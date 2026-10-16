@@ -519,23 +519,53 @@ func TestResolveCredentials_CacheHitAuthorizationEndpointProbe(t *testing.T) {
 			wantClientID: "cached-client-id",
 		},
 		{
-			name:         "direct 400 replaces the registration",
+			// The shape a vendor answered with for a purged public client
+			// (its description named the redirect_uri, not the client).
+			name:         "direct 400 invalid_request replaces the registration",
 			authorize:    oauthErrorResponse(http.StatusBadRequest, "invalid_request"),
 			wantClientID: "fresh-client-id", wantRegistrations: 1,
 		},
 		{
-			name:         "direct 401 replaces the registration",
+			// The shape a ToolHive auth server answers with (fosite).
+			name:         "direct 401 invalid_client replaces the registration",
 			authorize:    oauthErrorResponse(http.StatusUnauthorized, "invalid_client"),
 			wantClientID: "fresh-client-id", wantRegistrations: 1,
 		},
 		{
-			name: "direct 403 replaces the registration",
+			name:         "direct 403 unauthorized_client replaces the registration",
+			authorize:    oauthErrorResponse(http.StatusForbidden, "unauthorized_client"),
+			wantClientID: "fresh-client-id", wantRegistrations: 1,
+		},
+		{
+			name: "direct 403 HTML page keeps the registration",
 			authorize: func(w http.ResponseWriter, _ *http.Request) {
 				w.Header().Set("Content-Type", "text/html")
 				w.WriteHeader(http.StatusForbidden)
 				_, _ = w.Write([]byte("<html>Unknown client</html>"))
 			},
-			wantClientID: "fresh-client-id", wantRegistrations: 1,
+			wantClientID: "cached-client-id",
+		},
+		{
+			name: "direct 401 from a gateway without a body keeps the registration",
+			authorize: func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("WWW-Authenticate", `Bearer realm="gateway"`)
+				w.WriteHeader(http.StatusUnauthorized)
+			},
+			wantClientID: "cached-client-id",
+		},
+		{
+			name:         "direct 400 with a non-client error code keeps the registration",
+			authorize:    oauthErrorResponse(http.StatusBadRequest, "server_error"),
+			wantClientID: "cached-client-id",
+		},
+		{
+			name: "direct 400 with a JSON body that is not an error object keeps the registration",
+			authorize: func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(`{"message":"Unknown client"}`))
+			},
+			wantClientID: "cached-client-id",
 		},
 		{name: "404 keeps the registration", authorize: statusOnly(http.StatusNotFound), wantClientID: "cached-client-id"},
 		{name: "405 keeps the registration", authorize: statusOnly(http.StatusMethodNotAllowed), wantClientID: "cached-client-id"},
@@ -684,24 +714,42 @@ func TestResolveCredentials_ProbeNoneSkipsUpstream(t *testing.T) {
 func TestClassifyAuthorizationProbe(t *testing.T) {
 	t.Parallel()
 
+	invalidClient := []byte(`{"error":"invalid_client","error_description":"The requested OAuth 2.0 Client does not exist."}`)
 	tests := []struct {
-		status int
-		want   registrationStatus
+		name     string
+		status   int
+		body     []byte
+		want     registrationStatus
+		wantCode string
 	}{
-		{http.StatusOK, registrationLive},
-		{http.StatusSeeOther, registrationLive},
-		{http.StatusBadRequest, registrationRejected},
-		{http.StatusUnprocessableEntity, registrationRejected},
-		{http.StatusNotFound, registrationUnverified},
-		{http.StatusMethodNotAllowed, registrationUnverified},
-		{http.StatusTooManyRequests, registrationUnverified},
-		{http.StatusBadGateway, registrationUnverified},
-		{http.StatusContinue, registrationUnverified},
+		{name: "200 page", status: http.StatusOK, body: []byte("<html>"), want: registrationLive},
+		{name: "303 redirect", status: http.StatusSeeOther, want: registrationLive},
+		{name: "400 invalid_request", status: http.StatusBadRequest,
+			body: []byte(`{"error": "invalid_request", "error_description": "redirect_uri is not in the allowlist"}`),
+			want: registrationRejected, wantCode: "invalid_request"},
+		{name: "401 invalid_client", status: http.StatusUnauthorized, body: invalidClient,
+			want: registrationRejected, wantCode: "invalid_client"},
+		{name: "403 unauthorized_client", status: http.StatusForbidden, body: []byte(`{"error":"unauthorized_client"}`),
+			want: registrationRejected, wantCode: "unauthorized_client"},
+		{name: "400 other error code", status: http.StatusBadRequest, body: []byte(`{"error":"server_error"}`),
+			want: registrationUnverified, wantCode: "server_error"},
+		{name: "400 error code outside the log-safe alphabet", status: http.StatusBadRequest,
+			body: []byte(`{"error":"<script>alert(1)</script>"}`), want: registrationUnverified},
+		{name: "403 HTML", status: http.StatusForbidden, body: []byte("<html>Unknown client</html>"), want: registrationUnverified},
+		{name: "401 empty body", status: http.StatusUnauthorized, want: registrationUnverified},
+		{name: "422 invalid_client", status: http.StatusUnprocessableEntity, body: invalidClient, want: registrationUnverified},
+		{name: "404 invalid_client", status: http.StatusNotFound, body: invalidClient, want: registrationUnverified},
+		{name: "405", status: http.StatusMethodNotAllowed, want: registrationUnverified},
+		{name: "429 invalid_client", status: http.StatusTooManyRequests, body: invalidClient, want: registrationUnverified},
+		{name: "502 invalid_client", status: http.StatusBadGateway, body: invalidClient, want: registrationUnverified},
+		{name: "100", status: http.StatusContinue, want: registrationUnverified},
 	}
 	for _, tt := range tests {
-		t.Run(http.StatusText(tt.status), func(t *testing.T) {
+		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			assert.Equal(t, tt.want, classifyAuthorizationProbe(tt.status))
+			got, code := classifyAuthorizationProbe(tt.status, tt.body)
+			assert.Equal(t, tt.want, got)
+			assert.Equal(t, tt.wantCode, code)
 		})
 	}
 }
@@ -731,6 +779,55 @@ func TestAuthorizationProbeErrorAttrs_OmitsServerResponse(t *testing.T) {
 	require.Error(t, reason)
 	assert.NotContains(t, reason.Error(), secretish)
 	assert.Equal(t, []any{"error", "dcr: authorization endpoint answered HTTP 429"}, probeErrorAttrs(reason))
+}
+
+// TestAuthorizationProbeErrorAttrs_RepeatsOnlyTheErrorCode pins that a
+// structured error outside the rejection set is reported by status and
+// error code, never by its error_description.
+func TestAuthorizationProbeErrorAttrs_RepeatsOnlyTheErrorCode(t *testing.T) {
+	t.Parallel()
+
+	const secretish = "do-not-log-this-description"
+	upstream := newProbeUpstream(t, oauthErrorResponse(http.StatusUnauthorized, "invalid_client"), http.StatusCreated)
+	upstream.setAuthorize(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "server_error", "error_description": secretish})
+	})
+	req := preloadForAuthorizationProbe(t, newMemoryDCRStore(t), upstream)
+
+	status, reason := verifyCachedRegistration(context.Background(), req, &Resolution{
+		ClientID:                "cached-client-id",
+		AuthorizationEndpoint:   upstream.URL + "/authorize",
+		TokenEndpoint:           upstream.URL + "/token",
+		TokenEndpointAuthMethod: "none",
+		RedirectURI:             upstream.URL + "/oauth/callback",
+	})
+	require.Equal(t, registrationUnverified, status)
+	require.Error(t, reason)
+	assert.NotContains(t, reason.Error(), secretish)
+	assert.Equal(t, []any{"error", `dcr: authorization endpoint answered HTTP 400 (error "server_error")`}, probeErrorAttrs(reason))
+}
+
+// TestResolveCredentials_AuthorizationProbeVerifiesPrivateKeyJWTClients pins
+// that the authorization-endpoint probe, which sends no credentials, does
+// probe a private_key_jwt client (the token-endpoint probe cannot sign for
+// one and skips it).
+func TestResolveCredentials_AuthorizationProbeVerifiesPrivateKeyJWTClients(t *testing.T) {
+	t.Parallel()
+
+	upstream := newProbeUpstream(t, oauthErrorResponse(http.StatusUnauthorized, "invalid_client"), http.StatusCreated)
+	upstream.setAuthorize(oauthErrorResponse(http.StatusBadRequest, "invalid_client"))
+	cache := newMemoryDCRStore(t)
+	req := preloadCachedRegistration(t, cache, upstream, "private_key_jwt")
+	req.RegistrationProbe = ProbeAuthorizationEndpoint
+
+	got, err := ResolveCredentials(context.Background(), req, cache)
+	require.NoError(t, err)
+	assert.Equal(t, "fresh-client-id", got.ClientID)
+	assert.Equal(t, int32(1), upstream.authzRequests.Load())
+	assert.Equal(t, int32(1), upstream.registrations.Load())
+	assert.Zero(t, upstream.tokenRequests.Load())
 }
 
 func TestProbeErrorAttrs_OmitsServerResponse(t *testing.T) {

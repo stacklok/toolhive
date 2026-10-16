@@ -327,12 +327,14 @@ func newDCRStepError(step, issuer, redirectURI string, err error) *dcrStepError 
 // or req.RegistrationProbe is ProbeNone, it returns the cached resolution
 // without discovery or registration I/O.
 //
-// Neither probe can tell every dropped registration apart from a live one:
-// the token-endpoint probe is blind to an upstream that validates the grant
-// before authenticating a public client, the authorization-endpoint probe to
-// one that renders its unknown-client error with 200 or a redirect, and
-// private_key_jwt clients are never probed. For those, the operator retires
-// the registration with Request.RotationKey.
+// Neither probe can tell every dropped registration apart from a live one.
+// The token-endpoint probe is blind to an upstream that validates the grant
+// before authenticating a public client, and it does not sign for
+// private_key_jwt clients, so it skips them. The authorization-endpoint probe
+// sends no credentials and probes every auth method, but it is blind to an
+// upstream that renders its unknown-client error with 200, a redirect, or a
+// page instead of an RFC 6749 JSON error. For those, the operator retires the
+// registration with Request.RotationKey.
 //
 // The check runs only here, so a registration the upstream drops while the
 // caller keeps using a returned resolution is recovered on the next
@@ -503,9 +505,9 @@ func revalidateCachedResolution(
 }
 
 // logUnverifiedRegistration records why a cached registration is used
-// without the upstream having confirmed it. A private_key_jwt client is
-// never probed and ProbeNone asks for no probe, so those log at Debug on
-// every resolve; any other reason is unexpected and logs at Warn.
+// without the upstream having confirmed it. The token-endpoint probe skips
+// private_key_jwt clients and ProbeNone asks for no probe, so those log at
+// Debug on every resolve; any other reason is unexpected and logs at Warn.
 func logUnverifiedRegistration(
 	ctx context.Context, req *Request, key Key, redirectURI string, cached *Resolution, reason error,
 ) {

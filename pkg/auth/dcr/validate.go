@@ -6,12 +6,14 @@ package dcr
 import (
 	"context"
 	"crypto/rand"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
@@ -27,10 +29,27 @@ import (
 // long before the cached registration is used as-is.
 const registrationProbeTimeout = 10 * time.Second
 
-// authorizationProbeDrainLimit caps how much of an authorization endpoint's
-// response body the probe reads before closing it. The body is never
-// inspected; draining only lets the connection be reused.
-const authorizationProbeDrainLimit = 1 << 20
+// authorizationProbeBodyLimit caps how much of an authorization endpoint's
+// direct error response the probe reads to find an RFC 6749 error code. An
+// error object is a few hundred bytes; anything larger is a page, not a
+// verdict. The body is never logged.
+const authorizationProbeBodyLimit = 16 << 10
+
+// authorizationProbeRejectionCodes are the RFC 6749 error codes a direct
+// (non-redirected) authorization response may carry when the server could
+// not validate client_id or redirect_uri. invalid_request is included because
+// §4.1.2.1 names no code for that case and servers report an unregistered
+// redirect_uri that way (a 2026 vendor incident did exactly this), while a
+// valid client with a malformed request would be answered by redirect.
+var authorizationProbeRejectionCodes = map[string]struct{}{
+	"invalid_client":      {},
+	"unauthorized_client": {},
+	"invalid_request":     {},
+}
+
+// authorizationProbeErrorCodePattern bounds what the probe is willing to
+// repeat from a server's error code in its own error and logs.
+var authorizationProbeErrorCodePattern = regexp.MustCompile(`^[a-z_]{1,40}$`)
 
 // registrationStatus is the upstream's verdict on a cached registration.
 type registrationStatus int
@@ -98,8 +117,9 @@ func verifyCachedRegistration(ctx context.Context, req *Request, cached *Resolut
 // some servers validate the code first and answer invalid_grant for any
 // client_id; against those servers this probe cannot detect a deleted
 // registration (ProbeAuthorizationEndpoint can, when the server follows RFC
-// 6749 §4.1.2.1). private_key_jwt clients are not probed: the probe does not
-// sign for them.
+// 6749 §4.1.2.1). This probe skips private_key_jwt clients: it does not sign
+// for them (the authorization-endpoint probe sends no credentials and does
+// cover them).
 //
 // The configured token endpoint wins over the cached one, mirroring
 // applyExplicitEndpointOverrides, so a tampered cached endpoint cannot
@@ -147,22 +167,35 @@ func verifyViaTokenEndpoint(ctx context.Context, req *Request, cached *Resolutio
 }
 
 // verifyViaAuthorizationEndpoint sends an authorization request for the cached
-// client and reads the first response without following redirects. Per RFC
-// 6749 §4.1.2.1 the server MUST NOT redirect when the client_id or
-// redirect_uri is invalid and informs the user directly instead, so a direct
-// 4xx is the signal that the registration is gone, while any 2xx (a login or
+// client and reads the first response without following redirects. RFC 6749
+// §4.1.2.1 only says that a server MUST NOT redirect when client_id or
+// redirect_uri is invalid; the converse does not hold, since anything in
+// front of the server (a gateway wanting a login, an IP policy, bot
+// protection) can answer a direct 4xx for a live client. A 2xx (a login or
 // consent page) or 3xx (to the IdP, or back to redirect_uri with an error
-// such as invalid_scope) shows the client is known. The request carries no
-// credentials: only the public client_id, the registered redirect_uri, the
-// configured scopes and a throwaway state and PKCE challenge, so the server
-// records at most an abandoned authorization request.
+// such as invalid_scope) shows the client is known. A direct 4xx is a verdict
+// only when the server itself answered: status 400, 401 or 403 with an RFC
+// 6749 JSON error object whose error is one of
+// authorizationProbeRejectionCodes. A server that had validated client_id
+// and redirect_uri would have delivered that error by redirect, so the
+// direct structured error is the server reporting it could not. The request
+// carries no credentials: only the public client_id, the registered
+// redirect_uri, the configured scopes and a throwaway state and PKCE
+// challenge, so the server records at most an abandoned authorization
+// request.
 //
-// Not every 4xx is a verdict: 404 and 405 describe the endpoint rather than
-// the client, and 429 is rate limiting. Those, 5xx and transport failures are
-// unverified. A server that renders its unknown-client error with 200, or
-// redirects to its own error page, reads as alive; the cached registration is
-// then kept exactly as without a probe. The response body is never read for
-// content or logged.
+// Everything else is unverified and keeps the cached registration: other
+// 4xx, a 4xx without a JSON error object (Keycloak and Auth0 render HTML),
+// a JSON error outside the rejection set, 5xx and transport failures. A
+// server that renders its unknown-client error with 200, or redirects to its
+// own error page, reads as alive. Up to authorizationProbeBodyLimit of the
+// body is read for the error code and is never logged; only a code matching
+// authorizationProbeErrorCodePattern is repeated.
+//
+// A false rejection is costly: the resolver re-registers at every start (so
+// users of an upstream that binds refresh tokens to the client sign in again
+// each time) and, when registration also fails, startup fails. Hence the
+// narrow verdict.
 //
 // The configured authorization endpoint wins over the cached one, mirroring
 // verifyViaTokenEndpoint.
@@ -203,20 +236,28 @@ func verifyViaAuthorizationEndpoint(ctx context.Context, req *Request, cached *R
 		return registrationUnverified, fmt.Errorf("dcr: authorization endpoint probe: %w", err)
 	}
 	defer func() {
-		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, authorizationProbeDrainLimit))
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, authorizationProbeBodyLimit))
 		_ = resp.Body.Close()
 	}()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, authorizationProbeBodyLimit))
+	if err != nil {
+		return registrationUnverified, fmt.Errorf("dcr: authorization endpoint probe: read response: %w", err)
+	}
 
-	status := classifyAuthorizationProbe(resp.StatusCode)
+	status, errorCode := classifyAuthorizationProbe(resp.StatusCode, body)
 	//nolint:gosec // G706: client_id is public metadata per RFC 7591.
 	slog.Debug("dcr: authorization endpoint probe answered",
 		"client_id", cached.ClientID,
 		"status", resp.StatusCode,
+		"error_code", errorCode,
 		"registration_live", status == registrationLive,
 		"registration_rejected", status == registrationRejected,
 	)
 	if status != registrationUnverified {
 		return status, nil
+	}
+	if errorCode != "" {
+		return status, fmt.Errorf("dcr: authorization endpoint answered HTTP %d (error %q)", resp.StatusCode, errorCode)
 	}
 	return status, fmt.Errorf("dcr: authorization endpoint answered HTTP %d", resp.StatusCode)
 }
@@ -245,19 +286,27 @@ func authorizationProbeURL(endpoint, clientID, redirectURI string, scopes []stri
 
 // classifyAuthorizationProbe maps the authorization endpoint's first response
 // to a registrationStatus; see verifyViaAuthorizationEndpoint for the rules.
-func classifyAuthorizationProbe(statusCode int) registrationStatus {
-	switch {
-	case statusCode >= http.StatusOK && statusCode < http.StatusBadRequest:
-		return registrationLive
-	case statusCode == http.StatusNotFound,
-		statusCode == http.StatusMethodNotAllowed,
-		statusCode == http.StatusTooManyRequests:
-		return registrationUnverified
-	case statusCode >= http.StatusBadRequest && statusCode < http.StatusInternalServerError:
-		return registrationRejected
-	default:
-		return registrationUnverified
+// The second result is the RFC 6749 error code found in a direct error
+// response, filtered through authorizationProbeErrorCodePattern, or "".
+func classifyAuthorizationProbe(statusCode int, body []byte) (registrationStatus, string) {
+	if statusCode >= http.StatusOK && statusCode < http.StatusBadRequest {
+		return registrationLive, ""
 	}
+	switch statusCode {
+	case http.StatusBadRequest, http.StatusUnauthorized, http.StatusForbidden:
+	default:
+		return registrationUnverified, ""
+	}
+	var errResp struct {
+		Error string `json:"error"`
+	}
+	if json.Unmarshal(body, &errResp) != nil || !authorizationProbeErrorCodePattern.MatchString(errResp.Error) {
+		return registrationUnverified, ""
+	}
+	if _, rejected := authorizationProbeRejectionCodes[errResp.Error]; rejected {
+		return registrationRejected, errResp.Error
+	}
+	return registrationUnverified, errResp.Error
 }
 
 // probeErrorAttrs renders why a probe was unverified as log attributes. An

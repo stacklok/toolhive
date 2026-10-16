@@ -1912,11 +1912,14 @@ type DCRUpstreamConfig struct {
 	// gone"; it decides only for upstreams that authenticate the client
 	// before validating the grant. authorizationEndpoint sends an
 	// authorization request for the cached client without following
-	// redirects and reads a direct 4xx as "gone" (RFC 6749 §4.1.2.1), for
-	// upstreams whose token endpoint answers invalid_grant for any client_id;
-	// do not use it behind bot protection that answers 4xx to non-browser
-	// requests. none skips the check; the registration is then retired only
-	// through RotationKey.
+	// redirects and reads a direct 400, 401 or 403 that carries an RFC 6749
+	// JSON error object (error invalid_client, unauthorized_client or
+	// invalid_request) as "gone" (RFC 6749 §4.1.2.1), for upstreams whose
+	// token endpoint answers invalid_grant for any client_id; an HTML page or
+	// a bare gateway status is not a verdict. A false rejection re-registers
+	// at every start and, when registration also fails, fails startup. none
+	// skips the check; the registration is then retired only through
+	// RotationKey.
 	// +optional
 	// +kubebuilder:validation:Enum=tokenEndpoint;authorizationEndpoint;none
 	RegistrationProbe string `json:"registrationProbe,omitempty"`

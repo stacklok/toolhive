@@ -11,8 +11,10 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -561,7 +563,10 @@ func WithEnvReader(reader env.Reader) TokenValidatorOption {
 // with upstream provider tokens. When set, the Middleware extracts the token
 // session ID (tsid) from JWT claims and loads all upstream tokens into
 // Identity.UpstreamTokens (access tokens) and Identity.UpstreamIDTokens
-// (ID tokens) before placing the Identity in the request context.
+// (ID tokens) before placing the Identity in the request context. A token
+// session whose upstream access token cannot be refreshed, or that holds no
+// usable upstream access token at all, is answered with 401 and a
+// WWW-Authenticate challenge instead, so the client signs in again.
 func WithUpstreamTokenReader(reader upstreamtoken.TokenReader) TokenValidatorOption {
 	return func(o *tokenValidatorOptions) {
 		o.upstreamTokenReader = reader
@@ -1219,6 +1224,11 @@ const (
 	OAuthErrInsufficientScope = "insufficient_scope"
 )
 
+// upstreamReauthRequired is the error_description of the 401 the validator
+// answers when a token session's upstream credential is unusable: the client's
+// only cure is a new upstream login.
+const upstreamReauthRequired = "upstream token is no longer valid; re-authentication required"
+
 // RFC6750Error represents an RFC 6750 compliant OAuth error response body.
 type RFC6750Error struct {
 	Error            string `json:"error"`
@@ -1238,6 +1248,14 @@ func writeOAuthError(w http.ResponseWriter, errorCode, description string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusUnauthorized)
 	_, _ = w.Write(body)
+}
+
+// writeUpstreamReauthRequired answers 401 with the RFC 6750 invalid_token
+// challenge for a token session whose upstream credential is unusable, so the
+// client re-authenticates and the login writes fresh upstream rows.
+func (v *TokenValidator) writeUpstreamReauthRequired(w http.ResponseWriter) {
+	w.Header().Set("WWW-Authenticate", v.buildWWWAuthenticate(OAuthErrInvalidToken, upstreamReauthRequired))
+	writeOAuthError(w, OAuthErrInvalidToken, upstreamReauthRequired)
 }
 
 // loadUpstreamTokens extracts the token session ID from claims and loads
@@ -1353,18 +1371,12 @@ func (v *TokenValidator) Middleware(next http.Handler) http.Handler {
 			if len(failed) > 0 {
 				slog.WarnContext(loadCtx, "upstream token refresh failed; returning 401",
 					"providers", failed)
-				w.Header().Set("WWW-Authenticate",
-					v.buildWWWAuthenticate(OAuthErrInvalidToken, "upstream token is no longer valid; re-authentication required"))
-				writeOAuthError(w, OAuthErrInvalidToken,
-					"upstream token is no longer valid; re-authentication required")
+				v.writeUpstreamReauthRequired(w)
 				return
 			}
 			// Project the per-provider credential bundle onto the two
-			// consumer-facing Identity fields.
-			//
-			// Non-nil empty maps are preserved when a tsid claim was present
-			// so consumers can distinguish "enrichment attempted, nothing
-			// stored" from "enrichment never ran" (nil).
+			// consumer-facing Identity fields. creds is non-nil exactly when
+			// the token carried a tsid claim; without one both fields stay nil.
 			if creds != nil {
 				accessTokens := make(map[string]string, len(creds))
 				idTokens := make(map[string]string, len(creds))
@@ -1380,6 +1392,27 @@ func (v *TokenValidator) Middleware(next http.Handler) http.Handler {
 					if cred.IDToken != "" {
 						idTokens[provider] = cred.IDToken
 					}
+				}
+				// A token session that holds no usable access token for any
+				// provider (every stored row has expired or been deleted, or
+				// none carried an access token) is in the same state as one
+				// whose refresh was refused: consumers of UpstreamTokens can
+				// only deny it, and a denial does not make the client sign in
+				// again. Answer the same 401 challenge here, before any
+				// consumer runs.
+				//
+				// Debug, unlike the refresh-failure WARN above: an expired row
+				// is ordinary lifecycle rather than an upstream fault, a client
+				// retrying on a stale token sets the rate, and the audit
+				// middleware records the 401. The line names the session (tsid
+				// stays at Debug, as in loadUpstreamTokens) and the providers
+				// whose rows were still stored without an access token.
+				if len(accessTokens) == 0 {
+					tsid, _ := claims[upstreamtoken.TokenSessionIDClaimKey].(string)
+					slog.DebugContext(loadCtx, "token session holds no upstream access token; returning 401",
+						"tsid", tsid, "stored_providers", slices.Sorted(maps.Keys(creds)))
+					v.writeUpstreamReauthRequired(w)
+					return
 				}
 				identity.UpstreamTokens = accessTokens
 				identity.UpstreamIDTokens = idTokens

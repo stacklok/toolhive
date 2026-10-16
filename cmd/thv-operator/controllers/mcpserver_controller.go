@@ -74,6 +74,11 @@ var defaultRBACRules = []rbacv1.PolicyRule{
 		Verbs:     []string{"get", "list", "watch", "create", "update", "patch", "delete"},
 	},
 	{
+		APIGroups: []string{"apps"},
+		Resources: []string{"statefulsets/finalizers"},
+		Verbs:     []string{"update"},
+	},
+	{
 		APIGroups: []string{""},
 		Resources: []string{"services"},
 		Verbs:     []string{"get", "list", "watch", "create", "update", "patch", "delete"},
@@ -201,6 +206,7 @@ func (r *MCPServerReconciler) detectPlatform(ctx context.Context) (kubernetes.Pl
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=create;delete;get;list;patch;update;watch
 // +kubebuilder:rbac:groups="",resources=serviceaccounts,verbs=create;delete;get;list;patch;update;watch
 // +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=apps,resources=statefulsets/finalizers,verbs=update
 // +kubebuilder:rbac:groups="",resources=pods/attach,verbs=create;get
 // +kubebuilder:rbac:groups="",resources=pods/log,verbs=get
 

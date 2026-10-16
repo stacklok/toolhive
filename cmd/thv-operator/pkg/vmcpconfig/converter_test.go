@@ -2336,3 +2336,49 @@ func TestConverter_PassthroughHeaders(t *testing.T) {
 		})
 	}
 }
+
+func TestConvertSessionStorage_GlobalTLS(t *testing.T) {
+	t.Setenv("TOOLHIVE_DEFAULT_REDIS_ADDR", "global-redis:6380")
+	t.Setenv("TOOLHIVE_DEFAULT_REDIS_TLS_ENABLED", "true")
+	tests := []struct {
+		name     string
+		storage  *mcpv1beta1.SessionStorageConfig
+		globalCA string
+		wantAddr string
+		wantTLS  *redisconfig.TLSConfig
+	}{
+		{name: "global system roots", wantAddr: "global-redis:6380", wantTLS: &redisconfig.TLSConfig{}},
+		{name: "global private CA", globalCA: "global-ca", wantAddr: "global-redis:6380",
+			wantTLS: &redisconfig.TLSConfig{CACertFile: "/etc/toolhive/session-redis-tls/ca.crt"}},
+		{name: "explicit plaintext does not inherit TLS", globalCA: "global-ca",
+			storage: &mcpv1beta1.SessionStorageConfig{Provider: "redis", Address: "local-redis:6379"}, wantAddr: "local-redis:6379"},
+		{name: "explicit system roots do not inherit CA", globalCA: "global-ca",
+			storage:  &mcpv1beta1.SessionStorageConfig{Provider: "redis", Address: "local-redis:6380", TLS: &mcpv1beta1.RedisTLSConfig{}},
+			wantAddr: "local-redis:6380", wantTLS: &redisconfig.TLSConfig{}},
+		{name: "explicit CA overrides global CA", globalCA: "global-ca",
+			storage: &mcpv1beta1.SessionStorageConfig{Provider: "redis", Address: "local-redis:6380", TLS: &mcpv1beta1.RedisTLSConfig{
+				CACertSecretRef: &mcpv1beta1.SecretKeyRef{Name: "local-ca", Key: "local.pem"}}},
+			wantAddr: "local-redis:6380", wantTLS: &redisconfig.TLSConfig{CACertFile: "/etc/toolhive/session-redis-tls/ca.crt"}},
+		{name: "memory retains existing global fallback", globalCA: "global-ca",
+			storage: &mcpv1beta1.SessionStorageConfig{Provider: "memory"}, wantAddr: "global-redis:6380",
+			wantTLS: &redisconfig.TLSConfig{CACertFile: "/etc/toolhive/session-redis-tls/ca.crt"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("TOOLHIVE_DEFAULT_REDIS_TLS_CA_SECRET_NAME", tt.globalCA)
+			key := ""
+			if tt.globalCA != "" {
+				key = "ca.crt"
+			}
+			t.Setenv("TOOLHIVE_DEFAULT_REDIS_TLS_CA_SECRET_KEY", key)
+			before := tt.storage.DeepCopy()
+			server := v1beta1test.NewVirtualMCPServer("vmcp", "default", v1beta1test.WithVMCPSessionStorage(tt.storage))
+			got := convertSessionStorage(server)
+			require.NotNil(t, got)
+			assert.Equal(t, "redis", got.Provider)
+			assert.Equal(t, tt.wantAddr, got.Address)
+			assert.Equal(t, tt.wantTLS, got.TLS)
+			assert.Equal(t, before, server.Spec.SessionStorage)
+		})
+	}
+}

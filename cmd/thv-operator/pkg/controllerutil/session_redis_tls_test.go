@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	k8sptr "k8s.io/utils/ptr"
 
@@ -170,4 +171,69 @@ func caSecretVolume(secret, key string) corev1.Volume {
 			},
 		},
 	}
+}
+
+// Global defaults apply only when the caller selected the global Redis backend.
+// Explicit Redis blocks own their TLS policy, including omitted TLS (plaintext).
+func TestSessionRedisTLSGlobalSelection(t *testing.T) {
+	t.Setenv("TOOLHIVE_DEFAULT_REDIS_ADDR", "global-redis:6380")
+	t.Setenv("TOOLHIVE_DEFAULT_REDIS_TLS_ENABLED", "true")
+	t.Setenv("TOOLHIVE_DEFAULT_REDIS_TLS_CA_SECRET_NAME", "global-ca")
+	t.Setenv("TOOLHIVE_DEFAULT_REDIS_TLS_CA_SECRET_KEY", "global.pem")
+
+	tests := []struct {
+		name    string
+		storage *mcpv1beta1.SessionStorageConfig
+		wantTLS *redisconfig.TLSConfig
+		wantCA  string
+		wantKey string
+	}{
+		{name: "omitted storage inherits global CA", wantTLS: &redisconfig.TLSConfig{
+			CACertFile: "/etc/toolhive/session-redis-tls/ca.crt"}, wantCA: "global-ca", wantKey: "global.pem"},
+		{name: "explicit plaintext does not inherit global TLS", storage: &mcpv1beta1.SessionStorageConfig{
+			Provider: "redis", Address: "local-redis:6379"}},
+		{name: "explicit system roots do not inherit global CA", storage: &mcpv1beta1.SessionStorageConfig{
+			Provider: "redis", Address: "local-redis:6380", TLS: &mcpv1beta1.RedisTLSConfig{}}, wantTLS: &redisconfig.TLSConfig{}},
+		{name: "explicit private CA overrides global CA", storage: &mcpv1beta1.SessionStorageConfig{
+			Provider: "redis", Address: "local-redis:6380", TLS: &mcpv1beta1.RedisTLSConfig{
+				CACertSecretRef: &mcpv1beta1.SecretKeyRef{Name: "local-ca", Key: "local.pem"}}},
+			wantTLS: &redisconfig.TLSConfig{CACertFile: "/etc/toolhive/session-redis-tls/ca.crt"},
+			wantCA:  "local-ca", wantKey: "local.pem"},
+		{name: "explicit memory does not select global defaults", storage: &mcpv1beta1.SessionStorageConfig{Provider: "memory"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("TOOLHIVE_DEFAULT_REDIS_TLS_CA_SECRET_NAME", "global-ca")
+			t.Setenv("TOOLHIVE_DEFAULT_REDIS_TLS_CA_SECRET_KEY", "global.pem")
+			before := tt.storage.DeepCopy()
+			assert.Equal(t, tt.wantTLS, SessionRedisTLSConfig(tt.storage))
+			volumes, mounts := SessionRedisTLSVolumes(tt.storage)
+			if tt.wantCA == "" {
+				assert.Empty(t, volumes)
+				assert.Empty(t, mounts)
+			} else {
+				require.Len(t, volumes, 1)
+				assert.Equal(t, caSecretVolume(tt.wantCA, tt.wantKey), volumes[0])
+				require.Len(t, mounts, 1)
+				assert.Equal(t, tt.wantTLS.CACertFile, mounts[0].MountPath)
+			}
+			assert.Equal(t, before, tt.storage, "selecting global TLS must not mutate the workload spec")
+		})
+	}
+
+	memory := &mcpv1beta1.SessionStorageConfig{Provider: "memory"}
+	volumes, mounts := SessionRedisTLSVolumesWithDefault(memory)
+	require.Len(t, volumes, 1)
+	assert.Equal(t, caSecretVolume("global-ca", "global.pem"), volumes[0])
+	require.Len(t, mounts, 1)
+	assert.Equal(t, "/etc/toolhive/session-redis-tls/ca.crt", mounts[0].MountPath,
+		"MCPServer and VirtualMCPServer keep their existing non-Redis global fallback")
+	assert.Equal(t, &mcpv1beta1.SessionStorageConfig{Provider: "memory"}, memory)
+
+	t.Setenv("TOOLHIVE_DEFAULT_REDIS_TLS_CA_SECRET_NAME", "")
+	t.Setenv("TOOLHIVE_DEFAULT_REDIS_TLS_CA_SECRET_KEY", "")
+	assert.Equal(t, &redisconfig.TLSConfig{}, SessionRedisTLSConfig(nil))
+	volumes, mounts = SessionRedisTLSVolumes(nil)
+	assert.Empty(t, volumes, "system roots need no CA Secret projection")
+	assert.Empty(t, mounts)
 }

@@ -325,6 +325,7 @@ func populateScalingConfig(runConfig *runner.RunConfig, m *mcpv1beta1.MCPServer)
 	} else if defaultRedis != nil {
 		runConfig.ScalingConfig.SessionRedis = &runner.SessionRedisConfig{
 			Address: defaultRedis.Addr,
+			TLS:     ctrlutil.SessionRedisTLSConfig(nil),
 		}
 	}
 }

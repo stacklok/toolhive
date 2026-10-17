@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -1044,10 +1045,90 @@ func TestUpdateMCPRemoteProxyStatus(t *testing.T) {
 					},
 					Status: corev1.PodStatus{
 						Phase: corev1.PodRunning,
+						ContainerStatuses: []corev1.ContainerStatus{
+							{Name: "proxy", Ready: true},
+						},
 					},
 				},
 			},
 			expectedPhase: mcpv1beta1.MCPRemoteProxyPhaseReady,
+		},
+		{
+			// The readiness probe is what tells us the proxy can serve traffic,
+			// and the pod stays in the Running phase while it keeps failing.
+			name:  "running pod with a container that is not ready",
+			proxy: v1beta1test.NewMCPRemoteProxy("not-ready-proxy", "default"),
+			pods: []corev1.Pod{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "not-ready-proxy-pod",
+						Namespace: "default",
+						Labels:    labelsForMCPRemoteProxy("not-ready-proxy"),
+					},
+					Status: corev1.PodStatus{
+						Phase: corev1.PodRunning,
+						ContainerStatuses: []corev1.ContainerStatus{
+							{Name: "proxy", Ready: false},
+						},
+					},
+				},
+			},
+			expectedPhase: mcpv1beta1.MCPRemoteProxyPhasePending,
+		},
+		{
+			name:  "running pod in CrashLoopBackOff",
+			proxy: v1beta1test.NewMCPRemoteProxy("crashloop-proxy", "default"),
+			pods: []corev1.Pod{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "crashloop-proxy-pod",
+						Namespace: "default",
+						Labels:    labelsForMCPRemoteProxy("crashloop-proxy"),
+					},
+					Status: corev1.PodStatus{
+						Phase: corev1.PodRunning,
+						ContainerStatuses: []corev1.ContainerStatus{
+							{
+								Name:  "proxy",
+								Ready: false,
+								State: corev1.ContainerState{
+									Waiting: &corev1.ContainerStateWaiting{
+										Reason: "CrashLoopBackOff",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			expectedPhase: mcpv1beta1.MCPRemoteProxyPhaseFailed,
+		},
+		{
+			// Terminating pods are excluded from the counts, the same way the
+			// MCPServer reconciler excludes them, so a rolling update does not
+			// report a proxy that no longer accepts traffic as ready.
+			name:  "terminating pod",
+			proxy: v1beta1test.NewMCPRemoteProxy("terminating-proxy", "default"),
+			pods: []corev1.Pod{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:              "terminating-proxy-pod",
+						Namespace:         "default",
+						Labels:            labelsForMCPRemoteProxy("terminating-proxy"),
+						DeletionTimestamp: &metav1.Time{Time: time.Now()},
+						// the fake client requires a finalizer on an object with a
+						// deletion timestamp
+						Finalizers: []string{"test-finalizer"},
+					},
+					Status: corev1.PodStatus{
+						Phase: corev1.PodRunning,
+						ContainerStatuses: []corev1.ContainerStatus{
+							{Name: "proxy", Ready: true},
+						},
+					},
+				},
+			},
+			expectedPhase: mcpv1beta1.MCPRemoteProxyPhasePending,
 		},
 		{
 			name:  "pending pod",

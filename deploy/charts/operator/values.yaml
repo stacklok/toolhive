@@ -261,4 +261,4 @@ operator:
 # -- Settings for the registry API workloads created by the operator.
 registryAPI:
   # -- Container image for registry API workloads created by the operator.
-  image: "ghcr.io/stacklok/thv-registry-api:v1.5.2"
+  image: "ghcr.io/stacklok/thv-registry-api:v1.5.3"

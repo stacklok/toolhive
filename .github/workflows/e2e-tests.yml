@@ -163,7 +163,7 @@ jobs:
           fi
           # Envoy is only used by the network-isolation test suite
           if [ "${{ matrix.title }}" = "network-isolation" ]; then
-            images="$images envoyproxy/envoy:distroless-v1.39.1@sha256:eb2c01c13125d1629637cb4e4cce7207009fb7cc2c8027f9742758549d15b6f4 python:3.15-slim@sha256:ea4f1f290e071bf7d28199cfb3e09f5dbad31b50e9c32fd58f2f2d7be915f3ae"
+            images="$images envoyproxy/envoy:distroless-v1.39.1@sha256:eb2c01c13125d1629637cb4e4cce7207009fb7cc2c8027f9742758549d15b6f4 python:3.15-slim@sha256:d802f03223b9e00604cd54574bcac1a4638914c43683d3f0afd6ebee35f25313"
           fi
 
           for server in $servers; do

@@ -42,7 +42,7 @@ const (
 	// in Kubernetes tests. These run Flask-based Python services for testing authentication flows.
 	PythonImage = pythonImageURL + ":" + pythonImageTag
 
-	networkFixtureImageDigest = "sha256:ea4f1f290e071bf7d28199cfb3e09f5dbad31b50e9c32fd58f2f2d7be915f3ae"
+	networkFixtureImageDigest = "sha256:2da676046630d7bf14c6764ae1143dc7fa0377a53f94bf5a642f0b214aca5bce"
 	// NetworkFixtureImage is pinned because network-isolation tests use it for
 	// security-sensitive DNS and HTTP fixtures in the Docker-backed CI shard.
 	NetworkFixtureImage = pythonImageURL + ":" + pythonImageTag + "@" + networkFixtureImageDigest

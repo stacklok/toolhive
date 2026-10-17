@@ -310,6 +310,65 @@ func TestSkillsClient_ListSkills(t *testing.T) {
 	}
 }
 
+// TestSkillsClient_ListSkillsNotFoundPagination verifies that only a 404 on the
+// first page means the skills endpoint is not served. The endpoint answered a
+// later page, so a 404 there is a real failure that must not be mistaken for a
+// registry without skills.
+func TestSkillsClient_ListSkillsNotFoundPagination(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		notFoundOn    string // "first" or "later"
+		wantNotServed bool
+	}{
+		{
+			name:          "404 on the first page means the endpoint is not served",
+			notFoundOn:    "first",
+			wantNotServed: true,
+		},
+		{
+			name:          "404 on a later page is a real failure",
+			notFoundOn:    "later",
+			wantNotServed: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				cursor := r.URL.Query().Get("cursor")
+				if (tt.notFoundOn == "first" && cursor == "") ||
+					(tt.notFoundOn == "later" && cursor == "page2") {
+					w.WriteHeader(http.StatusNotFound)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				resp := skillsListResponse{
+					Skills: []*thvregistry.Skill{
+						{Namespace: "io.github.a", Name: "skill-1", Version: "1.0.0"},
+					},
+					Metadata: struct {
+						Count      int    `json:"count"`
+						NextCursor string `json:"nextCursor"`
+					}{Count: 1, NextCursor: "page2"},
+				}
+				require.NoError(t, json.NewEncoder(w).Encode(resp))
+			}))
+			defer server.Close()
+
+			client := newTestSkillsClient(t, server)
+			_, err := client.ListSkills(t.Context(), nil)
+			require.Error(t, err)
+			require.Equal(t, tt.wantNotServed, errors.Is(err, ErrSkillsEndpointNotServed),
+				"errors.Is(err, ErrSkillsEndpointNotServed) = %v for %s; err = %v",
+				errors.Is(err, ErrSkillsEndpointNotServed), tt.notFoundOn, err)
+		})
+	}
+}
+
 func TestSkillsClient_SearchSkills(t *testing.T) {
 	t.Parallel()
 

@@ -427,7 +427,8 @@ func TestCreateCedarEntities(t *testing.T) {
 			factory := NewEntityFactory("")
 
 			// Create Cedar entities (no groups for these test cases)
-			entities, err := factory.CreateEntitiesForRequest(tc.principal, tc.action, tc.resource, tc.claimsMap, tc.attributes, nil, "")
+			entities, err := factory.CreateEntitiesForRequest(
+				tc.principal, tc.action, tc.resource, tc.claimsMap, tc.attributes, nil, "")
 
 			// Check error expectations
 			if tc.expectErr {
@@ -590,6 +591,74 @@ func TestCreateEntitiesForRequest_MCPParent(t *testing.T) {
 				mcpUID := cedar.NewEntityUID("MCP", cedar.String(tt.wantMCPParentID))
 				assert.True(t, resourceEntity.Parents.Contains(mcpUID),
 					"expected MCP::%q in resource.Parents", tt.wantMCPParentID)
+			}
+		})
+	}
+}
+
+func TestCreateEntitiesForRequest_BackendParent(t *testing.T) {
+	t.Parallel()
+
+	factory := NewEntityFactory("")
+	tests := []struct {
+		name            string
+		serverName      string
+		backendID       string
+		wantParentCount int
+	}{
+		{
+			name:            "MCP and Backend parents",
+			serverName:      "main-vmcp",
+			backendID:       "github-mcp",
+			wantParentCount: 2,
+		},
+		{
+			name:            "empty BackendID keeps only MCP parent",
+			serverName:      "main-vmcp",
+			wantParentCount: 1,
+		},
+		{
+			name:            "Backend parent does not require MCP parent",
+			backendID:       "github-mcp",
+			wantParentCount: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var extraResourceParents []cedar.EntityUID
+			if tt.backendID != "" {
+				extraResourceParents = append(extraResourceParents,
+					cedar.NewEntityUID(EntityTypeBackend, cedar.String(tt.backendID)))
+			}
+
+			entities, err := factory.CreateEntitiesForRequest(
+				"Client::user1",
+				"Action::call_tool",
+				"Tool::renamed-search",
+				map[string]interface{}{"sub": "user1"},
+				map[string]interface{}{"name": "renamed-search"},
+				nil,
+				tt.serverName,
+				extraResourceParents...,
+			)
+			require.NoError(t, err)
+			assert.Len(t, entities, 3,
+				"request entities must contain only the principal, action, and resource")
+
+			toolUID := cedar.NewEntityUID("Tool", cedar.String("renamed-search"))
+			toolEntity, ok := entities[toolUID]
+			require.True(t, ok)
+			assert.Equal(t, tt.wantParentCount, toolEntity.Parents.Len())
+
+			if tt.backendID != "" {
+				backendUID := cedar.NewEntityUID(EntityTypeBackend, cedar.String(tt.backendID))
+				assert.True(t, toolEntity.Parents.Contains(backendUID),
+					"Tool must carry the trusted Backend parent UID")
+				assert.NotContains(t, entities, backendUID,
+					"request-time Backend parents must not be materialized as entities")
 			}
 		})
 	}

@@ -1456,7 +1456,7 @@ func newCapabilityListFromMCP(
 		// Dropping at this shared ingestion seam, like the tool rejection above,
 		// keeps the failure to the single offending resource.
 		if _, err := url.Parse(resource.URI); err != nil {
-			slog.Warn("rejecting backend resource with unparseable URI",
+			slog.Warn("rejecting backend resource with unparsable URI",
 				"backend", backendID, "resource", resource.Name, "error", err)
 			continue
 		}

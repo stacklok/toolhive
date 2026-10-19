@@ -906,3 +906,13 @@ func TestNew_HealthMonitorDisabledWhenNil(t *testing.T) {
 
 	assert.Nil(t, c.BackendHealth(), "nil HealthMonitorConfig must leave health monitoring disabled")
 }
+
+func TestTemplateMatches_URILengthCap(t *testing.T) {
+	t.Parallel()
+
+	const tmpl = "file:///{+path}"
+	prefix := "file:///"
+
+	assert.True(t, templateMatches(tmpl, prefix+strings.Repeat("a", vmcp.MaxResourceURILength-len(prefix))))
+	assert.False(t, templateMatches(tmpl, prefix+strings.Repeat("a", vmcp.MaxResourceURILength)))
+}

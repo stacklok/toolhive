@@ -1417,7 +1417,7 @@ func newCapabilityListFromMCP(
 	capabilities := &vmcp.CapabilityList{
 		Tools:             make([]vmcp.Tool, 0, len(tools)),
 		Resources:         make([]vmcp.Resource, 0, len(resources)),
-		ResourceTemplates: make([]vmcp.ResourceTemplate, len(templates)),
+		ResourceTemplates: make([]vmcp.ResourceTemplate, 0, len(templates)),
 		Prompts:           make([]vmcp.Prompt, len(prompts)),
 	}
 
@@ -1470,15 +1470,25 @@ func newCapabilityListFromMCP(
 		})
 	}
 
-	// Resource templates are a pass-through: no URI-template rewriting, like resources.
-	for i, template := range templates {
-		capabilities.ResourceTemplates[i] = vmcp.ResourceTemplate{
+	// Resource templates are passed through without URI-template rewriting, like
+	// resources, but each is bounded first: the URI template library's compile
+	// and match cost grows with the template's size, and every later request
+	// that reaches template matching pays it. Dropping the one offending
+	// template is the narrower failure than letting a backend exhaust vMCP's
+	// memory, which would take every other backend down with it.
+	for _, template := range templates {
+		if err := validateResourceTemplate(template.URITemplate); err != nil {
+			slog.Warn("rejecting backend resource template that exceeds the size bounds",
+				"backend", backendID, "name", template.Name, "error", err)
+			continue
+		}
+		capabilities.ResourceTemplates = append(capabilities.ResourceTemplates, vmcp.ResourceTemplate{
 			URITemplate: template.URITemplate,
 			Name:        template.Name,
 			Description: template.Description,
 			MimeType:    template.MIMEType,
 			BackendID:   backendID,
-		}
+		})
 	}
 
 	for i, prompt := range prompts {

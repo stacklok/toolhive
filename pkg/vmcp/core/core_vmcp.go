@@ -503,6 +503,7 @@ func (c *coreVMCP) LookupResource(ctx context.Context, identity *auth.Identity, 
 // invalid template string reports no match (it was already logged and skipped
 // at routing-table construction).
 func templateMatches(tmplStr, uri string) bool {
+	// An oversized client-supplied URI is a non-match; see vmcp.MaxResourceURILength.
 	if len(uri) > vmcp.MaxResourceURILength {
 		return false
 	}

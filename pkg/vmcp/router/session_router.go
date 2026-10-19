@@ -197,6 +197,8 @@ func (r *sessionRouter) RouteResource(_ context.Context, uri string) (*vmcp.Back
 // match. First-match wins over the sorted template keys (see
 // compileResourceTemplates).
 func (r *sessionRouter) matchResourceTemplate(uri string) *vmcp.BackendTarget {
+	// Matcher cost grows faster than linearly with input length and the client
+	// controls uri, so an oversized URI fails closed as not-found.
 	if len(uri) > vmcp.MaxResourceURILength {
 		return nil
 	}

@@ -203,8 +203,12 @@ func WithCleanupInterval(interval time.Duration) MemoryStorageOption {
 // WithMaxDCRClients sets the cap on live clients counted by
 // countsTowardDCRCap; zero means unlimited. At the cap RegisterClient returns a
 // *ClientCapacityError and evicts nothing. Operator-configured and CIMD
-// clients are never counted.
+// clients are never counted. It panics on a negative n, which
+// RunConfig.ResolvedMaxDCRClients already rejects.
 func WithMaxDCRClients(n int) MemoryStorageOption {
+	if n < 0 {
+		panic(fmt.Sprintf("max DCR clients must not be negative, got %d", n))
+	}
 	return func(s *MemoryStorage) {
 		s.maxDCRClients = n
 	}
@@ -598,9 +602,8 @@ func (s *MemoryStorage) RegisterClient(_ context.Context, client fosite.Client) 
 // expiry reset to DefaultDCRClientTTL) rather than rejected -- but only when
 // the existing row is itself DCR-issued; a configured/SPIFFE-reconciled row at
 // the same ID is protected and refuses with ErrAlreadyExists. See the
-// ClientRegistry interface doc for the full contract. It does not enforce the
-// DCR cap: its only caller is the CIMD decorator, whose clients are not
-// counted.
+// ClientRegistry interface doc for the full contract. A client counted
+// against the DCR cap is refused, so this path cannot bypass the cap.
 func (s *MemoryStorage) UpsertDCRIssuedClient(_ context.Context, client fosite.Client) error {
 	if !registration.DCRIssued(client) {
 		return fmt.Errorf("client %q must carry the DCR-issued marker to use UpsertDCRIssuedClient", client.GetID())
@@ -608,6 +611,9 @@ func (s *MemoryStorage) UpsertDCRIssuedClient(_ context.Context, client fosite.C
 	id := client.GetID()
 	if err := ValidateRegisterableClientID(id); err != nil {
 		return err
+	}
+	if countsTowardDCRCap(client) {
+		return fmt.Errorf("client %q counts against the DCR client cap and must use RegisterClient", id)
 	}
 
 	s.mu.Lock()

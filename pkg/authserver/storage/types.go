@@ -1161,7 +1161,10 @@ type ClientRegistry interface {
 	// returns ErrAlreadyExists if a client with the same ID already exists,
 	// regardless of the new client's origin. Used by unauthenticated DCR
 	// (RFC 7591) and any other caller that must never silently overwrite an
-	// existing registration.
+	// existing registration. A client counted against the DCR cap (see
+	// ErrClientCapacity) is refused with a *ClientCapacityError when the cap
+	// is reached; decorators must propagate it. An existing ID is reported as
+	// ErrAlreadyExists before the cap is checked, on both backends.
 	RegisterClient(ctx context.Context, client fosite.Client) error
 
 	// UpsertDCRIssuedClient creates or replaces a DCR-issued client at
@@ -1174,7 +1177,9 @@ type ClientRegistry interface {
 	// is itself DCR-issued; refuses with ErrAlreadyExists if the existing row is
 	// NOT DCR-issued (protects a configured/SPIFFE-reconciled client from being
 	// clobbered). client MUST carry registration.DCRIssued -- refuses otherwise
-	// (mirrors ReconcileConfiguredClient's inverse check).
+	// (mirrors ReconcileConfiguredClient's inverse check). A client that would
+	// count against the DCR cap (DCR-issued with an ID that is not a CIMD URL)
+	// is refused too: it must go through RegisterClient, which enforces the cap.
 	UpsertDCRIssuedClient(ctx context.Context, client fosite.Client) error
 
 	// ReconcileConfiguredClient applies an operator-declared (configured)

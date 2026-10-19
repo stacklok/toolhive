@@ -310,14 +310,17 @@ filled by spam drains within a day.
 On Redis the count lives in a sorted set, `{prefix}client-idx`, holding each
 counted client ID scored by its expiry in Unix milliseconds. It shares the
 client rows' hash slot, so one Lua script registers atomically on Redis
-Cluster: trim entries whose expiry has passed, reject if the remaining count
-is at the cap, otherwise `SET NX` the row with its TTL and add it to the set.
-`RenewClientTTL` sets the row's TTL and its score in one script, and
-`UpsertDCRIssuedClient` and `ReconcileConfiguredClient` update the set in the
-same transaction as the row. Scores come from the Redis server clock (`TIME`),
-the same clock that expires the rows, so replica clock skew cannot trim an
-entry before its row expires. Because the count is in Redis, every replica
-enforces one cap, unlike the per-process rate limiter.
+Cluster: report an existing row as a conflict, trim entries whose expiry has
+passed, reject if the remaining count is at the cap, otherwise write the row
+with its TTL and add it to the set. `RenewClientTTL` sets the row's TTL and
+its score in one script, and `ReconcileConfiguredClient` drops a stale entry
+in the same transaction as the row. `UpsertDCRIssuedClient` refuses counted
+clients, so it cannot bypass the cap. Scores come from the replica's clock,
+passed to the scripts as an argument: Redis `TIME` is in the `@fast` ACL
+category, which the documented auth-server ACL does not grant. Clock skew
+between replicas, milliseconds under NTP, only shifts when an entry is
+trimmed relative to its row's expiry. Because the count is in Redis, every
+replica enforces one cap, unlike the per-process rate limiter.
 
 Rows written before the index existed have no entry. On startup,
 `BackfillDCRClientIndex` scans the client rows and adds each counted row with

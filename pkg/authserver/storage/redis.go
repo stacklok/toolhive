@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -109,6 +110,9 @@ type RedisStorage struct {
 	// means unlimited. The count lives in the KeyTypeDCRClientIdx sorted set,
 	// so every replica sharing this Redis enforces one cap.
 	maxDCRClients int
+
+	// now is the clock DCR cap index scores are computed from.
+	now func() time.Time
 }
 
 // RedisStorageOption configures a RedisStorage.
@@ -116,10 +120,22 @@ type RedisStorageOption func(*RedisStorage)
 
 // WithRedisMaxDCRClients sets the cap on live clients counted by
 // countsTowardDCRCap; zero means unlimited. At the cap RegisterClient returns
-// a *ClientCapacityError and writes nothing.
+// a *ClientCapacityError and writes nothing. It panics on a negative n, which
+// RunConfig.ResolvedMaxDCRClients already rejects.
 func WithRedisMaxDCRClients(n int) RedisStorageOption {
+	if n < 0 {
+		panic(fmt.Sprintf("max DCR clients must not be negative, got %d", n))
+	}
 	return func(s *RedisStorage) {
 		s.maxDCRClients = n
+	}
+}
+
+// withRedisClock sets the clock DCR cap index scores are computed from, so
+// tests can keep it in step with miniredis's key TTLs.
+func withRedisClock(now func() time.Time) RedisStorageOption {
+	return func(s *RedisStorage) {
+		s.now = now
 	}
 }
 
@@ -128,6 +144,7 @@ func newRedisStorage(client redis.UniversalClient, keyPrefix string, opts []Redi
 		client:        client,
 		keyPrefix:     keyPrefix,
 		maxDCRClients: DefaultMaxDCRClients,
+		now:           time.Now,
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -482,36 +499,43 @@ func (s *RedisStorage) RegisterClient(ctx context.Context, client fosite.Client)
 	return nil
 }
 
-// redisNowMsLua sets the local now to the Redis server time in Unix
-// milliseconds. DCR cap index scores are computed from it rather than from a
-// replica's clock, so they agree with the key TTLs Redis itself enforces and
-// clock skew between replicas cannot trim an entry before its row expires.
-// Calling TIME before a write needs script effects replication, the default
-// since Redis 5.
-const redisNowMsLua = `
-local t = redis.call('TIME')
-local now = tonumber(t[1]) * 1000 + math.floor(tonumber(t[2]) / 1000)
-`
+// DCR cap index scores are expiry times in Unix milliseconds taken from the
+// replica's clock (RedisStorage.now) and passed to the scripts as an argument.
+// Redis TIME would avoid clock skew between replicas, but it is in the @fast
+// ACL category, which the documented auth-server ACL does not grant, so
+// using it would break existing ACL-restricted deployments on upgrade. Skew
+// under NTP is milliseconds, and its only effect is that an index entry is
+// trimmed that much before or after its row expires.
+
+// Status codes returned by registerCountedClientScript.
+const (
+	registerStatusCreated  int64 = 1
+	registerStatusAtCap    int64 = 0
+	registerStatusConflict int64 = -1
+)
 
 // registerCountedClientScript creates a client counted against the DCR cap.
 // KEYS[1] is the client row, KEYS[2] the KeyTypeDCRClientIdx sorted set.
-// ARGV: row data, TTL in ms, cap (0 = unlimited), client ID.
+// ARGV: row data, TTL in ms, cap (0 = unlimited), client ID, now in ms.
 //
-// It trims index entries whose expiry has passed, rejects at the cap, and
-// otherwise creates the row with SET NX and indexes it, all in one atomic
-// step so concurrent registrations on any replica cannot overshoot the cap.
-// Returns {1} on success, {0, oldest_expiry_ms, now_ms} at the cap, {-1}
-// when the row already exists.
-var registerCountedClientScript = redis.NewScript(redisNowMsLua + `
+// It reports an existing row first, as the memory store does, then trims
+// index entries whose expiry has passed, rejects at the cap, and otherwise
+// creates the row and indexes it, all in one atomic step so concurrent
+// registrations on any replica cannot overshoot the cap. Returns {1} on
+// success, {0, oldest_expiry_ms} at the cap, {-1} when the row already
+// exists.
+var registerCountedClientScript = redis.NewScript(`
 local cap = tonumber(ARGV[3])
+local now = tonumber(ARGV[5])
+if redis.call('EXISTS', KEYS[1]) == 1 then
+	return {-1}
+end
 redis.call('ZREMRANGEBYSCORE', KEYS[2], '-inf', now)
 if cap > 0 and redis.call('ZCARD', KEYS[2]) >= cap then
 	local oldest = redis.call('ZRANGE', KEYS[2], 0, 0, 'WITHSCORES')
-	return {0, tonumber(oldest[2]), now}
+	return {0, tonumber(oldest[2])}
 end
-if not redis.call('SET', KEYS[1], ARGV[1], 'PX', ARGV[2], 'NX') then
-	return {-1}
-end
+redis.call('SET', KEYS[1], ARGV[1], 'PX', ARGV[2])
 redis.call('ZADD', KEYS[2], now + tonumber(ARGV[2]), ARGV[4])
 return {1}
 `)
@@ -519,28 +543,37 @@ return {1}
 // registerCountedClient runs registerCountedClientScript for a client counted
 // against the DCR cap, giving it DefaultUnusedDCRClientTTL.
 func (s *RedisStorage) registerCountedClient(ctx context.Context, key, id string, data []byte) error {
+	now := s.now()
 	res, err := registerCountedClientScript.Run(ctx, s.client,
 		[]string{key, s.dcrClientIndexKey()},
-		data, DefaultUnusedDCRClientTTL.Milliseconds(), s.maxDCRClients, id,
+		data, DefaultUnusedDCRClientTTL.Milliseconds(), s.maxDCRClients, id, now.UnixMilli(),
 	).Slice()
 	if err != nil {
 		return fmt.Errorf("failed to register client: %w", err)
 	}
-	status, _ := res[0].(int64)
+	if len(res) == 0 {
+		return errors.New("failed to register client: empty script reply")
+	}
+	status, ok := res[0].(int64)
+	if !ok {
+		return fmt.Errorf("failed to register client: unexpected script status type %T", res[0])
+	}
 	switch status {
-	case 1:
+	case registerStatusCreated:
 		return nil
-	case -1:
+	case registerStatusConflict:
 		return fmt.Errorf("%w: client %q", ErrAlreadyExists, id)
-	case 0:
-		var oldestMs, nowMs int64
-		if len(res) > 2 {
-			oldestMs, _ = res[1].(int64)
-			nowMs, _ = res[2].(int64)
+	case registerStatusAtCap:
+		if len(res) < 2 {
+			return errors.New("failed to register client: at-cap reply has no oldest expiry")
 		}
-		return newClientCapacityError(time.UnixMilli(oldestMs), time.UnixMilli(nowMs))
+		oldestMs, ok := res[1].(int64)
+		if !ok {
+			return fmt.Errorf("failed to register client: unexpected oldest expiry type %T", res[1])
+		}
+		return newClientCapacityError(time.UnixMilli(oldestMs), now)
 	default:
-		return fmt.Errorf("failed to register client: unexpected script status %v", res[0])
+		return fmt.Errorf("failed to register client: unexpected script status %d", status)
 	}
 }
 
@@ -549,17 +582,12 @@ func (s *RedisStorage) dcrClientIndexKey() string {
 	return s.keyPrefix + KeyTypeDCRClientIdx
 }
 
-// countDCRClientsScript counts the KeyTypeDCRClientIdx entries (KEYS[1])
-// whose expiry is after the Redis server time. It only reads, so a metric
-// collection never writes.
-var countDCRClientsScript = redis.NewScript(redisNowMsLua + `
-return redis.call('ZCOUNT', KEYS[1], '(' .. string.format('%d', now), '+inf')
-`)
-
 // CountDCRClients implements DCRClientCounter: the number of index entries
-// whose expiry has not passed.
+// whose expiry has not passed. It only reads, so a metric collection never
+// writes.
 func (s *RedisStorage) CountDCRClients(ctx context.Context) (int64, error) {
-	n, err := countDCRClientsScript.Run(ctx, s.client, []string{s.dcrClientIndexKey()}).Int64()
+	minScore := "(" + strconv.FormatInt(s.now().UnixMilli(), 10)
+	n, err := s.client.ZCount(ctx, s.dcrClientIndexKey(), minScore, "+inf").Result()
 	if err != nil {
 		return 0, fmt.Errorf("failed to count DCR clients: %w", err)
 	}
@@ -581,15 +609,17 @@ func (s *RedisStorage) CountDCRClients(ctx context.Context) (int64, error) {
 // redis.TxFailedErr itself, up to the same bounded count. Unlike
 // ReconcileConfiguredClient (ttl=0, permanent), the write here always uses
 // DefaultDCRClientTTL: this row is TTL-bounded like any other DCR-issued
-// client. A client counted against the DCR cap is re-indexed with its new
-// expiry in the same transaction; the cap itself is not enforced here, since
-// the only caller is the CIMD decorator, whose clients are not counted.
+// client. A client counted against the DCR cap is refused, so this path can
+// neither bypass the cap nor leave the index out of step.
 func (s *RedisStorage) UpsertDCRIssuedClient(ctx context.Context, client fosite.Client) error {
 	if !registration.DCRIssued(client) {
 		return fmt.Errorf("client %q must carry the DCR-issued marker to use UpsertDCRIssuedClient", client.GetID())
 	}
 	if err := ValidateRegisterableClientID(client.GetID()); err != nil {
 		return err
+	}
+	if countsTowardDCRCap(client) {
+		return fmt.Errorf("client %q counts against the DCR client cap and must use RegisterClient", client.GetID())
 	}
 
 	key := redisKey(s.keyPrefix, KeyTypeClient, client.GetID())
@@ -599,23 +629,9 @@ func (s *RedisStorage) UpsertDCRIssuedClient(ctx context.Context, client fosite.
 		return fmt.Errorf("failed to marshal client: %w", err)
 	}
 
-	counted := countsTowardDCRCap(client)
 	setPipelined := func(tx *redis.Tx) error {
-		// The index score comes from the Redis server clock, as in the Lua
-		// scripts. tx runs on the connection serving key, so on Redis
-		// Cluster this is the clock of the node holding the index too.
-		now, err := tx.Time(ctx).Result()
-		if err != nil {
-			return fmt.Errorf("failed to read Redis time: %w", err)
-		}
-		expiry := now.Add(DefaultDCRClientTTL)
-		_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+		_, err := tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
 			pipe.Set(ctx, key, data, DefaultDCRClientTTL)
-			if counted {
-				pipe.ZAdd(ctx, s.dcrClientIndexKey(), redis.Z{
-					Score: float64(expiry.UnixMilli()), Member: client.GetID(),
-				})
-			}
 			return nil
 		})
 		return err
@@ -830,11 +846,11 @@ func (s *RedisStorage) GetClient(ctx context.Context, id string) (fosite.Client,
 // renewClientTTLScript sets a client row's TTL and, when the client counts
 // against the DCR cap, its index score, in one atomic step. KEYS[1] is the
 // client row, KEYS[2] the KeyTypeDCRClientIdx sorted set. ARGV: TTL in ms,
-// client ID, "1" when counted. PEXPIRE on a missing row is a no-op, and the
+// client ID, "1" when counted, now in ms. PEXPIRE on a missing row is a no-op, and the
 // index is left alone so an expired client is not re-counted.
-var renewClientTTLScript = redis.NewScript(redisNowMsLua + `
+var renewClientTTLScript = redis.NewScript(`
 if redis.call('PEXPIRE', KEYS[1], ARGV[1]) == 1 and ARGV[3] == '1' then
-	redis.call('ZADD', KEYS[2], now + tonumber(ARGV[1]), ARGV[2])
+	redis.call('ZADD', KEYS[2], tonumber(ARGV[4]) + tonumber(ARGV[1]), ARGV[2])
 end
 return 0
 `)
@@ -867,7 +883,7 @@ func (s *RedisStorage) RenewClientTTL(ctx context.Context, client fosite.Client)
 	}
 	return renewClientTTLScript.Run(ctx, s.client,
 		[]string{key, s.dcrClientIndexKey()},
-		DefaultDCRClientTTL.Milliseconds(), client.GetID(), counted,
+		DefaultDCRClientTTL.Milliseconds(), client.GetID(), counted, s.now().UnixMilli(),
 	).Err()
 }
 

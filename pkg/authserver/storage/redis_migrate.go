@@ -396,7 +396,7 @@ func (s *RedisStorage) BackfillDCRClientIndex(ctx context.Context) error {
 	return nil
 }
 
-// nodeForPrefix returns the client to run keyless commands (SCAN, TIME) on for
+// nodeForPrefix returns the client to run keyless commands (SCAN) on for
 // keys under s.keyPrefix. On Redis Cluster a keyless command goes to an
 // arbitrary node, and a SCAN cursor is only valid on the node that issued it,
 // so this resolves the master owning the prefix's hash slot. Every key under
@@ -422,7 +422,6 @@ func (s *RedisStorage) backfillDCRClientPage(ctx context.Context, node redis.Cmd
 	}
 
 	pipe := node.Pipeline()
-	timeCmd := pipe.Time(ctx)
 	getCmds := make([]*redis.StringCmd, len(keys))
 	pttlCmds := make([]*redis.DurationCmd, len(keys))
 	for i, key := range keys {
@@ -434,10 +433,7 @@ func (s *RedisStorage) backfillDCRClientPage(ctx context.Context, node redis.Cmd
 	if _, err := pipe.Exec(ctx); err != nil && !errors.Is(err, redis.Nil) {
 		return 0, 0, fmt.Errorf("failed to read client rows: %w", err)
 	}
-	now, err := timeCmd.Result()
-	if err != nil {
-		return 0, 0, fmt.Errorf("failed to read Redis time: %w", err)
-	}
+	now := s.now()
 
 	var members []redis.Z
 	var skipped int64
@@ -466,7 +462,7 @@ func (s *RedisStorage) backfillDCRClientPage(ctx context.Context, node redis.Cmd
 // backfillDCRClientEntry returns the index entry for one client row read by
 // backfillDCRClientPage, or nil when the row is gone, is not DCR-issued, or
 // does not count against the cap. ok is false when the row cannot be parsed
-// and is skipped. now is the Redis server time of the read.
+// and is skipped. now is the time of the read.
 func (s *RedisStorage) backfillDCRClientEntry(
 	key string, getCmd *redis.StringCmd, pttlCmd *redis.DurationCmd, now time.Time,
 ) (member *redis.Z, ok bool, err error) {

@@ -456,10 +456,10 @@ func TestMemoryStorage_UpsertDCRIssuedClient(t *testing.T) {
 		s := NewMemoryStorage()
 		defer s.Close()
 
-		client := dcrClient(t, "cimd-client")
+		client := dcrClient(t, "https://cimd.example/client.json")
 		require.NoError(t, s.UpsertDCRIssuedClient(ctx, client))
 
-		retrieved, err := s.GetClient(ctx, "cimd-client")
+		retrieved, err := s.GetClient(ctx, "https://cimd.example/client.json")
 		require.NoError(t, err)
 		assert.Equal(t, client, retrieved)
 	})
@@ -471,13 +471,13 @@ func TestMemoryStorage_UpsertDCRIssuedClient(t *testing.T) {
 		s := NewMemoryStorage(withClientClock(clock.Now))
 		defer s.Close()
 
-		first := dcrClient(t, "cimd-client")
+		first := dcrClient(t, "https://cimd.example/client.json")
 		require.NoError(t, s.UpsertDCRIssuedClient(ctx, first))
 
 		// A distinguishing field on the replacement proves the replace branch
 		// actually overwrote the stored data rather than being a silent no-op.
 		second, err := registration.New(registration.Config{
-			ID:                      "cimd-client",
+			ID:                      "https://cimd.example/client.json",
 			TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodNone,
 			RedirectURIs:            []string{"https://app.example/cb-v2"},
 		})
@@ -485,17 +485,17 @@ func TestMemoryStorage_UpsertDCRIssuedClient(t *testing.T) {
 		clock.Advance(time.Hour)
 		require.NoError(t, s.UpsertDCRIssuedClient(ctx, second))
 
-		retrieved, err := s.GetClient(ctx, "cimd-client")
+		retrieved, err := s.GetClient(ctx, "https://cimd.example/client.json")
 		require.NoError(t, err)
 		assert.Equal(t, second, retrieved, "second call must replace the stored row")
 
 		// The replace reset the expiry to DefaultDCRClientTTL from the
 		// second call, not the first.
 		clock.Advance(DefaultDCRClientTTL - time.Minute)
-		_, err = s.GetClient(ctx, "cimd-client")
+		_, err = s.GetClient(ctx, "https://cimd.example/client.json")
 		require.NoError(t, err, "upsert must renew the expiry")
 		clock.Advance(time.Minute)
-		_, err = s.GetClient(ctx, "cimd-client")
+		_, err = s.GetClient(ctx, "https://cimd.example/client.json")
 		requireNotFoundError(t, err)
 	})
 
@@ -505,14 +505,14 @@ func TestMemoryStorage_UpsertDCRIssuedClient(t *testing.T) {
 		s := NewMemoryStorage()
 		defer s.Close()
 
-		configured := &mockClient{id: "configured", public: false}
+		configured := &mockClient{id: "https://cimd.example/configured.json", public: false}
 		require.NoError(t, s.ReconcileConfiguredClient(ctx, configured))
 
-		err := s.UpsertDCRIssuedClient(ctx, dcrClient(t, "configured"))
+		err := s.UpsertDCRIssuedClient(ctx, dcrClient(t, "https://cimd.example/configured.json"))
 		require.ErrorIs(t, err, ErrAlreadyExists)
 
 		// The original registration must be untouched.
-		retrieved, err := s.GetClient(ctx, "configured")
+		retrieved, err := s.GetClient(ctx, "https://cimd.example/configured.json")
 		require.NoError(t, err)
 		assert.Equal(t, configured, retrieved)
 	})

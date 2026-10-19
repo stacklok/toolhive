@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -21,22 +22,20 @@ import (
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
-// newCappedRedisStorage returns a RedisStorage on mr capped at maxDCR, with
-// miniredis's TIME pinned to clock. Index scores come from TIME, so move time
-// only with advance, which keeps TIME and key TTLs in step.
+// newCappedRedisStorage returns a RedisStorage on mr capped at maxDCR whose
+// index scores come from clock. Move time only with advance, which keeps the
+// clock and miniredis's key TTLs in step.
 func newCappedRedisStorage(t *testing.T, mr *miniredis.Miniredis, maxDCR int, clock *manualClock) *RedisStorage {
 	t.Helper()
-	mr.SetTime(clock.Now())
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	s := NewRedisStorageWithClient(client, "test:auth:", WithRedisMaxDCRClients(maxDCR))
+	s := NewRedisStorageWithClient(client, "test:auth:", WithRedisMaxDCRClients(maxDCR), withRedisClock(clock.Now))
 	t.Cleanup(func() { _ = s.Close() })
 	return s
 }
 
-// advance moves the clock, miniredis's TIME and its key TTLs forward together.
+// advance moves the clock and miniredis's key TTLs forward together.
 func advance(clock *manualClock, mr *miniredis.Miniredis, d time.Duration) {
 	clock.Advance(d)
-	mr.SetTime(clock.Now())
 	mr.FastForward(d)
 }
 
@@ -86,6 +85,9 @@ func TestRedisStorage_DCRCap_RejectsAtCap(t *testing.T) {
 		_, err := s.GetClient(ctx, fmt.Sprintf("dcr-%d", i))
 		require.NoError(t, err, "no existing client may be evicted")
 	}
+
+	// An existing ID is a conflict even at the cap, as on the memory store.
+	require.ErrorIs(t, s.RegisterClient(ctx, newDCRClient(t, "dcr-0", "none", "")), ErrAlreadyExists)
 }
 
 func TestRedisStorage_DCRCap_IgnoresUncountedClients(t *testing.T) {
@@ -271,18 +273,17 @@ func TestRedisStorage_DCRClientTTLAndIndexScore(t *testing.T) {
 		assert.False(t, mr.Exists(s.dcrClientIndexKey()))
 	})
 
-	t.Run("upsert of a counted client re-indexes it", func(t *testing.T) {
+	t.Run("upsert refuses a counted client", func(t *testing.T) {
 		t.Parallel()
 		ctx := context.Background()
 		mr := miniredis.RunT(t)
 		clock := newManualClock()
 		s := newCappedRedisStorage(t, mr, 10, clock)
 
-		client := newDCRClient(t, "replaced", "none", "")
-		require.NoError(t, s.RegisterClient(ctx, client))
-		advance(clock, mr, time.Hour)
-		require.NoError(t, s.UpsertDCRIssuedClient(ctx, client))
-		assert.Equal(t, clock.Now().Add(DefaultDCRClientTTL), indexScore(t, mr, s, "replaced"))
+		err := s.UpsertDCRIssuedClient(ctx, newDCRClient(t, "counted", "none", ""))
+		require.ErrorContains(t, err, "must use RegisterClient")
+		assert.False(t, mr.Exists(redisKey(s.keyPrefix, KeyTypeClient, "counted")))
+		assert.False(t, mr.Exists(s.dcrClientIndexKey()))
 	})
 
 	t.Run("configured client reconcile drops a stale index entry", func(t *testing.T) {
@@ -379,14 +380,48 @@ func TestRedisStorage_BackfillDCRClientIndex_ClusterClient(t *testing.T) {
 	ctx := context.Background()
 	mr := miniredis.RunT(t)
 	clock := newManualClock()
-	mr.SetTime(clock.Now())
 	writer := newCappedRedisStorage(t, mr, 10, clock)
 	writeStoredClientRow(t, writer, "legacy", true, time.Hour)
 
 	cc := redis.NewClusterClient(&redis.ClusterOptions{Addrs: []string{mr.Addr()}})
-	s := NewRedisStorageWithClient(cc, "test:auth:")
+	s := NewRedisStorageWithClient(cc, "test:auth:", withRedisClock(clock.Now))
 	t.Cleanup(func() { _ = s.Close() })
 
 	require.NoError(t, s.BackfillDCRClientIndex(ctx))
 	assert.Equal(t, clock.Now().Add(time.Hour), indexScore(t, mr, s, "legacy"))
+}
+
+// clusterHashTag returns the part of key Redis Cluster hashes: the text
+// between the first '{' and the next '}', when non-empty, else the whole key.
+func clusterHashTag(key string) string {
+	if start := strings.IndexByte(key, '{'); start >= 0 {
+		if end := strings.IndexByte(key[start+1:], '}'); end > 0 {
+			return key[start+1 : start+1+end]
+		}
+	}
+	return key
+}
+
+// TestRedisStorage_DCRClientIndexKeyLayout pins that the index shares the
+// client rows' hash slot, which the register script needs on Redis Cluster,
+// and that the backfill's client:* SCAN pattern does not match the index.
+func TestRedisStorage_DCRClientIndexKeyLayout(t *testing.T) {
+	t.Parallel()
+	s := NewRedisStorageWithClient(redis.NewClient(&redis.Options{Addr: miniredis.RunT(t).Addr()}),
+		DeriveKeyPrefix("ns", "server"))
+	t.Cleanup(func() { _ = s.Close() })
+
+	rowKey := redisKey(s.keyPrefix, KeyTypeClient, "some-client")
+	assert.Equal(t, "ns:server", clusterHashTag(rowKey))
+	assert.Equal(t, clusterHashTag(rowKey), clusterHashTag(s.dcrClientIndexKey()))
+
+	matched, err := path.Match(s.keyPrefix+KeyTypeClient+":*", s.dcrClientIndexKey())
+	require.NoError(t, err)
+	assert.False(t, matched, "the client SCAN pattern must not match the index key")
+}
+
+func TestMaxDCRClientOptions_RejectNegative(t *testing.T) {
+	t.Parallel()
+	assert.PanicsWithValue(t, "max DCR clients must not be negative, got -1", func() { WithRedisMaxDCRClients(-1) })
+	assert.PanicsWithValue(t, "max DCR clients must not be negative, got -1", func() { WithMaxDCRClients(-1) })
 }

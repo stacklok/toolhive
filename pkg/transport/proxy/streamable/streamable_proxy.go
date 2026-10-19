@@ -89,12 +89,13 @@ type HTTPProxy struct {
 	// Keys are URL path prefixes. Set via WithPrefixHandlers.
 	prefixHandlers map[string]http.Handler
 
-	// Waiters keyed by compositeKey(sessID, idKey) -> one-shot channel for response delivery.
-	// The composite key MUST be unique per concurrent request; sharing it across requests
-	// (e.g. with sessID="" for sessionless requests) silently overwrites entries and crosses
-	// response payloads between unrelated clients. See resolveSessionForRequest.
+	// Waiters keyed by compositeKey(sessID, per-request token) -> one-shot channel for response
+	// delivery. The composite key MUST be unique per concurrent request; sharing it across
+	// requests silently overwrites entries and crosses response payloads between requests.
+	// createWaiter guarantees this by minting the token itself, because neither the session
+	// ID (empty for sessionless requests) nor the client-chosen JSON-RPC ID is unique.
 	waiters sync.Map // map[string]chan jsonrpc2.Message
-	// Keyed by the same compositeKey(sessID, idKey); stores the original client JSON-RPC ID
+	// Keyed by the same composite key; stores the original client JSON-RPC ID
 	// to restore before replying. Same uniqueness requirement as `waiters`.
 	idRestore sync.Map // map[string]jsonrpc2.ID
 
@@ -1026,10 +1027,10 @@ func (p *HTTPProxy) restoreResponseID(resp *jsonrpc2.Response, ck string) (jsonr
 func (p *HTTPProxy) sendCorrelatedRequest(
 	sessID string, req *jsonrpc2.Request,
 ) (waitCh chan jsonrpc2.Message, ck string, cleanup func(), err error) {
-	key := idKeyFromID(req.ID)
-	ck = compositeKey(sessID, key)
-
-	waitCh, cleanup = p.createWaiter(sessID, req.ID)
+	waitCh, ck, cleanup, err = p.createWaiter(sessID, req.ID)
+	if err != nil {
+		return nil, "", nil, err
+	}
 
 	proxiedMsg, err := encodeRequestWithID(req, ck)
 	if err != nil {
@@ -1099,11 +1100,12 @@ func (p *HTTPProxy) ensureSession(r *http.Request, id string) error {
 // in-process routing token (not registered with sessionManager). Sessionless
 // routing tokens MUST be unique per request: sharing one (e.g. the empty string,
 // or a stale/foreign Mcp-Session-Id) across concurrent sessionless requests with
-// the same JSON-RPC id collapses them onto the same compositeKey(sessID, idKey)
-// and overwrites entries in the waiters / idRestore sync.Maps, leaking one
+// the same JSON-RPC id could otherwise share routing state and leak one
 // client's response payload to another. This is a confidentiality bug, not a
 // performance issue -- do not collapse the token, and do not let a Modern
-// request fall through to the session-lookup path below.
+// request fall through to the session-lookup path below. (The waiter key
+// itself is additionally made unique per request by createWaiter, so two
+// requests in one session reusing an id are isolated too.)
 //
 // Writes HTTP errors on failure and returns error to stop handling.
 func (p *HTTPProxy) resolveSessionForRequest(
@@ -1652,10 +1654,21 @@ func resolveRequestTimeout() time.Duration {
 	return defaultRequestTimeout
 }
 
-// createWaiter registers a waiter channel for the given request ID and returns cleanup fn.
-func (p *HTTPProxy) createWaiter(sessID string, id jsonrpc2.ID) (chan jsonrpc2.Message, func()) {
-	key := idKeyFromID(id)
-	ck := compositeKey(sessID, key)
+// createWaiter registers a waiter channel for a request and returns the channel,
+// the composite key (ck) the request must carry upstream, and a cleanup fn.
+//
+// ck is minted here from a per-request random token, never from the
+// client-chosen JSON-RPC id: a client may have several requests with the same id
+// in flight in one session, and a key derived from the id would let them
+// overwrite each other's waiter and receive each other's responses (including
+// responses the authz response filter never saw). The client's original id is
+// kept in idRestore and put back on the reply.
+func (p *HTTPProxy) createWaiter(sessID string, id jsonrpc2.ID) (chan jsonrpc2.Message, string, func(), error) {
+	token, err := uuid.NewRandom()
+	if err != nil {
+		return nil, "", nil, fmt.Errorf("generate request correlation token: %w", err)
+	}
+	ck := compositeKey(sessID, token.String())
 	// store original client id to restore before replying
 	p.idRestore.Store(ck, id)
 
@@ -1666,5 +1679,5 @@ func (p *HTTPProxy) createWaiter(sessID string, id jsonrpc2.ID) (chan jsonrpc2.M
 		p.waiters.Delete(ck)
 		p.idRestore.Delete(ck)
 	}
-	return ch, cleanup
+	return ch, ck, cleanup, nil
 }

@@ -90,7 +90,7 @@ require (
 	go.uber.org/zap v1.28.0
 	golang.ngrok.com/ngrok/v2 v2.2.1
 	golang.org/x/crypto v0.58.0
-	golang.org/x/exp/jsonrpc2 v0.0.0-20261011100332-faecfb24eb49
+	golang.org/x/exp/jsonrpc2 v0.0.0-20261014143641-f0251eb4aa3e
 	golang.org/x/mod v0.42.0
 	golang.org/x/net v0.61.0
 	golang.org/x/oauth2 v0.37.0

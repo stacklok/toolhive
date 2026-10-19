@@ -19,6 +19,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"slices"
 	"sync"
@@ -1415,7 +1416,7 @@ func newCapabilityListFromMCP(
 ) *vmcp.CapabilityList {
 	capabilities := &vmcp.CapabilityList{
 		Tools:             make([]vmcp.Tool, 0, len(tools)),
-		Resources:         make([]vmcp.Resource, len(resources)),
+		Resources:         make([]vmcp.Resource, 0, len(resources)),
 		ResourceTemplates: make([]vmcp.ResourceTemplate, len(templates)),
 		Prompts:           make([]vmcp.Prompt, len(prompts)),
 	}
@@ -1447,14 +1448,26 @@ func newCapabilityListFromMCP(
 		})
 	}
 
-	for i, resource := range resources {
-		capabilities.Resources[i] = vmcp.Resource{
+	for _, resource := range resources {
+		// go-sdk's AddResource panics when url.Parse rejects a resource URI, and
+		// the URI is backend-controlled. Both the registration and list_changed
+		// resync paths register these resources on a session, so one malformed
+		// URI would crash the whole vMCP process and every other backend with it.
+		// Dropping at this shared ingestion seam, like the tool rejection above,
+		// keeps the failure to the single offending resource.
+		if _, err := url.Parse(resource.URI); err != nil {
+			slog.Warn("rejecting backend resource with unparseable URI",
+				"backend", backendID, "resource", resource.Name, "error", err)
+			continue
+		}
+
+		capabilities.Resources = append(capabilities.Resources, vmcp.Resource{
 			URI:         resource.URI,
 			Name:        resource.Name,
 			Description: resource.Description,
 			MimeType:    resource.MIMEType,
 			BackendID:   backendID,
-		}
+		})
 	}
 
 	// Resource templates are a pass-through: no URI-template rewriting, like resources.

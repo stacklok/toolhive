@@ -7,9 +7,12 @@ package runner
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"os"
 	"strings"
@@ -33,8 +36,10 @@ import (
 	"github.com/stacklok/toolhive/pkg/process"
 	"github.com/stacklok/toolhive/pkg/runtime"
 	"github.com/stacklok/toolhive/pkg/secrets"
+	"github.com/stacklok/toolhive/pkg/state"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/transport"
+	headerfwd "github.com/stacklok/toolhive/pkg/transport/middleware"
 	"github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 	"github.com/stacklok/toolhive/pkg/workloads/statuses"
@@ -918,12 +923,81 @@ func (r *Runner) handleRemoteAuthentication(ctx context.Context) (oauth2.TokenSo
 	return tokenSource, nil
 }
 
+// decodeStoredRunConfig decodes stored state without ReadJSON: its migrations
+// save state themselves and its normalizations are meant to stay in memory.
+func decodeStoredRunConfig(reader io.Reader) (*RunConfig, error) {
+	var stored *RunConfig
+	if err := json.NewDecoder(reader).Decode(&stored); err != nil {
+		// Custom unmarshalers (remote.Config, time.Time) can echo input.
+		return nil, fmt.Errorf("invalid stored run configuration: %T", err)
+	}
+	if stored == nil {
+		return nil, errors.New("stored run configuration is empty")
+	}
+	return stored, nil
+}
+
+// loadAndScrubRunConfig returns the stored state with legacy resolved secret
+// values removed. It changes neither the live config nor the state on disk.
+func (r *Runner) loadAndScrubRunConfig(ctx context.Context) (*RunConfig, error) {
+	stored, err := state.LoadRunConfig(ctx, r.Config.BaseName, decodeStoredRunConfig)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load stored run configuration for %q: %w", r.Config.BaseName, err)
+	}
+	for i, reference := range stored.Secrets {
+		parameter, err := secrets.ParseSecretParameter(reference)
+		if err != nil {
+			return nil, fmt.Errorf("invalid stored secret reference at index %d", i)
+		}
+		delete(stored.EnvVars, parameter.Target)
+	}
+	if stored.HeaderForward != nil {
+		if err := scrubStoredHeaderParameters(stored.MiddlewareConfigs, stored.HeaderForward.AddHeadersFromSecret); err != nil {
+			return nil, err
+		}
+	}
+	return stored, nil
+}
+
+// scrubStoredHeaderParameters removes secret headers from header-forward
+// entries, modifying the middlewares slice in place; pass a freshly decoded copy.
+// Params are decoded into the struct the middleware factory uses, so duplicate
+// or case-variant add_headers members resolve as they do at runtime.
+func scrubStoredHeaderParameters(middlewares []types.MiddlewareConfig, secretHeaders map[string]string) error {
+	secret := make(map[string]bool, len(secretHeaders))
+	for name := range secretHeaders {
+		secret[http.CanonicalHeaderKey(name)] = true
+	}
+	for i := range middlewares {
+		if middlewares[i].Type != headerfwd.HeaderForwardMiddlewareName || len(middlewares[i].Parameters) == 0 {
+			continue
+		}
+		var params headerfwd.HeaderForwardMiddlewareParams
+		if err := json.Unmarshal(middlewares[i].Parameters, &params); err != nil {
+			return fmt.Errorf("invalid stored header forwarding parameters: %T", err)
+		}
+		maps.DeleteFunc(params.AddHeaders, func(name, _ string) bool {
+			return secret[http.CanonicalHeaderKey(name)]
+		})
+		encoded, err := json.Marshal(params)
+		if err != nil {
+			return fmt.Errorf("failed to encode stored header forwarding parameters: %T", err)
+		}
+		middlewares[i].Parameters = encoded
+	}
+	return nil
+}
+
 func (r *Runner) persistRefreshToken(
 	ctx context.Context,
 	secretManager secrets.Provider,
 	refreshToken string,
 	expiry time.Time,
 ) error {
+	updatedConfig, err := r.loadAndScrubRunConfig(ctx)
+	if err != nil {
+		return err
+	}
 	secretName, err := authsecrets.GenerateUniqueSecretNameWithPrefix(
 		r.Config.Name,
 		"OAUTH_REFRESH_TOKEN_",
@@ -937,7 +1011,6 @@ func (r *Runner) persistRefreshToken(
 		return fmt.Errorf("failed to store refresh token: %w", err)
 	}
 
-	updatedConfig := *r.Config
 	updatedRemoteAuthConfig := *r.Config.RemoteAuthConfig
 	updatedConfig.RemoteAuthConfig = &updatedRemoteAuthConfig
 	updatedRemoteAuthConfig.CachedRefreshTokenRef = secretName
@@ -964,7 +1037,10 @@ func (r *Runner) persistClientCredentials(
 	tokenEndpointAuthMethod string,
 	registeredCallbackPort int,
 ) error {
-	updatedConfig := *r.Config
+	updatedConfig, err := r.loadAndScrubRunConfig(ctx)
+	if err != nil {
+		return err
+	}
 	updatedRemoteAuthConfig := remote.Config{}
 	if r.Config.RemoteAuthConfig != nil {
 		updatedRemoteAuthConfig = *r.Config.RemoteAuthConfig
@@ -975,7 +1051,6 @@ func (r *Runner) persistClientCredentials(
 	if clientSecret != "" {
 		clientSecretSecretName := updatedRemoteAuthConfig.CachedClientSecretRef
 		if clientSecretSecretName == "" {
-			var err error
 			clientSecretSecretName, err = authsecrets.GenerateUniqueSecretNameWithPrefix(
 				r.Config.Name,
 				"OAUTH_CLIENT_SECRET_",
@@ -997,7 +1072,6 @@ func (r *Runner) persistClientCredentials(
 	if regAccessToken != "" {
 		regTokenSecretName := updatedRemoteAuthConfig.CachedRegTokenRef
 		if regTokenSecretName == "" {
-			var err error
 			regTokenSecretName, err = authsecrets.GenerateUniqueSecretNameWithPrefix(r.Config.Name, "OAUTH_REG_TOKEN_", secretManager)
 			if err != nil {
 				return fmt.Errorf("failed to generate registration token secret name: %w", err)

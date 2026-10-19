@@ -74,6 +74,22 @@ func TestResolveBedrockModels(t *testing.T) {
 			want: bedrockTiers{sonnet: "global.anthropic.claude-sonnet-4-5-20250929-v1:0"},
 		},
 		{
+			name: "version-first legacy IDs rank within a family",
+			discovered: []string{
+				"anthropic.claude-3-haiku-20240307-v1:0",
+				"anthropic.claude-3-5-haiku-20241022-v1:0",
+			},
+			want: bedrockTiers{haiku: "anthropic.claude-3-5-haiku-20241022-v1:0"},
+		},
+		{
+			name: "modern family-first outranks legacy version-first",
+			discovered: []string{
+				"anthropic.claude-3-5-haiku-20241022-v1:0",
+				"us.anthropic.claude-haiku-4-5-20251001-v1:0",
+			},
+			want: bedrockTiers{haiku: "us.anthropic.claude-haiku-4-5-20251001-v1:0"},
+		},
+		{
 			name:       "equal versions tie-break on the smallest ID",
 			discovered: []string{"us.anthropic.claude-opus-4-8", "eu.anthropic.claude-opus-4-8"},
 			want:       bedrockTiers{opus: "eu.anthropic.claude-opus-4-8"},
@@ -241,6 +257,10 @@ func TestConfigureDetectedTools_BedrockClaudeCode(t *testing.T) {
 	assert.Empty(t, got.BedrockHaikuModel)
 	assert.Equal(t, "us.anthropic.claude-opus-x[1m]", got.BedrockOpusModel)
 	assert.Empty(t, got.BedrockSonnetModel)
+	// Only opus was pinned (via --models) and nothing was discovered, so the
+	// unpinned tiers are reported in canonical order.
+	assert.Contains(t, errOut.String(),
+		"no Bedrock model found in the gateway catalogue for the haiku, sonnet, fable tier(s)")
 }
 
 func TestConfigureDetectedTools_BedrockSkippedForNonClaudeCode(t *testing.T) {
@@ -1105,7 +1125,11 @@ func TestDiscoverSetupModelsBedrockClaudeCode(t *testing.T) {
 		compat        bool
 		token         string
 		status        int
+		targetClient  string
+		clients       []string
 		wantRequested bool
+		wantErr       string
+		wantClients   []string
 		wantAnthropic []string
 		wantWarning   string
 	}{
@@ -1114,25 +1138,39 @@ func TestDiscoverSetupModelsBedrockClaudeCode(t *testing.T) {
 			compat:        true,
 			token:         "discovery-token",
 			status:        http.StatusOK,
+			targetClient:  claudeCodeClient,
+			clients:       []string{claudeCodeClient},
 			wantRequested: true,
+			wantClients:   []string{claudeCodeClient},
 			wantAnthropic: []string{"us.anthropic.claude-opus-4-8"},
 		},
 		{
-			name:          "discovery failure warns and leaves tiers unpinned",
+			name:          "explicit claude-code fails when discovery fails",
 			compat:        true,
 			token:         "discovery-token",
 			status:        http.StatusInternalServerError,
+			targetClient:  claudeCodeClient,
+			clients:       []string{claudeCodeClient},
 			wantRequested: true,
-			wantWarning:   "Claude Code Bedrock tiers were not pinned from gateway discovery: discovering gateway models",
+			wantErr:       "discovering Bedrock models for Claude Code",
 		},
 		{
-			name:        "lazy mode warns without a request",
-			compat:      true,
-			wantWarning: "because setup did not log in (lazy mode)",
+			name:          "auto-detected claude-code is skipped with a warning when discovery fails",
+			compat:        true,
+			token:         "discovery-token",
+			status:        http.StatusInternalServerError,
+			targetClient:  "",
+			clients:       []string{claudeCodeClient, "cursor"},
+			wantRequested: true,
+			wantClients:   []string{"cursor"},
+			wantWarning:   "skipping auto-detected claude-code because Bedrock model discovery failed",
 		},
 		{
-			name:  "no request without bedrock compat",
-			token: "discovery-token",
+			name:         "no request without bedrock compat",
+			token:        "discovery-token",
+			targetClient: claudeCodeClient,
+			clients:      []string{claudeCodeClient},
+			wantClients:  []string{claudeCodeClient},
 		},
 	}
 
@@ -1155,12 +1193,82 @@ func TestDiscoverSetupModelsBedrockClaudeCode(t *testing.T) {
 			var warnings strings.Builder
 
 			clients, catalog, err := discoverSetupModels(
-				context.Background(), &warnings, []string{claudeCodeClient}, claudeCodeClient, cfg, "/anthropic")
+				context.Background(), &warnings, tt.clients, tt.targetClient, cfg, "/anthropic")
 
+			if tt.wantErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.wantErr)
+				return
+			}
 			require.NoError(t, err)
-			assert.Equal(t, []string{claudeCodeClient}, clients)
+			assert.Equal(t, tt.wantClients, clients)
 			assert.Equal(t, tt.wantRequested, requested.Load())
 			assert.Equal(t, tt.wantAnthropic, catalog.anthropic)
+			if tt.wantWarning == "" {
+				assert.Empty(t, warnings.String())
+				return
+			}
+			assert.Contains(t, warnings.String(), tt.wantWarning)
+		})
+	}
+}
+
+func TestFilterLazyModelDiscoveryClientsBedrock(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		clients       []string
+		targetClient  string
+		bedrockCompat bool
+		hasModels     bool
+		wantErr       string
+		wantClients   []string
+		wantWarning   string
+	}{
+		{
+			name:          "explicit claude-code with bedrock-compat and no models is refused",
+			clients:       []string{claudeCodeClient},
+			targetClient:  claudeCodeClient,
+			bedrockCompat: true,
+			wantErr:       "does not support --lazy with --bedrock-compat",
+		},
+		{
+			name:          "auto-detected claude-code with bedrock-compat and no models is skipped",
+			clients:       []string{claudeCodeClient, "cursor"},
+			bedrockCompat: true,
+			wantClients:   []string{"cursor"},
+			wantWarning:   "skipping claude-code in lazy mode; --bedrock-compat needs",
+		},
+		{
+			name:          "claude-code with bedrock-compat and models is kept",
+			clients:       []string{claudeCodeClient},
+			targetClient:  claudeCodeClient,
+			bedrockCompat: true,
+			hasModels:     true,
+			wantClients:   []string{claudeCodeClient},
+		},
+		{
+			name:         "claude-code without bedrock-compat is kept",
+			clients:      []string{claudeCodeClient},
+			targetClient: claudeCodeClient,
+			wantClients:  []string{claudeCodeClient},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var warnings strings.Builder
+			got, err := filterLazyModelDiscoveryClients(
+				tt.clients, tt.targetClient, tt.bedrockCompat, tt.hasModels, &warnings)
+			if tt.wantErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantClients, got)
 			if tt.wantWarning == "" {
 				assert.Empty(t, warnings.String())
 				return
@@ -1440,10 +1548,13 @@ func TestSetup_PromptCacheBedrockWarningOnlyForInlineFlag(t *testing.T) {
 			provider.cfg.Bedrock.Compat = tt.persistedBedrock
 			provider.cfg.ShortPromptCache = tt.shortPromptCache
 			var stdout, stderr bytes.Buffer
+			// Pass --models so bedrock-compat pins the tier without gateway discovery;
+			// lazy bedrock-compat setup is refused without it.
 			err := Setup(
 				context.Background(), &stdout, &stderr, gm, provider,
 				func(context.Context, *Config) error { return nil },
-				SetOptions{BedrockCompat: tt.inlineBedrock}, "", true, "", true,
+				SetOptions{BedrockCompat: tt.inlineBedrock, Models: []string{"us.anthropic.claude-opus-4-8"}},
+				"", true, "", true,
 			)
 			require.NoError(t, err)
 			assert.Equal(t, tt.wantCompatibility,

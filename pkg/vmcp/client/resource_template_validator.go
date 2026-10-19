@@ -64,7 +64,7 @@ func validateResourceTemplate(tmpl string) error {
 			return fmt.Errorf("template has more than %d variables", maxTemplateVariables)
 		}
 		for _, m := range prefixModifierRE.FindAllStringSubmatch(expr, -1) {
-			// An unparseable count is an overflowing digit run, so over the limit.
+			// An unparsable count is an overflowing digit run, so over the limit.
 			n, err := strconv.Atoi(m[1])
 			if err != nil || n > maxTemplatePrefixLength {
 				return fmt.Errorf("prefix modifier exceeds %d characters", maxTemplatePrefixLength)

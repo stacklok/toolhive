@@ -145,8 +145,8 @@ func (h *Handler) RegisterClientHandler(w http.ResponseWriter, req *http.Request
 	// Register client
 	if err := h.storage.RegisterClient(ctx, fositeClient); err != nil {
 		if errors.Is(err, storage.ErrClientCapacity) {
-			slog.Debug("DCR client registration capacity reached", "error", err)
 			h.dcrMetrics.recordCapacityRejection(ctx)
+			h.capacityWarner.rejected(ctx, err)
 			w.Header().Set("Retry-After", strconv.Itoa(capacityRetryAfterSeconds(err)))
 			writeDCRError(w, http.StatusServiceUnavailable, &registration.DCRError{
 				Error:            "server_error",

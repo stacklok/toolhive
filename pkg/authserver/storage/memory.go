@@ -625,7 +625,7 @@ func (s *MemoryStorage) RegisterClient(_ context.Context, client fosite.Client) 
 	}
 	if s.maxDCRClients > 0 && countsTowardDCRCap(client) {
 		if count, oldestExpiry := countLiveLocked(s.dcrClientExpiry, now); count >= s.maxDCRClients {
-			return newClientCapacityError(oldestExpiry, now)
+			return newClientCapacityError(s.maxDCRClients, oldestExpiry, now)
 		}
 	}
 	s.putExpiringClientLocked(id, client, now.Add(DefaultUnusedDCRClientTTL))
@@ -663,7 +663,7 @@ func (s *MemoryStorage) UpsertDCRIssuedClient(_ context.Context, client fosite.C
 	}
 	if !exists && s.maxCIMDClients > 0 {
 		if count, oldestExpiry := countLiveLocked(s.cimdClientExpiry, now); count >= s.maxCIMDClients {
-			return newClientCapacityError(oldestExpiry, now)
+			return newClientCapacityError(s.maxCIMDClients, oldestExpiry, now)
 		}
 	}
 	s.putExpiringClientLocked(id, client, now.Add(DefaultDCRClientTTL))

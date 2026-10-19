@@ -381,8 +381,13 @@ CIMD rate limit (1/s) and their 30-day TTL.
 Two metrics expose the cap: the gauge `toolhive_authserver_dcr_clients`
 (unexpired counted clients, read from storage at collection time) and the
 counter `toolhive_authserver_dcr_capacity_rejections` (registrations rejected
-at the cap). A rejection is not logged above Debug, since its volume would be
-set by an unauthenticated caller.
+at the cap). Rejections are also logged at WARN, at most once every 15
+minutes, with the cap, the live count, the `Retry-After` value and how many
+rejections were held back since the previous line, so a deployment without
+telemetry still sees the cap. The volume is bounded by time, not by the
+unauthenticated caller's request rate. Neither the cap filling nor clearing
+is logged, since a caller holding the cap flips between the two each time a
+slot expires.
 
 **Behaviour change for public clients registered after this feature:** a
 public client registered before this change was stored as a bare

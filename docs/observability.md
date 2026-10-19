@@ -505,6 +505,22 @@ DCR client cap was reached. Prometheus exports it as
 `toolhive_authserver_dcr_capacity_rejections_total`. Requests rejected by the
 `/oauth/register` rate limit (HTTP 429) are not counted.
 
+#### Alerting on the DCR client cap
+
+Alert on any increase in `toolhive_authserver_dcr_capacity_rejections_total`,
+for example `increase(toolhive_authserver_dcr_capacity_rejections_total[15m]) > 0`.
+Every rejection is a client that could not register, and new registrations
+keep failing until enough counted clients expire. The configured cap is not
+exported as a metric yet, so you cannot alert on the gauge approaching the cap
+before rejections start; compare `toolhive_authserver_dcr_clients` against your
+`storage.max_dcr_clients` value (default 10,000) instead.
+
+Without telemetry, the auth server logs the cap at WARN, at most once every
+15 minutes, as `DCR client cap reached; rejecting new client registrations`,
+with the cap, the live count, the `Retry-After` value and the number of
+rejections since the previous line. On Redis, it also logs one WARN at startup
+when existing clients already fill the cap.
+
 ## Span Attributes
 
 ### HTTP Attributes

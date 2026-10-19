@@ -590,6 +590,7 @@ func TestMemoryStorage_RegisterClient_CapRejectsWithoutEvicting(t *testing.T) {
 	require.ErrorAs(t, err, &capErr)
 	assert.Equal(t, DefaultUnusedDCRClientTTL-2*time.Hour, capErr.RetryAfter,
 		"Retry-After must be the time until the oldest client expires")
+	assert.Equal(t, 3, capErr.Cap)
 
 	for _, id := range ids {
 		_, err := s.GetClient(ctx, id)
@@ -647,6 +648,7 @@ func TestMemoryStorage_UpsertDCRIssuedClient_CIMDCap(t *testing.T) {
 	var capErr *ClientCapacityError
 	require.ErrorAs(t, err, &capErr)
 	assert.Equal(t, DefaultDCRClientTTL-time.Hour, capErr.RetryAfter)
+	assert.Equal(t, 2, capErr.Cap, "the CIMD cap, not the DCR cap")
 	_, err = s.GetClient(ctx, "https://cimd.example/c.json")
 	requireNotFoundError(t, err)
 

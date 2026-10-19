@@ -46,12 +46,13 @@ func TestClientCapacityError(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	err := fmt.Errorf("register: %w", newClientCapacityError(now.Add(time.Minute), now))
+	err := fmt.Errorf("register: %w", newClientCapacityError(7, now.Add(time.Minute), now))
 	require.ErrorIs(t, err, ErrClientCapacity)
 	var capErr *ClientCapacityError
 	require.True(t, errors.As(err, &capErr))
 	assert.Equal(t, time.Minute, capErr.RetryAfter)
+	assert.Equal(t, 7, capErr.Cap)
 
-	assert.Zero(t, newClientCapacityError(now.Add(-time.Minute), now).RetryAfter,
+	assert.Zero(t, newClientCapacityError(7, now.Add(-time.Minute), now).RetryAfter,
 		"an expiry in the past yields no wait")
 }

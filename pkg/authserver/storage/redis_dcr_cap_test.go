@@ -78,6 +78,7 @@ func TestRedisStorage_DCRCap_RejectsAtCap(t *testing.T) {
 	require.ErrorAs(t, err, &capErr)
 	// dcr-0 was registered 3h ago with a 24h TTL.
 	assert.Equal(t, DefaultUnusedDCRClientTTL-3*time.Hour, capErr.RetryAfter)
+	assert.Equal(t, 3, capErr.Cap)
 
 	assert.Equal(t, before, clientRowCount(t, mr), "a rejected registration must write no row")
 	assert.False(t, mr.Exists(redisKey(s.keyPrefix, KeyTypeClient, "dcr-rejected")))

@@ -571,7 +571,7 @@ func (s *RedisStorage) registerCountedClient(ctx context.Context, key, id string
 		if !ok {
 			return fmt.Errorf("failed to register client: unexpected oldest expiry type %T", res[1])
 		}
-		return newClientCapacityError(time.UnixMilli(oldestMs), now)
+		return newClientCapacityError(s.maxDCRClients, time.UnixMilli(oldestMs), now)
 	default:
 		return fmt.Errorf("failed to register client: unexpected script status %d", status)
 	}

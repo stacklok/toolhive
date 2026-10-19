@@ -17,6 +17,8 @@ import (
 // ClientCapacityError is the error RegisterClient returns when the DCR client
 // cap is reached. It matches ErrClientCapacity under errors.Is.
 type ClientCapacityError struct {
+	// Cap is the client cap that was reached.
+	Cap int
 	// RetryAfter is how long until the oldest counted client expires, which
 	// is the earliest moment a slot can free up. Zero when unknown.
 	RetryAfter time.Duration
@@ -32,10 +34,11 @@ func (*ClientCapacityError) Is(target error) bool {
 	return target == ErrClientCapacity
 }
 
-// newClientCapacityError builds a ClientCapacityError from the oldest counted
-// client's expiry. A past expiry yields a zero RetryAfter.
-func newClientCapacityError(oldestExpiry, now time.Time) *ClientCapacityError {
-	return &ClientCapacityError{RetryAfter: max(oldestExpiry.Sub(now), 0)}
+// newClientCapacityError builds a ClientCapacityError for the reached
+// capacity from the oldest counted client's expiry. A past expiry yields a
+// zero RetryAfter.
+func newClientCapacityError(capacity int, oldestExpiry, now time.Time) *ClientCapacityError {
+	return &ClientCapacityError{Cap: capacity, RetryAfter: max(oldestExpiry.Sub(now), 0)}
 }
 
 // DCRClientCounter is implemented by storage backends that can report how many

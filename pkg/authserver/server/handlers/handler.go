@@ -81,6 +81,10 @@ type Handler struct {
 	// count. Nil in tests that construct Handler directly; its methods
 	// tolerate a nil receiver.
 	dcrMetrics *dcrMetrics
+	// capacityWarner logs DCR cap rejections at WARN, bounded by time. Nil in
+	// tests that construct Handler directly; its methods tolerate a nil
+	// receiver.
+	capacityWarner *capacityWarner
 	// cimdAuthorizeLimiter bounds unauthenticated /oauth/authorize requests
 	// whose client_id is a CIMD URL (see oauthproto.IsClientIDMetadataDocumentURL).
 	// Resolving such a client_id — via the CIMD storage decorator's GetClient,
@@ -312,6 +316,7 @@ func NewHandler(
 		return nil, fmt.Errorf("handlers: %w", err)
 	}
 	h.dcrMetrics = metrics
+	h.capacityWarner = newCapacityWarner(stor)
 	return h, nil
 }
 

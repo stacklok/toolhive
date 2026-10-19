@@ -15,9 +15,9 @@ import (
 const dcrInstrumentationName = "github.com/stacklok/toolhive/pkg/authserver"
 
 // dcrMetrics lets operators see the DCR client cap. It records no per-client
-// attributes, and a capacity rejection is counted rather than logged: the
-// caller of /oauth/register is unauthenticated, so a log line there would
-// have unbounded volume.
+// attributes. Every capacity rejection is counted here; capacityWarner logs
+// them only at a time-bounded rate, because the caller of /oauth/register is
+// unauthenticated.
 type dcrMetrics struct {
 	capacityRejections metric.Int64Counter
 	// gaugeRegistration is the live-client gauge's callback, or nil when the

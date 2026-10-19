@@ -48,17 +48,17 @@ operator:
     existingSecretKey: ""
 
   # -- Container image for the operator.
-  image: ghcr.io/stacklok/toolhive/operator:v0.55.1
+  image: ghcr.io/stacklok/toolhive/operator:v0.55.2
   # -- Image pull policy for the operator container and image-discovery
   # containers.
   imagePullPolicy: IfNotPresent
 
   # -- Container image for ToolHive proxy runners created by the operator.
-  toolhiveRunnerImage: ghcr.io/stacklok/toolhive/proxyrunner:v0.55.1
+  toolhiveRunnerImage: ghcr.io/stacklok/toolhive/proxyrunner:v0.55.2
 
   # -- Container image for Virtual MCP Server (vMCP) deployments created by the
   # operator.
-  vmcpImage: ghcr.io/stacklok/toolhive/vmcp:v0.55.1
+  vmcpImage: ghcr.io/stacklok/toolhive/vmcp:v0.55.2
 
   # -- Image discovery settings for manifest scanners used to mirror images into
   # air-gapped environments.

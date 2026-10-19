@@ -24,6 +24,8 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/ory/fosite"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/metric"
 	"golang.org/x/time/rate"
 
 	"github.com/stacklok/toolhive/pkg/auth"
@@ -65,9 +67,18 @@ type Handler struct {
 	// under- or over-count, and X-Forwarded-For is attacker-controlled without
 	// a trusted proxy list). Because the limit lives on this per-process field,
 	// running N replicas multiplies the effective rate by N — size the
-	// configured rate with replica count in mind. Nil in tests that construct
-	// Handler directly; OAuthRoutes tolerates nil by skipping the gate.
+	// configured rate with replica count in mind. DefaultRegisterRate and
+	// DefaultRegisterBurst unless WithRegisterRateLimit overrides them. Nil in
+	// tests that construct Handler directly; OAuthRoutes tolerates nil by
+	// skipping the gate.
 	registerLimiter *rate.Limiter
+	// meterProvider supplies dcrMetrics. otel.GetMeterProvider() unless
+	// WithMeterProvider overrides it.
+	meterProvider metric.MeterProvider
+	// dcrMetrics counts DCR cap rejections and reports the live DCR client
+	// count. Nil in tests that construct Handler directly; its methods
+	// tolerate a nil receiver.
+	dcrMetrics *dcrMetrics
 	// cimdAuthorizeLimiter bounds unauthenticated /oauth/authorize requests
 	// whose client_id is a CIMD URL (see oauthproto.IsClientIDMetadataDocumentURL).
 	// Resolving such a client_id — via the CIMD storage decorator's GetClient,
@@ -86,7 +97,7 @@ type Handler struct {
 	// deviceAuthorizationLimiter bounds the unauthenticated
 	// /oauth/device_authorization endpoint, which mints persisted state
 	// (a device_code/user_code pair) on every call, exactly like
-	// /oauth/register. Same rate and same per-process (not per-IP)
+	// /oauth/register. Same default rate and same per-process (not per-IP)
 	// reasoning as registerLimiter. Nil when device flow is disabled — in
 	// that case OAuthRoutes never registers the route, so the nil limiter is
 	// never dereferenced. Also nil in tests that construct Handler directly.
@@ -122,6 +133,33 @@ type Handler struct {
 	// OAuthRoutes never registers the route in that case, so it is never
 	// dereferenced.
 	deviceVerificationLimiter *perIPLimiter
+}
+
+// DefaultRegisterRate and DefaultRegisterBurst bound /oauth/register when no
+// rate is configured: 1 registration/sec sustained, burst of 5. Generous for
+// legitimate tooling (a client registers once, then reuses its client_id),
+// tight enough that an unauthenticated caller cannot grow the client keyspace
+// or the log stream faster than operators can react.
+const (
+	DefaultRegisterRate  rate.Limit = 1
+	DefaultRegisterBurst int        = 5
+)
+
+// WithRegisterRateLimit overrides the /oauth/register rate (registrations per
+// second) and burst. The limit is per process: N replicas admit N times the
+// rate. NewHandler rejects a non-positive rate or burst.
+func WithRegisterRateLimit(r rate.Limit, burst int) Option {
+	return func(h *Handler) {
+		h.registerLimiter = rate.NewLimiter(r, burst)
+	}
+}
+
+// WithMeterProvider sets the meter provider for the DCR metrics. Without it,
+// NewHandler uses the global otel.GetMeterProvider().
+func WithMeterProvider(mp metric.MeterProvider) Option {
+	return func(h *Handler) {
+		h.meterProvider = mp
+	}
 }
 
 // UpstreamFilter narrows the authorization chain to a subset of the configured
@@ -228,25 +266,22 @@ func NewHandler(
 		seen[u.Name] = struct{}{}
 	}
 	h := &Handler{
-		provider:     provider,
-		config:       config,
-		storage:      stor,
-		upstreams:    upstreams,
-		tokenOnly:    len(upstreams) == 0,
-		userResolver: NewUserResolver(stor),
-		// 1 registration/sec sustained, burst of 5: generous for legitimate
-		// tooling (a client registers once, then reuses its client_id), tight
-		// enough that an unauthenticated caller cannot grow the client
-		// keyspace or the log stream faster than operators can react.
-		registerLimiter: rate.NewLimiter(rate.Limit(1), 5),
-		// Same rate as registerLimiter: this gate protects the same kind of
+		provider:        provider,
+		config:          config,
+		storage:         stor,
+		upstreams:       upstreams,
+		tokenOnly:       len(upstreams) == 0,
+		userResolver:    NewUserResolver(stor),
+		registerLimiter: rate.NewLimiter(DefaultRegisterRate, DefaultRegisterBurst),
+		meterProvider:   otel.GetMeterProvider(),
+		// Same rate as registerLimiter's default: this gate protects the same kind of
 		// unauthenticated persisted-state minting, just reached through
 		// /oauth/authorize instead of /oauth/register.
 		cimdAuthorizeLimiter: rate.NewLimiter(rate.Limit(1), 5),
 		deviceCodeInterval:   deviceCodeInterval(config.DeviceCodeInterval),
 	}
 	if config.DeviceFlowEnabled {
-		// Same rate as registerLimiter: this gate protects the same kind of
+		// Same rate as registerLimiter's default: this gate protects the same kind of
 		// unauthenticated persisted-state minting, just reached through
 		// /oauth/device_authorization instead of /oauth/register.
 		h.deviceAuthorizationLimiter = rate.NewLimiter(rate.Limit(1), 5)
@@ -267,6 +302,15 @@ func NewHandler(
 	for _, o := range opts {
 		o(h)
 	}
+	if h.registerLimiter.Limit() <= 0 || h.registerLimiter.Burst() <= 0 {
+		return nil, fmt.Errorf("handlers: register rate limit must have a positive rate and burst, got %v/s burst %d",
+			h.registerLimiter.Limit(), h.registerLimiter.Burst())
+	}
+	metrics, err := newDCRMetrics(h.meterProvider, stor)
+	if err != nil {
+		return nil, fmt.Errorf("handlers: %w", err)
+	}
+	h.dcrMetrics = metrics
 	return h, nil
 }
 

@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"net/url"
 	"regexp"
 	"slices"
@@ -163,8 +164,9 @@ type RunConfig struct {
 	// client_secret_post in addition to "none" (still the default on
 	// omission) and mints a client_secret returned exactly once. Confidential
 	// clients are restricted to https non-loopback redirect URIs, and
-	// registrations idle for more than DefaultDCRClientTTL (30 days) are
-	// evicted and must re-register. This gates registration only: disabling
+	// registrations expire and must re-register when never used within
+	// DefaultUnusedDCRClientTTL (24 hours) or idle for more than
+	// DefaultDCRClientTTL (30 days). This gates registration only: disabling
 	// it does not revoke or reject already-minted secrets at the token
 	// endpoint.
 	//
@@ -275,6 +277,40 @@ type RunConfig struct {
 	// TLSListener configures auth server routes to be served over TLS on port 8443.
 	// It is currently rejected because the runner does not start this listener.
 	TLSListener *TLSListenerRunConfig `json:"tls_listener,omitempty" yaml:"tls_listener,omitempty"`
+
+	// RegistrationRateLimit bounds the unauthenticated /oauth/register
+	// endpoint. Nil keeps the default of 1 registration per second with a
+	// burst of 5. The limiter is per process, so the effective rate is the
+	// configured rate multiplied by the replica count. The cap on how many
+	// registered clients may exist at once is Storage.MaxDCRClients.
+	//nolint:lll // field tags require full JSON+YAML names
+	RegistrationRateLimit *RegistrationRateLimitRunConfig `json:"registration_rate_limit,omitempty" yaml:"registration_rate_limit,omitempty"`
+}
+
+// RegistrationRateLimitRunConfig is the token-bucket limit on /oauth/register.
+type RegistrationRateLimitRunConfig struct {
+	// RequestsPerSecond is the sustained registration rate. Must be positive.
+	RequestsPerSecond float64 `json:"requests_per_second" yaml:"requests_per_second"`
+
+	// Burst is the number of registrations admitted at once before the rate
+	// applies. Must be positive.
+	Burst int `json:"burst" yaml:"burst"`
+}
+
+// Validate rejects a non-positive rate or burst. A nil receiver is valid and
+// means the default limit.
+func (c *RegistrationRateLimitRunConfig) Validate() error {
+	if c == nil {
+		return nil
+	}
+	if c.RequestsPerSecond <= 0 || math.IsInf(c.RequestsPerSecond, 0) || math.IsNaN(c.RequestsPerSecond) {
+		return fmt.Errorf("registration_rate_limit: requests_per_second must be a positive number, got %v",
+			c.RequestsPerSecond)
+	}
+	if c.Burst <= 0 {
+		return fmt.Errorf("registration_rate_limit: burst must be positive, got %d", c.Burst)
+	}
+	return nil
 }
 
 // DelegateClientRunConfig declares a pre-provisioned confidential OAuth
@@ -319,10 +355,8 @@ func (c *RunConfig) Validate() error {
 				"remove this configuration until listener startup is implemented",
 		)
 	}
-	if c.CIMD != nil {
-		if err := c.CIMD.Validate(); err != nil {
-			return fmt.Errorf("cimd: %w", err)
-		}
+	if err := c.validateClientAdmission(); err != nil {
+		return err
 	}
 	// Also checked by Config.Validate() (same reasoning as
 	// validateBaselineClientScopes below): buildUpstreamConfigs performs live
@@ -365,6 +399,24 @@ func (c *RunConfig) Validate() error {
 		return err
 	}
 	return c.validateBaselineClientScopes()
+}
+
+// validateClientAdmission checks the bounds on how unauthenticated callers
+// can create clients: CIMD resolution, the /oauth/register rate, and the DCR
+// client cap.
+func (c *RunConfig) validateClientAdmission() error {
+	if c.CIMD != nil {
+		if err := c.CIMD.Validate(); err != nil {
+			return fmt.Errorf("cimd: %w", err)
+		}
+	}
+	if err := c.RegistrationRateLimit.Validate(); err != nil {
+		return err
+	}
+	if _, err := c.Storage.ResolvedMaxDCRClients(); err != nil {
+		return fmt.Errorf("storage: %w", err)
+	}
+	return nil
 }
 
 // validateUpstreamFilter rejects an UpstreamFilter configuration whose rules or
@@ -1282,6 +1334,11 @@ type Config struct {
 	// SPIFFE associations are configured. The serialized declarations live on
 	// RunConfig and are converted at the RunConfig-to-Config boundary.
 	SPIFFETrust *SPIFFETrustConfig
+
+	// RegistrationRateLimit bounds /oauth/register. Nil keeps the default of
+	// 1 registration per second with a burst of 5. See the identically named
+	// field on RunConfig.
+	RegistrationRateLimit *RegistrationRateLimitRunConfig
 }
 
 // DelegateClient is the resolved form of DelegateClientRunConfig: the secret
@@ -1361,7 +1418,7 @@ func (c *Config) Validate() error {
 		return err
 	}
 
-	if err := c.validateCIMDBounds(); err != nil {
+	if err := c.validateClientAdmission(); err != nil {
 		return err
 	}
 
@@ -1370,6 +1427,15 @@ func (c *Config) Validate() error {
 	}
 
 	return c.validateDelegationAndTrustConfig()
+}
+
+// validateClientAdmission checks the bounds on how unauthenticated callers
+// can create clients: CIMD resolution and the /oauth/register rate.
+func (c *Config) validateClientAdmission() error {
+	if err := c.validateCIMDBounds(); err != nil {
+		return err
+	}
+	return c.RegistrationRateLimit.Validate()
 }
 
 // validateDelegationAndTrustConfig groups the delegate-client and SPIFFE

@@ -1045,8 +1045,8 @@ func TestRedisStorage_RenewClientTTL(t *testing.T) {
 
 			key := redisKey(s.keyPrefix, KeyTypeClient, "dcr-public-renew")
 
-			// Age the registration so only a small slice of the TTL remains.
-			mr.FastForward(DefaultDCRClientTTL - time.Hour)
+			// Age the registration so only a small slice of its unused TTL remains.
+			mr.FastForward(DefaultUnusedDCRClientTTL - time.Hour)
 			ttlBefore := mr.TTL(key)
 			require.Positive(t, ttlBefore)
 			require.Less(t, ttlBefore, 2*time.Hour, "precondition: TTL should be near expiry")

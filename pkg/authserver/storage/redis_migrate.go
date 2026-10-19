@@ -340,3 +340,102 @@ func (s *RedisStorage) migrateSingleProviderIdentity(
 	result.IdentitiesMigrated++
 	return nil
 }
+
+// BackfillDCRClientIndex adds every live client row counted against the DCR
+// cap to the KeyTypeDCRClientIdx sorted set, scored by the row's current
+// expiry. Rows written before the index existed have no entry, so without
+// this a deployment already holding more than the cap would keep admitting
+// registrations past it.
+//
+// It is idempotent and runs on every startup, in the style of
+// MigrateLegacyUpstreamData: ZADD NX never moves an existing entry, so a row
+// indexed by RegisterClient or RenewClientTTL keeps its exact score. Running
+// it again also picks up rows an older replica wrote during a rolling
+// upgrade. A row without a TTL is not DCR-issued and is skipped.
+//
+// TODO(migration): Remove once all deployments have upgraded past this version.
+func (s *RedisStorage) BackfillDCRClientIndex(ctx context.Context) error {
+	pattern := s.keyPrefix + KeyTypeClient + ":*"
+	idPrefixLen := len(s.keyPrefix) + len(KeyTypeClient) + 1
+	indexKey := s.dcrClientIndexKey()
+
+	var added, failed int
+	var cursor uint64
+	for {
+		keys, nextCursor, err := s.client.Scan(ctx, cursor, pattern, 100).Result()
+		if err != nil {
+			return fmt.Errorf("SCAN failed: %w", err)
+		}
+
+		for _, key := range keys {
+			ok, err := s.backfillDCRClient(ctx, key, key[idPrefixLen:], indexKey)
+			if err != nil {
+				slog.Warn("failed to backfill DCR client index entry", "key", key, "error", err)
+				failed++
+				continue
+			}
+			if ok {
+				added++
+			}
+		}
+
+		cursor = nextCursor
+		if cursor == 0 {
+			break
+		}
+	}
+
+	if failed > 0 {
+		return fmt.Errorf("DCR client index backfill incomplete: %d client row(s) failed", failed)
+	}
+	if added > 0 {
+		slog.Info("DCR client index backfill complete", "clients_added", added)
+	}
+	return nil
+}
+
+// backfillDCRClient indexes one client row if it counts against the DCR cap
+// and has no index entry yet. It reports whether an entry was added.
+func (s *RedisStorage) backfillDCRClient(ctx context.Context, key, id, indexKey string) (bool, error) {
+	pipe := s.client.Pipeline()
+	getCmd := pipe.Get(ctx, key)
+	pttlCmd := pipe.PTTL(ctx, key)
+	if _, err := pipe.Exec(ctx); err != nil && !errors.Is(err, redis.Nil) {
+		return false, fmt.Errorf("GET/PTTL failed: %w", err)
+	}
+
+	data, err := getCmd.Bytes()
+	if errors.Is(err, redis.Nil) {
+		return false, nil // expired since SCAN
+	}
+	if err != nil {
+		return false, fmt.Errorf("GET failed: %w", err)
+	}
+	// PTTL reports a missing key or a key without an expiry as a negative
+	// value. Neither is a DCR-issued row.
+	ttl, err := pttlCmd.Result()
+	if err != nil {
+		return false, fmt.Errorf("PTTL failed: %w", err)
+	}
+	if ttl <= 0 {
+		return false, nil
+	}
+
+	var stored storedClient
+	if err := json.Unmarshal(data, &stored); err != nil {
+		return false, fmt.Errorf("unmarshal failed: %w", err)
+	}
+	if stored.ID != "" && stored.ID != id {
+		return false, fmt.Errorf("row id %q does not match key", stored.ID)
+	}
+	if !countsTowardDCRCap(clientFromStored(stored, true)) {
+		return false, nil
+	}
+
+	expiry := s.now().Add(ttl)
+	n, err := s.client.ZAddNX(ctx, indexKey, redis.Z{Score: float64(expiry.UnixMilli()), Member: id}).Result()
+	if err != nil {
+		return false, fmt.Errorf("ZADD failed: %w", err)
+	}
+	return n > 0, nil
+}

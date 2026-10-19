@@ -18,6 +18,7 @@ import (
 	"github.com/ory/fosite/compose"
 	"github.com/spiffe/go-spiffe/v2/bundle/jwtbundle"
 	"github.com/spiffe/go-spiffe/v2/bundle/x509bundle"
+	"golang.org/x/time/rate"
 
 	oauthserver "github.com/stacklok/toolhive/pkg/authserver/server"
 	"github.com/stacklok/toolhive/pkg/authserver/server/deviceflow"
@@ -327,7 +328,7 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage) (_ *server
 	// opaque storage-row identity.
 	refresher := newUpstreamTokenRefresher(upstreams, stor, cfg.RefreshTokenLifespan)
 	handlerInstance, err := handlers.NewHandler(fositeProvider, authServerConfig, stor, upstreams,
-		buildHandlerOptions(refresher, cfg.UpstreamFilter)...)
+		buildHandlerOptions(refresher, cfg.UpstreamFilter, cfg.RegistrationRateLimit)...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create handler: %w", err)
 	}
@@ -600,10 +601,18 @@ func buildDeviceFlowFactory(cfg Config, stor storage.Storage) (oauthserver.Facto
 // refresher is always wired, and the filter is added only when the caller's
 // Config sets one so a nil Config.UpstreamFilter preserves the pre-filter
 // behavior of walking every configured upstream.
-func buildHandlerOptions(refresher storage.UpstreamTokenRefresher, filter handlers.UpstreamFilter) []handlers.Option {
+func buildHandlerOptions(
+	refresher storage.UpstreamTokenRefresher,
+	filter handlers.UpstreamFilter,
+	registrationRateLimit *RegistrationRateLimitRunConfig,
+) []handlers.Option {
 	opts := []handlers.Option{handlers.WithUpstreamRefresher(refresher)}
 	if filter != nil {
 		opts = append(opts, handlers.WithUpstreamFilter(filter))
+	}
+	if registrationRateLimit != nil {
+		opts = append(opts, handlers.WithRegisterRateLimit(
+			rate.Limit(registrationRateLimit.RequestsPerSecond), registrationRateLimit.Burst))
 	}
 	return opts
 }
@@ -767,12 +776,17 @@ func createProvider(
 
 // runLegacyMigration runs one-shot Redis data migrations before handlers are
 // constructed. It is a no-op for non-Redis backends and passes through any
-// decorator wrapping so the concrete type can be reached.
+// decorator wrapping so the concrete type can be reached. The DCR client index
+// backfill runs before /oauth/register is served, so the cap counts clients
+// written before the index existed.
 func runLegacyMigration(ctx context.Context, stor storage.Storage, upstreams []UpstreamConfig) error {
 	base := storage.Unwrap(stor)
 	rs, ok := base.(*storage.RedisStorage)
 	if !ok {
 		return nil
+	}
+	if err := rs.BackfillDCRClientIndex(ctx); err != nil {
+		return fmt.Errorf("DCR client index backfill failed: %w", err)
 	}
 	for i := range upstreams {
 		upCfg := &upstreams[i]

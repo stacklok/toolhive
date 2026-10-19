@@ -1459,6 +1459,40 @@ func (s *AuthenticationOIDCUpstreamRunConfigAdditionalTokenParams) init() Authen
 	return m
 }
 
+// RegistrationRateLimit bounds the unauthenticated /oauth/register
+// endpoint. Nil keeps the default of 1 registration per second with a
+// burst of 5. The limiter is per process, so the effective rate is the
+// configured rate multiplied by the replica count. The cap on how many
+// registered clients may exist at once is Storage.MaxDCRClients.
+// Ref: #/components/schemas/AuthenticationRegistrationRateLimitRunConfig
+type AuthenticationRegistrationRateLimitRunConfig struct {
+	// Burst is the number of registrations admitted at once before the rate
+	// applies. Must be positive.
+	Burst OptInt `json:"burst"`
+	// RequestsPerSecond is the sustained registration rate. Must be positive.
+	RequestsPerSecond OptFloat64 `json:"requests_per_second"`
+}
+
+// GetBurst returns the value of Burst.
+func (s *AuthenticationRegistrationRateLimitRunConfig) GetBurst() OptInt {
+	return s.Burst
+}
+
+// GetRequestsPerSecond returns the value of RequestsPerSecond.
+func (s *AuthenticationRegistrationRateLimitRunConfig) GetRequestsPerSecond() OptFloat64 {
+	return s.RequestsPerSecond
+}
+
+// SetBurst sets the value of Burst.
+func (s *AuthenticationRegistrationRateLimitRunConfig) SetBurst(val OptInt) {
+	s.Burst = val
+}
+
+// SetRequestsPerSecond sets the value of RequestsPerSecond.
+func (s *AuthenticationRegistrationRateLimitRunConfig) SetRequestsPerSecond(val OptFloat64) {
+	s.RequestsPerSecond = val
+}
+
 // EmbeddedAuthServerConfig contains configuration for the embedded OAuth2/OIDC authorization server.
 // When set, the proxy runner will start an embedded auth server that delegates to upstream IDPs.
 // This is the serializable RunConfig; secrets are referenced by file paths or env var names.
@@ -1470,8 +1504,9 @@ type AuthenticationRunConfig struct {
 	// client_secret_post in addition to "none" (still the default on
 	// omission) and mints a client_secret returned exactly once. Confidential
 	// clients are restricted to https non-loopback redirect URIs, and
-	// registrations idle for more than DefaultDCRClientTTL (30 days) are
-	// evicted and must re-register. This gates registration only: disabling
+	// registrations expire and must re-register when never used within
+	// DefaultUnusedDCRClientTTL (24 hours) or idle for more than
+	// DefaultDCRClientTTL (30 days). This gates registration only: disabling
 	// it does not revoke or reject already-minted secrets at the token
 	// endpoint.
 	// Security: /oauth/register is unauthenticated, so this issues client
@@ -1595,7 +1630,8 @@ type AuthenticationRunConfig struct {
 	// Issuer is the issuer identifier for this authorization server.
 	// This will be included in the "iss" claim of issued tokens.
 	// Must be a valid HTTPS URL (or HTTP for localhost) without query, fragment, or trailing slash.
-	Issuer OptString `json:"issuer"`
+	Issuer                OptString                                       `json:"issuer"`
+	RegistrationRateLimit OptAuthenticationRegistrationRateLimitRunConfig `json:"registration_rate_limit"`
 	// SchemaVersion is the version of the RunConfig schema.
 	SchemaVersion OptString `json:"schema_version"`
 	// ScopesSupported lists the OAuth 2.0 scope values advertised in discovery documents.
@@ -1705,6 +1741,11 @@ func (s *AuthenticationRunConfig) GetInsecureAllowHTTP() OptBool {
 // GetIssuer returns the value of Issuer.
 func (s *AuthenticationRunConfig) GetIssuer() OptString {
 	return s.Issuer
+}
+
+// GetRegistrationRateLimit returns the value of RegistrationRateLimit.
+func (s *AuthenticationRunConfig) GetRegistrationRateLimit() OptAuthenticationRegistrationRateLimitRunConfig {
+	return s.RegistrationRateLimit
 }
 
 // GetSchemaVersion returns the value of SchemaVersion.
@@ -1835,6 +1876,11 @@ func (s *AuthenticationRunConfig) SetInsecureAllowHTTP(val OptBool) {
 // SetIssuer sets the value of Issuer.
 func (s *AuthenticationRunConfig) SetIssuer(val OptString) {
 	s.Issuer = val
+}
+
+// SetRegistrationRateLimit sets the value of RegistrationRateLimit.
+func (s *AuthenticationRunConfig) SetRegistrationRateLimit(val OptAuthenticationRegistrationRateLimitRunConfig) {
+	s.RegistrationRateLimit = val
 }
 
 // SetSchemaVersion sets the value of SchemaVersion.
@@ -7269,6 +7315,52 @@ func (o OptAuthenticationOIDCUpstreamRunConfigAdditionalTokenParams) Or(d Authen
 	return d
 }
 
+// NewOptAuthenticationRegistrationRateLimitRunConfig returns new OptAuthenticationRegistrationRateLimitRunConfig with value set to v.
+func NewOptAuthenticationRegistrationRateLimitRunConfig(v AuthenticationRegistrationRateLimitRunConfig) OptAuthenticationRegistrationRateLimitRunConfig {
+	return OptAuthenticationRegistrationRateLimitRunConfig{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptAuthenticationRegistrationRateLimitRunConfig is optional AuthenticationRegistrationRateLimitRunConfig.
+type OptAuthenticationRegistrationRateLimitRunConfig struct {
+	Value AuthenticationRegistrationRateLimitRunConfig
+	Set   bool
+}
+
+// IsSet returns true if OptAuthenticationRegistrationRateLimitRunConfig was set.
+func (o OptAuthenticationRegistrationRateLimitRunConfig) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptAuthenticationRegistrationRateLimitRunConfig) Reset() {
+	var v AuthenticationRegistrationRateLimitRunConfig
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptAuthenticationRegistrationRateLimitRunConfig) SetTo(v AuthenticationRegistrationRateLimitRunConfig) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptAuthenticationRegistrationRateLimitRunConfig) Get() (v AuthenticationRegistrationRateLimitRunConfig, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptAuthenticationRegistrationRateLimitRunConfig) Or(d AuthenticationRegistrationRateLimitRunConfig) AuthenticationRegistrationRateLimitRunConfig {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
 // NewOptAuthenticationRunConfig returns new OptAuthenticationRunConfig with value set to v.
 func NewOptAuthenticationRunConfig(v AuthenticationRunConfig) OptAuthenticationRunConfig {
 	return OptAuthenticationRunConfig{
@@ -8275,6 +8367,52 @@ func (o OptDeleteSkillScope) Get() (v DeleteSkillScope, ok bool) {
 
 // Or returns value if set, or given parameter if does not.
 func (o OptDeleteSkillScope) Or(d DeleteSkillScope) DeleteSkillScope {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptFloat64 returns new OptFloat64 with value set to v.
+func NewOptFloat64(v float64) OptFloat64 {
+	return OptFloat64{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptFloat64 is optional float64.
+type OptFloat64 struct {
+	Value float64
+	Set   bool
+}
+
+// IsSet returns true if OptFloat64 was set.
+func (o OptFloat64) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptFloat64) Reset() {
+	var v float64
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptFloat64) SetTo(v float64) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptFloat64) Get() (v float64, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptFloat64) Or(d float64) float64 {
 	if v, ok := o.Get(); ok {
 		return v
 	}
@@ -20168,9 +20306,20 @@ func (s *StorageRedisTLSRunConfig) SetInsecureSkipVerify(val OptBool) {
 // If nil, defaults to in-memory storage.
 // Ref: #/components/schemas/StorageRunConfig
 type StorageRunConfig struct {
-	RedisConfig OptStorageRedisRunConfig `json:"redis_config"`
+	// MaxDCRClients caps the number of live clients created by
+	// /oauth/register. At the cap, registration fails with HTTP 503 until a
+	// client expires; no existing client is evicted. Nil uses
+	// DefaultMaxDCRClients, zero means unlimited, and a negative value is
+	// rejected. On Redis the count is shared by every replica.
+	MaxDcrClients OptInt                   `json:"max_dcr_clients"`
+	RedisConfig   OptStorageRedisRunConfig `json:"redis_config"`
 	// Type specifies the storage backend type. Defaults to "memory".
 	Type OptString `json:"type"`
+}
+
+// GetMaxDcrClients returns the value of MaxDcrClients.
+func (s *StorageRunConfig) GetMaxDcrClients() OptInt {
+	return s.MaxDcrClients
 }
 
 // GetRedisConfig returns the value of RedisConfig.
@@ -20181,6 +20330,11 @@ func (s *StorageRunConfig) GetRedisConfig() OptStorageRedisRunConfig {
 // GetType returns the value of Type.
 func (s *StorageRunConfig) GetType() OptString {
 	return s.Type
+}
+
+// SetMaxDcrClients sets the value of MaxDcrClients.
+func (s *StorageRunConfig) SetMaxDcrClients(val OptInt) {
+	s.MaxDcrClients = val
 }
 
 // SetRedisConfig sets the value of RedisConfig.

@@ -1431,6 +1431,34 @@ func TestCreateStorage(t *testing.T) {
 		assert.True(t, ok, "expected MemoryStorage")
 	})
 
+	t.Run("negative max DCR clients returns error", func(t *testing.T) {
+		t.Parallel()
+
+		_, err := createStorage(ctx, &storage.RunConfig{MaxDCRClients: new(-1)})
+		require.ErrorContains(t, err, "max_dcr_clients must not be negative")
+	})
+
+	t.Run("max DCR clients reaches memory storage", func(t *testing.T) {
+		t.Parallel()
+
+		stor, err := createStorage(ctx, &storage.RunConfig{MaxDCRClients: new(1)})
+		require.NoError(t, err)
+		ms, ok := stor.(*storage.MemoryStorage)
+		require.True(t, ok, "expected MemoryStorage")
+		t.Cleanup(func() { _ = ms.Close() })
+		register := func(id string) error {
+			client, err := registration.New(registration.Config{
+				ID:                      id,
+				TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodNone,
+				RedirectURIs:            []string{"http://127.0.0.1/callback"},
+			})
+			require.NoError(t, err)
+			return ms.RegisterClient(ctx, client)
+		}
+		require.NoError(t, register("first"))
+		require.ErrorIs(t, register("second"), storage.ErrClientCapacity)
+	})
+
 	t.Run("unsupported type returns error", func(t *testing.T) {
 		t.Parallel()
 

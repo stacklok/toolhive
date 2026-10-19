@@ -50,14 +50,6 @@ type assertionJWTKey struct {
 	jti     string
 }
 
-// clientOrderEntry is one position in MemoryStorage.clientOrder: a client ID
-// and the time it was placed at the back of the eviction queue (registration
-// or renewal). touchedAt backs the minClientAge grace window.
-type clientOrderEntry struct {
-	id        string
-	touchedAt time.Time
-}
-
 // MemoryStorage implements the Storage interface with in-memory maps.
 // This implementation is thread-safe and suitable for development and testing.
 // For production use, consider implementing a persistent storage backend.
@@ -84,36 +76,24 @@ type MemoryStorage struct {
 	// marker is needed here.
 	clients map[string]fosite.Client
 
-	// clientOrder is the least-recently-proven-used order of clients: a
-	// registration starts at the back, and RenewClientTTL moves a DCR-issued
-	// client to the back again on proven use (a successful token
-	// exchange/refresh), mirroring RedisStorage.RenewClientTTL's TTL bump.
-	// Each entry's touchedAt records when it was placed at the back
-	// (registration or renewal), which oldestEvictableClientIndex uses to
-	// apply the minClientAge grace window. Eviction in RegisterClient walks
-	// from the front and takes the first entry that both carries the
-	// registration.DCRIssued marker and has aged past minClientAge.
-	// /oauth/register is unauthenticated and every call mints an entry, so an
-	// uncapped map is a memory-exhaustion DoS in the same process as the
-	// proxy. RegisterClient evicts an aged DCR-issued client when safe;
-	// otherwise it rejects the registration to preserve the configured cap.
-	clientOrder []clientOrderEntry
+	// clientExpiry holds the expiry of every client in clients that carries
+	// the registration.DCRIssued marker (CIMD rows included), mirroring the
+	// key TTL RedisStorage gives the same rows. A client with no entry here
+	// never expires. Every read treats an expired client as absent, and
+	// cleanupExpired removes it.
+	clientExpiry map[string]time.Time
 
-	// maxClients caps the client map; zero means unlimited. RegisterClient
-	// evicts the oldest DCR-issued entry once the cap is reached; a
-	// pre-provisioned client (no DCRIssued marker) is never evicted.
-	maxClients int
+	// maxDCRClients caps the live clients counted by countsTowardDCRCap; zero
+	// means unlimited. /oauth/register is unauthenticated and every call
+	// mints an entry, so an uncapped map is a memory-exhaustion DoS in the
+	// same process as the proxy. At the cap RegisterClient rejects with a
+	// *ClientCapacityError and evicts nothing: evicting would let a caller
+	// registering at the full rate push out every idle real client. A full
+	// map drains as entries expire.
+	maxDCRClients int
 
-	// minClientAge is the grace window below which a DCR-issued client is
-	// never evicted, regardless of position in clientOrder. Without it, a
-	// legitimately registered but not-yet-used client sits at the front of
-	// the queue (RenewClientTTL only fires on a successful token exchange),
-	// so an attacker filling the map at capacity can evict that specific
-	// victim on demand — the rate limiter bounds the speed of this but not
-	// the outcome. The floor removes that targeted-victim primitive while
-	// keeping the anti-bloat bound: if every current entry is younger than
-	// the floor, RegisterClient returns ErrClientCapacity.
-	minClientAge time.Duration
+	// now returns the current time for client expiry.
+	now func() time.Time
 
 	// authCodes maps authorization code -> Requester. Codes are one-time-use;
 	// invalidatedCodes tracks used codes to return ErrInvalidatedAuthorizeCode.
@@ -182,7 +162,7 @@ type MemoryStorage struct {
 	// acting as a DCR client to register itself against a configured upstream
 	// IdP (see pkg/auth/dcr/store.go, the only caller of StoreDCRCredentialsIfAbsent).
 	// This is not reachable from the inbound, unauthenticated /oauth/register
-	// handler, so unlike clients (bounded by maxClients/clientOrder because
+	// handler, so unlike clients (bounded by maxDCRClients and clientExpiry because
 	// every inbound registration call mints an entry), growth here is bounded
 	// by the number of configured upstreams, which the operator controls, not
 	// by request volume — hence no eviction or cap on this map.
@@ -220,36 +200,21 @@ func WithCleanupInterval(interval time.Duration) MemoryStorageOption {
 	}
 }
 
-// DefaultMaxClients is the default cap on the in-memory client map.
-// /oauth/register is unauthenticated and mints an entry per call; the cap
-// bounds memory growth while staying far above any legitimate client count
-// (clients register once and reuse their client_id).
-const DefaultMaxClients = 10000
-
-// WithMaxClients sets the client-map cap. Once reached, RegisterClient evicts
-// the oldest DCR-issued registration that has aged past minClientAge
-// (oldest-first). A pre-provisioned client (no registration.DCRIssued marker)
-// is never evicted; if no DCR-issued client can be safely evicted,
-// RegisterClient returns ErrClientCapacity.
-func WithMaxClients(n int) MemoryStorageOption {
+// WithMaxDCRClients sets the cap on live clients counted by
+// countsTowardDCRCap; zero means unlimited. At the cap RegisterClient returns a
+// *ClientCapacityError and evicts nothing. Operator-configured and CIMD
+// clients are never counted.
+func WithMaxDCRClients(n int) MemoryStorageOption {
 	return func(s *MemoryStorage) {
-		s.maxClients = n
+		s.maxDCRClients = n
 	}
 }
 
-// DefaultMinClientAge is the default grace window below which a DCR-issued
-// client is never evicted. See the minClientAge field doc for why the floor
-// exists: without it, a freshly registered but not-yet-used client can be
-// evicted on demand by an attacker filling the map to capacity.
-const DefaultMinClientAge = time.Hour
-
-// WithMinClientAge overrides the grace window below which a DCR-issued
-// client is protected from eviction regardless of queue position. Tests use
-// this to drive the floor down (e.g. to zero) instead of sleeping for real
-// wall-clock time.
-func WithMinClientAge(d time.Duration) MemoryStorageOption {
+// withClientClock sets the clock used for client expiry, so tests can move
+// past a TTL without sleeping.
+func withClientClock(now func() time.Time) MemoryStorageOption {
 	return func(s *MemoryStorage) {
-		s.minClientAge = d
+		s.now = now
 	}
 }
 
@@ -277,8 +242,9 @@ func NewMemoryStorage(opts ...MemoryStorageOption) *MemoryStorage {
 		providerIdentities:         make(map[string]*ProviderIdentity),
 		dcrCredentials:             make(map[DCRKey]*DCRCredentials),
 		cleanupInterval:            DefaultCleanupInterval,
-		maxClients:                 DefaultMaxClients,
-		minClientAge:               DefaultMinClientAge,
+		clientExpiry:               make(map[string]time.Time),
+		maxDCRClients:              DefaultMaxDCRClients,
+		now:                        time.Now,
 		stopCleanup:                make(chan struct{}),
 		cleanupDone:                make(chan struct{}),
 	}
@@ -435,10 +401,18 @@ func (s *MemoryStorage) cleanupExpired() {
 		}
 	}
 
+	var expiredClients []string
+	for k, v := range s.clientExpiry {
+		if !s.now().Before(v) {
+			expiredClients = append(expiredClients, k)
+		}
+	}
+
 	s.mu.RUnlock()
 
 	// Phase 2: Early return if nothing to delete (no write lock needed)
-	if len(expiredAuthCodes) == 0 &&
+	if len(expiredClients) == 0 &&
+		len(expiredAuthCodes) == 0 &&
 		len(expiredInvalidatedCodes) == 0 &&
 		len(expiredAccessTokens) == 0 &&
 		len(expiredRefreshTokens) == 0 &&
@@ -458,6 +432,14 @@ func (s *MemoryStorage) cleanupExpired() {
 	// Phase 3: Delete collected keys under write lock
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	for _, k := range expiredClients {
+		// RenewClientTTL may have extended the client between the phases.
+		if exp, ok := s.clientExpiry[k]; ok && !s.now().Before(exp) {
+			delete(s.clients, k)
+			delete(s.clientExpiry, k)
+		}
+	}
 
 	for _, k := range expiredAuthCodes {
 		delete(s.authCodes, k)
@@ -598,18 +580,27 @@ func (s *MemoryStorage) RegisterClient(_ context.Context, client fosite.Client) 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if _, exists := s.clients[id]; exists {
+	now := s.now()
+	if _, exists := s.liveClientLocked(id, now); exists {
 		return fmt.Errorf("%w: client %q", ErrAlreadyExists, id)
 	}
-	return s.insertClientLocked(id, client)
+	if s.maxDCRClients > 0 && countsTowardDCRCap(client) {
+		if count, oldestExpiry := s.countDCRClientsLocked(now); count >= s.maxDCRClients {
+			return newClientCapacityError(oldestExpiry, now)
+		}
+	}
+	s.putClientLocked(id, client, now, DefaultUnusedDCRClientTTL)
+	return nil
 }
 
 // UpsertDCRIssuedClient creates or replaces a DCR-issued client at
 // client.GetID(). Unlike RegisterClient, an existing row is replaced (and its
-// eviction position refreshed) rather than rejected -- but only when the
-// existing row is itself DCR-issued; a configured/SPIFFE-reconciled row at
+// expiry reset to DefaultDCRClientTTL) rather than rejected -- but only when
+// the existing row is itself DCR-issued; a configured/SPIFFE-reconciled row at
 // the same ID is protected and refuses with ErrAlreadyExists. See the
-// ClientRegistry interface doc for the full contract.
+// ClientRegistry interface doc for the full contract. It does not enforce the
+// DCR cap: its only caller is the CIMD decorator, whose clients are not
+// counted.
 func (s *MemoryStorage) UpsertDCRIssuedClient(_ context.Context, client fosite.Client) error {
 	if !registration.DCRIssued(client) {
 		return fmt.Errorf("client %q must carry the DCR-issued marker to use UpsertDCRIssuedClient", client.GetID())
@@ -622,17 +613,11 @@ func (s *MemoryStorage) UpsertDCRIssuedClient(_ context.Context, client fosite.C
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	existing, exists := s.clients[id]
-	if !exists {
-		return s.insertClientLocked(id, client)
-	}
-	if !registration.DCRIssued(existing) {
+	now := s.now()
+	if existing, exists := s.liveClientLocked(id, now); exists && !registration.DCRIssued(existing) {
 		return fmt.Errorf("%w: client %q", ErrAlreadyExists, id)
 	}
-
-	s.clientOrder = slices.DeleteFunc(s.clientOrder, func(e clientOrderEntry) bool { return e.id == id })
-	s.clientOrder = append(s.clientOrder, clientOrderEntry{id: id, touchedAt: time.Now()})
-	s.clients[id] = client
+	s.putClientLocked(id, client, now, DefaultDCRClientTTL)
 	return nil
 }
 
@@ -653,9 +638,11 @@ func (s *MemoryStorage) ReconcileConfiguredClient(_ context.Context, client fosi
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	existing, exists := s.clients[id]
+	now := s.now()
+	existing, exists := s.liveClientLocked(id, now)
 	if !exists {
-		return s.insertClientLocked(id, client)
+		s.putClientLocked(id, client, now, 0)
+		return nil
 	}
 	if registration.DCRIssued(existing) {
 		return fmt.Errorf("%w: client %q is DCR-issued, refusing to overwrite with a configured client",
@@ -666,63 +653,68 @@ func (s *MemoryStorage) ReconcileConfiguredClient(_ context.Context, client fosi
 			ErrAlreadyExists, id)
 	}
 
-	// Idempotent restart with unchanged config: refresh the eviction position
-	// and replace the stored value so secret rotation still takes effect.
-	s.clientOrder = slices.DeleteFunc(s.clientOrder, func(e clientOrderEntry) bool { return e.id == id })
-	s.clientOrder = append(s.clientOrder, clientOrderEntry{id: id, touchedAt: time.Now()})
-	s.clients[id] = client
+	// Idempotent restart with unchanged config: replace the stored value so
+	// secret rotation still takes effect.
+	s.putClientLocked(id, client, now, 0)
 	return nil
 }
 
-// insertClientLocked inserts client under id, evicting the oldest eligible
-// DCR-issued client if the map is at capacity. Callers must hold s.mu and
-// must have already verified that no client currently exists at id.
-func (s *MemoryStorage) insertClientLocked(id string, client fosite.Client) error {
-	now := time.Now()
-	if s.maxClients > 0 && len(s.clients) >= s.maxClients {
-		if idx := s.oldestEvictableClientIndex(now); idx >= 0 {
-			victim := s.clientOrder[idx].id
-			s.clientOrder = append(s.clientOrder[:idx], s.clientOrder[idx+1:]...)
-			delete(s.clients, victim)
-			slog.Debug("evicted oldest DCR-issued client registration at capacity",
-				"client_id", victim, "max_clients", s.maxClients)
-		} else {
-			slog.Debug("client map at capacity with no safely evictable DCR-issued client",
-				"max_clients", s.maxClients)
-			return fmt.Errorf("%w: no DCR-issued client can be safely evicted", ErrClientCapacity)
-		}
+// liveClientLocked returns the client stored at id, or false when there is
+// none or it has expired. Callers must hold s.mu.
+func (s *MemoryStorage) liveClientLocked(id string, now time.Time) (fosite.Client, bool) {
+	client, ok := s.clients[id]
+	if !ok {
+		return nil, false
 	}
-	s.clientOrder = append(s.clientOrder, clientOrderEntry{id: id, touchedAt: now})
-	s.clients[id] = client
-	return nil
+	if exp, ok := s.clientExpiry[id]; ok && !now.Before(exp) {
+		return nil, false
+	}
+	return client, true
 }
 
-// oldestEvictableClientIndex returns the clientOrder index of the oldest
-// (frontmost) client that carries the registration.DCRIssued marker and has
-// aged past minClientAge as of now, or -1 if no current entry is evictable.
-// Callers must hold s.mu.
-func (s *MemoryStorage) oldestEvictableClientIndex(now time.Time) int {
-	for i, entry := range s.clientOrder {
-		if now.Sub(entry.touchedAt) < s.minClientAge {
+// putClientLocked stores client at id. A DCR-issued client expires ttl from
+// now; any other client never expires. Callers must hold s.mu for writing.
+func (s *MemoryStorage) putClientLocked(id string, client fosite.Client, now time.Time, ttl time.Duration) {
+	s.clients[id] = client
+	if registration.DCRIssued(client) {
+		s.clientExpiry[id] = now.Add(ttl)
+	} else {
+		delete(s.clientExpiry, id)
+	}
+}
+
+// countDCRClientsLocked returns the number of live clients counted by
+// countsTowardDCRCap and the earliest expiry among them. Callers must hold
+// s.mu. It walks the expiring clients, which the cap and the 24h unused TTL
+// keep small, and runs only on a registration or a metric collection.
+func (s *MemoryStorage) countDCRClientsLocked(now time.Time) (int, time.Time) {
+	var count int
+	var oldest time.Time
+	for id, exp := range s.clientExpiry {
+		if !now.Before(exp) || !countsTowardDCRCap(s.clients[id]) {
 			continue
 		}
-		if client, ok := s.clients[entry.id]; ok && registration.DCRIssued(client) {
-			return i
+		count++
+		if oldest.IsZero() || exp.Before(oldest) {
+			oldest = exp
 		}
 	}
-	return -1
+	return count, oldest
 }
 
-// RenewClientTTL moves a DCR-issued client to the back of clientOrder on
-// proven use (a successful token exchange/refresh), the same signal
-// RedisStorage.RenewClientTTL uses to extend a Redis TTL. The in-memory
-// backend holds no wall-clock TTL, so "renewal" here means "make this client
-// the least-eligible-for-eviction" rather than resetting an expiry: FIFO
-// eviction order thereby becomes least-recently-proven-used order. Only
-// DCR-issued clients are repositioned; a pre-provisioned client is never
-// evicted so it needs no renewal. A client absent from the map (already
-// evicted, or never persisted) is a no-op, matching RedisStorage's EXPIRE
-// no-op on a missing key.
+// CountDCRClients implements DCRClientCounter.
+func (s *MemoryStorage) CountDCRClients(_ context.Context) (int64, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	count, _ := s.countDCRClientsLocked(s.now())
+	return int64(count), nil
+}
+
+// RenewClientTTL sets a live DCR-issued client's expiry to DefaultDCRClientTTL
+// from now on proven use (a successful token exchange/refresh), the same
+// signal RedisStorage.RenewClientTTL uses. A pre-provisioned client never
+// expires, so it needs no renewal. A client that is absent or expired stays
+// absent, matching RedisStorage's PEXPIRE no-op on a missing key.
 func (s *MemoryStorage) RenewClientTTL(_ context.Context, client fosite.Client) error {
 	if client == nil || !registration.DCRIssued(client) {
 		return nil
@@ -732,11 +724,11 @@ func (s *MemoryStorage) RenewClientTTL(_ context.Context, client fosite.Client) 
 	defer s.mu.Unlock()
 
 	id := client.GetID()
-	if _, exists := s.clients[id]; !exists {
+	now := s.now()
+	if _, exists := s.liveClientLocked(id, now); !exists {
 		return nil
 	}
-	s.clientOrder = slices.DeleteFunc(s.clientOrder, func(e clientOrderEntry) bool { return e.id == id })
-	s.clientOrder = append(s.clientOrder, clientOrderEntry{id: id, touchedAt: time.Now()})
+	s.clientExpiry[id] = now.Add(DefaultDCRClientTTL)
 	return nil
 }
 
@@ -749,7 +741,7 @@ func (s *MemoryStorage) GetClient(_ context.Context, id string) (fosite.Client, 
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	client, ok := s.clients[id]
+	client, ok := s.liveClientLocked(id, s.now())
 	if !ok {
 		slog.Debug("client not found", "client_id", id)
 		return nil, notFoundRFC6749Error("Client not found")

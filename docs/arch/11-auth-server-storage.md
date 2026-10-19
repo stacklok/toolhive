@@ -304,8 +304,20 @@ No existing client is evicted: eviction let a caller registering at the full
 rate push out every idle real client, logging its user out. The handler
 answers HTTP 503 with an RFC 7591 `server_error` and a `Retry-After` header
 giving the seconds until the oldest counted client expires, the earliest
-moment a slot can free up. The 24-hour TTL for never-used clients means a cap
-filled by spam drains within a day.
+moment a slot can free up.
+
+**Sizing.** A client never used for a token exchange lives 24 hours, so a
+caller registering at the full rate keeps up to `rate × replicas × 86,400`
+unused clients alive. At the default rate of 1/s that is about 86,400 per
+replica, well above the default cap: one replica's worth of traffic fills it
+in about 2.8 hours, and new registrations then get 503 for up to 24 hours
+after the traffic stops, while the spam entries expire. A client promoted by a
+token exchange holds its slot for 30 days, which no cap value mitigates. Size
+the cap above the real client count plus the headroom you want during an
+attack, and lower `registration_rate_limit` to make the cap take longer to
+fill. Both settings are RunConfig-only for now; the operator CRD does not
+expose them yet ([#6864](https://github.com/stacklok/toolhive/issues/6864)),
+so operator-managed deployments get the defaults.
 
 On Redis the count lives in a sorted set, `{prefix}client-idx`, holding each
 counted client ID scored by its expiry in Unix milliseconds. It shares the
@@ -332,6 +344,23 @@ every startup. During a rolling upgrade, replicas still on the old version
 keep writing and renewing rows without index entries; rows written after the
 last upgraded replica started stay uncounted until the next restart reruns
 the backfill, or until they expire.
+
+**Upgrading.**
+
+- A Redis deployment already holding more than the cap in live DCR clients
+  rejects every new registration right after the upgrade, until enough of
+  them expire. Raise `max_dcr_clients` or set it to `0` before upgrading. The
+  operator cannot set it yet
+  ([#6864](https://github.com/stacklok/toolhive/issues/6864)), so an
+  operator-managed deployment over the cap must wait for the count to drain.
+- Backfilled rows keep their current TTL, up to 30 days, so a pre-existing
+  spam population can take that long to drain. Only clients registered after
+  the upgrade get the 24-hour unused TTL.
+- During a rolling upgrade, an old replica's `RenewClientTTL` on a row a new
+  replica indexed sets the row's TTL to 30 days but leaves its index score at
+  24 hours, so that row goes uncounted after 24 hours. The backfill's
+  `ZADD NX` does not correct it; the row is counted again on its next renewal
+  by an upgraded replica.
 
 CIMD clients are not counted against the DCR cap. The in-memory backend caps
 its CIMD rows separately at 10,000 (the old whole-map cap used to cover them):

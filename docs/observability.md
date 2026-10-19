@@ -484,6 +484,27 @@ checks.
 | `namespace` | string | Kubernetes namespace associated with the server |
 | `server` | string | MCPServer or VirtualMCPServer name |
 
+### Embedded Auth Server Metrics
+
+These metrics are emitted by the embedded authorization server for the cap on
+clients created by `/oauth/register` (see
+[Auth Server Storage](arch/11-auth-server-storage.md#dcr-client-cap)). Neither
+carries attributes.
+
+#### `toolhive_authserver_dcr_clients` (Gauge)
+
+Number of unexpired clients counted against the DCR client cap, read from
+storage at collection time. On Redis every replica reads the same shared
+count, so aggregate it across replicas with `max` or `avg`, not `sum`. On the
+in-memory backend each process reports its own count.
+
+#### `toolhive_authserver_dcr_capacity_rejections` (Counter)
+
+Total number of `/oauth/register` requests rejected with HTTP 503 because the
+DCR client cap was reached. Prometheus exports it as
+`toolhive_authserver_dcr_capacity_rejections_total`. Requests rejected by the
+`/oauth/register` rate limit (HTTP 429) are not counted.
+
 ## Span Attributes
 
 ### HTTP Attributes

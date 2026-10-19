@@ -85,9 +85,17 @@ type RunConfig struct {
 
 	// MaxDCRClients caps the number of live clients created by
 	// /oauth/register. At the cap, registration fails with HTTP 503 until a
-	// client expires; no existing client is evicted. Nil uses
-	// DefaultMaxDCRClients, zero means unlimited, and a negative value is
-	// rejected. On Redis the count is shared by every replica.
+	// client expires; no existing client is evicted. If omitted, defaults to
+	// 10000; 0 means unlimited, and a negative value is rejected. On Redis the
+	// count is shared by every replica.
+	//
+	// Sizing: a client never used for a token exchange lives 24 hours, so a
+	// caller registering at the full rate keeps up to rate x replicas x 86400
+	// unused clients alive. At the default rate of 1/s that is about 86400 per
+	// replica: one replica fills the default cap in about 2.8 hours, and new
+	// registrations then get 503 for up to 24 hours after the traffic stops.
+	// A client promoted by a token exchange holds its slot for 30 days. Not
+	// yet settable through the operator CRD (#6864).
 	MaxDCRClients *int `json:"max_dcr_clients,omitempty" yaml:"max_dcr_clients,omitempty"`
 }
 

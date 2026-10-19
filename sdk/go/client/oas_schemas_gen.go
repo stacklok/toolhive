@@ -1460,10 +1460,14 @@ func (s *AuthenticationOIDCUpstreamRunConfigAdditionalTokenParams) init() Authen
 }
 
 // RegistrationRateLimit bounds the unauthenticated /oauth/register
-// endpoint. Nil keeps the default of 1 registration per second with a
+// endpoint. If omitted, defaults to 1 registration per second with a
 // burst of 5. The limiter is per process, so the effective rate is the
 // configured rate multiplied by the replica count. The cap on how many
-// registered clients may exist at once is Storage.MaxDCRClients.
+// registered clients may exist at once is Storage.MaxDCRClients; unused
+// clients live 24 hours, so a caller at the full rate keeps up to
+// rate x replicas x 86400 of them alive, which at the defaults exceeds the
+// default cap within about 2.8 hours. Not yet settable through the
+// operator CRD (#6864).
 // Ref: #/components/schemas/AuthenticationRegistrationRateLimitRunConfig
 type AuthenticationRegistrationRateLimitRunConfig struct {
 	// Burst is the number of registrations admitted at once before the rate
@@ -20308,9 +20312,16 @@ func (s *StorageRedisTLSRunConfig) SetInsecureSkipVerify(val OptBool) {
 type StorageRunConfig struct {
 	// MaxDCRClients caps the number of live clients created by
 	// /oauth/register. At the cap, registration fails with HTTP 503 until a
-	// client expires; no existing client is evicted. Nil uses
-	// DefaultMaxDCRClients, zero means unlimited, and a negative value is
-	// rejected. On Redis the count is shared by every replica.
+	// client expires; no existing client is evicted. If omitted, defaults to
+	// 10000; 0 means unlimited, and a negative value is rejected. On Redis the
+	// count is shared by every replica.
+	// Sizing: a client never used for a token exchange lives 24 hours, so a
+	// caller registering at the full rate keeps up to rate x replicas x 86400
+	// unused clients alive. At the default rate of 1/s that is about 86400 per
+	// replica: one replica fills the default cap in about 2.8 hours, and new
+	// registrations then get 503 for up to 24 hours after the traffic stops.
+	// A client promoted by a token exchange holds its slot for 30 days. Not
+	// yet settable through the operator CRD (#6864).
 	MaxDcrClients OptInt                   `json:"max_dcr_clients"`
 	RedisConfig   OptStorageRedisRunConfig `json:"redis_config"`
 	// Type specifies the storage backend type. Defaults to "memory".

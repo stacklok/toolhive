@@ -341,6 +341,8 @@ All keys use the prefix `thv:auth:{namespace:name}:` where `{namespace:name}` is
 | `{prefix}invalidated:{code}` | Replay detection for auth codes | 30 minutes |
 | `{prefix}jwt:{jti}` | Client assertion JWT replay prevention | Matches JWT `exp` |
 
+When upgrading to the release that adds the DCR client cap, see the upgrade notes in [Auth Server Storage](arch/11-auth-server-storage.md#dcr-client-cap): a deployment already holding more than `max_dcr_clients` (default 10,000) live DCR clients rejects new registrations until the count drains, so raise the cap or set it to `0` before upgrading. Backfilled rows keep their existing TTL of up to 30 days.
+
 The DCR client cap registers a client with one Lua script that touches both `{prefix}client:{client_id}` and `{prefix}client-idx`, so on Redis Cluster the key prefix must contain a `{...}` hash tag; a prefix without one fails every DCR registration with `CROSSSLOT`. The operator's `DeriveKeyPrefix` always includes one. `{prefix}client-idx` has no TTL, so under an `allkeys-lru` or `allkeys-random` `maxmemory-policy` Redis may evict it, which resets the cap count and the `toolhive_authserver_dcr_clients` gauge to zero until new registrations rebuild it or a restart reruns the backfill. Use `noeviction` or a `volatile-*` policy.
 
 ### Secondary Indexes

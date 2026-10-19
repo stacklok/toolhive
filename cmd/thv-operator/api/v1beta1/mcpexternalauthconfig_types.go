@@ -1229,6 +1229,16 @@ type EmbeddedAuthServerConfig struct {
 	// CIMD configures Client ID Metadata Document support. When omitted, CIMD is disabled.
 	// +optional
 	CIMD *EmbeddedAuthServerCIMDConfig `json:"cimd,omitempty"`
+
+	// RegistrationRateLimit bounds the unauthenticated /oauth/register
+	// endpoint with a token bucket: up to maxTokens registrations at once,
+	// refilled at maxTokens per refillPeriod. If omitted, defaults to 1
+	// registration per second with a burst of 5 (maxTokens 5, refillPeriod
+	// 5s). The limit is per replica, so the effective rate is the configured
+	// rate multiplied by the replica count. How many registered clients may
+	// exist at once is capped separately by storage.maxDCRClients.
+	// +optional
+	RegistrationRateLimit *RateLimitBucket `json:"registrationRateLimit,omitempty"`
 }
 
 // effectiveInboundGrants is the folded validation view of legacy and canonical
@@ -2086,6 +2096,24 @@ type AuthServerStorageConfig struct {
 	// Required when type is "redis".
 	// +optional
 	Redis *RedisStorageConfig `json:"redis,omitempty"`
+
+	// MaxDCRClients caps the number of live clients created by Dynamic Client
+	// Registration (/oauth/register). At the cap, registration fails with HTTP
+	// 503 until a client expires; no existing client is evicted. If omitted,
+	// defaults to 10000; 0 means unlimited. Operator-configured and CIMD
+	// clients are not counted. On Redis the count is shared by every replica;
+	// with memory storage each replica keeps its own count.
+	//
+	// A client never used for a token exchange lives 24 hours, so a caller
+	// registering at the full registrationRateLimit keeps up to
+	// rate x replicas x 86400 unused clients alive; at the default rate one
+	// replica fills the default cap in about 2.8 hours. A Redis deployment
+	// that already holds more live DCR clients than the cap rejects every new
+	// registration until enough expire, so raise this, or set it to 0, before
+	// upgrading such a deployment.
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	MaxDCRClients *int32 `json:"maxDCRClients,omitempty"`
 }
 
 // RedisStorageConfig configures Redis connection for auth server storage.

@@ -1466,8 +1466,8 @@ func (s *AuthenticationOIDCUpstreamRunConfigAdditionalTokenParams) init() Authen
 // registered clients may exist at once is Storage.MaxDCRClients; unused
 // clients live 24 hours, so a caller at the full rate keeps up to
 // rate x replicas x 86400 of them alive, which at the defaults exceeds the
-// default cap within about 2.8 hours. Not yet settable through the
-// operator CRD (#6864).
+// default cap within about 2.8 hours. The operator sets it from the
+// embedded auth server's registrationRateLimit.
 // Ref: #/components/schemas/AuthenticationRegistrationRateLimitRunConfig
 type AuthenticationRegistrationRateLimitRunConfig struct {
 	// Burst is the number of registrations admitted at once before the rate
@@ -20320,8 +20320,8 @@ type StorageRunConfig struct {
 	// unused clients alive. At the default rate of 1/s that is about 86400 per
 	// replica: one replica fills the default cap in about 2.8 hours, and new
 	// registrations then get 503 for up to 24 hours after the traffic stops.
-	// A client promoted by a token exchange holds its slot for 30 days. Not
-	// yet settable through the operator CRD (#6864).
+	// A client promoted by a token exchange holds its slot for 30 days. The
+	// operator sets it from the embedded auth server's storage.maxDCRClients.
 	MaxDcrClients OptInt                   `json:"max_dcr_clients"`
 	RedisConfig   OptStorageRedisRunConfig `json:"redis_config"`
 	// Type specifies the storage backend type. Defaults to "memory".

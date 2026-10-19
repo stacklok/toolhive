@@ -1035,6 +1035,12 @@ func BuildAuthServerRunConfig(
 	}
 	config.Storage = storageCfg
 
+	registrationRateLimit, err := buildRegistrationRateLimitRunConfig(authConfig.RegistrationRateLimit)
+	if err != nil {
+		return nil, err
+	}
+	config.RegistrationRateLimit = registrationRateLimit
+
 	applySimpleAuthServerConfigFields(config, authConfig)
 
 	if err := validateDelegateClientsAndTrustedIssuers(config); err != nil {
@@ -1150,8 +1156,15 @@ func buildStorageRunConfig(
 	mcpServerName string,
 	authConfig *mcpv1beta1.EmbeddedAuthServerConfig,
 ) (*storage.RunConfig, error) {
-	if authConfig.Storage == nil || authConfig.Storage.Type == mcpv1beta1.AuthServerStorageTypeMemory {
+	if authConfig.Storage == nil {
 		return nil, nil
+	}
+	maxDCRClients := maxDCRClientsRunConfig(authConfig.Storage)
+	if authConfig.Storage.Type == mcpv1beta1.AuthServerStorageTypeMemory {
+		if maxDCRClients == nil {
+			return nil, nil
+		}
+		return &storage.RunConfig{Type: string(storage.TypeMemory), MaxDCRClients: maxDCRClients}, nil
 	}
 
 	if authConfig.Storage.Type != mcpv1beta1.AuthServerStorageTypeRedis {
@@ -1212,9 +1225,43 @@ func buildStorageRunConfig(
 	}
 
 	return &storage.RunConfig{
-		Type:        string(storage.TypeRedis),
-		RedisConfig: rc,
+		Type:          string(storage.TypeRedis),
+		RedisConfig:   rc,
+		MaxDCRClients: maxDCRClients,
 	}, nil
+}
+
+// maxDCRClientsRunConfig converts the CRD's DCR client cap. Nil keeps the auth
+// server's default; the CRD schema already rejects a negative value.
+func maxDCRClientsRunConfig(cfg *mcpv1beta1.AuthServerStorageConfig) *int {
+	if cfg.MaxDCRClients == nil {
+		return nil
+	}
+	n := int(*cfg.MaxDCRClients)
+	return &n
+}
+
+// buildRegistrationRateLimitRunConfig converts the CRD's /oauth/register token
+// bucket to the auth server's rate and burst. Nil keeps the auth server's
+// default. maxTokens is the burst and maxTokens/refillPeriod the sustained
+// rate, as for the MCPServer rate limits.
+func buildRegistrationRateLimitRunConfig(
+	b *mcpv1beta1.RateLimitBucket,
+) (*authserver.RegistrationRateLimitRunConfig, error) {
+	if b == nil {
+		return nil, nil
+	}
+	if b.RefillPeriod.Duration <= 0 {
+		return nil, fmt.Errorf("registrationRateLimit.refillPeriod must be positive, got %s", b.RefillPeriod.Duration)
+	}
+	rc := &authserver.RegistrationRateLimitRunConfig{
+		RequestsPerSecond: float64(b.MaxTokens) / b.RefillPeriod.Seconds(),
+		Burst:             int(b.MaxTokens),
+	}
+	if err := rc.Validate(); err != nil {
+		return nil, err
+	}
+	return rc, nil
 }
 
 // convertRedisTLSConfig converts CRD RedisTLSConfig to RunConfig.

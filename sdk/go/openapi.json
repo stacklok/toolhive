@@ -514,7 +514,7 @@
         "type": "object"
       },
       "AuthenticationRegistrationRateLimitRunConfig": {
-        "description": "RegistrationRateLimit bounds the unauthenticated /oauth/register\nendpoint. If omitted, defaults to 1 registration per second with a\nburst of 5. The limiter is per process, so the effective rate is the\nconfigured rate multiplied by the replica count. The cap on how many\nregistered clients may exist at once is Storage.MaxDCRClients; unused\nclients live 24 hours, so a caller at the full rate keeps up to\nrate x replicas x 86400 of them alive, which at the defaults exceeds the\ndefault cap within about 2.8 hours. Not yet settable through the\noperator CRD (#6864).",
+        "description": "RegistrationRateLimit bounds the unauthenticated /oauth/register\nendpoint. If omitted, defaults to 1 registration per second with a\nburst of 5. The limiter is per process, so the effective rate is the\nconfigured rate multiplied by the replica count. The cap on how many\nregistered clients may exist at once is Storage.MaxDCRClients; unused\nclients live 24 hours, so a caller at the full rate keeps up to\nrate x replicas x 86400 of them alive, which at the defaults exceeds the\ndefault cap within about 2.8 hours. The operator sets it from the\nembedded auth server's registrationRateLimit.",
         "properties": {
           "burst": {
             "description": "Burst is the number of registrations admitted at once before the rate\napplies. Must be positive.",
@@ -4866,7 +4866,7 @@
         "description": "Storage configures the storage backend for the auth server.\nIf nil, defaults to in-memory storage.",
         "properties": {
           "max_dcr_clients": {
-            "description": "MaxDCRClients caps the number of live clients created by\n/oauth/register. At the cap, registration fails with HTTP 503 until a\nclient expires; no existing client is evicted. If omitted, defaults to\n10000; 0 means unlimited, and a negative value is rejected. On Redis the\ncount is shared by every replica.\n\nSizing: a client never used for a token exchange lives 24 hours, so a\ncaller registering at the full rate keeps up to rate x replicas x 86400\nunused clients alive. At the default rate of 1/s that is about 86400 per\nreplica: one replica fills the default cap in about 2.8 hours, and new\nregistrations then get 503 for up to 24 hours after the traffic stops.\nA client promoted by a token exchange holds its slot for 30 days. Not\nyet settable through the operator CRD (#6864).",
+            "description": "MaxDCRClients caps the number of live clients created by\n/oauth/register. At the cap, registration fails with HTTP 503 until a\nclient expires; no existing client is evicted. If omitted, defaults to\n10000; 0 means unlimited, and a negative value is rejected. On Redis the\ncount is shared by every replica.\n\nSizing: a client never used for a token exchange lives 24 hours, so a\ncaller registering at the full rate keeps up to rate x replicas x 86400\nunused clients alive. At the default rate of 1/s that is about 86400 per\nreplica: one replica fills the default cap in about 2.8 hours, and new\nregistrations then get 503 for up to 24 hours after the traffic stops.\nA client promoted by a token exchange holds its slot for 30 days. The\noperator sets it from the embedded auth server's storage.maxDCRClients.",
             "type": "integer"
           },
           "redis_config": {

@@ -286,8 +286,8 @@ type RunConfig struct {
 	// registered clients may exist at once is Storage.MaxDCRClients; unused
 	// clients live 24 hours, so a caller at the full rate keeps up to
 	// rate x replicas x 86400 of them alive, which at the defaults exceeds the
-	// default cap within about 2.8 hours. Not yet settable through the
-	// operator CRD (#6864).
+	// default cap within about 2.8 hours. The operator sets it from the
+	// embedded auth server's registrationRateLimit.
 	//nolint:lll // field tags require full JSON+YAML names
 	RegistrationRateLimit *RegistrationRateLimitRunConfig `json:"registration_rate_limit,omitempty" yaml:"registration_rate_limit,omitempty"`
 }

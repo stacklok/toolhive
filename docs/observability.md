@@ -513,7 +513,8 @@ Every rejection is a client that could not register, and new registrations
 keep failing until enough counted clients expire. The configured cap is not
 exported as a metric yet, so you cannot alert on the gauge approaching the cap
 before rejections start; compare `toolhive_authserver_dcr_clients` against your
-`storage.max_dcr_clients` value (default 10,000) instead.
+`storage.max_dcr_clients` value (`storage.maxDCRClients` in the operator
+CRD; default 10,000) instead.
 
 Without telemetry, the auth server logs the cap at WARN, at most once every
 15 minutes, as `DCR client cap reached; rejecting new client registrations`,

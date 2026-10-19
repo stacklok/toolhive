@@ -4,9 +4,12 @@
 package docker
 
 import (
+	"archive/tar"
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/netip"
 	"testing"
 
@@ -526,7 +529,7 @@ func TestDeployWorkload_UnsupportedTransport_PropagatesError(t *testing.T) {
 }
 
 // TestDeployWorkload_IsolatedGatewaySnapshotAndProxyOrdering locks in the ordering
-// contract: gateway discovery runs once after network creation and before sidecars;
+// contract: gateway discovery runs once after DNS startup and before proxy setup;
 // egress is provisioned BEFORE the MCP container (so proxy env vars are injected), and ingress is provisioned AFTER it. Creating the ingress before the
 // MCP container caused the squid reverse proxy to cache a negative DNS lookup for
 // the not-yet-existent upstream and never recover, leaving the workload stuck.
@@ -570,8 +573,8 @@ func TestDeployWorkload_IsolatedGatewaySnapshotAndProxyOrdering(t *testing.T) {
 	require.Equal(t, []netip.Addr{internalGateway}, fproxy.capturedSpec.GatewayIPs,
 		"the post-create gateway snapshot must reach generated proxy policy")
 
-	require.Equal(t, []string{"createExternalNetworks", "createNetwork", "discoverBridgeGateways", "createDnsContainer", "SetupEgress", "createMcpContainer", "SetupIngress"}, callOrder,
-		"gateway discovery must snapshot after network creation and before sidecar setup")
+	require.Equal(t, []string{"createExternalNetworks", "createNetwork", "createDnsContainer", "discoverBridgeGateways", "SetupEgress", "createMcpContainer", "SetupIngress"}, callOrder,
+		"gateway discovery must snapshot after DNS startup and before proxy setup")
 }
 
 func TestDeployWorkload_GatewayDiscoveryFailsClosed(t *testing.T) {
@@ -586,23 +589,72 @@ func TestDeployWorkload_GatewayDiscoveryFailsClosed(t *testing.T) {
 		&permissions.Profile{}, "stdio", runtime.NewDeployWorkloadOptions(), true,
 	)
 	require.ErrorContains(t, err, "failed to discover Docker bridge gateways")
-	assert.False(t, fops.dnsCalled)
+	assert.True(t, fops.dnsCalled)
 	assert.False(t, fproxy.setupCalled)
 	assert.False(t, fops.mcpCalled)
 }
 
-func TestDeployWorkload_PropagatesGatewaySet(t *testing.T) {
+func TestDeployWorkload_PodmanHostDiscovery(t *testing.T) {
 	t.Parallel()
-
-	gateways := []netip.Addr{netip.MustParseAddr("10.0.0.1"), netip.MustParseAddr("2001:db8::1")}
-	fops := &fakeDeployOps{gatewayIPs: gateways}
-	fproxy := &fakeNetworkProxy{}
-	client := newClientWithOpsAndProxy(fops, fproxy)
-
-	_, err := client.DeployWorkload(
-		t.Context(), "image", "app", nil, nil, map[string]string{},
-		&permissions.Profile{}, "stdio", runtime.NewDeployWorkloadOptions(), true,
-	)
-	require.NoError(t, err)
-	require.Equal(t, gateways, fproxy.capturedSpec.GatewayIPs)
+	for _, allow := range []bool{false, true} {
+		for _, tt := range []struct {
+			name       string
+			hosts      string
+			dnsErr     error
+			gatewayErr error
+			status     int
+			wantErr    string
+		}{
+			{name: "sorted union", hosts: "::ffff:192.0.2.9 host.containers.internal host.docker.internal\n" +
+				"10.0.0.1 gateway.docker.internal\n", status: http.StatusOK},
+			{name: "DNS startup failure", dnsErr: errors.New("start failed"), wantErr: "failed to create dns container"},
+			{name: "gateway failure", gatewayErr: errors.New("list failed"), wantErr: "failed to discover Docker bridge gateways"},
+			{name: "missing aliases", hosts: "127.0.0.1 localhost\n", status: http.StatusOK, wantErr: "hosts missing host.containers.internal"},
+			{name: "archive failure", status: http.StatusInternalServerError, wantErr: "read running DNS hosts"},
+		} {
+			t.Run(fmt.Sprintf("%s/allow=%t", tt.name, allow), func(t *testing.T) {
+				t.Parallel()
+				var order []string
+				gateways := []netip.Addr{netip.MustParseAddr("2001:db8::1"), netip.MustParseAddr("10.0.0.1")}
+				ops := &fakeDeployOps{dnsID: "running-dns", dnsIP: "10.0.0.2", gatewayIPs: gateways,
+					errDNS: tt.dnsErr, errGateways: tt.gatewayErr, callOrder: &order}
+				proxy := &fakeNetworkProxy{callOrder: &order}
+				client := newClientWithOpsAndProxy(ops, proxy)
+				client.runtimeType = runtime.TypePodman
+				data := hostsArchive(t, "hosts", tt.hosts, tar.TypeReg)
+				client.hostAPI = discoveryHTTPClient(t, func(w http.ResponseWriter, r *http.Request) {
+					assert.Equal(t, "/v1.44/containers/running-dns/archive", r.URL.Path)
+					assert.Equal(t, "/etc/hosts", r.URL.Query().Get("path"))
+					assert.Equal(t, []string{"createExternalNetworks", "createNetwork", "createDnsContainer", "discoverBridgeGateways"}, order)
+					order = append(order, "archive")
+					w.Header().Set("X-Docker-Container-Path-Stat", base64.StdEncoding.EncodeToString([]byte(`{"name":"hosts"}`)))
+					w.WriteHeader(tt.status)
+					_, err := w.Write(data)
+					assert.NoError(t, err)
+				})
+				options := runtime.NewDeployWorkloadOptions()
+				options.AllowDockerGateway = allow
+				options.ExposedPorts = map[string]struct{}{"8080/tcp": {}}
+				options.PortBindings = map[string][]runtime.PortBinding{"8080/tcp": {{HostIP: "127.0.0.1", HostPort: ""}}}
+				_, err := client.DeployWorkload(t.Context(), "image", "app", nil, nil, map[string]string{},
+					&permissions.Profile{}, "sse", options, true)
+				if tt.wantErr != "" {
+					require.ErrorContains(t, err, tt.wantErr)
+					assert.False(t, ops.mcpCalled)
+					assert.False(t, proxy.setupCalled)
+					assert.False(t, proxy.ingressCalled)
+					return
+				}
+				require.NoError(t, err)
+				require.Equal(t, []string{"createExternalNetworks", "createNetwork", "createDnsContainer", "discoverBridgeGateways",
+					"archive", "SetupEgress", "createMcpContainer", "SetupIngress"}, order)
+				require.Equal(t, []netip.Addr{netip.MustParseAddr("10.0.0.1"), netip.MustParseAddr("192.0.2.9"),
+					netip.MustParseAddr("2001:db8::1")}, proxy.capturedSpec.GatewayIPs)
+				require.Equal(t, allow, proxy.capturedSpec.AllowDockerGateway)
+				require.Equal(t, "10.0.0.2", ops.mcpAdditionalDNS)
+				require.Equal(t, []netip.Addr{netip.MustParseAddr("2001:db8::1"), netip.MustParseAddr("10.0.0.1")}, gateways,
+					"discovery must not mutate the caller's gateway slice")
+			})
+		}
+	}
 }

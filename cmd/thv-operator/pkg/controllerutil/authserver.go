@@ -1251,6 +1251,7 @@ func buildRegistrationRateLimitRunConfig(
 	if b == nil {
 		return nil, nil
 	}
+	// Mirrors the CRD's CEL rule, for objects admitted before it existed.
 	if b.RefillPeriod.Duration <= 0 {
 		return nil, fmt.Errorf("registrationRateLimit.refillPeriod must be positive, got %s", b.RefillPeriod.Duration)
 	}

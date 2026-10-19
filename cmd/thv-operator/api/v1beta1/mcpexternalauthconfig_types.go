@@ -1237,6 +1237,7 @@ type EmbeddedAuthServerConfig struct {
 	// 5s). The limit is per replica, so the effective rate is the configured
 	// rate multiplied by the replica count. How many registered clients may
 	// exist at once is capped separately by storage.maxDCRClients.
+	// +kubebuilder:validation:XValidation:rule="duration(self.refillPeriod) > duration('0s')",message="registrationRateLimit.refillPeriod must be positive"
 	// +optional
 	RegistrationRateLimit *RateLimitBucket `json:"registrationRateLimit,omitempty"`
 }

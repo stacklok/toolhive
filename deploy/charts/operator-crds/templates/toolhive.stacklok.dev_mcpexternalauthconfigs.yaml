@@ -893,6 +893,9 @@ spec:
                     - maxTokens
                     - refillPeriod
                     type: object
+                    x-kubernetes-validations:
+                    - message: registrationRateLimit.refillPeriod must be positive
+                      rule: duration(self.refillPeriod) > duration('0s')
                   signingKeySecretRefs:
                     description: |-
                       SigningKeySecretRefs references Kubernetes Secrets containing signing keys for JWT operations.
@@ -3882,6 +3885,9 @@ spec:
                     - maxTokens
                     - refillPeriod
                     type: object
+                    x-kubernetes-validations:
+                    - message: registrationRateLimit.refillPeriod must be positive
+                      rule: duration(self.refillPeriod) > duration('0s')
                   signingKeySecretRefs:
                     description: |-
                       SigningKeySecretRefs references Kubernetes Secrets containing signing keys for JWT operations.

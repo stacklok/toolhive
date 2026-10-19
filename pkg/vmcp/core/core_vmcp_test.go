@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -688,7 +689,7 @@ func TestLookupResource_TemplateBackedURI(t *testing.T) {
 	t.Parallel()
 	cfg, m := baseConfig(t)
 
-	m.reg.EXPECT().List(gomock.Any()).Return(nil).Times(6)
+	m.reg.EXPECT().List(gomock.Any()).Return(nil).Times(10)
 	m.agg.EXPECT().AggregateCapabilities(gomock.Any(), gomock.Any()).Return(&aggregator.AggregatedCapabilities{
 		Resources: []vmcp.Resource{{URI: "file://a", BackendID: "be1"}},
 		ResourceTemplates: []vmcp.ResourceTemplate{
@@ -700,7 +701,7 @@ func TestLookupResource_TemplateBackedURI(t *testing.T) {
 				BackendID:   "be1",
 			},
 		},
-	}, nil).Times(6)
+	}, nil).Times(10)
 
 	c, err := New(cfg)
 	require.NoError(t, err)
@@ -721,6 +722,20 @@ func TestLookupResource_TemplateBackedURI(t *testing.T) {
 	// A URI matching no concrete resource or template still misses.
 	_, err = c.LookupResource(ctx, nil, "db:///users/42")
 	assert.ErrorIs(t, err, vmcp.ErrNotFound)
+
+	// A URI at the length cap still matches; one byte over is never
+	// template-matched (it would match otherwise) and is not echoed back.
+	atCap := "file:///logs/" + strings.Repeat("a", vmcp.MaxResourceURILength-len("file:///logs/.txt")) + ".txt"
+	require.Len(t, atCap, vmcp.MaxResourceURILength)
+	res, err = c.LookupResource(ctx, nil, atCap)
+	require.NoError(t, err)
+	assert.Equal(t, "be1", res.BackendID)
+
+	over := strings.TrimSuffix(atCap, ".txt") + "a.txt"
+	require.Len(t, over, vmcp.MaxResourceURILength+1)
+	_, err = c.LookupResource(ctx, nil, over)
+	require.ErrorIs(t, err, vmcp.ErrNotFound)
+	assert.Less(t, len(err.Error()), 256, "oversize URI must not be echoed in the error")
 }
 
 func TestClose_Idempotent(t *testing.T) {

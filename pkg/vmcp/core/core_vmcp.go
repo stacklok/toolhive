@@ -433,12 +433,17 @@ func (c *coreVMCP) LookupTool(ctx context.Context, identity *auth.Identity, name
 // reading it. Delegates to ListResources, so a URI that is unknown, unadvertised,
 // or denied to identity returns vmcp.ErrNotFound.
 //
-// A URI backed by a resource TEMPLATE resolves too: after the concrete-resource
-// miss, the URI is checked against the admission-filtered resource templates
-// (the same view ListResourceTemplates advertises) — an exact template-string
-// match (the form a resources/subscribe or completion ref/resource carries) or
-// a template-expansion match. This keeps subscribe's admission aligned with
-// read: any URI ReadResource would serve is a valid subscription target.
+// A URI backed by a resource TEMPLATE resolves too. Resolution order is:
+//
+//  1. Exact match against the advertised concrete resources.
+//  2. Exact template-string match (the form a resources/subscribe or completion
+//     ref/resource carries).
+//  3. Reject a URI over MaxResourceURILength without matching or echoing it.
+//  4. Match a concrete URI against an admission-filtered template expansion.
+//
+// The templates are the same view ListResourceTemplates advertises, keeping
+// subscribe's admission aligned with read: any URI ReadResource would serve is a
+// valid subscription target.
 func (c *coreVMCP) LookupResource(ctx context.Context, identity *auth.Identity, uri string) (*vmcp.Resource, error) {
 	resources, err := c.ListResources(ctx, identity)
 	if err != nil {
@@ -455,8 +460,30 @@ func (c *coreVMCP) LookupResource(ctx context.Context, identity *auth.Identity, 
 	if err != nil {
 		return nil, err
 	}
+	// Exact template-string matches precede the cap check because clients can
+	// subscribe to or reference the advertised template itself.
 	for i := range templates {
-		if templates[i].URITemplate == uri || templateMatches(templates[i].URITemplate, uri) {
+		if templates[i].URITemplate == uri {
+			return &vmcp.Resource{
+				URI:         templates[i].URITemplate,
+				Name:        templates[i].Name,
+				Description: templates[i].Description,
+				MimeType:    templates[i].MimeType,
+				BackendID:   templates[i].BackendID,
+			}, nil
+		}
+	}
+
+	// Template matching is superlinear in URI length and uncancellable, so an
+	// oversize client URI is rejected before matching. Log the length, never the URI.
+	if len(uri) > vmcp.MaxResourceURILength {
+		slog.Warn("skipping template matching for resource URI over length cap",
+			"length", len(uri), "max", vmcp.MaxResourceURILength)
+		return nil, fmt.Errorf("%w: resource URI exceeds %d bytes", vmcp.ErrNotFound, vmcp.MaxResourceURILength)
+	}
+
+	for i := range templates {
+		if templateMatches(templates[i].URITemplate, uri) {
 			// Project the template onto a resource (the same projection
 			// filterResourceTemplates uses) so lookup and list agree on the shape.
 			return &vmcp.Resource{
@@ -476,6 +503,9 @@ func (c *coreVMCP) LookupResource(ctx context.Context, identity *auth.Identity, 
 // invalid template string reports no match (it was already logged and skipped
 // at routing-table construction).
 func templateMatches(tmplStr, uri string) bool {
+	if len(uri) > vmcp.MaxResourceURILength {
+		return false
+	}
 	tmpl, err := uritemplate.New(tmplStr)
 	if err != nil {
 		return false

@@ -228,6 +228,7 @@ for session affinity design details.
 | Limit | Value | Source | Tunable? |
 | ----- | ----- | ------ | -------- |
 | Per-pod session cache | 1,000 sessions | `sessionmanager/factory.go:defaultCacheCapacity` | No (internal field) |
+| Resource URI template-match cap | 2048 bytes | vmcp/types.go:MaxResourceURILength | No |
 | vMCP session TTL | 30 minutes | `vmcp/server/server.go:defaultSessionTTL` | Via `server.Config.SessionTTL` (not CRD-exposed) |
 | MCPServer proxy session TTL | 2 hours | `transport/session/proxy_session.go:DefaultSessionTTL` | No |
 | Redis dial timeout | 5 s | `toolhive-core/redis/config.go:DefaultDialTimeout` | Via `tcredis.Config.DialTimeout` |

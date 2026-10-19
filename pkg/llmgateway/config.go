@@ -138,12 +138,13 @@ type ApplyConfig struct {
 	// BedrockCompat and the per-tier Bedrock model IDs configure Claude Code for a
 	// gateway that forwards to AWS Bedrock. When BedrockCompat is true, Claude Code
 	// is configured with CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1 (Bedrock rejects
-	// the experimental anthropic-beta headers) and the three per-tier model IDs.
-	// The caller (pkg/llm) resolves defaults, tier mapping, and the optional "[1m]"
-	// suffix; pkg/client only writes the resolved values. All are empty/false for
-	// non-Bedrock setups.
+	// the experimental anthropic-beta headers) and the per-tier model IDs.
+	// The caller (pkg/llm) resolves tier selection and the optional "[1m]"
+	// suffix; pkg/client only writes the resolved values. An empty tier is left
+	// unpinned. All are empty/false for non-Bedrock setups.
 	BedrockCompat      bool
 	BedrockHaikuModel  string
 	BedrockOpusModel   string
 	BedrockSonnetModel string
+	BedrockFableModel  string
 }

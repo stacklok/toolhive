@@ -1,6 +1,6 @@
 module github.com/stacklok/toolhive
 
-go 1.27.0
+go 1.27
 
 require (
 	cel.dev/cel-go v0.32.0
@@ -67,7 +67,7 @@ require (
 	github.com/spf13/pflag v1.0.10
 	github.com/spf13/viper v1.21.0
 	github.com/spiffe/go-spiffe/v2 v2.9.0
-	github.com/stacklok/toolhive-catalog v0.20261013.0
+	github.com/stacklok/toolhive-catalog v0.20261019.0
 	github.com/stacklok/toolhive-core v0.0.55
 	github.com/stacklok/toolhive-core/redisconn v0.0.4
 	github.com/stretchr/testify v1.12.1

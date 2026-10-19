@@ -237,10 +237,13 @@ var _ = Describe("Audit Middleware E2E", Label("middleware", "audit", "streamabl
 
 	Context("when audit middleware is configured to exclude certain events", func() {
 		BeforeEach(func() {
-			// Create audit config that excludes ping events
+			// Exclude tools/list rather than ping: ping was removed in MCP
+			// 2026-07-28, which the OSV test server now negotiates, so a ping
+			// is rejected by the proxy before it reaches the audit middleware
+			// (#6064). tools/list is valid in every protocol revision.
 			auditConfig := &audit.Config{
 				Component:         "exclude-audit-test",
-				ExcludeEventTypes: []string{audit.EventTypeMCPPing},
+				ExcludeEventTypes: []string{audit.EventTypeMCPToolsList},
 				LogFile:           auditLogFile,
 			}
 
@@ -251,23 +254,16 @@ var _ = Describe("Audit Middleware E2E", Label("middleware", "audit", "streamabl
 			By("Starting MCP server with exclude audit config")
 			serverURL := startMCPServerWithAuditConfig(config, workloadName, mcpServerName, auditConfigFile)
 
-			By("Making tools/list request (should be audited)")
+			By("Making tools/list request (should be excluded from audit)")
 			toolsRequest := map[string]any{
 				"jsonrpc": "2.0",
 				"id":      "exclude-tools",
 				"method":  "tools/list",
 			}
 
+			// makeHTTPMCPRequest initializes the session first, so this
+			// produces one audited initialize and one excluded tools/list.
 			makeHTTPMCPRequest(serverURL, toolsRequest)
-
-			By("Making ping request (should be excluded from audit)")
-			pingRequest := map[string]any{
-				"jsonrpc": "2.0",
-				"id":      "exclude-ping",
-				"method":  "ping",
-			}
-
-			makeHTTPMCPRequest(serverURL, pingRequest)
 
 			// Wait for audit events
 			time.Sleep(3 * time.Second)
@@ -275,12 +271,12 @@ var _ = Describe("Audit Middleware E2E", Label("middleware", "audit", "streamabl
 			By("Verifying exclusion works correctly")
 			auditContent := readAuditLogFile(auditLogFile)
 
-			// Should contain some audit events (but not ping events since they're excluded)
+			// The initialize that makeHTTPMCPRequest performs is still audited
 			Expect(auditContent).To(ContainSubstring("exclude-audit-test"))
+			Expect(auditContent).To(ContainSubstring(audit.EventTypeMCPInitialize))
 
-			// Should NOT contain mcp_ping events (excluded)
-			// Note: The audit system logs actual event types, not JSON-RPC request IDs
-			Expect(auditContent).ToNot(BeEmpty())
+			// The excluded tools/list event type must not appear
+			Expect(auditContent).ToNot(ContainSubstring(audit.EventTypeMCPToolsList))
 		})
 	})
 
@@ -478,10 +474,6 @@ func makeHTTPMCPRequest(serverURL string, request map[string]any) {
 		result, err := mcpClient.ListTools(ctx)
 		Expect(err).ToNot(HaveOccurred())
 		GinkgoWriter.Printf("MCP tools/list result: %d tools\n", len(result.Tools))
-	case "ping":
-		err := mcpClient.Ping(ctx)
-		Expect(err).ToNot(HaveOccurred())
-		GinkgoWriter.Printf("MCP ping completed\n")
 	default:
 		Fail(fmt.Sprintf("Unsupported MCP method: %s", method))
 	}

@@ -628,6 +628,58 @@ func TestMemoryStorage_RegisterClient_CapIgnoresUncountedClients(t *testing.T) {
 	}
 }
 
+// TestMemoryStorage_UpsertDCRIssuedClient_CIMDCap pins the separate cap on
+// CIMD rows: a new row past it is refused without touching existing rows,
+// replacing an existing row still succeeds, and the cap frees on expiry.
+func TestMemoryStorage_UpsertDCRIssuedClient_CIMDCap(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	clock := newManualClock()
+	s := NewMemoryStorage(withMaxCIMDClients(2), withClientClock(clock.Now))
+	t.Cleanup(func() { _ = s.Close() })
+
+	require.NoError(t, s.UpsertDCRIssuedClient(ctx, dcrClient(t, "https://cimd.example/a.json")))
+	clock.Advance(time.Hour)
+	require.NoError(t, s.UpsertDCRIssuedClient(ctx, dcrClient(t, "https://cimd.example/b.json")))
+
+	err := s.UpsertDCRIssuedClient(ctx, dcrClient(t, "https://cimd.example/c.json"))
+	var capErr *ClientCapacityError
+	require.ErrorAs(t, err, &capErr)
+	assert.Equal(t, DefaultDCRClientTTL-time.Hour, capErr.RetryAfter)
+	_, err = s.GetClient(ctx, "https://cimd.example/c.json")
+	requireNotFoundError(t, err)
+
+	require.NoError(t, s.UpsertDCRIssuedClient(ctx, dcrClient(t, "https://cimd.example/a.json")),
+		"replacing an existing CIMD row is allowed at the cap")
+	require.NoError(t, s.RegisterClient(ctx, dcrClient(t, "dcr-1")),
+		"the CIMD cap does not limit DCR registrations")
+
+	clock.Advance(DefaultDCRClientTTL)
+	require.NoError(t, s.UpsertDCRIssuedClient(ctx, dcrClient(t, "https://cimd.example/c.json")),
+		"expired CIMD rows free the cap")
+}
+
+// TestMemoryStorage_RenewClientTTL_CIMD pins that renewing a CIMD row moves
+// its expiry without counting it against the DCR cap.
+func TestMemoryStorage_RenewClientTTL_CIMD(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	s, clock := newClockedMemoryStorage(t, 10)
+	client := dcrClient(t, "https://cimd.example/client.json")
+	require.NoError(t, s.UpsertDCRIssuedClient(ctx, client))
+
+	clock.Advance(DefaultDCRClientTTL - time.Minute)
+	require.NoError(t, s.RenewClientTTL(ctx, client))
+	clock.Advance(time.Hour)
+	_, err := s.GetClient(ctx, client.GetID())
+	require.NoError(t, err, "renewal must extend the CIMD row")
+	count, err := s.CountDCRClients(ctx)
+	require.NoError(t, err)
+	assert.Zero(t, count)
+}
+
 // TestMemoryStorage_RegisterClient_CapFreesOnExpiry pins that a full map
 // drains on its own: once the oldest client's TTL passes, a registration at
 // the cap succeeds.
@@ -752,7 +804,7 @@ func TestMemoryStorage_ClientExpiry(t *testing.T) {
 		s.mu.RLock()
 		defer s.mu.RUnlock()
 		assert.NotContains(t, s.clients, "expiring")
-		assert.NotContains(t, s.clientExpiry, "expiring")
+		assert.NotContains(t, s.dcrClientExpiry, "expiring")
 		assert.Contains(t, s.clients, "permanent")
 	})
 }

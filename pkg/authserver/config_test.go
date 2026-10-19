@@ -2168,6 +2168,11 @@ func TestRunConfigValidateDCRRegistrationLimits(t *testing.T) {
 			wantErrMsg: "requests_per_second must be a positive number",
 		},
 		{
+			name:       "NaN rate rejected",
+			config:     RunConfig{RegistrationRateLimit: &RegistrationRateLimitRunConfig{RequestsPerSecond: math.NaN(), Burst: 2}},
+			wantErrMsg: "requests_per_second must be a positive number",
+		},
+		{
 			name:       "zero burst rejected",
 			config:     RunConfig{RegistrationRateLimit: &RegistrationRateLimitRunConfig{RequestsPerSecond: 1}},
 			wantErrMsg: "burst must be positive",

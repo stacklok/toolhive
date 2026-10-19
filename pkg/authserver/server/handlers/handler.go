@@ -304,9 +304,8 @@ func NewHandler(
 	for _, o := range opts {
 		o(h)
 	}
-	if h.registerLimiter.Limit() <= 0 || h.registerLimiter.Burst() <= 0 {
-		return nil, fmt.Errorf("handlers: register rate limit must have a positive rate and burst, got %v/s burst %d",
-			h.registerLimiter.Limit(), h.registerLimiter.Burst())
+	if err := validateRegisterLimiter(h.registerLimiter); err != nil {
+		return nil, err
 	}
 	metrics, err := newDCRMetrics(h.meterProvider, stor)
 	if err != nil {
@@ -384,9 +383,23 @@ func (h *Handler) rateLimitRegister(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+// validateRegisterLimiter rejects a register limiter without a finite
+// positive rate and a positive burst. rate.Inf (math.MaxFloat64, not +Inf)
+// would silently disable limiting, and NaN passes a plain <= 0 check.
+func validateRegisterLimiter(l *rate.Limiter) error {
+	lim := float64(l.Limit())
+	if math.IsNaN(lim) || math.IsInf(lim, 0) || l.Limit() == rate.Inf || lim <= 0 || l.Burst() <= 0 {
+		return fmt.Errorf("handlers: register rate limit must have a finite positive rate and positive burst, got %v/s burst %d",
+			l.Limit(), l.Burst())
+	}
+	return nil
+}
+
 // limiterRetryAfterSeconds returns the Retry-After value for a request l
-// refused: the seconds until l refills one token, rounded up and at least 1.
-// A rate below 1/s therefore advertises a wait longer than a second, so a
+// refused: 1/rate seconds, the longest the limiter can take to refill one
+// token, rounded up and at least 1. A partly refilled bucket frees a token
+// sooner, so this is an upper bound. A rate below 1/s therefore advertises a
+// wait longer than a second, so a
 // client honouring the header does not retry into further 429s. The result
 // is clamped to math.MaxInt32 so a vanishingly small rate cannot overflow int.
 func limiterRetryAfterSeconds(l *rate.Limiter) int {

@@ -29,6 +29,11 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 )
 
+// defaultMaxMemoryCIMDClients caps the live CIMD rows MemoryStorage keeps.
+// Each distinct client metadata document URL is one row, so real deployments
+// sit far below it.
+const defaultMaxMemoryCIMDClients = 10000
+
 // timedEntry wraps a value with its creation time for TTL tracking.
 type timedEntry[T any] struct {
 	value     T
@@ -76,12 +81,15 @@ type MemoryStorage struct {
 	// marker is needed here.
 	clients map[string]fosite.Client
 
-	// clientExpiry holds the expiry of every client in clients that carries
-	// the registration.DCRIssued marker (CIMD rows included), mirroring the
-	// key TTL RedisStorage gives the same rows. A client with no entry here
-	// never expires. Every read treats an expired client as absent, and
+	// dcrClientExpiry holds the expiry of every client in clients counted by
+	// countsTowardDCRCap, and cimdClientExpiry that of every other client
+	// carrying the registration.DCRIssued marker (the CIMD rows), mirroring
+	// the key TTL RedisStorage gives the same rows. They are split so each
+	// cap walks only the clients it bounds. A client in neither never
+	// expires. Every read treats an expired client as absent, and
 	// cleanupExpired removes it.
-	clientExpiry map[string]time.Time
+	dcrClientExpiry  map[string]time.Time
+	cimdClientExpiry map[string]time.Time
 
 	// maxDCRClients caps the live clients counted by countsTowardDCRCap; zero
 	// means unlimited. /oauth/register is unauthenticated and every call
@@ -91,6 +99,15 @@ type MemoryStorage struct {
 	// registering at the full rate push out every idle real client. A full
 	// map drains as entries expire.
 	maxDCRClients int
+
+	// maxCIMDClients caps the live CIMD rows UpsertDCRIssuedClient writes.
+	// Unauthenticated /oauth/authorize traffic mints them, bounded otherwise
+	// only by the per-process CIMD rate limit and their 30-day TTL. At the cap
+	// a new row is refused with a *ClientCapacityError. The CIMD decorator's
+	// write-through is best-effort, and this backend keeps sessions as Go
+	// values rather than rehydrating their client from the row, so a refused
+	// row costs at most a document refetch. RedisStorage has no such cap.
+	maxCIMDClients int
 
 	// now returns the current time for client expiry.
 	now func() time.Time
@@ -162,7 +179,7 @@ type MemoryStorage struct {
 	// acting as a DCR client to register itself against a configured upstream
 	// IdP (see pkg/auth/dcr/store.go, the only caller of StoreDCRCredentialsIfAbsent).
 	// This is not reachable from the inbound, unauthenticated /oauth/register
-	// handler, so unlike clients (bounded by maxDCRClients and clientExpiry because
+	// handler, so unlike clients (bounded by maxDCRClients and the client expiry maps because
 	// every inbound registration call mints an entry), growth here is bounded
 	// by the number of configured upstreams, which the operator controls, not
 	// by request volume — hence no eviction or cap on this map.
@@ -214,6 +231,14 @@ func WithMaxDCRClients(n int) MemoryStorageOption {
 	}
 }
 
+// withMaxCIMDClients overrides defaultMaxMemoryCIMDClients, so tests can
+// reach the CIMD cap.
+func withMaxCIMDClients(n int) MemoryStorageOption {
+	return func(s *MemoryStorage) {
+		s.maxCIMDClients = n
+	}
+}
+
 // withClientClock sets the clock used for client expiry, so tests can move
 // past a TTL without sleeping.
 func withClientClock(now func() time.Time) MemoryStorageOption {
@@ -246,8 +271,10 @@ func NewMemoryStorage(opts ...MemoryStorageOption) *MemoryStorage {
 		providerIdentities:         make(map[string]*ProviderIdentity),
 		dcrCredentials:             make(map[DCRKey]*DCRCredentials),
 		cleanupInterval:            DefaultCleanupInterval,
-		clientExpiry:               make(map[string]time.Time),
+		dcrClientExpiry:            make(map[string]time.Time),
+		cimdClientExpiry:           make(map[string]time.Time),
 		maxDCRClients:              DefaultMaxDCRClients,
+		maxCIMDClients:             defaultMaxMemoryCIMDClients,
 		now:                        time.Now,
 		stopCleanup:                make(chan struct{}),
 		cleanupDone:                make(chan struct{}),
@@ -405,10 +432,13 @@ func (s *MemoryStorage) cleanupExpired() {
 		}
 	}
 
+	clientNow := s.now()
 	var expiredClients []string
-	for k, v := range s.clientExpiry {
-		if !s.now().Before(v) {
-			expiredClients = append(expiredClients, k)
+	for _, expiry := range []map[string]time.Time{s.dcrClientExpiry, s.cimdClientExpiry} {
+		for k, v := range expiry {
+			if !clientNow.Before(v) {
+				expiredClients = append(expiredClients, k)
+			}
 		}
 	}
 
@@ -439,9 +469,10 @@ func (s *MemoryStorage) cleanupExpired() {
 
 	for _, k := range expiredClients {
 		// RenewClientTTL may have extended the client between the phases.
-		if exp, ok := s.clientExpiry[k]; ok && !s.now().Before(exp) {
+		if exp, ok := s.clientExpiryLocked(k); ok && !clientNow.Before(exp) {
 			delete(s.clients, k)
-			delete(s.clientExpiry, k)
+			delete(s.dcrClientExpiry, k)
+			delete(s.cimdClientExpiry, k)
 		}
 	}
 
@@ -588,12 +619,16 @@ func (s *MemoryStorage) RegisterClient(_ context.Context, client fosite.Client) 
 	if _, exists := s.liveClientLocked(id, now); exists {
 		return fmt.Errorf("%w: client %q", ErrAlreadyExists, id)
 	}
+	if !registration.DCRIssued(client) {
+		s.putPermanentClientLocked(id, client)
+		return nil
+	}
 	if s.maxDCRClients > 0 && countsTowardDCRCap(client) {
-		if count, oldestExpiry := s.countDCRClientsLocked(now); count >= s.maxDCRClients {
+		if count, oldestExpiry := countLiveLocked(s.dcrClientExpiry, now); count >= s.maxDCRClients {
 			return newClientCapacityError(oldestExpiry, now)
 		}
 	}
-	s.putClientLocked(id, client, now, DefaultUnusedDCRClientTTL)
+	s.putExpiringClientLocked(id, client, now.Add(DefaultUnusedDCRClientTTL))
 	return nil
 }
 
@@ -603,7 +638,9 @@ func (s *MemoryStorage) RegisterClient(_ context.Context, client fosite.Client) 
 // the existing row is itself DCR-issued; a configured/SPIFFE-reconciled row at
 // the same ID is protected and refuses with ErrAlreadyExists. See the
 // ClientRegistry interface doc for the full contract. A client counted
-// against the DCR cap is refused, so this path cannot bypass the cap.
+// against the DCR cap is refused, so this path cannot bypass the cap. A new
+// CIMD row beyond maxCIMDClients is refused with a *ClientCapacityError;
+// replacing an existing one always succeeds.
 func (s *MemoryStorage) UpsertDCRIssuedClient(_ context.Context, client fosite.Client) error {
 	if !registration.DCRIssued(client) {
 		return fmt.Errorf("client %q must carry the DCR-issued marker to use UpsertDCRIssuedClient", client.GetID())
@@ -620,10 +657,16 @@ func (s *MemoryStorage) UpsertDCRIssuedClient(_ context.Context, client fosite.C
 	defer s.mu.Unlock()
 
 	now := s.now()
-	if existing, exists := s.liveClientLocked(id, now); exists && !registration.DCRIssued(existing) {
+	existing, exists := s.liveClientLocked(id, now)
+	if exists && !registration.DCRIssued(existing) {
 		return fmt.Errorf("%w: client %q", ErrAlreadyExists, id)
 	}
-	s.putClientLocked(id, client, now, DefaultDCRClientTTL)
+	if !exists && s.maxCIMDClients > 0 {
+		if count, oldestExpiry := countLiveLocked(s.cimdClientExpiry, now); count >= s.maxCIMDClients {
+			return newClientCapacityError(oldestExpiry, now)
+		}
+	}
+	s.putExpiringClientLocked(id, client, now.Add(DefaultDCRClientTTL))
 	return nil
 }
 
@@ -647,7 +690,7 @@ func (s *MemoryStorage) ReconcileConfiguredClient(_ context.Context, client fosi
 	now := s.now()
 	existing, exists := s.liveClientLocked(id, now)
 	if !exists {
-		s.putClientLocked(id, client, now, 0)
+		s.putPermanentClientLocked(id, client)
 		return nil
 	}
 	if registration.DCRIssued(existing) {
@@ -661,7 +704,7 @@ func (s *MemoryStorage) ReconcileConfiguredClient(_ context.Context, client fosi
 
 	// Idempotent restart with unchanged config: replace the stored value so
 	// secret rotation still takes effect.
-	s.putClientLocked(id, client, now, 0)
+	s.putPermanentClientLocked(id, client)
 	return nil
 }
 
@@ -672,32 +715,57 @@ func (s *MemoryStorage) liveClientLocked(id string, now time.Time) (fosite.Clien
 	if !ok {
 		return nil, false
 	}
-	if exp, ok := s.clientExpiry[id]; ok && !now.Before(exp) {
+	if exp, ok := s.clientExpiryLocked(id); ok && !now.Before(exp) {
 		return nil, false
 	}
 	return client, true
 }
 
-// putClientLocked stores client at id. A DCR-issued client expires ttl from
-// now; any other client never expires. Callers must hold s.mu for writing.
-func (s *MemoryStorage) putClientLocked(id string, client fosite.Client, now time.Time, ttl time.Duration) {
-	s.clients[id] = client
-	if registration.DCRIssued(client) {
-		s.clientExpiry[id] = now.Add(ttl)
-	} else {
-		delete(s.clientExpiry, id)
+// clientExpiryLocked returns the expiry of the client stored at id, or false
+// when it never expires. Callers must hold s.mu.
+func (s *MemoryStorage) clientExpiryLocked(id string) (time.Time, bool) {
+	if exp, ok := s.dcrClientExpiry[id]; ok {
+		return exp, true
 	}
+	exp, ok := s.cimdClientExpiry[id]
+	return exp, ok
 }
 
-// countDCRClientsLocked returns the number of live clients counted by
-// countsTowardDCRCap and the earliest expiry among them. Callers must hold
-// s.mu. It walks the expiring clients, which the cap and the 24h unused TTL
-// keep small, and runs only on a registration or a metric collection.
-func (s *MemoryStorage) countDCRClientsLocked(now time.Time) (int, time.Time) {
+// expiryMapFor returns the expiry map a DCR-issued client belongs in.
+func (s *MemoryStorage) expiryMapFor(client fosite.Client) map[string]time.Time {
+	if countsTowardDCRCap(client) {
+		return s.dcrClientExpiry
+	}
+	return s.cimdClientExpiry
+}
+
+// putExpiringClientLocked stores a DCR-issued client at id, expiring at
+// expiry. Callers must hold s.mu for writing.
+func (s *MemoryStorage) putExpiringClientLocked(id string, client fosite.Client, expiry time.Time) {
+	s.clients[id] = client
+	delete(s.dcrClientExpiry, id)
+	delete(s.cimdClientExpiry, id)
+	s.expiryMapFor(client)[id] = expiry
+}
+
+// putPermanentClientLocked stores a client without the DCR-issued marker at
+// id; it never expires. Callers must hold s.mu for writing.
+func (s *MemoryStorage) putPermanentClientLocked(id string, client fosite.Client) {
+	s.clients[id] = client
+	delete(s.dcrClientExpiry, id)
+	delete(s.cimdClientExpiry, id)
+}
+
+// countLiveLocked returns the number of entries in expiry that have not
+// expired by now and the earliest expiry among them. Callers must hold s.mu.
+// It walks one expiry map, which its cap bounds (plus entries expired since
+// the last cleanup), on every write that map's cap checks and on a metric
+// collection.
+func countLiveLocked(expiry map[string]time.Time, now time.Time) (int, time.Time) {
 	var count int
 	var oldest time.Time
-	for id, exp := range s.clientExpiry {
-		if !now.Before(exp) || !countsTowardDCRCap(s.clients[id]) {
+	for _, exp := range expiry {
+		if !now.Before(exp) {
 			continue
 		}
 		count++
@@ -712,7 +780,7 @@ func (s *MemoryStorage) countDCRClientsLocked(now time.Time) (int, time.Time) {
 func (s *MemoryStorage) CountDCRClients(_ context.Context) (int64, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	count, _ := s.countDCRClientsLocked(s.now())
+	count, _ := countLiveLocked(s.dcrClientExpiry, s.now())
 	return int64(count), nil
 }
 
@@ -731,10 +799,11 @@ func (s *MemoryStorage) RenewClientTTL(_ context.Context, client fosite.Client) 
 
 	id := client.GetID()
 	now := s.now()
-	if _, exists := s.liveClientLocked(id, now); !exists {
+	stored, exists := s.liveClientLocked(id, now)
+	if !exists || !registration.DCRIssued(stored) {
 		return nil
 	}
-	s.clientExpiry[id] = now.Add(DefaultDCRClientTTL)
+	s.expiryMapFor(stored)[id] = now.Add(DefaultDCRClientTTL)
 	return nil
 }
 

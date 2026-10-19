@@ -333,11 +333,15 @@ keep writing and renewing rows without index entries; rows written after the
 last upgraded replica started stay uncounted until the next restart reruns
 the backfill, or until they expire.
 
-CIMD clients are not counted, as above, so on either backend persisted CIMD
-rows are bounded only by the per-process `/oauth/authorize` CIMD rate limit
-(1/s) and their 30-day TTL. On the in-memory backend this is a change: the old
-whole-map cap also covered them. Bounding CIMD rows separately is follow-up
-work.
+CIMD clients are not counted against the DCR cap. The in-memory backend caps
+its CIMD rows separately at 10,000 (the old whole-map cap used to cover them):
+past it, `UpsertDCRIssuedClient` refuses a new row with `ErrClientCapacity`,
+while replacing an existing row still succeeds. The CIMD decorator's
+write-through is best-effort and logs the refusal at Debug; the in-memory
+backend keeps sessions as Go values rather than rehydrating their client from
+the row, so a refused row costs at most a document refetch. On Redis,
+persisted CIMD rows are bounded only by the per-process `/oauth/authorize`
+CIMD rate limit (1/s) and their 30-day TTL.
 
 Two metrics expose the cap: the gauge `toolhive_authserver_dcr_clients`
 (unexpired counted clients, read from storage at collection time) and the
@@ -423,7 +427,7 @@ See the [storage consequences](#ttl-management) above for what happens to a conf
 
 But a loopback `http://` issuer combined with `AllowConfidentialClientRegistration: true` means a locally-run auth server would mint client secrets over cleartext at an unauthenticated endpoint — validation rejects that combination by default. Set `InsecureAllowConfidentialOverLoopbackHTTP: true` to opt in when that is genuinely fine, e.g. local development and testing where the traffic never leaves the machine. Do not rely on this shape in a cluster: the server still listens on all interfaces there, "localhost" in the issuer is just a string, and such a deployment is only reachable in practice through something like a port-forward — it does not make the connection loopback-only. Both flags default to off, so nothing changes for an existing deployment unless the operator sets them.
 
-**Rate limiting on `/oauth/register`.** Because the endpoint is unauthenticated, `Handler` also rate-limits it, by default 1 request/second sustained with a burst of 5 (`pkg/authserver/server/handlers/handler.go`). Set `registration_rate_limit` (`requests_per_second` and `burst`, both positive) in the auth server RunConfig to change it. The limiter is a field on `Handler`, so it is per-process — running N replicas behind a load balancer allows roughly N times the configured rate, not a shared global rate. Over the limit the endpoint returns 429 with a `Retry-After` of the seconds until the limiter refills one token (at least 1, so 1 at the default rate).
+**Rate limiting on `/oauth/register`.** Because the endpoint is unauthenticated, `Handler` also rate-limits it, by default 1 request/second sustained with a burst of 5 (`pkg/authserver/server/handlers/handler.go`). Set `registration_rate_limit` (`requests_per_second` and `burst`, both positive) in the auth server RunConfig to change it. The limiter is a field on `Handler`, so it is per-process — running N replicas behind a load balancer allows roughly N times the configured rate, not a shared global rate. Over the limit the endpoint returns 429 with a `Retry-After` of at most 1/rate seconds, rounded up, minimum 1 (so 1 at the default rate); a partly refilled bucket frees a token sooner.
 
 **DCR client metadata.** Redis persists the complete DCR client shape, including the inline public JWKS and `token_endpoint_auth_signing_alg` for `private_key_jwt` clients. These registrations use the same TTLs as public and secret-based confidential DCR clients: 24 hours until first use, then 30 days of inactivity. A successful token exchange or refresh renews the TTL; reading a client during authorization does not. The in-memory backend applies the same expiry. Pre-provisioned clients are not subject to this DCR retention policy.
 

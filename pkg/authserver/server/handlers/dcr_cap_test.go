@@ -11,6 +11,7 @@ import (
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 	"time"
 
@@ -93,6 +94,8 @@ func TestNewHandler_RegisterRateLimit(t *testing.T) {
 		{name: "configured", opts: []Option{WithRegisterRateLimit(0.5, 2)}, wantRate: 0.5, wantBurst: 2},
 		{name: "zero rate rejected", opts: []Option{WithRegisterRateLimit(0, 5)}, wantErr: true},
 		{name: "zero burst rejected", opts: []Option{WithRegisterRateLimit(1, 0)}, wantErr: true},
+		{name: "NaN rate rejected", opts: []Option{WithRegisterRateLimit(rate.Limit(math.NaN()), 5)}, wantErr: true},
+		{name: "Inf rate rejected", opts: []Option{WithRegisterRateLimit(rate.Inf, 5)}, wantErr: true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -153,12 +156,18 @@ func TestLimiterRetryAfterSeconds(t *testing.T) {
 }
 
 // TestRegister_CapRejectionAndMetrics drives /oauth/register through the cap
-// and the rate limit, checking the 503 response and both DCR metrics.
+// and the rate limit, checking the 503 response and both DCR metrics. The
+// store is wrapped in the CIMD decorator, as in production, so the gauge must
+// reach the counter through storage.Unwrap.
 func TestRegister_CapRejectionAndMetrics(t *testing.T) {
 	t.Parallel()
 
-	stor := storage.NewMemoryStorage(storage.WithMaxDCRClients(1))
-	t.Cleanup(func() { _ = stor.Close() })
+	base := storage.NewMemoryStorage(storage.WithMaxDCRClients(1))
+	t.Cleanup(func() { _ = base.Close() })
+	stor, err := storage.NewCIMDStorageDecorator(base, storage.CIMDDecoratorConfig{
+		Enabled: true, CacheMaxSize: 1, FallbackTTL: time.Minute,
+	})
+	require.NoError(t, err)
 	reader := sdkmetric.NewManualReader()
 	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
 	t.Cleanup(func() { _ = mp.Shutdown(context.Background()) })
@@ -176,8 +185,12 @@ func TestRegister_CapRejectionAndMetrics(t *testing.T) {
 	var errResp registration.DCRError
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &errResp))
 	assert.Equal(t, "server_error", errResp.Error)
-	assert.Equal(t, fmt.Sprint(int(storage.DefaultUnusedDCRClientTTL.Seconds())), w.Header().Get("Retry-After"),
-		"Retry-After is the time until the only client expires")
+	// The time until the only client expires, less whatever wall-clock time
+	// passed since it registered.
+	retryAfter, err := strconv.Atoi(w.Header().Get("Retry-After"))
+	require.NoError(t, err)
+	ttl := int(storage.DefaultUnusedDCRClientTTL.Seconds())
+	assert.InDelta(t, ttl-1, retryAfter, 1, "Retry-After is the time until the only client expires")
 	assert.Equal(t, int64(1), rejectionCount(t, reader))
 
 	require.Equal(t, http.StatusTooManyRequests, postRegister(t, routes).Code)

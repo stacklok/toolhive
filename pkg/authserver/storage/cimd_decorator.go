@@ -5,6 +5,7 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"slices"
@@ -296,7 +297,12 @@ func (d *CIMDStorageDecorator) fetch(ctx context.Context, id string) (fosite.Cli
 	// while still refusing to clobber a configured/SPIFFE-reconciled client
 	// at the same ID. A persistence failure only degrades token-path
 	// rehydration, so it must not fail the resolution itself.
-	if err := d.UpsertDCRIssuedClient(ctx, client); err != nil {
+	// A backend at its CIMD row cap refuses new rows; unauthenticated
+	// callers set that volume, so it stays at Debug.
+	if err := d.UpsertDCRIssuedClient(ctx, client); errors.Is(err, ErrClientCapacity) {
+		slog.DebugContext(ctx, "CIMD client not persisted: storage at capacity",
+			"client_id", id, "error", err)
+	} else if err != nil {
 		slog.WarnContext(ctx, "failed to persist resolved CIMD client",
 			"client_id", id, "error", err)
 	}

@@ -93,7 +93,7 @@ jobs:
   publish-gate:
     name: Publish Gate
     needs: [linting, security-scan, tests, sdk-go, e2e-tests, codegen, operator-ci]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     permissions:
       contents: read
     outputs:

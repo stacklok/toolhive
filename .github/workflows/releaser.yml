@@ -35,7 +35,7 @@ jobs:
 
   verify-release:
     name: Verify Release
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     permissions:
       contents: read
     steps:
@@ -102,7 +102,7 @@ jobs:
     permissions:
       contents: write # To add assets to a release.
       id-token: write # To do keyless signing with cosign
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -316,7 +316,7 @@ jobs:
 #    needs:
 #      - release
 #      - provenance
-#    runs-on: ubuntu-latest
+#    runs-on: ubuntu-26.04
 #    permissions: read-all
 #    steps:
 #      - name: Install the SLSA verifier

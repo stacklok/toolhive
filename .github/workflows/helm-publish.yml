@@ -9,7 +9,7 @@ env:
 jobs:
   verify-tag:
     name: Verify Tag
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     permissions:
       contents: read
     steps:
@@ -50,7 +50,7 @@ jobs:
   publish-helm:
     name: Publish ${{ matrix.chart.name }}
     needs: verify-tag
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     permissions:
       contents: read
       packages: write

@@ -57,7 +57,7 @@ jobs:
             label_filter: core
             artifact: e2e-test-results-core
             procs: 4
-            runner: ubuntu-latest
+            runner: ubuntu-26.04
           - title: mcp-run
             label_filter: mcp-run
             artifact: e2e-test-results-mcp-run
@@ -77,12 +77,12 @@ jobs:
           - title: api-registry
             label_filter: api-registry
             artifact: e2e-test-results-api-registry
-            runner: ubuntu-latest
+            runner: ubuntu-26.04
           - title: api-workloads
             label_filter: "api-workloads && !lifecycle"
             artifact: e2e-test-results-api-workloads
             test_timeout: 25m
-            runner: ubuntu-latest
+            runner: ubuntu-26.04
           - title: api-workloads-lifecycle
             label_filter: "api-workloads && lifecycle"
             artifact: e2e-test-results-api-workloads-lifecycle
@@ -90,18 +90,18 @@ jobs:
           - title: api-clients
             label_filter: api-clients
             artifact: e2e-test-results-api-clients
-            runner: ubuntu-latest
+            runner: ubuntu-26.04
           - title: api-misc
             label_filter: api-misc
             artifact: e2e-test-results-api-misc
-            runner: ubuntu-latest
+            runner: ubuntu-26.04
           - title: vmcp
             label_filter: vmcp
             artifact: e2e-test-results-vmcp
           - title: llm
             label_filter: llm
             artifact: e2e-test-results-llm
-            runner: ubuntu-latest
+            runner: ubuntu-26.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -208,7 +208,7 @@ jobs:
   conformance:
     name: MCP Conformance
     # Runs for about a minute; the standard runner is free for this public repo.
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     needs: build-binary
     timeout-minutes: 20
     strategy:

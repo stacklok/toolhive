@@ -6,7 +6,7 @@ on:
 jobs:
   image-build-and-publish:
     name: Build and Publish Main Image
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     permissions:
       contents: read
       packages: write
@@ -78,7 +78,7 @@ jobs:
 
   egress-proxy-image-build-and-publish:
     name: Build and Publish Egress Proxy Image
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     permissions:
       contents: read
       packages: write
@@ -144,7 +144,7 @@ jobs:
 
   operator-image-build-and-publish:
     name: Build and Publish Operator Image
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     permissions:
       contents: read
       packages: write
@@ -228,7 +228,7 @@ jobs:
 
   proxyrunner-image-build-and-publish:
     name: Build and Publish Proxy Runner Image
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     permissions:
       contents: read
       packages: write
@@ -301,7 +301,7 @@ jobs:
 
   vmcp-image-build-and-publish:
     name: Build and Publish Virtual MCP Server Image
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     permissions:
       contents: read
       packages: write

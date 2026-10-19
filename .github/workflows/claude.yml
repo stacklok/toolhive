@@ -46,7 +46,7 @@ jobs:
           && contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'),
                       github.event.issue.author_association))
       }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 20
     # Least-privilege permissions for the AI agent workflow.
     # contents:write is required for Claude to push commits on PRs.

@@ -47,7 +47,7 @@ on:
 jobs:
   keyless-signing-e2e:
     name: Sign against Sigstore staging and verify with cosign
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     # Non-blocking: staging carries no SLO guarantee and re-signs its TUF
     # metadata every few days, so an outage there must not fail a caller's
     # run. A failure is still recorded against this job for anyone reading

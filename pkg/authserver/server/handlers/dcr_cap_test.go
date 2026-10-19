@@ -126,7 +126,28 @@ func TestRegister_ConfiguredBurstThen429(t *testing.T) {
 	}
 	w := postRegister(t, routes)
 	assert.Equal(t, http.StatusTooManyRequests, w.Code)
-	assert.Equal(t, "1", w.Header().Get("Retry-After"))
+	assert.Equal(t, "1000", w.Header().Get("Retry-After"),
+		"at 0.001/s the next token is 1000s away")
+}
+
+func TestLimiterRetryAfterSeconds(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		rate rate.Limit
+		want int
+	}{
+		{rate: 1, want: 1},
+		{rate: 10, want: 1},
+		{rate: 0.5, want: 2},
+		{rate: 0.3, want: 4},
+	}
+	for _, tc := range tests {
+		t.Run(fmt.Sprint(tc.rate), func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tc.want, limiterRetryAfterSeconds(rate.NewLimiter(tc.rate, 1)))
+		})
+	}
 }
 
 // TestRegister_CapRejectionAndMetrics drives /oauth/register through the cap
@@ -141,7 +162,8 @@ func TestRegister_CapRejectionAndMetrics(t *testing.T) {
 	t.Cleanup(func() { _ = mp.Shutdown(context.Background()) })
 	// Burst 2 with a negligible refill: the first request fills the cap, the
 	// second is rejected at the cap, the third is rate limited.
-	routes := newRegisterTestHandler(t, stor, WithMeterProvider(mp), WithRegisterRateLimit(0.001, 2)).Routes()
+	h := newRegisterTestHandler(t, stor, WithMeterProvider(mp), WithRegisterRateLimit(0.001, 2))
+	routes := h.Routes()
 
 	require.Equal(t, http.StatusCreated, postRegister(t, routes).Code)
 	assert.Equal(t, int64(0), rejectionCount(t, reader), "a successful registration is not a rejection")
@@ -159,6 +181,10 @@ func TestRegister_CapRejectionAndMetrics(t *testing.T) {
 	require.Equal(t, http.StatusTooManyRequests, postRegister(t, routes).Code)
 	assert.Equal(t, int64(1), rejectionCount(t, reader), "a 429 is not a capacity rejection")
 	assert.Equal(t, int64(1), liveClientGauge(t, reader))
+
+	require.NoError(t, h.Close())
+	assert.Nil(t, collectDCRMetric(t, reader, "toolhive_authserver_dcr_clients"),
+		"Close must unregister the gauge callback")
 }
 
 func collectDCRMetric(t *testing.T, reader *sdkmetric.ManualReader, name string) *metricdata.Metrics {

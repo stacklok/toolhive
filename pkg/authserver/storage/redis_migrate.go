@@ -353,31 +353,32 @@ func (s *RedisStorage) migrateSingleProviderIdentity(
 // it again also picks up rows an older replica wrote during a rolling
 // upgrade. A row without a TTL is not DCR-issued and is skipped.
 //
+// Reads are batched per SCAN page. A row that cannot be parsed is skipped and
+// counted in one WARN line rather than failing startup: it would equally fail
+// GetClient, and one bad row must not keep every replica down. Only Redis
+// errors (SCAN, reads, writes) are returned.
+//
 // TODO(migration): Remove once all deployments have upgraded past this version.
 func (s *RedisStorage) BackfillDCRClientIndex(ctx context.Context) error {
+	node, err := s.nodeForPrefix(ctx)
+	if err != nil {
+		return err
+	}
 	pattern := s.keyPrefix + KeyTypeClient + ":*"
-	idPrefixLen := len(s.keyPrefix) + len(KeyTypeClient) + 1
-	indexKey := s.dcrClientIndexKey()
 
-	var added, failed int
+	var added, skipped int64
 	var cursor uint64
 	for {
-		keys, nextCursor, err := s.client.Scan(ctx, cursor, pattern, 100).Result()
+		keys, nextCursor, err := node.Scan(ctx, cursor, pattern, 100).Result()
 		if err != nil {
 			return fmt.Errorf("SCAN failed: %w", err)
 		}
-
-		for _, key := range keys {
-			ok, err := s.backfillDCRClient(ctx, key, key[idPrefixLen:], indexKey)
-			if err != nil {
-				slog.Warn("failed to backfill DCR client index entry", "key", key, "error", err)
-				failed++
-				continue
-			}
-			if ok {
-				added++
-			}
+		pageAdded, pageSkipped, err := s.backfillDCRClientPage(ctx, node, keys)
+		if err != nil {
+			return err
 		}
+		added += pageAdded
+		skipped += pageSkipped
 
 		cursor = nextCursor
 		if cursor == 0 {
@@ -385,8 +386,9 @@ func (s *RedisStorage) BackfillDCRClientIndex(ctx context.Context) error {
 		}
 	}
 
-	if failed > 0 {
-		return fmt.Errorf("DCR client index backfill incomplete: %d client row(s) failed", failed)
+	if skipped > 0 {
+		slog.Warn("DCR client index backfill skipped client rows it could not parse",
+			"rows_skipped", skipped)
 	}
 	if added > 0 {
 		slog.Info("DCR client index backfill complete", "clients_added", added)
@@ -394,48 +396,105 @@ func (s *RedisStorage) BackfillDCRClientIndex(ctx context.Context) error {
 	return nil
 }
 
-// backfillDCRClient indexes one client row if it counts against the DCR cap
-// and has no index entry yet. It reports whether an entry was added.
-func (s *RedisStorage) backfillDCRClient(ctx context.Context, key, id, indexKey string) (bool, error) {
-	pipe := s.client.Pipeline()
-	getCmd := pipe.Get(ctx, key)
-	pttlCmd := pipe.PTTL(ctx, key)
-	if _, err := pipe.Exec(ctx); err != nil && !errors.Is(err, redis.Nil) {
-		return false, fmt.Errorf("GET/PTTL failed: %w", err)
+// nodeForPrefix returns the client to run keyless commands (SCAN, TIME) on for
+// keys under s.keyPrefix. On Redis Cluster a keyless command goes to an
+// arbitrary node, and a SCAN cursor is only valid on the node that issued it,
+// so this resolves the master owning the prefix's hash slot. Every key under
+// the prefix shares that slot through its {ns:name} hash tag.
+func (s *RedisStorage) nodeForPrefix(ctx context.Context) (redis.Cmdable, error) {
+	cc, ok := s.client.(*redis.ClusterClient)
+	if !ok {
+		return s.client, nil
+	}
+	node, err := cc.MasterForKey(ctx, s.dcrClientIndexKey())
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve Redis Cluster node for key prefix: %w", err)
+	}
+	return node, nil
+}
+
+// backfillDCRClientPage indexes the counted client rows among keys, one SCAN
+// page, with one pipelined read and one ZADD NX. It returns how many entries
+// it added and how many rows it skipped as unparseable.
+func (s *RedisStorage) backfillDCRClientPage(ctx context.Context, node redis.Cmdable, keys []string) (int64, int64, error) {
+	if len(keys) == 0 {
+		return 0, 0, nil
 	}
 
+	pipe := node.Pipeline()
+	timeCmd := pipe.Time(ctx)
+	getCmds := make([]*redis.StringCmd, len(keys))
+	pttlCmds := make([]*redis.DurationCmd, len(keys))
+	for i, key := range keys {
+		getCmds[i] = pipe.Get(ctx, key)
+		pttlCmds[i] = pipe.PTTL(ctx, key)
+	}
+	// redis.Nil only means a row expired since SCAN; per-row results below
+	// tell the cases apart.
+	if _, err := pipe.Exec(ctx); err != nil && !errors.Is(err, redis.Nil) {
+		return 0, 0, fmt.Errorf("failed to read client rows: %w", err)
+	}
+	now, err := timeCmd.Result()
+	if err != nil {
+		return 0, 0, fmt.Errorf("failed to read Redis time: %w", err)
+	}
+
+	var members []redis.Z
+	var skipped int64
+	for i, key := range keys {
+		member, ok, err := s.backfillDCRClientEntry(key, getCmds[i], pttlCmds[i], now)
+		if err != nil {
+			return 0, 0, err
+		}
+		if !ok {
+			skipped++
+		} else if member != nil {
+			members = append(members, *member)
+		}
+	}
+	if len(members) == 0 {
+		return 0, skipped, nil
+	}
+
+	added, err := node.ZAddNX(ctx, s.dcrClientIndexKey(), members...).Result()
+	if err != nil {
+		return 0, 0, fmt.Errorf("failed to index client rows: %w", err)
+	}
+	return added, skipped, nil
+}
+
+// backfillDCRClientEntry returns the index entry for one client row read by
+// backfillDCRClientPage, or nil when the row is gone, is not DCR-issued, or
+// does not count against the cap. ok is false when the row cannot be parsed
+// and is skipped. now is the Redis server time of the read.
+func (s *RedisStorage) backfillDCRClientEntry(
+	key string, getCmd *redis.StringCmd, pttlCmd *redis.DurationCmd, now time.Time,
+) (member *redis.Z, ok bool, err error) {
 	data, err := getCmd.Bytes()
 	if errors.Is(err, redis.Nil) {
-		return false, nil // expired since SCAN
+		return nil, true, nil // expired since SCAN
 	}
 	if err != nil {
-		return false, fmt.Errorf("GET failed: %w", err)
+		return nil, false, fmt.Errorf("failed to read client row: %w", err)
 	}
 	// PTTL reports a missing key or a key without an expiry as a negative
 	// value. Neither is a DCR-issued row.
 	ttl, err := pttlCmd.Result()
 	if err != nil {
-		return false, fmt.Errorf("PTTL failed: %w", err)
+		return nil, false, fmt.Errorf("failed to read client row TTL: %w", err)
 	}
 	if ttl <= 0 {
-		return false, nil
+		return nil, true, nil
 	}
 
+	id := key[len(s.keyPrefix)+len(KeyTypeClient)+1:]
 	var stored storedClient
-	if err := json.Unmarshal(data, &stored); err != nil {
-		return false, fmt.Errorf("unmarshal failed: %w", err)
-	}
-	if stored.ID != "" && stored.ID != id {
-		return false, fmt.Errorf("row id %q does not match key", stored.ID)
+	if err := json.Unmarshal(data, &stored); err != nil || (stored.ID != "" && stored.ID != id) {
+		slog.Debug("DCR client index backfill skipping unparseable client row", "key", key)
+		return nil, false, nil
 	}
 	if !countsTowardDCRCap(clientFromStored(stored, true)) {
-		return false, nil
+		return nil, true, nil
 	}
-
-	expiry := s.now().Add(ttl)
-	n, err := s.client.ZAddNX(ctx, indexKey, redis.Z{Score: float64(expiry.UnixMilli()), Member: id}).Result()
-	if err != nil {
-		return false, fmt.Errorf("ZADD failed: %w", err)
-	}
-	return n > 0, nil
+	return &redis.Z{Score: float64(now.Add(ttl).UnixMilli()), Member: id}, true, nil
 }

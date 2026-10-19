@@ -20,6 +20,9 @@ const dcrInstrumentationName = "github.com/stacklok/toolhive/pkg/authserver"
 // have unbounded volume.
 type dcrMetrics struct {
 	capacityRejections metric.Int64Counter
+	// gaugeRegistration is the live-client gauge's callback, or nil when the
+	// storage backend cannot count DCR clients.
+	gaugeRegistration metric.Registration
 }
 
 // newDCRMetrics creates the capacity rejection counter and, when the storage
@@ -36,25 +39,42 @@ func newDCRMetrics(meterProvider metric.MeterProvider, stor storage.Storage) (*d
 		return nil, fmt.Errorf("create DCR capacity rejection counter: %w", err)
 	}
 
-	if counter, ok := storage.Unwrap(stor).(storage.DCRClientCounter); ok {
-		_, err := meter.Int64ObservableGauge(
-			"toolhive_authserver_dcr_clients",
-			metric.WithDescription("Number of live dynamically registered clients counted against the DCR client cap"),
-			metric.WithInt64Callback(func(ctx context.Context, o metric.Int64Observer) error {
-				n, err := counter.CountDCRClients(ctx)
-				if err != nil {
-					return err
-				}
-				o.Observe(n)
-				return nil
-			}),
-		)
-		if err != nil {
-			return nil, fmt.Errorf("create DCR client gauge: %w", err)
-		}
+	m := &dcrMetrics{capacityRejections: capacityRejections}
+	counter, ok := storage.Unwrap(stor).(storage.DCRClientCounter)
+	if !ok {
+		return m, nil
 	}
+	gauge, err := meter.Int64ObservableGauge(
+		"toolhive_authserver_dcr_clients",
+		metric.WithDescription("Number of live dynamically registered clients counted against the DCR client cap"),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("create DCR client gauge: %w", err)
+	}
+	m.gaugeRegistration, err = meter.RegisterCallback(func(ctx context.Context, o metric.Observer) error {
+		n, err := counter.CountDCRClients(ctx)
+		if err != nil {
+			return err
+		}
+		o.ObserveInt64(gauge, n)
+		return nil
+	}, gauge)
+	if err != nil {
+		return nil, fmt.Errorf("register DCR client gauge callback: %w", err)
+	}
+	return m, nil
+}
 
-	return &dcrMetrics{capacityRejections: capacityRejections}, nil
+// close unregisters the gauge callback. It is a no-op on a nil receiver or
+// when no gauge was registered.
+func (m *dcrMetrics) close() error {
+	if m == nil || m.gaugeRegistration == nil {
+		return nil
+	}
+	if err := m.gaugeRegistration.Unregister(); err != nil {
+		return fmt.Errorf("unregister DCR client gauge callback: %w", err)
+	}
+	return nil
 }
 
 // recordCapacityRejection counts one registration rejected at the DCR cap. It

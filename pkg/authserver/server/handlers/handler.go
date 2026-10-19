@@ -18,8 +18,10 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"math"
 	"net/http"
 	"net/url"
+	"strconv"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -314,6 +316,14 @@ func NewHandler(
 	return h, nil
 }
 
+// Close releases what NewHandler registered outside the Handler: the DCR
+// client gauge's callback, which holds the storage. Call it when the server
+// shuts down so a rebuilt server in the same process does not leave a
+// callback reading closed storage.
+func (h *Handler) Close() error {
+	return h.dcrMetrics.close()
+}
+
 // deviceCodeInterval returns configured, falling back to
 // server.DefaultDeviceCodeInterval when configured is zero. A zero interval
 // would defeat the interval's purpose of bounding poll frequency, so it is
@@ -366,12 +376,20 @@ func (h *Handler) OAuthRoutes(r chi.Router) {
 func (h *Handler) rateLimitRegister(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
 		if h.registerLimiter != nil && !h.registerLimiter.Allow() {
-			w.Header().Set("Retry-After", "1")
+			w.Header().Set("Retry-After", strconv.Itoa(limiterRetryAfterSeconds(h.registerLimiter)))
 			http.Error(w, "rate limit exceeded, retry later", http.StatusTooManyRequests)
 			return
 		}
 		next(w, req)
 	}
+}
+
+// limiterRetryAfterSeconds returns the Retry-After value for a request l
+// refused: the seconds until l refills one token, rounded up and at least 1.
+// A rate below 1/s therefore advertises a wait longer than a second, so a
+// client honouring the header does not retry into further 429s.
+func limiterRetryAfterSeconds(l *rate.Limiter) int {
+	return max(int(math.Ceil(1/float64(l.Limit()))), 1)
 }
 
 // rateLimitCIMDAuthorize gates /oauth/authorize requests whose client_id is a

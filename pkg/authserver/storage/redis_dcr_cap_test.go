@@ -21,20 +21,22 @@ import (
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
-// newCappedRedisStorage returns a RedisStorage on mr capped at maxDCR whose
-// index scores run on clock. Keep clock and mr.FastForward in step so index
-// scores and key TTLs age together.
+// newCappedRedisStorage returns a RedisStorage on mr capped at maxDCR, with
+// miniredis's TIME pinned to clock. Index scores come from TIME, so move time
+// only with advance, which keeps TIME and key TTLs in step.
 func newCappedRedisStorage(t *testing.T, mr *miniredis.Miniredis, maxDCR int, clock *manualClock) *RedisStorage {
 	t.Helper()
+	mr.SetTime(clock.Now())
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	s := NewRedisStorageWithClient(client, "test:auth:", WithRedisMaxDCRClients(maxDCR), withRedisClock(clock.Now))
+	s := NewRedisStorageWithClient(client, "test:auth:", WithRedisMaxDCRClients(maxDCR))
 	t.Cleanup(func() { _ = s.Close() })
 	return s
 }
 
-// advance moves both the storage clock and miniredis's key TTLs forward.
+// advance moves the clock, miniredis's TIME and its key TTLs forward together.
 func advance(clock *manualClock, mr *miniredis.Miniredis, d time.Duration) {
 	clock.Advance(d)
+	mr.SetTime(clock.Now())
 	mr.FastForward(d)
 }
 
@@ -343,4 +345,48 @@ func TestRedisStorage_BackfillDCRClientIndex(t *testing.T) {
 	advance(clock, mr, time.Minute)
 	require.NoError(t, s.BackfillDCRClientIndex(ctx))
 	assert.Equal(t, clock.Now().Add(-time.Minute).Add(time.Hour), indexScore(t, mr, s, "legacy-3"))
+}
+
+// TestRedisStorage_BackfillDCRClientIndex_SkipsUnparseableRows checks that a
+// row the backfill cannot parse is skipped rather than failing startup.
+func TestRedisStorage_BackfillDCRClientIndex_SkipsUnparseableRows(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	mr := miniredis.RunT(t)
+	clock := newManualClock()
+	s := newCappedRedisStorage(t, mr, 10, clock)
+
+	writeStoredClientRow(t, s, "good", true, time.Hour)
+	require.NoError(t, s.client.Set(ctx, redisKey(s.keyPrefix, KeyTypeClient, "garbage"), "{not json", time.Hour).Err())
+	mismatched := buildStoredClient(newDCRClient(t, "other-id", oauthproto.TokenEndpointAuthMethodNone, ""))
+	data, err := json.Marshal(mismatched)
+	require.NoError(t, err)
+	require.NoError(t, s.client.Set(ctx, redisKey(s.keyPrefix, KeyTypeClient, "mismatched"), data, time.Hour).Err())
+
+	require.NoError(t, s.BackfillDCRClientIndex(ctx))
+
+	members, err := mr.ZMembers(s.dcrClientIndexKey())
+	require.NoError(t, err)
+	assert.Equal(t, []string{"good"}, members)
+}
+
+// TestRedisStorage_BackfillDCRClientIndex_ClusterClient checks the backfill
+// scans through a ClusterClient, where SCAN must go to the node owning the
+// prefix's slot. miniredis answers CLUSTER SLOTS as a single node owning
+// every slot.
+func TestRedisStorage_BackfillDCRClientIndex_ClusterClient(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	mr := miniredis.RunT(t)
+	clock := newManualClock()
+	mr.SetTime(clock.Now())
+	writer := newCappedRedisStorage(t, mr, 10, clock)
+	writeStoredClientRow(t, writer, "legacy", true, time.Hour)
+
+	cc := redis.NewClusterClient(&redis.ClusterOptions{Addrs: []string{mr.Addr()}})
+	s := NewRedisStorageWithClient(cc, "test:auth:")
+	t.Cleanup(func() { _ = s.Close() })
+
+	require.NoError(t, s.BackfillDCRClientIndex(ctx))
+	assert.Equal(t, clock.Now().Add(time.Hour), indexScore(t, mr, s, "legacy"))
 }

@@ -1251,7 +1251,11 @@ func buildRegistrationRateLimitRunConfig(
 	if b == nil {
 		return nil, nil
 	}
-	// Mirrors the CRD's CEL rule, for objects admitted before it existed.
+	// Defense in depth: mirrors the CRD's Minimum and CEL rules for specs that
+	// did not go through admission (for example, a stale CRD).
+	if b.MaxTokens < 1 {
+		return nil, fmt.Errorf("registrationRateLimit.maxTokens must be >= 1, got %d", b.MaxTokens)
+	}
 	if b.RefillPeriod.Duration <= 0 {
 		return nil, fmt.Errorf("registrationRateLimit.refillPeriod must be positive, got %s", b.RefillPeriod.Duration)
 	}
@@ -1260,7 +1264,7 @@ func buildRegistrationRateLimitRunConfig(
 		Burst:             int(b.MaxTokens),
 	}
 	if err := rc.Validate(); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("registrationRateLimit: %w", err)
 	}
 	return rc, nil
 }

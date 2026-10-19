@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	utilptr "k8s.io/utils/ptr"
+	k8sptr "k8s.io/utils/ptr"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/pkg/authserver"
@@ -49,19 +49,19 @@ func TestBuildStorageRunConfig_MaxDCRClients(t *testing.T) {
 			name: "memory with a cap",
 			storage: &mcpv1beta1.AuthServerStorageConfig{
 				Type:          mcpv1beta1.AuthServerStorageTypeMemory,
-				MaxDCRClients: utilptr.To[int32](500),
+				MaxDCRClients: k8sptr.To[int32](500),
 			},
 			wantType: storage.TypeMemory,
-			wantMax:  utilptr.To(500),
+			wantMax:  k8sptr.To(500),
 		},
 		{
 			name: "memory with an unlimited cap",
 			storage: &mcpv1beta1.AuthServerStorageConfig{
 				Type:          mcpv1beta1.AuthServerStorageTypeMemory,
-				MaxDCRClients: utilptr.To[int32](0),
+				MaxDCRClients: k8sptr.To[int32](0),
 			},
 			wantType: storage.TypeMemory,
-			wantMax:  utilptr.To(0),
+			wantMax:  k8sptr.To(0),
 		},
 		{
 			name:     "redis without a cap leaves it unset",
@@ -70,15 +70,15 @@ func TestBuildStorageRunConfig_MaxDCRClients(t *testing.T) {
 		},
 		{
 			name:     "redis with a cap",
-			storage:  redisStorageConfig(utilptr.To[int32](50000)),
+			storage:  redisStorageConfig(k8sptr.To[int32](50000)),
 			wantType: storage.TypeRedis,
-			wantMax:  utilptr.To(50000),
+			wantMax:  k8sptr.To(50000),
 		},
 		{
 			name:     "redis with an unlimited cap",
-			storage:  redisStorageConfig(utilptr.To[int32](0)),
+			storage:  redisStorageConfig(k8sptr.To[int32](0)),
 			wantType: storage.TypeRedis,
-			wantMax:  utilptr.To(0),
+			wantMax:  k8sptr.To(0),
 		},
 	}
 
@@ -146,7 +146,7 @@ func TestBuildAuthServerRunConfig_RegistrationRateLimit(t *testing.T) {
 		{
 			name:        "zero maxTokens is rejected",
 			bucket:      &mcpv1beta1.RateLimitBucket{RefillPeriod: metav1.Duration{Duration: time.Second}},
-			errContains: "registration_rate_limit",
+			errContains: "registrationRateLimit.maxTokens must be >= 1",
 		},
 	}
 

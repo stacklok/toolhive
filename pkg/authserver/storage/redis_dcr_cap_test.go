@@ -348,9 +348,9 @@ func TestRedisStorage_BackfillDCRClientIndex(t *testing.T) {
 	assert.Equal(t, clock.Now().Add(-time.Minute).Add(time.Hour), indexScore(t, mr, s, "legacy-3"))
 }
 
-// TestRedisStorage_BackfillDCRClientIndex_SkipsUnparseableRows checks that a
+// TestRedisStorage_BackfillDCRClientIndex_SkipsUnparsableRows checks that a
 // row the backfill cannot parse is skipped rather than failing startup.
-func TestRedisStorage_BackfillDCRClientIndex_SkipsUnparseableRows(t *testing.T) {
+func TestRedisStorage_BackfillDCRClientIndex_SkipsUnparsableRows(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	mr := miniredis.RunT(t)

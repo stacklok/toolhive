@@ -415,7 +415,7 @@ func (s *RedisStorage) nodeForPrefix(ctx context.Context) (redis.Cmdable, error)
 
 // backfillDCRClientPage indexes the counted client rows among keys, one SCAN
 // page, with one pipelined read and one ZADD NX. It returns how many entries
-// it added and how many rows it skipped as unparseable.
+// it added and how many rows it skipped as unparsable.
 func (s *RedisStorage) backfillDCRClientPage(ctx context.Context, node redis.Cmdable, keys []string) (int64, int64, error) {
 	if len(keys) == 0 {
 		return 0, 0, nil
@@ -486,7 +486,7 @@ func (s *RedisStorage) backfillDCRClientEntry(
 	id := key[len(s.keyPrefix)+len(KeyTypeClient)+1:]
 	var stored storedClient
 	if err := json.Unmarshal(data, &stored); err != nil || (stored.ID != "" && stored.ID != id) {
-		slog.Debug("DCR client index backfill skipping unparseable client row", "key", key)
+		slog.Debug("DCR client index backfill skipping unparsable client row", "key", key)
 		return nil, false, nil
 	}
 	if !countsTowardDCRCap(clientFromStored(stored, true)) {

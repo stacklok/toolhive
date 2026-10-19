@@ -339,8 +339,14 @@ Rows written before the index existed have no entry. On startup,
 its remaining TTL (`ZADD NX`, so an existing entry keeps its score) before
 the server is constructed. On Redis Cluster it scans the master that owns the
 prefix's hash slot. Reads are batched per SCAN page, and a row it cannot parse
-is skipped and counted in one WARN line instead of failing startup. It runs on
-every startup. During a rolling upgrade, replicas still on the old version
+is skipped and counted in one WARN line instead of failing startup. It logs
+one INFO line with the rows scanned, the entries added and the duration, and
+a WARN naming `storage.max_dcr_clients` when the live count is already at or
+above the cap. A Redis error during the backfill is logged at WARN and
+startup continues, unlike a failed legacy upstream migration: skipping the
+backfill only leaves the cap undercounting older rows, which is how the
+server behaved before the cap, and the next start fills in what was missed.
+It runs on every startup. During a rolling upgrade, replicas still on the old version
 keep writing and renewing rows without index entries; rows written after the
 last upgraded replica started stay uncounted until the next restart reruns
 the backfill, or until they expire.
@@ -349,7 +355,7 @@ the backfill, or until they expire.
 
 - A Redis deployment already holding more than the cap in live DCR clients
   rejects every new registration right after the upgrade, until enough of
-  them expire. Raise `max_dcr_clients` or set it to `0` before upgrading. The
+  them expire; the backfill logs a WARN at startup when this happens. Raise `max_dcr_clients` or set it to `0` before upgrading. The
   operator cannot set it yet
   ([#6864](https://github.com/stacklok/toolhive/issues/6864)), so an
   operator-managed deployment over the cap must wait for the count to drain.

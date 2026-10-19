@@ -348,6 +348,45 @@ func TestRedisStorage_BackfillDCRClientIndex(t *testing.T) {
 	assert.Equal(t, clock.Now().Add(-time.Minute).Add(time.Hour), indexScore(t, mr, s, "legacy-3"))
 }
 
+// TestRedisStorage_BackfillDCRClientIndex_WarnsAtCap checks that the backfill
+// logs one WARN naming the setting when the backfilled count already fills the
+// cap, and stays silent below it or when the cap is unlimited.
+//
+//nolint:paralleltest // captures the process-global slog default
+func TestRedisStorage_BackfillDCRClientIndex_WarnsAtCap(t *testing.T) {
+	tests := []struct {
+		name     string
+		maxDCR   int
+		wantWarn bool
+	}{
+		{name: "at the cap", maxDCR: 2, wantWarn: true},
+		{name: "above the cap", maxDCR: 1, wantWarn: true},
+		{name: "below the cap", maxDCR: 3},
+		{name: "unlimited", maxDCR: 0},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			logs := captureWarnLogs(t)
+			mr := miniredis.RunT(t)
+			s := newCappedRedisStorage(t, mr, tc.maxDCR, newManualClock())
+			writeStoredClientRow(t, s, "legacy-1", true, time.Hour)
+			writeStoredClientRow(t, s, "legacy-2", true, time.Hour)
+
+			require.NoError(t, s.BackfillDCRClientIndex(context.Background()))
+
+			if !tc.wantWarn {
+				assert.Empty(t, logs.String())
+				return
+			}
+			out := logs.String()
+			assert.Equal(t, 1, strings.Count(out, "DCR client cap already reached"), out)
+			assert.Contains(t, out, `"dcr_clients":2`)
+			assert.Contains(t, out, fmt.Sprintf(`"max_dcr_clients":%d`, tc.maxDCR))
+			assert.Contains(t, out, "storage.max_dcr_clients")
+		})
+	}
+}
+
 // TestRedisStorage_BackfillDCRClientIndex_SkipsUnparsableRows checks that a
 // row the backfill cannot parse is skipped rather than failing startup.
 func TestRedisStorage_BackfillDCRClientIndex_SkipsUnparsableRows(t *testing.T) {

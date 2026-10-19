@@ -77,6 +77,35 @@ func TestNewServer_BackfillsDCRClientIndex(t *testing.T) {
 	assert.Equal(t, []string{"legacy"}, members)
 }
 
+// TestNewServer_StartsWhenBackfillFails pins that a failed DCR client index
+// backfill does not stop the server from starting: skipping it only leaves the
+// cap undercounting until the next restart.
+func TestNewServer_StartsWhenBackfillFails(t *testing.T) {
+	t.Parallel()
+
+	mr := miniredis.RunT(t)
+	prefix := storage.DeriveKeyPrefix("ns", "server")
+	stor := storage.NewRedisStorageWithClient(redis.NewClient(&redis.Options{Addr: mr.Addr()}), prefix)
+
+	client, err := registration.New(registration.Config{
+		ID:                      "legacy",
+		TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodNone,
+		RedirectURIs:            []string{"http://127.0.0.1/callback"},
+	})
+	require.NoError(t, err)
+	require.NoError(t, stor.RegisterClient(context.Background(), client))
+	// Replace the index with a string, so the backfill's ZADD fails WRONGTYPE.
+	indexKey := prefix + storage.KeyTypeDCRClientIdx
+	mr.Del(indexKey)
+	require.NoError(t, mr.Set(indexKey, "not a sorted set"))
+
+	newDCRCapTestServer(t, stor, nil)
+
+	got, err := mr.Get(indexKey)
+	require.NoError(t, err)
+	assert.Equal(t, "not a sorted set", got, "the backfill must have failed rather than rebuilt the index")
+}
+
 // TestNewServer_RegistrationRateLimit pins that registration_rate_limit
 // reaches the /oauth/register limiter, and that leaving it unset keeps the
 // default burst of 5.

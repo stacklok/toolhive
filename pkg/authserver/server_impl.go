@@ -788,6 +788,13 @@ func createProvider(
 // decorator wrapping so the concrete type can be reached. The DCR client index
 // backfill runs before /oauth/register is served, so the cap counts clients
 // written before the index existed.
+//
+// A backfill failure is logged and startup continues, unlike a legacy upstream
+// migration failure. Skipping the backfill only leaves the cap undercounting
+// rows written before the index existed, which is how the server behaved
+// before the cap, and the next start fills in whatever was missed (ZADD NX
+// makes a rerun safe). Skipping an upstream migration would break existing
+// data.
 func runLegacyMigration(ctx context.Context, stor storage.Storage, upstreams []UpstreamConfig) error {
 	base := storage.Unwrap(stor)
 	rs, ok := base.(*storage.RedisStorage)
@@ -795,7 +802,8 @@ func runLegacyMigration(ctx context.Context, stor storage.Storage, upstreams []U
 		return nil
 	}
 	if err := rs.BackfillDCRClientIndex(ctx); err != nil {
-		return fmt.Errorf("DCR client index backfill failed: %w", err)
+		slog.Warn("DCR client index backfill failed; the DCR client cap may undercount existing clients until the next restart",
+			"error", err)
 	}
 	for i := range upstreams {
 		upCfg := &upstreams[i]

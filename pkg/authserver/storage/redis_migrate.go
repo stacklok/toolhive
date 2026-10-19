@@ -358,6 +358,11 @@ func (s *RedisStorage) migrateSingleProviderIdentity(
 // GetClient, and one bad row must not keep every replica down. Only Redis
 // errors (SCAN, reads, writes) are returned.
 //
+// On success it logs one INFO line with the rows scanned, the entries added
+// and the duration, and one WARN line when the live count is already at or
+// above the cap, so an operator sees why /oauth/register answers 503 from the
+// first request.
+//
 // TODO(migration): Remove once all deployments have upgraded past this version.
 func (s *RedisStorage) BackfillDCRClientIndex(ctx context.Context) error {
 	node, err := s.nodeForPrefix(ctx)
@@ -365,8 +370,9 @@ func (s *RedisStorage) BackfillDCRClientIndex(ctx context.Context) error {
 		return err
 	}
 	pattern := s.keyPrefix + KeyTypeClient + ":*"
+	start := time.Now()
 
-	var added, skipped int64
+	var scanned, added, skipped int64
 	var cursor uint64
 	for {
 		keys, nextCursor, err := node.Scan(ctx, cursor, pattern, 100).Result()
@@ -377,6 +383,7 @@ func (s *RedisStorage) BackfillDCRClientIndex(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
+		scanned += int64(len(keys))
 		added += pageAdded
 		skipped += pageSkipped
 
@@ -390,9 +397,9 @@ func (s *RedisStorage) BackfillDCRClientIndex(ctx context.Context) error {
 		slog.Warn("DCR client index backfill skipped client rows it could not parse",
 			"rows_skipped", skipped)
 	}
-	if added > 0 {
-		slog.Info("DCR client index backfill complete", "clients_added", added)
-	}
+	slog.Info("DCR client index backfill complete",
+		"rows_scanned", scanned, "clients_added", added, "duration", time.Since(start))
+	s.warnIfDCRClientsAtCap(ctx)
 	return nil
 }
 
@@ -411,6 +418,26 @@ func (s *RedisStorage) nodeForPrefix(ctx context.Context) (redis.Cmdable, error)
 		return nil, fmt.Errorf("failed to resolve Redis Cluster node for key prefix: %w", err)
 	}
 	return node, nil
+}
+
+// warnIfDCRClientsAtCap logs one WARN when the live DCR client count is
+// already at or above the cap, which makes every registration fail until
+// enough clients expire. It is silent when the cap is unlimited. A failed
+// count is logged rather than returned: the backfill itself succeeded.
+func (s *RedisStorage) warnIfDCRClientsAtCap(ctx context.Context) {
+	if s.maxDCRClients == 0 {
+		return
+	}
+	n, err := s.CountDCRClients(ctx)
+	if err != nil {
+		slog.Warn("could not check the DCR client count against the cap", "error", err)
+		return
+	}
+	if n >= int64(s.maxDCRClients) {
+		slog.Warn("DCR client cap already reached; /oauth/register rejects new clients until enough expire",
+			"dcr_clients", n, "max_dcr_clients", s.maxDCRClients,
+			"setting", "storage.max_dcr_clients")
+	}
 }
 
 // backfillDCRClientPage indexes the counted client rows among keys, one SCAN

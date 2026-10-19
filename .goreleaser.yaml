@@ -100,11 +100,11 @@ winget:
          name: winget-pkgs
          branch: master
 # This section defines how to release to homebrew.
-brews:
+homebrew_casks:
   - name: thv
+    binaries: [thv]
     homepage: 'https://github.com/stacklok/toolhive'
     description: 'ToolHive (thv) is a lightweight, secure, and fast manager for MCP (Model Context Protocol) servers'
-    directory: Formula
     commit_author:
       name: stacklokbot
       email: info@stacklok.com
@@ -112,8 +112,14 @@ brews:
       owner: stacklok
       name: homebrew-tap
       token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
-    test: |
-      system "#{bin}/thv --help"
+    # Homebrew quarantines cask downloads, and the darwin binaries are signed
+    # but not notarized, so Gatekeeper would refuse to run them.
+    hooks:
+      post:
+        install: |
+          if OS.mac?
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/thv"]
+          end
 # This section defines whether we want to release the source code too.
 source:
   enabled: true

@@ -388,8 +388,18 @@ the backfill, or until they expire.
 - A Redis deployment already holding more than the cap in live DCR clients
   rejects every new registration right after the upgrade, until enough of
   them expire; the backfill logs a WARN at startup when this happens. Raise
-  `max_dcr_clients` (the CRD's `storage.maxDCRClients`) or set it to `0`
-  before upgrading.
+  `max_dcr_clients` or set it to `0` before upgrading. `0` removes the cap
+  entirely, so prefer a large finite value (two to three times the observed
+  live client count) and lower it again once the population drains.
+- On Kubernetes, `storage.maxDCRClients` exists only in the CRDs of the
+  release that enforces the cap, and the CRDs ship in the separate
+  `operator-crds` chart. Upgrade in this order: (1) upgrade the
+  `operator-crds` chart; (2) set `storage.maxDCRClients` on each Redis-backed
+  `MCPExternalAuthConfig` and `VirtualMCPServer` `authServerConfig`;
+  (3) upgrade the `operator` chart. With the older CRDs the API server drops
+  the field as unknown, and an older operator ignores it, so setting it
+  earlier has no effect, and upgrading the operator first enforces the
+  default cap before you can raise it.
 - Backfilled rows keep their current TTL, up to 30 days, so a pre-existing
   spam population can take that long to drain. Only clients registered after
   the upgrade get the 24-hour unused TTL.
@@ -498,7 +508,7 @@ See the [storage consequences](#ttl-management) above for what happens to a conf
 
 But a loopback `http://` issuer combined with `AllowConfidentialClientRegistration: true` means a locally-run auth server would mint client secrets over cleartext at an unauthenticated endpoint — validation rejects that combination by default. Set `InsecureAllowConfidentialOverLoopbackHTTP: true` to opt in when that is genuinely fine, e.g. local development and testing where the traffic never leaves the machine. Do not rely on this shape in a cluster: the server still listens on all interfaces there, "localhost" in the issuer is just a string, and such a deployment is only reachable in practice through something like a port-forward — it does not make the connection loopback-only. Both flags default to off, so nothing changes for an existing deployment unless the operator sets them.
 
-**Rate limiting on `/oauth/register`.** Because the endpoint is unauthenticated, `Handler` also rate-limits it, by default 1 request/second sustained with a burst of 5 (`pkg/authserver/server/handlers/handler.go`). Set `registration_rate_limit` (`requests_per_second` and `burst`, both positive) in the auth server RunConfig to change it. In the operator CRD it is the embedded auth server's `registrationRateLimit` token bucket: `maxTokens` is the burst and `maxTokens / refillPeriod` the sustained rate, so the default is `maxTokens: 5` with `refillPeriod: 5s`. The limiter is a field on `Handler`, so it is per-process — running N replicas behind a load balancer allows roughly N times the configured rate, not a shared global rate. Over the limit the endpoint returns 429 with a `Retry-After` of at most 1/rate seconds, rounded up, minimum 1 (so 1 at the default rate); a partly refilled bucket frees a token sooner.
+**Rate limiting on `/oauth/register`.** Because the endpoint is unauthenticated, `Handler` also rate-limits it, by default 1 request/second sustained with a burst of 5 (`pkg/authserver/server/handlers/handler.go`). Set `registration_rate_limit` (`requests_per_second` and `burst`, both positive) in the auth server RunConfig to change it. In the operator CRD it is the embedded auth server's `registrationRateLimit` token bucket: `maxTokens` is the burst and `maxTokens / refillPeriod` the sustained rate, so the default is `maxTokens: 5` with `refillPeriod: 5s`. For a sustained rate R per second with a burst of B, set `maxTokens` to B and `refillPeriod` to B/R: 10 per minute with a burst of 3 is `maxTokens: 3`, `refillPeriod: 18s`. The limiter is a field on `Handler`, so it is per-process — running N replicas behind a load balancer allows roughly N times the configured rate, not a shared global rate. Over the limit the endpoint returns 429 with a `Retry-After` of at most 1/rate seconds, rounded up, minimum 1 (so 1 at the default rate); a partly refilled bucket frees a token sooner.
 
 **DCR client metadata.** Redis persists the complete DCR client shape, including the inline public JWKS and `token_endpoint_auth_signing_alg` for `private_key_jwt` clients. These registrations use the same TTLs as public and secret-based confidential DCR clients: 24 hours until first use, then 30 days of inactivity. A successful token exchange or refresh renews the TTL; reading a client during authorization does not. The in-memory backend applies the same expiry. Pre-provisioned clients are not subject to this DCR retention policy.
 

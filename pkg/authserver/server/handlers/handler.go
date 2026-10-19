@@ -387,9 +387,10 @@ func (h *Handler) rateLimitRegister(next http.HandlerFunc) http.HandlerFunc {
 // limiterRetryAfterSeconds returns the Retry-After value for a request l
 // refused: the seconds until l refills one token, rounded up and at least 1.
 // A rate below 1/s therefore advertises a wait longer than a second, so a
-// client honouring the header does not retry into further 429s.
+// client honouring the header does not retry into further 429s. The result
+// is clamped to math.MaxInt32 so a vanishingly small rate cannot overflow int.
 func limiterRetryAfterSeconds(l *rate.Limiter) int {
-	return max(int(math.Ceil(1/float64(l.Limit()))), 1)
+	return int(min(max(math.Ceil(1/float64(l.Limit())), 1), math.MaxInt32))
 }
 
 // rateLimitCIMDAuthorize gates /oauth/authorize requests whose client_id is a

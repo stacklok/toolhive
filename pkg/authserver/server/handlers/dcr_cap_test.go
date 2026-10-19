@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -141,6 +142,7 @@ func TestLimiterRetryAfterSeconds(t *testing.T) {
 		{rate: 10, want: 1},
 		{rate: 0.5, want: 2},
 		{rate: 0.3, want: 4},
+		{rate: 1e-20, want: math.MaxInt32},
 	}
 	for _, tc := range tests {
 		t.Run(fmt.Sprint(tc.rate), func(t *testing.T) {

@@ -325,8 +325,10 @@ its remaining TTL (`ZADD NX`, so an existing entry keeps its score) before
 the server is constructed. On Redis Cluster it scans the master that owns the
 prefix's hash slot. Reads are batched per SCAN page, and a row it cannot parse
 is skipped and counted in one WARN line instead of failing startup. It runs on
-every startup, which also picks up rows an older replica wrote during a
-rolling upgrade.
+every startup. During a rolling upgrade, replicas still on the old version
+keep writing and renewing rows without index entries; rows written after the
+last upgraded replica started stay uncounted until the next restart reruns
+the backfill, or until they expire.
 
 CIMD clients are not counted, as above, so on either backend persisted CIMD
 rows are bounded only by the per-process `/oauth/authorize` CIMD rate limit

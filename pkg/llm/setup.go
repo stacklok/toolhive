@@ -821,7 +821,10 @@ func requestGatewayModels(ctx context.Context, cfg Config, path, afterID string)
 	}()
 	if resp.StatusCode != http.StatusOK {
 		_, _ = io.Copy(io.Discard, resp.Body)
-		return gatewayModelsResponse{}, &gatewayStatusError{URL: modelsURL, StatusCode: resp.StatusCode, Status: resp.Status}
+		// Redacted, because the gateway URL may carry a password in its userinfo.
+		return gatewayModelsResponse{}, &gatewayStatusError{
+			URL: req.URL.Redacted(), StatusCode: resp.StatusCode, Status: resp.Status,
+		}
 	}
 	var payload gatewayModelsResponse
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {

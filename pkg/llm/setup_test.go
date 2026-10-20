@@ -1475,7 +1475,8 @@ func TestModelDiscoveryErrorMessages(t *testing.T) {
 			if tt.closed {
 				server.Close()
 			}
-			cfg := Config{GatewayURL: server.URL}
+			// A password in the gateway URL's userinfo must never reach a diagnostic.
+			cfg := Config{GatewayURL: strings.Replace(server.URL, "://", "://alice:secret-pw@", 1)}
 			cfg.SetDiscoveryAccessToken("discovery-token")
 
 			var err error
@@ -1485,6 +1486,7 @@ func TestModelDiscoveryErrorMessages(t *testing.T) {
 				_, _, err = discoverGatewayModels(context.Background(), cfg)
 			}
 			require.ErrorContains(t, err, tt.wantErr)
+			assert.NotContains(t, err.Error(), "secret-pw")
 			if tt.wantIs != nil {
 				assert.ErrorIs(t, err, tt.wantIs)
 			}

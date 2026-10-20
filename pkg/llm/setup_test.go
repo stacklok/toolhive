@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -30,77 +31,132 @@ import (
 func TestResolveBedrockModels(t *testing.T) {
 	t.Parallel()
 
+	// stagingCatalog mirrors a gateway that routes both Anthropic-direct and
+	// Bedrock models, with several generations per family.
+	stagingCatalog := []string{
+		"claude-fable-5-1", "claude-haiku-5-5", "claude-opus-5-5", "claude-sonnet-5-5",
+		"us.anthropic.claude-fable-5-1",
+		"us.anthropic.claude-haiku-4-5-20251001-v1:0",
+		"us.anthropic.claude-opus-4-8",
+		"us.anthropic.claude-opus-4-6-v1",
+		"us.anthropic.claude-sonnet-5",
+		"us.anthropic.claude-sonnet-4-6",
+	}
+
 	tests := []struct {
 		name         string
 		models       []string
+		discovered   []string
 		enable1M     bool
-		wantHaiku    string
-		wantOpus     string
-		wantSonnet   string
+		want         bedrockTiers
 		wantWarnings []string
 	}{
 		{
-			name:       "defaults when no overrides",
-			wantHaiku:  defaultBedrockHaikuModel,
-			wantOpus:   defaultBedrockOpusModel,
-			wantSonnet: defaultBedrockSonnetModel,
+			name: "no pins without overrides or discovery",
 		},
 		{
-			name:       "override each tier by substring",
-			models:     []string{"us.anthropic.claude-haiku-x", "us.anthropic.claude-opus-x", "us.anthropic.claude-sonnet-x"},
-			wantHaiku:  "us.anthropic.claude-haiku-x",
-			wantOpus:   "us.anthropic.claude-opus-x",
-			wantSonnet: "us.anthropic.claude-sonnet-x",
+			name:       "newest Bedrock model per family, ignoring Anthropic-form IDs",
+			discovered: stagingCatalog,
+			want: bedrockTiers{
+				haiku:  "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+				opus:   "us.anthropic.claude-opus-4-8",
+				sonnet: "us.anthropic.claude-sonnet-5",
+				fable:  "us.anthropic.claude-fable-5-1",
+			},
+		},
+		{
+			name: "minor version and release date order within a family",
+			discovered: []string{
+				"anthropic.claude-sonnet-4-20250514-v1:0",
+				"global.anthropic.claude-sonnet-4-5-20250929-v1:0",
+				"eu.anthropic.claude-sonnet-4-5-20250101-v1:0",
+			},
+			want: bedrockTiers{sonnet: "global.anthropic.claude-sonnet-4-5-20250929-v1:0"},
+		},
+		{
+			name: "version-first legacy IDs rank within a family",
+			discovered: []string{
+				"anthropic.claude-3-haiku-20240307-v1:0",
+				"anthropic.claude-3-5-haiku-20241022-v1:0",
+			},
+			want: bedrockTiers{haiku: "anthropic.claude-3-5-haiku-20241022-v1:0"},
+		},
+		{
+			name: "modern family-first outranks legacy version-first",
+			discovered: []string{
+				"anthropic.claude-3-5-haiku-20241022-v1:0",
+				"us.anthropic.claude-haiku-4-5-20251001-v1:0",
+			},
+			want: bedrockTiers{haiku: "us.anthropic.claude-haiku-4-5-20251001-v1:0"},
+		},
+		{
+			name:       "equal versions tie-break on the smallest ID",
+			discovered: []string{"us.anthropic.claude-opus-4-8", "eu.anthropic.claude-opus-4-8"},
+			want:       bedrockTiers{opus: "eu.anthropic.claude-opus-4-8"},
+		},
+		{
+			name:       "override replaces only its own discovered tier",
+			models:     []string{"us.anthropic.claude-opus-4-6-v1"},
+			discovered: stagingCatalog,
+			want: bedrockTiers{
+				haiku:  "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+				opus:   "us.anthropic.claude-opus-4-6-v1",
+				sonnet: "us.anthropic.claude-sonnet-5",
+				fable:  "us.anthropic.claude-fable-5-1",
+			},
+		},
+		{
+			name:   "override each tier by substring",
+			models: []string{"x-haiku", "x-opus", "x-sonnet", "x-fable"},
+			want:   bedrockTiers{haiku: "x-haiku", opus: "x-opus", sonnet: "x-sonnet", fable: "x-fable"},
 		},
 		{
 			name:       "enable1M appends [1m] to opus and sonnet only",
+			discovered: stagingCatalog,
 			enable1M:   true,
-			wantHaiku:  defaultBedrockHaikuModel,
-			wantOpus:   defaultBedrockOpusModel + "[1m]",
-			wantSonnet: defaultBedrockSonnetModel + "[1m]",
+			want: bedrockTiers{
+				haiku:  "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+				opus:   "us.anthropic.claude-opus-4-8[1m]",
+				sonnet: "us.anthropic.claude-sonnet-5[1m]",
+				fable:  "us.anthropic.claude-fable-5-1",
+			},
+		},
+		{
+			name:     "enable1M leaves unpinned tiers empty",
+			enable1M: true,
 		},
 		{
 			name:         "unmatched entry is reported and ignored",
 			models:       []string{"us.anthropic.claude-opus-x", "some-random-model"},
-			wantHaiku:    defaultBedrockHaikuModel,
-			wantOpus:     "us.anthropic.claude-opus-x",
-			wantSonnet:   defaultBedrockSonnetModel,
-			wantWarnings: []string{`--models entry "some-random-model" did not match a tier (expected haiku/opus/sonnet in the ID); ignored`},
+			want:         bedrockTiers{opus: "us.anthropic.claude-opus-x"},
+			wantWarnings: []string{`--models entry "some-random-model" did not match a tier (expected haiku/opus/sonnet/fable in the ID); ignored`},
 		},
 		{
-			name:       "matching is case-insensitive",
-			models:     []string{"US.ANTHROPIC.CLAUDE-OPUS-X"},
-			wantHaiku:  defaultBedrockHaikuModel,
-			wantOpus:   "US.ANTHROPIC.CLAUDE-OPUS-X",
-			wantSonnet: defaultBedrockSonnetModel,
+			name:   "matching is case-insensitive",
+			models: []string{"US.ANTHROPIC.CLAUDE-OPUS-X"},
+			want:   bedrockTiers{opus: "US.ANTHROPIC.CLAUDE-OPUS-X"},
 		},
 		{
-			name:       "duplicate-tier override reports the clobbered entry and last wins",
-			models:     []string{"us.anthropic.claude-sonnet-5", "us.anthropic.claude-sonnet-4-6"},
-			wantHaiku:  defaultBedrockHaikuModel,
-			wantOpus:   defaultBedrockOpusModel,
-			wantSonnet: "us.anthropic.claude-sonnet-4-6",
+			name:   "duplicate-tier override reports the clobbered entry and last wins",
+			models: []string{"us.anthropic.claude-sonnet-5", "us.anthropic.claude-sonnet-4-6"},
+			want:   bedrockTiers{sonnet: "us.anthropic.claude-sonnet-4-6"},
 			wantWarnings: []string{
 				`--models entry "us.anthropic.claude-sonnet-4-6" overrides "us.anthropic.claude-sonnet-5" for the sonnet tier; only the last is used`,
 			},
 		},
 		{
-			name:       "already-suffixed override is not doubled with enable1M",
-			models:     []string{"us.anthropic.claude-opus-4-8[1m]"},
-			enable1M:   true,
-			wantHaiku:  defaultBedrockHaikuModel,
-			wantOpus:   "us.anthropic.claude-opus-4-8[1m]",
-			wantSonnet: defaultBedrockSonnetModel + "[1m]",
+			name:     "already-suffixed override is not doubled with enable1M",
+			models:   []string{"us.anthropic.claude-opus-4-8[1m]"},
+			enable1M: true,
+			want:     bedrockTiers{opus: "us.anthropic.claude-opus-4-8[1m]"},
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			haiku, opus, sonnet, warnings := resolveBedrockModels(tt.models, tt.enable1M)
-			assert.Equal(t, tt.wantHaiku, haiku)
-			assert.Equal(t, tt.wantOpus, opus)
-			assert.Equal(t, tt.wantSonnet, sonnet)
+			got, warnings := resolveBedrockModels(tt.models, tt.discovered, tt.enable1M)
+			assert.Equal(t, tt.want, got)
 			assert.Equal(t, tt.wantWarnings, warnings)
 		})
 	}
@@ -177,8 +233,8 @@ func TestWarnBedrockNoEffect(t *testing.T) {
 }
 
 // TestConfigureDetectedTools_BedrockClaudeCode verifies that bedrock-compat
-// populates the ApplyConfig bedrock fields for claude-code (with defaults) and
-// leaves them untouched for a non-claude-code client.
+// populates the ApplyConfig bedrock fields for claude-code (pinning only the
+// tiers named by --models) and leaves them untouched for a non-claude-code client.
 func TestConfigureDetectedTools_BedrockClaudeCode(t *testing.T) {
 	t.Parallel()
 
@@ -190,7 +246,7 @@ func TestConfigureDetectedTools_BedrockClaudeCode(t *testing.T) {
 		[]string{"claude-code"},
 		"https://gw.example.com", "http://localhost:14000/v1",
 		"/usr/local/bin/thv", []string{"llm", "token", "--skip-browser"},
-		false, "/anthropic", nil, discoveredGatewayModels{}, false,
+		false, "/anthropic", []string{"us.anthropic.claude-opus-x"}, discoveredGatewayModels{}, false,
 		BedrockConfig{Compat: true, Enable1M: true},
 	)
 	require.NoError(t, err)
@@ -198,9 +254,13 @@ func TestConfigureDetectedTools_BedrockClaudeCode(t *testing.T) {
 
 	got := gm.applied[0]
 	assert.True(t, got.BedrockCompat)
-	assert.Equal(t, defaultBedrockHaikuModel, got.BedrockHaikuModel)
-	assert.Equal(t, defaultBedrockOpusModel+"[1m]", got.BedrockOpusModel)
-	assert.Equal(t, defaultBedrockSonnetModel+"[1m]", got.BedrockSonnetModel)
+	assert.Empty(t, got.BedrockHaikuModel)
+	assert.Equal(t, "us.anthropic.claude-opus-x[1m]", got.BedrockOpusModel)
+	assert.Empty(t, got.BedrockSonnetModel)
+	// Only opus was pinned (via --models) and nothing was discovered, so the
+	// unpinned tiers are reported in canonical order.
+	assert.Contains(t, errOut.String(),
+		"no Bedrock model found in the gateway catalogue for the haiku, sonnet, fable tier(s)")
 }
 
 func TestConfigureDetectedTools_BedrockSkippedForNonClaudeCode(t *testing.T) {
@@ -1057,6 +1117,167 @@ func TestDiscoverSetupModelsPiAnthropicFallback(t *testing.T) {
 	assert.Contains(t, warnings.String(), "skipping Pi OpenAI models")
 }
 
+func TestDiscoverSetupModelsBedrockClaudeCode(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		compat        bool
+		token         string
+		status        int
+		targetClient  string
+		clients       []string
+		wantRequested bool
+		wantErr       string
+		wantClients   []string
+		wantAnthropic []string
+		wantWarning   string
+	}{
+		{
+			name:          "bedrock compat fetches the Anthropic catalogue",
+			compat:        true,
+			token:         "discovery-token",
+			status:        http.StatusOK,
+			targetClient:  claudeCodeClient,
+			clients:       []string{claudeCodeClient},
+			wantRequested: true,
+			wantClients:   []string{claudeCodeClient},
+			wantAnthropic: []string{"us.anthropic.claude-opus-4-8"},
+		},
+		{
+			name:          "explicit claude-code fails when discovery fails",
+			compat:        true,
+			token:         "discovery-token",
+			status:        http.StatusInternalServerError,
+			targetClient:  claudeCodeClient,
+			clients:       []string{claudeCodeClient},
+			wantRequested: true,
+			wantErr:       "discovering Bedrock models for Claude Code",
+		},
+		{
+			name:          "auto-detected claude-code is skipped with a warning when discovery fails",
+			compat:        true,
+			token:         "discovery-token",
+			status:        http.StatusInternalServerError,
+			targetClient:  "",
+			clients:       []string{claudeCodeClient, "cursor"},
+			wantRequested: true,
+			wantClients:   []string{"cursor"},
+			wantWarning:   "skipping auto-detected claude-code because Bedrock model discovery failed",
+		},
+		{
+			name:         "no request without bedrock compat",
+			token:        "discovery-token",
+			targetClient: claudeCodeClient,
+			clients:      []string{claudeCodeClient},
+			wantClients:  []string{claudeCodeClient},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var requested atomic.Bool
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requested.Store(true)
+				assert.Equal(t, "/anthropic/v1/models", r.URL.Path)
+				if tt.status != http.StatusOK {
+					w.WriteHeader(tt.status)
+					return
+				}
+				_, _ = w.Write([]byte(`{"data":[{"id":"us.anthropic.claude-opus-4-8"}],"has_more":false}`))
+			}))
+			t.Cleanup(server.Close)
+			cfg := Config{GatewayURL: server.URL, Bedrock: BedrockConfig{Compat: tt.compat}}
+			cfg.SetDiscoveryAccessToken(tt.token)
+			var warnings strings.Builder
+
+			clients, catalog, err := discoverSetupModels(
+				context.Background(), &warnings, tt.clients, tt.targetClient, cfg, "/anthropic")
+
+			if tt.wantErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantClients, clients)
+			assert.Equal(t, tt.wantRequested, requested.Load())
+			assert.Equal(t, tt.wantAnthropic, catalog.anthropic)
+			if tt.wantWarning == "" {
+				assert.Empty(t, warnings.String())
+				return
+			}
+			assert.Contains(t, warnings.String(), tt.wantWarning)
+		})
+	}
+}
+
+func TestFilterLazyModelDiscoveryClientsBedrock(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		clients       []string
+		targetClient  string
+		bedrockCompat bool
+		hasModels     bool
+		wantErr       string
+		wantClients   []string
+		wantWarning   string
+	}{
+		{
+			name:          "explicit claude-code with bedrock-compat and no models is refused",
+			clients:       []string{claudeCodeClient},
+			targetClient:  claudeCodeClient,
+			bedrockCompat: true,
+			wantErr:       "does not support --lazy with --bedrock-compat",
+		},
+		{
+			name:          "auto-detected claude-code with bedrock-compat and no models is skipped",
+			clients:       []string{claudeCodeClient, "cursor"},
+			bedrockCompat: true,
+			wantClients:   []string{"cursor"},
+			wantWarning:   "skipping claude-code in lazy mode; --bedrock-compat needs",
+		},
+		{
+			name:          "claude-code with bedrock-compat and models is kept",
+			clients:       []string{claudeCodeClient},
+			targetClient:  claudeCodeClient,
+			bedrockCompat: true,
+			hasModels:     true,
+			wantClients:   []string{claudeCodeClient},
+		},
+		{
+			name:         "claude-code without bedrock-compat is kept",
+			clients:      []string{claudeCodeClient},
+			targetClient: claudeCodeClient,
+			wantClients:  []string{claudeCodeClient},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var warnings strings.Builder
+			got, err := filterLazyModelDiscoveryClients(
+				tt.clients, tt.targetClient, tt.bedrockCompat, tt.hasModels, &warnings)
+			if tt.wantErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantClients, got)
+			if tt.wantWarning == "" {
+				assert.Empty(t, warnings.String())
+				return
+			}
+			assert.Contains(t, warnings.String(), tt.wantWarning)
+		})
+	}
+}
+
 func TestDiscoverAnthropicGatewayModels(t *testing.T) {
 	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1327,10 +1548,13 @@ func TestSetup_PromptCacheBedrockWarningOnlyForInlineFlag(t *testing.T) {
 			provider.cfg.Bedrock.Compat = tt.persistedBedrock
 			provider.cfg.ShortPromptCache = tt.shortPromptCache
 			var stdout, stderr bytes.Buffer
+			// Pass --models so bedrock-compat pins the tier without gateway discovery;
+			// lazy bedrock-compat setup is refused without it.
 			err := Setup(
 				context.Background(), &stdout, &stderr, gm, provider,
 				func(context.Context, *Config) error { return nil },
-				SetOptions{BedrockCompat: tt.inlineBedrock}, "", true, "", true,
+				SetOptions{BedrockCompat: tt.inlineBedrock, Models: []string{"us.anthropic.claude-opus-4-8"}},
+				"", true, "", true,
 			)
 			require.NoError(t, err)
 			assert.Equal(t, tt.wantCompatibility,

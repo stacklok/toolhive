@@ -173,7 +173,7 @@ const (
 //     "NodeTLSRejectUnauthorized", "PromptCacheTTL",
 //     "PromptCache1HLegacy",
 //     "BedrockDisableExperimentalBetas", "BedrockHaikuModel",
-//     "BedrockOpusModel", "BedrockSonnetModel". An unrecognised ValueField is
+//     "BedrockOpusModel", "BedrockSonnetModel", "BedrockFableModel". An unrecognised ValueField is
 //     a programming error and causes ConfigureLLMGateway to return an error.
 //   - Literal is written verbatim into the settings key (e.g. a fixed auth
 //     type string). Use Literal instead of ValueField for constant values so
@@ -190,7 +190,7 @@ type LLMGatewayKeySpec struct {
 	// "TokenHelperCommand" | "PlaceholderAPIKey" | "ClaudeCodeHelperTTLMillis" |
 	// "NodeTLSRejectUnauthorized" | "PromptCacheTTL" | "PromptCache1HLegacy" |
 	// "BedrockDisableExperimentalBetas" | "BedrockHaikuModel" |
-	// "BedrockOpusModel" | "BedrockSonnetModel"
+	// "BedrockOpusModel" | "BedrockSonnetModel" | "BedrockFableModel"
 	ValueField     string
 	Literal        string // constant value written verbatim; mutually exclusive with ValueField
 	ClearWhenEmpty bool   // remove the key when the resolved value is empty (ignored for Literal)
@@ -557,6 +557,9 @@ var supportedClientIntegrations = []clientAppConfig{
 			// source's preemptive refresh window — together they guarantee the helper
 			// never returns an about-to-expire token.
 			{JSONPointer: "/env/CLAUDE_CODE_API_KEY_HELPER_TTL_MS", ValueField: "ClaudeCodeHelperTTLMillis"},
+			// Populate the /model picker from the gateway's GET /v1/models on each
+			// startup, so models the gateway adds appear without re-running setup.
+			{JSONPointer: "/env/CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY", Literal: "1"},
 			// NODE_TLS_REJECT_UNAUTHORIZED is only written when --tls-skip-verify is set.
 			// ClearWhenEmpty ensures it is removed when the flag is later cleared.
 			{JSONPointer: "/env/NODE_TLS_REJECT_UNAUTHORIZED", ValueField: "NodeTLSRejectUnauthorized", ClearWhenEmpty: true},
@@ -578,6 +581,7 @@ var supportedClientIntegrations = []clientAppConfig{
 			{JSONPointer: "/env/ANTHROPIC_DEFAULT_HAIKU_MODEL", ValueField: "BedrockHaikuModel", ClearWhenEmpty: true},
 			{JSONPointer: "/env/ANTHROPIC_DEFAULT_OPUS_MODEL", ValueField: "BedrockOpusModel", ClearWhenEmpty: true},
 			{JSONPointer: "/env/ANTHROPIC_DEFAULT_SONNET_MODEL", ValueField: "BedrockSonnetModel", ClearWhenEmpty: true},
+			{JSONPointer: "/env/ANTHROPIC_DEFAULT_FABLE_MODEL", ValueField: "BedrockFableModel", ClearWhenEmpty: true},
 		},
 	},
 	{

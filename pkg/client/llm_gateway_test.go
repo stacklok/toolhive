@@ -85,9 +85,10 @@ func TestRealClientConfigs_ConfigureAndRevert(t *testing.T) {
 			// ~/.claude/settings.json
 			clientType: ClaudeCode,
 			wantPointers: map[string]string{
-				"/apiKeyHelper":                          `thv llm token`,
-				"/env/ANTHROPIC_BASE_URL":                "https://gw.example.com",
-				"/env/CLAUDE_CODE_API_KEY_HELPER_TTL_MS": "300000",
+				"/apiKeyHelper":                                   `thv llm token`,
+				"/env/ANTHROPIC_BASE_URL":                         "https://gw.example.com",
+				"/env/CLAUDE_CODE_API_KEY_HELPER_TTL_MS":          "300000",
+				"/env/CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY": "1",
 			},
 		},
 		{
@@ -347,6 +348,7 @@ func TestConfigureLLMGateway_ClaudeCodeBedrock(t *testing.T) {
 		"/env/ANTHROPIC_DEFAULT_HAIKU_MODEL":          "us.anthropic.claude-haiku-x",
 		"/env/ANTHROPIC_DEFAULT_OPUS_MODEL":           "us.anthropic.claude-opus-x[1m]",
 		"/env/ANTHROPIC_DEFAULT_SONNET_MODEL":         "us.anthropic.claude-sonnet-x[1m]",
+		"/env/ANTHROPIC_DEFAULT_FABLE_MODEL":          "us.anthropic.claude-fable-x",
 	}
 
 	t.Run("BedrockCompat writes keys", func(t *testing.T) {
@@ -362,6 +364,7 @@ func TestConfigureLLMGateway_ClaudeCodeBedrock(t *testing.T) {
 			BedrockHaikuModel:  "us.anthropic.claude-haiku-x",
 			BedrockOpusModel:   "us.anthropic.claude-opus-x[1m]",
 			BedrockSonnetModel: "us.anthropic.claude-sonnet-x[1m]",
+			BedrockFableModel:  "us.anthropic.claude-fable-x",
 		})
 		require.NoError(t, err)
 

@@ -88,6 +88,7 @@ func allClientTestCases() []llmClientTestCase {
 				"/env/ANTHROPIC_BASE_URL": func(gatewayURL, _ string) string {
 					return gatewayURL
 				},
+				"/env/CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY": func(_, _ string) string { return "1" },
 			},
 		},
 		{

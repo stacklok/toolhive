@@ -624,6 +624,8 @@ func resolveBedrockField(valueField string, cfg llmgateway.ApplyConfig) (string,
 		v = cfg.BedrockOpusModel
 	case "BedrockSonnetModel":
 		v = cfg.BedrockSonnetModel
+	case "BedrockFableModel":
+		v = cfg.BedrockFableModel
 	default:
 		return "", false
 	}

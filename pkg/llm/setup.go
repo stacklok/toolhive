@@ -13,8 +13,10 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"regexp"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -101,7 +103,8 @@ func Setup(
 	// there is nothing to configure. In non-lazy mode login still runs before any
 	// files are patched, preserving the guarantee that a failed login leaves no
 	// state.
-	detected, done, err := setupClients(gm, targetClient, lazy, out, errOut)
+	detected, done, err := setupClients(
+		gm, targetClient, lazy, llmCfg.Bedrock.Compat, len(llmCfg.Models) > 0, out, errOut)
 	if err != nil {
 		return err
 	}
@@ -492,7 +495,7 @@ func filterDetectedClients(gm GatewayManager, targetClient string) ([]string, er
 }
 
 func setupClients(
-	gm GatewayManager, targetClient string, lazy bool, out, errOut io.Writer,
+	gm GatewayManager, targetClient string, lazy, bedrockCompat, hasModels bool, out, errOut io.Writer,
 ) ([]string, bool, error) {
 	detected, err := filterDetectedClients(gm, targetClient)
 	if err != nil {
@@ -505,7 +508,7 @@ func setupClients(
 	if !lazy {
 		return detected, false, nil
 	}
-	detected, err = filterLazyModelDiscoveryClients(detected, targetClient, errOut)
+	detected, err = filterLazyModelDiscoveryClients(detected, targetClient, bedrockCompat, hasModels, errOut)
 	if err != nil {
 		return nil, false, err
 	}
@@ -537,7 +540,9 @@ func hasVSCodeClient(clients []string) bool {
 	return false
 }
 
-func filterLazyModelDiscoveryClients(clients []string, targetClient string, errOut io.Writer) ([]string, error) {
+func filterLazyModelDiscoveryClients(
+	clients []string, targetClient string, bedrockCompat, hasModels bool, errOut io.Writer,
+) ([]string, error) {
 	if targetClient == "pi" {
 		return nil, fmt.Errorf("client %q does not support --lazy: Pi needs authenticated model discovery "+
 			"to select each model's API; rerun without --lazy", targetClient)
@@ -546,6 +551,14 @@ func filterLazyModelDiscoveryClients(clients []string, targetClient string, errO
 		return nil, fmt.Errorf(
 			"client %q does not support --lazy: VS Code requires non-lazy setup for authenticated model discovery; "+
 				"rerun without --lazy", targetClient)
+	}
+	// --bedrock-compat pins each tier to a Bedrock model discovered from the
+	// gateway, which lazy mode cannot do (it never logs in). Without pins, Claude
+	// Code falls back to Anthropic-form IDs a Bedrock-only gateway rejects — so
+	// refuse unless the user pins the tiers explicitly with --models.
+	if targetClient == claudeCodeClient && bedrockCompat && !hasModels {
+		return nil, fmt.Errorf("client %q does not support --lazy with --bedrock-compat: Bedrock tiers need "+
+			"authenticated model discovery; pass --models to pin them, or rerun without --lazy", targetClient)
 	}
 	filtered := make([]string, 0, len(clients))
 	for _, clientType := range clients {
@@ -559,6 +572,11 @@ func filterLazyModelDiscoveryClients(clients []string, targetClient string, errO
 				"Warning: skipping %s in lazy mode; VS Code requires non-lazy setup for authenticated model discovery.\n",
 				clientType,
 			)
+			continue
+		}
+		if clientType == claudeCodeClient && bedrockCompat && !hasModels {
+			_, _ = fmt.Fprintln(errOut, "Warning: skipping claude-code in lazy mode; --bedrock-compat needs "+
+				"authenticated model discovery to pin tiers. Pass --models to pin them, or rerun without --lazy.")
 			continue
 		}
 		filtered = append(filtered, clientType)
@@ -580,34 +598,69 @@ func discoverSetupModels(
 ) ([]string, discoveredGatewayModels, error) {
 	hasPi := slices.Contains(clients, "pi")
 	hasVSCode := hasVSCodeClient(clients)
-	catalog, openErr, anthropicErr := fetchSetupModelCatalog(ctx, cfg, hasPi, hasVSCode, anthropicPrefix)
+	// Bedrock-compat Claude Code pins each tier to the newest Bedrock model the
+	// gateway advertises, so it needs the Anthropic catalogue too.
+	needsBedrockTiers := cfg.Bedrock.Compat && slices.Contains(clients, claudeCodeClient)
+	catalog, openErr, anthropicErr := fetchSetupModelCatalog(
+		ctx, cfg, hasPi || needsBedrockTiers, hasVSCode || hasPi, anthropicPrefix)
 	piMissing := hasPi && len(catalog.openAI) == 0 && len(catalog.anthropic) == 0
-	if isVSCodeClient(targetClient) && openErr != nil {
-		return nil, catalog, openErr
-	}
-	if targetClient == "pi" && piMissing {
-		return nil, catalog, fmt.Errorf("discovering Pi models: %w", errors.Join(openErr, anthropicErr))
+	// Bedrock-compat Claude Code cannot derive its tier pins when the Anthropic
+	// catalogue fetch failed. Treat that like the Pi/VS Code discovery failures:
+	// abort when the client was named explicitly, skip it with a warning when it
+	// was auto-detected (so the user is not left with a Claude Code that routes
+	// built-in Anthropic IDs a Bedrock-only gateway rejects).
+	bedrockMissing := needsBedrockTiers && anthropicErr != nil
+	if err := explicitDiscoveryFailure(targetClient, piMissing, bedrockMissing, openErr, anthropicErr); err != nil {
+		return nil, catalog, err
 	}
 	warnModelDiscovery(errOut, hasVSCode, hasPi, piMissing, catalog, openErr, anthropicErr)
+	if bedrockMissing {
+		_, _ = fmt.Fprintf(errOut, "Warning: skipping auto-detected claude-code because Bedrock model discovery "+
+			"failed: %v; pass --models to pin the tiers explicitly.\n", anthropicErr)
+	}
+	return keepDiscoverableClients(clients, openErr, piMissing, bedrockMissing), catalog, nil
+}
+
+// explicitDiscoveryFailure returns an error when the explicitly named client
+// cannot be configured because its model discovery failed, so setup aborts
+// rather than writing a half-configured client.
+func explicitDiscoveryFailure(targetClient string, piMissing, bedrockMissing bool, openErr, anthropicErr error) error {
+	switch {
+	case isVSCodeClient(targetClient) && openErr != nil:
+		return openErr
+	case targetClient == "pi" && piMissing:
+		return fmt.Errorf("discovering Pi models: %w", errors.Join(openErr, anthropicErr))
+	case targetClient == claudeCodeClient && bedrockMissing:
+		return fmt.Errorf("discovering Bedrock models for Claude Code: %w; "+
+			"pass --models to pin the tiers explicitly", anthropicErr)
+	default:
+		return nil
+	}
+}
+
+// keepDiscoverableClients drops the auto-detected clients whose required model
+// discovery failed, leaving the rest to be configured.
+func keepDiscoverableClients(clients []string, openErr error, piMissing, bedrockMissing bool) []string {
 	filtered := make([]string, 0, len(clients))
 	for _, clientType := range clients {
-		if (isVSCodeClient(clientType) && openErr != nil) || (clientType == "pi" && piMissing) {
+		if (isVSCodeClient(clientType) && openErr != nil) || (clientType == "pi" && piMissing) ||
+			(clientType == claudeCodeClient && bedrockMissing) {
 			continue
 		}
 		filtered = append(filtered, clientType)
 	}
-	return filtered, catalog, nil
+	return filtered
 }
 
 func fetchSetupModelCatalog(
-	ctx context.Context, cfg Config, hasPi, hasVSCode bool, anthropicPrefix string,
+	ctx context.Context, cfg Config, wantAnthropic, wantOpenAI bool, anthropicPrefix string,
 ) (discoveredGatewayModels, error, error) {
 	var catalog discoveredGatewayModels
 	var openErr, anthropicErr error
-	if hasVSCode || hasPi {
+	if wantOpenAI {
 		catalog.openAI, catalog.openAIContextWindows, openErr = discoverGatewayModels(ctx, cfg)
 	}
-	if hasPi && cfg.discoveryAccessToken != "" {
+	if wantAnthropic && cfg.discoveryAccessToken != "" {
 		catalog.anthropic, catalog.anthropicContextWindows, catalog.anthropicReasoning, catalog.anthropicAdaptive, anthropicErr =
 			discoverAnthropicGatewayModels(ctx, cfg, anthropicPrefix)
 	}
@@ -783,68 +836,217 @@ func piThinkingModes(supported, adaptive, enabled bool) (bool, bool) {
 	return supported && (adaptive || enabled), supported && adaptive
 }
 
-// Default Bedrock inference-profile model IDs written for Claude Code in
-// bedrock-compat mode when --models does not override a tier. These track the
-// current generation and are expected to be bumped periodically; users override
-// per tier via --models.
-const (
-	defaultBedrockHaikuModel  = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
-	defaultBedrockOpusModel   = "us.anthropic.claude-opus-4-8"
-	defaultBedrockSonnetModel = "us.anthropic.claude-sonnet-5"
-)
-
 // oneMSuffix is the model-ID suffix that opts Bedrock opus/sonnet into the
 // 1M-token context window.
 const oneMSuffix = "[1m]"
 
-// resolveBedrockModels maps optional override model IDs onto Claude Code's three
-// tiers, starting from the built-in defaults. Each override is assigned to a tier
-// by matching "haiku", "opus", or "sonnet" (case-insensitive) as a substring of
-// the ID. When enable1M is true, the "[1m]" suffix is appended to the opus and
-// sonnet IDs (never haiku, which has a 200K context window) to opt into the 1M
-// context window on Bedrock; an override that already carries the suffix is left
-// as-is so it is not doubled.
+// bedrockTiers holds the model ID pinned for each Claude Code model family in
+// bedrock-compat mode. An empty tier is left unpinned.
+type bedrockTiers struct {
+	haiku, opus, sonnet, fable string
+}
+
+// emptyFamilies lists the tiers left without a pinned model ID, in a stable
+// order, so the caller can tell the user which families it could not pin.
+func (t *bedrockTiers) emptyFamilies() []string {
+	var empty []string
+	for _, family := range bedrockFamilies {
+		if *t.slot(family) == "" {
+			empty = append(empty, family)
+		}
+	}
+	return empty
+}
+
+// slot returns the field for a family name, or nil for an unknown family.
+func (t *bedrockTiers) slot(family string) *string {
+	switch family {
+	case "haiku":
+		return &t.haiku
+	case "opus":
+		return &t.opus
+	case "sonnet":
+		return &t.sonnet
+	case "fable":
+		return &t.fable
+	default:
+		return nil
+	}
+}
+
+// bedrockFamilies are the Claude Code model tiers a Bedrock model ID can pin.
+var bedrockFamilies = []string{"haiku", "opus", "sonnet", "fable"}
+
+// bedrockModelCorePattern matches a Bedrock-form Anthropic Claude model ID: an
+// optional cross-region prefix ("us.", "eu.", "global.", ...) and the required
+// "anthropic.claude-" vendor segment, capturing the hyphenated core and dropping
+// an optional "-v<rev>[:<n>]" Bedrock revision suffix. Anthropic-form IDs
+// ("claude-opus-4-8", which lack the "anthropic." segment) do not match, so a
+// gateway that also routes Anthropic directly never has those picked as Bedrock
+// pins.
+var bedrockModelCorePattern = regexp.MustCompile(
+	`^(?:[a-z]+\.)?anthropic\.claude-(.+?)(?:-v\d+(?::\d+)?)?$`)
+
+// parseBedrockModel reports whether id is a Bedrock-form Anthropic Claude model
+// ID and, if so, its family and a [major, minor, releaseDate] key for ranking.
+// It tokenizes the core on "-" rather than pinning one layout, so it accepts
+// both the family-first form ("claude-haiku-4-5-20251001-v1:0") and the
+// version-first form used by Claude 3.x on Bedrock
+// ("claude-3-5-haiku-20241022-v1:0", "claude-3-haiku-20240307-v1:0"), plus a
+// major-only form with a release date ("claude-sonnet-4-20250514-v1:0"). The
+// 8-digit release date orders releases within a (major, minor). Any unexpected
+// token (a free-form route name, a second family word) rejects the ID so only
+// genuine Bedrock model IDs are pinned.
+func parseBedrockModel(id string) (family string, version []int, ok bool) {
+	m := bedrockModelCorePattern.FindStringSubmatch(id)
+	if m == nil {
+		return "", nil, false
+	}
+	var nums []int
+	date := 0
+	for _, tok := range strings.Split(m[1], "-") {
+		switch {
+		case slices.Contains(bedrockFamilies, tok):
+			if family != "" {
+				return "", nil, false // two family tokens: not a real model ID
+			}
+			family = tok
+		case len(tok) == 8 && isAllDigits(tok):
+			date, _ = strconv.Atoi(tok)
+		case isAllDigits(tok):
+			n, _ := strconv.Atoi(tok)
+			nums = append(nums, n)
+		default:
+			return "", nil, false // unknown token: free-form route name, not Bedrock
+		}
+	}
+	if family == "" {
+		return "", nil, false
+	}
+	version = []int{0, 0, date} // [major, minor, releaseDate]
+	if len(nums) > 0 {
+		version[0] = nums[0]
+	}
+	if len(nums) > 1 {
+		version[1] = nums[1]
+	}
+	return family, version, true
+}
+
+func isAllDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// newestBedrockTiers picks, for each family, the Bedrock-form ID in discovered
+// with the highest [major, minor, releaseDate] version. Ties are broken by the
+// lexicographically smallest ID so the result is deterministic. The gateway's
+// created_at is not used: it reflects when a route was configured, not the
+// model's release.
+func newestBedrockTiers(discovered []string) bedrockTiers {
+	var tiers bedrockTiers
+	best := make(map[string][]int, len(bedrockFamilies))
+	for _, id := range discovered {
+		family, version, ok := parseBedrockModel(id)
+		if !ok {
+			continue
+		}
+		dst := tiers.slot(family)
+		prev, seen := best[family]
+		cmp := slices.Compare(version, prev)
+		if !seen || cmp > 0 || (cmp == 0 && id < *dst) {
+			best[family] = version
+			*dst = id
+		}
+	}
+	return tiers
+}
+
+// applyBedrockCompat resolves the per-tier Bedrock model IDs for Claude Code and
+// writes them onto applyCfg, surfacing override diagnostics and naming any tier
+// that could not be pinned. Called only for bedrock-compat Claude Code.
+func applyBedrockCompat(
+	errOut io.Writer, applyCfg *llmgateway.ApplyConfig, models, discoveredAnthropic []string, enable1M bool,
+) {
+	tiers, warnings := resolveBedrockModels(models, discoveredAnthropic, enable1M)
+	applyCfg.BedrockCompat = true
+	applyCfg.BedrockHaikuModel = tiers.haiku
+	applyCfg.BedrockOpusModel = tiers.opus
+	applyCfg.BedrockSonnetModel = tiers.sonnet
+	applyCfg.BedrockFableModel = tiers.fable
+	for _, w := range warnings {
+		_, _ = fmt.Fprintf(errOut, "Warning: %s\n", w)
+	}
+	// Discovery succeeded (an outright failure would have skipped claude-code
+	// upstream) but a family may still have no Bedrock-form model — e.g. a gateway
+	// serving only some tiers, or naming its routes without the "anthropic."
+	// segment. Name those tiers so the user can pin them.
+	if empty := tiers.emptyFamilies(); len(empty) > 0 {
+		_, _ = fmt.Fprintf(errOut, "Warning: no Bedrock model found in the gateway catalogue for the %s "+
+			"tier(s); pass --models to pin them, or they fall back to Claude Code's built-in model IDs.\n",
+			strings.Join(empty, ", "))
+	}
+}
+
+// resolveBedrockModels picks the model ID pinned for each Claude Code family.
+// Each family starts from the newest Bedrock model in discovered (see
+// newestBedrockTiers); override model IDs then replace a family by matching
+// "haiku", "opus", "sonnet", or "fable" (case-insensitive) as a substring of
+// the ID. A family with neither resolves to "" so no pin is written and Claude
+// Code falls back to its built-in model ID. When enable1M is true, the "[1m]"
+// suffix is appended to pinned opus and sonnet IDs (never haiku, which has a
+// 200K context window) to opt into the 1M context window on Bedrock; an ID
+// that already carries the suffix is left as-is so it is not doubled.
 //
 // warnings collects the human-readable diagnostics for overrides that had no
 // (or a surprising) effect — an ID matching no tier, and a second ID clobbering
 // a tier an earlier ID already set — so the caller can surface them.
-func resolveBedrockModels(models []string, enable1M bool) (haiku, opus, sonnet string, warnings []string) {
-	haiku, opus, sonnet = defaultBedrockHaikuModel, defaultBedrockOpusModel, defaultBedrockSonnetModel
+func resolveBedrockModels(models, discovered []string, enable1M bool) (bedrockTiers, []string) {
+	tiers := newestBedrockTiers(discovered)
+	var warnings []string
 	// Track which tiers an override has already claimed so a second override for
 	// the same tier is reported rather than silently winning last-write.
-	assigned := make(map[string]string, 3)
-	assign := func(tier string, dst *string, id string) {
-		if prev, ok := assigned[tier]; ok {
-			warnings = append(warnings, fmt.Sprintf(
-				"--models entry %q overrides %q for the %s tier; only the last is used", id, prev, tier))
-		}
-		assigned[tier] = id
-		*dst = id
-	}
+	assigned := make(map[string]string, 4)
 	for _, m := range models {
-		switch lower := strings.ToLower(m); {
-		case strings.Contains(lower, "haiku"):
-			assign("haiku", &haiku, m)
-		case strings.Contains(lower, "opus"):
-			assign("opus", &opus, m)
-		case strings.Contains(lower, "sonnet"):
-			assign("sonnet", &sonnet, m)
-		default:
-			warnings = append(warnings, fmt.Sprintf(
-				"--models entry %q did not match a tier (expected haiku/opus/sonnet in the ID); ignored", m))
+		lower := strings.ToLower(m)
+		family := ""
+		for _, f := range []string{"haiku", "opus", "sonnet", "fable"} {
+			if strings.Contains(lower, f) {
+				family = f
+				break
+			}
 		}
+		if family == "" {
+			warnings = append(warnings, fmt.Sprintf(
+				"--models entry %q did not match a tier (expected haiku/opus/sonnet/fable in the ID); ignored", m))
+			continue
+		}
+		if prev, ok := assigned[family]; ok {
+			warnings = append(warnings, fmt.Sprintf(
+				"--models entry %q overrides %q for the %s tier; only the last is used", m, prev, family))
+		}
+		assigned[family] = m
+		*tiers.slot(family) = m
 	}
 	if enable1M {
-		opus = withOneMSuffix(opus)
-		sonnet = withOneMSuffix(sonnet)
+		tiers.opus = withOneMSuffix(tiers.opus)
+		tiers.sonnet = withOneMSuffix(tiers.sonnet)
 	}
-	return haiku, opus, sonnet, warnings
+	return tiers, warnings
 }
 
-// withOneMSuffix appends the "[1m]" suffix unless id already ends with it, so a
-// user-supplied ID that already carries the suffix is not doubled into "[1m][1m]".
+// withOneMSuffix appends the "[1m]" suffix unless id is empty (an unpinned tier)
+// or already ends with it, so a user-supplied ID that already carries the suffix
+// is not doubled into "[1m][1m]".
 func withOneMSuffix(id string) string {
-	if strings.HasSuffix(id, oneMSuffix) {
+	if id == "" || strings.HasSuffix(id, oneMSuffix) {
 		return id
 	}
 	return id + oneMSuffix
@@ -949,18 +1151,12 @@ func configureDetectedToolsWithDiscovery(
 		}
 
 		// Bedrock-compat applies only to Claude Code: it disables the experimental
-		// anthropic-beta headers Bedrock rejects and pins per-tier Bedrock model
-		// IDs. Resolve defaults, tier mapping, and the optional [1m] suffix here so
-		// pkg/client only writes the resolved values.
+		// anthropic-beta headers Bedrock rejects and pins each tier to the newest
+		// discovered Bedrock model (or the --models override). Resolve tier
+		// selection and the optional [1m] suffix here so pkg/client only writes
+		// the resolved values.
 		if bedrock.Compat && clientType == claudeCodeClient {
-			haiku, opus, sonnet, warnings := resolveBedrockModels(models, bedrock.Enable1M)
-			applyCfg.BedrockCompat = true
-			applyCfg.BedrockHaikuModel = haiku
-			applyCfg.BedrockOpusModel = opus
-			applyCfg.BedrockSonnetModel = sonnet
-			for _, w := range warnings {
-				_, _ = fmt.Fprintf(errOut, "Warning: %s\n", w)
-			}
+			applyBedrockCompat(errOut, &applyCfg, models, discovered.anthropic, bedrock.Enable1M)
 		}
 
 		configPath, err := gm.ConfigureLLMGateway(clientType, applyCfg)

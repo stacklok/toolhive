@@ -8,7 +8,13 @@ package consentpolicy
 import (
 	"fmt"
 	"net/url"
+	"slices"
 	"strings"
+
+	"github.com/ory/fosite"
+
+	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
+	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
 // Validate checks the configured client IDs and the prerequisites for enabling
@@ -44,6 +50,26 @@ func Validate(clientIDs []string, authorizationBase, issuer string, upstreamCoun
 		return fmt.Errorf("consent_exempt_client_ids requires an HTTPS authorization endpoint base URL")
 	}
 	return nil
+}
+
+// IsBackChannelOnlyClient reports whether client has no interactive /authorize
+// flow, using the same explicit marker and metadata-shape exclusions at startup
+// and runtime.
+func IsBackChannelOnlyClient(client fosite.Client) bool {
+	return registration.BackChannelOnly(client) ||
+		len(client.GetResponseTypes()) == 0 ||
+		client.GetGrantTypes().ExactOne(oauthproto.GrantTypeTokenExchange)
+}
+
+// IsEligibleClient reports whether client supports ToolHive's interactive
+// authorization-code flow and can be preauthorized to skip its consent page.
+func IsEligibleClient(client fosite.Client) bool {
+	return client != nil &&
+		!client.IsPublic() &&
+		!IsBackChannelOnlyClient(client) &&
+		slices.Contains(client.GetGrantTypes(), oauthproto.GrantTypeAuthorizationCode) &&
+		slices.Contains(client.GetResponseTypes(), oauthproto.ResponseTypeCode) &&
+		len(client.GetRedirectURIs()) > 0
 }
 
 // isURLShaped reports whether clientID is an absolute URI or a network-path URL

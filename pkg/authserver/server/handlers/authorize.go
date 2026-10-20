@@ -15,12 +15,12 @@ import (
 
 	"github.com/ory/fosite"
 
+	"github.com/stacklok/toolhive/pkg/authserver/internal/consentpolicy"
 	"github.com/stacklok/toolhive/pkg/authserver/server"
 	"github.com/stacklok/toolhive/pkg/authserver/server/crypto"
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
-	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
 // upstreamAuthSecrets holds cryptographic values needed for upstream IDP authorization.
@@ -237,7 +237,7 @@ func (h *Handler) rejectBackChannelOnlyAuthorizeClient(ctx context.Context, w ht
 		return false
 	}
 	client, err := h.storage.GetClient(ctx, clientID)
-	if err != nil || client == nil || !isBackChannelOnlyClient(client) {
+	if err != nil || client == nil || !consentpolicy.IsBackChannelOnlyClient(client) {
 		return false
 	}
 	authorizeRequest := fosite.NewAuthorizeRequest()
@@ -249,20 +249,6 @@ func (h *Handler) rejectBackChannelOnlyAuthorizeClient(ctx context.Context, w ht
 		fosite.ErrInvalidClient.WithHint("The requested OAuth 2.0 Client does not exist."),
 	)
 	return true
-}
-
-// isBackChannelOnlyClient reports whether client has no interactive
-// /authorize flow. It checks the explicit registration.BackChannelOnly
-// marker first -- the authoritative answer for client types that carry it
-// (registration.SPIFFEClient and the SPIFFE storage decorator's durable
-// placeholder) -- and falls back to the pre-existing metadata-shape
-// inference (empty response types, or grant types exactly
-// token-exchange) for every other client type, such as a delegate client,
-// so their current /authorize-hiding behaviour is unchanged.
-func isBackChannelOnlyClient(client fosite.Client) bool {
-	return registration.BackChannelOnly(client) ||
-		len(client.GetResponseTypes()) == 0 ||
-		client.GetGrantTypes().ExactOne(oauthproto.GrantTypeTokenExchange)
 }
 
 // loopbackAuthorizeRequester wraps a fosite.AuthorizeRequester to make the

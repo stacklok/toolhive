@@ -341,7 +341,8 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage) (_ *server
 	router := handlerInstance.Routes()
 
 	slog.Debug("oauth authorization server initialized",
-		"issuer", cfg.Issuer,
+		"consent_exemption_enabled", len(cfg.ConsentExemptClientIDs) > 0,
+		"consent_exempt_client_count", len(cfg.ConsentExemptClientIDs),
 	)
 
 	return &server{

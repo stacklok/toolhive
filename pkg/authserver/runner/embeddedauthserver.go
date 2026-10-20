@@ -56,11 +56,15 @@ type embeddedAuthServerOptions struct {
 }
 
 // WithConsentExemptClientIDs preauthorizes listed clients to skip ToolHive's
-// consent page. Listing a client ID preauthorizes whichever registration
-// currently holds that ID, for whichever user completes upstream authentication;
-// this is not per-user consent. The caller must control registration writes for
-// exempt IDs. The input is copied when the option is created, and repeated
-// options replace the list.
+// consent page. Listing a client ID preauthorizes whatever registration currently
+// holds that ID, for whichever user completes upstream authentication. It is not
+// per-user consent, and runtime eligibility checks do not prove where the
+// registration came from. The caller must control registration writes for exempt
+// IDs; replacing a registration or expanding its permissions transfers or broadens
+// preauthorization. Removing an ID affects new requests only and does not revoke
+// tokens or cancel already-approved flows. Upstream authentication still runs.
+// The input is copied when the option is created, and repeated options replace the
+// list.
 func WithConsentExemptClientIDs(ids []string) EmbeddedAuthServerOption {
 	copiedIDs := slices.Clone(ids)
 	return func(options *embeddedAuthServerOptions) {

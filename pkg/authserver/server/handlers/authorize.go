@@ -137,11 +137,7 @@ func (h *Handler) AuthorizeHandler(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	slog.Debug("authorize request received",
-		"client_id", clientID,
-		"redirect_uri", redirectURI,
-		"scope_count", len(scopes),
-	)
+	slog.Debug("authorize request received", "scope_count", len(scopes))
 
 	// Prepare the pending request before choosing the consent or upstream path;
 	// beginUpstream persists its secret-bearing copy before redirecting.
@@ -154,8 +150,17 @@ func (h *Handler) AuthorizeHandler(w http.ResponseWriter, req *http.Request) {
 		BrowserBindingHash: binding.hash, UpstreamProviderName: h.upstreams[0].Name,
 		SessionID: rand.Text(), CreatedAt: time.Now(),
 	}
-	if !promptRequiresConsent(ar.GetRequestForm()) {
-		if h.consentExempt(ar, originalForm, rewrittenFrom) {
+	promptConsent := promptRequiresConsent(ar.GetRequestForm())
+	exempt := !promptConsent && h.consentExempt(ar, originalForm, rewrittenFrom)
+	if len(h.consentExemptClientIDSet) > 0 {
+		slog.Debug("consent exemption decision",
+			"client_id", clientID,
+			"exempt", exempt,
+			"prompt_requires_consent", promptConsent,
+		)
+	}
+	if !promptConsent {
+		if exempt {
 			pending.ConsentStage = storage.ConsentStageApproved
 			h.beginUpstream(ctx, w, req, errAr, pending)
 			return

@@ -199,7 +199,15 @@ func WithUpstreamFilter(f UpstreamFilter) Option {
 }
 
 // WithConsentExemptClientIDs configures the client IDs preauthorized to skip
-// ToolHive's consent page. The IDs are copied when the option is created.
+// ToolHive's consent page. Listing a client ID preauthorizes whatever registration
+// currently holds that ID, for whichever user completes upstream authentication.
+// It is not per-user consent, and runtime eligibility checks do not prove where
+// the registration came from. The embedder must control registration writes for
+// exempt IDs; replacement or permission expansion transfers or broadens
+// preauthorization. Removing an ID affects new requests only and does not revoke
+// tokens or cancel already-approved flows. Upstream authentication still runs.
+// The IDs are copied when the option is created, and repeated options replace the
+// list.
 func WithConsentExemptClientIDs(ids []string) Option {
 	clientIDs := slices.Clone(ids)
 	return func(h *Handler) {

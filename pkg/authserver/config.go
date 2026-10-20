@@ -1124,6 +1124,10 @@ type Config struct {
 	Upstreams []UpstreamConfig
 
 	// ConsentExemptClientIDs preauthorizes listed clients to skip ToolHive's consent page.
+	//
+	// Listing a client ID preauthorizes whatever registration currently holds that ID, for whichever user completes upstream authentication. It is not per-user consent, and runtime eligibility checks do not prove where the registration came from.
+	//
+	// The embedder must control registration writes for exempt IDs. Replacing a registration or expanding its permissions transfers or broadens the preauthorization. Removing an ID affects new authorization requests only; it does not revoke tokens or cancel already-approved flows. Upstream authentication still runs.
 	ConsentExemptClientIDs []string
 
 	// UpstreamFactory, when set, is used instead of DefaultUpstreamFactory to

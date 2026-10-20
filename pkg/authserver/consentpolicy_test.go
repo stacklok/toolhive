@@ -44,9 +44,22 @@ func TestConfigValidateConsentExemptClientIDs(t *testing.T) {
 		{name: "absolute URI rejected", setup: func(cfg *Config) { cfg.ConsentExemptClientIDs = []string{"custom:desktop-client"} }, wantErr: "URL-shaped"},
 		{name: "network path URL rejected", setup: func(cfg *Config) { cfg.ConsentExemptClientIDs = []string{"//client.example.com/id"} }, wantErr: "URL-shaped"},
 		{name: "upstream required", setup: func(cfg *Config) { cfg.ConsentExemptClientIDs = []string{"desktop-client"}; cfg.Upstreams = nil }, wantErr: "at least one configured upstream"},
-		{name: "insecure HTTP issuer does not relax HTTPS requirement", setup: func(cfg *Config) { cfg.ConsentExemptClientIDs = []string{"desktop-client"}; cfg.Issuer = "http://auth.example.com"; cfg.InsecureAllowHTTP = true }, wantErr: "HTTPS"},
-		{name: "HTTP override rejected despite HTTPS issuer", setup: func(cfg *Config) { cfg.ConsentExemptClientIDs = []string{"desktop-client"}; cfg.AuthorizationEndpointBaseURL = "http://login.example.com"; cfg.InsecureAllowHTTP = true }, wantErr: "HTTPS"},
-		{name: "HTTPS override is effective over HTTP issuer", setup: func(cfg *Config) { cfg.ConsentExemptClientIDs = []string{"desktop-client"}; cfg.Issuer = "http://auth.example.com"; cfg.InsecureAllowHTTP = true; cfg.AuthorizationEndpointBaseURL = "https://login.example.com" }},
+		{name: "insecure HTTP issuer does not relax HTTPS requirement", setup: func(cfg *Config) {
+			cfg.ConsentExemptClientIDs = []string{"desktop-client"}
+			cfg.Issuer = "http://auth.example.com"
+			cfg.InsecureAllowHTTP = true
+		}, wantErr: "HTTPS"},
+		{name: "HTTP override rejected despite HTTPS issuer", setup: func(cfg *Config) {
+			cfg.ConsentExemptClientIDs = []string{"desktop-client"}
+			cfg.AuthorizationEndpointBaseURL = "http://login.example.com"
+			cfg.InsecureAllowHTTP = true
+		}, wantErr: "HTTPS"},
+		{name: "HTTPS override is effective over HTTP issuer", setup: func(cfg *Config) {
+			cfg.ConsentExemptClientIDs = []string{"desktop-client"}
+			cfg.Issuer = "http://auth.example.com"
+			cfg.InsecureAllowHTTP = true
+			cfg.AuthorizationEndpointBaseURL = "https://login.example.com"
+		}},
 	}
 
 	for _, tt := range tests {

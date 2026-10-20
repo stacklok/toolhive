@@ -17,7 +17,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver/server/crypto"
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
-	"github.com/stacklok/toolhive/pkg/authserver/upstream"
+	authupstream "github.com/stacklok/toolhive/pkg/authserver/upstream"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
@@ -48,7 +48,7 @@ type recordingConsentUpstream struct {
 }
 
 func (p *recordingConsentUpstream) AuthorizationURL(
-	state, challenge string, options ...upstream.AuthorizationOption,
+	state, challenge string, options ...authupstream.AuthorizationOption,
 ) (string, error) {
 	p.calls = append(p.calls, upstreamAuthorizationCall{state: state, challenge: challenge})
 	return p.mockIDPProvider.AuthorizationURL(state, challenge, options...)

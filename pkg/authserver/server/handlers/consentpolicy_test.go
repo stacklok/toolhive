@@ -24,7 +24,7 @@ func newConsentPolicyTestHandler(
 
 	stor := mocks.NewMockStorage(gomock.NewController(t))
 	config := &server.AuthorizationServerConfig{
-		Config: &fosite.Config{AccessTokenIssuer: issuer},
+		Config:                       &fosite.Config{AccessTokenIssuer: issuer},
 		AuthorizationEndpointBaseURL: authorizationBase,
 	}
 	provider := fosite.NewOAuth2Provider(stor, config.Config)
@@ -47,9 +47,9 @@ func TestNewHandlerConsentExemptClientIDsValidation(t *testing.T) {
 		wantErr           string
 	}{
 		{
-			name:              "empty list preserves token-only HTTP behavior",
-			issuer:            "http://auth.example.com",
-			clientIDs:         []string{},
+			name:      "empty list preserves token-only HTTP behavior",
+			issuer:    "http://auth.example.com",
+			clientIDs: []string{},
 		},
 		{name: "requires configured upstream", issuer: "https://auth.example.com", clientIDs: []string{"desktop-client"}, wantErr: "at least one configured upstream"},
 		{name: "issuer must be HTTPS", issuer: "http://auth.example.com", upstreamCount: 1, clientIDs: []string{"desktop-client"}, wantErr: "HTTPS"},

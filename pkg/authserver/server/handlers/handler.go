@@ -62,8 +62,8 @@ type Handler struct {
 	filter UpstreamFilter
 	// consentExemptClientIDs is populated by WithConsentExemptClientIDs until
 	// constructor validation builds consentExemptClientIDSet.
-	consentExemptClientIDs    []string
-	consentExemptClientIDSet  map[string]struct{}
+	consentExemptClientIDs   []string
+	consentExemptClientIDSet map[string]struct{}
 	// registerLimiter bounds the unauthenticated /oauth/register endpoint,
 	// which mints persisted state on every call. Per-process, not per-IP: the
 	// goal is to cap storage growth and log volume, not to be fair between

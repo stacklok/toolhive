@@ -203,43 +203,11 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage) (_ *server
 
 	logConfidentialClientStartup(cfg.AllowConfidentialClientRegistration)
 
-	// Validate storage is provided
-	if stor == nil {
-		return nil, fmt.Errorf("storage is required")
-	}
-
-	// Storage no longer embeds DCRCredentialStore (the embed widened secret
-	// reach to every Storage consumer); obtain the DCR-capable handle via an
-	// explicit assertion at the boundary. The per-backend
-	// `var _ DCRCredentialStore = (*MemoryStorage)(nil)` /
-	// `var _ DCRCredentialStore = (*RedisStorage)(nil)` checks make this
-	// provably safe for the production backends; surfacing a bad backend as
-	// a constructor error keeps misconfiguration fail-loud at boot rather
-	// than at first DCR resolve.
-	baseStore := storage.Unwrap(stor)
-	dcrStore, ok := baseStore.(storage.DCRCredentialStore)
-	if !ok {
-		return nil, fmt.Errorf("storage backend %T does not implement storage.DCRCredentialStore", baseStore)
-	}
-
-	bundleSource, err := newSPIFFEMultiDomainBundleSource(ctx, cfg.SPIFFETrust)
+	stor, dcrStore, bundleSource, spiffeRegistry, err := prepareServerStorage(ctx, cfg, stor)
 	if err != nil {
-		return nil, fmt.Errorf("create SPIFFE bundle source: %w", err)
+		return nil, err
 	}
 	defer closeSPIFFEBundleSourceOnConstructionError(bundleSource, &retErr)
-
-	stor, spiffeRegistry, err := decorateStorageForSPIFFE(ctx, cfg, stor)
-	if err != nil {
-		return nil, err
-	}
-
-	if err := validateConsentExemptClients(ctx, stor, cfg.ConsentExemptClientIDs); err != nil {
-		return nil, err
-	}
-
-	if err := registerDelegateClients(ctx, stor, cfg.DelegateClients); err != nil {
-		return nil, err
-	}
 
 	slog.Debug("creating OAuth2 configuration")
 
@@ -250,24 +218,24 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage) (_ *server
 
 	// Create OAuth2 config from authserver.Config
 	oauthParams := &oauthserver.AuthorizationServerParams{
-		Issuer:                                    cfg.Issuer,
-		AccessTokenLifespan:                       cfg.AccessTokenLifespan,
-		RefreshTokenLifespan:                      cfg.RefreshTokenLifespan,
-		AuthCodeLifespan:                          cfg.AuthCodeLifespan,
-		HMACSecrets:                               cfg.HMACSecrets,
-		SigningKeyID:                              signingKey.KeyID,
-		SigningKeyAlgorithm:                       signingKey.Algorithm,
-		SigningKey:                                signingKey.Key,
-		AdditionalPublicKeys:                      additionalPublicKeys,
-		ScopesSupported:                           cfg.ScopesSupported,
-		BaselineClientScopes:                      cfg.BaselineClientScopes,
-		AllowedAudiences:                          cfg.AllowedAudiences,
-		AuthorizationEndpointBaseURL:              cfg.AuthorizationEndpointBaseURL,
-		CIMDEnabled:                               cfg.CIMDEnabled,
-		AllowConfidentialClientRegistration:       cfg.AllowConfidentialClientRegistration,
-		AllowPrivateKeyJWTRegistration:            cfg.AllowPrivateKeyJWTRegistration,
-		HasStaticDelegateClients:                  len(cfg.DelegateClients) > 0,
-		InsecureAllowHTTP:                         cfg.InsecureAllowHTTP,
+		Issuer:                              cfg.Issuer,
+		AccessTokenLifespan:                 cfg.AccessTokenLifespan,
+		RefreshTokenLifespan:                cfg.RefreshTokenLifespan,
+		AuthCodeLifespan:                    cfg.AuthCodeLifespan,
+		HMACSecrets:                         cfg.HMACSecrets,
+		SigningKeyID:                        signingKey.KeyID,
+		SigningKeyAlgorithm:                 signingKey.Algorithm,
+		SigningKey:                          signingKey.Key,
+		AdditionalPublicKeys:                additionalPublicKeys,
+		ScopesSupported:                     cfg.ScopesSupported,
+		BaselineClientScopes:                cfg.BaselineClientScopes,
+		AllowedAudiences:                    cfg.AllowedAudiences,
+		AuthorizationEndpointBaseURL:        cfg.AuthorizationEndpointBaseURL,
+		CIMDEnabled:                         cfg.CIMDEnabled,
+		AllowConfidentialClientRegistration: cfg.AllowConfidentialClientRegistration,
+		AllowPrivateKeyJWTRegistration:      cfg.AllowPrivateKeyJWTRegistration,
+		HasStaticDelegateClients:            len(cfg.DelegateClients) > 0,
+		InsecureAllowHTTP:                   cfg.InsecureAllowHTTP,
 		InsecureAllowConfidentialOverLoopbackHTTP: cfg.InsecureAllowConfidentialOverLoopbackHTTP,
 		ForceConfidentialRedirectURIs:             cfg.ForceConfidentialRedirectURIs,
 		DisableTokenExchange:                      cfg.DisableTokenExchange,
@@ -354,6 +322,49 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage) (_ *server
 		trustedIssuerValidator: trustedIssuerValidator,
 		spiffeBundleSource:     bundleSource,
 	}, nil
+}
+
+func prepareServerStorage(
+	ctx context.Context, cfg Config, stor storage.Storage,
+) (prepared storage.Storage, dcrStore storage.DCRCredentialStore,
+	bundleSource *spiffeMultiDomainBundleSource, spiffeRegistry *SPIFFEAssociationRegistry, retErr error,
+) {
+	if stor == nil {
+		return nil, nil, nil, nil, fmt.Errorf("storage is required")
+	}
+
+	// Storage no longer embeds DCRCredentialStore (the embed widened secret
+	// reach to every Storage consumer); obtain the DCR-capable handle via an
+	// explicit assertion at the boundary. The per-backend
+	// `var _ DCRCredentialStore = (*MemoryStorage)(nil)` /
+	// `var _ DCRCredentialStore = (*RedisStorage)(nil)` checks make this
+	// provably safe for the production backends; surfacing a bad backend as
+	// a constructor error keeps misconfiguration fail-loud at boot rather
+	// than at first DCR resolve.
+	baseStore := storage.Unwrap(stor)
+	var ok bool
+	dcrStore, ok = baseStore.(storage.DCRCredentialStore)
+	if !ok {
+		return nil, nil, nil, nil, fmt.Errorf("storage backend %T does not implement storage.DCRCredentialStore", baseStore)
+	}
+
+	bundleSource, retErr = newSPIFFEMultiDomainBundleSource(ctx, cfg.SPIFFETrust)
+	if retErr != nil {
+		return nil, nil, nil, nil, fmt.Errorf("create SPIFFE bundle source: %w", retErr)
+	}
+	defer closeSPIFFEBundleSourceOnConstructionError(bundleSource, &retErr)
+
+	prepared, spiffeRegistry, retErr = decorateStorageForSPIFFE(ctx, cfg, stor)
+	if retErr != nil {
+		return nil, nil, nil, nil, retErr
+	}
+	if retErr = validateConsentExemptClients(ctx, prepared, cfg.ConsentExemptClientIDs); retErr != nil {
+		return nil, nil, nil, nil, retErr
+	}
+	if retErr = registerDelegateClients(ctx, prepared, cfg.DelegateClients); retErr != nil {
+		return nil, nil, nil, nil, retErr
+	}
+	return prepared, dcrStore, bundleSource, spiffeRegistry, nil
 }
 
 func validateConsentExemptClients(ctx context.Context, stor storage.Storage, clientIDs []string) error {

@@ -110,30 +110,8 @@ func (h *Handler) AuthorizeHandler(w http.ResponseWriter, req *http.Request) {
 
 	// Bind the resource while the client request is still being authorized.
 	// Multi-audience deployments require an explicit choice before upstream login.
-	resources := ar.GetRequestForm()["resource"]
-	if len(resources) > 1 || (len(resources) == 1 && resources[0] == "") {
-		h.provider.WriteAuthorizeError(ctx, w, errAr, server.ErrInvalidTarget.WithHint("Exactly one non-empty resource is required"))
-		return
-	}
-	resource := ""
-	if len(resources) == 1 {
-		resource = resources[0]
-	} else if len(h.config.AllowedAudiences) == 1 {
-		resource = h.config.AllowedAudiences[0]
-	} else {
-		h.provider.WriteAuthorizeError(ctx, w, errAr, server.ErrInvalidTarget.WithHint("Specify one resource for this authorization"))
-		return
-	}
-	if resource == "" {
-		h.provider.WriteAuthorizeError(ctx, w, errAr, server.ErrInvalidTarget.WithHint("No resource audience is configured"))
-		return
-	}
-	if err := server.ValidateAudienceURI(resource); err != nil {
-		h.provider.WriteAuthorizeError(ctx, w, errAr, err)
-		return
-	}
-	if err := server.ValidateAudienceAllowed(resource, h.config.AllowedAudiences); err != nil {
-		h.provider.WriteAuthorizeError(ctx, w, errAr, err)
+	resource, ok := h.validateAuthorizationResource(ctx, w, errAr, ar)
+	if !ok {
 		return
 	}
 
@@ -176,6 +154,40 @@ func (h *Handler) AuthorizeHandler(w http.ResponseWriter, req *http.Request) {
 	}
 	h.setBrowserBindingCookie(w, handle, binding.value)
 	h.renderConsent(w, handle, pending, ar.GetClient())
+}
+
+// validateAuthorizationResource resolves and validates the requested resource
+// before authorization continues to consent or upstream authentication.
+func (h *Handler) validateAuthorizationResource(
+	ctx context.Context, w http.ResponseWriter, errAr fosite.AuthorizeRequester, ar fosite.AuthorizeRequester,
+) (string, bool) {
+	resources := ar.GetRequestForm()["resource"]
+	if len(resources) > 1 || (len(resources) == 1 && resources[0] == "") {
+		h.provider.WriteAuthorizeError(ctx, w, errAr, server.ErrInvalidTarget.WithHint("Exactly one non-empty resource is required"))
+		return "", false
+	}
+	resource := ""
+	if len(resources) == 1 {
+		resource = resources[0]
+	} else if len(h.config.AllowedAudiences) == 1 {
+		resource = h.config.AllowedAudiences[0]
+	} else {
+		h.provider.WriteAuthorizeError(ctx, w, errAr, server.ErrInvalidTarget.WithHint("Specify one resource for this authorization"))
+		return "", false
+	}
+	if resource == "" {
+		h.provider.WriteAuthorizeError(ctx, w, errAr, server.ErrInvalidTarget.WithHint("No resource audience is configured"))
+		return "", false
+	}
+	if err := server.ValidateAudienceURI(resource); err != nil {
+		h.provider.WriteAuthorizeError(ctx, w, errAr, err)
+		return "", false
+	}
+	if err := server.ValidateAudienceAllowed(resource, h.config.AllowedAudiences); err != nil {
+		h.provider.WriteAuthorizeError(ctx, w, errAr, err)
+		return "", false
+	}
+	return resource, true
 }
 
 // beginIfRemembered skips the consent page when a covering server-side approval

@@ -1125,9 +1125,16 @@ type Config struct {
 
 	// ConsentExemptClientIDs preauthorizes listed clients to skip ToolHive's consent page.
 	//
-	// Listing a client ID preauthorizes whatever registration currently holds that ID, for whichever user completes upstream authentication. It is not per-user consent, and runtime eligibility checks do not prove where the registration came from.
+	// Listing a client ID preauthorizes whatever registration currently holds that
+	// ID, for whichever user completes upstream authentication. It is not per-user
+	// consent, and runtime eligibility checks do not prove where the registration
+	// came from.
 	//
-	// The embedder must control registration writes for exempt IDs. Replacing a registration or expanding its permissions transfers or broadens the preauthorization. Removing an ID affects new authorization requests only; it does not revoke tokens or cancel already-approved flows. Upstream authentication still runs.
+	// The embedder must control registration writes for exempt IDs. Replacing a
+	// registration or expanding its permissions transfers or broadens the
+	// preauthorization. Removing an ID affects new authorization requests only; it
+	// does not revoke tokens or cancel already-approved flows. Upstream
+	// authentication still runs.
 	ConsentExemptClientIDs []string
 
 	// UpstreamFactory, when set, is used instead of DefaultUpstreamFactory to
@@ -1312,26 +1319,7 @@ type DelegateClient struct {
 func (c *Config) Validate() error {
 	slog.Debug("validating authserver config", "issuer", c.Issuer)
 
-	if err := validateIssuerURL(c.Issuer, c.InsecureAllowHTTP); err != nil {
-		return fmt.Errorf("issuer: %w", err)
-	}
-
-	if err := c.validateConfidentialClientConfig(); err != nil {
-		return err
-	}
-
-	if err := c.validatePrivateKeyJWTRequiresTokenExchange(); err != nil {
-		return err
-	}
-
-	if c.AuthorizationEndpointBaseURL != "" {
-		if err := validateIssuerURL(c.AuthorizationEndpointBaseURL, c.InsecureAllowHTTP); err != nil {
-			return fmt.Errorf("authorization_endpoint_base_url: %w", err)
-		}
-	}
-
-	if err := consentpolicy.Validate(
-		c.ConsentExemptClientIDs, c.AuthorizationEndpointBaseURL, c.Issuer, len(c.Upstreams)); err != nil {
+	if err := c.validateIssuerAndConsentConfig(); err != nil {
 		return err
 	}
 
@@ -1383,6 +1371,27 @@ func (c *Config) Validate() error {
 	}
 
 	return c.validateDelegationAndTrustConfig()
+}
+
+// validateIssuerAndConsentConfig validates the issuer, client transport, and
+// consent-exemption settings before the remaining runtime configuration checks.
+func (c *Config) validateIssuerAndConsentConfig() error {
+	if err := validateIssuerURL(c.Issuer, c.InsecureAllowHTTP); err != nil {
+		return fmt.Errorf("issuer: %w", err)
+	}
+	if err := c.validateConfidentialClientConfig(); err != nil {
+		return err
+	}
+	if err := c.validatePrivateKeyJWTRequiresTokenExchange(); err != nil {
+		return err
+	}
+	if c.AuthorizationEndpointBaseURL != "" {
+		if err := validateIssuerURL(c.AuthorizationEndpointBaseURL, c.InsecureAllowHTTP); err != nil {
+			return fmt.Errorf("authorization_endpoint_base_url: %w", err)
+		}
+	}
+	return consentpolicy.Validate(
+		c.ConsentExemptClientIDs, c.AuthorizationEndpointBaseURL, c.Issuer, len(c.Upstreams))
 }
 
 // validateDelegationAndTrustConfig groups the delegate-client and SPIFFE

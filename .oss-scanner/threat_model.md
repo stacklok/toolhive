@@ -90,11 +90,9 @@ The image has `thv`, `thv-operator`, `thv-proxyrunner`, and `vmcp` in
 Kubernetes cluster, so prefer Go tests that drive the code directly. The
 proxy, middleware, and vMCP packages under `pkg/transport`, `pkg/auth`,
 `pkg/authz`, and `pkg/vmcp` have `httptest`-based tests that are a good model
-for reproducers. Unit tests in `pkg/api`, `pkg/client`, `pkg/secrets/keyring`,
-`pkg/plugins/pluginsvc`, `pkg/skills/skillsvc`, and `cmd/thv/app` fail in this
-image because there is no container runtime or keyring, and because the
-image runs as root, so tests that make a file unwritable to force an error
-see the write succeed. Those failures are expected.
+for reproducers. The unit suite passes in this image: tests that need a
+keyring, or that make a file unwritable to force an error (which root writes
+through), skip themselves with the reason in their `SKIP` line.
 
 ## Severity
 

@@ -17,9 +17,8 @@ RUN go build ./... \
     && go build -o /usr/local/bin/vmcp ./cmd/vmcp
 
 # Unit tests only: e2e and operator integration tests need a container runtime or
-# envtest. Some unit tests (pkg/api, pkg/client, pkg/secrets/keyring, ...) also need
-# a container runtime, a keyring, or installed MCP clients, so keep the image even
-# when tests fail; the run still compiles and caches every test binary for offline use.
+# envtest. The run compiles and caches every test binary for offline use; keep the
+# image even if a test fails so one regression does not block the audit.
 RUN go test $(go list ./... | grep -v '/test/e2e' | grep -v '/cmd/thv-operator/test-integration') \
     || echo "WARNING: go test reported failures"
 

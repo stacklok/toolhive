@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/stacklok/toolhive/pkg/authserver/internal/consentpolicy"
 	oauthserver "github.com/stacklok/toolhive/pkg/authserver/server"
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
 	"github.com/stacklok/toolhive/pkg/authserver/server/handlers"
@@ -1122,6 +1123,9 @@ type Config struct {
 	// Multiple upstreams form a sequential authorization chain.
 	Upstreams []UpstreamConfig
 
+	// ConsentExemptClientIDs preauthorizes listed clients to skip ToolHive's consent page.
+	ConsentExemptClientIDs []string
+
 	// UpstreamFactory, when set, is used instead of DefaultUpstreamFactory to
 	// construct each configured upstream's OAuth2Provider. Two reasons to set it:
 	//
@@ -1320,6 +1324,11 @@ func (c *Config) Validate() error {
 		if err := validateIssuerURL(c.AuthorizationEndpointBaseURL, c.InsecureAllowHTTP); err != nil {
 			return fmt.Errorf("authorization_endpoint_base_url: %w", err)
 		}
+	}
+
+	if err := consentpolicy.Validate(
+		c.ConsentExemptClientIDs, c.AuthorizationEndpointBaseURL, c.Issuer, len(c.Upstreams)); err != nil {
+		return err
 	}
 
 	// KeyProvider is optional - if nil, applyDefaults() will create a GeneratingProvider

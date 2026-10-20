@@ -327,7 +327,7 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage) (_ *server
 	// opaque storage-row identity.
 	refresher := newUpstreamTokenRefresher(upstreams, stor, cfg.RefreshTokenLifespan)
 	handlerInstance, err := handlers.NewHandler(fositeProvider, authServerConfig, stor, upstreams,
-		buildHandlerOptions(refresher, cfg.UpstreamFilter)...)
+		buildHandlerOptions(refresher, cfg.UpstreamFilter, cfg.ConsentExemptClientIDs)...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create handler: %w", err)
 	}
@@ -600,10 +600,17 @@ func buildDeviceFlowFactory(cfg Config, stor storage.Storage) (oauthserver.Facto
 // refresher is always wired, and the filter is added only when the caller's
 // Config sets one so a nil Config.UpstreamFilter preserves the pre-filter
 // behavior of walking every configured upstream.
-func buildHandlerOptions(refresher storage.UpstreamTokenRefresher, filter handlers.UpstreamFilter) []handlers.Option {
+func buildHandlerOptions(
+	refresher storage.UpstreamTokenRefresher,
+	filter handlers.UpstreamFilter,
+	consentExemptClientIDs []string,
+) []handlers.Option {
 	opts := []handlers.Option{handlers.WithUpstreamRefresher(refresher)}
 	if filter != nil {
 		opts = append(opts, handlers.WithUpstreamFilter(filter))
+	}
+	if len(consentExemptClientIDs) > 0 {
+		opts = append(opts, handlers.WithConsentExemptClientIDs(consentExemptClientIDs))
 	}
 	return opts
 }

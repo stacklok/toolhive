@@ -4,6 +4,7 @@
 package server
 
 import (
+	"cmp"
 	"net/http"
 
 	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
@@ -51,7 +52,25 @@ const methodServerDiscover = "server/discover"
 // middleware in the chain, so a Modern dispatch that gets gated 403 is still
 // audited as "denied".
 func (s *Server) classifyingHandler(next http.Handler) http.Handler {
+	// Serve and buildServeConfig apply no defaulting, so an embedder that calls
+	// Serve directly can leave EndpointPath empty; default it here rather than
+	// comparing against "" and never matching.
+	endpointPath := cmp.Or(s.config.EndpointPath, defaultEndpointPath)
+
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Only the MCP endpoint is classified. This is a routing scope, NOT a
+		// security boundary: authorization is enforced independently on both
+		// sides of it — by the SDK's pre-dispatch CallGate on the fall-through
+		// path, and by dispatchModern's own core.Check* calls on the Modern
+		// path. Do not tighten it into a security check, and do not delete it
+		// as redundant: since GHSA-h4mf-84xq-q2fc the parser parses any JSON
+		// POST on any path, so without this a Modern-_meta POST to an
+		// arbitrary path would newly reach dispatchModern.
+		if r.URL.Path != endpointPath {
+			next.ServeHTTP(w, r)
+			return
+		}
+
 		parsed := mcpparser.GetParsedMCPRequest(r.Context())
 		if parsed == nil {
 			next.ServeHTTP(w, r)

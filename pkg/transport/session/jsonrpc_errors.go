@@ -67,9 +67,8 @@ func NotFoundBody(requestID any) []byte {
 // with a .strict() schema and a throwing parse(), so "id":null crashes a
 // conformant client's transport.
 //
-// The transparent proxy threads the incoming id through as raw bytes, so a
-// json.RawMessage holding literal null -- or nothing -- is an absent id even
-// though the interface value is non-nil.
+// A json.RawMessage holding literal null -- or nothing -- is an absent id
+// even though the interface value is non-nil.
 //
 // Do not pass a typed jsonrpc2.ID here: its zero value is a non-nil interface
 // holding an empty struct, so this predicate would (wrongly) report it as

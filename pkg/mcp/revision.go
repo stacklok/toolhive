@@ -677,6 +677,9 @@ func decodeSentinelName(v string) (string, error) {
 // EncodeSentinelName encodes v into the draft spec's base64 sentinel format
 // (=?base64?<payload>?=) when required — the mirror of decodeSentinelName.
 // Encoding is required when EITHER:
+//   - v is empty: a plain empty HTTP header value is indistinguishable from an
+//     omitted header to receivers, so its sentinel form preserves that the
+//     parameter was present;
 //   - v is not safely representable as a plain ASCII header value: any byte
 //     falls outside printable ASCII 0x21-0x7E, which also covers leading/
 //     trailing whitespace and CR/LF (both fall below 0x21 and would
@@ -695,9 +698,9 @@ func EncodeSentinelName(v string) string {
 }
 
 // needsSentinelEncoding reports whether v requires sentinel encoding; see
-// EncodeSentinelName for the two conditions checked.
+// EncodeSentinelName for the three conditions checked.
 func needsSentinelEncoding(v string) bool {
-	if strings.HasPrefix(v, sentinelPrefix) && strings.HasSuffix(v, sentinelSuffix) {
+	if v == "" || (strings.HasPrefix(v, sentinelPrefix) && strings.HasSuffix(v, sentinelSuffix)) {
 		return true
 	}
 	for i := 0; i < len(v); i++ {

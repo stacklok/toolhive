@@ -79,6 +79,24 @@ func DefaultDiscoveryConfig() *Config {
 	}
 }
 
+// newDetectionClient builds the HTTP client used to probe a target server for
+// WWW-Authenticate. The remote MCP server is untrusted, so it refuses
+// cross-host / scheme-downgrade redirects to prevent the server driving the
+// host into an SSRF (CWE-918). Extracted so the pool bounds
+// networking.SetIdleConnBounds applies stay unit-testable.
+func newDetectionClient(config *Config) *http.Client {
+	transport := &http.Transport{
+		TLSHandshakeTimeout:   config.TLSHandshakeTimeout,
+		ResponseHeaderTimeout: config.ResponseHeaderTimeout,
+	}
+	networking.SetIdleConnBounds(transport)
+	return &http.Client{
+		Timeout:       config.Timeout,
+		Transport:     transport,
+		CheckRedirect: networking.SameHostRedirectPolicy(),
+	}
+}
+
 // DetectAuthenticationFromServer attempts to detect authentication requirements from the target server
 func DetectAuthenticationFromServer(ctx context.Context, targetURI string, config *Config) (*AuthInfo, error) {
 	if config == nil {
@@ -90,16 +108,7 @@ func DetectAuthenticationFromServer(ctx context.Context, targetURI string, confi
 	defer cancel()
 
 	// Make a test request to the target server to see if it returns WWW-Authenticate.
-	// The remote MCP server is untrusted, so refuse cross-host / scheme-downgrade
-	// redirects to prevent it driving the host into an SSRF (CWE-918).
-	client := &http.Client{
-		Timeout: config.Timeout,
-		Transport: &http.Transport{
-			TLSHandshakeTimeout:   config.TLSHandshakeTimeout,
-			ResponseHeaderTimeout: config.ResponseHeaderTimeout,
-		},
-		CheckRedirect: networking.SameHostRedirectPolicy(),
-	}
+	client := newDetectionClient(config)
 
 	// First try a GET request
 	authInfo, err := detectAuthWithRequest(detectCtx, client, targetURI, http.MethodGet, nil)
@@ -530,6 +539,19 @@ type OAuthFlowConfig struct {
 	// fetches. Defaults to false (guarded).
 	AllowPrivateIPs bool
 
+	// TokenEndpointTrusted reports that the token endpoint's authority was
+	// supplied by the operator — configured directly, or named by the
+	// operator-configured issuer's own metadata document. It permits
+	// private/loopback dialing of the token endpoint; the zero value is the
+	// guarded posture. Never set it for an endpoint whose authority a remote
+	// MCP server chose.
+	TokenEndpointTrusted bool
+
+	// IssuerTrusted reports that the issuer URL came from operator
+	// configuration rather than from the remote MCP server's WWW-Authenticate
+	// realm / resource metadata.
+	IssuerTrusted bool
+
 	// DCR renewal metadata — populated by handleDynamicRegistration and threaded
 	// into OAuthFlowResult so callers can persist the data for RFC 7592 operations.
 	SecretExpiry            time.Time // zero means the secret never expires
@@ -684,6 +706,13 @@ func handleDynamicRegistration(ctx context.Context, issuer string, config *OAuth
 		config.AuthorizeURL = resolution.AuthorizationEndpoint
 	}
 	if resolution.TokenEndpoint != "" {
+		// A registration response — or the metadata document behind it — can name
+		// a token endpoint on any authority. Trust survives only while the new
+		// authority is one the operator already named (CWE-918); this can clear
+		// the flag but never set it.
+		if !networking.AuthorityMatchesAny(resolution.TokenEndpoint, config.TokenURL, issuer) {
+			config.TokenEndpointTrusted = false
+		}
 		config.TokenURL = resolution.TokenEndpoint
 	}
 
@@ -759,6 +788,9 @@ func resolveDCRCredentials(
 		// calls would always be guarded and a legitimately private upstream
 		// would be refused. See OAuthFlowConfig.AllowPrivateIPs.
 		AllowPrivateIPs: config.AllowPrivateIPs,
+		// An operator-configured issuer is not server-supplied input; only a
+		// realm or resource-metadata URL named by the remote MCP server is.
+		ServerSuppliedEndpoints: !config.IssuerTrusted,
 	}
 
 	// Fetch AS metadata using the multi-URL fallback so non-root issuers
@@ -772,13 +804,21 @@ func resolveDCRCredentials(
 		// on some discovery branches (see discoverIssuerAndScopes in
 		// pkg/auth/remote/handler.go), so a nil client here would reopen the
 		// discovery-indirection and DNS-rebinding vectors this PR closes
-		// elsewhere. See networking.NewHostScopedClientBuilder for the guard
-		// policy and pkg/auth/dcr's newGuardedDCRClient for the same pattern.
+		// elsewhere. Which builder applies depends on who named the issuer: an
+		// operator-configured one gets the host-scoped policy, a server-supplied
+		// one the strict policy where localhost and
+		// INSECURE_DISABLE_URL_VALIDATION cannot widen the private-IP gate.
 		metaHost, parseErr := url.Parse(discoveredDoc.Issuer)
 		if parseErr != nil {
 			return nil, fmt.Errorf("dynamic client registration failed: parse issuer for http client: %w", parseErr)
 		}
-		metaClient, clientErr := networking.NewHostScopedClientBuilder(metaHost.Host, config.AllowPrivateIPs, false).
+		metaBuilder := func() *networking.HttpClientBuilder {
+			if config.IssuerTrusted {
+				return networking.NewHostScopedClientBuilder(metaHost.Host, config.AllowPrivateIPs, false)
+			}
+			return networking.NewServerSuppliedHostClientBuilder(metaHost.Host, config.AllowPrivateIPs, false)
+		}()
+		metaClient, clientErr := metaBuilder.
 			WithDisableKeepAlives(true).
 			Build()
 		if clientErr != nil {
@@ -881,7 +921,7 @@ func createOAuthConfig(ctx context.Context, issuer string, config *OAuthFlowConf
 		slog.Debug("Using OAuth endpoints",
 			"authorize_url", config.AuthorizeURL, "token_url", config.TokenURL)
 
-		return oauth.CreateOAuthConfigManual(
+		cfg, err := oauth.CreateOAuthConfigManual(
 			config.ClientID,
 			config.ClientSecret,
 			config.AuthorizeURL,
@@ -893,6 +933,12 @@ func createOAuthConfig(ctx context.Context, issuer string, config *OAuthFlowConf
 			config.OAuthParams,
 			config.ScopeParamName,
 		)
+		if err != nil {
+			return nil, err
+		}
+		// The token URL here is the operator's own, so the flag carries over as-is.
+		cfg.TokenEndpointTrusted = config.TokenEndpointTrusted
+		return cfg, nil
 	}
 
 	// Fall back to OIDC discovery
@@ -906,11 +952,17 @@ func createOAuthConfig(ctx context.Context, issuer string, config *OAuthFlowConf
 		true, // Enable PKCE by default for security
 		config.CallbackPort,
 		config.Resource,
+		!config.AllowPrivateIPs,
 	)
 	if err != nil {
 		return nil, err
 	}
 	cfg.ScopeParamName = config.ScopeParamName
+	// cfg.TokenURL came out of the issuer's discovery document. The issuer naming
+	// its own authority stays within the operator's decision to configure it;
+	// naming any other authority does not (CWE-918).
+	cfg.TokenEndpointTrusted = config.TokenEndpointTrusted &&
+		networking.AuthorityMatchesAny(cfg.TokenURL, config.TokenURL, issuer)
 	return cfg, nil
 }
 
@@ -977,6 +1029,26 @@ func buildOAuthFlowResult(
 	}
 }
 
+// newResourceMetadataTransport builds the transport for RFC 9728 metadata
+// fetches. The metadataURL is server-supplied, so the caller pairs it with a
+// same-host redirect policy; when blockPrivateIPs is true it also refuses to
+// dial private/loopback/link-local addresses on every hop (and disables
+// keep-alive so a pooled connection cannot skip the per-dial check).
+// Extracted so the pool bounds networking.SetIdleConnBounds applies stay
+// unit-testable.
+func newResourceMetadataTransport(blockPrivateIPs bool) *http.Transport {
+	transport := &http.Transport{
+		TLSHandshakeTimeout:   5 * time.Second,
+		ResponseHeaderTimeout: 5 * time.Second,
+	}
+	networking.SetIdleConnBounds(transport)
+	if blockPrivateIPs {
+		transport.DialContext = networking.NewPrivateIPBlockingDialContext()
+		transport.DisableKeepAlives = true
+	}
+	return transport
+}
+
 // FetchResourceMetadata fetches RFC 9728 protected-resource metadata from a
 // server-supplied URL.
 //
@@ -1003,17 +1075,7 @@ func FetchResourceMetadata(ctx context.Context, metadataURL string, blockPrivate
 		return nil, fmt.Errorf("metadata URL must use HTTPS: %s", metadataURL)
 	}
 
-	// The HTTPS check above runs once on the initial URL only, so refuse
-	// cross-host and scheme-downgrade redirects to stop a 30x reaching an
-	// internal address; optionally block private dials on every hop.
-	transport := &http.Transport{
-		TLSHandshakeTimeout:   5 * time.Second,
-		ResponseHeaderTimeout: 5 * time.Second,
-	}
-	if blockPrivateIPs {
-		transport.DialContext = networking.NewPrivateIPBlockingDialContext()
-		transport.DisableKeepAlives = true
-	}
+	transport := newResourceMetadataTransport(blockPrivateIPs)
 	client := &http.Client{
 		Timeout:       DefaultHTTPTimeout,
 		Transport:     transport,

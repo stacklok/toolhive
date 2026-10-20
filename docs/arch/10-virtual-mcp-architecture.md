@@ -77,7 +77,7 @@ graph TB
 | **Composition** | Execute multi-step workflows across multiple backends |
 | **Caching** | Reduce auth overhead by caching exchanged tokens |
 
-**Implementation**: `pkg/vmcp/` (discovery: `pkg/vmcp/discovery/`, routing: `pkg/vmcp/router/`)
+**Implementation**: `pkg/vmcp/` (discovery: `pkg/vmcp/aggregator/`, routing: `pkg/vmcp/router/`)
 
 ## Backend Discovery
 
@@ -133,8 +133,15 @@ When backends expose tools with the same name, vMCP resolves the conflict using 
 | Strategy | Behavior |
 |----------|----------|
 | **prefix** | Prepend backend name to all tools (e.g., `github_create_issue`) |
-| **priority** | First backend in priority order wins, others hidden |
+| **priority** | Highest-priority backend wins only if every conflicting backend is listed; otherwise all candidates are dropped |
 | **manual** | Explicit mapping for each conflict |
+
+Tool priority resolution leaves unique tools unchanged, including those from
+backends absent from `priorityOrder`; the list is not an allowlist. When every
+backend in a tool-name collision is listed, the first in priority order wins and
+losers are dropped. If any conflicting backend is unlisted, **all** candidates
+in that collision are dropped from both advertising and routing, with no prefix
+fallback, and the collision is logged at `ERROR`.
 
 The three strategies above cover **tools**. Resources, resource templates, and
 prompts are resolved separately (`aggregator/capability_conflicts.go`), with
@@ -493,10 +500,10 @@ Beyond tools, vMCP aggregates and serves the full complement of MCP capabilities
 |------------|---------|-------|
 | Tools (`tools/list`, `tools/call`) | Yes | Aggregated, conflict-resolved, admission-filtered; a backend's asynchronous `notifications/tools/list_changed` is propagated to already-registered sessions — see below |
 | Resources (`resources/list`, `resources/read`) | Yes | Admission-filtered per identity; a backend's asynchronous `notifications/resources/list_changed` propagates ADDITIONS (not removals) to already-registered sessions — see below |
-| Resource templates (`resources/templates/list`) | Yes | Templated reads route through the same `ReadResource` path; the router matches an expanded URI against the aggregated templates, and an exact template-string key routes to its backend; covered by the same `notifications/resources/list_changed` propagation as resources (MCP 2025-11-25 has no separate wire method for template changes) |
+| Resource templates (`resources/templates/list`) | Yes | Templated reads route through the same `ReadResource` path; an expanded URI longer than 2048 bytes is not template-matched and returns not found, while exact concrete-resource and exact template-string matches work at any length; covered by the same `notifications/resources/list_changed` propagation as resources (MCP 2025-11-25 has no separate wire method for template changes) |
 | Prompts (`prompts/list`, `prompts/get`) | Yes | Served per-session; a backend's asynchronous `notifications/prompts/list_changed` propagates ADDITIONS (not removals) to already-registered sessions — see below |
-| Completions (`completion/complete`) | Yes | A `ref/prompt` routes via the prompts table; a `ref/resource` carries the URI-template string per the spec and routes via the resource-templates table (exact template-string key, with exact-resource and template-expansion fallbacks). Unroutable refs return an empty result (lenient completion); admission denial returns an error |
-| Resource subscriptions (`resources/subscribe`, `resources/unsubscribe`) | Ack-level only | Legacy edge. vMCP accepts and records the subscription (after session-binding and resource-admission checks) but does **not** yet forward backend `notifications/resources/updated` — see the limitation below |
+| Completions (`completion/complete`) | Yes | A `ref/prompt` routes via the prompts table; a `ref/resource` carries the URI-template string per the spec and routes via the resource-templates table (exact template-string key, with exact-resource and template-expansion fallbacks). A URI over 2048 bytes that does not exactly match a concrete resource or template string returns an empty result, indistinguishable from no candidates; exact matches still route at any length. Admission denial returns an error |
+| Resource subscriptions (`resources/subscribe`, `resources/unsubscribe`) | Ack-level only | Legacy edge. vMCP accepts and records the subscription (after session-binding and resource-admission checks) but does **not** yet forward backend `notifications/resources/updated`. A URI over 2048 bytes that does not exactly match a concrete resource or template string is rejected with not found; exact matches still pass — see the limitation below |
 | Subscriptions (`subscriptions/listen`) | Ack-level only | Modern (2026-07-28) edge, the revision's only server→client push channel. Answered with an SSE stream carrying the mandatory `notifications/subscriptions/acknowledged` and then a terminating result, both tagged `io.modelcontextprotocol/subscriptionId` and keyed by the listen request's JSON-RPC id (Modern has no sessions). The honored set is intersected against the advertised capabilities, all of whose push flags are false, so it is always **empty** and the stream closes immediately rather than idling. Serving it is what lets a go-sdk v1.7 client complete `Connect` at all — see below |
 
 The four Modern list verbs (`tools/list`, `resources/list`, `resources/templates/list`, `prompts/list`) **paginate**, emitting `nextCursor` while items remain and capping a page at 1000 items to match the page size the SDK applies on the Legacy path. See [Client-facing list pagination](#client-facing-list-pagination).
@@ -806,6 +813,80 @@ connector wiring), `pkg/vmcp/aggregator/aggregator.go` and
 `runListChangedResync`, `resyncSessionTools`, `resyncSessionResources`,
 `resyncSessionPrompts`) with `Server.resyncBaseCtx` cancelled on `Stop`.
 
+### Health-driven tools resync (#5786, PR1: passthrough mode)
+
+The propagation above only fires when a connected backend itself emits a
+`list_changed` notification. A backend that flips
+unhealthy ⇄ healthy, or is added to / removed from the group, emits nothing —
+yet the advertised catalog changes, because capability aggregation
+health-filters the backend set (`filterHealthyBackends`). Before #5786,
+already-connected sessions kept serving the capability set snapshotted at
+registration until they reconnected; health transitions were a status-only
+signal (logged, reported to the CRD) with no data-path consumer.
+
+The health monitor (`pkg/vmcp/health`) now exposes a change callback:
+`Monitor.OnChange(fn ChangeListener)` (also on the `health.Reporter`
+interface). It fires when a backend's **advertisability** flips — a transition
+across the healthy/degraded ⇄ unhealthy/unknown/unauthenticated partition,
+detected at the `statusTracker.RecordSuccess`/`RecordFailure` transition
+points, mirroring `filterHealthyBackends`' inclusion rule — and when
+`UpdateBackends` adds or removes backends. A previously-untracked backend's
+**first result is quiet**: the registry-fallback status the aggregation had
+been serving is advertisable in practice, so a first success flips nothing
+("this backend exists" is the membership notification's job), and a first —
+or any below-threshold — failure is the normal path for a workload still
+starting when the registry lists it, so withdrawing it before
+`UnhealthyThreshold` genuinely trips would flap every connected session. The
+withdrawal is reported at the genuine threshold crossing; the recovery of a
+never-successful backend is reported on its first success. Delivery is
+**debounced to the monitor's check interval** (leading edge immediate,
+further changes in the window coalesced into one trailing delivery carrying a
+monotonically increasing generation), so a flapping backend or a
+multi-backend partition cannot storm listeners. Listeners run on a dedicated
+goroutine, never on a health-check path, and `Monitor.Stop` waits for
+in-flight deliveries.
+
+`Serve` subscribes the transport layer
+(`pkg/vmcp/server/serve_health_resync.go`): the server keeps a registry of
+each live session's **KindTools resync worker** (the same
+`listChangedResyncWorker` the backend-notification path builds — identity and
+forwarded-header capture, the liveness guard, replace semantics, and the
+SDK's automatic downstream `notifications/tools/list_changed` emission are
+all shared) and, on each delivery, purges the shared capability cache **once**
+and triggers a tools resync for every registered session. The per-run cache
+purge is skipped on this path — the cache key already hashes the
+health-filtered backend-ID set, so a health flip changes the key by itself,
+and per-session purges would defeat cross-session sharing of the freshly
+repopulated entry; the backend-notification path keeps its per-run purge,
+since there a backend's content changes under an unchanged key. Sessions
+register on successful registration (only when health monitoring is enabled —
+with no monitor there is no subscriber and nothing would ever trigger or
+prune the registry) and deregister on the termination paths the server
+observes — including SDK-initiated HTTP DELETE, via a thin
+`SessionIdManager` wrapper; sessions that end without any Terminate call (TTL
+expiry) are pruned lazily when a triggered resync's liveness guard finds them
+gone.
+
+**Scope**: passthrough mode, tools only. When the optimizer is enabled the
+fan-out is a no-op — the advertised `find_tool`/`call_tool` meta-tools do not
+change on a health flip, and rebuilding the optimizer's per-session backing
+index for live sessions is the deferred optimizer-mode follow-up (PR2 of
+#5786). Resources/resource-templates/prompts re-derivation on health change is
+likewise not wired (a recovered backend's resources appear to new sessions,
+and to existing sessions on the backend's own `list_changed`). `UpdateBackends`
+notifies on membership changes only: a property change to an existing backend
+(URL/transport) restarts its health-check goroutine but does not notify —
+if the relocated backend serves a different tool set, existing sessions pick
+it up via the backend's own `list_changed` or on reconnect, matching the
+agreed membership-only scope.
+
+**Implementation**: `pkg/vmcp/health/change_notifier.go` (`ChangeListener`,
+debounce), `pkg/vmcp/health/monitor.go` (`OnChange`, fire points),
+`pkg/vmcp/health/status.go` (advertisability-transition detection),
+`pkg/vmcp/server/serve_health_resync.go` (`healthResyncRegistry`,
+`resyncSessionsOnBackendHealthChange`), subscription in
+`pkg/vmcp/server/serve.go`.
+
 ### Mid-call forwarding (elicitation / sampling / progress / logging)
 
 While a backend `tools/call` (or other request) is in flight, the backend may issue **server-initiated** requests and notifications back toward the client: elicitation, sampling, progress, and logging. vMCP forwards these mid-call in both directions through a per-call forwarder that bridges the backend connection to the originating client session, so a backend that needs user input (elicitation) or model completions (sampling), or that emits progress/log notifications, reaches the real client transparently. This is distinct from composite-tool elicitation (which the composer drives during a workflow); the mid-call forwarder handles the general request-scoped case for a single backend call.
@@ -883,6 +964,75 @@ Exchanged tokens are cached to avoid repeated exchange calls.
 
 **Implementation**: `pkg/vmcp/auth/`, `pkg/vmcp/cache/`
 
+### Per-User Upstream Filtering
+
+When vMCP runs its embedded authorization server with multiple upstream providers
+(e.g. a corporate IdP followed by Jira, Slack, and Salesforce OAuth), every user
+would otherwise be forced through every upstream — a user without a Salesforce
+account cannot complete that leg, and the whole authorization fails even though
+the preceding identity chain was valid.
+
+`AuthServerUpstreamFilter` on `VirtualMCPServerSpec` narrows the chain per
+request based on a group claim resolved from the first upstream. The filter
+runs exactly once per authorization, on the first upstream's callback, and may
+only narrow the chain — it cannot reorder it, add unknown providers, or remove
+the mandatory first provider.
+
+```yaml
+apiVersion: toolhive.stacklok.dev/v1beta1
+kind: VirtualMCPServer
+metadata:
+  name: mcphub
+spec:
+  authServerConfig:
+    issuer: https://mcphub.example.com
+    upstreamProviders:
+      - name: okta        # mandatory first upstream — always walked
+        type: oidc
+        # ...
+      - name: jira
+        type: oauth2
+      - name: slack
+        type: oauth2
+      - name: salesforce
+        type: oauth2
+
+  authServerUpstreamFilter:
+    claim: groups          # top-level claim on the first upstream's token
+    rules:
+      - groups: [engineering]
+        upstreamProviders: [jira, slack]
+      - groups: [sales]
+        upstreamProviders: [salesforce, slack]
+    defaultUpstreams: []   # principals matching no rule walk okta only
+```
+
+Semantics:
+
+- The claim is read from the identity the first upstream resolves: an OIDC
+  upstream fills it from the validated ID token, a pure OAuth2 upstream from
+  the userinfo response. Groups carried only in an access token never reach
+  it. Before enabling the filter, configure the first upstream to include the
+  claim in its ID token or userinfo response, and request any required scopes.
+- A principal matches a rule when any of its group values appears in the
+  rule's `groups` list (OR within a rule).
+- Multiple matching rules combine by union: a principal in both `engineering`
+  and `sales` walks `jira`, `slack`, and `salesforce` (dedup, configured
+  order preserved).
+- A valid empty claim or an unmatched claim falls back to `defaultUpstreams`
+  (just the first upstream when empty).
+- A missing, nil, non-array, or mixed-type claim fails the authorization —
+  the filter is security-relevant and fail-closed.
+- Nested claim paths (e.g. Keycloak's `realm_access.roles`) are not
+  supported; the identity provider must flatten them into a top-level string
+  array.
+
+This controls which OAuth credentials vMCP acquires during login. It does not
+authorise backends or tools — Cedar remains the authorization boundary.
+
+**Implementation**: `pkg/authserver/upstreamfilter/`,
+`pkg/authserver/server/handlers.UpstreamFilter`.
+
 ## Request Flow
 
 ```mermaid
@@ -923,15 +1073,22 @@ Middleware is applied by wrapping handlers, so execution order is outer-to-inner
 | 7 | Annotation Enrichment | Optional | Injects tool annotations into context for annotation-aware authz (only when Authorization is configured) |
 | 8 | Authorization | Optional | Evaluates Cedar policies after discovery and annotation enrichment |
 | 9 | Backend Enrichment | Optional | Adds backend name to audit context (only when Audit is configured) |
-| 10 | MCP Parsing | Always | Second application is a no-op when auth already parsed; ensures telemetry can label metrics with `mcp_method` when auth is nil |
+| 10 | MCP Parsing | Always | Validates every MCP POST regardless of `Content-Type`, including when auth is nil; publishes calls and notifications for downstream controls. A second application skips already-parsed requests. |
 | 11 | Telemetry | Optional | OpenTelemetry instrumentation |
 | 12 | Pre-dispatch authorization gate | Optional | Innermost: runs inside the Streamable HTTP transport before session validation and SDK dispatch. Rejects a Cedar-denied `tools/call` / `resources/read` / `prompts/get` with HTTP 403 + JSON-RPC code 403, reusing the core admission decision. Installed only when Authorization is configured. See "Authorization Enforcement" below. |
 
 > On the New/Serve path, authorization is enforced by the **core admission seam**, not by rows 6–8 as standalone HTTP middleware; row 12 is the transport-level projection of that decision. See [Authorization Enforcement](#authorization-enforcement-core-admission-seam--pre-dispatch-gate).
 
+Every MCP POST passes shared envelope validation before Modern dispatch or the
+Legacy SDK, with or without authentication. Malformed, ambiguous, mixed
+request/response, and batch bodies are rejected rather than forwarded without a
+policy input. A leading UTF-8 BOM is removed from the forwarded body so webhook
+consumers see the same JSON as the parser; `Content-Type` is not relabeled. The
+Legacy SDK may still reject otherwise valid non-JSON media types with HTTP 415.
+
 ### Discovery Middleware
 
-The Discovery middleware (`pkg/vmcp/discovery/middleware.go`) is central to vMCP's multi-tenant design:
+Discovery (`pkg/vmcp/aggregator/discoverer.go`) is central to vMCP's multi-tenant design:
 
 - **Initialize requests** (no session ID): Discovers capabilities from all backends in the MCPGroup, stores routing table in session
 - **Subsequent requests** (with session ID): Retrieves cached capabilities from session
@@ -968,7 +1125,7 @@ The server wires them around discovery/annotation-enrichment so the effective ex
 Audit → Authentication → MCP Parsing → Discovery → Annotation Enrichment → Authorization → Next Handler
 ```
 
-**Implementation**: `pkg/vmcp/server/server.go`, `pkg/vmcp/discovery/middleware.go`, `pkg/vmcp/auth/factory/`
+**Implementation**: `pkg/vmcp/server/server.go`, `pkg/vmcp/aggregator/discoverer.go`, `pkg/vmcp/auth/factory/`
 
 ### Authorization Enforcement (core admission seam + pre-dispatch gate)
 
@@ -1073,6 +1230,7 @@ Status reporting enables vMCP runtime to report operational status directly inst
   - Phase: Pending, Ready, Degraded, Failed
   - Conditions: `metav1.Condition` (ready, backends discovered, auth configured) using shared constants
   - DiscoveredBackends: backend URL/auth type/health with timestamps
+- Kubernetes reporter: writes the runtime-owned `status.runtime` snapshot. The operator is the sole writer of top-level status fields and projects runtime phase, message, backend observations, and runtime conditions into their existing top-level compatibility fields during reconciliation. This ownership boundary prevents the runtime and operator from replacing the same conditions array concurrently.
 - CLI reporter: Logging-only reporter (no persistence) logs status updates at Debug level (visible when `--debug` is set).
 - Lifecycle hook: server starts the reporter, collects shutdown funcs, and stops them during graceful shutdown.
 
@@ -1085,7 +1243,7 @@ Status reporting enables vMCP runtime to report operational status directly inst
 ### Extensibility
 
 - Additional reporters can be added under `pkg/vmcp/status/` implementing `Reporter` and using shared `vmcp.Status` types.
-- Future sinks: Kubernetes status writer, file-based reporter for CLI (`thv status`), metrics exporter.
+- Future sinks: file-based reporter for CLI (`thv status`), metrics exporter.
 
 **Implementation**: `pkg/vmcp/status/`
 

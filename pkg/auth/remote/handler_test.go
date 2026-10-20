@@ -695,6 +695,9 @@ func TestTryDiscoverFromResourceMetadata_EmptyScopes(t *testing.T) {
 func TestAuthenticate_BearerToken(t *testing.T) {
 	t.Parallel()
 
+	resolvedBearerConfig := &Config{BearerToken: "bearer-token-ref,target=bearer_token"}
+	resolvedBearerConfig.SetResolvedBearerToken("resolved-bearer-token")
+
 	tests := []struct {
 		name        string
 		config      *Config
@@ -712,6 +715,14 @@ func TestAuthenticate_BearerToken(t *testing.T) {
 			expectError: false,
 			expectToken: true,
 			tokenValue:  "my-bearer-token-123",
+		},
+		{
+			name:        "resolved bearer token authentication succeeds",
+			config:      resolvedBearerConfig,
+			remoteURL:   "https://example.com/mcp",
+			expectError: false,
+			expectToken: true,
+			tokenValue:  "resolved-bearer-token",
 		},
 		{
 			name: "empty bearer token returns nil token source",
@@ -944,6 +955,12 @@ func TestAuthenticate_BearerTokenDiscovery(t *testing.T) {
 func TestResolveClientCredentials(t *testing.T) {
 	t.Parallel()
 
+	resolvedStaticConfig := &Config{
+		ClientID:     "static-client-id",
+		ClientSecret: "client-secret-ref,target=oauth_secret",
+	}
+	resolvedStaticConfig.SetResolvedClientSecret("resolved-static-secret")
+
 	tests := []struct {
 		name             string
 		config           *Config
@@ -992,6 +1009,12 @@ func TestResolveClientCredentials(t *testing.T) {
 			wantClientSecret: "static-secret",
 		},
 		{
+			name:             "resolved static credentials used when no cached credentials exist",
+			config:           resolvedStaticConfig,
+			wantClientID:     "static-client-id",
+			wantClientSecret: "resolved-static-secret",
+		},
+		{
 			name:             "all empty returns empty strings",
 			config:           &Config{},
 			wantClientID:     "",
@@ -1019,11 +1042,14 @@ func TestResolveClientCredentials(t *testing.T) {
 func TestBuildOAuthFlowConfig_ThreadsAllowPrivateIPs(t *testing.T) {
 	t.Parallel()
 
-	h := &Handler{config: &Config{}}
+	config := &Config{ClientSecret: "client-secret-ref,target=oauth_secret"}
+	config.SetResolvedClientSecret("resolved-client-secret")
+	h := &Handler{config: config}
 
 	flowConfig := h.buildOAuthFlowConfig([]string{"openid"}, nil, true)
 	assert.True(t, flowConfig.AllowPrivateIPs,
 		"allowPrivateIPs=true must reach OAuthFlowConfig.AllowPrivateIPs")
+	assert.Equal(t, "resolved-client-secret", flowConfig.ClientSecret)
 
 	flowConfig = h.buildOAuthFlowConfig([]string{"openid"}, nil, false)
 	assert.False(t, flowConfig.AllowPrivateIPs,

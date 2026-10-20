@@ -209,7 +209,9 @@ telemetry:
   metricsEnabled: true
   samplingRate: "0.1"  # 10% sampling
   insecure: true  # Use HTTP instead of HTTPS
-  enablePrometheusMetricsPath: true  # Expose /metrics endpoint
+  enablePrometheusMetricsPath: true  # Expose /metrics on the diagnostics port
+  # prometheusPort: 9464  # Diagnostics port for /metrics. Defaults to 9464; do
+  #                       # not route it publicly. See docs/observability.md.
 
 # ===== AUDIT LOGGING =====
 # Audit logging for MCP operations (optional)

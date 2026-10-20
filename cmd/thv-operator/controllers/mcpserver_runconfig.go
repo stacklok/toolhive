@@ -151,6 +151,7 @@ func (r *MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1beta1.MCPServ
 		runner.WithHost(proxyHost),
 		runner.WithTrustProxyHeaders(m.Spec.TrustProxyHeaders),
 		runner.WithEndpointPrefix(m.Spec.EndpointPrefix),
+		runner.WithMaxRequestBodySize(m.Spec.MaxRequestBodySize),
 		runner.WithToolsFilter(toolsFilter),
 		runner.WithEnvVars(envVars),
 		runner.WithVolumes(volumes),
@@ -161,25 +162,6 @@ func (r *MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1beta1.MCPServ
 	// Add tools override if present
 	if toolsOverride != nil {
 		options = append(options, runner.WithToolsOverride(toolsOverride))
-	}
-
-	// Add permission profile if specified
-	if m.Spec.PermissionProfile != nil {
-		switch m.Spec.PermissionProfile.Type {
-		case mcpv1beta1.PermissionProfileTypeBuiltin:
-			options = append(options,
-				runner.WithPermissionProfileNameOrPath(
-					m.Spec.PermissionProfile.Name,
-				),
-			)
-		case mcpv1beta1.PermissionProfileTypeConfigMap:
-			// For ConfigMap-based permission profiles, we store the path
-			options = append(options,
-				runner.WithPermissionProfileNameOrPath(
-					fmt.Sprintf("/etc/toolhive/profiles/%s", m.Spec.PermissionProfile.Key),
-				),
-			)
-		}
 	}
 
 	// Create context for API operations
@@ -277,6 +259,11 @@ func (r *MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1beta1.MCPServ
 		options = append(options, runner.WithRateLimitConfig(m.Namespace, m.Spec.RateLimiting))
 	}
 
+	// Add proxy HTTP server read timeout if specified
+	if m.Spec.ProxyReadTimeout != nil {
+		options = append(options, runner.WithProxyReadTimeout(m.Spec.ProxyReadTimeout.Duration))
+	}
+
 	// Use the RunConfigBuilder for operator context with full builder pattern
 	runConfig, err := runner.NewOperatorRunConfigBuilder(
 		context.Background(),
@@ -333,6 +320,7 @@ func populateScalingConfig(runConfig *runner.RunConfig, m *mcpv1beta1.MCPServer)
 			Address:   m.Spec.SessionStorage.Address,
 			DB:        m.Spec.SessionStorage.DB,
 			KeyPrefix: m.Spec.SessionStorage.KeyPrefix,
+			TLS:       ctrlutil.SessionRedisTLSConfig(m.Spec.SessionStorage),
 		}
 	} else if defaultRedis != nil {
 		runConfig.ScalingConfig.SessionRedis = &runner.SessionRedisConfig{

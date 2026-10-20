@@ -64,6 +64,26 @@ func discoverOIDCEndpointsWithClient(
 	return discoverOIDCEndpointsWithClientAndValidation(ctx, issuer, client, true, insecureAllowHTTP, blockPrivateIPs)
 }
 
+// newOIDCDiscoveryTransport builds the transport used to fetch OIDC/OAuth
+// discovery documents from an untrusted, remote-server-supplied issuer. The
+// caller pairs it with a same-host redirect policy to prevent a 30x driving the
+// host into an SSRF (CWE-918); when blockPrivateIPs is true it also refuses to
+// dial private/loopback/link-local addresses on every hop (and disables
+// keep-alive so a pooled connection cannot skip the per-dial check). Extracted
+// so the pool bounds networking.SetIdleConnBounds applies stay unit-testable.
+func newOIDCDiscoveryTransport(blockPrivateIPs bool) *http.Transport {
+	transport := &http.Transport{
+		TLSHandshakeTimeout:   10 * time.Second,
+		ResponseHeaderTimeout: 10 * time.Second,
+	}
+	networking.SetIdleConnBounds(transport)
+	if blockPrivateIPs {
+		transport.DialContext = networking.NewPrivateIPBlockingDialContext()
+		transport.DisableKeepAlives = true
+	}
+	return transport
+}
+
 // discoverOIDCEndpointsWithClientAndValidation discovers OAuth endpoints with optional issuer validation
 //
 //nolint:gocyclo // Function complexity justified by comprehensive OIDC discovery logic
@@ -82,21 +102,9 @@ func discoverOIDCEndpointsWithClientAndValidation(
 	}
 
 	if client == nil {
-		// The issuer/metadata URL originates from untrusted remote-server
-		// discovery, so refuse cross-host and scheme-downgrade redirects to
-		// prevent a 30x from driving the host into an SSRF (CWE-918), and
-		// optionally block private dials on every hop.
-		transport := &http.Transport{
-			TLSHandshakeTimeout:   10 * time.Second,
-			ResponseHeaderTimeout: 10 * time.Second,
-		}
-		if blockPrivateIPs {
-			transport.DialContext = networking.NewPrivateIPBlockingDialContext()
-			transport.DisableKeepAlives = true
-		}
 		client = &http.Client{
 			Timeout:       30 * time.Second,
-			Transport:     transport,
+			Transport:     newOIDCDiscoveryTransport(blockPrivateIPs),
 			CheckRedirect: networking.SameHostRedirectPolicy(),
 		}
 	}
@@ -191,12 +199,16 @@ func validateOIDCDocument(
 	oidc bool,
 	insecureAllowHTTP bool,
 ) error {
-	// Delegate basic field presence validation to the shared method.
-	// Note: We pass oidc=false here because we handle jwks_uri separately below
-	// with a more specific error message, and response_types_supported validation
-	// is not enforced in this legacy code path to maintain backward compatibility.
+	// Delegate basic field presence validation to the shared method. We pass
+	// oidc=false because this legacy path handles jwks_uri separately below and
+	// does not require response_types_supported. It nevertheless always creates
+	// an interactive authorization request, so authorization_endpoint is required
+	// regardless of the remote server's advertised grant types.
 	if err := doc.Validate(false); err != nil {
 		return err
+	}
+	if doc.AuthorizationEndpoint == "" {
+		return oauthproto.ErrMissingAuthorizationEndpoint
 	}
 
 	// Require jwks_uri for OIDC (with specific error message)
@@ -238,8 +250,11 @@ func CreateOAuthConfigFromOIDC(
 	usePKCE bool,
 	callbackPort int,
 	resource string,
+	blockPrivateIPs bool,
 ) (*Config, error) {
-	return createOAuthConfigFromOIDCWithClient(ctx, issuer, clientID, clientSecret, scopes, usePKCE, callbackPort, resource, nil)
+	return createOAuthConfigFromOIDCWithClient(
+		ctx, issuer, clientID, clientSecret, scopes, usePKCE, callbackPort, resource, nil, blockPrivateIPs,
+	)
 }
 
 // createOAuthConfigFromOIDCWithClient creates an OAuth config from OIDC discovery with a custom HTTP client (private for testing)
@@ -251,11 +266,10 @@ func createOAuthConfigFromOIDCWithClient(
 	callbackPort int,
 	resource string,
 	client networking.HTTPClient,
+	blockPrivateIPs bool,
 ) (*Config, error) {
 	// Discover OIDC endpoints (insecureAllowHTTP is false for OAuth config creation).
-	// blockPrivateIPs=false here preserves this call path's existing behavior;
-	// it is unrelated to the CLI DCR fallback fixed in DiscoverOIDCEndpoints.
-	doc, err := discoverOIDCEndpointsWithClient(ctx, issuer, client, false, false)
+	doc, err := discoverOIDCEndpointsWithClient(ctx, issuer, client, false, blockPrivateIPs)
 	if err != nil {
 		return nil, fmt.Errorf("failed to discover OIDC endpoints: %w", err)
 	}

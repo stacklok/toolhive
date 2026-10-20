@@ -11,12 +11,14 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	"github.com/stacklok/toolhive/pkg/diagnostics"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 	"github.com/stacklok/toolhive/test/e2e"
 )
@@ -215,13 +217,14 @@ var _ = Describe("Telemetry Middleware E2E", Label("middleware", "telemetry", "e
 			time.Sleep(3 * time.Second)
 
 			By("Attempting to access Prometheus metrics endpoint")
-			// Try to access the metrics endpoint
-			// Note: This is a best-effort test since the exact port binding might vary
-			possiblePorts := []string{"9090", "8080", "8081", "9091"}
+			// Metrics are served on the diagnostics listener (see pkg/diagnostics),
+			// which prefers diagnostics.DefaultPort but falls back to an available
+			// port when it is taken, so this stays a best-effort probe.
+			possiblePorts := []string{strconv.Itoa(diagnostics.DefaultPort), "9090", "8080", "8081", "9091"}
 			metricsFound := false
 
 			for _, port := range possiblePorts {
-				metricsURL := fmt.Sprintf("http://localhost:%s/metrics", port)
+				metricsURL := fmt.Sprintf("http://localhost:%s%s", port, diagnostics.MetricsPath)
 				resp, err := http.Get(metricsURL)
 				if err != nil {
 					continue

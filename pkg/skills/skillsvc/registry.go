@@ -21,6 +21,10 @@ import (
 type registryResolveResult struct {
 	OCIRef nameref.Reference
 	GitURL string // raw git:// URL for installFromGit
+	// Provenance is the expected signer identity the catalog entry declares
+	// for this skill, if any (RFC THV-0080 follow-up #6310). nil when the
+	// entry declares none.
+	Provenance *regtypes.Provenance
 }
 
 // resolveFromRegistry attempts to resolve a skill name by querying the
@@ -78,7 +82,7 @@ func (s *service) resolveFromRegistry(name string) (*registryResolveResult, erro
 		)
 	}
 
-	return resolveRegistryPackages(name, matches[0].Packages)
+	return resolveRegistryPackages(name, matches[0])
 }
 
 // splitQualifiedName splits "namespace/name" into (namespace, name).
@@ -212,10 +216,12 @@ func preferredGitRef(pkg regtypes.SkillPackage) string {
 }
 
 // resolveRegistryPackages selects the best installable package from a registry
-// entry. OCI packages are preferred; git is the fallback.
-func resolveRegistryPackages(name string, packages []regtypes.SkillPackage) (*registryResolveResult, error) {
+// entry. OCI packages are preferred; git is the fallback. The entry's
+// declared provenance (if any) is carried onto the result regardless of
+// which package type is chosen.
+func resolveRegistryPackages(name string, sk regtypes.Skill) (*registryResolveResult, error) {
 	// Try OCI packages first (preferred).
-	for _, pkg := range packages {
+	for _, pkg := range sk.Packages {
 		if pkg.RegistryType == "oci" && pkg.Identifier != "" {
 			ref, parseErr := nameref.ParseReference(pkg.Identifier)
 			if parseErr != nil {
@@ -225,12 +231,12 @@ func resolveRegistryPackages(name string, packages []regtypes.SkillPackage) (*re
 					http.StatusUnprocessableEntity,
 				)
 			}
-			return &registryResolveResult{OCIRef: ref}, nil
+			return &registryResolveResult{OCIRef: ref, Provenance: sk.Provenance}, nil
 		}
 	}
 
 	// Fallback: look for git packages.
-	for _, pkg := range packages {
+	for _, pkg := range sk.Packages {
 		if pkg.RegistryType == "git" && pkg.URL != "" {
 			gitURL, gitErr := buildGitReferenceFromRegistryURL(pkg.URL)
 			if gitErr != nil {
@@ -243,7 +249,7 @@ func resolveRegistryPackages(name string, packages []regtypes.SkillPackage) (*re
 			if pkg.Subfolder != "" {
 				gitURL += "#" + pkg.Subfolder
 			}
-			return &registryResolveResult{GitURL: gitURL}, nil
+			return &registryResolveResult{GitURL: gitURL, Provenance: sk.Provenance}, nil
 		}
 	}
 

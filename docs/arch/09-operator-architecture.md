@@ -167,7 +167,7 @@ Defines an MCP server deployment, including container images, transports, middle
 
 **Implementation**: `cmd/thv-operator/api/v1beta1/mcpserver_types.go`
 
-MCPServer resources support various transport types (stdio, SSE, streamable-http), permission profiles, OIDC authentication, and Cedar-based authorization policies. The operator reconciles these resources into Kubernetes Deployments, Services, and StatefulSets.
+MCPServer resources support various transport types (stdio, SSE, streamable-http), OIDC authentication, and Cedar-based authorization policies. The operator reconciles these resources into Kubernetes Deployments, Services, and StatefulSets. The legacy `permissionProfile` field is retained for API compatibility but is deprecated and ignored; Kubernetes-native workload and network controls provide enforcement in operator deployments.
 
 MCPServer supports referencing shared configuration CRDs:
 - `oidcConfigRef` — references an MCPOIDCConfig for shared OIDC settings
@@ -222,7 +222,13 @@ Manages external authentication configurations that can be shared across multipl
 
 **Implementation**: `cmd/thv-operator/api/v1beta1/mcpexternalauthconfig_types.go`
 
-MCPExternalAuthConfig allows you to define reusable authentication configurations that can be referenced by multiple MCPServer and MCPRemoteProxy resources. When using the embedded auth server type, the `storage` field supports configuring Redis Sentinel as a shared storage backend for horizontal scaling. See [Auth Server Storage](11-auth-server-storage.md) for details.
+MCPExternalAuthConfig allows you to define reusable authentication configurations that can be referenced by multiple MCPServer and MCPRemoteProxy resources. For an `embeddedAuthServer`, each entry in `embeddedAuthServer.upstreamProviders` can set `oidcConfig.caBundleRef` or `oauth2Config.caBundleRef`, and each entry in `embeddedAuthServer.trustedIssuers` can set `caBundleRef`, to reference a namespace-local ConfigMap containing PEM-encoded CA certificates. The ConfigMap key is required and is projected read-only for that provider or issuer, then added to the system trust pool; it does not replace public system roots. This allows different providers and issuers to use different private CAs without widening trust for other clients. When using the embedded auth server type, the `storage` field supports configuring Redis Sentinel as a shared storage backend for horizontal scaling. See [Auth Server Storage](11-auth-server-storage.md) for details.
+
+When the referenced CA data changes, the operator watches the ConfigMap, computes a checksum from the selected bundle bytes, and places that checksum on the proxyrunner pod template. A changed checksum causes a Deployment rollout so new pods use the updated trust material. The operator mounts the bundle for MCPServer and MCPRemoteProxy embedded auth servers; VirtualMCPServer uses the same configuration when constructing its auth-server deployment.
+
+For a complete example, see [`examples/operator/external-auth/mcpexternalauthconfig_private_ca.yaml`](../../examples/operator/external-auth/mcpexternalauthconfig_private_ca.yaml).
+
+Because appending a certificate to a referenced ConfigMap makes that CA a trust anchor — for an upstream provider's login, or for a trusted issuer's subject-token validation — restrict write access to a `caBundleRef` ConfigMap with the same RBAC care as the auth server's signing-key Secret.
 
 MCPExternalAuthConfig resources can be referenced via two paths:
 - `externalAuthConfigRef` — for outgoing auth types (token exchange, AWS STS, bearer token injection). This is the original reference path.
@@ -231,6 +237,8 @@ MCPExternalAuthConfig resources can be referenced via two paths:
 **Referenced by MCPServer and MCPRemoteProxy** using `externalAuthConfigRef` or `authServerRef`.
 
 **Controller**: `cmd/thv-operator/controllers/mcpexternalauthconfig_controller.go`
+
+`EmbeddedAuthServerConfig` can carry top-level SPIFFE trust-domain declarations in `spiffeTrustDomains` and canonical client associations in `inboundGrants.spiffeClientAuth` (`cmd/thv-operator/api/v1beta1/mcpexternalauthconfig_types.go`). The operator converts these CRD fields into runtime config via `buildSPIFFETrustDomainRunConfigs`/`buildSPIFFEClientAuthRunConfigs` in `cmd/thv-operator/pkg/controllerutil/authserver.go`, and projects file-source ConfigMap data read-only. `newServer` constructs the configured bundle source and passes its X.509 and JWT views to the authorization server. However, `RunConfig.Validate()` still rejects any non-empty SPIFFE trust configuration before the runner starts, so this wiring is not reachable in normal deployment. TLS listener startup and X.509-SVID verification are not implemented. See [SPIFFE Association Declarations](18-spiffe-association-declarations.md) for current scope.
 
 ### MCPOIDCConfig
 

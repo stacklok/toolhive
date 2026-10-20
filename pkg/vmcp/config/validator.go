@@ -72,6 +72,10 @@ func (v *DefaultValidator) Validate(cfg *Config) error {
 		errors = append(errors, err.Error())
 	}
 
+	if cfg.SessionStorage != nil && cfg.SessionStorage.TLS != nil && cfg.SessionStorage.Provider != "redis" {
+		errors = append(errors, "session storage TLS requires provider redis")
+	}
+
 	// Validate static backends
 	if err := v.validateStaticBackends(cfg.Backends); err != nil {
 		errors = append(errors, err.Error())
@@ -669,8 +673,10 @@ func validateAuthServerRunConfig(rc *authserver.RunConfig) error {
 	if rc.Issuer == "" {
 		return fmt.Errorf("auth server issuer is required")
 	}
-	if len(rc.Upstreams) == 0 {
-		return fmt.Errorf("auth server requires at least one upstream")
+	if len(rc.Upstreams) == 0 && len(rc.DelegateClients) == 0 &&
+		!authserver.JWTBearerGrantEnabled(rc.TrustedIssuers) {
+		return fmt.Errorf("auth server requires at least one upstream unless delegate clients or a " +
+			"trusted issuer with JWT bearer grant is configured")
 	}
 	// AllowedAudiences is required for MCP compliance (RFC 8707).
 	if len(rc.AllowedAudiences) == 0 {

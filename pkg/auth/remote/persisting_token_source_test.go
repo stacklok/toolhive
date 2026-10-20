@@ -234,12 +234,14 @@ func TestCreateTokenSourceFromCached(t *testing.T) {
 		},
 	}
 
-	tokenSource := CreateTokenSourceFromCached(
+	tokenSource, err := CreateTokenSourceFromCached(
 		oauth2Config,
 		"refresh_token",
 		time.Now().Add(time.Hour),
 		"",
+		false,
 	)
+	require.NoError(t, err)
 
 	assert.NotNil(t, tokenSource)
 }
@@ -283,7 +285,10 @@ func TestCreateTokenSourceFromCached_SetsUserAgent(t *testing.T) {
 				Endpoint:     oauth2.Endpoint{TokenURL: server.URL},
 			}
 
-			ts := CreateTokenSourceFromCached(cfg, "old-refresh-token", time.Now().Add(-time.Hour), tt.resource)
+			ts, err := CreateTokenSourceFromCached(
+				cfg, "old-refresh-token", time.Now().Add(-time.Hour), tt.resource, true,
+			)
+			require.NoError(t, err)
 
 			tok, err := ts.Token()
 			require.NoError(t, err)

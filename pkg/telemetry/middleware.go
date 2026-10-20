@@ -325,8 +325,9 @@ func (m *HTTPMiddleware) addEnvironmentAttributes(span trace.Span) {
 	// Include environment variables from host machine as configured
 	// Only environment variables specified in the config will be read and included
 	for _, envVar := range m.config.EnvironmentVariables {
-		if envVar == "" {
-			continue // Skip empty environment variable names
+		// A "NAME=value" assignment must not become part of the span attribute key.
+		if envVar == "" || strings.Contains(envVar, "=") {
+			continue // Skip empty or assignment-style environment variable names
 		}
 
 		value := os.Getenv(envVar)
@@ -955,12 +956,11 @@ func CreateMiddleware(config *types.MiddlewareConfig, runner types.MiddlewareRun
 	// Add middleware to runner
 	runner.AddMiddleware(config.Type, telemetryMw)
 
-	// Set Prometheus handler if enabled
+	// Set Prometheus handler if enabled. The runner serves it on a dedicated
+	// diagnostics listener and logs the resolved address there, so no port is
+	// logged here — it is not the application port.
 	if prometheusHandler != nil {
 		runner.SetPrometheusHandler(prometheusHandler)
-		//nolint:gosec // G706: port number from config
-		slog.Info("prometheus metrics will be exposed at /metrics",
-			"port", runner.GetConfig().GetPort())
 	}
 
 	return nil

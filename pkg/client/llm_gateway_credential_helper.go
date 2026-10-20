@@ -38,9 +38,11 @@ const (
 )
 
 // claudeDesktopConfig is the <id>.json document written into the configLibrary.
-// ToolHive fully owns this file, so a typed struct is safe (no user fields to
-// preserve). inferenceModels is omitted when empty so Claude Desktop falls back
-// to gateway-side model auto-discovery once the gateway serves it.
+// ToolHive owns this file. ManagedMCPServers holds the connectors written by
+// "thv client connector add" (see claude_desktop_connectors.go); setup carries
+// them over from the previous document rather than managing them itself.
+// inferenceModels is omitted when empty so Claude Desktop falls back to
+// gateway-side model auto-discovery once the gateway serves it.
 type claudeDesktopConfig struct {
 	InferenceProvider                   string   `json:"inferenceProvider"`
 	InferenceGatewayBaseURL             string   `json:"inferenceGatewayBaseUrl"`
@@ -50,6 +52,7 @@ type claudeDesktopConfig struct {
 	InferenceCredentialHelperTtlSec     int      `json:"inferenceCredentialHelperTtlSec"`
 	InferenceCredentialHelperTimeoutSec int      `json:"inferenceCredentialHelperTimeoutSec"`
 	InferenceModels                     []string `json:"inferenceModels,omitempty"`
+	ManagedMCPServers                   []any    `json:"managedMcpServers,omitempty"`
 }
 
 // configureCredentialHelper writes (or updates) ToolHive's Claude Desktop
@@ -64,7 +67,7 @@ func (cm *ClientManager) configureCredentialHelper(appCfg *clientAppConfig, cfg 
 	if runtime.GOOS == "windows" {
 		// The shim is a POSIX /bin/sh script — consistent with the rest of the
 		// LLM gateway token-helper feature, which is POSIX-only (see
-		// buildTokenHelperCommand in pkg/llm). Windows support is a follow-up.
+		// tokenHelperShellCommand in pkg/llm). Windows support is a follow-up.
 		return "", fmt.Errorf("claude-desktop LLM gateway setup is not supported on Windows yet")
 	}
 
@@ -89,7 +92,7 @@ func (cm *ClientManager) configureCredentialHelper(appCfg *clientAppConfig, cfg 
 		// Track whether the shim already existed so failure cleanup does not
 		// delete a shim an earlier successful setup still depends on.
 		shimExisted := fileExistsAt(cm.credentialHelperShimPath())
-		shimPath, err := cm.writeCredentialHelperShim(cfg.TokenHelperCommand)
+		shimPath, err := cm.writeCredentialHelperShim(cfg.TokenHelperPath)
 		if err != nil {
 			return err
 		}
@@ -117,6 +120,7 @@ func (cm *ClientManager) configureCredentialHelper(appCfg *clientAppConfig, cfg 
 		meta["entries"] = upsertMetaEntry(metaEntries(meta), id, claudeDesktopManagedEntryName)
 		meta["appliedId"] = id
 
+		cp := filepath.Join(dir, id+".json")
 		doc := claudeDesktopConfig{
 			InferenceProvider:                   "gateway",
 			InferenceGatewayBaseURL:             baseURL,
@@ -126,13 +130,14 @@ func (cm *ClientManager) configureCredentialHelper(appCfg *clientAppConfig, cfg 
 			InferenceCredentialHelperTtlSec:     int(llmgateway.ClaudeDesktopHelperTTL.Seconds()),
 			InferenceCredentialHelperTimeoutSec: int(llmgateway.ClaudeDesktopHelperTimeout.Seconds()),
 			InferenceModels:                     cfg.Models,
+			// Keep connectors across re-runs of setup, which rewrites the document.
+			ManagedMCPServers: previousManagedMCPServers(cp),
 		}
 		docBytes, err := json.MarshalIndent(doc, "", "  ")
 		if err != nil {
 			cleanup("")
 			return fmt.Errorf("encoding Claude Desktop config: %w", err)
 		}
-		cp := filepath.Join(dir, id+".json")
 		if err := fileutils.AtomicWriteFile(cp, docBytes, 0o600); err != nil {
 			cleanup(cp)
 			return fmt.Errorf("writing %s: %w", cp, err)
@@ -217,6 +222,13 @@ func (cm *ClientManager) revertCredentialHelper(appCfg *clientAppConfig, configP
 				return err
 			}
 		}
+		// The document also holds any connectors "thv client connector add" wrote;
+		// they go with it, since Claude Desktop ignores them without the inference
+		// settings anyway.
+		if names := connectorNamesInDoc(configPath); len(names) > 0 {
+			slog.Warn("removing Claude Desktop connectors along with the LLM gateway configuration",
+				"connectors", names)
+		}
 		if err := removeIfExists(configPath); err != nil {
 			return err
 		}
@@ -234,63 +246,66 @@ func (cm *ClientManager) credentialHelperShimPath() string {
 
 // writeCredentialHelperShim generates the no-arg executable that Claude Desktop
 // invokes as its inferenceCredentialHelper. Claude Desktop requires an absolute
-// path to an executable (no arguments), whereas tokenHelperCommand is a shell
-// command string (e.g. `"…thv" llm token`); the shim bridges the two.
+// path to an executable and passes no arguments, so the shim exists to supply
+// the "llm token" arguments — and to choose them per invocation context.
+//
+// tokenHelperPath is the absolute thv path (ApplyConfig.TokenHelperPath). It is
+// single-quoted into the exec lines rather than resolved via PATH at call time:
+// Claude Desktop is only ever GUI-launched, and GUI apps inherit launchd's
+// environment, which does not contain thv's install directory — a bare "thv"
+// would never be found. This is what distinguishes Claude Desktop from the
+// direct-mode clients, which deliberately keep the bare, PATH-resolved
+// tokenHelperShellCommand (see pkg/llm/setup.go). Single-quoting is a total
+// transform (see quoteForPOSIXShell), so no character in the path needs
+// rejecting and no metacharacter validation is required to keep this 0700
+// script injection-free.
 //
 // Claude Desktop sets CLAUDE_HELPER_CONTEXT on each call. Only "interactive"
 // permits an OIDC browser flow; silent contexts (background / setup-test /
 // mid-session-refresh) must not hijack the user's browser, so they use
 // --skip-browser and rely on the cached/refresh token that "thv llm setup"
 // primed up front.
-func (cm *ClientManager) writeCredentialHelperShim(tokenHelperCommand string) (string, error) {
-	if tokenHelperCommand == "" {
-		return "", fmt.Errorf("no token-helper command available for credential helper shim")
-	}
-	if !isSafeTokenHelperCommand(tokenHelperCommand) {
-		// Defence in depth: the producer (buildTokenHelperCommand) is shell-safe
-		// today, but the writer must not silently emit an injectable 0700 script
-		// if a future caller constructs tokenHelperCommand differently.
-		return "", fmt.Errorf("refusing to write credential helper shim: token-helper command is not shell-safe")
+func (cm *ClientManager) writeCredentialHelperShim(tokenHelperPath string) (string, error) {
+	// Require an absolute path. Defeating PATH resolution is the entire point of
+	// this shim, and a relative path would silently reintroduce it — resolved
+	// against whatever working directory Claude Desktop happens to have. A
+	// non-absolute path here is a caller bug (os.Executable() is documented to
+	// return an absolute path unless it errors), so fail closed rather than
+	// emit a shim that cannot reliably locate thv.
+	if !filepath.IsAbs(tokenHelperPath) {
+		return "", fmt.Errorf(
+			"credential helper shim requires an absolute token-helper path, got %q", tokenHelperPath)
 	}
 	shimPath := cm.credentialHelperShimPath()
 	if err := os.MkdirAll(filepath.Dir(shimPath), 0o700); err != nil {
 		return "", fmt.Errorf("creating credential helper directory: %w", err)
 	}
+	quoted := quoteForPOSIXShell(tokenHelperPath)
 	script := "#!/bin/sh\n" +
 		"# Generated by `thv llm setup` — Claude Desktop credential helper.\n" +
 		"# Prints a fresh LLM gateway token. Do not edit; `thv llm teardown` removes it.\n" +
 		"if [ \"$CLAUDE_HELPER_CONTEXT\" = \"interactive\" ]; then\n" +
-		"  exec " + tokenHelperCommand + "\n" +
+		"  exec " + quoted + " llm token\n" +
 		"fi\n" +
-		"exec " + tokenHelperCommand + " --skip-browser\n"
+		"exec " + quoted + " llm token --skip-browser\n"
 	if err := fileutils.AtomicWriteFile(shimPath, []byte(script), 0o700); err != nil {
 		return "", fmt.Errorf("writing credential helper shim %s: %w", shimPath, err)
 	}
 	return shimPath, nil
 }
 
-// isSafeTokenHelperCommand reports whether tokenHelperCommand is safe to splice
-// into the shim. The shim is a 0700 /bin/sh script built by string
-// concatenation, so a caller-supplied command containing ";", "&", "|", "`",
-// "$", "#", quotes, or newlines would be stored command injection.
+// quoteForPOSIXShell wraps s in single quotes so a POSIX shell reads every byte
+// of it literally, escaping any embedded single quote as the four-character
+// sequence quote-backslash-quote-quote (close the quoted run, emit a
+// backslash-escaped quote, reopen).
 //
-// The producer (tokenHelperShellCommand in pkg/llm) is a constant today, but
-// TokenHelperCommand is a general ApplyConfig field consumed by multiple
-// writers, so this check makes the shim writer fail closed rather than trusting
-// every future caller to uphold the contract. It deliberately validates only
-// that the command is metacharacter-free, not that it matches one exact string:
-// pinning the shape would couple this writer to the producer's formatting.
-func isSafeTokenHelperCommand(tokenHelperCommand string) bool {
-	if tokenHelperCommand == "" {
-		return false
-	}
-	for _, r := range tokenHelperCommand {
-		switch r {
-		case ';', '&', '|', '`', '$', '#', '\'', '"', '\\', '\n', '\r':
-			return false
-		}
-	}
-	return true
+// Single-quoting is a total transform: inside a single-quoted run no character
+// is special to the shell — not $, backtick, backslash, or even a newline — so
+// there is no input this fails on and callers need no metacharacter validation.
+// The shim it serves is POSIX-only by construction (configureCredentialHelper
+// hard-errors on Windows), so no cmd.exe equivalent is needed.
+func quoteForPOSIXShell(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 // managedProfilePresent reports whether an MDM/managed-preferences profile for

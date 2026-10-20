@@ -311,6 +311,7 @@ func (a *Applier) buildUpgradedConfig(
 		runner.WithProxyMode(old.ProxyMode),
 		runner.WithCmdArgs(slices.Clone(old.CmdArgs)),
 		runner.WithStateless(old.Stateless),
+		runner.WithMaxRequestBodySize(old.MaxRequestBodySize),
 		runner.WithEndpointPrefix(old.EndpointPrefix),
 		runner.WithRegistrySourceURLs(regAPIURL, regURL),
 		runner.WithRegistryServerName(old.RegistryServerName),
@@ -324,14 +325,9 @@ func (a *Applier) buildUpgradedConfig(
 	if old.PermissionProfileNameOrPath != "" {
 		options = append(options, runner.WithPermissionProfileNameOrPath(old.PermissionProfileNameOrPath))
 	} else if old.PermissionProfile != nil {
-		// Clone before handing it over: processVolumeMounts appends to Read/Write,
-		// which would otherwise mutate old's profile through the shared pointer and
-		// break this builder's "never mutates old" contract. The clone is shallow
-		// except for Read/Write: the builder only ever appends to those two slices
-		// here. The shared Network pointer is safe today because the builder mutates
-		// it solely via WithNetworkMode, which buildUpgradedConfig never sets; if a
-		// future change adds WithNetworkMode (or the builder starts touching Network
-		// unconditionally), Network must be cloned here too.
+		// Retain an upgrade-local copy of mount slices so this method's
+		// "never mutates old" contract does not depend on builder internals.
+		// The runner builder deep-clones the full profile before mutation.
 		cloned := *old.PermissionProfile
 		cloned.Read = slices.Clone(old.PermissionProfile.Read)
 		cloned.Write = slices.Clone(old.PermissionProfile.Write)
@@ -360,7 +356,7 @@ func (a *Applier) buildUpgradedConfig(
 // round-trip upgrade changes only the image, env/secrets, and registry URLs.
 //
 // SchemaVersion, Image, Name, Group, Transport, Host, Port, TargetPort,
-// Volumes, Secrets, EnvVars, ProxyMode, CmdArgs, Stateless, EndpointPrefix,
+// Volumes, Secrets, EnvVars, ProxyMode, CmdArgs, Stateless, MaxRequestBodySize, EndpointPrefix,
 // network/posture flags, permission profile, container name/labels (standard
 // labels), and registry fields are intentionally NOT copied here: they are
 // produced by the builder above (with image/env/secrets/registry URLs being the
@@ -414,6 +410,7 @@ func preserveUserConfigFields(dst, old *runner.RunConfig) {
 
 	// Proxy session / runtime / scheduling knobs.
 	dst.SessionTTL = old.SessionTTL
+	dst.ProxyReadTimeout = old.ProxyReadTimeout
 	dst.RuntimeConfig = old.RuntimeConfig
 	dst.IgnoreConfig = old.IgnoreConfig
 	dst.K8sPodTemplatePatch = old.K8sPodTemplatePatch

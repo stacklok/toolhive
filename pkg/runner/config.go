@@ -29,6 +29,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/labels"
 	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/oauthproto/tokenexchange"
+	"github.com/stacklok/toolhive/pkg/redisconfig"
 	"github.com/stacklok/toolhive/pkg/secrets"
 	"github.com/stacklok/toolhive/pkg/state"
 	"github.com/stacklok/toolhive/pkg/telemetry"
@@ -197,9 +198,10 @@ type RunConfig struct {
 	IsolateNetwork bool `json:"isolate_network,omitempty" yaml:"isolate_network,omitempty"`
 
 	// AllowDockerGateway permits outbound connections to Docker gateway addresses
-	// (host.docker.internal, gateway.docker.internal, 172.17.0.1). These are
+	// (all daemon bridge gateways, host.docker.internal, and gateway.docker.internal). These are
 	// blocked by default in the egress proxy even when InsecureAllowAll is set.
 	// Only applicable to Docker deployments with network isolation enabled.
+	// Gateways are snapshotted at deployment; redeploy to include bridges created later.
 	// Gateway access is port-independent: it ignores the permission profile's
 	// allowed ports, so once enabled the gateway is reachable on any port.
 	AllowDockerGateway bool `json:"allow_docker_gateway,omitempty" yaml:"allow_docker_gateway,omitempty"`
@@ -226,6 +228,18 @@ type RunConfig struct {
 	// String (not time.Duration) keeps the wire format unit-explicit: a
 	// time.Duration field serializes as nanoseconds in JSON.
 	SessionTTL string `json:"session_ttl,omitempty" yaml:"session_ttl,omitempty" example:"2h"`
+
+	// MaxRequestBodySize is the maximum inbound MCP proxy request body size in bytes.
+	// Zero uses the default limit of 8 MiB. Negative values are rejected
+	// when the RunConfig is built or used at runtime.
+	MaxRequestBodySize int64 `json:"max_request_body_size,omitempty" yaml:"max_request_body_size,omitempty"`
+
+	// ProxyReadTimeout bounds reading the entire request (headers + body) on the
+	// proxy HTTP server, expressed as a Go duration string (e.g. "30s", "1m").
+	// Empty uses the proxy default (30s). Negative durations and values that fail
+	// time.ParseDuration are rejected at runtime. Applies to all HTTP transports.
+	// String (not time.Duration) keeps the wire format unit-explicit.
+	ProxyReadTimeout string `json:"proxy_read_timeout,omitempty" yaml:"proxy_read_timeout,omitempty" example:"30s"`
 
 	// ProxyMode is the effective HTTP protocol the proxy uses.
 	// For stdio transports, this is the configured mode (sse or streamable-http).
@@ -337,6 +351,10 @@ type SessionRedisConfig struct {
 
 	// KeyPrefix is an optional prefix applied to all Redis keys used by ToolHive.
 	KeyPrefix string `json:"key_prefix,omitempty" yaml:"key_prefix,omitempty"`
+
+	// TLS enables TLS for session storage and rate limiting. An empty
+	// configuration verifies the Redis server using system roots.
+	TLS *redisconfig.TLSConfig `json:"tls,omitempty" yaml:"tls,omitempty"`
 }
 
 // NormalizeProxyMode sets ProxyMode to the effective value based on the
@@ -395,6 +413,11 @@ func ReadJSON(r io.Reader) (*RunConfig, error) {
 	// Migrate plain text bearer tokens to CLI format
 	if err := migrateBearerToken(&config); err != nil {
 		return nil, fmt.Errorf("failed to migrate bearer token: %w", err)
+	}
+
+	// Repair legacy serialized auth middleware in memory without rewriting the source config.
+	if err := canonicalizeOIDCMiddlewareConfig(&config); err != nil {
+		return nil, fmt.Errorf("invalid OIDC middleware configuration: %w", err)
 	}
 
 	// Normalize proxyMode so pre-existing configs always reflect the effective protocol
@@ -667,34 +690,30 @@ func (c *RunConfig) WithSecrets(
 		}
 	}
 
-	// Process RemoteAuthConfig.ClientSecret if it's in CLI format — system-managed secret
+	if c.RemoteAuthConfig != nil {
+		c.RemoteAuthConfig.ClearResolvedSecrets()
+	}
+
+	// Resolve RemoteAuthConfig.ClientSecret while retaining its persistable reference.
 	if c.RemoteAuthConfig != nil && c.RemoteAuthConfig.ClientSecret != "" {
-		// Check if it's in CLI format (contains ",target=")
 		if secretParam, err := secrets.ParseSecretParameter(c.RemoteAuthConfig.ClientSecret); err == nil {
-			// It's in CLI format, resolve the actual secret value
 			actualSecret, err := systemProvider.GetSecret(ctx, secretParam.Name)
 			if err != nil {
 				return c, fmt.Errorf("failed to resolve OAuth client secret '%s': %w", secretParam.Name, err)
 			}
-			// Replace the CLI format string with the actual secret value
-			c.RemoteAuthConfig.ClientSecret = actualSecret
+			c.RemoteAuthConfig.SetResolvedClientSecret(actualSecret)
 		}
-		// If it's not in CLI format (plain text), leave it as is
 	}
 
-	// Process RemoteAuthConfig.BearerToken if it's in CLI format — system-managed secret
+	// Resolve RemoteAuthConfig.BearerToken while retaining its persistable reference.
 	if c.RemoteAuthConfig != nil && c.RemoteAuthConfig.BearerToken != "" {
-		// Check if it's in CLI format (contains ",target=")
 		if secretParam, err := secrets.ParseSecretParameter(c.RemoteAuthConfig.BearerToken); err == nil {
-			// It's in CLI format, resolve the actual token value
 			actualToken, err := systemProvider.GetSecret(ctx, secretParam.Name)
 			if err != nil {
 				return c, fmt.Errorf("failed to resolve bearer token '%s': %w", secretParam.Name, err)
 			}
-			// Replace the CLI format string with the actual token value
-			c.RemoteAuthConfig.BearerToken = actualToken
+			c.RemoteAuthConfig.SetResolvedBearerToken(actualToken)
 		}
-		// If it's not in CLI format (plain text), leave it as is
 	}
 
 	// Process HeaderForward.AddHeadersFromSecret — user-managed secrets

@@ -117,6 +117,27 @@ type CommonOAuthConfig struct {
 	// and will be rejected during validation.
 	//nolint:lll // field tags require full JSON+YAML names
 	AdditionalAuthorizationParams map[string]string `json:"additional_authorization_params,omitempty" yaml:"additional_authorization_params,omitempty"`
+
+	// AdditionalTokenParams are extra form-body parameters to include in
+	// token requests (authorization code exchange and refresh) sent to the
+	// upstream IDP's token endpoint. This is useful for providers that
+	// enforce RFC 8707 resource indicators on token requests, where the
+	// resource parameter must accompany the code exchange and refresh, not
+	// only the authorization request.
+	// Framework-managed parameters (grant_type, code, redirect_uri, client_id,
+	// client_secret, code_verifier, refresh_token, scope) are not allowed here
+	// and will be rejected during validation.
+	//nolint:lll // field tags require full JSON+YAML names
+	AdditionalTokenParams map[string]string `json:"additional_token_params,omitempty" yaml:"additional_token_params,omitempty"`
+
+	// OmitScopeOnRefresh stops RefreshTokens from sending the `scope` parameter
+	// on refresh_token grant requests. Scopes are still sent on the
+	// authorization request. Defaults to false, which sends Scopes on refresh.
+	// Set it for providers that reject `scope` on refresh (e.g. Salesforce
+	// returns "invalid_request - scope parameter not supported"); per
+	// RFC 6749 §6 the AS then treats the refresh as covering the originally
+	// granted scope.
+	OmitScopeOnRefresh bool `json:"omit_scope_on_refresh,omitempty" yaml:"omit_scope_on_refresh,omitempty"`
 }
 
 // ValidateWithInsecure validates CommonOAuthConfig, allowing http:// redirect URIs for
@@ -129,6 +150,9 @@ func (c *CommonOAuthConfig) ValidateWithInsecure(insecureAllowHTTP bool) error {
 		return errors.New("redirect_uri is required")
 	}
 	if err := oauthparams.Validate(c.AdditionalAuthorizationParams); err != nil {
+		return err
+	}
+	if err := oauthparams.ValidateTokenParams(c.AdditionalTokenParams); err != nil {
 		return err
 	}
 	if insecureAllowHTTP {
@@ -149,13 +173,12 @@ type OAuth2Config struct {
 
 	// TokenEndpointAuthMethod is the RFC 7591 client authentication method used
 	// at the token endpoint; see authStyleFromMethod for the mapping to
-	// oauth2.AuthStyle and the rationale. When empty, the historical default
-	// (POST body) is used.
+	// oauth2.AuthStyle and the rationale.
 	//
-	// Only the DCR path populates this, via applyResolutionToOAuth2Config.
-	// OAuth2UpstreamRunConfig has no corresponding field, so a statically-
-	// configured upstream cannot set it and always gets the default — an
-	// intentional limitation scoped to issue #5865 (DCR-negotiated clients).
+	// When empty, the caller's provider-specific default applies. Static
+	// OAuth2UpstreamRunConfig clients default to the historical POST-body method
+	// regardless of whether a secret is configured; DCR clients receive the
+	// negotiated method via applyResolutionToOAuth2Config.
 	//nolint:lll // field tags require full JSON+YAML names
 	TokenEndpointAuthMethod string `json:"token_endpoint_auth_method,omitempty" yaml:"token_endpoint_auth_method,omitempty"`
 
@@ -177,6 +200,9 @@ type OAuth2Config struct {
 	// (cmd/thv-operator/api/v1beta1.IdentityFromTokenConfig) for the
 	// authoritative trust-model and uniqueness documentation.
 	IdentityFromToken *IdentityFromTokenConfig `json:"identity_from_token,omitempty" yaml:"identity_from_token,omitempty"`
+
+	// CAFilePath is the path to a PEM CA bundle added to the system roots.
+	CAFilePath string `json:"ca_file_path,omitempty" yaml:"ca_file_path,omitempty"`
 
 	// InsecureAllowHTTP permits http:// authorization_endpoint and token_endpoint
 	// URLs for non-localhost hosts. Set only for trusted in-cluster deployments.
@@ -291,15 +317,54 @@ type BaseOAuth2Provider struct {
 	config       *OAuth2Config
 	oauth2Config *oauth2.Config
 	httpClient   *http.Client
+	// ownsHTTPClient is true only when the provider built httpClient itself;
+	// see CloseIdleConnections.
+	ownsHTTPClient bool
 }
+
+// ErrCABundleWithInjectedClient is returned when a provider config sets
+// CAFilePath while the caller also injects an HTTP client via
+// WithOAuth2HTTPClient / WithHTTPClient. The injected client carries its own TLS
+// trust, so the bundle could never take effect; failing loudly keeps a
+// trust-anchor misconfiguration a boot-time error rather than a silent no-op.
+var ErrCABundleWithInjectedClient = errors.New("caFilePath cannot be combined with an injected HTTP client")
+
+// IdleConnectionCloser is an optional capability an OAuth2Provider may implement
+// to release the idle keep-alive connections held by its HTTP client. It is the
+// provider-level analogue of networking.IdleConnectionCloser, and is optional
+// rather than part of OAuth2Provider because doc.go invites external
+// implementations of that interface, which widening would break. Consumers
+// type-assert against it and treat a provider that does not implement it as
+// having nothing to release.
+//
+// Only idle connections are closed: in-flight requests are unaffected and the
+// provider stays usable, dialing again on its next call. An implementation must
+// leave a caller-supplied client alone — the caller may be sharing it — which is
+// the ownership rule BaseOAuth2Provider.CloseIdleConnections implements.
+type IdleConnectionCloser interface {
+	CloseIdleConnections()
+}
+
+// Compile-time capability check.
+var _ IdleConnectionCloser = (*BaseOAuth2Provider)(nil)
 
 // OAuth2ProviderOption configures a BaseOAuth2Provider.
 type OAuth2ProviderOption func(*BaseOAuth2Provider)
 
-// WithOAuth2HTTPClient sets a custom HTTP client.
+// WithOAuth2HTTPClient sets a custom HTTP client. See
+// BaseOAuth2Provider.CloseIdleConnections for the ownership rule this implies.
+//
+// The injected client fully supersedes the one the provider would have built, so
+// the caller owns its request-time scheme enforcement (the HTTPS check
+// networking.ValidatingTransport applies) and its dial-time private-IP blocking.
+// Config-level validation is unaffected: InsecureAllowHTTP still governs whether
+// a plain-http endpoint is accepted at all, via ValidateWithInsecure. Setting
+// CAFilePath alongside an injected client is a contradiction and is rejected —
+// see ErrCABundleWithInjectedClient.
 func WithOAuth2HTTPClient(client *http.Client) OAuth2ProviderOption {
 	return func(p *BaseOAuth2Provider) {
 		p.httpClient = client
+		p.ownsHTTPClient = false
 	}
 }
 
@@ -307,15 +372,44 @@ func WithOAuth2HTTPClient(client *http.Client) OAuth2ProviderOption {
 // The hostForClient parameter determines which URL to use for HTTP client configuration
 // (e.g., TokenEndpoint for OAuth2, Issuer for OIDC).
 //
+// Options are applied before the default HTTP client is built, so a caller that
+// injects one does not pay for a discarded transport (nor for reading the CA
+// bundle) on every construction.
+//
 // IMPORTANT: Callers must ensure config is non-nil before calling this function.
-func newBaseOAuth2Provider(config *OAuth2Config, hostForClient string) (*BaseOAuth2Provider, error) {
+func newBaseOAuth2Provider(
+	config *OAuth2Config,
+	hostForClient string,
+	opts ...OAuth2ProviderOption,
+) (_ *BaseOAuth2Provider, retErr error) {
 	if err := config.ValidateWithInsecure(config.InsecureAllowHTTP); err != nil {
 		return nil, fmt.Errorf("invalid config: %w", err)
 	}
 
-	httpClient, err := newHTTPClientForHost(hostForClient, config.AllowPrivateIPs, config.InsecureAllowHTTP)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create HTTP client: %w", err)
+	p := &BaseOAuth2Provider{config: config}
+	for _, opt := range opts {
+		opt(p)
+	}
+
+	if p.httpClient == nil {
+		httpClient, err := newHTTPClientForHost(
+			hostForClient, config.AllowPrivateIPs, config.InsecureAllowHTTP, config.CAFilePath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create HTTP client: %w", err)
+		}
+		p.httpClient = httpClient
+		p.ownsHTTPClient = true
+		// Symmetric with NewOIDCProvider's drain. Nothing below issues a request
+		// today — the only later failure is authStyleFromMethod — so the pool is
+		// empty and this is currently a no-op; it is here so a future step that
+		// performs I/O before returning an error cannot strand a connection.
+		defer func() {
+			if retErr != nil {
+				p.CloseIdleConnections()
+			}
+		}()
+	} else if err := checkInjectedClientCABundle(config.CAFilePath); err != nil {
+		return nil, err
 	}
 
 	// AuthStyle is derived from the negotiated token_endpoint_auth_method
@@ -326,7 +420,7 @@ func newBaseOAuth2Provider(config *OAuth2Config, hostForClient string) (*BaseOAu
 	}
 
 	// Create the oauth2.Config for use with golang.org/x/oauth2 library.
-	oauth2Cfg := &oauth2.Config{
+	p.oauth2Config = &oauth2.Config{
 		ClientID:     config.ClientID,
 		ClientSecret: config.ClientSecret,
 		RedirectURL:  config.RedirectURI,
@@ -338,11 +432,39 @@ func newBaseOAuth2Provider(config *OAuth2Config, hostForClient string) (*BaseOAu
 		},
 	}
 
-	return &BaseOAuth2Provider{
-		config:       config,
-		oauth2Config: oauth2Cfg,
-		httpClient:   httpClient,
-	}, nil
+	return p, nil
+}
+
+// CloseIdleConnections releases the idle keep-alive connections pooled by the
+// provider's HTTP client. Call it when retiring a provider: otherwise the pool's
+// sockets and their servicing goroutines are held until the idle timeout
+// elapses, and a process that constructs providers repeatedly accumulates them.
+//
+// This is the ownership rule the package enforces: a client supplied by the
+// caller (WithOAuth2HTTPClient / WithHTTPClient) is left alone, because the
+// caller may be sharing it and draining it here would cold-start connections
+// another live provider is using. Only a client the provider built itself is
+// drained.
+func (p *BaseOAuth2Provider) CloseIdleConnections() {
+	if p.httpClient == nil || !p.ownsHTTPClient {
+		return
+	}
+	p.httpClient.CloseIdleConnections()
+}
+
+// checkInjectedClientCABundle rejects a CA bundle configured alongside a
+// caller-injected HTTP client: the injected client carries its own TLS trust, so
+// the bundle can never take effect, and a trust-anchor decision must fail at
+// boot rather than be dropped. AllowPrivateIPs and InsecureAllowHTTP need no
+// equivalent check — the former was already inert with an injected client, the
+// latter still gates config-level scheme validation.
+func checkInjectedClientCABundle(caFilePath string) error {
+	if caFilePath == "" {
+		return nil
+	}
+	return fmt.Errorf("%w: caFilePath %q cannot take effect because the injected client carries "+
+		"its own TLS trust; configure the CA bundle on that client and clear caFilePath",
+		ErrCABundleWithInjectedClient, caFilePath)
 }
 
 // authStyleFromMethod maps an RFC 7591 token_endpoint_auth_method to the
@@ -403,13 +525,9 @@ func NewOAuth2Provider(config *OAuth2Config, opts ...OAuth2ProviderOption) (*Bas
 	if err != nil {
 		return nil, fmt.Errorf("invalid token endpoint URL: %w", err)
 	}
-	p, err := newBaseOAuth2Provider(config, tokenURL.Host)
+	p, err := newBaseOAuth2Provider(config, tokenURL.Host, opts...)
 	if err != nil {
 		return nil, err
-	}
-
-	for _, opt := range opts {
-		opt(p)
 	}
 
 	slog.Info("oauth2 provider created successfully",
@@ -672,6 +790,12 @@ func (p *BaseOAuth2Provider) exchangeCodeForTokens(
 	if codeVerifier != "" {
 		opts = append(opts, oauth2.VerifierOption(codeVerifier))
 	}
+	// AuthCodeOptions passed to Exchange land in the POST form body, so
+	// configured additional token params (e.g. an RFC 8707 resource
+	// indicator) reach the token endpoint the way such ASes require.
+	for k, v := range p.config.AdditionalTokenParams {
+		opts = append(opts, oauth2.SetAuthURLParam(k, v))
+	}
 
 	token, err := p.oauth2Config.Exchange(ctx, code, opts...)
 	if err != nil {
@@ -702,10 +826,12 @@ func (p *BaseOAuth2Provider) exchangeCodeForTokens(
 
 // RefreshTokens refreshes the upstream IDP tokens.
 //
-// Sends `scope` explicitly. RFC 6749 §6 makes the param optional and says the
-// AS SHOULD preserve original scopes on omission, but some ASes (notably
-// Entra ID v1) silently narrow refreshed tokens to the user's default consent
-// set when `scope` is omitted, dropping custom resource scopes.
+// Sends `scope` explicitly by default. RFC 6749 §6 makes the param optional
+// and says the AS SHOULD preserve original scopes on omission, but some ASes
+// (notably Entra ID v1) silently narrow refreshed tokens to the user's default
+// consent set when `scope` is omitted, dropping custom resource scopes. Other
+// ASes (e.g. Salesforce) reject `scope` on refresh outright; for those,
+// CommonOAuthConfig.OmitScopeOnRefresh leaves it out.
 //
 // Uses oauth2.Config.Exchange with SetAuthURLParam overrides (mirroring the
 // pattern in pkg/auth/oauth/non_caching_refresher.go) because the standard
@@ -734,8 +860,13 @@ func (p *BaseOAuth2Provider) RefreshTokens(ctx context.Context, refreshToken, _ 
 		oauth2.SetAuthURLParam("grant_type", "refresh_token"),
 		oauth2.SetAuthURLParam("refresh_token", refreshToken),
 	}
-	if len(p.oauth2Config.Scopes) > 0 {
+	if len(p.oauth2Config.Scopes) > 0 && !p.config.OmitScopeOnRefresh {
 		opts = append(opts, oauth2.SetAuthURLParam("scope", strings.Join(p.oauth2Config.Scopes, " ")))
+	}
+	// Same rationale as in exchangeCodeForTokens: ASes that enforce
+	// RFC 8707 on token requests require these on refresh as well.
+	for k, v := range p.config.AdditionalTokenParams {
+		opts = append(opts, oauth2.SetAuthURLParam(k, v))
 	}
 
 	token, err := p.oauth2Config.Exchange(ctx, "", opts...)
@@ -903,6 +1034,17 @@ func formatOAuth2Error(err error, prefix string) error {
 // resolver's per-request-host, low-frequency calls don't have the same
 // trade-off, hence the difference. If this provider's threat model changes
 // (e.g. it starts dialing caller-varying hosts), revisit this decision.
-func newHTTPClientForHost(host string, allowPrivateIPs, insecureAllowHTTP bool) (*http.Client, error) {
-	return networking.NewHostScopedClientBuilder(host, allowPrivateIPs, insecureAllowHTTP).Build()
+//
+// The client also sets no response-header timeout, so the client timeout is the
+// budget for each call, as for the shared grant client in pkg/oauthproto (see
+// grants.go): corporate IdP chains can take more than 10s to send the first
+// byte. That holds for every call made with this client, because discovery,
+// JWKS, userinfo and the token endpoint are all served by the same IdP.
+func newHTTPClientForHost(host string, allowPrivateIPs, insecureAllowHTTP bool, caFilePath string) (*http.Client, error) {
+	builder := networking.NewHostScopedClientBuilder(host, allowPrivateIPs, insecureAllowHTTP).
+		WithResponseHeaderTimeout(0)
+	if caFilePath != "" {
+		builder.WithSystemRootsPlusCABundle(caFilePath)
+	}
+	return builder.Build()
 }

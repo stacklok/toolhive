@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -26,6 +27,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/authz"
 	"github.com/stacklok/toolhive/pkg/authz/authorizers/cedar"
 	"github.com/stacklok/toolhive/pkg/container/kubernetes"
+	"github.com/stacklok/toolhive/pkg/redisconfig"
 	"github.com/stacklok/toolhive/pkg/runner"
 	transporttypes "github.com/stacklok/toolhive/pkg/transport/types"
 )
@@ -59,6 +61,36 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 				assert.Equal(t, "test-image:latest", config.Image)
 				assert.Equal(t, transporttypes.TransportTypeStdio, config.Transport)
 				assert.Equal(t, 8080, config.Port)
+			},
+		},
+		{
+			name:      "nil proxy read timeout leaves the RunConfig value empty",
+			mcpServer: v1beta1test.NewMCPServer("nil-timeout-server", "test-ns"),
+			//nolint:thelper // We want to see the error at the specific line
+			expected: func(t *testing.T, config *runner.RunConfig) {
+				assert.Empty(t, config.ProxyReadTimeout)
+			},
+		},
+		{
+			name: "zero proxy read timeout uses the proxy default",
+			mcpServer: v1beta1test.NewMCPServer("zero-timeout-server", "test-ns",
+				v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
+					m.Spec.ProxyReadTimeout = &metav1.Duration{}
+				})),
+			//nolint:thelper // We want to see the error at the specific line
+			expected: func(t *testing.T, config *runner.RunConfig) {
+				assert.Empty(t, config.ProxyReadTimeout)
+			},
+		},
+		{
+			name: "positive proxy read timeout is translated",
+			mcpServer: v1beta1test.NewMCPServer("positive-timeout-server", "test-ns",
+				v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
+					m.Spec.ProxyReadTimeout = &metav1.Duration{Duration: time.Minute}
+				})),
+			//nolint:thelper // We want to see the error at the specific line
+			expected: func(t *testing.T, config *runner.RunConfig) {
+				assert.Equal(t, "1m0s", config.ProxyReadTimeout)
 			},
 		},
 		{
@@ -346,6 +378,25 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 				assert.Len(t, cedarCfg.Options.Policies, 1)
 				assert.Contains(t, cedarCfg.Options.Policies[0], "call_tool")
 				assert.Equal(t, "[]", cedarCfg.Options.EntitiesJSON)
+			},
+		},
+		{
+			name:      "max request body size omitted",
+			mcpServer: v1beta1test.NewMCPServer("body-limit-omitted", "test-ns"),
+			//nolint:thelper // We want to see the error at the specific line
+			expected: func(t *testing.T, config *runner.RunConfig) {
+				assert.Zero(t, config.MaxRequestBodySize)
+			},
+		},
+		{
+			name: "with max request body size",
+			mcpServer: v1beta1test.NewMCPServer("body-limit-configured", "test-ns",
+				v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
+					m.Spec.MaxRequestBodySize = 16 << 20
+				})),
+			//nolint:thelper // We want to see the error at the specific line
+			expected: func(t *testing.T, config *runner.RunConfig) {
+				assert.Equal(t, int64(16<<20), config.MaxRequestBodySize)
 			},
 		},
 	}
@@ -1488,6 +1539,30 @@ func TestPopulateScalingConfig(t *testing.T) {
 				assert.Equal(t, "redis.default.svc:6379", sc.SessionRedis.Address)
 				assert.Equal(t, int32(2), sc.SessionRedis.DB)
 				assert.Equal(t, "thv:", sc.SessionRedis.KeyPrefix)
+				assert.Nil(t, sc.SessionRedis.TLS, "omitted tls must keep the existing plaintext behavior")
+			},
+		},
+		{
+			name: "sessionStorage redis with tls — TLS and mounted CA path written to SessionRedis",
+			spec: mcpv1beta1.MCPServerSpec{
+				Image:     testImage,
+				Transport: stdioTransport,
+				ProxyPort: 8080,
+				SessionStorage: &mcpv1beta1.SessionStorageConfig{
+					Provider: "redis",
+					Address:  "redis:6380",
+					TLS: &mcpv1beta1.RedisTLSConfig{
+						CACertSecretRef: &mcpv1beta1.SecretKeyRef{Name: "redis-ca", Key: "ca.crt"},
+					},
+				},
+			},
+			expected: func(t *testing.T, sc *runner.ScalingConfig) {
+				t.Helper()
+				require.NotNil(t, sc)
+				require.NotNil(t, sc.SessionRedis)
+				assert.Equal(t, &redisconfig.TLSConfig{
+					CACertFile: "/etc/toolhive/session-redis-tls/ca.crt",
+				}, sc.SessionRedis.TLS)
 			},
 		},
 		{

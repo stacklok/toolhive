@@ -73,6 +73,22 @@ func TestInstallPlainNameNotFound(t *testing.T) {
 	}
 }
 
+// extractWritingTree returns an Extract mock body that actually writes a
+// skill tree to disk, so rollback assertions can verify real filesystem
+// compensation instead of installer.Remove call counts.
+func extractWritingTree(t *testing.T) func([]byte, string, bool) (*skills.ExtractResult, error) {
+	t.Helper()
+	return func(_ []byte, dir string, _ bool) (*skills.ExtractResult, error) {
+		if err := os.MkdirAll(dir, 0o750); err != nil {
+			return nil, err
+		}
+		if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("# extracted"), 0o644); err != nil {
+			return nil, err
+		}
+		return &skills.ExtractResult{SkillDir: dir, Files: 1}, nil
+	}
+}
+
 func TestInstallWithExtraction(t *testing.T) {
 	t.Parallel()
 
@@ -407,9 +423,8 @@ func TestInstallWithExtraction(t *testing.T) {
 		pr.EXPECT().ListSkillSupportingClients().Return([]string{"claude-code"})
 		pr.EXPECT().GetSkillPath("claude-code", "my-skill", skills.ScopeUser, "").Return(targetDir, nil)
 		store.EXPECT().Get(gomock.Any(), "my-skill", skills.ScopeUser, "").Return(skills.InstalledSkill{}, storage.ErrNotFound)
-		inst.EXPECT().Extract(layerData, targetDir, false).Return(&skills.ExtractResult{SkillDir: targetDir, Files: 1}, nil)
+		inst.EXPECT().Extract(layerData, targetDir, false).DoAndReturn(extractWritingTree(t))
 		store.EXPECT().Create(gomock.Any(), gomock.Any()).Return(fmt.Errorf("db write error"))
-		inst.EXPECT().Remove(targetDir).Return(nil)
 
 		svc := New(store, WithPathResolver(pr), WithInstaller(inst))
 		_, err := svc.Install(t.Context(), skills.InstallOptions{
@@ -419,6 +434,7 @@ func TestInstallWithExtraction(t *testing.T) {
 		})
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "db write error")
+		assert.NoDirExists(t, targetDir, "rollback must remove the freshly written skill tree")
 	})
 
 	t.Run("upgrade rolls back extraction on store.Update failure", func(t *testing.T) {
@@ -439,9 +455,11 @@ func TestInstallWithExtraction(t *testing.T) {
 		pr.EXPECT().ListSkillSupportingClients().Return([]string{"claude-code"})
 		pr.EXPECT().GetSkillPath("claude-code", "my-skill", skills.ScopeUser, "").Return(targetDir, nil)
 		store.EXPECT().Get(gomock.Any(), "my-skill", skills.ScopeUser, "").Return(existing, nil)
-		inst.EXPECT().Extract(layerData, targetDir, true).Return(&skills.ExtractResult{SkillDir: targetDir, Files: 1}, nil)
+		// The tree exists on disk before the upgrade, holding the old content.
+		require.NoError(t, os.MkdirAll(targetDir, 0o750))
+		require.NoError(t, os.WriteFile(filepath.Join(targetDir, "SKILL.md"), []byte("old content"), 0o644))
+		inst.EXPECT().Extract(layerData, targetDir, true).DoAndReturn(extractWritingTree(t))
 		store.EXPECT().Update(gomock.Any(), gomock.Any()).Return(fmt.Errorf("db update error"))
-		inst.EXPECT().Remove(targetDir).Return(nil)
 
 		svc := New(store, WithPathResolver(pr), WithInstaller(inst))
 		_, err := svc.Install(t.Context(), skills.InstallOptions{
@@ -451,6 +469,9 @@ func TestInstallWithExtraction(t *testing.T) {
 		})
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "db update error")
+		got, readErr := os.ReadFile(filepath.Join(targetDir, "SKILL.md"))
+		require.NoError(t, readErr)
+		assert.Equal(t, "old content", string(got), "rollback must restore the pre-upgrade tree")
 	})
 
 	t.Run("multi-client fresh install rolls back first client on second extract failure", func(t *testing.T) {
@@ -466,11 +487,9 @@ func TestInstallWithExtraction(t *testing.T) {
 		pr.EXPECT().GetSkillPath("opencode", "my-skill", skills.ScopeUser, "").Return(dirB, nil)
 		store.EXPECT().Get(gomock.Any(), "my-skill", skills.ScopeUser, "").
 			Return(skills.InstalledSkill{}, storage.ErrNotFound)
-		inst.EXPECT().Extract(layerData, dirA, false).
-			Return(&skills.ExtractResult{SkillDir: dirA, Files: 1}, nil)
+		inst.EXPECT().Extract(layerData, dirA, false).DoAndReturn(extractWritingTree(t))
 		inst.EXPECT().Extract(layerData, dirB, false).
 			Return(nil, fmt.Errorf("disk full"))
-		inst.EXPECT().Remove(dirA).Return(nil)
 
 		svc := New(store, WithPathResolver(pr), WithInstaller(inst))
 		_, err := svc.Install(t.Context(), skills.InstallOptions{
@@ -481,6 +500,7 @@ func TestInstallWithExtraction(t *testing.T) {
 		})
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "disk full")
+		assert.NoDirExists(t, dirA, "rollback must remove the first client's fresh tree")
 	})
 
 	t.Run("upgrade digest rolls back written clients on second extract failure", func(t *testing.T) {
@@ -500,11 +520,9 @@ func TestInstallWithExtraction(t *testing.T) {
 		pr.EXPECT().GetSkillPath("claude-code", "my-skill", skills.ScopeUser, "").Return(dirA, nil)
 		pr.EXPECT().GetSkillPath("opencode", "my-skill", skills.ScopeUser, "").Return(dirB, nil)
 		store.EXPECT().Get(gomock.Any(), "my-skill", skills.ScopeUser, "").Return(existing, nil)
-		inst.EXPECT().Extract(layerData, dirA, true).
-			Return(&skills.ExtractResult{SkillDir: dirA, Files: 1}, nil)
+		inst.EXPECT().Extract(layerData, dirA, true).DoAndReturn(extractWritingTree(t))
 		inst.EXPECT().Extract(layerData, dirB, true).
 			Return(nil, fmt.Errorf("write error"))
-		inst.EXPECT().Remove(dirA).Return(nil)
 
 		svc := New(store, WithPathResolver(pr), WithInstaller(inst))
 		_, err := svc.Install(t.Context(), skills.InstallOptions{
@@ -515,6 +533,7 @@ func TestInstallWithExtraction(t *testing.T) {
 		})
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "write error")
+		assert.NoDirExists(t, dirA, "rollback must remove the freshly written tree")
 	})
 
 	t.Run("upgrade digest rolls back all clients on store.Update failure", func(t *testing.T) {
@@ -534,13 +553,9 @@ func TestInstallWithExtraction(t *testing.T) {
 		pr.EXPECT().GetSkillPath("claude-code", "my-skill", skills.ScopeUser, "").Return(dirA, nil)
 		pr.EXPECT().GetSkillPath("opencode", "my-skill", skills.ScopeUser, "").Return(dirB, nil)
 		store.EXPECT().Get(gomock.Any(), "my-skill", skills.ScopeUser, "").Return(existing, nil)
-		inst.EXPECT().Extract(layerData, dirA, true).
-			Return(&skills.ExtractResult{SkillDir: dirA, Files: 1}, nil)
-		inst.EXPECT().Extract(layerData, dirB, true).
-			Return(&skills.ExtractResult{SkillDir: dirB, Files: 1}, nil)
+		inst.EXPECT().Extract(layerData, dirA, true).DoAndReturn(extractWritingTree(t))
+		inst.EXPECT().Extract(layerData, dirB, true).DoAndReturn(extractWritingTree(t))
 		store.EXPECT().Update(gomock.Any(), gomock.Any()).Return(fmt.Errorf("db failure"))
-		inst.EXPECT().Remove(dirA).Return(nil)
-		inst.EXPECT().Remove(dirB).Return(nil)
 
 		svc := New(store, WithPathResolver(pr), WithInstaller(inst))
 		_, err := svc.Install(t.Context(), skills.InstallOptions{
@@ -551,6 +566,8 @@ func TestInstallWithExtraction(t *testing.T) {
 		})
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "db failure")
+		assert.NoDirExists(t, dirA, "rollback must remove every freshly written tree")
+		assert.NoDirExists(t, dirB, "rollback must remove every freshly written tree")
 	})
 
 	t.Run("same digest new client rolls back on extract failure", func(t *testing.T) {
@@ -600,10 +617,8 @@ func TestInstallWithExtraction(t *testing.T) {
 		pr.EXPECT().GetSkillPath("claude-code", "my-skill", skills.ScopeUser, "").Return(dirA, nil)
 		pr.EXPECT().GetSkillPath("opencode", "my-skill", skills.ScopeUser, "").Return(dirB, nil)
 		store.EXPECT().Get(gomock.Any(), "my-skill", skills.ScopeUser, "").Return(existing, nil)
-		inst.EXPECT().Extract(layerData, dirB, false).
-			Return(&skills.ExtractResult{SkillDir: dirB, Files: 1}, nil)
+		inst.EXPECT().Extract(layerData, dirB, false).DoAndReturn(extractWritingTree(t))
 		store.EXPECT().Update(gomock.Any(), gomock.Any()).Return(fmt.Errorf("db update boom"))
-		inst.EXPECT().Remove(dirB).Return(nil)
 
 		svc := New(store, WithPathResolver(pr), WithInstaller(inst))
 		_, err := svc.Install(t.Context(), skills.InstallOptions{
@@ -614,6 +629,7 @@ func TestInstallWithExtraction(t *testing.T) {
 		})
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "db update boom")
+		assert.NoDirExists(t, dirB, "rollback must remove the freshly added client tree")
 	})
 
 	t.Run("same digest new client unmanaged dir conflict", func(t *testing.T) {

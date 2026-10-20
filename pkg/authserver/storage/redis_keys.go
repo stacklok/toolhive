@@ -3,7 +3,10 @@
 
 package storage
 
-import "fmt"
+import (
+	"crypto/sha256"
+	"fmt"
+)
 
 // Key type constants for Redis storage.
 // These define the different types of data stored in Redis.
@@ -33,13 +36,35 @@ const (
 	KeyTypeUpstream = "upstream"
 
 	// KeyTypePending is the key type for pending authorizations.
-	KeyTypePending = "pending"
+	KeyTypePending        = "pending"
+	KeyTypeConsentSession = "consent:session"
+	KeyTypeClientApproval = "consent:approval"
+
+	// KeyTypeDeviceCode is the key type for RFC 8628 device authorization
+	// requests, keyed by device_code.
+	KeyTypeDeviceCode = "device"
+
+	// KeyTypeDeviceUserCode is the key type for the user_code -> device_code
+	// secondary index used by the verification page.
+	KeyTypeDeviceUserCode = "device:usercode"
+
+	// KeyTypePendingDeviceLogin is the key type for pending device-flow
+	// verification-page logins awaiting the upstream IDP callback.
+	KeyTypePendingDeviceLogin = "pending:device"
+
+	// KeyTypePendingDeviceConfirmation is the key type for resolved
+	// device-flow logins awaiting an explicit Approve/Deny decision at the
+	// verification page.
+	KeyTypePendingDeviceConfirmation = "pending:device:confirm"
 
 	// KeyTypeInvalidated is the key type for invalidated authorization codes.
 	KeyTypeInvalidated = "invalidated"
 
 	// KeyTypeJWT is the key type for client assertion JWTs.
 	KeyTypeJWT = "jwt"
+
+	// KeyTypeAssertionJWT is the key type for consumed assertion JWTs.
+	KeyTypeAssertionJWT = "assertion-jwt"
 
 	// KeyTypeReqIDAccess is the key type for request ID to access token mappings.
 	KeyTypeReqIDAccess = "reqid:access"
@@ -58,6 +83,13 @@ const (
 
 	// KeyTypeUserProviders is the key type for user to provider identity reverse lookups.
 	KeyTypeUserProviders = "user:providers"
+
+	// KeyTypeDCRClientIdx is the key type for the sorted set of client IDs
+	// counted against the DCR client cap, each scored by its expiry in Unix
+	// milliseconds. It is a single key per prefix, so it shares the client
+	// rows' hash slot and one Lua script can update both on Redis Cluster.
+	// The name deliberately does not match the "client:*" scan pattern.
+	KeyTypeDCRClientIdx = "client-idx"
 
 	// KeyTypeDCR is the key type for RFC 7591 Dynamic Client Registration credentials
 	// persisted by an authserver upstream-DCR resolver. Distinct from KeyTypeClient,
@@ -88,6 +120,16 @@ func redisKey(prefix, keyType, id string) string {
 	return fmt.Sprintf("%s%s:%s", prefix, keyType, id)
 }
 
+// redisAssertionJWTKey returns the namespaced replay key for an assertion JWT.
+// The tuple is length-prefixed before hashing, so arbitrary purpose, issuer, and
+// JTI values cannot create ambiguous encodings or inject Redis key segments. The
+// digest also avoids exposing assertion identifiers in Redis key names.
+func redisAssertionJWTKey(prefix, purpose, issuer, jti string) string {
+	tuple := fmt.Sprintf("%d:%s%d:%s%d:%s", len(purpose), purpose, len(issuer), issuer, len(jti), jti)
+	digest := sha256.Sum256([]byte(tuple))
+	return fmt.Sprintf("%s%s:%x", prefix, KeyTypeAssertionJWT, digest)
+}
+
 // redisProviderKey generates a Redis key for provider identities.
 // Uses length-prefixed format to handle colons in provider IDs/subjects.
 func redisProviderKey(prefix, providerID, providerSubject string) string {
@@ -98,6 +140,12 @@ func redisProviderKey(prefix, providerID, providerSubject string) string {
 // (Issuer, UpstreamID, RedirectURI, ScopesHash) tuple that DCRKey canonicalises.
 //
 // Format: "{prefix}dcr:<len(issuer)>:<issuer>:<len(upstream_id)>:<upstream_id>:<len(redirect_uri)>:<redirect_uri>:<scopes_hash>"
+//
+// When DCRKey.RotationKey is non-empty a length-prefixed
+// ":<len(rotation_key)>:<rotation_key>" segment follows the scopes hash. An
+// empty RotationKey yields exactly the format above, so rows written before
+// the field existed keep resolving; the hex scopes hash contains no colon, so
+// the two shapes cannot be confused.
 //
 // The first three segments are length-prefixed to handle colons in UpstreamID
 // and RedirectURI (and, for symmetry, Issuer) without ambiguity, mirroring
@@ -115,7 +163,7 @@ func redisProviderKey(prefix, providerID, providerSubject string) string {
 // format, so entries written by an older binary (without the segment) will
 // miss on lookup and be harmlessly re-registered under the new key. Orphaned
 // old rows self-evict only when the upstream asserted an RFC 7591 §3.2.1
-// client_secret_expires_at (StoreDCRCredentials sets a matching Redis TTL for
+// client_secret_expires_at (StoreDCRCredentialsIfAbsent sets a matching Redis TTL for
 // those); entries for non-expiring secrets — the common §3.2.1 "never" case —
 // carry no TTL and persist indefinitely, so they require manual cleanup.
 // There is no automated one-shot migration for this key-format change today.
@@ -128,12 +176,16 @@ func redisProviderKey(prefix, providerID, providerSubject string) string {
 // add the distinguishing component back to the key format alongside an
 // explicit migration story for existing Redis-cached entries.
 func redisDCRKey(prefix string, key DCRKey) string {
-	return fmt.Sprintf("%s%s:%d:%s:%d:%s:%d:%s:%s",
+	base := fmt.Sprintf("%s%s:%d:%s:%d:%s:%d:%s:%s",
 		prefix, KeyTypeDCR,
 		len(key.Issuer), key.Issuer,
 		len(key.UpstreamID), key.UpstreamID,
 		len(key.RedirectURI), key.RedirectURI,
 		key.ScopesHash)
+	if key.RotationKey == "" {
+		return base
+	}
+	return fmt.Sprintf("%s:%d:%s", base, len(key.RotationKey), key.RotationKey)
 }
 
 // redisUpstreamKey generates a Redis key for a per-provider upstream token entry.

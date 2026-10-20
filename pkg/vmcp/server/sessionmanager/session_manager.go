@@ -163,7 +163,12 @@ func New(
 				slog.Warn("session cache: error closing evicted session",
 					"session_id", id, "error", closeErr)
 			}
-			slog.Warn("session cache: session evicted from node-local cache",
+			// Eviction is a routine lifecycle transition (LRU capacity, TTL
+			// expiry, or a backend dropped from the registry), not a fault: the
+			// session is recoverable from storage via RestoreSession. Log at
+			// DEBUG so a generation swap that evicts many sessions does not emit
+			// a burst of WARNs (a real close failure is still surfaced above).
+			slog.Debug("session cache: session evicted from node-local cache",
 				"session_id", id)
 		},
 	)
@@ -494,12 +499,18 @@ func (sm *Manager) Validate(sessionID string) (isTerminated bool, err error) {
 // where client termination during the Phase 1→Phase 2 window could resurrect
 // sessions with open backend connections:
 //
-//   - MultiSession (Phase 2): the storage key is deleted. The node-local cache
-//     self-heals on the next Get: checkSession detects ErrSessionNotFound,
-//     evicts the entry, and onEvict closes backend connections. After deletion
-//     Validate() reports the absent key as (isTerminated=true, nil), so the next
-//     request — on this or any other replica — is rejected with a definitive 404
-//     and the client re-initializes instead of retrying the dead session.
+//   - MultiSession (Phase 2): the storage key is deleted and the node-local
+//     cache entry is removed, eagerly scheduling onEvict to close the session's
+//     backend connections. Storage is deleted first so that a loadSession whose
+//     metadata Update runs after the delete is rejected by the pre-existing SET
+//     XX guard; the residual race between that Update succeeding and the cache
+//     insertion is out of scope here. Removal drains evictions, but a concurrent
+//     operation may claim the callback, so Terminate can return before Close
+//     finishes. After deletion Validate() reports the absent key as
+//     (isTerminated=true, nil), so the next request — on this or any other
+//     replica — is rejected with a definitive 404 and the client re-initializes
+//     instead of retrying the dead session. Other replicas still self-heal
+//     through checkSession on their next cache access.
 //
 //   - Placeholder (Phase 1): the session is marked terminated=true and left
 //     for TTL cleanup. This prevents CreateSession() from opening backend
@@ -529,11 +540,30 @@ func (sm *Manager) Terminate(sessionID string) (isNotAllowed bool, err error) {
 	}
 
 	if _, isFullSession := metadata[sessiontypes.MetadataKeyIdentityBinding]; isFullSession {
-		// Phase 2 (full MultiSession): delete from storage. The cache entry will be
-		// evicted lazily on the next Get when checkSession finds the session gone.
+		// Phase 2 (full MultiSession): delete from storage, then remove the
+		// node-local cache entry to eagerly schedule backend cleanup. A
+		// concurrent eviction drain can claim onEvict, so Terminate need not
+		// wait for Close to finish.
+		//
+		// Order matters. Deleting the storage record first means a loadSession
+		// whose metadata Update runs after this delete is rejected by the
+		// pre-existing SET XX guard, so it cannot resurrect the session.
+		// This does not make termination race-free: the window between that
+		// Update returning true and the cache insertion on the Get miss path
+		// is pre-existing and out of scope for this change.
+		//
+		// Relying on lazy eviction alone is not enough: checkSession only runs
+		// on the cache-hit path, and a well-behaved client stops using a
+		// terminated session ID, so that Get may never come. The entry would
+		// then hold its backend connections and capability copies until some
+		// unrelated eviction trigger fires. See #6762.
 		if deleteErr := sm.storage.Delete(ctx, sessionID); deleteErr != nil {
 			return false, fmt.Errorf("Manager.Terminate: failed to delete session from storage: %w", deleteErr)
 		}
+		// onEvict closes the session's backend connections, so no extra
+		// teardown is needed here. Other replicas still self-heal through
+		// checkSession on their next cache access.
+		sm.sessions.Remove(sessionID)
 		slog.Info("Manager.Terminate: session terminated", "session_id", sessionID)
 		return false, nil
 	}
@@ -633,6 +663,68 @@ func (sm *Manager) NotifyBackendExpired(sessionID, workloadID string, metadata m
 			"workload_id", workloadID,
 			"error", err)
 	}
+}
+
+// EvictStaleSessions proactively evicts every live cached session that still
+// holds a connection to a backend no longer present in the registry — for
+// example a backend dropped by a dynamic-registry generation swap (#6546).
+// Eviction closes the session's backend connections through the cache's onEvict
+// hook, reclaiming any lingering server-push (SSE) stream to the dropped backend
+// that would otherwise persist until the owning client session ended. The next
+// GetMultiSession for an evicted session rebuilds it via RestoreSession against
+// the current registry (which no longer lists the dropped backend), so only the
+// surviving backends reconnect and the storage metadata is refreshed on that path.
+//
+// It compares each cached session's MetadataKeyBackendIDs against current
+// registry membership, so it is idempotent and a no-op when nothing is stale
+// (e.g. after an Upsert that only adds a backend). Returns the number of
+// sessions evicted.
+//
+// Trade-off: rebuilding the whole session briefly disconnects and reconnects the
+// surviving backends on the next request. This deliberately reuses the existing
+// lazy-eviction/RestoreSession machinery rather than mutating a live session in
+// place to close a single connection (vMCP anti-pattern #10: reconstruct, don't
+// mutate).
+//
+// Residual window: eviction operates on sessions already in the cache. A session
+// whose RestoreSession is in flight when the drop commits may have read the
+// pre-drop registry and opened a connection to the soon-dropped backend; it is
+// cached only after this pass has scanned, so it escapes this eviction. Such a
+// session's stale connection is reclaimed on the next registry change, on
+// checkSession metadata drift, or ultimately at session end — i.e. it falls back
+// to the original session-lifetime bound, never worse. Closing this window fully
+// would require re-filtering each restored session against current membership
+// before caching it; it is left as the accepted best-effort of a polling model.
+func (sm *Manager) EvictStaleSessions(ctx context.Context) int {
+	raw := sm.backendReg.List(ctx)
+	present := make(map[string]struct{}, len(raw))
+	for i := range raw {
+		present[raw[i].ID] = struct{}{}
+	}
+
+	evicted := sm.sessions.RemoveMatching(func(_ string, sess vmcpsession.MultiSession) bool {
+		return referencesMissingBackend(sess.GetMetadata()[vmcpsession.MetadataKeyBackendIDs], present)
+	})
+	if evicted > 0 {
+		// DEBUG for consistency with New's eviction closure: a backend leaving
+		// the registry is a routine lifecycle transition, not a fault, and the
+		// project convention is "INFO sparingly".
+		slog.Debug("evicted sessions referencing backends removed from the registry",
+			"evicted_sessions", evicted)
+	}
+	return evicted
+}
+
+// referencesMissingBackend reports whether backendIDs (the comma-separated
+// MetadataKeyBackendIDs value) names at least one backend absent from present.
+// An empty or whitespace-only list references no backend and is never stale.
+func referencesMissingBackend(backendIDs string, present map[string]struct{}) bool {
+	for _, id := range vmcpsession.ParseBackendIDs(backendIDs) {
+		if _, ok := present[id]; !ok {
+			return true
+		}
+	}
+	return false
 }
 
 // updateMetadata writes a complete metadata snapshot to storage using a

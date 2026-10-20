@@ -8,6 +8,7 @@ package kubernetes
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -17,10 +18,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cenkalti/backoff/v5"
+	"github.com/cenkalti/backoff/v7"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/errors"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	apimwatch "k8s.io/apimachinery/pkg/watch"
@@ -50,6 +51,12 @@ const (
 	defaultNamespace = "default"
 	// serviceFieldManager is the field manager name for server-side apply operations
 	serviceFieldManager = "toolhive-container-manager"
+
+	// KubectlRestartedAtAnnotation is the pod-template annotation written by
+	// `kubectl rollout restart`. Server-side apply must re-assert it or the
+	// operator/runner clobber the bounce (#6344). Exported so operator
+	// controllers share the same key.
+	KubectlRestartedAtAnnotation = "kubectl.kubernetes.io/restartedAt"
 
 	// RunConfigMCPServerGenerationAnnotation carries the MCPServer .metadata.generation that
 	// produced the RunConfig applied to this StatefulSet. Used as a monotonic version stamp
@@ -247,7 +254,8 @@ func (c *Client) AttachToWorkload(ctx context.Context, workloadName string) (io.
 			}),
 		)
 		if err != nil {
-			if statusErr, ok := err.(*errors.StatusError); ok {
+			var statusErr *apierrors.StatusError
+			if errors.As(err, &statusErr) {
 				slog.Error("kubernetes API error",
 					"status", statusErr.ErrStatus.Status,
 					"message", statusErr.ErrStatus.Message,
@@ -414,11 +422,11 @@ func (c *Client) DeployWorkload(ctx context.Context,
 	}
 
 	ourGen := runConfigGeneration(options)
-	skip, err := c.shouldSkipStatefulSetApply(ctx, namespace, containerName, ourGen)
+	existing, err := c.getExistingStatefulSet(ctx, namespace, containerName)
 	if err != nil {
 		return 0, err
 	}
-	if skip {
+	if skipStatefulSetApply(existing, ourGen) {
 		// Intentionally skip ensureBackendServices in the gated path: this pod's RunConfig
 		// is stale, so reconciling services here would clobber port/config fields set by
 		// the newer-generation pod under the same field manager + Force: true — the same
@@ -428,7 +436,7 @@ func (c *Client) DeployWorkload(ctx context.Context,
 	}
 
 	createdStatefulSet, err := c.applyStatefulSet(
-		ctx, namespace, containerName, containerLabels, podTemplateSpec, options, ourGen,
+		ctx, namespace, containerName, containerLabels, podTemplateSpec, options, ourGen, existing,
 	)
 	if err != nil {
 		return 0, err
@@ -490,11 +498,19 @@ func (c *Client) applyStatefulSet(
 	podTemplateSpec *corev1apply.PodTemplateSpecApplyConfiguration,
 	options *runtime.DeployWorkloadOptions,
 	ourGen int64,
+	existing *appsv1.StatefulSet,
 ) (*appsv1.StatefulSet, error) {
 	if ourGen > 0 {
 		podTemplateSpec = podTemplateSpec.WithAnnotations(map[string]string{
 			RunConfigMCPServerGenerationAnnotation: strconv.FormatInt(ourGen, 10),
 		})
+	}
+	if existing != nil && existing.Spec.Template.Annotations != nil {
+		if restartedAt := existing.Spec.Template.Annotations[KubectlRestartedAtAnnotation]; restartedAt != "" {
+			podTemplateSpec = podTemplateSpec.WithAnnotations(map[string]string{
+				KubectlRestartedAtAnnotation: restartedAt,
+			})
+		}
 	}
 	statefulSetApply := appsv1apply.StatefulSet(containerName, namespace).
 		WithLabels(containerLabels).
@@ -511,43 +527,45 @@ func (c *Client) applyStatefulSet(
 	return createdStatefulSet, nil
 }
 
-// shouldSkipStatefulSetApply returns true when the existing StatefulSet is already
+func (c *Client) getExistingStatefulSet(ctx context.Context, namespace, name string) (*appsv1.StatefulSet, error) {
+	existing, err := c.client.AppsV1().StatefulSets(namespace).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to get existing statefulset: %w", err)
+	}
+	return existing, nil
+}
+
+// skipStatefulSetApply returns true when the existing StatefulSet is already
 // stamped with a strictly greater MCPServer generation than ours, meaning a newer
 // proxyrunner pod has already reconciled the workload and ours would be a regression.
 // Returns false (apply as normal) when ourGen is zero or negative, when the StatefulSet
 // does not yet exist, when the annotation is absent, or when the annotation is unparsable.
-func (c *Client) shouldSkipStatefulSetApply(
-	ctx context.Context, namespace, name string, ourGen int64,
-) (bool, error) {
-	if ourGen <= 0 {
-		return false, nil
-	}
-	existing, err := c.client.AppsV1().StatefulSets(namespace).Get(ctx, name, metav1.GetOptions{})
-	if err != nil {
-		if errors.IsNotFound(err) {
-			return false, nil
-		}
-		return false, fmt.Errorf("failed to get existing statefulset: %w", err)
+func skipStatefulSetApply(existing *appsv1.StatefulSet, ourGen int64) bool {
+	if ourGen <= 0 || existing == nil {
+		return false
 	}
 	if existing.Spec.Template.Annotations == nil {
-		return false, nil
+		return false
 	}
 	theirs := existing.Spec.Template.Annotations[RunConfigMCPServerGenerationAnnotation]
 	if theirs == "" {
-		return false, nil
+		return false
 	}
 	theirsGen, parseErr := strconv.ParseInt(theirs, 10, 64)
 	if parseErr != nil {
 		slog.Warn("unparsable mcpserver-generation annotation; proceeding with apply",
-			"sts", name, "value", theirs, "err", parseErr)
-		return false, nil
+			"sts", existing.Name, "value", theirs, "err", parseErr)
+		return false
 	}
 	if theirsGen > ourGen {
 		slog.Debug("skipping StatefulSet apply; newer MCPServer generation already applied",
-			"sts", name, "ours", ourGen, "theirs", theirsGen)
-		return true, nil
+			"sts", existing.Name, "ours", ourGen, "theirs", theirsGen)
+		return true
 	}
-	return false, nil
+	return false
 }
 
 // buildStatefulSetSpec constructs the StatefulSet spec apply configuration.
@@ -615,7 +633,7 @@ func (c *Client) GetWorkloadInfo(ctx context.Context, workloadName string) (runt
 	// Get the statefulset
 	statefulset, err := c.client.AppsV1().StatefulSets(namespace).Get(ctx, workloadName, metav1.GetOptions{})
 	if err != nil {
-		if errors.IsNotFound(err) {
+		if apierrors.IsNotFound(err) {
 			return runtime.ContainerInfo{}, fmt.Errorf("%w: statefulset %s not found", runtime.ErrWorkloadNotFound, workloadName)
 		}
 		return runtime.ContainerInfo{}, fmt.Errorf("failed to get statefulset %s: %w", workloadName, err)
@@ -683,7 +701,7 @@ func (c *Client) IsWorkloadRunning(ctx context.Context, workloadName string) (bo
 	// Get the statefulset
 	statefulset, err := c.client.AppsV1().StatefulSets(namespace).Get(ctx, workloadName, metav1.GetOptions{})
 	if err != nil {
-		if errors.IsNotFound(err) {
+		if apierrors.IsNotFound(err) {
 			return false, fmt.Errorf("%w: statefulset %s not found", runtime.ErrWorkloadNotFound, workloadName)
 		}
 		return false, fmt.Errorf("failed to get statefulset %s: %w", workloadName, err)
@@ -770,7 +788,7 @@ func (c *Client) RemoveWorkload(ctx context.Context, workloadName string) error 
 	deleteOptions := metav1.DeleteOptions{}
 	err := c.client.AppsV1().StatefulSets(namespace).Delete(ctx, workloadName, deleteOptions)
 	if err != nil {
-		if errors.IsNotFound(err) {
+		if apierrors.IsNotFound(err) {
 			// If the statefulset doesn't exist, that's fine
 			slog.Info("statefulset not found, nothing to remove", "name", workloadName)
 			return nil

@@ -90,6 +90,11 @@ type dockerAPI interface {
 
 // deployOps defines the internal operations used by DeployWorkload.
 // It allows unit tests to substitute a fake implementation to avoid hitting a real Docker daemon.
+type bridgeNetworkAPI interface {
+	NetworkList(context.Context, mobyclient.NetworkListOptions) (mobyclient.NetworkListResult, error)
+	NetworkInspect(context.Context, string, mobyclient.NetworkInspectOptions) (mobyclient.NetworkInspectResult, error)
+}
+
 type deployOps interface {
 	createExternalNetworks(ctx context.Context) error
 	createNetwork(ctx context.Context, name string, labels map[string]string, internal bool) error
@@ -116,6 +121,7 @@ type deployOps interface {
 		isolateNetwork bool,
 	) error
 	getContainerNetworkIP(ctx context.Context, containerName, networkName string) (string, error)
+	discoverBridgeGateways(ctx context.Context) ([]netip.Addr, error)
 }
 
 // Client implements the Deployer interface for Docker (and compatible runtimes)
@@ -127,6 +133,8 @@ type Client struct {
 	imageManager images.ImageManager
 	ops          deployOps
 	proxy        networkProxy // selected at construction time via newNetworkProxy
+	bridgeAPI    bridgeNetworkAPI
+	hostAPI      hostDiscoveryAPI
 }
 
 // NewClient creates a new container client
@@ -144,6 +152,8 @@ func NewClient(ctx context.Context) (*Client, error) {
 		client:       dockerClient,
 		api:          dockerClient,
 		imageManager: imageManager,
+		bridgeAPI:    dockerClient,
+		hostAPI:      dockerClient,
 	}
 	// Default ops implementation uses the real client methods.
 	c.ops = c
@@ -252,21 +262,37 @@ func (c *Client) DeployWorkload(
 			return 0, fmt.Errorf("failed to create internal network: %w", err)
 		}
 
-		// create dns container
+		// Start or reuse DNS normally before reading Podman's generated hosts.
 		dnsContainerName := fmt.Sprintf("%s-dns", name)
-		_, dnsContainerIP, err := c.ops.createDnsContainer(ctx, dnsContainerName, attachStdio, networkName, externalEndpointsConfig)
-		if dnsContainerIP != "" {
-			additionalDNS = dnsContainerIP
-		}
+		dnsContainerID, dnsContainerIP, err := c.ops.createDnsContainer(
+			ctx, dnsContainerName, attachStdio, networkName, externalEndpointsConfig,
+		)
 		if err != nil {
 			return 0, fmt.Errorf("failed to create dns container: %w", err)
+		}
+		additionalDNS = dnsContainerIP
+
+		// Snapshot after DNS startup, which may recreate a missing network.
+		// Bridges or host mappings changed later require a workload redeploy.
+		gatewayIPs, err := c.ops.discoverBridgeGateways(ctx)
+		if err != nil {
+			return 0, fmt.Errorf("failed to discover Docker bridge gateways: %w", err)
+		}
+		if c.runtimeType == runtime.TypePodman {
+			aliases, err := c.discoverHostAliases(ctx, dnsContainerID)
+			if err != nil {
+				return 0, fmt.Errorf("failed to discover Podman host addresses: %w", err)
+			}
+			gatewayIPs = append(slices.Clone(gatewayIPs), aliases...)
+			slices.SortFunc(gatewayIPs, netip.Addr.Compare)
+			gatewayIPs = slices.Compact(gatewayIPs)
 		}
 
 		pspec = proxySpec{
 			WorkloadName:       name,
 			Permissions:        permissionProfile.Network,
 			AllowDockerGateway: options != nil && options.AllowDockerGateway,
-			GatewayIP:          c.getDockerBridgeGatewayIP(ctx),
+			GatewayIPs:         gatewayIPs,
 			TransportType:      transportType,
 			UpstreamPort:       upstreamPort,
 			AttachStdio:        attachStdio,
@@ -1225,29 +1251,97 @@ func (c *Client) getContainerNetworkIP(ctx context.Context, containerName, netwo
 	return netSettings.IPAddress.String(), nil
 }
 
-// getDockerBridgeGatewayIP returns the gateway IP of the Docker default bridge
-// network by inspecting it at runtime. This handles platform differences:
-// Linux Docker Engine uses 172.17.0.1 by default, while Docker Desktop on macOS
-// uses 192.168.65.1 and Colima typically uses 192.168.5.1 or similar. Querying
-// the daemon directly is more accurate than hardcoding platform-specific IPs.
-// Falls back to dockerDefaultBridgeGatewayIP on any error or when the underlying
-// Docker client is unavailable.
-func (c *Client) getDockerBridgeGatewayIP(ctx context.Context) string {
-	if c.client == nil {
-		return dockerDefaultBridgeGatewayIP
-	}
-	nr, err := c.client.NetworkInspect(ctx, "bridge", mobyclient.NetworkInspectOptions{})
-	if err != nil {
-		slog.Debug("failed to inspect bridge network, using default gateway IP", "error", err)
-		return dockerDefaultBridgeGatewayIP
-	}
-	for _, cfg := range nr.Network.IPAM.Config {
-		if cfg.Gateway.IsValid() {
-			return cfg.Gateway.String()
+// discoverBridgeGateways returns every gateway configured on every bridge
+// network. Networks are inspected by immutable ID; a concurrent deletion causes
+// one bounded relist before failing closed.
+func (c *Client) discoverBridgeGateways(ctx context.Context) ([]netip.Addr, error) {
+	api := c.bridgeAPI
+	if api == nil {
+		if c.client == nil {
+			return nil, errors.New("docker client is unavailable")
 		}
+		api = c.client
 	}
-	slog.Debug("bridge network has no gateway in IPAM config, using default gateway IP")
-	return dockerDefaultBridgeGatewayIP
+
+	for attempt := 0; attempt < 2; attempt++ {
+		networks, err := api.NetworkList(ctx, mobyclient.NetworkListOptions{})
+		if err != nil {
+			return nil, fmt.Errorf("list Docker networks: %w", err)
+		}
+
+		gateways := make(map[netip.Addr]struct{})
+		relist := false
+		bridgeCount := 0
+		for _, summary := range networks.Items {
+			if summary.Driver != "bridge" {
+				continue
+			}
+			if summary.ID == "" {
+				return nil, errors.New("docker daemon returned a bridge network without an ID")
+			}
+			bridgeCount++
+			networkGateways, err := inspectBridgeNetworkGateways(
+				ctx,
+				api,
+				summary,
+				c.runtimeType == runtime.TypePodman,
+			)
+			if err != nil {
+				if errdefs.IsNotFound(err) && attempt == 0 {
+					relist = true
+					break
+				}
+				return nil, err
+			}
+			for _, gateway := range networkGateways {
+				gateways[gateway] = struct{}{}
+			}
+		}
+		if relist {
+			continue
+		}
+		if bridgeCount == 0 || len(gateways) == 0 {
+			return nil, errors.New("docker daemon returned no bridge gateways")
+		}
+
+		result := slices.Collect(maps.Keys(gateways))
+		slices.SortFunc(result, netip.Addr.Compare)
+		return result, nil
+	}
+	return nil, errors.New("docker bridge networks changed during discovery")
+}
+
+func inspectBridgeNetworkGateways(
+	ctx context.Context,
+	api bridgeNetworkAPI,
+	summary network.Summary,
+	allowAbsentGateways bool,
+) ([]netip.Addr, error) {
+	inspected, err := api.NetworkInspect(ctx, summary.ID, mobyclient.NetworkInspectOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("inspect Docker bridge network %s: %w", summary.ID, err)
+	}
+	if inspected.Network.ID != summary.ID || inspected.Network.Driver != "bridge" {
+		return nil, fmt.Errorf("docker bridge network %s inspection returned inconsistent identity", summary.ID)
+	}
+	if len(inspected.Network.IPAM.Config) == 0 {
+		return nil, fmt.Errorf("docker bridge network %s has no IPAM configuration", summary.ID)
+	}
+
+	gateways := make([]netip.Addr, 0, len(inspected.Network.IPAM.Config))
+	for _, config := range inspected.Network.IPAM.Config {
+		if !config.Gateway.IsValid() {
+			if allowAbsentGateways {
+				// The Podman compatibility transport maps its explicit "<nil>"
+				// sentinel to an invalid address. Malformed non-empty values fail
+				// during JSON decoding before discovery reaches this case.
+				continue
+			}
+			return nil, fmt.Errorf("docker bridge network %s has an invalid IPAM gateway", summary.ID)
+		}
+		gateways = append(gateways, config.Gateway.Unmap())
+	}
+	return gateways, nil
 }
 
 // DeleteNetwork deletes a network by name.

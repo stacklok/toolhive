@@ -15,6 +15,67 @@ import (
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
+// AuthorityMatchesAny reports whether endpointURL's authority (host and port)
+// equals the authority of any of operatorURLs. Comparison is case-insensitive
+// and normalizes the implicit scheme default port, so "https://idp.example.com"
+// and "idp.example.com:443" match. Empty and malformed entries never match.
+//
+// This is the trust test for endpoints read out of an authorization-server
+// metadata document: an AS naming its own authority is still covered by the
+// operator's decision to configure it, while an AS naming some other host is
+// not (CWE-918).
+func AuthorityMatchesAny(endpointURL string, operatorURLs ...string) bool {
+	target := canonicalAuthority(endpointURL)
+	if target == "" {
+		return false
+	}
+	for _, operatorURL := range operatorURLs {
+		if authority := canonicalAuthority(operatorURL); authority != "" && authority == target {
+			return true
+		}
+	}
+	return false
+}
+
+// canonicalAuthority reduces a URL — or a bare "host:port" authority — to a
+// lowercase host:port form suitable for equality comparison. It returns the
+// empty string whenever the authority cannot be determined, including when a
+// bare host carries no port and no scheme to imply one: callers treat that as
+// "does not match", so an undecidable input fails closed.
+func canonicalAuthority(rawURL string) string {
+	if rawURL == "" {
+		return ""
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Host == "" {
+		// Not a full URL. Retry as a bare authority ("idp.example.com:443",
+		// "[::1]:8443"), which url.Parse otherwise reads as scheme:opaque or
+		// rejects outright.
+		u, err = url.Parse("//" + rawURL)
+		if err != nil || u.Host == "" {
+			return ""
+		}
+	}
+
+	host := strings.ToLower(u.Hostname())
+	if host == "" {
+		return ""
+	}
+
+	port := u.Port()
+	if port == "" {
+		switch strings.ToLower(u.Scheme) {
+		case HttpScheme:
+			port = "80"
+		case HttpsScheme:
+			port = "443"
+		default:
+			return ""
+		}
+	}
+	return net.JoinHostPort(host, port)
+}
+
 // TargetIsPrivate reports whether the host in rawURL refers to — or resolves to —
 // a private, loopback, or link-local address. It is used to detect when an
 // operator has deliberately pointed ToolHive at an internal target, so that
@@ -57,20 +118,24 @@ const (
 	ErrPrivateIpAddress = "the provided URL redirects to a private IP address, which is not allowed"
 )
 
-// nat64Prefixes are the NAT64 translation prefixes whose embedded IPv4 address
-// lives in the low 32 bits (RFC 6052 §2.2 "/96" embedding). An address inside
-// one of these is routed to that IPv4 by a NAT64 gateway, so its true
-// reachability is determined by the embedded IPv4, not by the (global-unicast)
-// IPv6 form.
-//   - 64:ff9b::/96   well-known prefix (RFC 6052), always a /96
-//   - 64:ff9b:1::/96 the /96 sub-prefix of the RFC 8215 local-use 64:ff9b:1::/48
+// low32EmbeddingPrefixes are the IPv6 prefixes whose addresses carry a full
+// IPv4 address in the low 32 bits. An address inside one of these reaches that
+// IPv4 through a translator or a dual-stack host, so its true reachability is
+// determined by the embedded IPv4, not by the IPv6 form.
+//   - 64:ff9b::/96     NAT64 well-known prefix (RFC 6052 §2.2), always a /96
+//   - 64:ff9b:1::/96   the /96 sub-prefix of the RFC 8215 local-use 64:ff9b:1::/48
+//   - ::/96            IPv4-compatible addresses (RFC 4291 §2.5.5.1, deprecated)
+//   - ::ffff:0:0:0/96  IPv4-translated addresses (SIIT, RFC 2765 §2.1)
+//
+// IPv4-mapped addresses (::ffff:0:0/96) are not listed: net.IP.To4 already
+// unwraps them to IPv4.
 //
 // The rest of the local-use 64:ff9b:1::/48 uses a shorter NAT64 prefix, where
 // the embedded IPv4 is NOT in the low 32 bits and cannot be located from the
 // address alone. Decoding the low 32 bits there could read attacker-chosen
 // suffix bytes and misclassify an internal target as public, so that remainder
 // is blocked wholesale via privateIPBlocks to avoid a false-negative bypass.
-var nat64Prefixes []*net.IPNet
+var low32EmbeddingPrefixes []*net.IPNet
 
 // sixToFourPrefix is the 6to4 prefix 2002::/16 (RFC 3056, deprecated by
 // RFC 7526). A 6to4 address embeds a full IPv4 address in bits 16-47
@@ -82,14 +147,14 @@ var nat64Prefixes []*net.IPNet
 // 6to4 addresses).
 var sixToFourPrefix *net.IPNet
 
-// embeddedIPv4 returns the IPv4 address embedded in a NAT64 or 6to4 address
-// if ip falls inside one of those translation prefixes, or nil otherwise.
+// embeddedIPv4 returns the IPv4 address embedded in ip if ip falls inside one
+// of low32EmbeddingPrefixes or the 6to4 prefix, or nil otherwise.
 func embeddedIPv4(ip net.IP) net.IP {
 	v6 := ip.To16()
 	if v6 == nil || ip.To4() != nil {
 		return nil
 	}
-	for _, block := range nat64Prefixes {
+	for _, block := range low32EmbeddingPrefixes {
 		if block.Contains(ip) {
 			return net.IPv4(v6[12], v6[13], v6[14], v6[15])
 		}
@@ -135,14 +200,16 @@ func init() {
 		privateIPBlocks = append(privateIPBlocks, block)
 	}
 	for _, cidr := range []string{
-		"64:ff9b::/96",   // NAT64 well-known prefix, /96 embedding (RFC 6052)
-		"64:ff9b:1::/96", // /96 sub-prefix of the local-use range (RFC 8215)
+		"64:ff9b::/96",    // NAT64 well-known prefix, /96 embedding (RFC 6052)
+		"64:ff9b:1::/96",  // /96 sub-prefix of the local-use range (RFC 8215)
+		"::/96",           // IPv4-compatible (RFC 4291 §2.5.5.1)
+		"::ffff:0:0:0/96", // IPv4-translated (RFC 2765 §2.1)
 	} {
 		_, block, err := net.ParseCIDR(cidr)
 		if err != nil {
 			panic(fmt.Errorf("parse error on %q: %w", cidr, err))
 		}
-		nat64Prefixes = append(nat64Prefixes, block)
+		low32EmbeddingPrefixes = append(low32EmbeddingPrefixes, block)
 	}
 	const sixToFourCIDR = "2002::/16"
 	_, sixToFourBlock, err := net.ParseCIDR(sixToFourCIDR)
@@ -164,8 +231,10 @@ func init() {
 // (RFC 6052) and the 64:ff9b:1::/96 sub-prefix of the RFC 8215 local-use
 // range; the rest of 64:ff9b:1::/48 uses a non-/96 embedding that cannot be
 // decoded from the address alone and is blocked wholesale (see
-// privateIPBlocks). 6to4 addresses (2002::/16, RFC 3056) are decoded the same
-// way, extracting the IPv4 from bits 16-47 (e.g. 2002:a9fe:a9fe:: ->
+// privateIPBlocks). IPv4-compatible (::/96) and IPv4-translated
+// (::ffff:0:0:0/96) addresses use the same low-32-bit embedding and are decoded
+// the same way. 6to4 addresses (2002::/16, RFC 3056) are decoded too,
+// extracting the IPv4 from bits 16-47 (e.g. 2002:a9fe:a9fe:: ->
 // 169.254.169.254). Teredo addresses (2001::/32, RFC 4380) obfuscate their
 // embedded IPv4 via bitwise NOT and so cannot be decoded from the address
 // alone; they are blocked wholesale (see privateIPBlocks).

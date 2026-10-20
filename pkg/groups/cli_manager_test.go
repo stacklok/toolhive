@@ -28,26 +28,25 @@ func TestManager_Create(t *testing.T) {
 	tests := []struct {
 		name        string
 		groupName   string
-		setupMock   func(*mocks.MockStore)
+		writer      *mockWriteCloser
+		setupMock   func(*mocks.MockStore, *mockWriteCloser)
 		expectError bool
 		errorMsg    string
+		aborted     bool
 	}{
 		{
 			name:      "successful creation",
 			groupName: testGroupName,
-			setupMock: func(mock *mocks.MockStore) {
-				mock.EXPECT().
-					CreateExclusive(gomock.Any(), testGroupName).
-					Return(&mockWriteCloser{}, nil)
+			writer:    &mockWriteCloser{},
+			setupMock: func(mock *mocks.MockStore, writer *mockWriteCloser) {
+				mock.EXPECT().CreateExclusive(gomock.Any(), testGroupName).Return(writer, nil)
 			},
-			expectError: false,
 		},
 		{
 			name:      "group already exists",
 			groupName: "existinggroup",
-			setupMock: func(mock *mocks.MockStore) {
-				mock.EXPECT().
-					CreateExclusive(gomock.Any(), "existinggroup").
+			setupMock: func(mock *mocks.MockStore, _ *mockWriteCloser) {
+				mock.EXPECT().CreateExclusive(gomock.Any(), "existinggroup").
 					Return(nil, httperr.WithCode(errors.New("state 'existinggroup' already exists"), http.StatusConflict))
 			},
 			expectError: true,
@@ -56,10 +55,8 @@ func TestManager_Create(t *testing.T) {
 		{
 			name:      "create exclusive fails with other error",
 			groupName: testGroupName,
-			setupMock: func(mock *mocks.MockStore) {
-				mock.EXPECT().
-					CreateExclusive(gomock.Any(), testGroupName).
-					Return(nil, errors.New("disk full"))
+			setupMock: func(mock *mocks.MockStore, _ *mockWriteCloser) {
+				mock.EXPECT().CreateExclusive(gomock.Any(), testGroupName).Return(nil, errors.New("disk full"))
 			},
 			expectError: true,
 			errorMsg:    "failed to create group",
@@ -67,25 +64,45 @@ func TestManager_Create(t *testing.T) {
 		{
 			name:      "writer encoding fails",
 			groupName: testGroupName,
-			setupMock: func(mock *mocks.MockStore) {
-				mock.EXPECT().
-					CreateExclusive(gomock.Any(), testGroupName).
-					Return(&mockWriteCloser{writeError: errors.New("write failed")}, nil)
+			writer:    &mockWriteCloser{writeError: errors.New("write failed")},
+			setupMock: func(mock *mocks.MockStore, writer *mockWriteCloser) {
+				mock.EXPECT().CreateExclusive(gomock.Any(), testGroupName).Return(writer, nil)
 			},
 			expectError: true,
 			errorMsg:    "failed to write group",
+			aborted:     true,
+		},
+		{
+			name:      "create conflicts when writer closes",
+			groupName: testGroupName,
+			writer:    &mockWriteCloser{closeError: httperr.WithCode(errors.New("state already exists"), http.StatusConflict)},
+			setupMock: func(mock *mocks.MockStore, writer *mockWriteCloser) {
+				mock.EXPECT().CreateExclusive(gomock.Any(), testGroupName).Return(writer, nil)
+			},
+			expectError: true,
+			errorMsg:    "already exists",
+		},
+		{
+			name:      "create returns writer close error",
+			groupName: testGroupName,
+			writer:    &mockWriteCloser{closeError: errors.New("close failed")},
+			setupMock: func(mock *mocks.MockStore, writer *mockWriteCloser) {
+				mock.EXPECT().CreateExclusive(gomock.Any(), testGroupName).Return(writer, nil)
+			},
+			expectError: true,
+			errorMsg:    "failed to close group writer",
 		},
 		{
 			name:        "invalid name - uppercase",
 			groupName:   "MyGroup",
-			setupMock:   func(_ *mocks.MockStore) {}, // validation fails before store access
+			setupMock:   func(_ *mocks.MockStore, _ *mockWriteCloser) {}, // validation fails before store access
 			expectError: true,
 			errorMsg:    "must be lowercase",
 		},
 		{
 			name:        "invalid name - mixed case",
 			groupName:   "DefAult",
-			setupMock:   func(_ *mocks.MockStore) {}, // validation fails before store access
+			setupMock:   func(_ *mocks.MockStore, _ *mockWriteCloser) {}, // validation fails before store access
 			expectError: true,
 			errorMsg:    "must be lowercase",
 		},
@@ -100,19 +117,18 @@ func TestManager_Create(t *testing.T) {
 
 			mockStore := mocks.NewMockStore(ctrl)
 			manager := &cliManager{groupStore: mockStore}
+			tt.setupMock(mockStore, tt.writer)
 
-			// Set up mock expectations
-			tt.setupMock(mockStore)
-
-			// Execute operation
 			err := manager.Create(context.Background(), tt.groupName)
 
-			// Verify results
 			if tt.expectError {
 				assert.Error(t, err)
 				assert.Contains(t, err.Error(), tt.errorMsg)
 			} else {
 				assert.NoError(t, err)
+			}
+			if tt.writer != nil {
+				assert.Equal(t, tt.aborted, tt.writer.aborted)
 			}
 		})
 	}
@@ -659,6 +675,17 @@ func TestManager_Update(t *testing.T) {
 			},
 		},
 		{
+			name:  "returns error when writer close fails",
+			group: &Group{Name: testGroupName},
+			setupMock: func(mock *mocks.MockStore) {
+				mock.EXPECT().
+					GetWriter(gomock.Any(), testGroupName).
+					Return(&mockWriteCloser{closeError: errors.New("close failed")}, nil)
+			},
+			expectError: true,
+			errorMsg:    "failed to close group writer",
+		},
+		{
 			name:  "returns error when writer fails",
 			group: &Group{Name: testGroupName},
 			setupMock: func(mock *mocks.MockStore) {
@@ -700,6 +727,7 @@ type mockWriteCloser struct {
 	data       []byte
 	writeError error
 	closeError error
+	aborted    bool
 }
 
 func (m *mockWriteCloser) Write(p []byte) (n int, err error) {
@@ -714,6 +742,7 @@ func (m *mockWriteCloser) Close() error {
 	return m.closeError
 }
 
-func (*mockWriteCloser) Sync() error {
+func (m *mockWriteCloser) Abort() error {
+	m.aborted = true
 	return nil
 }

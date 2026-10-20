@@ -52,8 +52,9 @@ type listChangedResyncWorker struct {
 	// run performs exactly one resync using the given (server-lifetime) context.
 	// It is self-contained: liveness check, context reconstruction, and the
 	// re-derive-and-replace of the session's advertised set for this worker's
-	// capability kind (tools, resources, or prompts).
-	run func(ctx context.Context)
+	// capability kind (tools, resources, or prompts). purge is the coalesced
+	// purge flag captured by the loop (see trigger).
+	run func(ctx context.Context, purge bool)
 	// baseCtx bounds every run to the server lifetime (cancelled on Stop) so a
 	// late notification cannot start work that outlives the server.
 	baseCtx context.Context
@@ -61,14 +62,27 @@ type listChangedResyncWorker struct {
 	mu      sync.Mutex
 	running bool
 	dirty   bool
+	purge   bool
 }
 
 // trigger requests a resync. It is non-blocking and safe to call from the
 // backend receive-loop goroutine: if a resync is already running it just marks
 // the state dirty (coalescing), otherwise it starts the single worker goroutine.
-func (w *listChangedResyncWorker) trigger() {
+//
+// purge requests a capability-cache invalidation before the re-derivation. The
+// backend-notification path passes true: a backend's content can change under
+// an unchanged backend set, so the cached aggregation is stale under the SAME
+// cache key and must be evicted. The health-driven fan-out passes false: a
+// health flip changes the health-filtered backend-ID set inside the cache key,
+// and resyncSessionsOnBackendHealthChange already purges once per delivery
+// before triggering — a per-run purge there would only evict the entry a
+// sibling session's sweep just repopulated, forcing one full backend sweep per
+// session where later same-identity sessions could share one. Coalesced
+// triggers OR the flag, so a purge request is never lost.
+func (w *listChangedResyncWorker) trigger(purge bool) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	w.purge = w.purge || purge
 	if w.running {
 		w.dirty = true
 		return
@@ -79,10 +93,17 @@ func (w *listChangedResyncWorker) trigger() {
 
 // loop runs resyncs until no further notification arrived during the last run.
 // It is the single worker goroutine started by trigger; it exits when idle so
-// an idle session holds no goroutine.
+// an idle session holds no goroutine. Each iteration consumes the coalesced
+// purge flag, so a purge requested while a run is in flight is honored by the
+// follow-up run.
 func (w *listChangedResyncWorker) loop() {
 	for {
-		w.run(w.baseCtx)
+		w.mu.Lock()
+		purge := w.purge
+		w.purge = false
+		w.mu.Unlock()
+
+		w.run(w.baseCtx, purge)
 
 		w.mu.Lock()
 		if !w.dirty {
@@ -96,10 +117,14 @@ func (w *listChangedResyncWorker) loop() {
 }
 
 // buildListChangedSink returns the sink passed to
-// SessionManager.CreateSession for a newly-registered session. The returned
-// sink runs on the backend receive-loop goroutine and only hands work off to a
-// per-(session, kind) coalescing worker (see listChangedResyncWorker) — it
-// never does the cache purge or backend re-aggregation inline.
+// SessionManager.CreateSession for a newly-registered session, plus the
+// session's KindTools worker so registration can also register it for
+// backend-health-driven fan-out (#5786, serve_health_resync.go) — health
+// transitions reuse the exact same coalescing worker a backend tools
+// list_changed notification drives. The returned sink runs on the backend
+// receive-loop goroutine and only hands work off to a per-(session, kind)
+// coalescing worker (see listChangedResyncWorker) — it never does the cache
+// purge or backend re-aggregation inline.
 //
 // It builds one listChangedResyncWorker per ChangeKind (tools, resources,
 // prompts) rather than a single shared worker: each worker's run closure
@@ -131,12 +156,12 @@ func (w *listChangedResyncWorker) loop() {
 // otherwise be denied.
 func (s *Server) buildListChangedSink(
 	sessionID string, session server.ClientSession, identity *auth.Identity, forwardedHeaders map[string]string,
-) vmcpsession.ListChangedSink {
+) (vmcpsession.ListChangedSink, *listChangedResyncWorker) {
 	newWorker := func(kind vmcpsession.ChangeKind) *listChangedResyncWorker {
 		return &listChangedResyncWorker{
 			baseCtx: s.resyncBaseCtx,
-			run: func(ctx context.Context) {
-				s.runListChangedResync(ctx, sessionID, session, identity, forwardedHeaders, kind)
+			run: func(ctx context.Context, purge bool) {
+				s.runListChangedResync(ctx, sessionID, session, identity, forwardedHeaders, kind, purge)
 			},
 		}
 	}
@@ -145,7 +170,7 @@ func (s *Server) buildListChangedSink(
 		vmcpsession.KindResources: newWorker(vmcpsession.KindResources),
 		vmcpsession.KindPrompts:   newWorker(vmcpsession.KindPrompts),
 	}
-	return func(_ context.Context, backendWorkloadID string, kind vmcpsession.ChangeKind) {
+	sink := func(_ context.Context, backendWorkloadID string, kind vmcpsession.ChangeKind) {
 		worker, ok := workers[kind]
 		if !ok {
 			slog.Debug("ignoring list_changed notification of unknown kind",
@@ -154,8 +179,11 @@ func (s *Server) buildListChangedSink(
 		}
 		slog.Debug("backend reported list_changed; scheduling session resync",
 			"session_id", sessionID, "backend_id", backendWorkloadID, "kind", kind)
-		worker.trigger()
+		// purge: the backend's content changed under an unchanged backend set,
+		// so the cached aggregation is stale under the same key (see trigger).
+		worker.trigger(true)
 	}
+	return sink, workers[vmcpsession.KindTools]
 }
 
 // runListChangedResync performs one coalesced resync for a session, for the
@@ -166,8 +194,10 @@ func (s *Server) buildListChangedSink(
 //  2. Reconstruct the registration-time request context (identity + forwarded
 //     headers) atop the server-lifetime base context, so the cache key and
 //     backend auth match a real request from this principal.
-//  3. Invalidate the capability cache so the re-derivation below re-sweeps the
-//     backend rather than reading the entry it just purged.
+//  3. When purge is set (backend-notification path), invalidate the capability
+//     cache so the re-derivation below re-sweeps the backend rather than
+//     reading the stale entry cached under the unchanged key. Health-driven
+//     runs pass purge=false — see listChangedResyncWorker.trigger.
 //  4. Re-derive and REPLACE the session's advertised set for kind: KindTools
 //     resyncs tools, KindResources resyncs both resources and resource
 //     templates (MCP 2025-11-25 has no separate wire method for template
@@ -179,10 +209,15 @@ func (s *Server) runListChangedResync(
 	identity *auth.Identity,
 	forwardedHeaders map[string]string,
 	kind vmcpsession.ChangeKind,
+	purge bool,
 ) {
 	// Liveness guard: if the session is gone (terminated/expired) there is
 	// nothing to resync, and doing the work would waste a full backend sweep.
+	// Also prune the session's health-driven fan-out registration (#5786):
+	// TTL expiry and SDK-initiated termination end sessions without server
+	// involvement, so this lazy prune is what keeps the registry bounded.
 	if _, ok := s.vmcpSessionMgr.GetMultiSession(baseCtx, sessionID); !ok {
+		s.healthResync.remove(sessionID)
 		slog.Debug("skipping list_changed resync for terminated session", "session_id", sessionID, "kind", kind)
 		return
 	}
@@ -195,8 +230,12 @@ func (s *Server) runListChangedResync(
 	// Invalidate FIRST so the re-derivation below re-sweeps the backend instead
 	// of re-reading the stale cached aggregation. The purge is global (all
 	// identities, all kinds) — see InvalidateCapabilityCache — but coalescing
-	// bounds it to at most once per resync burst per kind.
-	s.core.InvalidateCapabilityCache()
+	// bounds it to at most once per resync burst per kind. Health-driven runs
+	// skip it (purge=false): the fan-out purges once per delivery instead —
+	// see listChangedResyncWorker.trigger.
+	if purge {
+		s.core.InvalidateCapabilityCache()
+	}
 
 	var err error
 	switch kind {

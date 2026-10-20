@@ -22,8 +22,8 @@
 //
 // The server package is organized into focused sub-packages:
 //
-//   - server/registration: OAuth client types including RFC 8252 compliant LoopbackClient
-//     for native applications with dynamic port matching
+//   - server/registration: OAuth client construction plus RFC 8252 loopback
+//     redirect_uri matching for native applications with dynamic ports
 //   - server/crypto: Cryptographic utilities for key loading, PKCE, and signing
 //   - server/session: Session management linking issued tokens to upstream IdP tokens
 //
@@ -68,8 +68,10 @@
 // The authorization server implements the authorization code flow with PKCE:
 //
 //  1. Client initiates auth at /oauth/authorize with PKCE challenge
-//  2. Server redirects to upstream IdP for authentication
-//  3. IdP calls back to /oauth/callback with auth code
+//  2. Server redirects the browser to the upstream IdP for authentication,
+//     setting a browser-binding cookie for this pending authorization
+//  3. IdP calls back to /oauth/callback with auth code; the callback completes
+//     only for the browser that presents the cookie from step 2
 //  4. Server exchanges code with IdP and stores IdP tokens
 //  5. Server issues its own auth code and redirects to client
 //  6. Client exchanges code at /oauth/token for JWT access token

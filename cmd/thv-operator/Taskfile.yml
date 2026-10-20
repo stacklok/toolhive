@@ -265,6 +265,7 @@ tasks:
       - |
         KUBECONFIG="{{.ROOT_DIR}}/kconfig.yaml" $(go env GOPATH)/bin/ginkgo -v --fail-fast \
           --procs=8 \
+          {{.GINKGO_ARGS}} \
           {{.ROOT_DIR}}/test/e2e/thv-operator/...
 
   operator-run:

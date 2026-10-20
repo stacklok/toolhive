@@ -80,6 +80,17 @@ winget:
      owner: stacklok
      name: winget-pkgs
      branch: "thv-{{.Version}}"
+     # WINGET_GITHUB_TOKEN must be a *classic* PAT with full `repo` scope, NOT a
+     # GitHub App installation token or a fine-grained PAT. This publisher pushes
+     # the branch above to the stacklok/winget-pkgs fork and then opens the
+     # pull_request below into microsoft/winget-pkgs — a cross-account,
+     # fork-to-upstream PR. Only a classic PAT can create that PR: App tokens and
+     # fine-grained PATs are scoped to a single account and cannot open a PR on a
+     # repo they aren't installed on (403 "Resource not accessible by
+     # integration"). This is why winget can't reuse the App-token pattern that
+     # the homebrew/tap uses in .github/workflows/releaser.yml. A 401 "Bad
+     # credentials" at release time means the PAT expired or was revoked — rotate
+     # the secret and re-run the job. See the env comment in releaser.yml.
      token: "{{ .Env.WINGET_GITHUB_TOKEN }}"
      pull_request:
        enabled: true
@@ -89,11 +100,11 @@ winget:
          name: winget-pkgs
          branch: master
 # This section defines how to release to homebrew.
-brews:
+homebrew_casks:
   - name: thv
+    binaries: [thv]
     homepage: 'https://github.com/stacklok/toolhive'
     description: 'ToolHive (thv) is a lightweight, secure, and fast manager for MCP (Model Context Protocol) servers'
-    directory: Formula
     commit_author:
       name: stacklokbot
       email: info@stacklok.com
@@ -101,8 +112,20 @@ brews:
       owner: stacklok
       name: homebrew-tap
       token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
-    test: |
-      system "#{bin}/thv --help"
+    # Homebrew quarantines cask downloads, and the darwin binaries are signed
+    # but not notarized, so Gatekeeper would refuse to run them.
+    #
+    # Written as a raw postflight_steps stanza because Homebrew deprecated the
+    # Ruby postflight block that hooks.post.install generates, and GoReleaser's
+    # install_steps replacement is not in a stable release yet. The body matches
+    # what install_steps generates. {{staged_path}} is a Homebrew token, escaped
+    # so GoReleaser's own templating passes it through.
+    custom_block: |
+      postflight_steps do
+        on_macos do
+          run "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "{{ "{{staged_path}}" }}/thv"]
+        end
+      end
 # This section defines whether we want to release the source code too.
 source:
   enabled: true

@@ -5,6 +5,19 @@ package oauthproto
 
 import "time"
 
+// Idle-connection-pool bounds for the hand-built HTTP transports in this
+// package (NewDefaultDCRClient, buildDiscoveryHTTPClient). They mirror the
+// bounds pkg/networking.Build applies via networking.SetIdleConnBounds; a zero
+// IdleConnTimeout never expires a pooled connection, pinning a socket and its
+// goroutine pair for the process lifetime. pkg/networking imports this package,
+// so it cannot reference networking's constants without an import cycle — keep
+// these values in sync with networking's Build bounds by hand.
+const (
+	idleConnTimeout     = 90 * time.Second
+	maxIdleConns        = 100
+	maxIdleConnsPerHost = 4
+)
+
 // Well-known endpoint paths as defined by RFC 8414, OpenID Connect Discovery 1.0, and RFC 9728.
 const (
 	// WellKnownOIDCPath is the standard OIDC discovery endpoint path
@@ -49,6 +62,10 @@ const (
 	// TokenEndpointAuthMethodClientSecretPost sends the client credentials in the
 	// request body at the token endpoint (RFC 6749 Section 2.3.1).
 	TokenEndpointAuthMethodClientSecretPost = "client_secret_post"
+
+	// TokenEndpointAuthMethodPrivateKeyJWT authenticates with a signed client
+	// assertion at the token endpoint (RFC 7523).
+	TokenEndpointAuthMethodPrivateKeyJWT = "private_key_jwt" //nolint:gosec // G101: RFC 7591 auth-method identifier
 )
 
 // PKCE (Proof Key for Code Exchange) methods as defined by RFC 7636.
@@ -86,6 +103,10 @@ const (
 
 	// GrantTypeJWTBearer is the JWT Bearer grant type (RFC 7523).
 	GrantTypeJWTBearer = "urn:ietf:params:oauth:grant-type:jwt-bearer"
+
+	// GrantTypeDeviceCode is the OAuth 2.0 Device Authorization Grant's token
+	// grant type (RFC 8628 Section 3.4).
+	GrantTypeDeviceCode = "urn:ietf:params:oauth:grant-type:device_code"
 )
 
 // HTTP client constants.

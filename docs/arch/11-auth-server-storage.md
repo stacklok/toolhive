@@ -59,9 +59,11 @@ The storage layer implements multiple interfaces from the [fosite](https://githu
 **ToolHive extensions:**
 - `ClientRegistry` — Dynamic client registration (RFC 7591)
 - `UpstreamTokenStorage` — Upstream IDP token caching with user binding
-- `PendingAuthorizationStorage` — In-flight authorization tracking
+- `PendingAuthorizationStorage` — In-flight authorization tracking. Interactive requests have a single-use `awaiting` consent stage before upstream login; only an `approved` record can complete a callback. Each `PendingAuthorization` carries a `BrowserBindingHash`, the SHA-256 of a random cookie value set on the user agent. The consent POST and `/oauth/callback` require the matching cookie before consuming their respective records. Only the hash is stored; an older row without a binding or approval stage cannot complete the flow and must be restarted. `PendingDeviceLogin` carries the same browser binding for the separate device-flow verification-page login, which shares `/oauth/callback`.
+- `RememberedConsentStorage` — Optional server-side browser sessions and one approval per `(userID, clientID)`. The browser holds only a random `__Host-thv_consent_<sha256>` secret; storage holds its SHA-256 digest. Each approval records the redirect URI, scopes, and resource selected for that client. Memory and Redis implement this capability; decorators expose the underlying backend via `storage.Unwrap`. See [Interactive client approval](#interactive-client-approval).
 - `UserStorage` — Internal user accounts and provider identity linking
-- `DCRCredentialStore` — DCR client secret persistence; intentionally NOT embedded in `Storage` (each backend implements it separately and call sites reach it via an explicit `stor.(DCRCredentialStore)` type assertion)
+- `DCRCredentialStore` — DCR client metadata and credential persistence; intentionally NOT embedded in `Storage` (each backend implements it separately and call sites reach it via an explicit `stor.(DCRCredentialStore)` type assertion). Secret-based clients store hashed secrets; `private_key_jwt` clients store their inline public JWKS and signing algorithm. Outbound (upstream) registrations resolved by `pkg/auth/dcr` are keyed by `(Issuer, UpstreamID, RedirectURI, ScopesHash)` plus the optional operator-set `dcrConfig.rotationKey`. Changing the rotation key addresses a new row, so the next start registers a fresh upstream client; the previous row stays in place and carries no TTL unless the upstream asserted `client_secret_expires_at`. On a cache hit the resolver also checks the cached client at the upstream token endpoint and replaces the row when the upstream answers `invalid_client`, provided the store implements `dcr.Replacer`. The rotation key covers the upstreams where that check cannot tell a dropped registration from a live one: an upstream that validates the code before it looks up a public client, or a `private_key_jwt` client.
+- `AssertionJWTConsumer` — atomic single-use consumption for validated JWT assertions. It is deliberately separate from `Storage`, so only assertion-grant composition requires replay protection.
 
 **Implementation:**
 - Interface definitions: `pkg/authserver/storage/types.go`
@@ -115,6 +117,62 @@ Reached when both `IdentityFromToken` is unconfigured AND `userInfo` is absent. 
 - `pkg/authserver/server/handlers/callback.go` — `UserResolver` bypass on `Identity.Synthetic`
 - `cmd/thv-operator/controllers/mcpexternalauthconfig_controller.go` and `cmd/thv-operator/controllers/virtualmcpserver_controller.go` — `IdentitySynthesized` advisory condition
 
+## Interactive client approval
+
+For interactive authorization-code requests, `/oauth/authorize` validates the client, redirect URI and a single allowed resource **before** showing a consent page. If there is exactly one configured allowed audience, it is selected when `resource` is omitted; with multiple allowed audiences the client must specify one `resource`. For example, a client registered with `https://client.example/callback` can select an allowed audience at authorization time:
+
+```http
+GET /oauth/authorize?response_type=code&client_id=CLIENT_ID&redirect_uri=https%3A%2F%2Fclient.example%2Fcallback&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&code_challenge_method=S256&resource=https%3A%2F%2Fmcp.example%2F&state=illustrative-state-value HTTP/1.1
+```
+
+Clients must generate a fresh, unguessable `state` for each request and verify the returned value; do not reuse the illustrative value above.
+
+**Client compatibility:** When the server has multiple allowed audiences, clients must send `resource` on `/oauth/authorize` before consent; choosing it only at `/oauth/token` is too late. A single configured audience defaults when omitted at authorization, and a bound code or refresh token inherits its original audience when `resource` is omitted at the token endpoint. An explicit token-endpoint `resource` must match that audience exactly.
+
+The page leads with a plain-language summary and the classified destination of the redirect ("this computer" for loopback, the host plus its punycode form for other http(s) hosts, "an app that opens `<scheme>://` links" for custom schemes, or the full URI when it cannot be classified), followed by the client name, labelled as given by the app and not verified. A collapsed "Technical details" section holds the full redirect URI, client ID, scopes, resource and the first upstream provider's internal name. It does not redirect to the upstream identity provider until a browser-bound, same-origin POST to `/oauth/consent` approves the request. Denial returns `access_denied` to the validated client redirect. The pending consent handle and each upstream callback state are single-use, browser-bound records with a 10-minute absolute lifetime from the initial authorization (not extended by chaining). The device flow uses its separate verification and approval page.
+
+The form action uses the configured browser-facing authorization base, including any path prefix. The POST accepts only that base's browser-serialized Origin (including normalized IP addresses, domain names and ports), not a missing, null, or foreign Origin. `Referrer-Policy: same-origin` preserves Origin on native same-origin form submissions without leaking the consent URL to other sites.
+
+The page's CSP blocks scripts, framing and base URL changes. It deliberately omits `form-action 'self'`: browsers also apply that restriction to the POST's redirect to an external IdP or validated client URI, including dynamic loopback ports. The template has only the escaped, configured form target, and the POST additionally requires the single-use browser-binding cookie. No COOP header is set on the consent page, to avoid severing an OAuth popup's opener.
+
+On an HTTPS authorization endpoint with a backend implementing `RememberedConsentStorage`, the consent page offers a "Don't ask again for this app on this browser" checkbox that skips the page for 7 days (the browser session lifetime) when the same app asks for the same access. Only after a completed flow with a non-synthetic first-upstream identity does the server store an approval and issue a secure, HttpOnly, SameSite=Lax host-only cookie at `/` named `__Host-thv_consent_<sha256>`. The suffix is the full lowercase SHA-256 hex digest of the byte-length-prefixed ordered pair `(GetAccessTokenIssuer(), GetAuthorizationEndpointBaseURL())`, using the exact configured strings (the authorization base defaults to the issuer). This separates independent servers on the same browser host even across paths or ports, while replicas with the same pair use the same name. The server-side browser session expires after 7 days and the per-user, per-client approval after 30 days; neither lifetime slides on use. Re-approval overwrites the previous approval. Remember-storage write failures do not prevent code issuance; they simply leave the browser without reusable approval.
+
+A later request can skip the page only if both records are live, the session provider matches the first configured upstream, the client ID and resource match, requested scopes are a subset of the approved scopes, and the redirect URI matches (except that ports may differ for the same registered loopback redirect). This does not bind a remembered approval to one local listener: a process listening on another allowed loopback port can receive a code for a request it initiates with the same client ID without a new ToolHive consent page if the upstream login completes as the remembered user; PKCE still applies. A downstream `prompt=consent` shows ToolHive's page again; `prompt=login` alone does not force upstream reauthentication. The upstream login still runs. Before writing user or upstream-token state, its first callback must resolve to the same non-synthetic provider subject and linked user; an account switch revokes the browser session and returns `access_denied`, so the client must start a new authorization. A missing, expired or successfully read but malformed record shows consent again; storage read and decode failures fail closed with `server_error`.
+
+**Current boundaries:** When the embedded auth server is mounted on a transparent MCP proxy, that proxy removes every request cookie whose name starts with `__Host-thv_consent_` before forwarding to backends (including redirects and recovery), regardless of suffix; other backend cookies remain available. Proxies without an embedded auth server leave cookies untouched. There is no user-facing forget or sign-out control for remembered approvals; they expire automatically. The audience binding applies to newly authorized codes and their refreshes; refresh tokens issued before this binding retain their existing audience behavior. See [Redis storage configuration](../redis-storage.md#data-model) for the key schema and [remote MCP authentication](../remote-mcp-authentication.md) for client-side authentication context.
+
+### Administrator consent preauthorization
+
+The Go-only `authserver.Config.ConsentExemptClientIDs` field and the embedded runner's `WithConsentExemptClientIDs` option allow an embedder to skip ToolHive's consent page for explicitly listed client IDs. An empty list preserves the ordinary consent behavior. The policy skips only ToolHive's interactive consent page; `prompt=consent` takes precedence over the exemption and requires that page even when the client is allowlisted.
+
+> Listing a client ID preauthorizes whatever registration currently holds that ID, for whichever user completes upstream authentication. It is not per-user consent, and runtime eligibility checks do not prove where the registration came from.
+
+An ID qualifies only when explicitly allowlisted and its current registration is eligible: confidential, not back-channel-only, with the authorization-code grant, code response type and at least one redirect URI. At runtime, exemption also requires a code-only request with one explicit registered redirect URI and no loopback redirect rewrite. The client registration used for the decision is resolved normally at request time; startup validation does not freeze its metadata or prove its provenance.
+
+This is an administrator trust decision over the registration currently at the ID, not user consent scoped to an account, redirect, scope, audience or grant. Replacing the registration's credentials or redirect URIs transfers the exemption to the replacement. Expanding its permitted scopes, audiences or grants can expand what is preauthorized. An embedder must control registration writes for exempt IDs. HTTP Dynamic Client Registration (DCR) can qualify when its server-minted ID is explicitly allowlisted and eligible, but DCR IDs are server-generated and registration is create-only: a DCR caller cannot choose or overwrite an exempt ID. CIMD replacement targets URL-shaped IDs, which this allowlist excludes. These registration-write restrictions do not restrict access to the authorization endpoint. A privileged provisioner with registration-write access can still replace an exempt registration; this policy does not protect against that.
+
+`DCRIssued` continues to govern its existing retention and replacement behavior; it is not an exemption-eligibility signal. DCR-issued exempt clients remain subject to the existing TTL and in-memory eviction behavior. A client can expire or be evicted and then needs to be reprovisioned. The exemption does not change retention. Removing an ID restores ordinary consent decision-making for new authorization requests only: it does not revoke tokens or automatically cancel already-approved flows.
+
+This behavior is a deliberate standards trade-off. The [stable MCP authorization specification](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization) states: “MCP proxy servers using static client IDs MUST obtain user consent for each dynamically registered client before forwarding to third-party authorization servers.” ToolHive is that proxy. Allowlisting a dynamically registered client is a deliberate deviation from this requirement, not an exception. More broadly, administrator preauthorization trades individual user approval for the embedder's control over the allowlist and registration writes.
+
+#### Downstream transaction binding remains the embedder's responsibility
+
+Knowing an exempt client ID can be enough to send a victim an authorization link. If the victim already has an upstream SSO session, authentication may complete without interaction, and a code may be delivered to the legitimate client's callback without a new user action. The exemption does not establish user intent.
+
+The downstream client must maintain its own binding for every authorization transaction:
+
+1. Generate fresh, unpredictable `state` and an S256 PKCE verifier/challenge for each transaction.
+2. Bind the stored transaction to the initiating client user/session and browser or equivalent user-agent context. A live state belonging to another user's session is not sufficient.
+3. At the downstream callback, reject unsolicited, mismatched, expired, cancelled or already-consumed state before exchanging the code or attaching credentials to a session.
+4. Select the PKCE verifier from that stored transaction, not from callback or other attacker-controlled input, and use it at the token endpoint.
+5. Preserve issuer and other existing authorization-response checks.
+
+State is checked at the callback; the verifier is used at token exchange and is not normally carried in the callback. PKCE and confidential-client authentication alone do not prove which browser or session initiated the callback, or that the user intended the initial authorization navigation. ToolHive's upstream state, PKCE and browser-binding cookie protect the upstream hop; they do not replace the downstream client's transaction binding.
+
+#### Prompt behavior
+
+`prompt=consent` takes precedence over both administrator exemption and remembered approval, so ToolHive displays its consent page. `prompt=none` and `prompt=login` are not specially implemented: an exempt `prompt=none` request may continue to upstream authentication, which is not guaranteed to be silent, and `prompt=login` does not force upstream reauthentication. The current behavior does not establish OIDC `prompt=none` compliance.
+
 ## Memory Backend
 
 The in-memory backend uses Go maps protected by `sync.RWMutex` for thread safety. A background goroutine runs periodic cleanup of expired entries.
@@ -124,12 +182,22 @@ The in-memory backend uses Go maps protected by `sync.RWMutex` for thread safety
 - State is lost on restart
 - Cannot be shared across replicas
 - Suitable for development and single-instance deployments
+- JWT-bearer assertion replay tracking is per-process. Each accepted assertion is
+  retained through its `exp`; a replay sent to a different process is not
+  detected.
 
 **Implementation:** `pkg/authserver/storage/memory.go`
 
 ## Redis Backend
 
 The Redis backend stores all OAuth 2.0 state as JSON-serialized values in Redis.
+JWT-bearer assertion replay tracking uses the same shared Redis namespace, so
+all processes configured with that backend observe a consumed assertion. The
+backend hashes a length-prefixed `(purpose, issuer, replay key)` tuple before
+using it in a Redis key, preventing ambiguous key encoding and keeping the
+assertion identifier out of Redis key names. A successful atomic `SET NX` marker
+expires at the assertion's `exp`; a duplicate unexpired marker returns
+`fosite.ErrJTIKnown`, and a Redis error is returned so the grant fails closed.
 
 ### Connection Architecture
 
@@ -176,6 +244,55 @@ The implementation uses different strategies based on consistency requirements:
 - **Pipelines** (`MULTI`/`EXEC`) for batched operations: authorization code invalidation, token session creation with secondary index updates
 - **Individual commands** with best-effort cleanup: token revocation, refresh token rotation — partial failures are safe since orphaned keys expire via TTL
 
+### Refresh Coordination Scope
+
+When an expired upstream access token is refreshed, `UpstreamTokenStorage` derives
+an opaque SHA-256 identity from its storage-defined row representation. For
+Redis, that representation is its row-key format, so two `(sessionID,
+providerName)` pairs that happen to produce the same Redis key resolve to the
+same identity — that's safe because they're the same physical row. What's
+not allowed is aliasing two pairs that are genuinely different rows: the
+auth server uses this identity only as the key for its in-process
+`singleflight` group, then its leader re-reads the row before redeeming its
+refresh token, and it reads/writes under its own sessionID — aliasing
+distinct rows would cross credentials between sessions. This prevents
+duplicate redemption from stale concurrent callers served by the same
+process; the identity is not persisted, logged, or exposed.
+
+This is deliberately narrower than #4122's original in-process-only scope: it
+does not by itself provide distributed coordination across replicas. That
+coordination now exists as a second, independent layer:
+`UpstreamTokenStorage.CompareAndSwapUpstreamTokens` conditions a refresh write
+on the refresh token currently stored still matching the value the caller
+redeemed with, failing the write (`ErrConcurrentRefresh`) instead of
+overwriting when another replica already rotated the row first. `refreshAndStore`
+writes through this method rather than an unconditional `StoreUpstreamTokens`.
+Redis implements the comparison and the write as one atomic Lua script;
+`MemoryStorage` implements it under its existing mutex. `singleflight` remains
+the process-local optimization described above — it avoids a redundant
+upstream call and Redis round-trip for concurrent requests inside one
+process — while the CAS write is what makes the *stored* row deterministic
+across processes: whichever replica's write lands first wins, and every
+losing replica's write fails instead of silently clobbering it.
+
+This is a storage-ordering guarantee, not a guarantee that concurrent
+redemption is safe at the upstream provider. Both replicas still call
+`provider.RefreshTokens` before either one's CAS write runs, so for a
+provider enforcing strict single-use rotation (RFC 9700 §4.14.2 replay
+detection), two concurrent redemptions of the same refresh token can still
+be indistinguishable from a replay at the IdP, which may revoke the grant
+regardless of which replica's write wins here. CAS is fully sufficient only
+where the provider tolerates a short grace/leeway window in which more than
+one redeemed child stays valid (e.g. Read.ai's stated behavior) — outside
+that window, closing the gap requires serializing the *redemption* itself
+(a distributed lock around the read-redeem-write sequence), not just the
+write. That lock is a deliberate follow-up, not implemented here: this layer
+only prevents storage corruption from a lost write race, and its own log
+distinguishes a genuine lost race (an unexpired row on re-read) from a row
+that is simply gone (deleted by logout or evicted by TTL, `ErrNotFound` on
+re-read) — the latter is expected behavior, not a race, and refuses to
+resurrect the deleted row.
+
 ### Serialization
 
 All values are stored as JSON. The implementation uses defensive copies on read and write to prevent caller mutations from affecting stored data.
@@ -189,19 +306,129 @@ Redis TTL is used for all time-bounded data. TTL values are derived from OAuth 2
 | Access tokens | 1 hour |
 | Refresh tokens | 30 days |
 | Authorization codes | 10 minutes |
+| Pending interactive authorizations (`pending:{handle or state}`) | Remaining time until the initial `CreatedAt` + 10 minutes; deadline checked before consent/callback consumption |
+| Remembered browser sessions (`consent:session:{SHA-256 cookie digest}`) | Up to 7 days, remaining fixed lifetime |
+| Client approvals (`consent:approval:{SHA-256 JSON pair}`) | Up to 30 days, remaining fixed lifetime |
 | PKCE requests | 10 minutes |
 | Invalidated codes | 30 minutes |
-| DCR-issued clients (public and confidential) | 30 days |
+| DCR-issued clients (public, confidential, and private_key_jwt), never used | 24 hours |
+| DCR-issued clients, after their first successful token exchange | 30 days, renewed on each exchange |
+| JWT-bearer replay markers | Assertion `exp` |
 | Users / Providers | No expiry |
 
-These TTLs apply to the Redis backend. The in-memory backend holds no
-wall-clock TTL; it instead bounds growth with a capacity cap
-(`DefaultMaxClients`) and evicts the oldest DCR-issued client on overflow. A
-pre-provisioned client (no DCR marker) is never evicted. Both backends renew
-on the same proven-use signal (a successful token exchange/refresh): Redis
-extends the key's TTL, and the in-memory backend moves the client to the back
-of its eviction queue, so an actively-used DCR-issued client survives
-overflow the same way in either backend.
+The in-memory backend applies the same client expiry: each DCR-issued entry
+carries an expiry, reads treat an expired entry as absent, and the cleanup
+loop removes it. A pre-provisioned client (no DCR marker) never expires. Both
+backends renew on the same proven-use signal (a successful token
+exchange/refresh), which also raises a new client from 24 hours to 30 days.
+
+#### DCR client cap
+
+`/oauth/register` is unauthenticated and every successful call persists a
+client, so both backends cap the number of live clients it created. The cap
+defaults to 10,000 (`DefaultMaxDCRClients`) and is set with
+`storage.max_dcr_clients` in the auth server RunConfig, which the operator
+fills from the embedded auth server's `storage.maxDCRClients`; `0` means
+unlimited.
+It counts only clients carrying the DCR-issued marker. Operator-configured
+clients and CIMD clients are never counted and never rejected.
+
+At the cap, `RegisterClient` returns `ErrClientCapacity` and writes nothing.
+No existing client is evicted: eviction let a caller registering at the full
+rate push out every idle real client, logging its user out. The handler
+answers HTTP 503 with an RFC 7591 `server_error` and a `Retry-After` header
+giving the seconds until the oldest counted client expires, the earliest
+moment a slot can free up.
+
+**Sizing.** A client never used for a token exchange lives 24 hours, so a
+caller registering at the full rate keeps up to `rate × replicas × 86,400`
+unused clients alive. At the default rate of 1/s that is about 86,400 per
+replica, well above the default cap: one replica's worth of traffic fills it
+in about 2.8 hours, and new registrations then get 503 for up to 24 hours
+after the traffic stops, while the spam entries expire. A client promoted by a
+token exchange holds its slot for 30 days, which no cap value mitigates. Size
+the cap above the real client count plus the headroom you want during an
+attack, and lower `registration_rate_limit` (the CRD's
+`registrationRateLimit`) to make the cap take longer to fill.
+
+On Redis the count lives in a sorted set, `{prefix}client-idx`, holding each
+counted client ID scored by its expiry in Unix milliseconds. It shares the
+client rows' hash slot, so one Lua script registers atomically on Redis
+Cluster: report an existing row as a conflict, trim entries whose expiry has
+passed, reject if the remaining count is at the cap, otherwise write the row
+with its TTL and add it to the set. `RenewClientTTL` sets the row's TTL and
+its score in one script, and `ReconcileConfiguredClient` drops a stale entry
+in the same transaction as the row. `UpsertDCRIssuedClient` refuses counted
+clients, so it cannot bypass the cap. Scores come from the replica's clock,
+passed to the scripts as an argument: Redis `TIME` is in the `@fast` ACL
+category, which the documented auth-server ACL does not grant. Clock skew
+between replicas, milliseconds under NTP, only shifts when an entry is
+trimmed relative to its row's expiry. Because the count is in Redis, every
+replica enforces one cap, unlike the per-process rate limiter.
+
+Rows written before the index existed have no entry. On startup,
+`BackfillDCRClientIndex` scans the client rows and adds each counted row with
+its remaining TTL (`ZADD NX`, so an existing entry keeps its score) before
+the server is constructed. On Redis Cluster it scans the master that owns the
+prefix's hash slot. Reads are batched per SCAN page, and a row it cannot parse
+is skipped and counted in one WARN line instead of failing startup. It logs
+one INFO line with the rows scanned, the entries added and the duration, and
+a WARN naming `storage.max_dcr_clients` when the live count is already at or
+above the cap. A Redis error during the backfill is logged at WARN and
+startup continues, unlike a failed legacy upstream migration: skipping the
+backfill only leaves the cap undercounting older rows, which is how the
+server behaved before the cap, and the next start fills in what was missed.
+It runs on every startup. During a rolling upgrade, replicas still on the old version
+keep writing and renewing rows without index entries; rows written after the
+last upgraded replica started stay uncounted until the next restart reruns
+the backfill, or until they expire.
+
+**Upgrading.**
+
+- A Redis deployment already holding more than the cap in live DCR clients
+  rejects every new registration right after the upgrade, until enough of
+  them expire; the backfill logs a WARN at startup when this happens. Raise
+  `max_dcr_clients` or set it to `0` before upgrading. `0` removes the cap
+  entirely, so prefer a large finite value (two to three times the observed
+  live client count) and lower it again once the population drains.
+- On Kubernetes, `storage.maxDCRClients` exists only in the CRDs of the
+  release that enforces the cap, and the CRDs ship in the separate
+  `operator-crds` chart. Upgrade in this order: (1) upgrade the
+  `operator-crds` chart; (2) set `storage.maxDCRClients` on each Redis-backed
+  `MCPExternalAuthConfig` and `VirtualMCPServer` `authServerConfig`;
+  (3) upgrade the `operator` chart. With the older CRDs the API server drops
+  the field as unknown, and an older operator ignores it, so setting it
+  earlier has no effect, and upgrading the operator first enforces the
+  default cap before you can raise it.
+- Backfilled rows keep their current TTL, up to 30 days, so a pre-existing
+  spam population can take that long to drain. Only clients registered after
+  the upgrade get the 24-hour unused TTL.
+- During a rolling upgrade, an old replica's `RenewClientTTL` on a row a new
+  replica indexed sets the row's TTL to 30 days but leaves its index score at
+  24 hours, so that row goes uncounted after 24 hours. The backfill's
+  `ZADD NX` does not correct it; the row is counted again on its next renewal
+  by an upgraded replica.
+
+CIMD clients are not counted against the DCR cap. The in-memory backend caps
+its CIMD rows separately at 10,000 (the old whole-map cap used to cover them):
+past it, `UpsertDCRIssuedClient` refuses a new row with `ErrClientCapacity`,
+while replacing an existing row still succeeds. The CIMD decorator's
+write-through is best-effort and logs the refusal at Debug; the in-memory
+backend keeps sessions as Go values rather than rehydrating their client from
+the row, so a refused row costs at most a document refetch. On Redis,
+persisted CIMD rows are bounded only by the per-process `/oauth/authorize`
+CIMD rate limit (1/s) and their 30-day TTL.
+
+Two metrics expose the cap: the gauge `toolhive_authserver_dcr_clients`
+(unexpired counted clients, read from storage at collection time) and the
+counter `toolhive_authserver_dcr_capacity_rejections` (registrations rejected
+at the cap). Rejections are also logged at WARN, at most once every 15
+minutes, with the cap, the live count, the `Retry-After` value and how many
+rejections were held back since the previous line, so a deployment without
+telemetry still sees the cap. The volume is bounded by time, not by the
+unauthenticated caller's request rate. Neither the cap filling nor clearing
+is logged, since a caller holding the cap flips between the two each time a
+slot expires.
 
 **Behaviour change for public clients registered after this feature:** a
 public client registered before this change was stored as a bare
@@ -275,13 +502,90 @@ Two restrictions apply regardless of this flag:
 - Confidential registrations are restricted to https non-loopback redirect URIs. A client reachable on loopback or a private scheme is, by construction, a public client that cannot keep a secret (OAuth 2.1 §2.1), so the server declines to mint it one.
 - Combining `AllowConfidentialClientRegistration` with `InsecureAllowHTTP` is rejected outright at validation — an unauthenticated secret-minting endpoint served over plaintext HTTP would let the secret be intercepted in transit.
 
-See the [storage consequences](#ttl-management) above for what happens to a confidential registration over time: it is subject to the same DCR-issued TTL/eviction behavior as public DCR clients (Redis TTL, or the in-memory backend's capacity-bounded eviction).
+See the [storage consequences](#ttl-management) above for what happens to a confidential registration over time: it is subject to the same DCR-issued expiry and cap as public DCR clients, on both backends.
 
 **Loopback issuers need an explicit opt-in when combined with confidential registration.** The issuer validation that underlies `InsecureAllowHTTP` always permits a plain-`http://` issuer when the host is loopback (e.g. `http://localhost:18080`), independent of that flag — this is what lets `thv` run locally without setting up TLS just to test the auth server. Forcing TLS onto every loopback deployment instead would just push operators toward `InsecureAllowHTTP`, which is worse: that flag also disables the non-loopback host check entirely.
 
 But a loopback `http://` issuer combined with `AllowConfidentialClientRegistration: true` means a locally-run auth server would mint client secrets over cleartext at an unauthenticated endpoint — validation rejects that combination by default. Set `InsecureAllowConfidentialOverLoopbackHTTP: true` to opt in when that is genuinely fine, e.g. local development and testing where the traffic never leaves the machine. Do not rely on this shape in a cluster: the server still listens on all interfaces there, "localhost" in the issuer is just a string, and such a deployment is only reachable in practice through something like a port-forward — it does not make the connection loopback-only. Both flags default to off, so nothing changes for an existing deployment unless the operator sets them.
 
-**Rate limiting on `/oauth/register`.** Because the endpoint is unauthenticated, `Handler` also rate-limits it: 1 request/second sustained with a burst of 5 (`pkg/authserver/server/handlers/handler.go`). The limiter is a field on `Handler`, so it is per-process — running N replicas behind a load balancer allows roughly N times the configured rate, not a shared global rate.
+**Rate limiting on `/oauth/register`.** Because the endpoint is unauthenticated, `Handler` also rate-limits it, by default 1 request/second sustained with a burst of 5 (`pkg/authserver/server/handlers/handler.go`). Set `registration_rate_limit` (`requests_per_second` and `burst`, both positive) in the auth server RunConfig to change it. In the operator CRD it is the embedded auth server's `registrationRateLimit` token bucket: `maxTokens` is the burst and `maxTokens / refillPeriod` the sustained rate, so the default is `maxTokens: 5` with `refillPeriod: 5s`. For a sustained rate R per second with a burst of B, set `maxTokens` to B and `refillPeriod` to B/R: 10 per minute with a burst of 3 is `maxTokens: 3`, `refillPeriod: 18s`. The limiter is a field on `Handler`, so it is per-process — running N replicas behind a load balancer allows roughly N times the configured rate, not a shared global rate. Over the limit the endpoint returns 429 with a `Retry-After` of at most 1/rate seconds, rounded up, minimum 1 (so 1 at the default rate); a partly refilled bucket frees a token sooner.
+
+**DCR client metadata.** Redis persists the complete DCR client shape, including the inline public JWKS and `token_endpoint_auth_signing_alg` for `private_key_jwt` clients. These registrations use the same TTLs as public and secret-based confidential DCR clients: 24 hours until first use, then 30 days of inactivity. A successful token exchange or refresh renews the TTL; reading a client during authorization does not. The in-memory backend applies the same expiry. Pre-provisioned clients are not subject to this DCR retention policy.
+
+### Enabling `private_key_jwt` Dynamic Client Registration
+
+`AllowPrivateKeyJWTRegistration` is **off by default** and is separate from
+`AllowConfidentialClientRegistration`. The former permits unauthenticated
+`/oauth/register` requests to create clients that authenticate at the token
+endpoint with their own signed JWT assertions; the latter permits the endpoint
+to mint `client_secret` credentials for `client_secret_basic` or
+`client_secret_post`. Enabling one does not enable the other. Because registration
+is unauthenticated, either flag should be enabled only when any caller able to
+reach the endpoint is trusted to create a client of that type.
+
+This implementation accepts **inline `jwks` only** for `private_key_jwt` DCR.
+`jwks_uri` is explicitly rejected; the client must include at least one valid
+public signing key with `use: "sig"`. `token_endpoint_auth_signing_alg` is
+mandatory and must match a key in the set. The accepted algorithms are `RS256`,
+`RS384`, `RS512`, `PS256`, `PS384`, `PS512`, `ES256`, `ES384`, and `ES512`
+(EdDSA is excluded because the pinned fosite version cannot verify it — see
+`crypto.SupportedClientKeyAlgorithms`). RSA keys must have a 2048–8192-bit
+modulus and an odd public exponent between 3 and 65537, and a registration may
+carry at most 10 inline JWKS keys. The registration response contains the
+client metadata and no `client_secret`.
+
+Stored `private_key_jwt` clients are checked against these rules again every
+time they are loaded. A client registered before the limits existed whose keys
+exceed them is rejected with `invalid_client` (the reason is logged at debug
+level with its `client_id`) and must re-register. Re-registration issues a new
+`client_id`, so update any `AllowedDelegateClients` entries that name the old
+one.
+
+A `private_key_jwt` DCR registration is restricted to the RFC 8693 token-exchange
+grant (`urn:ietf:params:oauth:grant-type:token-exchange`) and cannot request the
+authorization-code or refresh-token grants. If `grant_types` is omitted, this
+exchange grant is supplied automatically. Discovery advertises
+`private_key_jwt` and the supported signing algorithms only when
+`allowPrivateKeyJWTRegistration` is enabled; token exchange itself is always
+advertised because the embedded server supports it for self-issued tokens.
+
+The registration and token endpoints must use HTTPS for confidential-client
+registration, exactly as described above. `private_key_jwt` registration has
+no equivalent restriction: a `private_key_jwt` DCR response never contains a
+`client_secret` or any other secret, so there is nothing for cleartext HTTP
+to expose. It is governed only by the issuer's general `insecureAllowHTTP`
+setting, the same as a public (`none`) client — no loopback-specific opt-in
+is needed or offered.
+
+A client proves possession of its private key by sending a signed
+`client_assertion` at `/oauth/token`; ToolHive stores only the registered public
+JWKS. Assertion replay markers are retained until the assertion `exp` in both
+storage backends. Redis also persists the registered client and its JWKS under
+the auth server's isolated key prefix, so replicas sharing Redis can use the
+same registration. The in-memory backend is process-local and loses registrations
+on restart.
+
+This client-authentication flow is distinct from the existing RFC 7523 §2.1
+JWT-bearer **grant**. The JWT-bearer grant accepts an external assertion as the
+bearer grant itself and issues a token without authenticating a registered OAuth
+client. `private_key_jwt` is RFC 7523 §2.2 client authentication: it authenticates
+an already registered client, which then uses its permitted token-exchange grant.
+The two flows have separate enablement and purposes; one does not configure or
+substitute for the other.
+
+### Delegation consent
+
+A private-key JWT client is subject to the same delegation consent checks as any
+other authenticated ToolHive client. For an externally issued subject token,
+the trusted issuer's `AllowedDelegateClients` list must contain the registered
+ToolHive `client_id`, or explicitly contain `"*"` where wildcard delegation is
+intended. The check is based on the authenticated client ID, not whether it used
+a secret or `private_key_jwt`; `allowedActors`/`actorMatcher` alone do not bind
+the exchange to a particular ToolHive client.
+
+The following capabilities are deliberately deferred and are not supported by
+this feature: remote `jwks_uri` key retrieval, SPIFFE/SVID client
+authentication, AWS STS `act` claim mapping, and ID-JAG chaining.
 
 ### Forcing Confidential Registration for a Known Redirect URI
 
@@ -318,15 +622,32 @@ All other `Storage` methods (`RegisterClient`, token storage, upstream token sto
 
 ### Unwrap pattern
 
-`CIMDStorageDecorator` implements `Unwrap() Storage` to expose the concrete backend through the decorator layer. Two call sites in `pkg/authserver/server_impl.go` depend on this:
+`CIMDStorageDecorator` implements `Unwrap() Storage` to expose the concrete backend through the decorator layer. Three call sites depend on this:
 
 - **`DCRCredentialStore` assertion** (`newServer`): The `DCRCredentialStore` interface is narrower than `Storage` and not embedded in it. The assertion `unwrapStorage(stor).(storage.DCRCredentialStore)` reaches the concrete backend through the decorator.
 - **`RedisStorage` migration** (`runLegacyMigration`): A type assertion to `*storage.RedisStorage` is needed to run a one-shot data migration. Same `unwrapStorage` call.
+- **`AssertionJWTConsumer` assertion** (`JWTBearerIssuanceFactory`): The JWT-bearer grant unwraps before asserting this narrow replay capability. The decorator also implements `ConsumeAssertionJWT` and forwards it to a capable backend. If the backend lacks the capability, the decorator returns an error instead of accepting an assertion with unknown replay status; replay protection therefore fails closed.
 
-Both call sites use the `unwrapStorage(stor)` helper rather than asserting directly on `stor`.
+All call sites use `unwrapStorage(stor)` or the equivalent JWT-bearer construction helper rather than asserting directly on the decorator.
 
 ### Air-gapped environments
 
 When the embedded authorization server is deployed in an environment that cannot reach `https://toolhive.dev/oauth/client-metadata.json` or any public CIMD metadata URL, set `authServer.cimd.enabled: false`. Clients will fall back to DCR (`/oauth/register`) which uses only the local storage backend and requires no outbound connectivity.
 
 **Implementation:** `pkg/authserver/storage/cimd_decorator.go`
+
+## SPIFFE Storage Decorator
+
+**Current status: not reachable in this build.** `RunConfig.Validate()` rejects any non-empty `spiffeTrustDomains`/`inboundGrants.spiffeClientAuth` before the authorization-server runner is created (`validateSPIFFENotYetEnforced` in `pkg/authserver/config.go`; `pkg/authserver/runner/embeddedauthserver.go`), so storage creation and decorator installation never happen. The decorator, overlay, and durable-reservation behavior below is the design this epic has implemented and tested in isolation, not current operational behavior — see [SPIFFE Association Declarations](18-spiffe-association-declarations.md) for the full status.
+
+When top-level `spiffeTrustDomains` and `inboundGrants.spiffeClientAuth` are configured, the embedded authorization server wraps its storage backend in a `SPIFFEStorageDecorator` — installed as the outermost decorator, after CIMD (`decorateStorageForSPIFFE` in `pkg/authserver/server_impl.go`). This decorator overlays statically configured OAuth clients ahead of the dynamic DCR/CIMD backend. `newServer` also wires the configured bundle source into the X.509 and JWT verification interfaces, but normal startup remains blocked by `RunConfig.Validate()`. The decorator reserves configured client IDs; it does not itself verify SVIDs. TLS listener startup and X.509-SVID verification are not implemented.
+
+### What it does
+
+`SPIFFEStorageDecorator` embeds the full `storage.Storage` interface and overrides `GetClient`, `RegisterClient`, and `ReconcileConfiguredClient`. `GetClient` checks its static client map first and only falls through to the wrapped storage (CIMD, then DCR) when the requested client ID is not one of the configured associations. `RegisterClient` and `ReconcileConfiguredClient` reject any DCR, delegate-client, or configured-client attempt that targets a client ID reserved by a static SPIFFE association. CIMD never calls `RegisterClient`; it durably persists resolved clients via `UpsertDCRIssuedClient` instead (a best-effort write-through for token-endpoint session rehydration — see the CIMD section above), which explicitly refuses to clobber a configured/SPIFFE-reconciled client at the same ID, so it cannot collide with a static association.
+
+Its clients come entirely from the configured SPIFFE trust-domain and client-association declarations (see [SPIFFE Association Declarations](18-spiffe-association-declarations.md)). They are built once at startup, held in memory, and never written to the storage backend (memory or Redis); they are never eligible for dynamic registration or replacement.
+
+At startup, the decorator durably claims each configured static client ID in the storage backend (memory or Redis) via `ReconcileConfiguredClient` (`preflightDurableCollisions`), using an inert placeholder rather than the real client. This is create-only for anything except a matching restart: it succeeds when the ID is unclaimed or already holds a matching placeholder from a prior run with the same configuration, and fails — refusing to start the server — when the ID is DCR-issued or holds a placeholder for a *different* association. This closes a cross-replica race that a read-only `GetClient` check alone cannot: with Redis and multiple replicas, an older or still-rolling replica without this SPIFFE config could otherwise DCR-register the same client ID after a newer replica's read-only check passed. The reverse collision can't happen: the decorator's `GetClient` always checks its static map first, so a durable client can never shadow a static one.
+
+**Implementation:** `pkg/authserver/storage/spiffe_decorator.go`

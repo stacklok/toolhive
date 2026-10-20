@@ -11,6 +11,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -19,7 +20,7 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
-	"github.com/lestrrat-go/jwx/v3/jwk"
+	"github.com/lestrrat-go/jwx/v4/jwk"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
@@ -50,7 +51,7 @@ func TestTokenValidator(t *testing.T) {
 	publicKey := &privateKey.PublicKey
 
 	// Create a key set with the public key
-	key, err := jwk.Import(publicKey)
+	key, err := jwk.Import[jwk.Key](publicKey)
 	if err != nil {
 		t.Fatalf("Failed to create JWK from public key: %v", err)
 	}
@@ -198,7 +199,7 @@ func TestTokenValidatorMiddleware(t *testing.T) {
 	publicKey := &privateKey.PublicKey
 
 	// Create a key set with the public key
-	key, err := jwk.Import(publicKey)
+	key, err := jwk.Import[jwk.Key](publicKey)
 	if err != nil {
 		t.Fatalf("Failed to create JWK from public key: %v", err)
 	}
@@ -559,7 +560,7 @@ func TestNewTokenValidatorWithOIDCDiscovery(t *testing.T) {
 	publicKey := &privateKey.PublicKey
 
 	// Create a key set with the public key
-	key, err := jwk.Import(publicKey)
+	key, err := jwk.Import[jwk.Key](publicKey)
 	if err != nil {
 		t.Fatalf("Failed to create JWK from public key: %v", err)
 	}
@@ -932,7 +933,7 @@ func TestValidateToken_TriggersLazyDiscovery(t *testing.T) {
 		t.Fatalf("Failed to generate RSA key pair: %v", err)
 	}
 
-	key, err := jwk.Import(&privateKey.PublicKey)
+	key, err := jwk.Import[jwk.Key](&privateKey.PublicKey)
 	if err != nil {
 		t.Fatalf("Failed to create JWK: %v", err)
 	}
@@ -1040,6 +1041,7 @@ func TestTokenValidator_OpaqueToken(t *testing.T) {
 				"aud":    "opaque-audience",
 				"scope":  "read:stuff",
 				"exp":    time.Now().Add(1 * time.Hour).Unix(),
+				"roles":  []string{"admin"},
 			})
 		} else {
 			w.WriteHeader(http.StatusOK)
@@ -1087,6 +1089,7 @@ func TestTokenValidator_OpaqueToken(t *testing.T) {
 		if claims["aud"] != "opaque-audience" {
 			t.Errorf("Expected aud=opaque-audience, got %v", claims["aud"])
 		}
+		require.Equal(t, []interface{}{"admin"}, claims["roles"])
 	})
 
 	t.Run("inactive opaque token", func(t *testing.T) {
@@ -1099,6 +1102,47 @@ func TestTokenValidator_OpaqueToken(t *testing.T) {
 			t.Errorf("Expected ErrInvalidToken, got %v", err)
 		}
 	})
+}
+
+func TestParseIntrospectionClaimsPreservesExtensionClaims(t *testing.T) {
+	t.Parallel()
+
+	claims, err := parseIntrospectionClaims(strings.NewReader(`{
+		"active": true,
+		"sub": " user-123 ",
+		"roles": ["admin"],
+		"tenant": "acme",
+		"metadata": {"region": "us-east-1"}
+	}`))
+	require.NoError(t, err)
+	require.Equal(t, "user-123", claims["sub"])
+	require.Equal(t, []interface{}{"admin"}, claims["roles"])
+	require.Equal(t, "acme", claims["tenant"])
+	require.Equal(t, map[string]interface{}{"region": "us-east-1"}, claims["metadata"])
+	require.NotContains(t, claims, "active")
+
+	claims, err = parseIntrospectionClaims(strings.NewReader(`{
+		"active": true,
+		"exp": null,
+		"sub": "",
+		"aud": null,
+		"scope": null,
+		"iss": null,
+		"roles": ["admin"]
+	}`))
+	require.NoError(t, err)
+	require.NotContains(t, claims, "exp")
+	require.NotContains(t, claims, "sub")
+	require.NotContains(t, claims, "aud")
+	require.NotContains(t, claims, "scope")
+	require.NotContains(t, claims, "iss")
+
+	claims, err = parseIntrospectionClaims(strings.NewReader(`{
+		"active": false,
+		"roles": ["admin"]
+	}`))
+	require.ErrorIs(t, err, ErrInvalidToken)
+	require.Nil(t, claims)
 }
 
 func TestNewAuthInfoHandler(t *testing.T) {
@@ -2371,7 +2415,7 @@ func TestMiddleware_UpstreamTokenEnrichment(t *testing.T) {
 	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	require.NoError(t, err)
 
-	key, err := jwk.Import(&privateKey.PublicKey)
+	key, err := jwk.Import[jwk.Key](&privateKey.PublicKey)
 	require.NoError(t, err)
 	require.NoError(t, key.Set(jwk.KeyIDKey, testKeyID))
 	require.NoError(t, key.Set(jwk.AlgorithmKey, "RS256"))
@@ -2620,6 +2664,63 @@ func TestMiddleware_UpstreamTokenEnrichment(t *testing.T) {
 		require.Contains(t, rr.Header().Get("WWW-Authenticate"), `error="invalid_token"`)
 	})
 
+	// A token session whose stored rows have all expired or been deleted, or whose
+	// rows carry no access token, leaves the identity without a usable upstream
+	// credential. That is the same user-facing state as a refused refresh, so the
+	// middleware answers the same 401 challenge instead of handing an empty map to
+	// consumers that can only deny.
+	t.Run("returns 401 with WWW-Authenticate when the session holds no usable upstream access token", func(t *testing.T) {
+		t.Parallel()
+
+		tests := []struct {
+			name  string
+			creds map[string]upstreamtoken.UpstreamCredential
+		}{
+			{
+				name:  "no rows stored for the session",
+				creds: map[string]upstreamtoken.UpstreamCredential{},
+			},
+			{
+				name:  "rows without an access token",
+				creds: map[string]upstreamtoken.UpstreamCredential{"github": {IDToken: "gh-id-tok"}},
+			},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				t.Parallel()
+				ctrl := gomock.NewController(t)
+				reader := upstreamtokenmocks.NewMockTokenReader(ctrl)
+				reader.EXPECT().GetAllUpstreamCredentials(gomock.Any(), "session-xyz").
+					Return(tt.creds, []string(nil), nil)
+				v := makeValidator(t, WithUpstreamTokenReader(reader))
+
+				nextCalled := false
+				handler := v.Middleware(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+					nextCalled = true
+				}))
+
+				req := httptest.NewRequest("GET", "/", nil)
+				req.Header.Set("Authorization", "Bearer "+signToken(claimsWithTsid))
+				rr := httptest.NewRecorder()
+				handler.ServeHTTP(rr, req)
+
+				require.Equal(t, http.StatusUnauthorized, rr.Code)
+				require.False(t, nextCalled, "next must not be called when the session holds no upstream access token")
+				wwwAuth := rr.Header().Get("WWW-Authenticate")
+				require.Contains(t, wwwAuth, `error="invalid_token"`)
+				require.Contains(t, wwwAuth,
+					`error_description="upstream token is no longer valid; re-authentication required"`)
+				var body map[string]string
+				require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &body))
+				require.Equal(t, map[string]string{
+					"error":             "invalid_token",
+					"error_description": "upstream token is no longer valid; re-authentication required",
+				}, body)
+			})
+		}
+	})
+
 	t.Run("no enrichment without tsid", func(t *testing.T) {
 		t.Parallel()
 		ctrl := gomock.NewController(t)
@@ -2665,6 +2766,146 @@ func TestMiddleware_UpstreamTokenEnrichment(t *testing.T) {
 		require.Nil(t, captured.UpstreamTokens)
 		require.Nil(t, captured.UpstreamIDTokens,
 			"UpstreamIDTokens must stay nil when no reader is configured")
+	})
+
+	// SessionlessGrant is provenance established by this middleware after JWT
+	// validation; Cedar must not derive it from raw claims.
+	t.Run("establishes session-less grant provenance", func(t *testing.T) {
+		t.Parallel()
+
+		tests := []struct {
+			name                 string
+			embeddedIssuer       string
+			claims               jwt.MapClaims
+			loadUpstreamTokens   bool
+			wantSessionlessGrant bool
+		}{
+			{
+				name:           "matching embedded issuer with valid delegation chain",
+				embeddedIssuer: "test-issuer",
+				claims: jwt.MapClaims{
+					"act": map[string]any{"sub": "delegated-agent"},
+				},
+				wantSessionlessGrant: true,
+			},
+			{
+				name:           "matching embedded issuer with no upstream session marker",
+				embeddedIssuer: "test-issuer",
+				claims: jwt.MapClaims{
+					upstreamtoken.NoUpstreamSessionClaimKey: true,
+				},
+				wantSessionlessGrant: true,
+			},
+			{
+				name:           "matching embedded issuer without grant evidence",
+				embeddedIssuer: "test-issuer",
+				claims:         jwt.MapClaims{},
+			},
+			{
+				name:           "foreign embedded issuer with valid delegation chain",
+				embeddedIssuer: "foreign-issuer",
+				claims: jwt.MapClaims{
+					"act": map[string]any{"sub": "delegated-agent"},
+				},
+			},
+			{
+				name:           "foreign embedded issuer with no upstream session marker",
+				embeddedIssuer: "foreign-issuer",
+				claims: jwt.MapClaims{
+					upstreamtoken.NoUpstreamSessionClaimKey: true,
+				},
+			},
+			{
+				name:               "upstream credentials loaded",
+				embeddedIssuer:     "test-issuer",
+				loadUpstreamTokens: true,
+				claims: jwt.MapClaims{
+					upstreamtoken.NoUpstreamSessionClaimKey: true,
+				},
+			},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				t.Parallel()
+
+				claims := maps.Clone(tt.claims)
+				claims["iss"] = "test-issuer"
+				claims["aud"] = "test-audience"
+				claims["sub"] = "test-user"
+				claims["exp"] = time.Now().Add(time.Hour).Unix()
+
+				var opts []TokenValidatorOption
+				if tt.loadUpstreamTokens {
+					ctrl := gomock.NewController(t)
+					reader := upstreamtokenmocks.NewMockTokenReader(ctrl)
+					claims[upstreamtoken.TokenSessionIDClaimKey] = "session-xyz"
+					reader.EXPECT().GetAllUpstreamCredentials(gomock.Any(), "session-xyz").
+						Return(map[string]upstreamtoken.UpstreamCredential{"github": {AccessToken: "gh-token"}}, nil, nil)
+					opts = append(opts, WithUpstreamTokenReader(reader))
+				}
+				opts = append(opts, WithEmbeddedAuthServerIssuer(tt.embeddedIssuer))
+				v := makeValidator(t, opts...)
+
+				var captured *Identity
+				handler := v.Middleware(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+					captured, _ = IdentityFromContext(r.Context())
+				}))
+				req := httptest.NewRequest(http.MethodGet, "/", nil)
+				req.Header.Set("Authorization", "Bearer "+signToken(claims))
+				rr := httptest.NewRecorder()
+				handler.ServeHTTP(rr, req)
+
+				require.Equal(t, http.StatusOK, rr.Code)
+				require.NotNil(t, captured)
+				require.Equal(t, tt.wantSessionlessGrant, captured.SessionlessGrant)
+				if tt.loadUpstreamTokens {
+					require.NotNil(t, captured.UpstreamTokens)
+				} else {
+					require.Nil(t, captured.UpstreamTokens)
+				}
+			})
+		}
+	})
+
+	// validateClaims only verifies "iss" when the validator has an issuer of its
+	// own, so on a JWKS-only configuration the claim is unverified beyond the
+	// signature. Provenance must rest on the validator's verified issuer, never on
+	// a claim the token asserts about itself.
+	t.Run("no session-less grant when the validator has no issuer to verify against", func(t *testing.T) {
+		t.Parallel()
+
+		v, err := NewTokenValidator(context.Background(), TokenValidatorConfig{
+			Audience: "test-audience", JWKSURL: jwksServer.URL, ClientID: "test-client",
+			CACertPath: caCertPath, AllowPrivateIP: true,
+		}, WithEmbeddedAuthServerIssuer("test-issuer"))
+		require.NoError(t, err)
+		require.Empty(t, v.issuer, "this test is only meaningful while the validator has no issuer")
+		require.NoError(t, v.ensureJWKSRegistered(context.Background()))
+		_, lErr := v.jwksClient.Lookup(context.Background(), jwksServer.URL)
+		require.NoError(t, lErr)
+
+		// Everything the gate looks for, self-asserted by the token.
+		claims := jwt.MapClaims{
+			"iss": "test-issuer", "aud": "test-audience", "sub": "test-user",
+			"exp":                                   time.Now().Add(time.Hour).Unix(),
+			upstreamtoken.NoUpstreamSessionClaimKey: true,
+			"act":                                   map[string]any{"sub": "delegated-agent"},
+		}
+
+		var captured *Identity
+		handler := v.Middleware(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+			captured, _ = IdentityFromContext(r.Context())
+		}))
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req.Header.Set("Authorization", "Bearer "+signToken(claims))
+		rr := httptest.NewRecorder()
+		handler.ServeHTTP(rr, req)
+
+		require.Equal(t, http.StatusOK, rr.Code)
+		require.NotNil(t, captured)
+		require.False(t, captured.SessionlessGrant,
+			"an unverified iss claim must not establish session-less grant provenance")
 	})
 }
 
@@ -2933,7 +3174,7 @@ func TestValidateToken_DiscoveryFailsWithKeyProvider(t *testing.T) {
 		}, nil).AnyTimes()
 
 		// Build JWK key set for the JWKS server with the CORRECT kid
-		jwkKey, err := jwk.Import(&privateKey.PublicKey)
+		jwkKey, err := jwk.Import[jwk.Key](&privateKey.PublicKey)
 		require.NoError(t, err)
 		require.NoError(t, jwkKey.Set(jwk.KeyIDKey, testKeyID))
 		require.NoError(t, jwkKey.Set(jwk.AlgorithmKey, "RS256"))
@@ -3074,4 +3315,40 @@ func TestEnsureJWKSRegistered_NonFatalRegistrationErrors(t *testing.T) {
 			"re-registering an already-registered URL must not fail")
 		require.True(t, validator.jwksRegistered)
 	})
+}
+
+func TestNewTokenValidator_GoogleTokeninfoRequiresAudience(t *testing.T) {
+	t.Parallel()
+
+	// Google tokeninfo returns no iss claim (the provider synthesises it
+	// locally), so an issuer check is self-satisfying and the audience check
+	// is the only binding to this deployment. Without it, any valid Google
+	// access token passes regardless of which OAuth client minted it.
+	tests := []struct {
+		name      string
+		audience  string
+		expectErr bool
+	}{
+		{name: "empty audience rejected", audience: "", expectErr: true},
+		{name: "whitespace-only audience rejected", audience: "   ", expectErr: true},
+		{name: "audience configured accepted", audience: "my-client-id.apps.googleusercontent.com", expectErr: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := NewTokenValidator(context.Background(), TokenValidatorConfig{
+				Issuer:           "https://accounts.google.com",
+				JWKSURL:          "https://www.googleapis.com/oauth2/v3/certs",
+				IntrospectionURL: GoogleTokeninfoURL,
+				Audience:         tt.audience,
+			})
+			if tt.expectErr {
+				require.Error(t, err)
+				require.Contains(t, err.Error(), "audience is required")
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
 }

@@ -18,6 +18,10 @@ type installRequest struct {
 	// AllowUnsigned mirrors skills.InstallOptions.AllowUnsigned; without it
 	// here the CLI flag would silently never reach the server.
 	AllowUnsigned bool `json:"allow_unsigned,omitempty"`
+	// PublicKey mirrors skills.InstallOptions.PublicKey: the base64 DER SPKI
+	// the CLI encoded from the --public-key file, since a path would not
+	// resolve on a server in another process or on another host.
+	PublicKey string `json:"public_key,omitempty"`
 }
 
 type validateRequest struct {
@@ -32,7 +36,10 @@ type buildRequest struct {
 type pushRequest struct {
 	Reference string `json:"reference"`
 	Key       string `json:"key,omitempty"`
-	NoSign    bool   `json:"no_sign,omitempty"`
+	// IdentityToken mirrors skills.PushOptions.IdentityToken; without it here
+	// the --identity-token flag would silently never reach the server.
+	IdentityToken string `json:"identity_token,omitempty"`
+	NoSign        bool   `json:"no_sign,omitempty"`
 }
 
 type listResponse struct {
@@ -61,6 +68,8 @@ type syncRequest struct {
 	Adopt       bool     `json:"adopt,omitempty"`
 	// AllowUnsigned mirrors skills.SyncOptions.AllowUnsigned for adoption.
 	AllowUnsigned bool `json:"allow_unsigned,omitempty"`
+	// PublicKey mirrors skills.SyncOptions.PublicKey for key-signed adoption.
+	PublicKey string `json:"public_key,omitempty"`
 }
 
 type upgradeRequest struct {
@@ -68,6 +77,7 @@ type upgradeRequest struct {
 	Names       []string `json:"names,omitempty"`
 	// AllowSignerChange mirrors skills.UpgradeOptions.AllowSignerChange.
 	AllowSignerChange bool     `json:"allow_signer_change,omitempty"`
+	PublicKey         string   `json:"public_key,omitempty"`
 	Preview           bool     `json:"preview,omitempty"`
 	FailOnChanges     bool     `json:"fail_on_changes,omitempty"`
 	AllowRefChange    bool     `json:"allow_ref_change,omitempty"`

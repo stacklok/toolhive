@@ -128,7 +128,7 @@ func TestK8sReporter_ReportStatus_Success(t *testing.T) {
 			t.Parallel()
 
 			reporter, fakeClient := createTestReporter(t, "test-server", "default")
-			vmcpServer := createTestVirtualMCPServer(t, fakeClient, "test-server", "default")
+			createTestVirtualMCPServer(t, fakeClient, "test-server", "default")
 
 			// Create test status
 			status := &vmcptypes.Status{
@@ -173,20 +173,20 @@ func TestK8sReporter_ReportStatus_Success(t *testing.T) {
 			require.NoError(t, err)
 
 			// Verify phase conversion
-			assert.Equal(t, tt.expectedPhase, updated.Status.Phase)
+			assert.Equal(t, tt.expectedPhase, updated.Status.Runtime.Phase)
 
 			// Verify message
-			assert.Equal(t, "Test message", updated.Status.Message)
+			assert.Equal(t, "Test message", updated.Status.Runtime.Message)
 
 			// Verify backend count
-			assert.Equal(t, tt.backendCount, updated.Status.BackendCount)
-			assert.Len(t, updated.Status.DiscoveredBackends, int(tt.backendCount))
+			assert.Equal(t, tt.backendCount, updated.Status.Runtime.BackendCount)
+			assert.Len(t, updated.Status.Runtime.DiscoveredBackends, int(tt.backendCount))
 
 			// Verify conditions
-			assert.Len(t, updated.Status.Conditions, tt.conditionCount)
+			assert.Len(t, updated.Status.Runtime.Conditions, tt.conditionCount)
 
-			// Verify observed generation
-			assert.Equal(t, vmcpServer.Generation, updated.Status.ObservedGeneration)
+			// The runtime reporter does not own the operator's observed generation.
+			assert.Zero(t, updated.Status.ObservedGeneration)
 		})
 	}
 }
@@ -234,10 +234,10 @@ func TestK8sReporter_ReportStatus_BackendConversion(t *testing.T) {
 	}, updated)
 	require.NoError(t, err)
 
-	require.Len(t, updated.Status.DiscoveredBackends, 2)
+	require.Len(t, updated.Status.Runtime.DiscoveredBackends, 2)
 
 	// Verify first backend
-	backend1 := updated.Status.DiscoveredBackends[0]
+	backend1 := updated.Status.Runtime.DiscoveredBackends[0]
 	assert.Equal(t, "backend-1", backend1.Name)
 	assert.Equal(t, "http://backend-1:8080", backend1.URL)
 	assert.Equal(t, "ready", backend1.Status)
@@ -249,7 +249,7 @@ func TestK8sReporter_ReportStatus_BackendConversion(t *testing.T) {
 	assert.Equal(t, "Healthy", backend1.Message)
 
 	// Verify second backend
-	backend2 := updated.Status.DiscoveredBackends[1]
+	backend2 := updated.Status.Runtime.DiscoveredBackends[1]
 	assert.Equal(t, "backend-2", backend2.Name)
 	assert.Equal(t, "degraded", backend2.Status)
 	assert.Equal(t, "Slow response times", backend2.Message)
@@ -312,9 +312,9 @@ func TestK8sReporter_ReportStatus_ConcurrentUpdates(t *testing.T) {
 	}, updated)
 	require.NoError(t, err)
 
-	assert.Equal(t, "Update 5", updated.Status.Message)
-	assert.Equal(t, int32(1), updated.Status.BackendCount)
-	assert.Equal(t, "backend-5", updated.Status.DiscoveredBackends[0].Name)
+	assert.Equal(t, "Update 5", updated.Status.Runtime.Message)
+	assert.Equal(t, int32(1), updated.Status.Runtime.BackendCount)
+	assert.Equal(t, "backend-5", updated.Status.Runtime.DiscoveredBackends[0].Name)
 }
 
 // TestK8sReporter_ReportStatus_ConditionUpdates tests that conditions are properly updated.
@@ -355,11 +355,11 @@ func TestK8sReporter_ReportStatus_ConditionUpdates(t *testing.T) {
 		Namespace: "default",
 	}, updated)
 	require.NoError(t, err)
-	require.Len(t, updated.Status.Conditions, 1)
-	assert.Equal(t, "Ready", updated.Status.Conditions[0].Type)
-	assert.Equal(t, metav1.ConditionTrue, updated.Status.Conditions[0].Status)
-	assert.Equal(t, "AllBackendsRoutable", updated.Status.Conditions[0].Reason)
-	assert.Equal(t, "All backends are healthy", updated.Status.Conditions[0].Message)
+	require.Len(t, updated.Status.Runtime.Conditions, 1)
+	assert.Equal(t, "Ready", updated.Status.Runtime.Conditions[0].Type)
+	assert.Equal(t, metav1.ConditionTrue, updated.Status.Runtime.Conditions[0].Status)
+	assert.Equal(t, "AllBackendsRoutable", updated.Status.Runtime.Conditions[0].Reason)
+	assert.Equal(t, "All backends are healthy", updated.Status.Runtime.Conditions[0].Message)
 
 	// Second report: update message while keeping Status True
 	status2 := &vmcptypes.Status{
@@ -387,9 +387,9 @@ func TestK8sReporter_ReportStatus_ConditionUpdates(t *testing.T) {
 		Namespace: "default",
 	}, updated)
 	require.NoError(t, err)
-	require.Len(t, updated.Status.Conditions, 1)
-	assert.Equal(t, metav1.ConditionTrue, updated.Status.Conditions[0].Status)
-	assert.Equal(t, "All backends are still healthy", updated.Status.Conditions[0].Message)
+	require.Len(t, updated.Status.Runtime.Conditions, 1)
+	assert.Equal(t, metav1.ConditionTrue, updated.Status.Runtime.Conditions[0].Status)
+	assert.Equal(t, "All backends are still healthy", updated.Status.Runtime.Conditions[0].Message)
 
 	// Third report: change Status to False
 	status3 := &vmcptypes.Status{
@@ -417,10 +417,10 @@ func TestK8sReporter_ReportStatus_ConditionUpdates(t *testing.T) {
 		Namespace: "default",
 	}, updated)
 	require.NoError(t, err)
-	require.Len(t, updated.Status.Conditions, 1)
-	assert.Equal(t, metav1.ConditionFalse, updated.Status.Conditions[0].Status)
-	assert.Equal(t, "NoRoutableBackends", updated.Status.Conditions[0].Reason)
-	assert.Equal(t, "No routable backends available", updated.Status.Conditions[0].Message)
+	require.Len(t, updated.Status.Runtime.Conditions, 1)
+	assert.Equal(t, metav1.ConditionFalse, updated.Status.Runtime.Conditions[0].Status)
+	assert.Equal(t, "NoRoutableBackends", updated.Status.Runtime.Conditions[0].Reason)
+	assert.Equal(t, "No routable backends available", updated.Status.Runtime.Conditions[0].Message)
 }
 
 // TestK8sReporter_ReportStatus_RemovesStaleConditions tests that conditions
@@ -466,10 +466,10 @@ func TestK8sReporter_ReportStatus_RemovesStaleConditions(t *testing.T) {
 		Namespace: "default",
 	}, updated)
 	require.NoError(t, err)
-	assert.Len(t, updated.Status.Conditions, 2, "Should have Ready and Degraded conditions")
+	assert.Len(t, updated.Status.Runtime.Conditions, 2, "Should have Ready and Degraded conditions")
 
 	hasDegraded := false
-	for _, cond := range updated.Status.Conditions {
+	for _, cond := range updated.Status.Runtime.Conditions {
 		if cond.Type == "Degraded" {
 			hasDegraded = true
 			assert.Equal(t, metav1.ConditionTrue, cond.Status)
@@ -503,11 +503,11 @@ func TestK8sReporter_ReportStatus_RemovesStaleConditions(t *testing.T) {
 		Namespace: "default",
 	}, updated)
 	require.NoError(t, err)
-	assert.Len(t, updated.Status.Conditions, 1, "Should have only Ready condition")
+	assert.Len(t, updated.Status.Runtime.Conditions, 1, "Should have only Ready condition")
 
 	hasReady := false
 	hasDegraded = false
-	for _, cond := range updated.Status.Conditions {
+	for _, cond := range updated.Status.Runtime.Conditions {
 		if cond.Type == "Ready" {
 			hasReady = true
 			assert.Equal(t, metav1.ConditionTrue, cond.Status)
@@ -566,6 +566,40 @@ func TestK8sReporter_FullLifecycle(t *testing.T) {
 	// Shutdown
 	err = shutdown(ctx)
 	assert.NoError(t, err)
+}
+
+func TestK8sReporter_UpdateStatusPreservesOperatorFields(t *testing.T) {
+	t.Parallel()
+
+	operatorCondition := metav1.Condition{
+		Type:   mcpv1beta1.ConditionTypeValid,
+		Status: metav1.ConditionTrue,
+		Reason: "ValidationSucceeded",
+	}
+	vmcpServer := &mcpv1beta1.VirtualMCPServer{
+		Status: mcpv1beta1.VirtualMCPServerStatus{
+			URL:                "https://operator.example.test",
+			ObservedGeneration: 7,
+			Conditions:         []metav1.Condition{operatorCondition},
+		},
+	}
+
+	(&K8sReporter{}).updateStatus(vmcpServer, &vmcptypes.Status{
+		Phase:   vmcptypes.PhaseReady,
+		Message: "runtime ready",
+		Conditions: []metav1.Condition{{
+			Type:   "Ready",
+			Status: metav1.ConditionTrue,
+			Reason: "AllBackendsRoutable",
+		}},
+	})
+
+	assert.Equal(t, "https://operator.example.test", vmcpServer.Status.URL)
+	assert.Equal(t, int64(7), vmcpServer.Status.ObservedGeneration)
+	assert.Equal(t, []metav1.Condition{operatorCondition}, vmcpServer.Status.Conditions)
+	require.NotNil(t, vmcpServer.Status.Runtime)
+	assert.Equal(t, mcpv1beta1.VirtualMCPServerPhaseReady, vmcpServer.Status.Runtime.Phase)
+	assert.Equal(t, "Ready", vmcpServer.Status.Runtime.Conditions[0].Type)
 }
 
 // TestConvertPhase tests phase conversion logic.

@@ -253,6 +253,61 @@ func TestConfig_ClearCachedClientCredentials(t *testing.T) {
 	}
 }
 
+func TestConfig_ResolvedSecrets(t *testing.T) {
+	t.Parallel()
+
+	config := Config{
+		ClientSecret: "client-secret-ref,target=oauth_secret",
+		BearerToken:  "bearer-token-ref,target=bearer_token",
+	}
+	assert.Equal(t, config.ClientSecret, config.clientSecret())
+	assert.Equal(t, config.BearerToken, config.bearerToken())
+
+	config.SetResolvedClientSecret("resolved-client-secret")
+	config.SetResolvedBearerToken("resolved-bearer-token")
+	assert.Equal(t, "resolved-client-secret", config.clientSecret())
+	assert.Equal(t, "resolved-bearer-token", config.bearerToken())
+
+	encoded, err := json.Marshal(config)
+	require.NoError(t, err)
+	assert.NotContains(t, string(encoded), "resolved-client-secret")
+	assert.NotContains(t, string(encoded), "resolved-bearer-token")
+	assert.Contains(t, string(encoded), config.ClientSecret)
+	assert.Contains(t, string(encoded), config.BearerToken)
+
+	config.SetResolvedClientSecret("")
+	config.SetResolvedBearerToken("")
+	assert.Empty(t, config.clientSecret())
+	assert.Empty(t, config.bearerToken())
+}
+
+func TestConfig_UnmarshalJSONClearsResolvedSecrets(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		data string
+	}{
+		{name: "snake case", data: `{"client_secret":"new-client","bearer_token":"new-bearer"}`},
+		{name: "legacy Pascal case", data: `{"ClientID":"client","ClientSecret":"new-client","BearerToken":"new-bearer"}`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			config := Config{}
+			config.SetResolvedClientSecret("stale-client")
+			config.SetResolvedBearerToken("stale-bearer")
+
+			err := json.Unmarshal([]byte(tt.data), &config)
+			require.NoError(t, err)
+			assert.Equal(t, "new-client", config.clientSecret())
+			assert.Equal(t, "new-bearer", config.bearerToken())
+		})
+	}
+}
+
 func TestConfig_LogContext(t *testing.T) {
 	t.Parallel()
 

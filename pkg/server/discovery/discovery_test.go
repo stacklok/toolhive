@@ -19,10 +19,11 @@ func TestWriteReadServerInfo_TCP(t *testing.T) {
 	dir := t.TempDir()
 
 	info := &ServerInfo{
-		URL:       "http://127.0.0.1:52341",
-		PID:       12345,
-		Nonce:     "test-nonce-tcp",
-		StartedAt: time.Date(2026, 3, 23, 10, 0, 0, 0, time.UTC),
+		URL:                  "http://127.0.0.1:52341",
+		PID:                  12345,
+		Nonce:                "test-nonce-tcp",
+		KeySigningCapability: "protected-discovery-capability",
+		StartedAt:            time.Date(2026, 3, 23, 10, 0, 0, 0, time.UTC),
 	}
 
 	require.NoError(t, writeServerInfoTo(dir, info))
@@ -32,6 +33,7 @@ func TestWriteReadServerInfo_TCP(t *testing.T) {
 	assert.Equal(t, info.URL, got.URL)
 	assert.Equal(t, info.PID, got.PID)
 	assert.Equal(t, info.Nonce, got.Nonce)
+	assert.Equal(t, info.KeySigningCapability, got.KeySigningCapability)
 	assert.True(t, info.StartedAt.Equal(got.StartedAt))
 }
 

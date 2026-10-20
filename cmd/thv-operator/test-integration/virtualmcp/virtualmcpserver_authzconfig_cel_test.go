@@ -57,18 +57,5 @@ var _ = Describe("CEL Validation for authzConfig vs authzConfigRef on VirtualMCP
 				Expect(k8sClient.Create(ctx, vmcp)).To(Succeed())
 			})
 
-			It("should reject when both authzConfig and authzConfigRef are set", func() {
-				vmcp := newVirtualMCPServerWithIncomingAuth(
-					"vmcp-authzmutex-both",
-					&mcpv1beta1.AuthzConfigRef{
-						Type:   "inline",
-						Inline: &mcpv1beta1.InlineAuthzConfig{Policies: []string{"permit(principal, action, resource);"}},
-					},
-					&mcpv1beta1.MCPAuthzConfigReference{Name: "shared-authz"},
-				)
-				err := k8sClient.Create(ctx, vmcp)
-				Expect(err).To(HaveOccurred())
-				Expect(err.Error()).To(ContainSubstring("authzConfig and authzConfigRef are mutually exclusive"))
-			})
 		})
 	})

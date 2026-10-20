@@ -1257,6 +1257,41 @@ func TestMCPRemoteProxyServiceNeedsUpdate(t *testing.T) {
 	}
 }
 
+func TestBuildRedisPasswordEnvVarForRemoteProxy_GlobalDefault(t *testing.T) {
+	t.Setenv("TOOLHIVE_DEFAULT_REDIS_ADDR", "global-redis:6379")
+	t.Setenv("TOOLHIVE_DEFAULT_REDIS_SECRET_NAME", "global-redis-secret")
+	t.Setenv("TOOLHIVE_DEFAULT_REDIS_SECRET_KEY", "redis-password")
+
+	proxy := v1beta1test.NewMCPRemoteProxy("test-proxy", "default")
+	got := buildRedisPasswordEnvVarForRemoteProxy(proxy)
+
+	require.Len(t, got, 1)
+	assert.Equal(t, session.RedisPasswordEnvVar, got[0].Name)
+	assert.Empty(t, got[0].Value, "must not use plaintext Value")
+	require.NotNil(t, got[0].ValueFrom)
+	require.NotNil(t, got[0].ValueFrom.SecretKeyRef)
+	assert.Equal(t, "global-redis-secret", got[0].ValueFrom.SecretKeyRef.Name)
+	assert.Equal(t, "redis-password", got[0].ValueFrom.SecretKeyRef.Key)
+}
+
+func TestBuildRedisPasswordEnvVarForRemoteProxy_NonRedisProviderNotOverriddenByGlobal(t *testing.T) {
+	t.Setenv("TOOLHIVE_DEFAULT_REDIS_ADDR", "global-redis:6379")
+	t.Setenv("TOOLHIVE_DEFAULT_REDIS_SECRET_NAME", "global-secret")
+
+	proxy := v1beta1test.NewMCPRemoteProxy("test-proxy", "default",
+		v1beta1test.WithRemoteProxySessionStorage(&mcpv1beta1.SessionStorageConfig{Provider: "memory"}))
+	got := buildRedisPasswordEnvVarForRemoteProxy(proxy)
+	assert.Empty(t, got, "non-Redis provider should not receive global Redis password env var")
+}
+
+func TestBuildRedisPasswordEnvVarForRemoteProxy_PasswordlessGlobalDefault(t *testing.T) {
+	t.Setenv("TOOLHIVE_DEFAULT_REDIS_ADDR", "global-redis:6379")
+
+	proxy := v1beta1test.NewMCPRemoteProxy("test-proxy", "default")
+	got := buildRedisPasswordEnvVarForRemoteProxy(proxy)
+	assert.Empty(t, got, "global default without a secret name must not inject a password env var")
+}
+
 // TestBuildRedisPasswordEnvVarForRemoteProxy mirrors VirtualMCPServer's
 // TestBuildRedisPasswordEnvVar — the env var must be injected only when
 // sessionStorage uses the redis provider AND a passwordRef is set, and it

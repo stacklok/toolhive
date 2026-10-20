@@ -11,11 +11,13 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/stacklok/toolhive/pkg/audit"
 	thvjson "github.com/stacklok/toolhive/pkg/json"
 	ratelimittypes "github.com/stacklok/toolhive/pkg/ratelimit/types"
+	"github.com/stacklok/toolhive/pkg/redisconfig"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
@@ -427,6 +429,54 @@ func (c *OutgoingAuthConfig) ResolveForBackend(backendID string) *authtypes.Back
 	return nil
 }
 
+// ApplyToBackend applies this outgoing auth configuration to a backend, choosing
+// between the backend's own discovered auth and config-based auth. It is the single
+// implementation shared by startup discovery (pkg/vmcp/aggregator) and the Kubernetes
+// backend watcher's reconciler (pkg/vmcp/k8s), so both paths resolve auth identically.
+//
+// Auth resolution logic:
+//   - "discovered" mode: keep discovered auth if the backend has any, otherwise fall
+//     back to config-based auth via ResolveForBackend (backend-specific entry, then
+//     Default, then no auth)
+//   - "inline" mode (or ""): always use config-based auth, ignore discovered auth
+//   - unknown mode: default to config-based auth for safety
+//
+// A nil receiver is a no-op: the backend keeps whatever auth it already carries.
+func (c *OutgoingAuthConfig) ApplyToBackend(backend *vmcp.Backend, backendName string) {
+	if c == nil {
+		return
+	}
+
+	// Determine if we should use discovered auth or config-based auth
+	var useDiscoveredAuth bool
+	switch c.Source {
+	case "discovered":
+		// In discovered mode, use auth discovered from MCPServer (if any exists)
+		// If no auth is discovered, fall back to config-based auth via ResolveForBackend
+		// which will use backend-specific config, then Default, then no auth
+		useDiscoveredAuth = backend.AuthConfig != nil
+	case "inline", "":
+		// For inline mode or empty source, always use config-based auth
+		// Ignore any discovered auth from backends
+		useDiscoveredAuth = false
+	default:
+		// Unknown source mode - default to config-based auth for safety
+		slog.Warn("unknown auth source mode, defaulting to config-based auth", "source", c.Source)
+		useDiscoveredAuth = false
+	}
+
+	if useDiscoveredAuth {
+		// Keep the auth discovered from MCPServer (already populated in backend)
+		slog.Debug("backend using discovered auth strategy", "backend", backendName, "strategy", backend.AuthConfig.Type)
+	} else {
+		// Use auth from config (inline mode)
+		if authConfig := c.ResolveForBackend(backendName); authConfig != nil {
+			backend.AuthConfig = authConfig
+			slog.Debug("backend configured with auth strategy from config", "backend", backendName, "strategy", authConfig.Type)
+		}
+	}
+}
+
 // AggregationConfig defines tool aggregation, filtering, and conflict resolution strategies.
 //
 // Tool Visibility vs Routing:
@@ -442,7 +492,8 @@ func (c *OutgoingAuthConfig) ResolveForBackend(backendID string) *authtypes.Back
 type AggregationConfig struct {
 	// ConflictResolution defines the strategy for resolving tool name conflicts.
 	// - prefix: Automatically prefix tool names with workload identifier
-	// - priority: First workload in priority order wins
+	// - priority: Highest-priority workload wins only if all conflicting workloads
+	//   are listed; otherwise all candidates are dropped (see PriorityOrder)
 	// - manual: Explicitly define overrides for all conflicts
 	// +kubebuilder:validation:Enum=prefix;priority;manual
 	// +kubebuilder:default=prefix
@@ -522,8 +573,14 @@ type ConflictResolutionConfig struct {
 	// +optional
 	PrefixFormat string `json:"prefixFormat,omitempty" yaml:"prefixFormat,omitempty"`
 
-	// PriorityOrder defines the workload priority order for the "priority" strategy.
-	// Listed workloads also keep their own prompt names (unlisted workloads'
+	// PriorityOrder defines the workload priority order for the "priority" strategy
+	// (first has highest priority). It is not an allowlist: unique tools remain
+	// unchanged, including those from unlisted workloads. If all workloads in a
+	// tool-name collision are listed, the highest-priority one wins and losers
+	// are dropped. If any conflicting workload is unlisted, all candidates in that
+	// collision are dropped from advertising and routing, with no prefix fallback,
+	// and the collision is logged at ERROR.
+	// Separately, listed workloads keep their own prompt names (unlisted workloads'
 	// prompts stay backend-prefixed).
 	// +optional
 	PriorityOrder []string `json:"priorityOrder,omitempty" yaml:"priorityOrder,omitempty"`
@@ -652,6 +709,33 @@ type OperationalConfig struct {
 	// FailureHandling configures failure handling behavior.
 	// +optional
 	FailureHandling *FailureHandlingConfig `json:"failureHandling,omitempty" yaml:"failureHandling,omitempty"`
+
+	// ListChanged configures live list_changed propagation from backends.
+	// +optional
+	ListChanged *ListChangedConfig `json:"listChanged,omitempty" yaml:"listChanged,omitempty"`
+}
+
+// ListChangedConfig configures which backends vMCP subscribes to for
+// list_changed notifications.
+//
+// Subscribing opens a standalone notification stream to the backend during
+// session initialization. A backend that accepts that subscribe and then never
+// services it stalls the handshake until the init deadline, and clients with
+// their own connect timeout give up first. Excluding such a backend costs it
+// live propagation only: its tools are still aggregated and callable, and they
+// refresh on the next session.
+// +kubebuilder:object:generate=true
+// +gendoc
+type ListChangedConfig struct {
+	// Enabled turns propagation on or off for every backend. Defaults to true.
+	// +optional
+	Enabled *bool `json:"enabled,omitempty" yaml:"enabled,omitempty"`
+
+	// DisabledWorkloads names backends to exclude while leaving the rest
+	// subscribed. Prefer this over Enabled when a single backend misbehaves.
+	// +optional
+	// +listType=set
+	DisabledWorkloads []string `json:"disabledWorkloads,omitempty" yaml:"disabledWorkloads,omitempty"`
 }
 
 // TimeoutConfig configures timeout settings.
@@ -666,6 +750,23 @@ type TimeoutConfig struct {
 	// PerWorkload defines per-workload timeout overrides.
 	// +optional
 	PerWorkload map[string]Duration `json:"perWorkload,omitempty" yaml:"perWorkload,omitempty"`
+
+	// BackendInit caps how long session initialization waits for a single
+	// backend to connect and hand back its capabilities. Unlike Default, which
+	// only ever extends that deadline, an explicit BackendInit is authoritative:
+	// it bounds session init even when a workload's request timeout is longer.
+	//
+	// Leave it unset unless a backend can stall the handshake. It exists for
+	// backends that neither answer nor fail promptly: a stateless MCP server
+	// that requires per-user auth cannot be classified by the unauthenticated
+	// health probe, so vMCP opens the persistent connection its Modern skip
+	// path would otherwise avoid, and that connection can hang until the
+	// deadline. Clients with their own connect timeout give up first, and
+	// because they never complete a call, the revision cache never warms and
+	// the next session repeats it. A few seconds here lets session init fail
+	// fast, which partialFailureMode: best_effort turns into a usable session.
+	// +optional
+	BackendInit Duration `json:"backendInit,omitempty" yaml:"backendInit,omitempty"`
 }
 
 // FailureHandlingConfig configures failure handling behavior.
@@ -1156,6 +1257,13 @@ type SessionStorageConfig struct {
 	// KeyPrefix is an optional prefix for all Redis keys used by ToolHive.
 	// +optional
 	KeyPrefix string `json:"keyPrefix,omitempty" yaml:"keyPrefix,omitempty"`
+
+	// TLS enables TLS for session storage and rate limiting. An empty
+	// configuration verifies the Redis server using system roots.
+	// On Kubernetes, set spec.sessionStorage.tls instead: the operator derives this
+	// field from it and rejects a value set under spec.config.sessionStorage.
+	// +optional
+	TLS *redisconfig.TLSConfig `json:"tls,omitempty" yaml:"tls,omitempty"`
 }
 
 // Validator validates configuration.

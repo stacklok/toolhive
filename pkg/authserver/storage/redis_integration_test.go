@@ -687,6 +687,25 @@ func TestIntegration_UpstreamTokens(t *testing.T) {
 	})
 }
 
+func TestIntegration_RememberedConsent(t *testing.T) {
+	withIntegrationStorage(t, func(ctx context.Context, s *RedisStorage) {
+		expiry := time.Now().Add(time.Hour)
+		require.NoError(t, s.StoreConsentSession(ctx, "digest", &ConsentSession{UserID: "user", ProviderID: "first", ProviderSubject: "sub", ExpiresAt: expiry}))
+		require.NoError(t, s.StoreClientApproval(ctx, "user", "client", &ClientApproval{RedirectURI: "https://client.example/callback", Scopes: []string{"openid"}, Resource: "https://resource.example", ExpiresAt: expiry}))
+		session, err := s.GetConsentSession(ctx, "digest")
+		require.NoError(t, err)
+		require.Equal(t, "sub", session.ProviderSubject)
+		approval, err := s.GetClientApproval(ctx, "user", "client")
+		require.NoError(t, err)
+		require.Equal(t, []string{"openid"}, approval.Scopes)
+		require.NoError(t, s.DeleteConsentSession(ctx, "digest"))
+		_, err = s.GetConsentSession(ctx, "digest")
+		require.ErrorIs(t, err, ErrNotFound)
+		_, err = s.GetClientApproval(ctx, "other", "client")
+		require.ErrorIs(t, err, ErrNotFound)
+	})
+}
+
 // --- Storage Interface: Pending Authorization ---
 
 func TestIntegration_PendingAuthorization(t *testing.T) {
@@ -697,7 +716,8 @@ func TestIntegration_PendingAuthorization(t *testing.T) {
 			ClientID: "pa-client", RedirectURI: "https://example.com/callback",
 			State: "client-state", PKCEChallenge: "challenge", PKCEMethod: "S256",
 			Scopes: []string{"openid"}, InternalState: state,
-			UpstreamPKCEVerifier: "verifier", UpstreamNonce: "nonce", CreatedAt: time.Now(),
+			UpstreamPKCEVerifier: "verifier", UpstreamNonce: "nonce",
+			BrowserBindingHash: "binding-hash", CreatedAt: time.Now(),
 		}
 	}
 
@@ -1443,7 +1463,9 @@ func TestIntegration_DCRCredentials_RoundTrip(t *testing.T) {
 				ClientSecretExpiresAt:   expiresAt,
 			}
 
-			require.NoError(t, s.StoreDCRCredentials(ctx, creds))
+			authoritative, err := s.StoreDCRCredentialsIfAbsent(ctx, creds)
+			require.NoError(t, err)
+			assert.Equal(t, *creds, *authoritative)
 
 			got, err := s.GetDCRCredentials(ctx, creds.Key)
 			require.NoError(t, err)
@@ -1483,7 +1505,8 @@ func TestIntegration_DCRCredentials_DistinctKeysCoexist(t *testing.T) {
 			mk(mkKey("https://idp-a.example.com", "https://up-b", "https://x/cb", []string{"openid"}), "e"),
 		}
 		for _, e := range entries {
-			require.NoError(t, s.StoreDCRCredentials(ctx, e))
+			_, err := s.StoreDCRCredentialsIfAbsent(ctx, e)
+			require.NoError(t, err)
 		}
 
 		for _, want := range entries {
@@ -1495,7 +1518,11 @@ func TestIntegration_DCRCredentials_DistinctKeysCoexist(t *testing.T) {
 	})
 }
 
-func TestIntegration_DCRCredentials_OverwriteSemantics(t *testing.T) {
+// TestIntegration_DCRCredentials_FirstClaimWins pins the create-if-absent
+// WATCH/MULTI claim against a real Redis Sentinel cluster: a second
+// StoreDCRCredentialsIfAbsent for a key that already holds a value must not
+// overwrite it, and the loser must get back the winner's credentials.
+func TestIntegration_DCRCredentials_FirstClaimWins(t *testing.T) {
 	withIntegrationStorage(t, func(ctx context.Context, s *RedisStorage) {
 		key := dcrFixtureKey()
 		mk := func(clientID string) *DCRCredentials {
@@ -1507,12 +1534,141 @@ func TestIntegration_DCRCredentials_OverwriteSemantics(t *testing.T) {
 			}
 		}
 
-		require.NoError(t, s.StoreDCRCredentials(ctx, mk("first")))
-		require.NoError(t, s.StoreDCRCredentials(ctx, mk("second")))
+		first, err := s.StoreDCRCredentialsIfAbsent(ctx, mk("first"))
+		require.NoError(t, err)
+		assert.Equal(t, "first", first.ClientID)
+
+		second, err := s.StoreDCRCredentialsIfAbsent(ctx, mk("second"))
+		require.NoError(t, err)
+		assert.Equal(t, "first", second.ClientID,
+			"the loser must get back the winner's credentials, not its own")
 
 		got, err := s.GetDCRCredentials(ctx, key)
 		require.NoError(t, err)
-		assert.Equal(t, "second", got.ClientID)
+		assert.Equal(t, "first", got.ClientID)
+	})
+}
+
+// TestIntegration_DCRCredentials_UpdateIfPresent pins the
+// UpdateDCRCredentialsIfPresent SET XX path against a real Redis Sentinel
+// cluster (miniredis's SET flag and TTL semantics only approximate it): an
+// existing row is rewritten in place with a refreshed TTL, and an update to an
+// absent key returns a wrapped not-found without creating the row.
+func TestIntegration_DCRCredentials_UpdateIfPresent(t *testing.T) {
+	t.Parallel()
+
+	t.Run("replaces existing row and refreshes TTL", func(t *testing.T) {
+		withIntegrationStorage(t, func(ctx context.Context, s *RedisStorage) {
+			key := dcrFixtureKey()
+			_, err := s.StoreDCRCredentialsIfAbsent(ctx, &DCRCredentials{
+				Key:                   key,
+				ClientID:              "client-int-abc",
+				ClientSecret:          "secret-original",
+				AuthorizationEndpoint: "https://idp.example.com/auth",
+				TokenEndpoint:         "https://idp.example.com/token",
+				// Stored persistent (no expiry).
+			})
+			require.NoError(t, err)
+
+			future := time.Now().Add(24 * time.Hour).Truncate(time.Second)
+			updated := &DCRCredentials{
+				Key:                     key,
+				ClientID:                "client-int-abc",
+				ClientSecret:            "secret-rotated",
+				TokenEndpointAuthMethod: "client_secret_basic",
+				AuthorizationEndpoint:   "https://idp.example.com/auth",
+				TokenEndpoint:           "https://idp.example.com/token",
+				ClientSecretExpiresAt:   future,
+			}
+			got, err := s.UpdateDCRCredentialsIfPresent(ctx, updated)
+			require.NoError(t, err)
+			assert.Equal(t, *updated, *got)
+
+			reread, err := s.GetDCRCredentials(ctx, key)
+			require.NoError(t, err)
+			assert.Equal(t, "secret-rotated", reread.ClientSecret)
+			assert.Equal(t, future.Unix(), reread.ClientSecretExpiresAt.Unix(),
+				"update must refresh the row's expiry from the incoming creds")
+
+			// Wire-level TTL check against the real cluster: the row was stored
+			// persistent (no TTL), so this proves the update actually applied a
+			// positive Redis TTL derived from the incoming future expiry —
+			// something miniredis-based unit tests only approximate.
+			ttl, err := s.client.TTL(ctx, redisDCRKey(s.keyPrefix, key)).Result()
+			require.NoError(t, err)
+			assert.Greater(t, ttl, time.Duration(0),
+				"update with a future expiry must set a positive TTL on the real cluster")
+			assert.LessOrEqual(t, ttl, 24*time.Hour)
+		})
+	})
+
+	t.Run("absent key returns not-found and does not create", func(t *testing.T) {
+		withIntegrationStorage(t, func(ctx context.Context, s *RedisStorage) {
+			key := dcrFixtureKey()
+			_, err := s.UpdateDCRCredentialsIfPresent(ctx, &DCRCredentials{
+				Key:                   key,
+				ClientID:              "client-int-abc",
+				AuthorizationEndpoint: "https://idp.example.com/auth",
+				TokenEndpoint:         "https://idp.example.com/token",
+			})
+			requireRedisNotFoundError(t, err)
+
+			_, getErr := s.GetDCRCredentials(ctx, key)
+			requireRedisNotFoundError(t, getErr)
+		})
+	})
+}
+
+// TestIntegration_DCRCredentials_UpdateIfUnchanged pins the
+// UpdateDCRCredentialsIfUnchanged WATCH/MULTI path against a real Redis
+// Sentinel cluster: an unchanged row is overwritten with a TTL derived from the
+// incoming creds, and a row replaced after the caller's read is refused and
+// left intact.
+func TestIntegration_DCRCredentials_UpdateIfUnchanged(t *testing.T) {
+	t.Parallel()
+
+	t.Run("unchanged row is overwritten and TTL applied", func(t *testing.T) {
+		withIntegrationStorage(t, func(ctx context.Context, s *RedisStorage) {
+			key := dcrFixtureKey()
+			_, err := s.StoreDCRCredentialsIfAbsent(ctx, dcrCASFixture(key, "original"))
+			require.NoError(t, err)
+			expected, err := s.GetDCRCredentials(ctx, key)
+			require.NoError(t, err)
+
+			replacement := dcrCASFixture(key, "replacement")
+			replacement.ClientSecretExpiresAt = time.Now().Add(24 * time.Hour).Truncate(time.Second)
+			_, err = s.UpdateDCRCredentialsIfUnchanged(ctx, replacement, expected)
+			require.NoError(t, err)
+
+			reread, err := s.GetDCRCredentials(ctx, key)
+			require.NoError(t, err)
+			assert.Equal(t, "replacement", reread.ClientSecret)
+
+			ttl, err := s.client.TTL(ctx, redisDCRKey(s.keyPrefix, key)).Result()
+			require.NoError(t, err)
+			assert.Greater(t, ttl, time.Duration(0))
+			assert.LessOrEqual(t, ttl, 24*time.Hour)
+		})
+	})
+
+	t.Run("changed row is refused and left intact", func(t *testing.T) {
+		withIntegrationStorage(t, func(ctx context.Context, s *RedisStorage) {
+			key := dcrFixtureKey()
+			_, err := s.StoreDCRCredentialsIfAbsent(ctx, dcrCASFixture(key, "original"))
+			require.NoError(t, err)
+			stale, err := s.GetDCRCredentials(ctx, key)
+			require.NoError(t, err)
+
+			_, err = s.UpdateDCRCredentialsIfPresent(ctx, dcrCASFixture(key, "newer"))
+			require.NoError(t, err)
+
+			_, err = s.UpdateDCRCredentialsIfUnchanged(ctx, dcrCASFixture(key, "stale-writer"), stale)
+			require.ErrorIs(t, err, ErrDCRCredentialsChanged)
+
+			reread, err := s.GetDCRCredentials(ctx, key)
+			require.NoError(t, err)
+			assert.Equal(t, "newer", reread.ClientSecret)
+		})
 	})
 }
 
@@ -1529,13 +1685,14 @@ func TestIntegration_DCRCredentials_TTL(t *testing.T) {
 		withIntegrationStorage(t, func(ctx context.Context, s *RedisStorage) {
 			key := dcrFixtureKey()
 			expires := time.Now().Add(24 * time.Hour).Truncate(time.Second)
-			require.NoError(t, s.StoreDCRCredentials(ctx, &DCRCredentials{
+			_, err := s.StoreDCRCredentialsIfAbsent(ctx, &DCRCredentials{
 				Key:                   key,
 				ClientID:              "client-with-expiry",
 				AuthorizationEndpoint: "https://idp.example.com/auth",
 				TokenEndpoint:         "https://idp.example.com/token",
 				ClientSecretExpiresAt: expires,
-			}))
+			})
+			require.NoError(t, err)
 
 			ttl, err := s.client.TTL(ctx, redisDCRKey(s.keyPrefix, key)).Result()
 			require.NoError(t, err)
@@ -1551,13 +1708,14 @@ func TestIntegration_DCRCredentials_TTL(t *testing.T) {
 	t.Run("zero expiry means no TTL", func(t *testing.T) {
 		withIntegrationStorage(t, func(ctx context.Context, s *RedisStorage) {
 			key := dcrFixtureKey()
-			require.NoError(t, s.StoreDCRCredentials(ctx, &DCRCredentials{
+			_, err := s.StoreDCRCredentialsIfAbsent(ctx, &DCRCredentials{
 				Key:                   key,
 				ClientID:              "client-no-expiry",
 				AuthorizationEndpoint: "https://idp.example.com/auth",
 				TokenEndpoint:         "https://idp.example.com/token",
 				// ClientSecretExpiresAt deliberately zero.
-			}))
+			})
+			require.NoError(t, err)
 
 			ttl, err := s.client.TTL(ctx, redisDCRKey(s.keyPrefix, key)).Result()
 			require.NoError(t, err)

@@ -140,7 +140,7 @@ Design proposals for ToolHive have been moved to a dedicated repository:
 
 **[github.com/stacklok/toolhive-rfcs](https://github.com/stacklok/toolhive-rfcs)**
 
-This RFC repository serves the entire ToolHive ecosystem, including the CLI, Studio, Registry, and Cloud UI.
+This RFC repository serves the entire ToolHive ecosystem, including the CLI, Studio, and Registry.
 
 #### How to submit an RFC
 

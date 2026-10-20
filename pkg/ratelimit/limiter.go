@@ -29,6 +29,12 @@ type Limiter interface {
 	Allow(ctx context.Context, toolName, userID string) (*Decision, error)
 }
 
+// failOpenObserver records the policy decision made by production enforcement
+// adapters after the built-in limiter returns an infrastructure error.
+type failOpenObserver interface {
+	recordFailOpen(context.Context)
+}
+
 // Decision holds the result of a rate limit check.
 type Decision struct {
 	// Allowed is true when the request may proceed.
@@ -39,7 +45,10 @@ type Decision struct {
 	RetryAfter time.Duration
 }
 
-// Allow checks whether identity may call toolName through limiter.
+// Allow checks whether identity may call toolName through limiter. When the
+// built-in limiter returns an infrastructure error, Allow records fail-open
+// observability before preserving the error for the HTTP or vMCP adapter to log
+// and apply its existing fail-open behavior.
 func Allow(ctx context.Context, limiter Limiter, identity *auth.Identity, toolName string) error {
 	if limiter == nil {
 		return nil
@@ -55,6 +64,9 @@ func Allow(ctx context.Context, limiter Limiter, identity *auth.Identity, toolNa
 
 	decision, err := limiter.Allow(ctx, toolName, userID)
 	if err != nil {
+		if observer, ok := limiter.(failOpenObserver); ok {
+			observer.recordFailOpen(ctx)
+		}
 		return err
 	}
 	if !decision.Allowed {
@@ -163,6 +175,13 @@ type limiter struct {
 	perUserTools map[string]bucketSpec          // tool name -> per-user bucket spec; nil when none
 }
 
+var _ failOpenObserver = (*limiter)(nil)
+
+func (l *limiter) recordFailOpen(ctx context.Context) {
+	l.telemetry.recordFailOpen(ctx)
+	recordRateLimitSpanOutcome(ctx, rateLimitDecisionAllowed, rateLimitRejectedByNone, true)
+}
+
 // Allow atomically checks all applicable rate limit buckets for the request.
 // Tokens are only consumed if ALL buckets have sufficient capacity, preventing
 // a rejected per-tool or per-user call from draining other budgets.
@@ -225,7 +244,7 @@ func (l *limiter) Allow(ctx context.Context, toolName, userID string) (*Decision
 	}
 
 	if len(checks) == 0 {
-		recordRateLimitSpanOutcome(ctx, rateLimitDecisionAllowed, rateLimitRejectedByNone)
+		recordRateLimitSpanOutcome(ctx, rateLimitDecisionAllowed, rateLimitRejectedByNone, false)
 		return &Decision{Allowed: true}, nil
 	}
 
@@ -243,7 +262,7 @@ func (l *limiter) Allow(ctx context.Context, toolName, userID string) (*Decision
 	}
 	if rejectedIdx >= 0 {
 		l.telemetry.recordRejected(ctx, checks[rejectedIdx])
-		recordRateLimitSpanOutcome(ctx, rateLimitDecisionRejected, checks[rejectedIdx].rejectionIdentifier())
+		recordRateLimitSpanOutcome(ctx, rateLimitDecisionRejected, checks[rejectedIdx].rejectionIdentifier(), false)
 		return &Decision{
 			Allowed:    false,
 			RetryAfter: buckets[rejectedIdx].RetryAfter(),
@@ -251,7 +270,7 @@ func (l *limiter) Allow(ctx context.Context, toolName, userID string) (*Decision
 	}
 
 	l.telemetry.recordAllowed(ctx, checks)
-	recordRateLimitSpanOutcome(ctx, rateLimitDecisionAllowed, rateLimitRejectedByNone)
+	recordRateLimitSpanOutcome(ctx, rateLimitDecisionAllowed, rateLimitRejectedByNone, false)
 	return &Decision{Allowed: true}, nil
 }
 

@@ -23,33 +23,15 @@ import (
 // so the dcr package no longer imports authserver types, and the tests
 // follow.
 
-func TestNeedsDCR(t *testing.T) {
+func TestNewDCRRequest_NoDCR(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		name     string
-		rc       *authserver.OAuth2UpstreamRunConfig
-		expected bool
-	}{
-		{name: "nil", rc: nil, expected: false},
-		{name: "empty client_id and dcr_config", rc: &authserver.OAuth2UpstreamRunConfig{
-			DCRConfig: &authserver.DCRUpstreamConfig{},
-		}, expected: true},
-		{name: "client_id without dcr", rc: &authserver.OAuth2UpstreamRunConfig{
-			ClientID: "x",
-		}, expected: false},
-		{name: "client_id wins over dcr_config (defensive AND semantic)", rc: &authserver.OAuth2UpstreamRunConfig{
-			ClientID:  "x",
-			DCRConfig: &authserver.DCRUpstreamConfig{},
-		}, expected: false},
-		{name: "both empty", rc: &authserver.OAuth2UpstreamRunConfig{}, expected: false},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			assert.Equal(t, tc.expected, needsDCR(tc.rc))
-		})
-	}
+	request, err := newDCRRequest(&authserver.UpstreamRunConfig{
+		Type:         authserver.UpstreamProviderTypeOAuth2,
+		OAuth2Config: &authserver.OAuth2UpstreamRunConfig{ClientID: "pre-provisioned"},
+	}, "https://thv.example.com")
+	require.NoError(t, err)
+	assert.Nil(t, request)
 }
 
 func TestConsumeResolution_RespectsExplicitEndpoints(t *testing.T) {
@@ -190,6 +172,47 @@ func TestApplyResolutionToOAuth2Config(t *testing.T) {
 	assert.Equal(t, cfg, unchanged)
 }
 
+// TestDCRResolution_PreservesOmitScopeOnRefresh pins that a DCR-registered
+// upstream still honours OmitScopeOnRefresh. The flag is configured on the
+// run-config, and a DCR upstream reaches upstream.OAuth2Config through the
+// same pair of calls as any other: consumeResolution rewrites the run-config
+// and applyResolutionToOAuth2Config rewrites the built config. Both only
+// overwrite client credentials and endpoints, so the flag must survive. A
+// refactor that rebuilds either config from the resolution alone would drop
+// it and silently reintroduce the scope parameter on refresh.
+func TestDCRResolution_PreservesOmitScopeOnRefresh(t *testing.T) {
+	t.Parallel()
+
+	rc := authserver.OAuth2UpstreamRunConfig{
+		RedirectURI:        "https://auth.example.com/callback",
+		Scopes:             []string{"api", "refresh_token"},
+		OmitScopeOnRefresh: true,
+		DCRConfig: &authserver.DCRUpstreamConfig{
+			RegistrationEndpoint: "https://idp.example.com/register",
+		},
+	}
+	res := &dcr.Resolution{
+		ClientID:              "dcr-issued-client",
+		ClientSecret:          "dcr-issued-secret",
+		AuthorizationEndpoint: "https://idp.example.com/authorize",
+		TokenEndpoint:         "https://idp.example.com/token",
+	}
+
+	resolved := consumeResolution(rc, res)
+	require.True(t, resolved.OmitScopeOnRefresh)
+
+	cfg, err := buildPureOAuth2Config(&authserver.UpstreamRunConfig{
+		Type:         authserver.UpstreamProviderTypeOAuth2,
+		OAuth2Config: &resolved,
+	}, false)
+	require.NoError(t, err)
+
+	out := applyResolutionToOAuth2Config(*cfg, res)
+	assert.True(t, out.OmitScopeOnRefresh)
+	assert.Equal(t, "dcr-issued-secret", out.ClientSecret,
+		"sanity: the resolution was applied")
+}
+
 // TestConsumeResolution_AloneLeavesClientSecretEmpty is a tripwire
 // regression test for the two-call invariant documented on
 // applyResolutionToOAuth2Config. The contract is:
@@ -234,7 +257,13 @@ func TestConsumeResolution_AloneLeavesClientSecretEmpty(t *testing.T) {
 			"applyResolutionToOAuth2Config's responsibility (see dcr_adapter.go)")
 }
 
-// TestNewDCRRequest covers the OAuth2UpstreamRunConfig → dcr.Request
+func oauth2RunConfig(rc *authserver.OAuth2UpstreamRunConfig) *authserver.UpstreamRunConfig {
+	if rc == nil {
+		return nil
+	}
+	return &authserver.UpstreamRunConfig{Type: authserver.UpstreamProviderTypeOAuth2, OAuth2Config: rc}
+}
+
 // translation, including the file-based InitialAccessToken resolution that
 // previously lived inside the resolver.
 func TestNewDCRRequest(t *testing.T) {
@@ -253,6 +282,8 @@ func TestNewDCRRequest(t *testing.T) {
 		wantDiscoveryURL       string
 		wantRegistration       string
 		wantAllowPrivateIPs    bool
+		wantCAFilePath         string
+		wantRotationKey        string
 	}{
 		{
 			name: "discovery_url branch resolves file-based initial access token",
@@ -292,11 +323,30 @@ func TestNewDCRRequest(t *testing.T) {
 					RegistrationEndpoint: "https://idp.example.com/register",
 				},
 				AllowPrivateIPs: true,
+				CAFilePath:      "/var/run/toolhive/upstream-ca/ca.crt",
 			},
 			localIssuer:         "https://thv.example.com",
 			wantIssuer:          "https://thv.example.com",
 			wantRegistration:    "https://idp.example.com/register",
 			wantAllowPrivateIPs: true,
+			wantCAFilePath:      "/var/run/toolhive/upstream-ca/ca.crt",
+		},
+		{
+			// Pins the RotationKey copy onto dcr.Request: without it a
+			// rotation configured on the run-config would silently keep
+			// addressing the pre-rotation cache row.
+			name: "rotation_key propagates from run-config",
+			rc: &authserver.OAuth2UpstreamRunConfig{
+				Scopes: []string{"openid"},
+				DCRConfig: &authserver.DCRUpstreamConfig{
+					RegistrationEndpoint: "https://idp.example.com/register",
+					RotationKey:          "2026-10",
+				},
+			},
+			localIssuer:      "https://thv.example.com",
+			wantIssuer:       "https://thv.example.com",
+			wantRegistration: "https://idp.example.com/register",
+			wantRotationKey:  "2026-10",
 		},
 		{
 			name:        "nil run-config rejected",
@@ -304,17 +354,11 @@ func TestNewDCRRequest(t *testing.T) {
 			localIssuer: "https://thv.example.com",
 			wantErrSub:  "run-config is required",
 		},
-		{
-			name:        "missing dcr_config rejected",
-			rc:          &authserver.OAuth2UpstreamRunConfig{},
-			localIssuer: "https://thv.example.com",
-			wantErrSub:  "no dcr_config",
-		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			req, err := newDCRRequest(tc.rc, tc.localIssuer)
+			req, err := newDCRRequest(oauth2RunConfig(tc.rc), tc.localIssuer)
 			if tc.wantErrSub != "" {
 				require.Error(t, err)
 				assert.Contains(t, err.Error(), tc.wantErrSub)
@@ -327,6 +371,8 @@ func TestNewDCRRequest(t *testing.T) {
 			assert.Equal(t, tc.wantDiscoveryURL, req.DiscoveryURL)
 			assert.Equal(t, tc.wantRegistration, req.RegistrationEndpoint)
 			assert.Equal(t, tc.wantAllowPrivateIPs, req.AllowPrivateIPs)
+			assert.Equal(t, tc.wantCAFilePath, req.CAFilePath)
+			assert.Equal(t, tc.wantRotationKey, req.RotationKey)
 		})
 	}
 }
@@ -351,9 +397,45 @@ func TestNewDCRRequest_EnvVarInitialAccessToken(t *testing.T) {
 		},
 	}
 
-	req, err := newDCRRequest(rc, "https://thv.example.com")
+	req, err := newDCRRequest(oauth2RunConfig(rc), "https://thv.example.com")
 	require.NoError(t, err)
 	require.NotNil(t, req)
 	assert.Equal(t, "iat-from-env", req.InitialAccessToken,
 		"env-var InitialAccessToken must flow through newDCRRequest → resolveSecret")
+}
+
+func TestNewDCRRequest_OIDCUsesIssuerDiscovery(t *testing.T) {
+	t.Parallel()
+
+	rc := &authserver.UpstreamRunConfig{
+		Type: authserver.UpstreamProviderTypeOIDC,
+		OIDCConfig: &authserver.OIDCUpstreamRunConfig{
+			IssuerURL: "https://idp.example.com/",
+			DCRConfig: &authserver.DCRUpstreamConfig{},
+		},
+	}
+	request, err := newDCRRequest(rc, "https://thv.example.com")
+	require.NoError(t, err)
+	require.NotNil(t, request)
+	assert.Equal(t, "https://idp.example.com/.well-known/openid-configuration", request.DiscoveryURL)
+	assert.Empty(t, request.AuthorizationEndpoint)
+	assert.Empty(t, request.TokenEndpoint)
+}
+
+func TestConsumeOIDCResolution(t *testing.T) {
+	t.Parallel()
+
+	cfg := consumeOIDCResolution(authserver.OIDCUpstreamRunConfig{
+		DCRConfig: &authserver.DCRUpstreamConfig{},
+	}, &dcr.Resolution{
+		ClientID:     "client",
+		ClientSecret: "secret",
+		RedirectURI:  "https://thv.example.com/oauth/callback",
+	})
+	assert.Equal(t, "client", cfg.ClientID)
+	assert.Equal(t, "https://thv.example.com/oauth/callback", cfg.RedirectURI)
+	assert.Nil(t, cfg.DCRConfig)
+
+	applied := applyResolutionToOIDCConfig(upstream.OIDCConfig{}, &dcr.Resolution{ClientSecret: "secret"})
+	assert.Equal(t, "secret", applied.ClientSecret)
 }

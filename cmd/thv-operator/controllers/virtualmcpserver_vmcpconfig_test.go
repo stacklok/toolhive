@@ -7,6 +7,7 @@ import (
 	"context"
 	stderrors "errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -2493,6 +2494,61 @@ func TestEnsureVmcpConfigConfigMap_AuthServerIntegrationValidationError(t *testi
 	var specErr *SpecValidationError
 	require.True(t, stderrors.As(err, &specErr), "expected a *SpecValidationError, got %T: %v", err, err)
 	assert.Contains(t, specErr.Message, "invalid auth server integration")
+}
+
+func TestEnsureVmcpConfigConfigMap_DelegateClientValidationError(t *testing.T) {
+	t.Parallel()
+
+	const (
+		audience          = "https://api.example.com"
+		authServerIssuer  = "https://auth.example.com"
+		upstreamIssuerURL = "https://upstream-idp.example.com"
+	)
+	testVmcp := v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+		v1beta1test.WithVMCPGroupRef("test-group"),
+		v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{
+			Type: "oidc", OIDCConfigRef: &mcpv1beta1.MCPOIDCConfigReference{
+				Name: "test-oidc", Audience: audience, ResourceURL: audience,
+			},
+		}),
+		v1beta1test.WithVMCPAuthServerConfig(&mcpv1beta1.EmbeddedAuthServerConfig{
+			Issuer: authServerIssuer,
+			DelegateClients: []mcpv1beta1.DelegateClientConfig{{
+				ClientID:        "delegate-client",
+				ClientSecretRef: &mcpv1beta1.SecretKeyRef{Name: "delegate-secret", Key: "credential"},
+				Scopes:          []string{"openid"},
+				Audiences:       []string{"https://not-allowed.example.com"},
+			}},
+			UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{{
+				Name: "corporate-idp", Type: mcpv1beta1.UpstreamProviderTypeOIDC,
+				OIDCConfig: &mcpv1beta1.OIDCUpstreamConfig{IssuerURL: upstreamIssuerURL, ClientID: "upstream-client-id"},
+			}},
+		}),
+		v1beta1test.MutateVMCP(func(v *mcpv1beta1.VirtualMCPServer) { v.Generation = 3 }),
+	)
+	oidcConfig := &mcpv1beta1.MCPOIDCConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-oidc", Namespace: "default"},
+		Spec: mcpv1beta1.MCPOIDCConfigSpec{Type: mcpv1beta1.MCPOIDCConfigTypeInline,
+			Inline: &mcpv1beta1.InlineOIDCSharedConfig{Issuer: authServerIssuer}},
+	}
+	scheme := testutil.NewScheme(t)
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(testVmcp, oidcConfig).Build()
+	r := &VirtualMCPServerReconciler{Client: fakeClient, Scheme: scheme}
+
+	mockCtrl := gomock.NewController(t)
+	mockStatus := statusmocks.NewMockStatusManager(mockCtrl)
+	mockStatus.EXPECT().SetPhase(mcpv1beta1.VirtualMCPServerPhaseFailed)
+	mockStatus.EXPECT().SetMessage(gomock.Cond(func(message string) bool {
+		return strings.Contains(message, "invalid delegate clients") && strings.Contains(message, "not-allowed.example.com")
+	}))
+	mockStatus.EXPECT().SetAuthServerConfigValidatedCondition(
+		mcpv1beta1.ConditionReasonAuthServerConfigInvalid, gomock.Any(), metav1.ConditionFalse)
+	mockStatus.EXPECT().SetObservedGeneration(testVmcp.Generation)
+
+	err := r.ensureVmcpConfigConfigMap(context.Background(), testVmcp, nil, nil, mockStatus)
+	var specErr *SpecValidationError
+	require.ErrorAs(t, err, &specErr)
+	assert.Contains(t, specErr.Message, "invalid delegate clients")
 }
 
 // TestConvertBackendsToStaticBackends_WithCABundlePathMap tests that CA bundle paths

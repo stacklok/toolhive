@@ -13,8 +13,6 @@ import (
 	"time"
 
 	"golang.org/x/oauth2"
-
-	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
 // NonCachingRefresher is an oauth2.TokenSource that always performs a network
@@ -43,13 +41,24 @@ type NonCachingRefresher struct {
 
 // NewNonCachingRefresher creates a NonCachingRefresher that refreshes using
 // cfg and the given refresh token. resource is the RFC 8707 resource indicator;
-// pass "" for standard OAuth 2.0 refresh.
-func NewNonCachingRefresher(cfg *oauth2.Config, refreshToken, resource string) *NonCachingRefresher {
+// pass "" for standard OAuth 2.0 refresh. httpClient carries the token
+// endpoint's SSRF policy and must be built by NewTokenHTTPClient.
+func NewNonCachingRefresher(
+	cfg *oauth2.Config,
+	refreshToken, resource string,
+	httpClient *http.Client,
+) *NonCachingRefresher {
+	if cfg == nil {
+		panic("oauth.NewNonCachingRefresher: config must not be nil")
+	}
+	if httpClient == nil {
+		panic("oauth.NewNonCachingRefresher: HTTP client must not be nil")
+	}
 	return &NonCachingRefresher{
 		cfg:          cfg,
 		resource:     resource,
 		refreshToken: refreshToken,
-		httpClient:   oauthproto.NewHTTPClient(),
+		httpClient:   httpClient,
 	}
 }
 

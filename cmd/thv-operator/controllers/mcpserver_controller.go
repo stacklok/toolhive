@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"maps"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -29,10 +30,12 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
@@ -60,9 +63,10 @@ type MCPServerReconciler struct {
 	ImagePullSecretsDefaults imagepullsecrets.Defaults
 }
 
-// defaultRBACRules are the default RBAC rules that the
-// ToolHive ProxyRunner and/or MCP server needs to have in order to run.
+// defaultRBACRules are the RBAC rules that the ToolHive ProxyRunner and/or MCP
+// server needs to have in order to run, whatever transport is configured.
 // These permissions are needed for MCPServer which deploys and manages MCP server containers.
+// Transport-specific rules are added on top; see rbacRulesForTransport.
 var defaultRBACRules = []rbacv1.PolicyRule{
 	{
 		APIGroups: []string{"apps"},
@@ -86,14 +90,39 @@ var defaultRBACRules = []rbacv1.PolicyRule{
 	},
 	{
 		APIGroups: []string{""},
-		Resources: []string{"pods/attach"},
-		Verbs:     []string{"create", "get"},
-	},
-	{
-		APIGroups: []string{""},
 		Resources: []string{"configmaps"},
 		Verbs:     []string{"get", "list", "watch"},
 	},
+}
+
+// stdioRBACRules are granted on top of defaultRBACRules for stdio transport only.
+// The proxy runner talks to a stdio MCP server by attaching to the pod's stdio
+// (Client.AttachToWorkload, reached only from the stdio transport); the HTTP
+// transports speak to the pod over the network and never attach. Security
+// auditors treat pods/attach as equivalent to pod exec, so withhold it where it
+// cannot be used.
+var stdioRBACRules = []rbacv1.PolicyRule{
+	{
+		APIGroups: []string{""},
+		Resources: []string{"pods/attach"},
+		Verbs:     []string{"create", "get"},
+	},
+}
+
+// rbacRulesForTransport returns the proxy-runner Role rules for the given
+// MCPServer transport. An empty transport is treated as stdio: the CRD defaults
+// the field to stdio, so an object can only reach here with an empty value if it
+// predates that default or was built in Go, and granting the extra permission
+// keeps such a server working rather than breaking it.
+//
+// The result is always a fresh slice — appending to defaultRBACRules directly
+// would let a future rule share its backing array.
+func rbacRulesForTransport(mcpTransport string) []rbacv1.PolicyRule {
+	rules := slices.Clone(defaultRBACRules)
+	if mcpTransport == stdioTransport || mcpTransport == "" {
+		rules = append(rules, stdioRBACRules...)
+	}
+	return rules
 }
 
 // remoteProxyRBACRules defines minimal RBAC permissions for MCPRemoteProxy.
@@ -144,6 +173,11 @@ const defaultTerminationGracePeriodSeconds = int64(30)
 
 const stdioTransport = "stdio"
 
+const (
+	permissionProfileUnsupportedEventReason = "PermissionProfileUnsupported"
+	permissionProfileUnsupportedEventAction = "IgnorePermissionProfile"
+)
+
 // detectPlatform detects the Kubernetes platform type (Kubernetes vs OpenShift)
 // It uses the shared platform detector to ensure detection is only performed once and cached
 func (r *MCPServerReconciler) detectPlatform(ctx context.Context) (kubernetes.Platform, error) {
@@ -169,6 +203,68 @@ func (r *MCPServerReconciler) detectPlatform(ctx context.Context) (kubernetes.Pl
 // +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=pods/attach,verbs=create;get
 // +kubebuilder:rbac:groups="",resources=pods/log,verbs=get
+
+// handleInvalidEmbeddedAuthServerConfig records an invalid embedded auth server
+// configuration as terminal. Failures to persist status remain retryable.
+func (r *MCPServerReconciler) handleInvalidEmbeddedAuthServerConfig(
+	ctx context.Context,
+	mcpServer *mcpv1beta1.MCPServer,
+	invalidConfigErr *ctrlutil.InvalidEmbeddedAuthServerConfigError,
+) error {
+	return ctrlutil.MutateAndPatchStatus(ctx, r.Client, mcpServer, func(server *mcpv1beta1.MCPServer) {
+		server.Status.Phase = mcpv1beta1.MCPServerPhaseFailed
+		server.Status.Message = fmt.Sprintf("Failed to build configuration: %s", invalidConfigErr)
+		server.Status.ObservedGeneration = server.Generation
+		setReadyCondition(server, metav1.ConditionFalse, mcpv1beta1.ConditionReasonNotReady, server.Status.Message)
+
+		if invalidConfigErr.Source == ctrlutil.EmbeddedAuthServerConfigSourceAuthServerRef {
+			meta.SetStatusCondition(&server.Status.Conditions, metav1.Condition{
+				Type:               mcpv1beta1.ConditionTypeAuthServerRefValidated,
+				Status:             metav1.ConditionFalse,
+				ObservedGeneration: server.Generation,
+				Reason:             mcpv1beta1.ConditionReasonAuthServerRefInvalidConfig,
+				Message:            invalidConfigErr.Error(),
+			})
+		}
+		if invalidConfigErr.Source == ctrlutil.EmbeddedAuthServerConfigSourceExternalAuthConfigRef {
+			meta.SetStatusCondition(&server.Status.Conditions, metav1.Condition{
+				Type:               mcpv1beta1.ConditionTypeExternalAuthConfigValidated,
+				Status:             metav1.ConditionFalse,
+				ObservedGeneration: server.Generation,
+				Reason:             mcpv1beta1.ConditionReasonInvalidConfig,
+				Message:            invalidConfigErr.Error(),
+			})
+		}
+	})
+}
+
+// handleInvalidCABundle records an invalid CA bundle as terminal
+// on conditionType, which the caller picks because it knows which reference the
+// bundle was reached through. err must be the full error returned by the
+// caller's validation call (not the unwrapped *InvalidCABundleError), so the
+// field-path prefix added by ValidateEmbeddedAuthServerCABundles (e.g.
+// "trustedIssuers[0] (...) caBundleRef:") reaches the status message. Failures
+// to persist status remain retryable.
+func (r *MCPServerReconciler) handleInvalidCABundle(
+	ctx context.Context,
+	mcpServer *mcpv1beta1.MCPServer,
+	conditionType string,
+	err error,
+) error {
+	return ctrlutil.MutateAndPatchStatus(ctx, r.Client, mcpServer, func(server *mcpv1beta1.MCPServer) {
+		server.Status.Phase = mcpv1beta1.MCPServerPhaseFailed
+		server.Status.Message = fmt.Sprintf("Failed to build configuration: %s", err)
+		server.Status.ObservedGeneration = server.Generation
+		setReadyCondition(server, metav1.ConditionFalse, mcpv1beta1.ConditionReasonNotReady, server.Status.Message)
+		meta.SetStatusCondition(&server.Status.Conditions, metav1.Condition{
+			Type:               conditionType,
+			Status:             metav1.ConditionFalse,
+			ObservedGeneration: server.Generation,
+			Reason:             mcpv1beta1.ConditionReasonInvalidCABundle,
+			Message:            fmt.Sprintf("invalid CA bundle: %v", err),
+		})
+	})
+}
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -209,6 +305,8 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{}, nil
 	}
 
+	r.emitPermissionProfileUnsupportedEvent(mcpServer)
+
 	// Add finalizer for this CR
 	if !controllerutil.ContainsFinalizer(mcpServer, MCPServerFinalizerName) {
 		if err := ctrlutil.MutateAndPatchSpec(ctx, r.Client, mcpServer, func(m *mcpv1beta1.MCPServer) {
@@ -224,6 +322,7 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{}, err
 	} else if shouldTriggerRestart {
 		// Return and requeue to avoid double-processing after triggering restart
+		//nolint:staticcheck // Requeue preserves the controller's existing rate-limited update behavior.
 		return ctrl.Result{Requeue: true}, nil
 	}
 
@@ -274,6 +373,16 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 	// Check if MCPExternalAuthConfig is referenced and handle it
 	if err := r.handleExternalAuthConfig(ctx, mcpServer); err != nil {
+		var invalidCABundleErr *ctrlutil.InvalidCABundleError
+		if stderrors.As(err, &invalidCABundleErr) {
+			if statusErr := r.handleInvalidCABundle(
+				ctx, mcpServer, mcpv1beta1.ConditionTypeExternalAuthConfigValidated, err); statusErr != nil {
+				ctxLogger.Error(statusErr, "Failed to update MCPServer status after invalid CA bundle")
+				return ctrl.Result{}, statusErr
+			}
+			return ctrl.Result{}, nil
+		}
+
 		ctxLogger.Error(err, "Failed to handle MCPExternalAuthConfig")
 		// Update status to reflect the error
 		mcpServer.Status.Phase = mcpv1beta1.MCPServerPhaseFailed
@@ -298,6 +407,16 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 	// Check if authServerRef is referenced and handle config hash tracking
 	if err := r.handleAuthServerRef(ctx, mcpServer); err != nil {
+		var invalidCABundleErr *ctrlutil.InvalidCABundleError
+		if stderrors.As(err, &invalidCABundleErr) {
+			if statusErr := r.handleInvalidCABundle(
+				ctx, mcpServer, mcpv1beta1.ConditionTypeAuthServerRefValidated, err); statusErr != nil {
+				ctxLogger.Error(statusErr, "Failed to update MCPServer status after invalid CA bundle")
+				return ctrl.Result{}, statusErr
+			}
+			return ctrl.Result{}, nil
+		}
+
 		ctxLogger.Error(err, "Failed to handle authServerRef")
 		mcpServer.Status.Phase = mcpv1beta1.MCPServerPhaseFailed
 		setReadyCondition(mcpServer, metav1.ConditionFalse, mcpv1beta1.ConditionReasonNotReady, err.Error())
@@ -361,6 +480,15 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 	// Ensure RunConfig ConfigMap exists and is up to date
 	if err := r.ensureRunConfigConfigMap(ctx, mcpServer); err != nil {
+		var invalidConfigErr *ctrlutil.InvalidEmbeddedAuthServerConfigError
+		if stderrors.As(err, &invalidConfigErr) {
+			if statusErr := r.handleInvalidEmbeddedAuthServerConfig(ctx, mcpServer, invalidConfigErr); statusErr != nil {
+				ctxLogger.Error(statusErr, "Failed to update MCPServer status after invalid embedded auth server configuration")
+				return ctrl.Result{}, statusErr
+			}
+			return ctrl.Result{}, nil
+		}
+
 		ctxLogger.Error(err, "Failed to ensure RunConfig ConfigMap")
 		mcpServer.Status.Phase = mcpv1beta1.MCPServerPhaseFailed
 		mcpServer.Status.Message = fmt.Sprintf("Failed to build configuration: %s", err.Error())
@@ -420,6 +548,7 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			return ctrl.Result{}, err
 		}
 		// Deployment created successfully - return and requeue
+		//nolint:staticcheck // Requeue preserves the controller's existing rate-limited update behavior.
 		return ctrl.Result{Requeue: true}, nil
 	} else if err != nil {
 		ctxLogger.Error(err, "Failed to get Deployment")
@@ -440,6 +569,7 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			return ctrl.Result{}, err
 		}
 		// Spec updated - return and requeue
+		//nolint:staticcheck // Requeue preserves the controller's existing rate-limited update behavior.
 		return ctrl.Result{Requeue: true}, nil
 	}
 
@@ -461,6 +591,7 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			return ctrl.Result{}, err
 		}
 		// Service created successfully - return and requeue
+		//nolint:staticcheck // Requeue preserves the controller's existing rate-limited create behavior.
 		return ctrl.Result{Requeue: true}, nil
 	} else if err != nil {
 		ctxLogger.Error(err, "Failed to get Service")
@@ -502,6 +633,8 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			}
 			return ctrl.Result{}, err
 		}
+		newDeployment.Spec.Template.Annotations = ctrlutil.PreserveKubectlRestartedAt(
+			newDeployment.Spec.Template.Annotations, deployment.Spec.Template.Annotations)
 		deployment.Spec.Template = newDeployment.Spec.Template
 		deployment.Spec.Selector = newDeployment.Spec.Selector
 		deployment.Labels = newDeployment.Labels
@@ -517,6 +650,7 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			return ctrl.Result{}, err
 		}
 		// Spec updated - return and requeue
+		//nolint:staticcheck // Requeue preserves the controller's existing rate-limited update behavior.
 		return ctrl.Result{Requeue: true}, nil
 	}
 
@@ -537,10 +671,39 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			return ctrl.Result{}, err
 		}
 		// Spec updated - return and requeue
+		//nolint:staticcheck // Requeue preserves the controller's existing rate-limited update behavior.
 		return ctrl.Result{Requeue: true}, nil
 	}
 
+	if result, err := r.ensureWorkloadStatefulSet(ctx, mcpServer, deployment); err != nil {
+		ctxLogger.Error(err, "Failed to ensure workload StatefulSet")
+		return ctrl.Result{}, err
+	} else if result.RequeueAfter > 0 {
+		return result, nil
+	}
+
 	return ctrl.Result{}, nil
+}
+
+// emitPermissionProfileUnsupportedEvent emits a Warning when an MCPServer
+// configures the deprecated spec.permissionProfile field. The operator keeps
+// the field for API compatibility but does not apply it to Kubernetes
+// workloads.
+//
+// The generation==observedGeneration guard suppresses the event after a
+// successful reconcile advances status. Retries that fail before
+// observedGeneration is updated can re-emit; Kubernetes event aggregation
+// is the practical dedupe in that window.
+func (r *MCPServerReconciler) emitPermissionProfileUnsupportedEvent(mcpServer *mcpv1beta1.MCPServer) {
+	if mcpServer.Spec.PermissionProfile == nil || r.Recorder == nil {
+		return
+	}
+	if mcpServer.Generation == mcpServer.Status.ObservedGeneration {
+		return
+	}
+	r.Recorder.Eventf(mcpServer, nil, corev1.EventTypeWarning,
+		permissionProfileUnsupportedEventReason, permissionProfileUnsupportedEventAction,
+		"spec.permissionProfile is deprecated and unsupported by the Kubernetes operator; it has no effect")
 }
 
 func (r *MCPServerReconciler) validateGroupRef(ctx context.Context, mcpServer *mcpv1beta1.MCPServer) {
@@ -639,10 +802,7 @@ func (r *MCPServerReconciler) validateCABundleRef(ctx context.Context, mcpServer
 	}
 
 	// Verify the key exists in the ConfigMap
-	key := caBundleRef.ConfigMapRef.Key
-	if key == "" {
-		key = validation.OIDCCABundleDefaultKey
-	}
+	key := caBundleKey(caBundleRef)
 	if _, exists := configMap.Data[key]; !exists {
 		ctxLogger.Error(nil, "CA bundle key not found in ConfigMap", "configMap", cmName, "key", key)
 		setCABundleRefCondition(mcpServer, metav1.ConditionFalse, mcpv1beta1.ConditionReasonCABundleRefInvalid,
@@ -972,7 +1132,7 @@ func (r *MCPServerReconciler) ensureRBACResources(ctx context.Context, mcpServer
 	if _, err := rbacClient.EnsureRBACResources(ctx, rbac.EnsureRBACResourcesParams{
 		Name:             proxyRunnerNameForRBAC,
 		Namespace:        mcpServer.Namespace,
-		Rules:            defaultRBACRules,
+		Rules:            rbacRulesForTransport(mcpServer.Spec.Transport),
 		Owner:            mcpServer,
 		ImagePullSecrets: imagePullSecrets,
 	}); err != nil {
@@ -1039,6 +1199,40 @@ func logOBOSecretEnvVarError(ctx context.Context, err error) {
 			"see the referenced MCPExternalAuthConfig status for details")
 }
 
+// proxyDeploymentScheduling returns the scheduling constraints for the proxy pod
+// from resourceOverrides.proxyDeployment. Takes ResourceOverrides directly because
+// MCPServer and MCPRemoteProxy share that type, so both get identical behaviour
+// from one implementation.
+//
+// The operator sets no proxy scheduling of its own, so these are authoritative
+// rather than merged. Used by both the deployment builders and their
+// deploymentNeedsUpdate drift checks so construction and comparison cannot
+// diverge.
+func proxyDeploymentScheduling(
+	overrides *mcpv1beta1.ResourceOverrides,
+) (map[string]string, []corev1.Toleration, *corev1.Affinity) {
+	if overrides == nil || overrides.ProxyDeployment == nil {
+		return nil, nil, nil
+	}
+	o := overrides.ProxyDeployment
+	return o.NodeSelector, o.Tolerations, o.Affinity
+}
+
+// proxySchedulingNeedsUpdate reports whether the Deployment's proxy pod scheduling
+// has drifted from what resourceOverrides.proxyDeployment asks for. Shared by both
+// controllers' drift checks; equality.Semantic treats nil and empty as equal so an
+// unset override does not read as perpetual drift.
+func proxySchedulingNeedsUpdate(
+	deployment *appsv1.Deployment,
+	overrides *mcpv1beta1.ResourceOverrides,
+) bool {
+	wantNodeSelector, wantTolerations, wantAffinity := proxyDeploymentScheduling(overrides)
+	podSpec := deployment.Spec.Template.Spec
+	return !equality.Semantic.DeepEqual(podSpec.NodeSelector, wantNodeSelector) ||
+		!equality.Semantic.DeepEqual(podSpec.Tolerations, wantTolerations) ||
+		!equality.Semantic.DeepEqual(podSpec.Affinity, wantAffinity)
+}
+
 // deploymentForMCPServer returns a MCPServer Deployment object
 //
 //nolint:gocyclo
@@ -1056,7 +1250,7 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 
 	// Using ConfigMap mode for all configuration
 	// Pod template patch for secrets and service account
-	builder, err := ctrlutil.NewPodTemplateSpecBuilder(m.Spec.PodTemplateSpec, mcpContainerName)
+	podTemplateBuilder, err := ctrlutil.NewPodTemplateSpecBuilder(m.Spec.PodTemplateSpec, mcpContainerName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build PodTemplateSpec: %w", err)
 	}
@@ -1066,7 +1260,7 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 		defaultSA := mcpServerServiceAccountName(m.Name)
 		serviceAccount = &defaultSA
 	}
-	finalPodTemplateSpec := builder.
+	finalPodTemplateSpec := podTemplateBuilder.
 		WithServiceAccount(serviceAccount).
 		WithSecrets(m.Spec.Secrets).
 		Build()
@@ -1098,7 +1292,7 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 		},
 	})
 
-	// Pod template patch, permission profile, OIDC, authorization, audit, environment variables,
+	// Pod template patch, OIDC, authorization, audit, environment variables,
 	// tools filter, and telemetry configuration are all included in the ConfigMap
 	// so we don't need to add them as individual flags
 
@@ -1237,26 +1431,6 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 		})
 	}
 
-	// Add volume mount for permission profile if using configmap
-	if m.Spec.PermissionProfile != nil && m.Spec.PermissionProfile.Type == mcpv1beta1.PermissionProfileTypeConfigMap {
-		volumeMounts = append(volumeMounts, corev1.VolumeMount{
-			Name:      "permission-profile",
-			MountPath: "/etc/toolhive/profiles",
-			ReadOnly:  true,
-		})
-
-		volumes = append(volumes, corev1.Volume{
-			Name: "permission-profile",
-			VolumeSource: corev1.VolumeSource{
-				ConfigMap: &corev1.ConfigMapVolumeSource{
-					LocalObjectReference: corev1.LocalObjectReference{
-						Name: m.Spec.PermissionProfile.Name,
-					},
-				},
-			},
-		})
-	}
-
 	// Add volume mounts for authorization configuration (inline spec.authzConfig).
 	// A referenced MCPAuthzConfig (spec.authzConfigRef) is not mounted: it is
 	// enforced via the authz config embedded in the RunConfig, not a file mount.
@@ -1288,6 +1462,11 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 			volumeMounts = append(volumeMounts, caMounts...)
 		}
 	}
+
+	// Mount the session storage Redis CA bundle when TLS references one.
+	sessionTLSVolumes, sessionTLSMounts := ctrlutil.SessionRedisTLSVolumes(m.Spec.SessionStorage)
+	volumes = append(volumes, sessionTLSVolumes...)
+	volumeMounts = append(volumeMounts, sessionTLSMounts...)
 
 	// Add embedded auth server volumes and env vars. AuthServerRef takes precedence;
 	// externalAuthConfigRef is used as a fallback (legacy path).
@@ -1333,6 +1512,15 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 
 	// Add RunConfig checksum annotation to trigger pod rollout when config changes
 	deploymentTemplateAnnotations = checksum.AddRunConfigChecksumToPodTemplate(deploymentTemplateAnnotations, runConfigChecksum)
+	if configName := ctrlutil.EmbeddedAuthServerConfigName(m.Spec.ExternalAuthConfigRef, m.Spec.AuthServerRef); configName != "" {
+		caChecksum, err := ctrlutil.EmbeddedAuthServerCABundleChecksum(ctx, r.Client, m.Namespace, configName)
+		if err != nil {
+			return nil, fmt.Errorf("failed to calculate auth server CA checksum: %w", err)
+		}
+		if caChecksum != "" {
+			deploymentTemplateAnnotations[ctrlutil.AuthServerCABundleChecksumAnnotation] = caChecksum
+		}
+	}
 
 	// Stamp the MCPServer generation on the proxy Deployment's pod template so the
 	// downward-API env var below resolves to a value that is frozen at pod creation
@@ -1381,6 +1569,7 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 	env = ctrlutil.EnsureRequiredEnvVars(ctx, env)
 
 	imagePullSecrets := r.imagePullSecretsForMCPServer(m)
+	proxyNodeSelector, proxyTolerations, proxyAffinity := proxyDeploymentScheduling(m.Spec.ResourceOverrides)
 
 	dep := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
@@ -1402,6 +1591,9 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 				Spec: corev1.PodSpec{
 					ServiceAccountName:            ctrlutil.ProxyRunnerServiceAccountName(m.Name),
 					ImagePullSecrets:              imagePullSecrets,
+					NodeSelector:                  proxyNodeSelector,
+					Tolerations:                   proxyTolerations,
+					Affinity:                      proxyAffinity,
 					TerminationGracePeriodSeconds: int64Ptr(defaultTerminationGracePeriodSeconds),
 					Containers: []corev1.Container{{
 						Image:        getToolhiveRunnerImage(),
@@ -1647,34 +1839,65 @@ func (r *MCPServerReconciler) updateMCPServerStatus(ctx context.Context, m *mcpv
 	// Set ReadyReplicas to the count of running pods
 	m.Status.ReadyReplicas = int32(running)
 
-	// Update the status based on pod health
+	// Proxy pods alone are not enough: stdio (and other) transports run the
+	// real MCP process in a sibling StatefulSet created by the proxy-runner.
+	// If that STS is gone, clients hit a dead backend while Ready stays true
+	// (#6343). Surface the gap instead of claiming the server is running.
 	if running > 0 {
+		updated, stsErr := r.statusIfWorkloadStatefulSetMissing(ctx, m)
+		if stsErr != nil {
+			return stsErr
+		}
+		if updated {
+			return nil
+		}
+	}
+	applyMCPServerPhaseFromCounts(m, running, pending, failed, failureReason)
+
+	// Update the status
+	return r.Status().Update(ctx, m)
+}
+
+func applyMCPServerPhaseFromCounts(m *mcpv1beta1.MCPServer, running, pending, failed int, failureReason string) {
+	switch {
+	case running > 0:
 		m.Status.Phase = mcpv1beta1.MCPServerPhaseReady
 		m.Status.Message = "MCP server is running"
-	} else if failed > 0 {
+	case failed > 0:
 		m.Status.Phase = mcpv1beta1.MCPServerPhaseFailed
 		if failureReason != "" {
 			m.Status.Message = fmt.Sprintf("MCP server pod failed: %s", failureReason)
 		} else {
 			m.Status.Message = "MCP server pod failed"
 		}
-	} else if pending > 0 {
+	case pending > 0:
 		m.Status.Phase = mcpv1beta1.MCPServerPhasePending
 		m.Status.Message = "MCP server is starting"
-	} else {
+	default:
 		m.Status.Phase = mcpv1beta1.MCPServerPhasePending
 		m.Status.Message = "No healthy pods found"
 	}
-
-	// Set the top-level Ready condition based on the determined phase
 	if m.Status.Phase == mcpv1beta1.MCPServerPhaseReady {
 		setReadyCondition(m, metav1.ConditionTrue, mcpv1beta1.ConditionReasonReady, "MCP server is running")
 	} else {
 		setReadyCondition(m, metav1.ConditionFalse, mcpv1beta1.ConditionReasonNotReady, m.Status.Message)
 	}
+}
 
-	// Update the status
-	return r.Status().Update(ctx, m)
+// statusIfWorkloadStatefulSetMissing sets Pending when the proxy is up but the
+// sibling workload STS is gone (#6343). Returns true if status was written.
+func (r *MCPServerReconciler) statusIfWorkloadStatefulSetMissing(ctx context.Context, m *mcpv1beta1.MCPServer) (bool, error) {
+	missing, err := r.statefulSetMissing(ctx, m)
+	if err != nil {
+		return false, err
+	}
+	if !missing {
+		return false, nil
+	}
+	m.Status.Phase = mcpv1beta1.MCPServerPhasePending
+	m.Status.Message = "MCP server proxy is running; recreating missing workload StatefulSet"
+	setReadyCondition(m, metav1.ConditionFalse, mcpv1beta1.ConditionReasonNotReady, m.Status.Message)
+	return true, r.Status().Update(ctx, m)
 }
 
 // deleteIfExists fetches a Kubernetes object by name and namespace, and deletes it if it exists.
@@ -1898,6 +2121,11 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(
 			return true
 		}
 
+		wantSessionTLSVolumes, _ := ctrlutil.SessionRedisTLSVolumes(mcpServer.Spec.SessionStorage)
+		if ctrlutil.SessionRedisTLSVolumeNeedsUpdate(deployment.Spec.Template.Spec.Volumes, wantSessionTLSVolumes) {
+			return true
+		}
+
 		// Check if the pod template spec has changed (including secrets)
 		// If service account is not specified, use the default MCP server service account
 		serviceAccount := mcpServer.Spec.ServiceAccount
@@ -1906,13 +2134,13 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(
 			serviceAccount = &defaultSA
 		}
 
-		builder, err := ctrlutil.NewPodTemplateSpecBuilder(mcpServer.Spec.PodTemplateSpec, mcpContainerName)
+		podTemplateBuilder, err := ctrlutil.NewPodTemplateSpecBuilder(mcpServer.Spec.PodTemplateSpec, mcpContainerName)
 		if err != nil {
 			// If we can't parse the PodTemplateSpec, consider it as needing update
 			return true
 		}
 
-		expectedPodTemplateSpec := builder.
+		expectedPodTemplateSpec := podTemplateBuilder.
 			WithServiceAccount(serviceAccount).
 			WithSecrets(mcpServer.Spec.Secrets).
 			Build()
@@ -1952,6 +2180,11 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(
 		// nil and empty slices are treated as equal.
 		expectedPullSecrets := r.imagePullSecretsForMCPServer(mcpServer)
 		if !equality.Semantic.DeepEqual(deployment.Spec.Template.Spec.ImagePullSecrets, expectedPullSecrets) {
+			return true
+		}
+
+		// Check if the proxy pod scheduling overrides have changed.
+		if proxySchedulingNeedsUpdate(deployment, mcpServer.Spec.ResourceOverrides) {
 			return true
 		}
 
@@ -1999,6 +2232,17 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(
 	// Check if pod template annotations have changed (including runconfig checksum)
 	expectedPodTemplateAnnotations := make(map[string]string)
 	expectedPodTemplateAnnotations = checksum.AddRunConfigChecksumToPodTemplate(expectedPodTemplateAnnotations, runConfigChecksum)
+	configName := ctrlutil.EmbeddedAuthServerConfigName(
+		mcpServer.Spec.ExternalAuthConfigRef, mcpServer.Spec.AuthServerRef)
+	if configName != "" {
+		caChecksum, err := ctrlutil.EmbeddedAuthServerCABundleChecksum(ctx, r.Client, mcpServer.Namespace, configName)
+		if err != nil {
+			return true
+		}
+		if caChecksum != "" {
+			expectedPodTemplateAnnotations[ctrlutil.AuthServerCABundleChecksumAnnotation] = caChecksum
+		}
+	}
 	// Mirrors deploymentForMCPServer: stamp the MCPServer generation so the
 	// downward-API env var injected into the proxyrunner container resolves
 	// to a frozen-per-pod value (#5360).
@@ -2015,7 +2259,16 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(
 		)
 	}
 
-	if !maps.Equal(deployment.Spec.Template.Annotations, expectedPodTemplateAnnotations) {
+	// Subset check so kubectl.kubernetes.io/restartedAt (and other
+	// externally-written keys) are not treated as drift and reverted (#6344).
+	if !ctrlutil.MapIsSubset(expectedPodTemplateAnnotations, deployment.Spec.Template.Annotations) {
+		return true
+	}
+
+	const caChecksumKey = ctrlutil.AuthServerCABundleChecksumAnnotation
+	actualCAChecksum, actualCAChecksumSet := deployment.Spec.Template.Annotations[caChecksumKey]
+	expectedCAChecksum, expectedCAChecksumSet := expectedPodTemplateAnnotations[caChecksumKey]
+	if actualCAChecksumSet != expectedCAChecksumSet || actualCAChecksum != expectedCAChecksum {
 		return true
 	}
 
@@ -2181,6 +2434,24 @@ func (r *MCPServerReconciler) handleExternalAuthConfig(ctx context.Context, m *m
 		return err
 	}
 
+	// Resolve upstream CA dependencies before allowing any workload changes.
+	if embeddedCfg := externalAuthConfig.Spec.EmbeddedAuthServer; embeddedCfg != nil {
+		if err := ctrlutil.ValidateEmbeddedAuthServerCABundles(ctx, r.Client, m.Namespace, embeddedCfg); err != nil {
+			// Only a content error is terminal. A failed ConfigMap read may be
+			// transient, and must requeue rather than be recorded as a spec defect.
+			var invalidCABundleErr *ctrlutil.InvalidCABundleError
+			if !stderrors.As(err, &invalidCABundleErr) {
+				return err
+			}
+			meta.SetStatusCondition(&m.Status.Conditions, metav1.Condition{
+				Type: mcpv1beta1.ConditionTypeExternalAuthConfigValidated, Status: metav1.ConditionFalse,
+				Reason: mcpv1beta1.ConditionReasonInvalidCABundle, Message: fmt.Sprintf("invalid CA bundle: %v", err),
+				ObservedGeneration: m.Generation,
+			})
+			return err
+		}
+	}
+
 	// MCPServer supports only single-upstream embedded auth server configs.
 	// Multi-upstream requires VirtualMCPServer.
 	if embeddedCfg := externalAuthConfig.Spec.EmbeddedAuthServer; embeddedCfg != nil && len(embeddedCfg.UpstreamProviders) > 1 {
@@ -2199,6 +2470,8 @@ func (r *MCPServerReconciler) handleExternalAuthConfig(ctx context.Context, m *m
 				"but only 1 is supported; use VirtualMCPServer",
 			m.Namespace, m.Name, len(embeddedCfg.UpstreamProviders))
 	}
+
+	setMCPServerExternalAuthConfigValidCondition(m, externalAuthConfig.Name, externalAuthConfig.Status.ConfigHash)
 
 	// Check if the MCPExternalAuthConfig hash has changed
 	if m.Status.ExternalAuthConfigHash != externalAuthConfig.Status.ConfigHash {
@@ -2219,6 +2492,37 @@ func (r *MCPServerReconciler) handleExternalAuthConfig(ctx context.Context, m *m
 	}
 
 	return nil
+}
+
+// setMCPServerExternalAuthConfigValidCondition preserves a terminal RunConfig validation failure
+// until its referenced configuration or this resource generation changes.
+//
+// A CA bundle failure (ConditionReasonInvalidCABundle) is deliberately not
+// preserved here: its failing input is ConfigMap content, which neither
+// generation nor configHash tracks, and the check that records it re-runs
+// earlier in this same function. Holding it would make the failure permanent.
+func setMCPServerExternalAuthConfigValidCondition(
+	m *mcpv1beta1.MCPServer,
+	configName, configHash string,
+) {
+	previousCondition := meta.FindStatusCondition(
+		m.Status.Conditions, mcpv1beta1.ConditionTypeExternalAuthConfigValidated,
+	)
+	if previousCondition != nil &&
+		previousCondition.Status == metav1.ConditionFalse &&
+		previousCondition.Reason == mcpv1beta1.ConditionReasonInvalidConfig &&
+		previousCondition.ObservedGeneration == m.Generation &&
+		m.Status.ExternalAuthConfigHash == configHash {
+		return
+	}
+
+	meta.SetStatusCondition(&m.Status.Conditions, metav1.Condition{
+		Type:               mcpv1beta1.ConditionTypeExternalAuthConfigValidated,
+		Status:             metav1.ConditionTrue,
+		Reason:             mcpv1beta1.ConditionReasonExternalAuthConfigValid,
+		Message:            fmt.Sprintf("MCPExternalAuthConfig '%s' is valid", configName),
+		ObservedGeneration: m.Generation,
+	})
 }
 
 // handleAuthServerRef validates and tracks the hash of the referenced authServerRef config.
@@ -2305,14 +2609,30 @@ func (r *MCPServerReconciler) handleAuthServerRef(ctx context.Context, m *mcpv1b
 			m.Namespace, m.Name, len(embeddedCfg.UpstreamProviders))
 	}
 
-	// AuthServerRef valid
-	meta.SetStatusCondition(&m.Status.Conditions, metav1.Condition{
-		Type:               mcpv1beta1.ConditionTypeAuthServerRefValidated,
-		Status:             metav1.ConditionTrue,
-		Reason:             mcpv1beta1.ConditionReasonAuthServerRefValid,
-		Message:            fmt.Sprintf("AuthServerRef '%s' is valid", authConfig.Name),
-		ObservedGeneration: m.Generation,
-	})
+	// Resolve upstream CA dependencies before allowing any workload changes.
+	// Mirrors handleExternalAuthConfig: without this the first notice of a bad
+	// bundle is Deployment construction, which reports a generic build failure
+	// and requeues instead of recording a terminal condition here.
+	if embeddedCfg := authConfig.Spec.EmbeddedAuthServer; embeddedCfg != nil {
+		if err := ctrlutil.ValidateEmbeddedAuthServerCABundles(ctx, r.Client, m.Namespace, embeddedCfg); err != nil {
+			// Only a content error is terminal. A failed ConfigMap read may be
+			// transient, and must requeue rather than be recorded as a spec defect.
+			var invalidCABundleErr *ctrlutil.InvalidCABundleError
+			if !stderrors.As(err, &invalidCABundleErr) {
+				return err
+			}
+			meta.SetStatusCondition(&m.Status.Conditions, metav1.Condition{
+				Type:               mcpv1beta1.ConditionTypeAuthServerRefValidated,
+				Status:             metav1.ConditionFalse,
+				Reason:             mcpv1beta1.ConditionReasonInvalidCABundle,
+				Message:            fmt.Sprintf("invalid CA bundle: %v", err),
+				ObservedGeneration: m.Generation,
+			})
+			return err
+		}
+	}
+
+	setMCPServerAuthServerRefValidCondition(m, authConfig.Name, authConfig.Status.ConfigHash)
 
 	// Check if the config hash has changed
 	if m.Status.AuthServerConfigHash != authConfig.Status.ConfigHash {
@@ -2329,6 +2649,27 @@ func (r *MCPServerReconciler) handleAuthServerRef(ctx context.Context, m *mcpv1b
 	}
 
 	return nil
+}
+
+// setMCPServerAuthServerRefValidCondition preserves a terminal RunConfig validation failure
+// until its referenced configuration or this resource generation changes.
+func setMCPServerAuthServerRefValidCondition(m *mcpv1beta1.MCPServer, configName, configHash string) {
+	previousCondition := meta.FindStatusCondition(m.Status.Conditions, mcpv1beta1.ConditionTypeAuthServerRefValidated)
+	if previousCondition != nil &&
+		previousCondition.Status == metav1.ConditionFalse &&
+		previousCondition.Reason == mcpv1beta1.ConditionReasonAuthServerRefInvalidConfig &&
+		previousCondition.ObservedGeneration == m.Generation &&
+		m.Status.AuthServerConfigHash == configHash {
+		return
+	}
+
+	meta.SetStatusCondition(&m.Status.Conditions, metav1.Condition{
+		Type:               mcpv1beta1.ConditionTypeAuthServerRefValidated,
+		Status:             metav1.ConditionTrue,
+		Reason:             mcpv1beta1.ConditionReasonAuthServerRefValid,
+		Message:            fmt.Sprintf("AuthServerRef '%s' is valid", configName),
+		ObservedGeneration: m.Generation,
+	})
 }
 
 // handleOIDCConfig validates and tracks the hash of the referenced MCPOIDCConfig.
@@ -2697,11 +3038,32 @@ func (r *MCPServerReconciler) validateSessionStorageForReplicas(ctx context.Cont
 }
 
 // buildRedisPasswordEnvVar returns the THV_SESSION_REDIS_PASSWORD env var when
-// sessionStorage.provider == "redis" and passwordRef is set; returns nil otherwise.
+// sessionStorage.provider == "redis" and passwordRef is set, or when
+// spec.sessionStorage is unset and TOOLHIVE_DEFAULT_REDIS_SECRET_NAME is set
+// via the global default; returns nil otherwise.
 func (*MCPServerReconciler) buildRedisPasswordEnvVar(m *mcpv1beta1.MCPServer) []corev1.EnvVar {
-	if m.Spec.SessionStorage == nil ||
-		m.Spec.SessionStorage.Provider != mcpv1beta1.SessionStorageProviderRedis ||
-		m.Spec.SessionStorage.PasswordRef == nil {
+	if m.Spec.SessionStorage != nil {
+		if m.Spec.SessionStorage.Provider == mcpv1beta1.SessionStorageProviderRedis &&
+			m.Spec.SessionStorage.PasswordRef != nil {
+			return []corev1.EnvVar{{
+				Name: session.RedisPasswordEnvVar,
+				ValueFrom: &corev1.EnvVarSource{
+					SecretKeyRef: &corev1.SecretKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{
+							Name: m.Spec.SessionStorage.PasswordRef.Name,
+						},
+						Key: m.Spec.SessionStorage.PasswordRef.Key,
+					},
+				},
+			}}
+		}
+		// spec.sessionStorage was set explicitly — never fall through to the
+		// global default regardless of provider.
+		return nil
+	}
+
+	def := ctrlutil.ReadDefaultRedisConfig()
+	if def == nil || def.SecretName == "" {
 		return nil
 	}
 	return []corev1.EnvVar{{
@@ -2709,9 +3071,9 @@ func (*MCPServerReconciler) buildRedisPasswordEnvVar(m *mcpv1beta1.MCPServer) []
 		ValueFrom: &corev1.EnvVarSource{
 			SecretKeyRef: &corev1.SecretKeySelector{
 				LocalObjectReference: corev1.LocalObjectReference{
-					Name: m.Spec.SessionStorage.PasswordRef.Name,
+					Name: def.SecretName,
 				},
-				Key: m.Spec.SessionStorage.PasswordRef.Key,
+				Key: def.SecretKey,
 			},
 		},
 	}}
@@ -2869,6 +3231,11 @@ func (r *MCPServerReconciler) mapToolConfigToServers(
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *MCPServerReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	if err := mgr.GetFieldIndexer().IndexField(
+		context.Background(), &mcpv1beta1.MCPServer{},
+		EmbeddedAuthConfigIndex, indexMCPServerEmbeddedAuthConfig); err != nil {
+		return fmt.Errorf("index MCPServer embedded auth references: %w", err)
+	}
 	// Create a handler that maps MCPExternalAuthConfig changes to MCPServer reconciliation requests
 	externalAuthConfigHandler := handler.EnqueueRequestsFromMapFunc(
 		func(ctx context.Context, obj client.Object) []reconcile.Request {
@@ -2946,11 +3313,22 @@ func (r *MCPServerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&mcpv1beta1.MCPServer{}).
 		Owns(&appsv1.Deployment{}).
 		Owns(&corev1.Service{}).
+		Owns(&appsv1.StatefulSet{}).
+		Watches(
+			&appsv1.StatefulSet{},
+			handler.EnqueueRequestsFromMapFunc(r.mapStatefulSetToMCPServer),
+			builder.WithPredicates(predicate.NewPredicateFuncs(isToolhiveStatefulSet)),
+		).
 		Watches(&mcpv1beta1.MCPExternalAuthConfig{}, externalAuthConfigHandler).
 		Watches(&mcpv1beta1.MCPOIDCConfig{}, oidcConfigHandler).
 		Watches(&mcpv1beta1.MCPAuthzConfig{}, authzConfigHandler).
 		Watches(&mcpv1beta1.MCPTelemetryConfig{}, telemetryConfigHandler).
 		Watches(&mcpv1alpha1.MCPWebhookConfig{}, webhookConfigHandler).
 		Watches(&mcpv1beta1.MCPToolConfig{}, toolConfigHandler).
+		Watches(
+			&corev1.ConfigMap{},
+			handler.EnqueueRequestsFromMapFunc(r.mapAuthServerCABundleConfigMapToMCPServer),
+			builder.WithPredicates(configMapDataChangedPredicate()),
+		).
 		Complete(r)
 }

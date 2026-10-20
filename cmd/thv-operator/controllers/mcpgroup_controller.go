@@ -285,6 +285,7 @@ func (r *MCPGroupReconciler) handleDeletion(ctx context.Context, mcpGroup *mcpv1
 		if err := r.Update(ctx, mcpGroup); err != nil {
 			if errors.IsConflict(err) {
 				// Requeue to retry with fresh data
+				//nolint:staticcheck // Requeue preserves the controller's rate-limited conflict retry behavior.
 				return ctrl.Result{Requeue: true}, nil
 			}
 			ctxLogger.Error(err, "Failed to remove finalizer")

@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 
@@ -60,6 +61,15 @@ func (h *Handler) AuthorizeHandler(w http.ResponseWriter, req *http.Request) {
 	}
 
 	// See rewriteLoopbackRedirectURI's doc comment for what this does and why.
+	// Keep the parsed form before any rewrite so exemption checks can distinguish
+	// an explicitly registered redirect from a rewritten or inferred value.
+	var originalForm url.Values
+	if err := req.ParseForm(); err == nil {
+		originalForm = make(url.Values, len(req.Form))
+		for key, values := range req.Form {
+			originalForm[key] = slices.Clone(values)
+		}
+	}
 	rewrittenFrom := h.rewriteLoopbackRedirectURI(ctx, req)
 
 	// Let fosite validate everything: client_id, redirect_uri, response_type, PKCE, scopes
@@ -133,7 +143,8 @@ func (h *Handler) AuthorizeHandler(w http.ResponseWriter, req *http.Request) {
 		"scope_count", len(scopes),
 	)
 
-	// Store the request before any upstream authorization secrets exist.
+	// Prepare the pending request before choosing the consent or upstream path;
+	// beginUpstream persists its secret-bearing copy before redirecting.
 	binding := newBrowserBinding()
 	handle := rand.Text()
 	pending := &storage.PendingAuthorization{
@@ -143,8 +154,15 @@ func (h *Handler) AuthorizeHandler(w http.ResponseWriter, req *http.Request) {
 		BrowserBindingHash: binding.hash, UpstreamProviderName: h.upstreams[0].Name,
 		SessionID: rand.Text(), CreatedAt: time.Now(),
 	}
-	if h.beginIfRemembered(ctx, w, req, errAr, pending, redirectURI, scopes, resource) {
-		return
+	if !promptRequiresConsent(ar.GetRequestForm()) {
+		if h.consentExempt(ar, originalForm, rewrittenFrom) {
+			pending.ConsentStage = storage.ConsentStageApproved
+			h.beginUpstream(ctx, w, req, errAr, pending)
+			return
+		}
+		if h.beginIfRemembered(ctx, w, req, errAr, pending, redirectURI, scopes, resource) {
+			return
+		}
 	}
 	if err := h.storage.StorePendingAuthorization(ctx, handle, pending); err != nil {
 		slog.Error("failed to store pending authorization", "error", err)
@@ -156,20 +174,11 @@ func (h *Handler) AuthorizeHandler(w http.ResponseWriter, req *http.Request) {
 }
 
 // beginIfRemembered skips the consent page when a covering server-side approval
-// exists and the client has not explicitly requested consent, and reports
-// whether it answered the request.
+// exists and reports whether it answered the request. Callers must apply
+// promptRequiresConsent before reaching this remembered-consent lookup.
 func (h *Handler) beginIfRemembered(ctx context.Context, w http.ResponseWriter, req *http.Request,
 	errAr fosite.AuthorizeRequester, pending *storage.PendingAuthorization,
 	redirectURI string, scopes []string, resource string) bool {
-	// A downstream consent prompt requires the consent page even with a covering approval.
-	for _, prompt := range errAr.GetRequestForm()["prompt"] {
-		for _, token := range strings.Fields(prompt) {
-			if token == "consent" {
-				return false
-			}
-		}
-	}
-
 	// Only a covering server-side approval can bypass the consent page.
 	remembered, digest, err := h.coveringConsent(ctx, req, errAr.GetClient(), redirectURI, scopes, resource)
 	if err != nil {
@@ -186,6 +195,32 @@ func (h *Handler) beginIfRemembered(ctx context.Context, w http.ResponseWriter, 
 	pending.ConsentSessionDigest = digest
 	h.beginUpstream(ctx, w, req, errAr, pending)
 	return true
+}
+
+func promptRequiresConsent(form url.Values) bool {
+	for _, prompt := range form["prompt"] {
+		for _, token := range strings.Fields(prompt) {
+			if token == "consent" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (h *Handler) consentExempt(
+	ar fosite.AuthorizeRequester, originalForm url.Values, rewrittenFrom string,
+) bool {
+	client := ar.GetClient()
+	if client == nil || !ar.GetResponseTypes().ExactOne("code") {
+		return false
+	}
+	if _, ok := h.consentExemptClientIDSet[client.GetID()]; !ok || !consentpolicy.IsEligibleClient(client) {
+		return false
+	}
+	redirectURIs := originalForm["redirect_uri"]
+	return rewrittenFrom == "" && len(redirectURIs) == 1 && redirectURIs[0] != "" &&
+		slices.Contains(client.GetRedirectURIs(), redirectURIs[0])
 }
 
 // beginUpstream starts an approved request using fresh per-leg secrets.

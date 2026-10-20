@@ -206,6 +206,74 @@ func TestRememberedApprovalPromptConsent(t *testing.T) {
 	}
 }
 
+func TestConsentExemptionDecisionPrecedence(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range []struct {
+		name      string
+		prompt    string
+		wantPage  bool
+		wantStage string
+	}{
+		{name: "exemption precedes remembered approval", wantStage: storage.ConsentStageApproved},
+		{name: "forced consent precedes exemption and remembered approval", prompt: "login consent", wantPage: true, wantStage: storage.ConsentStageAwaiting},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			h, state, upstream, remembered, cookie := setupRememberedHandler(t)
+			client := state.clients[testAuthClientID].(*fosite.DefaultClient)
+			client.Public = false
+			client.Secret = []byte("test-secret")
+			h.consentExemptClientIDSet = map[string]struct{}{testAuthClientID: {}}
+			counted := &countingConsentReads{RememberedConsentStorage: remembered}
+			h.rememberedStorage = counted
+
+			req := rememberedAuthorizeRequest(cookie, "openid", "https://api.example.com", testAuthRedirectURI)
+			if tt.prompt != "" {
+				params := req.URL.Query()
+				params.Set("prompt", tt.prompt)
+				req.URL.RawQuery = params.Encode()
+			}
+			w := httptest.NewRecorder()
+			h.AuthorizeHandler(w, req)
+
+			if tt.wantPage {
+				require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+				require.Contains(t, w.Body.String(), "Allow this app to sign you in?")
+				require.Empty(t, upstream.capturedState)
+			} else {
+				require.Equal(t, http.StatusSeeOther, w.Code, w.Body.String())
+				require.NotEmpty(t, upstream.capturedState)
+			}
+			require.Zero(t, counted.sessionReads)
+			require.Zero(t, counted.approvalReads)
+			pendingHandle := upstream.capturedState
+			if tt.wantPage {
+				pendingHandle = onlyPendingHandle(t, state)
+			}
+			pending := state.pendingAuths[pendingHandle]
+			require.Equal(t, tt.wantStage, pending.ConsentStage)
+			require.Empty(t, pending.ExpectedUserID)
+			require.Empty(t, pending.ExpectedProviderSubject)
+			require.Empty(t, pending.ConsentSessionDigest)
+			bindingCookie := bindingCookieFromSecure(t, w, pendingHandle)
+			require.Equal(t, hashBrowserBindingSecret(bindingCookie.Value), pending.BrowserBindingHash)
+			for _, responseCookie := range w.Result().Cookies() {
+				require.NotEqual(t, h.consentCookieName(), responseCookie.Name)
+			}
+		})
+	}
+}
+
+func onlyPendingHandle(t *testing.T, state *testStorageState) string {
+	t.Helper()
+	require.Len(t, state.pendingAuths, 1)
+	for handle := range state.pendingAuths {
+		return handle
+	}
+	return ""
+}
+
 func TestRememberedSecondAuthorizationSkipsConsent(t *testing.T) {
 	t.Parallel()
 	h, state, upstream, _, _ := setupRememberedHandler(t)
@@ -318,6 +386,22 @@ func TestRememberedIdentityMismatchRevocationFailureFailsClosed(t *testing.T) {
 	require.Equal(t, []string{consentDigest(cookie.Value)}, failing.deletedDigests)
 	_, err = s.GetConsentSession(context.Background(), consentDigest(cookie.Value))
 	require.NoError(t, err, "failed revocation must leave the originating session intact")
+}
+
+type countingConsentReads struct {
+	storage.RememberedConsentStorage
+	sessionReads  int
+	approvalReads int
+}
+
+func (r *countingConsentReads) GetConsentSession(ctx context.Context, digest string) (*storage.ConsentSession, error) {
+	r.sessionReads++
+	return r.RememberedConsentStorage.GetConsentSession(ctx, digest)
+}
+
+func (r *countingConsentReads) GetClientApproval(ctx context.Context, userID, clientID string) (*storage.ClientApproval, error) {
+	r.approvalReads++
+	return r.RememberedConsentStorage.GetClientApproval(ctx, userID, clientID)
 }
 
 type deleteFailureConsent struct {

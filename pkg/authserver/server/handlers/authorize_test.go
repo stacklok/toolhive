@@ -26,6 +26,84 @@ import (
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
+func TestPromptRequiresConsent(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range []struct {
+		name   string
+		prompt []string
+		want   bool
+	}{
+		{name: "missing"},
+		{name: "consent", prompt: []string{"consent"}, want: true},
+		{name: "space separated", prompt: []string{"login consent"}, want: true},
+		{name: "repeated", prompt: []string{"login", "consent"}, want: true},
+		{name: "not a token", prompt: []string{"consented"}},
+		{name: "other prompt", prompt: []string{"login"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, promptRequiresConsent(url.Values{"prompt": tt.prompt}))
+		})
+	}
+}
+
+func TestConsentExemptEligibility(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range []struct {
+		name                string
+		allowlisted         bool
+		public              bool
+		backChannelOnly     bool
+		grantTypes          []string
+		clientResponseTypes []string
+		requestTypes        fosite.Arguments
+		redirectURIs        []string
+		requestRedirects    []string
+		rewrittenFrom       string
+		want                bool
+	}{
+		{name: "eligible", allowlisted: true, grantTypes: []string{"authorization_code"}, clientResponseTypes: []string{"code"}, requestTypes: fosite.Arguments{"code"}, redirectURIs: []string{testAuthRedirectURI}, requestRedirects: []string{testAuthRedirectURI}, want: true},
+		{name: "not allowlisted", grantTypes: []string{"authorization_code"}, clientResponseTypes: []string{"code"}, requestTypes: fosite.Arguments{"code"}, redirectURIs: []string{testAuthRedirectURI}, requestRedirects: []string{testAuthRedirectURI}},
+		{name: "public client", allowlisted: true, public: true, grantTypes: []string{"authorization_code"}, clientResponseTypes: []string{"code"}, requestTypes: fosite.Arguments{"code"}, redirectURIs: []string{testAuthRedirectURI}, requestRedirects: []string{testAuthRedirectURI}},
+		{name: "back-channel-only client", allowlisted: true, backChannelOnly: true, grantTypes: []string{"urn:ietf:params:oauth:grant-type:token-exchange"}, requestTypes: fosite.Arguments{"code"}, redirectURIs: []string{testAuthRedirectURI}, requestRedirects: []string{testAuthRedirectURI}},
+		{name: "missing authorization-code grant", allowlisted: true, grantTypes: []string{"refresh_token"}, clientResponseTypes: []string{"code"}, requestTypes: fosite.Arguments{"code"}, redirectURIs: []string{testAuthRedirectURI}, requestRedirects: []string{testAuthRedirectURI}},
+		{name: "missing code response type", allowlisted: true, grantTypes: []string{"authorization_code"}, clientResponseTypes: []string{"token"}, requestTypes: fosite.Arguments{"code"}, redirectURIs: []string{testAuthRedirectURI}, requestRedirects: []string{testAuthRedirectURI}},
+		{name: "request response type is not exactly code", allowlisted: true, grantTypes: []string{"authorization_code"}, clientResponseTypes: []string{"code"}, requestTypes: fosite.Arguments{"code", "token"}, redirectURIs: []string{testAuthRedirectURI}, requestRedirects: []string{testAuthRedirectURI}},
+		{name: "missing explicit redirect", allowlisted: true, grantTypes: []string{"authorization_code"}, clientResponseTypes: []string{"code"}, requestTypes: fosite.Arguments{"code"}, redirectURIs: []string{testAuthRedirectURI}},
+		{name: "empty explicit redirect", allowlisted: true, grantTypes: []string{"authorization_code"}, clientResponseTypes: []string{"code"}, requestTypes: fosite.Arguments{"code"}, redirectURIs: []string{testAuthRedirectURI}, requestRedirects: []string{""}},
+		{name: "repeated explicit redirect", allowlisted: true, grantTypes: []string{"authorization_code"}, clientResponseTypes: []string{"code"}, requestTypes: fosite.Arguments{"code"}, redirectURIs: []string{testAuthRedirectURI}, requestRedirects: []string{testAuthRedirectURI, testAuthRedirectURI}},
+		{name: "unregistered redirect", allowlisted: true, grantTypes: []string{"authorization_code"}, clientResponseTypes: []string{"code"}, requestTypes: fosite.Arguments{"code"}, redirectURIs: []string{testAuthRedirectURI}, requestRedirects: []string{"https://other.example/callback"}},
+		{name: "rewritten redirect", allowlisted: true, grantTypes: []string{"authorization_code"}, clientResponseTypes: []string{"code"}, requestTypes: fosite.Arguments{"code"}, redirectURIs: []string{testAuthRedirectURI}, requestRedirects: []string{testAuthRedirectURI}, rewrittenFrom: "http://localhost:1234/callback"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			h, state, _ := handlerTestSetup(t)
+			client := *state.clients[testAuthClientID].(*fosite.DefaultClient)
+			client.Public = tt.public
+			client.Secret = []byte("test-secret")
+			client.GrantTypes = tt.grantTypes
+			client.ResponseTypes = tt.clientResponseTypes
+			client.RedirectURIs = tt.redirectURIs
+			if tt.backChannelOnly {
+				client.ResponseTypes = nil
+			}
+			if tt.allowlisted {
+				h.consentExemptClientIDSet = map[string]struct{}{testAuthClientID: {}}
+			}
+			ar := fosite.NewAuthorizeRequest()
+			ar.Client = &client
+			ar.ResponseTypes = tt.requestTypes
+			form := make(url.Values)
+			if tt.requestRedirects != nil {
+				form["redirect_uri"] = tt.requestRedirects
+			}
+			assert.Equal(t, tt.want, h.consentExempt(ar, form, tt.rewrittenFrom))
+		})
+	}
+}
+
 func TestAuthorizeHandler_MissingClientID(t *testing.T) {
 	t.Parallel()
 	handler, _, _ := handlerTestSetup(t)

@@ -884,34 +884,34 @@ func TestRedisStorage_UpsertDCRIssuedClient(t *testing.T) {
 
 	t.Run("creates when absent, with the DCR TTL", func(t *testing.T) {
 		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
-			client := newDCRClient(t, "cimd-client", oauthproto.TokenEndpointAuthMethodNone, "")
+			client := newDCRClient(t, "https://cimd.example/client.json", oauthproto.TokenEndpointAuthMethodNone, "")
 			require.NoError(t, s.UpsertDCRIssuedClient(ctx, client))
 
-			retrieved, err := s.GetClient(ctx, "cimd-client")
+			retrieved, err := s.GetClient(ctx, "https://cimd.example/client.json")
 			require.NoError(t, err)
 			assert.True(t, registration.DCRIssued(retrieved))
-			key := redisKey(s.keyPrefix, KeyTypeClient, "cimd-client")
+			key := redisKey(s.keyPrefix, KeyTypeClient, "https://cimd.example/client.json")
 			assert.InDelta(t, DefaultDCRClientTTL.Seconds(), mr.TTL(key).Seconds(), 60)
 		})
 	})
 
 	t.Run("replaces and renews when existing row is DCR-issued", func(t *testing.T) {
 		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
-			first := newDCRClient(t, "cimd-client", oauthproto.TokenEndpointAuthMethodNone, "")
+			first := newDCRClient(t, "https://cimd.example/client.json", oauthproto.TokenEndpointAuthMethodNone, "")
 			require.NoError(t, s.UpsertDCRIssuedClient(ctx, first))
 
-			key := redisKey(s.keyPrefix, KeyTypeClient, "cimd-client")
+			key := redisKey(s.keyPrefix, KeyTypeClient, "https://cimd.example/client.json")
 			mr.FastForward(DefaultDCRClientTTL - time.Hour)
 
 			second, err := registration.New(registration.Config{
-				ID:                      "cimd-client",
+				ID:                      "https://cimd.example/client.json",
 				TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodNone,
 				RedirectURIs:            []string{"https://app.example/cb-v2"},
 			})
 			require.NoError(t, err)
 			require.NoError(t, s.UpsertDCRIssuedClient(ctx, second))
 
-			retrieved, err := s.GetClient(ctx, "cimd-client")
+			retrieved, err := s.GetClient(ctx, "https://cimd.example/client.json")
 			require.NoError(t, err)
 			assert.Equal(t, []string{"https://app.example/cb-v2"}, retrieved.GetRedirectURIs(),
 				"second call must replace the stored row's data")
@@ -922,13 +922,13 @@ func TestRedisStorage_UpsertDCRIssuedClient(t *testing.T) {
 
 	t.Run("refuses to overwrite a non-DCR-issued client", func(t *testing.T) {
 		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
-			configured := newConfigured("configured", "secret")
+			configured := newConfigured("https://cimd.example/configured.json", "secret")
 			require.NoError(t, s.ReconcileConfiguredClient(ctx, configured))
 
-			err := s.UpsertDCRIssuedClient(ctx, newDCRClient(t, "configured", oauthproto.TokenEndpointAuthMethodNone, ""))
+			err := s.UpsertDCRIssuedClient(ctx, newDCRClient(t, "https://cimd.example/configured.json", oauthproto.TokenEndpointAuthMethodNone, ""))
 			require.ErrorIs(t, err, ErrAlreadyExists)
 
-			retrieved, err := s.GetClient(ctx, "configured")
+			retrieved, err := s.GetClient(ctx, "https://cimd.example/configured.json")
 			require.NoError(t, err)
 			assert.False(t, registration.DCRIssued(retrieved), "the configured client must be untouched")
 		})
@@ -1045,8 +1045,8 @@ func TestRedisStorage_RenewClientTTL(t *testing.T) {
 
 			key := redisKey(s.keyPrefix, KeyTypeClient, "dcr-public-renew")
 
-			// Age the registration so only a small slice of the TTL remains.
-			mr.FastForward(DefaultDCRClientTTL - time.Hour)
+			// Age the registration so only a small slice of its unused TTL remains.
+			mr.FastForward(DefaultUnusedDCRClientTTL - time.Hour)
 			ttlBefore := mr.TTL(key)
 			require.Positive(t, ttlBefore)
 			require.Less(t, ttlBefore, 2*time.Hour, "precondition: TTL should be near expiry")

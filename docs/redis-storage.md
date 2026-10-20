@@ -330,7 +330,8 @@ All keys use the prefix `thv:auth:{namespace:name}:` where `{namespace:name}` is
 | `{prefix}refresh:{signature}` | Refresh token data | 30 days (default) |
 | `{prefix}authcode:{code}` | Authorization code | 10 minutes |
 | `{prefix}pkce:{signature}` | PKCE challenge data | 10 minutes |
-| `{prefix}client:{client_id}` | OAuth client registration | 30 days sliding, renewed on use (DCR-issued) / none (pre-provisioned) |
+| `{prefix}client:{client_id}` | OAuth client registration | DCR-issued: 24 hours until first token exchange, then 30 days sliding, renewed on use / none (pre-provisioned) |
+| `{prefix}client-idx` | Sorted set of DCR-issued client IDs counted against the DCR client cap, scored by expiry (Unix ms) | None; entries are trimmed as their score passes |
 | `{prefix}user:{user_id}` | User account | None |
 | `{prefix}provider:{len}:{provider_id}:{subject}` | Provider identity linkage | None |
 | `{prefix}upstream:{session_id}` | Upstream IDP tokens | Matches token lifetime |
@@ -339,6 +340,10 @@ All keys use the prefix `thv:auth:{namespace:name}:` where `{namespace:name}` is
 | `{prefix}consent:approval:{pair_hash}` | One approval per user/client; `pair_hash` is SHA-256 of the JSON-encoded `[userID, clientID]` pair | Remaining fixed lifetime, at most 30 days |
 | `{prefix}invalidated:{code}` | Replay detection for auth codes | 30 minutes |
 | `{prefix}jwt:{jti}` | Client assertion JWT replay prevention | Matches JWT `exp` |
+
+When upgrading to the release that adds the DCR client cap, see the upgrade notes in [Auth Server Storage](arch/11-auth-server-storage.md#dcr-client-cap): a deployment already holding more than `max_dcr_clients` (default 10,000) live DCR clients rejects new registrations until the count drains, so raise the cap or set it to `0` before upgrading. Backfilled rows keep their existing TTL of up to 30 days.
+
+The DCR client cap registers a client with one Lua script that touches both `{prefix}client:{client_id}` and `{prefix}client-idx`, so on Redis Cluster the key prefix must contain a `{...}` hash tag; a prefix without one fails every DCR registration with `CROSSSLOT`. The operator's `DeriveKeyPrefix` always includes one. `{prefix}client-idx` has no TTL, so under an `allkeys-lru` or `allkeys-random` `maxmemory-policy` Redis may evict it, which resets the cap count and the `toolhive_authserver_dcr_clients` gauge to zero until new registrations rebuild it or a restart reruns the backfill. Use `noeviction` or a `volatile-*` policy.
 
 ### Secondary Indexes
 

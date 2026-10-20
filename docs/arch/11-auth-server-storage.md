@@ -311,18 +311,115 @@ Redis TTL is used for all time-bounded data. TTL values are derived from OAuth 2
 | Client approvals (`consent:approval:{SHA-256 JSON pair}`) | Up to 30 days, remaining fixed lifetime |
 | PKCE requests | 10 minutes |
 | Invalidated codes | 30 minutes |
-| DCR-issued clients (public, confidential, and private_key_jwt) | 30 days |
+| DCR-issued clients (public, confidential, and private_key_jwt), never used | 24 hours |
+| DCR-issued clients, after their first successful token exchange | 30 days, renewed on each exchange |
 | JWT-bearer replay markers | Assertion `exp` |
 | Users / Providers | No expiry |
 
-These TTLs apply to the Redis backend. The in-memory backend holds no
-wall-clock TTL; it instead bounds growth with a capacity cap
-(`DefaultMaxClients`) and evicts the oldest DCR-issued client on overflow. A
-pre-provisioned client (no DCR marker) is never evicted. Both backends renew
-on the same proven-use signal (a successful token exchange/refresh): Redis
-extends the key's TTL, and the in-memory backend moves the client to the back
-of its eviction queue, so an actively-used DCR-issued client survives
-overflow the same way in either backend.
+The in-memory backend applies the same client expiry: each DCR-issued entry
+carries an expiry, reads treat an expired entry as absent, and the cleanup
+loop removes it. A pre-provisioned client (no DCR marker) never expires. Both
+backends renew on the same proven-use signal (a successful token
+exchange/refresh), which also raises a new client from 24 hours to 30 days.
+
+#### DCR client cap
+
+`/oauth/register` is unauthenticated and every successful call persists a
+client, so both backends cap the number of live clients it created. The cap
+defaults to 10,000 (`DefaultMaxDCRClients`) and is set with
+`storage.max_dcr_clients` in the auth server RunConfig; `0` means unlimited.
+It counts only clients carrying the DCR-issued marker. Operator-configured
+clients and CIMD clients are never counted and never rejected.
+
+At the cap, `RegisterClient` returns `ErrClientCapacity` and writes nothing.
+No existing client is evicted: eviction let a caller registering at the full
+rate push out every idle real client, logging its user out. The handler
+answers HTTP 503 with an RFC 7591 `server_error` and a `Retry-After` header
+giving the seconds until the oldest counted client expires, the earliest
+moment a slot can free up.
+
+**Sizing.** A client never used for a token exchange lives 24 hours, so a
+caller registering at the full rate keeps up to `rate × replicas × 86,400`
+unused clients alive. At the default rate of 1/s that is about 86,400 per
+replica, well above the default cap: one replica's worth of traffic fills it
+in about 2.8 hours, and new registrations then get 503 for up to 24 hours
+after the traffic stops, while the spam entries expire. A client promoted by a
+token exchange holds its slot for 30 days, which no cap value mitigates. Size
+the cap above the real client count plus the headroom you want during an
+attack, and lower `registration_rate_limit` to make the cap take longer to
+fill. Both settings are RunConfig-only for now; the operator CRD does not
+expose them yet ([#6864](https://github.com/stacklok/toolhive/issues/6864)),
+so operator-managed deployments get the defaults.
+
+On Redis the count lives in a sorted set, `{prefix}client-idx`, holding each
+counted client ID scored by its expiry in Unix milliseconds. It shares the
+client rows' hash slot, so one Lua script registers atomically on Redis
+Cluster: report an existing row as a conflict, trim entries whose expiry has
+passed, reject if the remaining count is at the cap, otherwise write the row
+with its TTL and add it to the set. `RenewClientTTL` sets the row's TTL and
+its score in one script, and `ReconcileConfiguredClient` drops a stale entry
+in the same transaction as the row. `UpsertDCRIssuedClient` refuses counted
+clients, so it cannot bypass the cap. Scores come from the replica's clock,
+passed to the scripts as an argument: Redis `TIME` is in the `@fast` ACL
+category, which the documented auth-server ACL does not grant. Clock skew
+between replicas, milliseconds under NTP, only shifts when an entry is
+trimmed relative to its row's expiry. Because the count is in Redis, every
+replica enforces one cap, unlike the per-process rate limiter.
+
+Rows written before the index existed have no entry. On startup,
+`BackfillDCRClientIndex` scans the client rows and adds each counted row with
+its remaining TTL (`ZADD NX`, so an existing entry keeps its score) before
+the server is constructed. On Redis Cluster it scans the master that owns the
+prefix's hash slot. Reads are batched per SCAN page, and a row it cannot parse
+is skipped and counted in one WARN line instead of failing startup. It logs
+one INFO line with the rows scanned, the entries added and the duration, and
+a WARN naming `storage.max_dcr_clients` when the live count is already at or
+above the cap. A Redis error during the backfill is logged at WARN and
+startup continues, unlike a failed legacy upstream migration: skipping the
+backfill only leaves the cap undercounting older rows, which is how the
+server behaved before the cap, and the next start fills in what was missed.
+It runs on every startup. During a rolling upgrade, replicas still on the old version
+keep writing and renewing rows without index entries; rows written after the
+last upgraded replica started stay uncounted until the next restart reruns
+the backfill, or until they expire.
+
+**Upgrading.**
+
+- A Redis deployment already holding more than the cap in live DCR clients
+  rejects every new registration right after the upgrade, until enough of
+  them expire; the backfill logs a WARN at startup when this happens. Raise `max_dcr_clients` or set it to `0` before upgrading. The
+  operator cannot set it yet
+  ([#6864](https://github.com/stacklok/toolhive/issues/6864)), so an
+  operator-managed deployment over the cap must wait for the count to drain.
+- Backfilled rows keep their current TTL, up to 30 days, so a pre-existing
+  spam population can take that long to drain. Only clients registered after
+  the upgrade get the 24-hour unused TTL.
+- During a rolling upgrade, an old replica's `RenewClientTTL` on a row a new
+  replica indexed sets the row's TTL to 30 days but leaves its index score at
+  24 hours, so that row goes uncounted after 24 hours. The backfill's
+  `ZADD NX` does not correct it; the row is counted again on its next renewal
+  by an upgraded replica.
+
+CIMD clients are not counted against the DCR cap. The in-memory backend caps
+its CIMD rows separately at 10,000 (the old whole-map cap used to cover them):
+past it, `UpsertDCRIssuedClient` refuses a new row with `ErrClientCapacity`,
+while replacing an existing row still succeeds. The CIMD decorator's
+write-through is best-effort and logs the refusal at Debug; the in-memory
+backend keeps sessions as Go values rather than rehydrating their client from
+the row, so a refused row costs at most a document refetch. On Redis,
+persisted CIMD rows are bounded only by the per-process `/oauth/authorize`
+CIMD rate limit (1/s) and their 30-day TTL.
+
+Two metrics expose the cap: the gauge `toolhive_authserver_dcr_clients`
+(unexpired counted clients, read from storage at collection time) and the
+counter `toolhive_authserver_dcr_capacity_rejections` (registrations rejected
+at the cap). Rejections are also logged at WARN, at most once every 15
+minutes, with the cap, the live count, the `Retry-After` value and how many
+rejections were held back since the previous line, so a deployment without
+telemetry still sees the cap. The volume is bounded by time, not by the
+unauthenticated caller's request rate. Neither the cap filling nor clearing
+is logged, since a caller holding the cap flips between the two each time a
+slot expires.
 
 **Behaviour change for public clients registered after this feature:** a
 public client registered before this change was stored as a bare
@@ -396,15 +493,15 @@ Two restrictions apply regardless of this flag:
 - Confidential registrations are restricted to https non-loopback redirect URIs. A client reachable on loopback or a private scheme is, by construction, a public client that cannot keep a secret (OAuth 2.1 §2.1), so the server declines to mint it one.
 - Combining `AllowConfidentialClientRegistration` with `InsecureAllowHTTP` is rejected outright at validation — an unauthenticated secret-minting endpoint served over plaintext HTTP would let the secret be intercepted in transit.
 
-See the [storage consequences](#ttl-management) above for what happens to a confidential registration over time: it is subject to the same DCR-issued TTL/eviction behavior as public DCR clients (Redis TTL, or the in-memory backend's capacity-bounded eviction).
+See the [storage consequences](#ttl-management) above for what happens to a confidential registration over time: it is subject to the same DCR-issued expiry and cap as public DCR clients, on both backends.
 
 **Loopback issuers need an explicit opt-in when combined with confidential registration.** The issuer validation that underlies `InsecureAllowHTTP` always permits a plain-`http://` issuer when the host is loopback (e.g. `http://localhost:18080`), independent of that flag — this is what lets `thv` run locally without setting up TLS just to test the auth server. Forcing TLS onto every loopback deployment instead would just push operators toward `InsecureAllowHTTP`, which is worse: that flag also disables the non-loopback host check entirely.
 
 But a loopback `http://` issuer combined with `AllowConfidentialClientRegistration: true` means a locally-run auth server would mint client secrets over cleartext at an unauthenticated endpoint — validation rejects that combination by default. Set `InsecureAllowConfidentialOverLoopbackHTTP: true` to opt in when that is genuinely fine, e.g. local development and testing where the traffic never leaves the machine. Do not rely on this shape in a cluster: the server still listens on all interfaces there, "localhost" in the issuer is just a string, and such a deployment is only reachable in practice through something like a port-forward — it does not make the connection loopback-only. Both flags default to off, so nothing changes for an existing deployment unless the operator sets them.
 
-**Rate limiting on `/oauth/register`.** Because the endpoint is unauthenticated, `Handler` also rate-limits it: 1 request/second sustained with a burst of 5 (`pkg/authserver/server/handlers/handler.go`). The limiter is a field on `Handler`, so it is per-process — running N replicas behind a load balancer allows roughly N times the configured rate, not a shared global rate.
+**Rate limiting on `/oauth/register`.** Because the endpoint is unauthenticated, `Handler` also rate-limits it, by default 1 request/second sustained with a burst of 5 (`pkg/authserver/server/handlers/handler.go`). Set `registration_rate_limit` (`requests_per_second` and `burst`, both positive) in the auth server RunConfig to change it. The limiter is a field on `Handler`, so it is per-process — running N replicas behind a load balancer allows roughly N times the configured rate, not a shared global rate. Over the limit the endpoint returns 429 with a `Retry-After` of at most 1/rate seconds, rounded up, minimum 1 (so 1 at the default rate); a partly refilled bucket frees a token sooner.
 
-**DCR client metadata.** Redis persists the complete DCR client shape, including the inline public JWKS and `token_endpoint_auth_signing_alg` for `private_key_jwt` clients. These registrations use the same 30-day inactivity TTL as public and secret-based confidential DCR clients. A successful token exchange or refresh renews the TTL; reading a client during authorization does not. The in-memory backend has no wall-clock TTL, but applies the same DCR-issued marker to its capacity-bounded eviction policy. Pre-provisioned clients are not subject to this DCR retention policy.
+**DCR client metadata.** Redis persists the complete DCR client shape, including the inline public JWKS and `token_endpoint_auth_signing_alg` for `private_key_jwt` clients. These registrations use the same TTLs as public and secret-based confidential DCR clients: 24 hours until first use, then 30 days of inactivity. A successful token exchange or refresh renews the TTL; reading a client during authorization does not. The in-memory backend applies the same expiry. Pre-provisioned clients are not subject to this DCR retention policy.
 
 ### Enabling `private_key_jwt` Dynamic Client Registration
 

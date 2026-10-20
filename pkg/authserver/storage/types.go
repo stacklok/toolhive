@@ -50,8 +50,10 @@ var (
 	// (e.g., subject or client ID mismatch).
 	ErrInvalidBinding = errors.New("storage: token binding validation failed")
 
-	// ErrClientCapacity is returned when the client map is full and no
-	// DCR-issued client has aged enough to be safely evicted.
+	// ErrClientCapacity is returned by RegisterClient when the number of live
+	// clients counted against the DCR cap has reached it. Nothing is written.
+	// The returned error is a *ClientCapacityError, which matches this
+	// sentinel under errors.Is and carries the Retry-After hint.
 	ErrClientCapacity = errors.New("storage: client capacity reached")
 
 	// ErrReservedClientID is returned when a caller attempts to register a
@@ -1159,7 +1161,10 @@ type ClientRegistry interface {
 	// returns ErrAlreadyExists if a client with the same ID already exists,
 	// regardless of the new client's origin. Used by unauthenticated DCR
 	// (RFC 7591) and any other caller that must never silently overwrite an
-	// existing registration.
+	// existing registration. A client counted against the DCR cap (see
+	// ErrClientCapacity) is refused with a *ClientCapacityError when the cap
+	// is reached; decorators must propagate it. An existing ID is reported as
+	// ErrAlreadyExists before the cap is checked, on both backends.
 	RegisterClient(ctx context.Context, client fosite.Client) error
 
 	// UpsertDCRIssuedClient creates or replaces a DCR-issued client at
@@ -1172,7 +1177,9 @@ type ClientRegistry interface {
 	// is itself DCR-issued; refuses with ErrAlreadyExists if the existing row is
 	// NOT DCR-issued (protects a configured/SPIFFE-reconciled client from being
 	// clobbered). client MUST carry registration.DCRIssued -- refuses otherwise
-	// (mirrors ReconcileConfiguredClient's inverse check).
+	// (mirrors ReconcileConfiguredClient's inverse check). A client that would
+	// count against the DCR cap (DCR-issued with an ID that is not a CIMD URL)
+	// is refused too: it must go through RegisterClient, which enforces the cap.
 	UpsertDCRIssuedClient(ctx context.Context, client fosite.Client) error
 
 	// ReconcileConfiguredClient applies an operator-declared (configured)
@@ -1190,14 +1197,14 @@ type ClientRegistry interface {
 
 	// RenewClientTTL extends the registration TTL of a DCR-issued client (public or
 	// confidential, gated on the registration.DCRIssued marker) so an actively-used
-	// client is not evicted mid-lifecycle and forced to re-register. Call it on a
+	// client does not expire mid-lifecycle and is not forced to re-register. Call it on a
 	// proven-use signal (e.g. a successful token exchange), NOT on an unauthenticated
 	// client read such as the /oauth/authorize lookup. Pre-provisioned/static clients
-	// carry no marker and this is a no-op for them on both backends. On the Redis
-	// backend this refreshes the key's sliding TTL; on the in-memory backend, which
-	// has no native TTL, this instead repositions the client to the back of the
-	// eviction order so it is not the next one dropped when WithMaxClients is reached.
-	// A renewal failure is non-fatal to the caller's primary operation.
+	// carry no marker and this is a no-op for them on both backends. Both backends
+	// set the client's expiry to DefaultDCRClientTTL from now, which also raises a
+	// newly registered client off its shorter DefaultUnusedDCRClientTTL. A client
+	// that no longer exists is left absent. A renewal failure is non-fatal to the
+	// caller's primary operation.
 	RenewClientTTL(ctx context.Context, client fosite.Client) error
 }
 

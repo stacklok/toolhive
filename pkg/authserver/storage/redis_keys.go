@@ -84,6 +84,13 @@ const (
 	// KeyTypeUserProviders is the key type for user to provider identity reverse lookups.
 	KeyTypeUserProviders = "user:providers"
 
+	// KeyTypeDCRClientIdx is the key type for the sorted set of client IDs
+	// counted against the DCR client cap, each scored by its expiry in Unix
+	// milliseconds. It is a single key per prefix, so it shares the client
+	// rows' hash slot and one Lua script can update both on Redis Cluster.
+	// The name deliberately does not match the "client:*" scan pattern.
+	KeyTypeDCRClientIdx = "client-idx"
+
 	// KeyTypeDCR is the key type for RFC 7591 Dynamic Client Registration credentials
 	// persisted by an authserver upstream-DCR resolver. Distinct from KeyTypeClient,
 	// which holds the authserver's *own* OAuth clients — DCR entries are credentials

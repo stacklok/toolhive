@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"log/slog"
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -19,6 +20,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/authserver/server/tokenexchange"
+	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
 	"github.com/stacklok/toolhive/pkg/authserver/upstreamfilter"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
@@ -2138,6 +2140,62 @@ func TestConfig_WarnAuthorizeCallbackHostMismatch(t *testing.T) {
 			} else {
 				require.Empty(t, buf.String())
 			}
+		})
+	}
+}
+
+func TestRunConfigValidateDCRRegistrationLimits(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		config     RunConfig
+		wantErrMsg string
+	}{
+		{name: "unset keeps the defaults"},
+		{
+			name:   "positive rate and burst",
+			config: RunConfig{RegistrationRateLimit: &RegistrationRateLimitRunConfig{RequestsPerSecond: 0.5, Burst: 2}},
+		},
+		{
+			name:       "zero rate rejected",
+			config:     RunConfig{RegistrationRateLimit: &RegistrationRateLimitRunConfig{Burst: 2}},
+			wantErrMsg: "requests_per_second must be a positive number",
+		},
+		{
+			name:       "infinite rate rejected",
+			config:     RunConfig{RegistrationRateLimit: &RegistrationRateLimitRunConfig{RequestsPerSecond: math.Inf(1), Burst: 2}},
+			wantErrMsg: "requests_per_second must be a positive number",
+		},
+		{
+			name:       "NaN rate rejected",
+			config:     RunConfig{RegistrationRateLimit: &RegistrationRateLimitRunConfig{RequestsPerSecond: math.NaN(), Burst: 2}},
+			wantErrMsg: "requests_per_second must be a positive number",
+		},
+		{
+			name:       "zero burst rejected",
+			config:     RunConfig{RegistrationRateLimit: &RegistrationRateLimitRunConfig{RequestsPerSecond: 1}},
+			wantErrMsg: "burst must be positive",
+		},
+		{
+			name:   "zero max DCR clients means unlimited",
+			config: RunConfig{Storage: &storage.RunConfig{MaxDCRClients: new(0)}},
+		},
+		{
+			name:       "negative max DCR clients rejected",
+			config:     RunConfig{Storage: &storage.RunConfig{MaxDCRClients: new(-1)}},
+			wantErrMsg: "max_dcr_clients must not be negative",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := tt.config.Validate()
+			if tt.wantErrMsg == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.ErrorContains(t, err, tt.wantErrMsg)
 		})
 	}
 }

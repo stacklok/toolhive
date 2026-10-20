@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -104,6 +105,51 @@ func warnDroppedIndexMembers(operation, indexKey, expectedPrefix string, dropped
 type RedisStorage struct {
 	client    redis.UniversalClient
 	keyPrefix string
+
+	// maxDCRClients caps the live clients counted by countsTowardDCRCap; zero
+	// means unlimited. The count lives in the KeyTypeDCRClientIdx sorted set,
+	// so every replica sharing this Redis enforces one cap.
+	maxDCRClients int
+
+	// now is the clock DCR cap index scores are computed from.
+	now func() time.Time
+}
+
+// RedisStorageOption configures a RedisStorage.
+type RedisStorageOption func(*RedisStorage)
+
+// WithRedisMaxDCRClients sets the cap on live clients counted by
+// countsTowardDCRCap; zero means unlimited. At the cap RegisterClient returns
+// a *ClientCapacityError and writes nothing. It panics on a negative n, which
+// RunConfig.ResolvedMaxDCRClients already rejects.
+func WithRedisMaxDCRClients(n int) RedisStorageOption {
+	if n < 0 {
+		panic(fmt.Sprintf("max DCR clients must not be negative, got %d", n))
+	}
+	return func(s *RedisStorage) {
+		s.maxDCRClients = n
+	}
+}
+
+// withRedisClock sets the clock DCR cap index scores are computed from, so
+// tests can keep it in step with miniredis's key TTLs.
+func withRedisClock(now func() time.Time) RedisStorageOption {
+	return func(s *RedisStorage) {
+		s.now = now
+	}
+}
+
+func newRedisStorage(client redis.UniversalClient, keyPrefix string, opts []RedisStorageOption) *RedisStorage {
+	s := &RedisStorage{
+		client:        client,
+		keyPrefix:     keyPrefix,
+		maxDCRClients: DefaultMaxDCRClients,
+		now:           time.Now,
+	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
 // storedSession is a serializable wrapper for fosite.Requester.
@@ -131,7 +177,9 @@ type storedSession struct {
 // delegated to the shared toolhive-core redisconn package. cfg.Password may be
 // empty when the Redis server does not require authentication (the auth server
 // does not mandate ACL auth); the keyPrefix is storage-specific and required.
-func NewRedisStorage(ctx context.Context, cfg redisconn.Config, keyPrefix string) (*RedisStorage, error) {
+func NewRedisStorage(
+	ctx context.Context, cfg redisconn.Config, keyPrefix string, opts ...RedisStorageOption,
+) (*RedisStorage, error) {
 	if keyPrefix == "" {
 		return nil, errors.New("invalid redis configuration: key prefix is required")
 	}
@@ -141,19 +189,15 @@ func NewRedisStorage(ctx context.Context, cfg redisconn.Config, keyPrefix string
 		return nil, err
 	}
 
-	return &RedisStorage{
-		client:    client,
-		keyPrefix: keyPrefix,
-	}, nil
+	return newRedisStorage(client, keyPrefix, opts), nil
 }
 
 // NewRedisStorageWithClient creates a RedisStorage with a pre-configured client.
 // This is useful for testing with miniredis.
-func NewRedisStorageWithClient(client redis.UniversalClient, keyPrefix string) *RedisStorage {
-	return &RedisStorage{
-		client:    client,
-		keyPrefix: keyPrefix,
-	}
+func NewRedisStorageWithClient(
+	client redis.UniversalClient, keyPrefix string, opts ...RedisStorageOption,
+) *RedisStorage {
+	return newRedisStorage(client, keyPrefix, opts)
 }
 
 // defaultSessionFactory creates session prototypes for deserialization.
@@ -427,9 +471,13 @@ func (s *RedisStorage) RegisterClient(ctx context.Context, client fosite.Client)
 		return fmt.Errorf("failed to marshal client: %w", err)
 	}
 
+	if countsTowardDCRCap(client) {
+		return s.registerCountedClient(ctx, key, client.GetID(), data)
+	}
+
 	// DCR-issued clients (public and confidential) expire to prevent unbounded
-	// growth from unauthenticated dynamic registration; RenewClientTTL refreshes
-	// this on proven use so actively-used clients are not evicted. The TTL is
+	// growth from unauthenticated dynamic registration; RenewClientTTL raises
+	// the TTL on proven use so actively-used clients do not expire. The TTL is
 	// keyed on the registration.DCRIssued marker, not IsPublic: a confidential
 	// client minted via DCR is exactly the registration an attacker would pile
 	// up, while a pre-provisioned confidential client (no marker) must never
@@ -438,7 +486,7 @@ func (s *RedisStorage) RegisterClient(ctx context.Context, client fosite.Client)
 	// first token request after upgrade.
 	ttl := time.Duration(0)
 	if registration.DCRIssued(client) {
-		ttl = DefaultDCRClientTTL
+		ttl = DefaultUnusedDCRClientTTL
 	}
 
 	created, err := s.client.SetNX(ctx, key, data, ttl).Result()
@@ -449,6 +497,101 @@ func (s *RedisStorage) RegisterClient(ctx context.Context, client fosite.Client)
 		return fmt.Errorf("%w: client %q", ErrAlreadyExists, client.GetID())
 	}
 	return nil
+}
+
+// DCR cap index scores are expiry times in Unix milliseconds taken from the
+// replica's clock (RedisStorage.now) and passed to the scripts as an argument.
+// Redis TIME would avoid clock skew between replicas, but it is in the @fast
+// ACL category, which the documented auth-server ACL does not grant, so
+// using it would break existing ACL-restricted deployments on upgrade. Skew
+// under NTP is milliseconds, and its only effect is that an index entry is
+// trimmed that much before or after its row expires.
+
+// Status codes returned by registerCountedClientScript.
+const (
+	registerStatusCreated  int64 = 1
+	registerStatusAtCap    int64 = 0
+	registerStatusConflict int64 = -1
+)
+
+// registerCountedClientScript creates a client counted against the DCR cap.
+// KEYS[1] is the client row, KEYS[2] the KeyTypeDCRClientIdx sorted set.
+// ARGV: row data, TTL in ms, cap (0 = unlimited), client ID, now in ms.
+//
+// It reports an existing row first, as the memory store does, then trims
+// index entries whose expiry has passed, rejects at the cap, and otherwise
+// creates the row and indexes it, all in one atomic step so concurrent
+// registrations on any replica cannot overshoot the cap. Returns {1} on
+// success, {0, oldest_expiry_ms} at the cap, {-1} when the row already
+// exists.
+var registerCountedClientScript = redis.NewScript(`
+local cap = tonumber(ARGV[3])
+local now = tonumber(ARGV[5])
+if redis.call('EXISTS', KEYS[1]) == 1 then
+	return {-1}
+end
+redis.call('ZREMRANGEBYSCORE', KEYS[2], '-inf', now)
+if cap > 0 and redis.call('ZCARD', KEYS[2]) >= cap then
+	local oldest = redis.call('ZRANGE', KEYS[2], 0, 0, 'WITHSCORES')
+	return {0, tonumber(oldest[2])}
+end
+redis.call('SET', KEYS[1], ARGV[1], 'PX', ARGV[2])
+redis.call('ZADD', KEYS[2], now + tonumber(ARGV[2]), ARGV[4])
+return {1}
+`)
+
+// registerCountedClient runs registerCountedClientScript for a client counted
+// against the DCR cap, giving it DefaultUnusedDCRClientTTL.
+func (s *RedisStorage) registerCountedClient(ctx context.Context, key, id string, data []byte) error {
+	now := s.now()
+	res, err := registerCountedClientScript.Run(ctx, s.client,
+		[]string{key, s.dcrClientIndexKey()},
+		data, DefaultUnusedDCRClientTTL.Milliseconds(), s.maxDCRClients, id, now.UnixMilli(),
+	).Slice()
+	if err != nil {
+		return fmt.Errorf("failed to register client: %w", err)
+	}
+	if len(res) == 0 {
+		return errors.New("failed to register client: empty script reply")
+	}
+	status, ok := res[0].(int64)
+	if !ok {
+		return fmt.Errorf("failed to register client: unexpected script status type %T", res[0])
+	}
+	switch status {
+	case registerStatusCreated:
+		return nil
+	case registerStatusConflict:
+		return fmt.Errorf("%w: client %q", ErrAlreadyExists, id)
+	case registerStatusAtCap:
+		if len(res) < 2 {
+			return errors.New("failed to register client: at-cap reply has no oldest expiry")
+		}
+		oldestMs, ok := res[1].(int64)
+		if !ok {
+			return fmt.Errorf("failed to register client: unexpected oldest expiry type %T", res[1])
+		}
+		return newClientCapacityError(s.maxDCRClients, time.UnixMilli(oldestMs), now)
+	default:
+		return fmt.Errorf("failed to register client: unexpected script status %d", status)
+	}
+}
+
+// dcrClientIndexKey returns the KeyTypeDCRClientIdx sorted set key.
+func (s *RedisStorage) dcrClientIndexKey() string {
+	return s.keyPrefix + KeyTypeDCRClientIdx
+}
+
+// CountDCRClients implements DCRClientCounter: the number of index entries
+// whose expiry has not passed. It only reads, so a metric collection never
+// writes.
+func (s *RedisStorage) CountDCRClients(ctx context.Context) (int64, error) {
+	minScore := "(" + strconv.FormatInt(s.now().UnixMilli(), 10)
+	n, err := s.client.ZCount(ctx, s.dcrClientIndexKey(), minScore, "+inf").Result()
+	if err != nil {
+		return 0, fmt.Errorf("failed to count DCR clients: %w", err)
+	}
+	return n, nil
 }
 
 // UpsertDCRIssuedClient creates or replaces a DCR-issued client at
@@ -466,13 +609,17 @@ func (s *RedisStorage) RegisterClient(ctx context.Context, client fosite.Client)
 // redis.TxFailedErr itself, up to the same bounded count. Unlike
 // ReconcileConfiguredClient (ttl=0, permanent), the write here always uses
 // DefaultDCRClientTTL: this row is TTL-bounded like any other DCR-issued
-// client.
+// client. A client counted against the DCR cap is refused, so this path can
+// neither bypass the cap nor leave the index out of step.
 func (s *RedisStorage) UpsertDCRIssuedClient(ctx context.Context, client fosite.Client) error {
 	if !registration.DCRIssued(client) {
 		return fmt.Errorf("client %q must carry the DCR-issued marker to use UpsertDCRIssuedClient", client.GetID())
 	}
 	if err := ValidateRegisterableClientID(client.GetID()); err != nil {
 		return err
+	}
+	if countsTowardDCRCap(client) {
+		return fmt.Errorf("client %q counts against the DCR client cap and must use RegisterClient", client.GetID())
 	}
 
 	key := redisKey(s.keyPrefix, KeyTypeClient, client.GetID())
@@ -592,6 +739,11 @@ func (s *RedisStorage) ReconcileConfiguredClient(ctx context.Context, client fos
 	setPipelined := func(tx *redis.Tx) error {
 		_, err := tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
 			pipe.Set(ctx, key, data, 0)
+			// A configured client never counts against the DCR cap. The
+			// row it replaces cannot be DCR-issued (refused above), but an
+			// index entry outliving its expired row would otherwise be
+			// counted until its score passes.
+			pipe.ZRem(ctx, s.dcrClientIndexKey(), client.GetID())
 			return nil
 		})
 		return err
@@ -691,7 +843,21 @@ func (s *RedisStorage) GetClient(ctx context.Context, id string) (fosite.Client,
 	return client, nil
 }
 
+// renewClientTTLScript sets a client row's TTL and, when the client counts
+// against the DCR cap, its index score, in one atomic step. KEYS[1] is the
+// client row, KEYS[2] the KeyTypeDCRClientIdx sorted set. ARGV: TTL in ms,
+// client ID, "1" when counted, now in ms. PEXPIRE on a missing row is a no-op, and the
+// index is left alone so an expired client is not re-counted.
+var renewClientTTLScript = redis.NewScript(`
+if redis.call('PEXPIRE', KEYS[1], ARGV[1]) == 1 and ARGV[3] == '1' then
+	redis.call('ZADD', KEYS[2], tonumber(ARGV[4]) + tonumber(ARGV[1]), ARGV[2])
+end
+return 0
+`)
+
 // RenewClientTTL extends a DCR-issued client's registration TTL to DefaultDCRClientTTL.
+// This also raises a newly registered client off DefaultUnusedDCRClientTTL on
+// its first token exchange, and moves its DCR cap index score to match.
 //
 // Call this on a proven-use signal — a successful token exchange/refresh — not on a
 // client read. GetClient is reached from the unauthenticated front-channel
@@ -704,14 +870,21 @@ func (s *RedisStorage) GetClient(ctx context.Context, id string) (fosite.Client,
 // and are left untouched. The gate is the registration.DCRIssued marker, not IsPublic:
 // EXPIRE on a key with no TTL creates one, so keying on IsPublic would hand an
 // existing permanent confidential client an expiry on its first token request after
-// upgrade. EXPIRE on a missing key is a no-op, so a client whose row has already been
-// evicted (or a non-persisted CIMD client) is safely ignored.
+// upgrade. PEXPIRE on a missing key is a no-op, so a client whose row has already
+// expired (or a non-persisted CIMD client) is safely ignored.
 func (s *RedisStorage) RenewClientTTL(ctx context.Context, client fosite.Client) error {
 	if client == nil || !registration.DCRIssued(client) {
 		return nil
 	}
 	key := redisKey(s.keyPrefix, KeyTypeClient, client.GetID())
-	return s.client.Expire(ctx, key, DefaultDCRClientTTL).Err()
+	counted := "0"
+	if countsTowardDCRCap(client) {
+		counted = "1"
+	}
+	return renewClientTTLScript.Run(ctx, s.client,
+		[]string{key, s.dcrClientIndexKey()},
+		DefaultDCRClientTTL.Milliseconds(), client.GetID(), counted, s.now().UnixMilli(),
+	).Err()
 }
 
 // ClientAssertionJWTValid atomically reserves jti for a short window via

@@ -18,6 +18,7 @@ import (
 	"github.com/ory/fosite/compose"
 	"github.com/spiffe/go-spiffe/v2/bundle/jwtbundle"
 	"github.com/spiffe/go-spiffe/v2/bundle/x509bundle"
+	"golang.org/x/time/rate"
 
 	"github.com/stacklok/toolhive/pkg/authserver/internal/consentpolicy"
 	oauthserver "github.com/stacklok/toolhive/pkg/authserver/server"
@@ -35,6 +36,9 @@ import (
 // server is the internal implementation of the Server interface.
 type server struct {
 	handler http.Handler
+	// oauthHandler is the handler behind handler, kept so Close can release
+	// the metric callback it registered.
+	oauthHandler *handlers.Handler
 	// storage is the active storage backend, potentially wrapped by decorators
 	// such as CIMDStorageDecorator. Code that needs the concrete type must walk
 	// the Unwrap() chain rather than asserting directly.
@@ -300,7 +304,7 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage) (_ *server
 	// opaque storage-row identity.
 	refresher := newUpstreamTokenRefresher(upstreams, stor, cfg.RefreshTokenLifespan)
 	handlerInstance, err := handlers.NewHandler(fositeProvider, authServerConfig, stor, upstreams,
-		buildHandlerOptions(refresher, cfg.UpstreamFilter, cfg.ConsentExemptClientIDs)...)
+		buildHandlerOptions(refresher, cfg.UpstreamFilter, cfg.RegistrationRateLimit, cfg.ConsentExemptClientIDs)...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create handler: %w", err)
 	}
@@ -316,6 +320,7 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage) (_ *server
 
 	return &server{
 		handler:                router,
+		oauthHandler:           handlerInstance,
 		storage:                stor,
 		dcrStore:               dcrStore,
 		upstreams:              upstreams,
@@ -632,16 +637,22 @@ func buildDeviceFlowFactory(cfg Config, stor storage.Storage) (oauthserver.Facto
 
 // buildHandlerOptions assembles the handlers.Option list for NewHandler: the
 // refresher is always wired, the filter is added only when configured so a nil
-// filter preserves walking every upstream, and consent-exempt IDs are added
+// filter preserves walking every upstream, the register rate limit only when
+// configured so a nil one keeps the handler default, and consent-exempt IDs
 // only when the caller supplied a non-empty allowlist.
 func buildHandlerOptions(
 	refresher storage.UpstreamTokenRefresher,
 	filter handlers.UpstreamFilter,
+	registrationRateLimit *RegistrationRateLimitRunConfig,
 	consentExemptClientIDs []string,
 ) []handlers.Option {
 	opts := []handlers.Option{handlers.WithUpstreamRefresher(refresher)}
 	if filter != nil {
 		opts = append(opts, handlers.WithUpstreamFilter(filter))
+	}
+	if registrationRateLimit != nil {
+		opts = append(opts, handlers.WithRegisterRateLimit(
+			rate.Limit(registrationRateLimit.RequestsPerSecond), registrationRateLimit.Burst))
 	}
 	if len(consentExemptClientIDs) > 0 {
 		opts = append(opts, handlers.WithConsentExemptClientIDs(consentExemptClientIDs))
@@ -717,13 +728,18 @@ func (s *server) CloseIdleConnections() {
 }
 
 // Close releases resources held by the server: it drains upstream idle
-// connections, shuts down its SPIFFE bundle and trusted-issuer refresh
-// workers, and closes storage. Shutdown errors are joined so neither hides
+// connections, unregisters the handler's metric callback, shuts down its
+// SPIFFE bundle and trusted-issuer refresh workers, and closes storage. Shutdown errors are joined so neither hides
 // the other.
 func (s *server) Close() error {
 	slog.Debug("closing OAuth authorization server")
 	s.CloseIdleConnections()
 	var errs []error
+	if s.oauthHandler != nil {
+		if err := s.oauthHandler.Close(); err != nil {
+			errs = append(errs, err)
+		}
+	}
 	if s.spiffeBundleSource != nil {
 		if err := s.spiffeBundleSource.Close(); err != nil {
 			errs = append(errs, fmt.Errorf("failed to shut down SPIFFE bundle source: %w", err))
@@ -808,12 +824,25 @@ func createProvider(
 
 // runLegacyMigration runs one-shot Redis data migrations before handlers are
 // constructed. It is a no-op for non-Redis backends and passes through any
-// decorator wrapping so the concrete type can be reached.
+// decorator wrapping so the concrete type can be reached. The DCR client index
+// backfill runs before /oauth/register is served, so the cap counts clients
+// written before the index existed.
+//
+// A backfill failure is logged and startup continues, unlike a legacy upstream
+// migration failure. Skipping the backfill only leaves the cap undercounting
+// rows written before the index existed, which is how the server behaved
+// before the cap, and the next start fills in whatever was missed (ZADD NX
+// makes a rerun safe). Skipping an upstream migration would break existing
+// data.
 func runLegacyMigration(ctx context.Context, stor storage.Storage, upstreams []UpstreamConfig) error {
 	base := storage.Unwrap(stor)
 	rs, ok := base.(*storage.RedisStorage)
 	if !ok {
 		return nil
+	}
+	if err := rs.BackfillDCRClientIndex(ctx); err != nil {
+		slog.Warn("DCR client index backfill failed; the DCR client cap may undercount existing clients until the next restart",
+			"error", err)
 	}
 	for i := range upstreams {
 		upCfg := &upstreams[i]

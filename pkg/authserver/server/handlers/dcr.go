@@ -145,13 +145,9 @@ func (h *Handler) RegisterClientHandler(w http.ResponseWriter, req *http.Request
 	// Register client
 	if err := h.storage.RegisterClient(ctx, fositeClient); err != nil {
 		if errors.Is(err, storage.ErrClientCapacity) {
-			slog.Debug("DCR client registration capacity reached", "error", err)
-			// Capacity frees up once the oldest DCR-issued entry crosses
-			// storage.DefaultMinClientAge, so that's the honest worst-case
-			// wait. This uses the default rather than the configured
-			// minClientAge because the value isn't currently threaded from
-			// storage to this handler; wire it through if that gap matters.
-			w.Header().Set("Retry-After", strconv.Itoa(int(storage.DefaultMinClientAge.Seconds())))
+			h.dcrMetrics.recordCapacityRejection(ctx)
+			h.capacityWarner.rejected(ctx, err)
+			w.Header().Set("Retry-After", strconv.Itoa(capacityRetryAfterSeconds(err)))
 			writeDCRError(w, http.StatusServiceUnavailable, &registration.DCRError{
 				Error:            "server_error",
 				ErrorDescription: "client registration capacity reached; try again later",
@@ -216,9 +212,10 @@ func (h *Handler) RegisterClientHandler(w http.ResponseWriter, req *http.Request
 		// field, pkg/auth/dcr/resolver.go) re-register against a ToolHive auth
 		// server every TTL while its existing registration is still live,
 		// orphaning the old row — the registration bloat the TTL exists to
-		// prevent. An idle registration is still evicted after
-		// DefaultDCRClientTTL, but re-registration mints a new client_id either
-		// way, so the field cannot usefully describe that case.
+		// prevent. An unused or idle registration still expires (after
+		// DefaultUnusedDCRClientTTL or DefaultDCRClientTTL), but
+		// re-registration mints a new client_id either way, so the field
+		// cannot usefully describe that case.
 		response.ClientSecret = clientSecret
 		response.ClientSecretExpiresAt = new(int64) // 0: does not expire
 	}
@@ -417,4 +414,15 @@ func writeDCRError(w http.ResponseWriter, statusCode int, dcrErr *registration.D
 	if err := json.NewEncoder(w).Encode(dcrErr); err != nil {
 		slog.Debug("failed to encode DCR error response", "error", err)
 	}
+}
+
+// capacityRetryAfterSeconds returns the Retry-After value for a DCR cap
+// rejection: the seconds until the oldest counted client expires, which is
+// the earliest moment a slot can free up, rounded up and at least 1.
+func capacityRetryAfterSeconds(err error) int {
+	var capErr *storage.ClientCapacityError
+	if !errors.As(err, &capErr) {
+		return 1
+	}
+	return max(int((capErr.RetryAfter+time.Second-1)/time.Second), 1)
 }

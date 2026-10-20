@@ -985,6 +985,32 @@ func TestNewEmbeddedAuthServer(t *testing.T) {
 		require.NoError(t, server.Close())
 	})
 
+	t.Run("registration_rate_limit reaches the register endpoint", func(t *testing.T) {
+		t.Parallel()
+
+		cfg := createMinimalValidConfig()
+		cfg.RegistrationRateLimit = &authserver.RegistrationRateLimitRunConfig{RequestsPerSecond: 0.001, Burst: 1}
+		server, err := NewEmbeddedAuthServer(context.Background(), cfg)
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = server.Close() })
+
+		register := func() *httptest.ResponseRecorder {
+			body, err := json.Marshal(oauthproto.DynamicClientRegistrationRequest{
+				RedirectURIs: []string{"http://127.0.0.1:8080/callback"},
+			})
+			require.NoError(t, err)
+			req := httptest.NewRequest(http.MethodPost, "/oauth/register", bytes.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			w := httptest.NewRecorder()
+			server.Handler().ServeHTTP(w, req)
+			return w
+		}
+		require.Equal(t, http.StatusCreated, register().Code)
+		w := register()
+		assert.Equal(t, http.StatusTooManyRequests, w.Code, "burst 1 admits one request")
+		assert.Equal(t, "1000", w.Header().Get("Retry-After"), "at 0.001/s the next token is 1000s away")
+	})
+
 	t.Run("Close succeeds", func(t *testing.T) {
 		t.Parallel()
 
@@ -1626,6 +1652,34 @@ func TestCreateStorage(t *testing.T) {
 		require.NotNil(t, stor)
 		_, ok := stor.(*storage.MemoryStorage)
 		assert.True(t, ok, "expected MemoryStorage")
+	})
+
+	t.Run("negative max DCR clients returns error", func(t *testing.T) {
+		t.Parallel()
+
+		_, err := createStorage(ctx, &storage.RunConfig{MaxDCRClients: new(-1)})
+		require.ErrorContains(t, err, "max_dcr_clients must not be negative")
+	})
+
+	t.Run("max DCR clients reaches memory storage", func(t *testing.T) {
+		t.Parallel()
+
+		stor, err := createStorage(ctx, &storage.RunConfig{MaxDCRClients: new(1)})
+		require.NoError(t, err)
+		ms, ok := stor.(*storage.MemoryStorage)
+		require.True(t, ok, "expected MemoryStorage")
+		t.Cleanup(func() { _ = ms.Close() })
+		register := func(id string) error {
+			client, err := registration.New(registration.Config{
+				ID:                      id,
+				TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodNone,
+				RedirectURIs:            []string{"http://127.0.0.1/callback"},
+			})
+			require.NoError(t, err)
+			return ms.RegisterClient(ctx, client)
+		}
+		require.NoError(t, register("first"))
+		require.ErrorIs(t, register("second"), storage.ErrClientCapacity)
 	})
 
 	t.Run("unsupported type returns error", func(t *testing.T) {

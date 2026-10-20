@@ -432,11 +432,25 @@
                 },
                 "type": "object"
             },
+            "authserver.RegistrationRateLimitRunConfig": {
+                "description": "RegistrationRateLimit bounds the unauthenticated /oauth/register\nendpoint. If omitted, defaults to 1 registration per second with a\nburst of 5. The limiter is per process, so the effective rate is the\nconfigured rate multiplied by the replica count. The cap on how many\nregistered clients may exist at once is Storage.MaxDCRClients; unused\nclients live 24 hours, so a caller at the full rate keeps up to\nrate x replicas x 86400 of them alive, which at the defaults exceeds the\ndefault cap within about 2.8 hours. Not yet settable through the\noperator CRD (#6864).",
+                "properties": {
+                    "burst": {
+                        "description": "Burst is the number of registrations admitted at once before the rate\napplies. Must be positive.",
+                        "type": "integer"
+                    },
+                    "requests_per_second": {
+                        "description": "RequestsPerSecond is the sustained registration rate. Must be positive.",
+                        "type": "number"
+                    }
+                },
+                "type": "object"
+            },
             "authserver.RunConfig": {
                 "description": "EmbeddedAuthServerConfig contains configuration for the embedded OAuth2/OIDC authorization server.\nWhen set, the proxy runner will start an embedded auth server that delegates to upstream IDPs.\nThis is the serializable RunConfig; secrets are referenced by file paths or env var names.",
                 "properties": {
                     "allow_confidential_client_registration": {
-                        "description": "AllowConfidentialClientRegistration permits Dynamic Client Registration\nof confidential clients: when true, /oauth/register accepts\ntoken_endpoint_auth_method values client_secret_basic and\nclient_secret_post in addition to \"none\" (still the default on\nomission) and mints a client_secret returned exactly once. Confidential\nclients are restricted to https non-loopback redirect URIs, and\nregistrations idle for more than DefaultDCRClientTTL (30 days) are\nevicted and must re-register. This gates registration only: disabling\nit does not revoke or reject already-minted secrets at the token\nendpoint.\n\nSecurity: /oauth/register is unauthenticated, so this issues client\nsecrets to any caller. Combining it with InsecureAllowHTTP is rejected\nby Validate.",
+                        "description": "AllowConfidentialClientRegistration permits Dynamic Client Registration\nof confidential clients: when true, /oauth/register accepts\ntoken_endpoint_auth_method values client_secret_basic and\nclient_secret_post in addition to \"none\" (still the default on\nomission) and mints a client_secret returned exactly once. Confidential\nclients are restricted to https non-loopback redirect URIs, and\nregistrations expire and must re-register when never used within\nDefaultUnusedDCRClientTTL (24 hours) or idle for more than\nDefaultDCRClientTTL (30 days). This gates registration only: disabling\nit does not revoke or reject already-minted secrets at the token\nendpoint.\n\nSecurity: /oauth/register is unauthenticated, so this issues client\nsecrets to any caller. Combining it with InsecureAllowHTTP is rejected\nby Validate.",
                         "type": "boolean"
                     },
                     "allow_private_key_jwt_registration": {
@@ -516,6 +530,9 @@
                     "issuer": {
                         "description": "Issuer is the issuer identifier for this authorization server.\nThis will be included in the \"iss\" claim of issued tokens.\nMust be a valid HTTPS URL (or HTTP for localhost) without query, fragment, or trailing slash.",
                         "type": "string"
+                    },
+                    "registration_rate_limit": {
+                        "$ref": "#/components/schemas/authserver.RegistrationRateLimitRunConfig"
                     },
                     "schema_version": {
                         "description": "SchemaVersion is the version of the RunConfig schema.",
@@ -5483,6 +5500,10 @@
             "storage.RunConfig": {
                 "description": "Storage configures the storage backend for the auth server.\nIf nil, defaults to in-memory storage.",
                 "properties": {
+                    "max_dcr_clients": {
+                        "description": "MaxDCRClients caps the number of live clients created by\n/oauth/register. At the cap, registration fails with HTTP 503 until a\nclient expires; no existing client is evicted. If omitted, defaults to\n10000; 0 means unlimited, and a negative value is rejected. On Redis the\ncount is shared by every replica.\n\nSizing: a client never used for a token exchange lives 24 hours, so a\ncaller registering at the full rate keeps up to rate x replicas x 86400\nunused clients alive. At the default rate of 1/s that is about 86400 per\nreplica: one replica fills the default cap in about 2.8 hours, and new\nregistrations then get 503 for up to 24 hours after the traffic stops.\nA client promoted by a token exchange holds its slot for 30 days. Not\nyet settable through the operator CRD (#6864).",
+                        "type": "integer"
+                    },
                     "redis_config": {
                         "$ref": "#/components/schemas/storage.RedisRunConfig"
                     },

@@ -18,13 +18,17 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"math"
 	"net/http"
 	"net/url"
 	"slices"
+	"strconv"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/ory/fosite"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/metric"
 	"golang.org/x/time/rate"
 
 	"github.com/stacklok/toolhive/pkg/auth"
@@ -71,9 +75,22 @@ type Handler struct {
 	// under- or over-count, and X-Forwarded-For is attacker-controlled without
 	// a trusted proxy list). Because the limit lives on this per-process field,
 	// running N replicas multiplies the effective rate by N — size the
-	// configured rate with replica count in mind. Nil in tests that construct
-	// Handler directly; OAuthRoutes tolerates nil by skipping the gate.
+	// configured rate with replica count in mind. DefaultRegisterRate and
+	// DefaultRegisterBurst unless WithRegisterRateLimit overrides them. Nil in
+	// tests that construct Handler directly; OAuthRoutes tolerates nil by
+	// skipping the gate.
 	registerLimiter *rate.Limiter
+	// meterProvider supplies dcrMetrics. otel.GetMeterProvider() unless
+	// WithMeterProvider overrides it.
+	meterProvider metric.MeterProvider
+	// dcrMetrics counts DCR cap rejections and reports the live DCR client
+	// count. Nil in tests that construct Handler directly; its methods
+	// tolerate a nil receiver.
+	dcrMetrics *dcrMetrics
+	// capacityWarner logs DCR cap rejections at WARN, bounded by time. Nil in
+	// tests that construct Handler directly; its methods tolerate a nil
+	// receiver.
+	capacityWarner *capacityWarner
 	// cimdAuthorizeLimiter bounds unauthenticated /oauth/authorize requests
 	// whose client_id is a CIMD URL (see oauthproto.IsClientIDMetadataDocumentURL).
 	// Resolving such a client_id — via the CIMD storage decorator's GetClient,
@@ -92,7 +109,7 @@ type Handler struct {
 	// deviceAuthorizationLimiter bounds the unauthenticated
 	// /oauth/device_authorization endpoint, which mints persisted state
 	// (a device_code/user_code pair) on every call, exactly like
-	// /oauth/register. Same rate and same per-process (not per-IP)
+	// /oauth/register. Same default rate and same per-process (not per-IP)
 	// reasoning as registerLimiter. Nil when device flow is disabled — in
 	// that case OAuthRoutes never registers the route, so the nil limiter is
 	// never dereferenced. Also nil in tests that construct Handler directly.
@@ -128,6 +145,33 @@ type Handler struct {
 	// OAuthRoutes never registers the route in that case, so it is never
 	// dereferenced.
 	deviceVerificationLimiter *perIPLimiter
+}
+
+// DefaultRegisterRate and DefaultRegisterBurst bound /oauth/register when no
+// rate is configured: 1 registration/sec sustained, burst of 5. Generous for
+// legitimate tooling (a client registers once, then reuses its client_id),
+// tight enough that an unauthenticated caller cannot grow the client keyspace
+// or the log stream faster than operators can react.
+const (
+	DefaultRegisterRate  rate.Limit = 1
+	DefaultRegisterBurst int        = 5
+)
+
+// WithRegisterRateLimit overrides the /oauth/register rate (registrations per
+// second) and burst. The limit is per process: N replicas admit N times the
+// rate. NewHandler rejects a non-positive rate or burst.
+func WithRegisterRateLimit(r rate.Limit, burst int) Option {
+	return func(h *Handler) {
+		h.registerLimiter = rate.NewLimiter(r, burst)
+	}
+}
+
+// WithMeterProvider sets the meter provider for the DCR metrics. Without it,
+// NewHandler uses the global otel.GetMeterProvider().
+func WithMeterProvider(mp metric.MeterProvider) Option {
+	return func(h *Handler) {
+		h.meterProvider = mp
+	}
 }
 
 // UpstreamFilter narrows the authorization chain to a subset of the configured
@@ -251,25 +295,22 @@ func NewHandler(
 		seen[u.Name] = struct{}{}
 	}
 	h := &Handler{
-		provider:     provider,
-		config:       config,
-		storage:      stor,
-		upstreams:    upstreams,
-		tokenOnly:    len(upstreams) == 0,
-		userResolver: NewUserResolver(stor),
-		// 1 registration/sec sustained, burst of 5: generous for legitimate
-		// tooling (a client registers once, then reuses its client_id), tight
-		// enough that an unauthenticated caller cannot grow the client
-		// keyspace or the log stream faster than operators can react.
-		registerLimiter: rate.NewLimiter(rate.Limit(1), 5),
-		// Same rate as registerLimiter: this gate protects the same kind of
+		provider:        provider,
+		config:          config,
+		storage:         stor,
+		upstreams:       upstreams,
+		tokenOnly:       len(upstreams) == 0,
+		userResolver:    NewUserResolver(stor),
+		registerLimiter: rate.NewLimiter(DefaultRegisterRate, DefaultRegisterBurst),
+		meterProvider:   otel.GetMeterProvider(),
+		// Same rate as registerLimiter's default: this gate protects the same kind of
 		// unauthenticated persisted-state minting, just reached through
 		// /oauth/authorize instead of /oauth/register.
 		cimdAuthorizeLimiter: rate.NewLimiter(rate.Limit(1), 5),
 		deviceCodeInterval:   deviceCodeInterval(config.DeviceCodeInterval),
 	}
 	if config.DeviceFlowEnabled {
-		// Same rate as registerLimiter: this gate protects the same kind of
+		// Same rate as registerLimiter's default: this gate protects the same kind of
 		// unauthenticated persisted-state minting, just reached through
 		// /oauth/device_authorization instead of /oauth/register.
 		h.deviceAuthorizationLimiter = rate.NewLimiter(rate.Limit(1), 5)
@@ -290,20 +331,28 @@ func NewHandler(
 	for _, o := range opts {
 		o(h)
 	}
-	if err := consentpolicy.Validate(
-		h.consentExemptClientIDs,
-		config.GetAuthorizationEndpointBaseURL(),
-		config.GetAccessTokenIssuer(),
-		len(upstreams),
-	); err != nil {
+	if err := validateRegisterLimiter(h.registerLimiter); err != nil {
+		return nil, err
+	}
+	if err := h.initConsentExemptions(); err != nil {
+		return nil, err
+	}
+	// Registered last: the gauge callback outlives a failed constructor.
+	metrics, err := newDCRMetrics(h.meterProvider, stor)
+	if err != nil {
 		return nil, fmt.Errorf("handlers: %w", err)
 	}
-	h.consentExemptClientIDSet = make(map[string]struct{}, len(h.consentExemptClientIDs))
-	for _, id := range h.consentExemptClientIDs {
-		h.consentExemptClientIDSet[id] = struct{}{}
-	}
-	h.consentExemptClientIDs = nil
+	h.dcrMetrics = metrics
+	h.capacityWarner = newCapacityWarner(stor)
 	return h, nil
+}
+
+// Close releases what NewHandler registered outside the Handler: the DCR
+// client gauge's callback, which holds the storage. Call it when the server
+// shuts down so a rebuilt server in the same process does not leave a
+// callback reading closed storage.
+func (h *Handler) Close() error {
+	return h.dcrMetrics.close()
 }
 
 // deviceCodeInterval returns configured, falling back to
@@ -358,12 +407,54 @@ func (h *Handler) OAuthRoutes(r chi.Router) {
 func (h *Handler) rateLimitRegister(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
 		if h.registerLimiter != nil && !h.registerLimiter.Allow() {
-			w.Header().Set("Retry-After", "1")
+			w.Header().Set("Retry-After", strconv.Itoa(limiterRetryAfterSeconds(h.registerLimiter)))
 			http.Error(w, "rate limit exceeded, retry later", http.StatusTooManyRequests)
 			return
 		}
 		next(w, req)
 	}
+}
+
+// validateRegisterLimiter rejects a register limiter without a finite
+// positive rate and a positive burst. rate.Inf (math.MaxFloat64, not +Inf)
+// would silently disable limiting, and NaN passes a plain <= 0 check.
+func validateRegisterLimiter(l *rate.Limiter) error {
+	lim := float64(l.Limit())
+	if math.IsNaN(lim) || math.IsInf(lim, 0) || l.Limit() == rate.Inf || lim <= 0 || l.Burst() <= 0 {
+		return fmt.Errorf("handlers: register rate limit must have a finite positive rate and positive burst, got %v/s burst %d",
+			l.Limit(), l.Burst())
+	}
+	return nil
+}
+
+// initConsentExemptions validates the consent-exempt client IDs set by
+// WithConsentExemptClientIDs and indexes them for lookup.
+func (h *Handler) initConsentExemptions() error {
+	if err := consentpolicy.Validate(
+		h.consentExemptClientIDs,
+		h.config.GetAuthorizationEndpointBaseURL(),
+		h.config.GetAccessTokenIssuer(),
+		len(h.upstreams),
+	); err != nil {
+		return fmt.Errorf("handlers: %w", err)
+	}
+	h.consentExemptClientIDSet = make(map[string]struct{}, len(h.consentExemptClientIDs))
+	for _, id := range h.consentExemptClientIDs {
+		h.consentExemptClientIDSet[id] = struct{}{}
+	}
+	h.consentExemptClientIDs = nil
+	return nil
+}
+
+// limiterRetryAfterSeconds returns the Retry-After value for a request l
+// refused: 1/rate seconds, the longest the limiter can take to refill one
+// token, rounded up and at least 1. A partly refilled bucket frees a token
+// sooner, so this is an upper bound. A rate below 1/s therefore advertises a
+// wait longer than a second, so a
+// client honouring the header does not retry into further 429s. The result
+// is clamped to math.MaxInt32 so a vanishingly small rate cannot overflow int.
+func limiterRetryAfterSeconds(l *rate.Limiter) int {
+	return int(min(max(math.Ceil(1/float64(l.Limit())), 1), math.MaxInt32))
 }
 
 // rateLimitCIMDAuthorize gates /oauth/authorize requests whose client_id is a

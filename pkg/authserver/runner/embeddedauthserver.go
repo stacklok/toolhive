@@ -419,6 +419,7 @@ func newEmbeddedAuthServerWithStorage(
 		AllowPrivateKeyJWTRegistration:            cfg.AllowPrivateKeyJWTRegistration,
 		ForceConfidentialRedirectURIs:             slices.Clone(cfg.ForceConfidentialRedirectURIs),
 		InsecureAllowConfidentialOverLoopbackHTTP: cfg.InsecureAllowConfidentialOverLoopbackHTTP,
+		RegistrationRateLimit:                     cfg.RegistrationRateLimit,
 		// slices.Clone is shallow: each TrustedIssuer's own AllowedActors
 		// slice is still shared with cfg. NewMultiIssuerTokenValidator's
 		// constructor clones AllowedActors per issuer before use, so the
@@ -1066,15 +1067,20 @@ func convertFieldMapping(rc *authserver.UserInfoFieldMappingRunConfig) *upstream
 
 // createStorage creates the appropriate storage backend based on configuration.
 func createStorage(ctx context.Context, cfg *storage.RunConfig) (storage.Storage, error) {
+	maxDCRClients, err := cfg.ResolvedMaxDCRClients()
+	if err != nil {
+		return nil, err
+	}
 	if cfg == nil || cfg.Type == "" || cfg.Type == string(storage.TypeMemory) {
-		return storage.NewMemoryStorage(), nil
+		return storage.NewMemoryStorage(storage.WithMaxDCRClients(maxDCRClients)), nil
 	}
 	if cfg.Type == string(storage.TypeRedis) {
 		redisCfg, err := convertRedisRunConfig(cfg.RedisConfig)
 		if err != nil {
 			return nil, fmt.Errorf("invalid Redis config: %w", err)
 		}
-		return storage.NewRedisStorage(ctx, redisCfg, cfg.RedisConfig.KeyPrefix)
+		return storage.NewRedisStorage(ctx, redisCfg, cfg.RedisConfig.KeyPrefix,
+			storage.WithRedisMaxDCRClients(maxDCRClients))
 	}
 	return nil, fmt.Errorf("unsupported storage type: %s", cfg.Type)
 }

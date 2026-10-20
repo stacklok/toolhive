@@ -114,12 +114,18 @@ homebrew_casks:
       token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
     # Homebrew quarantines cask downloads, and the darwin binaries are signed
     # but not notarized, so Gatekeeper would refuse to run them.
-    hooks:
-      post:
-        install: |
-          if OS.mac?
-            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/thv"]
-          end
+    #
+    # Written as a raw postflight_steps stanza because Homebrew deprecated the
+    # Ruby postflight block that hooks.post.install generates, and GoReleaser's
+    # install_steps replacement is not in a stable release yet. The body matches
+    # what install_steps generates. {{staged_path}} is a Homebrew token, escaped
+    # so GoReleaser's own templating passes it through.
+    custom_block: |
+      postflight_steps do
+        on_macos do
+          run "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "{{ "{{staged_path}}" }}/thv"]
+        end
+      end
 # This section defines whether we want to release the source code too.
 source:
   enabled: true

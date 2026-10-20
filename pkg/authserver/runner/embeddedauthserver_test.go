@@ -1064,6 +1064,203 @@ func TestNewEmbeddedAuthServer(t *testing.T) {
 	})
 }
 
+func TestWithConsentExemptClientIDsCopiesAndReplaces(t *testing.T) {
+	t.Parallel()
+
+	firstIDs := []string{"first-client"}
+	firstOption := WithConsentExemptClientIDs(firstIDs)
+	firstIDs[0] = "mutated-client"
+
+	options := resolveEmbeddedAuthServerOptions([]EmbeddedAuthServerOption{firstOption})
+	require.Equal(t, []string{"first-client"}, options.consentExemptClientIDs)
+
+	secondIDs := []string{"second-client"}
+	secondOption := WithConsentExemptClientIDs(secondIDs)
+	secondIDs[0] = "also-mutated-client"
+	options = resolveEmbeddedAuthServerOptions([]EmbeddedAuthServerOption{firstOption, secondOption})
+	assert.Equal(t, []string{"second-client"}, options.consentExemptClientIDs)
+}
+
+func TestRunConfigAndResolvedConfigShareConsentPolicyValidation(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name              string
+		clientIDs         []string
+		authorizationBase string
+		issuer            string
+		upstreamCount     int
+		insecureAllowHTTP bool
+		wantError         string
+	}{
+		{
+			name:          "URL-shaped client ID",
+			clientIDs:     []string{"https://client.example.com"},
+			issuer:        "https://auth.example.com",
+			upstreamCount: 1,
+			wantError:     "consent_exempt_client_ids must not contain URL-shaped ID \"https://client.example.com\"",
+		},
+		{
+			name:              "non-HTTPS authorization base",
+			clientIDs:         []string{"client-id"},
+			authorizationBase: "http://auth.example.com",
+			issuer:            "https://auth.example.com",
+			upstreamCount:     1,
+			insecureAllowHTTP: true,
+			wantError:         "consent_exempt_client_ids requires an HTTPS authorization endpoint base URL",
+		},
+		{
+			name:      "missing upstream",
+			clientIDs: []string{"client-id"},
+			issuer:    "https://auth.example.com",
+			wantError: "consent_exempt_client_ids requires at least one configured upstream",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			runConfig := &authserver.RunConfig{
+				Issuer:                       tt.issuer,
+				AuthorizationEndpointBaseURL: tt.authorizationBase,
+				Upstreams:                    make([]authserver.UpstreamRunConfig, tt.upstreamCount),
+				InsecureAllowHTTP:            tt.insecureAllowHTTP,
+			}
+			runConfigOptions := embeddedAuthServerOptions{consentExemptClientIDs: tt.clientIDs}
+			runConfigErr := validateConsentPolicyForRunConfig(runConfig, runConfigOptions)
+
+			resolvedConfig := &authserver.Config{
+				Issuer:                       tt.issuer,
+				AuthorizationEndpointBaseURL: tt.authorizationBase,
+				Upstreams:                    make([]authserver.UpstreamConfig, tt.upstreamCount),
+				ConsentExemptClientIDs:       tt.clientIDs,
+				InsecureAllowHTTP:            tt.insecureAllowHTTP,
+			}
+			resolvedConfigErr := resolvedConfig.Validate()
+			require.EqualError(t, runConfigErr, tt.wantError)
+			require.EqualError(t, resolvedConfigErr, tt.wantError)
+			require.EqualError(t, runConfigErr, resolvedConfigErr.Error(), "both config paths use shared consentpolicy validation")
+		})
+	}
+}
+
+func TestEmbeddedAuthServerConsentOptionConstructors(t *testing.T) {
+	t.Parallel()
+
+	t.Run("option reaches NewEmbeddedAuthServer validation", func(t *testing.T) {
+		t.Parallel()
+
+		cfg := minimalRunnerConsentConfig("https://auth.example.com")
+		_, err := NewEmbeddedAuthServer(context.Background(), cfg, WithConsentExemptClientIDs([]string{"missing-client"}))
+		require.ErrorContains(t, err, "failed to resolve consent-exempt client")
+	})
+
+	t.Run("storage constructor propagates consent exemption option", func(t *testing.T) {
+		t.Parallel()
+
+		baseStorage := storage.NewMemoryStorage()
+		tracker := &closeTrackingDCRStorage{
+			closeTrackingStorage: &closeTrackingStorage{Storage: baseStorage},
+			DCRCredentialStore:   baseStorage,
+		}
+		_, err := NewEmbeddedAuthServerWithStorage(
+			context.Background(),
+			minimalRunnerConsentConfig("https://auth.example.com"),
+			tracker,
+			WithConsentExemptClientIDs([]string{"missing-client"}),
+		)
+		require.ErrorContains(t, err, "failed to resolve consent-exempt client")
+		assert.Equal(t, int32(1), tracker.closeCount.Load(), "failed construction must close caller-supplied storage")
+	})
+
+	t.Run("storage constructor transfers ownership on success", func(t *testing.T) {
+		t.Parallel()
+
+		ctx := context.Background()
+		baseStorage := storage.NewMemoryStorage()
+		client := &fosite.DefaultClient{
+			ID:            "exempt-client",
+			Secret:        []byte("test-secret"),
+			GrantTypes:    fosite.Arguments{"authorization_code"},
+			ResponseTypes: fosite.Arguments{"code"},
+			RedirectURIs:  []string{"https://client.example.com/callback"},
+		}
+		require.NoError(t, baseStorage.RegisterClient(ctx, client))
+		tracker := &closeTrackingDCRStorage{
+			closeTrackingStorage: &closeTrackingStorage{Storage: baseStorage},
+			DCRCredentialStore:   baseStorage,
+		}
+
+		server, err := NewEmbeddedAuthServerWithStorage(
+			ctx,
+			minimalRunnerConsentConfig("https://auth.example.com"),
+			tracker,
+			WithConsentExemptClientIDs([]string{"exempt-client"}),
+		)
+		require.NoError(t, err)
+		require.NoError(t, server.Close())
+		assert.Equal(t, int32(1), tracker.closeCount.Load())
+	})
+}
+
+func TestConsentPolicyRejectsBeforeUpstreamDiscovery(t *testing.T) {
+	t.Parallel()
+
+	var requestCount atomic.Int32
+	upstreamServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requestCount.Add(1)
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	t.Cleanup(upstreamServer.Close)
+
+	cfg := &authserver.RunConfig{
+		SchemaVersion: authserver.CurrentSchemaVersion,
+		Issuer:        upstreamServer.URL,
+		Upstreams: []authserver.UpstreamRunConfig{{
+			Name: "dcr-upstream",
+			Type: authserver.UpstreamProviderTypeOAuth2,
+			OAuth2Config: &authserver.OAuth2UpstreamRunConfig{
+				AuthorizationEndpoint: upstreamServer.URL + "/authorize",
+				TokenEndpoint:         upstreamServer.URL + "/token",
+				DCRConfig: &authserver.DCRUpstreamConfig{
+					DiscoveryURL: upstreamServer.URL + "/.well-known/oauth-authorization-server",
+				},
+			},
+		}},
+		AllowedAudiences: []string{"https://mcp.example.com"},
+	}
+	invalidOption := WithConsentExemptClientIDs([]string{"https://client.example.com"})
+
+	_, err := NewEmbeddedAuthServer(context.Background(), cfg, invalidOption)
+	require.ErrorContains(t, err, "URL-shaped ID")
+	assert.Zero(t, requestCount.Load(), "NewEmbeddedAuthServer must reject invalid policy before storage creation and DCR discovery")
+
+	tracker := &closeTrackingStorage{Storage: storage.NewMemoryStorage()}
+	_, err = NewEmbeddedAuthServerWithStorage(context.Background(), cfg, tracker, invalidOption)
+	require.ErrorContains(t, err, "URL-shaped ID")
+	assert.Zero(t, requestCount.Load(), "storage constructor must reject invalid policy before DCR discovery")
+	assert.Equal(t, int32(1), tracker.closeCount.Load(), "supplied storage remains owned and is closed on early validation failure")
+}
+
+func minimalRunnerConsentConfig(issuer string) *authserver.RunConfig {
+	return &authserver.RunConfig{
+		SchemaVersion:    authserver.CurrentSchemaVersion,
+		Issuer:           issuer,
+		AllowedAudiences: []string{"https://mcp.example.com"},
+		Upstreams: []authserver.UpstreamRunConfig{{
+			Name: "static-upstream",
+			Type: authserver.UpstreamProviderTypeOAuth2,
+			OAuth2Config: &authserver.OAuth2UpstreamRunConfig{
+				AuthorizationEndpoint: "https://upstream.example.com/authorize",
+				TokenEndpoint:         "https://upstream.example.com/token",
+				ClientID:              "upstream-client",
+				RedirectURI:           issuer + "/oauth/callback",
+			},
+		}},
+	}
+}
+
 func TestEmbeddedAuthServer_KeyProvider(t *testing.T) {
 	t.Parallel()
 
@@ -2781,6 +2978,11 @@ type closeTrackingStorage struct {
 func (s *closeTrackingStorage) Close() error {
 	s.closeCount.Add(1)
 	return s.Storage.Close()
+}
+
+type closeTrackingDCRStorage struct {
+	*closeTrackingStorage
+	storage.DCRCredentialStore
 }
 
 // TestNewEmbeddedAuthServer_ClosesStorageOnError pins the post-#5185

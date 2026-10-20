@@ -19,6 +19,7 @@ import (
 	"github.com/stacklok/toolhive-core/redisconn"
 	"github.com/stacklok/toolhive/pkg/auth/dcr"
 	"github.com/stacklok/toolhive/pkg/authserver"
+	"github.com/stacklok/toolhive/pkg/authserver/internal/consentpolicy"
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
 	"github.com/stacklok/toolhive/pkg/authserver/server/handlers"
 	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
@@ -47,6 +48,30 @@ const (
 	maxAuthServerBodySize = handlers.MaxDCRBodySize
 )
 
+// EmbeddedAuthServerOption configures an EmbeddedAuthServer.
+type EmbeddedAuthServerOption func(*embeddedAuthServerOptions)
+
+type embeddedAuthServerOptions struct {
+	consentExemptClientIDs []string
+}
+
+// WithConsentExemptClientIDs preauthorizes listed clients to skip ToolHive's
+// consent page. Listing a client ID preauthorizes whatever registration currently
+// holds that ID, for whichever user completes upstream authentication. It is not
+// per-user consent, and runtime eligibility checks do not prove where the
+// registration came from. The caller must control registration writes for exempt
+// IDs; replacing a registration or expanding its permissions transfers or broadens
+// preauthorization. Removing an ID affects new requests only and does not revoke
+// tokens or cancel already-approved flows. Upstream authentication still runs.
+// The input is copied when the option is created, and repeated options replace the
+// list.
+func WithConsentExemptClientIDs(ids []string) EmbeddedAuthServerOption {
+	copiedIDs := slices.Clone(ids)
+	return func(options *embeddedAuthServerOptions) {
+		options.consentExemptClientIDs = slices.Clone(copiedIDs)
+	}
+}
+
 // EmbeddedAuthServer wraps the authorization server for integration with the proxy runner.
 // It handles configuration transformation from authserver.RunConfig to authserver.Config,
 // manages resource lifecycle, and provides HTTP handlers for OAuth/OIDC endpoints.
@@ -62,6 +87,14 @@ type EmbeddedAuthServer struct {
 	closeErr    error
 }
 
+func resolveEmbeddedAuthServerOptions(opts []EmbeddedAuthServerOption) embeddedAuthServerOptions {
+	var options embeddedAuthServerOptions
+	for _, opt := range opts {
+		opt(&options)
+	}
+	return options
+}
+
 // NewEmbeddedAuthServer creates an EmbeddedAuthServer from authserver.RunConfig.
 // It loads signing keys from files, reads HMAC secrets from files, resolves
 // upstream and delegate-client secret references from files or environment
@@ -69,9 +102,17 @@ type EmbeddedAuthServer struct {
 //
 // The cfg parameter contains file paths and environment variable names that are
 // resolved at runtime to build the underlying authserver.Config.
-func NewEmbeddedAuthServer(ctx context.Context, cfg *authserver.RunConfig) (*EmbeddedAuthServer, error) {
+func NewEmbeddedAuthServer(
+	ctx context.Context,
+	cfg *authserver.RunConfig,
+	opts ...EmbeddedAuthServerOption,
+) (*EmbeddedAuthServer, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("config is required")
+	}
+	options := resolveEmbeddedAuthServerOptions(opts)
+	if err := validateConsentPolicyForRunConfig(cfg, options); err != nil {
+		return nil, fmt.Errorf("invalid consent policy: %w", err)
 	}
 
 	// Register gjson modifiers used by IdentityFromToken configs (e.g. @upstreamjwt).
@@ -99,7 +140,7 @@ func NewEmbeddedAuthServer(ctx context.Context, cfg *authserver.RunConfig) (*Emb
 	if err != nil {
 		return nil, fmt.Errorf("failed to create storage: %w", err)
 	}
-	return newEmbeddedAuthServerWithStorage(ctx, cfg, stor, nil)
+	return newEmbeddedAuthServerWithStorage(ctx, cfg, stor, nil, options)
 }
 
 // NewEmbeddedAuthServerWithStorage is the exported core constructor that
@@ -136,8 +177,9 @@ func NewEmbeddedAuthServerWithStorage(
 	ctx context.Context,
 	cfg *authserver.RunConfig,
 	stor storage.Storage,
+	opts ...EmbeddedAuthServerOption,
 ) (*EmbeddedAuthServer, error) {
-	return newEmbeddedAuthServerWithStorage(ctx, cfg, stor, nil)
+	return newEmbeddedAuthServerWithStorage(ctx, cfg, stor, nil, resolveEmbeddedAuthServerOptions(opts))
 }
 
 func warnDeprecatedInboundGrantFields(fields []authserver.DeprecatedFieldPath) {
@@ -234,6 +276,7 @@ func newEmbeddedAuthServerWithStorage(
 	cfg *authserver.RunConfig,
 	stor storage.Storage,
 	delegateClients []authserver.DelegateClient,
+	options embeddedAuthServerOptions,
 ) (retEAS *EmbeddedAuthServer, retErr error) {
 	// Validate required inputs before the deferred cleanup is installed: cfg is
 	// dereferenced during validation and stor is closed by that cleanup.
@@ -264,6 +307,13 @@ func newEmbeddedAuthServerWithStorage(
 			}
 		}
 	}()
+
+	// Validate consent prerequisites before upstream resolution, which may
+	// perform discovery and DCR network I/O. This remains inside the cleanup
+	// gate so caller-supplied storage is closed on constructor failure.
+	if err := validateConsentPolicyForRunConfig(cfg, options); err != nil {
+		return nil, fmt.Errorf("invalid consent policy: %w", err)
+	}
 
 	// Validate cfg here too. NewEmbeddedAuthServer validates before
 	// createStorage, but direct callers of this exported constructor would
@@ -357,6 +407,7 @@ func newEmbeddedAuthServerWithStorage(
 		AuthCodeLifespan:                          authCodeLifespan,
 		DelegationTokenLifespan:                   delegationLifespan,
 		Upstreams:                                 upstreams,
+		ConsentExemptClientIDs:                    slices.Clone(options.consentExemptClientIDs),
 		ScopesSupported:                           slices.Clone(cfg.ScopesSupported),
 		BaselineClientScopes:                      slices.Clone(cfg.BaselineClientScopes),
 		AllowedAudiences:                          slices.Clone(cfg.AllowedAudiences),
@@ -492,6 +543,15 @@ func (e *EmbeddedAuthServer) RegisterHandlers(mux *http.ServeMux) {
 	for pattern, handler := range e.Routes() {
 		mux.Handle(pattern, handler)
 	}
+}
+
+func validateConsentPolicyForRunConfig(cfg *authserver.RunConfig, options embeddedAuthServerOptions) error {
+	return consentpolicy.Validate(
+		options.consentExemptClientIDs,
+		cfg.AuthorizationEndpointBaseURL,
+		cfg.Issuer,
+		len(cfg.Upstreams),
+	)
 }
 
 // validateEmbeddedAuthServerInputs rejects required inputs before construction

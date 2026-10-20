@@ -152,11 +152,6 @@ func (h *MCPClientHelper) CallTool(
 	return h.client.CallTool(ctx, request)
 }
 
-// Ping sends a ping to test connectivity
-func (h *MCPClientHelper) Ping(ctx context.Context) error {
-	return h.client.Ping(ctx)
-}
-
 // ExpectToolExists verifies that a tool with the given name exists
 func (h *MCPClientHelper) ExpectToolExists(ctx context.Context, toolName string) {
 	tools, err := h.ListTools(ctx)

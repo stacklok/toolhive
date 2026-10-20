@@ -22,10 +22,10 @@ import (
 
 const defaultSquidImage = "ghcr.io/stacklok/toolhive/egress-proxy:latest"
 
-// dockerGateway* are Docker-specific addresses that resolve to the host network
-// interface from inside a container. They are blocked by default to prevent
+// These Docker/Podman host aliases are blocked by default to prevent
 // containers from reaching host services unintentionally.
 const (
+	podmanGatewayHostname    = "host.containers.internal"
 	dockerGatewayHostname    = "host.docker.internal"
 	dockerAltGatewayHostname = "gateway.docker.internal"
 )
@@ -190,16 +190,14 @@ func createSquidContainer(
 // before any http_access allow rules: Squid evaluates access control in
 // first-match-wins order, so a deny placed after an allow is never reached.
 //
-// gatewayIPs contains every bridge-network gateway reported by the daemon.
-// dockerGatewayHostname and dockerAltGatewayHostname cover hostname-based access;
-// the dst rule covers direct-IP access that bypasses DNS.
-// Note: gateway.docker.internal is Docker Desktop (macOS) specific; blocking it
-// on Linux is harmless since the name does not resolve there.
+// gatewayIPs contains every bridge gateway and discovered Podman host-alias IP.
+// hostGatewayNames covers hostname-based access; the dst rule also covers direct
+// IPs and other names resolving to a protected address.
 func writeDockerGatewayDenyRules(sb *strings.Builder, gatewayIPs []netip.Addr) {
 	sb.WriteString(
 		"# Block Docker gateway addresses — opt in with --allow-docker-gateway\n" +
 			"acl docker_gateway_hosts dstdomain " +
-			dockerGatewayHostname + " " + dockerAltGatewayHostname + "\n" +
+			strings.Join(hostGatewayNames[:], " ") + "\n" +
 			"acl docker_gateway_ip dst " + gatewayAddrList(gatewayIPs) + "\n" +
 			"http_access deny docker_gateway_hosts\n" +
 			"http_access deny docker_gateway_ip\n\n",
@@ -229,7 +227,7 @@ func writeDockerGatewayAllowRules(sb *strings.Builder, gatewayIPs []netip.Addr) 
 	sb.WriteString(
 		"# Grant Docker gateway access — enabled via --allow-docker-gateway\n" +
 			"acl docker_gateway_hosts dstdomain " +
-			dockerGatewayHostname + " " + dockerAltGatewayHostname + "\n" +
+			strings.Join(hostGatewayNames[:], " ") + "\n" +
 			"acl docker_gateway_ip dst " + gatewayAddrList(gatewayIPs) + "\n" +
 			"http_access allow docker_gateway_hosts\n" +
 			"http_access allow docker_gateway_ip\n\n",

@@ -303,9 +303,9 @@ func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
 		"Isolate the container network from the host. Use --isolate-network=false to opt out. "+
 			"Not enforced with --network host or --network none (isolation requires bridge networking).")
 	cmd.Flags().BoolVar(&config.AllowDockerGateway, "allow-docker-gateway", false,
-		"Allow outbound connections to Docker gateway addresses (all daemon bridge gateways, "+
-			"host.docker.internal, and gateway.docker.internal). Only applies when --isolate-network is set. "+
-			"Gateways are snapshotted at deployment; redeploy to include bridges created later. "+
+		"Allow outbound connections to Docker/Podman host addresses (all daemon bridge gateways, runtime host-alias IPs, "+
+			"host.docker.internal, gateway.docker.internal, and host.containers.internal). Only applies when --isolate-network is set. "+
+			"Addresses are snapshotted at deployment; redeploy after runtime network changes. "+
 			"These are blocked by default even when insecure_allow_all is enabled. "+
 			"Gateway access is port-independent: it ignores the permission profile's allowed ports, so once enabled the "+
 			"gateway is reachable on any port.")

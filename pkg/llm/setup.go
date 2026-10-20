@@ -605,34 +605,58 @@ func discoverSetupModels(
 		ctx, cfg, hasPi || needsBedrockTiers, hasVSCode || hasPi, anthropicPrefix)
 	piMissing := hasPi && len(catalog.openAI) == 0 && len(catalog.anthropic) == 0
 	// Bedrock-compat Claude Code cannot derive its tier pins when the Anthropic
-	// catalogue fetch failed. Treat that like the Pi/VS Code discovery failures:
-	// abort when the client was named explicitly, skip it with a warning when it
-	// was auto-detected (so the user is not left with a Claude Code that routes
-	// built-in Anthropic IDs a Bedrock-only gateway rejects).
-	bedrockMissing := needsBedrockTiers && anthropicErr != nil
-	if err := explicitDiscoveryFailure(targetClient, piMissing, bedrockMissing, openErr, anthropicErr); err != nil {
+	// catalogue fetch failed, or succeeded without a single Bedrock-form ID. Treat
+	// that like the Pi/VS Code discovery failures: abort when the client was named
+	// explicitly, skip it with a warning when it was auto-detected (so the user is
+	// not left with a Claude Code that routes built-in Anthropic IDs a Bedrock-only
+	// gateway rejects). --models pinning every tier needs no discovery. Lazy mode
+	// never fetches the catalogue (no access token); filterLazyModelDiscoveryClients
+	// already gates it on --models.
+	bedrockErr := bedrockDiscoveryError(
+		needsBedrockTiers && cfg.discoveryAccessToken != "", cfg.Models, catalog.anthropic, anthropicErr)
+	bedrockMissing := bedrockErr != nil
+	if err := explicitDiscoveryFailure(targetClient, piMissing, openErr, anthropicErr, bedrockErr); err != nil {
 		return nil, catalog, err
 	}
 	warnModelDiscovery(errOut, hasVSCode, hasPi, piMissing, catalog, openErr, anthropicErr)
 	if bedrockMissing {
 		_, _ = fmt.Fprintf(errOut, "Warning: skipping auto-detected claude-code because Bedrock model discovery "+
-			"failed: %v; pass --models to pin the tiers explicitly.\n", anthropicErr)
+			"failed: %v\n", bedrockErr)
 	}
 	return keepDiscoverableClients(clients, openErr, piMissing, bedrockMissing), catalog, nil
+}
+
+// bedrockDiscoveryError reports why bedrock-compat Claude Code cannot pin its
+// tiers from the gateway catalogue, or nil when it can (or need not, because
+// --models pins every tier). A catalogue with no Bedrock-form ID for any tier
+// is as unusable as a failed fetch; a partial one is only warned about later.
+func bedrockDiscoveryError(needsBedrockTiers bool, models, discovered []string, anthropicErr error) error {
+	if !needsBedrockTiers {
+		return nil
+	}
+	if pinned, _ := resolveBedrockModels(models, nil, false); len(pinned.emptyFamilies()) == 0 {
+		return nil
+	}
+	if anthropicErr != nil {
+		return anthropicErr
+	}
+	if newestBedrockTiers(discovered) == (bedrockTiers{}) {
+		return errNoBedrockModels
+	}
+	return nil
 }
 
 // explicitDiscoveryFailure returns an error when the explicitly named client
 // cannot be configured because its model discovery failed, so setup aborts
 // rather than writing a half-configured client.
-func explicitDiscoveryFailure(targetClient string, piMissing, bedrockMissing bool, openErr, anthropicErr error) error {
+func explicitDiscoveryFailure(targetClient string, piMissing bool, openErr, anthropicErr, bedrockErr error) error {
 	switch {
 	case isVSCodeClient(targetClient) && openErr != nil:
-		return openErr
+		return fmt.Errorf("discovering gateway models: %w", openErr)
 	case targetClient == "pi" && piMissing:
 		return fmt.Errorf("discovering Pi models: %w", errors.Join(openErr, anthropicErr))
-	case targetClient == claudeCodeClient && bedrockMissing:
-		return fmt.Errorf("discovering Bedrock models for Claude Code: %w; "+
-			"pass --models to pin the tiers explicitly", anthropicErr)
+	case targetClient == claudeCodeClient && bedrockErr != nil:
+		return fmt.Errorf("discovering Bedrock models for Claude Code: %w", bedrockErr)
 	default:
 		return nil
 	}
@@ -711,6 +735,63 @@ type gatewayModelsResponse struct {
 	} `json:"data"`
 }
 
+// errEmptyModelCatalog reports a model list the gateway served successfully but
+// with no models in it, which usually means the account has no model access.
+var errEmptyModelCatalog = errors.New("gateway returned an empty model list")
+
+// errNoBedrockModels reports an Anthropic catalogue with no Bedrock-form model
+// ID for any Claude Code tier, so bedrock-compat setup has nothing to pin.
+var errNoBedrockModels = errors.New("the gateway's model list has no Bedrock model IDs " +
+	"(expected us.anthropic.claude-…); check that the gateway forwards to Bedrock")
+
+// gatewayStatusError reports a non-200 response to a model-list request, so
+// callers can tell a wrong path (404) from missing access (401/403) or a
+// gateway fault (5xx).
+type gatewayStatusError struct {
+	URL        string
+	StatusCode int
+	Status     string
+}
+
+func (e *gatewayStatusError) Error() string {
+	return fmt.Sprintf("gateway returned %s for %s", e.Status, e.URL)
+}
+
+// describeDiscoveryError rewrites a model-discovery failure into a message that
+// names its likely cause and what to check, keeping err wrapped. anthropic
+// selects the hints for the Anthropic model list (path prefix, Anthropic access)
+// over the OpenAI one.
+func describeDiscoveryError(err error, anthropic bool) error {
+	list, models := "a model list", "models"
+	if anthropic {
+		list, models = "an Anthropic model list", "Anthropic models"
+	}
+	var statusErr *gatewayStatusError
+	var urlErr *url.Error
+	switch {
+	case errors.As(err, &statusErr):
+		switch code := statusErr.StatusCode; {
+		case code == http.StatusNotFound && anthropic:
+			return fmt.Errorf("the gateway doesn't serve %s at %s; check --anthropic-path-prefix: %w",
+				list, statusErr.URL, err)
+		case code == http.StatusNotFound:
+			return fmt.Errorf("the gateway doesn't serve %s at %s; check the gateway URL: %w", list, statusErr.URL, err)
+		case code == http.StatusUnauthorized || code == http.StatusForbidden:
+			return fmt.Errorf("the gateway rejected model discovery (%s); check that your account has access to %s: %w",
+				statusErr.Status, models, err)
+		case code >= http.StatusInternalServerError:
+			return fmt.Errorf("the gateway returned %s listing models; retry, or contact the gateway operator: %w",
+				statusErr.Status, err)
+		}
+	case errors.Is(err, errEmptyModelCatalog):
+		return fmt.Errorf("the gateway returned no %s for your account; ask the gateway operator for model access: %w",
+			models, err)
+	case errors.As(err, &urlErr):
+		return fmt.Errorf("could not reach the gateway at %s; check the URL and your network: %w", urlErr.URL, err)
+	}
+	return err
+}
+
 func requestGatewayModels(ctx context.Context, cfg Config, path, afterID string) (gatewayModelsResponse, error) {
 	if cfg.discoveryAccessToken == "" {
 		return gatewayModelsResponse{}, fmt.Errorf("discovering gateway models: authenticated setup did not provide an access token")
@@ -740,7 +821,7 @@ func requestGatewayModels(ctx context.Context, cfg Config, path, afterID string)
 	}()
 	if resp.StatusCode != http.StatusOK {
 		_, _ = io.Copy(io.Discard, resp.Body)
-		return gatewayModelsResponse{}, fmt.Errorf("discovering gateway models: gateway returned %s", resp.Status)
+		return gatewayModelsResponse{}, &gatewayStatusError{URL: modelsURL, StatusCode: resp.StatusCode, Status: resp.Status}
 	}
 	var payload gatewayModelsResponse
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
@@ -753,10 +834,13 @@ func requestGatewayModels(ctx context.Context, cfg Config, path, afterID string)
 func discoverGatewayModels(ctx context.Context, cfg Config) ([]string, map[string]int, error) {
 	payload, err := requestGatewayModels(ctx, cfg, "v1/models", "")
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, describeDiscoveryError(err, false)
 	}
-	if payload.Object != "list" || len(payload.Data) == 0 {
+	if payload.Object != "list" {
 		return nil, nil, fmt.Errorf("decoding gateway model response: expected a non-empty OpenAI model list")
+	}
+	if len(payload.Data) == 0 {
+		return nil, nil, describeDiscoveryError(errEmptyModelCatalog, false)
 	}
 	seen := make(map[string]struct{}, len(payload.Data))
 	models := make([]string, 0, len(payload.Data))
@@ -796,10 +880,13 @@ func discoverAnthropicGatewayModels(
 	for range 100 {
 		payload, err := requestGatewayModels(ctx, cfg, path, afterID)
 		if err != nil {
-			return nil, nil, nil, nil, err
+			return nil, nil, nil, nil, describeDiscoveryError(err, true)
 		}
-		if payload.HasMore == nil || len(payload.Data) == 0 {
+		if payload.HasMore == nil {
 			return nil, nil, nil, nil, fmt.Errorf("decoding gateway model response: expected a non-empty Anthropic model page")
+		}
+		if len(payload.Data) == 0 {
+			return nil, nil, nil, nil, describeDiscoveryError(errEmptyModelCatalog, true)
 		}
 		for _, model := range payload.Data {
 			id := strings.TrimSpace(model.ID)
@@ -984,13 +1071,13 @@ func applyBedrockCompat(
 	for _, w := range warnings {
 		_, _ = fmt.Fprintf(errOut, "Warning: %s\n", w)
 	}
-	// Discovery succeeded (an outright failure would have skipped claude-code
-	// upstream) but a family may still have no Bedrock-form model — e.g. a gateway
-	// serving only some tiers, or naming its routes without the "anthropic."
-	// segment. Name those tiers so the user can pin them.
+	// Discovery found at least one Bedrock-form model (a failed fetch, or a
+	// catalogue with none, skips claude-code upstream), but a family may still
+	// have none — e.g. a gateway serving only some tiers. Name those tiers so the
+	// fallback to built-in IDs is visible.
 	if empty := tiers.emptyFamilies(); len(empty) > 0 {
 		_, _ = fmt.Fprintf(errOut, "Warning: no Bedrock model found in the gateway catalogue for the %s "+
-			"tier(s); pass --models to pin them, or they fall back to Claude Code's built-in model IDs.\n",
+			"tier(s); they fall back to Claude Code's built-in model IDs.\n",
 			strings.Join(empty, ", "))
 	}
 }

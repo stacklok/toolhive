@@ -22,6 +22,7 @@ import (
 	"github.com/stacklok/toolhive-core/logging"
 	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/transport/types"
+	"github.com/stacklok/toolhive/test/testkit/osperm"
 )
 
 const testValidJSON = `{"mcpServers": {}, "mcp": {"servers": {}}}`
@@ -759,6 +760,7 @@ func TestCreateClientConfig(t *testing.T) {
 	})
 
 	t.Run("CreateClientConfigWriteError", func(t *testing.T) {
+		osperm.SkipIfRoot(t)
 		t.Parallel()
 		// Setup a temporary home directory for testing
 		tempHome := t.TempDir()

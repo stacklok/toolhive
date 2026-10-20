@@ -41,7 +41,7 @@ type GatewayManager interface {
 	// PromptCacheConflict names a setting that may override ToolHive's
 	// one-hour Claude Code prompt-cache configuration.
 	PromptCacheConflict(clientType string) (string, error)
-	// IsManaged reports whether a managed-preferences profile overrides the
+	// IsManaged reports whether a managed configuration overrides the
 	// client's local config (so the config setup writes would be ignored).
 	IsManaged(clientType string) bool
 	// LLMClientDetectionHint explains why clientType was not detected, or "".
@@ -1325,7 +1325,7 @@ func hasAnthropicBaseURLClient(gm GatewayManager, detected []string) bool {
 
 // warnCredentialHelperTools prints the follow-up notes credential-helper clients
 // (Claude Desktop) need: they read config only at launch, so the user must fully
-// quit and relaunch; and a managed-preferences profile, if present, overrides
+// quit and relaunch; and a managed configuration, if present, overrides
 // the local config setup just wrote.
 func warnCredentialHelperTools(out, errOut io.Writer, gm GatewayManager, configured []ToolConfig) {
 	for _, tc := range configured {
@@ -1337,8 +1337,8 @@ func warnCredentialHelperTools(out, errOut io.Writer, gm GatewayManager, configu
 				"for the gateway change to take effect.\n", tc.Tool)
 		if gm.IsManaged(tc.Tool) {
 			_, _ = fmt.Fprintf(errOut,
-				"Warning: a managed-preferences profile for %s is present; it overrides the local "+
-					"configuration just written, which will be ignored. Remove the managed profile or "+
+				"Warning: a managed configuration for %s is present; it overrides the local "+
+					"configuration just written, which will be ignored. Remove the managed configuration or "+
 					"configure the gateway there instead.\n", tc.Tool)
 		}
 	}

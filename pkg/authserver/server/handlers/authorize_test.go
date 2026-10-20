@@ -95,6 +95,9 @@ func TestConsentExemptEligibility(t *testing.T) {
 			ar := fosite.NewAuthorizeRequest()
 			ar.Client = &client
 			ar.ResponseTypes = tt.requestTypes
+			validatedRedirect, err := url.Parse(testAuthRedirectURI)
+			require.NoError(t, err)
+			ar.RedirectURI = validatedRedirect
 			form := make(url.Values)
 			if tt.requestRedirects != nil {
 				form["redirect_uri"] = tt.requestRedirects
@@ -102,6 +105,28 @@ func TestConsentExemptEligibility(t *testing.T) {
 			assert.Equal(t, tt.want, h.consentExempt(ar, form, tt.rewrittenFrom))
 		})
 	}
+}
+
+func TestConsentExemptRejectsValidatedRequestObjectRedirectOverride(t *testing.T) {
+	t.Parallel()
+
+	h, state, _ := handlerTestSetup(t)
+	client := *state.clients[testAuthClientID].(*fosite.DefaultClient)
+	client.Secret = []byte("test-secret")
+	client.RedirectURIs = append(client.RedirectURIs, "https://client.example/overridden-callback")
+	state.clients[testAuthClientID] = &client
+	h.consentExemptClientIDSet = map[string]struct{}{testAuthClientID: {}}
+	ar := fosite.NewAuthorizeRequest()
+	ar.Client = &client
+	ar.ResponseTypes = fosite.Arguments{oauthproto.ResponseTypeCode}
+	validatedRedirect, err := url.Parse("https://client.example/overridden-callback")
+	require.NoError(t, err)
+	ar.RedirectURI = validatedRedirect
+
+	// A signed request object may override the plain form redirect_uri before
+	// Fosite validates the redirect. The final redirect must not be exempted.
+	originalForm := url.Values{"redirect_uri": {testAuthRedirectURI}}
+	require.False(t, h.consentExempt(ar, originalForm, ""))
 }
 
 func TestAuthorizeHandler_MissingClientID(t *testing.T) {
@@ -192,7 +217,7 @@ func TestAuthorizeHandler_BackChannelOnlyClientsMatchMissingClient(t *testing.T)
 				return client
 			},
 			// A delegate client is rejected via the pre-existing metadata-shape
-			// inference (isBackChannelOnlyClient's fallback), not the explicit
+			// inference (`consentpolicy.IsBackChannelOnlyClient`), not the explicit
 			// registration.BackChannelOnly marker -- delegate clients are out of
 			// scope for that marker and must keep their current behaviour.
 			explicitMarker: false,

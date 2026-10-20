@@ -90,19 +90,19 @@ func TestAuthorizeHandler_ConsentExemptionRequiresExplicitExactRedirect(t *testi
 	t.Parallel()
 
 	for _, tt := range []struct {
-		name        string
-		redirects   []string
-		response    string
-		wantError   string
-		wantConsent bool
+		name           string
+		redirects      []string
+		response       string
+		wantKind       string
+		wantOAuthError string
 	}{
-		{name: "explicit exact redirect is exempt", redirects: []string{testAuthRedirectURI}},
-		{name: "inferred redirect is not exempt", redirects: []string{"<omitted>"}, wantConsent: true},
-		{name: "repeated redirect is not exempt", redirects: []string{testAuthRedirectURI, testAuthRedirectURI}, wantConsent: true, wantError: "invalid_request"},
-		{name: "empty redirect is not exempt", redirects: []string{""}, wantConsent: true, wantError: "invalid_request"},
-		{name: "mismatched redirect keeps OAuth rejection", redirects: []string{"https://other.example/callback"}, wantError: "invalid_request"},
-		{name: "invalid redirect keeps OAuth rejection", redirects: []string{"http://["}, wantError: "invalid_request"},
-		{name: "unsupported response type keeps OAuth rejection", redirects: []string{testAuthRedirectURI}, response: "token", wantError: "unsupported_response_type"},
+		{name: "explicit exact redirect is exempt", redirects: []string{testAuthRedirectURI}, wantKind: "exempt"},
+		{name: "inferred redirect requires consent", redirects: []string{"<omitted>"}, wantKind: "consent"},
+		{name: "repeated redirect requires consent", redirects: []string{testAuthRedirectURI, testAuthRedirectURI}, wantKind: "consent"},
+		{name: "empty redirect requires consent", redirects: []string{""}, wantKind: "consent"},
+		{name: "mismatched redirect is OAuth error", redirects: []string{"https://other.example/callback"}, wantKind: "oauth_error", wantOAuthError: "invalid_request"},
+		{name: "invalid redirect is OAuth error", redirects: []string{"http://["}, wantKind: "oauth_error", wantOAuthError: "invalid_request"},
+		{name: "unsupported response type is OAuth error", redirects: []string{testAuthRedirectURI}, response: "token", wantKind: "oauth_error", wantOAuthError: "unsupported_response_type"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
@@ -117,10 +117,11 @@ func TestAuthorizeHandler_ConsentExemptionRequiresExplicitExactRedirect(t *testi
 			rec := httptest.NewRecorder()
 			h.AuthorizeHandler(rec, httptest.NewRequest(http.MethodGet, "/oauth/authorize?"+params.Encode(), nil))
 
-			if tt.name == "explicit exact redirect is exempt" {
+			if tt.wantKind == "exempt" {
 				require.Equal(t, http.StatusSeeOther, rec.Code, rec.Body.String())
 				require.Contains(t, rec.Header().Get("Location"), "https://idp.example.com/authorize")
 				require.NotEmpty(t, upstream.capturedState, "an eligible exact redirect starts the upstream flow")
+				require.Len(t, state.pendingAuths, 1, "an exempt flow must leave exactly one pending record")
 				pending := state.pendingAuths[upstream.capturedState]
 				require.NotNil(t, pending)
 				require.Equal(t, storage.ConsentStageApproved, pending.ConsentStage,
@@ -134,19 +135,21 @@ func TestAuthorizeHandler_ConsentExemptionRequiresExplicitExactRedirect(t *testi
 			}
 
 			require.Empty(t, upstream.capturedState, "an ineligible or invalid authorization must not start upstream authentication")
-			if tt.wantConsent && rec.Code == http.StatusOK {
-				require.Contains(t, rec.Body.String(), "Allow this app to sign you in?",
-					"accepted but ineligible redirects require ordinary consent")
+			switch tt.wantKind {
+			case "consent":
+				require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+				require.Contains(t, rec.Body.String(), "Allow this app to sign you in?")
+				require.Len(t, state.pendingAuths, 1)
 				handle := onlyPendingHandle(t, state)
 				require.Equal(t, storage.ConsentStageAwaiting, state.pendingAuths[handle].ConsentStage)
-				return
+			case "oauth_error":
+				require.NotEqual(t, http.StatusOK, rec.Code)
+				require.Contains(t, rec.Body.String()+rec.Header().Get("Location"), tt.wantOAuthError)
+				require.NotContains(t, rec.Body.String(), "Allow this app to sign you in?")
+				require.Empty(t, state.pendingAuths)
+			default:
+				t.Fatalf("unexpected wantKind %q", tt.wantKind)
 			}
-			require.NotEqual(t, http.StatusOK, rec.Code,
-				"OAuth validation failures must remain OAuth errors, not be converted to consent pages")
-			require.NotEmpty(t, tt.wantError, "a request rejected before consent must declare its expected OAuth error")
-			require.Contains(t, rec.Body.String()+rec.Header().Get("Location"), tt.wantError,
-				"the existing OAuth error must be preserved without rendering consent")
-			require.NotContains(t, rec.Body.String(), "Allow this app to sign you in?")
 		})
 	}
 }
@@ -166,6 +169,7 @@ func TestAuthorizeHandler_ConsentExemptionDoesNotReadRememberedConsent(t *testin
 
 	require.Equal(t, http.StatusSeeOther, rec.Code, rec.Body.String())
 	require.NotEmpty(t, upstream.capturedState)
+	require.Len(t, state.pendingAuths, 1, "an exempt flow must leave exactly one pending record")
 	pending := state.pendingAuths[upstream.capturedState]
 	require.NotNil(t, pending)
 	require.Equal(t, storage.ConsentStageApproved, pending.ConsentStage)
@@ -204,6 +208,7 @@ func TestAuthorizeHandler_ConsentExemptionCreatesIndependentUpstreamFlows(t *tes
 	}
 
 	require.Len(t, internalStates, 2)
+	require.Len(t, state.pendingAuths, 2, "two independent exempt flows must leave exactly two pending records")
 	require.NotEqual(t, internalStates[0], internalStates[1], "separate authorization transactions must have independent upstream states")
 	require.NotEqual(t, cookies[0].Value, cookies[1].Value, "separate transactions must have independent browser-binding secrets")
 	first := state.pendingAuths[internalStates[0]]
@@ -300,6 +305,7 @@ func TestAuthorizeHandler_ConsentExemptionRuntimeEligibilityLossUsesRememberedAp
 
 	require.Equal(t, http.StatusSeeOther, rec.Code, rec.Body.String())
 	require.NotEmpty(t, upstream.capturedState)
+	require.Len(t, state.pendingAuths, 1, "an exempt flow must leave exactly one pending record")
 	pending := state.pendingAuths[upstream.capturedState]
 	require.NotNil(t, pending)
 	require.Equal(t, storage.ConsentStageApproved, pending.ConsentStage)

@@ -1064,16 +1064,15 @@ func TestRunConfigAndResolvedConfigShareConsentPolicyValidation(t *testing.T) {
 		authorizationBase string
 		issuer            string
 		upstreamCount     int
-		wantRunErr        string
-		wantResolvedErr   string
+		insecureAllowHTTP bool
+		wantError         string
 	}{
 		{
-			name:            "URL-shaped client ID",
-			clientIDs:       []string{"https://client.example.com"},
-			issuer:          "https://auth.example.com",
-			upstreamCount:   1,
-			wantRunErr:      "URL-shaped",
-			wantResolvedErr: "URL-shaped",
+			name:          "URL-shaped client ID",
+			clientIDs:     []string{"https://client.example.com"},
+			issuer:        "https://auth.example.com",
+			upstreamCount: 1,
+			wantError:     "consent_exempt_client_ids must not contain URL-shaped ID \"https://client.example.com\"",
 		},
 		{
 			name:              "non-HTTPS authorization base",
@@ -1081,15 +1080,14 @@ func TestRunConfigAndResolvedConfigShareConsentPolicyValidation(t *testing.T) {
 			authorizationBase: "http://auth.example.com",
 			issuer:            "https://auth.example.com",
 			upstreamCount:     1,
-			wantRunErr:        "HTTPS",
-			wantResolvedErr:   "http scheme",
+			insecureAllowHTTP: true,
+			wantError:         "consent_exempt_client_ids requires an HTTPS authorization endpoint base URL",
 		},
 		{
-			name:            "missing upstream",
-			clientIDs:       []string{"client-id"},
-			issuer:          "https://auth.example.com",
-			wantRunErr:      "at least one configured upstream",
-			wantResolvedErr: "at least one configured upstream",
+			name:      "missing upstream",
+			clientIDs: []string{"client-id"},
+			issuer:    "https://auth.example.com",
+			wantError: "consent_exempt_client_ids requires at least one configured upstream",
 		},
 	}
 
@@ -1101,6 +1099,7 @@ func TestRunConfigAndResolvedConfigShareConsentPolicyValidation(t *testing.T) {
 				Issuer:                       tt.issuer,
 				AuthorizationEndpointBaseURL: tt.authorizationBase,
 				Upstreams:                    make([]authserver.UpstreamRunConfig, tt.upstreamCount),
+				InsecureAllowHTTP:            tt.insecureAllowHTTP,
 			}
 			runConfigOptions := embeddedAuthServerOptions{consentExemptClientIDs: tt.clientIDs}
 			runConfigErr := validateConsentPolicyForRunConfig(runConfig, runConfigOptions)
@@ -1110,10 +1109,12 @@ func TestRunConfigAndResolvedConfigShareConsentPolicyValidation(t *testing.T) {
 				AuthorizationEndpointBaseURL: tt.authorizationBase,
 				Upstreams:                    make([]authserver.UpstreamConfig, tt.upstreamCount),
 				ConsentExemptClientIDs:       tt.clientIDs,
+				InsecureAllowHTTP:            tt.insecureAllowHTTP,
 			}
 			resolvedConfigErr := resolvedConfig.Validate()
-			require.ErrorContains(t, runConfigErr, tt.wantRunErr)
-			require.ErrorContains(t, resolvedConfigErr, tt.wantResolvedErr)
+			require.EqualError(t, runConfigErr, tt.wantError)
+			require.EqualError(t, resolvedConfigErr, tt.wantError)
+			require.EqualError(t, runConfigErr, resolvedConfigErr.Error(), "both config paths use shared consentpolicy validation")
 		})
 	}
 }

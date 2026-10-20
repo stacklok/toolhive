@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-// Package consentpolicy validates the syntax and deployment prerequisites for
-// administrator consent preauthorization.
+// Package consentpolicy validates the syntax, registration eligibility predicates,
+// and deployment prerequisites for administrator consent preauthorization.
 package consentpolicy
 
 import (
@@ -72,9 +72,9 @@ func IsEligibleClient(client fosite.Client) bool {
 		len(client.GetRedirectURIs()) > 0
 }
 
-// isURLShaped reports whether clientID is an absolute URI or a network-path URL
-// with an authority.
+// isURLShaped reports whether clientID is an absolute URI, a network-path URL
+// with an authority, or malformed as a URL (fail closed).
 func isURLShaped(clientID string) bool {
 	parsed, err := url.Parse(clientID)
-	return err == nil && (parsed.Scheme != "" || parsed.Host != "")
+	return err != nil || parsed.Scheme != "" || parsed.Host != ""
 }

@@ -32,49 +32,15 @@ func validConsentPolicyConfig() Config {
 func TestConfigValidateConsentExemptClientIDs(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		name    string
-		setup   func(*Config)
-		wantErr string
-	}{
-		{name: "empty list preserves existing behavior"},
-		{name: "valid opaque ID", setup: func(cfg *Config) { cfg.ConsentExemptClientIDs = []string{"desktop-client"} }},
-		{name: "empty ID rejected", setup: func(cfg *Config) { cfg.ConsentExemptClientIDs = []string{""} }, wantErr: "empty ID"},
-		{name: "duplicate ID rejected", setup: func(cfg *Config) { cfg.ConsentExemptClientIDs = []string{"desktop-client", "desktop-client"} }, wantErr: "duplicate ID"},
-		{name: "absolute URI rejected", setup: func(cfg *Config) { cfg.ConsentExemptClientIDs = []string{"custom:desktop-client"} }, wantErr: "URL-shaped"},
-		{name: "network path URL rejected", setup: func(cfg *Config) { cfg.ConsentExemptClientIDs = []string{"//client.example.com/id"} }, wantErr: "URL-shaped"},
-		{name: "upstream required", setup: func(cfg *Config) { cfg.ConsentExemptClientIDs = []string{"desktop-client"}; cfg.Upstreams = nil }, wantErr: "at least one configured upstream"},
-		{name: "insecure HTTP issuer does not relax HTTPS requirement", setup: func(cfg *Config) {
-			cfg.ConsentExemptClientIDs = []string{"desktop-client"}
-			cfg.Issuer = "http://auth.example.com"
-			cfg.InsecureAllowHTTP = true
-		}, wantErr: "HTTPS"},
-		{name: "HTTP override rejected despite HTTPS issuer", setup: func(cfg *Config) {
-			cfg.ConsentExemptClientIDs = []string{"desktop-client"}
-			cfg.AuthorizationEndpointBaseURL = "http://login.example.com"
-			cfg.InsecureAllowHTTP = true
-		}, wantErr: "HTTPS"},
-		{name: "HTTPS override is effective over HTTP issuer", setup: func(cfg *Config) {
-			cfg.ConsentExemptClientIDs = []string{"desktop-client"}
-			cfg.Issuer = "http://auth.example.com"
-			cfg.InsecureAllowHTTP = true
-			cfg.AuthorizationEndpointBaseURL = "https://login.example.com"
-		}},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			cfg := validConsentPolicyConfig()
-			if tt.setup != nil {
-				tt.setup(&cfg)
-			}
-			err := cfg.Validate()
-			if tt.wantErr != "" {
-				require.ErrorContains(t, err, tt.wantErr)
-				return
-			}
-			require.NoError(t, err)
-		})
-	}
+	t.Run("empty list preserves existing behavior", func(t *testing.T) {
+		t.Parallel()
+		cfg := validConsentPolicyConfig()
+		require.NoError(t, cfg.Validate())
+	})
+	t.Run("shared validator rejects URL-shaped IDs", func(t *testing.T) {
+		t.Parallel()
+		cfg := validConsentPolicyConfig()
+		cfg.ConsentExemptClientIDs = []string{"https://client.example.com"}
+		require.ErrorContains(t, cfg.Validate(), "URL-shaped")
+	})
 }

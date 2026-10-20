@@ -22,6 +22,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
+	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
 // upstreamAuthSecrets holds cryptographic values needed for upstream IDP authorization.
@@ -48,7 +49,8 @@ func newUpstreamAuthSecrets() *upstreamAuthSecrets {
 }
 
 // AuthorizeHandler handles GET /oauth/authorize requests.
-// It validates the client's request and shows the approval page before any upstream redirect.
+// It validates the client's request, then displays ToolHive consent when required
+// or redirects to an upstream provider for exempt or remembered requests.
 func (h *Handler) AuthorizeHandler(w http.ResponseWriter, req *http.Request) {
 	ctx := req.Context()
 
@@ -115,7 +117,11 @@ func (h *Handler) AuthorizeHandler(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	slog.Debug("authorize request received", "scope_count", len(scopes))
+	slog.Debug("authorize request received",
+		"client_id", clientID,
+		"redirect_uri", redirectURI,
+		"scope_count", len(scopes),
+	)
 
 	// Prepare the pending request before choosing the consent or upstream path;
 	// beginUpstream persists its secret-bearing copy before redirecting.
@@ -214,6 +220,7 @@ func (h *Handler) beginIfRemembered(ctx context.Context, w http.ResponseWriter, 
 	return true
 }
 
+// promptRequiresConsent reports whether any prompt parameter contains consent.
 func promptRequiresConsent(form url.Values) bool {
 	for _, prompt := range form["prompt"] {
 		for _, token := range strings.Fields(prompt) {
@@ -225,11 +232,17 @@ func promptRequiresConsent(form url.Values) bool {
 	return false
 }
 
+// consentExempt reports whether this authorization request meets every runtime
+// exemption condition: the client is allowlisted, confidential, interactive,
+// supports the authorization-code grant and code response type, and has a
+// registered redirect; the request asks for exactly code, supplies exactly one
+// non-empty redirect explicitly, that redirect is registered and equals Fosite's
+// validated final redirect, and no loopback redirect rewrite occurred.
 func (h *Handler) consentExempt(
 	ar fosite.AuthorizeRequester, originalForm url.Values, rewrittenFrom string,
 ) bool {
 	client := ar.GetClient()
-	if client == nil || !ar.GetResponseTypes().ExactOne("code") {
+	if client == nil || !ar.GetResponseTypes().ExactOne(oauthproto.ResponseTypeCode) {
 		return false
 	}
 	if _, ok := h.consentExemptClientIDSet[client.GetID()]; !ok || !consentpolicy.IsEligibleClient(client) {
@@ -237,7 +250,8 @@ func (h *Handler) consentExempt(
 	}
 	redirectURIs := originalForm["redirect_uri"]
 	return rewrittenFrom == "" && len(redirectURIs) == 1 && redirectURIs[0] != "" &&
-		slices.Contains(client.GetRedirectURIs(), redirectURIs[0])
+		slices.Contains(client.GetRedirectURIs(), redirectURIs[0]) &&
+		ar.GetRedirectURI().String() == redirectURIs[0]
 }
 
 // beginUpstream starts an approved request using fresh per-leg secrets.

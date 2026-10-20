@@ -203,7 +203,7 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage) (_ *server
 
 	logConfidentialClientStartup(cfg.AllowConfidentialClientRegistration)
 
-	stor, dcrStore, bundleSource, spiffeRegistry, err := prepareServerStorage(ctx, cfg, stor)
+	stor, dcrStore, bundleSource, spiffeRegistry, err := prepareServerStorageAndRegisterClients(ctx, cfg, stor)
 	if err != nil {
 		return nil, err
 	}
@@ -309,6 +309,7 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage) (_ *server
 	router := handlerInstance.Routes()
 
 	slog.Debug("oauth authorization server initialized",
+		"issuer", cfg.Issuer,
 		"consent_exemption_enabled", len(cfg.ConsentExemptClientIDs) > 0,
 		"consent_exempt_client_count", len(cfg.ConsentExemptClientIDs),
 	)
@@ -324,7 +325,10 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage) (_ *server
 	}, nil
 }
 
-func prepareServerStorage(
+// prepareServerStorageAndRegisterClients decorates storage, validates configured
+// consent-exempt clients against the prepared registration view, and registers
+// delegate clients before returning the storage handles used by server construction.
+func prepareServerStorageAndRegisterClients(
 	ctx context.Context, cfg Config, stor storage.Storage,
 ) (prepared storage.Storage, dcrStore storage.DCRCredentialStore,
 	bundleSource *spiffeMultiDomainBundleSource, spiffeRegistry *SPIFFEAssociationRegistry, retErr error,
@@ -627,9 +631,9 @@ func buildDeviceFlowFactory(cfg Config, stor storage.Storage) (oauthserver.Facto
 }
 
 // buildHandlerOptions assembles the handlers.Option list for NewHandler: the
-// refresher is always wired, and the filter is added only when the caller's
-// Config sets one so a nil Config.UpstreamFilter preserves the pre-filter
-// behavior of walking every configured upstream.
+// refresher is always wired, the filter is added only when configured so a nil
+// filter preserves walking every upstream, and consent-exempt IDs are added
+// only when the caller supplied a non-empty allowlist.
 func buildHandlerOptions(
 	refresher storage.UpstreamTokenRefresher,
 	filter handlers.UpstreamFilter,

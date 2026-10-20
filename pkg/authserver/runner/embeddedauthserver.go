@@ -72,14 +72,6 @@ func WithConsentExemptClientIDs(ids []string) EmbeddedAuthServerOption {
 	}
 }
 
-func resolveEmbeddedAuthServerOptions(opts []EmbeddedAuthServerOption) embeddedAuthServerOptions {
-	var options embeddedAuthServerOptions
-	for _, opt := range opts {
-		opt(&options)
-	}
-	return options
-}
-
 // EmbeddedAuthServer wraps the authorization server for integration with the proxy runner.
 // It handles configuration transformation from authserver.RunConfig to authserver.Config,
 // manages resource lifecycle, and provides HTTP handlers for OAuth/OIDC endpoints.
@@ -93,6 +85,14 @@ type EmbeddedAuthServer struct {
 	keyProvider keys.KeyProvider
 	closeOnce   sync.Once
 	closeErr    error
+}
+
+func resolveEmbeddedAuthServerOptions(opts []EmbeddedAuthServerOption) embeddedAuthServerOptions {
+	var options embeddedAuthServerOptions
+	for _, opt := range opts {
+		opt(&options)
+	}
+	return options
 }
 
 // NewEmbeddedAuthServer creates an EmbeddedAuthServer from authserver.RunConfig.

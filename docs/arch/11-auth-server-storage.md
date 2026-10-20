@@ -143,7 +143,7 @@ A later request can skip the page only if both records are live, the session pro
 
 ### Administrator consent preauthorization
 
-The Go-only `authserver.Config.ConsentExemptClientIDs` field and the embedded runner's `WithConsentExemptClientIDs` option allow an embedder to skip ToolHive's consent page for explicitly listed client IDs. An empty list preserves the ordinary consent behavior. A listed client still completes upstream authentication; the policy skips only ToolHive's interactive consent page.
+The Go-only `authserver.Config.ConsentExemptClientIDs` field and the embedded runner's `WithConsentExemptClientIDs` option allow an embedder to skip ToolHive's consent page for explicitly listed client IDs. An empty list preserves the ordinary consent behavior. The policy skips only ToolHive's interactive consent page; `prompt=consent` takes precedence over the exemption and requires that page even when the client is allowlisted.
 
 > Listing a client ID preauthorizes whatever registration currently holds that ID, for whichever user completes upstream authentication. It is not per-user consent, and runtime eligibility checks do not prove where the registration came from.
 
@@ -153,7 +153,7 @@ This is an administrator trust decision over the registration currently at the I
 
 `DCRIssued` continues to govern its existing retention and replacement behavior; it is not an exemption-eligibility signal. DCR-issued exempt clients remain subject to the existing TTL and in-memory eviction behavior. A client can expire or be evicted and then needs to be reprovisioned. The exemption does not change retention. Removing an ID restores ordinary consent decision-making for new authorization requests only: it does not revoke tokens or automatically cancel already-approved flows.
 
-This behavior is a deliberate standards trade-off. The [stable MCP authorization specification](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization) requires the authorization server to obtain user consent before authorizing a dynamically registered downstream client to access protected resources. Allowlisting an eligible HTTP-DCR client deliberately deviates from that user-consent requirement; it is not a standards exception. More broadly, administrator preauthorization trades individual user approval for the embedder's control over the allowlist and registration writes.
+This behavior is a deliberate standards trade-off. The [stable MCP authorization specification](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization) states: “MCP proxy servers using static client IDs MUST obtain user consent for each dynamically registered client before forwarding to third-party authorization servers.” ToolHive is that proxy. Allowlisting a dynamically registered client is a deliberate deviation from this requirement, not an exception. More broadly, administrator preauthorization trades individual user approval for the embedder's control over the allowlist and registration writes.
 
 #### Downstream transaction binding remains the embedder's responsibility
 
@@ -171,7 +171,7 @@ State is checked at the callback; the verifier is used at token exchange and is 
 
 #### Prompt behavior
 
-`prompt=none` and `prompt=login` are not specially implemented today. With exemption, an otherwise eligible `prompt=none` request may redirect upstream instead of displaying ToolHive's consent page. Neither existing behavior nor this proposal establishes OIDC `prompt=none` compliance, and upstream interaction is not guaranteed to be silent. Do not claim `prompt=login` forces upstream reauthentication. Implementing either prompt's full semantics is separate work.
+`prompt=consent` takes precedence over both administrator exemption and remembered approval, so ToolHive displays its consent page. `prompt=none` and `prompt=login` are not specially implemented: an exempt `prompt=none` request may continue to upstream authentication, which is not guaranteed to be silent, and `prompt=login` does not force upstream reauthentication. The current behavior does not establish OIDC `prompt=none` compliance.
 
 ## Memory Backend
 

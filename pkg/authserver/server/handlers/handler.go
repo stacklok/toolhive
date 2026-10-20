@@ -296,7 +296,7 @@ func NewHandler(
 		config.GetAccessTokenIssuer(),
 		len(upstreams),
 	); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("handlers: %w", err)
 	}
 	h.consentExemptClientIDSet = make(map[string]struct{}, len(h.consentExemptClientIDs))
 	for _, id := range h.consentExemptClientIDs {

@@ -245,6 +245,7 @@ func TestConsentExemptionDecisionPrecedence(t *testing.T) {
 				require.Equal(t, http.StatusSeeOther, w.Code, w.Body.String())
 				require.NotEmpty(t, upstream.capturedState)
 			}
+			require.Len(t, state.pendingAuths, 1, "each decision must leave exactly one pending record")
 			require.Zero(t, counted.sessionReads)
 			require.Zero(t, counted.approvalReads)
 			pendingHandle := upstream.capturedState

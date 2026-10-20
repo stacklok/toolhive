@@ -5,38 +5,85 @@ package pluginsvc
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/stacklok/toolhive-core/httperr"
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/plugins"
+	"github.com/stacklok/toolhive/pkg/projecttxn"
 	"github.com/stacklok/toolhive/pkg/skills/gitresolver"
+	"github.com/stacklok/toolhive/pkg/skills/lockfile"
 )
+
+// installRollbackTimeout bounds context-aware compensation after an install fails.
+const installRollbackTimeout = 5 * time.Second
 
 // Install installs a plugin. When the Name field contains a git reference
 // (git://...), the repo is cloned and the plugin tree is built in memory. When
 // it contains an OCI reference, the artifact is pulled and extracted. A plain
 // name is resolved against the local OCI store, then the registry lookup.
-// Mirror of skillsvc.Install, substituting the plugin install backends.
+// Structural mirror of skillsvc.Install, substituting the plugin install
+// backends. Rollback errors are joined with the trigger so partial
+// compensation is never reported as a clean failure (see rollbackInstall).
 func (s *service) Install(ctx context.Context, opts plugins.InstallOptions) (*plugins.InstallResult, error) {
+	return s.install(ctx, opts, false, nil)
+}
+
+// installAlreadyLocked is for sync/upgrade while the project transaction is held.
+func (s *service) installAlreadyLocked(
+	ctx context.Context, opts plugins.InstallOptions, constraints *installConstraints,
+) (*plugins.InstallResult, error) {
+	return s.install(ctx, opts, true, constraints)
+}
+
+type installConstraints struct {
+	preverifiedOCI    *preverifiedOCITrust
+	expectedLockEntry *lockfile.Entry
+}
+
+func (s *service) install(
+	ctx context.Context, opts plugins.InstallOptions, alreadyLocked bool, constraints *installConstraints,
+) (*plugins.InstallResult, error) {
 	scope, projectRoot, err := normalizeProjectRoot(opts.Scope, opts.ProjectRoot)
 	if err != nil {
 		return nil, err
 	}
 	scope = defaultScope(scope)
 	opts.ProjectRoot = projectRoot
+	if opts.LockSource == "" {
+		opts.LockSource = opts.Name
+	}
+
+	// Checked here, before any resolve or fetch work: this is the only path a
+	// caller-supplied public key arrives through, and rejecting it now means a
+	// key that could never be used is reported as bad input rather than as a
+	// verification failure after the artifact has been pulled. Lock-driven
+	// callers (sync, upgrade) never set it — they verify against the key the
+	// lock records.
+	if err := validateInstallPublicKey(opts, scope); err != nil {
+		return nil, err
+	}
+	if scope == plugins.ScopeProject && !alreadyLocked {
+		var result *plugins.InstallResult
+		err := projecttxn.Run(ctx, opts.ProjectRoot, func() error {
+			var installErr error
+			result, installErr = s.install(ctx, opts, true, constraints)
+			return installErr
+		})
+		return result, err
+	}
 
 	// Git references are dispatched first; the prefix is unambiguous and
-	// cannot collide with OCI references.
+	// cannot collide with OCI references. installFromGit holds the applicable
+	// user-plugin or project transaction lock across extraction, DB, group,
+	// lock-file, and rollback unless the caller already holds it.
 	if gitresolver.IsGitReference(opts.Name) {
-		result, err := s.installFromGit(ctx, opts, scope)
-		if err != nil {
-			return nil, err
-		}
-		return s.installAndRegister(ctx, result, opts.Group, result.Plugin.Metadata.Name, scope, opts.ProjectRoot)
+		return s.installFromGit(ctx, opts, scope, alreadyLocked, constraints)
 	}
 
 	// Splice opts.Version as the tag for tag-less OCI-like references.
@@ -54,13 +101,10 @@ func (s *service) Install(ctx context.Context, opts plugins.InstallOptions) (*pl
 		)
 	}
 	if isOCI {
-		result, ociErr := s.installFromOCI(ctx, opts, scope, ref)
-		if ociErr == nil {
-			return s.installAndRegister(ctx, result, opts.Group, result.Plugin.Metadata.Name, scope, opts.ProjectRoot)
-		}
-		// No registry-name fallback yet (Phase-3 later wave); surface the
-		// OCI pull error directly.
-		return nil, ociErr
+		// installFromOCI holds the applicable user-plugin or project
+		// transaction lock across extraction, DB, group, lock-file, and
+		// rollback unless the caller already holds it.
+		return s.installFromOCI(ctx, opts, scope, ref, alreadyLocked, constraints)
 	}
 
 	// Plain plugin name.
@@ -68,24 +112,43 @@ func (s *service) Install(ctx context.Context, opts plugins.InstallOptions) (*pl
 		return nil, httperr.WithCode(err, http.StatusBadRequest)
 	}
 
-	return s.installByName(ctx, opts, scope)
+	return s.installByName(ctx, opts, scope, alreadyLocked, constraints)
+}
+
+// validateExpectedCanonicalName rejects an install whose resolved plugin name
+// differs from the lock entry identity Sync/Upgrade is repairing.
+func validateExpectedCanonicalName(opts plugins.InstallOptions) error {
+	if opts.ExpectedCanonicalName == "" || opts.Name == opts.ExpectedCanonicalName {
+		return nil
+	}
+	return httperr.WithCode(
+		fmt.Errorf(
+			"plugin name %q does not match lock entry name %q",
+			opts.Name, opts.ExpectedCanonicalName,
+		),
+		http.StatusUnprocessableEntity,
+	)
 }
 
 // installByName handles installation for a validated plain plugin name. It
 // checks the local OCI store, then the registry lookup, before returning an
-// error. Mirror of skillsvc.installByName.
+// error. Structural mirror of skillsvc.installByName (failure semantics
+// diverge — see Install).
 func (s *service) installByName(
 	ctx context.Context,
 	opts plugins.InstallOptions,
 	scope plugins.Scope,
+	alreadyLocked bool,
+	constraints *installConstraints,
 ) (*plugins.InstallResult, error) {
-	unlock := s.locks.lock(opts.Name, scope, opts.ProjectRoot)
-	locked := true
-	defer func() {
-		if locked {
-			unlock()
-		}
-	}()
+	if !alreadyLocked {
+		var unlock func()
+		ctx, unlock = s.lockPlugin(ctx, opts.Name, scope, opts.ProjectRoot)
+		defer unlock()
+	}
+	// Lock is held from here (by us or the caller). Nested OCI/registry
+	// backends must not re-acquire.
+	const lockHeld = true
 
 	if len(opts.LayerData) == 0 {
 		resolved := false
@@ -97,20 +160,26 @@ func (s *service) installByName(
 			}
 		}
 		if !resolved {
-			// Release the lock before registry lookup — installFromOCI
-			// acquires its own lock on the plugin name, which could be the
-			// same key, causing deadlock since sync.Mutex is not re-entrant.
-			unlock()
-			locked = false
-			return s.installFromRegistryLookup(ctx, opts, scope)
+			return s.installFromRegistryLookup(ctx, opts, scope, lockHeld, constraints)
 		}
+	}
+
+	// Local-store artifacts and raw layer data carry no registry signature
+	// to verify — installing them project-scoped is an unsigned trust
+	// decision that must be explicit.
+	if shouldVerifyInstall(opts, scope) {
+		decision, verifyErr := verifyLocalInstall(opts, opts.Name)
+		if verifyErr != nil {
+			return nil, verifyErr
+		}
+		applyDecisionToOpts(&opts, decision)
 	}
 
 	result, err := s.installWithExtraction(ctx, opts, scope)
 	if err != nil {
 		return nil, err
 	}
-	return s.installAndRegister(ctx, result, opts.Group, opts.Name, scope, opts.ProjectRoot)
+	return s.installAndRegister(ctx, opts, result, scope, constraints)
 }
 
 // installFromRegistryLookup resolves a plain plugin name via the registry
@@ -134,12 +203,14 @@ func (s *service) installFromRegistryLookup(
 	ctx context.Context,
 	opts plugins.InstallOptions,
 	scope plugins.Scope,
+	alreadyLocked bool,
+	constraints *installConstraints,
 ) (*plugins.InstallResult, error) {
 	if s.pluginLookup != nil {
 		// Use the last path segment as the search query (matching
 		// skillsvc.resolveFromRegistry's splitQualifiedName), since
 		// SearchPlugins matches on name substring.
-		_, searchName := splitQualifiedName(opts.Name)
+		namespace, searchName := splitQualifiedName(opts.Name)
 
 		hits, err := s.pluginLookup.SearchPlugins(ctx, searchName)
 		if err != nil {
@@ -152,6 +223,9 @@ func (s *service) installFromRegistryLookup(
 		var matches []PluginSearchHit
 		for _, hit := range hits {
 			if !strings.EqualFold(hit.Name, searchName) {
+				continue
+			}
+			if namespace != "" && !strings.EqualFold(hit.Namespace, namespace) {
 				continue
 			}
 			matches = append(matches, hit)
@@ -172,7 +246,7 @@ func (s *service) installFromRegistryLookup(
 		}
 
 		if len(matches) == 1 {
-			return s.installFromRegistryHit(ctx, opts, scope, matches[0])
+			return s.installFromRegistryHit(ctx, opts, scope, matches[0], alreadyLocked, constraints)
 		}
 
 		if len(matches) > 1 {
@@ -206,11 +280,18 @@ func (s *service) installFromRegistryHit(
 	opts plugins.InstallOptions,
 	scope plugins.Scope,
 	hit PluginSearchHit,
+	alreadyLocked bool,
+	constraints *installConstraints,
 ) (*plugins.InstallResult, error) {
 	pkg, pkgErr := selectOCIPluginPackage(opts.Name, hit.Packages)
 	if pkgErr != nil {
 		return nil, pkgErr
 	}
+	// Carry catalog constraints to the verification boundary unchanged.
+	// Validation is deliberately deferred until the resolved canonical plugin
+	// name can be checked against the lock: existing lock entries take
+	// precedence, and user-scope installs do not apply project trust policy.
+	opts.CatalogProvenance = hit.Provenance
 	slog.Info("resolved plugin from registry", "name", opts.Name, "reference", pkg.Reference)
 	opts.Name = pkg.Reference
 	ref, isOCIRef, parseErr := parseOCIReference(pkg.Reference)
@@ -226,11 +307,7 @@ func (s *service) installFromRegistryHit(
 			http.StatusUnprocessableEntity,
 		)
 	}
-	result, ociErr := s.installFromOCI(ctx, opts, scope, ref)
-	if ociErr != nil {
-		return nil, ociErr
-	}
-	return s.installAndRegister(ctx, result, opts.Group, result.Plugin.Metadata.Name, scope, opts.ProjectRoot)
+	return s.installFromOCI(ctx, opts, scope, ref, alreadyLocked, constraints)
 }
 
 // selectOCIPluginPackage selects the first OCI package from a registry entry's
@@ -283,10 +360,11 @@ func splitQualifiedName(s string) (namespace, name string) {
 
 // registerPluginInGroup adds the plugin to the requested group when a group
 // manager is configured. When groupName is empty it defaults to the "default"
-// group, matching workload behavior.
-func (s *service) registerPluginInGroup(ctx context.Context, groupName string, pluginName string) error {
+// group, matching workload behavior. The bool reports whether this call
+// inserted the name, so rollback can remove it only then.
+func (s *service) registerPluginInGroup(ctx context.Context, groupName string, pluginName string) (bool, error) {
 	if s.groupManager == nil {
-		return nil
+		return false, nil
 	}
 	if groupName == "" {
 		groupName = groups.DefaultGroup
@@ -294,23 +372,165 @@ func (s *service) registerPluginInGroup(ctx context.Context, groupName string, p
 	return groups.AddPluginToGroup(ctx, s.groupManager, groupName, pluginName)
 }
 
-// installAndRegister registers the just-installed plugin in the target group.
-// If group registration fails, the DB record is rolled back so a retry starts
-// fresh. Mirror of skillsvc.installAndRegister.
+func resolvedGroupName(groupName string) string {
+	if groupName == "" {
+		return groups.DefaultGroup
+	}
+	return groupName
+}
+
+// installAndRegister registers the just-installed plugin in the target group
+// and, for project-scope installs, records it in the project's
+// toolhive.lock.yaml plugins: key. If group registration or the lock write
+// fails, the DB record, on-disk files, group membership (only when this call
+// added it), and lock entry are rolled back to their pre-install state:
+// restored when this call updated a pre-existing record (a --force reinstall
+// must not be destroyed by a transient failure), deleted/dematerialized when
+// this call created them. Callers must hold the applicable user-plugin or
+// project transaction lock for the duration of this call.
 func (s *service) installAndRegister(
 	ctx context.Context,
+	opts plugins.InstallOptions,
 	result *plugins.InstallResult,
-	groupName string,
-	pluginName string,
 	scope plugins.Scope,
-	projectRoot string,
+	constraints *installConstraints,
 ) (*plugins.InstallResult, error) {
-	if err := s.registerPluginInGroup(ctx, groupName, pluginName); err != nil {
-		// Best-effort rollback: remove the DB record so retries start fresh.
-		// Materialized files are left in place; a fresh install will overwrite
-		// them (the adapters are idempotent under the same name/scope).
-		_ = s.store.Delete(ctx, pluginName, scope, projectRoot)
-		return nil, fmt.Errorf("registering plugin in group: %w", err)
+	pluginName := result.Plugin.Metadata.Name
+	lockScoped := scope == plugins.ScopeProject
+	// Surface the verification decision on the result so callers can show
+	// what trust state this install recorded.
+	result.Provenance = provenanceInfoFromLock(opts.Provenance)
+	result.Unsigned = opts.Unsigned
+
+	// Snapshot the prior plugins: lock entry before anything below can write
+	// one, so rollback can reinstate it rather than blindly deleting it.
+	// OpenRoot/Load failures are fatal: treating them as "no previous pin"
+	// would delete a pre-existing entry on compensation. Extraction has
+	// already mutated DB/files, so compensate those even when the lock
+	// snapshot itself fails.
+	var prevEntry *lockfile.Entry
+	if lockScoped {
+		root, rootErr := lockfile.OpenRoot(opts.ProjectRoot)
+		if rootErr != nil {
+			return nil, errors.Join(
+				fmt.Errorf("opening lock file root: %w", rootErr),
+				s.rollbackInstall(ctx, result, rollbackParams{}),
+			)
+		}
+		lf, loadErr := lockfile.Load(root)
+		if loadErr != nil {
+			return nil, errors.Join(
+				fmt.Errorf("loading lock file: %w", loadErr),
+				s.rollbackInstall(ctx, result, rollbackParams{}),
+			)
+		}
+		if e, ok := lf.GetPlugin(pluginName); ok {
+			prevEntry = &e
+		}
 	}
+
+	var addedToGroup bool
+	groupName := resolvedGroupName(opts.Group)
+	rollback := func(restoreLock bool) error {
+		return s.rollbackInstall(ctx, result, rollbackParams{
+			lockScoped:   restoreLock,
+			prevEntry:    prevEntry,
+			addedToGroup: addedToGroup,
+			groupName:    groupName,
+		})
+	}
+
+	added, err := s.registerPluginInGroup(ctx, opts.Group, pluginName)
+	if err != nil {
+		return nil, errors.Join(fmt.Errorf("registering plugin in group: %w", err), rollback(false))
+	}
+	addedToGroup = added
+
+	if lockScoped {
+		var expected *lockfile.Entry
+		if constraints != nil {
+			expected = constraints.expectedLockEntry
+		}
+		updated, err := s.recordLockState(ctx, opts, result.Plugin, result.ContentDigest, expected)
+		if err != nil {
+			code := http.StatusInternalServerError
+			if errors.Is(err, lockfile.ErrEntryChanged) {
+				code = http.StatusConflict
+			}
+			return nil, httperr.WithCode(errors.Join(
+				fmt.Errorf("recording plugin in project lock file: %w", err),
+				rollback(!errors.Is(err, lockfile.ErrEntryChanged)),
+			), code)
+		}
+		result.Plugin = updated
+	}
+
 	return result, nil
+}
+
+// rollbackParams carries the compensation state rollbackInstall needs beyond
+// what the install result itself provides. Name, scope, and project root are
+// derived from result.Plugin.
+type rollbackParams struct {
+	lockScoped   bool
+	prevEntry    *lockfile.Entry
+	addedToGroup bool
+	groupName    string
+}
+
+// rollbackInstall undoes installAndRegister's side effects after a failure.
+// Every compensation error is returned so the caller can join it with the
+// original failure; discarding it can hide a partial restore after a
+// destructive rewrite.
+func (s *service) rollbackInstall(
+	ctx context.Context,
+	result *plugins.InstallResult,
+	params rollbackParams,
+) error {
+	pluginName := result.Plugin.Metadata.Name
+	scope := result.Plugin.Scope
+	projectRoot := result.Plugin.ProjectRoot
+	rollbackCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), installRollbackTimeout)
+	defer cancel()
+
+	var errs []error
+	if result.PreExisting != nil {
+		if err := s.store.Update(rollbackCtx, *result.PreExisting); err != nil {
+			errs = append(errs, fmt.Errorf("restoring pre-existing DB record: %w", err))
+		}
+	} else if err := s.store.Delete(rollbackCtx, pluginName, scope, projectRoot); err != nil {
+		errs = append(errs, fmt.Errorf("deleting rolled-back DB record: %w", err))
+	}
+
+	if result.RestoreFiles != nil {
+		if err := result.RestoreFiles(rollbackCtx); err != nil {
+			errs = append(errs, err)
+		}
+	}
+
+	if params.addedToGroup && s.groupManager != nil {
+		if err := groups.RemovePluginFromGroup(rollbackCtx, s.groupManager, params.groupName, pluginName); err != nil {
+			errs = append(errs, fmt.Errorf("removing plugin from group: %w", err))
+		}
+	}
+
+	if !params.lockScoped {
+		return errors.Join(errs...)
+	}
+	if params.prevEntry != nil {
+		root, err := lockfile.OpenRoot(projectRoot)
+		if err != nil {
+			return errors.Join(append(errs, fmt.Errorf("reopening lock file: %w", err))...)
+		}
+		if err := lockfile.UpsertPluginEntry(root, *params.prevEntry); err != nil {
+			errs = append(errs, fmt.Errorf("restoring lock entry: %w", err))
+		}
+		return errors.Join(errs...)
+	}
+	if err := removeLockEntry(plugins.UninstallOptions{
+		Name: pluginName, Scope: scope, ProjectRoot: projectRoot,
+	}); err != nil {
+		errs = append(errs, fmt.Errorf("removing rolled-back lock entry: %w", err))
+	}
+	return errors.Join(errs...)
 }

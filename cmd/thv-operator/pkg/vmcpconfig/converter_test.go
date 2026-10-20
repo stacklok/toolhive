@@ -27,6 +27,7 @@ import (
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/oidc"
 	oidcmocks "github.com/stacklok/toolhive/cmd/thv-operator/pkg/oidc/mocks"
 	thvjson "github.com/stacklok/toolhive/pkg/json"
+	"github.com/stacklok/toolhive/pkg/redisconfig"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 )
@@ -1549,6 +1550,41 @@ func TestConverter_SessionStorage(t *testing.T) {
 			},
 		},
 		{
+			name: "redis provider with TLS CA secret points at the mounted CA file",
+			sessionStorage: &mcpv1beta1.SessionStorageConfig{
+				Provider: mcpv1beta1.SessionStorageProviderRedis,
+				Address:  "redis:6380",
+				TLS: &mcpv1beta1.RedisTLSConfig{
+					CACertSecretRef: &mcpv1beta1.SecretKeyRef{Name: "redis-ca", Key: "ca.crt"},
+				},
+			},
+			expectedStorage: &vmcpconfig.SessionStorageConfig{
+				Provider: "redis",
+				Address:  "redis:6380",
+				TLS: &redisconfig.TLSConfig{
+					CACertFile: "/etc/toolhive/session-redis-tls/ca.crt",
+				},
+			},
+		},
+		{
+			name: "spec.config.sessionStorage.tls never reaches the vMCP config",
+			sessionStorage: &mcpv1beta1.SessionStorageConfig{
+				Provider: mcpv1beta1.SessionStorageProviderRedis,
+				Address:  "redis:6380",
+				TLS:      &mcpv1beta1.RedisTLSConfig{},
+			},
+			inlineConfig: &vmcpconfig.SessionStorageConfig{
+				Provider: "redis",
+				Address:  "redis:6380",
+				TLS:      &redisconfig.TLSConfig{CACertFile: "/user/supplied/ca.crt", InsecureSkipVerify: true},
+			},
+			expectedStorage: &vmcpconfig.SessionStorageConfig{
+				Provider: "redis",
+				Address:  "redis:6380",
+				TLS:      &redisconfig.TLSConfig{},
+			},
+		},
+		{
 			name: "memory provider results in nil SessionStorage",
 			sessionStorage: &mcpv1beta1.SessionStorageConfig{
 				Provider: "memory",
@@ -1821,6 +1857,7 @@ func TestConvert_AuthServerConfigIntegration(t *testing.T) {
 	converter, err := NewConverter(mockResolver, k8sClient)
 	require.NoError(t, err)
 
+	maxDCRClients := int32(500)
 	vmcp := v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
 		v1beta1test.WithVMCPGroupRef("test-group"),
 		v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{
@@ -1831,6 +1868,14 @@ func TestConvert_AuthServerConfigIntegration(t *testing.T) {
 			Issuer: "https://authserver.example.com",
 			SigningKeySecretRefs: []mcpv1beta1.SecretKeyRef{
 				{Name: "signing-key", Key: "private.pem"},
+			},
+			Storage: &mcpv1beta1.AuthServerStorageConfig{
+				Type:          mcpv1beta1.AuthServerStorageTypeMemory,
+				MaxDCRClients: &maxDCRClients,
+			},
+			RegistrationRateLimit: &mcpv1beta1.RateLimitBucket{
+				MaxTokens:    3,
+				RefillPeriod: metav1.Duration{Duration: 18 * time.Second},
 			},
 			DelegateClients: []mcpv1beta1.DelegateClientConfig{{
 				ClientID:        "delegate client / does not affect env name",
@@ -1864,6 +1909,14 @@ func TestConvert_AuthServerConfigIntegration(t *testing.T) {
 
 	// Verify Issuer comes from AuthServerConfig, not IncomingAuth
 	assert.Equal(t, "https://authserver.example.com", runConfig.Issuer)
+
+	// Verify the DCR client cap and /oauth/register rate reach the RunConfig.
+	require.NotNil(t, runConfig.Storage)
+	require.NotNil(t, runConfig.Storage.MaxDCRClients)
+	assert.Equal(t, 500, *runConfig.Storage.MaxDCRClients)
+	require.NotNil(t, runConfig.RegistrationRateLimit)
+	assert.InDelta(t, 3.0/18.0, runConfig.RegistrationRateLimit.RequestsPerSecond, 1e-9)
+	assert.Equal(t, 3, runConfig.RegistrationRateLimit.Burst)
 
 	// Verify AllowedAudiences derived from IncomingAuth OIDC Resource (takes precedence over Audience)
 	assert.Equal(t, []string{"https://resource.example.com"}, runConfig.AllowedAudiences)
@@ -2127,7 +2180,8 @@ func TestConvertIncomingAuth_PrimaryUpstreamProvider(t *testing.T) {
 			authzConfig: &mcpv1beta1.AuthzConfigRef{
 				Type: "inline",
 				Inline: &mcpv1beta1.InlineAuthzConfig{
-					Policies:                []string{`permit(principal, action, resource);`},
+					Policies: []string{`permit(principal, action, resource);`},
+					//nolint:staticcheck // Exercises conversion of the deprecated field.
 					PrimaryUpstreamProvider: "okta",
 				},
 			},
@@ -2162,7 +2216,8 @@ func TestConvertIncomingAuth_PrimaryUpstreamProvider(t *testing.T) {
 			authzConfig: &mcpv1beta1.AuthzConfigRef{
 				Type: "inline",
 				Inline: &mcpv1beta1.InlineAuthzConfig{
-					Policies:                []string{`permit(principal, action, resource);`},
+					Policies: []string{`permit(principal, action, resource);`},
+					//nolint:staticcheck // Exercises conversion of the deprecated field.
 					PrimaryUpstreamProvider: "github",
 				},
 			},
@@ -2182,7 +2237,8 @@ func TestConvertIncomingAuth_PrimaryUpstreamProvider(t *testing.T) {
 			authzConfig: &mcpv1beta1.AuthzConfigRef{
 				Type: "inline",
 				Inline: &mcpv1beta1.InlineAuthzConfig{
-					Policies:                []string{`permit(principal, action, resource);`},
+					Policies: []string{`permit(principal, action, resource);`},
+					//nolint:staticcheck // Exercises conversion of the deprecated field.
 					PrimaryUpstreamProvider: "okta",
 				},
 			},

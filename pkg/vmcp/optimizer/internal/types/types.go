@@ -72,6 +72,15 @@ type EmbeddingClient interface {
 	// EmbedBatch returns vector embeddings for multiple texts.
 	EmbedBatch(ctx context.Context, texts []string) ([][]float32, error)
 
+	// ModelID returns the identity of the model currently serving requests.
+	// Implementations that fix the model by configuration return the
+	// configured name; implementations whose backend can be replaced
+	// underneath a running process (e.g. TEI, where the model is a property
+	// of the container rather than of the client) must query it live, so two
+	// calls can observe a swap. Callers own any caching or fallback policy
+	// for the error case.
+	ModelID(ctx context.Context) (string, error)
+
 	// Close releases any resources held by the client.
 	Close() error
 }

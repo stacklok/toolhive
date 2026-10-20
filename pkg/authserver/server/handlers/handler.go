@@ -18,17 +18,25 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"math"
 	"net/http"
+	"net/url"
+	"slices"
+	"strconv"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/ory/fosite"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/metric"
 	"golang.org/x/time/rate"
 
 	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/authserver/internal/consentpolicy"
 	"github.com/stacklok/toolhive/pkg/authserver/server"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
+	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
 // NamedUpstream pairs a logical provider name with its OAuth2Provider implementation.
@@ -40,10 +48,13 @@ type NamedUpstream struct {
 
 // Handler provides HTTP handlers for the OAuth authorization server endpoints.
 type Handler struct {
-	provider     fosite.OAuth2Provider
-	config       *server.AuthorizationServerConfig
-	storage      storage.Storage
-	upstreams    []NamedUpstream
+	provider  fosite.OAuth2Provider
+	config    *server.AuthorizationServerConfig
+	storage   storage.Storage
+	upstreams []NamedUpstream
+	// tokenOnly is derived at construction from the absence of upstreams and is
+	// the single source of truth for token-only capability behavior.
+	tokenOnly    bool
 	userResolver *UserResolver
 	// refresher, when set, lets nextMissingUpstream transparently refresh an
 	// expired upstream leg during chain evaluation instead of re-prompting. Nil
@@ -53,6 +64,10 @@ type Handler struct {
 	// configured upstreams once the first leg resolves. Nil when no filter is
 	// configured; the chain then walks all configured upstreams as before.
 	filter UpstreamFilter
+	// consentExemptClientIDs is populated by WithConsentExemptClientIDs until
+	// constructor validation builds consentExemptClientIDSet.
+	consentExemptClientIDs   []string
+	consentExemptClientIDSet map[string]struct{}
 	// registerLimiter bounds the unauthenticated /oauth/register endpoint,
 	// which mints persisted state on every call. Per-process, not per-IP: the
 	// goal is to cap storage growth and log volume, not to be fair between
@@ -60,9 +75,103 @@ type Handler struct {
 	// under- or over-count, and X-Forwarded-For is attacker-controlled without
 	// a trusted proxy list). Because the limit lives on this per-process field,
 	// running N replicas multiplies the effective rate by N — size the
-	// configured rate with replica count in mind. Nil in tests that construct
-	// Handler directly; OAuthRoutes tolerates nil by skipping the gate.
+	// configured rate with replica count in mind. DefaultRegisterRate and
+	// DefaultRegisterBurst unless WithRegisterRateLimit overrides them. Nil in
+	// tests that construct Handler directly; OAuthRoutes tolerates nil by
+	// skipping the gate.
 	registerLimiter *rate.Limiter
+	// meterProvider supplies dcrMetrics. otel.GetMeterProvider() unless
+	// WithMeterProvider overrides it.
+	meterProvider metric.MeterProvider
+	// dcrMetrics counts DCR cap rejections and reports the live DCR client
+	// count. Nil in tests that construct Handler directly; its methods
+	// tolerate a nil receiver.
+	dcrMetrics *dcrMetrics
+	// capacityWarner logs DCR cap rejections at WARN, bounded by time. Nil in
+	// tests that construct Handler directly; its methods tolerate a nil
+	// receiver.
+	capacityWarner *capacityWarner
+	// cimdAuthorizeLimiter bounds unauthenticated /oauth/authorize requests
+	// whose client_id is a CIMD URL (see oauthproto.IsClientIDMetadataDocumentURL).
+	// Resolving such a client_id — via the CIMD storage decorator's GetClient,
+	// invoked from fosite's NewAuthorizeRequest — now write-through persists a
+	// row with a multi-day TTL (see CIMDStorageDecorator.fetch), so this
+	// endpoint mints persisted state exactly like /oauth/register and needs
+	// the same protection: without it, a flood of distinct CIMD client_id
+	// values (e.g. one host serving generated documents on a wildcard route)
+	// could mint rows as fast as the AS can complete the outbound document
+	// fetches. DCR (non-URL) client_id values are unaffected — they hit
+	// neither this limiter nor the write-through path. Same shape as
+	// registerLimiter: per-process, not per-IP, for the identical reasons.
+	// Nil in tests that construct Handler directly; OAuthRoutes tolerates nil
+	// by skipping the gate.
+	cimdAuthorizeLimiter *rate.Limiter
+	// deviceAuthorizationLimiter bounds the unauthenticated
+	// /oauth/device_authorization endpoint, which mints persisted state
+	// (a device_code/user_code pair) on every call, exactly like
+	// /oauth/register. Same default rate and same per-process (not per-IP)
+	// reasoning as registerLimiter. Nil when device flow is disabled — in
+	// that case OAuthRoutes never registers the route, so the nil limiter is
+	// never dereferenced. Also nil in tests that construct Handler directly.
+	deviceAuthorizationLimiter *rate.Limiter
+	// deviceCodeInterval is the minimum time a device-flow client must wait
+	// between polls of the token endpoint, and the value advertised in the
+	// device authorization response's "interval" field. Set from
+	// config.DeviceCodeInterval at construction, falling back to
+	// server.DefaultDeviceCodeInterval when that is zero.
+	deviceCodeInterval time.Duration
+	// deviceStorage is storage's storage.DeviceCodeStorage capability,
+	// resolved once via storage.Unwrap(stor).(storage.DeviceCodeStorage) at
+	// construction time -- storage.Storage deliberately does NOT embed
+	// DeviceCodeStorage (see that interface's contract there), and CIMD/SPIFFE
+	// decorators only implement the narrower Storage interface they wrap, so
+	// the unwrap is needed to reach a decorated backend's underlying
+	// MemoryStorage/RedisStorage. DeviceAuthorizationHandler goes through this
+	// field instead of storage directly. Nil when device flow is disabled;
+	// OAuthRoutes never registers DeviceAuthorizationHandler in that case, so
+	// it is never dereferenced.
+	deviceStorage     storage.DeviceCodeStorage
+	rememberedStorage storage.RememberedConsentStorage
+	// deviceVerificationLimiter bounds the unauthenticated POST /oauth/device
+	// endpoint (DeviceVerificationSubmitHandler), which looks up a
+	// DeviceRequest by the human-entered user_code. RFC 8628 §5.4 requires
+	// throttling this lookup: user_code is drawn from a bounded charset over a
+	// fixed-length code with a 10-minute TTL, so an unthrottled endpoint is a
+	// brute-force guessing oracle. Unlike registerLimiter, this IS per-IP
+	// (see perIPLimiter's doc comment for why): this endpoint is a
+	// human-facing login page, not a machine-driven one-shot call, so a
+	// shared process-wide bucket would let one caller starve every other
+	// concurrent device-flow login. Nil when device flow is disabled;
+	// OAuthRoutes never registers the route in that case, so it is never
+	// dereferenced.
+	deviceVerificationLimiter *perIPLimiter
+}
+
+// DefaultRegisterRate and DefaultRegisterBurst bound /oauth/register when no
+// rate is configured: 1 registration/sec sustained, burst of 5. Generous for
+// legitimate tooling (a client registers once, then reuses its client_id),
+// tight enough that an unauthenticated caller cannot grow the client keyspace
+// or the log stream faster than operators can react.
+const (
+	DefaultRegisterRate  rate.Limit = 1
+	DefaultRegisterBurst int        = 5
+)
+
+// WithRegisterRateLimit overrides the /oauth/register rate (registrations per
+// second) and burst. The limit is per process: N replicas admit N times the
+// rate. NewHandler rejects a non-positive rate or burst.
+func WithRegisterRateLimit(r rate.Limit, burst int) Option {
+	return func(h *Handler) {
+		h.registerLimiter = rate.NewLimiter(r, burst)
+	}
+}
+
+// WithMeterProvider sets the meter provider for the DCR metrics. Without it,
+// NewHandler uses the global otel.GetMeterProvider().
+func WithMeterProvider(mp metric.MeterProvider) Option {
+	return func(h *Handler) {
+		h.meterProvider = mp
+	}
 }
 
 // UpstreamFilter narrows the authorization chain to a subset of the configured
@@ -133,13 +242,30 @@ func WithUpstreamFilter(f UpstreamFilter) Option {
 	}
 }
 
+// WithConsentExemptClientIDs configures the client IDs preauthorized to skip
+// ToolHive's consent page. Listing a client ID preauthorizes whatever registration
+// currently holds that ID, for whichever user completes upstream authentication.
+// It is not per-user consent, and runtime eligibility checks do not prove where
+// the registration came from. The embedder must control registration writes for
+// exempt IDs; replacement or permission expansion transfers or broadens
+// preauthorization. Removing an ID affects new requests only and does not revoke
+// tokens or cancel already-approved flows. Upstream authentication still runs.
+// The IDs are copied when the option is created, and repeated options replace the
+// list.
+func WithConsentExemptClientIDs(ids []string) Option {
+	clientIDs := slices.Clone(ids)
+	return func(h *Handler) {
+		h.consentExemptClientIDs = slices.Clone(clientIDs)
+	}
+}
+
 // NewHandler creates a new Handler with the given dependencies.
 // upstreams defines the ordered sequence of upstream providers consulted
 // during multi-upstream authorization flows (e.g., sequential token acquisition).
 //
 // Returns an error if config is nil, if config's embedded *fosite.Config is
-// nil, if upstreams is empty, or if any entry has an empty name, a nil provider,
-// or a duplicate name. Upstream names must be unique: upstreamByName returns the
+// nil, or if any entry has an empty name, a nil provider, or a duplicate name.
+// Upstream names must be unique: upstreamByName returns the
 // first match, tokens are keyed by name, and the authorization chain is keyed by
 // name — a duplicate would silently shadow a provider. Catching misconfiguration
 // here is far easier to diagnose than a nil-deref panic or a shadowed provider
@@ -155,9 +281,6 @@ func NewHandler(
 		return nil, fmt.Errorf(
 			"handlers: AuthorizationServerConfig with embedded *fosite.Config must be non-nil")
 	}
-	if len(upstreams) == 0 {
-		return nil, fmt.Errorf("handlers: upstreams must not be empty")
-	}
 	seen := make(map[string]struct{}, len(upstreams))
 	for _, u := range upstreams {
 		if u.Name == "" {
@@ -172,21 +295,75 @@ func NewHandler(
 		seen[u.Name] = struct{}{}
 	}
 	h := &Handler{
-		provider:     provider,
-		config:       config,
-		storage:      stor,
-		upstreams:    upstreams,
-		userResolver: NewUserResolver(stor),
-		// 1 registration/sec sustained, burst of 5: generous for legitimate
-		// tooling (a client registers once, then reuses its client_id), tight
-		// enough that an unauthenticated caller cannot grow the client
-		// keyspace or the log stream faster than operators can react.
-		registerLimiter: rate.NewLimiter(rate.Limit(1), 5),
+		provider:        provider,
+		config:          config,
+		storage:         stor,
+		upstreams:       upstreams,
+		tokenOnly:       len(upstreams) == 0,
+		userResolver:    NewUserResolver(stor),
+		registerLimiter: rate.NewLimiter(DefaultRegisterRate, DefaultRegisterBurst),
+		meterProvider:   otel.GetMeterProvider(),
+		// Same rate as registerLimiter's default: this gate protects the same kind of
+		// unauthenticated persisted-state minting, just reached through
+		// /oauth/authorize instead of /oauth/register.
+		cimdAuthorizeLimiter: rate.NewLimiter(rate.Limit(1), 5),
+		deviceCodeInterval:   deviceCodeInterval(config.DeviceCodeInterval),
+	}
+	if config.DeviceFlowEnabled {
+		// Same rate as registerLimiter's default: this gate protects the same kind of
+		// unauthenticated persisted-state minting, just reached through
+		// /oauth/device_authorization instead of /oauth/register.
+		h.deviceAuthorizationLimiter = rate.NewLimiter(rate.Limit(1), 5)
+		// Same rate as deviceAuthorizationLimiter, but per-IP rather than
+		// per-process -- see deviceVerificationLimiter's field doc comment
+		// and perIPLimiter's doc comment for why.
+		h.deviceVerificationLimiter = newPerIPLimiter(rate.Limit(1), 5)
+		deviceStorage, ok := storage.Unwrap(stor).(storage.DeviceCodeStorage)
+		if !ok {
+			return nil, fmt.Errorf(
+				"handlers: device flow enabled but storage backend %T does not implement storage.DeviceCodeStorage", stor)
+		}
+		h.deviceStorage = deviceStorage
+	}
+	if base, err := url.Parse(config.GetAuthorizationEndpointBaseURL()); err == nil && base.Scheme == "https" {
+		h.rememberedStorage, _ = storage.Unwrap(stor).(storage.RememberedConsentStorage)
 	}
 	for _, o := range opts {
 		o(h)
 	}
+	if err := validateRegisterLimiter(h.registerLimiter); err != nil {
+		return nil, err
+	}
+	if err := h.initConsentExemptions(); err != nil {
+		return nil, err
+	}
+	// Registered last: the gauge callback outlives a failed constructor.
+	metrics, err := newDCRMetrics(h.meterProvider, stor)
+	if err != nil {
+		return nil, fmt.Errorf("handlers: %w", err)
+	}
+	h.dcrMetrics = metrics
+	h.capacityWarner = newCapacityWarner(stor)
 	return h, nil
+}
+
+// Close releases what NewHandler registered outside the Handler: the DCR
+// client gauge's callback, which holds the storage. Call it when the server
+// shuts down so a rebuilt server in the same process does not leave a
+// callback reading closed storage.
+func (h *Handler) Close() error {
+	return h.dcrMetrics.close()
+}
+
+// deviceCodeInterval returns configured, falling back to
+// server.DefaultDeviceCodeInterval when configured is zero. A zero interval
+// would defeat the interval's purpose of bounding poll frequency, so it is
+// never used as the enforced minimum.
+func deviceCodeInterval(configured time.Duration) time.Duration {
+	if configured <= 0 {
+		return server.DefaultDeviceCodeInterval
+	}
+	return configured
 }
 
 // Routes returns a router with all OAuth/OIDC endpoints registered.
@@ -197,12 +374,30 @@ func (h *Handler) Routes() http.Handler {
 	return r
 }
 
-// OAuthRoutes registers OAuth endpoints (authorize, callback, token, register) on the provided router.
+// OAuthRoutes registers OAuth endpoints (authorize, consent, callback, token, register,
+// and the device flow's device_authorization/verification routes when enabled)
+// on the provided router.
 func (h *Handler) OAuthRoutes(r chi.Router) {
-	r.Get("/oauth/authorize", h.AuthorizeHandler)
+	r.Get("/oauth/authorize", h.rateLimitCIMDAuthorize(h.AuthorizeHandler))
+	r.Post("/oauth/consent", h.ConsentHandler)
+	// /oauth/callback is shared by the OAuth-client authorization_code flow
+	// and (when device flow is enabled) the verification page's upstream
+	// login -- an upstream's redirect_uri is fixed per upstream at
+	// construction, so there is no way to register a second callback path
+	// for the device flow. CallbackHandler dispatches between the two based
+	// on which pending record the state parameter matches. An OAuth-client
+	// authorization additionally requires the browser-binding cookie that
+	// /oauth/authorize set, so it must be served on the same host (see
+	// browser_binding.go).
 	r.Get("/oauth/callback", h.CallbackHandler)
 	r.Post("/oauth/token", h.TokenHandler)
 	r.Post("/oauth/register", h.rateLimitRegister(h.RegisterClientHandler))
+	if h.config.DeviceFlowEnabled {
+		r.Post("/oauth/device_authorization", h.rateLimitDeviceAuthorization(h.DeviceAuthorizationHandler))
+		r.Get("/oauth/device", h.DeviceVerificationHandler)
+		r.Post("/oauth/device", h.rateLimitDeviceVerification(h.DeviceVerificationSubmitHandler))
+		r.Post("/oauth/device/confirm", h.DeviceVerificationConfirmHandler)
+	}
 }
 
 // rateLimitRegister gates the unauthenticated registration endpoint: over the
@@ -212,6 +407,109 @@ func (h *Handler) OAuthRoutes(r chi.Router) {
 func (h *Handler) rateLimitRegister(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
 		if h.registerLimiter != nil && !h.registerLimiter.Allow() {
+			w.Header().Set("Retry-After", strconv.Itoa(limiterRetryAfterSeconds(h.registerLimiter)))
+			http.Error(w, "rate limit exceeded, retry later", http.StatusTooManyRequests)
+			return
+		}
+		next(w, req)
+	}
+}
+
+// validateRegisterLimiter rejects a register limiter without a finite
+// positive rate and a positive burst. rate.Inf (math.MaxFloat64, not +Inf)
+// would silently disable limiting, and NaN passes a plain <= 0 check.
+func validateRegisterLimiter(l *rate.Limiter) error {
+	lim := float64(l.Limit())
+	if math.IsNaN(lim) || math.IsInf(lim, 0) || l.Limit() == rate.Inf || lim <= 0 || l.Burst() <= 0 {
+		return fmt.Errorf("handlers: register rate limit must have a finite positive rate and positive burst, got %v/s burst %d",
+			l.Limit(), l.Burst())
+	}
+	return nil
+}
+
+// initConsentExemptions validates the consent-exempt client IDs set by
+// WithConsentExemptClientIDs and indexes them for lookup.
+func (h *Handler) initConsentExemptions() error {
+	if err := consentpolicy.Validate(
+		h.consentExemptClientIDs,
+		h.config.GetAuthorizationEndpointBaseURL(),
+		h.config.GetAccessTokenIssuer(),
+		len(h.upstreams),
+	); err != nil {
+		return fmt.Errorf("handlers: %w", err)
+	}
+	h.consentExemptClientIDSet = make(map[string]struct{}, len(h.consentExemptClientIDs))
+	for _, id := range h.consentExemptClientIDs {
+		h.consentExemptClientIDSet[id] = struct{}{}
+	}
+	h.consentExemptClientIDs = nil
+	return nil
+}
+
+// limiterRetryAfterSeconds returns the Retry-After value for a request l
+// refused: 1/rate seconds, the longest the limiter can take to refill one
+// token, rounded up and at least 1. A partly refilled bucket frees a token
+// sooner, so this is an upper bound. A rate below 1/s therefore advertises a
+// wait longer than a second, so a
+// client honouring the header does not retry into further 429s. The result
+// is clamped to math.MaxInt32 so a vanishingly small rate cannot overflow int.
+func limiterRetryAfterSeconds(l *rate.Limiter) int {
+	return int(min(max(math.Ceil(1/float64(l.Limit())), 1), math.MaxInt32))
+}
+
+// rateLimitCIMDAuthorize gates /oauth/authorize requests whose client_id is a
+// CIMD URL, before next (and therefore before fosite's NewAuthorizeRequest,
+// which is what triggers GetClient and the CIMD write-through) ever runs.
+// Over the limit it returns 429 with a Retry-After hint, mirroring
+// rateLimitRegister. A request whose client_id is empty, missing, or not
+// URL-shaped (an ordinary DCR client_id) is never gated here — it falls
+// straight through to next, unaffected by this limiter's state.
+//
+// req.Form is parsed (not req.URL.Query()) so this reads the same client_id
+// fosite itself will see, including a form-encoded body on this GET-only
+// route; ParseForm is idempotent, so a later parse inside next re-reads
+// exactly the same values.
+func (h *Handler) rateLimitCIMDAuthorize(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, req *http.Request) {
+		if h.cimdAuthorizeLimiter != nil {
+			_ = req.ParseForm()
+			clientID := req.Form.Get("client_id")
+			if oauthproto.IsClientIDMetadataDocumentURL(clientID) && !h.cimdAuthorizeLimiter.Allow() {
+				w.Header().Set("Retry-After", "1")
+				http.Error(w, "rate limit exceeded, retry later", http.StatusTooManyRequests)
+				return
+			}
+		}
+		next(w, req)
+	}
+}
+
+// rateLimitDeviceAuthorization gates the unauthenticated
+// /oauth/device_authorization endpoint: over the limit it returns 429 with a
+// Retry-After hint rather than minting persisted state. Mirrors
+// rateLimitRegister exactly, including its nil-tolerant shape (nil when
+// device flow is disabled, in which case this wrapper is never installed by
+// OAuthRoutes anyway).
+func (h *Handler) rateLimitDeviceAuthorization(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, req *http.Request) {
+		if h.deviceAuthorizationLimiter != nil && !h.deviceAuthorizationLimiter.Allow() {
+			w.Header().Set("Retry-After", "1")
+			http.Error(w, "rate limit exceeded, retry later", http.StatusTooManyRequests)
+			return
+		}
+		next(w, req)
+	}
+}
+
+// rateLimitDeviceVerification gates the unauthenticated POST /oauth/device
+// endpoint: over the limit it returns 429 with a Retry-After hint rather than
+// running another user_code lookup. Per-IP (see perIPLimiter's doc comment
+// for why this endpoint differs from rateLimitDeviceAuthorization's
+// per-process gate), otherwise the same shape, including tolerating a nil
+// limiter when device flow is disabled.
+func (h *Handler) rateLimitDeviceVerification(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, req *http.Request) {
+		if h.deviceVerificationLimiter != nil && !h.deviceVerificationLimiter.allow(clientIP(req)) {
 			w.Header().Set("Retry-After", "1")
 			http.Error(w, "rate limit exceeded, retry later", http.StatusTooManyRequests)
 			return

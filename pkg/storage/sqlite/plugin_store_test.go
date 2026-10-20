@@ -78,6 +78,36 @@ func TestPluginStore_Create(t *testing.T) {
 
 	assert.False(t, got.InstalledAt.IsZero(), "InstalledAt should not be zero")
 	assert.False(t, got.Managed, "Managed should default to false")
+	assert.Nil(t, got.SigstoreBundle, "SigstoreBundle should default to nil (unsigned)")
+}
+
+func TestPluginStore_SigstoreBundleRoundTrip(t *testing.T) {
+	t.Parallel()
+	store := newPluginTestStore(t)
+
+	bundle := []byte(`{"mediaType":"application/vnd.dev.sigstore.bundle.v0.3+json"}`)
+	pl := testPlugin("bundle-test")
+	pl.SigstoreBundle = bundle
+	require.NoError(t, store.Create(t.Context(), pl))
+
+	got, err := store.Get(t.Context(), pl.Metadata.Name, pl.Scope, pl.ProjectRoot)
+	require.NoError(t, err)
+	assert.Equal(t, bundle, got.SigstoreBundle)
+
+	// Update replaces the stored bundle (e.g. re-install of a re-signed
+	// artifact), and can clear it back to nil for an unsigned replacement.
+	newBundle := []byte(`{"replaced":true}`)
+	got.SigstoreBundle = newBundle
+	require.NoError(t, store.Update(t.Context(), got))
+	got, err = store.Get(t.Context(), pl.Metadata.Name, pl.Scope, pl.ProjectRoot)
+	require.NoError(t, err)
+	assert.Equal(t, newBundle, got.SigstoreBundle)
+
+	got.SigstoreBundle = nil
+	require.NoError(t, store.Update(t.Context(), got))
+	got, err = store.Get(t.Context(), pl.Metadata.Name, pl.Scope, pl.ProjectRoot)
+	require.NoError(t, err)
+	assert.Nil(t, got.SigstoreBundle, "a cleared bundle must read back as NULL/unsigned")
 }
 
 func TestPluginStore_CreateDuplicate(t *testing.T) {

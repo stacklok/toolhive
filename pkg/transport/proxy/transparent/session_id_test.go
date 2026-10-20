@@ -4,11 +4,28 @@
 package transparent
 
 import (
+	"net/url"
 	"testing"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 )
+
+func TestRewriteSessionQuery(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct{ query, id, want string }{
+		{"toolsets=core,alerting&session=abc", "", "toolsets=core,alerting&session=abc"},
+		{"sessionId=old&toolsets=core,alerting", "", "toolsets=core,alerting"},
+		{"toolsets=core,alerting&session%49d=old", "new/id", "toolsets=core,alerting&sessionId=new%2Fid"},
+	} {
+		t.Run(tc.query, func(t *testing.T) {
+			t.Parallel()
+			u := &url.URL{RawQuery: tc.query}
+			rewriteSessionQuery(u, tc.id)
+			assert.Equal(t, tc.want, u.RawQuery)
+		})
+	}
+}
 
 func TestNormalizeSessionID(t *testing.T) {
 	t.Parallel()

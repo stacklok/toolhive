@@ -40,7 +40,10 @@ func TestStorageBackedStore_PutGet_RoundTrip(t *testing.T) {
 		CreatedAt:               time.Now(),
 	}
 
-	require.NoError(t, store.Put(ctx, key, resolution))
+	authoritative, err := store.PutIfAbsent(ctx, key, resolution)
+	require.NoError(t, err)
+	assert.Equal(t, resolution.ClientID, authoritative.ClientID,
+		"an uncontested claim must return the caller's own resolution")
 
 	got, ok, err := store.Get(ctx, key)
 	require.NoError(t, err)
@@ -106,6 +109,10 @@ func TestStorageBackedStore_DistinctKeysDoNotCollide(t *testing.T) {
 		RedirectURI: "https://toolhive.example.com/oauth/callback",
 		ScopesHash:  storage.ScopesHash([]string{"openid"}),
 	}
+	// keyF is keyA under an operator-set RotationKey: the rotation must
+	// address its own entry while keyA's row stays reachable.
+	keyF := keyA
+	keyF.RotationKey = "r2"
 
 	// The persisted *storage.DCRCredentials shape requires non-empty
 	// AuthorizationEndpoint / TokenEndpoint per validateDCRCredentialsForStore;
@@ -119,11 +126,15 @@ func TestStorageBackedStore_DistinctKeysDoNotCollide(t *testing.T) {
 		}
 	}
 
-	require.NoError(t, store.Put(ctx, keyA, resolution("a")))
-	require.NoError(t, store.Put(ctx, keyB, resolution("b")))
-	require.NoError(t, store.Put(ctx, keyC, resolution("c")))
-	require.NoError(t, store.Put(ctx, keyD, resolution("d")))
-	require.NoError(t, store.Put(ctx, keyE, resolution("e")))
+	for _, put := range []struct {
+		key      Key
+		clientID string
+	}{
+		{keyA, "a"}, {keyB, "b"}, {keyC, "c"}, {keyD, "d"}, {keyE, "e"}, {keyF, "f"},
+	} {
+		_, err := store.PutIfAbsent(ctx, put.key, resolution(put.clientID))
+		require.NoError(t, err)
+	}
 
 	for _, tc := range []struct {
 		key      Key
@@ -134,6 +145,7 @@ func TestStorageBackedStore_DistinctKeysDoNotCollide(t *testing.T) {
 		{keyC, "c"},
 		{keyD, "d"},
 		{keyE, "e"},
+		{keyF, "f"},
 	} {
 		got, ok, err := store.Get(ctx, tc.key)
 		require.NoError(t, err)
@@ -142,7 +154,15 @@ func TestStorageBackedStore_DistinctKeysDoNotCollide(t *testing.T) {
 	}
 }
 
-func TestStorageBackedStore_Put_OverwritesExisting(t *testing.T) {
+// TestStorageBackedStore_PutIfAbsent_FirstClaimWins pins the create-if-absent
+// contract that replaced unconditional overwrite (see PutIfAbsent doc): a
+// second PutIfAbsent for a key that already holds a value must NOT overwrite
+// it. Instead it returns the existing (first) resolution as the authoritative
+// value, and the store keeps holding the first entry. This is the fix for the
+// concurrent-replica bug where two callers independently register distinct
+// RFC 7591 clients for the same key — only one registration may ever become
+// the durable, agreed-upon value.
+func TestStorageBackedStore_PutIfAbsent_FirstClaimWins(t *testing.T) {
 	t.Parallel()
 
 	store := newMemoryDCRStore(t)
@@ -161,21 +181,27 @@ func TestStorageBackedStore_Put_OverwritesExisting(t *testing.T) {
 		Authorization: "https://idp.example.com/authorize",
 		Token:         "https://idp.example.com/token",
 	}
-	require.NoError(t, store.Put(ctx, key, &Resolution{
+	first, err := store.PutIfAbsent(ctx, key, &Resolution{
 		ClientID:              "first",
 		AuthorizationEndpoint: endpoints.Authorization,
 		TokenEndpoint:         endpoints.Token,
-	}))
-	require.NoError(t, store.Put(ctx, key, &Resolution{
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "first", first.ClientID, "the uncontested first claim returns its own resolution")
+
+	second, err := store.PutIfAbsent(ctx, key, &Resolution{
 		ClientID:              "second",
 		AuthorizationEndpoint: endpoints.Authorization,
 		TokenEndpoint:         endpoints.Token,
-	}))
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "first", second.ClientID,
+		"the loser must get back the winner's resolution, not its own")
 
 	got, ok, err := store.Get(ctx, key)
 	require.NoError(t, err)
 	require.True(t, ok)
-	assert.Equal(t, "second", got.ClientID)
+	assert.Equal(t, "first", got.ClientID, "the store must keep the first-claimed entry, not overwrite it")
 }
 
 // TestStorageBackedStore_Put_RejectsNilResolution pins the
@@ -189,7 +215,7 @@ func TestStorageBackedStore_Put_RejectsNilResolution(t *testing.T) {
 	ctx := context.Background()
 	key := Key{Issuer: "https://idp.example.com", RedirectURI: "https://x.example.com/cb"}
 
-	err := store.Put(ctx, key, nil)
+	_, err := store.PutIfAbsent(ctx, key, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "must not be nil")
 
@@ -211,11 +237,12 @@ func TestStorageBackedStore_GetReturnsDefensiveCopy(t *testing.T) {
 		RedirectURI: "https://x.example.com/cb",
 		ScopesHash:  storage.ScopesHash([]string{"openid"}),
 	}
-	require.NoError(t, store.Put(ctx, key, &Resolution{
+	_, err := store.PutIfAbsent(ctx, key, &Resolution{
 		ClientID:              "orig",
 		AuthorizationEndpoint: "https://idp.example.com/authorize",
 		TokenEndpoint:         "https://idp.example.com/token",
-	}))
+	})
+	require.NoError(t, err)
 
 	got, ok, err := store.Get(ctx, key)
 	require.NoError(t, err)
@@ -289,14 +316,14 @@ func TestStorageBackedStore_ConcurrentAccess(t *testing.T) {
 					CreatedAt:             time.Now(),
 				}
 				if i%2 == 0 {
-					if err := store.Put(ctx, overlappingKey(i), resolution); err != nil {
+					if _, err := store.PutIfAbsent(ctx, overlappingKey(i), resolution); err != nil {
 						atomic.AddInt32(&errCount, 1)
 					}
 					if _, _, err := store.Get(ctx, overlappingKey(i)); err != nil {
 						atomic.AddInt32(&errCount, 1)
 					}
 				} else {
-					if err := store.Put(ctx, disjointKey(worker, i), resolution); err != nil {
+					if _, err := store.PutIfAbsent(ctx, disjointKey(worker, i), resolution); err != nil {
 						atomic.AddInt32(&errCount, 1)
 					}
 					if _, _, err := store.Get(ctx, disjointKey(worker, i)); err != nil {
@@ -353,6 +380,7 @@ func TestResolutionCredentialsRoundTrip(t *testing.T) {
 		UpstreamID:  "https://upstream.example.com",
 		RedirectURI: "https://thv.example.com/oauth/callback",
 		ScopesHash:  storage.ScopesHash([]string{"openid", "profile"}),
+		RotationKey: "2026-10",
 	}
 
 	original := &Resolution{
@@ -508,18 +536,19 @@ func TestInMemoryStore_PutGetCloseShareBackend(t *testing.T) {
 		TokenEndpoint:         "https://idp.example.com/token",
 	}
 
-	require.NoError(t, store.Put(ctx, key, resolution))
+	_, err := store.PutIfAbsent(ctx, key, resolution)
+	require.NoError(t, err)
 
 	got, ok, err := store.Get(ctx, key)
 	require.NoError(t, err)
-	require.True(t, ok, "Get must see the value Put just wrote — confirms Put and Get share a backend")
+	require.True(t, ok, "Get must see the value PutIfAbsent just wrote — confirms Put and Get share a backend")
 	assert.Equal(t, "client-abc", got.ClientID)
 }
 
 // TestInMemoryStore_PutRejectsNilResolution mirrors the contract pinned
-// for storageBackedStore.Put: a nil resolution is rejected at the
+// for storageBackedStore.PutIfAbsent: a nil resolution is rejected at the
 // adapter boundary rather than silently no-oped, so the next Get miss
-// surfaces with a debug trail. inMemoryStore implements Put directly
+// surfaces with a debug trail. inMemoryStore implements PutIfAbsent directly
 // (not via embedding) — this test guards against a delegation
 // regression that omitted the nil check.
 func TestInMemoryStore_PutRejectsNilResolution(t *testing.T) {
@@ -528,7 +557,7 @@ func TestInMemoryStore_PutRejectsNilResolution(t *testing.T) {
 	store := NewInMemoryStore()
 	t.Cleanup(func() { _ = store.Close() })
 
-	err := store.Put(context.Background(), Key{Issuer: "https://idp.example.com"}, nil)
+	_, err := store.PutIfAbsent(context.Background(), Key{Issuer: "https://idp.example.com"}, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "resolution must not be nil")
 }
@@ -548,4 +577,86 @@ func TestInMemoryStore_GetMissingKeyReturnsMissTuple(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, ok)
 	assert.Nil(t, got)
+}
+
+func TestCredentialStore_ReplaceIfUnchanged(t *testing.T) {
+	t.Parallel()
+
+	key := Key{
+		Issuer:      "https://idp.example.com",
+		UpstreamID:  "https://upstream.example.com",
+		RedirectURI: "https://toolhive.example.com/oauth/callback",
+		ScopesHash:  storage.ScopesHash([]string{"openid"}),
+	}
+	registration := func(clientID string) *Resolution {
+		return &Resolution{
+			ClientID:              clientID,
+			ClientSecret:          clientID + "-secret",
+			AuthorizationEndpoint: "https://upstream.example.com/authorize",
+			TokenEndpoint:         "https://upstream.example.com/token",
+			CreatedAt:             time.Now(),
+		}
+	}
+	stale, newer, fresh := registration("stale-id"), registration("newer-id"), registration("fresh-id")
+
+	type replacingStore interface {
+		CredentialStore
+		Replacer
+	}
+	stores := map[string]func(t *testing.T) replacingStore{
+		"storage-backed": func(t *testing.T) replacingStore {
+			t.Helper()
+			s, ok := newMemoryDCRStore(t).(replacingStore)
+			require.True(t, ok, "the storage-backed store must implement Replacer")
+			return s
+		},
+		"in-memory": func(t *testing.T) replacingStore {
+			t.Helper()
+			s := NewInMemoryStore()
+			t.Cleanup(func() { _ = s.Close() })
+			r, ok := s.(replacingStore)
+			require.True(t, ok, "the in-memory store must implement Replacer")
+			return r
+		},
+	}
+	tests := []struct {
+		name     string
+		stored   *Resolution
+		wantID   string
+		wantRead string
+	}{
+		{name: "replaces the registration the caller read", stored: stale, wantID: "fresh-id", wantRead: "fresh-id"},
+		{name: "keeps a registration a concurrent writer already replaced", stored: newer, wantID: "newer-id", wantRead: "newer-id"},
+		{name: "claims the key when the row is gone", stored: nil, wantID: "fresh-id", wantRead: "fresh-id"},
+	}
+	for storeName, newStore := range stores {
+		for _, tt := range tests {
+			t.Run(storeName+"/"+tt.name, func(t *testing.T) {
+				t.Parallel()
+				ctx := context.Background()
+				store := newStore(t)
+				if tt.stored != nil {
+					_, err := store.PutIfAbsent(ctx, key, tt.stored)
+					require.NoError(t, err)
+				}
+
+				got, err := store.ReplaceIfUnchanged(ctx, key, stale, fresh)
+				require.NoError(t, err)
+				assert.Equal(t, tt.wantID, got.ClientID)
+
+				read, ok, err := store.Get(ctx, key)
+				require.NoError(t, err)
+				require.True(t, ok)
+				assert.Equal(t, tt.wantRead, read.ClientID)
+			})
+		}
+		t.Run(storeName+"/rejects nil resolutions", func(t *testing.T) {
+			t.Parallel()
+			store := newStore(t)
+			_, err := store.ReplaceIfUnchanged(context.Background(), key, nil, fresh)
+			require.Error(t, err)
+			_, err = store.ReplaceIfUnchanged(context.Background(), key, stale, nil)
+			require.Error(t, err)
+		})
+	}
 }

@@ -47,6 +47,7 @@ func (r *VirtualMCPServerReconciler) ensureVmcpConfigConfigMap(
 		return fmt.Errorf("failed to create vmcp converter: %w", err)
 	}
 	config, authServerRC, err := converter.Convert(ctx, vmcp, telemetryCfg)
+	r.emitInlineTelemetryIgnoredEvent(vmcp)
 	if err != nil {
 		var delegateErr *operatorvmcpconfig.DelegateClientConfigValidationError
 		if stderrors.As(err, &delegateErr) {

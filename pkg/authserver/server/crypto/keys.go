@@ -26,6 +26,7 @@ import (
 	"encoding/pem"
 	"fmt"
 	"os"
+	"slices"
 
 	"github.com/go-jose/go-jose/v4"
 )
@@ -37,6 +38,12 @@ const MinSecretLength = 32
 // MinRSAKeyBits is the minimum required RSA key size in bits.
 // NIST recommends at least 2048 bits for RSA keys.
 const MinRSAKeyBits = 2048
+
+// MaxRSAKeyBits is the maximum accepted RSA public modulus size in bits.
+const MaxRSAKeyBits = 8192
+
+// MaxRSAPublicExponent is the largest accepted public exponent for client RSA keys.
+const MaxRSAPublicExponent = 65537
 
 // LoadSigningKey loads a private key from a PEM file.
 // Supports both RSA (PKCS1 and PKCS8) and ECDSA (PKCS8) formats.
@@ -133,18 +140,44 @@ func deriveECAlgorithm(curve elliptic.Curve) (string, error) {
 	}
 }
 
-// ValidateAlgorithmForKey checks if the provided algorithm is compatible with the key type.
-// Returns an error if the algorithm doesn't match the key type.
-func ValidateAlgorithmForKey(alg string, key crypto.Signer) error {
+// rsaAlgorithmsForClientKeys are the RSA JWS algorithms accepted for a client's public key.
+var rsaAlgorithmsForClientKeys = []string{"RS256", "RS384", "RS512", "PS256", "PS384", "PS512"}
+
+// rsaAlgorithmsForSigningKeys are the RSA JWS algorithms accepted for the server's own
+// signing key. Deliberately narrower than rsaAlgorithmsForClientKeys: PS* is excluded.
+var rsaAlgorithmsForSigningKeys = []string{"RS256", "RS384", "RS512"}
+
+// SupportedClientKeyAlgorithms returns the allowlist of JWS algorithms
+// accepted for a private_key_jwt client's registered key: rsaAlgorithmsForClientKeys
+// plus the three EC algorithms deriveECAlgorithm maps curves to. This is the
+// single source of truth for both key-compatibility validation here and DCR's
+// signing-algorithm allowlist, so the two lists cannot silently drift apart
+// (as happened when EdDSA was previously missing from a hand-maintained copy
+// of this list).
+//
+// EdDSA is deliberately excluded even though validateAlgorithmForPublicKeyValue
+// and ValidateAlgorithmForKey both support Ed25519 keys structurally: fosite
+// v0.49.0's client-assertion verification (client_authentication.go) only
+// switches on the RS*/ES*/PS*/HS* families, so an EdDSA client could register
+// successfully and then never be able to authenticate. Revisit when fosite
+// adds EdDSA support or this pins a version that has it.
+func SupportedClientKeyAlgorithms() []string {
+	algs := make([]string, 0, len(rsaAlgorithmsForClientKeys)+3)
+	algs = append(algs, rsaAlgorithmsForClientKeys...)
+	return append(algs, "ES256", "ES384", "ES512")
+}
+
+// validateAlgorithmForPublicKeyValue checks whether alg is compatible with a public key,
+// accepting exactly the RSA algorithms in allowedRSAAlgorithms. boundRSA
+// additionally caps the RSA modulus and public exponent; it is set for
+// untrusted client keys only, not for operator-provisioned signing keys.
+func validateAlgorithmForPublicKeyValue(
+	alg string, key crypto.PublicKey, allowedRSAAlgorithms []string, boundRSA bool,
+) error {
 	switch k := key.(type) {
-	case *rsa.PrivateKey:
-		switch alg {
-		case "RS256", "RS384", "RS512":
-			return nil
-		default:
-			return fmt.Errorf("algorithm %s is not compatible with RSA key", alg)
-		}
-	case *ecdsa.PrivateKey:
+	case *rsa.PublicKey:
+		return validateAlgorithmForRSAPublicKey(alg, k, allowedRSAAlgorithms, boundRSA)
+	case *ecdsa.PublicKey:
 		expectedAlg, err := deriveECAlgorithm(k.Curve)
 		if err != nil {
 			return err
@@ -154,11 +187,72 @@ func ValidateAlgorithmForKey(alg string, key crypto.Signer) error {
 				alg, k.Curve.Params().Name, expectedAlg)
 		}
 		return nil
-	case ed25519.PrivateKey:
+	case ed25519.PublicKey:
 		if alg != "EdDSA" {
 			return fmt.Errorf("algorithm %s is not compatible with Ed25519 key (expected EdDSA)", alg)
 		}
 		return nil
+	default:
+		return fmt.Errorf("unsupported key type: %T", key)
+	}
+}
+
+// validateAlgorithmForRSAPublicKey checks an RSA public key's modulus and
+// exponent and whether alg is in allowedRSAAlgorithms. boundRSA caps the
+// modulus size and public exponent, as for validateAlgorithmForPublicKeyValue.
+func validateAlgorithmForRSAPublicKey(
+	alg string, k *rsa.PublicKey, allowedRSAAlgorithms []string, boundRSA bool,
+) error {
+	if k == nil || k.N == nil {
+		return fmt.Errorf("RSA public key is missing a modulus")
+	}
+	keyBits := k.N.BitLen()
+	if keyBits < MinRSAKeyBits {
+		return fmt.Errorf("RSA key size %d bits is below minimum required %d bits", keyBits, MinRSAKeyBits)
+	}
+	if boundRSA && keyBits > MaxRSAKeyBits {
+		return fmt.Errorf("RSA key size %d bits exceeds maximum allowed %d bits", keyBits, MaxRSAKeyBits)
+	}
+	// Reject a degenerate or unsafe public exponent (e.g. e=1 makes RSA
+	// the identity function; e must be odd for the exponentiation to be
+	// well-defined).
+	if k.E < 3 || k.E%2 == 0 {
+		return fmt.Errorf("RSA public exponent %d is invalid or unsafe (must be odd and at least 3)", k.E)
+	}
+	if boundRSA && k.E > MaxRSAPublicExponent {
+		return fmt.Errorf("RSA public exponent %d exceeds maximum allowed %d", k.E, MaxRSAPublicExponent)
+	}
+	if slices.Contains(allowedRSAAlgorithms, alg) {
+		return nil
+	}
+	return fmt.Errorf("algorithm %s is not compatible with RSA key", alg)
+}
+
+// ValidateAlgorithmForPublicKey checks whether alg is compatible with a public key.
+// It accepts the public-key values stored in jose.JSONWebKey.Key.
+func ValidateAlgorithmForPublicKey(alg string, key crypto.PublicKey) error {
+	return validateAlgorithmForPublicKeyValue(alg, key, rsaAlgorithmsForClientKeys, true)
+}
+
+// ValidateAlgorithmForKey checks if the provided algorithm is compatible with the key type.
+// Returns an error if the algorithm doesn't match the key type.
+func ValidateAlgorithmForKey(alg string, key crypto.Signer) error {
+	switch k := key.(type) {
+	case *rsa.PrivateKey:
+		if k == nil {
+			return fmt.Errorf("signing key is nil")
+		}
+		return validateAlgorithmForPublicKeyValue(alg, &k.PublicKey, rsaAlgorithmsForSigningKeys, false)
+	case *ecdsa.PrivateKey:
+		if k == nil {
+			return fmt.Errorf("signing key is nil")
+		}
+		return validateAlgorithmForPublicKeyValue(alg, &k.PublicKey, rsaAlgorithmsForSigningKeys, false)
+	case ed25519.PrivateKey:
+		if k == nil {
+			return fmt.Errorf("signing key is nil")
+		}
+		return validateAlgorithmForPublicKeyValue(alg, k.Public(), rsaAlgorithmsForSigningKeys, false)
 	default:
 		return fmt.Errorf("unsupported key type: %T", key)
 	}

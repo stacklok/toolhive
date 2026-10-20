@@ -7,6 +7,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -35,9 +36,8 @@ func TestStreamingSessionIDDetection(t *testing.T) {
 		w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
 		w.WriteHeader(200)
 
-		// Simulate SSE lines
-		w.Write([]byte("data: hello\n"))
-		w.Write([]byte("data: sessionId=ABC123\n"))
+		// Session authority comes from an endpoint event, not arbitrary message data.
+		w.Write([]byte("event: endpoint\ndata: /messages?sessionId=ABC123\n\n"))
 		w.(http.Flusher).Flush()
 
 		time.Sleep(10 * time.Millisecond)
@@ -63,12 +63,38 @@ func TestStreamingSessionIDDetection(t *testing.T) {
 	for sc.Scan() {
 		bodyLines = append(bodyLines, sc.Text())
 	}
-	assert.Contains(t, bodyLines, "data: sessionId=ABC123")
+	assert.Contains(t, bodyLines, "data: /messages?sessionId=ABC123")
 
-	// side-effect: proxy should have seen session
 	assert.True(t, proxy.serverInitialized(), "server should have been initialized")
-	_, ok := proxy.sessionManager.Get(normalizeSessionID("ABC123"))
-	assert.True(t, ok, "sessionManager should have stored ABC123")
+	stored, ok := proxy.sessionManager.Get(normalizeSessionID("ABC123"))
+	require.True(t, ok, "sessionManager should have stored ABC123")
+	owner, exists := stored.GetMetadataValue(session.MetadataKeyIdentityBinding)
+	require.True(t, exists, "endpoint must be bound before publication")
+	assert.Equal(t, "unauthenticated", owner)
+}
+
+func TestSSEEndpointWithoutSessionIDIsNotExposed(t *testing.T) {
+	t.Parallel()
+
+	for _, endpoint := range []string{"/messages", "/messages?sessionId="} {
+		t.Run(endpoint, func(t *testing.T) {
+			t.Parallel()
+			proxy := NewTransparentProxy("127.0.0.1", 0, "", nil, nil, nil, true, false, "sse", nil, nil, "", false)
+			t.Cleanup(func() { require.NoError(t, proxy.sessionManager.Stop()) })
+			processor := NewSSEResponseProcessor(proxy, "", false)
+			resp := &http.Response{
+				Header:  http.Header{"Content-Type": []string{"text/event-stream"}},
+				Body:    io.NopCloser(strings.NewReader("event: endpoint\ndata: " + endpoint + "\n\n")),
+				Request: httptest.NewRequest(http.MethodGet, "/sse", nil),
+			}
+
+			require.NoError(t, processor.ProcessResponse(resp))
+			body, err := io.ReadAll(resp.Body)
+			require.ErrorIs(t, err, session.ErrSessionNotFound)
+			require.NotContains(t, string(body), "data: "+endpoint)
+			require.Equal(t, 0, proxy.sessionManager.Count())
+		})
+	}
 }
 
 func createBasicProxy(p *TransparentProxy, targetURL *url.URL) *httputil.ReverseProxy {
@@ -82,6 +108,29 @@ func createBasicProxy(p *TransparentProxy, targetURL *url.URL) *httputil.Reverse
 		ModifyResponse: p.modifyResponse,
 	}
 	return proxy
+}
+
+func TestUnspecifiedTransportPreservesLargeSSEResponse(t *testing.T) {
+	t.Parallel()
+
+	proxy := NewTransparentProxy("127.0.0.1", 0, "", nil, nil, nil, false, false, "", nil, nil, "", false)
+	t.Cleanup(func() { require.NoError(t, proxy.sessionManager.Stop()) })
+	// A single data line exceeds the legacy SSE processor's 1 MiB scanner limit.
+	want := "event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"" +
+		strings.Repeat("x", (1<<20)+1) + "\"}]}}\n\n"
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader(want)),
+		Request:    httptest.NewRequest(http.MethodPost, "/mcp", nil),
+	}
+
+	require.NoError(t, proxy.modifyResponse(resp))
+	t.Cleanup(func() { require.NoError(t, resp.Body.Close()) })
+	got, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	require.Len(t, got, len(want))
+	require.Equal(t, want, string(got), "unspecified transport must forward SSE bytes unchanged")
 }
 
 func TestNoSessionIDInNonSSE(t *testing.T) {
@@ -108,6 +157,68 @@ func TestNoSessionIDInNonSSE(t *testing.T) {
 	assert.False(t, p.serverInitialized(), "server should not be initialized for application/json")
 	_, ok := p.sessionManager.Get("XYZ789")
 	assert.False(t, ok, "no session should be added")
+}
+
+// TestStreamableHTTPTransparentProxyForwardsClientResponse verifies that the
+// transparent proxy used by thv proxy and remote streamable-http runs forwards
+// client-response POSTs and preserves the upstream 202 response.
+func TestStreamableHTTPTransparentProxyForwardsClientResponse(t *testing.T) {
+	t.Parallel()
+
+	const message = `{"jsonrpc":"2.0","id":"server-1","result":{}}`
+	type capturedRequest struct {
+		method string
+		path   string
+		body   []byte
+	}
+	received := make(chan capturedRequest, 1)
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read client response: %v", err)
+			return
+		}
+		received <- capturedRequest{method: r.Method, path: r.URL.Path, body: body}
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	t.Cleanup(target.Close)
+
+	targetURL, err := url.Parse(target.URL)
+	require.NoError(t, err)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	p := NewTransparentProxy("127.0.0.1", 0, targetURL.String(), nil, nil, nil,
+		false, false, "", nil, nil, "", false)
+	t.Cleanup(func() { _ = p.Stop(context.Background()) })
+	require.NoError(t, p.Start(ctx))
+
+	requestCtx, requestCancel := context.WithTimeout(ctx, 3*time.Second)
+	defer requestCancel()
+	req, err := http.NewRequestWithContext(
+		requestCtx,
+		http.MethodPost,
+		fmt.Sprintf("http://%s/mcp", p.ListenerAddr()),
+		strings.NewReader(message),
+	)
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	responseBody, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+
+	assert.Equal(t, http.StatusAccepted, resp.StatusCode)
+	assert.Empty(t, responseBody, "client response 202 should have no body")
+
+	select {
+	case request := <-received:
+		assert.Equal(t, http.MethodPost, request.method)
+		assert.Equal(t, "/mcp", request.path)
+		assert.JSONEq(t, message, string(request.body))
+	case <-time.After(time.Second):
+		t.Fatal("upstream did not receive client response")
+	}
 }
 
 func TestHeaderBasedSessionInitialization(t *testing.T) {
@@ -179,7 +290,7 @@ func TestTracePropagationHeaders(t *testing.T) {
 	ctx, span := otel.Tracer("test").Start(context.Background(), "test-operation")
 	defer span.End()
 
-	req := httptest.NewRequest("POST", "/test", strings.NewReader(`{"method": "test"}`))
+	req := httptest.NewRequest("POST", "/test", strings.NewReader(`{"jsonrpc":"2.0","method":"test"}`))
 	req = req.WithContext(ctx)
 	req.Header.Set("Content-Type", "application/json")
 
@@ -1693,6 +1804,15 @@ func TestMetricsNotServedWithoutHandler(t *testing.T) {
 		"/metrics must not be served on the application listener")
 	assert.False(t, backendHit.Load(),
 		"/metrics must not be proxied to the backend")
+
+	// The response has to explain itself: a bare 404 here is indistinguishable
+	// from a typo, and this is the only client-side signal that a scrape
+	// configuration is pointed at the wrong port. It names no port deliberately —
+	// see diagnostics.NotServedHereHandler.
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	assert.Contains(t, string(body), "diagnostics",
+		"the 404 body must explain where metrics moved to")
 }
 
 // TestPrefixHandlers_NilMapDoesNotPanic tests that a nil PrefixHandlers map doesn't cause panic

@@ -5,19 +5,25 @@ package authserver
 
 import (
 	"bytes"
+	"encoding/json"
 	"log/slog"
+	"math"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gopkg.in/yaml.v3"
 
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
 	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/authserver/server/tokenexchange"
+	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
+	"github.com/stacklok/toolhive/pkg/authserver/upstreamfilter"
+	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
 func TestValidateIssuerURL(t *testing.T) {
@@ -82,6 +88,32 @@ func TestValidateIssuerURL(t *testing.T) {
 			assertError(t, err, tt.wantErr, tt.errMsg)
 		})
 	}
+}
+
+// mustNewSPIFFETrustConfig builds a well-formed, non-empty *SPIFFETrustConfig
+// for tests asserting that Config.Validate() rejects it as not-yet-enforced.
+func mustNewSPIFFETrustConfig(t *testing.T) *SPIFFETrustConfig {
+	t.Helper()
+	trust, err := NewSPIFFETrustConfig(
+		[]SPIFFETrustDomainRunConfig{{
+			Name:         "production",
+			TrustDomain:  "example.org",
+			Methods:      []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509},
+			BundleSource: validWorkloadAPIBundleSource(),
+		}},
+		&InboundGrantsRunConfig{SPIFFEClientAuth: []SPIFFEClientAuthRunConfig{{
+			TrustDomainRef:   "production",
+			PrincipalPattern: "spiffe://example.org/ns/default/*",
+			ClientID:         "agent-client",
+			Methods:          []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509},
+			Audiences:        []string{"https://mcp.example.com"},
+			Scopes:           []string{"openid"},
+			GrantTypes:       []string{SPIFFEGrantTypeTokenExchange},
+		}}},
+		[]string{"openid"}, []string{"https://mcp.example.com"},
+	)
+	require.NoError(t, err)
+	return trust
 }
 
 func TestConfigValidate(t *testing.T) {
@@ -157,12 +189,30 @@ func TestConfigValidate(t *testing.T) {
 
 		// Confidential-client transport gate (same predicate RunConfig.Validate uses)
 		{name: "confidential clients combined with insecure HTTP rejects", config: Config{Issuer: "http://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, AllowConfidentialClientRegistration: true, InsecureAllowHTTP: true}, wantErr: true, errMsg: "allow_confidential_client_registration cannot be combined with insecure_allow_http"},
+		{name: "private-key JWT registration combined with insecure HTTP passes (no secret to protect)", config: Config{Issuer: "http://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, AllowPrivateKeyJWTRegistration: true, InsecureAllowHTTP: true}},
+		{name: "private-key JWT registration combined with token exchange disabled rejects", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, AllowPrivateKeyJWTRegistration: true, DisableTokenExchange: true}, wantErr: true, errMsg: "token-exchange-only"},
 
 		// Valid configs
 		{name: "valid minimal", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}}},
 		{name: "valid nil key provider", config: Config{Issuer: "https://example.com", HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}}},
 		{name: "valid empty upstream name defaults", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: []UpstreamConfig{{Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstream}}, AllowedAudiences: []string{"https://mcp.example.com"}}},
 		{name: "valid OIDC upstream", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validOIDCUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}}},
+
+		// SPIFFETrust is accepted by NewSPIFFETrustConfig as well-formed, but
+		// hard-rejected here too -- mirroring RunConfig.Validate's
+		// validateSPIFFENotYetEnforced -- since a caller that constructs
+		// Config directly (e.g. authserver.New) bypasses RunConfig entirely.
+		{name: "nil SPIFFETrust passes", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}}},
+		{
+			name: "well-formed Config.SPIFFETrust is rejected as not yet enforced",
+			config: Config{
+				Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC,
+				Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"},
+				SPIFFETrust: mustNewSPIFFETrustConfig(t),
+			},
+			wantErr: true,
+			errMsg:  "SPIFFE client authentication is not yet enforced",
+		},
 	}
 
 	for _, tt := range tests {
@@ -170,6 +220,57 @@ func TestConfigValidate(t *testing.T) {
 			t.Parallel()
 			err := tt.config.Validate()
 			assertError(t, err, tt.wantErr, tt.errMsg)
+		})
+	}
+}
+
+func TestConfigValidate_ZeroUpstreamAlternatives(t *testing.T) {
+	t.Parallel()
+
+	secret := []byte("0123456789abcdef0123456789abcdef")
+	configs := []struct {
+		name string
+		cfg  Config
+	}{
+		{
+			name: "delegate client",
+			cfg: Config{
+				Issuer:           "https://example.com",
+				HMACSecrets:      servercrypto.NewHMACSecrets(secret),
+				AllowedAudiences: []string{"https://mcp.example.com"},
+				DelegateClients: []DelegateClient{{
+					ClientID:     "delegate",
+					ClientSecret: strings.Repeat("a", minDelegateClientSecretLength),
+					Scopes:       []string{"openid"},
+					Audiences:    []string{"https://mcp.example.com"},
+				}},
+			},
+		},
+		{
+			name: "JWT bearer trusted issuer",
+			cfg: Config{
+				Issuer:           "https://example.com",
+				HMACSecrets:      servercrypto.NewHMACSecrets(secret),
+				AllowedAudiences: []string{"https://mcp.example.com"},
+				TrustedIssuers: []tokenexchange.TrustedIssuer{{
+					IssuerURL: "https://idp.example.com",
+					JWTBearerGrant: &tokenexchange.JWTBearerGrantPolicy{
+						MaxAssertionAge: "1m",
+						SubjectBindings: []tokenexchange.JWTBearerSubjectBinding{{
+							Subject:          "workload",
+							AllowedResources: []string{"https://mcp.example.com"},
+						}},
+						AcceptedAudiences: []string{"https://example.com/oauth/token"},
+					},
+				}},
+			},
+		},
+	}
+
+	for _, tt := range configs {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			require.NoError(t, tt.cfg.Validate())
 		})
 	}
 }
@@ -420,6 +521,53 @@ func TestOAuth2UpstreamRunConfigValidate(t *testing.T) {
 				ClientID: "c",
 			},
 		},
+
+		// TokenEndpointAuthMethod / client secret source consistency.
+		{
+			name: "unrecognized TokenEndpointAuthMethod rejects",
+			config: OAuth2UpstreamRunConfig{
+				ClientID:                "c",
+				TokenEndpointAuthMethod: "not_a_real_method",
+			},
+			wantErr: true,
+			errMsg:  "unsupported token_endpoint_auth_method",
+		},
+		{
+			name: "none with a configured client secret file rejects",
+			config: OAuth2UpstreamRunConfig{
+				ClientID:                "c",
+				ClientSecretFile:        "/tmp/secret",
+				TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodNone,
+			},
+			wantErr: true,
+			errMsg:  "token_endpoint_auth_method none cannot be used with a client secret",
+		},
+		{
+			name: "client_secret_basic without a secret source rejects",
+			config: OAuth2UpstreamRunConfig{
+				ClientID:                "c",
+				TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodClientSecretBasic,
+			},
+			wantErr: true,
+			errMsg:  `token_endpoint_auth_method "client_secret_basic" requires client_secret_file or client_secret_env_var`,
+		},
+		{
+			name: "client_secret_post without a secret source rejects",
+			config: OAuth2UpstreamRunConfig{
+				ClientID:                "c",
+				TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodClientSecretPost,
+			},
+			wantErr: true,
+			errMsg:  `token_endpoint_auth_method "client_secret_post" requires client_secret_file or client_secret_env_var`,
+		},
+		{
+			name: "client_secret_basic with a client secret env var configured is valid",
+			config: OAuth2UpstreamRunConfig{
+				ClientID:                "c",
+				ClientSecretEnvVar:      "MY_CLIENT_SECRET",
+				TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodClientSecretBasic,
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -488,12 +636,28 @@ func TestRunConfigValidate(t *testing.T) {
 		{name: "CIMD enabled omitted optional fields pass", config: RunConfig{CIMD: &CIMDRunConfig{Enabled: true}}},
 		// Confidential-client transport gate
 		{name: "confidential clients without insecure HTTP passes", config: RunConfig{AllowConfidentialClientRegistration: true}},
+		{name: "private-key JWT registration defaults to false", config: RunConfig{}},
+		{name: "private-key JWT registration without insecure HTTP passes", config: RunConfig{AllowPrivateKeyJWTRegistration: true}},
 		{name: "insecure HTTP without confidential clients passes", config: RunConfig{InsecureAllowHTTP: true}},
 		{
-			name:    "confidential clients combined with insecure HTTP rejects",
-			config:  RunConfig{AllowConfidentialClientRegistration: true, InsecureAllowHTTP: true},
+			name:    "confidential clients with malformed issuer reject before startup",
+			config:  RunConfig{Issuer: "http://[::1", AllowConfidentialClientRegistration: true},
 			wantErr: true,
-			errMsg:  "allow_confidential_client_registration cannot be combined with insecure_allow_http",
+			errMsg:  "confidential clients require a valid issuer URL",
+		},
+		{
+			name: "loopback confidential opt-in rejects structurally invalid issuer before startup",
+			config: RunConfig{
+				Issuer:                              "http://user@localhost",
+				AllowConfidentialClientRegistration: true,
+				InsecureAllowConfidentialOverLoopbackHTTP: true,
+			},
+			wantErr: true,
+			errMsg:  "confidential clients require a valid issuer URL",
+		},
+		{
+			name:   "private-key JWT registration combined with insecure HTTP passes (no secret to protect)",
+			config: RunConfig{AllowPrivateKeyJWTRegistration: true, InsecureAllowHTTP: true},
 		},
 		{
 			name: "confidential clients with plain-HTTP loopback issuer rejects without the opt-in",
@@ -525,6 +689,41 @@ func TestRunConfigValidate(t *testing.T) {
 				Issuer: "http://localhost:8080",
 			},
 		},
+		{
+			name: "private-key JWT registration with plain-HTTP loopback issuer is unaffected (no secret to protect)",
+			config: RunConfig{
+				Issuer:                         "http://localhost:8080",
+				AllowPrivateKeyJWTRegistration: true,
+			},
+		},
+		// SPIFFE trust is accepted by ValidateSPIFFETrust as well-formed, but
+		// hard-rejected here until a real SVID verification consumer lands.
+		{
+			name:   "no SPIFFE trust domains passes",
+			config: RunConfig{},
+		},
+		{
+			name: "well-formed SPIFFE trust configuration is rejected as not yet enforced",
+			config: RunConfig{
+				SPIFFETrustDomains: []SPIFFETrustDomainRunConfig{{
+					Name:         "production",
+					TrustDomain:  "example.org",
+					Methods:      []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509},
+					BundleSource: validWorkloadAPIBundleSource(),
+				}},
+				InboundGrants: &InboundGrantsRunConfig{SPIFFEClientAuth: []SPIFFEClientAuthRunConfig{{
+					TrustDomainRef:   "production",
+					PrincipalPattern: "spiffe://example.org/ns/default/*",
+					ClientID:         "agent-client",
+					Methods:          []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509},
+					Audiences:        []string{"https://mcp.example.org/resource"},
+					Scopes:           []string{"openid"},
+					GrantTypes:       []string{SPIFFEGrantTypeTokenExchange},
+				}}},
+			},
+			wantErr: true,
+			errMsg:  "SPIFFE client authentication is not yet enforced",
+		},
 	}
 
 	for _, tt := range tests {
@@ -534,6 +733,216 @@ func TestRunConfigValidate(t *testing.T) {
 			assertError(t, err, tt.wantErr, tt.errMsg)
 		})
 	}
+}
+
+// TestRunConfigValidate_UpstreamFilter covers RunConfig.Validate()'s
+// enforcement of UpstreamFilter static invariants against the configured
+// upstream list. Thorough matching/union/claim behavior is covered in
+// pkg/authserver/upstreamfilter — these cases only verify that invalid filter
+// configurations are rejected at startup rather than deferred to a runtime
+// surprise.
+func TestRunConfigValidate_UpstreamFilter(t *testing.T) {
+	t.Parallel()
+
+	okta := UpstreamRunConfig{Name: "okta"}
+	jira := UpstreamRunConfig{Name: "jira"}
+	slack := UpstreamRunConfig{Name: "slack"}
+
+	validRule := upstreamfilter.GroupRule{
+		Groups:            []string{"engineering"},
+		UpstreamProviders: []string{"jira"},
+	}
+
+	tests := []struct {
+		name    string
+		cfg     RunConfig
+		wantErr bool
+		errMsg  string
+	}{
+		{
+			name: "nil UpstreamFilter passes",
+			cfg: RunConfig{
+				Upstreams: []UpstreamRunConfig{okta, jira, slack},
+			},
+		},
+		{
+			name: "valid UpstreamFilter passes",
+			cfg: RunConfig{
+				Upstreams: []UpstreamRunConfig{okta, jira, slack},
+				UpstreamFilter: &upstreamfilter.GroupBasedFilterConfig{
+					Rules:            []upstreamfilter.GroupRule{validRule},
+					DefaultUpstreams: []string{"slack"},
+				},
+			},
+		},
+		{
+			name: "fewer than two upstreams is rejected",
+			cfg: RunConfig{
+				Upstreams: []UpstreamRunConfig{okta},
+				UpstreamFilter: &upstreamfilter.GroupBasedFilterConfig{
+					Rules: []upstreamfilter.GroupRule{validRule},
+				},
+			},
+			wantErr: true,
+			errMsg:  "at least two configured upstreams",
+		},
+		{
+			name: "unknown upstream reference is rejected",
+			cfg: RunConfig{
+				Upstreams: []UpstreamRunConfig{okta, jira, slack},
+				UpstreamFilter: &upstreamfilter.GroupBasedFilterConfig{
+					Rules: []upstreamfilter.GroupRule{{
+						Groups:            []string{"engineering"},
+						UpstreamProviders: []string{"salesforce"},
+					}},
+				},
+			},
+			wantErr: true,
+			errMsg:  `"salesforce" is not a configured upstream`,
+		},
+		{
+			name: "reference to mandatory first upstream is rejected",
+			cfg: RunConfig{
+				Upstreams: []UpstreamRunConfig{okta, jira, slack},
+				UpstreamFilter: &upstreamfilter.GroupBasedFilterConfig{
+					Rules: []upstreamfilter.GroupRule{{
+						Groups:            []string{"engineering"},
+						UpstreamProviders: []string{"okta"},
+					}},
+				},
+			},
+			wantErr: true,
+			errMsg:  `must not reference the mandatory first upstream "okta"`,
+		},
+		{
+			name: "no rules is rejected",
+			cfg: RunConfig{
+				Upstreams: []UpstreamRunConfig{okta, jira, slack},
+				UpstreamFilter: &upstreamfilter.GroupBasedFilterConfig{
+					Rules: nil,
+				},
+			},
+			wantErr: true,
+			errMsg:  "at least one rule",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := tt.cfg.Validate()
+			assertError(t, err, tt.wantErr, tt.errMsg)
+		})
+	}
+}
+
+// TestRunConfig_UpstreamFilterRoundTrip verifies that UpstreamFilter survives
+// JSON encode/decode without data loss — this is the path by which the
+// operator ConfigMap delivers the field to the vMCP pod.
+func TestRunConfig_UpstreamFilterRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	original := RunConfig{
+		SchemaVersion: CurrentSchemaVersion,
+		Issuer:        "https://example.com",
+		Upstreams: []UpstreamRunConfig{
+			{Name: "okta"},
+			{Name: "jira"},
+			{Name: "slack"},
+		},
+		UpstreamFilter: &upstreamfilter.GroupBasedFilterConfig{
+			Claim: "groups",
+			Rules: []upstreamfilter.GroupRule{
+				{Groups: []string{"engineering"}, UpstreamProviders: []string{"jira", "slack"}},
+				{Groups: []string{"sales"}, UpstreamProviders: []string{"slack"}},
+			},
+			DefaultUpstreams: []string{"jira"},
+		},
+	}
+
+	encoded, err := json.Marshal(&original)
+	require.NoError(t, err)
+
+	var decoded RunConfig
+	require.NoError(t, json.Unmarshal(encoded, &decoded))
+
+	assert.Equal(t, original.UpstreamFilter, decoded.UpstreamFilter)
+	// Also confirm omitempty behavior: a nil filter must not appear in the
+	// encoded payload at all.
+	noFilter := RunConfig{SchemaVersion: CurrentSchemaVersion, Issuer: "https://example.com"}
+	noFilterJSON, err := json.Marshal(&noFilter)
+	require.NoError(t, err)
+	assert.NotContains(t, string(noFilterJSON), "upstream_filter")
+}
+
+// TestRunConfig_UpstreamFilterYAMLRoundTrip verifies YAML decoding and
+// re-encoding of upstream filter configuration using the vMCP loader's
+// YAML package. A literal document pins the expected configuration keys.
+func TestRunConfig_UpstreamFilterYAMLRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	t.Run("configured_filter", func(t *testing.T) {
+		t.Parallel()
+
+		const doc = `
+schema_version: v0.1.0
+issuer: https://example.com
+upstreams:
+  - name: okta
+  - name: jira
+  - name: slack
+upstream_filter:
+  claim: custom_groups
+  rules:
+    - groups:
+        - engineering
+      upstreamProviders:
+        - jira
+        - slack
+    - groups:
+        - sales
+      upstreamProviders:
+        - slack
+  defaultUpstreams:
+    - jira
+`
+
+		want := &upstreamfilter.GroupBasedFilterConfig{
+			Claim: "custom_groups",
+			Rules: []upstreamfilter.GroupRule{
+				{Groups: []string{"engineering"}, UpstreamProviders: []string{"jira", "slack"}},
+				{Groups: []string{"sales"}, UpstreamProviders: []string{"slack"}},
+			},
+			DefaultUpstreams: []string{"jira"},
+		}
+
+		var decoded RunConfig
+		require.NoError(t, yaml.Unmarshal([]byte(doc), &decoded))
+		require.NotNil(t, decoded.UpstreamFilter)
+		assert.Equal(t, want, decoded.UpstreamFilter)
+
+		// Re-encoding must produce a document the same decoder reads back
+		// unchanged: the operator rewrites the ConfigMap on every reconcile.
+		encoded, err := yaml.Marshal(&decoded)
+		require.NoError(t, err)
+		var reDecoded RunConfig
+		require.NoError(t, yaml.Unmarshal(encoded, &reDecoded))
+		assert.Equal(t, decoded.UpstreamFilter, reDecoded.UpstreamFilter)
+	})
+
+	t.Run("nil_filter", func(t *testing.T) {
+		t.Parallel()
+
+		// An unset filter must be omitted from YAML and decode back to nil.
+		noFilter := RunConfig{SchemaVersion: CurrentSchemaVersion, Issuer: "https://example.com"}
+		encoded, err := yaml.Marshal(&noFilter)
+		require.NoError(t, err)
+		assert.NotContains(t, string(encoded), "upstream_filter")
+
+		var decoded RunConfig
+		require.NoError(t, yaml.Unmarshal(encoded, &decoded))
+		assert.Nil(t, decoded.UpstreamFilter)
+	})
 }
 
 func TestDelegateClientRunConfigValidate(t *testing.T) {
@@ -558,6 +967,28 @@ func TestDelegateClientRunConfigValidate(t *testing.T) {
 		{name: "scope outside supported", clients: []DelegateClientRunConfig{{ClientID: "delegate", ClientSecretEnvVar: "SECRET", Scopes: []string{"admin"}, Audiences: validClient.Audiences}}, wantErr: `"admin" which is not in scopes_supported`},
 		{name: "missing audiences", clients: []DelegateClientRunConfig{{ClientID: "delegate", ClientSecretEnvVar: "SECRET", Scopes: validClient.Scopes}}, wantErr: "audiences is required"},
 		{name: "audience outside allowed", clients: []DelegateClientRunConfig{{ClientID: "delegate", ClientSecretEnvVar: "SECRET", Scopes: validClient.Scopes, Audiences: []string{"https://other.example.com"}}}, wantErr: "is not in allowed_audiences"},
+		// P4 (PR #6284 review): a URL-shaped client_id collides with CIMD
+		// client resolution (oauthproto.IsClientIDMetadataDocumentURL) — the
+		// CIMD decorator would shadow this pre-provisioned client on reads,
+		// and with write-through persistence (CIMDStorageDecorator.fetch) an
+		// unauthenticated request resolving that same URL would overwrite
+		// this confidential delegate client in place.
+		{
+			name: "https client_id collides with CIMD and is rejected",
+			clients: []DelegateClientRunConfig{{
+				ClientID: "https://example.com/client-metadata.json", ClientSecretEnvVar: "SECRET",
+				Scopes: validClient.Scopes, Audiences: validClient.Audiences,
+			}},
+			wantErr: "looks like a CIMD client metadata URL",
+		},
+		{
+			name: "loopback http client_id also collides with CIMD and is rejected",
+			clients: []DelegateClientRunConfig{{
+				ClientID: "http://localhost:8080/client-metadata.json", ClientSecretEnvVar: "SECRET",
+				Scopes: validClient.Scopes, Audiences: validClient.Audiences,
+			}},
+			wantErr: "looks like a CIMD client metadata URL",
+		},
 	}
 
 	for _, tt := range tests {
@@ -647,6 +1078,9 @@ func TestConfigValidateDelegateClients(t *testing.T) {
 // validateEmbeddedAuthServer reuses: confidential clients are rejected when
 // combined with insecureAllowHTTP (unconditionally), or with a plain-HTTP
 // loopback issuer unless insecureAllowConfidentialOverLoopbackHTTP opts in.
+// private_key_jwt registration has no equivalent transport gate: it never
+// returns a secret in the DCR response, so it is unaffected by any of this
+// (see TestConfigValidate's "private-key JWT registration ... passes" cases).
 func TestValidateConfidentialClientTransport(t *testing.T) {
 	t.Parallel()
 
@@ -658,6 +1092,7 @@ func TestValidateConfidentialClientTransport(t *testing.T) {
 		allowLoopbackOverride bool
 		wantErr               bool
 		errContains           string
+		redacted              []string
 	}{
 		{name: "both false passes"},
 		{name: "confidential only, https issuer passes", allowConfidential: true, issuer: "https://auth.example.com"},
@@ -665,6 +1100,17 @@ func TestValidateConfidentialClientTransport(t *testing.T) {
 		{
 			name: "insecure HTTP combined with confidential rejects", allowConfidential: true, insecureAllowHTTP: true,
 			wantErr: true, errContains: "insecure_allow_http",
+		},
+		{
+			name:              "confidential with malformed issuer rejects without exposing credentials",
+			allowConfidential: true, issuer: "http://user:supersecret@[::1",
+			wantErr: true, errContains: "confidential clients require a valid issuer URL",
+			redacted: []string{"user", "supersecret", "http://user:supersecret@[::1"},
+		},
+		{
+			name:              "loopback confidential opt-in rejects structurally invalid issuer",
+			allowConfidential: true, issuer: "http://user@localhost", allowLoopbackOverride: true,
+			wantErr: true, errContains: "confidential clients require a valid issuer URL",
 		},
 		{
 			name:              "confidential with plain-HTTP loopback issuer rejects without the opt-in",
@@ -684,9 +1130,23 @@ func TestValidateConfidentialClientTransport(t *testing.T) {
 			issuer: "http://localhost:8080",
 		},
 		{
-			name: "confidential with plain-HTTP non-loopback issuer passes here " +
-				"(caught separately by insecureAllowHTTP/validateIssuerURL)",
+			name:              "confidential with plain-HTTP non-loopback issuer rejects without opt-in",
 			allowConfidential: true, issuer: "http://auth.example.com",
+			wantErr: true, errContains: "plain-HTTP non-loopback",
+		},
+		{
+			name:                  "confidential credential-bearing non-loopback HTTP issuer rejects with loopback opt-in without leaking credentials",
+			allowConfidential:     true,
+			issuer:                "http://sentinel-user:sentinel-password@auth.example.com",
+			allowLoopbackOverride: true,
+			wantErr:               true,
+			errContains:           "require a valid issuer URL",
+			redacted:              []string{"sentinel-user", "sentinel-password", "http://sentinel-user:sentinel-password@auth.example.com"},
+		},
+		{
+			name:              "confidential with plain-HTTP non-loopback issuer rejects with loopback opt-in",
+			allowConfidential: true, issuer: "http://auth.example.com", allowLoopbackOverride: true,
+			wantErr: true, errContains: "non-loopback issuer",
 		},
 	}
 
@@ -698,6 +1158,9 @@ func TestValidateConfidentialClientTransport(t *testing.T) {
 				require.Error(t, err)
 				assert.Contains(t, err.Error(), "confidential clients")
 				assert.Contains(t, err.Error(), tt.errContains)
+				for _, value := range tt.redacted {
+					assert.NotContains(t, err.Error(), value)
+				}
 			} else {
 				require.NoError(t, err)
 			}
@@ -831,6 +1294,31 @@ func TestDCRUpstreamConfigValidate(t *testing.T) {
 				SoftwareID:             "toolhive",
 				SoftwareStatement:      "eyJhbGciOi...",
 			},
+		},
+		{
+			name: "rotation_key within the allowed alphabet passes validation",
+			config: DCRUpstreamConfig{
+				RegistrationEndpoint: "https://idp.example.com/register",
+				RotationKey:          "2026-10.ion_v2-A",
+			},
+		},
+		{
+			name: "rotation_key with characters outside the allowed alphabet rejects",
+			config: DCRUpstreamConfig{
+				RegistrationEndpoint: "https://idp.example.com/register",
+				RotationKey:          "rotate me",
+			},
+			wantErr: true,
+			errMsg:  "rotation_key must be 1-64 characters",
+		},
+		{
+			name: "rotation_key longer than 64 characters rejects",
+			config: DCRUpstreamConfig{
+				RegistrationEndpoint: "https://idp.example.com/register",
+				RotationKey:          strings.Repeat("a", 65),
+			},
+			wantErr: true,
+			errMsg:  "rotation_key must be 1-64 characters",
 		},
 		{
 			name: "both initial_access_token_file and initial_access_token_env_var rejects",
@@ -1058,9 +1546,9 @@ func TestConfigApplyDefaults_DelegationTokenLifespan(t *testing.T) {
 }
 
 // TestConfigValidate_TrustedIssuers covers validateTrustedIssuers as reached
-// from Config.Validate: the URL-shape checks (validateTrustedIssuerURL on
-// issuer_url, validateJWKSEndpointURL on jwks_url) and the structural checks
-// delegated to tokenexchange.ValidateTrustedIssuers.
+// from Config.Validate: the URL-shape checks (tokenexchange.ValidateTrustedIssuerURL
+// on issuer_url, tokenexchange.ValidateJWKSURL on jwks_url) and the structural
+// checks, all delegated to tokenexchange.ValidateTrustedIssuers.
 func TestConfigValidate_TrustedIssuers(t *testing.T) {
 	t.Parallel()
 
@@ -1101,7 +1589,7 @@ func TestConfigValidate_TrustedIssuers(t *testing.T) {
 				{IssuerURL: "htps://idp.example.com", ExpectedAudience: "https://mcp.example.com", AllowedDelegateClients: []string{"*"}},
 			},
 			wantErr: true,
-			errMsg:  "issuer_url",
+			errMsg:  "scheme must be https",
 		},
 		{
 			name: "issuer_url empty rejected",
@@ -1109,7 +1597,15 @@ func TestConfigValidate_TrustedIssuers(t *testing.T) {
 				{IssuerURL: "", ExpectedAudience: "https://mcp.example.com", AllowedDelegateClients: []string{"*"}},
 			},
 			wantErr: true,
-			errMsg:  "issuer is required",
+			errMsg:  "issuer_url is required",
+		},
+		{
+			name: "issuer_url empty hostname with port rejected",
+			issuers: []tokenexchange.TrustedIssuer{
+				{IssuerURL: "https://:443", ExpectedAudience: "https://mcp.example.com", AllowedDelegateClients: []string{"*"}},
+			},
+			wantErr: true,
+			errMsg:  "host is required",
 		},
 		{
 			name: "issuer_url http without per-issuer insecure_allow_http rejected",
@@ -1117,7 +1613,7 @@ func TestConfigValidate_TrustedIssuers(t *testing.T) {
 				{IssuerURL: "http://idp.example.com", ExpectedAudience: "https://mcp.example.com", AllowedDelegateClients: []string{"*"}},
 			},
 			wantErr: true,
-			errMsg:  "http scheme is only allowed for localhost",
+			errMsg:  "scheme must be https",
 		},
 		{
 			name: "issuer_url http with per-issuer insecure_allow_http accepted",
@@ -1129,7 +1625,7 @@ func TestConfigValidate_TrustedIssuers(t *testing.T) {
 			// Unlike Config.Issuer, a trusted issuer gets no localhost
 			// exemption: it isn't this server's own issuer, so the same
 			// same-host development convenience doesn't apply — see
-			// validateTrustedIssuerURL's doc comment. Without
+			// tokenexchange.ValidateTrustedIssuerURL's doc comment. Without
 			// insecure_allow_http, http://localhost must be rejected here
 			// the same as any other http issuer_url.
 			name: "issuer_url http localhost rejected without per-issuer insecure_allow_http",
@@ -1137,7 +1633,7 @@ func TestConfigValidate_TrustedIssuers(t *testing.T) {
 				{IssuerURL: "http://localhost:8080", ExpectedAudience: "https://mcp.example.com", AllowedDelegateClients: []string{"*"}},
 			},
 			wantErr: true,
-			errMsg:  "http scheme is only allowed for localhost",
+			errMsg:  "scheme must be https",
 		},
 		{
 			name: "issuer_url http localhost accepted with per-issuer insecure_allow_http",
@@ -1288,6 +1784,14 @@ func TestConfigValidate_TrustedIssuers(t *testing.T) {
 			errMsg:  "actor_claim",
 		},
 		{
+			name: "actor_matcher malformed rejected",
+			issuers: []tokenexchange.TrustedIssuer{
+				{IssuerURL: "https://idp.example.com", ExpectedAudience: "https://mcp.example.com", ActorMatcher: "claims.", AllowedDelegateClients: []string{"*"}},
+			},
+			wantErr: true,
+			errMsg:  "actor_matcher",
+		},
+		{
 			// Unlike Config.Issuer, a trusted issuer_url permits a trailing
 			// slash: Microsoft Entra ID v1 (the default for a newly
 			// registered API) issues "iss": "https://sts.windows.net/{tenant}/"
@@ -1330,6 +1834,25 @@ func TestConfigValidate_TrustedIssuers(t *testing.T) {
 			wantErr: true,
 			errMsg:  "allow_may_act",
 		},
+		{
+			// This is a server runtime configuration invariant, not CRD
+			// admission: the configured allowed audience is supplied by the
+			// individual MCP server using the shared auth configuration.
+			name: "JWT-bearer accepted audience overlapping allowed resource rejected",
+			issuers: []tokenexchange.TrustedIssuer{{
+				IssuerURL: "https://idp.example.com",
+				JWTBearerGrant: &tokenexchange.JWTBearerGrantPolicy{
+					MaxAssertionAge: "1m",
+					SubjectBindings: []tokenexchange.JWTBearerSubjectBinding{{
+						Subject:          "workload",
+						AllowedResources: []string{"https://mcp.example.com"},
+					}},
+					AcceptedAudiences: []string{"https://mcp.example.com"},
+				},
+			}},
+			wantErr: true,
+			errMsg:  "must not also be a configured resource audience",
+		},
 	}
 
 	for _, tt := range tests {
@@ -1371,7 +1894,15 @@ func TestRunConfigValidate_TrustedIssuers(t *testing.T) {
 				{IssuerURL: "htps://idp.example.com", ExpectedAudience: "https://mcp.example.com", AllowedDelegateClients: []string{"*"}},
 			},
 			wantErr: true,
-			errMsg:  "issuer_url",
+			errMsg:  "scheme must be https",
+		},
+		{
+			name: "issuer_url empty hostname with port rejected",
+			issuers: []tokenexchange.TrustedIssuer{
+				{IssuerURL: "https://:443", ExpectedAudience: "https://mcp.example.com", AllowedDelegateClients: []string{"*"}},
+			},
+			wantErr: true,
+			errMsg:  "host is required",
 		},
 		{
 			name: "missing expected_audience rejected",
@@ -1405,6 +1936,14 @@ func TestRunConfigValidate_TrustedIssuers(t *testing.T) {
 			},
 			wantErr: true,
 			errMsg:  "actor_claim",
+		},
+		{
+			name: "actor_matcher malformed rejected",
+			issuers: []tokenexchange.TrustedIssuer{
+				{IssuerURL: "https://idp.example.com", ExpectedAudience: "https://mcp.example.com", ActorMatcher: "claims.", AllowedDelegateClients: []string{"*"}},
+			},
+			wantErr: true,
+			errMsg:  "actor_matcher",
 		},
 		{
 			name: "jwks_url private IP literal rejected without allow_private_ips",
@@ -1485,6 +2024,178 @@ func TestConfig_WarnTrustedIssuerAudiences(t *testing.T) {
 			} else {
 				require.Empty(t, buf.String())
 			}
+
+		})
+	}
+}
+
+func TestRunConfigValidateTLSListener(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		config     *TLSListenerRunConfig
+		wantErrMsg string
+	}{
+		{name: "nil listener"},
+		{
+			name:       "empty listener config is rejected as unsupported",
+			config:     &TLSListenerRunConfig{},
+			wantErrMsg: "tls_listener: the TLS listener is not yet supported",
+		},
+		{
+			name:       "complete listener config is rejected as unsupported",
+			config:     &TLSListenerRunConfig{CertFile: "cert", KeyFile: "key"},
+			wantErrMsg: "tls_listener: the TLS listener is not yet supported",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := RunConfig{TLSListener: tt.config}
+			err := cfg.Validate()
+			if tt.wantErrMsg == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.ErrorContains(t, err, tt.wantErrMsg)
+		})
+	}
+}
+
+func TestHasSPIFFEX509ClientAuth(t *testing.T) {
+	t.Parallel()
+
+	x509Association := SPIFFEClientAuthRunConfig{Methods: []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509}}
+	jwtAssociation := SPIFFEClientAuthRunConfig{Methods: []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodJWT}}
+	tests := []struct {
+		name string
+		cfg  *RunConfig
+		want bool
+	}{
+		{name: "nil receiver", cfg: nil},
+		{name: "nil grants", cfg: &RunConfig{}},
+		{name: "JWT only", cfg: &RunConfig{InboundGrants: &InboundGrantsRunConfig{SPIFFEClientAuth: []SPIFFEClientAuthRunConfig{jwtAssociation}}}},
+		{name: "X.509 present", cfg: &RunConfig{InboundGrants: &InboundGrantsRunConfig{SPIFFEClientAuth: []SPIFFEClientAuthRunConfig{x509Association}}}, want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, tt.cfg.HasSPIFFEX509ClientAuth())
+		})
+	}
+}
+
+// TestConfig_WarnAuthorizeCallbackHostMismatch pins the startup signal for a
+// deployment whose upstream redirect_uri lives on a different host than the
+// browser-facing authorize URL: /oauth/callback binds each login to the
+// starting browser with a host-only cookie, so such a deployment rejects every
+// browser login. Validation must warn, not fail, and must stay silent when only
+// the port differs (cookies ignore ports).
+//
+//nolint:paralleltest // captures the package-global slog.Default()
+func TestConfig_WarnAuthorizeCallbackHostMismatch(t *testing.T) {
+	const (
+		hostWarn   = "redirect_uri host differs from the browser-facing authorize host"
+		schemeWarn = "redirect_uri is plain http while the browser-facing authorize URL is https"
+	)
+	tests := []struct {
+		name          string
+		issuer        string
+		authorizeBase string
+		redirectURI   string
+		wantWarn      string // substring of the expected WARN; empty means silent
+	}{
+		{name: "callback on the issuer host is silent", issuer: "https://auth.example.com", redirectURI: "https://auth.example.com/oauth/callback"},
+		{name: "port-only difference is silent", issuer: "http://localhost:18080", redirectURI: "http://localhost:8080/oauth/callback"},
+		{name: "hostname case difference is silent", issuer: "https://Auth.Example.com", redirectURI: "https://auth.example.com/oauth/callback"},
+		{name: "callback on another host warns", issuer: "https://auth.example.com", redirectURI: "https://mcp.example.com/oauth/callback", wantWarn: hostWarn},
+		{name: "authorize base override on the callback host is silent", issuer: "http://vmcp.ns.svc.cluster.local:4483", authorizeBase: "https://mcp.example.com", redirectURI: "https://mcp.example.com/oauth/callback"},
+		{name: "authorize base override on another host warns", issuer: "https://auth.example.com", authorizeBase: "https://login.example.com", redirectURI: "https://auth.example.com/oauth/callback", wantWarn: hostWarn},
+		{name: "https authorize with plain-http callback on the same non-loopback host warns", issuer: "https://gateway.corp.example", redirectURI: "http://gateway.corp.example:4483/oauth/callback", wantWarn: schemeWarn},
+		{name: "https authorize with plain-http loopback callback is silent", issuer: "https://localhost:8443", redirectURI: "http://localhost:8080/oauth/callback"},
+		{name: "http authorize with https callback is silent", issuer: "http://localhost:8080", redirectURI: "https://localhost:8443/oauth/callback"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			prev := slog.Default()
+			slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+			t.Cleanup(func() { slog.SetDefault(prev) })
+
+			cfg := Config{
+				Issuer:                       tt.issuer,
+				AuthorizationEndpointBaseURL: tt.authorizeBase,
+				Upstreams: []UpstreamConfig{{Name: "default", Type: UpstreamProviderTypeOIDC, OIDCConfig: &upstream.OIDCConfig{
+					CommonOAuthConfig: upstream.CommonOAuthConfig{ClientID: "c", RedirectURI: tt.redirectURI},
+					Issuer:            "https://accounts.google.com",
+				}}},
+			}
+			cfg.warnOnAuthorizeCallbackHostMismatch()
+
+			if tt.wantWarn != "" {
+				require.Contains(t, buf.String(), tt.wantWarn)
+				require.Contains(t, buf.String(), "upstream=default")
+			} else {
+				require.Empty(t, buf.String())
+			}
+		})
+	}
+}
+
+func TestRunConfigValidateDCRRegistrationLimits(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		config     RunConfig
+		wantErrMsg string
+	}{
+		{name: "unset keeps the defaults"},
+		{
+			name:   "positive rate and burst",
+			config: RunConfig{RegistrationRateLimit: &RegistrationRateLimitRunConfig{RequestsPerSecond: 0.5, Burst: 2}},
+		},
+		{
+			name:       "zero rate rejected",
+			config:     RunConfig{RegistrationRateLimit: &RegistrationRateLimitRunConfig{Burst: 2}},
+			wantErrMsg: "requests_per_second must be a positive number",
+		},
+		{
+			name:       "infinite rate rejected",
+			config:     RunConfig{RegistrationRateLimit: &RegistrationRateLimitRunConfig{RequestsPerSecond: math.Inf(1), Burst: 2}},
+			wantErrMsg: "requests_per_second must be a positive number",
+		},
+		{
+			name:       "NaN rate rejected",
+			config:     RunConfig{RegistrationRateLimit: &RegistrationRateLimitRunConfig{RequestsPerSecond: math.NaN(), Burst: 2}},
+			wantErrMsg: "requests_per_second must be a positive number",
+		},
+		{
+			name:       "zero burst rejected",
+			config:     RunConfig{RegistrationRateLimit: &RegistrationRateLimitRunConfig{RequestsPerSecond: 1}},
+			wantErrMsg: "burst must be positive",
+		},
+		{
+			name:   "zero max DCR clients means unlimited",
+			config: RunConfig{Storage: &storage.RunConfig{MaxDCRClients: new(0)}},
+		},
+		{
+			name:       "negative max DCR clients rejected",
+			config:     RunConfig{Storage: &storage.RunConfig{MaxDCRClients: new(-1)}},
+			wantErrMsg: "max_dcr_clients must not be negative",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := tt.config.Validate()
+			if tt.wantErrMsg == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.ErrorContains(t, err, tt.wantErrMsg)
 		})
 	}
 }

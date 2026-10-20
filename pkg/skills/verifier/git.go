@@ -37,8 +37,16 @@ import (
 func (*Default) VerifyGit(
 	ctx context.Context,
 	payload, signature []byte,
-	expected *lockfile.Provenance,
+	expected *ProvenanceExpectation,
 ) (*Result, error) {
+	// A git commit signature is always certificate-based (gitsign), so a
+	// key-pinned expectation cannot apply to one and PublicKey would
+	// otherwise be silently ignored — yielding an unsigned or signer-mismatch
+	// diagnosis unrelated to the real problem. Lock validation rejects such
+	// an entry, but an expectation built in memory never passes through it.
+	if keyPinnedExpectation(expected) {
+		return nil, errKeyPinnedEntry
+	}
 	if len(signature) == 0 {
 		return nil, fmt.Errorf("%w: commit is not signed", ErrUnsigned)
 	}
@@ -59,14 +67,8 @@ func (*Default) VerifyGit(
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrSignatureInvalid, err)
 	}
-	if expected != nil {
-		if !gitIdentityMatches(observed.Identity, expected) {
-			return nil, fmt.Errorf("%w: commit is signed by a different identity than %q",
-				ErrSignerMismatch, expected.SignerIdentity)
-		}
-		if err := checkPinnedCertificateFields(observed, expected); err != nil {
-			return nil, err
-		}
+	if err := checkProvenanceExpectation(observed, expected); err != nil {
+		return nil, err
 	}
 	result := resultFromCore(observed, nil)
 	// No transparency-log proof is validated yet (see the doc comment), so

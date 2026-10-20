@@ -16,6 +16,39 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TestIntegration_MCPPostSurvivesWriteTimeout verifies the full vMCP handler
+// keeps a tools/call POST alive while a real backend takes longer than the
+// server-level WriteTimeout to respond. Backend request timeouts remain the
+// authoritative bound for MCP operations.
+func TestIntegration_MCPPostSurvivesWriteTimeout(t *testing.T) {
+	t.Parallel()
+
+	const shortTimeout = 100 * time.Millisecond
+	const toolDelay = 3 * shortTimeout
+
+	backendURL := startRealMCPBackendWithToolDelay(t, toolDelay)
+	handler := newRealTestHandler(t, backendURL)
+
+	ts := httptest.NewUnstartedServer(handler)
+	ts.Config.WriteTimeout = shortTimeout
+	ts.Start()
+	t.Cleanup(ts.Close)
+
+	client := NewMCPTestClient(t, ts.URL)
+	client.InitializeSession()
+	waitForEchoTool(t, ts.URL, client.SessionID())
+
+	started := time.Now()
+	resp := client.CallTool("echo", map[string]any{"input": "slow response"})
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Contains(t, string(body), "slow response")
+	assert.GreaterOrEqual(t, time.Since(started), toolDelay-50*time.Millisecond)
+}
+
 // TestIntegration_SSEGetConnectionSurvivesWriteTimeout verifies that the full
 // vMCP server — with writeTimeoutMiddleware wired in — keeps a qualifying SSE
 // GET connection alive past the server-level WriteTimeout.

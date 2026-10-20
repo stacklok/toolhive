@@ -181,3 +181,28 @@ func TestTransport_base_DefaultsToHTTPDefaultTransport(t *testing.T) {
 	require.Equal(t, custom, tr.base(),
 		"base() should return the configured Base transport when set")
 }
+
+// closeIdleSpy records CloseIdleConnections calls; RoundTrip exists only to
+// satisfy http.RoundTripper.
+type closeIdleSpy struct{ closed int }
+
+func (*closeIdleSpy) RoundTrip(*http.Request) (*http.Response, error) {
+	return nil, errors.New("unused")
+}
+func (s *closeIdleSpy) CloseIdleConnections() { s.closed++ }
+
+// TestTransport_CloseIdleConnections verifies the auth wrapper forwards
+// CloseIdleConnections to its base rather than silently swallowing it, which
+// would make http.Client.CloseIdleConnections a no-op and leave the pool
+// pinned.
+func TestTransport_CloseIdleConnections(t *testing.T) {
+	t.Parallel()
+
+	spy := &closeIdleSpy{}
+	tr := &Transport{Base: spy}
+	tr.CloseIdleConnections()
+	assert.Equal(t, 1, spy.closed)
+
+	// Nil Base must not panic; it forwards to http.DefaultTransport.
+	assert.NotPanics(t, func() { (&Transport{}).CloseIdleConnections() })
+}

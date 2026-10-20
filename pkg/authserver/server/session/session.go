@@ -56,6 +56,25 @@ type UpstreamSession interface {
 // which defines "sid" for different purposes (RFC 7519, OIDC Session Management).
 const TokenSessionIDClaimKey = "tsid"
 
+// NoUpstreamSessionClaimKey marks a token this authorization server minted
+// without any link to an upstream IdP login, so no upstream credential exists
+// for it. Today only the RFC 7523 JWT-bearer grant sets it: its subject is a
+// synthetic machine identity (issuer#subject) asserted by a separate trust
+// root, with no end user and no upstream session.
+//
+// It exists so a resource server can distinguish "this token was deliberately
+// minted without an upstream session" from "this identity was never enriched
+// with upstream credentials" — states that are otherwise indistinguishable, as
+// both leave Identity.UpstreamTokens nil. pkg/authz/authorizers/cedar reads it
+// to decide whether request-token claims may drive policy. The RFC 8693
+// delegation grant needs no marker: its "act" claim already says so.
+//
+// The name is collision-resistant per RFC 7519 Section 4.3, so a JWT from
+// another issuer the deployment trusts cannot assert it by accident. It is a
+// private claim; RFC 9068 Section 2.2.3 permits additional claims on an
+// access token.
+const NoUpstreamSessionClaimKey = "https://toolhive.dev/no_upstream_session"
+
 // ClientIDClaimKey is the JWT claim key for the OAuth client ID.
 // This identifies which client was issued the token.
 const ClientIDClaimKey = "client_id"

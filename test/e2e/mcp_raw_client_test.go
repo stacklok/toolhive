@@ -333,7 +333,7 @@ func TestRawClientSend(t *testing.T) {
 		_, err = client.Send(context.Background(), server.URL, req)
 		require.NoError(t, err)
 		require.Empty(t, captured.headers.Get("Accept"),
-			"no Accept by default: keeps proxy responses plain JSON; conformant-Accept flip tracked in #6104")
+			"no Accept by default: callers opt in when they need the conformant streamable-HTTP Accept header")
 
 		withAccept, err := NewModernRequest("tools/list", nil)
 		require.NoError(t, err)

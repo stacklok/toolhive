@@ -69,6 +69,17 @@ func BuildTelemetryConfigFromAppConfig(
 	for _, entry := range otel.EnvVars {
 		for ev := range strings.SplitSeq(entry, ",") {
 			trimmed := strings.TrimSpace(ev)
+			// Entries are host environment variable names. A "NAME=value"
+			// assignment (e.g. OTEL_EXPORTER_OTLP_HEADERS, parsed above into
+			// Headers) may itself contain commas, so drop it and the rest of
+			// the entry: later pieces may be fragments of its value.
+			if name, _, isAssignment := strings.Cut(trimmed, "="); isAssignment {
+				// Never log the entry itself: it may carry a credential.
+				if name != otelHeadersEnvVar {
+					slog.Warn("Ignoring otel env-vars entry that is not an environment variable name")
+				}
+				break
+			}
 			if trimmed != "" {
 				processedEnvVars = append(processedEnvVars, trimmed)
 			}

@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-jose/go-jose/v3"
 	"github.com/google/uuid"
 	"github.com/ory/fosite"
 
@@ -35,7 +36,8 @@ const MaxDCRBodySize = 64 * 1024
 // It implements RFC 7591 Dynamic Client Registration for public clients with
 // loopback redirect URIs, and additionally for confidential clients with
 // https non-loopback redirect URIs when AllowConfidentialClientRegistration
-// is set.
+// is set. Token-only servers accept only private_key_jwt clients registered
+// for RFC 8693 token exchange.
 func (h *Handler) RegisterClientHandler(w http.ResponseWriter, req *http.Request) {
 	ctx := req.Context()
 
@@ -66,14 +68,14 @@ func (h *Handler) RegisterClientHandler(w http.ResponseWriter, req *http.Request
 
 	// Validate request. h.config.AllowConfidentialClientRegistration gates whether
 	// client_secret_basic / client_secret_post registrations are accepted.
-	validated, dcrErr := registration.ValidateDCRRequest(&dcrReq, h.config.AllowConfidentialClientRegistration)
+	validated, dcrErr := h.validateDCRRequest(&dcrReq)
 	if dcrErr != nil {
 		writeDCRError(w, http.StatusBadRequest, dcrErr)
 		return
 	}
 
 	// Validate requested scopes against server's supported scopes
-	scopes, dcrErr := registration.ValidateScopes(dcrReq.Scopes, h.config.ScopesSupported)
+	scopes, droppedDefaults, dcrErr := registration.ValidateScopes(dcrReq.Scopes, h.config.ScopesSupported)
 	if dcrErr != nil {
 		writeDCRError(w, http.StatusBadRequest, dcrErr)
 		return
@@ -129,7 +131,8 @@ func (h *Handler) RegisterClientHandler(w http.ResponseWriter, req *http.Request
 	}
 
 	fositeClient, clientSecret, err := buildDCRClient(
-		clientID, forcedURI != "", effectiveAuthMethod, validated, scopes, h.config.AllowedAudiences)
+		clientID, forcedURI != "", effectiveAuthMethod, validated, scopes, h.config.AllowedAudiences,
+		validated.JWKS, validated.TokenEndpointAuthSigningAlg)
 	if err != nil {
 		slog.Error("failed to create client", "error", err)
 		writeDCRError(w, http.StatusInternalServerError, &registration.DCRError{
@@ -142,13 +145,9 @@ func (h *Handler) RegisterClientHandler(w http.ResponseWriter, req *http.Request
 	// Register client
 	if err := h.storage.RegisterClient(ctx, fositeClient); err != nil {
 		if errors.Is(err, storage.ErrClientCapacity) {
-			slog.Debug("DCR client registration capacity reached", "error", err)
-			// Capacity frees up once the oldest DCR-issued entry crosses
-			// storage.DefaultMinClientAge, so that's the honest worst-case
-			// wait. This uses the default rather than the configured
-			// minClientAge because the value isn't currently threaded from
-			// storage to this handler; wire it through if that gap matters.
-			w.Header().Set("Retry-After", strconv.Itoa(int(storage.DefaultMinClientAge.Seconds())))
+			h.dcrMetrics.recordCapacityRejection(ctx)
+			h.capacityWarner.rejected(ctx, err)
+			w.Header().Set("Retry-After", strconv.Itoa(capacityRetryAfterSeconds(err)))
 			writeDCRError(w, http.StatusServiceUnavailable, &registration.DCRError{
 				Error:            "server_error",
 				ErrorDescription: "client registration capacity reached; try again later",
@@ -178,17 +177,9 @@ func (h *Handler) RegisterClientHandler(w http.ResponseWriter, req *http.Request
 	// upstream AS. The two uses live at opposite ends of the DCR flow.
 	// No "upstream" attribute is emitted because the /oauth/register
 	// endpoint has no upstream concept.
-	logAttrs := []any{
-		"client_id", clientID,
-		"software_id", validated.SoftwareID,
-		"token_endpoint_auth_method", effectiveAuthMethod,
-		"scopes", scopes,
-	}
-	if issuer := h.issuer(); issuer != "" {
-		logAttrs = append(logAttrs, "issuer", issuer)
-	}
 	//nolint:gosec // G706: client_id is public metadata per RFC 7591.
-	slog.Debug("registered new DCR client", logAttrs...)
+	slog.Debug("registered new DCR client",
+		h.dcrClientLogAttrs(clientID, validated.SoftwareID, effectiveAuthMethod, scopes, droppedDefaults)...)
 
 	// Build response per RFC 7591 Section 3.2.1.
 	// Scopes reflects the scopes actually granted to this client: the
@@ -200,14 +191,17 @@ func (h *Handler) RegisterClientHandler(w http.ResponseWriter, req *http.Request
 	// space-delimited wire form on the way out.
 	issuedAt := time.Now().Unix()
 	response := oauthproto.DynamicClientRegistrationResponse{
-		ClientID:                clientID,
-		ClientIDIssuedAt:        issuedAt,
-		RedirectURIs:            validated.RedirectURIs,
-		ClientName:              validated.ClientName,
-		TokenEndpointAuthMethod: effectiveAuthMethod,
-		GrantTypes:              validated.GrantTypes,
-		ResponseTypes:           validated.ResponseTypes,
-		Scopes:                  oauthproto.ScopeList(scopes),
+		ClientID:                    clientID,
+		ClientIDIssuedAt:            issuedAt,
+		RedirectURIs:                validated.RedirectURIs,
+		ClientName:                  validated.ClientName,
+		TokenEndpointAuthMethod:     effectiveAuthMethod,
+		GrantTypes:                  validated.GrantTypes,
+		ResponseTypes:               validated.ResponseTypes,
+		Scopes:                      oauthproto.ScopeList(scopes),
+		JWKS:                        validated.JWKS,
+		JWKSURI:                     validated.JWKSURI,
+		TokenEndpointAuthSigningAlg: validated.TokenEndpointAuthSigningAlg,
 	}
 	if clientSecret != "" {
 		// client_secret_expires_at is 0 ("does not expire", RFC 7591 §2): the
@@ -218,9 +212,10 @@ func (h *Handler) RegisterClientHandler(w http.ResponseWriter, req *http.Request
 		// field, pkg/auth/dcr/resolver.go) re-register against a ToolHive auth
 		// server every TTL while its existing registration is still live,
 		// orphaning the old row — the registration bloat the TTL exists to
-		// prevent. An idle registration is still evicted after
-		// DefaultDCRClientTTL, but re-registration mints a new client_id either
-		// way, so the field cannot usefully describe that case.
+		// prevent. An unused or idle registration still expires (after
+		// DefaultUnusedDCRClientTTL or DefaultDCRClientTTL), but
+		// re-registration mints a new client_id either way, so the field
+		// cannot usefully describe that case.
 		response.ClientSecret = clientSecret
 		response.ClientSecretExpiresAt = new(int64) // 0: does not expire
 	}
@@ -232,6 +227,68 @@ func (h *Handler) RegisterClientHandler(w http.ResponseWriter, req *http.Request
 	if err := json.NewEncoder(w).Encode(response); err != nil {
 		slog.Error("failed to encode DCR response", "error", err)
 	}
+}
+
+func (h *Handler) validateDCRRequest(
+	req *oauthproto.DynamicClientRegistrationRequest,
+) (*oauthproto.DynamicClientRegistrationRequest, *registration.DCRError) {
+	validated, dcrErr := registration.ValidateDCRRequest(
+		req, h.config.AllowConfidentialClientRegistration, h.config.AllowPrivateKeyJWTRegistration)
+	if dcrErr != nil {
+		return validated, dcrErr
+	}
+	// validated.GrantTypes is the effective, post-defaulting grant set (e.g. an
+	// empty grant_types on a private_key_jwt request defaults to token exchange
+	// inside registration.validateGrantTypes), so this check catches both an
+	// explicit and an implicit token-exchange request. Without it, DCR would
+	// register a client whose GetGrantTypes() durably includes token exchange
+	// even though the RFC 8693 factory is never registered at the token
+	// endpoint when disabled, and every token request against that client
+	// would fail confusingly with unsupported_grant_type instead of being
+	// rejected here at registration time.
+	if !h.config.TokenExchangeEnabled && slices.Contains(validated.GrantTypes, oauthproto.GrantTypeTokenExchange) {
+		return nil, &registration.DCRError{
+			Error:            registration.DCRErrorInvalidClientMetadata,
+			ErrorDescription: "token exchange is disabled on this authorization server",
+		}
+	}
+	if !h.tokenOnly {
+		return validated, nil
+	}
+	if validated.TokenEndpointAuthMethod == oauthproto.TokenEndpointAuthMethodPrivateKeyJWT &&
+		slices.Contains(validated.GrantTypes, oauthproto.GrantTypeTokenExchange) {
+		return validated, nil
+	}
+	return nil, &registration.DCRError{
+		Error:            registration.DCRErrorInvalidClientMetadata,
+		ErrorDescription: "token-only authorization servers only permit private_key_jwt token-exchange registrations",
+	}
+}
+
+// dcrClientLogAttrs builds the attribute list for the "registered new DCR
+// client" record. dropped_defaults is attached only when the request omitted
+// scope and scopes_supported did not carry the full default set (see issue
+// #6186): recording it here — after the baseline union and the client_id
+// mint upstream — means "scopes" is the set the client actually holds and
+// the drop correlates with the client's later log lines. The drop itself is
+// fully determined by startup config; the one-time operator-facing signal
+// lives in Config.applyDefaults.
+func (h *Handler) dcrClientLogAttrs(
+	clientID, softwareID, effectiveAuthMethod string, scopes, droppedDefaults []string,
+) []any {
+	attrs := []any{
+		"client_id", clientID,
+		"software_id", softwareID,
+		"token_endpoint_auth_method", effectiveAuthMethod,
+		"scopes", scopes,
+	}
+	if len(droppedDefaults) > 0 {
+		attrs = append(attrs, "dropped_defaults", droppedDefaults)
+	}
+	if issuer := h.issuer(); issuer != "" {
+		attrs = append(attrs, "issuer", issuer)
+	}
+	return attrs
 }
 
 // resolveForceConfidentialOverride checks whether validated's redirect_uris
@@ -291,8 +348,10 @@ func buildDCRClient(
 	effectiveAuthMethod string,
 	validated *oauthproto.DynamicClientRegistrationRequest,
 	scopes, allowedAudiences []string,
+	jwks *jose.JSONWebKeySet, signingAlgorithm string,
 ) (fositeClient fosite.Client, clientSecret string, err error) {
-	if effectiveAuthMethod != oauthproto.TokenEndpointAuthMethodNone {
+	if effectiveAuthMethod != oauthproto.TokenEndpointAuthMethodNone &&
+		effectiveAuthMethod != oauthproto.TokenEndpointAuthMethodPrivateKeyJWT {
 		clientSecret, err = registration.GenerateClientSecret()
 		if err != nil {
 			return nil, "", fmt.Errorf("failed to generate client secret: %w", err)
@@ -302,6 +361,7 @@ func buildDCRClient(
 	if forced {
 		fositeClient, err = registration.NewConfidentialPlain(registration.Config{
 			ID:            clientID,
+			ClientName:    validated.ClientName,
 			Secret:        clientSecret,
 			RedirectURIs:  validated.RedirectURIs,
 			GrantTypes:    validated.GrantTypes,
@@ -311,14 +371,17 @@ func buildDCRClient(
 		})
 	} else {
 		fositeClient, err = registration.New(registration.Config{
-			ID:                      clientID,
-			Secret:                  clientSecret,
-			RedirectURIs:            validated.RedirectURIs,
-			TokenEndpointAuthMethod: validated.TokenEndpointAuthMethod,
-			GrantTypes:              validated.GrantTypes,
-			ResponseTypes:           validated.ResponseTypes,
-			Scopes:                  scopes,
-			Audience:                allowedAudiences,
+			ID:                                clientID,
+			ClientName:                        validated.ClientName,
+			Secret:                            clientSecret,
+			RedirectURIs:                      validated.RedirectURIs,
+			TokenEndpointAuthMethod:           validated.TokenEndpointAuthMethod,
+			GrantTypes:                        validated.GrantTypes,
+			ResponseTypes:                     validated.ResponseTypes,
+			Scopes:                            scopes,
+			Audience:                          allowedAudiences,
+			JSONWebKeys:                       jwks,
+			TokenEndpointAuthSigningAlgorithm: signingAlgorithm,
 		})
 	}
 	if err != nil {
@@ -351,4 +414,15 @@ func writeDCRError(w http.ResponseWriter, statusCode int, dcrErr *registration.D
 	if err := json.NewEncoder(w).Encode(dcrErr); err != nil {
 		slog.Debug("failed to encode DCR error response", "error", err)
 	}
+}
+
+// capacityRetryAfterSeconds returns the Retry-After value for a DCR cap
+// rejection: the seconds until the oldest counted client expires, which is
+// the earliest moment a slot can free up, rounded up and at least 1.
+func capacityRetryAfterSeconds(err error) int {
+	var capErr *storage.ClientCapacityError
+	if !errors.As(err, &capErr) {
+		return 1
+	}
+	return max(int((capErr.RetryAfter+time.Second-1)/time.Second), 1)
 }

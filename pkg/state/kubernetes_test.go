@@ -169,6 +169,18 @@ func TestNoopWriteCloser_Close(t *testing.T) {
 	}
 }
 
+func TestNoopWriteCloser_Abort(t *testing.T) {
+	t.Parallel()
+
+	assert.NoError(t, AbortWriter(&noopWriteCloser{}))
+}
+
+func TestAbortWriter_UnsupportedWriter(t *testing.T) {
+	t.Parallel()
+
+	assert.Error(t, AbortWriter(&noAbortWriteCloser{}))
+}
+
 func TestNoopWriteCloser_WriteAndClose(t *testing.T) {
 	t.Parallel()
 	writer := &noopWriteCloser{}
@@ -196,10 +208,20 @@ func TestKubernetesStore_InterfaceCompliance(t *testing.T) {
 	var _ = NewKubernetesStore()
 }
 
-// TestNoopWriteCloser_InterfaceCompliance verifies that noopWriteCloser implements io.WriteCloser
+type noAbortWriteCloser struct{}
+
+func (*noAbortWriteCloser) Write(p []byte) (int, error) {
+	return len(p), nil
+}
+
+func (*noAbortWriteCloser) Close() error {
+	return nil
+}
+
 func TestNoopWriteCloser_InterfaceCompliance(t *testing.T) {
 	t.Parallel()
 	var _ io.WriteCloser = &noopWriteCloser{}
 	var _ io.Writer = &noopWriteCloser{}
 	var _ io.Closer = &noopWriteCloser{}
+	var _ Aborter = &noopWriteCloser{}
 }

@@ -7,9 +7,12 @@ package runner
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"os"
 	"strings"
@@ -17,7 +20,7 @@ import (
 
 	"golang.org/x/oauth2"
 
-	tcredis "github.com/stacklok/toolhive-core/redis"
+	"github.com/stacklok/toolhive-core/redisconn"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/auth/remote"
 	authsecrets "github.com/stacklok/toolhive/pkg/auth/secrets"
@@ -33,8 +36,10 @@ import (
 	"github.com/stacklok/toolhive/pkg/process"
 	"github.com/stacklok/toolhive/pkg/runtime"
 	"github.com/stacklok/toolhive/pkg/secrets"
+	"github.com/stacklok/toolhive/pkg/state"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/transport"
+	headerfwd "github.com/stacklok/toolhive/pkg/transport/middleware"
 	"github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 	"github.com/stacklok/toolhive/pkg/workloads/statuses"
@@ -193,10 +198,33 @@ func (c *RunConfig) GetPort() int {
 	return c.Port
 }
 
+// parseProxyTimeout parses an optional Go duration string from RunConfig. An
+// empty string yields 0, which the proxy treats as "use the package default".
+// Negative durations and unparsable values are rejected.
+func parseProxyTimeout(name, value string) (time.Duration, error) {
+	if value == "" {
+		return 0, nil
+	}
+	d, err := time.ParseDuration(value)
+	if err != nil {
+		return 0, fmt.Errorf("invalid %s %q: %w", name, value, err)
+	}
+	if d < 0 {
+		return 0, fmt.Errorf("%s must be non-negative, got %s", name, d)
+	}
+	return d, nil
+}
+
 // Run runs the MCP server with the provided configuration
 //
 //nolint:gocyclo // This function is complex but manageable
 func (r *Runner) Run(ctx context.Context) error {
+	// Validate serialized RunConfig input before any provider or runtime work.
+	// The builder and middleware helper repeat this check at their own boundaries.
+	if r.Config.MaxRequestBodySize < 0 {
+		return fmt.Errorf("max_request_body_size must be non-negative, got %d", r.Config.MaxRequestBodySize)
+	}
+
 	// Resolve session TTL once so both the transport proxy and Redis storage use
 	// the same effective value, rather than each applying their own zero-fallback
 	// independently. SessionTTL is stored as a Go duration string so the
@@ -215,6 +243,13 @@ func (r *Runner) Run(ctx context.Context) error {
 		}
 	}
 
+	// Resolve the proxy HTTP server read timeout. Empty/zero means "use the proxy
+	// default"; the proxy option ignores non-positive values.
+	proxyReadTimeout, parseErr := parseProxyTimeout("proxy_read_timeout", r.Config.ProxyReadTimeout)
+	if parseErr != nil {
+		return parseErr
+	}
+
 	// Create transport with runtime
 	transportConfig := types.Config{
 		Type:                     r.Config.Transport,
@@ -228,6 +263,8 @@ func (r *Runner) Run(ctx context.Context) error {
 		StrictProtocolValidation: r.Config.StrictProtocolValidation,
 		EndpointPrefix:           r.Config.EndpointPrefix,
 		SessionTTL:               effectiveSessionTTL,
+		ReadTimeout:              proxyReadTimeout,
+		StripConsentCookie:       r.Config.EmbeddedAuthServerConfig != nil,
 	}
 
 	// Set proxy mode for stdio transport
@@ -296,6 +333,14 @@ func (r *Runner) Run(ctx context.Context) error {
 		}
 	}
 
+	if err := canonicalizeOIDCMiddlewareConfig(r.Config); err != nil {
+		return fmt.Errorf("invalid OIDC middleware configuration: %w", err)
+	}
+
+	if err := validateCredentialStrippingMiddleware(r.Config.MiddlewareConfigs, r.Config); err != nil {
+		return fmt.Errorf("invalid credential stripping middleware configuration: %w", err)
+	}
+
 	// Origin-header validation (DNS-rebinding protection per MCP 2025-11-25
 	// §"Security Warning") is wired here, after both middleware-population
 	// paths, because it is the single place where Host/Port/AllowedOrigins are
@@ -310,9 +355,12 @@ func (r *Runner) Run(ctx context.Context) error {
 
 	// Body-size limit is always the outermost middleware, regardless of how the
 	// chain was assembled (PopulateMiddlewareConfigs above, or WithMiddlewareFromFlags
-	// which pre-populates the slice and takes the else branch). Idempotent, so the
-	// operator/Populate path is a no-op here.
-	r.Config.MiddlewareConfigs, err = addBodyLimitMiddleware(r.Config.MiddlewareConfigs)
+	// which pre-populates the slice and takes the else branch). Existing body-limit
+	// entries are replaced so the typed RunConfig value is authoritative.
+	r.Config.MiddlewareConfigs, err = addBodyLimitMiddleware(
+		r.Config.MiddlewareConfigs,
+		r.Config.MaxRequestBodySize,
+	)
 	if err != nil {
 		return fmt.Errorf("failed to add body limit middleware: %w", err)
 	}
@@ -373,13 +421,24 @@ func (r *Runner) Run(ctx context.Context) error {
 	transportConfig.Middlewares = r.namedMiddlewares
 	transportConfig.AuthInfoHandler = r.authInfoHandler
 
-	// Serve Prometheus metrics on a dedicated diagnostics listener rather than
-	// handing the handler to the transport, which would register it on the
-	// application mux where it outranks the middleware chain and stays
-	// unauthenticated. Leaving transportConfig.PrometheusHandler nil is what
-	// keeps the proxies from mounting /metrics at all.
+	// Metrics are served on a dedicated diagnostics listener so access can be
+	// restricted by port; see pkg/diagnostics.
 	if err := r.startDiagnosticsServer(); err != nil {
 		return err
+	}
+
+	// During the deprecation window /metrics is ALSO served on the transport port,
+	// so an existing scrape configuration keeps working while it is moved. Handing
+	// the handler to the transport is what mounts it there; leaving it nil is what
+	// keeps the proxies from mounting it at all. See
+	// telemetry.DefaultMetricsOnTransportPort for the cutover.
+	if mountPrometheusHandlerOnTransportPort(r.prometheusHandler, r.Config.TelemetryConfig) {
+		transportConfig.PrometheusHandler = r.prometheusHandler
+		slog.Warn("serving prometheus metrics on the transport port as well as the diagnostics port; "+
+			"this is deprecated and the transport-port copy will be removed; see #6384 for the timeline. "+
+			"Move scrapers to the "+
+			"diagnostics address logged above, then set metricsOnTransportPort: false to verify",
+			"transport_port", r.Config.Port)
 	}
 
 	// Release the listener on every exit from Run, not just the happy path.
@@ -461,15 +520,21 @@ func (r *Runner) Run(ctx context.Context) error {
 		if keyPrefix == "" {
 			keyPrefix = "thv:proxy:session:"
 		}
-		storage, err := session.NewRedisStorage(ctx, tcredis.Config{
+		tlsCfg, err := redisCfg.TLS.Load()
+		if err != nil {
+			return fmt.Errorf("redis session storage TLS configuration: %w", err)
+		}
+		storage, err := session.NewRedisStorage(ctx, redisconn.Config{
 			Addr:     redisCfg.Address,
 			Password: os.Getenv(session.RedisPasswordEnvVar),
 			DB:       int(redisCfg.DB),
+			TLS:      tlsCfg,
 		}, keyPrefix, effectiveSessionTTL)
 		if err != nil {
 			return fmt.Errorf("failed to create Redis session storage: %w", err)
 		}
 		slog.Info("using Redis session storage",
+			"store", redisCfg.Address,
 			"address", redisCfg.Address,
 			"db", redisCfg.DB,
 			"key_prefix", keyPrefix,
@@ -858,12 +923,81 @@ func (r *Runner) handleRemoteAuthentication(ctx context.Context) (oauth2.TokenSo
 	return tokenSource, nil
 }
 
+// decodeStoredRunConfig decodes stored state without ReadJSON: its migrations
+// save state themselves and its normalizations are meant to stay in memory.
+func decodeStoredRunConfig(reader io.Reader) (*RunConfig, error) {
+	var stored *RunConfig
+	if err := json.NewDecoder(reader).Decode(&stored); err != nil {
+		// Custom unmarshalers (remote.Config, time.Time) can echo input.
+		return nil, fmt.Errorf("invalid stored run configuration: %T", err)
+	}
+	if stored == nil {
+		return nil, errors.New("stored run configuration is empty")
+	}
+	return stored, nil
+}
+
+// loadAndScrubRunConfig returns the stored state with legacy resolved secret
+// values removed. It changes neither the live config nor the state on disk.
+func (r *Runner) loadAndScrubRunConfig(ctx context.Context) (*RunConfig, error) {
+	stored, err := state.LoadRunConfig(ctx, r.Config.BaseName, decodeStoredRunConfig)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load stored run configuration for %q: %w", r.Config.BaseName, err)
+	}
+	for i, reference := range stored.Secrets {
+		parameter, err := secrets.ParseSecretParameter(reference)
+		if err != nil {
+			return nil, fmt.Errorf("invalid stored secret reference at index %d", i)
+		}
+		delete(stored.EnvVars, parameter.Target)
+	}
+	if stored.HeaderForward != nil {
+		if err := scrubStoredHeaderParameters(stored.MiddlewareConfigs, stored.HeaderForward.AddHeadersFromSecret); err != nil {
+			return nil, err
+		}
+	}
+	return stored, nil
+}
+
+// scrubStoredHeaderParameters removes secret headers from header-forward
+// entries, modifying the middlewares slice in place; pass a freshly decoded copy.
+// Params are decoded into the struct the middleware factory uses, so duplicate
+// or case-variant add_headers members resolve as they do at runtime.
+func scrubStoredHeaderParameters(middlewares []types.MiddlewareConfig, secretHeaders map[string]string) error {
+	secret := make(map[string]bool, len(secretHeaders))
+	for name := range secretHeaders {
+		secret[http.CanonicalHeaderKey(name)] = true
+	}
+	for i := range middlewares {
+		if middlewares[i].Type != headerfwd.HeaderForwardMiddlewareName || len(middlewares[i].Parameters) == 0 {
+			continue
+		}
+		var params headerfwd.HeaderForwardMiddlewareParams
+		if err := json.Unmarshal(middlewares[i].Parameters, &params); err != nil {
+			return fmt.Errorf("invalid stored header forwarding parameters: %T", err)
+		}
+		maps.DeleteFunc(params.AddHeaders, func(name, _ string) bool {
+			return secret[http.CanonicalHeaderKey(name)]
+		})
+		encoded, err := json.Marshal(params)
+		if err != nil {
+			return fmt.Errorf("failed to encode stored header forwarding parameters: %T", err)
+		}
+		middlewares[i].Parameters = encoded
+	}
+	return nil
+}
+
 func (r *Runner) persistRefreshToken(
 	ctx context.Context,
 	secretManager secrets.Provider,
 	refreshToken string,
 	expiry time.Time,
 ) error {
+	updatedConfig, err := r.loadAndScrubRunConfig(ctx)
+	if err != nil {
+		return err
+	}
 	secretName, err := authsecrets.GenerateUniqueSecretNameWithPrefix(
 		r.Config.Name,
 		"OAUTH_REFRESH_TOKEN_",
@@ -877,12 +1011,18 @@ func (r *Runner) persistRefreshToken(
 		return fmt.Errorf("failed to store refresh token: %w", err)
 	}
 
-	r.Config.RemoteAuthConfig.CachedRefreshTokenRef = secretName
-	r.Config.RemoteAuthConfig.CachedTokenExpiry = expiry
+	updatedRemoteAuthConfig := *r.Config.RemoteAuthConfig
+	updatedConfig.RemoteAuthConfig = &updatedRemoteAuthConfig
+	updatedRemoteAuthConfig.CachedRefreshTokenRef = secretName
+	updatedRemoteAuthConfig.CachedTokenExpiry = expiry
 
-	if err := r.Config.SaveState(ctx); err != nil {
+	if err := updatedConfig.SaveState(ctx); err != nil {
 		return fmt.Errorf("failed to save config with token reference: %w", err)
 	}
+
+	// Preserve pointer identity so the auth handler and runner observe the same
+	// complete config only after the durable write succeeds.
+	*r.Config.RemoteAuthConfig = updatedRemoteAuthConfig
 
 	slog.Debug("Stored OAuth refresh token in secret manager", "secret_name", secretName)
 	return nil
@@ -897,7 +1037,10 @@ func (r *Runner) persistClientCredentials(
 	tokenEndpointAuthMethod string,
 	registeredCallbackPort int,
 ) error {
-	updatedConfig := *r.Config
+	updatedConfig, err := r.loadAndScrubRunConfig(ctx)
+	if err != nil {
+		return err
+	}
 	updatedRemoteAuthConfig := remote.Config{}
 	if r.Config.RemoteAuthConfig != nil {
 		updatedRemoteAuthConfig = *r.Config.RemoteAuthConfig
@@ -908,7 +1051,6 @@ func (r *Runner) persistClientCredentials(
 	if clientSecret != "" {
 		clientSecretSecretName := updatedRemoteAuthConfig.CachedClientSecretRef
 		if clientSecretSecretName == "" {
-			var err error
 			clientSecretSecretName, err = authsecrets.GenerateUniqueSecretNameWithPrefix(
 				r.Config.Name,
 				"OAUTH_CLIENT_SECRET_",
@@ -930,7 +1072,6 @@ func (r *Runner) persistClientCredentials(
 	if regAccessToken != "" {
 		regTokenSecretName := updatedRemoteAuthConfig.CachedRegTokenRef
 		if regTokenSecretName == "" {
-			var err error
 			regTokenSecretName, err = authsecrets.GenerateUniqueSecretNameWithPrefix(r.Config.Name, "OAUTH_REG_TOKEN_", secretManager)
 			if err != nil {
 				return fmt.Errorf("failed to generate registration token secret name: %w", err)

@@ -489,6 +489,21 @@ func TestSkillsRouter(t *testing.T) {
 			expectedStatus: http.StatusNoContent,
 		},
 		{
+			// Guards the DTO trap: identity_token must reach PushOptions, not
+			// just decode into the request struct and get dropped.
+			name:   "push skill forwards identity token",
+			method: "POST",
+			path:   "/push",
+			body:   `{"reference":"ghcr.io/test/skill:v1","identity_token":"a.b.c"}`,
+			setupMock: func(svc *skillsmocks.MockSkillService, _ string) {
+				svc.EXPECT().Push(gomock.Any(), skills.PushOptions{
+					Reference:     "ghcr.io/test/skill:v1",
+					IdentityToken: "a.b.c",
+				}).Return(nil)
+			},
+			expectedStatus: http.StatusNoContent,
+		},
+		{
 			name:           "push skill bad request",
 			method:         "POST",
 			path:           "/push",

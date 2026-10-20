@@ -608,3 +608,88 @@ thv run myserver -e SERVICE_URL=http://host.containers.internal:8080
 thv run myserver -e SERVICE_URL=http://172.17.0.1:8080
 ```
 
+## AI Plugin Management Examples
+
+> **Placeholders:** Replace `example-plugin`, `example-org`, paths, and versions below with reviewed values. Start `thv serve` before any `thv ai-plugin` command.
+
+### Inspect and Install
+
+```bash
+# Inspect installed project plugins before changing them.
+thv ai-plugin list --scope project --project-root .
+thv ai-plugin info example-plugin --scope project --project-root .
+
+# Install a reviewed OCI plugin into this project and target Claude Code.
+thv ai-plugin install ghcr.io/example-org/example-plugin:v1.0 \
+  --scope project --project-root . --clients claude-code
+
+# A Git source can select a ref and plugin subdirectory.
+thv ai-plugin install git://github.com/example-org/plugin-repo@v1.0#plugins/example-plugin \
+  --scope project --project-root . --clients codex
+```
+
+For Codex, then complete the explicit client hand-off; ToolHive does not invoke Codex or edit `config.toml`:
+
+```bash
+codex plugin install example-plugin@toolhive
+```
+
+### First Install of an Externally Key-Signed OCI Plugin
+
+```bash
+# Supply the reviewed public key only for the first project install.
+# ToolHive pins it in toolhive.lock.yaml and reuses it for sync and upgrade.
+thv ai-plugin install ghcr.io/example-org/example-plugin:v1.0 \
+  --scope project --project-root . --public-key ./keys/example-plugin.cosign.pub
+```
+
+### Check and Restore Project Drift
+
+```bash
+# CI-safe inspection: no install, lock-file write, or deletion.
+thv ai-plugin sync --check --project-root .
+
+# After reviewing the lock entries and prompt, restore missing/drifted plugins.
+thv ai-plugin sync --project-root .
+```
+
+Do not use `--allow-unsigned` for a failed signature: it only records an explicit unsigned exception and cannot validate invalid content. Do not use `--prune` or `--yes` unless explicitly approved.
+
+### Preview and Apply an Upgrade
+
+```bash
+# Show mutable-reference changes without persisting them.
+thv ai-plugin upgrade --preview --project-root .
+
+# After reviewing repositories and signer identities, confirm at the prompt.
+thv ai-plugin upgrade example-plugin --project-root .
+```
+
+`--fail-on-changes` is the non-mutating CI freshness check. Do not add `--allow-ref-change`, `--allow-signer-change`, or `--yes` without explicit approval.
+
+### Validate, Build, and Publish
+
+```bash
+# Validate before building; an invalid plugin exits non-zero.
+thv ai-plugin validate ./example-plugin
+
+# Build into the local OCI store, then inspect the local build.
+thv ai-plugin build ./example-plugin --tag ghcr.io/example-org/example-plugin:v1.0
+thv ai-plugin builds
+
+# Push signed by default (keyless signing acquires an OIDC token when needed).
+thv ai-plugin push ghcr.io/example-org/example-plugin:v1.0
+```
+
+Use `thv ai-plugin push --no-sign ...` only when intentionally publishing unsigned content under an approved policy; do not recommend it as an installation workaround.
+
+### Uninstall Versus Removing a Local Build
+
+```bash
+# Remove the project installation; this does not delete the local OCI artifact.
+thv ai-plugin uninstall example-plugin --scope project --project-root .
+
+# Separately remove a reviewed local build by its tag.
+thv ai-plugin builds remove ghcr.io/example-org/example-plugin:v1.0
+```
+

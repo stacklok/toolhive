@@ -127,6 +127,11 @@ const (
 	// which is not supported for MCPServer (use VirtualMCPServer for multi-upstream).
 	ConditionReasonExternalAuthConfigMultiUpstream = "MultiUpstreamNotSupported"
 
+	// ConditionReasonExternalAuthConfigValid indicates the referenced
+	// MCPExternalAuthConfig passed every check the MCPServer controller applies
+	// to it. Mirrors ConditionReasonMCPRemoteProxyExternalAuthConfigValid.
+	ConditionReasonExternalAuthConfigValid = "ExternalAuthConfigValid"
+
 	// ConditionReasonWebhookConfigInvalid indicates the referenced webhook config is invalid or missing
 	ConditionReasonWebhookConfigInvalid = "WebhookConfigInvalid"
 
@@ -281,6 +286,7 @@ type MCPServerSpec struct {
 	// Secrets are references to secrets to mount in the MCP server container
 	// +listType=map
 	// +listMapKey=name
+	// +listMapKey=key
 	// +optional
 	Secrets []SecretRef `json:"secrets,omitempty"`
 
@@ -289,7 +295,8 @@ type MCPServerSpec struct {
 	// +optional
 	ServiceAccount *string `json:"serviceAccount,omitempty"`
 
-	// PermissionProfile defines the permission profile to use
+	// PermissionProfile is deprecated and retained for API compatibility. It is
+	// not supported by the Kubernetes operator and has no effect.
 	// +optional
 	PermissionProfile *PermissionProfileRef `json:"permissionProfile,omitempty"`
 
@@ -375,6 +382,12 @@ type MCPServerSpec struct {
 	// +optional
 	EndpointPrefix string `json:"endpointPrefix,omitempty"`
 
+	// MaxRequestBodySize is the maximum inbound MCP proxy request body size in bytes.
+	// Zero uses the default limit of 8 MiB.
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	MaxRequestBodySize int64 `json:"maxRequestBodySize,omitempty"`
+
 	// GroupRef references the MCPGroup this server belongs to.
 	// The referenced MCPGroup must be in the same namespace.
 	// +optional
@@ -415,6 +428,15 @@ type MCPServerSpec struct {
 	// Requires Redis session storage to be configured for distributed rate limiting.
 	// +optional
 	RateLimiting *ratelimittypes.RateLimitConfig `json:"rateLimiting,omitempty"`
+
+	// ProxyReadTimeout bounds how long the proxy spends reading a full request
+	// (headers + body), mitigating slow-upload connection exhaustion. Applies to
+	// all transports. Defaults to 30s if not specified. Example: "1m".
+	// +kubebuilder:validation:Type=string
+	// +kubebuilder:validation:Format=duration
+	// +kubebuilder:validation:XValidation:rule="duration(self) >= duration('0s')",message="proxyReadTimeout must be non-negative"
+	// +optional
+	ProxyReadTimeout *metav1.Duration `json:"proxyReadTimeout,omitempty"`
 }
 
 // ResourceOverrides defines overrides for annotations and labels on created resources
@@ -448,6 +470,29 @@ type ProxyDeploymentOverrides struct {
 	// +listType=atomic
 	// +optional
 	ImagePullSecrets []corev1.LocalObjectReference `json:"imagePullSecrets,omitempty"`
+
+	// NodeSelector constrains the proxy pod to nodes with matching labels.
+	// Mirrors the scheduling control podTemplateSpec gives the MCP server pod, so
+	// the proxy can be steered onto the same nodes (e.g. a pre-warmed pool).
+	// On MCPRemoteProxy, spec.podTemplateSpec also reaches the proxy pod: the two
+	// maps are merged, and podTemplateSpec wins on keys set in both.
+	// +optional
+	NodeSelector map[string]string `json:"nodeSelector,omitempty"`
+
+	// Tolerations allow the proxy pod to schedule onto tainted nodes, such as a
+	// dedicated pre-warmed pool.
+	// On MCPRemoteProxy, spec.podTemplateSpec also reaches the proxy pod, and this
+	// list is atomic: a podTemplateSpec that sets tolerations replaces this field
+	// rather than adding to it.
+	// +listType=atomic
+	// +optional
+	Tolerations []corev1.Toleration `json:"tolerations,omitempty"`
+
+	// Affinity sets node/pod affinity and anti-affinity for the proxy pod.
+	// On MCPRemoteProxy, spec.podTemplateSpec also reaches the proxy pod: the two
+	// are merged per sub-field, and podTemplateSpec wins on sub-fields set in both.
+	// +optional
+	Affinity *corev1.Affinity `json:"affinity,omitempty"`
 }
 
 // ResourceMetadataOverrides defines metadata overrides for a resource
@@ -539,6 +584,11 @@ type SecretRef struct {
 // into the vMCP ConfigMap so the vMCP process receives connection parameters at startup.
 //
 // +kubebuilder:validation:XValidation:rule="self.provider == 'redis' ? has(self.address) : true",message="address is required"
+// +kubebuilder:validation:XValidation:rule="!has(self.tls) || self.provider == 'redis'",message="tls is only supported when provider is redis"
+// +kubebuilder:validation:XValidation:rule="!has(self.tls) || !has(self.tls.caCertSecretRef) || !has(self.tls.insecureSkipVerify) || !self.tls.insecureSkipVerify",message="tls.insecureSkipVerify disables certificate verification, so tls.caCertSecretRef would be ignored; set only one"
+// +kubebuilder:validation:XValidation:rule="!has(self.tls) || !has(self.tls.caCertSecretRef) || (size(self.tls.caCertSecretRef.name) > 0 && size(self.tls.caCertSecretRef.key) > 0)",message="tls.caCertSecretRef requires a non-empty name and key"
+//
+//nolint:lll // CEL validation rules exceed line length limit
 type SessionStorageConfig struct {
 	// Provider is the session storage backend type
 	// +kubebuilder:validation:Enum=memory;redis
@@ -563,6 +613,16 @@ type SessionStorageConfig struct {
 	// PasswordRef is a reference to a Secret key containing the Redis password
 	// +optional
 	PasswordRef *SecretKeyRef `json:"passwordRef,omitempty"`
+
+	// TLS enables TLS for the Redis session storage connection and, when rate
+	// limiting is configured, for the rate-limit connection to the same Redis.
+	// When omitted, the connections are plaintext and the Redis password and
+	// session data cross the network unencrypted. An empty object enables TLS
+	// with server certificate verification against the system root CAs; set
+	// caCertSecretRef for a private CA. A failed handshake never falls back to
+	// plaintext. Only used when provider is redis.
+	// +optional
+	TLS *RedisTLSConfig `json:"tls,omitempty"`
 }
 
 // RateLimitConfig defines rate limiting configuration for an MCP server.
@@ -580,10 +640,12 @@ type ToolRateLimitConfig = ratelimittypes.ToolRateLimitConfig
 
 // Permission profile types
 const (
-	// PermissionProfileTypeBuiltin is the type for built-in permission profiles
+	// PermissionProfileTypeBuiltin is the deprecated type for built-in permission
+	// profiles. Permission profiles are not supported for MCPServer workloads.
 	PermissionProfileTypeBuiltin = "builtin"
 
-	// PermissionProfileTypeConfigMap is the type for permission profiles stored in ConfigMaps
+	// PermissionProfileTypeConfigMap is the deprecated type for permission profiles
+	// stored in ConfigMaps. Permission profiles are not supported for MCPServer workloads.
 	PermissionProfileTypeConfigMap = "configmap"
 )
 
@@ -596,7 +658,8 @@ const (
 	AuthzConfigTypeInline = "inline"
 )
 
-// PermissionProfileRef defines a reference to a permission profile
+// PermissionProfileRef defines a deprecated reference to a permission profile.
+// Permission profiles are not supported for MCPServer workloads.
 type PermissionProfileRef struct {
 	// Type is the type of permission profile reference
 	// +kubebuilder:validation:Enum=builtin;configmap
@@ -615,7 +678,8 @@ type PermissionProfileRef struct {
 	Key string `json:"key,omitempty"`
 }
 
-// PermissionProfileSpec defines the permissions for an MCP server
+// PermissionProfileSpec defines deprecated permissions for an MCP server.
+// Permission profiles are not supported for MCPServer workloads.
 // +gendoc
 type PermissionProfileSpec struct {
 	// Read is a list of paths that the MCP server can read from
@@ -633,7 +697,8 @@ type PermissionProfileSpec struct {
 	Network *NetworkPermissions `json:"network,omitempty"`
 }
 
-// NetworkPermissions defines the network permissions for an MCP server
+// NetworkPermissions defines deprecated network permissions for an MCP server.
+// Permission profiles are not supported for MCPServer workloads.
 type NetworkPermissions struct {
 	// Mode specifies the network mode for the container (e.g., "host", "bridge", "none")
 	// When empty, the default container runtime network mode is used
@@ -664,9 +729,14 @@ type OutboundNetworkPermissions struct {
 }
 
 // CABundleSource defines a source for CA certificate bundles.
+//
+// +kubebuilder:validation:XValidation:rule="has(self.configMapRef) && size(self.configMapRef.name) > 0",message="configMapRef.name is required and must be non-empty"
+//
+//nolint:lll // CEL validation rule exceeds line length limit
 type CABundleSource struct {
 	// ConfigMapRef references a ConfigMap containing the CA certificate bundle.
-	// If Key is not specified, it defaults to "ca.crt".
+	// The ConfigMap key is required by the API. If omitted in a stored object, it
+	// defaults to "ca.crt" for backwards compatibility.
 	// +optional
 	ConfigMapRef *corev1.ConfigMapKeySelector `json:"configMapRef,omitempty"`
 }
@@ -861,6 +931,21 @@ type PrometheusConfig struct {
 	// +kubebuilder:default=false
 	// +optional
 	Enabled bool `json:"enabled,omitempty"`
+
+	// MetricsOnTransportPort controls whether /metrics is ALSO served on the main
+	// transport port, in addition to the dedicated diagnostics port. It exists to
+	// give deployments a migration window: while true, an existing scrape
+	// configuration aimed at the transport port keeps working, so a scraper can be
+	// moved to the diagnostics port and verified before the old location goes away.
+	//
+	// Leave unset to follow the current default, which is true during the migration
+	// window and becomes false when it closes. Setting it explicitly opts out of
+	// that change: an explicit value is honoured before and after the cutover.
+	//
+	// See https://github.com/stacklok/toolhive/issues/6384 for the removal timeline.
+	//
+	// +optional
+	MetricsOnTransportPort *bool `json:"metricsOnTransportPort,omitempty"`
 }
 
 // OpenTelemetryTracingConfig defines OpenTelemetry tracing configuration
@@ -968,7 +1053,7 @@ const (
 //+kubebuilder:storageversion
 //+kubebuilder:subresource:status
 //+kubebuilder:metadata:labels=toolhive.stacklok.dev/auto-migrate-storage-version=true
-//+kubebuilder:resource:shortName=mcpserver;mcpservers,categories=toolhive
+//+kubebuilder:resource:categories=toolhive
 //+kubebuilder:printcolumn:name="Status",type="string",JSONPath=".status.phase"
 //+kubebuilder:printcolumn:name="Ready",type="string",JSONPath=".status.conditions[?(@.type=='Ready')].status"
 //+kubebuilder:printcolumn:name="Replicas",type="integer",JSONPath=".status.readyReplicas"

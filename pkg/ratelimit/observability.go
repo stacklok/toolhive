@@ -45,6 +45,7 @@ type rateLimitTelemetry struct {
 
 	decisions    metric.Int64Counter
 	redisErrors  metric.Int64Counter
+	failOpen     metric.Int64Counter
 	checkLatency metric.Float64Histogram
 }
 
@@ -75,6 +76,14 @@ func newRateLimitTelemetry(
 		return nil, fmt.Errorf("create Redis error counter: %w", err)
 	}
 
+	failOpen, err := meter.Int64Counter(
+		"toolhive_rate_limit_fail_open",
+		metric.WithDescription("Total number of rate limit checks allowed after an enforcement error"),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("create fail-open counter: %w", err)
+	}
+
 	checkLatency, err := meter.Float64Histogram(
 		"toolhive_rate_limit_check_latency",
 		metric.WithDescription("Duration of Redis Lua rate limit checks in seconds"),
@@ -90,6 +99,7 @@ func newRateLimitTelemetry(
 		serverName:   serverName,
 		decisions:    decisions,
 		redisErrors:  redisErrors,
+		failOpen:     failOpen,
 		checkLatency: checkLatency,
 	}, nil
 }
@@ -131,6 +141,16 @@ func (t *rateLimitTelemetry) recordRedisError(ctx context.Context, err error) {
 	))
 }
 
+func (t *rateLimitTelemetry) recordFailOpen(ctx context.Context) {
+	if t == nil {
+		return
+	}
+	t.failOpen.Add(ctx, 1, metric.WithAttributes(
+		attribute.String("namespace", t.namespace),
+		attribute.String("server", t.serverName),
+	))
+}
+
 func (t *rateLimitTelemetry) recordCheckLatency(ctx context.Context, duration time.Duration) {
 	if t == nil {
 		return
@@ -141,11 +161,11 @@ func (t *rateLimitTelemetry) recordCheckLatency(ctx context.Context, duration ti
 	))
 }
 
-func recordRateLimitSpanOutcome(ctx context.Context, decision, rejectedBy string) {
+func recordRateLimitSpanOutcome(ctx context.Context, decision, rejectedBy string, failOpen bool) {
 	trace.SpanFromContext(ctx).SetAttributes(
 		attribute.String("rate_limit.decision", decision),
 		attribute.String("rate_limit.rejected_by", rejectedBy),
-		attribute.Bool("rate_limit.fail_open", false),
+		attribute.Bool("rate_limit.fail_open", failOpen),
 	)
 }
 

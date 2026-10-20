@@ -5,6 +5,8 @@ package transparent
 
 import (
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -23,69 +25,74 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
-func TestParseRPCRequest(t *testing.T) {
+func TestRoundTripMessageKinds(t *testing.T) {
 	t.Parallel()
 
-	tp := &tracingTransport{p: &TransparentProxy{targetURI: "http://backend"}}
-
 	tests := []struct {
-		name              string
-		body              string
-		wantMethod        string
-		wantID            string // "" means nil/absent
-		wantSingleRequest bool
-		wantSawInitialize bool
+		name            string
+		body            string
+		protocolVersion string
+		wantInitialized bool
+		wantRejected    bool
 	}{
 		{
-			name:              "single request with id",
-			body:              `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`,
-			wantMethod:        "tools/list",
-			wantID:            "1",
-			wantSingleRequest: true,
+			name: "single request with id",
+			body: `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`,
 		},
 		{
-			name:              "single initialize",
-			body:              `{"jsonrpc":"2.0","id":1,"method":"initialize"}`,
-			wantMethod:        "initialize",
-			wantID:            "1",
-			wantSingleRequest: true,
-			wantSawInitialize: true,
+			name: "request preserves whitespace and exact id",
+			body: " \n" + `{"jsonrpc":"2.0", "id":9007199254740993, "method":"tools/list", "params":{}}` + "\t\r\n",
 		},
 		{
-			name:              "notification has no id",
-			body:              `{"jsonrpc":"2.0","method":"notifications/progress"}`,
-			wantMethod:        "notifications/progress",
-			wantSingleRequest: false,
+			name:         "malformed JSON on arbitrary path",
+			body:         `{"jsonrpc":`,
+			wantRejected: true,
 		},
 		{
-			name:              "explicit null id is not a valid request id",
-			body:              `{"jsonrpc":"2.0","id":null,"method":"tools/list"}`,
-			wantMethod:        "tools/list",
-			wantID:            "null",
-			wantSingleRequest: false,
+			name:         "non-MCP JSON on arbitrary path",
+			body:         `{"action":"submit","value":"example"}`,
+			wantRejected: true,
 		},
 		{
-			name:              "response-shaped body has no method",
-			body:              `{"jsonrpc":"2.0","id":1,"result":{}}`,
-			wantMethod:        "",
-			wantID:            "1",
-			wantSingleRequest: false,
+			name:         "form body on arbitrary path",
+			body:         `action=submit&value=example`,
+			wantRejected: true,
 		},
 		{
-			name:              "batch with initialize",
-			body:              `[{"jsonrpc":"2.0","id":1,"method":"initialize"},{"jsonrpc":"2.0","id":2,"method":"tools/list"}]`,
-			wantSingleRequest: false,
-			wantSawInitialize: true,
+			name:            "single initialize",
+			body:            `{"jsonrpc":"2.0","id":1,"method":"initialize"}`,
+			wantInitialized: true,
 		},
 		{
-			name:              "batch without initialize",
-			body:              `[{"jsonrpc":"2.0","id":1,"method":"tools/list"},{"jsonrpc":"2.0","id":2,"method":"tools/call"}]`,
-			wantSingleRequest: false,
+			name:            "initialize notification retains handshake behavior",
+			body:            `{"jsonrpc":"2.0","method":"initialize"}`,
+			protocolVersion: mcp.MCPVersionModern,
+			wantInitialized: true,
 		},
 		{
-			name:              "malformed JSON",
-			body:              `{not valid json`,
-			wantSingleRequest: false,
+			name:            "notification is not revision classified",
+			body:            `{"jsonrpc":"2.0","method":"notifications/progress"}`,
+			protocolVersion: mcp.MCPVersionModern,
+		},
+		{
+			name:            "response is not revision classified",
+			body:            `{"jsonrpc":"2.0","id":9007199254740993,"result":{}}`,
+			protocolVersion: mcp.MCPVersionModern,
+		},
+		{
+			name:            "error response without id is not revision classified",
+			body:            `{"jsonrpc":"2.0","error":{"code":-32603,"message":"client error"}}`,
+			protocolVersion: mcp.MCPVersionModern,
+		},
+		{
+			name:         "null id is rejected",
+			body:         `{"jsonrpc":"2.0","id":null,"method":"tools/list"}`,
+			wantRejected: true,
+		},
+		{
+			name:         "batch initialize does not start handshake",
+			body:         `[{"jsonrpc":"2.0","id":1,"method":"initialize"}]`,
+			wantRejected: true,
 		},
 	}
 
@@ -93,16 +100,30 @@ func TestParseRPCRequest(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			method, _, id, singleRequest, sawInitialize := tp.parseRPCRequest([]byte(tc.body))
+			backendCalled := false
+			spy := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				backendCalled = true
+				body, err := io.ReadAll(req.Body)
+				require.NoError(t, err)
+				assert.Equal(t, tc.body, string(body), "forward the original envelope")
+				return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: http.NoBody}, nil
+			})
+			p := NewTransparentProxy("127.0.0.1", 0, "http://backend", nil, nil, nil, false, false,
+				"", nil, nil, "", false)
+			t.Cleanup(func() { require.NoError(t, p.sessionManager.Stop()) })
+			req := httptest.NewRequest(http.MethodPost, "/custom", strings.NewReader(tc.body))
+			req.Header.Set("MCP-Protocol-Version", tc.protocolVersion)
 
-			assert.Equal(t, tc.wantMethod, method)
-			assert.Equal(t, tc.wantSingleRequest, singleRequest)
-			assert.Equal(t, tc.wantSawInitialize, sawInitialize)
-			if tc.wantID == "" {
-				assert.Empty(t, string(id))
+			resp, err := newTracingTransport(spy, p).RoundTrip(req)
+			require.NoError(t, err)
+			drainAndClose(t, resp)
+			if tc.wantRejected {
+				assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 			} else {
-				assert.Equal(t, tc.wantID, string(id))
+				assert.Equal(t, http.StatusOK, resp.StatusCode)
 			}
+			assert.Equal(t, !tc.wantRejected, backendCalled)
+			assert.Equal(t, tc.wantInitialized, p.serverInitialized())
 		})
 	}
 }
@@ -195,32 +216,44 @@ func TestRoundTripClassifiesModernRequests(t *testing.T) {
 		assert.False(t, backendCalled.Load(), "backend must not be contacted for a rejected batch")
 	})
 
-	t.Run("large-integer id is preserved verbatim in the 400 body", func(t *testing.T) {
-		t.Parallel()
+	for _, rawID := range []string{`9007199254740993`, `0`, `"request-1"`, `""`} {
+		for _, status := range []int{http.StatusBadRequest, http.StatusNotFound} {
+			t.Run(fmt.Sprintf("local_error_%d_id_%s", status, rawID), func(t *testing.T) {
+				t.Parallel()
 
-		const largeID = "9007199254740993" // 2^53 + 1: loses precision if round-tripped through float64
-		spy := roundTripFunc(func(*http.Request) (*http.Response, error) {
-			t.Fatal("backend must not be contacted for a rejected request")
-			return nil, nil
-		})
-		tt, _ := newProxy(spy)
+				backendCalls := 0
+				spy := roundTripFunc(func(*http.Request) (*http.Response, error) {
+					backendCalls++
+					return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: http.NoBody}, nil
+				})
+				tt, p := newProxy(spy)
+				t.Cleanup(func() { require.NoError(t, p.sessionManager.Stop()) })
 
-		req := httptest.NewRequest(http.MethodPost, "/mcp",
-			strings.NewReader(`{"jsonrpc":"2.0","id":`+largeID+`,"method":"tools/call"}`))
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("MCP-Protocol-Version", mcp.MCPVersionModern)
+				req := httptest.NewRequest(http.MethodPost, "/mcp",
+					strings.NewReader(`{"jsonrpc":"2.0","id":`+rawID+`,"method":"tools/call"}`))
+				if status == http.StatusBadRequest {
+					req.Header.Set("MCP-Protocol-Version", mcp.MCPVersionModern)
+				} else {
+					req.Header.Set("Mcp-Session-Id", "unknown-session")
+				}
 
-		resp, err := tt.RoundTrip(req)
-		require.NoError(t, err)
-		require.NotNil(t, resp)
-		require.Equal(t, http.StatusBadRequest, resp.StatusCode)
+				resp, err := tt.RoundTrip(req)
+				require.NoError(t, err)
+				require.NotNil(t, resp)
+				t.Cleanup(func() { drainAndClose(t, resp) })
+				require.Equal(t, status, resp.StatusCode)
+				assert.Zero(t, backendCalls)
 
-		var decoded struct {
-			ID json.RawMessage `json:"id"`
+				var decoded struct {
+					ID    json.RawMessage  `json:"id"`
+					Error *json.RawMessage `json:"error"`
+				}
+				require.NoError(t, json.NewDecoder(resp.Body).Decode(&decoded))
+				assert.Equal(t, rawID, string(decoded.ID), "preserve the exact ID in local errors")
+				assert.NotNil(t, decoded.Error)
+			})
 		}
-		require.NoError(t, json.NewDecoder(resp.Body).Decode(&decoded))
-		assert.Equal(t, largeID, string(decoded.ID), "large integer id must not lose precision")
-	})
+	}
 
 	t.Run("Modern 200 response flips serverInitialized", func(t *testing.T) {
 		t.Parallel()

@@ -5,11 +5,18 @@ package authserver
 
 import (
 	"context"
+	"crypto/x509"
 	"log/slog"
 	"net/http"
 
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
+	"github.com/stacklok/toolhive/pkg/authserver/upstream"
 )
+
+// UpstreamProviderFactory constructs the OAuth2Provider for one configured
+// upstream IDP. Set it on Config.UpstreamFactory to own upstream construction;
+// DefaultUpstreamFactory is the built-in implementation and can be delegated to.
+type UpstreamProviderFactory func(ctx context.Context, cfg *UpstreamConfig) (upstream.OAuth2Provider, error)
 
 // Server is the OAuth authorization server.
 // It provides HTTP handlers that serve all OAuth/OIDC endpoints.
@@ -53,8 +60,74 @@ type Server interface {
 	// its closed connection pool).
 	DCRStore() storage.DCRCredentialStore
 
-	// Close releases resources held by the server.
+	// Close releases resources held by the server. It drains upstream idle
+	// connections, stops SPIFFE bundle and trusted-issuer refresh workers, and
+	// closes storage. It joins shutdown errors. Do not call it on a server whose
+	// storage is shared with another live server; retire that one with
+	// CloseIdleConnections instead.
 	Close() error
+}
+
+// idleConnectionCloser is the capability CloseIdleConnections detects. It is
+// deliberately not a method on Server: adding one would be a source-incompatible
+// change for out-of-tree implementations and test doubles, and the only in-tree
+// consumer needs a single call. Kept unexported so callers go through the
+// CloseIdleConnections function rather than asserting themselves — the
+// `var _ idleConnectionCloser = (*server)(nil)` check in server_impl.go is what
+// keeps the real implementation compile-time guaranteed to satisfy it.
+type idleConnectionCloser interface {
+	CloseIdleConnections()
+}
+
+// spiffeX509AuthorityLister is the capability SPIFFEX509Authorities detects.
+// It is deliberately not a method on Server so out-of-tree implementations and
+// test doubles are not forced to implement the optional operation.
+type spiffeX509AuthorityLister interface {
+	SPIFFEX509Authorities() []*x509.Certificate
+}
+
+// SPIFFEX509Authorities returns the current X.509 authorities of every trust
+// domain that enables spiffe_x509, and whether s supports the operation.
+// The result reflects live bundle rotation. It is used only as a TLS
+// certificate_authorities hint, never for verification.
+func SPIFFEX509Authorities(s Server) ([]*x509.Certificate, bool) {
+	lister, ok := s.(spiffeX509AuthorityLister)
+	if !ok {
+		return nil, false
+	}
+	return lister.SPIFFEX509Authorities(), true
+}
+
+// CloseIdleConnections releases the idle keep-alive connections pooled by s's
+// upstream IDP providers, without touching storage, and reports whether s
+// supported the operation. Only an implementation of Server that does not come
+// from New can report false; the production type is checked at compile time.
+//
+// An embedder that reconstructs the server to change its upstream set — passing
+// the same storage.Storage and keys.KeyProvider so token and JWKS continuity is
+// preserved — must retire the superseded server with this function rather than
+// Close, because Close would also close the storage the new server is now
+// serving through. That split is the whole point: without it there is no correct
+// call to make.
+//
+// Safe to call on a server that is still serving: only idle connections are
+// closed and in-flight requests are unaffected. See upstream.IdleConnectionCloser
+// for the per-provider capability this delegates to, and for the
+// caller-owned-client exemption.
+//
+// Scope: upstream HTTP pools only. A server configured with TrustedIssuers also
+// holds one JWKS refresh worker pool per issuer; those are released by Close,
+// not by this function — draining them would stop the background key refresh a
+// still-serving server depends on, and this function is safe to call on a live
+// server. An embedder retiring a superseded server with this function therefore
+// keeps its JWKS workers until the storage it shares with the replacement can
+// be closed via Close.
+func CloseIdleConnections(s Server) bool {
+	closer, ok := s.(idleConnectionCloser)
+	if ok {
+		closer.CloseIdleConnections()
+	}
+	return ok
 }
 
 // New creates a new OAuth authorization server.

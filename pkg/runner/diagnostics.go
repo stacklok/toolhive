@@ -6,6 +6,7 @@ package runner
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"time"
 
 	"github.com/stacklok/toolhive/pkg/diagnostics"
@@ -58,10 +59,18 @@ func (r *Runner) startDiagnosticsServer() error {
 // An unset port falls back to diagnostics.DefaultPort so a scraper has a
 // predictable target rather than an arbitrary one.
 func diagnosticsPort(cfg *telemetry.Config) int {
-	if cfg == nil || cfg.PrometheusPort == 0 {
+	if cfg == nil {
 		return diagnostics.DefaultPort
 	}
-	return cfg.PrometheusPort
+	return diagnostics.ResolvePort(cfg.PrometheusPort)
+}
+
+// mountPrometheusHandlerOnTransportPort reports whether Run should hand the
+// Prometheus handler to the transport, which is what makes the proxies also serve
+// /metrics on the transport port during the migration window (see
+// telemetry.DefaultMetricsOnTransportPort).
+func mountPrometheusHandlerOnTransportPort(handler http.Handler, cfg *telemetry.Config) bool {
+	return handler != nil && cfg.ServeMetricsOnTransportPort()
 }
 
 // stopDiagnosticsServer shuts the diagnostics listener down. It is safe to call

@@ -63,6 +63,18 @@ func TestBuildPORC(t *testing.T) {
 			wantRes:   "mrn:mcp:test:resource:file://data.json",
 		},
 		{
+			name:       "skill get",
+			feature:    authorizers.MCPFeatureSkill,
+			operation:  authorizers.MCPOperationGet,
+			resourceID: "mcp://example/skill",
+			claims: map[string]interface{}{
+				"sub": "user@example.com",
+			},
+			arguments: nil,
+			wantOp:    "mcp:skill:get",
+			wantRes:   "mrn:mcp:test:skill:mcp://example/skill",
+		},
+		{
 			name:       "tool list",
 			feature:    authorizers.MCPFeatureTool,
 			operation:  authorizers.MCPOperationList,

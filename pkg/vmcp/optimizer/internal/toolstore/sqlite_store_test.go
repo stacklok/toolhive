@@ -911,6 +911,14 @@ func (f *fakeEmbeddingClient) EmbedBatch(_ context.Context, texts []string) ([][
 	return result, nil
 }
 
+// fakeModelID is the model id every fakeEmbeddingClient reports. Fixtures
+// standing in for a replaced or swapped model override ModelID instead.
+const fakeModelID = "fake-model"
+
+func (*fakeEmbeddingClient) ModelID(context.Context) (string, error) {
+	return fakeModelID, nil
+}
+
 // embedVector produces the deterministic vector without recording the text,
 // keeping embeddedTexts limited to the read path.
 func (f *fakeEmbeddingClient) embedVector(text string) []float32 {

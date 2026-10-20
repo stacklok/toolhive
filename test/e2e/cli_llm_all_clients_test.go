@@ -88,6 +88,7 @@ func allClientTestCases() []llmClientTestCase {
 				"/env/ANTHROPIC_BASE_URL": func(gatewayURL, _ string) string {
 					return gatewayURL
 				},
+				"/env/CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY": func(_, _ string) string { return "1" },
 			},
 		},
 		{
@@ -121,7 +122,7 @@ func allClientTestCases() []llmClientTestCase {
 			detectionDir: func(tempDir string) string {
 				return llmSettingsDirFor("cursor", tempDir)
 			},
-			binaryName: "cursor",
+			binaryName: "",
 			settingsPath: func(tempDir string) string {
 				return filepath.Join(llmSettingsDirFor("cursor", tempDir), "settings.json")
 			},
@@ -131,44 +132,6 @@ func allClientTestCases() []llmClientTestCase {
 					return proxyURL
 				},
 				"/cursor.general.openAIAPIKey": func(_, _ string) string {
-					return clientThvProxy
-				},
-			},
-		},
-		{
-			name: "vscode",
-			detectionDir: func(tempDir string) string {
-				return llmSettingsDirFor("vscode", tempDir)
-			},
-			binaryName: "code",
-			settingsPath: func(tempDir string) string {
-				return filepath.Join(llmSettingsDirFor("vscode", tempDir), "settings.json")
-			},
-			mode: "proxy",
-			expectedKeys: map[string]func(string, string) string{
-				"/github.copilot.advanced.serverUrl": func(_, proxyURL string) string {
-					return proxyURL
-				},
-				"/github.copilot.advanced.apiKey": func(_, _ string) string {
-					return clientThvProxy
-				},
-			},
-		},
-		{
-			name: "vscode-insider",
-			detectionDir: func(tempDir string) string {
-				return llmSettingsDirFor("vscode-insider", tempDir)
-			},
-			binaryName: "code-insiders",
-			settingsPath: func(tempDir string) string {
-				return filepath.Join(llmSettingsDirFor("vscode-insider", tempDir), "settings.json")
-			},
-			mode: "proxy",
-			expectedKeys: map[string]func(string, string) string{
-				"/github.copilot.advanced.serverUrl": func(_, proxyURL string) string {
-					return proxyURL
-				},
-				"/github.copilot.advanced.apiKey": func(_, _ string) string {
 					return clientThvProxy
 				},
 			},
@@ -909,7 +872,7 @@ var _ = Describe("thv llm — all-client matrix", Label("cli", "llm", "clients",
 			}
 
 			// readAppliedConfigDoc resolves _meta.json's appliedId to its config doc.
-			readAppliedConfigDoc := func(configLib string) (map[string]any, map[string]any) {
+			readAppliedConfigDoc := func(configLib string) map[string]any {
 				metaData, err := os.ReadFile(filepath.Join(configLib, "_meta.json"))
 				Expect(err).ToNot(HaveOccurred(), "_meta.json should exist after setup")
 				var meta map[string]any
@@ -921,7 +884,7 @@ var _ = Describe("thv llm — all-client matrix", Label("cli", "llm", "clients",
 				Expect(err).ToNot(HaveOccurred(), "applied config document should exist")
 				var doc map[string]any
 				Expect(json.Unmarshal(docData, &doc)).To(Succeed())
-				return meta, doc
+				return doc
 			}
 
 			It("writes the config document, selector, and shim, then reverts them", func() {
@@ -949,7 +912,7 @@ var _ = Describe("thv llm — all-client matrix", Label("cli", "llm", "clients",
 					"setup should tell the user to relaunch Claude Desktop")
 
 				By("verifying the config document contents")
-				_, doc := readAppliedConfigDoc(configLib)
+				doc := readAppliedConfigDoc(configLib)
 				Expect(doc["inferenceProvider"]).To(Equal("gateway"))
 				Expect(doc["inferenceCredentialKind"]).To(Equal("helper-script"))
 				Expect(doc["inferenceGatewayAuthScheme"]).To(Equal("bearer"))
@@ -996,6 +959,67 @@ var _ = Describe("thv llm — all-client matrix", Label("cli", "llm", "clients",
 				Expect(json.Unmarshal([]byte(showOut), &cfg)).To(Succeed())
 				Expect(cfg.ConfiguredTools).To(BeEmpty(),
 					"ConfiguredTools should be empty after teardown")
+			})
+
+			It("adds, lists, and removes connectors in the same config document", func() {
+				issuerURL := fmt.Sprintf("http://localhost:%d", oidcPort)
+				appDir, configLib, _ := claudeDesktopPaths(tempDir)
+				Expect(os.MkdirAll(appDir, 0750)).To(Succeed())
+				const connectorURL = "https://cgw.example.com/gw/mcp"
+
+				By("rejecting connector add before thv llm setup")
+				_, stderr, err := thvCmd("client", "connector", "add", "--client", "claude-desktop",
+					"stacklok", connectorURL).ExpectFailure()
+				Expect(err).To(HaveOccurred())
+				Expect(stderr).To(ContainSubstring("thv llm setup --client claude-desktop"),
+					"error should point at the setup command")
+
+				By("running thv llm setup --client claude-desktop")
+				stdout, stderr, err := runSetupWithOIDCCompletion(
+					thvCmd, oidcServer,
+					"--client", "claude-desktop",
+					"--gateway-url", gatewayURL,
+					"--issuer", issuerURL,
+					"--client-id", clientID,
+					"--anthropic-path-prefix", "/anthropic",
+				)
+				Expect(err).ToNot(HaveOccurred(),
+					"setup should succeed; stdout=%q stderr=%q", stdout, stderr)
+
+				By("adding a connector")
+				thvCmd("client", "connector", "add", "--client", "claude-desktop",
+					"stacklok", connectorURL).ExpectSuccess()
+
+				By("verifying the applied config keeps inference settings and gains the connector")
+				doc := readAppliedConfigDoc(configLib)
+				Expect(doc["inferenceProvider"]).To(Equal("gateway"))
+				Expect(doc["managedMcpServers"]).To(ConsistOf(map[string]any{
+					"name":      "stacklok",
+					"transport": "http",
+					"url":       connectorURL,
+					"oauth":     true,
+				}))
+
+				By("listing connectors as JSON")
+				listOut, _ := thvCmd("client", "connector", "list", "--client", "claude-desktop",
+					"--format", "json").ExpectSuccess()
+				var connectors []map[string]string
+				Expect(json.Unmarshal([]byte(listOut), &connectors)).To(Succeed())
+				Expect(connectors).To(ConsistOf(map[string]string{"name": "stacklok", "url": connectorURL}))
+
+				By("removing the connector")
+				thvCmd("client", "connector", "rm", "--client", "claude-desktop", "stacklok").ExpectSuccess()
+				doc = readAppliedConfigDoc(configLib)
+				Expect(doc).ToNot(HaveKey("managedMcpServers"))
+
+				By("tearing down with a connector still configured")
+				thvCmd("client", "connector", "add", "--client", "claude-desktop",
+					"stacklok", connectorURL).ExpectSuccess()
+				thvCmd("llm", "teardown", "claude-desktop").ExpectSuccess()
+				_, stderr, err = thvCmd("client", "connector", "list", "--client", "claude-desktop").ExpectFailure()
+				Expect(err).To(HaveOccurred())
+				Expect(stderr).To(ContainSubstring("thv llm setup --client claude-desktop"),
+					"connectors should be gone with the config document")
 			})
 		})
 

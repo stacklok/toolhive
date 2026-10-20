@@ -47,6 +47,18 @@ type MCPRemoteProxySpec struct {
 	// +kubebuilder:validation:Pattern=`^https?://`
 	RemoteURL string `json:"remoteUrl"`
 
+	// AllowPrivateEndpoint permits RemoteURL to point at a private or
+	// in-cluster endpoint: RFC 1918 and IPv6 unique-local addresses, and
+	// hostnames ending in "cluster.local". (Bare ".svc" hostnames are never
+	// blocked, since no DNS resolution is performed.) Enable this to reach a
+	// co-located in-cluster backend in-mesh so the backend's workload-identity
+	// authorization policy still applies. Loopback, link-local, cloud-metadata,
+	// and kubernetes.default endpoints remain blocked regardless of this
+	// setting.
+	// +kubebuilder:default=false
+	// +optional
+	AllowPrivateEndpoint bool `json:"allowPrivateEndpoint,omitempty"`
+
 	// ProxyPort is the port to expose the MCP proxy on
 	// +kubebuilder:validation:Minimum=1
 	// +kubebuilder:validation:Maximum=65535

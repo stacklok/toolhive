@@ -68,24 +68,41 @@ func newTEIClient(baseURL string, timeout time.Duration) (*teiClient, error) {
 
 // teiInfoResponse is a subset of the TEI /info endpoint response.
 type teiInfoResponse struct {
-	MaxClientBatchSize int `json:"max_client_batch_size"`
+	ModelID            string `json:"model_id"`
+	MaxClientBatchSize int    `json:"max_client_batch_size"`
 }
 
-// fetchMaxBatchSize queries the TEI /info endpoint and returns the max client batch size.
-func fetchMaxBatchSize(baseURL string, httpClient *http.Client) (int, error) {
-	resp, err := httpClient.Get(baseURL + infoPath) // #nosec G107 -- URL is built from the configured TEI base URL
+// fetchInfo queries the TEI /info endpoint.
+func fetchInfo(ctx context.Context, baseURL string, httpClient *http.Client) (teiInfoResponse, error) {
+	var info teiInfoResponse
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+infoPath, nil)
 	if err != nil {
-		return 0, fmt.Errorf("TEI /info request failed: %w", err)
+		return info, fmt.Errorf("failed to create TEI /info request: %w", err)
+	}
+
+	resp, err := httpClient.Do(req) // #nosec G704 -- URL is built from the configured TEI base URL
+	if err != nil {
+		return info, fmt.Errorf("TEI /info request failed: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		return 0, fmt.Errorf("TEI /info returned status %d", resp.StatusCode)
+		return info, fmt.Errorf("TEI /info returned status %d", resp.StatusCode)
 	}
 
-	var info teiInfoResponse
 	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
-		return 0, fmt.Errorf("failed to decode TEI /info response: %w", err)
+		return info, fmt.Errorf("failed to decode TEI /info response: %w", err)
+	}
+
+	return info, nil
+}
+
+// fetchMaxBatchSize queries the TEI /info endpoint and returns the max client batch size.
+func fetchMaxBatchSize(baseURL string, httpClient *http.Client) (int, error) {
+	info, err := fetchInfo(context.Background(), baseURL, httpClient)
+	if err != nil {
+		return 0, err
 	}
 
 	if info.MaxClientBatchSize <= 0 {
@@ -93,6 +110,22 @@ func fetchMaxBatchSize(baseURL string, httpClient *http.Client) (int, error) {
 	}
 
 	return info.MaxClientBatchSize, nil
+}
+
+// ModelID returns the id of the model the TEI server is currently running,
+// read from /info on every call. The model is a property of the running
+// container, not of this client's configuration, so it is deliberately not
+// cached: the point is letting a caller observe a redeploy that swapped the
+// model behind an unchanged URL.
+func (c *teiClient) ModelID(ctx context.Context) (string, error) {
+	info, err := fetchInfo(ctx, c.baseURL, c.httpClient)
+	if err != nil {
+		return "", err
+	}
+	if info.ModelID == "" {
+		return "", fmt.Errorf("TEI /info reported no model_id")
+	}
+	return info.ModelID, nil
 }
 
 // embedRequest is the JSON body sent to the TEI /embed endpoint.

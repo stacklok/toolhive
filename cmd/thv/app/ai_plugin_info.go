@@ -6,6 +6,7 @@ package app
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"maps"
 	"os"
 	"slices"
@@ -81,6 +82,7 @@ func printAIPluginInfoText(info *plugins.PluginInfo) {
 
 	_, _ = fmt.Fprintf(w, "Name:\t%s\n", info.Metadata.Name)
 	_, _ = fmt.Fprintf(w, "Version:\t%s\n", info.Metadata.Version)
+	printAIPluginTrustState(w, info)
 	_, _ = fmt.Fprintf(w, "Description:\t%s\n", info.Metadata.Description)
 
 	if s := info.InstalledPlugin; s != nil {
@@ -121,6 +123,30 @@ func printAIPluginInfoText(info *plugins.PluginInfo) {
 	}
 
 	_ = w.Flush()
+}
+
+// printAIPluginTrustState renders the trust anchor the lock file records for
+// the plugin. Every state gets a line of its own: a state that rendered as no
+// trust block would be indistinguishable from a plugin nothing is pinning.
+func printAIPluginTrustState(w io.Writer, info *plugins.PluginInfo) {
+	switch {
+	// Checked before the identity cases: a key-pinned entry has no signer
+	// identity and no cert issuer, so those would render as empty values and
+	// read exactly like an untracked install.
+	case info.Provenance != nil && info.Provenance.PublicKey != "":
+		_, _ = fmt.Fprintf(w, "Signed by:\t(cosign key pair)\n")
+		_, _ = fmt.Fprintf(w, "Public key:\t%s\n", info.Provenance.PublicKey)
+	case info.Provenance != nil && info.Provenance.Provisional:
+		_, _ = fmt.Fprintf(w, "Signed by:\t%s (provisional)\n", info.Provenance.SignerIdentity)
+		_, _ = fmt.Fprintf(w, "Cert issuer:\t%s\n", info.Provenance.CertIssuer)
+	case info.Provenance != nil:
+		_, _ = fmt.Fprintf(w, "Signed by:\t%s\n", info.Provenance.SignerIdentity)
+		_, _ = fmt.Fprintf(w, "Cert issuer:\t%s\n", info.Provenance.CertIssuer)
+	case info.Unsigned:
+		_, _ = fmt.Fprintf(w, "Signed by:\t(unsigned — explicit exception)\n")
+	case info.TrustUnrecorded:
+		_, _ = fmt.Fprintf(w, "Signed by:\t(trust unrecorded — run 'thv ai-plugin sync')\n")
+	}
 }
 
 // formatComponentInventory renders a ComponentInventory (map[string]int) as a

@@ -93,6 +93,10 @@ const (
 	Factory ClientApp = "factory"
 	// CopilotCli represents the GitHub Copilot CLI.
 	CopilotCli ClientApp = "copilot-cli"
+	// Qoder represents the Qoder IDE.
+	Qoder ClientApp = "qoder"
+	// Pi represents the Pi coding agent.
+	Pi ClientApp = "pi"
 )
 
 const (
@@ -103,8 +107,9 @@ const (
 	Xcode LLMClientApp = "xcode"
 
 	// ClaudeDesktop represents the Claude Desktop app configured for LLM gateway
-	// routing via its "third-party inference" surface. Only LLM-gateway support is
-	// wired here (not MCP), so it is declared as LLMClientApp — same rationale as
+	// routing via its "third-party inference" surface. ToolHive workloads are not
+	// registered with it (remote MCP servers are added with "thv client
+	// connector" instead), so it is declared as LLMClientApp — same rationale as
 	// Xcode above.
 	ClaudeDesktop LLMClientApp = "claude-desktop"
 )
@@ -165,10 +170,11 @@ const (
 //   - ValueField names which ApplyConfig field to write. Valid values:
 //     "GatewayURL", "AnthropicBaseURL", "ProxyBaseURL", "ProxyOrigin",
 //     "TokenHelperCommand", "PlaceholderAPIKey", "ClaudeCodeHelperTTLMillis",
-//     "NodeTLSRejectUnauthorized", "BedrockDisableExperimentalBetas",
-//     "BedrockHaikuModel", "BedrockOpusModel", "BedrockSonnetModel". An
-//     unrecognised ValueField is a programming error and causes
-//     ConfigureLLMGateway to return an error.
+//     "NodeTLSRejectUnauthorized", "PromptCacheTTL",
+//     "PromptCache1HLegacy",
+//     "BedrockDisableExperimentalBetas", "BedrockHaikuModel",
+//     "BedrockOpusModel", "BedrockSonnetModel", "BedrockFableModel". An unrecognised ValueField is
+//     a programming error and causes ConfigureLLMGateway to return an error.
 //   - Literal is written verbatim into the settings key (e.g. a fixed auth
 //     type string). Use Literal instead of ValueField for constant values so
 //     that typos in ValueField are caught as errors rather than silently
@@ -182,8 +188,9 @@ type LLMGatewayKeySpec struct {
 	JSONPointer string // RFC 6901 path
 	// ValueField: "GatewayURL" | "AnthropicBaseURL" | "ProxyBaseURL" | "ProxyOrigin" |
 	// "TokenHelperCommand" | "PlaceholderAPIKey" | "ClaudeCodeHelperTTLMillis" |
-	// "NodeTLSRejectUnauthorized" | "BedrockDisableExperimentalBetas" |
-	// "BedrockHaikuModel" | "BedrockOpusModel" | "BedrockSonnetModel"
+	// "NodeTLSRejectUnauthorized" | "PromptCacheTTL" | "PromptCache1HLegacy" |
+	// "BedrockDisableExperimentalBetas" | "BedrockHaikuModel" |
+	// "BedrockOpusModel" | "BedrockSonnetModel" | "BedrockFableModel"
 	ValueField     string
 	Literal        string // constant value written verbatim; mutually exclusive with ValueField
 	ClearWhenEmpty bool   // remove the key when the resolved value is empty (ignored for Literal)
@@ -230,6 +237,12 @@ type clientAppConfig struct {
 	YAMLDefaults        map[string]any  // Default values to add to entries
 	// TOML-specific configuration (only used when Extension == TOML)
 	TOMLStorageType TOMLStorageType // How servers are stored in TOML (map or array)
+	// ConfigDirEnvVar names an environment variable that, when set, relocates
+	// the client's config directory. It replaces the home-relative directory
+	// holding SettingsFile and LLMSettingsFile, and the global skills directory
+	// becomes <dir>/skills. A leading "~" expands to the home directory and a
+	// relative value resolves against the working directory.
+	ConfigDirEnvVar string
 	// Skill-specific configuration
 	SupportsSkills    bool     // Whether this client supports skills
 	SkillsGlobalPath  []string // Path segments for global skills dir (from home dir)
@@ -423,19 +436,14 @@ var supportedClientIntegrations = []clientAppConfig{
 		SupportsSkills:    true,
 		SkillsGlobalPath:  []string{".copilot", skillsDirName},
 		SkillsProjectPath: []string{".github", skillsDirName},
-		// LLM gateway: patches settings.json (same dir as mcp.json, different file)
-		LLMGatewayMode:     llmgateway.ModeProxy,
-		LLMBinaryName:      "code-insiders",
-		LLMSettingsFile:    "settings.json",
+		// VS Code reads custom LLM provider groups from chatLanguageModels.json.
+		LLMGatewayMode:     llmgateway.ModeVSCode,
+		LLMSettingsFile:    "chatLanguageModels.json",
 		LLMSettingsRelPath: []string{"Code - Insiders", "User"},
 		LLMSettingsPlatformPrefix: map[Platform][]string{
 			PlatformLinux:   {".config"},
 			PlatformDarwin:  {"Library", "Application Support"},
 			PlatformWindows: {"AppData", "Roaming"},
-		},
-		LLMGatewayKeys: []LLMGatewayKeySpec{
-			{JSONPointer: "/github.copilot.advanced.serverUrl", ValueField: "ProxyBaseURL"},
-			{JSONPointer: "/github.copilot.advanced.apiKey", ValueField: "PlaceholderAPIKey"},
 		},
 	},
 	{
@@ -466,19 +474,14 @@ var supportedClientIntegrations = []clientAppConfig{
 		SupportsSkills:    true,
 		SkillsGlobalPath:  []string{".copilot", skillsDirName},
 		SkillsProjectPath: []string{".github", skillsDirName},
-		// LLM gateway: patches settings.json (same dir as mcp.json, different file)
-		LLMGatewayMode:     llmgateway.ModeProxy,
-		LLMBinaryName:      "code",
-		LLMSettingsFile:    "settings.json",
+		// VS Code reads custom LLM provider groups from chatLanguageModels.json.
+		LLMGatewayMode:     llmgateway.ModeVSCode,
+		LLMSettingsFile:    "chatLanguageModels.json",
 		LLMSettingsRelPath: []string{"Code", "User"},
 		LLMSettingsPlatformPrefix: map[Platform][]string{
 			PlatformLinux:   {".config"},
 			PlatformDarwin:  {"Library", "Application Support"},
 			PlatformWindows: {"AppData", "Roaming"},
-		},
-		LLMGatewayKeys: []LLMGatewayKeySpec{
-			{JSONPointer: "/github.copilot.advanced.serverUrl", ValueField: "ProxyBaseURL"},
-			{JSONPointer: "/github.copilot.advanced.apiKey", ValueField: "PlaceholderAPIKey"},
 		},
 	},
 	{
@@ -506,7 +509,6 @@ var supportedClientIntegrations = []clientAppConfig{
 		SkillsProjectPath: []string{".cursor", skillsDirName},
 		// LLM gateway: patches the editor settings.json (different from the MCP mcp.json)
 		LLMGatewayMode:     llmgateway.ModeProxy,
-		LLMBinaryName:      "cursor",
 		LLMSettingsFile:    "settings.json",
 		LLMSettingsRelPath: []string{"Cursor", "User"},
 		LLMSettingsPlatformPrefix: map[Platform][]string{
@@ -555,9 +557,18 @@ var supportedClientIntegrations = []clientAppConfig{
 			// source's preemptive refresh window — together they guarantee the helper
 			// never returns an about-to-expire token.
 			{JSONPointer: "/env/CLAUDE_CODE_API_KEY_HELPER_TTL_MS", ValueField: "ClaudeCodeHelperTTLMillis"},
+			// Populate the /model picker from the gateway's GET /v1/models on each
+			// startup, so models the gateway adds appear without re-running setup.
+			{JSONPointer: "/env/CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY", Literal: "1"},
 			// NODE_TLS_REJECT_UNAUTHORIZED is only written when --tls-skip-verify is set.
 			// ClearWhenEmpty ensures it is removed when the flag is later cleared.
 			{JSONPointer: "/env/NODE_TLS_REJECT_UNAUTHORIZED", ValueField: "NodeTLSRejectUnauthorized", ClearWhenEmpty: true},
+			// Current Claude Code versions expose separate controls for the main
+			// conversation and auxiliary requests. ENABLE_PROMPT_CACHING_1H is the
+			// fallback for versions that predate those per-bucket settings.
+			{JSONPointer: "/promptCacheTtl", ValueField: "PromptCacheTTL", ClearWhenEmpty: true},
+			{JSONPointer: "/subagentPromptCacheTtl", ValueField: "PromptCacheTTL", ClearWhenEmpty: true},
+			{JSONPointer: "/env/ENABLE_PROMPT_CACHING_1H", ValueField: "PromptCache1HLegacy", ClearWhenEmpty: true},
 			// Bedrock-compat keys (written only with --bedrock-compat). Bedrock rejects
 			// Claude Code's experimental anthropic-beta headers, so betas are disabled;
 			// the per-tier model IDs pin Bedrock inference-profile IDs. All use
@@ -570,6 +581,7 @@ var supportedClientIntegrations = []clientAppConfig{
 			{JSONPointer: "/env/ANTHROPIC_DEFAULT_HAIKU_MODEL", ValueField: "BedrockHaikuModel", ClearWhenEmpty: true},
 			{JSONPointer: "/env/ANTHROPIC_DEFAULT_OPUS_MODEL", ValueField: "BedrockOpusModel", ClearWhenEmpty: true},
 			{JSONPointer: "/env/ANTHROPIC_DEFAULT_SONNET_MODEL", ValueField: "BedrockSonnetModel", ClearWhenEmpty: true},
+			{JSONPointer: "/env/ANTHROPIC_DEFAULT_FABLE_MODEL", ValueField: "BedrockFableModel", ClearWhenEmpty: true},
 		},
 	},
 	{
@@ -1006,6 +1018,61 @@ var supportedClientIntegrations = []clientAppConfig{
 		},
 	},
 	{
+		ClientType:           Qoder,
+		Description:          "Qoder IDE",
+		SettingsFile:         "mcp.json",
+		MCPServersPathPrefix: "/mcpServers",
+		RelPath:              []string{},
+		PlatformPrefix: map[Platform][]string{
+			PlatformDarwin:  {".qoder"},
+			PlatformLinux:   {".qoder"},
+			PlatformWindows: {"AppData", "Roaming", "Qoder", "SharedClientCache"},
+		},
+		Extension:                     JSON,
+		IsTransportTypeFieldSupported: true,
+		SupportedTransportTypesMap: map[types.TransportType]string{
+			types.TransportTypeStdio:          httpTransportLabel,
+			types.TransportTypeSSE:            "sse",
+			types.TransportTypeStreamableHTTP: httpTransportLabel,
+		},
+		MCPServersUrlLabelMap: map[types.TransportType]string{
+			types.TransportTypeStdio:          defaultURLFieldName,
+			types.TransportTypeSSE:            defaultURLFieldName,
+			types.TransportTypeStreamableHTTP: defaultURLFieldName,
+		},
+		SupportsSkills:    true,
+		SkillsGlobalPath:  []string{".qoder", skillsDirName},
+		SkillsProjectPath: []string{".qoder", skillsDirName},
+	},
+	{
+		ClientType:           Pi,
+		Description:          "Pi coding agent",
+		SettingsFile:         "mcp.json",
+		MCPServersPathPrefix: "/mcpServers",
+		RelPath:              []string{".pi", "agent"},
+		Extension:            JSON,
+		// Pi rejects the legacy "sse" type, so SSE is intentionally unmapped
+		// and no type field is written for SSE servers.
+		SupportedTransportTypesMap: map[types.TransportType]string{
+			types.TransportTypeStdio:          httpTransportLabel,
+			types.TransportTypeStreamableHTTP: httpTransportLabel,
+		},
+		IsTransportTypeFieldSupported: true,
+		MCPServersUrlLabelMap: map[types.TransportType]string{
+			types.TransportTypeStdio:          defaultURLFieldName,
+			types.TransportTypeSSE:            defaultURLFieldName,
+			types.TransportTypeStreamableHTTP: defaultURLFieldName,
+		},
+		ConfigDirEnvVar:    "PI_CODING_AGENT_DIR",
+		SupportsSkills:     true,
+		SkillsGlobalPath:   []string{".pi", "agent", skillsDirName},
+		SkillsProjectPath:  []string{".pi", skillsDirName},
+		LLMGatewayMode:     llmgateway.ModePi,
+		LLMBinaryName:      "pi",
+		LLMSettingsFile:    "models.json",
+		LLMSettingsRelPath: []string{".pi", "agent"},
+	},
+	{
 		// Xcode does not support MCP; it is an LLM-gateway-only entry.
 		// Cast LLMClientApp → ClientApp for internal config storage; the type
 		// distinction matters only for swag enum generation (see LLMClientApp).
@@ -1029,8 +1096,10 @@ var supportedClientIntegrations = []clientAppConfig{
 		// document per saved config plus a _meta.json selector naming the active
 		// one. That document model does not fit JSON-key patching, so this entry
 		// uses LLMGatewayMode "credential-helper" and carries no LLMGatewayKeys —
-		// the dedicated credential-helper writer handles it. LLM-gateway-only (MCP
-		// not wired). Cast LLMClientApp → ClientApp for internal storage.
+		// the dedicated credential-helper writer handles it. LLM-gateway-only for
+		// workload registration; remote MCP servers are added to the same document
+		// by "thv client connector" instead. Cast LLMClientApp → ClientApp for
+		// internal storage.
 		ClientType:     ClientApp(ClaudeDesktop),
 		Description:    "Claude Desktop",
 		LLMGatewayOnly: true,
@@ -1231,7 +1300,7 @@ func (cm *ClientManager) CreateClientConfig(clientType ClientApp) (*ConfigFile, 
 	}
 
 	// Build the path to the configuration file
-	path := buildConfigFilePath(clientCfg.SettingsFile, clientCfg.RelPath, clientCfg.PlatformPrefix, []string{cm.homeDir})
+	path := cm.buildMCPConfigPath(clientCfg)
 
 	// Validate that the file does not already exist
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
@@ -1337,7 +1406,7 @@ func (cm *ClientManager) retrieveConfigFileMetadata(clientType ClientApp) (*Conf
 	}
 
 	// Build the path to the configuration file
-	path := buildConfigFilePath(clientCfg.SettingsFile, clientCfg.RelPath, clientCfg.PlatformPrefix, []string{cm.homeDir})
+	path := cm.buildMCPConfigPath(clientCfg)
 
 	// Validate that the file exists
 	if err := validateConfigFileExists(path); err != nil {
@@ -1389,6 +1458,38 @@ func (cm *ClientManager) retrieveConfigFileMetadata(clientType ClientApp) (*Conf
 		ClientType:    clientCfg.ClientType,
 		Extension:     clientCfg.Extension,
 	}, nil
+}
+
+// buildMCPConfigPath resolves the absolute path to the client's MCP settings
+// file, honoring cfg.ConfigDirEnvVar when it is set.
+func (cm *ClientManager) buildMCPConfigPath(cfg *clientAppConfig) string {
+	if dir := cm.configDirOverride(cfg); dir != "" {
+		return filepath.Join(dir, cfg.SettingsFile)
+	}
+	return buildConfigFilePath(cfg.SettingsFile, cfg.RelPath, cfg.PlatformPrefix, []string{cm.homeDir})
+}
+
+// configDirOverride returns the absolute directory named by cfg.ConfigDirEnvVar,
+// or "" when the client has no override variable or it is unset.
+func (cm *ClientManager) configDirOverride(cfg *clientAppConfig) string {
+	if cfg.ConfigDirEnvVar == "" {
+		return ""
+	}
+	dir := os.Getenv(cfg.ConfigDirEnvVar)
+	switch {
+	case dir == "":
+		return ""
+	case dir == "~":
+		dir = cm.homeDir
+	case strings.HasPrefix(dir, "~/"):
+		dir = filepath.Join(cm.homeDir, dir[2:])
+	}
+	if !filepath.IsAbs(dir) {
+		if absolute, err := filepath.Abs(dir); err == nil {
+			dir = absolute
+		}
+	}
+	return dir
 }
 
 func buildConfigFilePath(settingsFile string, relPath []string, platformPrefix map[Platform][]string, path []string) string {

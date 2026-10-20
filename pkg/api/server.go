@@ -23,9 +23,11 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"mime"
 	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -59,6 +61,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/skills/gitresolver"
 	"github.com/stacklok/toolhive/pkg/skills/skillsvc"
 	"github.com/stacklok/toolhive/pkg/storage/sqlite"
+	"github.com/stacklok/toolhive/pkg/transport/middleware/origin"
 	"github.com/stacklok/toolhive/pkg/updates"
 	"github.com/stacklok/toolhive/pkg/workloads"
 )
@@ -74,30 +77,31 @@ const (
 	readTimeout        = 30 * time.Second
 	idleTimeout        = 120 * time.Second
 	shutdownTimeout    = 30 * time.Second
-	nonceBytes         = 16
+	randomTokenBytes   = 16
 	socketPermissions  = 0660    // Socket file permissions (owner/group read-write)
 	maxRequestBodySize = 1 << 20 // 1MB - Maximum request body size
 )
 
 // ServerBuilder provides a fluent interface for building and configuring the API server
 type ServerBuilder struct {
-	address           string
-	isUnixSocket      bool
-	debugMode         bool
-	enableDocs        bool
-	nonce             string
-	oidcConfig        *auth.TokenValidatorConfig
-	otelEnabled       bool
-	middlewares       []func(http.Handler) http.Handler
-	customRoutes      map[string]http.Handler
-	containerRuntime  runtime.Runtime
-	clientManager     client.Manager
-	workloadManager   workloads.Manager
-	groupManager      groups.Manager
-	skillManager      skills.SkillService
-	skillStoreCloser  io.Closer
-	pluginManager     plugins.PluginService
-	pluginStoreCloser io.Closer
+	address              string
+	isUnixSocket         bool
+	debugMode            bool
+	enableDocs           bool
+	nonce                string
+	keySigningCapability string
+	oidcConfig           *auth.TokenValidatorConfig
+	otelEnabled          bool
+	middlewares          []func(http.Handler) http.Handler
+	customRoutes         map[string]http.Handler
+	containerRuntime     runtime.Runtime
+	clientManager        client.Manager
+	workloadManager      workloads.Manager
+	groupManager         groups.Manager
+	skillManager         skills.SkillService
+	skillStoreCloser     io.Closer
+	pluginManager        plugins.PluginService
+	pluginStoreCloser    io.Closer
 }
 
 // NewServerBuilder creates a new ServerBuilder with default configuration
@@ -140,6 +144,13 @@ func (b *ServerBuilder) WithNonce(nonce string) *ServerBuilder {
 	return b
 }
 
+// WithKeySigningCapability sets the bearer capability required by requests
+// that ask the server to open a private signing key.
+func (b *ServerBuilder) WithKeySigningCapability(capability string) *ServerBuilder {
+	b.keySigningCapability = capability
+	return b
+}
+
 // WithOIDCConfig sets the OIDC configuration
 func (b *ServerBuilder) WithOIDCConfig(oidcConfig *auth.TokenValidatorConfig) *ServerBuilder {
 	b.oidcConfig = oidcConfig
@@ -156,7 +167,8 @@ func (b *ServerBuilder) WithOtelEnabled(enabled bool) *ServerBuilder {
 }
 
 // WithMiddleware appends HTTP middleware that runs after the default middleware
-// stack (request-ID, body-size limit, headers, update-check, auth) and before
+// stack (request-ID, body-size limit, headers, update-check, Origin validation,
+// JSON content-type enforcement, auth) and before route handlers. Part of the
 // route handlers. Part of the ApplyServerExtensions extension point — used by
 // downstream consumers to inject custom authentication or request-scoping
 // middleware into the API server.
@@ -226,6 +238,40 @@ func (b *ServerBuilder) Build(ctx context.Context) (*chi.Mux, error) {
 
 	// Add update check middleware
 	r.Use(updateCheckMiddleware())
+
+	// Reject cross-origin browser requests before they reach auth or handlers.
+	// The management API creates workloads with caller-named host bind mounts,
+	// so a cross-origin page must not be able to drive it (GHSA-xv9h-79wp-q9w6).
+	// Skipped for UNIX-socket mode, which no web page can reach.
+	if !b.isUnixSocket {
+		// A loopback bind yields a loopback-only allowlist; a non-loopback bind
+		// (or --port 0, whose real port is unknown until the listener binds)
+		// yields none, which makes origin.NewHandler a pass-through — matching
+		// the `thv proxy` behaviour, where operators exposing a public listener
+		// must front it with a reverse proxy that enforces Origin. We WARN in
+		// that case so the disabled protection is visible. A parse error needs
+		// no handling here: the same address fails net.Listen in NewServer, so
+		// there is no running-but-unprotected window.
+		if host, portStr, err := net.SplitHostPort(b.address); err == nil {
+			port, _ := strconv.Atoi(portStr) // non-numeric → 0 → empty allowlist below
+			allowed := origin.ResolveAllowedOrigins(host, port, nil)
+			if len(allowed) == 0 {
+				slog.Warn("API server Origin validation is disabled for this bind address; "+
+					"cross-origin browser requests are not rejected at this layer. "+
+					"Front a non-loopback listener with a reverse proxy that enforces Origin.",
+					"address", b.address)
+			}
+			r.Use(origin.NewHandler(allowed))
+		}
+		// Defence in depth: require application/json on state-changing requests
+		// that carry a body. text/plain, form encodings, and an absent
+		// Content-Type are all CORS "simple" — a cross-origin page can send them
+		// with no preflight, and the handlers decode any body as JSON regardless
+		// of Content-Type. Requiring application/json forces a preflight the
+		// browser will not clear. Empty-body mutating routes (e.g. stop/restart)
+		// are unaffected.
+		r.Use(enforceJSONContentType)
+	}
 
 	// Add authentication middleware
 	authMiddleware, _, err := auth.GetAuthenticationMiddleware(ctx, b.oidcConfig)
@@ -411,10 +457,12 @@ func (b *ServerBuilder) setupDefaultRoutes(r *chi.Mux) {
 
 	// Skills router does the same: install, sync, and upgrade pull OCI
 	// artifacts, so a flat 60s cap would sever them mid-transfer.
-	r.Mount("/api/v1beta/skills", v1.SkillsRouter(b.skillManager))
+	r.Mount("/api/v1beta/skills", v1.SkillsRouter(b.skillManager,
+		v1.WithKeySigningCapability(b.keySigningCapability)))
 
 	// Plugins router likewise: install, build, and push move OCI artifacts.
-	r.Mount("/api/v1beta/plugins", v1.PluginsRouter(b.pluginManager))
+	r.Mount("/api/v1beta/plugins", v1.PluginsRouter(b.pluginManager,
+		v1.WithKeySigningCapability(b.keySigningCapability)))
 
 	// All other routes get standard timeout
 	standardRouters := map[string]http.Handler{
@@ -456,6 +504,39 @@ func isNamedPipeAddress(address string) bool {
 
 func setupTCPListener(address string) (net.Listener, error) {
 	return net.Listen("tcp", address)
+}
+
+// enforceJSONContentType refuses state-changing requests that carry a body
+// without an application/json content type. The three CORS "simple" content
+// types (text/plain, application/x-www-form-urlencoded, multipart/form-data)
+// and an absent Content-Type are all exempt from CORS preflight, so a
+// cross-origin page can send them without the browser consulting the server;
+// the handlers then decode the body as JSON regardless of Content-Type
+// (GHSA-xv9h-79wp-q9w6). Requiring application/json forces a preflight the
+// browser will not clear.
+//
+// Requests with no body are left alone: ContentLength is 0 for an empty body,
+// so mutating routes that take no body (e.g. /workloads/{name}/stop) still
+// work. A chunked request has ContentLength -1 (unknown), which is != 0 and so
+// takes the strict path — the safe choice. GET/HEAD are never gated.
+func enforceJSONContentType(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
+			if r.ContentLength == 0 {
+				break // no body to decode, nothing to smuggle
+			}
+			// mime.ParseMediaType lowercases the type and strips any
+			// ";charset=" parameter, so "application/json; charset=UTF-8"
+			// still matches; an absent or unparsable value fails closed.
+			mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+			if err != nil || mediaType != "application/json" {
+				http.Error(w, "unsupported content type", http.StatusUnsupportedMediaType)
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func headersMiddleware(next http.Handler) http.Handler {
@@ -514,14 +595,15 @@ func getComponentAndVersionFromRequest(r *http.Request) (string, string, bool) {
 
 // Server represents a configured HTTP server
 type Server struct {
-	httpServer        *http.Server
-	listener          net.Listener
-	address           string
-	isUnixSocket      bool
-	addrType          string
-	nonce             string
-	skillStoreCloser  io.Closer
-	pluginStoreCloser io.Closer
+	httpServer           *http.Server
+	listener             net.Listener
+	address              string
+	isUnixSocket         bool
+	addrType             string
+	nonce                string
+	keySigningCapability string
+	skillStoreCloser     io.Closer
+	pluginStoreCloser    io.Closer
 }
 
 // NewServer creates a new Server instance from a pre-configured builder
@@ -553,14 +635,15 @@ func NewServer(ctx context.Context, builder *ServerBuilder) (*Server, error) {
 	}
 
 	return &Server{
-		httpServer:        httpServer,
-		listener:          listener,
-		address:           builder.address,
-		isUnixSocket:      builder.isUnixSocket,
-		addrType:          addrType,
-		nonce:             builder.nonce,
-		skillStoreCloser:  builder.skillStoreCloser,
-		pluginStoreCloser: builder.pluginStoreCloser,
+		httpServer:           httpServer,
+		listener:             listener,
+		address:              builder.address,
+		isUnixSocket:         builder.isUnixSocket,
+		addrType:             addrType,
+		nonce:                builder.nonce,
+		keySigningCapability: builder.keySigningCapability,
+		skillStoreCloser:     builder.skillStoreCloser,
+		pluginStoreCloser:    builder.pluginStoreCloser,
 	}, nil
 }
 
@@ -655,10 +738,11 @@ func (s *Server) writeDiscoveryFile(ctx context.Context) error {
 		}
 
 		info := &discovery.ServerInfo{
-			URL:       s.ListenURL(),
-			PID:       os.Getpid(),
-			Nonce:     s.nonce,
-			StartedAt: time.Now().UTC(),
+			URL:                  s.ListenURL(),
+			PID:                  os.Getpid(),
+			Nonce:                s.nonce,
+			KeySigningCapability: s.keySigningCapability,
+			StartedAt:            time.Now().UTC(),
 		}
 		if err := discovery.WriteServerInfo(info); err != nil {
 			return fmt.Errorf("failed to write discovery file: %w", err)
@@ -877,9 +961,9 @@ func (lazyPluginLookup) SearchPlugins(_ context.Context, query string) ([]plugin
 // pluginHitsFromRegistry adapts registry plugin search results to the
 // pluginsvc lookup shape. The OCI reference lives in SkillPackage.Identifier
 // on the wire; pluginsvc consumes it as PluginPackage.Reference. Namespace,
-// Version, and Digest are carried through so the install flow can disambiguate
-// by namespace, honor an explicit version request, and pin to a verified
-// digest.
+// Version, Digest, and Provenance are carried through so the install flow can
+// disambiguate by namespace, honor an explicit version request, pin to a
+// verified digest, and enforce catalog-declared trust on true first use.
 func pluginHitsFromRegistry(regPlugins []regtypes.Plugin) []pluginsvc.PluginSearchHit {
 	hits := make([]pluginsvc.PluginSearchHit, 0, len(regPlugins))
 	for i := range regPlugins {
@@ -898,6 +982,7 @@ func pluginHitsFromRegistry(regPlugins []regtypes.Plugin) []pluginsvc.PluginSear
 			Version:     p.Version,
 			Description: p.Description,
 			Packages:    pkgs,
+			Provenance:  p.Provenance,
 		})
 	}
 	return hits
@@ -961,9 +1046,19 @@ func chiRouteSpanNamer(next http.Handler) http.Handler {
 
 // GenerateNonce generates a random nonce for server instance identification.
 func GenerateNonce() (string, error) {
-	b := make([]byte, nonceBytes)
+	return generateRandomToken("server nonce")
+}
+
+// GenerateKeySigningCapability generates a bearer capability for authorizing
+// requests that ask the API server to open a private signing key.
+func GenerateKeySigningCapability() (string, error) {
+	return generateRandomToken("key-signing capability")
+}
+
+func generateRandomToken(name string) (string, error) {
+	b := make([]byte, randomTokenBytes)
 	if _, err := rand.Read(b); err != nil {
-		return "", fmt.Errorf("failed to generate server nonce: %w", err)
+		return "", fmt.Errorf("failed to generate %s: %w", name, err)
 	}
 	return hex.EncodeToString(b), nil
 }

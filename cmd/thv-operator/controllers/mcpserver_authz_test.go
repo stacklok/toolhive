@@ -355,7 +355,8 @@ func TestValidateAuthzPrimaryUpstreamProviderIgnored(t *testing.T) {
 			authzConfig: &mcpv1beta1.AuthzConfigRef{
 				Type: mcpv1beta1.AuthzConfigTypeInline,
 				Inline: &mcpv1beta1.InlineAuthzConfig{
-					Policies:                []string{`permit(principal, action, resource);`},
+					Policies: []string{`permit(principal, action, resource);`},
+					//nolint:staticcheck // Exercises the advisory emitted for the deprecated field.
 					PrimaryUpstreamProvider: "okta",
 				},
 			},

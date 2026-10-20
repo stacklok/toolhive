@@ -15,7 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
-	tcredis "github.com/stacklok/toolhive-core/redis"
+	"github.com/stacklok/toolhive-core/redisconn"
 	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
@@ -111,7 +111,7 @@ func TestRegression_OriginPod_RejectsRequestAfterCrossPodTermination(t *testing.
 	terminatorFactory := sessionfactorymocks.NewMockMultiSessionFactory(ctrl)
 	terminatorStorage, err := transportsession.NewRedisSessionDataStorage(
 		context.Background(),
-		tcredis.Config{Addr: mr.Addr()},
+		redisconn.Config{Addr: mr.Addr()},
 		sharedRedisSessionKeyPrefix,
 		time.Hour,
 	)

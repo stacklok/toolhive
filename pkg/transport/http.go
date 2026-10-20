@@ -36,19 +36,20 @@ const (
 
 // HTTPTransport implements the Transport interface using Server-Sent/Streamable Events.
 type HTTPTransport struct {
-	transportType     types.TransportType
-	host              string
-	proxyPort         int
-	targetPort        int
-	targetHost        string
-	containerName     string
-	targetURI         string
-	deployer          rt.Deployer
-	debug             bool
-	middlewares       []types.NamedMiddleware
-	prometheusHandler http.Handler
-	authInfoHandler   http.Handler
-	prefixHandlers    map[string]http.Handler
+	transportType      types.TransportType
+	host               string
+	proxyPort          int
+	targetPort         int
+	targetHost         string
+	containerName      string
+	targetURI          string
+	deployer           rt.Deployer
+	debug              bool
+	middlewares        []types.NamedMiddleware
+	prometheusHandler  http.Handler
+	authInfoHandler    http.Handler
+	prefixHandlers     map[string]http.Handler
+	stripConsentCookie bool
 
 	// endpointPrefix is an explicit prefix to prepend to SSE endpoint URLs
 	endpointPrefix string
@@ -85,6 +86,10 @@ type HTTPTransport struct {
 	// sessionTTL overrides the inactivity timeout for sessions managed by the
 	// underlying proxy. Zero uses the proxy's default.
 	sessionTTL time.Duration
+
+	// readTimeout overrides http.Server.ReadTimeout on the underlying transparent
+	// proxy. Zero uses the proxy's default.
+	readTimeout time.Duration
 
 	// Transparent proxy
 	proxy types.Proxy
@@ -440,8 +445,14 @@ func (t *HTTPTransport) buildProxyOptions(remoteBasePath, remoteRawQuery string)
 	if t.sessionTTL > 0 {
 		opts = append(opts, transparent.WithSessionTTL(t.sessionTTL))
 	}
+	if t.readTimeout > 0 {
+		opts = append(opts, transparent.WithReadTimeout(t.readTimeout))
+	}
 	if t.sessionStorage != nil {
 		opts = append(opts, transparent.WithSessionStorage(t.sessionStorage))
+	}
+	if t.stripConsentCookie {
+		opts = append(opts, transparent.WithStripConsentCookie())
 	}
 	return opts
 }

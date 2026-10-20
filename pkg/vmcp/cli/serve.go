@@ -230,7 +230,7 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 			return fmt.Errorf("VMCP_NAMESPACE environment variable not set")
 		}
 
-		backendWatcher, err = k8s.NewBackendWatcher(restConfig, namespace, vmcpCfg.Group, dynamicRegistry)
+		backendWatcher, err = k8s.NewBackendWatcher(restConfig, namespace, vmcpCfg.Group, dynamicRegistry, vmcpCfg.OutgoingAuth)
 		if err != nil {
 			return fmt.Errorf("failed to create backend watcher: %w", err)
 		}
@@ -350,11 +350,10 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	}
 	// The factory never aggregates — the core is the single source of capability
 	// aggregation (agg feeds it via Config.Aggregator below).
-	var sessionFactoryOpts []vmcpsession.MultiSessionFactoryOption
-	if revisions, ok := backendClient.(vmcp.RevisionReporter); ok {
-		sessionFactoryOpts = append(sessionFactoryOpts, vmcpsession.WithRevisionLookup(revisions.CachedRevision))
-	}
-	sessionFactory := vmcpsession.NewSessionFactory(outgoingRegistry, sessionFactoryOpts...)
+	sessionFactory := vmcpsession.NewSessionFactory(
+		outgoingRegistry,
+		sessionFactoryOptions(vmcpCfg, backendClient)...,
+	)
 
 	// When the optimizer is enabled, its meta-tools are pass-through tools.
 	// Authz uses this for optimizer-aware authorization/filtering.
@@ -369,15 +368,18 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	// Extract dependencies from the embedded auth server.
 	var upstreamReader upstreamtoken.TokenReader
 	var keyProvider keys.PublicKeyProvider
+	var embeddedAuthServerIssuer string
 	if embeddedAuthServer != nil {
 		stor := embeddedAuthServer.IDPTokenStorage()
 		refresher := embeddedAuthServer.UpstreamTokenRefresher()
 		upstreamReader = upstreamtoken.NewInProcessService(stor, refresher)
 		keyProvider = embeddedAuthServer.KeyProvider()
+		embeddedAuthServerIssuer = authServerRC.Issuer
 	}
 
 	authMiddleware, authzMiddleware, authInfoHandler, err :=
-		authfactory.NewIncomingAuthMiddleware(ctx, vmcpCfg.IncomingAuth, vmcpCfg.Name, passThroughTools, upstreamReader, keyProvider)
+		authfactory.NewIncomingAuthMiddleware(ctx, vmcpCfg.IncomingAuth, vmcpCfg.Name, passThroughTools,
+			upstreamReader, keyProvider, embeddedAuthServerIssuer)
 	if err != nil {
 		return fmt.Errorf("failed to create authentication middleware: %w", err)
 	}
@@ -520,6 +522,80 @@ func getStatusReportingInterval(cfg *config.Config) time.Duration {
 	return 0
 }
 
+// backendRequestTimeoutResolver resolves the documented operational timeout
+// for a backend workload. Configuration loaded from YAML has defaults applied
+// and is immutable after startup; the defensive fallback also supports quick
+// mode and direct embedders that omit Operational.
+func backendRequestTimeoutResolver(cfg *config.Config) func(workloadID string) time.Duration {
+	timeouts := config.DefaultOperationalConfig().Timeouts
+	if cfg != nil && cfg.Operational != nil && cfg.Operational.Timeouts != nil {
+		timeouts = cfg.Operational.Timeouts
+	}
+
+	return func(workloadID string) time.Duration {
+		if timeout, ok := timeouts.PerWorkload[workloadID]; ok && timeout > 0 {
+			return time.Duration(timeout)
+		}
+		return time.Duration(timeouts.Default)
+	}
+}
+
+// sessionFactoryOptions builds the session factory options implied by cfg and
+// the backend client. Split out of Serve so the config-driven choices are
+// unit-testable without standing up a whole server.
+func sessionFactoryOptions(
+	cfg *config.Config,
+	backendClient vmcp.BackendClient,
+) []vmcpsession.MultiSessionFactoryOption {
+	var opts []vmcpsession.MultiSessionFactoryOption
+	if revisions, ok := backendClient.(vmcp.RevisionReporter); ok {
+		opts = append(opts, vmcpsession.WithRevisionLookup(revisions.CachedRevision))
+	}
+	opts = append(opts, vmcpsession.WithRequestTimeoutResolver(backendRequestTimeoutResolver(cfg)))
+	if backendInit := backendInitTimeout(cfg); backendInit > 0 {
+		opts = append(opts, vmcpsession.WithBackendInitTimeout(backendInit))
+	}
+	if filter := listChangedFilter(cfg); filter != nil {
+		opts = append(opts, vmcpsession.WithListChangedFilter(filter))
+	}
+	return opts
+}
+
+// backendInitTimeout returns the configured session-init cap, or 0 when unset
+// so the factory keeps its own default. Mirrors backendRequestTimeoutResolver's
+// nil-safety; there is no per-workload form because the cap exists to bound the
+// whole session handshake, which is only as fast as its slowest backend.
+func backendInitTimeout(cfg *config.Config) time.Duration {
+	if cfg == nil || cfg.Operational == nil || cfg.Operational.Timeouts == nil {
+		return 0
+	}
+	return time.Duration(cfg.Operational.Timeouts.BackendInit)
+}
+
+// listChangedFilter builds the per-backend list_changed predicate from cfg, or
+// returns nil when the config asks for the default (subscribe to everything) so
+// the factory keeps its own behaviour.
+func listChangedFilter(cfg *config.Config) func(workloadID string) bool {
+	if cfg == nil || cfg.Operational == nil || cfg.Operational.ListChanged == nil {
+		return nil
+	}
+	lc := cfg.Operational.ListChanged
+	if lc.Enabled != nil && !*lc.Enabled {
+		return func(string) bool { return false }
+	}
+	if len(lc.DisabledWorkloads) == 0 {
+		return nil
+	}
+	disabled := make(map[string]struct{}, len(lc.DisabledWorkloads))
+	for _, id := range lc.DisabledWorkloads {
+		disabled[id] = struct{}{}
+	}
+	return func(workloadID string) bool {
+		_, off := disabled[workloadID]
+		return !off
+	}
+}
+
 // loadAndValidateConfig loads and validates the vMCP configuration file.
 func loadAndValidateConfig(configPath string) (*config.Config, error) {
 	slog.Info(fmt.Sprintf("Loading configuration from: %s", configPath))
@@ -624,7 +700,10 @@ func discoverBackends(
 		return nil, nil, nil, fmt.Errorf("failed to create outgoing authentication registry: %w", err)
 	}
 
-	backendClient, err := vmcpclient.NewHTTPBackendClient(outgoingRegistry)
+	backendClient, err := vmcpclient.NewHTTPBackendClient(
+		outgoingRegistry,
+		vmcpclient.WithRequestTimeoutResolver(backendRequestTimeoutResolver(cfg)),
+	)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("failed to create backend client: %w", err)
 	}

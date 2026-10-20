@@ -187,6 +187,92 @@ thv skill push ghcr.io/org/my-skill:v1.0.0
 
 **Implementation:** `pkg/skills/skillsvc/build.go` (Push), `toolhive-core/oci/skills` (RegistryClient)
 
+**Signing:** Every push is signed by default — the RFC THV-0080 trust model
+has no unsigned publish path. `thv skill push` requires exactly one of three
+mutually exclusive choices:
+
+- `--key <path>`: sign with a cosign private key (`COSIGN_PASSWORD`
+  decrypts encrypted keys, read server-side by `thv serve`, which performs
+  the signing). This is accepted only through automatic local server
+  discovery: the owner-protected discovery file supplies a separate random
+  capability that the CLI sends with the key-bearing request. Loopback or IPC
+  transport alone is not authorization, because a public reverse proxy can
+  make an untrusted caller appear local. Remote and manually configured API
+  URLs must use keyless signing instead.
+- `--identity-token <token-or-path>`: sign keylessly. The CLI acquires an
+  OIDC identity token and forwards it in the push request; the server
+  exchanges it with Fulcio for a short-lived certificate, signs, and records
+  a Rekor transparency-log entry (`toolhive-core/container/signer`). The
+  server never handles long-lived credentials — only the already-acquired,
+  short-lived token.
+- `--no-sign`: push unsigned. Consumers installing project-scoped need an
+  explicit unsigned exception.
+
+When none of the three is given, `pkg/skills/identitytoken` runs an
+acquisition ladder before the push request is made, so a failure here never
+leaves an unsigned artifact published:
+
+1. A GitHub Actions ambient OIDC token, when the job has
+   `permissions: id-token: write` (`ACTIONS_ID_TOKEN_REQUEST_URL` /
+   `_TOKEN`, scoped to the `sigstore` audience).
+2. Otherwise, on an interactive terminal only: a y/N prompt, then a browser
+   sign-in against the public-good Sigstore OAuth instance
+   (`oauth2.sigstore.dev`).
+3. If neither yields a token (non-interactive with no ambient token, or the
+   prompt declined): the push fails with an actionable error naming all
+   three signing choices, never silently unsigned.
+
+`--key` and `--identity-token` are mutually exclusive; the identity token,
+once resolved, is always forwarded even alongside `--key` so the server
+reports the conflict rather than the client silently picking one.
+
+**Push happens before signing.** `skillsvc.Push` uploads the artifact to the
+registry first, then signs it and attaches the signature manifest. A signing
+failure therefore returns an error *after* the artifact is already published,
+leaving it live and unsigned in the registry — the acquisition ladder above
+narrows the window (a missing credential fails before anything is pushed) but
+does not close it, since Fulcio and Rekor can still fail once the upload has
+happened. Recovering means re-running the push, which re-signs the same
+digest. This ordering predates keyless signing and is unchanged by it;
+consumers are protected by the install-side requirement for a valid
+signature, not by the publisher's ordering.
+
+**In CI:** release pushes (`.github/workflows/skills-publish.yml`, called
+only from `releaser.yml`) run `thv skill push` with no signing flags at all,
+so the ambient rung of the ladder signs them with the job's OIDC token. That
+needs `id-token: write` on both the reusable workflow's job *and* the calling
+job — GitHub caps a reusable workflow's permissions at what its caller
+declares, so granting it in only one place silently yields no token and fails
+the push.
+
+Building is a separate workflow (`skills-build.yml`, called from
+`run-on-pr.yml` and `run-on-main.yml`) that publishes nothing and holds
+neither `packages: write` nor `id-token: write`. The split is the reason
+those permissions exist in one place only: the build executes repository
+code — `thv serve` and `thv skill build` — which on a pull request is code
+from the pull request itself, and GitHub validates a called workflow's
+permissions against its caller's statically, so a single workflow behind a
+`push:` input would have forced every caller to grant the union regardless.
+
+Interoperability with the wider Sigstore ecosystem is covered separately by
+`.github/workflows/skills-keyless-signing-e2e.yml`, which signs a throwaway
+skill against Sigstore's *staging* Fulcio and Rekor (via the
+`TOOLHIVE_SIGSTORE_FULCIO_URL` / `TOOLHIVE_SIGSTORE_REKOR_URL` overrides read
+by `thv serve`) and then verifies it with stock `cosign verify` rather than
+ToolHive's own verifier — so a signature that only ToolHive can read fails
+the job. It runs post-merge on `main` only, and is non-blocking: staging
+carries no SLO guarantee and re-signs its TUF metadata every few days, so its
+outages are reported without gating anything.
+
+It is deliberately not wired into `run-on-pr.yml`. Minting the ambient OIDC
+token needs `id-token: write`, and the job builds and runs repository code to
+use it — which on a pull request is code from the pull request. That code
+could not impersonate the release signer (a different workflow path yields a
+different certificate SAN, and lock provenance pins the path), but it could
+mint a token for any *other* audience from the request variables in its
+environment. Running it only on merged code keeps that capability out of
+reach; to exercise it on a branch, dispatch the "Main build" workflow there.
+
 ### 4. Installation
 
 ```bash
@@ -240,7 +326,13 @@ flowchart TD
    - Contains `/`, `:`, or `@` -> OCI reference
    - Otherwise -> plain name (registry lookup)
 
-2. **Per-skill locking**: A mutex map keyed by (scope, name, projectRoot) prevents concurrent installs of the same skill.
+2. **Mutation locking**: User-scoped operations use a per-skill mutex.
+   Project-scoped `install`, `uninstall`, `sync`, and `upgrade` operations share
+   a transaction keyed by the canonical project root. Bounded mutex stripes
+   coordinate service instances within a process, and a stable advisory lock
+   file in the ToolHive state directory coordinates processes that share that
+   state. The transaction covers resolution, extraction, persistence,
+   dependency changes, and compensation.
 
 3. **Supply chain validation**: For OCI installs, the skill name in the artifact must match the repository name in the reference.
 
@@ -329,9 +421,17 @@ oci_tags table (reserved; not currently populated)
 
 RFC [THV-0080](https://github.com/stacklok/toolhive-rfcs/blob/main/rfcs/THV-0080-skills-lock-file.md) adds a project-level `toolhive.lock.yaml`, committed at the project root, that pins the exact content of every project-scoped skill install — the same guarantee `package-lock.json`, `Cargo.lock`, and `go.sum` provide elsewhere. Two teammates (or a CI runner) cloning the same repo restore identical skill content via `thv skill sync`, rather than whatever the source currently resolves to.
 
-**Trust model, stated plainly:** project-scoped installs are verified against Sigstore signatures, and the lock file records the trust decisions those verifications produce. On first install of a signed skill the observed signer identity is recorded (trust on first use) as the entry's `provenance:` block and **displayed to the user**; every later install, sync, and upgrade enforces that identity *inside* the Sigstore verification policy — OCI artifacts through their attached signature bundles, git commits through gitsign signature-and-chain verification (currently `provisional: true`: the transparency-log proof of signing time is not yet validated, so the replay window is unbounded until that lands). Sync additionally re-verifies each entry's stored signature bundle offline (embedded trust root, no network) before counting it current, and upgrade refuses to move to an artifact signed by a different identity — or unsigned — without an explicit `--allow-signer-change`.
+**Trust model, stated plainly:** project-scoped installs are verified against Sigstore signatures, and the lock file records the trust decisions those verifications produce. On first install of a signed skill the observed signer identity is recorded (trust on first use) as the entry's `provenance:` block and **displayed to the user**; every later install, sync, and upgrade enforces that identity *inside* the Sigstore verification policy — OCI artifacts through their attached signature bundles, git commits through gitsign signature-and-chain verification (currently `provisional: true`: the transparency-log proof of signing time is not yet validated, so the replay window is unbounded until that lands). Sync additionally re-verifies each entry's stored signature bundle offline (embedded trust root, no network) before counting it current, and upgrade refuses to move to an artifact signed by a different identity without an explicit `--allow-signer-change`. An unsigned candidate is not a signer change but a failure (`unsigned-rejected`): upgrade has no unsigned-consent flag, and `--allow-signer-change` re-verifies from scratch, which an unsigned artifact still fails, so the failure names the project-scoped reinstall with `--allow-unsigned` that records the exception explicitly.
+
+**First install need not be blind.** When a skill resolves through the registry/catalog (a plain name like `thv skill install code-review`, not a direct OCI or git reference) and that catalog entry declares an expected `provenance` (`toolhive-core`'s `registry.Skill.Provenance`, RFC THV-0080 follow-up [#6310](https://github.com/stacklok/toolhive/issues/6310)), the very first project-scoped install is checked against it instead of unconditionally trusting whatever the artifact's signature says. Each non-empty supported field constrains independently; an empty or absent catalog provenance preserves ordinary trust on first use. For multi-signed OCI artifacts, every cryptographically valid signature is considered until one satisfies all declared constraints. A lock entry, including a legacy entry with no recorded trust state, always takes precedence over the catalog — the catalog only fills the gap before any trust decision has been recorded. User-scoped installs do not use project lock-file verification and therefore do not apply catalog provenance.
+
+Catalog constraints the skill verifier cannot enforce are refused rather than silently skipped. Attestations are not yet compared, and `sigstore_url` selects trust material in the registry schema while the skill verifier currently uses its embedded public-good trust root. A non-empty `sigstore_url` or any declared `attestation` therefore fails a true first project install; existing lock entries remain authoritative.
 
 The Sigstore policy alone is not the whole guarantee: its SAN match deliberately leaves the signing workflow's git ref unpinned (`(@.*)?$`), so identity alone is satisfied by "the right workflow, on any branch." Two additional certificate fields — the git ref the signing workflow ran on and the runner class it executed in (`repositoryRef:`/`runnerEnvironment:` in `provenance:`) — are enforced separately, after the Sigstore policy succeeds, against the certificate's Fulcio extensions. An entry recorded before these fields existed, or a certificate that carries neither (a signer outside CI), is unconstrained on that field — never a wildcard match once something IS recorded. Install, sync, and upgrade all require the recorded ref and runner class to match exactly, with no automatic allowance for any kind of change, ref rotation included: an earlier version of this guard let a recorded tag ref rotate to any other tag ref automatically, reasoning that a release workflow signs each version on its own tag, but review found that this let a candidate signed from an attacker's own tag on the same repository (e.g. `refs/tags/attacker-release`) replace a pinned tag just as easily, since nothing tied the candidate's tag to the version actually being upgraded to. A ref or runner-class change of any shape is now blocked exactly like a genuine signer-identity change, and needs the same explicit `--allow-signer-change` to proceed and re-record it.
+
+A `provenance:` block records exactly one trust anchor. Keyless entries record a certificate identity (`signerIdentity:` plus `certIssuer:`, optionally narrowed by the certificate-derived fields above). Key-pair entries record `publicKey:` instead — the base64 DER SPKI form of the cosign public key — and must leave every certificate field empty, since a key-pair signature carries none. The two are mutually exclusive: they are checked by different policies against different trust roots, so an entry carrying both would not say which applies.
+
+The full key is stored rather than a digest of it because the key is recoverable from neither the artifact nor the stored bundle — cosign's signature manifest defines no annotation carrying it — so a digest would have nothing to hash at verification time. That also makes the field safe to add without a schema version bump: a build predating it sees an entry with no `signerIdentity`, reports it as required, and fails the whole lock file closed rather than treating the entry as unpinned.
 
 What is still trusted on faith, deliberately and visibly:
 
@@ -339,7 +439,63 @@ What is still trusted on faith, deliberately and visibly:
 - **The lock file itself** remains a repository-editable policy document. A diff converting a `provenance:` block to `unsigned: true` is a trust downgrade that sync will honor — it cannot happen without a lock file edit, which is exactly what lock-file review must catch. Reviewing `provenance`, `unsigned`, `digest`, and `resolvedReference` changes carries the same weight as reviewing the AI-executed skill content itself.
 - **First use** anchors trust to whatever identity signed the artifact at that moment; verify the printed identity is the publisher you expect.
 
-Publishing is signed by default: `thv skill push` requires either `--key` (a cosign private key; the signature manifest is attached next to the artifact and the bundle is retrievable at install) or an explicit `--no-sign`.
+Publishing is signed by default: `thv skill push` requires `--key` (a cosign private key), an OIDC identity token for keyless signing (supplied with `--identity-token` or acquired automatically), or an explicit `--no-sign`. Either signing path attaches the signature manifest next to the artifact, and the bundle is retrievable at install. See [Publishing](#3-publishing) for the full ladder.
+
+### Trust tiers
+
+Prefer keyless signing when an OIDC identity is available. A keyless signature
+contains a Fulcio certificate and a Rekor transparency-log entry, so ToolHive
+can determine who signed the artifact and when. That evidence supports
+catalog-declared provenance, identity-based signer-change detection, and
+signing-time or revocation policies.
+
+Key-pair signing is a lower-assurance trust tier. `--key` creates a detached
+signature with no certificate or Rekor entry. ToolHive can determine only
+whether the pinned public key verifies the artifact; it cannot identify the
+signer or signing time, distinguish a wrong key from a damaged signature,
+enforce catalog-declared provenance or identity-based signer changes, or
+consult a revocation signal. A key-pinned entry has no signing timestamp, so a
+future transparency-log policy cannot narrow its replay window. If the private
+key is compromised, each project must explicitly re-anchor the skill to a new
+trusted public key.
+
+Both paths produce an installable artifact, but they differ in what the consumer must supply. A cosign key pair carries no certificate to chain to the keyless (Fulcio) trust root, and the signing public key is recoverable neither from the artifact nor from the attached bundle — the cosign manifest defines no annotation for it. So the key has to arrive from outside the artifact: a project-scoped install of a `--key`-signed skill requires `--public-key` on first use, which verifies the signature and pins that key in the lock entry as `publicKey:`. Later installs read it back from the lock and need no flag.
+
+`--allow-unsigned` does **not** substitute for the key in either direction. The
+artifact is signed, so it never produces the unsigned verdict that exception
+applies to. To re-anchor an installed skill, pass the new key to `upgrade` with
+`--allow-signer-change --public-key <PUBLIC_KEY_PATH>`. ToolHive verifies the
+candidate against that key before it replaces the recorded anchor. A public
+key without `--allow-signer-change` is rejected, and
+`--allow-signer-change` alone never records a key.
+
+Dispatch between the two paths is decided by the **lock entry, never the artifact**: a `publicKey:` pin selects the key path, a certificate pin the keyless one. Letting the artifact choose would let a republished key-signed artifact walk out of the identity its entry is pinned to. Outside an upgrade with explicit signer-change consent, a supplied key that disagrees with what the entry pins is refused rather than silently ignored.
+
+Verifying a key-pair signature binds it to the artifact explicitly. The signature covers cosign's simple-signing payload, and signature manifests are discovered by a tag derived from the digest being verified — so attachment proves nothing about which artifact a signature describes. The payload digest is reconstructed from the requested reference and each candidate must sign exactly those bytes, which is what stops one artifact's signature from being replayed onto another by copying its signature layer into that artifact's `.sig` manifest (`bundleSignsPayload`).
+
+Once an entry is pinned, the key does its job on the lock-driven operations too, because the anchor is read from the entry rather than supplied again:
+
+- **`sync`** re-verifies the stored bundle against the pinned key offline. This has to be a distinct path — the keyless verifier refuses a key-pinned entry, and sync reads a refusal as drift it can heal by reinstalling, so a key-pinned skill would report as modified on every run and `--check` would fail permanently on a project that is in fact intact.
+- **`upgrade`** evaluates a candidate against one complete signature snapshot.
+  A key-pinned entry tries its recorded key first, and that key remains the
+  anchor whenever it verifies. After a conclusive mismatch,
+  `--allow-signer-change --public-key <PUBLIC_KEY_PATH>` can verify and record a
+  replacement key. If the replacement key does not apply, the existing
+  keyless signer-change policy still decides the entry. Registry, transport,
+  and context errors leave the decision unresolved and preserve the old
+  anchor. The permission is narrowed per entry, so one replacement key does
+  not unpin other skills in a project. Upgrade also evaluates signatures when
+  the content digest is unchanged, because OCI signature attachments can
+  change independently. A successful trust-only update refreshes the stored
+  signature bundle and, when the selected anchor differs, the lock trust state
+  without reinstalling content.
+- **`sync --adopt`** accepts `--public-key <PUBLIC_KEY_PATH>` for key-pair-signed
+  installs. ToolHive verifies the stored bundle against that key and the
+  installed digest before recording the key as the anchor. Keyless installs
+  continue to adopt their certificate identity, and unsigned installs still
+  require `--allow-unsigned`.
+
+Plugins carry the same trust model over the same lock file: project-scoped plugin installs are recorded under the file's `plugins:` key, verified on the same TOFU/`allow_unsigned`/`allow_signer_change` terms, and published signed-by-default through `thv ai-plugin push`. See [Trust Model](14-plugins-system.md#trust-model) in the plugins document for what differs.
 
 ### Schema
 
@@ -362,7 +518,7 @@ Entries are sorted by name for stable diffs. `source` is never rewritten by `syn
 
 ### Install and Uninstall Hooks
 
-For project-scope installs (with the feature enabled), `skillsvc.Install`'s single existing choke point (`installAndRegister` — every dispatch path, OCI or git, direct or registry-resolved, converges there) additionally:
+For project-scope installs, `skillsvc.Install`'s single existing choke point (`installAndRegister` — every dispatch path, OCI or git, direct or registry-resolved, converges there) additionally:
 
 1. Computes `contentDigest` from the extracted files.
 2. Materializes `toolhive.requires` dependencies recursively — reading `SKILL.md` back from disk (not from the resolver's own parse, so this works uniformly across OCI and git sources), with a `Visited` set guarding cycles and `skills.MaxDependencies` bounding the whole tree.
@@ -392,13 +548,26 @@ Reinstalling *at the pinned reference* (never re-resolving `source`) uses `build
 
 ### Upgrade
 
-`thv skill upgrade [name...]` re-resolves each targeted entry's `source` (via the same git/OCI/registry dispatch order `Install` uses, stopping short of extraction — `resolveLatestState`) and installs newer content when the resolved digest changed. Entries pinned to an immutable reference (an OCI digest, or a git reference already pinned to a full commit hash — `isImmutableSource`) are reported not-upgradable. `--preview` reports what would change without persisting it (an OCI preview still pulls the artifact into the local store — there's no lighter "digest only" primitive — so it is not fully side-effect-free, matching the RFC's own caveat). `--allow-ref-change` permits the resolved reference itself changing; `--fail-on-changes` gives CI a freshness gate — it evaluates the same plan, never installs, and returns the full outcome set (exit codes are derived client-side from the outcomes, so a genuine resolution failure still surfaces as a partial failure rather than "lock is stale").
+`thv skill upgrade [name...]` re-resolves each targeted mutable entry's `source`
+through the same git, OCI, and registry dispatch order that `Install` uses. It
+installs newer content when the resolved digest changes. A Git source pinned to
+a full commit hash is not upgradable. An OCI digest reference has immutable
+content, but upgrade can still evaluate its separately attached signatures and
+apply a trust-only re-anchor when you pass
+`--allow-signer-change --public-key <PUBLIC_KEY_PATH>`.
+`--preview` reports content and trust changes without persisting them. An OCI
+content preview still pulls the artifact into the local store because there is
+no lighter digest-only operation.
+`--allow-ref-change` permits the resolved repository to change.
+`--allow-signer-change --public-key <PUBLIC_KEY_PATH>` proposes a replacement key,
+and `--fail-on-changes` treats content and trust-only updates as changes while
+leaving the installation untouched.
 
 **Implementation:** `pkg/skills/skillsvc/upgrade.go`
 
 ### CLI Confirmation and Exit Codes
 
-Because skill content is a set of AI-followed instructions, `sync` and `upgrade` gate real installs behind a confirmation prompt (skipped by `--check`/`--preview`/`--fail-on-changes`, which never write to the lock file or extracted skill directories — an OCI `--preview` still pulls the artifact to compare digests, but persists nothing). The prompt is printed to stderr together with a summary of the lock entries being acted on (name, source, short digest) so the human gate has something concrete to judge, and everything echoed into it is stripped of non-graphic characters so a hostile directory or entry name cannot repaint the prompt with terminal escapes. On a non-interactive terminal without `--yes`, the command refuses outright rather than silently proceeding. Until Sigstore verification lands, this prompt is a speed bump, not a security boundary — see the trust-model note above.
+Because skill content is a set of AI-followed instructions, `sync` and `upgrade` gate real installs behind a confirmation prompt (skipped by `--check`/`--preview`/`--fail-on-changes`, which never write to the lock file or extracted skill directories — an OCI `--preview` still pulls the artifact to compare digests, but persists nothing). The prompt is printed to stderr together with a summary of the lock entries being acted on (name, source, short digest) so the human gate has something concrete to judge, and everything echoed into it is stripped of non-graphic characters so a hostile directory or entry name cannot repaint the prompt with terminal escapes. On a non-interactive terminal without `--yes`, the command refuses outright rather than silently proceeding. This confirmation is an intentional review point in addition to the signature and lock-file trust controls above.
 
 Exit codes follow a CI-oriented contract distinct from the generic `1` used elsewhere in the CLI:
 
@@ -506,6 +675,9 @@ The skills system applies defense-in-depth across multiple layers:
 - OCI artifact skill name must match the last path component of the OCI repository
 - Git authentication is host-scoped (GitHub token only sent to github.com)
 - SSRF prevention: rejects localhost and private IPs in git references
+- Push signing is keyless by default; see "3. Publishing" above for the
+  credential ladder and the CLI-acquires / server-signs split
+  (`pkg/skills/identitytoken`, `toolhive-core/container/signer`)
 
 ### Input Validation
 - Skill names: 2-64 chars, lowercase alphanumeric + hyphens, no consecutive hyphens
@@ -550,7 +722,6 @@ ToolHive owns the installation lifecycle, scoping model, CLI/API interfaces, and
 | CLI commands | `cmd/thv/app/skill*.go` |
 | Group integration | `pkg/groups/skills.go` |
 | Lock file schema | `pkg/skills/lockfile/` |
-| Lock file rollout gate | `pkg/skills/feature_gate.go` |
 | Install/uninstall lock hooks | `pkg/skills/skillsvc/lock.go` |
 | Sync | `pkg/skills/skillsvc/sync.go`, `pkg/skills/skillsvc/pin.go` |
 | Upgrade | `pkg/skills/skillsvc/upgrade.go` |

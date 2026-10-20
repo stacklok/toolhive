@@ -44,8 +44,9 @@ type Request struct {
 	//     exercised on this path.
 	//
 	// The resolver's cache key is (Issuer, UpstreamID, RedirectURI,
-	// ScopesHash), where UpstreamID is derived by the resolver from
-	// DiscoveryURL / RegistrationEndpoint (issue #5823). The two consumers
+	// ScopesHash) plus RotationKey when set, where UpstreamID is derived by
+	// the resolver from DiscoveryURL / RegistrationEndpoint (issue #5823).
+	// The two consumers
 	// do not collide on the key because the embedded authserver's
 	// RedirectURI lives on the authserver's origin and the CLI's lives on a
 	// loopback (RFC 8252 §7.3) — even when Issuer happens to match between
@@ -90,6 +91,17 @@ type Request struct {
 	//
 	// Mutually exclusive with DiscoveryURL.
 	RegistrationEndpoint string
+
+	// RotationKey is an optional operator-chosen label folded into the cache
+	// key (and the in-process singleflight key) when non-empty. It is never
+	// sent to the upstream. Changing it forces a fresh RFC 7591 registration
+	// on the next resolve, without editing the credential store by hand.
+	// ResolveCredentials replaces a registration the upstream rejects with
+	// invalid_client on its own (see verifyCachedRegistration); RotationKey
+	// is how an operator retires one the probe cannot tell is gone, or
+	// rotates one on request. An empty value addresses the same cache row as
+	// a Request written before the field existed.
+	RotationKey string
 
 	// CodeChallengeMethodsSupported lists the PKCE challenge methods the
 	// upstream advertises. Only consulted when RegistrationEndpoint is set;
@@ -141,6 +153,9 @@ type Request struct {
 	// code_challenge_methods_supported the S256 gate cannot be evaluated,
 	// so the resolver refuses to register as a public client.
 	PublicClient bool
+
+	// CAFilePath is the path to a PEM CA bundle added to the system roots.
+	CAFilePath string
 
 	// AllowPrivateIPs permits both of the resolver's outbound calls — the
 	// discovery fetch to DiscoveryURL and the registration POST to the

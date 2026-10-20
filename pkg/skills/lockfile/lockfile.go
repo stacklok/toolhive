@@ -24,6 +24,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 
@@ -41,6 +42,10 @@ const FileName = "toolhive.lock.yaml"
 // lock file with a different version is a hard error, never a silent partial
 // parse.
 const CurrentVersion = 1
+
+// ErrEntryChanged reports that a conditional lock-entry update no longer
+// matches the entry it was planned against.
+var ErrEntryChanged = errors.New("lockfile: entry changed")
 
 // Entry represents a single pinned skill or plugin installation in the lock file.
 type Entry struct {
@@ -94,7 +99,13 @@ type Entry struct {
 	Extra map[string]any `yaml:",inline"`
 }
 
-// Provenance is the Sigstore signer identity recorded for a verified entry.
+// Provenance is the Sigstore trust anchor recorded for a verified entry.
+//
+// Exactly one anchor is recorded. Keyless (Fulcio) entries record a
+// certificate identity — SignerIdentity plus CertIssuer, optionally narrowed
+// by the certificate-derived fields below. Key-pair (cosign) entries record
+// PublicKey instead and leave every certificate field empty, because a
+// key-pair signature carries no certificate to derive them from.
 type Provenance struct {
 	// SignerIdentity is the certificate subject identity: for GitHub
 	// Actions certificates, the workflow path relative to the repository;
@@ -117,6 +128,21 @@ type Provenance struct {
 	RunnerEnvironment string `yaml:"runnerEnvironment,omitempty"`
 	// SigstoreURL is the Sigstore instance the signature chains to.
 	SigstoreURL string `yaml:"sigstoreUrl,omitempty"`
+	// PublicKey is the base64-encoded DER SPKI form of the cosign public key
+	// a key-pair-signed entry is pinned to — the PEM body with its armor and
+	// line breaks removed, since a lock value may not contain whitespace
+	// (see validateProvenance).
+	//
+	// The full key is stored, not a digest of it, because the key is
+	// recoverable from neither the artifact nor the stored bundle: cosign's
+	// signature manifest defines no annotation carrying it, so there would
+	// be nothing to hash at verification time. This value is therefore the
+	// entry's only trust anchor, and re-verification depends on it.
+	//
+	// Mutually exclusive with SignerIdentity/CertIssuer. Whether the value
+	// parses as a usable key is the verifier's concern; validation here is
+	// syntactic, as for every other field.
+	PublicKey string `yaml:"publicKey,omitempty"`
 	// Provisional marks provenance whose verification has a documented
 	// gap — currently git-commit signatures, verified for signature and
 	// certificate chain but without transparency-log proof of signing
@@ -341,6 +367,42 @@ func (l *Lockfile) Save(root Root) error {
 func UpsertEntry(root Root, entry Entry) error {
 	return Update(root, func(lf *Lockfile) error {
 		lf.Upsert(entry)
+		return nil
+	})
+}
+
+// CompareAndSwapEntry replaces expected with replacement only when the
+// complete current skills: entry still equals expected. The comparison and
+// replacement run under Update's advisory file lock, so a mutation made by a
+// non-participating process between planning and persistence cannot be
+// overwritten by a stale plan.
+func CompareAndSwapEntry(root Root, expected, replacement Entry) error {
+	if expected.Name == "" || replacement.Name != expected.Name {
+		return errors.New("lockfile: conditional replacement requires matching non-empty names")
+	}
+	return Update(root, func(lf *Lockfile) error {
+		current, ok := lf.Get(expected.Name)
+		if !ok || !reflect.DeepEqual(current, expected) {
+			return fmt.Errorf("%w: skill %q no longer matches the expected entry", ErrEntryChanged, expected.Name)
+		}
+		lf.Upsert(replacement)
+		return nil
+	})
+}
+
+// CompareAndSwapPluginEntry is the plugins: counterpart to
+// CompareAndSwapEntry. It performs the complete-entry comparison and
+// replacement under the same advisory file lock.
+func CompareAndSwapPluginEntry(root Root, expected, replacement Entry) error {
+	if expected.Name == "" || replacement.Name != expected.Name {
+		return errors.New("lockfile: conditional plugin replacement requires matching non-empty names")
+	}
+	return Update(root, func(lf *Lockfile) error {
+		current, ok := lf.GetPlugin(expected.Name)
+		if !ok || !reflect.DeepEqual(current, expected) {
+			return fmt.Errorf("%w: plugin %q no longer matches the expected entry", ErrEntryChanged, expected.Name)
+		}
+		lf.UpsertPlugin(replacement)
 		return nil
 	})
 }

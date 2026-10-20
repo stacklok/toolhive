@@ -15,13 +15,28 @@ import "context"
 // which defines "sid" for different purposes (RFC 7519, OIDC Session Management).
 const TokenSessionIDClaimKey = "tsid"
 
+// NoUpstreamSessionClaimKey is the JWT claim key by which the embedded
+// authorization server marks a token it minted with no link to an upstream IdP
+// login. Resource-server mirror of the constant in
+// pkg/authserver/server/session, duplicated for the same reason
+// TokenSessionIDClaimKey is: the token-issuing and token-consuming sides must
+// not import each other. The two spellings must stay identical.
+//
+// Its purpose is to separate "minted without an upstream session" from "never
+// enriched with upstream credentials" — both leave Identity.UpstreamTokens nil,
+// but only the former is a statement by an authorization server this deployment
+// trusts. See the issuing constant for the full contract.
+const NoUpstreamSessionClaimKey = "https://toolhive.dev/no_upstream_session"
+
 // UpstreamCredential bundles the access token and the ID token for a single
 // upstream provider. Access tokens are refreshed when expired.
 //
 // The IDToken is the rotated ID token when a refresh produced one (OIDC Core
 // 1.0 §12.2 permits but does not require a new id_token on refresh), otherwise
 // the original JWT captured at the initial OIDC login (OIDC Core 1.0 §3.1.3.7).
-// It is not independently validated for freshness.
+// InProcessService refreshes when the stored ID token has expired, so it is
+// usually current, but it is not guaranteed to be: it can still be expired when
+// the provider omits id_token on refresh or the refresh fails.
 //
 // Callers that PRESENT it as a credential — e.g. as the subject_token of an
 // RFC 8693 token exchange — are subject to expiry and must either check its `exp`

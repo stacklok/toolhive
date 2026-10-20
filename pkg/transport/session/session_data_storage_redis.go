@@ -12,7 +12,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
-	tcredis "github.com/stacklok/toolhive-core/redis"
+	"github.com/stacklok/toolhive-core/redisconn"
 )
 
 // RedisSessionDataStorage implements DataStorage backed by Redis/Valkey.
@@ -38,16 +38,18 @@ type RedisSessionDataStorage struct {
 // Connection-mode validation, timeout defaults, client construction (standalone,
 // cluster, or sentinel), TLS plumbing, and connectivity verification are
 // delegated to the shared toolhive-core redis package.
+// A connection without verified TLS is allowed but logged at WARN.
 func NewRedisSessionDataStorage(
 	ctx context.Context,
-	cfg tcredis.Config,
+	cfg redisconn.Config,
 	keyPrefix string,
 	ttl time.Duration,
 ) (*RedisSessionDataStorage, error) {
 	if err := validateSessionInvariants(keyPrefix, ttl); err != nil {
 		return nil, err
 	}
-	client, err := tcredis.NewClient(ctx, &cfg)
+	warnInsecureRedisTransport(&cfg)
+	client, err := redisconn.NewClient(ctx, &cfg)
 	if err != nil {
 		return nil, err
 	}

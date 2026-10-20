@@ -45,6 +45,7 @@ var telemetryFieldMappings = []testutil.FieldMapping{
 	{CRD: "openTelemetry.metrics.enabled", Runtime: "metricsEnabled"},
 	{CRD: "openTelemetry.useLegacyAttributes", Runtime: "useLegacyAttributes"},
 	{CRD: "prometheus.enabled", Runtime: "enablePrometheusMetricsPath"},
+	{CRD: "prometheus.metricsOnTransportPort", Runtime: "metricsOnTransportPort"},
 }
 
 // telemetryIgnoredOnCRDOnly lists CRD leaf fields that intentionally have no

@@ -4,12 +4,11 @@
 package ui
 
 import (
-	"fmt"
 	"os"
 	"sync"
 	"time"
 
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/lipgloss/v2"
 	"golang.org/x/term"
 )
 
@@ -65,7 +64,7 @@ func (s *Spinner) Start() {
 				s.mu.Lock()
 				label := lipgloss.NewStyle().Foreground(ColorDim2).Render(s.msg)
 				s.mu.Unlock()
-				fmt.Printf("\r\033[K  %s  %s", frame, label)
+				_, _ = lipgloss.Printf("\r\033[K  %s  %s", frame, label)
 				i++
 			}
 		}
@@ -76,7 +75,7 @@ func (s *Spinner) Start() {
 func printCheckpoint(doneMsg string) {
 	check := lipgloss.NewStyle().Foreground(ColorGreen).Bold(true).Render("✓")
 	msg := lipgloss.NewStyle().Foreground(ColorDim2).Render(doneMsg)
-	fmt.Printf("\r\033[K  %s  %s\n", check, msg)
+	_, _ = lipgloss.Printf("\r\033[K  %s  %s\n", check, msg)
 }
 
 // Checkpoint commits the current step as done (prints ✓ doneMsg) and keeps
@@ -104,7 +103,7 @@ func (s *Spinner) Stop(successMsg string) {
 	<-s.doneCh
 	check := lipgloss.NewStyle().Foreground(ColorGreen).Bold(true).Render("✓")
 	msg := lipgloss.NewStyle().Foreground(ColorText).Bold(true).Render(successMsg)
-	fmt.Printf("\r\033[K  %s  %s\n", check, msg)
+	_, _ = lipgloss.Printf("\r\033[K  %s  %s\n", check, msg)
 }
 
 // Fail halts the spinner and prints a final error line.
@@ -116,5 +115,5 @@ func (s *Spinner) Fail(errMsg string) {
 	<-s.doneCh
 	cross := lipgloss.NewStyle().Foreground(ColorRed).Bold(true).Render("✗")
 	msg := lipgloss.NewStyle().Foreground(ColorRed).Render(errMsg)
-	fmt.Printf("\r\033[K  %s  %s\n", cross, msg)
+	_, _ = lipgloss.Printf("\r\033[K  %s  %s\n", cross, msg)
 }

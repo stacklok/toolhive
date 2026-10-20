@@ -4,7 +4,7 @@
 package tui
 
 import (
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 )
 
 // formNextField advances focus to the next field in a formField slice (wraps around).
@@ -43,8 +43,8 @@ func formBlurAll(fields []formField, idx *int) {
 	*idx = -1
 }
 
-// formForwardKey forwards a key message to the currently focused field.
-func formForwardKey(fields []formField, idx int, msg tea.KeyMsg) tea.Cmd {
+// formForwardMessage forwards a message to the currently focused field.
+func formForwardMessage(fields []formField, idx int, msg tea.Msg) tea.Cmd {
 	if idx < 0 || idx >= len(fields) {
 		return nil
 	}

@@ -6,6 +6,7 @@ package core
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -264,6 +265,21 @@ func TestReadResource_NotFound(t *testing.T) {
 
 	_, err = c.ReadResource(context.Background(), nil, "file://missing")
 	assert.ErrorIs(t, err, vmcp.ErrNotFound)
+}
+
+func TestReadResource_OverCapNotFound(t *testing.T) {
+	t.Parallel()
+	cfg, m := baseConfig(t)
+	expectAggregation(m, &aggregator.AggregatedCapabilities{RoutingTable: &vmcp.RoutingTable{}})
+
+	c, err := New(cfg)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = c.Close() })
+
+	uri := strings.Repeat("a", vmcp.MaxResourceURILength+1)
+	_, err = c.ReadResource(context.Background(), nil, uri)
+	assert.ErrorIs(t, err, vmcp.ErrNotFound)
+	assert.Less(t, len(err.Error()), 256, "over-cap URI must not be echoed in the error")
 }
 
 func TestGetPrompt(t *testing.T) {

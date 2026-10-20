@@ -1,7 +1,10 @@
 name: Claude PR Assistant
 
 on:
-  issue_comment:
+  # Required for @claude commands; the job gates comment author associations,
+  # and the pinned action checks the invoking actor's repository write access.
+  # Invocation authorizes a privileged coding agent, not sandboxed PR analysis.
+  issue_comment: # zizmor: ignore[dangerous-triggers]
     types: [created]
   pull_request_review_comment:
     types: [created]
@@ -18,7 +21,7 @@ jobs:
     # This is an allow-list rather than a deny-list. Denying NONE, FIRST_TIMER
     # and FIRST_TIME_CONTRIBUTOR still admitted CONTRIBUTOR — which anyone
     # earns permanently by getting a single pull request merged — and
-    # MANNEQUIN. This job holds contents: write and ANTHROPIC_API_KEY and
+    # MANNEQUIN. This job holds contents: write and a gateway API key and
     # allows Bash(git *), so the bar needs to be write access to the
     # repository, not a history of contributing to it.
     #
@@ -60,11 +63,11 @@ jobs:
       # credential actions/checkout leaves in .git/config. Setting
       # persist-credentials: false here would break the action.
       - name: Checkout repository
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6   # zizmor: ignore[artipacked]
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7   # zizmor: ignore[artipacked]
         with:
           fetch-depth: 1
 
-      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version: 'stable'
 
@@ -73,11 +76,12 @@ jobs:
 
       - name: Run Claude Code
         id: claude
-        uses: anthropics/claude-code-action@be7b93b1907a4abad570368f3c74b6fe3807510b # v1.0.183
+        uses: anthropics/claude-code-action@5eb090f3c3afd701a0672cd32981197ca27688f6 # v1.0.253
+        env:
+          ANTHROPIC_BASE_URL: ${{ vars.ANTHROPIC_BASE_URL }}
         with:
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-          # Security: Restrict tools to prevent arbitrary code execution.
-          # Bash is scoped to known-safe commands (task, go, git, helm-docs).
-          # No unrestricted Bash access — prevents prompt injection from
-          # executing arbitrary shell commands via crafted issue/PR content.
-          allowed_tools: "Read,Edit,Write,Glob,Grep,Bash(task *),Bash(go *),Bash(git *),Bash(helm-docs *),mcp__github__*"
+          anthropic_api_key: ${{ secrets.STACKLOK_GATEWAY_KEY_CLAUDE_TAG }}
+          # Limit preapproved tools; these commands can execute repository code
+          # and are not a sandbox against prompt injection.
+          claude_args: >-
+            --allowedTools "Read,Edit,Write,Glob,Grep,Bash(task *),Bash(go *),Bash(git *),Bash(helm-docs *),mcp__github__*"

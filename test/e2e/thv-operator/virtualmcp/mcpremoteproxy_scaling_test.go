@@ -95,10 +95,10 @@ var _ = ginkgo.Describe("MCPRemoteProxy Cross-Replica Session Routing with Redis
 			// The backend MCPServer's proxy Service is reachable in-cluster at
 			// mcp-<name>-proxy.<ns>.svc, serving MCP at /mcp. We deliberately use the
 			// ".svc" short form rather than the ".svc.cluster.local" FQDN: the operator's
-			// ValidateRemoteURL rejects "*.cluster.local" as SSRF protection (production
-			// MCPRemoteProxy targets external servers, never in-cluster ones). The ".svc"
-			// form is not on the blocklist and still resolves via the pod's DNS search
-			// domains, letting the test exercise the proxy against an in-cluster backend.
+			// ValidateRemoteURL rejects "*.cluster.local" as SSRF protection unless
+			// spec.allowPrivateEndpoint is set. The ".svc" form is not on the blocklist
+			// and still resolves via the pod's DNS search domains, letting the test
+			// exercise the proxy against an in-cluster backend.
 			backendURL := fmt.Sprintf("http://mcp-%s-proxy.%s.svc:%d/mcp",
 				backendName, defaultNamespace, proxyPort)
 

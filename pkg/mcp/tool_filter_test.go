@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -1935,6 +1936,57 @@ func TestNewListToolsMappingMiddleware_BOMCannotSmuggleToolsList(t *testing.T) {
 	}
 }
 
+func TestNewListToolsMappingMiddleware_BOMCannotBypassRecognizedContentTypes(t *testing.T) {
+	t.Parallel()
+
+	middleware, err := NewListToolsMappingMiddleware(WithToolsFilter("tool1"))
+	require.NoError(t, err)
+
+	tests := []struct {
+		name        string
+		contentType string
+		body        string
+	}{
+		{
+			name:        "JSON",
+			contentType: "application/json",
+			body: "\xEF\xBB\xBF" + `{"jsonrpc":"2.0","id":1,"result":{"tools":[` +
+				`{"name":"tool1","description":"desc1"},` +
+				`{"name":"tool2","description":"desc2"}]}}`,
+		},
+		{
+			name:        "SSE",
+			contentType: "text/event-stream",
+			body: "\xEF\xBB\xBFdata: " + `{"jsonrpc":"2.0","id":1,"result":{"tools":[` +
+				`{"name":"tool1","description":"desc1"},` +
+				`{"name":"tool2","description":"desc2"}]}}` + "\n\n",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", tt.contentType)
+				_, writeErr := w.Write([]byte(tt.body))
+				require.NoError(t, writeErr)
+			})
+			handler := middleware(inner)
+			recorder := httptest.NewRecorder()
+
+			handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/", nil))
+
+			out := recorder.Body.String()
+			assert.Contains(t, out, "tool1")
+			assert.NotContains(t, out, "tool2",
+				"the excluded tool must not be exposed because a leading UTF-8 BOM defeated filtering")
+			assert.False(t, strings.HasPrefix(out, "\xEF\xBB\xBF"),
+				"the leading BOM must be dropped from the output")
+		})
+	}
+}
+
 func TestClientAcceptsJSON(t *testing.T) {
 	t.Parallel()
 
@@ -2035,15 +2087,12 @@ func TestNewToolCallMappingMiddleware_FilteredTool(t *testing.T) {
 			expectJSONRPC: true,
 		},
 		{
-			// MCP narrows base JSON-RPC 2.0 here: schema/2025-11-25 types the
-			// error response id as optional, not nullable, so a request with
-			// no usable id gets an error body that omits the "id" key
-			// entirely rather than echoing "id":null (session.HasJSONRPCID).
-			name:          "null id omits the id key",
+			// Null IDs are rejected at admission, without echoing the invalid ID.
+			name:          "null id is rejected without echoing it",
 			accept:        "application/json",
 			setAccept:     true,
 			id:            nil,
-			expectStatus:  http.StatusOK,
+			expectStatus:  http.StatusBadRequest,
 			expectJSONRPC: true,
 		},
 	}
@@ -2091,8 +2140,13 @@ func TestNewToolCallMappingMiddleware_FilteredTool(t *testing.T) {
 			assert.Equal(t, "2.0", response["jsonrpc"])
 			errObj, ok := response["error"].(map[string]any)
 			require.True(t, ok, "response must carry a JSON-RPC error object")
-			assert.Equal(t, float64(CodeInvalidParams), errObj["code"])
-			assert.Equal(t, "tool not found", errObj["message"])
+			if tt.id == nil {
+				assert.Equal(t, float64(CodeInvalidRequest), errObj["code"])
+				assert.Equal(t, "Invalid Request", errObj["message"])
+			} else {
+				assert.Equal(t, float64(CodeInvalidParams), errObj["code"])
+				assert.Equal(t, "tool not found", errObj["message"])
+			}
 			assert.NotContains(t, errObj["message"], "filter",
 				"a filtered tool must look the same as a nonexistent one")
 
@@ -2115,8 +2169,33 @@ func TestNewToolCallMappingMiddleware_FilteredTool(t *testing.T) {
 	}
 }
 
+// TestNewToolCallMappingMiddleware_BOMBlockedTool verifies that a leading UTF-8
+// BOM cannot prevent the middleware from blocking an excluded tools/call.
+func TestNewToolCallMappingMiddleware_BOMBlockedTool(t *testing.T) {
+	t.Parallel()
+
+	middleware, err := NewToolCallMappingMiddleware(WithToolsFilter("allowed_tool"))
+	require.NoError(t, err)
+
+	nextCalled := false
+	handler := middleware(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+		nextCalled = true
+	}))
+
+	body := "\xEF\xBB\xBF" + `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"blocked_tool"}}`
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+	req.Header.Set("Accept", "application/json")
+	recorder := httptest.NewRecorder()
+
+	handler.ServeHTTP(recorder, req)
+
+	assert.False(t, nextCalled, "backend must not receive a BOM-prefixed call for an excluded tool")
+	assert.Equal(t, http.StatusOK, recorder.Code)
+}
+
 // TestNewToolCallMappingMiddleware_AllowedToolPassesThrough verifies that a
-// tools/call request for an allowed tool is forwarded unmodified.
+// BOM-prefixed tools/call request for an allowed tool is normalized before it
+// reaches the backend.
 func TestNewToolCallMappingMiddleware_AllowedToolPassesThrough(t *testing.T) {
 	t.Parallel()
 
@@ -2124,20 +2203,28 @@ func TestNewToolCallMappingMiddleware_AllowedToolPassesThrough(t *testing.T) {
 	require.NoError(t, err)
 
 	nextCalled := false
-	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	var receivedBody string
+	var receivedContentLength int64
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		nextCalled = true
+		bodyBytes, readErr := io.ReadAll(r.Body)
+		require.NoError(t, readErr)
+		receivedBody = string(bodyBytes)
+		receivedContentLength = r.ContentLength
 		w.WriteHeader(http.StatusOK)
 	})
 	handler := middleware(next)
 
 	body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"allowed_tool"}}`
-	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("\xEF\xBB\xBF"+body))
 	req.Header.Set("Accept", "application/json")
 	recorder := httptest.NewRecorder()
 
 	handler.ServeHTTP(recorder, req)
 
 	assert.True(t, nextCalled, "next handler must be called for an allowed tool")
+	assert.Equal(t, body, receivedBody)
+	assert.Equal(t, int64(len(body)), receivedContentLength)
 	assert.Equal(t, http.StatusOK, recorder.Code)
 }
 

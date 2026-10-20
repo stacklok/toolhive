@@ -3914,6 +3914,65 @@ func TestRedisStorage_GetLatestUpstreamTokensForUser(t *testing.T) {
 		})
 	})
 
+	// foreign_owned_member_not_returned plants a readable row owned by another
+	// user into user-A's index set. The index is keyed by user and every writer
+	// files its row under its own UserID, so this cannot happen through the
+	// public API — the check guards the decode step against an index that says
+	// otherwise, since nothing else re-reads UserID off the row.
+	t.Run("foreign_owned_member_not_returned", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			// Row belongs to user-B, written under its own session.
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-B", "prov-X", &UpstreamTokens{
+				ProviderID:   "prov-X",
+				UserID:       "user-B",
+				RefreshToken: "rt-user-B",
+				ExpiresAt:    time.Now().Add(time.Hour),
+			}))
+
+			// Name user-B's row from user-A's index set.
+			mr.SAdd(
+				redisSetKey("test:auth:", KeyTypeUserUpstream, "user-A"),
+				redisUpstreamKey("test:auth:", "session-B", "prov-X"),
+			)
+
+			_, err := s.GetLatestUpstreamTokensForUser(ctx, "user-A", "prov-X")
+			require.Error(t, err)
+			assert.ErrorIs(t, err, ErrNotFound)
+		})
+	})
+
+	// foreign_owned_member_does_not_win_selection is the case the plain
+	// not-returned test above cannot catch: user-A owns a legitimate row, and the
+	// foreign row expires later, so the ExpiresAt tie-breaker would select it if
+	// ownership were not checked per row.
+	t.Run("foreign_owned_member_does_not_win_selection", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-A", "prov-X", &UpstreamTokens{
+				ProviderID:   "prov-X",
+				UserID:       "user-A",
+				RefreshToken: "rt-user-A",
+				ExpiresAt:    time.Now().Add(time.Hour),
+			}))
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-B", "prov-X", &UpstreamTokens{
+				ProviderID:   "prov-X",
+				UserID:       "user-B",
+				RefreshToken: "rt-user-B",
+				ExpiresAt:    time.Now().Add(24 * time.Hour),
+			}))
+
+			mr.SAdd(
+				redisSetKey("test:auth:", KeyTypeUserUpstream, "user-A"),
+				redisUpstreamKey("test:auth:", "session-B", "prov-X"),
+			)
+
+			got, err := s.GetLatestUpstreamTokensForUser(ctx, "user-A", "prov-X")
+			require.NoError(t, err)
+			require.NotNil(t, got)
+			assert.Equal(t, "rt-user-A", got.RefreshToken,
+				"the later-expiring foreign row must not win the selection")
+		})
+	})
+
 	// stale_index_entry is Redis-specific: a SMEMBER entry pointing at a key that
 	// was never written (simulating a TTL-evicted per-provider key). The real row
 	// must still be returned; the dangling member must not cause an error.

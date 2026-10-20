@@ -1741,7 +1741,7 @@ func (s *RedisStorage) GetLatestUpstreamTokensForUser(ctx context.Context, userI
 
 	var winner *storedUpstreamTokens
 	for i, val := range values {
-		stored, ok := parseUserUpstreamEntry(val, providerID, members[i])
+		stored, ok := parseUserUpstreamEntry(val, userID, providerID, members[i])
 		if !ok {
 			continue
 		}
@@ -1784,9 +1784,16 @@ func compareExpiryInt64(a, b int64) int {
 // parseUserUpstreamEntry parses one raw Redis value from the user-upstream index
 // and returns the decoded storedUpstreamTokens together with a match flag.
 // It returns (nil, false) for nil values, type mismatches, deletion tombstones,
-// JSON decode errors, and rows whose ProviderID does not match providerID.
-// keyName is used only for warning log messages.
-func parseUserUpstreamEntry(val any, providerID, keyName string) (*storedUpstreamTokens, bool) {
+// JSON decode errors, and rows whose UserID or ProviderID does not match the
+// requested userID / providerID. keyName is used only for warning log messages.
+//
+// The UserID comparison makes the ownership postcondition hold on the row
+// itself rather than on the index that named it. The index is keyed by user and
+// every writer files a row under its own UserID, so a foreign row is not
+// reachable today; the set has no TTL and is never garbage collected, which
+// makes it the one index where dead members accumulate, and the memory backend
+// already recomputes the same check while scanning.
+func parseUserUpstreamEntry(val any, userID, providerID, keyName string) (*storedUpstreamTokens, bool) {
 	if val == nil {
 		// Dangling set member: the per-provider key has been TTL-evicted.
 		// Skip it; the next write will clean up the index entry (best-effort).
@@ -1810,7 +1817,7 @@ func parseUserUpstreamEntry(val any, providerID, keyName string) (*storedUpstrea
 		return nil, false
 	}
 
-	if stored.ProviderID != providerID {
+	if stored.UserID != userID || stored.ProviderID != providerID {
 		return nil, false
 	}
 

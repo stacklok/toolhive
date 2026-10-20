@@ -94,8 +94,8 @@ type RunConfig struct {
 	// unused clients alive. At the default rate of 1/s that is about 86400 per
 	// replica: one replica fills the default cap in about 2.8 hours, and new
 	// registrations then get 503 for up to 24 hours after the traffic stops.
-	// A client promoted by a token exchange holds its slot for 30 days. Not
-	// yet settable through the operator CRD (#6864).
+	// A client promoted by a token exchange holds its slot for 30 days. The
+	// operator sets it from the embedded auth server's storage.maxDCRClients.
 	MaxDCRClients *int `json:"max_dcr_clients,omitempty" yaml:"max_dcr_clients,omitempty"`
 }
 

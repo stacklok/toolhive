@@ -64,6 +64,27 @@ storage:
     writeTimeout: "3s"
 ```
 
+#### DCR Client Cap and Registration Rate
+
+`storage.maxDCRClients` caps the live clients created through Dynamic Client Registration (default 10,000; `0` removes the cap), and the sibling `registrationRateLimit` field bounds how fast `/oauth/register` accepts them. On Redis the cap is shared by every replica; the rate limit is per replica. A `registrationRateLimit` bucket with `maxTokens` B and `refillPeriod` B/R allows a burst of B and a sustained rate of R per second:
+
+```yaml
+spec:
+  type: embeddedAuthServer
+  embeddedAuthServer:
+    # ...issuer, upstreamProviders, signing keys...
+    storage:
+      type: redis
+      maxDCRClients: 50000   # raise above the observed live DCR client count
+      redis:
+        # ...as above...
+    registrationRateLimit:   # 10 per minute sustained, burst of 3
+      maxTokens: 3
+      refillPeriod: 18s
+```
+
+`0` leaves the unauthenticated endpoint bounded only by the rate limit, so use it only temporarily; a large finite value, two to three times the observed count, keeps some protection. See [Auth Server Storage](arch/11-auth-server-storage.md#dcr-client-cap) for sizing.
+
 #### Redis Sentinel
 
 Use `sentinelConfig` for self-managed Redis deployments with Sentinel-based high availability.
@@ -341,7 +362,13 @@ All keys use the prefix `thv:auth:{namespace:name}:` where `{namespace:name}` is
 | `{prefix}invalidated:{code}` | Replay detection for auth codes | 30 minutes |
 | `{prefix}jwt:{jti}` | Client assertion JWT replay prevention | Matches JWT `exp` |
 
-When upgrading to the release that adds the DCR client cap, see the upgrade notes in [Auth Server Storage](arch/11-auth-server-storage.md#dcr-client-cap): a deployment already holding more than `max_dcr_clients` (default 10,000) live DCR clients rejects new registrations until the count drains, so raise the cap or set it to `0` before upgrading. Backfilled rows keep their existing TTL of up to 30 days.
+When upgrading to the release that adds the DCR client cap, see the upgrade notes in [Auth Server Storage](arch/11-auth-server-storage.md#dcr-client-cap): a deployment already holding more than `max_dcr_clients` (default 10,000) live DCR clients rejects new registrations until the count drains, so raise the cap before upgrading. Backfilled rows keep their existing TTL of up to 30 days. With the operator, `storage.maxDCRClients` exists only in the new CRDs, so upgrade in this order:
+
+1. Upgrade the `operator-crds` chart.
+2. Set `storage.maxDCRClients` on each Redis-backed `MCPExternalAuthConfig` and `VirtualMCPServer` `authServerConfig`.
+3. Upgrade the `operator` chart.
+
+With the older CRDs the API server drops the field, and an older operator ignores it; upgrading the operator first enforces the default cap before you can raise it.
 
 The DCR client cap registers a client with one Lua script that touches both `{prefix}client:{client_id}` and `{prefix}client-idx`, so on Redis Cluster the key prefix must contain a `{...}` hash tag; a prefix without one fails every DCR registration with `CROSSSLOT`. The operator's `DeriveKeyPrefix` always includes one. `{prefix}client-idx` has no TTL, so under an `allkeys-lru` or `allkeys-random` `maxmemory-policy` Redis may evict it, which resets the cap count and the `toolhive_authserver_dcr_clients` gauge to zero until new registrations rebuild it or a restart reruns the backfill. Use `noeviction` or a `volatile-*` policy.
 
@@ -437,6 +464,7 @@ Secondary index cleanup is best-effort: stale entries may remain temporarily but
 |---|---|---|---|---|
 | `type` | `string` | No | `memory` | Storage backend type: `memory` or `redis` |
 | `redis` | `RedisStorageConfig` | When type=redis | — | Redis configuration |
+| `maxDCRClients` | `int32` | No | `10000` | Cap on live DCR-created clients; `0` means unlimited |
 
 ### RedisStorageConfig (CRD)
 

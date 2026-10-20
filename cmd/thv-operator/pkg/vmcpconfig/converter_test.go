@@ -1857,6 +1857,7 @@ func TestConvert_AuthServerConfigIntegration(t *testing.T) {
 	converter, err := NewConverter(mockResolver, k8sClient)
 	require.NoError(t, err)
 
+	maxDCRClients := int32(500)
 	vmcp := v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
 		v1beta1test.WithVMCPGroupRef("test-group"),
 		v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{
@@ -1867,6 +1868,14 @@ func TestConvert_AuthServerConfigIntegration(t *testing.T) {
 			Issuer: "https://authserver.example.com",
 			SigningKeySecretRefs: []mcpv1beta1.SecretKeyRef{
 				{Name: "signing-key", Key: "private.pem"},
+			},
+			Storage: &mcpv1beta1.AuthServerStorageConfig{
+				Type:          mcpv1beta1.AuthServerStorageTypeMemory,
+				MaxDCRClients: &maxDCRClients,
+			},
+			RegistrationRateLimit: &mcpv1beta1.RateLimitBucket{
+				MaxTokens:    3,
+				RefillPeriod: metav1.Duration{Duration: 18 * time.Second},
 			},
 			DelegateClients: []mcpv1beta1.DelegateClientConfig{{
 				ClientID:        "delegate client / does not affect env name",
@@ -1900,6 +1909,14 @@ func TestConvert_AuthServerConfigIntegration(t *testing.T) {
 
 	// Verify Issuer comes from AuthServerConfig, not IncomingAuth
 	assert.Equal(t, "https://authserver.example.com", runConfig.Issuer)
+
+	// Verify the DCR client cap and /oauth/register rate reach the RunConfig.
+	require.NotNil(t, runConfig.Storage)
+	require.NotNil(t, runConfig.Storage.MaxDCRClients)
+	assert.Equal(t, 500, *runConfig.Storage.MaxDCRClients)
+	require.NotNil(t, runConfig.RegistrationRateLimit)
+	assert.InDelta(t, 3.0/18.0, runConfig.RegistrationRateLimit.RequestsPerSecond, 1e-9)
+	assert.Equal(t, 3, runConfig.RegistrationRateLimit.Burst)
 
 	// Verify AllowedAudiences derived from IncomingAuth OIDC Resource (takes precedence over Audience)
 	assert.Equal(t, []string{"https://resource.example.com"}, runConfig.AllowedAudiences)

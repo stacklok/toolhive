@@ -1229,6 +1229,21 @@ type EmbeddedAuthServerConfig struct {
 	// CIMD configures Client ID Metadata Document support. When omitted, CIMD is disabled.
 	// +optional
 	CIMD *EmbeddedAuthServerCIMDConfig `json:"cimd,omitempty"`
+
+	// RegistrationRateLimit bounds the unauthenticated /oauth/register
+	// endpoint with a token bucket: up to maxTokens registrations at once,
+	// refilled at maxTokens per refillPeriod. For a sustained rate of R per
+	// second with a burst of B, set maxTokens to B and refillPeriod to B/R;
+	// for example, 10 per minute with a burst of 3 is maxTokens 3,
+	// refillPeriod 18s. If omitted, defaults to 1 registration per second
+	// with a burst of 5 (maxTokens 5, refillPeriod 5s). The limit is per
+	// replica, so the effective rate is the configured rate multiplied by the
+	// replica count. Every successful registration stores a client, so a
+	// higher rate fills storage.maxDCRClients sooner, and with maxDCRClients
+	// 0 this limit is the only bound on stored clients.
+	// +kubebuilder:validation:XValidation:rule="duration(self.refillPeriod) > duration('0s')",message="registrationRateLimit.refillPeriod must be positive"
+	// +optional
+	RegistrationRateLimit *RateLimitBucket `json:"registrationRateLimit,omitempty"`
 }
 
 // effectiveInboundGrants is the folded validation view of legacy and canonical
@@ -2086,6 +2101,28 @@ type AuthServerStorageConfig struct {
 	// Required when type is "redis".
 	// +optional
 	Redis *RedisStorageConfig `json:"redis,omitempty"`
+
+	// MaxDCRClients caps the number of live clients created by Dynamic Client
+	// Registration (/oauth/register). At the cap, registration fails with HTTP
+	// 503 until a client expires; no existing client is evicted. If omitted,
+	// defaults to 10000. Operator-configured and CIMD clients are not counted.
+	// On Redis the count is shared by every replica; with memory storage each
+	// replica keeps its own count.
+	//
+	// A client never used for a token exchange lives 24 hours, so a caller
+	// registering at the full registrationRateLimit keeps up to
+	// rate x replicas x 86400 unused clients alive; at the default rate one
+	// replica fills the default cap in about 2.8 hours.
+	//
+	// 0 means unlimited. The endpoint is unauthenticated, so 0 leaves stored
+	// clients bounded only by the per-replica registrationRateLimit, about
+	// 86400 per replica per day at the default rate. Use 0 only temporarily,
+	// for example while an existing client population above the cap drains;
+	// a large finite value, such as two to three times the observed live
+	// client count, keeps some protection.
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	MaxDCRClients *int32 `json:"maxDCRClients,omitempty"`
 }
 
 // RedisStorageConfig configures Redis connection for auth server storage.

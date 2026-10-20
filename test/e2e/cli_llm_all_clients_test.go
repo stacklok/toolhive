@@ -860,14 +860,12 @@ var _ = Describe("thv llm — all-client matrix", Label("cli", "llm", "clients",
 			// a credential-helper shim, not single-file JSON-pointer patching — so it
 			// gets its own assertions rather than the allClientTestCases matrix.
 			claudeDesktopPaths := func(root string) (appDir, configLib, shim string) {
+				base := filepath.Join(root, ".config")
 				if runtime.GOOS == osDarwin {
-					base := filepath.Join(root, "Library", "Application Support")
-					return filepath.Join(base, "Claude"),
-						filepath.Join(base, "Claude-3p", "configLibrary"),
-						filepath.Join(root, ".toolhive", "llm", "claude-desktop-helper.sh")
+					base = filepath.Join(root, "Library", "Application Support")
 				}
-				return filepath.Join(root, "Claude"),
-					filepath.Join(root, "Claude-3p", "configLibrary"),
+				return filepath.Join(base, "Claude"),
+					filepath.Join(base, "Claude-3p", "configLibrary"),
 					filepath.Join(root, ".toolhive", "llm", "claude-desktop-helper.sh")
 			}
 

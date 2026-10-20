@@ -10,11 +10,13 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/ory/fosite"
 
+	"github.com/stacklok/toolhive/pkg/authserver/internal/consentpolicy"
 	"github.com/stacklok/toolhive/pkg/authserver/server"
 	"github.com/stacklok/toolhive/pkg/authserver/server/crypto"
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
@@ -47,7 +49,8 @@ func newUpstreamAuthSecrets() *upstreamAuthSecrets {
 }
 
 // AuthorizeHandler handles GET /oauth/authorize requests.
-// It validates the client's request and shows the approval page before any upstream redirect.
+// It validates the client's request, then displays ToolHive consent when required
+// or redirects to an upstream provider for exempt or remembered requests.
 func (h *Handler) AuthorizeHandler(w http.ResponseWriter, req *http.Request) {
 	ctx := req.Context()
 
@@ -60,6 +63,15 @@ func (h *Handler) AuthorizeHandler(w http.ResponseWriter, req *http.Request) {
 	}
 
 	// See rewriteLoopbackRedirectURI's doc comment for what this does and why.
+	// Keep the parsed form before any rewrite so exemption checks can distinguish
+	// an explicitly registered redirect from a rewritten or inferred value.
+	var originalForm url.Values
+	if err := req.ParseForm(); err == nil {
+		originalForm = make(url.Values, len(req.Form))
+		for key, values := range req.Form {
+			originalForm[key] = slices.Clone(values)
+		}
+	}
 	rewrittenFrom := h.rewriteLoopbackRedirectURI(ctx, req)
 
 	// Let fosite validate everything: client_id, redirect_uri, response_type, PKCE, scopes
@@ -100,30 +112,8 @@ func (h *Handler) AuthorizeHandler(w http.ResponseWriter, req *http.Request) {
 
 	// Bind the resource while the client request is still being authorized.
 	// Multi-audience deployments require an explicit choice before upstream login.
-	resources := ar.GetRequestForm()["resource"]
-	if len(resources) > 1 || (len(resources) == 1 && resources[0] == "") {
-		h.provider.WriteAuthorizeError(ctx, w, errAr, server.ErrInvalidTarget.WithHint("Exactly one non-empty resource is required"))
-		return
-	}
-	resource := ""
-	if len(resources) == 1 {
-		resource = resources[0]
-	} else if len(h.config.AllowedAudiences) == 1 {
-		resource = h.config.AllowedAudiences[0]
-	} else {
-		h.provider.WriteAuthorizeError(ctx, w, errAr, server.ErrInvalidTarget.WithHint("Specify one resource for this authorization"))
-		return
-	}
-	if resource == "" {
-		h.provider.WriteAuthorizeError(ctx, w, errAr, server.ErrInvalidTarget.WithHint("No resource audience is configured"))
-		return
-	}
-	if err := server.ValidateAudienceURI(resource); err != nil {
-		h.provider.WriteAuthorizeError(ctx, w, errAr, err)
-		return
-	}
-	if err := server.ValidateAudienceAllowed(resource, h.config.AllowedAudiences); err != nil {
-		h.provider.WriteAuthorizeError(ctx, w, errAr, err)
+	resource, ok := h.validateAuthorizationResource(ctx, w, errAr, ar)
+	if !ok {
 		return
 	}
 
@@ -133,7 +123,8 @@ func (h *Handler) AuthorizeHandler(w http.ResponseWriter, req *http.Request) {
 		"scope_count", len(scopes),
 	)
 
-	// Store the request before any upstream authorization secrets exist.
+	// Prepare the pending request before choosing the consent or upstream path;
+	// beginUpstream persists its secret-bearing copy before redirecting.
 	binding := newBrowserBinding()
 	handle := rand.Text()
 	pending := &storage.PendingAuthorization{
@@ -143,8 +134,24 @@ func (h *Handler) AuthorizeHandler(w http.ResponseWriter, req *http.Request) {
 		BrowserBindingHash: binding.hash, UpstreamProviderName: h.upstreams[0].Name,
 		SessionID: rand.Text(), CreatedAt: time.Now(),
 	}
-	if h.beginIfRemembered(ctx, w, req, errAr, pending, redirectURI, scopes, resource) {
-		return
+	promptConsent := promptRequiresConsent(ar.GetRequestForm())
+	exempt := !promptConsent && h.consentExempt(ar, originalForm, rewrittenFrom)
+	if len(h.consentExemptClientIDSet) > 0 {
+		slog.Debug("consent exemption decision",
+			"client_id", clientID,
+			"exempt", exempt,
+			"prompt_requires_consent", promptConsent,
+		)
+	}
+	if !promptConsent {
+		if exempt {
+			pending.ConsentStage = storage.ConsentStageApproved
+			h.beginUpstream(ctx, w, req, errAr, pending)
+			return
+		}
+		if h.beginIfRemembered(ctx, w, req, errAr, pending, redirectURI, scopes, resource) {
+			return
+		}
 	}
 	if err := h.storage.StorePendingAuthorization(ctx, handle, pending); err != nil {
 		slog.Error("failed to store pending authorization", "error", err)
@@ -155,21 +162,46 @@ func (h *Handler) AuthorizeHandler(w http.ResponseWriter, req *http.Request) {
 	h.renderConsent(w, handle, pending, ar.GetClient())
 }
 
+// validateAuthorizationResource resolves and validates the requested resource
+// before authorization continues to consent or upstream authentication.
+func (h *Handler) validateAuthorizationResource(
+	ctx context.Context, w http.ResponseWriter, errAr fosite.AuthorizeRequester, ar fosite.AuthorizeRequester,
+) (string, bool) {
+	resources := ar.GetRequestForm()["resource"]
+	if len(resources) > 1 || (len(resources) == 1 && resources[0] == "") {
+		h.provider.WriteAuthorizeError(ctx, w, errAr, server.ErrInvalidTarget.WithHint("Exactly one non-empty resource is required"))
+		return "", false
+	}
+	resource := ""
+	if len(resources) == 1 {
+		resource = resources[0]
+	} else if len(h.config.AllowedAudiences) == 1 {
+		resource = h.config.AllowedAudiences[0]
+	} else {
+		h.provider.WriteAuthorizeError(ctx, w, errAr, server.ErrInvalidTarget.WithHint("Specify one resource for this authorization"))
+		return "", false
+	}
+	if resource == "" {
+		h.provider.WriteAuthorizeError(ctx, w, errAr, server.ErrInvalidTarget.WithHint("No resource audience is configured"))
+		return "", false
+	}
+	if err := server.ValidateAudienceURI(resource); err != nil {
+		h.provider.WriteAuthorizeError(ctx, w, errAr, err)
+		return "", false
+	}
+	if err := server.ValidateAudienceAllowed(resource, h.config.AllowedAudiences); err != nil {
+		h.provider.WriteAuthorizeError(ctx, w, errAr, err)
+		return "", false
+	}
+	return resource, true
+}
+
 // beginIfRemembered skips the consent page when a covering server-side approval
-// exists and the client has not explicitly requested consent, and reports
-// whether it answered the request.
+// exists and reports whether it answered the request. Callers must apply
+// promptRequiresConsent before reaching this remembered-consent lookup.
 func (h *Handler) beginIfRemembered(ctx context.Context, w http.ResponseWriter, req *http.Request,
 	errAr fosite.AuthorizeRequester, pending *storage.PendingAuthorization,
 	redirectURI string, scopes []string, resource string) bool {
-	// A downstream consent prompt requires the consent page even with a covering approval.
-	for _, prompt := range errAr.GetRequestForm()["prompt"] {
-		for _, token := range strings.Fields(prompt) {
-			if token == "consent" {
-				return false
-			}
-		}
-	}
-
 	// Only a covering server-side approval can bypass the consent page.
 	remembered, digest, err := h.coveringConsent(ctx, req, errAr.GetClient(), redirectURI, scopes, resource)
 	if err != nil {
@@ -186,6 +218,40 @@ func (h *Handler) beginIfRemembered(ctx context.Context, w http.ResponseWriter, 
 	pending.ConsentSessionDigest = digest
 	h.beginUpstream(ctx, w, req, errAr, pending)
 	return true
+}
+
+// promptRequiresConsent reports whether any prompt parameter contains consent.
+func promptRequiresConsent(form url.Values) bool {
+	for _, prompt := range form["prompt"] {
+		for _, token := range strings.Fields(prompt) {
+			if token == "consent" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// consentExempt reports whether this authorization request meets every runtime
+// exemption condition: the client is allowlisted, confidential, interactive,
+// supports the authorization-code grant and code response type, and has a
+// registered redirect; the request asks for exactly code, supplies exactly one
+// non-empty redirect explicitly, that redirect is registered and equals Fosite's
+// validated final redirect, and no loopback redirect rewrite occurred.
+func (h *Handler) consentExempt(
+	ar fosite.AuthorizeRequester, originalForm url.Values, rewrittenFrom string,
+) bool {
+	client := ar.GetClient()
+	if client == nil || !ar.GetResponseTypes().ExactOne(oauthproto.ResponseTypeCode) {
+		return false
+	}
+	if _, ok := h.consentExemptClientIDSet[client.GetID()]; !ok || !consentpolicy.IsEligibleClient(client) {
+		return false
+	}
+	redirectURIs := originalForm["redirect_uri"]
+	return rewrittenFrom == "" && len(redirectURIs) == 1 && redirectURIs[0] != "" &&
+		slices.Contains(client.GetRedirectURIs(), redirectURIs[0]) &&
+		ar.GetRedirectURI().String() == redirectURIs[0]
 }
 
 // beginUpstream starts an approved request using fresh per-leg secrets.
@@ -237,7 +303,7 @@ func (h *Handler) rejectBackChannelOnlyAuthorizeClient(ctx context.Context, w ht
 		return false
 	}
 	client, err := h.storage.GetClient(ctx, clientID)
-	if err != nil || client == nil || !isBackChannelOnlyClient(client) {
+	if err != nil || client == nil || !consentpolicy.IsBackChannelOnlyClient(client) {
 		return false
 	}
 	authorizeRequest := fosite.NewAuthorizeRequest()
@@ -249,20 +315,6 @@ func (h *Handler) rejectBackChannelOnlyAuthorizeClient(ctx context.Context, w ht
 		fosite.ErrInvalidClient.WithHint("The requested OAuth 2.0 Client does not exist."),
 	)
 	return true
-}
-
-// isBackChannelOnlyClient reports whether client has no interactive
-// /authorize flow. It checks the explicit registration.BackChannelOnly
-// marker first -- the authoritative answer for client types that carry it
-// (registration.SPIFFEClient and the SPIFFE storage decorator's durable
-// placeholder) -- and falls back to the pre-existing metadata-shape
-// inference (empty response types, or grant types exactly
-// token-exchange) for every other client type, such as a delegate client,
-// so their current /authorize-hiding behaviour is unchanged.
-func isBackChannelOnlyClient(client fosite.Client) bool {
-	return registration.BackChannelOnly(client) ||
-		len(client.GetResponseTypes()) == 0 ||
-		client.GetGrantTypes().ExactOne(oauthproto.GrantTypeTokenExchange)
 }
 
 // loopbackAuthorizeRequester wraps a fosite.AuthorizeRequester to make the

@@ -19,6 +19,7 @@ import (
 	"github.com/spiffe/go-spiffe/v2/bundle/jwtbundle"
 	"github.com/spiffe/go-spiffe/v2/bundle/x509bundle"
 
+	"github.com/stacklok/toolhive/pkg/authserver/internal/consentpolicy"
 	oauthserver "github.com/stacklok/toolhive/pkg/authserver/server"
 	"github.com/stacklok/toolhive/pkg/authserver/server/deviceflow"
 	"github.com/stacklok/toolhive/pkg/authserver/server/handlers"
@@ -202,39 +203,11 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage) (_ *server
 
 	logConfidentialClientStartup(cfg.AllowConfidentialClientRegistration)
 
-	// Validate storage is provided
-	if stor == nil {
-		return nil, fmt.Errorf("storage is required")
-	}
-
-	// Storage no longer embeds DCRCredentialStore (the embed widened secret
-	// reach to every Storage consumer); obtain the DCR-capable handle via an
-	// explicit assertion at the boundary. The per-backend
-	// `var _ DCRCredentialStore = (*MemoryStorage)(nil)` /
-	// `var _ DCRCredentialStore = (*RedisStorage)(nil)` checks make this
-	// provably safe for the production backends; surfacing a bad backend as
-	// a constructor error keeps misconfiguration fail-loud at boot rather
-	// than at first DCR resolve.
-	baseStore := storage.Unwrap(stor)
-	dcrStore, ok := baseStore.(storage.DCRCredentialStore)
-	if !ok {
-		return nil, fmt.Errorf("storage backend %T does not implement storage.DCRCredentialStore", baseStore)
-	}
-
-	bundleSource, err := newSPIFFEMultiDomainBundleSource(ctx, cfg.SPIFFETrust)
+	stor, dcrStore, bundleSource, spiffeRegistry, err := prepareServerStorageAndRegisterClients(ctx, cfg, stor)
 	if err != nil {
-		return nil, fmt.Errorf("create SPIFFE bundle source: %w", err)
+		return nil, err
 	}
 	defer closeSPIFFEBundleSourceOnConstructionError(bundleSource, &retErr)
-
-	stor, spiffeRegistry, err := decorateStorageForSPIFFE(ctx, cfg, stor)
-	if err != nil {
-		return nil, err
-	}
-
-	if err := registerDelegateClients(ctx, stor, cfg.DelegateClients); err != nil {
-		return nil, err
-	}
 
 	slog.Debug("creating OAuth2 configuration")
 
@@ -327,7 +300,7 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage) (_ *server
 	// opaque storage-row identity.
 	refresher := newUpstreamTokenRefresher(upstreams, stor, cfg.RefreshTokenLifespan)
 	handlerInstance, err := handlers.NewHandler(fositeProvider, authServerConfig, stor, upstreams,
-		buildHandlerOptions(refresher, cfg.UpstreamFilter)...)
+		buildHandlerOptions(refresher, cfg.UpstreamFilter, cfg.ConsentExemptClientIDs)...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create handler: %w", err)
 	}
@@ -337,6 +310,8 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage) (_ *server
 
 	slog.Debug("oauth authorization server initialized",
 		"issuer", cfg.Issuer,
+		"consent_exemption_enabled", len(cfg.ConsentExemptClientIDs) > 0,
+		"consent_exempt_client_count", len(cfg.ConsentExemptClientIDs),
 	)
 
 	return &server{
@@ -348,6 +323,65 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage) (_ *server
 		trustedIssuerValidator: trustedIssuerValidator,
 		spiffeBundleSource:     bundleSource,
 	}, nil
+}
+
+// prepareServerStorageAndRegisterClients decorates storage, validates configured
+// consent-exempt clients against the prepared registration view, and registers
+// delegate clients before returning the storage handles used by server construction.
+func prepareServerStorageAndRegisterClients(
+	ctx context.Context, cfg Config, stor storage.Storage,
+) (prepared storage.Storage, dcrStore storage.DCRCredentialStore,
+	bundleSource *spiffeMultiDomainBundleSource, spiffeRegistry *SPIFFEAssociationRegistry, retErr error,
+) {
+	if stor == nil {
+		return nil, nil, nil, nil, fmt.Errorf("storage is required")
+	}
+
+	// Storage no longer embeds DCRCredentialStore (the embed widened secret
+	// reach to every Storage consumer); obtain the DCR-capable handle via an
+	// explicit assertion at the boundary. The per-backend
+	// `var _ DCRCredentialStore = (*MemoryStorage)(nil)` /
+	// `var _ DCRCredentialStore = (*RedisStorage)(nil)` checks make this
+	// provably safe for the production backends; surfacing a bad backend as
+	// a constructor error keeps misconfiguration fail-loud at boot rather
+	// than at first DCR resolve.
+	baseStore := storage.Unwrap(stor)
+	var ok bool
+	dcrStore, ok = baseStore.(storage.DCRCredentialStore)
+	if !ok {
+		return nil, nil, nil, nil, fmt.Errorf("storage backend %T does not implement storage.DCRCredentialStore", baseStore)
+	}
+
+	bundleSource, retErr = newSPIFFEMultiDomainBundleSource(ctx, cfg.SPIFFETrust)
+	if retErr != nil {
+		return nil, nil, nil, nil, fmt.Errorf("create SPIFFE bundle source: %w", retErr)
+	}
+	defer closeSPIFFEBundleSourceOnConstructionError(bundleSource, &retErr)
+
+	prepared, spiffeRegistry, retErr = decorateStorageForSPIFFE(ctx, cfg, stor)
+	if retErr != nil {
+		return nil, nil, nil, nil, retErr
+	}
+	if retErr = validateConsentExemptClients(ctx, prepared, cfg.ConsentExemptClientIDs); retErr != nil {
+		return nil, nil, nil, nil, retErr
+	}
+	if retErr = registerDelegateClients(ctx, prepared, cfg.DelegateClients); retErr != nil {
+		return nil, nil, nil, nil, retErr
+	}
+	return prepared, dcrStore, bundleSource, spiffeRegistry, nil
+}
+
+func validateConsentExemptClients(ctx context.Context, stor storage.Storage, clientIDs []string) error {
+	for _, clientID := range clientIDs {
+		client, err := stor.GetClient(ctx, clientID)
+		if err != nil {
+			return fmt.Errorf("failed to resolve consent-exempt client %q: %w", clientID, err)
+		}
+		if !consentpolicy.IsEligibleClient(client) {
+			return fmt.Errorf("consent-exempt client %q is missing or ineligible", clientID)
+		}
+	}
+	return nil
 }
 
 func registerDelegateClients(ctx context.Context, stor storage.Storage, delegateClients []DelegateClient) error {
@@ -597,13 +631,20 @@ func buildDeviceFlowFactory(cfg Config, stor storage.Storage) (oauthserver.Facto
 }
 
 // buildHandlerOptions assembles the handlers.Option list for NewHandler: the
-// refresher is always wired, and the filter is added only when the caller's
-// Config sets one so a nil Config.UpstreamFilter preserves the pre-filter
-// behavior of walking every configured upstream.
-func buildHandlerOptions(refresher storage.UpstreamTokenRefresher, filter handlers.UpstreamFilter) []handlers.Option {
+// refresher is always wired, the filter is added only when configured so a nil
+// filter preserves walking every upstream, and consent-exempt IDs are added
+// only when the caller supplied a non-empty allowlist.
+func buildHandlerOptions(
+	refresher storage.UpstreamTokenRefresher,
+	filter handlers.UpstreamFilter,
+	consentExemptClientIDs []string,
+) []handlers.Option {
 	opts := []handlers.Option{handlers.WithUpstreamRefresher(refresher)}
 	if filter != nil {
 		opts = append(opts, handlers.WithUpstreamFilter(filter))
+	}
+	if len(consentExemptClientIDs) > 0 {
+		opts = append(opts, handlers.WithConsentExemptClientIDs(consentExemptClientIDs))
 	}
 	return opts
 }

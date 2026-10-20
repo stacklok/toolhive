@@ -20,6 +20,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"slices"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -27,6 +28,7 @@ import (
 	"golang.org/x/time/rate"
 
 	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/authserver/internal/consentpolicy"
 	"github.com/stacklok/toolhive/pkg/authserver/server"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
@@ -58,6 +60,10 @@ type Handler struct {
 	// configured upstreams once the first leg resolves. Nil when no filter is
 	// configured; the chain then walks all configured upstreams as before.
 	filter UpstreamFilter
+	// consentExemptClientIDs is populated by WithConsentExemptClientIDs until
+	// constructor validation builds consentExemptClientIDSet.
+	consentExemptClientIDs   []string
+	consentExemptClientIDSet map[string]struct{}
 	// registerLimiter bounds the unauthenticated /oauth/register endpoint,
 	// which mints persisted state on every call. Per-process, not per-IP: the
 	// goal is to cap storage growth and log volume, not to be fair between
@@ -192,6 +198,23 @@ func WithUpstreamFilter(f UpstreamFilter) Option {
 	}
 }
 
+// WithConsentExemptClientIDs configures the client IDs preauthorized to skip
+// ToolHive's consent page. Listing a client ID preauthorizes whatever registration
+// currently holds that ID, for whichever user completes upstream authentication.
+// It is not per-user consent, and runtime eligibility checks do not prove where
+// the registration came from. The embedder must control registration writes for
+// exempt IDs; replacement or permission expansion transfers or broadens
+// preauthorization. Removing an ID affects new requests only and does not revoke
+// tokens or cancel already-approved flows. Upstream authentication still runs.
+// The IDs are copied when the option is created, and repeated options replace the
+// list.
+func WithConsentExemptClientIDs(ids []string) Option {
+	clientIDs := slices.Clone(ids)
+	return func(h *Handler) {
+		h.consentExemptClientIDs = slices.Clone(clientIDs)
+	}
+}
+
 // NewHandler creates a new Handler with the given dependencies.
 // upstreams defines the ordered sequence of upstream providers consulted
 // during multi-upstream authorization flows (e.g., sequential token acquisition).
@@ -267,6 +290,19 @@ func NewHandler(
 	for _, o := range opts {
 		o(h)
 	}
+	if err := consentpolicy.Validate(
+		h.consentExemptClientIDs,
+		config.GetAuthorizationEndpointBaseURL(),
+		config.GetAccessTokenIssuer(),
+		len(upstreams),
+	); err != nil {
+		return nil, fmt.Errorf("handlers: %w", err)
+	}
+	h.consentExemptClientIDSet = make(map[string]struct{}, len(h.consentExemptClientIDs))
+	for _, id := range h.consentExemptClientIDs {
+		h.consentExemptClientIDSet[id] = struct{}{}
+	}
+	h.consentExemptClientIDs = nil
 	return h, nil
 }
 

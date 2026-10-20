@@ -141,6 +141,38 @@ A later request can skip the page only if both records are live, the session pro
 
 **Current boundaries:** When the embedded auth server is mounted on a transparent MCP proxy, that proxy removes every request cookie whose name starts with `__Host-thv_consent_` before forwarding to backends (including redirects and recovery), regardless of suffix; other backend cookies remain available. Proxies without an embedded auth server leave cookies untouched. There is no user-facing forget or sign-out control for remembered approvals; they expire automatically. The audience binding applies to newly authorized codes and their refreshes; refresh tokens issued before this binding retain their existing audience behavior. See [Redis storage configuration](../redis-storage.md#data-model) for the key schema and [remote MCP authentication](../remote-mcp-authentication.md) for client-side authentication context.
 
+### Administrator consent preauthorization
+
+The Go-only `authserver.Config.ConsentExemptClientIDs` field and the embedded runner's `WithConsentExemptClientIDs` option allow an embedder to skip ToolHive's consent page for explicitly listed client IDs. An empty list preserves the ordinary consent behavior. The policy skips only ToolHive's interactive consent page; `prompt=consent` takes precedence over the exemption and requires that page even when the client is allowlisted.
+
+> Listing a client ID preauthorizes whatever registration currently holds that ID, for whichever user completes upstream authentication. It is not per-user consent, and runtime eligibility checks do not prove where the registration came from.
+
+An ID qualifies only when explicitly allowlisted and its current registration is eligible: confidential, not back-channel-only, with the authorization-code grant, code response type and at least one redirect URI. At runtime, exemption also requires a code-only request with one explicit registered redirect URI and no loopback redirect rewrite. The client registration used for the decision is resolved normally at request time; startup validation does not freeze its metadata or prove its provenance.
+
+This is an administrator trust decision over the registration currently at the ID, not user consent scoped to an account, redirect, scope, audience or grant. Replacing the registration's credentials or redirect URIs transfers the exemption to the replacement. Expanding its permitted scopes, audiences or grants can expand what is preauthorized. An embedder must control registration writes for exempt IDs. HTTP Dynamic Client Registration (DCR) can qualify when its server-minted ID is explicitly allowlisted and eligible, but DCR IDs are server-generated and registration is create-only: a DCR caller cannot choose or overwrite an exempt ID. CIMD replacement targets URL-shaped IDs, which this allowlist excludes. These registration-write restrictions do not restrict access to the authorization endpoint. A privileged provisioner with registration-write access can still replace an exempt registration; this policy does not protect against that.
+
+`DCRIssued` continues to govern its existing retention and replacement behavior; it is not an exemption-eligibility signal. DCR-issued exempt clients remain subject to the existing TTL and in-memory eviction behavior. A client can expire or be evicted and then needs to be reprovisioned. The exemption does not change retention. Removing an ID restores ordinary consent decision-making for new authorization requests only: it does not revoke tokens or automatically cancel already-approved flows.
+
+This behavior is a deliberate standards trade-off. The [stable MCP authorization specification](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization) states: “MCP proxy servers using static client IDs MUST obtain user consent for each dynamically registered client before forwarding to third-party authorization servers.” ToolHive is that proxy. Allowlisting a dynamically registered client is a deliberate deviation from this requirement, not an exception. More broadly, administrator preauthorization trades individual user approval for the embedder's control over the allowlist and registration writes.
+
+#### Downstream transaction binding remains the embedder's responsibility
+
+Knowing an exempt client ID can be enough to send a victim an authorization link. If the victim already has an upstream SSO session, authentication may complete without interaction, and a code may be delivered to the legitimate client's callback without a new user action. The exemption does not establish user intent.
+
+The downstream client must maintain its own binding for every authorization transaction:
+
+1. Generate fresh, unpredictable `state` and an S256 PKCE verifier/challenge for each transaction.
+2. Bind the stored transaction to the initiating client user/session and browser or equivalent user-agent context. A live state belonging to another user's session is not sufficient.
+3. At the downstream callback, reject unsolicited, mismatched, expired, cancelled or already-consumed state before exchanging the code or attaching credentials to a session.
+4. Select the PKCE verifier from that stored transaction, not from callback or other attacker-controlled input, and use it at the token endpoint.
+5. Preserve issuer and other existing authorization-response checks.
+
+State is checked at the callback; the verifier is used at token exchange and is not normally carried in the callback. PKCE and confidential-client authentication alone do not prove which browser or session initiated the callback, or that the user intended the initial authorization navigation. ToolHive's upstream state, PKCE and browser-binding cookie protect the upstream hop; they do not replace the downstream client's transaction binding.
+
+#### Prompt behavior
+
+`prompt=consent` takes precedence over both administrator exemption and remembered approval, so ToolHive displays its consent page. `prompt=none` and `prompt=login` are not specially implemented: an exempt `prompt=none` request may continue to upstream authentication, which is not guaranteed to be silent, and `prompt=login` does not force upstream reauthentication. The current behavior does not establish OIDC `prompt=none` compliance.
+
 ## Memory Backend
 
 The in-memory backend uses Go maps protected by `sync.RWMutex` for thread safety. A background goroutine runs periodic cleanup of expired entries.

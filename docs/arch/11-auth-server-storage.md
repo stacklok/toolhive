@@ -293,6 +293,30 @@ that is simply gone (deleted by logout or evicted by TTL, `ErrNotFound` on
 re-read) — the latter is expected behavior, not a race, and refuses to
 resurrect the deleted row.
 
+### Upstream Refresh Rejections and the Refresh Grant
+
+An upstream refresh fails in one of two ways. In a definitive rejection, the
+IdP answers with a 4xx status and the OAuth `invalid_grant` code, and that
+upstream refresh token will never work again. Any other failure (a network
+error, a 5xx, storage) is transient. The provider wraps
+`upstream.ErrInvalidGrant` only for the definitive case. The refresher and
+`upstreamtoken.ErrRefreshFailed` carry it through, so it can be detected with
+`errors.Is` on the error from `GetValidTokens`. It can also be detected on the
+per-provider errors that `GetAllUpstreamCredentials` returns in its `failed`
+map.
+
+The embedded auth server's own `refresh_token` grant keeps the token session
+(`tsid`). A refreshed access token therefore points at the same upstream
+credential. If that credential is dead, the bearer validator answers 401
+again, and a client that only ever refreshes loops. `Config.RefreshGrantHandlers`
+lets an embedder refuse such a grant. Each handler runs only on the
+`refresh_token` grant, after fosite's built-in refresh handler has
+authenticated the client and loaded the refresh session. The handler runs
+before any tokens are issued or the refresh token is rotated, and returning
+`fosite.ErrInvalidGrant` answers HTTP 400 `invalid_grant`, which pushes the
+client into a full authorization that creates a new `tsid`. No handler is
+registered by default.
+
 ### Serialization
 
 All values are stored as JSON. The implementation uses defensive copies on read and write to prevent caller mutations from affecting stored data.

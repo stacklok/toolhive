@@ -329,6 +329,15 @@ type BaseOAuth2Provider struct {
 // trust-anchor misconfiguration a boot-time error rather than a silent no-op.
 var ErrCABundleWithInjectedClient = errors.New("caFilePath cannot be combined with an injected HTTP client")
 
+// ErrInvalidGrant is wrapped by a token request error when the upstream
+// authorization server answered with the OAuth 2.0 invalid_grant error code
+// (RFC 6749 Section 5.2) and a 4xx status. On refresh it is a definitive
+// rejection: the upstream refresh token is expired, revoked or otherwise no
+// longer valid, and retrying cannot succeed. Network failures, 5xx responses
+// and other error codes do not wrap it, so callers can tell a dead upstream
+// credential from a transient failure with errors.Is.
+var ErrInvalidGrant = errors.New("invalid_grant")
+
 // IdleConnectionCloser is an optional capability an OAuth2Provider may implement
 // to release the idle keep-alive connections held by its HTTP client. It is the
 // provider-level analogue of networking.IdleConnectionCloser, and is optional
@@ -1001,6 +1010,9 @@ func formatOAuth2Error(err error, prefix string) error {
 	var retrieveErr *oauth2.RetrieveError
 	if errors.As(err, &retrieveErr) {
 		// RetrieveError contains the OAuth error response
+		if isInvalidGrant(retrieveErr) {
+			return fmt.Errorf("%s: %w - %s", prefix, ErrInvalidGrant, retrieveErr.ErrorDescription)
+		}
 		if retrieveErr.ErrorCode != "" {
 			return fmt.Errorf("%s: %s - %s", prefix, retrieveErr.ErrorCode, retrieveErr.ErrorDescription)
 		}
@@ -1012,6 +1024,18 @@ func formatOAuth2Error(err error, prefix string) error {
 	}
 	// For other errors (network errors, etc.), wrap with context
 	return fmt.Errorf("request failed: %w", err)
+}
+
+// isInvalidGrant reports whether a token endpoint error is a definitive
+// invalid_grant rejection. The 4xx check keeps a misbehaving server that sends
+// an invalid_grant body with a 5xx status classified as transient.
+func isInvalidGrant(retrieveErr *oauth2.RetrieveError) bool {
+	if retrieveErr.ErrorCode != "invalid_grant" {
+		return false
+	}
+	return retrieveErr.Response == nil ||
+		(retrieveErr.Response.StatusCode >= http.StatusBadRequest &&
+			retrieveErr.Response.StatusCode < http.StatusInternalServerError)
 }
 
 // newHTTPClientForHost creates an HTTP client configured for the given host.

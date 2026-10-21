@@ -16,6 +16,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ory/fosite"
+
 	"github.com/stacklok/toolhive/pkg/authserver/internal/consentpolicy"
 	oauthserver "github.com/stacklok/toolhive/pkg/authserver/server"
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
@@ -1240,6 +1242,24 @@ type Config struct {
 	// DefaultUpstreamFactory for upstreams you do not need to customize.
 	UpstreamFactory UpstreamProviderFactory
 
+	// RefreshGrantHandlers are extra token endpoint handlers that validate a
+	// refresh_token grant. Each runs only on that grant (never on
+	// authorization_code, device-code, token exchange, revocation or
+	// introspection requests), after the built-in refresh handler has
+	// authenticated the client, loaded the refresh session and checked the
+	// refresh token's expiry, scope and client binding.
+	//
+	// Returning an error from HandleTokenEndpointRequest refuses the grant:
+	// fosite.ErrInvalidGrant answers HTTP 400 invalid_grant, no tokens are
+	// issued and the refresh token is not rotated. Use it to refuse a refresh
+	// whose session can no longer be served, for example one whose upstream
+	// credential is definitively dead, so the client falls back to a full
+	// authorization instead of looping on refresh.
+	//
+	// CanSkipClientAuth is never consulted: client authentication still
+	// applies. A nil entry is rejected by Validate.
+	RefreshGrantHandlers []fosite.TokenEndpointHandler
+
 	// UpstreamFilter, when set, narrows the upstream authorization chain after the
 	// first leg resolves (see handlers.WithUpstreamFilter). When nil, all
 	// configured upstreams are walked — the current behavior. Pass nil itself,
@@ -1416,6 +1436,12 @@ func (c *Config) Validate() error {
 
 	if err := c.validateUpstreamFilter(); err != nil {
 		return err
+	}
+
+	for i, h := range c.RefreshGrantHandlers {
+		if h == nil {
+			return fmt.Errorf("refresh grant handler %d is nil", i)
+		}
 	}
 
 	// AllowedAudiences is required for MCP compliance.

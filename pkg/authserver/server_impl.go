@@ -571,7 +571,7 @@ func buildProvider(
 		}
 	}()
 
-	factories := make([]oauthserver.Factory, 0, 3)
+	factories := make([]oauthserver.Factory, 0, 3+len(cfg.RefreshGrantHandlers))
 	if !cfg.DisableTokenExchange {
 		tokenExchangeFactory, err := tokenexchange.FactoryWithSharedTrustedIssuerValidator(
 			cfg.DelegationTokenLifespan, cfg.TrustedIssuers, delegateClientIDs, shared)
@@ -594,6 +594,9 @@ func buildProvider(
 		}
 		factories = append(factories, deviceFlowFactory)
 	}
+	// Embedder refresh-grant handlers go last so each runs after the built-in
+	// refresh handler has validated the grant.
+	factories = append(factories, refreshGrantHandlerFactories(cfg.RefreshGrantHandlers)...)
 	provider, err := createProvider(authServerConfig, stor, factories...)
 	if err != nil {
 		return nil, nil, err
@@ -769,7 +772,8 @@ func (s *server) Close() error {
 //   - Authorization code grant (RFC 6749 Section 4.1)
 //   - Refresh token grant (RFC 6749 Section 6)
 //   - PKCE (RFC 7636) for public client security
-//   - Any extra factories passed in (e.g., RFC 8693 token exchange)
+//   - Any extra factories passed in (e.g., RFC 8693 token exchange, or the
+//     embedder's Config.RefreshGrantHandlers), registered after the built-ins
 func createProvider(
 	authServerConfig *oauthserver.AuthorizationServerConfig,
 	stor storage.Storage,

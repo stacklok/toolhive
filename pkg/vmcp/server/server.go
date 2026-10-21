@@ -693,7 +693,7 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 	// runs during tool dispatch inside the handler.
 	//
 	// Upstream token refresh failures are detected inside AuthMiddleware itself:
-	// GetAllUpstreamCredentials returns a non-empty failed-provider slice when
+	// GetAllUpstreamCredentials returns a non-empty failed-provider map when
 	// any upstream refresh fails, and the middleware short-circuits with
 	// HTTP 401 + WWW-Authenticate. Audit wraps auth, so those 401s (and every
 	// other rejection from the inner chain) still produce an audit event; the

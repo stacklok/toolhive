@@ -72,11 +72,15 @@ type TokenReader interface {
 	// given session ID. Returns an empty map if the session has no stored
 	// upstream tokens.
 	//
-	// The second return value contains the names of providers whose access tokens
-	// were expired and could not be refreshed (e.g. the refresh token is missing
-	// or the upstream IDP rejected the refresh). Those providers are omitted from
-	// the creds map. Callers should treat a non-empty failed list as a signal to
-	// return HTTP 401 + WWW-Authenticate so the client can re-authenticate.
+	// The second return value maps each provider whose access token was expired
+	// and could not be refreshed (e.g. the refresh token is missing or the
+	// upstream IDP rejected the refresh) to the reason, using the same sentinel
+	// errors as Service.GetValidTokens. Those providers are omitted from the
+	// creds map. Callers should treat a non-empty failed map as a signal to
+	// return HTTP 401 + WWW-Authenticate so the client can re-authenticate. An
+	// upstream that definitively rejected the refresh (the IdP answered
+	// invalid_grant) satisfies errors.Is(err, upstream.ErrInvalidGrant); a
+	// network or 5xx failure does not.
 	//
 	// Each returned IDToken is the rotated ID token when a refresh produced
 	// one (OIDC Core 1.0 §12.2), otherwise the original JWT captured at OIDC
@@ -85,9 +89,9 @@ type TokenReader interface {
 	// first or handle the resulting rejection; callers that only READ ITS CLAIMS
 	// are unaffected by expiry. See UpstreamCredential for both consumers.
 	//
-	// Returns an empty map and nil failed slice (not error) for unknown sessions.
+	// Returns an empty map and nil failed map (not error) for unknown sessions.
 	GetAllUpstreamCredentials(ctx context.Context, sessionID string) (
-		creds map[string]UpstreamCredential, failed []string, err error)
+		creds map[string]UpstreamCredential, failed map[string]error, err error)
 }
 
 // Service owns the upstream token lifecycle: read, refresh, error handling.
@@ -100,7 +104,10 @@ type Service interface {
 	//   - *UpstreamCredential on success
 	//   - ErrSessionNotFound if no upstream tokens exist for the session/provider
 	//   - ErrNoRefreshToken if the access token is expired and no refresh token is available
-	//   - ErrRefreshFailed if the refresh attempt fails (e.g., revoked refresh token)
+	//   - ErrRefreshFailed if the refresh attempt fails (e.g., revoked refresh token).
+	//     When the upstream IdP definitively rejected the refresh with
+	//     invalid_grant, the error also satisfies errors.Is(err, upstream.ErrInvalidGrant);
+	//     a network or 5xx failure does not.
 	//
 	// The returned UpstreamCredential.IDToken may be empty or expired. Callers that
 	// PRESENT it as a credential (e.g. as the subject_token of an RFC 8693 token

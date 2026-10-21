@@ -2039,14 +2039,23 @@ func TestRunConfigValidateTLSListener(t *testing.T) {
 	}{
 		{name: "nil listener"},
 		{
-			name:       "empty listener config is rejected as unsupported",
-			config:     &TLSListenerRunConfig{},
-			wantErrMsg: "tls_listener: the TLS listener is not yet supported",
+			name:   "complete listener config",
+			config: &TLSListenerRunConfig{CertFile: "cert", KeyFile: "key"},
 		},
 		{
-			name:       "complete listener config is rejected as unsupported",
-			config:     &TLSListenerRunConfig{CertFile: "cert", KeyFile: "key"},
-			wantErrMsg: "tls_listener: the TLS listener is not yet supported",
+			name:       "missing certificate",
+			config:     &TLSListenerRunConfig{KeyFile: "key"},
+			wantErrMsg: "tls_listener.cert_file",
+		},
+		{
+			name:       "missing key",
+			config:     &TLSListenerRunConfig{CertFile: "cert"},
+			wantErrMsg: "tls_listener.key_file",
+		},
+		{
+			name:       "missing both",
+			config:     &TLSListenerRunConfig{},
+			wantErrMsg: "tls_listener.cert_file and tls_listener.key_file",
 		},
 	}
 	for _, tt := range tests {

@@ -3049,6 +3049,151 @@ func TestNewEmbeddedAuthServer_ClosesStorageOnError(t *testing.T) {
 			"a count of 0 indicates the deferred Close did not run, leaking the backend on the error path")
 }
 
+// TestNewEmbeddedAuthServer_TLSListenerClosesStorageOnError verifies that a
+// TLS listener key-pair load failure also goes through the same
+// deferred-cleanup gate as every other constructor error path.
+//
+// Configured SPIFFE associations are rejected by the startup validation gate,
+// so they cannot exercise validateTLSListenerIssuer's https-issuer check
+// through this constructor yet. A missing TLS certificate file still proves
+// the storage is closed exactly once on the certificate-load error path.
+func TestNewEmbeddedAuthServer_TLSListenerClosesStorageOnError(t *testing.T) {
+	t.Parallel()
+
+	baseStorage := storage.NewMemoryStorage()
+	tracker := &closeTrackingDCRStorage{
+		closeTrackingStorage: &closeTrackingStorage{Storage: baseStorage},
+		DCRCredentialStore:   baseStorage,
+	}
+
+	cfg := &authserver.RunConfig{
+		SchemaVersion: authserver.CurrentSchemaVersion,
+		Issuer:        "http://localhost:8080",
+		Upstreams: []authserver.UpstreamRunConfig{
+			{
+				Name: "test-upstream",
+				Type: authserver.UpstreamProviderTypeOAuth2,
+				OAuth2Config: &authserver.OAuth2UpstreamRunConfig{
+					AuthorizationEndpoint: "https://example.com/authorize",
+					TokenEndpoint:         "https://example.com/token",
+					ClientID:              "test-client-id",
+					RedirectURI:           "http://localhost:8080/oauth/callback",
+				},
+			},
+		},
+		AllowedAudiences: []string{"https://mcp.example.com"},
+		TLSListener: &authserver.TLSListenerRunConfig{
+			CertFile: filepath.Join(t.TempDir(), "missing-cert.pem"),
+			KeyFile:  filepath.Join(t.TempDir(), "missing-key.pem"),
+		},
+	}
+
+	embed, err := NewEmbeddedAuthServerWithStorage(context.Background(), cfg, tracker, WithListenerHost("localhost"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "load auth server TLS listener certificate")
+	assert.Nil(t, embed)
+	assert.Equal(t, int32(1), tracker.closeCount.Load(),
+		"a TLS listener certificate load failure must Close the storage exactly once via the deferred-cleanup gate")
+}
+
+func TestNewEmbeddedAuthServer_TLSListenerRequiresHost(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name              string
+		tlsListener       bool
+		listenerHost      string
+		publicConstructor bool
+		wantError         string
+	}{
+		{
+			name:        "TLS listener without host fails before certificate loading",
+			tlsListener: true,
+			wantError:   "auth server TLS listener host is required",
+		},
+		{
+			name:              "public constructor rejects TLS listener without host",
+			tlsListener:       true,
+			publicConstructor: true,
+			wantError:         "auth server TLS listener host is required",
+		},
+		{
+			name: "no TLS listener without host remains valid",
+		},
+		{
+			name:         "TLS listener with host proceeds to certificate loading",
+			tlsListener:  true,
+			listenerHost: "localhost",
+			wantError:    "load auth server TLS listener certificate",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg := &authserver.RunConfig{
+				SchemaVersion: authserver.CurrentSchemaVersion,
+				Issuer:        "http://localhost:8080",
+				Upstreams: []authserver.UpstreamRunConfig{{
+					Name: "test-upstream",
+					Type: authserver.UpstreamProviderTypeOAuth2,
+					OAuth2Config: &authserver.OAuth2UpstreamRunConfig{
+						AuthorizationEndpoint: "https://example.com/authorize",
+						TokenEndpoint:         "https://example.com/token",
+						ClientID:              "test-client-id",
+						RedirectURI:           "http://localhost:8080/oauth/callback",
+					},
+				}},
+				AllowedAudiences: []string{"https://mcp.example.com"},
+			}
+			if tt.tlsListener {
+				cfg.TLSListener = &authserver.TLSListenerRunConfig{
+					CertFile: filepath.Join(t.TempDir(), "missing-cert.pem"),
+					KeyFile:  filepath.Join(t.TempDir(), "missing-key.pem"),
+				}
+			}
+
+			var tracker *closeTrackingDCRStorage
+			optionCalls := 0
+			opts := []EmbeddedAuthServerOption{func(*embeddedAuthServerOptions) { optionCalls++ }}
+			if tt.listenerHost != "" {
+				opts = append(opts, WithListenerHost(tt.listenerHost))
+			}
+			var embed *EmbeddedAuthServer
+			var err error
+			if tt.publicConstructor {
+				embed, err = NewEmbeddedAuthServer(context.Background(), cfg, opts...)
+			} else {
+				baseStorage := storage.NewMemoryStorage()
+				tracker = &closeTrackingDCRStorage{
+					closeTrackingStorage: &closeTrackingStorage{Storage: baseStorage},
+					DCRCredentialStore:   baseStorage,
+				}
+				embed, err = NewEmbeddedAuthServerWithStorage(context.Background(), cfg, tracker, opts...)
+			}
+			assert.Equal(t, 1, optionCalls, "constructor options must be applied once")
+			if tt.wantError != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.wantError)
+				if tt.tlsListener && tt.listenerHost == "" {
+					assert.NotContains(t, err.Error(), "certificate")
+				}
+				assert.Nil(t, embed)
+				if tracker != nil {
+					assert.Equal(t, int32(1), tracker.closeCount.Load())
+				}
+				return
+			}
+
+			require.NoError(t, err)
+			require.NotNil(t, embed)
+			require.NoError(t, embed.Close())
+			assert.Equal(t, int32(1), tracker.closeCount.Load())
+		})
+	}
+}
+
 // TestEmbeddedAuthServer_DCRStorePersistsAcrossClose verifies that the DCR
 // store reachable through EmbeddedAuthServer.DCRStore() holds the resolved
 // RFC 7591 client registration after the constructor's full DCR resolver

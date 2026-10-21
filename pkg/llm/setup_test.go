@@ -2011,6 +2011,6 @@ func TestWarnCredentialHelperTools(t *testing.T) {
 	assert.NotContains(t, out.String(), "claude-code")
 
 	// The MDM warning prints on stderr only for the managed tool.
-	assert.Contains(t, errOut.String(), "managed-preferences profile for claude-desktop")
+	assert.Contains(t, errOut.String(), "managed configuration for claude-desktop")
 	assert.NotContains(t, errOut.String(), "profile for other-desktop")
 }

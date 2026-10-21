@@ -308,21 +308,33 @@ func quoteForPOSIXShell(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
-// managedProfilePresent reports whether an MDM/managed-preferences profile for
-// the given plist domain is present. A managed profile overrides a client's
-// local config, so "thv llm setup" warns when one is detected (the local config
-// it writes would be ignored). macOS only; returns false elsewhere or when the
-// client declares no managed-profile domain.
-func managedProfilePresent(domain string) bool {
-	if domain == "" || runtime.GOOS != "darwin" {
+// managedProfilePresent reports whether a managed configuration source for the
+// client is present. A managed source overrides a client's local config, so
+// "thv llm setup" warns when one is detected (the local config it writes would
+// be ignored). Checks the MDM managed-preferences plist on macOS and the
+// managed settings file on Linux; returns false on other platforms or when the
+// client declares no managed source for the current platform.
+func managedProfilePresent(cfg *clientAppConfig) bool {
+	switch runtime.GOOS {
+	case "darwin":
+		return cfg.LLMManagedProfileDomain != "" &&
+			managedProfileExistsUnder(managedPreferencesRoot, cfg.LLMManagedProfileDomain)
+	case "linux":
+		return len(cfg.LLMManagedSettingsRelPath) > 0 &&
+			managedSettingsPresentUnder(linuxManagedSettingsRoot, cfg.LLMManagedSettingsRelPath)
+	default:
 		return false
 	}
-	return managedProfileExistsUnder(managedPreferencesRoot, domain)
 }
 
 // managedPreferencesRoot is the macOS managed-preferences directory. A package
 // variable (not a const) so tests can point it at a temp directory.
 var managedPreferencesRoot = "/Library/Managed Preferences"
+
+// linuxManagedSettingsRoot is the directory Linux managed settings files are
+// resolved under. A package variable (not a const) so tests can point it at a
+// temp directory.
+var linuxManagedSettingsRoot = "/etc"
 
 // managedProfileExistsUnder reports whether a managed-preferences plist for
 // domain exists directly under root or under a per-user subdirectory
@@ -333,6 +345,17 @@ func managedProfileExistsUnder(root, domain string) bool {
 	}
 	matches, _ := filepath.Glob(filepath.Join(root, "*", domain))
 	return len(matches) > 0
+}
+
+// managedSettingsPresentUnder reports whether anything exists at root/relPath.
+// Claude Desktop rejects a managed settings file that is a symlink, not owned
+// by root, or group- or world-writable, but it then treats the device as
+// managed and disables local settings anyway. Either way the local config is
+// ignored, so any entry counts and Desktop's checks are not replicated.
+// Platform-independent so it is unit-testable.
+func managedSettingsPresentUnder(root string, relPath []string) bool {
+	_, err := os.Lstat(filepath.Join(root, filepath.Join(relPath...)))
+	return err == nil
 }
 
 // ── _meta.json helpers ─────────────────────────────────────────────────────

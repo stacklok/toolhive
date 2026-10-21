@@ -314,6 +314,11 @@ type clientAppConfig struct {
 	// the client's local config. Setup warns when detected. Empty when the client
 	// has no managed-profile surface.
 	LLMManagedProfileDomain string
+	// LLMManagedSettingsRelPath is the path segments, under /etc, of the Linux
+	// managed settings file (e.g. claude-desktop/managed-settings.json) that,
+	// when present, overrides the client's local config. Setup warns when
+	// detected. Empty when the client has no Linux managed-settings surface.
+	LLMManagedSettingsRelPath []string
 }
 
 // extractServersKeyFromConfig extracts the servers key from MCPServersPathPrefix
@@ -1111,6 +1116,7 @@ var supportedClientIntegrations = []clientAppConfig{
 		LLMSettingsPlatformPrefix: map[Platform][]string{
 			PlatformDarwin:  {"Library", "Application Support"},
 			PlatformWindows: {"AppData", "Local"},
+			PlatformLinux:   {".config"},
 		},
 		// Detect via the app's user-data directory, which exists once Claude
 		// Desktop has run — the configLibrary directory above does not exist
@@ -1119,8 +1125,10 @@ var supportedClientIntegrations = []clientAppConfig{
 		LLMDetectPlatformPrefix: map[Platform][]string{
 			PlatformDarwin:  {"Library", "Application Support"},
 			PlatformWindows: {"AppData", "Roaming"},
+			PlatformLinux:   {".config"},
 		},
-		LLMManagedProfileDomain: "com.anthropic.claudefordesktop.plist",
+		LLMManagedProfileDomain:   "com.anthropic.claudefordesktop.plist",
+		LLMManagedSettingsRelPath: []string{"claude-desktop", "managed-settings.json"},
 	},
 }
 

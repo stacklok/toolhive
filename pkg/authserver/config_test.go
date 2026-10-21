@@ -195,6 +195,7 @@ func TestConfigValidate(t *testing.T) {
 
 		// RefreshGrantHandlers
 		{name: "nil refresh grant handler rejected", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, RefreshGrantHandlers: []fosite.TokenEndpointHandler{&recordingRefreshHandler{}, nil}}, wantErr: true, errMsg: "refresh grant handler 1 is nil"},
+		{name: "typed-nil refresh grant handler rejected", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, RefreshGrantHandlers: []fosite.TokenEndpointHandler{(*recordingRefreshHandler)(nil)}}, wantErr: true, errMsg: "refresh grant handler 0 is nil"},
 		{name: "refresh grant handler accepted", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, RefreshGrantHandlers: []fosite.TokenEndpointHandler{&recordingRefreshHandler{}}}},
 
 		// Valid configs

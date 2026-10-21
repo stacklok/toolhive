@@ -315,13 +315,18 @@ The embedded auth server's own `refresh_token` grant keeps the token session
 (`tsid`). A refreshed access token therefore points at the same upstream
 credential. If that credential is dead, the bearer validator answers 401
 again, and a client that only ever refreshes loops. `Config.RefreshGrantHandlers`
-lets an embedder refuse such a grant. Each handler runs only on the
+lets an embedder refuse such a grant. The handlers run in order, only on the
 `refresh_token` grant, after fosite's built-in refresh handler has
-authenticated the client and loaded the refresh session. The handler runs
-before any tokens are issued or the refresh token is rotated, and returning
+authenticated the client and loaded the refresh session. They run before any
+tokens are issued or the refresh token is rotated. Returning
 `fosite.ErrInvalidGrant` answers HTTP 400 `invalid_grant`, which pushes the
-client into a full authorization that creates a new `tsid`. No handler is
-registered by default.
+client into a full authorization that creates a new `tsid`. Another fosite
+error keeps its own status and code, and a plain Go error answers HTTP 500.
+Only the handlers' request phase is delegated:
+their response phase and client-authentication skip are never called, so the
+seam can refuse a grant but not change what is issued. All handlers are
+registered as one fosite handler, because fosite drops a second handler of
+the same concrete type. No handler is registered by default.
 
 ### Serialization
 

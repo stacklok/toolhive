@@ -1243,25 +1243,41 @@ type Config struct {
 	UpstreamFactory UpstreamProviderFactory
 
 	// RefreshGrantHandlers are extra token endpoint handlers that validate a
-	// refresh_token grant. Each runs only on that grant (never on
+	// refresh_token grant. They run in order and only on that grant (never on
 	// authorization_code, device-code, token exchange, revocation or
 	// introspection requests), after the built-in refresh handler has
 	// authenticated the client, loaded the refresh session and checked the
-	// refresh token's expiry, scope and client binding.
+	// refresh token's expiry, scope and client binding. The requester's session
+	// is then the stored refresh session (a *session.Session whose
+	// GetIDPSessionID returns the token session ID, tsid). A handler whose
+	// CanHandleTokenEndpointRequest returns false is skipped.
 	//
 	// Returning an error from HandleTokenEndpointRequest refuses the grant
-	// before any tokens are issued and before the refresh token is rotated.
-	// Return a fosite RFC 6749 error: fosite.ErrInvalidGrant answers HTTP 400
-	// invalid_grant, which sends the client to a full authorization instead of
-	// looping on refresh. Any other error, including a plain Go error, is
-	// answered as 500 server_error. Use it to refuse a refresh whose session
-	// can no longer be served, for example one whose upstream credential is
-	// definitively dead.
+	// before any tokens are issued and before the refresh token is rotated;
+	// later handlers do not run. Return a fosite RFC 6749 error:
+	// fosite.ErrInvalidGrant answers HTTP 400 invalid_grant, which sends the
+	// client to a full authorization instead of looping on refresh. Another
+	// fosite error answers with its own status and code. A plain Go error
+	// answers HTTP 500 with fosite's generic "error" code, which clients treat
+	// as a server failure and may retry. fosite.ErrUnknownRequest is treated as no objection,
+	// not a refusal, so returning it lets the grant through. Use the seam to
+	// refuse a refresh whose session can no longer be served, for example one
+	// whose upstream credential is dead. When deciding from
+	// upstream.ErrInvalidGrant, note its doc: under a cross-replica
+	// refresh race it can occasionally be reported for a live credential.
 	//
 	// The seam only validates. PopulateTokenEndpointResponse and
-	// CanSkipClientAuth are never called: client authentication still applies,
-	// and the issued response cannot be altered. A nil entry is rejected by
-	// Validate.
+	// CanSkipClientAuth are never called, so client authentication still
+	// applies. Handlers must treat the requester as read-only: they receive the
+	// live request the built-in handler has populated, and changing it would
+	// change what is issued. Handlers are called concurrently and must be safe
+	// for concurrent use.
+	//
+	// Handlers are fixed when New is called, before the server exists. A
+	// handler that needs the server's upstream state receives it after New
+	// returns, for example by wrapping UpstreamTokenRefresher and
+	// IDPTokenStorage in a service it holds a pointer to. A nil entry,
+	// including a nil pointer of a concrete type, is rejected by Validate.
 	RefreshGrantHandlers []fosite.TokenEndpointHandler
 
 	// UpstreamFilter, when set, narrows the upstream authorization chain after the
@@ -1443,7 +1459,7 @@ func (c *Config) Validate() error {
 	}
 
 	for i, h := range c.RefreshGrantHandlers {
-		if h == nil {
+		if isNilHandler(h) {
 			return fmt.Errorf("refresh grant handler %d is nil", i)
 		}
 	}

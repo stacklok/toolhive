@@ -571,7 +571,7 @@ func buildProvider(
 		}
 	}()
 
-	factories := make([]oauthserver.Factory, 0, 3+len(cfg.RefreshGrantHandlers))
+	factories := make([]oauthserver.Factory, 0, 4)
 	if !cfg.DisableTokenExchange {
 		tokenExchangeFactory, err := tokenexchange.FactoryWithSharedTrustedIssuerValidator(
 			cfg.DelegationTokenLifespan, cfg.TrustedIssuers, delegateClientIDs, shared)

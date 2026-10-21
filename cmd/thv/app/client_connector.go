@@ -49,6 +49,8 @@ A warning is logged when Claude Desktop will not load the connector: when a
 managed configuration (an MDM profile on macOS, or
 /etc/claude-desktop/managed-settings.json on Linux) overrides its local
 configuration, or when a different saved configuration is applied in the app.
+A managed file that Claude Desktop rejects as invalid also disables the local
+configuration, so it triggers the same warning.
 
 Example:
   thv client connector add --client claude-desktop stacklok-connectors https://connector-gateway.example.com/gw/mcp`,

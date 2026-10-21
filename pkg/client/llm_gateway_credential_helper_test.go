@@ -521,7 +521,7 @@ func TestClaudeDesktopPathsResolvePerPlatform(t *testing.T) {
 	}
 }
 
-func TestManagedSettingsFileExistsUnder(t *testing.T) {
+func TestManagedSettingsPresentUnder(t *testing.T) {
 	t.Parallel()
 	relPath := []string{"claude-desktop", "managed-settings.json"}
 
@@ -540,8 +540,8 @@ func TestManagedSettingsFileExistsUnder(t *testing.T) {
 			want: true,
 		},
 		{
-			// Claude Desktop ignores a symlinked managed file, so ToolHive must
-			// not warn that one overrides the local configuration.
+			// Claude Desktop rejects a symlinked managed file but still treats the
+			// device as managed and disables local settings, so it counts.
 			name: "symlink",
 			setup: func(t *testing.T, root string) {
 				t.Helper()
@@ -550,6 +550,16 @@ func TestManagedSettingsFileExistsUnder(t *testing.T) {
 				require.NoError(t, os.MkdirAll(filepath.Join(root, relPath[0]), 0o700))
 				require.NoError(t, os.Symlink(target, filepath.Join(root, filepath.Join(relPath...))))
 			},
+			want: true,
+		},
+		{
+			name: "dangling symlink",
+			setup: func(t *testing.T, root string) {
+				t.Helper()
+				require.NoError(t, os.MkdirAll(filepath.Join(root, relPath[0]), 0o700))
+				require.NoError(t, os.Symlink(filepath.Join(root, "missing.json"), filepath.Join(root, filepath.Join(relPath...))))
+			},
+			want: true,
 		},
 		{
 			name: "directory",
@@ -557,6 +567,7 @@ func TestManagedSettingsFileExistsUnder(t *testing.T) {
 				t.Helper()
 				require.NoError(t, os.MkdirAll(filepath.Join(root, filepath.Join(relPath...)), 0o700))
 			},
+			want: true,
 		},
 	}
 	for _, tc := range tests {
@@ -564,7 +575,7 @@ func TestManagedSettingsFileExistsUnder(t *testing.T) {
 			t.Parallel()
 			root := t.TempDir()
 			tc.setup(t, root)
-			assert.Equal(t, tc.want, managedSettingsFileExistsUnder(root, relPath))
+			assert.Equal(t, tc.want, managedSettingsPresentUnder(root, relPath))
 		})
 	}
 }

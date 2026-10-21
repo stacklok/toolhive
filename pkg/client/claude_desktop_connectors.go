@@ -85,7 +85,8 @@ func (cm *ClientManager) AddConnector(clientType ClientApp, name, serverURL stri
 	}
 	if cm.IsManaged(clientType) {
 		slog.Warn("a managed configuration overrides Claude Desktop's local configuration, "+
-			"so it will not load this connector; add it to the managed configuration instead",
+			"so it will not load this connector; add it to the managed configuration instead, "+
+			"or fix the managed configuration if Desktop rejected it",
 			"connector", name)
 	}
 	if !applied {

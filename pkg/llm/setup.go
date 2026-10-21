@@ -1338,8 +1338,8 @@ func warnCredentialHelperTools(out, errOut io.Writer, gm GatewayManager, configu
 		if gm.IsManaged(tc.Tool) {
 			_, _ = fmt.Fprintf(errOut,
 				"Warning: a managed configuration for %s is present; it overrides the local "+
-					"configuration just written, which will be ignored. Remove the managed configuration or "+
-					"configure the gateway there instead.\n", tc.Tool)
+					"configuration just written, which will be ignored. Remove the managed configuration, "+
+					"configure the gateway there instead, or fix it if %s rejected it.\n", tc.Tool, tc.Tool)
 		}
 	}
 }

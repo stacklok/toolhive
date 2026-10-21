@@ -321,7 +321,7 @@ func managedProfilePresent(cfg *clientAppConfig) bool {
 			managedProfileExistsUnder(managedPreferencesRoot, cfg.LLMManagedProfileDomain)
 	case "linux":
 		return len(cfg.LLMManagedSettingsRelPath) > 0 &&
-			managedSettingsFileExistsUnder(linuxManagedSettingsRoot, cfg.LLMManagedSettingsRelPath)
+			managedSettingsPresentUnder(linuxManagedSettingsRoot, cfg.LLMManagedSettingsRelPath)
 	default:
 		return false
 	}
@@ -347,14 +347,15 @@ func managedProfileExistsUnder(root, domain string) bool {
 	return len(matches) > 0
 }
 
-// managedSettingsFileExistsUnder reports whether root/relPath is a regular
-// file. Claude Desktop ignores a symlinked managed settings file, so a symlink
-// does not count. Desktop also requires root ownership and no group or world
-// write access; those checks are skipped because a false positive only costs
-// an unnecessary warning. Platform-independent so it is unit-testable.
-func managedSettingsFileExistsUnder(root string, relPath []string) bool {
-	info, err := os.Lstat(filepath.Join(root, filepath.Join(relPath...)))
-	return err == nil && info.Mode().IsRegular()
+// managedSettingsPresentUnder reports whether anything exists at root/relPath.
+// Claude Desktop rejects a managed settings file that is a symlink, not owned
+// by root, or group- or world-writable, but it then treats the device as
+// managed and disables local settings anyway. Either way the local config is
+// ignored, so any entry counts and Desktop's checks are not replicated.
+// Platform-independent so it is unit-testable.
+func managedSettingsPresentUnder(root string, relPath []string) bool {
+	_, err := os.Lstat(filepath.Join(root, filepath.Join(relPath...)))
+	return err == nil
 }
 
 // ── _meta.json helpers ─────────────────────────────────────────────────────

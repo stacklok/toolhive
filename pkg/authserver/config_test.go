@@ -243,6 +243,47 @@ func TestConfigValidate(t *testing.T) {
 	}
 }
 
+func TestConfigValidateSubjectIdentifierAudiences(t *testing.T) {
+	t.Parallel()
+
+	base := Config{
+		Issuer:      "https://issuer.example.com",
+		HMACSecrets: &servercrypto.HMACSecrets{Current: make([]byte, 32)},
+		Upstreams: []UpstreamConfig{{
+			Name: "default", Type: UpstreamProviderTypeOAuth2,
+			OAuth2Config: &upstream.OAuth2Config{
+				CommonOAuthConfig:     upstream.CommonOAuthConfig{ClientID: "client", RedirectURI: "https://issuer.example.com/callback"},
+				AuthorizationEndpoint: "https://idp.example.com/authorize",
+				TokenEndpoint:         "https://idp.example.com/token",
+			},
+		}},
+		AllowedAudiences: []string{"https://resource.example.com"},
+	}
+
+	tests := []struct {
+		name      string
+		audiences []string
+		wantErr   bool
+	}{
+		{name: "exact allowed URI", audiences: []string{"https://resource.example.com"}},
+		{name: "all is not special", audiences: []string{"all"}, wantErr: true},
+		{name: "URI outside allowed audiences", audiences: []string{"https://other.example.com"}, wantErr: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := base
+			cfg.SubjectIdentifierAudiences = tc.audiences
+			err := cfg.Validate()
+			if tc.wantErr {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
 func TestConfigValidate_ZeroUpstreamAlternatives(t *testing.T) {
 	t.Parallel()
 

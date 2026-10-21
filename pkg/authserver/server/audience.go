@@ -4,6 +4,7 @@
 package server
 
 import (
+	"fmt"
 	"net/http"
 	"net/url"
 	"slices"
@@ -56,6 +57,21 @@ func ValidateAudienceURI(resource string) error {
 		return ErrInvalidTarget.WithHint("Resource must use http or https scheme")
 	}
 
+	return nil
+}
+
+// ValidateSubjectIdentifierAudiences validates the runtime sub_id disclosure allowlist.
+// Every entry must be an exact member of the independently validated
+// allowed-audience list; an empty list disables disclosure.
+func ValidateSubjectIdentifierAudiences(subjectAudiences, allowedAudiences []string) error {
+	if len(subjectAudiences) == 0 {
+		return nil
+	}
+	for _, audience := range subjectAudiences {
+		if !slices.Contains(allowedAudiences, audience) {
+			return fmt.Errorf("subject identifier audience %q is not in allowed audiences", audience)
+		}
+	}
 	return nil
 }
 

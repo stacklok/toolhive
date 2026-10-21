@@ -1094,6 +1094,12 @@ func TestMemoryStorage_TokenSessions(t *testing.T) {
 	}
 }
 
+// testVerifiedUpstream is a complete verified upstream identity shared by the
+// memory and Redis storage tests.
+var testVerifiedUpstream = authsession.UpstreamSubject{
+	Issuer: "https://idp.example.com", Subject: "upstream-sub", StableClaim: "oid", StableValue: "upstream-oid",
+}
+
 func TestMemoryStorage_TokenSessionSnapshots(t *testing.T) {
 	t.Parallel()
 
@@ -1103,6 +1109,7 @@ func TestMemoryStorage_TokenSessionSnapshots(t *testing.T) {
 				client := &mockClient{id: "client-1", scopes: []string{"openid"}}
 				expires := time.Now().Add(time.Hour)
 				sess := authsession.New("subject", "upstream-1", client.id, authsession.UserClaims{})
+				sess.VerifiedUpstream = testVerifiedUpstream
 				sess.SetExpiresAt(tc.tokenType, expires)
 				sess.JWTClaims.Extra["profile"] = map[string]any{"roles": []string{"reader"}}
 				sess.JWTHeader.Extra["metadata"] = map[string]any{"tags": []string{"original"}}
@@ -1134,6 +1141,7 @@ func TestMemoryStorage_TokenSessionSnapshots(t *testing.T) {
 					storedSession := got.GetSession().(*authsession.Session)
 					assert.Equal(t, expires, storedSession.ExpiresAt[tc.tokenType])
 					assert.Equal(t, "upstream-1", storedSession.GetIDPSessionID())
+					assert.Equal(t, testVerifiedUpstream, storedSession.VerifiedUpstream)
 					assert.Equal(t, "upstream-1", storedSession.JWTClaims.Extra[authsession.TokenSessionIDClaimKey])
 					assert.Equal(t, map[string]any{"roles": []string{"reader"}}, storedSession.JWTClaims.Extra["profile"])
 					assert.Equal(t, map[string]any{"tags": []string{"original"}}, storedSession.GetJWTHeader().Extra["metadata"])
@@ -1148,6 +1156,7 @@ func TestMemoryStorage_TokenSessionSnapshots(t *testing.T) {
 				request.Form.Set("new", "value")
 				sess.SetExpiresAt(tc.tokenType, expires.Add(time.Hour))
 				sess.SetIDPSessionID("changed-source")
+				sess.VerifiedUpstream.StableValue = "changed-source"
 				sess.JWTClaims.Extra["profile"].(map[string]any)["roles"].([]string)[0] = "changed"
 				sess.GetJWTHeader().Extra["metadata"].(map[string]any)["tags"].([]string)[0] = "changed"
 
@@ -1165,6 +1174,7 @@ func TestMemoryStorage_TokenSessionSnapshots(t *testing.T) {
 				returnedSession := first.GetSession().(*authsession.Session)
 				returnedSession.SetExpiresAt(tc.tokenType, expires.Add(2*time.Hour))
 				returnedSession.SetIDPSessionID("changed-returned")
+				returnedSession.VerifiedUpstream.StableValue = "changed-returned"
 				returnedSession.JWTClaims.Extra["profile"].(map[string]any)["roles"].([]string)[0] = "changed"
 				returnedSession.GetJWTHeader().Extra["metadata"].(map[string]any)["tags"].([]string)[0] = "changed"
 
@@ -1908,7 +1918,8 @@ func TestMemoryStorage_PendingAuthorization(t *testing.T) {
 			UpstreamPKCEVerifier: "verifier", UpstreamNonce: "nonce",
 			BrowserBindingHash: "binding-hash",
 			SingleLeg:          true, ChainUpstreams: []string{"provider-1", "provider-2"},
-			CreatedAt: time.Now(),
+			VerifiedUpstream: testVerifiedUpstream,
+			CreatedAt:        time.Now(),
 		}
 	}
 
@@ -1927,6 +1938,7 @@ func TestMemoryStorage_PendingAuthorization(t *testing.T) {
 			assert.Equal(t, pending.BrowserBindingHash, retrieved.BrowserBindingHash)
 			assert.Equal(t, pending.SingleLeg, retrieved.SingleLeg)
 			assert.Equal(t, pending.ChainUpstreams, retrieved.ChainUpstreams)
+			assert.Equal(t, pending.VerifiedUpstream, retrieved.VerifiedUpstream)
 		})
 	})
 
@@ -2071,7 +2083,9 @@ func TestMemoryStorage_PendingDeviceConfirmation(t *testing.T) {
 		return &PendingDeviceConfirmation{
 			DeviceCode: "device-code", UserCode: "USER-CODE",
 			ResolvedUserID: "user-1", ResolvedUserName: "Ada Lovelace",
-			ResolvedUserEmail: "ada@example.com", CreatedAt: time.Now(),
+			ResolvedUserEmail: "ada@example.com",
+			VerifiedUpstream:  testVerifiedUpstream,
+			CreatedAt:         time.Now(),
 		}
 	}
 
@@ -2087,6 +2101,7 @@ func TestMemoryStorage_PendingDeviceConfirmation(t *testing.T) {
 			assert.Equal(t, pending.ResolvedUserID, retrieved.ResolvedUserID)
 			assert.Equal(t, pending.ResolvedUserName, retrieved.ResolvedUserName)
 			assert.Equal(t, pending.ResolvedUserEmail, retrieved.ResolvedUserEmail)
+			assert.Equal(t, pending.VerifiedUpstream, retrieved.VerifiedUpstream)
 		})
 	})
 
@@ -2215,7 +2230,10 @@ func TestMemoryStorage_DeviceCode(t *testing.T) {
 		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
 			require.NoError(t, s.StoreDeviceRequest(ctx, makeDevice("device-auth", "USER-AUTH")))
 
-			require.NoError(t, s.MarkDeviceRequestAuthorized(ctx, "device-auth", "user-1", "Alice", "alice@example.com", "session-1"))
+			require.NoError(t, s.MarkDeviceRequestAuthorized(ctx, "device-auth", DeviceAuthorization{
+				UserID: "user-1", UserName: "Alice", UserEmail: "alice@example.com", SessionID: "session-1",
+				VerifiedUpstream: testVerifiedUpstream,
+			}))
 
 			retrieved, err := s.LoadDeviceRequestByDeviceCode(ctx, "device-auth")
 			require.NoError(t, err)
@@ -2224,8 +2242,11 @@ func TestMemoryStorage_DeviceCode(t *testing.T) {
 			assert.Equal(t, "Alice", retrieved.ResolvedUserName)
 			assert.Equal(t, "alice@example.com", retrieved.ResolvedUserEmail)
 			assert.Equal(t, "session-1", retrieved.SessionID)
+			assert.Equal(t, testVerifiedUpstream, retrieved.VerifiedUpstream)
 
-			err = s.MarkDeviceRequestAuthorized(ctx, "device-auth", "user-2", "Bob", "bob@example.com", "session-2")
+			err = s.MarkDeviceRequestAuthorized(ctx, "device-auth", DeviceAuthorization{
+				UserID: "user-2", UserName: "Bob", UserEmail: "bob@example.com", SessionID: "session-2",
+			})
 			require.ErrorIs(t, err, ErrInvalidState)
 
 			err = s.MarkDeviceRequestDenied(ctx, "device-auth")
@@ -2243,7 +2264,9 @@ func TestMemoryStorage_DeviceCode(t *testing.T) {
 			require.NoError(t, err)
 			assert.Equal(t, DeviceRequestStatusDenied, retrieved.Status)
 
-			err = s.MarkDeviceRequestAuthorized(ctx, "device-deny", "user-1", "Alice", "alice@example.com", "session-1")
+			err = s.MarkDeviceRequestAuthorized(ctx, "device-deny", DeviceAuthorization{
+				UserID: "user-1", UserName: "Alice", UserEmail: "alice@example.com", SessionID: "session-1",
+			})
 			require.ErrorIs(t, err, ErrInvalidState)
 		})
 	})

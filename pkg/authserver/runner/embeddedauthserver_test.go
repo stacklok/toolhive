@@ -1053,6 +1053,28 @@ func TestNewEmbeddedAuthServer(t *testing.T) {
 		assert.Nil(t, server)
 	})
 
+	t.Run("subject identifier audience outside allowed audiences returns error", func(t *testing.T) {
+		t.Parallel()
+
+		cfg := createMinimalValidConfig()
+
+		server, err := NewEmbeddedAuthServer(context.Background(), cfg,
+			WithSubjectIdentifierAudiences([]string{"https://other.example.com"}))
+		require.ErrorContains(t, err, "subject identifier audience")
+		assert.Nil(t, server)
+	})
+
+	t.Run("subject identifier audience within allowed audiences creates server", func(t *testing.T) {
+		t.Parallel()
+
+		cfg := createMinimalValidConfig()
+
+		server, err := NewEmbeddedAuthServer(context.Background(), cfg,
+			WithSubjectIdentifierAudiences([]string{"https://mcp.example.com"}))
+		require.NoError(t, err)
+		require.NoError(t, server.Close())
+	})
+
 	t.Run("missing allowed audiences returns error", func(t *testing.T) {
 		t.Parallel()
 
@@ -1080,6 +1102,23 @@ func TestWithConsentExemptClientIDsCopiesAndReplaces(t *testing.T) {
 	secondIDs[0] = "also-mutated-client"
 	options = resolveEmbeddedAuthServerOptions([]EmbeddedAuthServerOption{firstOption, secondOption})
 	assert.Equal(t, []string{"second-client"}, options.consentExemptClientIDs)
+}
+
+func TestWithSubjectIdentifierAudiencesCopiesAndReplaces(t *testing.T) {
+	t.Parallel()
+
+	first := []string{"https://first.example.com"}
+	firstOption := WithSubjectIdentifierAudiences(first)
+	first[0] = "https://mutated.example.com"
+
+	options := resolveEmbeddedAuthServerOptions([]EmbeddedAuthServerOption{firstOption})
+	require.Equal(t, []string{"https://first.example.com"}, options.subjectIdentifierAudiences)
+
+	second := []string{"https://second.example.com"}
+	secondOption := WithSubjectIdentifierAudiences(second)
+	second[0] = "https://also-mutated.example.com"
+	options = resolveEmbeddedAuthServerOptions([]EmbeddedAuthServerOption{firstOption, secondOption})
+	assert.Equal(t, []string{"https://second.example.com"}, options.subjectIdentifierAudiences)
 }
 
 func TestRunConfigAndResolvedConfigShareConsentPolicyValidation(t *testing.T) {

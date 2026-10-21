@@ -331,11 +331,20 @@ var ErrCABundleWithInjectedClient = errors.New("caFilePath cannot be combined wi
 
 // ErrInvalidGrant is wrapped by a token request error when the upstream
 // authorization server answered with the OAuth 2.0 invalid_grant error code
-// (RFC 6749 Section 5.2) and a 4xx status. On refresh it is a definitive
-// rejection: the upstream refresh token is expired, revoked or otherwise no
-// longer valid, and retrying cannot succeed. Network failures, 5xx responses
-// and other error codes do not wrap it, so callers can tell a dead upstream
-// credential from a transient failure with errors.Is.
+// (RFC 6749 Section 5.2) and a 4xx status. It applies to both token requests a
+// provider makes: on the authorization code exchange it means the code or PKCE
+// verifier was rejected, and on refresh it means the presented upstream
+// refresh token is expired, revoked or otherwise no longer valid, so retrying
+// it cannot succeed. Network failures, 5xx responses and other error codes do
+// not wrap it, so callers can tell a rejection from a transient failure with
+// errors.Is.
+//
+// A rejected refresh token does not always mean the session's upstream
+// credential is dead. With a provider that rotates refresh tokens, the
+// replica that loses a cross-process refresh race presents an already-rotated
+// token and gets invalid_grant while the winner holds valid tokens. The auth
+// server's refresher re-reads storage before surfacing the error, which
+// resolves the race once the winner's write has landed, but not before.
 var ErrInvalidGrant = errors.New("invalid_grant")
 
 // IdleConnectionCloser is an optional capability an OAuth2Provider may implement

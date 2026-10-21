@@ -96,17 +96,16 @@ func TestRefreshGrantOnlyHandler(t *testing.T) {
 
 			handleErr := h.HandleTokenEndpointRequest(ctx, req)
 			populateErr := h.PopulateTokenEndpointResponse(ctx, req, fosite.NewAccessResponse())
+			// The response phase is never delegated, whatever the grant.
+			require.ErrorIs(t, populateErr, fosite.ErrUnknownRequest)
+			assert.Zero(t, inner.populated)
 			if tt.wantRun {
 				require.NoError(t, handleErr)
-				require.NoError(t, populateErr)
 				assert.Len(t, inner.handledGrants(), 1)
-				assert.Equal(t, 1, inner.populated)
 				return
 			}
 			require.ErrorIs(t, handleErr, fosite.ErrUnknownRequest)
-			require.ErrorIs(t, populateErr, fosite.ErrUnknownRequest)
 			assert.Empty(t, inner.handledGrants())
-			assert.Zero(t, inner.populated)
 		})
 	}
 
@@ -192,7 +191,6 @@ func TestIntegration_RefreshGrantHandlers(t *testing.T) {
 	require.Len(t, handler.handled, 1)
 	assert.Equal(t, fosite.Arguments{"refresh_token"}, handler.handled[0])
 	require.NotNil(t, handler.sessions[0], "the built-in refresh handler must have loaded the session first")
-	assert.Zero(t, handler.populated, "a refused grant must not reach the populate phase")
 	handler.mu.Unlock()
 
 	// Accepted: the same refresh token still works, so the refused attempt
@@ -202,4 +200,7 @@ func TestIntegration_RefreshGrantHandlers(t *testing.T) {
 	require.Equal(t, http.StatusOK, status, "refresh token must not have been rotated by the refused grant: %v", body)
 	assert.NotEmpty(t, body["access_token"])
 	assert.Len(t, handler.handledGrants(), 2)
+	handler.mu.Lock()
+	assert.Zero(t, handler.populated, "the seam must never reach the embedder's response phase")
+	handler.mu.Unlock()
 }

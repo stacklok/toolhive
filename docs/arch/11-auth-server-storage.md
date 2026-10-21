@@ -299,7 +299,13 @@ An upstream refresh fails in one of two ways. In a definitive rejection, the
 IdP answers with a 4xx status and the OAuth `invalid_grant` code, and that
 upstream refresh token will never work again. Any other failure (a network
 error, a 5xx, storage) is transient. The provider wraps
-`upstream.ErrInvalidGrant` only for the definitive case. The refresher and
+`upstream.ErrInvalidGrant` only for the definitive case. Under the
+cross-replica race described above, a rotating IdP also answers
+`invalid_grant` to the losing replica. The refresher therefore re-reads the
+row after a rejection, and if the stored row holds a different, unexpired
+token it returns that row instead. This works only once the winning
+replica's write has landed, so a rejection can still occasionally reflect a
+lost race rather than a dead credential. The refresher and
 `upstreamtoken.ErrRefreshFailed` carry it through, so it can be detected with
 `errors.Is` on the error from `GetValidTokens`. It can also be detected on the
 per-provider errors that `GetAllUpstreamCredentials` returns in its `failed`

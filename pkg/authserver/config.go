@@ -1249,15 +1249,19 @@ type Config struct {
 	// authenticated the client, loaded the refresh session and checked the
 	// refresh token's expiry, scope and client binding.
 	//
-	// Returning an error from HandleTokenEndpointRequest refuses the grant:
-	// fosite.ErrInvalidGrant answers HTTP 400 invalid_grant, no tokens are
-	// issued and the refresh token is not rotated. Use it to refuse a refresh
-	// whose session can no longer be served, for example one whose upstream
-	// credential is definitively dead, so the client falls back to a full
-	// authorization instead of looping on refresh.
+	// Returning an error from HandleTokenEndpointRequest refuses the grant
+	// before any tokens are issued and before the refresh token is rotated.
+	// Return a fosite RFC 6749 error: fosite.ErrInvalidGrant answers HTTP 400
+	// invalid_grant, which sends the client to a full authorization instead of
+	// looping on refresh. Any other error, including a plain Go error, is
+	// answered as 500 server_error. Use it to refuse a refresh whose session
+	// can no longer be served, for example one whose upstream credential is
+	// definitively dead.
 	//
-	// CanSkipClientAuth is never consulted: client authentication still
-	// applies. A nil entry is rejected by Validate.
+	// The seam only validates. PopulateTokenEndpointResponse and
+	// CanSkipClientAuth are never called: client authentication still applies,
+	// and the issued response cannot be altered. A nil entry is rejected by
+	// Validate.
 	RefreshGrantHandlers []fosite.TokenEndpointHandler
 
 	// UpstreamFilter, when set, narrows the upstream authorization chain after the

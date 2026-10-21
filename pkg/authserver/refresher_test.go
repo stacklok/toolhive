@@ -1208,3 +1208,88 @@ func TestRowChanged(t *testing.T) {
 		})
 	}
 }
+
+// TestUpstreamTokenRefresher_InvalidGrantLostRace verifies that an upstream
+// invalid_grant is resolved against storage before it is surfaced: a row
+// another process already rotated is returned, and anything else keeps the
+// typed rejection.
+func TestUpstreamTokenRefresher_InvalidGrantLostRace(t *testing.T) {
+	t.Parallel()
+
+	invalidGrant := fmt.Errorf("token request failed: %w - revoked", upstream.ErrInvalidGrant)
+	expired := &storage.UpstreamTokens{ProviderID: "github", RefreshToken: "stale", UpstreamSubject: "subject"}
+	winner := &storage.UpstreamTokens{
+		ProviderID: "github", AccessToken: "winner-access", RefreshToken: "rotated",
+		ExpiresAt: time.Now().Add(time.Hour),
+	}
+
+	tests := []struct {
+		name             string
+		refreshErr       error
+		setupStore       func(s *storagemocks.MockUpstreamTokenStorage)
+		wantWinner       bool
+		wantInvalidGrant bool
+	}{
+		{
+			name:       "row rotated elsewhere returns the stored row",
+			refreshErr: invalidGrant,
+			setupStore: func(s *storagemocks.MockUpstreamTokenStorage) {
+				s.EXPECT().GetUpstreamTokens(gomock.Any(), "session", "github").Return(winner, nil)
+			},
+			wantWinner: true,
+		},
+		{
+			name:       "same refresh token stored keeps the rejection",
+			refreshErr: invalidGrant,
+			setupStore: func(s *storagemocks.MockUpstreamTokenStorage) {
+				s.EXPECT().GetUpstreamTokens(gomock.Any(), "session", "github").Return(expired, storage.ErrExpired)
+			},
+			wantInvalidGrant: true,
+		},
+		{
+			name:       "rotated but expired row keeps the rejection",
+			refreshErr: invalidGrant,
+			setupStore: func(s *storagemocks.MockUpstreamTokenStorage) {
+				s.EXPECT().GetUpstreamTokens(gomock.Any(), "session", "github").Return(&storage.UpstreamTokens{
+					ProviderID: "github", RefreshToken: "rotated", ExpiresAt: time.Now().Add(-time.Minute),
+				}, nil)
+			},
+			wantInvalidGrant: true,
+		},
+		{
+			name:       "row gone keeps the rejection",
+			refreshErr: invalidGrant,
+			setupStore: func(s *storagemocks.MockUpstreamTokenStorage) {
+				s.EXPECT().GetUpstreamTokens(gomock.Any(), "session", "github").Return(nil, storage.ErrNotFound)
+			},
+			wantInvalidGrant: true,
+		},
+		{
+			name:       "transient failure does not re-read",
+			refreshErr: errors.New("token request failed with status 503"),
+			setupStore: func(*storagemocks.MockUpstreamTokenStorage) {},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			ctrl := gomock.NewController(t)
+			store := storagemocks.NewMockUpstreamTokenStorage(ctrl)
+			provider := upstreammocks.NewMockOAuth2Provider(ctrl)
+			provider.EXPECT().RefreshTokens(gomock.Any(), "stale", "subject").Return(nil, tt.refreshErr)
+			tt.setupStore(store)
+
+			refresher := &upstreamTokenRefresher{providers: map[string]upstream.OAuth2Provider{"github": provider}, storage: store}
+			got, err := refresher.refreshAndStore(context.Background(), "session", expired)
+			if tt.wantWinner {
+				require.NoError(t, err)
+				assert.Equal(t, winner, got)
+				return
+			}
+			require.Error(t, err)
+			assert.Nil(t, got)
+			assert.Equal(t, tt.wantInvalidGrant, errors.Is(err, upstream.ErrInvalidGrant), "err = %v", err)
+		})
+	}
+}

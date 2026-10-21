@@ -12,13 +12,15 @@ import (
 )
 
 // refreshGrantOnlyHandler confines an embedder-supplied token endpoint handler
-// (Config.RefreshGrantHandlers) to the refresh_token grant.
+// (Config.RefreshGrantHandlers) to validating the refresh_token grant.
 //
-// fosite calls PopulateTokenEndpointResponse on every registered handler
-// regardless of CanHandleTokenEndpointRequest, so each method gates on the
-// grant type itself rather than trusting the inner handler to. The type
-// implements only fosite.TokenEndpointHandler, so the handler is never
-// registered for revocation, introspection or the authorize endpoint.
+// Only the inner handler's request phase (HandleTokenEndpointRequest) runs.
+// The response phase is never delegated: by then the built-in refresh handler
+// has already rotated the refresh token, so an inner error there would leave
+// the client with no tokens and a dead refresh token, and an inner handler
+// could rewrite the issued response. The type implements only
+// fosite.TokenEndpointHandler, so the handler is never registered for
+// revocation, introspection or the authorize endpoint.
 type refreshGrantOnlyHandler struct {
 	inner fosite.TokenEndpointHandler
 }
@@ -50,15 +52,14 @@ func (h *refreshGrantOnlyHandler) HandleTokenEndpointRequest(ctx context.Context
 	return h.inner.HandleTokenEndpointRequest(ctx, requester)
 }
 
-// PopulateTokenEndpointResponse delegates to the inner handler for a
-// refresh_token grant.
-func (h *refreshGrantOnlyHandler) PopulateTokenEndpointResponse(
-	ctx context.Context, requester fosite.AccessRequester, responder fosite.AccessResponder,
+// PopulateTokenEndpointResponse never delegates to the inner handler, so the
+// seam can only refuse a grant, never alter or break an issued response.
+// fosite calls it on every registered handler; ErrUnknownRequest tells fosite
+// this handler contributes nothing.
+func (*refreshGrantOnlyHandler) PopulateTokenEndpointResponse(
+	context.Context, fosite.AccessRequester, fosite.AccessResponder,
 ) error {
-	if !h.CanHandleTokenEndpointRequest(ctx, requester) {
-		return fosite.ErrUnknownRequest
-	}
-	return h.inner.PopulateTokenEndpointResponse(ctx, requester, responder)
+	return fosite.ErrUnknownRequest
 }
 
 // isRefreshTokenGrant reports whether the request's sole grant type is

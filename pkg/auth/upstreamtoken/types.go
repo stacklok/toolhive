@@ -79,7 +79,7 @@ type TokenReader interface {
 	// creds map. Callers should treat a non-empty failed map as a signal to
 	// return HTTP 401 + WWW-Authenticate so the client can re-authenticate. An
 	// upstream that definitively rejected the refresh (the IdP answered
-	// invalid_grant) satisfies errors.Is(err, upstream.ErrInvalidGrant); a
+	// invalid_grant) satisfies errors.Is(err, upstream.ErrGrantRejected); a
 	// network or 5xx failure does not.
 	//
 	// Each returned IDToken is the rotated ID token when a refresh produced
@@ -106,7 +106,7 @@ type Service interface {
 	//   - ErrNoRefreshToken if the access token is expired and no refresh token is available
 	//   - ErrRefreshFailed if the refresh attempt fails (e.g., revoked refresh token).
 	//     When the upstream IdP definitively rejected the refresh with
-	//     invalid_grant, the error also satisfies errors.Is(err, upstream.ErrInvalidGrant);
+	//     invalid_grant, the error also satisfies errors.Is(err, upstream.ErrGrantRejected);
 	//     a network or 5xx failure does not.
 	//
 	// The returned UpstreamCredential.IDToken may be empty or expired. Callers that

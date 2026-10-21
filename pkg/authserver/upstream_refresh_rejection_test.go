@@ -111,14 +111,14 @@ func TestUpstreamRefreshRejection_ReachesServiceCallers(t *testing.T) {
 
 			_, err = svc.GetValidTokens(ctx, "session", "idp")
 			require.ErrorIs(t, err, upstreamtoken.ErrRefreshFailed)
-			assert.Equal(t, tt.wantInvalidGrant, errors.Is(err, upstream.ErrInvalidGrant), "GetValidTokens: %v", err)
+			assert.Equal(t, tt.wantInvalidGrant, errors.Is(err, upstream.ErrGrantRejected), "GetValidTokens: %v", err)
 
 			creds, failed, err := svc.GetAllUpstreamCredentials(ctx, "session")
 			require.NoError(t, err)
 			assert.Empty(t, creds)
 			require.Contains(t, failed, "idp")
 			require.ErrorIs(t, failed["idp"], upstreamtoken.ErrRefreshFailed)
-			assert.Equal(t, tt.wantInvalidGrant, errors.Is(failed["idp"], upstream.ErrInvalidGrant),
+			assert.Equal(t, tt.wantInvalidGrant, errors.Is(failed["idp"], upstream.ErrGrantRejected),
 				"GetAllUpstreamCredentials: %v", failed["idp"])
 		})
 	}

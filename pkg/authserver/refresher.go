@@ -170,7 +170,7 @@ func (r *upstreamTokenRefresher) refreshAndStore(
 	// Refresh tokens via the upstream provider
 	newTokens, err := provider.RefreshTokens(ctx, expired.RefreshToken, expired.UpstreamSubject)
 	if err != nil {
-		if errors.Is(err, upstream.ErrInvalidGrant) {
+		if errors.Is(err, upstream.ErrGrantRejected) {
 			if winner := r.rotatedElsewhere(ctx, sessionID, expired); winner != nil {
 				return winner, nil
 			}
@@ -362,6 +362,12 @@ func (r *upstreamTokenRefresher) resolveConcurrentRefreshConflict(
 // and an unexpired access token, that row is the result to use, so a lost race
 // is not reported as a dead upstream credential.
 //
+// "Another process refreshed" is tested by refresh-token inequality, unlike
+// rowChanged, which also compares the access token, ID token and expiry. The
+// rejection is of the refresh token itself, so only a row holding a different
+// refresh token can be a successor; a row that changed in other fields but
+// still holds the rejected refresh token is just as dead.
+//
 // This narrows the race but does not close it: when the winner's storage write
 // has not landed by the time of the re-read, the rejection is still returned.
 // Any read failure also returns nil, leaving the caller's original error.
@@ -372,8 +378,20 @@ func (r *upstreamTokenRefresher) rotatedElsewhere(
 	defer cancel()
 
 	stored, err := r.storage.GetUpstreamTokens(readCtx, sessionID, expired.ProviderID)
-	if err != nil || stored == nil ||
-		stored.RefreshToken == expired.RefreshToken || stored.IsExpired(time.Now()) {
+	if err != nil {
+		// ErrExpired and ErrNotFound are ordinary outcomes here: the row is
+		// still the rejected one, or it is gone. Anything else is a storage
+		// fault worth a diagnostic, though the caller's rejection still stands.
+		if !errors.Is(err, storage.ErrExpired) && !errors.Is(err, storage.ErrNotFound) {
+			slog.Debug("re-read after upstream invalid_grant failed; returning the rejection",
+				"session_id", sessionID,
+				"provider_id", expired.ProviderID,
+				"error", err,
+			)
+		}
+		return nil
+	}
+	if stored == nil || stored.RefreshToken == expired.RefreshToken || stored.IsExpired(time.Now()) {
 		return nil
 	}
 	slog.Debug("upstream rejected a refresh token another process already rotated; using the stored row",

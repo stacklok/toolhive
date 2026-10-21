@@ -1216,7 +1216,7 @@ func TestRowChanged(t *testing.T) {
 func TestUpstreamTokenRefresher_InvalidGrantLostRace(t *testing.T) {
 	t.Parallel()
 
-	invalidGrant := fmt.Errorf("token request failed: %w - revoked", upstream.ErrInvalidGrant)
+	invalidGrant := fmt.Errorf("token request failed: %w - revoked", upstream.ErrGrantRejected)
 	expired := &storage.UpstreamTokens{ProviderID: "github", RefreshToken: "stale", UpstreamSubject: "subject"}
 	winner := &storage.UpstreamTokens{
 		ProviderID: "github", AccessToken: "winner-access", RefreshToken: "rotated",
@@ -1239,10 +1239,39 @@ func TestUpstreamTokenRefresher_InvalidGrantLostRace(t *testing.T) {
 			wantWinner: true,
 		},
 		{
-			name:       "same refresh token stored keeps the rejection",
+			name:       "expired row still holding the rejected token keeps the rejection",
 			refreshErr: invalidGrant,
 			setupStore: func(s *storagemocks.MockUpstreamTokenStorage) {
 				s.EXPECT().GetUpstreamTokens(gomock.Any(), "session", "github").Return(expired, storage.ErrExpired)
+			},
+			wantInvalidGrant: true,
+		},
+		{
+			// Only the refresh-token comparison rejects this row: it is
+			// unexpired and other fields changed.
+			name:       "unexpired row still holding the rejected token keeps the rejection",
+			refreshErr: invalidGrant,
+			setupStore: func(s *storagemocks.MockUpstreamTokenStorage) {
+				s.EXPECT().GetUpstreamTokens(gomock.Any(), "session", "github").Return(&storage.UpstreamTokens{
+					ProviderID: "github", AccessToken: "other-access", RefreshToken: "stale",
+					ExpiresAt: time.Now().Add(time.Hour),
+				}, nil)
+			},
+			wantInvalidGrant: true,
+		},
+		{
+			name:       "nil row without error keeps the rejection",
+			refreshErr: invalidGrant,
+			setupStore: func(s *storagemocks.MockUpstreamTokenStorage) {
+				s.EXPECT().GetUpstreamTokens(gomock.Any(), "session", "github").Return(nil, nil)
+			},
+			wantInvalidGrant: true,
+		},
+		{
+			name:       "storage read error keeps the rejection",
+			refreshErr: invalidGrant,
+			setupStore: func(s *storagemocks.MockUpstreamTokenStorage) {
+				s.EXPECT().GetUpstreamTokens(gomock.Any(), "session", "github").Return(nil, errors.New("redis down"))
 			},
 			wantInvalidGrant: true,
 		},
@@ -1289,7 +1318,7 @@ func TestUpstreamTokenRefresher_InvalidGrantLostRace(t *testing.T) {
 			}
 			require.Error(t, err)
 			assert.Nil(t, got)
-			assert.Equal(t, tt.wantInvalidGrant, errors.Is(err, upstream.ErrInvalidGrant), "err = %v", err)
+			assert.Equal(t, tt.wantInvalidGrant, errors.Is(err, upstream.ErrGrantRejected), "err = %v", err)
 		})
 	}
 }

@@ -1027,7 +1027,7 @@ func TestBaseOAuth2Provider_RefreshTokens(t *testing.T) {
 		require.NoError(t, err)
 
 		_, err = provider.RefreshTokens(ctx, "expired-refresh-token", "")
-		require.ErrorIs(t, err, ErrInvalidGrant)
+		require.ErrorIs(t, err, ErrGrantRejected)
 		assert.Equal(t, "token request failed: invalid_grant - The refresh token has expired", err.Error())
 	})
 
@@ -1081,7 +1081,7 @@ func TestBaseOAuth2Provider_RefreshTokens(t *testing.T) {
 		_, err = provider.RefreshTokens(ctx, "refresh-token", "")
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "token request failed")
-		assert.NotErrorIs(t, err, ErrInvalidGrant)
+		assert.NotErrorIs(t, err, ErrGrantRejected)
 	})
 
 	t.Run("refresh request scope parameter", func(t *testing.T) {
@@ -3275,7 +3275,7 @@ func TestInjectedClientRejectsCABundle(t *testing.T) {
 	})
 }
 
-func TestFormatOAuth2Error_InvalidGrant(t *testing.T) {
+func TestFormatOAuth2Error_GrantRejected(t *testing.T) {
 	t.Parallel()
 
 	retrieveErr := func(status int, code string) error {
@@ -3292,7 +3292,9 @@ func TestFormatOAuth2Error_InvalidGrant(t *testing.T) {
 	}{
 		{name: "invalid_grant with 400", err: retrieveErr(http.StatusBadRequest, "invalid_grant"), wantInvalidGrant: true},
 		{name: "invalid_grant with 401", err: retrieveErr(http.StatusUnauthorized, "invalid_grant"), wantInvalidGrant: true},
-		{name: "invalid_grant without response", err: &oauth2.RetrieveError{ErrorCode: "invalid_grant"}, wantInvalidGrant: true},
+		{name: "invalid_grant with 200", err: retrieveErr(http.StatusOK, "invalid_grant"), wantInvalidGrant: true},
+		{name: "invalid_grant without response", err: &oauth2.RetrieveError{ErrorCode: "invalid_grant"}},
+		{name: "invalid_grant with 429", err: retrieveErr(http.StatusTooManyRequests, "invalid_grant")},
 		{name: "invalid_grant with 5xx", err: retrieveErr(http.StatusBadGateway, "invalid_grant")},
 		{name: "other error code", err: retrieveErr(http.StatusBadRequest, "invalid_client")},
 		{name: "no error code", err: retrieveErr(http.StatusBadRequest, "")},
@@ -3304,7 +3306,7 @@ func TestFormatOAuth2Error_InvalidGrant(t *testing.T) {
 			t.Parallel()
 			err := formatOAuth2Error(tt.err, "token request failed")
 			require.Error(t, err)
-			assert.Equal(t, tt.wantInvalidGrant, errors.Is(err, ErrInvalidGrant), "err = %v", err)
+			assert.Equal(t, tt.wantInvalidGrant, errors.Is(err, ErrGrantRejected), "err = %v", err)
 		})
 	}
 }

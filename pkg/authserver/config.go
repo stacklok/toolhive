@@ -1263,7 +1263,7 @@ type Config struct {
 	// not a refusal, so returning it lets the grant through. Use the seam to
 	// refuse a refresh whose session can no longer be served, for example one
 	// whose upstream credential is dead. When deciding from
-	// upstream.ErrInvalidGrant, note its doc: under a cross-replica
+	// upstream.ErrGrantRejected, note its doc: under a cross-replica
 	// refresh race it can occasionally be reported for a live credential.
 	//
 	// The seam only validates. PopulateTokenEndpointResponse and

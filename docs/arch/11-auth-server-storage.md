@@ -296,10 +296,12 @@ resurrect the deleted row.
 ### Upstream Refresh Rejections and the Refresh Grant
 
 An upstream refresh fails in one of two ways. In a definitive rejection, the
-IdP answers with a 4xx status and the OAuth `invalid_grant` code, and that
-upstream refresh token will never work again. Any other failure (a network
-error, a 5xx, storage) is transient. The provider wraps
-`upstream.ErrInvalidGrant` only for the definitive case. Under the
+IdP answers with the OAuth `invalid_grant` code on anything but a 5xx or 429,
+and that upstream refresh token will never work again. Any other failure (a
+network error, a 5xx, a 429, storage) is transient. The classification is
+`oautherr.IsRejectedRefreshGrant`, shared with the client-side token source.
+The provider wraps
+`upstream.ErrGrantRejected` only for the definitive case. Under the
 cross-replica race described above, a rotating IdP also answers
 `invalid_grant` to the losing replica. The refresher therefore re-reads the
 row after a rejection, and if the stored row holds a different, unexpired

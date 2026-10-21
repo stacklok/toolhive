@@ -1127,6 +1127,8 @@ func TestDiscoverSetupModelsBedrockClaudeCode(t *testing.T) {
 		status        int
 		targetClient  string
 		clients       []string
+		models        []string
+		body          string
 		wantRequested bool
 		wantErr       string
 		wantClients   []string
@@ -1166,6 +1168,50 @@ func TestDiscoverSetupModelsBedrockClaudeCode(t *testing.T) {
 			wantWarning:   "skipping auto-detected claude-code because Bedrock model discovery failed",
 		},
 		{
+			name:          "explicit claude-code fails when the catalogue has no Bedrock IDs",
+			compat:        true,
+			token:         "discovery-token",
+			status:        http.StatusOK,
+			body:          `{"data":[{"id":"claude-opus-4-8"}],"has_more":false}`,
+			targetClient:  claudeCodeClient,
+			clients:       []string{claudeCodeClient},
+			wantRequested: true,
+			wantErr:       "the gateway's model list has no Bedrock model IDs",
+		},
+		{
+			name:          "auto-detected claude-code is skipped when the catalogue has no Bedrock IDs",
+			compat:        true,
+			token:         "discovery-token",
+			status:        http.StatusOK,
+			body:          `{"data":[{"id":"claude-opus-4-8"}],"has_more":false}`,
+			clients:       []string{claudeCodeClient, "cursor"},
+			wantRequested: true,
+			wantClients:   []string{"cursor"},
+			wantWarning:   "the gateway's model list has no Bedrock model IDs",
+		},
+		{
+			name:          "models pinning every tier keep claude-code when discovery fails",
+			compat:        true,
+			token:         "discovery-token",
+			status:        http.StatusInternalServerError,
+			targetClient:  claudeCodeClient,
+			clients:       []string{claudeCodeClient},
+			models:        []string{"us.anthropic.claude-haiku-4-5", "us.anthropic.claude-opus-4-8", "us.anthropic.claude-sonnet-5", "us.anthropic.claude-fable-5-1"},
+			wantRequested: true,
+			wantClients:   []string{claudeCodeClient},
+		},
+		{
+			name:          "models pinning some tiers do not bypass a discovery failure",
+			compat:        true,
+			token:         "discovery-token",
+			status:        http.StatusInternalServerError,
+			targetClient:  claudeCodeClient,
+			clients:       []string{claudeCodeClient},
+			models:        []string{"us.anthropic.claude-opus-4-8"},
+			wantRequested: true,
+			wantErr:       "discovering Bedrock models for Claude Code",
+		},
+		{
 			name:         "no request without bedrock compat",
 			token:        "discovery-token",
 			targetClient: claudeCodeClient,
@@ -1185,10 +1231,14 @@ func TestDiscoverSetupModelsBedrockClaudeCode(t *testing.T) {
 					w.WriteHeader(tt.status)
 					return
 				}
-				_, _ = w.Write([]byte(`{"data":[{"id":"us.anthropic.claude-opus-4-8"}],"has_more":false}`))
+				body := tt.body
+				if body == "" {
+					body = `{"data":[{"id":"us.anthropic.claude-opus-4-8"}],"has_more":false}`
+				}
+				_, _ = w.Write([]byte(body))
 			}))
 			t.Cleanup(server.Close)
-			cfg := Config{GatewayURL: server.URL, Bedrock: BedrockConfig{Compat: tt.compat}}
+			cfg := Config{GatewayURL: server.URL, Models: tt.models, Bedrock: BedrockConfig{Compat: tt.compat}}
 			cfg.SetDiscoveryAccessToken(tt.token)
 			var warnings strings.Builder
 
@@ -1198,12 +1248,15 @@ func TestDiscoverSetupModelsBedrockClaudeCode(t *testing.T) {
 			if tt.wantErr != "" {
 				require.Error(t, err)
 				assert.Contains(t, err.Error(), tt.wantErr)
+				assert.NotContains(t, err.Error(), "--models")
 				return
 			}
 			require.NoError(t, err)
 			assert.Equal(t, tt.wantClients, clients)
 			assert.Equal(t, tt.wantRequested, requested.Load())
-			assert.Equal(t, tt.wantAnthropic, catalog.anthropic)
+			if tt.wantAnthropic != nil {
+				assert.Equal(t, tt.wantAnthropic, catalog.anthropic)
+			}
 			if tt.wantWarning == "" {
 				assert.Empty(t, warnings.String())
 				return
@@ -1377,6 +1430,66 @@ func TestDiscoverGatewayModels(t *testing.T) {
 			require.NoError(t, err)
 			assert.Equal(t, tt.want, got)
 			assert.Equal(t, tt.wantContext, contexts)
+		})
+	}
+}
+
+func TestModelDiscoveryErrorMessages(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		anthropic bool
+		status    int
+		body      string
+		closed    bool
+		wantErr   string
+		wantIs    error
+	}{
+		{name: "unreachable gateway", anthropic: true, closed: true,
+			wantErr: "could not reach the gateway at"},
+		{name: "Anthropic list not found", anthropic: true, status: http.StatusNotFound,
+			wantErr: "doesn't serve an Anthropic model list at"},
+		{name: "OpenAI list not found", status: http.StatusNotFound,
+			wantErr: "doesn't serve a model list at"},
+		{name: "unauthorized", anthropic: true, status: http.StatusUnauthorized,
+			wantErr: "the gateway rejected model discovery (401 Unauthorized)"},
+		{name: "forbidden", status: http.StatusForbidden,
+			wantErr: "the gateway rejected model discovery (403 Forbidden)"},
+		{name: "gateway error", anthropic: true, status: http.StatusBadGateway,
+			wantErr: "the gateway returned 502 Bad Gateway listing models; retry, or contact the gateway operator"},
+		{name: "empty Anthropic catalogue", anthropic: true, status: http.StatusOK,
+			body:    `{"data":[],"has_more":false}`,
+			wantErr: "the gateway returned no Anthropic models for your account", wantIs: errEmptyModelCatalog},
+		{name: "empty OpenAI catalogue", status: http.StatusOK, body: `{"object":"list","data":[]}`,
+			wantErr: "the gateway returned no models for your account", wantIs: errEmptyModelCatalog},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(tt.status)
+				_, _ = w.Write([]byte(tt.body))
+			}))
+			t.Cleanup(server.Close)
+			if tt.closed {
+				server.Close()
+			}
+			// A password in the gateway URL's userinfo must never reach a diagnostic.
+			cfg := Config{GatewayURL: strings.Replace(server.URL, "://", "://alice:secret-pw@", 1)}
+			cfg.SetDiscoveryAccessToken("discovery-token")
+
+			var err error
+			if tt.anthropic {
+				_, _, _, _, err = discoverAnthropicGatewayModels(context.Background(), cfg, "/anthropic")
+			} else {
+				_, _, err = discoverGatewayModels(context.Background(), cfg)
+			}
+			require.ErrorContains(t, err, tt.wantErr)
+			assert.NotContains(t, err.Error(), "secret-pw")
+			if tt.wantIs != nil {
+				assert.ErrorIs(t, err, tt.wantIs)
+			}
 		})
 	}
 }

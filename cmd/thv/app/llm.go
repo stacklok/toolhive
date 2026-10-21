@@ -340,8 +340,10 @@ add --enable-1m for the 1M context window on opus/sonnet). The pins repoint Clau
 Code's built-in Opus/Sonnet/Haiku/Fable rows in the /model picker (via
 ANTHROPIC_DEFAULT_*_MODEL), so selecting a built-in row routes to Bedrock. Setup
 also enables Claude Code's gateway model discovery, which adds any further models
-the gateway serves as separate picker rows without re-running setup. The setting
-is persisted and only affects Claude Code.
+the gateway serves as separate picker rows without re-running setup. If the
+gateway's model list cannot be fetched, or has no Bedrock model IDs, setup does
+not configure Claude Code (unless --models pins every tier). The setting is
+persisted and only affects Claude Code.
 To add it to an already-configured Claude Code, re-run:
 
   thv llm setup --client claude-code --bedrock-compat

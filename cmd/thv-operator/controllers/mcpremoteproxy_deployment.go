@@ -69,7 +69,7 @@ func (r *MCPRemoteProxyReconciler) deploymentForMCPRemoteProxy(
 	if configName != "" {
 		caChecksum, err := ctrlutil.EmbeddedAuthServerConfigMapChecksum(ctx, r.Client, proxy.Namespace, configName)
 		if err != nil {
-			log.FromContext(ctx).Error(err, "Failed to calculate auth server CA checksum")
+			log.FromContext(ctx).Error(err, "Failed to calculate auth server ConfigMap checksum")
 			return nil
 		}
 		if caChecksum != "" {

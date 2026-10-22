@@ -16,12 +16,14 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 )
 
 const virtualMCPServerConfigMapIndex = "toolhive.stacklok.dev/virtualmcpserver-configmap"
 
 // indexVirtualMCPServerConfigMaps returns namespace-local ConfigMap references
-// whose data changes require the VirtualMCPServer to reconcile.
+// whose data changes require the VirtualMCPServer to reconcile: the authz
+// ConfigMap, and the auth server's CA bundle and delegate client JWKS ConfigMaps.
 func indexVirtualMCPServerConfigMaps(obj client.Object) []string {
 	vmcp, ok := obj.(*mcpv1beta1.VirtualMCPServer)
 	if !ok {
@@ -47,6 +49,9 @@ func indexVirtualMCPServerConfigMaps(obj client.Object) []string {
 				names[ref.ConfigMapRef.Name] = struct{}{}
 			}
 		}
+		for _, name := range ctrlutil.DelegateClientJWKSConfigMapNames(vmcp.Spec.AuthServerConfig) {
+			names[name] = struct{}{}
+		}
 	}
 
 	result := make([]string, 0, len(names))
@@ -57,9 +62,10 @@ func indexVirtualMCPServerConfigMaps(obj client.Object) []string {
 }
 
 // mapAuthzConfigMapToVirtualMCPServer maps ConfigMap changes to VirtualMCPServer reconciliation
-// requests. Used by SetupWithManager to trigger reconciliation when a ConfigMap referenced via
-// spec.incomingAuth.authzConfig.configMap is updated, so the converter can re-resolve policies
-// and roll out a pod with the new config.
+// requests. Used by SetupWithManager to trigger reconciliation when any ConfigMap the
+// VirtualMCPServer depends on is updated: the authz ConfigMap
+// (spec.incomingAuth.authzConfig.configMap), or the auth server's CA bundle and delegate client
+// JWKS ConfigMaps. The controller then re-resolves the config and rolls out a pod with it.
 //
 // The mapper lists VirtualMCPServers in the ConfigMap's namespace and enqueues any that
 // reference this ConfigMap. ConfigMaps are cluster-wide objects but authz references are

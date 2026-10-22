@@ -1,0 +1,193 @@
+# SPDX-FileCopyrightText: Copyright 2026 Stacklok, Inc.
+# SPDX-License-Identifier: Apache-2.0
+
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: st-jwks-ref-rollout
+spec:
+  description: |
+    A delegate client's jwksRef ConfigMap is mounted into the embedded auth
+    server pod, and editing the ConfigMap rolls the pod: the JWKS bytes are part
+    of the pod-template checksum, and the MCPServer controller watches the
+    ConfigMap through the MCPExternalAuthConfig field index. The JWKS documents
+    are public keys only.
+  timeouts:
+    apply: 30s
+    assert: 180s
+    cleanup: 60s
+    exec: 300s
+  steps:
+  - name: verify-operator
+    try:
+    - assert:
+        file: ../../setup/assert-operator-ready.yaml
+
+  - name: create-prerequisites
+    description: Signing key and HMAC secret (generated, never committed) and the JWKS ConfigMap
+    try:
+    - script:
+        content: |
+          set -e
+          openssl genrsa -out /tmp/st-jwks-ref-signing.pem 2048 2>/dev/null
+          kubectl -n toolhive-system create secret generic st-jwks-ref-signing \
+            --from-file=private-key=/tmp/st-jwks-ref-signing.pem
+          kubectl -n toolhive-system create secret generic st-jwks-ref-hmac \
+            --from-literal=hmac="$(openssl rand -base64 32)"
+          rm -f /tmp/st-jwks-ref-signing.pem
+    - apply:
+        resource:
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: st-jwks-ref-broker
+            namespace: toolhive-system
+          data:
+            jwks.json: '{"keys": [{"kty": "RSA", "use": "sig", "alg": "RS256", "kid": "key-a", "n": "tQIZ4asBG3bjueuJzyqmXZ1iPVaVDcKXTGPHjUhXyGLfvxtbMhvApqNE3wcg99S97vXj1-yLgcUqnv0je95U97V1li1oD8hihW0Q2OdsN5qJQYFSRs7rgz1987M6LilB0QpTVLqIrP33vOaP8lKvMGTmPl0VlmZUVj2MbZb2rW3qiNvDNLbPQ1OBFrtbKFkgY5wirmUEhwU6DrA1d5F_lg7JEsKMbq7uBqsaIkalvFJYAbI8Ri5CA62YkKt-hNNyWHSO4NUiSxTrNGJaAu_kUe6f5GlUwnVMnuKjwO3fqnOLGx5f_-GpDlFMg7HJwBrNZnHjtHM-ET2WOLFkAM_Osw", "e": "AQAB"}]}'
+    cleanup:
+    - script:
+        content: |
+          kubectl -n toolhive-system delete secret st-jwks-ref-signing st-jwks-ref-hmac --ignore-not-found
+
+  - name: deploy-mcpserver
+    description: A private_key_jwt delegate client with jwksRef on an embedded auth server
+    try:
+    - apply:
+        resource:
+          apiVersion: toolhive.stacklok.dev/v1beta1
+          kind: MCPOIDCConfig
+          metadata:
+            name: st-jwks-ref
+            namespace: toolhive-system
+          spec:
+            type: inline
+            inline:
+              issuer: https://st-jwks-ref.example.com
+              jwksAllowPrivateIP: true
+    - apply:
+        resource:
+          apiVersion: toolhive.stacklok.dev/v1beta1
+          kind: MCPExternalAuthConfig
+          metadata:
+            name: st-jwks-ref
+            namespace: toolhive-system
+          spec:
+            type: embeddedAuthServer
+            embeddedAuthServer:
+              issuer: https://st-jwks-ref.example.com
+              signingKeySecretRefs:
+              - name: st-jwks-ref-signing
+                key: private-key
+              hmacSecretRefs:
+              - name: st-jwks-ref-hmac
+                key: hmac
+              inboundGrants:
+                tokenExchange:
+                  delegateClients:
+                  - clientId: broker
+                    tokenEndpointAuthMethod: private_key_jwt
+                    jwksRef:
+                      name: st-jwks-ref-broker
+                      key: jwks.json
+                    scopes: [openid]
+                    audiences: [http://st-jwks-ref.toolhive-system.svc.cluster.local:8080]
+              upstreamProviders:
+              - name: idp
+                type: oauth2
+                oauth2Config:
+                  authorizationEndpoint: https://idp.example.com/authorize
+                  tokenEndpoint: https://idp.example.com/token
+                  clientId: st-jwks-ref
+                  redirectUri: https://st-jwks-ref.example.com/oauth/callback
+                  clientSecretRef:
+                    name: st-jwks-ref-hmac
+                    key: hmac
+                  scopes: [openid]
+    - apply:
+        resource:
+          apiVersion: toolhive.stacklok.dev/v1beta1
+          kind: MCPServer
+          metadata:
+            name: st-jwks-ref
+            namespace: toolhive-system
+          spec:
+            image: ghcr.io/stackloklabs/yardstick/yardstick-server:1.1.1
+            transport: streamable-http
+            proxyPort: 8080
+            mcpPort: 8080
+            env:
+            - name: TRANSPORT
+              value: streamable-http
+            oidcConfigRef:
+              name: st-jwks-ref
+              audience: http://st-jwks-ref.toolhive-system.svc.cluster.local:8080
+            externalAuthConfigRef:
+              name: st-jwks-ref
+            resources:
+              limits:
+                cpu: "100m"
+                memory: "128Mi"
+              requests:
+                cpu: "50m"
+                memory: "64Mi"
+    - assert:
+        resource:
+          apiVersion: toolhive.stacklok.dev/v1beta1
+          kind: MCPServer
+          metadata:
+            name: st-jwks-ref
+            namespace: toolhive-system
+          status:
+            phase: Ready
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: st-jwks-ref
+            namespace: toolhive-system
+          status:
+            availableReplicas: 1
+
+  - name: verify-jwks-mounted
+    description: The ConfigMap key is mounted read-only where jwks_file points
+    try:
+    - assert:
+        resource:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: st-jwks-ref
+            namespace: toolhive-system
+          spec:
+            template:
+              spec:
+                (volumes[?name == 'authserver-delegate-jwks-0'] | [0].configMap.name): st-jwks-ref-broker
+                (volumes[?name == 'authserver-delegate-jwks-0'] | [0].configMap.items[0].key): jwks.json
+                (containers[0].volumeMounts[?name == 'authserver-delegate-jwks-0'] | [0].mountPath): /etc/toolhive/authserver/delegate-jwks/0/jwks.json
+                (containers[0].volumeMounts[?name == 'authserver-delegate-jwks-0'] | [0].readOnly): true
+
+  - name: edit-jwks-rolls-pod
+    description: Replacing the JWKS changes the checksum annotation and rolls the pod
+    try:
+    - script:
+        content: |
+          set -e
+          before_ann=$(kubectl -n toolhive-system get deploy st-jwks-ref \
+            -o jsonpath='{.spec.template.metadata.annotations.toolhive\.stacklok\.dev/authserver-ca-checksum}')
+          before_pod=$(kubectl -n toolhive-system get pods -o name | grep 'pod/st-jwks-ref-' | grep -v -- '-0$' | head -1)
+          [ -n "$before_ann" ] || { echo "no checksum annotation before the edit"; exit 1; }
+          kubectl -n toolhive-system patch configmap st-jwks-ref-broker --type merge \
+            -p '{"data":{"jwks.json":"'"$(printf '%s' '{"keys": [{"kty": "RSA", "use": "sig", "alg": "RS256", "kid": "key-b", "n": "55wBLqj-29xbfS20oGmtPVCakTEJXdsLihEINDNCHolstMzDadUfQi5lF2Y2jrvPaM583Ro4oWERahP-e77xyptz3IFDdQJv4kCpQPXzQS7fjeEHTztx-WJyGK5_uZ4-0QbM3DmNONIxKvUe-ZLsaMduaIDWwEus44IuqtxwuSes0ua_NhSlHRrtS8DyN0i04vbXaJ4DdGQ5g15RfXy0iBewUh9iRd_o52DCH9h1BTFxyteLUomVQFBPzPoc7fZtk7_CSTyIYgUhgDPCTEPi1NqVsc-FXPJ7IEMwecn2SbGnopmmYhBnh0eyqWpYU_izJjg6g39pFAMOpisDY33otw", "e": "AQAB"}]}' | sed 's/"/\\"/g')"'"}}'
+          for _ in $(seq 1 60); do
+            after_ann=$(kubectl -n toolhive-system get deploy st-jwks-ref \
+              -o jsonpath='{.spec.template.metadata.annotations.toolhive\.stacklok\.dev/authserver-ca-checksum}')
+            [ "$after_ann" != "$before_ann" ] && break
+            sleep 2
+          done
+          [ "$after_ann" != "$before_ann" ] || { echo "checksum annotation did not change"; exit 1; }
+          kubectl -n toolhive-system rollout status deploy/st-jwks-ref --timeout=150s
+          # The old pod may still be terminating after the rollout completes.
+          kubectl -n toolhive-system wait --for=delete "$before_pod" --timeout=150s
+          after_pod=$(kubectl -n toolhive-system get pods -o name | grep 'pod/st-jwks-ref-' | grep -v -- '-0$' | head -1)
+          [ -n "$after_pod" ] && [ "$after_pod" != "$before_pod" ] || { echo "pod did not roll"; exit 1; }

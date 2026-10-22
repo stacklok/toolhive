@@ -1515,7 +1515,7 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 	if configName := ctrlutil.EmbeddedAuthServerConfigName(m.Spec.ExternalAuthConfigRef, m.Spec.AuthServerRef); configName != "" {
 		caChecksum, err := ctrlutil.EmbeddedAuthServerConfigMapChecksum(ctx, r.Client, m.Namespace, configName)
 		if err != nil {
-			return nil, fmt.Errorf("failed to calculate auth server CA checksum: %w", err)
+			return nil, fmt.Errorf("failed to calculate auth server ConfigMap checksum: %w", err)
 		}
 		if caChecksum != "" {
 			deploymentTemplateAnnotations[ctrlutil.AuthServerConfigMapChecksumAnnotation] = caChecksum

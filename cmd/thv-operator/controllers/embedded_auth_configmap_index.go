@@ -18,7 +18,7 @@ const (
 )
 
 // IndexEmbeddedAuthConfigMapRefs returns the ConfigMap names referenced by
-// an MCPExternalAuthConfig's embedded-auth CA bundles.
+// an MCPExternalAuthConfig's embedded-auth CA bundles and delegate client JWKS.
 func IndexEmbeddedAuthConfigMapRefs(obj client.Object) []string {
 	config, ok := obj.(*mcpv1beta1.MCPExternalAuthConfig)
 	if !ok || config.Spec.EmbeddedAuthServer == nil {
@@ -36,7 +36,7 @@ func IndexEmbeddedAuthConfigMapRefs(obj client.Object) []string {
 			keys = append(keys, ref.ConfigMapRef.Name)
 		}
 	}
-	return keys
+	return append(keys, ctrlutil.DelegateClientJWKSConfigMapNames(config.Spec.EmbeddedAuthServer)...)
 }
 
 func indexMCPServerEmbeddedAuthConfig(obj client.Object) []string {

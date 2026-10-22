@@ -264,7 +264,8 @@ everything else (public keys only, redirect-URI policy, source-client rules).
 For `jwksRef`, the operator mounts the ConfigMap key read-only at
 `/etc/toolhive/authserver/delegate-jwks/<index>/jwks.json` and sets `jwks_file` to
 that path, where `<index>` is the client's position in the list. The runner reads
-the file at startup. The file is public key material, so the ConfigMap needs no
+the file at startup, and a ConfigMap edit rolls the pod (the JWKS bytes are in the
+pod-template checksum). The file is public key material, so the ConfigMap needs no
 special protection beyond controlling who can write it.
 
 `trustedIssuers` is exposed the same way, on the same shared

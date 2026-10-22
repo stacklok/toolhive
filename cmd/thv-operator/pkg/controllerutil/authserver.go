@@ -548,10 +548,64 @@ func EmbeddedAuthServerConfigMapChecksumForConfig(
 		_, _ = hash.Write([]byte{0})
 		found = true
 	}
+	// The JWKS section is hashed only when a delegate client references one, behind
+	// its own marker, so the checksum of every config without a jwksRef is unchanged.
+	wroteJWKSMarker := false
+	for _, delegateClient := range effectiveDelegateClients(config) {
+		if delegateClient.JWKSRef == nil {
+			continue
+		}
+		value, err := resolveConfigMapKeyBytes(ctx, c, namespace, delegateClient.JWKSRef)
+		if err != nil {
+			return "", fmt.Errorf("delegate client JWKS: %w", err)
+		}
+		if !wroteJWKSMarker {
+			_, _ = hash.Write([]byte("delegateClientJWKS\x00"))
+			wroteJWKSMarker = true
+		}
+		_, _ = hash.Write(value)
+		_, _ = hash.Write([]byte{0})
+		found = true
+	}
 	if !found {
 		return "", nil
 	}
 	return hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+// resolveConfigMapKeyBytes returns the bytes of one key of a namespace-local
+// ConfigMap, looking in data first and then binaryData.
+func resolveConfigMapKeyBytes(
+	ctx context.Context, c client.Reader, namespace string, ref *corev1.ConfigMapKeySelector,
+) ([]byte, error) {
+	configMap := &corev1.ConfigMap{}
+	if err := c.Get(ctx, client.ObjectKey{Namespace: namespace, Name: ref.Name}, configMap); err != nil {
+		return nil, fmt.Errorf("failed to get ConfigMap %q in namespace %q: %w", ref.Name, namespace, err)
+	}
+	if value, ok := configMap.Data[ref.Key]; ok {
+		return []byte(value), nil
+	}
+	if value, ok := configMap.BinaryData[ref.Key]; ok {
+		return value, nil
+	}
+	return nil, fmt.Errorf("ConfigMap %q does not contain key %q in data or binaryData", ref.Name, ref.Key)
+}
+
+// DelegateClientJWKSConfigMapNames returns the names of the ConfigMaps that
+// hold the public JWKS of the delegate clients the runtime config is built
+// from (the canonical list, or the deprecated one when the canonical block is
+// absent). Field indexes use it so a JWKS edit enqueues reconciles.
+func DelegateClientJWKSConfigMapNames(config *mcpv1beta1.EmbeddedAuthServerConfig) []string {
+	if config == nil {
+		return nil
+	}
+	var names []string
+	for _, delegateClient := range effectiveDelegateClients(config) {
+		if ref := delegateClient.JWKSRef; ref != nil && ref.Name != "" {
+			names = append(names, ref.Name)
+		}
+	}
+	return names
 }
 
 // GenerateAuthServerVolumes generates volumes and mounts for auth server

@@ -185,3 +185,58 @@ func TestVirtualMCPServerCABundleChecksumDrift(t *testing.T) {
 	assert.NotContains(t, none.Spec.Template.Annotations, ctrlutil.AuthServerConfigMapChecksumAnnotation,
 		"no CA bundle configured must not stamp an empty annotation")
 }
+
+func mapperJWKSConfig(jwksName string) *mcpv1beta1.MCPExternalAuthConfig {
+	return &mcpv1beta1.MCPExternalAuthConfig{ObjectMeta: metav1.ObjectMeta{Name: "auth", Namespace: "default"}, Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+		Type: mcpv1beta1.ExternalAuthTypeEmbeddedAuthServer,
+		EmbeddedAuthServer: &mcpv1beta1.EmbeddedAuthServerConfig{InboundGrants: &mcpv1beta1.InboundGrantsConfig{
+			TokenExchange: &mcpv1beta1.TokenExchangeInboundGrantConfig{DelegateClients: []mcpv1beta1.DelegateClientConfig{{
+				ClientID: "broker",
+				JWKSRef:  &corev1.ConfigMapKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: jwksName}, Key: "jwks.json"},
+			}}},
+		}},
+	}}
+}
+
+func TestEmbeddedAuthConfigMapIndexes_DelegateClientJWKS(t *testing.T) {
+	t.Parallel()
+
+	assert.Equal(t, []string{"broker-jwks"}, IndexEmbeddedAuthConfigMapRefs(mapperJWKSConfig("broker-jwks")))
+
+	deprecated := mapperJWKSConfig("legacy-jwks")
+	deprecated.Spec.EmbeddedAuthServer.DelegateClients = deprecated.Spec.EmbeddedAuthServer.InboundGrants.TokenExchange.DelegateClients
+	deprecated.Spec.EmbeddedAuthServer.InboundGrants = nil
+	assert.Equal(t, []string{"legacy-jwks"}, IndexEmbeddedAuthConfigMapRefs(deprecated))
+
+	vmcp := v1beta1test.NewVirtualMCPServer("vmcp", "default")
+	vmcp.Spec.AuthServerConfig = mapperJWKSConfig("broker-jwks").Spec.EmbeddedAuthServer
+	assert.Equal(t, []string{"broker-jwks"}, indexVirtualMCPServerConfigMaps(vmcp))
+	vmcp.Spec.AuthServerConfig = deprecated.Spec.EmbeddedAuthServer
+	assert.Equal(t, []string{"legacy-jwks"}, indexVirtualMCPServerConfigMaps(vmcp))
+}
+
+// TestJWKSConfigMapEditEnqueuesWorkloads checks that an edit of a delegate
+// client's JWKS ConfigMap reaches the MCPServer (through the
+// MCPExternalAuthConfig index) and the VirtualMCPServer.
+func TestJWKSConfigMapEditEnqueuesWorkloads(t *testing.T) {
+	t.Parallel()
+	scheme := testutil.NewScheme(t)
+	cm := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "broker-jwks", Namespace: "default"}}
+
+	auth := mapperJWKSConfig("broker-jwks")
+	server := v1beta1test.NewMCPServer("server", "default", v1beta1test.WithExternalAuthConfigRef("auth"))
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(cm, auth, server).
+		WithIndex(&mcpv1beta1.MCPExternalAuthConfig{}, EmbeddedAuthConfigMapRefIndex, IndexEmbeddedAuthConfigMapRefs).
+		WithIndex(&mcpv1beta1.MCPServer{}, EmbeddedAuthConfigIndex, indexMCPServerEmbeddedAuthConfig).Build()
+	requests := (&MCPServerReconciler{Client: c}).mapAuthServerConfigMapToMCPServer(t.Context(), cm)
+	require.Len(t, requests, 1)
+	assert.Equal(t, "server", requests[0].Name)
+
+	vmcp := v1beta1test.NewVirtualMCPServer("vmcp", "default")
+	vmcp.Spec.AuthServerConfig = auth.Spec.EmbeddedAuthServer
+	vc := fake.NewClientBuilder().WithScheme(scheme).WithObjects(vmcp).
+		WithIndex(&mcpv1beta1.VirtualMCPServer{}, virtualMCPServerConfigMapIndex, indexVirtualMCPServerConfigMaps).Build()
+	vrequests := (&VirtualMCPServerReconciler{Client: vc}).mapAuthzConfigMapToVirtualMCPServer(t.Context(), cm)
+	require.Len(t, vrequests, 1)
+	assert.Equal(t, "vmcp", vrequests[0].Name)
+}

@@ -11,7 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"gopkg.in/yaml.v3"
+	"go.yaml.in/yaml/v3"
 )
 
 // FileConfig is the top-level structure for a webhook configuration file.

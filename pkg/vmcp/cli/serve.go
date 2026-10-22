@@ -18,7 +18,7 @@ import (
 	"time"
 
 	"go.opentelemetry.io/otel/trace"
-	"gopkg.in/yaml.v3"
+	"go.yaml.in/yaml/v3"
 	"k8s.io/client-go/rest"
 
 	"github.com/stacklok/toolhive-core/env"

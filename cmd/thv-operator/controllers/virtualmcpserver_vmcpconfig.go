@@ -8,7 +8,7 @@ import (
 	stderrors "errors"
 	"fmt"
 
-	"gopkg.in/yaml.v3"
+	"go.yaml.in/yaml/v3"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -98,7 +98,7 @@ func (r *VirtualMCPServerReconciler) ensureVmcpConfigConfigMap(
 	}
 
 	// Marshal the serializable Config to YAML for storage in ConfigMap.
-	// Note: gopkg.in/yaml.v3 produces deterministic output by sorting map keys alphabetically.
+	// Note: go.yaml.in/yaml/v3 produces deterministic output by sorting map keys alphabetically.
 	// This ensures stable checksums for triggering pod rollouts only when content actually changes.
 	vmcpConfigYAML, err := yaml.Marshal(config)
 	if err != nil {

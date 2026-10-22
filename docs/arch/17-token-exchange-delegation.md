@@ -354,6 +354,33 @@ secret, so there is nothing for cleartext HTTP to expose. It is governed only
 by the issuer's general transport policy (`insecureAllowHTTP`), the same as a
 public (`none`) client.
 
+### Client-assertion audience
+
+A `private_key_jwt` client assertion is accepted when its `aud` claim is either
+of these, as a string or as an array containing either:
+
+- the issuer
+- the token endpoint URL (`{issuer}/oauth/token`)
+
+Assertions with the `client-authentication+jwt` JOSE `typ` header
+(draft-ietf-oauth-rfc7523bis-11 section 4.1) are accepted.
+
+Accepting the issuer is safe because the assertion is still bound by
+`iss == sub == client_id` and a signature from the client's registered keys.
+The issuer is this server's unique identifier (RFC 8414 section 2), and `aud` is
+compared as an exact string. An assertion addressed to this issuer is therefore
+not accepted by another issuer, even one on the same host.
+
+Two things do not meet draft-11 section 4(b), which requires the issuer as the
+sole value of `aud`: accepting the token endpoint URL, and accepting an `aud`
+array with more than one value that contains the issuer. Both are deprecated. A
+later release will require the issuer as the sole value.
+
+This applies to every `private_key_jwt` client. Inbound `private_key_jwt`
+clients come only from Dynamic Client Registration. The `aud` checks on
+RFC 7523 JWT-bearer and ID-JAG assertions, and on SPIFFE JWT-SVID client
+authentication, are unchanged.
+
 ## Trust model
 
 A trusted issuer plus a matching audience and a valid signature only proves

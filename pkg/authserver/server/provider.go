@@ -550,7 +550,7 @@ func NewAuthorizationServer(
 	fositeConfig.RevocationHandlers = slices.Clone(fositeConfig.RevocationHandlers)
 	fositeConfig.PushedAuthorizeEndpointHandlers = slices.Clone(fositeConfig.PushedAuthorizeEndpointHandlers)
 	providerConfig.Config = &fositeConfig
-	provider := fosite.NewOAuth2Provider(storage, &fositeConfig)
+	provider := fosite.NewOAuth2Provider(storage, newClientAssertionAudienceConfig(&fositeConfig))
 	// Select the fallback after constructing the provider because fosite's
 	// built-in strategy is a provider method. Preserve a caller-supplied strategy
 	// when present, then install the SPIFFE dispatcher on the provider-local copy.

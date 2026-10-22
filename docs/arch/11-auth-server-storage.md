@@ -771,7 +771,9 @@ is needed or offered.
 
 A client proves possession of its private key by sending a signed
 `client_assertion` at `/oauth/token`; ToolHive stores only the registered public
-JWKS. Assertion replay markers are retained until the assertion `exp` in both
+JWKS. The assertion's `aud` may be the issuer or the token endpoint URL; see
+[Client-assertion audience](17-token-exchange-delegation.md#client-assertion-audience).
+Assertion replay markers are retained until the assertion `exp` in both
 storage backends. Redis also persists the registered client and its JWKS under
 the auth server's isolated key prefix, so replicas sharing Redis can use the
 same registration. The in-memory backend is process-local and loses registrations

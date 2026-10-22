@@ -88,6 +88,7 @@ require (
 	go.starlark.net v0.0.0-20260908191801-89a6a09411d5
 	go.uber.org/mock v0.6.0
 	go.uber.org/zap v1.28.0
+	go.yaml.in/yaml/v3 v3.0.5
 	golang.ngrok.com/ngrok/v2 v2.2.1
 	golang.org/x/crypto v0.58.0
 	golang.org/x/exp/jsonrpc2 v0.0.0-20261014143641-f0251eb4aa3e
@@ -326,7 +327,6 @@ require (
 	go.uber.org/atomic v1.12.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	go.yaml.in/yaml/v2 v2.4.4 // indirect
-	go.yaml.in/yaml/v3 v3.0.5 // indirect
 	golang.ngrok.com/muxado/v2 v2.0.1 // indirect
 	golang.org/x/exp v0.0.0-20261014143641-f0251eb4aa3e // indirect
 	golang.org/x/exp/event v0.0.0-20261009195045-ca0d7ba23607 // indirect

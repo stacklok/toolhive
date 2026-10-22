@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/stacklok/toolhive-core/env"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/auth/upstreamtoken"
 	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
@@ -228,17 +229,9 @@ func newOIDCAuthMiddleware(
 		slog.Warn("no Resource defined in OIDC configuration")
 	}
 
-	oidcConfig := &auth.TokenValidatorConfig{
-		Issuer:            oidcCfg.Issuer,
-		ClientID:          oidcCfg.ClientID,
-		Audience:          oidcCfg.Audience,
-		ResourceURL:       oidcCfg.Resource,
-		JWKSURL:           oidcCfg.JWKSURL,
-		IntrospectionURL:  oidcCfg.IntrospectionURL,
-		AllowPrivateIP:    oidcCfg.ProtectedResourceAllowPrivateIP || oidcCfg.JwksAllowPrivateIP,
-		InsecureAllowHTTP: oidcCfg.InsecureAllowHTTP,
-		Scopes:            oidcCfg.Scopes,
-		CACertPath:        oidcCfg.CABundlePath,
+	oidcConfig, err := oidcTokenValidatorConfig(oidcCfg, &env.OSReader{})
+	if err != nil {
+		return nil, nil, err
 	}
 
 	// Wire optional dependencies from the embedded auth server so the JWT
@@ -265,6 +258,35 @@ func newOIDCAuthMiddleware(
 		"issuer", oidcCfg.Issuer, "client_id", oidcCfg.ClientID, "resource", oidcCfg.Resource)
 
 	return authMw, authInfo, nil
+}
+
+// oidcTokenValidatorConfig maps the incoming OIDC configuration to the token
+// validator, resolving ClientSecretEnv from the process environment. The
+// environment is read here rather than in the YAML loader or the operator so
+// both entry points share the same behavior and the secret never lands in
+// configuration.
+func oidcTokenValidatorConfig(oidcCfg *config.OIDCConfig, envReader env.Reader) (*auth.TokenValidatorConfig, error) {
+	clientSecret := ""
+	if oidcCfg.ClientSecretEnv != "" {
+		clientSecret = envReader.Getenv(oidcCfg.ClientSecretEnv)
+		if clientSecret == "" {
+			return nil, fmt.Errorf("OIDC client secret environment variable %q is not set or empty", oidcCfg.ClientSecretEnv)
+		}
+	}
+
+	return &auth.TokenValidatorConfig{
+		Issuer:            oidcCfg.Issuer,
+		ClientID:          oidcCfg.ClientID,
+		Audience:          oidcCfg.Audience,
+		ResourceURL:       oidcCfg.Resource,
+		JWKSURL:           oidcCfg.JWKSURL,
+		IntrospectionURL:  oidcCfg.IntrospectionURL,
+		AllowPrivateIP:    oidcCfg.ProtectedResourceAllowPrivateIP || oidcCfg.JwksAllowPrivateIP,
+		InsecureAllowHTTP: oidcCfg.InsecureAllowHTTP,
+		Scopes:            oidcCfg.Scopes,
+		CACertPath:        oidcCfg.CABundlePath,
+		ClientSecret:      clientSecret,
+	}, nil
 }
 
 // newLocalAuthMiddleware creates local OS user authentication middleware.

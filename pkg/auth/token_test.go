@@ -2283,7 +2283,7 @@ func TestLoadUpstreamTokens(t *testing.T) {
 			Return(map[string]upstreamtoken.UpstreamCredential{
 				"github":    {AccessToken: "gh-token", IDToken: "gh-id-token"},
 				"atlassian": {AccessToken: "atl-token"},
-			}, []string(nil), nil)
+			}, map[string]error(nil), nil)
 
 		v := &TokenValidator{upstreamTokenReader: reader}
 		creds, failed, err := v.loadUpstreamTokens(context.Background(), jwt.MapClaims{
@@ -2363,7 +2363,7 @@ func TestLoadUpstreamTokens(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		reader := upstreamtokenmocks.NewMockTokenReader(ctrl)
 		reader.EXPECT().GetAllUpstreamCredentials(gomock.Any(), "session-abc").
-			Return(map[string]upstreamtoken.UpstreamCredential{}, []string{"github"}, nil)
+			Return(map[string]upstreamtoken.UpstreamCredential{}, map[string]error{"github": upstreamtoken.ErrRefreshFailed}, nil)
 
 		v := &TokenValidator{upstreamTokenReader: reader}
 		creds, failed, err := v.loadUpstreamTokens(context.Background(), jwt.MapClaims{
@@ -2372,7 +2372,7 @@ func TestLoadUpstreamTokens(t *testing.T) {
 		})
 		require.NoError(t, err)
 		require.Equal(t, map[string]upstreamtoken.UpstreamCredential{}, creds)
-		require.Equal(t, []string{"github"}, failed)
+		require.Equal(t, map[string]error{"github": upstreamtoken.ErrRefreshFailed}, failed)
 	})
 
 	t.Run("returns empty map from reader", func(t *testing.T) {
@@ -2380,7 +2380,7 @@ func TestLoadUpstreamTokens(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		reader := upstreamtokenmocks.NewMockTokenReader(ctrl)
 		reader.EXPECT().GetAllUpstreamCredentials(gomock.Any(), "session-abc").
-			Return(map[string]upstreamtoken.UpstreamCredential{}, []string(nil), nil)
+			Return(map[string]upstreamtoken.UpstreamCredential{}, map[string]error(nil), nil)
 
 		v := &TokenValidator{upstreamTokenReader: reader}
 		creds, failed, err := v.loadUpstreamTokens(context.Background(), jwt.MapClaims{
@@ -2461,7 +2461,7 @@ func TestMiddleware_UpstreamTokenEnrichment(t *testing.T) {
 		reader.EXPECT().GetAllUpstreamCredentials(gomock.Any(), "session-xyz").
 			Return(map[string]upstreamtoken.UpstreamCredential{
 				"github": {AccessToken: "gh-tok", IDToken: "gh-id-tok"},
-			}, []string(nil), nil)
+			}, map[string]error(nil), nil)
 		v := makeValidator(t, WithUpstreamTokenReader(reader))
 
 		var captured *Identity
@@ -2491,7 +2491,7 @@ func TestMiddleware_UpstreamTokenEnrichment(t *testing.T) {
 			Return(map[string]upstreamtoken.UpstreamCredential{
 				"github":    {AccessToken: "gh-tok", IDToken: ""},
 				"atlassian": {AccessToken: "atl-tok", IDToken: ""},
-			}, []string(nil), nil)
+			}, map[string]error(nil), nil)
 		v := makeValidator(t, WithUpstreamTokenReader(reader))
 
 		var captured *Identity
@@ -2531,7 +2531,7 @@ func TestMiddleware_UpstreamTokenEnrichment(t *testing.T) {
 			Return(map[string]upstreamtoken.UpstreamCredential{
 				"github":    {AccessToken: "gh-tok", IDToken: "gh-id-tok"},
 				"atlassian": {AccessToken: "atl-tok", IDToken: ""},
-			}, []string(nil), nil)
+			}, map[string]error(nil), nil)
 		v := makeValidator(t, WithUpstreamTokenReader(reader))
 
 		var captured *Identity
@@ -2569,7 +2569,7 @@ func TestMiddleware_UpstreamTokenEnrichment(t *testing.T) {
 		var loadCtxCanonicalUser string
 		var loadCtxHadCanonicalUser bool
 		reader.EXPECT().GetAllUpstreamCredentials(gomock.Any(), "session-xyz").
-			DoAndReturn(func(ctx context.Context, _ string) (map[string]upstreamtoken.UpstreamCredential, []string, error) {
+			DoAndReturn(func(ctx context.Context, _ string) (map[string]upstreamtoken.UpstreamCredential, map[string]error, error) {
 				loadCtxIdentity, loadCtxHadIdentity = IdentityFromContext(ctx)
 				loadCtxCanonicalUser, loadCtxHadCanonicalUser = CanonicalUserFromContext(ctx)
 				return map[string]upstreamtoken.UpstreamCredential{"github": {AccessToken: "gh-tok"}}, nil, nil
@@ -2621,7 +2621,7 @@ func TestMiddleware_UpstreamTokenEnrichment(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		reader := upstreamtokenmocks.NewMockTokenReader(ctrl)
 		reader.EXPECT().GetAllUpstreamCredentials(gomock.Any(), "session-xyz").
-			Return(map[string]upstreamtoken.UpstreamCredential{}, []string{"github"}, nil)
+			Return(map[string]upstreamtoken.UpstreamCredential{}, map[string]error{"github": upstreamtoken.ErrRefreshFailed}, nil)
 		v := makeValidator(t, WithUpstreamTokenReader(reader))
 
 		nextCalled := false
@@ -2646,7 +2646,7 @@ func TestMiddleware_UpstreamTokenEnrichment(t *testing.T) {
 		reader := upstreamtokenmocks.NewMockTokenReader(ctrl)
 		// atlassian succeeded, github failed — the middleware must still reject the request
 		reader.EXPECT().GetAllUpstreamCredentials(gomock.Any(), "session-xyz").
-			Return(map[string]upstreamtoken.UpstreamCredential{"atlassian": {AccessToken: "atl-tok"}}, []string{"github"}, nil)
+			Return(map[string]upstreamtoken.UpstreamCredential{"atlassian": {AccessToken: "atl-tok"}}, map[string]error{"github": upstreamtoken.ErrRefreshFailed}, nil)
 		v := makeValidator(t, WithUpstreamTokenReader(reader))
 
 		nextCalled := false
@@ -2692,7 +2692,7 @@ func TestMiddleware_UpstreamTokenEnrichment(t *testing.T) {
 				ctrl := gomock.NewController(t)
 				reader := upstreamtokenmocks.NewMockTokenReader(ctrl)
 				reader.EXPECT().GetAllUpstreamCredentials(gomock.Any(), "session-xyz").
-					Return(tt.creds, []string(nil), nil)
+					Return(tt.creds, map[string]error(nil), nil)
 				v := makeValidator(t, WithUpstreamTokenReader(reader))
 
 				nextCalled := false

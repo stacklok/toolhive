@@ -7,6 +7,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -533,7 +535,7 @@ func TestInProcessService_GetAllUpstreamCredentials(t *testing.T) {
 
 			require.NoError(t, err)
 			assert.Equal(t, tt.wantResult, result)
-			assert.ElementsMatch(t, tt.wantFailed, failed)
+			assert.ElementsMatch(t, tt.wantFailed, slices.Collect(maps.Keys(failed)))
 		})
 	}
 }
@@ -565,7 +567,8 @@ func TestInProcessService_GetAllUpstreamCredentials_NilRefresher(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Equal(t, map[string]UpstreamCredential{}, result)
-	assert.Equal(t, []string{"github"}, failed)
+	require.Len(t, failed, 1)
+	assert.ErrorIs(t, failed["github"], ErrNoRefreshToken)
 }
 
 // TestInProcessService_RefreshOnExpiredIDToken covers the ID-token staleness
@@ -891,7 +894,8 @@ func TestInProcessService_GetAllUpstreamCredentials_IDTokenRefreshRemovedRow(t *
 
 	require.NoError(t, err)
 	assert.Empty(t, creds)
-	assert.Equal(t, []string{"entra"}, failed)
+	require.Len(t, failed, 1)
+	assert.ErrorIs(t, failed["entra"], ErrRefreshFailed)
 }
 
 func TestIDTokenExpired(t *testing.T) {

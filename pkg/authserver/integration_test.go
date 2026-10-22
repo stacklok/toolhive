@@ -130,6 +130,8 @@ type testServerOptions struct {
 	deviceFlowEnabled bool
 	// deviceCodeInterval, when non-zero, sets Config.DeviceCodeInterval.
 	deviceCodeInterval time.Duration
+	// refreshGrantHandlers, when non-empty, sets Config.RefreshGrantHandlers.
+	refreshGrantHandlers []fosite.TokenEndpointHandler
 }
 
 // testServerOption is a functional option for test server setup.
@@ -218,6 +220,13 @@ func withDeviceFlowEnabled() testServerOption {
 func withDeviceCodeInterval(d time.Duration) testServerOption {
 	return func(opts *testServerOptions) {
 		opts.deviceCodeInterval = d
+	}
+}
+
+// withRefreshGrantHandlers sets Config.RefreshGrantHandlers.
+func withRefreshGrantHandlers(hs ...fosite.TokenEndpointHandler) testServerOption {
+	return func(opts *testServerOptions) {
+		opts.refreshGrantHandlers = hs
 	}
 }
 
@@ -365,6 +374,7 @@ func setupTestServer(t *testing.T, opts ...testServerOption) *testServer {
 		ForceConfidentialRedirectURIs:       options.forceConfidentialRedirectURIs,
 		DeviceFlowEnabled:                   options.deviceFlowEnabled,
 		DeviceCodeInterval:                  options.deviceCodeInterval,
+		RefreshGrantHandlers:                options.refreshGrantHandlers,
 		// The test server's issuer is a plain-HTTP loopback URL (genuinely
 		// local: an in-process httptest server), so opt in to the same
 		// combination withAllowConfidentialClientRegistration would otherwise

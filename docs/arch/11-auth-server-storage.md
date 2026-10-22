@@ -293,6 +293,43 @@ that is simply gone (deleted by logout or evicted by TTL, `ErrNotFound` on
 re-read) — the latter is expected behavior, not a race, and refuses to
 resurrect the deleted row.
 
+### Upstream Refresh Rejections and the Refresh Grant
+
+An upstream refresh fails in one of two ways. In a definitive rejection, the
+IdP answers with the OAuth `invalid_grant` code on anything but a 5xx or 429,
+and that upstream refresh token will never work again. Any other failure (a
+network error, a 5xx, a 429, storage) is transient. The classification is
+`oautherr.IsRejectedRefreshGrant`, shared with the client-side token source.
+The provider wraps
+`upstream.ErrGrantRejected` only for the definitive case. Under the
+cross-replica race described above, a rotating IdP also answers
+`invalid_grant` to the losing replica. The refresher therefore re-reads the
+row after a rejection, and if the stored row holds a different, unexpired
+token it returns that row instead. This works only once the winning
+replica's write has landed, so a rejection can still occasionally reflect a
+lost race rather than a dead credential. The refresher and
+`upstreamtoken.ErrRefreshFailed` carry it through, so it can be detected with
+`errors.Is` on the error from `GetValidTokens`. It can also be detected on the
+per-provider errors that `GetAllUpstreamCredentials` returns in its `failed`
+map.
+
+The embedded auth server's own `refresh_token` grant keeps the token session
+(`tsid`). A refreshed access token therefore points at the same upstream
+credential. If that credential is dead, the bearer validator answers 401
+again, and a client that only ever refreshes loops. `Config.RefreshGrantHandlers`
+lets an embedder refuse such a grant. The handlers run in order, only on the
+`refresh_token` grant, after fosite's built-in refresh handler has
+authenticated the client and loaded the refresh session. They run before any
+tokens are issued or the refresh token is rotated. Returning
+`fosite.ErrInvalidGrant` answers HTTP 400 `invalid_grant`, which pushes the
+client into a full authorization that creates a new `tsid`. Another fosite
+error keeps its own status and code, and a plain Go error answers HTTP 500.
+Only the handlers' request phase is delegated:
+their response phase and client-authentication skip are never called, so the
+seam can refuse a grant but not change what is issued. All handlers are
+registered as one fosite handler, because fosite drops a second handler of
+the same concrete type. No handler is registered by default.
+
 ### Serialization
 
 All values are stored as JSON. The implementation uses defensive copies on read and write to prevent caller mutations from affecting stored data.

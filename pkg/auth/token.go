@@ -1262,12 +1262,12 @@ func (v *TokenValidator) writeUpstreamReauthRequired(w http.ResponseWriter) {
 // all upstream provider credentials (access + ID tokens) for that session.
 // Returns (nil, nil, nil) if no tsid claim exists. Returns a non-nil error
 // when a tsid claim is present but token loading fails due to an infrastructure
-// error (storage unavailable). A non-empty failed slice means one or more
+// error (storage unavailable). A non-empty failed map means one or more
 // providers' tokens could not be refreshed; the caller should return HTTP 401
 // to trigger re-authentication.
 func (v *TokenValidator) loadUpstreamTokens(
 	ctx context.Context, claims jwt.MapClaims,
-) (map[string]upstreamtoken.UpstreamCredential, []string, error) {
+) (map[string]upstreamtoken.UpstreamCredential, map[string]error, error) {
 	tsid, ok := claims[upstreamtoken.TokenSessionIDClaimKey].(string)
 	if !ok || tsid == "" {
 		return nil, nil, nil
@@ -1370,7 +1370,7 @@ func (v *TokenValidator) Middleware(next http.Handler) http.Handler {
 			// at this layer; this is the correct tradeoff for now.
 			if len(failed) > 0 {
 				slog.WarnContext(loadCtx, "upstream token refresh failed; returning 401",
-					"providers", failed)
+					"providers", slices.Sorted(maps.Keys(failed)))
 				v.writeUpstreamReauthRequired(w)
 				return
 			}

@@ -578,7 +578,9 @@ func buildProvider(
 	factories := make([]oauthserver.Factory, 0, 4)
 	if !cfg.DisableTokenExchange {
 		tokenExchangeFactory, err := tokenexchange.FactoryWithSharedTrustedIssuerValidator(
-			cfg.DelegationTokenLifespan, cfg.TrustedIssuers, delegateClientIDs, shared)
+			cfg.DelegationTokenLifespan, cfg.TrustedIssuers, delegateClientIDs, shared,
+			tokenexchange.WithAuthorizationDetailsRegistry(cfg.AuthorizationDetailsRegistry),
+		)
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to create token exchange factory: %w", err)
 		}

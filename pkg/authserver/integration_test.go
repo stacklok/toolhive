@@ -38,6 +38,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/auth/upstreamtoken"
+	"github.com/stacklok/toolhive/pkg/authserver/authorizationdetails"
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
 	"github.com/stacklok/toolhive/pkg/authserver/server/handlers"
 	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
@@ -129,7 +130,9 @@ type testServerOptions struct {
 	// registered at the token endpoint.
 	deviceFlowEnabled bool
 	// deviceCodeInterval, when non-zero, sets Config.DeviceCodeInterval.
-	deviceCodeInterval time.Duration
+	deviceCodeInterval           time.Duration
+	authorizationDetailsRegistry *authorizationdetails.Registry
+	storageDecorator             func(storage.Storage) storage.Storage
 	// refreshGrantHandlers, when non-empty, sets Config.RefreshGrantHandlers.
 	refreshGrantHandlers []fosite.TokenEndpointHandler
 }
@@ -230,6 +233,18 @@ func withRefreshGrantHandlers(hs ...fosite.TokenEndpointHandler) testServerOptio
 	}
 }
 
+func withAuthorizationDetailsRegistry(registry *authorizationdetails.Registry) testServerOption {
+	return func(opts *testServerOptions) {
+		opts.authorizationDetailsRegistry = registry
+	}
+}
+
+func withStorageDecorator(decorator func(storage.Storage) storage.Storage) testServerOption {
+	return func(opts *testServerOptions) {
+		opts.storageDecorator = decorator
+	}
+}
+
 // withRedisBackedStorage swaps the default in-memory storage for a
 // miniredis-backed *RedisStorage. This exercises the same Lua scripts and
 // Redis-shape key layout used in production, while remaining hermetic and
@@ -313,6 +328,9 @@ func setupTestServer(t *testing.T, opts ...testServerOption) *testServer {
 	if options.storageFactory != nil {
 		stor, mr = options.storageFactory(t)
 	}
+	if options.storageDecorator != nil {
+		stor = options.storageDecorator(stor)
+	}
 
 	// 4. Register test client (public client for PKCE)
 	err = stor.RegisterClient(ctx, &fosite.DefaultClient{
@@ -364,9 +382,10 @@ func setupTestServer(t *testing.T, opts ...testServerOption) *testServer {
 			}
 			return []UpstreamConfig{{Name: "default", Type: UpstreamProviderTypeOAuth2, OAuth2Config: upstreamCfg}}
 		}(),
-		UpstreamFilter:   options.upstreamFilter,
-		AllowedAudiences: options.allowedAudiences,
-		TrustedIssuers:   options.trustedIssuers,
+		UpstreamFilter:               options.upstreamFilter,
+		AllowedAudiences:             options.allowedAudiences,
+		TrustedIssuers:               options.trustedIssuers,
+		AuthorizationDetailsRegistry: options.authorizationDetailsRegistry,
 		// Opt-in gate for confidential-client DCR; off by default in tests just
 		// as in production.
 		AllowConfidentialClientRegistration: options.allowConfidentialClientRegistration,
@@ -481,6 +500,11 @@ func setupJWTBearerGrantTestServer(t *testing.T, opts ...testServerOption) (*tes
 	ts := setupTestServerWithMockOIDC(t, startMockOIDC(t), serverOpts...)
 	signer, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.RS256, Key: externalKey}, (&jose.SignerOptions{}).WithHeader("kid", "external-key"))
 	require.NoError(t, err)
+	idjagSigner, err := jose.NewSigner(
+		jose.SigningKey{Algorithm: jose.RS256, Key: externalKey},
+		(&jose.SignerOptions{}).WithHeader("kid", "external-key").WithType("oauth-id-jag+jwt"),
+	)
+	require.NoError(t, err)
 
 	sign := func(subject, audience string, issuedAt, expiry time.Time, id string) string {
 		t.Helper()
@@ -501,6 +525,15 @@ func setupJWTBearerGrantTestServer(t *testing.T, opts ...testServerOption) (*tes
 	}
 	ts.signSubjectToken = func(subject string, issuedAt, expiry time.Time, id string) string {
 		return sign(subject, testAudience, issuedAt, expiry, id)
+	}
+	ts.signIDJAGAssertion = func(subject string, issuedAt, expiry time.Time, id string) string {
+		t.Helper()
+		assertion, err := jwt.Signed(idjagSigner).Claims(jwt.Claims{
+			Issuer: externalIssuer, Subject: subject, Audience: jwt.Audience{testIssuer + "/oauth/token"},
+			IssuedAt: jwt.NewNumericDate(issuedAt), Expiry: jwt.NewNumericDate(expiry), ID: id,
+		}).Claims(map[string]any{"client_id": testClientID}).Serialize()
+		require.NoError(t, err)
+		return assertion
 	}
 	return ts, signAssertion
 }
@@ -2347,9 +2380,10 @@ func TestIntegration_TokenExchange_TrustedExternalIssuer(t *testing.T) {
 // testServerWithUpstream bundles test server components with upstream IDP.
 type testServerWithUpstream struct {
 	*testServer
-	mockOIDC         *mockoidc.MockOIDC
-	upstreamProvider upstream.OAuth2Provider
-	signSubjectToken func(string, time.Time, time.Time, string) string
+	mockOIDC           *mockoidc.MockOIDC
+	upstreamProvider   upstream.OAuth2Provider
+	signSubjectToken   func(string, time.Time, time.Time, string) string
+	signIDJAGAssertion func(string, time.Time, time.Time, string) string
 }
 
 // startMockOIDC starts a mockoidc server with default test user.

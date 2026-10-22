@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -22,7 +23,9 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/stacklok/toolhive/pkg/authserver"
+	"github.com/stacklok/toolhive/pkg/authserver/authorizationdetails"
 	authserverrunner "github.com/stacklok/toolhive/pkg/authserver/runner"
+	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 	"github.com/stacklok/toolhive/test/integration/authserver/helpers"
 )
@@ -305,7 +308,81 @@ func assertConfiguredDelegateDiscovery(t *testing.T, serverURL string) {
 	}
 }
 
+func TestConfiguredAuthorizationDetailsRegistryThroughRunnerConstructors(t *testing.T) {
+	t.Parallel()
+
+	for _, useStorage := range []bool{false, true} {
+		name := "NewEmbeddedAuthServer"
+		if useStorage {
+			name = "NewEmbeddedAuthServerWithStorage"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			var callbacks atomic.Int32
+			registry, err := authorizationdetails.New(map[string]authorizationdetails.Type{
+				"custom": {
+					GrantTypes: []string{oauthproto.GrantTypeTokenExchange},
+					Grant: func(_ context.Context, _ authorizationdetails.Request) (authorizationdetails.Result, error) {
+						callbacks.Add(1)
+						return authorizationdetails.Result{Entries: []json.RawMessage{
+							json.RawMessage(`{"type":"custom","granted":true}`),
+						}}, nil
+					},
+				},
+			})
+			require.NoError(t, err)
+			server, issuer, embedded := startConfiguredDelegateAuthServerWithOptions(
+				t, useStorage, authserverrunner.WithAuthorizationDetailsRegistry(registry),
+			)
+			subjectToken := signedDelegateSubjectToken(t, embedded, issuer)
+
+			request := func(details string) (int, map[string]json.RawMessage) {
+				t.Helper()
+				values := url.Values{
+					"grant_type":            {tokenExchangeGrantType},
+					"subject_token":         {subjectToken},
+					"subject_token_type":    {oauthproto.TokenTypeAccessToken},
+					"scope":                 {"openid profile"},
+					"audience":              {delegateAudience},
+					"client_id":             {delegateClientID},
+					"client_secret":         {delegateClientSecret},
+					"authorization_details": {details},
+				}
+				req, err := http.NewRequest(http.MethodPost, server.URL+"/oauth/token", strings.NewReader(values.Encode()))
+				require.NoError(t, err)
+				req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+				response, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
+				require.NoError(t, err)
+				defer response.Body.Close()
+				var body map[string]json.RawMessage
+				require.NoError(t, json.NewDecoder(response.Body).Decode(&body))
+				return response.StatusCode, body
+			}
+
+			status, body := request(`[{"type":"custom","nested":{"amount":12345678901234567890,"value":null}}]`)
+			require.Equal(t, http.StatusOK, status, body)
+			assert.Equal(t, `[{"type":"custom","granted":true}]`, string(body["authorization_details"]),
+				"the response carries what the hook granted, not the request")
+			assert.NotEmpty(t, body["access_token"])
+			assert.EqualValues(t, 1, callbacks.Load(), "registry callback must be reached through constructor wiring")
+
+			status, body = request(`[{"type":"unregistered"}]`)
+			assert.Equal(t, http.StatusBadRequest, status, body)
+			assert.Equal(t, `"invalid_authorization_details"`, string(body["error"]))
+			assert.EqualValues(t, 1, callbacks.Load(), "unknown types must be rejected before the hook is invoked")
+		})
+	}
+}
+
 func startConfiguredDelegateAuthServer(t *testing.T) (*httptest.Server, string, *authserverrunner.EmbeddedAuthServer) {
+	t.Helper()
+	return startConfiguredDelegateAuthServerWithOptions(t, false)
+}
+
+func startConfiguredDelegateAuthServerWithOptions(
+	t *testing.T, withStorage bool, options ...authserverrunner.EmbeddedAuthServerOption,
+) (*httptest.Server, string, *authserverrunner.EmbeddedAuthServer) {
 	t.Helper()
 
 	upstream := helpers.NewMockUpstreamIDP(t)
@@ -328,7 +405,13 @@ func startConfiguredDelegateAuthServer(t *testing.T) (*httptest.Server, string, 
 		Audiences:        []string{delegateAudience},
 	}}
 
-	embedded, err := authserverrunner.NewEmbeddedAuthServer(t.Context(), cfg)
+	var embedded *authserverrunner.EmbeddedAuthServer
+	if withStorage {
+		embedded, err = authserverrunner.NewEmbeddedAuthServerWithStorage(
+			t.Context(), cfg, storage.NewMemoryStorage(), options...)
+	} else {
+		embedded, err = authserverrunner.NewEmbeddedAuthServer(t.Context(), cfg, options...)
+	}
 	require.NoError(t, err)
 
 	server := httptest.NewUnstartedServer(embedded.Handler())

@@ -612,9 +612,16 @@ func New(
 // If the hosting server's drain is incomplete, retry it with a fresh context before Stop.
 //
 // The returned handler includes all routes (health, metrics, well-known, MCP)
-// and the full HTTP middleware chain (recovery, body limit, header validation,
-// auth, audit, MCP parsing, telemetry). Rate limiting decorates the core VMCP
-// and runs inside the MCP SDK handler.
+// and the full HTTP middleware chain (see the chain comment in the body for
+// the order). Rate limiting decorates the core VMCP and runs inside the MCP SDK
+// handler.
+//
+// DNS-rebinding protection: on a loopback connection, the MCP route answers
+// 403 when the Host header is not a loopback name, so a proxy or embedder that
+// reaches it over loopback must send a loopback Host. The guard reads
+// http.LocalAddrContextKey; when it is absent (the handler is not served by
+// net/http) the request is passed through, so such embedders need their own Host
+// check. See loopbackHostGuard for details.
 //
 // Each call builds a fresh handler. The method is safe to call multiple times.
 // All returned handlers share the same underlying MCPServer and SessionManager,
@@ -685,10 +692,11 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 		slog.Debug("embedded authorization server routes registered")
 	}
 
-	// MCP endpoint - apply middleware chain (wrapping order, execution happens in reverse):
-	// Code wraps: audit → auth → MCP-parsing → telemetry → classification
-	// Execution order: recovery → body-limit → header-val → audit → auth →
-	//   MCP-parsing → telemetry → classification → handler
+	// MCP endpoint - middleware chain, in execution order (outermost first):
+	//   recovery → body-limit → write-timeout → header-validation →
+	//   forwarded-header capture (if PassthroughHeaders is set) →
+	//   audit (if configured) → auth (if configured) → MCP-parsing →
+	//   telemetry (if configured) → host-guard → classification → handler
 	// Rate limiting is a core VMCP decorator rather than an HTTP middleware and
 	// runs during tool dispatch inside the handler.
 	//
@@ -722,6 +730,14 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 	// dispatcher 403 is still recorded by the telemetry middleware instead of
 	// bypassing it entirely.
 	mcpHandler = s.classifyingHandler(mcpHandler)
+
+	// DNS-rebinding protection for both MCP revisions. go-sdk's own localhost
+	// check only sees Legacy requests that reach StreamableHTTPHandler;
+	// classifyingHandler hands Modern requests to dispatchModern, and mcpcompat
+	// serves cross-replica Legacy sessions without that handler. Placed where
+	// go-sdk's check effectively sat (inside audit and telemetry) so a rejected
+	// request is still audited and recorded, for every path alike.
+	mcpHandler = loopbackHostGuard(mcpHandler)
 
 	if s.config.TelemetryProvider != nil {
 		mcpHandler = s.config.TelemetryProvider.Middleware(s.config.Name, "streamable-http")(mcpHandler)

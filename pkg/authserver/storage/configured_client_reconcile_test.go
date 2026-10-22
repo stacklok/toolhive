@@ -5,10 +5,13 @@ package storage
 
 import (
 	"context"
+	"crypto/rsa"
 	"log/slog"
+	"math/big"
 	"sync"
 	"testing"
 
+	"github.com/go-jose/go-jose/v3"
 	"github.com/ory/fosite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -433,12 +436,129 @@ func TestReconcileConfiguredClient_PolicyChangeWarning(t *testing.T) {
 					return
 				}
 				assert.Equal(t, map[string]any{
-					"client_id":     id,
-					"old_scopes":    tt.oldScopes,
-					"new_scopes":    tt.newScopes,
-					"old_audiences": tt.oldAudience,
-					"new_audiences": tt.newAudience,
+					"client_id":                      id,
+					"old_scopes":                     tt.oldScopes,
+					"new_scopes":                     tt.newScopes,
+					"old_audiences":                  tt.oldAudience,
+					"new_audiences":                  tt.newAudience,
+					"old_grant_types":                []string{oauthproto.GrantTypeTokenExchange},
+					"new_grant_types":                []string{oauthproto.GrantTypeTokenExchange},
+					"old_redirect_uris":              []string(nil),
+					"new_redirect_uris":              []string(nil),
+					"old_token_endpoint_auth_method": "",
+					"new_token_endpoint_auth_method": "",
 				}, warns[0])
+			})
+		}
+	}
+}
+
+func testPinnedJWKS(kid string) *jose.JSONWebKeySet {
+	key := &rsa.PublicKey{N: new(big.Int).Lsh(big.NewInt(1), 2047), E: 65537}
+	return &jose.JSONWebKeySet{Keys: []jose.JSONWebKey{{Key: key, KeyID: kid, Use: "sig", Algorithm: "RS256"}}}
+}
+
+// TestReconcileConfiguredClient_ClientMetadataChangeWarning deliberately does
+// not run in parallel: it swaps the global slog default.
+//
+//nolint:paralleltest // captures the process-global slog default
+func TestReconcileConfiguredClient_ClientMetadataChangeWarning(t *testing.T) {
+	id := reconcileTestClientID
+	base := func(mutate func(*registration.Config)) registration.Config {
+		cfg := registration.Config{
+			ID: id, Secret: "secret", Scopes: []string{"a"}, Audience: []string{"https://api.example"},
+			TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodClientSecretBasic,
+		}
+		mutate(&cfg)
+		return cfg
+	}
+	keyed := func(kid string) func(*registration.Config) {
+		return func(c *registration.Config) {
+			c.Secret = ""
+			c.TokenEndpointAuthMethod = oauthproto.TokenEndpointAuthMethodPrivateKeyJWT
+			c.JSONWebKeys = testPinnedJWKS(kid)
+		}
+	}
+	noop := func(*registration.Config) {}
+	withRedirects := func(uris ...string) func(*registration.Config) {
+		return func(c *registration.Config) {
+			c.GrantTypes = []string{oauthproto.GrantTypeAuthorizationCode, oauthproto.GrantTypeTokenExchange}
+			c.RedirectURIs = uris
+		}
+	}
+
+	tests := []struct {
+		name      string
+		old, new  func(*registration.Config)
+		wantWarns int
+		wantKeys  []string
+		wantAttrs map[string]any
+	}{
+		{
+			name: "grant type change warns",
+			old:  noop,
+			new: func(c *registration.Config) {
+				c.GrantTypes = []string{oauthproto.GrantTypeTokenExchange, oauthproto.GrantTypeJWTBearer}
+			},
+			wantWarns: 1,
+			wantKeys:  []string{"old_grant_types", "new_grant_types"},
+		},
+		{
+			name:      "auth method change warns",
+			old:       noop,
+			new:       keyed("k1"),
+			wantWarns: 1,
+			wantKeys:  []string{"old_token_endpoint_auth_method", "new_token_endpoint_auth_method"},
+		},
+		{
+			name:      "redirect URI change warns",
+			old:       withRedirects("https://app.example/cb"),
+			new:       withRedirects("https://app.example/cb2"),
+			wantWarns: 1,
+			wantAttrs: map[string]any{
+				"old_redirect_uris": []string{"https://app.example/cb"},
+				"new_redirect_uris": []string{"https://app.example/cb2"},
+			},
+		},
+		{
+			name: "redirect URI reorder is silent",
+			old:  withRedirects("https://app.example/a", "https://app.example/b"),
+			new:  withRedirects("https://app.example/b", "https://app.example/a"),
+		},
+		{
+			name: "unchanged redirect URIs are silent",
+			old:  withRedirects("https://app.example/cb"),
+			new:  withRedirects("https://app.example/cb"),
+		},
+		{name: "jwks rotation is silent", old: keyed("k1"), new: keyed("k2")},
+		{name: "unchanged client is silent", old: keyed("k1"), new: keyed("k1")},
+	}
+
+	for _, backend := range configuredClientBackends() {
+		for _, tt := range tests {
+			t.Run(backend.name+"/"+tt.name, func(t *testing.T) {
+				s := backend.new(t)
+				oldClient, err := registration.NewStaticDelegateClient(base(tt.old))
+				require.NoError(t, err)
+				newClient, err := registration.NewStaticDelegateClient(base(tt.new))
+				require.NoError(t, err)
+				require.NoError(t, s.ReconcileConfiguredClient(t.Context(), oldClient))
+
+				logs := captureSlog(t)
+				require.NoError(t, s.ReconcileConfiguredClient(t.Context(), newClient))
+
+				warns := logs.warnsFor(id)
+				require.Len(t, warns, tt.wantWarns)
+				for _, key := range tt.wantKeys {
+					assert.Contains(t, warns[0], key)
+				}
+				for key, want := range tt.wantAttrs {
+					assert.Equal(t, want, warns[0][key], key)
+				}
+
+				stored, err := s.GetClient(t.Context(), id)
+				require.NoError(t, err)
+				assert.Equal(t, fingerprintOfClient(newClient), fingerprintOfClient(stored))
 			})
 		}
 	}

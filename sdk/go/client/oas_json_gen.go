@@ -1255,6 +1255,32 @@ func (s *AuthenticationDelegateClientRunConfig) encodeFields(e *jx.Encoder) {
 		}
 	}
 	{
+		if s.GrantTypes != nil {
+			e.FieldStart("grant_types")
+			e.ArrStart()
+			for _, elem := range s.GrantTypes {
+				e.Str(elem)
+			}
+			e.ArrEnd()
+		}
+	}
+	{
+		if s.JwksFile.Set {
+			e.FieldStart("jwks_file")
+			s.JwksFile.Encode(e)
+		}
+	}
+	{
+		if s.RedirectUris != nil {
+			e.FieldStart("redirect_uris")
+			e.ArrStart()
+			for _, elem := range s.RedirectUris {
+				e.Str(elem)
+			}
+			e.ArrEnd()
+		}
+	}
+	{
 		if s.Scopes != nil {
 			e.FieldStart("scopes")
 			e.ArrStart()
@@ -1264,14 +1290,31 @@ func (s *AuthenticationDelegateClientRunConfig) encodeFields(e *jx.Encoder) {
 			e.ArrEnd()
 		}
 	}
+	{
+		if s.TokenEndpointAuthMethod.Set {
+			e.FieldStart("token_endpoint_auth_method")
+			s.TokenEndpointAuthMethod.Encode(e)
+		}
+	}
+	{
+		if s.TokenEndpointAuthSigningAlg.Set {
+			e.FieldStart("token_endpoint_auth_signing_alg")
+			s.TokenEndpointAuthSigningAlg.Encode(e)
+		}
+	}
 }
 
-var jsonFieldsNameOfAuthenticationDelegateClientRunConfig = [5]string{
+var jsonFieldsNameOfAuthenticationDelegateClientRunConfig = [10]string{
 	0: "audiences",
 	1: "client_id",
 	2: "client_secret_env_var",
 	3: "client_secret_file",
-	4: "scopes",
+	4: "grant_types",
+	5: "jwks_file",
+	6: "redirect_uris",
+	7: "scopes",
+	8: "token_endpoint_auth_method",
+	9: "token_endpoint_auth_signing_alg",
 }
 
 // Decode decodes AuthenticationDelegateClientRunConfig from json.
@@ -1331,6 +1374,54 @@ func (s *AuthenticationDelegateClientRunConfig) Decode(d *jx.Decoder) error {
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"client_secret_file\"")
 			}
+		case "grant_types":
+			if err := func() error {
+				s.GrantTypes = make([]string, 0)
+				if err := d.Arr(func(d *jx.Decoder) error {
+					var elem string
+					v, err := d.Str()
+					elem = string(v)
+					if err != nil {
+						return err
+					}
+					s.GrantTypes = append(s.GrantTypes, elem)
+					return nil
+				}); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"grant_types\"")
+			}
+		case "jwks_file":
+			if err := func() error {
+				s.JwksFile.Reset()
+				if err := s.JwksFile.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"jwks_file\"")
+			}
+		case "redirect_uris":
+			if err := func() error {
+				s.RedirectUris = make([]string, 0)
+				if err := d.Arr(func(d *jx.Decoder) error {
+					var elem string
+					v, err := d.Str()
+					elem = string(v)
+					if err != nil {
+						return err
+					}
+					s.RedirectUris = append(s.RedirectUris, elem)
+					return nil
+				}); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"redirect_uris\"")
+			}
 		case "scopes":
 			if err := func() error {
 				s.Scopes = make([]string, 0)
@@ -1349,6 +1440,26 @@ func (s *AuthenticationDelegateClientRunConfig) Decode(d *jx.Decoder) error {
 				return nil
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"scopes\"")
+			}
+		case "token_endpoint_auth_method":
+			if err := func() error {
+				s.TokenEndpointAuthMethod.Reset()
+				if err := s.TokenEndpointAuthMethod.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"token_endpoint_auth_method\"")
+			}
+		case "token_endpoint_auth_signing_alg":
+			if err := func() error {
+				s.TokenEndpointAuthSigningAlg.Reset()
+				if err := s.TokenEndpointAuthSigningAlg.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"token_endpoint_auth_signing_alg\"")
 			}
 		default:
 			return d.Skip()

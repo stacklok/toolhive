@@ -356,7 +356,8 @@ func validateTokenLifespans(cfg *AuthorizationServerParams) error {
 
 // ValidateConfidentialClientTransport rejects cleartext HTTP configurations
 // when any confidential client is enabled, whether it is admitted through DCR
-// or statically declared.
+// or statically declared. Statically declared delegate clients always count,
+// regardless of their authentication method.
 func ValidateConfidentialClientTransport(
 	allowConfidential, insecureAllowHTTP bool,
 	issuer string, insecureAllowConfidentialOverLoopbackHTTP bool,
@@ -365,8 +366,9 @@ func ValidateConfidentialClientTransport(
 		return nil
 	}
 	if insecureAllowHTTP {
-		return fmt.Errorf("allow_confidential_client_registration cannot be combined with insecure_allow_http: " +
-			"confidential clients would send secrets over cleartext HTTP")
+		return fmt.Errorf("confidential clients (allow_confidential_client_registration or delegate clients) " +
+			"cannot be combined with insecure_allow_http: " +
+			"client credentials, authorization codes and tokens would cross cleartext HTTP")
 	}
 	parsed, err := url.Parse(issuer)
 	if err != nil {
@@ -384,16 +386,20 @@ func ValidateConfidentialClientTransport(
 		return fmt.Errorf("confidential clients require a valid issuer URL")
 	}
 	if insecureAllowConfidentialOverLoopbackHTTP && !networking.IsLocalhost(parsed.Host) {
-		return fmt.Errorf("allow_confidential_client_registration cannot use the loopback HTTP opt-in with a non-loopback issuer: " +
-			"confidential clients would send secrets over cleartext HTTP")
+		return fmt.Errorf("confidential clients (allow_confidential_client_registration or delegate clients) " +
+			"cannot use the loopback HTTP opt-in with a non-loopback issuer: " +
+			"client credentials, authorization codes and tokens would cross cleartext HTTP")
 	}
 	if !insecureAllowConfidentialOverLoopbackHTTP && networking.IsLocalhost(parsed.Host) {
-		return fmt.Errorf("allow_confidential_client_registration cannot be combined with a plain-HTTP loopback issuer unless " +
-			"insecure_allow_confidential_over_loopback_http is set: confidential clients would send secrets over cleartext HTTP")
+		return fmt.Errorf("confidential clients (allow_confidential_client_registration or delegate clients) " +
+			"cannot be combined with a plain-HTTP loopback issuer unless " +
+			"insecure_allow_confidential_over_loopback_http is set: " +
+			"client credentials, authorization codes and tokens would cross cleartext HTTP")
 	}
 	if !networking.IsLocalhost(parsed.Host) {
-		return fmt.Errorf("allow_confidential_client_registration cannot use a plain-HTTP non-loopback issuer: " +
-			"confidential clients would send secrets over cleartext HTTP")
+		return fmt.Errorf("confidential clients (allow_confidential_client_registration or delegate clients) " +
+			"cannot use a plain-HTTP non-loopback issuer: " +
+			"client credentials, authorization codes and tokens would cross cleartext HTTP")
 	}
 	return nil
 }

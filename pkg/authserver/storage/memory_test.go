@@ -20,6 +20,7 @@ package storage
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/rsa"
 	"errors"
 	"fmt"
@@ -362,6 +363,102 @@ func TestMemoryStorage_RegisterClient_AlwaysCreateOnly(t *testing.T) {
 			assert.Equal(t, existing, retrieved)
 		})
 	}
+}
+
+// newConfiguredPrivateKeyJWTClient builds a pre-provisioned private_key_jwt
+// client holding a fresh public key.
+func newConfiguredPrivateKeyJWTClient(t *testing.T, id string) fosite.Client {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+	client, err := registration.NewStaticDelegateClient(registration.Config{
+		ID:                      id,
+		TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodPrivateKeyJWT,
+		JSONWebKeys: &jose.JSONWebKeySet{Keys: []jose.JSONWebKey{{
+			Key: &key.PublicKey, KeyID: "k", Use: "sig", Algorithm: string(jose.RS256),
+		}}},
+		Scopes:   []string{"openid"},
+		Audience: []string{"https://mcp.example"},
+	})
+	require.NoError(t, err)
+	return client
+}
+
+// requireKeyRotationOverwrites reconciles two private_key_jwt clients with the
+// same ID but different keys and checks the second replaces the first.
+func requireKeyRotationOverwrites(t *testing.T, s Storage) {
+	t.Helper()
+	ctx := t.Context()
+	first := newConfiguredPrivateKeyJWTClient(t, "broker")
+	require.NoError(t, s.ReconcileConfiguredClient(ctx, first))
+	rotated := newConfiguredPrivateKeyJWTClient(t, "broker")
+	require.NoError(t, s.ReconcileConfiguredClient(ctx, rotated))
+
+	got, err := s.GetClient(ctx, "broker")
+	require.NoError(t, err)
+	assert.False(t, registration.DCRIssued(got))
+	oidc, ok := got.(fosite.OpenIDConnectClient)
+	require.True(t, ok)
+	assert.Equal(t, oauthproto.TokenEndpointAuthMethodPrivateKeyJWT, oidc.GetTokenEndpointAuthMethod())
+	assert.Equal(t, rotated.(fosite.OpenIDConnectClient).GetJSONWebKeys().Keys[0].Key, oidc.GetJSONWebKeys().Keys[0].Key)
+}
+
+// requireSecretClientShapes round-trips an unpinned and a client_secret_post
+// pinned delegate client, then reconciles the same ID from unpinned to pinned
+// and checks the stored row switches shape.
+func requireSecretClientShapes(t *testing.T, s Storage) {
+	t.Helper()
+	ctx := t.Context()
+	build := func(id, method string) fosite.Client {
+		client, err := registration.NewStaticDelegateClient(registration.Config{
+			ID:                      id,
+			Secret:                  "a-delegate-secret-of-sufficient-length",
+			TokenEndpointAuthMethod: method,
+			Scopes:                  []string{"openid"},
+			Audience:                []string{"https://mcp.example"},
+		})
+		require.NoError(t, err)
+		return client
+	}
+
+	require.NoError(t, s.ReconcileConfiguredClient(ctx, build("unpinned", "")))
+	require.NoError(t, s.ReconcileConfiguredClient(ctx, build("pinned", oauthproto.TokenEndpointAuthMethodClientSecretPost)))
+
+	unpinned, err := s.GetClient(ctx, "unpinned")
+	require.NoError(t, err)
+	assert.NotImplements(t, (*fosite.OpenIDConnectClient)(nil), unpinned)
+	assert.NotEmpty(t, unpinned.GetHashedSecret())
+	assert.False(t, registration.DCRIssued(unpinned))
+
+	pinned, err := s.GetClient(ctx, "pinned")
+	require.NoError(t, err)
+	assert.Implements(t, (*fosite.OpenIDConnectClient)(nil), pinned)
+	assert.Equal(t, oauthproto.TokenEndpointAuthMethodClientSecretPost,
+		pinned.(fosite.OpenIDConnectClient).GetTokenEndpointAuthMethod())
+	assert.NotEmpty(t, pinned.GetHashedSecret())
+	assert.False(t, registration.DCRIssued(pinned))
+
+	require.NoError(t, s.ReconcileConfiguredClient(ctx, build("unpinned", oauthproto.TokenEndpointAuthMethodClientSecretPost)))
+	switched, err := s.GetClient(ctx, "unpinned")
+	require.NoError(t, err)
+	assert.Implements(t, (*fosite.OpenIDConnectClient)(nil), switched)
+	assert.Equal(t, oauthproto.TokenEndpointAuthMethodClientSecretPost,
+		switched.(fosite.OpenIDConnectClient).GetTokenEndpointAuthMethod())
+	assert.NotEmpty(t, switched.GetHashedSecret())
+}
+
+func TestMemoryStorage_ReconcileConfiguredSecretClientShapes(t *testing.T) {
+	t.Parallel()
+	s := NewMemoryStorage()
+	defer s.Close()
+	requireSecretClientShapes(t, s)
+}
+
+func TestMemoryStorage_ReconcileConfiguredPrivateKeyJWTClient(t *testing.T) {
+	t.Parallel()
+	s := NewMemoryStorage()
+	defer s.Close()
+	requireKeyRotationOverwrites(t, s)
 }
 
 // TestMemoryStorage_ReconcileConfiguredClient covers the create/idempotent/

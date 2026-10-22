@@ -1077,7 +1077,7 @@ func (*VirtualMCPServerReconciler) buildPodTemplateMetadata(
 	// Use the standard checksum package helper for consistency
 	templateAnnotations := checksum.AddRunConfigChecksumToPodTemplate(nil, vmcpConfigChecksum)
 	if caBundleChecksum != "" {
-		templateAnnotations[ctrlutil.AuthServerCABundleChecksumAnnotation] = caBundleChecksum
+		templateAnnotations[ctrlutil.AuthServerConfigMapChecksumAnnotation] = caBundleChecksum
 	}
 
 	return templateLabels, templateAnnotations

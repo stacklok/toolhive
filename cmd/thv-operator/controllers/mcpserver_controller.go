@@ -1513,12 +1513,12 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 	// Add RunConfig checksum annotation to trigger pod rollout when config changes
 	deploymentTemplateAnnotations = checksum.AddRunConfigChecksumToPodTemplate(deploymentTemplateAnnotations, runConfigChecksum)
 	if configName := ctrlutil.EmbeddedAuthServerConfigName(m.Spec.ExternalAuthConfigRef, m.Spec.AuthServerRef); configName != "" {
-		caChecksum, err := ctrlutil.EmbeddedAuthServerCABundleChecksum(ctx, r.Client, m.Namespace, configName)
+		caChecksum, err := ctrlutil.EmbeddedAuthServerConfigMapChecksum(ctx, r.Client, m.Namespace, configName)
 		if err != nil {
 			return nil, fmt.Errorf("failed to calculate auth server CA checksum: %w", err)
 		}
 		if caChecksum != "" {
-			deploymentTemplateAnnotations[ctrlutil.AuthServerCABundleChecksumAnnotation] = caChecksum
+			deploymentTemplateAnnotations[ctrlutil.AuthServerConfigMapChecksumAnnotation] = caChecksum
 		}
 	}
 
@@ -2235,12 +2235,12 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(
 	configName := ctrlutil.EmbeddedAuthServerConfigName(
 		mcpServer.Spec.ExternalAuthConfigRef, mcpServer.Spec.AuthServerRef)
 	if configName != "" {
-		caChecksum, err := ctrlutil.EmbeddedAuthServerCABundleChecksum(ctx, r.Client, mcpServer.Namespace, configName)
+		caChecksum, err := ctrlutil.EmbeddedAuthServerConfigMapChecksum(ctx, r.Client, mcpServer.Namespace, configName)
 		if err != nil {
 			return true
 		}
 		if caChecksum != "" {
-			expectedPodTemplateAnnotations[ctrlutil.AuthServerCABundleChecksumAnnotation] = caChecksum
+			expectedPodTemplateAnnotations[ctrlutil.AuthServerConfigMapChecksumAnnotation] = caChecksum
 		}
 	}
 	// Mirrors deploymentForMCPServer: stamp the MCPServer generation so the
@@ -2265,7 +2265,7 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(
 		return true
 	}
 
-	const caChecksumKey = ctrlutil.AuthServerCABundleChecksumAnnotation
+	const caChecksumKey = ctrlutil.AuthServerConfigMapChecksumAnnotation
 	actualCAChecksum, actualCAChecksumSet := deployment.Spec.Template.Annotations[caChecksumKey]
 	expectedCAChecksum, expectedCAChecksumSet := expectedPodTemplateAnnotations[caChecksumKey]
 	if actualCAChecksumSet != expectedCAChecksumSet || actualCAChecksum != expectedCAChecksum {
@@ -3327,7 +3327,7 @@ func (r *MCPServerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(&mcpv1beta1.MCPToolConfig{}, toolConfigHandler).
 		Watches(
 			&corev1.ConfigMap{},
-			handler.EnqueueRequestsFromMapFunc(r.mapAuthServerCABundleConfigMapToMCPServer),
+			handler.EnqueueRequestsFromMapFunc(r.mapAuthServerConfigMapToMCPServer),
 			builder.WithPredicates(configMapDataChangedPredicate()),
 		).
 		Complete(r)

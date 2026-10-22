@@ -481,8 +481,10 @@ func (h *Handler) callbackClient(ctx context.Context, id string) (fosite.Client,
 }
 
 // carryFirstUpstreamIdentity stores provenance only when this callback establishes the local user.
+// SingleLeg authorizations connect one backend and never establish the user, so the
+// upstream they authenticate against must not become the token's sub_id source.
 func carryFirstUpstreamIdentity(pending *storage.PendingAuthorization, result *upstream.Identity) *storage.PendingAuthorization {
-	if pending.ResolvedUserID != "" {
+	if pending.ResolvedUserID != "" || pending.SingleLeg {
 		return pending
 	}
 	verified := verifiedUpstreamIdentity(result)

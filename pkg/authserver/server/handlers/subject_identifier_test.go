@@ -256,6 +256,7 @@ func TestCarryFirstUpstreamIdentity(t *testing.T) {
 	tests := []struct {
 		name     string
 		resolved string
+		single   bool
 		identity *upstream.Identity
 		wantCopy bool
 	}{
@@ -267,6 +268,11 @@ func TestCarryFirstUpstreamIdentity(t *testing.T) {
 		{
 			name:     "later leg returns pending unchanged",
 			resolved: "user-1",
+			identity: with(func(*upstream.Identity) {}),
+		},
+		{
+			name:     "single-leg authorization is not carried",
+			single:   true,
 			identity: with(func(*upstream.Identity) {}),
 		},
 		{
@@ -295,7 +301,7 @@ func TestCarryFirstUpstreamIdentity(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			pending := &storage.PendingAuthorization{ResolvedUserID: tt.resolved}
+			pending := &storage.PendingAuthorization{ResolvedUserID: tt.resolved, SingleLeg: tt.single}
 
 			got := carryFirstUpstreamIdentity(pending, tt.identity)
 

@@ -671,10 +671,10 @@ func (s *MemoryStorage) UpsertDCRIssuedClient(_ context.Context, client fosite.C
 }
 
 // ReconcileConfiguredClient applies an operator-declared client: creates it
-// if absent, idempotently replaces a matching-fingerprint configured client
-// (the restart-with-unchanged-config case), or refuses with ErrAlreadyExists
-// when the existing record is DCR-issued or a different configured client.
-// See the ClientRegistry interface doc for the full contract.
+// if absent, otherwise replaces the existing record unless
+// configuredClientConflict refuses (or the record is DCR-issued), in which
+// case it returns ErrAlreadyExists. See the ClientRegistry interface doc for
+// the full contract.
 func (s *MemoryStorage) ReconcileConfiguredClient(_ context.Context, client fosite.Client) error {
 	if registration.DCRIssued(client) {
 		return fmt.Errorf("configured client %q must not carry the DCR-issued marker", client.GetID())
@@ -684,6 +684,22 @@ func (s *MemoryStorage) ReconcileConfiguredClient(_ context.Context, client fosi
 		return err
 	}
 
+	existingFP, incomingFP, replaced, err := s.reconcileConfiguredClientLocked(id, client)
+	if err != nil {
+		return err
+	}
+	if replaced {
+		warnConfiguredClientReplaced(id, existingFP, incomingFP)
+	}
+	return nil
+}
+
+// reconcileConfiguredClientLocked stores client under s.mu and reports the
+// fingerprints of the row it replaced, or replaced=false when it created a
+// new row. The caller logs the replacement after the lock is released.
+func (s *MemoryStorage) reconcileConfiguredClientLocked(
+	id string, client fosite.Client,
+) (existingFP, incomingFP clientFingerprint, replaced bool, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -691,21 +707,22 @@ func (s *MemoryStorage) ReconcileConfiguredClient(_ context.Context, client fosi
 	existing, exists := s.liveClientLocked(id, now)
 	if !exists {
 		s.putPermanentClientLocked(id, client)
-		return nil
+		return existingFP, incomingFP, false, nil
 	}
 	if registration.DCRIssued(existing) {
-		return fmt.Errorf("%w: client %q is DCR-issued, refusing to overwrite with a configured client",
+		return existingFP, incomingFP, false, fmt.Errorf(
+			"%w: client %q is DCR-issued, refusing to overwrite with a configured client",
 			ErrAlreadyExists, id)
 	}
-	if !fingerprintOfClient(existing).equal(fingerprintOfClient(client)) {
-		return fmt.Errorf("%w: client %q is already registered as a different configured client",
-			ErrAlreadyExists, id)
+	existingFP, incomingFP = fingerprintOfClient(existing), fingerprintOfClient(client)
+	if err := configuredClientConflict(id, existingFP, incomingFP); err != nil {
+		return existingFP, incomingFP, false, err
 	}
 
-	// Idempotent restart with unchanged config: replace the stored value so
-	// secret rotation still takes effect.
+	// Replace the stored value so secret rotation and policy changes take
+	// effect.
 	s.putPermanentClientLocked(id, client)
-	return nil
+	return existingFP, incomingFP, true, nil
 }
 
 // liveClientLocked returns the client stored at id, or false when there is

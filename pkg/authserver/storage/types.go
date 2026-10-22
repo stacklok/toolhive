@@ -24,6 +24,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
 	"sort"
 	"strings"
@@ -1079,40 +1080,45 @@ func sameStringSet(a, b []string) bool {
 	return slices.Equal(as, bs)
 }
 
-// clientFingerprint is the identity of a configured client registration: the
-// fields that decide whether two records at the same client ID are the same
-// logical client (idempotent restart) or two different colliding ones (a loud
-// failure). Client secrets are deliberately excluded -- an operator rotating a
-// secret must still be able to reconcile. TokenEndpointAuthMethod is excluded
-// for the same reason -- both memory.go and redis.go fully overwrite the
-// stored record on a fingerprint match rather than merging, so a match never
-// "keeps stale data": reconfiguring either field is always applied on the
-// next reconcile regardless of whether the fingerprint matched.
+// clientFingerprint holds the fields ReconcileConfiguredClient compares when a
+// configured client is declared over an existing row at the same ID. How much
+// of it matters depends on the row's kind (see configuredClientConflict):
+// reserved SPIFFE placeholders compare in full, other configured clients only
+// on public. Client secrets are deliberately excluded -- an operator rotating
+// a secret must still be able to reconcile. TokenEndpointAuthMethod is
+// excluded for the same reason: both backends fully overwrite the stored
+// record on a successful reconcile rather than merging.
 //
 // Deliberately NOT fosite.Client: fosite.DefaultClient's GetGrantTypes/
 // GetResponseTypes substitute an interactive default when the underlying list
 // is empty, so a deliberately-empty SPIFFE placeholder compared through that
 // interface can mismatch itself. Each backend converts its own representation
 // into this type; the comparison exists once, so memory- and Redis-backed
-// deployments cannot disagree about what "same client" means.
+// deployments cannot disagree.
+//
+// Grant and response types, like resources and identity, only matter for
+// reserved rows; for non-reserved rows only public is compared.
 type clientFingerprint struct {
 	scopes        []string
 	audience      []string
 	grantTypes    []string
 	responseTypes []string
 	// resources is the RFC 8707 resource allowlist, distinct from audience
-	// (see resourceScopedClient in spiffe_decorator.go). Two clients sharing
-	// every other field but differing in their resource allowlist are
-	// different logical clients -- this is the field #6473's review found
-	// missing from the SPIFFE static-client placeholder's durable identity.
-	resources           []string
+	// (see resourceScopedClient in spiffe_decorator.go). Only reserved rows
+	// carry it: buildStoredClient persists it for them alone.
+	resources []string
+	// identityFingerprint is the SPIFFE association hash. Like resources, it
+	// is only populated for reserved rows.
 	identityFingerprint string
 	public              bool
+	// reserved marks a SPIFFE static-client placeholder, as opposed to an
+	// ordinary configured client such as a delegate.
+	reserved bool
 }
 
 // equal reports whether f and o represent the same logical client
-// configuration: equal scope set, audience set, grant-type set,
-// response-type set, resource set, and public/confidential class.
+// configuration: equal scope, audience, grant-type, response-type and
+// resource sets, identity, public/confidential class, and reserved kind.
 func (f clientFingerprint) equal(o clientFingerprint) bool {
 	return sameStringSet(f.scopes, o.scopes) &&
 		sameStringSet(f.audience, o.audience) &&
@@ -1120,23 +1126,86 @@ func (f clientFingerprint) equal(o clientFingerprint) bool {
 		sameStringSet(f.responseTypes, o.responseTypes) &&
 		sameStringSet(f.resources, o.resources) &&
 		f.identityFingerprint == o.identityFingerprint &&
-		f.public == o.public
+		f.public == o.public &&
+		f.reserved == o.reserved
+}
+
+// policyChanged reports whether the scopes or audience differ between f and
+// o, for the operator-visible warning when a configured client is replaced
+// with a different policy. Grant and response types are deliberately not
+// compared, so a grant-type change is replaced without the WARN. Delegate
+// grant types are fixed internally today, so in practice only scopes and
+// audience can change.
+func (f clientFingerprint) policyChanged(o clientFingerprint) bool {
+	return !sameStringSet(f.scopes, o.scopes) || !sameStringSet(f.audience, o.audience)
+}
+
+// configuredClientConflict decides whether incoming may replace existing at
+// the same client ID in ReconcileConfiguredClient, after the backend has
+// already refused DCR-issued rows. It returns nil to replace, or an
+// ErrAlreadyExists-wrapped error to refuse:
+//   - a reserved placeholder and a non-reserved client never replace each
+//     other, in either direction;
+//   - two reserved placeholders must match in full, because replicas rolling
+//     a placeholder's policy would otherwise authorize different resource
+//     sets (#6473);
+//   - two non-reserved clients replace each other freely, so a changed
+//     scope or audience rolls out on restart, except that a
+//     public/confidential flip is refused in either direction. Confidential
+//     to public would let refresh tokens issued to a confidential client be
+//     used without a secret; the reverse is refused to stay symmetric, since
+//     a class change is a different client.
+func configuredClientConflict(id string, existing, incoming clientFingerprint) error {
+	switch {
+	case existing.reserved != incoming.reserved:
+		if existing.reserved {
+			return fmt.Errorf("%w: client %q is already registered as a different configured client "+
+				"(the stored row is a SPIFFE-reserved placeholder)", ErrAlreadyExists, id)
+		}
+		return fmt.Errorf("%w: client %q is already registered as a different configured client "+
+			"(the incoming client is SPIFFE-reserved and the stored one is not)", ErrAlreadyExists, id)
+	case existing.reserved:
+		if !existing.equal(incoming) {
+			return fmt.Errorf("%w: client %q is already registered as a different configured client "+
+				"(SPIFFE-reserved clients must match exactly)", ErrAlreadyExists, id)
+		}
+	case existing.public != incoming.public:
+		return fmt.Errorf("%w: client %q is already registered as a different configured client "+
+			"(public and confidential clients cannot replace each other)", ErrAlreadyExists, id)
+	}
+	return nil
+}
+
+// warnConfiguredClientReplaced logs, after a successful replace, that a
+// configured client's scopes or audience changed. During a rolling update with
+// differing configs the replicas overwrite each other, so this is the
+// operator's signal for that flapping. Secrets are never logged.
+func warnConfiguredClientReplaced(id string, existing, incoming clientFingerprint) {
+	if !existing.policyChanged(incoming) {
+		return
+	}
+	slog.Warn("configured client replaced with a different policy",
+		"client_id", id,
+		"old_scopes", existing.scopes, "new_scopes", incoming.scopes,
+		"old_audiences", existing.audience, "new_audiences", incoming.audience)
 }
 
 // fingerprintOfClient reads a live fosite.Client. Safe here because a
 // deliberately-empty client is the live inertPlaceholderClient, whose
 // overridden getters correctly return nil on both sides of the comparison.
-// resources is read through resourceScopedClient (nil when a client type
-// doesn't implement it), the same narrow interface staticClientPlaceholder
-// and buildStoredClient use.
+// resources and identity are read only for a reserved placeholder, mirroring
+// buildStoredClient, so both backends compare the same inputs.
 func fingerprintOfClient(c fosite.Client) clientFingerprint {
+	reserved := isReservedPlaceholder(c)
 	var resources []string
 	var identityFingerprint string
-	if rc, ok := c.(resourceScopedClient); ok {
-		resources = rc.Resources()
-	}
-	if identity, ok := c.(spiffeIdentityClient); ok {
-		identityFingerprint = identity.IdentityFingerprint()
+	if reserved {
+		if rc, ok := c.(resourceScopedClient); ok {
+			resources = rc.Resources()
+		}
+		if identity, ok := c.(spiffeIdentityClient); ok {
+			identityFingerprint = identity.IdentityFingerprint()
+		}
 	}
 	return clientFingerprint{
 		scopes:              c.GetScopes(),
@@ -1146,6 +1215,7 @@ func fingerprintOfClient(c fosite.Client) clientFingerprint {
 		resources:           resources,
 		identityFingerprint: identityFingerprint,
 		public:              c.IsPublic(),
+		reserved:            reserved,
 	}
 }
 
@@ -1183,14 +1253,20 @@ type ClientRegistry interface {
 	UpsertDCRIssuedClient(ctx context.Context, client fosite.Client) error
 
 	// ReconcileConfiguredClient applies an operator-declared (configured)
-	// client: creates it if no client with that ID exists, or idempotently
-	// replaces an existing record with the same ID when that record is itself
-	// operator-declared AND has a matching fingerprint (scopes, audience,
-	// grant types, response types, public/confidential class) — the
-	// restart-with-unchanged-config case. It refuses with ErrAlreadyExists if
-	// the existing record is DCR-issued (registration.DCRIssued), or if it is
-	// a *different* configured client at that ID (fingerprint mismatch — a
-	// misconfiguration, e.g. two colliding associations). The passed client
+	// client: creates it if no client with that ID exists, or replaces the
+	// existing record. It refuses with ErrAlreadyExists when:
+	//   - the existing record is DCR-issued (registration.DCRIssued);
+	//   - one of the two is a reserved SPIFFE placeholder and the other is
+	//     not (they never replace each other);
+	//   - both are reserved placeholders and their full fingerprints differ
+	//     (scopes, audience, grant and response types, resources, identity).
+	//     SPIFFE clients are served from an in-process overlay, so the strict
+	//     check keeps replicas from authorizing different policies (#6473);
+	//   - both are non-reserved and one is public while the other is
+	//     confidential.
+	// Otherwise two non-reserved clients replace each other, so a changed
+	// scope or audience takes effect on restart. A replace that
+	// changes scopes or audience logs a WARN. The passed client
 	// must not itself carry the registration.DCRIssued marker;
 	// ReconcileConfiguredClient returns an error if it does.
 	ReconcileConfiguredClient(ctx context.Context, client fosite.Client) error

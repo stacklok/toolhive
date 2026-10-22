@@ -446,6 +446,36 @@ behavior (their stored row has no auth method and reads back as a bare
 `*fosite.DefaultClient`). This brings the Redis backend in line with the
 in-memory backend, which has always enforced the pinned method.
 
+### Configured clients across restarts
+
+Operator-declared clients are written at startup by `ReconcileConfiguredClient`. The rule depends on what already sits at the client ID:
+
+- A DCR-issued client is never overwritten. Startup fails.
+- A SPIFFE placeholder and a non-placeholder client never replace each other, in either direction. Startup fails.
+- Two SPIFFE placeholders must match in full (scopes, audiences, resources, SPIFFE identity). A mismatch fails startup. See [SPIFFE Association Declarations](18-spiffe-association-declarations.md).
+- Two non-placeholder clients, such as delegate clients, are replaced. A changed scope or audience takes effect on restart, and so does a rotated secret. The one refusal is a flip between public and confidential, which fails startup. When scopes or audiences change, the server logs a WARN, `configured client replaced with a different policy`, with the `client_id` and the old and new scopes and audiences. An unchanged restart does not log this warning (the per-delegate startup WARN from `registerDelegateClients` still fires on every start).
+
+Before this rule, a changed delegate scope or audience on Redis failed startup with "already registered as a different configured client", and the new pod never became ready. The memory backend never hit this, because it starts empty.
+
+**Rolling updates.** Delegate rows are shared through Redis, and every token request reads the row. During a rollout with two different configs:
+
+- A replica that restarts with the older config writes its old policy back. That policy stays until any replica next restarts.
+- One request can combine the delegate status of one replica with the policy of another. Delegate status comes from each replica's own config. The policy comes from the shared row.
+- Secret rotation already behaves this way.
+- SPIFFE clients are not affected. Each replica serves them from its own config, and the placeholder row carries no policy that a request uses.
+- A replica can grant scopes and audiences from the shared row that its own config would reject. The request-time checks in `pkg/authserver/server/tokenexchange/handler.go` for requested scopes (`grantScopes`) and for audiences requested through the `audience` parameter (`grantAudiences`) use only the stored client's scopes and audience. A `resource` parameter (`grantResourceAudience`) and the default audience (`grantDefaultAudience`) are also checked against the replica's own `allowedAudiences` on every request. So narrowing a delegate is not a reliable revocation until every replica runs the new config and no old-config pod restarts. If an old-config pod restarts after the rollout, the wider policy stays in the row until a new-config pod restarts. The subject token still bounds what is granted.
+
+**Rollback and mixed versions.** Once new code has replaced a delegate row with a different policy, an older binary (v0.47.0 up to this change) that starts against that row fails startup with "already registered as a different configured client". Reverting the config alone does not fix this, because the stored row holds the new policy and the older binary's strict check compares it with the reverted config. To roll back across a delegate policy edit, use one of these:
+
+1. Roll out the previous policy on the new binary so the row goes back, then roll back the binary.
+2. Delete the stored row immediately before rolling back to the older binary with the older config.
+
+A binary-only rollback works when the older binary's config already matches the stored row. During an upgrade, an older-binary pod that restarts (crash, eviction) after new pods replaced the row with a different policy fails startup and crash-loops until the rollout finishes. No new stored field was added, so older binaries can still read the rows.
+
+**Removed delegates.** With the Redis backend, nothing deletes a delegate's row when you remove it from config. The client still authenticates with its stored secret and, while token exchange stays enabled on the server, keeps the token-exchange grant. It loses only the self-issued subject token exemption, because that check uses the running config (`pkg/authserver/server/tokenexchange/handler.go`, `configuredDelegate` in the exchange path and `checkDelegationConsent`). It also still passes external-issuer consent checks when an issuer's `allowedDelegateClients` is `["*"]` or lists its ID (`delegateClientAllowed`). Deleting the stored row is the only full revocation on Redis. With the memory backend, a restarted server starts empty and registers only the configured delegates (`pkg/authserver/server_impl.go`), so the removed client is gone from restarted replicas. See [Token Exchange and Delegation](17-token-exchange-delegation.md).
+
+**Implementation:** `configuredClientConflict` in `pkg/authserver/storage/types.go`, called by both backends.
+
 ## Configuration
 
 ### CRD Configuration
@@ -691,6 +721,6 @@ When top-level `spiffeTrustDomains` and `inboundGrants.spiffeClientAuth` are con
 
 Its clients come entirely from the configured SPIFFE trust-domain and client-association declarations (see [SPIFFE Association Declarations](18-spiffe-association-declarations.md)). They are built once at startup, held in memory, and never written to the storage backend (memory or Redis); they are never eligible for dynamic registration or replacement.
 
-At startup, the decorator durably claims each configured static client ID in the storage backend (memory or Redis) via `ReconcileConfiguredClient` (`preflightDurableCollisions`), using an inert placeholder rather than the real client. This is create-only for anything except a matching restart: it succeeds when the ID is unclaimed or already holds a matching placeholder from a prior run with the same configuration, and fails — refusing to start the server — when the ID is DCR-issued or holds a placeholder for a *different* association. This closes a cross-replica race that a read-only `GetClient` check alone cannot: with Redis and multiple replicas, an older or still-rolling replica without this SPIFFE config could otherwise DCR-register the same client ID after a newer replica's read-only check passed. The reverse collision can't happen: the decorator's `GetClient` always checks its static map first, so a durable client can never shadow a static one.
+At startup, the decorator durably claims each configured static client ID in the storage backend (memory or Redis) via `ReconcileConfiguredClient` (`preflightDurableCollisions`), using an inert placeholder rather than the real client. This is create-only for anything except a matching restart: it succeeds when the ID is unclaimed or already holds a matching placeholder from a prior run with the same configuration, and fails — refusing to start the server — when the ID is DCR-issued, holds a non-placeholder client, or holds a placeholder for a *different* association. Placeholders are compared strictly, unlike delegate clients (see [Configured clients across restarts](#configured-clients-across-restarts)). This closes a cross-replica race that a read-only `GetClient` check alone cannot: with Redis and multiple replicas, an older or still-rolling replica without this SPIFFE config could otherwise DCR-register the same client ID after a newer replica's read-only check passed. The reverse collision can't happen: the decorator's `GetClient` always checks its static map first, so a durable client can never shadow a static one.
 
 **Implementation:** `pkg/authserver/storage/spiffe_decorator.go`

@@ -353,10 +353,9 @@ func TestMemoryStorage_RegisterClient_AlwaysCreateOnly(t *testing.T) {
 
 // TestMemoryStorage_ReconcileConfiguredClient covers the create/idempotent/
 // reject matrix ReconcileConfiguredClient must implement: create when
-// absent, no-op (replace with an equivalent record) when the existing record
-// is itself configured and fingerprint-equal, and refuse with
-// ErrAlreadyExists when the existing record is DCR-issued or a different
-// configured client.
+// absent, no-op on an equivalent record, and refuse with ErrAlreadyExists
+// when the existing record is DCR-issued. Replacing a configured client is
+// covered by TestReconcileConfiguredClient_SharedBehaviour.
 func TestMemoryStorage_ReconcileConfiguredClient(t *testing.T) {
 	t.Parallel()
 
@@ -407,25 +406,6 @@ func TestMemoryStorage_ReconcileConfiguredClient(t *testing.T) {
 
 		err := s.ReconcileConfiguredClient(ctx, newConfigured("configured", []string{"openid"}))
 		require.ErrorIs(t, err, ErrAlreadyExists)
-	})
-
-	t.Run("refuses a different configured client at the same ID", func(t *testing.T) {
-		t.Parallel()
-		ctx := t.Context()
-		s := NewMemoryStorage()
-		defer s.Close()
-
-		first := newConfigured("configured", []string{"openid"})
-		require.NoError(t, s.ReconcileConfiguredClient(ctx, first))
-
-		different := newConfigured("configured", []string{"profile"})
-		err := s.ReconcileConfiguredClient(ctx, different)
-		require.ErrorIs(t, err, ErrAlreadyExists)
-
-		// The original registration must be untouched.
-		retrieved, err := s.GetClient(ctx, "configured")
-		require.NoError(t, err)
-		assert.Equal(t, first, retrieved)
 	})
 
 	t.Run("rejects a client carrying the DCR-issued marker", func(t *testing.T) {

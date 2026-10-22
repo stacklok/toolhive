@@ -277,12 +277,14 @@ func (h *Handler) completeDeviceLogin(
 	}
 
 	token := rand.Text()
+	verified := verifiedUpstreamIdentity(result)
 	confirmation := &storage.PendingDeviceConfirmation{
 		DeviceCode:        device.DeviceCode,
 		UserCode:          device.UserCode,
 		ResolvedUserID:    userID,
 		ResolvedUserName:  userName,
 		ResolvedUserEmail: userEmail,
+		VerifiedUpstream:  verified,
 		// UserID/SessionExpiresAt are left zero here and filled in by
 		// DeviceVerificationConfirmHandler once a session id exists -- see
 		// PendingDeviceConfirmation.UpstreamTokens's doc comment.
@@ -366,7 +368,13 @@ func (h *Handler) DeviceVerificationConfirmHandler(w http.ResponseWriter, req *h
 	}
 	if err := h.deviceStorage.MarkDeviceRequestAuthorized(
 		ctx, confirmation.DeviceCode,
-		confirmation.ResolvedUserID, confirmation.ResolvedUserName, confirmation.ResolvedUserEmail, sessionID,
+		storage.DeviceAuthorization{
+			UserID:           confirmation.ResolvedUserID,
+			UserName:         confirmation.ResolvedUserName,
+			UserEmail:        confirmation.ResolvedUserEmail,
+			SessionID:        sessionID,
+			VerifiedUpstream: confirmation.VerifiedUpstream,
+		},
 	); err != nil {
 		slog.Error("device verification: failed to mark device request authorized", "error", err)
 		renderError(w, http.StatusBadRequest,

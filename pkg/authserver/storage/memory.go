@@ -1547,6 +1547,7 @@ func (s *MemoryStorage) StorePendingAuthorization(_ context.Context, state strin
 		ResolvedUserID:          pending.ResolvedUserID,
 		ResolvedUserName:        pending.ResolvedUserName,
 		ResolvedUserEmail:       pending.ResolvedUserEmail,
+		VerifiedUpstream:        pending.VerifiedUpstream,
 		SingleLeg:               pending.SingleLeg,
 		ChainUpstreams:          slices.Clone(pending.ChainUpstreams),
 		CreatedAt:               pending.CreatedAt,
@@ -1606,6 +1607,7 @@ func (s *MemoryStorage) LoadPendingAuthorization(_ context.Context, state string
 		ResolvedUserID:          pending.ResolvedUserID,
 		ResolvedUserName:        pending.ResolvedUserName,
 		ResolvedUserEmail:       pending.ResolvedUserEmail,
+		VerifiedUpstream:        pending.VerifiedUpstream,
 		SingleLeg:               pending.SingleLeg,
 		ChainUpstreams:          slices.Clone(pending.ChainUpstreams),
 		CreatedAt:               pending.CreatedAt,
@@ -1727,6 +1729,7 @@ func (s *MemoryStorage) StorePendingDeviceConfirmation(
 		ResolvedUserID:    pending.ResolvedUserID,
 		ResolvedUserName:  pending.ResolvedUserName,
 		ResolvedUserEmail: pending.ResolvedUserEmail,
+		VerifiedUpstream:  pending.VerifiedUpstream,
 		UpstreamTokens:    cloneUpstreamTokens(pending.UpstreamTokens),
 		Synthetic:         pending.Synthetic,
 		CreatedAt:         pending.CreatedAt,
@@ -1763,6 +1766,7 @@ func (s *MemoryStorage) LoadPendingDeviceConfirmation(
 		ResolvedUserID:    pending.ResolvedUserID,
 		ResolvedUserName:  pending.ResolvedUserName,
 		ResolvedUserEmail: pending.ResolvedUserEmail,
+		VerifiedUpstream:  pending.VerifiedUpstream,
 		UpstreamTokens:    cloneUpstreamTokens(pending.UpstreamTokens),
 		Synthetic:         pending.Synthetic,
 		CreatedAt:         pending.CreatedAt,
@@ -1801,6 +1805,7 @@ func cloneDeviceRequest(device *DeviceRequest) *DeviceRequest {
 		ResolvedUserID:    device.ResolvedUserID,
 		ResolvedUserName:  device.ResolvedUserName,
 		ResolvedUserEmail: device.ResolvedUserEmail,
+		VerifiedUpstream:  device.VerifiedUpstream,
 		SessionID:         device.SessionID,
 		CreatedAt:         device.CreatedAt,
 	}
@@ -1889,7 +1894,7 @@ func (s *MemoryStorage) LoadDeviceRequestByUserCode(_ context.Context, userCode 
 // MarkDeviceRequestAuthorized transitions a pending device request to
 // authorized, attaching the resolved identity.
 func (s *MemoryStorage) MarkDeviceRequestAuthorized(
-	_ context.Context, deviceCode string, resolvedUserID, resolvedUserName, resolvedUserEmail, sessionID string,
+	_ context.Context, deviceCode string, auth DeviceAuthorization,
 ) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1903,10 +1908,11 @@ func (s *MemoryStorage) MarkDeviceRequestAuthorized(
 	}
 
 	entry.value.Status = DeviceRequestStatusAuthorized
-	entry.value.ResolvedUserID = resolvedUserID
-	entry.value.ResolvedUserName = resolvedUserName
-	entry.value.ResolvedUserEmail = resolvedUserEmail
-	entry.value.SessionID = sessionID
+	entry.value.ResolvedUserID = auth.UserID
+	entry.value.ResolvedUserName = auth.UserName
+	entry.value.ResolvedUserEmail = auth.UserEmail
+	entry.value.VerifiedUpstream = auth.VerifiedUpstream
+	entry.value.SessionID = auth.SessionID
 	return nil
 }
 

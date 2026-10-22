@@ -8,12 +8,14 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"slices"
 
 	"github.com/ory/fosite"
 
 	"github.com/stacklok/toolhive/pkg/authserver/server"
 	"github.com/stacklok/toolhive/pkg/authserver/server/session"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
+	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
 // logAccessError logs a token-endpoint failure from fosite's access
@@ -76,6 +78,7 @@ func (h *Handler) TokenHandler(w http.ResponseWriter, req *http.Request) {
 	if h.applyResourceAudience(ctx, w, accessRequest) {
 		return
 	}
+	h.applySubjectIdentifier(accessRequest)
 
 	// Generate the access response (tokens)
 	response, err := h.provider.NewAccessResponse(ctx, accessRequest)
@@ -108,6 +111,56 @@ func (h *Handler) TokenHandler(w http.ResponseWriter, req *http.Request) {
 
 	// Write the token response
 	h.provider.WriteAccessResponse(ctx, w, accessRequest, response)
+}
+
+// applySubjectIdentifier removes stale sub_id and upstream subject claims from
+// every grant, then adds both claims only when the current runtime policy
+// permits the final login-token audience.
+func (h *Handler) applySubjectIdentifier(request fosite.AccessRequester) {
+	stored := request.GetSession()
+	if stored == nil {
+		return
+	}
+	// Clone is the copy-before-mutate step: the stored session must not be modified in place.
+	cloned := stored.Clone()
+	sess, ok := cloned.(*session.Session)
+	if !ok {
+		return
+	}
+	request.SetSession(cloned)
+	sess.ClearSubjectIdentifier()
+
+	loginGrant := request.GetGrantTypes().HasOneOf(
+		oauthproto.GrantTypeAuthorizationCode, oauthproto.GrantTypeRefreshToken, oauthproto.GrantTypeDeviceCode)
+	if !loginGrant || !sess.VerifiedUpstream.IsComplete() {
+		return
+	}
+
+	// On authorization_code redemption fosite copies the authorized granted audience
+	// only inside NewAccessResponse, after this runs, and applyResourceAudience only
+	// validates a matching resource without granting it, so the granted audience is
+	// usually still empty here. writeAuthorizationResponse sets requested and granted
+	// audience to the same pending.Resource, so the requested audience is equivalent.
+	// Only authorization_code may fall back: for device_code the requested audience is
+	// the caller's unvalidated audience form field, and refresh copies it forward from
+	// the original request. Those grants already carry their granted audience here.
+	audiences := request.GetGrantedAudience()
+	if len(audiences) == 0 && request.GetGrantTypes().ExactOne(oauthproto.GrantTypeAuthorizationCode) {
+		audiences = request.GetRequestedAudience()
+	}
+	if len(audiences) == 0 {
+		return
+	}
+	for _, audience := range audiences {
+		if !subjectIdentifierAudienceEnabled(h.config.SubjectIdentifierAudiences, audience) {
+			return
+		}
+	}
+	sess.SetSubjectIdentifier(sess.VerifiedUpstream)
+}
+
+func subjectIdentifierAudienceEnabled(configured []string, audience string) bool {
+	return audience != "" && slices.Contains(configured, audience)
 }
 
 // applyResourceAudience applies the RFC 8707 resource parameter to the access

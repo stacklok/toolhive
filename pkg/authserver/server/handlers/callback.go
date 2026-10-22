@@ -290,6 +290,9 @@ func (h *Handler) CallbackHandler(w http.ResponseWriter, req *http.Request) {
 		}
 	}
 
+	// Capture provenance only on the callback that establishes the local ToolHive user.
+	pending = carryFirstUpstreamIdentity(pending, result)
+
 	// Place the resolved canonical user in the request context so callback storage
 	// calls that carry no tokens argument — GetAllUpstreamTokens during chain
 	// consistency, DeleteUpstreamTokensForProvider on cleanup — can resolve the user
@@ -477,6 +480,40 @@ func (h *Handler) callbackClient(ctx context.Context, id string) (fosite.Client,
 	return client, err
 }
 
+// carryFirstUpstreamIdentity stores provenance only when this callback establishes the local user.
+// SingleLeg authorizations connect one backend and never establish the user, so the
+// upstream they authenticate against must not become the token's sub_id source.
+func carryFirstUpstreamIdentity(pending *storage.PendingAuthorization, result *upstream.Identity) *storage.PendingAuthorization {
+	if pending.ResolvedUserID != "" || pending.SingleLeg {
+		return pending
+	}
+	verified := verifiedUpstreamIdentity(result)
+	if !verified.IsComplete() {
+		return pending
+	}
+	clone := *pending
+	clone.VerifiedUpstream = verified
+	return &clone
+}
+
+// verifiedUpstreamIdentity returns the validated upstream identity, or the zero
+// value when the identity is synthetic or any member is missing.
+func verifiedUpstreamIdentity(identity *upstream.Identity) session.UpstreamSubject {
+	if identity.Synthetic {
+		return session.UpstreamSubject{}
+	}
+	verified := session.UpstreamSubject{
+		Issuer:      identity.VerifiedIssuer,
+		Subject:     identity.VerifiedSubject,
+		StableClaim: identity.VerifiedStableClaim,
+		StableValue: identity.VerifiedStableValue,
+	}
+	if !verified.IsComplete() {
+		return session.UpstreamSubject{}
+	}
+	return verified
+}
+
 // writeAuthorizationResponse generates an authorization code and writes the redirect response.
 // This uses fosite's WriteAuthorizeResponse for RFC 6749 compliant redirects with proper
 // status codes (303 See Other) and cache headers.
@@ -503,6 +540,7 @@ func (h *Handler) writeAuthorizationResponse(
 		Name:  name,
 		Email: email,
 	})
+	sess.VerifiedUpstream = pending.VerifiedUpstream
 
 	// Set expiration times
 	now := time.Now()
@@ -840,6 +878,7 @@ func (h *Handler) continueChainOrComplete(
 		ResolvedUserID:    subject,
 		ResolvedUserName:  name,
 		ResolvedUserEmail: email,
+		VerifiedUpstream:  pending.VerifiedUpstream,
 		CreatedAt:         pending.CreatedAt,
 	}
 

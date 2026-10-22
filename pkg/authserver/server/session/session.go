@@ -87,13 +87,45 @@ const NameClaimKey = "name"
 // Per OIDC Core Section 5.1.
 const EmailClaimKey = "email"
 
+const subjectIdentifierClaimKey = "sub_id"
+
+// UpstreamSubjectClaimKey is the collision-resistant claim name (RFC 7519 §4.2) of
+// the claim that carries the upstream subject a consumer can key on across upstream
+// client registrations. It is emitted together with the RFC 9493 sub_id claim and
+// under the same disclosure policy.
+const UpstreamSubjectClaimKey = "https://toolhive.dev/upstream_subject"
+
+// UpstreamSubject is the verified identity of the upstream OIDC login that
+// established the local user. Issuer and Subject are the exact iss and sub of the
+// validated upstream ID token. StableClaim names the claim the upstream is
+// configured to key users on (its subject_claim, or "sub"), and StableValue is that
+// claim's value from the same ID token. All four are set together or not at all.
+//
+// upstream.Identity carries the same four values as its Verified* fields, because
+// the upstream package cannot import this one. verifiedUpstreamIdentity in
+// handlers/callback.go converts between them; a member added here must be added
+// there and to upstream.Identity too, or IsComplete never holds and the claims
+// are silently dropped.
+type UpstreamSubject struct {
+	Issuer      string `json:"iss,omitempty"`
+	Subject     string `json:"sub,omitempty"`
+	StableClaim string `json:"stable_claim,omitempty"`
+	StableValue string `json:"stable_value,omitempty"`
+}
+
+// IsComplete reports whether every member is set. Only a complete value is
+// stored or disclosed.
+func (u UpstreamSubject) IsComplete() bool {
+	return u.Issuer != "" && u.Subject != "" && u.StableClaim != "" && u.StableValue != ""
+}
+
 // Session extends fosite's JWT session with an IDP session reference.
 // This allows the authorization server to link issued tokens to
 // upstream IDP tokens stored separately.
 //
 // Most methods are provided by the embedded *oauth2.JWTSession. This type
-// only adds IDP session tracking and overrides Clone() to include the
-// UpstreamSessionID field.
+// adds IDP session tracking and verified upstream identity provenance; Clone()
+// preserves those fields along with the embedded JWT session.
 //
 // Concurrency: Sessions are designed to be request-scoped and are not
 // safe for concurrent access from multiple goroutines. This follows
@@ -106,6 +138,10 @@ type Session struct {
 	// UpstreamSessionID links this session to stored upstream IDP tokens.
 	// This ID is used to retrieve the IDP tokens from storage.
 	UpstreamSessionID string
+
+	// VerifiedUpstream is preserved server-side through code/refresh storage. It
+	// becomes the sub_id and upstream subject claims only when policy opts in.
+	VerifiedUpstream UpstreamSubject `json:"verified_upstream,omitzero"`
 }
 
 // New creates a new Session with the given subject, IDP session ID, client ID, and
@@ -172,7 +208,8 @@ func New(subject, idpSessionID, clientID string, claims UserClaims) *Session {
 }
 
 // Clone creates a deep copy of the session.
-// This overrides the embedded JWTSession.Clone() to also copy UpstreamSessionID.
+// This overrides the embedded JWTSession.Clone() to also copy UpstreamSessionID
+// and the verified upstream identity.
 func (s *Session) Clone() fosite.Session {
 	if s == nil {
 		return nil
@@ -186,6 +223,42 @@ func (s *Session) Clone() fosite.Session {
 	return &Session{
 		JWTSession:        jwtSession,
 		UpstreamSessionID: s.UpstreamSessionID,
+		VerifiedUpstream:  s.VerifiedUpstream,
+	}
+}
+
+// ClearSubjectIdentifier removes any persisted or source-token sub_id and
+// upstream subject claim before the current grant decides whether it is
+// eligible to issue them. It mutates the receiver's claims in place; a caller
+// holding a session loaded from storage must Clone it first.
+func (s *Session) ClearSubjectIdentifier() {
+	if s == nil || s.JWTSession == nil || s.JWTClaims == nil {
+		return
+	}
+	delete(s.JWTClaims.Extra, subjectIdentifierClaimKey)
+	delete(s.JWTClaims.Extra, UpstreamSubjectClaimKey)
+}
+
+// SetSubjectIdentifier sets the RFC 9493 sub_id claim and the upstream subject
+// claim from the verified upstream identity. It does nothing unless the identity
+// is complete. It mutates the receiver's claims in place; a caller holding a
+// session loaded from storage must Clone it first.
+func (s *Session) SetSubjectIdentifier(upstream UpstreamSubject) {
+	if s == nil || s.JWTSession == nil || s.JWTClaims == nil || !upstream.IsComplete() {
+		return
+	}
+	if s.JWTClaims.Extra == nil {
+		s.JWTClaims.Extra = make(map[string]any)
+	}
+	s.JWTClaims.Extra[subjectIdentifierClaimKey] = map[string]string{
+		"format": "iss_sub",
+		"iss":    upstream.Issuer,
+		"sub":    upstream.Subject,
+	}
+	s.JWTClaims.Extra[UpstreamSubjectClaimKey] = map[string]string{
+		"iss":   upstream.Issuer,
+		"claim": upstream.StableClaim,
+		"value": upstream.StableValue,
 	}
 }
 

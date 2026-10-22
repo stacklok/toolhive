@@ -1333,6 +1333,12 @@ type Config struct {
 	// "invalid_target". Configure this for proper MCP specification compliance.
 	AllowedAudiences []string
 
+	// SubjectIdentifierAudiences controls disclosure of the RFC 9493 sub_id claim and the
+	// https://toolhive.dev/upstream_subject claim on login-derived access tokens.
+	// Empty disables both claims. Entries must be exact members of
+	// AllowedAudiences. It never grants an audience or client access.
+	SubjectIdentifierAudiences []string
+
 	// CIMDEnabled enables the CIMD storage decorator so the authorization server
 	// accepts HTTPS URLs as client_id values without prior DCR registration.
 	//
@@ -1485,14 +1491,7 @@ func (c *Config) Validate() error {
 		}
 	}
 
-	// AllowedAudiences is required for MCP compliance.
-	// Per MCP specification, clients MUST include the "resource" parameter (RFC 8707),
-	// which requires the server to have configured allowed audiences to validate against.
-	if len(c.AllowedAudiences) == 0 {
-		return fmt.Errorf("at least one allowed audience is required for MCP compliance (RFC 8707 resource parameter validation)")
-	}
-
-	if err := validateAllowedAudiences(c.AllowedAudiences); err != nil {
+	if err := c.validateAudienceConfiguration(); err != nil {
 		return err
 	}
 
@@ -1568,6 +1567,18 @@ func (c *Config) validateDelegationAndTrustConfig() error {
 		"upstream_count", len(c.Upstreams),
 	)
 	return nil
+}
+
+// validateAudienceConfiguration validates resource audiences and the independent
+// opt-in policy for including upstream subject identifiers in access tokens.
+func (c *Config) validateAudienceConfiguration() error {
+	if len(c.AllowedAudiences) == 0 {
+		return fmt.Errorf("at least one allowed audience is required for MCP compliance (RFC 8707 resource parameter validation)")
+	}
+	if err := validateAllowedAudiences(c.AllowedAudiences); err != nil {
+		return err
+	}
+	return oauthserver.ValidateSubjectIdentifierAudiences(c.SubjectIdentifierAudiences, c.AllowedAudiences)
 }
 
 // validateBaselineClientScopes ensures every baseline scope is advertised by

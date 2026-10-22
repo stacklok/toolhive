@@ -1499,6 +1499,40 @@ func TestRedisStorage_SessionRoundTrip(t *testing.T) {
 			assert.Equal(t, "upstream-session-456", upstreamSess.GetIDPSessionID())
 		})
 	})
+
+	t.Run("verified upstream identity survives access and refresh token storage", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			client := testClient()
+			require.NoError(t, s.RegisterClient(ctx, client))
+
+			sess := session.New("user-123", "upstream-session-456", "test-client", session.UserClaims{})
+			sess.VerifiedUpstream = testVerifiedUpstream
+			request := &fosite.Request{
+				ID:             "req-verified",
+				RequestedAt:    time.Now(),
+				Client:         client,
+				RequestedScope: fosite.Arguments{"openid"},
+				GrantedScope:   fosite.Arguments{"openid"},
+				Form:           make(url.Values),
+				Session:        sess,
+			}
+			require.NoError(t, s.CreateAccessTokenSession(ctx, "verified-access", request))
+			require.NoError(t, s.CreateRefreshTokenSession(ctx, "verified-refresh", "verified-access", request))
+
+			gotAccess, err := s.GetAccessTokenSession(ctx, "verified-access", nil)
+			require.NoError(t, err)
+			accessSess, ok := gotAccess.GetSession().(*session.Session)
+			require.True(t, ok)
+			assert.Equal(t, testVerifiedUpstream, accessSess.VerifiedUpstream)
+
+			gotRefresh, err := s.GetRefreshTokenSession(ctx, "verified-refresh", nil)
+			require.NoError(t, err)
+			refreshSess, ok := gotRefresh.GetSession().(*session.Session)
+			require.True(t, ok)
+			assert.Equal(t, testVerifiedUpstream, refreshSess.VerifiedUpstream)
+		})
+	})
+
 }
 
 // --- Refresh Token Tests ---
@@ -2574,7 +2608,8 @@ func TestRedisStorage_PendingAuthorization(t *testing.T) {
 			UpstreamPKCEVerifier: "verifier", UpstreamNonce: "nonce",
 			BrowserBindingHash: "binding-hash",
 			SingleLeg:          true, ChainUpstreams: []string{"provider-1", "provider-2"},
-			CreatedAt: time.Now(),
+			VerifiedUpstream: testVerifiedUpstream,
+			CreatedAt:        time.Now(),
 		}
 	}
 
@@ -2593,6 +2628,7 @@ func TestRedisStorage_PendingAuthorization(t *testing.T) {
 			assert.Equal(t, pending.BrowserBindingHash, retrieved.BrowserBindingHash)
 			assert.Equal(t, pending.SingleLeg, retrieved.SingleLeg)
 			assert.Equal(t, pending.ChainUpstreams, retrieved.ChainUpstreams)
+			assert.Equal(t, pending.VerifiedUpstream, retrieved.VerifiedUpstream)
 			assert.WithinDuration(t, pending.CreatedAt, retrieved.CreatedAt, time.Nanosecond)
 		})
 	})
@@ -2758,7 +2794,9 @@ func TestRedisStorage_PendingDeviceConfirmation(t *testing.T) {
 		return &PendingDeviceConfirmation{
 			DeviceCode: "device-code", UserCode: "USER-CODE",
 			ResolvedUserID: "user-1", ResolvedUserName: "Ada Lovelace",
-			ResolvedUserEmail: "ada@example.com", CreatedAt: time.Now(),
+			ResolvedUserEmail: "ada@example.com",
+			VerifiedUpstream:  testVerifiedUpstream,
+			CreatedAt:         time.Now(),
 		}
 	}
 
@@ -2774,6 +2812,7 @@ func TestRedisStorage_PendingDeviceConfirmation(t *testing.T) {
 			assert.Equal(t, pending.ResolvedUserID, retrieved.ResolvedUserID)
 			assert.Equal(t, pending.ResolvedUserName, retrieved.ResolvedUserName)
 			assert.Equal(t, pending.ResolvedUserEmail, retrieved.ResolvedUserEmail)
+			assert.Equal(t, pending.VerifiedUpstream, retrieved.VerifiedUpstream)
 		})
 	})
 
@@ -3317,8 +3356,10 @@ func TestRedisStorage_DeviceCode(t *testing.T) {
 		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
 			require.NoError(t, s.StoreDeviceRequest(ctx, makeDevice("device-auth", "USER-AUTH")))
 
-			require.NoError(t, s.MarkDeviceRequestAuthorized(
-				ctx, "device-auth", "user-1", "Alice", "alice@example.com", "session-1"))
+			require.NoError(t, s.MarkDeviceRequestAuthorized(ctx, "device-auth", DeviceAuthorization{
+				UserID: "user-1", UserName: "Alice", UserEmail: "alice@example.com", SessionID: "session-1",
+				VerifiedUpstream: testVerifiedUpstream,
+			}))
 
 			retrieved, err := s.LoadDeviceRequestByDeviceCode(ctx, "device-auth")
 			require.NoError(t, err)
@@ -3327,8 +3368,11 @@ func TestRedisStorage_DeviceCode(t *testing.T) {
 			assert.Equal(t, "Alice", retrieved.ResolvedUserName)
 			assert.Equal(t, "alice@example.com", retrieved.ResolvedUserEmail)
 			assert.Equal(t, "session-1", retrieved.SessionID)
+			assert.Equal(t, testVerifiedUpstream, retrieved.VerifiedUpstream)
 
-			err = s.MarkDeviceRequestAuthorized(ctx, "device-auth", "user-2", "Bob", "bob@example.com", "session-2")
+			err = s.MarkDeviceRequestAuthorized(ctx, "device-auth", DeviceAuthorization{
+				UserID: "user-2", UserName: "Bob", UserEmail: "bob@example.com", SessionID: "session-2",
+			})
 			require.ErrorIs(t, err, ErrInvalidState)
 
 			err = s.MarkDeviceRequestDenied(ctx, "device-auth")
@@ -3346,7 +3390,9 @@ func TestRedisStorage_DeviceCode(t *testing.T) {
 			require.NoError(t, err)
 			assert.Equal(t, DeviceRequestStatusDenied, retrieved.Status)
 
-			err = s.MarkDeviceRequestAuthorized(ctx, "device-deny", "user-1", "Alice", "alice@example.com", "session-1")
+			err = s.MarkDeviceRequestAuthorized(ctx, "device-deny", DeviceAuthorization{
+				UserID: "user-1", UserName: "Alice", UserEmail: "alice@example.com", SessionID: "session-1",
+			})
 			require.ErrorIs(t, err, ErrInvalidState)
 		})
 	})
@@ -3363,8 +3409,9 @@ func TestRedisStorage_DeviceCode(t *testing.T) {
 				go func(idx int) {
 					defer wg.Done()
 					if idx%2 == 0 {
-						results[idx] = s.MarkDeviceRequestAuthorized(
-							ctx, "device-auth-race", "user-1", "Alice", "alice@example.com", "session-1")
+						results[idx] = s.MarkDeviceRequestAuthorized(ctx, "device-auth-race", DeviceAuthorization{
+							UserID: "user-1", UserName: "Alice", UserEmail: "alice@example.com", SessionID: "session-1",
+						})
 					} else {
 						results[idx] = s.MarkDeviceRequestDenied(ctx, "device-auth-race")
 					}

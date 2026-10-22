@@ -70,6 +70,101 @@ The storage layer implements multiple interfaces from the [fosite](https://githu
 - Memory backend: `pkg/authserver/storage/memory.go`
 - Redis backend: `pkg/authserver/storage/redis.go`
 
+## Upstream subject identifiers in access tokens
+
+The auth server can optionally include an RFC 9493 `sub_id` claim for access tokens issued after an upstream OIDC login through the authorization-code or device flow, including access tokens minted from their refresh tokens (not token exchange, jwt-bearer, or client credentials). The claim uses the issuer and subject from the validated upstream ID token:
+
+```json
+"sub_id": {
+  "format": "iss_sub",
+  "iss": "https://identity.example.com",
+  "sub": "upstream-subject"
+}
+```
+
+Together with `sub_id`, the auth server sends a second claim that a consumer can key on across upstream app registrations. Its name, `https://toolhive.dev/upstream_subject`, is a collision-resistant (public) claim name under RFC 7519 section 4.2:
+
+```json
+"https://toolhive.dev/upstream_subject": {
+  "iss": "https://login.microsoftonline.com/<tenant-GUID>/v2.0",
+  "claim": "oid",
+  "value": "<the user's oid>"
+}
+```
+
+- `iss` is the validated issuer of the upstream ID token, the same value as `sub_id.iss`.
+- `claim` is the upstream's `subject_claim` setting, or `"sub"` when the setting is not set.
+- `value` is that claim's value from the same validated ID token. It is the value ToolHive already uses to key its own local user.
+
+The claim is sent only when `sub_id` is sent, under the same setting. It is present for every OIDC upstream, also when `claim` is `"sub"` and `value` repeats `sub_id.sub` (Okta, Google, Keycloak). A consumer therefore always reads one claim, and the claim keeps the same structure when an operator sets `subject_claim` later (its values still change; see below). A consumer that needs an identifier that stays the same across upstream app registrations should key on (`iss`, `claim`, `value`), not on `sub_id`.
+
+Rules for consumers:
+
+- Compare all three members as exact strings. Never compare `value` alone: the same person has a different `iss` for Entra v1 and v2 endpoints, for an Okta org and a custom authorization server, and for custom URL domains.
+- Allowlist the (`iss`, `claim`) pairs you accept, for example (`https://login.microsoftonline.com/<tenant-GUID>/v2.0`, `oid`), and fail closed on any other pair. Use the exact `iss` string that appears in the upstream ID token.
+- Treat the value as an ownership key only when `claim` names an immutable identifier that the IdP never assigns to another person, such as `sub` or Entra `oid`. `email`, `preferred_username`, `upn` and `unique_name` can be reassigned to another person, who would then inherit the previous owner's sessions. Microsoft documents Entra `email` as mutable and not guaranteed to be correct.
+
+`subject_claim` is not restricted by the auth server. The same value already keys the local user, so this adds no new risk inside ToolHive, but a consumer that trusts the exported key must apply the allowlist above.
+
+This identifies the same user as the token's existing ToolHive `iss` and `sub`; those outer claims do not change. Pure OAuth2 upstreams (including those that resolve identity through userInfo or identityFromToken) and synthetic identities never receive `sub_id` or the upstream subject claim. A later upstream login in a multi-provider chain does not replace or fill in the identity established by the first login.
+
+Disclosure is disabled by default. Only Go code that embeds the auth server can enable it:
+
+- Callers of the embedded auth server runner pass `runner.WithSubjectIdentifierAudiences`.
+- Callers of `authserver.New` set `Config.SubjectIdentifierAudiences`.
+
+```go
+server, err := runner.NewEmbeddedAuthServerWithStorage(ctx, runConfig, stor,
+	runner.WithSubjectIdentifierAudiences([]string{"https://mcp.example.com"}))
+```
+
+The setting is not part of the RunConfig, so config files, `thv`, vMCP and operator CRDs cannot enable it.
+
+Each entry must be an exact member of the allowed audiences, and an empty list disables disclosure. The setting only controls whether `sub_id` and the upstream subject claim appear; it never grants an audience. The setting is re-evaluated for newly issued and refreshed access tokens; it cannot retract identifiers already disclosed in existing tokens. (`claim`, `value`) is fixed when the user logs in. If an operator changes `subject_claim`, the new claim takes effect at the user's next login (which also changes ToolHive's own `sub`), not at refresh. The disclosure setting, in contrast, is applied at every refresh.
+
+Sending `sub_id` and the upstream subject claim together links Entra's pairwise `sub` to the tenant-wide `oid`. RFC 9493 section 6.1 asks transmitters to send several identifiers for one subject together only when the recipient already knows they are related or the correlation is needed. Here the correlation is the purpose of the feature, and only the listed audiences receive it, so list only first-party resource servers. `oid` differs per tenant, so it does not correlate a user across tenants.
+
+A device-flow token gets every audience its client is registered with. For a dynamically registered client that is the full allowed-audience list at registration time. So device-flow tokens carry `sub_id` and the upstream subject claim only when all of those audiences are listed.
+
+### What `sub_id.sub` contains
+
+`sub_id.iss` and `sub_id.sub` are the exact `iss` and `sub` of the validated upstream ID token. If an OIDC upstream sets `subject_claim` to another claim, ToolHive keys its local user on that claim, but `sub_id.sub` is still the raw `sub`. So `sub_id.sub` can differ from the subject ToolHive uses to identify the user. This is deliberate: RFC 9493 `iss_sub` means the issuer's own `iss` and `sub`.
+
+Some IdPs issue a `sub` that is unique per application. Microsoft Entra ID (workforce and external tenants, not Azure AD B2C) is the common example: its `sub` is different for each app registration (client ID), while `oid` is the same across apps. If you register the upstream app again with a new client ID, every user's `sub` changes, so every `sub_id` changes. A client that stored the old value (for example to record who owns a session) will no longer match. Switching between the Entra v1 and v2 endpoints changes `iss` with the same effect. With `subject_claim: oid`, ToolHive's own `sub` stays stable across such a change, but `sub_id` still changes.
+
+The upstream subject claim stays the same across app registrations when `subject_claim` names a cross-app claim such as Entra's `oid`. It still changes when `iss` changes, and at the user's next login after `subject_claim` is changed.
+
+### Upstream IdP notes
+
+**Microsoft Entra ID.**
+
+- Set `subject_claim: oid`.
+- Use the tenant-specific v2.0 authority `https://login.microsoftonline.com/<tenant-GUID>/v2.0`, with the tenant GUID rather than a domain name. The `common`, `organizations` and `consumers` authorities publish a templated issuer (`.../{tenantid}/v2.0`) in discovery, which never equals a token's `iss`, so ToolHive's strict issuer check rejects them.
+- `oid` is in the ID token only when the `profile` scope is requested. ToolHive's default scopes include it; if you override the scopes without it, logins fail.
+- v1.0 tokens use the `https://sts.windows.net/<tid>/` issuer, so any other system that compares identities must use the same v2.0 endpoint.
+- A B2B guest has a different `oid` and `iss` in each tenant: two identities by design.
+- Azure AD B2C: the issuer in the ID token depends on the tenant's token-compatibility setting (default `https://<domain>/<tenant-GUID>/v2.0/`; the alternative `.../tfp/<tenant-GUID>/<policy>/v2.0/` includes the policy, so it differs per user flow). The authority's discovery issuer must equal the token's `iss`; check this in your tenant before relying on it. By default B2C `sub` is the user's object ID and is not pairwise, so leave `subject_claim` unset.
+
+**Okta.**
+
+- Okta documents the ID token `sub` as the user's unique identifier; in practice it is the Okta user ID (`00u...`). Leave `subject_claim` unset. Do not use the access-token `sub`, which can be the login or email. Okta's documentation does not state that the ID token `sub` is the same across OIDC apps or that it is never reassigned, so treat those as untested assumptions.
+- The issuer differs between the org authorization server (`https://<org>.okta.com`), each custom authorization server (`https://<org>.okta.com/oauth2/<id>`) and a custom URL domain. A custom authorization server's issuer mode (`ORG_URL`, `CUSTOM_URL`, `DYNAMIC`) decides which hostname appears in `iss`; with `DYNAMIC`, `iss` follows the hostname the request used. An administrator changing the mode or enabling a custom domain changes `iss` for new tokens. Systems that compare identities must use the same authorization server and hostname.
+- Do not use `uid` (it appears only in access tokens), or `email`, `preferred_username` or `login`, as the subject claim.
+
+### Storage and upgrades
+
+The verified upstream identity is kept on the server even when disclosure is off. It is stored on pending authorizations, device requests, pending device confirmations, and in the stored authorization-code, access-token and refresh-token sessions. In Redis it is the JSON key `verified_upstream`, an object with the members `iss`, `sub`, `stable_claim` and `stable_value`. The stored names `stable_claim` and `stable_value` differ from the emitted `claim` and `value` because the stored object also holds the raw `sub`. This lets a policy change take effect at the next refresh without a new login. Sessions created before the upgrade to this version have no stored identity, so they never get `sub_id` or the upstream subject claim, even after disclosure is turned on; the user has to log in again.
+
+The Redis key layout, Lua scripts and TTLs do not change. Replicas running the older version decode every record this version writes; they drop the unknown field.
+
+After disclosure is turned off, stored access and refresh sessions may still hold the claim issued earlier. Replicas running this version never issue it again: every token request removes the claim first and adds it back only if the current setting allows it. Older replicas do not do this (see below).
+
+During a rolling upgrade or after a rollback, replicas running an older version do not know the `verified_upstream` field. When an older replica handles an upstream callback, a code redemption, a device-code poll, or a refresh, it drops this field from what it stores. A `sub_id` or upstream subject claim already present in a stored refresh session is a plain JWT claim to older code, so an older replica that refreshes the session issues both claims again unchanged, without checking the disclosure setting, and keeps them in the session it stores. The first refresh after that on a replica running this version removes the claims and cannot add them back. From then on, tokens from that refresh chain carry neither claim until the user logs in again through an upgraded replica.
+
+The device flow has two more cases. When an older replica handles the device confirmation, or serves any device token poll after the confirmation (each poll rewrites the stored device request), the stored upstream identity is lost and that login gets neither claim.
+
+Rollout order for embedders that enable disclosure: first roll out this version with disclosure off, and enable it only when no older replica is left. To roll back, turn disclosure off and let the new version serve refreshes before going back to the older version.
+
 ## Identity resolution for pure OAuth2 providers
 
 For pure OAuth 2.0 upstream providers (`OAuth2Config`), OIDC is unavailable and there is no ID token. `BaseOAuth2Provider.ExchangeCodeForIdentity` resolves user identity through a three-way priority chain. Each path has distinct implications for `UserStorage`, `UpstreamTokenStorage`, and the Redis secondary index.

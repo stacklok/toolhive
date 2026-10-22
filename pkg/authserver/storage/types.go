@@ -33,6 +33,8 @@ import (
 	"github.com/ory/fosite"
 	"github.com/ory/fosite/handler/oauth2"
 	"github.com/ory/fosite/handler/pkce"
+
+	authsession "github.com/stacklok/toolhive/pkg/authserver/server/session"
 )
 
 // Sentinel errors for storage operations.
@@ -741,6 +743,11 @@ type PendingAuthorization struct {
 	// Empty on the first leg; populated after the first callback for subsequent legs.
 	ResolvedUserEmail string
 
+	// VerifiedUpstream is the verified identity of the first upstream OIDC login. It
+	// is set only from that login, never replaced by later legs, and zero for
+	// OAuth2-only or synthetic identities.
+	VerifiedUpstream authsession.UpstreamSubject
+
 	// SingleLeg scopes this authorization to exactly one upstream. When true, the
 	// callback issues the authorization code as soon as this leg completes instead
 	// of consulting nextMissingUpstream to continue the chain. This lets a caller
@@ -829,9 +836,21 @@ type DeviceRequest struct {
 	ResolvedUserID    string
 	ResolvedUserName  string
 	ResolvedUserEmail string
+	VerifiedUpstream  authsession.UpstreamSubject
 	SessionID         string
 
 	CreatedAt time.Time
+}
+
+// DeviceAuthorization is the identity MarkDeviceRequestAuthorized attaches to a
+// pending device request. Field-for-field it mirrors the Resolved*, SessionID
+// and VerifiedUpstream fields it populates on DeviceRequest.
+type DeviceAuthorization struct {
+	UserID           string
+	UserName         string
+	UserEmail        string
+	SessionID        string
+	VerifiedUpstream authsession.UpstreamSubject
 }
 
 // DeviceCodeStorage provides storage operations for RFC 8628 device
@@ -864,9 +883,7 @@ type DeviceCodeStorage interface {
 	// DeviceRequestStatusPending (already authorized or denied) — this call
 	// is not idempotent, so a stale verification-page resubmission can never
 	// clobber a request the token endpoint already consumed.
-	MarkDeviceRequestAuthorized(
-		ctx context.Context, deviceCode string, resolvedUserID, resolvedUserName, resolvedUserEmail, sessionID string,
-	) error
+	MarkDeviceRequestAuthorized(ctx context.Context, deviceCode string, auth DeviceAuthorization) error
 
 	// MarkDeviceRequestDenied transitions a pending device request to
 	// denied. Same ErrNotFound/ErrExpired/ErrInvalidState semantics as
@@ -970,6 +987,7 @@ type PendingDeviceConfirmation struct {
 	ResolvedUserID    string
 	ResolvedUserName  string
 	ResolvedUserEmail string
+	VerifiedUpstream  authsession.UpstreamSubject
 
 	// UpstreamTokens carries the tokens already exchanged with the upstream
 	// IDP, ready to persist under the final session id once one exists.

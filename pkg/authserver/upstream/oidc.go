@@ -392,12 +392,24 @@ func (p *OIDCProviderImpl) ExchangeCodeForIdentity(
 	}
 
 	return &Identity{
-		Tokens:  exchanged.tokens,
-		Subject: subject,
-		Name:    idClaims.Name,
-		Email:   idClaims.Email,
-		Claims:  allClaims,
+		Tokens:              exchanged.tokens,
+		Subject:             subject,
+		Name:                idClaims.Name,
+		Email:               idClaims.Email,
+		Claims:              allClaims,
+		VerifiedIssuer:      validatedToken.Issuer,
+		VerifiedSubject:     validatedToken.Subject,
+		VerifiedStableClaim: p.subjectClaimName(),
+		VerifiedStableValue: subject,
 	}, nil
+}
+
+// subjectClaimName returns the ID-token claim this upstream keys users on.
+func (p *OIDCProviderImpl) subjectClaimName() string {
+	if p.oidcConfig.SubjectClaim == "" {
+		return "sub"
+	}
+	return p.oidcConfig.SubjectClaim
 }
 
 // resolveSubject returns the upstream subject for the validated ID token.
@@ -406,8 +418,8 @@ func (p *OIDCProviderImpl) ExchangeCodeForIdentity(
 // if the claim is missing, empty, or not a string rather than falling back to
 // "sub" — a silent fallback would key the user under the wrong identifier.
 func (p *OIDCProviderImpl) resolveSubject(token *oidc.IDToken) (string, error) {
-	claim := p.oidcConfig.SubjectClaim
-	if claim == "" || claim == "sub" {
+	claim := p.subjectClaimName()
+	if claim == "sub" {
 		return token.Subject, nil
 	}
 

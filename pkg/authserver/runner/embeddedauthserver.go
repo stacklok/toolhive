@@ -64,6 +64,7 @@ type EmbeddedAuthServerOption func(*embeddedAuthServerOptions)
 
 type embeddedAuthServerOptions struct {
 	consentExemptClientIDs       []string
+	subjectIdentifierAudiences   []string
 	listenerHost                 string
 	authorizationDetailsRegistry *authorizationdetails.Registry
 }
@@ -94,6 +95,25 @@ func WithConsentExemptClientIDs(ids []string) EmbeddedAuthServerOption {
 	copiedIDs := slices.Clone(ids)
 	return func(options *embeddedAuthServerOptions) {
 		options.consentExemptClientIDs = slices.Clone(copiedIDs)
+	}
+}
+
+// WithSubjectIdentifierAudiences enables the RFC 9493 sub_id claim and the
+// https://toolhive.dev/upstream_subject claim on access tokens from authorization-code
+// and device-flow logins, and their refreshes, when every audience of the token is in
+// this list. sub_id carries the issuer and subject of the validated upstream OIDC ID
+// token. The second claim carries the issuer and the value of the claim the upstream
+// keys users on (its subject_claim, or sub). With subject_claim: oid on Entra ID it
+// discloses the tenant-wide oid, so list only first-party resource servers. Each
+// entry must be an exact member of the RunConfig's allowed_audiences, or server
+// construction fails. An empty list disables both claims. The setting never grants
+// an audience. It is deliberately not a RunConfig field yet, so config files and
+// operator CRDs cannot set it. The input is copied when the option is created, and
+// repeated options replace the list.
+func WithSubjectIdentifierAudiences(audiences []string) EmbeddedAuthServerOption {
+	copied := slices.Clone(audiences)
+	return func(options *embeddedAuthServerOptions) {
+		options.subjectIdentifierAudiences = slices.Clone(copied)
 	}
 }
 
@@ -433,6 +453,7 @@ func newEmbeddedAuthServerWithStorage(
 		ScopesSupported:                           slices.Clone(cfg.ScopesSupported),
 		BaselineClientScopes:                      slices.Clone(cfg.BaselineClientScopes),
 		AllowedAudiences:                          slices.Clone(cfg.AllowedAudiences),
+		SubjectIdentifierAudiences:                slices.Clone(options.subjectIdentifierAudiences),
 		CIMDEnabled:                               cimdEnabled,
 		CIMDCacheMaxSize:                          cimdCacheMaxSize,
 		CIMDCacheFallbackTTL:                      cimdCacheFallbackTTL,

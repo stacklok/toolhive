@@ -2514,32 +2514,33 @@ func (s *RedisStorage) GetDCRCredentials(ctx context.Context, key DCRKey) (*DCRC
 
 // storedPendingAuthorization is a serializable wrapper for PendingAuthorization.
 type storedPendingAuthorization struct {
-	ClientID                string   `json:"client_id"`
-	RedirectURI             string   `json:"redirect_uri"`
-	State                   string   `json:"state"`
-	PKCEChallenge           string   `json:"pkce_challenge"`
-	PKCEMethod              string   `json:"pkce_method"`
-	Scopes                  []string `json:"scopes"`
-	Resource                string   `json:"resource,omitempty"`
-	ConsentStage            string   `json:"consent_stage,omitempty"`
-	RememberConsent         bool     `json:"remember_consent,omitempty"`
-	FirstProviderSubject    string   `json:"first_provider_subject,omitempty"`
-	ExpectedUserID          string   `json:"expected_user_id,omitempty"`
-	ExpectedProviderSubject string   `json:"expected_provider_subject,omitempty"`
-	ConsentSessionDigest    string   `json:"consent_session_digest,omitempty"`
-	InternalState           string   `json:"internal_state"`
-	UpstreamPKCEVerifier    string   `json:"upstream_pkce_verifier"`
-	UpstreamNonce           string   `json:"upstream_nonce"`
-	BrowserBindingHash      string   `json:"browser_binding_hash,omitempty"`
-	UpstreamProviderName    string   `json:"upstream_provider_name,omitempty"`
-	SessionID               string   `json:"session_id,omitempty"`
-	ResolvedUserID          string   `json:"resolved_user_id,omitempty"`
-	ResolvedUserName        string   `json:"resolved_user_name,omitempty"`
-	ResolvedUserEmail       string   `json:"resolved_user_email,omitempty"`
-	SingleLeg               bool     `json:"single_leg,omitempty"`
-	ChainUpstreams          []string `json:"chain_upstreams,omitempty"`
-	CreatedAt               int64    `json:"created_at"`
-	CreatedAtNano           int64    `json:"created_at_nano,omitempty"`
+	ClientID                string                  `json:"client_id"`
+	RedirectURI             string                  `json:"redirect_uri"`
+	State                   string                  `json:"state"`
+	PKCEChallenge           string                  `json:"pkce_challenge"`
+	PKCEMethod              string                  `json:"pkce_method"`
+	Scopes                  []string                `json:"scopes"`
+	Resource                string                  `json:"resource,omitempty"`
+	ConsentStage            string                  `json:"consent_stage,omitempty"`
+	RememberConsent         bool                    `json:"remember_consent,omitempty"`
+	FirstProviderSubject    string                  `json:"first_provider_subject,omitempty"`
+	ExpectedUserID          string                  `json:"expected_user_id,omitempty"`
+	ExpectedProviderSubject string                  `json:"expected_provider_subject,omitempty"`
+	ConsentSessionDigest    string                  `json:"consent_session_digest,omitempty"`
+	InternalState           string                  `json:"internal_state"`
+	UpstreamPKCEVerifier    string                  `json:"upstream_pkce_verifier"`
+	UpstreamNonce           string                  `json:"upstream_nonce"`
+	BrowserBindingHash      string                  `json:"browser_binding_hash,omitempty"`
+	UpstreamProviderName    string                  `json:"upstream_provider_name,omitempty"`
+	SessionID               string                  `json:"session_id,omitempty"`
+	ResolvedUserID          string                  `json:"resolved_user_id,omitempty"`
+	ResolvedUserName        string                  `json:"resolved_user_name,omitempty"`
+	ResolvedUserEmail       string                  `json:"resolved_user_email,omitempty"`
+	VerifiedUpstream        session.UpstreamSubject `json:"verified_upstream,omitzero"`
+	SingleLeg               bool                    `json:"single_leg,omitempty"`
+	ChainUpstreams          []string                `json:"chain_upstreams,omitempty"`
+	CreatedAt               int64                   `json:"created_at"`
+	CreatedAtNano           int64                   `json:"created_at_nano,omitempty"`
 }
 
 // StorePendingAuthorization stores a pending authorization request.
@@ -2576,6 +2577,7 @@ func (s *RedisStorage) StorePendingAuthorization(ctx context.Context, state stri
 		ResolvedUserID:          pending.ResolvedUserID,
 		ResolvedUserName:        pending.ResolvedUserName,
 		ResolvedUserEmail:       pending.ResolvedUserEmail,
+		VerifiedUpstream:        pending.VerifiedUpstream,
 		SingleLeg:               pending.SingleLeg,
 		ChainUpstreams:          slices.Clone(pending.ChainUpstreams),
 		CreatedAt:               pending.CreatedAt.Unix(),
@@ -2644,6 +2646,7 @@ func (s *RedisStorage) LoadPendingAuthorization(ctx context.Context, state strin
 		ResolvedUserID:          stored.ResolvedUserID,
 		ResolvedUserName:        stored.ResolvedUserName,
 		ResolvedUserEmail:       stored.ResolvedUserEmail,
+		VerifiedUpstream:        stored.VerifiedUpstream,
 		SingleLeg:               stored.SingleLeg,
 		ChainUpstreams:          slices.Clone(stored.ChainUpstreams),
 		CreatedAt:               createdAt,
@@ -2763,14 +2766,15 @@ func (s *RedisStorage) DeletePendingDeviceLogin(ctx context.Context, state strin
 // storedPendingDeviceConfirmation is a serializable wrapper for
 // PendingDeviceConfirmation.
 type storedPendingDeviceConfirmation struct {
-	DeviceCode        string                `json:"device_code"`
-	UserCode          string                `json:"user_code"`
-	ResolvedUserID    string                `json:"resolved_user_id,omitempty"`
-	ResolvedUserName  string                `json:"resolved_user_name,omitempty"`
-	ResolvedUserEmail string                `json:"resolved_user_email,omitempty"`
-	UpstreamTokens    *storedUpstreamTokens `json:"upstream_tokens,omitempty"`
-	Synthetic         bool                  `json:"synthetic,omitempty"`
-	CreatedAt         int64                 `json:"created_at"`
+	DeviceCode        string                  `json:"device_code"`
+	UserCode          string                  `json:"user_code"`
+	ResolvedUserID    string                  `json:"resolved_user_id,omitempty"`
+	ResolvedUserName  string                  `json:"resolved_user_name,omitempty"`
+	ResolvedUserEmail string                  `json:"resolved_user_email,omitempty"`
+	VerifiedUpstream  session.UpstreamSubject `json:"verified_upstream,omitzero"`
+	UpstreamTokens    *storedUpstreamTokens   `json:"upstream_tokens,omitempty"`
+	Synthetic         bool                    `json:"synthetic,omitempty"`
+	CreatedAt         int64                   `json:"created_at"`
 }
 
 // StorePendingDeviceConfirmation stores a pending device-flow confirmation,
@@ -2795,6 +2799,7 @@ func (s *RedisStorage) StorePendingDeviceConfirmation(
 		ResolvedUserID:    pending.ResolvedUserID,
 		ResolvedUserName:  pending.ResolvedUserName,
 		ResolvedUserEmail: pending.ResolvedUserEmail,
+		VerifiedUpstream:  pending.VerifiedUpstream,
 		UpstreamTokens:    newStoredUpstreamTokens(pending.UpstreamTokens),
 		Synthetic:         pending.Synthetic,
 		CreatedAt:         pending.CreatedAt.Unix(),
@@ -2843,6 +2848,7 @@ func (s *RedisStorage) LoadPendingDeviceConfirmation(
 		ResolvedUserID:    stored.ResolvedUserID,
 		ResolvedUserName:  stored.ResolvedUserName,
 		ResolvedUserEmail: stored.ResolvedUserEmail,
+		VerifiedUpstream:  stored.VerifiedUpstream,
 		UpstreamTokens:    upstreamTokens,
 		Synthetic:         stored.Synthetic,
 		CreatedAt:         createdAt,
@@ -2874,19 +2880,20 @@ func (s *RedisStorage) DeletePendingDeviceConfirmation(ctx context.Context, toke
 // required interval must not appear to have waited long enough merely due to
 // storage rounding -- see deviceTimeToUnixNano / deviceUnixNanoToTime.
 type storedDeviceRequest struct {
-	DeviceCode        string              `json:"device_code"`
-	UserCode          string              `json:"user_code"`
-	ClientID          string              `json:"client_id"`
-	Scopes            []string            `json:"scopes"`
-	Audience          []string            `json:"audience,omitempty"`
-	Status            DeviceRequestStatus `json:"status"`
-	IntervalSeconds   int64               `json:"interval_seconds,omitempty"`
-	LastPolledAtNano  int64               `json:"last_polled_at_nano,omitempty"`
-	ResolvedUserID    string              `json:"resolved_user_id,omitempty"`
-	ResolvedUserName  string              `json:"resolved_user_name,omitempty"`
-	ResolvedUserEmail string              `json:"resolved_user_email,omitempty"`
-	SessionID         string              `json:"session_id,omitempty"`
-	CreatedAt         int64               `json:"created_at"`
+	DeviceCode        string                  `json:"device_code"`
+	UserCode          string                  `json:"user_code"`
+	ClientID          string                  `json:"client_id"`
+	Scopes            []string                `json:"scopes"`
+	Audience          []string                `json:"audience,omitempty"`
+	Status            DeviceRequestStatus     `json:"status"`
+	IntervalSeconds   int64                   `json:"interval_seconds,omitempty"`
+	LastPolledAtNano  int64                   `json:"last_polled_at_nano,omitempty"`
+	ResolvedUserID    string                  `json:"resolved_user_id,omitempty"`
+	ResolvedUserName  string                  `json:"resolved_user_name,omitempty"`
+	ResolvedUserEmail string                  `json:"resolved_user_email,omitempty"`
+	VerifiedUpstream  session.UpstreamSubject `json:"verified_upstream,omitzero"`
+	SessionID         string                  `json:"session_id,omitempty"`
+	CreatedAt         int64                   `json:"created_at"`
 }
 
 // deviceTimeToUnixNano converts t to epoch nanoseconds for JSON storage, using 0 to
@@ -2923,6 +2930,7 @@ func (stored *storedDeviceRequest) toDeviceRequest() *DeviceRequest {
 		ResolvedUserID:    stored.ResolvedUserID,
 		ResolvedUserName:  stored.ResolvedUserName,
 		ResolvedUserEmail: stored.ResolvedUserEmail,
+		VerifiedUpstream:  stored.VerifiedUpstream,
 		SessionID:         stored.SessionID,
 		CreatedAt:         time.Unix(stored.CreatedAt, 0),
 	}
@@ -2966,6 +2974,7 @@ func (s *RedisStorage) StoreDeviceRequest(ctx context.Context, device *DeviceReq
 		ResolvedUserID:    device.ResolvedUserID,
 		ResolvedUserName:  device.ResolvedUserName,
 		ResolvedUserEmail: device.ResolvedUserEmail,
+		VerifiedUpstream:  device.VerifiedUpstream,
 		SessionID:         device.SessionID,
 		CreatedAt:         device.CreatedAt.Unix(),
 	}
@@ -3116,17 +3125,18 @@ func (s *RedisStorage) updateDeviceRequest(
 // MarkDeviceRequestAuthorized transitions a pending device request to
 // authorized, attaching the resolved identity.
 func (s *RedisStorage) MarkDeviceRequestAuthorized(
-	ctx context.Context, deviceCode string, resolvedUserID, resolvedUserName, resolvedUserEmail, sessionID string,
+	ctx context.Context, deviceCode string, auth DeviceAuthorization,
 ) error {
 	return s.updateDeviceRequest(ctx, deviceCode, func(stored *storedDeviceRequest) error {
 		if stored.Status != DeviceRequestStatusPending {
 			return fmt.Errorf("%w: device request is %q, not pending", ErrInvalidState, stored.Status)
 		}
 		stored.Status = DeviceRequestStatusAuthorized
-		stored.ResolvedUserID = resolvedUserID
-		stored.ResolvedUserName = resolvedUserName
-		stored.ResolvedUserEmail = resolvedUserEmail
-		stored.SessionID = sessionID
+		stored.ResolvedUserID = auth.UserID
+		stored.ResolvedUserName = auth.UserName
+		stored.ResolvedUserEmail = auth.UserEmail
+		stored.VerifiedUpstream = auth.VerifiedUpstream
+		stored.SessionID = auth.SessionID
 		return nil
 	})
 }

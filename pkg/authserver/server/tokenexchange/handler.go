@@ -184,23 +184,8 @@ func (h *Handler) HandleTokenEndpointRequest(ctx context.Context, requester fosi
 		return err
 	}
 
-	configuredDelegate := slices.Contains(h.configuredDelegateClients, client.GetID())
-	if err := checkDelegationConsent(validatedClaims, client.GetID(), actorSub, configuredDelegate); err != nil {
+	if err := h.authorizeDelegation(ctx, requester, client, params, validatedClaims, actorSub, pendingDetails); err != nil {
 		return err
-	}
-
-	if err := h.grantScopes(ctx, requester, client, validatedClaims); err != nil {
-		return err
-	}
-
-	if err := h.grantAndBoundAudiences(ctx, requester, client, validatedClaims); err != nil {
-		return err
-	}
-
-	if pendingDetails != nil {
-		if err := h.grantAuthorizationDetails(ctx, pendingDetails, requester, params, validatedClaims, actorSub); err != nil {
-			return err
-		}
 	}
 
 	// Build the delegated session with the user's identity and the
@@ -302,6 +287,40 @@ func (h *Handler) PopulateTokenEndpointResponse(
 	responder.SetExtra("issued_token_type", oauthproto.TokenTypeAccessToken)
 
 	h.echoAuthorizationDetails(requester, responder)
+
+	return nil
+}
+
+// authorizeDelegation runs consent, then scopes, then audiences, then the
+// authorization_details hook, in that order, so the hook sees only a request
+// that passed every other check.
+func (h *Handler) authorizeDelegation(
+	ctx context.Context,
+	requester fosite.AccessRequester,
+	client fosite.Client,
+	params *formParams,
+	validatedClaims *ValidatedClaims,
+	actorSub string,
+	pendingDetails *authorizationdetails.Pending,
+) error {
+	configuredDelegate := slices.Contains(h.configuredDelegateClients, client.GetID())
+	if err := checkDelegationConsent(validatedClaims, client.GetID(), actorSub, configuredDelegate); err != nil {
+		return err
+	}
+
+	if err := h.grantScopes(ctx, requester, client, validatedClaims); err != nil {
+		return err
+	}
+
+	if err := h.grantAndBoundAudiences(ctx, requester, client, validatedClaims); err != nil {
+		return err
+	}
+
+	if pendingDetails != nil {
+		if err := h.grantAuthorizationDetails(ctx, pendingDetails, requester, params, validatedClaims, actorSub); err != nil {
+			return err
+		}
+	}
 
 	return nil
 }

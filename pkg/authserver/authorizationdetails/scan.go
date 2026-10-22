@@ -17,6 +17,13 @@ type scanFrame struct {
 	folded    map[string]struct{}
 }
 
+// arrayScanner tracks the container stack while validArray walks the tokens.
+type arrayScanner struct {
+	frames  []scanFrame
+	started bool
+	done    bool
+}
+
 // validArray reports whether raw is exactly one JSON array, nested at most
 // maxDepth containers deep, in which no object repeats a member name.
 //
@@ -30,60 +37,72 @@ type scanFrame struct {
 func validArray(raw []byte) bool {
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.UseNumber()
-	frames := make([]scanFrame, 0, 8)
-	started := false
-	done := false
+	s := &arrayScanner{frames: make([]scanFrame, 0, 8)}
 
 	for {
 		token, err := decoder.Token()
 		if err == io.EOF {
-			return done
+			return s.done
 		}
-		if err != nil || done {
+		if err != nil || s.done || !s.accept(token) {
 			return false
 		}
-		delim, isDelim := token.(json.Delim)
-		if !started {
-			if !isDelim || delim != '[' {
-				return false
-			}
-			started = true
-		}
-
-		// Token enforces the JSON syntax: bracket pairing, string keys in key
-		// position and separators. Only duplicates, depth and the single root
-		// array remain to be checked here.
-		if n := len(frames); n > 0 && frames[n-1].object && frames[n-1].expectKey && !isDelim {
-			key, _ := token.(string)
-			top := &frames[n-1]
-			// The folded set alone catches exact and case-variant duplicates.
-			folded := foldKey(key)
-			if _, dup := top.folded[folded]; dup {
-				return false
-			}
-			top.folded[folded] = struct{}{}
-			top.expectKey = false
-			continue
-		}
-
-		if isDelim && (delim == '{' || delim == '[') {
-			if len(frames) == maxDepth {
-				return false
-			}
-			frames = append(frames, newScanFrame(delim == '{'))
-			continue
-		}
-		if isDelim {
-			frames = frames[:len(frames)-1]
-		}
-
-		// A scalar or a whole container just ended.
-		if n := len(frames); n == 0 {
-			done = true
-		} else if frames[n-1].object {
-			frames[n-1].expectKey = true
-		}
 	}
+}
+
+// accept consumes one token and reports whether the array is still valid.
+func (s *arrayScanner) accept(token json.Token) bool {
+	delim, isDelim := token.(json.Delim)
+	if !s.started {
+		if !isDelim || delim != '[' {
+			return false
+		}
+		s.started = true
+	}
+
+	// Token enforces the JSON syntax: bracket pairing, string keys in key
+	// position and separators. Only duplicates, depth and the single root
+	// array remain to be checked here.
+	if n := len(s.frames); n > 0 && s.frames[n-1].object && s.frames[n-1].expectKey && !isDelim {
+		return s.frames[n-1].addKey(token)
+	}
+	return s.acceptValue(delim, isDelim)
+}
+
+// acceptValue handles a delimiter or scalar outside key position.
+func (s *arrayScanner) acceptValue(delim json.Delim, isDelim bool) bool {
+	if isDelim && (delim == '{' || delim == '[') {
+		if len(s.frames) == maxDepth {
+			return false
+		}
+		s.frames = append(s.frames, newScanFrame(delim == '{'))
+		return true
+	}
+	if isDelim {
+		s.frames = s.frames[:len(s.frames)-1]
+	}
+
+	// A scalar or a whole container just ended.
+	if n := len(s.frames); n == 0 {
+		s.done = true
+	} else if s.frames[n-1].object {
+		s.frames[n-1].expectKey = true
+	}
+	return true
+}
+
+// addKey records an object member name and reports false on a duplicate.
+func (f *scanFrame) addKey(token json.Token) bool {
+	// Decoder.Token only returns strings in key position, so the assertion holds.
+	key, _ := token.(string)
+	// The folded set alone catches exact and case-variant duplicates.
+	folded := foldKey(key)
+	if _, dup := f.folded[folded]; dup {
+		return false
+	}
+	f.folded[folded] = struct{}{}
+	f.expectKey = false
+	return true
 }
 
 func newScanFrame(object bool) scanFrame {

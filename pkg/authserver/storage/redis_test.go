@@ -891,6 +891,19 @@ func TestRedisStorage_CIMDBuiltClientRoundTrip(t *testing.T) {
 	})
 }
 
+func TestRedisStorage_ReconcileConfiguredSecretClientShapes(t *testing.T) {
+	withRedisStorage(t, func(_ context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+		requireSecretClientShapes(t, s)
+	})
+}
+
+func TestRedisStorage_ReconcileConfiguredPrivateKeyJWTClient(t *testing.T) {
+	withRedisStorage(t, func(_ context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+		requireKeyRotationOverwrites(t, s)
+		assert.Equal(t, time.Duration(0), mr.TTL(redisKey(s.keyPrefix, KeyTypeClient, "broker")))
+	})
+}
+
 // TestRedisStorage_UpsertDCRIssuedClient covers the create/replace/reject
 // matrix UpsertDCRIssuedClient must implement: create when absent (with the
 // DCR TTL, not permanent), replace and renew the TTL when the existing row is

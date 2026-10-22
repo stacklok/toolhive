@@ -750,16 +750,37 @@ type AuthenticationDelegateClientRunConfig struct {
 	// ClientID is the OAuth client_id this client presents at the token endpoint.
 	ClientID OptString `json:"client_id"`
 	// ClientSecretEnvVar is the name of an environment variable containing
-	// the client secret. One of ClientSecretFile or ClientSecretEnvVar is
-	// required.
+	// the client secret. Unless the client uses private_key_jwt, one of
+	// ClientSecretFile or ClientSecretEnvVar is required.
 	ClientSecretEnvVar OptString `json:"client_secret_env_var"`
 	// ClientSecretFile is the path to a file containing the client secret.
 	// If both this and ClientSecretEnvVar are set, the file takes precedence.
+	// Forbidden with private_key_jwt.
 	ClientSecretFile OptString `json:"client_secret_file"`
+	// GrantTypes are the grants this client may use. If omitted or empty, it
+	// is [urn:ietf:params:oauth:grant-type:token-exchange]. When set, it must
+	// include token exchange. Allowed values are authorization_code,
+	// refresh_token, the token-exchange grant and the jwt-bearer grant.
+	GrantTypes []string `json:"grant_types"`
+	// JWKSFile is the path to a file containing the client's public JWKS.
+	// Required for private_key_jwt and forbidden otherwise. The keys must be
+	// public signing keys.
+	JwksFile OptString `json:"jwks_file"`
+	// RedirectURIs are the registered redirect URIs. Required with the
+	// authorization_code grant and forbidden without it.
+	RedirectUris []string `json:"redirect_uris"`
 	// Scopes are the OAuth scopes this client may request. Required, and
 	// must be a subset of RunConfig.ScopesSupported: a declared client must
 	// not receive every supported scope just because this was left empty.
 	Scopes []string `json:"scopes"`
+	// TokenEndpointAuthMethod pins how the client authenticates at the token
+	// endpoint: client_secret_basic, client_secret_post or private_key_jwt.
+	// If omitted, the client authenticates with its secret by either HTTP
+	// Basic or form body.
+	TokenEndpointAuthMethod OptString `json:"token_endpoint_auth_method"`
+	// TokenEndpointAuthSigningAlg is the private_key_jwt signing algorithm.
+	// Defaults to RS256.
+	TokenEndpointAuthSigningAlg OptString `json:"token_endpoint_auth_signing_alg"`
 }
 
 // GetAudiences returns the value of Audiences.
@@ -782,9 +803,34 @@ func (s *AuthenticationDelegateClientRunConfig) GetClientSecretFile() OptString 
 	return s.ClientSecretFile
 }
 
+// GetGrantTypes returns the value of GrantTypes.
+func (s *AuthenticationDelegateClientRunConfig) GetGrantTypes() []string {
+	return s.GrantTypes
+}
+
+// GetJwksFile returns the value of JwksFile.
+func (s *AuthenticationDelegateClientRunConfig) GetJwksFile() OptString {
+	return s.JwksFile
+}
+
+// GetRedirectUris returns the value of RedirectUris.
+func (s *AuthenticationDelegateClientRunConfig) GetRedirectUris() []string {
+	return s.RedirectUris
+}
+
 // GetScopes returns the value of Scopes.
 func (s *AuthenticationDelegateClientRunConfig) GetScopes() []string {
 	return s.Scopes
+}
+
+// GetTokenEndpointAuthMethod returns the value of TokenEndpointAuthMethod.
+func (s *AuthenticationDelegateClientRunConfig) GetTokenEndpointAuthMethod() OptString {
+	return s.TokenEndpointAuthMethod
+}
+
+// GetTokenEndpointAuthSigningAlg returns the value of TokenEndpointAuthSigningAlg.
+func (s *AuthenticationDelegateClientRunConfig) GetTokenEndpointAuthSigningAlg() OptString {
+	return s.TokenEndpointAuthSigningAlg
 }
 
 // SetAudiences sets the value of Audiences.
@@ -807,9 +853,34 @@ func (s *AuthenticationDelegateClientRunConfig) SetClientSecretFile(val OptStrin
 	s.ClientSecretFile = val
 }
 
+// SetGrantTypes sets the value of GrantTypes.
+func (s *AuthenticationDelegateClientRunConfig) SetGrantTypes(val []string) {
+	s.GrantTypes = val
+}
+
+// SetJwksFile sets the value of JwksFile.
+func (s *AuthenticationDelegateClientRunConfig) SetJwksFile(val OptString) {
+	s.JwksFile = val
+}
+
+// SetRedirectUris sets the value of RedirectUris.
+func (s *AuthenticationDelegateClientRunConfig) SetRedirectUris(val []string) {
+	s.RedirectUris = val
+}
+
 // SetScopes sets the value of Scopes.
 func (s *AuthenticationDelegateClientRunConfig) SetScopes(val []string) {
 	s.Scopes = val
+}
+
+// SetTokenEndpointAuthMethod sets the value of TokenEndpointAuthMethod.
+func (s *AuthenticationDelegateClientRunConfig) SetTokenEndpointAuthMethod(val OptString) {
+	s.TokenEndpointAuthMethod = val
+}
+
+// SetTokenEndpointAuthSigningAlg sets the value of TokenEndpointAuthSigningAlg.
+func (s *AuthenticationDelegateClientRunConfig) SetTokenEndpointAuthSigningAlg(val OptString) {
+	s.TokenEndpointAuthSigningAlg = val
 }
 
 // IdentityFromToken extracts user identity (subject, name, email) directly from the
@@ -1642,14 +1713,17 @@ type AuthenticationRunConfig struct {
 	// local development (the traffic never leaves the machine), but client
 	// secrets would otherwise travel over cleartext. Defaults to false. Has no
 	// effect when there are no confidential clients or Issuer is https.
-	// Applies identically to delegate clients and DCR-registered clients. The
-	// Kubernetes CRD requires the explicit opt-in for a delegate client with an
-	// HTTP issuer; the shared transport validator enforces that its host is
-	// loopback — see EmbeddedAuthServerConfig's doc comment.
-	// private_key_jwt registration has no equivalent flag or transport
-	// restriction: unlike confidential registration, it never returns a
-	// client_secret (or any other secret) in the DCR response, so there is
-	// nothing here for cleartext HTTP to expose.
+	// Applies identically to delegate clients that authenticate with a secret
+	// and DCR-registered confidential clients. The Kubernetes CRD requires the
+	// explicit opt-in for a delegate client with an HTTP issuer; the shared
+	// transport validator enforces that its host is loopback — see
+	// EmbeddedAuthServerConfig's doc comment.
+	// private_key_jwt clients have no equivalent flag or transport
+	// restriction, whether registered through DCR or declared as delegate
+	// clients: no secret travels to or from the server for them, so there is
+	// nothing here for cleartext HTTP to expose. A delegate client set that
+	// mixes private_key_jwt with secret-authenticated clients is still
+	// confidential.
 	InsecureAllowConfidentialOverLoopbackHTTP OptBool `json:"insecure_allow_confidential_over_loopback_http"`
 	// InsecureAllowHTTP permits an http:// issuer URL for non-localhost hosts.
 	// Only set this for in-cluster Kubernetes deployments on a trusted network.

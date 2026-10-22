@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-jose/go-jose/v3"
 	"github.com/ory/fosite"
 
 	"github.com/stacklok/toolhive/pkg/auth/dcr"
@@ -242,15 +243,18 @@ type RunConfig struct {
 	// secrets would otherwise travel over cleartext. Defaults to false. Has no
 	// effect when there are no confidential clients or Issuer is https.
 	//
-	// Applies identically to delegate clients and DCR-registered clients. The
-	// Kubernetes CRD requires the explicit opt-in for a delegate client with an
-	// HTTP issuer; the shared transport validator enforces that its host is
-	// loopback — see EmbeddedAuthServerConfig's doc comment.
+	// Applies identically to delegate clients that authenticate with a secret
+	// and DCR-registered confidential clients. The Kubernetes CRD requires the
+	// explicit opt-in for a delegate client with an HTTP issuer; the shared
+	// transport validator enforces that its host is loopback — see
+	// EmbeddedAuthServerConfig's doc comment.
 	//
-	// private_key_jwt registration has no equivalent flag or transport
-	// restriction: unlike confidential registration, it never returns a
-	// client_secret (or any other secret) in the DCR response, so there is
-	// nothing here for cleartext HTTP to expose.
+	// private_key_jwt clients have no equivalent flag or transport
+	// restriction, whether registered through DCR or declared as delegate
+	// clients: no secret travels to or from the server for them, so there is
+	// nothing here for cleartext HTTP to expose. A delegate client set that
+	// mixes private_key_jwt with secret-authenticated clients is still
+	// confidential.
 	//nolint:lll // field tags require full JSON+YAML names
 	InsecureAllowConfidentialOverLoopbackHTTP bool `json:"insecure_allow_confidential_over_loopback_http,omitempty" yaml:"insecure_allow_confidential_over_loopback_http,omitempty"`
 
@@ -325,19 +329,48 @@ func (c *RegistrationRateLimitRunConfig) Validate() error {
 // DelegateClientRunConfig declares a pre-provisioned confidential OAuth
 // client for authorization-server startup, so it can act as the client in an
 // RFC 8693 token-exchange request. The secret is always a reference (file or
-// environment variable), never an inline literal. The grant type is fixed to
-// RFC 8693 token exchange internally and is not configurable.
+// environment variable), never an inline literal, and public keys come from a
+// JWKS file. Only the grant types named in GrantTypes are enabled; the default
+// is RFC 8693 token exchange alone.
 type DelegateClientRunConfig struct {
 	// ClientID is the OAuth client_id this client presents at the token endpoint.
 	ClientID string `json:"client_id" yaml:"client_id"`
 
+	// TokenEndpointAuthMethod pins how the client authenticates at the token
+	// endpoint: client_secret_basic, client_secret_post or private_key_jwt.
+	// If omitted, the client authenticates with its secret by either HTTP
+	// Basic or form body.
+	//nolint:lll // field tags require full JSON+YAML names
+	TokenEndpointAuthMethod string `json:"token_endpoint_auth_method,omitempty" yaml:"token_endpoint_auth_method,omitempty"`
+
+	// JWKSFile is the path to a file containing the client's public JWKS.
+	// Required for private_key_jwt and forbidden otherwise. The keys must be
+	// public signing keys.
+	JWKSFile string `json:"jwks_file,omitempty" yaml:"jwks_file,omitempty"`
+
+	// TokenEndpointAuthSigningAlg is the private_key_jwt signing algorithm.
+	// Defaults to RS256.
+	//nolint:lll // field tags require full JSON+YAML names
+	TokenEndpointAuthSigningAlg string `json:"token_endpoint_auth_signing_alg,omitempty" yaml:"token_endpoint_auth_signing_alg,omitempty"`
+
+	// GrantTypes are the grants this client may use. If omitted or empty, it
+	// is [urn:ietf:params:oauth:grant-type:token-exchange]. When set, it must
+	// include token exchange. Allowed values are authorization_code,
+	// refresh_token, the token-exchange grant and the jwt-bearer grant.
+	GrantTypes []string `json:"grant_types,omitempty" yaml:"grant_types,omitempty"`
+
+	// RedirectURIs are the registered redirect URIs. Required with the
+	// authorization_code grant and forbidden without it.
+	RedirectURIs []string `json:"redirect_uris,omitempty" yaml:"redirect_uris,omitempty"`
+
 	// ClientSecretFile is the path to a file containing the client secret.
 	// If both this and ClientSecretEnvVar are set, the file takes precedence.
+	// Forbidden with private_key_jwt.
 	ClientSecretFile string `json:"client_secret_file,omitempty" yaml:"client_secret_file,omitempty"`
 
 	// ClientSecretEnvVar is the name of an environment variable containing
-	// the client secret. One of ClientSecretFile or ClientSecretEnvVar is
-	// required.
+	// the client secret. Unless the client uses private_key_jwt, one of
+	// ClientSecretFile or ClientSecretEnvVar is required.
 	//nolint:lll // field tags require full JSON+YAML names
 	ClientSecretEnvVar string `json:"client_secret_env_var,omitempty" yaml:"client_secret_env_var,omitempty"`
 
@@ -385,7 +418,7 @@ func (c *RunConfig) Validate() error {
 		return err
 	}
 	if err := ValidateConfidentialClientTransport(
-		c.AllowConfidentialClientRegistration || len(normalized.DelegateClients) > 0, c.InsecureAllowHTTP,
+		c.AllowConfidentialClientRegistration || hasSecretDelegateClientRunConfig(normalized.DelegateClients), c.InsecureAllowHTTP,
 		c.Issuer, c.InsecureAllowConfidentialOverLoopbackHTTP); err != nil {
 		return err
 	}
@@ -553,6 +586,37 @@ func validateAllowedAudiences(audiences []string) error {
 func validateDelegateClients(
 	clients []DelegateClientRunConfig, scopesSupported, allowedAudiences []string,
 ) error {
+	views := make([]delegateClientView, len(clients))
+	for i, client := range clients {
+		views[i] = delegateClientView{
+			ClientID:  client.ClientID,
+			Scopes:    client.Scopes,
+			Audiences: client.Audiences,
+			Spec: registration.ConfiguredClientSpec{
+				TokenEndpointAuthMethod: client.TokenEndpointAuthMethod,
+				SigningAlgorithm:        client.TokenEndpointAuthSigningAlg,
+				GrantTypes:              client.GrantTypes,
+				RedirectURIs:            client.RedirectURIs,
+				HasSecret:               client.ClientSecretFile != "" || client.ClientSecretEnvVar != "",
+				JWKSPending:             client.JWKSFile != "",
+			},
+		}
+	}
+	return validateDelegateClientViews(views, scopesSupported, allowedAudiences)
+}
+
+// delegateClientView is the part of a delegate client that both the RunConfig
+// and the resolved Config validation paths check.
+type delegateClientView struct {
+	ClientID  string
+	Scopes    []string
+	Audiences []string
+	Spec      registration.ConfiguredClientSpec
+}
+
+func validateDelegateClientViews(
+	clients []delegateClientView, scopesSupported, allowedAudiences []string,
+) error {
 	effectiveScopes := scopesSupported
 	if len(effectiveScopes) == 0 {
 		effectiveScopes = registration.DefaultScopes
@@ -584,9 +648,8 @@ func validateDelegateClients(
 					"clients must use an opaque, non-URL client_id", client.ClientID)
 		}
 
-		if client.ClientSecretFile == "" && client.ClientSecretEnvVar == "" {
-			return fmt.Errorf(
-				"delegate_clients: client_id %q: client_secret_file or client_secret_env_var is required", client.ClientID)
+		if err := registration.ValidateConfiguredClient(client.Spec); err != nil {
+			return fmt.Errorf("delegate_clients: client_id %q: %w", client.ClientID, err)
 		}
 		if len(client.Scopes) == 0 {
 			return fmt.Errorf("delegate_clients: client_id %q: scopes is required", client.ClientID)
@@ -618,32 +681,43 @@ func validateDelegateClients(
 // anything at that scale without requiring a specific encoding.
 const minDelegateClientSecretLength = 32
 
-// validateResolvedDelegateClients validates resolved runtime delegate clients.
-// The resolved secret must be nonempty and at least minDelegateClientSecretLength
-// characters, because Config callers bypass secret resolution and
-// RunConfig.Validate, and unlike DCR-minted secrets, a delegate-client secret's
-// entropy is never otherwise checked.
+// validateResolvedDelegateClients validates resolved runtime delegate clients
+// against their real metadata: auth method, signing algorithm, grants,
+// redirect URIs and loaded keys. Clients that authenticate with a secret must
+// carry a nonempty one of at least minDelegateClientSecretLength characters,
+// because Config callers bypass secret resolution and RunConfig.Validate, and
+// unlike DCR-minted secrets, a delegate-client secret's entropy is never
+// otherwise checked. private_key_jwt clients carry keys instead of a secret.
 func validateResolvedDelegateClients(
 	clients []DelegateClient, scopesSupported, allowedAudiences []string,
 ) error {
-	runClients := make([]DelegateClientRunConfig, len(clients))
+	views := make([]delegateClientView, len(clients))
 	for i, client := range clients {
-		if client.ClientSecret == "" {
-			return fmt.Errorf("delegate_clients: client_id %q: resolved client secret is required", client.ClientID)
+		if client.TokenEndpointAuthMethod != oauthproto.TokenEndpointAuthMethodPrivateKeyJWT {
+			if client.ClientSecret == "" {
+				return fmt.Errorf("delegate_clients: client_id %q: resolved client secret is required", client.ClientID)
+			}
+			if len(client.ClientSecret) < minDelegateClientSecretLength {
+				return fmt.Errorf(
+					"delegate_clients: client_id %q: resolved client secret must be at least %d characters",
+					client.ClientID, minDelegateClientSecretLength)
+			}
 		}
-		if len(client.ClientSecret) < minDelegateClientSecretLength {
-			return fmt.Errorf(
-				"delegate_clients: client_id %q: resolved client secret must be at least %d characters",
-				client.ClientID, minDelegateClientSecretLength)
-		}
-		runClients[i] = DelegateClientRunConfig{
-			ClientID:           client.ClientID,
-			ClientSecretEnvVar: "resolved",
-			Scopes:             client.Scopes,
-			Audiences:          client.Audiences,
+		views[i] = delegateClientView{
+			ClientID:  client.ClientID,
+			Scopes:    client.Scopes,
+			Audiences: client.Audiences,
+			Spec: registration.ConfiguredClientSpec{
+				TokenEndpointAuthMethod: client.TokenEndpointAuthMethod,
+				SigningAlgorithm:        client.TokenEndpointAuthSigningAlg,
+				GrantTypes:              client.GrantTypes,
+				RedirectURIs:            client.RedirectURIs,
+				HasSecret:               client.ClientSecret != "",
+				JWKS:                    client.JSONWebKeys,
+			},
 		}
 	}
-	return validateDelegateClients(runClients, scopesSupported, allowedAudiences)
+	return validateDelegateClientViews(views, scopesSupported, allowedAudiences)
 }
 
 // CIMDRunConfig controls client_id metadata document (CIMD) support.
@@ -1511,6 +1585,16 @@ type DelegateClient struct {
 
 	// Audiences are the RFC 8707 resource values this client may request a token for.
 	Audiences []string
+
+	// TokenEndpointAuthMethod, TokenEndpointAuthSigningAlg, GrantTypes and
+	// RedirectURIs carry the matching DelegateClientRunConfig fields.
+	TokenEndpointAuthMethod     string
+	TokenEndpointAuthSigningAlg string
+	GrantTypes                  []string
+	RedirectURIs                []string
+
+	// JSONWebKeys are the public keys loaded from JWKSFile, for private_key_jwt.
+	JSONWebKeys *jose.JSONWebKeySet
 }
 
 // Validate checks that the Config is valid.
@@ -1664,7 +1748,7 @@ func (c *Config) validateDelegationConfig() error {
 // complexity down.
 func (c *Config) validateConfidentialClientConfig() error {
 	if err := ValidateConfidentialClientTransport(
-		c.AllowConfidentialClientRegistration || len(c.DelegateClients) > 0, c.InsecureAllowHTTP,
+		c.AllowConfidentialClientRegistration || hasSecretDelegateClient(c.DelegateClients), c.InsecureAllowHTTP,
 		c.Issuer, c.InsecureAllowConfidentialOverLoopbackHTTP); err != nil {
 		return err
 	}
@@ -2198,8 +2282,25 @@ func (c *Config) applyDefaults() error {
 	return nil
 }
 
+// hasSecretDelegateClientRunConfig reports whether any delegate client
+// authenticates with a secret. private_key_jwt clients are excluded: no secret
+// crosses the wire for them, so they are exempt from the confidential
+// transport rule.
+func hasSecretDelegateClientRunConfig(clients []DelegateClientRunConfig) bool {
+	return slices.ContainsFunc(clients, func(c DelegateClientRunConfig) bool {
+		return c.TokenEndpointAuthMethod != oauthproto.TokenEndpointAuthMethodPrivateKeyJWT
+	})
+}
+
+// hasSecretDelegateClient is hasSecretDelegateClientRunConfig for resolved clients.
+func hasSecretDelegateClient(clients []DelegateClient) bool {
+	return slices.ContainsFunc(clients, func(c DelegateClient) bool {
+		return c.TokenEndpointAuthMethod != oauthproto.TokenEndpointAuthMethodPrivateKeyJWT
+	})
+}
+
 // ValidateConfidentialClientTransport rejects cleartext HTTP configurations
-// when any confidential client is enabled. It delegates to the server-layer
+// when any client that sends a secret is enabled. It delegates to the server-layer
 // validator so direct AuthorizationServerParams construction cannot bypass the
 // same transport policy.
 func ValidateConfidentialClientTransport(

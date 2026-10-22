@@ -136,6 +136,10 @@ type AuthorizationServerConfig struct {
 	// delegate client is registered at startup. Discovery advertises client-secret
 	// authentication methods when this is true.
 	HasStaticDelegateClients bool
+	// HasStaticSecretClients indicates whether any static delegate
+	// client authenticates with a secret. Only these count as confidential for
+	// the transport rule; private_key_jwt delegate clients send no secret.
+	HasStaticSecretClients bool
 	// InsecureAllowHTTP permits a non-loopback HTTP issuer. It is incompatible
 	// with confidential clients.
 	InsecureAllowHTTP bool
@@ -246,6 +250,10 @@ type AuthorizationServerParams struct {
 	// delegate client is registered at startup. Discovery advertises client-secret
 	// authentication methods when this is true.
 	HasStaticDelegateClients bool
+	// HasStaticSecretClients indicates whether any static delegate
+	// client authenticates with a secret. Only these count as confidential for
+	// the transport rule; private_key_jwt delegate clients send no secret.
+	HasStaticSecretClients bool
 	// InsecureAllowHTTP permits a non-loopback HTTP issuer. It is incompatible
 	// with confidential clients.
 	InsecureAllowHTTP bool
@@ -355,8 +363,9 @@ func validateTokenLifespans(cfg *AuthorizationServerParams) error {
 }
 
 // ValidateConfidentialClientTransport rejects cleartext HTTP configurations
-// when any confidential client is enabled, whether it is admitted through DCR
-// or statically declared.
+// when any client that sends a secret is enabled, whether it is admitted
+// through DCR or statically declared. private_key_jwt clients send no secret
+// and callers must not count them as confidential.
 func ValidateConfidentialClientTransport(
 	allowConfidential, insecureAllowHTTP bool,
 	issuer string, insecureAllowConfidentialOverLoopbackHTTP bool,
@@ -436,7 +445,7 @@ func validateParams(cfg *AuthorizationServerParams) error {
 		return err
 	}
 	if err := ValidateConfidentialClientTransport(
-		cfg.AllowConfidentialClientRegistration || cfg.HasStaticDelegateClients,
+		cfg.AllowConfidentialClientRegistration || cfg.HasStaticSecretClients,
 		cfg.InsecureAllowHTTP, cfg.Issuer, cfg.InsecureAllowConfidentialOverLoopbackHTTP,
 	); err != nil {
 		return err
@@ -538,6 +547,7 @@ func NewAuthorizationServerConfig(cfg *AuthorizationServerParams) (*Authorizatio
 		AllowConfidentialClientRegistration:       cfg.AllowConfidentialClientRegistration,
 		AllowPrivateKeyJWTRegistration:            cfg.AllowPrivateKeyJWTRegistration,
 		HasStaticDelegateClients:                  cfg.HasStaticDelegateClients,
+		HasStaticSecretClients:                    cfg.HasStaticSecretClients,
 		InsecureAllowHTTP:                         cfg.InsecureAllowHTTP,
 		InsecureAllowConfidentialOverLoopbackHTTP: cfg.InsecureAllowConfidentialOverLoopbackHTTP,
 		ForceConfidentialRedirectURIs:             cfg.ForceConfidentialRedirectURIs,
@@ -573,7 +583,7 @@ func NewAuthorizationServer(
 	factories ...Factory,
 ) (fosite.OAuth2Provider, error) {
 	if err := ValidateConfidentialClientTransport(
-		config.AllowConfidentialClientRegistration || config.HasStaticDelegateClients,
+		config.AllowConfidentialClientRegistration || config.HasStaticSecretClients,
 		config.InsecureAllowHTTP,
 		config.AccessTokenIssuer,
 		config.InsecureAllowConfidentialOverLoopbackHTTP,

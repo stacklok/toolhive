@@ -154,6 +154,7 @@ func TestNewAuthorizationServerConfig_ConfidentialHTTPTransport(t *testing.T) {
 		{name: "static delegate client rejects non-loopback HTTP", mutate: func(p *AuthorizationServerParams) {
 			p.Issuer = "http://auth.example.com"
 			p.HasStaticDelegateClients = true
+			p.HasStaticSecretClients = true
 		}, wantErr: "plain-HTTP non-loopback"},
 		{name: "loopback opt-in permits confidential HTTP", mutate: func(p *AuthorizationServerParams) {
 			p.Issuer = "http://localhost:8080"
@@ -833,8 +834,16 @@ func TestNewAuthorizationServer_ConfidentialHTTPTransport(t *testing.T) {
 			config: &AuthorizationServerConfig{
 				Config:                   &fosite.Config{AccessTokenIssuer: "http://auth.example.com"},
 				HasStaticDelegateClients: true,
+				HasStaticSecretClients:   true,
 			},
 			wantErr: "plain-HTTP non-loopback",
+		},
+		{
+			name: "direct private_key_jwt-only delegate configuration permits non-loopback HTTP",
+			config: &AuthorizationServerConfig{
+				Config:                   &fosite.Config{AccessTokenIssuer: "http://auth.example.com"},
+				HasStaticDelegateClients: true,
+			},
 		},
 		{
 			name: "direct loopback opt-in permits confidential HTTP",

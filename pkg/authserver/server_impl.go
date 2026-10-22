@@ -30,7 +30,6 @@ import (
 	spiffeauth "github.com/stacklok/toolhive/pkg/authserver/spiffe"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
-	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
 // server is the internal implementation of the Server interface.
@@ -220,6 +219,7 @@ func authorizationServerParams(
 		AllowConfidentialClientRegistration:       cfg.AllowConfidentialClientRegistration,
 		AllowPrivateKeyJWTRegistration:            cfg.AllowPrivateKeyJWTRegistration,
 		HasStaticDelegateClients:                  len(cfg.DelegateClients) > 0,
+		HasStaticSecretClients:                    hasSecretDelegateClient(cfg.DelegateClients),
 		InsecureAllowHTTP:                         cfg.InsecureAllowHTTP,
 		InsecureAllowConfidentialOverLoopbackHTTP: cfg.InsecureAllowConfidentialOverLoopbackHTTP,
 		ForceConfidentialRedirectURIs:             cfg.ForceConfidentialRedirectURIs,
@@ -433,11 +433,15 @@ func validateConsentExemptClients(ctx context.Context, stor storage.Storage, cli
 func registerDelegateClients(ctx context.Context, stor storage.Storage, delegateClients []DelegateClient) error {
 	for _, delegateClient := range delegateClients {
 		client, err := registration.NewStaticDelegateClient(registration.Config{
-			ID:         delegateClient.ClientID,
-			Secret:     delegateClient.ClientSecret,
-			GrantTypes: []string{oauthproto.GrantTypeTokenExchange},
-			Scopes:     delegateClient.Scopes,
-			Audience:   delegateClient.Audiences,
+			ID:                                delegateClient.ClientID,
+			Secret:                            delegateClient.ClientSecret,
+			TokenEndpointAuthMethod:           delegateClient.TokenEndpointAuthMethod,
+			TokenEndpointAuthSigningAlgorithm: delegateClient.TokenEndpointAuthSigningAlg,
+			JSONWebKeys:                       delegateClient.JSONWebKeys,
+			GrantTypes:                        delegateClient.GrantTypes,
+			RedirectURIs:                      delegateClient.RedirectURIs,
+			Scopes:                            delegateClient.Scopes,
+			Audience:                          delegateClient.Audiences,
 		})
 		if err != nil {
 			return fmt.Errorf("failed to create delegate client %q: %w", delegateClient.ClientID, err)

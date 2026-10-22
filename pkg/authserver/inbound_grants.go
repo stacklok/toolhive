@@ -233,6 +233,8 @@ func cloneDelegateClients(clients []DelegateClientRunConfig) []DelegateClientRun
 	for i := range cloned {
 		cloned[i].Scopes = slices.Clone(cloned[i].Scopes)
 		cloned[i].Audiences = slices.Clone(cloned[i].Audiences)
+		cloned[i].GrantTypes = slices.Clone(cloned[i].GrantTypes)
+		cloned[i].RedirectURIs = slices.Clone(cloned[i].RedirectURIs)
 	}
 	return cloned
 }

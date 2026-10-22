@@ -265,12 +265,32 @@
             "type": "string"
           },
           "client_secret_env_var": {
-            "description": "ClientSecretEnvVar is the name of an environment variable containing\nthe client secret. One of ClientSecretFile or ClientSecretEnvVar is\nrequired.",
+            "description": "ClientSecretEnvVar is the name of an environment variable containing\nthe client secret. Unless the client uses private_key_jwt, one of\nClientSecretFile or ClientSecretEnvVar is required.",
             "type": "string"
           },
           "client_secret_file": {
-            "description": "ClientSecretFile is the path to a file containing the client secret.\nIf both this and ClientSecretEnvVar are set, the file takes precedence.",
+            "description": "ClientSecretFile is the path to a file containing the client secret.\nIf both this and ClientSecretEnvVar are set, the file takes precedence.\nForbidden with private_key_jwt.",
             "type": "string"
+          },
+          "grant_types": {
+            "description": "GrantTypes are the grants this client may use. If omitted or empty, it\nis [urn:ietf:params:oauth:grant-type:token-exchange]. When set, it must\ninclude token exchange. Allowed values are authorization_code,\nrefresh_token, the token-exchange grant and the jwt-bearer grant.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "uniqueItems": false
+          },
+          "jwks_file": {
+            "description": "JWKSFile is the path to a file containing the client's public JWKS.\nRequired for private_key_jwt and forbidden otherwise. The keys must be\npublic signing keys.",
+            "type": "string"
+          },
+          "redirect_uris": {
+            "description": "RedirectURIs are the registered redirect URIs. Required with the\nauthorization_code grant and forbidden without it.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "uniqueItems": false
           },
           "scopes": {
             "description": "Scopes are the OAuth scopes this client may request. Required, and\nmust be a subset of RunConfig.ScopesSupported: a declared client must\nnot receive every supported scope just because this was left empty.",
@@ -279,6 +299,14 @@
             },
             "type": "array",
             "uniqueItems": false
+          },
+          "token_endpoint_auth_method": {
+            "description": "TokenEndpointAuthMethod pins how the client authenticates at the token\nendpoint: client_secret_basic, client_secret_post or private_key_jwt.\nIf omitted, the client authenticates with its secret by either HTTP\nBasic or form body.",
+            "type": "string"
+          },
+          "token_endpoint_auth_signing_alg": {
+            "description": "TokenEndpointAuthSigningAlg is the private_key_jwt signing algorithm.\nDefaults to RS256.",
+            "type": "string"
           }
         },
         "type": "object"
@@ -605,7 +633,7 @@
             "$ref": "#/components/schemas/AuthenticationInboundGrantsRunConfig"
           },
           "insecure_allow_confidential_over_loopback_http": {
-            "description": "InsecureAllowConfidentialOverLoopbackHTTP opts in to confidential clients\nwhen Issuer is a plain-HTTP loopback URL. Without this flag, that\ncombination is rejected: a loopback http:// issuer is normally fine for\nlocal development (the traffic never leaves the machine), but client\nsecrets would otherwise travel over cleartext. Defaults to false. Has no\neffect when there are no confidential clients or Issuer is https.\n\nApplies identically to delegate clients and DCR-registered clients. The\nKubernetes CRD requires the explicit opt-in for a delegate client with an\nHTTP issuer; the shared transport validator enforces that its host is\nloopback — see EmbeddedAuthServerConfig's doc comment.\n\nprivate_key_jwt registration has no equivalent flag or transport\nrestriction: unlike confidential registration, it never returns a\nclient_secret (or any other secret) in the DCR response, so there is\nnothing here for cleartext HTTP to expose.",
+            "description": "InsecureAllowConfidentialOverLoopbackHTTP opts in to confidential clients\nwhen Issuer is a plain-HTTP loopback URL. Without this flag, that\ncombination is rejected: a loopback http:// issuer is normally fine for\nlocal development (the traffic never leaves the machine), but client\nsecrets would otherwise travel over cleartext. Defaults to false. Has no\neffect when there are no confidential clients or Issuer is https.\n\nApplies identically to delegate clients that authenticate with a secret\nand DCR-registered confidential clients. The Kubernetes CRD requires the\nexplicit opt-in for a delegate client with an HTTP issuer; the shared\ntransport validator enforces that its host is loopback — see\nEmbeddedAuthServerConfig's doc comment.\n\nprivate_key_jwt clients have no equivalent flag or transport\nrestriction, whether registered through DCR or declared as delegate\nclients: no secret travels to or from the server for them, so there is\nnothing here for cleartext HTTP to expose. A delegate client set that\nmixes private_key_jwt with secret-authenticated clients is still\nconfidential.",
             "type": "boolean"
           },
           "insecure_allow_http": {

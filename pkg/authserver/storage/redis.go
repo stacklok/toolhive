@@ -717,14 +717,15 @@ func (s *RedisStorage) UpsertDCRIssuedClient(ctx context.Context, client fosite.
 // directly sidesteps that defaulting entirely.
 func (s storedClient) fingerprint() clientFingerprint {
 	return clientFingerprint{
-		scopes:              s.Scopes,
-		audience:            s.Audience,
-		grantTypes:          s.GrantTypes,
-		responseTypes:       s.ResponseTypes,
-		resources:           s.Resources,
-		identityFingerprint: s.IdentityFingerprint,
-		public:              s.Public,
-		reserved:            s.Reserved,
+		scopes:                  s.Scopes,
+		audience:                s.Audience,
+		grantTypes:              s.GrantTypes,
+		responseTypes:           s.ResponseTypes,
+		tokenEndpointAuthMethod: s.TokenEndpointAuthMethod,
+		resources:               s.Resources,
+		identityFingerprint:     s.IdentityFingerprint,
+		public:                  s.Public,
+		reserved:                s.Reserved,
 	}
 }
 

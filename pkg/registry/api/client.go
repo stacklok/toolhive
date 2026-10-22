@@ -14,7 +14,7 @@ import (
 	"net/url"
 
 	v0 "github.com/modelcontextprotocol/registry/pkg/api/v0"
-	"gopkg.in/yaml.v3"
+	"go.yaml.in/yaml/v3"
 
 	"github.com/stacklok/toolhive/pkg/registry/auth"
 	"github.com/stacklok/toolhive/pkg/versions"

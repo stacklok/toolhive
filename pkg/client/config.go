@@ -18,7 +18,7 @@ import (
 
 	"github.com/pelletier/go-toml/v2"
 	"github.com/tailscale/hujson"
-	"gopkg.in/yaml.v3"
+	"go.yaml.in/yaml/v3"
 
 	"github.com/stacklok/toolhive/pkg/llmgateway"
 	"github.com/stacklok/toolhive/pkg/transport/types"

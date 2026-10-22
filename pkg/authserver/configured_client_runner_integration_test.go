@@ -228,17 +228,31 @@ func brokerClient(jwksFile string) authserver.DelegateClientRunConfig {
 		GrantTypes: []string{
 			oauthproto.GrantTypeAuthorizationCode, oauthproto.GrantTypeRefreshToken, oauthproto.GrantTypeTokenExchange,
 		},
-		RedirectURIs: []string{cfgRedirectURI},
-		Scopes:       []string{"openid", "profile", "offline_access"},
-		Audiences:    []string{cfgAudienceA},
+		RedirectURIs:  []string{cfgRedirectURI},
+		Scopes:        []string{"openid", "profile", "offline_access"},
+		Audiences:     []string{cfgAudienceA},
+		TokenExchange: anySelfIssuedSubjectTokens(),
 	}
 }
 
+// secretClient builds a client-secret delegate client. A client with grants
+// must declare its trust mode, so it gets an explicit any, which keeps the
+// blanket trust these tests were written against.
 func secretClient(t *testing.T, id string, grants []string) authserver.DelegateClientRunConfig {
 	t.Helper()
-	return authserver.DelegateClientRunConfig{
+	client := authserver.DelegateClientRunConfig{
 		ClientID: id, ClientSecretFile: writeSecretFile(t, cfgClientSecret), GrantTypes: grants,
 		Scopes: []string{"openid", "profile"}, Audiences: []string{cfgAudienceA},
+	}
+	if len(grants) > 0 {
+		client.TokenExchange = anySelfIssuedSubjectTokens()
+	}
+	return client
+}
+
+func anySelfIssuedSubjectTokens() *authserver.DelegateClientTokenExchange {
+	return &authserver.DelegateClientTokenExchange{
+		SelfIssuedSubjectTokens: authserver.SelfIssuedSubjectTokensAny,
 	}
 }
 

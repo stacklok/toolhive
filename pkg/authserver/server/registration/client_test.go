@@ -20,6 +20,7 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
+	"fmt"
 	"math/big"
 	"testing"
 
@@ -753,6 +754,7 @@ func TestValidateConfiguredClient(t *testing.T) {
 	exchange := oauthproto.GrantTypeTokenExchange
 	authCode := oauthproto.GrantTypeAuthorizationCode
 	redirect := []string{"https://broker.example/callback"}
+	restricted := selfIssuedSubjectTokensRestricted
 
 	ecKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	require.NoError(t, err)
@@ -840,6 +842,70 @@ func TestValidateConfiguredClient(t *testing.T) {
 		{name: "signing algorithm with a secret method", spec: ConfiguredClientSpec{
 			SigningAlgorithm: string(jose.RS256),
 		}, wantErr: "only allowed with"},
+		{name: "token_exchange block without a mode", spec: ConfiguredClientSpec{TokenExchange: true},
+			wantErr: "self_issued_subject_tokens is required"},
+		{name: "unsupported self_issued_subject_tokens", spec: ConfiguredClientSpec{
+			TokenExchange: true, SelfIssuedSubjectTokens: "Restricted",
+		}, wantErr: "is not supported"},
+		{name: "restricted with no source clients", spec: ConfiguredClientSpec{
+			TokenExchange: true, SelfIssuedSubjectTokens: restricted,
+		}},
+		{name: "any with no other fields", spec: ConfiguredClientSpec{
+			TokenExchange: true, SelfIssuedSubjectTokens: selfIssuedSubjectTokensAny,
+		}},
+		{name: "any with source clients", spec: ConfiguredClientSpec{
+			TokenExchange: true, SelfIssuedSubjectTokens: selfIssuedSubjectTokensAny,
+			AllowedSourceClients: []string{"tui"},
+		}, wantErr: "allowed_source_clients is valid only with"},
+		{name: "any with api audience", spec: ConfiguredClientSpec{
+			TokenExchange: true, SelfIssuedSubjectTokens: selfIssuedSubjectTokensAny,
+			Audiences: []string{"https://a.example"}, APIAudience: "https://a.example",
+		}, wantErr: "api_audience is valid only with"},
+		{name: "token_exchange with sources and api audience", spec: ConfiguredClientSpec{
+			TokenExchange: true, SelfIssuedSubjectTokens: restricted,
+			AllowedSourceClients: []string{"tui", "web"},
+			Audiences:            []string{"https://api.example"}, APIAudience: "https://api.example",
+		}},
+		{name: "duplicate source client", spec: ConfiguredClientSpec{
+			TokenExchange: true, SelfIssuedSubjectTokens: restricted,
+			AllowedSourceClients: []string{"tui", "tui"},
+		}, wantErr: "more than once"},
+		{name: "wildcard source client", spec: ConfiguredClientSpec{
+			TokenExchange: true, SelfIssuedSubjectTokens: restricted,
+			AllowedSourceClients: []string{"*"},
+		}, wantErr: "wildcard"},
+		{name: "empty source client", spec: ConfiguredClientSpec{
+			TokenExchange: true, SelfIssuedSubjectTokens: restricted,
+			AllowedSourceClients: []string{"tui", ""},
+		}, wantErr: "empty client_id"},
+		{name: "too many source clients", spec: ConfiguredClientSpec{
+			TokenExchange: true, SelfIssuedSubjectTokens: restricted,
+			AllowedSourceClients: func() []string {
+				ids := make([]string, maxAllowedSourceClients+1)
+				for i := range ids {
+					ids[i] = fmt.Sprintf("client-%d", i)
+				}
+				return ids
+			}(),
+		}, wantErr: "at most"},
+		{name: "source client that is a delegate client", spec: ConfiguredClientSpec{
+			TokenExchange: true, SelfIssuedSubjectTokens: restricted,
+			AllowedSourceClients: []string{"tui", "other-broker"},
+			DelegateClientIDs:    []string{"broker", "other-broker"},
+		}, wantErr: "configured delegate client"},
+		{name: "source client that is the client itself", spec: ConfiguredClientSpec{
+			ClientID: "broker", TokenExchange: true, SelfIssuedSubjectTokens: restricted,
+			AllowedSourceClients: []string{"broker"},
+			DelegateClientIDs:    []string{"broker"},
+		}, wantErr: "its own tokens are always accepted"},
+		{name: "source client that is not a delegate client", spec: ConfiguredClientSpec{
+			TokenExchange: true, SelfIssuedSubjectTokens: restricted,
+			AllowedSourceClients: []string{"tui"}, DelegateClientIDs: []string{"broker"},
+		}},
+		{name: "api audience outside the client's audiences", spec: ConfiguredClientSpec{
+			TokenExchange: true, SelfIssuedSubjectTokens: restricted,
+			Audiences: []string{"https://a.example"}, APIAudience: "https://b.example",
+		}, wantErr: "not one of the client's audiences"},
 	}
 
 	for _, tt := range tests {

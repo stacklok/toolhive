@@ -388,6 +388,70 @@ type DelegateClientRunConfig struct {
 	// a declared client must not receive every allowed audience just because
 	// this was left empty.
 	Audiences []string `json:"audiences" yaml:"audiences"`
+
+	// TokenExchange is the client's token-exchange policy. Its
+	// SelfIssuedSubjectTokens field selects which self-issued subject tokens
+	// the client may exchange and is required whenever the block is present.
+	// The block may be omitted only when GrantTypes is omitted or empty; such
+	// a client keeps the legacy rule (any) and may exchange any self-issued
+	// token. A client that sets GrantTypes must declare the block.
+	TokenExchange *DelegateClientTokenExchange `json:"token_exchange,omitempty" yaml:"token_exchange,omitempty"`
+}
+
+// SelfIssuedSubjectTokens selects which self-issued subject tokens a delegate
+// client may exchange. It never applies to external-issuer subject tokens,
+// which follow the trusted issuer policy.
+type SelfIssuedSubjectTokens string
+
+const (
+	// SelfIssuedSubjectTokensAny lets the client exchange any self-issued
+	// subject token, whichever client it was issued to.
+	SelfIssuedSubjectTokensAny SelfIssuedSubjectTokens = "any"
+	// SelfIssuedSubjectTokensRestricted limits the client to self-issued
+	// subject tokens issued to itself or to one of AllowedSourceClients.
+	SelfIssuedSubjectTokensRestricted SelfIssuedSubjectTokens = "restricted"
+)
+
+// DelegateClientTokenExchange is the token-exchange policy of one delegate
+// client. External-issuer subject tokens are not affected by it: the trusted
+// issuer's own policy decides those.
+type DelegateClientTokenExchange struct {
+	// SelfIssuedSubjectTokens is any or restricted, and is required. With
+	// restricted, a self-issued subject token must carry the client's own
+	// client_id or one of AllowedSourceClients, and a may_act claim naming
+	// this client does not lift that restriction. With any, the client may
+	// exchange any self-issued token.
+	SelfIssuedSubjectTokens SelfIssuedSubjectTokens `json:"self_issued_subject_tokens" yaml:"self_issued_subject_tokens" binding:"required"`
+
+	// AllowedSourceClients are client_id values, as they appear in the subject
+	// token's client_id claim, whose self-issued tokens this client may
+	// exchange in addition to its own. They must be user-facing clients that
+	// register at runtime (DCR or CIMD), so startup cannot check that they
+	// exist. A configured delegate client cannot be listed: its tokens carry
+	// its own client_id, so listing it would trust everything it accepts.
+	// Valid only with restricted; empty means the client's own tokens only.
+	AllowedSourceClients []string `json:"allowed_source_clients,omitempty" yaml:"allowed_source_clients,omitempty"`
+
+	// APIAudience is the client's own API audience. The client may request it
+	// even when the subject token does not cover it. It must be one of the
+	// client's Audiences. Valid only with restricted.
+	APIAudience string `json:"api_audience,omitempty" yaml:"api_audience,omitempty"`
+}
+
+// Clone returns a copy that shares no slices with t. A nil policy clones to nil.
+func (t *DelegateClientTokenExchange) Clone() *DelegateClientTokenExchange {
+	if t == nil {
+		return nil
+	}
+	cloned := *t
+	cloned.AllowedSourceClients = slices.Clone(t.AllowedSourceClients)
+	return &cloned
+}
+
+// Restricted reports whether the policy limits self-issued subject tokens to
+// the client and its allowed source clients. A nil policy is not restricted.
+func (t *DelegateClientTokenExchange) Restricted() bool {
+	return t != nil && t.SelfIssuedSubjectTokens == SelfIssuedSubjectTokensRestricted
 }
 
 // Validate checks that the on-disk RunConfig is internally consistent. Called
@@ -593,9 +657,10 @@ func validateDelegateClients(
 	views := make([]delegateClientView, len(clients))
 	for i, client := range clients {
 		views[i] = delegateClientView{
-			ClientID:  client.ClientID,
-			Scopes:    client.Scopes,
-			Audiences: client.Audiences,
+			ClientID:      client.ClientID,
+			Scopes:        client.Scopes,
+			Audiences:     client.Audiences,
+			TokenExchange: client.TokenExchange,
 			Spec: registration.ConfiguredClientSpec{
 				TokenEndpointAuthMethod: client.TokenEndpointAuthMethod,
 				SigningAlgorithm:        client.TokenEndpointAuthSigningAlg,
@@ -615,7 +680,11 @@ type delegateClientView struct {
 	ClientID  string
 	Scopes    []string
 	Audiences []string
-	Spec      registration.ConfiguredClientSpec
+	// TokenExchange is the client's token-exchange source policy, if any.
+	TokenExchange *DelegateClientTokenExchange
+	// Spec carries the client metadata; validateDelegateClientViews fills in
+	// the fields that depend on the whole client list.
+	Spec registration.ConfiguredClientSpec
 }
 
 func validateDelegateClientViews(
@@ -624,6 +693,11 @@ func validateDelegateClientViews(
 	effectiveScopes := scopesSupported
 	if len(effectiveScopes) == 0 {
 		effectiveScopes = registration.DefaultScopes
+	}
+
+	delegateIDs := make([]string, len(clients))
+	for i, client := range clients {
+		delegateIDs[i] = client.ClientID
 	}
 
 	seen := make(map[string]struct{}, len(clients))
@@ -652,8 +726,21 @@ func validateDelegateClientViews(
 					"clients must use an opaque, non-URL client_id", client.ClientID)
 		}
 
-		if err := registration.ValidateConfiguredClient(client.Spec); err != nil {
+		spec := client.Spec
+		spec.Audiences = client.Audiences
+		spec.ClientID = client.ClientID
+		spec.DelegateClientIDs = delegateIDs
+		if client.TokenExchange != nil {
+			spec.TokenExchange = true
+			spec.SelfIssuedSubjectTokens = string(client.TokenExchange.SelfIssuedSubjectTokens)
+			spec.AllowedSourceClients = client.TokenExchange.AllowedSourceClients
+			spec.APIAudience = client.TokenExchange.APIAudience
+		}
+		if err := registration.ValidateConfiguredClient(spec); err != nil {
 			return fmt.Errorf("delegate_clients: client_id %q: %w", client.ClientID, err)
+		}
+		if err := requireDeclaredTrustMode(client); err != nil {
+			return err
 		}
 		if len(client.Scopes) == 0 {
 			return fmt.Errorf("delegate_clients: client_id %q: scopes is required", client.ClientID)
@@ -671,6 +758,19 @@ func validateDelegateClientViews(
 					"delegate_clients: client_id %q: audience %q is not in allowed_audiences", client.ClientID, audience)
 			}
 		}
+	}
+	return nil
+}
+
+// requireDeclaredTrustMode refuses a client that declares grant_types without
+// a token_exchange block. Only the legacy shape (no grants, no block) keeps
+// blanket trust implicitly; a client written against the newer metadata must
+// state its trust mode for self-issued subject tokens.
+func requireDeclaredTrustMode(client delegateClientView) error {
+	if len(client.Spec.GrantTypes) > 0 && client.TokenExchange == nil {
+		return fmt.Errorf("delegate_clients: client_id %q: grant_types is set, so a token_exchange block "+
+			"with self_issued_subject_tokens (%q or %q) is required",
+			client.ClientID, SelfIssuedSubjectTokensAny, SelfIssuedSubjectTokensRestricted)
 	}
 	return nil
 }
@@ -708,9 +808,10 @@ func validateResolvedDelegateClients(
 			}
 		}
 		views[i] = delegateClientView{
-			ClientID:  client.ClientID,
-			Scopes:    client.Scopes,
-			Audiences: client.Audiences,
+			ClientID:      client.ClientID,
+			Scopes:        client.Scopes,
+			Audiences:     client.Audiences,
+			TokenExchange: client.TokenExchange,
 			Spec: registration.ConfiguredClientSpec{
 				TokenEndpointAuthMethod: client.TokenEndpointAuthMethod,
 				SigningAlgorithm:        client.TokenEndpointAuthSigningAlg,
@@ -1599,6 +1700,9 @@ type DelegateClient struct {
 
 	// JSONWebKeys are the public keys loaded from JWKSFile, for private_key_jwt.
 	JSONWebKeys *jose.JSONWebKeySet
+
+	// TokenExchange carries the matching DelegateClientRunConfig field.
+	TokenExchange *DelegateClientTokenExchange
 }
 
 // Validate checks that the Config is valid.

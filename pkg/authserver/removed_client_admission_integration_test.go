@@ -569,6 +569,9 @@ func (w *removedClientWorld) start(t *testing.T, fixtures []removedClientFixture
 				oauthproto.GrantTypeTokenExchange, oauthproto.GrantTypeJWTBearer,
 			}
 			client.RedirectURIs = []string{f.redirectURI()}
+			client.TokenExchange = &authserver.DelegateClientTokenExchange{
+				SelfIssuedSubjectTokens: authserver.SelfIssuedSubjectTokensAny,
+			}
 		}
 		cfg.DelegateClients = append(cfg.DelegateClients, client)
 	}

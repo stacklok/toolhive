@@ -1174,9 +1174,10 @@ func TestDelegateClientRunConfigValidate(t *testing.T) {
 		}}, wantErr: "must include"},
 		{name: "authorization_code with redirect", clients: []DelegateClientRunConfig{{
 			ClientID: "delegate", ClientSecretEnvVar: "SECRET",
-			GrantTypes:   []string{"urn:ietf:params:oauth:grant-type:token-exchange", "authorization_code"},
-			RedirectURIs: []string{"https://broker.example.com/callback"},
-			Scopes:       validClient.Scopes, Audiences: validClient.Audiences,
+			GrantTypes:    []string{"urn:ietf:params:oauth:grant-type:token-exchange", "authorization_code"},
+			RedirectURIs:  []string{"https://broker.example.com/callback"},
+			TokenExchange: &DelegateClientTokenExchange{SelfIssuedSubjectTokens: SelfIssuedSubjectTokensAny},
+			Scopes:        validClient.Scopes, Audiences: validClient.Audiences,
 		}}},
 		{name: "authorization_code without redirect", clients: []DelegateClientRunConfig{{
 			ClientID: "delegate", ClientSecretEnvVar: "SECRET",
@@ -1187,6 +1188,71 @@ func TestDelegateClientRunConfigValidate(t *testing.T) {
 			ClientID: "delegate", ClientSecretEnvVar: "SECRET", RedirectURIs: []string{"https://broker.example.com/callback"},
 			Scopes: validClient.Scopes, Audiences: validClient.Audiences,
 		}}, wantErr: "only allowed with the authorization_code grant"},
+		{name: "token_exchange with source client and api audience", clients: []DelegateClientRunConfig{{
+			ClientID: "delegate", ClientSecretEnvVar: "SECRET",
+			TokenExchange: &DelegateClientTokenExchange{
+				SelfIssuedSubjectTokens: SelfIssuedSubjectTokensRestricted,
+				AllowedSourceClients:    []string{"tui"}, APIAudience: "https://mcp.example.com",
+			},
+			Scopes: validClient.Scopes, Audiences: validClient.Audiences,
+		}}},
+		{name: "token_exchange source client is another delegate client", clients: []DelegateClientRunConfig{
+			validClient,
+			{
+				ClientID: "broker", ClientSecretEnvVar: "SECRET",
+				TokenExchange: &DelegateClientTokenExchange{
+					SelfIssuedSubjectTokens: SelfIssuedSubjectTokensRestricted,
+					AllowedSourceClients:    []string{"delegate"},
+				},
+				Scopes: validClient.Scopes, Audiences: validClient.Audiences,
+			},
+		}, wantErr: "configured delegate client"},
+		{name: "empty token_exchange block", clients: []DelegateClientRunConfig{{
+			ClientID: "delegate", ClientSecretEnvVar: "SECRET", TokenExchange: &DelegateClientTokenExchange{},
+			Scopes: validClient.Scopes, Audiences: validClient.Audiences,
+		}}, wantErr: "self_issued_subject_tokens is required"},
+		{name: "unsupported self_issued_subject_tokens", clients: []DelegateClientRunConfig{{
+			ClientID: "delegate", ClientSecretEnvVar: "SECRET",
+			TokenExchange: &DelegateClientTokenExchange{SelfIssuedSubjectTokens: "blanket"},
+			Scopes:        validClient.Scopes, Audiences: validClient.Audiences,
+		}}, wantErr: `self_issued_subject_tokens "blanket" is not supported`},
+		{name: "grant_types without token_exchange block", clients: []DelegateClientRunConfig{{
+			ClientID: "delegate", ClientSecretEnvVar: "SECRET",
+			GrantTypes: []string{"urn:ietf:params:oauth:grant-type:token-exchange"},
+			Scopes:     validClient.Scopes, Audiences: validClient.Audiences,
+		}}, wantErr: "grant_types is set, so a token_exchange block"},
+		{name: "grant_types with explicit any", clients: []DelegateClientRunConfig{{
+			ClientID: "delegate", ClientSecretEnvVar: "SECRET",
+			GrantTypes:    []string{"urn:ietf:params:oauth:grant-type:token-exchange"},
+			TokenExchange: &DelegateClientTokenExchange{SelfIssuedSubjectTokens: SelfIssuedSubjectTokensAny},
+			Scopes:        validClient.Scopes, Audiences: validClient.Audiences,
+		}}},
+		{name: "empty grant_types without token_exchange block", clients: []DelegateClientRunConfig{{
+			ClientID: "delegate", ClientSecretEnvVar: "SECRET", GrantTypes: []string{},
+			Scopes: validClient.Scopes, Audiences: validClient.Audiences,
+		}}},
+		{name: "restricted with no source clients", clients: []DelegateClientRunConfig{{
+			ClientID: "delegate", ClientSecretEnvVar: "SECRET",
+			GrantTypes: []string{"urn:ietf:params:oauth:grant-type:token-exchange"},
+			TokenExchange: &DelegateClientTokenExchange{
+				SelfIssuedSubjectTokens: SelfIssuedSubjectTokensRestricted, AllowedSourceClients: []string{},
+			},
+			Scopes: validClient.Scopes, Audiences: validClient.Audiences,
+		}}},
+		{name: "any with source clients", clients: []DelegateClientRunConfig{{
+			ClientID: "delegate", ClientSecretEnvVar: "SECRET",
+			TokenExchange: &DelegateClientTokenExchange{
+				SelfIssuedSubjectTokens: SelfIssuedSubjectTokensAny, AllowedSourceClients: []string{"tui"},
+			},
+			Scopes: validClient.Scopes, Audiences: validClient.Audiences,
+		}}, wantErr: "allowed_source_clients is valid only with"},
+		{name: "any with api audience", clients: []DelegateClientRunConfig{{
+			ClientID: "delegate", ClientSecretEnvVar: "SECRET",
+			TokenExchange: &DelegateClientTokenExchange{
+				SelfIssuedSubjectTokens: SelfIssuedSubjectTokensAny, APIAudience: "https://mcp.example.com",
+			},
+			Scopes: validClient.Scopes, Audiences: validClient.Audiences,
+		}}, wantErr: "api_audience is valid only with"},
 		// P4 (PR #6284 review): a URL-shaped client_id collides with CIMD
 		// client resolution (oauthproto.IsClientIDMetadataDocumentURL) — the
 		// CIMD decorator would shadow this pre-provisioned client on reads,
@@ -1350,6 +1416,22 @@ func TestConfigValidateDelegateClients(t *testing.T) {
 			ClientID: "delegate", ClientSecret: validClient.ClientSecret, RedirectURIs: []string{"https://broker.example.com/callback"},
 			Scopes: validClient.Scopes, Audiences: validClient.Audiences,
 		}}, wantErr: "only allowed with the authorization_code grant"},
+		{name: "resolved grant_types without token_exchange block", clients: []DelegateClient{{
+			ClientID: "delegate", ClientSecret: validClient.ClientSecret,
+			GrantTypes: []string{"urn:ietf:params:oauth:grant-type:token-exchange"},
+			Scopes:     validClient.Scopes, Audiences: validClient.Audiences,
+		}}, wantErr: "grant_types is set, so a token_exchange block"},
+		{name: "resolved empty token_exchange block", clients: []DelegateClient{{
+			ClientID: "delegate", ClientSecret: validClient.ClientSecret, TokenExchange: &DelegateClientTokenExchange{},
+			Scopes: validClient.Scopes, Audiences: validClient.Audiences,
+		}}, wantErr: "self_issued_subject_tokens is required"},
+		{name: "resolved any with source clients", clients: []DelegateClient{{
+			ClientID: "delegate", ClientSecret: validClient.ClientSecret,
+			TokenExchange: &DelegateClientTokenExchange{
+				SelfIssuedSubjectTokens: SelfIssuedSubjectTokensAny, AllowedSourceClients: []string{"tui"},
+			},
+			Scopes: validClient.Scopes, Audiences: validClient.Audiences,
+		}}, wantErr: "allowed_source_clients is valid only with"},
 		{name: "unsupported auth method", clients: []DelegateClient{{
 			ClientID: "delegate", ClientSecret: validClient.ClientSecret, TokenEndpointAuthMethod: "none",
 			Scopes: validClient.Scopes, Audiences: validClient.Audiences,
@@ -2545,6 +2627,72 @@ func TestRunConfigValidateDCRRegistrationLimits(t *testing.T) {
 				return
 			}
 			require.ErrorContains(t, err, tt.wantErrMsg)
+		})
+	}
+}
+
+func TestDelegateClientRunConfigTokenExchangeRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		json       string
+		yaml       string
+		wantNil    bool
+		wantMode   SelfIssuedSubjectTokens
+		wantSource []string
+	}{
+		{name: "absent", json: `{"client_id":"c"}`, yaml: "client_id: c\n", wantNil: true},
+		{name: "null", json: `{"client_id":"c","token_exchange":null}`, yaml: "client_id: c\ntoken_exchange:\n", wantNil: true},
+		{name: "empty block", json: `{"client_id":"c","token_exchange":{}}`, yaml: "client_id: c\ntoken_exchange: {}\n"},
+		{
+			name: "populated",
+			json: `{"client_id":"c","token_exchange":{"self_issued_subject_tokens":"restricted",` +
+				`"allowed_source_clients":["tui"],"api_audience":"a"}}`,
+			yaml: "client_id: c\ntoken_exchange:\n  self_issued_subject_tokens: restricted\n" +
+				"  allowed_source_clients: [tui]\n  api_audience: a\n",
+			wantMode:   SelfIssuedSubjectTokensRestricted,
+			wantSource: []string{"tui"},
+		},
+		{
+			name:     "explicit any",
+			json:     `{"client_id":"c","token_exchange":{"self_issued_subject_tokens":"any"}}`,
+			yaml:     "client_id: c\ntoken_exchange:\n  self_issued_subject_tokens: any\n",
+			wantMode: SelfIssuedSubjectTokensAny,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			check := func(t *testing.T, got DelegateClientRunConfig) {
+				t.Helper()
+				if tt.wantNil {
+					assert.Nil(t, got.TokenExchange)
+					return
+				}
+				require.NotNil(t, got.TokenExchange)
+				assert.Equal(t, tt.wantMode, got.TokenExchange.SelfIssuedSubjectTokens)
+				assert.Equal(t, tt.wantSource, got.TokenExchange.AllowedSourceClients)
+			}
+
+			var fromJSON DelegateClientRunConfig
+			require.NoError(t, json.Unmarshal([]byte(tt.json), &fromJSON))
+			check(t, fromJSON)
+			encoded, err := json.Marshal(fromJSON)
+			require.NoError(t, err)
+			var reJSON DelegateClientRunConfig
+			require.NoError(t, json.Unmarshal(encoded, &reJSON))
+			check(t, reJSON)
+
+			var fromYAML DelegateClientRunConfig
+			require.NoError(t, yaml.Unmarshal([]byte(tt.yaml), &fromYAML))
+			check(t, fromYAML)
+			encoded, err = yaml.Marshal(fromYAML)
+			require.NoError(t, err)
+			var reYAML DelegateClientRunConfig
+			require.NoError(t, yaml.Unmarshal(encoded, &reYAML))
+			check(t, reYAML)
 		})
 	}
 }

@@ -390,7 +390,8 @@ func prepareServerStorageAndRegisterClients(
 	if retErr != nil {
 		return nil, nil, nil, nil, retErr
 	}
-	if retErr = registerDelegateClients(ctx, prepared, cfg.DelegateClients); retErr != nil {
+	retErr = registerDelegateClients(ctx, prepared, cfg.DelegateClients, JWTBearerGrantEnabled(cfg.TrustedIssuers))
+	if retErr != nil {
 		return nil, nil, nil, nil, retErr
 	}
 	if retErr = validateConsentExemptClients(ctx, prepared, cfg.ConsentExemptClientIDs); retErr != nil {
@@ -455,7 +456,9 @@ func validateConsentExemptClients(ctx context.Context, stor storage.Storage, cli
 	return nil
 }
 
-func registerDelegateClients(ctx context.Context, stor storage.Storage, delegateClients []DelegateClient) error {
+func registerDelegateClients(
+	ctx context.Context, stor storage.Storage, delegateClients []DelegateClient, jwtBearerEnabled bool,
+) error {
 	for _, delegateClient := range delegateClients {
 		client, err := registration.NewStaticDelegateClient(registration.Config{
 			ID:                                delegateClient.ClientID,
@@ -474,10 +477,25 @@ func registerDelegateClients(ctx context.Context, stor storage.Storage, delegate
 		if err := stor.ReconcileConfiguredClient(ctx, client); err != nil {
 			return fmt.Errorf("failed to register delegate client %q: %w", delegateClient.ClientID, err)
 		}
+		if delegateClient.TokenExchange.Restricted() {
+			continue
+		}
+		attrs := []any{
+			"client_id", delegateClient.ClientID, "scopes", delegateClient.Scopes, "audiences", delegateClient.Audiences,
+		}
+		// A client with grant_types must declare its mode, so reaching here
+		// means it chose any explicitly. A client without grant_types can
+		// also redeem an ID-JAG when jwt-bearer is enabled, minting its own
+		// self-issued tokens to exchange.
+		if len(delegateClient.GrantTypes) > 0 {
+			attrs = append(attrs, "explicit_any", true)
+		} else if jwtBearerEnabled {
+			attrs = append(attrs, "redeems_id_jag", true)
+		}
 		slog.Warn("delegate client has blanket self-issued token exchange rights: "+
 			"it may exchange any user's self-issued ToolHive token for a delegated token, "+
 			"with no per-subject binding to the client that originally obtained that token",
-			"client_id", delegateClient.ClientID, "scopes", delegateClient.Scopes, "audiences", delegateClient.Audiences)
+			attrs...)
 	}
 	return nil
 }
@@ -592,6 +610,27 @@ func JWTBearerGrantEnabled(trustedIssuers []tokenexchange.TrustedIssuer) bool {
 	return false
 }
 
+// restrictedClientPolicies returns the source policy of every delegate client
+// whose self_issued_subject_tokens is restricted, keyed by client ID. A client
+// with any, or without a token_exchange block, gets no entry and so keeps
+// blanket trust of self-issued subject tokens.
+func restrictedClientPolicies(clients []DelegateClient) map[string]tokenexchange.ConfiguredClientPolicy {
+	var policies map[string]tokenexchange.ConfiguredClientPolicy
+	for _, c := range clients {
+		if !c.TokenExchange.Restricted() {
+			continue
+		}
+		if policies == nil {
+			policies = make(map[string]tokenexchange.ConfiguredClientPolicy)
+		}
+		policies[c.ClientID] = tokenexchange.ConfiguredClientPolicy{
+			AllowedSourceClients: slices.Clone(c.TokenExchange.AllowedSourceClients),
+			APIAudience:          c.TokenExchange.APIAudience,
+		}
+	}
+	return policies
+}
+
 // buildProvider assembles the fosite OAuth2 provider, registering the RFC 8693
 // token-exchange handler and/or the RFC 7523 JWT-bearer handler as extension
 // grants alongside the standard grants -- whichever of the two are enabled
@@ -612,6 +651,7 @@ func buildProvider(
 	refresher storage.UpstreamTokenRefresher, upstreams []handlers.NamedUpstream,
 ) (_ fosite.OAuth2Provider, _ *tokenexchange.MultiIssuerTokenValidator, retErr error) {
 	delegateIDs := delegateClientIDs(cfg.DelegateClients)
+	clientPolicies := restrictedClientPolicies(cfg.DelegateClients)
 	jwtBearerEnabled := JWTBearerGrantEnabled(cfg.TrustedIssuers)
 
 	// Built once, up front, and handed to whichever factories below actually
@@ -650,7 +690,7 @@ func buildProvider(
 	factories := make([]oauthserver.Factory, 0, 4)
 	if !cfg.DisableTokenExchange {
 		tokenExchangeFactory, err := tokenexchange.FactoryWithSharedTrustedIssuerValidator(
-			cfg.DelegationTokenLifespan, cfg.TrustedIssuers, delegateIDs, shared,
+			cfg.DelegationTokenLifespan, cfg.TrustedIssuers, delegateIDs, clientPolicies, shared,
 			tokenexchange.WithAuthorizationDetailsRegistry(cfg.AuthorizationDetailsRegistry),
 		)
 		if err != nil {

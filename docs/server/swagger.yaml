@@ -324,6 +324,47 @@ components:
             TokenEndpointAuthSigningAlg is the private_key_jwt signing algorithm.
             Defaults to RS256.
           type: string
+        token_exchange:
+          $ref: '#/components/schemas/authserver.DelegateClientTokenExchange'
+      type: object
+    authserver.DelegateClientTokenExchange:
+      description: |-
+        TokenExchange is the client's token-exchange policy. Its
+        SelfIssuedSubjectTokens field selects which self-issued subject tokens
+        the client may exchange and is required whenever the block is present.
+        The block may be omitted only when GrantTypes is omitted or empty; such
+        a client keeps the legacy rule (any) and may exchange any self-issued
+        token. A client that sets GrantTypes must declare the block.
+      properties:
+        allowed_source_clients:
+          description: |-
+            AllowedSourceClients are client_id values, as they appear in the subject
+            token's client_id claim, whose self-issued tokens this client may
+            exchange in addition to its own. They must be user-facing clients that
+            register at runtime (DCR or CIMD), so startup cannot check that they
+            exist. A configured delegate client cannot be listed: its tokens carry
+            its own client_id, so listing it would trust everything it accepts.
+            Valid only with restricted; empty means the client's own tokens only.
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+        api_audience:
+          description: |-
+            APIAudience is the client's own API audience. The client may request it
+            even when the subject token does not cover it. It must be one of the
+            client's Audiences. Valid only with restricted.
+          type: string
+        self_issued_subject_tokens:
+          description: |-
+            SelfIssuedSubjectTokens is any or restricted, and is required. With
+            restricted, a self-issued subject token must carry the client's own
+            client_id or one of AllowedSourceClients, and a may_act claim naming
+            this client does not lift that restriction. With any, the client may
+            exchange any self-issued token.
+          type: string
+      required:
+      - self_issued_subject_tokens
       type: object
     authserver.IdentityFromTokenRunConfig:
       description: |-

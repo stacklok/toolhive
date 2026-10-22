@@ -77,6 +77,23 @@ type Handler struct {
 	configuredDelegateClients []string
 	// authorizationDetailsRegistry validates RFC 9396 details on token exchange.
 	authorizationDetailsRegistry *authorizationdetails.Registry
+	// clientPolicies holds the source policy of the delegate clients whose
+	// self_issued_subject_tokens is restricted. It is built once at startup
+	// and never mutated.
+	clientPolicies map[string]ConfiguredClientPolicy
+}
+
+// ConfiguredClientPolicy is the token-exchange policy of a delegate client
+// whose self_issued_subject_tokens is restricted. A client with any, or
+// without a token_exchange block, has no entry and keeps blanket trust of
+// self-issued subject tokens.
+type ConfiguredClientPolicy struct {
+	// AllowedSourceClients are the client_id values, besides the client
+	// itself, whose self-issued subject tokens the client may exchange.
+	AllowedSourceClients []string
+	// APIAudience is the audience the client may be granted without subject
+	// token coverage. Empty means none.
+	APIAudience string
 }
 
 // formParams holds the validated RFC 8693 form parameters extracted from a
@@ -168,9 +185,9 @@ func (h *Handler) HandleTokenEndpointRequest(ctx context.Context, requester fosi
 		// RFC 8693 §2.2.2 mandates invalid_request here: "if either the
 		// subject_token or actor_token are invalid for any reason, or are
 		// unacceptable based on policy ... The value of the error parameter
-		// MUST be the invalid_request error code." checkDelegationConsent
-		// below deliberately returns invalid_grant instead for its own
-		// failures — a documented deviation: RFC 6749 §5.2's invalid_grant
+		// MUST be the invalid_request error code." checkSourcePolicy and
+		// checkDelegationConsent below deliberately return invalid_grant
+		// instead for their own failures — a documented deviation: RFC 6749 §5.2's invalid_grant
 		// covers "was issued to another client", §2.2.2 permits other error
 		// codes for other failures, and both Keycloak and Hydra follow this
 		// same split.
@@ -291,9 +308,10 @@ func (h *Handler) PopulateTokenEndpointResponse(
 	return nil
 }
 
-// authorizeDelegation runs consent, then scopes, then audiences, then the
-// authorization_details hook, in that order, so the hook sees only a request
-// that passed every other check.
+// authorizeDelegation runs the source policy (for clients that have one), then
+// consent, then scopes, then audiences, then the authorization_details hook,
+// in that order, so the hook sees only a request that passed every other
+// check.
 func (h *Handler) authorizeDelegation(
 	ctx context.Context,
 	requester fosite.AccessRequester,
@@ -304,6 +322,11 @@ func (h *Handler) authorizeDelegation(
 	pendingDetails *authorizationdetails.Pending,
 ) error {
 	configuredDelegate := slices.Contains(h.configuredDelegateClients, client.GetID())
+	if policy, ok := h.clientPolicies[client.GetID()]; ok {
+		if err := checkSourcePolicy(validatedClaims, client.GetID(), policy); err != nil {
+			return err
+		}
+	}
 	if err := checkDelegationConsent(validatedClaims, client.GetID(), actorSub, configuredDelegate); err != nil {
 		return err
 	}
@@ -609,13 +632,19 @@ func buildActClaim(validatedClaims *ValidatedClaims, issuer, actorID string) (ma
 	// hop, so "original" and "most recent" coincide today; if a design ever
 	// introduces multiple external-issuer hops, this will need to change to
 	// keep tracking the original rather than the latest.
-	externalIssuer := validatedClaims.ExternalIssuer
-	if externalIssuer == "" {
-		if prior, ok := validatedClaims.Extra["external_issuer"].(string); ok {
-			externalIssuer = prior
-		}
+	return act, externalOrigin(validatedClaims), nil
+}
+
+// externalOrigin returns the trusted external issuer the subject token was
+// validated against or, for a self-issued token, the one recorded in its own
+// "external_issuer" claim. It is empty only when no external token is in the
+// token's ancestry.
+func externalOrigin(validatedClaims *ValidatedClaims) string {
+	if validatedClaims.ExternalIssuer != "" {
+		return validatedClaims.ExternalIssuer
 	}
-	return act, externalIssuer, nil
+	prior, _ := validatedClaims.Extra["external_issuer"].(string)
+	return prior
 }
 
 // chainToAct rebuilds a nested RFC 8693 act structure from a parsed
@@ -663,6 +692,23 @@ func chainToAct(hops []coreaudit.DelegatedActor) (map[string]any, error) {
 func delegateClientAllowed(allowedDelegateClients []string, actorID string) bool {
 	return slices.Contains(allowedDelegateClients, anyDelegateClient) ||
 		slices.Contains(allowedDelegateClients, actorID)
+}
+
+// checkSourcePolicy narrows the self-issued blanket trust of a delegate client
+// whose self_issued_subject_tokens is restricted: the subject token must have
+// been issued to the client itself or to one of its allowed source clients.
+// It runs before checkDelegationConsent, so a may_act claim must also match;
+// neither check overrides the other. External-issuer tokens are left to the issuer policy
+// in checkDelegationConsent.
+func checkSourcePolicy(validatedClaims *ValidatedClaims, clientID string, policy ConfiguredClientPolicy) error {
+	if validatedClaims.ExternalIssuer != "" {
+		return nil
+	}
+	if validatedClaims.ClientID == clientID || slices.Contains(policy.AllowedSourceClients, validatedClaims.ClientID) {
+		return nil
+	}
+	return errorsx.WithStack(fosite.ErrInvalidGrant.WithHint(
+		"The subject token was not issued to this client or to one of its allowed source clients."))
 }
 
 // checkDelegationConsent enforces the RFC 8693 §4.4 delegation consent check.
@@ -718,8 +764,11 @@ func delegateClientAllowed(allowedDelegateClients []string, actorID string) bool
 //     Config.DelegateClients ID-only) is exempt from this binding when the
 //     subject token is self-issued (ExternalIssuer == ""). Such a client may
 //     present ANY self-issued subject token regardless of which client it was
-//     originally issued to. This is deliberately scoped to the self-issued
-//     path only — see selfIssuedDelegate below — because delegate clients are
+//     originally issued to, unless the client's self_issued_subject_tokens is
+//     restricted, in which case checkSourcePolicy has already limited it to
+//     its own and its listed source clients' tokens. This is deliberately
+//     scoped to the self-issued path only — see selfIssuedDelegate below —
+//     because delegate clients are
 //     operator-declared at server startup, not obtained through self-service
 //     registration (DCR), matching the blanket-trust model already accepted
 //     for the AllowedDelegateClients wildcard (anyDelegateClient) above.
@@ -823,10 +872,12 @@ func (h *Handler) grantScopes(
 // The delegated token must not target a resource the subject token was not
 // itself valid for: every granted audience must be covered by the subject
 // token's audience — delegation narrows, never broadens, the resource
-// boundary. This mirrors grantScopes, which bounds scopes by the subject
-// token; without it a client registered for audiences A and B could exchange a
-// user token minted for A into a token for B, an escalation the user never
-// consented to.
+// boundary. The one exception is the client's api_audience, which may be
+// granted without coverage when the subject token is self-issued and not
+// derived from an external-issuer token. This mirrors grantScopes, which
+// bounds scopes by the subject token; without it a client registered for
+// audiences A and B could exchange a user token minted for A into a token for
+// B, an escalation the user never consented to.
 func (h *Handler) grantAndBoundAudiences(
 	ctx context.Context, requester fosite.AccessRequester, client fosite.Client, validatedClaims *ValidatedClaims,
 ) error {
@@ -839,7 +890,17 @@ func (h *Handler) grantAndBoundAudiences(
 	if err := h.grantDefaultAudience(ctx, requester, client); err != nil {
 		return err
 	}
-	return ensureAudienceSubsetOfSubject(requester.GetGrantedAudience(), validatedClaims.Audience)
+	// The api_audience exception applies only to self-issued subject tokens
+	// with no external token in their ancestry: externalOrigin also sees a
+	// re-exchanged token's signed external_issuer claim, so a token derived
+	// from an external one stays bound by its own audience.
+	apiAudience := func() string {
+		if externalOrigin(validatedClaims) != "" {
+			return ""
+		}
+		return h.clientPolicies[client.GetID()].APIAudience
+	}()
+	return ensureAudienceSubsetOfSubject(requester.GetGrantedAudience(), validatedClaims.Audience, apiAudience)
 }
 
 // grantAudiences validates that the requested audience is allowed for this
@@ -930,13 +991,18 @@ func (h *Handler) grantDefaultAudience(ctx context.Context, requester fosite.Acc
 // issuer's own configured ExpectedAudience, which has no required
 // relationship to AllowedAudiences — see the TrustedIssuers field doc
 // comment in pkg/authserver/config.go for the operator-facing consequence.
-func ensureAudienceSubsetOfSubject(granted, subjectAud []string) error {
+//
+// apiAudience is the client's own configured API audience; it is exempt from
+// the coverage rule. Empty means the client has none. Granted audiences are
+// never empty: fosite drops empty "audience" values, and grantResourceAudience
+// skips an empty "resource". So an empty apiAudience exempts nothing.
+func ensureAudienceSubsetOfSubject(granted, subjectAud []string, apiAudience string) error {
 	subj := make(map[string]bool, len(subjectAud))
 	for _, a := range subjectAud {
 		subj[a] = true
 	}
 	for _, a := range granted {
-		if !subj[a] {
+		if !subj[a] && a != apiAudience {
 			return errorsx.WithStack(server.ErrInvalidTarget.WithHintf(
 				"The delegated token audience %q is not covered by the subject token's audience.", a))
 		}

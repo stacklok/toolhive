@@ -233,8 +233,36 @@ const docTemplate = `{
                     "token_endpoint_auth_signing_alg": {
                         "description": "TokenEndpointAuthSigningAlg is the private_key_jwt signing algorithm.\nDefaults to RS256.",
                         "type": "string"
+                    },
+                    "token_exchange": {
+                        "$ref": "#/components/schemas/authserver.DelegateClientTokenExchange"
                     }
                 },
+                "type": "object"
+            },
+            "authserver.DelegateClientTokenExchange": {
+                "description": "TokenExchange is the client's token-exchange policy. Its\nSelfIssuedSubjectTokens field selects which self-issued subject tokens\nthe client may exchange and is required whenever the block is present.\nThe block may be omitted only when GrantTypes is omitted or empty; such\na client keeps the legacy rule (any) and may exchange any self-issued\ntoken. A client that sets GrantTypes must declare the block.",
+                "properties": {
+                    "allowed_source_clients": {
+                        "description": "AllowedSourceClients are client_id values, as they appear in the subject\ntoken's client_id claim, whose self-issued tokens this client may\nexchange in addition to its own. They must be user-facing clients that\nregister at runtime (DCR or CIMD), so startup cannot check that they\nexist. A configured delegate client cannot be listed: its tokens carry\nits own client_id, so listing it would trust everything it accepts.\nValid only with restricted; empty means the client's own tokens only.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "api_audience": {
+                        "description": "APIAudience is the client's own API audience. The client may request it\neven when the subject token does not cover it. It must be one of the\nclient's Audiences. Valid only with restricted.",
+                        "type": "string"
+                    },
+                    "self_issued_subject_tokens": {
+                        "description": "SelfIssuedSubjectTokens is any or restricted, and is required. With\nrestricted, a self-issued subject token must carry the client's own\nclient_id or one of AllowedSourceClients, and a may_act claim naming\nthis client does not lift that restriction. With any, the client may\nexchange any self-issued token.",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "self_issued_subject_tokens"
+                ],
                 "type": "object"
             },
             "authserver.IdentityFromTokenRunConfig": {

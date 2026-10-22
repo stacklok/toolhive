@@ -323,7 +323,7 @@ func TestConfiguredAuthorizationDetailsRegistryThroughRunnerConstructors(t *test
 			registry, err := authorizationdetails.New(map[string]authorizationdetails.Type{
 				"custom": {
 					GrantTypes: []string{oauthproto.GrantTypeTokenExchange},
-					Grant: func(_ context.Context, req authorizationdetails.Request) (authorizationdetails.Result, error) {
+					Grant: func(_ context.Context, _ authorizationdetails.Request) (authorizationdetails.Result, error) {
 						callbacks.Add(1)
 						return authorizationdetails.Result{Entries: []json.RawMessage{
 							json.RawMessage(`{"type":"custom","granted":true}`),
@@ -376,6 +376,7 @@ func TestConfiguredAuthorizationDetailsRegistryThroughRunnerConstructors(t *test
 }
 
 func startConfiguredDelegateAuthServer(t *testing.T) (*httptest.Server, string, *authserverrunner.EmbeddedAuthServer) {
+	t.Helper()
 	return startConfiguredDelegateAuthServerWithOptions(t, false)
 }
 

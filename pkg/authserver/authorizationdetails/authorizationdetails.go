@@ -246,7 +246,8 @@ func checkGranted(typeName string, entry json.RawMessage) error {
 	wrapped := make([]byte, 0, len(entry)+2)
 	wrapped = append(append(append(wrapped, '['), entry...), ']')
 	if !validArray(wrapped) {
-		return fmt.Errorf("type %q returned an entry with duplicate member names or too deep nesting: %w", typeName, errInvalidHookResult)
+		return fmt.Errorf("type %q returned an entry with duplicate member names or too deep nesting: %w",
+			typeName, errInvalidHookResult)
 	}
 	return nil
 }

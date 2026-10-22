@@ -49,7 +49,7 @@ func (s *accessTokenFormRecorder) CreateAccessTokenSession(
 	if err := s.Storage.CreateAccessTokenSession(ctx, signature, request); err != nil {
 		return err
 	}
-	stored, err := s.Storage.GetAccessTokenSession(ctx, signature, nil)
+	stored, err := s.GetAccessTokenSession(ctx, signature, nil)
 	if err != nil {
 		return err
 	}
@@ -94,6 +94,8 @@ func newAuthorizationDetailsRegistry(t *testing.T, calls *atomic.Int32) *authori
 // response member and what reaches the JWT and the store. Parsing and hook
 // semantics are covered by the unit tests in the authorizationdetails and
 // tokenexchange packages.
+//
+//nolint:paralleltest,tparallel // The subtests share the recorder and call counter, so they run in order.
 func TestIntegration_AuthorizationDetailsOverHTTP(t *testing.T) {
 	t.Parallel()
 

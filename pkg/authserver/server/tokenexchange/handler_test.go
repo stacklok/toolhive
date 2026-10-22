@@ -1446,7 +1446,7 @@ func TestTokenExchangeHandler_AuthorizationDetails(t *testing.T) {
 	}
 }
 
-// Not run in parallel: slog.SetDefault is process-wide.
+//nolint:paralleltest // slog.SetDefault is process-wide, so this test cannot run in parallel.
 func TestTokenExchangeHandler_AuthorizationDetailsHookErrorTextNotLogged(t *testing.T) {
 	var buf bytes.Buffer
 	prev := slog.Default()

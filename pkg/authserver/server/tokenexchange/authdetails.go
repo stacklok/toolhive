@@ -59,7 +59,7 @@ func (h *Handler) parseAuthorizationDetails(form url.Values, clientID string) (*
 
 // grantAuthorizationDetails asks the registered hooks what to grant and stores
 // the granted JSON in the request form for PopulateTokenEndpointResponse.
-func (h *Handler) grantAuthorizationDetails(
+func (*Handler) grantAuthorizationDetails(
 	ctx context.Context,
 	pending *authorizationdetails.Pending,
 	requester fosite.AccessRequester,

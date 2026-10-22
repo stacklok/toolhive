@@ -307,9 +307,10 @@ spec:
                     description: |-
                       DelegateClients configures pre-provisioned confidential clients for RFC 8693
                       token exchange. Each secret is referenced from a Kubernetes Secret; no
-                      plaintext secret, redirect URI, or grant selection is accepted here. The
-                      operator always supplies the token-exchange grant when it converts this
-                      configuration to the runtime contract.
+                      plaintext secret is accepted here. The supported path is
+                      inboundGrants.tokenExchange.delegateClients. This field shares its type,
+                      so the newer fields (private_key_jwt, jwksRef, grantTypes, redirectUris,
+                      tokenExchange) are accepted here too, with the same validation.
 
                       This is independent of allowConfidentialClientRegistration: it neither
                       enables nor requires unauthenticated confidential dynamic client
@@ -317,9 +318,10 @@ spec:
                       This legacy field is deprecated; use inboundGrants.tokenExchange.delegateClients.
                     items:
                       description: |-
-                        DelegateClientConfig configures a pre-provisioned confidential OAuth client
-                        for RFC 8693 token exchange. Its secret is referenced from a Kubernetes
-                        Secret and is never represented inline.
+                        DelegateClientConfig configures a pre-provisioned confidential OAuth client.
+                        By default it is a token-exchange client (RFC 8693). Its credential is either
+                        a client secret, referenced from a Kubernetes Secret and never represented
+                        inline, or a public JWKS for private_key_jwt, referenced from a ConfigMap.
                       properties:
                         audiences:
                           description: Audiences is the narrowed set of RFC 8707 resources
@@ -339,8 +341,9 @@ spec:
                           minLength: 1
                           type: string
                         clientSecretRef:
-                          description: ClientSecretRef references the Kubernetes Secret
-                            key containing the client secret.
+                          description: |-
+                            ClientSecretRef references the Kubernetes Secret key containing the client secret.
+                            Required unless tokenEndpointAuthMethod is private_key_jwt, where it is forbidden.
                           properties:
                             key:
                               description: Key is the key within the secret
@@ -352,6 +355,63 @@ spec:
                           - key
                           - name
                           type: object
+                        grantTypes:
+                          description: |-
+                            GrantTypes are the grants this client may use. If omitted or empty, the
+                            client is token-exchange only. When set, the list must include
+                            urn:ietf:params:oauth:grant-type:token-exchange: a delegate client is a
+                            token-exchange client that may also log in or redeem other grants.
+                          items:
+                            enum:
+                            - authorization_code
+                            - refresh_token
+                            - urn:ietf:params:oauth:grant-type:token-exchange
+                            - urn:ietf:params:oauth:grant-type:jwt-bearer
+                            type: string
+                          maxItems: 4
+                          type: array
+                          x-kubernetes-list-type: set
+                        jwksRef:
+                          description: |-
+                            JWKSRef references the ConfigMap key holding the client's public JWKS
+                            document. Required with private_key_jwt and forbidden otherwise. The
+                            document must contain public keys only.
+                          properties:
+                            key:
+                              description: |-
+                                The key to select from the ConfigMap's Data field.
+                                Keys in the BinaryData field are not currently propagated to container env vars.
+                              type: string
+                            name:
+                              default: ""
+                              description: |-
+                                Name of the referent.
+                                This field is effectively required, but due to backwards compatibility is
+                                allowed to be empty. Instances of this type with an empty value here are
+                                almost certainly wrong.
+                                More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                              type: string
+                            optional:
+                              description: Specify whether the ConfigMap or its key
+                                must be defined
+                              type: boolean
+                          required:
+                          - key
+                          type: object
+                          x-kubernetes-map-type: atomic
+                        redirectUris:
+                          description: |-
+                            RedirectURIs are the registered redirect URIs. They are required with the
+                            authorization_code grant and forbidden without it. They sit here, under
+                            tokenExchange.delegateClients, because a delegate client is a
+                            token-exchange client that may also log in (authorization_code).
+                          items:
+                            maxLength: 2048
+                            minLength: 1
+                            type: string
+                          maxItems: 10
+                          type: array
+                          x-kubernetes-list-type: set
                         scopes:
                           description: Scopes is the narrowed set of OAuth scopes
                             this client may request.
@@ -363,17 +423,103 @@ spec:
                           minItems: 1
                           type: array
                           x-kubernetes-list-type: atomic
+                        tokenEndpointAuthMethod:
+                          description: |-
+                            TokenEndpointAuthMethod pins how the client authenticates at the token
+                            endpoint. If omitted, the client authenticates with its secret by either
+                            HTTP Basic or form body.
+                          enum:
+                          - client_secret_basic
+                          - client_secret_post
+                          - private_key_jwt
+                          type: string
+                        tokenEndpointAuthSigningAlg:
+                          description: |-
+                            TokenEndpointAuthSigningAlg is the private_key_jwt signing algorithm,
+                            for example RS256 or ES256. If omitted, RS256 is used.
+                          maxLength: 16
+                          type: string
+                        tokenExchange:
+                          description: |-
+                            TokenExchange is the client's token-exchange policy. Its
+                            selfIssuedSubjectTokens field is required whenever the block is present.
+                            The block may be omitted only when grantTypes is omitted or empty; such a
+                            client keeps the legacy rule (any) and may exchange any self-issued
+                            token. A client that sets grantTypes must declare the block.
+                          properties:
+                            allowedSourceClients:
+                              description: |-
+                                AllowedSourceClients are client_id values, as they appear in the subject
+                                token's client_id claim, whose self-issued tokens this client may
+                                exchange in addition to its own. They must be user-facing clients that
+                                register at runtime (DCR or CIMD). A configured delegate client cannot be
+                                listed here. Valid only with restricted; empty means the client's own
+                                tokens only.
+                              items:
+                                maxLength: 256
+                                minLength: 1
+                                type: string
+                              maxItems: 20
+                              type: array
+                              x-kubernetes-list-type: set
+                            apiAudience:
+                              description: |-
+                                APIAudience is the client's own API audience. The client may request it
+                                even when the subject token does not cover it. It must be one of the
+                                client's audiences. Valid only with restricted.
+                              maxLength: 2048
+                              type: string
+                            selfIssuedSubjectTokens:
+                              description: |-
+                                SelfIssuedSubjectTokens selects which self-issued subject tokens the
+                                client may exchange. With restricted, a self-issued subject token must
+                                carry the client's own client_id or one of allowedSourceClients, and a
+                                may_act claim naming this client does not lift that restriction. With
+                                any, the client may exchange any self-issued token. It has no default
+                                and must be set explicitly.
+                              enum:
+                              - any
+                              - restricted
+                              type: string
+                          required:
+                          - selfIssuedSubjectTokens
+                          type: object
+                          x-kubernetes-validations:
+                          - message: tokenExchange.allowedSourceClients and tokenExchange.apiAudience
+                              are valid only when selfIssuedSubjectTokens is restricted
+                            rule: self.selfIssuedSubjectTokens == 'restricted' ||
+                              ((!has(self.allowedSourceClients) || size(self.allowedSourceClients)
+                              == 0) && (!has(self.apiAudience) || size(self.apiAudience)
+                              == 0))
                       required:
                       - audiences
                       - clientId
-                      - clientSecretRef
                       - scopes
                       type: object
                       x-kubernetes-validations:
-                      - message: clientSecretRef.name and clientSecretRef.key are
-                          required and must be non-empty
-                        rule: has(self.clientSecretRef) && size(self.clientSecretRef.name)
-                          > 0 && size(self.clientSecretRef.key) > 0
+                      - message: private_key_jwt requires a non-empty jwksRef and
+                          forbids clientSecretRef; any other tokenEndpointAuthMethod
+                          (or none) requires a non-empty clientSecretRef and forbids
+                          jwksRef
+                        rule: 'has(self.tokenEndpointAuthMethod) && self.tokenEndpointAuthMethod
+                          == ''private_key_jwt'' ? (has(self.jwksRef) && size(self.jwksRef.name)
+                          > 0 && size(self.jwksRef.key) > 0 && !has(self.clientSecretRef))
+                          : (has(self.clientSecretRef) && size(self.clientSecretRef.name)
+                          > 0 && size(self.clientSecretRef.key) > 0 && !has(self.jwksRef))'
+                      - message: grantTypes must include urn:ietf:params:oauth:grant-type:token-exchange
+                          when set
+                        rule: '!has(self.grantTypes) || size(self.grantTypes) == 0
+                          || ''urn:ietf:params:oauth:grant-type:token-exchange'' in
+                          self.grantTypes'
+                      - message: redirectUris is required when grantTypes includes
+                          authorization_code
+                        rule: '!has(self.grantTypes) || !(''authorization_code'' in
+                          self.grantTypes) || (has(self.redirectUris) && size(self.redirectUris)
+                          > 0)'
+                      - message: tokenExchange.selfIssuedSubjectTokens is required
+                          when grantTypes is set
+                        rule: '!has(self.grantTypes) || size(self.grantTypes) == 0
+                          || has(self.tokenExchange)'
                     maxItems: 10
                     type: array
                     x-kubernetes-list-type: atomic
@@ -662,9 +808,10 @@ spec:
                               confidential clients.
                             items:
                               description: |-
-                                DelegateClientConfig configures a pre-provisioned confidential OAuth client
-                                for RFC 8693 token exchange. Its secret is referenced from a Kubernetes
-                                Secret and is never represented inline.
+                                DelegateClientConfig configures a pre-provisioned confidential OAuth client.
+                                By default it is a token-exchange client (RFC 8693). Its credential is either
+                                a client secret, referenced from a Kubernetes Secret and never represented
+                                inline, or a public JWKS for private_key_jwt, referenced from a ConfigMap.
                               properties:
                                 audiences:
                                   description: Audiences is the narrowed set of RFC
@@ -684,8 +831,9 @@ spec:
                                   minLength: 1
                                   type: string
                                 clientSecretRef:
-                                  description: ClientSecretRef references the Kubernetes
-                                    Secret key containing the client secret.
+                                  description: |-
+                                    ClientSecretRef references the Kubernetes Secret key containing the client secret.
+                                    Required unless tokenEndpointAuthMethod is private_key_jwt, where it is forbidden.
                                   properties:
                                     key:
                                       description: Key is the key within the secret
@@ -697,6 +845,63 @@ spec:
                                   - key
                                   - name
                                   type: object
+                                grantTypes:
+                                  description: |-
+                                    GrantTypes are the grants this client may use. If omitted or empty, the
+                                    client is token-exchange only. When set, the list must include
+                                    urn:ietf:params:oauth:grant-type:token-exchange: a delegate client is a
+                                    token-exchange client that may also log in or redeem other grants.
+                                  items:
+                                    enum:
+                                    - authorization_code
+                                    - refresh_token
+                                    - urn:ietf:params:oauth:grant-type:token-exchange
+                                    - urn:ietf:params:oauth:grant-type:jwt-bearer
+                                    type: string
+                                  maxItems: 4
+                                  type: array
+                                  x-kubernetes-list-type: set
+                                jwksRef:
+                                  description: |-
+                                    JWKSRef references the ConfigMap key holding the client's public JWKS
+                                    document. Required with private_key_jwt and forbidden otherwise. The
+                                    document must contain public keys only.
+                                  properties:
+                                    key:
+                                      description: |-
+                                        The key to select from the ConfigMap's Data field.
+                                        Keys in the BinaryData field are not currently propagated to container env vars.
+                                      type: string
+                                    name:
+                                      default: ""
+                                      description: |-
+                                        Name of the referent.
+                                        This field is effectively required, but due to backwards compatibility is
+                                        allowed to be empty. Instances of this type with an empty value here are
+                                        almost certainly wrong.
+                                        More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                                      type: string
+                                    optional:
+                                      description: Specify whether the ConfigMap or
+                                        its key must be defined
+                                      type: boolean
+                                  required:
+                                  - key
+                                  type: object
+                                  x-kubernetes-map-type: atomic
+                                redirectUris:
+                                  description: |-
+                                    RedirectURIs are the registered redirect URIs. They are required with the
+                                    authorization_code grant and forbidden without it. They sit here, under
+                                    tokenExchange.delegateClients, because a delegate client is a
+                                    token-exchange client that may also log in (authorization_code).
+                                  items:
+                                    maxLength: 2048
+                                    minLength: 1
+                                    type: string
+                                  maxItems: 10
+                                  type: array
+                                  x-kubernetes-list-type: set
                                 scopes:
                                   description: Scopes is the narrowed set of OAuth
                                     scopes this client may request.
@@ -708,17 +913,104 @@ spec:
                                   minItems: 1
                                   type: array
                                   x-kubernetes-list-type: atomic
+                                tokenEndpointAuthMethod:
+                                  description: |-
+                                    TokenEndpointAuthMethod pins how the client authenticates at the token
+                                    endpoint. If omitted, the client authenticates with its secret by either
+                                    HTTP Basic or form body.
+                                  enum:
+                                  - client_secret_basic
+                                  - client_secret_post
+                                  - private_key_jwt
+                                  type: string
+                                tokenEndpointAuthSigningAlg:
+                                  description: |-
+                                    TokenEndpointAuthSigningAlg is the private_key_jwt signing algorithm,
+                                    for example RS256 or ES256. If omitted, RS256 is used.
+                                  maxLength: 16
+                                  type: string
+                                tokenExchange:
+                                  description: |-
+                                    TokenExchange is the client's token-exchange policy. Its
+                                    selfIssuedSubjectTokens field is required whenever the block is present.
+                                    The block may be omitted only when grantTypes is omitted or empty; such a
+                                    client keeps the legacy rule (any) and may exchange any self-issued
+                                    token. A client that sets grantTypes must declare the block.
+                                  properties:
+                                    allowedSourceClients:
+                                      description: |-
+                                        AllowedSourceClients are client_id values, as they appear in the subject
+                                        token's client_id claim, whose self-issued tokens this client may
+                                        exchange in addition to its own. They must be user-facing clients that
+                                        register at runtime (DCR or CIMD). A configured delegate client cannot be
+                                        listed here. Valid only with restricted; empty means the client's own
+                                        tokens only.
+                                      items:
+                                        maxLength: 256
+                                        minLength: 1
+                                        type: string
+                                      maxItems: 20
+                                      type: array
+                                      x-kubernetes-list-type: set
+                                    apiAudience:
+                                      description: |-
+                                        APIAudience is the client's own API audience. The client may request it
+                                        even when the subject token does not cover it. It must be one of the
+                                        client's audiences. Valid only with restricted.
+                                      maxLength: 2048
+                                      type: string
+                                    selfIssuedSubjectTokens:
+                                      description: |-
+                                        SelfIssuedSubjectTokens selects which self-issued subject tokens the
+                                        client may exchange. With restricted, a self-issued subject token must
+                                        carry the client's own client_id or one of allowedSourceClients, and a
+                                        may_act claim naming this client does not lift that restriction. With
+                                        any, the client may exchange any self-issued token. It has no default
+                                        and must be set explicitly.
+                                      enum:
+                                      - any
+                                      - restricted
+                                      type: string
+                                  required:
+                                  - selfIssuedSubjectTokens
+                                  type: object
+                                  x-kubernetes-validations:
+                                  - message: tokenExchange.allowedSourceClients and
+                                      tokenExchange.apiAudience are valid only when
+                                      selfIssuedSubjectTokens is restricted
+                                    rule: self.selfIssuedSubjectTokens == 'restricted'
+                                      || ((!has(self.allowedSourceClients) || size(self.allowedSourceClients)
+                                      == 0) && (!has(self.apiAudience) || size(self.apiAudience)
+                                      == 0))
                               required:
                               - audiences
                               - clientId
-                              - clientSecretRef
                               - scopes
                               type: object
                               x-kubernetes-validations:
-                              - message: clientSecretRef.name and clientSecretRef.key
-                                  are required and must be non-empty
-                                rule: has(self.clientSecretRef) && size(self.clientSecretRef.name)
-                                  > 0 && size(self.clientSecretRef.key) > 0
+                              - message: private_key_jwt requires a non-empty jwksRef
+                                  and forbids clientSecretRef; any other tokenEndpointAuthMethod
+                                  (or none) requires a non-empty clientSecretRef and
+                                  forbids jwksRef
+                                rule: 'has(self.tokenEndpointAuthMethod) && self.tokenEndpointAuthMethod
+                                  == ''private_key_jwt'' ? (has(self.jwksRef) && size(self.jwksRef.name)
+                                  > 0 && size(self.jwksRef.key) > 0 && !has(self.clientSecretRef))
+                                  : (has(self.clientSecretRef) && size(self.clientSecretRef.name)
+                                  > 0 && size(self.clientSecretRef.key) > 0 && !has(self.jwksRef))'
+                              - message: grantTypes must include urn:ietf:params:oauth:grant-type:token-exchange
+                                  when set
+                                rule: '!has(self.grantTypes) || size(self.grantTypes)
+                                  == 0 || ''urn:ietf:params:oauth:grant-type:token-exchange''
+                                  in self.grantTypes'
+                              - message: redirectUris is required when grantTypes
+                                  includes authorization_code
+                                rule: '!has(self.grantTypes) || !(''authorization_code''
+                                  in self.grantTypes) || (has(self.redirectUris) &&
+                                  size(self.redirectUris) > 0)'
+                              - message: tokenExchange.selfIssuedSubjectTokens is
+                                  required when grantTypes is set
+                                rule: '!has(self.grantTypes) || size(self.grantTypes)
+                                  == 0 || has(self.tokenExchange)'
                             maxItems: 10
                             type: array
                             x-kubernetes-list-type: atomic
@@ -797,8 +1089,8 @@ spec:
                     default: false
                     description: |-
                       InsecureAllowConfidentialOverLoopbackHTTP opts in to confidential
-                      Dynamic Client Registration (DCR) and delegate clients when issuer is a
-                      plain-HTTP loopback URL (e.g. "http://localhost:8080"). Without this
+                      Dynamic Client Registration (DCR) and secret-authenticated delegate clients
+                      when issuer is a plain-HTTP loopback URL (e.g. "http://localhost:8080"). Without this
                       flag, that combination is rejected at reconcile time: a loopback http://
                       issuer is normally fine for local development since the traffic never
                       leaves the machine, but confidential clients send secrets over cleartext.
@@ -807,10 +1099,9 @@ spec:
                       the non-loopback host check. Has no effect when there are no confidential
                       clients or issuer is https.
 
-                      private_key_jwt registration has no equivalent flag or transport
-                      restriction: unlike confidential registration, it never returns a
-                      client_secret (or any other secret) in the DCR response, so there is
-                      nothing here for cleartext HTTP to expose.
+                      private_key_jwt registration and private_key_jwt delegate clients have no
+                      equivalent flag or transport restriction: no secret is returned or sent
+                      for them, so there is nothing here for cleartext HTTP to expose.
                     type: boolean
                   insecureAllowHTTP:
                     default: false
@@ -830,8 +1121,8 @@ spec:
 
                       One combination is rejected at admission on all three CRDs regardless of the
                       above: setting this field alongside confidential client registration or
-                      delegate clients, which would issue or use client secrets in cleartext over
-                      an unauthenticated endpoint (see the XValidation rule on
+                      secret-authenticated delegate clients, which would issue or use client
+                      secrets in cleartext over an unauthenticated endpoint (see the XValidation rule on
                       EmbeddedAuthServerConfig).
                     type: boolean
                   issuer:
@@ -2529,27 +2820,33 @@ spec:
                   rule: '!has(self.inboundGrants) || !has(self.inboundGrants.spiffeClientAuth)
                     || self.inboundGrants.spiffeClientAuth.all(client, !client.clientId.matches(''^[A-Za-z][A-Za-z0-9+.-]*://.+''))'
                 - message: insecureAllowHTTP cannot be combined with confidential
-                    client registration or delegateClients; client secrets would be
-                    issued or used in cleartext over an unauthenticated endpoint
+                    client registration or secret-authenticated delegateClients; client
+                    secrets would be issued or used in cleartext over an unauthenticated
+                    endpoint
                   rule: '!(has(self.insecureAllowHTTP) && self.insecureAllowHTTP &&
                     ((has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration)
-                    || (has(self.delegateClients) && size(self.delegateClients) >
-                    0) || (has(self.inboundGrants) && has(self.inboundGrants.tokenExchange)
-                    && has(self.inboundGrants.tokenExchange.delegateClients) && size(self.inboundGrants.tokenExchange.delegateClients)
-                    > 0)))'
+                    || (has(self.delegateClients) && self.delegateClients.exists(c,
+                    !has(c.tokenEndpointAuthMethod) || c.tokenEndpointAuthMethod !=
+                    ''private_key_jwt'')) || (has(self.inboundGrants) && has(self.inboundGrants.tokenExchange)
+                    && has(self.inboundGrants.tokenExchange.delegateClients) && self.inboundGrants.tokenExchange.delegateClients.exists(c,
+                    !has(c.tokenEndpointAuthMethod) || c.tokenEndpointAuthMethod !=
+                    ''private_key_jwt''))))'
                 - message: forceConfidentialRedirectUris requires allowConfidentialClientRegistration
                     to be true
                   rule: (!has(self.forceConfidentialRedirectUris) || size(self.forceConfidentialRedirectUris)
                     == 0) || (has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration)
-                - message: confidential client registration or delegateClients with
-                    an HTTP issuer require insecureAllowConfidentialOverLoopbackHTTP
+                - message: confidential client registration or secret-authenticated
+                    delegateClients with an HTTP issuer require insecureAllowConfidentialOverLoopbackHTTP
                     to be explicitly enabled; the issuer must still be loopback
                   rule: '!self.issuer.startsWith(''http://'') || (has(self.insecureAllowConfidentialOverLoopbackHTTP)
                     && self.insecureAllowConfidentialOverLoopbackHTTP) || ((!has(self.allowConfidentialClientRegistration)
                     || !self.allowConfidentialClientRegistration) && (!has(self.delegateClients)
-                    || size(self.delegateClients) == 0) && (!has(self.inboundGrants)
+                    || !self.delegateClients.exists(c, !has(c.tokenEndpointAuthMethod)
+                    || c.tokenEndpointAuthMethod != ''private_key_jwt'')) && (!has(self.inboundGrants)
                     || !has(self.inboundGrants.tokenExchange) || !has(self.inboundGrants.tokenExchange.delegateClients)
-                    || size(self.inboundGrants.tokenExchange.delegateClients) == 0))'
+                    || !self.inboundGrants.tokenExchange.delegateClients.exists(c,
+                    !has(c.tokenEndpointAuthMethod) || c.tokenEndpointAuthMethod !=
+                    ''private_key_jwt'')))'
                 - message: canonical tokenExchange conflicts with legacy delegateClients
                     or RFC 8693 trusted issuer policy
                   rule: '!has(self.inboundGrants) || !has(self.inboundGrants.tokenExchange)
@@ -3347,9 +3644,10 @@ spec:
                     description: |-
                       DelegateClients configures pre-provisioned confidential clients for RFC 8693
                       token exchange. Each secret is referenced from a Kubernetes Secret; no
-                      plaintext secret, redirect URI, or grant selection is accepted here. The
-                      operator always supplies the token-exchange grant when it converts this
-                      configuration to the runtime contract.
+                      plaintext secret is accepted here. The supported path is
+                      inboundGrants.tokenExchange.delegateClients. This field shares its type,
+                      so the newer fields (private_key_jwt, jwksRef, grantTypes, redirectUris,
+                      tokenExchange) are accepted here too, with the same validation.
 
                       This is independent of allowConfidentialClientRegistration: it neither
                       enables nor requires unauthenticated confidential dynamic client
@@ -3357,9 +3655,10 @@ spec:
                       This legacy field is deprecated; use inboundGrants.tokenExchange.delegateClients.
                     items:
                       description: |-
-                        DelegateClientConfig configures a pre-provisioned confidential OAuth client
-                        for RFC 8693 token exchange. Its secret is referenced from a Kubernetes
-                        Secret and is never represented inline.
+                        DelegateClientConfig configures a pre-provisioned confidential OAuth client.
+                        By default it is a token-exchange client (RFC 8693). Its credential is either
+                        a client secret, referenced from a Kubernetes Secret and never represented
+                        inline, or a public JWKS for private_key_jwt, referenced from a ConfigMap.
                       properties:
                         audiences:
                           description: Audiences is the narrowed set of RFC 8707 resources
@@ -3379,8 +3678,9 @@ spec:
                           minLength: 1
                           type: string
                         clientSecretRef:
-                          description: ClientSecretRef references the Kubernetes Secret
-                            key containing the client secret.
+                          description: |-
+                            ClientSecretRef references the Kubernetes Secret key containing the client secret.
+                            Required unless tokenEndpointAuthMethod is private_key_jwt, where it is forbidden.
                           properties:
                             key:
                               description: Key is the key within the secret
@@ -3392,6 +3692,63 @@ spec:
                           - key
                           - name
                           type: object
+                        grantTypes:
+                          description: |-
+                            GrantTypes are the grants this client may use. If omitted or empty, the
+                            client is token-exchange only. When set, the list must include
+                            urn:ietf:params:oauth:grant-type:token-exchange: a delegate client is a
+                            token-exchange client that may also log in or redeem other grants.
+                          items:
+                            enum:
+                            - authorization_code
+                            - refresh_token
+                            - urn:ietf:params:oauth:grant-type:token-exchange
+                            - urn:ietf:params:oauth:grant-type:jwt-bearer
+                            type: string
+                          maxItems: 4
+                          type: array
+                          x-kubernetes-list-type: set
+                        jwksRef:
+                          description: |-
+                            JWKSRef references the ConfigMap key holding the client's public JWKS
+                            document. Required with private_key_jwt and forbidden otherwise. The
+                            document must contain public keys only.
+                          properties:
+                            key:
+                              description: |-
+                                The key to select from the ConfigMap's Data field.
+                                Keys in the BinaryData field are not currently propagated to container env vars.
+                              type: string
+                            name:
+                              default: ""
+                              description: |-
+                                Name of the referent.
+                                This field is effectively required, but due to backwards compatibility is
+                                allowed to be empty. Instances of this type with an empty value here are
+                                almost certainly wrong.
+                                More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                              type: string
+                            optional:
+                              description: Specify whether the ConfigMap or its key
+                                must be defined
+                              type: boolean
+                          required:
+                          - key
+                          type: object
+                          x-kubernetes-map-type: atomic
+                        redirectUris:
+                          description: |-
+                            RedirectURIs are the registered redirect URIs. They are required with the
+                            authorization_code grant and forbidden without it. They sit here, under
+                            tokenExchange.delegateClients, because a delegate client is a
+                            token-exchange client that may also log in (authorization_code).
+                          items:
+                            maxLength: 2048
+                            minLength: 1
+                            type: string
+                          maxItems: 10
+                          type: array
+                          x-kubernetes-list-type: set
                         scopes:
                           description: Scopes is the narrowed set of OAuth scopes
                             this client may request.
@@ -3403,17 +3760,103 @@ spec:
                           minItems: 1
                           type: array
                           x-kubernetes-list-type: atomic
+                        tokenEndpointAuthMethod:
+                          description: |-
+                            TokenEndpointAuthMethod pins how the client authenticates at the token
+                            endpoint. If omitted, the client authenticates with its secret by either
+                            HTTP Basic or form body.
+                          enum:
+                          - client_secret_basic
+                          - client_secret_post
+                          - private_key_jwt
+                          type: string
+                        tokenEndpointAuthSigningAlg:
+                          description: |-
+                            TokenEndpointAuthSigningAlg is the private_key_jwt signing algorithm,
+                            for example RS256 or ES256. If omitted, RS256 is used.
+                          maxLength: 16
+                          type: string
+                        tokenExchange:
+                          description: |-
+                            TokenExchange is the client's token-exchange policy. Its
+                            selfIssuedSubjectTokens field is required whenever the block is present.
+                            The block may be omitted only when grantTypes is omitted or empty; such a
+                            client keeps the legacy rule (any) and may exchange any self-issued
+                            token. A client that sets grantTypes must declare the block.
+                          properties:
+                            allowedSourceClients:
+                              description: |-
+                                AllowedSourceClients are client_id values, as they appear in the subject
+                                token's client_id claim, whose self-issued tokens this client may
+                                exchange in addition to its own. They must be user-facing clients that
+                                register at runtime (DCR or CIMD). A configured delegate client cannot be
+                                listed here. Valid only with restricted; empty means the client's own
+                                tokens only.
+                              items:
+                                maxLength: 256
+                                minLength: 1
+                                type: string
+                              maxItems: 20
+                              type: array
+                              x-kubernetes-list-type: set
+                            apiAudience:
+                              description: |-
+                                APIAudience is the client's own API audience. The client may request it
+                                even when the subject token does not cover it. It must be one of the
+                                client's audiences. Valid only with restricted.
+                              maxLength: 2048
+                              type: string
+                            selfIssuedSubjectTokens:
+                              description: |-
+                                SelfIssuedSubjectTokens selects which self-issued subject tokens the
+                                client may exchange. With restricted, a self-issued subject token must
+                                carry the client's own client_id or one of allowedSourceClients, and a
+                                may_act claim naming this client does not lift that restriction. With
+                                any, the client may exchange any self-issued token. It has no default
+                                and must be set explicitly.
+                              enum:
+                              - any
+                              - restricted
+                              type: string
+                          required:
+                          - selfIssuedSubjectTokens
+                          type: object
+                          x-kubernetes-validations:
+                          - message: tokenExchange.allowedSourceClients and tokenExchange.apiAudience
+                              are valid only when selfIssuedSubjectTokens is restricted
+                            rule: self.selfIssuedSubjectTokens == 'restricted' ||
+                              ((!has(self.allowedSourceClients) || size(self.allowedSourceClients)
+                              == 0) && (!has(self.apiAudience) || size(self.apiAudience)
+                              == 0))
                       required:
                       - audiences
                       - clientId
-                      - clientSecretRef
                       - scopes
                       type: object
                       x-kubernetes-validations:
-                      - message: clientSecretRef.name and clientSecretRef.key are
-                          required and must be non-empty
-                        rule: has(self.clientSecretRef) && size(self.clientSecretRef.name)
-                          > 0 && size(self.clientSecretRef.key) > 0
+                      - message: private_key_jwt requires a non-empty jwksRef and
+                          forbids clientSecretRef; any other tokenEndpointAuthMethod
+                          (or none) requires a non-empty clientSecretRef and forbids
+                          jwksRef
+                        rule: 'has(self.tokenEndpointAuthMethod) && self.tokenEndpointAuthMethod
+                          == ''private_key_jwt'' ? (has(self.jwksRef) && size(self.jwksRef.name)
+                          > 0 && size(self.jwksRef.key) > 0 && !has(self.clientSecretRef))
+                          : (has(self.clientSecretRef) && size(self.clientSecretRef.name)
+                          > 0 && size(self.clientSecretRef.key) > 0 && !has(self.jwksRef))'
+                      - message: grantTypes must include urn:ietf:params:oauth:grant-type:token-exchange
+                          when set
+                        rule: '!has(self.grantTypes) || size(self.grantTypes) == 0
+                          || ''urn:ietf:params:oauth:grant-type:token-exchange'' in
+                          self.grantTypes'
+                      - message: redirectUris is required when grantTypes includes
+                          authorization_code
+                        rule: '!has(self.grantTypes) || !(''authorization_code'' in
+                          self.grantTypes) || (has(self.redirectUris) && size(self.redirectUris)
+                          > 0)'
+                      - message: tokenExchange.selfIssuedSubjectTokens is required
+                          when grantTypes is set
+                        rule: '!has(self.grantTypes) || size(self.grantTypes) == 0
+                          || has(self.tokenExchange)'
                     maxItems: 10
                     type: array
                     x-kubernetes-list-type: atomic
@@ -3702,9 +4145,10 @@ spec:
                               confidential clients.
                             items:
                               description: |-
-                                DelegateClientConfig configures a pre-provisioned confidential OAuth client
-                                for RFC 8693 token exchange. Its secret is referenced from a Kubernetes
-                                Secret and is never represented inline.
+                                DelegateClientConfig configures a pre-provisioned confidential OAuth client.
+                                By default it is a token-exchange client (RFC 8693). Its credential is either
+                                a client secret, referenced from a Kubernetes Secret and never represented
+                                inline, or a public JWKS for private_key_jwt, referenced from a ConfigMap.
                               properties:
                                 audiences:
                                   description: Audiences is the narrowed set of RFC
@@ -3724,8 +4168,9 @@ spec:
                                   minLength: 1
                                   type: string
                                 clientSecretRef:
-                                  description: ClientSecretRef references the Kubernetes
-                                    Secret key containing the client secret.
+                                  description: |-
+                                    ClientSecretRef references the Kubernetes Secret key containing the client secret.
+                                    Required unless tokenEndpointAuthMethod is private_key_jwt, where it is forbidden.
                                   properties:
                                     key:
                                       description: Key is the key within the secret
@@ -3737,6 +4182,63 @@ spec:
                                   - key
                                   - name
                                   type: object
+                                grantTypes:
+                                  description: |-
+                                    GrantTypes are the grants this client may use. If omitted or empty, the
+                                    client is token-exchange only. When set, the list must include
+                                    urn:ietf:params:oauth:grant-type:token-exchange: a delegate client is a
+                                    token-exchange client that may also log in or redeem other grants.
+                                  items:
+                                    enum:
+                                    - authorization_code
+                                    - refresh_token
+                                    - urn:ietf:params:oauth:grant-type:token-exchange
+                                    - urn:ietf:params:oauth:grant-type:jwt-bearer
+                                    type: string
+                                  maxItems: 4
+                                  type: array
+                                  x-kubernetes-list-type: set
+                                jwksRef:
+                                  description: |-
+                                    JWKSRef references the ConfigMap key holding the client's public JWKS
+                                    document. Required with private_key_jwt and forbidden otherwise. The
+                                    document must contain public keys only.
+                                  properties:
+                                    key:
+                                      description: |-
+                                        The key to select from the ConfigMap's Data field.
+                                        Keys in the BinaryData field are not currently propagated to container env vars.
+                                      type: string
+                                    name:
+                                      default: ""
+                                      description: |-
+                                        Name of the referent.
+                                        This field is effectively required, but due to backwards compatibility is
+                                        allowed to be empty. Instances of this type with an empty value here are
+                                        almost certainly wrong.
+                                        More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                                      type: string
+                                    optional:
+                                      description: Specify whether the ConfigMap or
+                                        its key must be defined
+                                      type: boolean
+                                  required:
+                                  - key
+                                  type: object
+                                  x-kubernetes-map-type: atomic
+                                redirectUris:
+                                  description: |-
+                                    RedirectURIs are the registered redirect URIs. They are required with the
+                                    authorization_code grant and forbidden without it. They sit here, under
+                                    tokenExchange.delegateClients, because a delegate client is a
+                                    token-exchange client that may also log in (authorization_code).
+                                  items:
+                                    maxLength: 2048
+                                    minLength: 1
+                                    type: string
+                                  maxItems: 10
+                                  type: array
+                                  x-kubernetes-list-type: set
                                 scopes:
                                   description: Scopes is the narrowed set of OAuth
                                     scopes this client may request.
@@ -3748,17 +4250,104 @@ spec:
                                   minItems: 1
                                   type: array
                                   x-kubernetes-list-type: atomic
+                                tokenEndpointAuthMethod:
+                                  description: |-
+                                    TokenEndpointAuthMethod pins how the client authenticates at the token
+                                    endpoint. If omitted, the client authenticates with its secret by either
+                                    HTTP Basic or form body.
+                                  enum:
+                                  - client_secret_basic
+                                  - client_secret_post
+                                  - private_key_jwt
+                                  type: string
+                                tokenEndpointAuthSigningAlg:
+                                  description: |-
+                                    TokenEndpointAuthSigningAlg is the private_key_jwt signing algorithm,
+                                    for example RS256 or ES256. If omitted, RS256 is used.
+                                  maxLength: 16
+                                  type: string
+                                tokenExchange:
+                                  description: |-
+                                    TokenExchange is the client's token-exchange policy. Its
+                                    selfIssuedSubjectTokens field is required whenever the block is present.
+                                    The block may be omitted only when grantTypes is omitted or empty; such a
+                                    client keeps the legacy rule (any) and may exchange any self-issued
+                                    token. A client that sets grantTypes must declare the block.
+                                  properties:
+                                    allowedSourceClients:
+                                      description: |-
+                                        AllowedSourceClients are client_id values, as they appear in the subject
+                                        token's client_id claim, whose self-issued tokens this client may
+                                        exchange in addition to its own. They must be user-facing clients that
+                                        register at runtime (DCR or CIMD). A configured delegate client cannot be
+                                        listed here. Valid only with restricted; empty means the client's own
+                                        tokens only.
+                                      items:
+                                        maxLength: 256
+                                        minLength: 1
+                                        type: string
+                                      maxItems: 20
+                                      type: array
+                                      x-kubernetes-list-type: set
+                                    apiAudience:
+                                      description: |-
+                                        APIAudience is the client's own API audience. The client may request it
+                                        even when the subject token does not cover it. It must be one of the
+                                        client's audiences. Valid only with restricted.
+                                      maxLength: 2048
+                                      type: string
+                                    selfIssuedSubjectTokens:
+                                      description: |-
+                                        SelfIssuedSubjectTokens selects which self-issued subject tokens the
+                                        client may exchange. With restricted, a self-issued subject token must
+                                        carry the client's own client_id or one of allowedSourceClients, and a
+                                        may_act claim naming this client does not lift that restriction. With
+                                        any, the client may exchange any self-issued token. It has no default
+                                        and must be set explicitly.
+                                      enum:
+                                      - any
+                                      - restricted
+                                      type: string
+                                  required:
+                                  - selfIssuedSubjectTokens
+                                  type: object
+                                  x-kubernetes-validations:
+                                  - message: tokenExchange.allowedSourceClients and
+                                      tokenExchange.apiAudience are valid only when
+                                      selfIssuedSubjectTokens is restricted
+                                    rule: self.selfIssuedSubjectTokens == 'restricted'
+                                      || ((!has(self.allowedSourceClients) || size(self.allowedSourceClients)
+                                      == 0) && (!has(self.apiAudience) || size(self.apiAudience)
+                                      == 0))
                               required:
                               - audiences
                               - clientId
-                              - clientSecretRef
                               - scopes
                               type: object
                               x-kubernetes-validations:
-                              - message: clientSecretRef.name and clientSecretRef.key
-                                  are required and must be non-empty
-                                rule: has(self.clientSecretRef) && size(self.clientSecretRef.name)
-                                  > 0 && size(self.clientSecretRef.key) > 0
+                              - message: private_key_jwt requires a non-empty jwksRef
+                                  and forbids clientSecretRef; any other tokenEndpointAuthMethod
+                                  (or none) requires a non-empty clientSecretRef and
+                                  forbids jwksRef
+                                rule: 'has(self.tokenEndpointAuthMethod) && self.tokenEndpointAuthMethod
+                                  == ''private_key_jwt'' ? (has(self.jwksRef) && size(self.jwksRef.name)
+                                  > 0 && size(self.jwksRef.key) > 0 && !has(self.clientSecretRef))
+                                  : (has(self.clientSecretRef) && size(self.clientSecretRef.name)
+                                  > 0 && size(self.clientSecretRef.key) > 0 && !has(self.jwksRef))'
+                              - message: grantTypes must include urn:ietf:params:oauth:grant-type:token-exchange
+                                  when set
+                                rule: '!has(self.grantTypes) || size(self.grantTypes)
+                                  == 0 || ''urn:ietf:params:oauth:grant-type:token-exchange''
+                                  in self.grantTypes'
+                              - message: redirectUris is required when grantTypes
+                                  includes authorization_code
+                                rule: '!has(self.grantTypes) || !(''authorization_code''
+                                  in self.grantTypes) || (has(self.redirectUris) &&
+                                  size(self.redirectUris) > 0)'
+                              - message: tokenExchange.selfIssuedSubjectTokens is
+                                  required when grantTypes is set
+                                rule: '!has(self.grantTypes) || size(self.grantTypes)
+                                  == 0 || has(self.tokenExchange)'
                             maxItems: 10
                             type: array
                             x-kubernetes-list-type: atomic
@@ -3837,8 +4426,8 @@ spec:
                     default: false
                     description: |-
                       InsecureAllowConfidentialOverLoopbackHTTP opts in to confidential
-                      Dynamic Client Registration (DCR) and delegate clients when issuer is a
-                      plain-HTTP loopback URL (e.g. "http://localhost:8080"). Without this
+                      Dynamic Client Registration (DCR) and secret-authenticated delegate clients
+                      when issuer is a plain-HTTP loopback URL (e.g. "http://localhost:8080"). Without this
                       flag, that combination is rejected at reconcile time: a loopback http://
                       issuer is normally fine for local development since the traffic never
                       leaves the machine, but confidential clients send secrets over cleartext.
@@ -3847,10 +4436,9 @@ spec:
                       the non-loopback host check. Has no effect when there are no confidential
                       clients or issuer is https.
 
-                      private_key_jwt registration has no equivalent flag or transport
-                      restriction: unlike confidential registration, it never returns a
-                      client_secret (or any other secret) in the DCR response, so there is
-                      nothing here for cleartext HTTP to expose.
+                      private_key_jwt registration and private_key_jwt delegate clients have no
+                      equivalent flag or transport restriction: no secret is returned or sent
+                      for them, so there is nothing here for cleartext HTTP to expose.
                     type: boolean
                   insecureAllowHTTP:
                     default: false
@@ -3870,8 +4458,8 @@ spec:
 
                       One combination is rejected at admission on all three CRDs regardless of the
                       above: setting this field alongside confidential client registration or
-                      delegate clients, which would issue or use client secrets in cleartext over
-                      an unauthenticated endpoint (see the XValidation rule on
+                      secret-authenticated delegate clients, which would issue or use client
+                      secrets in cleartext over an unauthenticated endpoint (see the XValidation rule on
                       EmbeddedAuthServerConfig).
                     type: boolean
                   issuer:
@@ -5569,27 +6157,33 @@ spec:
                   rule: '!has(self.inboundGrants) || !has(self.inboundGrants.spiffeClientAuth)
                     || self.inboundGrants.spiffeClientAuth.all(client, !client.clientId.matches(''^[A-Za-z][A-Za-z0-9+.-]*://.+''))'
                 - message: insecureAllowHTTP cannot be combined with confidential
-                    client registration or delegateClients; client secrets would be
-                    issued or used in cleartext over an unauthenticated endpoint
+                    client registration or secret-authenticated delegateClients; client
+                    secrets would be issued or used in cleartext over an unauthenticated
+                    endpoint
                   rule: '!(has(self.insecureAllowHTTP) && self.insecureAllowHTTP &&
                     ((has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration)
-                    || (has(self.delegateClients) && size(self.delegateClients) >
-                    0) || (has(self.inboundGrants) && has(self.inboundGrants.tokenExchange)
-                    && has(self.inboundGrants.tokenExchange.delegateClients) && size(self.inboundGrants.tokenExchange.delegateClients)
-                    > 0)))'
+                    || (has(self.delegateClients) && self.delegateClients.exists(c,
+                    !has(c.tokenEndpointAuthMethod) || c.tokenEndpointAuthMethod !=
+                    ''private_key_jwt'')) || (has(self.inboundGrants) && has(self.inboundGrants.tokenExchange)
+                    && has(self.inboundGrants.tokenExchange.delegateClients) && self.inboundGrants.tokenExchange.delegateClients.exists(c,
+                    !has(c.tokenEndpointAuthMethod) || c.tokenEndpointAuthMethod !=
+                    ''private_key_jwt''))))'
                 - message: forceConfidentialRedirectUris requires allowConfidentialClientRegistration
                     to be true
                   rule: (!has(self.forceConfidentialRedirectUris) || size(self.forceConfidentialRedirectUris)
                     == 0) || (has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration)
-                - message: confidential client registration or delegateClients with
-                    an HTTP issuer require insecureAllowConfidentialOverLoopbackHTTP
+                - message: confidential client registration or secret-authenticated
+                    delegateClients with an HTTP issuer require insecureAllowConfidentialOverLoopbackHTTP
                     to be explicitly enabled; the issuer must still be loopback
                   rule: '!self.issuer.startsWith(''http://'') || (has(self.insecureAllowConfidentialOverLoopbackHTTP)
                     && self.insecureAllowConfidentialOverLoopbackHTTP) || ((!has(self.allowConfidentialClientRegistration)
                     || !self.allowConfidentialClientRegistration) && (!has(self.delegateClients)
-                    || size(self.delegateClients) == 0) && (!has(self.inboundGrants)
+                    || !self.delegateClients.exists(c, !has(c.tokenEndpointAuthMethod)
+                    || c.tokenEndpointAuthMethod != ''private_key_jwt'')) && (!has(self.inboundGrants)
                     || !has(self.inboundGrants.tokenExchange) || !has(self.inboundGrants.tokenExchange.delegateClients)
-                    || size(self.inboundGrants.tokenExchange.delegateClients) == 0))'
+                    || !self.inboundGrants.tokenExchange.delegateClients.exists(c,
+                    !has(c.tokenEndpointAuthMethod) || c.tokenEndpointAuthMethod !=
+                    ''private_key_jwt'')))'
                 - message: canonical tokenExchange conflicts with legacy delegateClients
                     or RFC 8693 trusted issuer policy
                   rule: '!has(self.inboundGrants) || !has(self.inboundGrants.tokenExchange)

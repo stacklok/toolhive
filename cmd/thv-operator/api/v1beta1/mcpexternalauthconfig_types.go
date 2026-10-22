@@ -8,11 +8,13 @@ import (
 	"slices"
 	"sort"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/stacklok/toolhive/pkg/authserver"
 	"github.com/stacklok/toolhive/pkg/authserver/oauthparams"
 	"github.com/stacklok/toolhive/pkg/authserver/server/tokenexchange"
+	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
 // External auth configuration types
@@ -351,11 +353,15 @@ type BearerTokenConfig struct {
 	TokenSecretRef *SecretKeyRef `json:"tokenSecretRef"`
 }
 
-// DelegateClientConfig configures a pre-provisioned confidential OAuth client
-// for RFC 8693 token exchange. Its secret is referenced from a Kubernetes
-// Secret and is never represented inline.
+// DelegateClientConfig configures a pre-provisioned confidential OAuth client.
+// By default it is a token-exchange client (RFC 8693). Its credential is either
+// a client secret, referenced from a Kubernetes Secret and never represented
+// inline, or a public JWKS for private_key_jwt, referenced from a ConfigMap.
 //
-// +kubebuilder:validation:XValidation:rule="has(self.clientSecretRef) && size(self.clientSecretRef.name) > 0 && size(self.clientSecretRef.key) > 0",message="clientSecretRef.name and clientSecretRef.key are required and must be non-empty"
+// +kubebuilder:validation:XValidation:rule="has(self.tokenEndpointAuthMethod) && self.tokenEndpointAuthMethod == 'private_key_jwt' ? (has(self.jwksRef) && size(self.jwksRef.name) > 0 && size(self.jwksRef.key) > 0 && !has(self.clientSecretRef)) : (has(self.clientSecretRef) && size(self.clientSecretRef.name) > 0 && size(self.clientSecretRef.key) > 0 && !has(self.jwksRef))",message="private_key_jwt requires a non-empty jwksRef and forbids clientSecretRef; any other tokenEndpointAuthMethod (or none) requires a non-empty clientSecretRef and forbids jwksRef"
+// +kubebuilder:validation:XValidation:rule="!has(self.grantTypes) || size(self.grantTypes) == 0 || 'urn:ietf:params:oauth:grant-type:token-exchange' in self.grantTypes",message="grantTypes must include urn:ietf:params:oauth:grant-type:token-exchange when set"
+// +kubebuilder:validation:XValidation:rule="!has(self.grantTypes) || !('authorization_code' in self.grantTypes) || (has(self.redirectUris) && size(self.redirectUris) > 0)",message="redirectUris is required when grantTypes includes authorization_code"
+// +kubebuilder:validation:XValidation:rule="!has(self.grantTypes) || size(self.grantTypes) == 0 || has(self.tokenExchange)",message="tokenExchange.selfIssuedSubjectTokens is required when grantTypes is set"
 //
 //nolint:lll // CEL validation rule exceeds line length limit
 type DelegateClientConfig struct {
@@ -365,9 +371,50 @@ type DelegateClientConfig struct {
 	// +kubebuilder:validation:MaxLength=256
 	ClientID string `json:"clientId"`
 
+	// TokenEndpointAuthMethod pins how the client authenticates at the token
+	// endpoint. If omitted, the client authenticates with its secret by either
+	// HTTP Basic or form body.
+	// +kubebuilder:validation:Enum=client_secret_basic;client_secret_post;private_key_jwt
+	// +optional
+	TokenEndpointAuthMethod string `json:"tokenEndpointAuthMethod,omitempty"`
+
 	// ClientSecretRef references the Kubernetes Secret key containing the client secret.
-	// +kubebuilder:validation:Required
-	ClientSecretRef *SecretKeyRef `json:"clientSecretRef"`
+	// Required unless tokenEndpointAuthMethod is private_key_jwt, where it is forbidden.
+	// +optional
+	ClientSecretRef *SecretKeyRef `json:"clientSecretRef,omitempty"`
+
+	// JWKSRef references the ConfigMap key holding the client's public JWKS
+	// document. Required with private_key_jwt and forbidden otherwise. The
+	// document must contain public keys only.
+	// +optional
+	JWKSRef *corev1.ConfigMapKeySelector `json:"jwksRef,omitempty"`
+
+	// TokenEndpointAuthSigningAlg is the private_key_jwt signing algorithm,
+	// for example RS256 or ES256. If omitted, RS256 is used.
+	// +kubebuilder:validation:MaxLength=16
+	// +optional
+	TokenEndpointAuthSigningAlg string `json:"tokenEndpointAuthSigningAlg,omitempty"`
+
+	// GrantTypes are the grants this client may use. If omitted or empty, the
+	// client is token-exchange only. When set, the list must include
+	// urn:ietf:params:oauth:grant-type:token-exchange: a delegate client is a
+	// token-exchange client that may also log in or redeem other grants.
+	// +kubebuilder:validation:MaxItems=4
+	// +kubebuilder:validation:items:Enum=authorization_code;refresh_token;"urn:ietf:params:oauth:grant-type:token-exchange";"urn:ietf:params:oauth:grant-type:jwt-bearer"
+	// +listType=set
+	// +optional
+	GrantTypes []string `json:"grantTypes,omitempty"`
+
+	// RedirectURIs are the registered redirect URIs. They are required with the
+	// authorization_code grant and forbidden without it. They sit here, under
+	// tokenExchange.delegateClients, because a delegate client is a
+	// token-exchange client that may also log in (authorization_code).
+	// +kubebuilder:validation:MaxItems=10
+	// +kubebuilder:validation:items:MinLength=1
+	// +kubebuilder:validation:items:MaxLength=2048
+	// +listType=set
+	// +optional
+	RedirectURIs []string `json:"redirectUris,omitempty"`
 
 	// Scopes is the narrowed set of OAuth scopes this client may request.
 	// +kubebuilder:validation:Required
@@ -386,6 +433,53 @@ type DelegateClientConfig struct {
 	// +kubebuilder:validation:items:MaxLength=2048
 	// +listType=atomic
 	Audiences []string `json:"audiences"`
+
+	// TokenExchange is the client's token-exchange policy. Its
+	// selfIssuedSubjectTokens field is required whenever the block is present.
+	// The block may be omitted only when grantTypes is omitted or empty; such a
+	// client keeps the legacy rule (any) and may exchange any self-issued
+	// token. A client that sets grantTypes must declare the block.
+	// +optional
+	TokenExchange *DelegateClientTokenExchangeConfig `json:"tokenExchange,omitempty"`
+}
+
+// DelegateClientTokenExchangeConfig is the token-exchange policy of one
+// delegate client. External-issuer subject tokens are not affected by it: the
+// trusted issuer's own policy decides those.
+//
+// +kubebuilder:validation:XValidation:rule="self.selfIssuedSubjectTokens == 'restricted' || ((!has(self.allowedSourceClients) || size(self.allowedSourceClients) == 0) && (!has(self.apiAudience) || size(self.apiAudience) == 0))",message="tokenExchange.allowedSourceClients and tokenExchange.apiAudience are valid only when selfIssuedSubjectTokens is restricted"
+//
+//nolint:lll // CEL validation rule exceeds line length limit
+type DelegateClientTokenExchangeConfig struct {
+	// SelfIssuedSubjectTokens selects which self-issued subject tokens the
+	// client may exchange. With restricted, a self-issued subject token must
+	// carry the client's own client_id or one of allowedSourceClients, and a
+	// may_act claim naming this client does not lift that restriction. With
+	// any, the client may exchange any self-issued token. It has no default
+	// and must be set explicitly.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Enum=any;restricted
+	SelfIssuedSubjectTokens string `json:"selfIssuedSubjectTokens"`
+
+	// AllowedSourceClients are client_id values, as they appear in the subject
+	// token's client_id claim, whose self-issued tokens this client may
+	// exchange in addition to its own. They must be user-facing clients that
+	// register at runtime (DCR or CIMD). A configured delegate client cannot be
+	// listed here. Valid only with restricted; empty means the client's own
+	// tokens only.
+	// +kubebuilder:validation:MaxItems=20
+	// +kubebuilder:validation:items:MinLength=1
+	// +kubebuilder:validation:items:MaxLength=256
+	// +listType=set
+	// +optional
+	AllowedSourceClients []string `json:"allowedSourceClients,omitempty"`
+
+	// APIAudience is the client's own API audience. The client may request it
+	// even when the subject token does not cover it. It must be one of the
+	// client's audiences. Valid only with restricted.
+	// +kubebuilder:validation:MaxLength=2048
+	// +optional
+	APIAudience string `json:"apiAudience,omitempty"`
 }
 
 // TrustedIssuerConfig configures an external OIDC issuer whose tokens are
@@ -922,9 +1016,10 @@ type JWTBearerIssuerPolicyConfig struct {
 // or accepts token exchange without an interactive authorization flow.
 // This type is shared by MCPExternalAuthConfig.Spec.EmbeddedAuthServer and
 // VirtualMCPServer.Spec.AuthServerConfig, so the XValidation rules below are
-// enforced at admission for both CRDs. CEL only requires the explicit opt-in for
-// delegate clients using an HTTP issuer; the shared Go validator performs the
-// precise loopback-host security check.
+// enforced at admission for both CRDs. Only delegate clients that authenticate
+// with a secret (tokenEndpointAuthMethod absent or not private_key_jwt) count as
+// confidential: CEL requires the explicit opt-in for them under an HTTP issuer,
+// and the shared Go validator performs the precise loopback-host security check.
 //
 // +kubebuilder:validation:XValidation:rule="(has(self.upstreamProviders) && size(self.upstreamProviders) > 0) || (has(self.delegateClients) && size(self.delegateClients) > 0) || (has(self.trustedIssuers) && self.trustedIssuers.exists(issuer, has(issuer.jwtBearerGrant))) || (has(self.inboundGrants) && (has(self.inboundGrants.tokenExchange) || has(self.inboundGrants.jwtBearer) || (has(self.inboundGrants.spiffeClientAuth) && size(self.inboundGrants.spiffeClientAuth) > 0)))",message="at least one upstream provider or inbound grant family is required"
 //
@@ -940,9 +1035,9 @@ type JWTBearerIssuerPolicyConfig struct {
 // +kubebuilder:validation:XValidation:rule="!has(self.inboundGrants) || !has(self.inboundGrants.spiffeClientAuth) || self.inboundGrants.spiffeClientAuth.all(client, !client.clientId.startsWith('synthetic:'))",message="spiffeClientAuth clientId must not use the reserved synthetic: prefix"
 // +kubebuilder:validation:XValidation:rule="!has(self.inboundGrants) || !has(self.inboundGrants.spiffeClientAuth) || self.inboundGrants.spiffeClientAuth.all(client, !client.clientId.matches('^[A-Za-z][A-Za-z0-9+.-]*://.+'))",message="spiffeClientAuth clientId must not be an absolute URL"
 //
-// +kubebuilder:validation:XValidation:rule="!(has(self.insecureAllowHTTP) && self.insecureAllowHTTP && ((has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration) || (has(self.delegateClients) && size(self.delegateClients) > 0) || (has(self.inboundGrants) && has(self.inboundGrants.tokenExchange) && has(self.inboundGrants.tokenExchange.delegateClients) && size(self.inboundGrants.tokenExchange.delegateClients) > 0)))",message="insecureAllowHTTP cannot be combined with confidential client registration or delegateClients; client secrets would be issued or used in cleartext over an unauthenticated endpoint"
+// +kubebuilder:validation:XValidation:rule="!(has(self.insecureAllowHTTP) && self.insecureAllowHTTP && ((has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration) || (has(self.delegateClients) && self.delegateClients.exists(c, !has(c.tokenEndpointAuthMethod) || c.tokenEndpointAuthMethod != 'private_key_jwt')) || (has(self.inboundGrants) && has(self.inboundGrants.tokenExchange) && has(self.inboundGrants.tokenExchange.delegateClients) && self.inboundGrants.tokenExchange.delegateClients.exists(c, !has(c.tokenEndpointAuthMethod) || c.tokenEndpointAuthMethod != 'private_key_jwt'))))",message="insecureAllowHTTP cannot be combined with confidential client registration or secret-authenticated delegateClients; client secrets would be issued or used in cleartext over an unauthenticated endpoint"
 // +kubebuilder:validation:XValidation:rule="(!has(self.forceConfidentialRedirectUris) || size(self.forceConfidentialRedirectUris) == 0) || (has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration)",message="forceConfidentialRedirectUris requires allowConfidentialClientRegistration to be true"
-// +kubebuilder:validation:XValidation:rule="!self.issuer.startsWith('http://') || (has(self.insecureAllowConfidentialOverLoopbackHTTP) && self.insecureAllowConfidentialOverLoopbackHTTP) || ((!has(self.allowConfidentialClientRegistration) || !self.allowConfidentialClientRegistration) && (!has(self.delegateClients) || size(self.delegateClients) == 0) && (!has(self.inboundGrants) || !has(self.inboundGrants.tokenExchange) || !has(self.inboundGrants.tokenExchange.delegateClients) || size(self.inboundGrants.tokenExchange.delegateClients) == 0))",message="confidential client registration or delegateClients with an HTTP issuer require insecureAllowConfidentialOverLoopbackHTTP to be explicitly enabled; the issuer must still be loopback"
+// +kubebuilder:validation:XValidation:rule="!self.issuer.startsWith('http://') || (has(self.insecureAllowConfidentialOverLoopbackHTTP) && self.insecureAllowConfidentialOverLoopbackHTTP) || ((!has(self.allowConfidentialClientRegistration) || !self.allowConfidentialClientRegistration) && (!has(self.delegateClients) || !self.delegateClients.exists(c, !has(c.tokenEndpointAuthMethod) || c.tokenEndpointAuthMethod != 'private_key_jwt')) && (!has(self.inboundGrants) || !has(self.inboundGrants.tokenExchange) || !has(self.inboundGrants.tokenExchange.delegateClients) || !self.inboundGrants.tokenExchange.delegateClients.exists(c, !has(c.tokenEndpointAuthMethod) || c.tokenEndpointAuthMethod != 'private_key_jwt')))",message="confidential client registration or secret-authenticated delegateClients with an HTTP issuer require insecureAllowConfidentialOverLoopbackHTTP to be explicitly enabled; the issuer must still be loopback"
 // +kubebuilder:validation:XValidation:rule="!has(self.inboundGrants) || !has(self.inboundGrants.tokenExchange) || ((!has(self.delegateClients) || size(self.delegateClients) == 0) && (!has(self.trustedIssuers) || !self.trustedIssuers.exists(issuer, has(issuer.expectedAudience) || has(issuer.actorClaim) || has(issuer.allowedActors) || has(issuer.actorMatcher) || has(issuer.allowedDelegateClients) || (has(issuer.allowMayAct) && issuer.allowMayAct))))",message="canonical tokenExchange conflicts with legacy delegateClients or RFC 8693 trusted issuer policy"
 // +kubebuilder:validation:XValidation:rule="!has(self.inboundGrants) || !has(self.inboundGrants.jwtBearer) || !has(self.trustedIssuers) || !self.trustedIssuers.exists(issuer, has(issuer.jwtBearerGrant))",message="canonical jwtBearer conflicts with legacy jwtBearerGrant"
 // +kubebuilder:validation:XValidation:rule="!has(self.trustedIssuers) || self.trustedIssuers.all(issuer, !has(issuer.name) || self.trustedIssuers.filter(other, has(other.name) && other.name == issuer.name).size() == 1)",message="trustedIssuers must not contain duplicate names"
@@ -953,7 +1048,8 @@ type JWTBearerIssuerPolicyConfig struct {
 //
 // The shared Go-level ValidateConfidentialClientTransport validator remains the
 // source of truth for confidential-client transport and loopback policy,
-// including delegate clients. Trusted issuer endpoint shape is validated by
+// including secret-authenticated delegate clients; private_key_jwt delegate
+// clients are exempt, as they never send a secret. Trusted issuer endpoint shape is validated by
 // ValidateInboundGrants; audience and outbound DNS/private-IP checks remain
 // runtime-only.
 //
@@ -1086,8 +1182,8 @@ type EmbeddedAuthServerConfig struct {
 	//
 	// One combination is rejected at admission on all three CRDs regardless of the
 	// above: setting this field alongside confidential client registration or
-	// delegate clients, which would issue or use client secrets in cleartext over
-	// an unauthenticated endpoint (see the XValidation rule on
+	// secret-authenticated delegate clients, which would issue or use client
+	// secrets in cleartext over an unauthenticated endpoint (see the XValidation rule on
 	// EmbeddedAuthServerConfig).
 	// +kubebuilder:default=false
 	// +optional
@@ -1150,8 +1246,8 @@ type EmbeddedAuthServerConfig struct {
 	AllowPrivateKeyJWTRegistration bool `json:"allowPrivateKeyJWTRegistration,omitempty"`
 
 	// InsecureAllowConfidentialOverLoopbackHTTP opts in to confidential
-	// Dynamic Client Registration (DCR) and delegate clients when issuer is a
-	// plain-HTTP loopback URL (e.g. "http://localhost:8080"). Without this
+	// Dynamic Client Registration (DCR) and secret-authenticated delegate clients
+	// when issuer is a plain-HTTP loopback URL (e.g. "http://localhost:8080"). Without this
 	// flag, that combination is rejected at reconcile time: a loopback http://
 	// issuer is normally fine for local development since the traffic never
 	// leaves the machine, but confidential clients send secrets over cleartext.
@@ -1160,19 +1256,19 @@ type EmbeddedAuthServerConfig struct {
 	// the non-loopback host check. Has no effect when there are no confidential
 	// clients or issuer is https.
 	//
-	// private_key_jwt registration has no equivalent flag or transport
-	// restriction: unlike confidential registration, it never returns a
-	// client_secret (or any other secret) in the DCR response, so there is
-	// nothing here for cleartext HTTP to expose.
+	// private_key_jwt registration and private_key_jwt delegate clients have no
+	// equivalent flag or transport restriction: no secret is returned or sent
+	// for them, so there is nothing here for cleartext HTTP to expose.
 	// +kubebuilder:default=false
 	// +optional
 	InsecureAllowConfidentialOverLoopbackHTTP bool `json:"insecureAllowConfidentialOverLoopbackHTTP,omitempty"`
 
 	// DelegateClients configures pre-provisioned confidential clients for RFC 8693
 	// token exchange. Each secret is referenced from a Kubernetes Secret; no
-	// plaintext secret, redirect URI, or grant selection is accepted here. The
-	// operator always supplies the token-exchange grant when it converts this
-	// configuration to the runtime contract.
+	// plaintext secret is accepted here. The supported path is
+	// inboundGrants.tokenExchange.delegateClients. This field shares its type,
+	// so the newer fields (private_key_jwt, jwksRef, grantTypes, redirectUris,
+	// tokenExchange) are accepted here too, with the same validation.
 	//
 	// This is independent of allowConfidentialClientRegistration: it neither
 	// enables nor requires unauthenticated confidential dynamic client
@@ -1387,6 +1483,14 @@ func applyEffectiveJWTBearer(
 	return nil
 }
 
+// hasSecretDelegateClientConfig reports whether any delegate client
+// authenticates with a secret; private_key_jwt clients send none.
+func hasSecretDelegateClientConfig(clients []DelegateClientConfig) bool {
+	return slices.ContainsFunc(clients, func(c DelegateClientConfig) bool {
+		return c.TokenEndpointAuthMethod != oauthproto.TokenEndpointAuthMethodPrivateKeyJWT
+	})
+}
+
 // ValidateInboundGrants validates the effective grant projection shared by
 // MCPExternalAuthConfig and inline VirtualMCPServer auth configuration.
 func (c *EmbeddedAuthServerConfig) ValidateInboundGrants() error {
@@ -1395,7 +1499,7 @@ func (c *EmbeddedAuthServerConfig) ValidateInboundGrants() error {
 		return err
 	}
 	if err := authserver.ValidateConfidentialClientTransport(
-		c.AllowConfidentialClientRegistration || len(grants.delegateClients) > 0,
+		c.AllowConfidentialClientRegistration || hasSecretDelegateClientConfig(grants.delegateClients),
 		c.InsecureAllowHTTP,
 		c.Issuer,
 		c.InsecureAllowConfidentialOverLoopbackHTTP,
@@ -1428,14 +1532,12 @@ func resolveEffectiveIssuerRef(byName, seen map[string]int, ref, path string) (i
 }
 
 func cloneDelegateClientConfigs(clients []DelegateClientConfig) []DelegateClientConfig {
-	cloned := slices.Clone(clients)
-	for i := range cloned {
-		cloned[i].Scopes = slices.Clone(cloned[i].Scopes)
-		cloned[i].Audiences = slices.Clone(cloned[i].Audiences)
-		if cloned[i].ClientSecretRef != nil {
-			secretRef := *cloned[i].ClientSecretRef
-			cloned[i].ClientSecretRef = &secretRef
-		}
+	if clients == nil {
+		return nil
+	}
+	cloned := make([]DelegateClientConfig, len(clients))
+	for i := range clients {
+		cloned[i] = *clients[i].DeepCopy()
 	}
 	return cloned
 }
@@ -2715,6 +2817,8 @@ func (r *MCPExternalAuthConfig) validateTypeConfigConsistency() error {
 
 // validateEmbeddedAuthServer validates embeddedAuthServer type configuration.
 // This performs complex business logic validation that CEL cannot express.
+//
+//nolint:gocyclo // a flat sequence of independent spec checks, each delegated to a helper
 func (r *MCPExternalAuthConfig) validateEmbeddedAuthServer() error {
 	// Validate upstream providers
 	cfg := r.Spec.EmbeddedAuthServer
@@ -2764,6 +2868,9 @@ func (r *MCPExternalAuthConfig) validateEmbeddedAuthServer() error {
 	); err != nil {
 		return err
 	}
+	if err := validateEmbeddedDelegateClientTrustModes(cfg); err != nil {
+		return err
+	}
 
 	seen := make(map[string]bool, len(cfg.UpstreamProviders))
 	for i, provider := range cfg.UpstreamProviders {
@@ -2780,6 +2887,52 @@ func (r *MCPExternalAuthConfig) validateEmbeddedAuthServer() error {
 	for i := range cfg.TrustedIssuers {
 		if err := validateUpstreamCABundleRef(cfg.TrustedIssuers[i].CABundleRef); err != nil {
 			return fmt.Errorf("trustedIssuers[%d] (%q) caBundleRef: %w", i, cfg.TrustedIssuers[i].IssuerURL, err)
+		}
+	}
+	return nil
+}
+
+// validateEmbeddedDelegateClientTrustModes checks both the deprecated and the
+// canonical delegate client lists, which share DelegateClientConfig.
+func validateEmbeddedDelegateClientTrustModes(cfg *EmbeddedAuthServerConfig) error {
+	if err := validateDelegateClientTrustModes(cfg.DelegateClients, "delegateClients"); err != nil {
+		return err
+	}
+	if cfg.InboundGrants == nil || cfg.InboundGrants.TokenExchange == nil {
+		return nil
+	}
+	return validateDelegateClientTrustModes(
+		cfg.InboundGrants.TokenExchange.DelegateClients, "inboundGrants.tokenExchange.delegateClients")
+}
+
+// validateDelegateClientTrustModes checks the trust mode of each delegate
+// client's tokenExchange block. Defense-in-depth with CEL: the
+// DelegateClientConfig and DelegateClientTokenExchangeConfig XValidation rules
+// and the selfIssuedSubjectTokens Required/Enum markers enforce the same rules
+// at admission; this catches an object stored before those rules existed, so
+// the condition names the field instead of failing later in RunConfig
+// validation.
+func validateDelegateClientTrustModes(clients []DelegateClientConfig, path string) error {
+	for i, client := range clients {
+		policy := client.TokenExchange
+		if policy == nil {
+			if len(client.GrantTypes) > 0 {
+				return fmt.Errorf("%s[%d] (%q): tokenExchange.selfIssuedSubjectTokens is required when grantTypes is set",
+					path, i, client.ClientID)
+			}
+			continue
+		}
+		switch authserver.SelfIssuedSubjectTokens(policy.SelfIssuedSubjectTokens) {
+		case authserver.SelfIssuedSubjectTokensRestricted:
+		case authserver.SelfIssuedSubjectTokensAny:
+			if len(policy.AllowedSourceClients) > 0 || policy.APIAudience != "" {
+				return fmt.Errorf("%s[%d] (%q): tokenExchange.allowedSourceClients and tokenExchange.apiAudience "+
+					"are valid only when selfIssuedSubjectTokens is restricted", path, i, client.ClientID)
+			}
+		default:
+			return fmt.Errorf("%s[%d] (%q): tokenExchange.selfIssuedSubjectTokens must be %q or %q, got %q",
+				path, i, client.ClientID, authserver.SelfIssuedSubjectTokensAny,
+				authserver.SelfIssuedSubjectTokensRestricted, policy.SelfIssuedSubjectTokens)
 		}
 	}
 	return nil

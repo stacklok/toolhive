@@ -3827,3 +3827,179 @@ func TestAuthServerConfigMapChecksumAnnotationValue(t *testing.T) {
 	// Changing this value rolls every embedded-auth pod on operator upgrade.
 	assert.Equal(t, "toolhive.stacklok.dev/authserver-ca-checksum", AuthServerConfigMapChecksumAnnotation)
 }
+
+func delegateJWKSTestRef(name, key string) *corev1.ConfigMapKeySelector {
+	return &corev1.ConfigMapKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: name}, Key: key}
+}
+
+func TestBuildAuthServerRunConfig_CanonicalDelegateClientFields(t *testing.T) {
+	t.Parallel()
+
+	authConfig := &mcpv1beta1.EmbeddedAuthServerConfig{
+		Issuer: "https://auth.example.com",
+		InboundGrants: &mcpv1beta1.InboundGrantsConfig{TokenExchange: &mcpv1beta1.TokenExchangeInboundGrantConfig{
+			DelegateClients: []mcpv1beta1.DelegateClientConfig{
+				{
+					ClientID:                    "broker",
+					TokenEndpointAuthMethod:     "private_key_jwt",
+					JWKSRef:                     delegateJWKSTestRef("broker-jwks", "jwks.json"),
+					TokenEndpointAuthSigningAlg: "ES256",
+					GrantTypes: []string{
+						"authorization_code", "refresh_token", "urn:ietf:params:oauth:grant-type:token-exchange",
+					},
+					RedirectURIs: []string{"https://broker.example.com/callback"},
+					Scopes:       []string{"openid"},
+					Audiences:    []string{"https://resource.example.com"},
+					TokenExchange: &mcpv1beta1.DelegateClientTokenExchangeConfig{
+						SelfIssuedSubjectTokens: "restricted",
+						AllowedSourceClients:    []string{"tui"}, APIAudience: "https://resource.example.com",
+					},
+				},
+				{
+					ClientID:        "secret-client",
+					ClientSecretRef: &mcpv1beta1.SecretKeyRef{Name: "s", Key: "k"},
+					Scopes:          []string{"openid"},
+					Audiences:       []string{"https://resource.example.com"},
+					TokenExchange: &mcpv1beta1.DelegateClientTokenExchangeConfig{
+						SelfIssuedSubjectTokens: "restricted", AllowedSourceClients: []string{},
+					},
+				},
+				{
+					ClientID:        "legacy-trust",
+					ClientSecretRef: &mcpv1beta1.SecretKeyRef{Name: "s2", Key: "k"},
+					Scopes:          []string{"openid"},
+					Audiences:       []string{"https://resource.example.com"},
+				},
+			},
+		}},
+	}
+
+	config, err := BuildAuthServerRunConfig(
+		"default", "test-server", authConfig,
+		[]string{"https://resource.example.com"},
+		[]string{"openid"}, "https://resource.example.com",
+	)
+	require.NoError(t, err)
+	clients := config.InboundGrants.TokenExchange.DelegateClients
+	require.Len(t, clients, 3)
+
+	broker := clients[0]
+	assert.Equal(t, "private_key_jwt", broker.TokenEndpointAuthMethod)
+	assert.Equal(t, "ES256", broker.TokenEndpointAuthSigningAlg)
+	assert.Equal(t, "/etc/toolhive/authserver/delegate-jwks/0/jwks.json", broker.JWKSFile)
+	assert.Empty(t, broker.ClientSecretEnvVar)
+	assert.Equal(t, []string{
+		"authorization_code", "refresh_token", "urn:ietf:params:oauth:grant-type:token-exchange",
+	}, broker.GrantTypes)
+	assert.Equal(t, []string{"https://broker.example.com/callback"}, broker.RedirectURIs)
+	require.NotNil(t, broker.TokenExchange)
+	assert.Equal(t, authserver.SelfIssuedSubjectTokensRestricted, broker.TokenExchange.SelfIssuedSubjectTokens)
+	assert.Equal(t, []string{"tui"}, broker.TokenExchange.AllowedSourceClients)
+	assert.Equal(t, "https://resource.example.com", broker.TokenExchange.APIAudience)
+
+	// restricted with an empty source list maps to own tokens only, while an
+	// absent block keeps the legacy blanket trust.
+	assert.Empty(t, clients[1].JWKSFile)
+	assert.Equal(t, "TOOLHIVE_DELEGATE_CLIENT_SECRET_1", clients[1].ClientSecretEnvVar)
+	require.NotNil(t, clients[1].TokenExchange)
+	assert.True(t, clients[1].TokenExchange.Restricted())
+	assert.Empty(t, clients[1].TokenExchange.AllowedSourceClients)
+	assert.Nil(t, clients[2].TokenExchange)
+
+	// The secret env vars keep their list positions, and the JWKS client has none.
+	envVars := GenerateAuthServerEnvVars(authConfig)
+	require.Len(t, envVars, 2)
+	assert.Equal(t, "TOOLHIVE_DELEGATE_CLIENT_SECRET_1", envVars[0].Name)
+	assert.Equal(t, "TOOLHIVE_DELEGATE_CLIENT_SECRET_2", envVars[1].Name)
+
+	// The RunConfig path must match the mount.
+	volumes, mounts, err := GenerateAuthServerVolumes(authConfig)
+	require.NoError(t, err)
+	require.Len(t, volumes, 1)
+	require.Len(t, mounts, 1)
+	assert.Equal(t, broker.JWKSFile, mounts[0].MountPath)
+}
+
+func TestBuildDelegateClientRunConfigs_PrivateKeyJWTRequiresJWKSRef(t *testing.T) {
+	t.Parallel()
+
+	for name, ref := range map[string]*corev1.ConfigMapKeySelector{
+		"nil":        nil,
+		"empty name": delegateJWKSTestRef("", "jwks.json"),
+		"empty key":  delegateJWKSTestRef("cm", ""),
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			_, err := buildDelegateClientRunConfigs([]mcpv1beta1.DelegateClientConfig{{
+				ClientID: "broker", TokenEndpointAuthMethod: "private_key_jwt", JWKSRef: ref,
+			}})
+			require.ErrorContains(t, err, "delegateClients[0].jwksRef")
+		})
+	}
+}
+
+func TestGenerateDelegateClientJWKSVolumes(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		clients    []mcpv1beta1.DelegateClientConfig
+		wantNames  []string
+		wantPaths  []string
+		wantErrMsg string
+	}{
+		{
+			name:    "no jwksRef means no mount",
+			clients: []mcpv1beta1.DelegateClientConfig{{ClientID: "a"}, {ClientID: "b"}},
+		},
+		{
+			name: "clients get distinct stable paths by list position",
+			clients: []mcpv1beta1.DelegateClientConfig{
+				{ClientID: "a", JWKSRef: delegateJWKSTestRef("jwks-a", "a.json")},
+				{ClientID: "secret"},
+				{ClientID: "c", JWKSRef: delegateJWKSTestRef("jwks-c", "c.json")},
+			},
+			wantNames: []string{"authserver-delegate-jwks-0", "authserver-delegate-jwks-2"},
+			wantPaths: []string{
+				"/etc/toolhive/authserver/delegate-jwks/0/jwks.json",
+				"/etc/toolhive/authserver/delegate-jwks/2/jwks.json",
+			},
+		},
+		{
+			name:       "empty configmap name is rejected",
+			clients:    []mcpv1beta1.DelegateClientConfig{{ClientID: "a", JWKSRef: delegateJWKSTestRef("", "a.json")}},
+			wantErrMsg: "delegateClients[0].jwksRef",
+		},
+		{
+			name:       "empty key is rejected",
+			clients:    []mcpv1beta1.DelegateClientConfig{{ClientID: "a", JWKSRef: delegateJWKSTestRef("cm", "")}},
+			wantErrMsg: "delegateClients[0].jwksRef",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			volumes, mounts, err := generateDelegateClientJWKSVolumes(tt.clients)
+			if tt.wantErrMsg != "" {
+				require.ErrorContains(t, err, tt.wantErrMsg)
+				return
+			}
+			require.NoError(t, err)
+			require.Len(t, volumes, len(tt.wantNames))
+			require.Len(t, mounts, len(tt.wantNames))
+			for i := range tt.wantNames {
+				assert.Equal(t, tt.wantNames[i], volumes[i].Name)
+				assert.Equal(t, tt.wantNames[i], mounts[i].Name)
+				assert.Equal(t, tt.wantPaths[i], mounts[i].MountPath)
+				assert.Equal(t, AuthServerDelegateClientJWKSFileName, mounts[i].SubPath)
+				assert.True(t, mounts[i].ReadOnly)
+				require.NotNil(t, volumes[i].ConfigMap)
+			}
+			if len(tt.wantNames) > 0 {
+				assert.Equal(t, "jwks-a", volumes[0].ConfigMap.Name)
+				assert.Equal(t, []corev1.KeyToPath{{Key: "a.json", Path: AuthServerDelegateClientJWKSFileName}},
+					volumes[0].ConfigMap.Items)
+			}
+		})
+	}
+}

@@ -228,6 +228,8 @@ When the referenced CA data changes, the operator watches the ConfigMap, compute
 
 For a complete example, see [`examples/operator/external-auth/mcpexternalauthconfig_private_ca.yaml`](../../examples/operator/external-auth/mcpexternalauthconfig_private_ca.yaml).
 
+An embedded auth server's pre-provisioned delegate clients (`inboundGrants.tokenExchange.delegateClients`) can authenticate with `private_key_jwt`. The client sets `tokenEndpointAuthMethod: private_key_jwt` and `jwksRef`, a ConfigMap key holding its public JWKS, instead of `clientSecretRef`. The operator mounts that key read-only at `/etc/toolhive/authserver/delegate-jwks/<index>/jwks.json` and points the RunConfig `jwks_file` at it. These clients can also set `grantTypes`, `redirectUris` and a `tokenExchange` source policy (a client that sets `grantTypes` must declare `tokenExchange.selfIssuedSubjectTokens` as `any` or `restricted`); see [Token Exchange and Delegation](17-token-exchange-delegation.md). Rolling the pod when the JWKS ConfigMap changes is not part of this change yet.
+
 Because appending a certificate to a referenced ConfigMap makes that CA a trust anchor — for an upstream provider's login, or for a trusted issuer's subject-token validation — restrict write access to a `caBundleRef` ConfigMap with the same RBAC care as the auth server's signing-key Secret.
 
 MCPExternalAuthConfig resources can be referenced via two paths:

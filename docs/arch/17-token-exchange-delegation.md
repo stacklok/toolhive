@@ -222,14 +222,50 @@ A token-only vMCP cannot use Cedar authorization: grant-only issuance does not
 create the provenance-bound upstream-token entries Cedar needs for
 upstream-derived claims.
 
-The CRD accepts Secret references only: no plaintext secret, redirect URI, or
-arbitrary grant selection is available. A non-empty `clientSecretRef.name` and
-`.key`, at least one scope, and at least one audience are required. Delegate
-clients require an HTTPS issuer at admission. In the RunConfig and `Config`
-validators, only delegate clients that authenticate with a secret count as
-confidential for the cleartext-transport rule; a set made up only of
-`private_key_jwt` delegate clients sends no secret and may use an HTTP issuer.
-A set that mixes the two stays subject to the rule.
+The CRD accepts Secret references only: no plaintext secret is available. A
+non-empty `clientSecretRef.name` and `.key`, at least one scope, and at least one
+audience are required, except for a `private_key_jwt` client (see below). Delegate
+clients that authenticate with a secret require an HTTPS issuer, or the
+loopback opt-in `insecureAllowConfidentialOverLoopbackHTTP` for a loopback HTTP
+issuer, and are rejected with `insecureAllowHTTP`.
+The CRD admission rules, the RunConfig validator and the `Config` validator all
+apply the same rule: only delegate clients that authenticate with a secret
+(`tokenEndpointAuthMethod` absent or not `private_key_jwt`) count as
+confidential for the cleartext-transport rule. A set made up only of
+`private_key_jwt` delegate clients sends no secret and may use an HTTP issuer or
+`insecureAllowHTTP`. A set that mixes the two stays subject to the rule.
+
+#### Pre-provisioned clients on `inboundGrants.tokenExchange.delegateClients`
+
+The canonical list `inboundGrants.tokenExchange.delegateClients` accepts more
+fields. They are documented and tested only there. The deprecated top-level
+`delegateClients` shares the Go type, so it accepts them too, but nothing
+enforces or documents them on that path.
+
+| Field | Meaning |
+|---|---|
+| `tokenEndpointAuthMethod` | `client_secret_basic`, `client_secret_post` or `private_key_jwt`. |
+| `jwksRef` | ConfigMap key holding the client's public JWKS. Required for `private_key_jwt`; forbidden otherwise. |
+| `tokenEndpointAuthSigningAlg` | The `private_key_jwt` signing algorithm. |
+| `grantTypes` | A subset of `authorization_code`, `refresh_token`, token exchange and JWT-bearer. When set, it must include token exchange. |
+| `redirectUris` | Required with `authorization_code`. They sit under `tokenExchange.delegateClients` because a delegate client is a token-exchange client that may also log in. |
+| `tokenExchange` | `selfIssuedSubjectTokens` (`any` or `restricted`, required in the block, no default), `allowedSourceClients` and `apiAudience`. The block is required when `grantTypes` is set; omitting it is allowed only without `grantTypes` and keeps the legacy blanket trust. See [Source policy and API audience](#source-policy-and-api-audience). |
+
+`clientSecretRef` is required unless the method is `private_key_jwt`, where it is
+forbidden. CEL admission enforces this, the token-exchange rule for `grantTypes`,
+`redirectUris` with `authorization_code`, the `tokenExchange` block when
+`grantTypes` is set, and `allowedSourceClients` and `apiAudience` only with
+`restricted`. `selfIssuedSubjectTokens` has no schema default on purpose: a
+default would be applied before CEL runs, so "set it explicitly" could not be
+enforced, and it would also be applied to objects read back from etcd, turning a
+stored `tokenExchange: {}` into blanket trust. The shared Go validator checks
+everything else (public keys only, redirect-URI policy, source-client rules).
+
+For `jwksRef`, the operator mounts the ConfigMap key read-only at
+`/etc/toolhive/authserver/delegate-jwks/<index>/jwks.json` and sets `jwks_file` to
+that path, where `<index>` is the client's position in the list. The runner reads
+the file at startup. The file is public key material, so the ConfigMap needs no
+special protection beyond controlling who can write it.
 
 `trustedIssuers` is exposed the same way, on the same shared
 `EmbeddedAuthServerConfig`, and converts directly to `[]tokenexchange.TrustedIssuer`

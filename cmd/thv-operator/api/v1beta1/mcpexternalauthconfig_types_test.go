@@ -5,12 +5,14 @@ package v1beta1
 
 import (
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -2022,11 +2024,56 @@ func TestEmbeddedAuthServerConfig_ValidateInboundGrants_ConfidentialClientTransp
 		Scopes:          []string{"openid"},
 		Audiences:       []string{"https://api.example.com"},
 	}}
+	jwtClient := DelegateClientConfig{
+		ClientID:                "jwt-client",
+		TokenEndpointAuthMethod: "private_key_jwt",
+		JWKSRef:                 &corev1.ConfigMapKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: "jwks"}, Key: "jwks.json"},
+		Scopes:                  []string{"openid"},
+		Audiences:               []string{"https://api.example.com"},
+	}
+	jwtOnly := []DelegateClientConfig{jwtClient}
+	mixed := append(slices.Clone(delegateClients), jwtClient)
 	tests := []struct {
 		name      string
 		config    EmbeddedAuthServerConfig
 		expectErr bool
 	}{
+		{
+			name: "private_key_jwt delegate clients allow plain-HTTP loopback issuer without opt in",
+			config: EmbeddedAuthServerConfig{
+				Issuer:          "http://127.0.0.1:8080",
+				DelegateClients: jwtOnly,
+			},
+		},
+		{
+			name: "canonical private_key_jwt delegate clients allow insecure HTTP",
+			config: EmbeddedAuthServerConfig{
+				Issuer:            "http://auth.example.com",
+				InsecureAllowHTTP: true,
+				InboundGrants: &InboundGrantsConfig{
+					TokenExchange: &TokenExchangeInboundGrantConfig{DelegateClients: jwtOnly},
+				},
+			},
+		},
+		{
+			name: "mixed delegate clients reject plain-HTTP loopback issuer without opt in",
+			config: EmbeddedAuthServerConfig{
+				Issuer:          "http://127.0.0.1:8080",
+				DelegateClients: mixed,
+			},
+			expectErr: true,
+		},
+		{
+			name: "canonical mixed delegate clients reject insecure HTTP",
+			config: EmbeddedAuthServerConfig{
+				Issuer:            "http://auth.example.com",
+				InsecureAllowHTTP: true,
+				InboundGrants: &InboundGrantsConfig{
+					TokenExchange: &TokenExchangeInboundGrantConfig{DelegateClients: mixed},
+				},
+			},
+			expectErr: true,
+		},
 		{
 			name: "delegate clients remain independent of confidential DCR",
 			config: EmbeddedAuthServerConfig{
@@ -2153,6 +2200,70 @@ func TestMCPExternalAuthConfig_DelegateClientsRejectUnsafeHTTP(t *testing.T) {
 	err := config.Validate()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "insecure_allow_http")
+}
+
+func TestMCPExternalAuthConfig_DelegateClientTrustModes(t *testing.T) {
+	t.Parallel()
+
+	exchangeOnly := []string{"urn:ietf:params:oauth:grant-type:token-exchange"}
+	client := func(grants []string, policy *DelegateClientTokenExchangeConfig) DelegateClientConfig {
+		return DelegateClientConfig{
+			ClientID:        "broker",
+			ClientSecretRef: &SecretKeyRef{Name: "broker-secret", Key: "client-secret"},
+			GrantTypes:      grants,
+			Scopes:          []string{"openid"},
+			Audiences:       []string{"https://api.example.com"},
+			TokenExchange:   policy,
+		}
+	}
+	tests := []struct {
+		name    string
+		client  DelegateClientConfig
+		legacy  bool
+		wantErr string
+	}{
+		{name: "no grants and no block keeps legacy trust", client: client(nil, nil)},
+		{name: "grants without block", client: client(exchangeOnly, nil),
+			wantErr: "tokenExchange.selfIssuedSubjectTokens is required when grantTypes is set"},
+		{name: "legacy list grants without block", client: client(exchangeOnly, nil), legacy: true,
+			wantErr: "delegateClients[0]"},
+		{name: "empty block", client: client(nil, &DelegateClientTokenExchangeConfig{}),
+			wantErr: "tokenExchange.selfIssuedSubjectTokens must be"},
+		{name: "grants with explicit any", client: client(exchangeOnly,
+			&DelegateClientTokenExchangeConfig{SelfIssuedSubjectTokens: "any"})},
+		{name: "restricted with empty list", client: client(exchangeOnly,
+			&DelegateClientTokenExchangeConfig{SelfIssuedSubjectTokens: "restricted", AllowedSourceClients: []string{}})},
+		{name: "any with source clients", client: client(exchangeOnly, &DelegateClientTokenExchangeConfig{
+			SelfIssuedSubjectTokens: "any", AllowedSourceClients: []string{"tui"},
+		}), wantErr: "valid only when selfIssuedSubjectTokens is restricted"},
+		{name: "any with api audience", client: client(exchangeOnly, &DelegateClientTokenExchangeConfig{
+			SelfIssuedSubjectTokens: "any", APIAudience: "https://api.example.com",
+		}), wantErr: "valid only when selfIssuedSubjectTokens is restricted"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			embedded := &EmbeddedAuthServerConfig{Issuer: "https://auth.example.com"}
+			if tt.legacy {
+				embedded.DelegateClients = []DelegateClientConfig{tt.client}
+			} else {
+				embedded.InboundGrants = &InboundGrantsConfig{TokenExchange: &TokenExchangeInboundGrantConfig{
+					DelegateClients: []DelegateClientConfig{tt.client},
+				}}
+			}
+			config := &MCPExternalAuthConfig{Spec: MCPExternalAuthConfigSpec{
+				Type: ExternalAuthTypeEmbeddedAuthServer, EmbeddedAuthServer: embedded,
+			}}
+			err := config.Validate()
+			if tt.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.ErrorContains(t, err, tt.wantErr)
+		})
+	}
 }
 
 func TestEmbeddedAuthServerConfig_SyntheticIdentityUpstreams(t *testing.T) {

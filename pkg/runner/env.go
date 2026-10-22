@@ -6,7 +6,9 @@ package runner
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"strings"
@@ -54,7 +56,7 @@ func (*DetachedEnvVarValidator) Validate(
 			if isEnvVarProvided(envVar.Name, suppliedEnvVars, secretsList) {
 				continue
 			} else if envVar.Required {
-				return nil, fmt.Errorf("missing required environment variable: %s", envVar.Name)
+				return nil, missingRequiredEnvVarError(envVar, nil)
 			} else if envVar.Default != "" {
 				addAsEnvironmentVariable(envVar, envVar.Default, &suppliedEnvVars)
 			}
@@ -143,11 +145,10 @@ func (v *CLIEnvVarValidator) Validate(
 				if err != nil {
 					// The variable is required: without a value the workload starts
 					// misconfigured, so fail instead of warning and skipping it.
-					return nil, fmt.Errorf("failed to read value for required environment variable %s: %w",
-						envVar.Name, err)
+					return nil, missingRequiredEnvVarError(envVar, err)
 				}
 				if value == "" {
-					return nil, fmt.Errorf("no value provided for required environment variable: %s", envVar.Name)
+					return nil, missingRequiredEnvVarError(envVar, nil)
 				}
 				addNewVariable(ctx, envVar, value, secretsManager, &envVars, &secretsList)
 			} else if envVar.Default != "" {
@@ -184,13 +185,29 @@ func promptForEnvironmentVariable(envVar *registry.EnvVar, stdin *bufio.Reader) 
 		// A value that arrives without a trailing newline still counts: ReadString
 		// returns the data alongside io.EOF in that case.
 		line, readErr := stdin.ReadString('\n')
-		if readErr != nil && line == "" {
+		// EOF is the normal end of a line that arrived without a trailing
+		// newline. Any other error, or EOF before a byte arrived, means the
+		// value is not complete: reject it even when a partial line came back.
+		if readErr != nil && (!errors.Is(readErr, io.EOF) || line == "") {
 			return "", fmt.Errorf("failed to read input: %w", readErr)
 		}
 		byteValue = []byte(line)
 	}
 
 	return strings.TrimSpace(string(byteValue)), nil
+}
+
+// missingRequiredEnvVarError explains how to supply a required variable without
+// a prompt, so a non-interactive run does not fail with only io.EOF.
+func missingRequiredEnvVarError(envVar *registry.EnvVar, cause error) error {
+	message := fmt.Sprintf(
+		"missing required environment variable %s (pass it with --env %s=<value> or --secret <name>,target=%s)",
+		envVar.Name, envVar.Name, envVar.Name,
+	)
+	if cause != nil {
+		return fmt.Errorf("%s: %w", message, cause)
+	}
+	return errors.New(message)
 }
 
 // addNewVariable adds an environment variable or secret to the appropriate list

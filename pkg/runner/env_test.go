@@ -4,10 +4,15 @@
 package runner
 
 import (
+	"bufio"
 	"context"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"testing/iotest"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -24,6 +29,7 @@ func TestDetachedEnvVarValidator_Validate(t *testing.T) {
 		envVars         []*registry.EnvVar
 		suppliedEnvVars map[string]string
 		wantErr         bool
+		wantErrContains string
 		wantEnvVars     map[string]string
 	}{
 		{
@@ -42,6 +48,7 @@ func TestDetachedEnvVarValidator_Validate(t *testing.T) {
 			},
 			suppliedEnvVars: map[string]string{},
 			wantErr:         true,
+			wantErrContains: "pass it with --env REQUIRED_VAR=<value>",
 		},
 		{
 			name: "required secret not provided returns error",
@@ -93,6 +100,7 @@ func TestDetachedEnvVarValidator_Validate(t *testing.T) {
 			got, err := validator.Validate(context.Background(), metadata, runConfig, tc.suppliedEnvVars)
 			if tc.wantErr {
 				require.Error(t, err)
+				require.ErrorContains(t, err, tc.wantErrContains)
 				return
 			}
 			require.NoError(t, err)
@@ -113,11 +121,13 @@ func TestDetachedEnvVarValidator_Validate(t *testing.T) {
 //nolint:paralleltest // Swaps process-global os.Stdin; cannot run in parallel.
 func TestCLIEnvVarValidator_PromptsRequiredEnvVars(t *testing.T) {
 	tests := []struct {
-		name        string
-		envVars     []*registry.EnvVar
-		input       string
-		wantErr     bool
-		wantEnvVars map[string]string
+		name            string
+		envVars         []*registry.EnvVar
+		input           string
+		wantErr         bool
+		wantErrContains string
+		wantErrIs       error
+		wantEnvVars     map[string]string
 	}{
 		{
 			name: "value containing spaces is captured in full",
@@ -149,16 +159,19 @@ func TestCLIEnvVarValidator_PromptsRequiredEnvVars(t *testing.T) {
 			envVars: []*registry.EnvVar{
 				{Name: "GRAFANA_URL", Required: true, Description: "URL of the Grafana instance"},
 			},
-			input:   "\n",
-			wantErr: true,
+			input:           "\n",
+			wantErr:         true,
+			wantErrContains: "missing required environment variable GRAFANA_URL",
 		},
 		{
-			name: "unreadable input for a required variable is an error",
+			name: "end of input before any value is an error",
 			envVars: []*registry.EnvVar{
 				{Name: "GRAFANA_URL", Required: true, Description: "URL of the Grafana instance"},
 			},
-			input:   "",
-			wantErr: true,
+			input:           "",
+			wantErr:         true,
+			wantErrIs:       io.EOF,
+			wantErrContains: "pass it with --env GRAFANA_URL=<value>",
 		},
 	}
 
@@ -185,10 +198,32 @@ func TestCLIEnvVarValidator_PromptsRequiredEnvVars(t *testing.T) {
 			got, err := validator.Validate(context.Background(), metadata, runConfig, map[string]string{})
 			if tc.wantErr {
 				require.Error(t, err)
+				if tc.wantErrIs != nil {
+					require.ErrorIs(t, err, tc.wantErrIs)
+				}
+				require.ErrorContains(t, err, tc.wantErrContains)
 				return
 			}
 			require.NoError(t, err)
 			assert.Equal(t, tc.wantEnvVars, got)
 		})
 	}
+}
+
+func TestPromptForEnvironmentVariableRejectsPartialLineOnReadError(t *testing.T) {
+	t.Parallel()
+
+	stdin := bufio.NewReader(io.MultiReader(
+		strings.NewReader("partial"),
+		iotest.ErrReader(errors.New("boom")),
+	))
+
+	_, err := promptForEnvironmentVariable(
+		&registry.EnvVar{Name: "REQUIRED_VAR", Required: true},
+		stdin,
+	)
+
+	require.Error(t, err)
+	require.ErrorContains(t, err, "failed to read input")
+	require.ErrorContains(t, err, "boom")
 }

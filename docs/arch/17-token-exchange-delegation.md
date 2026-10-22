@@ -288,6 +288,11 @@ Secret does not change the environment of an already running pod. The operator
 has no delegate-client Secret watch or automatic rollout for this feature, so
 restart or otherwise roll out the workload after rotating the secret.
 
+Changing a delegate client's scopes or audiences works the same way. The new
+values replace the stored client row when the server restarts. On Redis, with
+more than one replica, a rolling update can briefly serve either policy. See
+[Auth Server Storage](11-auth-server-storage.md#configured-clients-across-restarts).
+
 ## Secretless DCR delegate flow
 
 Set `allowPrivateKeyJWTRegistration: true` without enabling

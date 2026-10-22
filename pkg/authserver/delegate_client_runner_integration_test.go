@@ -361,6 +361,17 @@ func signedSubjectTokenForClient(
 	issuer, clientID string,
 ) string {
 	t.Helper()
+	return signedSubjectTokenWithScopes(t, embedded, issuer, clientID, "openid profile")
+}
+
+// signedSubjectTokenWithScopes is signedSubjectTokenForClient with an explicit
+// scope claim. A token exchange can only request scopes the subject token holds.
+func signedSubjectTokenWithScopes(
+	t *testing.T,
+	embedded *authserverrunner.EmbeddedAuthServer,
+	issuer, clientID, scopes string,
+) string {
+	t.Helper()
 
 	signingKey, err := embedded.KeyProvider().SigningKey(context.Background())
 	require.NoError(t, err)
@@ -379,7 +390,7 @@ func signedSubjectTokenForClient(
 		IssuedAt: jwt.NewNumericDate(now),
 	}).Claims(map[string]any{
 		"client_id": clientID,
-		"scope":     "openid profile",
+		"scope":     scopes,
 	}).Serialize()
 	require.NoError(t, err)
 	return token

@@ -691,6 +691,7 @@ func (s storedClient) fingerprint() clientFingerprint {
 		resources:           s.Resources,
 		identityFingerprint: s.IdentityFingerprint,
 		public:              s.Public,
+		reserved:            s.Reserved,
 	}
 }
 
@@ -706,15 +707,15 @@ func (s storedClient) fingerprint() clientFingerprint {
 const maxConfiguredClientReconcileRetries = 5
 
 // ReconcileConfiguredClient applies an operator-declared client: creates it
-// if absent, idempotently replaces a matching-fingerprint configured client
-// (the restart-with-unchanged-config case), or refuses with ErrAlreadyExists
-// when the existing record is DCR-issued or a different configured client.
-// See the ClientRegistry interface doc for the full contract.
+// if absent, otherwise replaces the existing record unless
+// configuredClientConflict refuses (or the record is DCR-issued), in which
+// case it returns ErrAlreadyExists. See the ClientRegistry interface doc for
+// the full contract.
 //
 // The read-check-write sequence for an existing key runs inside a Redis
 // WATCH/MULTI transaction so a concurrent writer (e.g. a DCR registration on
 // another replica racing this reconciliation) cannot interleave between the
-// fingerprint check and the write. Redis aborts the transaction if the
+// conflict check and the write. Redis aborts the transaction if the
 // watched key changed concurrently, and go-redis surfaces that as
 // redis.TxFailedErr rather than retrying it — see
 // maxConfiguredClientReconcileRetries for why this method retries that error
@@ -749,6 +750,9 @@ func (s *RedisStorage) ReconcileConfiguredClient(ctx context.Context, client fos
 		return err
 	}
 
+	// replaced holds the fingerprint of the row the successful attempt
+	// overwrote, nil when the key was absent.
+	var replaced *clientFingerprint
 	txFn := func(tx *redis.Tx) error {
 		existingData, getErr := tx.Get(ctx, key).Bytes()
 		if errors.Is(getErr, redis.Nil) {
@@ -777,20 +781,27 @@ func (s *RedisStorage) ReconcileConfiguredClient(ctx context.Context, client fos
 			return fmt.Errorf("%w: client %q is DCR-issued, refusing to overwrite with a configured client",
 				ErrAlreadyExists, client.GetID())
 		}
-		if !existingStored.fingerprint().equal(stored.fingerprint()) {
-			return fmt.Errorf("%w: client %q is already registered as a different configured client",
-				ErrAlreadyExists, client.GetID())
+		existingFP := existingStored.fingerprint()
+		if conflictErr := configuredClientConflict(client.GetID(), existingFP, stored.fingerprint()); conflictErr != nil {
+			return conflictErr
 		}
 
+		replaced = &existingFP
 		return setPipelined(tx)
 	}
 
 	var watchErr error
 	for attempt := 0; attempt < maxConfiguredClientReconcileRetries; attempt++ {
+		replaced = nil
 		watchErr = s.client.Watch(ctx, txFn, key)
 		if !errors.Is(watchErr, redis.TxFailedErr) {
-			return watchErr
+			break
 		}
+	}
+	// replaced is only meaningful when watchErr is nil: the last attempt may
+	// have set it before EXEC aborted.
+	if watchErr == nil && replaced != nil {
+		warnConfiguredClientReplaced(client.GetID(), *replaced, stored.fingerprint())
 	}
 	return watchErr
 }

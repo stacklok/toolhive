@@ -807,9 +807,9 @@ func TestClientFingerprint_StoredAndReconstructedAgree(t *testing.T) {
 
 // TestRedisStorage_ReconcileConfiguredClient covers the create/idempotent/
 // reject matrix ReconcileConfiguredClient must implement over Redis: create
-// when absent (no TTL), no-op when the existing record is itself configured
-// and fingerprint-equal, and refuse with ErrAlreadyExists when the existing
-// record is DCR-issued or a different configured client.
+// when absent (no TTL), no-op on an equivalent record, and refuse with
+// ErrAlreadyExists when the existing record is DCR-issued. Replacing a
+// configured client is covered by TestReconcileConfiguredClient_SharedBehaviour.
 func TestRedisStorage_ReconcileConfiguredClient(t *testing.T) {
 	t.Parallel()
 
@@ -843,15 +843,6 @@ func TestRedisStorage_ReconcileConfiguredClient(t *testing.T) {
 			retrieved, err := s.GetClient(ctx, "configured")
 			require.NoError(t, err)
 			assert.NoError(t, registration.SHA256Hasher.Compare(ctx, retrieved.GetHashedSecret(), []byte("new-secret")))
-		})
-	})
-
-	t.Run("refuses a different configured client at the same ID", func(t *testing.T) {
-		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
-			require.NoError(t, s.ReconcileConfiguredClient(ctx, newConfigured("configured", "secret", []string{"openid"})))
-
-			err := s.ReconcileConfiguredClient(ctx, newConfigured("configured", "secret", []string{"profile"}))
-			require.ErrorIs(t, err, ErrAlreadyExists)
 		})
 	})
 
@@ -5708,4 +5699,166 @@ func TestFilterIndexMembersByPrefix(t *testing.T) {
 			assert.Equal(t, tc.wantDropped, dropped, "dropped slice mismatch")
 		})
 	}
+}
+
+// afterFirstGetHook runs a competing write straight after the first GET of
+// key, while ReconcileConfiguredClient's WATCH is open, so the transaction's
+// EXEC aborts and the method has to retry.
+type afterFirstGetHook struct {
+	mr     *miniredis.Miniredis
+	key    string
+	value  []byte
+	fired  atomic.Bool
+	setErr atomic.Value
+}
+
+func (*afterFirstGetHook) DialHook(next redis.DialHook) redis.DialHook { return next }
+
+func (h *afterFirstGetHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
+	return func(ctx context.Context, cmd redis.Cmder) error {
+		err := next(ctx, cmd)
+		if args := cmd.Args(); cmd.Name() == "get" && len(args) > 1 && args[1] == h.key &&
+			h.fired.CompareAndSwap(false, true) {
+			if setErr := h.mr.Set(h.key, string(h.value)); setErr != nil {
+				h.setErr.Store(setErr)
+			}
+		}
+		return err
+	}
+}
+
+func (*afterFirstGetHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
+	return next
+}
+
+func (h *afterFirstGetHook) requireFired(t *testing.T) {
+	t.Helper()
+	require.True(t, h.fired.Load(), "the competing write must have run during the WATCH")
+	require.Nil(t, h.setErr.Load())
+}
+
+func marshalStoredClient(t *testing.T, c fosite.Client) []byte {
+	t.Helper()
+	data, err := json.Marshal(buildStoredClient(c))
+	require.NoError(t, err)
+	return data
+}
+
+func TestRedisStorage_ReconcileConfiguredClient_RedisSpecific(t *testing.T) {
+	t.Parallel()
+
+	id := reconcileTestClientID
+	audience := []string{"https://mcp.example"}
+	key := func(s *RedisStorage) string { return redisKey(s.keyPrefix, KeyTypeClient, id) }
+	legacyRow := func(t *testing.T, public bool) string {
+		t.Helper()
+		row := map[string]any{
+			"id": id, "grant_types": []string{oauthproto.GrantTypeTokenExchange},
+			"scopes": []string{"a"}, "audience": audience, "public": public,
+		}
+		data, err := json.Marshal(row)
+		require.NoError(t, err)
+		return string(data)
+	}
+
+	t.Run("replace clears the TTL and removes the ID from the DCR cap index", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			require.NoError(t, s.ReconcileConfiguredClient(ctx, testDelegateClient(t, id, "s", []string{"a"}, audience)))
+			mr.SetTTL(key(s), time.Hour)
+			_, err := mr.ZAdd(s.dcrClientIndexKey(), 1, id)
+			require.NoError(t, err)
+
+			require.NoError(t, s.ReconcileConfiguredClient(ctx, testDelegateClient(t, id, "s", []string{"a", "b"}, audience)))
+
+			assert.Equal(t, time.Duration(0), mr.TTL(key(s)))
+			members, err := mr.ZMembers(s.dcrClientIndexKey())
+			if err != nil {
+				assert.ErrorIs(t, err, miniredis.ErrKeyNotFound)
+			}
+			assert.NotContains(t, members, id)
+		})
+	})
+
+	t.Run("legacy delegate row without reserved or identity keys is replaced", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			require.NoError(t, mr.Set(key(s), legacyRow(t, false)))
+
+			require.NoError(t, s.ReconcileConfiguredClient(ctx, testDelegateClient(t, id, "s", []string{"a", "b"}, audience)))
+
+			got, err := s.GetClient(ctx, id)
+			require.NoError(t, err)
+			assert.ElementsMatch(t, []string{"a", "b"}, []string(got.GetScopes()))
+		})
+	})
+
+	t.Run("legacy public row with a TTL and no DCR marker is refused as DCR-issued", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			require.NoError(t, mr.Set(key(s), legacyRow(t, true)))
+			mr.SetTTL(key(s), time.Hour)
+
+			err := s.ReconcileConfiguredClient(ctx, testDelegateClient(t, id, "s", []string{"a"}, audience))
+
+			require.ErrorIs(t, err, ErrAlreadyExists)
+			assert.Contains(t, err.Error(), "DCR-issued")
+		})
+	})
+
+	t.Run("placeholder with an empty identity persists Reserved and is refused against a delegate", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			require.NoError(t, s.ReconcileConfiguredClient(ctx, testPlaceholder(t, id, "", []string{"a"}, nil)))
+
+			raw, err := mr.Get(key(s))
+			require.NoError(t, err)
+			var persisted storedClient
+			require.NoError(t, json.Unmarshal([]byte(raw), &persisted))
+			assert.True(t, persisted.Reserved)
+			assert.Empty(t, persisted.IdentityFingerprint)
+
+			err = s.ReconcileConfiguredClient(ctx, testDelegateClient(t, id, "s", []string{"a"}, audience))
+			require.ErrorIs(t, err, ErrAlreadyExists)
+			assert.Contains(t, err.Error(), "stored row is a SPIFFE-reserved placeholder")
+		})
+	})
+
+	t.Run("WATCH abort on the replace path is retried and re-evaluates the kind", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			require.NoError(t, s.ReconcileConfiguredClient(ctx, testDelegateClient(t, id, "s", []string{"a"}, audience)))
+			hook := &afterFirstGetHook{mr: mr, key: key(s), value: marshalStoredClient(t, testPlaceholder(t, id, "id-a", []string{"a"}, nil))}
+			s.client.AddHook(hook)
+
+			err := s.ReconcileConfiguredClient(ctx, testDelegateClient(t, id, "s", []string{"a", "b"}, audience))
+
+			hook.requireFired(t)
+			require.ErrorIs(t, err, ErrAlreadyExists)
+			assert.Contains(t, err.Error(), "stored row is a SPIFFE-reserved placeholder")
+			got, getErr := s.GetClient(ctx, id)
+			require.NoError(t, getErr)
+			assert.True(t, isReservedPlaceholder(got), "the competing placeholder must survive")
+		})
+	})
+}
+
+// TestRedisStorage_ReconcileConfiguredClient_WarnsOnceAcrossWatchRetry does
+// not run in parallel: it swaps the global slog default.
+func TestRedisStorage_ReconcileConfiguredClient_WarnsOnceAcrossWatchRetry(t *testing.T) {
+	id := reconcileTestClientID
+	audience := []string{"https://mcp.example"}
+	s, mr := newTestRedisStorage(t)
+	t.Cleanup(func() { _ = s.Close() })
+
+	require.NoError(t, s.ReconcileConfiguredClient(t.Context(), testDelegateClient(t, id, "s", []string{"a"}, audience)))
+	hook := &afterFirstGetHook{
+		mr: mr, key: redisKey(s.keyPrefix, KeyTypeClient, id),
+		value: marshalStoredClient(t, testDelegateClient(t, id, "s", []string{"a", "c"}, audience)),
+	}
+	s.client.AddHook(hook)
+	logs := captureSlog(t)
+
+	require.NoError(t, s.ReconcileConfiguredClient(t.Context(), testDelegateClient(t, id, "s", []string{"a", "b"}, audience)))
+
+	hook.requireFired(t)
+	warns := logs.warnsFor(id)
+	require.Len(t, warns, 1, "the aborted first attempt must not log")
+	assert.Equal(t, []string{"a", "c"}, warns[0]["old_scopes"], "the WARN reports the row the winning attempt replaced")
+	assert.Equal(t, []string{"a", "b"}, warns[0]["new_scopes"])
 }

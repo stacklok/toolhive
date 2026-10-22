@@ -853,7 +853,8 @@ func TestNewUpstreamTokenRefresher_NilWhenNoUpstreams(t *testing.T) {
 // use of ReconcileConfiguredClient: registering a delegate client is
 // create-only against a DCR-issued collision (the security fix -- an
 // operator-declared client must never silently overwrite a DCR
-// registration), and idempotent across a restart with unchanged config.
+// registration), and idempotent across a restart with unchanged config. The
+// policy-change case is in TestConfiguredDelegateClientPolicyChangeAcrossRestarts.
 func TestNewServer_DelegateClientReconciliation(t *testing.T) {
 	t.Parallel()
 

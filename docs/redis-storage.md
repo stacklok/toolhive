@@ -362,6 +362,8 @@ All keys use the prefix `thv:auth:{namespace:name}:` where `{namespace:name}` is
 | `{prefix}invalidated:{code}` | Replay detection for auth codes | 30 minutes |
 | `{prefix}jwt:{jti}` | Client assertion JWT replay prevention | Matches JWT `exp` |
 
+For how configured (delegate and SPIFFE) client rows behave across restarts and rollbacks, see [Configured clients across restarts](arch/11-auth-server-storage.md#configured-clients-across-restarts).
+
 When upgrading to the release that adds the DCR client cap, see the upgrade notes in [Auth Server Storage](arch/11-auth-server-storage.md#dcr-client-cap): a deployment already holding more than `max_dcr_clients` (default 10,000) live DCR clients rejects new registrations until the count drains, so raise the cap before upgrading. Backfilled rows keep their existing TTL of up to 30 days. With the operator, `storage.maxDCRClients` exists only in the new CRDs, so upgrade in this order:
 
 1. Upgrade the `operator-crds` chart.

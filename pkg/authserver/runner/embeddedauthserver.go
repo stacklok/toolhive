@@ -1267,6 +1267,7 @@ func resolveDelegateClients(clients []authserver.DelegateClientRunConfig) ([]aut
 			TokenEndpointAuthSigningAlg: client.TokenEndpointAuthSigningAlg,
 			GrantTypes:                  slices.Clone(client.GrantTypes),
 			RedirectURIs:                slices.Clone(client.RedirectURIs),
+			TokenExchange:               client.TokenExchange.Clone(),
 		}
 		if client.TokenEndpointAuthMethod == oauthproto.TokenEndpointAuthMethodPrivateKeyJWT {
 			jwks, err := loadJWKSFile(client.JWKSFile)

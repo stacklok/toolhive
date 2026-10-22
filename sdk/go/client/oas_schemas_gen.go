@@ -805,7 +805,8 @@ type AuthenticationDelegateClientRunConfig struct {
 	TokenEndpointAuthMethod OptString `json:"token_endpoint_auth_method"`
 	// TokenEndpointAuthSigningAlg is the private_key_jwt signing algorithm.
 	// Defaults to RS256.
-	TokenEndpointAuthSigningAlg OptString `json:"token_endpoint_auth_signing_alg"`
+	TokenEndpointAuthSigningAlg OptString                                    `json:"token_endpoint_auth_signing_alg"`
+	TokenExchange               OptAuthenticationDelegateClientTokenExchange `json:"token_exchange"`
 }
 
 // GetAudiences returns the value of Audiences.
@@ -858,6 +859,11 @@ func (s *AuthenticationDelegateClientRunConfig) GetTokenEndpointAuthSigningAlg()
 	return s.TokenEndpointAuthSigningAlg
 }
 
+// GetTokenExchange returns the value of TokenExchange.
+func (s *AuthenticationDelegateClientRunConfig) GetTokenExchange() OptAuthenticationDelegateClientTokenExchange {
+	return s.TokenExchange
+}
+
 // SetAudiences sets the value of Audiences.
 func (s *AuthenticationDelegateClientRunConfig) SetAudiences(val []string) {
 	s.Audiences = val
@@ -906,6 +912,69 @@ func (s *AuthenticationDelegateClientRunConfig) SetTokenEndpointAuthMethod(val O
 // SetTokenEndpointAuthSigningAlg sets the value of TokenEndpointAuthSigningAlg.
 func (s *AuthenticationDelegateClientRunConfig) SetTokenEndpointAuthSigningAlg(val OptString) {
 	s.TokenEndpointAuthSigningAlg = val
+}
+
+// SetTokenExchange sets the value of TokenExchange.
+func (s *AuthenticationDelegateClientRunConfig) SetTokenExchange(val OptAuthenticationDelegateClientTokenExchange) {
+	s.TokenExchange = val
+}
+
+// TokenExchange is the client's token-exchange policy. Its
+// SelfIssuedSubjectTokens field selects which self-issued subject tokens
+// the client may exchange and is required whenever the block is present.
+// The block may be omitted only when GrantTypes is omitted or empty; such
+// a client keeps the legacy rule (any) and may exchange any self-issued
+// token. A client that sets GrantTypes must declare the block.
+// Ref: #/components/schemas/AuthenticationDelegateClientTokenExchange
+type AuthenticationDelegateClientTokenExchange struct {
+	// AllowedSourceClients are client_id values, as they appear in the subject
+	// token's client_id claim, whose self-issued tokens this client may
+	// exchange in addition to its own. They must be user-facing clients that
+	// register at runtime (DCR or CIMD), so startup cannot check that they
+	// exist. A configured delegate client cannot be listed: its tokens carry
+	// its own client_id, so listing it would trust everything it accepts.
+	// Valid only with restricted; empty means the client's own tokens only.
+	AllowedSourceClients []string `json:"allowed_source_clients"`
+	// APIAudience is the client's own API audience. The client may request it
+	// even when the subject token does not cover it. It must be one of the
+	// client's Audiences. Valid only with restricted.
+	APIAudience OptString `json:"api_audience"`
+	// SelfIssuedSubjectTokens is any or restricted, and is required. With
+	// restricted, a self-issued subject token must carry the client's own
+	// client_id or one of AllowedSourceClients, and a may_act claim naming
+	// this client does not lift that restriction. With any, the client may
+	// exchange any self-issued token.
+	SelfIssuedSubjectTokens string `json:"self_issued_subject_tokens"`
+}
+
+// GetAllowedSourceClients returns the value of AllowedSourceClients.
+func (s *AuthenticationDelegateClientTokenExchange) GetAllowedSourceClients() []string {
+	return s.AllowedSourceClients
+}
+
+// GetAPIAudience returns the value of APIAudience.
+func (s *AuthenticationDelegateClientTokenExchange) GetAPIAudience() OptString {
+	return s.APIAudience
+}
+
+// GetSelfIssuedSubjectTokens returns the value of SelfIssuedSubjectTokens.
+func (s *AuthenticationDelegateClientTokenExchange) GetSelfIssuedSubjectTokens() string {
+	return s.SelfIssuedSubjectTokens
+}
+
+// SetAllowedSourceClients sets the value of AllowedSourceClients.
+func (s *AuthenticationDelegateClientTokenExchange) SetAllowedSourceClients(val []string) {
+	s.AllowedSourceClients = val
+}
+
+// SetAPIAudience sets the value of APIAudience.
+func (s *AuthenticationDelegateClientTokenExchange) SetAPIAudience(val OptString) {
+	s.APIAudience = val
+}
+
+// SetSelfIssuedSubjectTokens sets the value of SelfIssuedSubjectTokens.
+func (s *AuthenticationDelegateClientTokenExchange) SetSelfIssuedSubjectTokens(val string) {
+	s.SelfIssuedSubjectTokens = val
 }
 
 // IdentityFromToken extracts user identity (subject, name, email) directly from the
@@ -7032,6 +7101,52 @@ func (o OptAuthenticationDCRUpstreamConfig) Get() (v AuthenticationDCRUpstreamCo
 
 // Or returns value if set, or given parameter if does not.
 func (o OptAuthenticationDCRUpstreamConfig) Or(d AuthenticationDCRUpstreamConfig) AuthenticationDCRUpstreamConfig {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptAuthenticationDelegateClientTokenExchange returns new OptAuthenticationDelegateClientTokenExchange with value set to v.
+func NewOptAuthenticationDelegateClientTokenExchange(v AuthenticationDelegateClientTokenExchange) OptAuthenticationDelegateClientTokenExchange {
+	return OptAuthenticationDelegateClientTokenExchange{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptAuthenticationDelegateClientTokenExchange is optional AuthenticationDelegateClientTokenExchange.
+type OptAuthenticationDelegateClientTokenExchange struct {
+	Value AuthenticationDelegateClientTokenExchange
+	Set   bool
+}
+
+// IsSet returns true if OptAuthenticationDelegateClientTokenExchange was set.
+func (o OptAuthenticationDelegateClientTokenExchange) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptAuthenticationDelegateClientTokenExchange) Reset() {
+	var v AuthenticationDelegateClientTokenExchange
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptAuthenticationDelegateClientTokenExchange) SetTo(v AuthenticationDelegateClientTokenExchange) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptAuthenticationDelegateClientTokenExchange) Get() (v AuthenticationDelegateClientTokenExchange, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptAuthenticationDelegateClientTokenExchange) Or(d AuthenticationDelegateClientTokenExchange) AuthenticationDelegateClientTokenExchange {
 	if v, ok := o.Get(); ok {
 		return v
 	}

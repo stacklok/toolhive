@@ -156,6 +156,13 @@ Configures authentication from Virtual MCP to backend MCPServers.
 - `default` (BackendAuthConfig, optional): Default behavior for backends without explicit auth config
 - `backends` (map[string]BackendAuthConfig, optional): Per-backend authentication overrides
 
+In both modes the operator reads `spec.externalAuthConfigRef` from the backend
+workload (`MCPServer`, `MCPRemoteProxy` or `MCPServerEntry`) and mounts the secrets
+that strategy needs onto the vMCP Deployment. An entry under `backends` overrides
+the workload's configuration for that backend, and only the override's secrets are
+mounted. `source` selects how the running vMCP resolves backend auth, not whether
+the operator reads these workload references.
+
 **Example (discovered mode)**:
 ```yaml
 spec:

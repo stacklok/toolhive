@@ -1340,6 +1340,29 @@ func TestDCRUpstreamConfigValidate(t *testing.T) {
 			errMsg:  "rotation_key must be 1-64 characters",
 		},
 		{
+			name: "registration_probe authorizationEndpoint accepts",
+			config: DCRUpstreamConfig{
+				RegistrationEndpoint: "https://idp.example.com/register",
+				RegistrationProbe:    "authorizationEndpoint",
+			},
+		},
+		{
+			name: "registration_probe none accepts",
+			config: DCRUpstreamConfig{
+				RegistrationEndpoint: "https://idp.example.com/register",
+				RegistrationProbe:    "none",
+			},
+		},
+		{
+			name: "unknown registration_probe rejects",
+			config: DCRUpstreamConfig{
+				RegistrationEndpoint: "https://idp.example.com/register",
+				RegistrationProbe:    "userinfo",
+			},
+			wantErr: true,
+			errMsg:  "registration_probe must be one of",
+		},
+		{
 			name: "both initial_access_token_file and initial_access_token_env_var rejects",
 			config: DCRUpstreamConfig{
 				RegistrationEndpoint:     "https://idp.example.com/register",

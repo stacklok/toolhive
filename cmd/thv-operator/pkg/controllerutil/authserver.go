@@ -1501,6 +1501,7 @@ func buildDCRUpstreamRunConfig(
 		DiscoveryURL:         dcr.DiscoveryURL,
 		RegistrationEndpoint: dcr.RegistrationEndpoint,
 		RotationKey:          dcr.RotationKey,
+		RegistrationProbe:    dcr.RegistrationProbe,
 		SoftwareID:           dcr.SoftwareID,
 		SoftwareStatement:    dcr.SoftwareStatement,
 	}

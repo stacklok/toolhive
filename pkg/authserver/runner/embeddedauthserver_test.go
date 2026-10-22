@@ -33,6 +33,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/stacklok/toolhive/pkg/authserver"
+	"github.com/stacklok/toolhive/pkg/authserver/authorizationdetails"
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
 	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
@@ -1258,6 +1259,71 @@ func minimalRunnerConsentConfig(issuer string) *authserver.RunConfig {
 				RedirectURI:           issuer + "/oauth/callback",
 			},
 		}},
+	}
+}
+
+func TestEmbeddedAuthServer_AuthorizationDetailsRegistryRequiresTokenExchange(t *testing.T) {
+	t.Parallel()
+
+	registry, err := authorizationdetails.New(map[string]authorizationdetails.Type{
+		"example": {
+			GrantTypes: []string{oauthproto.GrantTypeTokenExchange},
+			Grant: func(_ context.Context, req authorizationdetails.Request) (authorizationdetails.Result, error) {
+				return authorizationdetails.Result{Entries: req.Entries}, nil
+			},
+		},
+	})
+	require.NoError(t, err)
+
+	tests := []struct {
+		name      string
+		construct func(context.Context, *authserver.RunConfig, ...EmbeddedAuthServerOption) (*EmbeddedAuthServer, error)
+	}{
+		{name: "NewEmbeddedAuthServer", construct: NewEmbeddedAuthServer},
+		{
+			name: "NewEmbeddedAuthServerWithStorage",
+			construct: func(
+				ctx context.Context, cfg *authserver.RunConfig, opts ...EmbeddedAuthServerOption,
+			) (*EmbeddedAuthServer, error) {
+				return NewEmbeddedAuthServerWithStorage(ctx, cfg, storage.NewMemoryStorage(), opts...)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var discoveryRequests atomic.Int32
+			upstreamServer := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				discoveryRequests.Add(1)
+			}))
+			t.Cleanup(upstreamServer.Close)
+
+			cfg := &authserver.RunConfig{
+				SchemaVersion: authserver.CurrentSchemaVersion,
+				Issuer:        "http://localhost:8080",
+				Upstreams: []authserver.UpstreamRunConfig{{
+					Name: "test-upstream",
+					Type: authserver.UpstreamProviderTypeOIDC,
+					OIDCConfig: &authserver.OIDCUpstreamRunConfig{
+						IssuerURL:         upstreamServer.URL,
+						ClientID:          "test-client-id",
+						RedirectURI:       "http://localhost:8080/oauth/callback",
+						InsecureAllowHTTP: true,
+					},
+				}},
+				AllowedAudiences: []string{"https://mcp.example.com"},
+				// An explicit, empty inbound grants block leaves token exchange off.
+				InboundGrants: &authserver.InboundGrantsRunConfig{},
+			}
+
+			server, err := tt.construct(context.Background(), cfg, WithAuthorizationDetailsRegistry(registry))
+			require.Error(t, err)
+			assert.Nil(t, server)
+			assert.ErrorContains(t, err, "authorization details registry requires token exchange")
+			assert.Zero(t, discoveryRequests.Load(), "the check must run before upstream discovery")
+		})
 	}
 }
 

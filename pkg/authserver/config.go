@@ -18,6 +18,7 @@ import (
 
 	"github.com/ory/fosite"
 
+	"github.com/stacklok/toolhive/pkg/authserver/authorizationdetails"
 	"github.com/stacklok/toolhive/pkg/authserver/internal/consentpolicy"
 	oauthserver "github.com/stacklok/toolhive/pkg/authserver/server"
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
@@ -1359,6 +1360,10 @@ type Config struct {
 	// operators must account for.
 	TrustedIssuers []tokenexchange.TrustedIssuer
 
+	// AuthorizationDetailsRegistry validates RFC 9396 authorization_details on
+	// RFC 8693 token-exchange requests. It is Go-only and is not part of RunConfig.
+	AuthorizationDetailsRegistry *authorizationdetails.Registry
+
 	// AllowConfidentialClientRegistration permits DCR of confidential clients
 	// (client_secret_basic / client_secret_post). See RunConfig for the full
 	// semantics; disabling it does not revoke already-minted secrets.
@@ -1517,6 +1522,9 @@ func (c *Config) validateIssuerAndConsentConfig() error {
 	if err := c.validatePrivateKeyJWTRequiresTokenExchange(); err != nil {
 		return err
 	}
+	if err := c.validateAuthorizationDetailsRequiresTokenExchange(); err != nil {
+		return err
+	}
 	if c.AuthorizationEndpointBaseURL != "" {
 		if err := validateIssuerURL(c.AuthorizationEndpointBaseURL, c.InsecureAllowHTTP); err != nil {
 			return fmt.Errorf("authorization_endpoint_base_url: %w", err)
@@ -1592,6 +1600,16 @@ func (c *Config) validatePrivateKeyJWTRequiresTokenExchange() error {
 		return fmt.Errorf(
 			"allow_private_key_jwt_registration requires token exchange to be enabled: " +
 				"private_key_jwt registrations are token-exchange-only (RFC 8693)")
+	}
+	return nil
+}
+
+// validateAuthorizationDetailsRequiresTokenExchange rejects a registry combined
+// with a disabled token-exchange grant: authorization_details is only handled
+// on token exchange, so the registry could never be reached.
+func (c *Config) validateAuthorizationDetailsRequiresTokenExchange() error {
+	if c.AuthorizationDetailsRegistry != nil && c.DisableTokenExchange {
+		return fmt.Errorf("authorization details registry requires token exchange to be enabled")
 	}
 	return nil
 }

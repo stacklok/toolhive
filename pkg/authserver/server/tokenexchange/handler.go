@@ -18,6 +18,7 @@ import (
 	"github.com/ory/x/errorsx"
 
 	coreaudit "github.com/stacklok/toolhive-core/audit"
+	"github.com/stacklok/toolhive/pkg/authserver/authorizationdetails"
 	"github.com/stacklok/toolhive/pkg/authserver/server"
 	"github.com/stacklok/toolhive/pkg/authserver/server/session"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
@@ -74,6 +75,8 @@ type Handler struct {
 	// configuredDelegateClients holds the operator-configured delegate-client
 	// IDs (Config.DelegateClients, ID-only).
 	configuredDelegateClients []string
+	// authorizationDetailsRegistry validates RFC 9396 details on token exchange.
+	authorizationDetailsRegistry *authorizationdetails.Registry
 }
 
 // formParams holds the validated RFC 8693 form parameters extracted from a
@@ -141,6 +144,11 @@ func (h *Handler) HandleTokenEndpointRequest(ctx context.Context, requester fosi
 		return err
 	}
 
+	pendingDetails, err := h.parseAuthorizationDetails(form, actorID)
+	if err != nil {
+		return err
+	}
+
 	// Validate requested_token_type per RFC 8693 Section 2.1: if the client
 	// requests a token type the server does not support, the request must fail.
 	requestedTokenType := form.Get("requested_token_type")
@@ -187,6 +195,12 @@ func (h *Handler) HandleTokenEndpointRequest(ctx context.Context, requester fosi
 
 	if err := h.grantAndBoundAudiences(ctx, requester, client, validatedClaims); err != nil {
 		return err
+	}
+
+	if pendingDetails != nil {
+		if err := h.grantAuthorizationDetails(ctx, pendingDetails, requester, params, validatedClaims, actorSub); err != nil {
+			return err
+		}
 	}
 
 	// Build the delegated session with the user's identity and the
@@ -243,7 +257,9 @@ func (h *Handler) HandleTokenEndpointRequest(ctx context.Context, requester fosi
 }
 
 // PopulateTokenEndpointResponse issues the delegated access token and sets
-// the RFC 8693 issued_token_type in the response.
+// the RFC 8693 issued_token_type in the response. When an authorization_details
+// registry is configured and details were granted, it also echoes the granted
+// details as the RFC 9396 authorization_details response member.
 func (h *Handler) PopulateTokenEndpointResponse(
 	ctx context.Context, requester fosite.AccessRequester, responder fosite.AccessResponder,
 ) error {
@@ -284,6 +300,8 @@ func (h *Handler) PopulateTokenEndpointResponse(
 
 	// Per RFC 8693 Section 2.2.1, the response MUST include issued_token_type.
 	responder.SetExtra("issued_token_type", oauthproto.TokenTypeAccessToken)
+
+	h.echoAuthorizationDetails(requester, responder)
 
 	return nil
 }

@@ -139,6 +139,7 @@ Welcome to the ToolHive architecture documentation. This directory contains comp
     - Confused-deputy trust model and the `may_act` / allowlist consent signals
     - Accepted limitations: client-set equivalence, disjoint subject namespaces, partial provenance
     - Operational gotchas: audience/scope binding, discovery redirects, JWKS caching, diagnostics
+    - RFC 9396 `authorization_details` on token exchange: Go-only type registry, validation and echo
 
 18. **[SPIFFE Association Declarations](18-spiffe-association-declarations.md)**
     - SPIFFE configuration remains rejected at startup; the feature is not yet deployable

@@ -22,6 +22,7 @@ import (
 	"github.com/stacklok/toolhive-core/redisconn"
 	"github.com/stacklok/toolhive/pkg/auth/dcr"
 	"github.com/stacklok/toolhive/pkg/authserver"
+	"github.com/stacklok/toolhive/pkg/authserver/authorizationdetails"
 	"github.com/stacklok/toolhive/pkg/authserver/internal/consentpolicy"
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
 	"github.com/stacklok/toolhive/pkg/authserver/server/handlers"
@@ -62,8 +63,15 @@ const (
 type EmbeddedAuthServerOption func(*embeddedAuthServerOptions)
 
 type embeddedAuthServerOptions struct {
-	consentExemptClientIDs []string
-	listenerHost           string
+	consentExemptClientIDs       []string
+	listenerHost                 string
+	authorizationDetailsRegistry *authorizationdetails.Registry
+}
+
+// WithAuthorizationDetailsRegistry configures the embedded authorization server
+// to pass the registry to its RFC 8693 token-exchange handler.
+func WithAuthorizationDetailsRegistry(registry *authorizationdetails.Registry) EmbeddedAuthServerOption {
+	return func(options *embeddedAuthServerOptions) { options.authorizationDetailsRegistry = registry }
 }
 
 // WithListenerHost sets the address the TLS listener binds. Callers pass the
@@ -150,6 +158,11 @@ func NewEmbeddedAuthServer(
 	if err := validateTLSListenerHost(cfg, options.listenerHost); err != nil {
 		return nil, err
 	}
+	// A pure config check, like the validations above, so a misconfigured
+	// registry never reaches storage creation.
+	if err := validateAuthorizationDetailsRegistryForRunConfig(cfg, options); err != nil {
+		return nil, err
+	}
 	// Create the storage backend FIRST so the DCR resolver and the auth
 	// server share the same persistence. Both MemoryStorage and RedisStorage
 	// satisfy storage.DCRCredentialStore (verified by package-level var _
@@ -183,7 +196,9 @@ func NewEmbeddedAuthServer(
 // The supplied storage MUST also implement storage.DCRCredentialStore (both
 // OSS MemoryStorage and RedisStorage do); the constructor returns an error if
 // it does not. It also validates cfg, so direct callers get the same
-// fail-loud config check NewEmbeddedAuthServer performs before dispatch.
+// fail-loud config check NewEmbeddedAuthServer performs before dispatch. Optional
+// Go-only settings, such as the token-exchange authorization-details registry,
+// are supplied through EmbeddedAuthServerOption and are not part of RunConfig.
 //
 // NewEmbeddedAuthServer dispatches into this helper after running
 // createStorage; tests dispatch into it directly so they can supply a
@@ -331,6 +346,9 @@ func newEmbeddedAuthServerWithStorage(
 	if err != nil {
 		return nil, err
 	}
+	if options.authorizationDetailsRegistry != nil && !normalized.Capabilities.TokenExchange {
+		return nil, fmt.Errorf("authorization details registry requires token exchange to be enabled")
+	}
 
 	if err := authserver.PreflightSPIFFEStaticClientCollisions(ctx, stor, spiffeTrust); err != nil {
 		return nil, fmt.Errorf("preflight SPIFFE static client collisions: %w", err)
@@ -433,10 +451,11 @@ func newEmbeddedAuthServerWithStorage(
 		// SPIFFE client authentication factors into Capabilities.TokenExchange
 		// already (see prepareInboundGrantConfiguration): it exclusively uses
 		// the token-exchange grant, independent of legacy/canonical enablement.
-		DisableTokenExchange: !normalized.Capabilities.TokenExchange,
-		SPIFFETrust:          spiffeTrust,
-		DeviceFlowEnabled:    cfg.DeviceFlowEnabled,
-		UpstreamFilter:       upstreamFilter,
+		DisableTokenExchange:         !normalized.Capabilities.TokenExchange,
+		AuthorizationDetailsRegistry: options.authorizationDetailsRegistry,
+		SPIFFETrust:                  spiffeTrust,
+		DeviceFlowEnabled:            cfg.DeviceFlowEnabled,
+		UpstreamFilter:               upstreamFilter,
 	}
 
 	listenerKeyPair, err := loadTLSListenerKeyPair(cfg)
@@ -639,6 +658,20 @@ func validateConsentPolicyForRunConfig(cfg *authserver.RunConfig, options embedd
 		cfg.Issuer,
 		len(cfg.Upstreams),
 	)
+}
+
+func validateAuthorizationDetailsRegistryForRunConfig(cfg *authserver.RunConfig, options embeddedAuthServerOptions) error {
+	if options.authorizationDetailsRegistry == nil {
+		return nil
+	}
+	normalized, err := authserver.NormalizeInboundGrants(cfg)
+	if err != nil {
+		return fmt.Errorf("normalize inbound grants: %w", err)
+	}
+	if !normalized.Capabilities.TokenExchange {
+		return fmt.Errorf("authorization details registry requires token exchange to be enabled")
+	}
+	return nil
 }
 
 func validateTLSListenerIssuer(cfg *authserver.RunConfig, leaf *x509.Certificate) error {

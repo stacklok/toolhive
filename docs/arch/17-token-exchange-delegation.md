@@ -1005,6 +1005,86 @@ Where the two differ is the trust model — the ID-JAG handler is **bound**:
   `ConditionReasonInvalidCABundle` on the owning MCPServer, MCPRemoteProxy, or
   VirtualMCPServer before any RunConfig is built.
 
+## Authorization details
+
+RFC 9396 `authorization_details` is handled only on the RFC 8693 token-exchange
+handler. Without a type registry the parameter is ignored: no validation, no
+echo, and repeated values are not rejected.
+
+**With a registry.** The registry (`pkg/authserver/authorizationdetails`) is
+Go-only. It is not part of `RunConfig`, YAML, or CRDs. It maps exact,
+case-sensitive `type` names to a `Type`, which lists the grant types it applies
+to (`GrantTypes`) and a `Grant` hook. Only token exchange uses the registry
+today; other grants, including JWT-bearer ID-JAG redemption, ignore the
+parameter. Nothing is advertised in discovery.
+
+A request value must follow RFC 9396 section 2: one JSON array of objects, each
+with a non-empty string `type` registered for the grant type. `[]` is valid. An
+absent parameter or a single empty value (`authorization_details=`) is ignored
+and nothing is echoed, while `[]` is accepted and echoed as
+`"authorization_details":[]`. On top of that, ToolHive rejects duplicate member names after unescaping, member
+names that are equal under JSON case folding (the folding `encoding/json` uses
+to match struct fields), values over 64 KiB, and nesting deeper than 64
+containers.
+
+**Check order.** Fosite authenticates the client. The handler then checks for a
+public client, the grant type and the required parameters. Next come the
+repeated-value rejection and shape parsing, then the `requested_token_type`,
+subject token, actor, delegation consent, scope and audience checks. Then each
+type's `Grant` hook runs once, with all of that type's entries and the request
+context. After the hooks, the handler still builds the `act` claim and checks
+the subject token's remaining lifetime, and either can fail the request before
+the token is issued. Token issuance comes last, so hooks are decide-only: a hook
+may read state but must not commit it, because the request can still fail after
+a hook returns.
+
+**Response.** After the token is issued, the response member
+`authorization_details` holds the entries the hooks returned, not the request.
+The echo is equal to the hook output as JSON values, but not byte-identical:
+`encoding/json` compacts it and HTML-escapes `<`, `>` and `&`. Types appear in
+the order of their first appearance in the request, and each type's entries in
+the order its hook returned them.
+
+**Errors.**
+
+| Cause | Response |
+| --- | --- |
+| Parameter repeated | 400 `invalid_request`, fixed description (RFC 6749 section 5.2) |
+| Parse or shape failure | 400 `invalid_authorization_details`, fixed description |
+| Hook returns a valid `authorizationdetails.Error` | 400 with its code (`invalid_authorization_details` or `invalid_request`) and its reason as `error_description` |
+| Any other hook error, an `Error` with an unknown code or a malformed reason, or invalid hook output | 500 `server_error`, fixed description |
+
+Invalid hook output is an empty result, an entry that is not an object of the
+hook's own type or breaks the request limits, or a combined result over 64 KiB.
+Each rejection is logged once at WARN with `client_id` and a fixed reason code
+(`malformed`, `repeated`, `hook_rejected` or `hook_failed`). Hook rejections
+also carry `code` and `hook_reason`. The text of a failed hook's error is not
+logged at any level, and the submitted value is never logged.
+
+**Boundary.** Details are not put in issued tokens, not persisted, and not
+conveyed to resource servers yet. Register only types ToolHive itself enforces,
+such as a session-binding type. Conveying details to resource servers is
+tracked in [#6909](https://github.com/stacklok/toolhive/issues/6909), and grant
+storage in [#6895](https://github.com/stacklok/toolhive/issues/6895). Requesting
+a refresh token as the output of token exchange remains unsupported
+(#6896/#6897).
+
+**Wiring.** Pass `runner.WithAuthorizationDetailsRegistry` to
+`NewEmbeddedAuthServer` or `NewEmbeddedAuthServerWithStorage`, or set
+`authserver.Config.AuthorizationDetailsRegistry` before `authserver.New`.
+Setting a registry while token exchange is disabled is a startup error.
+
+```go
+registry, err := authorizationdetails.New(map[string]authorizationdetails.Type{
+	"session_binding": {
+		GrantTypes: []string{oauthproto.GrantTypeTokenExchange},
+		Grant: func(_ context.Context, req authorizationdetails.Request) (authorizationdetails.Result, error) {
+			return authorizationdetails.Result{Entries: req.Entries}, nil
+		},
+	},
+})
+```
+
 ## Implementation
 
 - `pkg/authserver/server/tokenexchange/handler.go` — `checkDelegationConsent`, `grantScopes`, `grantAndBoundAudiences`
@@ -1021,3 +1101,5 @@ Where the two differ is the trust model — the ID-JAG handler is **bound**:
 - `pkg/authserver/server/tokenexchange/jwt_bearer_handler.go` — `JWTBearerHandler`, `JWTBearerIssuanceFactory`, `NewSharedTrustedIssuerValidator`, synthetic client-ID minting
 - `pkg/authserver/storage/types.go` — `SyntheticClientIDPrefix`, `NewSyntheticClient`, `IsSyntheticClientID`
 - `pkg/authserver/storage/redis.go` — synthetic-client-aware `marshalRequester`/`unmarshalRequester`
+- `pkg/authserver/authorizationdetails/authorizationdetails.go`, `errors.go`, `scan.go` — `Registry`, `Type`, `Pending.Grant`, typed `Error`, strict JSON scanner
+- `pkg/authserver/server/tokenexchange/authdetails.go` — handler parsing, hook invocation, error mapping, response echo

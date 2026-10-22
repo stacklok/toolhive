@@ -5,6 +5,7 @@ package handlers
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 
@@ -12,6 +13,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/authserver/server"
 	"github.com/stacklok/toolhive/pkg/authserver/server/session"
+	"github.com/stacklok/toolhive/pkg/authserver/storage"
 )
 
 // logAccessError logs a token-endpoint failure from fosite's access
@@ -49,9 +51,17 @@ func (h *Handler) TokenHandler(w http.ResponseWriter, req *http.Request) {
 	// This session object is only used as a deserialization template.
 	sess := session.New("", "", "", session.UserClaims{})
 
+	// Token endpoint only: lets the CIMD decorator use the persisted client
+	// row when its fetch limiter refuses.
+	ctx = storage.WithPersistedClientFallback(ctx)
+
 	// Parse and validate the access request
 	accessRequest, err := h.provider.NewAccessRequest(ctx, req, sess)
 	if err != nil {
+		if errors.Is(err, storage.ErrCIMDRateLimited) {
+			writeCIMDRateLimitedOAuth(w)
+			return
+		}
 		// RFC6749Error.Error() returns only the error code, so a bare "error"
 		// field carries no diagnostic detail; logAccessError reads CodeField,
 		// DebugField, and DescriptionField instead. Client errors (4xx, the
@@ -85,7 +95,8 @@ func (h *Handler) TokenHandler(w http.ResponseWriter, req *http.Request) {
 	// raises a newly registered client from DefaultUnusedDCRClientTTL to
 	// DefaultDCRClientTTL. Best-effort: a renewal failure must not fail the token that
 	// was just issued. Storage is a no-op for pre-provisioned/static clients, which
-	// carry no DCRIssued marker.
+	// carry no DCRIssued marker, and the CIMD decorator skips CIMD rows (each
+	// successful fetch already renews them).
 	if client := accessRequest.GetClient(); client != nil {
 		if err := h.storage.RenewClientTTL(ctx, client); err != nil {
 			slog.Warn("failed to renew client registration TTL",

@@ -449,6 +449,34 @@ func (h *Handler) maybeCarryForwardRefreshToken(
 	}
 }
 
+// callbackClient resolves the client for /oauth/callback and the consent step
+// (which reaches it through buildAuthorizeRequesterFromPending). If the CIMD fetch
+// limiter refuses the lookup (ErrCIMDRateLimited means no cached entry within
+// the decorator's MaxStale could be served, e.g. a cold cache after a restart
+// or an LRU eviction), it reads the persisted row from the base storage
+// instead: the pending authorization was already consumed, so a 429 here
+// would make the login unrecoverable.
+//
+// This is safe because the base row was written by the same fetch that
+// /oauth/authorize validated against, and the pending authorization lives at
+// most DefaultPendingAuthorizationTTL. /oauth/authorize may itself have been
+// served a stale cache entry, so the snapshot is bounded by that lifetime plus
+// the CIMD cache TTL plus the decorator's MaxStale, and does not depend on the
+// row's own TTL.
+//
+// The base-row fallback is still needed even with stale serving, which only
+// covers entries already cached in this process (not a cold cache). The shape
+// guard used when CIMD is disabled returns plain not-found and never
+// ErrCIMDRateLimited, so it cannot be bypassed this way. The base lookup's
+// error is returned as-is.
+func (h *Handler) callbackClient(ctx context.Context, id string) (fosite.Client, error) {
+	client, err := h.storage.GetClient(ctx, id)
+	if errors.Is(err, storage.ErrCIMDRateLimited) {
+		return storage.Unwrap(h.storage).GetClient(ctx, id)
+	}
+	return client, err
+}
+
 // writeAuthorizationResponse generates an authorization code and writes the redirect response.
 // This uses fosite's WriteAuthorizeResponse for RFC 6749 compliant redirects with proper
 // status codes (303 See Other) and cache headers.
@@ -465,7 +493,7 @@ func (h *Handler) writeAuthorizationResponse(
 		return errors.New("authorization has not been approved")
 	}
 	// Get the client from storage
-	fositeClient, err := h.storage.GetClient(ctx, pending.ClientID)
+	fositeClient, err := h.callbackClient(ctx, pending.ClientID)
 	if err != nil {
 		return err
 	}
@@ -563,7 +591,7 @@ func (h *Handler) buildAuthorizeRequesterFromPending(
 	}
 	ar.RedirectURI = redirectURI
 
-	if client, err := h.storage.GetClient(ctx, pending.ClientID); err == nil {
+	if client, err := h.callbackClient(ctx, pending.ClientID); err == nil {
 		ar.Client = client
 	}
 

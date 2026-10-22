@@ -611,24 +611,67 @@ When `authServer.cimd.enabled: true` is set, the embedded authorization server w
 
 ### What it does
 
-`CIMDStorageDecorator` embeds the full `storage.Storage` interface and overrides only `GetClient`. When fosite calls `GetClient("https://vscode.dev/oauth/client-metadata.json")` during an authorization request:
+`CIMDStorageDecorator` embeds the full `storage.Storage` interface and overrides `GetClient` and `RenewClientTTL`. When fosite calls `GetClient("https://vscode.dev/oauth/client-metadata.json")` during an authorization request:
 
 1. The decorator detects the HTTPS URL using `oauthproto.IsClientIDMetadataDocumentURL`
 2. It fetches the Client ID Metadata Document from that URL via `pkg/oauthproto/cimd.FetchClientMetadataDocument` (with SSRF protection, 10 KB cap, 5-second timeout)
 3. It builds a `fosite.Client` from the document fields, caches it with a configurable TTL, and returns it to fosite
 4. Concurrent fetches for the same URL are deduplicated via `singleflight`
+5. Fetches on a cache miss or expiry are rate-limited to 1 per second with a burst of 5, per process, on every route that resolves a `client_id` (authorize, token, device authorization). Failed fetches count against the limit. A refused lookup with no servable stale entry (see below) returns a `fosite.ErrNotFound` error that wraps `storage.ErrCIMDRateLimited`, which the handlers answer with HTTP 429 and `Retry-After: 1`. Some routes can still be answered from the persisted write-through row instead; see "Persisted-row fallbacks" below.
 
-All other `Storage` methods (`RegisterClient`, token storage, upstream token storage, etc.) delegate to the underlying backend unchanged. DCR clients (opaque string IDs) continue to work exactly as before.
+   When the limiter refuses a fetch and the client has an expired cache entry, the decorator serves that entry instead of returning 429, as long as the entry is less than `MaxStale` past its expiry. `MaxStale` is set to the configured access token lifespan (default 1 hour) and is not user-configurable: a refresh arrives about one access-token lifetime after the last use, so a smaller bound would never cover a refresh. While budget is available an expired entry is still re-fetched and re-validated. A failed re-fetch (404, or an invalid or policy-rejected document) is returned to that one caller but does not evict the expired entry, so while the limiter stays empty the same client can again be served the pre-failure entry until the cache TTL plus `MaxStale` has passed.
+
+   The trade-off is freshness. Points to know:
+   - An unauthenticated caller can create the limiter pressure by sending more than one distinct `client_id` per second, so the stale window can be held open on purpose.
+   - Stale serving applies to `/oauth/authorize` and `/oauth/device_authorization` as well as `/oauth/token`. A `redirect_uri` or policy that the client has since withdrawn can stay in effect for up to the cache TTL plus `MaxStale`: 65 minutes on defaults, and about 24 hours 5 minutes if an operator raises `access_token_lifespan` to its 24 hour maximum. Before the limiter existed the bound was the cache TTL (5 minutes).
+   - The cache and the limiter are per process. With several replicas, each replica has its own window.
+   - This is a deliberate choice of availability over freshness. The CIMD draft (section 5) says a fetch that does not return 200 must be treated as an error, and sections 5.1 and 5.2 say a server SHOULD re-fetch periodically and SHOULD abort on a failed fetch. Serving a stale entry or row after a failed fetch departs from that on purpose. It also departs from RFC 9111 revalidation for documents sent with `no-store` or `must-revalidate`. The fixed cache TTL, which ignores the document's HTTP cache headers (section 5.2 SHOULD), predates the limiter.
+
+   This widens but does not close the lockout. Stale serving does not cover a cold cache (first use, or after a restart), other replicas that have not cached the client, or an entry evicted from the LRU, for example by an attacker hosting enough valid documents to push it out.
+
+   Persisted-row fallbacks. The persisted client row is written on every successful fetch. Two routes read it when the limiter refuses and no stale cache entry is servable. They differ on purpose, and unifying them is deferred.
+   - `/oauth/callback` and the consent step (`callbackClient` in `handlers/callback.go`) read the row through `storage.Unwrap` on any `ErrCIMDRateLimited`. There is no drift check, and if the read fails the caller gets the base lookup's error. They need the row because the pending authorization is already consumed and the login could not be retried. The snapshot is bounded by the pending-authorization lifetime plus the cache TTL plus `MaxStale`.
+   - `/oauth/token` only. Some clients discard their stored session when a token request fails, so a 429 on a refresh would log the user out. The handler marks the request (`storage.WithPersistedClientFallback`), and the decorator then reads the row from the layer under it. A drift check applies first: the row must be a public client written by the CIMD fetch for this id, every grant type on it must still be one the server allows for CIMD clients, the row's audience must equal the configured allowed audiences, and when `scopes_supported` is set every row scope must be in `scopes_supported` or the baseline scopes. This protects against an operator changing that configuration before a restart. When the row is missing, the storage read fails, or the check fails, the caller gets the original rate-limit error (429), never the base error. `/oauth/authorize` and `/oauth/device_authorization` still return 429. The row is shared by all replicas on Redis, so a replica that never served the client benefits. The memory backend loses its rows on restart, so it gets no protection right after one (its sessions also end on restart).
+
+   The `/oauth/token` fallback skips re-validation against the document. The decorator does not renew CIMD rows when a token request succeeds, because every successful fetch already writes the row again. The age of the row is therefore bounded the same way on both backends:
+   - The row expires 30 days (`DefaultDCRClientTTL`) after the last successful fetch. The memory backend also loses it on restart.
+   - Rolling upgrade: a replica that still runs the older version renews the row (resets it to the full 30 days) on every successful token request. While such replicas serve token traffic, the row can stay in place beyond 30 days from the last fetch. This ends when all replicas run the new version.
+
+   Revocation lag. This is how long a client's withdrawn or changed document can stay in effect:
+   - On the main branch before the limiter: about 5 minutes (the cache TTL). The token route fetched the document live every time.
+   - Limiter budget available: unchanged, about 5 minutes.
+   - Limiter empty and a cache entry present: until the entry expires plus `MaxStale`. That is 65 minutes on defaults, and up to about 24 hours 5 minutes if `access_token_lifespan` is raised to its 24 hour maximum.
+   - Limiter empty, no cache entry, `/oauth/token`: up to 30 days since the last successful fetch, on both backends.
+
+   An unauthenticated caller can hold the limiter empty (about 6 requests, then one request per second with distinct URL-shaped `client_id` values), so every one of these windows can be held open on purpose, not only the stale one. A stolen refresh token for a client whose document was withdrawn is usable for up to this lag, but never beyond the refresh token's own lifetime (7 days by default, at most 30 days, at least 1 hour).
+
+   What a client sees:
+   - A refused lookup always answers with status 429 and `Retry-After: 1`. The body differs by route. `/oauth/token` and `/oauth/device_authorization` also send `Cache-Control: no-store`, `Pragma: no-cache` and an `application/json` body `{"error":"temporarily_unavailable","error_description":"..."}`. This follows the RFC 6749 section 5.2 error format, although that section defines no rate-limit code, and `temporarily_unavailable` is defined by RFC 6749 only for the authorization endpoint (section 4.1.2.1), so at the token endpoint it is an extension code. `/oauth/authorize` answers with a `text/plain` body `rate limit exceeded, retry later`, because the client is unresolved there and its `redirect_uri` cannot be trusted. `/oauth/register` and the device flow's own limiters still answer plain text. None of the clients we checked honour `Retry-After`, and clients that discard their stored credentials on any failed refresh gain nothing from the JSON body.
+   - It applies to `/oauth/token` and `/oauth/device_authorization` as well as `/oauth/authorize`. All three share one bucket per process. The bucket is not per IP address and not per route.
+   - A cache hit costs no token. Only a miss or an expiry does. A fetch that fails or is rejected is not cached and costs a token. `/oauth/authorize` can look the client up up to 3 times per request (the back-channel check, fosite, and the loopback rewrite for `http://localhost` redirect URIs), so a failing authorize request can cost 2 to 3 tokens.
+   - The earlier limiter on `/oauth/authorize` that spent a token on every URL-shaped `client_id`, including cache hits, is gone.
+   - `GET /oauth/authorize` answers 400 with a plain-text body for any `multipart/*` `Content-Type`, for CIMD and non-CIMD clients alike, because authorize parameters must come from the query string. The server logs this at WARN with the media type and path.
+
+   Known limits:
+   - Stale serving needs a cache entry. `/oauth/device_authorization` and `/oauth/authorize` have no other fallback, so after a restart, or on a replica that never served the client, they can return 429 where they used to fetch the document live. `/oauth/token` returns 429 only when no usable row exists either.
+   - Junk traffic on `/oauth/token` or `/oauth/device_authorization` can use up the shared bucket and so deny new sign-ins at `/oauth/authorize`.
+   - A device flow that polls `/oauth/token` can end with a 429 when the bucket is empty and there is neither a stale cache entry nor a persisted row. RFC 8628 section 3.5 tells a client to stop polling on any error other than `authorization_pending`, `slow_down`, `access_denied` or `expired_token`.
+   - A failed fetch that is not a limiter refusal (a document host timeout, a 5xx, a DNS failure) is covered by neither stale serving nor the row fallback. The request gets `invalid_client` exactly as before the limiter existed, and clients that discard their session on a failed refresh lose it.
+   - `cacheFallbackTtl` has no upper bound. The configuration check only requires a positive duration when CIMD is enabled. Because token success no longer renews CIMD rows, a value above 30 days can let cache hits outlive the Redis row. Keep it well below 30 days.
+
+All other `Storage` methods (`RegisterClient`, token storage, upstream token storage, etc.) delegate to the underlying backend unchanged, except `RenewClientTTL` (CIMD client ids are skipped, other ids are delegated) and `ConsumeAssertionJWT` and `Unwrap`, which forward to the wrapped backend. DCR clients (opaque string IDs) continue to work exactly as before.
 
 ### Unwrap pattern
 
-`CIMDStorageDecorator` implements `Unwrap() Storage` to expose the concrete backend through the decorator layer. Three call sites depend on this:
+The storage decorators (`CIMDStorageDecorator`, the CIMD shape guard and `SPIFFEStorageDecorator`) implement `Unwrap() Storage`, and `storage.Unwrap` follows the chain to the concrete backend. Runtime code depends on this at these places:
 
-- **`DCRCredentialStore` assertion** (`newServer`): The `DCRCredentialStore` interface is narrower than `Storage` and not embedded in it. The assertion `unwrapStorage(stor).(storage.DCRCredentialStore)` reaches the concrete backend through the decorator.
-- **`RedisStorage` migration** (`runLegacyMigration`): A type assertion to `*storage.RedisStorage` is needed to run a one-shot data migration. Same `unwrapStorage` call.
-- **`AssertionJWTConsumer` assertion** (`JWTBearerIssuanceFactory`): The JWT-bearer grant unwraps before asserting this narrow replay capability. The decorator also implements `ConsumeAssertionJWT` and forwards it to a capable backend. If the backend lacks the capability, the decorator returns an error instead of accepting an assertion with unknown replay status; replay protection therefore fails closed.
+- **`DCRCredentialStore` assertion** (`newServer`): The `DCRCredentialStore` interface is narrower than `Storage` and not embedded in it. `storage.Unwrap(stor).(storage.DCRCredentialStore)` reaches the concrete backend through the decorators.
+- **`RedisStorage` migration** (`runLegacyMigration`): A type assertion to `*storage.RedisStorage` is needed to run a one-shot data migration.
+- **`DeviceCodeStorage` assertion** (`buildDeviceFlowFactory` and `handlers.NewHandler`): The device flow reaches the device-code store on the concrete backend.
+- **`RememberedConsentStorage` assertion** (`handlers.NewHandler`): Remembered consent is only offered when the concrete backend implements it.
+- **`callbackClient`** (`handlers/callback.go`): This one deliberately bypasses the decorator. When the CIMD fetch limiter refuses a lookup during callback or consent, it reads the persisted client row straight from the base storage.
 
-All call sites use `unwrapStorage(stor)` or the equivalent JWT-bearer construction helper rather than asserting directly on the decorator.
+The `AssertionJWTConsumer` capability is separate: `CIMDStorageDecorator` implements `ConsumeAssertionJWT` and forwards it to a capable backend. If the backend lacks the capability, the decorator returns an error instead of accepting an assertion with unknown replay status; replay protection therefore fails closed.
 
 ### Air-gapped environments
 

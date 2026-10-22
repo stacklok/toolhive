@@ -4,8 +4,10 @@
 package handlers
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -17,7 +19,6 @@ import (
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"golang.org/x/time/rate"
 
 	"github.com/stacklok/toolhive/pkg/authserver/server"
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
@@ -177,6 +178,69 @@ func TestAuthorizeHandler_ClientNotFound(t *testing.T) {
 	// fosite returns 401 with invalid_client for unknown clients
 	assert.Equal(t, http.StatusUnauthorized, rec.Code)
 	assert.Contains(t, rec.Body.String(), "invalid_client")
+}
+
+func TestAuthorizeRoutes_RejectsMultipartCIMDRequestBeforeLookup(t *testing.T) {
+	t.Parallel()
+
+	handler, state, _ := handlerTestSetup(t)
+
+	rec := httptest.NewRecorder()
+	handler.Routes().ServeHTTP(rec, multipartAuthorizeRequest(t, "https://client.example.com/metadata"))
+
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.Equal(t, "multipart request bodies are not supported\n", rec.Body.String())
+	assert.Zero(t, state.getClientCalls, "multipart CIMD request must be rejected before client lookup")
+}
+
+func TestAuthorizeRoutes_MultipartBackChannelOnlyAndUnknownClientsMatch(t *testing.T) {
+	t.Parallel()
+
+	handler, state, _ := handlerTestSetup(t)
+	client, err := registration.NewSPIFFEClient(
+		"spiffe-client",
+		[]string{"openid"},
+		[]string{"https://mcp.example.com"},
+		nil,
+	)
+	require.NoError(t, err)
+	state.clients[client.GetID()] = client
+
+	configured := httptest.NewRecorder()
+	handler.Routes().ServeHTTP(configured, multipartAuthorizeRequest(t, client.GetID()))
+	unknown := httptest.NewRecorder()
+	handler.Routes().ServeHTTP(unknown, multipartAuthorizeRequest(t, "unknown-client"))
+
+	assert.Equal(t, http.StatusBadRequest, configured.Code)
+	assert.Equal(t, unknown.Code, configured.Code)
+	assert.Equal(t, unknown.Body.String(), configured.Body.String())
+}
+
+func TestAuthorizeRoutes_QueryParametersStillWork(t *testing.T) {
+	t.Parallel()
+
+	handler, _, _ := handlerTestSetup(t)
+	req := httptest.NewRequest(http.MethodGet,
+		"/oauth/authorize?client_id="+testAuthClientID+"&redirect_uri=http://evil.example/callback", nil)
+	rec := httptest.NewRecorder()
+	handler.Routes().ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.Contains(t, rec.Body.String(), "invalid_request")
+}
+
+func multipartAuthorizeRequest(t *testing.T, clientID string) *http.Request {
+	t.Helper()
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	require.NoError(t, writer.WriteField("client_id", clientID))
+	require.NoError(t, writer.WriteField("redirect_uri", "https://invalid.example/callback"))
+	require.NoError(t, writer.Close())
+
+	req := httptest.NewRequest(http.MethodGet, "/oauth/authorize", &body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	return req
 }
 
 func TestAuthorizeHandler_BackChannelOnlyClientsMatchMissingClient(t *testing.T) {
@@ -841,93 +905,21 @@ func TestLoopbackAuthorizeRequester_IsRedirectURIValid(t *testing.T) {
 	}
 }
 
-// --- rateLimitCIMDAuthorize (P1: /oauth/authorize CIMD rate limiting) ---
-
-// TestRateLimitCIMDAuthorize_BurstThen429 exercises the reviewer's exact
-// scenario: a flood of distinct CIMD-URL client_id values must be bounded by
-// the limiter, exhausting the burst before the gate starts returning 429,
-// entirely independent of fosite or the CIMD decorator — this test only
-// exercises the gate itself.
-func TestRateLimitCIMDAuthorize_BurstThen429(t *testing.T) {
+// TestAuthorizeHandler_CIMDRateLimited also proves the early back-channel-only
+// client lookup falls through to fosite when the limiter refuses it, so the 429
+// comes from the NewAuthorizeRequest mapping. The loopback rewrite lookup is not
+// exercised: the 127.0.0.1 redirect_uri returns before any GetClient call.
+func TestAuthorizeHandler_CIMDRateLimited(t *testing.T) {
 	t.Parallel()
+	handler, _, _ := handlerTestSetup(t,
+		withGetClientErrorAfterCalls(0, fosite.ErrNotFound.WithWrap(storage.ErrCIMDRateLimited)))
 
-	var nextCalls int
-	h := &Handler{cimdAuthorizeLimiter: rate.NewLimiter(rate.Limit(1), 5)}
-	gated := h.rateLimitCIMDAuthorize(func(http.ResponseWriter, *http.Request) {
-		nextCalls++
-	})
-
-	// Burst of 5 must all be allowed through to next.
-	for i := 0; i < 5; i++ {
-		req := httptest.NewRequest(http.MethodGet,
-			"/oauth/authorize?client_id=https://evil.test/"+string(rune('a'+i))+".json", nil)
-		rec := httptest.NewRecorder()
-		gated(rec, req)
-		assert.NotEqual(t, http.StatusTooManyRequests, rec.Code, "burst request %d must not be rate limited", i)
-	}
-	assert.Equal(t, 5, nextCalls, "all 5 burst requests must reach next")
-
-	// The 6th CIMD-URL request in the same instant must be rejected with 429.
-	req := httptest.NewRequest(http.MethodGet, "/oauth/authorize?client_id=https://evil.test/f.json", nil)
+	req := httptest.NewRequest(http.MethodGet,
+		"/oauth/authorize?client_id=https://client.example.com/metadata&redirect_uri=http://127.0.0.1:8080/callback", nil)
 	rec := httptest.NewRecorder()
-	gated(rec, req)
-	assert.Equal(t, http.StatusTooManyRequests, rec.Code, "request past the burst must be rate limited")
+
+	handler.AuthorizeHandler(rec, req)
+
+	assert.Equal(t, http.StatusTooManyRequests, rec.Code)
 	assert.Equal(t, "1", rec.Header().Get("Retry-After"))
-	assert.Equal(t, 5, nextCalls, "the rate-limited request must not reach next")
-}
-
-// TestRateLimitCIMDAuthorize_NonURLClientIDUnaffected verifies that ordinary
-// DCR (opaque, non-URL) client_id values never consult or exhaust the CIMD
-// limiter: a flood of such requests must all reach next, and must not affect
-// the limiter's state for a later CIMD-URL request.
-func TestRateLimitCIMDAuthorize_NonURLClientIDUnaffected(t *testing.T) {
-	t.Parallel()
-
-	var nextCalls int
-	h := &Handler{cimdAuthorizeLimiter: rate.NewLimiter(rate.Limit(1), 5)}
-	gated := h.rateLimitCIMDAuthorize(func(http.ResponseWriter, *http.Request) {
-		nextCalls++
-	})
-
-	// Far more than the burst size, all with an opaque DCR-style client_id.
-	for i := 0; i < 20; i++ {
-		req := httptest.NewRequest(http.MethodGet, "/oauth/authorize?client_id=opaque-dcr-client-id", nil)
-		rec := httptest.NewRecorder()
-		gated(rec, req)
-		assert.NotEqual(t, http.StatusTooManyRequests, rec.Code,
-			"a non-URL client_id must never be rate limited by the CIMD gate")
-	}
-	assert.Equal(t, 20, nextCalls)
-
-	// The limiter's full burst must still be available to a CIMD-URL request,
-	// proving the DCR traffic above never touched cimdAuthorizeLimiter's state.
-	for i := 0; i < 5; i++ {
-		req := httptest.NewRequest(http.MethodGet,
-			"/oauth/authorize?client_id=https://example.test/"+string(rune('a'+i))+".json", nil)
-		rec := httptest.NewRecorder()
-		gated(rec, req)
-		assert.NotEqual(t, http.StatusTooManyRequests, rec.Code, "CIMD burst request %d must not be rate limited", i)
-	}
-	assert.Equal(t, 25, nextCalls)
-}
-
-// TestRateLimitCIMDAuthorize_NilLimiterAllowsThrough matches the documented
-// contract of registerLimiter's nil case: a Handler constructed without going
-// through NewHandler (as several existing tests in this package do) leaves
-// cimdAuthorizeLimiter nil, and the gate must tolerate that by always calling
-// next.
-func TestRateLimitCIMDAuthorize_NilLimiterAllowsThrough(t *testing.T) {
-	t.Parallel()
-
-	var nextCalls int
-	h := &Handler{}
-	gated := h.rateLimitCIMDAuthorize(func(http.ResponseWriter, *http.Request) {
-		nextCalls++
-	})
-
-	req := httptest.NewRequest(http.MethodGet, "/oauth/authorize?client_id=https://evil.test/a.json", nil)
-	rec := httptest.NewRecorder()
-	gated(rec, req)
-	assert.NotEqual(t, http.StatusTooManyRequests, rec.Code)
-	assert.Equal(t, 1, nextCalls)
 }

@@ -1205,6 +1205,9 @@ type ClientRegistry interface {
 	// newly registered client off its shorter DefaultUnusedDCRClientTTL. A client
 	// that no longer exists is left absent. A renewal failure is non-fatal to the
 	// caller's primary operation.
+	// CIMDStorageDecorator skips URL-shaped (CIMD) client ids: each successful
+	// fetch already resets the row's TTL, and not renewing keeps that TTL as the
+	// age bound for its token-endpoint persisted-row fallback.
 	RenewClientTTL(ctx context.Context, client fosite.Client) error
 }
 

@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -31,6 +32,22 @@ const (
 	testAuthIssuer      = "http://test-auth-issuer"
 	testInternalState   = "internal-state-123"
 )
+
+// assertOAuthRateLimited checks the JSON 429 the token and device authorization
+// endpoints write when the CIMD fetch limiter refuses a client lookup.
+func assertOAuthRateLimited(t *testing.T, rec *httptest.ResponseRecorder) {
+	t.Helper()
+	require.Equal(t, http.StatusTooManyRequests, rec.Code)
+	require.Equal(t, "1", rec.Header().Get("Retry-After"))
+	require.Equal(t, "application/json", rec.Header().Get("Content-Type"))
+	require.Equal(t, "no-store", rec.Header().Get("Cache-Control"))
+	require.Equal(t, "no-cache", rec.Header().Get("Pragma"))
+	var body struct {
+		Error string `json:"error"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+	require.Equal(t, "temporarily_unavailable", body.Error)
+}
 
 // mockIDPProvider implements upstream.OAuth2Provider for testing.
 type mockIDPProvider struct {
@@ -96,6 +113,9 @@ type testStorageState struct {
 	pkceSessions       map[string]fosite.Requester          // PKCE sessions for token exchange
 	idpTokenCount      int
 	renewedClients     []string // client IDs passed to RenewClientTTL
+	// getClientCalls records storage client lookups so route-boundary tests can
+	// prove malformed requests are rejected before any lookup.
+	getClientCalls int
 	// getAllUpstreamCtx and deleteUpstreamCtx capture the context passed to
 	// GetAllUpstreamTokens / DeleteUpstreamTokens, so a test can assert the
 	// callback placed the authenticated identity into the request context before
@@ -256,10 +276,9 @@ func baseTestSetup(t *testing.T, opts ...baseTestSetupOption) (fosite.OAuth2Prov
 	// Setup mock expectations for GetClient. Looks up storState.clients so tests
 	// can register additional clients (e.g. a loopback client under its own ID)
 	// after baseTestSetup returns.
-	getClientCalls := 0
 	stor.EXPECT().GetClient(gomock.Any(), gomock.Any()).DoAndReturn(func(_ context.Context, id string) (fosite.Client, error) {
-		getClientCalls++
-		if setupCfg.getClientErr != nil && getClientCalls > setupCfg.getClientErrAfter {
+		storState.getClientCalls++
+		if setupCfg.getClientErr != nil && storState.getClientCalls > setupCfg.getClientErrAfter {
 			return nil, setupCfg.getClientErr
 		}
 		if c, ok := storState.clients[id]; ok {

@@ -83,7 +83,7 @@ func (h *Handler) AuthorizeHandler(w http.ResponseWriter, req *http.Request) {
 	// doc comment for how -- not just a NewAuthorizeRequest failure.
 	errAr := wrapLoopbackErrorRequester(ar, rewrittenFrom)
 	if err != nil {
-		h.provider.WriteAuthorizeError(ctx, w, errAr, err)
+		h.writeAuthorizeRequestError(ctx, w, errAr, err)
 		return
 	}
 
@@ -288,6 +288,19 @@ func (h *Handler) beginUpstream(ctx context.Context, w http.ResponseWriter, req 
 	}
 	h.setBrowserBindingCookie(w, secrets.State, binding.value)
 	http.Redirect(w, req, upstreamURL, http.StatusSeeOther)
+}
+
+// writeAuthorizeRequestError answers a failed NewAuthorizeRequest: 429 when the
+// CIMD fetch limiter refused the client lookup, fosite's error response
+// otherwise.
+func (h *Handler) writeAuthorizeRequestError(
+	ctx context.Context, w http.ResponseWriter, ar fosite.AuthorizeRequester, err error,
+) {
+	if errors.Is(err, storage.ErrCIMDRateLimited) {
+		writeCIMDRateLimited(w)
+		return
+	}
+	h.provider.WriteAuthorizeError(ctx, w, ar, err)
 }
 
 // rejectBackChannelOnlyAuthorizeClient rejects a configured client that has no

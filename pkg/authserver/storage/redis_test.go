@@ -35,6 +35,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/authserver/server/session"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
+	"github.com/stacklok/toolhive/pkg/oauthproto/cimd"
 )
 
 // --- Test Helpers ---
@@ -860,6 +861,42 @@ func TestRedisStorage_ReconcileConfiguredClient(t *testing.T) {
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), "must not carry the DCR-issued marker")
 		})
+	})
+}
+
+// TestRedisStorage_CIMDBuiltClientRoundTrip pins that a client built by the
+// CIMD decorator survives UpsertDCRIssuedClient + GetClient intact, since the
+// decorator serves that row when its fetch limiter refuses a lookup.
+func TestRedisStorage_CIMDBuiltClientRoundTrip(t *testing.T) {
+	withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+		id := "https://client.example.com/metadata.json"
+		built := registration.MarkDCRIssued(buildFositeClient(fositeClientParams{
+			doc: &cimd.ClientMetadataDocument{
+				ClientID:     id,
+				RedirectURIs: []string{"https://client.example.com/cb", "http://localhost/cb"},
+			},
+			resolvedScopes:          []string{"openid", "profile"},
+			grantTypes:              []string{"authorization_code", "refresh_token"},
+			responseTypes:           []string{"code"},
+			tokenEndpointAuthMethod: defaultCIMDTokenEndpointAuthMethod,
+			allowedAudiences:        []string{"https://mcp.example.com"},
+		}))
+		require.NoError(t, s.UpsertDCRIssuedClient(ctx, built))
+
+		got, err := s.GetClient(ctx, id)
+		require.NoError(t, err)
+		assert.True(t, got.IsPublic())
+		assert.True(t, registration.DCRIssued(got))
+		assert.Equal(t, built.GetRedirectURIs(), got.GetRedirectURIs())
+		assert.ElementsMatch(t, built.GetGrantTypes(), got.GetGrantTypes())
+		assert.ElementsMatch(t, built.GetResponseTypes(), got.GetResponseTypes())
+		assert.ElementsMatch(t, built.GetScopes(), got.GetScopes())
+		assert.ElementsMatch(t, built.GetAudience(), got.GetAudience())
+		oidc, ok := got.(fosite.OpenIDConnectClient)
+		require.True(t, ok)
+		assert.Equal(t, oauthproto.TokenEndpointAuthMethodNone, oidc.GetTokenEndpointAuthMethod())
+		_, ok = registration.RegisteredLoopbackRedirectURI(got, "http://localhost:54321/cb")
+		assert.True(t, ok, "loopback dynamic-port matching must survive the round trip")
 	})
 }
 

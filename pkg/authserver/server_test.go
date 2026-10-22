@@ -7,12 +7,14 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -543,6 +545,103 @@ func TestNewServer_CIMDEnabled_WrapsStorage(t *testing.T) {
 	_, ok := srv.storage.(*storage.CIMDStorageDecorator)
 	if !ok {
 		t.Errorf("expected storage to be *storage.CIMDStorageDecorator when CIMDEnabled=true, got %T", srv.storage)
+	}
+}
+
+// TestServer_TokenEndpoint_CIMDFetchesAreRateLimited is the regression test for
+// GHSA-cmf3-r76g-m472: POST /oauth/token resolves the client_id before it
+// picks a grant handler, so every distinct CIMD URL it carries (form body or
+// an unsigned client_assertion's sub) must be charged against the same
+// outbound-fetch budget as /oauth/authorize.
+func TestServer_TokenEndpoint_CIMDFetchesAreRateLimited(t *testing.T) {
+	t.Parallel()
+
+	const requests = 20
+
+	unsignedAssertion := func(sub string) string {
+		enc := base64.RawURLEncoding
+		header := enc.EncodeToString([]byte(`{"alg":"RS256","typ":"JWT"}`))
+		claims, err := json.Marshal(map[string]any{"iss": sub, "sub": sub, "jti": "j", "exp": time.Now().Add(time.Hour).Unix()})
+		require.NoError(t, err)
+		return header + "." + enc.EncodeToString(claims) + "." + enc.EncodeToString([]byte("sig"))
+	}
+
+	tests := []struct {
+		name string
+		form func(clientID string) url.Values
+	}{
+		{
+			name: "client_id in form body",
+			form: func(clientID string) url.Values {
+				return url.Values{"grant_type": {"authorization_code"}, "code": {"x"}, "client_id": {clientID}}
+			},
+		},
+		{
+			name: "unsigned client_assertion",
+			form: func(clientID string) url.Values {
+				return url.Values{
+					"grant_type":            {"authorization_code"},
+					"code":                  {"x"},
+					"client_assertion_type": {"urn:ietf:params:oauth:client-assertion-type:jwt-bearer"},
+					"client_assertion":      {unsignedAssertion(clientID)},
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var fetches atomic.Int32
+			cimdHost := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				fetches.Add(1)
+				http.NotFound(w, r)
+			}))
+			t.Cleanup(cimdHost.Close)
+
+			stor := storage.NewMemoryStorage()
+			t.Cleanup(func() { _ = stor.Close() })
+			cfg := Config{
+				Issuer:               "https://example.com",
+				KeyProvider:          keys.NewGeneratingProvider(keys.DefaultAlgorithm),
+				HMACSecrets:          &servercrypto.HMACSecrets{Current: validHMACSecret()},
+				Upstreams:            []UpstreamConfig{{Name: "default", Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstreamConfig()}},
+				AllowedAudiences:     []string{"https://mcp.example.com"},
+				CIMDEnabled:          true,
+				CIMDCacheMaxSize:     16,
+				CIMDCacheFallbackTTL: 5 * time.Minute,
+				UpstreamFactory: func(_ context.Context, _ *UpstreamConfig) (upstream.OAuth2Provider, error) {
+					return upstreammocks.NewMockOAuth2Provider(gomock.NewController(t)), nil
+				},
+			}
+			srv, err := newServer(context.Background(), cfg, stor)
+			require.NoError(t, err)
+
+			var unauthorized, limited int
+			for i := 0; i < requests; i++ {
+				form := tt.form(fmt.Sprintf("%s/c%d", cimdHost.URL, i))
+				req := httptest.NewRequest(http.MethodPost, "/oauth/token", strings.NewReader(form.Encode()))
+				req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+				rec := httptest.NewRecorder()
+				srv.Handler().ServeHTTP(rec, req)
+
+				switch rec.Code {
+				case http.StatusUnauthorized:
+					unauthorized++
+				case http.StatusTooManyRequests:
+					limited++
+					assert.Equal(t, "1", rec.Header().Get("Retry-After"))
+				default:
+					t.Fatalf("request %d: unexpected status %d: %s", i, rec.Code, rec.Body.String())
+				}
+			}
+
+			assert.LessOrEqual(t, int(fetches.Load()), 6, "outbound CIMD fetches must be bounded by the limiter")
+			assert.Equal(t, requests, unauthorized+limited)
+			assert.Greater(t, limited, 0, "requests past the burst must be answered 429")
+			assert.Greater(t, unauthorized, 0, "requests within the burst must reach the client lookup and fail with 401")
+		})
 	}
 }
 

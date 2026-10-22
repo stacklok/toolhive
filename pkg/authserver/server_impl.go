@@ -494,9 +494,13 @@ func decorateStorageForCIMD(cfg Config, stor storage.Storage) (storage.Storage, 
 			"baseline_client_scopes", cfg.BaselineClientScopes)
 	}
 	decorated, err := storage.NewCIMDStorageDecorator(stor, storage.CIMDDecoratorConfig{
-		Enabled:              true,
-		CacheMaxSize:         cfg.CIMDCacheMaxSize,
-		FallbackTTL:          cfg.CIMDCacheFallbackTTL,
+		Enabled:      true,
+		CacheMaxSize: cfg.CIMDCacheMaxSize,
+		FallbackTTL:  cfg.CIMDCacheFallbackTTL,
+		// A refresh arrives about one access-token lifetime after the client's
+		// last use, so any smaller bound never covers a refresh: on defaults the
+		// cache entry is ~55m past its 5m expiry when the refresh arrives.
+		MaxStale:             cfg.AccessTokenLifespan,
 		ScopesSupported:      cfg.ScopesSupported,
 		BaselineClientScopes: cfg.BaselineClientScopes,
 		AllowedAudiences:     cfg.AllowedAudiences,

@@ -4,6 +4,7 @@
 package handlers
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ory/fosite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -2294,4 +2296,113 @@ func TestCallbackHandler_TwoUpstreams_EachLegIsBoundToTheBrowser(t *testing.T) {
 		assert.Empty(t, rec2.Header().Get("Location"))
 		assert.Empty(t, provider2.capturedCode, "provider-2's code must not be exchanged")
 	})
+}
+
+// decoratedClientStorage stands in for a CIMD decorator layered over the base
+// storage: GetClient returns err from the (errAfter+1)-th call on, and Unwrap
+// exposes the base like the real decorators, so storage.Unwrap reaches it.
+type decoratedClientStorage struct {
+	storage.Storage
+	errAfter int
+	err      error
+	calls    int
+}
+
+func (d *decoratedClientStorage) GetClient(ctx context.Context, id string) (fosite.Client, error) {
+	d.calls++
+	if d.calls > d.errAfter {
+		return nil, d.err
+	}
+	return d.Storage.GetClient(ctx, id)
+}
+
+func (d *decoratedClientStorage) Unwrap() storage.Storage { return d.Storage }
+
+func TestCallbackHandler_CIMDRateLimited_ClientLookup(t *testing.T) {
+	t.Parallel()
+
+	rateLimited := fosite.ErrNotFound.WithWrap(storage.ErrCIMDRateLimited)
+
+	tests := []struct {
+		name          string
+		decoratedErr  error
+		decoratedOK   int // decorated calls that succeed before decoratedErr
+		baseErr       error
+		baseOK        int // base calls that succeed before baseErr
+		wantCode      bool
+		wantBaseCalls int
+	}{
+		{
+			name:          "rate limited falls back to persisted row",
+			decoratedErr:  rateLimited,
+			wantCode:      true,
+			wantBaseCalls: 2,
+		},
+		{
+			name:          "rate limited and base storage error is an error redirect",
+			decoratedErr:  rateLimited,
+			baseErr:       errors.New("storage unavailable"),
+			baseOK:        1,
+			wantBaseCalls: 2,
+		},
+		{
+			name:          "ordinary error does not consult base storage",
+			decoratedErr:  errors.New("get client unavailable"),
+			decoratedOK:   1,
+			wantBaseCalls: 1,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			var opts []baseTestSetupOption
+			if tc.baseErr != nil {
+				opts = append(opts, withGetClientErrorAfterCalls(tc.baseOK, tc.baseErr))
+			}
+			provider, oauth2Config, stor, storState := baseTestSetup(t, opts...)
+			mockUpstream := &mockIDPProvider{
+				providerType:     upstream.ProviderTypeOAuth2,
+				authorizationURL: "https://idp.example.com/authorize",
+				exchangeResult: &upstream.Identity{
+					Tokens:  &upstream.Tokens{AccessToken: "at", ExpiresAt: time.Now().Add(time.Hour)},
+					Subject: "user-123",
+				},
+			}
+			decorated := &decoratedClientStorage{Storage: stor, errAfter: tc.decoratedOK, err: tc.decoratedErr}
+			handler, err := NewHandler(provider, oauth2Config, decorated,
+				[]NamedUpstream{{Name: "test-upstream", Provider: mockUpstream}})
+			require.NoError(t, err)
+
+			internalState := testInternalState
+			cookie := bindPending(t, storState, internalState, &storage.PendingAuthorization{
+				ClientID:             testAuthClientID,
+				RedirectURI:          testAuthRedirectURI,
+				State:                "client-state",
+				PKCEChallenge:        "challenge123",
+				PKCEMethod:           "S256",
+				Scopes:               []string{"openid"},
+				InternalState:        internalState,
+				UpstreamPKCEVerifier: "test-upstream-pkce-verifier-12345678901234567890",
+				SessionID:            "session-cimd-rl",
+				UpstreamProviderName: "test-upstream",
+				CreatedAt:            time.Now(),
+			})
+
+			rec := httptest.NewRecorder()
+			handler.CallbackHandler(rec, newCallbackRequest("code=upstream-code&state="+internalState, cookie))
+
+			require.Equal(t, http.StatusSeeOther, rec.Code)
+			location := rec.Header().Get("Location")
+			if tc.wantCode {
+				assert.Contains(t, location, "code=")
+				assert.NotContains(t, location, "error=")
+			} else {
+				assert.Contains(t, location, "error=")
+				assert.NotContains(t, location, "code=")
+			}
+			assert.Equal(t, tc.wantBaseCalls, storState.getClientCalls)
+		})
+	}
 }

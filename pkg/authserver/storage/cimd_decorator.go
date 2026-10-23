@@ -49,9 +49,12 @@ var ErrCIMDRateLimited = errors.New("CIMD document fetch rate limit exceeded")
 // (cimd.ErrDocumentUnavailable), an expired cache entry is served for up to
 // maxStale past its expiry so a known client is not locked out by traffic
 // that drains the shared budget or by a document host that is briefly
-// unreachable; see fetchFailed for the transient rule. On the token endpoint
+// unreachable. A re-fetch that fails definitively evicts the entry, so
+// neither path serves a document the host withdrew or this server rejected
+// from the cache again; see fetchFailed for both rules. On the token endpoint
 // (WithPersistedClientFallback), a refused lookup with no servable cache entry
-// is answered from the persisted client row when one exists.
+// is answered from the persisted client row when one exists; that row is not
+// evicted, so it can still answer a refusal after a definitive failure.
 type CIMDStorageDecorator struct {
 	Storage                                 // embed full interface — all methods delegate
 	sf                   singleflight.Group // deduplicates concurrent fetches for the same URL
@@ -345,10 +348,9 @@ func (d *CIMDStorageDecorator) fetchOrCached(ctx context.Context, id string) (fo
 		// The stale check sits after the limiter so that with budget left an
 		// expired entry is still re-fetched and re-validated; a refusal falls
 		// back to the expired entry within maxStale, and so does a fetch that
-		// is attempted and fails transiently (fetchFailed). A fetch that fails
-		// definitively returns its error but does not evict the entry, so while
-		// the limiter stays empty, or the host keeps failing transiently, the
-		// pre-failure entry can be served again until expires+maxStale.
+		// is attempted and fails transiently (fetchFailed, which also evicts
+		// the entry on every other failure, so the pre-failure document cannot
+		// come back from the cache through a later refusal or blip).
 		if !d.fetchLimiter.Allow() {
 			if d.servableStale(entry, ok) {
 				// DEBUG: callers can trigger this at request rate.
@@ -494,7 +496,8 @@ func (d *CIMDStorageDecorator) fetch(ctx context.Context, id string) (fosite.Cli
 
 // fetchFailed answers a re-fetch of id that returned err. It runs inside the
 // singleflight call, so every caller sharing the flight gets one decision and
-// one log line.
+// one log line, and no concurrent fetch for id can add a fresh entry between
+// the decision below and the eviction.
 //
 // A transient failure (cimd.ErrDocumentUnavailable: the host delivered no
 // usable response or answered 5xx) is answered from the expired cache entry
@@ -502,10 +505,18 @@ func (d *CIMDStorageDecorator) fetch(ctx context.Context, id string) (fosite.Cli
 // uses. The entry is neither renewed nor re-persisted, so the next lookup
 // re-fetches again and the stale answer never outlives maxStale.
 //
-// Every other outcome returns err: a definitive fetch failure (a 3xx or 4xx
-// whatever happened to its body, an unexpected content type, a malformed
-// body, a document that fails validation), a document this server's policy
-// rejects, and a transient failure with no servable entry. fosite renders the
+// Every other outcome evicts the entry and returns err: a definitive fetch
+// failure (a 3xx or 4xx whatever happened to its body, an unexpected content
+// type, a malformed body, a document that fails validation), a document this
+// server's policy rejects, and a transient failure with no servable entry. The
+// cache must not hand a document the host withdrew or this server rejected
+// back through a later limiter refusal or transient failure, and an entry past
+// the window can never answer again; the next lookup needs a successful fetch.
+// The persisted row is left in place (Storage has no client delete): on a
+// later limiter refusal the row fallbacks of the token endpoint (GetClient)
+// and the callback (handlers/callback.go) still answer from it, so the
+// pre-failure snapshot stays reachable there for up to DefaultDCRClientTTL
+// after the last successful fetch. fosite renders the
 // returned error as invalid_client exactly as before, so a client this server
 // has never resolved still fails closed.
 //
@@ -526,6 +537,7 @@ func (d *CIMDStorageDecorator) fetchFailed(ctx context.Context, id string, err e
 			"fallback", "expired_cache", "age_past_expiry", time.Since(entry.expires))
 		return entry.client, nil
 	}
+	d.cache.Remove(id)
 	if !errors.Is(err, fosite.ErrInvalidClient) {
 		slog.WarnContext(ctx, "CIMD document fetch failed",
 			"client_id", id, "error", cause, "fallback", "none")

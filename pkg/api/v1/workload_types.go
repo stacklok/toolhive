@@ -60,6 +60,9 @@ type updateRequest struct {
 	ProxyPort int `json:"proxy_port"`
 	// Maximum inbound MCP proxy request body size in bytes. Zero uses the default limit of 8 MiB.
 	MaxRequestBodySize int64 `json:"max_request_body_size,omitempty"`
+	// Maximum time to read a complete MCP proxy request, expressed as a Go duration string.
+	// Empty or zero uses the default timeout of 30 seconds.
+	ProxyReadTimeout string `json:"proxy_read_timeout,omitempty" example:"30s"`
 	// Environment variables to set in the container
 	EnvVars map[string]string `json:"env_vars"`
 	// Secret parameters to inject
@@ -86,9 +89,10 @@ type updateRequest struct {
 	// Whether to trust X-Forwarded-* headers from reverse proxies
 	TrustProxyHeaders bool `json:"trust_proxy_headers"`
 	// Whether to permit outbound connections to Docker gateway addresses
-	// (host.docker.internal, gateway.docker.internal, 172.17.0.1). These are
+	// (all daemon bridge gateways, host.docker.internal, and gateway.docker.internal). These are
 	// blocked by default in the egress proxy even when network isolation is on.
 	// Only applicable to Docker deployments with network isolation enabled.
+	// Gateways are snapshotted at deployment; redeploy to include bridges created later.
 	AllowDockerGateway bool `json:"allow_docker_gateway,omitempty"`
 	// Tools filter
 	ToolsFilter []string `json:"tools"`
@@ -296,7 +300,6 @@ func runConfigToCreateRequest(runConfig *runner.RunConfig) *createRequest {
 			JwksURL:          runConfig.OIDCConfig.JWKSURL,
 			IntrospectionURL: runConfig.OIDCConfig.IntrospectionURL,
 			ClientID:         runConfig.OIDCConfig.ClientID,
-			ClientSecret:     runConfig.OIDCConfig.ClientSecret,
 			Scopes:           runConfig.OIDCConfig.Scopes,
 		}
 	}
@@ -374,6 +377,7 @@ func runConfigToCreateRequest(runConfig *runner.RunConfig) *createRequest {
 			TargetPort:         runConfig.TargetPort,
 			ProxyPort:          runConfig.Port,
 			MaxRequestBodySize: runConfig.MaxRequestBodySize,
+			ProxyReadTimeout:   runConfig.ProxyReadTimeout,
 			EnvVars:            runConfig.EnvVars,
 			Secrets:            secretParams,
 			Volumes:            runConfig.Volumes,

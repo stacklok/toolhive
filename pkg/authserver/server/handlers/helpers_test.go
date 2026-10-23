@@ -7,6 +7,10 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -28,6 +32,22 @@ const (
 	testAuthIssuer      = "http://test-auth-issuer"
 	testInternalState   = "internal-state-123"
 )
+
+// assertOAuthRateLimited checks the JSON 429 the token and device authorization
+// endpoints write when the CIMD fetch limiter refuses a client lookup.
+func assertOAuthRateLimited(t *testing.T, rec *httptest.ResponseRecorder) {
+	t.Helper()
+	require.Equal(t, http.StatusTooManyRequests, rec.Code)
+	require.Equal(t, "1", rec.Header().Get("Retry-After"))
+	require.Equal(t, "application/json", rec.Header().Get("Content-Type"))
+	require.Equal(t, "no-store", rec.Header().Get("Cache-Control"))
+	require.Equal(t, "no-cache", rec.Header().Get("Pragma"))
+	var body struct {
+		Error string `json:"error"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+	require.Equal(t, "temporarily_unavailable", body.Error)
+}
 
 // mockIDPProvider implements upstream.OAuth2Provider for testing.
 type mockIDPProvider struct {
@@ -89,22 +109,27 @@ type testStorageState struct {
 	users              map[string]*storage.User
 	providerIdentities map[string]*storage.ProviderIdentity // key: providerID:providerSubject
 	authCodeSessions   map[string]fosite.Requester          // authorize code sessions for token exchange
+	refreshSessions    map[string]fosite.Requester          // refresh token sessions for token exchange
 	pkceSessions       map[string]fosite.Requester          // PKCE sessions for token exchange
 	idpTokenCount      int
 	renewedClients     []string // client IDs passed to RenewClientTTL
-	// getAllUpstreamCtx and deleteUpstreamCtx capture the context passed to
-	// GetAllUpstreamTokens / DeleteUpstreamTokens, so a test can assert the
-	// callback placed the authenticated identity into the request context before
-	// that storage call runs. Each records only the most recent call; tests that
-	// trigger multiple calls must account for last-write-wins.
-	getAllUpstreamCtx context.Context
-	deleteUpstreamCtx context.Context
+	// getClientCalls records storage client lookups so route-boundary tests can
+	// prove malformed requests are rejected before any lookup.
+	getClientCalls int
+	// Capture each context separately so assertions observe the context at the
+	// storage call itself, including methods that may be called more than once.
+	getAllUpstreamCtx    []context.Context
+	getLatestUpstreamCtx []context.Context
+	storeUpstreamCtx     []context.Context
+	deleteUpstreamCtx    []context.Context
+	deleteForProviderCtx []context.Context
 }
 
 // baseTestSetupOption configures optional behavior overrides for baseTestSetup.
 type baseTestSetupOption func(*baseTestSetupConfig)
 
 type baseTestSetupConfig struct {
+	deletePendingErr           error            // if non-nil, DeletePendingAuthorization always returns this error
 	storePendingErr            error            // if non-nil, StorePendingAuthorization always returns this error
 	getLatestUpstreamTokensErr error            // if non-nil, GetLatestUpstreamTokensForUser always returns this error
 	createUserErr              error            // if non-nil, CreateUser always returns this error
@@ -113,7 +138,12 @@ type baseTestSetupConfig struct {
 	getAllUpstreamErrAfter     int              // number of GetAllUpstreamTokens calls that succeed before the error kicks in
 	deleteForProviderErrs      map[string]error // per-provider error for DeleteUpstreamTokensForProvider
 	getClientErr               error            // if non-nil, GetClient returns this after getClientErrAfter successful calls
+	getProviderIdentityErr     error            // if non-nil, GetProviderIdentity returns this error
 	getClientErrAfter          int              // number of GetClient calls that succeed before getClientErr kicks in
+}
+
+func withDeletePendingError(err error) baseTestSetupOption {
+	return func(c *baseTestSetupConfig) { c.deletePendingErr = err }
 }
 
 func withStorePendingError(err error) baseTestSetupOption {
@@ -224,6 +254,7 @@ func baseTestSetup(t *testing.T, opts ...baseTestSetupOption) (fosite.OAuth2Prov
 		users:              make(map[string]*storage.User),
 		providerIdentities: make(map[string]*storage.ProviderIdentity),
 		authCodeSessions:   make(map[string]fosite.Requester),
+		refreshSessions:    make(map[string]fosite.Requester),
 		pkceSessions:       make(map[string]fosite.Requester),
 	}
 
@@ -236,7 +267,8 @@ func baseTestSetup(t *testing.T, opts ...baseTestSetupOption) (fosite.OAuth2Prov
 		RedirectURIs:  []string{testAuthRedirectURI},
 		ResponseTypes: []string{"code"},
 		GrantTypes:    []string{"authorization_code", "refresh_token"},
-		Scopes:        []string{"openid", "profile", "email"},
+		Scopes:        []string{"openid", "profile", "email", "offline_access"},
+		Audience:      []string{"https://api.example.com"},
 		Public:        true,
 	}
 	storState.clients[testAuthClientID] = testClient
@@ -244,10 +276,9 @@ func baseTestSetup(t *testing.T, opts ...baseTestSetupOption) (fosite.OAuth2Prov
 	// Setup mock expectations for GetClient. Looks up storState.clients so tests
 	// can register additional clients (e.g. a loopback client under its own ID)
 	// after baseTestSetup returns.
-	getClientCalls := 0
 	stor.EXPECT().GetClient(gomock.Any(), gomock.Any()).DoAndReturn(func(_ context.Context, id string) (fosite.Client, error) {
-		getClientCalls++
-		if setupCfg.getClientErr != nil && getClientCalls > setupCfg.getClientErrAfter {
+		storState.getClientCalls++
+		if setupCfg.getClientErr != nil && storState.getClientCalls > setupCfg.getClientErrAfter {
 			return nil, setupCfg.getClientErr
 		}
 		if c, ok := storState.clients[id]; ok {
@@ -291,8 +322,18 @@ func baseTestSetup(t *testing.T, opts ...baseTestSetupOption) (fosite.OAuth2Prov
 			return nil, storage.ErrNotFound
 		}).AnyTimes()
 
+	// CallbackHandler falls back to LoadPendingDeviceLogin when a state
+	// doesn't match a pending OAuth-client authorization (see that
+	// function's doc comment) -- no test using this mock exercises the
+	// device flow's login callback, so this always misses.
+	stor.EXPECT().LoadPendingDeviceLogin(gomock.Any(), gomock.Any()).Return(
+		nil, storage.ErrNotFound).AnyTimes()
+
 	stor.EXPECT().DeletePendingAuthorization(gomock.Any(), gomock.Any()).DoAndReturn(
 		func(_ context.Context, state string) error {
+			if setupCfg.deletePendingErr != nil {
+				return setupCfg.deletePendingErr
+			}
 			if _, ok := storState.pendingAuths[state]; !ok {
 				return storage.ErrNotFound
 			}
@@ -345,10 +386,25 @@ func baseTestSetup(t *testing.T, opts ...baseTestSetupOption) (fosite.OAuth2Prov
 	stor.EXPECT().RevokeAccessToken(gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
 
 	// Setup mock expectations for refresh token storage (needed by fosite for token generation)
-	stor.EXPECT().CreateRefreshTokenSession(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
-	stor.EXPECT().GetRefreshTokenSession(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil, fosite.ErrNotFound).AnyTimes()
-	stor.EXPECT().DeleteRefreshTokenSession(gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
+	stor.EXPECT().CreateRefreshTokenSession(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(
+		func(_ context.Context, signature, _ string, req fosite.Requester) error {
+			storState.refreshSessions[signature] = req
+			return nil
+		}).AnyTimes()
+	stor.EXPECT().GetRefreshTokenSession(gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(
+		func(_ context.Context, signature string, _ fosite.Session) (fosite.Requester, error) {
+			if req, ok := storState.refreshSessions[signature]; ok {
+				return req, nil
+			}
+			return nil, fosite.ErrNotFound
+		}).AnyTimes()
+	stor.EXPECT().DeleteRefreshTokenSession(gomock.Any(), gomock.Any()).DoAndReturn(
+		func(_ context.Context, signature string) error {
+			delete(storState.refreshSessions, signature)
+			return nil
+		}).AnyTimes()
 	stor.EXPECT().RevokeRefreshToken(gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
+	stor.EXPECT().RotateRefreshToken(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
 
 	// Setup mock expectations for user storage (needed by UserResolver)
 	if setupCfg.createUserErr != nil {
@@ -372,6 +428,9 @@ func baseTestSetup(t *testing.T, opts ...baseTestSetupOption) (fosite.OAuth2Prov
 
 	stor.EXPECT().GetProviderIdentity(gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(
 		func(_ context.Context, providerID, providerSubject string) (*storage.ProviderIdentity, error) {
+			if setupCfg.getProviderIdentityErr != nil {
+				return nil, setupCfg.getProviderIdentityErr
+			}
 			key := providerID + ":" + providerSubject
 			if identity, ok := storState.providerIdentities[key]; ok {
 				return identity, nil
@@ -408,7 +467,8 @@ func baseTestSetup(t *testing.T, opts ...baseTestSetupOption) (fosite.OAuth2Prov
 	// Setup mock expectations for upstream tokens storage.
 	// Keyed by "sessionID:providerName" to support multiple providers per session.
 	stor.EXPECT().StoreUpstreamTokens(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(
-		func(_ context.Context, sessionID, providerName string, tokens *storage.UpstreamTokens) error {
+		func(ctx context.Context, sessionID, providerName string, tokens *storage.UpstreamTokens) error {
+			storState.storeUpstreamCtx = append(storState.storeUpstreamCtx, ctx)
 			if setupCfg.storeUpstreamTokensErr != nil {
 				return setupCfg.storeUpstreamTokensErr
 			}
@@ -423,8 +483,8 @@ func baseTestSetup(t *testing.T, opts ...baseTestSetupOption) (fosite.OAuth2Prov
 			// DeleteUpstreamTokens takes only (ctx, sessionID) — no tokens argument
 			// to carry the user — so a context-keyed storage decorator can resolve
 			// the user only from ctx. Capture the ctx so a test can assert the
-			// callback placed the identity into it before this delete runs.
-			storState.deleteUpstreamCtx = ctx
+			// callback placed the canonical user into it before this delete runs.
+			storState.deleteUpstreamCtx = append(storState.deleteUpstreamCtx, ctx)
 			for key := range storState.upstreamTokens {
 				if len(key) > len(sessionID) && key[:len(sessionID)+1] == sessionID+":" {
 					delete(storState.upstreamTokens, key)
@@ -440,7 +500,7 @@ func baseTestSetup(t *testing.T, opts ...baseTestSetupOption) (fosite.OAuth2Prov
 			// resolves the user from ctx exactly as DeleteUpstreamTokens does. Capture
 			// the ctx here too so the callback's per-provider cleanup path is covered by
 			// the same context-placement assertions.
-			storState.deleteUpstreamCtx = ctx
+			storState.deleteForProviderCtx = append(storState.deleteForProviderCtx, ctx)
 			// Mirror the real backends, which reject an empty session or provider rather
 			// than deleting; cleanupUpstreamTokens filters empty names, so this only
 			// fires if a future caller bug lets one through.
@@ -461,8 +521,8 @@ func baseTestSetup(t *testing.T, opts ...baseTestSetupOption) (fosite.OAuth2Prov
 			// GetAllUpstreamTokens takes only (ctx, sessionID) — no tokens argument to
 			// carry the user — so a user-keyed storage decorator can resolve the user
 			// only from ctx. Capture the ctx here so a test can assert the callback
-			// placed the identity into it before this read runs.
-			storState.getAllUpstreamCtx = ctx
+			// placed the canonical user into it before this read runs.
+			storState.getAllUpstreamCtx = append(storState.getAllUpstreamCtx, ctx)
 			getAllUpstreamCalls++
 			if setupCfg.getAllUpstreamTokensErr != nil && getAllUpstreamCalls > setupCfg.getAllUpstreamErrAfter {
 				return nil, setupCfg.getAllUpstreamTokensErr
@@ -479,7 +539,8 @@ func baseTestSetup(t *testing.T, opts ...baseTestSetupOption) (fosite.OAuth2Prov
 
 	stor.EXPECT().
 		GetLatestUpstreamTokensForUser(gomock.Any(), gomock.Any(), gomock.Any()).
-		DoAndReturn(func(_ context.Context, userID, providerID string) (*storage.UpstreamTokens, error) {
+		DoAndReturn(func(ctx context.Context, userID, providerID string) (*storage.UpstreamTokens, error) {
+			storState.getLatestUpstreamCtx = append(storState.getLatestUpstreamCtx, ctx)
 			if setupCfg.getLatestUpstreamTokensErr != nil {
 				return nil, setupCfg.getLatestUpstreamTokensErr
 			}
@@ -616,4 +677,67 @@ func multiUpstreamTestSetupWithStorage(t *testing.T, storageOpts ...baseTestSetu
 	require.NoError(t, err)
 
 	return handler, storState, mockProvider1, mockProvider2
+}
+
+// approveConsent submits the approval form from an authorize response.
+func approveConsent(t *testing.T, handler *Handler, page *httptest.ResponseRecorder) *httptest.ResponseRecorder {
+	t.Helper()
+	require.Equal(t, http.StatusOK, page.Code)
+	_, rest, ok := strings.Cut(page.Body.String(), `name="handle" value="`)
+	require.True(t, ok, "consent handle missing")
+	handle, _, ok := strings.Cut(rest, `"`)
+	require.True(t, ok)
+	form := "handle=" + handle + "&decision=approve"
+	req := httptest.NewRequest(http.MethodPost, "/oauth/consent", strings.NewReader(form))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Origin", testAuthIssuer)
+	for _, cookie := range page.Result().Cookies() {
+		req.AddCookie(cookie)
+	}
+	rec := httptest.NewRecorder()
+	handler.ConsentHandler(rec, req)
+	return rec
+}
+
+// testBindingSecure reports the cookie shape the shared test handler emits:
+// testAuthIssuer is plain http and no test overrides the authorize base URL,
+// so the unprefixed, non-Secure shape.
+func testBindingSecure() bool {
+	return strings.HasPrefix(testAuthIssuer, "https://")
+}
+
+// bindPending seeds pending under state in storState with a fresh browser
+// binding, mirroring what AuthorizeHandler (or the previous chain leg) does,
+// and returns the cookie a callback for that state must carry. Callback tests
+// seed storage directly, so they need this to pass verifyBrowserBinding.
+func bindPending(t *testing.T, storState *testStorageState, state string, pending *storage.PendingAuthorization) *http.Cookie {
+	t.Helper()
+	binding := newBrowserBinding()
+	pending.BrowserBindingHash = binding.hash
+	pending.ConsentStage = storage.ConsentStageApproved
+	storState.pendingAuths[state] = pending
+	return &http.Cookie{Name: browserBindingCookieName(state, testBindingSecure()), Value: binding.value}
+}
+
+// newCallbackRequest builds GET /oauth/callback?<query> carrying cookies.
+func newCallbackRequest(query string, cookies ...*http.Cookie) *http.Request {
+	req := httptest.NewRequest(http.MethodGet, "/oauth/callback?"+query, nil)
+	for _, c := range cookies {
+		req.AddCookie(c)
+	}
+	return req
+}
+
+// bindingCookieFrom returns the browser-binding cookie that a redirect to an
+// upstream set for state, or fails the test when the response carries none.
+func bindingCookieFrom(t *testing.T, rec *httptest.ResponseRecorder, state string) *http.Cookie {
+	t.Helper()
+	name := browserBindingCookieName(state, testBindingSecure())
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == name {
+			return c
+		}
+	}
+	require.Failf(t, "browser binding cookie not set", "no cookie named %s in response", name)
+	return nil
 }

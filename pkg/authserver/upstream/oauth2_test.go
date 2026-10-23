@@ -36,6 +36,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"golang.org/x/oauth2"
 
+	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
@@ -596,6 +597,42 @@ func TestBaseOAuth2Provider_AuthorizationURL_NoScopes(t *testing.T) {
 	assert.Empty(t, query.Get("scope"))
 }
 
+func TestBaseOAuth2Provider_AuthorizationURL_OmitScopeOnRefresh(t *testing.T) {
+	t.Parallel()
+
+	mock := newMockOAuth2Server()
+	t.Cleanup(mock.Close)
+
+	config := &OAuth2Config{
+		CommonOAuthConfig: CommonOAuthConfig{
+			ClientID:           "test-client",
+			ClientSecret:       "test-secret",
+			RedirectURI:        "http://localhost:8080/callback",
+			Scopes:             []string{"api", "refresh_token"},
+			OmitScopeOnRefresh: true,
+		},
+		AuthorizationEndpoint: mock.URL + "/authorize",
+		TokenEndpoint:         mock.URL + "/token",
+	}
+
+	provider, err := NewOAuth2Provider(config)
+	require.NoError(t, err)
+
+	authURL, err := provider.AuthorizationURL("test-state", "")
+	require.NoError(t, err)
+
+	parsed, err := url.Parse(authURL)
+	require.NoError(t, err)
+
+	// OmitScopeOnRefresh applies to refresh_token requests only: the
+	// authorization request must still ask for the configured scopes, or the
+	// upstream would never grant them in the first place.
+	assert.ElementsMatch(t,
+		[]string{"api", "refresh_token"},
+		strings.Fields(parsed.Query().Get("scope")),
+	)
+}
+
 func TestBaseOAuth2Provider_exchangeCodeForTokens(t *testing.T) {
 	t.Parallel()
 
@@ -990,8 +1027,8 @@ func TestBaseOAuth2Provider_RefreshTokens(t *testing.T) {
 		require.NoError(t, err)
 
 		_, err = provider.RefreshTokens(ctx, "expired-refresh-token", "")
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "invalid_grant")
+		require.ErrorIs(t, err, ErrGrantRejected)
+		assert.Equal(t, "token request failed: invalid_grant - The refresh token has expired", err.Error())
 	})
 
 	t.Run("empty refresh token returns error", func(t *testing.T) {
@@ -1044,62 +1081,101 @@ func TestBaseOAuth2Provider_RefreshTokens(t *testing.T) {
 		_, err = provider.RefreshTokens(ctx, "refresh-token", "")
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "token request failed")
+		assert.NotErrorIs(t, err, ErrGrantRejected)
 	})
 
-	t.Run("refresh request includes configured scopes", func(t *testing.T) {
+	t.Run("refresh request scope parameter", func(t *testing.T) {
 		t.Parallel()
 
-		mock := newMockOAuth2Server()
-		t.Cleanup(mock.Close)
-
-		var receivedParams url.Values
-		mock.tokenHandler = func(w http.ResponseWriter, r *http.Request) {
-			if err := r.ParseForm(); err != nil {
-				http.Error(w, err.Error(), http.StatusBadRequest)
-				return
-			}
-			receivedParams = r.PostForm
-
-			w.Header().Set("Content-Type", "application/json")
-			resp := testTokenResponse{
-				AccessToken:  "refreshed-access-token",
-				TokenType:    "Bearer",
-				RefreshToken: "new-refresh-token",
-				ExpiresIn:    3600,
-			}
-			if err := json.NewEncoder(w).Encode(resp); err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-			}
+		configuredScopes := []string{
+			"openid",
+			"profile",
+			"api://example.com/custom:scope",
 		}
 
-		config := &OAuth2Config{
-			CommonOAuthConfig: CommonOAuthConfig{
-				ClientID:     "test-client",
-				ClientSecret: "test-secret",
-				RedirectURI:  "http://localhost:8080/callback",
-				Scopes: []string{
-					"openid",
-					"profile",
-					"api://example.com/custom:scope",
-				},
+		tests := []struct {
+			name                  string
+			omitScopeOnRefresh    bool
+			additionalTokenParams map[string]string
+			wantScopes            []string
+			wantResource          string
+		}{
+			{
+				// Scope must be sent on refresh by default; some ASes drop
+				// custom scopes otherwise.
+				name:       "includes configured scopes by default",
+				wantScopes: configuredScopes,
 			},
-			AuthorizationEndpoint: mock.URL + "/authorize",
-			TokenEndpoint:         mock.URL + "/token",
+			{
+				name:               "omits scope when OmitScopeOnRefresh is set",
+				omitScopeOnRefresh: true,
+			},
+			{
+				name:                  "OmitScopeOnRefresh keeps additional token params",
+				omitScopeOnRefresh:    true,
+				additionalTokenParams: map[string]string{"resource": "https://api.example.com"},
+				wantResource:          "https://api.example.com",
+			},
 		}
 
-		provider, err := NewOAuth2Provider(config)
-		require.NoError(t, err)
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				t.Parallel()
 
-		_, err = provider.RefreshTokens(ctx, "old-refresh-token", "")
-		require.NoError(t, err)
+				mock := newMockOAuth2Server()
+				t.Cleanup(mock.Close)
 
-		// Scope must be sent on refresh; some ASes drop custom scopes otherwise.
-		sentScopes := strings.Fields(receivedParams.Get("scope"))
-		assert.ElementsMatch(t,
-			[]string{"openid", "profile", "api://example.com/custom:scope"},
-			sentScopes,
-			"refresh request must include the configured scope set verbatim",
-		)
+				var receivedParams url.Values
+				mock.tokenHandler = func(w http.ResponseWriter, r *http.Request) {
+					if err := r.ParseForm(); err != nil {
+						http.Error(w, err.Error(), http.StatusBadRequest)
+						return
+					}
+					receivedParams = r.PostForm
+
+					w.Header().Set("Content-Type", "application/json")
+					resp := testTokenResponse{
+						AccessToken:  "refreshed-access-token",
+						TokenType:    "Bearer",
+						RefreshToken: "new-refresh-token",
+						ExpiresIn:    3600,
+					}
+					if err := json.NewEncoder(w).Encode(resp); err != nil {
+						http.Error(w, err.Error(), http.StatusInternalServerError)
+					}
+				}
+
+				config := &OAuth2Config{
+					CommonOAuthConfig: CommonOAuthConfig{
+						ClientID:              "test-client",
+						ClientSecret:          "test-secret",
+						RedirectURI:           "http://localhost:8080/callback",
+						Scopes:                configuredScopes,
+						AdditionalTokenParams: tt.additionalTokenParams,
+						OmitScopeOnRefresh:    tt.omitScopeOnRefresh,
+					},
+					AuthorizationEndpoint: mock.URL + "/authorize",
+					TokenEndpoint:         mock.URL + "/token",
+				}
+
+				provider, err := NewOAuth2Provider(config)
+				require.NoError(t, err)
+
+				_, err = provider.RefreshTokens(ctx, "old-refresh-token", "")
+				require.NoError(t, err)
+
+				assert.Equal(t, "refresh_token", receivedParams.Get("grant_type"))
+				assert.Equal(t, "old-refresh-token", receivedParams.Get("refresh_token"))
+				if tt.wantScopes == nil {
+					assert.False(t, receivedParams.Has("scope"),
+						"refresh request must not include a scope parameter")
+				} else {
+					assert.ElementsMatch(t, tt.wantScopes, strings.Fields(receivedParams.Get("scope")),
+						"refresh request must include the configured scope set verbatim")
+				}
+				assert.Equal(t, tt.wantResource, receivedParams.Get("resource"))
+			})
+		}
 	})
 
 	t.Run("refresh preserves existing refresh_token when AS does not issue a new one", func(t *testing.T) {
@@ -2800,6 +2876,16 @@ func TestNewHTTPClientForHost(t *testing.T) {
 			require.NoError(t, err)
 			require.NotNil(t, client)
 
+			// Every case: no response-header timeout, so the client timeout is
+			// the whole budget for a slow identity provider's response.
+			validating, ok := client.Transport.(*networking.ValidatingTransport)
+			require.True(t, ok, "unexpected client transport %T", client.Transport)
+			transport, ok := validating.Transport.(*http.Transport)
+			require.True(t, ok, "unexpected base transport %T", validating.Transport)
+			assert.Zero(t, transport.ResponseHeaderTimeout,
+				"ResponseHeaderTimeout must stay unset so a slow identity provider can respond within the client timeout")
+			assert.Equal(t, networking.HttpTimeout, client.Timeout)
+
 			// Use a short deadline so "allowed" cases don't wait for a real TCP
 			// timeout when dialing the unreachable private IP.
 			ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
@@ -2871,6 +2957,163 @@ func TestOAuth2Config_AllowPrivateIPs(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, provider)
 		assert.False(t, provider.config.AllowPrivateIPs)
+	})
+}
+
+func TestValidateAdditionalTokenParams(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		params      map[string]string
+		wantErr     bool
+		errContains string
+	}{
+		{
+			name:   "nil map",
+			params: nil,
+		},
+		{
+			name:   "empty map",
+			params: map[string]string{},
+		},
+		{
+			name:   "valid RFC 8707 resource",
+			params: map[string]string{"resource": "https://api.example.com/mcp"},
+		},
+		{
+			name:   "valid multiple params",
+			params: map[string]string{"resource": "https://api.example.com/mcp", "audience": "mcp"},
+		},
+		{
+			name:        "reserved: grant_type",
+			params:      map[string]string{"grant_type": "password"},
+			wantErr:     true,
+			errContains: "grant_type",
+		},
+		{
+			name:        "reserved: code",
+			params:      map[string]string{"code": "x"},
+			wantErr:     true,
+			errContains: "code",
+		},
+		{
+			name:        "reserved: code_verifier",
+			params:      map[string]string{"code_verifier": "x"},
+			wantErr:     true,
+			errContains: "code_verifier",
+		},
+		{
+			name:        "reserved: refresh_token",
+			params:      map[string]string{"refresh_token": "x"},
+			wantErr:     true,
+			errContains: "refresh_token",
+		},
+		{
+			name:        "reserved: client_id",
+			params:      map[string]string{"client_id": "x"},
+			wantErr:     true,
+			errContains: "client_id",
+		},
+		{
+			name:        "reserved: client_secret",
+			params:      map[string]string{"client_secret": "x"},
+			wantErr:     true,
+			errContains: "client_secret",
+		},
+		{
+			name:        "reserved: redirect_uri",
+			params:      map[string]string{"redirect_uri": "http://evil.com"},
+			wantErr:     true,
+			errContains: "redirect_uri",
+		},
+		{
+			name:        "reserved: scope",
+			params:      map[string]string{"scope": "admin"},
+			wantErr:     true,
+			errContains: "scope",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			config := &CommonOAuthConfig{
+				ClientID:              "test-client",
+				RedirectURI:           "http://localhost:8080/callback",
+				AdditionalTokenParams: tt.params,
+			}
+
+			err := config.ValidateWithInsecure(false)
+
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errContains)
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
+// TestTokenRequests_AdditionalTokenParams verifies that configured additional
+// token params reach the token endpoint's POST form body on both the
+// authorization-code exchange and the refresh grant — the RFC 8707 use case,
+// where an AS rejects token requests lacking a resource indicator.
+func TestTokenRequests_AdditionalTokenParams(t *testing.T) {
+	t.Parallel()
+
+	newProviderWithCapture := func(t *testing.T) (*BaseOAuth2Provider, *url.Values) {
+		t.Helper()
+		var captured url.Values
+		mux := http.NewServeMux()
+		mux.HandleFunc("/token", func(w http.ResponseWriter, r *http.Request) {
+			require.NoError(t, r.ParseForm())
+			captured = r.PostForm
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"access_token":"a","token_type":"Bearer","refresh_token":"r"}`))
+		})
+		srv := httptest.NewServer(mux)
+		t.Cleanup(srv.Close)
+
+		config := &OAuth2Config{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:    "test-client",
+				RedirectURI: "http://localhost:8080/callback",
+				AdditionalTokenParams: map[string]string{
+					"resource": "https://api.example.com/mcp",
+				},
+			},
+			AuthorizationEndpoint: srv.URL + "/authorize",
+			TokenEndpoint:         srv.URL + "/token",
+		}
+		provider, err := NewOAuth2Provider(config)
+		require.NoError(t, err)
+		return provider, &captured
+	}
+
+	t.Run("code exchange includes params in form body", func(t *testing.T) {
+		t.Parallel()
+
+		provider, captured := newProviderWithCapture(t)
+		_, err := provider.ExchangeCodeForIdentity(context.Background(), "test-code", "test-verifier", "")
+		require.NoError(t, err)
+
+		assert.Equal(t, "https://api.example.com/mcp", captured.Get("resource"))
+		assert.Equal(t, "authorization_code", captured.Get("grant_type"))
+		assert.Equal(t, "test-verifier", captured.Get("code_verifier"))
+	})
+
+	t.Run("refresh includes params in form body", func(t *testing.T) {
+		t.Parallel()
+
+		provider, captured := newProviderWithCapture(t)
+		_, err := provider.RefreshTokens(context.Background(), "old-refresh", "")
+		require.NoError(t, err)
+
+		assert.Equal(t, "https://api.example.com/mcp", captured.Get("resource"))
+		assert.Equal(t, "refresh_token", captured.Get("grant_type"))
 	})
 }
 
@@ -3030,4 +3273,40 @@ func TestInjectedClientRejectsCABundle(t *testing.T) {
 		require.Error(t, err)
 		assert.NotErrorIs(t, err, ErrCABundleWithInjectedClient)
 	})
+}
+
+func TestFormatOAuth2Error_GrantRejected(t *testing.T) {
+	t.Parallel()
+
+	retrieveErr := func(status int, code string) error {
+		return &oauth2.RetrieveError{
+			Response:  &http.Response{StatusCode: status},
+			ErrorCode: code,
+		}
+	}
+
+	tests := []struct {
+		name             string
+		err              error
+		wantInvalidGrant bool
+	}{
+		{name: "invalid_grant with 400", err: retrieveErr(http.StatusBadRequest, "invalid_grant"), wantInvalidGrant: true},
+		{name: "invalid_grant with 401", err: retrieveErr(http.StatusUnauthorized, "invalid_grant"), wantInvalidGrant: true},
+		{name: "invalid_grant with 200", err: retrieveErr(http.StatusOK, "invalid_grant"), wantInvalidGrant: true},
+		{name: "invalid_grant without response", err: &oauth2.RetrieveError{ErrorCode: "invalid_grant"}},
+		{name: "invalid_grant with 429", err: retrieveErr(http.StatusTooManyRequests, "invalid_grant")},
+		{name: "invalid_grant with 5xx", err: retrieveErr(http.StatusBadGateway, "invalid_grant")},
+		{name: "other error code", err: retrieveErr(http.StatusBadRequest, "invalid_client")},
+		{name: "no error code", err: retrieveErr(http.StatusBadRequest, "")},
+		{name: "network error", err: errors.New("dial tcp: connection refused")},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := formatOAuth2Error(tt.err, "token request failed")
+			require.Error(t, err)
+			assert.Equal(t, tt.wantInvalidGrant, errors.Is(err, ErrGrantRejected), "err = %v", err)
+		})
+	}
 }

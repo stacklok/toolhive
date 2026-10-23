@@ -148,10 +148,6 @@ var _ = Describe("OsvMcpServer", Label("mcp", "mcp-run", "streamable-http", "e2e
 				err = mcpClient.Initialize(ctx)
 				Expect(err).ToNot(HaveOccurred(), "Should be able to initialize MCP connection")
 
-				By("Testing basic MCP operations")
-				err = mcpClient.Ping(ctx)
-				Expect(err).ToNot(HaveOccurred(), "Should be able to ping the server")
-
 				By("Listing available tools")
 				tools, err := mcpClient.ListTools(ctx)
 				Expect(err).ToNot(HaveOccurred(), "Should be able to list tools")

@@ -35,6 +35,40 @@ func TestUpgrade_InvalidInputsFail(t *testing.T) {
 	require.Error(t, err, "an unreadable lock file must fail")
 }
 
+func TestValidateUpgradePublicKey(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		opts    skills.UpgradeOptions
+		wantErr bool
+	}{
+		{name: "no key"},
+		{
+			name: "valid replacement key",
+			opts: skills.UpgradeOptions{AllowSignerChange: true, PublicKey: testPublicKeyB64},
+		},
+		{name: "key without signer change", opts: skills.UpgradeOptions{PublicKey: testPublicKeyB64}, wantErr: true},
+		{
+			name:    "malformed key",
+			opts:    skills.UpgradeOptions{AllowSignerChange: true, PublicKey: "not-a-key"},
+			wantErr: true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			err := validateUpgradePublicKey(tc.opts)
+			if !tc.wantErr {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Equal(t, http.StatusBadRequest, httperr.Code(err))
+		})
+	}
+}
+
 // upgradeOne must report a failed outcome when the lock file becomes
 // unreadable under the held transaction.
 //

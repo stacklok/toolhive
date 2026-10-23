@@ -21,6 +21,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -43,6 +44,7 @@ import (
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/virtualmcpserverstatus"
 	operatorvmcpconfig "github.com/stacklok/toolhive/cmd/thv-operator/pkg/vmcpconfig"
 	"github.com/stacklok/toolhive/pkg/authserver"
+	"github.com/stacklok/toolhive/pkg/authserver/upstreamfilter"
 	"github.com/stacklok/toolhive/pkg/networking"
 	vmcptypes "github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/auth/converters"
@@ -531,6 +533,22 @@ func (r *VirtualMCPServerReconciler) runAuthValidations(
 		statusManager.RemoveConditionsWithPrefix(mcpv1beta1.ConditionTypeIdentitySynthesized, []string{})
 	}
 
+	// Re-check the upstream filter's full static invariants against the
+	// configured upstream providers. CEL enforces only cheap structural
+	// invariants at admission time (filter requires authServerConfig, min
+	// two upstream providers); deeper reference-integrity checks (every
+	// referenced provider exists, no reference to the mandatory first
+	// provider, no duplicates, no empty values) are enforced here before
+	// the ConfigMap is written. Runs regardless of AuthServerConfig
+	// presence so a filter set without a corresponding AuthServerConfig
+	// also surfaces as a terminal spec error.
+	if err := r.validateAuthServerUpstreamFilter(vmcp, statusManager); err != nil {
+		if applyErr := r.applyStatusUpdates(ctx, vmcp, statusManager); applyErr != nil {
+			return false, applyErr
+		}
+		return false, nil
+	}
+
 	// Validate that authz policies have an upstream IDP available to source
 	// claims from. Runs after the AuthServerConfig branch so it can set the
 	// AuthServerConfigValidated condition without being clobbered by the
@@ -543,6 +561,62 @@ func (r *VirtualMCPServerReconciler) runAuthValidations(
 	}
 
 	return true, nil
+}
+
+// validateAuthServerUpstreamFilter re-checks the upstream filter's static
+// invariants against the configured upstream providers. This repeats the CEL
+// admission rules so a resource that bypassed admission (fake client, pre-CEL
+// stored object) is still rejected before its ConfigMap is written.
+//
+// Returns a terminal validation error — the caller should surface the
+// condition and return without requeueing. Returns nil when no filter is
+// configured.
+func (*VirtualMCPServerReconciler) validateAuthServerUpstreamFilter(
+	vmcp *mcpv1beta1.VirtualMCPServer,
+	statusManager virtualmcpserverstatus.StatusManager,
+) error {
+	filter := vmcp.Spec.AuthServerUpstreamFilter
+	if filter == nil {
+		return nil
+	}
+	cfg := vmcp.Spec.AuthServerConfig
+	if cfg == nil {
+		return setAuthServerUpstreamFilterError(vmcp, statusManager,
+			"spec.authServerUpstreamFilter requires spec.authServerConfig to be set")
+	}
+
+	configured := make([]string, len(cfg.UpstreamProviders))
+	for i := range cfg.UpstreamProviders {
+		configured[i] = cfg.UpstreamProviders[i].Name
+	}
+
+	runtimeCfg := operatorvmcpconfig.ConvertUpstreamFilter(filter)
+	if _, err := upstreamfilter.NewGroupBasedFilter(*runtimeCfg, configured); err != nil {
+		return setAuthServerUpstreamFilterError(vmcp, statusManager,
+			fmt.Sprintf("spec.authServerUpstreamFilter: %v", err))
+	}
+	return nil
+}
+
+// setAuthServerUpstreamFilterError stamps a terminal AuthServerUpstreamFilter
+// validation failure onto status. Reuses ConditionTypeAuthServerConfigValidated
+// (rather than introducing a new condition type) so operators observe all
+// auth-server spec defects through a single surface; the message carries the
+// precise field path.
+func setAuthServerUpstreamFilterError(
+	vmcp *mcpv1beta1.VirtualMCPServer,
+	statusManager virtualmcpserverstatus.StatusManager,
+	message string,
+) error {
+	statusManager.SetPhase(mcpv1beta1.VirtualMCPServerPhaseFailed)
+	statusManager.SetMessage(message)
+	statusManager.SetAuthServerConfigValidatedCondition(
+		mcpv1beta1.ConditionReasonAuthServerConfigInvalid,
+		message,
+		metav1.ConditionFalse,
+	)
+	statusManager.SetObservedGeneration(vmcp.Generation)
+	return stderrors.New(message)
 }
 
 // validateAuthServerConfigCABundles resolves inline upstream CA dependencies.
@@ -684,11 +758,16 @@ func (*VirtualMCPServerReconciler) validateAuthServerConfig(
 		return stderrors.New(message)
 	}
 
-	// Validate additionalAuthorizationParams on each upstream provider
+	// Validate additionalAuthorizationParams / additionalTokenParams on each
+	// upstream provider
 	for i := range cfg.UpstreamProviders {
 		prefix := fmt.Sprintf("spec.authServerConfig.upstreamProviders[%d]", i)
 		params := cfg.UpstreamProviders[i].AdditionalAuthorizationParams()
-		if err := mcpv1beta1.ValidateAdditionalAuthorizationParams(prefix, params); err != nil {
+		err := mcpv1beta1.ValidateAdditionalAuthorizationParams(prefix, params)
+		if err == nil {
+			err = mcpv1beta1.ValidateAdditionalTokenParams(prefix, cfg.UpstreamProviders[i].AdditionalTokenParams())
+		}
+		if err != nil {
 			message := err.Error()
 			statusManager.SetPhase(mcpv1beta1.VirtualMCPServerPhaseFailed)
 			statusManager.SetMessage(message)
@@ -1885,7 +1964,10 @@ func (r *VirtualMCPServerReconciler) containerNeedsUpdate(
 		return true
 	}
 
-	container := deployment.Spec.Template.Spec.Containers[0]
+	container, ok := findContainerByName(deployment.Spec.Template.Spec.Containers, vmcpMainContainerName)
+	if !ok {
+		return true
+	}
 
 	// Check if vmcp image has changed
 	expectedImage := getVmcpImage()
@@ -1904,12 +1986,15 @@ func (r *VirtualMCPServerReconciler) containerNeedsUpdate(
 		return true
 	}
 
-	// Check if environment variables have changed
-	expectedEnv, err := r.buildEnvVarsForVmcp(ctx, vmcp, telemetryCfg, typedWorkloads)
+	// Compare against the fully rendered desired vmcp env (controller env plus
+	// spec.podTemplateSpec merges). Semantic equality still treats nil vs
+	// pointer-to-zero as different for some API fields, so normalize known
+	// defaults before comparing (#6340, #6377).
+	expectedEnv, err := r.desiredMainContainerEnv(ctx, vmcp, telemetryCfg, typedWorkloads)
 	if err != nil {
 		return true // Trigger update to surface the error
 	}
-	if !reflect.DeepEqual(container.Env, expectedEnv) {
+	if !envVarsEqual(container.Env, expectedEnv) {
 		return true
 	}
 
@@ -1963,11 +2048,18 @@ func (r *VirtualMCPServerReconciler) podTemplateMetadataNeedsUpdate(
 		return true
 	}
 
-	expectedPodTemplateLabels, expectedPodTemplateAnnotations := r.buildPodTemplateMetadata(
-		labelsForVirtualMCPServer(vmcp.Name), vmcp, vmcpConfigChecksum, caBundleChecksum,
+	expectedPodTemplateLabels, expectedPodTemplateAnnotations, err := r.desiredPodTemplateMetadata(
+		vmcp, vmcpConfigChecksum, caBundleChecksum,
 	)
+	if err != nil {
+		return true
+	}
 
-	if !maps.Equal(deployment.Spec.Template.Labels, expectedPodTemplateLabels) {
+	// Subset check, not maps.Equal: desired is the fully rendered set
+	// (controller labels plus spec.podTemplateSpec merges). Extra live keys
+	// such as pod-template-hash or kubectl restartedAt are not drift
+	// (statusReportingInterval must not Update, #6340).
+	if !ctrlutil.MapIsSubset(expectedPodTemplateLabels, deployment.Spec.Template.Labels) {
 		return true
 	}
 
@@ -1981,6 +2073,116 @@ func (r *VirtualMCPServerReconciler) podTemplateMetadataNeedsUpdate(
 	}
 
 	return false
+}
+
+const vmcpMainContainerName = "vmcp"
+
+// desiredPodTemplateMetadata returns the fully rendered desired pod-template
+// labels and annotations: controller-generated metadata plus any keys merged
+// from spec.podTemplateSpec. Callers compare this set as a subset of live
+// metadata so externally owned extras (pod-template-hash, restartedAt) are
+// not treated as drift.
+func (r *VirtualMCPServerReconciler) desiredPodTemplateMetadata(
+	vmcp *mcpv1beta1.VirtualMCPServer,
+	vmcpConfigChecksum string,
+	caBundleChecksum string,
+) (map[string]string, map[string]string, error) {
+	labels, annotations := r.buildPodTemplateMetadata(
+		labelsForVirtualMCPServer(vmcp.Name), vmcp, vmcpConfigChecksum, caBundleChecksum,
+	)
+	// Clone: buildPodTemplateMetadata aliases the caller-owned base label map,
+	// and ApplyPodTemplateSpecPatch must not mutate it.
+	labels = maps.Clone(labels)
+	annotations = maps.Clone(annotations)
+
+	if vmcp.Spec.PodTemplateSpec == nil || len(vmcp.Spec.PodTemplateSpec.Raw) == 0 {
+		return labels, annotations, nil
+	}
+
+	merged, err := ctrlutil.ApplyPodTemplateSpecPatch(corev1.PodTemplateSpec{
+		ObjectMeta: metav1.ObjectMeta{
+			Labels:      labels,
+			Annotations: annotations,
+		},
+	}, vmcp.Spec.PodTemplateSpec.Raw)
+	if err != nil {
+		return nil, nil, err
+	}
+	return merged.Labels, merged.Annotations, nil
+}
+
+// desiredMainContainerEnv returns the fully rendered desired env for the vmcp
+// container: buildEnvVarsForVmcp plus any env merged from spec.podTemplateSpec.
+func (r *VirtualMCPServerReconciler) desiredMainContainerEnv(
+	ctx context.Context,
+	vmcp *mcpv1beta1.VirtualMCPServer,
+	telemetryCfg *mcpv1beta1.MCPTelemetryConfig,
+	typedWorkloads []workloads.TypedWorkload,
+) ([]corev1.EnvVar, error) {
+	expectedEnv, err := r.buildEnvVarsForVmcp(ctx, vmcp, telemetryCfg, typedWorkloads)
+	if err != nil {
+		return nil, err
+	}
+
+	if vmcp.Spec.PodTemplateSpec == nil || len(vmcp.Spec.PodTemplateSpec.Raw) == 0 {
+		return expectedEnv, nil
+	}
+
+	merged, err := ctrlutil.ApplyPodTemplateSpecPatch(corev1.PodTemplateSpec{
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{{
+				Name: vmcpMainContainerName,
+				Env:  expectedEnv,
+			}},
+		},
+	}, vmcp.Spec.PodTemplateSpec.Raw)
+	if err != nil {
+		return nil, err
+	}
+
+	if container, ok := findContainerByName(merged.Spec.Containers, vmcpMainContainerName); ok {
+		return container.Env, nil
+	}
+	return expectedEnv, nil
+}
+
+// envVarsEqual compares container env after normalizing known Kubernetes API
+// defaults. equality.Semantic.DeepEqual still treats nil vs pointer-to-zero
+// (and "" vs "v1" on ObjectFieldSelector.APIVersion) as different.
+func envVarsEqual(live, desired []corev1.EnvVar) bool {
+	return equality.Semantic.DeepEqual(normalizeEnvVarsForCompare(live), normalizeEnvVarsForCompare(desired))
+}
+
+// normalizeEnvVarsForCompare copies env and collapses known API-server
+// defaults so persisted and freshly built representations compare equal.
+func normalizeEnvVarsForCompare(env []corev1.EnvVar) []corev1.EnvVar {
+	if env == nil {
+		return nil
+	}
+	out := make([]corev1.EnvVar, len(env))
+	for i := range env {
+		out[i] = *env[i].DeepCopy()
+		normalizeEnvVarSource(out[i].ValueFrom)
+	}
+	return out
+}
+
+func normalizeEnvVarSource(src *corev1.EnvVarSource) {
+	if src == nil {
+		return
+	}
+	if ref := src.SecretKeyRef; ref != nil && ref.Optional != nil && !*ref.Optional {
+		ref.Optional = nil
+	}
+	if ref := src.ConfigMapKeyRef; ref != nil && ref.Optional != nil && !*ref.Optional {
+		ref.Optional = nil
+	}
+	if ref := src.FileKeyRef; ref != nil && ref.Optional != nil && !*ref.Optional {
+		ref.Optional = nil
+	}
+	if ref := src.FieldRef; ref != nil && ref.APIVersion == "v1" {
+		ref.APIVersion = ""
+	}
 }
 
 // podTemplateSpecNeedsUpdate checks if the user-provided PodTemplateSpec has changed, by

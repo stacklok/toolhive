@@ -13,16 +13,213 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
-	"gopkg.in/yaml.v3"
+	"go.yaml.in/yaml/v3"
 
 	authserverconfig "github.com/stacklok/toolhive/pkg/authserver"
+	authserverrunner "github.com/stacklok/toolhive/pkg/authserver/runner"
 	"github.com/stacklok/toolhive/pkg/groups"
+	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
+	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	aggregatormocks "github.com/stacklok/toolhive/pkg/vmcp/aggregator/mocks"
 	clientmocks "github.com/stacklok/toolhive/pkg/vmcp/client/mocks"
 	"github.com/stacklok/toolhive/pkg/vmcp/config"
 	vmcpmocks "github.com/stacklok/toolhive/pkg/vmcp/mocks"
 )
+
+// revisionReportingClient is a BackendClient that also satisfies
+// vmcp.RevisionReporter, so sessionFactoryOptions takes the revision-lookup
+// branch. Only the two methods the branch touches need real behaviour.
+type revisionReportingClient struct {
+	vmcp.BackendClient
+}
+
+func (*revisionReportingClient) CachedRevision(string) (mcpparser.Revision, bool) {
+	return mcpparser.RevisionLegacy, false
+}
+
+func TestSessionFactoryOptions(t *testing.T) {
+	t.Parallel()
+
+	withBackendInit := &config.Config{Operational: &config.OperationalConfig{
+		Timeouts: &config.TimeoutConfig{
+			Default:     config.Duration(90 * time.Second),
+			BackendInit: config.Duration(5 * time.Second),
+		},
+	}}
+
+	tests := []struct {
+		name          string
+		cfg           *config.Config
+		backendClient vmcp.BackendClient
+		// The option set is opaque (a slice of funcs), so assert on its size:
+		// the request-timeout resolver is always present, and each of the other
+		// two branches adds exactly one more when taken.
+		wantOptions int
+	}{
+		{
+			name:          "resolver only",
+			cfg:           &config.Config{},
+			backendClient: nil,
+			wantOptions:   1,
+		},
+		{
+			name:          "revision reporter adds a lookup",
+			cfg:           &config.Config{},
+			backendClient: &revisionReportingClient{},
+			wantOptions:   2,
+		},
+		{
+			name:          "backendInit adds a cap",
+			cfg:           withBackendInit,
+			backendClient: nil,
+			wantOptions:   2,
+		},
+		{
+			name:          "both timeout branches taken",
+			cfg:           withBackendInit,
+			backendClient: &revisionReportingClient{},
+			wantOptions:   3,
+		},
+		{
+			name: "list_changed exclusion adds a filter",
+			cfg: &config.Config{Operational: &config.OperationalConfig{
+				ListChanged: &config.ListChangedConfig{DisabledWorkloads: []string{"grafana"}},
+			}},
+			backendClient: nil,
+			wantOptions:   2,
+		},
+		{
+			name: "every branch taken",
+			cfg: &config.Config{Operational: &config.OperationalConfig{
+				Timeouts:    &config.TimeoutConfig{BackendInit: config.Duration(5 * time.Second)},
+				ListChanged: &config.ListChangedConfig{DisabledWorkloads: []string{"grafana"}},
+			}},
+			backendClient: &revisionReportingClient{},
+			wantOptions:   4,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Len(t, sessionFactoryOptions(tt.cfg, tt.backendClient), tt.wantOptions)
+		})
+	}
+}
+
+func TestBackendInitTimeout(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		cfg  *config.Config
+		want time.Duration
+	}{
+		{
+			name: "nil config leaves the factory default",
+			cfg:  nil,
+			want: 0,
+		},
+		{
+			name: "missing operational config leaves the factory default",
+			cfg:  &config.Config{},
+			want: 0,
+		},
+		{
+			name: "unset backendInit leaves the factory default",
+			cfg: &config.Config{Operational: &config.OperationalConfig{
+				Timeouts: &config.TimeoutConfig{Default: config.Duration(90 * time.Second)},
+			}},
+			want: 0,
+		},
+		{
+			name: "configured backendInit is returned",
+			cfg: &config.Config{Operational: &config.OperationalConfig{
+				Timeouts: &config.TimeoutConfig{
+					Default:     config.Duration(90 * time.Second),
+					BackendInit: config.Duration(5 * time.Second),
+				},
+			}},
+			want: 5 * time.Second,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, backendInitTimeout(tt.cfg))
+		})
+	}
+}
+
+func TestListChangedFilter(t *testing.T) {
+	t.Parallel()
+
+	enabled, disabled := true, false
+
+	tests := []struct {
+		name      string
+		cfg       *config.Config
+		wantNil   bool
+		wantAllow map[string]bool
+	}{
+		{name: "nil config keeps the factory default", cfg: nil, wantNil: true},
+		{name: "no operational config keeps the default", cfg: &config.Config{}, wantNil: true},
+		{
+			name:    "no listChanged block keeps the default",
+			cfg:     &config.Config{Operational: &config.OperationalConfig{}},
+			wantNil: true,
+		},
+		{
+			name: "enabled true with no exclusions keeps the default",
+			cfg: &config.Config{Operational: &config.OperationalConfig{
+				ListChanged: &config.ListChangedConfig{Enabled: &enabled},
+			}},
+			wantNil: true,
+		},
+		{
+			name: "enabled false excludes every backend",
+			cfg: &config.Config{Operational: &config.OperationalConfig{
+				ListChanged: &config.ListChangedConfig{Enabled: &disabled},
+			}},
+			wantAllow: map[string]bool{"anything": false},
+		},
+		{
+			name: "disabledWorkloads excludes only those named",
+			cfg: &config.Config{Operational: &config.OperationalConfig{
+				ListChanged: &config.ListChangedConfig{DisabledWorkloads: []string{"grafana"}},
+			}},
+			wantAllow: map[string]bool{"grafana": false, "github": true},
+		},
+		{
+			name: "enabled false wins over an exclusion list",
+			cfg: &config.Config{Operational: &config.OperationalConfig{
+				ListChanged: &config.ListChangedConfig{
+					Enabled:           &disabled,
+					DisabledWorkloads: []string{"grafana"},
+				},
+			}},
+			wantAllow: map[string]bool{"grafana": false, "github": false},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			filter := listChangedFilter(tt.cfg)
+			if tt.wantNil {
+				assert.Nil(t, filter)
+				return
+			}
+			require.NotNil(t, filter)
+			for id, want := range tt.wantAllow {
+				assert.Equal(t, want, filter(id), "workload %q", id)
+			}
+		})
+	}
+}
 
 func TestBackendRequestTimeoutResolver(t *testing.T) {
 	t.Parallel()
@@ -333,6 +530,97 @@ func TestValidateQuickModeHost(t *testing.T) {
 			} else {
 				require.NoError(t, err)
 			}
+		})
+	}
+}
+
+func TestAuthServerListenerHost(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		host string
+		want string
+	}{
+		{name: "empty host defaults to loopback", host: "", want: "127.0.0.1"},
+		{name: "configured host is preserved", host: "0.0.0.0", want: "0.0.0.0"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tc.want, authServerListenerHost(tc.host))
+		})
+	}
+}
+
+func TestValidateAuthServerListenerPorts(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		port         int
+		telemetryCfg *telemetry.Config
+		authServerRC *authserverconfig.RunConfig
+		wantErr      bool
+		errContains  string
+	}{
+		{name: "nil auth config", port: authserverrunner.TLSListenerPort},
+		{
+			name:         "TLS listener not configured",
+			port:         authserverrunner.TLSListenerPort,
+			authServerRC: &authserverconfig.RunConfig{},
+		},
+		{
+			name:         "listener configured without telemetry",
+			port:         4483,
+			authServerRC: &authserverconfig.RunConfig{TLSListener: &authserverconfig.TLSListenerRunConfig{}},
+		},
+		{
+			name:         "vMCP port conflicts",
+			port:         authserverrunner.TLSListenerPort,
+			authServerRC: &authserverconfig.RunConfig{TLSListener: &authserverconfig.TLSListenerRunConfig{}},
+			wantErr:      true,
+			errContains:  "8443",
+		},
+		{
+			name: "diagnostics port conflicts",
+			port: 4483,
+			telemetryCfg: &telemetry.Config{
+				EnablePrometheusMetricsPath: true,
+				PrometheusPort:              authserverrunner.TLSListenerPort,
+			},
+			authServerRC: &authserverconfig.RunConfig{TLSListener: &authserverconfig.TLSListenerRunConfig{}},
+			wantErr:      true,
+			errContains:  "diagnostics",
+		},
+		{
+			name: "disabled diagnostics do not conflict",
+			port: 4483,
+			telemetryCfg: &telemetry.Config{
+				PrometheusPort: authserverrunner.TLSListenerPort,
+			},
+			authServerRC: &authserverconfig.RunConfig{TLSListener: &authserverconfig.TLSListenerRunConfig{}},
+		},
+		{
+			name: "default diagnostics port does not conflict",
+			port: 4483,
+			telemetryCfg: &telemetry.Config{
+				EnablePrometheusMetricsPath: true,
+			},
+			authServerRC: &authserverconfig.RunConfig{TLSListener: &authserverconfig.TLSListenerRunConfig{}},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			err := validateAuthServerListenerPorts(tc.port, tc.telemetryCfg, tc.authServerRC)
+			if tc.wantErr {
+				require.ErrorContains(t, err, tc.errContains)
+				return
+			}
+			require.NoError(t, err)
 		})
 	}
 }

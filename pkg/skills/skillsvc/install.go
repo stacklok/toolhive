@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	nameref "github.com/google/go-containerregistry/pkg/name"
 
@@ -19,6 +20,9 @@ import (
 	"github.com/stacklok/toolhive/pkg/skills/gitresolver"
 	"github.com/stacklok/toolhive/pkg/skills/lockfile"
 )
+
+// installRollbackTimeout bounds context-aware compensation after an install fails.
+const installRollbackTimeout = 5 * time.Second
 
 // Install installs a skill. When the Name field contains an OCI reference
 // (detected by the presence of '/', ':', or '@'), the artifact is pulled from
@@ -69,11 +73,22 @@ func (s *service) Install(ctx context.Context, opts skills.InstallOptions) (*ski
 	}
 
 	if scope == skills.ScopeProject {
-		unlock := s.projectTx.lock(opts.ProjectRoot)
-		defer unlock()
-		return s.installLocked(ctx, opts, originalName, scope, newDepState())
+		var result *skills.InstallResult
+		err := s.projectTx.run(ctx, opts.ProjectRoot, func() error {
+			var installErr error
+			result, installErr = s.installLocked(ctx, opts, originalName, scope, newDepState(), nil)
+			return installErr
+		})
+		return result, err
 	}
-	return s.installLocked(ctx, opts, originalName, scope, nil)
+	return s.installLocked(ctx, opts, originalName, scope, nil, nil)
+}
+
+// installConstraints carries upgrade-only state through the normal install
+// pipeline without exposing lockfile implementation types on InstallOptions.
+type installConstraints struct {
+	preverifiedOCI    *preverifiedOCITrust
+	expectedLockEntry *lockfile.Entry
 }
 
 // installLocked performs Install assuming the appropriate lock is already
@@ -87,14 +102,17 @@ func (s *service) installLocked(
 	originalName string,
 	scope skills.Scope,
 	deps *depState,
+	constraints *installConstraints,
 ) (*skills.InstallResult, error) {
 	alreadyLocked := scope == skills.ScopeProject
 	return dispatchSource(ctx, s, opts.Name, sourceOps[*skills.InstallResult]{
 		git: func(ctx context.Context, _ string) (*skills.InstallResult, error) {
-			return s.installFromGit(ctx, &opts, scope, originalName, deps, alreadyLocked)
+			return s.installFromGit(ctx, &opts, scope, originalName, deps, alreadyLocked, constraints)
 		},
 		oci: func(ctx context.Context, ref nameref.Reference) (*skills.InstallResult, error) {
-			result, err := s.installFromOCI(ctx, &opts, scope, originalName, deps, alreadyLocked, ref)
+			result, err := s.installFromOCI(
+				ctx, &opts, scope, originalName, deps, alreadyLocked, ref, constraints,
+			)
 			if err != nil {
 				slog.Debug("OCI pull failed, registry fallback may apply", "name", opts.Name, "error", err)
 				return nil, err
@@ -102,10 +120,12 @@ func (s *service) installLocked(
 			return result, nil
 		},
 		registry: func(ctx context.Context, resolved *registryResolveResult) (*skills.InstallResult, error) {
-			return s.installFromResolvedRegistry(ctx, opts, originalName, scope, resolved, deps, alreadyLocked)
+			return s.installFromResolvedRegistry(
+				ctx, opts, originalName, scope, resolved, deps, alreadyLocked, constraints,
+			)
 		},
 		plainName: func(ctx context.Context, _ string) (*skills.InstallResult, error) {
-			return s.installByName(ctx, opts, originalName, scope, deps, alreadyLocked)
+			return s.installByName(ctx, opts, originalName, scope, deps, alreadyLocked, constraints)
 		},
 	})
 }
@@ -119,6 +139,7 @@ func (s *service) installByName(
 	scope skills.Scope,
 	deps *depState,
 	alreadyLocked bool,
+	constraints *installConstraints,
 ) (*skills.InstallResult, error) {
 	if !alreadyLocked {
 		unlock := s.locks.lock(opts.Name, scope, opts.ProjectRoot)
@@ -141,7 +162,9 @@ func (s *service) installByName(
 			}
 		}
 		if !resolved {
-			return s.installFromRegistryLookup(ctx, opts, originalName, scope, deps, alreadyLocked)
+			return s.installFromRegistryLookup(
+				ctx, opts, originalName, scope, deps, alreadyLocked, constraints,
+			)
 		}
 		// resolved: opts hydrated, fall through to installWithExtraction
 	}
@@ -175,7 +198,9 @@ func (s *service) installByName(
 	if err != nil {
 		return nil, err
 	}
-	return s.installAndRegister(ctx, opts, originalName, result, opts.Group, opts.Name, scope, deps)
+	return s.installAndRegister(
+		ctx, opts, originalName, result, opts.Group, opts.Name, scope, deps, constraints,
+	)
 }
 
 // installFromRegistryLookup resolves a plain skill name via the registry and
@@ -187,13 +212,16 @@ func (s *service) installFromRegistryLookup(
 	scope skills.Scope,
 	deps *depState,
 	alreadyLocked bool,
+	constraints *installConstraints,
 ) (*skills.InstallResult, error) {
 	resolved, regErr := s.resolveFromRegistry(opts.Name)
 	if regErr != nil {
 		return nil, regErr
 	}
 	if resolved != nil {
-		return s.installFromResolvedRegistry(ctx, opts, originalName, scope, resolved, deps, alreadyLocked)
+		return s.installFromResolvedRegistry(
+			ctx, opts, originalName, scope, resolved, deps, alreadyLocked, constraints,
+		)
 	}
 
 	return nil, httperr.WithCode(
@@ -214,6 +242,7 @@ func (s *service) installFromResolvedRegistry(
 	resolved *registryResolveResult,
 	deps *depState,
 	alreadyLocked bool,
+	constraints *installConstraints,
 ) (*skills.InstallResult, error) {
 	// Carry catalog constraints to the verification boundary unchanged.
 	// Validation is deliberately deferred until the resolved canonical skill
@@ -225,11 +254,13 @@ func (s *service) installFromResolvedRegistry(
 	case resolved.OCIRef != nil:
 		slog.Info("resolved skill from registry (OCI)", "name", opts.Name, "oci_reference", resolved.OCIRef.String())
 		opts.Name = resolved.OCIRef.String()
-		return s.installFromOCI(ctx, &opts, scope, originalName, deps, alreadyLocked, resolved.OCIRef)
+		return s.installFromOCI(
+			ctx, &opts, scope, originalName, deps, alreadyLocked, resolved.OCIRef, constraints,
+		)
 	case resolved.GitURL != "":
 		slog.Info("resolved skill from registry (git)", "name", opts.Name, "git_url", resolved.GitURL)
 		opts.Name = resolved.GitURL
-		return s.installFromGit(ctx, &opts, scope, originalName, deps, alreadyLocked)
+		return s.installFromGit(ctx, &opts, scope, originalName, deps, alreadyLocked, constraints)
 	}
 	return nil, httperr.WithCode(
 		fmt.Errorf("skill %q resolved from registry but has no installable package", opts.Name),
@@ -318,8 +349,7 @@ func (s *service) mergeRequiredByOnly(
 }
 
 // installAndRegister registers the just-installed skill in the target group
-// and, for project-scope installs with the lock file feature enabled (see
-// records it — and any toolhive.requires
+// and, for project-scope installs, records it — and any toolhive.requires
 // dependencies — in the project's toolhive.lock.yaml. If group registration
 // or the lock write fails, the DB record and lock entry are rolled back to
 // their pre-install state: restored when this call updated a pre-existing
@@ -335,6 +365,7 @@ func (s *service) installAndRegister(
 	skillName string,
 	scope skills.Scope,
 	deps *depState,
+	constraints *installConstraints,
 ) (*skills.InstallResult, error) {
 	lockScoped := scope == skills.ScopeProject
 	// Surface the verification decision on the result so callers can show
@@ -370,8 +401,8 @@ func (s *service) installAndRegister(
 
 	resolvedGroup := resolvedGroupName(groupName)
 	var addedToGroup bool
-	rollback := func() error {
-		return s.rollbackInstall(ctx, opts, result, skillName, scope, lockScoped, prevEntry, addedToGroup, resolvedGroup)
+	rollback := func(restoreLock bool) error {
+		return s.rollbackInstall(ctx, opts, result, skillName, scope, restoreLock, prevEntry, addedToGroup, resolvedGroup)
 	}
 
 	added, err := s.registerSkillInGroup(ctx, groupName, skillName)
@@ -379,12 +410,16 @@ func (s *service) installAndRegister(
 		// Rollback restores files from the pre-write snapshot and removes
 		// freshly created trees; its errors join the trigger error so a
 		// partial restore is never reported as clean.
-		return nil, errors.Join(fmt.Errorf("registering skill in group: %w", err), rollback())
+		return nil, errors.Join(fmt.Errorf("registering skill in group: %w", err), rollback(false))
 	}
 	addedToGroup = added
 
 	if lockScoped {
-		updated, err := s.recordLockState(ctx, opts, originalName, result.Skill, deps)
+		var expected *lockfile.Entry
+		if constraints != nil {
+			expected = constraints.expectedLockEntry
+		}
+		updated, err := s.recordLockState(ctx, opts, originalName, result.Skill, deps, expected)
 		if err != nil {
 			// Preserve a specific code already attached deeper in the chain
 			// — dependency materialization runs inside recordLockState, so a
@@ -393,10 +428,14 @@ func (s *service) installAndRegister(
 			// failure (e.g. an actual lock write error) defaults to 500.
 			wrapped := fmt.Errorf("recording skill in project lock file: %w", err)
 			var coded *httperr.CodedError
-			if !errors.As(err, &coded) {
+			switch {
+			case errors.Is(err, lockfile.ErrEntryChanged):
+				wrapped = httperr.WithCode(wrapped, http.StatusConflict)
+			case !errors.As(err, &coded):
 				wrapped = httperr.WithCode(wrapped, http.StatusInternalServerError)
 			}
-			return nil, errors.Join(wrapped, rollback())
+			restoreLock := !errors.Is(err, lockfile.ErrEntryChanged)
+			return nil, errors.Join(wrapped, rollback(restoreLock))
 		}
 		result.Skill = updated
 	}
@@ -426,13 +465,16 @@ func (s *service) rollbackInstall(
 	addedToGroup bool,
 	groupName string,
 ) error {
+	rollbackCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), installRollbackTimeout)
+	defer cancel()
+
 	var errs []error
 	if result.PreExisting != nil {
-		if err := s.store.Update(ctx, *result.PreExisting); err != nil {
+		if err := s.store.Update(rollbackCtx, *result.PreExisting); err != nil {
 			errs = append(errs, fmt.Errorf("restoring pre-existing DB record: %w", err))
 		}
 	} else {
-		if err := s.store.Delete(ctx, skillName, scope, opts.ProjectRoot); err != nil {
+		if err := s.store.Delete(rollbackCtx, skillName, scope, opts.ProjectRoot); err != nil {
 			errs = append(errs, fmt.Errorf("deleting rolled-back DB record: %w", err))
 		}
 	}
@@ -444,7 +486,7 @@ func (s *service) rollbackInstall(
 	}
 
 	if addedToGroup && s.groupManager != nil {
-		if err := groups.RemoveSkillFromGroup(ctx, s.groupManager, groupName, skillName); err != nil {
+		if err := groups.RemoveSkillFromGroup(rollbackCtx, s.groupManager, groupName, skillName); err != nil {
 			errs = append(errs, fmt.Errorf("removing skill from group: %w", err))
 		}
 	}
@@ -469,7 +511,7 @@ func (s *service) rollbackInstall(
 		return errors.Join(errs...)
 	}
 	visited := map[string]struct{}{skillName: {}}
-	if err := s.cascadeUninstall(ctx, candidates, visited, opts.ProjectRoot, scope); err != nil {
+	if err := s.cascadeUninstall(rollbackCtx, candidates, visited, opts.ProjectRoot, scope); err != nil {
 		errs = append(errs, err)
 	}
 	return errors.Join(errs...)

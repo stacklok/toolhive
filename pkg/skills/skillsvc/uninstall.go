@@ -34,9 +34,9 @@ func (s *service) Uninstall(ctx context.Context, opts skills.UninstallOptions) e
 	opts.ProjectRoot = projectRoot
 
 	if scope == skills.ScopeProject {
-		unlock := s.projectTx.lock(opts.ProjectRoot)
-		defer unlock()
-		return s.uninstallLocked(ctx, opts, scope)
+		return s.projectTx.run(ctx, opts.ProjectRoot, func() error {
+			return s.uninstallLocked(ctx, opts, scope)
+		})
 	}
 	unlock := s.locks.lock(opts.Name, scope, opts.ProjectRoot)
 	defer unlock()

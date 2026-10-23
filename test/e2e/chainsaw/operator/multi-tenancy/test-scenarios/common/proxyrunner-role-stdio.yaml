@@ -1,8 +1,13 @@
+# Proxy-runner Role for the stdio transport.
+# The proxy attaches to the MCP pod's stdio, so it is granted pods/attach on
+# top of the shared rules. Keep in step with defaultRBACRules and
+# stdioRBACRules in cmd/thv-operator/controllers/mcpserver_controller.go;
+# chainsaw matches the rules positionally, so order matters.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
-  name: (join('-', [$testPrefix, 'proxy-runner']))
-  namespace: toolhive-system
+  name: yardstick-proxy-runner
+  namespace: test-namespace
 rules:
 - apiGroups:
   - apps
@@ -45,15 +50,15 @@ rules:
 - apiGroups:
   - ""
   resources:
-  - pods/attach
-  verbs:
-  - create
-  - get
-- apiGroups:
-  - ""
-  resources:
   - configmaps
   verbs:
   - get
   - list
   - watch
+- apiGroups:
+  - ""
+  resources:
+  - pods/attach
+  verbs:
+  - create
+  - get

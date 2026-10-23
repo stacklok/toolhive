@@ -18,6 +18,9 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"testing"
 	"time"
 
@@ -26,6 +29,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
+	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
+	spiffeauth "github.com/stacklok/toolhive/pkg/authserver/spiffe"
 )
 
 func TestNewAuthorizationServerConfig(t *testing.T) {
@@ -64,6 +69,14 @@ func TestNewAuthorizationServerConfig(t *testing.T) {
 	// Verify JWKS contains the key
 	require.NotNil(t, authzServerConfig.SigningJWKS)
 	assert.Len(t, authzServerConfig.SigningJWKS.Keys, 1)
+
+	// Strategies that fosite would otherwise assign lazily on first use (an
+	// unsynchronized write to the shared Config) must be set up front.
+	assert.NotNil(t, authzServerConfig.AudienceMatchingStrategy)
+	require.NotNil(t, authzServerConfig.JWKSFetcherStrategy)
+	clientKeys, err := authzServerConfig.JWKSFetcherStrategy.Resolve(t.Context(), "https://client.example.com/jwks", false)
+	assert.Nil(t, clientKeys)
+	require.ErrorIs(t, err, fosite.ErrInvalidClient, "remote client key sets must be rejected, not fetched")
 }
 
 // TestNewAuthorizationServerConfig_ConfidentialClientCapabilities pins the
@@ -613,11 +626,66 @@ func TestAuthorizationServerConfig_PublicJWKS(t *testing.T) {
 	assert.True(t, ok, "expected public key, got %T", publicJWKS.Keys[0].Key)
 }
 
-// mockStorage is a minimal fosite.Storage implementation for testing.
-type mockStorage struct{}
+// TestNewAuthorizationServerConfig_PublishesFallbackKeys pins that fallback
+// keys configured for key rotation (see keys.Config.FallbackKeyFiles) are
+// published in the JWKS alongside the primary signing key, in public form
+// only, with the signing key first. Without this, the documented rotation
+// procedure's overlap window never opens: promoting a fallback key to
+// primary invalidates every token signed with the old key immediately.
+func TestNewAuthorizationServerConfig_PublishesFallbackKeys(t *testing.T) {
+	t.Parallel()
 
-func (*mockStorage) GetClient(_ context.Context, _ string) (fosite.Client, error) {
-	return nil, fosite.ErrNotFound
+	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+
+	fallbackKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+
+	params := &AuthorizationServerParams{
+		Issuer:               "https://auth.example.com",
+		AccessTokenLifespan:  time.Hour,
+		RefreshTokenLifespan: time.Hour * 24,
+		AuthCodeLifespan:     time.Minute * 10,
+		HMACSecrets:          servercrypto.NewHMACSecrets([]byte("test-secret-with-32-bytes-long!!")),
+		SigningKeyID:         "key-1",
+		SigningKeyAlgorithm:  "RS256",
+		SigningKey:           rsaKey,
+		AdditionalPublicKeys: []*keys.PublicKeyData{
+			{
+				KeyID:     "key-0-old",
+				Algorithm: "RS256",
+				PublicKey: fallbackKey.Public(),
+			},
+		},
+	}
+
+	authzServerConfig, err := NewAuthorizationServerConfig(params)
+	require.NoError(t, err)
+	require.NotNil(t, authzServerConfig)
+
+	require.Len(t, authzServerConfig.SigningJWKS.Keys, 2)
+	assert.Equal(t, "key-1", authzServerConfig.SigningJWKS.Keys[0].KeyID, "primary signing key must be first")
+	assert.Equal(t, "key-0-old", authzServerConfig.SigningJWKS.Keys[1].KeyID)
+
+	// The fallback key must be published in public form only.
+	_, ok := authzServerConfig.SigningJWKS.Keys[1].Key.(*rsa.PublicKey)
+	assert.True(t, ok, "expected fallback key to be public, got %T", authzServerConfig.SigningJWKS.Keys[1].Key)
+
+	publicJWKS := authzServerConfig.PublicJWKS()
+	require.Len(t, publicJWKS.Keys, 2)
+}
+
+// mockStorage is a minimal fosite.Storage implementation for testing.
+type mockStorage struct {
+	clients map[string]fosite.Client
+}
+
+func (s *mockStorage) GetClient(_ context.Context, id string) (fosite.Client, error) {
+	client, ok := s.clients[id]
+	if !ok {
+		return nil, fosite.ErrNotFound
+	}
+	return client, nil
 }
 
 func (*mockStorage) ClientAssertionJWTValid(_ context.Context, _ string) error {
@@ -820,4 +888,113 @@ func TestNewAuthorizationServer(t *testing.T) {
 		require.Contains(t, err.Error(), "string")
 		require.Nil(t, provider)
 	})
+}
+
+func TestNewAuthorizationServer_InstallsSPIFFEClientAuthenticationStrategy(t *testing.T) {
+	t.Parallel()
+
+	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+
+	config, err := NewAuthorizationServerConfig(&AuthorizationServerParams{
+		Issuer:               "https://auth.example.com",
+		AccessTokenLifespan:  time.Hour,
+		RefreshTokenLifespan: 24 * time.Hour,
+		AuthCodeLifespan:     10 * time.Minute,
+		HMACSecrets:          servercrypto.NewHMACSecrets([]byte("test-secret-with-32-bytes-long!!")),
+		SigningKeyID:         "key-1",
+		SigningKeyAlgorithm:  "RS256",
+		SigningKey:           rsaKey,
+	})
+	require.NoError(t, err)
+	// A configured resolver is required for the SPIFFE arms to engage at all;
+	// see TestSPIFFEClientAuthenticationStrategy for the nil-resolver case.
+	config.SPIFFEClientResolver = stubResolver
+	fallbackClient := &fosite.DefaultClient{ID: "fallback-client", Public: true}
+	fallbackCalled := false
+	config.ClientAuthenticationStrategy = func(
+		_ context.Context, _ *http.Request, _ url.Values,
+	) (fosite.Client, error) {
+		fallbackCalled = true
+		return fallbackClient, nil
+	}
+
+	initialTokenHandlers := len(config.TokenEndpointHandlers)
+	var providerConfig *AuthorizationServerConfig
+	captureConfig := func(config *AuthorizationServerConfig, _ fosite.Storage, _ any) (any, error) {
+		providerConfig = config
+		return &mockTokenHandler{}, nil
+	}
+	_, err = NewAuthorizationServer(config, &mockStorage{}, nil, captureConfig)
+	require.NoError(t, err)
+	require.NotNil(t, providerConfig)
+	assert.NotSame(t, config, providerConfig)
+	assert.NotSame(t, config.Config, providerConfig.Config)
+	assert.Len(t, config.TokenEndpointHandlers, initialTokenHandlers)
+	assert.Len(t, providerConfig.TokenEndpointHandlers, initialTokenHandlers+1)
+	require.NotNil(t, config.ClientAuthenticationStrategy)
+	require.NotNil(t, providerConfig.ClientAuthenticationStrategy)
+
+	// A request with the SPIFFE JWT assertion type but no assertion or
+	// client_id reaches the JWT arm and is rejected there for malformed
+	// fields, confirming NewAuthorizationServer wires the issuer and JWT
+	// bundle source through to newSPIFFEClientAuthenticationStrategy rather
+	// than leaving the JWT arm unreachable.
+	request := httptest.NewRequest("POST", "/oauth/token", nil)
+	originalClient, err := config.ClientAuthenticationStrategy(request.Context(), request, url.Values{
+		"client_assertion_type": {spiffeauth.SPIFFEJWTAssertionType},
+	})
+	require.NoError(t, err)
+	assert.Same(t, fallbackClient, originalClient)
+	assert.True(t, fallbackCalled)
+
+	fallbackCalled = false
+	_, err = providerConfig.ClientAuthenticationStrategy(request.Context(), request, url.Values{
+		"client_assertion_type": {spiffeauth.SPIFFEJWTAssertionType},
+	})
+	require.ErrorIs(t, err, fosite.ErrInvalidRequest)
+}
+
+func TestNewAuthorizationServer_DoesNotShareAuthenticationStrategy(t *testing.T) {
+	t.Parallel()
+
+	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+	config, err := NewAuthorizationServerConfig(&AuthorizationServerParams{
+		Issuer:               "https://auth.example.com",
+		AccessTokenLifespan:  time.Hour,
+		RefreshTokenLifespan: 24 * time.Hour,
+		AuthCodeLifespan:     10 * time.Minute,
+		HMACSecrets:          servercrypto.NewHMACSecrets([]byte("test-secret-with-32-bytes-long!!")),
+		SigningKeyID:         "key-1",
+		SigningKeyAlgorithm:  "RS256",
+		SigningKey:           rsaKey,
+	})
+	require.NoError(t, err)
+	config.SPIFFEClientResolver = stubResolver
+
+	clientA := &fosite.DefaultClient{ID: "client-a", Public: true}
+	storageA := &mockStorage{clients: map[string]fosite.Client{"client-a": clientA}}
+	storageB := &mockStorage{clients: map[string]fosite.Client{
+		"client-b": &fosite.DefaultClient{ID: "client-b", Public: true},
+	}}
+
+	var configA *AuthorizationServerConfig
+	captureA := func(config *AuthorizationServerConfig, _ fosite.Storage, _ any) (any, error) {
+		configA = config
+		return nil, nil
+	}
+	_, err = NewAuthorizationServer(config, storageA, nil, captureA)
+	require.NoError(t, err)
+	require.NotNil(t, configA)
+
+	_, err = NewAuthorizationServer(config, storageB, nil)
+	require.NoError(t, err)
+
+	request := httptest.NewRequest("POST", "/oauth/token", nil)
+	client, err := configA.ClientAuthenticationStrategy(request.Context(), request, url.Values{
+		"client_id": {"client-a"},
+	})
+	require.NoError(t, err)
+	assert.Same(t, clientA, client)
 }

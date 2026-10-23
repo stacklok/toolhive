@@ -21,6 +21,10 @@ const (
 
 	// NonceHeader is the HTTP header used to return the server nonce.
 	NonceHeader = "X-Toolhive-Nonce"
+
+	// KeySigningCapabilityHeader carries the secret capability required for a
+	// request that asks the API server to open a private signing key.
+	KeySigningCapabilityHeader = "X-Toolhive-Key-Signing-Capability"
 )
 
 // NamedPipePrefix is the Windows named-pipe namespace prefix. The discovery

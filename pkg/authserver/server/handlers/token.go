@@ -5,13 +5,17 @@ package handlers
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
+	"slices"
 
 	"github.com/ory/fosite"
 
 	"github.com/stacklok/toolhive/pkg/authserver/server"
 	"github.com/stacklok/toolhive/pkg/authserver/server/session"
+	"github.com/stacklok/toolhive/pkg/authserver/storage"
+	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
 // logAccessError logs a token-endpoint failure from fosite's access
@@ -49,9 +53,17 @@ func (h *Handler) TokenHandler(w http.ResponseWriter, req *http.Request) {
 	// This session object is only used as a deserialization template.
 	sess := session.New("", "", "", session.UserClaims{})
 
+	// Token endpoint only: lets the CIMD decorator use the persisted client
+	// row when its fetch limiter refuses.
+	ctx = storage.WithPersistedClientFallback(ctx)
+
 	// Parse and validate the access request
 	accessRequest, err := h.provider.NewAccessRequest(ctx, req, sess)
 	if err != nil {
+		if errors.Is(err, storage.ErrCIMDRateLimited) {
+			writeCIMDRateLimitedOAuth(w)
+			return
+		}
 		// RFC6749Error.Error() returns only the error code, so a bare "error"
 		// field carries no diagnostic detail; logAccessError reads CodeField,
 		// DebugField, and DescriptionField instead. Client errors (4xx, the
@@ -63,6 +75,99 @@ func (h *Handler) TokenHandler(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	if h.applyResourceAudience(ctx, w, accessRequest) {
+		return
+	}
+	h.applySubjectIdentifier(accessRequest)
+
+	// Generate the access response (tokens)
+	response, err := h.provider.NewAccessResponse(ctx, accessRequest)
+	if err != nil {
+		// Same reasoning as the NewAccessRequest failure above: split on
+		// status so a 500 from a storage outage or signing-key failure isn't
+		// silently swallowed at Debug level.
+		logAccessError(ctx, "failed to create access response", err)
+		h.provider.WriteAccessError(ctx, w, accessRequest, err)
+		return
+	}
+
+	// Renew the registration TTL for DCR-issued clients (public or confidential) on a
+	// successful token exchange/refresh. This is the proven-use signal — unlike the
+	// unauthenticated /oauth/authorize client read — so an actively-used client does
+	// not expire mid-lifecycle and is not forced to re-register. The first renewal also
+	// raises a newly registered client from DefaultUnusedDCRClientTTL to
+	// DefaultDCRClientTTL. Best-effort: a renewal failure must not fail the token that
+	// was just issued. Storage is a no-op for pre-provisioned/static clients, which
+	// carry no DCRIssued marker, and the CIMD decorator skips CIMD rows (each
+	// successful fetch already renews them).
+	if client := accessRequest.GetClient(); client != nil {
+		if err := h.storage.RenewClientTTL(ctx, client); err != nil {
+			slog.Warn("failed to renew client registration TTL",
+				"client_id", client.GetID(),
+				"error", err,
+			)
+		}
+	}
+
+	// Write the token response
+	h.provider.WriteAccessResponse(ctx, w, accessRequest, response)
+}
+
+// applySubjectIdentifier removes stale sub_id and upstream subject claims from
+// every grant, then adds both claims only when the current runtime policy
+// permits the final login-token audience.
+func (h *Handler) applySubjectIdentifier(request fosite.AccessRequester) {
+	stored := request.GetSession()
+	if stored == nil {
+		return
+	}
+	// Clone is the copy-before-mutate step: the stored session must not be modified in place.
+	cloned := stored.Clone()
+	sess, ok := cloned.(*session.Session)
+	if !ok {
+		return
+	}
+	request.SetSession(cloned)
+	sess.ClearSubjectIdentifier()
+
+	loginGrant := request.GetGrantTypes().HasOneOf(
+		oauthproto.GrantTypeAuthorizationCode, oauthproto.GrantTypeRefreshToken, oauthproto.GrantTypeDeviceCode)
+	if !loginGrant || !sess.VerifiedUpstream.IsComplete() {
+		return
+	}
+
+	// On authorization_code redemption fosite copies the authorized granted audience
+	// only inside NewAccessResponse, after this runs, and applyResourceAudience only
+	// validates a matching resource without granting it, so the granted audience is
+	// usually still empty here. writeAuthorizationResponse sets requested and granted
+	// audience to the same pending.Resource, so the requested audience is equivalent.
+	// Only authorization_code may fall back: for device_code the requested audience is
+	// the caller's unvalidated audience form field, and refresh copies it forward from
+	// the original request. Those grants already carry their granted audience here.
+	audiences := request.GetGrantedAudience()
+	if len(audiences) == 0 && request.GetGrantTypes().ExactOne(oauthproto.GrantTypeAuthorizationCode) {
+		audiences = request.GetRequestedAudience()
+	}
+	if len(audiences) == 0 {
+		return
+	}
+	for _, audience := range audiences {
+		if !subjectIdentifierAudienceEnabled(h.config.SubjectIdentifierAudiences, audience) {
+			return
+		}
+	}
+	sess.SetSubjectIdentifier(sess.VerifiedUpstream)
+}
+
+func subjectIdentifierAudienceEnabled(configured []string, audience string) bool {
+	return audience != "" && slices.Contains(configured, audience)
+}
+
+// applyResourceAudience applies the RFC 8707 resource parameter to the access
+// request's granted audience. It reports whether it already wrote an error response.
+func (h *Handler) applyResourceAudience(
+	ctx context.Context, w http.ResponseWriter, accessRequest fosite.AccessRequester,
+) (handled bool) {
 	// RFC 8707: Handle resource parameter for audience claim.
 	// The resource parameter allows clients to specify which protected resource (MCP server)
 	// the token is intended for. This value becomes the "aud" claim in the JWT.
@@ -70,15 +175,23 @@ func (h *Handler) TokenHandler(w http.ResponseWriter, req *http.Request) {
 	// Note: RFC 8707 allows multiple resource parameters, but we explicitly reject them
 	// for security reasons (simpler audience model, clearer token scope).
 	resources := accessRequest.GetRequestForm()["resource"]
-	if len(resources) > 1 {
+	if requested := accessRequest.GetRequestedAudience(); len(requested) > 0 &&
+		(accessRequest.GetGrantTypes().ExactOne("authorization_code") || accessRequest.GetGrantTypes().ExactOne("refresh_token")) {
+		// Fosite restores the authorized audience on code redemption and refresh;
+		// other grants (notably token exchange) may request audiences independently.
+		if len(requested) != 1 || len(resources) > 1 || (len(resources) == 1 && resources[0] != requested[0]) {
+			h.provider.WriteAccessError(ctx, w, accessRequest,
+				server.ErrInvalidTarget.WithHint("Resource differs from authorized audience"))
+			return true
+		}
+	} else if len(resources) > 1 {
 		slog.Debug("multiple resource parameters not supported", //nolint:gosec // G706: count is an integer
 			"count", len(resources),
 		)
 		h.provider.WriteAccessError(ctx, w, accessRequest,
 			server.ErrInvalidTarget.WithHint("Multiple resource parameters are not supported"))
-		return
-	}
-	if len(resources) == 1 && resources[0] != "" {
+		return true
+	} else if len(resources) == 1 && resources[0] != "" {
 		resource := resources[0]
 		// Validate URI format per RFC 8707
 		if err := server.ValidateAudienceURI(resource); err != nil {
@@ -87,7 +200,7 @@ func (h *Handler) TokenHandler(w http.ResponseWriter, req *http.Request) {
 				"error", err,
 			)
 			h.provider.WriteAccessError(ctx, w, accessRequest, err)
-			return
+			return true
 		}
 
 		// Validate against allowed audiences list
@@ -97,7 +210,7 @@ func (h *Handler) TokenHandler(w http.ResponseWriter, req *http.Request) {
 				"error", err,
 			)
 			h.provider.WriteAccessError(ctx, w, accessRequest, err)
-			return
+			return true
 		}
 
 		slog.Debug("granting audience from resource parameter", //nolint:gosec // G706: resource URI from token request
@@ -116,33 +229,5 @@ func (h *Handler) TokenHandler(w http.ResponseWriter, req *http.Request) {
 		)
 		accessRequest.GrantAudience(h.config.AllowedAudiences[0])
 	}
-
-	// Generate the access response (tokens)
-	response, err := h.provider.NewAccessResponse(ctx, accessRequest)
-	if err != nil {
-		// Same reasoning as the NewAccessRequest failure above: split on
-		// status so a 500 from a storage outage or signing-key failure isn't
-		// silently swallowed at Debug level.
-		logAccessError(ctx, "failed to create access response", err)
-		h.provider.WriteAccessError(ctx, w, accessRequest, err)
-		return
-	}
-
-	// Renew the registration TTL for DCR-issued clients (public or confidential) on a
-	// successful token exchange/refresh. This is the proven-use signal — unlike the
-	// unauthenticated /oauth/authorize client read — so an actively-used client is not
-	// evicted mid-lifecycle and forced to re-register. Best-effort: a renewal failure
-	// must not fail the token that was just issued. Storage is a no-op for
-	// pre-provisioned/static clients, which carry no DCRIssued marker.
-	if client := accessRequest.GetClient(); client != nil {
-		if err := h.storage.RenewClientTTL(ctx, client); err != nil {
-			slog.Warn("failed to renew client registration TTL",
-				"client_id", client.GetID(),
-				"error", err,
-			)
-		}
-	}
-
-	// Write the token response
-	h.provider.WriteAccessResponse(ctx, w, accessRequest, response)
+	return false
 }

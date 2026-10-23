@@ -111,7 +111,7 @@ thv run [flags] SERVER_OR_IMAGE_OR_PROTOCOL [-- ARGS...]
 ### Options
 
 ```
-      --allow-docker-gateway                        Allow outbound connections to Docker gateway addresses (host.docker.internal, gateway.docker.internal, 172.17.0.1). Only applies when --isolate-network is set. These are blocked by default even when insecure_allow_all is enabled. Gateway access is port-independent: it ignores the permission profile's allowed ports, so once enabled the gateway is reachable on any port.
+      --allow-docker-gateway                        Allow outbound connections to Docker/Podman host addresses (all daemon bridge gateways, runtime host-alias IPs, host.docker.internal, gateway.docker.internal, and host.containers.internal). Only applies when --isolate-network is set. Addresses are snapshotted at deployment; redeploy after runtime network changes. These are blocked by default even when insecure_allow_all is enabled. Gateway access is port-independent: it ignores the permission profile's allowed ports, so once enabled the gateway is reachable on any port.
       --allowed-origins stringArray                 Exact-match allowlist for the HTTP Origin header (repeatable). Recommended when binding publicly; loopback binds derive a default allowlist automatically, non-loopback binds log a warning when no value is supplied. Example: https://my-mcp.example.com
       --audit-config string                         Path to the audit configuration file
       --authz-config string                         Path to the authorization configuration file
@@ -160,6 +160,7 @@ thv run [flags] SERVER_OR_IMAGE_OR_PROTOCOL [-- ARGS...]
       --print-resolved-overlays                     Debug: show resolved container paths for tmpfs overlays (default false)
       --proxy-mode string                           Proxy mode for stdio (streamable-http or sse (deprecated, will be removed)) (default "streamable-http")
       --proxy-port int                              Port for the HTTP proxy to listen on (host port)
+      --proxy-read-timeout duration                 Maximum time to read a full request on the proxy (e.g., 30s, 1m); zero uses the default (30s)
   -p, --publish stringArray                         Publish a container's port(s) to the host (format: hostPort:containerPort)
       --remote-auth                                 Enable OAuth/OIDC authentication to remote MCP server (default false)
       --remote-auth-authorize-url string            OAuth authorization endpoint URL (alternative to --remote-auth-issuer for non-OIDC OAuth)

@@ -5,24 +5,29 @@ on:
   workflow_dispatch:
   pull_request:
 
+# Cancel superseded PR runs; keep other events independent.
+concurrency:
+  group: run-on-pr-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: read
 
 jobs:
   spellcheck:
     name: Spellcheck
-    uses: ./.github/workflows/spellcheck.yml
+    uses: $/.github/workflows/spellcheck.yml
   license-headers:
     name: License Headers
-    uses: ./.github/workflows/license-headers.yml
+    uses: $/.github/workflows/license-headers.yml
   linting:
     name: Linting
-    uses: ./.github/workflows/lint.yml
+    uses: $/.github/workflows/lint.yml
   # Security Scan is not called from here: security-scan.yml has its own
   # `pull_request` trigger, so calling it as well ran every scan twice per PR.
   tests:
     name: Tests
-    uses: ./.github/workflows/test.yml
+    uses: $/.github/workflows/test.yml
     # Named rather than inherited: this job runs the Go test suite, and so
     # executes repository code and its dependency tree. It has no business
     # holding the release signing keys.
@@ -30,24 +35,27 @@ jobs:
       CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
   docs:
     name: Docs
-    uses: ./.github/workflows/verify-docgen.yml
+    uses: $/.github/workflows/verify-docgen.yml
+  sdk-go:
+    name: Go SDK
+    uses: $/.github/workflows/sdk-go.yml
   codegen:
     name: Codegen
-    uses: ./.github/workflows/verify-gen.yml
+    uses: $/.github/workflows/verify-gen.yml
   # Tier 2: Expensive integration tests - only run after all fast checks pass
   helm-charts:
     name: Helm Charts
-    uses: ./.github/workflows/helm-charts-test.yml
+    uses: $/.github/workflows/helm-charts-test.yml
   e2e-tests:
     name: E2E Tests
     needs: [linting, tests, docs, codegen]
-    uses: ./.github/workflows/e2e-tests.yml
+    uses: $/.github/workflows/e2e-tests.yml
   operator-ci:
     name: Operator CI
     needs: [linting, tests, docs, codegen]
     permissions:
       contents: read
-    uses: ./.github/workflows/operator-ci.yml
+    uses: $/.github/workflows/operator-ci.yml
   skills-build:
     name: Build Skills
     needs: [linting, tests, codegen]
@@ -57,7 +65,7 @@ jobs:
     # and push a release.
     permissions:
       contents: read
-    uses: ./.github/workflows/skills-build.yml
+    uses: $/.github/workflows/skills-build.yml
   # Deliberately no skills-keyless-signing-e2e job here. It needs
   # id-token: write to mint an ambient OIDC token, and it builds and runs
   # repository code to use it — which on a pull request is code from the

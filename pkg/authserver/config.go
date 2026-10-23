@@ -9,12 +9,18 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"net/url"
 	"regexp"
 	"slices"
 	"strings"
 	"time"
 
+	"github.com/ory/fosite"
+
+	"github.com/stacklok/toolhive/pkg/auth/dcr"
+	"github.com/stacklok/toolhive/pkg/authserver/authorizationdetails"
+	"github.com/stacklok/toolhive/pkg/authserver/internal/consentpolicy"
 	oauthserver "github.com/stacklok/toolhive/pkg/authserver/server"
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
 	"github.com/stacklok/toolhive/pkg/authserver/server/handlers"
@@ -23,12 +29,19 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver/server/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
+	"github.com/stacklok/toolhive/pkg/authserver/upstreamfilter"
 	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
 // CurrentSchemaVersion is the current version of the authserver RunConfig schema.
 const CurrentSchemaVersion = "v0.1.0"
+
+// TLSListenerRunConfig configures the auth server TLS listener on port 8443.
+type TLSListenerRunConfig struct {
+	CertFile string `json:"cert_file" yaml:"cert_file"`
+	KeyFile  string `json:"key_file" yaml:"key_file"`
+}
 
 // RunConfig is the serializable configuration for the embedded auth server.
 // It contains no secrets - only file paths and environment variable names
@@ -78,6 +91,18 @@ type RunConfig struct {
 	// TrustedIssuer with JWTBearerGrant enables token-only operation.
 	// Multiple upstreams are supported for sequential authorization chains.
 	Upstreams []UpstreamRunConfig `json:"upstreams" yaml:"upstreams"`
+
+	// UpstreamFilter configures an optional group-based filter that narrows the
+	// multi-upstream authorization chain per-request based on the first
+	// upstream's resolved identity. When nil, every request walks the full
+	// upstream chain in configured order (preserving behavior from before the
+	// filter hook existed).
+	//
+	// The filter is applied exactly once per authorization, on the first leg's
+	// callback. The mandatory first upstream (Upstreams[0]) is never filtered
+	// out. See pkg/authserver/upstreamfilter for the configuration schema and
+	// pkg/authserver/server/handlers for the runtime contract.
+	UpstreamFilter *upstreamfilter.GroupBasedFilterConfig `json:"upstream_filter,omitempty" yaml:"upstream_filter,omitempty"`
 
 	// ScopesSupported lists the OAuth 2.0 scope values advertised in discovery documents.
 	// If empty, defaults to registration.DefaultScopes (["openid", "profile", "email", "offline_access"]).
@@ -144,8 +169,9 @@ type RunConfig struct {
 	// client_secret_post in addition to "none" (still the default on
 	// omission) and mints a client_secret returned exactly once. Confidential
 	// clients are restricted to https non-loopback redirect URIs, and
-	// registrations idle for more than DefaultDCRClientTTL (30 days) are
-	// evicted and must re-register. This gates registration only: disabling
+	// registrations expire and must re-register when never used within
+	// DefaultUnusedDCRClientTTL (24 hours) or idle for more than
+	// DefaultDCRClientTTL (30 days). This gates registration only: disabling
 	// it does not revoke or reject already-minted secrets at the token
 	// endpoint.
 	//
@@ -168,6 +194,16 @@ type RunConfig struct {
 	// expose.
 	//nolint:lll // field tags require full JSON+YAML names
 	AllowPrivateKeyJWTRegistration bool `json:"allow_private_key_jwt_registration,omitempty" yaml:"allow_private_key_jwt_registration,omitempty"`
+
+	// DeviceFlowEnabled enables the RFC 8628 OAuth 2.0 Device Authorization
+	// Grant: POST /oauth/device_authorization is mounted and
+	// urn:ietf:params:oauth:grant-type:device_code is registered at the
+	// token endpoint and advertised in discovery. The minimum polling
+	// interval (RFC 8628 Section 3.5) is fixed at
+	// oauthserver.DefaultDeviceCodeInterval; this is a deliberate
+	// simplification to keep this config surface minimal — a future
+	// increment may add an override.
+	DeviceFlowEnabled bool `json:"device_flow_enabled,omitempty" yaml:"device_flow_enabled,omitempty"`
 
 	// ForceConfidentialRedirectURIs lists redirect URIs that must be registered
 	// as confidential clients regardless of the token_endpoint_auth_method the
@@ -242,6 +278,48 @@ type RunConfig struct {
 	// SPIFFE client authentication, delegate clients, and issuer policy. A
 	// non-nil value explicitly controls grant-family enablement.
 	InboundGrants *InboundGrantsRunConfig `json:"inbound_grants,omitempty" yaml:"inbound_grants,omitempty"`
+
+	// TLSListener serves the auth server routes over TLS on port 8443, in
+	// addition to the MCP port. Required for spiffe_x509 client authentication.
+	TLSListener *TLSListenerRunConfig `json:"tls_listener,omitempty" yaml:"tls_listener,omitempty"`
+
+	// RegistrationRateLimit bounds the unauthenticated /oauth/register
+	// endpoint. If omitted, defaults to 1 registration per second with a
+	// burst of 5. The limiter is per process, so the effective rate is the
+	// configured rate multiplied by the replica count. The cap on how many
+	// registered clients may exist at once is Storage.MaxDCRClients; unused
+	// clients live 24 hours, so a caller at the full rate keeps up to
+	// rate x replicas x 86400 of them alive, which at the defaults exceeds the
+	// default cap within about 2.8 hours. The operator sets it from the
+	// embedded auth server's registrationRateLimit.
+	//nolint:lll // field tags require full JSON+YAML names
+	RegistrationRateLimit *RegistrationRateLimitRunConfig `json:"registration_rate_limit,omitempty" yaml:"registration_rate_limit,omitempty"`
+}
+
+// RegistrationRateLimitRunConfig is the token-bucket limit on /oauth/register.
+type RegistrationRateLimitRunConfig struct {
+	// RequestsPerSecond is the sustained registration rate. Must be positive.
+	RequestsPerSecond float64 `json:"requests_per_second" yaml:"requests_per_second"`
+
+	// Burst is the number of registrations admitted at once before the rate
+	// applies. Must be positive.
+	Burst int `json:"burst" yaml:"burst"`
+}
+
+// Validate rejects a non-positive rate or burst. A nil receiver is valid and
+// means the default limit.
+func (c *RegistrationRateLimitRunConfig) Validate() error {
+	if c == nil {
+		return nil
+	}
+	if c.RequestsPerSecond <= 0 || math.IsInf(c.RequestsPerSecond, 0) || math.IsNaN(c.RequestsPerSecond) {
+		return fmt.Errorf("registration_rate_limit: requests_per_second must be a positive number, got %v",
+			c.RequestsPerSecond)
+	}
+	if c.Burst <= 0 {
+		return fmt.Errorf("registration_rate_limit: burst must be positive, got %d", c.Burst)
+	}
+	return nil
 }
 
 // DelegateClientRunConfig declares a pre-provisioned confidential OAuth
@@ -280,10 +358,11 @@ type DelegateClientRunConfig struct {
 // catches operator-supplied misconfiguration early so server startup fails
 // loudly instead of degrading silently at runtime.
 func (c *RunConfig) Validate() error {
-	if c.CIMD != nil {
-		if err := c.CIMD.Validate(); err != nil {
-			return fmt.Errorf("cimd: %w", err)
-		}
+	if err := c.TLSListener.validate(); err != nil {
+		return err
+	}
+	if err := c.validateClientAdmission(); err != nil {
+		return err
 	}
 	// Also checked by Config.Validate() (same reasoning as
 	// validateBaselineClientScopes below): buildUpstreamConfigs performs live
@@ -322,7 +401,82 @@ func (c *RunConfig) Validate() error {
 	if err := validateSPIFFENotYetEnforced(c.SPIFFETrustDomains); err != nil {
 		return err
 	}
+	if err := c.validateUpstreamFilter(); err != nil {
+		return err
+	}
 	return c.validateBaselineClientScopes()
+}
+
+// validateClientAdmission checks the bounds on how unauthenticated callers
+// can create clients: CIMD resolution, the /oauth/register rate, and the DCR
+// client cap.
+func (c *RunConfig) validateClientAdmission() error {
+	if c.CIMD != nil {
+		if err := c.CIMD.Validate(); err != nil {
+			return fmt.Errorf("cimd: %w", err)
+		}
+	}
+	if err := c.RegistrationRateLimit.Validate(); err != nil {
+		return err
+	}
+	if _, err := c.Storage.ResolvedMaxDCRClients(); err != nil {
+		return fmt.Errorf("storage: %w", err)
+	}
+	return nil
+}
+
+// validate requires both certificate paths when a TLS listener is configured.
+// A nil receiver means no listener and is valid.
+func (l *TLSListenerRunConfig) validate() error {
+	if l == nil {
+		return nil
+	}
+	missing := make([]string, 0, 2)
+	if l.CertFile == "" {
+		missing = append(missing, "tls_listener.cert_file")
+	}
+	if l.KeyFile == "" {
+		missing = append(missing, "tls_listener.key_file")
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("%s must be set", strings.Join(missing, " and "))
+	}
+	return nil
+}
+
+// validateUpstreamFilter rejects an UpstreamFilter configuration whose rules or
+// defaults reference upstream names that are not configured, that reference the
+// mandatory first upstream, or that otherwise violate the filter's static
+// invariants. It constructs the filter against the configured upstream names
+// and discards the result — successful construction is the validation.
+func (c *RunConfig) validateUpstreamFilter() error {
+	if c.UpstreamFilter == nil {
+		return nil
+	}
+	configured := make([]string, len(c.Upstreams))
+	for i := range c.Upstreams {
+		configured[i] = c.Upstreams[i].Name
+	}
+	if _, err := upstreamfilter.NewGroupBasedFilter(*c.UpstreamFilter, configured); err != nil {
+		return fmt.Errorf("upstream_filter: %w", err)
+	}
+	return nil
+}
+
+// HasSPIFFEX509ClientAuth reports whether any SPIFFE client association
+// enables spiffe_x509. A nil *RunConfig returns false.
+func (c *RunConfig) HasSPIFFEX509ClientAuth() bool {
+	if c == nil || c.InboundGrants == nil {
+		return false
+	}
+	for _, association := range c.InboundGrants.SPIFFEClientAuth {
+		for _, method := range association.Methods {
+			if method == SPIFFEAuthenticationMethodX509 {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // validateSPIFFENotYetEnforced hard-rejects a non-empty SPIFFE trust
@@ -638,7 +792,12 @@ type OIDCUpstreamRunConfig struct {
 	ClientSecretEnvVar string `json:"client_secret_env_var,omitempty" yaml:"client_secret_env_var,omitempty"`
 
 	// RedirectURI is the callback URL where the upstream IDP will redirect after authentication.
-	// When not specified, defaults to `{issuer}/oauth/callback`.
+	// For a DCR upstream (dcr_config set) an empty value is resolved to
+	// `{issuer}/oauth/callback`; a pre-provisioned client (client_id set) must
+	// specify it. Its hostname must match the browser-facing authorize URL
+	// (issuer, or authorization_endpoint_base_url when set): /oauth/callback is
+	// bound to the browser that started the login by a host-only cookie, so a
+	// different host rejects every browser login (Config.Validate warns).
 	RedirectURI string `json:"redirect_uri,omitempty" yaml:"redirect_uri,omitempty"`
 
 	// Scopes are the OAuth scopes to request from the upstream IDP.
@@ -658,10 +817,29 @@ type OIDCUpstreamRunConfig struct {
 	//nolint:lll // field tags require full JSON+YAML names
 	AdditionalAuthorizationParams map[string]string `json:"additional_authorization_params,omitempty" yaml:"additional_authorization_params,omitempty"`
 
+	// AdditionalTokenParams are extra form-body parameters to include in
+	// token requests (authorization code exchange and refresh). Useful for
+	// providers that enforce RFC 8707 resource indicators on token requests.
+	//nolint:lll // field tags require full JSON+YAML names
+	AdditionalTokenParams map[string]string `json:"additional_token_params,omitempty" yaml:"additional_token_params,omitempty"`
+
+	// OmitScopeOnRefresh stops the `scope` parameter from being sent on
+	// refresh_token grant requests. Scopes are still sent on the authorization
+	// request. Useful for providers that reject `scope` on refresh, such as
+	// Salesforce. See upstream.CommonOAuthConfig.
+	OmitScopeOnRefresh bool `json:"omit_scope_on_refresh,omitempty" yaml:"omit_scope_on_refresh,omitempty"`
+
 	// SubjectClaim names the validated ID-token claim to use as the upstream
 	// subject. Defaults to "sub" when empty. Set for IdPs where "sub" isn't
 	// stable per user (e.g. Entra/Azure AD's "oid"). See upstream.OIDCConfig.
 	SubjectClaim string `json:"subject_claim,omitempty" yaml:"subject_claim,omitempty"`
+
+	// DCRConfig enables RFC 7591 Dynamic Client Registration against the
+	// upstream authorization server. When set, the client credentials are
+	// obtained at runtime rather than being pre-provisioned via ClientID /
+	// ClientSecretFile / ClientSecretEnvVar, and ClientID must be left empty.
+	// Mutually exclusive with ClientID.
+	DCRConfig *DCRUpstreamConfig `json:"dcr_config,omitempty" yaml:"dcr_config,omitempty"`
 
 	// CAFilePath is the path to a PEM CA bundle added to the system roots.
 	CAFilePath string `json:"ca_file_path,omitempty" yaml:"ca_file_path,omitempty"`
@@ -703,8 +881,20 @@ type OAuth2UpstreamRunConfig struct {
 	// Mutually exclusive with ClientSecretFile. Optional for public clients using PKCE.
 	ClientSecretEnvVar string `json:"client_secret_env_var,omitempty" yaml:"client_secret_env_var,omitempty"`
 
+	// TokenEndpointAuthMethod selects how the client authenticates at the OAuth token
+	// endpoint. When empty, credentials are sent in the request body (the historical
+	// client_secret_post-shaped default). Set this to client_secret_basic explicitly
+	// for providers that require HTTP Basic auth. Public clients without a secret use
+	// the "none" method.
+	TokenEndpointAuthMethod string `json:"token_endpoint_auth_method,omitempty" yaml:"token_endpoint_auth_method,omitempty"`
+
 	// RedirectURI is the callback URL where the upstream IDP will redirect after authentication.
-	// When not specified, defaults to `{issuer}/oauth/callback`.
+	// For a DCR upstream (dcr_config set) an empty value is resolved to
+	// `{issuer}/oauth/callback`; a pre-provisioned client (client_id set) must
+	// specify it. Its hostname must match the browser-facing authorize URL
+	// (issuer, or authorization_endpoint_base_url when set): /oauth/callback is
+	// bound to the browser that started the login by a host-only cookie, so a
+	// different host rejects every browser login (Config.Validate warns).
 	RedirectURI string `json:"redirect_uri,omitempty" yaml:"redirect_uri,omitempty"`
 
 	// Scopes are the OAuth scopes to request from the upstream IDP.
@@ -737,6 +927,18 @@ type OAuth2UpstreamRunConfig struct {
 	//nolint:lll // field tags require full JSON+YAML names
 	AdditionalAuthorizationParams map[string]string `json:"additional_authorization_params,omitempty" yaml:"additional_authorization_params,omitempty"`
 
+	// AdditionalTokenParams are extra form-body parameters to include in
+	// token requests (authorization code exchange and refresh). Useful for
+	// providers that enforce RFC 8707 resource indicators on token requests.
+	//nolint:lll // field tags require full JSON+YAML names
+	AdditionalTokenParams map[string]string `json:"additional_token_params,omitempty" yaml:"additional_token_params,omitempty"`
+
+	// OmitScopeOnRefresh stops the `scope` parameter from being sent on
+	// refresh_token grant requests. Scopes are still sent on the authorization
+	// request. Useful for providers that reject `scope` on refresh, such as
+	// Salesforce. See upstream.CommonOAuthConfig.
+	OmitScopeOnRefresh bool `json:"omit_scope_on_refresh,omitempty" yaml:"omit_scope_on_refresh,omitempty"`
+
 	// DCRConfig enables RFC 7591 Dynamic Client Registration against the
 	// upstream authorization server. When set, the client credentials are
 	// obtained at runtime rather than being pre-provisioned via ClientID /
@@ -767,11 +969,13 @@ type OAuth2UpstreamRunConfig struct {
 }
 
 // DCRUpstreamConfig configures RFC 7591 Dynamic Client Registration for an
-// upstream authorization server. When present on an OAuth2 upstream, the
-// authserver performs registration at runtime to obtain client credentials,
-// replacing the need to pre-provision a ClientID.
+// OAuth2 or OIDC upstream. When present, the authserver performs registration
+// at runtime to obtain client credentials, replacing the need to pre-provision
+// a ClientID.
 //
-// Exactly one of DiscoveryURL or RegistrationEndpoint must be set. DiscoveryURL
+// OAuth2 upstreams must set exactly one of DiscoveryURL or
+// RegistrationEndpoint. OIDC upstreams may omit both and derive DiscoveryURL
+// from IssuerURL.
 // points at RFC 8414 / OIDC Discovery metadata from which the registration
 // endpoint is resolved; RegistrationEndpoint is used directly when the upstream
 // does not publish discovery metadata.
@@ -814,6 +1018,36 @@ type DCRUpstreamConfig struct {
 	//
 	// Mutually exclusive with DiscoveryURL.
 	RegistrationEndpoint string `json:"registration_endpoint,omitempty" yaml:"registration_endpoint,omitempty"`
+
+	// RotationKey is an optional operator-chosen label (1-64 characters from
+	// [A-Za-z0-9._-]) that becomes part of the cached registration's identity
+	// without being sent to the upstream. Changing it makes the next start
+	// register a fresh client instead of reusing the cached one. At start the
+	// resolver checks the cached client at the upstream (see RegistrationProbe)
+	// and replaces it by itself when the upstream rejects it. Use RotationKey
+	// when the upstream has dropped the registration and the configured probe
+	// cannot tell, so the rejection may not be visible to the resolver, or when
+	// a registration must be rotated on request. The row written under the
+	// previous value is left in place. Upstream refresh tokens bound to the
+	// previous client_id stop refreshing once the client changes; affected
+	// users sign in again.
+	RotationKey string `json:"rotation_key,omitempty" yaml:"rotation_key,omitempty"`
+
+	// RegistrationProbe selects how the resolver checks a cached registration
+	// against the upstream at start. "tokenEndpoint" (the default) redeems a
+	// random authorization code with the cached client and reads
+	// invalid_client as "registration gone"; it decides only for upstreams
+	// that authenticate the client before validating the grant.
+	// "authorizationEndpoint" sends an authorization request for the cached
+	// client without following redirects and reads a direct 400, 401 or 403
+	// that carries an RFC 6749 JSON error object (error invalid_client,
+	// unauthorized_client or invalid_request) as "gone" (RFC 6749 §4.1.2.1),
+	// for upstreams whose token endpoint answers invalid_grant for any
+	// client_id; an HTML page or a bare gateway status is not a verdict. A
+	// false rejection re-registers at every start and, when registration also
+	// fails, fails startup. "none" skips the check; the registration is then
+	// retired only through RotationKey.
+	RegistrationProbe string `json:"registration_probe,omitempty" yaml:"registration_probe,omitempty"`
 
 	// InitialAccessTokenFile is the path to a file containing the RFC 7591
 	// initial access token presented to the registration endpoint. Mutually
@@ -980,6 +1214,20 @@ type Config struct {
 	// Multiple upstreams form a sequential authorization chain.
 	Upstreams []UpstreamConfig
 
+	// ConsentExemptClientIDs preauthorizes listed clients to skip ToolHive's consent page.
+	//
+	// Listing a client ID preauthorizes whatever registration currently holds that
+	// ID, for whichever user completes upstream authentication. It is not per-user
+	// consent, and runtime eligibility checks do not prove where the registration
+	// came from.
+	//
+	// The embedder must control registration writes for exempt IDs. Replacing a
+	// registration or expanding its permissions transfers or broadens the
+	// preauthorization. Removing an ID affects new authorization requests only; it
+	// does not revoke tokens or cancel already-approved flows. Upstream
+	// authentication still runs.
+	ConsentExemptClientIDs []string
+
 	// UpstreamFactory, when set, is used instead of DefaultUpstreamFactory to
 	// construct each configured upstream's OAuth2Provider. Two reasons to set it:
 	//
@@ -1010,6 +1258,44 @@ type Config struct {
 	// bypasses upstream authentication for that leg of the chain. Delegate to
 	// DefaultUpstreamFactory for upstreams you do not need to customize.
 	UpstreamFactory UpstreamProviderFactory
+
+	// RefreshGrantHandlers are extra token endpoint handlers that validate a
+	// refresh_token grant. They run in order and only on that grant (never on
+	// authorization_code, device-code, token exchange, revocation or
+	// introspection requests), after the built-in refresh handler has
+	// authenticated the client, loaded the refresh session and checked the
+	// refresh token's expiry, scope and client binding. The requester's session
+	// is then the stored refresh session (a *session.Session whose
+	// GetIDPSessionID returns the token session ID, tsid). A handler whose
+	// CanHandleTokenEndpointRequest returns false is skipped.
+	//
+	// Returning an error from HandleTokenEndpointRequest refuses the grant
+	// before any tokens are issued and before the refresh token is rotated;
+	// later handlers do not run. Return a fosite RFC 6749 error:
+	// fosite.ErrInvalidGrant answers HTTP 400 invalid_grant, which sends the
+	// client to a full authorization instead of looping on refresh. Another
+	// fosite error answers with its own status and code. A plain Go error
+	// answers HTTP 500 with fosite's generic "error" code, which clients treat
+	// as a server failure and may retry. fosite.ErrUnknownRequest is treated as no objection,
+	// not a refusal, so returning it lets the grant through. Use the seam to
+	// refuse a refresh whose session can no longer be served, for example one
+	// whose upstream credential is dead. When deciding from
+	// upstream.ErrGrantRejected, note its doc: under a cross-replica
+	// refresh race it can occasionally be reported for a live credential.
+	//
+	// The seam only validates. PopulateTokenEndpointResponse and
+	// CanSkipClientAuth are never called, so client authentication still
+	// applies. Handlers must treat the requester as read-only: they receive the
+	// live request the built-in handler has populated, and changing it would
+	// change what is issued. Handlers are called concurrently and must be safe
+	// for concurrent use.
+	//
+	// Handlers are fixed when New is called, before the server exists. A
+	// handler that needs the server's upstream state receives it after New
+	// returns, for example by wrapping UpstreamTokenRefresher and
+	// IDPTokenStorage in a service it holds a pointer to. A nil entry,
+	// including a nil pointer of a concrete type, is rejected by Validate.
+	RefreshGrantHandlers []fosite.TokenEndpointHandler
 
 	// UpstreamFilter, when set, narrows the upstream authorization chain after the
 	// first leg resolves (see handlers.WithUpstreamFilter). When nil, all
@@ -1046,6 +1332,12 @@ type Config struct {
 	// When empty, any request with a "resource" parameter will be rejected with
 	// "invalid_target". Configure this for proper MCP specification compliance.
 	AllowedAudiences []string
+
+	// SubjectIdentifierAudiences controls disclosure of the RFC 9493 sub_id claim and the
+	// https://toolhive.dev/upstream_subject claim on login-derived access tokens.
+	// Empty disables both claims. Entries must be exact members of
+	// AllowedAudiences. It never grants an audience or client access.
+	SubjectIdentifierAudiences []string
 
 	// CIMDEnabled enables the CIMD storage decorator so the authorization server
 	// accepts HTTPS URLs as client_id values without prior DCR registration.
@@ -1090,6 +1382,10 @@ type Config struct {
 	// operators must account for.
 	TrustedIssuers []tokenexchange.TrustedIssuer
 
+	// AuthorizationDetailsRegistry validates RFC 9396 authorization_details on
+	// RFC 8693 token-exchange requests. It is Go-only and is not part of RunConfig.
+	AuthorizationDetailsRegistry *authorizationdetails.Registry
+
 	// AllowConfidentialClientRegistration permits DCR of confidential clients
 	// (client_secret_basic / client_secret_post). See RunConfig for the full
 	// semantics; disabling it does not revoke already-minted secrets.
@@ -1098,6 +1394,20 @@ type Config struct {
 	// AllowPrivateKeyJWTRegistration permits DCR of clients using
 	// private_key_jwt authentication. See RunConfig for the full semantics.
 	AllowPrivateKeyJWTRegistration bool
+
+	// DeviceFlowEnabled enables the RFC 8628 device authorization grant. See
+	// RunConfig.DeviceFlowEnabled for the full semantics.
+	DeviceFlowEnabled bool
+
+	// DeviceCodeInterval is the minimum time a device-flow client must wait
+	// between polls of the token endpoint. If zero, defaults to
+	// oauthserver.DefaultDeviceCodeInterval.
+	//
+	// Not yet exposed via RunConfig or set by embeddedauthserver.go's Config
+	// construction -- only DeviceFlowEnabled is wired through today, so this
+	// field is currently reachable only from tests that construct Config
+	// directly. A future increment may add a RunConfig override.
+	DeviceCodeInterval time.Duration
 
 	// ForceConfidentialRedirectURIs lists redirect URIs that are always
 	// registered as confidential clients, even when the DCR request declares
@@ -1126,6 +1436,11 @@ type Config struct {
 	// SPIFFE associations are configured. The serialized declarations live on
 	// RunConfig and are converted at the RunConfig-to-Config boundary.
 	SPIFFETrust *SPIFFETrustConfig
+
+	// RegistrationRateLimit bounds /oauth/register. Nil keeps the default of
+	// 1 registration per second with a burst of 5. See the identically named
+	// field on RunConfig.
+	RegistrationRateLimit *RegistrationRateLimitRunConfig
 }
 
 // DelegateClient is the resolved form of DelegateClientRunConfig: the secret
@@ -1148,22 +1463,8 @@ type DelegateClient struct {
 func (c *Config) Validate() error {
 	slog.Debug("validating authserver config", "issuer", c.Issuer)
 
-	if err := validateIssuerURL(c.Issuer, c.InsecureAllowHTTP); err != nil {
-		return fmt.Errorf("issuer: %w", err)
-	}
-
-	if err := c.validateConfidentialClientConfig(); err != nil {
+	if err := c.validateIssuerAndConsentConfig(); err != nil {
 		return err
-	}
-
-	if err := c.validatePrivateKeyJWTRequiresTokenExchange(); err != nil {
-		return err
-	}
-
-	if c.AuthorizationEndpointBaseURL != "" {
-		if err := validateIssuerURL(c.AuthorizationEndpointBaseURL, c.InsecureAllowHTTP); err != nil {
-			return fmt.Errorf("authorization_endpoint_base_url: %w", err)
-		}
 	}
 
 	// KeyProvider is optional - if nil, applyDefaults() will create a GeneratingProvider
@@ -1178,19 +1479,19 @@ func (c *Config) Validate() error {
 	if err := c.validateUpstreams(); err != nil {
 		return err
 	}
+	c.warnOnAuthorizeCallbackHostMismatch()
 
 	if err := c.validateUpstreamFilter(); err != nil {
 		return err
 	}
 
-	// AllowedAudiences is required for MCP compliance.
-	// Per MCP specification, clients MUST include the "resource" parameter (RFC 8707),
-	// which requires the server to have configured allowed audiences to validate against.
-	if len(c.AllowedAudiences) == 0 {
-		return fmt.Errorf("at least one allowed audience is required for MCP compliance (RFC 8707 resource parameter validation)")
+	for i, h := range c.RefreshGrantHandlers {
+		if isNilHandler(h) {
+			return fmt.Errorf("refresh grant handler %d is nil", i)
+		}
 	}
 
-	if err := validateAllowedAudiences(c.AllowedAudiences); err != nil {
+	if err := c.validateAudienceConfiguration(); err != nil {
 		return err
 	}
 
@@ -1204,7 +1505,7 @@ func (c *Config) Validate() error {
 		return err
 	}
 
-	if err := c.validateCIMDBounds(); err != nil {
+	if err := c.validateClientAdmission(); err != nil {
 		return err
 	}
 
@@ -1213,6 +1514,39 @@ func (c *Config) Validate() error {
 	}
 
 	return c.validateDelegationAndTrustConfig()
+}
+
+// validateClientAdmission checks the bounds on how unauthenticated callers
+// can create clients: CIMD resolution and the /oauth/register rate.
+func (c *Config) validateClientAdmission() error {
+	if err := c.validateCIMDBounds(); err != nil {
+		return err
+	}
+	return c.RegistrationRateLimit.Validate()
+}
+
+// validateIssuerAndConsentConfig validates the issuer, client transport, and
+// consent-exemption settings before the remaining runtime configuration checks.
+func (c *Config) validateIssuerAndConsentConfig() error {
+	if err := validateIssuerURL(c.Issuer, c.InsecureAllowHTTP); err != nil {
+		return fmt.Errorf("issuer: %w", err)
+	}
+	if err := c.validateConfidentialClientConfig(); err != nil {
+		return err
+	}
+	if err := c.validatePrivateKeyJWTRequiresTokenExchange(); err != nil {
+		return err
+	}
+	if err := c.validateAuthorizationDetailsRequiresTokenExchange(); err != nil {
+		return err
+	}
+	if c.AuthorizationEndpointBaseURL != "" {
+		if err := validateIssuerURL(c.AuthorizationEndpointBaseURL, c.InsecureAllowHTTP); err != nil {
+			return fmt.Errorf("authorization_endpoint_base_url: %w", err)
+		}
+	}
+	return consentpolicy.Validate(
+		c.ConsentExemptClientIDs, c.AuthorizationEndpointBaseURL, c.Issuer, len(c.Upstreams))
 }
 
 // validateDelegationAndTrustConfig groups the delegate-client and SPIFFE
@@ -1233,6 +1567,18 @@ func (c *Config) validateDelegationAndTrustConfig() error {
 		"upstream_count", len(c.Upstreams),
 	)
 	return nil
+}
+
+// validateAudienceConfiguration validates resource audiences and the independent
+// opt-in policy for including upstream subject identifiers in access tokens.
+func (c *Config) validateAudienceConfiguration() error {
+	if len(c.AllowedAudiences) == 0 {
+		return fmt.Errorf("at least one allowed audience is required for MCP compliance (RFC 8707 resource parameter validation)")
+	}
+	if err := validateAllowedAudiences(c.AllowedAudiences); err != nil {
+		return err
+	}
+	return oauthserver.ValidateSubjectIdentifierAudiences(c.SubjectIdentifierAudiences, c.AllowedAudiences)
 }
 
 // validateBaselineClientScopes ensures every baseline scope is advertised by
@@ -1281,6 +1627,16 @@ func (c *Config) validatePrivateKeyJWTRequiresTokenExchange() error {
 		return fmt.Errorf(
 			"allow_private_key_jwt_registration requires token exchange to be enabled: " +
 				"private_key_jwt registrations are token-exchange-only (RFC 8693)")
+	}
+	return nil
+}
+
+// validateAuthorizationDetailsRequiresTokenExchange rejects a registry combined
+// with a disabled token-exchange grant: authorization_details is only handled
+// on token exchange, so the registry could never be reached.
+func (c *Config) validateAuthorizationDetailsRequiresTokenExchange() error {
+	if c.AuthorizationDetailsRegistry != nil && c.DisableTokenExchange {
+		return fmt.Errorf("authorization details registry requires token exchange to be enabled")
 	}
 	return nil
 }
@@ -1370,6 +1726,37 @@ func (c *Config) warnTrustedIssuerAudiences() {
 	}
 }
 
+// Validate checks that the OIDCUpstreamRunConfig has either a pre-provisioned
+// client ID or a DCR configuration, but not both. OIDC DCR may omit both endpoint
+// selectors because discovery is derived from IssuerURL.
+func (c *OIDCUpstreamRunConfig) Validate() error {
+	hasClientID := c.ClientID != ""
+	hasDCR := c.DCRConfig != nil
+	if hasClientID == hasDCR {
+		return fmt.Errorf("oidc upstream: exactly one of client_id or dcr_config must be set")
+	}
+	if !hasDCR {
+		return nil
+	}
+	if c.DCRConfig.DiscoveryURL != "" && c.DCRConfig.RegistrationEndpoint != "" {
+		return fmt.Errorf("oidc upstream: dcr_config discovery_url and registration_endpoint are mutually exclusive")
+	}
+	if c.DCRConfig.DiscoveryURL == "" && c.DCRConfig.RegistrationEndpoint == "" {
+		if c.DCRConfig.InitialAccessTokenFile != "" && c.DCRConfig.InitialAccessTokenEnvVar != "" {
+			return fmt.Errorf(
+				"oidc upstream: dcr_config initial_access_token_file and initial_access_token_env_var are mutually exclusive")
+		}
+		if c.IssuerURL == "" {
+			return fmt.Errorf("oidc upstream: issuer_url is required when dcr_config omits discovery_url and registration_endpoint")
+		}
+		return nil
+	}
+	if err := c.DCRConfig.Validate(); err != nil {
+		return fmt.Errorf("oidc upstream: invalid dcr_config: %w", err)
+	}
+	return nil
+}
+
 // Validate checks that the OAuth2UpstreamRunConfig is internally consistent.
 // It enforces the mutual exclusivity of ClientID and DCRConfig: exactly one must
 // be set. A ClientID is required for pre-provisioned clients; a DCRConfig is
@@ -1420,6 +1807,34 @@ func (c *OAuth2UpstreamRunConfig) Validate() error {
 		return fmt.Errorf("oauth2 upstream: identity_from_token.subject_path must not be empty when identity_from_token is configured")
 	}
 
+	return c.validateTokenEndpointAuthMethod()
+}
+
+// validateTokenEndpointAuthMethod checks TokenEndpointAuthMethod against the
+// set of methods buildPureOAuth2Config/authStyleFromMethod support, and that
+// the method is consistent with whether a client secret source is configured.
+// Split out of Validate to keep that method's cyclomatic complexity down.
+func (c *OAuth2UpstreamRunConfig) validateTokenEndpointAuthMethod() error {
+	hasSecretSource := c.ClientSecretFile != "" || c.ClientSecretEnvVar != ""
+
+	switch c.TokenEndpointAuthMethod {
+	case "":
+		// Empty means the historical POST-body default; buildPureOAuth2Config
+		// passes it through unchanged, it does not resolve to a confidential method.
+	case oauthproto.TokenEndpointAuthMethodNone:
+		if hasSecretSource {
+			return fmt.Errorf("oauth2 upstream: token_endpoint_auth_method none cannot be used with a client secret")
+		}
+	case oauthproto.TokenEndpointAuthMethodClientSecretBasic, oauthproto.TokenEndpointAuthMethodClientSecretPost:
+		if !hasSecretSource {
+			return fmt.Errorf(
+				"oauth2 upstream: token_endpoint_auth_method %q requires client_secret_file or client_secret_env_var",
+				c.TokenEndpointAuthMethod)
+		}
+	default:
+		return fmt.Errorf("oauth2 upstream: unsupported token_endpoint_auth_method %q", c.TokenEndpointAuthMethod)
+	}
+
 	return nil
 }
 
@@ -1468,8 +1883,24 @@ func (c *DCRUpstreamConfig) Validate() error {
 			"dcr_config: initial_access_token_file and initial_access_token_env_var are mutually exclusive")
 	}
 
+	// Mirrors the CRD's Pattern/MaxLength markers on rotationKey for the
+	// YAML and CLI run-config paths, which have no admission-time schema.
+	if c.RotationKey != "" && !dcrRotationKeyPattern.MatchString(c.RotationKey) {
+		return fmt.Errorf("dcr_config: rotation_key must be 1-64 characters from [A-Za-z0-9._-]")
+	}
+
+	// Mirrors the CRD's Enum marker on registrationProbe; the resolver owns
+	// the set of strategies.
+	if err := dcr.RegistrationProbe(c.RegistrationProbe).Validate(); err != nil {
+		return fmt.Errorf("dcr_config: %w", err)
+	}
+
 	return nil
 }
+
+// dcrRotationKeyPattern bounds DCRUpstreamConfig.RotationKey to a short,
+// log- and key-safe alphabet; the CRD enforces the same shape at admission.
+var dcrRotationKeyPattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
 
 func validateZeroUpstreamMode(upstreamCount, delegateClientCount int, issuers []tokenexchange.TrustedIssuer) error {
 	if upstreamCount > 0 || delegateClientCount > 0 || JWTBearerGrantEnabled(issuers) {
@@ -1503,6 +1934,74 @@ func (c *Config) validateUpstreams() error {
 	}
 
 	return validateZeroUpstreamMode(len(c.Upstreams), len(c.DelegateClients), c.TrustedIssuers)
+}
+
+// warnOnAuthorizeCallbackHostMismatch logs a WARN for every upstream whose
+// redirect_uri the browser-binding cookie cannot reach from the browser-facing
+// authorize URL (AuthorizationEndpointBaseURL, else Issuer). /oauth/callback
+// only completes a login for the browser that started it at /oauth/authorize
+// or /oauth/device, and that binding is a host-only cookie that is Secure when
+// the authorize URL is https (see handlers/browser_binding.go). It therefore
+// never reaches a callback on another hostname, nor a plain-http callback on a
+// non-loopback host when the cookie is Secure, and every browser login through
+// that upstream is rejected at the callback. Ports are ignored, as cookies
+// ignore them, and browsers do send Secure cookies to http://localhost.
+//
+// This is a WARN rather than a validation error: the auth server shares a
+// process with the MCP proxy, and refusing to start would also take down token
+// refresh and token exchange over a misconfiguration that only affects
+// interactive login.
+func (c *Config) warnOnAuthorizeCallbackHostMismatch() {
+	authorizeBase := c.AuthorizationEndpointBaseURL
+	if authorizeBase == "" {
+		authorizeBase = c.Issuer
+	}
+	authorizeURL, err := url.Parse(authorizeBase)
+	if err != nil {
+		// Already rejected by validateIssuerURL above.
+		return
+	}
+	for i := range c.Upstreams {
+		up := &c.Upstreams[i]
+		callbackURL, err := url.Parse(up.redirectURI())
+		if err != nil || callbackURL.Hostname() == "" {
+			// validateUpstreamType has already rejected an unusable redirect_uri.
+			continue
+		}
+		authorizeHost, callbackHost := authorizeURL.Hostname(), callbackURL.Hostname()
+		switch {
+		case !strings.EqualFold(authorizeHost, callbackHost):
+			slog.Warn("upstream redirect_uri host differs from the browser-facing authorize host; "+
+				"/oauth/callback binds each login to the browser that started it with a host-only cookie, "+
+				"so browser logins through this upstream will be rejected until the two hosts match",
+				"upstream", up.Name,
+				"authorize_host", authorizeHost,
+				"callback_host", callbackHost,
+			)
+		case strings.EqualFold(authorizeURL.Scheme, "https") &&
+			strings.EqualFold(callbackURL.Scheme, "http") &&
+			!networking.IsLocalhost(callbackHost):
+			slog.Warn("upstream redirect_uri is plain http while the browser-facing authorize URL is https; "+
+				"the browser-binding cookie is Secure and browsers will not send it to the callback, "+
+				"so browser logins through this upstream will be rejected until the callback uses https",
+				"upstream", up.Name,
+				"authorize_url", authorizeBase,
+				"callback_url", up.redirectURI(),
+			)
+		}
+	}
+}
+
+// redirectURI returns the upstream's configured callback URL for either
+// provider type, or "" when no provider config is set.
+func (u *UpstreamConfig) redirectURI() string {
+	switch {
+	case u.OAuth2Config != nil:
+		return u.OAuth2Config.RedirectURI
+	case u.OIDCConfig != nil:
+		return u.OIDCConfig.RedirectURI
+	}
+	return ""
 }
 
 // validateUpstreamFilter rejects an UpstreamFilter configured with fewer than

@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/stacklok/toolhive-core/audit"
+	serveridentity "github.com/stacklok/toolhive/pkg/authserver/identity"
 )
 
 // TestIdentityContext_StoreAndRetrieve verifies basic context storage and retrieval functionality.
@@ -205,8 +206,28 @@ func TestPlatformUserContext_StoreAndRetrieve(t *testing.T) {
 	assert.False(t, hasIdentity, "platform-user key must not read as an authenticated Identity")
 }
 
+func TestCanonicalUserContextInteroperability(t *testing.T) {
+	t.Parallel()
+
+	t.Run("server helper is readable through host helper", func(t *testing.T) {
+		t.Parallel()
+		ctx := serveridentity.WithCanonicalUser(context.Background(), "server-user")
+		got, ok := PlatformUserFromContext(ctx)
+		require.True(t, ok)
+		assert.Equal(t, "server-user", got)
+	})
+
+	t.Run("host helper is readable through server helper", func(t *testing.T) {
+		t.Parallel()
+		ctx := WithPlatformUser(context.Background(), "host-user")
+		got, ok := serveridentity.CanonicalUserFromContext(ctx)
+		require.True(t, ok)
+		assert.Equal(t, "host-user", got)
+	})
+}
+
 // TestCanonicalUserFromContext verifies the precedence storage relies on: the
-// dedicated platform-user key wins, the authenticated Identity's PlatformUserID is
+// dedicated canonical-user key wins, the authenticated Identity's PlatformUserID is
 // the fallback, and an empty PlatformUserID does not count as present.
 func TestCanonicalUserFromContext(t *testing.T) {
 	t.Parallel()
@@ -239,6 +260,18 @@ func TestCanonicalUserFromContext(t *testing.T) {
 			name:   "dedicated key wins over identity",
 			ctx:    WithPlatformUser(withIdentity("sub-1", "identity-user"), "key-user"),
 			wantID: "key-user",
+			wantOK: true,
+		},
+		{
+			name:   "direct empty key remains present and overrides identity",
+			ctx:    context.WithValue(withIdentity("sub-1", "identity-user"), serveridentity.CanonicalUserContextKey{}, ""),
+			wantID: "",
+			wantOK: true,
+		},
+		{
+			name:   "wrong type key is ignored in favor of identity",
+			ctx:    context.WithValue(withIdentity("sub-1", "identity-user"), serveridentity.CanonicalUserContextKey{}, 42),
+			wantID: "identity-user",
 			wantOK: true,
 		},
 		{

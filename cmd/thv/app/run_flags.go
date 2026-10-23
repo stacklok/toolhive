@@ -5,6 +5,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -28,6 +29,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/process"
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/runner/retriever"
+	"github.com/stacklok/toolhive/pkg/secrets"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/transport"
 	"github.com/stacklok/toolhive/pkg/transport/types"
@@ -123,6 +125,9 @@ type RunFlags struct {
 
 	// MaxRequestBodySize is the maximum inbound request body size in bytes. Zero uses the default.
 	MaxRequestBodySize int64
+
+	// ProxyReadTimeout bounds reading a full request on the proxy. Zero uses the default.
+	ProxyReadTimeout time.Duration
 
 	// Network mode
 	Network string
@@ -298,8 +303,10 @@ func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
 		"Isolate the container network from the host. Use --isolate-network=false to opt out. "+
 			"Not enforced with --network host or --network none (isolation requires bridge networking).")
 	cmd.Flags().BoolVar(&config.AllowDockerGateway, "allow-docker-gateway", false,
-		"Allow outbound connections to Docker gateway addresses (host.docker.internal, gateway.docker.internal, 172.17.0.1). "+
-			"Only applies when --isolate-network is set. These are blocked by default even when insecure_allow_all is enabled. "+
+		"Allow outbound connections to Docker/Podman host addresses (all daemon bridge gateways, runtime host-alias IPs, "+
+			"host.docker.internal, gateway.docker.internal, and host.containers.internal). Only applies when --isolate-network is set. "+
+			"Addresses are snapshotted at deployment; redeploy after runtime network changes. "+
+			"These are blocked by default even when insecure_allow_all is enabled. "+
 			"Gateway access is port-independent: it ignores the permission profile's allowed ports, so once enabled the "+
 			"gateway is reachable on any port.")
 	cmd.Flags().BoolVar(&config.TrustProxyHeaders, "trust-proxy-headers", false,
@@ -315,6 +322,8 @@ func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
 		"Session inactivity timeout (e.g., 30m, 2h); zero uses the default (2h)")
 	cmd.Flags().Int64Var(&config.MaxRequestBodySize, "max-request-body-size", 0,
 		"Maximum inbound request body size in bytes; zero uses the default (8 MiB)")
+	cmd.Flags().DurationVar(&config.ProxyReadTimeout, "proxy-read-timeout", 0,
+		"Maximum time to read a full request on the proxy (e.g., 30s, 1m); zero uses the default (30s)")
 	cmd.Flags().StringVar(&config.EndpointPrefix, "endpoint-prefix", "",
 		"Path prefix to prepend to SSE endpoint URLs (e.g., /playwright)")
 	cmd.Flags().StringVar(&config.Network, "network", "",
@@ -742,6 +751,7 @@ func buildRunnerConfig(
 		runner.WithStateless(runFlags.Stateless),
 		runner.WithSessionTTL(runFlags.SessionTTL),
 		runner.WithMaxRequestBodySize(runFlags.MaxRequestBodySize),
+		runner.WithProxyReadTimeout(runFlags.ProxyReadTimeout),
 		runner.WithEndpointPrefix(runFlags.EndpointPrefix),
 		runner.WithNetworkMode(runFlags.Network),
 		runner.WithK8sPodPatch(runFlags.K8sPodPatch),
@@ -1053,7 +1063,19 @@ func getRemoteAuthFromRemoteServerMetadata(
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve bearer token: %w", err)
 	}
-	authCfg.BearerToken = resolvedBearerToken
+
+	bearerToken, err := authsecrets.ProcessSecret(runFlags.Name, resolvedBearerToken, authsecrets.TokenTypeBearerToken)
+	if err != nil {
+		if errors.Is(err, secrets.ErrSecretsNotSetup) {
+			return nil, fmt.Errorf(
+				"failed to process bearer token: run 'thv secret setup', or pass a NAME,target=bearer_token reference "+
+					"with TOOLHIVE_SECRETS_PROVIDER=environment and TOOLHIVE_SECRET_<NAME> set: %w",
+				err,
+			)
+		}
+		return nil, fmt.Errorf("failed to process bearer token: %w", err)
+	}
+	authCfg.BearerToken = bearerToken
 	authCfg.BearerTokenFile = f.RemoteAuthBearerTokenFile
 
 	return authCfg, nil

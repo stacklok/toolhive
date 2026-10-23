@@ -35,6 +35,7 @@ func (s *service) installFromGit(
 	originalName string,
 	deps *depState,
 	alreadyLocked bool,
+	constraints *installConstraints,
 ) (*skills.InstallResult, error) {
 	if s.gitResolver == nil {
 		return nil, httperr.WithCode(
@@ -127,7 +128,9 @@ func (s *service) installFromGit(
 	if err != nil {
 		return nil, err
 	}
-	return s.installAndRegister(ctx, *opts, originalName, result, opts.Group, result.Skill.Metadata.Name, scope, deps)
+	return s.installAndRegister(
+		ctx, *opts, originalName, result, opts.Group, result.Skill.Metadata.Name, scope, deps, constraints,
+	)
 }
 
 // applyGitInstall handles the create/upgrade/no-op logic for a git-based skill
@@ -187,6 +190,14 @@ func (s *service) applyGitInstallExisting(
 	clientsExplicit := len(opts.Clients) > 0
 	if clientsContainAll(existing.Clients, clientTypes) ||
 		(len(existing.Clients) == 0 && len(clientTypes) <= 1 && !clientsExplicit) {
+		if opts.RefreshMetadata {
+			updated := buildInstalledSkill(opts, scope, clientTypes, existing.Clients)
+			updated.Managed = existing.Managed
+			if err := s.store.Update(ctx, updated); err != nil {
+				return nil, err
+			}
+			return &skills.InstallResult{Skill: updated}, nil
+		}
 		return &skills.InstallResult{Skill: existing}, nil
 	}
 	toWrite := missingClients(existing.Clients, clientTypes)

@@ -1468,6 +1468,149 @@ func TestBuildAuthServerRunConfig(t *testing.T) {
 			},
 		},
 		{
+			name: "OIDC upstream propagates AdditionalTokenParams",
+			authConfig: &mcpv1beta1.EmbeddedAuthServerConfig{
+				Issuer: "https://auth.example.com",
+				SigningKeySecretRefs: []mcpv1beta1.SecretKeyRef{
+					{Name: "signing-key", Key: "private.pem"},
+				},
+				HMACSecretRefs: []mcpv1beta1.SecretKeyRef{
+					{Name: "hmac-secret", Key: "hmac"},
+				},
+				UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{
+					{
+						Name: "okta",
+						Type: mcpv1beta1.UpstreamProviderTypeOIDC,
+						OIDCConfig: &mcpv1beta1.OIDCUpstreamConfig{
+							IssuerURL:   "https://okta.example.com",
+							ClientID:    "okta-client-id",
+							RedirectURI: "https://auth.example.com/callback",
+							Scopes:      []string{"openid", "profile"},
+							AdditionalTokenParams: map[string]string{
+								"resource": "https://api.example.com",
+							},
+						},
+					},
+				},
+			},
+			allowedAudiences: defaultAudiences,
+			scopesSupported:  defaultScopes,
+			checkFunc: func(t *testing.T, config *authserver.RunConfig) {
+				t.Helper()
+				require.Len(t, config.Upstreams, 1)
+				upstream := config.Upstreams[0]
+				require.NotNil(t, upstream.OIDCConfig)
+				assert.Equal(t, map[string]string{"resource": "https://api.example.com"},
+					upstream.OIDCConfig.AdditionalTokenParams)
+			},
+		},
+		{
+			name: "OAuth2 upstream propagates AdditionalTokenParams",
+			authConfig: &mcpv1beta1.EmbeddedAuthServerConfig{
+				Issuer: "https://auth.example.com",
+				SigningKeySecretRefs: []mcpv1beta1.SecretKeyRef{
+					{Name: "signing-key", Key: "private.pem"},
+				},
+				HMACSecretRefs: []mcpv1beta1.SecretKeyRef{
+					{Name: "hmac-secret", Key: "hmac"},
+				},
+				UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{
+					{
+						Name: "github",
+						Type: mcpv1beta1.UpstreamProviderTypeOAuth2,
+						OAuth2Config: &mcpv1beta1.OAuth2UpstreamConfig{
+							AuthorizationEndpoint: "https://github.com/login/oauth/authorize",
+							TokenEndpoint:         "https://github.com/login/oauth/access_token",
+							ClientID:              "github-client-id",
+							RedirectURI:           "https://auth.example.com/callback",
+							AdditionalTokenParams: map[string]string{
+								"resource": "https://api.example.com",
+							},
+						},
+					},
+				},
+			},
+			allowedAudiences: defaultAudiences,
+			scopesSupported:  defaultScopes,
+			checkFunc: func(t *testing.T, config *authserver.RunConfig) {
+				t.Helper()
+				require.Len(t, config.Upstreams, 1)
+				upstream := config.Upstreams[0]
+				require.NotNil(t, upstream.OAuth2Config)
+				assert.Equal(t, map[string]string{"resource": "https://api.example.com"},
+					upstream.OAuth2Config.AdditionalTokenParams)
+			},
+		},
+		{
+			name: "OIDC upstream propagates OmitScopeOnRefresh",
+			authConfig: &mcpv1beta1.EmbeddedAuthServerConfig{
+				Issuer: "https://auth.example.com",
+				SigningKeySecretRefs: []mcpv1beta1.SecretKeyRef{
+					{Name: "signing-key", Key: "private.pem"},
+				},
+				HMACSecretRefs: []mcpv1beta1.SecretKeyRef{
+					{Name: "hmac-secret", Key: "hmac"},
+				},
+				UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{
+					{
+						Name: "okta",
+						Type: mcpv1beta1.UpstreamProviderTypeOIDC,
+						OIDCConfig: &mcpv1beta1.OIDCUpstreamConfig{
+							IssuerURL:          "https://okta.example.com",
+							ClientID:           "okta-client-id",
+							RedirectURI:        "https://auth.example.com/callback",
+							Scopes:             []string{"openid", "profile"},
+							OmitScopeOnRefresh: true,
+						},
+					},
+				},
+			},
+			allowedAudiences: defaultAudiences,
+			scopesSupported:  defaultScopes,
+			checkFunc: func(t *testing.T, config *authserver.RunConfig) {
+				t.Helper()
+				require.Len(t, config.Upstreams, 1)
+				upstream := config.Upstreams[0]
+				require.NotNil(t, upstream.OIDCConfig)
+				assert.True(t, upstream.OIDCConfig.OmitScopeOnRefresh)
+			},
+		},
+		{
+			name: "OAuth2 upstream propagates OmitScopeOnRefresh",
+			authConfig: &mcpv1beta1.EmbeddedAuthServerConfig{
+				Issuer: "https://auth.example.com",
+				SigningKeySecretRefs: []mcpv1beta1.SecretKeyRef{
+					{Name: "signing-key", Key: "private.pem"},
+				},
+				HMACSecretRefs: []mcpv1beta1.SecretKeyRef{
+					{Name: "hmac-secret", Key: "hmac"},
+				},
+				UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{
+					{
+						Name: "salesforce",
+						Type: mcpv1beta1.UpstreamProviderTypeOAuth2,
+						OAuth2Config: &mcpv1beta1.OAuth2UpstreamConfig{
+							AuthorizationEndpoint: "https://login.salesforce.com/services/oauth2/authorize",
+							TokenEndpoint:         "https://login.salesforce.com/services/oauth2/token",
+							ClientID:              "salesforce-client-id",
+							RedirectURI:           "https://auth.example.com/callback",
+							Scopes:                []string{"api", "refresh_token"},
+							OmitScopeOnRefresh:    true,
+						},
+					},
+				},
+			},
+			allowedAudiences: defaultAudiences,
+			scopesSupported:  defaultScopes,
+			checkFunc: func(t *testing.T, config *authserver.RunConfig) {
+				t.Helper()
+				require.Len(t, config.Upstreams, 1)
+				upstream := config.Upstreams[0]
+				require.NotNil(t, upstream.OAuth2Config)
+				assert.True(t, upstream.OAuth2Config.OmitScopeOnRefresh)
+			},
+		},
+		{
 			name:        "OIDC upstream with empty redirectUri defaults to resourceURL/oauth/callback",
 			resourceURL: "https://mcp.example.com",
 			authConfig: &mcpv1beta1.EmbeddedAuthServerConfig{
@@ -1671,6 +1814,8 @@ func TestBuildAuthServerRunConfig(t *testing.T) {
 							UserInfo:              &mcpv1beta1.UserInfoConfig{EndpointURL: "https://idp.example.com/userinfo"},
 							DCRConfig: &mcpv1beta1.DCRUpstreamConfig{
 								RegistrationEndpoint: "https://idp.example.com/register",
+								RotationKey:          "2026-10",
+								RegistrationProbe:    "authorizationEndpoint",
 							},
 						},
 					},
@@ -1687,6 +1832,8 @@ func TestBuildAuthServerRunConfig(t *testing.T) {
 				assert.Equal(t, "https://idp.example.com/register",
 					upstream.OAuth2Config.DCRConfig.RegistrationEndpoint)
 				assert.Empty(t, upstream.OAuth2Config.DCRConfig.DiscoveryURL)
+				assert.Equal(t, "2026-10", upstream.OAuth2Config.DCRConfig.RotationKey)
+				assert.Equal(t, "authorizationEndpoint", upstream.OAuth2Config.DCRConfig.RegistrationProbe)
 				// No InitialAccessTokenRef set: env var name should stay empty.
 				assert.Empty(t, upstream.OAuth2Config.DCRConfig.InitialAccessTokenEnvVar)
 			},
@@ -2060,6 +2207,35 @@ func TestBuildOAuth2UpstreamRunConfig_TransportOptions(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, runConfig.InsecureAllowHTTP)
 	assert.True(t, runConfig.AllowPrivateIPs)
+}
+
+func TestBuildOAuth2UpstreamRunConfig_TokenEndpointAuthMethod(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		method string
+	}{
+		{name: "empty passes through unset", method: ""},
+		{name: "client_secret_basic propagates", method: "client_secret_basic"},
+		{name: "client_secret_post propagates", method: "client_secret_post"},
+		{name: "none propagates", method: "none"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			runConfig, err := buildOAuth2UpstreamRunConfig(&mcpv1beta1.OAuth2UpstreamConfig{
+				AuthorizationEndpoint:   "http://dex.default.svc.cluster.local/auth",
+				TokenEndpoint:           "http://dex.default.svc.cluster.local/token",
+				ClientID:                "client-id",
+				TokenEndpointAuthMethod: tt.method,
+			}, "", "", 0, "")
+			require.NoError(t, err)
+			assert.Equal(t, tt.method, runConfig.TokenEndpointAuthMethod)
+		})
+	}
 }
 
 func TestDelegateClientsConversionAndEnvVars(t *testing.T) {
@@ -3474,9 +3650,19 @@ func TestBuildSPIFFETrustDomainRunConfigs(t *testing.T) {
 				},
 			},
 		},
+		{
+			Name: "development", TrustDomain: "dev.example.org", Methods: methods,
+			BundleSource: mcpv1beta1.SPIFFEBundleSourceConfig{
+				Type: mcpv1beta1.SPIFFEBundleSourceTypeFile,
+				File: &mcpv1beta1.SPIFFEFileBundleSourceConfig{
+					ConfigMapName: "spire-bundle",
+					ConfigMapKey:  "bundle.json",
+				},
+			},
+		},
 	})
 
-	require.Len(t, configs, 2)
+	require.Len(t, configs, 3)
 	assert.Equal(t, "example", configs[0].Name)
 	assert.Equal(t, "example.org", configs[0].TrustDomain)
 	assert.Equal(t, []authserver.SPIFFEAuthenticationMethod{authserver.SPIFFEAuthenticationMethodX509}, configs[0].Methods)
@@ -3489,6 +3675,15 @@ func TestBuildSPIFFETrustDomainRunConfigs(t *testing.T) {
 	assert.Equal(t, "https://bundle.example.com", configs[1].BundleSource.Endpoint.URL)
 	assert.Equal(t, authserver.SPIFFEBundleEndpointProfileHTTPSWeb, configs[1].BundleSource.Endpoint.Profile)
 	assert.Nil(t, configs[1].BundleSource.WorkloadAPI)
+
+	// The runtime file source carries a derived, index-scoped mount path —
+	// not the CRD's configMapName/configMapKey — matching the volume
+	// GenerateAuthServerVolumes projects that ConfigMap key to.
+	assert.Equal(t, authserver.SPIFFEBundleSourceTypeFile, configs[2].BundleSource.Type)
+	require.NotNil(t, configs[2].BundleSource.File)
+	assert.Equal(t, AuthServerSPIFFEBundleMountPath+"/2/"+AuthServerSPIFFEBundleFileName, configs[2].BundleSource.File.Path)
+	assert.Nil(t, configs[2].BundleSource.Endpoint)
+	assert.Nil(t, configs[2].BundleSource.WorkloadAPI)
 
 	// The runtime type must not retain the CRD object's backing slices.
 	methods[0] = mcpv1beta1.SPIFFEAuthenticationMethodJWT

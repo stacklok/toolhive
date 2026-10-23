@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 )
 
@@ -68,6 +69,9 @@ func TestHandlePost_StrictProtocolValidation(t *testing.T) {
 
 			req := httptest.NewRequest(http.MethodPost, StreamableHTTPEndpoint, bytes.NewReader([]byte(notificationBody)))
 			req.Header.Set("Content-Type", "application/json")
+			sid := uuid.NewString()
+			require.NoError(t, proxy.ensureSession(req, sid))
+			req.Header.Set("Mcp-Session-Id", sid)
 			if tt.protocolHeader != "" {
 				req.Header.Set("MCP-Protocol-Version", tt.protocolHeader)
 			}

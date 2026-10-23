@@ -9,8 +9,8 @@ import (
 	"sort"
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 
 	"github.com/stacklok/toolhive/pkg/client"
 	"github.com/stacklok/toolhive/pkg/groups"
@@ -48,7 +48,7 @@ type setupModel struct {
 func (*setupModel) Init() tea.Cmd { return nil }
 
 func (m *setupModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	if keyMsg, ok := msg.(tea.KeyMsg); ok {
+	if keyMsg, ok := msg.(tea.KeyPressMsg); ok {
 		switch keyMsg.String() {
 		case "ctrl+c", "q":
 			m.Confirmed = false
@@ -84,7 +84,7 @@ func (m *setupModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.Confirmed = true
 			m.Quitting = true
 			return m, tea.Quit
-		case " ":
+		case "space":
 			if m.CurrentStep == stepGroupSelection {
 				// Toggle group selection
 				if _, ok := m.SelectedGroups[m.Cursor]; ok {
@@ -112,9 +112,9 @@ func (m *setupModel) getMaxCursorPosition() int {
 	return len(m.Clients)
 }
 
-func (m *setupModel) View() string {
+func (m *setupModel) View() tea.View {
 	if m.Quitting {
-		return ""
+		return tea.NewView("")
 	}
 	var b strings.Builder
 
@@ -135,7 +135,7 @@ func (m *setupModel) View() string {
 		b.WriteString("\nUse ↑/↓ (or j/k) to move, 'space' to select, 'enter' to confirm, 'q' to quit.\n")
 	}
 
-	return docStyle.Render(b.String())
+	return tea.NewView(docStyle.Render(b.String()))
 }
 
 // selectedGroups returns the groups corresponding to SelectedGroups indices,

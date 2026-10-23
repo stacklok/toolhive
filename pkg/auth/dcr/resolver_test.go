@@ -140,8 +140,10 @@ func TestResolveDCRCredentials_CacheHitShortCircuits(t *testing.T) {
 	t.Parallel()
 
 	// Count every request to every path — discovery, registration,
-	// anything. The acceptance criterion is that a cache hit issues zero
-	// network I/O, so the cache-hit path must never reach this server.
+	// anything. A cache hit never re-runs discovery or registration, and the
+	// preloaded row below records no token endpoint auth method, so the
+	// cache-hit verification (TestResolveCredentials_CacheHitVerifiesRegistration)
+	// is skipped too and the cache-hit path must never reach this server.
 	var totalRequests int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		atomic.AddInt32(&totalRequests, 1)
@@ -185,6 +187,85 @@ func TestResolveDCRCredentials_CacheHitShortCircuits(t *testing.T) {
 	assert.Equal(t, "preloaded-secret", got.ClientSecret)
 	assert.Equal(t, int32(0), atomic.LoadInt32(&totalRequests),
 		"cache hit must not issue any network I/O (discovery or registration)")
+}
+
+// TestResolveDCRCredentials_RotationKeyForcesFreshRegistration pins the
+// operator-driven rotation path: a Request whose RotationKey differs from the
+// cached row's registers a new client, while the previous row stays
+// reachable under its own key and neither row is re-registered on later
+// resolves.
+func TestResolveDCRCredentials_RotationKeyForcesFreshRegistration(t *testing.T) {
+	t.Parallel()
+
+	var registrationCalls int32
+	server := newDCRTestServer(t, dcrTestHandlerConfig{
+		tokenEndpointAuthMethodsSupported: []string{"client_secret_basic"},
+		observeRegistration: func(_ *http.Request, _ []byte) {
+			atomic.AddInt32(&registrationCalls, 1)
+		},
+	})
+
+	cache := newMemoryDCRStore(t)
+	issuer := server.URL
+	request := func(rotationKey string) *Request {
+		return &Request{
+			Issuer:       issuer,
+			Scopes:       []string{"openid"},
+			DiscoveryURL: issuer + "/.well-known/oauth-authorization-server",
+			RotationKey:  rotationKey,
+		}
+	}
+
+	for i, step := range []struct {
+		rotationKey       string
+		wantRegistrations int32
+	}{
+		{"", 1},   // first resolve registers
+		{"", 1},   // cache hit
+		{"r1", 2}, // rotation addresses a new row: fresh registration
+		{"r1", 2}, // cache hit under the rotation key
+		{"", 2},   // the pre-rotation row is still there
+	} {
+		_, err := ResolveCredentials(context.Background(), request(step.rotationKey), cache)
+		require.NoError(t, err, "step %d", i)
+		assert.Equal(t, step.wantRegistrations, atomic.LoadInt32(&registrationCalls),
+			"step %d (rotation_key=%q)", i, step.rotationKey)
+	}
+
+	baseKey := Key{
+		Issuer:      issuer,
+		UpstreamID:  issuer,
+		RedirectURI: issuer + "/oauth/callback",
+		ScopesHash:  storage.ScopesHash([]string{"openid"}),
+	}
+	rotatedKey := baseKey
+	rotatedKey.RotationKey = "r1"
+	for _, key := range []Key{baseKey, rotatedKey} {
+		_, ok, err := cache.Get(context.Background(), key)
+		require.NoError(t, err)
+		assert.True(t, ok, "row for rotation_key=%q must be cached", key.RotationKey)
+	}
+}
+
+// TestFlightKeyOf_RotationKey pins that the singleflight key tracks the
+// persisted DCRKey: an empty RotationKey leaves the pre-rotation encoding
+// untouched and a non-empty one appends a length-prefixed segment, so two
+// rotations of the same upstream never coalesce into one in-flight
+// registration.
+func TestFlightKeyOf_RotationKey(t *testing.T) {
+	t.Parallel()
+
+	key := Key{
+		Issuer:      "https://thv.example.com",
+		UpstreamID:  "https://idp.example.com",
+		RedirectURI: "https://thv.example.com/oauth/callback",
+		ScopesHash:  storage.ScopesHash([]string{"openid"}),
+	}
+	legacy := flightKeyOf(key)
+	assert.Equal(t, "23:https://thv.example.com:23:https://idp.example.com:38:https://thv.example.com/oauth/callback:"+key.ScopesHash, legacy)
+
+	key.RotationKey = "r1"
+	assert.Equal(t, legacy+":2:r1", flightKeyOf(key))
 }
 
 func TestResolveDCRCredentials_RegistersOnCacheMiss(t *testing.T) {
@@ -1129,6 +1210,16 @@ func TestResolveDCRCredentials_RejectsInvalidInputs(t *testing.T) {
 			},
 			cache:      nil,
 			wantErrSub: "credential store is required",
+		},
+		{
+			name: "unknown registration probe",
+			req: &Request{
+				Issuer:               "https://example.com",
+				RegistrationEndpoint: "https://example.com/register",
+				RegistrationProbe:    "userinfo",
+			},
+			cache:      newMemoryDCRStore(t),
+			wantErrSub: "registration_probe must be one of",
 		},
 	}
 	for _, tc := range tests {

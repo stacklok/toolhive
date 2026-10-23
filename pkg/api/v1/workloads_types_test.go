@@ -96,6 +96,7 @@ func TestRunConfigToCreateRequest(t *testing.T) {
 			CmdArgs:            []string{"arg1", "arg2"},
 			TargetPort:         8080,
 			MaxRequestBodySize: 16 << 20,
+			ProxyReadTimeout:   "45s",
 			EnvVars:            map[string]string{"ENV1": "value1"},
 			Secrets:            []string{"secret1,target=/path1", "secret2,target=/path2"},
 			Volumes:            []string{"/host:/container"},
@@ -117,6 +118,7 @@ func TestRunConfigToCreateRequest(t *testing.T) {
 		assert.Equal(t, 8080, result.TargetPort)
 		assert.Equal(t, 3000, result.ProxyPort)
 		assert.Equal(t, int64(16<<20), result.MaxRequestBodySize)
+		assert.Equal(t, "45s", result.ProxyReadTimeout)
 		assert.Equal(t, map[string]string{"ENV1": "value1"}, result.EnvVars)
 		require.Len(t, result.Secrets, 2)
 		assert.Equal(t, "secret1", result.Secrets[0].Name)
@@ -227,7 +229,7 @@ func TestRunConfigToCreateRequest(t *testing.T) {
 		assert.Equal(t, "https://oidc.example.com/jwks", result.OIDC.JwksURL)
 		assert.Equal(t, "https://oidc.example.com/introspect", result.OIDC.IntrospectionURL)
 		assert.Equal(t, "test-client", result.OIDC.ClientID)
-		assert.Equal(t, "test-secret", result.OIDC.ClientSecret)
+		assert.Empty(t, result.OIDC.ClientSecret)
 	})
 
 	t.Run("with remote OAuth config", func(t *testing.T) {

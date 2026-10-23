@@ -29,6 +29,7 @@ import (
 	verifiermocks "github.com/stacklok/toolhive/pkg/skills/verifier/mocks"
 	"github.com/stacklok/toolhive/pkg/storage"
 	"github.com/stacklok/toolhive/pkg/storage/sqlite"
+	"github.com/stacklok/toolhive/test/testkit/osperm"
 )
 
 // newLockTestService builds a service backed by a real (temp-file) SQLite
@@ -67,11 +68,16 @@ func newLockTestService(t *testing.T, gr *gitmocks.MockResolver, extra ...Option
 	// identity, so tests exercising lock mechanics don't trip install-time
 	// verification. Tests about verification pass their own WithVerifier
 	// via extra (later options win).
-	mv := verifiermocks.NewMockVerifier(ctrl)
+	mv := verifiermocks.NewMockOCISnapshotVerifier(ctrl)
+	snapshot := verifiermocks.NewMockOCISnapshot(ctrl)
 	mv.EXPECT().VerifyGit(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
 		AnyTimes().Return(signedResult(), nil)
 	mv.EXPECT().VerifyOCI(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
 		AnyTimes().Return(signedResult(), nil)
+	mv.EXPECT().RetrieveOCISnapshot(gomock.Any(), gomock.Any(), gomock.Any()).
+		AnyTimes().Return(snapshot, nil)
+	snapshot.EXPECT().VerifyKeyless(gomock.Any()).AnyTimes().Return(signedResult(), nil)
+	snapshot.EXPECT().VerifyWithKey(gomock.Any()).AnyTimes().Return(signedResult(), nil)
 	mv.EXPECT().VerifyBundleOffline(gomock.Any(), gomock.Any(), gomock.Any()).
 		AnyTimes().Return(nil)
 	mv.EXPECT().ResultFromBundle(gomock.Any(), gomock.Any()).
@@ -409,9 +415,11 @@ func TestInstallProjectScope_LockWriteFailureRemovesAddedClientTree(t *testing.T
 // hookSkillStore lets tests inject storage failures into specific operations.
 type hookSkillStore struct {
 	storage.SkillStore
-	deleteErr   error
-	updateErr   error
-	afterCreate func()
+	deleteErr          error
+	updateErr          error
+	afterUpdate        func()
+	afterUpdateContext func(context.Context)
+	afterCreate        func()
 }
 
 func (s *hookSkillStore) Delete(ctx context.Context, name string, scope skills.Scope, projectRoot string) error {
@@ -425,7 +433,16 @@ func (s *hookSkillStore) Update(ctx context.Context, sk skills.InstalledSkill) e
 	if s.updateErr != nil {
 		return s.updateErr
 	}
-	return s.SkillStore.Update(ctx, sk)
+	if err := s.SkillStore.Update(ctx, sk); err != nil {
+		return err
+	}
+	if s.afterUpdate != nil {
+		s.afterUpdate()
+	}
+	if s.afterUpdateContext != nil {
+		s.afterUpdateContext(ctx)
+	}
+	return nil
 }
 
 func (s *hookSkillStore) Create(ctx context.Context, sk skills.InstalledSkill) error {
@@ -773,6 +790,7 @@ func TestInstallProjectScope_DependencyJoinsParentGroup(t *testing.T) {
 //
 //nolint:paralleltest // uses t.Setenv via newLockTestService, incompatible with t.Parallel
 func TestUninstall_LockWriteFailureAbortsBeforeDestruction(t *testing.T) {
+	osperm.SkipIfRoot(t)
 	gr, fx := newGitResolverMock(t)
 	fx.register("my-skill", gitSkill("my-skill"))
 	svc, projectRoot := newLockTestService(t, gr)

@@ -72,7 +72,7 @@ type MCPExternalAuthConfigList struct {
 //+kubebuilder:object:root=true
 //+kubebuilder:deprecatedversion:warning="toolhive.stacklok.dev/v1alpha1 is deprecated; use v1beta1"
 //+kubebuilder:subresource:status
-//+kubebuilder:resource:shortName=mcpg;mcpgroup,categories=toolhive
+//+kubebuilder:resource:shortName=mcpg,categories=toolhive
 //+kubebuilder:printcolumn:name="Servers",type="integer",JSONPath=".status.serverCount"
 //+kubebuilder:printcolumn:name="Proxies",type="integer",JSONPath=".status.remoteProxyCount"
 //+kubebuilder:printcolumn:name="Phase",type="string",JSONPath=".status.phase"
@@ -223,7 +223,7 @@ type MCPRemoteProxyList struct {
 //+kubebuilder:object:root=true
 //+kubebuilder:deprecatedversion:warning="toolhive.stacklok.dev/v1alpha1 is deprecated; use v1beta1"
 //+kubebuilder:subresource:status
-//+kubebuilder:resource:shortName=mcpserver;mcpservers,categories=toolhive
+//+kubebuilder:resource:categories=toolhive
 //+kubebuilder:printcolumn:name="Status",type="string",JSONPath=".status.phase"
 //+kubebuilder:printcolumn:name="Ready",type="string",JSONPath=".status.conditions[?(@.type=='Ready')].status"
 //+kubebuilder:printcolumn:name="Replicas",type="integer",JSONPath=".status.readyReplicas"

@@ -203,6 +203,38 @@ components:
 
             Mutually exclusive with DiscoveryURL.
           type: string
+        registration_probe:
+          description: |-
+            RegistrationProbe selects how the resolver checks a cached registration
+            against the upstream at start. "tokenEndpoint" (the default) redeems a
+            random authorization code with the cached client and reads
+            invalid_client as "registration gone"; it decides only for upstreams
+            that authenticate the client before validating the grant.
+            "authorizationEndpoint" sends an authorization request for the cached
+            client without following redirects and reads a direct 400, 401 or 403
+            that carries an RFC 6749 JSON error object (error invalid_client,
+            unauthorized_client or invalid_request) as "gone" (RFC 6749 §4.1.2.1),
+            for upstreams whose token endpoint answers invalid_grant for any
+            client_id; an HTML page or a bare gateway status is not a verdict. A
+            false rejection re-registers at every start and, when registration also
+            fails, fails startup. "none" skips the check; the registration is then
+            retired only through RotationKey.
+          type: string
+        rotation_key:
+          description: |-
+            RotationKey is an optional operator-chosen label (1-64 characters from
+            [A-Za-z0-9._-]) that becomes part of the cached registration's identity
+            without being sent to the upstream. Changing it makes the next start
+            register a fresh client instead of reusing the cached one. At start the
+            resolver checks the cached client at the upstream (see RegistrationProbe)
+            and replaces it by itself when the upstream rejects it. Use RotationKey
+            when the upstream has dropped the registration and the configured probe
+            cannot tell, so the rejection may not be visible to the resolver, or when
+            a registration must be rotated on request. The row written under the
+            previous value is left in place. Upstream refresh tokens bound to the
+            previous client_id stop refreshing once the client changes; affected
+            users sign in again.
+          type: string
         software_id:
           description: |-
             SoftwareID is the RFC 7591 "software_id" registration metadata value,
@@ -331,6 +363,14 @@ components:
             authorization requests. Useful for provider-specific parameters like
             Google's access_type=offline.
           type: object
+        additional_token_params:
+          additionalProperties:
+            type: string
+          description: |-
+            AdditionalTokenParams are extra form-body parameters to include in
+            token requests (authorization code exchange and refresh). Useful for
+            providers that enforce RFC 8707 resource indicators on token requests.
+          type: object
         allow_private_ips:
           description: |-
             AllowPrivateIPs permits the upstream provider's HTTP client to connect to
@@ -378,10 +418,22 @@ components:
             OAuth2 provider served over HTTP in a kind cluster) where TLS is not
             available. Never set this in production.
           type: boolean
+        omit_scope_on_refresh:
+          description: |-
+            OmitScopeOnRefresh stops the `scope` parameter from being sent on
+            refresh_token grant requests. Scopes are still sent on the authorization
+            request. Useful for providers that reject `scope` on refresh, such as
+            Salesforce. See upstream.CommonOAuthConfig.
+          type: boolean
         redirect_uri:
           description: |-
             RedirectURI is the callback URL where the upstream IDP will redirect after authentication.
-            When not specified, defaults to `{issuer}/oauth/callback`.
+            For a DCR upstream (dcr_config set) an empty value is resolved to
+            `{issuer}/oauth/callback`; a pre-provisioned client (client_id set) must
+            specify it. Its hostname must match the browser-facing authorize URL
+            (issuer, or authorization_endpoint_base_url when set): /oauth/callback is
+            bound to the browser that started the login by a host-only cookie, so a
+            different host rejects every browser login (Config.Validate warns).
           type: string
         scopes:
           description: Scopes are the OAuth scopes to request from the upstream IDP.
@@ -391,6 +443,14 @@ components:
           uniqueItems: false
         token_endpoint:
           description: TokenEndpoint is the URL for the OAuth token endpoint.
+          type: string
+        token_endpoint_auth_method:
+          description: |-
+            TokenEndpointAuthMethod selects how the client authenticates at the OAuth token
+            endpoint. When empty, credentials are sent in the request body (the historical
+            client_secret_post-shaped default). Set this to client_secret_basic explicitly
+            for providers that require HTTP Basic auth. Public clients without a secret use
+            the "none" method.
           type: string
         token_response_mapping:
           $ref: '#/components/schemas/authserver.TokenResponseMappingRunConfig'
@@ -409,6 +469,14 @@ components:
             AdditionalAuthorizationParams are extra query parameters to include in
             authorization requests. Useful for provider-specific parameters like
             Google's access_type=offline.
+          type: object
+        additional_token_params:
+          additionalProperties:
+            type: string
+          description: |-
+            AdditionalTokenParams are extra form-body parameters to include in
+            token requests (authorization code exchange and refresh). Useful for
+            providers that enforce RFC 8707 resource indicators on token requests.
           type: object
         allow_private_ips:
           description: |-
@@ -436,6 +504,8 @@ components:
             ClientSecretFile is the path to a file containing the OAuth 2.0 client secret.
             Mutually exclusive with ClientSecretEnvVar. Optional for public clients using PKCE.
           type: string
+        dcr_config:
+          $ref: '#/components/schemas/authserver.DCRUpstreamConfig'
         insecure_allow_http:
           description: |-
             InsecureAllowHTTP permits a plain-HTTP issuer URL and HTTP discovery
@@ -448,10 +518,22 @@ components:
             IssuerURL is the OIDC issuer URL for automatic endpoint discovery.
             Must be a valid HTTPS URL.
           type: string
+        omit_scope_on_refresh:
+          description: |-
+            OmitScopeOnRefresh stops the `scope` parameter from being sent on
+            refresh_token grant requests. Scopes are still sent on the authorization
+            request. Useful for providers that reject `scope` on refresh, such as
+            Salesforce. See upstream.CommonOAuthConfig.
+          type: boolean
         redirect_uri:
           description: |-
             RedirectURI is the callback URL where the upstream IDP will redirect after authentication.
-            When not specified, defaults to `{issuer}/oauth/callback`.
+            For a DCR upstream (dcr_config set) an empty value is resolved to
+            `{issuer}/oauth/callback`; a pre-provisioned client (client_id set) must
+            specify it. Its hostname must match the browser-facing authorize URL
+            (issuer, or authorization_endpoint_base_url when set): /oauth/callback is
+            bound to the browser that started the login by a host-only cookie, so a
+            different host rejects every browser login (Config.Validate warns).
           type: string
         scopes:
           description: |-
@@ -473,6 +555,28 @@ components:
         userinfo_override:
           $ref: '#/components/schemas/authserver.UserInfoRunConfig'
       type: object
+    authserver.RegistrationRateLimitRunConfig:
+      description: |-
+        RegistrationRateLimit bounds the unauthenticated /oauth/register
+        endpoint. If omitted, defaults to 1 registration per second with a
+        burst of 5. The limiter is per process, so the effective rate is the
+        configured rate multiplied by the replica count. The cap on how many
+        registered clients may exist at once is Storage.MaxDCRClients; unused
+        clients live 24 hours, so a caller at the full rate keeps up to
+        rate x replicas x 86400 of them alive, which at the defaults exceeds the
+        default cap within about 2.8 hours. The operator sets it from the
+        embedded auth server's registrationRateLimit.
+      properties:
+        burst:
+          description: |-
+            Burst is the number of registrations admitted at once before the rate
+            applies. Must be positive.
+          type: integer
+        requests_per_second:
+          description: RequestsPerSecond is the sustained registration rate. Must
+            be positive.
+          type: number
+      type: object
     authserver.RunConfig:
       description: |-
         EmbeddedAuthServerConfig contains configuration for the embedded OAuth2/OIDC authorization server.
@@ -487,8 +591,9 @@ components:
             client_secret_post in addition to "none" (still the default on
             omission) and mints a client_secret returned exactly once. Confidential
             clients are restricted to https non-loopback redirect URIs, and
-            registrations idle for more than DefaultDCRClientTTL (30 days) are
-            evicted and must re-register. This gates registration only: disabling
+            registrations expire and must re-register when never used within
+            DefaultUnusedDCRClientTTL (24 hours) or idle for more than
+            DefaultDCRClientTTL (30 days). This gates registration only: disabling
             it does not revoke or reject already-minted secrets at the token
             endpoint.
 
@@ -569,6 +674,17 @@ components:
             via RFC 8693 token exchange. Specified as a Go duration string (e.g., "15m").
             If empty, defaults to 15 minutes.
           type: string
+        device_flow_enabled:
+          description: |-
+            DeviceFlowEnabled enables the RFC 8628 OAuth 2.0 Device Authorization
+            Grant: POST /oauth/device_authorization is mounted and
+            urn:ietf:params:oauth:grant-type:device_code is registered at the
+            token endpoint and advertised in discovery. The minimum polling
+            interval (RFC 8628 Section 3.5) is fixed at
+            oauthserver.DefaultDeviceCodeInterval; this is a deliberate
+            simplification to keep this config surface minimal — a future
+            increment may add an override.
+          type: boolean
         disable_upstream_token_injection:
           description: |-
             DisableUpstreamTokenInjection prevents the upstream swap middleware from being added.
@@ -655,6 +771,8 @@ components:
             This will be included in the "iss" claim of issued tokens.
             Must be a valid HTTPS URL (or HTTP for localhost) without query, fragment, or trailing slash.
           type: string
+        registration_rate_limit:
+          $ref: '#/components/schemas/authserver.RegistrationRateLimitRunConfig'
         schema_version:
           description: SchemaVersion is the version of the RunConfig schema.
           type: string
@@ -678,6 +796,8 @@ components:
           uniqueItems: false
         storage:
           $ref: '#/components/schemas/storage.RunConfig'
+        tls_listener:
+          $ref: '#/components/schemas/authserver.TLSListenerRunConfig'
         token_lifespans:
           $ref: '#/components/schemas/authserver.TokenLifespanRunConfig'
         trusted_issuers:
@@ -697,6 +817,8 @@ components:
             $ref: '#/components/schemas/tokenexchange.TrustedIssuer'
           type: array
           uniqueItems: false
+        upstream_filter:
+          $ref: '#/components/schemas/upstreamfilter.GroupBasedFilterConfig'
         upstreams:
           description: |-
             Upstreams configures connections to upstream Identity Providers for
@@ -715,20 +837,22 @@ components:
             Profile selects how the endpoint's TLS connection is authenticated:
             SPIFFEBundleEndpointProfileHTTPSWeb (Web PKI) or
             SPIFFEBundleEndpointProfileHTTPSSPIFFE (a separately distributed
-            X.509-SVID root). Required, since the future bundle loader cannot
-            otherwise know which trust anchor to use for the initial connection.
+            X.509-SVID root). Required, since an endpoint loader needs this profile
+            to choose the trust anchor for its initial connection.
           type: string
         url:
           type: string
       type: object
     authserver.SPIFFEBundleSourceRunConfig:
       description: |-
-        BundleSource declares exactly one future trust-bundle source. It is
-        validated for shape only; fetching or loading a bundle from it is a
-        later step.
+        BundleSource declares exactly one trust-bundle source and is validated for
+        shape here. The standalone file loader exists, but source initialization
+        is not wired into SPIFFE authentication.
       properties:
         endpoint:
           $ref: '#/components/schemas/authserver.SPIFFEBundleEndpointSourceRunConfig'
+        file:
+          $ref: '#/components/schemas/authserver.SPIFFEFileBundleSourceRunConfig'
         type:
           type: string
         workload_api:
@@ -795,6 +919,11 @@ components:
             this association policy.
           type: string
       type: object
+    authserver.SPIFFEFileBundleSourceRunConfig:
+      properties:
+        path:
+          type: string
+      type: object
     authserver.SPIFFETrustDomainRunConfig:
       properties:
         bundle_source:
@@ -842,6 +971,16 @@ components:
           description: |-
             SigningKeyFile is the filename of the primary signing key (relative to KeyDir).
             This key is used for signing new tokens.
+          type: string
+      type: object
+    authserver.TLSListenerRunConfig:
+      description: |-
+        TLSListener serves the auth server routes over TLS on port 8443, in
+        addition to the MCP port. Required for spiffe_x509 client authentication.
+      properties:
+        cert_file:
+          type: string
+        key_file:
           type: string
       type: object
     authserver.TokenExchangeInboundGrantRunConfig:
@@ -1219,6 +1358,7 @@ components:
       - factory
       - copilot-cli
       - qoder
+      - pi
       type: string
       x-enum-varnames:
       - RooCode
@@ -1246,6 +1386,7 @@ components:
       - Factory
       - CopilotCli
       - Qoder
+      - Pi
     github_com_stacklok_toolhive_pkg_client.ClientAppStatus:
       properties:
         client_type:
@@ -1739,9 +1880,10 @@ components:
         allow_docker_gateway:
           description: |-
             AllowDockerGateway permits outbound connections to Docker gateway addresses
-            (host.docker.internal, gateway.docker.internal, 172.17.0.1). These are
+            (all daemon bridge gateways, host.docker.internal, and gateway.docker.internal). These are
             blocked by default in the egress proxy even when InsecureAllowAll is set.
             Only applicable to Docker deployments with network isolation enabled.
+            Gateways are snapshotted at deployment; redeploy to include bridges created later.
             Gateway access is port-independent: it ignores the permission profile's
             allowed ports, so once enabled the gateway is reachable on any port.
           type: boolean
@@ -1888,6 +2030,15 @@ components:
           enum:
           - sse
           - streamable-http
+          type: string
+        proxy_read_timeout:
+          description: |-
+            ProxyReadTimeout bounds reading the entire request (headers + body) on the
+            proxy HTTP server, expressed as a Go duration string (e.g. "30s", "1m").
+            Empty uses the proxy default (30s). Negative durations and values that fail
+            time.ParseDuration are rejected at runtime. Applies to all HTTP transports.
+            String (not time.Duration) keeps the wire format unit-explicit.
+          example: 30s
           type: string
         publish:
           description: Publish lists ports to publish to the host in format "hostPort:containerPort"
@@ -2054,6 +2205,8 @@ components:
           description: KeyPrefix is an optional prefix applied to all Redis keys used
             by ToolHive.
           type: string
+        tls:
+          $ref: '#/components/schemas/redisconfig.TLSConfig'
       type: object
     github_com_stacklok_toolhive_pkg_runner.ToolOverride:
       properties:
@@ -2395,8 +2548,8 @@ components:
           type: string
         new_digest:
           description: |-
-            NewDigest is the digest the source currently resolves to. Equal to
-            OldDigest when Status is UpgradeStatusUpToDate.
+            NewDigest is the digest the source currently resolves to. It may equal
+            OldDigest when only the resolved reference or trust material changed.
           type: string
         new_resolved_reference:
           description: NewResolvedReference is the new resolvedReference when it changed.
@@ -2414,6 +2567,11 @@ components:
           $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_skills.FailureReason'
         status:
           $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_skills.UpgradeStatus'
+        trust_anchor_changed:
+          description: |-
+            TrustAnchorChanged reports that the operation selected a different
+            verified provenance or unsigned trust state than the lock recorded.
+          type: boolean
       type: object
     github_com_stacklok_toolhive_pkg_skills.UpgradeResult:
       properties:
@@ -2429,6 +2587,7 @@ components:
       enum:
       - upgraded
       - up-to-date
+      - trust-updated
       - not-upgradable
       - ref-change-blocked
       - signer-change-blocked
@@ -2437,6 +2596,7 @@ components:
       x-enum-varnames:
       - UpgradeStatusUpgraded
       - UpgradeStatusUpToDate
+      - UpgradeStatusTrustUpdated
       - UpgradeStatusNotUpgradable
       - UpgradeStatusRefChangeBlocked
       - UpgradeStatusSignerChangeBlocked
@@ -3092,9 +3252,10 @@ components:
         allow_docker_gateway:
           description: |-
             Whether to permit outbound connections to Docker gateway addresses
-            (host.docker.internal, gateway.docker.internal, 172.17.0.1). These are
+            (all daemon bridge gateways, host.docker.internal, and gateway.docker.internal). These are
             blocked by default in the egress proxy even when network isolation is on.
             Only applicable to Docker deployments with network isolation enabled.
+            Gateways are snapshotted at deployment; redeploy to include bridges created later.
           type: boolean
         authz_config:
           description: Authorization configuration
@@ -3154,6 +3315,12 @@ components:
         proxy_port:
           description: Port for the HTTP proxy to listen on
           type: integer
+        proxy_read_timeout:
+          description: |-
+            Maximum time to read a complete MCP proxy request, expressed as a Go duration string.
+            Empty or zero uses the default timeout of 30 seconds.
+          example: 30s
+          type: string
         registry:
           description: Registry is the optional registry name to resolve the server
             from (e.g. "default").
@@ -3352,6 +3519,13 @@ components:
         project_root:
           description: ProjectRoot is the project root path for project-scoped installs
           type: string
+        public_key:
+          description: |-
+            PublicKey is the base64-encoded DER SPKI cosign public key the artifact
+            must verify against, for artifacts signed with a cosign key pair rather
+            than keylessly. Required the first time such an artifact is installed
+            project-scoped, and pinned in the lock file from then on.
+          type: string
         scope:
           $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_plugins.Scope'
         version:
@@ -3542,15 +3716,24 @@ components:
           type: boolean
       type: object
     pkg_api_v1.pushPluginRequest:
-      description: Request to push a built plugin artifact. Exactly one of identity_token
+      description: Request to push a built plugin artifact. Exactly one of key, identity_token,
         or no_sign is required.
       properties:
         identity_token:
           description: |-
             IdentityToken is a short-lived OIDC identity token used for keyless
-            signing. Plugin signing is keyless-only: there is deliberately no key
-            field, because ToolHive cannot verify key-signed artifacts at install
-            time and would publish an uninstallable plugin (#6442)
+            signing, mutually exclusive with Key
+          type: string
+        key:
+          description: |-
+            Key is the path to a cosign private key, resolved on the server's
+            filesystem. Accepted only when the request carries the secret capability
+            from the owner-protected local server discovery file; other requests are
+            refused with 403, since honoring one would let an untrusted caller have
+            the server sign with any key it can read. Use IdentityToken when calling
+            a remote or manually configured server. Consumers installing the result
+            project-scoped must supply the matching public key on first use
+            (install's public_key).
           type: string
         no_sign:
           description: NoSign pushes without signing
@@ -3571,8 +3754,12 @@ components:
           type: string
         key:
           description: |-
-            Key is the path to a cosign private key used to sign the pushed
-            artifact
+            Key is the path to a cosign private key, resolved on the server's
+            filesystem. Accepted only when the request carries the secret capability
+            from the owner-protected local server discovery file; other requests are
+            refused with 403, since honoring one would let an untrusted caller have
+            the server sign with any key it can read. Use IdentityToken when calling
+            a remote or manually configured server.
           type: string
         no_sign:
           description: NoSign pushes without signing
@@ -3785,6 +3972,9 @@ components:
           description: Prune removes project-scoped plugins installed but not present
             in the lock file
           type: boolean
+        public_key:
+          description: PublicKey supplies the cosign public key for key-signed adoption.
+          type: string
       type: object
     pkg_api_v1.syncSkillsRequest:
       description: Request to restore a project's installed skills to match its lock
@@ -3819,6 +4009,9 @@ components:
           description: Prune removes project-scoped skills installed but not present
             in the lock file
           type: boolean
+        public_key:
+          description: PublicKey supplies the cosign public key for key-signed adoption.
+          type: string
       type: object
     pkg_api_v1.toolOverride:
       description: Tool override
@@ -3836,9 +4029,10 @@ components:
         allow_docker_gateway:
           description: |-
             Whether to permit outbound connections to Docker gateway addresses
-            (host.docker.internal, gateway.docker.internal, 172.17.0.1). These are
+            (all daemon bridge gateways, host.docker.internal, and gateway.docker.internal). These are
             blocked by default in the egress proxy even when network isolation is on.
             Only applicable to Docker deployments with network isolation enabled.
+            Gateways are snapshotted at deployment; redeploy to include bridges created later.
           type: boolean
         authz_config:
           description: Authorization configuration
@@ -3895,6 +4089,12 @@ components:
         proxy_port:
           description: Port for the HTTP proxy to listen on
           type: integer
+        proxy_read_timeout:
+          description: |-
+            Maximum time to read a complete MCP proxy request, expressed as a Go duration string.
+            Empty or zero uses the default timeout of 30 seconds.
+          example: 30s
+          type: string
         runtime_config:
           $ref: '#/components/schemas/templates.RuntimeConfig'
         secrets:
@@ -4008,6 +4208,10 @@ components:
           description: ProjectRoot is the project root path whose lock file should
             be upgraded
           type: string
+        public_key:
+          description: PublicKey proposes a cosign public key as the replacement trust
+            anchor.
+          type: string
       type: object
     pkg_api_v1.upgradeRequest:
       description: Request to apply an available upgrade to a workload. All fields
@@ -4052,8 +4256,8 @@ components:
           type: array
           uniqueItems: false
         fail_on_changes:
-          description: FailOnChanges exits with an error when any mutable source would
-            upgrade
+          description: FailOnChanges reports content and trust changes without applying
+            them
           type: boolean
         names:
           description: Names restricts the upgrade to specific skill names. Empty
@@ -4069,6 +4273,10 @@ components:
         project_root:
           description: ProjectRoot is the project root path whose lock file should
             be upgraded
+          type: string
+        public_key:
+          description: PublicKey proposes a cosign public key as the replacement trust
+            anchor.
           type: string
       type: object
     pkg_api_v1.validatePluginRequest:
@@ -4118,6 +4326,23 @@ components:
           - auth_retrying
           - policy_stopped
           type: string
+      type: object
+    redisconfig.TLSConfig:
+      description: |-
+        TLS enables TLS for session storage and rate limiting. An empty
+        configuration verifies the Redis server using system roots.
+      properties:
+        caCertFile:
+          description: |-
+            CACertFile is the path to a PEM-encoded CA bundle. When configured, this
+            bundle replaces the system roots used to verify the Redis server.
+            +optional
+          type: string
+        insecureSkipVerify:
+          description: |-
+            InsecureSkipVerify skips server certificate and hostname verification.
+            +optional
+          type: boolean
       type: object
     registry.EnvVar:
       properties:
@@ -4440,6 +4665,8 @@ components:
             $ref: '#/components/schemas/registry.SkillPackage'
           type: array
           uniqueItems: false
+        provenance:
+          $ref: '#/components/schemas/registry.Provenance'
         repository:
           $ref: '#/components/schemas/registry.SkillRepository'
         status:
@@ -4856,7 +5083,12 @@ components:
           type: string
       type: object
     storage.ACLUserRunConfig:
-      description: ACLUserConfig contains ACL user authentication configuration.
+      description: |-
+        ACLUserConfig contains ACL user authentication configuration.
+        A nil value is a valid no-auth configuration: the store connects without
+        credentials. A populated block whose password resolves to empty is a
+        misconfiguration (mis-keyed or unsynced secret) and is rejected rather
+        than silently downgraded to an unauthenticated connection.
       properties:
         password_env_var:
           description: PasswordEnvVar is the environment variable containing the Redis
@@ -4878,8 +5110,14 @@ components:
             Mutually exclusive with SentinelConfig.
           type: string
         auth_type:
-          description: AuthType must be "aclUser" - only ACL user authentication is
-            supported.
+          description: |-
+            AuthType selects the Redis authentication mode. "aclUser" is the only
+            authenticated mode. Leave it empty, with a nil ACLUserConfig, for a
+            no-auth connection to a Redis/Valkey instance that has no authentication
+            configured. Setting AuthType to "aclUser" declares authenticated intent:
+            the conversion rejects that pairing with a nil ACLUserConfig rather than
+            downgrading to no-auth. Otherwise presence of ACLUserConfig is what
+            enables authentication.
           type: string
         cluster_mode:
           description: ClusterMode enables the Redis Cluster protocol. Requires Addr
@@ -4921,6 +5159,22 @@ components:
         Storage configures the storage backend for the auth server.
         If nil, defaults to in-memory storage.
       properties:
+        max_dcr_clients:
+          description: |-
+            MaxDCRClients caps the number of live clients created by
+            /oauth/register. At the cap, registration fails with HTTP 503 until a
+            client expires; no existing client is evicted. If omitted, defaults to
+            10000; 0 means unlimited, and a negative value is rejected. On Redis the
+            count is shared by every replica.
+
+            Sizing: a client never used for a token exchange lives 24 hours, so a
+            caller registering at the full rate keeps up to rate x replicas x 86400
+            unused clients alive. At the default rate of 1/s that is about 86400 per
+            replica: one replica fills the default cap in about 2.8 hours, and new
+            registrations then get 503 for up to 24 hours after the traffic stops.
+            A client promoted by a token exchange holds its slot for 30 days. The
+            operator sets it from the embedded auth server's storage.maxDCRClients.
+          type: integer
         redis_config:
           $ref: '#/components/schemas/storage.RedisRunConfig'
         type:
@@ -5108,7 +5362,7 @@ components:
           description: |-
             BuilderImage is the full image reference for the builder stage.
             An empty string signals "use the default for this transport type" during config merging.
-            Examples: "golang:1.26-alpine", "node:24-alpine", "python:3.14-slim"
+            Examples: "golang:1.27-alpine", "node:24-alpine", "python:3.14-slim"
           type: string
         runtime_env:
           additionalProperties:
@@ -5354,6 +5608,81 @@ components:
           $ref: '#/components/schemas/types.RateLimitBucket'
         shared:
           $ref: '#/components/schemas/types.RateLimitBucket'
+      type: object
+    upstreamfilter.GroupBasedFilterConfig:
+      description: |-
+        UpstreamFilter configures an optional group-based filter that narrows the
+        multi-upstream authorization chain per-request based on the first
+        upstream's resolved identity. When nil, every request walks the full
+        upstream chain in configured order (preserving behavior from before the
+        filter hook existed).
+
+        The filter is applied exactly once per authorization, on the first leg's
+        callback. The mandatory first upstream (Upstreams[0]) is never filtered
+        out. See pkg/authserver/upstreamfilter for the configuration schema and
+        pkg/authserver/server/handlers for the runtime contract.
+      properties:
+        claim:
+          description: |-
+            Claim is the exact, top-level JWT/OIDC claim name to read group
+            membership from. Defaults to "groups" when empty. The claim value MUST be
+            a JSON array of strings; other shapes (missing, non-array, mixed types)
+            fail the authorization. Nested claims (e.g. Keycloak's realm_access.roles)
+            must be flattened by the identity provider — nested paths are not
+            supported in this implementation.
+
+            The value is read from upstream.Identity.Claims as the first upstream
+            resolves it: an OIDC upstream fills that map from the validated ID
+            token, a pure OAuth2 upstream from the userinfo response. The
+            identityFromToken and synthesized-identity paths leave it empty, and
+            groups carried only in an access token never reach it. A missing claim
+            fails the authorization — DefaultUpstreams covers a valid-but-empty
+            claim and unmatched groups, not an absent one.
+          type: string
+        defaultUpstreams:
+          description: |-
+            DefaultUpstreams is used when the claim is a valid empty array or when no
+            rule matches. When empty or omitted, no optional upstreams are added —
+            the mandatory first upstream remains but the authorization walks no
+            further.
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+        rules:
+          description: |-
+            Rules assigns groups to upstream provider subsets. A principal matches a
+            rule if any of the principal's group values appears in the rule's Groups
+            list (any-of / OR semantics). Multiple matching rules are combined by
+            union: the effective upstream chain contains every UpstreamProviders
+            value from every matching rule, deduplicated.
+          items:
+            $ref: '#/components/schemas/upstreamfilter.GroupRule'
+          type: array
+          uniqueItems: false
+      type: object
+    upstreamfilter.GroupRule:
+      properties:
+        groups:
+          description: |-
+            Groups is the set of principal group names this rule matches. Matching
+            is case-sensitive and exact. Empty and duplicate values are rejected at
+            configuration validation time.
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+        upstreamProviders:
+          description: |-
+            UpstreamProviders lists the non-first upstream provider names to include
+            in the chain when this rule matches. All names must reference a
+            configured non-first upstream. Empty and duplicate values, references to
+            the mandatory first upstream, and references to undeclared upstreams are
+            rejected at configuration validation time.
+          items:
+            type: string
+          type: array
+          uniqueItems: false
       type: object
     v0.ServerJSON:
       properties:
@@ -6149,6 +6478,12 @@ paths:
   /api/v1beta/plugins/push:
     post:
       description: Push a built plugin artifact to a remote registry
+      parameters:
+      - description: Local discovery capability (required with request.key)
+        in: header
+        name: X-Toolhive-Key-Signing-Capability
+        schema:
+          type: string
       requestBody:
         content:
           application/json:
@@ -6173,6 +6508,12 @@ paths:
               schema:
                 type: string
           description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Forbidden (key signing requires the local discovery capability)
         "404":
           content:
             application/json:
@@ -6341,20 +6682,17 @@ paths:
       tags:
       - registry
     post:
-      description: Add a new registry
-      requestBody:
-        content:
-          application/json:
-            schema:
-              type: object
+      description: |-
+        This endpoint is retained for API compatibility, accepts no request body, and always returns 501 Not Implemented.
+        Custom registries are not currently supported.
       responses:
         "501":
           content:
-            application/json:
+            text/plain:
               schema:
                 type: string
           description: Not Implemented
-      summary: Add a registry
+      summary: Add a registry (unavailable)
       tags:
       - registry
   /api/v1beta/registry/{name}:
@@ -7244,6 +7582,12 @@ paths:
   /api/v1beta/skills/push:
     post:
       description: Push a built skill artifact to a remote registry
+      parameters:
+      - description: Local discovery capability (required with request.key)
+        in: header
+        name: X-Toolhive-Key-Signing-Capability
+        schema:
+          type: string
       requestBody:
         content:
           application/json:
@@ -7268,6 +7612,12 @@ paths:
               schema:
                 type: string
           description: Bad Request
+        "403":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Forbidden (key signing requires the local discovery capability)
         "404":
           content:
             application/json:

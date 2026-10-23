@@ -11,18 +11,19 @@ import (
 	"github.com/stacklok/toolhive/pkg/authz/authorizers"
 )
 
-// filterToolsByPolicy filters tools based on Cedar authorization policies.
-// For each tool, it checks whether the caller (identified by JWT claims in ctx)
-// is authorized to call that tool. Only authorized tools are returned.
-// If authorizer is nil, all tools are returned unmodified.
-func filterToolsByPolicy(ctx context.Context, a authorizers.Authorizer, tools []mcp.Tool) []mcp.Tool {
+// authorizedToolIndexes returns the positions, in tools, of the tools the caller
+// (identified by JWT claims in ctx) is authorized to call, so a filter can keep
+// the matching raw descriptors. If authorizer is nil, every position is returned.
+func authorizedToolIndexes(ctx context.Context, a authorizers.Authorizer, tools []mcp.Tool) []int {
 	if a == nil {
-		return tools
+		indexes := make([]int, len(tools))
+		for i := range tools {
+			indexes[i] = i
+		}
+		return indexes
 	}
 
-	// Note: instantiating the list ensures that no null value is sent over the wire.
-	// This is basically defensive programming, but for clients.
-	filtered := make([]mcp.Tool, 0, len(tools))
+	authorizedIndexes := make([]int, 0, len(tools))
 	for i, tool := range tools {
 		// Inject this tool's annotations into the context so Cedar policies
 		// that use when clauses on resource attributes (e.g. resource.readOnlyHint)
@@ -42,19 +43,19 @@ func filterToolsByPolicy(ctx context.Context, a authorizers.Authorizer, tools []
 		}
 
 		if authorized {
-			filtered = append(filtered, tool)
+			authorizedIndexes = append(authorizedIndexes, i)
 		} else {
 			slog.Debug("Tool denied by authorization policy",
 				"tool", tool.Name)
 		}
 	}
 
-	if denied := len(tools) - len(filtered); denied > 0 {
+	if denied := len(tools) - len(authorizedIndexes); denied > 0 {
 		slog.Debug("Authorization policy filtered tools",
-			"total", len(tools), "allowed", len(filtered), "denied", denied)
+			"total", len(tools), "allowed", len(authorizedIndexes), "denied", denied)
 	}
 
-	return filtered
+	return authorizedIndexes
 }
 
 // authorizeToolCall checks whether the caller is authorized to call a specific tool

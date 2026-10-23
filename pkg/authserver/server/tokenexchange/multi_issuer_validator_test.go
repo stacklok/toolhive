@@ -6,11 +6,16 @@ package tokenexchange
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/rsa"
+	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
-	"io"
 	"log/slog"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -24,6 +29,7 @@ import (
 
 	"github.com/go-jose/go-jose/v4"
 	"github.com/go-jose/go-jose/v4/jwt"
+	"github.com/lestrrat-go/jwx/v4/jwk"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -1672,7 +1678,7 @@ func TestNewMultiIssuerTokenValidator_GrantOnlyIssuerAccepted(t *testing.T) {
 }
 
 // TestMultiIssuerTokenValidator_Close verifies Close releases each issuer's
-// JWKS refresh worker pool (issue #6482). jwk.Cache.Shutdown returns nil only
+// JWKS refresh worker pool (issue #6482). jwkfetch.Cache.Shutdown returns nil only
 // once its controller's goroutines have drained — it waits on the controller's
 // shutdown channel, and returns its context's error if they do not finish in
 // time — so Close returning nil well within its per-cache timeout is proof the
@@ -1730,7 +1736,7 @@ func TestMultiIssuerTokenValidator_CloseReleasesGoroutines(t *testing.T) {
 	}}, nil)
 	require.NoError(t, err)
 
-	// The per-issuer jwk.Cache starts its worker pool at construction (no fetch
+	// The per-issuer jwkfetch.Cache starts its worker pool at construction (no fetch
 	// needed), so the goroutines are already running.
 	require.Greater(t, runtime.NumGoroutine(), before, "the JWKS worker pool should be running before Close")
 
@@ -2453,7 +2459,7 @@ func TestValidateJWKSURL(t *testing.T) {
 // TestMultiIssuerTokenValidator_FetchJWKS exercises ensureRegistered's and
 // lookupJWKS's error paths through the full Validate path, bypassing OIDC
 // discovery via a preconfigured JWKSURL. Registration and the JWKS's own
-// zero-keys/too-many-keys checks now go through the issuer's own jwk.Cache and
+// zero-keys/too-many-keys checks now go through the issuer's own jwkfetch.Cache and
 // lookupJWKS respectively rather than a private HTTP fetch.
 //
 // For "non-200 response" and "malformed JSON body", verified empirically:
@@ -2531,19 +2537,12 @@ func TestMultiIssuerTokenValidator_FetchJWKS(t *testing.T) {
 			wantErr: "too many keys",
 		},
 		{
-			// Pins limitedBodyTransport's cap on the JWKS fetch path (jwx's
-			// own httprc.MaxBufferSize ceiling is ~1000 MiB, far too high to
-			// bound anything here on its own). Deliberately WELL-FORMED and
-			// complete, unlike the other failure cases above: the padding
-			// field is oversized but the document would parse successfully
-			// if read in full, so only limitedBodyTransport cutting the read
-			// short makes this fail — the same technique
-			// TestMultiIssuerTokenValidator_DiscoverJWKSURL's oversized-body
-			// case uses for the discovery path. The 4 MiB padding size is a
-			// fixed literal independent of maxResponseBodySize (1 MiB): sizing
-			// it as a multiple of that constant would make a broken cap and a
-			// shrunken constant fail identically, hiding a regression in the
-			// cap itself.
+			// Pins jwkfetch's body-size cap on the JWKS fetch path.
+			// Deliberately WELL-FORMED and complete, unlike the other failure
+			// cases above: the padding field is oversized but the document would
+			// parse successfully if read in full. The 4 MiB padding size is a
+			// fixed literal independent of maxResponseBodySize (1 MiB), so a
+			// broken cap cannot be hidden by changing the production limit.
 			name: "oversized JWKS response is rejected rather than parsed",
 			handler: func(w http.ResponseWriter, _ *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
@@ -2769,7 +2768,7 @@ func TestMultiIssuerTokenValidator_NeverFetchedRetryIsRateLimited(t *testing.T) 
 // TestMultiIssuerTokenValidator_SharedJWKSURL_SamePolicy proves that two
 // issuers resolving to the identical jwksURL under the identical HTTP
 // transport policy both validate successfully — each through its own
-// jwk.Cache and *http.Client (see externalIssuerConfig.jwksCache). This is
+// jwkfetch.Cache and *http.Client (see externalIssuerConfig.jwksCache). This is
 // the common real-world case: Microsoft Entra v1 tenants share one
 // tenant-independent JWKS endpoint, so two Entra tenants configured as
 // separate trusted issuers collide on the same jwks_url by construction.
@@ -2941,33 +2940,95 @@ func TestMultiIssuerTokenValidator_RetryAfterFetchFailureRefreshes(t *testing.T)
 	require.NotNil(t, result)
 }
 
-// TestLimitedBodyTransport asserts directly on the body cap that protects the
-// JWKS fetch path. A direct test is necessary rather than sufficient coverage
-// via Validate: jwx surfaces every fetch failure as its own WaitReady timeout,
-// so the cap's error never reaches a caller and cannot be distinguished there
-// from a 500, a parse failure, or a kid mismatch. Asserting on the cap itself
-// is the only way to pin it — the oversized case in
-// TestMultiIssuerTokenValidator_FetchJWKS proves the fetch fails, not why.
-func TestLimitedBodyTransport(t *testing.T) {
+func parseJWKS(t *testing.T, keys ...string) jwk.Set {
+	t.Helper()
+	raw := fmt.Sprintf(`{"keys":[%s]}`, strings.Join(keys, ","))
+	set, err := jwk.Parse([]byte(raw))
+	require.NoError(t, err)
+	return set
+}
+
+func mustECJWKJSON(t *testing.T, kid string) string {
+	t.Helper()
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	key, err := jwk.Import[jwk.Key](&priv.PublicKey)
+	require.NoError(t, err)
+	require.NoError(t, key.Set(jwk.KeyIDKey, kid))
+	b, err := json.Marshal(key)
+	require.NoError(t, err)
+	return string(b)
+}
+
+func mustRSAJWKJSON(t *testing.T, bits int, kid string) string {
+	t.Helper()
+	priv, err := rsa.GenerateKey(rand.Reader, bits)
+	require.NoError(t, err)
+	n := base64.RawURLEncoding.EncodeToString(priv.N.Bytes())
+	e := base64.RawURLEncoding.EncodeToString(big.NewInt(int64(priv.PublicKey.E)).Bytes())
+	return fmt.Sprintf(`{"kty":"RSA","kid":%q,"n":%q,"e":%q}`, kid, n, e)
+}
+
+// TestBridgeJWKSet_DropsUnsupportedKeys pins the conversion that lookupJWKS
+// uses to hand a jwx set to go-jose. v4 retains unparsable JWKS entries as
+// UnsupportedKey placeholders whose original JSON round-trips losslessly;
+// go-jose then either rejects the whole set (unknown kty) or accepts a key
+// jwx already refused (RSA below the 2048-bit floor). Dropping placeholders
+// keeps usable keys and applies the same floor on the token-exchange path.
+func TestBridgeJWKSet_DropsUnsupportedKeys(t *testing.T) {
 	t.Parallel()
 
-	const bodyCap = 1024
+	tests := []struct {
+		name       string
+		keys       []string
+		wantKids   []string
+		wantEmpty  bool
+		wantUnsupp int
+	}{
+		{
+			name:       "unknown kty next to a usable EC key is dropped, not fatal",
+			keys:       []string{mustECJWKJSON(t, "good"), `{"kty":"UNKNOWN","kid":"pq"}`},
+			wantKids:   []string{"good"},
+			wantUnsupp: 1,
+		},
+		{
+			name:       "RSA below 2048 bits is dropped rather than rehydrated for go-jose",
+			keys:       []string{mustRSAJWKJSON(t, 1024, "weak")},
+			wantEmpty:  true,
+			wantUnsupp: 1,
+		},
+		{
+			name:     "usable RSA is kept",
+			keys:     []string{mustRSAJWKJSON(t, 2048, "ok")},
+			wantKids: []string{"ok"},
+		},
+	}
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(strings.Repeat("a", 8*1024)))
-	}))
-	t.Cleanup(srv.Close)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 
-	client := srv.Client()
-	client.Transport = &limitedBodyTransport{base: client.Transport, max: bodyCap}
+			set := parseJWKS(t, tt.keys...)
+			gotUnsupp := 0
+			for _, key := range set.All() {
+				if jwk.IsUnsupportedKey(key) {
+					gotUnsupp++
+				}
+			}
+			require.Equal(t, tt.wantUnsupp, gotUnsupp)
 
-	resp, err := client.Get(srv.URL)
-	require.NoError(t, err, "the cap applies to reading the body, not to the round trip")
-	t.Cleanup(func() { _ = resp.Body.Close() })
-
-	body, err := io.ReadAll(resp.Body)
-	require.Error(t, err, "reading past the cap must fail rather than truncate silently: "+
-		"a truncated JWKS would be parsed as though it were the whole document")
-	assert.LessOrEqual(t, int64(len(body)), int64(bodyCap),
-		"no more than the cap may be delivered before the error")
+			jwks, err := bridgeJWKSet(set)
+			require.NoError(t, err)
+			if tt.wantEmpty {
+				assert.Empty(t, jwks.Keys)
+				return
+			}
+			require.Len(t, jwks.Keys, len(tt.wantKids))
+			gotKids := make([]string, 0, len(jwks.Keys))
+			for _, k := range jwks.Keys {
+				gotKids = append(gotKids, k.KeyID)
+			}
+			assert.Equal(t, tt.wantKids, gotKids)
+		})
+	}
 }

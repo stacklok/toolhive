@@ -1,0 +1,12 @@
+{
+  "name": "invalid-oidc-middleware",
+  "oidc_config": {
+    "Issuer": "https://issuer.example.com"
+  },
+  "middleware_configs": [
+    {
+      "type": "auth",
+      "parameters": null
+    }
+  ]
+}

@@ -14,14 +14,161 @@ import (
 
 	"github.com/ory/fosite"
 
-	"github.com/stacklok/toolhive/pkg/auth"
+	serveridentity "github.com/stacklok/toolhive/pkg/authserver/identity"
 	"github.com/stacklok/toolhive/pkg/authserver/server/session"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
 )
 
+// isNotFoundOrExpired reports whether err is a genuine "no such record"
+// result -- storage.ErrNotFound or storage.ErrExpired (or an error wrapping
+// either, e.g. via fosite's notFoundRFC6749Error) -- as opposed to a
+// transient backend failure (a Redis timeout, a marshal error, etc.). Callers
+// use this to avoid conflating the two: a real storage error must be reported
+// as a server error and logged loudly, never silently reinterpreted as "not
+// found" or used to trigger a fallback lookup.
+func isNotFoundOrExpired(err error) bool {
+	return errors.Is(err, storage.ErrNotFound) || errors.Is(err, storage.ErrExpired)
+}
+
+// deviceLoginOutcome is tryCompleteDeviceLogin's result: whether internalState
+// matched a pending device login, was genuinely not found, or the lookup hit
+// a real storage error (in which case a response has already been written).
+type deviceLoginOutcome int
+
+const (
+	// deviceLoginNotFound means internalState does not match a pending device
+	// login either; no response has been written and the caller should fall
+	// through to its own not-found handling.
+	deviceLoginNotFound deviceLoginOutcome = iota
+	// deviceLoginCompleted means the device login was found and completeDeviceLogin
+	// has already written a response.
+	deviceLoginCompleted
+	// deviceLoginStorageError means the lookup failed for a reason other than
+	// not-found/expired; a response has already been written.
+	deviceLoginStorageError
+	// deviceLoginRejected means the device login was found but the calling
+	// browser did not present its binding cookie; the login has been consumed
+	// and a 400 response has already been written.
+	deviceLoginRejected
+)
+
+// loadPendingOrCompleteDeviceLogin loads the pending OAuth-client
+// authorization for internalState, verifies its browser binding and deadline,
+// then deletes it (single-use) and builds its
+// AuthorizeRequester. The upstream IDP's redirect_uri is fixed per upstream
+// at construction (see upstream.OAuth2Config.RedirectURI / AuthCodeURL), so
+// the device flow's verification-page login (DeviceVerificationSubmitHandler)
+// reuses this same /oauth/callback endpoint rather than a distinct one --
+// there is no way to register a second redirect_uri per call. Accordingly,
+// when internalState genuinely does not match a pending OAuth-client
+// authorization (not found/expired -- never a backend error, see
+// isNotFoundOrExpired), this falls back to completing a pending device-flow
+// login instead of failing outright.
+//
+// A pending OAuth-client authorization is only released to the browser that
+// started it: req must carry the browser-binding cookie /oauth/authorize (or
+// the previous chain leg) set for internalState, see browser_binding.go. The
+// check runs only after the record loads, so the device-flow fallback, whose
+// browser never visited /oauth/authorize, is unaffected.
+//
+// The bool return is false whenever a response has already been written
+// (either the device-login completion, a storage error, a browser-binding
+// failure, or a not-found/corrupted error) and the caller must return
+// immediately without doing anything further.
+func (h *Handler) loadPendingOrCompleteDeviceLogin(
+	ctx context.Context, w http.ResponseWriter, req *http.Request, internalState, code string,
+) (*storage.PendingAuthorization, fosite.AuthorizeRequester, bool) {
+	pending, err := h.storage.LoadPendingAuthorization(ctx, internalState)
+	if err != nil {
+		if !isNotFoundOrExpired(err) {
+			// A genuine backend failure must not be silently reinterpreted as
+			// "maybe this is a device login" and reported to the client as an
+			// ordinary 400 -- that would mask an infra outage as client error.
+			slog.Error("failed to load pending authorization", "error", err)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return nil, nil, false
+		}
+		switch h.tryCompleteDeviceLogin(ctx, w, req, internalState, code) {
+		case deviceLoginCompleted, deviceLoginStorageError, deviceLoginRejected:
+			return nil, nil, false
+		case deviceLoginNotFound:
+			slog.Warn("pending authorization not found", "error", err)
+			http.Error(w, "authorization request not found or expired", http.StatusBadRequest)
+			return nil, nil, false
+		}
+	}
+
+	if !h.validateAndConsumePending(ctx, w, req, internalState, pending, storage.ConsentStageApproved) {
+		return nil, nil, false
+	}
+
+	ar := h.buildAuthorizeRequesterFromPending(ctx, pending)
+	if ar == nil {
+		// Stored redirect URI was corrupt - cannot redirect, show error page
+		http.Error(w, "authorization request data corrupted", http.StatusInternalServerError)
+		return nil, nil, false
+	}
+	return pending, ar, true
+}
+
+// validateAndConsumePending checks the required consent stage, browser binding
+// and absolute deadline before consuming the flow. Unbound or unapproved
+// requests never invalidate the owner's state.
+func (h *Handler) validateAndConsumePending(
+	ctx context.Context, w http.ResponseWriter, req *http.Request, state string, pending *storage.PendingAuthorization, stage string,
+) bool {
+	if pending.ConsentStage != stage {
+		http.Error(w, "authorization request not found or expired", http.StatusBadRequest)
+		return false
+	}
+	if bindErr := h.verifyBrowserBinding(req, state, pending.BrowserBindingHash); bindErr != nil {
+		writeUnboundCallbackRejection(w, bindErr,
+			"flow", "authorization_code",
+			"client_id", pending.ClientID,
+			"upstream_provider", pending.UpstreamProviderName,
+		)
+		return false
+	}
+	if pending.CreatedAt.IsZero() || !time.Now().Before(pending.CreatedAt.Add(storage.DefaultPendingAuthorizationTTL)) {
+		http.Error(w, "authorization request not found or expired", http.StatusBadRequest)
+		return false
+	}
+	if err := h.storage.DeletePendingAuthorization(ctx, state); err != nil {
+		if isNotFoundOrExpired(err) {
+			// A concurrent request consumed the record first; single use held.
+			slog.Debug("pending authorization already consumed", "error", err)
+			http.Error(w, "authorization request not found or expired", http.StatusBadRequest)
+			return false
+		}
+		slog.Error("failed to delete pending authorization", "error", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return false
+	}
+	return true
+}
+
+// writeUnboundCallbackRejection logs and answers a browser-binding failure for
+// either flow that shares /oauth/callback. The pending record is left intact so
+// the browser that started the flow can still complete it. The response is a plain 400
+// rather than a redirect: the browser making this request is by definition not
+// the one that started the flow, so sending it to the client's redirect URI
+// would hand a victim to whoever registered that client. attrs are extra slog
+// key/value pairs identifying the flow; callers must not pass the cookie
+// value, the stored hash, or device or user codes.
+func writeUnboundCallbackRejection(w http.ResponseWriter, bindErr error, attrs ...any) {
+	logAttrs := append([]any{"reason", bindErr.Error()}, attrs...)
+	slog.Warn("rejected upstream callback: browser binding check failed", //nolint:gosec // G706 - server-side identifiers
+		logAttrs...)
+	http.Error(w,
+		"sign-in must be completed in the browser that started it; cookies for this host must be enabled",
+		http.StatusBadRequest)
+}
+
 // CallbackHandler handles GET /oauth/callback requests.
-// It exchanges the upstream authorization code and issues our own authorization code.
+// It exchanges the upstream authorization code and issues our own authorization
+// code. The request must carry the browser-binding cookie set when the flow
+// started; see loadPendingOrCompleteDeviceLogin and browser_binding.go.
 func (h *Handler) CallbackHandler(w http.ResponseWriter, req *http.Request) {
 	ctx := req.Context()
 
@@ -37,7 +184,7 @@ func (h *Handler) CallbackHandler(w http.ResponseWriter, req *http.Request) {
 
 	// Handle upstream errors
 	if errorParam != "" {
-		h.handleUpstreamError(ctx, w, internalState, errorParam, errorDescription)
+		h.handleUpstreamError(ctx, w, req, internalState, errorParam, errorDescription)
 		return
 	}
 
@@ -54,28 +201,10 @@ func (h *Handler) CallbackHandler(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	// Load and delete pending authorization (single-use)
-	pending, err := h.storage.LoadPendingAuthorization(ctx, internalState)
-	if err != nil {
-		slog.Warn("pending authorization not found",
-			"error", err,
-		)
-		http.Error(w, "authorization request not found or expired", http.StatusBadRequest)
-		return
-	}
-
-	// Delete pending authorization immediately (single-use)
-	if err := h.storage.DeletePendingAuthorization(ctx, internalState); err != nil {
-		slog.Warn("failed to delete pending authorization",
-			"error", err,
-		)
-	}
-
-	// Build authorize requester for error responses now that we have pending
-	ar := h.buildAuthorizeRequesterFromPending(ctx, pending)
-	if ar == nil {
-		// Stored redirect URI was corrupt - cannot redirect, show error page
-		http.Error(w, "authorization request data corrupted", http.StatusInternalServerError)
+	// Load and delete pending authorization (single-use), falling back to
+	// completing a device-flow login when internalState doesn't match one.
+	pending, ar, ok := h.loadPendingOrCompleteDeviceLogin(ctx, w, req, internalState, code)
+	if !ok {
 		return
 	}
 
@@ -111,6 +240,10 @@ func (h *Handler) CallbackHandler(w http.ResponseWriter, req *http.Request) {
 	// This was generated in authorize.go and will be reused across all legs of the chain.
 	sessionID := pending.SessionID
 
+	if h.rememberedIdentityRejected(ctx, w, ar, pending, result, providerID) {
+		return
+	}
+
 	// Determine identity: first leg resolves from upstream, subsequent legs
 	// carry from pending. Synthetic identities (see upstream.Identity.Synthetic)
 	// bypass UserResolver — the synthesized subject rotates per re-auth and
@@ -138,6 +271,11 @@ func (h *Handler) CallbackHandler(w http.ResponseWriter, req *http.Request) {
 				return
 			}
 			subject = user.ID
+			if pending.RememberConsent {
+				clone := *pending
+				clone.FirstProviderSubject = providerSubject
+				pending = &clone
+			}
 			h.userResolver.UpdateLastAuthenticated(ctx, providerID, providerSubject)
 		}
 		userName = result.Name
@@ -152,14 +290,17 @@ func (h *Handler) CallbackHandler(w http.ResponseWriter, req *http.Request) {
 		}
 	}
 
+	// Capture provenance only on the callback that establishes the local ToolHive user.
+	pending = carryFirstUpstreamIdentity(pending, result)
+
 	// Place the resolved canonical user in the request context so callback storage
 	// calls that carry no tokens argument — GetAllUpstreamTokens during chain
 	// consistency, DeleteUpstreamTokensForProvider on cleanup — can resolve the user
-	// from context. We use WithPlatformUser, not WithIdentity: no ToolHive bearer has
-	// been issued at the callback, so there is no authenticated identity to assert —
+	// from context. The authserver-owned helper does not create a ToolHive identity:
+	// no bearer has been issued, so there is no authenticated identity to assert —
 	// only the canonical user for storage keying. (StoreUpstreamTokens does not need
 	// this; it keys off tokens.UserID below.)
-	ctx = auth.WithPlatformUser(ctx, subject)
+	ctx = serveridentity.WithCanonicalUser(ctx, subject)
 
 	// Convert IDP tokens to storage tokens with binding fields.
 	// SessionExpiresAt is set unconditionally as the Fosite session bound. Storage
@@ -201,15 +342,58 @@ func (h *Handler) CallbackHandler(w http.ResponseWriter, req *http.Request) {
 	// upstream subject; subject is the canonical ToolHive user ID. On subsequent legs
 	// the filter is not consulted, so this only drives filtering for upstreams[0].
 	// result.Claims carries the ID-token/userinfo claims (nil for synthetic upstreams).
-	principal := auth.PrincipalInfo{
-		Subject:        providerSubject,
-		PlatformUserID: subject,
-		Name:           userName,
-		Email:          userEmail,
-		Claims:         result.Claims,
+	principal := filterPrincipal{
+		subject:         providerSubject,
+		canonicalUserID: subject,
+		name:            userName,
+		email:           userEmail,
+		claims:          result.Claims,
 	}
 
 	h.continueChainOrComplete(ctx, w, req, ar, pending, sessionID, principal)
+}
+
+// rememberedIdentityRejected checks that a remembered approval still resolves to
+// the same linked account, before ResolveUser or any token write. It reports
+// whether it already answered the request with an error.
+func (h *Handler) rememberedIdentityRejected(ctx context.Context, w http.ResponseWriter, ar fosite.AuthorizeRequester,
+	pending *storage.PendingAuthorization, result *upstream.Identity, providerID string) bool {
+	providerSubject := result.Subject
+	if pending.ResolvedUserID == "" && pending.ConsentSessionDigest != "" && pending.ExpectedUserID == "" {
+		h.provider.WriteAuthorizeError(ctx, w, ar, fosite.ErrServerError)
+		return true
+	}
+	if pending.ExpectedUserID != "" && pending.ResolvedUserID == "" {
+		if pending.ConsentSessionDigest == "" || h.rememberedStorage == nil {
+			h.provider.WriteAuthorizeError(ctx, w, ar, fosite.ErrServerError)
+			return true
+		}
+		identity, lookupErr := h.storage.GetProviderIdentity(ctx, providerID, providerSubject)
+		if !result.Synthetic && providerSubject == pending.ExpectedProviderSubject &&
+			lookupErr == nil && identity != nil && identity.UserID == pending.ExpectedUserID {
+			// The remembered identity was verified without changing user or token storage.
+		} else if lookupErr != nil && !isNotFoundOrExpired(lookupErr) {
+			slog.Error("failed to verify remembered identity", "error", lookupErr)
+			h.provider.WriteAuthorizeError(ctx, w, ar, fosite.ErrServerError)
+			return true
+		} else {
+			h.revokeRememberedSession(ctx, w, ar, pending.ConsentSessionDigest)
+			return true
+		}
+	}
+	return false
+}
+
+// revokeRememberedSession deletes the originating consent session and answers
+// access_denied, or server_error when the revocation itself fails.
+func (h *Handler) revokeRememberedSession(ctx context.Context, w http.ResponseWriter,
+	ar fosite.AuthorizeRequester, digest string) {
+	if err := h.rememberedStorage.DeleteConsentSession(ctx, digest); err != nil {
+		slog.Error("failed to revoke mismatched consent session", "error", err)
+		h.provider.WriteAuthorizeError(ctx, w, ar, fosite.ErrServerError)
+		return
+	}
+	h.provider.WriteAuthorizeError(ctx, w, ar, fosite.ErrAccessDenied)
 }
 
 // maybeCarryForwardRefreshToken preserves a prior refresh token when the upstream IdP
@@ -268,6 +452,68 @@ func (h *Handler) maybeCarryForwardRefreshToken(
 	}
 }
 
+// callbackClient resolves the client for /oauth/callback and the consent step
+// (which reaches it through buildAuthorizeRequesterFromPending). If the CIMD fetch
+// limiter refuses the lookup (ErrCIMDRateLimited means no cached entry within
+// the decorator's MaxStale could be served, e.g. a cold cache after a restart
+// or an LRU eviction), it reads the persisted row from the base storage
+// instead: the pending authorization was already consumed, so a 429 here
+// would make the login unrecoverable.
+//
+// This is safe because the base row was written by the same fetch that
+// /oauth/authorize validated against, and the pending authorization lives at
+// most DefaultPendingAuthorizationTTL. /oauth/authorize may itself have been
+// served a stale cache entry, so the snapshot is bounded by that lifetime plus
+// the CIMD cache TTL plus the decorator's MaxStale, and does not depend on the
+// row's own TTL.
+//
+// The base-row fallback is still needed even with stale serving, which only
+// covers entries already cached in this process (not a cold cache). The shape
+// guard used when CIMD is disabled returns plain not-found and never
+// ErrCIMDRateLimited, so it cannot be bypassed this way. The base lookup's
+// error is returned as-is.
+func (h *Handler) callbackClient(ctx context.Context, id string) (fosite.Client, error) {
+	client, err := h.storage.GetClient(ctx, id)
+	if errors.Is(err, storage.ErrCIMDRateLimited) {
+		return storage.Unwrap(h.storage).GetClient(ctx, id)
+	}
+	return client, err
+}
+
+// carryFirstUpstreamIdentity stores provenance only when this callback establishes the local user.
+// SingleLeg authorizations connect one backend and never establish the user, so the
+// upstream they authenticate against must not become the token's sub_id source.
+func carryFirstUpstreamIdentity(pending *storage.PendingAuthorization, result *upstream.Identity) *storage.PendingAuthorization {
+	if pending.ResolvedUserID != "" || pending.SingleLeg {
+		return pending
+	}
+	verified := verifiedUpstreamIdentity(result)
+	if !verified.IsComplete() {
+		return pending
+	}
+	clone := *pending
+	clone.VerifiedUpstream = verified
+	return &clone
+}
+
+// verifiedUpstreamIdentity returns the validated upstream identity, or the zero
+// value when the identity is synthetic or any member is missing.
+func verifiedUpstreamIdentity(identity *upstream.Identity) session.UpstreamSubject {
+	if identity.Synthetic {
+		return session.UpstreamSubject{}
+	}
+	verified := session.UpstreamSubject{
+		Issuer:      identity.VerifiedIssuer,
+		Subject:     identity.VerifiedSubject,
+		StableClaim: identity.VerifiedStableClaim,
+		StableValue: identity.VerifiedStableValue,
+	}
+	if !verified.IsComplete() {
+		return session.UpstreamSubject{}
+	}
+	return verified
+}
+
 // writeAuthorizationResponse generates an authorization code and writes the redirect response.
 // This uses fosite's WriteAuthorizeResponse for RFC 6749 compliant redirects with proper
 // status codes (303 See Other) and cache headers.
@@ -280,8 +526,11 @@ func (h *Handler) writeAuthorizationResponse(
 	name string,
 	email string,
 ) error {
+	if pending.ConsentStage != storage.ConsentStageApproved {
+		return errors.New("authorization has not been approved")
+	}
 	// Get the client from storage
-	fositeClient, err := h.storage.GetClient(ctx, pending.ClientID)
+	fositeClient, err := h.callbackClient(ctx, pending.ClientID)
 	if err != nil {
 		return err
 	}
@@ -291,6 +540,7 @@ func (h *Handler) writeAuthorizationResponse(
 		Name:  name,
 		Email: email,
 	})
+	sess.VerifiedUpstream = pending.VerifiedUpstream
 
 	// Set expiration times
 	now := time.Now()
@@ -313,6 +563,10 @@ func (h *Handler) writeAuthorizationResponse(
 	authorizeRequest.RequestedAt = now
 	authorizeRequest.ResponseTypes = fosite.Arguments{"code"}
 	authorizeRequest.State = pending.State // Set state for inclusion in redirect
+	if pending.Resource != "" {
+		authorizeRequest.SetRequestedAudience(fosite.Arguments{pending.Resource})
+		authorizeRequest.GrantAudience(pending.Resource)
+	}
 
 	// Parse the redirect URI - this was validated by fosite during authorization,
 	// so a parse error here indicates storage corruption
@@ -344,6 +598,9 @@ func (h *Handler) writeAuthorizationResponse(
 		return err
 	}
 
+	// Only a successfully generated response may create a remembered browser session.
+	h.maybeRememberConsent(ctx, w, pending, subject)
+
 	// Write the redirect response using fosite's RFC 6749 compliant handler
 	// This handles status code (303), cache headers, and URL building
 	h.provider.WriteAuthorizeResponse(ctx, w, authorizeRequest, response)
@@ -372,7 +629,7 @@ func (h *Handler) buildAuthorizeRequesterFromPending(
 	}
 	ar.RedirectURI = redirectURI
 
-	if client, err := h.storage.GetClient(ctx, pending.ClientID); err == nil {
+	if client, err := h.callbackClient(ctx, pending.ClientID); err == nil {
 		ar.Client = client
 	}
 
@@ -388,10 +645,13 @@ func (h *Handler) buildAuthorizeRequesterFromPending(
 }
 
 // handleUpstreamError handles error responses from the upstream IDP.
-// It attempts to redirect the error to the client if possible, otherwise shows an error page.
+// It attempts to redirect the error to the client if possible, otherwise
+// falls back to completing a pending device-flow login as denied (see
+// tryDenyDeviceLoginOnUpstreamError), otherwise shows an error page.
 func (h *Handler) handleUpstreamError(
 	ctx context.Context,
 	w http.ResponseWriter,
+	req *http.Request,
 	internalState string,
 	errorParam string,
 	errorDescription string,
@@ -404,7 +664,8 @@ func (h *Handler) handleUpstreamError(
 	// Try to load pending authorization to redirect error to client
 	if internalState != "" {
 		pending, err := h.storage.LoadPendingAuthorization(ctx, internalState)
-		if err == nil {
+		switch {
+		case err == nil:
 			// Delete only the single-use pending authorization. Deliberately do NOT touch
 			// upstream tokens: the upstream IdP errored before this attempt exchanged a
 			// code, so this attempt stored nothing. Under a (gateway, user)-keyed storage
@@ -412,7 +673,9 @@ func (h *Handler) handleUpstreamError(
 			// successful authorization — e.g. canceling a re-connect (error=access_denied)
 			// would otherwise disconnect the already-connected account — and earlier legs
 			// are likewise the user's own valid tokens. Leave them all intact.
-			_ = h.storage.DeletePendingAuthorization(ctx, internalState)
+			if !h.validateAndConsumePending(ctx, w, req, internalState, pending, storage.ConsentStageApproved) {
+				return
+			}
 			ar := h.buildAuthorizeRequesterFromPending(ctx, pending)
 			if ar != nil {
 				// Use generic error hint to avoid exposing upstream IDP details to clients.
@@ -421,6 +684,18 @@ func (h *Handler) handleUpstreamError(
 				return
 			}
 			// ar is nil means stored redirect URI was corrupt - fall through to error page
+		case isNotFoundOrExpired(err):
+			// internalState doesn't match a pending OAuth-client authorization --
+			// it may belong to a device-flow login instead (e.g. the human clicked
+			// "Deny" at the upstream IDP). See tryDenyDeviceLoginOnUpstreamError's
+			// doc comment for why this fallback matters.
+			if h.tryDenyDeviceLoginOnUpstreamError(ctx, w, req, internalState) {
+				return
+			}
+		default:
+			// A genuine backend failure must not be silently swallowed, even though
+			// the response below is the same generic error either way.
+			slog.Error("failed to load pending authorization on upstream error", "error", err)
 		}
 	}
 
@@ -486,14 +761,14 @@ func (h *Handler) continueChainOrComplete(
 	ar fosite.AuthorizeRequester,
 	pending *storage.PendingAuthorization,
 	sessionID string,
-	principal auth.PrincipalInfo,
+	principal FilterPrincipal,
 ) {
 	// subject is the canonical ToolHive user ID used for chain state, token keying,
-	// and the cross-leg identity check. Note this is principal.PlatformUserID, NOT
-	// principal.Subject (which is the upstream provider's subject).
-	subject := principal.PlatformUserID
-	name := principal.Name
-	email := principal.Email
+	// and the cross-leg identity check. Note this is principal.GetCanonicalUserID(), NOT
+	// principal.GetSubject() (which is the upstream provider's subject).
+	subject := principal.GetCanonicalUserID()
+	name := principal.GetName()
+	email := principal.GetEmail()
 
 	// SingleLeg authorizations intentionally bypass chain continuation: the caller
 	// scoped this flow to one specific upstream (e.g. a UI-initiated "connect one
@@ -572,18 +847,27 @@ func (h *Handler) continueChainOrComplete(
 	// completed legs remain in storage until their TTL expires. Add cascading cleanup
 	// when pending authorizations expire to also delete associated upstream tokens.
 	secrets := newUpstreamAuthSecrets()
+	binding := newBrowserBinding()
 	nextPending := &storage.PendingAuthorization{
 		// Carry client request fields
-		ClientID:      pending.ClientID,
-		RedirectURI:   pending.RedirectURI,
-		State:         pending.State,
-		PKCEChallenge: pending.PKCEChallenge,
-		PKCEMethod:    pending.PKCEMethod,
-		Scopes:        pending.Scopes,
+		ClientID:                pending.ClientID,
+		RedirectURI:             pending.RedirectURI,
+		State:                   pending.State,
+		PKCEChallenge:           pending.PKCEChallenge,
+		PKCEMethod:              pending.PKCEMethod,
+		Scopes:                  pending.Scopes,
+		Resource:                pending.Resource,
+		ConsentStage:            pending.ConsentStage,
+		RememberConsent:         pending.RememberConsent,
+		FirstProviderSubject:    pending.FirstProviderSubject,
+		ExpectedUserID:          pending.ExpectedUserID,
+		ExpectedProviderSubject: pending.ExpectedProviderSubject,
+		ConsentSessionDigest:    pending.ConsentSessionDigest,
 		// Fresh per-leg secrets
 		InternalState:        secrets.State,
 		UpstreamPKCEVerifier: secrets.PKCEVerifier,
 		UpstreamNonce:        secrets.Nonce,
+		BrowserBindingHash:   binding.hash,
 		// Chain state
 		UpstreamProviderName: nextProvider,
 		SessionID:            sessionID,
@@ -594,7 +878,8 @@ func (h *Handler) continueChainOrComplete(
 		ResolvedUserID:    subject,
 		ResolvedUserName:  name,
 		ResolvedUserEmail: email,
-		CreatedAt:         time.Now(),
+		VerifiedUpstream:  pending.VerifiedUpstream,
+		CreatedAt:         pending.CreatedAt,
 	}
 
 	if err := h.storage.StorePendingAuthorization(ctx, secrets.State, nextPending); err != nil {
@@ -629,6 +914,11 @@ func (h *Handler) continueChainOrComplete(
 		return
 	}
 
+	// Fresh binding for the fresh state: the same browser must also complete
+	// the next leg's callback. Set only once every failure path above is past,
+	// so a failed leg leaves no cookie behind. The consumed leg's cookie is
+	// left to expire.
+	h.setBrowserBindingCookie(w, secrets.State, binding.value)
 	http.Redirect(w, req, nextURL, http.StatusFound)
 }
 

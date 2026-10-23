@@ -36,7 +36,26 @@ const (
 	KeyTypeUpstream = "upstream"
 
 	// KeyTypePending is the key type for pending authorizations.
-	KeyTypePending = "pending"
+	KeyTypePending        = "pending"
+	KeyTypeConsentSession = "consent:session"
+	KeyTypeClientApproval = "consent:approval"
+
+	// KeyTypeDeviceCode is the key type for RFC 8628 device authorization
+	// requests, keyed by device_code.
+	KeyTypeDeviceCode = "device"
+
+	// KeyTypeDeviceUserCode is the key type for the user_code -> device_code
+	// secondary index used by the verification page.
+	KeyTypeDeviceUserCode = "device:usercode"
+
+	// KeyTypePendingDeviceLogin is the key type for pending device-flow
+	// verification-page logins awaiting the upstream IDP callback.
+	KeyTypePendingDeviceLogin = "pending:device"
+
+	// KeyTypePendingDeviceConfirmation is the key type for resolved
+	// device-flow logins awaiting an explicit Approve/Deny decision at the
+	// verification page.
+	KeyTypePendingDeviceConfirmation = "pending:device:confirm"
 
 	// KeyTypeInvalidated is the key type for invalidated authorization codes.
 	KeyTypeInvalidated = "invalidated"
@@ -64,6 +83,13 @@ const (
 
 	// KeyTypeUserProviders is the key type for user to provider identity reverse lookups.
 	KeyTypeUserProviders = "user:providers"
+
+	// KeyTypeDCRClientIdx is the key type for the sorted set of client IDs
+	// counted against the DCR client cap, each scored by its expiry in Unix
+	// milliseconds. It is a single key per prefix, so it shares the client
+	// rows' hash slot and one Lua script can update both on Redis Cluster.
+	// The name deliberately does not match the "client:*" scan pattern.
+	KeyTypeDCRClientIdx = "client-idx"
 
 	// KeyTypeDCR is the key type for RFC 7591 Dynamic Client Registration credentials
 	// persisted by an authserver upstream-DCR resolver. Distinct from KeyTypeClient,
@@ -115,6 +141,12 @@ func redisProviderKey(prefix, providerID, providerSubject string) string {
 //
 // Format: "{prefix}dcr:<len(issuer)>:<issuer>:<len(upstream_id)>:<upstream_id>:<len(redirect_uri)>:<redirect_uri>:<scopes_hash>"
 //
+// When DCRKey.RotationKey is non-empty a length-prefixed
+// ":<len(rotation_key)>:<rotation_key>" segment follows the scopes hash. An
+// empty RotationKey yields exactly the format above, so rows written before
+// the field existed keep resolving; the hex scopes hash contains no colon, so
+// the two shapes cannot be confused.
+//
 // The first three segments are length-prefixed to handle colons in UpstreamID
 // and RedirectURI (and, for symmetry, Issuer) without ambiguity, mirroring
 // redisProviderKey. ScopesHash is expected to be a SHA-256 hex digest produced
@@ -144,12 +176,16 @@ func redisProviderKey(prefix, providerID, providerSubject string) string {
 // add the distinguishing component back to the key format alongside an
 // explicit migration story for existing Redis-cached entries.
 func redisDCRKey(prefix string, key DCRKey) string {
-	return fmt.Sprintf("%s%s:%d:%s:%d:%s:%d:%s:%s",
+	base := fmt.Sprintf("%s%s:%d:%s:%d:%s:%d:%s:%s",
 		prefix, KeyTypeDCR,
 		len(key.Issuer), key.Issuer,
 		len(key.UpstreamID), key.UpstreamID,
 		len(key.RedirectURI), key.RedirectURI,
 		key.ScopesHash)
+	if key.RotationKey == "" {
+		return base
+	}
+	return fmt.Sprintf("%s:%d:%s", base, len(key.RotationKey), key.RotationKey)
 }
 
 // redisUpstreamKey generates a Redis key for a per-provider upstream token entry.

@@ -430,6 +430,32 @@ func TestUpsertEntryAndRemoveEntry(t *testing.T) {
 	require.NoError(t, RemoveEntry(root, "does-not-exist"))
 }
 
+func TestCompareAndSwapEntry(t *testing.T) {
+	t.Parallel()
+	root := testRoot(t)
+
+	expected := Entry{
+		Name: "my-skill", Source: "my-skill", Digest: ociDigest(3),
+		Extra: map[string]any{"futureField": "preserved-in-comparison"},
+	}
+	require.NoError(t, UpsertEntry(root, expected))
+
+	replacement := expected
+	replacement.Digest = ociDigest(4)
+	require.NoError(t, CompareAndSwapEntry(root, expected, replacement))
+
+	staleReplacement := expected
+	staleReplacement.Digest = ociDigest(5)
+	err := CompareAndSwapEntry(root, expected, staleReplacement)
+	require.ErrorIs(t, err, ErrEntryChanged)
+
+	lf, err := Load(root)
+	require.NoError(t, err)
+	current, ok := lf.Get(expected.Name)
+	require.True(t, ok)
+	assert.Equal(t, replacement, current, "a stale replacement must not overwrite the current entry")
+}
+
 func TestUpdateLeavesLockfileUnchangedOnError(t *testing.T) {
 	t.Parallel()
 	root := testRoot(t)

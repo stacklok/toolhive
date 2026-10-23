@@ -18,7 +18,7 @@ import (
 	"time"
 
 	"go.opentelemetry.io/otel/trace"
-	"gopkg.in/yaml.v3"
+	"go.yaml.in/yaml/v3"
 	"k8s.io/client-go/rest"
 
 	"github.com/stacklok/toolhive-core/env"
@@ -29,6 +29,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
 	"github.com/stacklok/toolhive/pkg/container"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
+	"github.com/stacklok/toolhive/pkg/diagnostics"
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/migration"
 	"github.com/stacklok/toolhive/pkg/telemetry"
@@ -160,10 +161,16 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 		return fmt.Errorf("failed to default outgoing auth subject provider names: %w", err)
 	}
 
-	// Construct embedded authorization server if configured.
+	// Construct the embedded authorization server if configured, and start its
+	// TLS listener when the auth server config enables one.
 	var embeddedAuthServer *authserverrunner.EmbeddedAuthServer
 	if authServerRC != nil {
-		embeddedAuthServer, err = authserverrunner.NewEmbeddedAuthServer(ctx, authServerRC)
+		if err := validateAuthServerListenerPorts(cfg.Port, vmcpCfg.Telemetry, authServerRC); err != nil {
+			return err
+		}
+		embeddedAuthServer, err = authserverrunner.NewEmbeddedAuthServer(
+			ctx, authServerRC, authserverrunner.WithListenerHost(authServerListenerHost(cfg.Host)),
+		)
 		if err != nil {
 			return fmt.Errorf("failed to create embedded auth server: %w", err)
 		}
@@ -172,6 +179,9 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 				slog.Error(fmt.Sprintf("failed to close embedded auth server: %v", closeErr))
 			}
 		}()
+		if err := embeddedAuthServer.Start(); err != nil {
+			return fmt.Errorf("failed to start auth server TLS listener: %w", err)
+		}
 		slog.Info("embedded authorization server initialized")
 	}
 
@@ -350,15 +360,10 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	}
 	// The factory never aggregates — the core is the single source of capability
 	// aggregation (agg feeds it via Config.Aggregator below).
-	var sessionFactoryOpts []vmcpsession.MultiSessionFactoryOption
-	if revisions, ok := backendClient.(vmcp.RevisionReporter); ok {
-		sessionFactoryOpts = append(sessionFactoryOpts, vmcpsession.WithRevisionLookup(revisions.CachedRevision))
-	}
-	sessionFactoryOpts = append(
-		sessionFactoryOpts,
-		vmcpsession.WithRequestTimeoutResolver(backendRequestTimeoutResolver(vmcpCfg)),
+	sessionFactory := vmcpsession.NewSessionFactory(
+		outgoingRegistry,
+		sessionFactoryOptions(vmcpCfg, backendClient)...,
 	)
-	sessionFactory := vmcpsession.NewSessionFactory(outgoingRegistry, sessionFactoryOpts...)
 
 	// When the optimizer is enabled, its meta-tools are pass-through tools.
 	// Authz uses this for optimizer-aware authorization/filtering.
@@ -545,6 +550,62 @@ func backendRequestTimeoutResolver(cfg *config.Config) func(workloadID string) t
 	}
 }
 
+// sessionFactoryOptions builds the session factory options implied by cfg and
+// the backend client. Split out of Serve so the config-driven choices are
+// unit-testable without standing up a whole server.
+func sessionFactoryOptions(
+	cfg *config.Config,
+	backendClient vmcp.BackendClient,
+) []vmcpsession.MultiSessionFactoryOption {
+	var opts []vmcpsession.MultiSessionFactoryOption
+	if revisions, ok := backendClient.(vmcp.RevisionReporter); ok {
+		opts = append(opts, vmcpsession.WithRevisionLookup(revisions.CachedRevision))
+	}
+	opts = append(opts, vmcpsession.WithRequestTimeoutResolver(backendRequestTimeoutResolver(cfg)))
+	if backendInit := backendInitTimeout(cfg); backendInit > 0 {
+		opts = append(opts, vmcpsession.WithBackendInitTimeout(backendInit))
+	}
+	if filter := listChangedFilter(cfg); filter != nil {
+		opts = append(opts, vmcpsession.WithListChangedFilter(filter))
+	}
+	return opts
+}
+
+// backendInitTimeout returns the configured session-init cap, or 0 when unset
+// so the factory keeps its own default. Mirrors backendRequestTimeoutResolver's
+// nil-safety; there is no per-workload form because the cap exists to bound the
+// whole session handshake, which is only as fast as its slowest backend.
+func backendInitTimeout(cfg *config.Config) time.Duration {
+	if cfg == nil || cfg.Operational == nil || cfg.Operational.Timeouts == nil {
+		return 0
+	}
+	return time.Duration(cfg.Operational.Timeouts.BackendInit)
+}
+
+// listChangedFilter builds the per-backend list_changed predicate from cfg, or
+// returns nil when the config asks for the default (subscribe to everything) so
+// the factory keeps its own behaviour.
+func listChangedFilter(cfg *config.Config) func(workloadID string) bool {
+	if cfg == nil || cfg.Operational == nil || cfg.Operational.ListChanged == nil {
+		return nil
+	}
+	lc := cfg.Operational.ListChanged
+	if lc.Enabled != nil && !*lc.Enabled {
+		return func(string) bool { return false }
+	}
+	if len(lc.DisabledWorkloads) == 0 {
+		return nil
+	}
+	disabled := make(map[string]struct{}, len(lc.DisabledWorkloads))
+	for _, id := range lc.DisabledWorkloads {
+		disabled[id] = struct{}{}
+	}
+	return func(workloadID string) bool {
+		_, off := disabled[workloadID]
+		return !off
+	}
+}
+
 // loadAndValidateConfig loads and validates the vMCP configuration file.
 func loadAndValidateConfig(configPath string) (*config.Config, error) {
 	slog.Info(fmt.Sprintf("Loading configuration from: %s", configPath))
@@ -611,6 +672,34 @@ func vmcpNamespace() string {
 		return "local"
 	}
 	return namespace
+}
+
+// authServerListenerHost returns the host the embedded auth server's TLS
+// listener binds: the same host as the MCP listener, resolved through
+// vmcpserver.WithDefaults so the two cannot drift apart.
+func authServerListenerHost(host string) string {
+	return vmcpserver.WithDefaults(&vmcpserver.Config{Host: host}).Host
+}
+
+// validateAuthServerListenerPorts rejects a vMCP or diagnostics port that
+// collides with the embedded auth server's fixed TLS listener port. The port
+// is part of the issuer URL, so a clash is an error rather than a reason to
+// pick another port.
+// Keep in sync with Runner.startEmbeddedAuthServerListener in pkg/runner.
+func validateAuthServerListenerPorts(
+	port int, telemetryCfg *telemetry.Config, authServerRC *authserverconfig.RunConfig,
+) error {
+	if authServerRC == nil || authServerRC.TLSListener == nil {
+		return nil
+	}
+	if port == authserverrunner.TLSListenerPort {
+		return fmt.Errorf("vMCP port %d conflicts with the auth server TLS listener port", port)
+	}
+	if telemetryCfg != nil && telemetryCfg.EnablePrometheusMetricsPath &&
+		diagnostics.ResolvePort(telemetryCfg.PrometheusPort) == authserverrunner.TLSListenerPort {
+		return fmt.Errorf("diagnostics port %d conflicts with the auth server TLS listener port", authserverrunner.TLSListenerPort)
+	}
+	return nil
 }
 
 // loadAuthServerConfig loads the auth server RunConfig from a sibling file

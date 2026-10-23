@@ -44,13 +44,14 @@ func driveLoopbackAuthorizeAndCallback(t *testing.T, dynamicRedirectURI string) 
 	authReq := httptest.NewRequest(http.MethodGet, "/oauth/authorize?"+authParams.Encode(), nil)
 	authRec := httptest.NewRecorder()
 	handler.AuthorizeHandler(authRec, authReq)
-	require.Equal(t, http.StatusFound, authRec.Code,
+	authRec = approveConsent(t, handler, authRec)
+	require.Equal(t, http.StatusSeeOther, authRec.Code,
 		"authorize should redirect to upstream, got %d: %s", authRec.Code, authRec.Body.String())
 
 	internalState := mockUpstream.capturedState
 	require.NotEmpty(t, internalState, "upstream authorization URL should have been built with the internal state")
 
-	callbackReq := httptest.NewRequest(http.MethodGet, "/oauth/callback?code=upstream-code&state="+internalState, nil)
+	callbackReq := newCallbackRequest("code=upstream-code&state="+internalState, bindingCookieFrom(t, authRec, internalState))
 	callbackRec := httptest.NewRecorder()
 	handler.CallbackHandler(callbackRec, callbackReq)
 	require.Equal(t, http.StatusSeeOther, callbackRec.Code,

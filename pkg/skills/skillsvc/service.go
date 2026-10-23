@@ -7,8 +7,8 @@ package skillsvc
 //go:generate mockgen -destination=mocks/mock_signer.go -package=mocks github.com/stacklok/toolhive-core/container/signer Signer
 
 import (
+	"context"
 	"fmt"
-	"hash/fnv"
 	"net/http"
 	"sync"
 
@@ -17,6 +17,7 @@ import (
 	ociskills "github.com/stacklok/toolhive-core/oci/skills"
 	regtypes "github.com/stacklok/toolhive-core/registry/types"
 	"github.com/stacklok/toolhive/pkg/groups"
+	"github.com/stacklok/toolhive/pkg/projecttxn"
 	"github.com/stacklok/toolhive/pkg/skills"
 	"github.com/stacklok/toolhive/pkg/skills/gitresolver"
 	"github.com/stacklok/toolhive/pkg/skills/verifier"
@@ -117,30 +118,26 @@ func (sl *skillLock) lock(name string, scope skills.Scope, projectRoot string) f
 	return m.Unlock
 }
 
-// projectTxStripes bounds the project transaction lock set. Project roots
-// are request-derived in the long-running API service, so a grow-forever
-// map keyed by root would leak; a fixed stripe set caps memory at a
-// constant. Two projects hashing to the same stripe merely serialize
-// against each other — never a correctness issue.
-const projectTxStripes = 64
-
 // projectTx serializes all project-scoped skill mutations for a given
 // canonical ProjectRoot. Different projects remain concurrent (up to stripe
 // collisions); Install, Uninstall, Sync, and Upgrade for the same project
 // share one transaction that spans extraction through bookkeeping,
 // dependency materialization, cascades, and compensation.
-type projectTx struct {
-	stripes [projectTxStripes]sync.Mutex
-}
+type projectTx struct{}
 
 // lock acquires the project transaction mutex for projectRoot's stripe and
 // returns a release function.
-func (p *projectTx) lock(projectRoot string) func() {
-	h := fnv.New32a()
-	_, _ = h.Write([]byte(projectRoot))
-	m := &p.stripes[h.Sum32()%projectTxStripes]
-	m.Lock()
-	return m.Unlock
+func (*projectTx) lock(ctx context.Context, projectRoot string) (func(), error) {
+	return projecttxn.Lock(ctx, projectRoot)
+}
+
+// run executes fn while holding both the process-wide project transaction
+// mutex and an OS-backed file lock shared by ToolHive processes that use the
+// same state directory. The lock file is intentionally retained after
+// release: deleting it can split concurrent waiters across different inodes.
+// It is separate from the project's lock file and Git metadata.
+func (*projectTx) run(ctx context.Context, projectRoot string, fn func() error) error {
+	return projecttxn.Run(ctx, projectRoot, fn)
 }
 
 // depState tracks dependency traversal under a held project transaction.
@@ -219,9 +216,10 @@ func WithSigner(sg signer.Signer) Option {
 	}
 }
 
-// WithVerifier sets the signature verifier used for install-time
-// verification. Defaults to the Sigstore verifier with the composite
-// registry keychain.
+// WithVerifier sets the signature verifier used by install, sync, and
+// upgrade. Strict OCI re-anchor upgrades additionally require v to implement
+// verifier.OCISnapshotRetriever and fail explicitly when it does not.
+// Defaults to the Sigstore verifier with the composite registry keychain.
 func WithVerifier(v verifier.Verifier) Option {
 	return func(s *service) {
 		s.sigVerifier = v

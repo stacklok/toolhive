@@ -20,6 +20,7 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
+	"fmt"
 	"math/big"
 	"strings"
 	"testing"
@@ -364,6 +365,43 @@ func TestValidateDCRRequest(t *testing.T) {
 			errorCode:   DCRErrorInvalidClientMetadata,
 		},
 
+		// device_code registrations (RFC 8628)
+		{
+			name: "device_code-only registration succeeds without redirect_uris or response_types",
+			request: &oauthproto.DynamicClientRegistrationRequest{
+				GrantTypes: []string{oauthproto.GrantTypeDeviceCode},
+			},
+			expectError:       false,
+			expectedGrants:    []string{oauthproto.GrantTypeDeviceCode},
+			expectedResponses: nil,
+		},
+		{
+			name: "device_code plus refresh_token registration succeeds",
+			request: &oauthproto.DynamicClientRegistrationRequest{
+				GrantTypes: []string{oauthproto.GrantTypeDeviceCode, "refresh_token"},
+			},
+			expectError:       false,
+			expectedGrants:    []string{oauthproto.GrantTypeDeviceCode, "refresh_token"},
+			expectedResponses: nil,
+		},
+		{
+			name: "device_code registration with response_types rejected",
+			request: &oauthproto.DynamicClientRegistrationRequest{
+				GrantTypes:    []string{oauthproto.GrantTypeDeviceCode},
+				ResponseTypes: []string{"code"},
+			},
+			expectError: true,
+			errorCode:   DCRErrorInvalidClientMetadata,
+		},
+		{
+			name: "device_code mixed with authorization_code still requires redirect_uris",
+			request: &oauthproto.DynamicClientRegistrationRequest{
+				GrantTypes: []string{oauthproto.GrantTypeDeviceCode, "authorization_code"},
+			},
+			expectError: true,
+			errorCode:   DCRErrorInvalidRedirectURI,
+		},
+
 		// response_types validation
 		{
 			name: "response_types defaults when empty",
@@ -575,6 +613,12 @@ func TestValidatePrivateKeyJWTRegistration(t *testing.T) {
 			require.NoError(t, err)
 			r.JWKS.Keys[0].Key = &ecKey.PublicKey
 		}, true, true},
+		{"oversized RSA modulus", func(r *oauthproto.DynamicClientRegistrationRequest) {
+			r.JWKS.Keys[0].Key = &rsa.PublicKey{N: new(big.Int).Lsh(big.NewInt(1), 8192), E: 65537}
+		}, true, true},
+		{"oversized RSA exponent", func(r *oauthproto.DynamicClientRegistrationRequest) {
+			r.JWKS.Keys[0].Key = &rsa.PublicKey{N: validKey.Key.(*rsa.PublicKey).N, E: 2147483647}
+		}, true, true},
 		{"unsupported algorithm", func(r *oauthproto.DynamicClientRegistrationRequest) { r.TokenEndpointAuthSigningAlg = "HS256" }, true, true},
 		{"missing algorithm", func(r *oauthproto.DynamicClientRegistrationRequest) { r.TokenEndpointAuthSigningAlg = "" }, true, true},
 		{"jwks_uri", func(r *oauthproto.DynamicClientRegistrationRequest) { r.JWKSURI = "https://keys.example/jwks" }, true, true},
@@ -607,6 +651,49 @@ func TestValidatePrivateKeyJWTRegistration(t *testing.T) {
 		})
 	}
 }
+
+func TestPrivateKeyJWTInlineJWKSCount(t *testing.T) {
+	t.Parallel()
+
+	key := jose.JSONWebKey{Key: testRSAPublicKey(t), KeyID: "key-1", Algorithm: string(jose.RS256), Use: "sig"}
+	for _, tt := range []struct {
+		name            string
+		count           int
+		invalidFirstKey bool
+		wantErr         bool
+	}{
+		{"maximum number of valid keys accepted", maxInlineJWKSKeys, false, false},
+		{"one over the maximum rejected before validating entries", maxInlineJWKSKeys + 1, true, true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			keys := make([]jose.JSONWebKey, tt.count)
+			for i := range keys {
+				keys[i] = key
+			}
+			if tt.invalidFirstKey {
+				keys[0] = jose.JSONWebKey{}
+			}
+			validated, dcrErr := ValidateDCRRequest(&oauthproto.DynamicClientRegistrationRequest{
+				TokenEndpointAuthMethod:     oauthproto.TokenEndpointAuthMethodPrivateKeyJWT,
+				TokenEndpointAuthSigningAlg: string(jose.RS256),
+				JWKS:                        &jose.JSONWebKeySet{Keys: keys},
+			}, false, true)
+			if tt.wantErr {
+				require.Nil(t, validated)
+				require.NotNil(t, dcrErr)
+				assert.Equal(t, DCRErrorInvalidClientMetadata, dcrErr.Error)
+				assert.Contains(t, dcrErr.ErrorDescription,
+					fmt.Sprintf("too many inline jwks keys (maximum %d)", maxInlineJWKSKeys))
+			} else {
+				require.Nil(t, dcrErr)
+				require.NotNil(t, validated)
+				assert.Len(t, validated.JWKS.Keys, maxInlineJWKSKeys)
+			}
+		})
+	}
+}
+
 func TestPrivateKeyJWTAllowsTokenExchangeWithoutRedirectURI(t *testing.T) {
 	t.Parallel()
 
@@ -813,7 +900,7 @@ func TestFilterPublicGrantTypes(t *testing.T) {
 		{"supported set passes through", []string{"authorization_code", "refresh_token"},
 			[]string{"authorization_code", "refresh_token"}, false},
 		{"unsupported entries are dropped, not fatal",
-			[]string{"authorization_code", "refresh_token", "urn:ietf:params:oauth:grant-type:device_code"},
+			[]string{"authorization_code", "refresh_token", "client_credentials"},
 			[]string{"authorization_code", "refresh_token"}, false},
 		{"unsupported-only list rejected (authorization_code missing)",
 			[]string{"urn:ietf:params:oauth:grant-type:device_code", "client_credentials"}, nil, true},

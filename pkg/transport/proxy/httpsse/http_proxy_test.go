@@ -197,43 +197,26 @@ func TestForwardResponseToClients(t *testing.T) {
 	require.NoError(t, err)
 	proxy.liveSSESessions.Store(clientID, sseSession)
 
-	// Create a test response
-	response, err := jsonrpc2.NewResponse(jsonrpc2.StringID("test"), "test result", nil)
+	// Create a test response carrying the routed ID the proxy would have
+	// minted for this session, as the backend echoes it back.
+	routedID, err := encodeRoutedID(clientID, jsonrpc2.StringID("test"))
+	require.NoError(t, err)
+	response, err := jsonrpc2.NewResponse(jsonrpc2.StringID(routedID), "test result", nil)
 	require.NoError(t, err)
 
 	// Forward the response
 	err = proxy.ForwardResponseToClients(ctx, response)
 	assert.NoError(t, err)
 
-	// Check if the message was received
+	// Check if the message was received with the client's original ID restored
 	select {
 	case msg := <-messageCh:
 		assert.Contains(t, msg, "event: message")
+		assert.Contains(t, msg, `"id":"test"`)
 		assert.Contains(t, msg, "test result")
 	case <-time.After(1 * time.Second):
 		t.Fatal("Message was not forwarded to client")
 	}
-}
-
-// TestForwardResponseToClients_NoClients tests forwarding when no clients are connected
-//
-//nolint:paralleltest // Test modifies shared proxy state
-func TestForwardResponseToClients_NoClients(t *testing.T) {
-	proxy := NewHTTPSSEProxy("localhost", 8080, false, nil, nil)
-	ctx := t.Context()
-
-	// Create a test response
-	response, err := jsonrpc2.NewResponse(jsonrpc2.StringID("test"), "test result", nil)
-	require.NoError(t, err)
-
-	// Forward the response (should queue it)
-	err = proxy.ForwardResponseToClients(ctx, response)
-	assert.NoError(t, err)
-
-	// Verify the message was queued
-	proxy.pendingMutex.Lock()
-	assert.Len(t, proxy.pendingMessages, 1)
-	proxy.pendingMutex.Unlock()
 }
 
 // TestSendSSEEvent_ChannelFull tests handling of full client channels
@@ -271,76 +254,6 @@ func TestSendSSEEvent_ChannelFull(t *testing.T) {
 
 	// Clean up
 	proxy.removeClient(clientID)
-}
-
-// TestProcessPendingMessages tests processing of pending messages
-//
-//nolint:paralleltest // Test modifies shared proxy state
-func TestProcessPendingMessages(t *testing.T) {
-	proxy := NewHTTPSSEProxy("localhost", 8080, false, nil, nil)
-
-	// Add pending messages
-	for i := 0; i < 5; i++ {
-		msg := ssecommon.NewSSEMessage("test", fmt.Sprintf("data-%d", i))
-		proxy.pendingMutex.Lock()
-		proxy.pendingMessages = append(proxy.pendingMessages, ssecommon.NewPendingSSEMessage(msg))
-		proxy.pendingMutex.Unlock()
-	}
-
-	// Create a client channel
-	clientID := testClientID
-	messageCh := make(chan string, 10)
-
-	// Process pending messages
-	proxy.processPendingMessages(clientID, messageCh)
-
-	// Verify all messages were sent
-	assert.Len(t, messageCh, 5)
-
-	// Verify pending messages were cleared
-	proxy.pendingMutex.Lock()
-	assert.Empty(t, proxy.pendingMessages)
-	proxy.pendingMutex.Unlock()
-}
-
-// TestProcessPendingMessages_ChannelFull tests partial delivery when channel is full
-//
-//nolint:paralleltest // Test modifies shared proxy state
-func TestProcessPendingMessages_ChannelFull(t *testing.T) {
-	proxy := NewHTTPSSEProxy("localhost", 8080, false, nil, nil)
-
-	// Add 10 pending messages
-	for i := 0; i < 10; i++ {
-		msg := ssecommon.NewSSEMessage("test", fmt.Sprintf("data-%d", i))
-		proxy.pendingMutex.Lock()
-		proxy.pendingMessages = append(proxy.pendingMessages, ssecommon.NewPendingSSEMessage(msg))
-		proxy.pendingMutex.Unlock()
-	}
-
-	// Create a client channel that can only hold 3 messages
-	messageCh := make(chan string, 3)
-
-	// Process pending messages
-	proxy.processPendingMessages("client-1", messageCh)
-
-	// Verify only 3 messages were sent
-	assert.Len(t, messageCh, 3)
-
-	// Verify 7 messages remain pending for reconnection
-	proxy.pendingMutex.Lock()
-	assert.Len(t, proxy.pendingMessages, 7)
-	proxy.pendingMutex.Unlock()
-
-	// Reconnected client should receive the remaining messages
-	messageCh2 := make(chan string, 10)
-	proxy.processPendingMessages("client-1", messageCh2)
-
-	assert.Len(t, messageCh2, 7)
-
-	// Verify all pending messages are now cleared
-	proxy.pendingMutex.Lock()
-	assert.Empty(t, proxy.pendingMessages)
-	proxy.pendingMutex.Unlock()
 }
 
 // TestHandleSSEConnection tests the SSE connection handler
@@ -455,8 +368,9 @@ func TestHandlePostRequest(t *testing.T) {
 		CreatedAt: time.Now(),
 	}
 
-	// Add session to manager and to the live registry (mirrors what handleSSEConnection does)
+	// Auth is disabled for this fixture, matching handleSSEConnection's binding.
 	sseSession := session.NewSSESessionWithClient(sessionID, clientInfo)
+	sseSession.SetMetadata(session.MetadataKeyIdentityBinding, "unauthenticated")
 	err := proxy.sessionManager.AddSession(sseSession)
 	require.NoError(t, err)
 	proxy.liveSSESessions.Store(sessionID, sseSession)
@@ -478,10 +392,18 @@ func TestHandlePostRequest(t *testing.T) {
 	assert.Equal(t, http.StatusAccepted, w.Code)
 	assert.Equal(t, "Accepted", w.Body.String())
 
-	// Verify the message was sent to the channel
+	// Verify the message reached the backend with its wire ID rewritten to
+	// carry the session, and everything else untouched.
 	select {
 	case receivedMsg := <-proxy.messageCh:
-		assert.Equal(t, msg, receivedMsg)
+		forwarded, ok := receivedMsg.(*jsonrpc2.Request)
+		require.True(t, ok, "expected *jsonrpc2.Request, got %T", receivedMsg)
+		assert.Equal(t, msg.Method, forwarded.Method)
+		assert.Equal(t, msg.Params, forwarded.Params)
+		gotSession, gotID, routed := decodeRoutedID(forwarded.ID)
+		require.True(t, routed, "forwarded id %v must carry the session route", forwarded.ID.Raw())
+		assert.Equal(t, sessionID, gotSession)
+		assert.Equal(t, msg.ID, gotID)
 	case <-time.After(1 * time.Second):
 		t.Fatal("Message was not sent to channel")
 	}

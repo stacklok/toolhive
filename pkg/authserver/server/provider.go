@@ -20,13 +20,18 @@ import (
 	"fmt"
 	"log/slog"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 
+	josev3 "github.com/go-jose/go-jose/v3"
 	"github.com/go-jose/go-jose/v4"
 	"github.com/ory/fosite"
+	"github.com/spiffe/go-spiffe/v2/bundle/jwtbundle"
+	"github.com/spiffe/go-spiffe/v2/bundle/x509bundle"
 
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
+	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/networking"
 )
@@ -61,6 +66,13 @@ const (
 	MaxAssertionJTILength = 256
 )
 
+// DefaultDeviceCodeInterval is RFC 8628's suggested default minimum interval
+// between device-flow polls of the token endpoint, applied whenever
+// AuthorizationServerConfig.DeviceCodeInterval / AuthorizationServerParams.DeviceCodeInterval
+// is left at its zero value. A zero interval would defeat the interval's
+// purpose entirely, so it is never used as the enforced minimum.
+const DefaultDeviceCodeInterval = 5 * time.Second
+
 // AuthorizationServerConfig wraps fosite.Config with additional configuration
 // for JWT signing and other extensions.
 type AuthorizationServerConfig struct {
@@ -71,6 +83,10 @@ type AuthorizationServerConfig struct {
 	// Per RFC 8707, the "resource" parameter in token requests is validated against this list.
 	// Security: An empty list means NO audiences are permitted (secure default).
 	AllowedAudiences []string
+	// SubjectIdentifierAudiences controls disclosure of the RFC 9493 sub_id claim and the
+	// https://toolhive.dev/upstream_subject claim on login-derived access tokens.
+	// It is not an access-control or audience-grant setting.
+	SubjectIdentifierAudiences []string
 	// ScopesSupported lists the OAuth 2.0 scope values advertised in discovery documents.
 	// This is advertised in /.well-known/openid-configuration and
 	// /.well-known/oauth-authorization-server discovery endpoints.
@@ -116,6 +132,32 @@ type AuthorizationServerConfig struct {
 	// only when this is true, mirroring how the grant itself is only
 	// registered with fosite when true (see buildProvider).
 	JWTBearerGrantEnabled bool
+	// DeviceFlowEnabled indicates that the RFC 8628 device authorization
+	// grant is registered and advertised. Discovery advertises
+	// urn:ietf:params:oauth:grant-type:device_code in grant_types_supported,
+	// and POST /oauth/device_authorization is mounted, only when this is true.
+	DeviceFlowEnabled bool
+	// DeviceCodeInterval is the minimum time a device-flow client must wait
+	// between polls of the token endpoint (RFC 8628 Section 3.5), and the
+	// value advertised in the device authorization response's "interval"
+	// field. Zero is replaced by DefaultDeviceCodeInterval wherever it would
+	// otherwise be used as the enforced minimum.
+	DeviceCodeInterval time.Duration
+	// SPIFFEClientResolver resolves a verified SPIFFE identity to its
+	// configured OAuth client for the SPIFFE client-authentication strategy.
+	// Nil when no SPIFFE trust is configured; package server cannot import
+	// the concrete association registry and storage that back this resolver
+	// (authserver imports server), so the caller supplies it as a closure.
+	SPIFFEClientResolver SPIFFEClientResolver
+	// SPIFFEX509BundleSource provides X.509 bundles for verifying SPIFFE
+	// X.509-SVID client certificates. Not yet read by this package: carried
+	// here, copied through from AuthorizationServerParams, so the X.509 and
+	// JWT SPIFFE client-authentication arms land on a shared field instead of
+	// each independently extending this struct.
+	SPIFFEX509BundleSource x509bundle.Source
+	// SPIFFEJWTBundleSource provides JWT bundles for verifying SPIFFE
+	// JWT-SVID client assertions, read by newSPIFFEClientAuthenticationStrategy.
+	SPIFFEJWTBundleSource jwtbundle.Source
 }
 
 // Factory is a constructor which is used to create an OAuth2 endpoint handler.
@@ -138,10 +180,21 @@ type AuthorizationServerParams struct {
 	SigningKeyID         string
 	SigningKeyAlgorithm  string
 	SigningKey           crypto.Signer
+	// AdditionalPublicKeys are published in the JWKS alongside the primary
+	// signing key, in public form only, so that tokens signed with a
+	// previous key remain verifiable during rotation. Typically sourced from
+	// keys.KeyProvider.PublicKeys(ctx), which includes the primary signing
+	// key itself; the entry matching SigningKeyID is skipped to avoid
+	// publishing it twice.
+	AdditionalPublicKeys []*keys.PublicKeyData
 	// AllowedAudiences is the list of valid resource URIs that tokens can be issued for.
 	// Per RFC 8707, the "resource" parameter in token requests is validated against this list.
 	// Security: An empty list means NO audiences are permitted (secure default).
 	AllowedAudiences []string
+	// SubjectIdentifierAudiences controls disclosure of the RFC 9493 sub_id claim and the
+	// https://toolhive.dev/upstream_subject claim on login-derived access tokens.
+	// It is not an access-control or audience-grant setting.
+	SubjectIdentifierAudiences []string
 	// ScopesSupported lists the OAuth 2.0 scope values advertised in discovery documents.
 	ScopesSupported []string
 	// BaselineClientScopes is a baseline set of OAuth 2.0 scopes the DCR handler
@@ -184,6 +237,27 @@ type AuthorizationServerParams struct {
 	// RFC 7523 JWT-bearer grant configured. See AuthorizationServerConfig's
 	// field of the same name.
 	JWTBearerGrantEnabled bool
+	// DeviceFlowEnabled indicates that the RFC 8628 device authorization
+	// grant should be registered and advertised. See AuthorizationServerConfig's
+	// field of the same name.
+	DeviceFlowEnabled bool
+	// DeviceCodeInterval is the minimum time a device-flow client must wait
+	// between polls of the token endpoint. See AuthorizationServerConfig's
+	// field of the same name.
+	DeviceCodeInterval time.Duration
+	// SPIFFEClientResolver resolves a verified SPIFFE identity to its
+	// configured OAuth client. Nil when no SPIFFE trust is configured.
+	// See the identically named field on AuthorizationServerConfig.
+	SPIFFEClientResolver SPIFFEClientResolver
+	// SPIFFEX509BundleSource provides X.509 bundles for verifying SPIFFE
+	// X.509-SVID client certificates. Not yet read by this package: threaded
+	// through here so the X.509 and JWT SPIFFE client-authentication arms
+	// land on a shared field instead of each independently extending this
+	// struct.
+	SPIFFEX509BundleSource x509bundle.Source
+	// SPIFFEJWTBundleSource provides JWT bundles for verifying SPIFFE
+	// JWT-SVID client assertions, copied through to AuthorizationServerConfig.
+	SPIFFEJWTBundleSource jwtbundle.Source
 }
 
 // validateIssuerURL validates that the issuer is a valid URL with http or https scheme
@@ -328,6 +402,9 @@ func validateParams(cfg *AuthorizationServerParams) error {
 	if err := validateAllowedAudiences(cfg.AllowedAudiences); err != nil {
 		return err
 	}
+	if err := ValidateSubjectIdentifierAudiences(cfg.SubjectIdentifierAudiences, cfg.AllowedAudiences); err != nil {
+		return err
+	}
 	if err := ValidateConfidentialClientTransport(
 		cfg.AllowConfidentialClientRegistration || cfg.HasStaticDelegateClients,
 		cfg.InsecureAllowHTTP, cfg.Issuer, cfg.InsecureAllowConfidentialOverLoopbackHTTP,
@@ -364,6 +441,24 @@ func NewAuthorizationServerConfig(cfg *AuthorizationServerParams) (*Authorizatio
 		Use:       "sig",
 	}
 
+	// The JWKS published at /.well-known/jwks.json must include every
+	// fallback key still in rotation, not just the primary signing key,
+	// or the documented key-rotation procedure never opens its overlap
+	// window (#6451). The primary key is listed first; any additional
+	// key matching its KeyID is skipped to avoid publishing it twice.
+	signingJWKS := &jose.JSONWebKeySet{Keys: []jose.JSONWebKey{jwk}}
+	for _, pubKey := range cfg.AdditionalPublicKeys {
+		if pubKey.KeyID == cfg.SigningKeyID {
+			continue
+		}
+		signingJWKS.Keys = append(signingJWKS.Keys, jose.JSONWebKey{
+			Key:       pubKey.PublicKey,
+			KeyID:     pubKey.KeyID,
+			Algorithm: pubKey.Algorithm,
+			Use:       "sig",
+		})
+	}
+
 	fositeConfig := &fosite.Config{
 		AccessTokenIssuer:              cfg.Issuer,
 		AccessTokenLifespan:            cfg.AccessTokenLifespan,
@@ -378,6 +473,11 @@ func NewAuthorizationServerConfig(cfg *AuthorizationServerParams) (*Authorizatio
 		// ExactScopeStrategy requires exact matches (no wildcards) for security.
 		// This prevents clients from requesting scopes beyond what they registered with.
 		ScopeStrategy: fosite.ExactScopeStrategy,
+		// AudienceMatchingStrategy and JWKSFetcherStrategy are set explicitly
+		// because fosite's getters lazily assign their defaults on first use,
+		// an unsynchronized write that races between concurrent requests.
+		AudienceMatchingStrategy: fosite.DefaultAudienceMatchingStrategy,
+		JWKSFetcherStrategy:      unsupportedJWKSFetcher{},
 		// ClientSecretsHasher compares client secrets at the token endpoint.
 		// Plain SHA-256 is correct here: the secrets are 256 bits of CSPRNG
 		// output, never client-chosen, so a password-stretching KDF protects
@@ -388,23 +488,42 @@ func NewAuthorizationServerConfig(cfg *AuthorizationServerParams) (*Authorizatio
 	}
 
 	return &AuthorizationServerConfig{
-		Config:                              fositeConfig,
-		SigningKey:                          &jwk,
-		SigningJWKS:                         &jose.JSONWebKeySet{Keys: []jose.JSONWebKey{jwk}},
-		AllowedAudiences:                    cfg.AllowedAudiences,
-		ScopesSupported:                     cfg.ScopesSupported,
-		BaselineClientScopes:                cfg.BaselineClientScopes,
-		AuthorizationEndpointBaseURL:        cfg.AuthorizationEndpointBaseURL,
-		CIMDEnabled:                         cfg.CIMDEnabled,
-		AllowConfidentialClientRegistration: cfg.AllowConfidentialClientRegistration,
-		AllowPrivateKeyJWTRegistration:      cfg.AllowPrivateKeyJWTRegistration,
-		HasStaticDelegateClients:            cfg.HasStaticDelegateClients,
-		InsecureAllowHTTP:                   cfg.InsecureAllowHTTP,
+		Config:                                    fositeConfig,
+		SigningKey:                                &jwk,
+		SigningJWKS:                               signingJWKS,
+		AllowedAudiences:                          cfg.AllowedAudiences,
+		SubjectIdentifierAudiences:                cfg.SubjectIdentifierAudiences,
+		ScopesSupported:                           cfg.ScopesSupported,
+		BaselineClientScopes:                      cfg.BaselineClientScopes,
+		AuthorizationEndpointBaseURL:              cfg.AuthorizationEndpointBaseURL,
+		CIMDEnabled:                               cfg.CIMDEnabled,
+		AllowConfidentialClientRegistration:       cfg.AllowConfidentialClientRegistration,
+		AllowPrivateKeyJWTRegistration:            cfg.AllowPrivateKeyJWTRegistration,
+		HasStaticDelegateClients:                  cfg.HasStaticDelegateClients,
+		InsecureAllowHTTP:                         cfg.InsecureAllowHTTP,
 		InsecureAllowConfidentialOverLoopbackHTTP: cfg.InsecureAllowConfidentialOverLoopbackHTTP,
 		ForceConfidentialRedirectURIs:             cfg.ForceConfidentialRedirectURIs,
 		TokenExchangeEnabled:                      !cfg.DisableTokenExchange,
 		JWTBearerGrantEnabled:                     cfg.JWTBearerGrantEnabled,
+		DeviceFlowEnabled:                         cfg.DeviceFlowEnabled,
+		DeviceCodeInterval:                        cfg.DeviceCodeInterval,
+		SPIFFEClientResolver:                      cfg.SPIFFEClientResolver,
+		SPIFFEX509BundleSource:                    cfg.SPIFFEX509BundleSource,
+		SPIFFEJWTBundleSource:                     cfg.SPIFFEJWTBundleSource,
 	}, nil
+}
+
+// unsupportedJWKSFetcher is the fosite JWKS fetcher for this server. Client
+// keys are only accepted inline: DCR rejects jwks_uri and storage drops it, so
+// fosite has nothing to fetch. Unlike fosite's default fetcher, it starts no
+// cache goroutines, and if a client with a jwks_uri ever reached client
+// authentication it fails closed instead of fetching an arbitrary URL.
+type unsupportedJWKSFetcher struct{}
+
+// Resolve always rejects the client, because remote client key sets are not
+// supported. fosite's interface uses go-jose v3.
+func (unsupportedJWKSFetcher) Resolve(context.Context, string, bool) (*josev3.JSONWebKeySet, error) {
+	return nil, fosite.ErrInvalidClient.WithHint("Client JSON Web Key Sets must be registered inline; jwks_uri is not supported.")
 }
 
 // NewAuthorizationServer creates a new fosite OAuth2Provider with the given configuration,
@@ -423,11 +542,31 @@ func NewAuthorizationServer(
 	); err != nil {
 		return nil, err
 	}
-	fositeConfig := config.Config
-	provider := fosite.NewOAuth2Provider(storage, fositeConfig)
+	providerConfig := *config
+	fositeConfig := *config.Config
+	fositeConfig.AuthorizeEndpointHandlers = slices.Clone(fositeConfig.AuthorizeEndpointHandlers)
+	fositeConfig.TokenEndpointHandlers = slices.Clone(fositeConfig.TokenEndpointHandlers)
+	fositeConfig.TokenIntrospectionHandlers = slices.Clone(fositeConfig.TokenIntrospectionHandlers)
+	fositeConfig.RevocationHandlers = slices.Clone(fositeConfig.RevocationHandlers)
+	fositeConfig.PushedAuthorizeEndpointHandlers = slices.Clone(fositeConfig.PushedAuthorizeEndpointHandlers)
+	providerConfig.Config = &fositeConfig
+	provider := fosite.NewOAuth2Provider(storage, &fositeConfig)
+	// Select the fallback after constructing the provider because fosite's
+	// built-in strategy is a provider method. Preserve a caller-supplied strategy
+	// when present, then install the SPIFFE dispatcher on the provider-local copy.
+	defaultStrategy := func() fosite.ClientAuthenticationStrategy {
+		if fositeConfig.ClientAuthenticationStrategy != nil {
+			return fositeConfig.ClientAuthenticationStrategy
+		}
+		return provider.DefaultClientAuthenticationStrategy
+	}()
+	fositeConfig.ClientAuthenticationStrategy = newSPIFFEClientAuthenticationStrategy(
+		defaultStrategy, config.GetAccessTokenIssuer(),
+		config.SPIFFEJWTBundleSource, providerConfig.SPIFFEClientResolver,
+	)
 
 	for _, factory := range factories {
-		result, err := factory(config, storage, strategy)
+		result, err := factory(&providerConfig, storage, strategy)
 		if err != nil {
 			return nil, fmt.Errorf("authorization server factory failed: %w", err)
 		}

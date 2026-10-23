@@ -8,7 +8,9 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -29,6 +31,14 @@ import (
 type mockAuthorizer struct {
 	results map[string]mockResult // keyed by resourceID
 	calls   []mockCall
+	// allowed, when set, decides by operation and takes precedence over results.
+	allowed map[authorizers.MCPOperation]bool
+	// blockRead makes tool:read wait for its context to end, like a hung PDP.
+	blockRead bool
+	// readErr, when set, is returned for tool:read.
+	readErr error
+	// reads counts the tool:read checks received.
+	reads atomic.Int32
 }
 
 type mockResult struct {
@@ -66,6 +76,20 @@ func (m *mockAuthorizer) AuthorizeWithJWTClaims(
 		call.identitySubject = id.Subject
 	}
 	m.calls = append(m.calls, call)
+
+	if operation == authorizers.MCPOperationRead {
+		m.reads.Add(1)
+		if m.blockRead {
+			<-ctx.Done()
+			return false, ctx.Err()
+		}
+		if m.readErr != nil {
+			return false, m.readErr
+		}
+	}
+	if m.allowed != nil {
+		return m.allowed[operation], nil
+	}
 
 	r, ok := m.results[resourceID]
 	if !ok {
@@ -193,7 +217,7 @@ func TestCedarAdmission_InvokesToolAuthorizerCorrectly(t *testing.T) {
 	require.Len(t, mock.calls, 2)
 	for _, c := range mock.calls {
 		assert.Equal(t, authorizers.MCPFeatureTool, c.feature)
-		assert.Equal(t, authorizers.MCPOperationCall, c.operation)
+		assert.Equal(t, authorizers.MCPOperationRead, c.operation)
 		assert.True(t, c.identityPresent, "adapter must re-inject identity into ctx")
 		assert.Equal(t, "user123", c.identitySubject)
 	}
@@ -502,6 +526,24 @@ func TestNewAdmission(t *testing.T) {
 		assert.False(t, ok)
 	})
 
+	t.Run("cedar config lists tools through the tool:read fallback", func(t *testing.T) {
+		t.Parallel()
+		// Cedar denies every tool:read check. Without the decorator in the factory
+		// path, FilterTools would hide every tool. Keeping weather proves the fallback.
+		adm, err := newAdmission(
+			cedarAuthzConfig(t, `permit(principal, action == Action::"call_tool", resource == Tool::"weather");`),
+			"test-vmcp")
+		require.NoError(t, err)
+
+		filtered, err := adm.FilterTools(context.Background(), cedarIdentity(), []vmcp.Tool{
+			{Name: "weather"},
+			{Name: "calculator"},
+		})
+		require.NoError(t, err)
+		require.Len(t, filtered, 1)
+		assert.Equal(t, "weather", filtered[0].Name)
+	})
+
 	t.Run("empty server name with authz errors", func(t *testing.T) {
 		t.Parallel()
 		_, err := newAdmission(
@@ -759,4 +801,56 @@ func TestAdmission_IdentityNeverLogged(t *testing.T) {
 	logs := buf.String()
 	require.NotEmpty(t, logs, "expected a skip warning so the assertion is not vacuous")
 	assert.NotContains(t, logs, secret, "identity token must never be logged")
+}
+
+func TestCedarAdmission_ReadGrantListsButDoesNotAllowCall(t *testing.T) {
+	t.Parallel()
+
+	adm := newCedarAdmission(&mockAuthorizer{allowed: map[authorizers.MCPOperation]bool{authorizers.MCPOperationRead: true}})
+	tool := vmcp.Tool{Name: "weather"}
+
+	filtered, err := adm.FilterTools(context.Background(), cedarIdentity(), []vmcp.Tool{tool})
+	require.NoError(t, err)
+	require.Len(t, filtered, 1)
+
+	ok, err := adm.AllowToolCall(context.Background(), cedarIdentity(), &tool, nil)
+	require.NoError(t, err)
+	assert.False(t, ok, "tool:read must never allow invocation")
+}
+
+func TestCedarAdmission_FilterToolsStopsAtSharedDeadline(t *testing.T) {
+	t.Parallel()
+
+	mock := &mockAuthorizer{
+		allowed:   map[authorizers.MCPOperation]bool{authorizers.MCPOperationCall: true},
+		blockRead: true,
+	}
+	adm := newCedarAdmission(mock, withFilterBudget(50*time.Millisecond))
+	// The outer timeout only keeps this test from hanging if the shared deadline is removed.
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	start := time.Now()
+	filtered, err := adm.FilterTools(ctx, cedarIdentity(), []vmcp.Tool{{Name: "alpha"}, {Name: "beta"}, {Name: "gamma"}})
+
+	require.NoError(t, err)
+	assert.Empty(t, filtered, "no tool may be listed through the tool:call fallback after a timeout")
+	assert.Equal(t, int32(1), mock.reads.Load(), "the filter must stop at the first expired check")
+	assert.Less(t, time.Since(start), 2*time.Second)
+}
+
+func TestCedarAdmission_FilterToolsHidesToolOnReadError(t *testing.T) {
+	t.Parallel()
+
+	mock := &mockAuthorizer{
+		allowed: map[authorizers.MCPOperation]bool{authorizers.MCPOperationCall: true},
+		readErr: errors.New("PDP rejected mcp:tool:read"),
+	}
+	adm := newCedarAdmission(mock)
+
+	filtered, err := adm.FilterTools(context.Background(), cedarIdentity(), []vmcp.Tool{{Name: "weather"}})
+
+	require.NoError(t, err)
+	assert.Empty(t, filtered, "a tool:read error hides the tool without a tool:call check")
+	assert.Len(t, mock.calls, 1, "tool:call must not be asked after a tool:read error")
 }

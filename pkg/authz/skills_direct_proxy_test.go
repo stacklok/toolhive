@@ -224,7 +224,7 @@ func TestSkillsListResponseFilterFailsClosed(t *testing.T) {
 			t.Parallel()
 			rr := httptest.NewRecorder()
 			rr.Header().Set("Content-Type", "application/json")
-			writer := NewResponseFilteringWriter(rr, &stubAuthorizer{allowed: true}, httptest.NewRequest(http.MethodPost, "/messages", nil), "skills/list", nil, nil)
+			writer := newTestFilteringWriter(rr, &stubAuthorizer{allowed: true}, httptest.NewRequest(http.MethodPost, "/messages", nil), "skills/list", nil, nil)
 			body, err := jsonrpc2.EncodeMessage(&jsonrpc2.Response{ID: jsonrpc2.Int64ID(1), Result: json.RawMessage(tt.body)})
 			require.NoError(t, err)
 			_, err = writer.Write(body)
@@ -250,7 +250,7 @@ func TestSkillsListResponseFilterSkipsAuthorizerErrors(t *testing.T) {
 	}}
 	rr := httptest.NewRecorder()
 	rr.Header().Set("Content-Type", "application/json")
-	writer := NewResponseFilteringWriter(rr, authorizer, httptest.NewRequest(http.MethodPost, "/messages", nil), "skills/list", nil, nil)
+	writer := newTestFilteringWriter(rr, authorizer, httptest.NewRequest(http.MethodPost, "/messages", nil), "skills/list", nil, nil)
 	body, err := jsonrpc2.EncodeMessage(&jsonrpc2.Response{ID: jsonrpc2.Int64ID(1), Result: json.RawMessage(`{"skills":[
 		{"uri":"mcp://example/allowed"},{"uri":"mcp://example/error"}]}`)})
 	require.NoError(t, err)
@@ -304,7 +304,7 @@ func TestSkillsListResponseFilterSSE(t *testing.T) {
 			require.NoError(t, err)
 			rr := httptest.NewRecorder()
 			rr.Header().Set("Content-Type", "text/event-stream")
-			writer := NewResponseFilteringWriter(rr, tt.authorizer, skillRequest(t, "skills/list", `{}`), "skills/list", nil, nil)
+			writer := newTestFilteringWriter(rr, tt.authorizer, skillRequest(t, "skills/list", `{}`), "skills/list", nil, nil)
 			_, err = writer.Write(append(append([]byte("data: "), payload...), []byte("\n\n")...))
 			require.NoError(t, err)
 			require.NoError(t, writer.FlushAndFilter())

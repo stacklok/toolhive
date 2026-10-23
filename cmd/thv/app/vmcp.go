@@ -129,6 +129,7 @@ If neither --output nor --config is provided, the generated YAML is written to s
 // newVMCPValidateCommand returns the "vmcp validate" subcommand.
 func newVMCPValidateCommand() *cobra.Command {
 	var configPath string
+	var format string
 	cmd := &cobra.Command{
 		Use:   "validate",
 		Short: "Validate a vMCP configuration file",
@@ -141,10 +142,14 @@ for valid configurations, non-zero with a descriptive error otherwise.`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return vmcpcli.Validate(cmd.Context(), vmcpcli.ValidateConfig{
 				ConfigPath: configPath,
+				Format:     format,
+				Writer:     cmd.OutOrStdout(),
 			})
 		},
 	}
 	cmd.Flags().StringVarP(&configPath, "config", "c", "", "Path to vMCP configuration file (required)")
+	AddFormatFlag(cmd, &format)
+	cmd.PreRunE = ValidateFormat(&format)
 	_ = cmd.MarkFlagRequired("config")
 	return cmd
 }

@@ -1010,9 +1010,10 @@ func buildUpstreamConfig(rc *authserver.UpstreamRunConfig, insecureAllowHTTP boo
 			return nil, err
 		}
 		return &authserver.UpstreamConfig{
-			Name:       rc.Name,
-			Type:       authserver.UpstreamProviderTypeOIDC,
-			OIDCConfig: oidcCfg,
+			Name:        rc.Name,
+			DisplayName: rc.DisplayName,
+			Type:        authserver.UpstreamProviderTypeOIDC,
+			OIDCConfig:  oidcCfg,
 		}, nil
 
 	case authserver.UpstreamProviderTypeOAuth2:
@@ -1022,6 +1023,7 @@ func buildUpstreamConfig(rc *authserver.UpstreamRunConfig, insecureAllowHTTP boo
 		}
 		return &authserver.UpstreamConfig{
 			Name:         rc.Name,
+			DisplayName:  rc.DisplayName,
 			Type:         authserver.UpstreamProviderTypeOAuth2,
 			OAuth2Config: oauth2Cfg,
 		}, nil

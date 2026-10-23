@@ -26,10 +26,13 @@ import (
 )
 
 type consentPageData struct {
-	Handle, ActionURL, Destination, Summary, RedirectURI, ClientID, ClientName, Resource, Upstream string
-	Scopes                                                                                         []string
-	CanRemember                                                                                    bool
-	RememberFor                                                                                    string
+	Handle, ActionURL, Destination, Summary, RedirectURI, ClientID, ClientName, Resource string
+	// Upstream is the upstream's name (its routing and storage key); UpstreamDisplay
+	// is the sanitised label shown in the "You will sign in with" line.
+	Upstream, UpstreamDisplay string
+	Scopes                    []string
+	CanRemember               bool
+	RememberFor               string
 }
 
 // consentStyles extends pageStyles for the consent page only; it is served as a
@@ -69,7 +72,7 @@ var consentPageTemplate = template.Must(template.New("consent").Parse(`<!DOCTYPE
 <div class="card"><div class="card-body">
 <h1>Allow this app to sign you in?</h1>
 <p class="subtitle summary">{{.Summary}}</p>
-<p class="subtitle">You will sign in with {{.Upstream}} next.</p>
+<p class="subtitle">You will sign in with {{.UpstreamDisplay}} next.</p>
 <dl><dt>Sends your sign-in to:</dt><dd><strong>{{.Destination}}</strong></dd>
 <dt>Name given by the app (not verified):</dt><dd>{{.ClientName}}</dd></dl>
 <details><summary>Technical details</summary><dl>
@@ -132,6 +135,31 @@ func displayClientName(name string) string {
 	}, name)
 }
 
+// truncateConsentText caps s at maxConsentClientNameRunes, marking a cut with an ellipsis.
+func truncateConsentText(s string) string {
+	if r := []rune(s); len(r) > maxConsentClientNameRunes {
+		return string(r[:maxConsentClientNameRunes]) + "…"
+	}
+	return s
+}
+
+// upstreamDisplayName returns the label for the named upstream on the consent page:
+// its sanitised DisplayName when the upstream is still configured and has one,
+// otherwise the name itself. The label is resolved at render time so a swapped
+// upstream set shows the current value; it is display-only and never a key.
+func (h *Handler) upstreamDisplayName(name string) string {
+	for i := range h.upstreams {
+		if h.upstreams[i].Name != name {
+			continue
+		}
+		if label := strings.TrimSpace(displayClientName(h.upstreams[i].DisplayName)); label != "" {
+			return truncateConsentText(label)
+		}
+		break
+	}
+	return name
+}
+
 func (h *Handler) renderConsent(
 	w http.ResponseWriter, handle string, pending *storage.PendingAuthorization, client fosite.Client,
 ) {
@@ -139,14 +167,15 @@ func (h *Handler) renderConsent(
 	clientName := displayClientName(registration.ClientName(client))
 	if clientName == "" {
 		clientName = "No name given"
-	} else if r := []rune(clientName); len(r) > maxConsentClientNameRunes {
-		clientName = string(r[:maxConsentClientNameRunes]) + "…"
+	} else {
+		clientName = truncateConsentText(clientName)
 	}
 	data := consentPageData{
 		Handle: handle, ActionURL: h.config.GetAuthorizationEndpointBaseURL() + "/oauth/consent",
 		Destination: destination, Summary: summary, RedirectURI: pending.RedirectURI,
 		ClientID: client.GetID(), ClientName: clientName, Resource: pending.Resource,
-		Upstream: pending.UpstreamProviderName, Scopes: pending.Scopes, CanRemember: h.rememberedStorage != nil,
+		Upstream: pending.UpstreamProviderName, UpstreamDisplay: h.upstreamDisplayName(pending.UpstreamProviderName),
+		Scopes: pending.Scopes, CanRemember: h.rememberedStorage != nil,
 		RememberFor: formatDays(storage.ConsentSessionTTL),
 	}
 	pageHash, consentHash := sha256.Sum256([]byte(pageStyles)), sha256.Sum256([]byte(consentStyles))

@@ -1405,6 +1405,34 @@ func TestEmbeddedAuthServer_KeyProvider(t *testing.T) {
 	})
 }
 
+func TestBuildUpstreamConfig_CopiesDisplayName(t *testing.T) {
+	t.Parallel()
+
+	for _, rc := range []authserver.UpstreamRunConfig{
+		{
+			Name: "okta", DisplayName: "Acme Okta", Type: authserver.UpstreamProviderTypeOIDC,
+			OIDCConfig: &authserver.OIDCUpstreamRunConfig{
+				IssuerURL: "https://okta.example.com", ClientID: "c", RedirectURI: "http://localhost:8080/callback",
+			},
+		},
+		{
+			Name: "okta", DisplayName: "Acme Okta", Type: authserver.UpstreamProviderTypeOAuth2,
+			OAuth2Config: &authserver.OAuth2UpstreamRunConfig{
+				AuthorizationEndpoint: "https://okta.example.com/authorize", TokenEndpoint: "https://okta.example.com/token",
+				ClientID: "c", RedirectURI: "http://localhost:8080/callback",
+			},
+		},
+	} {
+		t.Run(string(rc.Type), func(t *testing.T) {
+			t.Parallel()
+			cfg, err := buildUpstreamConfig(&rc, false)
+			require.NoError(t, err)
+			assert.Equal(t, "okta", cfg.Name)
+			assert.Equal(t, "Acme Okta", cfg.DisplayName)
+		})
+	}
+}
+
 func TestBuildUpstreamConfig(t *testing.T) {
 	t.Parallel()
 

@@ -801,6 +801,46 @@ func TestRunConfigValidate(t *testing.T) {
 // pkg/authserver/upstreamfilter — these cases only verify that invalid filter
 // configurations are rejected at startup rather than deferred to a runtime
 // surprise.
+func TestUpstreamConfig_DisplayNameNeverFailsValidation(t *testing.T) {
+	t.Parallel()
+
+	oauth2 := &upstream.OAuth2Config{
+		CommonOAuthConfig:     upstream.CommonOAuthConfig{ClientID: "c", RedirectURI: "https://example.com/cb"},
+		AuthorizationEndpoint: "https://idp.example.com/authorize",
+		TokenEndpoint:         "https://idp.example.com/token",
+	}
+	displayNames := map[string]string{
+		"empty":           "",
+		"plain":           "Acme Okta",
+		"control runes":   "Acme\u202e\u200b\nOkta",
+		"whitespace only": " \t ",
+		"html":            "<script>alert(1)</script>",
+		"very long":       strings.Repeat("é", 1000),
+	}
+	for name, displayName := range displayNames {
+		t.Run("Config/"+name, func(t *testing.T) {
+			t.Parallel()
+			cfg := Config{
+				Issuer: "https://example.com", KeyProvider: keys.NewGeneratingProvider(keys.DefaultAlgorithm),
+				HMACSecrets:      &servercrypto.HMACSecrets{Current: make([]byte, 32)},
+				AllowedAudiences: []string{"https://mcp.example.com"},
+				Upstreams: []UpstreamConfig{{
+					Name: "ffffffff-ffff-ffff-ffff-ffffffffffff", DisplayName: displayName,
+					Type: UpstreamProviderTypeOAuth2, OAuth2Config: oauth2,
+				}},
+			}
+			require.NoError(t, cfg.Validate())
+			cfg.Upstreams[0].Name = "Not_A_Label"
+			require.ErrorContains(t, cfg.Validate(), "must match")
+		})
+		t.Run("RunConfig/"+name, func(t *testing.T) {
+			t.Parallel()
+			cfg := RunConfig{Upstreams: []UpstreamRunConfig{{Name: "okta", DisplayName: displayName}}}
+			require.NoError(t, cfg.Validate())
+		})
+	}
+}
+
 func TestRunConfigValidate_UpstreamFilter(t *testing.T) {
 	t.Parallel()
 

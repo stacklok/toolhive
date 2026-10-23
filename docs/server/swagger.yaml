@@ -1066,6 +1066,14 @@ components:
       type: object
     authserver.UpstreamRunConfig:
       properties:
+        display_name:
+          description: |-
+            DisplayName is an optional human-readable label for this upstream, shown to
+            end users on the consent page in place of Name. It is display-only: never
+            compared, stored, or used to route. It is sanitised at render time and never
+            rejected by validation. It is shown as trusted text, so it must come from
+            operator-controlled configuration only.
+          type: string
         name:
           description: |-
             Name uniquely identifies this upstream.

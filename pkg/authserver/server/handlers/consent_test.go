@@ -498,3 +498,145 @@ func TestFormatDays(t *testing.T) {
 		assert.Equal(t, want, formatDays(d))
 	}
 }
+
+func TestConsentPage_UpstreamDisplayName(t *testing.T) {
+	t.Parallel()
+	const name = "ffffffff-ffff-ffff-ffff-ffffffffffff"
+	h, _, _, handle, _, _ := startConsentTest(t)
+	h.upstreams[0].Name, h.upstreams[0].DisplayName = name, "Acme Okta"
+	client, err := h.storage.GetClient(context.Background(), testAuthClientID)
+	require.NoError(t, err)
+	rec := httptest.NewRecorder()
+	h.renderConsent(rec, handle, &storage.PendingAuthorization{
+		RedirectURI: testAuthRedirectURI, ClientID: testAuthClientID, UpstreamProviderName: name,
+	}, client)
+	body := rec.Body.String()
+	assert.Contains(t, body, "You will sign in with Acme Okta next.")
+	assert.Contains(t, body, "<dt>Identity provider (internal name)</dt><dd>"+name+"</dd>")
+	assert.NotContains(t, body, "You will sign in with "+name)
+}
+
+func TestConsentPage_UpstreamDisplayNameSanitised(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, in, want string
+	}{
+		{name: "bidi override", in: "Acme\u202eatkO", want: "AcmeatkO"},
+		{name: "zero width space", in: "Ac\u200bme Okta", want: "Acme Okta"},
+		{name: "newline", in: "Acme\nOkta", want: "AcmeOkta"},
+		{name: "surrounding whitespace", in: "  Acme Okta \u200b ", want: "Acme Okta"},
+		{name: "html escaped", in: "<b>Acme</b>", want: "&lt;b&gt;Acme&lt;/b&gt;"},
+		{name: "truncated", in: strings.Repeat("é", 200), want: strings.Repeat("é", maxConsentClientNameRunes) + "…"},
+		{name: "whitespace only falls back to name", in: " \t ", want: "test-upstream"},
+		{name: "format runes only fall back to name", in: "\u202e\u200b\u2066", want: "test-upstream"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			h, _, _, handle, _, _ := startConsentTest(t)
+			h.upstreams[0].DisplayName = tc.in
+			client, err := h.storage.GetClient(context.Background(), testAuthClientID)
+			require.NoError(t, err)
+			rec := httptest.NewRecorder()
+			h.renderConsent(rec, handle, &storage.PendingAuthorization{
+				RedirectURI: testAuthRedirectURI, ClientID: testAuthClientID, UpstreamProviderName: "test-upstream",
+			}, client)
+			body := rec.Body.String()
+			assert.Contains(t, body, "You will sign in with "+tc.want+" next.")
+			assert.Contains(t, body, "<dt>Identity provider (internal name)</dt><dd>test-upstream</dd>")
+			assert.NotContains(t, body, "<b>Acme")
+		})
+	}
+}
+
+func TestConsentPage_MissingUpstreamFallsBackToName(t *testing.T) {
+	t.Parallel()
+	h, state, _, handle, cookie, _ := startConsentTest(t)
+	client, err := h.storage.GetClient(context.Background(), testAuthClientID)
+	require.NoError(t, err)
+	// The pending authorization's upstream was removed after the request started;
+	// a different upstream with a display name is configured instead.
+	h.upstreams = []NamedUpstream{{Name: "other", DisplayName: "Other IdP", Provider: h.upstreams[0].Provider}}
+	rec := httptest.NewRecorder()
+	h.renderConsent(rec, handle, state.pendingAuths[handle], client)
+	assert.Contains(t, rec.Body.String(), "You will sign in with test-upstream next.")
+	assert.NotContains(t, rec.Body.String(), "Other IdP")
+
+	approve := httptest.NewRecorder()
+	h.ConsentHandler(approve, consentRequest(handle, "approve", testAuthIssuer, cookie))
+	assert.Equal(t, http.StatusSeeOther, approve.Code)
+	assert.Contains(t, approve.Header().Get("Location"), "error=server_error")
+}
+
+func TestDisplayNameChangeKeepsStoredRecordsValid(t *testing.T) {
+	t.Parallel()
+	for _, backend := range []string{"memory", "redis"} {
+		t.Run(backend, func(t *testing.T) {
+			t.Parallel()
+			ctx := context.Background()
+			var s interface {
+				storage.Storage
+				storage.RememberedConsentStorage
+			}
+			var mr *miniredis.Miniredis
+			if backend == "redis" {
+				mr = miniredis.RunT(t)
+				client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+				t.Cleanup(func() { require.NoError(t, client.Close()) })
+				s = storage.NewRedisStorageWithClient(client, "consent:display:")
+			} else {
+				mem := storage.NewMemoryStorage()
+				t.Cleanup(func() { require.NoError(t, mem.Close()) })
+				s = mem
+			}
+			h, _, _ := handlerTestSetup(t)
+			h.rememberedStorage = s
+			h.upstreams[0].DisplayName = "Acme Okta"
+
+			pending := &storage.PendingAuthorization{ClientID: testAuthClientID, RedirectURI: testAuthRedirectURI,
+				Scopes: []string{"openid"}, UpstreamProviderName: "test-upstream", InternalState: "internal-state",
+				PKCEChallenge: strings.Repeat("A", 43), PKCEMethod: "S256", RememberConsent: true,
+				FirstProviderSubject: "sub", ConsentStage: storage.ConsentStageApproved, CreatedAt: time.Now()}
+			require.NoError(t, s.StorePendingAuthorization(ctx, "internal-state", pending))
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "sid", "test-upstream", &storage.UpstreamTokens{
+				ProviderID: "test-upstream", AccessToken: "at", UserID: "user", UpstreamSubject: "sub",
+				ClientID: testAuthClientID, ExpiresAt: time.Now().Add(time.Hour),
+			}))
+			remember := httptest.NewRecorder()
+			h.maybeRememberConsent(ctx, remember, pending, "user")
+			var consentCookie *http.Cookie
+			for _, c := range remember.Result().Cookies() {
+				if c.Name == h.consentCookieName() {
+					consentCookie = c
+				}
+			}
+			require.NotNil(t, consentCookie)
+
+			h.upstreams[0].DisplayName = "Renamed IdP"
+
+			loaded, err := s.LoadPendingAuthorization(ctx, "internal-state")
+			require.NoError(t, err)
+			assert.Equal(t, "test-upstream", loaded.UpstreamProviderName)
+			tokens, err := s.GetUpstreamTokens(ctx, "sid", "test-upstream")
+			require.NoError(t, err)
+			assert.Equal(t, "test-upstream", tokens.ProviderID)
+			req := httptest.NewRequest(http.MethodGet, "/oauth/authorize", nil)
+			req.AddCookie(consentCookie)
+			session, _, err := h.rememberedSession(ctx, req)
+			require.NoError(t, err)
+			require.NotNil(t, session, "remembered consent must survive a display name change")
+			assert.Equal(t, "test-upstream", session.ProviderID)
+
+			records, err := json.Marshal([]any{loaded, tokens, session})
+			require.NoError(t, err)
+			assert.NotContains(t, string(records), "Acme Okta")
+			if mr != nil {
+				for _, key := range mr.Keys() {
+					assert.NotContains(t, key, "Acme")
+					if v, err := mr.Get(key); err == nil {
+						assert.NotContains(t, v, "Acme Okta")
+					}
+				}
+			}
+		})
+	}
+}

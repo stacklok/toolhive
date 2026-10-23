@@ -60,9 +60,11 @@ const guardRevokeTimeout = 5 * time.Second
 // the credential can never be used again. It refuses without revoking when the
 // cause could be wrong and later correct itself: the IdP rejected a refresh
 // (a replica that loses a cross-replica refresh race to a rotating IdP sees
-// the same rejection), or no row could be read (a storage backend may skip
-// rows it cannot parse). A refusal that turns out wrong then costs the client
-// one re-authorization, not its grant.
+// the same rejection), no row could be read (a storage backend may skip rows
+// it cannot parse), or a row's provider is not configured (a decision from
+// this replica's config, which can lag a rolling deploy that adds the
+// provider). A refusal that turns out wrong then costs the client one
+// re-authorization, not its grant.
 //
 // Before refusing on an IdP rejection, the guard re-reads the row once more
 // after rejectionRecheckDelay and treats a row now holding a different refresh
@@ -219,9 +221,11 @@ func (g *upstreamRefreshGuard) checkRow(
 		return row.AccessToken != "", nil
 	}
 	if _, ok := g.providers[name]; !ok {
+		// Not revoked: this replica's config decides it, and another replica
+		// may have the provider configured during a rolling deploy.
 		return false, &refusal{
-			provider: name, revoke: true,
-			reason: "upstream access token expired and its provider is no longer configured",
+			provider: name,
+			reason:   "upstream access token expired and its provider is no longer configured",
 		}
 	}
 	if row.RefreshToken == "" {

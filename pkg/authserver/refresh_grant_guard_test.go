@@ -202,12 +202,11 @@ func TestUpstreamRefreshGuard(t *testing.T) {
 			hang:      true,
 		},
 		{
-			name:         "expired row for an unconfigured provider is refused and revoked",
+			name:         "expired row for an unconfigured provider is refused without revoking",
 			tsid:         guardTestTSID,
 			rows:         map[string]*storage.UpstreamTokens{"removed": guardTestRow(past, "rt")},
 			unconfigured: "removed",
 			wantRefuse:   true,
-			wantRevoke:   true,
 		},
 		{
 			name:         "unexpired row for an unconfigured provider is granted",

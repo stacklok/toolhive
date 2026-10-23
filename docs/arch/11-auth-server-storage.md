@@ -449,7 +449,7 @@ other docs link here.
 |---|---|
 | The session has no readable upstream rows | No |
 | Rows exist but none holds an access token | Yes |
-| A row's access token is expired and its provider is no longer configured, so nothing can refresh it | Yes |
+| A row's access token is expired and its provider is no longer configured, so nothing can refresh it | No |
 | A row's access token is expired and the row has no refresh token | Yes |
 | The row was deleted while the guard refreshed it | No |
 | The IdP rejects the row's refresh with `invalid_grant` (`upstream.ErrGrantRejected`) | No |
@@ -460,8 +460,18 @@ prove the credential can never be used again. The other refusals keep the
 refresh token, because their cause could be wrong: a rotating IdP also
 answers `invalid_grant` to a replica that lost a refresh race, and Redis's
 bulk read skips a row it cannot parse (for example one written by another
-version during a rolling upgrade) and reports none. If such a refusal is
-wrong, the client's next refresh succeeds; otherwise it is refused again.
+version during a rolling upgrade) and reports none. An unconfigured provider
+is decided by the serving replica's config rather than by the stored rows, and
+during a rolling deploy that adds an upstream an old replica does not know it
+yet. If such a refusal is wrong, the client's next refresh succeeds; otherwise
+it is refused again.
+
+Keeping the token has a cost. A client that retries a refused refresh token
+repeats the whole check each time. For an IdP rejection, each retry makes
+another upstream refresh call, waits out the 500ms recheck and logs another
+WARN, where a revoked token would be refused once. This is bounded: the
+caller must authenticate as the token's client, and well-behaved clients
+treat `invalid_grant` as terminal.
 
 The guard refreshes an expired row through the shared refresher before
 deciding, one provider at a time. Upstream refresh is otherwise lazy, so an

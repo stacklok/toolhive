@@ -300,7 +300,7 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage) (_ *server
 
 	// Create fosite provider with the configured storage decorators.
 	slog.Debug("creating fosite OAuth2 provider")
-	fositeProvider, trustedIssuerValidator, err := buildProvider(cfg, authServerConfig, stor, refresher)
+	fositeProvider, trustedIssuerValidator, err := buildProvider(cfg, authServerConfig, stor, refresher, upstreams)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create fosite OAuth2 provider: %w", err)
 	}
@@ -531,7 +531,8 @@ func JWTBearerGrantEnabled(trustedIssuers []tokenexchange.TrustedIssuer) bool {
 // configuration; JWT-bearer is enabled per JWTBearerGrantEnabled).
 //
 // refresher is the server's shared upstream token refresher (nil without
-// upstreams), used by the built-in upstream refresh guard.
+// upstreams) and upstreams are the resolved upstreams it refreshes, both used
+// by the built-in upstream refresh guard.
 //
 // It returns the shared MultiIssuerTokenValidator (nil when no TrustedIssuers
 // are configured, or when neither enabled grant would use it) so newServer
@@ -540,7 +541,7 @@ func JWTBearerGrantEnabled(trustedIssuers []tokenexchange.TrustedIssuer) bool {
 // the caller never receives it.
 func buildProvider(
 	cfg Config, authServerConfig *oauthserver.AuthorizationServerConfig, stor storage.Storage,
-	refresher storage.UpstreamTokenRefresher,
+	refresher storage.UpstreamTokenRefresher, upstreams []handlers.NamedUpstream,
 ) (_ fosite.OAuth2Provider, _ *tokenexchange.MultiIssuerTokenValidator, retErr error) {
 	delegateClientIDs := make([]string, len(cfg.DelegateClients))
 	for i, c := range cfg.DelegateClients {
@@ -608,7 +609,11 @@ func buildProvider(
 	}
 	// Refresh-grant validators go last so each runs after the built-in refresh
 	// handler has validated the grant.
-	factories = append(factories, refreshGrantHandlerFactories(refreshGrantValidatorChain(cfg, stor, refresher))...)
+	validators, err := refreshGrantValidatorChain(cfg, stor, refresher, upstreams)
+	if err != nil {
+		return nil, nil, err
+	}
+	factories = append(factories, refreshGrantHandlerFactories(validators)...)
 	provider, err := createProvider(authServerConfig, stor, factories...)
 	if err != nil {
 		return nil, nil, err
@@ -617,20 +622,25 @@ func buildProvider(
 }
 
 // refreshGrantValidatorChain returns the refresh-grant validators in run
-// order: the built-in upstream refresh guard (unless disabled or there are no
-// upstreams), then the embedder's Config.RefreshGrantHandlers.
+// order: the built-in upstream refresh guard (unless disabled or there is no
+// refresher, because no upstreams are configured), then the embedder's
+// Config.RefreshGrantHandlers. The guard's set of configured providers comes
+// from upstreams, the same resolved list the refresher was built from.
 func refreshGrantValidatorChain(
-	cfg Config, stor storage.Storage, refresher storage.UpstreamTokenRefresher,
-) []fosite.TokenEndpointHandler {
-	upstreamNames := make([]string, len(cfg.Upstreams))
-	for i := range cfg.Upstreams {
-		upstreamNames[i] = cfg.Upstreams[i].Name
+	cfg Config, stor storage.Storage, refresher storage.UpstreamTokenRefresher, upstreams []handlers.NamedUpstream,
+) ([]fosite.TokenEndpointHandler, error) {
+	if cfg.DisableUpstreamRefreshGuard || refresher == nil {
+		return cfg.RefreshGrantHandlers, nil
 	}
-	guard := newUpstreamRefreshGuard(cfg.DisableUpstreamRefreshGuard, stor, refresher, upstreamNames)
-	if guard == nil {
-		return cfg.RefreshGrantHandlers
+	upstreamNames := make([]string, len(upstreams))
+	for i, u := range upstreams {
+		upstreamNames[i] = u.Name
 	}
-	return append([]fosite.TokenEndpointHandler{guard}, cfg.RefreshGrantHandlers...)
+	guard, err := newUpstreamRefreshGuard(stor, refresher, upstreamNames)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create upstream refresh guard: %w", err)
+	}
+	return append([]fosite.TokenEndpointHandler{guard}, cfg.RefreshGrantHandlers...), nil
 }
 
 // buildJWTBearerFactories builds the RFC 7523 JWT-bearer factory together

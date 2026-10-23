@@ -795,12 +795,6 @@ func TestRunConfigValidate(t *testing.T) {
 	}
 }
 
-// TestRunConfigValidate_UpstreamFilter covers RunConfig.Validate()'s
-// enforcement of UpstreamFilter static invariants against the configured
-// upstream list. Thorough matching/union/claim behavior is covered in
-// pkg/authserver/upstreamfilter — these cases only verify that invalid filter
-// configurations are rejected at startup rather than deferred to a runtime
-// surprise.
 func TestUpstreamConfig_DisplayNameNeverFailsValidation(t *testing.T) {
 	t.Parallel()
 
@@ -841,6 +835,12 @@ func TestUpstreamConfig_DisplayNameNeverFailsValidation(t *testing.T) {
 	}
 }
 
+// TestRunConfigValidate_UpstreamFilter covers RunConfig.Validate()'s
+// enforcement of UpstreamFilter static invariants against the configured
+// upstream list. Thorough matching/union/claim behavior is covered in
+// pkg/authserver/upstreamfilter — these cases only verify that invalid filter
+// configurations are rejected at startup rather than deferred to a runtime
+// surprise.
 func TestRunConfigValidate_UpstreamFilter(t *testing.T) {
 	t.Parallel()
 

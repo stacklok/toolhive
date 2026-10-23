@@ -1405,10 +1405,11 @@ func TestEmbeddedAuthServer_KeyProvider(t *testing.T) {
 	})
 }
 
-// TestBuildUpstreamConfig_CopiesDisplayName checks that the runner's upstream
-// validation never rejects a display name and copies it through unchanged for both
-// upstream types; sanitizing happens only when the consent page renders it.
-func TestBuildUpstreamConfig_CopiesDisplayName(t *testing.T) {
+// TestBuildUpstreamConfigs_CopiesDisplayName drives buildUpstreamConfigs, which runs
+// validateUpstreamRunConfig, so the runner's upstream validation is shown to never
+// reject a display name. The label is copied through unchanged for both upstream
+// types; sanitizing happens only when the consent page renders it.
+func TestBuildUpstreamConfigs_CopiesDisplayName(t *testing.T) {
 	t.Parallel()
 
 	upstreams := []authserver.UpstreamRunConfig{
@@ -1439,10 +1440,12 @@ func TestBuildUpstreamConfig_CopiesDisplayName(t *testing.T) {
 				t.Parallel()
 				rc := rc
 				rc.DisplayName = displayName
-				cfg, err := buildUpstreamConfig(&rc, false)
+				got, err := buildUpstreamConfigs(context.Background(), []authserver.UpstreamRunConfig{rc},
+					"http://localhost:8080", newMemoryDCRStore(t), false)
 				require.NoError(t, err)
-				assert.Equal(t, "okta", cfg.Name)
-				assert.Equal(t, displayName, cfg.DisplayName)
+				require.Len(t, got, 1)
+				assert.Equal(t, "okta", got[0].Name)
+				assert.Equal(t, displayName, got[0].DisplayName)
 			})
 		}
 	}

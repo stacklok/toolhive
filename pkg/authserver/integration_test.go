@@ -137,6 +137,8 @@ type testServerOptions struct {
 	storageDecorator             func(storage.Storage) storage.Storage
 	// refreshGrantHandlers, when non-empty, sets Config.RefreshGrantHandlers.
 	refreshGrantHandlers []fosite.TokenEndpointHandler
+	// disableUpstreamRefreshGuard sets Config.DisableUpstreamRefreshGuard.
+	disableUpstreamRefreshGuard bool
 	// signingKey and hmacSecret, when set, replace the freshly generated key
 	// material in setupTestServerWithOIDCProvider so that two servers can issue
 	// and validate each other's tokens (see withSharedKeyMaterial).
@@ -253,6 +255,13 @@ func withDeviceCodeInterval(d time.Duration) testServerOption {
 func withRefreshGrantHandlers(hs ...fosite.TokenEndpointHandler) testServerOption {
 	return func(opts *testServerOptions) {
 		opts.refreshGrantHandlers = hs
+	}
+}
+
+// withoutUpstreamRefreshGuard sets Config.DisableUpstreamRefreshGuard.
+func withoutUpstreamRefreshGuard() testServerOption {
+	return func(opts *testServerOptions) {
+		opts.disableUpstreamRefreshGuard = true
 	}
 }
 
@@ -447,6 +456,7 @@ func setupTestServer(t *testing.T, opts ...testServerOption) *testServer {
 		DeviceFlowEnabled:                   options.deviceFlowEnabled,
 		DeviceCodeInterval:                  options.deviceCodeInterval,
 		RefreshGrantHandlers:                options.refreshGrantHandlers,
+		DisableUpstreamRefreshGuard:         options.disableUpstreamRefreshGuard,
 		// The test server's issuer is a plain-HTTP loopback URL (genuinely
 		// local: an in-process httptest server), so opt in to the same
 		// combination withAllowConfidentialClientRegistration would otherwise

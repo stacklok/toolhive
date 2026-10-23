@@ -1405,31 +1405,46 @@ func TestEmbeddedAuthServer_KeyProvider(t *testing.T) {
 	})
 }
 
+// TestBuildUpstreamConfig_CopiesDisplayName checks that the runner's upstream
+// validation never rejects a display name and copies it through unchanged for both
+// upstream types; sanitizing happens only when the consent page renders it.
 func TestBuildUpstreamConfig_CopiesDisplayName(t *testing.T) {
 	t.Parallel()
 
-	for _, rc := range []authserver.UpstreamRunConfig{
+	upstreams := []authserver.UpstreamRunConfig{
 		{
-			Name: "okta", DisplayName: "Acme Okta", Type: authserver.UpstreamProviderTypeOIDC,
+			Name: "okta", Type: authserver.UpstreamProviderTypeOIDC,
 			OIDCConfig: &authserver.OIDCUpstreamRunConfig{
 				IssuerURL: "https://okta.example.com", ClientID: "c", RedirectURI: "http://localhost:8080/callback",
 			},
 		},
 		{
-			Name: "okta", DisplayName: "Acme Okta", Type: authserver.UpstreamProviderTypeOAuth2,
+			Name: "okta", Type: authserver.UpstreamProviderTypeOAuth2,
 			OAuth2Config: &authserver.OAuth2UpstreamRunConfig{
 				AuthorizationEndpoint: "https://okta.example.com/authorize", TokenEndpoint: "https://okta.example.com/token",
 				ClientID: "c", RedirectURI: "http://localhost:8080/callback",
 			},
 		},
-	} {
-		t.Run(string(rc.Type), func(t *testing.T) {
-			t.Parallel()
-			cfg, err := buildUpstreamConfig(&rc, false)
-			require.NoError(t, err)
-			assert.Equal(t, "okta", cfg.Name)
-			assert.Equal(t, "Acme Okta", cfg.DisplayName)
-		})
+	}
+	displayNames := map[string]string{
+		"plain":           "Acme Okta",
+		"control runes":   "Acme\u202e\u200b\nOkta",
+		"whitespace only": " \t ",
+		"html":            "<script>alert(1)</script>",
+		"very long":       strings.Repeat("é", 1000),
+	}
+	for _, rc := range upstreams {
+		for name, displayName := range displayNames {
+			t.Run(string(rc.Type)+"/"+name, func(t *testing.T) {
+				t.Parallel()
+				rc := rc
+				rc.DisplayName = displayName
+				cfg, err := buildUpstreamConfig(&rc, false)
+				require.NoError(t, err)
+				assert.Equal(t, "okta", cfg.Name)
+				assert.Equal(t, displayName, cfg.DisplayName)
+			})
+		}
 	}
 }
 

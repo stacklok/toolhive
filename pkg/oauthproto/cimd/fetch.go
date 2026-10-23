@@ -11,7 +11,9 @@ package cimd
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -21,6 +23,18 @@ import (
 	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
+
+// ErrDocumentUnavailable marks a fetch failure in which the document host
+// delivered no usable response or answered with a 5xx status: a resolver,
+// dial, TLS, or SSRF-guard failure, a timeout, a 200 whose body was cut short
+// or stalled, or a server error. Nothing is known about the document itself in
+// these cases, so a caller that holds an earlier copy may keep serving it for
+// a bounded time (RFC 5861 stale-if-error). Every other failure is definitive
+// and never carries this error: an invalid client_id URL, a 3xx or 4xx status
+// (whatever happened to its body), an unexpected content type, a body that is
+// not JSON, or a document that ValidateClientMetadataDocument rejects. Check
+// with errors.Is.
+var ErrDocumentUnavailable = errors.New("client metadata document unavailable")
 
 // ClientMetadataDocument represents an OAuth 2.0 Client ID Metadata Document
 // per draft-ietf-oauth-client-id-metadata-document.
@@ -68,7 +82,9 @@ var forbiddenAuthMethods = []string{
 // accepted in development). The document is fetched with a 5-second timeout,
 // redirects disabled, a 10 KB body cap, and SSRF protection via a per-dial IP
 // check. After fetching, ValidateClientMetadataDocument is called and any
-// validation error is returned.
+// validation error is returned. A failure in which the host delivered no
+// usable response or answered 5xx wraps ErrDocumentUnavailable; see that error
+// for the exact split between transient and definitive failures.
 func FetchClientMetadataDocument(ctx context.Context, rawURL string) (*ClientMetadataDocument, error) {
 	allowHTTPLoopback, err := validateCIMDClientURL(rawURL)
 	if err != nil {
@@ -82,7 +98,7 @@ func FetchClientMetadataDocument(ctx context.Context, rawURL string) (*ClientMet
 		networking.WithMaxResponseSize(10*1024),
 	)
 	if err != nil {
-		return nil, fmt.Errorf("failed to fetch client metadata document: %w", err)
+		return nil, classifyFetchError(err)
 	}
 
 	doc := &result.Data
@@ -91,6 +107,28 @@ func FetchClientMetadataDocument(ctx context.Context, rawURL string) (*ClientMet
 	}
 
 	return doc, nil
+}
+
+// classifyFetchError wraps a networking.FetchJSON failure, marking it with
+// ErrDocumentUnavailable when the host delivered no usable response: a 5xx
+// status, or an error before the status arrived or while reading a 200 body
+// (every transport error is a net.Error; a body cut short is
+// io.ErrUnexpectedEOF). FetchJSON reports a 3xx or 4xx whether or not its
+// body arrived in full, so those stay definitive, as does every error raised
+// after a 200 body was read in full.
+func classifyFetchError(err error) error {
+	var httpErr *networking.HTTPError
+	if errors.As(err, &httpErr) {
+		if httpErr.StatusCode >= http.StatusInternalServerError {
+			return fmt.Errorf("%w: %w", ErrDocumentUnavailable, err)
+		}
+		return fmt.Errorf("failed to fetch client metadata document: %w", err)
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return fmt.Errorf("%w: %w", ErrDocumentUnavailable, err)
+	}
+	return fmt.Errorf("failed to fetch client metadata document: %w", err)
 }
 
 // newCIMDHTTPClient builds an *http.Client for fetching CIMD documents.

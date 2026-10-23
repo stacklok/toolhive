@@ -940,7 +940,7 @@
       "AuthenticationUpstreamRunConfig": {
         "properties": {
           "display_name": {
-            "description": "DisplayName is an optional human-readable label for this upstream, shown to\nend users on the consent page in place of Name. It is display-only: never\ncompared, stored, or used to route. It is sanitised at render time and never\nrejected by validation. It is shown as trusted text, so it must come from\noperator-controlled configuration only.",
+            "description": "DisplayName is an optional human-readable label for this upstream, shown to\nend users on the consent page in place of Name. It is display-only: never\ncompared, stored, or used to route. It is sanitized at render time and never\nrejected by validation. It is shown as trusted text, so it must come from\noperator-controlled configuration only.",
             "type": "string"
           },
           "name": {

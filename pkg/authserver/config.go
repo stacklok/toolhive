@@ -763,7 +763,7 @@ type UpstreamRunConfig struct {
 
 	// DisplayName is an optional human-readable label for this upstream, shown to
 	// end users on the consent page in place of Name. It is display-only: never
-	// compared, stored, or used to route. It is sanitised at render time and never
+	// compared, stored, or used to route. It is sanitized at render time and never
 	// rejected by validation. It is shown as trusted text, so it must come from
 	// operator-controlled configuration only.
 	DisplayName string `json:"display_name,omitempty" yaml:"display_name,omitempty"`
@@ -1160,7 +1160,7 @@ type UpstreamConfig struct {
 
 	// DisplayName is an optional human-readable label for this upstream, shown to
 	// end users on the consent page in place of Name. It is display-only: never
-	// compared, stored, or used to route. It is sanitised at render time and never
+	// compared, stored, or used to route. It is sanitized at render time and never
 	// rejected by validation. It is shown as trusted text, so it must come from
 	// operator-controlled configuration only.
 	DisplayName string `json:"display_name,omitempty" yaml:"display_name,omitempty"`

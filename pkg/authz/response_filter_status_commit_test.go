@@ -73,7 +73,7 @@ func TestResponseFilteringWriter_Non2xxStatusPreservedOnWire(t *testing.T) {
 		ctx = context.WithValue(ctx, mcpparser.MCPRequestContextKey, parsed)
 		r = r.WithContext(ctx)
 
-		filteringWriter := NewResponseFilteringWriter(w, authorizer, r, string(mcp.MethodToolsList), nil, nil)
+		filteringWriter := newTestFilteringWriter(w, authorizer, r, string(mcp.MethodToolsList), nil, nil)
 		proxy := httputil.NewSingleHostReverseProxy(backendURL)
 		proxy.FlushInterval = -1 // production transparent proxy
 		proxy.ServeHTTP(filteringWriter, r)

@@ -52,7 +52,9 @@ const guardRevokeTimeout = 5 * time.Second
 // A rotating IdP also answers invalid_grant to a replica that loses a
 // cross-replica refresh race. The refresher re-reads the row immediately; the
 // guard re-reads it once more after rejectionRecheckDelay and treats a row now
-// holding a different, unexpired refresh token as live.
+// holding a different, unexpired refresh token as live. A recheck that cannot
+// complete (the request is cancelled, or the read fails) leaves the outcome
+// uncertain, so the grant is not refused and nothing is revoked.
 type upstreamRefreshGuard struct {
 	tokens       storage.UpstreamTokenStorage
 	refresher    storage.UpstreamTokenRefresher
@@ -111,7 +113,7 @@ func (g *upstreamRefreshGuard) HandleTokenEndpointRequest(ctx context.Context, r
 	// The refresh token is revoked, so each refresh token logs this once.
 	slog.WarnContext(ctx, "refusing refresh grant: upstream credential is no longer usable; re-authorization required",
 		"client_id", requester.GetClient().GetID(),
-		"provider", provider,
+		"provider_id", provider,
 		"reason", reason,
 	)
 	// Log tsid at DEBUG only; it is credential-adjacent.
@@ -155,10 +157,10 @@ func (g *upstreamRefreshGuard) deadUpstream(ctx context.Context, tsid string) (p
 		}
 		if !errors.Is(err, upstream.ErrGrantRejected) {
 			slog.DebugContext(ctx, "upstream refresh failed transiently; refresh grant guard is not refusing",
-				"provider", name, "error", err)
+				"provider_id", name, "error", err)
 			continue
 		}
-		if g.rotatedAfterRejection(ctx, tsid, name, row.RefreshToken) {
+		if !g.rejectionStands(ctx, tsid, name, row.RefreshToken) {
 			continue
 		}
 		return name, "upstream refresh was rejected with invalid_grant"
@@ -166,25 +168,40 @@ func (g *upstreamRefreshGuard) deadUpstream(ctx context.Context, tsid string) (p
 	return "", ""
 }
 
-// rotatedAfterRejection waits recheckDelay and reports whether the stored row
-// now holds a refresh token other than rejectedRT with an unexpired access
-// token, meaning another replica won a refresh race and its write has landed.
-// A read failure, or a cancelled wait, reports false and the rejection stands.
-func (g *upstreamRefreshGuard) rotatedAfterRejection(ctx context.Context, tsid, provider, rejectedRT string) bool {
+// rejectionStands waits recheckDelay, re-reads the row and reports whether
+// the upstream rejection of rejectedRT is final. It is not when the row now
+// holds a different refresh token with an unexpired access token, meaning
+// another replica won a refresh race and its write has landed. It is not known
+// when the wait is cancelled or the read fails with anything but ErrNotFound
+// or ErrExpired; that reports false too, so a client disconnect or a storage
+// fault never revokes a session that may be live.
+func (g *upstreamRefreshGuard) rejectionStands(ctx context.Context, tsid, provider, rejectedRT string) bool {
 	if g.recheckDelay > 0 {
 		timer := time.NewTimer(g.recheckDelay)
 		defer timer.Stop()
 		select {
 		case <-ctx.Done():
+			slog.DebugContext(ctx, "refresh grant guard recheck cancelled; not refusing", "provider_id", provider)
 			return false
 		case <-timer.C:
 		}
 	}
 	stored, err := g.tokens.GetUpstreamTokens(ctx, tsid, provider)
-	if err != nil || stored == nil {
+	switch {
+	case errors.Is(err, storage.ErrNotFound):
+		return true
+	case errors.Is(err, storage.ErrExpired):
+		// The row is still expired; only a different refresh token would mean
+		// a successor, and an expired successor is no more usable.
+		return true
+	case err != nil:
+		slog.DebugContext(ctx, "refresh grant guard recheck read failed; not refusing",
+			"provider_id", provider, "error", err)
 		return false
+	case stored == nil:
+		return true
 	}
-	return stored.RefreshToken != rejectedRT && !stored.IsExpired(time.Now())
+	return stored.RefreshToken == rejectedRT || stored.IsExpired(time.Now())
 }
 
 // revoke revokes the refused refresh token and the access tokens of the same

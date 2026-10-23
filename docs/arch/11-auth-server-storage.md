@@ -455,7 +455,9 @@ failure (network, 5xx, 429, storage) grants the refresh, since the bearer
 validator answers those with 503 or a retryable 401 anyway. To tolerate the
 lost-race window described above, the guard does not refuse on the first
 rejection: it waits briefly (500ms) and re-reads the row, and a row now holding
-a different, unexpired refresh token counts as live. A session without a
+a different, unexpired refresh token counts as live. A recheck that cannot complete (the
+request is cancelled, or the read fails) is treated as uncertain, so the grant
+is not refused and nothing is revoked. A session without a
 `tsid` (a session-less grant) is not checked. `Config.DisableUpstreamRefreshGuard`
 turns the guard off.
 

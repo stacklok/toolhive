@@ -20,6 +20,7 @@ import (
 
 	coreaudit "github.com/stacklok/toolhive-core/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/authz/authorizers"
 	"github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
@@ -210,6 +211,10 @@ func ensureAuditContext(r *http.Request) *http.Request {
 		ctx = mcp.WithAuthzDenialMarker(ctx, &mcp.AuthzDenialMarker{})
 		changed = true
 	}
+	if _, ok := authorizers.DiscoveryMarkerFromContext(ctx); !ok {
+		ctx = authorizers.WithDiscoveryMarker(ctx, &authorizers.DiscoveryMarker{})
+		changed = true
+	}
 	if !changed {
 		return r
 	}
@@ -229,7 +234,7 @@ func (a *Auditor) Middleware(next http.Handler) http.Handler {
 		if a.isMCPStreamOpenRequest(r) {
 			sw := &streamOpenWriter{ResponseWriter: w, auditor: a, req: r}
 			// Deferred BEFORE ServeHTTP so a panic in an inner handler still
-			// produces the connection event during unwinding — some chains run
+			// produces the connection event during unwinding â€” some chains run
 			// the recovery middleware OUTSIDE audit (e.g. the vMCP Serve path),
 			// which would otherwise swallow the event entirely. If the stream
 			// already logged on first write this is a no-op.
@@ -520,7 +525,7 @@ func (*Auditor) getClientIP(r *http.Request) string {
 
 // extractSubjectsFromIdentity extracts subject information from an Identity.
 // This helper ensures consistent fallback order and validation across all auditors.
-// Fallback order for user: Name → PreferredUsername → Email
+// Fallback order for user: Name â†’ PreferredUsername â†’ Email
 func extractSubjectsFromIdentity(identity *auth.Identity) map[string]string {
 	subjects := make(map[string]string)
 
@@ -529,7 +534,7 @@ func extractSubjectsFromIdentity(identity *auth.Identity) map[string]string {
 		subjects[SubjectKeyUserID] = identity.Subject
 	}
 
-	// Extract user name with fallback order: Name → PreferredUsername → Email
+	// Extract user name with fallback order: Name â†’ PreferredUsername â†’ Email
 	if identity.Name != "" {
 		subjects[SubjectKeyUser] = identity.Name
 	} else if preferredUsername, ok := identity.Claims["preferred_username"].(string); ok && preferredUsername != "" {
@@ -554,7 +559,7 @@ func extractSubjectsFromIdentity(identity *auth.Identity) map[string]string {
 // carried by the identity, bound to maxDepth, or nil when there is none.
 // The identity layer (auth.claimsToIdentity) always parses at
 // auth.DefaultMaxDelegationDepth, so a larger maxDepth requires re-parsing the
-// raw "act" claim — rebinding an already-parsed chain can only shrink it. The
+// raw "act" claim â€” rebinding an already-parsed chain can only shrink it. The
 // re-parse is only trusted when it yields at least as many hops as are
 // already parsed, so it can widen the chain but never narrow it.
 func extractDelegationChainFromIdentity(identity *auth.Identity, maxDepth int) *coreaudit.DelegationChain {
@@ -581,8 +586,8 @@ func extractDelegationChainFromIdentity(identity *auth.Identity, maxDepth int) *
 }
 
 // rebindDelegationChain applies maxDepth to an already-parsed chain: hops
-// beyond the cap are dropped (keeping the outermost hops, so Chain[0] — the
-// current actor — is preserved), the chain is marked truncated, and the
+// beyond the cap are dropped (keeping the outermost hops, so Chain[0] â€” the
+// current actor â€” is preserved), the chain is marked truncated, and the
 // omitted count accounts for both hops truncated at parse time and hops
 // dropped by this re-binding.
 func rebindDelegationChain(chain *coreaudit.DelegationChain, maxDepth int) *coreaudit.DelegationChain {
@@ -712,6 +717,12 @@ func (a *Auditor) addMetadata(event *AuditEvent, r *http.Request, duration time.
 	}
 
 	stampTraceContext(r.Context(), event)
+
+	// A tools/list entry granted only by tool:call is discovery, not invocation.
+	// Recording it lets the audit trail tell the two apart.
+	if marker, ok := authorizers.DiscoveryMarkerFromContext(r.Context()); ok && marker.FallbackCount > 0 {
+		event.Metadata.Extra[MetadataExtraKeyDiscoveryFallbackCount] = marker.FallbackCount
+	}
 }
 
 // stampTraceContext records the trace and span IDs carried by ctx on the event,
@@ -780,7 +791,7 @@ type streamOpenWriter struct {
 }
 
 func (sw *streamOpenWriter) WriteHeader(statusCode int) {
-	// Informational (1xx) responses are not the final status — don't consume
+	// Informational (1xx) responses are not the final status â€” don't consume
 	// the one-shot connection event on them.
 	if statusCode >= http.StatusOK {
 		sw.logOnce(statusCode)
@@ -796,7 +807,7 @@ func (sw *streamOpenWriter) Write(data []byte) (int, error) {
 
 // Flush implements http.Flusher if the underlying ResponseWriter supports it.
 // A flush commits the response headers with an implicit 200, so it counts as
-// the stream being established — log the connection event here too, otherwise
+// the stream being established â€” log the connection event here too, otherwise
 // a handler that flushes before its first write would delay (or, on a stream
 // that only ever flushes, lose) the event.
 func (sw *streamOpenWriter) Flush() {

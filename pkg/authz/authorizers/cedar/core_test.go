@@ -1480,7 +1480,7 @@ func TestAuthorizeWithJWTClaims_UpstreamProvider(t *testing.T) {
 				},
 				UpstreamTokens: map[string]string{
 					// Three-segment shape (looks like a JWT) but the segments are
-					// not valid base64-encoded JSON — i.e. a tampered or
+					// not valid base64-encoded JSON â€” i.e. a tampered or
 					// corrupted JWT. The fallback path MUST NOT trigger here:
 					// silently degrading a tampered upstream JWT to fallback
 					// claims would be a security regression.
@@ -1806,7 +1806,7 @@ func TestSupplementProfileClaims(t *testing.T) {
 // token wins, its id_token supplies only the profile claims the access token
 // omits, and the ToolHive-issued token is not a claim source at all.
 //
-// The email-filling case is the #5916 reproducer — an upstream IdP whose access
+// The email-filling case is the #5916 reproducer â€” an upstream IdP whose access
 // token is a well-formed JWT carrying no `email` (the provider asserts it in the
 // id_token only), which used to make every `claim_email` policy deny.
 func TestResolveClaimsUpstreamSupplement(t *testing.T) {
@@ -1880,7 +1880,7 @@ func TestResolveClaimsUpstreamSupplement(t *testing.T) {
 		},
 		{
 			// The multi-upstream misattribution guard. With no id_token stored for
-			// the pinned provider, `email` stays absent and the policy denies — the
+			// the pinned provider, `email` stays absent and the policy denies â€” the
 			// ToolHive-issued token's mirrored email must NOT stand in, because in a
 			// chain it belongs to the first configured upstream, not this one.
 			name:     "no_id_token_leaves_profile_claims_absent",
@@ -1995,7 +1995,7 @@ func TestAuthorizeWithJWTClaims_UpstreamJWTMissingIdentityClaim(t *testing.T) {
 
 	// A JWT-shaped upstream access token that parses cleanly but carries no
 	// identity claims beyond `sub`. looksLikeJWT is true here, so the #5147
-	// opaque-token fallback does not apply — the id_token supplement is what
+	// opaque-token fallback does not apply â€” the id_token supplement is what
 	// recovers `email`.
 	upstreamToken := makeUnsignedJWT(jwt.MapClaims{
 		"sub": "hub|alice",
@@ -2079,7 +2079,7 @@ func TestAuthorizeWithJWTClaims_PrincipalStaysUpstreamSourced(t *testing.T) {
 	// A banned-user rule keyed on the upstream subject, plus a broad permit that
 	// would otherwise let the request through. If the principal were ever built
 	// from the AS-issued subject, the forbid would stop matching and the permit
-	// would apply — the exact silent-widening this guards against.
+	// would apply â€” the exact silent-widening this guards against.
 	authorizer, err := NewCedarAuthorizer(ConfigOptions{
 		Policies: []string{
 			`forbid(principal == Client::"hub|banned-alice", action, resource);`,
@@ -2112,7 +2112,7 @@ func TestAuthorizeWithJWTClaims_PrincipalStaysUpstreamSourced(t *testing.T) {
 		{
 			// The sharp case. If `sub` were added to mirroredIdentityClaims, the
 			// AS subject would stand in, the principal would become
-			// Client::"7f3c1e64-..." and the broad permit would apply — the
+			// Client::"7f3c1e64-..." and the broad permit would apply â€” the
 			// request would be ALLOWED instead of erroring. Fail closed instead.
 			name:           "missing_upstream_subject_fails_closed_not_to_the_as_subject",
 			upstreamClaims: jwt.MapClaims{"iss": "https://hub.example.com"},
@@ -2252,7 +2252,7 @@ func TestAuthorizeWithJWTClaims_TransitiveHierarchyPreserved(t *testing.T) {
 
 	// Policy: only members of THVRole::"developer" may call the deploy tool.
 	// The user is in THVGroup::"engineering" which is a child of THVRole::"developer"
-	// in entities_json — so this requires transitive "in" evaluation.
+	// in entities_json â€” so this requires transitive "in" evaluation.
 	policy := `
 		permit(
 			principal in THVRole::"developer",
@@ -2261,7 +2261,7 @@ func TestAuthorizeWithJWTClaims_TransitiveHierarchyPreserved(t *testing.T) {
 		);
 	`
 
-	// Static entities: THVGroup::"engineering" → THVRole::"developer".
+	// Static entities: THVGroup::"engineering" â†’ THVRole::"developer".
 	entitiesJSON := `[
 		{
 			"uid": {"type": "THVGroup", "id": "engineering"},
@@ -2303,7 +2303,7 @@ func TestAuthorizeWithJWTClaims_TransitiveHierarchyPreserved(t *testing.T) {
 	)
 	require.NoError(t, err)
 	assert.True(t, authorized,
-		"transitive hierarchy THVGroup→THVRole from entities_json must survive entity merge")
+		"transitive hierarchy THVGroupâ†’THVRole from entities_json must survive entity merge")
 }
 
 func TestAuthorizeWithJWTClaims_BackendHierarchyPreserved(t *testing.T) {
@@ -2642,7 +2642,7 @@ func TestInjectUpstreamProvider(t *testing.T) {
 		},
 		{
 			// GroupClaimName and RoleClaimName must survive the
-			// serialise→deserialise round-trip that InjectUpstreamProvider
+			// serialiseâ†’deserialise round-trip that InjectUpstreamProvider
 			// performs internally. A refactor that reconstructed ConfigOptions
 			// from scratch (populating only known fields) would silently drop
 			// these claim name fields without this test.
@@ -2714,7 +2714,7 @@ func TestInjectUpstreamProvider_NonCedarPassThrough(t *testing.T) {
 	result, err := InjectUpstreamProvider(src, "github")
 	require.NoError(t, err)
 	assert.Same(t, src, result,
-		"non-Cedar config must be returned as the same pointer — InjectUpstreamProvider must be a no-op for unknown types")
+		"non-Cedar config must be returned as the same pointer â€” InjectUpstreamProvider must be a no-op for unknown types")
 }
 
 // TestResolveNestedClaim tests the resolveNestedClaim function.
@@ -3139,7 +3139,7 @@ func TestAuthorizeWithJWTClaims_DualClaim(t *testing.T) {
 		{
 			// Pins the "present but empty" semantic: if the configured custom
 			// claim exists as an empty array, the IdP has explicitly said
-			// "no groups" — fallback to well-known names MUST NOT fire. Without
+			// "no groups" â€” fallback to well-known names MUST NOT fire. Without
 			// this test, a refactor of extractGroups that returns nil on empty
 			// arrays would silently flip the semantic and allow well-known
 			// claims like "roles" to grant access.
@@ -3296,7 +3296,7 @@ func TestAuthorizeWithJWTClaims_BackwardCompat(t *testing.T) {
 			authorizer, err := NewCedarAuthorizer(ConfigOptions{
 				Policies:     []string{policy},
 				EntitiesJSON: `[]`,
-				// Both claim names empty — backward compatible mode.
+				// Both claim names empty â€” backward compatible mode.
 			}, "")
 			require.NoError(t, err)
 
@@ -3328,7 +3328,7 @@ func TestAuthorizeWithJWTClaims_BackwardCompat(t *testing.T) {
 // both normalized surfaces work for both IdP shapes (array and space-delimited
 // string): the "claimset_<name>" Cedar Set for exact-element `.contains`/
 // `.containsAll` matching, and (in the containsAll subtest) that a missing
-// token correctly denies. It also proves `.contains` is exact-element — a
+// token correctly denies. It also proves `.contains` is exact-element â€” a
 // "Mail.ReadWrite" token does not satisfy a "Mail.Read" check.
 func TestAuthorizeWithJWTClaims_MultiValuedClaimSets(t *testing.T) {
 	t.Parallel()
@@ -3454,7 +3454,7 @@ func TestAuthorizeWithJWTClaims_MultiValuedClaimSets(t *testing.T) {
 	})
 
 	// principal_claimset_set proves the claimset_<name> Set also appears as a principal
-	// entity attribute, not just in the context — mirroring how claim_<name>
+	// entity attribute, not just in the context â€” mirroring how claim_<name>
 	// is available on both surfaces.
 	t.Run("principal_claimset_set", func(t *testing.T) {
 		t.Parallel()
@@ -3484,7 +3484,7 @@ func TestAuthorizeWithJWTClaims_MultiValuedClaimSets(t *testing.T) {
 
 // TestAuthorizeWithJWTClaims_MultiValuedClaimsEmptyIsBackwardCompat verifies that
 // when MultiValuedClaims is unset, a whole-string equality policy on the claim
-// still matches — i.e. normalization is fully opt-in and byte-identical to the
+// still matches â€” i.e. normalization is fully opt-in and byte-identical to the
 // pre-#5828 behavior when no claim names are listed.
 func TestAuthorizeWithJWTClaims_MultiValuedClaimsEmptyIsBackwardCompat(t *testing.T) {
 	t.Parallel()
@@ -3835,7 +3835,7 @@ func TestNormalizeMultiValuedClaims(t *testing.T) {
 
 // TestAddMultiValuedClaimSets tests the addMultiValuedClaimSets helper, which
 // injects a bare "claimset_<name>" key holding the claim's elements as a []string
-// (converted to a Cedar Set downstream) — the companion to
+// (converted to a Cedar Set downstream) â€” the companion to
 // normalizeMultiValuedClaims's "claim_<name>" string form.
 func TestAddMultiValuedClaimSets(t *testing.T) {
 	t.Parallel()
@@ -3922,7 +3922,7 @@ func TestAddMultiValuedClaimSets(t *testing.T) {
 			assert.Equal(t, tt.want, tt.processed)
 
 			// The injected key must be bare "claimset_<name>", never
-			// "claim_claimset_<name>" — it must not be reachable via the
+			// "claim_claimset_<name>" â€” it must not be reachable via the
 			// claim_-prefix path.
 			for _, name := range tt.names {
 				_, hadRaw := tt.raw[name]
@@ -4071,7 +4071,7 @@ func TestIsAuthorized_EntityMergePriority(t *testing.T) {
 		};
 	`
 
-	// Global entity has tier = "gold" — policy should deny with global entity alone.
+	// Global entity has tier = "gold" â€” policy should deny with global entity alone.
 	authorizer, err := NewCedarAuthorizer(ConfigOptions{
 		Policies: []string{policy},
 		EntitiesJSON: `[
@@ -4104,7 +4104,7 @@ func TestIsAuthorized_EntityMergePriority(t *testing.T) {
 		Tags:    cedar.NewRecord(cedar.RecordMap{}),
 	}
 
-	// Request entity should overwrite global entity → policy matches.
+	// Request entity should overwrite global entity â†’ policy matches.
 	allowed, err := cedarAuthz.IsAuthorized(
 		"Client::user1", "Action::call_tool", "Tool::weather",
 		nil, requestEntities,
@@ -4211,8 +4211,8 @@ func TestConfigOptionsMultiValuedClaimsJSON(t *testing.T) {
 }
 
 // TestValidateGroupEntityType exercises the private validateGroupEntityType helper
-// directly. Each case names an input, states whether it should succeed, and — for
-// error cases — a substring that the error message must contain so operators can
+// directly. Each case names an input, states whether it should succeed, and â€” for
+// error cases â€” a substring that the error message must contain so operators can
 // diagnose misconfiguration from a single log line.
 //
 // Only our package's contract is tested here:
@@ -4220,11 +4220,11 @@ func TestConfigOptionsMultiValuedClaimsJSON(t *testing.T) {
 //  2. Inputs containing "::" are rejected with our project-specific error.
 //  3. Valid Cedar identifiers pass through (smoke test of the cedar-go delegation path).
 //  4. Invalid Cedar identifiers surface the cedar-go rejection wrapped with our message.
-//  5. __cedarFoo is accepted — the Cedar spec only reserves the bare "__cedar" token,
+//  5. __cedarFoo is accepted â€” the Cedar spec only reserves the bare "__cedar" token,
 //     not the entire prefix namespace. This intentional behavioral difference vs older
 //     hand-rolled validators would be the most surprising case for a future reader.
 //
-// Exhaustive grammar testing (hyphens, leading digits, whitespace, reserved words, …)
+// Exhaustive grammar testing (hyphens, leading digits, whitespace, reserved words, â€¦)
 // belongs in cedar-go's own test suite, not here.
 func TestValidateGroupEntityType(t *testing.T) {
 	t.Parallel()
@@ -4269,7 +4269,7 @@ func TestValidateGroupEntityType(t *testing.T) {
 			// The Cedar spec reserves the literal "__cedar" token. "__cedarFoo" (with a
 			// suffix) is accepted because the reservation does NOT extend to the whole
 			// prefix namespace. This is intentionally different from older hand-rolled
-			// validators that rejected the entire "__cedar" prefix — keep this case so a
+			// validators that rejected the entire "__cedar" prefix â€” keep this case so a
 			// future refactor cannot silently regress to the stricter behavior.
 			name:    "__cedarFoo accepted (Cedar spec only reserves bare __cedar)",
 			input:   "__cedarFoo",
@@ -4304,14 +4304,14 @@ func TestValidateGroupEntityType(t *testing.T) {
 
 // TestAuthorizeWithJWTClaims_CustomGroupEntityType proves that GroupEntityType
 // actually flows through Cedar evaluation, not just through entity construction.
-// Case A: GroupEntityType "OrgRole" with policy "principal in OrgRole::..." → Permit.
-// Case B: same policy, default GroupEntityType "" (resolves to THVGroup) → Deny,
+// Case A: GroupEntityType "OrgRole" with policy "principal in OrgRole::..." â†’ Permit.
+// Case B: same policy, default GroupEntityType "" (resolves to THVGroup) â†’ Deny,
 // because the parent UIDs are typed THVGroup::"engineering" which is not in OrgRole.
 // The two cases are adjacent so the contrast is visible to reviewers.
 func TestAuthorizeWithJWTClaims_CustomGroupEntityType(t *testing.T) {
 	t.Parallel()
 
-	// Policy references OrgRole — only a factory configured with GroupEntityType "OrgRole"
+	// Policy references OrgRole â€” only a factory configured with GroupEntityType "OrgRole"
 	// will synthesise parent UIDs that match this policy.
 	policy := `
 		permit(
@@ -4338,7 +4338,7 @@ func TestAuthorizeWithJWTClaims_CustomGroupEntityType(t *testing.T) {
 	}{
 		{
 			// GroupEntityType "OrgRole" makes the factory emit OrgRole::"engineering"
-			// as the principal's parent UID. Cedar's `in` resolves to true → Permit.
+			// as the principal's parent UID. Cedar's `in` resolves to true â†’ Permit.
 			name:            "custom_type_OrgRole_permits",
 			groupEntityType: "OrgRole",
 			wantAuthorize:   true,
@@ -4346,7 +4346,7 @@ func TestAuthorizeWithJWTClaims_CustomGroupEntityType(t *testing.T) {
 		{
 			// Default GroupEntityType "" resolves to THVGroup. The factory emits
 			// THVGroup::"engineering" instead of OrgRole::"engineering". Cedar's `in`
-			// for OrgRole::"engineering" evaluates to false → Deny by default.
+			// for OrgRole::"engineering" evaluates to false â†’ Deny by default.
 			name:            "default_type_THVGroup_denies",
 			groupEntityType: "",
 			wantAuthorize:   false,
@@ -4383,7 +4383,7 @@ func TestAuthorizeWithJWTClaims_CustomGroupEntityType(t *testing.T) {
 
 // TestNewCedarAuthorizerGroupEntityTypeValidation is a thin wiring proof
 // that NewCedarAuthorizer actually invokes validateGroupEntityType. The
-// exhaustive rejection coverage lives in TestValidateGroupEntityType — this
+// exhaustive rejection coverage lives in TestValidateGroupEntityType â€” this
 // test only confirms one valid input passes through and one invalid input
 // produces the validator's error at the constructor boundary.
 func TestNewCedarAuthorizerGroupEntityTypeValidation(t *testing.T) {
@@ -4426,7 +4426,7 @@ func TestNewCedarAuthorizerGroupEntityTypeValidation(t *testing.T) {
 // captureSlogWarn needs one because slog.SetDefault is process-global: while the
 // capturing handler is installed, ANY goroutine in the test binary can emit a
 // record into it. Keeping the capturing test itself non-parallel does not prevent
-// that — other tests already running in parallel still log — so the buffer must
+// that â€” other tests already running in parallel still log â€” so the buffer must
 // be safe on its own. A plain bytes.Buffer here is a data race that only shows up
 // once some concurrently-reachable code path starts logging.
 type syncBuffer struct {
@@ -4470,7 +4470,7 @@ func captureSlogWarn(t *testing.T, f func()) string {
 // TestStaleTHVGroupWarning verifies that NewCedarAuthorizer emits a WARN log
 // when entities_json contains entities of type "THVGroup" while GroupEntityType
 // is configured to a different value. The mismatch causes Cedar's `in` operator
-// to evaluate to false for those entities — a silent deny that is hard to debug
+// to evaluate to false for those entities â€” a silent deny that is hard to debug
 // without this diagnostic.
 //
 // Subtests use slog.SetDefault (process-global), so they must NOT run in
@@ -4554,7 +4554,7 @@ func TestFactory_ConfigKeyMatchesStructTag(t *testing.T) {
 	require.NoError(t, json.Unmarshal(envelope, &cfg),
 		"envelope built around Factory.ConfigKey() must parse into Config")
 	require.NotNil(t, cfg.Options,
-		"Config.Options must be set after Unmarshal — if nil, Factory.ConfigKey() and the Options struct tag have drifted apart")
+		"Config.Options must be set after Unmarshal â€” if nil, Factory.ConfigKey() and the Options struct tag have drifted apart")
 }
 
 // TestAuthorizeWithJWTClaims_ClaimSourceAttribute pins the value of the
@@ -4935,4 +4935,20 @@ func TestAuthorizeNonScalarArguments(t *testing.T) {
 			assert.Equal(t, tc.allowed, authorized)
 		})
 	}
+
+func TestAuthorizer_ToolReadIsAPlainDeny(t *testing.T) {
+	t.Parallel()
+
+	a, err := NewCedarAuthorizer(ConfigOptions{
+		Policies:     []string{"permit(principal, action, resource);"},
+		EntitiesJSON: "[]",
+	}, "")
+	require.NoError(t, err)
+
+	// No identity is attached: the deny must come before claims are resolved.
+	ok, err := a.AuthorizeWithJWTClaims(
+		context.Background(), authorizers.MCPFeatureTool, authorizers.MCPOperationRead, "weather", nil)
+
+	require.NoError(t, err)
+	assert.False(t, ok, "Cedar has no read_tool action, so tool:read is denied")
 }

@@ -4,9 +4,12 @@
 package storage
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -488,11 +491,48 @@ func TestNewCIMDStorageDecorator_NegativeMaxStaleReturnsError(t *testing.T) {
 // id, expired expiredFor ago.
 type staleFixture struct {
 	dec     *CIMDStorageDecorator
+	srv     *httptest.Server
 	id      string
 	fetches *atomic.Int32 // outbound document fetches, including the seeding one
-	gone    *atomic.Bool  // when set, the document server answers 404
+	// answer, when set, replaces the document server's handler for every
+	// later request; the default handler serves the document.
+	answer  *atomic.Pointer[http.HandlerFunc]
 	stale   fosite.Client
 	expires time.Time // the seeded (expired) expiry
+}
+
+// respond makes the document server answer every later request with h; nil
+// restores the document.
+func (f *staleFixture) respond(h http.HandlerFunc) {
+	if h == nil {
+		f.answer.Store(nil)
+		return
+	}
+	f.answer.Store(&h)
+}
+
+// closeHost shuts the document server down so the re-fetch cannot connect.
+func (f *staleFixture) closeHost() { f.srv.Close() }
+
+// respondStatus answers every request with the given status and no body.
+func respondStatus(status int) http.HandlerFunc {
+	return func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(status)
+	}
+}
+
+// respondDoc answers every request with a CIMD document for the requested URL
+// after mutate has adjusted it.
+func respondDoc(mutate func(*cimd.ClientMetadataDocument)) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		doc := cimd.ClientMetadataDocument{
+			ClientID:     "http://" + r.Host + r.URL.Path,
+			RedirectURIs: []string{"https://example.com/callback"},
+		}
+		mutate(&doc)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(doc)
+	}
 }
 
 // refuseAll is a limiter that never allows a fetch.
@@ -500,11 +540,17 @@ func refuseAll() *rate.Limiter { return rate.NewLimiter(rate.Every(time.Hour), 0
 
 func newStaleFixture(t *testing.T, maxStale, expiredFor time.Duration) *staleFixture {
 	t.Helper()
-	f := &staleFixture{fetches: &atomic.Int32{}, gone: &atomic.Bool{}}
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return newStaleFixtureOn(t, newTestBase(t), maxStale, expiredFor)
+}
+
+// newStaleFixtureOn is newStaleFixture over the given base storage.
+func newStaleFixtureOn(t *testing.T, base Storage, maxStale, expiredFor time.Duration) *staleFixture {
+	t.Helper()
+	f := &staleFixture{fetches: &atomic.Int32{}, answer: &atomic.Pointer[http.HandlerFunc]{}}
+	f.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		f.fetches.Add(1)
-		if f.gone.Load() {
-			http.NotFound(w, r)
+		if h := f.answer.Load(); h != nil {
+			(*h)(w, r)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -513,10 +559,10 @@ func newStaleFixture(t *testing.T, maxStale, expiredFor time.Duration) *staleFix
 			RedirectURIs: []string{"https://example.com/callback"},
 		})
 	}))
-	t.Cleanup(srv.Close)
-	f.id = cimdURL(srv, "/a.json")
+	t.Cleanup(f.srv.Close)
+	f.id = cimdURL(f.srv, "/a.json")
 
-	got, err := NewCIMDStorageDecorator(newTestBase(t), CIMDDecoratorConfig{
+	got, err := NewCIMDStorageDecorator(base, CIMDDecoratorConfig{
 		Enabled: true, CacheMaxSize: 10, FallbackTTL: time.Minute, MaxStale: maxStale,
 	})
 	require.NoError(t, err)
@@ -582,7 +628,7 @@ func TestCIMDStorageDecorator_StaleServing(t *testing.T) {
 		t.Parallel()
 		f := newStaleFixture(t, time.Hour, time.Minute)
 		f.dec.fetchLimiter = rate.NewLimiter(rate.Every(time.Hour), 1)
-		f.gone.Store(true)
+		f.respond(respondStatus(http.StatusNotFound))
 
 		_, err := f.dec.GetClient(context.Background(), f.id)
 		require.ErrorIs(t, err, fosite.ErrNotFound)
@@ -634,6 +680,199 @@ func TestCIMDStorageDecorator_StaleServing(t *testing.T) {
 			assert.Same(t, f.stale, results[i])
 		}
 		assert.Equal(t, int32(1), f.fetches.Load())
+	})
+}
+
+// TestCIMDStorageDecorator_TransientFetchFailure covers GetClient for a client
+// the decorator already resolved when the re-fetch of its expired entry is
+// attempted (the limiter allows it) and fails. A transient failure (the host
+// is unreachable or answers 5xx) is answered from the expired entry within
+// maxStale, the window the limiter's refusal path uses; every other outcome
+// fails closed as it did before.
+func TestCIMDStorageDecorator_TransientFetchFailure(t *testing.T) {
+	t.Parallel()
+
+	serve := func(h http.HandlerFunc) func(*staleFixture) {
+		return func(f *staleFixture) { f.respond(h) }
+	}
+	tests := []struct {
+		name       string
+		maxStale   time.Duration
+		expiredFor time.Duration
+		refetch    func(f *staleFixture) // how the host answers the re-fetch
+		wantErr    error                 // nil: the expired entry is served
+		// wantFetches counts the seeding fetch plus the re-fetch the host saw;
+		// a closed host sees none.
+		wantFetches int32
+	}{
+		{name: "host closed within window serves the expired entry", maxStale: time.Hour, expiredFor: time.Minute,
+			refetch: (*staleFixture).closeHost, wantFetches: 1},
+		{name: "500 within window serves the expired entry", maxStale: time.Hour, expiredFor: time.Minute,
+			refetch: serve(respondStatus(http.StatusInternalServerError)), wantFetches: 2},
+		{name: "503 within window serves the expired entry", maxStale: time.Hour, expiredFor: time.Minute,
+			refetch: serve(respondStatus(http.StatusServiceUnavailable)), wantFetches: 2},
+		{name: "host closed past window fails closed", maxStale: time.Hour, expiredFor: 2 * time.Hour,
+			refetch: (*staleFixture).closeHost, wantErr: fosite.ErrNotFound, wantFetches: 1},
+		{name: "zero maxStale fails closed", maxStale: 0, expiredFor: time.Minute,
+			refetch: serve(respondStatus(http.StatusServiceUnavailable)), wantErr: fosite.ErrNotFound, wantFetches: 2},
+		{name: "404 fails closed", maxStale: time.Hour, expiredFor: time.Minute,
+			refetch: serve(respondStatus(http.StatusNotFound)), wantErr: fosite.ErrNotFound, wantFetches: 2},
+		{name: "mismatched client_id fails closed", maxStale: time.Hour, expiredFor: time.Minute,
+			refetch: serve(respondDoc(func(doc *cimd.ClientMetadataDocument) {
+				doc.ClientID = "https://other.example.com/metadata.json"
+			})), wantErr: fosite.ErrNotFound, wantFetches: 2},
+		{name: "private_key_jwt is rejected", maxStale: time.Hour, expiredFor: time.Minute,
+			refetch: serve(respondDoc(func(doc *cimd.ClientMetadataDocument) {
+				doc.TokenEndpointAuthMethod = "private_key_jwt"
+			})), wantErr: fosite.ErrInvalidClient, wantFetches: 2},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			f := newStaleFixture(t, tt.maxStale, tt.expiredFor)
+			f.dec.fetchLimiter = rate.NewLimiter(rate.Inf, 0)
+			tt.refetch(f)
+
+			got, err := f.dec.GetClient(context.Background(), f.id)
+			assert.Equal(t, tt.wantFetches, f.fetches.Load())
+			if tt.wantErr != nil {
+				require.ErrorIs(t, err, tt.wantErr)
+				require.NotErrorIs(t, err, ErrCIMDRateLimited)
+				return
+			}
+			require.NoError(t, err, "a transient re-fetch failure must not unresolve a client the decorator resolved before")
+			assert.Same(t, f.stale, got)
+			entry, ok := f.dec.cache.Peek(f.id)
+			require.True(t, ok)
+			assert.True(t, entry.expires.Equal(f.expires), "a stale answer must not move the entry's expiry")
+		})
+	}
+}
+
+// TestCIMDStorageDecorator_StaleServeNeitherRenewsEntryNorRepersists pins
+// that answering from the expired entry leaves the entry expired and the
+// persisted row untouched: the next lookup re-fetches again, and once the host
+// answers, the client and its row are renewed from the fresh document.
+func TestCIMDStorageDecorator_StaleServeNeitherRenewsEntryNorRepersists(t *testing.T) {
+	t.Parallel()
+
+	rec := &recordingStorage{MemoryStorage: newTestBase(t)}
+	f := newStaleFixtureOn(t, rec, time.Hour, time.Minute)
+	f.dec.fetchLimiter = rate.NewLimiter(rate.Inf, 0)
+	require.Equal(t, int32(1), rec.upserts.Load(), "the seeding fetch persists the row once")
+
+	f.respond(respondStatus(http.StatusInternalServerError))
+	got, err := f.dec.GetClient(context.Background(), f.id)
+	require.NoError(t, err, "the expired entry must answer while the host fails")
+	assert.Same(t, f.stale, got)
+	assert.Equal(t, int32(2), f.fetches.Load())
+	entry, ok := f.dec.cache.Peek(f.id)
+	require.True(t, ok)
+	assert.True(t, entry.expires.Equal(f.expires), "a stale answer must not renew the entry")
+	assert.Equal(t, int32(1), rec.upserts.Load(), "a stale answer must not re-persist the row")
+	assert.Equal(t, int32(0), rec.renews.Load(), "a stale answer must not renew the row")
+
+	f.respond(nil)
+	got, err = f.dec.GetClient(context.Background(), f.id)
+	require.NoError(t, err)
+	assert.NotSame(t, f.stale, got, "the entry stays expired, so the next lookup re-fetches once the host answers")
+	assert.Equal(t, int32(3), f.fetches.Load())
+	assert.Equal(t, int32(2), rec.upserts.Load(), "a successful re-fetch re-persists the row")
+	entry, ok = f.dec.cache.Peek(f.id)
+	require.True(t, ok)
+	assert.True(t, time.Now().Before(entry.expires), "a successful re-fetch replaces the expired entry")
+}
+
+// captureWarnLines swaps in a JSON slog handler at warn level for the duration
+// of the test and returns a function decoding every line logged so far.
+// Process-global, not safe for t.Parallel().
+func captureWarnLines(t *testing.T) func() []map[string]any {
+	t.Helper()
+	var buf bytes.Buffer
+	orig := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	t.Cleanup(func() { slog.SetDefault(orig) })
+	return func() []map[string]any {
+		var lines []map[string]any
+		scanner := bufio.NewScanner(bytes.NewReader(buf.Bytes()))
+		for scanner.Scan() {
+			var line map[string]any
+			require.NoError(t, json.Unmarshal(scanner.Bytes(), &line))
+			lines = append(lines, line)
+		}
+		return lines
+	}
+}
+
+// linesWithMsg returns the captured lines whose msg field equals msg.
+func linesWithMsg(lines []map[string]any, msg string) []map[string]any {
+	var out []map[string]any
+	for _, line := range lines {
+		if line["msg"] == msg {
+			out = append(out, line)
+		}
+	}
+	return out
+}
+
+// TestCIMDStorageDecorator_FetchFailureWarnsOnceWithCause pins what operators
+// see of a failed re-fetch: one "CIMD document fetch failed" warning per
+// failed fetch, naming the fetch error (the status or the transport error, not
+// the bare code fosite renders its wrapper as) and the outcome
+// (fallback=expired_cache with age_past_expiry, or fallback=none), and no such
+// line for a document fetch rejected, which fetch warns about itself.
+//
+//nolint:paralleltest // captures the process-global slog default
+func TestCIMDStorageDecorator_FetchFailureWarnsOnceWithCause(t *testing.T) {
+	tests := []struct {
+		name         string
+		refetch      func(f *staleFixture)
+		wantCause    string // substring of the error field
+		wantFallback string
+		wantAge      bool // age_past_expiry is present
+	}{
+		{name: "503 within window is served and the line names the status",
+			refetch:   func(f *staleFixture) { f.respond(respondStatus(http.StatusServiceUnavailable)) },
+			wantCause: "HTTP 503", wantFallback: "expired_cache", wantAge: true},
+		{name: "closed host within window is served and the line names the dial error",
+			refetch:   (*staleFixture).closeHost,
+			wantCause: "dial tcp", wantFallback: "expired_cache", wantAge: true},
+		{name: "404 fails closed and the line names the status",
+			refetch:   func(f *staleFixture) { f.respond(respondStatus(http.StatusNotFound)) },
+			wantCause: "HTTP 404", wantFallback: "none"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			lines := captureWarnLines(t)
+			f := newStaleFixture(t, time.Hour, time.Minute)
+			f.dec.fetchLimiter = rate.NewLimiter(rate.Inf, 0)
+			tt.refetch(f)
+
+			_, _ = f.dec.GetClient(context.Background(), f.id)
+
+			got := linesWithMsg(lines(), "CIMD document fetch failed")
+			require.Len(t, got, 1, "one warning per failed fetch")
+			line := got[0]
+			assert.Equal(t, f.id, line["client_id"])
+			cause, _ := line["error"].(string)
+			assert.Contains(t, cause, tt.wantCause, "the line must name the fetch error, got %v", line["error"])
+			assert.Equal(t, tt.wantFallback, line["fallback"])
+			_, hasAge := line["age_past_expiry"]
+			assert.Equal(t, tt.wantAge, hasAge)
+		})
+	}
+
+	t.Run("a rejected document is warned about by fetch alone", func(t *testing.T) {
+		lines := captureWarnLines(t)
+		f := newStaleFixture(t, time.Hour, time.Minute)
+		f.dec.fetchLimiter = rate.NewLimiter(rate.Inf, 0)
+		f.respond(respondDoc(func(doc *cimd.ClientMetadataDocument) { doc.TokenEndpointAuthMethod = "private_key_jwt" }))
+
+		_, err := f.dec.GetClient(context.Background(), f.id)
+		require.ErrorIs(t, err, fosite.ErrInvalidClient)
+
+		assert.Empty(t, linesWithMsg(lines(), "CIMD document fetch failed"), "a rejection is logged once, by fetch")
+		assert.Len(t, linesWithMsg(lines(), "CIMD client rejected: unsupported token_endpoint_auth_method"), 1)
 	})
 }
 

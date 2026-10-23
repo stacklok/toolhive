@@ -194,7 +194,7 @@ In the context of MCP servers, the following entities are used:
     - `Action::"get_skill"`: Get a skill
 
   Note: List operations (`tools/list`, `prompts/list`, `resources/list`, `skills/list`) are always
-  allowed but the response is filtered based on the corresponding call/get/read policies.
+  allowed, but the response is filtered by the user's permissions for the corresponding operation. `tools/list` uses the `tool:read` check, which a `tool:call` grant also satisfies (see List operations below).
   Define policies for the specific operations (call_tool, get_prompt, read_resource, get_skill)
   and the list responses will automatically show only the items the user is authorized to access.
 
@@ -284,7 +284,13 @@ List operations (`tools/list`, `prompts/list`, `resources/list`, `skills/list`) 
 They are always allowed but the response is automatically filtered based on the user's permissions
 for the corresponding operations:
 
-- `tools/list` shows only tools the user can call (based on `call_tool` policies); a result in which a tool repeats `name`, `annotations`, or the annotation `title` or a hint such as `readOnlyHint`, or spells one with a case-insensitive alias, fails closed with a generic internal JSON-RPC error, so policies evaluate exactly the hints the client receives.
+- `tools/list` shows only tools the user can read. The read check is `tool:read`, and a `tool:call` grant also satisfies it, so a user who can call a tool can also see it. `tool:read` never grants `tool:call`.
+  - **Cedar:** Cedar has no `tool:read` action, so it denies `tool:read` without evaluating policies and the `tool:call` check decides visibility. In policies this is `call_tool`, so a tool is listed only when a `call_tool` policy allows it.
+  - **HTTP PDP:** the PDP receives `mcp:tool:read` as well as `mcp:tool:call`, and a tool is listed when it allows either one. Each tool costs up to two PDP decisions: a read check, then a call check when read is denied. A `mcp:tool:read` allow lists its tool even when the `mcp:tool:call` rule denies it. The PDP must answer `mcp:tool:read`: an error from it hides the tool, even for callers who hold `mcp:tool:call`.
+  - **vMCP:** filtering uses the same `tool:read` check as the single-server path, so the same visibility rules and PDP costs apply.
+  - **Errors:** an error from either check skips that tool and logs a WARN, and a `tool:read` error does not fall back to `tool:call`. The whole filter runs under one 30 second deadline, and tools checked after it expires are hidden.
+  - **Audit:** when a tool is listed only through the `tool:call` fallback, the `tools/list` audit event carries `discovery_fallback_count`, the number of tools listed that way. The optimizer's `find_tool` response is filtered the same way, so its `tools/call` event can carry the count too.
+  - A result in which a tool repeats `name`, `annotations`, or the annotation `title` or a hint such as `readOnlyHint`, or spells one with a case-insensitive alias, fails closed with a generic internal JSON-RPC error, so policies evaluate exactly the hints the client receives.
 - `prompts/list` shows only prompts the user can get (based on `get_prompt` policies)
 - `resources/list` shows only resources the user can read (based on `read_resource` policies)
 - `skills/list` shows only skill entries the user can get (based on `get_skill` policies); entries

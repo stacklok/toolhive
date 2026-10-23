@@ -301,6 +301,10 @@ type AuthzConfig struct {
 	// Policies contains Cedar policy definitions (when Type = "cedar").
 	Policies []string `json:"policies,omitempty" yaml:"policies,omitempty"`
 
+	// MultiValuedClaims lists JWT claim names that Cedar should also expose as sets.
+	// +optional
+	MultiValuedClaims []string `json:"multiValuedClaims,omitempty" yaml:"multiValuedClaims,omitempty"`
+
 	// EntitiesJSON is a JSON string representing Cedar entities. Required for
 	// enterprise policies that rely on transitive relationships (e.g.
 	// `ClaimGroup → PlatformRole`) — without it the Cedar authorizer is

@@ -307,6 +307,8 @@ These features are implemented through two complementary middleware components t
 - One component handles outgoing responses containing tool lists
 - Another component handles incoming requests to execute tools
 
+The response component rewrites only the `tools` array of a `tools/list` result: every other member of the response and of its result, such as `id`, `nextCursor`, `resultType` or `_meta`, reaches the client as the backend sent it. Over an event stream, every line goes back ended by the ending it arrived with, CRLF, LF or CR, so an event whose lines end differently keeps the empty line that ends it, and the filtered list goes out as one `data:` line. Clients differ on what ends a line: the SSE specification ends one at CRLF, LF or CR, while the Go SDK ends one at LF alone and reads a lone CR as content, so a list value that holds a lone CR is decoded both ways, filtered when either reading finds a list, and written as one `data:` line per line of the filtered value, which a client joins back into one value.
+
 Both components must be in place for the features to work correctly, as they ensure consistency between tool discovery and tool execution.
 
 **Configuration**:

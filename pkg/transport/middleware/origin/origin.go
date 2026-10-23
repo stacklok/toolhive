@@ -37,6 +37,10 @@ const (
 	// forbiddenBodyFallback is returned if JSON marshalling of the error body
 	// fails (should never happen with simple map types).
 	forbiddenBodyFallback = `{"jsonrpc":"2.0","error":{"code":-32600,"message":"Origin not allowed"}}`
+
+	accessControlAllowMethods  = "GET, POST, DELETE, OPTIONS"
+	accessControlAllowHeaders  = "Authorization, Content-Type, Accept, Mcp-Session-Id, MCP-Protocol-Version, Last-Event-ID"
+	accessControlExposeHeaders = "Mcp-Session-Id, Last-Event-ID"
 )
 
 // MiddlewareParams holds the parameters for the origin middleware factory.
@@ -93,9 +97,10 @@ func CreateMiddleware(config *types.MiddlewareConfig, runner types.MiddlewareRun
 // Warning" — requests whose Origin header is present and not in allowedOrigins
 // receive HTTP 403 with a JSON-RPC error body.
 //
-// What this does NOT solve: CORS, CSRF token validation, authentication, or
-// Origin-header injection via trusted reverse proxies (the caller's reverse
-// proxy must deduplicate Origin headers upstream).
+// This also handles CORS for allowed browser Origins. It does not provide CSRF
+// token validation, authentication, or Origin-header injection protection via
+// trusted reverse proxies (the caller's reverse proxy must deduplicate Origin
+// headers upstream).
 //
 // An empty allowedOrigins slice produces a pass-through handler — the caller
 // is responsible for deciding whether that is acceptable (e.g. when bind is
@@ -157,9 +162,23 @@ func NewHandler(allowedOrigins []string) types.MiddlewareFunction {
 				writeForbidden(w)
 				return
 			}
+
+			writeCORSHeaders(w, origin)
+			if r.Method == http.MethodOptions {
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+func writeCORSHeaders(w http.ResponseWriter, requestOrigin string) {
+	w.Header().Set("Access-Control-Allow-Origin", requestOrigin)
+	w.Header().Add("Vary", "Origin")
+	w.Header().Set("Access-Control-Allow-Methods", accessControlAllowMethods)
+	w.Header().Set("Access-Control-Allow-Headers", accessControlAllowHeaders)
+	w.Header().Set("Access-Control-Expose-Headers", accessControlExposeHeaders)
 }
 
 // canonicalizeOrigin normalizes an Origin value for exact-match comparison.

@@ -17,7 +17,6 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
-	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/authserver/server"
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
@@ -38,12 +37,12 @@ type stubUpstreamFilter struct {
 	err               error
 	calls             int
 	capturedArgs      []string
-	capturedPrincipal auth.PrincipalInfo
+	capturedPrincipal FilterPrincipal
 }
 
 func (f *stubUpstreamFilter) FilterUpstreams(
 	_ context.Context,
-	principal auth.PrincipalInfo,
+	principal FilterPrincipal,
 	configured []string,
 ) ([]string, error) {
 	f.calls++
@@ -146,11 +145,11 @@ func TestComputeChain(t *testing.T) {
 			}
 			handler := newChainTestHandler(t, tt.upstreams, opts...)
 
-			principal := auth.PrincipalInfo{
-				PlatformUserID: "canonical-user-1",
-				Subject:        "upstream-sub-1",
-				Email:          "user@example.com",
-				Claims:         map[string]any{"groups": []any{"admins"}},
+			principal := filterPrincipal{
+				canonicalUserID: "canonical-user-1",
+				subject:         "upstream-sub-1",
+				email:           "user@example.com",
+				claims:          map[string]any{"groups": []any{"admins"}},
 			}
 
 			got, err := handler.computeChain(context.Background(), principal)

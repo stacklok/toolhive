@@ -33,7 +33,6 @@ import (
 	"go.opentelemetry.io/otel/metric"
 	"golang.org/x/time/rate"
 
-	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/authserver/internal/consentpolicy"
 	"github.com/stacklok/toolhive/pkg/authserver/server"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
@@ -168,19 +167,15 @@ func WithMeterProvider(mp metric.MeterProvider) Option {
 //
 // FilterUpstreams receives, in order:
 //   - ctx: the request context of the first leg's callback.
-//   - principal: the upstream-derived identity for authorization decisions. Its
-//     PlatformUserID is the canonical ToolHive user ID (the stable internal
-//     identifier); Subject is the claim-mapped upstream subject (OIDC SubjectClaim,
-//     or "sub"); Claims carries the ID-token/userinfo claims; Name and Email are
-//     populated when the upstream provides them. It carries NO tokens — it is the
-//     credential-free auth.PrincipalInfo projection. The filter MUST treat
-//     principal (including its Claims map) as read-only.
+//   - principal: the first upstream's credential-free identity and claims, used for
+//     authorization decisions. See FilterPrincipal for where each value comes from.
+//     The filter MUST treat principal (including its claims map) as read-only.
 //   - configured: the names of the non-first configured upstreams, in configured
 //     order.
 //
 // Claims contract: values are untyped and come straight from the upstream IdP, so
 // implementations MUST assert types defensively (e.g. comma-ok on map/slice
-// access) — a malformed IdP response must not be able to panic the filter. Claims
+// access) — a malformed IdP response must not be able to panic the filter. GetClaims()
 // is nil not only for OAuth2 identityFromToken / synthetic upstreams (which resolve
 // no structured claim set) but also on a transient OIDC claims-extraction failure,
 // so a security-relevant filter MUST treat nil/absent claims as fail-closed. Note
@@ -200,7 +195,7 @@ func WithMeterProvider(mp metric.MeterProvider) Option {
 type UpstreamFilter interface {
 	FilterUpstreams(
 		ctx context.Context,
-		principal auth.PrincipalInfo,
+		principal FilterPrincipal,
 		configured []string,
 	) ([]string, error)
 }
@@ -586,7 +581,7 @@ func (h *Handler) nextMissingUpstream(ctx context.Context, sessionID string, cha
 //
 // principal is the first upstream's resolved identity, passed through to the filter
 // (see UpstreamFilter); it is unused when no filter is configured.
-func (h *Handler) computeChain(ctx context.Context, principal auth.PrincipalInfo) ([]string, error) {
+func (h *Handler) computeChain(ctx context.Context, principal FilterPrincipal) ([]string, error) {
 	chain := []string{h.upstreams[0].Name}
 	rest := h.upstreams[1:]
 	if len(rest) == 0 {
@@ -642,7 +637,7 @@ func (h *Handler) computeChain(ctx context.Context, principal auth.PrincipalInfo
 func (h *Handler) resolveChain(
 	ctx context.Context,
 	pending *storage.PendingAuthorization,
-	principal auth.PrincipalInfo,
+	principal FilterPrincipal,
 ) ([]string, error) {
 	if pending.ResolvedUserID == "" {
 		// True first leg — compute with this (the first) leg's request context.

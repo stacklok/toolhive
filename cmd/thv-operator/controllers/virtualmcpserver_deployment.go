@@ -278,6 +278,10 @@ func (r *VirtualMCPServerReconciler) buildPodVolumesForVmcp(
 		volumeMounts = append(volumeMounts, authServerMounts...)
 	}
 
+	sessionTLSVolumes, sessionTLSMounts := ctrlutil.SessionRedisTLSVolumes(vmcp.Spec.SessionStorage)
+	volumes = append(volumes, sessionTLSVolumes...)
+	volumeMounts = append(volumeMounts, sessionTLSMounts...)
+
 	hash, err := podVolumesHash(volumes, volumeMounts)
 	if err != nil {
 		return nil, nil, "", err
@@ -567,11 +571,13 @@ func (r *VirtualMCPServerReconciler) buildOutgoingAuthEnvVars(
 		return env
 	}
 
-	// Mount secrets from discovered ExternalAuthConfigs (discovered mode)
-	if vmcp.Spec.OutgoingAuth.Source == OutgoingAuthSourceDiscovered {
-		discoveredSecrets := r.discoverExternalAuthConfigSecrets(ctx, vmcp, typedWorkloads)
-		env = append(env, discoveredSecrets...)
-	}
+	// Mount secrets for ExternalAuthConfigs referenced by workloads in the group.
+	// Runs in BOTH source modes, mirroring buildOutgoingAuthConfig, which embeds
+	// workload-referenced auth into the config in both. In inline mode that strategy
+	// still reaches the ConfigMap and names the secret env var the vMCP reads at
+	// startup, so gating this on discovered mode left the env var unmounted and
+	// crash-looped the pod (#6837).
+	env = append(env, r.discoverExternalAuthConfigSecrets(ctx, vmcp, typedWorkloads)...)
 
 	// Mount secrets from inline ExternalAuthConfigRefs
 	if vmcp.Spec.OutgoingAuth.Backends != nil {
@@ -741,8 +747,15 @@ func buildHeaderForwardManifestForEntry(entry *mcpv1beta1.MCPServerEntry) (strin
 	return string(out), nil
 }
 
-// discoverExternalAuthConfigSecrets discovers ExternalAuthConfigs from workloads in the group
-// and returns environment variables for their client secrets. This is used for discovered mode.
+// discoverExternalAuthConfigSecrets discovers ExternalAuthConfigs referenced by
+// workloads in the group (via spec.externalAuthConfigRef) and returns environment
+// variables for their secrets.
+//
+// This mirrors discoverExternalAuthConfigs, which embeds those workload-referenced
+// strategies into the vMCP config in BOTH source modes — including the skip for
+// backends that carry an inline override, whose strategy (and therefore whose
+// secret env var) wins instead. A backend is skipped per workload rather than per
+// config, so a config shared with a non-overridden workload is still mounted.
 func (r *VirtualMCPServerReconciler) discoverExternalAuthConfigSecrets(
 	ctx context.Context,
 	vmcp *mcpv1beta1.VirtualMCPServer,
@@ -777,6 +790,16 @@ func (r *VirtualMCPServerReconciler) discoverExternalAuthConfigSecrets(
 			workloadInfo, mcpServerMap, mcpRemoteProxyMap, mcpServerEntryMap)
 		if configName == "" {
 			continue
+		}
+
+		// Skip backends overridden inline — discoverExternalAuthConfigs leaves the
+		// workload-referenced strategy out of the config for those, so its secret
+		// would be mounted for a strategy that never runs. Checked before seenConfigs
+		// so a config another, non-overridden workload references is still mounted.
+		if vmcp.Spec.OutgoingAuth != nil && vmcp.Spec.OutgoingAuth.Backends != nil {
+			if _, overridden := vmcp.Spec.OutgoingAuth.Backends[workloadInfo.Name]; overridden {
+				continue
+			}
 		}
 
 		// Skip if we've already processed this ExternalAuthConfig

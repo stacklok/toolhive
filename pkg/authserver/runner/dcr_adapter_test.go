@@ -172,6 +172,47 @@ func TestApplyResolutionToOAuth2Config(t *testing.T) {
 	assert.Equal(t, cfg, unchanged)
 }
 
+// TestDCRResolution_PreservesOmitScopeOnRefresh pins that a DCR-registered
+// upstream still honours OmitScopeOnRefresh. The flag is configured on the
+// run-config, and a DCR upstream reaches upstream.OAuth2Config through the
+// same pair of calls as any other: consumeResolution rewrites the run-config
+// and applyResolutionToOAuth2Config rewrites the built config. Both only
+// overwrite client credentials and endpoints, so the flag must survive. A
+// refactor that rebuilds either config from the resolution alone would drop
+// it and silently reintroduce the scope parameter on refresh.
+func TestDCRResolution_PreservesOmitScopeOnRefresh(t *testing.T) {
+	t.Parallel()
+
+	rc := authserver.OAuth2UpstreamRunConfig{
+		RedirectURI:        "https://auth.example.com/callback",
+		Scopes:             []string{"api", "refresh_token"},
+		OmitScopeOnRefresh: true,
+		DCRConfig: &authserver.DCRUpstreamConfig{
+			RegistrationEndpoint: "https://idp.example.com/register",
+		},
+	}
+	res := &dcr.Resolution{
+		ClientID:              "dcr-issued-client",
+		ClientSecret:          "dcr-issued-secret",
+		AuthorizationEndpoint: "https://idp.example.com/authorize",
+		TokenEndpoint:         "https://idp.example.com/token",
+	}
+
+	resolved := consumeResolution(rc, res)
+	require.True(t, resolved.OmitScopeOnRefresh)
+
+	cfg, err := buildPureOAuth2Config(&authserver.UpstreamRunConfig{
+		Type:         authserver.UpstreamProviderTypeOAuth2,
+		OAuth2Config: &resolved,
+	}, false)
+	require.NoError(t, err)
+
+	out := applyResolutionToOAuth2Config(*cfg, res)
+	assert.True(t, out.OmitScopeOnRefresh)
+	assert.Equal(t, "dcr-issued-secret", out.ClientSecret,
+		"sanity: the resolution was applied")
+}
+
 // TestConsumeResolution_AloneLeavesClientSecretEmpty is a tripwire
 // regression test for the two-call invariant documented on
 // applyResolutionToOAuth2Config. The contract is:
@@ -242,6 +283,8 @@ func TestNewDCRRequest(t *testing.T) {
 		wantRegistration       string
 		wantAllowPrivateIPs    bool
 		wantCAFilePath         string
+		wantRotationKey        string
+		wantRegistrationProbe  dcr.RegistrationProbe
 	}{
 		{
 			name: "discovery_url branch resolves file-based initial access token",
@@ -290,6 +333,40 @@ func TestNewDCRRequest(t *testing.T) {
 			wantCAFilePath:      "/var/run/toolhive/upstream-ca/ca.crt",
 		},
 		{
+			// Pins the RotationKey copy onto dcr.Request: without it a
+			// rotation configured on the run-config would silently keep
+			// addressing the pre-rotation cache row.
+			name: "rotation_key propagates from run-config",
+			rc: &authserver.OAuth2UpstreamRunConfig{
+				Scopes: []string{"openid"},
+				DCRConfig: &authserver.DCRUpstreamConfig{
+					RegistrationEndpoint: "https://idp.example.com/register",
+					RotationKey:          "2026-10",
+				},
+			},
+			localIssuer:      "https://thv.example.com",
+			wantIssuer:       "https://thv.example.com",
+			wantRegistration: "https://idp.example.com/register",
+			wantRotationKey:  "2026-10",
+		},
+		{
+			// Pins the RegistrationProbe copy onto dcr.Request: without it an
+			// upstream configured for the authorization-endpoint probe would
+			// silently be probed at its token endpoint.
+			name: "registration_probe propagates from run-config",
+			rc: &authserver.OAuth2UpstreamRunConfig{
+				Scopes: []string{"openid"},
+				DCRConfig: &authserver.DCRUpstreamConfig{
+					RegistrationEndpoint: "https://idp.example.com/register",
+					RegistrationProbe:    "authorizationEndpoint",
+				},
+			},
+			localIssuer:           "https://thv.example.com",
+			wantIssuer:            "https://thv.example.com",
+			wantRegistration:      "https://idp.example.com/register",
+			wantRegistrationProbe: dcr.ProbeAuthorizationEndpoint,
+		},
+		{
 			name:        "nil run-config rejected",
 			rc:          nil,
 			localIssuer: "https://thv.example.com",
@@ -313,6 +390,8 @@ func TestNewDCRRequest(t *testing.T) {
 			assert.Equal(t, tc.wantRegistration, req.RegistrationEndpoint)
 			assert.Equal(t, tc.wantAllowPrivateIPs, req.AllowPrivateIPs)
 			assert.Equal(t, tc.wantCAFilePath, req.CAFilePath)
+			assert.Equal(t, tc.wantRotationKey, req.RotationKey)
+			assert.Equal(t, tc.wantRegistrationProbe, req.RegistrationProbe)
 		})
 	}
 }

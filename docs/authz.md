@@ -216,13 +216,18 @@ In the context of MCP servers, the following entities are used:
   every URI character is ordinary, but `"` and `\` must be escaped (for example
   `Resource::"file://C:\\share\\data"`).
 
+Requests that identify their target only by `params.name` or `params.uri` (`tools/call`,
+`prompts/get`, `resources/read`, `resources/subscribe`, `resources/unsubscribe`, and
+`skills/get`) are rejected with a 403 when that value is missing, empty, or not a string. The proxy denies these before any policy is evaluated or
+the backend is called, so a permit that does not name the target cannot match an empty
+identifier.
+
 #### Skills (SEP-2640 direct proxy)
 
 Direct proxies authorize `skills/get` with `Action::"get_skill"` on an exact
 `Skill::"<params.uri>"` entity. The URI is passed through verbatim: it is not
-canonicalized and no scheme or suffix is validated. A missing, empty, or non-string
-`params.uri` is denied before the authorizer or backend is called. Requests with duplicate
-immediate `params.uri` members are likewise denied so the proxy and backend cannot
+canonicalized and no scheme or suffix is validated. Requests with duplicate
+immediate `params.uri` members are denied so the proxy and backend cannot
 interpret an ambiguous URI differently.
 
 `skills/list` itself has no separate list policy. It is forwarded and each entry is
@@ -563,7 +568,11 @@ Two consequences worth planning around:
 Everything else stays closed. A token that simply arrives without upstream
 credentials and says nothing about why — an anonymous or local identity, or a
 bearer token from an IdP other than the pinned one — is denied, as is a session
-that exists but holds no credential for the pinned provider.
+that holds credentials for other providers but none for the pinned one. A session
+whose stored upstream credentials have all expired or been deleted never reaches
+the authorizer: the authentication middleware answers it with 401 and a
+`WWW-Authenticate` challenge so the client signs in again (see
+[Middleware Architecture](middleware.md)).
 
 **Upgrading:** JWT-bearer tokens minted by an authorization server running a
 version before this marker existed carry no marker, so a pinned deployment

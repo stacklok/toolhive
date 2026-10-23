@@ -20,6 +20,8 @@ import (
 	"go.uber.org/mock/gomock"
 
 	regtypes "github.com/stacklok/toolhive-core/registry/types"
+	clientmocks "github.com/stacklok/toolhive/pkg/client/mocks"
+	runtimemocks "github.com/stacklok/toolhive/pkg/container/runtime/mocks"
 	pluginsmocks "github.com/stacklok/toolhive/pkg/plugins/mocks"
 	"github.com/stacklok/toolhive/pkg/plugins/pluginsvc"
 	skillsmocks "github.com/stacklok/toolhive/pkg/skills/mocks"
@@ -124,10 +126,29 @@ func TestListenURL(t *testing.T) {
 	}
 }
 
+// newTestServerBuilder returns a builder with mock container runtime, client,
+// skill and plugin managers injected. The default runtime and client manager
+// each need a container runtime on the host, and the default skill and plugin
+// managers share a SQLite file on disk that races under parallel tests
+// (SQLITE_BUSY). Build() calls no method on the mocks; tests that serve a
+// route touching the runtime set expectations on the returned runtime mock.
+func newTestServerBuilder(t *testing.T) (*ServerBuilder, *runtimemocks.MockRuntime) {
+	t.Helper()
+	ctrl := gomock.NewController(t)
+	rt := runtimemocks.NewMockRuntime(ctrl)
+	b := NewServerBuilder()
+	b.containerRuntime = rt
+	b.clientManager = clientmocks.NewMockManager(ctrl)
+	b.skillManager = skillsmocks.NewMockSkillService(ctrl)
+	b.pluginManager = pluginsmocks.NewMockPluginService(ctrl)
+	return b, rt
+}
+
 func TestSecurityHeaders(t *testing.T) {
 	t.Parallel()
 
-	b := NewServerBuilder()
+	b, rt := newTestServerBuilder(t)
+	rt.EXPECT().IsRunning(gomock.Any()).Return(nil)
 	router, err := b.Build(context.Background())
 	require.NoError(t, err)
 
@@ -135,6 +156,7 @@ func TestSecurityHeaders(t *testing.T) {
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 
+	assert.Equal(t, http.StatusNoContent, rec.Code)
 	assert.Equal(t, "nosniff", rec.Header().Get("X-Content-Type-Options"))
 	assert.Equal(t, "same-origin", rec.Header().Get("Cross-Origin-Resource-Policy"))
 }
@@ -185,13 +207,8 @@ func TestServerBuilderExtensionPoints(t *testing.T) {
 func TestNewServer_ReadTimeoutConfigured(t *testing.T) {
 	t.Parallel()
 
-	// Inject mock skill and plugin managers so Build() skips creating the default
-	// SQLite stores, which share a DB file on disk and race under parallel tests
-	// (SQLITE_BUSY).
-	ctrl := gomock.NewController(t)
-	b := NewServerBuilder().WithAddress("127.0.0.1:0")
-	b.skillManager = skillsmocks.NewMockSkillService(ctrl)
-	b.pluginManager = pluginsmocks.NewMockPluginService(ctrl)
+	b, _ := newTestServerBuilder(t)
+	b.WithAddress("127.0.0.1:0")
 
 	s, err := NewServer(context.Background(), b)
 	require.NoError(t, err)
@@ -333,12 +350,8 @@ func TestCrossOriginCSRFProtection(t *testing.T) {
 
 	build := func(t *testing.T, addr string, socket bool) http.Handler {
 		t.Helper()
-		// Inject mock skill/plugin managers so Build() skips the default SQLite
-		// stores, which share a DB file and race under parallel subtests.
-		ctrl := gomock.NewController(t)
-		b := NewServerBuilder().WithAddress(addr).WithUnixSocket(socket)
-		b.skillManager = skillsmocks.NewMockSkillService(ctrl)
-		b.pluginManager = pluginsmocks.NewMockPluginService(ctrl)
+		b, _ := newTestServerBuilder(t)
+		b.WithAddress(addr).WithUnixSocket(socket)
 		hit := chi.NewRouter()
 		hit.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
 		b.WithRoute("/ext", hit)

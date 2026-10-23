@@ -106,7 +106,7 @@ jobs:
 
       - name: Generate release notes with Claude
         id: claude
-        uses: anthropics/claude-code-action@cab360f6565aa35a51d6ce9e43f1f4287c0a32ea # v1.0.241
+        uses: anthropics/claude-code-action@5eb090f3c3afd701a0672cd32981197ca27688f6 # v1.0.253
         env:
           # gh CLI used by the skill (read-only PR/issue lookups) authenticates
           # via GH_TOKEN. Read access is sufficient — publishing happens in a
@@ -134,10 +134,14 @@ jobs:
             - The GitHub auto-generated "What's Changed" block already exists on the
               release; read it from `gh release view ${{ steps.tag.outputs.tag }}`
               and preserve it verbatim as instructed by the skill.
-            - For Phase 5, do NOT wait for approval and do NOT publish or edit the
-              GitHub release. ONLY write the final notes to
-              `release-notes-${{ steps.tag.outputs.tag }}.md` in the repo root.
-            - Do not post comments or run `gh release edit`. Stop after writing the file.
+            - Skip Phase 5 entirely: do NOT present a draft, ask for approval,
+              write a file, publish, or edit the GitHub release. There is no
+              user to answer questions.
+            - Do not post comments or run `gh release edit`.
+            - Return the complete, final release notes markdown (the full body
+              assembled in Phase 4) in the `release_notes` field of your
+              structured output. That field is the only deliverable; the
+              workflow writes it to disk.
           # Tools: gh/git for read-only data gathering, Task for the expert
           # subagents (kubernetes-expert, mcp-protocol-expert, oauth-expert,
           # toolhive-expert, site-reliability-engineer), file tools for reading
@@ -148,9 +152,24 @@ jobs:
           # write-capable commands (curl, go get/install, etc.) — this job
           # runs unattended over PR/issue content it doesn't control, so
           # Bash stays scoped rather than fully unrestricted.
+          #
+          # The notes come back through --json-schema structured output rather
+          # than a file the model writes. Relying on the model to call Write
+          # failed intermittently: the skill's Phase 5 tells it to present the
+          # draft and wait for approval, and the run could end "successfully"
+          # with the notes only in chat. With a schema, the action fails the
+          # step outright if the notes are not returned.
           claude_args: |
             --allowedTools "Bash(gh *),Bash(git *),Bash(grep *),Bash(rg *),Bash(find *),Bash(cat *),Bash(ls *),Bash(head *),Bash(tail *),Bash(go doc *),Task,Read,Write,Edit,Glob,Grep,TodoWrite,WebFetch,mcp__context7__resolve-library-id,mcp__context7__get-library-docs"
             --max-turns 60
+            --json-schema '{"type":"object","properties":{"release_notes":{"type":"string","minLength":1,"description":"The complete final release notes markdown, starting with the H1 title"}},"required":["release_notes"]}'
+
+      - name: Write notes to file
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+          STRUCTURED_OUTPUT: ${{ steps.claude.outputs.structured_output }}
+        run: |
+          printf '%s\n' "$STRUCTURED_OUTPUT" | jq -r '.release_notes' > "release-notes-${TAG}.md"
 
       - name: Verify notes were generated
         id: verify
@@ -182,7 +201,7 @@ jobs:
           echo "text=$SUMMARY" >> "$GITHUB_OUTPUT"
 
       - name: Upload release notes artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-notes-${{ steps.tag.outputs.tag }}
           path: ${{ steps.verify.outputs.file }}

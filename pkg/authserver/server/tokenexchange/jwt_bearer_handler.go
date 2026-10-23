@@ -7,11 +7,13 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/go-jose/go-jose/v4"
@@ -27,8 +29,9 @@ import (
 )
 
 const (
-	idJAGJWTType           = "oauth-id-jag+jwt"
-	jwtBearerReplayPurpose = "jwt-bearer"
+	idJAGJWTType                = "oauth-id-jag+jwt"
+	jwtBearerReplayPurpose      = "jwt-bearer"
+	jwtBearerNoJTIReplayPurpose = "jwt-bearer-no-jti" //nolint:gosec // G101: replay-store purpose label, not a credential
 )
 
 // JWTBearerAssertionValidator verifies cryptographic and registered claims of a
@@ -155,6 +158,10 @@ func (h *JWTBearerHandler) HandleTokenEndpointRequest(ctx context.Context, reque
 	if err != nil {
 		return err
 	}
+	segments, err := canonicalAssertionSegments(assertion)
+	if err != nil {
+		return err
+	}
 	if err := validateAssertionType(assertion); err != nil {
 		return err
 	}
@@ -181,8 +188,12 @@ func (h *JWTBearerHandler) HandleTokenEndpointRequest(ctx context.Context, reque
 	// Consume before issuing. This intentionally fails closed: if issuance fails
 	// after this point, the assertion remains consumed rather than becoming
 	// replayable.
-	replayKey := assertionReplayKey(assertion, claims.JWTID)
-	if err := h.consumeAssertion(ctx, jwtBearerReplayPurpose, claims.Issuer, replayKey, claims.Expiry); err != nil {
+	replayKey := assertionReplayKey(segments, claims.JWTID)
+	purpose := jwtBearerReplayPurpose
+	if claims.JWTID == "" {
+		purpose = jwtBearerNoJTIReplayPurpose
+	}
+	if err := h.consumeAssertion(ctx, purpose, claims.Issuer, replayKey, claims.Expiry); err != nil {
 		return err
 	}
 	lifetime, err := h.assertionBoundedLifetime(ctx, claims.Expiry)
@@ -317,18 +328,39 @@ func jwtBearerClientID(issuer, subject string) string {
 	return storage.SyntheticClientIDPrefix + "jwt-bearer-" + base64.RawURLEncoding.EncodeToString(digest[:])
 }
 
-// assertionReplayKey returns the value used to key the single-use replay
-// check for a JWT-bearer assertion. jti is used when the issuer supplied
-// one; otherwise a hash of the raw assertion JWT stands in for it — the
-// raw assertion (including its signature bytes) is itself guaranteed
-// unique per assertion, so it is an equally valid single-use key. The
-// "noJTI" prefix keeps these synthetic keys visually distinct from real
-// jti values and guarantees they can never collide with one.
-func assertionReplayKey(rawAssertion, jti string) string {
+// canonicalAssertionSegments rejects alternate encodings of a compact JWT before
+// it reaches the validator. The decoded protected header and payload are reused
+// for replay keying; the signature is checked for canonical form but not keyed.
+func canonicalAssertionSegments(assertion string) ([2][]byte, error) {
+	var replaySegments [2][]byte
+	parts := strings.Split(assertion, ".")
+	if len(parts) != 3 {
+		return replaySegments, errorsx.WithStack(fosite.ErrInvalidGrant.WithHint("The assertion is not a valid signed JWT."))
+	}
+	for i, part := range parts {
+		decoded, err := base64.RawURLEncoding.DecodeString(part)
+		if err != nil || base64.RawURLEncoding.EncodeToString(decoded) != part {
+			return replaySegments, errorsx.WithStack(fosite.ErrInvalidGrant.WithHint("The assertion is not a valid signed JWT."))
+		}
+		if i < len(replaySegments) {
+			replaySegments[i] = decoded
+		}
+	}
+	return replaySegments, nil
+}
+
+// assertionReplayKey uses jti when present; otherwise it hashes the decoded
+// protected header and payload with a length-delimited header. Excluding the
+// signature makes re-signings of the same assertion share a replay slot. The
+// no-jti purpose keeps these keys separate from issuer-supplied jti values.
+func assertionReplayKey(segments [2][]byte, jti string) string {
 	if jti != "" {
 		return jti
 	}
-	digest := sha256.Sum256([]byte(rawAssertion))
+	framed := binary.BigEndian.AppendUint64(nil, uint64(len(segments[0])))
+	framed = append(framed, segments[0]...)
+	framed = append(framed, segments[1]...)
+	digest := sha256.Sum256(framed)
 	return "jwt-bearer-noJTI-" + base64.RawURLEncoding.EncodeToString(digest[:])
 }
 
@@ -377,7 +409,7 @@ func assertionType(assertion string) string {
 // assertion's "aud" must intersect — see JWTBearerGrantPolicy.AcceptedAudiences.
 // "jti" is not required: many real-world IdPs (e.g. Microsoft Entra ID
 // client_credentials tokens) never emit one. When absent, assertionReplayKey
-// falls back to hashing the raw assertion for the replay check instead.
+// hashes the decoded protected header and payload for the replay check.
 func validateJWTBearerAssertionClaims(claims jwt.Claims, issuer string, acceptedAudiences []string) error {
 	if claims.Expiry == nil {
 		return errors.New("assertion is missing required 'exp' claim")

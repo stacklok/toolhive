@@ -288,6 +288,11 @@ Secret does not change the environment of an already running pod. The operator
 has no delegate-client Secret watch or automatic rollout for this feature, so
 restart or otherwise roll out the workload after rotating the secret.
 
+Changing a delegate client's scopes or audiences works the same way. The new
+values replace the stored client row when the server restarts. On Redis, with
+more than one replica, a rolling update can briefly serve either policy. See
+[Auth Server Storage](11-auth-server-storage.md#configured-clients-across-restarts).
+
 ## Secretless DCR delegate flow
 
 Set `allowPrivateKeyJWTRegistration: true` without enabling
@@ -338,7 +343,11 @@ authentication, AWS STS `act` mapping, and ID-JAG chaining are deferred and out
 of scope. `token_endpoint_auth_signing_alg` is required and the supported
 values are `RS256`, `RS384`, `RS512`, `PS256`, `PS384`, `PS512`, `ES256`,
 `ES384`, and `ES512` (not `EdDSA` — the pinned fosite version's
-client-assertion verification doesn't handle it). Unlike confidential-client
+client-assertion verification doesn't handle it). RSA keys must have a
+2048–8192-bit modulus and an odd public exponent between 3 and 65537, and a
+registration may carry at most 10 inline JWKS keys. Stored `private_key_jwt`
+clients whose keys no longer meet these limits are rejected with
+`invalid_client` when loaded. Unlike confidential-client
 registration, this has no transport restriction of its own: the DCR response
 for a `private_key_jwt` client never contains a `client_secret` or any other
 secret, so there is nothing for cleartext HTTP to expose. It is governed only
@@ -823,14 +832,23 @@ spec:
   `exp`, and returns `fosite.ErrJTIKnown` on a repeat. `key` is not always the
   assertion's `jti`: many real-world IdPs (e.g. Entra ID `client_credentials`
   tokens) never emit one, so `jti` is not a required claim here. `assertionReplayKey`
-  uses `jti` when present, and otherwise falls back to a SHA-256 digest of the
-  raw assertion JWT string (prefixed `jwt-bearer-noJTI-` so it can never
-  collide with a real `jti`) — hashing the serialized assertion identifies
-  replays of the exact same assertion without storing the raw JWT. Replay
-  protection is never skipped, only re-keyed. The
-  JWT-bearer grant's purpose is `"jwt-bearer"` (`jwtBearerReplayPurpose`), kept
-  separate from any other assertion-consuming grant so a reused key cannot be
-  laundered across purposes. Consumption happens *before* issuance: if token
+  uses `jti` when present. Plain JWT-bearer assertions must first be compact
+  JWTs with exactly three canonical unpadded base64url segments (protected
+  header, payload, signature); malformed or alternate encodings are rejected
+  as `invalid_grant` before validation. Without `jti`, the key is a SHA-256
+  digest of the decoded protected header and payload, with the header length
+  framed to separate the two. The signature is excluded so re-signing the
+  same header and payload cannot evade replay detection. This also treats
+  independently issued assertions with identical header and payload as one use;
+  without an issuer-provided identifier they cannot be distinguished safely.
+  No-`jti` keys use purpose `"jwt-bearer-no-jti"`, separate from the `"jwt-bearer"`
+  purpose for issuer-supplied `jti` values, so those keys cannot collide.
+  Existing no-`jti` replay entries keyed by the old hash of the raw JWT are not
+  migrated; until those assertions expire, a previously consumed no-`jti`
+  assertion may be accepted once more across the upgrade. Replay protection
+  is otherwise never skipped. Both purposes are kept separate from other
+  assertion-consuming grants so a reused key cannot be laundered across
+  purposes. Consumption happens *before* issuance: if token
   issuance somehow fails after that point, the assertion stays consumed rather
   than becoming replayable — a fail-closed choice that costs an otherwise-valid
   assertion its one use on an issuance-side error, rather than risk a second
@@ -987,6 +1005,86 @@ Where the two differ is the trust model — the ID-JAG handler is **bound**:
   `ConditionReasonInvalidCABundle` on the owning MCPServer, MCPRemoteProxy, or
   VirtualMCPServer before any RunConfig is built.
 
+## Authorization details
+
+RFC 9396 `authorization_details` is handled only on the RFC 8693 token-exchange
+handler. Without a type registry the parameter is ignored: no validation, no
+echo, and repeated values are not rejected.
+
+**With a registry.** The registry (`pkg/authserver/authorizationdetails`) is
+Go-only. It is not part of `RunConfig`, YAML, or CRDs. It maps exact,
+case-sensitive `type` names to a `Type`, which lists the grant types it applies
+to (`GrantTypes`) and a `Grant` hook. Only token exchange uses the registry
+today; other grants, including JWT-bearer ID-JAG redemption, ignore the
+parameter. Nothing is advertised in discovery.
+
+A request value must follow RFC 9396 section 2: one JSON array of objects, each
+with a non-empty string `type` registered for the grant type. `[]` is valid. An
+absent parameter or a single empty value (`authorization_details=`) is ignored
+and nothing is echoed, while `[]` is accepted and echoed as
+`"authorization_details":[]`. On top of that, ToolHive rejects duplicate member names after unescaping, member
+names that are equal under JSON case folding (the folding `encoding/json` uses
+to match struct fields), values over 64 KiB, and nesting deeper than 64
+containers.
+
+**Check order.** Fosite authenticates the client. The handler then checks for a
+public client, the grant type and the required parameters. Next come the
+repeated-value rejection and shape parsing, then the `requested_token_type`,
+subject token, actor, delegation consent, scope and audience checks. Then each
+type's `Grant` hook runs once, with all of that type's entries and the request
+context. After the hooks, the handler still builds the `act` claim and checks
+the subject token's remaining lifetime, and either can fail the request before
+the token is issued. Token issuance comes last, so hooks are decide-only: a hook
+may read state but must not commit it, because the request can still fail after
+a hook returns.
+
+**Response.** After the token is issued, the response member
+`authorization_details` holds the entries the hooks returned, not the request.
+The echo is equal to the hook output as JSON values, but not byte-identical:
+`encoding/json` compacts it and HTML-escapes `<`, `>` and `&`. Types appear in
+the order of their first appearance in the request, and each type's entries in
+the order its hook returned them.
+
+**Errors.**
+
+| Cause | Response |
+| --- | --- |
+| Parameter repeated | 400 `invalid_request`, fixed description (RFC 6749 section 5.2) |
+| Parse or shape failure | 400 `invalid_authorization_details`, fixed description |
+| Hook returns a valid `authorizationdetails.Error` | 400 with its code (`invalid_authorization_details` or `invalid_request`) and its reason as `error_description` |
+| Any other hook error, an `Error` with an unknown code or a malformed reason, or invalid hook output | 500 `server_error`, fixed description |
+
+Invalid hook output is an empty result, an entry that is not an object of the
+hook's own type or breaks the request limits, or a combined result over 64 KiB.
+Each rejection is logged once at WARN with `client_id` and a fixed reason code
+(`malformed`, `repeated`, `hook_rejected` or `hook_failed`). Hook rejections
+also carry `code` and `hook_reason`. The text of a failed hook's error is not
+logged at any level, and the submitted value is never logged.
+
+**Boundary.** Details are not put in issued tokens, not persisted, and not
+conveyed to resource servers yet. Register only types ToolHive itself enforces,
+such as a session-binding type. Conveying details to resource servers is
+tracked in [#6909](https://github.com/stacklok/toolhive/issues/6909), and grant
+storage in [#6895](https://github.com/stacklok/toolhive/issues/6895). Requesting
+a refresh token as the output of token exchange remains unsupported
+(#6896/#6897).
+
+**Wiring.** Pass `runner.WithAuthorizationDetailsRegistry` to
+`NewEmbeddedAuthServer` or `NewEmbeddedAuthServerWithStorage`, or set
+`authserver.Config.AuthorizationDetailsRegistry` before `authserver.New`.
+Setting a registry while token exchange is disabled is a startup error.
+
+```go
+registry, err := authorizationdetails.New(map[string]authorizationdetails.Type{
+	"session_binding": {
+		GrantTypes: []string{oauthproto.GrantTypeTokenExchange},
+		Grant: func(_ context.Context, req authorizationdetails.Request) (authorizationdetails.Result, error) {
+			return authorizationdetails.Result{Entries: req.Entries}, nil
+		},
+	},
+})
+```
+
 ## Implementation
 
 - `pkg/authserver/server/tokenexchange/handler.go` — `checkDelegationConsent`, `grantScopes`, `grantAndBoundAudiences`
@@ -1003,3 +1101,5 @@ Where the two differ is the trust model — the ID-JAG handler is **bound**:
 - `pkg/authserver/server/tokenexchange/jwt_bearer_handler.go` — `JWTBearerHandler`, `JWTBearerIssuanceFactory`, `NewSharedTrustedIssuerValidator`, synthetic client-ID minting
 - `pkg/authserver/storage/types.go` — `SyntheticClientIDPrefix`, `NewSyntheticClient`, `IsSyntheticClientID`
 - `pkg/authserver/storage/redis.go` — synthetic-client-aware `marshalRequester`/`unmarshalRequester`
+- `pkg/authserver/authorizationdetails/authorizationdetails.go`, `errors.go`, `scan.go` — `Registry`, `Type`, `Pending.Grant`, typed `Error`, strict JSON scanner
+- `pkg/authserver/server/tokenexchange/authdetails.go` — handler parsing, hook invocation, error mapping, response echo

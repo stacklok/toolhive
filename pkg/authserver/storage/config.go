@@ -38,10 +38,29 @@ const (
 	DefaultPKCETTL = 10 * time.Minute
 
 	// DefaultDCRClientTTL is the TTL for dynamically registered (DCR-issued)
-	// clients, public and confidential alike. This prevents unbounded growth from
-	// DCR. Only clients carrying the registration.DCRIssued marker expire;
-	// pre-provisioned confidential clients are stored without a TTL.
+	// clients, public and confidential alike, once they have been used. This
+	// prevents unbounded growth from DCR. Only clients carrying the
+	// registration.DCRIssued marker expire; pre-provisioned confidential
+	// clients are stored without a TTL. RenewClientTTL sets it on every
+	// successful token exchange.
+	// It is also the age bound of the CIMD persisted-row fallback on
+	// /oauth/token: CIMD rows are not renewed on token success
+	// (CIMDStorageDecorator.RenewClientTTL), so changing it changes that bound.
 	DefaultDCRClientTTL = 30 * 24 * time.Hour // 30 days
+
+	// DefaultUnusedDCRClientTTL is the TTL a client gets when /oauth/register
+	// creates it. /oauth/register is unauthenticated, so a client that is
+	// never used for a token exchange expires after this window instead of
+	// DefaultDCRClientTTL. The first successful token exchange raises the TTL
+	// to DefaultDCRClientTTL through RenewClientTTL.
+	DefaultUnusedDCRClientTTL = 24 * time.Hour
+
+	// DefaultMaxDCRClients is the default cap on live clients created by
+	// /oauth/register, on both backends. Only clients counted by
+	// countsTowardDCRCap are counted: operator-configured and CIMD clients
+	// never are. Clients register once and reuse their client_id, so the cap
+	// sits far above any legitimate count. Zero means unlimited.
+	DefaultMaxDCRClients = 10000
 )
 
 // Config configures the storage backend.
@@ -66,6 +85,21 @@ type RunConfig struct {
 
 	// RedisConfig is the Redis-specific configuration when Type is "redis".
 	RedisConfig *RedisRunConfig `json:"redis_config,omitempty" yaml:"redis_config,omitempty"`
+
+	// MaxDCRClients caps the number of live clients created by
+	// /oauth/register. At the cap, registration fails with HTTP 503 until a
+	// client expires; no existing client is evicted. If omitted, defaults to
+	// 10000; 0 means unlimited, and a negative value is rejected. On Redis the
+	// count is shared by every replica.
+	//
+	// Sizing: a client never used for a token exchange lives 24 hours, so a
+	// caller registering at the full rate keeps up to rate x replicas x 86400
+	// unused clients alive. At the default rate of 1/s that is about 86400 per
+	// replica: one replica fills the default cap in about 2.8 hours, and new
+	// registrations then get 503 for up to 24 hours after the traffic stops.
+	// A client promoted by a token exchange holds its slot for 30 days. The
+	// operator sets it from the embedded auth server's storage.maxDCRClients.
+	MaxDCRClients *int `json:"max_dcr_clients,omitempty" yaml:"max_dcr_clients,omitempty"`
 }
 
 // RedisRunConfig is the serializable Redis configuration for RunConfig.

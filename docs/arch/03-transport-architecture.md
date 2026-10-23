@@ -179,6 +179,7 @@ Current admission is stricter than base JSON-RPC:
 - IDs, when present, must be strings or signed-int64 values written as lexical JSON integers. `null`, fractional spellings such as `1.0`, and exponent spellings such as `1e0` are rejected.
 - Valid client error responses may omit the ID, as MCP permits; successful responses require an ID. Client responses remain subject to transport and authorization handling.
 - Invalid envelopes and unreadable bodies return `400`; bodies exceeding the configured limit return `413`.
+- Only a `POST` body is parsed as an MCP message. A request carrying a body on any other method (matched case-sensitively, so `post` is not `POST`) is rejected with `400` rather than forwarded unparsed: forwarding it would skip the request-level middleware that act on the parsed message. Bodyless `GET` (SSE stream), `DELETE` (session termination), and `OPTIONS` (CORS preflight) pass through unchanged; method-specific `405`/`Allow` responses stay with the transport handlers, which know the methods their endpoint serves.
 
 **Why transparent:**
 - Container already speaks HTTP

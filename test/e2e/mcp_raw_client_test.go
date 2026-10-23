@@ -177,6 +177,7 @@ func TestRawClientBuilders(t *testing.T) {
 // capturedRequest snapshots what the sender actually transmitted.
 type capturedRequest struct {
 	headers http.Header
+	host    string
 	body    []byte
 }
 
@@ -190,6 +191,7 @@ func newCapturingServer(t *testing.T, responseBody string) (*httptest.Server, *c
 		body, err := io.ReadAll(r.Body)
 		require.NoError(t, err)
 		captured.headers = r.Header.Clone()
+		captured.host = r.Host
 		captured.body = body
 
 		w.Header().Set("Content-Type", "application/json")
@@ -342,6 +344,19 @@ func TestRawClientSend(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, "application/json, text/event-stream", captured.headers.Get("Accept"),
 			"WithStreamableAccept opts into the Accept a real streamable-HTTP backend requires")
+	})
+
+	t.Run("a Host header entry overrides the request Host", func(t *testing.T) {
+		t.Parallel()
+		server, captured := newCapturingServer(t, `{"jsonrpc":"2.0","id":1,"result":{}}`)
+
+		req, err := NewModernRequest("tools/list", nil)
+		require.NoError(t, err)
+		req.SetHeader("Host", "attacker.example:4483")
+		_, err = client.Send(context.Background(), server.URL, req)
+		require.NoError(t, err)
+		require.Equal(t, "attacker.example:4483", captured.host,
+			"net/http ignores Header[\"Host\"]; SendRaw must route it to Request.Host")
 	})
 }
 

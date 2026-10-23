@@ -11,7 +11,7 @@ import (
 	stdjson "encoding/json"
 	"fmt"
 
-	"gopkg.in/yaml.v3"
+	"go.yaml.in/yaml/v3"
 )
 
 // Data stores JSON-compatible data of type T. It supports both JSON and YAML

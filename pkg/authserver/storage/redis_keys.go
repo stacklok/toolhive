@@ -84,6 +84,13 @@ const (
 	// KeyTypeUserProviders is the key type for user to provider identity reverse lookups.
 	KeyTypeUserProviders = "user:providers"
 
+	// KeyTypeDCRClientIdx is the key type for the sorted set of client IDs
+	// counted against the DCR client cap, each scored by its expiry in Unix
+	// milliseconds. It is a single key per prefix, so it shares the client
+	// rows' hash slot and one Lua script can update both on Redis Cluster.
+	// The name deliberately does not match the "client:*" scan pattern.
+	KeyTypeDCRClientIdx = "client-idx"
+
 	// KeyTypeDCR is the key type for RFC 7591 Dynamic Client Registration credentials
 	// persisted by an authserver upstream-DCR resolver. Distinct from KeyTypeClient,
 	// which holds the authserver's *own* OAuth clients — DCR entries are credentials
@@ -134,6 +141,12 @@ func redisProviderKey(prefix, providerID, providerSubject string) string {
 //
 // Format: "{prefix}dcr:<len(issuer)>:<issuer>:<len(upstream_id)>:<upstream_id>:<len(redirect_uri)>:<redirect_uri>:<scopes_hash>"
 //
+// When DCRKey.RotationKey is non-empty a length-prefixed
+// ":<len(rotation_key)>:<rotation_key>" segment follows the scopes hash. An
+// empty RotationKey yields exactly the format above, so rows written before
+// the field existed keep resolving; the hex scopes hash contains no colon, so
+// the two shapes cannot be confused.
+//
 // The first three segments are length-prefixed to handle colons in UpstreamID
 // and RedirectURI (and, for symmetry, Issuer) without ambiguity, mirroring
 // redisProviderKey. ScopesHash is expected to be a SHA-256 hex digest produced
@@ -163,12 +176,16 @@ func redisProviderKey(prefix, providerID, providerSubject string) string {
 // add the distinguishing component back to the key format alongside an
 // explicit migration story for existing Redis-cached entries.
 func redisDCRKey(prefix string, key DCRKey) string {
-	return fmt.Sprintf("%s%s:%d:%s:%d:%s:%d:%s:%s",
+	base := fmt.Sprintf("%s%s:%d:%s:%d:%s:%d:%s:%s",
 		prefix, KeyTypeDCR,
 		len(key.Issuer), key.Issuer,
 		len(key.UpstreamID), key.UpstreamID,
 		len(key.RedirectURI), key.RedirectURI,
 		key.ScopesHash)
+	if key.RotationKey == "" {
+		return base
+	}
+	return fmt.Sprintf("%s:%d:%s", base, len(key.RotationKey), key.RotationKey)
 }
 
 // redisUpstreamKey generates a Redis key for a per-provider upstream token entry.

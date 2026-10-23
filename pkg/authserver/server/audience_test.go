@@ -69,3 +69,34 @@ func TestValidateAudienceAllowed(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateSubjectIdentifierAudiences(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		configured []string
+		allowed    []string
+		wantErr    bool
+	}{
+		{name: "disabled by default"},
+		{name: "empty disables", configured: []string{}},
+		{name: "exact allowed audience", configured: []string{"https://a.example"}, allowed: []string{"https://a.example"}},
+		{name: "all is not special", configured: []string{"all"}, allowed: []string{"https://a.example"}, wantErr: true},
+		{name: "empty audience rejected", configured: []string{""}, allowed: []string{"https://a.example"}, wantErr: true},
+		{name: "non-member entry rejected", configured: []string{"relative"}, allowed: []string{"https://a.example"}, wantErr: true},
+		{name: "unknown audience rejected", configured: []string{"https://b.example"}, allowed: []string{"https://a.example"}, wantErr: true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			err := ValidateSubjectIdentifierAudiences(tc.configured, tc.allowed)
+			if tc.wantErr {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+}

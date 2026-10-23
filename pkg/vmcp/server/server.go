@@ -367,7 +367,8 @@ type Server struct {
 // When cfg.SessionStorage is nil or provider is "memory" (or empty), local in-process
 // storage is used. When provider is "redis", a Redis-backed store is created
 // using the address, DB, TLS settings, and key prefix from cfg.SessionStorage; the password
-// is read from the THV_SESSION_REDIS_PASSWORD environment variable.
+// is read from the THV_SESSION_REDIS_PASSWORD environment variable. A connection
+// without verified TLS is tolerated but logged at WARN by the store constructor.
 // Any other provider value is a misconfiguration and returns an error.
 //
 // Presence of THV_SESSION_REDIS_PASSWORD, not just its value, carries intent:
@@ -611,9 +612,16 @@ func New(
 // If the hosting server's drain is incomplete, retry it with a fresh context before Stop.
 //
 // The returned handler includes all routes (health, metrics, well-known, MCP)
-// and the full HTTP middleware chain (recovery, body limit, header validation,
-// auth, audit, MCP parsing, telemetry). Rate limiting decorates the core VMCP
-// and runs inside the MCP SDK handler.
+// and the full HTTP middleware chain (see the chain comment in the body for
+// the order). Rate limiting decorates the core VMCP and runs inside the MCP SDK
+// handler.
+//
+// DNS-rebinding protection: on a loopback connection, the MCP route answers
+// 403 when the Host header is not a loopback name, so a proxy or embedder that
+// reaches it over loopback must send a loopback Host. The guard reads
+// http.LocalAddrContextKey; when it is absent (the handler is not served by
+// net/http) the request is passed through, so such embedders need their own Host
+// check. See loopbackHostGuard for details.
 //
 // Each call builds a fresh handler. The method is safe to call multiple times.
 // All returned handlers share the same underlying MCPServer and SessionManager,
@@ -684,15 +692,16 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 		slog.Debug("embedded authorization server routes registered")
 	}
 
-	// MCP endpoint - apply middleware chain (wrapping order, execution happens in reverse):
-	// Code wraps: audit → auth → MCP-parsing → telemetry → classification
-	// Execution order: recovery → body-limit → header-val → audit → auth →
-	//   MCP-parsing → telemetry → classification → handler
+	// MCP endpoint - middleware chain, in execution order (outermost first):
+	//   recovery → body-limit → write-timeout → header-validation →
+	//   forwarded-header capture (if PassthroughHeaders is set) →
+	//   audit (if configured) → auth (if configured) → MCP-parsing →
+	//   telemetry (if configured) → host-guard → classification → handler
 	// Rate limiting is a core VMCP decorator rather than an HTTP middleware and
 	// runs during tool dispatch inside the handler.
 	//
 	// Upstream token refresh failures are detected inside AuthMiddleware itself:
-	// GetAllUpstreamCredentials returns a non-empty failed-provider slice when
+	// GetAllUpstreamCredentials returns a non-empty failed-provider map when
 	// any upstream refresh fails, and the middleware short-circuits with
 	// HTTP 401 + WWW-Authenticate. Audit wraps auth, so those 401s (and every
 	// other rejection from the inner chain) still produce an audit event; the
@@ -721,6 +730,14 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 	// dispatcher 403 is still recorded by the telemetry middleware instead of
 	// bypassing it entirely.
 	mcpHandler = s.classifyingHandler(mcpHandler)
+
+	// DNS-rebinding protection for both MCP revisions. go-sdk's own localhost
+	// check only sees Legacy requests that reach StreamableHTTPHandler;
+	// classifyingHandler hands Modern requests to dispatchModern, and mcpcompat
+	// serves cross-replica Legacy sessions without that handler. Placed where
+	// go-sdk's check effectively sat (inside audit and telemetry) so a rejected
+	// request is still audited and recorded, for every path alike.
+	mcpHandler = loopbackHostGuard(mcpHandler)
 
 	if s.config.TelemetryProvider != nil {
 		mcpHandler = s.config.TelemetryProvider.Middleware(s.config.Name, "streamable-http")(mcpHandler)

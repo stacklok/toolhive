@@ -84,6 +84,203 @@ func TestModernEnumerate_Pagination(t *testing.T) {
 	assert.Equal(t, "b", list.Tools[0].BackendID)
 }
 
+// TestModernEnumerate_UndecodableItems verifies the per-item tolerance of the
+// Modern list path: an item the compat types cannot decode (a wrongly typed
+// field) or a JSON null item is skipped and every other item on the page is
+// kept, for tools and for the optional lists that share modernListAll. A list
+// field that is not an array is a protocol-level fault and still fails the
+// enumeration. Without per-item decoding, one bad item hides every other item
+// the backend advertises.
+func TestModernEnumerate_UndecodableItems(t *testing.T) {
+	t.Parallel()
+
+	goodTool := func(name string) map[string]any {
+		return map[string]any{"name": name, "inputSchema": map[string]any{"type": "object"}}
+	}
+	toolNames := func(l *vmcp.CapabilityList) []string {
+		names := make([]string, 0, len(l.Tools))
+		for _, tool := range l.Tools {
+			names = append(names, tool.Name)
+		}
+		return names
+	}
+
+	tests := []struct {
+		name string
+		// "<Mcp-Method>" (first page) or "<Mcp-Method>@<cursor>" -> result; a request
+		// with no entry gets an empty list.
+		results map[string]map[string]any
+		wantErr string
+		check   func(t *testing.T, l *vmcp.CapabilityList)
+	}{
+		{
+			name: "undecodable tool is skipped and its neighbours kept",
+			results: map[string]map[string]any{"tools/list": {"tools": []any{
+				goodTool("t1"),
+				map[string]any{"name": "bad", "description": 123},
+				goodTool("t3"),
+			}}},
+			check: func(t *testing.T, l *vmcp.CapabilityList) {
+				t.Helper()
+				assert.Equal(t, []string{"t1", "t3"}, toolNames(l))
+			},
+		},
+		{
+			name: "null tool is skipped",
+			results: map[string]map[string]any{"tools/list": {"tools": []any{
+				goodTool("t1"), nil, goodTool("t3"),
+			}}},
+			check: func(t *testing.T, l *vmcp.CapabilityList) {
+				t.Helper()
+				assert.Equal(t, []string{"t1", "t3"}, toolNames(l))
+			},
+		},
+		{
+			name: "undecodable resource is skipped",
+			results: map[string]map[string]any{"resources/list": {"resources": []any{
+				map[string]any{"name": "r1", "uri": "file:///r1"},
+				map[string]any{"name": 123, "uri": "file:///bad"},
+				map[string]any{"name": "r3", "uri": "file:///r3"},
+			}}},
+			check: func(t *testing.T, l *vmcp.CapabilityList) {
+				t.Helper()
+				require.Len(t, l.Resources, 2)
+				assert.Equal(t, "file:///r1", l.Resources[0].URI)
+				assert.Equal(t, "file:///r3", l.Resources[1].URI)
+			},
+		},
+		{
+			name: "undecodable prompt is skipped",
+			results: map[string]map[string]any{"prompts/list": {"prompts": []any{
+				map[string]any{"name": "p1"},
+				map[string]any{"name": "bad", "description": 123},
+				map[string]any{"name": "p3"},
+			}}},
+			check: func(t *testing.T, l *vmcp.CapabilityList) {
+				t.Helper()
+				require.Len(t, l.Prompts, 2)
+				assert.Equal(t, "p1", l.Prompts[0].Name)
+				assert.Equal(t, "p3", l.Prompts[1].Name)
+			},
+		},
+		{
+			name: "undecodable resource template is skipped",
+			results: map[string]map[string]any{"resources/templates/list": {"resourceTemplates": []any{
+				map[string]any{"name": "rt1", "uriTemplate": "file:///{a}"},
+				map[string]any{"name": 123, "uriTemplate": "file:///{bad}"},
+				map[string]any{"name": "rt3", "uriTemplate": "file:///{c}"},
+			}}},
+			check: func(t *testing.T, l *vmcp.CapabilityList) {
+				t.Helper()
+				require.Len(t, l.ResourceTemplates, 2)
+				assert.Equal(t, "file:///{a}", l.ResourceTemplates[0].URITemplate)
+				assert.Equal(t, "file:///{c}", l.ResourceTemplates[1].URITemplate)
+			},
+		},
+		{
+			name: "page where every item is bad yields an empty list, not an error",
+			results: map[string]map[string]any{"tools/list": {"tools": []any{
+				map[string]any{"name": "bad1", "description": 123},
+				nil,
+				map[string]any{"name": "bad3", "description": 123},
+			}}},
+			check: func(t *testing.T, l *vmcp.CapabilityList) {
+				t.Helper()
+				assert.Empty(t, l.Tools)
+			},
+		},
+		{
+			name: "bad items do not stop pagination and later pages are kept",
+			results: map[string]map[string]any{
+				"tools/list": {
+					"tools":      []any{goodTool("t1"), map[string]any{"name": "bad", "description": 123}},
+					"nextCursor": "c2",
+				},
+				"tools/list@c2": {
+					"tools": []any{map[string]any{"name": "bad", "description": 123}, goodTool("t3")},
+				},
+			},
+			check: func(t *testing.T, l *vmcp.CapabilityList) {
+				t.Helper()
+				assert.Equal(t, []string{"t1", "t3"}, toolNames(l))
+			},
+		},
+		{
+			name:    "tools field that is not an array fails the enumeration",
+			results: map[string]map[string]any{"tools/list": {"tools": "not-an-array"}},
+			wantErr: "decoding tools from tools/list",
+		},
+	}
+
+	emptyLists := map[string]string{
+		"tools/list":               "tools",
+		"resources/list":           "resources",
+		"resources/templates/list": "resourceTemplates",
+		"prompts/list":             "prompts",
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				id, cursor := modernReq(t, r)
+				method := r.Header.Get("Mcp-Method")
+				key := method
+				if cursor != "" {
+					key += "@" + cursor
+				}
+				result, ok := tt.results[key]
+				if !ok {
+					result = map[string]any{emptyLists[method]: []any{}}
+				}
+				writeModernResult(t, w, id, result)
+			}))
+			t.Cleanup(srv.Close)
+
+			h := newProbeClient(t)
+			target := &vmcp.BackendTarget{WorkloadID: "b", BaseURL: srv.URL, TransportType: "streamable-http"}
+
+			list, err := h.modernEnumerate(context.Background(), target, modernCapsAll())
+			if tt.wantErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			tt.check(t, list)
+		})
+	}
+}
+
+// TestItemIdentifier verifies the identifier logged for a skipped item: the name
+// when it is a string, else the uri, decoded per key so one wrongly typed field
+// does not hide the other.
+func TestItemIdentifier(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{name: "name wins over uri", raw: `{"name":"n","uri":"file:///u"}`, want: "n"},
+		{name: "uri when there is no name", raw: `{"uri":"file:///u"}`, want: "file:///u"},
+		{name: "wrongly typed name falls back to uri", raw: `{"name":123,"uri":"file:///u"}`, want: "file:///u"},
+		{name: "wrongly typed uri still yields the name", raw: `{"name":"n","uri":123}`, want: "n"},
+		{name: "neither field is a string", raw: `{"name":123,"uri":[]}`, want: ""},
+		{name: "neither field present", raw: `{"description":"d"}`, want: ""},
+		{name: "item that is not an object", raw: `"just-a-string"`, want: ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, itemIdentifier(json.RawMessage(tt.raw)))
+		})
+	}
+}
+
 // TestModernEnumerate_GatesOnFlags verifies only advertised capabilities are
 // enumerated: a backend advertising only Tools is never asked for resources or
 // prompts.

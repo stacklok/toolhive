@@ -607,6 +607,8 @@ const (
 
 	// SPIFFEBundleSourceTypeEndpoint selects a HTTPS SPIFFE Bundle Endpoint.
 	SPIFFEBundleSourceTypeEndpoint SPIFFEBundleSourceType = "bundle_endpoint"
+	// SPIFFEBundleSourceTypeFile selects a ConfigMap-mounted SPIFFE trust bundle.
+	SPIFFEBundleSourceTypeFile SPIFFEBundleSourceType = "file"
 	// SPIFFEBundleSourceTypeWorkloadAPI selects the local SPIFFE Workload API.
 	SPIFFEBundleSourceTypeWorkloadAPI SPIFFEBundleSourceType = "workload_api"
 
@@ -619,18 +621,19 @@ const (
 )
 
 // SPIFFEBundleSourceConfig is a discriminated bundle-source declaration. Type
-// determines which, and only which, source payload may be set. It is
-// validated for shape only; fetching or loading a bundle from the declared
-// source is not implemented yet.
+// determines which, and only which, source payload may be set. The file-bundle
+// loader is implemented in isolation, but SPIFFE authentication is not wired
+// to any bundle source; endpoint and Workload API loading are not implemented.
 //
 // +kubebuilder:validation:XValidation:rule="self.type == 'bundle_endpoint' ? has(self.endpoint) : !has(self.endpoint)",message="endpoint configuration must be set if and only if type is 'bundle_endpoint'"
+// +kubebuilder:validation:XValidation:rule="self.type == 'file' ? has(self.file) : !has(self.file)",message="file configuration must be set if and only if type is 'file'"
 // +kubebuilder:validation:XValidation:rule="self.type == 'workload_api' ? has(self.workloadAPI) : !has(self.workloadAPI)",message="workloadAPI configuration must be set if and only if type is 'workload_api'"
 //
 //nolint:lll // CEL validation rules exceed line length limit
 type SPIFFEBundleSourceConfig struct {
 	// Type selects the trust-bundle source.
 	// +kubebuilder:validation:Required
-	// +kubebuilder:validation:Enum=bundle_endpoint;workload_api
+	// +kubebuilder:validation:Enum=bundle_endpoint;file;workload_api
 	Type SPIFFEBundleSourceType `json:"type"`
 
 	// Endpoint declares a HTTPS SPIFFE Bundle Endpoint. Required when Type is
@@ -638,10 +641,36 @@ type SPIFFEBundleSourceConfig struct {
 	// +optional
 	Endpoint *SPIFFEBundleEndpointSourceConfig `json:"endpoint,omitempty"`
 
+	// File declares a SPIFFE trust bundle projected from a ConfigMap.
+	// Required when Type is "file".
+	// +optional
+	File *SPIFFEFileBundleSourceConfig `json:"file,omitempty"`
+
 	// WorkloadAPI selects the local SPIFFE Workload API. Required when Type
 	// is "workload_api".
 	// +optional
 	WorkloadAPI *SPIFFEWorkloadAPIBundleSourceConfig `json:"workloadAPI,omitempty"`
+}
+
+// SPIFFEFileBundleSourceConfig selects one ConfigMap key containing a SPIFFE
+// trust-bundle JWKS document, typically projected as a mounted file. The
+// ConfigMap name and key follow Kubernetes ConfigMap naming constraints.
+type SPIFFEFileBundleSourceConfig struct {
+	// ConfigMapName is the name of the ConfigMap containing the trust bundle.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`
+	ConfigMapName string `json:"configMapName"`
+
+	// ConfigMapKey is the key within the ConfigMap holding the SPIFFE JWKS
+	// trust-bundle document. It must not be "." or start with "..".
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9._-]+$`
+	// +kubebuilder:validation:XValidation:rule="self != '.' && !self.startsWith('..')"
+	ConfigMapKey string `json:"configMapKey"`
 }
 
 // SPIFFEBundleEndpointSourceConfig declares a HTTPS SPIFFE Bundle Endpoint.
@@ -700,9 +729,9 @@ type SPIFFETrustDomainConfig struct {
 	// +listType=set
 	Methods []SPIFFEAuthenticationMethod `json:"methods"`
 
-	// BundleSource declares exactly one future trust-bundle source. It is
-	// validated for shape only; fetching or loading a bundle from it is a
-	// later step.
+	// BundleSource declares exactly one trust-bundle source and is validated for
+	// shape here. The standalone file loader exists, but is not wired into SPIFFE
+	// authentication.
 	// +kubebuilder:validation:Required
 	BundleSource SPIFFEBundleSourceConfig `json:"bundleSource"`
 }
@@ -1200,6 +1229,21 @@ type EmbeddedAuthServerConfig struct {
 	// CIMD configures Client ID Metadata Document support. When omitted, CIMD is disabled.
 	// +optional
 	CIMD *EmbeddedAuthServerCIMDConfig `json:"cimd,omitempty"`
+
+	// RegistrationRateLimit bounds the unauthenticated /oauth/register
+	// endpoint with a token bucket: up to maxTokens registrations at once,
+	// refilled at maxTokens per refillPeriod. For a sustained rate of R per
+	// second with a burst of B, set maxTokens to B and refillPeriod to B/R;
+	// for example, 10 per minute with a burst of 3 is maxTokens 3,
+	// refillPeriod 18s. If omitted, defaults to 1 registration per second
+	// with a burst of 5 (maxTokens 5, refillPeriod 5s). The limit is per
+	// replica, so the effective rate is the configured rate multiplied by the
+	// replica count. Every successful registration stores a client, so a
+	// higher rate fills storage.maxDCRClients sooner, and with maxDCRClients
+	// 0 this limit is the only bound on stored clients.
+	// +kubebuilder:validation:XValidation:rule="duration(self.refillPeriod) > duration('0s')",message="registrationRateLimit.refillPeriod must be positive"
+	// +optional
+	RegistrationRateLimit *RateLimitBucket `json:"registrationRateLimit,omitempty"`
 }
 
 // effectiveInboundGrants is the folded validation view of legacy and canonical
@@ -1575,6 +1619,16 @@ type OIDCUpstreamConfig struct {
 	// +optional
 	AdditionalTokenParams map[string]string `json:"additionalTokenParams,omitempty"`
 
+	// OmitScopeOnRefresh stops the scope parameter from being sent on
+	// refresh_token grant requests to the upstream provider's token endpoint.
+	// Scopes are still sent on the authorization request.
+	// By default (false), the configured scopes are sent on refresh as well,
+	// which some providers require to avoid narrowing the refreshed token.
+	// Set it for providers that reject scope on refresh, such as Salesforce
+	// ("invalid_request - scope parameter not supported").
+	// +optional
+	OmitScopeOnRefresh bool `json:"omitScopeOnRefresh,omitempty"`
+
 	// SubjectClaim names the validated ID-token claim to use as the upstream
 	// subject. Defaults to "sub" when empty. Set it for IdPs where "sub" isn't
 	// stable per user — e.g. Entra/Azure AD, whose "sub" rotates per application
@@ -1746,6 +1800,16 @@ type OAuth2UpstreamConfig struct {
 	// +optional
 	AdditionalTokenParams map[string]string `json:"additionalTokenParams,omitempty"`
 
+	// OmitScopeOnRefresh stops the scope parameter from being sent on
+	// refresh_token grant requests to the upstream provider's token endpoint.
+	// Scopes are still sent on the authorization request.
+	// By default (false), the configured scopes are sent on refresh as well,
+	// which some providers require to avoid narrowing the refreshed token.
+	// Set it for providers that reject scope on refresh, such as Salesforce
+	// ("invalid_request - scope parameter not supported").
+	// +optional
+	OmitScopeOnRefresh bool `json:"omitScopeOnRefresh,omitempty"`
+
 	// CABundleRef references a ConfigMap containing a CA bundle added to the
 	// system roots when connecting to this upstream; it does not restrict trust
 	// to this bundle or disable public-root trust. The selected key is projected
@@ -1824,6 +1888,41 @@ type DCRUpstreamConfig struct {
 	// +kubebuilder:validation:Pattern=`^https://[^\s?#]+[^/\s?#]$`
 	// +kubebuilder:validation:MaxLength=2048
 	RegistrationEndpoint string `json:"registrationEndpoint,omitempty"`
+
+	// RotationKey is an optional operator-chosen label that is part of the
+	// cached registration's identity but is never sent to the upstream.
+	// Change it to make the proxies register a fresh client at their next
+	// start instead of reusing the cached one: for example after the
+	// upstream has dropped the registration, or when a rotation is required.
+	// At start ToolHive checks the cached client at the upstream (see
+	// RegistrationProbe) and registers a new one by itself when the upstream
+	// rejects it. Where the configured probe cannot tell, the stale client_id
+	// may only be rejected in the user's browser, and changing this key is
+	// the remedy. The previous registration's row stays in storage, and
+	// upstream refresh tokens bound to the previous client_id stop
+	// refreshing, so affected users sign in again.
+	// +optional
+	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9._-]+$`
+	// +kubebuilder:validation:MaxLength=64
+	RotationKey string `json:"rotationKey,omitempty"`
+
+	// RegistrationProbe selects how ToolHive checks the cached upstream client
+	// at start. tokenEndpoint (the default) redeems a random authorization
+	// code with the cached client and reads invalid_client as "registration
+	// gone"; it decides only for upstreams that authenticate the client
+	// before validating the grant. authorizationEndpoint sends an
+	// authorization request for the cached client without following
+	// redirects and reads a direct 400, 401 or 403 that carries an RFC 6749
+	// JSON error object (error invalid_client, unauthorized_client or
+	// invalid_request) as "gone" (RFC 6749 §4.1.2.1), for upstreams whose
+	// token endpoint answers invalid_grant for any client_id; an HTML page or
+	// a bare gateway status is not a verdict. A false rejection re-registers
+	// at every start and, when registration also fails, fails startup. none
+	// skips the check; the registration is then retired only through
+	// RotationKey.
+	// +optional
+	// +kubebuilder:validation:Enum=tokenEndpoint;authorizationEndpoint;none
+	RegistrationProbe string `json:"registrationProbe,omitempty"`
 
 	// InitialAccessTokenRef is an optional reference to a Kubernetes Secret
 	// carrying an RFC 7591 §3 initial access token. When set, the resolver
@@ -2019,6 +2118,28 @@ type AuthServerStorageConfig struct {
 	// Required when type is "redis".
 	// +optional
 	Redis *RedisStorageConfig `json:"redis,omitempty"`
+
+	// MaxDCRClients caps the number of live clients created by Dynamic Client
+	// Registration (/oauth/register). At the cap, registration fails with HTTP
+	// 503 until a client expires; no existing client is evicted. If omitted,
+	// defaults to 10000. Operator-configured and CIMD clients are not counted.
+	// On Redis the count is shared by every replica; with memory storage each
+	// replica keeps its own count.
+	//
+	// A client never used for a token exchange lives 24 hours, so a caller
+	// registering at the full registrationRateLimit keeps up to
+	// rate x replicas x 86400 unused clients alive; at the default rate one
+	// replica fills the default cap in about 2.8 hours.
+	//
+	// 0 means unlimited. The endpoint is unauthenticated, so 0 leaves stored
+	// clients bounded only by the per-replica registrationRateLimit, about
+	// 86400 per replica per day at the default rate. Use 0 only temporarily,
+	// for example while an existing client population above the cap drains;
+	// a large finite value, such as two to three times the observed live
+	// client count, keeps some protection.
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	MaxDCRClients *int32 `json:"maxDCRClients,omitempty"`
 }
 
 // RedisStorageConfig configures Redis connection for auth server storage.
@@ -2127,13 +2248,18 @@ type SentinelServiceRef struct {
 // RedisTLSConfig configures TLS for Redis connections.
 // Presence of this struct on a connection type enables TLS for that connection.
 type RedisTLSConfig struct {
-	// InsecureSkipVerify skips TLS certificate verification.
-	// Use when connecting to services with self-signed certificates.
+	// InsecureSkipVerify disables server certificate and hostname verification.
+	// The connection is encrypted but not authenticated, so anyone able to
+	// impersonate the server can read the credentials and data sent over it.
+	// Intended for testing only; for self-signed or private CAs set
+	// caCertSecretRef instead.
 	// +optional
 	InsecureSkipVerify bool `json:"insecureSkipVerify,omitempty"`
 
 	// CACertSecretRef references a Secret containing a PEM-encoded CA certificate
 	// for verifying the server. When not specified, system root CAs are used.
+	// If the Secret or key does not exist, the pod cannot start (it stays in
+	// ContainerCreating) rather than connecting without verification.
 	// +optional
 	CACertSecretRef *SecretKeyRef `json:"caCertSecretRef,omitempty"`
 }

@@ -24,6 +24,7 @@ import (
 	"strings"
 	"time"
 
+	josev3 "github.com/go-jose/go-jose/v3"
 	"github.com/go-jose/go-jose/v4"
 	"github.com/ory/fosite"
 	"github.com/spiffe/go-spiffe/v2/bundle/jwtbundle"
@@ -82,6 +83,10 @@ type AuthorizationServerConfig struct {
 	// Per RFC 8707, the "resource" parameter in token requests is validated against this list.
 	// Security: An empty list means NO audiences are permitted (secure default).
 	AllowedAudiences []string
+	// SubjectIdentifierAudiences controls disclosure of the RFC 9493 sub_id claim and the
+	// https://toolhive.dev/upstream_subject claim on login-derived access tokens.
+	// It is not an access-control or audience-grant setting.
+	SubjectIdentifierAudiences []string
 	// ScopesSupported lists the OAuth 2.0 scope values advertised in discovery documents.
 	// This is advertised in /.well-known/openid-configuration and
 	// /.well-known/oauth-authorization-server discovery endpoints.
@@ -186,6 +191,10 @@ type AuthorizationServerParams struct {
 	// Per RFC 8707, the "resource" parameter in token requests is validated against this list.
 	// Security: An empty list means NO audiences are permitted (secure default).
 	AllowedAudiences []string
+	// SubjectIdentifierAudiences controls disclosure of the RFC 9493 sub_id claim and the
+	// https://toolhive.dev/upstream_subject claim on login-derived access tokens.
+	// It is not an access-control or audience-grant setting.
+	SubjectIdentifierAudiences []string
 	// ScopesSupported lists the OAuth 2.0 scope values advertised in discovery documents.
 	ScopesSupported []string
 	// BaselineClientScopes is a baseline set of OAuth 2.0 scopes the DCR handler
@@ -393,6 +402,9 @@ func validateParams(cfg *AuthorizationServerParams) error {
 	if err := validateAllowedAudiences(cfg.AllowedAudiences); err != nil {
 		return err
 	}
+	if err := ValidateSubjectIdentifierAudiences(cfg.SubjectIdentifierAudiences, cfg.AllowedAudiences); err != nil {
+		return err
+	}
 	if err := ValidateConfidentialClientTransport(
 		cfg.AllowConfidentialClientRegistration || cfg.HasStaticDelegateClients,
 		cfg.InsecureAllowHTTP, cfg.Issuer, cfg.InsecureAllowConfidentialOverLoopbackHTTP,
@@ -461,6 +473,11 @@ func NewAuthorizationServerConfig(cfg *AuthorizationServerParams) (*Authorizatio
 		// ExactScopeStrategy requires exact matches (no wildcards) for security.
 		// This prevents clients from requesting scopes beyond what they registered with.
 		ScopeStrategy: fosite.ExactScopeStrategy,
+		// AudienceMatchingStrategy and JWKSFetcherStrategy are set explicitly
+		// because fosite's getters lazily assign their defaults on first use,
+		// an unsynchronized write that races between concurrent requests.
+		AudienceMatchingStrategy: fosite.DefaultAudienceMatchingStrategy,
+		JWKSFetcherStrategy:      unsupportedJWKSFetcher{},
 		// ClientSecretsHasher compares client secrets at the token endpoint.
 		// Plain SHA-256 is correct here: the secrets are 256 bits of CSPRNG
 		// output, never client-chosen, so a password-stretching KDF protects
@@ -471,18 +488,19 @@ func NewAuthorizationServerConfig(cfg *AuthorizationServerParams) (*Authorizatio
 	}
 
 	return &AuthorizationServerConfig{
-		Config:                              fositeConfig,
-		SigningKey:                          &jwk,
-		SigningJWKS:                         signingJWKS,
-		AllowedAudiences:                    cfg.AllowedAudiences,
-		ScopesSupported:                     cfg.ScopesSupported,
-		BaselineClientScopes:                cfg.BaselineClientScopes,
-		AuthorizationEndpointBaseURL:        cfg.AuthorizationEndpointBaseURL,
-		CIMDEnabled:                         cfg.CIMDEnabled,
-		AllowConfidentialClientRegistration: cfg.AllowConfidentialClientRegistration,
-		AllowPrivateKeyJWTRegistration:      cfg.AllowPrivateKeyJWTRegistration,
-		HasStaticDelegateClients:            cfg.HasStaticDelegateClients,
-		InsecureAllowHTTP:                   cfg.InsecureAllowHTTP,
+		Config:                                    fositeConfig,
+		SigningKey:                                &jwk,
+		SigningJWKS:                               signingJWKS,
+		AllowedAudiences:                          cfg.AllowedAudiences,
+		SubjectIdentifierAudiences:                cfg.SubjectIdentifierAudiences,
+		ScopesSupported:                           cfg.ScopesSupported,
+		BaselineClientScopes:                      cfg.BaselineClientScopes,
+		AuthorizationEndpointBaseURL:              cfg.AuthorizationEndpointBaseURL,
+		CIMDEnabled:                               cfg.CIMDEnabled,
+		AllowConfidentialClientRegistration:       cfg.AllowConfidentialClientRegistration,
+		AllowPrivateKeyJWTRegistration:            cfg.AllowPrivateKeyJWTRegistration,
+		HasStaticDelegateClients:                  cfg.HasStaticDelegateClients,
+		InsecureAllowHTTP:                         cfg.InsecureAllowHTTP,
 		InsecureAllowConfidentialOverLoopbackHTTP: cfg.InsecureAllowConfidentialOverLoopbackHTTP,
 		ForceConfidentialRedirectURIs:             cfg.ForceConfidentialRedirectURIs,
 		TokenExchangeEnabled:                      !cfg.DisableTokenExchange,
@@ -493,6 +511,19 @@ func NewAuthorizationServerConfig(cfg *AuthorizationServerParams) (*Authorizatio
 		SPIFFEX509BundleSource:                    cfg.SPIFFEX509BundleSource,
 		SPIFFEJWTBundleSource:                     cfg.SPIFFEJWTBundleSource,
 	}, nil
+}
+
+// unsupportedJWKSFetcher is the fosite JWKS fetcher for this server. Client
+// keys are only accepted inline: DCR rejects jwks_uri and storage drops it, so
+// fosite has nothing to fetch. Unlike fosite's default fetcher, it starts no
+// cache goroutines, and if a client with a jwks_uri ever reached client
+// authentication it fails closed instead of fetching an arbitrary URL.
+type unsupportedJWKSFetcher struct{}
+
+// Resolve always rejects the client, because remote client key sets are not
+// supported. fosite's interface uses go-jose v3.
+func (unsupportedJWKSFetcher) Resolve(context.Context, string, bool) (*josev3.JSONWebKeySet, error) {
+	return nil, fosite.ErrInvalidClient.WithHint("Client JSON Web Key Sets must be registered inline; jwks_uri is not supported.")
 }
 
 // NewAuthorizationServer creates a new fosite OAuth2Provider with the given configuration,

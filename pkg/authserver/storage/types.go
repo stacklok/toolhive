@@ -24,6 +24,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
 	"sort"
 	"strings"
@@ -32,6 +33,8 @@ import (
 	"github.com/ory/fosite"
 	"github.com/ory/fosite/handler/oauth2"
 	"github.com/ory/fosite/handler/pkce"
+
+	authsession "github.com/stacklok/toolhive/pkg/authserver/server/session"
 )
 
 // Sentinel errors for storage operations.
@@ -50,8 +53,10 @@ var (
 	// (e.g., subject or client ID mismatch).
 	ErrInvalidBinding = errors.New("storage: token binding validation failed")
 
-	// ErrClientCapacity is returned when the client map is full and no
-	// DCR-issued client has aged enough to be safely evicted.
+	// ErrClientCapacity is returned by RegisterClient when the number of live
+	// clients counted against the DCR cap has reached it. Nothing is written.
+	// The returned error is a *ClientCapacityError, which matches this
+	// sentinel under errors.Is and carries the Retry-After hint.
 	ErrClientCapacity = errors.New("storage: client capacity reached")
 
 	// ErrReservedClientID is returned when a caller attempts to register a
@@ -235,6 +240,18 @@ type DCRKey struct {
 	// hand at call sites; the canonical form must be a single source of truth
 	// so the key matches across processes and backends.
 	ScopesHash string
+
+	// RotationKey is an optional operator-chosen label that is part of the
+	// cache identity but carries no OAuth meaning and is never sent to the
+	// upstream. Changing it makes the resolver miss the cache and register a
+	// fresh client. It is how an operator retires a registration the upstream
+	// has dropped when the resolver's own registration probe cannot tell
+	// (see authserver.DCRUpstreamConfig.RotationKey).
+	// Empty for every row written before the field existed; backends MUST
+	// encode an empty value exactly as they encoded a key without the field
+	// so those rows stay reachable. Rows written under a previous value are
+	// not deleted and follow the same lifetime rules as any superseded row.
+	RotationKey string
 }
 
 // ScopesHash returns the SHA-256 hex digest of the canonical OAuth scope set,
@@ -364,7 +381,8 @@ func validateDCRCompareAndSet(creds, expected *DCRCredentials) error {
 // TestResolutionCredentialsRoundTrip in
 // pkg/auth/dcr/store_test.go.
 type DCRCredentials struct {
-	// Key is the canonical cache key: (Issuer, UpstreamID, RedirectURI, ScopesHash).
+	// Key is the canonical cache key: (Issuer, UpstreamID, RedirectURI,
+	// ScopesHash) plus the optional RotationKey.
 	Key DCRKey
 
 	// ProviderName is the upstream's UpstreamRunConfig.Name. Debug / audit
@@ -725,6 +743,11 @@ type PendingAuthorization struct {
 	// Empty on the first leg; populated after the first callback for subsequent legs.
 	ResolvedUserEmail string
 
+	// VerifiedUpstream is the verified identity of the first upstream OIDC login. It
+	// is set only from that login, never replaced by later legs, and zero for
+	// OAuth2-only or synthetic identities.
+	VerifiedUpstream authsession.UpstreamSubject
+
 	// SingleLeg scopes this authorization to exactly one upstream. When true, the
 	// callback issues the authorization code as soon as this leg completes instead
 	// of consulting nextMissingUpstream to continue the chain. This lets a caller
@@ -813,9 +836,21 @@ type DeviceRequest struct {
 	ResolvedUserID    string
 	ResolvedUserName  string
 	ResolvedUserEmail string
+	VerifiedUpstream  authsession.UpstreamSubject
 	SessionID         string
 
 	CreatedAt time.Time
+}
+
+// DeviceAuthorization is the identity MarkDeviceRequestAuthorized attaches to a
+// pending device request. Field-for-field it mirrors the Resolved*, SessionID
+// and VerifiedUpstream fields it populates on DeviceRequest.
+type DeviceAuthorization struct {
+	UserID           string
+	UserName         string
+	UserEmail        string
+	SessionID        string
+	VerifiedUpstream authsession.UpstreamSubject
 }
 
 // DeviceCodeStorage provides storage operations for RFC 8628 device
@@ -848,9 +883,7 @@ type DeviceCodeStorage interface {
 	// DeviceRequestStatusPending (already authorized or denied) — this call
 	// is not idempotent, so a stale verification-page resubmission can never
 	// clobber a request the token endpoint already consumed.
-	MarkDeviceRequestAuthorized(
-		ctx context.Context, deviceCode string, resolvedUserID, resolvedUserName, resolvedUserEmail, sessionID string,
-	) error
+	MarkDeviceRequestAuthorized(ctx context.Context, deviceCode string, auth DeviceAuthorization) error
 
 	// MarkDeviceRequestDenied transitions a pending device request to
 	// denied. Same ErrNotFound/ErrExpired/ErrInvalidState semantics as
@@ -954,6 +987,7 @@ type PendingDeviceConfirmation struct {
 	ResolvedUserID    string
 	ResolvedUserName  string
 	ResolvedUserEmail string
+	VerifiedUpstream  authsession.UpstreamSubject
 
 	// UpstreamTokens carries the tokens already exchanged with the upstream
 	// IDP, ready to persist under the final session id once one exists.
@@ -1064,40 +1098,45 @@ func sameStringSet(a, b []string) bool {
 	return slices.Equal(as, bs)
 }
 
-// clientFingerprint is the identity of a configured client registration: the
-// fields that decide whether two records at the same client ID are the same
-// logical client (idempotent restart) or two different colliding ones (a loud
-// failure). Client secrets are deliberately excluded -- an operator rotating a
-// secret must still be able to reconcile. TokenEndpointAuthMethod is excluded
-// for the same reason -- both memory.go and redis.go fully overwrite the
-// stored record on a fingerprint match rather than merging, so a match never
-// "keeps stale data": reconfiguring either field is always applied on the
-// next reconcile regardless of whether the fingerprint matched.
+// clientFingerprint holds the fields ReconcileConfiguredClient compares when a
+// configured client is declared over an existing row at the same ID. How much
+// of it matters depends on the row's kind (see configuredClientConflict):
+// reserved SPIFFE placeholders compare in full, other configured clients only
+// on public. Client secrets are deliberately excluded -- an operator rotating
+// a secret must still be able to reconcile. TokenEndpointAuthMethod is
+// excluded for the same reason: both backends fully overwrite the stored
+// record on a successful reconcile rather than merging.
 //
 // Deliberately NOT fosite.Client: fosite.DefaultClient's GetGrantTypes/
 // GetResponseTypes substitute an interactive default when the underlying list
 // is empty, so a deliberately-empty SPIFFE placeholder compared through that
 // interface can mismatch itself. Each backend converts its own representation
 // into this type; the comparison exists once, so memory- and Redis-backed
-// deployments cannot disagree about what "same client" means.
+// deployments cannot disagree.
+//
+// Grant and response types, like resources and identity, only matter for
+// reserved rows; for non-reserved rows only public is compared.
 type clientFingerprint struct {
 	scopes        []string
 	audience      []string
 	grantTypes    []string
 	responseTypes []string
 	// resources is the RFC 8707 resource allowlist, distinct from audience
-	// (see resourceScopedClient in spiffe_decorator.go). Two clients sharing
-	// every other field but differing in their resource allowlist are
-	// different logical clients -- this is the field #6473's review found
-	// missing from the SPIFFE static-client placeholder's durable identity.
-	resources           []string
+	// (see resourceScopedClient in spiffe_decorator.go). Only reserved rows
+	// carry it: buildStoredClient persists it for them alone.
+	resources []string
+	// identityFingerprint is the SPIFFE association hash. Like resources, it
+	// is only populated for reserved rows.
 	identityFingerprint string
 	public              bool
+	// reserved marks a SPIFFE static-client placeholder, as opposed to an
+	// ordinary configured client such as a delegate.
+	reserved bool
 }
 
 // equal reports whether f and o represent the same logical client
-// configuration: equal scope set, audience set, grant-type set,
-// response-type set, resource set, and public/confidential class.
+// configuration: equal scope, audience, grant-type, response-type and
+// resource sets, identity, public/confidential class, and reserved kind.
 func (f clientFingerprint) equal(o clientFingerprint) bool {
 	return sameStringSet(f.scopes, o.scopes) &&
 		sameStringSet(f.audience, o.audience) &&
@@ -1105,23 +1144,86 @@ func (f clientFingerprint) equal(o clientFingerprint) bool {
 		sameStringSet(f.responseTypes, o.responseTypes) &&
 		sameStringSet(f.resources, o.resources) &&
 		f.identityFingerprint == o.identityFingerprint &&
-		f.public == o.public
+		f.public == o.public &&
+		f.reserved == o.reserved
+}
+
+// policyChanged reports whether the scopes or audience differ between f and
+// o, for the operator-visible warning when a configured client is replaced
+// with a different policy. Grant and response types are deliberately not
+// compared, so a grant-type change is replaced without the WARN. Delegate
+// grant types are fixed internally today, so in practice only scopes and
+// audience can change.
+func (f clientFingerprint) policyChanged(o clientFingerprint) bool {
+	return !sameStringSet(f.scopes, o.scopes) || !sameStringSet(f.audience, o.audience)
+}
+
+// configuredClientConflict decides whether incoming may replace existing at
+// the same client ID in ReconcileConfiguredClient, after the backend has
+// already refused DCR-issued rows. It returns nil to replace, or an
+// ErrAlreadyExists-wrapped error to refuse:
+//   - a reserved placeholder and a non-reserved client never replace each
+//     other, in either direction;
+//   - two reserved placeholders must match in full, because replicas rolling
+//     a placeholder's policy would otherwise authorize different resource
+//     sets (#6473);
+//   - two non-reserved clients replace each other freely, so a changed
+//     scope or audience rolls out on restart, except that a
+//     public/confidential flip is refused in either direction. Confidential
+//     to public would let refresh tokens issued to a confidential client be
+//     used without a secret; the reverse is refused to stay symmetric, since
+//     a class change is a different client.
+func configuredClientConflict(id string, existing, incoming clientFingerprint) error {
+	switch {
+	case existing.reserved != incoming.reserved:
+		if existing.reserved {
+			return fmt.Errorf("%w: client %q is already registered as a different configured client "+
+				"(the stored row is a SPIFFE-reserved placeholder)", ErrAlreadyExists, id)
+		}
+		return fmt.Errorf("%w: client %q is already registered as a different configured client "+
+			"(the incoming client is SPIFFE-reserved and the stored one is not)", ErrAlreadyExists, id)
+	case existing.reserved:
+		if !existing.equal(incoming) {
+			return fmt.Errorf("%w: client %q is already registered as a different configured client "+
+				"(SPIFFE-reserved clients must match exactly)", ErrAlreadyExists, id)
+		}
+	case existing.public != incoming.public:
+		return fmt.Errorf("%w: client %q is already registered as a different configured client "+
+			"(public and confidential clients cannot replace each other)", ErrAlreadyExists, id)
+	}
+	return nil
+}
+
+// warnConfiguredClientReplaced logs, after a successful replace, that a
+// configured client's scopes or audience changed. During a rolling update with
+// differing configs the replicas overwrite each other, so this is the
+// operator's signal for that flapping. Secrets are never logged.
+func warnConfiguredClientReplaced(id string, existing, incoming clientFingerprint) {
+	if !existing.policyChanged(incoming) {
+		return
+	}
+	slog.Warn("configured client replaced with a different policy",
+		"client_id", id,
+		"old_scopes", existing.scopes, "new_scopes", incoming.scopes,
+		"old_audiences", existing.audience, "new_audiences", incoming.audience)
 }
 
 // fingerprintOfClient reads a live fosite.Client. Safe here because a
 // deliberately-empty client is the live inertPlaceholderClient, whose
 // overridden getters correctly return nil on both sides of the comparison.
-// resources is read through resourceScopedClient (nil when a client type
-// doesn't implement it), the same narrow interface staticClientPlaceholder
-// and buildStoredClient use.
+// resources and identity are read only for a reserved placeholder, mirroring
+// buildStoredClient, so both backends compare the same inputs.
 func fingerprintOfClient(c fosite.Client) clientFingerprint {
+	reserved := isReservedPlaceholder(c)
 	var resources []string
 	var identityFingerprint string
-	if rc, ok := c.(resourceScopedClient); ok {
-		resources = rc.Resources()
-	}
-	if identity, ok := c.(spiffeIdentityClient); ok {
-		identityFingerprint = identity.IdentityFingerprint()
+	if reserved {
+		if rc, ok := c.(resourceScopedClient); ok {
+			resources = rc.Resources()
+		}
+		if identity, ok := c.(spiffeIdentityClient); ok {
+			identityFingerprint = identity.IdentityFingerprint()
+		}
 	}
 	return clientFingerprint{
 		scopes:              c.GetScopes(),
@@ -1131,6 +1233,7 @@ func fingerprintOfClient(c fosite.Client) clientFingerprint {
 		resources:           resources,
 		identityFingerprint: identityFingerprint,
 		public:              c.IsPublic(),
+		reserved:            reserved,
 	}
 }
 
@@ -1146,7 +1249,10 @@ type ClientRegistry interface {
 	// returns ErrAlreadyExists if a client with the same ID already exists,
 	// regardless of the new client's origin. Used by unauthenticated DCR
 	// (RFC 7591) and any other caller that must never silently overwrite an
-	// existing registration.
+	// existing registration. A client counted against the DCR cap (see
+	// ErrClientCapacity) is refused with a *ClientCapacityError when the cap
+	// is reached; decorators must propagate it. An existing ID is reported as
+	// ErrAlreadyExists before the cap is checked, on both backends.
 	RegisterClient(ctx context.Context, client fosite.Client) error
 
 	// UpsertDCRIssuedClient creates or replaces a DCR-issued client at
@@ -1159,32 +1265,43 @@ type ClientRegistry interface {
 	// is itself DCR-issued; refuses with ErrAlreadyExists if the existing row is
 	// NOT DCR-issued (protects a configured/SPIFFE-reconciled client from being
 	// clobbered). client MUST carry registration.DCRIssued -- refuses otherwise
-	// (mirrors ReconcileConfiguredClient's inverse check).
+	// (mirrors ReconcileConfiguredClient's inverse check). A client that would
+	// count against the DCR cap (DCR-issued with an ID that is not a CIMD URL)
+	// is refused too: it must go through RegisterClient, which enforces the cap.
 	UpsertDCRIssuedClient(ctx context.Context, client fosite.Client) error
 
 	// ReconcileConfiguredClient applies an operator-declared (configured)
-	// client: creates it if no client with that ID exists, or idempotently
-	// replaces an existing record with the same ID when that record is itself
-	// operator-declared AND has a matching fingerprint (scopes, audience,
-	// grant types, response types, public/confidential class) — the
-	// restart-with-unchanged-config case. It refuses with ErrAlreadyExists if
-	// the existing record is DCR-issued (registration.DCRIssued), or if it is
-	// a *different* configured client at that ID (fingerprint mismatch — a
-	// misconfiguration, e.g. two colliding associations). The passed client
+	// client: creates it if no client with that ID exists, or replaces the
+	// existing record. It refuses with ErrAlreadyExists when:
+	//   - the existing record is DCR-issued (registration.DCRIssued);
+	//   - one of the two is a reserved SPIFFE placeholder and the other is
+	//     not (they never replace each other);
+	//   - both are reserved placeholders and their full fingerprints differ
+	//     (scopes, audience, grant and response types, resources, identity).
+	//     SPIFFE clients are served from an in-process overlay, so the strict
+	//     check keeps replicas from authorizing different policies (#6473);
+	//   - both are non-reserved and one is public while the other is
+	//     confidential.
+	// Otherwise two non-reserved clients replace each other, so a changed
+	// scope or audience takes effect on restart. A replace that
+	// changes scopes or audience logs a WARN. The passed client
 	// must not itself carry the registration.DCRIssued marker;
 	// ReconcileConfiguredClient returns an error if it does.
 	ReconcileConfiguredClient(ctx context.Context, client fosite.Client) error
 
 	// RenewClientTTL extends the registration TTL of a DCR-issued client (public or
 	// confidential, gated on the registration.DCRIssued marker) so an actively-used
-	// client is not evicted mid-lifecycle and forced to re-register. Call it on a
+	// client does not expire mid-lifecycle and is not forced to re-register. Call it on a
 	// proven-use signal (e.g. a successful token exchange), NOT on an unauthenticated
 	// client read such as the /oauth/authorize lookup. Pre-provisioned/static clients
-	// carry no marker and this is a no-op for them on both backends. On the Redis
-	// backend this refreshes the key's sliding TTL; on the in-memory backend, which
-	// has no native TTL, this instead repositions the client to the back of the
-	// eviction order so it is not the next one dropped when WithMaxClients is reached.
-	// A renewal failure is non-fatal to the caller's primary operation.
+	// carry no marker and this is a no-op for them on both backends. Both backends
+	// set the client's expiry to DefaultDCRClientTTL from now, which also raises a
+	// newly registered client off its shorter DefaultUnusedDCRClientTTL. A client
+	// that no longer exists is left absent. A renewal failure is non-fatal to the
+	// caller's primary operation.
+	// CIMDStorageDecorator skips URL-shaped (CIMD) client ids: each successful
+	// fetch already resets the row's TTL, and not renewing keeps that TTL as the
+	// age bound for its token-endpoint persisted-row fallback.
 	RenewClientTTL(ctx context.Context, client fosite.Client) error
 }
 

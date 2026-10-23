@@ -82,6 +82,7 @@ Welcome to the ToolHive architecture documentation. This directory contains comp
    - Multi-tenancy via key prefixes
    - Atomic operations with Lua scripts
    - Configuration and security model
+   - Upstream subject identifiers (RFC 9493 `sub_id`) in access tokens
 
 10. **[Skills System](12-skills-system.md)**
     - Agent Skills lifecycle (discover, build, publish, install)
@@ -139,13 +140,15 @@ Welcome to the ToolHive architecture documentation. This directory contains comp
     - Confused-deputy trust model and the `may_act` / allowlist consent signals
     - Accepted limitations: client-set equivalence, disjoint subject namespaces, partial provenance
     - Operational gotchas: audience/scope binding, discovery redirects, JWKS caching, diagnostics
+    - RFC 9396 `authorization_details` on token exchange: Go-only type registry, validation and echo
 
 18. **[SPIFFE Association Declarations](18-spiffe-association-declarations.md)**
-    - Not yet deployable: rejected at startup pending real SVID verification
-    - Configuration-only SPIFFE trust, association, and static-client model
-    - JWT-SVID client-authentication dispatch and validation logic implemented but not yet wired to a trust bundle source
+    - SPIFFE configuration remains rejected at startup; the feature is not yet deployable
+    - Auth-server TLS listener runs on the proxy runner and vMCP at fixed port 8443; operator configuration/exposure is unsupported
+    - File-bundle source and `newServer` X.509/JWT bundle wiring are present but unreachable through normal SPIFFE startup
+    - JWT-SVID validation logic exists; X.509-SVID verification remains unimplemented
     - Fail-closed policy validation and durable, restart-safe static-client reservation
-    - X.509-SVID validation, trust-bundle loading, and SPIFFE grant/discovery integration remain pending
+    - Endpoint/Workload API loading and SPIFFE method integration with grants or discovery remain pending
 
 ### Existing Documentation
 

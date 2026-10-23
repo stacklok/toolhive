@@ -53,6 +53,9 @@ func (cm *ClientManager) ConfigureLLMGateway(clientType ClientApp, cfg llmgatewa
 	if appCfg.LLMGatewayMode == llmgateway.ModeCodexAuth {
 		return cm.configureCodexAuth(appCfg, cfg)
 	}
+	if appCfg.LLMGatewayMode == llmgateway.ModePi {
+		return cm.configurePi(appCfg, cfg)
+	}
 	if appCfg.LLMGatewayMode == llmgateway.ModeVSCode {
 		return cm.configureVSCode(appCfg, cfg)
 	}
@@ -191,6 +194,9 @@ func (cm *ClientManager) RevertLLMGateway(clientType ClientApp, configPath strin
 	// Codex reverts via its dedicated TOML writer.
 	if appCfg.LLMGatewayMode == llmgateway.ModeCodexAuth {
 		return cm.revertCodexAuth(appCfg, configPath)
+	}
+	if appCfg.LLMGatewayMode == llmgateway.ModePi {
+		return cm.revertPi(appCfg, configPath)
 	}
 	if appCfg.LLMGatewayMode == llmgateway.ModeVSCode {
 		return cm.revertVSCode(appCfg, configPath)
@@ -429,12 +435,13 @@ func claudeCodeManagedSettingsDir(goos string) string {
 	}
 }
 
-// IsManaged reports whether an MDM/managed-preferences profile is present for
-// the given client. When true, the client reads config from the managed profile
-// and ignores the local config "thv llm setup" writes, so setup warns the user.
+// IsManaged reports whether a managed configuration source (an MDM profile on
+// macOS, a managed settings file on Linux) is present for the given client.
+// When true, the client reads config from the managed source and ignores the
+// local config "thv llm setup" writes, so setup warns the user.
 func (cm *ClientManager) IsManaged(clientType ClientApp) bool {
 	cfg := cm.lookupClientAppConfig(clientType)
-	return cfg != nil && managedProfilePresent(cfg.LLMManagedProfileDomain)
+	return cfg != nil && managedProfilePresent(cfg)
 }
 
 // LLMGatewayModeFor returns the client's configured gateway integration mode,
@@ -541,8 +548,12 @@ func (cm *ClientManager) LLMClientDetectionHint(clientType ClientApp) string {
 }
 
 // buildLLMSettingsPath resolves the absolute path to the LLM settings file
-// for the given client using the same PlatformPrefix logic as MCP config paths.
+// for the given client using the same PlatformPrefix logic as MCP config paths,
+// honoring cfg.ConfigDirEnvVar when it is set.
 func (cm *ClientManager) buildLLMSettingsPath(cfg *clientAppConfig) string {
+	if dir := cm.configDirOverride(cfg); dir != "" {
+		return filepath.Join(dir, cfg.LLMSettingsFile)
+	}
 	return buildConfigFilePath(
 		cfg.LLMSettingsFile,
 		cfg.LLMSettingsRelPath,
@@ -614,6 +625,8 @@ func resolveBedrockField(valueField string, cfg llmgateway.ApplyConfig) (string,
 		v = cfg.BedrockOpusModel
 	case "BedrockSonnetModel":
 		v = cfg.BedrockSonnetModel
+	case "BedrockFableModel":
+		v = cfg.BedrockFableModel
 	default:
 		return "", false
 	}

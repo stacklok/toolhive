@@ -422,46 +422,80 @@ map.
 The embedded auth server's own `refresh_token` grant keeps the token session
 (`tsid`). A refreshed access token therefore points at the same upstream
 credential. If that credential is dead, the bearer validator answers 401
-again, and a client that only ever refreshes loops. `Config.RefreshGrantHandlers`
-lets an embedder refuse such a grant. The handlers run in order, only on the
-`refresh_token` grant, after fosite's built-in refresh handler has
-authenticated the client and loaded the refresh session. They run before any
-tokens are issued or the refresh token is rotated. Returning
-`fosite.ErrInvalidGrant` answers HTTP 400 `invalid_grant`, which pushes the
-client into a full authorization that creates a new `tsid`. Another fosite
-error keeps its own status and code, and a plain Go error answers HTTP 500.
-Only the handlers' request phase is delegated:
-their response phase and client-authentication skip are never called, so the
-seam can refuse a grant but not change what is issued. All handlers are
-registered as one fosite handler, because fosite drops a second handler of
-the same concrete type.
+again, and a client that only ever refreshes loops. A built-in upstream
+refresh guard breaks the loop by default (see below). Beyond it,
+`Config.RefreshGrantHandlers` lets an embedder add its own refresh-grant
+checks. The guard and the handlers run in order, only on the `refresh_token`
+grant, after fosite's built-in refresh handler has authenticated the client
+and loaded the refresh session. They run before any tokens are issued or the
+refresh token is rotated. Returning `fosite.ErrInvalidGrant` answers HTTP 400
+`invalid_grant`, which pushes the client into a full authorization that
+creates a new `tsid`. Another fosite error keeps its own status and code, and
+a plain Go error answers HTTP 500. Only the request phase is delegated: the
+response phase and client-authentication skip are never called, so the seam
+can refuse a grant but not change what is issued. The guard and the
+handlers are registered as one fosite handler, because fosite drops a second
+handler of the same concrete type.
 
-A built-in upstream refresh guard is registered by default whenever at least
-one upstream is configured, ahead of the embedder's handlers, which therefore
-see only grants it accepted. It refuses the grant with `invalid_grant`, and
-revokes the refresh token and the grant's access tokens, when the token
-session's upstream credential is definitively dead:
+#### Upstream refresh guard
 
-- the session has no upstream rows, or none holds an access token, or
-- a row's access token is expired and its provider is no longer configured,
-  so nothing can refresh it, or
-- a row's access token is expired and the row has no refresh token, or
-- the IdP rejects the row's refresh with `invalid_grant`
-  (`upstream.ErrGrantRejected`).
+The guard is registered whenever at least one upstream is configured, ahead
+of the embedder's handlers, which therefore see only grants it accepted. It
+refuses the grant with `invalid_grant` when the token session's upstream
+credential is definitively dead. This is the canonical list; the code and the
+other docs link here.
+
+| Cause | Refresh token revoked |
+|---|---|
+| The session has no readable upstream rows | No |
+| Rows exist but none holds an access token | Yes |
+| A row's access token is expired and its provider is no longer configured, so nothing can refresh it | Yes |
+| A row's access token is expired and the row has no refresh token | Yes |
+| The row was deleted while the guard refreshed it | No |
+| The IdP rejects the row's refresh with `invalid_grant` (`upstream.ErrGrantRejected`) | No |
+
+A revoking refusal also revokes the grant's access tokens, as an RFC 7009
+revocation of the refresh token would. It applies only when the stored rows
+prove the credential can never be used again. The other refusals keep the
+refresh token, because their cause could be wrong: a rotating IdP also
+answers `invalid_grant` to a replica that lost a refresh race, and Redis's
+bulk read skips a row it cannot parse (for example one written by another
+version during a rolling upgrade) and reports none. If such a refusal is
+wrong, the client's next refresh succeeds; otherwise it is refused again.
 
 The guard refreshes an expired row through the shared refresher before
-deciding. Upstream refresh is otherwise lazy, so an idle client's stored token
-is often expired while its upstream refresh token still works, and refusing on
-stored state alone would force every idle client to sign in again. A transient
-failure (network, 5xx, 429, storage) grants the refresh, since the bearer
-validator answers those with 503 or a retryable 401 anyway. To tolerate the
-lost-race window described above, the guard does not refuse on the first
-rejection: it waits briefly (500ms) and re-reads the row, and a row now holding
-a different, unexpired refresh token counts as live. A recheck that cannot
-complete (the request is cancelled, or the read fails) is treated as uncertain,
-so the grant is not refused and nothing is revoked. A session without a `tsid`
-(a session-less grant) is not checked. `Config.DisableUpstreamRefreshGuard`
-turns the guard off.
+deciding, one provider at a time. Upstream refresh is otherwise lazy, so an
+idle client's stored token is often expired while its upstream refresh token
+still works, and refusing on stored state alone would force every idle client
+to sign in again. Any other outcome is uncertain and grants the refresh, since
+the bearer validator answers those with 503 or a retryable 401 anyway:
+
+- a transient upstream failure (network, 5xx, 429);
+- a storage error;
+- the request being cancelled; or
+- the check running past its 10-second budget. A refresh still in flight then
+  completes in the background and stores its result.
+
+To tolerate the lost-race window described above, the guard does not refuse
+on the first rejection. It waits briefly (500ms) and re-reads the row, and a
+row now holding any different refresh token counts as live. This is a
+heuristic: a winner whose write lands after the wait is missed, and the
+client is refused once, but keeps its refresh token. A recheck that cannot
+complete (the request is cancelled, or the read fails) is uncertain too. A
+session without a `tsid` (a session-less grant) is not checked.
+
+**Upgrade impact.** The guard is on by default. After an upgrade, a session
+whose upstream credential is already dead is refused on its first refresh
+instead of looping. A refresh token's useful life is now also bounded by the
+upstream credential's liveness, even in a deployment whose resource server
+never reads upstream tokens: once the upstream refresh token stops working,
+the client signs in again.
+
+**Opt-out.** `Config.DisableUpstreamRefreshGuard` turns the guard off. It is
+available only to Go embedders of `pkg/authserver`; the RunConfig, CLI and
+operator CRDs do not expose it, so `thv`, vMCP and the operator always run the
+guard. Exposing the switch is tracked in
+[#6931](https://github.com/stacklok/toolhive/issues/6931).
 
 ### Serialization
 

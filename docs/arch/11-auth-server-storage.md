@@ -434,7 +434,30 @@ Only the handlers' request phase is delegated:
 their response phase and client-authentication skip are never called, so the
 seam can refuse a grant but not change what is issued. All handlers are
 registered as one fosite handler, because fosite drops a second handler of
-the same concrete type. No handler is registered by default.
+the same concrete type.
+
+A built-in upstream refresh guard is registered by default whenever at least
+one upstream is configured, ahead of the embedder's handlers, which therefore
+see only grants it accepted. It refuses the grant with `invalid_grant`, and
+revokes the refresh token and the grant's access tokens, when the token
+session's upstream credential is definitively dead:
+
+- the session has no upstream rows, or
+- a row's access token is expired and the row has no refresh token, or
+- the IdP rejects the row's refresh with `invalid_grant`
+  (`upstream.ErrGrantRejected`).
+
+The guard refreshes an expired row through the shared refresher before
+deciding. Upstream refresh is otherwise lazy, so an idle client's stored token
+is often expired while its upstream refresh token still works, and refusing on
+stored state alone would force every idle client to sign in again. A transient
+failure (network, 5xx, 429, storage) grants the refresh, since the bearer
+validator answers those with 503 or a retryable 401 anyway. To tolerate the
+lost-race window described above, the guard does not refuse on the first
+rejection: it waits briefly (500ms) and re-reads the row, and a row now holding
+a different, unexpired refresh token counts as live. A session without a
+`tsid` (a session-less grant) is not checked. `Config.DisableUpstreamRefreshGuard`
+turns the guard off.
 
 ### Serialization
 

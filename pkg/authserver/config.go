@@ -1295,7 +1295,27 @@ type Config struct {
 	// returns, for example by wrapping UpstreamTokenRefresher and
 	// IDPTokenStorage in a service it holds a pointer to. A nil entry,
 	// including a nil pointer of a concrete type, is rejected by Validate.
+	//
+	// These handlers run after the built-in upstream refresh guard (see
+	// DisableUpstreamRefreshGuard), so they see only grants it accepted.
 	RefreshGrantHandlers []fosite.TokenEndpointHandler
+
+	// DisableUpstreamRefreshGuard turns off the built-in refresh-grant guard.
+	// When on (the default, with at least one upstream configured), a
+	// refresh_token grant is refused with invalid_grant, and its refresh token
+	// and access tokens revoked, when the token session's upstream credential
+	// is definitively dead: the session has no upstream rows, or a row's access
+	// token is expired and it either has no refresh token or the IdP rejects
+	// its refresh with invalid_grant. The guard refreshes an expired row before
+	// deciding, so an idle session whose upstream refresh succeeds is granted.
+	// A transient failure (network, 5xx, storage) grants the refresh.
+	//
+	// Without the guard, a refreshed access token keeps the token session and
+	// therefore its dead upstream credential, so a client that answers the
+	// bearer validator's 401 by refreshing loops. The refusal sends it to a
+	// full authorization instead. A refresh grant that finds an expired row
+	// makes an upstream refresh call before tokens are issued.
+	DisableUpstreamRefreshGuard bool
 
 	// UpstreamFilter, when set, narrows the upstream authorization chain after the
 	// first leg resolves (see handlers.WithUpstreamFilter). When nil, all

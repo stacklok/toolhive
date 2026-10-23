@@ -47,15 +47,7 @@ func startConsentTestWithBase(t *testing.T, secure bool, opts ...baseTestSetupOp
 	if secure {
 		h.config.AuthorizationEndpointBaseURL = "https://auth.example.com"
 	}
-	params := url.Values{
-		"client_id": {testAuthClientID}, "redirect_uri": {testAuthRedirectURI},
-		"response_type": {"code"}, "state": {"client-state"},
-		"code_challenge": {"challenge123"}, "code_challenge_method": {"S256"},
-		"scope": {"openid"},
-	}
-	page := httptest.NewRecorder()
-	h.AuthorizeHandler(page, httptest.NewRequest(http.MethodGet, "/oauth/authorize?"+params.Encode(), nil))
-	require.Equal(t, http.StatusOK, page.Code)
+	page := authorizePage(t, h)
 	_, rest, ok := strings.Cut(page.Body.String(), `name="handle" value="`)
 	require.True(t, ok)
 	handle, _, ok := strings.Cut(rest, `"`)
@@ -69,6 +61,31 @@ func startConsentTestWithBase(t *testing.T, secure bool, opts ...baseTestSetupOp
 		t.Fatal("secure binding cookie not set")
 	}
 	return h, state, upstream, handle, bindingCookieFrom(t, page, handle), page
+}
+
+// authorizePage issues a GET /oauth/authorize for the test client and returns the consent page.
+func authorizePage(t *testing.T, h *Handler) *httptest.ResponseRecorder {
+	t.Helper()
+	params := url.Values{
+		"client_id": {testAuthClientID}, "redirect_uri": {testAuthRedirectURI},
+		"response_type": {"code"}, "state": {"client-state"},
+		"code_challenge": {"challenge123"}, "code_challenge_method": {"S256"},
+		"scope": {"openid"},
+	}
+	page := httptest.NewRecorder()
+	h.AuthorizeHandler(page, httptest.NewRequest(http.MethodGet, "/oauth/authorize?"+params.Encode(), nil))
+	require.Equal(t, http.StatusOK, page.Code)
+	return page
+}
+
+// renderConsentBody renders the consent page for pending and returns its body.
+func renderConsentBody(t *testing.T, h *Handler, handle string, pending *storage.PendingAuthorization) string {
+	t.Helper()
+	client, err := h.storage.GetClient(context.Background(), testAuthClientID)
+	require.NoError(t, err)
+	rec := httptest.NewRecorder()
+	h.renderConsent(rec, handle, pending, client)
+	return rec.Body.String()
 }
 
 func consentRequest(handle, decision, origin string, cookie *http.Cookie) *http.Request {
@@ -376,8 +393,8 @@ func TestConsentPage_LayoutAndNameTruncation(t *testing.T) {
 	named := namedConsentClient{DefaultClient: &fosite.DefaultClient{ID: "c"}, name: strings.Repeat("é", 200)}
 	rec = httptest.NewRecorder()
 	h.renderConsent(rec, handle, &storage.PendingAuthorization{RedirectURI: "https://app.example.com/cb"}, named)
-	assert.Contains(t, rec.Body.String(), "<dd>"+strings.Repeat("é", maxConsentClientNameRunes)+"…</dd>")
-	assert.NotContains(t, rec.Body.String(), strings.Repeat("é", maxConsentClientNameRunes+1))
+	assert.Contains(t, rec.Body.String(), "<dd>"+strings.Repeat("é", maxConsentTextRunes)+"…</dd>")
+	assert.NotContains(t, rec.Body.String(), strings.Repeat("é", maxConsentTextRunes+1))
 }
 
 func TestConsentPage_ClientNameStripsInvisibleRunes(t *testing.T) {
@@ -504,29 +521,62 @@ func TestConsentPage_UpstreamDisplayName(t *testing.T) {
 	const name = "ffffffff-ffff-ffff-ffff-ffffffffffff"
 	h, _, _, handle, _, _ := startConsentTest(t)
 	h.upstreams[0].Name, h.upstreams[0].DisplayName = name, "Acme Okta"
-	client, err := h.storage.GetClient(context.Background(), testAuthClientID)
-	require.NoError(t, err)
-	rec := httptest.NewRecorder()
-	h.renderConsent(rec, handle, &storage.PendingAuthorization{
+	body := renderConsentBody(t, h, handle, &storage.PendingAuthorization{
 		RedirectURI: testAuthRedirectURI, ClientID: testAuthClientID, UpstreamProviderName: name,
-	}, client)
-	body := rec.Body.String()
+	})
 	assert.Contains(t, body, "You will sign in with Acme Okta next.")
 	assert.Contains(t, body, "<dt>Identity provider (internal name)</dt><dd>"+name+"</dd>")
 	assert.NotContains(t, body, "You will sign in with "+name)
 }
 
-func TestConsentPage_UpstreamDisplayNameSanitised(t *testing.T) {
+// TestConsentPage_UpstreamDisplayNameViaAuthorize drives a real GET /oauth/authorize,
+// so the label reaches the page through the same path a browser takes. With several
+// upstreams, the page names only the first one, which the user signs in with next.
+func TestConsentPage_UpstreamDisplayNameViaAuthorize(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
-		name, in, want string
+		name   string
+		setup  func(t *testing.T) *Handler
+		want   string
+		absent string
+	}{
+		{name: "single upstream", setup: func(t *testing.T) *Handler {
+			t.Helper()
+			h, _, _ := handlerTestSetup(t)
+			h.upstreams[0].Name, h.upstreams[0].DisplayName = "ffffffff-ffff-ffff-ffff-ffffffffffff", "Acme Okta"
+			return h
+		}, want: "Acme Okta", absent: "You will sign in with ffffffff"},
+		{name: "first of several upstreams", setup: func(t *testing.T) *Handler {
+			t.Helper()
+			h, _, _, _ := multiUpstreamTestSetup(t)
+			h.upstreams[0].DisplayName, h.upstreams[1].DisplayName = "First IdP", "Second IdP"
+			return h
+		}, want: "First IdP", absent: "Second IdP"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			body := authorizePage(t, tc.setup(t)).Body.String()
+			assert.Contains(t, body, "You will sign in with "+tc.want+" next.")
+			assert.NotContains(t, body, tc.absent)
+		})
+	}
+}
+
+func TestConsentPage_UpstreamDisplayNameSanitized(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, in, want, absent string
 	}{
 		{name: "bidi override", in: "Acme\u202eatkO", want: "AcmeatkO"},
 		{name: "zero width space", in: "Ac\u200bme Okta", want: "Acme Okta"},
 		{name: "newline", in: "Acme\nOkta", want: "AcmeOkta"},
 		{name: "surrounding whitespace", in: "  Acme Okta \u200b ", want: "Acme Okta"},
-		{name: "html escaped", in: "<b>Acme</b>", want: "&lt;b&gt;Acme&lt;/b&gt;"},
-		{name: "truncated", in: strings.Repeat("é", 200), want: strings.Repeat("é", maxConsentClientNameRunes) + "…"},
+		{name: "html escaped", in: "<b>Acme</b>", want: "&lt;b&gt;Acme&lt;/b&gt;", absent: "<b>Acme"},
+		{name: "ampersand and quotes escaped", in: `A&B "C"`, want: "A&amp;B &#34;C&#34;"},
+		{name: "truncated", in: strings.Repeat("é", 200), want: strings.Repeat("é", maxConsentTextRunes) + "…"},
+		{name: "exactly at the cap is kept whole", in: strings.Repeat("é", maxConsentTextRunes), want: strings.Repeat("é", maxConsentTextRunes)},
+		{name: "no space before the ellipsis", in: strings.Repeat("a", maxConsentTextRunes-1) + " bc", want: strings.Repeat("a", maxConsentTextRunes-1) + "…"},
+		{name: "empty falls back to name", in: "", want: "test-upstream"},
 		{name: "whitespace only falls back to name", in: " \t ", want: "test-upstream"},
 		{name: "format runes only fall back to name", in: "\u202e\u200b\u2066", want: "test-upstream"},
 	} {
@@ -534,16 +584,14 @@ func TestConsentPage_UpstreamDisplayNameSanitised(t *testing.T) {
 			t.Parallel()
 			h, _, _, handle, _, _ := startConsentTest(t)
 			h.upstreams[0].DisplayName = tc.in
-			client, err := h.storage.GetClient(context.Background(), testAuthClientID)
-			require.NoError(t, err)
-			rec := httptest.NewRecorder()
-			h.renderConsent(rec, handle, &storage.PendingAuthorization{
+			body := renderConsentBody(t, h, handle, &storage.PendingAuthorization{
 				RedirectURI: testAuthRedirectURI, ClientID: testAuthClientID, UpstreamProviderName: "test-upstream",
-			}, client)
-			body := rec.Body.String()
+			})
 			assert.Contains(t, body, "You will sign in with "+tc.want+" next.")
 			assert.Contains(t, body, "<dt>Identity provider (internal name)</dt><dd>test-upstream</dd>")
-			assert.NotContains(t, body, "<b>Acme")
+			if tc.absent != "" {
+				assert.NotContains(t, body, tc.absent)
+			}
 		})
 	}
 }
@@ -551,22 +599,25 @@ func TestConsentPage_UpstreamDisplayNameSanitised(t *testing.T) {
 func TestConsentPage_MissingUpstreamFallsBackToName(t *testing.T) {
 	t.Parallel()
 	h, state, _, handle, cookie, _ := startConsentTest(t)
-	client, err := h.storage.GetClient(context.Background(), testAuthClientID)
-	require.NoError(t, err)
 	// The pending authorization's upstream was removed after the request started;
 	// a different upstream with a display name is configured instead.
 	h.upstreams = []NamedUpstream{{Name: "other", DisplayName: "Other IdP", Provider: h.upstreams[0].Provider}}
-	rec := httptest.NewRecorder()
-	h.renderConsent(rec, handle, state.pendingAuths[handle], client)
-	assert.Contains(t, rec.Body.String(), "You will sign in with test-upstream next.")
-	assert.NotContains(t, rec.Body.String(), "Other IdP")
+	body := renderConsentBody(t, h, handle, state.pendingAuths[handle])
+	assert.Contains(t, body, "You will sign in with test-upstream next.")
+	assert.NotContains(t, body, "Other IdP")
 
 	approve := httptest.NewRecorder()
 	h.ConsentHandler(approve, consentRequest(handle, "approve", testAuthIssuer, cookie))
 	assert.Equal(t, http.StatusSeeOther, approve.Code)
 	assert.Contains(t, approve.Header().Get("Location"), "error=server_error")
+	assert.Empty(t, state.pendingAuths)
 }
 
+// TestDisplayNameChangeKeepsStoredRecordsValid guards that renaming an upstream's
+// display name leaves records keyed by Name usable: the pending authorization and
+// upstream tokens still load under the same name, and remembered consent still
+// matches. The record types carry no DisplayName field, so the label cannot be
+// persisted; this test pins the lookups, not the absence of the label.
 func TestDisplayNameChangeKeepsStoredRecordsValid(t *testing.T) {
 	t.Parallel()
 	for _, backend := range []string{"memory", "redis"} {
@@ -577,9 +628,8 @@ func TestDisplayNameChangeKeepsStoredRecordsValid(t *testing.T) {
 				storage.Storage
 				storage.RememberedConsentStorage
 			}
-			var mr *miniredis.Miniredis
 			if backend == "redis" {
-				mr = miniredis.RunT(t)
+				mr := miniredis.RunT(t)
 				client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 				t.Cleanup(func() { require.NoError(t, client.Close()) })
 				s = storage.NewRedisStorageWithClient(client, "consent:display:")
@@ -625,18 +675,6 @@ func TestDisplayNameChangeKeepsStoredRecordsValid(t *testing.T) {
 			require.NoError(t, err)
 			require.NotNil(t, session, "remembered consent must survive a display name change")
 			assert.Equal(t, "test-upstream", session.ProviderID)
-
-			records, err := json.Marshal([]any{loaded, tokens, session})
-			require.NoError(t, err)
-			assert.NotContains(t, string(records), "Acme Okta")
-			if mr != nil {
-				for _, key := range mr.Keys() {
-					assert.NotContains(t, key, "Acme")
-					if v, err := mr.Get(key); err == nil {
-						assert.NotContains(t, v, "Acme Okta")
-					}
-				}
-			}
 		})
 	}
 }

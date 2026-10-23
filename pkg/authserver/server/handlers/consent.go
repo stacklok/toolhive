@@ -28,7 +28,7 @@ import (
 type consentPageData struct {
 	Handle, ActionURL, Destination, Summary, RedirectURI, ClientID, ClientName, Resource string
 	// Upstream is the upstream's name (its routing and storage key); UpstreamDisplay
-	// is the sanitised label shown in the "You will sign in with" line.
+	// is the sanitized label shown in the "You will sign in with" line.
 	Upstream, UpstreamDisplay string
 	Scopes                    []string
 	CanRemember               bool
@@ -64,7 +64,8 @@ func formatDays(d time.Duration) string {
 	return strconv.Itoa(n) + " " + unit
 }
 
-const maxConsentClientNameRunes = 80
+// maxConsentTextRunes caps the client name and upstream label shown on the consent page.
+const maxConsentTextRunes = 80
 
 var consentPageTemplate = template.Must(template.New("consent").Parse(`<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
@@ -135,18 +136,20 @@ func displayClientName(name string) string {
 	}, name)
 }
 
-// truncateConsentText caps s at maxConsentClientNameRunes, marking a cut with an ellipsis.
+// truncateConsentText keeps at most maxConsentTextRunes runes of s and appends an
+// ellipsis when it cuts, trimming any whitespace left before the ellipsis.
 func truncateConsentText(s string) string {
-	if r := []rune(s); len(r) > maxConsentClientNameRunes {
-		return string(r[:maxConsentClientNameRunes]) + "…"
+	if r := []rune(s); len(r) > maxConsentTextRunes {
+		return strings.TrimRightFunc(string(r[:maxConsentTextRunes]), unicode.IsSpace) + "…"
 	}
 	return s
 }
 
 // upstreamDisplayName returns the label for the named upstream on the consent page:
-// its sanitised DisplayName when the upstream is still configured and has one,
-// otherwise the name itself. The label is resolved at render time so a swapped
-// upstream set shows the current value; it is display-only and never a key.
+// its sanitized DisplayName when the upstream is still configured and has one,
+// otherwise the name itself. The label is resolved at render time from this
+// handler's upstream list, so a handler rebuilt with a different upstream set shows
+// the current value; it is display-only and never a key.
 func (h *Handler) upstreamDisplayName(name string) string {
 	for i := range h.upstreams {
 		if h.upstreams[i].Name != name {
@@ -155,7 +158,7 @@ func (h *Handler) upstreamDisplayName(name string) string {
 		if label := strings.TrimSpace(displayClientName(h.upstreams[i].DisplayName)); label != "" {
 			return truncateConsentText(label)
 		}
-		break
+		return name
 	}
 	return name
 }

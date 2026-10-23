@@ -607,18 +607,30 @@ func buildProvider(
 		factories = append(factories, deviceFlowFactory)
 	}
 	// Refresh-grant validators go last so each runs after the built-in refresh
-	// handler has validated the grant. The upstream refresh guard runs before
-	// the embedder's handlers.
-	refreshGrantHandlers := cfg.RefreshGrantHandlers
-	if guard := newUpstreamRefreshGuard(cfg.DisableUpstreamRefreshGuard, stor, refresher); guard != nil {
-		refreshGrantHandlers = append([]fosite.TokenEndpointHandler{guard}, refreshGrantHandlers...)
-	}
-	factories = append(factories, refreshGrantHandlerFactories(refreshGrantHandlers)...)
+	// handler has validated the grant.
+	factories = append(factories, refreshGrantHandlerFactories(refreshGrantValidatorChain(cfg, stor, refresher))...)
 	provider, err := createProvider(authServerConfig, stor, factories...)
 	if err != nil {
 		return nil, nil, err
 	}
 	return provider, shared, nil
+}
+
+// refreshGrantValidatorChain returns the refresh-grant validators in run
+// order: the built-in upstream refresh guard (unless disabled or there are no
+// upstreams), then the embedder's Config.RefreshGrantHandlers.
+func refreshGrantValidatorChain(
+	cfg Config, stor storage.Storage, refresher storage.UpstreamTokenRefresher,
+) []fosite.TokenEndpointHandler {
+	upstreamNames := make([]string, len(cfg.Upstreams))
+	for i := range cfg.Upstreams {
+		upstreamNames[i] = cfg.Upstreams[i].Name
+	}
+	guard := newUpstreamRefreshGuard(cfg.DisableUpstreamRefreshGuard, stor, refresher, upstreamNames)
+	if guard == nil {
+		return cfg.RefreshGrantHandlers
+	}
+	return append([]fosite.TokenEndpointHandler{guard}, cfg.RefreshGrantHandlers...)
 }
 
 // buildJWTBearerFactories builds the RFC 7523 JWT-bearer factory together

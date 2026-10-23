@@ -38,11 +38,17 @@ const guardRevokeTimeout = 5 * time.Second
 // refreshes would loop. Refusing with invalid_grant sends the client to a full
 // authorization, which creates a new tsid with fresh upstream rows.
 //
-// A credential is definitively dead when the session has no upstream rows, or
-// a row is expired and either has no refresh token or the IdP rejected its
-// refresh with invalid_grant (upstream.ErrGrantRejected). Any other failure
-// (network, 5xx, storage) is transient and the grant goes through: the bearer
-// validator answers those with 503 or a retryable 401 anyway.
+// A credential is definitively dead when:
+//   - the session has no upstream rows, or none holds an access token;
+//   - a row is expired and its provider is no longer configured, so nothing
+//     can refresh it;
+//   - a row is expired and has no refresh token; or
+//   - the IdP rejected a row's refresh with invalid_grant
+//     (upstream.ErrGrantRejected).
+//
+// Any other failure (network, 5xx, storage) is transient and the grant goes
+// through: the bearer validator answers those with 503 or a retryable 401
+// anyway.
 //
 // Expired rows are refreshed before deciding, because upstream refresh is lazy
 // (it runs only on a resource request). An idle client's stored token is often
@@ -58,6 +64,7 @@ const guardRevokeTimeout = 5 * time.Second
 type upstreamRefreshGuard struct {
 	tokens       storage.UpstreamTokenStorage
 	refresher    storage.UpstreamTokenRefresher
+	providers    map[string]struct{}
 	revoker      oauth2.TokenRevocationStorage
 	recheckDelay time.Duration
 }
@@ -66,16 +73,21 @@ var _ fosite.TokenEndpointHandler = (*upstreamRefreshGuard)(nil)
 
 // newUpstreamRefreshGuard returns the guard, or nil when it is disabled or
 // there is no refresher (no upstreams are configured, so no session has
-// upstream rows to check).
+// upstream rows to check). providerNames are the configured upstreams.
 func newUpstreamRefreshGuard(
-	disabled bool, stor storage.Storage, refresher storage.UpstreamTokenRefresher,
+	disabled bool, stor storage.Storage, refresher storage.UpstreamTokenRefresher, providerNames []string,
 ) *upstreamRefreshGuard {
 	if disabled || refresher == nil {
 		return nil
 	}
+	providers := make(map[string]struct{}, len(providerNames))
+	for _, name := range providerNames {
+		providers[name] = struct{}{}
+	}
 	return &upstreamRefreshGuard{
 		tokens:       stor,
 		refresher:    refresher,
+		providers:    providers,
 		revoker:      stor,
 		recheckDelay: rejectionRecheckDelay,
 	}
@@ -131,41 +143,81 @@ func (*upstreamRefreshGuard) PopulateTokenEndpointResponse(
 
 // deadUpstream returns a non-empty reason, and the provider it applies to (if
 // any), when the session's upstream credential is definitively dead. It
-// returns an empty reason when every row is live or its state is uncertain.
+// returns an empty reason when some row is usable or its state is uncertain.
 // Rows are checked in provider-name order and checking stops at the first dead
-// one, so a refusal costs no further upstream refreshes.
+// one, so a refusal costs no further upstream refreshes. The bearer validator
+// answers a session without any upstream access token with 401, so a session
+// with no usable row is dead too.
 func (g *upstreamRefreshGuard) deadUpstream(ctx context.Context, tsid string) (provider, reason string) {
 	rows, err := g.tokens.GetAllUpstreamTokens(ctx, tsid)
 	if err != nil {
 		slog.DebugContext(ctx, "refresh grant guard could not read upstream tokens; granting", "error", err)
 		return "", ""
 	}
-	if len(rows) == 0 {
-		return "", "no upstream credential stored"
-	}
+	usable := false
 	for _, name := range slices.Sorted(maps.Keys(rows)) {
-		row := rows[name]
-		if row == nil || !row.IsExpired(time.Now()) {
-			continue
+		state, reason := g.checkRow(ctx, tsid, name, rows[name])
+		switch state {
+		case rowDead:
+			return name, reason
+		case rowUsable:
+			usable = true
+		case rowUnusable:
 		}
-		if row.RefreshToken == "" {
-			return name, "upstream access token expired and no refresh token is stored"
-		}
-		_, err := g.refresher.RefreshAndStore(ctx, tsid, row)
-		if err == nil {
-			continue
-		}
-		if !errors.Is(err, upstream.ErrGrantRejected) {
-			slog.DebugContext(ctx, "upstream refresh failed transiently; refresh grant guard is not refusing",
-				"provider_id", name, "error", err)
-			continue
-		}
-		if !g.rejectionStands(ctx, tsid, name, row.RefreshToken) {
-			continue
-		}
-		return name, "upstream refresh was rejected with invalid_grant"
+	}
+	if !usable {
+		return "", "no upstream access token stored"
 	}
 	return "", ""
+}
+
+// rowState is the guard's verdict on one upstream row.
+type rowState int
+
+const (
+	// rowUnusable holds no access token but is not dead on its own.
+	rowUnusable rowState = iota
+	// rowUsable holds an access token after any refresh, or its state is
+	// uncertain (a transient failure), which the guard does not refuse.
+	rowUsable
+	// rowDead can never yield an access token again.
+	rowDead
+)
+
+// checkRow classifies one upstream row, refreshing it first when it is
+// expired. A dead row comes with the reason it is dead.
+func (g *upstreamRefreshGuard) checkRow(
+	ctx context.Context, tsid, name string, row *storage.UpstreamTokens,
+) (rowState, string) {
+	if row == nil {
+		return rowUnusable, ""
+	}
+	if !row.IsExpired(time.Now()) {
+		if row.AccessToken == "" {
+			return rowUnusable, ""
+		}
+		return rowUsable, ""
+	}
+	if _, ok := g.providers[name]; !ok {
+		return rowDead, "upstream access token expired and its provider is no longer configured"
+	}
+	if row.RefreshToken == "" {
+		return rowDead, "upstream access token expired and no refresh token is stored"
+	}
+	refreshed, err := g.refresher.RefreshAndStore(ctx, tsid, row)
+	switch {
+	case err == nil && (refreshed == nil || refreshed.AccessToken == ""):
+		return rowUnusable, ""
+	case err == nil:
+		return rowUsable, ""
+	case !errors.Is(err, upstream.ErrGrantRejected):
+		slog.DebugContext(ctx, "upstream refresh failed transiently; refresh grant guard is not refusing",
+			"provider_id", name, "error", err)
+		return rowUsable, ""
+	case !g.rejectionStands(ctx, tsid, name, row.RefreshToken):
+		return rowUsable, ""
+	}
+	return rowDead, "upstream refresh was rejected with invalid_grant"
 }
 
 // rejectionStands waits recheckDelay, re-reads the row and reports whether

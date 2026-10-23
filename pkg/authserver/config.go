@@ -1304,9 +1304,10 @@ type Config struct {
 	// When on (the default, with at least one upstream configured), a
 	// refresh_token grant is refused with invalid_grant, and its refresh token
 	// and access tokens revoked, when the token session's upstream credential
-	// is definitively dead: the session has no upstream rows, or a row's access
-	// token is expired and it either has no refresh token or the IdP rejects
-	// its refresh with invalid_grant. The guard refreshes an expired row before
+	// is definitively dead: the session has no upstream rows or none holds an
+	// access token, or a row's access token is expired and its provider is no
+	// longer configured, it has no refresh token, or the IdP rejects its
+	// refresh with invalid_grant. The guard refreshes an expired row before
 	// deciding, so an idle session whose upstream refresh succeeds is granted.
 	// A transient failure (network, 5xx, storage) grants the refresh.
 	//

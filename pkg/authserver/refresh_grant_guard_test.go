@@ -73,6 +73,8 @@ func TestUpstreamRefreshGuard(t *testing.T) {
 		onRefresh *storage.UpstreamTokens
 		// deleteOnRefresh deletes the row after the refresher runs.
 		deleteOnRefresh bool
+		// unconfigured names a row's provider that is not configured.
+		unconfigured string
 		// cancelled runs the request on a cancelled context, with a recheck
 		// delay long enough that only the cancellation can end the wait.
 		cancelled  bool
@@ -159,6 +161,29 @@ func TestUpstreamRefreshGuard(t *testing.T) {
 			cancelled:  true,
 		},
 		{
+			name:         "expired row for an unconfigured provider is refused",
+			tsid:         guardTestTSID,
+			rows:         map[string]*storage.UpstreamTokens{"removed": guardTestRow(past, "rt")},
+			unconfigured: "removed",
+			wantRefuse:   true,
+		},
+		{
+			name:         "unexpired row for an unconfigured provider is granted",
+			tsid:         guardTestTSID,
+			rows:         map[string]*storage.UpstreamTokens{"removed": guardTestRow(future, "rt")},
+			unconfigured: "removed",
+		},
+		{
+			name: "rows without an access token are refused",
+			tsid: guardTestTSID,
+			rows: map[string]*storage.UpstreamTokens{"idp": func() *storage.UpstreamTokens {
+				row := guardTestRow(future, "rt")
+				row.AccessToken = ""
+				return row
+			}()},
+			wantRefuse: true,
+		},
+		{
 			name: "one dead provider among live ones is refused",
 			tsid: guardTestTSID,
 			rows: map[string]*storage.UpstreamTokens{
@@ -176,9 +201,13 @@ func TestUpstreamRefreshGuard(t *testing.T) {
 
 			stor := storage.NewMemoryStorage()
 			t.Cleanup(func() { _ = stor.Close() })
+			var configured []string
 			for name, row := range tt.rows {
 				row.ProviderID = name
 				require.NoError(t, stor.StoreUpstreamTokens(ctx, guardTestTSID, name, row))
+				if name != tt.unconfigured {
+					configured = append(configured, name)
+				}
 			}
 			// The grant's own tokens, which a refusal must revoke.
 			req := guardTestRequest(tt.tsid, "refresh_token")
@@ -203,7 +232,7 @@ func TestUpstreamRefreshGuard(t *testing.T) {
 					refreshed.ExpiresAt = future
 					return &refreshed, nil
 				})
-			guard := newUpstreamRefreshGuard(false, stor, refresher)
+			guard := newUpstreamRefreshGuard(false, stor, refresher, configured)
 			require.NotNil(t, guard)
 			guard.recheckDelay = 0
 
@@ -243,14 +272,14 @@ func TestUpstreamRefreshGuard_Gates(t *testing.T) {
 
 	t.Run("not built when disabled or without a refresher", func(t *testing.T) {
 		t.Parallel()
-		assert.Nil(t, newUpstreamRefreshGuard(true, stor, refresher))
-		assert.Nil(t, newUpstreamRefreshGuard(false, stor, nil))
+		assert.Nil(t, newUpstreamRefreshGuard(true, stor, refresher, []string{"idp"}))
+		assert.Nil(t, newUpstreamRefreshGuard(false, stor, nil, nil))
 	})
 
 	t.Run("runs only on the refresh_token grant and never skips client auth", func(t *testing.T) {
 		t.Parallel()
 		ctx := context.Background()
-		guard := newUpstreamRefreshGuard(false, stor, refresher)
+		guard := newUpstreamRefreshGuard(false, stor, refresher, []string{"idp"})
 		require.NotNil(t, guard)
 
 		req := guardTestRequest(guardTestTSID, "authorization_code")
@@ -260,6 +289,69 @@ func TestUpstreamRefreshGuard_Gates(t *testing.T) {
 		require.ErrorIs(t, guard.PopulateTokenEndpointResponse(ctx, req, fosite.NewAccessResponse()), fosite.ErrUnknownRequest)
 		assert.True(t, guard.CanHandleTokenEndpointRequest(ctx, guardTestRequest(guardTestTSID, "refresh_token")))
 	})
+}
+
+// TestUpstreamRefreshGuard_StorageFailures pins the fail-open storage paths: a
+// storage fault never refuses a grant on its own, and a failed revocation
+// still refuses one already found dead.
+func TestUpstreamRefreshGuard_StorageFailures(t *testing.T) {
+	t.Parallel()
+
+	storageErr := errors.New("storage unavailable")
+	rejected := fmt.Errorf("upstream token refresh failed: %w", upstream.ErrGrantRejected)
+	expired := guardTestRow(time.Now().Add(-time.Minute), "rt")
+
+	tests := []struct {
+		name       string
+		setup      func(stor *mocks.MockStorage, refresher *mocks.MockUpstreamTokenRefresher)
+		wantRefuse bool
+	}{
+		{
+			name: "upstream token read failure grants",
+			setup: func(stor *mocks.MockStorage, _ *mocks.MockUpstreamTokenRefresher) {
+				stor.EXPECT().GetAllUpstreamTokens(gomock.Any(), guardTestTSID).Return(nil, storageErr)
+			},
+		},
+		{
+			name: "recheck read failure after a rejection grants",
+			setup: func(stor *mocks.MockStorage, refresher *mocks.MockUpstreamTokenRefresher) {
+				stor.EXPECT().GetAllUpstreamTokens(gomock.Any(), guardTestTSID).
+					Return(map[string]*storage.UpstreamTokens{"idp": expired}, nil)
+				refresher.EXPECT().RefreshAndStore(gomock.Any(), guardTestTSID, gomock.Any()).Return(nil, rejected)
+				stor.EXPECT().GetUpstreamTokens(gomock.Any(), guardTestTSID, "idp").Return(nil, storageErr)
+			},
+		},
+		{
+			name: "revocation failure still refuses",
+			setup: func(stor *mocks.MockStorage, _ *mocks.MockUpstreamTokenRefresher) {
+				stor.EXPECT().GetAllUpstreamTokens(gomock.Any(), guardTestTSID).
+					Return(map[string]*storage.UpstreamTokens{}, nil)
+				stor.EXPECT().RevokeRefreshToken(gomock.Any(), guardTestRequestID).Return(storageErr)
+				stor.EXPECT().RevokeAccessToken(gomock.Any(), guardTestRequestID).Return(storageErr)
+			},
+			wantRefuse: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			ctrl := gomock.NewController(t)
+			stor := mocks.NewMockStorage(ctrl)
+			refresher := mocks.NewMockUpstreamTokenRefresher(ctrl)
+			tt.setup(stor, refresher)
+			guard := newUpstreamRefreshGuard(false, stor, refresher, []string{"idp"})
+			require.NotNil(t, guard)
+			guard.recheckDelay = 0
+
+			err := guard.HandleTokenEndpointRequest(context.Background(), guardTestRequest(guardTestTSID, "refresh_token"))
+			if tt.wantRefuse {
+				require.ErrorIs(t, err, fosite.ErrInvalidGrant)
+				return
+			}
+			require.NoError(t, err)
+		})
+	}
 }
 
 // TestUpstreamRefreshGuard_RealIdPRejection drives the guard with the real
@@ -305,7 +397,7 @@ func TestUpstreamRefreshGuard_RealIdPRejection(t *testing.T) {
 			require.NoError(t, stor.StoreUpstreamTokens(ctx, guardTestTSID, "idp", guardTestRow(time.Now().Add(-time.Minute), "rt")))
 			refresher := newUpstreamTokenRefresher(
 				[]handlers.NamedUpstream{{Name: "idp", Provider: provider}}, stor, time.Hour)
-			guard := newUpstreamRefreshGuard(false, stor, refresher)
+			guard := newUpstreamRefreshGuard(false, stor, refresher, []string{"idp"})
 			require.NotNil(t, guard)
 			guard.recheckDelay = 0
 

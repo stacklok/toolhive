@@ -442,7 +442,9 @@ see only grants it accepted. It refuses the grant with `invalid_grant`, and
 revokes the refresh token and the grant's access tokens, when the token
 session's upstream credential is definitively dead:
 
-- the session has no upstream rows, or
+- the session has no upstream rows, or none holds an access token, or
+- a row's access token is expired and its provider is no longer configured,
+  so nothing can refresh it, or
 - a row's access token is expired and the row has no refresh token, or
 - the IdP rejects the row's refresh with `invalid_grant`
   (`upstream.ErrGrantRejected`).
@@ -455,10 +457,10 @@ failure (network, 5xx, 429, storage) grants the refresh, since the bearer
 validator answers those with 503 or a retryable 401 anyway. To tolerate the
 lost-race window described above, the guard does not refuse on the first
 rejection: it waits briefly (500ms) and re-reads the row, and a row now holding
-a different, unexpired refresh token counts as live. A recheck that cannot complete (the
-request is cancelled, or the read fails) is treated as uncertain, so the grant
-is not refused and nothing is revoked. A session without a
-`tsid` (a session-less grant) is not checked. `Config.DisableUpstreamRefreshGuard`
+a different, unexpired refresh token counts as live. A recheck that cannot
+complete (the request is cancelled, or the read fails) is treated as uncertain,
+so the grant is not refused and nothing is revoked. A session without a `tsid`
+(a session-less grant) is not checked. `Config.DisableUpstreamRefreshGuard`
 turns the guard off.
 
 ### Serialization

@@ -11,6 +11,8 @@ import (
 	"fmt"
 	"maps"
 	"reflect"
+	"slices"
+	"strings"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -1645,18 +1647,26 @@ func (r *MCPRemoteProxyReconciler) updateMCPRemoteProxyStatus(ctx context.Contex
 	// same pod: a pod in the Running phase whose container is not ready, or one
 	// in CrashLoopBackOff, is not a proxy that can serve traffic (#6726).
 	var running, pending, failed int
-	var failureReason string
+	var failureReasons []string
 	for _, pod := range podList.Items {
 		podRunning, podPending, podFailed, reason := categorizePodStatus(pod)
 		running += podRunning
 		pending += podPending
 		failed += podFailed
-		if reason != "" && failureReason == "" {
-			failureReason = reason
+		// categorizePodStatus returns a reason with a failed pod only; the
+		// guard keeps a future pending reason from reaching the Failed message.
+		if podFailed > 0 && reason != "" {
+			failureReasons = append(failureReasons, reason)
 		}
 	}
+	if len(failureReasons) > 0 {
+		slices.Sort(failureReasons)
+		failureReasons = slices.Compact(failureReasons)
+	}
 
-	// Update the status
+	// Update the status. A Ready replica keeps a proxy routable even while a
+	// second replica crash-loops, which is the MCPServer verdict too; the
+	// failure branch only wins when no replica is ready.
 	if running > 0 {
 		proxy.Status.Phase = mcpv1beta1.MCPRemoteProxyPhaseReady
 		proxy.Status.Message = "Remote proxy is running"
@@ -1667,6 +1677,19 @@ func (r *MCPRemoteProxyReconciler) updateMCPRemoteProxyStatus(ctx context.Contex
 			Message:            "Deployment is ready and running",
 			ObservedGeneration: proxy.Generation,
 		})
+	} else if failed > 0 {
+		proxy.Status.Phase = mcpv1beta1.MCPRemoteProxyPhaseFailed
+		proxy.Status.Message = "Remote proxy failed to start"
+		if len(failureReasons) > 0 {
+			proxy.Status.Message = fmt.Sprintf("Remote proxy failed to start: %s", strings.Join(failureReasons, ", "))
+		}
+		meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
+			Type:               mcpv1beta1.ConditionTypeReady,
+			Status:             metav1.ConditionFalse,
+			Reason:             mcpv1beta1.ConditionReasonDeploymentNotReady,
+			Message:            proxy.Status.Message,
+			ObservedGeneration: proxy.Generation,
+		})
 	} else if pending > 0 {
 		proxy.Status.Phase = mcpv1beta1.MCPRemoteProxyPhasePending
 		proxy.Status.Message = "Remote proxy is starting"
@@ -1675,19 +1698,6 @@ func (r *MCPRemoteProxyReconciler) updateMCPRemoteProxyStatus(ctx context.Contex
 			Status:             metav1.ConditionFalse,
 			Reason:             mcpv1beta1.ConditionReasonDeploymentNotReady,
 			Message:            "Deployment is not yet ready",
-			ObservedGeneration: proxy.Generation,
-		})
-	} else if failed > 0 {
-		proxy.Status.Phase = mcpv1beta1.MCPRemoteProxyPhaseFailed
-		proxy.Status.Message = "Remote proxy failed to start"
-		if failureReason != "" {
-			proxy.Status.Message = fmt.Sprintf("Remote proxy failed to start: %s", failureReason)
-		}
-		meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
-			Type:               mcpv1beta1.ConditionTypeReady,
-			Status:             metav1.ConditionFalse,
-			Reason:             mcpv1beta1.ConditionReasonDeploymentNotReady,
-			Message:            proxy.Status.Message,
 			ObservedGeneration: proxy.Generation,
 		})
 	} else {

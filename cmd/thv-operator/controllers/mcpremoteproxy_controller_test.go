@@ -1028,10 +1028,12 @@ func TestUpdateMCPRemoteProxyStatus(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name          string
-		proxy         *mcpv1beta1.MCPRemoteProxy
-		pods          []corev1.Pod
-		expectedPhase mcpv1beta1.MCPRemoteProxyPhase
+		name                     string
+		proxy                    *mcpv1beta1.MCPRemoteProxy
+		pods                     []corev1.Pod
+		expectedPhase            mcpv1beta1.MCPRemoteProxyPhase
+		expectedMessage          string
+		expectedConditionMessage string
 	}{
 		{
 			name:  "running pod",
@@ -1101,7 +1103,139 @@ func TestUpdateMCPRemoteProxyStatus(t *testing.T) {
 					},
 				},
 			},
-			expectedPhase: mcpv1beta1.MCPRemoteProxyPhaseFailed,
+			expectedPhase:            mcpv1beta1.MCPRemoteProxyPhaseFailed,
+			expectedMessage:          "Remote proxy failed to start: CrashLoopBackOff",
+			expectedConditionMessage: "Remote proxy failed to start: CrashLoopBackOff",
+		},
+		{
+			// A Ready replica still serves traffic, so a second crash-looping
+			// replica does not take the proxy out of the routable set. This is
+			// the MCPServer verdict too (running is checked before failed).
+			name:  "ready pod next to a crash-looping pod",
+			proxy: v1beta1test.NewMCPRemoteProxy("mixed-ready-proxy", "default"),
+			pods: []corev1.Pod{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "mixed-ready-proxy-pod",
+						Namespace: "default",
+						Labels:    labelsForMCPRemoteProxy("mixed-ready-proxy"),
+					},
+					Status: corev1.PodStatus{
+						Phase: corev1.PodRunning,
+						ContainerStatuses: []corev1.ContainerStatus{
+							{Name: "proxy", Ready: true},
+						},
+					},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "mixed-ready-proxy-crashloop",
+						Namespace: "default",
+						Labels:    labelsForMCPRemoteProxy("mixed-ready-proxy"),
+					},
+					Status: corev1.PodStatus{
+						Phase: corev1.PodRunning,
+						ContainerStatuses: []corev1.ContainerStatus{
+							{
+								Name:  "proxy",
+								Ready: false,
+								State: corev1.ContainerState{
+									Waiting: &corev1.ContainerStateWaiting{Reason: "CrashLoopBackOff"},
+								},
+							},
+						},
+					},
+				},
+			},
+			expectedPhase:   mcpv1beta1.MCPRemoteProxyPhaseReady,
+			expectedMessage: "Remote proxy is running",
+		},
+		{
+			// When no replica is ready, a failure outranks a starting pod, the
+			// same order applyMCPServerPhaseFromCounts uses.
+			name:  "pending pod next to a crash-looping pod",
+			proxy: v1beta1test.NewMCPRemoteProxy("mixed-failed-proxy", "default"),
+			pods: []corev1.Pod{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "mixed-failed-proxy-pending",
+						Namespace: "default",
+						Labels:    labelsForMCPRemoteProxy("mixed-failed-proxy"),
+					},
+					Status: corev1.PodStatus{Phase: corev1.PodPending},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "mixed-failed-proxy-crashloop",
+						Namespace: "default",
+						Labels:    labelsForMCPRemoteProxy("mixed-failed-proxy"),
+					},
+					Status: corev1.PodStatus{
+						Phase: corev1.PodRunning,
+						ContainerStatuses: []corev1.ContainerStatus{
+							{
+								Name:  "proxy",
+								Ready: false,
+								State: corev1.ContainerState{
+									Waiting: &corev1.ContainerStateWaiting{Reason: "CrashLoopBackOff"},
+								},
+							},
+						},
+					},
+				},
+			},
+			expectedPhase:            mcpv1beta1.MCPRemoteProxyPhaseFailed,
+			expectedMessage:          "Remote proxy failed to start: CrashLoopBackOff",
+			expectedConditionMessage: "Remote proxy failed to start: CrashLoopBackOff",
+		},
+		{
+			// Every distinct failure reason is kept, sorted so the message does
+			// not depend on the order the API server returns the pods in.
+			name:  "multiple failing pods list every reason",
+			proxy: v1beta1test.NewMCPRemoteProxy("multi-failed-proxy", "default"),
+			pods: []corev1.Pod{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "multi-failed-proxy-crashloop",
+						Namespace: "default",
+						Labels:    labelsForMCPRemoteProxy("multi-failed-proxy"),
+					},
+					Status: corev1.PodStatus{
+						Phase: corev1.PodRunning,
+						ContainerStatuses: []corev1.ContainerStatus{
+							{
+								Name:  "proxy",
+								Ready: false,
+								State: corev1.ContainerState{
+									Waiting: &corev1.ContainerStateWaiting{Reason: "CrashLoopBackOff"},
+								},
+							},
+						},
+					},
+				},
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "multi-failed-proxy-create",
+						Namespace: "default",
+						Labels:    labelsForMCPRemoteProxy("multi-failed-proxy"),
+					},
+					Status: corev1.PodStatus{
+						Phase: corev1.PodRunning,
+						ContainerStatuses: []corev1.ContainerStatus{
+							{
+								Name:  "proxy",
+								Ready: false,
+								State: corev1.ContainerState{
+									Waiting: &corev1.ContainerStateWaiting{Reason: "CreateContainerError"},
+								},
+							},
+						},
+					},
+				},
+			},
+			expectedPhase:            mcpv1beta1.MCPRemoteProxyPhaseFailed,
+			expectedMessage:          "Remote proxy failed to start: CrashLoopBackOff, CreateContainerError",
+			expectedConditionMessage: "Remote proxy failed to start: CrashLoopBackOff, CreateContainerError",
 		},
 		{
 			// Terminating pods are excluded from the counts, the same way the
@@ -1204,6 +1338,14 @@ func TestUpdateMCPRemoteProxyStatus(t *testing.T) {
 			}, updatedProxy)
 			assert.NoError(t, err)
 			assert.Equal(t, tt.expectedPhase, updatedProxy.Status.Phase)
+			if tt.expectedMessage != "" {
+				assert.Equal(t, tt.expectedMessage, updatedProxy.Status.Message)
+			}
+			if tt.expectedConditionMessage != "" {
+				condition := meta.FindStatusCondition(updatedProxy.Status.Conditions, mcpv1beta1.ConditionTypeReady)
+				require.NotNil(t, condition)
+				assert.Equal(t, tt.expectedConditionMessage, condition.Message)
+			}
 		})
 	}
 }

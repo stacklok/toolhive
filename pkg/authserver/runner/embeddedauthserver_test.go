@@ -1405,6 +1405,52 @@ func TestEmbeddedAuthServer_KeyProvider(t *testing.T) {
 	})
 }
 
+// TestBuildUpstreamConfigs_CopiesDisplayName drives buildUpstreamConfigs, which runs
+// validateUpstreamRunConfig, so the runner's upstream validation is shown to never
+// reject a display name. The label is copied through unchanged for both upstream
+// types; sanitizing happens only when the consent page renders it.
+func TestBuildUpstreamConfigs_CopiesDisplayName(t *testing.T) {
+	t.Parallel()
+
+	upstreams := []authserver.UpstreamRunConfig{
+		{
+			Name: "okta", Type: authserver.UpstreamProviderTypeOIDC,
+			OIDCConfig: &authserver.OIDCUpstreamRunConfig{
+				IssuerURL: "https://okta.example.com", ClientID: "c", RedirectURI: "http://localhost:8080/callback",
+			},
+		},
+		{
+			Name: "okta", Type: authserver.UpstreamProviderTypeOAuth2,
+			OAuth2Config: &authserver.OAuth2UpstreamRunConfig{
+				AuthorizationEndpoint: "https://okta.example.com/authorize", TokenEndpoint: "https://okta.example.com/token",
+				ClientID: "c", RedirectURI: "http://localhost:8080/callback",
+			},
+		},
+	}
+	displayNames := map[string]string{
+		"plain":           "Acme Okta",
+		"control runes":   "Acme\u202e\u200b\nOkta",
+		"whitespace only": " \t ",
+		"html":            "<script>alert(1)</script>",
+		"very long":       strings.Repeat("é", 1000),
+	}
+	for _, rc := range upstreams {
+		for name, displayName := range displayNames {
+			t.Run(string(rc.Type)+"/"+name, func(t *testing.T) {
+				t.Parallel()
+				rc := rc
+				rc.DisplayName = displayName
+				got, err := buildUpstreamConfigs(context.Background(), []authserver.UpstreamRunConfig{rc},
+					"http://localhost:8080", newMemoryDCRStore(t), false)
+				require.NoError(t, err)
+				require.Len(t, got, 1)
+				assert.Equal(t, "okta", got[0].Name)
+				assert.Equal(t, displayName, got[0].DisplayName)
+			})
+		}
+	}
+}
+
 func TestBuildUpstreamConfig(t *testing.T) {
 	t.Parallel()
 

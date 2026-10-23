@@ -795,6 +795,89 @@ func TestRunConfigValidate(t *testing.T) {
 	}
 }
 
+func TestUpstreamConfig_DisplayNameNeverFailsValidation(t *testing.T) {
+	t.Parallel()
+
+	newConfig := func(name, displayName string) Config {
+		return Config{
+			Issuer: "https://example.com", KeyProvider: keys.NewGeneratingProvider(keys.DefaultAlgorithm),
+			HMACSecrets:      &servercrypto.HMACSecrets{Current: make([]byte, 32)},
+			AllowedAudiences: []string{"https://mcp.example.com"},
+			Upstreams: []UpstreamConfig{{
+				Name: name, DisplayName: displayName, Type: UpstreamProviderTypeOAuth2,
+				OAuth2Config: &upstream.OAuth2Config{
+					CommonOAuthConfig:     upstream.CommonOAuthConfig{ClientID: "c", RedirectURI: "https://example.com/cb"},
+					AuthorizationEndpoint: "https://idp.example.com/authorize",
+					TokenEndpoint:         "https://idp.example.com/token",
+				},
+			}},
+		}
+	}
+	for name, displayName := range map[string]string{
+		"empty":           "",
+		"plain":           "Acme Okta",
+		"control runes":   "Acme\u202e\u200b\nOkta",
+		"whitespace only": " \t ",
+		"html":            "<script>alert(1)</script>",
+		"very long":       strings.Repeat("é", 1000),
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			cfg := newConfig("ffffffff-ffff-ffff-ffff-ffffffffffff", displayName)
+			require.NoError(t, cfg.Validate())
+		})
+	}
+	t.Run("name is still validated", func(t *testing.T) {
+		t.Parallel()
+		cfg := newConfig("Not_A_Label", "Acme Okta")
+		require.Error(t, cfg.Validate())
+	})
+}
+
+// TestRunConfig_DisplayNameRoundTrip pins the display_name key in YAML and JSON,
+// the form operators write in config files and ConfigMaps, and checks that an
+// unset display name is omitted on encode.
+func TestRunConfig_DisplayNameRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	const yamlDoc = `
+upstreams:
+  - name: okta
+    display_name: Acme Okta
+`
+	const jsonDoc = `{"upstreams":[{"name":"okta","display_name":"Acme Okta"}]}`
+	for _, tc := range []struct {
+		name      string
+		unmarshal func([]byte, any) error
+		marshal   func(any) ([]byte, error)
+		doc       string
+	}{
+		{name: "yaml", unmarshal: yaml.Unmarshal, marshal: yaml.Marshal, doc: yamlDoc},
+		{name: "json", unmarshal: json.Unmarshal, marshal: json.Marshal, doc: jsonDoc},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var decoded RunConfig
+			require.NoError(t, tc.unmarshal([]byte(tc.doc), &decoded))
+			require.Len(t, decoded.Upstreams, 1)
+			assert.Equal(t, "okta", decoded.Upstreams[0].Name)
+			assert.Equal(t, "Acme Okta", decoded.Upstreams[0].DisplayName)
+
+			encoded, err := tc.marshal(&decoded)
+			require.NoError(t, err)
+			assert.Contains(t, string(encoded), "display_name")
+			var reDecoded RunConfig
+			require.NoError(t, tc.unmarshal(encoded, &reDecoded))
+			assert.Equal(t, decoded.Upstreams, reDecoded.Upstreams)
+
+			decoded.Upstreams[0].DisplayName = ""
+			encoded, err = tc.marshal(&decoded)
+			require.NoError(t, err)
+			assert.NotContains(t, string(encoded), "display_name")
+		})
+	}
+}
+
 // TestRunConfigValidate_UpstreamFilter covers RunConfig.Validate()'s
 // enforcement of UpstreamFilter static invariants against the configured
 // upstream list. Thorough matching/union/claim behavior is covered in

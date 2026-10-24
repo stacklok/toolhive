@@ -16,7 +16,7 @@
 // OAuth authorization server.
 package storage
 
-//go:generate mockgen -destination=mocks/mock_storage.go -package=mocks -source=types.go Storage,PendingAuthorizationStorage,DeviceCodeStorage,PendingDeviceLoginStorage,PendingDeviceConfirmationStorage,RememberedConsentStorage,AssertionJWTConsumer,ClientRegistry,UpstreamTokenStorage,UpstreamTokenRefresher,UserStorage,DCRCredentialStore
+//go:generate mockgen -destination=mocks/mock_storage.go -package=mocks -source=types.go Storage,PendingAuthorizationStorage,DeviceCodeStorage,PendingDeviceLoginStorage,PendingDeviceConfirmationStorage,RememberedConsentStorage,AssertionJWTConsumer,ClientRegistry,UpstreamTokenStorage,UpstreamTokenRefresher,UserStorage,DCRCredentialStore,ExchangeGrantStorage
 
 import (
 	"context"
@@ -46,6 +46,11 @@ var (
 
 	// ErrExpired is returned when an item exists but has expired.
 	ErrExpired = errors.New("storage: item expired")
+
+	// ErrRevoked is returned when an item exists but has been revoked, such as
+	// an exchange grant revoked through RFC 7009. Live reports it ahead of
+	// ErrExpired when both apply.
+	ErrRevoked = errors.New("storage: item revoked")
 
 	// ErrAlreadyExists is returned when attempting to create an item that already exists.
 	ErrAlreadyExists = errors.New("storage: item already exists")
@@ -1043,6 +1048,106 @@ type PendingDeviceConfirmationStorage interface {
 // assertion-grant composition needs replay-consumption access.
 type AssertionJWTConsumer interface {
 	ConsumeAssertionJWT(ctx context.Context, purpose, issuer, jti string, exp time.Time) error
+}
+
+// ExchangeGrant is the server-side record behind a refresh token issued through
+// RFC 8693 token exchange. The client holds only the opaque token; the record is
+// found by the token's HMAC signature. A grant either allows exchange for
+// ID-JAGs (id-jag) or for child refresh tokens (refresh_token), fixed at issuance.
+type ExchangeGrant struct {
+	// Signature is the refresh token's HMAC signature. It is also the internal
+	// grant ID. It is never exposed to clients.
+	Signature string
+
+	// ParentSignature is the Signature of the grant this one was derived from.
+	// It is empty for a top-level grant. Depth is 1: a grant with a
+	// ParentSignature cannot be a parent.
+	ParentSignature string
+
+	// ClientID is the ID of the OAuth client the grant was issued to.
+	ClientID string
+
+	// Subject is the subject (sub) of the user the grant acts for.
+	Subject string
+
+	// SubjectIdentifier is the sub_id JSON of the subject, recorded when present.
+	SubjectIdentifier string
+
+	// SourceIssuer is the iss of the subject access token. With SourceJTI it forms
+	// the replay key. Empty for child grants.
+	SourceIssuer string
+
+	// SourceJTI is the jti of the subject access token that authorized issuance.
+	// It is empty for child grants, which have no subject access token.
+	SourceJTI string
+
+	// SourceExpiresAt is the exp of the subject access token. The SourceJTI replay
+	// marker is kept at least until this time.
+	SourceExpiresAt time.Time
+
+	// IssuableTokenTypes holds exactly one token type URN: the ID-JAG URN or the
+	// refresh-token URN. The store does not check this shape; the handler does.
+	IssuableTokenTypes []string
+
+	ExpiresAt time.Time
+	CreatedAt time.Time
+
+	// RevokedAt is zero while the grant is not revoked.
+	RevokedAt time.Time
+}
+
+// Live reports whether the grant can still be used at now. It returns ErrRevoked
+// if the grant has been revoked, and ErrExpired if now is after ExpiresAt. The
+// revocation check comes first, so a grant that is both revoked and expired
+// reports ErrRevoked. A zero ExpiresAt counts as expired, which is the opposite
+// of UpstreamTokens.IsExpired, where zero means no expiry. A grant with
+// now == ExpiresAt is still live. Live checks only this record. A child grant is
+// usable only if its parent is live too; see ExchangeGrantStorage.
+func (g *ExchangeGrant) Live(now time.Time) error {
+	if !g.RevokedAt.IsZero() {
+		return ErrRevoked
+	}
+	if now.After(g.ExpiresAt) {
+		return ErrExpired
+	}
+	return nil
+}
+
+// ExchangeGrantStorage stores the grant records behind refresh tokens issued
+// through token exchange. It is an optional capability, like DeviceCodeStorage.
+// Callers discover it with storage.Unwrap(stor).(ExchangeGrantStorage) at
+// construction time. Decorators do not forward this interface, so the lookup
+// must go through Unwrap.
+//
+// Records are kept until ExpiresAt. Time decisions belong to the caller, which
+// applies ExchangeGrant.Live(now) to every record it reads. Backend expiry is
+// only garbage collection.
+type ExchangeGrantStorage interface {
+	// CreateExchangeGrant stores g. The write is atomic: the record and, when
+	// g.SourceJTI is set, its replay marker are both written, or neither is.
+	// The replay marker is keyed by (g.SourceIssuer, g.SourceJTI) and is kept at
+	// least until g.SourceExpiresAt. There is no separate leeway setting; the
+	// self-issued validator uses leeway 0. SourceIssuer and SourceJTI are both
+	// set for a top-level grant, and both empty for a child.
+	//
+	// It returns fosite.ErrJTIKnown if (g.SourceIssuer, g.SourceJTI) was already
+	// recorded, and ErrAlreadyExists if a grant with g.Signature already exists.
+	// A failed call writes nothing, so the caller can retry with the same record.
+	// Other failures are returned as-is.
+	CreateExchangeGrant(ctx context.Context, g *ExchangeGrant) error
+
+	// GetExchangeGrant returns the grant with the given signature. Revoked grants
+	// are returned with RevokedAt set. It returns ErrNotFound if no record exists
+	// or the record is past ExpiresAt. Callers still apply Live to what is
+	// returned, since eviction can lag, and Live decides.
+	GetExchangeGrant(ctx context.Context, signature string) (*ExchangeGrant, error)
+
+	// RevokeExchangeGrant sets RevokedAt to now on the grant with the given
+	// signature. It is idempotent: revoking a grant that is already revoked
+	// succeeds and keeps the original RevokedAt. It returns ErrNotFound if no
+	// record exists. It does not touch child grants. A child is dead once its
+	// parent is missing or not live, and callers check that on every use.
+	RevokeExchangeGrant(ctx context.Context, signature string, now time.Time) error
 }
 
 // SyntheticClientIDPrefix marks a client ID minted by NewSyntheticClient. A

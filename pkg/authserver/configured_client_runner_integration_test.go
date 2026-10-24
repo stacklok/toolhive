@@ -242,10 +242,17 @@ func secretClient(t *testing.T, id string, grants []string) authserver.DelegateC
 	}
 }
 
-// login drives authorize, consent and the upstream callback, and returns the
-// authorization code with the PKCE verifier that redeems it. The mock upstream
-// is not visited: its code is fixed, so the callback is driven directly.
+// login logs the configured broker client in.
 func login(t *testing.T, serverURL string) (string, string) {
+	t.Helper()
+	return loginWith(t, serverURL, cfgBrokerID, cfgRedirectURI, cfgAudienceA, "openid profile offline_access")
+}
+
+// loginWith drives authorize, consent and the upstream callback for the given
+// client, and returns the authorization code with the PKCE verifier that
+// redeems it. The mock upstream is not visited: its code is fixed, so the
+// callback is driven directly.
+func loginWith(t *testing.T, serverURL, clientID, redirectURI, resource, scope string) (string, string) {
 	t.Helper()
 	locationOf := func(response *http.Response) *url.URL {
 		t.Helper()
@@ -259,8 +266,8 @@ func login(t *testing.T, serverURL string) (string, string) {
 	browser := helpers.NewOAuthClient(serverURL)
 	verifier := servercrypto.GeneratePKCEVerifier()
 	page, err := browser.StartAuthorization(url.Values{
-		"client_id": {cfgBrokerID}, "redirect_uri": {cfgRedirectURI}, "response_type": {"code"},
-		"scope": {"openid profile offline_access"}, "state": {"login-state"}, "resource": {cfgAudienceA},
+		"client_id": {clientID}, "redirect_uri": {redirectURI}, "response_type": {"code"},
+		"scope": {scope}, "state": {"login-state"}, "resource": {resource},
 		"code_challenge":        {servercrypto.ComputePKCEChallenge(verifier)},
 		"code_challenge_method": {"S256"},
 	})

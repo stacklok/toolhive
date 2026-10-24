@@ -2927,6 +2927,72 @@ func TestIntegration_BoundAudience(t *testing.T) {
 	}
 }
 
+// TestIntegration_EmbedderClientAudience covers a client an embedder registers
+// with Storage.RegisterClient. The client-level audience check at /authorize
+// uses the rule the callback applies, so a path below the client's audience
+// completes the whole flow, and a client without audiences is refused with
+// invalid_target at /authorize instead of failing after the upstream login.
+func TestIntegration_EmbedderClientAudience(t *testing.T) {
+	t.Parallel()
+	const scopedResource = testAudience + "/api"
+	newClient := func(id string, audience []string) *fosite.DefaultClient {
+		return &fosite.DefaultClient{
+			ID: id, RedirectURIs: []string{testRedirectURI},
+			ResponseTypes: []string{"code"}, GrantTypes: []string{"authorization_code"},
+			Scopes: registration.DefaultScopes, Audience: audience, Public: true,
+		}
+	}
+	withAudience := newClient("embedder-with-audience", []string{testAudience})
+	withoutAudience := newClient("embedder-without-audience", nil)
+	m := startMockOIDC(t)
+	ts := setupTestServerWithMockOIDC(t, m,
+		withAllowedAudiences(testAudience, scopedResource),
+		withExtraClient(withAudience), withExtraClient(withoutAudience))
+
+	t.Run("path below the client audience completes the flow", func(t *testing.T) {
+		t.Parallel()
+		verifier := servercrypto.GeneratePKCEVerifier()
+		code, _ := completeAuthorizationFlow(t, ts.Server.URL, authorizationParams{
+			ClientID: withAudience.ID, RedirectURI: testRedirectURI, State: "embedder-prefix",
+			Challenge: servercrypto.ComputePKCEChallenge(verifier), Scope: "openid profile",
+			ResponseType: "code", Resource: scopedResource,
+		})
+		resp := makeTokenRequest(t, ts.Server.URL, url.Values{
+			"grant_type": {"authorization_code"}, "client_id": {withAudience.ID},
+			"redirect_uri": {testRedirectURI}, "code": {code}, "code_verifier": {verifier},
+		})
+		defer resp.Body.Close()
+		tokens := parseTokenResponse(t, resp)
+		require.Equal(t, http.StatusOK, resp.StatusCode, "response: %v", tokens)
+		accessToken, ok := tokens["access_token"].(string)
+		require.True(t, ok)
+		parsed, err := jwt.ParseSigned(accessToken, []jose.SignatureAlgorithm{jose.RS256})
+		require.NoError(t, err)
+		var claims map[string]interface{}
+		require.NoError(t, parsed.Claims(ts.PrivateKey.Public(), &claims))
+		assert.Equal(t, []interface{}{scopedResource}, claims["aud"])
+	})
+
+	t.Run("client without audiences is refused at authorize", func(t *testing.T) {
+		t.Parallel()
+		query := url.Values{
+			"client_id": {withoutAudience.ID}, "redirect_uri": {testRedirectURI}, "response_type": {"code"},
+			"scope": {"openid profile"}, "state": {"embedder-empty"}, "resource": {testAudience},
+			"code_challenge":        {servercrypto.ComputePKCEChallenge(servercrypto.GeneratePKCEVerifier())},
+			"code_challenge_method": {"S256"},
+		}
+		response, err := (&http.Client{
+			Timeout:       10 * time.Second,
+			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+		}).Get(ts.Server.URL + "/oauth/authorize?" + query.Encode())
+		require.NoError(t, err)
+		defer response.Body.Close()
+		location, err := response.Location()
+		require.NoError(t, err)
+		assert.Equal(t, "invalid_target", location.Query().Get("error"))
+	})
+}
+
 // ============================================================================
 // OIDC Provider Integration Tests (OIDCProviderImpl via DefaultUpstreamFactory)
 // ============================================================================

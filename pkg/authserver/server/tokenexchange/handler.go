@@ -854,17 +854,6 @@ func (h *Handler) grantAudiences(ctx context.Context, requester fosite.AccessReq
 	return nil
 }
 
-// resourceScopedClient is implemented by fosite.Client types (e.g.
-// SPIFFEClient) that maintain an RFC 8707 resource allowlist independent of
-// GetAudience's RFC 8693 audience allowlist. Resources and audiences are
-// independent request dimensions: permission in one must never imply
-// permission in the other. A client that doesn't implement this interface
-// falls back to GetAudience for the resource check, preserving prior
-// behavior for clients (e.g. DelegateClient) that only ever had one list.
-type resourceScopedClient interface {
-	Resources() []string
-}
-
 // grantResourceAudience validates the RFC 8707 resource parameter against
 // the server's allowedAudiences and the client's own registered resource
 // allowlist, and grants it as an additional audience claim, binding the
@@ -891,11 +880,7 @@ func (h *Handler) grantResourceAudience(ctx context.Context, requester fosite.Ac
 		// resource-bound token, so it must be subject to the client's own
 		// registered allowlist — otherwise a client could bypass its
 		// registration simply by using "resource" instead of "audience".
-		allowedResources := client.GetAudience()
-		if rc, ok := client.(resourceScopedClient); ok {
-			allowedResources = rc.Resources()
-		}
-		if err := h.config.GetAudienceStrategy(ctx)(allowedResources, []string{resource}); err != nil {
+		if err := h.config.GetAudienceStrategy(ctx)(server.ClientResources(client), []string{resource}); err != nil {
 			return errorsx.WithStack(server.ErrInvalidTarget.WithHintf(
 				"The client is not permitted to request a token for resource %q.", resource))
 		}

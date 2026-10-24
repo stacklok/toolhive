@@ -761,6 +761,9 @@ type AuthenticationDelegateClientRunConfig struct {
 	// is [urn:ietf:params:oauth:grant-type:token-exchange]. When set, it must
 	// include token exchange. Allowed values are authorization_code,
 	// refresh_token, the token-exchange grant and the jwt-bearer grant.
+	// When omitted, the client can still redeem an ID-JAG (a JWT-bearer
+	// assertion of typ oauth-id-jag+jwt) for backward compatibility. Set
+	// grant_types explicitly without the jwt-bearer grant to refuse it.
 	GrantTypes []string `json:"grant_types"`
 	// JWKSFile is the path to a file containing the client's public JWKS.
 	// Required for private_key_jwt and forbidden otherwise. The keys must be

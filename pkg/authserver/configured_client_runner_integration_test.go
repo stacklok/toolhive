@@ -7,12 +7,14 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/rsa"
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -31,6 +33,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver"
 	authserverrunner "github.com/stacklok/toolhive/pkg/authserver/runner"
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
+	"github.com/stacklok/toolhive/pkg/authserver/server/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 	"github.com/stacklok/toolhive/test/integration/authserver/helpers"
@@ -39,10 +42,13 @@ import (
 const (
 	cfgAudienceA     = delegateAudience
 	cfgRedirectURI   = "https://broker.example.com/callback"
+	cfgIDJAGIssuer   = "https://idp.example.com"
+	cfgSubject       = "testuser@example.com"
 	cfgClientSecret  = "configured-client-secret-well-above-minimum-length"
 	cfgBrokerID      = "configured-broker"
 	cfgNoCodeID      = "configured-no-code"
 	cfgExchangeOnly  = "configured-exchange-only"
+	cfgLegacyID      = "legacy-delegate"
 	cfgAssertionType = "urn:ietf:params:oauth:client-assertion-type:jwt-bearer"
 )
 
@@ -291,13 +297,36 @@ func runConfiguredClientFlows(t *testing.T, backend string) {
 	jwksFile := filepath.Join(t.TempDir(), "broker.jwks")
 	writeJWKS(t, jwksFile, brokerKey)
 
+	idpKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+	jwksServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(jose.JSONWebKeySet{Keys: []jose.JSONWebKey{{
+			Key: &idpKey.PublicKey, KeyID: "idp-key", Use: "sig", Algorithm: string(jose.RS256),
+		}}})
+	}))
+	t.Cleanup(jwksServer.Close)
+
 	clients := configuredClients(
 		brokerClient(jwksFile),
 		secretClient(t, cfgNoCodeID, []string{oauthproto.GrantTypeTokenExchange, oauthproto.GrantTypeJWTBearer}),
 		secretClient(t, cfgExchangeOnly, []string{oauthproto.GrantTypeTokenExchange}),
+		secretClient(t, cfgLegacyID, nil),
 	)
-	srv, issuer, embedded, _ := startEmbeddedAuthServer(t, func(cfg *authserver.RunConfig, _ string) {
+	srv, issuer, embedded, _ := startEmbeddedAuthServer(t, func(cfg *authserver.RunConfig, issuer string) {
 		clients(cfg)
+		cfg.InboundGrants.JWTBearer = &authserver.JWTBearerInboundGrantRunConfig{
+			IssuerPolicies: []authserver.JWTBearerIssuerPolicyRunConfig{{
+				IssuerRef: "mock-idp", MaxAssertionAge: "5m",
+				SubjectBindings: []tokenexchange.JWTBearerSubjectBinding{{
+					Subject: cfgSubject, AllowedResources: []string{cfgAudienceA},
+				}},
+				AcceptedAudiences: []string{issuer + "/oauth/token"},
+			}},
+		}
+		cfg.TrustedIssuers = []tokenexchange.TrustedIssuer{{
+			Name: "mock-idp", IssuerURL: cfgIDJAGIssuer, JWKSURL: jwksServer.URL,
+			InsecureAllowHTTP: true, AllowPrivateIPs: true,
+		}}
 	}, newStorageForBackend(t, backend))
 
 	t.Run("discovery advertises private_key_jwt", func(t *testing.T) {
@@ -333,6 +362,24 @@ func runConfiguredClientFlows(t *testing.T, backend string) {
 		})
 		require.Equal(t, http.StatusOK, refreshed.status, refreshed.body)
 		assert.Equal(t, []any{cfgAudienceA}, accessTokenClaims(t, embedded, refreshed.str(t, "access_token"))["aud"])
+	})
+
+	t.Run("ID-JAG honors explicit grants only", func(t *testing.T) {
+		redeem := func(clientID, jti string) tokenResult {
+			assertion := signIDJAGAssertion(t, idpKey, issuer, clientID, jti)
+			return postToken(t, srv.URL, clientAuth{clientID: clientID, secret: cfgClientSecret}, url.Values{
+				"grant_type": {oauthproto.GrantTypeJWTBearer}, "assertion": {assertion}, "resource": {cfgAudienceA},
+			})
+		}
+		refused := redeem(cfgExchangeOnly, "jti-exchange-only")
+		assert.Equal(t, http.StatusBadRequest, refused.status, refused.body)
+		assert.Equal(t, "unauthorized_client", refused.body["error"])
+
+		explicit := redeem(cfgNoCodeID, "jti-explicit")
+		assert.Equal(t, http.StatusOK, explicit.status, explicit.body)
+
+		legacy := redeem(cfgLegacyID, "jti-legacy")
+		assert.Equal(t, http.StatusOK, legacy.status, legacy.body)
 	})
 
 	t.Run("private_key_jwt client cannot authenticate without its assertion", func(t *testing.T) {
@@ -434,4 +481,18 @@ func accessTokenClaims(t *testing.T, embedded *authserverrunner.EmbeddedAuthServ
 	var claims map[string]any
 	require.NoError(t, parsed.Claims(signingKey.Key.Public(), &claims))
 	return claims
+}
+
+func signIDJAGAssertion(t *testing.T, key *rsa.PrivateKey, issuer, clientID, jti string) string {
+	t.Helper()
+	signer, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.RS256, Key: key},
+		(&jose.SignerOptions{}).WithType("oauth-id-jag+jwt").WithHeader("kid", "idp-key"))
+	require.NoError(t, err)
+	now := time.Now()
+	assertion, err := jwt.Signed(signer).Claims(jwt.Claims{
+		Issuer: cfgIDJAGIssuer, Subject: cfgSubject, Audience: jwt.Audience{issuer + "/oauth/token"},
+		ID: jti, IssuedAt: jwt.NewNumericDate(now), Expiry: jwt.NewNumericDate(now.Add(2 * time.Minute)),
+	}).Claims(map[string]any{"client_id": clientID}).Serialize()
+	require.NoError(t, err)
+	return assertion
 }

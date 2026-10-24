@@ -199,7 +199,7 @@ const docTemplate = `{
                         "type": "string"
                     },
                     "grant_types": {
-                        "description": "GrantTypes are the grants this client may use. If omitted or empty, it\nis [urn:ietf:params:oauth:grant-type:token-exchange]. When set, it must\ninclude token exchange. Allowed values are authorization_code,\nrefresh_token, the token-exchange grant and the jwt-bearer grant.",
+                        "description": "GrantTypes are the grants this client may use. If omitted or empty, it\nis [urn:ietf:params:oauth:grant-type:token-exchange]. When set, it must\ninclude token exchange. Allowed values are authorization_code,\nrefresh_token, the token-exchange grant and the jwt-bearer grant.\nWhen omitted, the client can still redeem an ID-JAG (a JWT-bearer\nassertion of typ oauth-id-jag+jwt) for backward compatibility. Set\ngrant_types explicitly without the jwt-bearer grant to refuse it.",
                         "items": {
                             "type": "string"
                         },

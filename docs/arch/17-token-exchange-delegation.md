@@ -586,6 +586,39 @@ change a client was handled this way only when it was explicitly marked, had no
 response types, or had exactly the token-exchange grant. A client that holds `authorization_code` in addition to other grants can
 log users in.
 
+#### Grants and audiences
+
+- **Client audiences.** `/authorize` refuses a `resource` that the client may
+  not request, with `invalid_target`. A `resource` that is omitted defaults to
+  the server's sole allowed audience and is checked the same way. The check
+  applies to every client, including dynamically registered and CIMD clients.
+  It uses the client's own `audiences`, or its resource allowlist for SPIFFE
+  clients, and fosite's path-prefix audience strategy, which is the rule the
+  authorization code callback and the refresh grant already apply. A request the
+  check accepts therefore cannot fail the callback later, and a client with no
+  audiences, which could never complete the callback, now fails at `/authorize`
+  with `invalid_target` instead of after the upstream login. The match compares
+  scheme and host exactly and accepts a path that equals the client's audience
+  path or extends it at a segment boundary (`https://api.example.com/v1`
+  matches an audience of `https://api.example.com`, but `/v1x` does not match
+  `/v1`). The resource must still be an exact member of the server's allowed
+  audiences, which is checked first. The RFC 8693 `resource` check uses the
+  same strategy. Code redemption reuses the audience bound at `/authorize`, and
+  refresh is enforced by fosite.
+- **ID-JAG redemption.** The `resource` of an ID-JAG gets the same client
+  check, with one exception kept for backward compatibility: a client that
+  keeps no resource allowlist and has no audiences is not narrowed, as before
+  this check existed. This fails open and applies only to the ID-JAG grant. A
+  client with a resource allowlist, such as a SPIFFE client, is always checked,
+  so an empty allowlist permits nothing. A client that sets `grant_types`
+  explicitly must also list the JWT-bearer grant, or the redemption fails with
+  `unauthorized_client`. A client that omits `grant_types` keeps today's
+  behaviour. The plain JWT-bearer grant is not gated this way, because it can
+  run without client authentication.
+- **Consent exemption.** Delegate clients are registered before the
+  consent-exempt client IDs are checked, so a configured login client can be
+  listed in `WithConsentExemptClientIDs`.
+
 ### Worked example
 
 This is the scenario the relaxation exists for (issue #5194): an interactive
@@ -982,7 +1015,9 @@ Where the two differ is the trust model — the ID-JAG handler is **bound**:
   A public client suffices here because the assertion itself is the primary
   credential: single-use, short-lived, and audience-pinned to this AS. The
   client's registered `grant_types` metadata is deliberately not consulted —
-  with open DCR, self-asserted metadata authorizes nothing.
+  with open DCR, self-asserted metadata authorizes nothing. The exception is an
+  operator-configured client that sets `grant_types` explicitly: those grants
+  are operator policy, so they are enforced.
 - **`jti` is required.** The draft requires it, and it is what makes the
   assertion single-use; there is no assertion-hash fallback like the plain
   handler's. Replay consumption uses its own purpose (`"id-jag"`,

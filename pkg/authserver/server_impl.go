@@ -408,6 +408,19 @@ func delegateClientIDs(delegateClients []DelegateClient) []string {
 	return ids
 }
 
+// explicitGrantClientIDs lists the IDs of delegate clients that set
+// grant_types explicitly. The ID-JAG handler gates these clients on the
+// jwt-bearer grant.
+func explicitGrantClientIDs(clients []DelegateClient) []string {
+	var ids []string
+	for _, c := range clients {
+		if len(c.GrantTypes) > 0 {
+			ids = append(ids, c.ClientID)
+		}
+	}
+	return ids
+}
+
 // newClientAdmissionStorage wraps stor so a configured client is served only
 // while cfg declares it. Consent-exempt IDs deliberately do not vouch. It must
 // sit below the CIMD decorator: callbackClient's fallback (ClientStoreBelowCIMD)
@@ -646,7 +659,7 @@ func buildProvider(
 		factories = append(factories, tokenExchangeFactory)
 	}
 	if jwtBearerEnabled {
-		jwtBearerFactories, err := buildJWTBearerFactories(cfg.TrustedIssuers, shared)
+		jwtBearerFactories, err := buildJWTBearerFactories(cfg.TrustedIssuers, shared, explicitGrantClientIDs(cfg.DelegateClients))
 		if err != nil {
 			return nil, nil, err
 		}
@@ -699,15 +712,17 @@ func refreshGrantValidatorChain(
 // with the bound ID-JAG factory. The bound ID-JAG handler rides the same
 // per-issuer JWT-bearer policy: enabling the grant enables both assertion
 // forms, split by JOSE typ (plain assertions to JWTBearerHandler,
-// oauth-id-jag+jwt to IDJAGHandler).
+// oauth-id-jag+jwt to IDJAGHandler). explicitGrantClientIDs names the clients
+// whose registered grant_types the ID-JAG handler enforces.
 func buildJWTBearerFactories(
 	trustedIssuers []tokenexchange.TrustedIssuer, shared *tokenexchange.MultiIssuerTokenValidator,
+	explicitGrantClientIDs []string,
 ) ([]oauthserver.Factory, error) {
 	jwtBearerFactory, err := tokenexchange.JWTBearerIssuanceFactory(trustedIssuers, shared)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create JWT-bearer factory: %w", err)
 	}
-	idJAGFactory, err := tokenexchange.IDJAGIssuanceFactory(trustedIssuers, shared)
+	idJAGFactory, err := tokenexchange.IDJAGIssuanceFactory(trustedIssuers, shared, explicitGrantClientIDs)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create ID-JAG factory: %w", err)
 	}

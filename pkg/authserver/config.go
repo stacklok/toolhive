@@ -331,7 +331,8 @@ func (c *RegistrationRateLimitRunConfig) Validate() error {
 // RFC 8693 token-exchange request. The secret is always a reference (file or
 // environment variable), never an inline literal, and public keys come from a
 // JWKS file. Only the grant types named in GrantTypes are enabled; the default
-// is RFC 8693 token exchange alone.
+// is RFC 8693 token exchange alone. A client that omits GrantTypes can still
+// redeem an ID-JAG for backward compatibility; see GrantTypes.
 type DelegateClientRunConfig struct {
 	// ClientID is the OAuth client_id this client presents at the token endpoint.
 	ClientID string `json:"client_id" yaml:"client_id"`
@@ -357,6 +358,9 @@ type DelegateClientRunConfig struct {
 	// is [urn:ietf:params:oauth:grant-type:token-exchange]. When set, it must
 	// include token exchange. Allowed values are authorization_code,
 	// refresh_token, the token-exchange grant and the jwt-bearer grant.
+	// When omitted, the client can still redeem an ID-JAG (a JWT-bearer
+	// assertion of typ oauth-id-jag+jwt) for backward compatibility. Set
+	// grant_types explicitly without the jwt-bearer grant to refuse it.
 	GrantTypes []string `json:"grant_types,omitempty" yaml:"grant_types,omitempty"`
 
 	// RedirectURIs are the registered redirect URIs. Required with the

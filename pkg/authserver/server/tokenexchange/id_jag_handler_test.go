@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/stacklok/toolhive/pkg/authserver/server"
 	"github.com/stacklok/toolhive/pkg/authserver/server/session"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
@@ -87,6 +88,7 @@ func newIDJAGTestHandler(
 		&mockAccessTokenStrategy{},
 		&mockAccessTokenStorage{},
 		idJAGResolvedIssuers(t),
+		nil,
 	)
 	require.NoError(t, err)
 	return handler
@@ -101,7 +103,7 @@ func newIDJAGRequest(t *testing.T, tj *testJWKS, clientID string) *fosite.Access
 		"resource":  {idJAGTestResource},
 	}
 	if clientID != "" {
-		req.Client = &fosite.DefaultClient{ID: clientID}
+		req.Client = &fosite.DefaultClient{ID: clientID, Audience: []string{idJAGTestResource}}
 	}
 	return req
 }
@@ -220,6 +222,64 @@ func TestIDJAGHandler_ClientBindingAndJTI(t *testing.T) {
 	}
 }
 
+func TestIDJAGHandler_ClientGrantAndAudience(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		gated      bool
+		grantTypes []string
+		audience   []string
+		wantErrIs  error
+	}{
+		{
+			name:       "gated client with jwt-bearer is allowed",
+			gated:      true,
+			grantTypes: []string{oauthproto.GrantTypeJWTBearer},
+			audience:   []string{idJAGTestResource},
+		},
+		{
+			name:       "gated client without jwt-bearer is refused",
+			gated:      true,
+			grantTypes: []string{oauthproto.GrantTypeTokenExchange},
+			audience:   []string{idJAGTestResource},
+			wantErrIs:  fosite.ErrUnauthorizedClient,
+		},
+		{
+			name:       "ungated client is not held to its grants",
+			grantTypes: []string{oauthproto.GrantTypeTokenExchange},
+			audience:   []string{idJAGTestResource},
+		},
+		{
+			name:       "resource outside the client audiences is refused",
+			grantTypes: []string{oauthproto.GrantTypeJWTBearer},
+			audience:   []string{"https://other.example.com"},
+			wantErrIs:  server.ErrInvalidTarget,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			tj := newTestJWKS(t)
+			consumer := &recordingAssertionConsumer{}
+			h := newIDJAGTestHandler(t, &testJWTBearerAssertionValidator{claims: validIDJAGClaims()}, consumer)
+			if tt.gated {
+				h.explicitGrantClients = map[string]struct{}{idJAGTestClientID: {}}
+			}
+			req := newIDJAGRequest(t, tj, idJAGTestClientID)
+			req.Client = &fosite.DefaultClient{ID: idJAGTestClientID, GrantTypes: tt.grantTypes, Audience: tt.audience}
+
+			err := h.HandleTokenEndpointRequest(t.Context(), req)
+			if tt.wantErrIs == nil {
+				require.NoError(t, err)
+				return
+			}
+			assert.ErrorIs(t, err, tt.wantErrIs)
+			assert.Empty(t, consumer.key, "a refused client must not consume the assertion")
+		})
+	}
+}
+
 func TestIDJAGHandler_IssuesBoundSession(t *testing.T) {
 	t.Parallel()
 
@@ -308,7 +368,7 @@ func TestIDJAGHandler_PopulateGatesOnOwnMatcher(t *testing.T) {
 func TestIDJAGIssuanceFactory_RequiresSharedValidator(t *testing.T) {
 	t.Parallel()
 
-	_, err := IDJAGIssuanceFactory(idJAGResolvedIssuers(t), nil)
+	_, err := IDJAGIssuanceFactory(idJAGResolvedIssuers(t), nil, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "shared validator")
 }

@@ -96,3 +96,60 @@ func ValidateAudienceAllowed(resource string, allowedAudiences []string) error {
 
 	return ErrInvalidTarget.WithHintf("Resource %q is not a registered audience", resource)
 }
+
+// resourceScopedClient is implemented by clients (e.g. SPIFFE clients) that
+// keep an RFC 8707 resource allowlist independent of GetAudience. Resources and
+// audiences are independent request dimensions: permission in one must never
+// imply permission in the other. A client that does not implement this
+// interface falls back to GetAudience, preserving behavior for clients (e.g.
+// delegate clients) that only ever had one list.
+type resourceScopedClient interface {
+	Resources() []string
+}
+
+// ClientResources returns the resources client may request: its own resource
+// allowlist if it keeps one, otherwise its audiences.
+func ClientResources(client fosite.Client) []string {
+	if rc, ok := client.(resourceScopedClient); ok {
+		return rc.Resources()
+	}
+	return client.GetAudience()
+}
+
+// ValidateClientAudience checks that resource is one the client itself may
+// request. It applies to every client, including DCR and CIMD clients, and
+// uses fosite's audience matching strategy over the client's resources, the
+// same rule the authorization code callback and the refresh grant apply to the
+// client's audiences. A request this check lets through therefore cannot fail
+// the callback check later, and one it refuses fails here, with invalid_target,
+// before the user logs in upstream.
+//
+// The matching is fosite's path-prefix rule: scheme and host are compared
+// exactly, and the client's path must equal the resource path or be a
+// segment-boundary prefix of it. ValidateAudienceAllowed, which runs first,
+// still requires the resource to be an exact member of the server's list.
+func ValidateClientAudience(resource string, client fosite.Client) error {
+	if resource == "" {
+		return nil
+	}
+	if err := fosite.DefaultAudienceMatchingStrategy(ClientResources(client), []string{resource}); err != nil {
+		return ErrInvalidTarget.WithHintf("The client is not permitted to request resource %q", resource)
+	}
+	return nil
+}
+
+// ValidateIDJAGClientAudience is ValidateClientAudience for ID-JAG redemption,
+// with one backward-compatibility exception: a client that keeps no resource
+// allowlist and has no audiences is not narrowed. Before the client audience
+// check existed, such clients (for example an embedder's client registered
+// without an audience) could redeem an ID-JAG for any resource the server
+// allows, and nothing else in this grant checks the client's audiences. This
+// fails open and is kept only so that upgrading does not break them. Clients
+// with a resource allowlist, such as SPIFFE clients, are always checked, so an
+// empty allowlist permits nothing.
+func ValidateIDJAGClientAudience(resource string, client fosite.Client) error {
+	if _, scoped := client.(resourceScopedClient); !scoped && len(client.GetAudience()) == 0 {
+		return nil
+	}
+	return ValidateClientAudience(resource, client)
+}

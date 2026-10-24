@@ -436,6 +436,28 @@ type DelegateClientTokenExchange struct {
 	// even when the subject token does not cover it. It must be one of the
 	// client's Audiences. Valid only with restricted.
 	APIAudience string `json:"api_audience,omitempty" yaml:"api_audience,omitempty"`
+
+	// ExchangeRefreshTokens enables refresh-token issuance through token
+	// exchange for this client. Presence of the block enables it; a nil block
+	// refuses both grant kinds. Valid only with restricted, and requires
+	// APIAudience.
+	//nolint:lll // field tags require full JSON+YAML names
+	ExchangeRefreshTokens *DelegateClientExchangeRefreshTokens `json:"exchange_refresh_tokens,omitempty" yaml:"exchange_refresh_tokens,omitempty"`
+}
+
+// DelegateClientExchangeRefreshTokens holds the lifetime caps for refresh
+// tokens that a delegate client obtains through token exchange. Durations are
+// Go duration strings (e.g. "12h"), as in TokenLifespanRunConfig. Each cap must
+// be positive and at most 720h. An empty cap refuses the matching grant kind
+// for this client, and at least one cap must be set.
+type DelegateClientExchangeRefreshTokens struct {
+	// IDJAGMaxLifetime caps the lifetime of grants that can be exchanged for
+	// ID-JAGs. Empty refuses those grants.
+	IDJAGMaxLifetime string `json:"id_jag_max_lifetime,omitempty" yaml:"id_jag_max_lifetime,omitempty"`
+
+	// RefreshTokenMaxLifetime caps the lifetime of grants that can be exchanged
+	// for child refresh tokens. Empty refuses those grants.
+	RefreshTokenMaxLifetime string `json:"refresh_token_max_lifetime,omitempty" yaml:"refresh_token_max_lifetime,omitempty"`
 }
 
 // Clone returns a copy that shares no slices with t. A nil policy clones to nil.
@@ -742,6 +764,7 @@ func validateDelegateClientViews(
 			spec.SelfIssuedSubjectTokens = string(client.TokenExchange.SelfIssuedSubjectTokens)
 			spec.AllowedSourceClients = client.TokenExchange.AllowedSourceClients
 			spec.APIAudience = client.TokenExchange.APIAudience
+			setExchangeRefreshTokensSpec(&spec, client.TokenExchange.ExchangeRefreshTokens)
 		}
 		if err := registration.ValidateConfiguredClient(spec); err != nil {
 			return fmt.Errorf("delegate_clients: client_id %q: %w", client.ClientID, err)
@@ -767,6 +790,17 @@ func validateDelegateClientViews(
 		}
 	}
 	return nil
+}
+
+// setExchangeRefreshTokensSpec copies an exchange_refresh_tokens block into the
+// spec that ValidateConfiguredClient checks. A nil block leaves spec unchanged.
+func setExchangeRefreshTokensSpec(spec *registration.ConfiguredClientSpec, refresh *DelegateClientExchangeRefreshTokens) {
+	if refresh == nil {
+		return
+	}
+	spec.ExchangeRefreshTokens = true
+	spec.IDJAGMaxLifetime = refresh.IDJAGMaxLifetime
+	spec.RefreshTokenMaxLifetime = refresh.RefreshTokenMaxLifetime
 }
 
 // requireDeclaredTrustMode refuses a client that declares grant_types without

@@ -922,6 +922,58 @@ func TestValidateConfiguredClient(t *testing.T) {
 			TokenExchange: true, SelfIssuedSubjectTokens: restricted,
 			Audiences: []string{"https://a.example"}, APIAudience: "https://b.example",
 		}, wantErr: "not one of the client's audiences"},
+		{name: "exchange refresh tokens with id-jag cap", spec: exchangeRefreshSpec("12h", "")},
+		{name: "exchange refresh tokens with refresh cap", spec: exchangeRefreshSpec("", "720h")},
+		{name: "exchange refresh tokens with both caps", spec: exchangeRefreshSpec("1h", "24h")},
+		{name: "exchange refresh tokens with private_key_jwt", spec: func() ConfiguredClientSpec {
+			s := exchangeRefreshSpec("12h", "")
+			s.TokenEndpointAuthMethod = pkjwt
+			s.JWKS = keySet(validKey)
+			return s
+		}()},
+		{name: "exchange refresh tokens without caps", spec: exchangeRefreshSpec("", ""),
+			wantErr: "needs id_jag_max_lifetime or refresh_token_max_lifetime"},
+		{name: "exchange refresh tokens zero id-jag cap", spec: exchangeRefreshSpec("0s", ""),
+			wantErr: "id_jag_max_lifetime must be positive"},
+		{name: "exchange refresh tokens zero refresh cap without unit", spec: exchangeRefreshSpec("", "0"),
+			wantErr: "refresh_token_max_lifetime must be positive"},
+		{name: "exchange refresh tokens negative refresh cap", spec: exchangeRefreshSpec("", "-1h"),
+			wantErr: "refresh_token_max_lifetime must be positive"},
+		{name: "exchange refresh tokens id-jag cap above 720h", spec: exchangeRefreshSpec("721h", ""),
+			wantErr: "id_jag_max_lifetime must not exceed 720h"},
+		{name: "exchange refresh tokens refresh cap above 720h", spec: exchangeRefreshSpec("", "1000h"),
+			wantErr: "refresh_token_max_lifetime must not exceed 720h"},
+		{name: "exchange refresh tokens both caps exactly 720h", spec: exchangeRefreshSpec("720h", "720h")},
+		{name: "exchange refresh tokens id-jag cap one nanosecond over 720h",
+			spec:    exchangeRefreshSpec("720h0m0.000000001s", ""),
+			wantErr: "id_jag_max_lifetime must not exceed 720h"},
+		{name: "exchange refresh tokens refresh cap one nanosecond over 720h",
+			spec:    exchangeRefreshSpec("", "720h0m0.000000001s"),
+			wantErr: "refresh_token_max_lifetime must not exceed 720h"},
+		{name: "exchange refresh tokens id-jag cap with leading space", spec: exchangeRefreshSpec(" 12h", ""),
+			wantErr: "invalid duration"},
+		{name: "exchange refresh tokens refresh cap with trailing space", spec: exchangeRefreshSpec("", "12h "),
+			wantErr: "unknown unit"},
+		{name: "exchange refresh tokens id-jag cap without unit", spec: exchangeRefreshSpec("12", ""),
+			wantErr: "missing unit"},
+		{name: "exchange refresh tokens unparseable cap", spec: exchangeRefreshSpec("twelve", ""),
+			wantErr: "token_exchange.exchange_refresh_tokens.id_jag_max_lifetime"},
+		{name: "exchange refresh tokens without api audience", spec: func() ConfiguredClientSpec {
+			s := exchangeRefreshSpec("12h", "")
+			s.APIAudience = ""
+			return s
+		}(), wantErr: "api_audience is required with token_exchange.exchange_refresh_tokens"},
+		{name: "exchange refresh tokens with any", spec: func() ConfiguredClientSpec {
+			s := exchangeRefreshSpec("12h", "")
+			s.SelfIssuedSubjectTokens = selfIssuedSubjectTokensAny
+			s.APIAudience = ""
+			return s
+		}(), wantErr: `token_exchange.exchange_refresh_tokens requires self_issued_subject_tokens "restricted"`},
+		{name: "exchange refresh tokens with any and api audience", spec: func() ConfiguredClientSpec {
+			s := exchangeRefreshSpec("12h", "")
+			s.SelfIssuedSubjectTokens = selfIssuedSubjectTokensAny
+			return s
+		}(), wantErr: "token_exchange.api_audience is valid only with"},
 	}
 
 	for _, tt := range tests {
@@ -934,6 +986,58 @@ func TestValidateConfiguredClient(t *testing.T) {
 				spec.HasSecret = *tt.hasSecret
 			}
 			err := ValidateConfiguredClient(spec)
+			if tt.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
+}
+
+// exchangeRefreshSpec is a valid confidential token-exchange client with an
+// exchange_refresh_tokens block carrying the given caps.
+func exchangeRefreshSpec(idJAG, refresh string) ConfiguredClientSpec {
+	return ConfiguredClientSpec{
+		TokenExchange:           true,
+		SelfIssuedSubjectTokens: selfIssuedSubjectTokensRestricted,
+		Audiences:               []string{"https://api.example"},
+		APIAudience:             "https://api.example",
+		ExchangeRefreshTokens:   true,
+		IDJAGMaxLifetime:        idJAG,
+		RefreshTokenMaxLifetime: refresh,
+		HasSecret:               true,
+	}
+}
+
+// The confidential and token-exchange-grant rules are already enforced earlier
+// in ValidateConfiguredClient, so these cases call the block check directly.
+func TestValidateConfiguredExchangeRefreshTokensGuards(t *testing.T) {
+	t.Parallel()
+
+	noSecret := exchangeRefreshSpec("12h", "")
+	noSecret.HasSecret = false
+	noExchangeGrant := exchangeRefreshSpec("12h", "")
+	noExchangeGrant.GrantTypes = []string{oauthproto.GrantTypeJWTBearer}
+	anyMode := exchangeRefreshSpec("12h", "")
+	anyMode.SelfIssuedSubjectTokens = selfIssuedSubjectTokensAny
+
+	tests := []struct {
+		name    string
+		spec    ConfiguredClientSpec
+		wantErr string
+	}{
+		{name: "confidential secret client", spec: exchangeRefreshSpec("12h", "")},
+		{name: "no secret and not private_key_jwt", spec: noSecret, wantErr: "requires a confidential client"},
+		{name: "token exchange grant missing", spec: noExchangeGrant, wantErr: "exchange_refresh_tokens requires the"},
+		{name: "any mode", spec: anyMode, wantErr: `requires self_issued_subject_tokens "restricted"`},
+		{name: "block absent is not checked", spec: ConfiguredClientSpec{HasSecret: false}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := validateConfiguredExchangeRefreshTokens(tt.spec)
 			if tt.wantErr == "" {
 				require.NoError(t, err)
 				return

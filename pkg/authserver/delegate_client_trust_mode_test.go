@@ -96,7 +96,9 @@ func TestRestrictedClientPolicies(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			assert.Equal(t, tt.want, restrictedClientPolicies(tt.clients))
+			policies, err := configuredClientPolicies(tt.clients)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, policies)
 		})
 	}
 }

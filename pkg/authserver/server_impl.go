@@ -655,11 +655,39 @@ func JWTBearerGrantEnabled(trustedIssuers []tokenexchange.TrustedIssuer) bool {
 	return false
 }
 
-// restrictedClientPolicies returns the source policy of every delegate client
-// whose self_issued_subject_tokens is restricted, keyed by client ID. A client
-// with any, or without a token_exchange block, gets no entry and so keeps
-// blanket trust of self-issued subject tokens.
-func restrictedClientPolicies(clients []DelegateClient) map[string]tokenexchange.ConfiguredClientPolicy {
+// exchangeRefreshTokenCaps converts a delegate client's exchange_refresh_tokens
+// block into the lifetime caps of its token-exchange policy, keyed by the
+// token-type URN of the grant. A nil block gives nil; an empty cap is left out.
+// Config validation has already checked the durations.
+func exchangeRefreshTokenCaps(block *DelegateClientExchangeRefreshTokens) (map[string]time.Duration, error) {
+	if block == nil {
+		return nil, nil
+	}
+	caps := make(map[string]time.Duration, 2)
+	if block.IDJAGMaxLifetime != "" {
+		d, err := time.ParseDuration(block.IDJAGMaxLifetime)
+		if err != nil {
+			return nil, fmt.Errorf("token_exchange.exchange_refresh_tokens.id_jag_max_lifetime: %w", err)
+		}
+		caps[oauthproto.TokenTypeIDJAG] = d
+	}
+	if block.RefreshTokenMaxLifetime != "" {
+		d, err := time.ParseDuration(block.RefreshTokenMaxLifetime)
+		if err != nil {
+			return nil, fmt.Errorf("token_exchange.exchange_refresh_tokens.refresh_token_max_lifetime: %w", err)
+		}
+		caps[oauthproto.TokenTypeRefreshToken] = d
+	}
+	return caps, nil
+}
+
+// configuredClientPolicies builds the token-exchange policy of every delegate
+// client whose self_issued_subject_tokens is restricted, keyed by client_id. A
+// client with any, or without a token_exchange block, gets no entry and so
+// keeps blanket trust of self-issued subject tokens.
+func configuredClientPolicies(
+	clients []DelegateClient,
+) (map[string]tokenexchange.ConfiguredClientPolicy, error) {
 	var policies map[string]tokenexchange.ConfiguredClientPolicy
 	for _, c := range clients {
 		if !c.TokenExchange.Restricted() {
@@ -668,12 +696,17 @@ func restrictedClientPolicies(clients []DelegateClient) map[string]tokenexchange
 		if policies == nil {
 			policies = make(map[string]tokenexchange.ConfiguredClientPolicy)
 		}
+		refreshCaps, err := exchangeRefreshTokenCaps(c.TokenExchange.ExchangeRefreshTokens)
+		if err != nil {
+			return nil, fmt.Errorf("delegate client %q: %w", c.ClientID, err)
+		}
 		policies[c.ClientID] = tokenexchange.ConfiguredClientPolicy{
-			AllowedSourceClients: slices.Clone(c.TokenExchange.AllowedSourceClients),
-			APIAudience:          c.TokenExchange.APIAudience,
+			AllowedSourceClients:  slices.Clone(c.TokenExchange.AllowedSourceClients),
+			APIAudience:           c.TokenExchange.APIAudience,
+			ExchangeRefreshTokens: refreshCaps,
 		}
 	}
-	return policies
+	return policies, nil
 }
 
 // buildProvider assembles the fosite OAuth2 provider, registering the RFC 8693
@@ -696,7 +729,10 @@ func buildProvider(
 	refresher storage.UpstreamTokenRefresher, upstreams []handlers.NamedUpstream,
 ) (_ fosite.OAuth2Provider, _ *tokenexchange.MultiIssuerTokenValidator, retErr error) {
 	delegateIDs := delegateClientIDs(cfg.DelegateClients)
-	clientPolicies := restrictedClientPolicies(cfg.DelegateClients)
+	clientPolicies, policyErr := configuredClientPolicies(cfg.DelegateClients)
+	if policyErr != nil {
+		return nil, nil, policyErr
+	}
 	jwtBearerEnabled := JWTBearerGrantEnabled(cfg.TrustedIssuers)
 
 	// Built once, up front, and handed to whichever factories below actually

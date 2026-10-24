@@ -64,6 +64,7 @@ The storage layer implements multiple interfaces from the [fosite](https://githu
 - `UserStorage` — Internal user accounts and provider identity linking
 - `DCRCredentialStore` — DCR client metadata and credential persistence; intentionally NOT embedded in `Storage` (each backend implements it separately and call sites reach it via an explicit `stor.(DCRCredentialStore)` type assertion). Secret-based clients store hashed secrets; `private_key_jwt` clients store their inline public JWKS and signing algorithm. Outbound (upstream) registrations resolved by `pkg/auth/dcr` are keyed by `(Issuer, UpstreamID, RedirectURI, ScopesHash)` plus the optional operator-set `dcrConfig.rotationKey`. Changing the rotation key addresses a new row, so the next start registers a fresh upstream client; the previous row stays in place and carries no TTL unless the upstream asserted `client_secret_expires_at`. On a cache hit the resolver also checks the cached client against the upstream and replaces the row when the upstream rejects it, provided the store implements `dcr.Replacer`. `dcrConfig.registrationProbe` selects the check: `tokenEndpoint` (default) redeems a random authorization code and reads `invalid_client` as "gone"; `authorizationEndpoint` sends an authorization request without following redirects and reads a direct 400/401/403 carrying an RFC 6749 JSON error object with `error` `invalid_client`, `unauthorized_client` or `invalid_request` as "gone" (RFC 6749 §4.1.2.1); `none` skips the check. Each setting has a blind spot the rotation key covers: `tokenEndpoint` misses an upstream that validates the grant before authenticating a public client (it then answers `invalid_grant` for any client_id) and skips `private_key_jwt` clients, which it cannot sign for; `authorizationEndpoint` misses an upstream that renders its unknown-client error with 200, a redirect, or a page rather than a JSON error object; with `none` the rotation key is the only way to retire a registration. A false rejection by either probe re-registers at every start and, when registration also fails, fails startup.
 - `AssertionJWTConsumer` — atomic single-use consumption for validated JWT assertions. It is deliberately separate from `Storage`, so only assertion-grant composition requires replay protection.
+- `ExchangeGrantStorage` — optional server-side records behind refresh tokens issued through RFC 8693 token exchange. A callable discovers it with `storage.Unwrap(stor).(ExchangeGrantStorage)`. Memory and Redis implement it. See [Exchange grant storage](#exchange-grant-storage).
 
 **Implementation:**
 - Interface definitions: `pkg/authserver/storage/types.go`
@@ -372,6 +373,23 @@ Secondary indexes use Redis Sets to enable reverse lookups:
 thv:auth:{default:my-server}:reqid:access:{request-id}  → {sig1, sig2}
 thv:auth:{default:my-server}:user:upstream:{user-id}     → {session1, session2}
 ```
+
+### Exchange grant storage
+
+`ExchangeGrantStorage` keeps one record per refresh token issued through token exchange, found by the token's HMAC signature. Time decisions for records (live, expired, revoked) are made in Go against the store clock; the record's Redis TTL is only garbage collection. The replay marker is different: its window follows Redis's own TTL. The create script checks whether the marker key exists, and Go only skips the marker once its window has already passed. `ExchangeGrantMarkerMargin` absorbs clock skew and the time between reading the clock and running the script. Both effects can only lengthen the window, which is the safe direction.
+
+| Key | Type | Contents | TTL |
+|---|---|---|---|
+| `{prefix}xgrant:{signature}` | HASH | `data`: immutable JSON of the record without `RevokedAt`. `rev_ms`: revocation time in Unix ms, absent while the grant is live | `ExpiresAt` (plus 1 ms, see below) |
+| `{prefix}assertion-jwt:{digest}` | STRING | Replay marker for the subject access token's `(issuer, jti)`, built with the `exchange-grant` purpose. The value is the grant signature. Written only for a top-level grant | `SourceExpiresAt` plus `ExchangeGrantMarkerMargin` (1 minute), plus 1 ms |
+
+Creating a grant is one Lua script. It runs every check before any write: a key of the wrong type is an error, then an existing record returns `ErrAlreadyExists`, then an existing marker returns `fosite.ErrJTIKnown`. Only then does it write the record, set its TTL, and write the marker. Concurrent creates for one `jti` therefore admit exactly one. The script touches only its declared keys, which share the `{ns:name}` hash tag of the store prefix, so it is safe on Redis Cluster.
+
+Revoking is a single `HSETNX` of `rev_ms` (inside a small script that first checks the record exists, since a bare `HSETNX` would create a HASH with no TTL). It is idempotent, keeps the first revocation time, and does not change either TTL. Get and revoke return `ErrNotFound` for a record past `ExpiresAt` even if Redis has not evicted it.
+
+Each TTL has 1 ms added because liveness is inclusive: a grant is usable at exactly `ExpiresAt`, and a marker still blocks replay at exactly `SourceExpiresAt` plus the margin. miniredis deletes a key when its TTL reaches zero, so the extra millisecond keeps the boundary instant inclusive there. On real Redis it only extends a key's life by 1 ms. For a record, Go decides, so the extra time only affects garbage collection. For a marker it lengthens blocking by at most 1 ms, which is the safe direction. TTLs are capped at 100 years so a far-future `exp` cannot overflow.
+
+**Persistence expectation.** Recent writes can be lost when Redis restarts without AOF, or when it fails over to a replica that had not yet received them. A lost replay marker allows a second exchange of the subject access token. A lost revocation makes the grant, and its children, usable again until `ExpiresAt`. A lost record only makes its refresh token unusable. Enable AOF (and prefer a strict fsync policy) if these losses matter.
 
 ### Consistency Model
 

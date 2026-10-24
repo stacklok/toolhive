@@ -1121,6 +1121,34 @@ func (g *ExchangeGrant) Live(now time.Time) error {
 	return nil
 }
 
+// validateExchangeGrantShape checks the parts of a grant that every backend
+// must refuse before writing: it must be non-nil, have a Signature, and either
+// set SourceIssuer and SourceJTI together (a top-level grant, which also needs
+// SourceExpiresAt) or leave both empty (a child).
+func validateExchangeGrantShape(g *ExchangeGrant) error {
+	if g == nil {
+		return errors.New("exchange grant is nil")
+	}
+	if g.Signature == "" {
+		return errors.New("exchange grant signature is empty")
+	}
+	if (g.SourceJTI == "") != (g.SourceIssuer == "") {
+		return errors.New("exchange grant must set both SourceIssuer and SourceJTI or neither")
+	}
+	if g.SourceJTI != "" && g.SourceExpiresAt.IsZero() {
+		return errors.New("exchange grant with a SourceJTI needs SourceExpiresAt")
+	}
+	return nil
+}
+
+// validateExchangeGrantRevokeTime refuses a zero revocation time.
+func validateExchangeGrantRevokeTime(now time.Time) error {
+	if now.IsZero() {
+		return errors.New("revoke time must not be zero")
+	}
+	return nil
+}
+
 // ExchangeGrantStorage stores the grant records behind refresh tokens issued
 // through token exchange. It is an optional capability, like DeviceCodeStorage.
 // Callers discover it with storage.Unwrap(stor).(ExchangeGrantStorage) at

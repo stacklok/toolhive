@@ -16,7 +16,6 @@ package storage
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"net/url"
@@ -1037,18 +1036,8 @@ func cloneExchangeGrant(g *ExchangeGrant) *ExchangeGrant {
 // of a create that already succeeded (same signature, same jti) therefore gets
 // ErrAlreadyExists, which says this exact grant exists, instead of ErrJTIKnown.
 func (s *MemoryStorage) CreateExchangeGrant(_ context.Context, g *ExchangeGrant) error {
-	if g == nil {
-		return errors.New("exchange grant is nil")
-	}
-	if g.Signature == "" {
-		return errors.New("exchange grant signature is empty")
-	}
-
-	if (g.SourceJTI == "") != (g.SourceIssuer == "") {
-		return errors.New("exchange grant must set both SourceIssuer and SourceJTI or neither")
-	}
-	if g.SourceJTI != "" && g.SourceExpiresAt.IsZero() {
-		return errors.New("exchange grant with a SourceJTI needs SourceExpiresAt")
+	if err := validateExchangeGrantShape(g); err != nil {
+		return err
 	}
 
 	s.mu.Lock()
@@ -1094,8 +1083,8 @@ func (s *MemoryStorage) GetExchangeGrant(_ context.Context, signature string) (*
 // revoked, in which case the first RevokedAt is kept. A missing or expired
 // record returns ErrNotFound.
 func (s *MemoryStorage) RevokeExchangeGrant(_ context.Context, signature string, now time.Time) error {
-	if now.IsZero() {
-		return errors.New("revoke time must not be zero")
+	if err := validateExchangeGrantRevokeTime(now); err != nil {
+		return err
 	}
 
 	s.mu.Lock()

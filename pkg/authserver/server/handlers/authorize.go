@@ -303,10 +303,17 @@ func (h *Handler) writeAuthorizeRequestError(
 	h.provider.WriteAuthorizeError(ctx, w, ar, err)
 }
 
-// rejectBackChannelOnlyAuthorizeClient rejects a configured client that has no
-// authorization response types before fosite validates redirect_uri. It returns
+// rejectBackChannelOnlyAuthorizeClient rejects any client that has no
+// interactive /authorize flow (see consentpolicy.IsBackChannelOnlyClient), which
+// includes every client without the authorization_code grant, whether
+// configured, DCR or CIMD, before fosite validates redirect_uri. It returns
 // false for unknown clients so fosite retains responsibility for its normal
 // client lookup and error handling.
+//
+// RFC 6749 section 4.1.2.1 would answer a known client that may not use this
+// grant with unauthorized_client. invalid_client without a redirect is returned
+// deliberately: it matches the answer for an unknown client, so the response
+// does not reveal whether the client ID exists.
 func (h *Handler) rejectBackChannelOnlyAuthorizeClient(ctx context.Context, w http.ResponseWriter, req *http.Request) bool {
 	if err := req.ParseForm(); err != nil {
 		return false

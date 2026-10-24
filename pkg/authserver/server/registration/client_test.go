@@ -756,6 +756,10 @@ func TestValidateConfiguredClient(t *testing.T) {
 
 	ecKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	require.NoError(t, err)
+	secondKey := jose.JSONWebKey{Key: testRSAPublicKey(t), KeyID: "k2", Use: "sig", Algorithm: string(jose.RS256)}
+	keyWithoutKID := jose.JSONWebKey{Key: testRSAPublicKey(t), Use: "sig", Algorithm: string(jose.RS256)}
+	duplicateKID := secondKey
+	duplicateKID.KeyID = validKey.KeyID
 
 	noSecret := false
 	tests := []struct {
@@ -811,6 +815,18 @@ func TestValidateConfiguredClient(t *testing.T) {
 		{name: "private_key_jwt with public key", spec: ConfiguredClientSpec{
 			TokenEndpointAuthMethod: pkjwt, JWKS: keySet(validKey),
 		}},
+		{name: "rotation with unique kids", spec: ConfiguredClientSpec{
+			TokenEndpointAuthMethod: pkjwt, JWKS: keySet(validKey, secondKey),
+		}},
+		{name: "single key without kid", spec: ConfiguredClientSpec{
+			TokenEndpointAuthMethod: pkjwt, JWKS: keySet(keyWithoutKID),
+		}},
+		{name: "rotation with a key lacking kid", spec: ConfiguredClientSpec{
+			TokenEndpointAuthMethod: pkjwt, JWKS: keySet(validKey, keyWithoutKID),
+		}, wantErr: "has no kid"},
+		{name: "rotation with duplicate kids", spec: ConfiguredClientSpec{
+			TokenEndpointAuthMethod: pkjwt, JWKS: keySet(validKey, duplicateKID),
+		}, wantErr: "used by more than one key"},
 		{name: "private_key_jwt keys pending", spec: ConfiguredClientSpec{
 			TokenEndpointAuthMethod: pkjwt, JWKSPending: true,
 		}},

@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net/http"
 	"reflect"
+	"slices"
 	"time"
 
 	josev3 "github.com/go-jose/go-jose/v3"
@@ -30,6 +31,7 @@ import (
 	spiffeauth "github.com/stacklok/toolhive/pkg/authserver/spiffe"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
+	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
 // server is the internal implementation of the Server interface.
@@ -219,9 +221,11 @@ func authorizationServerParams(
 		AllowConfidentialClientRegistration:       cfg.AllowConfidentialClientRegistration,
 		AllowPrivateKeyJWTRegistration:            cfg.AllowPrivateKeyJWTRegistration,
 		HasStaticDelegateClients:                  len(cfg.DelegateClients) > 0,
+		HasStaticSecretClients:                    hasSecretDelegateClient(cfg.DelegateClients),
 		InsecureAllowHTTP:                         cfg.InsecureAllowHTTP,
 		InsecureAllowConfidentialOverLoopbackHTTP: cfg.InsecureAllowConfidentialOverLoopbackHTTP,
 		ForceConfidentialRedirectURIs:             cfg.ForceConfidentialRedirectURIs,
+		HasStaticPrivateKeyJWTClients:             hasPrivateKeyJWTDelegateClient(cfg.DelegateClients),
 		DisableTokenExchange:                      cfg.DisableTokenExchange,
 		JWTBearerGrantEnabled:                     JWTBearerGrantEnabled(cfg.TrustedIssuers),
 		DeviceFlowEnabled:                         cfg.DeviceFlowEnabled,
@@ -344,9 +348,12 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage) (_ *server
 	}, nil
 }
 
-// prepareServerStorageAndRegisterClients decorates storage, validates configured
-// consent-exempt clients against the prepared registration view, and registers
-// delegate clients before returning the storage handles used by server construction.
+// prepareServerStorageAndRegisterClients decorates storage, builds the delegate
+// clients, validates configured consent-exempt clients, and then registers the
+// delegate clients, before returning the storage handles used by server
+// construction. A configured login client is checked as built, so it need not
+// be stored yet, and a bad consent-exempt ID aborts startup before any
+// delegate row is written to shared storage.
 func prepareServerStorageAndRegisterClients(
 	ctx context.Context, cfg Config, stor storage.Storage,
 ) (prepared storage.Storage, dcrStore storage.DCRCredentialStore,
@@ -385,10 +392,14 @@ func prepareServerStorageAndRegisterClients(
 	if retErr != nil {
 		return nil, nil, nil, nil, retErr
 	}
-	if retErr = validateConsentExemptClients(ctx, prepared, cfg.ConsentExemptClientIDs); retErr != nil {
+	delegates, err := buildDelegateClients(cfg.DelegateClients)
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+	if retErr = validateConsentExemptClients(ctx, prepared, delegates, cfg.ConsentExemptClientIDs); retErr != nil {
 		return nil, nil, nil, nil, retErr
 	}
-	if retErr = registerDelegateClients(ctx, prepared, cfg.DelegateClients); retErr != nil {
+	if retErr = registerDelegateClients(ctx, prepared, delegates); retErr != nil {
 		return nil, nil, nil, nil, retErr
 	}
 	return prepared, dcrStore, bundleSource, spiffeRegistry, nil
@@ -416,11 +427,40 @@ func newClientAdmissionStorage(cfg Config, stor storage.Storage) (storage.Storag
 	return admission, nil
 }
 
-func validateConsentExemptClients(ctx context.Context, stor storage.Storage, clientIDs []string) error {
+// hasSecretDelegateClient reports whether any delegate client authenticates
+// with a client secret, which is every method other than private_key_jwt.
+func hasSecretDelegateClient(clients []DelegateClient) bool {
+	return slices.ContainsFunc(clients, func(c DelegateClient) bool {
+		return c.TokenEndpointAuthMethod != oauthproto.TokenEndpointAuthMethodPrivateKeyJWT
+	})
+}
+
+// hasPrivateKeyJWTDelegateClient reports whether any delegate client
+// authenticates with private_key_jwt.
+func hasPrivateKeyJWTDelegateClient(clients []DelegateClient) bool {
+	return slices.ContainsFunc(clients, func(c DelegateClient) bool {
+		return c.TokenEndpointAuthMethod == oauthproto.TokenEndpointAuthMethodPrivateKeyJWT
+	})
+}
+
+// validateConsentExemptClients checks that every consent-exempt ID names a
+// client that can be preauthorized. A configured delegate client is checked as
+// built, before it is written, so a bad ID aborts startup without leaving new
+// delegate rows in shared storage; any other ID is read from stor.
+func validateConsentExemptClients(
+	ctx context.Context, stor storage.Storage, delegates []fosite.Client, clientIDs []string,
+) error {
+	byID := make(map[string]fosite.Client, len(delegates))
+	for _, delegate := range delegates {
+		byID[delegate.GetID()] = delegate
+	}
 	for _, clientID := range clientIDs {
-		client, err := stor.GetClient(ctx, clientID)
-		if err != nil {
-			return fmt.Errorf("failed to resolve consent-exempt client %q: %w", clientID, err)
+		client, ok := byID[clientID]
+		if !ok {
+			var err error
+			if client, err = stor.GetClient(ctx, clientID); err != nil {
+				return fmt.Errorf("failed to resolve consent-exempt client %q: %w", clientID, err)
+			}
 		}
 		if !consentpolicy.IsEligibleClient(client) {
 			return fmt.Errorf("consent-exempt client %q is missing or ineligible", clientID)
@@ -429,7 +469,10 @@ func validateConsentExemptClients(ctx context.Context, stor storage.Storage, cli
 	return nil
 }
 
-func registerDelegateClients(ctx context.Context, stor storage.Storage, delegateClients []DelegateClient) error {
+// buildDelegateClients builds the configured delegate clients in memory
+// without touching storage.
+func buildDelegateClients(delegateClients []DelegateClient) ([]fosite.Client, error) {
+	clients := make([]fosite.Client, 0, len(delegateClients))
 	for _, delegateClient := range delegateClients {
 		client, err := registration.NewStaticDelegateClient(registration.Config{
 			ID:                                delegateClient.ClientID,
@@ -443,15 +486,24 @@ func registerDelegateClients(ctx context.Context, stor storage.Storage, delegate
 			Audience:                          delegateClient.Audiences,
 		})
 		if err != nil {
-			return fmt.Errorf("failed to create delegate client %q: %w", delegateClient.ClientID, err)
+			return nil, fmt.Errorf("failed to create delegate client %q: %w", delegateClient.ClientID, err)
 		}
+		clients = append(clients, client)
+	}
+	return clients, nil
+}
+
+// registerDelegateClients writes the built delegate clients to stor, replacing
+// any stored row at the same ID.
+func registerDelegateClients(ctx context.Context, stor storage.Storage, clients []fosite.Client) error {
+	for _, client := range clients {
 		if err := stor.ReconcileConfiguredClient(ctx, client); err != nil {
-			return fmt.Errorf("failed to register delegate client %q: %w", delegateClient.ClientID, err)
+			return fmt.Errorf("failed to register delegate client %q: %w", client.GetID(), err)
 		}
 		slog.Warn("delegate client has blanket self-issued token exchange rights: "+
 			"it may exchange any user's self-issued ToolHive token for a delegated token, "+
 			"with no per-subject binding to the client that originally obtained that token",
-			"client_id", delegateClient.ClientID, "scopes", delegateClient.Scopes, "audiences", delegateClient.Audiences)
+			"client_id", client.GetID(), "scopes", client.GetScopes(), "audiences", client.GetAudience())
 	}
 	return nil
 }

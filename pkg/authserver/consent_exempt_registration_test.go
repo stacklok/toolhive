@@ -173,3 +173,56 @@ func TestNewConsentExemptLookupUsesDecoratedStorage(t *testing.T) {
 	_, err = baseStore.GetClient(context.Background(), "exempt-client")
 	require.Error(t, err)
 }
+
+// TestNewConsentExemptValidationPrecedesDelegateRegistration pins that a bad
+// consent-exempt ID aborts startup before any delegate row reaches shared
+// storage. The delegate here has the default token-exchange-only grants, so it
+// cannot be preauthorized.
+func TestNewConsentExemptValidationPrecedesDelegateRegistration(t *testing.T) {
+	t.Parallel()
+
+	baseStore := storage.NewMemoryStorage()
+	t.Cleanup(func() { _ = baseStore.Close() })
+	cfg := consentExemptConfig(func(context.Context, *UpstreamConfig) (upstream.OAuth2Provider, error) {
+		return nil, errors.New("upstream factory should not run")
+	})
+	cfg.DelegateClients = []DelegateClient{{
+		ClientID: "delegate", ClientSecret: "0123456789abcdef0123456789abcdef", Scopes: []string{"openid"}, Audiences: []string{"https://mcp.example.com"},
+	}}
+	cfg.ConsentExemptClientIDs = []string{"delegate"}
+
+	_, err := newServer(context.Background(), cfg, baseStore)
+	require.ErrorContains(t, err, "missing or ineligible")
+
+	_, err = baseStore.GetClient(context.Background(), "delegate")
+	require.ErrorIs(t, err, storage.ErrNotFound, "a failed startup must not leave the delegate row behind")
+}
+
+// TestNewConsentExemptValidationPrefersBuiltDelegate pins that a configured
+// delegate is checked as built, not as a stored row under the same ID. The
+// stored row is eligible, the configured delegate is not, and startup must
+// fail: the stored row is about to be replaced by the delegate.
+func TestNewConsentExemptValidationPrefersBuiltDelegate(t *testing.T) {
+	t.Parallel()
+
+	baseStore := storage.NewMemoryStorage()
+	t.Cleanup(func() { _ = baseStore.Close() })
+	stale := eligibleConsentClient()
+	stale.ID = "delegate"
+	require.NoError(t, baseStore.RegisterClient(context.Background(), stale))
+
+	cfg := consentExemptConfig(func(context.Context, *UpstreamConfig) (upstream.OAuth2Provider, error) {
+		return nil, errors.New("upstream factory should not run")
+	})
+	cfg.DelegateClients = []DelegateClient{{
+		ClientID: "delegate", ClientSecret: "0123456789abcdef0123456789abcdef", Scopes: []string{"openid"}, Audiences: []string{"https://mcp.example.com"},
+	}}
+	cfg.ConsentExemptClientIDs = []string{"delegate"}
+
+	_, err := newServer(context.Background(), cfg, baseStore)
+	require.ErrorContains(t, err, "missing or ineligible")
+
+	got, err := baseStore.GetClient(context.Background(), "delegate")
+	require.NoError(t, err)
+	require.Equal(t, stale.RedirectURIs, got.GetRedirectURIs(), "a failed startup must leave the stored row untouched")
+}

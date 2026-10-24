@@ -44,6 +44,8 @@ type testSetupOptions struct {
 	AllowConfidentialClientRegistration bool
 	AllowPrivateKeyJWTRegistration      bool
 	HasStaticDelegateClients            bool
+	HasStaticSecretClients              bool
+	HasStaticPrivateKeyJWTClients       bool
 	DisableTokenExchange                bool
 	JWTBearerGrantEnabled               bool
 }
@@ -78,6 +80,8 @@ func testSetupWithOptions(t *testing.T, opts testSetupOptions) *Handler {
 		AllowConfidentialClientRegistration: opts.AllowConfidentialClientRegistration,
 		AllowPrivateKeyJWTRegistration:      opts.AllowPrivateKeyJWTRegistration,
 		HasStaticDelegateClients:            opts.HasStaticDelegateClients,
+		HasStaticSecretClients:              opts.HasStaticSecretClients,
+		HasStaticPrivateKeyJWTClients:       opts.HasStaticPrivateKeyJWTClients,
 		DisableTokenExchange:                opts.DisableTokenExchange,
 		JWTBearerGrantEnabled:               opts.JWTBearerGrantEnabled,
 		AccessTokenLifespan:                 time.Hour,
@@ -292,21 +296,41 @@ func TestDiscoveryHandlers_ConfidentialAuthMethods(t *testing.T) {
 	wantAlgorithms := registration.SupportedSigningAlgorithms()
 
 	tests := []struct {
-		name              string
-		allowConfidential bool
-		allowPrivate      bool
-		hasStaticClient   bool
-		wantMethods       []string
-		wantAlgorithms    []string
+		name                string
+		allowConfidential   bool
+		allowPrivate        bool
+		hasStaticDelegate   bool
+		hasStaticSecret     bool
+		hasStaticPrivateKey bool
+		wantMethods         []string
+		wantAlgorithms      []string
 	}{
-		{"public only advertises only none", false, false, false, wantOff, nil},
-		{"private_key_jwt only advertises private_key_jwt", false, true, false, wantPrivateKeyJWT, wantAlgorithms},
-		{"confidential DCR advertises client_secret methods", true, false, false, wantSecrets, nil},
-		{"confidential DCR and private_key_jwt advertise both", true, true, false, wantSecretsAndPrivateKeyJWT, wantAlgorithms},
-		{"static delegate advertises client_secret methods", false, false, true, wantSecrets, nil},
-		{"static delegate and private_key_jwt advertise both", false, true, true, wantSecretsAndPrivateKeyJWT, wantAlgorithms},
-		{"confidential DCR and static delegate advertise client_secret methods", true, false, true, wantSecrets, nil},
-		{"all authentication methods are advertised", true, true, true, wantSecretsAndPrivateKeyJWT, wantAlgorithms},
+		{name: "public only advertises only none", wantMethods: wantOff},
+		{name: "private_key_jwt only advertises private_key_jwt", allowPrivate: true,
+			wantMethods: wantPrivateKeyJWT, wantAlgorithms: wantAlgorithms},
+		{name: "confidential DCR advertises client_secret methods", allowConfidential: true, wantMethods: wantSecrets},
+		{name: "confidential DCR and private_key_jwt advertise both", allowConfidential: true, allowPrivate: true,
+			wantMethods: wantSecretsAndPrivateKeyJWT, wantAlgorithms: wantAlgorithms},
+		{name: "static secret delegate advertises client_secret methods", hasStaticDelegate: true, hasStaticSecret: true,
+			wantMethods: wantSecrets},
+		{name: "static secret delegate and private_key_jwt DCR advertise both", allowPrivate: true,
+			hasStaticDelegate: true, hasStaticSecret: true,
+			wantMethods: wantSecretsAndPrivateKeyJWT, wantAlgorithms: wantAlgorithms},
+		{name: "confidential DCR and static secret delegate advertise client_secret methods", allowConfidential: true,
+			hasStaticDelegate: true, hasStaticSecret: true, wantMethods: wantSecrets},
+		{name: "key-only static delegate advertises only private_key_jwt",
+			hasStaticDelegate: true, hasStaticPrivateKey: true,
+			wantMethods: wantPrivateKeyJWT, wantAlgorithms: wantAlgorithms},
+		{name: "transport flag alone does not advertise client_secret methods", hasStaticDelegate: true,
+			wantMethods: wantOff},
+		{name: "mixed static delegates advertise both", hasStaticDelegate: true, hasStaticSecret: true,
+			hasStaticPrivateKey: true, wantMethods: wantSecretsAndPrivateKeyJWT, wantAlgorithms: wantAlgorithms},
+		{name: "confidential DCR with a key-only static delegate advertises both", allowConfidential: true,
+			hasStaticDelegate: true, hasStaticPrivateKey: true,
+			wantMethods: wantSecretsAndPrivateKeyJWT, wantAlgorithms: wantAlgorithms},
+		{name: "all authentication methods are advertised", allowConfidential: true, allowPrivate: true,
+			hasStaticDelegate: true, hasStaticSecret: true, hasStaticPrivateKey: true,
+			wantMethods: wantSecretsAndPrivateKeyJWT, wantAlgorithms: wantAlgorithms},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -314,7 +338,9 @@ func TestDiscoveryHandlers_ConfidentialAuthMethods(t *testing.T) {
 			handler := testSetupWithOptions(t, testSetupOptions{
 				AllowConfidentialClientRegistration: tc.allowConfidential,
 				AllowPrivateKeyJWTRegistration:      tc.allowPrivate,
-				HasStaticDelegateClients:            tc.hasStaticClient,
+				HasStaticDelegateClients:            tc.hasStaticDelegate,
+				HasStaticSecretClients:              tc.hasStaticSecret,
+				HasStaticPrivateKeyJWTClients:       tc.hasStaticPrivateKey,
 			})
 
 			// OAuth AS metadata endpoint.

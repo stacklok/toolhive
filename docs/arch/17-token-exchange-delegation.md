@@ -277,14 +277,15 @@ Both `/.well-known/oauth-authorization-server` and
 (`Config.DisableTokenExchange`, `AuthorizationServerConfig.TokenExchangeEnabled`)
 — the same flag governs both registration with fosite and discovery
 advertisement, so they cannot drift out of sync. `token_endpoint_auth_methods_supported` always
-includes `none`; it also includes `client_secret_basic` and
-`client_secret_post` when confidential DCR is enabled or a static delegate
-client is configured, and includes `private_key_jwt` when
-`allowPrivateKeyJWTRegistration` is enabled. In the latter case,
-`token_endpoint_auth_signing_alg_values_supported` lists the implemented
-algorithms. The RFC 7523 §2.1 JWT-bearer grant is advertised only when a trusted
-issuer opts into it. A private-key JWT DCR client is limited to token exchange;
-it is not an authorization-code client.
+includes `none`. It also includes `client_secret_basic` and
+`client_secret_post` when confidential DCR is enabled or a configured delegate
+client authenticates with a secret, so a deployment whose delegate clients all
+use `private_key_jwt` does not advertise them. It includes `private_key_jwt`, together with
+`token_endpoint_auth_signing_alg_values_supported` (the implemented algorithms),
+when `allowPrivateKeyJWTRegistration` is enabled or a configured delegate client
+uses `private_key_jwt`. The RFC 7523 §2.1 JWT-bearer grant is advertised only
+when a trusted issuer opts into it. A private-key JWT DCR client is limited to
+token exchange; it is not an authorization-code client.
 
 On Kubernetes, a delegate-client Secret is injected as a pod environment
 variable and is resolved when the authorization server starts. Updating that
@@ -561,14 +562,40 @@ optional; a client that sets none of them is the same client as before.
 | Field | Meaning |
 |---|---|
 | `token_endpoint_auth_method` | Omitted: the client authenticates with its secret by HTTP Basic or form body. `client_secret_basic` or `client_secret_post` pins one of them. `private_key_jwt` authenticates with a signed assertion instead of a secret. |
-| `jwks_file` | Path to the client's public JWKS. Required for `private_key_jwt`, forbidden otherwise. Each key must have `use: sig`. Private and symmetric keys are rejected, at most 10 keys are allowed, and the keys must match `token_endpoint_auth_signing_alg` (default `RS256`). |
+| `jwks_file` | Path to the client's public JWKS. Required for `private_key_jwt`, forbidden otherwise. Each key must have `use: sig`. Private and symmetric keys are rejected, at most 10 keys are allowed, and the keys must match `token_endpoint_auth_signing_alg` (default `RS256`). When the file holds more than one key, every key must have a unique, non-empty `kid`, and the client must send the `kid` of its signing key in the assertion header: fosite checks an assertion that has no `kid` only against the first signing key of the matching type, so a key added during a rotation would never be used otherwise. The `kid` rule is checked when the keys are loaded at startup, not when `RunConfig` is validated. |
 | `grant_types` | Omitted or empty means token exchange only. When set, the list must include token exchange. The other allowed values are `authorization_code`, `refresh_token` and the JWT-bearer grant. `refresh_token` is allowed only together with `authorization_code`. |
 | `redirect_uris` | Required with `authorization_code`, forbidden without it. Each URI must be https and not loopback, as for any other confidential client. |
+
+A delegate's `audiences` limit what it may request. List the narrowest
+audience the client needs: with the default path-prefix strategy, an audience
+such as `https://h/` covers every child path that is also in the server's
+`allowed_audiences` (see "Grants and audiences" below).
 
 One validator in the `registration` package checks these fields. It runs when
 `RunConfig` is validated (with the JWKS contents still unloaded) and when the
 client is built (with the keys loaded). The built client is never marked as
 DCR-issued, so it has no TTL and does not count against `max_dcr_clients`.
+
+At startup the runner reads each `jwks_file` next to the existing
+`client_secret_file` handling, so rotating a key means replacing the file and
+restarting. The stored client keeps its `client_id`; the new key set replaces
+the old one. Discovery lists the client authentication methods as described in
+[Discovery and secret rotation](#discovery-and-secret-rotation). The
+cleartext-transport rule is separate: every delegate client, `private_key_jwt`
+ones included, counts as confidential there.
+
+The server builds each configured delegate client in memory and checks it as
+consent-exempt before it writes the client. A configured login client can
+therefore be listed in `WithConsentExemptClientIDs`, and a bad ID aborts startup
+without leaving delegate rows in storage. When an ID names both a configured
+delegate and a stored row, the delegate as built is the one checked.
+
+`/authorize` treats every client without the `authorization_code` grant as
+back-channel only and answers `invalid_client`, as it does for an unknown
+client, so the response does not show whether such a client exists. RFC 6749
+section 4.1.2.1 would use `unauthorized_client` for a known client; the server
+returns `invalid_client` deliberately. A client that holds `authorization_code`
+in addition to other grants can log users in.
 
 ### Worked example
 

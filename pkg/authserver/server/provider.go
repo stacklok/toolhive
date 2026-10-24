@@ -132,10 +132,23 @@ type AuthorizationServerConfig struct {
 	// private_key_jwt authentication. This is independent of confidential-client
 	// registration and is used by DCR validation and discovery advertisement.
 	AllowPrivateKeyJWTRegistration bool
-	// HasStaticDelegateClients indicates whether any pre-provisioned confidential
-	// delegate client is registered at startup. Discovery advertises client-secret
-	// authentication methods when this is true.
+	// HasStaticDelegateClients indicates whether any pre-provisioned delegate
+	// client is registered at startup. Every such client counts as confidential
+	// for the cleartext-transport check, whatever its auth method. It does not
+	// drive discovery; see HasStaticSecretClients and
+	// HasStaticPrivateKeyJWTClients.
 	HasStaticDelegateClients bool
+	// HasStaticSecretClients indicates whether any pre-provisioned delegate
+	// client authenticates with a client secret (an empty, client_secret_basic
+	// or client_secret_post token endpoint auth method). Discovery advertises
+	// the client_secret_* methods when this is true. It is deliberately separate
+	// from HasStaticDelegateClients, which counts private_key_jwt delegates too
+	// because the cleartext-transport check does.
+	HasStaticSecretClients bool
+	// HasStaticPrivateKeyJWTClients indicates whether any pre-provisioned
+	// delegate client authenticates with private_key_jwt. Discovery advertises
+	// that method and its signing algorithms when this is true.
+	HasStaticPrivateKeyJWTClients bool
 	// InsecureAllowHTTP permits a non-loopback HTTP issuer. It is incompatible
 	// with confidential clients.
 	InsecureAllowHTTP bool
@@ -242,10 +255,23 @@ type AuthorizationServerParams struct {
 	// private_key_jwt authentication. This is independent of confidential-client
 	// registration and is used by DCR validation and discovery advertisement.
 	AllowPrivateKeyJWTRegistration bool
-	// HasStaticDelegateClients indicates whether any pre-provisioned confidential
-	// delegate client is registered at startup. Discovery advertises client-secret
-	// authentication methods when this is true.
+	// HasStaticDelegateClients indicates whether any pre-provisioned delegate
+	// client is registered at startup. Every such client counts as confidential
+	// for the cleartext-transport check, whatever its auth method. It does not
+	// drive discovery; see HasStaticSecretClients and
+	// HasStaticPrivateKeyJWTClients.
 	HasStaticDelegateClients bool
+	// HasStaticSecretClients indicates whether any pre-provisioned delegate
+	// client authenticates with a client secret (an empty, client_secret_basic
+	// or client_secret_post token endpoint auth method). Discovery advertises
+	// the client_secret_* methods when this is true. It is deliberately separate
+	// from HasStaticDelegateClients, which counts private_key_jwt delegates too
+	// because the cleartext-transport check does.
+	HasStaticSecretClients bool
+	// HasStaticPrivateKeyJWTClients indicates whether any pre-provisioned
+	// delegate client authenticates with private_key_jwt. Discovery advertises
+	// that method and its signing algorithms when this is true.
+	HasStaticPrivateKeyJWTClients bool
 	// InsecureAllowHTTP permits a non-loopback HTTP issuer. It is incompatible
 	// with confidential clients.
 	InsecureAllowHTTP bool
@@ -544,6 +570,8 @@ func NewAuthorizationServerConfig(cfg *AuthorizationServerParams) (*Authorizatio
 		AllowConfidentialClientRegistration:       cfg.AllowConfidentialClientRegistration,
 		AllowPrivateKeyJWTRegistration:            cfg.AllowPrivateKeyJWTRegistration,
 		HasStaticDelegateClients:                  cfg.HasStaticDelegateClients,
+		HasStaticSecretClients:                    cfg.HasStaticSecretClients,
+		HasStaticPrivateKeyJWTClients:             cfg.HasStaticPrivateKeyJWTClients,
 		InsecureAllowHTTP:                         cfg.InsecureAllowHTTP,
 		InsecureAllowConfidentialOverLoopbackHTTP: cfg.InsecureAllowConfidentialOverLoopbackHTTP,
 		ForceConfidentialRedirectURIs:             cfg.ForceConfidentialRedirectURIs,

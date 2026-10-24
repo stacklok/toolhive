@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/x509"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -18,6 +19,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	josev3 "github.com/go-jose/go-jose/v3"
 
 	"github.com/stacklok/toolhive-core/redisconn"
 	"github.com/stacklok/toolhive/pkg/auth/dcr"
@@ -1235,11 +1238,44 @@ func resolveSecret(file, envVar string) (string, error) {
 	return "", nil
 }
 
-// resolveDelegateClients resolves secret references and copies authorization
-// permissions before configuration crosses into the running authorization server.
+// loadJWKSFile reads a public JWKS document. Key contents are validated later
+// by the shared configured-client validator.
+func loadJWKSFile(path string) (*josev3.JSONWebKeySet, error) {
+	// #nosec G304 - file path is from configuration, not user input
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read jwks file %q: %w", path, err)
+	}
+	var jwks josev3.JSONWebKeySet
+	if err := json.Unmarshal(data, &jwks); err != nil {
+		return nil, fmt.Errorf("failed to parse jwks file %q: %w", path, err)
+	}
+	return &jwks, nil
+}
+
+// resolveDelegateClients resolves secret and JWKS file references and copies
+// authorization permissions before configuration crosses into the running
+// authorization server.
 func resolveDelegateClients(clients []authserver.DelegateClientRunConfig) ([]authserver.DelegateClient, error) {
 	resolved := make([]authserver.DelegateClient, len(clients))
 	for i, client := range clients {
+		resolved[i] = authserver.DelegateClient{
+			ClientID:                    client.ClientID,
+			Scopes:                      slices.Clone(client.Scopes),
+			Audiences:                   slices.Clone(client.Audiences),
+			TokenEndpointAuthMethod:     client.TokenEndpointAuthMethod,
+			TokenEndpointAuthSigningAlg: client.TokenEndpointAuthSigningAlg,
+			GrantTypes:                  slices.Clone(client.GrantTypes),
+			RedirectURIs:                slices.Clone(client.RedirectURIs),
+		}
+		if client.TokenEndpointAuthMethod == oauthproto.TokenEndpointAuthMethodPrivateKeyJWT {
+			jwks, err := loadJWKSFile(client.JWKSFile)
+			if err != nil {
+				return nil, fmt.Errorf("delegate client %q: %w", client.ClientID, err)
+			}
+			resolved[i].JSONWebKeys = jwks
+			continue
+		}
 		secret, err := resolveSecret(client.ClientSecretFile, client.ClientSecretEnvVar)
 		if err != nil {
 			return nil, fmt.Errorf("delegate client %q: %w", client.ClientID, err)
@@ -1247,12 +1283,7 @@ func resolveDelegateClients(clients []authserver.DelegateClientRunConfig) ([]aut
 		if secret == "" {
 			return nil, fmt.Errorf("delegate client %q: resolved client secret is empty", client.ClientID)
 		}
-		resolved[i] = authserver.DelegateClient{
-			ClientID:     client.ClientID,
-			ClientSecret: secret,
-			Scopes:       slices.Clone(client.Scopes),
-			Audiences:    slices.Clone(client.Audiences),
-		}
+		resolved[i].ClientSecret = secret
 	}
 	return resolved, nil
 }

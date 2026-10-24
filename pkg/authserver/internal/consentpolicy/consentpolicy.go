@@ -54,11 +54,13 @@ func Validate(clientIDs []string, authorizationBase, issuer string, upstreamCoun
 
 // IsBackChannelOnlyClient reports whether client has no interactive /authorize
 // flow, using the same explicit marker and metadata-shape exclusions at startup
-// and runtime.
+// and runtime. Any client without the authorization_code grant qualifies, so
+// /authorize answers it exactly like an unknown client ID instead of letting
+// fosite's redirect_uri validation reveal that the ID exists.
 func IsBackChannelOnlyClient(client fosite.Client) bool {
 	return registration.BackChannelOnly(client) ||
 		len(client.GetResponseTypes()) == 0 ||
-		client.GetGrantTypes().ExactOne(oauthproto.GrantTypeTokenExchange)
+		!client.GetGrantTypes().Has(oauthproto.GrantTypeAuthorizationCode)
 }
 
 // IsEligibleClient reports whether client supports ToolHive's interactive
@@ -67,7 +69,6 @@ func IsEligibleClient(client fosite.Client) bool {
 	return client != nil &&
 		!client.IsPublic() &&
 		!IsBackChannelOnlyClient(client) &&
-		slices.Contains(client.GetGrantTypes(), oauthproto.GrantTypeAuthorizationCode) &&
 		slices.Contains(client.GetResponseTypes(), oauthproto.ResponseTypeCode) &&
 		len(client.GetRedirectURIs()) > 0
 }

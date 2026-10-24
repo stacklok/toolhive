@@ -5,6 +5,7 @@ package runner
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -12,11 +13,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/adrg/xdg"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
+	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/auth/remote"
 	"github.com/stacklok/toolhive/pkg/auth/upstreamtoken"
 	"github.com/stacklok/toolhive/pkg/authserver"
@@ -25,6 +26,7 @@ import (
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/secrets"
 	secretsmocks "github.com/stacklok/toolhive/pkg/secrets/mocks"
+	"github.com/stacklok/toolhive/pkg/state"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 	statusesmocks "github.com/stacklok/toolhive/pkg/workloads/statuses/mocks"
 )
@@ -219,6 +221,33 @@ func TestRunner_RunRejectsPrePopulatedChainWithoutCredentialStrip(t *testing.T) 
 
 	err := NewRunner(config, nil).Run(t.Context())
 	require.ErrorContains(t, err, "credential stripping requires strip-auth middleware")
+}
+
+func TestRunner_RunCanonicalizesPrePopulatedOIDCMiddleware(t *testing.T) {
+	t.Parallel()
+
+	authConfig, err := types.NewMiddlewareConfig(auth.MiddlewareType, auth.MiddlewareParams{})
+	require.NoError(t, err)
+
+	config := NewRunConfig()
+	config.OIDCConfig = &auth.TokenValidatorConfig{Issuer: "https://issuer.example.com"}
+	config.MiddlewareConfigs = []types.MiddlewareConfig{{Type: "unsupported"}, *authConfig}
+
+	// The unsupported entry makes Run return after canonicalization, before any
+	// middleware factory can open a connection or listener.
+	err = NewRunner(config, nil).Run(t.Context())
+	require.ErrorContains(t, err, "unsupported middleware type")
+
+	for _, middlewareConfig := range config.MiddlewareConfigs {
+		if middlewareConfig.Type != auth.MiddlewareType {
+			continue
+		}
+		var params auth.MiddlewareParams
+		require.NoError(t, json.Unmarshal(middlewareConfig.Parameters, &params))
+		assert.Equal(t, config.OIDCConfig, params.OIDCConfig)
+		return
+	}
+	t.Fatal("authentication middleware configuration not found")
 }
 
 func TestStatusManagerAdapter_SetWorkloadStatus(t *testing.T) {
@@ -447,13 +476,7 @@ func TestHandleRemoteAuthentication(t *testing.T) {
 
 //nolint:paralleltest // Mutates process-wide runtime and XDG state settings.
 func TestRunner_PersistClientCredentials(t *testing.T) {
-	// SaveState uses process-wide runtime and XDG state settings. Keep this test
-	// sequential and restore xdg's cached paths after t.Setenv restores the env.
-	t.Cleanup(xdg.Reload)
-	t.Setenv("TOOLHIVE_RUNTIME", "")
-	t.Setenv("KUBERNETES_SERVICE_HOST", "")
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	xdg.Reload()
+	setupPersistenceState(t)
 
 	ctx := context.Background()
 	writableCapabilities := secrets.ProviderCapabilities{CanWrite: true}
@@ -482,6 +505,7 @@ func TestRunner_PersistClientCredentials(t *testing.T) {
 		runConfig.Name = "initial-registration"
 		runConfig.BaseName = "initial-registration"
 		runConfig.RemoteAuthConfig = remoteAuthConfig
+		require.NoError(t, runConfig.SaveState(ctx))
 		runner := &Runner{Config: runConfig}
 
 		err := runner.persistClientCredentials(
@@ -510,10 +534,69 @@ func TestRunner_PersistClientCredentials(t *testing.T) {
 		assert.Same(t, remoteAuthConfig, runner.Config.RemoteAuthConfig)
 		assert.Equal(t, expected, *runner.Config.RemoteAuthConfig)
 
+		reader, err := state.LoadRunConfigJSON(ctx, runConfig.BaseName)
+		require.NoError(t, err)
+		rawState, err := io.ReadAll(reader)
+		require.NoError(t, err)
+		require.NoError(t, reader.Close())
+		assert.Contains(t, string(rawState), clientSecretName)
+		assert.NotContains(t, string(rawState), "initial-client-secret")
+		assert.NotContains(t, string(rawState), "initial-registration-token")
+
 		persisted, err := LoadState(ctx, runConfig.BaseName)
 		require.NoError(t, err)
 		require.NotNil(t, persisted.RemoteAuthConfig)
 		assert.Equal(t, expected, *persisted.RemoteAuthConfig)
+	})
+
+	t.Run("static client persistence keeps resolved secret out of state", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
+		secretManager := secretsmocks.NewMockProvider(ctrl)
+		const (
+			clientSecretReference = "STATIC_CLIENT_SECRET,target=oauth_secret"
+			clientSecretValue     = "static-client-secret-value"
+			cachedSecretName      = "OAUTH_CLIENT_SECRET_static-client"
+		)
+		gomock.InOrder(
+			secretManager.EXPECT().GetSecret(ctx, "STATIC_CLIENT_SECRET").Return(clientSecretValue, nil),
+			secretManager.EXPECT().GetSecret(gomock.Any(), cachedSecretName).Return("", assert.AnError),
+			secretManager.EXPECT().Capabilities().Return(writableCapabilities),
+			secretManager.EXPECT().SetSecret(ctx, cachedSecretName, clientSecretValue).Return(nil),
+		)
+
+		runConfig := NewRunConfig()
+		runConfig.Name = "static-client"
+		runConfig.BaseName = "static-client"
+		runConfig.RemoteAuthConfig = &remote.Config{
+			ClientID:     "static-client-id",
+			ClientSecret: clientSecretReference,
+		}
+		require.NoError(t, runConfig.SaveState(ctx))
+		_, err := runConfig.WithSecrets(ctx, secretManager, secretManager)
+		require.NoError(t, err)
+
+		runner := &Runner{Config: runConfig}
+		err = runner.persistClientCredentials(
+			ctx,
+			secretManager,
+			"static-client-id",
+			clientSecretValue,
+			time.Time{},
+			"",
+			"",
+			"client_secret_basic",
+			0,
+		)
+		require.NoError(t, err)
+
+		reader, err := state.LoadRunConfigJSON(ctx, runConfig.BaseName)
+		require.NoError(t, err)
+		rawState, err := io.ReadAll(reader)
+		require.NoError(t, err)
+		require.NoError(t, reader.Close())
+		assert.Contains(t, string(rawState), clientSecretReference)
+		assert.Contains(t, string(rawState), cachedSecretName)
+		assert.NotContains(t, string(rawState), clientSecretValue)
 	})
 
 	t.Run("renewal reuses secret names and updates the existing config", func(t *testing.T) {
@@ -544,6 +627,7 @@ func TestRunner_PersistClientCredentials(t *testing.T) {
 		runConfig.Name = "renewal"
 		runConfig.BaseName = "renewal"
 		runConfig.RemoteAuthConfig = remoteAuthConfig
+		require.NoError(t, runConfig.SaveState(ctx))
 		runner := &Runner{Config: runConfig}
 
 		err := runner.persistClientCredentials(
@@ -589,7 +673,11 @@ func TestRunner_PersistClientCredentials(t *testing.T) {
 		secretManager.EXPECT().Capabilities().Return(writableCapabilities)
 		secretManager.EXPECT().SetSecret(ctx, clientSecretName, "new-client-secret").Return(nil)
 		secretManager.EXPECT().Capabilities().Return(writableCapabilities)
-		secretManager.EXPECT().SetSecret(ctx, regTokenName, "new-registration-token").Return(nil)
+		secretManager.EXPECT().SetSecret(ctx, regTokenName, "new-registration-token").DoAndReturn(
+			func(context.Context, string, string) error {
+				blockPersistedStateSave(t, "failed-renewal")
+				return nil
+			})
 
 		original := remote.Config{
 			Issuer:                        "https://issuer.example.com",
@@ -605,8 +693,9 @@ func TestRunner_PersistClientCredentials(t *testing.T) {
 		*remoteAuthConfig = original
 		runConfig := NewRunConfig()
 		runConfig.Name = "failed-renewal"
-		runConfig.BaseName = "../invalid"
+		runConfig.BaseName = "failed-renewal"
 		runConfig.RemoteAuthConfig = remoteAuthConfig
+		require.NoError(t, runConfig.SaveState(ctx))
 		runner := &Runner{Config: runConfig}
 
 		err := runner.persistClientCredentials(
@@ -797,6 +886,19 @@ func TestRunner_RejectsMultiUpstreamConfig(t *testing.T) {
 	assert.Contains(t, err.Error(), "does not support multiple upstream providers")
 }
 
+func TestRunner_RejectsNegativeMaxRequestBodySize(t *testing.T) {
+	t.Parallel()
+
+	runConfig := NewRunConfig()
+	runConfig.MaxRequestBodySize = -1
+	runner := NewRunner(runConfig, nil)
+
+	err := runner.Run(t.Context())
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "max_request_body_size must be non-negative")
+}
+
 func TestRunner_GetUpstreamTokenReader(t *testing.T) {
 	t.Parallel()
 
@@ -822,4 +924,35 @@ func TestRunner_GetUpstreamTokenReader(t *testing.T) {
 		assert.NotNil(t, reader)
 		assert.Equal(t, svc, reader)
 	})
+}
+
+func TestParseProxyTimeout(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		value     string
+		want      time.Duration
+		expectErr bool
+	}{
+		{name: "empty uses the proxy default", value: "", want: 0},
+		{name: "valid duration", value: "45s", want: 45 * time.Second},
+		{name: "explicit zero uses the proxy default", value: "0s", want: 0},
+		{name: "negative duration is rejected", value: "-1s", expectErr: true},
+		{name: "unparsable duration is rejected", value: "notaduration", expectErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := parseProxyTimeout("proxy_read_timeout", tt.value)
+			if tt.expectErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
 }

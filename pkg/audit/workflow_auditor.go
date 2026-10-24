@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"time"
 
@@ -21,6 +22,7 @@ type WorkflowAuditor struct {
 	auditLogger *slog.Logger
 	config      *Config
 	component   string
+	logWriter   io.Writer
 }
 
 // NewWorkflowAuditor creates a new workflow auditor.
@@ -45,7 +47,14 @@ func NewWorkflowAuditor(config *Config) (*WorkflowAuditor, error) {
 		auditLogger: NewAuditLogger(logWriter),
 		config:      config,
 		component:   component,
+		logWriter:   logWriter,
 	}, nil
+}
+
+// Close closes the underlying log writer if it owns a closeable resource.
+// This should be called when the workflow auditor is no longer needed.
+func (w *WorkflowAuditor) Close() error {
+	return closeLogWriter(w.logWriter)
 }
 
 // LogWorkflowStarted logs the start of workflow execution.

@@ -145,13 +145,9 @@ func (h *Handler) RegisterClientHandler(w http.ResponseWriter, req *http.Request
 	// Register client
 	if err := h.storage.RegisterClient(ctx, fositeClient); err != nil {
 		if errors.Is(err, storage.ErrClientCapacity) {
-			slog.Debug("DCR client registration capacity reached", "error", err)
-			// Capacity frees up once the oldest DCR-issued entry crosses
-			// storage.DefaultMinClientAge, so that's the honest worst-case
-			// wait. This uses the default rather than the configured
-			// minClientAge because the value isn't currently threaded from
-			// storage to this handler; wire it through if that gap matters.
-			w.Header().Set("Retry-After", strconv.Itoa(int(storage.DefaultMinClientAge.Seconds())))
+			h.dcrMetrics.recordCapacityRejection(ctx)
+			h.capacityWarner.rejected(ctx, err)
+			w.Header().Set("Retry-After", strconv.Itoa(capacityRetryAfterSeconds(err)))
 			writeDCRError(w, http.StatusServiceUnavailable, &registration.DCRError{
 				Error:            "server_error",
 				ErrorDescription: "client registration capacity reached; try again later",
@@ -216,9 +212,10 @@ func (h *Handler) RegisterClientHandler(w http.ResponseWriter, req *http.Request
 		// field, pkg/auth/dcr/resolver.go) re-register against a ToolHive auth
 		// server every TTL while its existing registration is still live,
 		// orphaning the old row — the registration bloat the TTL exists to
-		// prevent. An idle registration is still evicted after
-		// DefaultDCRClientTTL, but re-registration mints a new client_id either
-		// way, so the field cannot usefully describe that case.
+		// prevent. An unused or idle registration still expires (after
+		// DefaultUnusedDCRClientTTL or DefaultDCRClientTTL), but
+		// re-registration mints a new client_id either way, so the field
+		// cannot usefully describe that case.
 		response.ClientSecret = clientSecret
 		response.ClientSecretExpiresAt = new(int64) // 0: does not expire
 	}
@@ -237,8 +234,26 @@ func (h *Handler) validateDCRRequest(
 ) (*oauthproto.DynamicClientRegistrationRequest, *registration.DCRError) {
 	validated, dcrErr := registration.ValidateDCRRequest(
 		req, h.config.AllowConfidentialClientRegistration, h.config.AllowPrivateKeyJWTRegistration)
-	if dcrErr != nil || !h.tokenOnly {
+	if dcrErr != nil {
 		return validated, dcrErr
+	}
+	// validated.GrantTypes is the effective, post-defaulting grant set (e.g. an
+	// empty grant_types on a private_key_jwt request defaults to token exchange
+	// inside registration.validateGrantTypes), so this check catches both an
+	// explicit and an implicit token-exchange request. Without it, DCR would
+	// register a client whose GetGrantTypes() durably includes token exchange
+	// even though the RFC 8693 factory is never registered at the token
+	// endpoint when disabled, and every token request against that client
+	// would fail confusingly with unsupported_grant_type instead of being
+	// rejected here at registration time.
+	if !h.config.TokenExchangeEnabled && slices.Contains(validated.GrantTypes, oauthproto.GrantTypeTokenExchange) {
+		return nil, &registration.DCRError{
+			Error:            registration.DCRErrorInvalidClientMetadata,
+			ErrorDescription: "token exchange is disabled on this authorization server",
+		}
+	}
+	if !h.tokenOnly {
+		return validated, nil
 	}
 	if validated.TokenEndpointAuthMethod == oauthproto.TokenEndpointAuthMethodPrivateKeyJWT &&
 		slices.Contains(validated.GrantTypes, oauthproto.GrantTypeTokenExchange) {
@@ -346,6 +361,7 @@ func buildDCRClient(
 	if forced {
 		fositeClient, err = registration.NewConfidentialPlain(registration.Config{
 			ID:            clientID,
+			ClientName:    validated.ClientName,
 			Secret:        clientSecret,
 			RedirectURIs:  validated.RedirectURIs,
 			GrantTypes:    validated.GrantTypes,
@@ -356,6 +372,7 @@ func buildDCRClient(
 	} else {
 		fositeClient, err = registration.New(registration.Config{
 			ID:                                clientID,
+			ClientName:                        validated.ClientName,
 			Secret:                            clientSecret,
 			RedirectURIs:                      validated.RedirectURIs,
 			TokenEndpointAuthMethod:           validated.TokenEndpointAuthMethod,
@@ -397,4 +414,15 @@ func writeDCRError(w http.ResponseWriter, statusCode int, dcrErr *registration.D
 	if err := json.NewEncoder(w).Encode(dcrErr); err != nil {
 		slog.Debug("failed to encode DCR error response", "error", err)
 	}
+}
+
+// capacityRetryAfterSeconds returns the Retry-After value for a DCR cap
+// rejection: the seconds until the oldest counted client expires, which is
+// the earliest moment a slot can free up, rounded up and at least 1.
+func capacityRetryAfterSeconds(err error) int {
+	var capErr *storage.ClientCapacityError
+	if !errors.As(err, &capErr) {
+		return 1
+	}
+	return max(int((capErr.RetryAfter+time.Second-1)/time.Second), 1)
 }

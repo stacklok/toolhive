@@ -10,6 +10,7 @@ import (
 	"github.com/ory/fosite"
 	"github.com/ory/fosite/handler/oauth2"
 
+	"github.com/stacklok/toolhive/pkg/authserver/authorizationdetails"
 	"github.com/stacklok/toolhive/pkg/authserver/server"
 )
 
@@ -30,11 +31,28 @@ func NewSharedTrustedIssuerValidator(
 	if len(trustedIssuers) == 0 {
 		return nil, nil
 	}
+	if config == nil {
+		return nil, fmt.Errorf("authorization server config is required when trusted issuers are configured")
+	}
 	selfValidator, err := NewSelfIssuedTokenValidator(config.PublicJWKS(), config.GetAccessTokenIssuer(), config.AllowedAudiences)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create self validator: %w", err)
 	}
 	return NewMultiIssuerTokenValidator(selfValidator, config.GetAccessTokenIssuer(), trustedIssuers, config.AllowedAudiences)
+}
+
+// FactoryOption configures a token-exchange Handler factory.
+type FactoryOption func(*factoryOptions)
+
+type factoryOptions struct {
+	authorizationDetailsRegistry *authorizationdetails.Registry
+}
+
+// WithAuthorizationDetailsRegistry configures the factory to pass the registry
+// through to the token-exchange Handler. With no registry (or a nil one) the
+// authorization_details parameter is ignored.
+func WithAuthorizationDetailsRegistry(registry *authorizationdetails.Registry) FactoryOption {
+	return func(o *factoryOptions) { o.authorizationDetailsRegistry = registry }
 }
 
 // Factory returns a server.Factory that creates a token exchange Handler.
@@ -64,9 +82,10 @@ func NewSharedTrustedIssuerValidator(
 // explicit revocation step against storage.
 func Factory(
 	delegationLifespan time.Duration, trustedIssuers []TrustedIssuer, configuredDelegateClients []string,
+	options ...FactoryOption,
 ) (server.Factory, error) {
 	return FactoryWithSharedTrustedIssuerValidator(
-		delegationLifespan, trustedIssuers, configuredDelegateClients, nil)
+		delegationLifespan, trustedIssuers, configuredDelegateClients, nil, options...)
 }
 
 // FactoryWithSharedTrustedIssuerValidator is Factory with a shared
@@ -79,7 +98,7 @@ func Factory(
 // 7523 JWT-bearer grants.
 func FactoryWithSharedTrustedIssuerValidator(
 	delegationLifespan time.Duration, trustedIssuers []TrustedIssuer, configuredDelegateClients []string,
-	shared *MultiIssuerTokenValidator,
+	shared *MultiIssuerTokenValidator, options ...FactoryOption,
 ) (server.Factory, error) {
 	if delegationLifespan <= 0 || delegationLifespan > server.MaxAccessTokenLifespan {
 		return nil, fmt.Errorf("tokenexchange: delegationLifespan must be between %v and %v, got %v",
@@ -101,6 +120,7 @@ func FactoryWithSharedTrustedIssuerValidator(
 		return nil, fmt.Errorf("tokenexchange: trusted issuers require a shared validator built via " +
 			"NewSharedTrustedIssuerValidator so its JWKS refresh workers can be released on shutdown")
 	}
+	resolved := resolveFactoryOptions(options)
 	return func(config *server.AuthorizationServerConfig, storage fosite.Storage, strategy any) (any, error) {
 		selfValidator, err := NewSelfIssuedTokenValidator(config.PublicJWKS(), config.GetAccessTokenIssuer(), config.AllowedAudiences)
 		if err != nil {
@@ -136,13 +156,22 @@ func FactoryWithSharedTrustedIssuerValidator(
 				AccessTokenStorage:  atStorage,
 				Config:              config.Config,
 			},
-			validator:                 validator,
-			selfValidator:             selfValidator,
-			issuer:                    config.GetAccessTokenIssuer(),
-			delegationLifespan:        delegationLifespan,
-			config:                    config.Config,
-			allowedAudiences:          config.AllowedAudiences,
-			configuredDelegateClients: configuredDelegateClients,
+			validator:                    validator,
+			selfValidator:                selfValidator,
+			issuer:                       config.GetAccessTokenIssuer(),
+			delegationLifespan:           delegationLifespan,
+			config:                       config.Config,
+			allowedAudiences:             config.AllowedAudiences,
+			configuredDelegateClients:    configuredDelegateClients,
+			authorizationDetailsRegistry: resolved.authorizationDetailsRegistry,
 		}, nil
 	}, nil
+}
+
+func resolveFactoryOptions(options []FactoryOption) factoryOptions {
+	var resolved factoryOptions
+	for _, option := range options {
+		option(&resolved)
+	}
+	return resolved
 }

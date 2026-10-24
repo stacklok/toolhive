@@ -37,6 +37,7 @@ func (s *service) recordLockState(
 	opts plugins.InstallOptions,
 	pl plugins.InstalledPlugin,
 	contentDigest string,
+	expected *lockfile.Entry,
 ) (plugins.InstalledPlugin, error) {
 	// contentDigest is always populated by installWithExtraction
 	// (lockContentDigest gates on the same ScopeProject + feature-flag
@@ -60,6 +61,7 @@ func (s *service) recordLockState(
 		ContentDigest:     contentDigest,
 		Provenance:        opts.Provenance,
 		Unsigned:          opts.Unsigned,
+		Expected:          expected,
 	}); err != nil {
 		return pl, fmt.Errorf("writing lock entry: %w", errors.Join(errLockWrite, err))
 	}
@@ -87,6 +89,8 @@ type lockEntryInput struct {
 	Provenance *lockfile.Provenance
 	// Unsigned records the explicit unsigned-install exception.
 	Unsigned bool
+	// Expected makes this an exact conditional replacement for upgrade.
+	Expected *lockfile.Entry
 }
 
 // recordLockEntry upserts a single plugins: entry into projectRoot's lock
@@ -98,26 +102,35 @@ func recordLockEntry(projectRoot string, in lockEntryInput) error {
 	if err != nil {
 		return err
 	}
+	if in.Expected != nil {
+		replacement := newPluginLockEntry(in, *in.Expected, true)
+		return lockfile.CompareAndSwapPluginEntry(root, *in.Expected, replacement)
+	}
 	return lockfile.Update(root, func(lf *lockfile.Lockfile) error {
-		entry := lockfile.Entry{
-			Name:              in.Name,
-			Version:           in.Version,
-			Source:            in.Source,
-			ResolvedReference: in.ResolvedReference,
-			Digest:            in.Digest,
-			ContentDigest:     in.ContentDigest,
-			Provenance:        in.Provenance,
-			Unsigned:          in.Unsigned,
-			Explicit:          true,
-		}
 		existing, exists := lf.GetPlugin(in.Name)
-		if exists {
-			entry.RequiredBy = existing.RequiredBy
-			entry.Explicit = entry.Explicit || existing.Explicit
-		}
+		entry := newPluginLockEntry(in, existing, exists)
 		lf.UpsertPlugin(entry)
 		return nil
 	})
+}
+
+func newPluginLockEntry(in lockEntryInput, existing lockfile.Entry, exists bool) lockfile.Entry {
+	entry := lockfile.Entry{
+		Name:              in.Name,
+		Version:           in.Version,
+		Source:            in.Source,
+		ResolvedReference: in.ResolvedReference,
+		Digest:            in.Digest,
+		ContentDigest:     in.ContentDigest,
+		Provenance:        in.Provenance,
+		Unsigned:          in.Unsigned,
+		Explicit:          true,
+	}
+	if exists {
+		entry.RequiredBy = existing.RequiredBy
+		entry.Explicit = entry.Explicit || existing.Explicit
+	}
+	return entry
 }
 
 // removeLockEntry removes opts.Name's plugins: lock entry. Unlike skills,

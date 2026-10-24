@@ -18,9 +18,6 @@ spec:
     kind: MCPServer
     listKind: MCPServerList
     plural: mcpservers
-    shortNames:
-    - mcpserver
-    - mcpservers
     singular: mcpserver
   scope: Namespaced
   versions:
@@ -294,6 +291,13 @@ spec:
               image:
                 description: Image is the container image for the MCP server
                 type: string
+              maxRequestBodySize:
+                description: |-
+                  MaxRequestBodySize is the maximum inbound MCP proxy request body size in bytes.
+                  Zero uses the default limit of 8 MiB.
+                format: int64
+                minimum: 0
+                type: integer
               mcpPort:
                 description: MCPPort is the port that MCP server listens to
                 format: int32
@@ -342,7 +346,9 @@ spec:
                 - name
                 type: object
               permissionProfile:
-                description: PermissionProfile defines the permission profile to use
+                description: |-
+                  PermissionProfile is deprecated and retained for API compatibility. It is
+                  not supported by the Kubernetes operator and has no effect.
                 properties:
                   key:
                     description: |-
@@ -393,6 +399,16 @@ spec:
                 maximum: 65535
                 minimum: 1
                 type: integer
+              proxyReadTimeout:
+                description: |-
+                  ProxyReadTimeout bounds how long the proxy spends reading a full request
+                  (headers + body), mitigating slow-upload connection exhaustion. Applies to
+                  all transports. Defaults to 30s if not specified. Example: "1m".
+                format: duration
+                type: string
+                x-kubernetes-validations:
+                - message: proxyReadTimeout must be non-negative
+                  rule: duration(self) >= duration('0s')
               rateLimiting:
                 description: |-
                   RateLimiting defines rate limiting configuration for the MCP server.
@@ -1661,6 +1677,7 @@ spec:
                 type: array
                 x-kubernetes-list-map-keys:
                 - name
+                - key
                 x-kubernetes-list-type: map
               serviceAccount:
                 description: |-
@@ -1717,12 +1734,57 @@ spec:
                     - memory
                     - redis
                     type: string
+                  tls:
+                    description: |-
+                      TLS enables TLS for the Redis session storage connection and, when rate
+                      limiting is configured, for the rate-limit connection to the same Redis.
+                      When omitted, the connections are plaintext and the Redis password and
+                      session data cross the network unencrypted. An empty object enables TLS
+                      with server certificate verification against the system root CAs; set
+                      caCertSecretRef for a private CA. A failed handshake never falls back to
+                      plaintext. Only used when provider is redis.
+                    properties:
+                      caCertSecretRef:
+                        description: |-
+                          CACertSecretRef references a Secret containing a PEM-encoded CA certificate
+                          for verifying the server. When not specified, system root CAs are used.
+                          If the Secret or key does not exist, the pod cannot start (it stays in
+                          ContainerCreating) rather than connecting without verification.
+                        properties:
+                          key:
+                            description: Key is the key within the secret
+                            type: string
+                          name:
+                            description: Name is the name of the secret
+                            type: string
+                        required:
+                        - key
+                        - name
+                        type: object
+                      insecureSkipVerify:
+                        description: |-
+                          InsecureSkipVerify disables server certificate and hostname verification.
+                          The connection is encrypted but not authenticated, so anyone able to
+                          impersonate the server can read the credentials and data sent over it.
+                          Intended for testing only; for self-signed or private CAs set
+                          caCertSecretRef instead.
+                        type: boolean
+                    type: object
                 required:
                 - provider
                 type: object
                 x-kubernetes-validations:
                 - message: address is required
                   rule: 'self.provider == ''redis'' ? has(self.address) : true'
+                - message: tls is only supported when provider is redis
+                  rule: '!has(self.tls) || self.provider == ''redis'''
+                - message: tls.insecureSkipVerify disables certificate verification,
+                    so tls.caCertSecretRef would be ignored; set only one
+                  rule: '!has(self.tls) || !has(self.tls.caCertSecretRef) || !has(self.tls.insecureSkipVerify)
+                    || !self.tls.insecureSkipVerify'
+                - message: tls.caCertSecretRef requires a non-empty name and key
+                  rule: '!has(self.tls) || !has(self.tls.caCertSecretRef) || (size(self.tls.caCertSecretRef.name)
+                    > 0 && size(self.tls.caCertSecretRef.key) > 0)'
               telemetryConfigRef:
                 description: |-
                   TelemetryConfigRef references an MCPTelemetryConfig resource for shared telemetry configuration.
@@ -2221,6 +2283,13 @@ spec:
               image:
                 description: Image is the container image for the MCP server
                 type: string
+              maxRequestBodySize:
+                description: |-
+                  MaxRequestBodySize is the maximum inbound MCP proxy request body size in bytes.
+                  Zero uses the default limit of 8 MiB.
+                format: int64
+                minimum: 0
+                type: integer
               mcpPort:
                 description: MCPPort is the port that MCP server listens to
                 format: int32
@@ -2269,7 +2338,9 @@ spec:
                 - name
                 type: object
               permissionProfile:
-                description: PermissionProfile defines the permission profile to use
+                description: |-
+                  PermissionProfile is deprecated and retained for API compatibility. It is
+                  not supported by the Kubernetes operator and has no effect.
                 properties:
                   key:
                     description: |-
@@ -2320,6 +2391,16 @@ spec:
                 maximum: 65535
                 minimum: 1
                 type: integer
+              proxyReadTimeout:
+                description: |-
+                  ProxyReadTimeout bounds how long the proxy spends reading a full request
+                  (headers + body), mitigating slow-upload connection exhaustion. Applies to
+                  all transports. Defaults to 30s if not specified. Example: "1m".
+                format: duration
+                type: string
+                x-kubernetes-validations:
+                - message: proxyReadTimeout must be non-negative
+                  rule: duration(self) >= duration('0s')
               rateLimiting:
                 description: |-
                   RateLimiting defines rate limiting configuration for the MCP server.
@@ -3588,6 +3669,7 @@ spec:
                 type: array
                 x-kubernetes-list-map-keys:
                 - name
+                - key
                 x-kubernetes-list-type: map
               serviceAccount:
                 description: |-
@@ -3644,12 +3726,57 @@ spec:
                     - memory
                     - redis
                     type: string
+                  tls:
+                    description: |-
+                      TLS enables TLS for the Redis session storage connection and, when rate
+                      limiting is configured, for the rate-limit connection to the same Redis.
+                      When omitted, the connections are plaintext and the Redis password and
+                      session data cross the network unencrypted. An empty object enables TLS
+                      with server certificate verification against the system root CAs; set
+                      caCertSecretRef for a private CA. A failed handshake never falls back to
+                      plaintext. Only used when provider is redis.
+                    properties:
+                      caCertSecretRef:
+                        description: |-
+                          CACertSecretRef references a Secret containing a PEM-encoded CA certificate
+                          for verifying the server. When not specified, system root CAs are used.
+                          If the Secret or key does not exist, the pod cannot start (it stays in
+                          ContainerCreating) rather than connecting without verification.
+                        properties:
+                          key:
+                            description: Key is the key within the secret
+                            type: string
+                          name:
+                            description: Name is the name of the secret
+                            type: string
+                        required:
+                        - key
+                        - name
+                        type: object
+                      insecureSkipVerify:
+                        description: |-
+                          InsecureSkipVerify disables server certificate and hostname verification.
+                          The connection is encrypted but not authenticated, so anyone able to
+                          impersonate the server can read the credentials and data sent over it.
+                          Intended for testing only; for self-signed or private CAs set
+                          caCertSecretRef instead.
+                        type: boolean
+                    type: object
                 required:
                 - provider
                 type: object
                 x-kubernetes-validations:
                 - message: address is required
                   rule: 'self.provider == ''redis'' ? has(self.address) : true'
+                - message: tls is only supported when provider is redis
+                  rule: '!has(self.tls) || self.provider == ''redis'''
+                - message: tls.insecureSkipVerify disables certificate verification,
+                    so tls.caCertSecretRef would be ignored; set only one
+                  rule: '!has(self.tls) || !has(self.tls.caCertSecretRef) || !has(self.tls.insecureSkipVerify)
+                    || !self.tls.insecureSkipVerify'
+                - message: tls.caCertSecretRef requires a non-empty name and key
+                  rule: '!has(self.tls) || !has(self.tls.caCertSecretRef) || (size(self.tls.caCertSecretRef.name)
+                    > 0 && size(self.tls.caCertSecretRef.key) > 0)'
               telemetryConfigRef:
                 description: |-
                   TelemetryConfigRef references an MCPTelemetryConfig resource for shared telemetry configuration.

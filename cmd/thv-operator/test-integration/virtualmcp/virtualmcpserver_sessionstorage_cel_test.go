@@ -5,14 +5,19 @@
 package controllers
 
 import (
+	"fmt"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
+	"github.com/stacklok/toolhive/cmd/thv-operator/test-integration/testutil"
+	"github.com/stacklok/toolhive/pkg/redisconfig"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 )
 
@@ -27,6 +32,15 @@ func newVirtualMCPServerWithSessionStorage(name string, ss *mcpv1beta1.SessionSt
 		}),
 		v1beta1test.WithVMCPSessionStorage(ss),
 	)
+}
+
+// virtualMCPServerAtVersion returns vmcp as an object of the given served API
+// version. v1alpha1 reuses the v1beta1 spec type, so only the wrapper differs.
+func virtualMCPServerAtVersion(vmcp *mcpv1beta1.VirtualMCPServer, version string) client.Object {
+	if version == mcpv1beta1.GroupVersion.Version {
+		return vmcp
+	}
+	return &mcpv1alpha1.VirtualMCPServer{ObjectMeta: vmcp.ObjectMeta, Spec: vmcp.Spec}
 }
 
 var _ = Describe("CEL Validation for SessionStorageConfig on VirtualMCPServer",
@@ -78,6 +92,40 @@ var _ = Describe("CEL Validation for SessionStorageConfig on VirtualMCPServer",
 				err := k8sClient.Create(ctx, vmcp)
 				Expect(err).NotTo(HaveOccurred())
 			})
+		})
+
+		Context("tls", func() {
+			for _, version := range testutil.ServedAPIVersions {
+				for _, tc := range testutil.SessionStorageTLSCases() {
+					It(fmt.Sprintf("%s %s", version, tc.Name), func() {
+						vmcp := newVirtualMCPServerWithSessionStorage(
+							fmt.Sprintf("vmcp-tls-%s-%s", version, tc.Name), tc.SessionStorage)
+						err := k8sClient.Create(ctx, virtualMCPServerAtVersion(vmcp, version))
+						if tc.WantErr == "" {
+							Expect(err).NotTo(HaveOccurred())
+							return
+						}
+						Expect(err).To(HaveOccurred())
+						Expect(err.Error()).To(ContainSubstring(tc.WantErr))
+					})
+				}
+
+				It(fmt.Sprintf("%s rejects tls under config.sessionStorage, which the operator ignores", version), func() {
+					vmcp := newVirtualMCPServerWithSessionStorage(
+						fmt.Sprintf("vmcp-config-tls-%s", version), &mcpv1beta1.SessionStorageConfig{
+							Provider: "redis",
+							Address:  "redis:6380",
+						})
+					vmcp.Spec.Config.SessionStorage = &vmcpconfig.SessionStorageConfig{
+						Provider: "redis",
+						Address:  "redis:6380",
+						TLS:      &redisconfig.TLSConfig{},
+					}
+					err := k8sClient.Create(ctx, virtualMCPServerAtVersion(vmcp, version))
+					Expect(err).To(HaveOccurred())
+					Expect(err.Error()).To(ContainSubstring("config.sessionStorage.tls is ignored by the operator"))
+				})
+			}
 		})
 
 		Context("replicas field", func() {

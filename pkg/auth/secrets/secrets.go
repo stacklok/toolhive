@@ -77,6 +77,11 @@ func ProcessSecret(workloadName, secretValue string, tokenType TokenType) (strin
 		return "", fmt.Errorf("unknown token type: %s", tokenType)
 	}
 
+	// Return existing CLI secret references without requiring a configured secrets manager.
+	if _, err := secrets.ParseSecretParameter(secretValue); err == nil {
+		return secretValue, nil
+	}
+
 	// Get the secrets manager
 	secretManager, err := GetSecretsManager()
 	if err != nil {

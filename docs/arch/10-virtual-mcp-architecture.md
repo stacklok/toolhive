@@ -77,7 +77,7 @@ graph TB
 | **Composition** | Execute multi-step workflows across multiple backends |
 | **Caching** | Reduce auth overhead by caching exchanged tokens |
 
-**Implementation**: `pkg/vmcp/` (discovery: `pkg/vmcp/discovery/`, routing: `pkg/vmcp/router/`)
+**Implementation**: `pkg/vmcp/` (discovery: `pkg/vmcp/aggregator/`, routing: `pkg/vmcp/router/`)
 
 ## Backend Discovery
 
@@ -133,8 +133,15 @@ When backends expose tools with the same name, vMCP resolves the conflict using 
 | Strategy | Behavior |
 |----------|----------|
 | **prefix** | Prepend backend name to all tools (e.g., `github_create_issue`) |
-| **priority** | First backend in priority order wins, others hidden |
+| **priority** | Highest-priority backend wins only if every conflicting backend is listed; otherwise all candidates are dropped |
 | **manual** | Explicit mapping for each conflict |
+
+Tool priority resolution leaves unique tools unchanged, including those from
+backends absent from `priorityOrder`; the list is not an allowlist. When every
+backend in a tool-name collision is listed, the first in priority order wins and
+losers are dropped. If any conflicting backend is unlisted, **all** candidates
+in that collision are dropped from both advertising and routing, with no prefix
+fallback, and the collision is logged at `ERROR`.
 
 The three strategies above cover **tools**. Resources, resource templates, and
 prompts are resolved separately (`aggregator/capability_conflicts.go`), with
@@ -493,10 +500,10 @@ Beyond tools, vMCP aggregates and serves the full complement of MCP capabilities
 |------------|---------|-------|
 | Tools (`tools/list`, `tools/call`) | Yes | Aggregated, conflict-resolved, admission-filtered; a backend's asynchronous `notifications/tools/list_changed` is propagated to already-registered sessions — see below |
 | Resources (`resources/list`, `resources/read`) | Yes | Admission-filtered per identity; a backend's asynchronous `notifications/resources/list_changed` propagates ADDITIONS (not removals) to already-registered sessions — see below |
-| Resource templates (`resources/templates/list`) | Yes | Templated reads route through the same `ReadResource` path; the router matches an expanded URI against the aggregated templates, and an exact template-string key routes to its backend; covered by the same `notifications/resources/list_changed` propagation as resources (MCP 2025-11-25 has no separate wire method for template changes) |
+| Resource templates (`resources/templates/list`) | Yes | Templated reads route through the same `ReadResource` path; an expanded URI longer than 2048 bytes is not template-matched and returns not found, while exact concrete-resource and exact template-string matches work at any length; covered by the same `notifications/resources/list_changed` propagation as resources (MCP 2025-11-25 has no separate wire method for template changes) |
 | Prompts (`prompts/list`, `prompts/get`) | Yes | Served per-session; a backend's asynchronous `notifications/prompts/list_changed` propagates ADDITIONS (not removals) to already-registered sessions — see below |
-| Completions (`completion/complete`) | Yes | A `ref/prompt` routes via the prompts table; a `ref/resource` carries the URI-template string per the spec and routes via the resource-templates table (exact template-string key, with exact-resource and template-expansion fallbacks). Unroutable refs return an empty result (lenient completion); admission denial returns an error |
-| Resource subscriptions (`resources/subscribe`, `resources/unsubscribe`) | Ack-level only | Legacy edge. vMCP accepts and records the subscription (after session-binding and resource-admission checks) but does **not** yet forward backend `notifications/resources/updated` — see the limitation below |
+| Completions (`completion/complete`) | Yes | A `ref/prompt` routes via the prompts table; a `ref/resource` carries the URI-template string per the spec and routes via the resource-templates table (exact template-string key, with exact-resource and template-expansion fallbacks). A URI over 2048 bytes that does not exactly match a concrete resource or template string returns an empty result, indistinguishable from no candidates; exact matches still route at any length. Admission denial returns an error |
+| Resource subscriptions (`resources/subscribe`, `resources/unsubscribe`) | Ack-level only | Legacy edge. vMCP accepts and records the subscription (after session-binding and resource-admission checks) but does **not** yet forward backend `notifications/resources/updated`. A URI over 2048 bytes that does not exactly match a concrete resource or template string is rejected with not found; exact matches still pass — see the limitation below |
 | Subscriptions (`subscriptions/listen`) | Ack-level only | Modern (2026-07-28) edge, the revision's only server→client push channel. Answered with an SSE stream carrying the mandatory `notifications/subscriptions/acknowledged` and then a terminating result, both tagged `io.modelcontextprotocol/subscriptionId` and keyed by the listen request's JSON-RPC id (Modern has no sessions). The honored set is intersected against the advertised capabilities, all of whose push flags are false, so it is always **empty** and the stream closes immediately rather than idling. Serving it is what lets a go-sdk v1.7 client complete `Connect` at all — see below |
 
 The four Modern list verbs (`tools/list`, `resources/list`, `resources/templates/list`, `prompts/list`) **paginate**, emitting `nextCursor` while items remain and capping a page at 1000 items to match the page size the SDK applies on the Legacy path. See [Client-facing list pagination](#client-facing-list-pagination).
@@ -957,6 +964,75 @@ Exchanged tokens are cached to avoid repeated exchange calls.
 
 **Implementation**: `pkg/vmcp/auth/`, `pkg/vmcp/cache/`
 
+### Per-User Upstream Filtering
+
+When vMCP runs its embedded authorization server with multiple upstream providers
+(e.g. a corporate IdP followed by Jira, Slack, and Salesforce OAuth), every user
+would otherwise be forced through every upstream — a user without a Salesforce
+account cannot complete that leg, and the whole authorization fails even though
+the preceding identity chain was valid.
+
+`AuthServerUpstreamFilter` on `VirtualMCPServerSpec` narrows the chain per
+request based on a group claim resolved from the first upstream. The filter
+runs exactly once per authorization, on the first upstream's callback, and may
+only narrow the chain — it cannot reorder it, add unknown providers, or remove
+the mandatory first provider.
+
+```yaml
+apiVersion: toolhive.stacklok.dev/v1beta1
+kind: VirtualMCPServer
+metadata:
+  name: mcphub
+spec:
+  authServerConfig:
+    issuer: https://mcphub.example.com
+    upstreamProviders:
+      - name: okta        # mandatory first upstream — always walked
+        type: oidc
+        # ...
+      - name: jira
+        type: oauth2
+      - name: slack
+        type: oauth2
+      - name: salesforce
+        type: oauth2
+
+  authServerUpstreamFilter:
+    claim: groups          # top-level claim on the first upstream's token
+    rules:
+      - groups: [engineering]
+        upstreamProviders: [jira, slack]
+      - groups: [sales]
+        upstreamProviders: [salesforce, slack]
+    defaultUpstreams: []   # principals matching no rule walk okta only
+```
+
+Semantics:
+
+- The claim is read from the identity the first upstream resolves: an OIDC
+  upstream fills it from the validated ID token, a pure OAuth2 upstream from
+  the userinfo response. Groups carried only in an access token never reach
+  it. Before enabling the filter, configure the first upstream to include the
+  claim in its ID token or userinfo response, and request any required scopes.
+- A principal matches a rule when any of its group values appears in the
+  rule's `groups` list (OR within a rule).
+- Multiple matching rules combine by union: a principal in both `engineering`
+  and `sales` walks `jira`, `slack`, and `salesforce` (dedup, configured
+  order preserved).
+- A valid empty claim or an unmatched claim falls back to `defaultUpstreams`
+  (just the first upstream when empty).
+- A missing, nil, non-array, or mixed-type claim fails the authorization —
+  the filter is security-relevant and fail-closed.
+- Nested claim paths (e.g. Keycloak's `realm_access.roles`) are not
+  supported; the identity provider must flatten them into a top-level string
+  array.
+
+This controls which OAuth credentials vMCP acquires during login. It does not
+authorise backends or tools — Cedar remains the authorization boundary.
+
+**Implementation**: `pkg/authserver/upstreamfilter/`,
+`pkg/authserver/server/handlers.UpstreamFilter`.
+
 ## Request Flow
 
 ```mermaid
@@ -997,15 +1073,23 @@ Middleware is applied by wrapping handlers, so execution order is outer-to-inner
 | 7 | Annotation Enrichment | Optional | Injects tool annotations into context for annotation-aware authz (only when Authorization is configured) |
 | 8 | Authorization | Optional | Evaluates Cedar policies after discovery and annotation enrichment |
 | 9 | Backend Enrichment | Optional | Adds backend name to audit context (only when Audit is configured) |
-| 10 | MCP Parsing | Always | Second application is a no-op when auth already parsed; ensures telemetry can label metrics with `mcp_method` when auth is nil |
+| 10 | MCP Parsing | Always | Validates every MCP POST regardless of `Content-Type`, including when auth is nil; publishes calls and notifications for downstream controls. A second application skips already-parsed requests. |
 | 11 | Telemetry | Optional | OpenTelemetry instrumentation |
-| 12 | Pre-dispatch authorization gate | Optional | Innermost: runs inside the Streamable HTTP transport before session validation and SDK dispatch. Rejects a Cedar-denied `tools/call` / `resources/read` / `prompts/get` with HTTP 403 + JSON-RPC code 403, reusing the core admission decision. Installed only when Authorization is configured. See "Authorization Enforcement" below. |
+| 12 | Loopback Host guard | Always | DNS-rebinding protection: on a connection that arrived over loopback, rejects a non-loopback `Host` header with 403 before classification, so Legacy and Modern requests are held to the same rule. Mirrors go-sdk's localhost protection, which covers only Legacy requests that reach `StreamableHTTPHandler`; Modern requests (`dispatchModern`) and cross-replica Legacy sessions rehydrated by toolhive-core's `mcpcompat` did not pass through it, and the guard covers all of them. mcpcompat also runs session cleanup for a Legacy DELETE around go-sdk's Host check, so without the guard a DELETE with a forged `Host` and a known session ID could end that session even though go-sdk answered 403; the guard runs first and stops this. Only the MCP route is guarded: `/health`, `/ping`, `/readyz`, `/status`, `/api/backends/health`, `/metrics`, `/.well-known/` and the embedded auth server routes are deliberately left unguarded because they are unauthenticated by design and expose only operational metadata. Connections on a non-loopback local address (e.g. a pod IP) are unaffected; a loopback hop that preserves a non-loopback `Host` must rewrite it. See `pkg/vmcp/server/loopback_host_guard.go`. |
+| 13 | Pre-dispatch authorization gate | Optional | Innermost: runs inside the Streamable HTTP transport before session validation and SDK dispatch. Rejects a Cedar-denied `tools/call` / `resources/read` / `prompts/get` with HTTP 403 + JSON-RPC code 403, reusing the core admission decision. Installed only when Authorization is configured. See "Authorization Enforcement" below. |
 
-> On the New/Serve path, authorization is enforced by the **core admission seam**, not by rows 6–8 as standalone HTTP middleware; row 12 is the transport-level projection of that decision. See [Authorization Enforcement](#authorization-enforcement-core-admission-seam--pre-dispatch-gate).
+> On the New/Serve path, authorization is enforced by the **core admission seam**, not by rows 6–8 as standalone HTTP middleware; row 13 is the transport-level projection of that decision. See [Authorization Enforcement](#authorization-enforcement-core-admission-seam--pre-dispatch-gate).
+
+Every MCP POST passes shared envelope validation before Modern dispatch or the
+Legacy SDK, with or without authentication. Malformed, ambiguous, mixed
+request/response, and batch bodies are rejected rather than forwarded without a
+policy input. A leading UTF-8 BOM is removed from the forwarded body so webhook
+consumers see the same JSON as the parser; `Content-Type` is not relabeled. The
+Legacy SDK may still reject otherwise valid non-JSON media types with HTTP 415.
 
 ### Discovery Middleware
 
-The Discovery middleware (`pkg/vmcp/discovery/middleware.go`) is central to vMCP's multi-tenant design:
+Discovery (`pkg/vmcp/aggregator/discoverer.go`) is central to vMCP's multi-tenant design:
 
 - **Initialize requests** (no session ID): Discovers capabilities from all backends in the MCPGroup, stores routing table in session
 - **Subsequent requests** (with session ID): Retrieves cached capabilities from session
@@ -1042,7 +1126,7 @@ The server wires them around discovery/annotation-enrichment so the effective ex
 Audit → Authentication → MCP Parsing → Discovery → Annotation Enrichment → Authorization → Next Handler
 ```
 
-**Implementation**: `pkg/vmcp/server/server.go`, `pkg/vmcp/discovery/middleware.go`, `pkg/vmcp/auth/factory/`
+**Implementation**: `pkg/vmcp/server/server.go`, `pkg/vmcp/aggregator/discoverer.go`, `pkg/vmcp/auth/factory/`
 
 ### Authorization Enforcement (core admission seam + pre-dispatch gate)
 
@@ -1147,6 +1231,7 @@ Status reporting enables vMCP runtime to report operational status directly inst
   - Phase: Pending, Ready, Degraded, Failed
   - Conditions: `metav1.Condition` (ready, backends discovered, auth configured) using shared constants
   - DiscoveredBackends: backend URL/auth type/health with timestamps
+- Kubernetes reporter: writes the runtime-owned `status.runtime` snapshot. The operator is the sole writer of top-level status fields and projects runtime phase, message, backend observations, and runtime conditions into their existing top-level compatibility fields during reconciliation. This ownership boundary prevents the runtime and operator from replacing the same conditions array concurrently.
 - CLI reporter: Logging-only reporter (no persistence) logs status updates at Debug level (visible when `--debug` is set).
 - Lifecycle hook: server starts the reporter, collects shutdown funcs, and stops them during graceful shutdown.
 
@@ -1159,7 +1244,7 @@ Status reporting enables vMCP runtime to report operational status directly inst
 ### Extensibility
 
 - Additional reporters can be added under `pkg/vmcp/status/` implementing `Reporter` and using shared `vmcp.Status` types.
-- Future sinks: Kubernetes status writer, file-based reporter for CLI (`thv status`), metrics exporter.
+- Future sinks: file-based reporter for CLI (`thv status`), metrics exporter.
 
 **Implementation**: `pkg/vmcp/status/`
 

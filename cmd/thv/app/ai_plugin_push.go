@@ -11,6 +11,7 @@ import (
 )
 
 var (
+	aiPluginPushKey           string
 	aiPluginPushIdentityToken string
 	aiPluginPushNoSign        bool
 )
@@ -18,20 +19,29 @@ var (
 var aiPluginPushCmd = &cobra.Command{
 	Use:   "push [reference]",
 	Short: "Push a built AI-tool plugin to an OCI registry",
-	Long:  `Push a previously built plugin artifact to a remote OCI registry.`,
-	Args:  cobra.ExactArgs(1),
-	RunE:  aiPluginPushCmdFunc,
+	Long: `Push a previously built plugin artifact to a remote OCI registry.
+
+Push signs keylessly by default. Use --key to sign with a cosign key pair
+instead, or --no-sign to publish unsigned.`,
+	Args: cobra.ExactArgs(1),
+	RunE: aiPluginPushCmdFunc,
 }
 
 func init() {
 	aiPluginCmd.AddCommand(aiPluginPushCmd)
-	// No --key flag: plugin signing is keyless-only until install-time key
-	// verification exists (#6442). Pushing a key-signed plugin would produce
-	// an artifact no project-scoped install can accept.
+	aiPluginPushCmd.Flags().StringVar(&aiPluginPushKey, "key", "",
+		"Path to a cosign private key to sign the pushed artifact. "+
+			"Requires the locally discovered ToolHive server; for a remote or manually configured API URL, use keyless signing. "+
+			"Encrypted keys are decrypted with COSIGN_PASSWORD read from the 'thv serve' process, "+
+			"which performs the signing. Consumers installing the result project-scoped must pass "+
+			"--public-key with the matching cosign public key the first time; distribute it "+
+			"alongside the artifact. Keyless signing needs no such out-of-band step, since the "+
+			"signer identity is verifiable from the artifact itself")
 	aiPluginPushCmd.Flags().StringVar(&aiPluginPushIdentityToken, "identity-token", "",
 		"OIDC identity token (or a path to a file containing one) for keyless signing. "+
-			"If omitted, one is acquired automatically: from the GitHub Actions OIDC token when "+
-			"running with id-token: write permission, otherwise via an interactive browser sign-in")
+			"Mutually exclusive with --key. If omitted, one is acquired automatically: from the "+
+			"GitHub Actions OIDC token when running with id-token: write permission, otherwise "+
+			"via an interactive browser sign-in")
 	aiPluginPushCmd.Flags().BoolVar(&aiPluginPushNoSign, "no-sign", false,
 		"Push without signing (consumers will need an explicit unsigned exception to install project-scoped)")
 }
@@ -44,11 +54,10 @@ func aiPluginPushCmdFunc(cmd *cobra.Command, args []string) error {
 	// Sigstore keyless signing, not of the artifact kind being pushed.
 	token, err := identitytoken.Acquire(ctx, identitytoken.Options{
 		FlagValue: aiPluginPushIdentityToken,
+		Key:       aiPluginPushKey,
 		NoSign:    aiPluginPushNoSign,
 		Confirm:   confirmBrowserSignIn,
-		// No --key: plugin signing is keyless-only (#6442), so the
-		// remediation must not offer a flag this command does not define.
-		Remediation: "Provide --identity-token, run in CI with id-token: write permission, " +
+		Remediation: "Provide --key or --identity-token, run in CI with id-token: write permission, " +
 			"or pass --no-sign to push unsigned",
 	})
 	if err != nil {
@@ -58,6 +67,7 @@ func aiPluginPushCmdFunc(cmd *cobra.Command, args []string) error {
 	c := newAIPluginClient(ctx)
 	err = c.Push(ctx, plugins.PushOptions{
 		Reference:     args[0],
+		Key:           aiPluginPushKey,
 		IdentityToken: token,
 		NoSign:        aiPluginPushNoSign,
 	})

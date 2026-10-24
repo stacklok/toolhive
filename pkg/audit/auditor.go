@@ -88,7 +88,15 @@ func NewAuditorWithTransport(config *Config, transportType string) (*Auditor, er
 // Close closes the underlying log writer if it implements io.Closer.
 // This should be called when the auditor is no longer needed to properly release resources.
 func (a *Auditor) Close() error {
-	if closer, ok := a.logWriter.(io.Closer); ok {
+	return closeLogWriter(a.logWriter)
+}
+
+func closeLogWriter(logWriter io.Writer) error {
+	if logWriter == os.Stdout || logWriter == os.Stderr {
+		return nil
+	}
+
+	if closer, ok := logWriter.(io.Closer); ok {
 		return closer.Close()
 	}
 	return nil
@@ -282,7 +290,7 @@ func (a *Auditor) logAuditEvent(r *http.Request, rw *responseWriter, requestData
 	outcome := a.determineOutcome(rw.statusCode)
 
 	// A refusal by the authz middleware before message-level authorization
-	// could run (e.g. a non-JSON POST carrying a smuggled JSON-RPC body)
+	// could run (e.g. a client response or missing parsing middleware)
 	// writes a 400, which determineOutcome maps to a generic failure. The
 	// marker reclassifies it as a denial so blocked sweeps are alertable.
 	if marker, ok := mcp.AuthzDenialMarkerFromContext(r.Context()); ok && marker.Denied {

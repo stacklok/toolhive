@@ -5,7 +5,6 @@ package pluginsvc
 
 import (
 	"net/http"
-	"reflect"
 	"testing"
 
 	"github.com/opencontainers/go-digest"
@@ -47,8 +46,8 @@ func newPushFixture(t *testing.T) (*ocimocks.MockRegistryClient, *ociplugins.Sto
 }
 
 // TestPushValidatesSigningInputs guards the RFC invariant that pushes are
-// signed by default: an identity token or an explicit no_sign must be given,
-// before anything is pushed.
+// signed by default: exactly one of a key, an identity token, or an explicit
+// no_sign must be given, before anything is pushed.
 func TestPushValidatesSigningInputs(t *testing.T) {
 	t.Parallel()
 
@@ -56,7 +55,15 @@ func TestPushValidatesSigningInputs(t *testing.T) {
 		name string
 		opts plugins.PushOptions
 	}{
-		{name: "neither identity_token nor no_sign", opts: plugins.PushOptions{}},
+		{name: "neither key, identity_token, nor no_sign", opts: plugins.PushOptions{}},
+		{
+			name: "both key and identity_token",
+			opts: plugins.PushOptions{Key: "/tmp/cosign.key", IdentityToken: "tok"},
+		},
+		{
+			name: "no_sign combined with key",
+			opts: plugins.PushOptions{NoSign: true, Key: "/tmp/cosign.key"},
+		},
 		{
 			name: "no_sign combined with identity_token",
 			opts: plugins.PushOptions{NoSign: true, IdentityToken: "tok"},
@@ -76,19 +83,28 @@ func TestPushValidatesSigningInputs(t *testing.T) {
 	}
 }
 
-// TestPushOptionsCarriesNoKeyField pins the keyless-only contract at the type
-// level. Plugin signing is keyless until install-time key verification exists
-// (#6442), and a settable Key had no single answer for what it meant: the
-// in-process service rejected it while the HTTP client dropped it and
-// published unsigned. Omitting the field is what makes those two agree, so
-// the absence is the invariant worth pinning — a reintroduced Key (for
-// instance by restoring the skills.PushOptions alias) fails here rather than
-// silently reopening the divergence.
-func TestPushOptionsCarriesNoKeyField(t *testing.T) {
+// TestPushSignsWithKey proves a key alone is an accepted signing method and
+// that the key reaches core's signer — a Key validated here but dropped on
+// the way to SignOCI would publish unsigned content in answer to a request
+// that named a key. Install-time key verification is what makes this safe to
+// offer: consumers supply the matching public key on first project-scoped
+// install and the lock pins it (see resolveKeyAnchor).
+func TestPushSignsWithKey(t *testing.T) {
 	t.Parallel()
-	_, ok := reflect.TypeOf(plugins.PushOptions{}).FieldByName("Key")
-	assert.False(t, ok,
-		"plugins.PushOptions must not carry a Key field: plugin signing is keyless-only (#6442)")
+	reg, ociStore, artifactDigest, staged := newPushFixture(t)
+
+	ms := signermocks.NewMockSigner(gomock.NewController(t))
+	gomock.InOrder(
+		reg.EXPECT().Push(gomock.Any(), gomock.Any(), gomock.Any(), staged).Return(nil),
+		ms.EXPECT().SignOCI(gomock.Any(), staged, artifactDigest, signer.Options{
+			Key: "/tmp/cosign.key",
+		}).Return(&signer.Result{Bundle: []byte(`{"bundle":true}`)}, nil),
+		reg.EXPECT().Push(gomock.Any(), gomock.Any(), gomock.Any(), testPushRef).Return(nil),
+	)
+
+	svc := New(WithRegistryClient(reg), WithOCIStore(ociStore), WithSigner(ms))
+	err := svc.Push(t.Context(), plugins.PushOptions{Reference: testPushRef, Key: "/tmp/cosign.key"})
+	require.NoError(t, err)
 }
 
 // TestPushSignsKeylessWithIdentityToken proves an identity token signs the

@@ -18,6 +18,7 @@ import (
 	"github.com/ory/x/errorsx"
 
 	coreaudit "github.com/stacklok/toolhive-core/audit"
+	"github.com/stacklok/toolhive/pkg/authserver/authorizationdetails"
 	"github.com/stacklok/toolhive/pkg/authserver/server"
 	"github.com/stacklok/toolhive/pkg/authserver/server/session"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
@@ -74,6 +75,8 @@ type Handler struct {
 	// configuredDelegateClients holds the operator-configured delegate-client
 	// IDs (Config.DelegateClients, ID-only).
 	configuredDelegateClients []string
+	// authorizationDetailsRegistry validates RFC 9396 details on token exchange.
+	authorizationDetailsRegistry *authorizationdetails.Registry
 }
 
 // formParams holds the validated RFC 8693 form parameters extracted from a
@@ -141,6 +144,11 @@ func (h *Handler) HandleTokenEndpointRequest(ctx context.Context, requester fosi
 		return err
 	}
 
+	pendingDetails, err := h.parseAuthorizationDetails(form, actorID)
+	if err != nil {
+		return err
+	}
+
 	// Validate requested_token_type per RFC 8693 Section 2.1: if the client
 	// requests a token type the server does not support, the request must fail.
 	requestedTokenType := form.Get("requested_token_type")
@@ -176,16 +184,7 @@ func (h *Handler) HandleTokenEndpointRequest(ctx context.Context, requester fosi
 		return err
 	}
 
-	configuredDelegate := slices.Contains(h.configuredDelegateClients, client.GetID())
-	if err := checkDelegationConsent(validatedClaims, client.GetID(), actorSub, configuredDelegate); err != nil {
-		return err
-	}
-
-	if err := h.grantScopes(ctx, requester, client, validatedClaims); err != nil {
-		return err
-	}
-
-	if err := h.grantAndBoundAudiences(ctx, requester, client, validatedClaims); err != nil {
+	if err := h.authorizeDelegation(ctx, requester, client, params, validatedClaims, actorSub, pendingDetails); err != nil {
 		return err
 	}
 
@@ -205,11 +204,19 @@ func (h *Handler) HandleTokenEndpointRequest(ctx context.Context, requester fosi
 		},
 	)
 
-	act, err := buildActClaim(validatedClaims, h.issuer, actorSub)
+	act, externalIssuer, err := buildActClaim(validatedClaims, h.issuer, actorSub)
 	if err != nil {
 		return err
 	}
 	delegatedSession.JWTClaims.Extra["act"] = act
+	// external_issuer records that this exchange (or, on re-exchange, a
+	// prior one in the chain) involved a trusted external issuer,
+	// independent of whether a client-namespace actor was also resolved
+	// (see buildActClaim's doc comment for why this is not nested inside
+	// act, and for how it is carried forward across re-exchanges).
+	if externalIssuer != "" {
+		delegatedSession.JWTClaims.Extra["external_issuer"] = externalIssuer
+	}
 
 	// Compute the delegated token lifetime: the shorter of the subject token's
 	// remaining lifetime and the configured delegation lifespan.
@@ -235,7 +242,9 @@ func (h *Handler) HandleTokenEndpointRequest(ctx context.Context, requester fosi
 }
 
 // PopulateTokenEndpointResponse issues the delegated access token and sets
-// the RFC 8693 issued_token_type in the response.
+// the RFC 8693 issued_token_type in the response. When an authorization_details
+// registry is configured and details were granted, it also echoes the granted
+// details as the RFC 9396 authorization_details response member.
 func (h *Handler) PopulateTokenEndpointResponse(
 	ctx context.Context, requester fosite.AccessRequester, responder fosite.AccessResponder,
 ) error {
@@ -276,6 +285,42 @@ func (h *Handler) PopulateTokenEndpointResponse(
 
 	// Per RFC 8693 Section 2.2.1, the response MUST include issued_token_type.
 	responder.SetExtra("issued_token_type", oauthproto.TokenTypeAccessToken)
+
+	h.echoAuthorizationDetails(requester, responder)
+
+	return nil
+}
+
+// authorizeDelegation runs consent, then scopes, then audiences, then the
+// authorization_details hook, in that order, so the hook sees only a request
+// that passed every other check.
+func (h *Handler) authorizeDelegation(
+	ctx context.Context,
+	requester fosite.AccessRequester,
+	client fosite.Client,
+	params *formParams,
+	validatedClaims *ValidatedClaims,
+	actorSub string,
+	pendingDetails *authorizationdetails.Pending,
+) error {
+	configuredDelegate := slices.Contains(h.configuredDelegateClients, client.GetID())
+	if err := checkDelegationConsent(validatedClaims, client.GetID(), actorSub, configuredDelegate); err != nil {
+		return err
+	}
+
+	if err := h.grantScopes(ctx, requester, client, validatedClaims); err != nil {
+		return err
+	}
+
+	if err := h.grantAndBoundAudiences(ctx, requester, client, validatedClaims); err != nil {
+		return err
+	}
+
+	if pendingDetails != nil {
+		if err := h.grantAuthorizationDetails(ctx, pendingDetails, requester, params, validatedClaims, actorSub); err != nil {
+			return err
+		}
+	}
 
 	return nil
 }
@@ -445,43 +490,55 @@ func delegatedSubject(validatedClaims *ValidatedClaims) string {
 }
 
 // buildActClaim assembles the RFC 8693 Section 4.1 "act" claim for the
-// delegated token. The outermost act.sub is always actorID (the ToolHive
-// client) — every downstream consumer reads that as "who is acting", and it
-// must not change regardless of how the subject token was obtained.
+// delegated token, and separately reports the external issuer of the
+// original external hop (if any) for the caller to record as its own
+// top-level claim. This is either the external issuer this exchange itself
+// resolved, or — when this exchange has none of its own (a self-issued
+// subject token being re-exchanged) — the value already carried in the
+// subject token's own "external_issuer" claim, so the fact that an external
+// issuer was ever involved survives across re-exchanges (up to whatever
+// depth maxDelegationDepth still permits) instead of disappearing after one
+// hop.
+//
+// externalIssuer is deliberately NOT nested inside act: RFC 8693 §4.1
+// defines act as identifying a party that acted, and an issuer alone names
+// no party — "the combination of the two claims iss and sub might be
+// necessary to uniquely identify an actor" (§4.1) treats iss only as a
+// qualifier for an already-identified sub, never as a standalone actor.
+// Nesting a bare {"iss": ...} entry under act.act would present a
+// non-actor as a prior actor to any RFC-8693-aware consumer that walks the
+// chain -- including this codebase's own pkg/audit, whose
+// extractDelegationChainFromIdentity is documented as extracting "the full
+// chain of acting parties." A may_act-bearing or ActorMatcher-only external
+// token has no client-namespace actor to report (see ExternalActor's doc
+// comment), so for those the act claim stops at the outer, genuinely-acting
+// hop, and the external issuer is reported only via the returned string.
+//
+// The outermost act.sub is always actorID (the ToolHive client) — every
+// downstream consumer reads that as "who is acting", and it must not change
+// regardless of how the subject token was obtained.
 //
 // Extracted from HandleTokenEndpointRequest rather than inlined: the external
 // provenance nesting, the prior-chain depth gate, and the encoded-size gate
 // below add several branches that have nothing to do with the surrounding
 // request plumbing, and multiple of them reject the request outright.
-func buildActClaim(validatedClaims *ValidatedClaims, issuer, actorID string) (map[string]any, error) {
+func buildActClaim(validatedClaims *ValidatedClaims, issuer, actorID string) (map[string]any, string, error) {
 	act := map[string]any{"iss": issuer, "sub": actorID}
 	nestUnder := act
 	newLevels := 1
 
 	// When the subject token came from a trusted external issuer
 	// (ValidatedClaims.ExternalIssuer is set only there — see
-	// multi_issuer_validator.go), nest that issuer one level in, together
-	// with the allowlisted actor when one was resolved. RFC 8693 §4.1
-	// anticipates exactly this: "the combination of the two claims 'iss' and
-	// 'sub' might be necessary to uniquely identify an actor." Without this,
-	// the issued token would carry no record that the delegation originated
-	// externally at all — including for a may_act-bearing external token,
-	// which leaves ExternalActor unset because may_act.sub already names the
-	// delegate directly via the actorID binding above. That token still has
-	// an external issuer worth recording, so nesting here is keyed on
-	// ExternalIssuer, not ExternalActor: the allowlist path's accepted
-	// any-ToolHive-client scope limitation (see checkDelegationConsent)
-	// depends on this provenance being auditable after the fact, and a
-	// may_act-bearing external token — the path that bypasses the allowlist
-	// entirely — needs it at least as much.
-	if validatedClaims.ExternalIssuer != "" {
-		external := map[string]any{"iss": validatedClaims.ExternalIssuer}
-		// ExternalActor is only present on the allowlist path (see its doc
-		// comment) — a may_act-bearing external token has no client-namespace
-		// actor claim to report, so the nested entry there carries "iss" only.
-		if validatedClaims.ExternalActor != "" {
-			external["sub"] = validatedClaims.ExternalActor
-		}
+	// multi_issuer_validator.go), nest that issuer's allowlisted actor one
+	// level in, when one was resolved: RFC 8693 §4.1 anticipates exactly
+	// this, "the combination of the two claims 'iss' and 'sub' might be
+	// necessary to uniquely identify an actor." A may_act-bearing or
+	// ActorMatcher-only external token has no such actor to nest (see
+	// ExternalActor's doc comment) — its act claim stays a single hop, and
+	// the caller-returned externalIssuer below is this exchange's only
+	// record that an external issuer was involved.
+	if validatedClaims.ExternalActor != "" {
+		external := map[string]any{"iss": validatedClaims.ExternalIssuer, "sub": validatedClaims.ExternalActor}
 		act["act"] = external
 		nestUnder = external
 		newLevels = 2
@@ -503,7 +560,7 @@ func buildActClaim(validatedClaims *ValidatedClaims, issuer, actorID string) (ma
 		if chain.Malformed {
 			// MalformedReason is a closed, value-free enum; it is surfaced to the
 			// client and MUST stay that way — never interpolate claim contents here.
-			return nil, errorsx.WithStack(fosite.ErrInvalidRequest.WithHintf(
+			return nil, "", errorsx.WithStack(fosite.ErrInvalidRequest.WithHintf(
 				"The subject token's delegation chain is malformed (%s).", chain.MalformedReason))
 		}
 		// len(Chain) is the prior chain's depth: the parser appends exactly one
@@ -512,7 +569,7 @@ func buildActClaim(validatedClaims *ValidatedClaims, issuer, actorID string) (ma
 		// on top — one for the acting client, two when an external issuer is
 		// also nested — so the resulting chain never exceeds the cap.
 		if len(chain.Chain)+newLevels > maxDelegationDepth {
-			return nil, errorsx.WithStack(fosite.ErrInvalidRequest.WithHint(
+			return nil, "", errorsx.WithStack(fosite.ErrInvalidRequest.WithHint(
 				"The subject token's delegation chain is too deep."))
 		}
 		// Rebuild the nested act from the parsed chain rather than nesting
@@ -533,21 +590,32 @@ func buildActClaim(validatedClaims *ValidatedClaims, issuer, actorID string) (ma
 		// displacing it.
 		normalizedAct, err := chainToAct(chain.Chain)
 		if err != nil {
-			return nil, errorsx.WithStack(fosite.ErrInvalidRequest.WithHint(
+			return nil, "", errorsx.WithStack(fosite.ErrInvalidRequest.WithHint(
 				"The subject token's delegation chain contains an empty actor."))
 		}
 		nestUnder["act"] = normalizedAct
 	}
 	encodedAct, err := json.Marshal(act)
 	if err != nil {
-		return nil, errorsx.WithStack(fosite.ErrInvalidRequest.WithHint(
+		return nil, "", errorsx.WithStack(fosite.ErrInvalidRequest.WithHint(
 			"The subject token's delegation chain cannot be serialized."))
 	}
 	if len(encodedAct) > maxActClaimSize {
-		return nil, errorsx.WithStack(fosite.ErrInvalidRequest.WithHint(
+		return nil, "", errorsx.WithStack(fosite.ErrInvalidRequest.WithHint(
 			"The subject token's delegation chain is too large."))
 	}
-	return act, nil
+
+	// Under the current handler structure there is only ever one external
+	// hop, so "original" and "most recent" coincide today; if a design ever
+	// introduces multiple external-issuer hops, this will need to change to
+	// keep tracking the original rather than the latest.
+	externalIssuer := validatedClaims.ExternalIssuer
+	if externalIssuer == "" {
+		if prior, ok := validatedClaims.Extra["external_issuer"].(string); ok {
+			externalIssuer = prior
+		}
+	}
+	return act, externalIssuer, nil
 }
 
 // chainToAct rebuilds a nested RFC 8693 act structure from a parsed
@@ -786,9 +854,20 @@ func (h *Handler) grantAudiences(ctx context.Context, requester fosite.AccessReq
 	return nil
 }
 
+// resourceScopedClient is implemented by fosite.Client types (e.g.
+// SPIFFEClient) that maintain an RFC 8707 resource allowlist independent of
+// GetAudience's RFC 8693 audience allowlist. Resources and audiences are
+// independent request dimensions: permission in one must never imply
+// permission in the other. A client that doesn't implement this interface
+// falls back to GetAudience for the resource check, preserving prior
+// behavior for clients (e.g. DelegateClient) that only ever had one list.
+type resourceScopedClient interface {
+	Resources() []string
+}
+
 // grantResourceAudience validates the RFC 8707 resource parameter against
-// both the server's allowedAudiences and the client's own registered
-// audiences, and grants it as an additional audience claim, binding the
+// the server's allowedAudiences and the client's own registered resource
+// allowlist, and grants it as an additional audience claim, binding the
 // issued token to a specific resource server (e.g., an MCP server).
 //
 // Per RFC 8707 §2, a request MAY carry multiple resource parameters; this
@@ -808,12 +887,15 @@ func (h *Handler) grantResourceAudience(ctx context.Context, requester fosite.Ac
 		if err := server.ValidateAudienceAllowed(resource, h.allowedAudiences); err != nil {
 			return errorsx.WithStack(err)
 		}
-		// The resource parameter is RFC 8707's mechanism for requesting an
-		// audience, so it must be subject to the same per-client audience
-		// registration as the "audience" parameter (grantAudiences) — otherwise
-		// a client could bypass its registered audiences simply by using
-		// "resource" instead of "audience".
-		if err := h.config.GetAudienceStrategy(ctx)(client.GetAudience(), []string{resource}); err != nil {
+		// The resource parameter is RFC 8707's mechanism for requesting a
+		// resource-bound token, so it must be subject to the client's own
+		// registered allowlist — otherwise a client could bypass its
+		// registration simply by using "resource" instead of "audience".
+		allowedResources := client.GetAudience()
+		if rc, ok := client.(resourceScopedClient); ok {
+			allowedResources = rc.Resources()
+		}
+		if err := h.config.GetAudienceStrategy(ctx)(allowedResources, []string{resource}); err != nil {
 			return errorsx.WithStack(server.ErrInvalidTarget.WithHintf(
 				"The client is not permitted to request a token for resource %q.", resource))
 		}

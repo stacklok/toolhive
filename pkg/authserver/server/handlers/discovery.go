@@ -131,6 +131,9 @@ func (h *Handler) buildOAuthMetadata() sharedobauth.AuthorizationServerMetadata 
 	if !h.tokenOnly || h.config.AllowPrivateKeyJWTRegistration {
 		metadata.RegistrationEndpoint = issuer + "/oauth/register"
 	}
+	if h.config.DeviceFlowEnabled {
+		metadata.DeviceAuthorizationEndpoint = issuer + "/oauth/device_authorization"
+	}
 	return metadata
 }
 
@@ -164,15 +167,12 @@ func (h *Handler) tokenEndpointAuthSigningAlgorithms() []string {
 	return registration.SupportedSigningAlgorithms()
 }
 
-// grantTypesSupported returns the grant_types_supported list for discovery.
-// RFC 8693 token exchange is always registered with fosite (buildProvider wires
-// it unconditionally, even with no trusted issuers, to preserve
-// self-issued token exchange), so it's always advertised. The RFC 7523
-// JWT-bearer grant, by contrast, is only registered when at least one
-// trusted issuer opts in — advertising it unconditionally would claim
-// support the token endpoint doesn't actually have.
+// grantTypesSupported returns only grant families registered with fosite.
 func (h *Handler) grantTypesSupported() []string {
-	grantTypes := []string{sharedobauth.GrantTypeTokenExchange}
+	grantTypes := make([]string, 0, 4)
+	if h.config.TokenExchangeEnabled {
+		grantTypes = append(grantTypes, sharedobauth.GrantTypeTokenExchange)
+	}
 	if !h.tokenOnly {
 		grantTypes = append(grantTypes,
 			string(fosite.GrantTypeAuthorizationCode),
@@ -181,6 +181,9 @@ func (h *Handler) grantTypesSupported() []string {
 	}
 	if h.config.JWTBearerGrantEnabled {
 		grantTypes = append(grantTypes, sharedobauth.GrantTypeJWTBearer)
+	}
+	if h.config.DeviceFlowEnabled {
+		grantTypes = append(grantTypes, sharedobauth.GrantTypeDeviceCode)
 	}
 	return grantTypes
 }

@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 
@@ -383,16 +384,34 @@ func TestQuoteForCmd(t *testing.T) {
 	}
 }
 
+// buildFakeThvExe compiles a tiny program that prints its arguments and
+// places thv.exe in dir. A .cmd stand-in would need `call`, which re-expands
+// % and ^, so the shim test has to run a real executable.
+func buildFakeThvExe(t *testing.T, dir string) string {
+	t.Helper()
+	srcDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(srcDir, "go.mod"), []byte("module fakethv\n\ngo 1.22\n"), 0o600))
+	src := "package main\n\nimport (\n\t\"fmt\"\n\t\"os\"\n\t\"strings\"\n)\n\nfunc main() {\n\tfmt.Println(\"ARGS: \" + strings.Join(os.Args[1:], \" \"))\n}\n"
+	require.NoError(t, os.WriteFile(filepath.Join(srcDir, "main.go"), []byte(src), 0o600))
+	built := filepath.Join(srcDir, "thv.exe")
+	cmd := exec.Command("go", "build", "-o", built, ".")
+	cmd.Dir = srcDir
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, "go build failed: %s", out)
+	fakeThv := filepath.Join(dir, "thv.exe")
+	require.NoError(t, os.Rename(built, fakeThv))
+	return fakeThv
+}
+
 func TestWriteCredentialHelperShim_ExecutesWithHostilePath_Windows(t *testing.T) {
 	t.Parallel()
 	if runtime.GOOS != "windows" {
 		t.Skip("Windows .cmd shim")
 	}
 
-	hostileDir := filepath.Join(t.TempDir(), "O'Brien we ird")
+	hostileDir := filepath.Join(t.TempDir(), "100% ^ &")
 	require.NoError(t, os.MkdirAll(hostileDir, 0o700))
-	fakeThv := filepath.Join(hostileDir, "thv.cmd")
-	require.NoError(t, os.WriteFile(fakeThv, []byte("@echo off\r\necho ARGS: %*\r\n"), 0o700))
+	fakeThv := buildFakeThvExe(t, hostileDir)
 
 	cm := &ClientManager{homeDir: t.TempDir()}
 	shimPath, err := cm.writeCredentialHelperShim(fakeThv)
@@ -450,8 +469,9 @@ func TestWriteCredentialHelperShim_UsesAbsolutePath(t *testing.T) {
 	require.NoError(t, err)
 
 	if runtime.GOOS == "windows" {
-		assert.Contains(t, string(shim), `call "`+helperPath+`" llm token`)
-		assert.Contains(t, string(shim), `call "`+helperPath+`" llm token --skip-browser`)
+		assert.Contains(t, string(shim), `"`+helperPath+`" llm token`)
+		assert.Contains(t, string(shim), `"`+helperPath+`" llm token --skip-browser`)
+		assert.NotContains(t, string(shim), "call ")
 		silent, interactive, found := strings.Cut(string(shim), ":interactive")
 		require.True(t, found, "Windows shim must have a :interactive label")
 		assert.Contains(t, silent, "--skip-browser")
@@ -555,6 +575,110 @@ func TestManagedProfileExistsUnder(t *testing.T) {
 		require.NoError(t, os.WriteFile(filepath.Join(userDir, domain), []byte("x"), 0o600))
 		assert.True(t, managedProfileExistsUnder(root, domain))
 	})
+}
+
+// TestClaudeDesktopPathsResolvePerPlatform pins Claude Desktop's documented
+// configLibrary and user-data locations on every platform, independent of the
+// platform running the test, so a missing prefix fails everywhere rather than
+// only on that platform's CI runner.
+func TestClaudeDesktopPathsResolvePerPlatform(t *testing.T) {
+	t.Parallel()
+	cfg := NewTestClientManager(t.TempDir(), nil, supportedClientIntegrations, nil).
+		lookupClientAppConfig(ClientApp(ClaudeDesktop))
+	require.NotNil(t, cfg)
+
+	// https://claude.com/docs/third-party/claude-desktop/configuration
+	tests := []struct {
+		platform     Platform
+		wantLibrary  []string
+		wantUserData []string
+	}{
+		{PlatformDarwin, []string{"Library", "Application Support", "Claude-3p", "configLibrary"},
+			[]string{"Library", "Application Support", "Claude"}},
+		{PlatformWindows, []string{"AppData", "Local", "Claude-3p", "configLibrary"},
+			[]string{"AppData", "Roaming", "Claude"}},
+		{PlatformLinux, []string{".config", "Claude-3p", "configLibrary"},
+			[]string{".config", "Claude"}},
+	}
+	for _, tc := range tests {
+		t.Run(string(tc.platform), func(t *testing.T) {
+			t.Parallel()
+			libraryPrefix, ok := cfg.LLMSettingsPlatformPrefix[tc.platform]
+			require.True(t, ok, "configLibrary must define a prefix for %s", tc.platform)
+			assert.Equal(t, tc.wantLibrary, append(slices.Clone(libraryPrefix), cfg.LLMSettingsRelPath...))
+
+			detectPrefix, ok := cfg.LLMDetectPlatformPrefix[tc.platform]
+			require.True(t, ok, "detection must define a prefix for %s", tc.platform)
+			assert.Equal(t, tc.wantUserData, append(slices.Clone(detectPrefix), cfg.LLMDetectRelPath...))
+		})
+	}
+}
+
+func TestManagedSettingsPresentUnder(t *testing.T) {
+	t.Parallel()
+	relPath := []string{"claude-desktop", "managed-settings.json"}
+
+	tests := []struct {
+		name  string
+		setup func(t *testing.T, root string)
+		want  bool
+	}{
+		{name: "absent", setup: func(*testing.T, string) {}},
+		{
+			name: "regular file",
+			setup: func(t *testing.T, root string) {
+				t.Helper()
+				writeFileUnder(t, root, relPath)
+			},
+			want: true,
+		},
+		{
+			// Claude Desktop rejects a symlinked managed file but still treats the
+			// device as managed and disables local settings, so it counts.
+			name: "symlink",
+			setup: func(t *testing.T, root string) {
+				t.Helper()
+				target := filepath.Join(t.TempDir(), "real.json")
+				require.NoError(t, os.WriteFile(target, []byte("{}"), 0o600))
+				require.NoError(t, os.MkdirAll(filepath.Join(root, relPath[0]), 0o700))
+				require.NoError(t, os.Symlink(target, filepath.Join(root, filepath.Join(relPath...))))
+			},
+			want: true,
+		},
+		{
+			name: "dangling symlink",
+			setup: func(t *testing.T, root string) {
+				t.Helper()
+				require.NoError(t, os.MkdirAll(filepath.Join(root, relPath[0]), 0o700))
+				require.NoError(t, os.Symlink(filepath.Join(root, "missing.json"), filepath.Join(root, filepath.Join(relPath...))))
+			},
+			want: true,
+		},
+		{
+			name: "directory",
+			setup: func(t *testing.T, root string) {
+				t.Helper()
+				require.NoError(t, os.MkdirAll(filepath.Join(root, filepath.Join(relPath...)), 0o700))
+			},
+			want: true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			root := t.TempDir()
+			tc.setup(t, root)
+			assert.Equal(t, tc.want, managedSettingsPresentUnder(root, relPath))
+		})
+	}
+}
+
+// writeFileUnder creates root/relPath (and its parents) with placeholder content.
+func writeFileUnder(t *testing.T, root string, relPath []string) {
+	t.Helper()
+	path := filepath.Join(root, filepath.Join(relPath...))
+	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o700))
+	require.NoError(t, os.WriteFile(path, []byte("{}"), 0o600))
 }
 
 func TestConfigureCredentialHelper_RejectsNonArrayEntries(t *testing.T) {

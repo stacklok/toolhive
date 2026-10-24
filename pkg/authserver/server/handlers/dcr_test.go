@@ -190,6 +190,7 @@ func testRegisterClientHandlerPrivateKeyJWTResponseAndClient(t *testing.T, token
 			Config:                         &fosite.Config{AccessTokenIssuer: "https://test-authserver"},
 			ScopesSupported:                registration.DefaultScopes,
 			AllowPrivateKeyJWTRegistration: true,
+			TokenExchangeEnabled:           true,
 		},
 	}
 	body, err := json.Marshal(oauthproto.DynamicClientRegistrationRequest{
@@ -233,6 +234,107 @@ func testRegisterClientHandlerPrivateKeyJWTResponseAndClient(t *testing.T, token
 	assert.Equal(t, jwks.Keys[0].Algorithm, oidc.GetJSONWebKeys().Keys[0].Algorithm)
 	assert.Equal(t, jwks.Keys[0].Use, oidc.GetJSONWebKeys().Keys[0].Use)
 }
+
+// TestRegisterClientHandler_TokenExchangeDisabledRejectsGrant confirms that DCR
+// rejects a registration whose effective grant types include RFC 8693 token
+// exchange when the server has token exchange disabled, both when the client
+// requests the grant explicitly and when it is defaulted implicitly for a
+// private_key_jwt client. It also confirms the same request succeeds when
+// token exchange is enabled, so the working path is unaffected.
+func TestRegisterClientHandler_TokenExchangeDisabledRejectsGrant(t *testing.T) {
+	t.Parallel()
+
+	jwks := &jose.JSONWebKeySet{Keys: []jose.JSONWebKey{{
+		Key:       testRSAPublicKey(t),
+		KeyID:     "handler-key",
+		Use:       "sig",
+		Algorithm: string(jose.RS256),
+	}}}
+
+	tests := []struct {
+		name                 string
+		requestBody          oauthproto.DynamicClientRegistrationRequest
+		tokenExchangeEnabled bool
+		expectedStatus       int
+		expectedErrDesc      string // non-empty means expect an error
+	}{
+		{
+			name: "explicit token-exchange grant rejected when disabled",
+			requestBody: oauthproto.DynamicClientRegistrationRequest{
+				RedirectURIs:                []string{"https://example.com/callback"},
+				GrantTypes:                  []string{oauthproto.GrantTypeTokenExchange},
+				TokenEndpointAuthMethod:     oauthproto.TokenEndpointAuthMethodPrivateKeyJWT,
+				JWKS:                        jwks,
+				TokenEndpointAuthSigningAlg: string(jose.RS256),
+			},
+			tokenExchangeEnabled: false,
+			expectedStatus:       http.StatusBadRequest,
+			expectedErrDesc:      "token exchange is disabled",
+		},
+		{
+			name: "implicit token-exchange default rejected when disabled",
+			requestBody: oauthproto.DynamicClientRegistrationRequest{
+				RedirectURIs:                []string{"https://example.com/callback"},
+				TokenEndpointAuthMethod:     oauthproto.TokenEndpointAuthMethodPrivateKeyJWT,
+				JWKS:                        jwks,
+				TokenEndpointAuthSigningAlg: string(jose.RS256),
+			},
+			tokenExchangeEnabled: false,
+			expectedStatus:       http.StatusBadRequest,
+			expectedErrDesc:      "token exchange is disabled",
+		},
+		{
+			name: "same request succeeds when token exchange enabled",
+			requestBody: oauthproto.DynamicClientRegistrationRequest{
+				RedirectURIs:                []string{"https://example.com/callback"},
+				GrantTypes:                  []string{oauthproto.GrantTypeTokenExchange},
+				TokenEndpointAuthMethod:     oauthproto.TokenEndpointAuthMethodPrivateKeyJWT,
+				JWKS:                        jwks,
+				TokenEndpointAuthSigningAlg: string(jose.RS256),
+			},
+			tokenExchangeEnabled: true,
+			expectedStatus:       http.StatusCreated,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctrl := gomock.NewController(t)
+			stor := mocks.NewMockStorage(ctrl)
+			if tc.expectedStatus == http.StatusCreated {
+				stor.EXPECT().RegisterClient(gomock.Any(), gomock.Any()).Return(nil)
+			}
+			handler := &Handler{
+				storage: stor,
+				config: &server.AuthorizationServerConfig{
+					Config:                         &fosite.Config{AccessTokenIssuer: "https://test-authserver"},
+					ScopesSupported:                registration.DefaultScopes,
+					AllowPrivateKeyJWTRegistration: true,
+					TokenExchangeEnabled:           tc.tokenExchangeEnabled,
+				},
+			}
+
+			body, err := json.Marshal(tc.requestBody)
+			require.NoError(t, err)
+
+			req := httptest.NewRequest(http.MethodPost, "/oauth/register", bytes.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			w := httptest.NewRecorder()
+			handler.RegisterClientHandler(w, req)
+
+			require.Equal(t, tc.expectedStatus, w.Code)
+			if tc.expectedErrDesc != "" {
+				var errResp registration.DCRError
+				require.NoError(t, json.Unmarshal(w.Body.Bytes(), &errResp))
+				assert.Equal(t, registration.DCRErrorInvalidClientMetadata, errResp.Error)
+				assert.Contains(t, errResp.ErrorDescription, tc.expectedErrDesc)
+			}
+		})
+	}
+}
+
 func TestRegisterClientHandler_ScopeInResponse(t *testing.T) {
 	t.Parallel()
 
@@ -608,6 +710,59 @@ func runDCR(t *testing.T, cfg *server.AuthorizationServerConfig, body string) (
 	w = httptest.NewRecorder()
 	handler.RegisterClientHandler(w, req)
 	return w, capturedClient
+}
+
+func TestDCRIgnoresCallerClientIDAndPreservesExistingRegistration(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	stor := storage.NewMemoryStorage()
+	t.Cleanup(func() { require.NoError(t, stor.Close()) })
+	handler := &Handler{
+		storage: stor,
+		config: &server.AuthorizationServerConfig{
+			Config:          &fosite.Config{AccessTokenIssuer: "https://test-authserver"},
+			ScopesSupported: registration.DefaultScopes,
+		},
+	}
+	register := func(body string) oauthproto.DynamicClientRegistrationResponse {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodPost, "/oauth/register", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		handler.RegisterClientHandler(w, req)
+		require.Equal(t, http.StatusCreated, w.Code, w.Body.String())
+		var response oauthproto.DynamicClientRegistrationResponse
+		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &response))
+		return response
+	}
+
+	first := register(`{"client_id":"caller-selected","client_name":"first registration","redirect_uris":["https://first.example/callback"]}`)
+	require.NotEmpty(t, first.ClientID)
+	require.NotEqual(t, "caller-selected", first.ClientID,
+		"initial DCR must issue a server-generated client_id instead of accepting the caller's value")
+	firstStored, err := stor.GetClient(ctx, first.ClientID)
+	require.NoError(t, err)
+
+	second := register(`{"client_id":"` + first.ClientID + `","client_name":"replacement attempt","redirect_uris":["https://second.example/callback"]}`)
+	require.NotEmpty(t, second.ClientID)
+	require.NotEqual(t, first.ClientID, second.ClientID,
+		"repeat DCR supplying the first issued ID must receive a different server-generated client_id")
+	require.NotEqual(t, "caller-selected", second.ClientID,
+		"repeat DCR must not accept any caller-supplied client_id")
+
+	firstAfter, err := stor.GetClient(ctx, first.ClientID)
+	require.NoError(t, err)
+	assert.Equal(t, registration.ClientName(firstStored), registration.ClientName(firstAfter),
+		"the original registration name must remain unchanged after a repeat request targeting its ID")
+	assert.Equal(t, firstStored.GetRedirectURIs(), firstAfter.GetRedirectURIs(),
+		"the original registration redirects must remain unchanged after a repeat request targeting its ID")
+	secondStored, err := stor.GetClient(ctx, second.ClientID)
+	require.NoError(t, err)
+	assert.Equal(t, "replacement attempt", registration.ClientName(secondStored),
+		"the repeat request's metadata must be stored only under its newly issued ID")
+	assert.Equal(t, []string{"https://second.example/callback"}, secondStored.GetRedirectURIs(),
+		"the repeat request's redirects must be stored only under its newly issued ID")
 }
 
 // TestRegisterClientHandler_ConfidentialDCR covers the confidential-client DCR

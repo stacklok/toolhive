@@ -7,12 +7,14 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"path/filepath"
 	"slices"
 	"strings"
 
 	"github.com/spiffe/go-spiffe/v2/spiffeid"
 
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
+	spiffeauth "github.com/stacklok/toolhive/pkg/authserver/spiffe"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
@@ -20,9 +22,9 @@ import (
 
 const (
 	// SPIFFEAuthenticationMethodX509 authenticates a workload with an X.509-SVID.
-	SPIFFEAuthenticationMethodX509 SPIFFEAuthenticationMethod = "spiffe_x509"
+	SPIFFEAuthenticationMethodX509 = spiffeauth.SPIFFEAuthenticationMethodX509
 	// SPIFFEAuthenticationMethodJWT authenticates a workload with a JWT-SVID.
-	SPIFFEAuthenticationMethodJWT SPIFFEAuthenticationMethod = "spiffe_jwt"
+	SPIFFEAuthenticationMethodJWT = spiffeauth.SPIFFEAuthenticationMethodJWT
 
 	// SPIFFEGrantTypeTokenExchange is the only SPIFFE client grant supported by
 	// this configuration surface.
@@ -30,6 +32,8 @@ const (
 
 	// SPIFFEBundleSourceTypeEndpoint selects a HTTPS SPIFFE Bundle Endpoint.
 	SPIFFEBundleSourceTypeEndpoint SPIFFEBundleSourceType = "bundle_endpoint"
+	// SPIFFEBundleSourceTypeFile selects a locally mounted SPIFFE trust bundle.
+	SPIFFEBundleSourceTypeFile SPIFFEBundleSourceType = "file"
 	// SPIFFEBundleSourceTypeWorkloadAPI selects the local SPIFFE Workload API.
 	SPIFFEBundleSourceTypeWorkloadAPI SPIFFEBundleSourceType = "workload_api"
 
@@ -44,9 +48,8 @@ const (
 )
 
 // SPIFFEAuthenticationMethod identifies the credential type permitted for a
-// SPIFFE workload. Methods are explicit so introducing another credential type
-// cannot silently broaden a policy.
-type SPIFFEAuthenticationMethod string
+// SPIFFE workload.
+type SPIFFEAuthenticationMethod = spiffeauth.SPIFFEAuthenticationMethod
 
 // SPIFFEBundleSourceType identifies the selected trust-bundle source.
 type SPIFFEBundleSourceType string
@@ -69,9 +72,9 @@ type SPIFFETrustDomainRunConfig struct {
 	// domain. No authentication method is enabled when the list is empty.
 	Methods []SPIFFEAuthenticationMethod `json:"methods" yaml:"methods"`
 
-	// BundleSource declares exactly one future trust-bundle source. It is
-	// validated for shape only; fetching or loading a bundle from it is a
-	// later step.
+	// BundleSource declares exactly one trust-bundle source and is validated for
+	// shape here. The standalone file loader exists, but source initialization
+	// is not wired into SPIFFE authentication.
 	BundleSource SPIFFEBundleSourceRunConfig `json:"bundle_source" yaml:"bundle_source"`
 }
 
@@ -81,6 +84,7 @@ type SPIFFEBundleSourceRunConfig struct {
 	Type SPIFFEBundleSourceType `json:"type" yaml:"type"`
 
 	Endpoint    *SPIFFEBundleEndpointSourceRunConfig    `json:"endpoint,omitempty" yaml:"endpoint,omitempty"`
+	File        *SPIFFEFileBundleSourceRunConfig        `json:"file,omitempty" yaml:"file,omitempty"`
 	WorkloadAPI *SPIFFEWorkloadAPIBundleSourceRunConfig `json:"workload_api,omitempty" yaml:"workload_api,omitempty"`
 }
 
@@ -91,9 +95,16 @@ type SPIFFEBundleEndpointSourceRunConfig struct {
 	// Profile selects how the endpoint's TLS connection is authenticated:
 	// SPIFFEBundleEndpointProfileHTTPSWeb (Web PKI) or
 	// SPIFFEBundleEndpointProfileHTTPSSPIFFE (a separately distributed
-	// X.509-SVID root). Required, since the future bundle loader cannot
-	// otherwise know which trust anchor to use for the initial connection.
+	// X.509-SVID root). Required, since an endpoint loader needs this profile
+	// to choose the trust anchor for its initial connection.
 	Profile SPIFFEBundleEndpointProfile `json:"profile" yaml:"profile"`
+}
+
+// SPIFFEFileBundleSourceRunConfig declares a trust bundle read from a local
+// file, typically a mounted ConfigMap or Secret containing a SPIFFE JWKS
+// trust-bundle document.
+type SPIFFEFileBundleSourceRunConfig struct {
+	Path string `json:"path" yaml:"path"`
 }
 
 // SPIFFEWorkloadAPIBundleSourceRunConfig selects the local SPIFFE Workload API.
@@ -104,11 +115,18 @@ type SPIFFEWorkloadAPIBundleSourceRunConfig struct{}
 // InboundGrantsRunConfig declares canonical inbound grant configuration for
 // separately declared trust roots. SPIFFE client authentication entries live
 // here, alongside other inbound grant purposes, so SPIFFE is not a parallel
-// trust path.
+// trust path, and so client authentication and grant-family enablement
+// (token exchange, JWT-bearer) remain independently configurable.
 type InboundGrantsRunConfig struct {
 	// SPIFFEClientAuth associates SPIFFE principal patterns with explicit OAuth
 	// client identities and permissions. See SPIFFEClientAuthRunConfig.
 	SPIFFEClientAuth []SPIFFEClientAuthRunConfig `json:"spiffe_client_auth,omitempty" yaml:"spiffe_client_auth,omitempty"`
+
+	// TokenExchange configures RFC 8693 inbound clients and issuer policies.
+	TokenExchange *TokenExchangeInboundGrantRunConfig `json:"token_exchange,omitempty" yaml:"token_exchange,omitempty"`
+
+	// JWTBearer configures RFC 7523 issuer policies.
+	JWTBearer *JWTBearerInboundGrantRunConfig `json:"jwt_bearer,omitempty" yaml:"jwt_bearer,omitempty"`
 }
 
 // SPIFFEClientAuthRunConfig associates one SPIFFE principal pattern from a
@@ -278,27 +296,36 @@ type SPIFFEBundleSourceConfig struct {
 	sourceType SPIFFEBundleSourceType
 	endpoint   string
 	profile    SPIFFEBundleEndpointProfile
+	path       string
 }
 
 // Type returns the selected bundle-source type.
 func (c SPIFFEBundleSourceConfig) Type() SPIFFEBundleSourceType { return c.sourceType }
 
 // Endpoint returns the configured Bundle Endpoint URL, or an empty string for
-// a Workload API source.
+// a Workload API or file source.
 func (c SPIFFEBundleSourceConfig) Endpoint() string { return c.endpoint }
 
 // Profile returns the configured Bundle Endpoint authentication profile, or
-// an empty string for a Workload API source.
+// an empty string for a Workload API or file source.
 func (c SPIFFEBundleSourceConfig) Profile() SPIFFEBundleEndpointProfile { return c.profile }
 
+// Path returns the configured local bundle file path, or an empty string for
+// a Bundle Endpoint or Workload API source.
+func (c SPIFFEBundleSourceConfig) Path() string { return c.path }
+
 func normalizeSPIFFEBundleSource(source SPIFFEBundleSourceRunConfig) SPIFFEBundleSourceConfig {
-	if source.Endpoint == nil {
+	switch {
+	case source.Endpoint != nil:
+		return SPIFFEBundleSourceConfig{
+			sourceType: source.Type,
+			endpoint:   source.Endpoint.URL,
+			profile:    source.Endpoint.Profile,
+		}
+	case source.File != nil:
+		return SPIFFEBundleSourceConfig{sourceType: source.Type, path: source.File.Path}
+	default:
 		return SPIFFEBundleSourceConfig{sourceType: source.Type}
-	}
-	return SPIFFEBundleSourceConfig{
-		sourceType: source.Type,
-		endpoint:   source.Endpoint.URL,
-		profile:    source.Endpoint.Profile,
 	}
 }
 
@@ -465,12 +492,17 @@ func validateSPIFFETrustDomains(domains []SPIFFETrustDomainRunConfig) (map[strin
 func validateSPIFFEBundleSource(source SPIFFEBundleSourceRunConfig, index int) error {
 	switch source.Type {
 	case SPIFFEBundleSourceTypeEndpoint:
-		if source.Endpoint == nil || source.WorkloadAPI != nil {
+		if source.Endpoint == nil || source.File != nil || source.WorkloadAPI != nil {
 			return fmt.Errorf("spiffe_trust_domains[%d].bundle_source: type %q requires endpoint only", index, source.Type)
 		}
 		return validateSPIFFEBundleEndpoint(*source.Endpoint, index)
+	case SPIFFEBundleSourceTypeFile:
+		if source.File == nil || source.Endpoint != nil || source.WorkloadAPI != nil {
+			return fmt.Errorf("spiffe_trust_domains[%d].bundle_source: type %q requires file only", index, source.Type)
+		}
+		return validateSPIFFEBundleFilePath(source.File.Path, index)
 	case SPIFFEBundleSourceTypeWorkloadAPI:
-		if source.WorkloadAPI == nil || source.Endpoint != nil {
+		if source.WorkloadAPI == nil || source.Endpoint != nil || source.File != nil {
 			return fmt.Errorf("spiffe_trust_domains[%d].bundle_source: type %q requires workload_api only", index, source.Type)
 		}
 		return nil
@@ -479,22 +511,45 @@ func validateSPIFFEBundleSource(source SPIFFEBundleSourceRunConfig, index int) e
 	}
 }
 
+// validateSPIFFEBundleFilePath validates the context-independent shape of a
+// local trust-bundle file path: it must be a non-empty absolute path with no
+// traversal segments. The isolated file loader checks that it resolves to a
+// regular file and can parse a bundle when it is constructed.
+func validateSPIFFEBundleFilePath(path string, index int) error {
+	if path == "" || !filepath.IsAbs(path) {
+		return fmt.Errorf("spiffe_trust_domains[%d].bundle_source.file.path must be a non-empty absolute path", index)
+	}
+	for _, segment := range strings.Split(filepath.ToSlash(path), "/") {
+		if segment == ".." {
+			return fmt.Errorf("spiffe_trust_domains[%d].bundle_source.file.path must not contain traversal segments", index)
+		}
+	}
+	return nil
+}
+
 func validateSPIFFEBundleEndpoint(endpoint SPIFFEBundleEndpointSourceRunConfig, index int) error {
+	if err := ValidateSPIFFEBundleEndpoint(endpoint); err != nil {
+		return fmt.Errorf("spiffe_trust_domains[%d].bundle_source.endpoint: %w", index, err)
+	}
+	return nil
+}
+
+// ValidateSPIFFEBundleEndpoint validates a SPIFFE Bundle Endpoint URL and its
+// TLS-authentication profile. Exported so the operator CRD admission path
+// can reject the same structurally invalid endpoints at admission time
+// instead of only at reconcile time; fetching or loading a bundle from the
+// endpoint remains a separate, later step.
+func ValidateSPIFFEBundleEndpoint(endpoint SPIFFEBundleEndpointSourceRunConfig) error {
 	endpointURL := endpoint.URL
 	u, err := url.ParseRequestURI(endpointURL)
 	if err != nil || u.Scheme != "https" || u.Host == "" || u.Hostname() == "" {
-		return fmt.Errorf(
-			"spiffe_trust_domains[%d].bundle_source.endpoint.url must be an absolute HTTPS URL with a valid authority",
-			index,
-		)
+		return fmt.Errorf("url must be an absolute HTTPS URL with a valid authority")
 	}
 	if u.User != nil || u.RawQuery != "" || u.Fragment != "" ||
 		strings.Contains(endpointURL, "?") || strings.Contains(endpointURL, "#") ||
 		net.ParseIP(u.Hostname()) != nil || networking.IsLoopbackHost(u.Hostname()) {
 		return fmt.Errorf(
-			"spiffe_trust_domains[%d].bundle_source.endpoint.url must not contain credentials, query, "+
-				"fragment, an IP-literal host, or a loopback host",
-			index,
+			"url must not contain credentials, query, fragment, an IP-literal host, or a loopback host",
 		)
 	}
 	switch endpoint.Profile {
@@ -502,8 +557,7 @@ func validateSPIFFEBundleEndpoint(endpoint SPIFFEBundleEndpointSourceRunConfig, 
 		return nil
 	default:
 		return fmt.Errorf(
-			"spiffe_trust_domains[%d].bundle_source.endpoint.profile must be %q or %q",
-			index, SPIFFEBundleEndpointProfileHTTPSWeb, SPIFFEBundleEndpointProfileHTTPSSPIFFE,
+			"profile must be %q or %q", SPIFFEBundleEndpointProfileHTTPSWeb, SPIFFEBundleEndpointProfileHTTPSSPIFFE,
 		)
 	}
 }
@@ -703,7 +757,7 @@ func validateSPIFFEResources(values []string, field string, allowedResources []s
 	if len(values) == 0 {
 		return nil
 	}
-	if err := validateResourceIndicators(values, field); err != nil {
+	if err := ValidateResourceIndicators(values, field); err != nil {
 		return err
 	}
 	for _, value := range values {
@@ -714,7 +768,13 @@ func validateSPIFFEResources(values []string, field string, allowedResources []s
 	return nil
 }
 
-func validateResourceIndicators(values []string, field string) error {
+// ValidateResourceIndicators validates the context-independent shape of RFC
+// 8707 resource indicators: each must be a syntactically valid absolute
+// HTTP(S) URI with a non-empty host, no userinfo, and no fragment. It does
+// not check allowlist membership, which needs the reconcile-time-derived
+// allowed_audiences value (see validateSPIFFEResources and
+// MCPExternalAuthConfig's own admission-time call for this shape-only half).
+func ValidateResourceIndicators(values []string, field string) error {
 	if len(values) == 0 {
 		return nil
 	}
@@ -723,7 +783,7 @@ func validateResourceIndicators(values []string, field string) error {
 	}
 	for _, value := range values {
 		u, err := url.ParseRequestURI(value)
-		if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" || u.User != nil ||
+		if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Hostname() == "" || u.User != nil ||
 			u.Fragment != "" || strings.Contains(value, "#") {
 			return fmt.Errorf("%s: resource indicator %q must be an absolute HTTP(S) URI without a fragment", field, value)
 		}
@@ -765,6 +825,35 @@ func overlapsSPIFFEPatterns(patterns []string, principal string) bool {
 		}
 	}
 	return false
+}
+
+// ValidateSPIFFEPrincipalPattern validates a single principal pattern — a
+// concrete SPIFFE ID or a terminal /* wildcard — using the same
+// normalization as the runtime association validator, without comparing it
+// to any other pattern. Exported so an admission-time caller can validate
+// each entry in a set up front and attribute a normalization failure to the
+// correct entry, before running SPIFFEPatternsOverlap pairwise across the set.
+func ValidateSPIFFEPrincipalPattern(pattern string) error {
+	_, err := normalizeSPIFFEPrincipal(pattern, true)
+	return err
+}
+
+// SPIFFEPatternsOverlap reports whether two principal patterns — each a
+// concrete SPIFFE ID or a terminal /* wildcard — overlap, using the same
+// normalization (via the go-spiffe parser) and prefix semantics as the
+// runtime association validator. Exported so the operator CRD admission
+// path can reject overlapping principal patterns (e.g. "/agent/*" and
+// "/agent/one") at admission time instead of only at reconcile time.
+func SPIFFEPatternsOverlap(first, second string) (bool, error) {
+	normalizedFirst, err := normalizeSPIFFEPrincipal(first, true)
+	if err != nil {
+		return false, err
+	}
+	normalizedSecond, err := normalizeSPIFFEPrincipal(second, true)
+	if err != nil {
+		return false, err
+	}
+	return spiffePatternsOverlap(normalizedFirst, normalizedSecond), nil
 }
 
 func spiffePatternsOverlap(first, second string) bool {

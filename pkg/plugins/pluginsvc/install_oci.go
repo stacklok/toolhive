@@ -20,8 +20,8 @@ import (
 
 // installFromOCI pulls a plugin artifact from a remote registry, extracts
 // metadata and layer data, then materializes and registers the plugin while
-// holding the per-plugin lock. Structural mirror of skillsvc.installFromOCI
-// (failure semantics diverge — see Install), substituting
+// holding the applicable user-plugin or project transaction lock. Structural
+// mirror of skillsvc.installFromOCI (failure semantics diverge — see Install), substituting
 // the plugin supply-chain check (config.Name == OCI repo last segment) and
 // hydrating Components/Dependencies from the plugin OCI config.
 //
@@ -32,6 +32,7 @@ func (s *service) installFromOCI(
 	scope plugins.Scope,
 	ref nameref.Reference,
 	alreadyLocked bool,
+	constraints *installConstraints,
 ) (*plugins.InstallResult, error) {
 	if s.registry == nil || s.ociStore == nil {
 		return nil, httperr.WithCode(
@@ -124,10 +125,16 @@ func (s *service) installFromOCI(
 	// Verify the artifact signature before anything is extracted or
 	// recorded; the decision (verified identity or explicit unsigned
 	// exception) travels on opts into the DB record and lock entry. This
-	// runs under the per-plugin lock so concurrent first installs cannot
-	// both read an absent lock entry and race their TOFU anchors.
+	// runs under the applicable user-plugin or project transaction lock so
+	// concurrent first installs cannot both read an absent lock entry and race
+	// their TOFU anchors.
 	if shouldVerifyInstall(opts, scope) {
-		decision, verifyErr := s.verifyOCIInstall(ctx, opts, pluginConfig.Name, ociRef, opts.Digest)
+		decision, verifyErr := func() (*provenanceDecision, error) {
+			if constraints != nil && constraints.preverifiedOCI != nil {
+				return consumePreverifiedTrust(constraints.preverifiedOCI, opts.Digest)
+			}
+			return s.verifyOCIInstall(ctx, opts, pluginConfig.Name, ociRef, opts.Digest)
+		}()
 		if verifyErr != nil {
 			return nil, verifyErr
 		}
@@ -138,7 +145,7 @@ func (s *service) installFromOCI(
 	if err != nil {
 		return nil, err
 	}
-	return s.installAndRegister(ctx, opts, result, scope)
+	return s.installAndRegister(ctx, opts, result, scope, constraints)
 }
 
 // requiresToDependencies maps a plugin's declared `requires` OCI references

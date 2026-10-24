@@ -6,6 +6,7 @@ package skillsvc
 import (
 	"context"
 	"errors"
+	"net/http"
 	"os"
 	"path/filepath"
 	"testing"
@@ -14,6 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
+	"github.com/stacklok/toolhive-core/httperr"
 	"github.com/stacklok/toolhive/pkg/skills"
 	"github.com/stacklok/toolhive/pkg/skills/lockfile"
 	skillsmocks "github.com/stacklok/toolhive/pkg/skills/mocks"
@@ -307,7 +309,9 @@ func TestSync_AdoptsUnmanagedInstall(t *testing.T) {
 
 	// Adoption of an install with no stored bundle is an unsigned trust
 	// decision: without the explicit exception it fails...
-	result, err = syncer.Sync(t.Context(), skills.SyncOptions{ProjectRoot: projectRoot, Adopt: true})
+	result, err = syncer.Sync(t.Context(), skills.SyncOptions{
+		ProjectRoot: projectRoot, Adopt: true, PublicKey: testPublicKeyB64,
+	})
 	require.NoError(t, err)
 	require.Len(t, result.Failed, 1)
 	assert.Equal(t, skills.FailureReasonUnsignedRejected, result.Failed[0].Reason)
@@ -316,7 +320,9 @@ func TestSync_AdoptsUnmanagedInstall(t *testing.T) {
 	assert.False(t, ok, "adoption without the unsigned exception must not write a lock entry")
 
 	// ...and with it, the entry records the unsigned state.
-	result, err = syncer.Sync(t.Context(), skills.SyncOptions{ProjectRoot: projectRoot, Adopt: true, AllowUnsigned: true})
+	result, err = syncer.Sync(t.Context(), skills.SyncOptions{
+		ProjectRoot: projectRoot, Adopt: true, AllowUnsigned: true, PublicKey: testPublicKeyB64,
+	})
 	require.NoError(t, err)
 	assert.Equal(t, []string{"unmanaged-skill"}, result.NeverManaged)
 
@@ -393,6 +399,38 @@ func TestSync_InvalidInputsFail(t *testing.T) {
 	require.NoError(t, os.MkdirAll(lockPath, 0o755))
 	_, err = syncer.Sync(t.Context(), skills.SyncOptions{ProjectRoot: projectRoot})
 	require.Error(t, err, "an unreadable lock file must fail")
+}
+
+func TestValidateSyncPublicKey(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		opts    skills.SyncOptions
+		wantErr bool
+	}{
+		{name: "no key"},
+		{name: "valid adoption key", opts: skills.SyncOptions{Adopt: true, PublicKey: testPublicKeyB64}},
+		{name: "key without adopt", opts: skills.SyncOptions{PublicKey: testPublicKeyB64}, wantErr: true},
+		{
+			name:    "adopt check with key",
+			opts:    skills.SyncOptions{Adopt: true, Check: true, PublicKey: testPublicKeyB64},
+			wantErr: true,
+		},
+		{name: "malformed key", opts: skills.SyncOptions{Adopt: true, PublicKey: "not-a-key"}, wantErr: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			err := validateSyncPublicKey(tc.opts)
+			if !tc.wantErr {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Equal(t, http.StatusBadRequest, httperr.Code(err))
+		})
+	}
 }
 
 // syncOne must report a per-name failure when the lock file becomes

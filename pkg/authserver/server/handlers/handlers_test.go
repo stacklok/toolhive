@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"testing"
 	"time"
 
@@ -43,6 +44,7 @@ type testSetupOptions struct {
 	AllowConfidentialClientRegistration bool
 	AllowPrivateKeyJWTRegistration      bool
 	HasStaticDelegateClients            bool
+	DisableTokenExchange                bool
 	JWTBearerGrantEnabled               bool
 }
 
@@ -76,6 +78,7 @@ func testSetupWithOptions(t *testing.T, opts testSetupOptions) *Handler {
 		AllowConfidentialClientRegistration: opts.AllowConfidentialClientRegistration,
 		AllowPrivateKeyJWTRegistration:      opts.AllowPrivateKeyJWTRegistration,
 		HasStaticDelegateClients:            opts.HasStaticDelegateClients,
+		DisableTokenExchange:                opts.DisableTokenExchange,
 		JWTBearerGrantEnabled:               opts.JWTBearerGrantEnabled,
 		AccessTokenLifespan:                 time.Hour,
 		RefreshTokenLifespan:                time.Hour * 24,
@@ -430,19 +433,25 @@ func TestWellKnownRoutes(t *testing.T) {
 	}
 }
 
-func TestDiscoveryHandlers_JWTBearerGrant(t *testing.T) {
+func TestDiscoveryHandlers_InboundGrantCapabilities(t *testing.T) {
 	t.Parallel()
 
 	for _, tc := range []struct {
-		name    string
-		enabled bool
+		name                  string
+		disableTokenExchange  bool
+		jwtBearerGrantEnabled bool
 	}{
-		{"enabled", true},
-		{"disabled", false},
+		{name: "historical token exchange default"},
+		{name: "token exchange and JWT bearer", jwtBearerGrantEnabled: true},
+		{name: "all inbound grants disabled", disableTokenExchange: true},
+		{name: "JWT bearer independent of token exchange", disableTokenExchange: true, jwtBearerGrantEnabled: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			handler := testSetupWithOptions(t, testSetupOptions{JWTBearerGrantEnabled: tc.enabled})
+			handler := testSetupWithOptions(t, testSetupOptions{
+				DisableTokenExchange:  tc.disableTokenExchange,
+				JWTBearerGrantEnabled: tc.jwtBearerGrantEnabled,
+			})
 
 			for _, endpoint := range []struct {
 				name string
@@ -460,11 +469,10 @@ func TestDiscoveryHandlers_JWTBearerGrant(t *testing.T) {
 
 					var meta sharedobauth.AuthorizationServerMetadata
 					require.NoError(t, json.NewDecoder(rec.Body).Decode(&meta))
-					if tc.enabled {
-						assert.Contains(t, meta.GrantTypesSupported, sharedobauth.GrantTypeJWTBearer)
-					} else {
-						assert.NotContains(t, meta.GrantTypesSupported, sharedobauth.GrantTypeJWTBearer)
-					}
+					assert.Equal(t, !tc.disableTokenExchange,
+						slices.Contains(meta.GrantTypesSupported, sharedobauth.GrantTypeTokenExchange))
+					assert.Equal(t, tc.jwtBearerGrantEnabled,
+						slices.Contains(meta.GrantTypesSupported, sharedobauth.GrantTypeJWTBearer))
 				})
 			}
 		})

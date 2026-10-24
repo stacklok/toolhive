@@ -25,6 +25,9 @@ import (
 // the lock file are reported (or removed with Prune). Check performs the
 // same reconciliation read-only: nothing is installed, written, or removed.
 func (s *service) Sync(ctx context.Context, opts skills.SyncOptions) (*skills.SyncResult, error) {
+	if err := validateSyncPublicKey(opts); err != nil {
+		return nil, err
+	}
 
 	_, projectRoot, err := normalizeProjectRoot(skills.ScopeProject, opts.ProjectRoot)
 	if err != nil {
@@ -32,42 +35,66 @@ func (s *service) Sync(ctx context.Context, opts skills.SyncOptions) (*skills.Sy
 	}
 	opts.ProjectRoot = projectRoot
 
-	unlock := s.projectTx.lock(projectRoot)
-	defer unlock()
-
-	root, err := lockfile.OpenRoot(projectRoot)
-	if err != nil {
-		return nil, err
-	}
-	lf, err := lockfile.Load(root)
-	if err != nil {
-		return nil, err
-	}
-
-	installed, err := s.store.List(ctx, storage.ListFilter{Scope: skills.ScopeProject, ProjectRoot: projectRoot})
-	if err != nil {
-		return nil, fmt.Errorf("listing installed skills: %w", err)
-	}
-
-	names := make([]string, 0, len(lf.Skills)+len(installed))
-	seen := make(map[string]struct{}, len(lf.Skills)+len(installed))
-	for _, entry := range lf.Skills {
-		names = append(names, entry.Name)
-		seen[entry.Name] = struct{}{}
-	}
-	for _, sk := range installed {
-		if _, ok := seen[sk.Metadata.Name]; ok {
-			continue
+	var result *skills.SyncResult
+	err = s.projectTx.run(ctx, projectRoot, func() error {
+		root, openErr := lockfile.OpenRoot(projectRoot)
+		if openErr != nil {
+			return openErr
 		}
-		names = append(names, sk.Metadata.Name)
-	}
+		lf, loadErr := lockfile.Load(root)
+		if loadErr != nil {
+			return loadErr
+		}
 
-	result := &skills.SyncResult{}
-	for _, name := range names {
-		s.syncOne(ctx, opts, name, result)
-	}
+		installed, listErr := s.store.List(ctx, storage.ListFilter{
+			Scope: skills.ScopeProject, ProjectRoot: projectRoot,
+		})
+		if listErr != nil {
+			return fmt.Errorf("listing installed skills: %w", listErr)
+		}
 
-	return result, nil
+		names := make([]string, 0, len(lf.Skills)+len(installed))
+		seen := make(map[string]struct{}, len(lf.Skills)+len(installed))
+		for _, entry := range lf.Skills {
+			names = append(names, entry.Name)
+			seen[entry.Name] = struct{}{}
+		}
+		for _, sk := range installed {
+			if _, ok := seen[sk.Metadata.Name]; ok {
+				continue
+			}
+			names = append(names, sk.Metadata.Name)
+		}
+
+		result = &skills.SyncResult{}
+		for _, name := range names {
+			s.syncOne(ctx, opts, name, result)
+		}
+		return nil
+	})
+	return result, err
+}
+
+func validateSyncPublicKey(opts skills.SyncOptions) error {
+	if opts.PublicKey == "" {
+		return nil
+	}
+	if !opts.Adopt {
+		return httperr.WithCode(
+			errors.New("public_key (--public-key) is accepted only with adopt (--adopt)"),
+			http.StatusBadRequest,
+		)
+	}
+	if opts.Check {
+		return httperr.WithCode(
+			errors.New("public_key (--public-key) cannot be used when adopt runs in check mode"),
+			http.StatusBadRequest,
+		)
+	}
+	if _, err := verifier.DecodePublicKey(opts.PublicKey); err != nil {
+		return httperr.WithCode(fmt.Errorf("public_key: %w", err), http.StatusBadRequest)
+	}
+	return nil
 }
 
 // syncOne re-reads the lock entry and DB row under the held project
@@ -216,7 +243,7 @@ func (s *service) reinstallPinned(
 		LockResolvedReference: entry.ResolvedReference, // preserve — pinnedRef is a restore form
 		SyncRestore:           true,                    // reinstall despite unchanged Digest — drift is on disk, not the pin
 		ExpectedCanonicalName: entry.Name,
-	}, pinnedRef, skills.ScopeProject, newDepState())
+	}, pinnedRef, skills.ScopeProject, newDepState(), nil)
 	return err
 }
 
@@ -325,40 +352,9 @@ func (s *service) adoptSkill(ctx context.Context, opts skills.SyncOptions, sk sk
 	if err != nil {
 		return fmt.Errorf("computing content digest: %w", err)
 	}
-	var provenance *lockfile.Provenance
-	unsigned := false
-	if len(sk.SigstoreBundle) > 0 {
-		result, verifyErr := s.artifactVerifier().ResultFromBundle(sk.SigstoreBundle, sk.Digest)
-		if errors.Is(verifyErr, verifier.ErrKeySigned) {
-			// Adoption back-fills trust from what the bundle itself reveals,
-			// and a key-signed bundle reveals nothing: the key is not in it,
-			// and sync takes no --public-key to supply one. Recording the
-			// install as unsigned instead would be a lie about a signed
-			// artifact, so the honest move is to send it through the one
-			// path that can anchor it.
-			return httperr.WithCode(
-				fmt.Errorf("%w: %q is signed with a cosign key pair, so adopting it cannot record"+
-					" a trust anchor — the key is carried neither by the artifact nor by its bundle."+
-					" Install it with --public-key instead, which verifies the signature and pins"+
-					" the key (--allow-unsigned is not a substitute: the artifact is signed)",
-					verifyErr, sk.Metadata.Name),
-				http.StatusForbidden,
-			)
-		}
-		if verifyErr != nil {
-			return fmt.Errorf("verifying stored bundle for adoption: %w", verifyErr)
-		}
-		provenance = provenanceInfoToLock(provenanceInfoFromResult(result))
-	}
-	if provenance == nil {
-		if !opts.AllowUnsigned {
-			return httperr.WithCode(
-				fmt.Errorf("%w: adopting %q records it as unsigned; pass --allow-unsigned to accept that",
-					verifier.ErrUnsigned, sk.Metadata.Name),
-				http.StatusForbidden,
-			)
-		}
-		unsigned = true
+	provenance, unsigned, err := s.resolveAdoptionTrust(opts, sk)
+	if err != nil {
+		return err
 	}
 
 	var prevEntry *lockfile.Entry
@@ -394,6 +390,59 @@ func (s *service) adoptSkill(ctx context.Context, opts skills.SyncOptions, sk sk
 		return fmt.Errorf("marking skill as lock-managed: %w", err)
 	}
 	return nil
+}
+
+func (s *service) resolveAdoptionTrust(
+	opts skills.SyncOptions, sk skills.InstalledSkill,
+) (*lockfile.Provenance, bool, error) {
+	if len(sk.SigstoreBundle) == 0 {
+		if !opts.AllowUnsigned {
+			return nil, false, httperr.WithCode(
+				fmt.Errorf("%w: adopting %q records it as unsigned; pass --allow-unsigned to accept that",
+					verifier.ErrUnsigned, sk.Metadata.Name),
+				http.StatusForbidden,
+			)
+		}
+		return nil, true, nil
+	}
+
+	result, err := s.artifactVerifier().ResultFromBundle(sk.SigstoreBundle, sk.Digest)
+	if errors.Is(err, verifier.ErrKeySigned) {
+		provenance, keyErr := s.resolveKeySignedAdoption(opts, sk, err)
+		return provenance, false, keyErr
+	}
+	if err != nil {
+		return nil, false, fmt.Errorf("verifying stored bundle for adoption: %w", err)
+	}
+	return provenanceInfoToLock(provenanceInfoFromResult(result)), false, nil
+}
+
+func (s *service) resolveKeySignedAdoption(
+	opts skills.SyncOptions, sk skills.InstalledSkill, keySignedErr error,
+) (*lockfile.Provenance, error) {
+	if opts.PublicKey == "" {
+		return nil, httperr.WithCode(
+			fmt.Errorf("%w: %q is signed with a cosign key pair, so adoption requires"+
+				" --public-key to verify and record its trust anchor"+
+				" (--allow-unsigned is not a substitute: the artifact is signed)",
+				keySignedErr, sk.Metadata.Name),
+			http.StatusForbidden,
+		)
+	}
+	pubKeyPEM, err := verifier.DecodePublicKey(opts.PublicKey)
+	if err != nil {
+		return nil, httperr.WithCode(fmt.Errorf("public_key: %w", err), http.StatusBadRequest)
+	}
+	if err := s.artifactVerifier().VerifyBundleOfflineWithKey(
+		sk.SigstoreBundle, sk.Digest, pubKeyPEM,
+	); err != nil {
+		return nil, httperr.WithCode(
+			fmt.Errorf("%q does not verify against the supplied cosign public key: %w",
+				sk.Metadata.Name, err),
+			http.StatusForbidden,
+		)
+	}
+	return &lockfile.Provenance{PublicKey: opts.PublicKey}, nil
 }
 
 // restoreAdoptedLockEntry undoes adoptSkill's lock write: reinstates the

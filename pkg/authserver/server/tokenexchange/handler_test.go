@@ -4,9 +4,12 @@
 package tokenexchange
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"strings"
 	"testing"
@@ -19,7 +22,9 @@ import (
 	"github.com/stretchr/testify/require"
 
 	coreaudit "github.com/stacklok/toolhive-core/audit"
+	"github.com/stacklok/toolhive/pkg/authserver/authorizationdetails"
 	"github.com/stacklok/toolhive/pkg/authserver/server"
+	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/authserver/server/session"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
@@ -1199,6 +1204,472 @@ func TestTokenExchangeHandler_HandleTokenEndpointRequest(t *testing.T) {
 	}
 }
 
+// newDetailsRegistry registers the "read" and "write" types on token exchange,
+// both backed by hook.
+func newDetailsRegistry(
+	t *testing.T, hook func(authorizationdetails.Request) (authorizationdetails.Result, error),
+) *authorizationdetails.Registry {
+	t.Helper()
+
+	grant := func(_ context.Context, req authorizationdetails.Request) (authorizationdetails.Result, error) {
+		return hook(req)
+	}
+	grantTypes := []string{oauthproto.GrantTypeTokenExchange}
+	registry, err := authorizationdetails.New(map[string]authorizationdetails.Type{
+		"read":  {GrantTypes: grantTypes, Grant: grant},
+		"write": {GrantTypes: grantTypes, Grant: grant},
+	})
+	require.NoError(t, err)
+	return registry
+}
+
+func TestTokenExchangeHandler_AuthorizationDetails(t *testing.T) {
+	t.Parallel()
+
+	tj := newTestJWKS(t)
+	const (
+		oneEntry     = `{"type":"read","resource":"one"}`
+		twoEntry     = `{"type":"write","resource":"two"}`
+		threeEntry   = `{"type":"read","resource":"three"}`
+		genericError = "The authorization_details parameter is invalid."
+	)
+	tests := []struct {
+		name              string
+		details           []string
+		noRegistry        bool
+		invalidSubject    bool
+		publicClient      bool
+		unregisteredGrant bool
+		otherGrant        bool
+		clientID          string
+		requestedScope    string
+		requestedAudience string
+		clientAudience    []string
+		hookEmpty         bool
+		hookErr           error
+		wantError         *fosite.RFC6749Error
+		wantOAuthError    string
+		wantDescription   string
+		wantCalls         [][]string
+		wantEntries       string
+	}{
+		{name: "nil registry ignores garbage", noRegistry: true, details: []string{"[{"}},
+		{name: "nil registry ignores repeated values", noRegistry: true, details: []string{"[]", "[]"}},
+		{name: "nil registry ignores unknown type", noRegistry: true, details: []string{`[{"type":"unknown"}]`}},
+		{name: "absent"},
+		{name: "single empty value", details: []string{""}},
+		{name: "empty array", details: []string{"[]"}, wantEntries: "[]"},
+		{
+			name:            "repeated values",
+			details:         []string{"[]", "[]"},
+			wantOAuthError:  "invalid_request",
+			wantDescription: "The authorization_details parameter must not be repeated.",
+		},
+		{
+			name:            "malformed JSON is rejected before the subject token is checked",
+			details:         []string{"[{"},
+			invalidSubject:  true,
+			wantOAuthError:  "invalid_authorization_details",
+			wantDescription: genericError,
+		},
+		{
+			name:            "unknown type",
+			details:         []string{`[{"type":"unknown"}]`},
+			wantOAuthError:  "invalid_authorization_details",
+			wantDescription: genericError,
+		},
+		{
+			name:        "each type's entries reach its hook in one call",
+			details:     []string{`[` + oneEntry + `,` + twoEntry + `,` + threeEntry + `]`},
+			wantCalls:   [][]string{{oneEntry, threeEntry}, {twoEntry}},
+			wantEntries: `[` + oneEntry + `,` + threeEntry + `,` + twoEntry + `]`,
+		},
+		{
+			name:            "typed invalid_request error maps to its code and reason",
+			details:         []string{`[` + oneEntry + `]`},
+			hookErr:         authorizationdetails.Error{Code: authorizationdetails.CodeInvalidRequest, Reason: "too_broad"},
+			wantCalls:       [][]string{{oneEntry}},
+			wantOAuthError:  "invalid_request",
+			wantDescription: "too_broad",
+		},
+		{
+			name:    "typed invalid_authorization_details error maps to its code and reason",
+			details: []string{`[` + oneEntry + `]`},
+			hookErr: authorizationdetails.Error{
+				Code: authorizationdetails.CodeInvalidAuthorizationDetails, Reason: "unsupported_action",
+			},
+			wantCalls:       [][]string{{oneEntry}},
+			wantOAuthError:  "invalid_authorization_details",
+			wantDescription: "unsupported_action",
+		},
+		{
+			name:            "untyped hook error maps to server_error without its text",
+			details:         []string{`[` + oneEntry + `]`},
+			hookErr:         errors.New("database password is hunter2"),
+			wantCalls:       [][]string{{oneEntry}},
+			wantOAuthError:  "server_error",
+			wantDescription: "The authorization_details could not be processed.",
+		},
+		{
+			name:            "empty hook result maps to server_error",
+			details:         []string{`[` + oneEntry + `]`},
+			hookEmpty:       true,
+			wantCalls:       [][]string{{oneEntry}},
+			wantOAuthError:  "server_error",
+			wantDescription: "The authorization_details could not be processed.",
+		},
+		{
+			name:           "hooks are not called when the subject token is invalid",
+			details:        []string{`[` + oneEntry + `]`},
+			invalidSubject: true,
+			wantError:      fosite.ErrInvalidRequest,
+		},
+		{
+			name:      "hooks are not called when consent fails",
+			details:   []string{`[` + oneEntry + `]`},
+			clientID:  "different-client",
+			wantError: fosite.ErrInvalidGrant,
+		},
+		{
+			name:           "hooks are not called when the scope is not allowed",
+			details:        []string{`[` + oneEntry + `]`},
+			requestedScope: "admin",
+			wantError:      fosite.ErrInvalidScope,
+		},
+		{
+			name:              "hooks are not called when the audience escapes the subject token",
+			details:           []string{`[` + oneEntry + `]`},
+			clientAudience:    []string{testIssuer, "https://other.example.com"},
+			requestedAudience: "https://other.example.com",
+			wantError:         server.ErrInvalidTarget,
+		},
+		{
+			name:         "public client check precedes details parsing",
+			details:      []string{`[{`},
+			publicClient: true,
+			wantError:    fosite.ErrInvalidGrant,
+		},
+		{
+			name:              "client grant check precedes details parsing",
+			details:           []string{`[{`},
+			unregisteredGrant: true,
+			wantError:         fosite.ErrUnauthorizedClient,
+		},
+		{
+			name:       "other grants do not parse authorization details",
+			details:    []string{`[{`},
+			otherGrant: true,
+			wantError:  fosite.ErrUnknownRequest,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var calls [][]string
+			registry := newDetailsRegistry(t, func(req authorizationdetails.Request) (authorizationdetails.Result, error) {
+				call := make([]string, len(req.Entries))
+				for i, entry := range req.Entries {
+					call[i] = string(entry)
+				}
+				calls = append(calls, call)
+				switch {
+				case tt.hookErr != nil:
+					return authorizationdetails.Result{}, tt.hookErr
+				case tt.hookEmpty:
+					return authorizationdetails.Result{}, nil
+				default:
+					return authorizationdetails.Result{Entries: req.Entries}, nil
+				}
+			})
+
+			h := newTestHandler(t, tj, 15*time.Minute)
+			if !tt.noRegistry {
+				h.authorizationDetailsRegistry = registry
+			}
+			form := defaultFormValues(t, tj)
+			if tt.invalidSubject {
+				form.Set("subject_token", "not-a-jwt")
+			}
+			if len(tt.details) > 0 {
+				form["authorization_details"] = tt.details
+			}
+			before := form.Encode()
+			client := defaultClient()
+			if tt.publicClient {
+				client.Public = true
+			}
+			if tt.unregisteredGrant {
+				client.GrantTypes = nil
+			}
+			if tt.clientID != "" {
+				client.ID = tt.clientID
+			}
+			if tt.clientAudience != nil {
+				client.Audience = tt.clientAudience
+			}
+			req := newAccessRequest(t, client, form)
+			if tt.otherGrant {
+				req.GrantTypes = fosite.Arguments{"client_credentials"}
+			}
+			if tt.requestedScope != "" {
+				req.SetRequestedScopes(fosite.Arguments{tt.requestedScope})
+			}
+			if tt.requestedAudience != "" {
+				req.SetRequestedAudience(fosite.Arguments{tt.requestedAudience})
+			}
+
+			err := h.HandleTokenEndpointRequest(context.Background(), req)
+			switch {
+			case tt.wantOAuthError != "":
+				require.Error(t, err)
+				var rfcErr *fosite.RFC6749Error
+				require.ErrorAs(t, err, &rfcErr)
+				assert.Equal(t, tt.wantOAuthError, rfcErr.ErrorField)
+				assert.Equal(t, tt.wantDescription, rfcErr.DescriptionField)
+			case tt.wantError != nil:
+				require.Error(t, err)
+				assert.ErrorIs(t, err, tt.wantError)
+			default:
+				require.NoError(t, err)
+			}
+
+			assert.Equal(t, tt.wantCalls, calls)
+			if tt.wantEntries != "" {
+				assert.Equal(t, tt.wantEntries, req.GetRequestForm().Get("authorization_details"),
+					"the form must carry the granted JSON for the response")
+			} else {
+				assert.Equal(t, before, form.Encode(), "the request form must be left as submitted")
+			}
+		})
+	}
+}
+
+//nolint:paralleltest // slog.SetDefault is process-wide, so this test cannot run in parallel.
+func TestTokenExchangeHandler_AuthorizationDetailsHookErrorTextNotLogged(t *testing.T) {
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	tj := newTestJWKS(t)
+	h := newTestHandler(t, tj, 15*time.Minute)
+	h.authorizationDetailsRegistry = newDetailsRegistry(t, func(authorizationdetails.Request) (authorizationdetails.Result, error) {
+		return authorizationdetails.Result{}, errors.New("database password is hunter2")
+	})
+	form := defaultFormValues(t, tj)
+	form.Set("authorization_details", `[{"type":"read"}]`)
+	req := newAccessRequest(t, defaultClient(), form)
+
+	err := h.HandleTokenEndpointRequest(context.Background(), req)
+
+	var rfcErr *fosite.RFC6749Error
+	require.ErrorAs(t, err, &rfcErr)
+	assert.Equal(t, "server_error", rfcErr.ErrorField)
+	assert.Contains(t, buf.String(), "authorization_details rejected", "the rejection is still logged")
+	assert.NotContains(t, buf.String(), "hunter2", "a hook's error text must not be logged at any level")
+}
+
+func TestTokenExchangeHandler_AuthorizationDetailsRequest(t *testing.T) {
+	t.Parallel()
+
+	selfJWKS := newTestJWKS(t)
+	const entry = `{"type":"read"}`
+	tests := []struct {
+		name               string
+		external           bool
+		actorSubject       string
+		requestedTokenType string
+		subjectScope       string
+		requestedScope     string
+		wantActor          string
+		wantActorPresent   bool
+		wantTokenType      string
+		wantScopes         []string
+		wantSubject        authorizationdetails.Subject
+		wantClaims         map[string]any
+	}{
+		{
+			name:      "self-issued subject without an actor token",
+			wantActor: testAgentClientID,
+			wantSubject: authorizationdetails.Subject{
+				Issuer: testIssuer, Subject: "user-123", ClientID: testAgentClientID,
+				JWTID: "jti-abc-123", Audience: []string{testIssuer},
+			},
+			wantClaims: map[string]any{"sub": "user-123", "tsid": "session-xyz", "email": "test@example.com"},
+		},
+		{
+			name:             "actor token names a distinct actor",
+			actorSubject:     "other-agent",
+			wantActor:        "other-agent",
+			wantActorPresent: true,
+			wantSubject: authorizationdetails.Subject{
+				Issuer: testIssuer, Subject: "user-123", ClientID: testAgentClientID,
+				JWTID: "jti-abc-123", Audience: []string{testIssuer},
+			},
+			wantClaims: map[string]any{"tsid": "session-xyz"},
+		},
+		{
+			name:               "requested token type and scopes",
+			requestedTokenType: oauthproto.TokenTypeAccessToken,
+			subjectScope:       "openid profile",
+			requestedScope:     "openid",
+			wantActor:          testAgentClientID,
+			wantTokenType:      oauthproto.TokenTypeAccessToken,
+			wantScopes:         []string{"openid"},
+			wantSubject: authorizationdetails.Subject{
+				Issuer: testIssuer, Subject: "user-123", ClientID: testAgentClientID,
+				JWTID: "jti-abc-123", Audience: []string{testIssuer},
+			},
+			wantClaims: map[string]any{"scope": "openid profile"},
+		},
+		{
+			name:      "subject validated through a trusted issuer",
+			external:  true,
+			wantActor: testAgentClientID,
+			wantSubject: authorizationdetails.Subject{
+				Issuer: testExternalIssuer, Subject: "ext-user-456",
+				JWTID: "jti-ext-789", Audience: []string{testExternalAudience, testIssuer}, External: true,
+			},
+			wantClaims: map[string]any{"azp": "trusted-app"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var got []authorizationdetails.Request
+			registry := newDetailsRegistry(t, func(req authorizationdetails.Request) (authorizationdetails.Result, error) {
+				got = append(got, req)
+				return authorizationdetails.Result{Entries: req.Entries}, nil
+			})
+
+			var h *Handler
+			form := defaultFormValues(t, selfJWKS)
+			if tt.external {
+				externalJWKS := newTestJWKS(t)
+				jwksServer := startJWKSServer(t, externalJWKS)
+				h = newTestHandlerWithValidator(newMultiValidator(t, selfJWKS, []TrustedIssuer{{
+					IssuerURL:              testExternalIssuer,
+					ExpectedAudience:       testExternalAudience,
+					JWKSURL:                jwksServer.URL + "/jwks",
+					ActorMatcher:           `claims.azp == "trusted-app"`,
+					AllowedDelegateClients: []string{testAgentClientID},
+				}}))
+				claims := externalClaims()
+				claims.Audience = jwt.Audience{testExternalAudience, testIssuer}
+				form.Set("subject_token", externalJWKS.signToken(t, claims, map[string]any{"azp": "trusted-app"}))
+			} else {
+				h = newTestHandler(t, selfJWKS, 15*time.Minute)
+				if tt.subjectScope != "" {
+					extra := validExtraClaims()
+					extra["scope"] = tt.subjectScope
+					form.Set("subject_token", selfJWKS.signToken(t, validClaims(), extra))
+				}
+			}
+			h.authorizationDetailsRegistry = registry
+
+			form.Set("authorization_details", "["+entry+"]")
+			if tt.actorSubject != "" {
+				form.Set("actor_token", signActorToken(t, selfJWKS, tt.actorSubject))
+				form.Set("actor_token_type", oauthproto.TokenTypeJWT)
+			}
+			if tt.requestedTokenType != "" {
+				form.Set("requested_token_type", tt.requestedTokenType)
+			}
+			req := newAccessRequest(t, defaultClient(), form)
+			if tt.requestedScope != "" {
+				req.SetRequestedScopes(fosite.Arguments{tt.requestedScope})
+			}
+
+			require.NoError(t, h.HandleTokenEndpointRequest(context.Background(), req))
+			require.Len(t, got, 1)
+			r := got[0]
+
+			assert.Equal(t, []json.RawMessage{json.RawMessage(entry)}, r.Entries)
+			assert.Equal(t, oauthproto.GrantTypeTokenExchange, r.GrantType)
+			assert.Equal(t, testAgentClientID, r.ClientID)
+			assert.Equal(t, tt.wantActor, r.Actor)
+			assert.Equal(t, tt.wantActorPresent, r.ActorTokenPresent)
+			assert.Equal(t, tt.wantTokenType, r.RequestedTokenType)
+			assert.ElementsMatch(t, tt.wantScopes, r.RequestedScopes)
+			assert.Equal(t, []string{testIssuer}, r.GrantedAudience)
+
+			assert.Equal(t, tt.wantSubject.Issuer, r.Subject.Issuer)
+			assert.Equal(t, tt.wantSubject.Subject, r.Subject.Subject)
+			assert.Equal(t, tt.wantSubject.ClientID, r.Subject.ClientID)
+			assert.Equal(t, tt.wantSubject.JWTID, r.Subject.JWTID)
+			assert.Equal(t, tt.wantSubject.Audience, r.Subject.Audience)
+			assert.Equal(t, tt.wantSubject.External, r.Subject.External)
+			assert.WithinDuration(t, time.Now(), r.Subject.IssuedAt, time.Minute)
+			assert.WithinDuration(t, time.Now().Add(time.Hour), r.Subject.Expiry, time.Minute)
+			for key, want := range tt.wantClaims {
+				assert.Equal(t, want, r.Subject.Claims[key], "claim %q", key)
+			}
+		})
+	}
+}
+
+func TestDeepCopyClaims(t *testing.T) {
+	t.Parallel()
+
+	newSource := func() map[string]any {
+		return map[string]any{
+			"sub":    "user-123",
+			"nested": map[string]any{"inner": map[string]any{"k": "v"}, "list": []any{"a", "b"}},
+			"groups": []any{"g1", map[string]any{"name": "g2"}},
+		}
+	}
+
+	tests := []struct {
+		name   string
+		source map[string]any
+		mutate func(copied map[string]any)
+	}{
+		{
+			name:   "top-level key",
+			source: newSource(),
+			mutate: func(c map[string]any) { c["sub"] = "changed"; c["added"] = true },
+		},
+		{
+			name:   "nested map",
+			source: newSource(),
+			mutate: func(c map[string]any) {
+				c["nested"].(map[string]any)["inner"].(map[string]any)["k"] = "changed"
+			},
+		},
+		{
+			name:   "slice inside nested map",
+			source: newSource(),
+			mutate: func(c map[string]any) { c["nested"].(map[string]any)["list"].([]any)[0] = "changed" },
+		},
+		{
+			name:   "map inside slice",
+			source: newSource(),
+			mutate: func(c map[string]any) { c["groups"].([]any)[1].(map[string]any)["name"] = "changed" },
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			copied := deepCopyClaims(tt.source)
+			require.Equal(t, newSource(), copied, "the copy starts equal to the source")
+
+			tt.mutate(copied)
+			assert.Equal(t, newSource(), tt.source, "mutating the copy must not change the source")
+		})
+	}
+
+	t.Run("nil stays nil", func(t *testing.T) {
+		t.Parallel()
+		assert.Nil(t, deepCopyClaims(nil))
+	})
+}
+
 // TestTokenExchangeHandler_DelegateClientDepthCap exercises the self-issued
 // delegate-client relaxation end to end: a token originally issued to
 // delegate D1 is re-exchanged by a different configured delegate D2. The
@@ -1772,6 +2243,8 @@ func TestTokenExchangeHandler_ActChainProvenance(t *testing.T) {
 		assert.Equal(t, "ext-agent", nested["sub"])
 		assert.Equal(t, testExternalIssuer, nested["iss"])
 		assert.Nil(t, nested["act"], "no prior chain to nest further")
+		assert.Equal(t, testExternalIssuer, sess.JWTClaims.Extra["external_issuer"],
+			"external_issuer is always recorded, even when a genuine actor was also nested under act")
 	})
 
 	t.Run("self-issued delegation stays a single level with no external nesting", func(t *testing.T) {
@@ -1790,6 +2263,8 @@ func TestTokenExchangeHandler_ActChainProvenance(t *testing.T) {
 		assert.Equal(t, testAgentClientID, act["sub"])
 		assert.Equal(t, testIssuer, act["iss"], "outermost act.iss is always this server's own issuer")
 		assert.Nil(t, act["act"], "self-issued delegation must not nest an external actor")
+		assert.NotContains(t, sess.JWTClaims.Extra, "external_issuer",
+			"self-issued delegation involves no external issuer to record")
 	})
 
 	// #5989 fix: an external issuer choosing a "sub" equal to a native
@@ -1825,7 +2300,7 @@ func TestTokenExchangeHandler_ActChainProvenance(t *testing.T) {
 	// actor authorization, but AllowedDelegateClients still applies. Only
 	// covered at the checkDelegationConsent unit level until now — this
 	// exercises it through the full handler.
-	t.Run("external token carrying may_act still nests the issuer, with no actor to report", func(t *testing.T) {
+	t.Run("external token carrying may_act records the issuer without nesting a phantom actor", func(t *testing.T) {
 		t.Parallel()
 		h := newTestHandlerWithValidator(multiValidator)
 
@@ -1844,20 +2319,20 @@ func TestTokenExchangeHandler_ActChainProvenance(t *testing.T) {
 		require.True(t, ok, "act claim must be a map")
 		assert.Equal(t, testAgentClientID, act["sub"])
 
-		// External actor authorization is bypassed, but this path still records where
-		// the delegation came from (ValidatedClaims.ExternalIssuer is set
-		// unconditionally by validateExternalToken) — it just has no
-		// client-namespace actor claim to report, since may_act.sub already
-		// named the delegate directly via the outermost act.sub above.
-		nested, ok := act["act"].(map[string]any)
-		require.True(t, ok, "external issuer must be nested even on the may_act path")
-		assert.Equal(t, testExternalIssuer, nested["iss"])
-		_, hasSub := nested["sub"]
-		assert.False(t, hasSub, "no ExternalActor exists on the may_act path")
+		// External actor authorization is bypassed, and may_act.sub already
+		// named the delegate directly via the outermost act.sub above, so
+		// there is no client-namespace actor to nest. The external issuer is
+		// still recorded (ValidatedClaims.ExternalIssuer is set unconditionally
+		// by validateExternalToken) -- but as its own top-level claim, not as
+		// a phantom, issuer-only hop under act.act: an act entry identifies a
+		// party that acted, and an issuer alone identifies no party.
+		assert.Nil(t, act["act"], "no actor was resolved, so act must not nest an issuer-only phantom hop")
+		assert.Equal(t, testExternalIssuer, sess.JWTClaims.Extra["external_issuer"],
+			"the external issuer must still be recorded, as its own top-level claim")
 	})
 
 	// maxDelegationDepth (10) bounds the prior chain depth + newLevels. The
-	// external wrapper adds a level of its own (newLevels=2) versus the
+	// external-actor wrapper adds a level of its own (newLevels=2) versus the
 	// self-issued path (newLevels=1), so the external path's prior chain must
 	// be one level shallower to fit:
 	//   self-issued: depth 9 accepted (9+1=10); depth 10 rejected (10+1=11>10)
@@ -1900,6 +2375,224 @@ func TestTokenExchangeHandler_ActChainProvenance(t *testing.T) {
 		require.True(t, errors.As(err, &rfcErr), "expected fosite RFC6749Error")
 		assert.Contains(t, rfcErr.Reason(), "too deep")
 	})
+
+	// reExchange re-submits a first exchange's resulting session as a new
+	// subject_token: the delegated token's own "iss" is always this server's
+	// own issuer (see delegatedSubject's doc comment), so a second exchange
+	// validates it via the self-issued path, not the external-issuer path.
+	// It carries forward exactly the claims a real re-exchange would see on
+	// the wire — client_id, the nested act chain, and external_issuer.
+	reExchange := func(t *testing.T, h *Handler, sess *session.Session) (*fosite.AccessRequest, error) {
+		t.Helper()
+		extra := map[string]any{"client_id": testAgentClientID}
+		if act, ok := sess.JWTClaims.Extra["act"]; ok {
+			extra["act"] = act
+		}
+		if externalIssuer, ok := sess.JWTClaims.Extra["external_issuer"]; ok {
+			extra["external_issuer"] = externalIssuer
+		}
+		claims := validClaims()
+		claims.Subject = sess.JWTClaims.Subject
+		return requestWith(t, h, tj.signToken(t, claims, extra))
+	}
+
+	// #6473 regression: re-exchanging a delegated token that itself recorded
+	// an external_issuer must not silently drop that provenance just because
+	// the second exchange validates via the self-issued path.
+	t.Run("external_issuer survives a self-issued re-exchange (may_act path)", func(t *testing.T) {
+		t.Parallel()
+		h := newTestHandlerWithValidator(multiValidator)
+
+		claims := externalClaims()
+		claims.Audience = jwt.Audience{testExternalAudience, testIssuer}
+		token := externalJWKS.signToken(t, claims, map[string]any{
+			"may_act": map[string]any{"sub": testAgentClientID, "iss": testIssuer},
+		})
+
+		firstReq, err := requestWith(t, h, token)
+		require.NoError(t, err)
+		firstSess, ok := firstReq.GetSession().(*session.Session)
+		require.True(t, ok, "session should be *session.Session")
+		require.Equal(t, testExternalIssuer, firstSess.JWTClaims.Extra["external_issuer"],
+			"first exchange must record the external issuer")
+
+		secondReq, err := reExchange(t, h, firstSess)
+		require.NoError(t, err)
+		secondSess, ok := secondReq.GetSession().(*session.Session)
+		require.True(t, ok, "session should be *session.Session")
+		assert.Equal(t, testExternalIssuer, secondSess.JWTClaims.Extra["external_issuer"],
+			"external_issuer must survive a self-issued re-exchange, not just the first hop")
+	})
+
+	t.Run("external_issuer survives a self-issued re-exchange (ActorMatcher-only path)", func(t *testing.T) {
+		t.Parallel()
+		actorMatcherValidator := newMultiValidator(t, tj, []TrustedIssuer{{
+			IssuerURL:              testExternalIssuer,
+			ExpectedAudience:       testExternalAudience,
+			JWKSURL:                jwksServer.URL + "/jwks",
+			ActorMatcher:           `claims.azp == "trusted-app"`,
+			AllowedDelegateClients: []string{testAgentClientID},
+		}})
+		h := newTestHandlerWithValidator(actorMatcherValidator)
+
+		claims := externalClaims()
+		claims.Audience = jwt.Audience{testExternalAudience, testIssuer}
+		token := externalJWKS.signToken(t, claims, map[string]any{"azp": "trusted-app"})
+
+		firstReq, err := requestWith(t, h, token)
+		require.NoError(t, err)
+		firstSess, ok := firstReq.GetSession().(*session.Session)
+		require.True(t, ok, "session should be *session.Session")
+		require.Equal(t, testExternalIssuer, firstSess.JWTClaims.Extra["external_issuer"],
+			"first exchange must record the external issuer even with no actor resolved")
+		firstAct, ok := firstSess.JWTClaims.Extra["act"].(map[string]any)
+		require.True(t, ok, "act claim must be a map")
+		assert.Nil(t, firstAct["act"], "ActorMatcher alone resolves no actor to nest")
+
+		secondReq, err := reExchange(t, h, firstSess)
+		require.NoError(t, err)
+		secondSess, ok := secondReq.GetSession().(*session.Session)
+		require.True(t, ok, "session should be *session.Session")
+		assert.Equal(t, testExternalIssuer, secondSess.JWTClaims.Extra["external_issuer"],
+			"external_issuer must survive a self-issued re-exchange even when no client-namespace actor was ever nested")
+	})
+}
+
+// TestBuildActClaim_ExternalIssuerIsNeverNestedAsAPhantomActor locks in the
+// design fix for a category error: an act object identifies a party that
+// acted (RFC 8693 §4.1), so a bare {"iss": externalIssuer} entry -- naming
+// no party -- must never be nested under act.act. When an actual actor was
+// resolved (the allowlist path's ExternalActor), it nests correctly with
+// both iss and sub. When no actor was resolved (the may_act-bearing or
+// ActorMatcher-only path), act stays a single hop and the external issuer
+// is reported only through buildActClaim's separate return value, which the
+// caller records as its own external_issuer claim -- never inside act.
+func TestBuildActClaim_ExternalIssuerIsNeverNestedAsAPhantomActor(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name            string
+		claims          *ValidatedClaims
+		wantNestedActor bool
+	}{
+		{
+			name: "allowlist path nests the allowlisted external actor",
+			claims: &ValidatedClaims{
+				Subject:        "ext-user-456",
+				ExternalIssuer: testExternalIssuer,
+				ExternalActor:  "ext-agent",
+			},
+			wantNestedActor: true,
+		},
+		{
+			name: "may_act path with no ExternalActor nests nothing under act",
+			claims: &ValidatedClaims{
+				Subject:        "ext-user-456",
+				ExternalIssuer: testExternalIssuer,
+				ExternalActor:  "",
+			},
+			wantNestedActor: false,
+		},
+		{
+			// newLevels stays 1 (not 2) on the no-actor path, so a prior
+			// chain of depth maxDelegationDepth-1 must fit exactly here,
+			// unlike the external-actor case in
+			// "external delegation at depth 8 fits exactly...", which only
+			// admits depth-8 because its newLevels is 2. Pins the depth
+			// arithmetic for the no-actor-plus-prior-chain combination,
+			// which no other test exercises.
+			name: "may_act path with a prior chain: no actor wrapper means one more level of prior chain fits",
+			claims: &ValidatedClaims{
+				Subject:        "ext-user-456",
+				ExternalIssuer: testExternalIssuer,
+				ExternalActor:  "",
+				Extra:          map[string]any{"act": nestedActChain(maxDelegationDepth - 1)},
+			},
+			wantNestedActor: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			act, externalIssuer, err := buildActClaim(tt.claims, testIssuer, testAgentClientID)
+			require.NoError(t, err)
+
+			// The external issuer is always reported via the return value,
+			// regardless of whether an actor was also resolved.
+			assert.Equal(t, testExternalIssuer, externalIssuer)
+
+			if !tt.wantNestedActor {
+				if prior, ok := tt.claims.Extra["act"]; ok {
+					assert.Equal(t, prior, act["act"],
+						"with no actor to nest, the prior chain must hang directly under the outer hop, unchanged")
+				} else {
+					assert.Nil(t, act["act"], "no actor was resolved, so act must not nest a phantom, issuer-only hop")
+				}
+				return
+			}
+			nested, ok := act["act"].(map[string]any)
+			require.True(t, ok, "a genuine actor must nest under act.act")
+			assert.Equal(t, testExternalIssuer, nested["iss"])
+			assert.Equal(t, "ext-agent", nested["sub"])
+		})
+	}
+}
+
+// TestBuildActClaim_ExternalIssuerCarriesForwardOnReExchange covers the fix
+// for the provenance-loss bug: a self-issued subject token being re-exchanged
+// validates via SelfIssuedTokenValidator, which never sets
+// ValidatedClaims.ExternalIssuer, so without reading back the subject
+// token's own "external_issuer" claim, a second exchange would silently drop
+// the fact that an earlier hop involved an external issuer.
+func TestBuildActClaim_ExternalIssuerCarriesForwardOnReExchange(t *testing.T) {
+	t.Parallel()
+
+	const freshIssuer = "https://fresh-external-issuer.example.com"
+	const priorIssuer = "https://prior-external-issuer.example.com"
+
+	tests := []struct {
+		name   string
+		claims *ValidatedClaims
+		want   string
+	}{
+		{
+			name: "a fresh external issuer this hop wins over a stale prior one",
+			claims: &ValidatedClaims{
+				ExternalIssuer: freshIssuer,
+				Extra:          map[string]any{"external_issuer": priorIssuer},
+			},
+			want: freshIssuer,
+		},
+		{
+			name: "no fresh external issuer this hop carries the prior one forward",
+			claims: &ValidatedClaims{
+				Extra: map[string]any{"external_issuer": priorIssuer},
+			},
+			want: priorIssuer,
+		},
+		{
+			name:   "neither this hop nor the subject token has an external issuer",
+			claims: &ValidatedClaims{},
+			want:   "",
+		},
+		{
+			name: "a non-string prior external_issuer is ignored, not carried forward",
+			claims: &ValidatedClaims{
+				Extra: map[string]any{"external_issuer": 12345},
+			},
+			want: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			_, externalIssuer, err := buildActClaim(tt.claims, testIssuer, testAgentClientID)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, externalIssuer)
+		})
+	}
 }
 
 func TestChainToAct_EmptyIdentityHop(t *testing.T) {
@@ -2068,11 +2761,15 @@ func TestTokenExchangeHandler_PopulateTokenEndpointResponse(t *testing.T) {
 		strategy := &mockAccessTokenStrategy{}
 		storage := &mockAccessTokenStorage{}
 		h := newTestHandlerWithHelper(t, tj, 15*time.Minute, strategy, storage)
+		h.authorizationDetailsRegistry = newDetailsRegistry(t, func(req authorizationdetails.Request) (authorizationdetails.Result, error) {
+			return authorizationdetails.Result{Entries: req.Entries}, nil
+		})
 
 		// Client is allowed client_credentials only, not token-exchange.
 		client := defaultClient()
 		client.GrantTypes = fosite.Arguments{"client_credentials"}
 		req := newAccessRequest(t, client, defaultFormValues(t, tj))
+		req.GetRequestForm().Set("authorization_details", `[{"type":"read"}]`)
 		req.SetSession(&session.Session{})
 
 		responder := fosite.NewAccessResponse()
@@ -2083,6 +2780,7 @@ func TestTokenExchangeHandler_PopulateTokenEndpointResponse(t *testing.T) {
 			"expected ErrUnauthorizedClient, got: %v", err)
 		// No token should have been issued.
 		assert.Empty(t, responder.GetAccessToken())
+		assert.Nil(t, responder.GetExtra("authorization_details"))
 		assert.Empty(t, storage.createdSig)
 	})
 
@@ -2106,9 +2804,96 @@ func TestTokenExchangeHandler_PopulateTokenEndpointResponse(t *testing.T) {
 		// The mock strategy issues a fixed opaque token; verify it propagated.
 		assert.Equal(t, "test-access-token", responder.GetAccessToken())
 		assert.Equal(t, "bearer", responder.GetTokenType())
+		assert.Nil(t, responder.GetExtra("authorization_details"))
 		// The session should have been persisted via CreateAccessTokenSession.
 		assert.Equal(t, "test-signature", storage.createdSig)
 		require.Len(t, storage.createdReqs, 1)
+	})
+
+	t.Run("authorization_details echoed as JSON only after successful issuance", func(t *testing.T) {
+		t.Parallel()
+
+		const bigEntry = `{"type":"custom","nested":{"big":1234567890123456789012345678901234567890,"nullable":null},"array":[3,1,2]}`
+		tests := []struct {
+			name        string
+			details     string
+			hookResult  []json.RawMessage
+			wantEcho    bool
+			wantEntries string
+			wantCalls   int
+		}{
+			{name: "empty parameter is omitted"},
+			{name: "empty array is echoed", details: "[]", wantEcho: true, wantEntries: "[]"},
+			{
+				name:        "large numbers keep their precision",
+				details:     "[" + bigEntry + "]",
+				wantEcho:    true,
+				wantEntries: "[" + bigEntry + "]",
+				wantCalls:   1,
+			},
+			{
+				name:        "echo is the hook result, not the request",
+				details:     `[{"type":"custom","scope":"wide"}]`,
+				hookResult:  []json.RawMessage{json.RawMessage(`{"type":"custom","scope":"narrow"}`)},
+				wantEcho:    true,
+				wantEntries: `[{"type":"custom","scope":"narrow"}]`,
+				wantCalls:   1,
+			},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				t.Parallel()
+
+				strategy := &mockAccessTokenStrategy{}
+				storage := &mockAccessTokenStorage{}
+				h := newTestHandlerWithHelper(t, tj, time.Hour, strategy, storage)
+				callbackCount := 0
+				registry, err := authorizationdetails.New(map[string]authorizationdetails.Type{
+					"custom": {
+						GrantTypes: []string{oauthproto.GrantTypeTokenExchange},
+						Grant: func(_ context.Context, req authorizationdetails.Request) (authorizationdetails.Result, error) {
+							callbackCount++
+							if tt.hookResult != nil {
+								return authorizationdetails.Result{Entries: tt.hookResult}, nil
+							}
+							return authorizationdetails.Result{Entries: req.Entries}, nil
+						},
+					},
+				})
+				require.NoError(t, err)
+				h.authorizationDetailsRegistry = registry
+
+				form := defaultFormValues(t, tj)
+				form.Set("authorization_details", tt.details)
+				req := newAccessRequest(t, defaultClient(), form)
+				require.NoError(t, h.HandleTokenEndpointRequest(context.Background(), req))
+				assert.Equal(t, tt.wantCalls, callbackCount)
+
+				responder := fosite.NewAccessResponse()
+				require.NoError(t, h.PopulateTokenEndpointResponse(context.Background(), req, responder))
+				assert.Equal(t, tt.wantCalls, callbackCount, "response population must not rerun hooks")
+				require.Len(t, storage.createdReqs, 1)
+				assert.NotContains(t, storage.createdReqs[0].GetRequestForm(), "authorization_details",
+					"authorization_details must not be persisted with the issued token")
+
+				if !tt.wantEcho {
+					assert.Nil(t, responder.GetExtra("authorization_details"))
+					return
+				}
+
+				responseJSON, err := json.Marshal(responder.ToMap())
+				require.NoError(t, err)
+				var response map[string]json.RawMessage
+				require.NoError(t, json.Unmarshal(responseJSON, &response))
+				echoed, ok := response["authorization_details"]
+				require.True(t, ok, "authorization_details must appear in the serialized response")
+				assert.Equal(t, json.RawMessage(tt.wantEntries), echoed)
+
+				var entries []json.RawMessage
+				require.NoError(t, json.Unmarshal(echoed, &entries), "authorization_details must serialize as an array, not a JSON string")
+			})
+		}
 	})
 
 	t.Run("lifetime capped by subject token expiry", func(t *testing.T) {
@@ -2169,8 +2954,12 @@ func TestTokenExchangeHandler_PopulateTokenEndpointResponse(t *testing.T) {
 		}
 		storage := &mockAccessTokenStorage{}
 		h := newTestHandlerWithHelper(t, tj, time.Hour, strategy, storage)
+		h.authorizationDetailsRegistry = newDetailsRegistry(t, func(req authorizationdetails.Request) (authorizationdetails.Result, error) {
+			return authorizationdetails.Result{Entries: req.Entries}, nil
+		})
 
 		req := newAccessRequest(t, defaultClient(), defaultFormValues(t, tj))
+		req.GetRequestForm().Set("authorization_details", `[{"type":"read"}]`)
 		require.NoError(t, h.HandleTokenEndpointRequest(context.Background(), req))
 
 		responder := fosite.NewAccessResponse()
@@ -2178,6 +2967,7 @@ func TestTokenExchangeHandler_PopulateTokenEndpointResponse(t *testing.T) {
 
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "strategy failure")
+		assert.Nil(t, responder.GetExtra("authorization_details"))
 		// No session should have been persisted on failure.
 		assert.Empty(t, storage.createdSig)
 	})
@@ -2188,8 +2978,13 @@ func TestTokenExchangeHandler_PopulateTokenEndpointResponse(t *testing.T) {
 		strategy := &mockAccessTokenStrategy{}
 		storage := &mockAccessTokenStorage{}
 		h := newTestHandlerWithHelper(t, tj, time.Hour, strategy, storage)
+		h.authorizationDetailsRegistry = newDetailsRegistry(t, func(req authorizationdetails.Request) (authorizationdetails.Result, error) {
+			return authorizationdetails.Result{Entries: req.Entries}, nil
+		})
 
-		req := newAccessRequest(t, defaultClient(), defaultFormValues(t, tj))
+		form := defaultFormValues(t, tj)
+		form.Set("authorization_details", `[{"type":"read"}]`)
+		req := newAccessRequest(t, defaultClient(), form)
 		require.NoError(t, h.HandleTokenEndpointRequest(context.Background(), req))
 
 		// Simulate the narrow window where the session's bound expiry (set by
@@ -2205,6 +3000,7 @@ func TestTokenExchangeHandler_PopulateTokenEndpointResponse(t *testing.T) {
 		assert.True(t, errors.Is(err, fosite.ErrInvalidGrant),
 			"expected ErrInvalidGrant, got: %v", err)
 		assert.Empty(t, responder.GetAccessToken())
+		assert.Nil(t, responder.GetExtra("authorization_details"))
 		assert.Empty(t, storage.createdSig)
 	})
 
@@ -2216,8 +3012,12 @@ func TestTokenExchangeHandler_PopulateTokenEndpointResponse(t *testing.T) {
 			createErr: errors.New("storage failure"),
 		}
 		h := newTestHandlerWithHelper(t, tj, time.Hour, strategy, storage)
+		h.authorizationDetailsRegistry = newDetailsRegistry(t, func(req authorizationdetails.Request) (authorizationdetails.Result, error) {
+			return authorizationdetails.Result{Entries: req.Entries}, nil
+		})
 
 		req := newAccessRequest(t, defaultClient(), defaultFormValues(t, tj))
+		req.GetRequestForm().Set("authorization_details", `[{"type":"read"}]`)
 		require.NoError(t, h.HandleTokenEndpointRequest(context.Background(), req))
 
 		responder := fosite.NewAccessResponse()
@@ -2225,7 +3025,52 @@ func TestTokenExchangeHandler_PopulateTokenEndpointResponse(t *testing.T) {
 
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "storage failure")
-		// issued_token_type must NOT be set when token issuance failed.
+		// Neither response member is set when token persistence fails.
 		assert.Nil(t, responder.GetExtra("issued_token_type"))
+		assert.Nil(t, responder.GetExtra("authorization_details"))
+	})
+}
+
+// TestGrantResourceAudience_SPIFFEClientEnforcesResourcesIndependentlyOfAudiences
+// is a regression test for a bug where the RFC 8707 "resource" parameter was
+// checked against a SPIFFE client's audience allowlist instead of its
+// independently configured resource allowlist: a resource the client was
+// registered for was rejected, and a resource the client was NOT registered
+// for -- but which happened to be one of its audiences -- was granted.
+func TestGrantResourceAudience_SPIFFEClientEnforcesResourcesIndependentlyOfAudiences(t *testing.T) {
+	t.Parallel()
+
+	tj := newTestJWKS(t)
+	h := newTestHandler(t, tj, time.Hour)
+	// Both values must be server-wide allowed so the test isolates the
+	// per-client check (grantResourceAudience) from the server-wide one.
+	h.allowedAudiences = []string{testIssuer, "https://other.example.com"}
+
+	const registeredResource = testIssuer
+	const registeredAudience = "https://other.example.com"
+	client, err := registration.NewSPIFFEClient(
+		"spiffe-client",
+		[]string{"openid"},
+		[]string{registeredAudience},
+		[]string{registeredResource},
+	)
+	require.NoError(t, err)
+
+	t.Run("resource in the client's resources is granted", func(t *testing.T) {
+		t.Parallel()
+
+		req := newAccessRequest(t, client, url.Values{"resource": {registeredResource}})
+		require.NoError(t, h.grantResourceAudience(context.Background(), req, client))
+		assert.Contains(t, req.GetGrantedAudience(), registeredResource)
+	})
+
+	t.Run("resource that is only an audience, not a resource, is rejected", func(t *testing.T) {
+		t.Parallel()
+
+		req := newAccessRequest(t, client, url.Values{"resource": {registeredAudience}})
+		err := h.grantResourceAudience(context.Background(), req, client)
+		require.Error(t, err)
+		assert.True(t, errors.Is(err, server.ErrInvalidTarget))
+		assert.Empty(t, req.GetGrantedAudience())
 	})
 }

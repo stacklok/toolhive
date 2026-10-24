@@ -11,17 +11,20 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/cenkalti/backoff/v5"
+	"github.com/cenkalti/backoff/v7"
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/jwx-go/jwkfetch/v4"
 	"github.com/lestrrat-go/httprc/v3"
-	"github.com/lestrrat-go/jwx/v3/jwk"
+	"github.com/lestrrat-go/jwx/v4/jwk"
 
 	"github.com/stacklok/toolhive-core/env"
 	"github.com/stacklok/toolhive/pkg/auth/upstreamtoken"
@@ -360,7 +363,7 @@ type TokenValidator struct {
 	jwksURL           string
 	clientID          string
 	clientSecret      string // Optional client secret for introspection
-	jwksClient        *jwk.Cache
+	jwksClient        *jwkfetch.Cache
 	introspectURL     string       // Optional introspection endpoint
 	client            *http.Client // HTTP client for making requests
 	resourceURL       string       // (RFC 9728)
@@ -560,7 +563,10 @@ func WithEnvReader(reader env.Reader) TokenValidatorOption {
 // with upstream provider tokens. When set, the Middleware extracts the token
 // session ID (tsid) from JWT claims and loads all upstream tokens into
 // Identity.UpstreamTokens (access tokens) and Identity.UpstreamIDTokens
-// (ID tokens) before placing the Identity in the request context.
+// (ID tokens) before placing the Identity in the request context. A token
+// session whose upstream access token cannot be refreshed, or that holds no
+// usable upstream access token at all, is answered with 401 and a
+// WWW-Authenticate challenge instead, so the client signs in again.
 func WithUpstreamTokenReader(reader upstreamtoken.TokenReader) TokenValidatorOption {
 	return func(o *tokenValidatorOptions) {
 		o.upstreamTokenReader = reader
@@ -678,10 +684,9 @@ func NewTokenValidator(ctx context.Context, config TokenValidatorConfig, opts ..
 	}
 	config.httpClient = httpClient
 
-	// Create a new JWKS client with auto-refresh
-	// In jwx v3, NewCache requires an httprc.Client
-	httprcClient := httprc.NewClient(httprc.WithHTTPClient(httpClient))
-	cache, err := jwk.NewCache(ctx, httprcClient)
+	// Create a new JWKS client with auto-refresh.
+	httprcClient := httprc.NewClient()
+	cache, err := jwkfetch.NewCache(ctx, httprcClient, jwkfetch.WithHTTPClient(httpClient))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create JWKS cache: %w", err)
 	}
@@ -752,11 +757,9 @@ func (v *TokenValidator) ensureJWKSRegistered(ctx context.Context) error {
 	registrationCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
-	// Attempt registration. The CA-aware client must be passed per-resource:
-	// jwx >= 3.1.0 injects its own default client at the resource level when
-	// none is given here, which takes precedence over the client-level one
-	// configured in NewTokenValidator and silently drops custom CA support.
-	err := v.jwksClient.Register(registrationCtx, v.jwksURL, jwk.WithHTTPClient(v.client))
+	// The CA-aware client is configured on the cache so every fetch,
+	// including background refreshes, uses the same transport policy.
+	err := v.jwksClient.Register(registrationCtx, v.jwksURL)
 	switch {
 	case err == nil:
 		// Registered and the first fetch succeeded.
@@ -970,8 +973,7 @@ func (v *TokenValidator) getKeyFromJWKS(ctx context.Context, token *jwt.Token) (
 		return nil, err
 	}
 
-	// Get the key set from the JWKS
-	// In jwx v3, Get is replaced with Lookup
+	// Get the key set from the JWKS.
 	keySet, err := v.jwksClient.Lookup(ctx, v.jwksURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to lookup JWKS: %w", err)
@@ -983,10 +985,9 @@ func (v *TokenValidator) getKeyFromJWKS(ctx context.Context, token *jwt.Token) (
 		return nil, fmt.Errorf("key ID %s not found in JWKS", kid)
 	}
 
-	// Get the raw key
-	// In jwx v3, Raw method is replaced with Export function
-	var rawKey interface{}
-	if err := jwk.Export(key, &rawKey); err != nil {
+	// Export the raw key.
+	rawKey, err := jwk.Export[any](key)
+	if err != nil {
 		return nil, fmt.Errorf("failed to export raw key: %w", err)
 	}
 
@@ -1036,16 +1037,19 @@ func (v *TokenValidator) validateClaims(claims jwt.MapClaims) error {
 
 func parseIntrospectionClaims(r io.Reader) (jwt.MapClaims, error) {
 	var j struct {
-		Active bool                   `json:"active"`
-		Exp    *float64               `json:"exp,omitempty"`
-		Sub    string                 `json:"sub,omitempty"`
-		Aud    interface{}            `json:"aud,omitempty"`
-		Scope  string                 `json:"scope,omitempty"`
-		Iss    string                 `json:"iss,omitempty"`
-		Extra  map[string]interface{} `json:"-"`
+		Active bool        `json:"active"`
+		Exp    *float64    `json:"exp,omitempty"`
+		Sub    string      `json:"sub,omitempty"`
+		Aud    interface{} `json:"aud,omitempty"`
+		Scope  string      `json:"scope,omitempty"`
+		Iss    string      `json:"iss,omitempty"`
 	}
+	var body json.RawMessage
 
-	if err := json.NewDecoder(r).Decode(&j); err != nil {
+	if err := json.NewDecoder(r).Decode(&body); err != nil {
+		return nil, fmt.Errorf("failed to decode introspection JSON: %w", err)
+	}
+	if err := json.Unmarshal(body, &j); err != nil {
 		return nil, fmt.Errorf("failed to decode introspection JSON: %w", err)
 	}
 	if !j.Active {
@@ -1053,6 +1057,18 @@ func parseIntrospectionClaims(r io.Reader) (jwt.MapClaims, error) {
 	}
 
 	claims := jwt.MapClaims{}
+	var extra map[string]interface{}
+	if err := json.Unmarshal(body, &extra); err != nil {
+		return nil, fmt.Errorf("failed to decode introspection JSON: %w", err)
+	}
+	for k, v := range extra {
+		switch k {
+		case "active", "exp", "sub", "aud", "scope", "iss":
+			continue
+		default:
+			claims[k] = v
+		}
+	}
 	if j.Exp != nil {
 		claims["exp"] = *j.Exp
 	}
@@ -1067,9 +1083,6 @@ func parseIntrospectionClaims(r io.Reader) (jwt.MapClaims, error) {
 	}
 	if j.Iss != "" {
 		claims["iss"] = strings.TrimSpace(j.Iss)
-	}
-	for k, v := range j.Extra {
-		claims[k] = v
 	}
 
 	return claims, nil
@@ -1211,6 +1224,11 @@ const (
 	OAuthErrInsufficientScope = "insufficient_scope"
 )
 
+// upstreamReauthRequired is the error_description of the 401 the validator
+// answers when a token session's upstream credential is unusable: the client's
+// only cure is a new upstream login.
+const upstreamReauthRequired = "upstream token is no longer valid; re-authentication required"
+
 // RFC6750Error represents an RFC 6750 compliant OAuth error response body.
 type RFC6750Error struct {
 	Error            string `json:"error"`
@@ -1232,16 +1250,24 @@ func writeOAuthError(w http.ResponseWriter, errorCode, description string) {
 	_, _ = w.Write(body)
 }
 
+// writeUpstreamReauthRequired answers 401 with the RFC 6750 invalid_token
+// challenge for a token session whose upstream credential is unusable, so the
+// client re-authenticates and the login writes fresh upstream rows.
+func (v *TokenValidator) writeUpstreamReauthRequired(w http.ResponseWriter) {
+	w.Header().Set("WWW-Authenticate", v.buildWWWAuthenticate(OAuthErrInvalidToken, upstreamReauthRequired))
+	writeOAuthError(w, OAuthErrInvalidToken, upstreamReauthRequired)
+}
+
 // loadUpstreamTokens extracts the token session ID from claims and loads
 // all upstream provider credentials (access + ID tokens) for that session.
 // Returns (nil, nil, nil) if no tsid claim exists. Returns a non-nil error
 // when a tsid claim is present but token loading fails due to an infrastructure
-// error (storage unavailable). A non-empty failed slice means one or more
+// error (storage unavailable). A non-empty failed map means one or more
 // providers' tokens could not be refreshed; the caller should return HTTP 401
 // to trigger re-authentication.
 func (v *TokenValidator) loadUpstreamTokens(
 	ctx context.Context, claims jwt.MapClaims,
-) (map[string]upstreamtoken.UpstreamCredential, []string, error) {
+) (map[string]upstreamtoken.UpstreamCredential, map[string]error, error) {
 	tsid, ok := claims[upstreamtoken.TokenSessionIDClaimKey].(string)
 	if !ok || tsid == "" {
 		return nil, nil, nil
@@ -1344,19 +1370,13 @@ func (v *TokenValidator) Middleware(next http.Handler) http.Handler {
 			// at this layer; this is the correct tradeoff for now.
 			if len(failed) > 0 {
 				slog.WarnContext(loadCtx, "upstream token refresh failed; returning 401",
-					"providers", failed)
-				w.Header().Set("WWW-Authenticate",
-					v.buildWWWAuthenticate(OAuthErrInvalidToken, "upstream token is no longer valid; re-authentication required"))
-				writeOAuthError(w, OAuthErrInvalidToken,
-					"upstream token is no longer valid; re-authentication required")
+					"providers", slices.Sorted(maps.Keys(failed)))
+				v.writeUpstreamReauthRequired(w)
 				return
 			}
 			// Project the per-provider credential bundle onto the two
-			// consumer-facing Identity fields.
-			//
-			// Non-nil empty maps are preserved when a tsid claim was present
-			// so consumers can distinguish "enrichment attempted, nothing
-			// stored" from "enrichment never ran" (nil).
+			// consumer-facing Identity fields. creds is non-nil exactly when
+			// the token carried a tsid claim; without one both fields stay nil.
 			if creds != nil {
 				accessTokens := make(map[string]string, len(creds))
 				idTokens := make(map[string]string, len(creds))
@@ -1372,6 +1392,27 @@ func (v *TokenValidator) Middleware(next http.Handler) http.Handler {
 					if cred.IDToken != "" {
 						idTokens[provider] = cred.IDToken
 					}
+				}
+				// A token session that holds no usable access token for any
+				// provider (every stored row has expired or been deleted, or
+				// none carried an access token) is in the same state as one
+				// whose refresh was refused: consumers of UpstreamTokens can
+				// only deny it, and a denial does not make the client sign in
+				// again. Answer the same 401 challenge here, before any
+				// consumer runs.
+				//
+				// Debug, unlike the refresh-failure WARN above: an expired row
+				// is ordinary lifecycle rather than an upstream fault, a client
+				// retrying on a stale token sets the rate, and the audit
+				// middleware records the 401. The line names the session (tsid
+				// stays at Debug, as in loadUpstreamTokens) and the providers
+				// whose rows were still stored without an access token.
+				if len(accessTokens) == 0 {
+					tsid, _ := claims[upstreamtoken.TokenSessionIDClaimKey].(string)
+					slog.DebugContext(loadCtx, "token session holds no upstream access token; returning 401",
+						"tsid", tsid, "stored_providers", slices.Sorted(maps.Keys(creds)))
+					v.writeUpstreamReauthRequired(w)
+					return
 				}
 				identity.UpstreamTokens = accessTokens
 				identity.UpstreamIDTokens = idTokens

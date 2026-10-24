@@ -6,7 +6,6 @@ package app
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"errors"
 	"path/filepath"
 	"strings"
@@ -240,10 +239,9 @@ func TestRunSystemSecretDelete(t *testing.T) {
 func newTestEncryptedProvider(t *testing.T) secrets.Provider {
 	t.Helper()
 
-	key := sha256.Sum256([]byte("integration-test-password"))
 	filePath := filepath.Join(t.TempDir(), "secrets_encrypted")
 
-	provider, err := secrets.NewEncryptedManager(filePath, key[:])
+	provider, err := secrets.NewEncryptedManager(filePath, []byte("integration-test-password"))
 	require.NoError(t, err)
 	return provider
 }

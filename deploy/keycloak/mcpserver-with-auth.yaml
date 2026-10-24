@@ -40,11 +40,6 @@ spec:
     # MCP server client ID - tokens must have this in their audience claim
     audience: mcp-server
 
-  # Basic permission profile allowing network access
-  permissionProfile:
-    type: builtin
-    name: network
-
   # Resource limits
   resources:
     requests:

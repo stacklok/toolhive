@@ -5,6 +5,7 @@ package core
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -107,6 +108,36 @@ func TestCheckResourceRead_AllowDenyFailClosed_NoAggregation(t *testing.T) {
 		vmcp.ErrAuthorizationFailed)
 	assert.ErrorIs(t, c.CheckResourceRead(t.Context(), cedarIdentity(), "res://boom"),
 		vmcp.ErrAuthorizationFailed, "authorizer error must fail closed")
+}
+
+func TestCheckResourceRead_OversizedURIErrorDoesNotEchoURI(t *testing.T) {
+	t.Parallel()
+
+	uri := "res://" + strings.Repeat("x", vmcp.MaxResourceURILength)
+	authorizerErr := errors.New("authorizer exploded")
+	tests := []struct {
+		name   string
+		result mockResult
+	}{
+		{name: "denial"},
+		{name: "authorizer error", result: mockResult{err: authorizerErr}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			_, m := baseConfig(t)
+			c := checkCore(m, newCedarAdmission(&mockAuthorizer{
+				results: map[string]mockResult{uri: tc.result},
+			}))
+
+			err := c.CheckResourceRead(t.Context(), cedarIdentity(), uri)
+
+			require.Error(t, err)
+			assert.True(t, errors.Is(err, vmcp.ErrAuthorizationFailed))
+			assert.Less(t, len(err.Error()), 256)
+			assert.NotContains(t, err.Error(), uri)
+		})
+	}
 }
 
 // TestCallTool_DenialPrecedesNotFound pins the ORDER of CallTool's two rejections.

@@ -5,7 +5,11 @@ package plugins
 
 import (
 	"context"
+	"errors"
+	"net/http"
 
+	"github.com/stacklok/toolhive-core/httperr"
+	regtypes "github.com/stacklok/toolhive-core/registry/types"
 	"github.com/stacklok/toolhive/pkg/skills"
 	"github.com/stacklok/toolhive/pkg/skills/lockfile"
 )
@@ -39,6 +43,15 @@ type InstallOptions struct {
 	// servers to the client that loads it, so this is an explicit
 	// per-install trust decision, never a default.
 	AllowUnsigned bool `json:"allow_unsigned,omitempty"`
+	// PublicKey is the base64-encoded DER SPKI cosign public key a
+	// project-scoped install must verify the artifact against, for artifacts
+	// signed with a cosign key pair rather than keylessly. Required on true
+	// first use of such an artifact — the signing key is recoverable from
+	// neither the artifact nor its bundle, so nothing else can supply the
+	// trust anchor — and pinned into the lock entry, which supplies it on
+	// every install thereafter. A value that conflicts with what the lock
+	// already pins is rejected, never ignored.
+	PublicKey string `json:"public_key,omitempty"`
 	// LayerData is the tar.gz content from an OCI layer. Internal use only — NOT exposed via HTTP API.
 	LayerData []byte `json:"-"`
 	// Reference is the full OCI reference (e.g. ghcr.io/org/plugin:v1).
@@ -75,6 +88,10 @@ type InstallOptions struct {
 	// normal "same digest means content is already correct" fast path must
 	// not apply. Internal use only — NOT exposed via HTTP API.
 	SyncRestore bool `json:"-"`
+	// RefreshMetadata updates the installed record when content is already at
+	// the requested digest and no client needs materialization. Upgrade sets it
+	// for an explicitly allowed resolved-reference change. Internal use only.
+	RefreshMetadata bool `json:"-"`
 	// AllowSignerChange lets install-time verification re-record the
 	// observed identity instead of enforcing the lock file's recorded one.
 	// Internal use only — set by upgrade when its signer-change guard was
@@ -89,6 +106,13 @@ type InstallOptions struct {
 	// install-time verification; recorded as `unsigned: true` in the lock
 	// entry. Internal use only — NOT exposed via HTTP API.
 	Unsigned bool `json:"-"`
+	// CatalogProvenance is the independently optional provenance constraints
+	// declared by the plugin registry/catalog entry this install resolved
+	// from. On true first use, install-time verification checks each non-empty
+	// field against the observed signature. A lock entry, including a legacy
+	// entry with no trust state, always takes precedence over this. Internal
+	// use only — NOT exposed via HTTP API.
+	CatalogProvenance *regtypes.Provenance `json:"-"`
 	// Provenance carries the verified signer identity established during
 	// install-time verification, for recording into the lock entry. Set by
 	// the verification step, nil when the artifact is unsigned or
@@ -193,32 +217,53 @@ type BuildOptions = skills.BuildOptions
 // skills.BuildResult (Reference).
 type BuildResult = skills.BuildResult
 
-// PushOptions configures the behavior of the Push operation.
+// PushOptions configures the behavior of the Push operation. Alias for
+// skills.PushOptions (identical shape: Reference, Key, IdentityToken,
+// NoSign).
+type PushOptions = skills.PushOptions
+
+// ValidatePushSigning enforces the push endpoint's signing contract: exactly
+// one of a cosign key, an OIDC identity token for keyless signing, or an
+// explicit opt-out. Ambiguous or absent input is rejected with HTTP 400 before
+// the artifact is pushed, rather than surfacing as a signing failure afterward.
 //
-// Deliberately NOT an alias of skills.PushOptions, unlike its Build/Sync
-// siblings: that type carries a Key for cosign key-pair signing, and plugin
-// signing is keyless-only until install-time key verification exists (#6442).
-// Aliasing left Key settable with no single answer for what it meant — the
-// in-process service rejected it with a 400 while the HTTP client dropped it
-// silently and published unsigned, so the same PluginService.Push call did
-// different things depending on which implementation was wired in. Omitting
-// the field makes the unsupported request unrepresentable instead of
-// rejected in one implementation and ignored in the other.
-type PushOptions struct {
-	// Reference is the OCI reference to push.
-	Reference string `json:"reference"`
-	// IdentityToken is a short-lived OIDC identity token (raw JWT) used for
-	// keyless signing: the server exchanges it with Fulcio for a short-lived
-	// signing certificate and records the signature in Rekor. Mutually
-	// exclusive with NoSign; exactly one of the two is required.
-	IdentityToken string `json:"identity_token,omitempty"`
-	// NoSign pushes without signing. Consumers installing the artifact
-	// project-scoped will need an explicit unsigned exception.
-	NoSign bool `json:"no_sign,omitempty"`
+// The HTTP handler runs this before dispatch and the service runs it again on
+// the options it receives. Both call it so the API contract holds regardless
+// of which PluginService implementation is wired in: a request naming only a
+// reference must be a 400 from the endpoint itself, not from whichever
+// service happens to answer. Mirrors skillsvc.validateSigningInputs; the
+// error text names both the JSON fields and the plugin command's flags.
+func ValidatePushSigning(opts PushOptions) error {
+	methods := 0
+	if opts.Key != "" {
+		methods++
+	}
+	if opts.IdentityToken != "" {
+		methods++
+	}
+	switch {
+	case opts.NoSign && methods > 0:
+		return httperr.WithCode(
+			errors.New("no_sign (--no-sign) cannot be combined with key (--key) or identity_token (--identity-token)"),
+			http.StatusBadRequest,
+		)
+	case !opts.NoSign && methods == 0:
+		return httperr.WithCode(
+			errors.New("signing credential required: set key (--key), identity_token (--identity-token) "+
+				"for CI/OIDC keyless signing, or no_sign (--no-sign) to push unsigned"),
+			http.StatusBadRequest,
+		)
+	case !opts.NoSign && methods > 1:
+		return httperr.WithCode(
+			errors.New("specify only one of key (--key) or identity_token (--identity-token)"),
+			http.StatusBadRequest,
+		)
+	}
+	return nil
 }
 
 // SyncOptions configures a lock-file sync. Alias for skills.SyncOptions
-// (identical shape: ProjectRoot, Clients, Prune, Check, AllowUnsigned, Adopt).
+// (identical shape including adoption's AllowUnsigned and PublicKey inputs).
 type SyncOptions = skills.SyncOptions
 
 // SyncResult is the outcome of a lock-file sync. Alias for skills.SyncResult.
@@ -252,8 +297,8 @@ const (
 )
 
 // UpgradeOptions configures a lock-file upgrade. Alias for
-// skills.UpgradeOptions (identical shape including AllowRefChange /
-// AllowSignerChange).
+// skills.UpgradeOptions (identical shape including AllowRefChange,
+// AllowSignerChange, and PublicKey).
 type UpgradeOptions = skills.UpgradeOptions
 
 // UpgradeResult is the outcome of a lock-file upgrade. Alias for
@@ -273,6 +318,7 @@ type UpgradeStatus = skills.UpgradeStatus
 const (
 	UpgradeStatusUpgraded            = skills.UpgradeStatusUpgraded
 	UpgradeStatusUpToDate            = skills.UpgradeStatusUpToDate
+	UpgradeStatusTrustUpdated        = skills.UpgradeStatusTrustUpdated
 	UpgradeStatusNotUpgradable       = skills.UpgradeStatusNotUpgradable
 	UpgradeStatusRefChangeBlocked    = skills.UpgradeStatusRefChangeBlocked
 	UpgradeStatusSignerChangeBlocked = skills.UpgradeStatusSignerChangeBlocked

@@ -77,6 +77,13 @@ type fakeBackend struct {
 type jsonRPCError struct {
 	code    int
 	message string
+
+	// httpStatus, when non-zero, is the HTTP status the error envelope is
+	// returned under instead of 200. The 2026-07-28 spec has servers answer an
+	// unknown method with HTTP 404 carrying a -32601 body; tests set this to 404
+	// for that shape, and to 405 / 501 for the wider scope named in #5242. Zero
+	// keeps the pre-2026-07-28 shape (-32601 inside a 200).
+	httpStatus int
 }
 
 // newFakeBackend wires up an httptest.Server speaking just enough JSON-RPC for
@@ -277,8 +284,12 @@ func (f *fakeBackend) writeResult(w http.ResponseWriter, id json.RawMessage, res
 }
 
 func (f *fakeBackend) writeError(w http.ResponseWriter, id json.RawMessage, e *jsonRPCError) {
+	status := e.httpStatus
+	if status == 0 {
+		status = http.StatusOK
+	}
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
+	w.WriteHeader(status)
 	if err := json.NewEncoder(w).Encode(map[string]any{
 		"jsonrpc": "2.0",
 		"id":      json.RawMessage(id),
@@ -591,4 +602,153 @@ func TestInitAndQueryCapabilities_FollowsToolPagination(t *testing.T) {
 	// The cursor loop must issue ceil(total/pageSize) tools/list calls — proof
 	// pagination actually happened rather than one oversized page.
 	assert.Equal(t, 3, fb.callCount(string(mcp.MethodToolsList)), "expected one tools/list per page")
+}
+
+// TestInitAndQueryCapabilities_RecoversFromErrorStatusMethodNotFound covers the
+// shape the 2026-07-28 spec requires for an unknown method: HTTP 404 carrying a
+// JSON-RPC -32601 body. 405 and 501 are exercised alongside it as the defensive
+// scope named in #5242 rather than spec requirements; the recovery path is the same
+// for all three, and must behave exactly as it does for -32601 inside a 200 — init
+// succeeds with the backend's tools intact.
+//
+// Beyond the return value, each case asserts the session is still USABLE: the
+// recovery is worthless if init reports success but hands back a client whose
+// connection the SDK has already torn down, because the backend's tools would
+// then appear in the catalog while every tools/call fails.
+func TestInitAndQueryCapabilities_RecoversFromErrorStatusMethodNotFound(t *testing.T) {
+	t.Parallel()
+
+	helloTool := mcp.Tool{Name: "hello"}
+
+	methods := []struct {
+		name string
+		// inject returns a fakeBackend whose optional list method fails with
+		// the -32601 body under the given HTTP status.
+		inject func(status int) *fakeBackend
+		// listMethod is the JSON-RPC method expected to have been attempted.
+		listMethod string
+	}{
+		{
+			name:       "resources/list",
+			listMethod: string(mcp.MethodResourcesList),
+			inject: func(status int) *fakeBackend {
+				return &fakeBackend{
+					advertiseTools:     true,
+					advertiseResources: true,
+					tools:              []mcp.Tool{helloTool},
+					listResourcesErr: &jsonRPCError{
+						code:       mcp.METHOD_NOT_FOUND,
+						message:    "Method not found",
+						httpStatus: status,
+					},
+				}
+			},
+		},
+		{
+			name:       "prompts/list",
+			listMethod: string(mcp.MethodPromptsList),
+			inject: func(status int) *fakeBackend {
+				return &fakeBackend{
+					advertiseTools:   true,
+					advertisePrompts: true,
+					tools:            []mcp.Tool{helloTool},
+					listPromptsErr: &jsonRPCError{
+						code:       mcp.METHOD_NOT_FOUND,
+						message:    "Method not found",
+						httpStatus: status,
+					},
+				}
+			},
+		},
+	}
+
+	statuses := []int{
+		http.StatusNotFound,
+		http.StatusMethodNotAllowed,
+		http.StatusNotImplemented,
+	}
+
+	for _, m := range methods {
+		for _, status := range statuses {
+			t.Run(fmt.Sprintf("%s/%d", m.name, status), func(t *testing.T) {
+				t.Parallel()
+
+				fb := m.inject(status)
+				url := newFakeBackend(t, fb)
+				c := newTestClient(t, url)
+				target := &vmcp.BackendTarget{
+					WorkloadID:    "fake-backend",
+					WorkloadName:  "fake-backend",
+					BaseURL:       url,
+					TransportType: "streamable-http",
+				}
+
+				caps, err := initAndQueryCapabilities(context.Background(), c, target)
+				require.NoError(t, err,
+					"init must survive %s returning HTTP %d with a -32601 body", m.name, status)
+				require.NotNil(t, caps)
+
+				// The point of the recovery: the backend's tools are kept.
+				require.Len(t, caps.Tools, 1)
+				assert.Equal(t, helloTool.Name, caps.Tools[0].Name)
+				assert.Empty(t, caps.Resources)
+				assert.Empty(t, caps.Prompts)
+
+				// The failing list method was genuinely attempted, so the case
+				// under test is the recovery path and not a skipped capability.
+				assert.Equal(t, 1, fb.callCount(m.listMethod))
+
+				// The session must still work. A recovery that leaves the
+				// client's connection closed would publish tools nobody can call.
+				listResult, err := c.ListTools(context.Background(), mcp.ListToolsRequest{})
+				require.NoError(t, err, "session must remain usable after recovery")
+				require.Len(t, listResult.Tools, 1)
+
+				_, err = c.CallTool(context.Background(), mcp.CallToolRequest{
+					Params: mcp.CallToolParams{Name: helloTool.Name},
+				})
+				require.NoError(t, err, "tools/call must succeed on the recovered session")
+			})
+		}
+	}
+}
+
+// TestInitAndQueryCapabilities_ErrorStatusToolsListFatal is the regression guard
+// for #5242: widening recovery to error-status responses must not soften
+// tools/list. A backend that advertises tools but cannot list them has no usable
+// surface, so init still aborts — whether the -32601 arrives under a 200 (covered
+// by TestInitAndQueryCapabilities_FatalErrors) or under 404 / 405 / 501.
+func TestInitAndQueryCapabilities_ErrorStatusToolsListFatal(t *testing.T) {
+	t.Parallel()
+
+	for _, status := range []int{
+		http.StatusNotFound,
+		http.StatusMethodNotAllowed,
+		http.StatusNotImplemented,
+	} {
+		t.Run(strconv.Itoa(status), func(t *testing.T) {
+			t.Parallel()
+
+			fb := &fakeBackend{
+				advertiseTools: true,
+				listToolsErr: &jsonRPCError{
+					code:       mcp.METHOD_NOT_FOUND,
+					message:    "Method not found",
+					httpStatus: status,
+				},
+			}
+			url := newFakeBackend(t, fb)
+			c := newTestClient(t, url)
+			target := &vmcp.BackendTarget{
+				WorkloadID:    "fake-backend",
+				WorkloadName:  "fake-backend",
+				BaseURL:       url,
+				TransportType: "streamable-http",
+			}
+
+			_, err := initAndQueryCapabilities(context.Background(), c, target)
+			require.Error(t, err, "tools/list must stay strict under HTTP %d", status)
+			assert.ErrorContains(t, err, "list tools failed")
+		})
+	}
 }

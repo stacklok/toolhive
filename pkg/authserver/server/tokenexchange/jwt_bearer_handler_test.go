@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -20,6 +21,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/stacklok/toolhive/pkg/authserver/server"
+	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/authserver/server/session"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
@@ -381,23 +383,46 @@ func (assertionConsumerStorage) ConsumeAssertionJWT(context.Context, string, str
 	return nil
 }
 
-func TestAssertionJWTConsumer_UnwrapsCIMDAtConstruction(t *testing.T) {
+func TestAssertionJWTConsumer(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
 		name    string
-		base    storage.Storage
+		build   func(t *testing.T) fosite.Storage
 		wantErr string
 	}{
-		{name: "unsupported backend fails", base: storageWithoutAssertionConsumer{}, wantErr: "does not implement"},
-		{name: "supported backend succeeds", base: assertionConsumerStorage{}},
+		{
+			name:    "bare storage without the capability fails",
+			build:   func(*testing.T) fosite.Storage { return storageWithoutAssertionConsumer{} },
+			wantErr: "does not implement",
+		},
+		{
+			name:  "storage implementing the capability directly succeeds",
+			build: func(*testing.T) fosite.Storage { return assertionConsumerStorage{} },
+		},
+		{
+			// CIMDStorageDecorator itself always implements
+			// storage.AssertionJWTConsumer (it forwards one level down to
+			// whatever it wraps), so it satisfies the interface here
+			// regardless of what its wrapped backend supports -- a wrapped
+			// backend lacking the capability only surfaces as an error when
+			// ConsumeAssertionJWT is actually called (see
+			// TestCIMDStorageDecorator_ConsumeAssertionJWTFailsClosedWithoutBackendCapability
+			// in the storage package).
+			name: "CIMD decorator satisfies the interface via its own forwarding method",
+			build: func(t *testing.T) fosite.Storage {
+				t.Helper()
+				decorated, err := storage.NewCIMDStorageDecorator(storageWithoutAssertionConsumer{},
+					storage.CIMDDecoratorConfig{Enabled: true, CacheMaxSize: 1, FallbackTTL: time.Minute})
+				require.NoError(t, err)
+				return decorated
+			},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			decorated, err := storage.NewCIMDStorageDecorator(tt.base, storage.CIMDDecoratorConfig{Enabled: true, CacheMaxSize: 1, FallbackTTL: time.Minute})
-			require.NoError(t, err)
-			consumer, err := assertionJWTConsumer(decorated)
+			consumer, err := assertionJWTConsumer(tt.build(t))
 			if tt.wantErr != "" {
 				require.Error(t, err)
 				assert.Contains(t, err.Error(), tt.wantErr)
@@ -410,12 +435,176 @@ func TestAssertionJWTConsumer_UnwrapsCIMDAtConstruction(t *testing.T) {
 	}
 }
 
+// TestAssertionJWTConsumer_ForwardsThroughFullSPIFFEDecoratorChain is an
+// end-to-end positive proof, against the real production chain shape
+// (SPIFFEStorageDecorator wrapping CIMDStorageDecorator wrapping
+// MemoryStorage), that JWT-bearer replay protection still resolves and
+// functions correctly after the storage.Unwrap bypass fix (PR #6474 review).
+// It does not by itself distinguish "forwarded one level at a time" from
+// "unwrapped straight to the base" -- both reach the same MemoryStorage here.
+// The actual regression gate for that distinction is the
+// "CIMD decorator satisfies the interface via its own forwarding method"
+// subtest of TestAssertionJWTConsumer above, which uses a backend that only
+// a correct one-level forward (not a full Unwrap) can resolve.
+func TestAssertionJWTConsumer_ForwardsThroughFullSPIFFEDecoratorChain(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	base := storage.NewMemoryStorage()
+	t.Cleanup(func() { _ = base.Close() })
+
+	cimdDecorated, err := storage.NewCIMDStorageDecorator(base, storage.CIMDDecoratorConfig{
+		Enabled: true, CacheMaxSize: 1, FallbackTTL: time.Minute,
+	})
+	require.NoError(t, err)
+
+	spiffeClient, err := registration.NewSPIFFEClient(
+		"spiffe-client", []string{"openid"}, []string{"https://mcp.example.com"}, nil)
+	require.NoError(t, err)
+	chain, err := storage.NewSPIFFEStorageDecorator(
+		ctx, cimdDecorated, map[string]fosite.Client{spiffeClient.GetID(): spiffeClient})
+	require.NoError(t, err)
+
+	consumer, err := assertionJWTConsumer(chain)
+	require.NoError(t, err)
+
+	exp := time.Now().Add(time.Hour)
+	require.NoError(t, consumer.ConsumeAssertionJWT(ctx, "jwt-bearer", "https://issuer.example", "chain-jti", exp))
+	require.ErrorIs(t,
+		consumer.ConsumeAssertionJWT(ctx, "jwt-bearer", "https://issuer.example", "chain-jti", exp),
+		fosite.ErrJTIKnown)
+}
+
 type storageWithoutAssertionConsumer struct{ storage.Storage }
 
 type testAssertionJWTConsumer struct{ err error }
 
 func (c testAssertionJWTConsumer) ConsumeAssertionJWT(context.Context, string, string, string, time.Time) error {
 	return c.err
+}
+
+func TestAssertionReplayKey(t *testing.T) {
+	t.Parallel()
+
+	tj := newTestJWKS(t)
+	claims := validClaims()
+	claims.ID = ""
+	sign := func(key jose.JSONWebKey, c jwt.Claims) string {
+		t.Helper()
+		signer, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.ES256, Key: key.Key}, nil)
+		require.NoError(t, err)
+		raw, err := jwt.Signed(signer).Claims(c).Serialize()
+		require.NoError(t, err)
+		return raw
+	}
+
+	first := sign(tj.jwk, claims)
+	second := sign(newTestJWKS(t).jwk, claims)
+	firstParts := strings.Split(first, ".")
+	secondParts := strings.Split(second, ".")
+	require.Equal(t, firstParts[:2], secondParts[:2])
+	require.NotEqual(t, firstParts[2], secondParts[2])
+
+	changed := claims
+	changed.Subject = "another-subject"
+	differentPayload := sign(tj.jwk, changed)
+	key := func(raw, jti string) string {
+		t.Helper()
+		segments, err := canonicalAssertionSegments(raw)
+		require.NoError(t, err)
+		return assertionReplayKey(segments, jti)
+	}
+	assert.Equal(t, key(first, ""), key(second, ""),
+		"valid signatures of the same protected header and payload must share one replay slot")
+	assert.NotEqual(t, key(first, ""), key(differentPayload, ""))
+	assert.Equal(t, "issuer-jti", key(first, "issuer-jti"))
+	assert.Equal(t, "issuer-jti", key(differentPayload, "issuer-jti"))
+	assert.NotEqual(t, assertionReplayKey([2][]byte{[]byte("ab"), []byte("c")}, ""),
+		assertionReplayKey([2][]byte{[]byte("a"), []byte("bc")}, ""))
+}
+
+func TestJWTBearerHandler_RejectsNoncanonicalCompactAssertion(t *testing.T) {
+	t.Parallel()
+
+	tj := newTestJWKS(t)
+	var parts []string
+	for n := range 16 {
+		options := (&jose.SignerOptions{}).WithHeader("pad", strings.Repeat("x", n))
+		signer, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.ES256, Key: tj.jwk}, options)
+		require.NoError(t, err)
+		raw, err := jwt.Signed(signer).Claims(validClaims()).Claims(map[string]any{"pad": strings.Repeat("x", n)}).Serialize()
+		require.NoError(t, err)
+		candidate := strings.Split(raw, ".")
+		if len(candidate[0])%4 != 0 && len(candidate[1])%4 != 0 {
+			parts = candidate
+			break
+		}
+	}
+	require.Len(t, parts, 3, "need non-multiple-of-three protected header and payload")
+	require.NoError(t, validateAssertionType(strings.Join(parts, ".")))
+
+	const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+	for i, segment := range []string{"header", "payload", "signature"} {
+		t.Run(segment, func(t *testing.T) {
+			t.Parallel()
+			decoded, err := base64.RawURLEncoding.DecodeString(parts[i])
+			require.NoError(t, err)
+			require.NotZero(t, len(decoded)%3)
+			last := strings.IndexByte(alphabet, parts[i][len(parts[i])-1])
+			require.GreaterOrEqual(t, last, 0)
+			unusedBits := 2
+			if len(decoded)%3 == 1 {
+				unusedBits = 4
+			}
+			mask := (1 << unusedBits) - 1
+			require.Zero(t, last&mask)
+			noncanonical := parts[i][:len(parts[i])-1] + string(alphabet[last+1])
+			altered, err := base64.RawURLEncoding.DecodeString(noncanonical)
+			require.NoError(t, err)
+			require.Equal(t, decoded, altered)
+
+			for _, tc := range []struct {
+				name  string
+				value string
+			}{
+				{name: "CRLF", value: parts[i] + "\r\n"},
+				{name: "invalid character", value: parts[i] + "!"},
+				{name: "noncanonical bits", value: noncanonical},
+				{name: "padding", value: base64.URLEncoding.EncodeToString(decoded)},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					t.Parallel()
+					modified := append([]string(nil), parts...)
+					modified[i] = tc.value
+					validator := &testJWTBearerAssertionValidator{}
+					handler, err := newJWTBearerHandler(validator, testTokenEndpoint)
+					require.NoError(t, err)
+					err = handler.HandleTokenEndpointRequest(context.Background(), newJWTBearerRequest(
+						map[string][]string{"assertion": {strings.Join(modified, ".")}}))
+					assert.ErrorIs(t, err, fosite.ErrInvalidGrant)
+					assert.Zero(t, validator.calls, "noncanonical JWT must be rejected before validation")
+				})
+			}
+		})
+	}
+	for _, tc := range []struct {
+		name string
+		raw  string
+	}{
+		{name: "two segments", raw: strings.Join(parts[:2], ".")},
+		{name: "four segments", raw: strings.Join(parts, ".") + ".extra"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			validator := &testJWTBearerAssertionValidator{}
+			handler, err := newJWTBearerHandler(validator, testTokenEndpoint)
+			require.NoError(t, err)
+			err = handler.HandleTokenEndpointRequest(context.Background(), newJWTBearerRequest(
+				map[string][]string{"assertion": {tc.raw}}))
+			assert.ErrorIs(t, err, fosite.ErrInvalidGrant)
+			assert.Zero(t, validator.calls)
+		})
+	}
 }
 
 func TestJWTBearerHandler_ConsumeAssertionJWTErrors(t *testing.T) {

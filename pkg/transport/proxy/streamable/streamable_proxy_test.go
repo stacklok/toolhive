@@ -464,7 +464,7 @@ func TestHandleGet_DefaultEnabledRegistersAndDeregistersStream(t *testing.T) {
 
 	proxy := NewHTTPProxy("localhost", 0, nil, nil)
 	sessID := uuid.NewString()
-	require.NoError(t, proxy.sessionManager.AddWithID(sessID))
+	require.NoError(t, proxy.ensureSession(httptest.NewRequest(http.MethodPost, "/mcp", nil), sessID))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	req := httptest.NewRequest(http.MethodGet, StreamableHTTPEndpoint, nil).WithContext(ctx)
@@ -518,7 +518,7 @@ func TestHandleGet_SessionDecisionMatrix(t *testing.T) {
 
 			proxy := NewHTTPProxy("localhost", 0, nil, nil)
 			sessID := uuid.NewString()
-			require.NoError(t, proxy.sessionManager.AddWithID(sessID))
+			require.NoError(t, proxy.ensureSession(httptest.NewRequest(http.MethodPost, "/mcp", nil), sessID))
 
 			ctx, cancel := context.WithCancel(context.Background())
 			t.Cleanup(cancel)

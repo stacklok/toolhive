@@ -93,10 +93,14 @@ func addLLMConnectionFlags(cmd *cobra.Command, opts *llm.SetOptions) {
 // field unchanged (nil pointer = "not provided"). Shared by "config set" and
 // "setup" so both commands treat these flags identically.
 func applyChangedLLMFlags(
-	cmd *cobra.Command, opts *llm.SetOptions, tlsSkipVerify, bedrockCompat, enable1M bool, models []string,
+	cmd *cobra.Command, opts *llm.SetOptions,
+	tlsSkipVerify, shortPromptCache, bedrockCompat, enable1M bool, models []string,
 ) {
 	if cmd.Flags().Changed("tls-skip-verify") {
 		opts.TLSSkipVerify = &tlsSkipVerify
+	}
+	if cmd.Flags().Changed("short-prompt-cache") {
+		opts.ShortPromptCache = &shortPromptCache
 	}
 	if cmd.Flags().Changed("bedrock-compat") {
 		opts.BedrockCompat = &bedrockCompat
@@ -111,11 +115,12 @@ func applyChangedLLMFlags(
 
 func newConfigSetCommand() *cobra.Command {
 	var (
-		opts          llm.SetOptions
-		tlsSkipVerify bool
-		bedrockCompat bool
-		enable1M      bool
-		models        []string
+		opts             llm.SetOptions
+		tlsSkipVerify    bool
+		shortPromptCache bool
+		bedrockCompat    bool
+		enable1M         bool
+		models           []string
 	)
 
 	cmd := &cobra.Command{
@@ -130,7 +135,7 @@ Example:
     --client-id my-client-id`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			applyChangedLLMFlags(cmd, &opts, tlsSkipVerify, bedrockCompat, enable1M, models)
+			applyChangedLLMFlags(cmd, &opts, tlsSkipVerify, shortPromptCache, bedrockCompat, enable1M, models)
 			return config.UpdateConfig(func(c *config.Config) error {
 				return c.LLM.SetFields(opts)
 			})
@@ -140,16 +145,19 @@ Example:
 	addLLMConnectionFlags(cmd, &opts)
 	cmd.Flags().BoolVar(&tlsSkipVerify, "tls-skip-verify", false,
 		"Skip TLS certificate verification for the upstream gateway (local dev only; use --tls-skip-verify=false to clear)")
+	cmd.Flags().BoolVar(&shortPromptCache, "short-prompt-cache", false,
+		"Use Claude Code's five-minute prompt cache instead of ToolHive's one-hour default. "+
+			"Applied by \"thv llm setup\"; use --short-prompt-cache=false to restore one-hour caching.")
 	cmd.Flags().BoolVar(&bedrockCompat, "bedrock-compat", false,
 		"Persist Bedrock compatibility for Claude Code (CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1 + per-tier "+
-			"Bedrock model IDs). Applied by \"thv llm setup\". Use --bedrock-compat=false to clear.")
+			"Bedrock model IDs discovered from the gateway). Applied by \"thv llm setup\". Use --bedrock-compat=false to clear.")
 	cmd.Flags().BoolVar(&enable1M, "enable-1m", false,
 		"With Bedrock compat, opt into the 1M context window by appending [1m] to opus/sonnet model IDs.")
 	cmd.Flags().StringSliceVar(&models, "models", nil,
 		"Model IDs to persist and apply during \"thv llm setup\", comma-separated or by repeating the flag, e.g. "+
 			"--models=us.anthropic.claude-opus-4-8,us.anthropic.claude-sonnet-5. Credential-helper clients "+
-			"(Claude Desktop) write these as inferenceModels; with Bedrock compat, each ID is also mapped to a "+
-			"Claude Code tier by matching 'haiku', 'opus', or 'sonnet' in the ID.")
+			"(Claude Desktop) write these as inferenceModels; with Bedrock compat, each ID overrides a "+
+			"Claude Code tier by matching 'haiku', 'opus', 'sonnet', or 'fable' in the ID.")
 
 	return cmd
 }
@@ -192,15 +200,20 @@ func newConfigResetCommand() *cobra.Command {
 tokens from the secrets provider.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if sp, err := secrets.GetSystemSecretsProvider(); err == nil {
-				llm.PurgeTokens(cmd.Context(), cmd.ErrOrStderr(), sp)
-			} else {
-				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "Warning: could not get secrets provider: %v\n", err)
+			sp, err := secrets.GetSystemSecretsProvider()
+			if err != nil {
+				return fmt.Errorf("getting secrets provider to remove cached LLM tokens: %w", err)
 			}
-			return config.UpdateConfig(func(c *config.Config) error {
+			if err := llm.PurgeTokens(cmd.Context(), sp); err != nil {
+				return err
+			}
+			if err := config.UpdateConfig(func(c *config.Config) error {
 				c.LLM = llm.Config{}
 				return nil
-			})
+			}); err != nil {
+				return fmt.Errorf("cached LLM tokens were deleted, but resetting LLM config: %w", err)
+			}
+			return nil
 		},
 	}
 }
@@ -263,6 +276,7 @@ func newLLMSetupCommand() *cobra.Command {
 	var (
 		opts                llm.SetOptions
 		tlsSkipVerify       bool
+		shortPromptCache    bool
 		bedrockCompat       bool
 		enable1M            bool
 		targetClient        string
@@ -275,7 +289,7 @@ func newLLMSetupCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "setup",
 		Short: "Configure detected AI tools to use the LLM gateway",
-		Long: `Detect installed AI tools (Claude Code, Gemini CLI, Cursor, VS Code, Xcode,
+		Long: `Detect installed AI tools (Claude Code, Gemini CLI, Pi, Cursor, VS Code, Xcode,
 Claude Desktop, Codex) and patch each tool's configuration to route through the
 LLM gateway.
 
@@ -295,6 +309,20 @@ untouched. Desktop app detection is supported on macOS and Windows; the canonica
 --client target remains "codex". If the desktop app is running, fully quit and
 reopen it after setup.
 
+Pi is configured with OpenAI-compatible and Anthropic providers in
+~/.pi/agent/models.json (or $PI_CODING_AGENT_DIR/models.json). It runs
+"thv llm token" for each request; authenticated setup discovers models and
+context sizes from both gateway APIs and Anthropic thinking support when
+advertised. --models filters the discovered models. Pi does not support --lazy
+because model discovery determines each model's API.
+Pi defaults to short prompt caching: start Pi with PI_CACHE_RETENTION=long
+in its environment for long retention (Anthropic: 1h; OpenAI: 24h).
+This cannot be persisted in models.json. The gateway does not currently provide
+image-input or max-output metadata, so Pi defaults to text-only input and 16K
+max output tokens. OpenAI models without reasoning metadata default to no reasoning.
+If Pi cannot refresh its gateway token, run "thv llm token" in a terminal to
+log in again.
+
 Proxy-mode tools (Cursor, VS Code, Xcode) are configured to send requests to
 the localhost reverse proxy started by "thv llm proxy start".
 
@@ -306,10 +334,17 @@ run and persisted to config only after login and tool patching succeed. This
 lets you combine "config set" and "setup" into a single command.
 
 For a gateway that forwards to AWS Bedrock, add --bedrock-compat to configure
-Claude Code with CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1 and per-tier Bedrock
-model IDs (override with --models; add --enable-1m for the 1M context window on
-opus/sonnet). The setting is persisted and only affects Claude Code. To add it to
-an already-configured Claude Code, re-run:
+Claude Code with CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1 and pin each model tier
+to the newest Bedrock model the gateway advertises (override a tier with --models;
+add --enable-1m for the 1M context window on opus/sonnet). The pins repoint Claude
+Code's built-in Opus/Sonnet/Haiku/Fable rows in the /model picker (via
+ANTHROPIC_DEFAULT_*_MODEL), so selecting a built-in row routes to Bedrock. Setup
+also enables Claude Code's gateway model discovery, which adds any further models
+the gateway serves as separate picker rows without re-running setup. If the
+gateway's model list cannot be fetched, or has no Bedrock model IDs, setup does
+not configure Claude Code (unless --models pins every tier). The setting is
+persisted and only affects Claude Code.
+To add it to an already-configured Claude Code, re-run:
 
   thv llm setup --client claude-code --bedrock-compat
 
@@ -318,7 +353,7 @@ Re-running is idempotent and uses the cached token (no browser prompt).
 Run "thv llm teardown" to revert all changes.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			applyChangedLLMFlags(cmd, &opts, tlsSkipVerify, bedrockCompat, enable1M, models)
+			applyChangedLLMFlags(cmd, &opts, tlsSkipVerify, shortPromptCache, bedrockCompat, enable1M, models)
 			cm, err := client.NewClientManager()
 			if err != nil {
 				return fmt.Errorf("initializing client manager: %w", err)
@@ -340,9 +375,12 @@ Run "thv llm teardown" to revert all changes.`,
 			"For direct-mode tools (Claude Code, Gemini CLI) this sets NODE_TLS_REJECT_UNAUTHORIZED=0, "+
 			"disabling TLS for ALL of that tool's outbound connections. "+
 			"For proxy-mode tools only the proxy-to-gateway connection is affected.")
+	cmd.Flags().BoolVar(&shortPromptCache, "short-prompt-cache", false,
+		"Use Claude Code's five-minute prompt cache instead of ToolHive's one-hour default. Persisted, so a later "+
+			"plain \"thv llm setup\" keeps it; use --short-prompt-cache=false to restore one-hour caching.")
 	cmd.Flags().StringVar(&anthropicPathPrefix, "anthropic-path-prefix", "",
-		"Path prefix appended to the gateway URL when writing ANTHROPIC_BASE_URL for direct-mode tools "+
-			"(e.g. /anthropic). When omitted, the gateway is probed automatically.")
+		"Path prefix appended to the gateway URL for Anthropic API tools (e.g. /anthropic). "+
+			"Also used for Pi model discovery. When omitted, the gateway is probed automatically.")
 	cmd.Flags().StringVar(&targetClient, "client", "",
 		"Configure only this AI tool by name (e.g. claude-code, cursor, codex). Omit to configure all detected tools.")
 	cmd.Flags().BoolVar(&lazy, "lazy", false,
@@ -353,15 +391,17 @@ Run "thv llm teardown" to revert all changes.`,
 	cmd.Flags().StringSliceVar(&models, "models", nil,
 		"Model IDs to configure, comma-separated or by repeating the flag, e.g. "+
 			"--models=us.anthropic.claude-opus-4-8,us.anthropic.claude-sonnet-5. "+
+			"For Pi these filter its discovered models (Pi does not support --lazy). "+
 			"For credential-helper clients (Claude Desktop) these become inferenceModels. "+
-			"With --bedrock-compat, each ID is also mapped to a Claude Code tier by matching "+
-			"'haiku', 'opus', or 'sonnet' in the ID (IDs matching no tier are ignored with a "+
-			"warning). Omit to use the built-in Bedrock defaults / gateway model discovery.")
+			"With --bedrock-compat, each ID overrides a Claude Code tier by matching "+
+			"'haiku', 'opus', 'sonnet', or 'fable' in the ID (IDs matching no tier are ignored with a "+
+			"warning). Omit to pin each tier to the newest Bedrock model discovered from the gateway.")
 	cmd.Flags().BoolVar(&bedrockCompat, "bedrock-compat", false,
 		"Configure Claude Code for a gateway that forwards to AWS Bedrock: write "+
 			"CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1 (Bedrock rejects the experimental anthropic-beta headers) "+
-			"and pin per-tier Bedrock model IDs (override with --models). Persisted, so a later plain "+
-			"\"thv llm setup\" keeps it; clear with --bedrock-compat=false. Only affects Claude Code.")
+			"and pin each tier to the newest Bedrock model the gateway advertises (override with --models). "+
+			"Persisted, so a later plain \"thv llm setup\" keeps it; clear with --bedrock-compat=false. "+
+			"Only affects Claude Code.")
 	cmd.Flags().BoolVar(&enable1M, "enable-1m", false,
 		"With --bedrock-compat, append the [1m] suffix to the opus and sonnet model IDs to opt into the "+
 			"1M-token context window on Bedrock (never haiku, which is 200K). Off by default.")
@@ -399,6 +439,7 @@ func runLLMSetup(
 func newLLMTeardownCommand() *cobra.Command {
 	var (
 		purgeTokens  bool
+		keepTokens   bool
 		targetClient string
 	)
 
@@ -409,7 +450,15 @@ func newLLMTeardownCommand() *cobra.Command {
 tools, or for a single tool when tool-name is provided as a positional argument
 or via --client.
 
-Use --purge-tokens to also remove cached OIDC tokens from the secrets provider.`,
+When no configured tools remain after teardown, ToolHive deletes locally cached
+OIDC tokens by default, including tokens left from an earlier or incomplete
+setup. Use --keep-tokens to retain them for a later setup. A targeted teardown
+that leaves other tools configured retains their shared tokens by default. Use
+--purge-tokens to delete the tokens and require those tools to authenticate
+again. Deleting local tokens does not revoke them at the identity provider or
+sign out the browser session. Stop any running LLM proxy and wait for active
+token-helper commands to finish before teardown because they can recreate
+cached credentials.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if targetClient != "" && len(args) > 0 {
@@ -422,11 +471,18 @@ Use --purge-tokens to also remove cached OIDC tokens from the secrets provider.`
 			if err != nil {
 				return fmt.Errorf("initializing client manager: %w", err)
 			}
-			return runLLMTeardown(cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(), cm, args, purgeTokens, config.NewDefaultProvider())
+			return runLLMTeardown(
+				cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(), cm, args,
+				keepTokens, purgeTokens, config.NewDefaultProvider(), secrets.GetSystemSecretsProvider,
+			)
 		},
 	}
 
-	cmd.Flags().BoolVar(&purgeTokens, "purge-tokens", false, "Also delete cached OIDC tokens from the secrets provider")
+	cmd.Flags().BoolVar(&purgeTokens, "purge-tokens", false,
+		"Delete cached OIDC tokens even when other tools remain configured")
+	cmd.Flags().BoolVar(&keepTokens, "keep-tokens", false,
+		"Retain cached OIDC tokens when no configured tools remain")
+	cmd.MarkFlagsMutuallyExclusive("keep-tokens", "purge-tokens")
 	cmd.Flags().StringVar(&targetClient, "client", "",
 		"Remove configuration for only this AI tool by name (e.g. claude-code, cursor). Omit to revert all configured tools.")
 
@@ -440,22 +496,19 @@ func runLLMTeardown(
 	out, errOut io.Writer,
 	cm *client.ClientManager,
 	args []string,
+	keepTokens bool,
 	purgeTokens bool,
 	provider config.Provider,
+	getSecretsProvider llm.SecretsProviderFunc,
 ) error {
-	var sp pkgsecrets.Provider
-	if purgeTokens {
-		var err error
-		sp, err = secrets.GetSystemSecretsProvider()
-		if err != nil {
-			_, _ = fmt.Fprintf(errOut, "Warning: could not get secrets provider: %v\n", err)
-		}
-	}
 	var targetTool string
 	if len(args) == 1 {
 		targetTool = args[0]
 	}
-	return llm.Teardown(ctx, out, errOut, &clientManagerAdapter{cm}, targetTool, purgeTokens, &configUpdaterAdapter{provider}, sp)
+	return llm.Teardown(
+		ctx, out, errOut, &clientManagerAdapter{cm}, targetTool,
+		keepTokens, purgeTokens, &configUpdaterAdapter{provider}, getSecretsProvider,
+	)
 }
 
 // ── CLI adapters ──────────────────────────────────────────────────────────────
@@ -478,6 +531,10 @@ func (a *clientManagerAdapter) ConfigureLLMGateway(clientType string, cfg llmgat
 
 func (a *clientManagerAdapter) LLMGatewayModeFor(clientType string) string {
 	return a.cm.LLMGatewayModeFor(client.ClientApp(clientType))
+}
+
+func (a *clientManagerAdapter) PromptCacheConflict(clientType string) (string, error) {
+	return a.cm.PromptCacheConflict(client.ClientApp(clientType))
 }
 
 func (a *clientManagerAdapter) IsManaged(clientType string) bool {

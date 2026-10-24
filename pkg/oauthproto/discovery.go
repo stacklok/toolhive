@@ -342,6 +342,9 @@ type AuthorizationServerMetadata struct {
 	// RegistrationEndpoint is the URL of the Dynamic Client Registration endpoint (OPTIONAL).
 	RegistrationEndpoint string `json:"registration_endpoint,omitempty"`
 
+	// DeviceAuthorizationEndpoint is the RFC 8628 device authorization endpoint (OPTIONAL).
+	DeviceAuthorizationEndpoint string `json:"device_authorization_endpoint,omitempty"`
+
 	// IntrospectionEndpoint is the URL of the token introspection endpoint (OPTIONAL, RFC 7662).
 	IntrospectionEndpoint string `json:"introspection_endpoint,omitempty"`
 

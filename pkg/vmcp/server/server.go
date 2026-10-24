@@ -22,7 +22,7 @@ import (
 	"time"
 
 	"github.com/stacklok/toolhive-core/mcpcompat/server"
-	tcredis "github.com/stacklok/toolhive-core/redis"
+	"github.com/stacklok/toolhive-core/redisconn"
 	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
 	asrunner "github.com/stacklok/toolhive/pkg/authserver/runner"
@@ -71,7 +71,7 @@ const (
 	// defaultMaxHeaderBytes is the maximum size of request headers in bytes (1 MB).
 	defaultMaxHeaderBytes = 1 << 20
 
-	// defaultShutdownTimeout is the maximum time to wait for graceful shutdown.
+	// defaultShutdownTimeout bounds HTTP draining, not the subsequent resource cleanup.
 	defaultShutdownTimeout = 10 * time.Second
 
 	// defaultHeartbeatInterval sends SSE heartbeat pings on GET connections.
@@ -339,6 +339,11 @@ type Server struct {
 	// Nil if status reporting is disabled.
 	statusReporter vmcpstatus.Reporter
 
+	// versionPollInterval overrides how often the registry version is polled.
+	// Zero means the package default. Set per-Server so a test can shorten it
+	// without mutating shared state a parallel test also reads.
+	versionPollInterval time.Duration
+
 	// shutdownFuncs contains cleanup functions to run during Stop().
 	// Populated during Start() initialization before blocking; no mutex needed
 	// since Stop() is only called after Start()'s select returns.
@@ -361,10 +366,22 @@ type Server struct {
 // buildSessionDataStorage constructs the DataStorage backend from cfg.
 // When cfg.SessionStorage is nil or provider is "memory" (or empty), local in-process
 // storage is used. When provider is "redis", a Redis-backed store is created
-// using the address, DB, and key prefix from cfg.SessionStorage; the password
-// is read from the THV_SESSION_REDIS_PASSWORD environment variable.
+// using the address, DB, TLS settings, and key prefix from cfg.SessionStorage; the password
+// is read from the THV_SESSION_REDIS_PASSWORD environment variable. A connection
+// without verified TLS is tolerated but logged at WARN by the store constructor.
 // Any other provider value is a misconfiguration and returns an error.
+//
+// Presence of THV_SESSION_REDIS_PASSWORD, not just its value, carries intent:
+// the operator injects it only when sessionStorage.passwordRef (or a global
+// default secret) is set. So an unset variable is an intended no-auth connection
+// (tolerated, with one startup WARN naming the store), whereas a variable that is
+// set but resolves to empty is a misconfiguration — a mis-keyed or emptied secret
+// — and is rejected rather than silently downgraded, mirroring the embedded auth
+// server's convertRedisACLConfig. An authenticated connection logs at INFO.
 func buildSessionDataStorage(ctx context.Context, cfg *Config) (transportsession.DataStorage, error) {
+	if cfg.SessionStorage != nil && cfg.SessionStorage.TLS != nil && cfg.SessionStorage.Provider != "redis" {
+		return nil, fmt.Errorf("session storage TLS requires provider redis")
+	}
 	// Default to in-process storage when session storage is not configured,
 	// or when the provider is explicitly "memory" or left empty.
 	if cfg.SessionStorage == nil ||
@@ -380,16 +397,47 @@ func buildSessionDataStorage(ctx context.Context, cfg *Config) (transportsession
 	if keyPrefix == "" {
 		keyPrefix = "thv:vmcp:session:"
 	}
-	redisCfg := tcredis.Config{
-		Addr:     cfg.SessionStorage.Address,
-		Password: os.Getenv(vmcpconfig.RedisPasswordEnvVar),
-		DB:       int(cfg.SessionStorage.DB),
+	password, passwordSet := os.LookupEnv(vmcpconfig.RedisPasswordEnvVar)
+	// A set-but-empty password is a misconfiguration (the operator injected the
+	// var from a passwordRef whose secret resolved empty), not a no-auth request.
+	// Fail loudly rather than silently downgrading a store that holds session data.
+	if passwordSet && password == "" {
+		return nil, fmt.Errorf(
+			"%s is set but empty; unset it for a no-auth connection or fix the referenced secret",
+			vmcpconfig.RedisPasswordEnvVar)
 	}
-	slog.Info("using Redis session storage",
-		"address", cfg.SessionStorage.Address,
-		"db", cfg.SessionStorage.DB,
-		"key_prefix", keyPrefix,
-	)
+	tlsCfg, err := cfg.SessionStorage.TLS.Load()
+	if err != nil {
+		return nil, fmt.Errorf("redis session storage TLS configuration: %w", err)
+	}
+	redisCfg := redisconn.Config{
+		Addr:     cfg.SessionStorage.Address,
+		Password: password,
+		DB:       int(cfg.SessionStorage.DB),
+		TLS:      tlsCfg,
+	}
+	// Distinguish an authenticated connection (INFO) from a no-auth one (WARN):
+	// an unset password is an intended no-auth connection, but the downgrade
+	// should still be visible in logs rather than silent. The store holds session
+	// data, so name it either way. Both records carry a "store" attribute matching
+	// the embedded auth server's no-auth WARN (convertRedisRunConfig), so a single
+	// log-based alert can match one key across both Redis consumers.
+	if !passwordSet {
+		slog.Warn("vMCP Redis session storage connecting without authentication "+
+			"(THV_SESSION_REDIS_PASSWORD is not set)",
+			"store", cfg.SessionStorage.Address,
+			"address", cfg.SessionStorage.Address,
+			"db", cfg.SessionStorage.DB,
+			"key_prefix", keyPrefix,
+		)
+	} else {
+		slog.Info("using Redis session storage",
+			"store", cfg.SessionStorage.Address,
+			"address", cfg.SessionStorage.Address,
+			"db", cfg.SessionStorage.DB,
+			"key_prefix", keyPrefix,
+		)
+	}
 	return transportsession.NewRedisSessionDataStorage(ctx, redisCfg, keyPrefix, cfg.SessionTTL)
 }
 
@@ -490,21 +538,10 @@ func New(
 	// ListTools now advertises execute_tool_script alongside the backend tools, so the
 	// Serve-layer optimizer (if enabled) indexes it like any other tool, and the script's
 	// inner calls route back through core.CallTool for admission. The decorator delegates
-	// Close to the inner core, so the closeCoreOnErr guard below still releases it.
+	// Close to the inner core, so New can release it if Serve fails and srv.Stop owns it on success.
 	if cfg.CodeModeConfig != nil {
 		coreVMCP = codemode.NewDecorator(coreVMCP, cfg.CodeModeConfig)
 	}
-
-	// core.New started the workflow state store's cleanup goroutine and the backend health
-	// monitor (both owned by the core now). If Serve fails after this point, close the core so
-	// neither leaks (mirrors Serve's closeStorageOnErr guard); on success the core's lifecycle
-	// is owned by srv.Stop, so the guard is disarmed before returning.
-	closeCoreOnErr := true
-	defer func() {
-		if closeCoreOnErr {
-			_ = coreVMCP.Close()
-		}
-	}()
 
 	// On the New/Serve path the core is the single aggregator and the source of the
 	// advertised set; the session factory only opens per-session backend connections and
@@ -535,9 +572,10 @@ func New(
 		BackendHealth: coreVMCP.BackendHealth(),
 	}
 
+	// On success srv.Stop owns the core; on failure New must release it.
 	srv, err := Serve(ctx, coreVMCP, deriveServerConfig(resolved, backendRegistry, sessMgrCfg))
 	if err != nil {
-		return nil, err
+		return nil, errors.Join(err, coreVMCP.Close())
 	}
 
 	// Enable the pre-dispatch authorization gate when Cedar policies are configured.
@@ -564,17 +602,26 @@ func New(
 		)
 	}
 
-	closeCoreOnErr = false // Serve succeeded; srv.Stop now owns the core's lifecycle.
 	return srv, nil
 }
 
 // Handler builds and returns the MCP HTTP handler without starting a listener.
 // This enables embedding the vmcp server inside another HTTP server or framework.
+// Embedders must stop accepting requests and fully drain their hosting HTTP server
+// before calling Stop; Stop cannot drain an externally hosted handler.
+// If the hosting server's drain is incomplete, retry it with a fresh context before Stop.
 //
 // The returned handler includes all routes (health, metrics, well-known, MCP)
-// and the full HTTP middleware chain (recovery, body limit, header validation,
-// auth, audit, MCP parsing, telemetry). Rate limiting decorates the core VMCP
-// and runs inside the MCP SDK handler.
+// and the full HTTP middleware chain (see the chain comment in the body for
+// the order). Rate limiting decorates the core VMCP and runs inside the MCP SDK
+// handler.
+//
+// DNS-rebinding protection: on a loopback connection, the MCP route answers
+// 403 when the Host header is not a loopback name, so a proxy or embedder that
+// reaches it over loopback must send a loopback Host. The guard reads
+// http.LocalAddrContextKey; when it is absent (the handler is not served by
+// net/http) the request is passed through, so such embedders need their own Host
+// check. See loopbackHostGuard for details.
 //
 // Each call builds a fresh handler. The method is safe to call multiple times.
 // All returned handlers share the same underlying MCPServer and SessionManager,
@@ -645,15 +692,16 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 		slog.Debug("embedded authorization server routes registered")
 	}
 
-	// MCP endpoint - apply middleware chain (wrapping order, execution happens in reverse):
-	// Code wraps: audit → auth → MCP-parsing → telemetry → classification
-	// Execution order: recovery → body-limit → header-val → audit → auth →
-	//   MCP-parsing → telemetry → classification → handler
+	// MCP endpoint - middleware chain, in execution order (outermost first):
+	//   recovery → body-limit → write-timeout → header-validation →
+	//   forwarded-header capture (if PassthroughHeaders is set) →
+	//   audit (if configured) → auth (if configured) → MCP-parsing →
+	//   telemetry (if configured) → host-guard → classification → handler
 	// Rate limiting is a core VMCP decorator rather than an HTTP middleware and
 	// runs during tool dispatch inside the handler.
 	//
 	// Upstream token refresh failures are detected inside AuthMiddleware itself:
-	// GetAllUpstreamCredentials returns a non-empty failed-provider slice when
+	// GetAllUpstreamCredentials returns a non-empty failed-provider map when
 	// any upstream refresh fails, and the middleware short-circuits with
 	// HTTP 401 + WWW-Authenticate. Audit wraps auth, so those 401s (and every
 	// other rejection from the inner chain) still produce an audit event; the
@@ -682,6 +730,14 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 	// dispatcher 403 is still recorded by the telemetry middleware instead of
 	// bypassing it entirely.
 	mcpHandler = s.classifyingHandler(mcpHandler)
+
+	// DNS-rebinding protection for both MCP revisions. go-sdk's own localhost
+	// check only sees Legacy requests that reach StreamableHTTPHandler;
+	// classifyingHandler hands Modern requests to dispatchModern, and mcpcompat
+	// serves cross-replica Legacy sessions without that handler. Placed where
+	// go-sdk's check effectively sat (inside audit and telemetry) so a rejected
+	// request is still audited and recorded, for every path alike.
+	mcpHandler = loopbackHostGuard(mcpHandler)
 
 	if s.config.TelemetryProvider != nil {
 		mcpHandler = s.config.TelemetryProvider.Middleware(s.config.Name, "streamable-http")(mcpHandler)
@@ -841,6 +897,18 @@ func (s *Server) Start(ctx context.Context) error {
 	// The backend health monitor is owned by the core (built and started in core.New, stopped
 	// in core.Close), so the server no longer starts or stops it here.
 
+	// Evict sessions whose backends are dropped from a dynamic registry so their
+	// lingering per-session connections (e.g. SSE streams) are reclaimed promptly
+	// (#6546). Runs independently of status reporting; a no-op for static registries.
+	if _, isDynamic := s.backendRegistry.(vmcp.DynamicRegistry); isDynamic && s.vmcpSessionMgr != nil {
+		reconcileCtx, reconcileCancel := context.WithCancel(ctx)
+		go s.reconcileSessionsOnRegistryChange(reconcileCtx, s.pollInterval())
+		s.shutdownFuncs = append(s.shutdownFuncs, func(context.Context) error {
+			reconcileCancel()
+			return nil
+		})
+	}
+
 	// Start status reporter if configured
 	if s.statusReporter != nil {
 		shutdown, err := s.statusReporter.Start(ctx)
@@ -879,15 +947,18 @@ func (s *Server) Start(ctx context.Context) error {
 	case err := <-errCh:
 		// HTTP server error - log and tear down cleanly
 		slog.Error("hTTP server error", "error", err)
-		if stopErr := s.Stop(context.Background()); stopErr != nil {
-			// Combine errors if Stop() also fails
-			return fmt.Errorf("server error: %w; stop error: %v", err, stopErr)
-		}
-		return err
+		return errors.Join(err, s.Stop(context.Background()))
 	}
 }
 
 // Stop gracefully stops the Virtual MCP Server.
+// It allows up to 10 seconds (or ctx's earlier deadline) for the owned HTTP server
+// to drain, then releases resources. This bounds HTTP draining, not total cleanup.
+// If draining fails, Stop returns without force-closing active connections or
+// releasing request-used resources. Cleanup remains pending; callers may retry
+// Stop serially with a fresh context after an incomplete drain. Stop does not
+// support arbitrary repeated or concurrent calls.
+// Embedders using Handler must fully drain their hosting HTTP server before Stop.
 func (s *Server) Stop(ctx context.Context) error {
 	slog.Info("stopping Virtual MCP Server")
 
@@ -899,15 +970,17 @@ func (s *Server) Stop(ctx context.Context) error {
 		shutdownCtx, cancel := context.WithTimeout(ctx, defaultShutdownTimeout)
 		defer cancel()
 
-		if err := s.httpServer.Shutdown(shutdownCtx); err != nil {
-			errs = append(errs, fmt.Errorf("failed to shutdown HTTP server: %w", err))
+		err := s.httpServer.Shutdown(shutdownCtx)
+
+		// Shutdown closes the listener even if draining active requests fails.
+		s.listenerMu.Lock()
+		s.listener = nil
+		s.listenerMu.Unlock()
+
+		if err != nil {
+			return fmt.Errorf("failed to shutdown HTTP server: %w", err)
 		}
 	}
-
-	// Clear listener reference (already closed by httpServer.Shutdown)
-	s.listenerMu.Lock()
-	s.listener = nil
-	s.listenerMu.Unlock()
 
 	if err := s.stopDiagnostics(ctx); err != nil {
 		errs = append(errs, err)

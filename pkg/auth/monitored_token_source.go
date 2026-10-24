@@ -15,7 +15,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/cenkalti/backoff/v5"
+	"github.com/cenkalti/backoff/v7"
 	"golang.org/x/oauth2"
 	"golang.org/x/sync/singleflight"
 

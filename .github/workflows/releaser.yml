@@ -40,7 +40,7 @@ jobs:
       contents: read
     steps:
       - name: Checkout
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
 
@@ -83,7 +83,7 @@ jobs:
       tree-state: ${{ steps.ldflags.outputs.tree-state }}
     steps:
       - id: checkout
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -105,19 +105,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
           persist-credentials: false
 
       - name: Setup Go
-        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version: 'stable'
           cache: false # No cache for release builds — prevents cache poisoning attacks
 
       - name: Install Syft
-        uses: anchore/sbom-action/download-syft@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        uses: anchore/sbom-action/download-syft@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
 
       - name: Install Cosign
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
@@ -201,7 +201,7 @@ jobs:
 
       - name: Generate Homebrew tap token
         id: homebrew-tap-token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
           client-id: ${{ vars.HOMEBREW_TAP_APP_CLIENT_ID }}
           private-key: ${{ secrets.HOMEBREW_TAP_APP_PRIVATE_KEY }}
@@ -231,13 +231,20 @@ jobs:
 
       - name: Run GoReleaser
         id: run-goreleaser
-        uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7
+        uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7
         with:
           distribution: goreleaser
           version: "~> v2"
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Unlike the homebrew tap above, winget cannot use a GitHub App token.
+          # The winget pipe in .goreleaser.yaml opens a cross-account PR from the
+          # stacklok/winget-pkgs fork into microsoft/winget-pkgs, which only a
+          # classic PAT (full `repo` scope) can do — App and fine-grained tokens
+          # are scoped to a single account and get 403'd creating that PR. A 401
+          # "Bad credentials" here means this PAT expired/was revoked: rotate the
+          # secret (ideally a bot account's classic PAT) and re-run this job.
           WINGET_GITHUB_TOKEN: ${{ secrets.WINGET_GITHUB_TOKEN }}
           HOMEBREW_TAP_GITHUB_TOKEN: ${{ steps.homebrew-tap-token.outputs.token }}
           VERSION: ${{ needs.compute-build-flags.outputs.version }}
@@ -271,7 +278,7 @@ jobs:
       contents: write
       packages: write
       id-token: write
-    uses: ./.github/workflows/image-build-and-publish.yml
+    uses: $/.github/workflows/image-build-and-publish.yml
 
   skills-publish:
     name: Publish Skills
@@ -280,7 +287,7 @@ jobs:
       contents: read
       packages: write
       id-token: write # To do keyless signing of the pushed skill artifacts
-    uses: ./.github/workflows/skills-publish.yml
+    uses: $/.github/workflows/skills-publish.yml
 
   publish-helm:
     name: Publish Helm Chart
@@ -289,7 +296,7 @@ jobs:
       contents: read
       packages: write
       id-token: write
-    uses: ./.github/workflows/helm-publish.yml
+    uses: $/.github/workflows/helm-publish.yml
 
 #  provenance:
 #    name: Generate provenance (SLSA3)
@@ -357,7 +364,7 @@ jobs:
     permissions: {}
     steps:
       - name: Send Slack Notification
-        uses: slackapi/slack-github-action@45a88b9581bfab2566dc881e2cd66d334e621e2c # v3.0.3
+        uses: slackapi/slack-github-action@dcb1066f776dd043e64d0e8ba94ca15cc7e1875d # v4.0.0
         with:
           webhook: ${{ secrets.SLACK_TOOLHIVE_RELEASE_WEBHOOK_URL }}
           webhook-type: incoming-webhook

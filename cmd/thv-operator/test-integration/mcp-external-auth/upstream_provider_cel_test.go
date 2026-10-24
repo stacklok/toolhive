@@ -128,8 +128,7 @@ var _ = Describe("MCPExternalAuthConfig upstream-provider CEL validation", Label
 			}
 
 			Expect(err).To(HaveOccurred(), "expected apiserver to reject config: %s", tc.name)
-			Expect(err.Error()).To(ContainSubstring(
-				"at least one upstream provider is required unless delegateClients or a trustedIssuer with jwtBearerGrant is configured"))
+			Expect(err.Error()).To(ContainSubstring("at least one upstream provider or inbound grant family is required"))
 		})
 	}
 })

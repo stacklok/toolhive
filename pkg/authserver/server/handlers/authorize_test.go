@@ -4,23 +4,131 @@
 package handlers
 
 import (
+	"bytes"
+	"context"
 	"errors"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
 
+	"github.com/alicebob/miniredis/v2"
 	"github.com/ory/fosite"
+	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"golang.org/x/time/rate"
 
 	"github.com/stacklok/toolhive/pkg/authserver/server"
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
+	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
+
+func TestPromptRequiresConsent(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range []struct {
+		name   string
+		prompt []string
+		want   bool
+	}{
+		{name: "missing"},
+		{name: "consent", prompt: []string{"consent"}, want: true},
+		{name: "space separated", prompt: []string{"login consent"}, want: true},
+		{name: "repeated", prompt: []string{"login", "consent"}, want: true},
+		{name: "not a token", prompt: []string{"consented"}},
+		{name: "other prompt", prompt: []string{"login"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, promptRequiresConsent(url.Values{"prompt": tt.prompt}))
+		})
+	}
+}
+
+func TestConsentExemptEligibility(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range []struct {
+		name                string
+		allowlisted         bool
+		public              bool
+		backChannelOnly     bool
+		grantTypes          []string
+		clientResponseTypes []string
+		requestTypes        fosite.Arguments
+		redirectURIs        []string
+		requestRedirects    []string
+		rewrittenFrom       string
+		want                bool
+	}{
+		{name: "eligible", allowlisted: true, grantTypes: []string{"authorization_code"}, clientResponseTypes: []string{"code"}, requestTypes: fosite.Arguments{"code"}, redirectURIs: []string{testAuthRedirectURI}, requestRedirects: []string{testAuthRedirectURI}, want: true},
+		{name: "not allowlisted", grantTypes: []string{"authorization_code"}, clientResponseTypes: []string{"code"}, requestTypes: fosite.Arguments{"code"}, redirectURIs: []string{testAuthRedirectURI}, requestRedirects: []string{testAuthRedirectURI}},
+		{name: "public client", allowlisted: true, public: true, grantTypes: []string{"authorization_code"}, clientResponseTypes: []string{"code"}, requestTypes: fosite.Arguments{"code"}, redirectURIs: []string{testAuthRedirectURI}, requestRedirects: []string{testAuthRedirectURI}},
+		{name: "back-channel-only client", allowlisted: true, backChannelOnly: true, grantTypes: []string{"urn:ietf:params:oauth:grant-type:token-exchange"}, requestTypes: fosite.Arguments{"code"}, redirectURIs: []string{testAuthRedirectURI}, requestRedirects: []string{testAuthRedirectURI}},
+		{name: "missing authorization-code grant", allowlisted: true, grantTypes: []string{"refresh_token"}, clientResponseTypes: []string{"code"}, requestTypes: fosite.Arguments{"code"}, redirectURIs: []string{testAuthRedirectURI}, requestRedirects: []string{testAuthRedirectURI}},
+		{name: "missing code response type", allowlisted: true, grantTypes: []string{"authorization_code"}, clientResponseTypes: []string{"token"}, requestTypes: fosite.Arguments{"code"}, redirectURIs: []string{testAuthRedirectURI}, requestRedirects: []string{testAuthRedirectURI}},
+		{name: "request response type is not exactly code", allowlisted: true, grantTypes: []string{"authorization_code"}, clientResponseTypes: []string{"code"}, requestTypes: fosite.Arguments{"code", "token"}, redirectURIs: []string{testAuthRedirectURI}, requestRedirects: []string{testAuthRedirectURI}},
+		{name: "missing explicit redirect", allowlisted: true, grantTypes: []string{"authorization_code"}, clientResponseTypes: []string{"code"}, requestTypes: fosite.Arguments{"code"}, redirectURIs: []string{testAuthRedirectURI}},
+		{name: "empty explicit redirect", allowlisted: true, grantTypes: []string{"authorization_code"}, clientResponseTypes: []string{"code"}, requestTypes: fosite.Arguments{"code"}, redirectURIs: []string{testAuthRedirectURI}, requestRedirects: []string{""}},
+		{name: "repeated explicit redirect", allowlisted: true, grantTypes: []string{"authorization_code"}, clientResponseTypes: []string{"code"}, requestTypes: fosite.Arguments{"code"}, redirectURIs: []string{testAuthRedirectURI}, requestRedirects: []string{testAuthRedirectURI, testAuthRedirectURI}},
+		{name: "unregistered redirect", allowlisted: true, grantTypes: []string{"authorization_code"}, clientResponseTypes: []string{"code"}, requestTypes: fosite.Arguments{"code"}, redirectURIs: []string{testAuthRedirectURI}, requestRedirects: []string{"https://other.example/callback"}},
+		{name: "rewritten redirect", allowlisted: true, grantTypes: []string{"authorization_code"}, clientResponseTypes: []string{"code"}, requestTypes: fosite.Arguments{"code"}, redirectURIs: []string{testAuthRedirectURI}, requestRedirects: []string{testAuthRedirectURI}, rewrittenFrom: "http://localhost:1234/callback"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			h, state, _ := handlerTestSetup(t)
+			client := *state.clients[testAuthClientID].(*fosite.DefaultClient)
+			client.Public = tt.public
+			client.Secret = []byte("test-secret")
+			client.GrantTypes = tt.grantTypes
+			client.ResponseTypes = tt.clientResponseTypes
+			client.RedirectURIs = tt.redirectURIs
+			if tt.backChannelOnly {
+				client.ResponseTypes = nil
+			}
+			if tt.allowlisted {
+				h.consentExemptClientIDSet = map[string]struct{}{testAuthClientID: {}}
+			}
+			ar := fosite.NewAuthorizeRequest()
+			ar.Client = &client
+			ar.ResponseTypes = tt.requestTypes
+			validatedRedirect, err := url.Parse(testAuthRedirectURI)
+			require.NoError(t, err)
+			ar.RedirectURI = validatedRedirect
+			form := make(url.Values)
+			if tt.requestRedirects != nil {
+				form["redirect_uri"] = tt.requestRedirects
+			}
+			assert.Equal(t, tt.want, h.consentExempt(ar, form, tt.rewrittenFrom))
+		})
+	}
+}
+
+func TestConsentExemptRejectsValidatedRequestObjectRedirectOverride(t *testing.T) {
+	t.Parallel()
+
+	h, state, _ := handlerTestSetup(t)
+	client := *state.clients[testAuthClientID].(*fosite.DefaultClient)
+	client.Secret = []byte("test-secret")
+	client.RedirectURIs = append(client.RedirectURIs, "https://client.example/overridden-callback")
+	state.clients[testAuthClientID] = &client
+	h.consentExemptClientIDSet = map[string]struct{}{testAuthClientID: {}}
+	ar := fosite.NewAuthorizeRequest()
+	ar.Client = &client
+	ar.ResponseTypes = fosite.Arguments{oauthproto.ResponseTypeCode}
+	validatedRedirect, err := url.Parse("https://client.example/overridden-callback")
+	require.NoError(t, err)
+	ar.RedirectURI = validatedRedirect
+
+	// A signed request object may override the plain form redirect_uri before
+	// Fosite validates the redirect. The final redirect must not be exempted.
+	originalForm := url.Values{"redirect_uri": {testAuthRedirectURI}}
+	require.False(t, h.consentExempt(ar, originalForm, ""))
+}
 
 func TestAuthorizeHandler_MissingClientID(t *testing.T) {
 	t.Parallel()
@@ -72,6 +180,177 @@ func TestAuthorizeHandler_ClientNotFound(t *testing.T) {
 	assert.Contains(t, rec.Body.String(), "invalid_client")
 }
 
+func TestAuthorizeRoutes_RejectsMultipartCIMDRequestBeforeLookup(t *testing.T) {
+	t.Parallel()
+
+	handler, state, _ := handlerTestSetup(t)
+
+	rec := httptest.NewRecorder()
+	handler.Routes().ServeHTTP(rec, multipartAuthorizeRequest(t, "https://client.example.com/metadata"))
+
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.Equal(t, "multipart request bodies are not supported\n", rec.Body.String())
+	assert.Zero(t, state.getClientCalls, "multipart CIMD request must be rejected before client lookup")
+}
+
+func TestAuthorizeRoutes_MultipartBackChannelOnlyAndUnknownClientsMatch(t *testing.T) {
+	t.Parallel()
+
+	handler, state, _ := handlerTestSetup(t)
+	client, err := registration.NewSPIFFEClient(
+		"spiffe-client",
+		[]string{"openid"},
+		[]string{"https://mcp.example.com"},
+		nil,
+	)
+	require.NoError(t, err)
+	state.clients[client.GetID()] = client
+
+	configured := httptest.NewRecorder()
+	handler.Routes().ServeHTTP(configured, multipartAuthorizeRequest(t, client.GetID()))
+	unknown := httptest.NewRecorder()
+	handler.Routes().ServeHTTP(unknown, multipartAuthorizeRequest(t, "unknown-client"))
+
+	assert.Equal(t, http.StatusBadRequest, configured.Code)
+	assert.Equal(t, unknown.Code, configured.Code)
+	assert.Equal(t, unknown.Body.String(), configured.Body.String())
+}
+
+func TestAuthorizeRoutes_QueryParametersStillWork(t *testing.T) {
+	t.Parallel()
+
+	handler, _, _ := handlerTestSetup(t)
+	req := httptest.NewRequest(http.MethodGet,
+		"/oauth/authorize?client_id="+testAuthClientID+"&redirect_uri=http://evil.example/callback", nil)
+	rec := httptest.NewRecorder()
+	handler.Routes().ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.Contains(t, rec.Body.String(), "invalid_request")
+}
+
+func multipartAuthorizeRequest(t *testing.T, clientID string) *http.Request {
+	t.Helper()
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	require.NoError(t, writer.WriteField("client_id", clientID))
+	require.NoError(t, writer.WriteField("redirect_uri", "https://invalid.example/callback"))
+	require.NoError(t, writer.Close())
+
+	req := httptest.NewRequest(http.MethodGet, "/oauth/authorize", &body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	return req
+}
+
+func TestAuthorizeHandler_BackChannelOnlyClientsMatchMissingClient(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		client         func(t *testing.T) fosite.Client
+		explicitMarker bool
+	}{
+		{
+			name: "SPIFFE client",
+			client: func(t *testing.T) fosite.Client {
+				t.Helper()
+				client, err := registration.NewSPIFFEClient(
+					"spiffe-client",
+					[]string{"openid"},
+					[]string{"https://mcp.example.com"},
+					nil,
+				)
+				require.NoError(t, err)
+				return client
+			},
+			explicitMarker: true,
+		},
+		{
+			name: "delegate client",
+			client: func(t *testing.T) fosite.Client {
+				t.Helper()
+				client, err := registration.NewStaticDelegateClient(registration.Config{
+					ID:         "delegate-client",
+					Secret:     "test-secret",
+					GrantTypes: []string{"urn:ietf:params:oauth:grant-type:token-exchange"},
+					Scopes:     []string{"openid"},
+					Audience:   []string{"https://mcp.example.com"},
+				})
+				require.NoError(t, err)
+				return client
+			},
+			// A delegate client is rejected via the pre-existing metadata-shape
+			// inference (`consentpolicy.IsBackChannelOnlyClient`), not the explicit
+			// registration.BackChannelOnly marker -- delegate clients are out of
+			// scope for that marker and must keep their current behaviour.
+			explicitMarker: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			handler, state, _ := handlerTestSetup(t)
+			client := tt.client(t)
+			state.clients[client.GetID()] = client
+
+			// Prove classification for this client type is directional: the
+			// explicit marker is set (SPIFFE) or is not (delegate), rather than
+			// both client types happening to reach the same /authorize outcome
+			// via the same mechanism.
+			assert.Equal(t, tt.explicitMarker, registration.BackChannelOnly(client))
+
+			missing := httptest.NewRecorder()
+			handler.AuthorizeHandler(missing, httptest.NewRequest(http.MethodGet,
+				"/oauth/authorize?client_id=missing-client&redirect_uri=https://invalid.example/callback", nil))
+
+			configured := httptest.NewRecorder()
+			handler.AuthorizeHandler(configured, httptest.NewRequest(http.MethodGet,
+				"/oauth/authorize?client_id="+client.GetID()+"&redirect_uri=https://invalid.example/callback", nil))
+
+			require.Equal(t, http.StatusUnauthorized, configured.Code)
+			assert.Equal(t, missing.Code, configured.Code)
+			assert.Equal(t, missing.Body.String(), configured.Body.String())
+			assert.Contains(t, configured.Body.String(), "invalid_client")
+		})
+	}
+}
+
+func TestAuthorizeHandler_RedisLoadedDelegateClientMatchesMissingClient(t *testing.T) {
+	t.Parallel()
+
+	handler, _, _ := handlerTestSetup(t)
+	mr := miniredis.RunT(t)
+	redisClient := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	stor := storage.NewRedisStorageWithClient(redisClient, "test:authorize:")
+	t.Cleanup(func() { _ = stor.Close() })
+
+	client, err := registration.NewStaticDelegateClient(registration.Config{
+		ID:         "delegate-client",
+		Secret:     "test-secret",
+		GrantTypes: []string{oauthproto.GrantTypeTokenExchange},
+		Scopes:     []string{"openid"},
+		Audience:   []string{"https://mcp.example.com"},
+	})
+	require.NoError(t, err)
+	require.NoError(t, stor.RegisterClient(context.Background(), client))
+	handler.storage = stor
+
+	missing := httptest.NewRecorder()
+	handler.AuthorizeHandler(missing, httptest.NewRequest(http.MethodGet,
+		"/oauth/authorize?client_id=missing-client&redirect_uri=https://invalid.example/callback", nil))
+
+	configured := httptest.NewRecorder()
+	handler.AuthorizeHandler(configured, httptest.NewRequest(http.MethodGet,
+		"/oauth/authorize?client_id=delegate-client&redirect_uri=https://invalid.example/callback", nil))
+
+	require.Equal(t, http.StatusUnauthorized, configured.Code)
+	assert.Equal(t, missing.Code, configured.Code)
+	assert.Equal(t, missing.Body.String(), configured.Body.String())
+	assert.Contains(t, configured.Body.String(), "invalid_client")
+}
+
 func TestAuthorizeHandler_InvalidRedirectURI(t *testing.T) {
 	t.Parallel()
 	handler, _, _ := handlerTestSetup(t)
@@ -112,10 +391,8 @@ func TestAuthorizeHandler_PKCENotValidatedAtAuthorizeEndpoint(t *testing.T) {
 	t.Parallel()
 	handler, _, _ := handlerTestSetup(t)
 
-	// Note: Per RFC 7636, PKCE code_challenge is accepted at the authorize endpoint,
-	// but the code_verifier is only validated at the token endpoint. Fosite follows
-	// this pattern, so requests without code_challenge are accepted at /authorize
-	// and will fail at /token instead.
+	// This branch defers the missing-challenge check until code issuance.
+	// The client must still pass consent before reaching the upstream IDP.
 	params := url.Values{
 		"client_id":     {testAuthClientID},
 		"redirect_uri":  {testAuthRedirectURI},
@@ -128,11 +405,11 @@ func TestAuthorizeHandler_PKCENotValidatedAtAuthorizeEndpoint(t *testing.T) {
 
 	handler.AuthorizeHandler(rec, req)
 
-	// Fosite accepts requests without PKCE at authorize endpoint per RFC 7636
-	// PKCE validation happens at the token endpoint
-	assert.Equal(t, http.StatusFound, rec.Code)
+	// Accepting the authorization request shows consent, not an upstream redirect.
+	rec = approveConsent(t, handler, rec)
+	assert.Equal(t, http.StatusSeeOther, rec.Code)
 	location := rec.Header().Get("Location")
-	// Should redirect to upstream IDP (not return error)
+	// Approval starts upstream login; missing PKCE is rejected at code issuance.
 	assert.Contains(t, location, "https://idp.example.com/authorize")
 }
 
@@ -140,27 +417,75 @@ func TestAuthorizeHandler_PlainChallengeMethodAcceptedButValidatedAtToken(t *tes
 	t.Parallel()
 	handler, _, _ := handlerTestSetup(t)
 
-	// Note: Similar to missing PKCE, the challenge method is captured at authorize
-	// but validated at token endpoint. The config has EnablePKCEPlainChallengeMethod=false,
-	// which will reject "plain" method at the token endpoint.
+	// The challenge method is captured here and validated later by Fosite.
+	// Consent is still required before redirecting upstream.
 	params := url.Values{
 		"client_id":             {testAuthClientID},
 		"redirect_uri":          {testAuthRedirectURI},
 		"response_type":         {"code"},
 		"state":                 {"test-state"},
 		"code_challenge":        {"challenge123"},
-		"code_challenge_method": {"plain"}, // Will fail at token endpoint, not authorize
+		"code_challenge_method": {"plain"}, // Not rejected at the authorize endpoint.
 	}
 	req := httptest.NewRequest(http.MethodGet, "/oauth/authorize?"+params.Encode(), nil)
 	rec := httptest.NewRecorder()
 
 	handler.AuthorizeHandler(rec, req)
 
-	// Fosite accepts requests at authorize endpoint; validation happens at token endpoint
-	assert.Equal(t, http.StatusFound, rec.Code)
+	rec = approveConsent(t, handler, rec)
+	assert.Equal(t, http.StatusSeeOther, rec.Code)
 	location := rec.Header().Get("Location")
-	// Should redirect to upstream IDP (not return error at authorize endpoint)
+	// Approval redirects to the upstream IDP; it does not validate the PKCE method.
 	assert.Contains(t, location, "https://idp.example.com/authorize")
+}
+
+func TestAuthorizeHandler_ResourceSelection(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name      string
+		allowed   []string
+		resources []string
+		want      string
+	}{
+		{name: "sole default", allowed: []string{"https://api.example.com"}, want: "https://api.example.com"},
+		{name: "explicit", allowed: []string{"https://api.example.com", "https://other.example.com"}, resources: []string{"https://other.example.com"}, want: "https://other.example.com"},
+		{name: "ambiguous", allowed: []string{"https://api.example.com", "https://other.example.com"}},
+		{name: "unconfigured", allowed: nil},
+		{name: "repeated", allowed: []string{"https://api.example.com"}, resources: []string{"https://api.example.com", "https://api.example.com"}},
+		{name: "empty", allowed: []string{"https://api.example.com"}, resources: []string{""}},
+		{name: "unknown", allowed: []string{"https://api.example.com"}, resources: []string{"https://other.example.com"}},
+		{name: "malformed", allowed: []string{"https://api.example.com", "relative"}, resources: []string{"relative"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			handler, state, upstream := handlerTestSetup(t)
+			handler.config.AllowedAudiences = tt.allowed
+			params := url.Values{
+				"client_id": {testAuthClientID}, "redirect_uri": {testAuthRedirectURI},
+				"response_type": {"code"}, "state": {"client-state"},
+				"code_challenge": {"challenge123"}, "code_challenge_method": {"S256"},
+			}
+			if tt.resources != nil {
+				params["resource"] = tt.resources
+			}
+			rec := httptest.NewRecorder()
+			handler.AuthorizeHandler(rec, httptest.NewRequest(http.MethodGet, "/oauth/authorize?"+params.Encode(), nil))
+			if tt.want == "" {
+				assert.Equal(t, http.StatusSeeOther, rec.Code)
+				assert.Contains(t, rec.Header().Get("Location"), "error=invalid_target")
+				assert.Empty(t, upstream.capturedState)
+				assert.Empty(t, state.pendingAuths)
+				return
+			}
+			require.Equal(t, http.StatusOK, rec.Code)
+			require.Len(t, state.pendingAuths, 1)
+			assert.Empty(t, upstream.capturedState)
+			for _, pending := range state.pendingAuths {
+				assert.Equal(t, tt.want, pending.Resource)
+				assert.Equal(t, storage.ConsentStageAwaiting, pending.ConsentStage)
+			}
+		})
+	}
 }
 
 func TestNewHandler_AllowsEmptyUpstreams(t *testing.T) {
@@ -224,9 +549,10 @@ func TestAuthorizeHandler_RedirectsToUpstream(t *testing.T) {
 	rec := httptest.NewRecorder()
 
 	handler.AuthorizeHandler(rec, req)
+	rec = approveConsent(t, handler, rec)
 
 	// Should redirect to upstream IDP
-	assert.Equal(t, http.StatusFound, rec.Code)
+	assert.Equal(t, http.StatusSeeOther, rec.Code)
 	location := rec.Header().Get("Location")
 	assert.Contains(t, location, "https://idp.example.com/authorize")
 
@@ -255,6 +581,17 @@ func TestAuthorizeHandler_RedirectsToUpstream(t *testing.T) {
 
 	// Verify the challenge matches the stored verifier
 	assert.Equal(t, servercrypto.ComputePKCEChallenge(pending.UpstreamPKCEVerifier), mockUpstream.capturedCodeChallenge)
+
+	// Should have bound the pending authorization to this browser: the cookie
+	// on the redirect hashes to the stored binding.
+	cookie := bindingCookieFrom(t, rec, mockUpstream.capturedState)
+	assert.Equal(t, hashBrowserBindingSecret(cookie.Value), pending.BrowserBindingHash)
+	assert.Equal(t, "/", cookie.Path)
+	assert.True(t, cookie.HttpOnly)
+	assert.Equal(t, http.SameSiteLaxMode, cookie.SameSite)
+	assert.Equal(t, int(storage.DefaultPendingAuthorizationTTL.Seconds()), cookie.MaxAge)
+	assert.False(t, cookie.Secure, "plain-http test issuer must not set Secure")
+	assert.False(t, strings.HasPrefix(cookie.Name, hostCookiePrefix), "plain-http test issuer must not use __Host-")
 }
 
 // registerLoopbackClient creates a public client with loopback redirect URIs (as
@@ -267,6 +604,7 @@ func registerLoopbackClient(t *testing.T, storState *testStorageState, clientID 
 		ID:                      clientID,
 		RedirectURIs:            redirectURIs,
 		TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodNone,
+		Audience:                []string{"https://api.example.com"},
 	})
 	require.NoError(t, err)
 	storState.clients[clientID] = client
@@ -291,8 +629,9 @@ func TestAuthorizeHandler_LoopbackLocalhostDynamicPortIsAccepted(t *testing.T) {
 	rec := httptest.NewRecorder()
 
 	handler.AuthorizeHandler(rec, req)
+	rec = approveConsent(t, handler, rec)
 
-	require.Equal(t, http.StatusFound, rec.Code, "response body: %s", rec.Body.String())
+	require.Equal(t, http.StatusSeeOther, rec.Code, "response body: %s", rec.Body.String())
 	assert.Contains(t, rec.Header().Get("Location"), "https://idp.example.com/authorize")
 
 	pending, ok := storState.pendingAuths[mockUpstream.capturedState]
@@ -327,8 +666,9 @@ func TestAuthorizeHandler_LoopbackCaseInsensitiveLocalhostIsAccepted(t *testing.
 	rec := httptest.NewRecorder()
 
 	handler.AuthorizeHandler(rec, req)
+	rec = approveConsent(t, handler, rec)
 
-	require.Equal(t, http.StatusFound, rec.Code, "response body: %s", rec.Body.String())
+	require.Equal(t, http.StatusSeeOther, rec.Code, "response body: %s", rec.Body.String())
 
 	pending, ok := storState.pendingAuths[mockUpstream.capturedState]
 	require.True(t, ok, "pending authorization should be stored")
@@ -354,8 +694,9 @@ func TestAuthorizeHandler_Loopback127001DynamicPortStillWorks(t *testing.T) {
 	rec := httptest.NewRecorder()
 
 	handler.AuthorizeHandler(rec, req)
+	rec = approveConsent(t, handler, rec)
 
-	require.Equal(t, http.StatusFound, rec.Code, "response body: %s", rec.Body.String())
+	require.Equal(t, http.StatusSeeOther, rec.Code, "response body: %s", rec.Body.String())
 
 	pending, ok := storState.pendingAuths[mockUpstream.capturedState]
 	require.True(t, ok, "pending authorization should be stored")
@@ -564,93 +905,21 @@ func TestLoopbackAuthorizeRequester_IsRedirectURIValid(t *testing.T) {
 	}
 }
 
-// --- rateLimitCIMDAuthorize (P1: /oauth/authorize CIMD rate limiting) ---
-
-// TestRateLimitCIMDAuthorize_BurstThen429 exercises the reviewer's exact
-// scenario: a flood of distinct CIMD-URL client_id values must be bounded by
-// the limiter, exhausting the burst before the gate starts returning 429,
-// entirely independent of fosite or the CIMD decorator — this test only
-// exercises the gate itself.
-func TestRateLimitCIMDAuthorize_BurstThen429(t *testing.T) {
+// TestAuthorizeHandler_CIMDRateLimited also proves the early back-channel-only
+// client lookup falls through to fosite when the limiter refuses it, so the 429
+// comes from the NewAuthorizeRequest mapping. The loopback rewrite lookup is not
+// exercised: the 127.0.0.1 redirect_uri returns before any GetClient call.
+func TestAuthorizeHandler_CIMDRateLimited(t *testing.T) {
 	t.Parallel()
+	handler, _, _ := handlerTestSetup(t,
+		withGetClientErrorAfterCalls(0, fosite.ErrNotFound.WithWrap(storage.ErrCIMDRateLimited)))
 
-	var nextCalls int
-	h := &Handler{cimdAuthorizeLimiter: rate.NewLimiter(rate.Limit(1), 5)}
-	gated := h.rateLimitCIMDAuthorize(func(http.ResponseWriter, *http.Request) {
-		nextCalls++
-	})
-
-	// Burst of 5 must all be allowed through to next.
-	for i := 0; i < 5; i++ {
-		req := httptest.NewRequest(http.MethodGet,
-			"/oauth/authorize?client_id=https://evil.test/"+string(rune('a'+i))+".json", nil)
-		rec := httptest.NewRecorder()
-		gated(rec, req)
-		assert.NotEqual(t, http.StatusTooManyRequests, rec.Code, "burst request %d must not be rate limited", i)
-	}
-	assert.Equal(t, 5, nextCalls, "all 5 burst requests must reach next")
-
-	// The 6th CIMD-URL request in the same instant must be rejected with 429.
-	req := httptest.NewRequest(http.MethodGet, "/oauth/authorize?client_id=https://evil.test/f.json", nil)
+	req := httptest.NewRequest(http.MethodGet,
+		"/oauth/authorize?client_id=https://client.example.com/metadata&redirect_uri=http://127.0.0.1:8080/callback", nil)
 	rec := httptest.NewRecorder()
-	gated(rec, req)
-	assert.Equal(t, http.StatusTooManyRequests, rec.Code, "request past the burst must be rate limited")
+
+	handler.AuthorizeHandler(rec, req)
+
+	assert.Equal(t, http.StatusTooManyRequests, rec.Code)
 	assert.Equal(t, "1", rec.Header().Get("Retry-After"))
-	assert.Equal(t, 5, nextCalls, "the rate-limited request must not reach next")
-}
-
-// TestRateLimitCIMDAuthorize_NonURLClientIDUnaffected verifies that ordinary
-// DCR (opaque, non-URL) client_id values never consult or exhaust the CIMD
-// limiter: a flood of such requests must all reach next, and must not affect
-// the limiter's state for a later CIMD-URL request.
-func TestRateLimitCIMDAuthorize_NonURLClientIDUnaffected(t *testing.T) {
-	t.Parallel()
-
-	var nextCalls int
-	h := &Handler{cimdAuthorizeLimiter: rate.NewLimiter(rate.Limit(1), 5)}
-	gated := h.rateLimitCIMDAuthorize(func(http.ResponseWriter, *http.Request) {
-		nextCalls++
-	})
-
-	// Far more than the burst size, all with an opaque DCR-style client_id.
-	for i := 0; i < 20; i++ {
-		req := httptest.NewRequest(http.MethodGet, "/oauth/authorize?client_id=opaque-dcr-client-id", nil)
-		rec := httptest.NewRecorder()
-		gated(rec, req)
-		assert.NotEqual(t, http.StatusTooManyRequests, rec.Code,
-			"a non-URL client_id must never be rate limited by the CIMD gate")
-	}
-	assert.Equal(t, 20, nextCalls)
-
-	// The limiter's full burst must still be available to a CIMD-URL request,
-	// proving the DCR traffic above never touched cimdAuthorizeLimiter's state.
-	for i := 0; i < 5; i++ {
-		req := httptest.NewRequest(http.MethodGet,
-			"/oauth/authorize?client_id=https://example.test/"+string(rune('a'+i))+".json", nil)
-		rec := httptest.NewRecorder()
-		gated(rec, req)
-		assert.NotEqual(t, http.StatusTooManyRequests, rec.Code, "CIMD burst request %d must not be rate limited", i)
-	}
-	assert.Equal(t, 25, nextCalls)
-}
-
-// TestRateLimitCIMDAuthorize_NilLimiterAllowsThrough matches the documented
-// contract of registerLimiter's nil case: a Handler constructed without going
-// through NewHandler (as several existing tests in this package do) leaves
-// cimdAuthorizeLimiter nil, and the gate must tolerate that by always calling
-// next.
-func TestRateLimitCIMDAuthorize_NilLimiterAllowsThrough(t *testing.T) {
-	t.Parallel()
-
-	var nextCalls int
-	h := &Handler{}
-	gated := h.rateLimitCIMDAuthorize(func(http.ResponseWriter, *http.Request) {
-		nextCalls++
-	})
-
-	req := httptest.NewRequest(http.MethodGet, "/oauth/authorize?client_id=https://evil.test/a.json", nil)
-	rec := httptest.NewRecorder()
-	gated(rec, req)
-	assert.NotEqual(t, http.StatusTooManyRequests, rec.Code)
-	assert.Equal(t, 1, nextCalls)
 }

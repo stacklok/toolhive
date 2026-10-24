@@ -115,6 +115,8 @@ func TestGetHealthcheck_ReturnsNonceHeader(t *testing.T) {
 	// Assert the response status and nonce header
 	assert.Equal(t, http.StatusNoContent, resp.Code)
 	assert.Equal(t, "test-nonce-value", resp.Header().Get(discovery.NonceHeader))
+	assert.Empty(t, resp.Header().Values(discovery.KeySigningCapabilityHeader),
+		"the owner-only key-signing capability must never be returned by health")
 }
 
 func TestGetHealthcheck_OmitsNonceHeaderWhenEmpty(t *testing.T) {

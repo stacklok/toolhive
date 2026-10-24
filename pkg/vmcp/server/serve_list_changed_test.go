@@ -184,6 +184,7 @@ func (*stubSessionManager) DecorateSession(string, func(vmcpsession.MultiSession
 	panic("stubSessionManager: DecorateSession unexpected")
 }
 func (*stubSessionManager) NotifyBackendExpired(string, string, map[string]string) {}
+func (*stubSessionManager) EvictStaleSessions(context.Context) int                 { return 0 }
 
 var _ SessionManager = (*stubSessionManager)(nil)
 

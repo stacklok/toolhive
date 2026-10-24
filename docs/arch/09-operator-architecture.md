@@ -167,7 +167,7 @@ Defines an MCP server deployment, including container images, transports, middle
 
 **Implementation**: `cmd/thv-operator/api/v1beta1/mcpserver_types.go`
 
-MCPServer resources support various transport types (stdio, SSE, streamable-http), permission profiles, OIDC authentication, and Cedar-based authorization policies. The operator reconciles these resources into Kubernetes Deployments, Services, and StatefulSets.
+MCPServer resources support various transport types (stdio, SSE, streamable-http), OIDC authentication, and Cedar-based authorization policies. The operator reconciles these resources into Kubernetes Deployments, Services, and StatefulSets. The legacy `permissionProfile` field is retained for API compatibility but is deprecated and ignored; Kubernetes-native workload and network controls provide enforcement in operator deployments.
 
 MCPServer supports referencing shared configuration CRDs:
 - `oidcConfigRef` — references an MCPOIDCConfig for shared OIDC settings
@@ -237,6 +237,8 @@ MCPExternalAuthConfig resources can be referenced via two paths:
 **Referenced by MCPServer and MCPRemoteProxy** using `externalAuthConfigRef` or `authServerRef`.
 
 **Controller**: `cmd/thv-operator/controllers/mcpexternalauthconfig_controller.go`
+
+`EmbeddedAuthServerConfig` can carry top-level SPIFFE trust-domain declarations in `spiffeTrustDomains` and canonical client associations in `inboundGrants.spiffeClientAuth` (`cmd/thv-operator/api/v1beta1/mcpexternalauthconfig_types.go`). The operator converts these CRD fields into runtime config via `buildSPIFFETrustDomainRunConfigs`/`buildSPIFFEClientAuthRunConfigs` in `cmd/thv-operator/pkg/controllerutil/authserver.go`, and projects file-source ConfigMap data read-only. `newServer` constructs the configured bundle source and passes its X.509 and JWT views to the authorization server. However, `RunConfig.Validate()` still rejects any non-empty SPIFFE trust configuration before the runner starts, so this wiring is not reachable for SPIFFE authentication in normal deployment. The proxy runner and vMCP can start the auth-server TLS listener on fixed port 8443, but X.509-SVID verification is not implemented. Operator configuration and network exposure for this listener are not supported. See [SPIFFE Association Declarations](18-spiffe-association-declarations.md) for current scope.
 
 ### MCPOIDCConfig
 

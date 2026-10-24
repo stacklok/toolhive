@@ -20,6 +20,7 @@ import (
 	"github.com/stacklok/toolhive-core/httperr"
 	"github.com/stacklok/toolhive/pkg/plugins"
 	plugmocks "github.com/stacklok/toolhive/pkg/plugins/mocks"
+	"github.com/stacklok/toolhive/pkg/server/discovery"
 	"github.com/stacklok/toolhive/pkg/storage"
 )
 
@@ -31,6 +32,7 @@ func TestPluginsRouter(t *testing.T) {
 		method         string
 		path           string
 		body           string
+		capability     string
 		setupMock      func(*plugmocks.MockPluginService, string)
 		expectedStatus int
 		expectedBody   string
@@ -461,15 +463,26 @@ func TestPluginsRouter(t *testing.T) {
 		},
 		// pushPlugin
 		{
-			name:   "push plugin success",
-			method: "POST",
-			path:   "/push",
-			body:   `{"reference":"ghcr.io/test/plugin:v1"}`,
-			setupMock: func(svc *plugmocks.MockPluginService, _ string) {
-				svc.EXPECT().Push(gomock.Any(), plugins.PushOptions{Reference: "ghcr.io/test/plugin:v1"}).
-					Return(nil)
-			},
-			expectedStatus: http.StatusNoContent,
+			// The signing choice is validated at the route, before dispatch:
+			// a request naming only a reference is a 400 from the API itself,
+			// not from whichever service implementation is wired in. The
+			// service is never reached (the mock has no expectations).
+			name:           "push plugin rejects missing signing choice",
+			method:         "POST",
+			path:           "/push",
+			body:           `{"reference":"ghcr.io/test/plugin:v1"}`,
+			setupMock:      func(_ *plugmocks.MockPluginService, _ string) {},
+			expectedStatus: http.StatusBadRequest,
+			expectedBody:   "signing credential required",
+		},
+		{
+			name:           "push plugin rejects conflicting signing choice",
+			method:         "POST",
+			path:           "/push",
+			body:           `{"reference":"ghcr.io/test/plugin:v1","no_sign":true,"identity_token":"a.b.c"}`,
+			setupMock:      func(_ *plugmocks.MockPluginService, _ string) {},
+			expectedStatus: http.StatusBadRequest,
+			expectedBody:   "cannot be combined",
 		},
 		{
 			// Guards the DTO trap: the signing fields must reach PushOptions,
@@ -487,21 +500,27 @@ func TestPluginsRouter(t *testing.T) {
 			expectedStatus: http.StatusNoContent,
 		},
 		{
-			// Plugin signing is keyless-only (#6442), so the request DTO has
-			// no key field. A key must be refused rather than dropped: the
-			// caller asked for a key-signed artifact, and quietly publishing
-			// an unsigned one instead is the wrong answer. The service is
-			// never reached (the mock has no expectations).
-			name:           "push plugin rejects a key",
-			method:         "POST",
-			path:           "/push",
-			body:           `{"reference":"ghcr.io/test/plugin:v1","key":"/tmp/cosign.key","no_sign":true}`,
-			setupMock:      func(_ *plugmocks.MockPluginService, _ string) {},
-			expectedStatus: http.StatusBadRequest,
+			// A key is a known field again, and must reach PushOptions rather
+			// than decode into the request struct and get dropped: quietly
+			// publishing unsigned in answer to "sign this with my key" is the
+			// failure this forwarding prevents.
+			name:       "push plugin forwards key",
+			method:     "POST",
+			path:       "/push",
+			body:       `{"reference":"ghcr.io/test/plugin:v1","key":"/tmp/cosign.key"}`,
+			capability: "protected-discovery-capability",
+			setupMock: func(svc *plugmocks.MockPluginService, _ string) {
+				svc.EXPECT().Push(gomock.Any(), plugins.PushOptions{
+					Reference: "ghcr.io/test/plugin:v1",
+					Key:       "/tmp/cosign.key",
+				}).Return(nil)
+			},
+			expectedStatus: http.StatusNoContent,
 		},
 		{
-			// Same contract, any unrecognized field: a typo in a signing
-			// field must not decode to "sign however you like".
+			// Unknown fields stay rejected: a typo in a signing field must not
+			// decode to "sign however you like". The service is never reached
+			// (the mock has no expectations).
 			name:           "push plugin rejects unknown fields",
 			method:         "POST",
 			path:           "/push",
@@ -544,10 +563,12 @@ func TestPluginsRouter(t *testing.T) {
 			name:   "push plugin service error",
 			method: "POST",
 			path:   "/push",
-			body:   `{"reference":"ghcr.io/test/plugin:v1"}`,
+			body:   `{"reference":"ghcr.io/test/plugin:v1","no_sign":true}`,
 			setupMock: func(svc *plugmocks.MockPluginService, _ string) {
-				svc.EXPECT().Push(gomock.Any(), plugins.PushOptions{Reference: "ghcr.io/test/plugin:v1"}).
-					Return(fmt.Errorf("push failed"))
+				svc.EXPECT().Push(gomock.Any(), plugins.PushOptions{
+					Reference: "ghcr.io/test/plugin:v1",
+					NoSign:    true,
+				}).Return(fmt.Errorf("push failed"))
 			},
 			expectedStatus: http.StatusInternalServerError,
 			expectedBody:   "Internal Server Error",
@@ -663,10 +684,14 @@ func TestPluginsRouter(t *testing.T) {
 			tt.setupMock(mockSvc, projectRoot)
 
 			router := chi.NewRouter()
-			router.Mount("/", PluginsRouter(mockSvc))
+			router.Mount("/", PluginsRouter(mockSvc,
+				WithKeySigningCapability("protected-discovery-capability")))
 
 			req := httptest.NewRequest(tt.method, path, strings.NewReader(body))
 			req.Header.Set("Content-Type", "application/json")
+			if tt.capability != "" {
+				req.Header.Set(discovery.KeySigningCapabilityHeader, tt.capability)
+			}
 			rec := httptest.NewRecorder()
 
 			router.ServeHTTP(rec, req)
@@ -765,6 +790,47 @@ func TestPluginsInstallLocationHeader(t *testing.T) {
 
 	assert.Equal(t, http.StatusCreated, rec.Code)
 	assert.Equal(t, "/api/v1beta/plugins/my-plugin", rec.Header().Get("Location"))
+}
+
+// TestPluginsInstallCarriesPublicKey pins the API-side half of the key path: a
+// public_key that dies at the handler would leave a key-signed artifact
+// failing verification while the caller is told to supply the key they did.
+func TestPluginsInstallCarriesPublicKey(t *testing.T) {
+	t.Parallel()
+
+	const encodedKey = "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAExlVDpbnOEv2fH3gS8n7UCHS9Gs0wKxIPR5" +
+		"EAcl8F1jSxlxAV/pll0NsSiuAK95Ws4Fpkn+5QkdVKNXy7LHgb2A=="
+
+	ctrl := gomock.NewController(t)
+	mockSvc := plugmocks.NewMockPluginService(ctrl)
+
+	mockSvc.EXPECT().Install(gomock.Any(), plugins.InstallOptions{
+		Name:        "my-plugin",
+		Scope:       plugins.ScopeProject,
+		ProjectRoot: "/tmp/project",
+		PublicKey:   encodedKey,
+	}).Return(&plugins.InstallResult{
+		Plugin: plugins.InstalledPlugin{
+			Metadata: plugins.PluginMetadata{Name: "my-plugin"},
+			Scope:    plugins.ScopeProject,
+			Status:   plugins.InstallStatusInstalled,
+		},
+		Provenance: &plugins.ProvenanceInfo{PublicKey: encodedKey},
+	}, nil)
+
+	router := chi.NewRouter()
+	router.Mount("/", PluginsRouter(mockSvc))
+
+	body := `{"name":"my-plugin","scope":"project","project_root":"/tmp/project",` +
+		`"public_key":"` + encodedKey + `"}`
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusCreated, rec.Code)
+	assert.Contains(t, rec.Body.String(), `"public_key":"`+encodedKey+`"`,
+		"the pinned key must come back so the CLI can report the anchor it recorded")
 }
 
 // TestPluginsInstallCarriesAllowUnsigned pins the API-side half of the

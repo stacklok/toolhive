@@ -66,6 +66,8 @@ func (s *service) installWithExtraction(
 
 // dispatchExtraction routes an extraction-based install to the no-op,
 // same-digest, upgrade, or fresh path based on the pre-install store state.
+//
+//nolint:gocyclo // trust persistence adds one branch to the existing install-state dispatch
 func (s *service) dispatchExtraction(
 	ctx context.Context,
 	opts plugins.InstallOptions,
@@ -116,8 +118,24 @@ func (s *service) dispatchExtraction(
 	// and persists the record, where the two short-circuits below do neither.
 	mustRematerialize := mustPersistTrust || becomesManaged
 
-	if !opts.SyncRestore && !mustRematerialize && isExtractionNoOp(existing, storeErr, opts, clientTypes) {
-		return &plugins.InstallResult{Plugin: existing}, nil
+	if !opts.SyncRestore && isExtractionNoOp(existing, storeErr, opts, clientTypes) {
+		// An authorized reference change at the same digest needs only a DB
+		// refresh. Its strict upgrade-time trust decision is already bound to
+		// this digest, so refreshing the bundle does not require rewriting the
+		// identical extracted content. Never use this shortcut for the
+		// unmanaged-to-managed transition, which must materialize the tree the
+		// new lock entry describes.
+		if opts.RefreshMetadata && !becomesManaged {
+			updated := buildInstalledPlugin(opts, scope, clientTypes, existing.Clients)
+			updated.Managed = existing.Managed
+			if err := s.store.Update(ctx, updated); err != nil {
+				return nil, err
+			}
+			return &plugins.InstallResult{Plugin: updated}, nil
+		}
+		if !mustRematerialize {
+			return &plugins.InstallResult{Plugin: existing}, nil
+		}
 	}
 
 	digestMatches := storeErr == nil && existing.Digest == opts.Digest

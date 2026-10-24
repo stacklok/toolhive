@@ -248,6 +248,24 @@ components:
             server trusts.
           type: string
       type: object
+    authserver.DelegateClientExchangeRefreshTokens:
+      description: |-
+        ExchangeRefreshTokens enables refresh-token issuance through token
+        exchange for this client. Presence of the block enables it; a nil block
+        refuses both grant kinds. Valid only with restricted, and requires
+        APIAudience.
+      properties:
+        id_jag_max_lifetime:
+          description: |-
+            IDJAGMaxLifetime caps the lifetime of grants that can be exchanged for
+            ID-JAGs. Empty refuses those grants.
+          type: string
+        refresh_token_max_lifetime:
+          description: |-
+            RefreshTokenMaxLifetime caps the lifetime of grants that can be exchanged
+            for child refresh tokens. Empty refuses those grants.
+          type: string
+      type: object
     authserver.DelegateClientRunConfig:
       properties:
         audiences:
@@ -355,6 +373,8 @@ components:
             even when the subject token does not cover it. It must be one of the
             client's Audiences. Valid only with restricted.
           type: string
+        exchange_refresh_tokens:
+          $ref: '#/components/schemas/authserver.DelegateClientExchangeRefreshTokens'
         self_issued_subject_tokens:
           description: |-
             SelfIssuedSubjectTokens is any or restricted, and is required. With

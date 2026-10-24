@@ -92,6 +92,9 @@ const (
 	// as the `requested_token_type` in an RFC 8693 token exchange when the IdP is
 	// asked to mint an ID-JAG for a target application.
 	TokenTypeIDJAG = "urn:ietf:params:oauth:token-type:id-jag"
+
+	// TokenTypeRefreshToken indicates an OAuth 2.0 refresh token (RFC 8693 Section 3).
+	TokenTypeRefreshToken = "urn:ietf:params:oauth:token-type:refresh_token"
 )
 
 // Grant type URNs for token exchange protocols.

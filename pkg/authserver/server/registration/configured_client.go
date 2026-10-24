@@ -6,6 +6,7 @@ package registration
 import (
 	"fmt"
 	"slices"
+	"time"
 
 	"github.com/go-jose/go-jose/v3"
 
@@ -25,6 +26,9 @@ const (
 	selfIssuedSubjectTokensAny        = "any"
 	selfIssuedSubjectTokensRestricted = "restricted"
 )
+
+// maxExchangeRefreshTokenLifetime bounds each exchange_refresh_tokens lifetime cap.
+const maxExchangeRefreshTokenLifetime = 720 * time.Hour
 
 // configuredGrantTypes are the grants an operator-configured client may hold.
 var configuredGrantTypes = []string{
@@ -77,6 +81,16 @@ type ConfiguredClientSpec struct {
 	AllowedSourceClients []string
 	APIAudience          string
 
+	// ExchangeRefreshTokens reports an exchange_refresh_tokens block. It is
+	// only meaningful with TokenExchange set, and valid only with the
+	// restricted mode.
+	ExchangeRefreshTokens bool
+
+	// IDJAGMaxLifetime and RefreshTokenMaxLifetime are the block's lifetime
+	// caps as written, as Go duration strings. Empty means not set.
+	IDJAGMaxLifetime        string
+	RefreshTokenMaxLifetime string
+
 	// ClientID is the client's own client_id, which must not be listed as a
 	// source client.
 	ClientID string
@@ -112,6 +126,9 @@ func ValidateConfiguredClient(spec ConfiguredClientSpec) error {
 		return err
 	}
 	if err := validateConfiguredTokenExchange(spec); err != nil {
+		return err
+	}
+	if err := validateConfiguredExchangeRefreshTokens(spec); err != nil {
 		return err
 	}
 	return validateConfiguredRedirectURIs(spec.RedirectURIs)
@@ -277,4 +294,59 @@ func validateSelfIssuedSubjectTokens(spec ConfiguredClientSpec) error {
 		return fmt.Errorf("token_exchange.self_issued_subject_tokens %q is not supported: set %q or %q",
 			spec.SelfIssuedSubjectTokens, selfIssuedSubjectTokensAny, selfIssuedSubjectTokensRestricted)
 	}
+}
+
+// validateConfiguredExchangeRefreshTokens checks the exchange_refresh_tokens
+// block. The confidential-client and token-exchange-grant checks are also
+// enforced for every configured client in ValidateConfiguredClient. They are
+// kept here so the block stays gated if those client-wide rules are relaxed.
+func validateConfiguredExchangeRefreshTokens(spec ConfiguredClientSpec) error {
+	if !spec.ExchangeRefreshTokens {
+		return nil
+	}
+	usesKey := spec.TokenEndpointAuthMethod == oauthproto.TokenEndpointAuthMethodPrivateKeyJWT
+	if !usesKey && !spec.HasSecret {
+		return fmt.Errorf("token_exchange.exchange_refresh_tokens requires a confidential client")
+	}
+	if !slices.Contains(effectiveConfiguredGrantTypes(spec.GrantTypes), oauthproto.GrantTypeTokenExchange) {
+		return fmt.Errorf("token_exchange.exchange_refresh_tokens requires the %q grant", oauthproto.GrantTypeTokenExchange)
+	}
+	if spec.SelfIssuedSubjectTokens != selfIssuedSubjectTokensRestricted {
+		return fmt.Errorf("token_exchange.exchange_refresh_tokens requires self_issued_subject_tokens %q",
+			selfIssuedSubjectTokensRestricted)
+	}
+	if spec.APIAudience == "" {
+		return fmt.Errorf("token_exchange.api_audience is required with token_exchange.exchange_refresh_tokens")
+	}
+	if spec.IDJAGMaxLifetime == "" && spec.RefreshTokenMaxLifetime == "" {
+		return fmt.Errorf("token_exchange.exchange_refresh_tokens needs id_jag_max_lifetime or refresh_token_max_lifetime")
+	}
+	if spec.IDJAGMaxLifetime != "" {
+		if err := validateExchangeRefreshTokenLifetime("id_jag_max_lifetime", spec.IDJAGMaxLifetime); err != nil {
+			return err
+		}
+	}
+	if spec.RefreshTokenMaxLifetime != "" {
+		if err := validateExchangeRefreshTokenLifetime("refresh_token_max_lifetime", spec.RefreshTokenMaxLifetime); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// validateExchangeRefreshTokenLifetime checks one lifetime cap: a Go duration
+// string that is positive and at most maxExchangeRefreshTokenLifetime.
+func validateExchangeRefreshTokenLifetime(field, value string) error {
+	d, err := time.ParseDuration(value)
+	if err != nil {
+		return fmt.Errorf("token_exchange.exchange_refresh_tokens.%s: %w", field, err)
+	}
+	if d <= 0 {
+		return fmt.Errorf("token_exchange.exchange_refresh_tokens.%s must be positive, got %q", field, value)
+	}
+	if d > maxExchangeRefreshTokenLifetime {
+		return fmt.Errorf("token_exchange.exchange_refresh_tokens.%s must not exceed %v, got %q",
+			field, maxExchangeRefreshTokenLifetime, value)
+	}
+	return nil
 }

@@ -740,6 +740,40 @@ func (s *AuthenticationDCRUpstreamConfig) SetSoftwareStatement(val OptString) {
 	s.SoftwareStatement = val
 }
 
+// ExchangeRefreshTokens enables refresh-token issuance through token
+// exchange for this client. Presence of the block enables it; a nil block
+// refuses both grant kinds. Valid only with restricted, and requires
+// APIAudience.
+// Ref: #/components/schemas/AuthenticationDelegateClientExchangeRefreshTokens
+type AuthenticationDelegateClientExchangeRefreshTokens struct {
+	// IDJAGMaxLifetime caps the lifetime of grants that can be exchanged for
+	// ID-JAGs. Empty refuses those grants.
+	IDJagMaxLifetime OptString `json:"id_jag_max_lifetime"`
+	// RefreshTokenMaxLifetime caps the lifetime of grants that can be exchanged
+	// for child refresh tokens. Empty refuses those grants.
+	RefreshTokenMaxLifetime OptString `json:"refresh_token_max_lifetime"`
+}
+
+// GetIDJagMaxLifetime returns the value of IDJagMaxLifetime.
+func (s *AuthenticationDelegateClientExchangeRefreshTokens) GetIDJagMaxLifetime() OptString {
+	return s.IDJagMaxLifetime
+}
+
+// GetRefreshTokenMaxLifetime returns the value of RefreshTokenMaxLifetime.
+func (s *AuthenticationDelegateClientExchangeRefreshTokens) GetRefreshTokenMaxLifetime() OptString {
+	return s.RefreshTokenMaxLifetime
+}
+
+// SetIDJagMaxLifetime sets the value of IDJagMaxLifetime.
+func (s *AuthenticationDelegateClientExchangeRefreshTokens) SetIDJagMaxLifetime(val OptString) {
+	s.IDJagMaxLifetime = val
+}
+
+// SetRefreshTokenMaxLifetime sets the value of RefreshTokenMaxLifetime.
+func (s *AuthenticationDelegateClientExchangeRefreshTokens) SetRefreshTokenMaxLifetime(val OptString) {
+	s.RefreshTokenMaxLifetime = val
+}
+
 // Ref: #/components/schemas/AuthenticationDelegateClientRunConfig
 type AuthenticationDelegateClientRunConfig struct {
 	// Audiences are the RFC 8707 resource values this client may request a
@@ -916,7 +950,8 @@ type AuthenticationDelegateClientTokenExchange struct {
 	// APIAudience is the client's own API audience. The client may request it
 	// even when the subject token does not cover it. It must be one of the
 	// client's Audiences. Valid only with restricted.
-	APIAudience OptString `json:"api_audience"`
+	APIAudience           OptString                                            `json:"api_audience"`
+	ExchangeRefreshTokens OptAuthenticationDelegateClientExchangeRefreshTokens `json:"exchange_refresh_tokens"`
 	// SelfIssuedSubjectTokens is any or restricted, and is required. With
 	// restricted, a self-issued subject token must carry the client's own
 	// client_id or one of AllowedSourceClients, and a may_act claim naming
@@ -935,6 +970,11 @@ func (s *AuthenticationDelegateClientTokenExchange) GetAPIAudience() OptString {
 	return s.APIAudience
 }
 
+// GetExchangeRefreshTokens returns the value of ExchangeRefreshTokens.
+func (s *AuthenticationDelegateClientTokenExchange) GetExchangeRefreshTokens() OptAuthenticationDelegateClientExchangeRefreshTokens {
+	return s.ExchangeRefreshTokens
+}
+
 // GetSelfIssuedSubjectTokens returns the value of SelfIssuedSubjectTokens.
 func (s *AuthenticationDelegateClientTokenExchange) GetSelfIssuedSubjectTokens() string {
 	return s.SelfIssuedSubjectTokens
@@ -948,6 +988,11 @@ func (s *AuthenticationDelegateClientTokenExchange) SetAllowedSourceClients(val 
 // SetAPIAudience sets the value of APIAudience.
 func (s *AuthenticationDelegateClientTokenExchange) SetAPIAudience(val OptString) {
 	s.APIAudience = val
+}
+
+// SetExchangeRefreshTokens sets the value of ExchangeRefreshTokens.
+func (s *AuthenticationDelegateClientTokenExchange) SetExchangeRefreshTokens(val OptAuthenticationDelegateClientExchangeRefreshTokens) {
+	s.ExchangeRefreshTokens = val
 }
 
 // SetSelfIssuedSubjectTokens sets the value of SelfIssuedSubjectTokens.
@@ -7081,6 +7126,52 @@ func (o OptAuthenticationDCRUpstreamConfig) Get() (v AuthenticationDCRUpstreamCo
 
 // Or returns value if set, or given parameter if does not.
 func (o OptAuthenticationDCRUpstreamConfig) Or(d AuthenticationDCRUpstreamConfig) AuthenticationDCRUpstreamConfig {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptAuthenticationDelegateClientExchangeRefreshTokens returns new OptAuthenticationDelegateClientExchangeRefreshTokens with value set to v.
+func NewOptAuthenticationDelegateClientExchangeRefreshTokens(v AuthenticationDelegateClientExchangeRefreshTokens) OptAuthenticationDelegateClientExchangeRefreshTokens {
+	return OptAuthenticationDelegateClientExchangeRefreshTokens{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptAuthenticationDelegateClientExchangeRefreshTokens is optional AuthenticationDelegateClientExchangeRefreshTokens.
+type OptAuthenticationDelegateClientExchangeRefreshTokens struct {
+	Value AuthenticationDelegateClientExchangeRefreshTokens
+	Set   bool
+}
+
+// IsSet returns true if OptAuthenticationDelegateClientExchangeRefreshTokens was set.
+func (o OptAuthenticationDelegateClientExchangeRefreshTokens) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptAuthenticationDelegateClientExchangeRefreshTokens) Reset() {
+	var v AuthenticationDelegateClientExchangeRefreshTokens
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptAuthenticationDelegateClientExchangeRefreshTokens) SetTo(v AuthenticationDelegateClientExchangeRefreshTokens) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptAuthenticationDelegateClientExchangeRefreshTokens) Get() (v AuthenticationDelegateClientExchangeRefreshTokens, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptAuthenticationDelegateClientExchangeRefreshTokens) Or(d AuthenticationDelegateClientExchangeRefreshTokens) AuthenticationDelegateClientExchangeRefreshTokens {
 	if v, ok := o.Get(); ok {
 		return v
 	}

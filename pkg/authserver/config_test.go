@@ -1291,6 +1291,164 @@ func TestDelegateClientRunConfigValidate(t *testing.T) {
 	}
 }
 
+// TestDelegateClientExchangeRefreshTokensValidate runs each exchange_refresh_tokens
+// rule through both the RunConfig path and the resolved Config path.
+func TestDelegateClientExchangeRefreshTokensValidate(t *testing.T) {
+	t.Parallel()
+
+	const (
+		audience = "https://mcp.example.com"
+		secret   = "0123456789abcdef0123456789abcdef"
+	)
+	block := func(idJAG, refresh string) *DelegateClientExchangeRefreshTokens {
+		return &DelegateClientExchangeRefreshTokens{IDJAGMaxLifetime: idJAG, RefreshTokenMaxLifetime: refresh}
+	}
+
+	tests := []struct {
+		name        string
+		block       *DelegateClientExchangeRefreshTokens
+		apiAudience string
+		mode        SelfIssuedSubjectTokens
+		wantErr     string
+	}{
+		{name: "id-jag cap only", block: block("12h", ""), apiAudience: audience},
+		{name: "refresh cap only", block: block("", "720h"), apiAudience: audience},
+		{name: "both caps", block: block("1h", "24h"), apiAudience: audience},
+		{name: "absent block", block: nil, apiAudience: audience},
+		{name: "no caps", block: block("", ""), apiAudience: audience,
+			wantErr: "needs id_jag_max_lifetime or refresh_token_max_lifetime"},
+		{name: "zero id-jag cap", block: block("0s", ""), apiAudience: audience,
+			wantErr: "id_jag_max_lifetime must be positive"},
+		{name: "zero refresh cap without unit", block: block("", "0"), apiAudience: audience,
+			wantErr: "refresh_token_max_lifetime must be positive"},
+		{name: "negative id-jag cap", block: block("-1h", ""), apiAudience: audience,
+			wantErr: "id_jag_max_lifetime must be positive"},
+		{name: "negative refresh cap", block: block("", "-1s"), apiAudience: audience,
+			wantErr: "refresh_token_max_lifetime must be positive"},
+		{name: "id-jag cap above 720h", block: block("721h", ""), apiAudience: audience,
+			wantErr: "id_jag_max_lifetime must not exceed 720h"},
+		{name: "refresh cap above 720h", block: block("", "1000h"), apiAudience: audience,
+			wantErr: "refresh_token_max_lifetime must not exceed 720h"},
+		{name: "both caps exactly 720h", block: block("720h", "720h"), apiAudience: audience},
+		{name: "id-jag cap one nanosecond over 720h", block: block("720h0m0.000000001s", ""), apiAudience: audience,
+			wantErr: "id_jag_max_lifetime must not exceed 720h"},
+		{name: "refresh cap one nanosecond over 720h", block: block("", "720h0m0.000000001s"), apiAudience: audience,
+			wantErr: "refresh_token_max_lifetime must not exceed 720h"},
+		{name: "id-jag cap with leading space", block: block(" 12h", ""), apiAudience: audience,
+			wantErr: "invalid duration"},
+		{name: "refresh cap with trailing space", block: block("", "12h "), apiAudience: audience,
+			wantErr: "unknown unit"},
+		{name: "id-jag cap without unit", block: block("12", ""), apiAudience: audience,
+			wantErr: "missing unit"},
+		{name: "unparseable cap", block: block("soon", ""), apiAudience: audience,
+			wantErr: "token_exchange.exchange_refresh_tokens.id_jag_max_lifetime"},
+		{name: "api audience missing", block: block("12h", ""), apiAudience: "",
+			wantErr: "api_audience is required with token_exchange.exchange_refresh_tokens"},
+		{name: "any mode", block: block("12h", ""), mode: SelfIssuedSubjectTokensAny,
+			wantErr: `token_exchange.exchange_refresh_tokens requires self_issued_subject_tokens "restricted"`},
+		{name: "any mode with api audience", block: block("12h", ""), apiAudience: audience,
+			mode: SelfIssuedSubjectTokensAny, wantErr: "token_exchange.api_audience is valid only with"},
+		{name: "any mode without block", block: nil, mode: SelfIssuedSubjectTokensAny},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			mode := tt.mode
+			if mode == "" {
+				mode = SelfIssuedSubjectTokensRestricted
+			}
+			tokenExchange := &DelegateClientTokenExchange{
+				SelfIssuedSubjectTokens: mode,
+				APIAudience:             tt.apiAudience,
+				ExchangeRefreshTokens:   tt.block,
+			}
+			runConfigClients := []DelegateClientRunConfig{{
+				ClientID: "delegate", ClientSecretEnvVar: "SECRET", TokenExchange: tokenExchange,
+				Scopes: []string{"openid"}, Audiences: []string{audience},
+			}}
+			assertError(t, validateDelegateClients(runConfigClients, []string{"openid"}, []string{audience}),
+				tt.wantErr != "", tt.wantErr)
+
+			resolvedClients := []DelegateClient{{
+				ClientID: "delegate", ClientSecret: secret, TokenExchange: tokenExchange,
+				Scopes: []string{"openid"}, Audiences: []string{audience},
+			}}
+			assertError(t, validateResolvedDelegateClients(resolvedClients, []string{"openid"}, []string{audience}),
+				tt.wantErr != "", tt.wantErr)
+		})
+	}
+}
+
+func TestDelegateClientExchangeRefreshTokensRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		json     string
+		yaml     string
+		wantNil  bool
+		wantIDJA string
+		wantRefr string
+	}{
+		{
+			name:    "absent",
+			json:    `{"client_id":"c","token_exchange":{"self_issued_subject_tokens":"restricted","api_audience":"a"}}`,
+			yaml:    "client_id: c\ntoken_exchange:\n  self_issued_subject_tokens: restricted\n  api_audience: a\n",
+			wantNil: true,
+		},
+		{
+			name:     "populated",
+			json:     `{"client_id":"c","token_exchange":{"self_issued_subject_tokens":"restricted","api_audience":"a","exchange_refresh_tokens":{"id_jag_max_lifetime":"12h","refresh_token_max_lifetime":"720h"}}}`,
+			yaml:     "client_id: c\ntoken_exchange:\n  self_issued_subject_tokens: restricted\n  api_audience: a\n  exchange_refresh_tokens:\n    id_jag_max_lifetime: 12h\n    refresh_token_max_lifetime: 720h\n",
+			wantIDJA: "12h",
+			wantRefr: "720h",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			check := func(t *testing.T, got DelegateClientRunConfig) {
+				t.Helper()
+				require.NotNil(t, got.TokenExchange)
+				if tt.wantNil {
+					assert.Nil(t, got.TokenExchange.ExchangeRefreshTokens)
+					return
+				}
+				require.NotNil(t, got.TokenExchange.ExchangeRefreshTokens)
+				assert.Equal(t, tt.wantIDJA, got.TokenExchange.ExchangeRefreshTokens.IDJAGMaxLifetime)
+				assert.Equal(t, tt.wantRefr, got.TokenExchange.ExchangeRefreshTokens.RefreshTokenMaxLifetime)
+			}
+
+			var fromJSON DelegateClientRunConfig
+			require.NoError(t, json.Unmarshal([]byte(tt.json), &fromJSON))
+			check(t, fromJSON)
+			encoded, err := json.Marshal(fromJSON)
+			require.NoError(t, err)
+			if tt.wantNil {
+				assert.NotContains(t, string(encoded), "exchange_refresh_tokens")
+			}
+			var reJSON DelegateClientRunConfig
+			require.NoError(t, json.Unmarshal(encoded, &reJSON))
+			check(t, reJSON)
+
+			var fromYAML DelegateClientRunConfig
+			require.NoError(t, yaml.Unmarshal([]byte(tt.yaml), &fromYAML))
+			check(t, fromYAML)
+			encoded, err = yaml.Marshal(fromYAML)
+			require.NoError(t, err)
+			if tt.wantNil {
+				assert.NotContains(t, string(encoded), "exchange_refresh_tokens")
+			}
+			var reYAML DelegateClientRunConfig
+			require.NoError(t, yaml.Unmarshal(encoded, &reYAML))
+			check(t, reYAML)
+		})
+	}
+}
+
 func TestRunConfigValidateAllowedAudiences(t *testing.T) {
 	t.Parallel()
 

@@ -4090,3 +4090,76 @@ func TestScopesHash_DistinctForDistinctScopes(t *testing.T) {
 	assert.NotEqual(t, a, d)
 	assert.Equal(t, d, e)
 }
+
+func TestMemoryStorage_ExchangeGrantContract(t *testing.T) {
+	t.Parallel()
+	runExchangeGrantStorageContract(t, func(t *testing.T) (ExchangeGrantStorage, func(time.Duration)) {
+		t.Helper()
+		clock := &manualClock{now: contractEpoch}
+		s := NewMemoryStorage(withClientClock(clock.Now))
+		t.Cleanup(func() { _ = s.Close() })
+		return s, clock.Advance
+	})
+}
+
+func TestMemoryStorage_ExchangeGrantCleanup(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	clock := &manualClock{now: contractEpoch}
+	s := NewMemoryStorage(withClientClock(clock.Now))
+	t.Cleanup(func() { _ = s.Close() })
+
+	require.NoError(t, s.CreateExchangeGrant(ctx, contractGrant("sig-1")))
+
+	// The marker (10m + margin) ends before the record (1h).
+	clock.Advance(11*time.Minute + ExchangeGrantMarkerMargin)
+	s.cleanupExpired()
+	s.mu.RLock()
+	assert.Len(t, s.exchangeGrants, 1)
+	assert.Empty(t, s.exchangeGrantJTIs)
+	s.mu.RUnlock()
+
+	clock.Advance(time.Hour)
+	s.cleanupExpired()
+	s.mu.RLock()
+	assert.Empty(t, s.exchangeGrants)
+	s.mu.RUnlock()
+}
+
+func TestMemoryStorage_ExchangeGrantMarkerHoldsSignature(t *testing.T) {
+	t.Parallel()
+	s := NewMemoryStorage()
+	t.Cleanup(func() { _ = s.Close() })
+	g := contractGrant("sig-1")
+	g.SourceExpiresAt = time.Now().Add(time.Hour)
+	g.ExpiresAt = time.Now().Add(time.Hour)
+	require.NoError(t, s.CreateExchangeGrant(context.Background(), g))
+
+	key := assertionJWTKey{purpose: "exchange-grant", issuer: g.SourceIssuer, jti: g.SourceJTI}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	assert.Equal(t, "sig-1", s.exchangeGrantJTIs[key].signature)
+	assert.Empty(t, s.assertionJWTs, "ConsumeAssertionJWT state must stay untouched")
+}
+
+func TestMemoryStorage_ExchangeGrantChildrenWriteNoMarker(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	s := NewMemoryStorage(withClientClock(newManualClock().Now))
+	t.Cleanup(func() { _ = s.Close() })
+
+	parent := contractGrant("parent")
+	parent.SourceExpiresAt = newManualClock().Now().Add(10 * time.Minute)
+	parent.ExpiresAt = newManualClock().Now().Add(time.Hour)
+	require.NoError(t, s.CreateExchangeGrant(ctx, parent))
+	for _, sig := range []string{"child-1", "child-2"} {
+		c := contractChild(sig)
+		c.ExpiresAt = parent.ExpiresAt
+		require.NoError(t, s.CreateExchangeGrant(ctx, c))
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	assert.Len(t, s.exchangeGrants, 3)
+	assert.Len(t, s.exchangeGrantJTIs, 1)
+}

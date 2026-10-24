@@ -242,9 +242,10 @@ func secretClient(t *testing.T, id string, grants []string) authserver.DelegateC
 	}
 }
 
-// login drives authorize, consent and the upstream callback, and returns the
-// authorization code with the PKCE verifier that redeems it. The mock upstream
-// is not visited: its code is fixed, so the callback is driven directly.
+// login drives authorize, consent and the upstream callback for the configured
+// broker client, and returns the authorization code with the PKCE verifier that
+// redeems it. The mock upstream is not visited: its code is fixed, so the
+// callback is driven directly.
 func login(t *testing.T, serverURL string) (string, string) {
 	t.Helper()
 	locationOf := func(response *http.Response) *url.URL {

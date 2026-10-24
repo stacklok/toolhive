@@ -366,10 +366,14 @@ components:
                     type: string
                 grant_types:
                     description: |-
-                        GrantTypes are the grants this client may use. If omitted or empty, it
-                        is [urn:ietf:params:oauth:grant-type:token-exchange]. When set, it must
-                        include token exchange. Allowed values are authorization_code,
-                        refresh_token, the token-exchange grant and the jwt-bearer grant.
+                        GrantTypes are the grants this client may use. If omitted or empty, the
+                        client is stored with [urn:ietf:params:oauth:grant-type:token-exchange]
+                        and its ID-JAG redemption (a JWT-bearer assertion of typ
+                        oauth-id-jag+jwt) is not gated, for backward compatibility. When set, the
+                        list is complete: it must include token exchange, and it must include the
+                        jwt-bearer grant to keep ID-JAG redemption. Allowed values are
+                        authorization_code, refresh_token, the token-exchange grant and the
+                        jwt-bearer grant.
                     items:
                         type: string
                     type: array

@@ -193,6 +193,10 @@ func (h *Handler) validateAuthorizationResource(
 		h.provider.WriteAuthorizeError(ctx, w, errAr, err)
 		return "", false
 	}
+	if err := server.ValidateClientAudience(resource, ar.GetClient(), h.config.GetAudienceStrategy(ctx)); err != nil {
+		h.provider.WriteAuthorizeError(ctx, w, errAr, err)
+		return "", false
+	}
 	return resource, true
 }
 

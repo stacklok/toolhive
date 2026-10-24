@@ -328,8 +328,9 @@ func (c *RegistrationRateLimitRunConfig) Validate() error {
 // client for authorization-server startup, so it can act as the client in an
 // RFC 8693 token-exchange request. The secret is always a reference (file or
 // environment variable), never an inline literal, and public keys come from a
-// JWKS file. Only the grant types named in GrantTypes are enabled; the default
-// is RFC 8693 token exchange alone.
+// JWKS file. Only the grant types named in GrantTypes are enabled. A client
+// that omits GrantTypes is stored with RFC 8693 token exchange alone, and its
+// ID-JAG redemption is not gated, for backward compatibility; see GrantTypes.
 type DelegateClientRunConfig struct {
 	// ClientID is the OAuth client_id this client presents at the token endpoint.
 	ClientID string `json:"client_id" yaml:"client_id"`
@@ -351,10 +352,14 @@ type DelegateClientRunConfig struct {
 	//nolint:lll // field tags require full JSON+YAML names
 	TokenEndpointAuthSigningAlg string `json:"token_endpoint_auth_signing_alg,omitempty" yaml:"token_endpoint_auth_signing_alg,omitempty"`
 
-	// GrantTypes are the grants this client may use. If omitted or empty, it
-	// is [urn:ietf:params:oauth:grant-type:token-exchange]. When set, it must
-	// include token exchange. Allowed values are authorization_code,
-	// refresh_token, the token-exchange grant and the jwt-bearer grant.
+	// GrantTypes are the grants this client may use. If omitted or empty, the
+	// client is stored with [urn:ietf:params:oauth:grant-type:token-exchange]
+	// and its ID-JAG redemption (a JWT-bearer assertion of typ
+	// oauth-id-jag+jwt) is not gated, for backward compatibility. When set, the
+	// list is complete: it must include token exchange, and it must include the
+	// jwt-bearer grant to keep ID-JAG redemption. Allowed values are
+	// authorization_code, refresh_token, the token-exchange grant and the
+	// jwt-bearer grant.
 	GrantTypes []string `json:"grant_types,omitempty" yaml:"grant_types,omitempty"`
 
 	// RedirectURIs are the registered redirect URIs. Required with the

@@ -10,6 +10,8 @@ import (
 	"slices"
 
 	"github.com/ory/fosite"
+
+	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 )
 
 // ErrInvalidTarget is the RFC 8707 error for invalid or unauthorized resource parameters.
@@ -86,7 +88,7 @@ func ValidateAudienceAllowed(resource string, allowedAudiences []string) error {
 
 	// Secure default: empty allowlist means reject all
 	if len(allowedAudiences) == 0 {
-		return ErrInvalidTarget.WithHint("No resource audiences are configured on this server")
+		return errResourceNotPermitted(resource)
 	}
 
 	// Exact string matching
@@ -94,5 +96,81 @@ func ValidateAudienceAllowed(resource string, allowedAudiences []string) error {
 		return nil
 	}
 
-	return ErrInvalidTarget.WithHintf("Resource %q is not a registered audience", resource)
+	return errResourceNotPermitted(resource)
+}
+
+// resourceScopedClient is implemented by clients (e.g. SPIFFE clients) that
+// keep an RFC 8707 resource allowlist independent of GetAudience. Resources and
+// audiences are independent request dimensions: permission in one must never
+// imply permission in the other. A client that does not implement this
+// interface falls back to GetAudience, preserving behavior for clients (e.g.
+// delegate clients) that only ever had one list.
+type resourceScopedClient interface {
+	Resources() []string
+}
+
+// ClientResources returns the resources client may request: its own resource
+// allowlist if it keeps one, otherwise its audiences.
+func ClientResources(client fosite.Client) []string {
+	if rc, ok := client.(resourceScopedClient); ok {
+		return rc.Resources()
+	}
+	return client.GetAudience()
+}
+
+// ValidateClientAudience checks that resource is one the client itself may
+// request. It applies to every client, including DCR and CIMD clients, and
+// compares resource to the client's resources with match, which callers take
+// from the server's fosite configuration (GetAudienceStrategy). That is the
+// strategy the token exchange path uses and the one fosite applies to the
+// client's audiences at the authorization code callback and in the refresh
+// grant, so the three cannot drift apart if the configured strategy changes.
+//
+// For a client that keeps no separate resource list, the callback checks the
+// same audiences this check does, so a request accepted here does not fail the
+// callback's audience check later, and one refused here fails with
+// invalid_target before the user logs in upstream. A client that keeps its own
+// resource list (a SPIFFE client) is checked against that list here but against
+// GetAudience at the callback; such clients are token-exchange only and never
+// reach /authorize, so the two never meet today.
+//
+// With fosite's default path-prefix strategy, scheme and host are compared
+// exactly, and the client's path must equal the resource path or be a
+// segment-boundary prefix of it. ValidateAudienceAllowed, which runs first,
+// still requires the resource to be an exact member of the server's list.
+func ValidateClientAudience(resource string, client fosite.Client, match fosite.AudienceMatchingStrategy) error {
+	if resource == "" {
+		return nil
+	}
+	if err := match(ClientResources(client), []string{resource}); err != nil {
+		return errResourceNotPermitted(resource)
+	}
+	return nil
+}
+
+// ValidateIDJAGClientAudience is ValidateClientAudience for ID-JAG redemption,
+// with one exception: a DCR or CIMD client is not narrowed. Its audience is a
+// copy of the server's allowed audiences taken at registration, not a
+// per-client policy, so checking it adds nothing while the copy is current
+// and wrongly refuses a newly added audience once it is stale (DCR rows are
+// never refreshed). The resource is still required to be an exact member of
+// the server's list.
+//
+// Every other client is checked, including a client that has no audiences and
+// no resource allowlist: such a client may request nothing. Clients with a
+// resource allowlist, such as SPIFFE clients, are checked against it.
+func ValidateIDJAGClientAudience(resource string, client fosite.Client, match fosite.AudienceMatchingStrategy) error {
+	if _, scoped := client.(resourceScopedClient); !scoped && registration.DCRIssued(client) {
+		return nil
+	}
+	return ValidateClientAudience(resource, client, match)
+}
+
+// errResourceNotPermitted is the single refusal both the server-level and the
+// client-level audience checks return. /authorize delivers it in the redirect
+// to a caller that has not authenticated, so two different hints would tell
+// that caller which of the two policies refused a resource, and so whether the
+// resource is on the server's list or only outside this client's audiences.
+func errResourceNotPermitted(resource string) error {
+	return ErrInvalidTarget.WithHintf("The client is not permitted to request resource %q", resource)
 }

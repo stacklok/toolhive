@@ -34,7 +34,9 @@ type ConfiguredClientSpec struct {
 	// defaultConfiguredSigningAlgorithm.
 	SigningAlgorithm string
 
-	// GrantTypes empty means the default [token-exchange].
+	// GrantTypes empty means the stored client holds [token-exchange] alone.
+	// ID-JAG redemption is still not gated for such a client, for backward
+	// compatibility; only a client that sets GrantTypes must list jwt-bearer.
 	GrantTypes []string
 
 	RedirectURIs []string

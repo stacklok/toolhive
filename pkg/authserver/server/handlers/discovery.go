@@ -139,29 +139,35 @@ func (h *Handler) buildOAuthMetadata() sharedobauth.AuthorizationServerMetadata 
 
 // tokenEndpointAuthMethodsSupported returns the token_endpoint_auth_methods_supported
 // list for discovery, derived from config. "none" is always first — the public-client
-// default. When confidential DCR is enabled or static delegate clients are configured,
+// default. When confidential DCR is enabled or a static delegate client uses a secret,
 // the two client_secret_* methods are appended. Static clients need these methods even
 // though DCR itself remains public-only. RFC 8414 defines no ordering semantics, so
 // "none"-first is a readability convention, not a security control.
 func (h *Handler) tokenEndpointAuthMethodsSupported() []string {
 	methods := []string{sharedobauth.TokenEndpointAuthMethodNone}
-	if h.config.AllowConfidentialClientRegistration || h.config.HasStaticDelegateClients {
+	if h.config.AllowConfidentialClientRegistration || h.config.HasStaticSecretClients {
 		methods = append(methods,
 			sharedobauth.TokenEndpointAuthMethodClientSecretBasic,
 			sharedobauth.TokenEndpointAuthMethodClientSecretPost,
 		)
 	}
-	if h.config.AllowPrivateKeyJWTRegistration {
+	if h.advertisesPrivateKeyJWT() {
 		methods = append(methods, sharedobauth.TokenEndpointAuthMethodPrivateKeyJWT)
 	}
 	return methods
+}
+
+// advertisesPrivateKeyJWT reports whether any client, registered dynamically or
+// configured at startup, can authenticate with private_key_jwt.
+func (h *Handler) advertisesPrivateKeyJWT() bool {
+	return h.config.AllowPrivateKeyJWTRegistration || h.config.HasStaticPrivateKeyJWTClients
 }
 
 // tokenEndpointAuthSigningAlgorithms returns the signing algorithms advertised
 // for private_key_jwt client assertions. The list is shared with DCR validation
 // so discovery cannot claim support for an algorithm registration rejects.
 func (h *Handler) tokenEndpointAuthSigningAlgorithms() []string {
-	if !h.config.AllowPrivateKeyJWTRegistration {
+	if !h.advertisesPrivateKeyJWT() {
 		return nil
 	}
 	return registration.SupportedSigningAlgorithms()

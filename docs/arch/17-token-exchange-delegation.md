@@ -279,14 +279,14 @@ Both `/.well-known/oauth-authorization-server` and
 (`Config.DisableTokenExchange`, `AuthorizationServerConfig.TokenExchangeEnabled`)
 — the same flag governs both registration with fosite and discovery
 advertisement, so they cannot drift out of sync. `token_endpoint_auth_methods_supported` always
-includes `none`; it also includes `client_secret_basic` and
-`client_secret_post` when confidential DCR is enabled or a static delegate
-client is configured, and includes `private_key_jwt` when
-`allowPrivateKeyJWTRegistration` is enabled. In the latter case,
-`token_endpoint_auth_signing_alg_values_supported` lists the implemented
-algorithms. The RFC 7523 §2.1 JWT-bearer grant is advertised only when a trusted
-issuer opts into it. A private-key JWT DCR client is limited to token exchange;
-it is not an authorization-code client.
+includes `none`. It also includes `client_secret_basic` and
+`client_secret_post` when confidential DCR is enabled or a configured delegate
+client authenticates with a secret. It includes `private_key_jwt`, together with
+`token_endpoint_auth_signing_alg_values_supported` (the implemented algorithms),
+when `allowPrivateKeyJWTRegistration` is enabled or a configured delegate client
+uses `private_key_jwt`. The RFC 7523 §2.1 JWT-bearer grant is advertised only
+when a trusted issuer opts into it. A private-key JWT DCR client is limited to
+token exchange; it is not an authorization-code client.
 
 On Kubernetes, a delegate-client Secret is injected as a pod environment
 variable and is resolved when the authorization server starts. Updating that
@@ -570,6 +570,21 @@ One validator in the `registration` package checks these fields. It runs when
 `RunConfig` is validated (with the JWKS contents still unloaded) and when the
 client is built (with the keys loaded). The built client is never marked as
 DCR-issued, so it has no TTL and does not count against `max_dcr_clients`.
+
+At startup the runner reads each `jwks_file` next to the existing
+`client_secret_file` handling, so rotating a key means replacing the file and
+restarting. The stored client keeps its `client_id`; the new key set replaces
+the old one. Discovery lists `private_key_jwt` in
+`token_endpoint_auth_methods_supported` when any configured client uses it.
+It lists the `client_secret_*` methods only when a configured client or dynamic
+client registration uses a secret.
+
+`/authorize` treats every client without the `authorization_code` grant as
+back-channel only and answers `invalid_client`, as it does for an unknown
+client, so the response does not show whether such a client exists. Before this
+change a client was handled this way only when it was explicitly marked, had no
+response types, or had exactly the token-exchange grant. A client that holds `authorization_code` in addition to other grants can
+log users in.
 
 ### Worked example
 

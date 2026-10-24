@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net/http"
 	"reflect"
+	"slices"
 	"time"
 
 	josev3 "github.com/go-jose/go-jose/v3"
@@ -30,6 +31,7 @@ import (
 	spiffeauth "github.com/stacklok/toolhive/pkg/authserver/spiffe"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
+	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
 // server is the internal implementation of the Server interface.
@@ -200,29 +202,29 @@ func authorizationServerParams(
 	spiffeRegistry *SPIFFEAssociationRegistry, bundleSource *spiffeMultiDomainBundleSource, stor storage.Storage,
 ) *oauthserver.AuthorizationServerParams {
 	return &oauthserver.AuthorizationServerParams{
-		Issuer:                                    cfg.Issuer,
-		AccessTokenLifespan:                       cfg.AccessTokenLifespan,
-		RefreshTokenLifespan:                      cfg.RefreshTokenLifespan,
-		AuthCodeLifespan:                          cfg.AuthCodeLifespan,
-		HMACSecrets:                               cfg.HMACSecrets,
-		SigningKeyID:                              signingKey.KeyID,
-		SigningKeyAlgorithm:                       signingKey.Algorithm,
-		SigningKey:                                signingKey.Key,
-		AdditionalPublicKeys:                      additionalPublicKeys,
-		ScopesSupported:                           cfg.ScopesSupported,
-		BaselineClientScopes:                      cfg.BaselineClientScopes,
-		AllowedAudiences:                          cfg.AllowedAudiences,
-		SubjectIdentifierAudiences:                cfg.SubjectIdentifierAudiences,
-		AccessTokenType:                           cfg.AccessTokenType,
-		AuthorizationEndpointBaseURL:              cfg.AuthorizationEndpointBaseURL,
-		CIMDEnabled:                               cfg.CIMDEnabled,
-		AllowConfidentialClientRegistration:       cfg.AllowConfidentialClientRegistration,
-		AllowPrivateKeyJWTRegistration:            cfg.AllowPrivateKeyJWTRegistration,
-		HasStaticDelegateClients:                  len(cfg.DelegateClients) > 0,
-		HasStaticSecretClients:                    hasSecretDelegateClient(cfg.DelegateClients),
-		InsecureAllowHTTP:                         cfg.InsecureAllowHTTP,
+		Issuer:                              cfg.Issuer,
+		AccessTokenLifespan:                 cfg.AccessTokenLifespan,
+		RefreshTokenLifespan:                cfg.RefreshTokenLifespan,
+		AuthCodeLifespan:                    cfg.AuthCodeLifespan,
+		HMACSecrets:                         cfg.HMACSecrets,
+		SigningKeyID:                        signingKey.KeyID,
+		SigningKeyAlgorithm:                 signingKey.Algorithm,
+		SigningKey:                          signingKey.Key,
+		AdditionalPublicKeys:                additionalPublicKeys,
+		ScopesSupported:                     cfg.ScopesSupported,
+		BaselineClientScopes:                cfg.BaselineClientScopes,
+		AllowedAudiences:                    cfg.AllowedAudiences,
+		SubjectIdentifierAudiences:          cfg.SubjectIdentifierAudiences,
+		AccessTokenType:                     cfg.AccessTokenType,
+		AuthorizationEndpointBaseURL:        cfg.AuthorizationEndpointBaseURL,
+		CIMDEnabled:                         cfg.CIMDEnabled,
+		AllowConfidentialClientRegistration: cfg.AllowConfidentialClientRegistration,
+		AllowPrivateKeyJWTRegistration:      cfg.AllowPrivateKeyJWTRegistration,
+		InsecureAllowHTTP:                   cfg.InsecureAllowHTTP,
 		InsecureAllowConfidentialOverLoopbackHTTP: cfg.InsecureAllowConfidentialOverLoopbackHTTP,
 		ForceConfidentialRedirectURIs:             cfg.ForceConfidentialRedirectURIs,
+		HasStaticPrivateKeyJWTClients:             hasPrivateKeyJWTDelegateClient(cfg.DelegateClients),
+		HasStaticSecretClients:                    hasSecretDelegateClient(cfg.DelegateClients),
 		DisableTokenExchange:                      cfg.DisableTokenExchange,
 		JWTBearerGrantEnabled:                     JWTBearerGrantEnabled(cfg.TrustedIssuers),
 		DeviceFlowEnabled:                         cfg.DeviceFlowEnabled,
@@ -345,9 +347,11 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage) (_ *server
 	}, nil
 }
 
-// prepareServerStorageAndRegisterClients decorates storage, validates configured
-// consent-exempt clients against the prepared registration view, and registers
-// delegate clients before returning the storage handles used by server construction.
+// prepareServerStorageAndRegisterClients decorates storage, registers delegate
+// clients, and validates configured consent-exempt clients against the prepared
+// registration view before returning the storage handles used by server
+// construction. Registration comes first because a configured login client must
+// exist before it can be checked as consent-exempt.
 func prepareServerStorageAndRegisterClients(
 	ctx context.Context, cfg Config, stor storage.Storage,
 ) (prepared storage.Storage, dcrStore storage.DCRCredentialStore,
@@ -386,10 +390,10 @@ func prepareServerStorageAndRegisterClients(
 	if retErr != nil {
 		return nil, nil, nil, nil, retErr
 	}
-	if retErr = validateConsentExemptClients(ctx, prepared, cfg.ConsentExemptClientIDs); retErr != nil {
+	if retErr = registerDelegateClients(ctx, prepared, cfg.DelegateClients); retErr != nil {
 		return nil, nil, nil, nil, retErr
 	}
-	if retErr = registerDelegateClients(ctx, prepared, cfg.DelegateClients); retErr != nil {
+	if retErr = validateConsentExemptClients(ctx, prepared, cfg.ConsentExemptClientIDs); retErr != nil {
 		return nil, nil, nil, nil, retErr
 	}
 	return prepared, dcrStore, bundleSource, spiffeRegistry, nil
@@ -415,6 +419,14 @@ func newClientAdmissionStorage(cfg Config, stor storage.Storage) (storage.Storag
 		return nil, fmt.Errorf("create client admission storage: %w", err)
 	}
 	return admission, nil
+}
+
+// hasPrivateKeyJWTDelegateClient reports whether any delegate client
+// authenticates with private_key_jwt.
+func hasPrivateKeyJWTDelegateClient(clients []DelegateClient) bool {
+	return slices.ContainsFunc(clients, func(c DelegateClient) bool {
+		return c.TokenEndpointAuthMethod == oauthproto.TokenEndpointAuthMethodPrivateKeyJWT
+	})
 }
 
 func validateConsentExemptClients(ctx context.Context, stor storage.Storage, clientIDs []string) error {

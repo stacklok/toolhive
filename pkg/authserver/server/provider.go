@@ -132,14 +132,15 @@ type AuthorizationServerConfig struct {
 	// private_key_jwt authentication. This is independent of confidential-client
 	// registration and is used by DCR validation and discovery advertisement.
 	AllowPrivateKeyJWTRegistration bool
-	// HasStaticDelegateClients indicates whether any pre-provisioned confidential
-	// delegate client is registered at startup. Discovery advertises client-secret
-	// authentication methods when this is true.
-	HasStaticDelegateClients bool
-	// HasStaticSecretClients indicates whether any static delegate
-	// client authenticates with a secret. Only these count as confidential for
-	// the transport rule; private_key_jwt delegate clients send no secret.
+	// HasStaticSecretClients indicates whether any pre-provisioned delegate
+	// client authenticates with a client secret. Only these count as
+	// confidential for the cleartext-transport check, and discovery advertises
+	// the client_secret_* methods when this is true.
 	HasStaticSecretClients bool
+	// HasStaticPrivateKeyJWTClients indicates whether any pre-provisioned
+	// delegate client authenticates with private_key_jwt. Discovery advertises
+	// that method and its signing algorithms when this is true.
+	HasStaticPrivateKeyJWTClients bool
 	// InsecureAllowHTTP permits a non-loopback HTTP issuer. It is incompatible
 	// with confidential clients.
 	InsecureAllowHTTP bool
@@ -246,14 +247,15 @@ type AuthorizationServerParams struct {
 	// private_key_jwt authentication. This is independent of confidential-client
 	// registration and is used by DCR validation and discovery advertisement.
 	AllowPrivateKeyJWTRegistration bool
-	// HasStaticDelegateClients indicates whether any pre-provisioned confidential
-	// delegate client is registered at startup. Discovery advertises client-secret
-	// authentication methods when this is true.
-	HasStaticDelegateClients bool
-	// HasStaticSecretClients indicates whether any static delegate
-	// client authenticates with a secret. Only these count as confidential for
-	// the transport rule; private_key_jwt delegate clients send no secret.
+	// HasStaticSecretClients indicates whether any pre-provisioned delegate
+	// client authenticates with a client secret. Only these count as
+	// confidential for the cleartext-transport check, and discovery advertises
+	// the client_secret_* methods when this is true.
 	HasStaticSecretClients bool
+	// HasStaticPrivateKeyJWTClients indicates whether any pre-provisioned
+	// delegate client authenticates with private_key_jwt. Discovery advertises
+	// that method and its signing algorithms when this is true.
+	HasStaticPrivateKeyJWTClients bool
 	// InsecureAllowHTTP permits a non-loopback HTTP issuer. It is incompatible
 	// with confidential clients.
 	InsecureAllowHTTP bool
@@ -534,21 +536,19 @@ func NewAuthorizationServerConfig(cfg *AuthorizationServerParams) (*Authorizatio
 	}()
 
 	return &AuthorizationServerConfig{
-		Config:                                    fositeConfig,
-		SigningKey:                                &jwk,
-		SigningJWKS:                               signingJWKS,
-		AllowedAudiences:                          cfg.AllowedAudiences,
-		SubjectIdentifierAudiences:                cfg.SubjectIdentifierAudiences,
-		AccessTokenType:                           accessTokenType,
-		ScopesSupported:                           cfg.ScopesSupported,
-		BaselineClientScopes:                      cfg.BaselineClientScopes,
-		AuthorizationEndpointBaseURL:              cfg.AuthorizationEndpointBaseURL,
-		CIMDEnabled:                               cfg.CIMDEnabled,
-		AllowConfidentialClientRegistration:       cfg.AllowConfidentialClientRegistration,
-		AllowPrivateKeyJWTRegistration:            cfg.AllowPrivateKeyJWTRegistration,
-		HasStaticDelegateClients:                  cfg.HasStaticDelegateClients,
-		HasStaticSecretClients:                    cfg.HasStaticSecretClients,
-		InsecureAllowHTTP:                         cfg.InsecureAllowHTTP,
+		Config:                              fositeConfig,
+		SigningKey:                          &jwk,
+		SigningJWKS:                         signingJWKS,
+		AllowedAudiences:                    cfg.AllowedAudiences,
+		SubjectIdentifierAudiences:          cfg.SubjectIdentifierAudiences,
+		AccessTokenType:                     accessTokenType,
+		ScopesSupported:                     cfg.ScopesSupported,
+		BaselineClientScopes:                cfg.BaselineClientScopes,
+		AuthorizationEndpointBaseURL:        cfg.AuthorizationEndpointBaseURL,
+		CIMDEnabled:                         cfg.CIMDEnabled,
+		AllowConfidentialClientRegistration: cfg.AllowConfidentialClientRegistration,
+		AllowPrivateKeyJWTRegistration:      cfg.AllowPrivateKeyJWTRegistration,
+		InsecureAllowHTTP:                   cfg.InsecureAllowHTTP,
 		InsecureAllowConfidentialOverLoopbackHTTP: cfg.InsecureAllowConfidentialOverLoopbackHTTP,
 		ForceConfidentialRedirectURIs:             cfg.ForceConfidentialRedirectURIs,
 		TokenExchangeEnabled:                      !cfg.DisableTokenExchange,
@@ -558,6 +558,8 @@ func NewAuthorizationServerConfig(cfg *AuthorizationServerParams) (*Authorizatio
 		SPIFFEClientResolver:                      cfg.SPIFFEClientResolver,
 		SPIFFEX509BundleSource:                    cfg.SPIFFEX509BundleSource,
 		SPIFFEJWTBundleSource:                     cfg.SPIFFEJWTBundleSource,
+		HasStaticPrivateKeyJWTClients:             cfg.HasStaticPrivateKeyJWTClients,
+		HasStaticSecretClients:                    cfg.HasStaticSecretClients,
 	}, nil
 }
 

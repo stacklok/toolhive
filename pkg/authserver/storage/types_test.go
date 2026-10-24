@@ -28,6 +28,62 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestExchangeGrantLive(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 10, 24, 12, 0, 0, 0, time.UTC)
+	future := now.Add(time.Hour)
+	past := now.Add(-time.Hour)
+
+	tests := []struct {
+		name    string
+		grant   ExchangeGrant
+		wantErr error
+	}{
+		{
+			name:  "live",
+			grant: ExchangeGrant{ExpiresAt: future},
+		},
+		{
+			name:    "expired",
+			grant:   ExchangeGrant{ExpiresAt: past},
+			wantErr: ErrExpired,
+		},
+		{
+			name:    "revoked",
+			grant:   ExchangeGrant{ExpiresAt: future, RevokedAt: past},
+			wantErr: ErrRevoked,
+		},
+		{
+			name:    "revoked and expired reports revoked",
+			grant:   ExchangeGrant{ExpiresAt: past, RevokedAt: past},
+			wantErr: ErrRevoked,
+		},
+		{
+			name:    "zero expiry counts as expired",
+			grant:   ExchangeGrant{},
+			wantErr: ErrExpired,
+		},
+		{
+			name:  "now equal to expiry is still live",
+			grant: ExchangeGrant{ExpiresAt: now},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := tt.grant.Live(now)
+			if tt.wantErr == nil {
+				assert.NoError(t, err)
+				return
+			}
+			assert.ErrorIs(t, err, tt.wantErr)
+		})
+	}
+}
+
 func TestNotFoundRFC6749Error(t *testing.T) {
 	t.Parallel()
 

@@ -64,7 +64,7 @@ jobs:
       # Throwaway registry. Nothing published here outlives the job, so it
       # runs over plain HTTP with no auth.
       registry:
-        image: registry:3@sha256:ddf754342cfc8acc51a56d5d0ab6af06826461864460636d8bd5c546dab2a7b8
+        image: registry:3@sha256:01cd312e67026f06f5d89c3e133a4a9adc7cb9eeb9b1194e0b2954dfd770efd2
         ports:
           - 5000:5000
 

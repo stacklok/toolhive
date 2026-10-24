@@ -1050,6 +1050,14 @@ type AssertionJWTConsumer interface {
 	ConsumeAssertionJWT(ctx context.Context, purpose, issuer, jti string, exp time.Time) error
 }
 
+// ExchangeGrantMarkerMargin is how long past the subject token's exp the replay
+// marker of an exchange grant stays live. The self-issued validator accepts a
+// token at now == exp, and CreateExchangeGrant runs after the handler's own
+// latency, so a marker that ended exactly at exp could let a token pass
+// validation just before exp and be replayed just after. The marker is live
+// while !now.After(SourceExpiresAt + margin). Every backend uses this value.
+const ExchangeGrantMarkerMargin = time.Minute
+
 // ExchangeGrant is the server-side record behind a refresh token issued through
 // RFC 8693 token exchange. The client holds only the opaque token; the record is
 // found by the token's HMAC signature. A grant either allows exchange for
@@ -1125,10 +1133,11 @@ func (g *ExchangeGrant) Live(now time.Time) error {
 type ExchangeGrantStorage interface {
 	// CreateExchangeGrant stores g. The write is atomic: the record and, when
 	// g.SourceJTI is set, its replay marker are both written, or neither is.
-	// The replay marker is keyed by (g.SourceIssuer, g.SourceJTI) and is kept at
-	// least until g.SourceExpiresAt. There is no separate leeway setting; the
-	// self-issued validator uses leeway 0. SourceIssuer and SourceJTI are both
-	// set for a top-level grant, and both empty for a child.
+	// The replay marker is keyed by (g.SourceIssuer, g.SourceJTI) and is live
+	// while now is not after g.SourceExpiresAt + ExchangeGrantMarkerMargin.
+	// SourceIssuer and SourceJTI must both be set (with a non-zero
+	// SourceExpiresAt) for a top-level grant, and both empty for a child; any
+	// other shape is an error and writes nothing.
 	//
 	// It returns fosite.ErrJTIKnown if (g.SourceIssuer, g.SourceJTI) was already
 	// recorded, and ErrAlreadyExists if a grant with g.Signature already exists.
@@ -1144,8 +1153,9 @@ type ExchangeGrantStorage interface {
 
 	// RevokeExchangeGrant sets RevokedAt to now on the grant with the given
 	// signature. It is idempotent: revoking a grant that is already revoked
-	// succeeds and keeps the original RevokedAt. It returns ErrNotFound if no
-	// record exists. It does not touch child grants. A child is dead once its
+	// succeeds and keeps the original RevokedAt. now must not be zero. It
+	// returns ErrNotFound if no record exists or the record is past ExpiresAt.
+	// It does not touch child grants. A child is dead once its
 	// parent is missing or not live, and callers check that on every use.
 	RevokeExchangeGrant(ctx context.Context, signature string, now time.Time) error
 }

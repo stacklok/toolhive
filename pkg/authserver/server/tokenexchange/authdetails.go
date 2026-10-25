@@ -43,11 +43,7 @@ func (h *Handler) parseAuthorizationDetails(form url.Values, clientID string) (*
 	}
 	if len(values) > 1 {
 		warnAuthorizationDetailsRejected(clientID, rejectRepeated)
-		return nil, &fosite.RFC6749Error{
-			ErrorField:       string(authorizationdetails.CodeInvalidRequest),
-			DescriptionField: "The authorization_details parameter must not be repeated.",
-			CodeField:        http.StatusBadRequest,
-		}
+		return nil, repeatedAuthorizationDetailsError()
 	}
 	pending, err := h.authorizationDetailsRegistry.Parse(values[0], oauthproto.GrantTypeTokenExchange)
 	if err != nil {
@@ -135,6 +131,16 @@ func authorizationDetailsGrantError(clientID string, err error) error {
 
 func warnAuthorizationDetailsRejected(clientID, reason string) {
 	slog.Warn("authorization_details rejected", "client_id", clientID, "reason", reason)
+}
+
+// repeatedAuthorizationDetailsError is returned when the authorization_details
+// parameter appears more than once.
+func repeatedAuthorizationDetailsError() *fosite.RFC6749Error {
+	return &fosite.RFC6749Error{
+		ErrorField:       string(authorizationdetails.CodeInvalidRequest),
+		DescriptionField: "The authorization_details parameter must not be repeated.",
+		CodeField:        http.StatusBadRequest,
+	}
 }
 
 func invalidAuthorizationDetailsError() *fosite.RFC6749Error {

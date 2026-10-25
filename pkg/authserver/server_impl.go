@@ -709,6 +709,27 @@ func configuredClientPolicies(
 	return policies, nil
 }
 
+// discoverExchangeGrantStorage finds the optional ExchangeGrantStorage
+// capability of stor. A backend without it is fine until a client sets
+// exchange_refresh_tokens, which then fails startup rather than the first
+// request. The result is nil when the capability is absent.
+func discoverExchangeGrantStorage(
+	clients []DelegateClient, stor storage.Storage,
+) (storage.ExchangeGrantStorage, error) {
+	store, ok := storage.Unwrap(stor).(storage.ExchangeGrantStorage)
+	if ok {
+		return store, nil
+	}
+	for _, c := range clients {
+		if c.TokenExchange != nil && c.TokenExchange.ExchangeRefreshTokens != nil {
+			return nil, fmt.Errorf(
+				"delegate client %q sets exchange_refresh_tokens but storage backend %T does not implement storage.ExchangeGrantStorage",
+				c.ClientID, storage.Unwrap(stor))
+		}
+	}
+	return nil, nil
+}
+
 // buildProvider assembles the fosite OAuth2 provider, registering the RFC 8693
 // token-exchange handler and/or the RFC 7523 JWT-bearer handler as extension
 // grants alongside the standard grants -- whichever of the two are enabled
@@ -734,6 +755,10 @@ func buildProvider(
 		return nil, nil, policyErr
 	}
 	jwtBearerEnabled := JWTBearerGrantEnabled(cfg.TrustedIssuers)
+	exchangeGrantStore, storeErr := discoverExchangeGrantStorage(cfg.DelegateClients, stor)
+	if storeErr != nil {
+		return nil, nil, storeErr
+	}
 
 	// Built once, up front, and handed to whichever factories below actually
 	// need it: otherwise each factory closure would build its own
@@ -769,16 +794,11 @@ func buildProvider(
 	}()
 
 	factories := make([]oauthserver.Factory, 0, 4)
-	if !cfg.DisableTokenExchange {
-		tokenExchangeFactory, err := tokenexchange.FactoryWithSharedTrustedIssuerValidator(
-			cfg.DelegationTokenLifespan, cfg.TrustedIssuers, delegateIDs, clientPolicies, shared,
-			tokenexchange.WithAuthorizationDetailsRegistry(cfg.AuthorizationDetailsRegistry),
-		)
-		if err != nil {
-			return nil, nil, fmt.Errorf("failed to create token exchange factory: %w", err)
-		}
-		factories = append(factories, tokenExchangeFactory)
+	tokenExchangeFactories, err := buildTokenExchangeFactories(cfg, delegateIDs, clientPolicies, shared, exchangeGrantStore)
+	if err != nil {
+		return nil, nil, err
 	}
+	factories = append(factories, tokenExchangeFactories...)
 	if jwtBearerEnabled {
 		jwtBearerFactories, err := buildJWTBearerFactories(cfg.TrustedIssuers, shared, explicitGrantClientIDs(cfg.DelegateClients))
 		if err != nil {
@@ -805,6 +825,34 @@ func buildProvider(
 		return nil, nil, err
 	}
 	return provider, shared, nil
+}
+
+// buildTokenExchangeFactories builds the RFC 8693 token-exchange factory
+// together with the factory that issues refresh tokens through token exchange.
+// It returns none when token exchange is disabled.
+func buildTokenExchangeFactories(
+	cfg Config, delegateIDs []string, clientPolicies map[string]tokenexchange.ConfiguredClientPolicy,
+	shared *tokenexchange.MultiIssuerTokenValidator, exchangeGrantStore storage.ExchangeGrantStorage,
+) ([]oauthserver.Factory, error) {
+	if cfg.DisableTokenExchange {
+		return nil, nil
+	}
+	tokenExchangeFactory, err := tokenexchange.FactoryWithSharedTrustedIssuerValidator(
+		cfg.DelegationTokenLifespan, cfg.TrustedIssuers, delegateIDs, clientPolicies, shared,
+		tokenexchange.WithAuthorizationDetailsRegistry(cfg.AuthorizationDetailsRegistry),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create token exchange factory: %w", err)
+	}
+
+	// Registered with token exchange so a request for a refresh token
+	// always reaches it, even for a client that has not enabled the feature.
+	refreshTokenFactory, err := tokenexchange.RefreshTokenFactory(
+		clientPolicies, tokenexchange.WithExchangeGrantStorage(exchangeGrantStore))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create refresh token exchange factory: %w", err)
+	}
+	return []oauthserver.Factory{tokenExchangeFactory, refreshTokenFactory}, nil
 }
 
 // refreshGrantValidatorChain returns the refresh-grant validators in run

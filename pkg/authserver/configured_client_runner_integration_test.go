@@ -115,6 +115,7 @@ type clientAuth struct {
 
 type tokenResult struct {
 	status int
+	header http.Header
 	body   map[string]any
 }
 
@@ -160,7 +161,7 @@ func postToken(t *testing.T, serverURL string, auth clientAuth, values url.Value
 	}()
 	var body map[string]any
 	require.NoError(t, json.NewDecoder(response.Body).Decode(&body))
-	return tokenResult{status: response.StatusCode, body: body}
+	return tokenResult{status: response.StatusCode, header: response.Header, body: body}
 }
 
 // authorizeProbe sends an authorization request without following redirects and
@@ -256,10 +257,10 @@ func anySelfIssuedSubjectTokens() *authserver.DelegateClientTokenExchange {
 	}
 }
 
-// login logs the configured broker client in.
-func login(t *testing.T, serverURL string) (string, string) {
+// login logs clientID in with the broker's redirect URI, audience and scopes.
+func login(t *testing.T, serverURL, clientID string) (string, string) {
 	t.Helper()
-	return loginWith(t, serverURL, cfgBrokerID, cfgRedirectURI, cfgAudienceA, "openid profile offline_access")
+	return loginWith(t, serverURL, clientID, cfgRedirectURI, cfgAudienceA, "openid profile offline_access")
 }
 
 // loginWith drives authorize, consent and the upstream callback for the given
@@ -409,7 +410,7 @@ func runConfiguredClientFlows(t *testing.T, backend string) {
 	})
 
 	t.Run("private_key_jwt client logs in and refreshes", func(t *testing.T) {
-		code, verifier := login(t, srv.URL)
+		code, verifier := login(t, srv.URL, cfgBrokerID)
 		auth := clientAuth{clientID: cfgBrokerID, key: &brokerKey}
 		tokens := postToken(t, srv.URL, auth, url.Values{
 			"grant_type": {oauthproto.GrantTypeAuthorizationCode}, "code": {code},
@@ -562,7 +563,7 @@ func TestConfiguredLoginClientRefreshTokenSurvivesRemovalAndReAdd(t *testing.T) 
 	}
 
 	serverURL, stop := start(brokerClient(jwksFile))
-	code, verifier := login(t, serverURL)
+	code, verifier := login(t, serverURL, cfgBrokerID)
 	tokens := postToken(t, serverURL, auth, url.Values{
 		"grant_type": {oauthproto.GrantTypeAuthorizationCode}, "code": {code},
 		"redirect_uri": {cfgRedirectURI}, "code_verifier": {verifier},
@@ -595,8 +596,15 @@ func accessTokenClaims(t *testing.T, embedded *authserverrunner.EmbeddedAuthServ
 
 func signIDJAGAssertion(t *testing.T, key *rsa.PrivateKey, issuer, clientID, jti string) string {
 	t.Helper()
+	return signAssertionOfType(t, key, "oauth-id-jag+jwt", issuer, clientID, jti)
+}
+
+// signAssertionOfType signs a trusted-issuer assertion with the given JOSE typ:
+// oauth-id-jag+jwt for an ID-JAG, JWT for a plain RFC 7523 assertion.
+func signAssertionOfType(t *testing.T, key *rsa.PrivateKey, typ, issuer, clientID, jti string) string {
+	t.Helper()
 	signer, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.RS256, Key: key},
-		(&jose.SignerOptions{}).WithType("oauth-id-jag+jwt").WithHeader("kid", "idp-key"))
+		(&jose.SignerOptions{}).WithType(jose.ContentType(typ)).WithHeader("kid", "idp-key"))
 	require.NoError(t, err)
 	now := time.Now()
 	assertion, err := jwt.Signed(signer).Claims(jwt.Claims{

@@ -53,6 +53,7 @@ type exchangeGrantRecord struct {
 	ClientID           string    `json:"client_id"`
 	Subject            string    `json:"subject"`
 	SubjectIdentifier  string    `json:"subject_identifier,omitempty"`
+	UpstreamSubject    string    `json:"upstream_subject,omitempty"`
 	SourceIssuer       string    `json:"source_issuer,omitempty"`
 	SourceJTI          string    `json:"source_jti,omitempty"`
 	SourceExpiresAt    time.Time `json:"source_expires_at"`
@@ -190,6 +191,7 @@ func (s *RedisStorage) CreateExchangeGrant(ctx context.Context, g *ExchangeGrant
 		ClientID:           g.ClientID,
 		Subject:            g.Subject,
 		SubjectIdentifier:  g.SubjectIdentifier,
+		UpstreamSubject:    g.UpstreamSubject,
 		SourceIssuer:       g.SourceIssuer,
 		SourceJTI:          g.SourceJTI,
 		SourceExpiresAt:    g.SourceExpiresAt,
@@ -264,6 +266,7 @@ func (s *RedisStorage) GetExchangeGrant(ctx context.Context, signature string) (
 		ClientID:           rec.ClientID,
 		Subject:            rec.Subject,
 		SubjectIdentifier:  rec.SubjectIdentifier,
+		UpstreamSubject:    rec.UpstreamSubject,
 		SourceIssuer:       rec.SourceIssuer,
 		SourceJTI:          rec.SourceJTI,
 		SourceExpiresAt:    rec.SourceExpiresAt,

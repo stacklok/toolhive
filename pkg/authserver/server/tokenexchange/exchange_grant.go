@@ -73,8 +73,8 @@ func newExchangeGrantRegistry() (*authorizationdetails.Registry, error) {
 // grantExchangeGrantShape is the Grant hook. It is decide-only and holds no
 // state: it checks that exactly one entry was sent and that it has the right
 // shape, and returns the entry unchanged. Its output is the request, NOT the
-// echo: the handler must echo the entry returned by validateTopLevelEntry or
-// validateChildEntry, never Pending.Grant's output. Policy, caps and the echo
+// echo: the handler must echo the entry returned by the validateTopLevel* or
+// validateChild* functions, never Pending.Grant's output. Policy, caps and the echo
 // are applied by those functions, which know the client.
 //
 // The hook is never called when the parameter is absent or "[]", so the
@@ -180,7 +180,7 @@ func decodeExchangeGrantEntry(raw json.RawMessage) (exchangeGrantEntry, error) {
 //
 // The response's expires_in is exchangeGrantExpiresIn(expiresAt, now) with the
 // same now. Errors are plain authorizationdetails.Error values that
-// authorizationDetailsGrantError maps to invalid_authorization_details.
+// exchangeGrantDetailsError maps to invalid_authorization_details.
 //
 // The grant's lifetime is now plus the client's cap for the entry's token type.
 // It is deliberately not bounded by the subject token's exp: the grant exists
@@ -195,6 +195,14 @@ func validateTopLevelEntry(
 	if err != nil {
 		return nil, time.Time{}, err
 	}
+	return validateTopLevelDecoded(entry, policy, now)
+}
+
+// validateTopLevelDecoded is validateTopLevelEntry for an entry the caller has
+// already decoded with decodeExchangeGrantEntry.
+func validateTopLevelDecoded(
+	entry exchangeGrantEntry, policy ConfiguredClientPolicy, now time.Time,
+) (json.RawMessage, time.Time, error) {
 	tokenType := entry.IssuableTokenTypes[0]
 	capSeconds, err := exchangeGrantCapSeconds(policy, tokenType)
 	if err != nil {
@@ -219,6 +227,14 @@ func validateChildEntry(
 	if err != nil {
 		return nil, time.Time{}, err
 	}
+	return validateChildDecoded(entry, parent, policy, now)
+}
+
+// validateChildDecoded is validateChildEntry for an entry the caller has
+// already decoded with decodeExchangeGrantEntry.
+func validateChildDecoded(
+	entry exchangeGrantEntry, parent *storage.ExchangeGrant, policy ConfiguredClientPolicy, now time.Time,
+) (json.RawMessage, time.Time, error) {
 	tokenType := entry.IssuableTokenTypes[0]
 	if tokenType == oauthproto.TokenTypeRefreshToken {
 		return nil, time.Time{}, invalidExchangeGrant(reasonTokenTypeNotPermitted)

@@ -341,6 +341,9 @@ func validateConfiguredExchangeRefreshTokens(spec ConfiguredClientSpec) error {
 	if spec.APIAudience == "" {
 		return fmt.Errorf("token_exchange.api_audience is required with token_exchange.exchange_refresh_tokens")
 	}
+	if len(spec.AllowedSourceClients) == 0 {
+		return fmt.Errorf("token_exchange.allowed_source_clients is required with token_exchange.exchange_refresh_tokens")
+	}
 	if spec.IDJAGMaxLifetime == "" && spec.RefreshTokenMaxLifetime == "" {
 		return fmt.Errorf("token_exchange.exchange_refresh_tokens needs id_jag_max_lifetime or refresh_token_max_lifetime")
 	}

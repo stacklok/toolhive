@@ -41,6 +41,7 @@ func contractGrant(signature string) *ExchangeGrant {
 		ClientID:           "client-a",
 		Subject:            "user-1",
 		SubjectIdentifier:  `{"format":"iss_sub","iss":"https://issuer.example","sub":"user-1"}`,
+		UpstreamSubject:    `{"claim":"oid","iss":"https://issuer.example","value":"obj-1"}`,
 		SourceIssuer:       "https://issuer.example",
 		SourceJTI:          "jti-" + signature,
 		SourceExpiresAt:    contractEpoch.Add(10 * time.Minute),
@@ -68,6 +69,7 @@ func runExchangeGrantStorageContract(t *testing.T, newStore exchangeGrantStoreFa
 		assert.Equal(t, g.ClientID, got.ClientID)
 		assert.Equal(t, g.Subject, got.Subject)
 		assert.Equal(t, g.SubjectIdentifier, got.SubjectIdentifier)
+		assert.Equal(t, g.UpstreamSubject, got.UpstreamSubject)
 		assert.Equal(t, g.SourceIssuer, got.SourceIssuer)
 		assert.Equal(t, g.SourceJTI, got.SourceJTI)
 		assert.True(t, g.SourceExpiresAt.Equal(got.SourceExpiresAt))
@@ -88,6 +90,8 @@ func runExchangeGrantStorageContract(t *testing.T, newStore exchangeGrantStoreFa
 		got, err := store.GetExchangeGrant(ctx, "child")
 		require.NoError(t, err)
 		assert.Equal(t, "parent", got.ParentSignature)
+		assert.Equal(t, child.SubjectIdentifier, got.SubjectIdentifier)
+		assert.Equal(t, child.UpstreamSubject, got.UpstreamSubject)
 		assert.Empty(t, got.SourceJTI)
 		assert.True(t, child.CreatedAt.Equal(got.CreatedAt))
 	})

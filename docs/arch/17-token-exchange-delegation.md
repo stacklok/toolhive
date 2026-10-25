@@ -1287,9 +1287,9 @@ logged at any level, and the submitted value is never logged.
 conveyed to resource servers yet. Register only types ToolHive itself enforces,
 such as a session-binding type. Conveying details to resource servers is
 tracked in [#6909](https://github.com/stacklok/toolhive/issues/6909), and grant
-storage in [#6895](https://github.com/stacklok/toolhive/issues/6895). Requesting
-a refresh token as the output of token exchange remains unsupported
-(#6896/#6897).
+storage in [#6895](https://github.com/stacklok/toolhive/issues/6895). Refresh
+tokens issued through token exchange use their own entry type and registry; see
+[Refresh tokens through token exchange](#refresh-tokens-through-token-exchange).
 
 **Wiring.** Pass `runner.WithAuthorizationDetailsRegistry` to
 `NewEmbeddedAuthServer` or `NewEmbeddedAuthServerWithStorage`, or set
@@ -1307,9 +1307,205 @@ registry, err := authorizationdetails.New(map[string]authorizationdetails.Type{
 })
 ```
 
+## Refresh tokens through token exchange
+
+A configured confidential client can exchange a user's login access token for
+an opaque refresh token. The token is not redeemable at `grant_type=refresh_token`;
+only token exchange accepts it. What the token may be used for is fixed when it
+is issued. This section describes issuing it from an access token. Deriving a
+child token from it, and revoking it, are not covered here yet.
+
+**Enabling.** Set `token_exchange.exchange_refresh_tokens` on the client, with
+`id_jag_max_lifetime` and/or `refresh_token_max_lifetime` (each at most 720h; a
+missing value refuses that kind of token). The client also needs
+`token_exchange.self_issued_subject_tokens: restricted` and
+`token_exchange.api_audience`; validation refuses the feature with `any`
+(CRD: `exchangeRefreshTokens` requires `selfIssuedSubjectTokens: restricted`).
+The storage backend must support
+`storage.ExchangeGrantStorage`; startup fails if a client enables the feature
+and it does not. The memory and Redis backends both support it.
+
+**Request.** `POST /oauth/token` with client authentication and:
+
+| Parameter | Value |
+| --- | --- |
+| `grant_type` | `urn:ietf:params:oauth:grant-type:token-exchange` |
+| `subject_token` | A login access token (see below) |
+| `subject_token_type` | `urn:ietf:params:oauth:token-type:access_token` |
+| `requested_token_type` | `urn:ietf:params:oauth:token-type:refresh_token` |
+| `authorization_details` | `[{"type":"https://toolhive.dev/exchange_grant","issuable_token_types":["<one URN>"],"expires_at":<seconds>}]` |
+
+`issuable_token_types` holds exactly one of the ID-JAG URN
+(`urn:ietf:params:oauth:token-type:id-jag`) or the refresh-token URN. `expires_at`
+is optional, in whole seconds since the epoch. The array must hold exactly one
+entry, and no other member is accepted. `actor_token`, `scope`, `resource` and
+`audience` are refused.
+
+**Subject token.** It must be a login access token: self-issued, with no `act`,
+`external_issuer` or no-upstream-session claim, no `#` in `sub`, a `client_id`
+and a `jti`, and not an ID token. Its `aud` must contain the client's
+`api_audience`, and its `client_id` must be one of the client's
+`allowed_source_clients`. This differs from the rule `checkSourcePolicy` applies
+to other exchanges: for a refresh-token request the client's own tokens are not
+accepted, and the list must not be empty. Startup validation rejects
+`exchange_refresh_tokens` without a non-empty `allowed_source_clients`. Tokens
+made by token exchange, the JWT-bearer grant or an ID-JAG are refused.
+
+**Lifetime.** The grant lasts until the requested `expires_at`, but never longer
+than the client's cap for that kind of token. A request above the cap is capped,
+not refused. A missing `expires_at` gets the cap. A past or fractional value, or
+one that is not a number, is refused.
+
+**Response.** `200` with `Cache-Control: no-store` and `Pragma: no-cache`:
+
+```json
+{
+  "access_token": "<the refresh token>",
+  "token_type": "N_A",
+  "issued_token_type": "urn:ietf:params:oauth:token-type:refresh_token",
+  "expires_in": 2591999,
+  "authorization_details": [{"type": "https://toolhive.dev/exchange_grant",
+    "issuable_token_types": ["urn:ietf:params:oauth:token-type:refresh_token"],
+    "expires_at": 1893456000}]
+}
+```
+
+There is no `refresh_token` member. The echoed `expires_at` is the granted value
+and equals the whole second of the response time plus `expires_in`.
+
+**Single use of the subject token.** Each subject token can open one grant. The
+server records the token's issuer and `jti` together with the grant in one
+atomic store call, so a second exchange of the same token, including a
+concurrent one, fails with `token_used`. A request that is refused for any other
+reason does not use up the token.
+
+**Recorded subject data.** The grant records the subject token's `sub`, and, when
+present, its `sub_id` claim and its `https://toolhive.dev/upstream_subject` claim
+(`iss`, `claim`, `value`) as JSON. They are copied at creation because the access
+token is gone when the grant is used later, and `upstream_subject` cannot be
+derived from `sub_id`: on some identity providers `sub_id` carries the
+per-application `sub`, while `upstream_subject` carries a tenant-wide object ID.
+A token without either claim still gets a grant with the field empty. The Redis
+record holds the upstream subject in an optional JSON member, so records written
+before it existed load with an empty field.
+
+**Routing.** A token-exchange request whose `requested_token_type` or
+`subject_token_type` is the refresh-token URN is handled by the refresh-token
+handler (`RefreshTokenHandler`); every other token-exchange request is handled by
+the access-token handler. Both use one predicate, `isRefreshTokenExchange`, so a
+request goes to exactly one. A refresh-token `subject_token_type` is refused for
+now.
+
+**Errors.** Each `error_description` is one of two kinds. The reason-code rows,
+the `authorization_details` rows and the internal-failure row are exact: the
+client gets the text shown. Every other row with text is a hint built with
+fosite's `WithHint`. For those, the client gets fosite's generic description for
+the `error` code, then a space, then the hint. fosite also replaces every double
+quote with a single quote, so the quoted values below show single quotes as the
+client receives them.
+
+| Condition | `error` | `error_description` |
+| --- | --- | --- |
+| Client is public | `invalid_grant` | generic text, then a fixed hint |
+| Client lacks the token-exchange grant | `unauthorized_client` | generic text, then a fixed hint |
+| `subject_token_type` is the refresh-token URN | `invalid_request` | generic text, then `The 'subject_token_type' value '<URN>' is not supported. Use '<access token URN>' or '<JWT URN>'.` (unchanged from before) |
+| `requested_token_type` is the refresh-token URN and the client has no `exchange_refresh_tokens` | `invalid_request` | generic text, then the unsupported `requested_token_type` hint (see below) |
+| Missing `subject_token` | `invalid_request` | generic text, then a fixed hint |
+| `subject_token_type` is not the access-token URN, or `actor_token` or `actor_token_type` is present | `invalid_request` | generic text, then a fixed hint |
+| `scope` | `invalid_scope` | generic text, then a fixed hint |
+| `resource` or `audience` | `invalid_target` | generic text, then a fixed hint |
+| `authorization_details` repeated | `invalid_request` | `The authorization_details parameter must not be repeated.` |
+| `authorization_details` absent or a single empty value | `invalid_request` | `The authorization_details parameter is required.` |
+| `authorization_details` is `[]` or not exactly one entry | `invalid_authorization_details` | `single_entry_required` |
+| Not valid JSON, or an entry with no known `type` | `invalid_authorization_details` | `The authorization_details parameter is invalid.` |
+| Unknown member in the entry | `invalid_authorization_details` | `malformed_entry` |
+| `issuable_token_types` not exactly one known URN | `invalid_authorization_details` | `invalid_issuable_token_types` |
+| `expires_at` in the past, fractional, or not a number | `invalid_authorization_details` | `invalid_expires_at` |
+| Kind of token not enabled for the client | `invalid_authorization_details` | `token_type_not_permitted` |
+| Subject token expired, invalid, or not a login token (delegated, external, no upstream session, no `client_id` or `jti`) | `invalid_request` | `subject_token_invalid` |
+| Subject token has no audience of the client's API, or was issued to a client that is not in `allowed_source_clients` (this includes the exchanging client itself) | `invalid_request` | `subject_token_audience` or `subject_token_source_client` |
+| Subject token already used | `invalid_request` | `token_used` |
+| Store failure | `server_error` | generic text, then the hint `The refresh token could not be issued.` |
+| Internal failure while processing `authorization_details` | `server_error` | `The authorization_details could not be processed.` |
+
+Checks run in this order, after the public-client, grant, subject-type and feature
+checks: request parameters, then `authorization_details` presence and parsing,
+then the subject token (validation, then the login-subject checks), then the
+entry content. A request with an expired subject token and a bad entry therefore
+gets the subject-token error.
+
+A subject token that is expired, invalid, or not a login token gets
+`error_description` `subject_token_invalid`. A fresh login access token fixes
+these, so the client can refresh its access token and retry. The precise reason
+(for example a delegated token or a missing `jti`) is only in the server log.
+`subject_token_audience` and `subject_token_source_client` mean a configuration
+fault, not a retry: a new access token will be refused the same way.
+
+This path uses `invalid_request` for an expired subject token and for a disallowed
+source client, as RFC 8693 section 2.2.2 requires. The access-token handler uses
+`invalid_grant` for the same cases. The difference is deliberate.
+
+The reason strings are stable. Reasons that come from the entry are fixed
+strings. Some fixed texts echo a request parameter value, for example the
+unsupported `subject_token_type` and `requested_token_type` texts.
+
+An entry of another `type` is refused earlier, by the parse step, with the
+generic text above, because only the exchange-grant type is registered on this
+path.
+
+**Before and after.** Any `requested_token_type` other than the access-token URN
+now gets a new text on every deployment, whether or not the feature is enabled.
+Before: `The 'requested_token_type' value '<v>' is not supported. This server only
+issues '<access token URN>'.` After: `The 'requested_token_type' value '<v>' is
+not supported for this client. The access token type '<access token URN>' is
+always supported.` Both are hints after the generic `invalid_request` text. The
+code is still `invalid_request`. A request whose
+`subject_token_type` is the refresh-token URN now goes to the refresh-token
+handler, and its refusal text is unchanged. Check precedence changed for that case
+in one way: the `subject_token_type` refusal now comes before a missing
+`subject_token`. For `requested_token_type` set to the refresh-token URN from a
+client without `exchange_refresh_tokens`, the request is now refused right after
+the public-client and grant checks. The embedder's `authorization_details`
+registry is no longer consulted, and problems with `subject_token`,
+`subject_token_type`, the actor parameters or `authorization_details` are no
+longer reported first.
+
+**Logging.** The server logs "Exchange grant created" at debug level when it issues
+a token, and "Exchange grant refused" at warn level for refusals after the
+public-client and grant checks. The public-client and missing-grant refusals are
+not logged this way. Each line carries `client_id`, plus `sub`, `source_jti`,
+`sub_id`, `issuable_token_type` and `expires_at` once they are known, and a stable
+`reason` on a refusal. The refresh token, its signature and the subject token are
+never logged.
+
+**Accepted limits.** A client can hold one grant per login access token `jti`;
+there is no other bound on the number of grants. A Redis instance that does not
+persist its data (no AOF) can lose the `jti` markers, which reopens the single-use
+check for tokens that have not yet expired. Revoked JWT access tokens stay valid at
+resource servers until they expire. A grant's `ExpiresAt` is a whole second, so a
+cap under one second would make every request fail with `invalid_expires_at`;
+configuration should not allow it.
+
+If the response is lost after the grant is stored, that login access token's
+`jti` is used up. The client needs a new login access token to try again.
+
+**Other profiles.** The `refresh_token` URN is bound to this feature, and the
+exchange grant is the only profile today. Ordinary refresh tokens could be added in
+two ways: the access-token handler returns a `refresh_token` member (RFC 8693
+section 2.2.1), or a second profile under the same URN is chosen by client
+configuration. Either needs:
+
+- a single-use marker shared with the exchange grant, so one login access token
+  cannot open one grant of each kind;
+- revocation across both stores (there is no revoke or introspect route today);
+- a decision on lifetime: a redeemable token ends with the login, while an
+  exchange grant does not.
+
 ## Implementation
 
 - `pkg/authserver/server/tokenexchange/handler.go` — `checkSourcePolicy`, `ConfiguredClientPolicy`, `checkDelegationConsent`, `grantScopes`, `grantAndBoundAudiences`, `externalOrigin`
+- `pkg/authserver/server/tokenexchange/refresh_token_handler.go` — `RefreshTokenHandler`, `isRefreshTokenExchange`, `checkLoginToken`, `checkExchangeGrantSubject`
+- `pkg/authserver/server/tokenexchange/exchange_grant.go` — the exchange-grant entry type and its validation
 - `pkg/authserver/server/tokenexchange/multi_issuer_validator.go` — `MultiIssuerTokenValidator`, `TrustedIssuer`, `resolveActorAuthorization`, `ValidateJWKSURL`
 - `pkg/authserver/server/tokenexchange/validator.go` — `assignClaim`, `buildValidatedClaims`, `validateMayActShape`, `scpToScopeString`
 - `pkg/authserver/config.go` — `DelegateClientRunConfig`, delegate-client validation, `validateTrustedIssuerURL`, `validateJWKSEndpointURL`, `validateTrustedIssuers`, `warnTrustedIssuerAudiences`

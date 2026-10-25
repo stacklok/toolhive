@@ -63,7 +63,8 @@ const anyDelegateClient = "*"
 // once. Replay is bounded by the delegated token's lifetime cap
 // (min(subject-remaining, delegation)), not by single-use tracking; per-jti
 // single-use enforcement is deferred to the broader M2M/sender-constrained-
-// token effort.
+// token effort. Single-use applies only to requests for a refresh token (see
+// RefreshTokenHandler).
 type Handler struct {
 	*oauth2.HandleHelper
 	validator          SubjectTokenValidator // for subject tokens (multi-issuer)
@@ -118,9 +119,12 @@ type tokenExchangeConfig interface {
 }
 
 // CanHandleTokenEndpointRequest returns true if the request's grant_type is
-// the RFC 8693 token exchange grant type.
+// the RFC 8693 token exchange grant type and the request does not involve a
+// refresh-token type. RefreshTokenHandler claims the opposite, through the same
+// isRefreshTokenExchange predicate, so the two never both handle a request.
 func (*Handler) CanHandleTokenEndpointRequest(_ context.Context, requester fosite.AccessRequester) bool {
-	return requester.GetGrantTypes().ExactOne(oauthproto.GrantTypeTokenExchange)
+	return requester.GetGrantTypes().ExactOne(oauthproto.GrantTypeTokenExchange) &&
+		!isRefreshTokenExchange(requester.GetRequestForm())
 }
 
 // CanSkipClientAuth always returns false: RFC 8693 token exchange requires
@@ -177,9 +181,7 @@ func (h *Handler) HandleTokenEndpointRequest(ctx context.Context, requester fosi
 	// requests a token type the server does not support, the request must fail.
 	requestedTokenType := form.Get("requested_token_type")
 	if requestedTokenType != "" && requestedTokenType != oauthproto.TokenTypeAccessToken {
-		return errorsx.WithStack(fosite.ErrInvalidRequest.WithHintf(
-			"The 'requested_token_type' value %q is not supported. This server only issues %q.",
-			requestedTokenType, oauthproto.TokenTypeAccessToken))
+		return errorsx.WithStack(unsupportedTokenType("requested_token_type", requestedTokenType))
 	}
 
 	// Validate the subject token against the configured token validator.
@@ -263,6 +265,15 @@ func (h *Handler) HandleTokenEndpointRequest(ctx context.Context, requester fosi
 	)
 
 	return nil
+}
+
+// unsupportedTokenType is the invalid_request error for a token-type parameter
+// this client or request cannot use. Both token-exchange handlers return it, so
+// a client sees one text whichever of them refuses.
+func unsupportedTokenType(param, value string) error {
+	return fosite.ErrInvalidRequest.WithHintf(
+		"The '%s' value %q is not supported for this client. The access token type %q is always supported.",
+		param, value, oauthproto.TokenTypeAccessToken)
 }
 
 // PopulateTokenEndpointResponse issues the delegated access token and sets
@@ -724,14 +735,21 @@ func delegateClientAllowed(allowedDelegateClients []string, actorID string) bool
 // neither check overrides the other. External-issuer tokens are left to the issuer policy
 // in checkDelegationConsent.
 func checkSourcePolicy(validatedClaims *ValidatedClaims, clientID string, policy ConfiguredClientPolicy) error {
-	if validatedClaims.ExternalIssuer != "" {
-		return nil
-	}
-	if validatedClaims.ClientID == clientID || slices.Contains(policy.AllowedSourceClients, validatedClaims.ClientID) {
+	if sourceClientAllowed(validatedClaims, clientID, policy) {
 		return nil
 	}
 	return errorsx.WithStack(fosite.ErrInvalidGrant.WithHint(
 		"The subject token was not issued to this client or to one of its allowed source clients."))
+}
+
+// sourceClientAllowed reports whether the source policy accepts the subject
+// token: it came from a trusted external issuer, or was issued to the client
+// itself or to one of its allowed source clients.
+func sourceClientAllowed(validatedClaims *ValidatedClaims, clientID string, policy ConfiguredClientPolicy) bool {
+	if validatedClaims.ExternalIssuer != "" {
+		return true
+	}
+	return validatedClaims.ClientID == clientID || slices.Contains(policy.AllowedSourceClients, validatedClaims.ClientID)
 }
 
 // checkDelegationConsent enforces the RFC 8693 §4.4 delegation consent check.

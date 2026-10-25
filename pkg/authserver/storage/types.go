@@ -1081,6 +1081,11 @@ type ExchangeGrant struct {
 	// SubjectIdentifier is the sub_id JSON of the subject, recorded when present.
 	SubjectIdentifier string
 
+	// UpstreamSubject is the JSON of the subject token's
+	// https://toolhive.dev/upstream_subject claim (iss, claim, value), recorded
+	// when present.
+	UpstreamSubject string
+
 	// SourceIssuer is the iss of the subject access token. With SourceJTI it forms
 	// the replay key. Empty for child grants.
 	SourceIssuer string

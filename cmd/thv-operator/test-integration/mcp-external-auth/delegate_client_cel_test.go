@@ -5,6 +5,7 @@ package controllers
 
 import (
 	"fmt"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -40,6 +41,13 @@ var _ = Describe("MCPExternalAuthConfig delegate client CEL validation", func() 
 			LocalObjectReference: corev1.LocalObjectReference{Name: "delegate-jwks"}, Key: "jwks.json",
 		}
 		return c
+	}
+
+	durationOf := func(d time.Duration) *metav1.Duration { return &metav1.Duration{Duration: d} }
+	withRefreshCaps := func(caps mcpv1beta1.DelegateClientExchangeRefreshTokensConfig) *mcpv1beta1.DelegateClientTokenExchangeConfig {
+		return &mcpv1beta1.DelegateClientTokenExchangeConfig{
+			SelfIssuedSubjectTokens: "restricted", ExchangeRefreshTokens: &caps, APIAudience: "https://mcp.example.com",
+		}
 	}
 
 	cases := []struct {
@@ -99,6 +107,62 @@ var _ = Describe("MCPExternalAuthConfig delegate client CEL validation", func() 
 			mutate: func(c *mcpv1beta1.DelegateClientConfig) { c.GrantTypes = []string{tokenExchange, "password"} }},
 		{name: "authorization_code without redirectUris", base: secretClient, errMatch: "redirectUris is required",
 			mutate: func(c *mcpv1beta1.DelegateClientConfig) { c.GrantTypes = []string{"authorization_code", tokenExchange} }},
+		{name: "exchangeRefreshTokens with both caps", base: secretClient, mutate: func(c *mcpv1beta1.DelegateClientConfig) {
+			c.TokenExchange = withRefreshCaps(mcpv1beta1.DelegateClientExchangeRefreshTokensConfig{
+				IDJAGMaxLifetime: durationOf(12 * time.Hour), RefreshTokenMaxLifetime: durationOf(720 * time.Hour),
+			})
+		}},
+		{name: "exchangeRefreshTokens with only idJagMaxLifetime", base: secretClient, mutate: func(c *mcpv1beta1.DelegateClientConfig) {
+			c.TokenExchange = withRefreshCaps(mcpv1beta1.DelegateClientExchangeRefreshTokensConfig{IDJAGMaxLifetime: durationOf(90 * time.Minute)})
+		}},
+		{name: "exchangeRefreshTokens refresh cap at 720h0m0s, the serialized boundary", base: secretClient, mutate: func(c *mcpv1beta1.DelegateClientConfig) {
+			c.TokenExchange = withRefreshCaps(mcpv1beta1.DelegateClientExchangeRefreshTokensConfig{RefreshTokenMaxLifetime: durationOf(720 * time.Hour)})
+		}},
+		{name: "exchangeRefreshTokens empty block", base: secretClient,
+			errMatch: "at least one of idJagMaxLifetime or refreshTokenMaxLifetime must be set",
+			mutate: func(c *mcpv1beta1.DelegateClientConfig) {
+				c.TokenExchange = withRefreshCaps(mcpv1beta1.DelegateClientExchangeRefreshTokensConfig{})
+			}},
+		{name: "exchangeRefreshTokens zero idJag cap", base: secretClient,
+			errMatch: "idJagMaxLifetime must be greater than zero and at most 720h",
+			mutate: func(c *mcpv1beta1.DelegateClientConfig) {
+				c.TokenExchange = withRefreshCaps(mcpv1beta1.DelegateClientExchangeRefreshTokensConfig{IDJAGMaxLifetime: durationOf(0)})
+			}},
+		{name: "exchangeRefreshTokens negative refresh cap", base: secretClient,
+			errMatch: "refreshTokenMaxLifetime must be greater than zero and at most 720h",
+			mutate: func(c *mcpv1beta1.DelegateClientConfig) {
+				c.TokenExchange = withRefreshCaps(mcpv1beta1.DelegateClientExchangeRefreshTokensConfig{RefreshTokenMaxLifetime: durationOf(-time.Hour)})
+			}},
+		{name: "exchangeRefreshTokens idJag cap just over 720h", base: secretClient,
+			errMatch: "idJagMaxLifetime must be greater than zero and at most 720h",
+			mutate: func(c *mcpv1beta1.DelegateClientConfig) {
+				c.TokenExchange = withRefreshCaps(mcpv1beta1.DelegateClientExchangeRefreshTokensConfig{IDJAGMaxLifetime: durationOf(721 * time.Hour)})
+			}},
+		{name: "exchangeRefreshTokens refresh cap just over 720h", base: secretClient,
+			errMatch: "refreshTokenMaxLifetime must be greater than zero and at most 720h",
+			mutate: func(c *mcpv1beta1.DelegateClientConfig) {
+				c.TokenExchange = withRefreshCaps(mcpv1beta1.DelegateClientExchangeRefreshTokensConfig{RefreshTokenMaxLifetime: durationOf(721 * time.Hour)})
+			}},
+		{name: "exchangeRefreshTokens without apiAudience", base: secretClient,
+			errMatch: "apiAudience is required with exchangeRefreshTokens",
+			mutate: func(c *mcpv1beta1.DelegateClientConfig) {
+				c.TokenExchange = &mcpv1beta1.DelegateClientTokenExchangeConfig{
+					SelfIssuedSubjectTokens: "restricted",
+					ExchangeRefreshTokens: &mcpv1beta1.DelegateClientExchangeRefreshTokensConfig{
+						RefreshTokenMaxLifetime: durationOf(time.Hour),
+					},
+				}
+			}},
+		{name: "exchangeRefreshTokens with any", base: secretClient,
+			errMatch: "tokenExchange.exchangeRefreshTokens are valid only when selfIssuedSubjectTokens is restricted",
+			mutate: func(c *mcpv1beta1.DelegateClientConfig) {
+				c.TokenExchange = &mcpv1beta1.DelegateClientTokenExchangeConfig{
+					SelfIssuedSubjectTokens: "any",
+					ExchangeRefreshTokens: &mcpv1beta1.DelegateClientExchangeRefreshTokensConfig{
+						RefreshTokenMaxLifetime: durationOf(time.Hour),
+					},
+				}
+			}},
 	}
 
 	for i, test := range cases {

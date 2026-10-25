@@ -359,6 +359,41 @@ spec:
                                 client's audiences. Valid only with restricted.
                               maxLength: 2048
                               type: string
+                            exchangeRefreshTokens:
+                              description: |-
+                                ExchangeRefreshTokens enables refresh-token issuance through token
+                                exchange for this client. Setting it requires apiAudience and is valid
+                                only when selfIssuedSubjectTokens is restricted.
+                              properties:
+                                idJagMaxLifetime:
+                                  description: |-
+                                    IDJAGMaxLifetime is the maximum lifetime of a refresh token issued to
+                                    this client through token exchange that can later be exchanged for
+                                    ID-JAGs. Use a Go duration such as "12h". Must be greater than zero and
+                                    at most 720h. Omit to disallow that use.
+                                  type: string
+                                refreshTokenMaxLifetime:
+                                  description: |-
+                                    RefreshTokenMaxLifetime is the maximum lifetime of a refresh token issued
+                                    to this client through token exchange that can later be exchanged for new
+                                    refresh tokens. Use a Go duration such as "720h". Must be greater than
+                                    zero and at most 720h. Omit to disallow that use.
+                                  type: string
+                              type: object
+                              x-kubernetes-validations:
+                              - message: at least one of idJagMaxLifetime or refreshTokenMaxLifetime
+                                  must be set
+                                rule: has(self.idJagMaxLifetime) || has(self.refreshTokenMaxLifetime)
+                              - message: idJagMaxLifetime must be greater than zero
+                                  and at most 720h
+                                rule: '!has(self.idJagMaxLifetime) || (duration(self.idJagMaxLifetime)
+                                  > duration(''0s'') && duration(self.idJagMaxLifetime)
+                                  <= duration(''720h''))'
+                              - message: refreshTokenMaxLifetime must be greater than
+                                  zero and at most 720h
+                                rule: '!has(self.refreshTokenMaxLifetime) || (duration(self.refreshTokenMaxLifetime)
+                                  > duration(''0s'') && duration(self.refreshTokenMaxLifetime)
+                                  <= duration(''720h''))'
                             selfIssuedSubjectTokens:
                               description: |-
                                 SelfIssuedSubjectTokens selects which self-issued subject tokens the
@@ -375,12 +410,16 @@ spec:
                           - selfIssuedSubjectTokens
                           type: object
                           x-kubernetes-validations:
-                          - message: tokenExchange.allowedSourceClients and tokenExchange.apiAudience
-                              are valid only when selfIssuedSubjectTokens is restricted
+                          - message: tokenExchange.allowedSourceClients, tokenExchange.apiAudience
+                              and tokenExchange.exchangeRefreshTokens are valid only
+                              when selfIssuedSubjectTokens is restricted
                             rule: self.selfIssuedSubjectTokens == 'restricted' ||
                               ((!has(self.allowedSourceClients) || size(self.allowedSourceClients)
                               == 0) && (!has(self.apiAudience) || size(self.apiAudience)
-                              == 0))
+                              == 0) && !has(self.exchangeRefreshTokens))
+                          - message: apiAudience is required with exchangeRefreshTokens
+                            rule: '!has(self.exchangeRefreshTokens) || (has(self.apiAudience)
+                              && size(self.apiAudience) > 0)'
                       required:
                       - audiences
                       - clientId
@@ -849,6 +888,42 @@ spec:
                                         client's audiences. Valid only with restricted.
                                       maxLength: 2048
                                       type: string
+                                    exchangeRefreshTokens:
+                                      description: |-
+                                        ExchangeRefreshTokens enables refresh-token issuance through token
+                                        exchange for this client. Setting it requires apiAudience and is valid
+                                        only when selfIssuedSubjectTokens is restricted.
+                                      properties:
+                                        idJagMaxLifetime:
+                                          description: |-
+                                            IDJAGMaxLifetime is the maximum lifetime of a refresh token issued to
+                                            this client through token exchange that can later be exchanged for
+                                            ID-JAGs. Use a Go duration such as "12h". Must be greater than zero and
+                                            at most 720h. Omit to disallow that use.
+                                          type: string
+                                        refreshTokenMaxLifetime:
+                                          description: |-
+                                            RefreshTokenMaxLifetime is the maximum lifetime of a refresh token issued
+                                            to this client through token exchange that can later be exchanged for new
+                                            refresh tokens. Use a Go duration such as "720h". Must be greater than
+                                            zero and at most 720h. Omit to disallow that use.
+                                          type: string
+                                      type: object
+                                      x-kubernetes-validations:
+                                      - message: at least one of idJagMaxLifetime
+                                          or refreshTokenMaxLifetime must be set
+                                        rule: has(self.idJagMaxLifetime) || has(self.refreshTokenMaxLifetime)
+                                      - message: idJagMaxLifetime must be greater
+                                          than zero and at most 720h
+                                        rule: '!has(self.idJagMaxLifetime) || (duration(self.idJagMaxLifetime)
+                                          > duration(''0s'') && duration(self.idJagMaxLifetime)
+                                          <= duration(''720h''))'
+                                      - message: refreshTokenMaxLifetime must be greater
+                                          than zero and at most 720h
+                                        rule: '!has(self.refreshTokenMaxLifetime)
+                                          || (duration(self.refreshTokenMaxLifetime)
+                                          > duration(''0s'') && duration(self.refreshTokenMaxLifetime)
+                                          <= duration(''720h''))'
                                     selfIssuedSubjectTokens:
                                       description: |-
                                         SelfIssuedSubjectTokens selects which self-issued subject tokens the
@@ -865,13 +940,16 @@ spec:
                                   - selfIssuedSubjectTokens
                                   type: object
                                   x-kubernetes-validations:
-                                  - message: tokenExchange.allowedSourceClients and
-                                      tokenExchange.apiAudience are valid only when
-                                      selfIssuedSubjectTokens is restricted
+                                  - message: tokenExchange.allowedSourceClients, tokenExchange.apiAudience
+                                      and tokenExchange.exchangeRefreshTokens are
+                                      valid only when selfIssuedSubjectTokens is restricted
                                     rule: self.selfIssuedSubjectTokens == 'restricted'
                                       || ((!has(self.allowedSourceClients) || size(self.allowedSourceClients)
                                       == 0) && (!has(self.apiAudience) || size(self.apiAudience)
-                                      == 0))
+                                      == 0) && !has(self.exchangeRefreshTokens))
+                                  - message: apiAudience is required with exchangeRefreshTokens
+                                    rule: '!has(self.exchangeRefreshTokens) || (has(self.apiAudience)
+                                      && size(self.apiAudience) > 0)'
                               required:
                               - audiences
                               - clientId
@@ -6088,6 +6166,41 @@ spec:
                                 client's audiences. Valid only with restricted.
                               maxLength: 2048
                               type: string
+                            exchangeRefreshTokens:
+                              description: |-
+                                ExchangeRefreshTokens enables refresh-token issuance through token
+                                exchange for this client. Setting it requires apiAudience and is valid
+                                only when selfIssuedSubjectTokens is restricted.
+                              properties:
+                                idJagMaxLifetime:
+                                  description: |-
+                                    IDJAGMaxLifetime is the maximum lifetime of a refresh token issued to
+                                    this client through token exchange that can later be exchanged for
+                                    ID-JAGs. Use a Go duration such as "12h". Must be greater than zero and
+                                    at most 720h. Omit to disallow that use.
+                                  type: string
+                                refreshTokenMaxLifetime:
+                                  description: |-
+                                    RefreshTokenMaxLifetime is the maximum lifetime of a refresh token issued
+                                    to this client through token exchange that can later be exchanged for new
+                                    refresh tokens. Use a Go duration such as "720h". Must be greater than
+                                    zero and at most 720h. Omit to disallow that use.
+                                  type: string
+                              type: object
+                              x-kubernetes-validations:
+                              - message: at least one of idJagMaxLifetime or refreshTokenMaxLifetime
+                                  must be set
+                                rule: has(self.idJagMaxLifetime) || has(self.refreshTokenMaxLifetime)
+                              - message: idJagMaxLifetime must be greater than zero
+                                  and at most 720h
+                                rule: '!has(self.idJagMaxLifetime) || (duration(self.idJagMaxLifetime)
+                                  > duration(''0s'') && duration(self.idJagMaxLifetime)
+                                  <= duration(''720h''))'
+                              - message: refreshTokenMaxLifetime must be greater than
+                                  zero and at most 720h
+                                rule: '!has(self.refreshTokenMaxLifetime) || (duration(self.refreshTokenMaxLifetime)
+                                  > duration(''0s'') && duration(self.refreshTokenMaxLifetime)
+                                  <= duration(''720h''))'
                             selfIssuedSubjectTokens:
                               description: |-
                                 SelfIssuedSubjectTokens selects which self-issued subject tokens the
@@ -6104,12 +6217,16 @@ spec:
                           - selfIssuedSubjectTokens
                           type: object
                           x-kubernetes-validations:
-                          - message: tokenExchange.allowedSourceClients and tokenExchange.apiAudience
-                              are valid only when selfIssuedSubjectTokens is restricted
+                          - message: tokenExchange.allowedSourceClients, tokenExchange.apiAudience
+                              and tokenExchange.exchangeRefreshTokens are valid only
+                              when selfIssuedSubjectTokens is restricted
                             rule: self.selfIssuedSubjectTokens == 'restricted' ||
                               ((!has(self.allowedSourceClients) || size(self.allowedSourceClients)
                               == 0) && (!has(self.apiAudience) || size(self.apiAudience)
-                              == 0))
+                              == 0) && !has(self.exchangeRefreshTokens))
+                          - message: apiAudience is required with exchangeRefreshTokens
+                            rule: '!has(self.exchangeRefreshTokens) || (has(self.apiAudience)
+                              && size(self.apiAudience) > 0)'
                       required:
                       - audiences
                       - clientId
@@ -6578,6 +6695,42 @@ spec:
                                         client's audiences. Valid only with restricted.
                                       maxLength: 2048
                                       type: string
+                                    exchangeRefreshTokens:
+                                      description: |-
+                                        ExchangeRefreshTokens enables refresh-token issuance through token
+                                        exchange for this client. Setting it requires apiAudience and is valid
+                                        only when selfIssuedSubjectTokens is restricted.
+                                      properties:
+                                        idJagMaxLifetime:
+                                          description: |-
+                                            IDJAGMaxLifetime is the maximum lifetime of a refresh token issued to
+                                            this client through token exchange that can later be exchanged for
+                                            ID-JAGs. Use a Go duration such as "12h". Must be greater than zero and
+                                            at most 720h. Omit to disallow that use.
+                                          type: string
+                                        refreshTokenMaxLifetime:
+                                          description: |-
+                                            RefreshTokenMaxLifetime is the maximum lifetime of a refresh token issued
+                                            to this client through token exchange that can later be exchanged for new
+                                            refresh tokens. Use a Go duration such as "720h". Must be greater than
+                                            zero and at most 720h. Omit to disallow that use.
+                                          type: string
+                                      type: object
+                                      x-kubernetes-validations:
+                                      - message: at least one of idJagMaxLifetime
+                                          or refreshTokenMaxLifetime must be set
+                                        rule: has(self.idJagMaxLifetime) || has(self.refreshTokenMaxLifetime)
+                                      - message: idJagMaxLifetime must be greater
+                                          than zero and at most 720h
+                                        rule: '!has(self.idJagMaxLifetime) || (duration(self.idJagMaxLifetime)
+                                          > duration(''0s'') && duration(self.idJagMaxLifetime)
+                                          <= duration(''720h''))'
+                                      - message: refreshTokenMaxLifetime must be greater
+                                          than zero and at most 720h
+                                        rule: '!has(self.refreshTokenMaxLifetime)
+                                          || (duration(self.refreshTokenMaxLifetime)
+                                          > duration(''0s'') && duration(self.refreshTokenMaxLifetime)
+                                          <= duration(''720h''))'
                                     selfIssuedSubjectTokens:
                                       description: |-
                                         SelfIssuedSubjectTokens selects which self-issued subject tokens the
@@ -6594,13 +6747,16 @@ spec:
                                   - selfIssuedSubjectTokens
                                   type: object
                                   x-kubernetes-validations:
-                                  - message: tokenExchange.allowedSourceClients and
-                                      tokenExchange.apiAudience are valid only when
-                                      selfIssuedSubjectTokens is restricted
+                                  - message: tokenExchange.allowedSourceClients, tokenExchange.apiAudience
+                                      and tokenExchange.exchangeRefreshTokens are
+                                      valid only when selfIssuedSubjectTokens is restricted
                                     rule: self.selfIssuedSubjectTokens == 'restricted'
                                       || ((!has(self.allowedSourceClients) || size(self.allowedSourceClients)
                                       == 0) && (!has(self.apiAudience) || size(self.apiAudience)
-                                      == 0))
+                                      == 0) && !has(self.exchangeRefreshTokens))
+                                  - message: apiAudience is required with exchangeRefreshTokens
+                                    rule: '!has(self.exchangeRefreshTokens) || (has(self.apiAudience)
+                                      && size(self.apiAudience) > 0)'
                               required:
                               - audiences
                               - clientId

@@ -4122,3 +4122,139 @@ func TestDelegateClientJWKSConfigMapNames(t *testing.T) {
 	assert.Equal(t, []string{"jwks-a", "jwks-c"}, DelegateClientJWKSConfigMapNames(
 		&mcpv1beta1.EmbeddedAuthServerConfig{DelegateClients: clients}))
 }
+
+func TestBuildDelegateClientRunConfigs_ExchangeRefreshTokens(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		refresh *mcpv1beta1.DelegateClientExchangeRefreshTokensConfig
+		want    *authserver.DelegateClientExchangeRefreshTokens
+	}{
+		{
+			name:    "block absent maps to nil",
+			refresh: nil,
+			want:    nil,
+		},
+		{
+			name: "both caps set are converted to duration strings",
+			refresh: &mcpv1beta1.DelegateClientExchangeRefreshTokensConfig{
+				IDJAGMaxLifetime:        &metav1.Duration{Duration: 12 * time.Hour},
+				RefreshTokenMaxLifetime: &metav1.Duration{Duration: 720 * time.Hour},
+			},
+			want: &authserver.DelegateClientExchangeRefreshTokens{
+				IDJAGMaxLifetime:        "12h0m0s",
+				RefreshTokenMaxLifetime: "720h0m0s",
+			},
+		},
+		{
+			name: "only id-jag cap set leaves refresh cap empty",
+			refresh: &mcpv1beta1.DelegateClientExchangeRefreshTokensConfig{
+				IDJAGMaxLifetime: &metav1.Duration{Duration: 90 * time.Minute},
+			},
+			want: &authserver.DelegateClientExchangeRefreshTokens{
+				IDJAGMaxLifetime: "1h30m0s",
+			},
+		},
+		{
+			name: "only refresh cap set, at the 720h boundary",
+			refresh: &mcpv1beta1.DelegateClientExchangeRefreshTokensConfig{
+				RefreshTokenMaxLifetime: &metav1.Duration{Duration: 720 * time.Hour},
+			},
+			want: &authserver.DelegateClientExchangeRefreshTokens{
+				RefreshTokenMaxLifetime: "720h0m0s",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			configs, err := buildDelegateClientRunConfigs([]mcpv1beta1.DelegateClientConfig{{
+				ClientID:        "broker",
+				ClientSecretRef: &mcpv1beta1.SecretKeyRef{Name: "s", Key: "k"},
+				TokenExchange: &mcpv1beta1.DelegateClientTokenExchangeConfig{
+					SelfIssuedSubjectTokens: "restricted",
+					APIAudience:             "https://resource.example.com",
+					ExchangeRefreshTokens:   tt.refresh,
+				},
+			}})
+			require.NoError(t, err)
+			require.Len(t, configs, 1)
+			require.NotNil(t, configs[0].TokenExchange)
+			assert.Equal(t, tt.want, configs[0].TokenExchange.ExchangeRefreshTokens)
+		})
+	}
+
+	t.Run("nil token exchange block leaves no token exchange config", func(t *testing.T) {
+		t.Parallel()
+
+		configs, err := buildDelegateClientRunConfigs([]mcpv1beta1.DelegateClientConfig{{
+			ClientID:        "legacy",
+			ClientSecretRef: &mcpv1beta1.SecretKeyRef{Name: "s", Key: "k"},
+		}})
+		require.NoError(t, err)
+		require.Len(t, configs, 1)
+		assert.Nil(t, configs[0].TokenExchange)
+	})
+}
+
+func TestBuildAuthServerRunConfig_ExchangeRefreshTokensRequireAPIAudience(t *testing.T) {
+	t.Parallel()
+
+	newAuthConfig := func(mode, apiAudience string) *mcpv1beta1.EmbeddedAuthServerConfig {
+		return &mcpv1beta1.EmbeddedAuthServerConfig{
+			Issuer: "https://auth.example.com",
+			InboundGrants: &mcpv1beta1.InboundGrantsConfig{TokenExchange: &mcpv1beta1.TokenExchangeInboundGrantConfig{
+				DelegateClients: []mcpv1beta1.DelegateClientConfig{{
+					ClientID:        "broker",
+					ClientSecretRef: &mcpv1beta1.SecretKeyRef{Name: "s", Key: "k"},
+					GrantTypes:      []string{"urn:ietf:params:oauth:grant-type:token-exchange"},
+					Scopes:          []string{"openid"},
+					Audiences:       []string{"https://resource.example.com"},
+					TokenExchange: &mcpv1beta1.DelegateClientTokenExchangeConfig{
+						SelfIssuedSubjectTokens: mode,
+						APIAudience:             apiAudience,
+						ExchangeRefreshTokens: &mcpv1beta1.DelegateClientExchangeRefreshTokensConfig{
+							RefreshTokenMaxLifetime: &metav1.Duration{Duration: 720 * time.Hour},
+						},
+					},
+				}},
+			}},
+		}
+	}
+	build := func(authConfig *mcpv1beta1.EmbeddedAuthServerConfig) (*authserver.RunConfig, error) {
+		return BuildAuthServerRunConfig(
+			"default", "test-server", authConfig,
+			[]string{"https://resource.example.com"},
+			[]string{"openid"}, "https://resource.example.com",
+		)
+	}
+
+	t.Run("accepted when apiAudience is set", func(t *testing.T) {
+		t.Parallel()
+
+		config, err := build(newAuthConfig("restricted", "https://resource.example.com"))
+		require.NoError(t, err)
+		require.NotNil(t, config.InboundGrants.TokenExchange.DelegateClients[0].TokenExchange.ExchangeRefreshTokens)
+	})
+
+	t.Run("rejected when apiAudience is empty", func(t *testing.T) {
+		t.Parallel()
+
+		_, err := build(newAuthConfig("restricted", ""))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(),
+			"token_exchange.api_audience is required with token_exchange.exchange_refresh_tokens")
+	})
+
+	t.Run("rejected with any", func(t *testing.T) {
+		t.Parallel()
+
+		_, err := build(newAuthConfig("any", ""))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(),
+			`token_exchange.exchange_refresh_tokens requires self_issued_subject_tokens "restricted"`)
+	})
+}

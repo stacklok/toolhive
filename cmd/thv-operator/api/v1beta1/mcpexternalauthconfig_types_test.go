@@ -2239,6 +2239,18 @@ func TestMCPExternalAuthConfig_DelegateClientTrustModes(t *testing.T) {
 		{name: "any with api audience", client: client(exchangeOnly, &DelegateClientTokenExchangeConfig{
 			SelfIssuedSubjectTokens: "any", APIAudience: "https://api.example.com",
 		}), wantErr: "valid only when selfIssuedSubjectTokens is restricted"},
+		{name: "any with exchange refresh tokens", client: client(exchangeOnly, &DelegateClientTokenExchangeConfig{
+			SelfIssuedSubjectTokens: "any",
+			ExchangeRefreshTokens: &DelegateClientExchangeRefreshTokensConfig{
+				RefreshTokenMaxLifetime: &metav1.Duration{Duration: time.Hour},
+			},
+		}), wantErr: "tokenExchange.exchangeRefreshTokens are valid only when selfIssuedSubjectTokens is restricted"},
+		{name: "restricted with exchange refresh tokens", client: client(exchangeOnly, &DelegateClientTokenExchangeConfig{
+			SelfIssuedSubjectTokens: "restricted", APIAudience: "https://api.example.com",
+			ExchangeRefreshTokens: &DelegateClientExchangeRefreshTokensConfig{
+				RefreshTokenMaxLifetime: &metav1.Duration{Duration: time.Hour},
+			},
+		})},
 	}
 
 	for _, tt := range tests {

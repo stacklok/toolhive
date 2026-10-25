@@ -447,9 +447,10 @@ type DelegateClientConfig struct {
 // delegate client. External-issuer subject tokens are not affected by it: the
 // trusted issuer's own policy decides those.
 //
-// +kubebuilder:validation:XValidation:rule="self.selfIssuedSubjectTokens == 'restricted' || ((!has(self.allowedSourceClients) || size(self.allowedSourceClients) == 0) && (!has(self.apiAudience) || size(self.apiAudience) == 0))",message="tokenExchange.allowedSourceClients and tokenExchange.apiAudience are valid only when selfIssuedSubjectTokens is restricted"
+// +kubebuilder:validation:XValidation:rule="self.selfIssuedSubjectTokens == 'restricted' || ((!has(self.allowedSourceClients) || size(self.allowedSourceClients) == 0) && (!has(self.apiAudience) || size(self.apiAudience) == 0) && !has(self.exchangeRefreshTokens))",message="tokenExchange.allowedSourceClients, tokenExchange.apiAudience and tokenExchange.exchangeRefreshTokens are valid only when selfIssuedSubjectTokens is restricted"
+// +kubebuilder:validation:XValidation:rule="!has(self.exchangeRefreshTokens) || (has(self.apiAudience) && size(self.apiAudience) > 0)",message="apiAudience is required with exchangeRefreshTokens"
 //
-//nolint:lll // CEL validation rule exceeds line length limit
+//nolint:lll // CEL validation rules exceed line length limit
 type DelegateClientTokenExchangeConfig struct {
 	// SelfIssuedSubjectTokens selects which self-issued subject tokens the
 	// client may exchange. With restricted, a self-issued subject token must
@@ -480,6 +481,37 @@ type DelegateClientTokenExchangeConfig struct {
 	// +kubebuilder:validation:MaxLength=2048
 	// +optional
 	APIAudience string `json:"apiAudience,omitempty"`
+
+	// ExchangeRefreshTokens enables refresh-token issuance through token
+	// exchange for this client. Setting it requires apiAudience and is valid
+	// only when selfIssuedSubjectTokens is restricted.
+	// +optional
+	ExchangeRefreshTokens *DelegateClientExchangeRefreshTokensConfig `json:"exchangeRefreshTokens,omitempty"`
+}
+
+// DelegateClientExchangeRefreshTokensConfig sets the lifetime limits for refresh
+// tokens that this client obtains through token exchange. Set at least one
+// limit. A limit that is omitted disallows that use.
+//
+// +kubebuilder:validation:XValidation:rule="has(self.idJagMaxLifetime) || has(self.refreshTokenMaxLifetime)",message="at least one of idJagMaxLifetime or refreshTokenMaxLifetime must be set"
+// +kubebuilder:validation:XValidation:rule="!has(self.idJagMaxLifetime) || (duration(self.idJagMaxLifetime) > duration('0s') && duration(self.idJagMaxLifetime) <= duration('720h'))",message="idJagMaxLifetime must be greater than zero and at most 720h"
+// +kubebuilder:validation:XValidation:rule="!has(self.refreshTokenMaxLifetime) || (duration(self.refreshTokenMaxLifetime) > duration('0s') && duration(self.refreshTokenMaxLifetime) <= duration('720h'))",message="refreshTokenMaxLifetime must be greater than zero and at most 720h"
+//
+//nolint:lll // CEL validation rules exceed line length limit
+type DelegateClientExchangeRefreshTokensConfig struct {
+	// IDJAGMaxLifetime is the maximum lifetime of a refresh token issued to
+	// this client through token exchange that can later be exchanged for
+	// ID-JAGs. Use a Go duration such as "12h". Must be greater than zero and
+	// at most 720h. Omit to disallow that use.
+	// +optional
+	IDJAGMaxLifetime *metav1.Duration `json:"idJagMaxLifetime,omitempty"`
+
+	// RefreshTokenMaxLifetime is the maximum lifetime of a refresh token issued
+	// to this client through token exchange that can later be exchanged for new
+	// refresh tokens. Use a Go duration such as "720h". Must be greater than
+	// zero and at most 720h. Omit to disallow that use.
+	// +optional
+	RefreshTokenMaxLifetime *metav1.Duration `json:"refreshTokenMaxLifetime,omitempty"`
 }
 
 // TrustedIssuerConfig configures an external OIDC issuer whose tokens are
@@ -2925,9 +2957,10 @@ func validateDelegateClientTrustModes(clients []DelegateClientConfig, path strin
 		switch authserver.SelfIssuedSubjectTokens(policy.SelfIssuedSubjectTokens) {
 		case authserver.SelfIssuedSubjectTokensRestricted:
 		case authserver.SelfIssuedSubjectTokensAny:
-			if len(policy.AllowedSourceClients) > 0 || policy.APIAudience != "" {
-				return fmt.Errorf("%s[%d] (%q): tokenExchange.allowedSourceClients and tokenExchange.apiAudience "+
-					"are valid only when selfIssuedSubjectTokens is restricted", path, i, client.ClientID)
+			if len(policy.AllowedSourceClients) > 0 || policy.APIAudience != "" || policy.ExchangeRefreshTokens != nil {
+				return fmt.Errorf("%s[%d] (%q): tokenExchange.allowedSourceClients, tokenExchange.apiAudience and "+
+					"tokenExchange.exchangeRefreshTokens are valid only when selfIssuedSubjectTokens is restricted",
+					path, i, client.ClientID)
 			}
 		default:
 			return fmt.Errorf("%s[%d] (%q): tokenExchange.selfIssuedSubjectTokens must be %q or %q, got %q",

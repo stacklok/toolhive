@@ -13,7 +13,8 @@ import (
 
 // DefaultRedisConfig holds global Redis defaults read from the operator's own
 // environment variables. These are injected by the Helm chart when
-// operator.defaultRedis.addr (or global.redis.host) is set.
+// operator.defaultRedis.addr (or global.redis.host) is set. Controllers share the
+// startup snapshot and must treat it as read-only.
 type DefaultRedisConfig struct {
 	// Addr is the Redis server address (host:port).
 	Addr string
@@ -28,27 +29,12 @@ type DefaultRedisConfig struct {
 	TLS *mcpv1beta1.RedisTLSConfig
 }
 
-// ReadDefaultRedisConfig returns the global Redis defaults from the operator's
-// environment, or nil when TOOLHIVE_DEFAULT_REDIS_ADDR is not set. Invalid TLS
-// settings panic rather than silently falling back to plaintext; the operator
-// calls ValidateDefaultRedisConfig at startup to report these errors gracefully.
-func ReadDefaultRedisConfig() *DefaultRedisConfig {
-	cfg, err := readDefaultRedisConfig()
-	if err != nil {
-		panic(err)
-	}
-	return cfg
-}
-
-// ValidateDefaultRedisConfig validates the global Redis environment before the
-// operator starts its controllers. It validates references, not Secret contents;
-// CA Secrets are projected separately into each workload's namespace.
-func ValidateDefaultRedisConfig() error {
-	_, err := readDefaultRedisConfig()
-	return err
-}
-
-func readDefaultRedisConfig() (*DefaultRedisConfig, error) {
+// LoadDefaultRedisConfigFromEnv reads and validates the global Redis defaults at
+// operator startup, or returns nil when no default address is configured. Pass
+// the returned snapshot to controllers instead of reading the environment during
+// reconciliation. Validation checks references, not Secret contents; Secrets must
+// exist in each workload's namespace and are projected separately by Kubernetes.
+func LoadDefaultRedisConfigFromEnv() (*DefaultRedisConfig, error) {
 	enabled := false
 	if raw := os.Getenv("TOOLHIVE_DEFAULT_REDIS_TLS_ENABLED"); raw != "" {
 		parsed, err := strconv.ParseBool(raw)
@@ -87,4 +73,19 @@ func readDefaultRedisConfig() (*DefaultRedisConfig, error) {
 		}
 	}
 	return cfg, nil
+}
+
+// SessionStorage returns the global address and TLS settings as an existing
+// session storage API type, or nil when no default is configured. Password Secret
+// references are injected separately by deployment builders. The snapshot is
+// read-only; copying TLS keeps callers from mutating the shared default.
+func (d *DefaultRedisConfig) SessionStorage() *mcpv1beta1.SessionStorageConfig {
+	if d == nil {
+		return nil
+	}
+	return &mcpv1beta1.SessionStorageConfig{
+		Provider: mcpv1beta1.SessionStorageProviderRedis,
+		Address:  d.Addr,
+		TLS:      d.TLS.DeepCopy(),
+	}
 }

@@ -172,9 +172,18 @@ in every workload namespace that uses the fallback, alongside any configured
 password Secret. The operator passes references to the workloads; it does not
 copy Secret contents between namespaces or connect to Redis itself.
 
+If the global CA Secret or its configured key is missing, Kubernetes reports a
+`FailedMount` event on each affected pod and leaves it in `ContainerCreating`.
+Inspect `kubectl describe pod` in the workload namespace to identify the missing
+reference. A missing global CA affects every workload using that fallback in the
+namespace; it does not affect workloads with their own Redis configuration.
+
 The chart sets `TOOLHIVE_DEFAULT_REDIS_TLS_ENABLED` and, for a private CA,
 `TOOLHIVE_DEFAULT_REDIS_TLS_CA_SECRET_NAME` and
 `TOOLHIVE_DEFAULT_REDIS_TLS_CA_SECRET_KEY`. Invalid settings stop operator startup.
+The operator reads and validates the defaults once at startup and passes that
+snapshot to the controllers and vMCP converter. Configuration conversion and CA
+projection do not read the environment during reconciliation.
 CA projection, certificate validation, rate-limiter TLS, and restart requirements
 are the same as for per-workload session storage. A change to operator defaults
 is applied as workloads reconcile after the operator restarts.

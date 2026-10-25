@@ -45,11 +45,11 @@ func newNoOpMockResolver(t *testing.T) *oidcmocks.MockResolver {
 }
 
 // newTestConverter creates a Converter with the given resolver, failing the test if creation fails.
-func newTestConverter(t *testing.T, resolver *oidcmocks.MockResolver) *vmcpconfigconv.Converter {
+func newTestConverter(t *testing.T, resolver *oidcmocks.MockResolver, options ...vmcpconfigconv.ConverterOption) *vmcpconfigconv.Converter {
 	t.Helper()
 	scheme := testutil.NewScheme(t)
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
-	converter, err := vmcpconfigconv.NewConverter(resolver, fakeClient)
+	converter, err := vmcpconfigconv.NewConverter(resolver, fakeClient, options...)
 	require.NoError(t, err)
 	return converter
 }

@@ -13,7 +13,7 @@ import (
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 )
 
-func TestReadDefaultRedisConfig(t *testing.T) {
+func TestLoadDefaultRedisConfigFromEnv(t *testing.T) {
 	tests := []struct {
 		name           string
 		addr           string
@@ -48,13 +48,14 @@ func TestReadDefaultRedisConfig(t *testing.T) {
 			t.Setenv("TOOLHIVE_DEFAULT_REDIS_TLS_CA_SECRET_KEY", tt.caKey)
 			t.Setenv("TOOLHIVE_DEFAULT_REDIS_SECRET_NAME", tt.passwordSecret)
 			t.Setenv("TOOLHIVE_DEFAULT_REDIS_SECRET_KEY", tt.passwordKey)
-			require.NoError(t, ctrlutil.ValidateDefaultRedisConfig())
-			assert.Equal(t, tt.want, ctrlutil.ReadDefaultRedisConfig())
+			got, err := ctrlutil.LoadDefaultRedisConfigFromEnv()
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
 		})
 	}
 }
 
-func TestValidateDefaultRedisConfigRejectsInvalidTLS(t *testing.T) {
+func TestLoadDefaultRedisConfigFromEnvRejectsInvalidTLS(t *testing.T) {
 	tests := []struct {
 		name     string
 		addr     string
@@ -77,9 +78,34 @@ func TestValidateDefaultRedisConfigRejectsInvalidTLS(t *testing.T) {
 			t.Setenv("TOOLHIVE_DEFAULT_REDIS_TLS_ENABLED", tt.enabled)
 			t.Setenv("TOOLHIVE_DEFAULT_REDIS_TLS_CA_SECRET_NAME", tt.caSecret)
 			t.Setenv("TOOLHIVE_DEFAULT_REDIS_TLS_CA_SECRET_KEY", tt.caKey)
-			require.Error(t, ctrlutil.ValidateDefaultRedisConfig())
-			assert.Panics(t, func() { ctrlutil.ReadDefaultRedisConfig() },
-				"invalid global TLS must never silently produce a plaintext configuration")
+			got, err := ctrlutil.LoadDefaultRedisConfigFromEnv()
+			require.Error(t, err)
+			assert.Nil(t, got, "invalid global TLS must never produce a usable plaintext configuration")
 		})
 	}
+}
+
+// SessionStorage returns a separate configuration so consumers cannot mutate the
+// startup defaults shared by all reconcilers.
+func TestDefaultRedisConfigSessionStorage(t *testing.T) {
+	t.Parallel()
+
+	var absent *ctrlutil.DefaultRedisConfig
+	assert.Nil(t, absent.SessionStorage())
+
+	defaults := &ctrlutil.DefaultRedisConfig{
+		Addr: "global-redis:6380",
+		TLS: &mcpv1beta1.RedisTLSConfig{
+			CACertSecretRef: &mcpv1beta1.SecretKeyRef{Name: "redis-ca", Key: "ca.crt"},
+		},
+	}
+	storage := defaults.SessionStorage()
+	require.NotNil(t, storage)
+	assert.Equal(t, mcpv1beta1.SessionStorageProviderRedis, storage.Provider)
+	assert.Equal(t, defaults.Addr, storage.Address)
+	require.Equal(t, defaults.TLS, storage.TLS)
+	storage.Address = "other-redis:6379"
+	storage.TLS.CACertSecretRef.Name = "other-ca"
+	assert.Equal(t, "global-redis:6380", defaults.Addr)
+	assert.Equal(t, "redis-ca", defaults.TLS.CACertSecretRef.Name)
 }

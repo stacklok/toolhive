@@ -566,13 +566,21 @@ Secret reference for workloads using the operator's Redis session storage fallba
 Enable `operator.defaultRedis.tls.enabled` for verified TLS; an optional
 `operator.defaultRedis.tls.caCertSecretRef` selects a private CA. The password and
 CA Secrets must exist in each workload's namespace.
+If the CA Secret or key is missing, affected pods remain in `ContainerCreating`
+with a Kubernetes `FailedMount` event visible through `kubectl describe pod`.
 
 The chart injects connection settings and Secret references into the operator's
-environment. The operator validates the TLS settings at startup, renders the
-existing session TLS configuration, and projects the CA into the proxy runner or
-vMCP container. It does not load the CA into its own process or transfer it between
-namespaces. The existing configuration checksum and CA-volume comparisons trigger
-Deployment updates when the selected TLS configuration or CA reference changes.
+environment. At startup, the operator reads and validates these defaults once,
+then passes the same configuration to its controllers and vMCP converter. Runtime
+configuration and CA projection use this startup snapshot without reading the
+environment during reconciliation. Changing the defaults requires restarting the
+operator; the new settings apply as workloads reconcile.
+
+The operator renders the existing session TLS configuration and projects the CA
+into the proxy runner or vMCP container. It does not load the CA into its own
+process or transfer it between namespaces. The existing configuration checksum
+and CA-volume comparisons trigger Deployment updates when the selected TLS
+configuration or CA reference changes.
 Changing CA contents under the same reference requires restarting workload pods.
 
 Per-workload Redis configuration takes precedence over global address, password,

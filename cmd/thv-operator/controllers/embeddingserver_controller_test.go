@@ -4,6 +4,7 @@ package controllers
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -18,7 +19,9 @@ import (
 	"k8s.io/client-go/tools/events"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
@@ -537,6 +540,64 @@ func TestHandleDeletion(t *testing.T) {
 			expectFinalizer: false,
 		},
 	}
+
+	// #4624: when the final status update inside finalizeEmbeddingServer fails,
+	// handleDeletion must return the error and keep the finalizer in place so
+	// the object is requeued instead of being deleted with an unpersisted
+	// final status.
+	t.Run("status update failure keeps finalizer and returns error", func(t *testing.T) {
+		t.Parallel()
+
+		embedding := v1beta1test.NewEmbeddingServer("test-status-fail", testNamespaceDefault,
+			v1beta1test.WithEmbeddingImage("test:latest"),
+			v1beta1test.WithEmbeddingModel("test-model"),
+			v1beta1test.WithEmbeddingDeletionTimestamp(metav1.Time{Time: time.Now()}, embeddingFinalizerName),
+		)
+
+		scheme := testutil.NewScheme(t)
+		fakeClient := fake.NewClientBuilder().
+			WithScheme(scheme).
+			WithRuntimeObjects(embedding).
+			WithStatusSubresource(embedding).
+			WithInterceptorFuncs(interceptor.Funcs{
+				SubResourceUpdate: func(
+					ctx context.Context,
+					c client.Client,
+					subResourceName string,
+					obj client.Object,
+					opts ...client.SubResourceUpdateOption,
+				) error {
+					if subResourceName == "status" {
+						return errors.New("simulated status update failure")
+					}
+					return c.SubResource(subResourceName).Update(ctx, obj, opts...)
+				},
+			}).
+			Build()
+
+		reconciler := &EmbeddingServerReconciler{
+			Client:   fakeClient,
+			Scheme:   scheme,
+			Recorder: events.NewFakeRecorder(10),
+		}
+
+		result, done, err := reconciler.handleDeletion(context.TODO(), embedding)
+
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "simulated status update failure")
+		assert.True(t, done)
+		assert.Equal(t, ctrl.Result{}, result)
+
+		// The finalizer must still be present: removal is only allowed after
+		// finalization succeeds.
+		updatedEmbedding := &mcpv1beta1.EmbeddingServer{}
+		err = fakeClient.Get(context.TODO(), types.NamespacedName{
+			Name:      embedding.Name,
+			Namespace: embedding.Namespace,
+		}, updatedEmbedding)
+		require.NoError(t, err)
+		assert.Contains(t, updatedEmbedding.Finalizers, embeddingFinalizerName)
+	})
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -164,7 +164,12 @@ func (r *EmbeddingServerReconciler) handleDeletion(
 	}
 
 	if controllerutil.ContainsFinalizer(embedding, embeddingFinalizerName) {
-		r.finalizeEmbeddingServer(ctx, embedding)
+		// If finalization fails (e.g. the final status update errors), requeue
+		// with the finalizer still in place so the status is not silently
+		// lost (#4624). The finalizer is only removed after it succeeds.
+		if err := r.finalizeEmbeddingServer(ctx, embedding); err != nil {
+			return ctrl.Result{}, true, err
+		}
 
 		controllerutil.RemoveFinalizer(embedding, embeddingFinalizerName)
 		err := r.Update(ctx, embedding)
@@ -1003,21 +1008,25 @@ func (r *EmbeddingServerReconciler) updateEmbeddingServerStatus(
 	return nil
 }
 
-// finalizeEmbeddingServer performs cleanup before the EmbeddingServer is deleted
-func (r *EmbeddingServerReconciler) finalizeEmbeddingServer(ctx context.Context, embedding *mcpv1beta1.EmbeddingServer) {
+// finalizeEmbeddingServer performs cleanup before the EmbeddingServer is deleted.
+// It returns an error when the final status update fails so the caller can
+// requeue instead of removing the finalizer and silently losing the final
+// status (#4624). This mirrors finalizeMCPServer's error contract.
+func (r *EmbeddingServerReconciler) finalizeEmbeddingServer(ctx context.Context, embedding *mcpv1beta1.EmbeddingServer) error {
 	ctxLogger := log.FromContext(ctx)
 	ctxLogger.Info("Finalizing EmbeddingServer", "name", embedding.Name)
 
 	// Update status to Terminating
 	embedding.Status.Phase = mcpv1beta1.EmbeddingServerPhaseTerminating
 	if err := r.Status().Update(ctx, embedding); err != nil {
-		ctxLogger.Error(err, "Failed to update EmbeddingServer status to Terminating")
+		return fmt.Errorf("updating final status: %w", err)
 	}
 
 	// Cleanup logic here if needed
 	// For now, Kubernetes will handle cascade deletion of owned resources
 
 	r.Recorder.Eventf(embedding, nil, corev1.EventTypeNormal, "Deleted", "Finalize", "EmbeddingServer has been finalized")
+	return nil
 }
 
 // SetupWithManager sets up the controller with the Manager.

@@ -302,6 +302,18 @@ func buildDelegateClientRunConfigs(
 				AllowedSourceClients: slices.Clone(delegateClient.TokenExchange.AllowedSourceClients),
 				APIAudience:          delegateClient.TokenExchange.APIAudience,
 			}
+			if refresh := delegateClient.TokenExchange.ExchangeRefreshTokens; refresh != nil {
+				// Durations reach the RunConfig as Go duration strings. An omitted
+				// cap stays empty, which refuses that grant kind.
+				exchangeRefresh := &authserver.DelegateClientExchangeRefreshTokens{}
+				if refresh.IDJAGMaxLifetime != nil {
+					exchangeRefresh.IDJAGMaxLifetime = refresh.IDJAGMaxLifetime.Duration.String()
+				}
+				if refresh.RefreshTokenMaxLifetime != nil {
+					exchangeRefresh.RefreshTokenMaxLifetime = refresh.RefreshTokenMaxLifetime.Duration.String()
+				}
+				runConfig.TokenExchange.ExchangeRefreshTokens = exchangeRefresh
+			}
 		}
 		configs[i] = runConfig
 	}

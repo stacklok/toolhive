@@ -1382,8 +1382,11 @@ child token from it, and revoking it, are not covered here yet.
 `id_jag_max_lifetime` and/or `refresh_token_max_lifetime` (each at most 720h; a
 missing value refuses that kind of token). The client also needs
 `token_exchange.self_issued_subject_tokens: restricted` and
-`token_exchange.api_audience`; validation refuses the feature with `any`
-(CRD: `exchangeRefreshTokens` requires `selfIssuedSubjectTokens: restricted`).
+`token_exchange.api_audience`; validation refuses the feature with `any`.
+On the CRD, the same settings are `tokenExchange.exchangeRefreshTokens` with
+`idJagMaxLifetime` and `refreshTokenMaxLifetime`. The CRD also requires
+`selfIssuedSubjectTokens: restricted`, `apiAudience`, and at least one
+`allowedSourceClients` entry with it, matching the runtime.
 The storage backend must support
 `storage.ExchangeGrantStorage`; startup fails if a client enables the feature
 and it does not. The memory and Redis backends both support it.

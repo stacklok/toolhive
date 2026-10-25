@@ -5,6 +5,7 @@ package authserver
 
 import (
 	"context"
+	"crypto/x509"
 	"log/slog"
 	"net/http"
 
@@ -59,10 +60,11 @@ type Server interface {
 	// its closed connection pool).
 	DCRStore() storage.DCRCredentialStore
 
-	// Close releases resources held by the server. It drains the upstream idle
-	// connections (see the CloseIdleConnections function) and then closes
-	// storage. Do not call it on a server whose storage is shared with another
-	// live server; retire that one with CloseIdleConnections instead.
+	// Close releases resources held by the server. It drains upstream idle
+	// connections, stops SPIFFE bundle and trusted-issuer refresh workers, and
+	// closes storage. It joins shutdown errors. Do not call it on a server whose
+	// storage is shared with another live server; retire that one with
+	// CloseIdleConnections instead.
 	Close() error
 }
 
@@ -75,6 +77,25 @@ type Server interface {
 // keeps the real implementation compile-time guaranteed to satisfy it.
 type idleConnectionCloser interface {
 	CloseIdleConnections()
+}
+
+// spiffeX509AuthorityLister is the capability SPIFFEX509Authorities detects.
+// It is deliberately not a method on Server so out-of-tree implementations and
+// test doubles are not forced to implement the optional operation.
+type spiffeX509AuthorityLister interface {
+	SPIFFEX509Authorities() []*x509.Certificate
+}
+
+// SPIFFEX509Authorities returns the current X.509 authorities of every trust
+// domain that enables spiffe_x509, and whether s supports the operation.
+// The result reflects live bundle rotation. It is used only as a TLS
+// certificate_authorities hint, never for verification.
+func SPIFFEX509Authorities(s Server) ([]*x509.Certificate, bool) {
+	lister, ok := s.(spiffeX509AuthorityLister)
+	if !ok {
+		return nil, false
+	}
+	return lister.SPIFFEX509Authorities(), true
 }
 
 // CloseIdleConnections releases the idle keep-alive connections pooled by s's

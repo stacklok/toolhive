@@ -135,6 +135,8 @@ type syncPluginsRequest struct {
 	// decision at all, whose reinstall otherwise fails closed on unsigned
 	// content.
 	AllowUnsigned bool `json:"allow_unsigned,omitempty"`
+	// PublicKey supplies the cosign public key for key-signed adoption.
+	PublicKey string `json:"public_key,omitempty"`
 }
 
 // upgradePluginsRequest represents the request to upgrade a project's plugins.
@@ -154,6 +156,8 @@ type upgradePluginsRequest struct {
 	// AllowSignerChange permits upgrading to an artifact signed by a
 	// different identity than the recorded one
 	AllowSignerChange bool `json:"allow_signer_change,omitempty"`
+	// PublicKey proposes a cosign public key as the replacement trust anchor.
+	PublicKey string `json:"public_key,omitempty"`
 	// Clients lists target client identifiers. Empty means every
 	// plugin-supporting client detected on this host.
 	Clients []string `json:"clients,omitempty"`

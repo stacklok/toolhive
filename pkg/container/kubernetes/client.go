@@ -8,6 +8,7 @@ package kubernetes
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -17,10 +18,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cenkalti/backoff/v5"
+	"github.com/cenkalti/backoff/v7"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/errors"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	apimwatch "k8s.io/apimachinery/pkg/watch"
@@ -253,7 +254,8 @@ func (c *Client) AttachToWorkload(ctx context.Context, workloadName string) (io.
 			}),
 		)
 		if err != nil {
-			if statusErr, ok := err.(*errors.StatusError); ok {
+			var statusErr *apierrors.StatusError
+			if errors.As(err, &statusErr) {
 				slog.Error("kubernetes API error",
 					"status", statusErr.ErrStatus.Status,
 					"message", statusErr.ErrStatus.Message,
@@ -528,7 +530,7 @@ func (c *Client) applyStatefulSet(
 func (c *Client) getExistingStatefulSet(ctx context.Context, namespace, name string) (*appsv1.StatefulSet, error) {
 	existing, err := c.client.AppsV1().StatefulSets(namespace).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
-		if errors.IsNotFound(err) {
+		if apierrors.IsNotFound(err) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("failed to get existing statefulset: %w", err)
@@ -631,7 +633,7 @@ func (c *Client) GetWorkloadInfo(ctx context.Context, workloadName string) (runt
 	// Get the statefulset
 	statefulset, err := c.client.AppsV1().StatefulSets(namespace).Get(ctx, workloadName, metav1.GetOptions{})
 	if err != nil {
-		if errors.IsNotFound(err) {
+		if apierrors.IsNotFound(err) {
 			return runtime.ContainerInfo{}, fmt.Errorf("%w: statefulset %s not found", runtime.ErrWorkloadNotFound, workloadName)
 		}
 		return runtime.ContainerInfo{}, fmt.Errorf("failed to get statefulset %s: %w", workloadName, err)
@@ -699,7 +701,7 @@ func (c *Client) IsWorkloadRunning(ctx context.Context, workloadName string) (bo
 	// Get the statefulset
 	statefulset, err := c.client.AppsV1().StatefulSets(namespace).Get(ctx, workloadName, metav1.GetOptions{})
 	if err != nil {
-		if errors.IsNotFound(err) {
+		if apierrors.IsNotFound(err) {
 			return false, fmt.Errorf("%w: statefulset %s not found", runtime.ErrWorkloadNotFound, workloadName)
 		}
 		return false, fmt.Errorf("failed to get statefulset %s: %w", workloadName, err)
@@ -786,7 +788,7 @@ func (c *Client) RemoveWorkload(ctx context.Context, workloadName string) error 
 	deleteOptions := metav1.DeleteOptions{}
 	err := c.client.AppsV1().StatefulSets(namespace).Delete(ctx, workloadName, deleteOptions)
 	if err != nil {
-		if errors.IsNotFound(err) {
+		if apierrors.IsNotFound(err) {
 			// If the statefulset doesn't exist, that's fine
 			slog.Info("statefulset not found, nothing to remove", "name", workloadName)
 			return nil

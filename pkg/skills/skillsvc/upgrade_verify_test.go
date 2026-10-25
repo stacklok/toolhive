@@ -514,12 +514,12 @@ func TestJudgeKeyedCandidate(t *testing.T) {
 			wantStatus: skills.UpgradeStatusFailed,
 		},
 		{
-			name:        "a different key is a failure, since allow_signer_change cannot re-anchor",
+			name:        "a different key names the explicit re-anchor path",
 			verifyErr:   verifier.ErrSignatureInvalid,
 			probeErr:    verifier.ErrKeySigned,
 			wantKind:    keyedUndecided,
 			wantReason:  skills.FailureReasonSignatureInvalid,
-			wantErrText: "--scope project --public-key",
+			wantErrText: "--allow-signer-change --public-key",
 			wantBlocked: true, wantBlockedOverride: true,
 			wantStatus: skills.UpgradeStatusFailed,
 		},
@@ -695,39 +695,30 @@ func upgradeKeyPinned(t *testing.T, svc *service, opts skills.UpgradeOptions) sk
 	return result.Outcomes[0]
 }
 
-// TestUpgrade_KeyPinnedEntryVerifiesAgainstPinnedKey proves the whole keyed
-// upgrade, not just the guard: the candidate is checked against the pinned
-// key, and the install applyUpgrade then performs is checked against it too.
-// That install carries no key of its own — resolveKeyAnchor reads the anchor
-// back out of the lock — so a regression that dropped the pin would surface
-// here as a keyless verification call rather than as a wrong result.
+// TestUpgrade_KeyPinnedEntryVerifiesAgainstPinnedKey proves an ordinary keyed
+// upgrade remains compatible with a Verifier that does not implement strict
+// OCI snapshot retrieval. It retains the legacy two-stage flow: measure the
+// candidate during planning, then enforce the recorded anchor during install.
 //
 //nolint:paralleltest // uses t.Setenv via newLockTestService, incompatible with t.Parallel
 func TestUpgrade_KeyPinnedEntryVerifiesAgainstPinnedKey(t *testing.T) {
 	keyPEM, err := verifier.DecodePublicKey(testPublicKeyB64)
 	require.NoError(t, err)
 
-	keyCalls := 0
 	mv := verifiermocks.NewMockVerifier(gomock.NewController(t))
 	mv.EXPECT().VerifyOCIWithKey(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Eq(keyPEM)).
-		AnyTimes().
-		DoAndReturn(func(_ context.Context, _, _ string, _ []byte) (*verifier.Result, error) {
-			keyCalls++
-			return &verifier.Result{Signed: true, Bundle: []byte(`{"bundle":true}`)}, nil
-		})
-	// Neither the guard nor the install may fall back to the keyless path.
+		Return(&verifier.Result{Signed: true, Bundle: []byte(`{"bundle":"installed"}`)}, nil)
 	mv.EXPECT().VerifyOCI(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Times(0)
 
 	svc, projectRoot, publishV2 := keyPinnedUpgradeFixture(t, mv)
-	installCalls := keyCalls
 	publishV2()
+	mv.EXPECT().VerifyOCIWithKey(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Eq(keyPEM)).
+		Return(&verifier.Result{Signed: true, Bundle: []byte(`{"bundle":"candidate"}`)}, nil).
+		Times(2)
 
 	outcome := upgradeKeyPinned(t, svc, skills.UpgradeOptions{ProjectRoot: projectRoot})
 	assert.Equal(t, skills.UpgradeStatusUpgraded, outcome.Status,
 		"a candidate that verifies against the pinned key must not be blocked; error: %s", outcome.Error)
-
-	assert.Equal(t, 2, keyCalls-installCalls,
-		"the signer guard and the install applyUpgrade performs must each verify against the key")
 
 	entry, ok := loadLockEntry(t, projectRoot, "my-skill")
 	require.True(t, ok)
@@ -748,23 +739,16 @@ func TestUpgrade_KeyPinnedEntryVerifiesAgainstPinnedKey(t *testing.T) {
 //nolint:paralleltest // uses t.Setenv via newLockTestService, incompatible with t.Parallel
 func TestUpgrade_AllowSignerChangeMovesKeyPinnedEntryToKeyless(t *testing.T) {
 	mv := verifiermocks.NewMockVerifier(gomock.NewController(t))
-	// The install pins the key; the candidate has since moved to keyless
-	// signing, which is what makes the override applicable at all.
-	installed := false
 	mv.EXPECT().VerifyOCIWithKey(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
-		AnyTimes().
-		DoAndReturn(func(_ any, _, _ string, _ []byte) (*verifier.Result, error) {
-			if !installed {
-				installed = true
-				return &verifier.Result{Signed: true, Bundle: []byte(`{"bundle":true}`)}, nil
-			}
-			return nil, verifier.ErrKeylessSigned
-		})
-	mv.EXPECT().VerifyOCI(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
-		AnyTimes().Return(signedResult(), nil)
+		Return(&verifier.Result{Signed: true, Bundle: []byte(`{"bundle":"installed"}`)}, nil)
 
 	svc, projectRoot, publishV2 := keyPinnedUpgradeFixture(t, mv)
 	publishV2()
+	mv.EXPECT().VerifyOCIWithKey(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+		Return(nil, verifier.ErrKeylessSigned)
+	mv.EXPECT().VerifyOCI(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+		Return(signedResult(), nil).
+		Times(2)
 
 	outcome := upgradeKeyPinned(t, svc, skills.UpgradeOptions{
 		ProjectRoot: projectRoot, AllowSignerChange: true,
@@ -792,13 +776,13 @@ func TestUpgrade_AllowSignerChangeMovesKeyPinnedEntryToKeyless(t *testing.T) {
 func TestUpgrade_AllowSignerChangeKeepsSameKeyPin(t *testing.T) {
 	mv := verifiermocks.NewMockVerifier(gomock.NewController(t))
 	mv.EXPECT().VerifyOCIWithKey(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
-		AnyTimes().Return(&verifier.Result{Signed: true, Bundle: []byte(`{"bundle":true}`)}, nil)
-	// What a key-signed artifact really answers when verified keylessly.
-	mv.EXPECT().VerifyOCI(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
-		AnyTimes().Return(nil, verifier.ErrKeySigned)
+		Return(&verifier.Result{Signed: true, Bundle: []byte(`{"bundle":"installed"}`)}, nil)
 
 	svc, projectRoot, publishV2 := keyPinnedUpgradeFixture(t, mv)
 	publishV2()
+	mv.EXPECT().VerifyOCIWithKey(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+		Return(&verifier.Result{Signed: true, Bundle: []byte(`{"bundle":"candidate"}`)}, nil).
+		Times(2)
 
 	outcome := upgradeKeyPinned(t, svc, skills.UpgradeOptions{
 		ProjectRoot: projectRoot, AllowSignerChange: true,
@@ -823,27 +807,16 @@ func TestUpgrade_AllowSignerChangeKeepsSameKeyPin(t *testing.T) {
 //nolint:paralleltest // uses t.Setenv via newLockTestService, incompatible with t.Parallel
 func TestUpgrade_OperationalKeyedErrorDoesNotDropPin(t *testing.T) {
 	mv := verifiermocks.NewMockVerifier(gomock.NewController(t))
-	installed := false
 	mv.EXPECT().VerifyOCIWithKey(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
-		AnyTimes().
-		DoAndReturn(func(_ any, _, _ string, _ []byte) (*verifier.Result, error) {
-			if !installed {
-				installed = true
-				return &verifier.Result{Signed: true, Bundle: []byte(`{"bundle":true}`)}, nil
-			}
-			return nil, fmt.Errorf("fetching signatures: %w", context.DeadlineExceeded)
-		})
-	// The candidate also carries a perfectly good keyless signature, so a
-	// probe would succeed. That is the trap: the artifact still carries a
-	// valid pinned-key signature too, and only the transient keyed fault
-	// makes it look like it moved. The probe must never be reached.
-	mv.EXPECT().VerifyOCI(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
-		AnyTimes().Return(signedResult(), nil)
+		Return(&verifier.Result{Signed: true, Bundle: []byte(`{"bundle":"installed"}`)}, nil)
 
 	svc, projectRoot, publishV2 := keyPinnedUpgradeFixture(t, mv)
 	before, ok := loadLockEntry(t, projectRoot, "my-skill")
 	require.True(t, ok)
 	publishV2()
+	mv.EXPECT().VerifyOCIWithKey(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+		Return(nil, fmt.Errorf("fetching signatures: %w", context.DeadlineExceeded))
+	mv.EXPECT().VerifyOCI(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Times(0)
 
 	outcome := upgradeKeyPinned(t, svc, skills.UpgradeOptions{
 		ProjectRoot: projectRoot, AllowSignerChange: true,

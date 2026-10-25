@@ -469,10 +469,8 @@ var _ = Describe("MCPExternalAuthConfig Controller Integration Tests", func() {
 	})
 
 	Context("When deleting an MCPExternalAuthConfig with active references", Ordered, func() {
-		// The block->unblock deletion transition is driven purely by the
-		// controller's periodic requeue (the workload watches were removed), so
-		// the unblock assertion below must tolerate the up-to-30s requeue delay.
-		const deletionRequeueTimeout = time.Second * 45
+		// Deletion must unblock on the workload watch, not the 30s requeue.
+		const deletionUnblockTimeout = time.Second * 10
 
 		var (
 			namespace       string
@@ -580,7 +578,7 @@ var _ = Describe("MCPExternalAuthConfig Controller Integration Tests", func() {
 					Namespace: namespace,
 				}, updated)
 				return errors.IsNotFound(err)
-			}, deletionRequeueTimeout, interval).Should(BeTrue())
+			}, deletionUnblockTimeout, interval).Should(BeTrue())
 		})
 
 		It("Should have the finalizer once it is being tracked", func() {
@@ -633,8 +631,6 @@ var _ = Describe("MCPExternalAuthConfig Controller Integration Tests", func() {
 			// Remove the reference.
 			Expect(k8sClient.Delete(ctx, mcpServer)).Should(Succeed())
 
-			// With the workload watches removed, the unblock relies solely on the
-			// controller's periodic (up-to-30s) requeue, so allow extra time.
 			Eventually(func() bool {
 				updated := &mcpv1beta1.MCPExternalAuthConfig{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
@@ -642,7 +638,7 @@ var _ = Describe("MCPExternalAuthConfig Controller Integration Tests", func() {
 					Namespace: namespace,
 				}, updated)
 				return errors.IsNotFound(err)
-			}, deletionRequeueTimeout, interval).Should(BeTrue())
+			}, deletionUnblockTimeout, interval).Should(BeTrue())
 		})
 	})
 })

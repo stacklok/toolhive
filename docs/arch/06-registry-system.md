@@ -860,8 +860,8 @@ thv run weather-server --image-verification enabled
 ```
 
 **Implementation**:
-- `pkg/registry/types.go` - Provenance type definitions
-- `pkg/container/verifier/` - Sigstore/cosign verification using sigstore-go library
+- [`toolhive-core/registry/types`](https://github.com/stacklok/toolhive-core/tree/main/registry/types) - Provenance type definitions
+- [`toolhive-core/container/verifier`](https://github.com/stacklok/toolhive-core/tree/main/container/verifier) - Sigstore/cosign verification using sigstore-go library
 - `pkg/runner/retriever/retriever.go` - Image verification orchestration
 
 ### Supply Chain Security
@@ -919,7 +919,7 @@ ToolHive uses the `io.modelcontextprotocol.registry/publisher-provided` extensio
 For the complete schema definition, see:
 - **Schemas**: published in [`stacklok/toolhive-core`](https://github.com/stacklok/toolhive-core) under `registry/types/data/`
 - **Documentation**: `docs/registry/schema.md`
-- **Validation**: `pkg/registry/schema_validation.go`
+- **Validation**: [`toolhive-core/registry/types`](https://github.com/stacklok/toolhive-core/tree/main/registry/types)
 
 **Implementation**: `pkg/registry/`
 

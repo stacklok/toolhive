@@ -23,8 +23,8 @@ import (
 // membership never changes, so this returns immediately.
 //
 // The loop runs until ctx is cancelled (on server Stop). pollInterval is passed
-// in (rather than read from the package-level versionPollInterval) so tests can
-// drive it without mutating shared state that a parallel test also touches.
+// in (rather than read from a package-level default) so tests can drive it
+// without mutating shared state that a parallel test also touches.
 func (s *Server) reconcileSessionsOnRegistryChange(ctx context.Context, pollInterval time.Duration) {
 	dynamicReg, isDynamic := s.backendRegistry.(vmcp.DynamicRegistry)
 	if !isDynamic || s.vmcpSessionMgr == nil {

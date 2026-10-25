@@ -8,6 +8,7 @@
 package client
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -18,6 +19,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"slices"
 	"sync"
@@ -959,6 +961,11 @@ func queryResources(ctx context.Context, c *client.Client, supported bool, backe
 			}
 			return result.Resources, result.NextCursor, nil
 		})
+		if errors.Is(err, mcp.ErrMethodNotFound) {
+			slog.Warn("backend advertised resources capability but does not implement resources/list",
+				"backendID", backendID, "method", "resources/list")
+			return &mcp.ListResourcesResult{Resources: []mcp.Resource{}}, nil
+		}
 		if err != nil {
 			return nil, fmt.Errorf("failed to list resources from backend %s: %w", backendID, err)
 		}
@@ -1017,6 +1024,11 @@ func queryPrompts(ctx context.Context, c *client.Client, supported bool, backend
 			}
 			return result.Prompts, result.NextCursor, nil
 		})
+		if errors.Is(err, mcp.ErrMethodNotFound) {
+			slog.Warn("backend advertised prompts capability but does not implement prompts/list",
+				"backendID", backendID, "method", "prompts/list")
+			return &mcp.ListPromptsResult{Prompts: []mcp.Prompt{}}, nil
+		}
 		if err != nil {
 			return nil, fmt.Errorf("failed to list prompts from backend %s: %w", backendID, err)
 		}
@@ -1242,7 +1254,7 @@ func (h *httpBackendClient) modernEnumerate(
 
 	var tools []mcp.Tool
 	if caps != nil && caps.Tools != nil {
-		tools, err = modernListAll[mcp.Tool](ctx, hc, endpoint, "tools/list", "tools")
+		tools, err = modernListAll[mcp.Tool](ctx, hc, endpoint, "tools/list", "tools", target.WorkloadName)
 		if err != nil {
 			return nil, wrapBackendError(err, target.WorkloadID, "list tools")
 		}
@@ -1252,7 +1264,7 @@ func (h *httpBackendClient) modernEnumerate(
 	var templates []mcp.ResourceTemplate
 	if caps != nil && caps.Resources != nil {
 		resources, err = modernListOptional[mcp.Resource](
-			ctx, hc, endpoint, "resources/list", "resources", target.WorkloadName, false,
+			ctx, hc, endpoint, "resources/list", "resources", target.WorkloadName, true,
 		)
 		if err != nil {
 			return nil, wrapBackendError(err, target.WorkloadID, "list resources")
@@ -1272,7 +1284,7 @@ func (h *httpBackendClient) modernEnumerate(
 	var prompts []mcp.Prompt
 	if caps != nil && caps.Prompts != nil {
 		prompts, err = modernListOptional[mcp.Prompt](
-			ctx, hc, endpoint, "prompts/list", "prompts", target.WorkloadName, false,
+			ctx, hc, endpoint, "prompts/list", "prompts", target.WorkloadName, true,
 		)
 		if err != nil {
 			return nil, wrapBackendError(err, target.WorkloadID, "list prompts")
@@ -1294,14 +1306,14 @@ func (h *httpBackendClient) modernEnumerate(
 //     read failure, or a transport/network error), after the mandatory
 //     tools/list has already succeeded, yields an empty list with a WARN;
 //   - a -32601 not-implemented (mcp.ErrMethodNotFound) yields an empty list
-//     when degradeNotFound is set, mirroring the Legacy resources/templates/list
-//     path; resources/list and prompts/list treat it as fatal.
+//     when degradeNotFound is set. This is used for optional resource and
+//     prompt surfaces so a backend's remaining capabilities can still aggregate.
 //
 // Any other error is returned to the caller, which fails the enumeration.
 func modernListOptional[T any](
 	ctx context.Context, hc *http.Client, endpoint, method, itemsField, backend string, degradeNotFound bool,
 ) ([]T, error) {
-	items, err := modernListAll[T](ctx, hc, endpoint, method, itemsField)
+	items, err := modernListAll[T](ctx, hc, endpoint, method, itemsField, backend)
 	switch {
 	case errors.Is(err, errModernTransient):
 		slog.Warn(method+" transiently unavailable; degrading to empty list",
@@ -1328,8 +1340,18 @@ func cursorParams(cursor mcp.Cursor) map[string]any {
 // nextCursor (#5851). itemsField is the result key holding the item array
 // ("tools", "resources", "resourceTemplates", "prompts"); the envelope is decoded
 // into a raw-message map so one helper serves all four list shapes.
+//
+// Items are decoded one at a time. An item the compat types cannot decode is
+// skipped with a warning naming it, so one bad item does not hide every other
+// item the backend advertises. The item is not necessarily invalid: the compat
+// types model less than the spec allows (for example a tool whose top-level
+// outputSchema "type" is a JSON Schema type array is valid but cannot be
+// represented), so a skip means vMCP could not use the item, not that the
+// backend broke the protocol. A JSON null item carries nothing to advertise and
+// is skipped the same way. An items field that is not an array is a
+// protocol-level fault and still fails the page.
 func modernListAll[T any](
-	ctx context.Context, hc *http.Client, endpoint, method, itemsField string,
+	ctx context.Context, hc *http.Client, endpoint, method, itemsField, backend string,
 ) ([]T, error) {
 	return pagination.ListAll(ctx, func(ctx context.Context, cursor mcp.Cursor) ([]T, mcp.Cursor, error) {
 		var page map[string]json.RawMessage
@@ -1338,8 +1360,25 @@ func modernListAll[T any](
 		}
 		var items []T
 		if raw, ok := page[itemsField]; ok {
-			if err := json.Unmarshal(raw, &items); err != nil {
+			var rawItems []json.RawMessage
+			if err := json.Unmarshal(raw, &rawItems); err != nil {
 				return nil, "", fmt.Errorf("decoding %s from %s: %w", itemsField, method, err)
+			}
+			items = make([]T, 0, len(rawItems))
+			for i, rawItem := range rawItems {
+				var item T
+				if bytes.Equal(bytes.TrimSpace(rawItem), []byte("null")) {
+					slog.Warn("skipping null item in "+method+" response",
+						"backend", backend, "field", itemsField, "index", i)
+					continue
+				}
+				if err := json.Unmarshal(rawItem, &item); err != nil {
+					slog.Warn("skipping undecodable item in "+method+" response",
+						"backend", backend, "field", itemsField, "index", i,
+						"item", itemIdentifier(rawItem), "error", err)
+					continue
+				}
+				items = append(items, item)
 			}
 		}
 		var next mcp.Cursor
@@ -1348,6 +1387,23 @@ func modernListAll[T any](
 		}
 		return items, next, nil
 	})
+}
+
+// itemIdentifier returns the name (or, for resources, the uri) of a raw list
+// item for logging, or "" when it carries neither as a string. The keys are
+// decoded separately so a wrongly typed name does not hide a usable uri.
+func itemIdentifier(raw json.RawMessage) string {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return ""
+	}
+	for _, key := range []string{"name", "uri"} {
+		var value string
+		if err := json.Unmarshal(fields[key], &value); err == nil && value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 // newCapabilityListFromMCP converts backend mcp types into the vmcp domain
@@ -1360,8 +1416,8 @@ func newCapabilityListFromMCP(
 ) *vmcp.CapabilityList {
 	capabilities := &vmcp.CapabilityList{
 		Tools:             make([]vmcp.Tool, 0, len(tools)),
-		Resources:         make([]vmcp.Resource, len(resources)),
-		ResourceTemplates: make([]vmcp.ResourceTemplate, len(templates)),
+		Resources:         make([]vmcp.Resource, 0, len(resources)),
+		ResourceTemplates: make([]vmcp.ResourceTemplate, 0, len(templates)),
 		Prompts:           make([]vmcp.Prompt, len(prompts)),
 	}
 
@@ -1392,25 +1448,47 @@ func newCapabilityListFromMCP(
 		})
 	}
 
-	for i, resource := range resources {
-		capabilities.Resources[i] = vmcp.Resource{
+	for _, resource := range resources {
+		// go-sdk's AddResource panics when url.Parse rejects a resource URI, and
+		// the URI is backend-controlled. Both the registration and list_changed
+		// resync paths register these resources on a session, so one malformed
+		// URI would crash the whole vMCP process and every other backend with it.
+		// Dropping at this shared ingestion seam, like the tool rejection above,
+		// keeps the failure to the single offending resource.
+		if _, err := url.Parse(resource.URI); err != nil {
+			slog.Warn("rejecting backend resource with unparsable URI",
+				"backend", backendID, "resource", resource.Name, "error", err)
+			continue
+		}
+
+		capabilities.Resources = append(capabilities.Resources, vmcp.Resource{
 			URI:         resource.URI,
 			Name:        resource.Name,
 			Description: resource.Description,
 			MimeType:    resource.MIMEType,
 			BackendID:   backendID,
-		}
+		})
 	}
 
-	// Resource templates are a pass-through: no URI-template rewriting, like resources.
-	for i, template := range templates {
-		capabilities.ResourceTemplates[i] = vmcp.ResourceTemplate{
+	// Resource templates are passed through without URI-template rewriting, like
+	// resources, but each is bounded first: the URI template library's compile
+	// and match cost grows with the template's size, and every later request
+	// that reaches template matching pays it. Dropping the one offending
+	// template is the narrower failure than letting a backend exhaust vMCP's
+	// memory, which would take every other backend down with it.
+	for _, template := range templates {
+		if err := validateResourceTemplate(template.URITemplate); err != nil {
+			slog.Warn("rejecting backend resource template that exceeds the size bounds",
+				"backend", backendID, "name", template.Name, "error", err)
+			continue
+		}
+		capabilities.ResourceTemplates = append(capabilities.ResourceTemplates, vmcp.ResourceTemplate{
 			URITemplate: template.URITemplate,
 			Name:        template.Name,
 			Description: template.Description,
 			MimeType:    template.MIMEType,
 			BackendID:   backendID,
-		}
+		})
 	}
 
 	for i, prompt := range prompts {

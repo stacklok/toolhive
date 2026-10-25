@@ -19,6 +19,7 @@ var (
 	skillUpgradeFailOnChanges     bool
 	skillUpgradeAllowRefChange    bool
 	skillUpgradeAllowSignerChange bool
+	skillUpgradePublicKey         string
 	skillUpgradeYes               bool
 	skillUpgradeFormat            string
 )
@@ -28,8 +29,9 @@ var skillUpgradeCmd = &cobra.Command{
 	Short: "Upgrade project skills to newer pinned content",
 	Long: `Re-resolve a project's lock entries and install newer content where available.
 
-Skills pinned to an immutable reference (an OCI digest or a full git commit
-hash) are reported not-upgradable — there is nothing newer to resolve to.
+Skills pinned to a full git commit hash are not upgradable. OCI digest content
+is also immutable, but --allow-signer-change --public-key can evaluate its
+separately attached signatures for a trust-only update.
 Use --preview to see what would change without persisting anything (OCI
 sources are still fetched into the local artifact store to compare digests),
 and --allow-ref-change to permit the artifact moving to a different
@@ -38,9 +40,9 @@ this guard blocks).
 --fail-on-changes evaluates the same plan and never installs: it is a CI
 freshness gate.
 
-Unless --preview is set, upgrade prompts for confirmation before installing —
-skill content is a set of AI-followed instructions. Pass --yes to skip the
-prompt (required in non-interactive contexts such as CI).`,
+Unless --preview or --fail-on-changes is set, upgrade prompts for confirmation
+before installing. Skill content is a set of AI-followed instructions. Pass
+--yes to skip the prompt (required in non-interactive contexts such as CI).`,
 	PreRunE: chainPreRunE(
 		ValidateFormat(&skillUpgradeFormat),
 	),
@@ -60,6 +62,8 @@ func init() {
 		"Report what would change without installing anything; a CI freshness gate")
 	skillUpgradeCmd.Flags().BoolVar(&skillUpgradeAllowSignerChange, "allow-signer-change", false,
 		"Permit upgrading to an artifact signed by a different identity; the new identity replaces the recorded one")
+	skillUpgradeCmd.Flags().StringVar(&skillUpgradePublicKey, "public-key", "",
+		"Path to a cosign public key proposed as the replacement trust anchor (requires --allow-signer-change)")
 	skillUpgradeCmd.Flags().BoolVar(&skillUpgradeAllowRefChange, "allow-ref-change", false,
 		"Permit the artifact to move to a different repository during upgrade")
 	skillUpgradeCmd.Flags().BoolVar(&skillUpgradeYes, "yes", false,
@@ -69,6 +73,10 @@ func init() {
 
 func skillUpgradeCmdFunc(cmd *cobra.Command, args []string) error {
 	projectRoot, err := resolveProjectRoot(skillUpgradeProjectRoot)
+	if err != nil {
+		return err
+	}
+	publicKey, err := readInstallPublicKey(skillUpgradePublicKey)
 	if err != nil {
 		return err
 	}
@@ -96,6 +104,7 @@ func skillUpgradeCmdFunc(cmd *cobra.Command, args []string) error {
 		FailOnChanges:     skillUpgradeFailOnChanges,
 		AllowRefChange:    skillUpgradeAllowRefChange,
 		AllowSignerChange: skillUpgradeAllowSignerChange,
+		PublicKey:         publicKey,
 	})
 	if err != nil {
 		return formatSkillError("upgrade skills", err)
@@ -132,7 +141,7 @@ func tallyUpgradeOutcomes(result *skills.UpgradeResult) upgradeTally {
 		case skills.UpgradeStatusSignerChangeBlocked:
 			t.signerBlocked++
 			t.wouldChange++
-		case skills.UpgradeStatusUpgraded:
+		case skills.UpgradeStatusUpgraded, skills.UpgradeStatusTrustUpdated:
 			t.wouldChange++
 		case skills.UpgradeStatusUpToDate, skills.UpgradeStatusNotUpgradable:
 			// No exit-code impact.
@@ -191,25 +200,48 @@ func printUpgradeResult(result *skills.UpgradeResult, format string, planOnly bo
 		upgradedVerb = "would upgrade"
 	}
 	for _, o := range result.Outcomes {
-		switch o.Status {
-		case skills.UpgradeStatusUpgraded:
-			fmt.Printf("%s: %s %s -> %s\n", o.Name, upgradedVerb, o.OldDigest, o.NewDigest)
-		case skills.UpgradeStatusUpToDate:
-			fmt.Printf("%s: up to date\n", o.Name)
-		case skills.UpgradeStatusNotUpgradable:
-			fmt.Printf("%s: not upgradable (pinned to an immutable reference)\n", o.Name)
-		case skills.UpgradeStatusRefChangeBlocked:
-			fmt.Printf("%s: repository change blocked (would move to %s; use --allow-ref-change)\n",
-				o.Name, o.NewResolvedReference)
-		case skills.UpgradeStatusSignerChangeBlocked:
-			newSigner := o.NewSignerIdentity
-			if newSigner == "" {
-				newSigner = "unsigned"
-			}
-			fmt.Printf("%s: signer change blocked (candidate is %s; use --allow-signer-change)\n", o.Name, newSigner)
-		case skills.UpgradeStatusFailed:
-			fmt.Printf("%s: failed [%s]: %s\n", o.Name, o.Reason, o.Error)
-		}
+		printUpgradeOutcome(o, upgradedVerb, planOnly)
 	}
 	return nil
+}
+
+func printUpgradeOutcome(o skills.UpgradeOutcome, upgradedVerb string, planOnly bool) {
+	switch o.Status {
+	case skills.UpgradeStatusUpgraded:
+		if o.TrustAnchorChanged {
+			fmt.Printf("%s: %s %s -> %s (trust anchor changed)\n", o.Name, upgradedVerb, o.OldDigest, o.NewDigest)
+		} else {
+			fmt.Printf("%s: %s %s -> %s\n", o.Name, upgradedVerb, o.OldDigest, o.NewDigest)
+		}
+	case skills.UpgradeStatusTrustUpdated:
+		printTrustUpdateOutcome(o, planOnly)
+	case skills.UpgradeStatusUpToDate:
+		fmt.Printf("%s: up to date\n", o.Name)
+	case skills.UpgradeStatusNotUpgradable:
+		fmt.Printf("%s: not upgradable (pinned to an immutable reference)\n", o.Name)
+	case skills.UpgradeStatusRefChangeBlocked:
+		fmt.Printf("%s: repository change blocked (would move to %s; use --allow-ref-change)\n",
+			o.Name, o.NewResolvedReference)
+	case skills.UpgradeStatusSignerChangeBlocked:
+		newSigner := o.NewSignerIdentity
+		if newSigner == "" {
+			newSigner = "unsigned"
+		}
+		fmt.Printf("%s: signer change blocked (candidate is %s; use --allow-signer-change)\n", o.Name, newSigner)
+	case skills.UpgradeStatusFailed:
+		fmt.Printf("%s: failed [%s]: %s\n", o.Name, o.Reason, o.Error)
+	}
+}
+
+func printTrustUpdateOutcome(o skills.UpgradeOutcome, planOnly bool) {
+	verb := "updated"
+	if planOnly {
+		verb = "would update"
+	}
+	detail := "verification material refreshed"
+	if o.TrustAnchorChanged {
+		detail = "trust anchor changed"
+	}
+	fmt.Printf("%s: %s trust metadata (content remains at %s; %s)\n",
+		o.Name, verb, o.OldDigest, detail)
 }

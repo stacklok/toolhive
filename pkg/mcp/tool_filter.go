@@ -245,15 +245,10 @@ func NewToolCallMappingMiddleware(opts ...ToolMiddlewareOption) (types.Middlewar
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Read the request body
-			bodyBytes, err := io.ReadAll(r.Body)
-			if err != nil {
-				// If we can't read the body, let the next handler deal with it
-				next.ServeHTTP(w, r)
+			bodyBytes, ok := readToolCallBody(w, r)
+			if !ok {
 				return
 			}
-
-			bodyBytes = bytes.TrimPrefix(bodyBytes, UTF8BOM)
 
 			// Restore the normalized request body for downstream handlers.
 			r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
@@ -263,8 +258,10 @@ func NewToolCallMappingMiddleware(opts ...ToolMiddlewareOption) (types.Middlewar
 			// check if the tool is in the filter. If it is not a tool call request,
 			// just pass it through.
 			var toolCallRequest toolCallRequest
-			err = json.Unmarshal(bodyBytes, &toolCallRequest)
-			if err == nil && toolCallRequest.Method == "tools/call" {
+			decoder := json.NewDecoder(bytes.NewReader(bodyBytes))
+			decoder.UseNumber()
+			err := decoder.Decode(&toolCallRequest)
+			if err == nil && json.Valid(bodyBytes) && toolCallRequest.Method == "tools/call" {
 				fix := processToolCallRequest(config, toolCallRequest)
 
 				switch fix := fix.(type) {
@@ -341,6 +338,22 @@ func NewToolCallMappingMiddleware(opts ...ToolMiddlewareOption) (types.Middlewar
 			next.ServeHTTP(w, r)
 		})
 	}, nil
+}
+
+func readToolCallBody(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeBodyReadError(w, err)
+		return nil, false
+	}
+	// Validate before an override can erase invalid envelope evidence.
+	if r.Method == http.MethodPost {
+		if _, err := DecodeMessage(body); err != nil {
+			WriteClassificationError(w, nil, err)
+			return nil, false
+		}
+	}
+	return bytes.TrimPrefix(body, UTF8BOM), true
 }
 
 // clientAcceptsJSON reports whether r's Accept header allows an
@@ -564,7 +577,7 @@ type toolsListResponse struct {
 
 type toolCallRequest struct {
 	JSONRPC string          `json:"jsonrpc"`
-	ID      any             `json:"id"`
+	ID      any             `json:"id,omitempty"`
 	Method  string          `json:"method"`
 	Params  *map[string]any `json:"params,omitempty"`
 }

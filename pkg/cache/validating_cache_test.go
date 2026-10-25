@@ -584,6 +584,126 @@ func TestValidatingCache_Singleflight_DeduplicatesConcurrentMisses(t *testing.T)
 	}
 }
 
+// TestRemove verifies Remove evicts the entry, invokes onEvict exactly once,
+// and reports that an entry was present.
+func TestRemove(t *testing.T) {
+	t.Parallel()
+
+	var evicted []string
+	c := newStringCache(
+		func(_ context.Context, key string) (string, error) { return "loaded-" + key, nil },
+		alwaysAliveCheck,
+		func(key, _ string) { evicted = append(evicted, key) },
+	)
+	c.Set("gone", "v1")
+	c.Set("kept", "v2")
+
+	assert.True(t, c.Remove("gone"), "Remove should report the entry was present")
+	assert.Equal(t, []string{"gone"}, evicted, "onEvict should fire once for the removed entry")
+	assert.Equal(t, 1, c.Len(), "only the untouched entry should remain")
+
+	// The surviving entry is still a cache hit (not reloaded).
+	v, ok := c.Get(context.Background(), "kept")
+	require.True(t, ok)
+	assert.Equal(t, "v2", v, "kept should be served from cache, not reloaded")
+}
+
+// TestRemove_AbsentKey pins that removing a key the cache never held is a
+// no-op: it reports false and fires no eviction. Callers on a termination path
+// rely on this to call Remove unconditionally.
+func TestRemove_AbsentKey(t *testing.T) {
+	t.Parallel()
+
+	evictCount := 0
+	c := newStringCache(
+		func(_ context.Context, key string) (string, error) { return key, nil },
+		alwaysAliveCheck,
+		func(string, string) { evictCount++ },
+	)
+	c.Set("present", "v")
+
+	assert.False(t, c.Remove("absent"))
+	assert.Zero(t, evictCount, "no eviction for a key that was never cached")
+	assert.Equal(t, 1, c.Len())
+}
+
+// TestRemove_Idempotent pins that a repeated Remove for the same key is safe:
+// the second call reports false and does not fire onEvict again. Termination
+// can be retried (or raced), so double removal must not double-close.
+func TestRemove_Idempotent(t *testing.T) {
+	t.Parallel()
+
+	evictCount := 0
+	c := newStringCache(
+		func(_ context.Context, key string) (string, error) { return key, nil },
+		alwaysAliveCheck,
+		func(string, string) { evictCount++ },
+	)
+	c.Set("k", "v")
+
+	assert.True(t, c.Remove("k"))
+	assert.False(t, c.Remove("k"), "second Remove must report the entry was already gone")
+	assert.Equal(t, 1, evictCount, "onEvict must fire exactly once across both calls")
+	assert.Zero(t, c.Len())
+}
+
+// TestRemove_SlowOnEvictDoesNotBlockOtherKeys pins that Remove runs onEvict off
+// the cache lock, mirroring RemoveMatching: a slow teardown of one entry must
+// not block Set/Get on unrelated keys.
+func TestRemove_SlowOnEvictDoesNotBlockOtherKeys(t *testing.T) {
+	t.Parallel()
+
+	const slowKey, otherKey = 1, 2
+	closing := make(chan struct{}) // closed when the slow onEvict starts
+	release := make(chan struct{}) // test releases the slow onEvict
+
+	c := New[int, int](
+		1000,
+		func(_ context.Context, k int) (int, error) { return k, nil },
+		func(context.Context, int, int) error { return nil },
+		func(k, _ int) {
+			if k == slowKey {
+				close(closing)
+				<-release
+			}
+		},
+	)
+	c.Set(slowKey, 1)
+	c.Set(otherKey, 1)
+
+	removeDone := make(chan struct{})
+	go func() {
+		defer close(removeDone)
+		c.Remove(slowKey)
+	}()
+
+	select {
+	case <-closing:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for slow onEvict to start")
+	}
+
+	// The cache lock must be free while onEvict is in flight.
+	setDone := make(chan struct{})
+	go func() {
+		defer close(setDone)
+		c.Set(otherKey, 2)
+	}()
+	select {
+	case <-setDone:
+	case <-time.After(5 * time.Second):
+		close(release) // unblock so the test can exit cleanly before failing
+		t.Fatal("Set blocked while onEvict of another key was in progress: onEvict is holding the cache lock")
+	}
+
+	close(release)
+	select {
+	case <-removeDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for Remove to finish")
+	}
+}
+
 // TestRemoveMatching verifies that RemoveMatching evicts exactly the entries the
 // predicate selects, fires onEvict for each, returns the count, and leaves
 // non-matching entries in place.

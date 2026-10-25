@@ -245,6 +245,10 @@ spec:
                       All other endpoints (token, registration, JWKS) remain derived from the issuer.
                       This is useful when the browser-facing authorization endpoint needs to be on a
                       different host than the issuer used for backend-to-backend calls.
+                      The upstream callback (`redirectUri` on each upstream provider, defaulting to
+                      `{resourceUrl}/oauth/callback`) must share this hostname: the callback only
+                      completes a login for the browser that started it, bound by a host-only cookie
+                      set on this endpoint, so a different callback host rejects every browser login.
                       Must be a valid HTTPS URL (or HTTP for localhost, or HTTP for trusted in-cluster hosts
                       when insecureAllowHTTP is true) without query, fragment, or trailing slash.
                     pattern: ^https?://[^\s?#]+[^/\s?#]$
@@ -778,7 +782,8 @@ spec:
                                   size(self.allowedDelegateClients) == 1'
                               - message: allowMayAct must not be enabled when allowedDelegateClients
                                   contains the wildcard "*"
-                                rule: '!(self.allowMayAct && ''*'' in self.allowedDelegateClients)'
+                                rule: '!(has(self.allowMayAct) && self.allowMayAct
+                                  && ''*'' in self.allowedDelegateClients)'
                               - message: actorClaim must name a readable claim; use
                                   client_id or a non-reserved claim such as azp, appid,
                                   or cid
@@ -860,6 +865,41 @@ spec:
                     minLength: 1
                     pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
                     type: string
+                  registrationRateLimit:
+                    description: |-
+                      RegistrationRateLimit bounds the unauthenticated /oauth/register
+                      endpoint with a token bucket: up to maxTokens registrations at once,
+                      refilled at maxTokens per refillPeriod. For a sustained rate of R per
+                      second with a burst of B, set maxTokens to B and refillPeriod to B/R;
+                      for example, 10 per minute with a burst of 3 is maxTokens 3,
+                      refillPeriod 18s. If omitted, defaults to 1 registration per second
+                      with a burst of 5 (maxTokens 5, refillPeriod 5s). The limit is per
+                      replica, so the effective rate is the configured rate multiplied by the
+                      replica count. Every successful registration stores a client, so a
+                      higher rate fills storage.maxDCRClients sooner, and with maxDCRClients
+                      0 this limit is the only bound on stored clients.
+                    properties:
+                      maxTokens:
+                        description: |-
+                          MaxTokens is the maximum number of tokens (bucket capacity).
+                          This is also the burst size: the maximum number of requests that can be served
+                          instantaneously before the bucket is depleted.
+                        format: int32
+                        minimum: 1
+                        type: integer
+                      refillPeriod:
+                        description: |-
+                          RefillPeriod is the duration to fully refill the bucket from zero to maxTokens.
+                          The effective refill rate is maxTokens / refillPeriod tokens per second.
+                          Format: Go duration string (e.g., "1m0s", "30s", "1h0m0s").
+                        type: string
+                    required:
+                    - maxTokens
+                    - refillPeriod
+                    type: object
+                    x-kubernetes-validations:
+                    - message: registrationRateLimit.refillPeriod must be positive
+                      rule: duration(self.refillPeriod) > duration('0s')
                   signingKeySecretRefs:
                     description: |-
                       SigningKeySecretRefs references Kubernetes Secrets containing signing keys for JWT operations.
@@ -900,9 +940,9 @@ spec:
                       properties:
                         bundleSource:
                           description: |-
-                            BundleSource declares exactly one future trust-bundle source. It is
-                            validated for shape only; fetching or loading a bundle from it is a
-                            later step.
+                            BundleSource declares exactly one trust-bundle source and is validated for
+                            shape here. The standalone file loader exists, but is not wired into SPIFFE
+                            authentication.
                           properties:
                             endpoint:
                               description: |-
@@ -929,10 +969,37 @@ spec:
                               - profile
                               - url
                               type: object
+                            file:
+                              description: |-
+                                File declares a SPIFFE trust bundle projected from a ConfigMap.
+                                Required when Type is "file".
+                              properties:
+                                configMapKey:
+                                  description: |-
+                                    ConfigMapKey is the key within the ConfigMap holding the SPIFFE JWKS
+                                    trust-bundle document. It must not be "." or start with "..".
+                                  maxLength: 253
+                                  minLength: 1
+                                  pattern: ^[A-Za-z0-9._-]+$
+                                  type: string
+                                  x-kubernetes-validations:
+                                  - rule: self != '.' && !self.startsWith('..')
+                                configMapName:
+                                  description: ConfigMapName is the name of the ConfigMap
+                                    containing the trust bundle.
+                                  maxLength: 253
+                                  minLength: 1
+                                  pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                                  type: string
+                              required:
+                              - configMapKey
+                              - configMapName
+                              type: object
                             type:
                               description: Type selects the trust-bundle source.
                               enum:
                               - bundle_endpoint
+                              - file
                               - workload_api
                               type: string
                             workloadAPI:
@@ -948,6 +1015,9 @@ spec:
                               if type is 'bundle_endpoint'
                             rule: 'self.type == ''bundle_endpoint'' ? has(self.endpoint)
                               : !has(self.endpoint)'
+                          - message: file configuration must be set if and only if
+                              type is 'file'
+                            rule: 'self.type == ''file'' ? has(self.file) : !has(self.file)'
                           - message: workloadAPI configuration must be set if and
                               only if type is 'workload_api'
                             rule: 'self.type == ''workload_api'' ? has(self.workloadAPI)
@@ -1001,6 +1071,29 @@ spec:
                       Storage configures the storage backend for the embedded auth server.
                       If not specified, defaults to in-memory storage.
                     properties:
+                      maxDCRClients:
+                        description: |-
+                          MaxDCRClients caps the number of live clients created by Dynamic Client
+                          Registration (/oauth/register). At the cap, registration fails with HTTP
+                          503 until a client expires; no existing client is evicted. If omitted,
+                          defaults to 10000. Operator-configured and CIMD clients are not counted.
+                          On Redis the count is shared by every replica; with memory storage each
+                          replica keeps its own count.
+
+                          A client never used for a token exchange lives 24 hours, so a caller
+                          registering at the full registrationRateLimit keeps up to
+                          rate x replicas x 86400 unused clients alive; at the default rate one
+                          replica fills the default cap in about 2.8 hours.
+
+                          0 means unlimited. The endpoint is unauthenticated, so 0 leaves stored
+                          clients bounded only by the per-replica registrationRateLimit, about
+                          86400 per replica per day at the default rate. Use 0 only temporarily,
+                          for example while an existing client population above the cap drains;
+                          a large finite value, such as two to three times the observed live
+                          client count, keeps some protection.
+                        format: int32
+                        minimum: 0
+                        type: integer
                       redis:
                         description: |-
                           Redis configures the Redis storage backend.
@@ -1125,6 +1218,8 @@ spec:
                                 description: |-
                                   CACertSecretRef references a Secret containing a PEM-encoded CA certificate
                                   for verifying the server. When not specified, system root CAs are used.
+                                  If the Secret or key does not exist, the pod cannot start (it stays in
+                                  ContainerCreating) rather than connecting without verification.
                                 properties:
                                   key:
                                     description: Key is the key within the secret
@@ -1138,8 +1233,11 @@ spec:
                                 type: object
                               insecureSkipVerify:
                                 description: |-
-                                  InsecureSkipVerify skips TLS certificate verification.
-                                  Use when connecting to services with self-signed certificates.
+                                  InsecureSkipVerify disables server certificate and hostname verification.
+                                  The connection is encrypted but not authenticated, so anyone able to
+                                  impersonate the server can read the credentials and data sent over it.
+                                  Intended for testing only; for self-signed or private CAs set
+                                  caCertSecretRef instead.
                                 type: boolean
                             type: object
                           tls:
@@ -1151,6 +1249,8 @@ spec:
                                 description: |-
                                   CACertSecretRef references a Secret containing a PEM-encoded CA certificate
                                   for verifying the server. When not specified, system root CAs are used.
+                                  If the Secret or key does not exist, the pod cannot start (it stays in
+                                  ContainerCreating) rather than connecting without verification.
                                 properties:
                                   key:
                                     description: Key is the key within the secret
@@ -1164,8 +1264,11 @@ spec:
                                 type: object
                               insecureSkipVerify:
                                 description: |-
-                                  InsecureSkipVerify skips TLS certificate verification.
-                                  Use when connecting to services with self-signed certificates.
+                                  InsecureSkipVerify disables server certificate and hostname verification.
+                                  The connection is encrypted but not authenticated, so anyone able to
+                                  impersonate the server can read the credentials and data sent over it.
+                                  Intended for testing only; for self-signed or private CAs set
+                                  caCertSecretRef instead.
                                 type: boolean
                             type: object
                           writeTimeout:
@@ -1331,7 +1434,9 @@ spec:
                                 defaults to "ca.crt" for backwards compatibility.
                               properties:
                                 key:
-                                  description: The key to select.
+                                  description: |-
+                                    The key to select from the ConfigMap's Data field.
+                                    Keys in the BinaryData field are not currently propagated to container env vars.
                                   type: string
                                 name:
                                   default: ""
@@ -1549,6 +1654,20 @@ spec:
                                 scope, state, code_challenge, code_challenge_method, nonce) are not allowed.
                               maxProperties: 16
                               type: object
+                            additionalTokenParams:
+                              additionalProperties:
+                                type: string
+                              description: |-
+                                AdditionalTokenParams are extra form-body parameters to include in
+                                token requests (authorization code exchange and refresh) sent to the
+                                upstream provider's token endpoint.
+                                This is useful for providers that enforce RFC 8707 resource indicators
+                                on token requests, where the resource parameter must accompany the code
+                                exchange and refresh, not only the authorization request.
+                                Framework-managed parameters (grant_type, code, redirect_uri, client_id,
+                                client_secret, code_verifier, refresh_token, scope) are not allowed.
+                              maxProperties: 16
+                              type: object
                             allowPrivateIPs:
                               description: |-
                                 AllowPrivateIPs permits the upstream provider's HTTP client to connect to
@@ -1576,7 +1695,9 @@ spec:
                                     defaults to "ca.crt" for backwards compatibility.
                                   properties:
                                     key:
-                                      description: The key to select.
+                                      description: |-
+                                        The key to select from the ConfigMap's Data field.
+                                        Keys in the BinaryData field are not currently propagated to container env vars.
                                       type: string
                                     name:
                                       default: ""
@@ -1676,6 +1797,44 @@ spec:
                                   maxLength: 2048
                                   pattern: ^https://[^\s?#]+[^/\s?#]$
                                   type: string
+                                registrationProbe:
+                                  description: |-
+                                    RegistrationProbe selects how ToolHive checks the cached upstream client
+                                    at start. tokenEndpoint (the default) redeems a random authorization
+                                    code with the cached client and reads invalid_client as "registration
+                                    gone"; it decides only for upstreams that authenticate the client
+                                    before validating the grant. authorizationEndpoint sends an
+                                    authorization request for the cached client without following
+                                    redirects and reads a direct 400, 401 or 403 that carries an RFC 6749
+                                    JSON error object (error invalid_client, unauthorized_client or
+                                    invalid_request) as "gone" (RFC 6749 §4.1.2.1), for upstreams whose
+                                    token endpoint answers invalid_grant for any client_id; an HTML page or
+                                    a bare gateway status is not a verdict. A false rejection re-registers
+                                    at every start and, when registration also fails, fails startup. none
+                                    skips the check; the registration is then retired only through
+                                    RotationKey.
+                                  enum:
+                                  - tokenEndpoint
+                                  - authorizationEndpoint
+                                  - none
+                                  type: string
+                                rotationKey:
+                                  description: |-
+                                    RotationKey is an optional operator-chosen label that is part of the
+                                    cached registration's identity but is never sent to the upstream.
+                                    Change it to make the proxies register a fresh client at their next
+                                    start instead of reusing the cached one: for example after the
+                                    upstream has dropped the registration, or when a rotation is required.
+                                    At start ToolHive checks the cached client at the upstream (see
+                                    RegistrationProbe) and registers a new one by itself when the upstream
+                                    rejects it. Where the configured probe cannot tell, the stale client_id
+                                    may only be rejected in the user's browser, and changing this key is
+                                    the remedy. The previous registration's row stays in storage, and
+                                    upstream refresh tokens bound to the previous client_id stop
+                                    refreshing, so affected users sign in again.
+                                  maxLength: 64
+                                  pattern: ^[A-Za-z0-9._-]+$
+                                  type: string
                                 softwareId:
                                   description: |-
                                     SoftwareID is the RFC 7591 "software_id" registration metadata value,
@@ -1754,11 +1913,24 @@ spec:
                                 OAuth2 provider served over HTTP in a kind cluster) where TLS is not
                                 available. Never set this in production.
                               type: boolean
+                            omitScopeOnRefresh:
+                              description: |-
+                                OmitScopeOnRefresh stops the scope parameter from being sent on
+                                refresh_token grant requests to the upstream provider's token endpoint.
+                                Scopes are still sent on the authorization request.
+                                By default (false), the configured scopes are sent on refresh as well,
+                                which some providers require to avoid narrowing the refreshed token.
+                                Set it for providers that reject scope on refresh, such as Salesforce
+                                ("invalid_request - scope parameter not supported").
+                              type: boolean
                             redirectUri:
                               description: |-
                                 RedirectURI is the callback URL where the upstream IdP will redirect after authentication.
                                 When not specified, defaults to `{resourceUrl}/oauth/callback` where `resourceUrl` is the
                                 URL associated with the resource (e.g., MCPServer or vMCP) using this config.
+                                Its hostname must match the browser-facing authorization endpoint (`issuer`, or
+                                `authorizationEndpointBaseUrl` when set): the callback is bound to the browser that
+                                started the login by a host-only cookie, so a different host rejects every browser login.
                               type: string
                             scopes:
                               description: Scopes are the OAuth scopes to request
@@ -1920,6 +2092,20 @@ spec:
                                 scope, state, code_challenge, code_challenge_method, nonce) are not allowed.
                               maxProperties: 16
                               type: object
+                            additionalTokenParams:
+                              additionalProperties:
+                                type: string
+                              description: |-
+                                AdditionalTokenParams are extra form-body parameters to include in
+                                token requests (authorization code exchange and refresh) sent to the
+                                upstream provider's token endpoint.
+                                This is useful for providers that enforce RFC 8707 resource indicators
+                                on token requests, where the resource parameter must accompany the code
+                                exchange and refresh, not only the authorization request.
+                                Framework-managed parameters (grant_type, code, redirect_uri, client_id,
+                                client_secret, code_verifier, refresh_token, scope) are not allowed.
+                              maxProperties: 16
+                              type: object
                             allowPrivateIPs:
                               description: |-
                                 AllowPrivateIPs permits the upstream provider's HTTP client to connect to
@@ -1940,7 +2126,9 @@ spec:
                                     defaults to "ca.crt" for backwards compatibility.
                                   properties:
                                     key:
-                                      description: The key to select.
+                                      description: |-
+                                        The key to select from the ConfigMap's Data field.
+                                        Keys in the BinaryData field are not currently propagated to container env vars.
                                       type: string
                                     name:
                                       default: ""
@@ -2037,6 +2225,44 @@ spec:
                                   maxLength: 2048
                                   pattern: ^https://[^\s?#]+[^/\s?#]$
                                   type: string
+                                registrationProbe:
+                                  description: |-
+                                    RegistrationProbe selects how ToolHive checks the cached upstream client
+                                    at start. tokenEndpoint (the default) redeems a random authorization
+                                    code with the cached client and reads invalid_client as "registration
+                                    gone"; it decides only for upstreams that authenticate the client
+                                    before validating the grant. authorizationEndpoint sends an
+                                    authorization request for the cached client without following
+                                    redirects and reads a direct 400, 401 or 403 that carries an RFC 6749
+                                    JSON error object (error invalid_client, unauthorized_client or
+                                    invalid_request) as "gone" (RFC 6749 §4.1.2.1), for upstreams whose
+                                    token endpoint answers invalid_grant for any client_id; an HTML page or
+                                    a bare gateway status is not a verdict. A false rejection re-registers
+                                    at every start and, when registration also fails, fails startup. none
+                                    skips the check; the registration is then retired only through
+                                    RotationKey.
+                                  enum:
+                                  - tokenEndpoint
+                                  - authorizationEndpoint
+                                  - none
+                                  type: string
+                                rotationKey:
+                                  description: |-
+                                    RotationKey is an optional operator-chosen label that is part of the
+                                    cached registration's identity but is never sent to the upstream.
+                                    Change it to make the proxies register a fresh client at their next
+                                    start instead of reusing the cached one: for example after the
+                                    upstream has dropped the registration, or when a rotation is required.
+                                    At start ToolHive checks the cached client at the upstream (see
+                                    RegistrationProbe) and registers a new one by itself when the upstream
+                                    rejects it. Where the configured probe cannot tell, the stale client_id
+                                    may only be rejected in the user's browser, and changing this key is
+                                    the remedy. The previous registration's row stays in storage, and
+                                    upstream refresh tokens bound to the previous client_id stop
+                                    refreshing, so affected users sign in again.
+                                  maxLength: 64
+                                  pattern: ^[A-Za-z0-9._-]+$
+                                  type: string
                                 softwareId:
                                   description: |-
                                     SoftwareID is the RFC 7591 "software_id" registration metadata value,
@@ -2075,11 +2301,24 @@ spec:
                                 Must be a valid HTTPS URL.
                               pattern: ^https://.*$
                               type: string
+                            omitScopeOnRefresh:
+                              description: |-
+                                OmitScopeOnRefresh stops the scope parameter from being sent on
+                                refresh_token grant requests to the upstream provider's token endpoint.
+                                Scopes are still sent on the authorization request.
+                                By default (false), the configured scopes are sent on refresh as well,
+                                which some providers require to avoid narrowing the refreshed token.
+                                Set it for providers that reject scope on refresh, such as Salesforce
+                                ("invalid_request - scope parameter not supported").
+                              type: boolean
                             redirectUri:
                               description: |-
                                 RedirectURI is the callback URL where the upstream IdP will redirect after authentication.
                                 When not specified, defaults to `{resourceUrl}/oauth/callback` where `resourceUrl` is the
                                 URL associated with the resource (e.g., MCPServer or vMCP) using this config.
+                                Its hostname must match the browser-facing authorization endpoint (`issuer`, or
+                                `authorizationEndpointBaseUrl` when set): the callback is bound to the browser that
+                                started the login by a host-only cookie, so a different host rejects every browser login.
                               type: string
                             scopes:
                               description: |-
@@ -3046,6 +3285,10 @@ spec:
                       All other endpoints (token, registration, JWKS) remain derived from the issuer.
                       This is useful when the browser-facing authorization endpoint needs to be on a
                       different host than the issuer used for backend-to-backend calls.
+                      The upstream callback (`redirectUri` on each upstream provider, defaulting to
+                      `{resourceUrl}/oauth/callback`) must share this hostname: the callback only
+                      completes a login for the browser that started it, bound by a host-only cookie
+                      set on this endpoint, so a different callback host rejects every browser login.
                       Must be a valid HTTPS URL (or HTTP for localhost, or HTTP for trusted in-cluster hosts
                       when insecureAllowHTTP is true) without query, fragment, or trailing slash.
                     pattern: ^https?://[^\s?#]+[^/\s?#]$
@@ -3579,7 +3822,8 @@ spec:
                                   size(self.allowedDelegateClients) == 1'
                               - message: allowMayAct must not be enabled when allowedDelegateClients
                                   contains the wildcard "*"
-                                rule: '!(self.allowMayAct && ''*'' in self.allowedDelegateClients)'
+                                rule: '!(has(self.allowMayAct) && self.allowMayAct
+                                  && ''*'' in self.allowedDelegateClients)'
                               - message: actorClaim must name a readable claim; use
                                   client_id or a non-reserved claim such as azp, appid,
                                   or cid
@@ -3661,6 +3905,41 @@ spec:
                     minLength: 1
                     pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
                     type: string
+                  registrationRateLimit:
+                    description: |-
+                      RegistrationRateLimit bounds the unauthenticated /oauth/register
+                      endpoint with a token bucket: up to maxTokens registrations at once,
+                      refilled at maxTokens per refillPeriod. For a sustained rate of R per
+                      second with a burst of B, set maxTokens to B and refillPeriod to B/R;
+                      for example, 10 per minute with a burst of 3 is maxTokens 3,
+                      refillPeriod 18s. If omitted, defaults to 1 registration per second
+                      with a burst of 5 (maxTokens 5, refillPeriod 5s). The limit is per
+                      replica, so the effective rate is the configured rate multiplied by the
+                      replica count. Every successful registration stores a client, so a
+                      higher rate fills storage.maxDCRClients sooner, and with maxDCRClients
+                      0 this limit is the only bound on stored clients.
+                    properties:
+                      maxTokens:
+                        description: |-
+                          MaxTokens is the maximum number of tokens (bucket capacity).
+                          This is also the burst size: the maximum number of requests that can be served
+                          instantaneously before the bucket is depleted.
+                        format: int32
+                        minimum: 1
+                        type: integer
+                      refillPeriod:
+                        description: |-
+                          RefillPeriod is the duration to fully refill the bucket from zero to maxTokens.
+                          The effective refill rate is maxTokens / refillPeriod tokens per second.
+                          Format: Go duration string (e.g., "1m0s", "30s", "1h0m0s").
+                        type: string
+                    required:
+                    - maxTokens
+                    - refillPeriod
+                    type: object
+                    x-kubernetes-validations:
+                    - message: registrationRateLimit.refillPeriod must be positive
+                      rule: duration(self.refillPeriod) > duration('0s')
                   signingKeySecretRefs:
                     description: |-
                       SigningKeySecretRefs references Kubernetes Secrets containing signing keys for JWT operations.
@@ -3701,9 +3980,9 @@ spec:
                       properties:
                         bundleSource:
                           description: |-
-                            BundleSource declares exactly one future trust-bundle source. It is
-                            validated for shape only; fetching or loading a bundle from it is a
-                            later step.
+                            BundleSource declares exactly one trust-bundle source and is validated for
+                            shape here. The standalone file loader exists, but is not wired into SPIFFE
+                            authentication.
                           properties:
                             endpoint:
                               description: |-
@@ -3730,10 +4009,37 @@ spec:
                               - profile
                               - url
                               type: object
+                            file:
+                              description: |-
+                                File declares a SPIFFE trust bundle projected from a ConfigMap.
+                                Required when Type is "file".
+                              properties:
+                                configMapKey:
+                                  description: |-
+                                    ConfigMapKey is the key within the ConfigMap holding the SPIFFE JWKS
+                                    trust-bundle document. It must not be "." or start with "..".
+                                  maxLength: 253
+                                  minLength: 1
+                                  pattern: ^[A-Za-z0-9._-]+$
+                                  type: string
+                                  x-kubernetes-validations:
+                                  - rule: self != '.' && !self.startsWith('..')
+                                configMapName:
+                                  description: ConfigMapName is the name of the ConfigMap
+                                    containing the trust bundle.
+                                  maxLength: 253
+                                  minLength: 1
+                                  pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$
+                                  type: string
+                              required:
+                              - configMapKey
+                              - configMapName
+                              type: object
                             type:
                               description: Type selects the trust-bundle source.
                               enum:
                               - bundle_endpoint
+                              - file
                               - workload_api
                               type: string
                             workloadAPI:
@@ -3749,6 +4055,9 @@ spec:
                               if type is 'bundle_endpoint'
                             rule: 'self.type == ''bundle_endpoint'' ? has(self.endpoint)
                               : !has(self.endpoint)'
+                          - message: file configuration must be set if and only if
+                              type is 'file'
+                            rule: 'self.type == ''file'' ? has(self.file) : !has(self.file)'
                           - message: workloadAPI configuration must be set if and
                               only if type is 'workload_api'
                             rule: 'self.type == ''workload_api'' ? has(self.workloadAPI)
@@ -3802,6 +4111,29 @@ spec:
                       Storage configures the storage backend for the embedded auth server.
                       If not specified, defaults to in-memory storage.
                     properties:
+                      maxDCRClients:
+                        description: |-
+                          MaxDCRClients caps the number of live clients created by Dynamic Client
+                          Registration (/oauth/register). At the cap, registration fails with HTTP
+                          503 until a client expires; no existing client is evicted. If omitted,
+                          defaults to 10000. Operator-configured and CIMD clients are not counted.
+                          On Redis the count is shared by every replica; with memory storage each
+                          replica keeps its own count.
+
+                          A client never used for a token exchange lives 24 hours, so a caller
+                          registering at the full registrationRateLimit keeps up to
+                          rate x replicas x 86400 unused clients alive; at the default rate one
+                          replica fills the default cap in about 2.8 hours.
+
+                          0 means unlimited. The endpoint is unauthenticated, so 0 leaves stored
+                          clients bounded only by the per-replica registrationRateLimit, about
+                          86400 per replica per day at the default rate. Use 0 only temporarily,
+                          for example while an existing client population above the cap drains;
+                          a large finite value, such as two to three times the observed live
+                          client count, keeps some protection.
+                        format: int32
+                        minimum: 0
+                        type: integer
                       redis:
                         description: |-
                           Redis configures the Redis storage backend.
@@ -3926,6 +4258,8 @@ spec:
                                 description: |-
                                   CACertSecretRef references a Secret containing a PEM-encoded CA certificate
                                   for verifying the server. When not specified, system root CAs are used.
+                                  If the Secret or key does not exist, the pod cannot start (it stays in
+                                  ContainerCreating) rather than connecting without verification.
                                 properties:
                                   key:
                                     description: Key is the key within the secret
@@ -3939,8 +4273,11 @@ spec:
                                 type: object
                               insecureSkipVerify:
                                 description: |-
-                                  InsecureSkipVerify skips TLS certificate verification.
-                                  Use when connecting to services with self-signed certificates.
+                                  InsecureSkipVerify disables server certificate and hostname verification.
+                                  The connection is encrypted but not authenticated, so anyone able to
+                                  impersonate the server can read the credentials and data sent over it.
+                                  Intended for testing only; for self-signed or private CAs set
+                                  caCertSecretRef instead.
                                 type: boolean
                             type: object
                           tls:
@@ -3952,6 +4289,8 @@ spec:
                                 description: |-
                                   CACertSecretRef references a Secret containing a PEM-encoded CA certificate
                                   for verifying the server. When not specified, system root CAs are used.
+                                  If the Secret or key does not exist, the pod cannot start (it stays in
+                                  ContainerCreating) rather than connecting without verification.
                                 properties:
                                   key:
                                     description: Key is the key within the secret
@@ -3965,8 +4304,11 @@ spec:
                                 type: object
                               insecureSkipVerify:
                                 description: |-
-                                  InsecureSkipVerify skips TLS certificate verification.
-                                  Use when connecting to services with self-signed certificates.
+                                  InsecureSkipVerify disables server certificate and hostname verification.
+                                  The connection is encrypted but not authenticated, so anyone able to
+                                  impersonate the server can read the credentials and data sent over it.
+                                  Intended for testing only; for self-signed or private CAs set
+                                  caCertSecretRef instead.
                                 type: boolean
                             type: object
                           writeTimeout:
@@ -4132,7 +4474,9 @@ spec:
                                 defaults to "ca.crt" for backwards compatibility.
                               properties:
                                 key:
-                                  description: The key to select.
+                                  description: |-
+                                    The key to select from the ConfigMap's Data field.
+                                    Keys in the BinaryData field are not currently propagated to container env vars.
                                   type: string
                                 name:
                                   default: ""
@@ -4350,6 +4694,20 @@ spec:
                                 scope, state, code_challenge, code_challenge_method, nonce) are not allowed.
                               maxProperties: 16
                               type: object
+                            additionalTokenParams:
+                              additionalProperties:
+                                type: string
+                              description: |-
+                                AdditionalTokenParams are extra form-body parameters to include in
+                                token requests (authorization code exchange and refresh) sent to the
+                                upstream provider's token endpoint.
+                                This is useful for providers that enforce RFC 8707 resource indicators
+                                on token requests, where the resource parameter must accompany the code
+                                exchange and refresh, not only the authorization request.
+                                Framework-managed parameters (grant_type, code, redirect_uri, client_id,
+                                client_secret, code_verifier, refresh_token, scope) are not allowed.
+                              maxProperties: 16
+                              type: object
                             allowPrivateIPs:
                               description: |-
                                 AllowPrivateIPs permits the upstream provider's HTTP client to connect to
@@ -4377,7 +4735,9 @@ spec:
                                     defaults to "ca.crt" for backwards compatibility.
                                   properties:
                                     key:
-                                      description: The key to select.
+                                      description: |-
+                                        The key to select from the ConfigMap's Data field.
+                                        Keys in the BinaryData field are not currently propagated to container env vars.
                                       type: string
                                     name:
                                       default: ""
@@ -4477,6 +4837,44 @@ spec:
                                   maxLength: 2048
                                   pattern: ^https://[^\s?#]+[^/\s?#]$
                                   type: string
+                                registrationProbe:
+                                  description: |-
+                                    RegistrationProbe selects how ToolHive checks the cached upstream client
+                                    at start. tokenEndpoint (the default) redeems a random authorization
+                                    code with the cached client and reads invalid_client as "registration
+                                    gone"; it decides only for upstreams that authenticate the client
+                                    before validating the grant. authorizationEndpoint sends an
+                                    authorization request for the cached client without following
+                                    redirects and reads a direct 400, 401 or 403 that carries an RFC 6749
+                                    JSON error object (error invalid_client, unauthorized_client or
+                                    invalid_request) as "gone" (RFC 6749 §4.1.2.1), for upstreams whose
+                                    token endpoint answers invalid_grant for any client_id; an HTML page or
+                                    a bare gateway status is not a verdict. A false rejection re-registers
+                                    at every start and, when registration also fails, fails startup. none
+                                    skips the check; the registration is then retired only through
+                                    RotationKey.
+                                  enum:
+                                  - tokenEndpoint
+                                  - authorizationEndpoint
+                                  - none
+                                  type: string
+                                rotationKey:
+                                  description: |-
+                                    RotationKey is an optional operator-chosen label that is part of the
+                                    cached registration's identity but is never sent to the upstream.
+                                    Change it to make the proxies register a fresh client at their next
+                                    start instead of reusing the cached one: for example after the
+                                    upstream has dropped the registration, or when a rotation is required.
+                                    At start ToolHive checks the cached client at the upstream (see
+                                    RegistrationProbe) and registers a new one by itself when the upstream
+                                    rejects it. Where the configured probe cannot tell, the stale client_id
+                                    may only be rejected in the user's browser, and changing this key is
+                                    the remedy. The previous registration's row stays in storage, and
+                                    upstream refresh tokens bound to the previous client_id stop
+                                    refreshing, so affected users sign in again.
+                                  maxLength: 64
+                                  pattern: ^[A-Za-z0-9._-]+$
+                                  type: string
                                 softwareId:
                                   description: |-
                                     SoftwareID is the RFC 7591 "software_id" registration metadata value,
@@ -4555,11 +4953,24 @@ spec:
                                 OAuth2 provider served over HTTP in a kind cluster) where TLS is not
                                 available. Never set this in production.
                               type: boolean
+                            omitScopeOnRefresh:
+                              description: |-
+                                OmitScopeOnRefresh stops the scope parameter from being sent on
+                                refresh_token grant requests to the upstream provider's token endpoint.
+                                Scopes are still sent on the authorization request.
+                                By default (false), the configured scopes are sent on refresh as well,
+                                which some providers require to avoid narrowing the refreshed token.
+                                Set it for providers that reject scope on refresh, such as Salesforce
+                                ("invalid_request - scope parameter not supported").
+                              type: boolean
                             redirectUri:
                               description: |-
                                 RedirectURI is the callback URL where the upstream IdP will redirect after authentication.
                                 When not specified, defaults to `{resourceUrl}/oauth/callback` where `resourceUrl` is the
                                 URL associated with the resource (e.g., MCPServer or vMCP) using this config.
+                                Its hostname must match the browser-facing authorization endpoint (`issuer`, or
+                                `authorizationEndpointBaseUrl` when set): the callback is bound to the browser that
+                                started the login by a host-only cookie, so a different host rejects every browser login.
                               type: string
                             scopes:
                               description: Scopes are the OAuth scopes to request
@@ -4721,6 +5132,20 @@ spec:
                                 scope, state, code_challenge, code_challenge_method, nonce) are not allowed.
                               maxProperties: 16
                               type: object
+                            additionalTokenParams:
+                              additionalProperties:
+                                type: string
+                              description: |-
+                                AdditionalTokenParams are extra form-body parameters to include in
+                                token requests (authorization code exchange and refresh) sent to the
+                                upstream provider's token endpoint.
+                                This is useful for providers that enforce RFC 8707 resource indicators
+                                on token requests, where the resource parameter must accompany the code
+                                exchange and refresh, not only the authorization request.
+                                Framework-managed parameters (grant_type, code, redirect_uri, client_id,
+                                client_secret, code_verifier, refresh_token, scope) are not allowed.
+                              maxProperties: 16
+                              type: object
                             allowPrivateIPs:
                               description: |-
                                 AllowPrivateIPs permits the upstream provider's HTTP client to connect to
@@ -4741,7 +5166,9 @@ spec:
                                     defaults to "ca.crt" for backwards compatibility.
                                   properties:
                                     key:
-                                      description: The key to select.
+                                      description: |-
+                                        The key to select from the ConfigMap's Data field.
+                                        Keys in the BinaryData field are not currently propagated to container env vars.
                                       type: string
                                     name:
                                       default: ""
@@ -4838,6 +5265,44 @@ spec:
                                   maxLength: 2048
                                   pattern: ^https://[^\s?#]+[^/\s?#]$
                                   type: string
+                                registrationProbe:
+                                  description: |-
+                                    RegistrationProbe selects how ToolHive checks the cached upstream client
+                                    at start. tokenEndpoint (the default) redeems a random authorization
+                                    code with the cached client and reads invalid_client as "registration
+                                    gone"; it decides only for upstreams that authenticate the client
+                                    before validating the grant. authorizationEndpoint sends an
+                                    authorization request for the cached client without following
+                                    redirects and reads a direct 400, 401 or 403 that carries an RFC 6749
+                                    JSON error object (error invalid_client, unauthorized_client or
+                                    invalid_request) as "gone" (RFC 6749 §4.1.2.1), for upstreams whose
+                                    token endpoint answers invalid_grant for any client_id; an HTML page or
+                                    a bare gateway status is not a verdict. A false rejection re-registers
+                                    at every start and, when registration also fails, fails startup. none
+                                    skips the check; the registration is then retired only through
+                                    RotationKey.
+                                  enum:
+                                  - tokenEndpoint
+                                  - authorizationEndpoint
+                                  - none
+                                  type: string
+                                rotationKey:
+                                  description: |-
+                                    RotationKey is an optional operator-chosen label that is part of the
+                                    cached registration's identity but is never sent to the upstream.
+                                    Change it to make the proxies register a fresh client at their next
+                                    start instead of reusing the cached one: for example after the
+                                    upstream has dropped the registration, or when a rotation is required.
+                                    At start ToolHive checks the cached client at the upstream (see
+                                    RegistrationProbe) and registers a new one by itself when the upstream
+                                    rejects it. Where the configured probe cannot tell, the stale client_id
+                                    may only be rejected in the user's browser, and changing this key is
+                                    the remedy. The previous registration's row stays in storage, and
+                                    upstream refresh tokens bound to the previous client_id stop
+                                    refreshing, so affected users sign in again.
+                                  maxLength: 64
+                                  pattern: ^[A-Za-z0-9._-]+$
+                                  type: string
                                 softwareId:
                                   description: |-
                                     SoftwareID is the RFC 7591 "software_id" registration metadata value,
@@ -4876,11 +5341,24 @@ spec:
                                 Must be a valid HTTPS URL.
                               pattern: ^https://.*$
                               type: string
+                            omitScopeOnRefresh:
+                              description: |-
+                                OmitScopeOnRefresh stops the scope parameter from being sent on
+                                refresh_token grant requests to the upstream provider's token endpoint.
+                                Scopes are still sent on the authorization request.
+                                By default (false), the configured scopes are sent on refresh as well,
+                                which some providers require to avoid narrowing the refreshed token.
+                                Set it for providers that reject scope on refresh, such as Salesforce
+                                ("invalid_request - scope parameter not supported").
+                              type: boolean
                             redirectUri:
                               description: |-
                                 RedirectURI is the callback URL where the upstream IdP will redirect after authentication.
                                 When not specified, defaults to `{resourceUrl}/oauth/callback` where `resourceUrl` is the
                                 URL associated with the resource (e.g., MCPServer or vMCP) using this config.
+                                Its hostname must match the browser-facing authorization endpoint (`issuer`, or
+                                `authorizationEndpointBaseUrl` when set): the callback is bound to the browser that
+                                started the login by a host-only cookie, so a different host rejects every browser login.
                               type: string
                             scopes:
                               description: |-

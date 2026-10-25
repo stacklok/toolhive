@@ -28,6 +28,11 @@ func TestPluginUpgradeExitError(t *testing.T) {
 			wantCode: 0,
 		},
 		{
+			name:     "trust-only update is not a failure",
+			outcomes: []plugins.UpgradeOutcome{{Name: "a", Status: plugins.UpgradeStatusTrustUpdated}},
+			wantCode: 0,
+		},
+		{
 			name:     "signer change blocked is a policy rejection",
 			outcomes: []plugins.UpgradeOutcome{{Name: "a", Status: plugins.UpgradeStatusSignerChangeBlocked}},
 			wantCode: ExitCodePolicyRejection,
@@ -41,6 +46,12 @@ func TestPluginUpgradeExitError(t *testing.T) {
 		{
 			name:          "signer change blocked counts as would-change under fail-on-changes",
 			outcomes:      []plugins.UpgradeOutcome{{Name: "a", Status: plugins.UpgradeStatusSignerChangeBlocked}},
+			failOnChanges: true,
+			wantCode:      ExitCodeCheckFailure,
+		},
+		{
+			name:          "trust-only update counts as would-change under fail-on-changes",
+			outcomes:      []plugins.UpgradeOutcome{{Name: "a", Status: plugins.UpgradeStatusTrustUpdated}},
 			failOnChanges: true,
 			wantCode:      ExitCodeCheckFailure,
 		},
@@ -74,24 +85,32 @@ func TestPluginUpgradeExitError(t *testing.T) {
 	}
 }
 
-// TestPluginUpgradeAllowSignerChangeFlag pins the flag name the blocked-status
-// message tells users to pass, and its binding to the variable the upgrade
-// options are built from.
+// TestPluginUpgradeTrustFlags pins the consent and replacement-key flags and
+// their bindings to the variables used to build plugins.UpgradeOptions.
 //
 //nolint:paralleltest // mutates the command's package-level flag state
-func TestPluginUpgradeAllowSignerChangeFlag(t *testing.T) {
-	flag := aiPluginUpgradeCmd.Flags().Lookup("allow-signer-change")
-	require.NotNil(t, flag, "the status message promises --allow-signer-change")
-	assert.Equal(t, "false", flag.DefValue, "a signer rotation is never permitted by default")
+func TestPluginUpgradeTrustFlags(t *testing.T) {
+	signerFlag := aiPluginUpgradeCmd.Flags().Lookup("allow-signer-change")
+	require.NotNil(t, signerFlag, "the status message promises --allow-signer-change")
+	assert.Equal(t, "false", signerFlag.DefValue, "a signer rotation is never permitted by default")
+	publicKeyFlag := aiPluginUpgradeCmd.Flags().Lookup("public-key")
+	require.NotNil(t, publicKeyFlag, "thv ai-plugin upgrade must expose --public-key")
+	assert.Empty(t, publicKeyFlag.DefValue)
 
 	t.Cleanup(func() {
 		aiPluginUpgradeAllowSignerChange = false
-		require.NoError(t, flag.Value.Set("false"))
-		flag.Changed = false
+		aiPluginUpgradePublicKey = ""
+		require.NoError(t, signerFlag.Value.Set("false"))
+		require.NoError(t, publicKeyFlag.Value.Set(""))
+		signerFlag.Changed = false
+		publicKeyFlag.Changed = false
 	})
 	require.NoError(t, aiPluginUpgradeCmd.Flags().Set("allow-signer-change", "true"))
+	require.NoError(t, aiPluginUpgradeCmd.Flags().Set("public-key", "cosign.pub"))
 	assert.True(t, aiPluginUpgradeAllowSignerChange,
 		"the flag must bind to the variable threaded into plugins.UpgradeOptions")
+	assert.Equal(t, "cosign.pub", aiPluginUpgradePublicKey,
+		"the key flag must bind to the path upgrade reads and encodes before the HTTP request")
 }
 
 // TestPrintPluginUpgradeResultSignerRendering pins the distinction the
@@ -149,6 +168,49 @@ func TestPrintPluginUpgradeResultSignerRendering(t *testing.T) {
 					FormatText, false))
 			})
 			assert.Equal(t, tc.wantOutput, output)
+		})
+	}
+}
+
+//nolint:paralleltest // captures os.Stdout
+func TestPrintPluginUpgradeResultTrustChanges(t *testing.T) {
+	tests := []struct {
+		name     string
+		outcome  plugins.UpgradeOutcome
+		planOnly bool
+		want     string
+	}{
+		{
+			name: "applied trust-only update",
+			outcome: plugins.UpgradeOutcome{
+				Name: "keyed-plugin", Status: plugins.UpgradeStatusTrustUpdated, OldDigest: "sha256:same",
+			},
+			want: "keyed-plugin: updated trust metadata (content remains at sha256:same; verification material refreshed)\n",
+		},
+		{
+			name: "preview trust-only update",
+			outcome: plugins.UpgradeOutcome{
+				Name: "keyed-plugin", Status: plugins.UpgradeStatusTrustUpdated, OldDigest: "sha256:same",
+			},
+			planOnly: true,
+			want:     "keyed-plugin: would update trust metadata (content remains at sha256:same; verification material refreshed)\n",
+		},
+		{
+			name: "content and trust update",
+			outcome: plugins.UpgradeOutcome{
+				Name: "keyed-plugin", Status: plugins.UpgradeStatusUpgraded,
+				OldDigest: "sha256:old", NewDigest: "sha256:new", TrustAnchorChanged: true,
+			},
+			want: "keyed-plugin: upgraded sha256:old -> sha256:new (trust anchor changed)\n",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := captureStdout(t, func() {
+				require.NoError(t, printPluginUpgradeResult(
+					&plugins.UpgradeResult{Outcomes: []plugins.UpgradeOutcome{tc.outcome}}, FormatText, tc.planOnly))
+			})
+			assert.Equal(t, tc.want, got)
 		})
 	}
 }

@@ -436,11 +436,10 @@ func TestSync_KeyPinnedEntrySettles(t *testing.T) {
 }
 
 // TestSync_AdoptRefusesKeySignedInstall covers the one place a key-signed
-// artifact has no path through: adoption back-fills trust from what the stored
-// bundle reveals, and a key-pair bundle reveals no identity and does not carry
-// the key. Recording it as unsigned instead would file a false trust decision
-// about an artifact that IS signed, so the refusal has to name the route that
-// can anchor it.
+// artifact needs caller-supplied trust: a key-pair bundle reveals no identity
+// and does not carry the key. Recording it as unsigned instead would file a
+// false trust decision about an artifact that IS signed, so the refusal has to
+// name the --adopt --public-key route that can anchor it.
 //
 //nolint:paralleltest // serial: real sqlite + on-disk client materialization per test
 func TestSync_AdoptRefusesKeySignedInstall(t *testing.T) {
@@ -472,12 +471,98 @@ func TestSync_AdoptRefusesKeySignedInstall(t *testing.T) {
 		require.Len(t, result.Failed, 1, "allow_unsigned=%v", allowUnsigned)
 		assert.Equal(t, plugins.FailureReasonKeySigned, result.Failed[0].Reason,
 			"--allow-unsigned is not a substitute: the artifact is signed (allow_unsigned=%v)", allowUnsigned)
-		assert.Contains(t, result.Failed[0].Error, "--scope project --public-key",
-			"the refusal must name the path that can anchor it, not merely refuse")
+		assert.Contains(t, result.Failed[0].Error, "adoption requires --public-key",
+			"the refusal must name the sync adoption option that can anchor it")
 
 		_, ok := readLockfile(t, projectRoot).GetPlugin("my-plugin")
 		assert.False(t, ok, "a refused adoption must write nothing")
 	}
+}
+
+//nolint:paralleltest // serial: real sqlite + on-disk client materialization
+func TestSync_AdoptKeySignedInstallWithPublicKey(t *testing.T) {
+	bundle := []byte(`{"bundle":"key-signed"}`)
+	keyPEM, err := verifier.DecodePublicKey(testPublicKeyB64)
+	require.NoError(t, err)
+
+	mv := verifiermocks.NewMockVerifier(gomock.NewController(t))
+	mv.EXPECT().ResultFromBundle(bundle, validLockDigest()).Return(nil, verifier.ErrKeySigned)
+	mv.EXPECT().VerifyBundleOfflineWithKey(bundle, validLockDigest(), keyPEM).Return(nil)
+
+	svc, projectRoot := newLockTestService(t, WithVerifier(mv))
+	installTestPlugin(t, svc, projectRoot, validLockDigest())
+	inner := svc.(*service) //nolint:forcetypeassert
+
+	require.NoError(t, lockfile.RemovePluginEntry(mustOpenRoot(t, projectRoot), "my-plugin"))
+	legacy, err := inner.store.Get(t.Context(), "my-plugin", plugins.ScopeProject, projectRoot)
+	require.NoError(t, err)
+	legacy.Managed = false
+	legacy.Reference = "ghcr.io/org/my-plugin:v1"
+	legacy.SigstoreBundle = bundle
+	require.NoError(t, inner.store.Update(t.Context(), legacy))
+
+	result, err := inner.Sync(t.Context(), plugins.SyncOptions{
+		ProjectRoot: projectRoot,
+		Adopt:       true,
+		PublicKey:   testPublicKeyB64,
+	})
+	require.NoError(t, err)
+	assert.Empty(t, result.Failed)
+	assert.Equal(t, []string{"my-plugin"}, result.NeverManaged)
+
+	entry, ok := readLockfile(t, projectRoot).GetPlugin("my-plugin")
+	require.True(t, ok)
+	require.NotNil(t, entry.Provenance)
+	assert.Equal(t, testPublicKeyB64, entry.Provenance.PublicKey)
+	assert.False(t, entry.Unsigned)
+}
+
+func TestAdoptionTrust_PublicKeyOnlyAnchorsKeySignedBundle(t *testing.T) {
+	t.Parallel()
+
+	bundle := []byte(`{"bundle":true}`)
+	keyPEM, err := verifier.DecodePublicKey(testPublicKeyB64)
+	require.NoError(t, err)
+
+	t.Run("wrong key is rejected", func(t *testing.T) {
+		t.Parallel()
+		mv := verifiermocks.NewMockVerifier(gomock.NewController(t))
+		mv.EXPECT().ResultFromBundle(bundle, validLockDigest()).Return(nil, verifier.ErrKeySigned)
+		mv.EXPECT().VerifyBundleOfflineWithKey(bundle, validLockDigest(), keyPEM).
+			Return(verifier.ErrSignatureInvalid)
+
+		svc := &service{sigVerifier: mv}
+		_, _, trustErr := svc.adoptionTrust(
+			plugins.SyncOptions{Adopt: true, PublicKey: testPublicKeyB64},
+			plugins.InstalledPlugin{
+				Metadata:       plugins.PluginMetadata{Name: "keyed-plugin"},
+				Digest:         validLockDigest(),
+				SigstoreBundle: bundle,
+			})
+		require.ErrorIs(t, trustErr, verifier.ErrSignatureInvalid)
+	})
+
+	t.Run("keyless evidence remains authoritative", func(t *testing.T) {
+		t.Parallel()
+		mv := verifiermocks.NewMockVerifier(gomock.NewController(t))
+		mv.EXPECT().ResultFromBundle(bundle, validLockDigest()).Return(signedResult(), nil)
+		mv.EXPECT().VerifyBundleOfflineWithKey(gomock.Any(), gomock.Any(), gomock.Any()).Times(0)
+
+		svc := &service{sigVerifier: mv}
+		provenance, unsigned, trustErr := svc.adoptionTrust(
+			plugins.SyncOptions{Adopt: true, PublicKey: testPublicKeyB64},
+			plugins.InstalledPlugin{
+				Metadata:       plugins.PluginMetadata{Name: "keyless-plugin"},
+				Digest:         validLockDigest(),
+				SigstoreBundle: bundle,
+			})
+		require.NoError(t, trustErr)
+		require.NotNil(t, provenance)
+		assert.False(t, unsigned)
+		assert.Equal(t, testSignerIdentity, provenance.SignerIdentity)
+		assert.Empty(t, provenance.PublicKey,
+			"a supplied key must not replace the identity observed in a keyless bundle")
+	})
 }
 
 // TestAdoptionTrust_KeySignedIsForbidden pins the status code and wrapped

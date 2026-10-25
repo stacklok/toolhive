@@ -80,8 +80,11 @@ var _ storage.UpstreamTokenRefresher = (*upstreamTokenRefresher)(nil)
 // opaque storage-row identity used to deduplicate a refresh within this process.
 // The leader re-reads that row under a detached timeout so it never redeems a
 // stale refresh token supplied by a caller. It only short-circuits on that
-// re-read when the row is actually unexpired; a storage backend that returns
-// tokens without checking expiry does not fool it into skipping the refresh.
+// re-read when the row is unexpired AND differs from the caller's row, i.e.
+// another caller already refreshed it. A storage backend that returns tokens
+// without checking expiry does not fool it into skipping the refresh, and a
+// caller that deliberately refreshes a still-current row (e.g. because its ID
+// token expired before its access token) gets a real upstream refresh.
 func (r *upstreamTokenRefresher) RefreshAndStore(
 	ctx context.Context,
 	sessionID string,
@@ -122,7 +125,7 @@ func (r *upstreamTokenRefresher) RefreshAndStore(
 					sessionID, expired.ProviderID,
 				)
 			}
-			if !authoritative.IsExpired(time.Now()) {
+			if !authoritative.IsExpired(time.Now()) && rowChanged(expired, authoritative) {
 				return authoritative, nil
 			}
 			return r.refreshAndStore(refreshCtx, sessionID, authoritative)
@@ -167,6 +170,11 @@ func (r *upstreamTokenRefresher) refreshAndStore(
 	// Refresh tokens via the upstream provider
 	newTokens, err := provider.RefreshTokens(ctx, expired.RefreshToken, expired.UpstreamSubject)
 	if err != nil {
+		if errors.Is(err, upstream.ErrGrantRejected) {
+			if winner := r.rotatedElsewhere(ctx, sessionID, expired); winner != nil {
+				return winner, nil
+			}
+		}
 		return nil, fmt.Errorf("upstream token refresh failed: %w", err)
 	}
 
@@ -346,6 +354,53 @@ func (r *upstreamTokenRefresher) resolveConcurrentRefreshConflict(
 	)
 }
 
+// rotatedElsewhere is consulted when the upstream provider rejected this
+// call's refresh token with invalid_grant. A rotating provider answers that
+// way to the replica that loses a cross-process refresh race (singleflight
+// only deduplicates within this process), even though the winner has already
+// stored a valid row. If the stored row now holds a different refresh token
+// and an unexpired access token, that row is the result to use, so a lost race
+// is not reported as a dead upstream credential.
+//
+// "Another process refreshed" is tested by refresh-token inequality, unlike
+// rowChanged, which also compares the access token, ID token and expiry. The
+// rejection is of the refresh token itself, so only a row holding a different
+// refresh token can be a successor; a row that changed in other fields but
+// still holds the rejected refresh token is just as dead.
+//
+// This narrows the race but does not close it: when the winner's storage write
+// has not landed by the time of the re-read, the rejection is still returned.
+// Any read failure also returns nil, leaving the caller's original error.
+func (r *upstreamTokenRefresher) rotatedElsewhere(
+	ctx context.Context, sessionID string, expired *storage.UpstreamTokens,
+) *storage.UpstreamTokens {
+	readCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), upstreamConflictReadTimeout)
+	defer cancel()
+
+	stored, err := r.storage.GetUpstreamTokens(readCtx, sessionID, expired.ProviderID)
+	if err != nil {
+		// ErrExpired and ErrNotFound are ordinary outcomes here: the row is
+		// still the rejected one, or it is gone. Anything else is a storage
+		// fault worth a diagnostic, though the caller's rejection still stands.
+		if !errors.Is(err, storage.ErrExpired) && !errors.Is(err, storage.ErrNotFound) {
+			slog.Debug("re-read after upstream invalid_grant failed; returning the rejection",
+				"session_id", sessionID,
+				"provider_id", expired.ProviderID,
+				"error", err,
+			)
+		}
+		return nil
+	}
+	if stored == nil || stored.RefreshToken == expired.RefreshToken || stored.IsExpired(time.Now()) {
+		return nil
+	}
+	slog.Debug("upstream rejected a refresh token another process already rotated; using the stored row",
+		"session_id", sessionID,
+		"provider_id", expired.ProviderID,
+	)
+	return stored
+}
+
 // compareAndSwapWithRetry attempts CompareAndSwapUpstreamTokens up to
 // upstreamStoreMaxAttempts times, waiting upstreamStoreRetryBackoff between
 // attempts. Returns nil on first success. A storage.ErrConcurrentRefresh
@@ -385,4 +440,16 @@ func (r *upstreamTokenRefresher) compareAndSwapWithRetry(
 		}
 	}
 	return lastErr
+}
+
+// rowChanged reports whether the stored row was rewritten since the caller read
+// it, i.e. another caller already refreshed it. Expiry is compared as well as
+// the token values so a provider that re-issues the same access token string
+// with a new expiry (and does not rotate the refresh token) still counts as a
+// change, and the caller does not redeem again.
+func rowChanged(callerRow, stored *storage.UpstreamTokens) bool {
+	return callerRow.AccessToken != stored.AccessToken ||
+		callerRow.RefreshToken != stored.RefreshToken ||
+		callerRow.IDToken != stored.IDToken ||
+		!callerRow.ExpiresAt.Equal(stored.ExpiresAt)
 }

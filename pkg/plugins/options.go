@@ -9,6 +9,7 @@ import (
 	"net/http"
 
 	"github.com/stacklok/toolhive-core/httperr"
+	regtypes "github.com/stacklok/toolhive-core/registry/types"
 	"github.com/stacklok/toolhive/pkg/skills"
 	"github.com/stacklok/toolhive/pkg/skills/lockfile"
 )
@@ -87,6 +88,10 @@ type InstallOptions struct {
 	// normal "same digest means content is already correct" fast path must
 	// not apply. Internal use only — NOT exposed via HTTP API.
 	SyncRestore bool `json:"-"`
+	// RefreshMetadata updates the installed record when content is already at
+	// the requested digest and no client needs materialization. Upgrade sets it
+	// for an explicitly allowed resolved-reference change. Internal use only.
+	RefreshMetadata bool `json:"-"`
 	// AllowSignerChange lets install-time verification re-record the
 	// observed identity instead of enforcing the lock file's recorded one.
 	// Internal use only — set by upgrade when its signer-change guard was
@@ -101,6 +106,13 @@ type InstallOptions struct {
 	// install-time verification; recorded as `unsigned: true` in the lock
 	// entry. Internal use only — NOT exposed via HTTP API.
 	Unsigned bool `json:"-"`
+	// CatalogProvenance is the independently optional provenance constraints
+	// declared by the plugin registry/catalog entry this install resolved
+	// from. On true first use, install-time verification checks each non-empty
+	// field against the observed signature. A lock entry, including a legacy
+	// entry with no trust state, always takes precedence over this. Internal
+	// use only — NOT exposed via HTTP API.
+	CatalogProvenance *regtypes.Provenance `json:"-"`
 	// Provenance carries the verified signer identity established during
 	// install-time verification, for recording into the lock entry. Set by
 	// the verification step, nil when the artifact is unsigned or
@@ -251,7 +263,7 @@ func ValidatePushSigning(opts PushOptions) error {
 }
 
 // SyncOptions configures a lock-file sync. Alias for skills.SyncOptions
-// (identical shape: ProjectRoot, Clients, Prune, Check, AllowUnsigned, Adopt).
+// (identical shape including adoption's AllowUnsigned and PublicKey inputs).
 type SyncOptions = skills.SyncOptions
 
 // SyncResult is the outcome of a lock-file sync. Alias for skills.SyncResult.
@@ -285,8 +297,8 @@ const (
 )
 
 // UpgradeOptions configures a lock-file upgrade. Alias for
-// skills.UpgradeOptions (identical shape including AllowRefChange /
-// AllowSignerChange).
+// skills.UpgradeOptions (identical shape including AllowRefChange,
+// AllowSignerChange, and PublicKey).
 type UpgradeOptions = skills.UpgradeOptions
 
 // UpgradeResult is the outcome of a lock-file upgrade. Alias for
@@ -306,6 +318,7 @@ type UpgradeStatus = skills.UpgradeStatus
 const (
 	UpgradeStatusUpgraded            = skills.UpgradeStatusUpgraded
 	UpgradeStatusUpToDate            = skills.UpgradeStatusUpToDate
+	UpgradeStatusTrustUpdated        = skills.UpgradeStatusTrustUpdated
 	UpgradeStatusNotUpgradable       = skills.UpgradeStatusNotUpgradable
 	UpgradeStatusRefChangeBlocked    = skills.UpgradeStatusRefChangeBlocked
 	UpgradeStatusSignerChangeBlocked = skills.UpgradeStatusSignerChangeBlocked

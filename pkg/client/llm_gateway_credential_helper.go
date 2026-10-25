@@ -38,9 +38,11 @@ const (
 )
 
 // claudeDesktopConfig is the <id>.json document written into the configLibrary.
-// ToolHive fully owns this file, so a typed struct is safe (no user fields to
-// preserve). inferenceModels is omitted when empty so Claude Desktop falls back
-// to gateway-side model auto-discovery once the gateway serves it.
+// ToolHive owns this file. ManagedMCPServers holds the connectors written by
+// "thv client connector add" (see claude_desktop_connectors.go); setup carries
+// them over from the previous document rather than managing them itself.
+// inferenceModels is omitted when empty so Claude Desktop falls back to
+// gateway-side model auto-discovery once the gateway serves it.
 type claudeDesktopConfig struct {
 	InferenceProvider                   string   `json:"inferenceProvider"`
 	InferenceGatewayBaseURL             string   `json:"inferenceGatewayBaseUrl"`
@@ -50,6 +52,7 @@ type claudeDesktopConfig struct {
 	InferenceCredentialHelperTtlSec     int      `json:"inferenceCredentialHelperTtlSec"`
 	InferenceCredentialHelperTimeoutSec int      `json:"inferenceCredentialHelperTimeoutSec"`
 	InferenceModels                     []string `json:"inferenceModels,omitempty"`
+	ManagedMCPServers                   []any    `json:"managedMcpServers,omitempty"`
 }
 
 // configureCredentialHelper writes (or updates) ToolHive's Claude Desktop
@@ -117,6 +120,7 @@ func (cm *ClientManager) configureCredentialHelper(appCfg *clientAppConfig, cfg 
 		meta["entries"] = upsertMetaEntry(metaEntries(meta), id, claudeDesktopManagedEntryName)
 		meta["appliedId"] = id
 
+		cp := filepath.Join(dir, id+".json")
 		doc := claudeDesktopConfig{
 			InferenceProvider:                   "gateway",
 			InferenceGatewayBaseURL:             baseURL,
@@ -126,13 +130,14 @@ func (cm *ClientManager) configureCredentialHelper(appCfg *clientAppConfig, cfg 
 			InferenceCredentialHelperTtlSec:     int(llmgateway.ClaudeDesktopHelperTTL.Seconds()),
 			InferenceCredentialHelperTimeoutSec: int(llmgateway.ClaudeDesktopHelperTimeout.Seconds()),
 			InferenceModels:                     cfg.Models,
+			// Keep connectors across re-runs of setup, which rewrites the document.
+			ManagedMCPServers: previousManagedMCPServers(cp),
 		}
 		docBytes, err := json.MarshalIndent(doc, "", "  ")
 		if err != nil {
 			cleanup("")
 			return fmt.Errorf("encoding Claude Desktop config: %w", err)
 		}
-		cp := filepath.Join(dir, id+".json")
 		if err := fileutils.AtomicWriteFile(cp, docBytes, 0o600); err != nil {
 			cleanup(cp)
 			return fmt.Errorf("writing %s: %w", cp, err)
@@ -217,6 +222,13 @@ func (cm *ClientManager) revertCredentialHelper(appCfg *clientAppConfig, configP
 				return err
 			}
 		}
+		// The document also holds any connectors "thv client connector add" wrote;
+		// they go with it, since Claude Desktop ignores them without the inference
+		// settings anyway.
+		if names := connectorNamesInDoc(configPath); len(names) > 0 {
+			slog.Warn("removing Claude Desktop connectors along with the LLM gateway configuration",
+				"connectors", names)
+		}
 		if err := removeIfExists(configPath); err != nil {
 			return err
 		}
@@ -296,21 +308,33 @@ func quoteForPOSIXShell(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
-// managedProfilePresent reports whether an MDM/managed-preferences profile for
-// the given plist domain is present. A managed profile overrides a client's
-// local config, so "thv llm setup" warns when one is detected (the local config
-// it writes would be ignored). macOS only; returns false elsewhere or when the
-// client declares no managed-profile domain.
-func managedProfilePresent(domain string) bool {
-	if domain == "" || runtime.GOOS != "darwin" {
+// managedProfilePresent reports whether a managed configuration source for the
+// client is present. A managed source overrides a client's local config, so
+// "thv llm setup" warns when one is detected (the local config it writes would
+// be ignored). Checks the MDM managed-preferences plist on macOS and the
+// managed settings file on Linux; returns false on other platforms or when the
+// client declares no managed source for the current platform.
+func managedProfilePresent(cfg *clientAppConfig) bool {
+	switch runtime.GOOS {
+	case "darwin":
+		return cfg.LLMManagedProfileDomain != "" &&
+			managedProfileExistsUnder(managedPreferencesRoot, cfg.LLMManagedProfileDomain)
+	case "linux":
+		return len(cfg.LLMManagedSettingsRelPath) > 0 &&
+			managedSettingsPresentUnder(linuxManagedSettingsRoot, cfg.LLMManagedSettingsRelPath)
+	default:
 		return false
 	}
-	return managedProfileExistsUnder(managedPreferencesRoot, domain)
 }
 
 // managedPreferencesRoot is the macOS managed-preferences directory. A package
 // variable (not a const) so tests can point it at a temp directory.
 var managedPreferencesRoot = "/Library/Managed Preferences"
+
+// linuxManagedSettingsRoot is the directory Linux managed settings files are
+// resolved under. A package variable (not a const) so tests can point it at a
+// temp directory.
+var linuxManagedSettingsRoot = "/etc"
 
 // managedProfileExistsUnder reports whether a managed-preferences plist for
 // domain exists directly under root or under a per-user subdirectory
@@ -321,6 +345,17 @@ func managedProfileExistsUnder(root, domain string) bool {
 	}
 	matches, _ := filepath.Glob(filepath.Join(root, "*", domain))
 	return len(matches) > 0
+}
+
+// managedSettingsPresentUnder reports whether anything exists at root/relPath.
+// Claude Desktop rejects a managed settings file that is a symlink, not owned
+// by root, or group- or world-writable, but it then treats the device as
+// managed and disables local settings anyway. Either way the local config is
+// ignored, so any entry counts and Desktop's checks are not replicated.
+// Platform-independent so it is unit-testable.
+func managedSettingsPresentUnder(root string, relPath []string) bool {
+	_, err := os.Lstat(filepath.Join(root, filepath.Join(relPath...)))
+	return err == nil
 }
 
 // ── _meta.json helpers ─────────────────────────────────────────────────────

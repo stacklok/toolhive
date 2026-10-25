@@ -87,6 +87,11 @@ type InstallOptions struct {
 	// normal "same digest means content is already correct" fast path must
 	// not apply. Internal use only — NOT exposed via HTTP API.
 	SyncRestore bool `json:"-"`
+	// RefreshMetadata updates the installed record when content is already at
+	// the requested digest and no client needs extraction. Upgrade sets it
+	// when an explicitly allowed resolved-reference change must be persisted.
+	// Internal use only — NOT exposed via HTTP API.
+	RefreshMetadata bool `json:"-"`
 	// AllowSignerChange lets install-time verification re-record the
 	// observed identity instead of enforcing the lock file's recorded one.
 	// Internal use only — set by upgrade when its signer-change guard was
@@ -299,6 +304,10 @@ type SyncOptions struct {
 	AllowUnsigned bool `json:"allow_unsigned,omitempty"`
 	// Adopt writes lock entries for existing unmanaged project-scope installs.
 	Adopt bool `json:"adopt,omitempty"`
+	// PublicKey is the base64-encoded DER SPKI cosign public key used to
+	// verify key-pair-signed bundles during adoption. It is accepted only
+	// with Adopt and without Check.
+	PublicKey string `json:"public_key,omitempty"`
 }
 
 // FailureReason is a typed failure reason for sync/upgrade operations, per
@@ -386,7 +395,8 @@ type UpgradeOptions struct {
 	// Preview reports what would change without installing (still fetches
 	// artifacts to compare digests).
 	Preview bool `json:"preview,omitempty"`
-	// FailOnChanges exits with an error when any mutable source would upgrade.
+	// FailOnChanges reports content and trust changes without applying them;
+	// callers decide whether those outcomes should fail their freshness gate.
 	FailOnChanges bool `json:"fail_on_changes,omitempty"`
 	// AllowRefChange permits an upgrade whose candidate lives in a different
 	// repository. Tag moves within the same repository are always allowed —
@@ -396,6 +406,10 @@ type UpgradeOptions struct {
 	// different identity than the one recorded in the lock file; the new
 	// identity is recorded in its place.
 	AllowSignerChange bool `json:"allow_signer_change,omitempty"`
+	// PublicKey is the base64-encoded DER SPKI cosign public key proposed as
+	// a replacement trust anchor. It is accepted only together with
+	// AllowSignerChange and recorded only for candidates it verifies.
+	PublicKey string `json:"public_key,omitempty"`
 	// Clients lists target clients (e.g., "claude-code"). Empty preserves the
 	// skill's currently installed client list; when that is also empty,
 	// every skill-supporting client detected on this host is used.
@@ -406,14 +420,19 @@ type UpgradeOptions struct {
 type UpgradeStatus string
 
 const (
-	// UpgradeStatusUpgraded indicates the skill was installed at a new digest.
+	// UpgradeStatusUpgraded indicates the skill was installed at a new digest
+	// or resolved reference.
 	UpgradeStatusUpgraded UpgradeStatus = "upgraded"
-	// UpgradeStatusUpToDate indicates the resolved source still points at the pinned digest.
+	// UpgradeStatusUpToDate indicates the resolved source still matches the pinned digest and reference.
 	UpgradeStatusUpToDate UpgradeStatus = "up-to-date"
+	// UpgradeStatusTrustUpdated indicates content and resolved reference stayed
+	// unchanged while verified trust or persisted verification material was updated.
+	UpgradeStatusTrustUpdated UpgradeStatus = "trust-updated"
 	// UpgradeStatusNotUpgradable indicates the entry is pinned to an immutable
 	// reference (an OCI digest or a full git commit hash) and cannot be upgraded.
 	UpgradeStatusNotUpgradable UpgradeStatus = "not-upgradable"
-	// UpgradeStatusRefChangeBlocked indicates re-resolution changed resolvedReference.
+	// UpgradeStatusRefChangeBlocked indicates re-resolution moved to a different
+	// repository without explicit permission.
 	UpgradeStatusRefChangeBlocked UpgradeStatus = "ref-change-blocked"
 	// UpgradeStatusSignerChangeBlocked indicates the candidate artifact is
 	// signed by a different identity (or unsigned) versus the identity the
@@ -431,14 +450,17 @@ type UpgradeOutcome struct {
 	Status UpgradeStatus `json:"status"`
 	// OldDigest is the digest pinned in the lock file before this operation.
 	OldDigest string `json:"old_digest,omitempty"`
-	// NewDigest is the digest the source currently resolves to. Equal to
-	// OldDigest when Status is UpgradeStatusUpToDate.
+	// NewDigest is the digest the source currently resolves to. It may equal
+	// OldDigest when only the resolved reference or trust material changed.
 	NewDigest string `json:"new_digest,omitempty"`
 	// NewResolvedReference is the new resolvedReference when it changed.
 	NewResolvedReference string `json:"new_resolved_reference,omitempty"`
 	// NewSignerIdentity is the candidate's signer identity when it differs
 	// from the recorded one (empty when the candidate is unsigned).
 	NewSignerIdentity string `json:"new_signer_identity,omitempty"`
+	// TrustAnchorChanged reports that the operation selected a different
+	// verified provenance or unsigned trust state than the lock recorded.
+	TrustAnchorChanged bool `json:"trust_anchor_changed,omitempty"`
 	// Reason is a typed failure reason when Status is UpgradeStatusFailed.
 	Reason FailureReason `json:"reason,omitempty"`
 	// Error is a human-readable description of the failure, set only when Status is UpgradeStatusFailed.

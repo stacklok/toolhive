@@ -82,7 +82,9 @@ func CreateMiddleware(config *types.MiddlewareConfig, runner types.MiddlewareRun
 func createMutatingHandler(executors []clientExecutor, serverName, transport string) types.MiddlewareFunction {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Skip if it's not a parsed MCP request (middleware runs after mcp parser).
+			// The configured chain MUST place MCP parsing before this middleware.
+			// A nil POST context may be an admitted response or a missing-parser
+			// misconfiguration. These controls do not apply to non-POST traffic.
 			parsedMCP := mcp.GetParsedMCPRequest(r.Context())
 			if parsedMCP == nil {
 				next.ServeHTTP(w, r)

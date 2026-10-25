@@ -10,10 +10,12 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/exp/jsonrpc2"
 )
 
 func TestParsingMiddleware(t *testing.T) {
@@ -104,12 +106,15 @@ func TestParsingMiddleware(t *testing.T) {
 			expectParsed: false,
 		},
 		{
-			name:         "non-JSON content type - not parsed",
-			method:       "POST",
-			path:         "/messages",
-			contentType:  "text/plain",
-			body:         "not json",
-			expectParsed: false,
+			name:           "non-JSON content type - parsed",
+			method:         "POST",
+			path:           "/messages",
+			contentType:    "text/plain",
+			body:           `{"jsonrpc":"2.0","id":1,"method":"ping"}`,
+			expectParsed:   true,
+			expectedMethod: "ping",
+			expectedID:     int64(1),
+			expectedResID:  "ping",
 		},
 		{
 			name:           "SSE endpoint - parsed",
@@ -249,11 +254,178 @@ func TestParsingMiddleware(t *testing.T) {
 	}
 }
 
-func TestParseMCPRequest_LeadingBOM(t *testing.T) {
+func TestParsingMiddlewareRejectsAmbiguousJSON(t *testing.T) {
 	t.Parallel()
 
-	parsed := parseMCPRequest([]byte("\xEF\xBB\xBF" +
+	body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"allowed","Name":"denied"}}`
+	nextCalled := false
+	next := http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		nextCalled = true
+	})
+	req := httptest.NewRequest(http.MethodPost, "/messages", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+
+	ParsingMiddleware(next).ServeHTTP(recorder, req)
+
+	assert.False(t, nextCalled)
+	assert.Equal(t, http.StatusBadRequest, recorder.Code)
+	assert.Equal(t, "application/json", recorder.Header().Get("Content-Type"))
+	assert.NotContains(t, recorder.Body.String(), "allowed")
+	assert.NotContains(t, recorder.Body.String(), "denied")
+
+	var response map[string]any
+	require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &response))
+	assert.Equal(t, "2.0", response["jsonrpc"])
+	_, hasID := response["id"]
+	assert.False(t, hasID)
+	errorBody, ok := response["error"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, float64(CodeInvalidRequest), errorBody["code"])
+	assert.Equal(t, "Invalid Request", errorBody["message"])
+}
+
+func TestParsingMiddlewareRejectsBOMPrefixedAmbiguousJSON(t *testing.T) {
+	t.Parallel()
+
+	body := "\xEF\xBB\xBF" + `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"allowed","Name":"denied"}}`
+	nextCalled := false
+	next := http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		nextCalled = true
+	})
+	req := httptest.NewRequest(http.MethodPost, "/messages", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+
+	ParsingMiddleware(next).ServeHTTP(recorder, req)
+
+	assert.Equal(t, http.StatusBadRequest, recorder.Code)
+	assert.False(t, nextCalled)
+}
+
+func TestParsingMiddlewareRejectsBodiesOnNonPOSTMethods(t *testing.T) {
+	t.Parallel()
+
+	const body = `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"weather"}}`
+	tests := []struct {
+		name         string
+		method       string
+		body         string
+		chunked      bool // unknown length (Transfer-Encoding: chunked)
+		wantRejected bool
+	}{
+		{name: "GET without body", method: http.MethodGet},
+		{name: "DELETE without body", method: http.MethodDelete},
+		{name: "OPTIONS without body", method: http.MethodOptions},
+		{name: "lower-case post without body", method: "post"},
+		{name: "chunked GET with empty body", method: http.MethodGet, chunked: true},
+		{name: "GET with body", method: http.MethodGet, body: body, wantRejected: true},
+		{name: "DELETE with body", method: http.MethodDelete, body: body, wantRejected: true},
+		{name: "lower-case post with body", method: "post", body: body, wantRejected: true},
+		{name: "mixed-case Post with body", method: "Post", body: body, wantRejected: true},
+		{name: "PUT with body", method: http.MethodPut, body: body, wantRejected: true},
+		{name: "PATCH with body", method: http.MethodPatch, body: body, wantRejected: true},
+		{name: "chunked PUT with body", method: http.MethodPut, body: body, chunked: true, wantRejected: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var nextCalled bool
+			var forwarded []byte
+			next := http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+				nextCalled = true
+				var err error
+				forwarded, err = io.ReadAll(r.Body)
+				require.NoError(t, err)
+			})
+
+			req := httptest.NewRequest(tt.method, "/mcp", nil)
+			if tt.body != "" {
+				req = httptest.NewRequest(tt.method, "/mcp", strings.NewReader(tt.body))
+			}
+			if tt.chunked {
+				req.ContentLength = -1
+				req.Body = io.NopCloser(strings.NewReader(tt.body))
+			}
+			recorder := httptest.NewRecorder()
+
+			ParsingMiddleware(next).ServeHTTP(recorder, req)
+
+			if tt.wantRejected {
+				assert.False(t, nextCalled, "a body on a non-POST method must not reach the next handler")
+				assert.Equal(t, http.StatusBadRequest, recorder.Code)
+				return
+			}
+			assert.True(t, nextCalled)
+			assert.Equal(t, http.StatusOK, recorder.Code)
+			assert.Empty(t, forwarded)
+		})
+	}
+}
+
+func TestParsingMiddlewarePreservesValidBody(t *testing.T) {
+	t.Parallel()
+
+	body := `{"jsonrpc":"2.0", "id":9007199254740993, "method":"tools/call", "params":{"name":"weather","extension":{"keep":true}}}`
+	var forwarded []byte
+	next := http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		var err error
+		forwarded, err = io.ReadAll(r.Body)
+		require.NoError(t, err)
+	})
+	req := httptest.NewRequest(http.MethodPost, "/messages", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	ParsingMiddleware(next).ServeHTTP(httptest.NewRecorder(), req)
+
+	assert.Equal(t, []byte(body), forwarded)
+}
+
+func TestParsedMCPMessage_UndecodableParamsFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		id     jsonrpc2.ID
+		wantID any
+		params string
+	}{
+		{name: "exponent beyond float64", id: jsonrpc2.Int64ID(1), wantID: int64(1), params: `{"name":"echo","arguments":{"x":1e1000}}`},
+		{name: "huge integer literal", id: jsonrpc2.StringID("req-1"), wantID: "req-1", params: `{"name":"echo","arguments":{"x":` + strings.Repeat("9", 400) + `}}`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			msg := &jsonrpc2.Request{
+				ID:     tt.id,
+				Method: "tools/call",
+				Params: json.RawMessage(tt.params),
+			}
+
+			parsed, err := parsedMCPMessage(msg)
+
+			assert.Nil(t, parsed)
+			var coded CodedError
+			require.ErrorAs(t, err, &coded)
+			assert.Equal(t, CodeInvalidRequest, coded.Code())
+			var withID interface{ RequestID() any }
+			require.ErrorAs(t, err, &withID)
+			assert.Equal(t, tt.wantID, withID.RequestID())
+		})
+	}
+}
+
+func TestParsedMCPMessage_LeadingBOM(t *testing.T) {
+	t.Parallel()
+
+	msg, err := DecodeMessage([]byte("\xEF\xBB\xBF" +
 		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"weather"}}`))
+	require.NoError(t, err)
+	parsed, err := parsedMCPMessage(msg)
+	require.NoError(t, err)
 
 	require.NotNil(t, parsed)
 	assert.Equal(t, "tools/call", parsed.Method)
@@ -279,10 +451,6 @@ func TestParsingMiddlewareRejectsBatch(t *testing.T) {
 		{
 			name: "empty batch",
 			body: `[]`,
-		},
-		{
-			name: "malformed batch (unterminated array)",
-			body: `[{"jsonrpc":"2.0","id":1,"method":"tools/call"`,
 		},
 	}
 
@@ -983,7 +1151,8 @@ func TestExtractResourceAndArguments(t *testing.T) {
 				params = json.RawMessage(tt.params)
 			}
 
-			resourceID, arguments, meta := extractResourceAndArguments(tt.method, params)
+			resourceID, arguments, meta, err := extractResourceAndArguments(tt.method, params)
+			require.NoError(t, err)
 
 			assert.Equal(t, tt.expectedResourceID, resourceID)
 			if tt.expectedArguments == nil {
@@ -1475,7 +1644,7 @@ func TestShouldParseMCPRequest(t *testing.T) {
 			method:      "POST",
 			path:        "/messages",
 			contentType: "text/plain",
-			expected:    false,
+			expected:    true,
 		},
 		{
 			name:        "POST to SSE endpoint",
@@ -1540,19 +1709,22 @@ func TestShouldParseMCPRequest(t *testing.T) {
 	}
 }
 
-func TestParseMCPRequestWithInvalidJSON(t *testing.T) {
+func TestParsedMCPMessageWithoutRequest(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
-		name string
-		body string
+		name         string
+		body         string
+		wantParseErr bool
 	}{
 		{
-			name: "empty body",
-			body: "",
+			name:         "empty body",
+			body:         "",
+			wantParseErr: true,
 		},
 		{
-			name: "invalid JSON",
-			body: "not json",
+			name:         "invalid JSON",
+			body:         "not json",
+			wantParseErr: true,
 		},
 		{
 			name: "JSON-RPC response instead of request",
@@ -1567,8 +1739,16 @@ func TestParseMCPRequestWithInvalidJSON(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			result := parseMCPRequest([]byte(tt.body))
-			assert.Nil(t, result)
+			msg, err := DecodeMessage([]byte(tt.body))
+			if tt.wantParseErr {
+				require.ErrorIs(t, err, jsonrpc2.ErrParse)
+				require.Nil(t, msg)
+				return
+			}
+			require.NoError(t, err)
+			parsed, err := parsedMCPMessage(msg)
+			require.NoError(t, err)
+			assert.Nil(t, parsed)
 		})
 	}
 }
@@ -1661,13 +1841,8 @@ func TestParsingMiddlewareErrorHandling(t *testing.T) {
 			// Execute the middleware
 			middleware.ServeHTTP(w, req)
 
-			// Check if parsing occurred as expected
-			parsed := GetParsedMCPRequest(capturedCtx)
-			if tt.expectParsed {
-				assert.NotNil(t, parsed)
-			} else {
-				assert.Nil(t, parsed)
-			}
+			assert.Nil(t, capturedCtx, "invalid bodies must not reach the handler")
+			assert.Equal(t, http.StatusBadRequest, w.Code)
 		})
 	}
 }
@@ -1711,7 +1886,8 @@ func TestExtractResourceAndArgumentsNilParams(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			resourceID, arguments, meta := extractResourceAndArguments(tt.method, nil)
+			resourceID, arguments, meta, err := extractResourceAndArguments(tt.method, nil)
+			require.NoError(t, err)
 			assert.Equal(t, tt.expectedResourceID, resourceID)
 			assert.Nil(t, arguments)
 			assert.Nil(t, meta)
@@ -2018,6 +2194,28 @@ func TestRepublishParsedMCPRequest(t *testing.T) {
 			require.NotNil(t, oldParsed)
 			assert.Equal(t, "old-tool", oldParsed.ResourceID)
 		})
+	}
+}
+
+func TestRepublishParsedMCPRequestRejectsAmbiguousBody(t *testing.T) {
+	t.Parallel()
+
+	req := httptest.NewRequest(http.MethodPost, "/messages", nil)
+	for _, body := range [][]byte{
+		[]byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"allowed","Name":"denied"}}`),
+		[]byte("\xEF\xBB\xBF" + `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"allowed","Name":"denied"}}`),
+		[]byte(`{"padding":1e1000,"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"allowed","Name":"denied"}}`),
+		[]byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"allowed","Name":"denied"},"padding":1e1000}`),
+	} {
+		republished, err := RepublishParsedMCPRequest(req, body)
+
+		require.Error(t, err)
+		assert.Nil(t, republished)
+		var coded CodedError
+		require.ErrorAs(t, err, &coded)
+		assert.Equal(t, CodeInvalidRequest, coded.Code())
+		assert.Equal(t, "Invalid Request", err.Error())
+		assert.Empty(t, coded.Data())
 	}
 }
 

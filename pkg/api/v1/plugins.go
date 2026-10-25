@@ -484,6 +484,7 @@ func (s *PluginsRoutes) syncPlugins(w http.ResponseWriter, r *http.Request) erro
 		Check:         req.Check,
 		Adopt:         req.Adopt,
 		AllowUnsigned: req.AllowUnsigned,
+		PublicKey:     req.PublicKey,
 	})
 	if err != nil {
 		return err
@@ -531,6 +532,7 @@ func (s *PluginsRoutes) upgradePlugins(w http.ResponseWriter, r *http.Request) e
 		FailOnChanges:     req.FailOnChanges,
 		AllowRefChange:    req.AllowRefChange,
 		AllowSignerChange: req.AllowSignerChange,
+		PublicKey:         req.PublicKey,
 		Clients:           req.Clients,
 	})
 	if err != nil {

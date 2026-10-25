@@ -358,6 +358,7 @@ func (c *Client) Sync(ctx context.Context, opts plugins.SyncOptions) (*plugins.S
 		Check:         opts.Check,
 		Adopt:         opts.Adopt,
 		AllowUnsigned: opts.AllowUnsigned,
+		PublicKey:     opts.PublicKey,
 	}
 
 	var result plugins.SyncResult
@@ -377,6 +378,7 @@ func (c *Client) Upgrade(ctx context.Context, opts plugins.UpgradeOptions) (*plu
 		FailOnChanges:     opts.FailOnChanges,
 		AllowRefChange:    opts.AllowRefChange,
 		AllowSignerChange: opts.AllowSignerChange,
+		PublicKey:         opts.PublicKey,
 		Clients:           opts.Clients,
 	}
 

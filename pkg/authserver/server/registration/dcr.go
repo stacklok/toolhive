@@ -23,6 +23,7 @@ import (
 	"strings"
 
 	"github.com/go-jose/go-jose/v3"
+	"github.com/ory/fosite"
 
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
@@ -71,6 +72,9 @@ const (
 	// MaxRedirectURICount is the maximum number of redirect URIs allowed per client.
 	MaxRedirectURICount = 10
 
+	// maxInlineJWKSKeys limits the number of keys validated for private_key_jwt registration.
+	maxInlineJWKSKeys = 10
+
 	// MaxClientNameLength is the maximum allowed length for a client name.
 	MaxClientNameLength = 256
 
@@ -92,12 +96,13 @@ type DCRError struct {
 }
 
 // defaultGrantTypes are the default grant types for registered clients.
-var defaultGrantTypes = []string{"authorization_code", "refresh_token"}
+var defaultGrantTypes = []string{oauthproto.GrantTypeAuthorizationCode, oauthproto.GrantTypeRefreshToken}
 
 // allowedGrantTypes defines the grant types permitted for public clients.
 var allowedGrantTypes = map[string]bool{
-	"authorization_code": true,
-	"refresh_token":      true,
+	oauthproto.GrantTypeAuthorizationCode: true,
+	oauthproto.GrantTypeRefreshToken:      true,
+	oauthproto.GrantTypeDeviceCode:        true,
 }
 
 // defaultResponseTypes are the default response types for registered clients.
@@ -135,7 +140,8 @@ func ValidateDCRRequest(
 		return nil, dcrErr
 	}
 
-	if len(req.RedirectURIs) == 0 && authMethod != oauthproto.TokenEndpointAuthMethodPrivateKeyJWT {
+	if len(req.RedirectURIs) == 0 && authMethod != oauthproto.TokenEndpointAuthMethodPrivateKeyJWT &&
+		!isDeviceCodeOnlyRequest(req.GrantTypes) {
 		return nil, &DCRError{
 			Error:            DCRErrorInvalidRedirectURI,
 			ErrorDescription: "redirect_uris is required",
@@ -185,7 +191,7 @@ func ValidateDCRRequest(
 	}
 
 	// 7. Validate/default response_types
-	responseTypes, err := validateResponseTypes(req.ResponseTypes, authMethod)
+	responseTypes, err := validateResponseTypes(req.ResponseTypes, authMethod, grantTypes)
 	if err != nil {
 		return nil, err
 	}
@@ -344,6 +350,24 @@ func ValidateConfidentialRedirectURIs(redirectURIs []string, authMethod string) 
 	return nil
 }
 
+// ValidatePrivateKeyJWTClientKeys checks persisted private_key_jwt metadata before
+// fosite can use it for signature verification. This also rejects registrations
+// made before the key-size and JWKS limits were introduced. It returns nil for
+// clients that do not use private_key_jwt.
+func ValidatePrivateKeyJWTClientKeys(client fosite.Client) *DCRError {
+	c, ok := client.(fosite.OpenIDConnectClient)
+	if !ok || c.GetTokenEndpointAuthMethod() != oauthproto.TokenEndpointAuthMethodPrivateKeyJWT {
+		return nil
+	}
+	return validatePrivateKeyJWTMetadata(&oauthproto.DynamicClientRegistrationRequest{
+		JWKS:                        c.GetJSONWebKeys(),
+		TokenEndpointAuthSigningAlg: c.GetTokenEndpointAuthSigningAlgorithm(),
+	}, oauthproto.TokenEndpointAuthMethodPrivateKeyJWT)
+}
+
+// validatePrivateKeyJWTMetadata is also run against stored clients on every
+// load (ValidatePrivateKeyJWTClientKeys), so tightening it revokes existing
+// private_key_jwt registrations that no longer pass.
 func validatePrivateKeyJWTMetadata(req *oauthproto.DynamicClientRegistrationRequest, authMethod string) *DCRError {
 	if authMethod != oauthproto.TokenEndpointAuthMethodPrivateKeyJWT {
 		return nil
@@ -353,6 +377,12 @@ func validatePrivateKeyJWTMetadata(req *oauthproto.DynamicClientRegistrationRequ
 	}
 	if req.JWKS == nil || len(req.JWKS.Keys) == 0 {
 		return &DCRError{Error: DCRErrorInvalidClientMetadata, ErrorDescription: "private_key_jwt requires a non-empty inline jwks"}
+	}
+	if len(req.JWKS.Keys) > maxInlineJWKSKeys {
+		return &DCRError{
+			Error:            DCRErrorInvalidClientMetadata,
+			ErrorDescription: fmt.Sprintf("too many inline jwks keys (maximum %d)", maxInlineJWKSKeys),
+		}
 	}
 	if !supportedSigningAlgorithm(req.TokenEndpointAuthSigningAlg) {
 		return &DCRError{
@@ -416,6 +446,26 @@ func supportedSigningAlgorithm(alg string) bool {
 	return slices.Contains(SupportedSigningAlgorithms(), alg)
 }
 
+// isDeviceCodeOnlyRequest reports whether the requested grant_types are
+// exactly {device_code} or {device_code, refresh_token}. RFC 8628 device
+// flow clients never receive a redirect and have no authorize-endpoint
+// response_type, so a request matching this carves out of the
+// authorization_code-shaped requirements the same way private_key_jwt
+// registrations do. Mixing device_code into an authorization_code
+// registration is intentionally NOT covered here -- such a request must
+// still satisfy the ordinary authorization_code requirements below.
+func isDeviceCodeOnlyRequest(grantTypes []string) bool {
+	if !slices.Contains(grantTypes, oauthproto.GrantTypeDeviceCode) {
+		return false
+	}
+	for _, gt := range grantTypes {
+		if gt != oauthproto.GrantTypeDeviceCode && gt != oauthproto.GrantTypeRefreshToken {
+			return false
+		}
+	}
+	return true
+}
+
 func validateGrantTypes(grantTypes []string, authMethod string) ([]string, *DCRError) {
 	if authMethod == oauthproto.TokenEndpointAuthMethodPrivateKeyJWT {
 		if len(grantTypes) == 0 {
@@ -429,12 +479,23 @@ func validateGrantTypes(grantTypes []string, authMethod string) ([]string, *DCRE
 		}
 		return append([]string(nil), grantTypes...), nil
 	}
+	if isDeviceCodeOnlyRequest(grantTypes) {
+		for _, gt := range grantTypes {
+			if !allowedGrantTypes[gt] {
+				return nil, &DCRError{
+					Error:            DCRErrorInvalidClientMetadata,
+					ErrorDescription: "unsupported grant_type: " + gt,
+				}
+			}
+		}
+		return append([]string(nil), grantTypes...), nil
+	}
 	if len(grantTypes) == 0 {
 		grantTypes = defaultGrantTypes
 	}
 	// Require authorization_code explicitly - provides a clearer error for the
 	// "refresh_token only" case that would otherwise pass the allowlist.
-	if !slices.Contains(grantTypes, "authorization_code") {
+	if !slices.Contains(grantTypes, oauthproto.GrantTypeAuthorizationCode) {
 		return nil, &DCRError{
 			Error:            DCRErrorInvalidClientMetadata,
 			ErrorDescription: "grant_types must include 'authorization_code'",
@@ -451,12 +512,21 @@ func validateGrantTypes(grantTypes []string, authMethod string) ([]string, *DCRE
 	return grantTypes, nil
 }
 
-func validateResponseTypes(responseTypes []string, authMethod string) ([]string, *DCRError) {
+func validateResponseTypes(responseTypes []string, authMethod string, grantTypes []string) ([]string, *DCRError) {
 	if authMethod == oauthproto.TokenEndpointAuthMethodPrivateKeyJWT {
 		if len(responseTypes) != 0 {
 			return nil, &DCRError{
 				Error:            DCRErrorInvalidClientMetadata,
 				ErrorDescription: "private_key_jwt registrations cannot use response_types",
+			}
+		}
+		return nil, nil
+	}
+	if isDeviceCodeOnlyRequest(grantTypes) {
+		if len(responseTypes) != 0 {
+			return nil, &DCRError{
+				Error:            DCRErrorInvalidClientMetadata,
+				ErrorDescription: "device_code registrations cannot use response_types",
 			}
 		}
 		return nil, nil
@@ -611,10 +681,11 @@ func ValidatePublicGrantTypes(grantTypes []string) ([]string, *DCRError) {
 
 // ValidatePublicResponseTypes validates the response_types for a public OAuth
 // client, applying the same rules as DCR: code must be present and all declared
-// values must be in the allowed set. Returns the validated slice (with defaults
+// values must be in the allowed set (unless grantTypes is device_code-only, which
+// requires no response_types). Returns the validated slice (with defaults
 // applied when nil/empty) or a *DCRError on violation.
-func ValidatePublicResponseTypes(responseTypes []string) ([]string, *DCRError) {
-	return validateResponseTypes(responseTypes, oauthproto.TokenEndpointAuthMethodNone)
+func ValidatePublicResponseTypes(responseTypes, grantTypes []string) ([]string, *DCRError) {
+	return validateResponseTypes(responseTypes, oauthproto.TokenEndpointAuthMethodNone, grantTypes)
 }
 
 // FilterPublicGrantTypes returns the subset of grantTypes this server supports
@@ -647,7 +718,7 @@ func FilterPublicGrantTypes(grantTypes []string) ([]string, *DCRError) {
 			filtered = append(filtered, gt)
 		}
 	}
-	if !slices.Contains(filtered, "authorization_code") {
+	if !slices.Contains(filtered, oauthproto.GrantTypeAuthorizationCode) {
 		return nil, &DCRError{
 			Error:            DCRErrorInvalidClientMetadata,
 			ErrorDescription: "grant_types must include 'authorization_code'",

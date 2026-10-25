@@ -286,6 +286,7 @@ type MCPServerSpec struct {
 	// Secrets are references to secrets to mount in the MCP server container
 	// +listType=map
 	// +listMapKey=name
+	// +listMapKey=key
 	// +optional
 	Secrets []SecretRef `json:"secrets,omitempty"`
 
@@ -294,7 +295,8 @@ type MCPServerSpec struct {
 	// +optional
 	ServiceAccount *string `json:"serviceAccount,omitempty"`
 
-	// PermissionProfile defines the permission profile to use
+	// PermissionProfile is deprecated and retained for API compatibility. It is
+	// not supported by the Kubernetes operator and has no effect.
 	// +optional
 	PermissionProfile *PermissionProfileRef `json:"permissionProfile,omitempty"`
 
@@ -582,6 +584,11 @@ type SecretRef struct {
 // into the vMCP ConfigMap so the vMCP process receives connection parameters at startup.
 //
 // +kubebuilder:validation:XValidation:rule="self.provider == 'redis' ? has(self.address) : true",message="address is required"
+// +kubebuilder:validation:XValidation:rule="!has(self.tls) || self.provider == 'redis'",message="tls is only supported when provider is redis"
+// +kubebuilder:validation:XValidation:rule="!has(self.tls) || !has(self.tls.caCertSecretRef) || !has(self.tls.insecureSkipVerify) || !self.tls.insecureSkipVerify",message="tls.insecureSkipVerify disables certificate verification, so tls.caCertSecretRef would be ignored; set only one"
+// +kubebuilder:validation:XValidation:rule="!has(self.tls) || !has(self.tls.caCertSecretRef) || (size(self.tls.caCertSecretRef.name) > 0 && size(self.tls.caCertSecretRef.key) > 0)",message="tls.caCertSecretRef requires a non-empty name and key"
+//
+//nolint:lll // CEL validation rules exceed line length limit
 type SessionStorageConfig struct {
 	// Provider is the session storage backend type
 	// +kubebuilder:validation:Enum=memory;redis
@@ -606,6 +613,16 @@ type SessionStorageConfig struct {
 	// PasswordRef is a reference to a Secret key containing the Redis password
 	// +optional
 	PasswordRef *SecretKeyRef `json:"passwordRef,omitempty"`
+
+	// TLS enables TLS for the Redis session storage connection and, when rate
+	// limiting is configured, for the rate-limit connection to the same Redis.
+	// When omitted, the connections are plaintext and the Redis password and
+	// session data cross the network unencrypted. An empty object enables TLS
+	// with server certificate verification against the system root CAs; set
+	// caCertSecretRef for a private CA. A failed handshake never falls back to
+	// plaintext. Only used when provider is redis.
+	// +optional
+	TLS *RedisTLSConfig `json:"tls,omitempty"`
 }
 
 // RateLimitConfig defines rate limiting configuration for an MCP server.
@@ -623,10 +640,12 @@ type ToolRateLimitConfig = ratelimittypes.ToolRateLimitConfig
 
 // Permission profile types
 const (
-	// PermissionProfileTypeBuiltin is the type for built-in permission profiles
+	// PermissionProfileTypeBuiltin is the deprecated type for built-in permission
+	// profiles. Permission profiles are not supported for MCPServer workloads.
 	PermissionProfileTypeBuiltin = "builtin"
 
-	// PermissionProfileTypeConfigMap is the type for permission profiles stored in ConfigMaps
+	// PermissionProfileTypeConfigMap is the deprecated type for permission profiles
+	// stored in ConfigMaps. Permission profiles are not supported for MCPServer workloads.
 	PermissionProfileTypeConfigMap = "configmap"
 )
 
@@ -639,7 +658,8 @@ const (
 	AuthzConfigTypeInline = "inline"
 )
 
-// PermissionProfileRef defines a reference to a permission profile
+// PermissionProfileRef defines a deprecated reference to a permission profile.
+// Permission profiles are not supported for MCPServer workloads.
 type PermissionProfileRef struct {
 	// Type is the type of permission profile reference
 	// +kubebuilder:validation:Enum=builtin;configmap
@@ -658,7 +678,8 @@ type PermissionProfileRef struct {
 	Key string `json:"key,omitempty"`
 }
 
-// PermissionProfileSpec defines the permissions for an MCP server
+// PermissionProfileSpec defines deprecated permissions for an MCP server.
+// Permission profiles are not supported for MCPServer workloads.
 // +gendoc
 type PermissionProfileSpec struct {
 	// Read is a list of paths that the MCP server can read from
@@ -676,7 +697,8 @@ type PermissionProfileSpec struct {
 	Network *NetworkPermissions `json:"network,omitempty"`
 }
 
-// NetworkPermissions defines the network permissions for an MCP server
+// NetworkPermissions defines deprecated network permissions for an MCP server.
+// Permission profiles are not supported for MCPServer workloads.
 type NetworkPermissions struct {
 	// Mode specifies the network mode for the container (e.g., "host", "bridge", "none")
 	// When empty, the default container runtime network mode is used
@@ -1031,7 +1053,7 @@ const (
 //+kubebuilder:storageversion
 //+kubebuilder:subresource:status
 //+kubebuilder:metadata:labels=toolhive.stacklok.dev/auto-migrate-storage-version=true
-//+kubebuilder:resource:shortName=mcpserver;mcpservers,categories=toolhive
+//+kubebuilder:resource:categories=toolhive
 //+kubebuilder:printcolumn:name="Status",type="string",JSONPath=".status.phase"
 //+kubebuilder:printcolumn:name="Ready",type="string",JSONPath=".status.conditions[?(@.type=='Ready')].status"
 //+kubebuilder:printcolumn:name="Replicas",type="integer",JSONPath=".status.readyReplicas"

@@ -23,6 +23,7 @@ import (
 
 	sdkmcp "github.com/stacklok/toolhive-core/mcpcompat/mcp"
 	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/auth/sessionbinding"
 	"github.com/stacklok/toolhive/pkg/bodylimit"
 	"github.com/stacklok/toolhive/pkg/diagnostics"
 	"github.com/stacklok/toolhive/pkg/healthcheck"
@@ -88,12 +89,13 @@ type HTTPProxy struct {
 	// Keys are URL path prefixes. Set via WithPrefixHandlers.
 	prefixHandlers map[string]http.Handler
 
-	// Waiters keyed by compositeKey(sessID, idKey) -> one-shot channel for response delivery.
-	// The composite key MUST be unique per concurrent request; sharing it across requests
-	// (e.g. with sessID="" for sessionless requests) silently overwrites entries and crosses
-	// response payloads between unrelated clients. See resolveSessionForRequest.
+	// Waiters keyed by compositeKey(sessID, per-request token) -> one-shot channel for response
+	// delivery. The composite key MUST be unique per concurrent request; sharing it across
+	// requests silently overwrites entries and crosses response payloads between requests.
+	// createWaiter guarantees this by minting the token itself, because neither the session
+	// ID (empty for sessionless requests) nor the client-chosen JSON-RPC ID is unique.
 	waiters sync.Map // map[string]chan jsonrpc2.Message
-	// Keyed by the same compositeKey(sessID, idKey); stores the original client JSON-RPC ID
+	// Keyed by the same composite key; stores the original client JSON-RPC ID
 	// to restore before replying. Same uniqueness requirement as `waiters`.
 	idRestore sync.Map // map[string]jsonrpc2.ID
 
@@ -437,13 +439,17 @@ func (p *HTTPProxy) handleGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sessID := r.Header.Get("Mcp-Session-Id")
+	sessID, carrierErr := sessionbinding.RequestID(r, "")
+	if carrierErr != nil {
+		sessionbinding.WriteOwnershipError(w, nil, carrierErr)
+		return
+	}
 	if sessID == "" {
 		writeHTTPError(w, http.StatusBadRequest, "Mcp-Session-Id header required for standalone SSE")
 		return
 	}
-	if _, ok := p.sessionManager.Get(sessID); !ok {
-		session.WriteNotFound(w, nil)
+	if err := sessionbinding.Check(r, sessID, p.sessionManager.LookupOwner); err != nil {
+		sessionbinding.WriteOwnershipError(w, nil, err)
 		return
 	}
 
@@ -488,18 +494,28 @@ func (p *HTTPProxy) handleGet(w http.ResponseWriter, r *http.Request) {
 }
 
 func (p *HTTPProxy) handleDelete(w http.ResponseWriter, r *http.Request) {
-	sessID := r.Header.Get("Mcp-Session-Id")
+	sessID, carrierErr := sessionbinding.RequestID(r, "")
+	if carrierErr != nil {
+		sessionbinding.WriteOwnershipError(w, nil, carrierErr)
+		return
+	}
 	if sessID == "" {
 		writeHTTPError(w, http.StatusBadRequest, "Mcp-Session-Id header required for DELETE")
 		return
 	}
-	if _, ok := p.sessionManager.Get(sessID); !ok {
-		session.WriteNotFound(w, nil)
+	if err := sessionbinding.Check(r, sessID, p.sessionManager.LookupOwner); err != nil {
+		sessionbinding.WriteOwnershipError(w, nil, err)
 		return
 	}
-	if err := p.sessionManager.Delete(sessID); err != nil {
-		//nolint:gosec // G706: session ID is from validated request header
-		slog.Debug("failed to delete session", "session_id", sessID, "error", err)
+	identity, _ := auth.IdentityFromContext(r.Context())
+	expectedOwner, err := sessionbinding.FromIdentity(identity)
+	if err != nil {
+		sessionbinding.WriteOwnershipError(w, nil, sessionbinding.ErrNotFound)
+		return
+	}
+	if err := p.sessionManager.DeleteIfOwner(sessID, expectedOwner); err != nil {
+		sessionbinding.WriteOwnershipError(w, nil, err)
+		return
 	}
 
 	// Purge routing state (subscriptions, log level) for the deleted session so
@@ -525,7 +541,6 @@ func (p *HTTPProxy) handleDelete(w http.ResponseWriter, r *http.Request) {
 }
 
 func (p *HTTPProxy) handlePost(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
 
 	// MCP-Protocol-Version validation is opt-in via strictProtocolValidation
 	// (WithStrictProtocolValidation). Default (false) is version-agnostic:
@@ -547,20 +562,12 @@ func (p *HTTPProxy) handlePost(w http.ResponseWriter, r *http.Request) {
 		// (e.g. chunked) trips http.MaxBytesReader here rather than at the
 		// early Content-Length check. Surface it as 413, not 500.
 		if bodylimit.IsRequestTooLarge(err) {
+			slog.Warn("rejected unreadable MCP request body", "reason", "body_too_large")
 			writeHTTPError(w, http.StatusRequestEntityTooLarge, "Request Entity Too Large")
 			return
 		}
-		writeHTTPError(w, http.StatusInternalServerError, fmt.Sprintf("Error reading request body: %v", err))
-		return
-	}
-
-	// Reject JSON-RPC batches outright. Batching was removed in MCP revision
-	// 2025-06-18 and ToolHive serves only 2025-11-25 and 2026-07-28. Rejecting
-	// at the executor (not only in ParsingMiddleware) makes this independent of
-	// middleware presence, ordering, and Content-Type, so a batch can never
-	// reach the backend uninspected by authz/audit/tool-filtering (see #5745).
-	if mcp.IsBatchRequest(body) {
-		mcp.WriteBatchUnsupportedError(w)
+		slog.Warn("rejected unreadable MCP request body", "reason", "read_error")
+		writeHTTPError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
 
@@ -569,8 +576,32 @@ func (p *HTTPProxy) handlePost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	p.handlePostMessage(w, r, msg)
+}
+
+func (p *HTTPProxy) handlePostMessage(w http.ResponseWriter, r *http.Request, msg jsonrpc2.Message) {
+	ctx := r.Context()
+	var legacySID string
+	// Notifications and client responses are Legacy session-bearing traffic.
+	// Id-bearing Modern requests are classified below and intentionally ignore SID.
+	if req, ok := msg.(*jsonrpc2.Request); !ok || !req.ID.IsValid() {
+		sid, err := sessionbinding.RequestID(r, "")
+		if err != nil {
+			sessionbinding.WriteOwnershipError(w, nil, err)
+			return
+		}
+		if sid == "" {
+			writeHTTPError(w, http.StatusBadRequest, "Mcp-Session-Id header required")
+			return
+		}
+		if err := sessionbinding.Check(r, sid, p.sessionManager.LookupOwner); err != nil {
+			sessionbinding.WriteOwnershipError(w, nil, err)
+			return
+		}
+		legacySID = sid
+	}
 	// Notifications or client responses are accepted and forwarded (202)
-	if p.handleNotificationOrClientResponse(w, r.Header.Get("Mcp-Session-Id"), msg) {
+	if p.handleNotificationOrClientResponse(w, legacySID, msg) {
 		return
 	}
 
@@ -996,10 +1027,10 @@ func (p *HTTPProxy) restoreResponseID(resp *jsonrpc2.Response, ck string) (jsonr
 func (p *HTTPProxy) sendCorrelatedRequest(
 	sessID string, req *jsonrpc2.Request,
 ) (waitCh chan jsonrpc2.Message, ck string, cleanup func(), err error) {
-	key := idKeyFromID(req.ID)
-	ck = compositeKey(sessID, key)
-
-	waitCh, cleanup = p.createWaiter(sessID, req.ID)
+	waitCh, ck, cleanup, err = p.createWaiter(sessID, req.ID)
+	if err != nil {
+		return nil, "", nil, err
+	}
 
 	proxiedMsg, err := encodeRequestWithID(req, ck)
 	if err != nil {
@@ -1046,11 +1077,11 @@ func (p *HTTPProxy) applyMiddlewares(handler http.Handler) http.Handler {
 	return handler
 }
 
-func (p *HTTPProxy) ensureSession(id string) error {
-	if _, ok := p.sessionManager.Get(id); ok {
-		return nil
+func (p *HTTPProxy) ensureSession(r *http.Request, id string) error {
+	if _, err := uuid.Parse(id); err != nil {
+		return sessionbinding.ErrNotFound
 	}
-	return p.sessionManager.AddWithID(id)
+	return sessionbinding.AddOwnedSession(r.Context(), p.sessionManager, session.NewProxySession(id))
 }
 
 // resolveSessionForRequest resolves session rules for a single JSON-RPC request.
@@ -1069,11 +1100,12 @@ func (p *HTTPProxy) ensureSession(id string) error {
 // in-process routing token (not registered with sessionManager). Sessionless
 // routing tokens MUST be unique per request: sharing one (e.g. the empty string,
 // or a stale/foreign Mcp-Session-Id) across concurrent sessionless requests with
-// the same JSON-RPC id collapses them onto the same compositeKey(sessID, idKey)
-// and overwrites entries in the waiters / idRestore sync.Maps, leaking one
+// the same JSON-RPC id could otherwise share routing state and leak one
 // client's response payload to another. This is a confidentiality bug, not a
 // performance issue -- do not collapse the token, and do not let a Modern
-// request fall through to the session-lookup path below.
+// request fall through to the session-lookup path below. (The waiter key
+// itself is additionally made unique per request by createWaiter, so two
+// requests in one session reusing an id are isolated too.)
 //
 // Writes HTTP errors on failure and returns error to stop handling.
 func (p *HTTPProxy) resolveSessionForRequest(
@@ -1115,7 +1147,11 @@ func (p *HTTPProxy) resolveSessionForRequest(
 	}
 
 	var setSessionHeader bool
-	sessID := r.Header.Get("Mcp-Session-Id")
+	sessID, carrierErr := sessionbinding.RequestID(r, "")
+	if carrierErr != nil {
+		sessionbinding.WriteOwnershipError(w, req.ID.Raw(), carrierErr)
+		return "", false, carrierErr
+	}
 
 	if req.Method == "initialize" {
 		if sessID == "" {
@@ -1127,8 +1163,8 @@ func (p *HTTPProxy) resolveSessionForRequest(
 			sessID = newID.String()
 			setSessionHeader = true
 		}
-		if err := p.ensureSession(sessID); err != nil {
-			writeHTTPError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to create session: %v", err))
+		if err := p.ensureSession(r, sessID); err != nil {
+			sessionbinding.WriteOwnershipError(w, req.ID.Raw(), err)
 			return "", false, err
 		}
 		return sessID, setSessionHeader, nil
@@ -1146,10 +1182,9 @@ func (p *HTTPProxy) resolveSessionForRequest(
 		return token.String(), false, nil
 	}
 
-	// Session ID provided but not found: reject with 404.
-	if _, ok := p.sessionManager.Get(sessID); !ok {
-		session.WriteNotFound(w, req.ID.Raw())
-		return "", false, fmt.Errorf("session not found")
+	if err := sessionbinding.Check(r, sessID, p.sessionManager.LookupOwner); err != nil {
+		sessionbinding.WriteOwnershipError(w, req.ID.Raw(), err)
+		return "", false, err
 	}
 	return sessID, false, nil
 }
@@ -1514,27 +1549,16 @@ func (p *HTTPProxy) reconcileUpstreamLogLevel(level string) {
 // manager's own cleanup routine (sessionTTL/2, see manager.go's
 // cleanupRoutine), and exits when shutdownCh is closed.
 //
-// isActive is p.sessionManager.Get: the only session liveness check the
-// session.Manager/Storage interfaces currently expose. Every Storage
-// implementation intentionally refreshes its backend's TTL on every read
-// (LocalStorage's Load, RedisStorage's GETEX) to keep genuinely active
-// sessions alive -- there is no "peek without refreshing" method today (see
-// manager.go and storage.go). Using Get here as isActive means: a session
-// that still owns routing state (e.g. an open subscription) has its TTL
-// refreshed by this reaper's own liveness check, which can delay that
-// session's expiry by up to one reap tick (sessionTTL/2) beyond actual client
-// inactivity. This is an accepted, documented tradeoff, not a security gap:
-// Get on an ALREADY-deleted session correctly returns false without
-// refreshing anything, so reap can never retain routing state past a
-// session's true deletion -- it can only delay reaping state for a session
-// that reap's own check just observed to still be nominally alive.
+// isActive uses LookupOwner's authoritative, non-touching metadata read. Reaping
+// therefore observes liveness without extending the session TTL; only normal
+// session activity through Manager.Get refreshes the sliding expiration window.
 func (p *HTTPProxy) reapRoutingState() {
 	ticker := time.NewTicker(p.sessionTTL / 2)
 	defer ticker.Stop()
 
 	isActive := func(sess string) bool {
-		_, ok := p.sessionManager.Get(sess)
-		return ok
+		_, err := p.sessionManager.LookupOwner(context.Background(), sess)
+		return err == nil
 	}
 
 	for {
@@ -1579,11 +1603,9 @@ func (p *HTTPProxy) reapServerStreams(isActive func(sess string) bool) {
 
 // decodeJSONRPCMessage decodes a JSON-RPC message from the request body.
 func decodeJSONRPCMessage(w http.ResponseWriter, body []byte) (jsonrpc2.Message, bool) {
-	msg, err := jsonrpc2.DecodeMessage(body)
+	msg, err := mcp.DecodeMessage(body)
 	if err != nil {
-		//nolint:gosec // G706: logging raw JSON-RPC data from HTTP request body
-		slog.Warn("skipping message that failed to decode", "body", string(body))
-		writeHTTPError(w, http.StatusBadRequest, "Invalid JSON-RPC 2.0 message")
+		mcp.WriteClassificationError(w, nil, err)
 		return nil, false
 	}
 	return msg, true
@@ -1632,10 +1654,21 @@ func resolveRequestTimeout() time.Duration {
 	return defaultRequestTimeout
 }
 
-// createWaiter registers a waiter channel for the given request ID and returns cleanup fn.
-func (p *HTTPProxy) createWaiter(sessID string, id jsonrpc2.ID) (chan jsonrpc2.Message, func()) {
-	key := idKeyFromID(id)
-	ck := compositeKey(sessID, key)
+// createWaiter registers a waiter channel for a request and returns the channel,
+// the composite key (ck) the request must carry upstream, and a cleanup fn.
+//
+// ck is minted here from a per-request random token, never from the
+// client-chosen JSON-RPC id: a client may have several requests with the same id
+// in flight in one session, and a key derived from the id would let them
+// overwrite each other's waiter and receive each other's responses (including
+// responses the authz response filter never saw). The client's original id is
+// kept in idRestore and put back on the reply.
+func (p *HTTPProxy) createWaiter(sessID string, id jsonrpc2.ID) (chan jsonrpc2.Message, string, func(), error) {
+	token, err := uuid.NewRandom()
+	if err != nil {
+		return nil, "", nil, fmt.Errorf("generate request correlation token: %w", err)
+	}
+	ck := compositeKey(sessID, token.String())
 	// store original client id to restore before replying
 	p.idRestore.Store(ck, id)
 
@@ -1646,5 +1679,5 @@ func (p *HTTPProxy) createWaiter(sessID string, id jsonrpc2.ID) (chan jsonrpc2.M
 		p.waiters.Delete(ck)
 		p.idRestore.Delete(ck)
 	}
-	return ch, cleanup
+	return ch, ck, cleanup, nil
 }

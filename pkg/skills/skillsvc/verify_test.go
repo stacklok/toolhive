@@ -29,6 +29,8 @@ const (
 	testSignerIdentity    = "/.github/workflows/release.yml"
 	testCertIssuer        = "https://token.actions.githubusercontent.com"
 	testRunnerEnvironment = "github-hosted"
+	otherKeyB64           = "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEPl5po5mEdKFsHEdt11SCm95YB50Jeyha" +
+		"N7o00oGAZy+W+3bTntiNoo/j4AsPbBrKRoZFAbDRUX5SsOvkE7vYzA=="
 )
 
 // testPublicKeyB64 is a real P-256 public key in the base64 DER SPKI
@@ -1266,8 +1268,6 @@ func ptrTo[T any](v T) *T { return &v }
 func TestResolveKeyAnchor(t *testing.T) {
 	t.Parallel()
 
-	const otherKeyB64 = "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEZ7Bd5Kk7GAOI1PoQFvY6Sw+9zL3fVX" +
-		"Bqz0mAo0hVW1nQz4Vv9pQmT2yqXqL7NqRk5FvPQZ8DdcW0xTn3Yg6ZBw=="
 	identityPin := &lockfile.Provenance{SignerIdentity: testSignerIdentity, CertIssuer: testCertIssuer}
 	keyPin := &lockfile.Provenance{PublicKey: testPublicKeyB64}
 
@@ -1327,14 +1327,13 @@ func TestResolveKeyAnchor(t *testing.T) {
 			want: testPublicKeyB64,
 		},
 		{
-			// The override re-records whatever it observes, and a key-pair
-			// bundle offers nothing to observe — so honoring a key here would
-			// re-anchor on the caller's say-so alone. v1 has no such path.
-			name:     "allow_signer_change with a key is refused",
-			opts:     skills.InstallOptions{PublicKey: testPublicKeyB64, AllowSignerChange: true},
+			// Upgrade planning verifies the candidate against this key before
+			// forwarding the preverified decision to install. The resolver's
+			// role is to select that already-authorized replacement anchor.
+			name:     "allow_signer_change selects the supplied replacement key",
+			opts:     skills.InstallOptions{PublicKey: otherKeyB64, AllowSignerChange: true},
 			expected: keyPin,
-			wantCode: http.StatusBadRequest,
-			wantMsg:  "cannot be combined with allow_signer_change",
+			want:     otherKeyB64,
 		},
 		{
 			// key -> keyless is the one supported transition: the candidate is

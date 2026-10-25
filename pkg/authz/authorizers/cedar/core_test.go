@@ -2923,6 +2923,39 @@ func TestExtractGroups(t *testing.T) {
 			claimName:  "https://example.com/groups",
 			wantGroups: []string{"platform"},
 		},
+		{
+			// A typed nil []string is indistinguishable from an absent claim
+			// for fallback purposes: nil means "keep looking at well-known
+			// claim names". Pinned because the strict decoder used by the
+			// upstream filter rejects this shape instead.
+			name:       "typed_nil_string_slice_returns_nil",
+			claims:     jwt.MapClaims{"groups": []string(nil)},
+			claimName:  "groups",
+			wantGroups: nil,
+		},
+		{
+			// A typed nil []any, by contrast, has always decoded to a non-nil
+			// empty slice here and therefore suppresses fallback. The two nil
+			// slice shapes are not interchangeable.
+			name:       "typed_nil_interface_slice_returns_empty",
+			claims:     jwt.MapClaims{"groups": []interface{}(nil)},
+			claimName:  "groups",
+			wantGroups: []string{},
+		},
+		{
+			name:       "empty_typed_string_slice_returns_empty",
+			claims:     jwt.MapClaims{"groups": []string{}},
+			claimName:  "groups",
+			wantGroups: []string{},
+		},
+		{
+			// All elements dropped still means "the IdP asserted this claim",
+			// so the result is empty rather than nil and fallback stays off.
+			name:       "all_non_string_elements_returns_empty",
+			claims:     jwt.MapClaims{"groups": []interface{}{42, true, nil}},
+			claimName:  "groups",
+			wantGroups: []string{},
+		},
 	}
 
 	for _, tt := range tests {
@@ -2932,6 +2965,31 @@ func TestExtractGroups(t *testing.T) {
 			assert.Equal(t, tt.wantGroups, got)
 		})
 	}
+}
+
+// TestExtractGroups_DoesNotAliasClaimValue pins that the returned slice is a
+// copy of the claim value. authorizeWithClaims appends the role claim onto the
+// slice returned for the group claim; if that slice aliased a []string claim
+// with spare capacity, the append would write a role name into the token's own
+// backing array.
+func TestExtractGroups_DoesNotAliasClaimValue(t *testing.T) {
+	t.Parallel()
+
+	backing := make([]string, 2, 4)
+	backing[0], backing[1] = "g1", "g2"
+	claims := jwt.MapClaims{"groups": backing}
+
+	got := extractGroups(claims, "groups")
+	require.Equal(t, []string{"g1", "g2"}, got)
+
+	// Mirrors authorizeWithClaims merging the role claim into the group slice.
+	merged := append(got, "role-from-another-claim")
+	require.Len(t, merged, 3)
+
+	got[0] = "mutated"
+
+	assert.Equal(t, []string{"g1", "g2"}, backing, "claim value must not be modified")
+	assert.Equal(t, "", backing[:cap(backing)][2], "append must not write into the claim's backing array")
 }
 
 // TestDedup tests the dedup function.

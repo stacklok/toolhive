@@ -4,37 +4,80 @@
 package pluginsvc
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	nameref "github.com/google/go-containerregistry/pkg/name"
 
 	"github.com/stacklok/toolhive-core/httperr"
 	"github.com/stacklok/toolhive/pkg/plugins"
+	"github.com/stacklok/toolhive/pkg/projecttxn"
 	"github.com/stacklok/toolhive/pkg/skills/gitresolver"
 	"github.com/stacklok/toolhive/pkg/skills/lockfile"
 	"github.com/stacklok/toolhive/pkg/skills/verifier"
+	"github.com/stacklok/toolhive/pkg/storage"
 )
 
 // var _ ensures *service continues to satisfy the full lock service surface
 // now that both Sync and Upgrade exist.
 var _ plugins.PluginLockService = (*service)(nil)
 
+const trustOnlyRollbackTimeout = 5 * time.Second
+
 // Upgrade re-resolves each targeted lock entry's Source and, when the
 // resolved digest has changed, installs the newer content and rewrites the
-// entry (Source itself is never rewritten — see RFC THV-0080). Entries
-// pinned to an immutable reference (an OCI digest or a full git commit hash)
-// are reported not-upgradable: there is nothing newer to resolve to.
+// entry (Source itself is never rewritten — see RFC THV-0080). Full git
+// commit pins are not upgradable. An OCI digest has immutable content, but an
+// explicit public-key re-anchor can still update its attached trust material.
 //
 // An upgrade re-resolves a mutable source, which is exactly when a
 // compromised or transferred publisher would slip a differently-signed
 // artifact into the pinned trust chain, so planning probes the candidate's
 // signer identity before anything is installed — see guardSignerChange.
 func (s *service) Upgrade(ctx context.Context, opts plugins.UpgradeOptions) (*plugins.UpgradeResult, error) {
+	if err := validateUpgradePublicKey(opts); err != nil {
+		return nil, err
+	}
+	_, projectRoot, err := normalizeProjectRoot(plugins.ScopeProject, opts.ProjectRoot)
+	if err != nil {
+		return nil, err
+	}
+	opts.ProjectRoot = projectRoot
+
+	var result *plugins.UpgradeResult
+	err = projecttxn.Run(ctx, projectRoot, func() error {
+		var upgradeErr error
+		result, upgradeErr = s.upgradeProjectLocked(ctx, opts)
+		return upgradeErr
+	})
+	return result, err
+}
+
+func validateUpgradePublicKey(opts plugins.UpgradeOptions) error {
+	if opts.PublicKey == "" {
+		return nil
+	}
+	if !opts.AllowSignerChange {
+		return httperr.WithCode(
+			errors.New("public_key (--public-key) requires allow_signer_change (--allow-signer-change)"),
+			http.StatusBadRequest,
+		)
+	}
+	if _, err := verifier.DecodePublicKey(opts.PublicKey); err != nil {
+		return httperr.WithCode(fmt.Errorf("public_key: %w", err), http.StatusBadRequest)
+	}
+	return nil
+}
+
+func (s *service) upgradeProjectLocked(
+	ctx context.Context, opts plugins.UpgradeOptions,
+) (*plugins.UpgradeResult, error) {
 	_, projectRoot, err := normalizeProjectRoot(plugins.ScopeProject, opts.ProjectRoot)
 	if err != nil {
 		return nil, err
@@ -82,16 +125,11 @@ func selectUpgradeTargets(lf *lockfile.Lockfile, names []string) ([]lockfile.Ent
 	return targets, nil
 }
 
-// upgradeOne reloads the named lock entry under the per-plugin lock, then
-// plans and applies against that fresh snapshot. Planning every entry first
-// and applying later would let a concurrent uninstall be resurrected, or a
-// newer install be overwritten by this older plan.
+// upgradeOne reloads the named lock entry under the project transaction, then
+// plans and applies against that fresh snapshot.
 func (s *service) upgradeOne(
 	ctx context.Context, opts plugins.UpgradeOptions, name string,
 ) plugins.UpgradeOutcome {
-	ctx, unlock := s.lockPlugin(ctx, name, plugins.ScopeProject, opts.ProjectRoot)
-	defer unlock()
-
 	root, err := lockfile.OpenRoot(opts.ProjectRoot)
 	if err != nil {
 		return plugins.UpgradeOutcome{
@@ -139,6 +177,7 @@ type upgradePlan struct {
 	// drops the key and sends a key-signed artifact through keyless
 	// verification, which refuses it.
 	allowSignerChange bool
+	trustDecision     *provenanceDecision
 }
 
 // resolvedLatest is the current state of a lock entry's Source, before any
@@ -158,12 +197,16 @@ type resolvedLatest struct {
 func (s *service) planUpgrade(ctx context.Context, opts plugins.UpgradeOptions, entry lockfile.Entry) upgradePlan {
 	outcome := plugins.UpgradeOutcome{Name: entry.Name, OldDigest: entry.Digest}
 
-	if isImmutableSource(entry) {
+	immutable := isImmutableSource(entry)
+	if opts.PublicKey != "" && gitresolver.IsGitReference(entry.Source) {
+		return unsupportedPublicKeyUpgrade(entry, outcome, "git")
+	}
+	if immutable && opts.PublicKey == "" {
 		outcome.Status = plugins.UpgradeStatusNotUpgradable
 		return upgradePlan{entry: entry, outcome: outcome}
 	}
 
-	latest, err := s.resolveLatestState(ctx, entry.Source)
+	latest, err := s.resolveUpgradeCandidate(ctx, entry, immutable)
 	if err != nil {
 		outcome.Status = plugins.UpgradeStatusFailed
 		outcome.Reason = classifySyncFailure(err)
@@ -171,13 +214,16 @@ func (s *service) planUpgrade(ctx context.Context, opts plugins.UpgradeOptions, 
 		return upgradePlan{entry: entry, outcome: outcome}
 	}
 	outcome.NewDigest = latest.digest
-
-	if latest.digest == entry.Digest {
-		outcome.Status = plugins.UpgradeStatusUpToDate
-		return upgradePlan{entry: entry, outcome: outcome}
-	}
+	digestChanged := latest.digest != entry.Digest
 
 	if len(latest.layerData) > 0 {
+		if opts.PublicKey != "" {
+			return unsupportedPublicKeyUpgrade(entry, outcome, "local-store")
+		}
+		if !digestChanged {
+			outcome.Status = plugins.UpgradeStatusUpToDate
+			return upgradePlan{entry: entry, outcome: outcome}
+		}
 		// Local-store hit: carry the exact artifact. buildPinnedReference
 		// would parse a bare tag as index.docker.io/library/<tag>@digest.
 		// resolvedRef is the local tag for the DB; the lock leaves
@@ -195,17 +241,21 @@ func (s *service) planUpgrade(ctx context.Context, opts plugins.UpgradeOptions, 
 		}
 	}
 
-	if latest.ref != entry.ResolvedReference {
-		outcome.NewResolvedReference = latest.ref
-		if entry.ResolvedReference != "" && repositoryMoved(entry.ResolvedReference, latest.ref) && !opts.AllowRefChange {
-			outcome.Status = plugins.UpgradeStatusRefChangeBlocked
-			return upgradePlan{entry: entry, outcome: outcome}
-		}
+	resolvedReferenceChanged := latest.ref != entry.ResolvedReference
+	if repositoryChangeBlocksUpgrade(opts, entry, latest.ref, &outcome) {
+		return upgradePlan{entry: entry, outcome: outcome}
 	}
 
-	allowSignerChange, blocked := s.resolveSignerPolicy(ctx, opts, entry, latest, &outcome)
+	candidateChanged := digestChanged || resolvedReferenceChanged
+	isOCI := len(latest.commitPayload) == 0 && strings.Contains(latest.digest, ":")
+	trustDecision, allowSignerChange, blocked := s.resolvePlannedTrust(
+		ctx, opts, entry, latest, candidateChanged, isOCI, &outcome,
+	)
 	if blocked {
 		return upgradePlan{entry: entry, outcome: outcome}
+	}
+	if !candidateChanged {
+		return s.finishUnchangedUpgrade(ctx, opts, entry, immutable, outcome, trustDecision)
 	}
 
 	pinnedRef, err := buildPinnedReference(lockfile.Entry{ResolvedReference: latest.ref, Digest: latest.digest})
@@ -223,7 +273,322 @@ func (s *service) planUpgrade(ctx context.Context, opts plugins.UpgradeOptions, 
 		pinnedRef:         pinnedRef,
 		resolvedRef:       latest.ref,
 		allowSignerChange: allowSignerChange,
+		trustDecision:     trustDecision,
 	}
+}
+
+func (s *service) resolveUpgradeCandidate(
+	ctx context.Context, entry lockfile.Entry, immutable bool,
+) (resolvedLatest, error) {
+	if !immutable {
+		return s.resolveLatestState(ctx, entry.Source)
+	}
+	resolvedRef := entry.ResolvedReference
+	if resolvedRef == "" {
+		resolvedRef = entry.Source
+	}
+	return resolvedLatest{ref: resolvedRef, digest: entry.Digest}, nil
+}
+
+func unsupportedPublicKeyUpgrade(
+	entry lockfile.Entry, outcome plugins.UpgradeOutcome, sourceKind string,
+) upgradePlan {
+	err := httperr.WithCode(
+		fmt.Errorf("plugin %q uses a %s source; public_key re-anchoring applies only to OCI registry artifacts",
+			entry.Name, sourceKind),
+		http.StatusBadRequest,
+	)
+	outcome.Status = plugins.UpgradeStatusFailed
+	outcome.Reason = plugins.FailureReasonValidationRejected
+	outcome.Error = err.Error()
+	return upgradePlan{entry: entry, outcome: outcome}
+}
+
+func repositoryChangeBlocksUpgrade(
+	opts plugins.UpgradeOptions,
+	entry lockfile.Entry,
+	newRef string,
+	outcome *plugins.UpgradeOutcome,
+) bool {
+	if newRef == entry.ResolvedReference {
+		return false
+	}
+	outcome.NewResolvedReference = newRef
+	if entry.ResolvedReference != "" && repositoryMoved(entry.ResolvedReference, newRef) && !opts.AllowRefChange {
+		outcome.Status = plugins.UpgradeStatusRefChangeBlocked
+		return true
+	}
+	return false
+}
+
+func (s *service) resolvePlannedTrust(
+	ctx context.Context,
+	opts plugins.UpgradeOptions,
+	entry lockfile.Entry,
+	latest resolvedLatest,
+	candidateChanged, isOCI bool,
+	outcome *plugins.UpgradeOutcome,
+) (*provenanceDecision, bool, bool) {
+	if isOCI && opts.PublicKey != "" {
+		decision, blocked := s.resolveOCITrustPolicy(ctx, opts, entry, latest, outcome)
+		if !blocked {
+			outcome.TrustAnchorChanged = trustDecisionChangesEntry(entry, decision)
+		}
+		return decision, false, blocked
+	}
+	if !candidateChanged {
+		return nil, false, false
+	}
+	allowSignerChange, blocked := s.resolveSignerPolicy(ctx, opts, entry, latest, outcome)
+	return nil, allowSignerChange, blocked
+}
+
+func (s *service) finishUnchangedUpgrade(
+	ctx context.Context,
+	opts plugins.UpgradeOptions,
+	entry lockfile.Entry,
+	immutable bool,
+	outcome plugins.UpgradeOutcome,
+	trustDecision *provenanceDecision,
+) upgradePlan {
+	trustMaterialChanged, err := s.storedTrustMaterialChanged(
+		ctx, opts.ProjectRoot, entry.Name, trustDecision,
+	)
+	if err != nil {
+		outcome.Status = plugins.UpgradeStatusFailed
+		outcome.Reason = classifySyncFailure(err)
+		outcome.Error = err.Error()
+		return upgradePlan{entry: entry, outcome: outcome}
+	}
+	switch {
+	case outcome.TrustAnchorChanged || trustMaterialChanged:
+		outcome.Status = plugins.UpgradeStatusTrustUpdated
+	case immutable:
+		outcome.Status = plugins.UpgradeStatusNotUpgradable
+	default:
+		outcome.Status = plugins.UpgradeStatusUpToDate
+	}
+	return upgradePlan{entry: entry, outcome: outcome, trustDecision: trustDecision}
+}
+
+// resolveOCITrustPolicy retrieves one complete signature snapshot for an
+// explicit public-key re-anchor and chooses a single verified decision from
+// it. The recorded key is always tried before the proposed replacement.
+func (s *service) resolveOCITrustPolicy(
+	ctx context.Context,
+	opts plugins.UpgradeOptions,
+	entry lockfile.Entry,
+	latest resolvedLatest,
+	outcome *plugins.UpgradeOutcome,
+) (*provenanceDecision, bool) {
+	retriever, ok := s.artifactVerifier().(verifier.OCISnapshotRetriever)
+	if !ok {
+		setUpgradeTrustFailure(outcome, errors.New(
+			"configured signature verifier does not support OCI snapshot retrieval"))
+		return nil, true
+	}
+
+	snapshot, err := retriever.RetrieveOCISnapshot(ctx, latest.ref, latest.digest)
+	if err != nil {
+		if errors.Is(err, verifier.ErrUnsigned) {
+			return resolveUnsignedCandidate(entry, outcome)
+		}
+		setUpgradeTrustFailure(outcome, err)
+		return nil, true
+	}
+	if entry.Provenance != nil && entry.Provenance.PublicKey != "" {
+		return resolveKeyPinnedSnapshot(opts, entry, snapshot, outcome)
+	}
+	return resolveNonKeyPinnedSnapshot(opts, entry, snapshot, outcome)
+}
+
+func resolveUnsignedCandidate(
+	entry lockfile.Entry, outcome *plugins.UpgradeOutcome,
+) (*provenanceDecision, bool) {
+	if entry.Unsigned {
+		return &provenanceDecision{unsigned: true}, false
+	}
+	outcome.Status = plugins.UpgradeStatusFailed
+	outcome.Reason = plugins.FailureReasonUnsignedRejected
+	if entry.Provenance == nil {
+		outcome.Error = fmt.Errorf("%w: plugin %q has no recorded trust anchor, and the candidate is unsigned;"+
+			" upgrade cannot create an unsigned exception without explicit unsigned consent",
+			errLockTrustUnrecorded, entry.Name).Error()
+	} else if entry.Provenance.PublicKey != "" {
+		outcome.Error = fmt.Sprintf("candidate is unsigned, and this entry is pinned to a cosign public key;"+
+			" upgrade has no unsigned-consent flag. To move it to an unsigned artifact, reinstall it: %s",
+			projectUnsignedReinstallCommand(entry))
+	} else {
+		outcome.Error = fmt.Sprintf("candidate is unsigned, and this entry is pinned to signer %q;"+
+			" upgrade has no unsigned-consent flag. To move it to an unsigned artifact, reinstall it: %s",
+			entry.Provenance.SignerIdentity, projectUnsignedReinstallCommand(entry))
+	}
+	return nil, true
+}
+
+func resolveKeyPinnedSnapshot(
+	opts plugins.UpgradeOptions,
+	entry lockfile.Entry,
+	snapshot verifier.OCISnapshot,
+	outcome *plugins.UpgradeOutcome,
+) (*provenanceDecision, bool) {
+	oldKeyPEM, err := verifier.DecodePublicKey(entry.Provenance.PublicKey)
+	if err != nil {
+		setUpgradeTrustFailure(outcome, fmt.Errorf("lock entry's pinned %w", err))
+		return nil, true
+	}
+	oldResult, oldErr := snapshot.VerifyWithKey(oldKeyPEM)
+	if oldErr == nil {
+		decision, decisionErr := keyTrustDecision(entry.Name, entry.Provenance.PublicKey, oldResult)
+		return checkedTrustDecision(decision, decisionErr, outcome)
+	}
+	if !conclusiveKeyedMismatch(oldErr) {
+		setUpgradeTrustFailure(outcome, fmt.Errorf(
+			"verifying candidate against the pinned cosign public key: %w", oldErr))
+		return nil, true
+	}
+
+	newKeyPEM, decodeErr := verifier.DecodePublicKey(opts.PublicKey)
+	if decodeErr != nil {
+		setUpgradeTrustFailure(outcome, fmt.Errorf("public_key: %w", decodeErr))
+		return nil, true
+	}
+	newResult, newErr := snapshot.VerifyWithKey(newKeyPEM)
+	if newErr == nil {
+		decision, decisionErr := keyTrustDecision(entry.Name, opts.PublicKey, newResult)
+		return checkedTrustDecision(decision, decisionErr, outcome)
+	}
+	if !conclusiveKeyedMismatch(newErr) {
+		setUpgradeTrustFailure(outcome, fmt.Errorf(
+			"verifying candidate against the supplied cosign public key: %w", newErr))
+		return nil, true
+	}
+	outcome.Status = plugins.UpgradeStatusFailed
+	outcome.Reason = plugins.FailureReasonSignatureInvalid
+	outcome.Error = fmt.Errorf("candidate verifies against neither the recorded cosign key"+
+		" nor the supplied cosign public key: %w", newErr).Error()
+	return nil, true
+}
+
+func resolveNonKeyPinnedSnapshot(
+	opts plugins.UpgradeOptions,
+	entry lockfile.Entry,
+	snapshot verifier.OCISnapshot,
+	outcome *plugins.UpgradeOutcome,
+) (*provenanceDecision, bool) {
+	keyPEM, err := verifier.DecodePublicKey(opts.PublicKey)
+	if err != nil {
+		setUpgradeTrustFailure(outcome, fmt.Errorf("public_key: %w", err))
+		return nil, true
+	}
+	result, verifyErr := snapshot.VerifyWithKey(keyPEM)
+	if verifyErr == nil {
+		decision, decisionErr := keyTrustDecision(entry.Name, opts.PublicKey, result)
+		return checkedTrustDecision(decision, decisionErr, outcome)
+	}
+	if !conclusiveKeyedMismatch(verifyErr) {
+		setUpgradeTrustFailure(outcome, fmt.Errorf(
+			"verifying candidate against the supplied cosign public key: %w", verifyErr))
+		return nil, true
+	}
+
+	if entry.Unsigned {
+		return &provenanceDecision{unsigned: true}, false
+	}
+	if entry.Provenance == nil {
+		keylessResult, keylessErr := snapshot.VerifyKeyless(nil)
+		if keylessErr != nil {
+			setUpgradeTrustFailure(outcome, keylessErr)
+			return nil, true
+		}
+		decision, decisionErr := keylessTrustDecision(entry.Name, keylessResult)
+		return checkedTrustDecision(decision, decisionErr, outcome)
+	}
+
+	keylessResult, keylessErr := snapshot.VerifyKeyless(verifier.NewLockExpectation(entry.Provenance))
+	if keylessErr == nil {
+		decision, decisionErr := keylessTrustDecision(entry.Name, keylessResult)
+		return checkedTrustDecision(decision, decisionErr, outcome)
+	}
+	if !errors.Is(keylessErr, verifier.ErrSignerMismatch) &&
+		!errors.Is(keylessErr, verifier.ErrProvenanceFieldMismatch) {
+		setUpgradeTrustFailure(outcome, keylessErr)
+		return nil, true
+	}
+	replacement, replacementErr := snapshot.VerifyKeyless(nil)
+	if replacementErr != nil {
+		setUpgradeTrustFailure(outcome, replacementErr)
+		return nil, true
+	}
+	decision, decisionErr := keylessTrustDecision(entry.Name, replacement)
+	return checkedTrustDecision(decision, decisionErr, outcome)
+}
+
+func checkedTrustDecision(
+	decision *provenanceDecision, err error, outcome *plugins.UpgradeOutcome,
+) (*provenanceDecision, bool) {
+	if err != nil {
+		setUpgradeTrustFailure(outcome, err)
+		return nil, true
+	}
+	return decision, false
+}
+
+func keyTrustDecision(
+	pluginName, encodedKey string, result *verifier.Result,
+) (*provenanceDecision, error) {
+	if err := rejectOversizedBlob("sigstore bundle", pluginName, len(result.Bundle)); err != nil {
+		return nil, err
+	}
+	return &provenanceDecision{
+		provenance: &lockfile.Provenance{PublicKey: encodedKey},
+		bundle:     bytes.Clone(result.Bundle),
+	}, nil
+}
+
+func keylessTrustDecision(pluginName string, result *verifier.Result) (*provenanceDecision, error) {
+	if err := rejectOversizedBlob("sigstore bundle", pluginName, len(result.Bundle)); err != nil {
+		return nil, err
+	}
+	return &provenanceDecision{
+		provenance: result.ToLockProvenance(),
+		bundle:     bytes.Clone(result.Bundle),
+	}, nil
+}
+
+func trustDecisionChangesEntry(entry lockfile.Entry, decision *provenanceDecision) bool {
+	if decision == nil || entry.Unsigned != decision.unsigned {
+		return decision != nil
+	}
+	if entry.Provenance == nil || decision.provenance == nil {
+		return entry.Provenance != nil || decision.provenance != nil
+	}
+	return *entry.Provenance != *decision.provenance
+}
+
+func (s *service) storedTrustMaterialChanged(
+	ctx context.Context, projectRoot, name string, decision *provenanceDecision,
+) (bool, error) {
+	if decision == nil {
+		return false, nil
+	}
+	installed, err := s.store.Get(ctx, name, plugins.ScopeProject, projectRoot)
+	if errors.Is(err, storage.ErrNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("loading installed plugin trust material: %w", err)
+	}
+	return !bytes.Equal(installed.SigstoreBundle, decision.bundle), nil
+}
+
+func setUpgradeTrustFailure(outcome *plugins.UpgradeOutcome, err error) {
+	outcome.Status = plugins.UpgradeStatusFailed
+	outcome.Reason = classifySignatureError(err)
+	if outcome.Reason == "" {
+		outcome.Reason = plugins.FailureReasonUnknown
+	}
+	outcome.Error = err.Error()
 }
 
 // resolveSignerPolicy applies the signer-change guard to one entry, and
@@ -324,7 +689,7 @@ func (s *service) guardSignerChange(
 			" identity: %w. Upgrade has no unsigned-consent flag, and --allow-signer-change is not"+
 			" one — it re-verifies from scratch, which an unsigned artifact still fails. To move"+
 			" this plugin to an unsigned artifact, reinstall it: %s",
-			probeErr, projectReinstallCommand(entry, "--allow-unsigned")).Error()
+			probeErr, projectUnsignedReinstallCommand(entry)).Error()
 		return true
 	case probeErr != nil:
 		outcome.Status = plugins.UpgradeStatusFailed
@@ -463,7 +828,7 @@ func (s *service) judgeKeyedCandidate(
 				" key: %w. Upgrade has no unsigned-consent flag, and --allow-signer-change is not"+
 				" one — it re-verifies from scratch, which an unsigned artifact still fails. To"+
 				" move this plugin to an unsigned artifact, reinstall it: %s",
-				verifyErr, projectReinstallCommand(entry, "--allow-unsigned")).Error(),
+				verifyErr, projectUnsignedReinstallCommand(entry)).Error(),
 		}
 	}
 
@@ -488,7 +853,7 @@ func (s *service) judgeKeyedCandidate(
 	return keyedVerdict{
 		kind:   keyedUndecided,
 		reason: keyedFailureReason(verifyErr, probeErr),
-		err:    keyedFailureMessage(entry, verifyErr, probeErr),
+		err:    keyedFailureMessage(verifyErr, probeErr),
 	}
 }
 
@@ -523,7 +888,7 @@ func keyedFailureReason(verifyErr, probeErr error) plugins.FailureReason {
 
 // keyedFailureMessage explains a candidate that verifies neither way, naming
 // a remedy only where one exists.
-func keyedFailureMessage(entry lockfile.Entry, verifyErr, probeErr error) string {
+func keyedFailureMessage(verifyErr, probeErr error) string {
 	switch {
 	case errors.Is(verifyErr, verifier.ErrKeylessSigned):
 		return fmt.Errorf("candidate dropped key-pair signing for keyless, but its keyless"+
@@ -531,27 +896,27 @@ func keyedFailureMessage(entry lockfile.Entry, verifyErr, probeErr error) string
 	default:
 		return fmt.Errorf("candidate does not verify against the cosign public key this entry is"+
 			" pinned to — either it was signed with a different key or the signature is damaged:"+
-			" %w (re-anchoring to a new key is not supported in place; reinstall it: %s)",
-			verifyErr, projectReinstallCommand(entry, "--public-key <path-or-base64>")).Error()
+			" %w (to propose a replacement key, use --allow-signer-change --public-key <path>)",
+			verifyErr).Error()
 	}
 }
 
-// projectReinstallCommand renders a reinstall the caller can actually run.
+// projectUnsignedReinstallCommand renders an unsigned reinstall the caller
+// can actually run.
 //
 // Naming the flag alone is not enough to act on. `thv ai-plugin install`
-// requires the plugin argument, and it defaults to --scope user, where
-// validateInstallPublicKey rejects --public-key outright and --allow-unsigned
-// records nothing — a lock entry's trust anchor only exists project-scoped.
-// So the bare flag would be refused before it verified anything.
-func projectReinstallCommand(entry lockfile.Entry, flag string) string {
+// requires the plugin argument and defaults to --scope user, where
+// --allow-unsigned records no lock decision. So the rendered command includes
+// both the source and project scope.
+func projectUnsignedReinstallCommand(entry lockfile.Entry) string {
 	source := entry.Source
 	if source == "" {
 		source = entry.Name
 	}
 	return fmt.Sprintf("`thv ai-plugin uninstall %s --scope project` then"+
-		" `thv ai-plugin install %s --scope project %s`"+
+		" `thv ai-plugin install %s --scope project --allow-unsigned`"+
 		" (add --project-root if you are not in the project directory)",
-		entry.Name, source, flag)
+		entry.Name, source)
 }
 
 // runnerEnvironmentChanged reports whether the candidate's runner class
@@ -599,7 +964,16 @@ func (s *service) probeCandidateSigner(
 }
 
 func (s *service) applyUpgrade(ctx context.Context, opts plugins.UpgradeOptions, plan upgradePlan) plugins.UpgradeOutcome {
-	if plan.pinnedRef == "" || opts.Preview {
+	if opts.Preview {
+		return plan.outcome
+	}
+	if plan.outcome.Status == plugins.UpgradeStatusTrustUpdated {
+		if err := s.persistTrustOnlyUpgrade(ctx, opts.ProjectRoot, plan); err != nil {
+			return failedUpgradeOutcome(plan.outcome, err)
+		}
+		return plan.outcome
+	}
+	if plan.pinnedRef == "" {
 		return plan.outcome
 	}
 
@@ -618,7 +992,7 @@ func (s *service) applyUpgrade(ctx context.Context, opts plugins.UpgradeOptions,
 		lockResolved = plan.entry.ResolvedReference
 	}
 
-	if _, err := s.installAlreadyLocked(ctx, plugins.InstallOptions{
+	installOpts := plugins.InstallOptions{
 		Name:                  plan.pinnedRef,
 		Reference:             plan.resolvedRef,
 		LayerData:             plan.layerData,
@@ -630,15 +1004,87 @@ func (s *service) applyUpgrade(ctx context.Context, opts plugins.UpgradeOptions,
 		LockResolvedReference: lockResolved,
 		AllowSignerChange:     plan.allowSignerChange,
 		ExpectedCanonicalName: plan.entry.Name,
-	}); err != nil {
-		outcome := plan.outcome
-		outcome.Status = plugins.UpgradeStatusFailed
-		outcome.Reason = classifySyncFailure(err)
-		outcome.Error = err.Error()
-		return outcome
+		RefreshMetadata:       plan.entry.ResolvedReference != lockResolved,
+	}
+	constraints := &installConstraints{expectedLockEntry: &plan.entry}
+	if plan.trustDecision != nil {
+		constraints.preverifiedOCI = &preverifiedOCITrust{
+			decision: &provenanceDecision{
+				provenance: cloneLockProvenance(plan.trustDecision.provenance),
+				unsigned:   plan.trustDecision.unsigned,
+				bundle:     bytes.Clone(plan.trustDecision.bundle),
+			},
+			digest: plan.outcome.NewDigest,
+		}
+	}
+
+	if _, err := s.installAlreadyLocked(ctx, installOpts, constraints); err != nil {
+		return failedUpgradeOutcome(plan.outcome, err)
 	}
 
 	return plan.outcome
+}
+
+func failedUpgradeOutcome(outcome plugins.UpgradeOutcome, err error) plugins.UpgradeOutcome {
+	outcome.Status = plugins.UpgradeStatusFailed
+	outcome.Reason = classifySyncFailure(err)
+	outcome.Error = err.Error()
+	return outcome
+}
+
+// persistTrustOnlyUpgrade changes only the stored bundle and the lock entry's
+// trust fields. SQLite and the lock file cannot share a transaction, so this
+// is rollback-assisted rather than crash-atomic: the durable DB write happens
+// first and is restored if the subsequent lock-file write fails.
+func (s *service) persistTrustOnlyUpgrade(
+	ctx context.Context, projectRoot string, plan upgradePlan,
+) error {
+	if plan.trustDecision == nil {
+		return errors.New("trust-only upgrade has no verified trust decision")
+	}
+
+	root, err := lockfile.OpenRoot(projectRoot)
+	if err != nil {
+		return err
+	}
+	oldPlugin, err := s.store.Get(ctx, plan.entry.Name, plugins.ScopeProject, projectRoot)
+	if err != nil {
+		return fmt.Errorf("loading installed plugin for trust update: %w", err)
+	}
+	if oldPlugin.Digest != plan.entry.Digest {
+		return httperr.WithCode(
+			fmt.Errorf("installed plugin %q changed while its trust update was being planned; retry the upgrade",
+				plan.entry.Name),
+			http.StatusConflict,
+		)
+	}
+	oldPlugin.SigstoreBundle = bytes.Clone(oldPlugin.SigstoreBundle)
+	updatedPlugin := oldPlugin
+	updatedPlugin.SigstoreBundle = bytes.Clone(plan.trustDecision.bundle)
+
+	updatedEntry := plan.entry
+	updatedEntry.Provenance = cloneLockProvenance(plan.trustDecision.provenance)
+	updatedEntry.Unsigned = plan.trustDecision.unsigned
+
+	if err := s.store.Update(ctx, updatedPlugin); err != nil {
+		return fmt.Errorf("updating stored signature bundle: %w", err)
+	}
+	if err := lockfile.CompareAndSwapPluginEntry(root, plan.entry, updatedEntry); err != nil {
+		lockErr := func() error {
+			wrapped := fmt.Errorf("updating lock trust anchor: %w", errors.Join(errLockWrite, err))
+			if errors.Is(err, lockfile.ErrEntryChanged) {
+				return httperr.WithCode(wrapped, http.StatusConflict)
+			}
+			return wrapped
+		}()
+		rollbackCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), trustOnlyRollbackTimeout)
+		defer cancel()
+		if rollbackErr := s.store.Update(rollbackCtx, oldPlugin); rollbackErr != nil {
+			return errors.Join(lockErr, fmt.Errorf("restoring stored signature bundle: %w", rollbackErr))
+		}
+		return lockErr
+	}
+	return nil
 }
 
 // resolveLatestState re-resolves source (a lock entry's original Source

@@ -61,9 +61,10 @@ func (h *Handler) SetHTTPClient(client networking.HTTPClient) {
 // Authenticate is the main entry point for remote MCP server authentication
 func (h *Handler) Authenticate(ctx context.Context, remoteURL string) (oauth2.TokenSource, error) {
 	// Priority 1: Bearer token authentication (if configured)
-	if h.config.BearerToken != "" {
+	bearerToken := h.config.bearerToken()
+	if bearerToken != "" {
 		slog.Debug("Using bearer token authentication")
-		return NewBearerTokenSource(h.config.BearerToken), nil
+		return NewBearerTokenSource(bearerToken), nil
 	}
 
 	// Detect authentication requirements once (used by both cached token restore and fresh OAuth)
@@ -148,7 +149,7 @@ func (h *Handler) performOAuthFlow(
 	slog.Debug("Starting OAuth authentication flow", "issuer", issuer)
 
 	// Client registration priority (MCP spec: stored credentials → CIMD → DCR):
-	// Priority 1: Pre-configured credentials — set by buildOAuthFlowConfig from h.config.ClientID/ClientSecret.
+	// Priority 1: Pre-configured credentials — set by buildOAuthFlowConfig from h.config's effective values.
 	// Priority 2: CIMD — AS advertises support and no credentials are set; use metadata URL as client_id.
 	// Priority 3: DCR — PerformOAuthFlow handles this when ClientID is still empty after the above.
 	flowConfig := h.buildOAuthFlowConfig(scopes, authServerInfo, allowPrivateIPs)
@@ -181,7 +182,7 @@ func (h *Handler) buildOAuthFlowConfig(
 ) *discovery.OAuthFlowConfig {
 	flowConfig := &discovery.OAuthFlowConfig{
 		ClientID:        h.config.ClientID,
-		ClientSecret:    h.config.ClientSecret,
+		ClientSecret:    h.config.clientSecret(),
 		AuthorizeURL:    h.config.AuthorizeURL,
 		TokenURL:        h.config.TokenURL,
 		Scopes:          scopes,
@@ -378,7 +379,7 @@ func (h *Handler) restoreCachedRefreshToken(
 func (h *Handler) resolveClientCredentials(ctx context.Context) (clientID, clientSecret string) {
 	// First try to use statically configured credentials
 	clientID = h.config.ClientID
-	clientSecret = h.config.ClientSecret
+	clientSecret = h.config.clientSecret()
 
 	// If CIMD was used in a prior session, use the cached metadata URL as client_id.
 	// CIMD clients have no secret (token_endpoint_auth_method=none).

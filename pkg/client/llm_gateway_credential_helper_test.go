@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 
@@ -252,11 +253,10 @@ func TestRevertCredentialHelper_LeavesForeignAppliedIDIntact(t *testing.T) {
 // Each case gets its own sentinel file so subtests run in parallel safely.
 func TestRevertCredentialHelper_RejectsUnsafeConfigPath(t *testing.T) {
 	t.Parallel()
-	cm, _ := newClaudeDesktopManager(t)
+	cm, metaPath := newClaudeDesktopManager(t)
 	// configLibrary must exist so revert reaches the guard rather than
 	// early-returning on a missing dir.
-	require.NoError(t, os.MkdirAll(
-		filepath.Join(cm.homeDir, "Library", "Application Support", "Claude-3p", "configLibrary"), 0o700))
+	require.NoError(t, os.MkdirAll(filepath.Dir(metaPath), 0o700))
 
 	cases := []struct {
 		name   string
@@ -482,6 +482,110 @@ func TestManagedProfileExistsUnder(t *testing.T) {
 		require.NoError(t, os.WriteFile(filepath.Join(userDir, domain), []byte("x"), 0o600))
 		assert.True(t, managedProfileExistsUnder(root, domain))
 	})
+}
+
+// TestClaudeDesktopPathsResolvePerPlatform pins Claude Desktop's documented
+// configLibrary and user-data locations on every platform, independent of the
+// platform running the test, so a missing prefix fails everywhere rather than
+// only on that platform's CI runner.
+func TestClaudeDesktopPathsResolvePerPlatform(t *testing.T) {
+	t.Parallel()
+	cfg := NewTestClientManager(t.TempDir(), nil, supportedClientIntegrations, nil).
+		lookupClientAppConfig(ClientApp(ClaudeDesktop))
+	require.NotNil(t, cfg)
+
+	// https://claude.com/docs/third-party/claude-desktop/configuration
+	tests := []struct {
+		platform     Platform
+		wantLibrary  []string
+		wantUserData []string
+	}{
+		{PlatformDarwin, []string{"Library", "Application Support", "Claude-3p", "configLibrary"},
+			[]string{"Library", "Application Support", "Claude"}},
+		{PlatformWindows, []string{"AppData", "Local", "Claude-3p", "configLibrary"},
+			[]string{"AppData", "Roaming", "Claude"}},
+		{PlatformLinux, []string{".config", "Claude-3p", "configLibrary"},
+			[]string{".config", "Claude"}},
+	}
+	for _, tc := range tests {
+		t.Run(string(tc.platform), func(t *testing.T) {
+			t.Parallel()
+			libraryPrefix, ok := cfg.LLMSettingsPlatformPrefix[tc.platform]
+			require.True(t, ok, "configLibrary must define a prefix for %s", tc.platform)
+			assert.Equal(t, tc.wantLibrary, append(slices.Clone(libraryPrefix), cfg.LLMSettingsRelPath...))
+
+			detectPrefix, ok := cfg.LLMDetectPlatformPrefix[tc.platform]
+			require.True(t, ok, "detection must define a prefix for %s", tc.platform)
+			assert.Equal(t, tc.wantUserData, append(slices.Clone(detectPrefix), cfg.LLMDetectRelPath...))
+		})
+	}
+}
+
+func TestManagedSettingsPresentUnder(t *testing.T) {
+	t.Parallel()
+	relPath := []string{"claude-desktop", "managed-settings.json"}
+
+	tests := []struct {
+		name  string
+		setup func(t *testing.T, root string)
+		want  bool
+	}{
+		{name: "absent", setup: func(*testing.T, string) {}},
+		{
+			name: "regular file",
+			setup: func(t *testing.T, root string) {
+				t.Helper()
+				writeFileUnder(t, root, relPath)
+			},
+			want: true,
+		},
+		{
+			// Claude Desktop rejects a symlinked managed file but still treats the
+			// device as managed and disables local settings, so it counts.
+			name: "symlink",
+			setup: func(t *testing.T, root string) {
+				t.Helper()
+				target := filepath.Join(t.TempDir(), "real.json")
+				require.NoError(t, os.WriteFile(target, []byte("{}"), 0o600))
+				require.NoError(t, os.MkdirAll(filepath.Join(root, relPath[0]), 0o700))
+				require.NoError(t, os.Symlink(target, filepath.Join(root, filepath.Join(relPath...))))
+			},
+			want: true,
+		},
+		{
+			name: "dangling symlink",
+			setup: func(t *testing.T, root string) {
+				t.Helper()
+				require.NoError(t, os.MkdirAll(filepath.Join(root, relPath[0]), 0o700))
+				require.NoError(t, os.Symlink(filepath.Join(root, "missing.json"), filepath.Join(root, filepath.Join(relPath...))))
+			},
+			want: true,
+		},
+		{
+			name: "directory",
+			setup: func(t *testing.T, root string) {
+				t.Helper()
+				require.NoError(t, os.MkdirAll(filepath.Join(root, filepath.Join(relPath...)), 0o700))
+			},
+			want: true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			root := t.TempDir()
+			tc.setup(t, root)
+			assert.Equal(t, tc.want, managedSettingsPresentUnder(root, relPath))
+		})
+	}
+}
+
+// writeFileUnder creates root/relPath (and its parents) with placeholder content.
+func writeFileUnder(t *testing.T, root string, relPath []string) {
+	t.Helper()
+	path := filepath.Join(root, filepath.Join(relPath...))
+	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o700))
+	require.NoError(t, os.WriteFile(path, []byte("{}"), 0o600))
 }
 
 func TestConfigureCredentialHelper_RejectsNonArrayEntries(t *testing.T) {

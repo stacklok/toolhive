@@ -37,10 +37,15 @@ const (
 	OSVMCPServerImage = osvmcpServerImageURL + ":" + osvmcpServerImageTag
 
 	pythonImageURL = "python"
-	pythonImageTag = "3.9-slim"
+	pythonImageTag = "3.15-slim"
 	// PythonImage is used for deploying mock OIDC servers and instrumented backend servers
 	// in Kubernetes tests. These run Flask-based Python services for testing authentication flows.
 	PythonImage = pythonImageURL + ":" + pythonImageTag
+
+	networkFixtureImageDigest = "sha256:533b0b2f9b5d46fd097091cf826f27902f1d6c3bca714b6dc74551356aa97a51"
+	// NetworkFixtureImage is pinned because network-isolation tests use it for
+	// security-sensitive DNS and HTTP fixtures in the Docker-backed CI shard.
+	NetworkFixtureImage = pythonImageURL + ":" + pythonImageTag + "@" + networkFixtureImageDigest
 
 	curlImageURL = "curlimages/curl"
 	curlImageTag = "8.17.0"

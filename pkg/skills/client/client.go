@@ -356,6 +356,7 @@ func (c *Client) Sync(ctx context.Context, opts skills.SyncOptions) (*skills.Syn
 		Check:         opts.Check,
 		Adopt:         opts.Adopt,
 		AllowUnsigned: opts.AllowUnsigned,
+		PublicKey:     opts.PublicKey,
 	}
 
 	var result skills.SyncResult
@@ -375,6 +376,7 @@ func (c *Client) Upgrade(ctx context.Context, opts skills.UpgradeOptions) (*skil
 		FailOnChanges:     opts.FailOnChanges,
 		AllowRefChange:    opts.AllowRefChange,
 		AllowSignerChange: opts.AllowSignerChange,
+		PublicKey:         opts.PublicKey,
 		Clients:           opts.Clients,
 	}
 

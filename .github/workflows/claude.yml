@@ -1,7 +1,10 @@
 name: Claude PR Assistant
 
 on:
-  issue_comment:
+  # Required for @claude commands; the job gates comment author associations,
+  # and the pinned action checks the invoking actor's repository write access.
+  # Invocation authorizes a privileged coding agent, not sandboxed PR analysis.
+  issue_comment: # zizmor: ignore[dangerous-triggers]
     types: [created]
   pull_request_review_comment:
     types: [created]
@@ -73,13 +76,12 @@ jobs:
 
       - name: Run Claude Code
         id: claude
-        uses: anthropics/claude-code-action@19dda84776b3518d98b8798e591daee763049ed3 # v1.0.220
+        uses: anthropics/claude-code-action@5eb090f3c3afd701a0672cd32981197ca27688f6 # v1.0.253
         env:
-          ANTHROPIC_BASE_URL: https://llm-gateway.stacklok.dev/anthropic
+          ANTHROPIC_BASE_URL: ${{ vars.ANTHROPIC_BASE_URL }}
         with:
           anthropic_api_key: ${{ secrets.STACKLOK_GATEWAY_KEY_CLAUDE_TAG }}
-          # Security: Restrict tools to prevent arbitrary code execution.
-          # Bash is scoped to known-safe commands (task, go, git, helm-docs).
-          # No unrestricted Bash access — prevents prompt injection from
-          # executing arbitrary shell commands via crafted issue/PR content.
-          allowed_tools: "Read,Edit,Write,Glob,Grep,Bash(task *),Bash(go *),Bash(git *),Bash(helm-docs *),mcp__github__*"
+          # Limit preapproved tools; these commands can execute repository code
+          # and are not a sandbox against prompt injection.
+          claude_args: >-
+            --allowedTools "Read,Edit,Write,Glob,Grep,Bash(task *),Bash(go *),Bash(git *),Bash(helm-docs *),mcp__github__*"

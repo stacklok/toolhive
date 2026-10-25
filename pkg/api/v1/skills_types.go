@@ -114,6 +114,8 @@ type syncSkillsRequest struct {
 	// AllowUnsigned permits adopting skills whose signature state cannot be
 	// established, recording them as unsigned
 	AllowUnsigned bool `json:"allow_unsigned,omitempty"`
+	// PublicKey supplies the cosign public key for key-signed adoption.
+	PublicKey string `json:"public_key,omitempty"`
 }
 
 // upgradeSkillsRequest represents the request to upgrade a project's skills.
@@ -126,13 +128,15 @@ type upgradeSkillsRequest struct {
 	Names []string `json:"names,omitempty"`
 	// Preview reports what would change without installing (still fetches to compare digests)
 	Preview bool `json:"preview,omitempty"`
-	// FailOnChanges exits with an error when any mutable source would upgrade
+	// FailOnChanges reports content and trust changes without applying them
 	FailOnChanges bool `json:"fail_on_changes,omitempty"`
 	// AllowRefChange permits resolvedReference changes during upgrade
 	AllowRefChange bool `json:"allow_ref_change,omitempty"`
 	// AllowSignerChange permits upgrading to an artifact signed by a
 	// different identity than the recorded one
 	AllowSignerChange bool `json:"allow_signer_change,omitempty"`
+	// PublicKey proposes a cosign public key as the replacement trust anchor.
+	PublicKey string `json:"public_key,omitempty"`
 	// Clients lists target client identifiers. Empty means every
 	// skill-supporting client detected on this host.
 	Clients []string `json:"clients,omitempty"`

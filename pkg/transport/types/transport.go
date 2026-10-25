@@ -195,7 +195,9 @@ type Proxy interface {
 	// SendMessageToDestination sends a message to the destination.
 	SendMessageToDestination(msg jsonrpc2.Message) error
 
-	// ForwardResponseToClients forwards a response from the destination to clients.
+	// ForwardResponseToClients delivers a message from the destination to the
+	// client session(s) it belongs to. Implementations must never deliver a
+	// message to a session that did not originate it.
 	ForwardResponseToClients(ctx context.Context, msg jsonrpc2.Message) error
 }
 
@@ -278,6 +280,10 @@ type Config struct {
 	//	  "/.well-known/oauth-authorization-server": authServerHandler,
 	//	}
 	PrefixHandlers map[string]http.Handler
+
+	// StripConsentCookie prevents the embedded auth server's browser session
+	// cookie from reaching the MCP backend. Only set when the embedded AS is mounted.
+	StripConsentCookie bool
 
 	// SessionStorage overrides the default in-memory session store when set.
 	// Used for Redis-backed session sharing across replicas.

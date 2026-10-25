@@ -12,20 +12,19 @@ import (
 
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/util/dump"
+	"k8s.io/utils/dump"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 )
 
 // CalculateConfigHash calculates a hash of any configuration spec using Kubernetes utilities.
-// This function uses k8s.io/apimachinery/pkg/util/dump.ForHash which is designed for
-// generating consistent string representations for hashing in Kubernetes.
+// This function uses k8s.io/utils/dump.ForHash, which is designed for generating
+// consistent string representations for hashing in Kubernetes.
 // It then applies FNV-1a hash which is commonly used in Kubernetes for fast hashing.
 // See: https://github.com/kubernetes/kubernetes/blob/master/pkg/controller/controller_utils.go
 func CalculateConfigHash[T any](spec T) string {
-	// Use k8s.io/apimachinery/pkg/util/dump.ForHash which is designed for
-	// generating consistent string representations for hashing in Kubernetes
+	// Generate a consistent string representation for hashing in Kubernetes.
 	hashString := dump.ForHash(spec)
 
 	// Use FNV-1a hash which is commonly used in Kubernetes for fast hashing

@@ -23,6 +23,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/stacklok/toolhive/pkg/authserver/server"
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 )
@@ -395,6 +396,80 @@ func TestTokenHandler_AudienceClaim(t *testing.T) {
 	}
 }
 
+func TestTokenHandler_BoundAudience(t *testing.T) {
+	t.Parallel()
+	const audience = "https://api.example.com"
+	for _, tt := range []struct {
+		name      string
+		resources []string
+		wantCode  int
+	}{
+		{name: "omission inherits", wantCode: http.StatusOK},
+		{name: "same resource", resources: []string{audience}, wantCode: http.StatusOK},
+		{name: "substitution rejected", resources: []string{"https://other.example.com"}, wantCode: http.StatusBadRequest},
+		{name: "empty rejected", resources: []string{""}, wantCode: http.StatusBadRequest},
+		{name: "repeated rejected", resources: []string{audience, audience}, wantCode: http.StatusBadRequest},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			handler, storState, _ := handlerTestSetup(t)
+			code := simulateAuthorizeFlow(t, handler, storState, audience)
+			form := url.Values{
+				"grant_type": {"authorization_code"}, "client_id": {testAuthClientID},
+				"redirect_uri": {testAuthRedirectURI}, "code": {code}, "code_verifier": {testPKCEVerifier},
+			}
+			if tt.resources != nil {
+				form["resource"] = tt.resources
+			}
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPost, "/oauth/token", strings.NewReader(form.Encode()))
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			handler.TokenHandler(rec, req)
+			assert.Equal(t, tt.wantCode, rec.Code, rec.Body.String())
+			if tt.wantCode != http.StatusOK {
+				assert.Contains(t, rec.Body.String(), "invalid_target")
+			}
+		})
+	}
+}
+
+func TestTokenHandler_BoundAudienceRefreshCannotWiden(t *testing.T) {
+	t.Parallel()
+	handler, storState, _ := handlerTestSetup(t)
+	form := url.Values{
+		"grant_type": {"authorization_code"}, "client_id": {testAuthClientID},
+		"redirect_uri": {testAuthRedirectURI}, "code_verifier": {testPKCEVerifier},
+	}
+	for _, resource := range []string{"https://other.example.com", "https://api.example.com"} {
+		code := simulateAuthorizeFlow(t, handler, storState, "https://api.example.com")
+		form.Set("code", code)
+		redeem := httptest.NewRequest(http.MethodPost, "/oauth/token", strings.NewReader(form.Encode()))
+		redeem.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		redeemed := httptest.NewRecorder()
+		handler.TokenHandler(redeemed, redeem)
+		require.Equal(t, http.StatusOK, redeemed.Code, redeemed.Body.String())
+		var tokens struct {
+			RefreshToken string `json:"refresh_token"`
+		}
+		require.NoError(t, json.NewDecoder(redeemed.Body).Decode(&tokens))
+		require.NotEmpty(t, tokens.RefreshToken)
+		refresh := url.Values{
+			"grant_type": {"refresh_token"}, "client_id": {testAuthClientID},
+			"refresh_token": {tokens.RefreshToken}, "resource": {resource},
+		}
+		req := httptest.NewRequest(http.MethodPost, "/oauth/token", strings.NewReader(refresh.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		rec := httptest.NewRecorder()
+		handler.TokenHandler(rec, req)
+		if resource == "https://other.example.com" {
+			assert.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+			assert.Contains(t, rec.Body.String(), "invalid_target")
+		} else {
+			assert.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+		}
+	}
+}
+
 func TestTokenHandler_RouteRegistered(t *testing.T) {
 	t.Parallel()
 	handler, _, _ := handlerTestSetup(t)
@@ -417,7 +492,7 @@ const testPKCEVerifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"
 
 // simulateAuthorizeFlow runs through the authorize and callback flow to produce
 // a valid authorization code that can be exchanged at the token endpoint.
-func simulateAuthorizeFlow(t *testing.T, handler *Handler, storState *testStorageState) string {
+func simulateAuthorizeFlow(t *testing.T, handler *Handler, storState *testStorageState, resource ...string) string {
 	t.Helper()
 
 	// Step 1: Store a pending authorization (simulating what AuthorizeHandler does)
@@ -437,10 +512,14 @@ func simulateAuthorizeFlow(t *testing.T, handler *Handler, storState *testStorag
 		UpstreamProviderName: "test-upstream",
 		CreatedAt:            time.Now(),
 	}
-	storState.pendingAuths[internalState] = pending
+	if len(resource) == 1 {
+		pending.Resource = resource[0]
+		pending.Scopes = append(pending.Scopes, "offline_access")
+	}
+	cookie := bindPending(t, storState, internalState, pending)
 
 	// Step 2: Call the callback handler to exchange upstream code and issue our code
-	callbackReq := httptest.NewRequest(http.MethodGet, "/oauth/callback?code=upstream-code&state="+internalState, nil)
+	callbackReq := newCallbackRequest("code=upstream-code&state="+internalState, cookie)
 	callbackRec := httptest.NewRecorder()
 
 	handler.CallbackHandler(callbackRec, callbackReq)
@@ -459,4 +538,111 @@ func simulateAuthorizeFlow(t *testing.T, handler *Handler, storState *testStorag
 	require.NotEmpty(t, code, "callback redirect should include authorization code")
 
 	return code
+}
+
+func TestTokenHandler_CIMDRateLimited(t *testing.T) {
+	t.Parallel()
+	handler, _, _ := handlerTestSetup(t,
+		withGetClientErrorAfterCalls(0, fosite.ErrNotFound.WithWrap(storage.ErrCIMDRateLimited)))
+
+	form := url.Values{
+		"grant_type": {"authorization_code"},
+		"client_id":  {"https://client.example.com/metadata"},
+		"code":       {"some-code"},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/oauth/token", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+
+	handler.TokenHandler(rec, req)
+
+	assertOAuthRateLimited(t, rec)
+}
+
+// markRecordingStorage records, for every GetClient, whether the context it
+// received carries the persisted-client-fallback mark, then reports not found.
+type markRecordingStorage struct {
+	*storage.MemoryStorage
+	mu   sync.Mutex
+	seen []bool
+}
+
+func (s *markRecordingStorage) GetClient(ctx context.Context, _ string) (fosite.Client, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.seen = append(s.seen, storage.PersistedClientFallbackAllowed(ctx))
+	return nil, fosite.ErrNotFound
+}
+
+func (s *markRecordingStorage) recorded() []bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]bool(nil), s.seen...)
+}
+
+// TestPersistedClientFallbackMark_OnlyTokenEndpointSetsIt pins the scope of the
+// persisted-row fallback: only /oauth/token marks its context.
+func TestPersistedClientFallbackMark_OnlyTokenEndpointSetsIt(t *testing.T) {
+	t.Parallel()
+
+	const clientID = "https://client.example.com/metadata"
+	tests := []struct {
+		name     string
+		wantMark bool
+		call     func(h *Handler, rec *httptest.ResponseRecorder)
+	}{
+		{
+			name:     "token endpoint sets the mark",
+			wantMark: true,
+			call: func(h *Handler, rec *httptest.ResponseRecorder) {
+				form := url.Values{"grant_type": {"refresh_token"}, "client_id": {clientID}, "refresh_token": {"x"}}
+				req := httptest.NewRequest(http.MethodPost, "/oauth/token", strings.NewReader(form.Encode()))
+				req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+				h.TokenHandler(rec, req)
+			},
+		},
+		{
+			name: "authorize endpoint does not set the mark",
+			call: func(h *Handler, rec *httptest.ResponseRecorder) {
+				req := httptest.NewRequest(http.MethodGet, "/oauth/authorize?client_id="+url.QueryEscape(clientID), nil)
+				h.AuthorizeHandler(rec, req)
+			},
+		},
+		{
+			name: "device authorization endpoint does not set the mark",
+			call: func(h *Handler, rec *httptest.ResponseRecorder) {
+				form := url.Values{"client_id": {clientID}, "scope": {"openid"}}
+				req := httptest.NewRequest(http.MethodPost, "/oauth/device_authorization", strings.NewReader(form.Encode()))
+				req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+				h.DeviceAuthorizationHandler(rec, req)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			mem := storage.NewMemoryStorage()
+			t.Cleanup(func() { _ = mem.Close() })
+			stor := &markRecordingStorage{MemoryStorage: mem}
+			fositeConfig := &fosite.Config{}
+			provider := fosite.NewOAuth2Provider(stor, fositeConfig)
+			fositeConfig.GetSecretsHasher(context.Background())
+			h, err := NewHandler(provider, &server.AuthorizationServerConfig{
+				Config:            fositeConfig,
+				ScopesSupported:   []string{"openid"},
+				DeviceFlowEnabled: true,
+			}, stor, nil)
+			require.NoError(t, err)
+
+			tt.call(h, httptest.NewRecorder())
+
+			seen := stor.recorded()
+			require.NotEmpty(t, seen, "the endpoint must have looked the client up")
+			for _, marked := range seen {
+				assert.Equal(t, tt.wantMark, marked)
+			}
+		})
+	}
 }

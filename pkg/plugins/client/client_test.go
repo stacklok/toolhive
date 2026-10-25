@@ -1157,10 +1157,9 @@ func TestInstallReturnsTrustState(t *testing.T) {
 	}
 }
 
-// TestSyncCarriesAllowUnsigned mirrors TestInstallCarriesAllowUnsigned for
-// the sync/adopt path: a flag that dies at the DTO boundary would silently
-// make every adoption of an install with no stored bundle fail.
-func TestSyncCarriesAllowUnsigned(t *testing.T) {
+// TestSyncCarriesAdoptionTrustOptions pins both explicit adoption decisions
+// at the client DTO boundary.
+func TestSyncCarriesAdoptionTrustOptions(t *testing.T) {
 	t.Parallel()
 
 	var got syncRequest
@@ -1175,9 +1174,11 @@ func TestSyncCarriesAllowUnsigned(t *testing.T) {
 		ProjectRoot:   "/tmp/project",
 		Adopt:         true,
 		AllowUnsigned: true,
+		PublicKey:     "encoded-public-key",
 	})
 	require.NoError(t, err)
 	assert.True(t, got.AllowUnsigned, "allow_unsigned must reach the server")
+	assert.Equal(t, "encoded-public-key", got.PublicKey)
 }
 
 // TestUpgradeCarriesAllowSignerChange pins the upgrade DTO boundary: a flag
@@ -1199,11 +1200,31 @@ func TestUpgradeCarriesAllowSignerChange(t *testing.T) {
 		Names:             []string{"my-plugin"},
 		AllowRefChange:    true,
 		AllowSignerChange: true,
+		PublicKey:         "encoded-public-key",
 	})
 	require.NoError(t, err)
 	assert.True(t, got.AllowSignerChange, "allow_signer_change must reach the server")
 	assert.True(t, got.AllowRefChange)
 	assert.Equal(t, []string{"my-plugin"}, got.Names)
+	assert.Equal(t, "encoded-public-key", got.PublicKey)
+}
+
+func TestUpgradeDecodesTrustUpdateFields(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"outcomes":[{"name":"my-plugin","status":"trust-updated",` +
+			`"trust_anchor_changed":true,"new_resolved_reference":"ghcr.io/new-org/my-plugin:v2"}]}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	result, err := newTestClient(t, srv).Upgrade(t.Context(), plugins.UpgradeOptions{ProjectRoot: "/tmp/project"})
+	require.NoError(t, err)
+	require.Len(t, result.Outcomes, 1)
+	assert.Equal(t, plugins.UpgradeStatusTrustUpdated, result.Outcomes[0].Status)
+	assert.True(t, result.Outcomes[0].TrustAnchorChanged)
+	assert.Equal(t, "ghcr.io/new-org/my-plugin:v2", result.Outcomes[0].NewResolvedReference)
 }
 
 // recordingTransport fails the test if any HTTP request is attempted.

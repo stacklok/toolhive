@@ -8,6 +8,10 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -15,6 +19,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
+	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
@@ -59,6 +64,31 @@ func baseConfig(t *testing.T) (*Config, *coreMocks) {
 		BackendClient:   m.client,
 	}
 	return cfg, m
+}
+
+func requireNoOpenFDForPath(t *testing.T, path string) {
+	t.Helper()
+
+	if runtime.GOOS != "linux" {
+		t.Skip("/proc/self/fd is Linux-only; fd-release is covered on Linux CI")
+	}
+
+	entries, err := os.ReadDir("/proc/self/fd")
+	require.NoError(t, err)
+	for _, entry := range entries {
+		target, err := os.Readlink(filepath.Join("/proc/self/fd", entry.Name()))
+		if err != nil {
+			continue
+		}
+		require.NotEqual(t, path, target, "audit log file descriptor must be closed")
+	}
+}
+
+func closeErrorPathAuditConfig(t *testing.T) (*audit.Config, string) {
+	t.Helper()
+
+	path := filepath.Join(t.TempDir(), "workflow-audit.log")
+	return &audit.Config{LogFile: path}, path
 }
 
 // testBackendID is the single backend ID used across these tests.
@@ -113,6 +143,87 @@ func TestNew_NilConfig(t *testing.T) {
 	require.Error(t, err)
 	assert.ErrorIs(t, err, vmcp.ErrInvalidConfig)
 	assert.Nil(t, c)
+}
+
+func TestNew_CloseReleasesWorkflowAuditLogFile(t *testing.T) {
+	t.Parallel()
+
+	t.Run("closes retained audit log file", func(t *testing.T) {
+		t.Parallel()
+
+		cfg, _ := baseConfig(t)
+		cfg.AuditConfig, _ = closeErrorPathAuditConfig(t)
+
+		c, err := New(cfg)
+		require.NoError(t, err)
+		require.NoError(t, c.Close())
+
+		require.ErrorIs(t, c.(*coreVMCP).workflowAuditor.Close(), os.ErrClosed)
+	})
+
+	t.Run("returns first close error and keeps later Close idempotent", func(t *testing.T) {
+		t.Parallel()
+
+		cfg, _ := baseConfig(t)
+		cfg.AuditConfig, _ = closeErrorPathAuditConfig(t)
+
+		c, err := New(cfg)
+		require.NoError(t, err)
+		core := c.(*coreVMCP)
+		require.NoError(t, core.workflowAuditor.Close())
+
+		err = c.Close()
+		require.Error(t, err)
+		assert.ErrorIs(t, err, os.ErrClosed)
+		require.NoError(t, c.Close())
+	})
+}
+
+func TestNew_ErrorPathsCloseWorkflowAuditLogFile(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		mutate func(*testing.T, *Config, *coreMocks)
+	}{
+		{
+			name: "workflow validation error",
+			mutate: func(_ *testing.T, cfg *Config, _ *coreMocks) {
+				cfg.WorkflowDefs = map[string]*composer.WorkflowDefinition{
+					"wf": {
+						Name: "wf",
+						Steps: []composer.WorkflowStep{
+							{ID: "s1", Type: composer.StepTypeTool, Tool: "be1.tool", DependsOn: []string{"s2"}},
+							{ID: "s2", Type: composer.StepTypeTool, Tool: "be1.tool", DependsOn: []string{"s1"}},
+						},
+					},
+				}
+			},
+		},
+		{
+			name: "health monitor creation error",
+			mutate: func(_ *testing.T, cfg *Config, mocks *coreMocks) {
+				mocks.reg.EXPECT().List(gomock.Any()).Return(nil)
+				cfg.HealthMonitorConfig = &health.MonitorConfig{}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg, mocks := baseConfig(t)
+			var auditLogPath string
+			cfg.AuditConfig, auditLogPath = closeErrorPathAuditConfig(t)
+			tt.mutate(t, cfg, mocks)
+
+			c, err := New(cfg)
+
+			require.Error(t, err)
+			assert.Nil(t, c)
+			requireNoOpenFDForPath(t, auditLogPath)
+		})
+	}
 }
 
 func TestNew_ValidatesWorkflows(t *testing.T) {
@@ -578,7 +689,7 @@ func TestLookupResource_TemplateBackedURI(t *testing.T) {
 	t.Parallel()
 	cfg, m := baseConfig(t)
 
-	m.reg.EXPECT().List(gomock.Any()).Return(nil).Times(6)
+	m.reg.EXPECT().List(gomock.Any()).Return(nil).Times(10)
 	m.agg.EXPECT().AggregateCapabilities(gomock.Any(), gomock.Any()).Return(&aggregator.AggregatedCapabilities{
 		Resources: []vmcp.Resource{{URI: "file://a", BackendID: "be1"}},
 		ResourceTemplates: []vmcp.ResourceTemplate{
@@ -590,7 +701,7 @@ func TestLookupResource_TemplateBackedURI(t *testing.T) {
 				BackendID:   "be1",
 			},
 		},
-	}, nil).Times(6)
+	}, nil).Times(10)
 
 	c, err := New(cfg)
 	require.NoError(t, err)
@@ -611,6 +722,20 @@ func TestLookupResource_TemplateBackedURI(t *testing.T) {
 	// A URI matching no concrete resource or template still misses.
 	_, err = c.LookupResource(ctx, nil, "db:///users/42")
 	assert.ErrorIs(t, err, vmcp.ErrNotFound)
+
+	// A URI at the length cap still matches; one byte over is never
+	// template-matched (it would match otherwise) and is not echoed back.
+	atCap := "file:///logs/" + strings.Repeat("a", vmcp.MaxResourceURILength-len("file:///logs/.txt")) + ".txt"
+	require.Len(t, atCap, vmcp.MaxResourceURILength)
+	res, err = c.LookupResource(ctx, nil, atCap)
+	require.NoError(t, err)
+	assert.Equal(t, "be1", res.BackendID)
+
+	over := strings.TrimSuffix(atCap, ".txt") + "a.txt"
+	require.Len(t, over, vmcp.MaxResourceURILength+1)
+	_, err = c.LookupResource(ctx, nil, over)
+	require.ErrorIs(t, err, vmcp.ErrNotFound)
+	assert.Less(t, len(err.Error()), 256, "oversize URI must not be echoed in the error")
 }
 
 func TestClose_Idempotent(t *testing.T) {
@@ -780,4 +905,14 @@ func TestNew_HealthMonitorDisabledWhenNil(t *testing.T) {
 	t.Cleanup(func() { _ = c.Close() })
 
 	assert.Nil(t, c.BackendHealth(), "nil HealthMonitorConfig must leave health monitoring disabled")
+}
+
+func TestTemplateMatches_URILengthCap(t *testing.T) {
+	t.Parallel()
+
+	const tmpl = "file:///{+path}"
+	prefix := "file:///"
+
+	assert.True(t, templateMatches(tmpl, prefix+strings.Repeat("a", vmcp.MaxResourceURILength-len(prefix))))
+	assert.False(t, templateMatches(tmpl, prefix+strings.Repeat("a", vmcp.MaxResourceURILength)))
 }

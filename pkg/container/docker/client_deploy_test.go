@@ -4,8 +4,13 @@
 package docker
 
 import (
+	"archive/tar"
 	"context"
+	"encoding/base64"
+	"errors"
 	"fmt"
+	"net/http"
+	"net/netip"
 	"testing"
 
 	"github.com/moby/moby/api/types/network"
@@ -37,6 +42,9 @@ type fakeDeployOps struct {
 	mcpIP    string
 	errMcpIP error
 
+	gatewayIPs  []netip.Addr
+	errGateways error
+
 	mcpCalled        bool
 	mcpName          string
 	mcpNetworkName   string
@@ -62,11 +70,17 @@ type fakeDeployOps struct {
 }
 
 func (f *fakeDeployOps) createExternalNetworks(_ context.Context) error {
+	if f.callOrder != nil {
+		*f.callOrder = append(*f.callOrder, "createExternalNetworks")
+	}
 	f.externalNetworksCalled = true
 	return f.errExternalNetworks
 }
 
 func (f *fakeDeployOps) createNetwork(_ context.Context, name string, labels map[string]string, internal bool) error {
+	if f.callOrder != nil {
+		*f.callOrder = append(*f.callOrder, "createNetwork")
+	}
 	f.createNetworkCalls = append(f.createNetworkCalls, struct {
 		name     string
 		internal bool
@@ -75,7 +89,23 @@ func (f *fakeDeployOps) createNetwork(_ context.Context, name string, labels map
 	return f.errCreateNetwork
 }
 
+func (f *fakeDeployOps) discoverBridgeGateways(_ context.Context) ([]netip.Addr, error) {
+	if f.callOrder != nil {
+		*f.callOrder = append(*f.callOrder, "discoverBridgeGateways")
+	}
+	if f.errGateways != nil {
+		return nil, f.errGateways
+	}
+	if f.gatewayIPs == nil {
+		return []netip.Addr{netip.MustParseAddr("172.17.0.1")}, nil
+	}
+	return f.gatewayIPs, nil
+}
+
 func (f *fakeDeployOps) createDnsContainer(_ context.Context, _ string, _ bool, _ string, _ map[string]*network.EndpointSettings) (string, string, error) {
+	if f.callOrder != nil {
+		*f.callOrder = append(*f.callOrder, "createDnsContainer")
+	}
 	f.dnsCalled = true
 	return f.dnsID, f.dnsIP, f.errDNS
 }
@@ -498,18 +528,20 @@ func TestDeployWorkload_UnsupportedTransport_PropagatesError(t *testing.T) {
 	assert.Contains(t, err.Error(), "unsupported transport type")
 }
 
-// TestDeployWorkload_Isolated_EgressBeforeMcpIngressAfter locks in the ordering
-// contract: egress is provisioned BEFORE the MCP container (so proxy env vars are
-// injected), and ingress is provisioned AFTER it. Creating the ingress before the
+// TestDeployWorkload_IsolatedGatewaySnapshotAndProxyOrdering locks in the ordering
+// contract: gateway discovery runs once after DNS startup and before proxy setup;
+// egress is provisioned BEFORE the MCP container (so proxy env vars are injected), and ingress is provisioned AFTER it. Creating the ingress before the
 // MCP container caused the squid reverse proxy to cache a negative DNS lookup for
 // the not-yet-existent upstream and never recover, leaving the workload stuck.
-func TestDeployWorkload_Isolated_EgressBeforeMcpIngressAfter(t *testing.T) {
+func TestDeployWorkload_IsolatedGatewaySnapshotAndProxyOrdering(t *testing.T) {
 	t.Parallel()
 
-	callOrder := make([]string, 0, 3)
+	callOrder := make([]string, 0, 7)
+	internalGateway := netip.MustParseAddr("172.18.0.1")
 	fops := &fakeDeployOps{
-		dnsIP:     "172.18.0.10",
-		callOrder: &callOrder,
+		dnsIP:      "172.18.0.10",
+		gatewayIPs: []netip.Addr{internalGateway},
+		callOrder:  &callOrder,
 	}
 	fproxy := &fakeNetworkProxy{
 		ingressPort: 18081,
@@ -536,7 +568,93 @@ func TestDeployWorkload_Isolated_EgressBeforeMcpIngressAfter(t *testing.T) {
 		true,
 	)
 	require.NoError(t, err)
+	require.Len(t, fops.createNetworkCalls, 1)
+	require.True(t, fops.createNetworkCalls[0].internal, "internal workload network must exist before gateway discovery")
+	require.Equal(t, []netip.Addr{internalGateway}, fproxy.capturedSpec.GatewayIPs,
+		"the post-create gateway snapshot must reach generated proxy policy")
 
-	require.Equal(t, []string{"SetupEgress", "createMcpContainer", "SetupIngress"}, callOrder,
-		"egress must be set up before the MCP container and ingress after it")
+	require.Equal(t, []string{"createExternalNetworks", "createNetwork", "createDnsContainer", "discoverBridgeGateways", "SetupEgress", "createMcpContainer", "SetupIngress"}, callOrder,
+		"gateway discovery must snapshot after DNS startup and before proxy setup")
+}
+
+func TestDeployWorkload_GatewayDiscoveryFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	fops := &fakeDeployOps{errGateways: errors.New("unavailable")}
+	fproxy := &fakeNetworkProxy{}
+	client := newClientWithOpsAndProxy(fops, fproxy)
+
+	_, err := client.DeployWorkload(
+		t.Context(), "image", "app", nil, nil, map[string]string{},
+		&permissions.Profile{}, "stdio", runtime.NewDeployWorkloadOptions(), true,
+	)
+	require.ErrorContains(t, err, "failed to discover Docker bridge gateways")
+	assert.True(t, fops.dnsCalled)
+	assert.False(t, fproxy.setupCalled)
+	assert.False(t, fops.mcpCalled)
+}
+
+func TestDeployWorkload_PodmanHostDiscovery(t *testing.T) {
+	t.Parallel()
+	for _, allow := range []bool{false, true} {
+		for _, tt := range []struct {
+			name       string
+			hosts      string
+			dnsErr     error
+			gatewayErr error
+			status     int
+			wantErr    string
+		}{
+			{name: "sorted union", hosts: "::ffff:192.0.2.9 host.containers.internal host.docker.internal\n" +
+				"10.0.0.1 gateway.docker.internal\n", status: http.StatusOK},
+			{name: "DNS startup failure", dnsErr: errors.New("start failed"), wantErr: "failed to create dns container"},
+			{name: "gateway failure", gatewayErr: errors.New("list failed"), wantErr: "failed to discover Docker bridge gateways"},
+			{name: "missing aliases", hosts: "127.0.0.1 localhost\n", status: http.StatusOK, wantErr: "hosts missing host.containers.internal"},
+			{name: "archive failure", status: http.StatusInternalServerError, wantErr: "read running DNS hosts"},
+		} {
+			t.Run(fmt.Sprintf("%s/allow=%t", tt.name, allow), func(t *testing.T) {
+				t.Parallel()
+				var order []string
+				gateways := []netip.Addr{netip.MustParseAddr("2001:db8::1"), netip.MustParseAddr("10.0.0.1")}
+				ops := &fakeDeployOps{dnsID: "running-dns", dnsIP: "10.0.0.2", gatewayIPs: gateways,
+					errDNS: tt.dnsErr, errGateways: tt.gatewayErr, callOrder: &order}
+				proxy := &fakeNetworkProxy{callOrder: &order}
+				client := newClientWithOpsAndProxy(ops, proxy)
+				client.runtimeType = runtime.TypePodman
+				data := hostsArchive(t, "hosts", tt.hosts, tar.TypeReg)
+				client.hostAPI = discoveryHTTPClient(t, func(w http.ResponseWriter, r *http.Request) {
+					assert.Equal(t, "/v1.44/containers/running-dns/archive", r.URL.Path)
+					assert.Equal(t, "/etc/hosts", r.URL.Query().Get("path"))
+					assert.Equal(t, []string{"createExternalNetworks", "createNetwork", "createDnsContainer", "discoverBridgeGateways"}, order)
+					order = append(order, "archive")
+					w.Header().Set("X-Docker-Container-Path-Stat", base64.StdEncoding.EncodeToString([]byte(`{"name":"hosts"}`)))
+					w.WriteHeader(tt.status)
+					_, err := w.Write(data)
+					assert.NoError(t, err)
+				})
+				options := runtime.NewDeployWorkloadOptions()
+				options.AllowDockerGateway = allow
+				options.ExposedPorts = map[string]struct{}{"8080/tcp": {}}
+				options.PortBindings = map[string][]runtime.PortBinding{"8080/tcp": {{HostIP: "127.0.0.1", HostPort: ""}}}
+				_, err := client.DeployWorkload(t.Context(), "image", "app", nil, nil, map[string]string{},
+					&permissions.Profile{}, "sse", options, true)
+				if tt.wantErr != "" {
+					require.ErrorContains(t, err, tt.wantErr)
+					assert.False(t, ops.mcpCalled)
+					assert.False(t, proxy.setupCalled)
+					assert.False(t, proxy.ingressCalled)
+					return
+				}
+				require.NoError(t, err)
+				require.Equal(t, []string{"createExternalNetworks", "createNetwork", "createDnsContainer", "discoverBridgeGateways",
+					"archive", "SetupEgress", "createMcpContainer", "SetupIngress"}, order)
+				require.Equal(t, []netip.Addr{netip.MustParseAddr("10.0.0.1"), netip.MustParseAddr("192.0.2.9"),
+					netip.MustParseAddr("2001:db8::1")}, proxy.capturedSpec.GatewayIPs)
+				require.Equal(t, allow, proxy.capturedSpec.AllowDockerGateway)
+				require.Equal(t, "10.0.0.2", ops.mcpAdditionalDNS)
+				require.Equal(t, []netip.Addr{netip.MustParseAddr("2001:db8::1"), netip.MustParseAddr("10.0.0.1")}, gateways,
+					"discovery must not mutate the caller's gateway slice")
+			})
+		}
+	}
 }

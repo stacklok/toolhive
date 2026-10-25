@@ -13,7 +13,7 @@ import (
 	"maps"
 	"time"
 
-	"github.com/cenkalti/backoff/v5"
+	"github.com/cenkalti/backoff/v7"
 	"golang.org/x/sync/errgroup"
 
 	"github.com/stacklok/toolhive/pkg/audit"

@@ -22,6 +22,7 @@ var (
 	aiPluginSyncPrune         bool
 	aiPluginSyncYes           bool
 	aiPluginSyncAllowUnsigned bool
+	aiPluginSyncPublicKey     string
 	aiPluginSyncFormat        string
 )
 
@@ -63,11 +64,17 @@ func init() {
 		"Record plugins as unsigned in the lock file: when adopting installs whose signature state "+
 			"cannot be established (--adopt), and when repairing an entry that records no trust "+
 			"decision and whose content is unsigned")
+	aiPluginSyncCmd.Flags().StringVar(&aiPluginSyncPublicKey, "public-key", "",
+		"Path to the cosign public key used to verify key-pair-signed plugins during --adopt")
 	AddFormatFlag(aiPluginSyncCmd, &aiPluginSyncFormat)
 }
 
 func aiPluginSyncCmdFunc(cmd *cobra.Command, _ []string) error {
 	projectRoot, err := resolveProjectRoot(aiPluginSyncProjectRoot)
+	if err != nil {
+		return err
+	}
+	publicKey, err := readInstallPublicKey(aiPluginSyncPublicKey)
 	if err != nil {
 		return err
 	}
@@ -94,6 +101,7 @@ func aiPluginSyncCmdFunc(cmd *cobra.Command, _ []string) error {
 		Adopt:         aiPluginSyncAdopt,
 		Prune:         aiPluginSyncPrune,
 		AllowUnsigned: aiPluginSyncAllowUnsigned,
+		PublicKey:     publicKey,
 	})
 	if err != nil {
 		return formatAIPluginError("sync plugins", err)

@@ -32,6 +32,7 @@ import (
 
 	"golang.org/x/oauth2"
 
+	"github.com/stacklok/toolhive/pkg/auth/oautherr"
 	"github.com/stacklok/toolhive/pkg/authserver/oauthparams"
 	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
@@ -117,6 +118,27 @@ type CommonOAuthConfig struct {
 	// and will be rejected during validation.
 	//nolint:lll // field tags require full JSON+YAML names
 	AdditionalAuthorizationParams map[string]string `json:"additional_authorization_params,omitempty" yaml:"additional_authorization_params,omitempty"`
+
+	// AdditionalTokenParams are extra form-body parameters to include in
+	// token requests (authorization code exchange and refresh) sent to the
+	// upstream IDP's token endpoint. This is useful for providers that
+	// enforce RFC 8707 resource indicators on token requests, where the
+	// resource parameter must accompany the code exchange and refresh, not
+	// only the authorization request.
+	// Framework-managed parameters (grant_type, code, redirect_uri, client_id,
+	// client_secret, code_verifier, refresh_token, scope) are not allowed here
+	// and will be rejected during validation.
+	//nolint:lll // field tags require full JSON+YAML names
+	AdditionalTokenParams map[string]string `json:"additional_token_params,omitempty" yaml:"additional_token_params,omitempty"`
+
+	// OmitScopeOnRefresh stops RefreshTokens from sending the `scope` parameter
+	// on refresh_token grant requests. Scopes are still sent on the
+	// authorization request. Defaults to false, which sends Scopes on refresh.
+	// Set it for providers that reject `scope` on refresh (e.g. Salesforce
+	// returns "invalid_request - scope parameter not supported"); per
+	// RFC 6749 §6 the AS then treats the refresh as covering the originally
+	// granted scope.
+	OmitScopeOnRefresh bool `json:"omit_scope_on_refresh,omitempty" yaml:"omit_scope_on_refresh,omitempty"`
 }
 
 // ValidateWithInsecure validates CommonOAuthConfig, allowing http:// redirect URIs for
@@ -129,6 +151,9 @@ func (c *CommonOAuthConfig) ValidateWithInsecure(insecureAllowHTTP bool) error {
 		return errors.New("redirect_uri is required")
 	}
 	if err := oauthparams.Validate(c.AdditionalAuthorizationParams); err != nil {
+		return err
+	}
+	if err := oauthparams.ValidateTokenParams(c.AdditionalTokenParams); err != nil {
 		return err
 	}
 	if insecureAllowHTTP {
@@ -304,6 +329,28 @@ type BaseOAuth2Provider struct {
 // trust, so the bundle could never take effect; failing loudly keeps a
 // trust-anchor misconfiguration a boot-time error rather than a silent no-op.
 var ErrCABundleWithInjectedClient = errors.New("caFilePath cannot be combined with an injected HTTP client")
+
+// ErrGrantRejected is wrapped by a token request error when the upstream
+// authorization server rejected the grant with the OAuth 2.0 invalid_grant
+// error code (RFC 6749 Section 5.2). The classification is
+// oautherr.IsRejectedRefreshGrant, shared with the client-side token source:
+// invalid_grant on any response except a 5xx or 429, which are treated as
+// transient, and a response with no HTTP status is not counted. It applies to
+// both token requests a provider makes: on the authorization code exchange it
+// means the code or PKCE verifier was rejected, and on refresh it means the
+// presented upstream refresh token is expired, revoked or otherwise no longer
+// valid, so retrying it cannot succeed. Network failures, 5xx responses and
+// other error codes do not wrap it, so callers can tell a rejection from a
+// transient failure with errors.Is. It is distinct from fosite.ErrInvalidGrant,
+// which is the error the embedded auth server itself returns to its clients.
+//
+// A rejected refresh token does not always mean the session's upstream
+// credential is dead. With a provider that rotates refresh tokens, the
+// replica that loses a cross-process refresh race presents an already-rotated
+// token and gets invalid_grant while the winner holds valid tokens. The auth
+// server's refresher re-reads storage before surfacing the error, which
+// resolves the race once the winner's write has landed, but not before.
+var ErrGrantRejected = errors.New("invalid_grant")
 
 // IdleConnectionCloser is an optional capability an OAuth2Provider may implement
 // to release the idle keep-alive connections held by its HTTP client. It is the
@@ -766,6 +813,12 @@ func (p *BaseOAuth2Provider) exchangeCodeForTokens(
 	if codeVerifier != "" {
 		opts = append(opts, oauth2.VerifierOption(codeVerifier))
 	}
+	// AuthCodeOptions passed to Exchange land in the POST form body, so
+	// configured additional token params (e.g. an RFC 8707 resource
+	// indicator) reach the token endpoint the way such ASes require.
+	for k, v := range p.config.AdditionalTokenParams {
+		opts = append(opts, oauth2.SetAuthURLParam(k, v))
+	}
 
 	token, err := p.oauth2Config.Exchange(ctx, code, opts...)
 	if err != nil {
@@ -796,10 +849,12 @@ func (p *BaseOAuth2Provider) exchangeCodeForTokens(
 
 // RefreshTokens refreshes the upstream IDP tokens.
 //
-// Sends `scope` explicitly. RFC 6749 §6 makes the param optional and says the
-// AS SHOULD preserve original scopes on omission, but some ASes (notably
-// Entra ID v1) silently narrow refreshed tokens to the user's default consent
-// set when `scope` is omitted, dropping custom resource scopes.
+// Sends `scope` explicitly by default. RFC 6749 §6 makes the param optional
+// and says the AS SHOULD preserve original scopes on omission, but some ASes
+// (notably Entra ID v1) silently narrow refreshed tokens to the user's default
+// consent set when `scope` is omitted, dropping custom resource scopes. Other
+// ASes (e.g. Salesforce) reject `scope` on refresh outright; for those,
+// CommonOAuthConfig.OmitScopeOnRefresh leaves it out.
 //
 // Uses oauth2.Config.Exchange with SetAuthURLParam overrides (mirroring the
 // pattern in pkg/auth/oauth/non_caching_refresher.go) because the standard
@@ -828,8 +883,13 @@ func (p *BaseOAuth2Provider) RefreshTokens(ctx context.Context, refreshToken, _ 
 		oauth2.SetAuthURLParam("grant_type", "refresh_token"),
 		oauth2.SetAuthURLParam("refresh_token", refreshToken),
 	}
-	if len(p.oauth2Config.Scopes) > 0 {
+	if len(p.oauth2Config.Scopes) > 0 && !p.config.OmitScopeOnRefresh {
 		opts = append(opts, oauth2.SetAuthURLParam("scope", strings.Join(p.oauth2Config.Scopes, " ")))
+	}
+	// Same rationale as in exchangeCodeForTokens: ASes that enforce
+	// RFC 8707 on token requests require these on refresh as well.
+	for k, v := range p.config.AdditionalTokenParams {
+		opts = append(opts, oauth2.SetAuthURLParam(k, v))
 	}
 
 	token, err := p.oauth2Config.Exchange(ctx, "", opts...)
@@ -964,6 +1024,9 @@ func formatOAuth2Error(err error, prefix string) error {
 	var retrieveErr *oauth2.RetrieveError
 	if errors.As(err, &retrieveErr) {
 		// RetrieveError contains the OAuth error response
+		if oautherr.IsRejectedRefreshGrant(retrieveErr) {
+			return fmt.Errorf("%s: %w - %s", prefix, ErrGrantRejected, retrieveErr.ErrorDescription)
+		}
 		if retrieveErr.ErrorCode != "" {
 			return fmt.Errorf("%s: %s - %s", prefix, retrieveErr.ErrorCode, retrieveErr.ErrorDescription)
 		}
@@ -997,8 +1060,15 @@ func formatOAuth2Error(err error, prefix string) error {
 // resolver's per-request-host, low-frequency calls don't have the same
 // trade-off, hence the difference. If this provider's threat model changes
 // (e.g. it starts dialing caller-varying hosts), revisit this decision.
+//
+// The client also sets no response-header timeout, so the client timeout is the
+// budget for each call, as for the shared grant client in pkg/oauthproto (see
+// grants.go): corporate IdP chains can take more than 10s to send the first
+// byte. That holds for every call made with this client, because discovery,
+// JWKS, userinfo and the token endpoint are all served by the same IdP.
 func newHTTPClientForHost(host string, allowPrivateIPs, insecureAllowHTTP bool, caFilePath string) (*http.Client, error) {
-	builder := networking.NewHostScopedClientBuilder(host, allowPrivateIPs, insecureAllowHTTP)
+	builder := networking.NewHostScopedClientBuilder(host, allowPrivateIPs, insecureAllowHTTP).
+		WithResponseHeaderTimeout(0)
 	if caFilePath != "" {
 		builder.WithSystemRootsPlusCABundle(caFilePath)
 	}

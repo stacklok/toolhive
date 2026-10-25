@@ -14,8 +14,11 @@ import (
 	"mime"
 	"net/http"
 	"net/url"
-	"regexp"
 	"strings"
+
+	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/auth/sessionbinding"
+	"github.com/stacklok/toolhive/pkg/transport/session"
 )
 
 // inboundRequestKey is the context key for storing the original inbound request.
@@ -53,8 +56,6 @@ type sseRewriteConfig struct {
 func (c sseRewriteConfig) hasRewriteConfig() bool {
 	return c.prefix != "" || c.scheme != "" || c.host != ""
 }
-
-var sessionRe = regexp.MustCompile(`sessionId=([0-9A-Fa-f-]+)|"sessionId"\s*:\s*"([^"]+)"`)
 
 // SSEResponseProcessor handles SSE-specific response processing including:
 // - Session ID extraction from SSE streams
@@ -106,6 +107,15 @@ func (s *SSEResponseProcessor) ProcessResponse(resp *http.Response) error {
 		rewriteConfig = s.getSSERewriteConfig(resp.Request)
 	}
 
+	ctx := context.Background()
+	if resp.Request != nil {
+		identity, _ := auth.IdentityFromContext(resp.Request.Context())
+		ctx = auth.WithIdentity(ctx, identity)
+	}
+	identity, _ := auth.IdentityFromContext(ctx)
+	if _, err := sessionbinding.FromIdentity(identity); err != nil {
+		return err
+	}
 	pr, pw := io.Pipe()
 	originalBody := resp.Body
 	resp.Body = pr
@@ -118,7 +128,12 @@ func (s *SSEResponseProcessor) ProcessResponse(resp *http.Response) error {
 				slog.Debug("failed to close pipe writer", "error", err)
 			}
 		}()
-		s.processSSEStream(originalBody, pw, rewriteConfig)
+		defer func() {
+			if err := originalBody.Close(); err != nil {
+				slog.Debug("failed to close upstream SSE body", "error", err)
+			}
+		}()
+		s.processSSEStream(ctx, originalBody, pw, rewriteConfig)
 	}()
 
 	return nil
@@ -211,7 +226,8 @@ type sseLineProcessor struct {
 	proxy            *TransparentProxy
 	rewriteConfig    sseRewriteConfig
 	currentEventType string
-	sessionFound     bool
+	ctx              context.Context
+	err              error
 }
 
 // processLine processes a single SSE line and returns the potentially modified line.
@@ -240,8 +256,10 @@ func (s *sseLineProcessor) processLine(line string) string {
 func (s *sseLineProcessor) processDataLine(line string) string {
 	dataContent := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
 
-	// Extract session ID for tracking (from any data line)
-	s.extractSessionID(line)
+	// Bind every endpoint before exposing its ID, including later endpoint events.
+	if s.currentEventType == "endpoint" {
+		s.err = s.extractSessionID(dataContent)
+	}
 
 	// Rewrite endpoint URLs only for "endpoint" events
 	if s.currentEventType == "endpoint" && s.rewriteConfig.hasRewriteConfig() {
@@ -252,21 +270,21 @@ func (s *sseLineProcessor) processDataLine(line string) string {
 }
 
 // extractSessionID extracts and stores the session ID from a data line.
-func (s *sseLineProcessor) extractSessionID(line string) {
-	if s.sessionFound {
-		return
+func (s *sseLineProcessor) extractSessionID(endpoint string) error {
+	parsed, err := url.Parse(endpoint)
+	if err != nil {
+		return sessionbinding.ErrNotFound
 	}
-	if m := sessionRe.FindStringSubmatch(line); m != nil {
-		sid := m[1]
-		if sid == "" {
-			sid = m[2]
-		}
-		s.proxy.setServerInitialized()
-		if err := s.proxy.sessionManager.AddWithID(normalizeSessionID(sid)); err != nil {
-			slog.Error("failed to create session from SSE line", "error", err)
-		}
-		s.sessionFound = true
+	sid, err := requestSessionID(&http.Request{URL: parsed})
+	if err != nil || sid == "" {
+		return sessionbinding.ErrNotFound
 	}
+	sess := session.NewProxySession(normalizeSessionID(sid))
+	if err := sessionbinding.AddOwnedSession(s.ctx, s.proxy.sessionManager, sess); err != nil {
+		return err
+	}
+	s.proxy.setServerInitialized()
+	return nil
 }
 
 // rewriteDataLine rewrites the URL in an endpoint event's data line.
@@ -288,7 +306,9 @@ func (s *sseLineProcessor) rewriteDataLine(line, dataContent string) string {
 }
 
 // processSSEStream processes an SSE stream, extracting session IDs and rewriting URLs.
-func (s *SSEResponseProcessor) processSSEStream(originalBody io.Reader, pw *io.PipeWriter, rewriteConfig sseRewriteConfig) {
+func (s *SSEResponseProcessor) processSSEStream(
+	ctx context.Context, originalBody io.Reader, pw *io.PipeWriter, rewriteConfig sseRewriteConfig,
+) {
 	scanner := bufio.NewScanner(originalBody)
 	// NOTE: The following line mitigates the issue of the response body being too large.
 	// By default, the maximum token size of the scanner is 64KB, which is too small in
@@ -297,12 +317,17 @@ func (s *SSEResponseProcessor) processSSEStream(originalBody io.Reader, pw *io.P
 	scanner.Buffer(make([]byte, 0, 1024), 1024*1024*1)
 
 	processor := &sseLineProcessor{
+		ctx:           ctx,
 		proxy:         s.proxy,
 		rewriteConfig: rewriteConfig,
 	}
 
 	for scanner.Scan() {
 		line := processor.processLine(scanner.Text())
+		if processor.err != nil {
+			_ = pw.CloseWithError(processor.err)
+			return
+		}
 		if _, err := pw.Write([]byte(line + "\n")); err != nil {
 			return
 		}

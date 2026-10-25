@@ -2087,15 +2087,12 @@ func TestNewToolCallMappingMiddleware_FilteredTool(t *testing.T) {
 			expectJSONRPC: true,
 		},
 		{
-			// MCP narrows base JSON-RPC 2.0 here: schema/2025-11-25 types the
-			// error response id as optional, not nullable, so a request with
-			// no usable id gets an error body that omits the "id" key
-			// entirely rather than echoing "id":null (session.HasJSONRPCID).
-			name:          "null id omits the id key",
+			// Null IDs are rejected at admission, without echoing the invalid ID.
+			name:          "null id is rejected without echoing it",
 			accept:        "application/json",
 			setAccept:     true,
 			id:            nil,
-			expectStatus:  http.StatusOK,
+			expectStatus:  http.StatusBadRequest,
 			expectJSONRPC: true,
 		},
 	}
@@ -2143,8 +2140,13 @@ func TestNewToolCallMappingMiddleware_FilteredTool(t *testing.T) {
 			assert.Equal(t, "2.0", response["jsonrpc"])
 			errObj, ok := response["error"].(map[string]any)
 			require.True(t, ok, "response must carry a JSON-RPC error object")
-			assert.Equal(t, float64(CodeInvalidParams), errObj["code"])
-			assert.Equal(t, "tool not found", errObj["message"])
+			if tt.id == nil {
+				assert.Equal(t, float64(CodeInvalidRequest), errObj["code"])
+				assert.Equal(t, "Invalid Request", errObj["message"])
+			} else {
+				assert.Equal(t, float64(CodeInvalidParams), errObj["code"])
+				assert.Equal(t, "tool not found", errObj["message"])
+			}
 			assert.NotContains(t, errObj["message"], "filter",
 				"a filtered tool must look the same as a nonexistent one")
 

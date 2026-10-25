@@ -961,9 +961,9 @@ func (lazyPluginLookup) SearchPlugins(_ context.Context, query string) ([]plugin
 // pluginHitsFromRegistry adapts registry plugin search results to the
 // pluginsvc lookup shape. The OCI reference lives in SkillPackage.Identifier
 // on the wire; pluginsvc consumes it as PluginPackage.Reference. Namespace,
-// Version, and Digest are carried through so the install flow can disambiguate
-// by namespace, honor an explicit version request, and pin to a verified
-// digest.
+// Version, Digest, and Provenance are carried through so the install flow can
+// disambiguate by namespace, honor an explicit version request, pin to a
+// verified digest, and enforce catalog-declared trust on true first use.
 func pluginHitsFromRegistry(regPlugins []regtypes.Plugin) []pluginsvc.PluginSearchHit {
 	hits := make([]pluginsvc.PluginSearchHit, 0, len(regPlugins))
 	for i := range regPlugins {
@@ -982,6 +982,7 @@ func pluginHitsFromRegistry(regPlugins []regtypes.Plugin) []pluginsvc.PluginSear
 			Version:     p.Version,
 			Description: p.Description,
 			Packages:    pkgs,
+			Provenance:  p.Provenance,
 		})
 	}
 	return hits

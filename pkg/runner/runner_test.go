@@ -13,7 +13,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/adrg/xdg"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
@@ -27,6 +26,7 @@ import (
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/secrets"
 	secretsmocks "github.com/stacklok/toolhive/pkg/secrets/mocks"
+	"github.com/stacklok/toolhive/pkg/state"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 	statusesmocks "github.com/stacklok/toolhive/pkg/workloads/statuses/mocks"
 )
@@ -476,13 +476,7 @@ func TestHandleRemoteAuthentication(t *testing.T) {
 
 //nolint:paralleltest // Mutates process-wide runtime and XDG state settings.
 func TestRunner_PersistClientCredentials(t *testing.T) {
-	// SaveState uses process-wide runtime and XDG state settings. Keep this test
-	// sequential and restore xdg's cached paths after t.Setenv restores the env.
-	t.Cleanup(xdg.Reload)
-	t.Setenv("TOOLHIVE_RUNTIME", "")
-	t.Setenv("KUBERNETES_SERVICE_HOST", "")
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	xdg.Reload()
+	setupPersistenceState(t)
 
 	ctx := context.Background()
 	writableCapabilities := secrets.ProviderCapabilities{CanWrite: true}
@@ -511,6 +505,7 @@ func TestRunner_PersistClientCredentials(t *testing.T) {
 		runConfig.Name = "initial-registration"
 		runConfig.BaseName = "initial-registration"
 		runConfig.RemoteAuthConfig = remoteAuthConfig
+		require.NoError(t, runConfig.SaveState(ctx))
 		runner := &Runner{Config: runConfig}
 
 		err := runner.persistClientCredentials(
@@ -539,10 +534,69 @@ func TestRunner_PersistClientCredentials(t *testing.T) {
 		assert.Same(t, remoteAuthConfig, runner.Config.RemoteAuthConfig)
 		assert.Equal(t, expected, *runner.Config.RemoteAuthConfig)
 
+		reader, err := state.LoadRunConfigJSON(ctx, runConfig.BaseName)
+		require.NoError(t, err)
+		rawState, err := io.ReadAll(reader)
+		require.NoError(t, err)
+		require.NoError(t, reader.Close())
+		assert.Contains(t, string(rawState), clientSecretName)
+		assert.NotContains(t, string(rawState), "initial-client-secret")
+		assert.NotContains(t, string(rawState), "initial-registration-token")
+
 		persisted, err := LoadState(ctx, runConfig.BaseName)
 		require.NoError(t, err)
 		require.NotNil(t, persisted.RemoteAuthConfig)
 		assert.Equal(t, expected, *persisted.RemoteAuthConfig)
+	})
+
+	t.Run("static client persistence keeps resolved secret out of state", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
+		secretManager := secretsmocks.NewMockProvider(ctrl)
+		const (
+			clientSecretReference = "STATIC_CLIENT_SECRET,target=oauth_secret"
+			clientSecretValue     = "static-client-secret-value"
+			cachedSecretName      = "OAUTH_CLIENT_SECRET_static-client"
+		)
+		gomock.InOrder(
+			secretManager.EXPECT().GetSecret(ctx, "STATIC_CLIENT_SECRET").Return(clientSecretValue, nil),
+			secretManager.EXPECT().GetSecret(gomock.Any(), cachedSecretName).Return("", assert.AnError),
+			secretManager.EXPECT().Capabilities().Return(writableCapabilities),
+			secretManager.EXPECT().SetSecret(ctx, cachedSecretName, clientSecretValue).Return(nil),
+		)
+
+		runConfig := NewRunConfig()
+		runConfig.Name = "static-client"
+		runConfig.BaseName = "static-client"
+		runConfig.RemoteAuthConfig = &remote.Config{
+			ClientID:     "static-client-id",
+			ClientSecret: clientSecretReference,
+		}
+		require.NoError(t, runConfig.SaveState(ctx))
+		_, err := runConfig.WithSecrets(ctx, secretManager, secretManager)
+		require.NoError(t, err)
+
+		runner := &Runner{Config: runConfig}
+		err = runner.persistClientCredentials(
+			ctx,
+			secretManager,
+			"static-client-id",
+			clientSecretValue,
+			time.Time{},
+			"",
+			"",
+			"client_secret_basic",
+			0,
+		)
+		require.NoError(t, err)
+
+		reader, err := state.LoadRunConfigJSON(ctx, runConfig.BaseName)
+		require.NoError(t, err)
+		rawState, err := io.ReadAll(reader)
+		require.NoError(t, err)
+		require.NoError(t, reader.Close())
+		assert.Contains(t, string(rawState), clientSecretReference)
+		assert.Contains(t, string(rawState), cachedSecretName)
+		assert.NotContains(t, string(rawState), clientSecretValue)
 	})
 
 	t.Run("renewal reuses secret names and updates the existing config", func(t *testing.T) {
@@ -573,6 +627,7 @@ func TestRunner_PersistClientCredentials(t *testing.T) {
 		runConfig.Name = "renewal"
 		runConfig.BaseName = "renewal"
 		runConfig.RemoteAuthConfig = remoteAuthConfig
+		require.NoError(t, runConfig.SaveState(ctx))
 		runner := &Runner{Config: runConfig}
 
 		err := runner.persistClientCredentials(
@@ -618,7 +673,11 @@ func TestRunner_PersistClientCredentials(t *testing.T) {
 		secretManager.EXPECT().Capabilities().Return(writableCapabilities)
 		secretManager.EXPECT().SetSecret(ctx, clientSecretName, "new-client-secret").Return(nil)
 		secretManager.EXPECT().Capabilities().Return(writableCapabilities)
-		secretManager.EXPECT().SetSecret(ctx, regTokenName, "new-registration-token").Return(nil)
+		secretManager.EXPECT().SetSecret(ctx, regTokenName, "new-registration-token").DoAndReturn(
+			func(context.Context, string, string) error {
+				blockPersistedStateSave(t, "failed-renewal")
+				return nil
+			})
 
 		original := remote.Config{
 			Issuer:                        "https://issuer.example.com",
@@ -634,8 +693,9 @@ func TestRunner_PersistClientCredentials(t *testing.T) {
 		*remoteAuthConfig = original
 		runConfig := NewRunConfig()
 		runConfig.Name = "failed-renewal"
-		runConfig.BaseName = "../invalid"
+		runConfig.BaseName = "failed-renewal"
 		runConfig.RemoteAuthConfig = remoteAuthConfig
+		require.NoError(t, runConfig.SaveState(ctx))
 		runner := &Runner{Config: runConfig}
 
 		err := runner.persistClientCredentials(

@@ -19,6 +19,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 
 	"github.com/stacklok/toolhive/pkg/auth"
+	authclaims "github.com/stacklok/toolhive/pkg/auth/claims"
 	"github.com/stacklok/toolhive/pkg/authz/authorizers"
 	"github.com/stacklok/toolhive/pkg/syncutil"
 )
@@ -266,7 +267,14 @@ type ConfigOptions struct {
 	// group/role/scope claims, comes from the upstream access token or not at all.
 	// The sole nil-map exception uses only request-token claims because no upstream
 	// provider credential exists, never as a substitute for another provider's
-	// credentials. See resolveClaims for the full contract.
+	// credentials.
+	//
+	// Separately from that exception: when the provider's access token is present
+	// but opaque rather than JWT-shaped (Google's ya29.*, GitHub's gho_*), its
+	// claims cannot be read at all and evaluation degrades to the request token's
+	// claims, labelled claimSourceUpstreamOpaque. That is a fallback, not an
+	// exception to the fail-closed rule above — the credential is there, it just
+	// cannot be parsed. See resolveClaims for the full contract.
 	PrimaryUpstreamProvider string `json:"primary_upstream_provider,omitempty" yaml:"primary_upstream_provider,omitempty"`
 
 	// GroupClaimName is the JWT claim key that contains group membership for the
@@ -1432,17 +1440,25 @@ func resolveNestedClaim(claims jwt.MapClaims, path string) interface{} {
 
 // extractGroups extracts group/role names from a specific JWT claim.
 // It resolves the claim via resolveNestedClaim (supporting both flat and
-// dot-notation paths) and coerces the value to []string.
+// dot-notation paths) and decodes the value with authclaims.DecodeStringArrayLenient,
+// Cedar's host-owned lenient decoder. The auth-server GroupBasedFilter uses its
+// separate strict OAuth claims decoder.
 //
 // Return value distinguishes "claim absent" from "claim present but empty"
 // so callers can decide whether to fall back to defaults:
-//   - nil: claimName is empty, the claim is absent, or the value has an
-//     unsupported scalar/object type (e.g. string, number).
-//   - non-nil, possibly empty: the claim is an array. Non-string elements
-//     are silently dropped, so an array of all non-strings yields an empty
-//     slice (not nil). A genuinely empty array (`[]`) also yields an empty
-//     slice. Both cases mean "the IdP said this claim exists with no usable
-//     group names" and suppress fallback.
+//   - nil: claimName is empty, the claim is absent, the value has an
+//     unsupported scalar/object type (e.g. string, number), or the recognized
+//     value is a nil []string. The latter preserves its historical nil-ness,
+//     allowing callers to fall back.
+//   - non-nil, possibly empty: the claim has a recognized array shape other than
+//     a nil []string. Non-string elements are silently dropped, so an []any with
+//     no strings (including []any(nil)) yields a non-nil empty slice. A non-nil
+//     empty []string{} does too. These cases mean "the IdP said this claim exists
+//     with no usable group names" and suppress fallback.
+//
+// The returned slice never aliases the claim value, so the caller may append
+// to it (as authorizeWithClaims does when merging role claims) without writing
+// into the token's own backing array.
 func extractGroups(claims jwt.MapClaims, claimName string) []string {
 	if claimName == "" {
 		return nil
@@ -1453,22 +1469,13 @@ func extractGroups(claims jwt.MapClaims, claimName string) []string {
 		return nil
 	}
 
-	switch v := val.(type) {
-	case []interface{}:
-		groups := make([]string, 0, len(v))
-		for _, g := range v {
-			if s, ok := g.(string); ok {
-				groups = append(groups, s)
-			}
-		}
-		return groups
-	case []string:
-		return v
-	default:
+	groups, recognized := authclaims.DecodeStringArrayLenient(val)
+	if !recognized {
 		slog.Warn("group/role claim has unrecognized type, ignoring",
 			"claim", claimName, "type", fmt.Sprintf("%T", val))
 		return nil
 	}
+	return groups
 }
 
 // dedup removes duplicate strings while preserving first-occurrence order.

@@ -5,6 +5,7 @@ package authserver
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
@@ -93,8 +94,13 @@ type testServerOptions struct {
 	scopes                     []string
 	allowedAudiences           []string
 	subjectIdentifierAudiences []string
-	oidcSubjectClaim           string
-	accessTokenLifespan        time.Duration
+	// accessTokenType is passed through to Config.AccessTokenType by every
+	// setup helper that builds its own Config and takes options.
+	// setupTestServerWithRTProxy builds a Config but takes no options, the
+	// same exception the upstreamFilter comment below notes.
+	accessTokenType     string
+	oidcSubjectClaim    string
+	accessTokenLifespan time.Duration
 	// storageFactory, when non-nil, supplies the storage backend instead of
 	// the default in-memory implementation. The factory may also return a
 	// *miniredis.Miniredis instance; when it does, the setup helper stashes
@@ -180,6 +186,12 @@ func withAllowedAudiences(audiences ...string) testServerOption {
 func withSubjectIdentifierAudiences(audiences ...string) testServerOption {
 	return func(opts *testServerOptions) {
 		opts.subjectIdentifierAudiences = audiences
+	}
+}
+
+func withAccessTokenType(typ string) testServerOption {
+	return func(opts *testServerOptions) {
+		opts.accessTokenType = typ
 	}
 }
 
@@ -437,6 +449,7 @@ func setupTestServer(t *testing.T, opts ...testServerOption) *testServer {
 		UpstreamFilter:               options.upstreamFilter,
 		AllowedAudiences:             options.allowedAudiences,
 		SubjectIdentifierAudiences:   options.subjectIdentifierAudiences,
+		AccessTokenType:              options.accessTokenType,
 		TrustedIssuers:               options.trustedIssuers,
 		AuthorizationDetailsRegistry: options.authorizationDetailsRegistry,
 		// Opt-in gate for confidential-client DCR; off by default in tests just
@@ -3010,6 +3023,7 @@ func setupTestServerWithOIDCProvider(t *testing.T, m *mockoidc.MockOIDC, opts ..
 		}},
 		AllowedAudiences:           allowedAudiences,
 		SubjectIdentifierAudiences: options.subjectIdentifierAudiences,
+		AccessTokenType:            options.accessTokenType,
 		UpstreamFilter:             options.upstreamFilter,
 		DeviceFlowEnabled:          options.deviceFlowEnabled,
 		DeviceCodeInterval:         options.deviceCodeInterval,
@@ -3263,15 +3277,7 @@ func newSyntheticOAuth2Provider(t *testing.T, m *mockoidc.MockOIDC) upstream.OAu
 // signed the token (ts) is the one used for verification.
 func refreshAccessTokenClaims(t *testing.T, serverURL string, ts *testServer, refreshToken string) map[string]interface{} {
 	t.Helper()
-	resp := makeTokenRequest(t, serverURL, url.Values{
-		"grant_type": {"refresh_token"}, "refresh_token": {refreshToken}, "client_id": {testClientID},
-	})
-	defer resp.Body.Close()
-	body := parseTokenResponse(t, resp)
-	require.Equal(t, http.StatusOK, resp.StatusCode, body)
-	access, ok := body["access_token"].(string)
-	require.True(t, ok)
-	return decodeTestAccessToken(t, ts, access)
+	return decodeTestAccessToken(t, ts, refreshForAccessToken(t, serverURL, refreshToken))
 }
 
 // TestIntegration_SubjectIdentifierPolicyAppliesAtRefresh proves the disclosure
@@ -3447,6 +3453,7 @@ func setupTestServerWithUpstreamChain(t *testing.T, upstreams []UpstreamConfig, 
 		Upstreams:                  upstreams,
 		AllowedAudiences:           []string{testAudience},
 		SubjectIdentifierAudiences: options.subjectIdentifierAudiences,
+		AccessTokenType:            options.accessTokenType,
 	}, stor)
 	require.NoError(t, err)
 
@@ -4433,6 +4440,7 @@ func setupTestServerWithTwoUpstreams(t *testing.T, m1, m2 *mockoidc.MockOIDC, op
 			{Name: "provider-2", Type: UpstreamProviderTypeOAuth2, OAuth2Config: upstreamCfg2},
 		},
 		AllowedAudiences: []string{testAudience},
+		AccessTokenType:  options.accessTokenType,
 		UpstreamFilter:   options.upstreamFilter,
 	}
 
@@ -6943,4 +6951,329 @@ func TestIntegration_DeviceFlow_FullHappyPath(t *testing.T) {
 	replayResp.Body.Close()
 	assert.Equal(t, http.StatusBadRequest, replayResp.StatusCode)
 	assert.Equal(t, "invalid_grant", replayBody["error"])
+}
+
+// jwtHeaderTyp returns the JOSE "typ" header of a compact-serialized JWT.
+func jwtHeaderTyp(t *testing.T, token string) string {
+	t.Helper()
+	segments := strings.Split(token, ".")
+	require.Len(t, segments, 3, "token should be a compact JWS")
+	raw, err := base64.RawURLEncoding.DecodeString(segments[0])
+	require.NoError(t, err)
+	var header map[string]any
+	require.NoError(t, json.Unmarshal(raw, &header))
+	typ, ok := header["typ"].(string)
+	require.Truef(t, ok, "JOSE header must carry a string typ, got %v", header)
+	return typ
+}
+
+// loginForTokens runs the authorization code + PKCE flow as the default public
+// client and returns the access and refresh tokens.
+func loginForTokens(t *testing.T, serverURL string) (accessToken, refreshToken string) {
+	t.Helper()
+	verifier := servercrypto.GeneratePKCEVerifier()
+	authCode, _ := completeAuthorizationFlow(t, serverURL, authorizationParams{
+		ClientID: testClientID, RedirectURI: testRedirectURI, State: "access-token-type",
+		Challenge: servercrypto.ComputePKCEChallenge(verifier),
+		Scope:     "openid profile offline_access", Resource: testAudience, ResponseType: "code",
+	})
+	tokens := exchangeCodeForTokens(t, serverURL, authCode, verifier, testAudience)
+	accessToken, ok := tokens["access_token"].(string)
+	require.True(t, ok)
+	refreshToken, ok = tokens["refresh_token"].(string)
+	require.True(t, ok)
+	return accessToken, refreshToken
+}
+
+// refreshForAccessToken redeems a refresh token and returns the new access token.
+func refreshForAccessToken(t *testing.T, serverURL, refreshToken string) string {
+	t.Helper()
+	resp := makeTokenRequest(t, serverURL, url.Values{
+		"grant_type": {"refresh_token"}, "refresh_token": {refreshToken}, "client_id": {testClientID},
+	})
+	defer resp.Body.Close()
+	body := parseTokenResponse(t, resp)
+	require.Equal(t, http.StatusOK, resp.StatusCode, body)
+	accessToken, ok := body["access_token"].(string)
+	require.True(t, ok)
+	return accessToken
+}
+
+// deviceFlowAccessToken drives the device authorization grant end to end and
+// returns the access token.
+func deviceFlowAccessToken(t *testing.T, serverURL string) string {
+	t.Helper()
+	resp, body := postDeviceAuthorization(t, serverURL, url.Values{
+		"client_id": {testDeviceFlowClientID}, "scope": {"openid"},
+	})
+	require.Equal(t, http.StatusOK, resp.StatusCode, body)
+	deviceCode, ok := body["device_code"].(string)
+	require.True(t, ok)
+	userCode, ok := body["user_code"].(string)
+	require.True(t, ok)
+	completeDeviceVerification(t, serverURL, userCode)
+	status, tokens := pollDeviceToken(t, serverURL, url.Values{
+		"grant_type": {oauthproto.GrantTypeDeviceCode}, "device_code": {deviceCode}, "client_id": {testDeviceFlowClientID},
+	})
+	require.Equal(t, http.StatusOK, status, tokens)
+	accessToken, ok := tokens["access_token"].(string)
+	require.True(t, ok)
+	return accessToken
+}
+
+// tokenExchangeAccessToken logs in as a confidential client and exchanges the
+// access token it receives, as that same client, per RFC 8693. The subject
+// token is an access token from the server under test, so a server configured
+// for at+jwt must accept an at+jwt subject token.
+func tokenExchangeAccessToken(t *testing.T, opts ...testServerOption) string {
+	t.Helper()
+	const agentID, agentSecret = "typ-agent-client", "typ-agent-secret"
+	agent, err := registration.New(registration.Config{
+		ID: agentID, Secret: agentSecret,
+		TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodClientSecretPost,
+		RedirectURIs:            []string{testConfidentialRedirectURI},
+		GrantTypes:              []string{oauthproto.GrantTypeAuthorizationCode, oauthproto.GrantTypeTokenExchange},
+		Scopes:                  registration.DefaultScopes,
+		Audience:                []string{testAudience},
+	})
+	require.NoError(t, err)
+	ts := setupTestServerWithMockOIDC(t, startMockOIDC(t), append([]testServerOption{withExtraClient(agent)}, opts...)...)
+
+	verifier := servercrypto.GeneratePKCEVerifier()
+	code := completeConfidentialAuthorizationFlow(t, ts.Server.URL, agentID, servercrypto.ComputePKCEChallenge(verifier))
+	params := confidentialAuthCodeParams(code, verifier)
+	params.Set("client_id", agentID)
+	params.Set("client_secret", agentSecret)
+	loginResp := makeTokenRequest(t, ts.Server.URL, params)
+	defer loginResp.Body.Close()
+	login := parseTokenResponse(t, loginResp)
+	require.Equal(t, http.StatusOK, loginResp.StatusCode, login)
+	subjectToken, ok := login["access_token"].(string)
+	require.True(t, ok)
+	configured := &testServerOptions{}
+	for _, opt := range opts {
+		opt(configured)
+	}
+	wantTyp := cmp.Or(configured.accessTokenType, "JWT")
+	require.Equal(t, wantTyp, jwtHeaderTyp(t, subjectToken), "the subject token must carry the configured typ")
+
+	resp := makeTokenRequest(t, ts.Server.URL, url.Values{
+		"grant_type":         {oauthproto.GrantTypeTokenExchange},
+		"subject_token":      {subjectToken},
+		"subject_token_type": {oauthproto.TokenTypeAccessToken},
+		"client_id":          {agentID},
+		"client_secret":      {agentSecret},
+	})
+	defer resp.Body.Close()
+	body := parseTokenResponse(t, resp)
+	require.Equal(t, http.StatusOK, resp.StatusCode, "token exchange must accept the server's own access token: %v", body)
+	exchanged, ok := body["access_token"].(string)
+	require.True(t, ok)
+	require.NotEqual(t, subjectToken, exchanged)
+	return exchanged
+}
+
+// jwtBearerAccessToken redeems an external RFC 7523 assertion built by sign.
+func jwtBearerAccessToken(
+	t *testing.T,
+	opts []testServerOption,
+	sign func(ts *testServerWithUpstream, signAssertion func(string, time.Time, time.Time, string) string, now time.Time) url.Values,
+) string {
+	t.Helper()
+	ts, signAssertion := setupJWTBearerGrantTestServer(t, append([]testServerOption{withoutUpstreams()}, opts...)...)
+	resp := makeTokenRequest(t, ts.Server.URL, sign(ts, signAssertion, time.Now()))
+	defer resp.Body.Close()
+	body := parseTokenResponse(t, resp)
+	require.Equal(t, http.StatusOK, resp.StatusCode, body)
+	accessToken, ok := body["access_token"].(string)
+	require.True(t, ok)
+	return accessToken
+}
+
+// TestIntegration_AccessTokenType proves Config.AccessTokenType reaches the
+// signer through newServer and createProvider for every grant that issues an
+// access token: the JOSE typ is "JWT" by default and "at+jwt" when configured.
+func TestIntegration_AccessTokenType(t *testing.T) {
+	t.Parallel()
+
+	grants := []struct {
+		name  string
+		issue func(t *testing.T, opts ...testServerOption) string
+	}{
+		{"authorization code", func(t *testing.T, opts ...testServerOption) string {
+			t.Helper()
+			ts := setupTestServerWithMockOIDC(t, startMockOIDC(t), opts...)
+			access, _ := loginForTokens(t, ts.Server.URL)
+			return access
+		}},
+		{"refresh token", func(t *testing.T, opts ...testServerOption) string {
+			t.Helper()
+			ts := setupTestServerWithOIDCProvider(t, startMockOIDC(t), opts...)
+			_, refresh := loginForTokens(t, ts.Server.URL)
+			return refreshForAccessToken(t, ts.Server.URL, refresh)
+		}},
+		{"device code", func(t *testing.T, opts ...testServerOption) string {
+			t.Helper()
+			opts = append([]testServerOption{
+				withExtraClient(deviceFlowClient()), withDeviceFlowEnabled(), withDeviceCodeInterval(time.Millisecond),
+			}, opts...)
+			ts := setupTestServerWithMockOIDC(t, startMockOIDC(t), opts...)
+			return deviceFlowAccessToken(t, ts.Server.URL)
+		}},
+		{"token exchange", tokenExchangeAccessToken},
+		{"jwt-bearer", func(t *testing.T, opts ...testServerOption) string {
+			t.Helper()
+			return jwtBearerAccessToken(t, opts, func(_ *testServerWithUpstream, signAssertion func(string, time.Time, time.Time, string) string, now time.Time) url.Values {
+				return url.Values{
+					"grant_type": {oauthproto.GrantTypeJWTBearer},
+					"assertion":  {signAssertion("external-subject", now, now.Add(2*time.Minute), "typ-jwt-bearer")},
+					"resource":   {testAudience},
+				}
+			})
+		}},
+		{"id-jag redemption", func(t *testing.T, opts ...testServerOption) string {
+			t.Helper()
+			token := jwtBearerAccessToken(t, opts, func(ts *testServerWithUpstream, _ func(string, time.Time, time.Time, string) string, now time.Time) url.Values {
+				return url.Values{
+					"grant_type": {oauthproto.GrantTypeJWTBearer},
+					"assertion":  {ts.signIDJAGAssertion("external-subject", now, now.Add(2*time.Minute), "typ-id-jag")},
+					"client_id":  {testClientID},
+					"resource":   {testAudience},
+				}
+			})
+			// The plain JWT-bearer handler would mint a synthetic client_id, so
+			// the requesting client here shows the ID-JAG handler issued it.
+			parsed, err := jwt.ParseSigned(token, []jose.SignatureAlgorithm{jose.RS256})
+			require.NoError(t, err)
+			var claims map[string]any
+			require.NoError(t, parsed.UnsafeClaimsWithoutVerification(&claims))
+			require.Equal(t, testClientID, claims["client_id"])
+			return token
+		}},
+	}
+	configs := []struct {
+		name    string
+		opts    []testServerOption
+		wantTyp string
+	}{
+		{"default", nil, "JWT"},
+		{"at+jwt", []testServerOption{withAccessTokenType("at+jwt")}, "at+jwt"},
+	}
+
+	for _, g := range grants {
+		for _, c := range configs {
+			t.Run(g.name+"/"+c.name, func(t *testing.T) {
+				t.Parallel()
+				assert.Equal(t, c.wantTyp, jwtHeaderTyp(t, g.issue(t, c.opts...)))
+			})
+		}
+	}
+}
+
+// TestIntegration_AccessTokenTypeAppliesAtRefresh proves the type is chosen when
+// each access token is signed, not frozen at login: two servers share storage
+// and keys but differ in AccessTokenType, and a refresh token minted by one is
+// redeemed on the other. It also checks the persisted sessions never record a
+// typ, which would otherwise survive a configuration change.
+func TestIntegration_AccessTokenTypeAppliesAtRefresh(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name        string
+		loginType   string
+		refreshType string
+	}{
+		{name: "default to at+jwt", refreshType: "at+jwt"},
+		{name: "at+jwt to default", loginType: "at+jwt"},
+	}
+	typOf := func(configured string) string {
+		if configured == "" {
+			return "JWT"
+		}
+		return configured
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			m := startMockOIDC(t)
+			mr := miniredis.RunT(t)
+			key, err := rsa.GenerateKey(rand.Reader, 2048)
+			require.NoError(t, err)
+			secret := make([]byte, 32)
+			_, err = rand.Read(secret)
+			require.NoError(t, err)
+			serverOptions := func(typ string) []testServerOption {
+				opts := []testServerOption{withSharedMiniredisStorage(mr), withSharedKeyMaterial(key, secret)}
+				if typ != "" {
+					opts = append(opts, withAccessTokenType(typ))
+				}
+				return opts
+			}
+			loginServer := setupTestServerWithOIDCProvider(t, m, serverOptions(tc.loginType)...)
+			refreshServer := setupTestServerWithOIDCProvider(t, m, serverOptions(tc.refreshType)...)
+
+			loginAccess, refreshToken := loginForTokens(t, loginServer.Server.URL)
+			assert.Equal(t, typOf(tc.loginType), jwtHeaderTyp(t, loginAccess), "login")
+			refreshed := refreshForAccessToken(t, refreshServer.Server.URL, refreshToken)
+			assert.Equal(t, typOf(tc.refreshType), jwtHeaderTyp(t, refreshed), "refresh")
+
+			var sessions int
+			for _, k := range mr.Keys() {
+				if !strings.Contains(k, ":access:") && !strings.Contains(k, ":refresh:") {
+					continue
+				}
+				raw, err := mr.Get(k)
+				if err != nil {
+					continue // a set or other non-string key, not a stored session
+				}
+				sessions++
+				var stored struct {
+					Session json.RawMessage `json:"session"`
+				}
+				require.NoError(t, json.Unmarshal([]byte(raw), &stored), k)
+				var sess struct {
+					JWTHeader *struct {
+						Extra map[string]any `json:"extra"`
+					} `json:"JWTHeader"`
+				}
+				require.NoError(t, json.Unmarshal(stored.Session, &sess), k)
+				require.NotNilf(t, sess.JWTHeader, "persisted session %s should carry a JWT header: %s", k, stored.Session)
+				assert.NotContains(t, sess.JWTHeader.Extra, "typ", "persisted session %s must not record a JOSE typ", k)
+			}
+			assert.Positive(t, sessions, "expected stored access or refresh sessions to inspect")
+		})
+	}
+}
+
+// TestIntegration_AccessTokenAtJWTRefusedAsJWTBearerAssertion proves an at+jwt
+// assertion is refused by the RFC 7523 handler's typ check, before issuer
+// verification runs.
+func TestIntegration_AccessTokenAtJWTRefusedAsJWTBearerAssertion(t *testing.T) {
+	t.Parallel()
+
+	ts, signAssertion := setupJWTBearerGrantTestServer(t, withoutUpstreams(), withAccessTokenType("at+jwt"))
+	now := time.Now()
+	issued := makeTokenRequest(t, ts.Server.URL, url.Values{
+		"grant_type": {oauthproto.GrantTypeJWTBearer},
+		"assertion":  {signAssertion("external-subject", now, now.Add(2*time.Minute), "typ-source-assertion")},
+		"resource":   {testAudience},
+	})
+	defer issued.Body.Close()
+	issuedBody := parseTokenResponse(t, issued)
+	require.Equal(t, http.StatusOK, issued.StatusCode, issuedBody)
+	accessToken, ok := issuedBody["access_token"].(string)
+	require.True(t, ok)
+	require.Equal(t, "at+jwt", jwtHeaderTyp(t, accessToken))
+
+	resp := makeTokenRequest(t, ts.Server.URL, url.Values{
+		"grant_type": {oauthproto.GrantTypeJWTBearer},
+		"assertion":  {accessToken},
+		"resource":   {testAudience},
+	})
+	defer resp.Body.Close()
+	body := parseTokenResponse(t, resp)
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode, body)
+	assert.Equal(t, "invalid_grant", body["error"])
+	assert.Contains(t, body["error_description"], "typ header is not supported",
+		"the refusal must come from the assertion type check, not from a later check")
 }

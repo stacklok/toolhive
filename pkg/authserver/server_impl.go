@@ -817,6 +817,15 @@ func createProvider(
 		compose.NewOAuth2HMACStrategy(authServerConfig.Config),
 		authServerConfig.Config,
 	)
+	// This signer signs only access tokens: auth codes and refresh tokens use
+	// the HMAC strategy, and no ID-token strategy is registered. The type is
+	// set at signing time, not in the session, because storage persists the
+	// session's JWT header and a per-session typ would survive a configuration
+	// change across refreshes. ID-JAG issuance (#6898) must sign with its own
+	// signer, or its tokens would be typed at+jwt.
+	if authServerConfig.AccessTokenType == oauthserver.AccessTokenTypeATJWT {
+		jwtStrategy.Signer = oauthserver.NewATJWTAccessTokenSigner(jwtStrategy.Signer)
+	}
 
 	commonStrategy := &compose.CommonStrategy{CoreStrategy: jwtStrategy}
 

@@ -377,6 +377,41 @@ func TestValidateAssertionType_RejectsUntrustedAlgorithms(t *testing.T) {
 	}
 }
 
+func TestValidateAssertionType_Typ(t *testing.T) {
+	t.Parallel()
+
+	tj := newTestJWKS(t)
+	tests := []struct {
+		name       string
+		typ        any
+		wantAccept bool
+	}{
+		{name: "absent typ is accepted", typ: nil, wantAccept: true},
+		{name: "empty typ is accepted", typ: "", wantAccept: true},
+		{name: "JWT typ is accepted", typ: "JWT", wantAccept: true},
+		{name: "ID-JAG typ is accepted", typ: idJAGJWTType, wantAccept: true},
+		// An access token from this server must not be accepted as a JWT-bearer assertion.
+		{name: "at+jwt typ is refused", typ: "at+jwt", wantAccept: false},
+		{name: "media-type at+jwt typ is refused", typ: "application/at+jwt", wantAccept: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := validateAssertionType(signAssertionWithType(t, tj, tt.typ))
+			if tt.wantAccept {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.ErrorIs(t, err, fosite.ErrInvalidGrant)
+			var rfcErr *fosite.RFC6749Error
+			require.True(t, errors.As(err, &rfcErr), "expected fosite RFC6749Error")
+			assert.Contains(t, rfcErr.Reason(), "typ header is not supported")
+		})
+	}
+}
+
 type assertionConsumerStorage struct{ storage.Storage }
 
 func (assertionConsumerStorage) ConsumeAssertionJWT(context.Context, string, string, string, time.Time) error {

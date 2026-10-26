@@ -171,8 +171,8 @@ type Config struct {
 	// PassthroughHeaders is an allowlist of incoming client header names that the
 	// vMCP forwards, unchanged, to every backend it calls. They are captured
 	// per-request at the incoming edge (headerforward.CaptureMiddleware) and merged
-	// into the per-session backend client's header-forward config. Empty disables
-	// capture (no middleware is installed).
+	// into the header-forward config of each backend call the request triggers.
+	// Empty disables capture (no middleware is installed).
 	PassthroughHeaders []string
 
 	// RateLimiter is the optional core-layer limiter applied at CallTool.
@@ -613,8 +613,8 @@ func New(
 //
 // The returned handler includes all routes (health, metrics, well-known, MCP)
 // and the full HTTP middleware chain (see the chain comment in the body for
-// the order). Rate limiting decorates the core VMCP and runs inside the MCP SDK
-// handler.
+// the order, including session ownership). Rate limiting decorates the core VMCP
+// and runs inside the MCP SDK handler.
 //
 // DNS-rebinding protection: on a loopback connection, the MCP route answers
 // 403 when the Host header is not a loopback name, so a proxy or embedder that
@@ -638,6 +638,14 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 			registry:         &s.healthResync,
 		}),
 		server.WithHeartbeatInterval(heartbeatInterval(s.config.HeartbeatInterval)),
+		// sessionOwnershipMiddleware answers 404 for an absent or terminated session
+		// before the transport runs, so the transport's own cleanup of this pod's
+		// copy of that session never happens. The idle timeout reaps it instead. It
+		// releases only this pod's copy: the store record is untouched, so a client
+		// that returns after being reaped is rehydrated if the session is still
+		// valid. Only POSTs count as activity. SessionTTL is the same non-zero
+		// value the session storage was built with (see WithDefaults).
+		server.WithSessionIdleTimeout(s.config.SessionTTL),
 	}
 	// Install the pre-dispatch authorization gate only when authz is configured
 	// (allow-all otherwise, matching the core admission seam's guard). The gate
@@ -696,7 +704,8 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 	//   recovery → body-limit → write-timeout → header-validation →
 	//   forwarded-header capture (if PassthroughHeaders is set) →
 	//   audit (if configured) → auth (if configured) → MCP-parsing →
-	//   telemetry (if configured) → host-guard → classification → handler
+	//   telemetry (if configured) → host-guard → classification →
+	//   session ownership (Legacy only) → handler
 	// Rate limiting is a core VMCP decorator rather than an HTTP middleware and
 	// runs during tool dispatch inside the handler.
 	//
@@ -717,11 +726,20 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 	// Authorization additionally runs a pre-dispatch CallGate INSIDE the streamable
 	// server (installed above only when Authz is configured): it re-runs the core
 	// admission decision for tools/call, resources/read, and prompts/get and rejects a
-	// denial as HTTP 403 + JSON-RPC 403 before dispatch. The gate sits before session
-	// validation (403-before-404) and inside the audit middleware, so a denied call is
-	// audited with outcome "denied". See call_gate.go.
+	// denial as HTTP 403 + JSON-RPC 403 before dispatch. The gate runs before the
+	// transport's session-existence validation but after the ownership middleware below,
+	// and inside the audit middleware, so a denied call is audited with outcome
+	// "denied". See call_gate.go.
+	//
+	// Session ownership is enforced in front of the streamable server, after
+	// authentication: a request carrying the Mcp-Session-Id of a session the caller
+	// does not own is answered 404 before the transport routes it (stream, DELETE,
+	// list, client response, cross-replica rehydration). It therefore also precedes
+	// the authorization gate above, so a foreign or unknown session ID gets 404
+	// before any 403.
+	// See session_ownership.go.
 
-	var mcpHandler http.Handler = streamableServer
+	var mcpHandler = s.sessionOwnershipMiddleware(streamableServer)
 
 	// Classify Modern (2026-07-28) vs Legacy at the decode seam, reject
 	// malformed Modern requests before dispatch, and route well-formed Modern
@@ -805,11 +823,12 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 
 // applyForwardedHeaderCapture wraps next with the forwarded-header capture
 // middleware when passthrough headers are configured. It copies the allowlisted
-// incoming headers into the request context so the per-session backend client
-// forwards them to backends (see pkg/vmcp/headerforward). Identity-independent
-// plumbing: its position relative to auth is immaterial; it must only run before
-// session creation, which every inner handler satisfies. No-op when the allowlist
-// is empty.
+// incoming headers into the request context so the backend client forwards them
+// to backends (see pkg/vmcp/headerforward). Identity-independent plumbing: its
+// position relative to auth is immaterial, but it must wrap every MCP request,
+// not only the one that creates the session, so a request that omits a header
+// does not inherit the session creator's value. No-op when the allowlist is
+// empty.
 func (s *Server) applyForwardedHeaderCapture(next http.Handler) http.Handler {
 	if len(s.config.PassthroughHeaders) == 0 {
 		return next
@@ -1294,11 +1313,10 @@ func (s *Server) lazyInjectSessionTools(ctx context.Context) {
 	// the optimizer is enabled — via serveSessionTools, the same helper registration uses.
 	//
 	// Note: this lists under the CURRENT request identity, not the session's bound identity.
-	// For the realistic same-principal load-balanced case they are equal, so the advertised
-	// set is identical across pods. A cross-identity re-hydration would advertise the
-	// requester's own filtered set, but the call-time binding check (enforceSessionBinding,
-	// run before core.CallTool/ReadResource) is the backstop — it rejects a mismatched
-	// caller, so no other principal's capabilities can be invoked.
+	// They are the same principal (issuer and subject): sessionOwnershipMiddleware rejects any
+	// other principal before the transport rehydrates the session, so the advertised set is identical across
+	// pods. The call-time binding check (enforceSessionBinding, run before
+	// core.CallTool/ReadResource) remains a second layer for embedders without that middleware.
 	identity, _ := auth.IdentityFromContext(ctx)
 	adaptedTools, err := s.serveSessionTools(ctx, sessionID, identity)
 	if err != nil || len(adaptedTools) == 0 {
@@ -1357,18 +1375,14 @@ func (s *Server) handleSessionRegistrationImpl(ctx context.Context, session serv
 		}
 	}()
 
-	// NOTE: the initialize response (including the Mcp-Session-Id header) has
-	// already been sent to the client before this hook fires. Any error below
-	// terminates the session internally, but the client holds a session ID that
-	// will appear to have no tools (tool calls will return "not found" from the
-	// SDK). This is an architectural constraint of the two-phase pattern — there
-	// is no way to retract the session ID after it has been sent.
-	//
-	// NOTE: there is a brief race window between the client receiving the session
-	// ID and this hook completing. A client that pipelines a tools/call immediately
-	// after initialize may receive a "tool not found" error before AddSessionTools
-	// completes. Conforming MCP clients call tools/list before tools/call, so this
-	// window is expected to be harmless in practice.
+	// NOTE: this hook runs synchronously inside the initialize dispatch (the
+	// mcpcompat shim's sessionDispatchMiddleware calls registerAndSync before the
+	// initialize result is returned), so the session record, including its owner,
+	// is complete before the client receives the Mcp-Session-Id header. The
+	// session-ownership middleware relies on this: it rejects a record that has
+	// no owner yet. Any error below terminates the session before the response is
+	// written; the client still receives the session ID, and its next request on
+	// it is answered 404 so it re-initializes.
 	//
 	// The list_changed sink is built here, before CreateSession, so it can be
 	// threaded through to every backend connector this session opens (#5748).

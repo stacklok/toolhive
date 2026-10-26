@@ -54,6 +54,23 @@ func runDataStorageTests(t *testing.T, newStorage func(t *testing.T) DataStorage
 		assert.NotNil(t, loaded)
 	})
 
+	t.Run("LoadMetadata round-trip, miss and empty ID", func(t *testing.T) {
+		t.Parallel()
+		s := newStorage(t)
+		ctx := context.Background()
+
+		_, err := s.Create(ctx, "sess-peek", map[string]string{"key": "value"})
+		require.NoError(t, err)
+		loaded, err := s.LoadMetadata(ctx, "sess-peek")
+		require.NoError(t, err)
+		assert.Equal(t, "value", loaded["key"])
+
+		_, err = s.LoadMetadata(ctx, "absent")
+		assert.ErrorIs(t, err, ErrSessionNotFound)
+		_, err = s.LoadMetadata(ctx, "")
+		assert.Error(t, err)
+	})
+
 	t.Run("Load miss returns ErrSessionNotFound", func(t *testing.T) {
 		t.Parallel()
 		s := newStorage(t)
@@ -305,6 +322,27 @@ func TestLocalSessionDataStorage(t *testing.T) {
 		assert.NoError(t, err, "actively loaded session should not be evicted")
 	})
 
+	t.Run("LoadMetadata does not refresh TTL", func(t *testing.T) {
+		t.Parallel()
+		const ttl = time.Hour
+		s, err := NewLocalSessionDataStorage(ttl)
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = s.Close() })
+		ctx := context.Background()
+
+		_, err = s.Create(ctx, "peek-sess", map[string]string{"k": "v"})
+		require.NoError(t, err)
+		backdateLocalEntry(t, s, "peek-sess", ttl+time.Millisecond)
+
+		loaded, err := s.LoadMetadata(ctx, "peek-sess")
+		require.NoError(t, err)
+		assert.Equal(t, "v", loaded["k"])
+
+		s.deleteExpired()
+		_, err = s.LoadMetadata(ctx, "peek-sess")
+		assert.ErrorIs(t, err, ErrSessionNotFound, "LoadMetadata must not have refreshed the entry")
+	})
+
 }
 
 // backdateLocalEntry moves the last-access timestamp of id back by age,
@@ -376,6 +414,22 @@ func TestRedisSessionDataStorage(t *testing.T) {
 
 		_, err = s.Load(ctx, "expiring")
 		assert.ErrorIs(t, err, ErrSessionNotFound)
+	})
+
+	t.Run("LoadMetadata does not refresh TTL", func(t *testing.T) {
+		t.Parallel()
+		s, mr := newTestRedisDataStorage(t)
+		ctx := context.Background()
+
+		_, err := s.Create(ctx, "peek", map[string]string{})
+		require.NoError(t, err)
+		mr.FastForward(29 * time.Minute)
+		_, err = s.LoadMetadata(ctx, "peek")
+		require.NoError(t, err, "LoadMetadata should succeed before expiry")
+
+		mr.FastForward(2 * time.Minute)
+		_, err = s.LoadMetadata(ctx, "peek")
+		assert.ErrorIs(t, err, ErrSessionNotFound, "LoadMetadata must not have extended the TTL")
 	})
 
 	t.Run("Create uses SET NX — key format is {prefix}{id}", func(t *testing.T) {

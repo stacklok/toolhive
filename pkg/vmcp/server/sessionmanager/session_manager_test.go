@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alicebob/miniredis/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
@@ -86,6 +87,9 @@ func newMockFactoryWithError(t *testing.T, ctrl *gomock.Controller, err error) *
 type alwaysFailDataStorage struct{}
 
 func (alwaysFailDataStorage) Load(_ context.Context, _ string) (map[string]string, error) {
+	return nil, transportsession.ErrSessionNotFound
+}
+func (alwaysFailDataStorage) LoadMetadata(_ context.Context, _ string) (map[string]string, error) {
 	return nil, transportsession.ErrSessionNotFound
 }
 func (alwaysFailDataStorage) Create(_ context.Context, _ string, _ map[string]string) (bool, error) {
@@ -2134,4 +2138,89 @@ func TestSessionManager_EvictStaleSessions_NoStale(t *testing.T) {
 
 	assert.Zero(t, sm.EvictStaleSessions(context.Background()))
 	assert.Equal(t, 2, sm.sessions.Len())
+}
+
+// loadFailDataStorage is a DataStorage whose metadata reads always fail with a
+// storage error, as an unreachable Redis does.
+type loadFailDataStorage struct{ alwaysFailDataStorage }
+
+func (loadFailDataStorage) LoadMetadata(context.Context, string) (map[string]string, error) {
+	return nil, errors.New("storage unavailable")
+}
+
+func TestSessionManager_LookupOwner(t *testing.T) {
+	t.Parallel()
+
+	const owner = "https://issuer.example.com\x00alice"
+	tests := []struct {
+		name         string
+		stored       map[string]string // nil: no record
+		storage      transportsession.DataStorage
+		wantOwner    string
+		wantNotFound bool
+		wantStoreErr bool
+	}{
+		{name: "absent session", wantNotFound: true},
+		{name: "placeholder has no owner yet", stored: map[string]string{}},
+		{
+			name:         "terminated placeholder",
+			stored:       map[string]string{MetadataKeyTerminated: MetadataValTrue},
+			wantNotFound: true,
+		},
+		{
+			name:      "bound session",
+			stored:    map[string]string{sessiontypes.MetadataKeyIdentityBinding: owner},
+			wantOwner: owner,
+		},
+		{name: "storage failure", storage: loadFailDataStorage{}, wantStoreErr: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			storage := tc.storage
+			if storage == nil {
+				storage = newTestSessionDataStorage(t)
+			}
+			if tc.stored != nil {
+				created, err := storage.Create(context.Background(), "sess-1", tc.stored)
+				require.NoError(t, err)
+				require.True(t, created)
+			}
+			sm := &Manager{storage: storage}
+
+			got, err := sm.LookupOwner(context.Background(), "sess-1")
+			switch {
+			case tc.wantStoreErr:
+				require.Error(t, err)
+				assert.NotErrorIs(t, err, transportsession.ErrSessionNotFound)
+			case tc.wantNotFound:
+				assert.ErrorIs(t, err, transportsession.ErrSessionNotFound)
+			default:
+				require.NoError(t, err)
+			}
+			assert.Equal(t, tc.wantOwner, got)
+		})
+	}
+
+	t.Run("does not renew the session TTL", func(t *testing.T) {
+		t.Parallel()
+		mr := miniredis.RunT(t)
+		storage := newSharedRedisStorageWithTTL(t, mr, 30*time.Minute)
+		created, err := storage.Create(context.Background(), "sess-ttl",
+			map[string]string{sessiontypes.MetadataKeyIdentityBinding: owner})
+		require.NoError(t, err)
+		require.True(t, created)
+		sm := &Manager{storage: storage}
+
+		mr.FastForward(29 * time.Minute)
+		got, err := sm.LookupOwner(context.Background(), "sess-ttl")
+		require.NoError(t, err)
+		assert.Equal(t, owner, got)
+
+		// Past the original TTL: a renewing read would have kept the key alive.
+		mr.FastForward(2 * time.Minute)
+		_, err = sm.LookupOwner(context.Background(), "sess-ttl")
+		assert.ErrorIs(t, err, transportsession.ErrSessionNotFound,
+			"an ownership lookup must not keep the session alive")
+	})
 }

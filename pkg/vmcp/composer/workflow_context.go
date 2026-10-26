@@ -117,7 +117,8 @@ func (ctx *WorkflowContext) RecordStepFailure(stepID string, err error) {
 	}
 }
 
-// RecordStepSkipped records that a step was skipped (condition was false).
+// RecordStepSkipped records that a step was skipped: its condition was false, or
+// an earlier skip_remaining elicitation action stopped the workflow.
 // If defaultResults is provided, it will be used as the step's output for downstream templates.
 // Thread-safe for concurrent step execution.
 func (ctx *WorkflowContext) RecordStepSkipped(stepID string, defaultResults map[string]any) {

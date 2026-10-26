@@ -68,7 +68,15 @@ is rejected with **HTTP 403** and a JSON-RPC error whose code is `403`, and the
 denied request is audited with outcome `denied`. The denial message is kind-only
 (for example, `call denied by authorization policy`) and never reveals the
 capability name or whether it exists, so it cannot be used to enumerate the
-server. See the [Virtual MCP architecture](arch/10-virtual-mcp-architecture.md#authorization-enforcement-core-admission-seam--pre-dispatch-gate)
+server.
+
+One ordering differs from the direct `thv run` proxies, where authorization runs
+first: vMCP checks session ownership before the authorization gate. A request that
+carries an `Mcp-Session-Id` the caller does not own, or that does not exist, gets
+**HTTP 404** before any 403. A denied call on the caller's own session still gets
+403.
+
+See the [Virtual MCP architecture](arch/10-virtual-mcp-architecture.md#authorization-enforcement-core-admission-seam--pre-dispatch-gate)
 for details.
 
 ## Configure authorization

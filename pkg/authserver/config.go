@@ -1291,10 +1291,10 @@ type Config struct {
 	// fosite error answers with its own status and code. A plain Go error
 	// answers HTTP 500 with fosite's generic "error" code, which clients treat
 	// as a server failure and may retry. fosite.ErrUnknownRequest is treated as no objection,
-	// not a refusal, so returning it lets the grant through. Use the seam to
-	// refuse a refresh whose session can no longer be served, for example one
-	// whose upstream credential is dead. When deciding from
-	// upstream.ErrGrantRejected, note its doc: under a cross-replica
+	// not a refusal, so returning it lets the grant through. The built-in
+	// upstream refresh guard already refuses a refresh whose upstream
+	// credential is dead; use the seam for checks of your own. When deciding
+	// from upstream.ErrGrantRejected, note its doc: under a cross-replica
 	// refresh race it can occasionally be reported for a live credential.
 	//
 	// The seam only validates. PopulateTokenEndpointResponse and
@@ -1309,7 +1309,32 @@ type Config struct {
 	// returns, for example by wrapping UpstreamTokenRefresher and
 	// IDPTokenStorage in a service it holds a pointer to. A nil entry,
 	// including a nil pointer of a concrete type, is rejected by Validate.
+	//
+	// These handlers run after the built-in upstream refresh guard (see
+	// DisableUpstreamRefreshGuard), so they see only grants it accepted.
 	RefreshGrantHandlers []fosite.TokenEndpointHandler
+
+	// DisableUpstreamRefreshGuard turns off the built-in refresh-grant guard.
+	// When on (the default, with at least one upstream configured), a
+	// refresh_token grant is refused with invalid_grant when the token
+	// session's upstream credential is definitively dead, and its refresh
+	// token revoked when the stored rows prove the credential can never be
+	// used again. docs/arch/11-auth-server-storage.md ("Upstream refresh
+	// guard") lists every cause and whether it revokes. The guard refreshes
+	// expired rows, one provider at a time and within a 10-second budget,
+	// before deciding, so an idle session whose upstream refresh succeeds is
+	// granted. A transient failure (network, 5xx, 429, storage, the budget
+	// running out) grants the refresh.
+	//
+	// Without the guard, a refreshed access token keeps the token session and
+	// therefore its dead upstream credential, so a client that answers the
+	// bearer validator's 401 by refreshing loops. The refusal sends it to a
+	// full authorization instead. With the guard on, a refresh token stays
+	// useful only while the upstream credential does.
+	//
+	// Only Go embedders can set this: the RunConfig, CLI and operator CRDs do
+	// not expose it.
+	DisableUpstreamRefreshGuard bool
 
 	// UpstreamFilter, when set, narrows the upstream authorization chain after the
 	// first leg resolves (see handlers.WithUpstreamFilter). When nil, all

@@ -121,8 +121,7 @@ func (r *upstreamTokenRefresher) RefreshAndStore(
 			// and refresh using it as the authoritative row.
 			if authoritative == nil {
 				return nil, fmt.Errorf(
-					"upstream token row missing on re-read for session %q provider %q",
-					sessionID, expired.ProviderID,
+					"upstream token row missing on re-read for provider %q", expired.ProviderID,
 				)
 			}
 			if !authoritative.IsExpired(time.Now()) && rowChanged(expired, authoritative) {
@@ -250,10 +249,11 @@ func (r *upstreamTokenRefresher) refreshAndStore(
 			// The old refresh token is still valid in storage; the caller can
 			// proceed with the refreshed access token for this request.
 			slog.Warn("failed to persist refreshed upstream tokens; old refresh token still valid",
-				"session_id", sessionID,
 				"provider_id", expired.ProviderID,
 				"error", err,
 			)
+			// Log session_id at DEBUG only; it is credential-adjacent.
+			slog.Debug("upstream token persist failure session", "session_id", sessionID)
 			return updated, nil
 		}
 
@@ -268,14 +268,15 @@ func (r *upstreamTokenRefresher) refreshAndStore(
 		defer deleteCancel()
 		if delErr := r.storage.DeleteUpstreamTokensForProvider(deleteCtx, sessionID, expired.ProviderID); delErr != nil {
 			slog.Error("failed to delete stale upstream token row after rotation persist failure",
-				"session_id", sessionID,
 				"provider_id", expired.ProviderID,
 				"error", delErr,
 			)
+			// Log session_id at DEBUG only; it is credential-adjacent.
+			slog.Debug("stale upstream token row delete failure session", "session_id", sessionID)
 		}
 		return nil, fmt.Errorf(
-			"failed to persist rotated upstream refresh token for session %q provider %q: %w",
-			sessionID, expired.ProviderID, err,
+			"failed to persist rotated upstream refresh token for provider %q: %w",
+			expired.ProviderID, err,
 		)
 	}
 
@@ -331,26 +332,26 @@ func (r *upstreamTokenRefresher) resolveConcurrentRefreshConflict(
 	if errors.Is(err, storage.ErrNotFound) {
 		slog.Warn("upstream token row no longer exists after a concurrent-refresh conflict; "+
 			"this is expected on logout or TTL eviction and is not necessarily a lost race",
-			"session_id", sessionID,
 			"provider_id", providerID,
 		)
 	} else {
 		slog.Error("lost concurrent upstream token refresh race and re-read found no usable winner; "+
 			"the redeemed refresh token is unrecoverable for this attempt",
-			"session_id", sessionID,
 			"provider_id", providerID,
 			"error", err,
 		)
 	}
+	// Log session_id at DEBUG only; it is credential-adjacent.
+	slog.Debug("concurrent upstream token refresh conflict session", "session_id", sessionID)
 	if err != nil {
 		return nil, fmt.Errorf(
-			"concurrent upstream token refresh for session %q provider %q: %w: %w",
-			sessionID, providerID, storage.ErrConcurrentRefresh, err,
+			"concurrent upstream token refresh for provider %q: %w: %w",
+			providerID, storage.ErrConcurrentRefresh, err,
 		)
 	}
 	return nil, fmt.Errorf(
-		"concurrent upstream token refresh for session %q provider %q: %w",
-		sessionID, providerID, storage.ErrConcurrentRefresh,
+		"concurrent upstream token refresh for provider %q: %w",
+		providerID, storage.ErrConcurrentRefresh,
 	)
 }
 

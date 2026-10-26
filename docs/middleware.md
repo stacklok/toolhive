@@ -170,7 +170,7 @@ sequenceDiagram
 - Extract JWT claims (sub, name, roles, etc.)
 - Add claims to request context for downstream middleware
 - With the embedded auth server, load the token session's upstream provider credentials (the `tsid` claim) into `Identity.UpstreamTokens` and `Identity.UpstreamIDTokens`, refreshing expired access tokens
-- Return 401 Unauthorized with a `WWW-Authenticate: Bearer error="invalid_token"` challenge when a provider's access token can no longer be refreshed, or when the token session holds no usable upstream access token at all (every stored row has expired or been deleted), so the client signs in again instead of receiving a policy denial from a later middleware; the answer does not depend on whether a later middleware reads the credential
+- Return 401 Unauthorized with a `WWW-Authenticate: Bearer error="invalid_token"` challenge when a provider's access token can no longer be refreshed, or when the token session holds no usable upstream access token at all (every stored row has expired or been deleted), so the client signs in again instead of receiving a policy denial from a later middleware; the answer does not depend on whether a later middleware reads the credential. A client that answers this 401 by redeeming its refresh token gets HTTP 400 `invalid_grant` from the embedded auth server when the upstream credential is definitively dead (for example, no row is stored or the IdP rejected its refresh; see [Upstream refresh guard](arch/11-auth-server-storage.md#upstream-refresh-guard) for the full list), which sends it to a full authorization instead of looping on refresh
 
 **Context Data Added**:
 - JWT claims with `claim_` prefix (e.g., `claim_sub`, `claim_name`)

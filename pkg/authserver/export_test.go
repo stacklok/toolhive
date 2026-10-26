@@ -29,7 +29,10 @@ func BuildProviderForTest(ctx context.Context, cfg Config, stor storage.Storage)
 	if err != nil {
 		return nil, err
 	}
-	provider, validator, err := buildProvider(cfg, authServerConfig, stor)
+	// A nil refresher leaves the upstream refresh guard out. The guard would sit
+	// inside the refreshGrantValidators wrapper, which is the one handler the
+	// tests that use this helper can see.
+	provider, validator, err := buildProvider(cfg, authServerConfig, stor, nil, nil)
 	if err != nil {
 		return nil, err
 	}

@@ -164,6 +164,29 @@ During a rolling upgrade or after a rollback, replicas running an older version 
 The device flow has two more cases. When an older replica handles the device confirmation, or serves any device token poll after the confirmation (each poll rewrites the stored device request), the stored upstream identity is lost and that login gets neither claim.
 
 Rollout order for embedders that enable disclosure: first roll out this version with disclosure off, and enable it only when no older replica is left. To roll back, turn disclosure off and let the new version serve refreshes before going back to the older version.
+
+## Access token type (`typ`)
+
+Every JWT has a JOSE header, and its `typ` member says what kind of JWT it is. By default the auth server writes `"typ": "JWT"`. An embedder can opt in to `"typ": "at+jwt"`, the value RFC 9068 section 2.1 defines for JWT access tokens:
+
+```json
+{"alg":"RS256","kid":"…","typ":"at+jwt"}
+```
+
+The setting is Go-only. Set `authserver.Config.AccessTokenType`, or pass `runner.WithAccessTokenType`. The accepted values are `""` and `"JWT"` (the default) and `"at+jwt"`. Any other value makes server construction fail. The setting is not a RunConfig field, so config files, the CLI and operator CRDs cannot set it yet.
+
+When the value is `at+jwt`, every JWT access token the server issues gets that type. This covers the authorization code grant (with PKCE), the refresh grant, the device code grant, RFC 8693 token exchange, the RFC 7523 JWT-bearer grant and ID-JAG redemption. This server has no client credentials grant. Refresh tokens and authorization codes are opaque HMAC tokens, not JWTs, so the setting does not change them. An ID-JAG this server may issue in the future keeps its own type, `oauth-id-jag+jwt`.
+
+The type is written when a token is signed. It is not stored with the session. A change therefore takes effect at the next refresh, including for sessions created before the change.
+
+ToolHive's own consumers accept both types. The token validator in `pkg/auth`, the vMCP (which uses it), and the token exchange grant's check of a subject token issued by this server do not check `typ`.
+
+The JWT-bearer grant only accepts assertions from configured trusted issuers, and the server's own issuer can never be one, so it never accepts this server's own access tokens as assertions. With `at+jwt` enabled, the grant also refuses them by `typ`: it accepts assertions with no `typ`, `""`, `"JWT"` or `"oauth-id-jag+jwt"`.
+
+Compatibility warning: some resource servers reject `at+jwt` by default. Java resource servers built on the default type verifier of Nimbus JOSE+JWT accept only `JWT` or no `typ`, and they reject `at+jwt`. This includes Spring Security before 6.5. Enable `at+jwt` only when every resource server that validates these tokens accepts it.
+
+The default may switch to `at+jwt` in a later release, once the setting is also a RunConfig field.
+
 ## Callback identity and storage context
 
 The first upstream callback passes a `handlers.FilterPrincipal` to `UpstreamFilter`. This public interface is a getter contract (`GetSubject`, `GetCanonicalUserID`, `GetName`, `GetEmail`, `GetClaims`), not a promise that implementations contain only those fields. The callback passes a private concrete projection with only those five credential-free values; tokens and upstream credentials are not included. The claims map is upstream-provided and read-only, and may be nil when unavailable.
@@ -236,6 +259,12 @@ Clients must generate a fresh, unguessable `state` for each request and verify t
 **Client compatibility:** When the server has multiple allowed audiences, clients must send `resource` on `/oauth/authorize` before consent; choosing it only at `/oauth/token` is too late. A single configured audience defaults when omitted at authorization, and a bound code or refresh token inherits its original audience when `resource` is omitted at the token endpoint. An explicit token-endpoint `resource` must match that audience exactly.
 
 The page leads with a plain-language summary and the classified destination of the redirect ("this computer" for loopback, the host plus its punycode form for other http(s) hosts, "an app that opens `<scheme>://` links" for custom schemes, or the full URI when it cannot be classified), followed by the client name, labelled as given by the app and not verified. A collapsed "Technical details" section holds the full redirect URI, client ID, scopes, resource and the first upstream provider's internal name. It does not redirect to the upstream identity provider until a browser-bound, same-origin POST to `/oauth/consent` approves the request. Denial returns `access_denied` to the validated client redirect. The pending consent handle and each upstream callback state are single-use, browser-bound records with a 10-minute absolute lifetime from the initial authorization (not extended by chaining). The device flow uses its separate verification and approval page.
+
+The "You will sign in with … next." line shows the upstream's optional `DisplayName` (`display_name` in `UpstreamRunConfig`; not yet settable from the `MCPExternalAuthConfig` CRD), falling back to its `Name` when the display name is unset, empty after sanitizing, or when the pending authorization's upstream is no longer configured. Technical details keep showing `Name` as the internal name. The label is resolved at render time from the handler's upstream list, so a handler rebuilt with a different upstream set shows the current value while pending authorizations in shared storage stay valid. `DisplayName` is display-only: it is never compared, persisted, or used as a key. Upstream token storage, remembered consent (`ProviderID`), pending authorizations (`UpstreamProviderName`) and callback routing all stay keyed by `Name`, so changing a display name leaves every stored record valid.
+
+At render, control and format runes (bidi overrides, zero-width characters, newlines) are dropped, surrounding whitespace is trimmed, the result is capped at `maxConsentTextRunes` with a trailing ellipsis, and the template HTML-escapes it. Sanitizing removes only those runes: other invisible characters, such as Hangul fillers, are kept and can render as a blank label. A malformed label is cleaned at render and never rejected by validation, so a cosmetic field cannot fail server start or an embedder's rebuild of its upstreams.
+
+**Embedder obligation.** Sanitizing does not judge meaning: printable misleading text such as "Acme Okta (verified)" is shown in full, and the page presents the label as trusted text on the anti-phishing gate. An embedder must therefore populate `DisplayName` only from operator-controlled values, never from tenant-, admin- or client-writable input, and not from metadata fetched from the upstream, such as its discovery document.
 
 The form action uses the configured browser-facing authorization base, including any path prefix. The POST accepts only that base's browser-serialized Origin (including normalized IP addresses, domain names and ports), not a missing, null, or foreign Origin. `Referrer-Policy: same-origin` preserves Origin on native same-origin form submissions without leaking the consent URL to other sites.
 

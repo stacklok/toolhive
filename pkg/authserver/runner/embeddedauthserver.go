@@ -65,6 +65,7 @@ type EmbeddedAuthServerOption func(*embeddedAuthServerOptions)
 type embeddedAuthServerOptions struct {
 	consentExemptClientIDs       []string
 	subjectIdentifierAudiences   []string
+	accessTokenType              string
 	listenerHost                 string
 	authorizationDetailsRegistry *authorizationdetails.Registry
 }
@@ -115,6 +116,18 @@ func WithSubjectIdentifierAudiences(audiences []string) EmbeddedAuthServerOption
 	return func(options *embeddedAuthServerOptions) {
 		options.subjectIdentifierAudiences = slices.Clone(copied)
 	}
+}
+
+// WithAccessTokenType sets the JOSE "typ" header on the JWT access tokens the
+// embedded server issues. The value may be empty or "JWT" (the default), or
+// "at+jwt" (RFC 9068). Some resource servers reject at+jwt by default, such as
+// Java ones built on Nimbus JOSE+JWT's default type verifier, including Spring
+// Security before 6.5, so enable it only when every resource server accepts it.
+// Any other value makes server construction fail. It is deliberately not a
+// RunConfig field yet, so config files and operator CRDs cannot set it. Repeated
+// options replace the value.
+func WithAccessTokenType(typ string) EmbeddedAuthServerOption {
+	return func(options *embeddedAuthServerOptions) { options.accessTokenType = typ }
 }
 
 // EmbeddedAuthServer wraps the authorization server for integration with the proxy runner.
@@ -454,6 +467,7 @@ func newEmbeddedAuthServerWithStorage(
 		BaselineClientScopes:                      slices.Clone(cfg.BaselineClientScopes),
 		AllowedAudiences:                          slices.Clone(cfg.AllowedAudiences),
 		SubjectIdentifierAudiences:                slices.Clone(options.subjectIdentifierAudiences),
+		AccessTokenType:                           options.accessTokenType,
 		CIMDEnabled:                               cimdEnabled,
 		CIMDCacheMaxSize:                          cimdCacheMaxSize,
 		CIMDCacheFallbackTTL:                      cimdCacheFallbackTTL,
@@ -1010,9 +1024,10 @@ func buildUpstreamConfig(rc *authserver.UpstreamRunConfig, insecureAllowHTTP boo
 			return nil, err
 		}
 		return &authserver.UpstreamConfig{
-			Name:       rc.Name,
-			Type:       authserver.UpstreamProviderTypeOIDC,
-			OIDCConfig: oidcCfg,
+			Name:        rc.Name,
+			DisplayName: rc.DisplayName,
+			Type:        authserver.UpstreamProviderTypeOIDC,
+			OIDCConfig:  oidcCfg,
 		}, nil
 
 	case authserver.UpstreamProviderTypeOAuth2:
@@ -1022,6 +1037,7 @@ func buildUpstreamConfig(rc *authserver.UpstreamRunConfig, insecureAllowHTTP boo
 		}
 		return &authserver.UpstreamConfig{
 			Name:         rc.Name,
+			DisplayName:  rc.DisplayName,
 			Type:         authserver.UpstreamProviderTypeOAuth2,
 			OAuth2Config: oauth2Cfg,
 		}, nil

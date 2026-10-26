@@ -83,6 +83,7 @@ Welcome to the ToolHive architecture documentation. This directory contains comp
    - Atomic operations with Lua scripts
    - Configuration and security model
    - Upstream subject identifiers (RFC 9493 `sub_id`) in access tokens
+   - Access token type (`typ`: `JWT` or `at+jwt`) in JWT access tokens
 
 10. **[Skills System](12-skills-system.md)**
     - Agent Skills lifecycle (discover, build, publish, install)

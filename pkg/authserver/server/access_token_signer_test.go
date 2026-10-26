@@ -57,25 +57,29 @@ func TestATJWTAccessTokenSigner_Generate(t *testing.T) {
 	tests := []struct {
 		name      string
 		header    jwt.Mapper
+		wantTyp   string
 		wantExtra map[string]any
 	}{
 		{
-			name:   "empty headers",
-			header: jwt.NewHeaders(),
+			name:    "empty headers",
+			header:  jwt.NewHeaders(),
+			wantTyp: AccessTokenTypeATJWT,
 		},
 		{
 			name:      "caller header entries are kept",
 			header:    &jwt.Headers{Extra: map[string]any{"x-test": "v"}},
+			wantTyp:   AccessTokenTypeATJWT,
 			wantExtra: map[string]any{"x-test": "v"},
 		},
 		{
-			name:      "caller header already says JWT",
-			header:    &jwt.Headers{Extra: map[string]any{"typ": "JWT", "x-test": "v"}},
-			wantExtra: map[string]any{"x-test": "v"},
+			name:    "non-access JWT keeps its typ",
+			header:  &jwt.Headers{Extra: map[string]any{"typ": "oauth-id-jag+jwt"}},
+			wantTyp: "oauth-id-jag+jwt",
 		},
 		{
-			name:   "untyped nil mapper",
-			header: nil,
+			name:    "untyped nil mapper",
+			header:  nil,
+			wantTyp: AccessTokenTypeATJWT,
 		},
 	}
 
@@ -98,7 +102,7 @@ func TestATJWTAccessTokenSigner_Generate(t *testing.T) {
 			require.NoError(t, err)
 
 			decoded := decodeJOSEHeader(t, token)
-			assert.Equal(t, AccessTokenTypeATJWT, decoded["typ"])
+			assert.Equal(t, tt.wantTyp, decoded["typ"])
 			assert.Equal(t, "test-kid", decoded["kid"])
 			for k, v := range tt.wantExtra {
 				assert.Equal(t, v, decoded[k], "header entry %q", k)

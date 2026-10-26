@@ -821,8 +821,10 @@ func createProvider(
 	// the HMAC strategy, and no ID-token strategy is registered. The type is
 	// set at signing time, not in the session, because storage persists the
 	// session's JWT header and a per-session typ would survive a configuration
-	// change across refreshes. ID-JAG issuance (#6898) must sign with its own
-	// signer, or its tokens would be typed at+jwt.
+	// change across refreshes. Tokens signed through this signer get typ: at+jwt
+	// unless they set their own typ, so any future JWT that is not an access
+	// token, such as an ID-JAG (#6898), must set its own typ or sign with its
+	// own signer.
 	if authServerConfig.AccessTokenType == oauthserver.AccessTokenTypeATJWT {
 		jwtStrategy.Signer = oauthserver.NewATJWTAccessTokenSigner(jwtStrategy.Signer)
 	}

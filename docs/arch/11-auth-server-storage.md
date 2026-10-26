@@ -164,6 +164,27 @@ During a rolling upgrade or after a rollback, replicas running an older version 
 The device flow has two more cases. When an older replica handles the device confirmation, or serves any device token poll after the confirmation (each poll rewrites the stored device request), the stored upstream identity is lost and that login gets neither claim.
 
 Rollout order for embedders that enable disclosure: first roll out this version with disclosure off, and enable it only when no older replica is left. To roll back, turn disclosure off and let the new version serve refreshes before going back to the older version.
+
+## Access token type (`typ`)
+
+Every JWT has a JOSE header, and its `typ` member says what kind of JWT it is. By default the auth server writes `"typ": "JWT"`. An embedder can opt in to `"typ": "at+jwt"`, the value RFC 9068 section 2.1 defines for JWT access tokens:
+
+```json
+{"alg":"RS256","kid":"…","typ":"at+jwt"}
+```
+
+The setting is Go-only. Set `authserver.Config.AccessTokenType`, or pass `runner.WithAccessTokenType`. The accepted values are `""` and `"JWT"` (the default) and `"at+jwt"`. Any other value makes server construction fail. The setting is not a RunConfig field, so config files, the CLI and operator CRDs cannot set it yet.
+
+When the value is `at+jwt`, every JWT access token the server issues gets that type. This covers the authorization code grant (with PKCE), the refresh grant, the device code grant, RFC 8693 token exchange, the RFC 7523 JWT-bearer grant and ID-JAG redemption. This server has no client credentials grant. Refresh tokens and authorization codes are opaque HMAC tokens, not JWTs, so the setting does not change them. An ID-JAG this server may issue in the future keeps its own type, `oauth-id-jag+jwt`.
+
+The type is written when a token is signed. It is not stored with the session. A change therefore takes effect at the next refresh, including for sessions created before the change.
+
+ToolHive's own consumers accept both types. The token validator in `pkg/auth` and the vMCP, which uses it, do not check `typ`. The JWT-bearer grant refuses an assertion typed `at+jwt`, so an access token from this server cannot be used as a JWT-bearer assertion. It accepts assertions with no `typ`, `""`, `"JWT"` or `"oauth-id-jag+jwt"`.
+
+Compatibility warning: some resource servers reject `at+jwt` by default. Java resource servers built on the default type verifier of Nimbus JOSE+JWT accept only `JWT` or no `typ`, and they reject `at+jwt`. This includes Spring Security before 6.5. Enable `at+jwt` only when every resource server that validates these tokens accepts it.
+
+The default may switch to `at+jwt` in a later release, once the setting is also a RunConfig field.
+
 ## Callback identity and storage context
 
 The first upstream callback passes a `handlers.FilterPrincipal` to `UpstreamFilter`. This public interface is a getter contract (`GetSubject`, `GetCanonicalUserID`, `GetName`, `GetEmail`, `GetClaims`), not a promise that implementations contain only those fields. The callback passes a private concrete projection with only those five credential-free values; tokens and upstream credentials are not included. The claims map is upstream-provided and read-only, and may be nil when unavailable.

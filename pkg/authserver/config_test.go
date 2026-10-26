@@ -243,10 +243,11 @@ func TestConfigValidate(t *testing.T) {
 	}
 }
 
-func TestConfigValidateSubjectIdentifierAudiences(t *testing.T) {
-	t.Parallel()
+// minimalValidConfig returns a Config that passes Validate, for tests that vary one field.
+func minimalValidConfig(t *testing.T) Config {
+	t.Helper()
 
-	base := Config{
+	return Config{
 		Issuer:      "https://issuer.example.com",
 		HMACSecrets: &servercrypto.HMACSecrets{Current: make([]byte, 32)},
 		Upstreams: []UpstreamConfig{{
@@ -259,6 +260,12 @@ func TestConfigValidateSubjectIdentifierAudiences(t *testing.T) {
 		}},
 		AllowedAudiences: []string{"https://resource.example.com"},
 	}
+}
+
+func TestConfigValidateSubjectIdentifierAudiences(t *testing.T) {
+	t.Parallel()
+
+	base := minimalValidConfig(t)
 
 	tests := []struct {
 		name      string
@@ -274,6 +281,34 @@ func TestConfigValidateSubjectIdentifierAudiences(t *testing.T) {
 			t.Parallel()
 			cfg := base
 			cfg.SubjectIdentifierAudiences = tc.audiences
+			err := cfg.Validate()
+			if tc.wantErr {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
+func TestConfigValidateAccessTokenType(t *testing.T) {
+	t.Parallel()
+
+	base := minimalValidConfig(t)
+
+	tests := []struct {
+		name    string
+		typ     string
+		wantErr bool
+	}{
+		{name: "at+jwt is accepted", typ: "at+jwt"},
+		{name: "media type prefix is rejected", typ: "application/at+jwt", wantErr: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := base
+			cfg.AccessTokenType = tc.typ
 			err := cfg.Validate()
 			if tc.wantErr {
 				require.Error(t, err)

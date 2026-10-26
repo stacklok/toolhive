@@ -1353,6 +1353,15 @@ type Config struct {
 	// AllowedAudiences. It never grants an audience or client access.
 	SubjectIdentifierAudiences []string
 
+	// AccessTokenType sets the JOSE "typ" header on every JWT access token this server
+	// issues: authorization code, refresh, device code, token exchange, JWT-bearer and
+	// ID-JAG redemption grants. Empty or "JWT" keeps fosite's default typ: JWT.
+	// "at+jwt" types access tokens as RFC 9068 §2.1 requires. Some resource servers
+	// reject at+jwt by default, such as Java ones built on Nimbus JOSE+JWT's default
+	// type verifier, including Spring Security before 6.5. Enable it only when every
+	// resource server accepts it. It is reachable from Go only.
+	AccessTokenType string
+
 	// CIMDEnabled enables the CIMD storage decorator so the authorization server
 	// accepts HTTPS URLs as client_id values without prior DCR registration.
 	//
@@ -1506,6 +1515,10 @@ func (c *Config) Validate() error {
 	}
 
 	if err := c.validateAudienceConfiguration(); err != nil {
+		return err
+	}
+
+	if err := oauthserver.ValidateAccessTokenType(c.AccessTokenType); err != nil {
 		return err
 	}
 

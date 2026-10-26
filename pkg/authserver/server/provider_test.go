@@ -675,6 +675,82 @@ func TestNewAuthorizationServerConfig_PublishesFallbackKeys(t *testing.T) {
 	require.Len(t, publicJWKS.Keys, 2)
 }
 
+func TestValidateAccessTokenType(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		typ     string
+		wantErr bool
+	}{
+		{"empty is accepted", "", false},
+		{"JWT", "JWT", false},
+		{"at+jwt", "at+jwt", false},
+		{"uppercase suffix", "at+JWT", true},
+		{"all uppercase", "AT+JWT", true},
+		{"media type prefix", "application/at+jwt", true},
+		{"missing prefix", "jwt", true},
+		{"unknown", "foo", true},
+		{"leading space", " at+jwt", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := ValidateAccessTokenType(tt.typ)
+			if tt.wantErr {
+				assert.Error(t, err, "typ: %q", tt.typ)
+			} else {
+				assert.NoError(t, err, "typ: %q", tt.typ)
+			}
+		})
+	}
+}
+
+func TestNewAuthorizationServerConfig_AccessTokenType(t *testing.T) {
+	t.Parallel()
+
+	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+
+	tests := []struct {
+		name    string
+		typ     string
+		want    string
+		wantErr bool
+	}{
+		{name: "empty defaults to JWT", typ: "", want: AccessTokenTypeJWT},
+		{name: "at+jwt is kept", typ: AccessTokenTypeATJWT, want: AccessTokenTypeATJWT},
+		{name: "unsupported value is rejected", typ: "bogus", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			params := &AuthorizationServerParams{
+				Issuer:               "https://auth.example.com",
+				AccessTokenLifespan:  time.Hour,
+				RefreshTokenLifespan: time.Hour * 24,
+				AuthCodeLifespan:     time.Minute * 10,
+				HMACSecrets:          servercrypto.NewHMACSecrets([]byte("test-secret-with-32-bytes-long!!")),
+				SigningKeyID:         "key-1",
+				SigningKeyAlgorithm:  "RS256",
+				SigningKey:           rsaKey,
+				AccessTokenType:      tt.typ,
+			}
+
+			cfg, err := NewAuthorizationServerConfig(params)
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Nil(t, cfg)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, cfg.AccessTokenType)
+		})
+	}
+}
+
 // mockStorage is a minimal fosite.Storage implementation for testing.
 type mockStorage struct {
 	clients map[string]fosite.Client

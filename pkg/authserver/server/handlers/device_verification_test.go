@@ -325,6 +325,62 @@ func TestDeviceVerificationConfirmHandler_UnknownToken(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
 }
 
+// A pending confirmation without upstream tokens is corrupt data, not a removed
+// client. Approve must answer 500 before any client lookup, and deny must still
+// record the denial because it runs first.
+func TestDeviceVerificationConfirmHandler_MissingUpstreamTokens(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name             string
+		action           string
+		wantStatus       int
+		wantBody         string
+		wantDeviceStatus storage.DeviceRequestStatus
+	}{
+		{"approve", "approve", http.StatusInternalServerError, "Something went wrong", storage.DeviceRequestStatusPending},
+		{"deny", "deny", http.StatusOK, "Access denied", storage.DeviceRequestStatusDenied},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			h, mockUpstream := setupDeviceVerificationHandler(t)
+			deviceCode, userCode := issueDeviceCode(t, h)
+
+			submitRec, state := submitDeviceUserCode(t, h, mockUpstream, userCode)
+			callbackRec := httptest.NewRecorder()
+			h.CallbackHandler(callbackRec, newCallbackRequest("code=upstream-code&state="+state,
+				bindingCookieFrom(t, submitRec, state)))
+			require.Equal(t, http.StatusOK, callbackRec.Code, callbackRec.Body.String())
+			confirmToken := extractConfirmToken(t, callbackRec.Body.String())
+
+			// Replace the stored confirmation with one that has no upstream tokens.
+			ctx := context.Background()
+			pending, err := h.storage.LoadPendingDeviceConfirmation(ctx, confirmToken)
+			require.NoError(t, err)
+			require.NotNil(t, pending.UpstreamTokens)
+			pending.UpstreamTokens = nil
+			require.NoError(t, h.storage.StorePendingDeviceConfirmation(ctx, confirmToken, pending))
+
+			form := url.Values{"confirm_token": {confirmToken}, "action": {tt.action}}
+			req := httptest.NewRequest(http.MethodPost, "/oauth/device/confirm", strings.NewReader(form.Encode()))
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			rec := httptest.NewRecorder()
+			h.DeviceVerificationConfirmHandler(rec, req)
+
+			assert.Equal(t, tt.wantStatus, rec.Code, rec.Body.String())
+			assert.Empty(t, rec.Header().Get("Location"))
+			assert.Contains(t, rec.Body.String(), tt.wantBody)
+			assert.NotContains(t, rec.Body.String(), "Device authorized")
+			assert.NotContains(t, rec.Body.String(), "no longer valid")
+
+			device, err := h.deviceStorage.LoadDeviceRequestByDeviceCode(ctx, deviceCode)
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantDeviceStatus, device.Status)
+		})
+	}
+}
+
 // TestDeviceVerificationConfirmHandler_ConcurrentReplay drives two goroutines
 // that submit the same confirm_token simultaneously. LoadPendingDeviceConfirmation
 // and DeletePendingDeviceConfirmation are two independent storage operations

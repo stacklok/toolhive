@@ -370,12 +370,13 @@ func (h *Handler) DeviceVerificationConfirmHandler(w http.ResponseWriter, req *h
 	}
 
 	// The confirmation page does not carry the client, but the upstream tokens
-	// captured at login do.
-	var clientID string
-	if confirmation.UpstreamTokens != nil {
-		clientID = confirmation.UpstreamTokens.ClientID
+	// captured at login do. A record without them is corrupt, not a removed client.
+	if confirmation.UpstreamTokens == nil {
+		slog.Error("device verification: pending confirmation has no upstream tokens")
+		renderError(w, http.StatusInternalServerError, "Something went wrong. Please try again.")
+		return
 	}
-	if h.rejectUnresolvableDeviceClient(ctx, w, clientID) {
+	if h.rejectUnresolvableDeviceClient(ctx, w, confirmation.UpstreamTokens.ClientID) {
 		return
 	}
 

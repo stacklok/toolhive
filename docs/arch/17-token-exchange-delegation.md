@@ -498,12 +498,20 @@ this codebase today, for any token-exchange path, self-issued or external
 lifetime, not single-use tracking, pending the broader M2M/sender-constrained-
 token effort).
 
-Revoking a delegate client (removing it from config) revokes this specific
-relaxation for that client on the next server restart — it does **not**
-retroactively delete the client's already-registered row, its hashed secret,
-or its token-exchange grant from storage. No `DeleteClient` path exists in
-this codebase today; that is a separate, pre-existing gap, unrelated to this
-relaxation, and not something this change addresses.
+Removing a delegate client from config revokes it on the next server restart.
+After that restart the client is no longer served at all: it cannot
+authenticate at the token endpoint (see "Client admission" in
+[Auth Server Storage](11-auth-server-storage.md#configured-clients-across-restarts)).
+The stored row is not deleted. Access tokens already issued to the client stay
+valid until they expire. Self-issued subject tokens whose `client_id` is the
+removed client can still be exchanged by other configured delegates until those
+subject tokens expire, because the exchange checks the subject token's own
+claims and does not look the original client up again. A binary without client
+admission still honors the stored row.
+
+Admission is per replica. A newly added delegate is served reliably only once
+every replica runs the new config. Until then, a replica that runs client
+admission with the old config answers `invalid_client`.
 
 RFC 8693 §2.1 permits this: it defines the subject token only as a token
 that represents "the identity of the party on behalf of whom the request is

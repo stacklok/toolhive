@@ -190,6 +190,46 @@ func loadKeyMaterial(ctx context.Context, provider keys.KeyProvider) (*keys.Sign
 	return signingKey, publicKeys, nil
 }
 
+// authorizationServerParams maps cfg and the loaded key material onto the
+// fosite provider parameters. newServer and the test provider builder both use
+// it so handler selection cannot drift between them. spiffeRegistry and
+// bundleSource may be nil.
+func authorizationServerParams(
+	cfg Config, signingKey *keys.SigningKeyData, additionalPublicKeys []*keys.PublicKeyData,
+	spiffeRegistry *SPIFFEAssociationRegistry, bundleSource *spiffeMultiDomainBundleSource, stor storage.Storage,
+) *oauthserver.AuthorizationServerParams {
+	return &oauthserver.AuthorizationServerParams{
+		Issuer:                                    cfg.Issuer,
+		AccessTokenLifespan:                       cfg.AccessTokenLifespan,
+		RefreshTokenLifespan:                      cfg.RefreshTokenLifespan,
+		AuthCodeLifespan:                          cfg.AuthCodeLifespan,
+		HMACSecrets:                               cfg.HMACSecrets,
+		SigningKeyID:                              signingKey.KeyID,
+		SigningKeyAlgorithm:                       signingKey.Algorithm,
+		SigningKey:                                signingKey.Key,
+		AdditionalPublicKeys:                      additionalPublicKeys,
+		ScopesSupported:                           cfg.ScopesSupported,
+		BaselineClientScopes:                      cfg.BaselineClientScopes,
+		AllowedAudiences:                          cfg.AllowedAudiences,
+		SubjectIdentifierAudiences:                cfg.SubjectIdentifierAudiences,
+		AuthorizationEndpointBaseURL:              cfg.AuthorizationEndpointBaseURL,
+		CIMDEnabled:                               cfg.CIMDEnabled,
+		AllowConfidentialClientRegistration:       cfg.AllowConfidentialClientRegistration,
+		AllowPrivateKeyJWTRegistration:            cfg.AllowPrivateKeyJWTRegistration,
+		HasStaticDelegateClients:                  len(cfg.DelegateClients) > 0,
+		InsecureAllowHTTP:                         cfg.InsecureAllowHTTP,
+		InsecureAllowConfidentialOverLoopbackHTTP: cfg.InsecureAllowConfidentialOverLoopbackHTTP,
+		ForceConfidentialRedirectURIs:             cfg.ForceConfidentialRedirectURIs,
+		DisableTokenExchange:                      cfg.DisableTokenExchange,
+		JWTBearerGrantEnabled:                     JWTBearerGrantEnabled(cfg.TrustedIssuers),
+		DeviceFlowEnabled:                         cfg.DeviceFlowEnabled,
+		DeviceCodeInterval:                        cfg.DeviceCodeInterval,
+		SPIFFEClientResolver:                      newSPIFFEClientResolver(spiffeRegistry, stor),
+		SPIFFEX509BundleSource:                    spiffeX509BundleSource(bundleSource),
+		SPIFFEJWTBundleSource:                     spiffeJWTBundleSource(bundleSource),
+	}
+}
+
 // newServer creates a new OAuth authorization server.
 // The opts parameter allows injecting dependencies for testing.
 func newServer(ctx context.Context, cfg Config, stor storage.Storage) (_ *server, retErr error) {
@@ -220,37 +260,7 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage) (_ *server
 		return nil, err
 	}
 
-	// Create OAuth2 config from authserver.Config
-	oauthParams := &oauthserver.AuthorizationServerParams{
-		Issuer:                                    cfg.Issuer,
-		AccessTokenLifespan:                       cfg.AccessTokenLifespan,
-		RefreshTokenLifespan:                      cfg.RefreshTokenLifespan,
-		AuthCodeLifespan:                          cfg.AuthCodeLifespan,
-		HMACSecrets:                               cfg.HMACSecrets,
-		SigningKeyID:                              signingKey.KeyID,
-		SigningKeyAlgorithm:                       signingKey.Algorithm,
-		SigningKey:                                signingKey.Key,
-		AdditionalPublicKeys:                      additionalPublicKeys,
-		ScopesSupported:                           cfg.ScopesSupported,
-		BaselineClientScopes:                      cfg.BaselineClientScopes,
-		AllowedAudiences:                          cfg.AllowedAudiences,
-		SubjectIdentifierAudiences:                cfg.SubjectIdentifierAudiences,
-		AuthorizationEndpointBaseURL:              cfg.AuthorizationEndpointBaseURL,
-		CIMDEnabled:                               cfg.CIMDEnabled,
-		AllowConfidentialClientRegistration:       cfg.AllowConfidentialClientRegistration,
-		AllowPrivateKeyJWTRegistration:            cfg.AllowPrivateKeyJWTRegistration,
-		HasStaticDelegateClients:                  len(cfg.DelegateClients) > 0,
-		InsecureAllowHTTP:                         cfg.InsecureAllowHTTP,
-		InsecureAllowConfidentialOverLoopbackHTTP: cfg.InsecureAllowConfidentialOverLoopbackHTTP,
-		ForceConfidentialRedirectURIs:             cfg.ForceConfidentialRedirectURIs,
-		DisableTokenExchange:                      cfg.DisableTokenExchange,
-		JWTBearerGrantEnabled:                     JWTBearerGrantEnabled(cfg.TrustedIssuers),
-		DeviceFlowEnabled:                         cfg.DeviceFlowEnabled,
-		DeviceCodeInterval:                        cfg.DeviceCodeInterval,
-		SPIFFEClientResolver:                      newSPIFFEClientResolver(spiffeRegistry, stor),
-		SPIFFEX509BundleSource:                    spiffeX509BundleSource(bundleSource),
-		SPIFFEJWTBundleSource:                     spiffeJWTBundleSource(bundleSource),
-	}
+	oauthParams := authorizationServerParams(cfg, signingKey, additionalPublicKeys, spiffeRegistry, bundleSource, stor)
 	authServerConfig, err := oauthserver.NewAuthorizationServerConfig(oauthParams)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create OAuth2 config: %w", err)
@@ -364,7 +374,11 @@ func prepareServerStorageAndRegisterClients(
 	}
 	defer closeSPIFFEBundleSourceOnConstructionError(bundleSource, &retErr)
 
-	prepared, spiffeRegistry, retErr = decorateStorageForSPIFFE(ctx, cfg, stor)
+	admitted, err := newClientAdmissionStorage(cfg, stor)
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+	prepared, spiffeRegistry, retErr = decorateStorageForSPIFFE(ctx, cfg, admitted)
 	if retErr != nil {
 		return nil, nil, nil, nil, retErr
 	}
@@ -375,6 +389,28 @@ func prepareServerStorageAndRegisterClients(
 		return nil, nil, nil, nil, retErr
 	}
 	return prepared, dcrStore, bundleSource, spiffeRegistry, nil
+}
+
+// delegateClientIDs returns the client IDs of the configured delegate clients.
+func delegateClientIDs(delegateClients []DelegateClient) []string {
+	ids := make([]string, len(delegateClients))
+	for i, c := range delegateClients {
+		ids[i] = c.ClientID
+	}
+	return ids
+}
+
+// newClientAdmissionStorage wraps stor so a configured client is served only
+// while cfg declares it. Consent-exempt IDs deliberately do not vouch. It must
+// sit below the CIMD decorator: callbackClient's fallback (ClientStoreBelowCIMD)
+// and CIMD's persisted-row fallback read below that decorator and must still
+// pass admission.
+func newClientAdmissionStorage(cfg Config, stor storage.Storage) (storage.Storage, error) {
+	admission, err := storage.NewClientAdmissionStorage(stor, delegateClientIDs(cfg.DelegateClients))
+	if err != nil {
+		return nil, fmt.Errorf("create client admission storage: %w", err)
+	}
+	return admission, nil
 }
 
 func validateConsentExemptClients(ctx context.Context, stor storage.Storage, clientIDs []string) error {
@@ -537,10 +573,7 @@ func JWTBearerGrantEnabled(trustedIssuers []tokenexchange.TrustedIssuer) bool {
 func buildProvider(
 	cfg Config, authServerConfig *oauthserver.AuthorizationServerConfig, stor storage.Storage,
 ) (_ fosite.OAuth2Provider, _ *tokenexchange.MultiIssuerTokenValidator, retErr error) {
-	delegateClientIDs := make([]string, len(cfg.DelegateClients))
-	for i, c := range cfg.DelegateClients {
-		delegateClientIDs[i] = c.ClientID
-	}
+	delegateIDs := delegateClientIDs(cfg.DelegateClients)
 	jwtBearerEnabled := JWTBearerGrantEnabled(cfg.TrustedIssuers)
 
 	// Built once, up front, and handed to whichever factories below actually
@@ -579,7 +612,7 @@ func buildProvider(
 	factories := make([]oauthserver.Factory, 0, 4)
 	if !cfg.DisableTokenExchange {
 		tokenExchangeFactory, err := tokenexchange.FactoryWithSharedTrustedIssuerValidator(
-			cfg.DelegationTokenLifespan, cfg.TrustedIssuers, delegateClientIDs, shared,
+			cfg.DelegationTokenLifespan, cfg.TrustedIssuers, delegateIDs, shared,
 			tokenexchange.WithAuthorizationDetailsRegistry(cfg.AuthorizationDetailsRegistry),
 		)
 		if err != nil {

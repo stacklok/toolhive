@@ -3590,6 +3590,13 @@ func marshalRequester(request fosite.Requester) ([]byte, error) {
 // unmarshalRequester deserializes a fosite.Requester from JSON.
 // It requires storage access to look up the client and a session factory
 // to create the correct session type for deserialization.
+//
+// The client lookup goes to this backend directly, below ClientAdmissionStorage,
+// so it is identity-only: it names the client a stored session belongs to and
+// does not prove that client is still admitted. That is safe because fosite
+// always compares the session's client ID with the client the request
+// authenticated through the admitted store, and a removed client cannot
+// authenticate. Do not use a rehydrated client as an authentication result.
 func unmarshalRequester(ctx context.Context, data []byte, s *RedisStorage) (fosite.Requester, error) {
 	var stored storedSession
 	if err := json.Unmarshal(data, &stored); err != nil {

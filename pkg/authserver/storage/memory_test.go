@@ -168,6 +168,19 @@ func requireNotFoundError(t *testing.T, err error) {
 	assert.ErrorIs(t, err, fosite.ErrNotFound, "should match fosite.ErrNotFound")
 }
 
+// requireStampedCopy asserts got is the configured-stamped read-back of want,
+// and that the value held in s.clients is want itself, never a wrapper.
+func requireStampedCopy(t *testing.T, s *MemoryStorage, want, got fosite.Client) {
+	t.Helper()
+	s.mu.RLock()
+	assert.Same(t, want, s.clients[want.GetID()])
+	s.mu.RUnlock()
+	require.True(t, registration.IsConfigured(got))
+	assert.Equal(t, want.GetID(), got.GetID())
+	assert.Equal(t, want.GetScopes(), got.GetScopes())
+	assert.Equal(t, want.IsPublic(), got.IsPublic())
+}
+
 func testClient() *mockClient { return &mockClient{id: "test-client"} }
 
 // --- Basic Tests ---
@@ -360,7 +373,7 @@ func TestMemoryStorage_ReconcileConfiguredClient(t *testing.T) {
 	t.Parallel()
 
 	newConfigured := func(id string, scopes []string) fosite.Client {
-		return &mockClient{id: id, scopes: scopes, public: false}
+		return &fosite.DefaultClient{ID: id, Scopes: scopes, Public: false}
 	}
 
 	t.Run("creates when absent", func(t *testing.T) {
@@ -374,7 +387,7 @@ func TestMemoryStorage_ReconcileConfiguredClient(t *testing.T) {
 
 		retrieved, err := s.GetClient(ctx, "configured")
 		require.NoError(t, err)
-		assert.Equal(t, client, retrieved)
+		requireStampedCopy(t, s, client, retrieved)
 	})
 
 	t.Run("idempotent on matching fingerprint", func(t *testing.T) {
@@ -393,7 +406,7 @@ func TestMemoryStorage_ReconcileConfiguredClient(t *testing.T) {
 
 		retrieved, err := s.GetClient(ctx, "configured")
 		require.NoError(t, err)
-		assert.Equal(t, second, retrieved)
+		requireStampedCopy(t, s, second, retrieved)
 	})
 
 	t.Run("refuses to overwrite a DCR-issued client", func(t *testing.T) {
@@ -485,7 +498,7 @@ func TestMemoryStorage_UpsertDCRIssuedClient(t *testing.T) {
 		s := NewMemoryStorage()
 		defer s.Close()
 
-		configured := &mockClient{id: "https://cimd.example/configured.json", public: false}
+		configured := &fosite.DefaultClient{ID: "https://cimd.example/configured.json", Public: false}
 		require.NoError(t, s.ReconcileConfiguredClient(ctx, configured))
 
 		err := s.UpsertDCRIssuedClient(ctx, dcrClient(t, "https://cimd.example/configured.json"))
@@ -494,7 +507,7 @@ func TestMemoryStorage_UpsertDCRIssuedClient(t *testing.T) {
 		// The original registration must be untouched.
 		retrieved, err := s.GetClient(ctx, "https://cimd.example/configured.json")
 		require.NoError(t, err)
-		assert.Equal(t, configured, retrieved)
+		requireStampedCopy(t, s, configured, retrieved)
 	})
 
 	t.Run("rejects a client not carrying the DCR-issued marker", func(t *testing.T) {
@@ -589,7 +602,7 @@ func TestMemoryStorage_RegisterClient_CapIgnoresUncountedClients(t *testing.T) {
 	ctx := t.Context()
 	s, _ := newClockedMemoryStorage(t, 2)
 
-	require.NoError(t, s.ReconcileConfiguredClient(ctx, &mockClient{id: "configured-1"}))
+	require.NoError(t, s.ReconcileConfiguredClient(ctx, &fosite.DefaultClient{ID: "configured-1"}))
 	require.NoError(t, s.UpsertDCRIssuedClient(ctx, dcrClient(t, "https://cimd.example/client.json")))
 	require.NoError(t, s.RegisterClient(ctx, dcrClient(t, "dcr-1")))
 	require.NoError(t, s.RegisterClient(ctx, dcrClient(t, "dcr-2")),
@@ -597,7 +610,7 @@ func TestMemoryStorage_RegisterClient_CapIgnoresUncountedClients(t *testing.T) {
 	require.ErrorIs(t, s.RegisterClient(ctx, dcrClient(t, "dcr-3")), ErrClientCapacity)
 
 	// At the cap, uncounted clients are still accepted.
-	require.NoError(t, s.ReconcileConfiguredClient(ctx, &mockClient{id: "configured-2"}))
+	require.NoError(t, s.ReconcileConfiguredClient(ctx, &fosite.DefaultClient{ID: "configured-2"}))
 	require.NoError(t, s.UpsertDCRIssuedClient(ctx, dcrClient(t, "https://cimd.example/other.json")))
 
 	count, err := s.CountDCRClients(ctx)
@@ -767,7 +780,7 @@ func TestMemoryStorage_ClientExpiry(t *testing.T) {
 		ctx := t.Context()
 		s, clock := newClockedMemoryStorage(t, 0)
 
-		require.NoError(t, s.ReconcileConfiguredClient(ctx, &mockClient{id: "permanent"}))
+		require.NoError(t, s.ReconcileConfiguredClient(ctx, &fosite.DefaultClient{ID: "permanent"}))
 		clock.Advance(10 * DefaultDCRClientTTL)
 		_, err := s.GetClient(ctx, "permanent")
 		require.NoError(t, err)
@@ -779,7 +792,7 @@ func TestMemoryStorage_ClientExpiry(t *testing.T) {
 		s, clock := newClockedMemoryStorage(t, 0)
 
 		require.NoError(t, s.RegisterClient(ctx, dcrClient(t, "expiring")))
-		require.NoError(t, s.ReconcileConfiguredClient(ctx, &mockClient{id: "permanent"}))
+		require.NoError(t, s.ReconcileConfiguredClient(ctx, &fosite.DefaultClient{ID: "permanent"}))
 		clock.Advance(DefaultUnusedDCRClientTTL)
 		s.cleanupExpired()
 
@@ -802,7 +815,7 @@ func TestMemoryStorage_CountDCRClients(t *testing.T) {
 	require.NoError(t, s.RegisterClient(ctx, dcrClient(t, "dcr-1")))
 	clock.Advance(time.Hour)
 	require.NoError(t, s.RegisterClient(ctx, dcrClient(t, "dcr-2")))
-	require.NoError(t, s.ReconcileConfiguredClient(ctx, &mockClient{id: "configured"}))
+	require.NoError(t, s.ReconcileConfiguredClient(ctx, &fosite.DefaultClient{ID: "configured"}))
 
 	count, err := s.CountDCRClients(ctx)
 	require.NoError(t, err)

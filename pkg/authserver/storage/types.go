@@ -34,6 +34,7 @@ import (
 	"github.com/ory/fosite/handler/oauth2"
 	"github.com/ory/fosite/handler/pkce"
 
+	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	authsession "github.com/stacklok/toolhive/pkg/authserver/server/session"
 )
 
@@ -1085,6 +1086,22 @@ func ValidateRegisterableClientID(id string) error {
 	return nil
 }
 
+// checkConfiguredClientType refuses a non-reserved client that
+// registration.MarkConfigured cannot wrap, so a stamped row is always readable
+// as stamped. The reserved SPIFFE placeholder is exempt: it is never wrapped.
+func checkConfiguredClientType(client fosite.Client) error {
+	if isReservedPlaceholder(client) {
+		return nil
+	}
+	if registration.IsConfigured(client) {
+		return fmt.Errorf("configured client %q is already stamped; pass the unwrapped client", client.GetID())
+	}
+	if _, ok := registration.MarkConfigured(client); !ok {
+		return fmt.Errorf("configured client %q has unsupported type %T", client.GetID(), client)
+	}
+	return nil
+}
+
 // sameStringSet reports whether a and b contain the same elements as sets:
 // order and duplicate count don't matter, only membership. Canonicalisation
 // (sort, then dedup) mirrors ScopesHash's approach so the two stay consistent.
@@ -1286,7 +1303,18 @@ type ClientRegistry interface {
 	// scope or audience takes effect on restart. A replace that
 	// changes scopes or audience logs a WARN. The passed client
 	// must not itself carry the registration.DCRIssued marker;
-	// ReconcileConfiguredClient returns an error if it does.
+	// ReconcileConfiguredClient returns an error if it does. It also returns
+	// an error, before writing anything, for a non-reserved client whose
+	// concrete type registration.MarkConfigured cannot wrap
+	// (*fosite.DefaultClient and *fosite.DefaultOpenIDConnectClient are
+	// supported), because the stamp could not be read back.
+	//
+	// Rows written here belong to ToolHive configuration. GetClient returns
+	// them stamped (registration.IsConfigured), so a caller can hide a row
+	// the running server's configuration no longer declares. Embedders that
+	// register their own clients use RegisterClient, which never stamps. The
+	// stamp is not part of the fingerprint comparison above, and a stamped
+	// row is never treated as DCR-issued, whatever its TTL.
 	ReconcileConfiguredClient(ctx context.Context, client fosite.Client) error
 
 	// RenewClientTTL extends the registration TTL of a DCR-issued client (public or

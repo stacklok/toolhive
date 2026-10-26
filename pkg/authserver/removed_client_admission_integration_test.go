@@ -8,6 +8,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -18,6 +19,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -112,7 +114,7 @@ type removalProbe struct {
 }
 
 // removedClientExemptRoutes lists the routes no probe covers, with the reason
-// each is left out.
+// none resolves a client.
 var removedClientExemptRoutes = map[string]string{
 	"GET /.well-known/jwks.json":                    "discovery: no client",
 	"GET /.well-known/oauth-authorization-server":   "discovery: no client",
@@ -120,10 +122,6 @@ var removedClientExemptRoutes = map[string]string{
 	"GET /.well-known/openid-configuration":         "discovery: no client",
 	"GET /.well-known/openid-configuration/*":       "discovery: no client",
 	"GET /oauth/device":                             "verification form: only renders the form, resolves no client",
-	"GET /oauth/callback":                           "pending authorization: client resolved when the request was created",
-	"POST /oauth/consent":                           "pending authorization: client resolved when the request was created",
-	"POST /oauth/device":                            "pending device request: client resolved at device authorization",
-	"POST /oauth/device/confirm":                    "pending device request: client resolved at device authorization",
 }
 
 var removalProbes = []removalProbe{
@@ -164,6 +162,56 @@ var removalProbes = []removalProbe{
 		after: func(t *testing.T, w *removedClientWorld, f removedClientFixture, _ any) {
 			t.Helper()
 			assertTokenEndpoint(t, w, f, f.servedAfter())
+		},
+	},
+	{
+		name: "pending consent and callback", covers: []string{"POST /oauth/consent", "GET /oauth/callback"}, forAll: true,
+		before: func(t *testing.T, w *removedClientWorld, f removedClientFixture) any {
+			t.Helper()
+			if f.servedBefore() && f.authCapable() {
+				pre := w.seedPending(t, f, "pre")
+				consent := w.consent(t, pre)
+				require.Equal(t, http.StatusSeeOther, consent.status, "consent must send a served client upstream: %s", consent.raw)
+			}
+			return w.seedPending(t, f, "post")
+		},
+		after: func(t *testing.T, w *removedClientWorld, f removedClientFixture, state any) {
+			t.Helper()
+			pending, ok := state.(removedClientPending)
+			require.True(t, ok, "before state is %T, not removedClientPending", state)
+			if f.servedAfter() {
+				if f.authCapable() {
+					consent := w.consent(t, pending)
+					assert.Equal(t, http.StatusSeeOther, consent.status, "a served client must reach upstream: %s", consent.raw)
+				}
+				return
+			}
+			assertBrowserRejected(t, w.consent(t, pending), "invalid_client")
+			assertBrowserRejected(t, w.callback(t, pending), "invalid_client")
+			assert.Zero(t, w.exchanges.Load(), "no upstream code exchange for a refused client")
+		},
+	},
+	{
+		name: "device verification", covers: []string{"POST /oauth/device", "POST /oauth/device/confirm"}, forAll: true,
+		before: func(t *testing.T, w *removedClientWorld, f removedClientFixture) any {
+			t.Helper()
+			return w.seedDevice(t, f)
+		},
+		after: func(t *testing.T, w *removedClientWorld, f removedClientFixture, state any) {
+			t.Helper()
+			device, ok := state.(removedClientDevice)
+			require.True(t, ok, "before state is %T, not removedClientDevice", state)
+			if f.servedAfter() {
+				if f.authCapable() {
+					resp := w.deviceSubmit(t, device.userCode)
+					assert.NotContains(t, resp.raw, "no longer valid", "a served client must keep its device request")
+				}
+				return
+			}
+			assertBrowserRejected(t, w.deviceSubmit(t, device.userCode), "no longer valid")
+			assertBrowserRejected(t, w.post(t, "/oauth/device/confirm",
+				url.Values{"confirm_token": {device.confirmToken}, "action": {"approve"}}), "no longer valid")
+			assert.Zero(t, w.exchanges.Load(), "no upstream code exchange for a refused client")
 		},
 	},
 	{
@@ -599,9 +647,97 @@ func (w *removedClientWorld) tokenRequest(t *testing.T, f removedClientFixture) 
 	return w.post(t, "/oauth/token", url.Values{"grant_type": {oauthproto.GrantTypeTokenExchange}}, basicAuth(f.id, f.secret))
 }
 
+// removedClientPending is a seeded pair of pending authorizations, one awaiting
+// consent and one approved and ready for the upstream callback.
+type removedClientPending struct{ awaiting, approved, binding string }
+
+func (w *removedClientWorld) seedPending(t *testing.T, f removedClientFixture, suffix string) removedClientPending {
+	t.Helper()
+	p := removedClientPending{"awaiting-" + f.id + suffix, "approved-" + f.id + suffix, "binding-" + f.id + suffix}
+	hash := sha256.Sum256([]byte(p.binding))
+	bindingHash := base64.RawURLEncoding.EncodeToString(hash[:])
+	for handle, stage := range map[string]string{p.awaiting: storage.ConsentStageAwaiting, p.approved: storage.ConsentStageApproved} {
+		require.NoError(t, w.base.StorePendingAuthorization(t.Context(), handle, &storage.PendingAuthorization{
+			ClientID: f.id, RedirectURI: removedClientRedirectURI, State: "client-state",
+			PKCEChallenge: bindingHash, PKCEMethod: "S256", Scopes: []string{"scope-a"}, Resource: delegateAudience,
+			ConsentStage: stage, InternalState: handle, UpstreamProviderName: removedClientUpstream,
+			SessionID: "session-" + handle, BrowserBindingHash: bindingHash, CreatedAt: time.Now(),
+		}))
+	}
+	return p
+}
+
+func (p removedClientPending) cookie(handle string) func(*http.Request) {
+	sum := sha256.Sum256([]byte(handle))
+	return func(r *http.Request) {
+		r.AddCookie(&http.Cookie{Name: "thv_authz_" + hex.EncodeToString(sum[:])[:16], Value: p.binding})
+	}
+}
+
+func (w *removedClientWorld) consent(t *testing.T, p removedClientPending) removedClientResponse {
+	t.Helper()
+	return w.post(t, "/oauth/consent", url.Values{"handle": {p.awaiting}, "decision": {"approve"}},
+		func(r *http.Request) { r.Header.Set("Origin", w.baseURL) }, p.cookie(p.awaiting))
+}
+
+func (w *removedClientWorld) callback(t *testing.T, p removedClientPending) removedClientResponse {
+	t.Helper()
+	q := url.Values{"code": {"upstream-code"}, "state": {p.approved}}
+	return w.send(t, http.MethodGet, "/oauth/callback?"+q.Encode(), nil, p.cookie(p.approved))
+}
+
+// removedClientDevice is a stored pending device request and a pending
+// confirmation for it, both for the fixture's client.
+type removedClientDevice struct{ userCode, confirmToken string }
+
+func (w *removedClientWorld) seedDevice(t *testing.T, f removedClientFixture) removedClientDevice {
+	t.Helper()
+	d := removedClientDevice{userCode: "ABCD-" + strings.ToUpper(f.id[len(f.id)-4:]), confirmToken: "confirm-" + f.id}
+	deviceCode := "device-code-" + f.id
+	require.NoError(t, w.base.StoreDeviceRequest(t.Context(), &storage.DeviceRequest{
+		DeviceCode: deviceCode, UserCode: d.userCode, ClientID: f.id, Scopes: []string{"scope-a"},
+		Audience: []string{delegateAudience}, Status: storage.DeviceRequestStatusPending,
+		Interval: time.Second, CreatedAt: time.Now(),
+	}))
+	require.NoError(t, w.base.StorePendingDeviceConfirmation(t.Context(), d.confirmToken, &storage.PendingDeviceConfirmation{
+		DeviceCode: deviceCode, UserCode: d.userCode, ResolvedUserID: "seeded-user",
+		UpstreamTokens: &storage.UpstreamTokens{
+			ProviderID: removedClientUpstream, AccessToken: "seeded-upstream-token",
+			ExpiresAt: time.Now().Add(time.Hour), UpstreamSubject: "seeded-subject", ClientID: f.id,
+		},
+		CreatedAt: time.Now(),
+	}))
+	return d
+}
+
+var deviceFormTokenPattern = regexp.MustCompile(`name="form_token" value="([^"]+)"`)
+
+// deviceSubmit loads the verification form and submits userCode through it, as
+// a browser would, so the anti-forgery check passes.
+func (w *removedClientWorld) deviceSubmit(t *testing.T, userCode string) removedClientResponse {
+	t.Helper()
+	form := w.send(t, http.MethodGet, "/oauth/device", nil)
+	matches := deviceFormTokenPattern.FindStringSubmatch(form.raw)
+	require.Len(t, matches, 2, "form_token not found: %s", form.raw)
+	return w.post(t, "/oauth/device", url.Values{"user_code": {userCode}, "form_token": {matches[1]}}, func(r *http.Request) {
+		for _, c := range (&http.Response{Header: form.header}).Cookies() {
+			r.AddCookie(c)
+		}
+	})
+}
+
 func assertInvalidClient401(t *testing.T, resp removedClientResponse) {
 	t.Helper()
 	assert.Equal(t, http.StatusUnauthorized, resp.status, resp.raw)
 	assert.Equal(t, "invalid_client", resp.body["error"], resp.raw)
 	assert.Empty(t, resp.body["access_token"], "no token may be issued")
+}
+
+// assertBrowserRejected requires the plain 400 page the browser-facing
+// endpoints answer with, containing want, and no redirect.
+func assertBrowserRejected(t *testing.T, resp removedClientResponse, want string) {
+	t.Helper()
+	assert.Equal(t, http.StatusBadRequest, resp.status, resp.raw)
+	assert.Contains(t, resp.raw, want)
+	assert.Empty(t, resp.header.Get("Location"), "must not redirect")
 }

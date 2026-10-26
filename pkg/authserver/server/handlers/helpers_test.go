@@ -116,6 +116,8 @@ type testStorageState struct {
 	// getClientCalls records storage client lookups so route-boundary tests can
 	// prove malformed requests are rejected before any lookup.
 	getClientCalls int
+	// clientErr, when set after setup, fails every later client lookup.
+	clientErr error
 	// Capture each context separately so assertions observe the context at the
 	// storage call itself, including methods that may be called more than once.
 	getAllUpstreamCtx    []context.Context
@@ -278,6 +280,9 @@ func baseTestSetup(t *testing.T, opts ...baseTestSetupOption) (fosite.OAuth2Prov
 	// after baseTestSetup returns.
 	stor.EXPECT().GetClient(gomock.Any(), gomock.Any()).DoAndReturn(func(_ context.Context, id string) (fosite.Client, error) {
 		storState.getClientCalls++
+		if storState.clientErr != nil {
+			return nil, storState.clientErr
+		}
 		if setupCfg.getClientErr != nil && storState.getClientCalls > setupCfg.getClientErrAfter {
 			return nil, setupCfg.getClientErr
 		}

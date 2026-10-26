@@ -250,6 +250,12 @@ actually absent identity uses the unauthenticated sentinel. Non-nil identities
 `iss` and `sub` claims without NUL bytes. Ownership never comes from outbound
 Authorization headers. Shared metadata does not replace live-stream affinity.
 
+vMCP applies the same check (`sessionbinding.Validate`) to every request carrying
+`Mcp-Session-Id`, with the shared carrier parsing. Its 404 is a plain-text
+`Session terminated` rather than the proxies' JSON-RPC body, so go-sdk clients
+re-initialize. See *Session
+Ownership* in [Virtual MCP](10-virtual-mcp-architecture.md).
+
 ### Middleware Integration
 
 All proxy types integrate with the middleware chain:

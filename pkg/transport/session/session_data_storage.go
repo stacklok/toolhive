@@ -57,6 +57,12 @@ type DataStorage interface {
 	// Returns ErrSessionNotFound if the session does not exist.
 	Load(ctx context.Context, id string) (map[string]string, error)
 
+	// LoadMetadata retrieves session metadata without refreshing its TTL, for
+	// checks (such as ownership) that must not keep a session alive on behalf
+	// of a caller that may be rejected. Returns ErrSessionNotFound if the
+	// session does not exist.
+	LoadMetadata(ctx context.Context, id string) (map[string]string, error)
+
 	// Delete removes session metadata. Not an error if absent.
 	Delete(ctx context.Context, id string) error
 

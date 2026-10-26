@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
+	"github.com/stacklok/toolhive-core/mcpcompat/server"
 	"github.com/stacklok/toolhive-core/redisconn"
 	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
@@ -45,6 +46,13 @@ const sharedRedisSessionKeyPrefix = "test:vmcp:session:"
 // termination by re-validating the shared store on the next request (see
 // mcpcompat/server/transports.go's "Local-session validation, issue #156,
 // item U5" comment), and drop its local bookkeeping only then.
+//
+// The session ownership middleware in Server.Handler answers 404 for a session
+// missing from the shared store before the transport runs, which would hide
+// that path. The U5 leg therefore mounts the streamable server directly,
+// without the middleware, as context_isolation_regression_test.go does. A
+// second leg goes through Server.Handler and asserts the same 404 from the
+// middleware.
 func TestRegression_OriginPod_RejectsRequestAfterCrossPodTermination(t *testing.T) {
 	t.Parallel()
 
@@ -72,9 +80,12 @@ func TestRegression_OriginPod_RejectsRequestAfterCrossPodTermination(t *testing.
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = srv.Stop(context.Background()) })
 
-	handler, err := srv.Handler(context.Background())
-	require.NoError(t, err)
-	ts := httptest.NewServer(handler)
+	streamable := server.NewStreamableHTTPServer(
+		srv.mcpServer,
+		server.WithEndpointPath("/mcp"),
+		server.WithSessionIdManager(srv.vmcpSessionMgr),
+	)
+	ts := httptest.NewServer(streamable)
 	t.Cleanup(ts.Close)
 
 	initResp := postServeMCP(t, ts.URL, map[string]any{
@@ -132,8 +143,9 @@ func TestRegression_OriginPod_RejectsRequestAfterCrossPodTermination(t *testing.
 
 	// The origin pod must reject the NEXT request for the cross-pod-terminated
 	// session with HTTP 404 -- the streamable transport's validate-on-every-
-	// request path must observe the termination via the shared store and
-	// refuse to serve it from local state.
+	// request path (no ownership middleware in front of it here) must observe
+	// the termination via the shared store and refuse to serve it from local
+	// state.
 	rejectResp := postServeMCP(t, ts.URL, map[string]any{
 		"jsonrpc": "2.0", "id": 3, "method": "tools/list", "params": map[string]any{},
 	}, sessionID)
@@ -141,4 +153,19 @@ func TestRegression_OriginPod_RejectsRequestAfterCrossPodTermination(t *testing.
 	assert.Equal(t, http.StatusNotFound, rejectResp.StatusCode,
 		"a session terminated on another pod's shared store must be rejected as 404 "+
 			"on the very next request to the origin pod")
+
+	// Through Server.Handler the ownership middleware rejects the same request
+	// before the transport, with the plain-text 404 it returns for any session
+	// missing from the store.
+	handler, err := srv.Handler(context.Background())
+	require.NoError(t, err)
+	handlerTS := httptest.NewServer(handler)
+	t.Cleanup(handlerTS.Close)
+
+	middlewareResp := postServeMCP(t, handlerTS.URL, map[string]any{
+		"jsonrpc": "2.0", "id": 4, "method": "tools/list", "params": map[string]any{},
+	}, sessionID)
+	defer middlewareResp.Body.Close()
+	assert.Equal(t, http.StatusNotFound, middlewareResp.StatusCode,
+		"the ownership middleware must answer 404 for a session terminated in the shared store")
 }

@@ -190,19 +190,15 @@ var _ = Describe("VirtualMCPServer Dual-Era Backends over Redis Session Storage"
 				Address:   fmt.Sprintf("%s.%s.svc.cluster.local:6379", redisName, defaultNamespace),
 				KeyPrefix: dualEraRedisKeyPrefix,
 			}),
-			// One replica, for three reasons:
-			//  1. Every request takes the local-session Validate branch
-			//     (WithSessionIdManager is wired unconditionally, server.go:570),
-			//     which is what will make the outage spec's 503 deterministic. At two
-			//     replicas, a request landing on the non-owning pod without a cached
-			//     rehydration takes the rehydration path instead, whose transient-error
-			//     branch returns 404 rather than 503 (session_manager.go:437-443 states
-			//     this mapping explicitly).
-			//  2. GetVMCPStatus and readRedisSessionBackendIDs (Step 3) each observe a
+			// One replica, for two reasons. The outage spec's 503 is not one of
+			// them: the session ownership middleware looks the owner up in Redis
+			// before any transport routing, so a store failure is a 503 on every
+			// replica, whichever pod the request lands on.
+			//  1. GetVMCPStatus and readRedisSessionBackendIDs (Step 3) each observe a
 			//     single pod's view of the world, so the era gate below and Step 3's
 			//     direct Redis read are deterministic only when there is exactly one
 			//     pod to ask.
-			//  3. SessionAffinity becomes moot -- there is only one pod to be sticky
+			//  2. SessionAffinity becomes moot -- there is only one pod to be sticky
 			//     to -- so it is deliberately left unset rather than set to a value
 			//     that would do nothing.
 			v1beta1test.WithVMCPReplicas(1),
@@ -508,10 +504,13 @@ var _ = Describe("VirtualMCPServer Dual-Era Backends over Redis Session Storage"
 		}, timeout, pollingInterval).Should(Equal(0), "Redis pod should be gone after scaling to 0")
 
 		By("Confirming the Legacy path 503s on the pre-outage session")
-		// With replicas=1 (see the BeforeAll comment on WithVMCPReplicas),
-		// every request takes sessionmanager.Manager.Validate's local-session
-		// branch, which returns (false, err) on Redis's transient error; the
-		// transport maps that to 503 (session_manager.go:444-471,
+		// The ownership middleware reads the owner from Redis on every
+		// session-bearing request and maps a storage error to 503 (a missing
+		// record would be 404). Were a request to get past it, with replicas=1
+		// (see the BeforeAll comment on WithVMCPReplicas) the transport would
+		// also 503 via sessionmanager.Manager.Validate's local-session branch,
+		// which returns (false, err) on Redis's transient error
+		// (session_manager.go:444-471,
 		// toolhive-core@v0.0.34/mcpcompat/server/transports.go:462-496). A
 		// client that instead runs "initialize" DURING the outage gets a 200
 		// with NO Mcp-Session-Id -- Manager.Generate returns "" after two
@@ -525,18 +524,18 @@ var _ = Describe("VirtualMCPServer Dual-Era Backends over Redis Session Storage"
 		// endpoints. dualEraLegacyCallErr (rather than dualEraLegacyCall) lets
 		// a transient Send error be retried instead of aborting the spec,
 		// mirroring how dualEraLegacyInitErr exists alongside dualEraLegacyInit.
-		var outageResp *e2e.RawResponse
+		//
+		// The 503 comes from the session-ownership middleware, whose owner lookup
+		// fails against the unreachable store before the transport sees the
+		// request. Its body is plain text, not a JSON-RPC envelope, and is not part
+		// of the contract, so only the status is asserted.
 		Eventually(func() (int, error) {
 			resp, err := dualEraLegacyCallErr(rawClient, vmcpURL, sessionID, legacyBackend+"_echo", "duringoutage")
 			if err != nil {
 				return 0, err
 			}
-			outageResp = resp
 			return resp.StatusCode, nil
 		}, timeout, pollingInterval).Should(Equal(http.StatusServiceUnavailable))
-		// The 503 body is written with http.Error, so it is plain text, not a
-		// JSON-RPC envelope -- assert on status + body substring, not resp.Error.
-		Expect(string(outageResp.Body)).To(ContainSubstring("session validation unavailable"))
 
 		By("Confirming the Modern path is unaffected while Redis is down")
 		// dispatchModern (pkg/vmcp/server/modern_dispatch.go) holds no
@@ -593,9 +592,11 @@ var _ = Describe("VirtualMCPServer Dual-Era Backends over Redis Session Storage"
 
 		By("Confirming the stale pre-outage session was cleared by the outage, not merely surviving it")
 		// Redis here is a plain in-memory Deployment with no persistence, so
-		// scaling it to 0 earlier wiped every key; Validate now sees
-		// redis.Nil -> ErrSessionNotFound -> (true, nil) -> 404
-		// (session_manager.go:444-471, transports.go:462-496). This is NOT
+		// scaling it to 0 earlier wiped every key; the ownership middleware's
+		// LookupOwner now sees redis.Nil -> ErrNotFound -> plain-text 404
+		// "Session terminated" (the same body the transport's own
+		// Validate path gives, session_manager.go:444-471,
+		// transports.go:462-496). This is NOT
 		// asserting session survival -- it proves the outage really cleared
 		// state, so the recovery above is genuine functional recovery, not a
 		// session that was never gone.

@@ -54,6 +54,13 @@ and the client must reinitialize. Backend connections held by the cached
 `MultiSession` are only released when the LRU cache evicts the entry or the
 session is explicitly terminated.
 
+The Streamable HTTP transport also reaps its own pod-local copy of a session
+(the go-sdk session and its per-session server) after one TTL with no POST
+request. The session ownership middleware answers 404 for absent or terminated
+sessions before the transport runs, so the transport's usual cleanup on that path
+no longer happens. This releases only the pod-local copy, never the stored
+metadata, so a client that returns within the stored TTL is rehydrated.
+
 The TTL is configurable via `server.Config.SessionTTL` but is not currently
 exposed through the operator CRD.
 
@@ -75,6 +82,12 @@ resets the key's TTL atomically (see `pkg/transport/session/storage_redis.go`,
 - Idle sessions expire automatically after the full TTL elapses with no access.
 - There is no absolute maximum session lifetime enforced by Redis storage.
 
+For the pod-local copy described above, an open standalone GET stream alone
+does not count as activity, so a client that only listens must send a POST (for
+example a ping) within `SessionTTL` to keep the copy on that pod. Otherwise the stream is closed,
+and a reconnecting GET is rehydrated if the stored record is still valid and
+answered 404 if not.
+
 ### Session garbage collection
 
 | Trigger | Mechanism |
@@ -90,6 +103,11 @@ key `vmcp.identity.binding`. The canonical format is defined in
 `pkg/vmcp/session/binding/binding.go`: a NUL-separated `iss + "\x00" + sub` for
 authenticated sessions, and the literal string `"unauthenticated"` for sessions
 without an auth identity.
+
+Every replica checks the stored binding against the authenticated caller on each
+request that carries `Mcp-Session-Id`, reading it from the shared store before the
+session is rehydrated locally, so a session is usable only by its owner on any
+replica. See *Session Ownership* in [Virtual MCP](10-virtual-mcp-architecture.md).
 
 The binding is stored as **plaintext** in the session store (Redis/Valkey). It is
 not a credential — it identifies but does not authenticate a principal — but it is

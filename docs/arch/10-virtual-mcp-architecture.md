@@ -1076,9 +1076,10 @@ Middleware is applied by wrapping handlers, so execution order is outer-to-inner
 | 10 | MCP Parsing | Always | Validates every MCP POST regardless of `Content-Type`, including when auth is nil; publishes calls and notifications for downstream controls. A second application skips already-parsed requests. |
 | 11 | Telemetry | Optional | OpenTelemetry instrumentation |
 | 12 | Loopback Host guard | Always | DNS-rebinding protection: on a connection that arrived over loopback, rejects a non-loopback `Host` header with 403 before classification, so Legacy and Modern requests are held to the same rule. Mirrors go-sdk's localhost protection, which covers only Legacy requests that reach `StreamableHTTPHandler`; Modern requests (`dispatchModern`) and cross-replica Legacy sessions rehydrated by toolhive-core's `mcpcompat` did not pass through it, and the guard covers all of them. mcpcompat also runs session cleanup for a Legacy DELETE around go-sdk's Host check, so without the guard a DELETE with a forged `Host` and a known session ID could end that session even though go-sdk answered 403; the guard runs first and stops this. Only the MCP route is guarded: `/health`, `/ping`, `/readyz`, `/status`, `/api/backends/health`, `/metrics`, `/.well-known/` and the embedded auth server routes are deliberately left unguarded because they are unauthenticated by design and expose only operational metadata. Connections on a non-loopback local address (e.g. a pod IP) are unaffected; a loopback hop that preserves a non-loopback `Host` must rewrite it. See `pkg/vmcp/server/loopback_host_guard.go`. |
-| 13 | Pre-dispatch authorization gate | Optional | Innermost: runs inside the Streamable HTTP transport before session validation and SDK dispatch. Rejects a Cedar-denied `tools/call` / `resources/read` / `prompts/get` with HTTP 403 + JSON-RPC code 403, reusing the core admission decision. Installed only when Authorization is configured. See "Authorization Enforcement" below. |
+| 13 | Session ownership | Always | After Modern/Legacy classification (Legacy only), rejects any request carrying the `Mcp-Session-Id` of a session the authenticated caller does not own with a non-disclosing plain-text 404, before the Streamable HTTP transport routes it. See "Session Ownership" below. |
+| 14 | Pre-dispatch authorization gate | Optional | Innermost: runs inside the Streamable HTTP transport after the session-ownership check (row 13) and before the transport's session-existence validation and SDK dispatch, so a foreign or unknown session gets 404 before any 403. Rejects a Cedar-denied `tools/call` / `resources/read` / `prompts/get` with HTTP 403 + JSON-RPC code 403, reusing the core admission decision. Installed only when Authorization is configured. See "Authorization Enforcement" below. |
 
-> On the New/Serve path, authorization is enforced by the **core admission seam**, not by rows 6–8 as standalone HTTP middleware; row 13 is the transport-level projection of that decision. See [Authorization Enforcement](#authorization-enforcement-core-admission-seam--pre-dispatch-gate).
+> On the New/Serve path, authorization is enforced by the **core admission seam**, not by rows 6–8 as standalone HTTP middleware; row 14 is the transport-level projection of that decision. See [Authorization Enforcement](#authorization-enforcement-core-admission-seam--pre-dispatch-gate).
 
 Every MCP POST passes shared envelope validation before Modern dispatch or the
 Legacy SDK, with or without authentication. Malformed, ambiguous, mixed
@@ -1086,6 +1087,54 @@ request/response, and batch bodies are rejected rather than forwarded without a
 policy input. A leading UTF-8 BOM is removed from the forwarded body so webhook
 consumers see the same JSON as the parser; `Content-Type` is not relabeled. The
 Legacy SDK may still reject otherwise valid non-JSON media types with HTTP 415.
+
+### Session Ownership
+
+Every vMCP session is bound at creation to the issuer and subject of the
+identity that initialized it (`vmcp.identity.binding`, the format shared with
+`pkg/auth/sessionbinding`). `sessionOwnershipMiddleware`
+(`pkg/vmcp/server/session_ownership.go`) checks that binding on **every**
+request that carries `Mcp-Session-Id`, after authentication and before the
+Streamable HTTP transport routes the request: the standalone GET stream, DELETE,
+list methods, calls, client responses and notifications, and cross-replica
+rehydration. Sessionless requests (initialize) pass through; Modern (2026-07-28)
+requests are dispatched by `classifyingHandler` before this middleware and never
+reach it.
+
+- The owner is read from the session store (`Manager.LookupOwner`) without
+  restoring the session or refreshing its TTL, so with Redis-backed storage the
+  check holds on a replica that did not create the session, before it is
+  rehydrated there, and a rejected caller cannot keep the session alive.
+- The caller is compared with `sessionbinding.Validate`, the check shared with
+  the other proxies: the same issuer and subject (refreshed tokens work), or, for
+  a session created with no identity at all (authentication disabled), no
+  identity. A non-nil identity without valid `iss` and `sub` claims never
+  matches, even a session bound to the unauthenticated sentinel.
+- The owner is persisted before the client learns the session ID: the SDK shim
+  runs `OnRegisterSession` (and so `CreateSession`) synchronously inside the
+  initialize dispatch. A record without an owner is a session still being
+  created or whose creation failed, and is rejected.
+- Missing, unowned (still being created), foreign and ambiguous-carrier
+  requests all get the same plain-text 404 `Session terminated`, byte for byte.
+  Unlike the direct proxies' JSON-RPC 404, it has no JSON-RPC body: go-sdk 1.7+
+  clients treat a JSON-RPC error body on a 404 as a per-call rejection and never
+  re-initialize, while a plain-text 404 (what the transport returns for an
+  unknown session) makes them start a new session.
+  A store failure gets 503. A rejected request never terminates or otherwise
+  disturbs the owner's session. Rejections of foreign callers are logged at WARN.
+- Because the check precedes the pre-dispatch authorization gate, a denied call
+  on a foreign or unknown session ID gets 404 rather than 403.
+- The middleware answers 404 for absent sessions before the transport runs, so
+  the transport's cleanup of its pod-local session copy no longer happens on that
+  path. `Handler` therefore sets the transport's session idle timeout to
+  `SessionTTL`: a copy with no POST for that long is released, the stored record is
+  left alone, and a returning client is rehydrated if the session is still valid.
+  An open standalone GET stream alone does not count as activity, so a client that
+  only listens must send a POST (for example a ping) within `SessionTTL` to keep this
+  pod's copy; otherwise the stream is closed, and a reconnecting GET is rehydrated if
+  the stored record is still valid and answered 404 if not.
+- `enforceSessionBinding` still re-checks the binding inside the call handlers,
+  for embedders that mount the MCP server without this middleware.
 
 ### Discovery Middleware
 
@@ -1154,8 +1203,10 @@ policies are configured:
   names the capability or reveals advertised-vs-nonexistent, so a denial is not an
   **enumeration oracle**: a filtered tool, an argument-gated deny, and a nonexistent tool
   under a default-deny policy all converge on the same 403.
-- The gate runs **before session validation** (403-before-404): a denial is determinable
-  from the caller's own identity without session state.
+- The gate runs **before the transport's session-existence validation**: a denial is
+  determinable from the caller's own identity without session state. Session *ownership*
+  is checked earlier still (see [Session Ownership](#session-ownership)), so a denied
+  call on a foreign or unknown session ID gets 404 before any 403.
 - It sits **inside the audit middleware**, so a denied call is audited with outcome
   `denied` (403 → `OutcomeDenied`) with no audit-layer changes.
 - An authorizer error fails **closed** (treated as a denial); a non-authorization

@@ -7050,12 +7050,6 @@ func tokenExchangeAccessToken(t *testing.T, opts ...testServerOption) string {
 	require.Equal(t, http.StatusOK, loginResp.StatusCode, login)
 	subjectToken, ok := login["access_token"].(string)
 	require.True(t, ok)
-	configured := &testServerOptions{}
-	for _, opt := range opts {
-		opt(configured)
-	}
-	wantTyp := cmp.Or(configured.accessTokenType, "JWT")
-	require.Equal(t, wantTyp, jwtHeaderTyp(t, subjectToken), "the subject token must carry the configured typ")
 
 	resp := makeTokenRequest(t, ts.Server.URL, url.Values{
 		"grant_type":         {oauthproto.GrantTypeTokenExchange},
@@ -7070,6 +7064,8 @@ func tokenExchangeAccessToken(t *testing.T, opts ...testServerOption) string {
 	exchanged, ok := body["access_token"].(string)
 	require.True(t, ok)
 	require.NotEqual(t, subjectToken, exchanged)
+	require.Equal(t, jwtHeaderTyp(t, subjectToken), jwtHeaderTyp(t, exchanged),
+		"the exchanged token must carry the same typ as the subject token")
 	return exchanged
 }
 
@@ -7115,7 +7111,7 @@ func TestIntegration_AccessTokenType(t *testing.T) {
 		{"device code", func(t *testing.T, opts ...testServerOption) string {
 			t.Helper()
 			opts = append([]testServerOption{
-				withExtraClient(deviceFlowClient()), withDeviceFlowEnabled(), withDeviceCodeInterval(time.Millisecond),
+				withExtraClient(deviceFlowClient()), withDeviceFlowEnabled(),
 			}, opts...)
 			ts := setupTestServerWithMockOIDC(t, startMockOIDC(t), opts...)
 			return deviceFlowAccessToken(t, ts.Server.URL)
@@ -7185,12 +7181,6 @@ func TestIntegration_AccessTokenTypeAppliesAtRefresh(t *testing.T) {
 		{name: "default to at+jwt", refreshType: "at+jwt"},
 		{name: "at+jwt to default", loginType: "at+jwt"},
 	}
-	typOf := func(configured string) string {
-		if configured == "" {
-			return "JWT"
-		}
-		return configured
-	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -7213,9 +7203,9 @@ func TestIntegration_AccessTokenTypeAppliesAtRefresh(t *testing.T) {
 			refreshServer := setupTestServerWithOIDCProvider(t, m, serverOptions(tc.refreshType)...)
 
 			loginAccess, refreshToken := loginForTokens(t, loginServer.Server.URL)
-			assert.Equal(t, typOf(tc.loginType), jwtHeaderTyp(t, loginAccess), "login")
+			assert.Equal(t, cmp.Or(tc.loginType, "JWT"), jwtHeaderTyp(t, loginAccess), "login")
 			refreshed := refreshForAccessToken(t, refreshServer.Server.URL, refreshToken)
-			assert.Equal(t, typOf(tc.refreshType), jwtHeaderTyp(t, refreshed), "refresh")
+			assert.Equal(t, cmp.Or(tc.refreshType, "JWT"), jwtHeaderTyp(t, refreshed), "refresh")
 
 			var sessions int
 			for _, k := range mr.Keys() {

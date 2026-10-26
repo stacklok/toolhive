@@ -179,7 +179,9 @@ When the value is `at+jwt`, every JWT access token the server issues gets that t
 
 The type is written when a token is signed. It is not stored with the session. A change therefore takes effect at the next refresh, including for sessions created before the change.
 
-ToolHive's own consumers accept both types. The token validator in `pkg/auth` and the vMCP, which uses it, do not check `typ`. The JWT-bearer grant refuses an assertion typed `at+jwt`, so an access token from this server cannot be used as a JWT-bearer assertion. It accepts assertions with no `typ`, `""`, `"JWT"` or `"oauth-id-jag+jwt"`.
+ToolHive's own consumers accept both types. The token validator in `pkg/auth`, the vMCP (which uses it), and the token exchange grant's check of a subject token issued by this server do not check `typ`.
+
+The JWT-bearer grant only accepts assertions from configured trusted issuers, and the server's own issuer can never be one, so it never accepts this server's own access tokens as assertions. With `at+jwt` enabled, the grant also refuses them by `typ`: it accepts assertions with no `typ`, `""`, `"JWT"` or `"oauth-id-jag+jwt"`.
 
 Compatibility warning: some resource servers reject `at+jwt` by default. Java resource servers built on the default type verifier of Nimbus JOSE+JWT accept only `JWT` or no `typ`, and they reject `at+jwt`. This includes Spring Security before 6.5. Enable `at+jwt` only when every resource server that validates these tokens accepts it.
 

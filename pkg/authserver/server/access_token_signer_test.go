@@ -51,7 +51,7 @@ func decodeJOSEHeader(t *testing.T, token string) map[string]any {
 	return header
 }
 
-func TestTypedAccessTokenSigner_Generate(t *testing.T) {
+func TestATJWTAccessTokenSigner_Generate(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {

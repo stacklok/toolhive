@@ -5,6 +5,7 @@ package server
 
 import (
 	"context"
+	"maps"
 
 	"github.com/ory/fosite/token/jwt"
 )
@@ -24,10 +25,14 @@ func NewATJWTAccessTokenSigner(signer jwt.Signer) jwt.Signer {
 
 func (s *atJWTAccessTokenSigner) Generate(ctx context.Context, claims jwt.MapClaims, header jwt.Mapper) (string, string, error) {
 	// Copy the header: the session's stored header must not change.
-	hdr := map[string]any{}
-	if header != nil {
-		hdr = header.ToMap()
-	}
+	hdr := func() map[string]any {
+		if header != nil {
+			if m := maps.Clone(header.ToMap()); m != nil {
+				return m
+			}
+		}
+		return map[string]any{}
+	}()
 	hdr[string(jwt.JWTHeaderType)] = AccessTokenTypeATJWT
 	return s.Signer.Generate(ctx, claims, &jwt.Headers{Extra: hdr})
 }

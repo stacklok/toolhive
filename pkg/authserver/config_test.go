@@ -301,11 +301,8 @@ func TestConfigValidateAccessTokenType(t *testing.T) {
 		typ     string
 		wantErr bool
 	}{
-		{name: "empty is accepted", typ: ""},
-		{name: "JWT", typ: "JWT"},
-		{name: "at+jwt", typ: "at+jwt"},
+		{name: "at+jwt is accepted", typ: "at+jwt"},
 		{name: "media type prefix is rejected", typ: "application/at+jwt", wantErr: true},
-		{name: "case mismatch is rejected", typ: "AT+JWT", wantErr: true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

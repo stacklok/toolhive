@@ -4845,6 +4845,12 @@ func (s *AuthenticationUpstreamRunConfig) Encode(e *jx.Encoder) {
 // encodeFields encodes fields.
 func (s *AuthenticationUpstreamRunConfig) encodeFields(e *jx.Encoder) {
 	{
+		if s.DisplayName.Set {
+			e.FieldStart("display_name")
+			s.DisplayName.Encode(e)
+		}
+	}
+	{
 		if s.Name.Set {
 			e.FieldStart("name")
 			s.Name.Encode(e)
@@ -4870,11 +4876,12 @@ func (s *AuthenticationUpstreamRunConfig) encodeFields(e *jx.Encoder) {
 	}
 }
 
-var jsonFieldsNameOfAuthenticationUpstreamRunConfig = [4]string{
-	0: "name",
-	1: "oauth2_config",
-	2: "oidc_config",
-	3: "type",
+var jsonFieldsNameOfAuthenticationUpstreamRunConfig = [5]string{
+	0: "display_name",
+	1: "name",
+	2: "oauth2_config",
+	3: "oidc_config",
+	4: "type",
 }
 
 // Decode decodes AuthenticationUpstreamRunConfig from json.
@@ -4885,6 +4892,16 @@ func (s *AuthenticationUpstreamRunConfig) Decode(d *jx.Decoder) error {
 
 	if err := d.ObjBytes(func(d *jx.Decoder, k []byte) error {
 		switch string(k) {
+		case "display_name":
+			if err := func() error {
+				s.DisplayName.Reset()
+				if err := s.DisplayName.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"display_name\"")
+			}
 		case "name":
 			if err := func() error {
 				s.Name.Reset()

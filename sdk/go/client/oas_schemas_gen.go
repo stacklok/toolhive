@@ -2537,6 +2537,12 @@ func (s *AuthenticationTokenResponseMappingRunConfig) SetScopePath(val OptString
 
 // Ref: #/components/schemas/AuthenticationUpstreamRunConfig
 type AuthenticationUpstreamRunConfig struct {
+	// DisplayName is an optional human-readable label for this upstream, shown to
+	// end users on the consent page in place of Name. It is display-only: never
+	// compared, stored, or used to route. It is sanitized at render time and never
+	// rejected by validation. It is shown as trusted text, so it must come from
+	// operator-controlled configuration only.
+	DisplayName OptString `json:"display_name"`
 	// Name uniquely identifies this upstream.
 	// Used for routing decisions and session binding in multi-upstream scenarios.
 	// If empty when only one upstream is configured, defaults to "default".
@@ -2545,6 +2551,11 @@ type AuthenticationUpstreamRunConfig struct {
 	OidcConfig   OptAuthenticationOIDCUpstreamRunConfig   `json:"oidc_config"`
 	// Type specifies the provider type: "oidc" or "oauth2".
 	Type OptString `json:"type"`
+}
+
+// GetDisplayName returns the value of DisplayName.
+func (s *AuthenticationUpstreamRunConfig) GetDisplayName() OptString {
+	return s.DisplayName
 }
 
 // GetName returns the value of Name.
@@ -2565,6 +2576,11 @@ func (s *AuthenticationUpstreamRunConfig) GetOidcConfig() OptAuthenticationOIDCU
 // GetType returns the value of Type.
 func (s *AuthenticationUpstreamRunConfig) GetType() OptString {
 	return s.Type
+}
+
+// SetDisplayName sets the value of DisplayName.
+func (s *AuthenticationUpstreamRunConfig) SetDisplayName(val OptString) {
+	s.DisplayName = val
 }
 
 // SetName sets the value of Name.

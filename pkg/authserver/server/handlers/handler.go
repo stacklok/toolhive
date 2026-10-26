@@ -42,8 +42,11 @@ import (
 // NamedUpstream pairs a logical provider name with its OAuth2Provider implementation.
 // The name is used as the storage key and must be unique within the upstream slice.
 type NamedUpstream struct {
-	Name     string
-	Provider upstream.OAuth2Provider
+	Name string
+	// DisplayName is an optional human-readable label shown on the consent page.
+	// It is display-only: never compared, stored, or used to route.
+	DisplayName string
+	Provider    upstream.OAuth2Provider
 }
 
 // Handler provides HTTP handlers for the OAuth authorization server endpoints.

@@ -1217,6 +1217,30 @@ func TestBuildUpstreams_DrainsAlreadyBuiltProvidersOnFailure(t *testing.T) {
 		"the provider built before the failure must be drained")
 }
 
+// TestBuildUpstreams_CopiesDisplayName pins that the display-only label reaches
+// the handler's NamedUpstream alongside the name it never replaces.
+func TestBuildUpstreams_CopiesDisplayName(t *testing.T) {
+	t.Parallel()
+
+	cfg := Config{
+		Upstreams: []UpstreamConfig{
+			{Name: "okta", DisplayName: "Acme Okta", Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstreamConfig()},
+			{Name: "github", Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstreamConfig()},
+		},
+		UpstreamFactory: func(context.Context, *UpstreamConfig) (upstream.OAuth2Provider, error) {
+			return &closeCountingProvider{}, nil
+		},
+	}
+
+	upstreams, err := buildUpstreams(t.Context(), cfg)
+	require.NoError(t, err)
+	require.Len(t, upstreams, 2)
+	assert.Equal(t, "okta", upstreams[0].Name)
+	assert.Equal(t, "Acme Okta", upstreams[0].DisplayName)
+	assert.Equal(t, "github", upstreams[1].Name)
+	assert.Empty(t, upstreams[1].DisplayName)
+}
+
 // TestBuildUpstreams_RejectsNilProvider pins that a custom
 // Config.UpstreamFactory cannot drop an upstream by returning (nil, nil). Such a
 // NamedUpstream would be wired into the authorization chain and panic on the

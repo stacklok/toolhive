@@ -761,6 +761,13 @@ type UpstreamRunConfig struct {
 	// If empty when only one upstream is configured, defaults to "default".
 	Name string `json:"name,omitempty" yaml:"name,omitempty"`
 
+	// DisplayName is an optional human-readable label for this upstream, shown to
+	// end users on the consent page in place of Name. It is display-only: never
+	// compared, stored, or used to route. It is sanitized at render time and never
+	// rejected by validation. It is shown as trusted text, so it must come from
+	// operator-controlled configuration only.
+	DisplayName string `json:"display_name,omitempty" yaml:"display_name,omitempty"`
+
 	// Type specifies the provider type: "oidc" or "oauth2".
 	Type UpstreamProviderType `json:"type" yaml:"type"`
 
@@ -1150,6 +1157,13 @@ type UpstreamConfig struct {
 	// Used for routing decisions and session binding in multi-upstream scenarios.
 	// If empty when only one upstream is configured, defaults to "default".
 	Name string `json:"name,omitempty" yaml:"name,omitempty"`
+
+	// DisplayName is an optional human-readable label for this upstream, shown to
+	// end users on the consent page in place of Name. It is display-only: never
+	// compared, stored, or used to route. It is sanitized at render time and never
+	// rejected by validation. It is shown as trusted text, so it must come from
+	// operator-controlled configuration only.
+	DisplayName string `json:"display_name,omitempty" yaml:"display_name,omitempty"`
 
 	// Type specifies the provider type: "oidc" or "oauth2".
 	Type UpstreamProviderType `json:"type" yaml:"type"`

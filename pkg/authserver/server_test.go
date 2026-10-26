@@ -203,14 +203,79 @@ func TestNewServer_Success(t *testing.T) {
 	}
 	// CIMDEnabled defaults to false in cfg, so newServer wraps stor with the
 	// CIMD shape-guard (decorateStorageForCIMD) rather than passing it through
-	// unchanged — see TestNewServer_CIMDEnabled_WrapsStorage for the enabled
-	// case. Unwrap() must still reach the exact storage this test constructed.
-	if unwrapper, ok := srv.IDPTokenStorage().(interface{ Unwrap() storage.Storage }); ok {
-		if unwrapper.Unwrap() != stor {
-			t.Error("server.IDPTokenStorage().Unwrap() did not return expected storage")
+	// unchanged. The caller's store must stay reachable below client admission.
+	admission := requireSingleClientAdmission(t, srv.IDPTokenStorage())
+	if admission.Unwrap() != stor {
+		t.Error("client admission did not wrap the caller's storage")
+	}
+}
+
+// requireSingleClientAdmission walks the Unwrap chain of s and requires exactly
+// one *storage.ClientAdmissionStorage in it, returning that layer.
+func requireSingleClientAdmission(t *testing.T, s any) *storage.ClientAdmissionStorage {
+	t.Helper()
+	var found *storage.ClientAdmissionStorage
+	for {
+		if a, ok := s.(*storage.ClientAdmissionStorage); ok {
+			require.Nil(t, found, "more than one client admission layer in the chain")
+			found = a
 		}
-	} else {
-		t.Errorf("server.IDPTokenStorage() (%T) does not implement Unwrap()", srv.IDPTokenStorage())
+		unwrapper, ok := s.(interface{ Unwrap() storage.Storage })
+		if !ok {
+			break
+		}
+		s = unwrapper.Unwrap()
+	}
+	require.NotNil(t, found, "no client admission layer in the chain")
+	return found
+}
+
+// TestNewServer_ClientAdmissionWiring pins that the server's storage, which
+// newServer hands to the fosite provider and the handlers, reaches a single
+// client admission layer, so no consumer resolves clients around it. Admission
+// sits directly on the caller's store, below the CIMD layer, with the SPIFFE
+// overlay above both.
+func TestNewServer_ClientAdmissionWiring(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		cimdEnabled bool
+	}{
+		{name: "CIMD disabled"},
+		{name: "CIMD enabled", cimdEnabled: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctrl := gomock.NewController(t)
+			mockUpstream := upstreammocks.NewMockOAuth2Provider(ctrl)
+			stor := storage.NewMemoryStorage()
+
+			cfg := Config{
+				Issuer:           "https://example.com",
+				KeyProvider:      keys.NewGeneratingProvider(keys.DefaultAlgorithm),
+				HMACSecrets:      &servercrypto.HMACSecrets{Current: validHMACSecret()},
+				Upstreams:        []UpstreamConfig{{Name: "default", Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstreamConfig()}},
+				AllowedAudiences: []string{"https://mcp.example.com"},
+				UpstreamFactory: func(_ context.Context, _ *UpstreamConfig) (upstream.OAuth2Provider, error) {
+					return mockUpstream, nil
+				},
+			}
+			if tt.cimdEnabled {
+				cfg.CIMDEnabled = true
+				cfg.CIMDCacheMaxSize = 16
+				cfg.CIMDCacheFallbackTTL = 5 * time.Minute
+			}
+
+			srv, err := newServer(context.Background(), cfg, stor)
+			require.NoError(t, err)
+			t.Cleanup(func() { require.NoError(t, srv.Close()) })
+
+			admission := requireSingleClientAdmission(t, srv.storage)
+			assert.Same(t, stor, admission.Unwrap(), "chain must end at the caller's store")
+		})
 	}
 }
 

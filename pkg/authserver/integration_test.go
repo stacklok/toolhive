@@ -6727,6 +6727,101 @@ func TestIntegration_PrivateKeyJWTDCRTokenExchange(t *testing.T) {
 	}
 }
 
+// TestIntegration_PrivateKeyJWTClientAssertionAudience drives a DCR
+// private_key_jwt client through the token endpoint with different assertion
+// audiences and JOSE types. The issuer and the token endpoint URL are accepted;
+// any other audience is refused with invalid_client.
+func TestIntegration_PrivateKeyJWTClientAssertionAudience(t *testing.T) {
+	t.Parallel()
+
+	ts, _ := setupJWTBearerGrantTestServer(t,
+		withoutUpstreams(), withAllowPrivateKeyJWTRegistration(), withDeviceFlowEnabled())
+	clientKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+	registrationBody, err := json.Marshal(oauthproto.DynamicClientRegistrationRequest{
+		RedirectURIs:                []string{testConfidentialRedirectURI},
+		TokenEndpointAuthMethod:     oauthproto.TokenEndpointAuthMethodPrivateKeyJWT,
+		TokenEndpointAuthSigningAlg: "RS256",
+		GrantTypes:                  []string{oauthproto.GrantTypeTokenExchange},
+		JWKS: &josev3.JSONWebKeySet{Keys: []josev3.JSONWebKey{{
+			Key: clientKey.Public(), KeyID: "k1", Algorithm: "RS256", Use: "sig",
+		}}},
+	})
+	require.NoError(t, err)
+	registrationResponse, err := http.Post(ts.Server.URL+"/oauth/register", "application/json", bytes.NewReader(registrationBody))
+	require.NoError(t, err)
+	t.Cleanup(func() { registrationResponse.Body.Close() })
+	var registered oauthproto.DynamicClientRegistrationResponse
+	require.NoError(t, json.NewDecoder(registrationResponse.Body).Decode(&registered))
+	require.Equal(t, http.StatusCreated, registrationResponse.StatusCode)
+
+	assertionWith := func(t *testing.T, audience jwt.Audience, typ, jti string) string {
+		t.Helper()
+		signer, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.RS256, Key: clientKey},
+			(&jose.SignerOptions{}).WithType(jose.ContentType(typ)).WithHeader("kid", "k1"))
+		require.NoError(t, err)
+		now := time.Now()
+		assertion, err := jwt.Signed(signer).Claims(jwt.Claims{
+			Issuer:   registered.ClientID,
+			Subject:  registered.ClientID,
+			Audience: audience,
+			Expiry:   jwt.NewNumericDate(now.Add(2 * time.Minute)),
+			IssuedAt: jwt.NewNumericDate(now),
+			ID:       jti,
+		}).Serialize()
+		require.NoError(t, err)
+		return assertion
+	}
+	const assertionType = "urn:ietf:params:oauth:client-assertion-type:jwt-bearer"
+
+	tests := []struct {
+		name     string
+		audience jwt.Audience
+		typ      string
+		wantOK   bool
+	}{
+		{name: "issuer", audience: jwt.Audience{testIssuer}, typ: "JWT", wantOK: true},
+		{name: "token URL", audience: jwt.Audience{testIssuer + "/oauth/token"}, typ: "JWT", wantOK: true},
+		{name: "unrelated audience", audience: jwt.Audience{"https://other.example.com"}, typ: "JWT"},
+		{name: "rfc7523bis typ header with issuer", audience: jwt.Audience{testIssuer}, typ: "client-authentication+jwt", wantOK: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			now := time.Now()
+			response := makeTokenRequest(t, ts.Server.URL, url.Values{
+				"grant_type":            {oauthproto.GrantTypeTokenExchange},
+				"subject_token":         {ts.signSubjectToken("external-subject", now, now.Add(10*time.Minute), "subject-"+tc.name)},
+				"subject_token_type":    {oauthproto.TokenTypeAccessToken},
+				"client_id":             {registered.ClientID},
+				"client_assertion_type": {assertionType},
+				"client_assertion":      {assertionWith(t, tc.audience, tc.typ, "jti-"+tc.name)},
+			})
+			t.Cleanup(func() { response.Body.Close() })
+			body := parseTokenResponse(t, response)
+			if tc.wantOK {
+				require.Equal(t, http.StatusOK, response.StatusCode, "%v", body)
+				return
+			}
+			require.Equal(t, http.StatusUnauthorized, response.StatusCode, "%v", body)
+			assert.Equal(t, "invalid_client", body["error"])
+		})
+	}
+
+	t.Run("device authorization endpoint accepts the issuer", func(t *testing.T) {
+		t.Parallel()
+
+		_, body := postDeviceAuthorization(t, ts.Server.URL, url.Values{
+			"client_id":             {registered.ClientID},
+			"client_assertion_type": {assertionType},
+			"client_assertion":      {assertionWith(t, jwt.Audience{testIssuer}, "JWT", "jti-device")},
+		})
+		assert.NotEqual(t, "invalid_client", body["error"],
+			"client authentication must pass; any later failure is about the grant: %v", body)
+	})
+}
+
 // TestNoUpstreamSessionClaimKeysMatch pins the two spellings of the
 // no-upstream-session marker together. The issuing side (session) and the
 // consuming side (upstreamtoken) deliberately do not import each other, so

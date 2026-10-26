@@ -354,6 +354,33 @@ secret, so there is nothing for cleartext HTTP to expose. It is governed only
 by the issuer's general transport policy (`insecureAllowHTTP`), the same as a
 public (`none`) client.
 
+### Client-assertion audience
+
+A `private_key_jwt` client assertion is accepted when its `aud` claim is either
+of these, as a string or as an array containing either:
+
+- the issuer
+- the token endpoint URL (`{issuer}/oauth/token`)
+
+Assertions with the `client-authentication+jwt` JOSE `typ` header
+(draft-ietf-oauth-rfc7523bis-11 section 4.1) are accepted.
+
+Accepting the issuer is safe because the assertion is still bound by
+`iss == sub == client_id` and a signature from the client's registered keys.
+The issuer is this server's unique identifier (RFC 8414 section 2), and `aud` is
+compared as an exact string. An assertion addressed to this issuer is therefore
+not accepted by another issuer, even one on the same host.
+
+Two things do not meet draft-11 section 4(b), which requires the issuer as the
+sole value of `aud`: accepting the token endpoint URL, and accepting an `aud`
+array with more than one value that contains the issuer. Both are deprecated. A
+later release will require the issuer as the sole value.
+
+This applies to every `private_key_jwt` client. Inbound `private_key_jwt`
+clients come only from Dynamic Client Registration. The `aud` checks on
+RFC 7523 JWT-bearer and ID-JAG assertions, and on SPIFFE JWT-SVID client
+authentication, are unchanged.
+
 ## Trust model
 
 A trusted issuer plus a matching audience and a valid signature only proves
@@ -498,12 +525,20 @@ this codebase today, for any token-exchange path, self-issued or external
 lifetime, not single-use tracking, pending the broader M2M/sender-constrained-
 token effort).
 
-Revoking a delegate client (removing it from config) revokes this specific
-relaxation for that client on the next server restart — it does **not**
-retroactively delete the client's already-registered row, its hashed secret,
-or its token-exchange grant from storage. No `DeleteClient` path exists in
-this codebase today; that is a separate, pre-existing gap, unrelated to this
-relaxation, and not something this change addresses.
+Removing a delegate client from config revokes it on the next server restart.
+After that restart the client is no longer served at all: it cannot
+authenticate at the token endpoint (see "Client admission" in
+[Auth Server Storage](11-auth-server-storage.md#configured-clients-across-restarts)).
+The stored row is not deleted. Access tokens already issued to the client stay
+valid until they expire. Self-issued subject tokens whose `client_id` is the
+removed client can still be exchanged by other configured delegates until those
+subject tokens expire, because the exchange checks the subject token's own
+claims and does not look the original client up again. A binary without client
+admission still honors the stored row.
+
+Admission is per replica. A newly added delegate is served reliably only once
+every replica runs the new config. Until then, a replica that runs client
+admission with the old config answers `invalid_client`.
 
 RFC 8693 §2.1 permits this: it defines the subject token only as a token
 that represents "the identity of the party on behalf of whom the request is

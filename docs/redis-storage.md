@@ -364,6 +364,10 @@ All keys use the prefix `thv:auth:{namespace:name}:` where `{namespace:name}` is
 
 For how configured (delegate and SPIFFE) client rows behave across restarts and rollbacks, see [Configured clients across restarts](arch/11-auth-server-storage.md#configured-clients-across-restarts).
 
+A delegate client removed from config stops being served after the next restart. It gets `invalid_client` at the token endpoint. Its row is not deleted, and access tokens already issued to it stay valid until they expire. To delete the row, run `DEL {prefix}client:{client_id}`. A newly added delegate gets `invalid_client` on any replica that runs client admission but still has the old config. See "Client admission" in [Configured clients across restarts](arch/11-auth-server-storage.md#configured-clients-across-restarts).
+
+A pending consent or upstream callback for a removed client also gets `invalid_client`, and the device verification page refuses it. The same happens to any client whose lookup ends in not-found, including a CIMD client whose metadata document fetch fails transiently; storage and transport failures answer HTTP 500.
+
 When upgrading to the release that adds the DCR client cap, see the upgrade notes in [Auth Server Storage](arch/11-auth-server-storage.md#dcr-client-cap): a deployment already holding more than `max_dcr_clients` (default 10,000) live DCR clients rejects new registrations until the count drains, so raise the cap before upgrading. Backfilled rows keep their existing TTL of up to 30 days. With the operator, `storage.maxDCRClients` exists only in the new CRDs, so upgrade in this order:
 
 1. Upgrade the `operator-crds` chart.

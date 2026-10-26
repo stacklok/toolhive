@@ -288,6 +288,8 @@ This is an administrator trust decision over the registration currently at the I
 
 `DCRIssued` continues to govern its existing retention and replacement behavior; it is not an exemption-eligibility signal. DCR-issued exempt clients remain subject to the existing TTL and in-memory eviction behavior. A client can expire or be evicted and then needs to be reprovisioned. The exemption does not change retention. Removing an ID restores ordinary consent decision-making for new authorization requests only: it does not revoke tokens or automatically cancel already-approved flows.
 
+A consent-exempt ID does not make client admission serve a client. A stored client that admission hides is not found, so it is not eligible for the exemption. See "Client admission" in [Configured clients across restarts](#configured-clients-across-restarts). Listing such an ID fails startup.
+
 This behavior is a deliberate standards trade-off. The [stable MCP authorization specification](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization) states: “MCP proxy servers using static client IDs MUST obtain user consent for each dynamically registered client before forwarding to third-party authorization servers.” ToolHive is that proxy. Allowlisting a dynamically registered client is a deliberate deviation from this requirement, not an exception. More broadly, administrator preauthorization trades individual user approval for the embedder's control over the allowlist and registration writes.
 
 #### Downstream transaction binding remains the embedder's responsibility
@@ -725,11 +727,48 @@ Before this rule, a changed delegate scope or audience on Redis failed startup w
 1. Roll out the previous policy on the new binary so the row goes back, then roll back the binary.
 2. Delete the stored row immediately before rolling back to the older binary with the older config.
 
-A binary-only rollback works when the older binary's config already matches the stored row. During an upgrade, an older-binary pod that restarts (crash, eviction) after new pods replaced the row with a different policy fails startup and crash-loops until the rollout finishes. No new stored field was added, so older binaries can still read the rows.
-
-**Removed delegates.** With the Redis backend, nothing deletes a delegate's row when you remove it from config. The client still authenticates with its stored secret and, while token exchange stays enabled on the server, keeps the token-exchange grant. It loses only the self-issued subject token exemption, because that check uses the running config (`pkg/authserver/server/tokenexchange/handler.go`, `configuredDelegate` in the exchange path and `checkDelegationConsent`). It also still passes external-issuer consent checks when an issuer's `allowedDelegateClients` is `["*"]` or lists its ID (`delegateClientAllowed`). Deleting the stored row is the only full revocation on Redis. With the memory backend, a restarted server starts empty and registers only the configured delegates (`pkg/authserver/server_impl.go`), so the removed client is gone from restarted replicas. See [Token Exchange and Delegation](17-token-exchange-delegation.md).
+A binary-only rollback works when the older binary's config already matches the stored row. During an upgrade, an older-binary pod that restarts (crash, eviction) after new pods replaced the row with a different policy fails startup and crash-loops until the rollout finishes. Newer binaries add a `configured` field to delegate rows. Older binaries ignore it, so they can still read the rows. A row an older binary rewrites loses the field and is then recognized by the legacy delegate shape (see "Client admission" below).
 
 **Implementation:** `configuredClientConflict` in `pkg/authserver/storage/types.go`, called by both backends.
+
+**Client admission.** A configured client removed from config must stop working even though its row is still in the backend. `ClientAdmissionStorage` (`pkg/authserver/storage/client_admission.go`) wraps the caller's store and overrides only `GetClient`. It classifies the stored row by what the row itself shows, in this order:
+
+| Class | How the row is recognized | Served when |
+|---|---|---|
+| Placeholder | the inert SPIFFE reservation row | never from storage (the SPIFFE overlay serves SPIFFE clients from config) |
+| Configured | the stamp that `ReconcileConfiguredClient` writes, or the legacy delegate shape (below) | its ID is a configured delegate client in this server's config |
+| Registered | the registration marker (DCR and CIMD) | always |
+| Unmarked | anything else, such as a client an embedder writes with `RegisterClient` | always |
+
+The Configured and Registered classes never overlap.
+
+The stamp is a `configured` field on the Redis row and a side map in the memory backend. Only `ReconcileConfiguredClient` sets it. It is not part of the client fingerprint, so it never causes a "different policy" conflict.
+
+**Legacy delegate shape.** Every delegate row written by any release since v0.43.0 has one shape: a bare `*fosite.DefaultClient` that is confidential, has grant types of exactly `urn:ietf:params:oauth:grant-type:token-exchange`, and has no token endpoint auth method. A row with that shape and no stamp is classed as Configured. This covers delegates removed before the upgrade, and rows an older binary rewrote without the stamp. Public clients, clients with other grant types, and DCR or CIMD rows do not match. The rule does not look at who wrote the row. An embedder row that is confidential, has grant types of exactly token-exchange and has no token endpoint auth method matches it too, and is hidden unless its ID is a configured delegate. On Redis this also covers such a client registered as an OIDC client with an empty auth method, because it reads back as a plain client. The memory backend serves that OIDC case.
+
+A row that is Configured but not declared, or a Placeholder, is reported as not found, the same error an unknown ID gets. The server logs one WARN per client ID for the life of the server instance. The wrapper sits directly on the caller's store, below the CIMD decorator and the SPIFFE overlay. Admission never deletes or rewrites a row.
+
+What this means for a delegate you remove from `delegate_clients`, after the next restart, on both backends:
+
+- It is not found. It cannot authenticate at the token endpoint, so it cannot exchange tokens.
+- Access JWTs already issued to it stay valid until they expire. Admission does not revoke them.
+- A self-issued subject token issued to it can still be exchanged by other delegates until it expires. This is an accepted exposure.
+- To remove the row as well, delete it manually: `DEL thv:auth:{ns:name}:client:<id>`.
+
+A pending request for a removed client is refused too. Consent and the upstream callback (including an upstream error response) answer a plain-text HTTP 400 containing `invalid_client`, send nothing upstream, and write no upstream tokens or user rows. On the device verification page, submitting the user code (`POST /oauth/device`), completing the upstream login (`/oauth/callback`) and confirming (`POST /oauth/device/confirm`) each check that the device request's client still resolves. When it no longer resolves, the page answers HTTP 400 before any upstream redirect or code exchange, and the device request is never authorized. Denying still closes the request, because deny runs before the check. Any client lookup that ends in not-found gets this answer, including a CIMD document fetch that fails transiently; storage and transport failures answer HTTP 500.
+
+**Rolling updates.** Admission is per replica, so a rollout is not atomic in either direction:
+
+- A removed delegate is fully revoked only after every replica restarts on the new binary and config. A replica still on the old config, or on a binary without admission, keeps serving it.
+- A newly added delegate gets `invalid_client` on a replica that runs client admission but still has the old config, because that replica does not declare it. It works once that replica restarts. A replica on a binary without admission serves it.
+
+**What admission does not cover.** The Redis session lookup that rebuilds the client for a stored authorization-code, PKCE, refresh-token or access-token session (`unmarshalRequester`) reads the backend directly, so it is identity-only. That is safe because fosite compares the session's client ID with the client that authenticated through the admitted store. Do not treat a rehydrated client as an authentication result. Device requests store only a client ID string. Code that reads the backend directly also bypasses admission, as does a binary that lacks it.
+
+**Embedders.** Clients an embedder writes with `RegisterClient` are Unmarked and are always served, except a row that matches the legacy delegate shape above. No declaration is needed and nothing changes for the usual embedder clients (public clients, or clients with other grant types). A later change (#6937) will add `ProvisionedClients` to the config so embedders can declare them. A consent-exempt ID does not vouch for a client. Delegates are token-exchange-only and can never be consent-exempt; see [Administrator consent preauthorization](#administrator-consent-preauthorization).
+
+With the memory backend, a restarted server starts empty and registers only the configured delegates (`pkg/authserver/server_impl.go`). See [Token Exchange and Delegation](17-token-exchange-delegation.md).
+
+**Implementation:** `ClientAdmissionStorage` in `pkg/authserver/storage/client_admission.go`, installed by `newClientAdmissionStorage` in `pkg/authserver/server_impl.go`.
 
 ## Configuration
 
@@ -844,7 +883,9 @@ is needed or offered.
 
 A client proves possession of its private key by sending a signed
 `client_assertion` at `/oauth/token`; ToolHive stores only the registered public
-JWKS. Assertion replay markers are retained until the assertion `exp` in both
+JWKS. The assertion's `aud` may be the issuer or the token endpoint URL; see
+[Client-assertion audience](17-token-exchange-delegation.md#client-assertion-audience).
+Assertion replay markers are retained until the assertion `exp` in both
 storage backends. Redis also persists the registered client and its JWKS under
 the auth server's isolated key prefix, so replicas sharing Redis can use the
 same registration. The in-memory backend is process-local and loses registrations
@@ -914,8 +955,9 @@ When `authServer.cimd.enabled: true` is set, the embedded authorization server w
 
    This widens but does not close the lockout. Stale serving does not cover a cold cache (first use, or after a restart), other replicas that have not cached the client, or an entry evicted from the LRU, for example by an attacker hosting enough valid documents to push it out.
 
-   Persisted-row fallbacks. The persisted client row is written on every successful fetch. Two routes read it when the limiter refuses and no stale cache entry is servable. They differ on purpose, and unifying them is deferred.
-   - `/oauth/callback` and the consent step (`callbackClient` in `handlers/callback.go`) read the row through `storage.Unwrap` on any `ErrCIMDRateLimited`. There is no drift check, and if the read fails the caller gets the base lookup's error. They need the row because the pending authorization is already consumed and the login could not be retried. The snapshot is bounded by the pending-authorization lifetime plus the cache TTL plus `MaxStale`.
+   Persisted-row fallbacks. The persisted client row is written on every successful fetch. Three places read it when the limiter refuses and no stale cache entry is servable. They differ on purpose, and unifying them is deferred.
+   - `/oauth/callback` and the consent step (`callbackClient` in `handlers/callback.go`) read the row through `storage.ClientStoreBelowCIMD` on any `ErrCIMDRateLimited`; that walk stops at `ClientAdmissionStorage`, so the fallback still passes client admission. There is no drift check, and if the read fails the caller gets the base lookup's error. They need the row because the pending authorization is already consumed and the login could not be retried. The snapshot is bounded by the pending-authorization lifetime plus the cache TTL plus `MaxStale`.
+   - Device verification: the device submit, the device upstream-login completion, and `POST /oauth/device/confirm` (all through `rejectUnresolvableDeviceClient` in `handlers/device_verification.go`, which calls `callbackClient`) read the row the same way. Nothing is consumed at these steps, and the lookup only decides yes or no; the resolved client is not used to issue anything. The device request was created only after `/oauth/device_authorization` resolved the client, so the snapshot is bounded by the device code lifetime plus the cache TTL plus `MaxStale`.
    - `/oauth/token` only. Some clients discard their stored session when a token request fails, so a 429 on a refresh would log the user out. The handler marks the request (`storage.WithPersistedClientFallback`), and the decorator then reads the row from the layer under it. A drift check applies first: the row must be a public client written by the CIMD fetch for this id, every grant type on it must still be one the server allows for CIMD clients, the row's audience must equal the configured allowed audiences, and when `scopes_supported` is set every row scope must be in `scopes_supported` or the baseline scopes. This protects against an operator changing that configuration before a restart. When the row is missing, the storage read fails, or the check fails, the caller gets the original rate-limit error (429), never the base error. `/oauth/authorize` and `/oauth/device_authorization` still return 429. The row is shared by all replicas on Redis, so a replica that never served the client benefits. The memory backend loses its rows on restart, so it gets no protection right after one (its sessions also end on restart).
 
    The `/oauth/token` fallback skips re-validation against the document. The decorator does not renew CIMD rows when a token request succeeds, because every successful fetch already writes the row again. The age of the row is therefore bounded the same way on both backends:
@@ -948,13 +990,13 @@ All other `Storage` methods (`RegisterClient`, token storage, upstream token sto
 
 ### Unwrap pattern
 
-The storage decorators (`CIMDStorageDecorator`, the CIMD shape guard and `SPIFFEStorageDecorator`) implement `Unwrap() Storage`, and `storage.Unwrap` follows the chain to the concrete backend. Runtime code depends on this at these places:
+The storage decorators (`CIMDStorageDecorator`, the CIMD shape guard, `SPIFFEStorageDecorator` and `ClientAdmissionStorage`) implement `Unwrap() Storage`, and `storage.Unwrap` follows the chain to the concrete backend. Runtime code depends on this at these places:
 
 - **`DCRCredentialStore` assertion** (`newServer`): The `DCRCredentialStore` interface is narrower than `Storage` and not embedded in it. `storage.Unwrap(stor).(storage.DCRCredentialStore)` reaches the concrete backend through the decorators.
 - **`RedisStorage` migration** (`runLegacyMigration`): A type assertion to `*storage.RedisStorage` is needed to run a one-shot data migration.
 - **`DeviceCodeStorage` assertion** (`buildDeviceFlowFactory` and `handlers.NewHandler`): The device flow reaches the device-code store on the concrete backend.
 - **`RememberedConsentStorage` assertion** (`handlers.NewHandler`): Remembered consent is only offered when the concrete backend implements it.
-- **`callbackClient`** (`handlers/callback.go`): This one deliberately bypasses the decorator. When the CIMD fetch limiter refuses a lookup during callback or consent, it reads the persisted client row straight from the base storage.
+- **`callbackClient`** (`handlers/callback.go`): deliberately bypasses the CIMD decorator. When the CIMD fetch limiter refuses a lookup during callback, consent, or device verification, it reads the persisted client row through `storage.ClientStoreBelowCIMD`, which stops at `ClientAdmissionStorage`, so the fallback still passes client admission and never reaches the raw backend.
 
 The `AssertionJWTConsumer` capability is separate: `CIMDStorageDecorator` implements `ConsumeAssertionJWT` and forwards it to a capable backend. If the backend lacks the capability, the decorator returns an error instead of accepting an assertion with unknown replay status; replay protection therefore fails closed.
 
@@ -972,7 +1014,7 @@ When top-level `spiffeTrustDomains` and `inboundGrants.spiffeClientAuth` are con
 
 ### What it does
 
-`SPIFFEStorageDecorator` embeds the full `storage.Storage` interface and overrides `GetClient`, `RegisterClient`, and `ReconcileConfiguredClient`. `GetClient` checks its static client map first and only falls through to the wrapped storage (CIMD, then DCR) when the requested client ID is not one of the configured associations. `RegisterClient` and `ReconcileConfiguredClient` reject any DCR, delegate-client, or configured-client attempt that targets a client ID reserved by a static SPIFFE association. CIMD never calls `RegisterClient`; it durably persists resolved clients via `UpsertDCRIssuedClient` instead (a best-effort write-through for token-endpoint session rehydration — see the CIMD section above), which explicitly refuses to clobber a configured/SPIFFE-reconciled client at the same ID, so it cannot collide with a static association.
+`SPIFFEStorageDecorator` embeds the full `storage.Storage` interface and overrides `GetClient`, `RegisterClient`, and `ReconcileConfiguredClient`. `GetClient` checks its static client map first and only falls through to the wrapped storage (CIMD or the shape guard, then client admission, then the backend) when the requested client ID is not one of the configured associations. `RegisterClient` and `ReconcileConfiguredClient` reject any DCR, delegate-client, or configured-client attempt that targets a client ID reserved by a static SPIFFE association. CIMD never calls `RegisterClient`; it durably persists resolved clients via `UpsertDCRIssuedClient` instead (a best-effort write-through for token-endpoint session rehydration — see the CIMD section above), which explicitly refuses to clobber a configured/SPIFFE-reconciled client at the same ID, so it cannot collide with a static association.
 
 Its clients come entirely from the configured SPIFFE trust-domain and client-association declarations (see [SPIFFE Association Declarations](18-spiffe-association-declarations.md)). They are built once at startup, held in memory, and never written to the storage backend (memory or Redis); they are never eligible for dynamic registration or replacement.
 

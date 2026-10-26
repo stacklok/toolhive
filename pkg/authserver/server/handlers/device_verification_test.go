@@ -6,6 +6,7 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -324,6 +325,62 @@ func TestDeviceVerificationConfirmHandler_UnknownToken(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
 }
 
+// A pending confirmation without upstream tokens is corrupt data, not a removed
+// client. Approve must answer 500 before any client lookup, and deny must still
+// record the denial because it runs first.
+func TestDeviceVerificationConfirmHandler_MissingUpstreamTokens(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name             string
+		action           string
+		wantStatus       int
+		wantBody         string
+		wantDeviceStatus storage.DeviceRequestStatus
+	}{
+		{"approve", "approve", http.StatusInternalServerError, "Something went wrong", storage.DeviceRequestStatusPending},
+		{"deny", "deny", http.StatusOK, "Access denied", storage.DeviceRequestStatusDenied},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			h, mockUpstream := setupDeviceVerificationHandler(t)
+			deviceCode, userCode := issueDeviceCode(t, h)
+
+			submitRec, state := submitDeviceUserCode(t, h, mockUpstream, userCode)
+			callbackRec := httptest.NewRecorder()
+			h.CallbackHandler(callbackRec, newCallbackRequest("code=upstream-code&state="+state,
+				bindingCookieFrom(t, submitRec, state)))
+			require.Equal(t, http.StatusOK, callbackRec.Code, callbackRec.Body.String())
+			confirmToken := extractConfirmToken(t, callbackRec.Body.String())
+
+			// Replace the stored confirmation with one that has no upstream tokens.
+			ctx := context.Background()
+			pending, err := h.storage.LoadPendingDeviceConfirmation(ctx, confirmToken)
+			require.NoError(t, err)
+			require.NotNil(t, pending.UpstreamTokens)
+			pending.UpstreamTokens = nil
+			require.NoError(t, h.storage.StorePendingDeviceConfirmation(ctx, confirmToken, pending))
+
+			form := url.Values{"confirm_token": {confirmToken}, "action": {tt.action}}
+			req := httptest.NewRequest(http.MethodPost, "/oauth/device/confirm", strings.NewReader(form.Encode()))
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			rec := httptest.NewRecorder()
+			h.DeviceVerificationConfirmHandler(rec, req)
+
+			assert.Equal(t, tt.wantStatus, rec.Code, rec.Body.String())
+			assert.Empty(t, rec.Header().Get("Location"))
+			assert.Contains(t, rec.Body.String(), tt.wantBody)
+			assert.NotContains(t, rec.Body.String(), "Device authorized")
+			assert.NotContains(t, rec.Body.String(), "no longer valid")
+
+			device, err := h.deviceStorage.LoadDeviceRequestByDeviceCode(ctx, deviceCode)
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantDeviceStatus, device.Status)
+		})
+	}
+}
+
 // TestDeviceVerificationConfirmHandler_ConcurrentReplay drives two goroutines
 // that submit the same confirm_token simultaneously. LoadPendingDeviceConfirmation
 // and DeletePendingDeviceConfirmation are two independent storage operations
@@ -606,4 +663,86 @@ func TestDeviceVerificationForm_OutstandingFormsCoexist(t *testing.T) {
 	// Tab A submits with its original token and the (unchanged) cookie.
 	rec := postDeviceForm(t, h, url.Values{"user_code": {userCode}, deviceFormTokenField: {tokenA}}, cookieA)
 	assert.Equal(t, http.StatusFound, rec.Code, "body: %s", rec.Body.String())
+}
+
+// clientGoneStorage fails every client lookup with err, as client admission
+// does (ErrNotFound) for a client removed from configuration.
+type clientGoneStorage struct {
+	storage.Storage
+	err error
+}
+
+func (c clientGoneStorage) GetClient(context.Context, string) (fosite.Client, error) {
+	return nil, c.err
+}
+
+// A device request whose client no longer resolves must stop at each step of
+// the verification page: no upstream redirect or code exchange, no
+// confirmation page and no authorized device request.
+func TestDeviceVerification_ClientNoLongerServed(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		step       string
+		err        error
+		wantStatus int
+	}{
+		{"submit", "submit", storage.ErrNotFound, http.StatusBadRequest},
+		{"completion", "completion", storage.ErrNotFound, http.StatusBadRequest},
+		{"confirm", "confirm", storage.ErrNotFound, http.StatusBadRequest},
+		{"lookup failure", "submit", errors.New("storage unavailable"), http.StatusInternalServerError},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			h, up := setupDeviceVerificationHandler(t)
+			deviceCode, userCode := issueDeviceCode(t, h)
+
+			var submitRec *httptest.ResponseRecorder
+			var state, confirmToken string
+			if tt.step != "submit" {
+				submitRec, state = submitDeviceUserCode(t, h, up, userCode)
+			}
+			callback := func() *httptest.ResponseRecorder {
+				rec := httptest.NewRecorder()
+				h.CallbackHandler(rec, newCallbackRequest("code=upstream-code&state="+state, bindingCookieFrom(t, submitRec, state)))
+				return rec
+			}
+			if tt.step == "confirm" {
+				rec := callback()
+				require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+				confirmToken = extractConfirmToken(t, rec.Body.String())
+			}
+			h.storage = clientGoneStorage{Storage: h.storage, err: tt.err}
+
+			var rec *httptest.ResponseRecorder
+			switch tt.step {
+			case "submit":
+				rec = postDeviceUserCode(t, h, userCode)
+			case "completion":
+				rec = callback()
+			case "confirm":
+				form := url.Values{"confirm_token": {confirmToken}, "action": {"approve"}}
+				req := httptest.NewRequest(http.MethodPost, "/oauth/device/confirm", strings.NewReader(form.Encode()))
+				req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+				rec = httptest.NewRecorder()
+				h.DeviceVerificationConfirmHandler(rec, req)
+			}
+
+			assert.Equal(t, tt.wantStatus, rec.Code, rec.Body.String())
+			assert.Empty(t, rec.Header().Get("Location"))
+			assert.NotContains(t, rec.Body.String(), "confirm_token")
+			assert.NotContains(t, rec.Body.String(), "Device authorized")
+			if tt.step == "submit" {
+				assert.Empty(t, up.capturedState, "no upstream authorization URL may be built")
+			}
+			if tt.step != "confirm" { // confirm runs after a legitimate exchange
+				assert.Empty(t, up.capturedCode, "no upstream code exchange")
+			}
+			device, err := h.deviceStorage.LoadDeviceRequestByDeviceCode(context.Background(), deviceCode)
+			require.NoError(t, err)
+			assert.Equal(t, storage.DeviceRequestStatusPending, device.Status)
+		})
+	}
 }

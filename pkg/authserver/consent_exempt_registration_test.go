@@ -4,6 +4,7 @@
 package authserver
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"testing"
@@ -76,12 +77,17 @@ func TestNewValidatesConsentExemptClientRegistrations(t *testing.T) {
 		name      string
 		client    fosite.Client
 		lookupErr error
+		// wantErr defaults to "missing or ineligible".
+		wantErr string
 	}{
 		{name: "missing registration", lookupErr: storage.ErrNotFound},
 		{name: "public client", client: func() fosite.Client { c := eligibleConsentClient(); c.Public = true; return c }()},
 		{name: "explicit back-channel marker", client: &markedBackChannelConsentClient{DefaultClient: eligibleConsentClient()}},
 		{name: "empty response types", client: &noResponseConsentClient{DefaultClient: eligibleConsentClient()}},
-		{name: "token-exchange-only metadata", client: func() fosite.Client {
+		// A confidential token-exchange-only row has the legacy delegate shape, so
+		// admission hides it as an undeclared configured client before eligibility
+		// is checked.
+		{name: "legacy delegate shape is hidden by admission", wantErr: "not_found", client: func() fosite.Client {
 			c := eligibleConsentClient()
 			c.GrantTypes = fosite.Arguments{oauthproto.GrantTypeTokenExchange}
 			return c
@@ -126,7 +132,7 @@ func TestNewValidatesConsentExemptClientRegistrations(t *testing.T) {
 			if tt.lookupErr != nil {
 				require.ErrorIs(t, err, tt.lookupErr)
 			} else {
-				require.ErrorContains(t, err, "missing or ineligible")
+				require.ErrorContains(t, err, cmp.Or(tt.wantErr, "missing or ineligible"))
 			}
 		})
 	}

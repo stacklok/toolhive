@@ -225,8 +225,12 @@ func (h *Handler) ConsentHandler(w http.ResponseWriter, req *http.Request) {
 	if !h.validateAndConsumePending(req.Context(), w, req, handle, pending, storage.ConsentStageAwaiting) {
 		return
 	}
-	ar := h.buildAuthorizeRequesterFromPending(req.Context(), pending)
-	if ar == nil || ar.GetClient() == nil {
+	ar, err := h.buildAuthorizeRequesterFromPending(req.Context(), pending)
+	if err != nil {
+		writePendingClientError(w, pending.ClientID, err)
+		return
+	}
+	if ar == nil {
 		http.Error(w, "authorization request data corrupted", http.StatusInternalServerError)
 		return
 	}

@@ -55,13 +55,27 @@
 //	}
 //	authServerConfig, err := server.NewAuthorizationServerConfig(params)
 //
-// For creating OAuth clients:
+// For creating OAuth clients, build a fosite client and store it with
+// Storage.RegisterClient. Clients written this way carry no marker, so client
+// admission serves them. The exception is a confidential *fosite.DefaultClient
+// whose grant types are exactly token-exchange (on Redis, also such an OIDC
+// client with no token endpoint auth method, which reads back as a
+// DefaultClient): it matches the legacy delegate shape and is hidden unless its
+// ID is a configured delegate client.
 //
-//	client, err := registration.New(registration.Config{
-//	    ID:                      "my-client",
-//	    RedirectURIs:            []string{"http://127.0.0.1:8080/callback"},
-//	    TokenEndpointAuthMethod: "none",
-//	})
+//	client := &fosite.DefaultClient{
+//	    ID:            "my-client",
+//	    RedirectURIs:  []string{"http://127.0.0.1:8080/callback"},
+//	    ResponseTypes: []string{"code"},
+//	    GrantTypes:    []string{"authorization_code"},
+//	    Scopes:        []string{"openid", "offline_access"},
+//	    Public:        true,
+//	}
+//	err := stor.RegisterClient(ctx, client)
+//
+// registration.New is for dynamic client registration only. The clients it
+// returns carry the DCR marker, get the DCR TTL on Redis, count toward the DCR
+// client cap, and are always served by client admission.
 //
 // # Token Flow
 //

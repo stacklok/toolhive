@@ -1075,6 +1075,30 @@ func TestNewEmbeddedAuthServer(t *testing.T) {
 		require.NoError(t, server.Close())
 	})
 
+	// This rejection is the case that proves the option reaches Config.Validate.
+	t.Run("unsupported access token type returns error", func(t *testing.T) {
+		t.Parallel()
+
+		cfg := createMinimalValidConfig()
+
+		server, err := NewEmbeddedAuthServer(context.Background(), cfg,
+			WithAccessTokenType("application/at+jwt"))
+		require.ErrorContains(t, err, "unsupported access token type")
+		assert.Nil(t, server)
+	})
+
+	// Smoke test only: this also passes without the option, so wiring is proven by the rejection case above.
+	t.Run("at+jwt access token type is accepted", func(t *testing.T) {
+		t.Parallel()
+
+		cfg := createMinimalValidConfig()
+
+		server, err := NewEmbeddedAuthServer(context.Background(), cfg,
+			WithAccessTokenType("at+jwt"))
+		require.NoError(t, err)
+		require.NoError(t, server.Close())
+	})
+
 	t.Run("missing allowed audiences returns error", func(t *testing.T) {
 		t.Parallel()
 
@@ -1119,6 +1143,21 @@ func TestWithSubjectIdentifierAudiencesCopiesAndReplaces(t *testing.T) {
 	second[0] = "https://also-mutated.example.com"
 	options = resolveEmbeddedAuthServerOptions([]EmbeddedAuthServerOption{firstOption, secondOption})
 	assert.Equal(t, []string{"https://second.example.com"}, options.subjectIdentifierAudiences)
+}
+
+func TestWithAccessTokenTypeReplacesValue(t *testing.T) {
+	t.Parallel()
+
+	options := resolveEmbeddedAuthServerOptions([]EmbeddedAuthServerOption{
+		WithAccessTokenType("at+jwt"),
+		WithAccessTokenType("JWT"),
+	})
+	assert.Equal(t, "JWT", options.accessTokenType)
+
+	options = resolveEmbeddedAuthServerOptions([]EmbeddedAuthServerOption{
+		WithAccessTokenType("at+jwt"),
+	})
+	assert.Equal(t, "at+jwt", options.accessTokenType)
 }
 
 func TestRunConfigAndResolvedConfigShareConsentPolicyValidation(t *testing.T) {

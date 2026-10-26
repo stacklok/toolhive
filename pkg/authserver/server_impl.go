@@ -237,6 +237,7 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage) (_ *server
 		BaselineClientScopes:                      cfg.BaselineClientScopes,
 		AllowedAudiences:                          cfg.AllowedAudiences,
 		SubjectIdentifierAudiences:                cfg.SubjectIdentifierAudiences,
+		AccessTokenType:                           cfg.AccessTokenType,
 		AuthorizationEndpointBaseURL:              cfg.AuthorizationEndpointBaseURL,
 		CIMDEnabled:                               cfg.CIMDEnabled,
 		AllowConfidentialClientRegistration:       cfg.AllowConfidentialClientRegistration,

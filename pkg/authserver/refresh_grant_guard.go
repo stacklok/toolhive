@@ -31,9 +31,10 @@ const rejectionRecheckDelay = 500 * time.Millisecond
 // running on the refresher's own detached context and stores its result.
 const guardCheckTimeout = 10 * time.Second
 
-// guardRevokeTimeout bounds the revocation of a refused refresh token. It runs
+// guardRevokeTimeout bounds the revocation of a refused refresh token and the
+// deletion of a session's rows after a confirmed upstream rejection. Both run
 // on a context detached from the request so a client that disconnects after
-// the refusal does not leave the refresh token live.
+// the refusal does not skip them.
 const guardRevokeTimeout = 5 * time.Second
 
 // upstreamRefreshGuard is the built-in refresh-grant validator. It refuses a
@@ -70,7 +71,15 @@ const guardRevokeTimeout = 5 * time.Second
 // after rejectionRecheckDelay and treats a row now holding a different refresh
 // token as live. A recheck that cannot complete (the check is cancelled or
 // times out, or the read fails) leaves the outcome uncertain, so the grant
-// goes through.
+// goes through. Once the rejection is confirmed, the guard deletes all of the
+// session's upstream rows: the client is sent to a new tsid, so nothing reads
+// them again, and a replay of the kept refresh token is then refused as having
+// no rows, without another IdP call or recheck, on every replica.
+//
+// A refusal is logged at WARN only when it revokes or follows a confirmed IdP
+// rejection; the row deletion makes the latter happen once per session. The
+// other refusals repeat on every replay of a kept refresh token, so they are
+// logged at DEBUG.
 type upstreamRefreshGuard struct {
 	tokens       storage.UpstreamTokenStorage
 	refresher    storage.UpstreamTokenRefresher
@@ -137,14 +146,17 @@ func (g *upstreamRefreshGuard) HandleTokenEndpointRequest(ctx context.Context, r
 	if refused == nil {
 		return nil
 	}
-	if refused.revoke {
-		g.revoke(ctx, requester.GetID())
+	clientID := requester.GetClient().GetID()
+	revoked := refused.revoke && g.revoke(ctx, requester.GetID(), clientID)
+	level := slog.LevelDebug
+	if refused.revoke || refused.rejected {
+		level = slog.LevelWarn
 	}
-	slog.WarnContext(ctx, "refusing refresh grant: upstream credential is no longer usable; re-authorization required",
-		"client_id", requester.GetClient().GetID(),
+	slog.Log(ctx, level, "refusing refresh grant: upstream credential is no longer usable; re-authorization required",
+		"client_id", clientID,
 		"provider_id", refused.provider,
 		"reason", refused.reason,
-		"revoked", refused.revoke,
+		"revoked", revoked,
 	)
 	// Log tsid at DEBUG only; it is credential-adjacent.
 	slog.DebugContext(ctx, "refused refresh grant for token session", "tsid", tsid)
@@ -170,6 +182,9 @@ type refusal struct {
 	// revoke is set when the stored rows prove the credential can never be
 	// used again, so the refused refresh token is revoked too.
 	revoke bool
+	// rejected is set when the IdP's rejection of the refresh was confirmed
+	// and the session's rows were deleted.
+	rejected bool
 }
 
 // deadUpstream returns why the session's upstream credential is definitively
@@ -252,7 +267,8 @@ func (g *upstreamRefreshGuard) checkRow(
 	if !g.rejectionConfirmed(ctx, tsid, name, row.RefreshToken) {
 		return true, nil
 	}
-	return false, &refusal{provider: name, reason: "upstream refresh was rejected with invalid_grant"}
+	g.dropSession(ctx, tsid)
+	return false, &refusal{provider: name, reason: "upstream refresh was rejected with invalid_grant", rejected: true}
 }
 
 // refresh runs the refresher, returning ctx's error without calling the IdP
@@ -322,18 +338,37 @@ func (g *upstreamRefreshGuard) rejectionConfirmed(ctx context.Context, tsid, pro
 	return stored.RefreshToken == rejectedRT
 }
 
+// dropSession deletes all of the session's upstream rows after a confirmed
+// upstream rejection. Every row goes, not only the rejected provider's: with
+// the rejected row gone and its siblings kept, a replay would see only usable
+// rows and be granted a token that never gets a credential for the rejected
+// provider. A replica that wins a refresh race after the recheck then fails
+// its compare-and-swap, which costs nothing more, since this client is
+// already refused. A failure is logged at DEBUG and the grant is still
+// refused; a replay then repeats the check.
+func (g *upstreamRefreshGuard) dropSession(ctx context.Context, tsid string) {
+	delCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), guardRevokeTimeout)
+	defer cancel()
+	if err := g.tokens.DeleteUpstreamTokens(delCtx, tsid); err != nil && !errors.Is(err, storage.ErrNotFound) {
+		slog.DebugContext(ctx, "refresh grant guard could not delete rejected upstream rows", "error", err)
+	}
+}
+
 // revoke revokes the refused refresh token and the access tokens of the same
-// grant, as an RFC 7009 revocation of the refresh token would. A failure is
-// logged and the grant is still refused: the client is sent to a full
-// authorization either way, and the guard refuses the token again if it is
-// presented.
-func (g *upstreamRefreshGuard) revoke(ctx context.Context, requestID string) {
+// grant, as an RFC 7009 revocation of the refresh token would, and reports
+// whether it succeeded. A failure is logged and the grant is still refused:
+// the client is sent to a full authorization either way, and the guard
+// refuses the token again if it is presented.
+func (g *upstreamRefreshGuard) revoke(ctx context.Context, requestID, clientID string) bool {
 	revokeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), guardRevokeTimeout)
 	defer cancel()
 	if err := errors.Join(
 		g.revoker.RevokeRefreshToken(revokeCtx, requestID),
 		g.revoker.RevokeAccessToken(revokeCtx, requestID),
 	); err != nil {
-		slog.WarnContext(ctx, "failed to revoke refresh token refused by the upstream refresh guard", "error", err)
+		slog.WarnContext(ctx, "failed to revoke refresh token refused by the upstream refresh guard",
+			"client_id", clientID, "error", err)
+		return false
 	}
+	return true
 }

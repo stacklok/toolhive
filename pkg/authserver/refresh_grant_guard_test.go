@@ -89,6 +89,9 @@ func TestUpstreamRefreshGuard(t *testing.T) {
 		recheckDelay time.Duration
 		wantRefuse   bool
 		wantRevoke   bool
+		// wantDropped expects every upstream row of the session deleted, and a
+		// replay of the refresh token refused without another refresh.
+		wantDropped bool
 	}{
 		{
 			name: "session-less grant is not checked",
@@ -130,12 +133,25 @@ func TestUpstreamRefreshGuard(t *testing.T) {
 			refreshes:  1,
 		},
 		{
-			name:       "upstream invalid_grant is refused without revoking",
-			tsid:       guardTestTSID,
-			rows:       map[string]*storage.UpstreamTokens{"idp": guardTestRow(past, "rt")},
-			refreshErr: rejected,
-			refreshes:  1,
-			wantRefuse: true,
+			name:        "upstream invalid_grant is refused without revoking and drops the rows",
+			tsid:        guardTestTSID,
+			rows:        map[string]*storage.UpstreamTokens{"idp": guardTestRow(past, "rt")},
+			refreshErr:  rejected,
+			refreshes:   1,
+			wantRefuse:  true,
+			wantDropped: true,
+		},
+		{
+			name: "upstream invalid_grant drops the live sibling providers' rows too",
+			tsid: guardTestTSID,
+			rows: map[string]*storage.UpstreamTokens{
+				"a-rejected": guardTestRow(past, "rt-a"),
+				"b-live":     guardTestRow(future, "rt-b"),
+			},
+			refreshErr:  rejected,
+			refreshes:   1,
+			wantRefuse:  true,
+			wantDropped: true,
 		},
 		{
 			name:            "upstream invalid_grant with the row deleted is refused without revoking",
@@ -317,6 +333,16 @@ func TestUpstreamRefreshGuard(t *testing.T) {
 			} else {
 				require.NoError(t, err)
 			}
+			rows, rowsErr := stor.GetAllUpstreamTokens(ctx, guardTestTSID)
+			require.NoError(t, rowsErr)
+			if tt.wantDropped {
+				assert.Empty(t, rows, "a confirmed rejection must drop every upstream row of the session")
+				// The refresher mock allows no further call, so a replay that
+				// reached the IdP again fails the test.
+				require.ErrorIs(t, guard.HandleTokenEndpointRequest(ctx, req), fosite.ErrInvalidGrant)
+			} else if len(tt.rows) > 0 && !tt.deleteOnRefresh {
+				assert.NotEmpty(t, rows, "only a confirmed rejection drops the upstream rows")
+			}
 			if tt.wantRevoke {
 				assert.Error(t, refreshErr, "refused refresh token must be revoked")
 				assert.Error(t, accessErr, "the refused grant's access token must be revoked")
@@ -452,6 +478,20 @@ func TestUpstreamRefreshGuard_StorageFailures(t *testing.T) {
 			},
 		},
 		{
+			name: "row deletion failure after a confirmed rejection still refuses",
+			setup: func(stor *mocks.MockStorage, refresher *mocks.MockUpstreamTokenRefresher) {
+				stor.EXPECT().GetAllUpstreamTokens(gomock.Any(), guardTestTSID).
+					Return(map[string]*storage.UpstreamTokens{"idp": expired}, nil)
+				refresher.EXPECT().RefreshAndStore(gomock.Any(), guardTestTSID, gomock.Any()).Return(nil, rejected)
+				stor.EXPECT().GetUpstreamTokens(gomock.Any(), guardTestTSID, "idp").Return(expired, nil)
+				stor.EXPECT().DeleteUpstreamTokens(gomock.Any(), guardTestTSID).
+					Do(func(ctx context.Context, _ string) {
+						assert.NoError(t, ctx.Err(), "deletion must not run on the cancelled request context")
+					}).Return(storageErr)
+			},
+			wantRefuse: true,
+		},
+		{
 			name: "revocation failure still refuses",
 			setup: func(stor *mocks.MockStorage, _ *mocks.MockUpstreamTokenRefresher) {
 				stor.EXPECT().GetAllUpstreamTokens(gomock.Any(), guardTestTSID).
@@ -561,7 +601,8 @@ func TestUpstreamRefreshGuard_RealIdPRejection(t *testing.T) {
 // on memory and Redis storage: a refresh grant whose upstream credential is
 // live, or expired but refreshable, is granted. One whose upstream row is
 // absent or unreadable, or whose upstream refresh the IdP rejects, is refused
-// with invalid_grant and its refresh token kept. One whose expired row has no
+// with invalid_grant and its refresh token kept; an IdP rejection also drops
+// the session's upstream rows. One whose expired row has no
 // refresh token is refused and its refresh token revoked. With the guard
 // disabled, the absent case is granted.
 func TestIntegration_UpstreamRefreshGuard(t *testing.T) {
@@ -601,6 +642,8 @@ func TestIntegration_UpstreamRefreshGuard(t *testing.T) {
 		redis      bool
 		wantRefuse bool
 		wantRevoke bool
+		// wantDropped asserts the refusal deleted the session's upstream rows.
+		wantDropped bool
 		// wantRowRefreshed asserts the grant refreshed the expired upstream row.
 		wantRowRefreshed bool
 	}{
@@ -632,12 +675,18 @@ func TestIntegration_UpstreamRefreshGuard(t *testing.T) {
 			redis:      true,
 			wantRefuse: true,
 		},
-		{name: "upstream refresh rejected with invalid_grant is refused", mutate: rejectRefresh, wantRefuse: true},
 		{
-			name:       "upstream refresh rejected with invalid_grant is refused on Redis",
-			mutate:     rejectRefresh,
-			redis:      true,
-			wantRefuse: true,
+			name:        "upstream refresh rejected with invalid_grant is refused",
+			mutate:      rejectRefresh,
+			wantRefuse:  true,
+			wantDropped: true,
+		},
+		{
+			name:        "upstream refresh rejected with invalid_grant is refused on Redis",
+			mutate:      rejectRefresh,
+			redis:       true,
+			wantRefuse:  true,
+			wantDropped: true,
 		},
 		{
 			name:       "expired upstream row without a refresh token is refused and revoked",
@@ -714,6 +763,11 @@ func TestIntegration_UpstreamRefreshGuard(t *testing.T) {
 			assert.Equal(t, "invalid_grant", body["error"])
 			assert.NotContains(t, body, "access_token")
 			assert.Empty(t, embedder.handledGrants(), "embedder handlers must not run after the guard refuses")
+			if tt.wantDropped {
+				rows, err := ts.storage.GetAllUpstreamTokens(context.Background(), tsid)
+				require.NoError(t, err)
+				assert.Empty(t, rows, "a confirmed IdP rejection must drop the session's upstream rows")
+			}
 
 			// Restore a live upstream row: a revoked refresh token still does
 			// not work, and one only refused works again.

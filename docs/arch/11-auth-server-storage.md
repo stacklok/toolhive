@@ -452,7 +452,7 @@ other docs link here.
 | A row's access token is expired and its provider is no longer configured, so nothing can refresh it | No |
 | A row's access token is expired and the row has no refresh token | Yes |
 | The row was deleted while the guard refreshed it | No |
-| The IdP rejects the row's refresh with `invalid_grant` (`upstream.ErrGrantRejected`) | No |
+| The IdP rejects the row's refresh with `invalid_grant` (`upstream.ErrGrantRejected`) | No (the session's upstream rows are deleted) |
 
 A revoking refusal also revokes the grant's access tokens, as an RFC 7009
 revocation of the refresh token would. It applies only when the stored rows
@@ -466,12 +466,23 @@ during a rolling deploy that adds an upstream an old replica does not know it
 yet. If such a refusal is wrong, the client's next refresh succeeds; otherwise
 it is refused again.
 
-Keeping the token has a cost. A client that retries a refused refresh token
-repeats the whole check each time. For an IdP rejection, each retry makes
-another upstream refresh call, waits out the 500ms recheck and logs another
-WARN, where a revoked token would be refused once. This is bounded: the
-caller must authenticate as the token's client, and well-behaved clients
-treat `invalid_grant` as terminal.
+A kept token can be retried, and public clients (`token_endpoint_auth_method`
+`none`, the DCR default) need nothing but the token to do so. A retry of the
+cheap causes repeats a storage read. For an IdP rejection, a retry would
+repeat an upstream refresh call and the 500ms recheck, so once the rejection
+is confirmed the guard deletes all of the session's upstream rows. The client
+is sent to a new `tsid`, so nothing reads them again, and a retry is refused
+as having no rows, on any replica. Every row goes, not only the rejected
+provider's: with the siblings kept, a retry would see only usable rows and be
+granted a token that never gets a credential for the rejected provider. The
+rows are not the refresh token, so a lost race still costs one
+re-authorization rather than the grant, though the refusal can no longer
+correct itself on a retry.
+
+A refusal is logged at WARN when it revokes or follows a confirmed IdP
+rejection, which the row deletion limits to once per session. The other
+refusals repeat on every retry of a kept token (for example after logout), so
+they are logged at DEBUG.
 
 The guard refreshes an expired row through the shared refresher before
 deciding, one provider at a time. Upstream refresh is otherwise lazy, so an
@@ -489,8 +500,9 @@ the bearer validator answers those with 503 or a retryable 401 anyway:
 To tolerate the lost-race window described above, the guard does not refuse
 on the first rejection. It waits briefly (500ms) and re-reads the row, and a
 row now holding any different refresh token counts as live. This is a
-heuristic: a winner whose write lands after the wait is missed, and the
-client is refused once, but keeps its refresh token. A recheck that cannot
+heuristic: a winner whose write lands after the wait is missed. The client is
+refused and its rows deleted, so the winner's write fails, but it keeps its
+refresh token. A recheck that cannot
 complete (the request is cancelled, or the read fails) is uncertain too. A
 session without a `tsid` (a session-less grant) is not checked.
 

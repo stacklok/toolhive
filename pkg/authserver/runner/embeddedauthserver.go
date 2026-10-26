@@ -130,8 +130,12 @@ type EmbeddedAuthServer struct {
 	keyProvider  keys.KeyProvider
 	tlsListener  *tlsListener
 	listenerHost string
-	closeOnce    sync.Once
-	closeErr     error
+	// dcrRechecks are the RegistrationProbeInterval loops; stopDCRRechecks
+	// stops them, and Close calls it before closing the server they update.
+	dcrRechecks     []*dcrRecheck
+	stopDCRRechecks func()
+	closeOnce       sync.Once
+	closeErr        error
 }
 
 func resolveEmbeddedAuthServerOptions(opts []EmbeddedAuthServerOption) embeddedAuthServerOptions {
@@ -405,7 +409,7 @@ func newEmbeddedAuthServerWithStorage(
 	// 5. Build upstream configurations. The DCR resolver caches RFC 7591
 	// resolutions in dcrStore so re-entrant boot/reload paths reuse
 	// previously-registered upstream clients instead of re-registering.
-	upstreams, err := buildUpstreamConfigs(
+	upstreams, dcrRechecks, err := buildUpstreamConfigs(
 		ctx, cfg.Upstreams, cfg.Issuer, dcr.NewStorageBackedStore(dcrStore), cfg.InsecureAllowHTTP,
 	)
 	if err != nil {
@@ -493,9 +497,11 @@ func newEmbeddedAuthServerWithStorage(
 	}
 
 	e := &EmbeddedAuthServer{
-		server:       server,
-		keyProvider:  keyProvider,
-		listenerHost: options.listenerHost,
+		server:          server,
+		keyProvider:     keyProvider,
+		listenerHost:    options.listenerHost,
+		dcrRechecks:     dcrRechecks,
+		stopDCRRechecks: startDCRRechecks(server, dcrRechecks),
 	}
 	e.attachTLSListener(cfg, listenerKeyPair)
 	return e, nil
@@ -592,6 +598,9 @@ func (e *EmbeddedAuthServer) Start() error {
 // Should be called during runner shutdown.
 func (e *EmbeddedAuthServer) Close() error {
 	e.closeOnce.Do(func() {
+		if e.stopDCRRechecks != nil {
+			e.stopDCRRechecks()
+		}
 		var listenerErr error
 		if e.tlsListener != nil {
 			ctx, cancel := context.WithTimeout(context.Background(), tlsListenerStopTimeout)
@@ -605,7 +614,8 @@ func (e *EmbeddedAuthServer) Close() error {
 
 // CloseIdleConnections releases the idle keep-alive connections pooled by the
 // underlying server's upstream IDP providers, without touching storage. See
-// authserver.CloseIdleConnections for when to use this rather than Close.
+// authserver.CloseIdleConnections for when to use this rather than Close. It
+// does not stop the RegistrationProbeInterval re-check loops; Close does.
 func (e *EmbeddedAuthServer) CloseIdleConnections() {
 	authserver.CloseIdleConnections(e.server)
 }
@@ -864,24 +874,31 @@ func parseTokenLifespans(cfg *authserver.TokenLifespanRunConfig) (access, refres
 // slog.Error via dcr.LogStepError and returns the wrapped error to the
 // caller without logging further. The resolver itself does not log
 // errors, which avoids the log-and-return double-reporting pattern.
+//
+// It also returns one dcrRecheck per DCR upstream that sets
+// RegistrationProbeInterval, seeded with the resolution applied here.
 func buildUpstreamConfigs(
 	ctx context.Context,
 	runConfigs []authserver.UpstreamRunConfig,
 	issuer string,
 	dcrStore dcr.CredentialStore,
 	insecureAllowHTTP bool,
-) ([]authserver.UpstreamConfig, error) {
+) ([]authserver.UpstreamConfig, []*dcrRecheck, error) {
 	configs := make([]authserver.UpstreamConfig, 0, len(runConfigs))
+	var rechecks []*dcrRecheck
 
 	for _, rc := range runConfigs {
-		cfg, err := buildOneUpstreamConfig(ctx, rc, issuer, dcrStore, insecureAllowHTTP)
+		cfg, recheck, err := buildOneUpstreamConfig(ctx, rc, issuer, dcrStore, insecureAllowHTTP)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		configs = append(configs, *cfg)
+		if recheck != nil {
+			rechecks = append(rechecks, recheck)
+		}
 	}
 
-	return configs, nil
+	return configs, rechecks, nil
 }
 
 // buildOneUpstreamConfig validates rc, resolves DCR credentials if required,
@@ -894,23 +911,28 @@ func buildOneUpstreamConfig(
 	issuer string,
 	dcrStore dcr.CredentialStore,
 	insecureAllowHTTP bool,
-) (*authserver.UpstreamConfig, error) {
+) (*authserver.UpstreamConfig, *dcrRecheck, error) {
 	// Shallow copy of the outer UpstreamRunConfig so DCR resolution never
 	// mutates the caller's slice element.
 	rcCopy := rc
 
 	if err := validateUpstreamRunConfig(&rcCopy); err != nil {
-		return nil, fmt.Errorf("upstream %q: %w", rc.Name, err)
+		return nil, nil, fmt.Errorf("upstream %q: %w", rc.Name, err)
 	}
 
-	resolution, err := resolveUpstreamDCR(ctx, &rcCopy, issuer, dcrStore)
+	req, resolution, err := resolveUpstreamDCR(ctx, &rcCopy, issuer, dcrStore)
 	if err != nil {
-		return nil, fmt.Errorf("upstream %q: %w", rc.Name, err)
+		return nil, nil, fmt.Errorf("upstream %q: %w", rc.Name, err)
 	}
 
 	cfg, err := buildUpstreamConfig(&rcCopy, insecureAllowHTTP)
 	if err != nil {
-		return nil, fmt.Errorf("upstream %q: %w", rc.Name, err)
+		return nil, nil, fmt.Errorf("upstream %q: %w", rc.Name, err)
+	}
+
+	recheck, err := newDCRRecheck(&rc, req, resolution, dcrStore)
+	if err != nil {
+		return nil, nil, fmt.Errorf("upstream %q: %w", rc.Name, err)
 	}
 
 	// Apply the DCR-resolved ClientSecret to the built provider config. The
@@ -920,7 +942,7 @@ func buildOneUpstreamConfig(
 	// fully-resolved DCR client.
 	applyDCRResolutionToConfig(cfg, rcCopy.Type, resolution)
 
-	return cfg, nil
+	return cfg, recheck, nil
 }
 
 // validateUpstreamRunConfig enforces that rc carries the sub-config matching
@@ -943,26 +965,26 @@ func validateUpstreamRunConfig(rc *authserver.UpstreamRunConfig) error {
 
 // resolveUpstreamDCR performs Dynamic Client Registration for rc when
 // required, folding the result back into rc's sub-config in place. It
-// returns a nil Resolution when rc has a pre-provisioned client and no DCR
-// is needed.
+// returns the request it resolved and the Resolution, both nil when rc has a
+// pre-provisioned client and no DCR is needed.
 func resolveUpstreamDCR(
 	ctx context.Context,
 	rc *authserver.UpstreamRunConfig,
 	issuer string,
 	dcrStore dcr.CredentialStore,
-) (*dcr.Resolution, error) {
+) (*dcr.Request, *dcr.Resolution, error) {
 	req, err := newDCRRequest(rc, issuer)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if req == nil {
-		return nil, nil
+		return nil, nil, nil
 	}
 
 	resolution, err := dcr.ResolveCredentials(ctx, req, dcrStore)
 	if err != nil {
 		dcr.LogStepError(rc.Name, err)
-		return nil, err
+		return nil, nil, err
 	}
 
 	switch rc.Type {
@@ -973,7 +995,7 @@ func resolveUpstreamDCR(
 		resolved := consumeResolution(*rc.OAuth2Config, resolution)
 		rc.OAuth2Config = &resolved
 	}
-	return resolution, nil
+	return req, resolution, nil
 }
 
 // applyDCRResolutionToConfig overlays the DCR-resolved ClientSecret onto the

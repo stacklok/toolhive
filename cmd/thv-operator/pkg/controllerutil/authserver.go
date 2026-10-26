@@ -1505,6 +1505,9 @@ func buildDCRUpstreamRunConfig(
 		SoftwareID:           dcr.SoftwareID,
 		SoftwareStatement:    dcr.SoftwareStatement,
 	}
+	if dcr.RegistrationProbeInterval != nil {
+		rc.RegistrationProbeInterval = dcr.RegistrationProbeInterval.Duration.String()
+	}
 	if dcr.InitialAccessTokenRef != nil {
 		rc.InitialAccessTokenEnvVar = initialAccessTokenEnvVar
 	}

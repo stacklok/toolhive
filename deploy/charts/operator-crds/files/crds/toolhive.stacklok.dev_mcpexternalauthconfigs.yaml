@@ -1815,6 +1815,28 @@ spec:
                                   - authorizationEndpoint
                                   - none
                                   type: string
+                                registrationProbeInterval:
+                                  description: |-
+                                    RegistrationProbeInterval, when set, repeats the start-time check while
+                                    the proxy runs, as a duration of at least 1m; 5m to 15m suits most
+                                    upstreams. ToolHive re-reads the cached registration, checks it with
+                                    RegistrationProbe, replaces a rejected one or registers a missing one,
+                                    and switches to the result in place when it differs from the client in
+                                    use, including when another replica replaced it. Without it, a
+                                    registration the upstream drops stays in use until the proxy restarts.
+                                    Each check sends at most one RegistrationProbe request to the upstream
+                                    from every replica (none with RegistrationProbe none), plus a
+                                    registration request when the probe rejects the client; the
+                                    tokenEndpoint probe appears in upstream logs as a failed code
+                                    redemption. A re-registration presents the initial access token the pod
+                                    read at start, so an upstream that issues single-use initial access
+                                    tokens still needs a restart to recover.
+                                  pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$
+                                  type: string
+                                  x-kubernetes-validations:
+                                  - message: registrationProbeInterval must be at
+                                      least 1m
+                                    rule: duration(self) >= duration('1m')
                                 rotationKey:
                                   description: |-
                                     RotationKey is an optional operator-chosen label that is part of the
@@ -2243,6 +2265,28 @@ spec:
                                   - authorizationEndpoint
                                   - none
                                   type: string
+                                registrationProbeInterval:
+                                  description: |-
+                                    RegistrationProbeInterval, when set, repeats the start-time check while
+                                    the proxy runs, as a duration of at least 1m; 5m to 15m suits most
+                                    upstreams. ToolHive re-reads the cached registration, checks it with
+                                    RegistrationProbe, replaces a rejected one or registers a missing one,
+                                    and switches to the result in place when it differs from the client in
+                                    use, including when another replica replaced it. Without it, a
+                                    registration the upstream drops stays in use until the proxy restarts.
+                                    Each check sends at most one RegistrationProbe request to the upstream
+                                    from every replica (none with RegistrationProbe none), plus a
+                                    registration request when the probe rejects the client; the
+                                    tokenEndpoint probe appears in upstream logs as a failed code
+                                    redemption. A re-registration presents the initial access token the pod
+                                    read at start, so an upstream that issues single-use initial access
+                                    tokens still needs a restart to recover.
+                                  pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$
+                                  type: string
+                                  x-kubernetes-validations:
+                                  - message: registrationProbeInterval must be at
+                                      least 1m
+                                    rule: duration(self) >= duration('1m')
                                 rotationKey:
                                   description: |-
                                     RotationKey is an optional operator-chosen label that is part of the
@@ -4855,6 +4899,28 @@ spec:
                                   - authorizationEndpoint
                                   - none
                                   type: string
+                                registrationProbeInterval:
+                                  description: |-
+                                    RegistrationProbeInterval, when set, repeats the start-time check while
+                                    the proxy runs, as a duration of at least 1m; 5m to 15m suits most
+                                    upstreams. ToolHive re-reads the cached registration, checks it with
+                                    RegistrationProbe, replaces a rejected one or registers a missing one,
+                                    and switches to the result in place when it differs from the client in
+                                    use, including when another replica replaced it. Without it, a
+                                    registration the upstream drops stays in use until the proxy restarts.
+                                    Each check sends at most one RegistrationProbe request to the upstream
+                                    from every replica (none with RegistrationProbe none), plus a
+                                    registration request when the probe rejects the client; the
+                                    tokenEndpoint probe appears in upstream logs as a failed code
+                                    redemption. A re-registration presents the initial access token the pod
+                                    read at start, so an upstream that issues single-use initial access
+                                    tokens still needs a restart to recover.
+                                  pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$
+                                  type: string
+                                  x-kubernetes-validations:
+                                  - message: registrationProbeInterval must be at
+                                      least 1m
+                                    rule: duration(self) >= duration('1m')
                                 rotationKey:
                                   description: |-
                                     RotationKey is an optional operator-chosen label that is part of the
@@ -5283,6 +5349,28 @@ spec:
                                   - authorizationEndpoint
                                   - none
                                   type: string
+                                registrationProbeInterval:
+                                  description: |-
+                                    RegistrationProbeInterval, when set, repeats the start-time check while
+                                    the proxy runs, as a duration of at least 1m; 5m to 15m suits most
+                                    upstreams. ToolHive re-reads the cached registration, checks it with
+                                    RegistrationProbe, replaces a rejected one or registers a missing one,
+                                    and switches to the result in place when it differs from the client in
+                                    use, including when another replica replaced it. Without it, a
+                                    registration the upstream drops stays in use until the proxy restarts.
+                                    Each check sends at most one RegistrationProbe request to the upstream
+                                    from every replica (none with RegistrationProbe none), plus a
+                                    registration request when the probe rejects the client; the
+                                    tokenEndpoint probe appears in upstream logs as a failed code
+                                    redemption. A re-registration presents the initial access token the pod
+                                    read at start, so an upstream that issues single-use initial access
+                                    tokens still needs a restart to recover.
+                                  pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$
+                                  type: string
+                                  x-kubernetes-validations:
+                                  - message: registrationProbeInterval must be at
+                                      least 1m
+                                    rule: duration(self) >= duration('1m')
                                 rotationKey:
                                   description: |-
                                     RotationKey is an optional operator-chosen label that is part of the

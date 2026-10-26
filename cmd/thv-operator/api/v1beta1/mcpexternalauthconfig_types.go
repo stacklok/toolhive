@@ -1924,6 +1924,26 @@ type DCRUpstreamConfig struct {
 	// +kubebuilder:validation:Enum=tokenEndpoint;authorizationEndpoint;none
 	RegistrationProbe string `json:"registrationProbe,omitempty"`
 
+	// RegistrationProbeInterval, when set, repeats the start-time check while
+	// the proxy runs, as a duration of at least 1m; 5m to 15m suits most
+	// upstreams. ToolHive re-reads the cached registration, checks it with
+	// RegistrationProbe, replaces a rejected one or registers a missing one,
+	// and switches to the result in place when it differs from the client in
+	// use, including when another replica replaced it. Without it, a
+	// registration the upstream drops stays in use until the proxy restarts.
+	// Each check sends at most one RegistrationProbe request to the upstream
+	// from every replica (none with RegistrationProbe none), plus a
+	// registration request when the probe rejects the client; the
+	// tokenEndpoint probe appears in upstream logs as a failed code
+	// redemption. A re-registration presents the initial access token the pod
+	// read at start, so an upstream that issues single-use initial access
+	// tokens still needs a restart to recover.
+	// +optional
+	// +kubebuilder:validation:Type=string
+	// +kubebuilder:validation:Pattern=`^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$`
+	// +kubebuilder:validation:XValidation:rule="duration(self) >= duration('1m')",message="registrationProbeInterval must be at least 1m"
+	RegistrationProbeInterval *metav1.Duration `json:"registrationProbeInterval,omitempty"`
+
 	// InitialAccessTokenRef is an optional reference to a Kubernetes Secret
 	// carrying an RFC 7591 §3 initial access token. When set, the resolver
 	// presents the token value as a Bearer credential on the registration

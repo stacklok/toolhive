@@ -1056,6 +1056,19 @@ type DCRUpstreamConfig struct {
 	// retired only through RotationKey.
 	RegistrationProbe string `json:"registration_probe,omitempty" yaml:"registration_probe,omitempty"`
 
+	// RegistrationProbeInterval, when set, repeats the start-time resolution
+	// while the server runs, as a Go duration of at least 1m (e.g. "5m"): the
+	// cached registration is re-read and checked with RegistrationProbe, a
+	// rejected one is replaced, a missing one is registered, and when the
+	// result differs from the client the server holds (also when another
+	// replica replaced the row) the server switches to it without a restart.
+	// Each check sends at most one RegistrationProbe request to the upstream
+	// (none with RegistrationProbe none), plus a registration request when
+	// the probe rejects the client; 5m to 15m suits most upstreams. Empty
+	// keeps the check at start only.
+	//nolint:lll // field tags require full JSON+YAML names
+	RegistrationProbeInterval string `json:"registration_probe_interval,omitempty" yaml:"registration_probe_interval,omitempty"`
+
 	// InitialAccessTokenFile is the path to a file containing the RFC 7591
 	// initial access token presented to the registration endpoint. Mutually
 	// exclusive with InitialAccessTokenEnvVar. Both may be omitted for open
@@ -1909,7 +1922,30 @@ func (c *DCRUpstreamConfig) Validate() error {
 		return fmt.Errorf("dcr_config: %w", err)
 	}
 
+	if _, err := c.ProbeInterval(); err != nil {
+		return fmt.Errorf("dcr_config: %w", err)
+	}
+
 	return nil
+}
+
+// MinRegistrationProbeInterval is the shortest RegistrationProbeInterval
+// accepted: each check sends a request to the upstream from every replica.
+const MinRegistrationProbeInterval = time.Minute
+
+// ProbeInterval parses RegistrationProbeInterval; zero means start only.
+func (c *DCRUpstreamConfig) ProbeInterval() (time.Duration, error) {
+	if c.RegistrationProbeInterval == "" {
+		return 0, nil
+	}
+	d, err := time.ParseDuration(c.RegistrationProbeInterval)
+	if err != nil {
+		return 0, fmt.Errorf("invalid registration_probe_interval: %w", err)
+	}
+	if d < MinRegistrationProbeInterval {
+		return 0, fmt.Errorf("registration_probe_interval must be at least %s", MinRegistrationProbeInterval)
+	}
+	return d, nil
 }
 
 // dcrRotationKeyPattern bounds DCRUpstreamConfig.RotationKey to a short,

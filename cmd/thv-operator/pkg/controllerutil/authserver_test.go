@@ -1813,9 +1813,10 @@ func TestBuildAuthServerRunConfig(t *testing.T) {
 							Scopes:                []string{"openid"},
 							UserInfo:              &mcpv1beta1.UserInfoConfig{EndpointURL: "https://idp.example.com/userinfo"},
 							DCRConfig: &mcpv1beta1.DCRUpstreamConfig{
-								RegistrationEndpoint: "https://idp.example.com/register",
-								RotationKey:          "2026-10",
-								RegistrationProbe:    "authorizationEndpoint",
+								RegistrationEndpoint:      "https://idp.example.com/register",
+								RotationKey:               "2026-10",
+								RegistrationProbe:         "authorizationEndpoint",
+								RegistrationProbeInterval: &metav1.Duration{Duration: 5 * time.Minute},
 							},
 						},
 					},
@@ -1834,6 +1835,7 @@ func TestBuildAuthServerRunConfig(t *testing.T) {
 				assert.Empty(t, upstream.OAuth2Config.DCRConfig.DiscoveryURL)
 				assert.Equal(t, "2026-10", upstream.OAuth2Config.DCRConfig.RotationKey)
 				assert.Equal(t, "authorizationEndpoint", upstream.OAuth2Config.DCRConfig.RegistrationProbe)
+				assert.Equal(t, "5m0s", upstream.OAuth2Config.DCRConfig.RegistrationProbeInterval)
 				// No InitialAccessTokenRef set: env var name should stay empty.
 				assert.Empty(t, upstream.OAuth2Config.DCRConfig.InitialAccessTokenEnvVar)
 			},

@@ -637,6 +637,17 @@ type AuthenticationDCRUpstreamConfig struct {
 	// fails, fails startup. "none" skips the check; the registration is then
 	// retired only through RotationKey.
 	RegistrationProbe OptString `json:"registration_probe"`
+	// RegistrationProbeInterval, when set, repeats the start-time resolution
+	// while the server runs, as a Go duration of at least 1m (e.g. "5m"): the
+	// cached registration is re-read and checked with RegistrationProbe, a
+	// rejected one is replaced, a missing one is registered, and when the
+	// result differs from the client the server holds (also when another
+	// replica replaced the row) the server switches to it without a restart.
+	// Each check sends at most one RegistrationProbe request to the upstream
+	// (none with RegistrationProbe none), plus a registration request when
+	// the probe rejects the client; 5m to 15m suits most upstreams. Empty
+	// keeps the check at start only.
+	RegistrationProbeInterval OptString `json:"registration_probe_interval"`
 	// RotationKey is an optional operator-chosen label (1-64 characters from
 	// [A-Za-z0-9._-]) that becomes part of the cached registration's identity
 	// without being sent to the upstream. Changing it makes the next start
@@ -685,6 +696,11 @@ func (s *AuthenticationDCRUpstreamConfig) GetRegistrationProbe() OptString {
 	return s.RegistrationProbe
 }
 
+// GetRegistrationProbeInterval returns the value of RegistrationProbeInterval.
+func (s *AuthenticationDCRUpstreamConfig) GetRegistrationProbeInterval() OptString {
+	return s.RegistrationProbeInterval
+}
+
 // GetRotationKey returns the value of RotationKey.
 func (s *AuthenticationDCRUpstreamConfig) GetRotationKey() OptString {
 	return s.RotationKey
@@ -723,6 +739,11 @@ func (s *AuthenticationDCRUpstreamConfig) SetRegistrationEndpoint(val OptString)
 // SetRegistrationProbe sets the value of RegistrationProbe.
 func (s *AuthenticationDCRUpstreamConfig) SetRegistrationProbe(val OptString) {
 	s.RegistrationProbe = val
+}
+
+// SetRegistrationProbeInterval sets the value of RegistrationProbeInterval.
+func (s *AuthenticationDCRUpstreamConfig) SetRegistrationProbeInterval(val OptString) {
+	s.RegistrationProbeInterval = val
 }
 
 // SetRotationKey sets the value of RotationKey.

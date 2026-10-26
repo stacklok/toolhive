@@ -649,8 +649,12 @@ func createMCPClient(
 	base = &identityRoundTripper{base: base, fallbackIdentity: identity}
 	// Forwarded headers ride the request context (set by headerforward.CaptureMiddleware
 	// at the vMCP server's incoming edge) and are merged into the per-session backend
-	// header-forward config here. The session is created once per request, so the
-	// captured headers are stable for the session's lifetime.
+	// header-forward config here. This connection is built once, from the request
+	// that creates the session, so it carries that request's headers for its whole
+	// lifetime, including the requests it makes when the session is torn down. On
+	// the vMCP server's Serve path, tool calls, resource reads and prompt gets go
+	// through the per-request backend client (pkg/vmcp/client) instead, which reads
+	// each request's own headers.
 	mergedHeaderForward, err := mergeForwardedHeaders(target.HeaderForward, headerforward.ForwardedHeadersFromContext(ctx))
 	if err != nil {
 		return nil, fmt.Errorf("backend %s: %w", target.WorkloadID, err)

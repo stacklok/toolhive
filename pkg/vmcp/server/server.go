@@ -171,8 +171,8 @@ type Config struct {
 	// PassthroughHeaders is an allowlist of incoming client header names that the
 	// vMCP forwards, unchanged, to every backend it calls. They are captured
 	// per-request at the incoming edge (headerforward.CaptureMiddleware) and merged
-	// into the per-session backend client's header-forward config. Empty disables
-	// capture (no middleware is installed).
+	// into the header-forward config of each backend call the request triggers.
+	// Empty disables capture (no middleware is installed).
 	PassthroughHeaders []string
 
 	// RateLimiter is the optional core-layer limiter applied at CallTool.
@@ -823,11 +823,12 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 
 // applyForwardedHeaderCapture wraps next with the forwarded-header capture
 // middleware when passthrough headers are configured. It copies the allowlisted
-// incoming headers into the request context so the per-session backend client
-// forwards them to backends (see pkg/vmcp/headerforward). Identity-independent
-// plumbing: its position relative to auth is immaterial; it must only run before
-// session creation, which every inner handler satisfies. No-op when the allowlist
-// is empty.
+// incoming headers into the request context so the backend client forwards them
+// to backends (see pkg/vmcp/headerforward). Identity-independent plumbing: its
+// position relative to auth is immaterial, but it must wrap every MCP request,
+// not only the one that creates the session, so a request that omits a header
+// does not inherit the session creator's value. No-op when the allowlist is
+// empty.
 func (s *Server) applyForwardedHeaderCapture(next http.Handler) http.Handler {
 	if len(s.config.PassthroughHeaders) == 0 {
 		return next

@@ -139,6 +139,31 @@ func TestStopWorkload_NotFound_ReturnsNil(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestStopWorkload_EmptyContainerListIsAlreadyStopped(t *testing.T) {
+	t.Parallel()
+
+	stopCalls := 0
+	inspectCalls := 0
+	api := &fakeDockerAPI{
+		listFunc: func(_ context.Context, _ mobyclient.ContainerListOptions) ([]container.Summary, error) {
+			return nil, nil
+		},
+		inspectFunc: func(_ context.Context, _ string) (container.InspectResponse, error) {
+			inspectCalls++
+			return container.InspectResponse{}, nil
+		},
+		stopFunc: func(_ context.Context, _ string, _ mobyclient.ContainerStopOptions) error {
+			stopCalls++
+			return nil
+		},
+	}
+	c := &Client{api: api}
+
+	require.NoError(t, c.StopWorkload(t.Context(), "already-removed"))
+	assert.Zero(t, inspectCalls, "a missing workload has no container to inspect")
+	assert.Zero(t, stopCalls, "missing workloads must not call the container stop API")
+}
+
 // TestStopProxyContainer_HandlesEnvoyAndSquidTopologies exercises the building
 // block of the shared cleanup path. StopWorkload iterates the fixed proxy
 // suffixes (-egress, -ingress, -dns) and calls stopProxyContainer for each; this

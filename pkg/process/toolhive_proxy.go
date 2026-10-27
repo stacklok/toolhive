@@ -4,6 +4,7 @@
 package process
 
 import (
+	"slices"
 	"strings"
 
 	gopsutilprocess "github.com/shirou/gopsutil/v4/process"
@@ -66,6 +67,38 @@ func IsToolHiveProxyForWorkload(pid int, workloadName string) (bool, error) {
 	return true, nil
 }
 
+// IsTrackedToolHiveProxyForWorkload verifies a PID read from a workload's status.
+// Detached supervisors must match the workload name. Non-detached ToolHive
+// run/start/restart supervisors use recorded-PID binding without a process-birth-time check.
+// An unnamed run may omit its derived workload name; start/restart include the name.
+// Port-discovered PIDs must use IsToolHiveProxyForWorkload instead.
+func IsTrackedToolHiveProxyForWorkload(pid int, workloadName string) (bool, error) {
+	if pid <= 0 || workloadName == "" {
+		return false, nil
+	}
+	p, err := gopsutilprocess.NewProcess(int32(pid)) //nolint:gosec // G115: supported platform PIDs fit int32.
+	if err != nil {
+		return false, err
+	}
+	env, err := p.Environ()
+	if err != nil {
+		return false, err
+	}
+	if slices.Contains(env, ToolHiveDetachedEnv+"="+ToolHiveDetachedValue) {
+		cmdline, err := p.Cmdline()
+		if err != nil {
+			return false, err
+		}
+		return cmdlineContainsWorkload(cmdline, workloadName), nil
+	}
+	cmdline, err := p.Cmdline()
+	if err != nil {
+		return false, err
+	}
+	return isToolHiveProcess(p) && (strings.Contains(cmdline, " run ") || strings.Contains(cmdline, " start ") ||
+		strings.Contains(cmdline, " restart ")), nil
+}
+
 // isToolHiveProcess returns true if p is a ToolHive process (TOOLHIVE_DETACHED
 // or thv binary in exe/cmdline).
 func isToolHiveProcess(p *gopsutilprocess.Process) bool {
@@ -105,12 +138,12 @@ func cmdlineContainsWorkload(cmdline, workloadName string) bool {
 	if !strings.Contains(cmdline, pattern) {
 		return false
 	}
-	// Ensure workloadName is not a prefix of a longer word: next char must be space, -, or end
+	// A hyphen continues the workload name; it is not a token boundary.
 	idx := strings.Index(cmdline, pattern)
 	end := idx + len(pattern)
 	if end >= len(cmdline) {
 		return true
 	}
 	next := cmdline[end]
-	return next == ' ' || next == '-'
+	return next == ' '
 }

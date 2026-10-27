@@ -20,7 +20,7 @@ jobs:
           persist-credentials: false
 
       - name: Run Claude Code for Issue Triage
-        uses: anthropics/claude-code-action@5eb090f3c3afd701a0672cd32981197ca27688f6 # v1.0.253
+        uses: anthropics/claude-code-action@925afb53776cf1a2b738c6bdbed37b4d4000ef13 # v1.0.262
         env:
           ANTHROPIC_BASE_URL: ${{ vars.ANTHROPIC_BASE_URL }}
         with:
@@ -43,7 +43,7 @@ jobs:
             - DO NOT add the "good-first-issue" label.
             - DO NOT post comments or otherwise communicate with the issue author.
             - If no labels are clearly applicable, do not apply any.
-          claude_args: --model claude-sonnet-5
+          claude_args: --model claude-sonnet-5-5
           anthropic_api_key: ${{ secrets.STACKLOK_GATEWAY_KEY_ISSUE_TRIAGE }}
           allowed_non_write_users: "*"
           github_token: ${{ secrets.GITHUB_TOKEN }}

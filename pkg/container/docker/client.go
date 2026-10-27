@@ -134,6 +134,7 @@ type Client struct {
 	ops          deployOps
 	proxy        networkProxy // selected at construction time via newNetworkProxy
 	bridgeAPI    bridgeNetworkAPI
+	hostAPI      hostDiscoveryAPI
 }
 
 // NewClient creates a new container client
@@ -152,6 +153,7 @@ func NewClient(ctx context.Context) (*Client, error) {
 		api:          dockerClient,
 		imageManager: imageManager,
 		bridgeAPI:    dockerClient,
+		hostAPI:      dockerClient,
 	}
 	// Default ops implementation uses the real client methods.
 	c.ops = c
@@ -260,21 +262,30 @@ func (c *Client) DeployWorkload(
 			return 0, fmt.Errorf("failed to create internal network: %w", err)
 		}
 
-		// Gateway policy is a deployment-time snapshot taken after ToolHive's
-		// networks exist. Bridges created later require a workload redeploy.
+		// Start or reuse DNS normally before reading Podman's generated hosts.
+		dnsContainerName := fmt.Sprintf("%s-dns", name)
+		dnsContainerID, dnsContainerIP, err := c.ops.createDnsContainer(
+			ctx, dnsContainerName, attachStdio, networkName, externalEndpointsConfig,
+		)
+		if err != nil {
+			return 0, fmt.Errorf("failed to create dns container: %w", err)
+		}
+		additionalDNS = dnsContainerIP
+
+		// Snapshot after DNS startup, which may recreate a missing network.
+		// Bridges or host mappings changed later require a workload redeploy.
 		gatewayIPs, err := c.ops.discoverBridgeGateways(ctx)
 		if err != nil {
 			return 0, fmt.Errorf("failed to discover Docker bridge gateways: %w", err)
 		}
-
-		// create dns container
-		dnsContainerName := fmt.Sprintf("%s-dns", name)
-		_, dnsContainerIP, err := c.ops.createDnsContainer(ctx, dnsContainerName, attachStdio, networkName, externalEndpointsConfig)
-		if dnsContainerIP != "" {
-			additionalDNS = dnsContainerIP
-		}
-		if err != nil {
-			return 0, fmt.Errorf("failed to create dns container: %w", err)
+		if c.runtimeType == runtime.TypePodman {
+			aliases, err := c.discoverHostAliases(ctx, dnsContainerID)
+			if err != nil {
+				return 0, fmt.Errorf("failed to discover Podman host addresses: %w", err)
+			}
+			gatewayIPs = append(slices.Clone(gatewayIPs), aliases...)
+			slices.SortFunc(gatewayIPs, netip.Addr.Compare)
+			gatewayIPs = slices.Compact(gatewayIPs)
 		}
 
 		pspec = proxySpec{

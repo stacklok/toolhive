@@ -26,10 +26,13 @@ import (
 )
 
 type consentPageData struct {
-	Handle, ActionURL, Destination, Summary, RedirectURI, ClientID, ClientName, Resource, Upstream string
-	Scopes                                                                                         []string
-	CanRemember                                                                                    bool
-	RememberFor                                                                                    string
+	Handle, ActionURL, Destination, Summary, RedirectURI, ClientID, ClientName, Resource string
+	// Upstream is the upstream's name (its routing and storage key); UpstreamDisplay
+	// is the sanitized label shown in the "You will sign in with" line.
+	Upstream, UpstreamDisplay string
+	Scopes                    []string
+	CanRemember               bool
+	RememberFor               string
 }
 
 // consentStyles extends pageStyles for the consent page only; it is served as a
@@ -61,7 +64,8 @@ func formatDays(d time.Duration) string {
 	return strconv.Itoa(n) + " " + unit
 }
 
-const maxConsentClientNameRunes = 80
+// maxConsentTextRunes caps the client name and upstream label shown on the consent page.
+const maxConsentTextRunes = 80
 
 var consentPageTemplate = template.Must(template.New("consent").Parse(`<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
@@ -69,7 +73,7 @@ var consentPageTemplate = template.Must(template.New("consent").Parse(`<!DOCTYPE
 <div class="card"><div class="card-body">
 <h1>Allow this app to sign you in?</h1>
 <p class="subtitle summary">{{.Summary}}</p>
-<p class="subtitle">You will sign in with {{.Upstream}} next.</p>
+<p class="subtitle">You will sign in with {{.UpstreamDisplay}} next.</p>
 <dl><dt>Sends your sign-in to:</dt><dd><strong>{{.Destination}}</strong></dd>
 <dt>Name given by the app (not verified):</dt><dd>{{.ClientName}}</dd></dl>
 <details><summary>Technical details</summary><dl>
@@ -132,6 +136,33 @@ func displayClientName(name string) string {
 	}, name)
 }
 
+// truncateConsentText keeps at most maxConsentTextRunes runes of s and appends an
+// ellipsis when it cuts, trimming any whitespace left before the ellipsis.
+func truncateConsentText(s string) string {
+	if r := []rune(s); len(r) > maxConsentTextRunes {
+		return strings.TrimRightFunc(string(r[:maxConsentTextRunes]), unicode.IsSpace) + "…"
+	}
+	return s
+}
+
+// upstreamDisplayName returns the label for the named upstream on the consent page:
+// its sanitized DisplayName when the upstream is still configured and has one,
+// otherwise the name itself. The label is resolved at render time from this
+// handler's upstream list, so a handler rebuilt with a different upstream set shows
+// the current value; it is display-only and never a key.
+func (h *Handler) upstreamDisplayName(name string) string {
+	for i := range h.upstreams {
+		if h.upstreams[i].Name != name {
+			continue
+		}
+		if label := strings.TrimSpace(displayClientName(h.upstreams[i].DisplayName)); label != "" {
+			return truncateConsentText(label)
+		}
+		return name
+	}
+	return name
+}
+
 func (h *Handler) renderConsent(
 	w http.ResponseWriter, handle string, pending *storage.PendingAuthorization, client fosite.Client,
 ) {
@@ -139,14 +170,15 @@ func (h *Handler) renderConsent(
 	clientName := displayClientName(registration.ClientName(client))
 	if clientName == "" {
 		clientName = "No name given"
-	} else if r := []rune(clientName); len(r) > maxConsentClientNameRunes {
-		clientName = string(r[:maxConsentClientNameRunes]) + "…"
+	} else {
+		clientName = truncateConsentText(clientName)
 	}
 	data := consentPageData{
 		Handle: handle, ActionURL: h.config.GetAuthorizationEndpointBaseURL() + "/oauth/consent",
 		Destination: destination, Summary: summary, RedirectURI: pending.RedirectURI,
 		ClientID: client.GetID(), ClientName: clientName, Resource: pending.Resource,
-		Upstream: pending.UpstreamProviderName, Scopes: pending.Scopes, CanRemember: h.rememberedStorage != nil,
+		Upstream: pending.UpstreamProviderName, UpstreamDisplay: h.upstreamDisplayName(pending.UpstreamProviderName),
+		Scopes: pending.Scopes, CanRemember: h.rememberedStorage != nil,
 		RememberFor: formatDays(storage.ConsentSessionTTL),
 	}
 	pageHash, consentHash := sha256.Sum256([]byte(pageStyles)), sha256.Sum256([]byte(consentStyles))
@@ -193,8 +225,12 @@ func (h *Handler) ConsentHandler(w http.ResponseWriter, req *http.Request) {
 	if !h.validateAndConsumePending(req.Context(), w, req, handle, pending, storage.ConsentStageAwaiting) {
 		return
 	}
-	ar := h.buildAuthorizeRequesterFromPending(req.Context(), pending)
-	if ar == nil || ar.GetClient() == nil {
+	ar, err := h.buildAuthorizeRequesterFromPending(req.Context(), pending)
+	if err != nil {
+		writePendingClientError(w, pending.ClientID, err)
+		return
+	}
+	if ar == nil {
 		http.Error(w, "authorization request data corrupted", http.StatusInternalServerError)
 		return
 	}

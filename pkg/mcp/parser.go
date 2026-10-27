@@ -96,6 +96,20 @@ func ParsingMiddleware(next http.Handler) http.Handler {
 
 		// Check if we should parse this request
 		if !shouldParseMCPRequest(r) {
+			// Only a POST body is parsed as an MCP message. Rather than forward a
+			// body the chain has not inspected, reject any non-POST request that
+			// carries one. A bodyless GET (SSE stream), DELETE (session
+			// termination) or OPTIONS (CORS preflight) passes through unchanged;
+			// the method itself may be legitimate, so this is a 400 for the
+			// unexpected body, not a 405. Method-specific 405/Allow responses are
+			// left to the transport handlers, which know the methods their
+			// endpoint serves. Method names are case-sensitive (RFC 9110 §9.1).
+			if requestCarriesBody(r) {
+				slog.WarnContext(r.Context(), "rejected request body on a non-POST method",
+					"method", r.Method)
+				http.Error(w, "request body is only accepted on POST", http.StatusBadRequest)
+				return
+			}
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -284,8 +298,33 @@ func GetParsedMCPRequest(ctx context.Context) *ParsedMCPRequest {
 // ToolHive's proxies forward as given. Any POST may carry an MCP message,
 // regardless of Content-Type (not mandated by all supported MCP revisions).
 // Path or media-type gates would bypass downstream request-level controls.
+// ParsingMiddleware rejects a body sent with any other method instead of
+// forwarding it unparsed (see requestCarriesBody).
 func shouldParseMCPRequest(r *http.Request) bool {
 	return r.Method == http.MethodPost
+}
+
+// requestCarriesBody reports whether r has a non-empty body. When the length
+// is unknown (chunked) it reads one byte and puts it back, so the body
+// forwarded downstream is unchanged. A read error other than EOF counts as a
+// body: the request is rejected rather than forwarded unexamined.
+func requestCarriesBody(r *http.Request) bool {
+	if r.Body == nil || r.Body == http.NoBody || r.ContentLength == 0 {
+		return false
+	}
+	if r.ContentLength > 0 {
+		return true
+	}
+	var first [1]byte
+	n, err := io.ReadFull(r.Body, first[:])
+	if n > 0 {
+		r.Body = struct {
+			io.Reader
+			io.Closer
+		}{io.MultiReader(bytes.NewReader(first[:n]), r.Body), r.Body}
+		return true
+	}
+	return !errors.Is(err, io.EOF)
 }
 
 // parsedMCPMessage returns nil, nil for responses. Request params that do not

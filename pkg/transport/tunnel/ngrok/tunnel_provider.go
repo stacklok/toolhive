@@ -12,8 +12,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"go.yaml.in/yaml/v3"
 	"golang.ngrok.com/ngrok/v2"
-	"gopkg.in/yaml.v3"
 )
 
 // TunnelProvider implements the TunnelProvider interface for ngrok.

@@ -157,8 +157,12 @@ const docTemplate = `{
                         "description": "RegistrationEndpoint is the RFC 7591 registration endpoint URL used\ndirectly, bypassing discovery. Because no discovery is performed,\nserver-capability fields (token_endpoint_auth_methods_supported,\nscopes_supported) are unavailable on this code path; the caller is\nexpected to also supply AuthorizationEndpoint, TokenEndpoint, and an\nexplicit Scopes list on the parent OAuth2UpstreamRunConfig. Auth\nmethod falls back to the resolver's default (client_secret_basic).\n\nMutually exclusive with DiscoveryURL.",
                         "type": "string"
                     },
+                    "registration_probe": {
+                        "description": "RegistrationProbe selects how the resolver checks a cached registration\nagainst the upstream at start. \"tokenEndpoint\" (the default) redeems a\nrandom authorization code with the cached client and reads\ninvalid_client as \"registration gone\"; it decides only for upstreams\nthat authenticate the client before validating the grant.\n\"authorizationEndpoint\" sends an authorization request for the cached\nclient without following redirects and reads a direct 400, 401 or 403\nthat carries an RFC 6749 JSON error object (error invalid_client,\nunauthorized_client or invalid_request) as \"gone\" (RFC 6749 §4.1.2.1),\nfor upstreams whose token endpoint answers invalid_grant for any\nclient_id; an HTML page or a bare gateway status is not a verdict. A\nfalse rejection re-registers at every start and, when registration also\nfails, fails startup. \"none\" skips the check; the registration is then\nretired only through RotationKey.",
+                        "type": "string"
+                    },
                     "rotation_key": {
-                        "description": "RotationKey is an optional operator-chosen label (1-64 characters from\n[A-Za-z0-9._-]) that becomes part of the cached registration's identity\nwithout being sent to the upstream. Changing it makes the next start\nregister a fresh client instead of reusing the cached one. At start the\nresolver checks the cached client at the upstream's token endpoint and\nreplaces it by itself when the upstream answers invalid_client. Use\nRotationKey when the upstream has dropped the registration and that\ncheck cannot tell (an upstream that answers a dropped public client\nlike a live one, or a private_key_jwt client), so the rejection is only\nvisible in the user's browser, or when a registration must be rotated\non request. The row written under the previous value is left in place. Upstream refresh tokens\nbound to the previous client_id stop refreshing once the client\nchanges; affected users sign in again.",
+                        "description": "RotationKey is an optional operator-chosen label (1-64 characters from\n[A-Za-z0-9._-]) that becomes part of the cached registration's identity\nwithout being sent to the upstream. Changing it makes the next start\nregister a fresh client instead of reusing the cached one. At start the\nresolver checks the cached client at the upstream (see RegistrationProbe)\nand replaces it by itself when the upstream rejects it. Use RotationKey\nwhen the upstream has dropped the registration and the configured probe\ncannot tell, so the rejection may not be visible to the resolver, or when\na registration must be rotated on request. The row written under the\nprevious value is left in place. Upstream refresh tokens bound to the\nprevious client_id stop refreshing once the client changes; affected\nusers sign in again.",
                         "type": "string"
                     },
                     "software_id": {
@@ -439,11 +443,25 @@ const docTemplate = `{
                 },
                 "type": "object"
             },
+            "authserver.RegistrationRateLimitRunConfig": {
+                "description": "RegistrationRateLimit bounds the unauthenticated /oauth/register\nendpoint. If omitted, defaults to 1 registration per second with a\nburst of 5. The limiter is per process, so the effective rate is the\nconfigured rate multiplied by the replica count. The cap on how many\nregistered clients may exist at once is Storage.MaxDCRClients; unused\nclients live 24 hours, so a caller at the full rate keeps up to\nrate x replicas x 86400 of them alive, which at the defaults exceeds the\ndefault cap within about 2.8 hours. The operator sets it from the\nembedded auth server's registrationRateLimit.",
+                "properties": {
+                    "burst": {
+                        "description": "Burst is the number of registrations admitted at once before the rate\napplies. Must be positive.",
+                        "type": "integer"
+                    },
+                    "requests_per_second": {
+                        "description": "RequestsPerSecond is the sustained registration rate. Must be positive.",
+                        "type": "number"
+                    }
+                },
+                "type": "object"
+            },
             "authserver.RunConfig": {
                 "description": "EmbeddedAuthServerConfig contains configuration for the embedded OAuth2/OIDC authorization server.\nWhen set, the proxy runner will start an embedded auth server that delegates to upstream IDPs.\nThis is the serializable RunConfig; secrets are referenced by file paths or env var names.",
                 "properties": {
                     "allow_confidential_client_registration": {
-                        "description": "AllowConfidentialClientRegistration permits Dynamic Client Registration\nof confidential clients: when true, /oauth/register accepts\ntoken_endpoint_auth_method values client_secret_basic and\nclient_secret_post in addition to \"none\" (still the default on\nomission) and mints a client_secret returned exactly once. Confidential\nclients are restricted to https non-loopback redirect URIs, and\nregistrations idle for more than DefaultDCRClientTTL (30 days) are\nevicted and must re-register. This gates registration only: disabling\nit does not revoke or reject already-minted secrets at the token\nendpoint.\n\nSecurity: /oauth/register is unauthenticated, so this issues client\nsecrets to any caller. Combining it with InsecureAllowHTTP is rejected\nby Validate.",
+                        "description": "AllowConfidentialClientRegistration permits Dynamic Client Registration\nof confidential clients: when true, /oauth/register accepts\ntoken_endpoint_auth_method values client_secret_basic and\nclient_secret_post in addition to \"none\" (still the default on\nomission) and mints a client_secret returned exactly once. Confidential\nclients are restricted to https non-loopback redirect URIs, and\nregistrations expire and must re-register when never used within\nDefaultUnusedDCRClientTTL (24 hours) or idle for more than\nDefaultDCRClientTTL (30 days). This gates registration only: disabling\nit does not revoke or reject already-minted secrets at the token\nendpoint.\n\nSecurity: /oauth/register is unauthenticated, so this issues client\nsecrets to any caller. Combining it with InsecureAllowHTTP is rejected\nby Validate.",
                         "type": "boolean"
                     },
                     "allow_private_key_jwt_registration": {
@@ -523,6 +541,9 @@ const docTemplate = `{
                     "issuer": {
                         "description": "Issuer is the issuer identifier for this authorization server.\nThis will be included in the \"iss\" claim of issued tokens.\nMust be a valid HTTPS URL (or HTTP for localhost) without query, fragment, or trailing slash.",
                         "type": "string"
+                    },
+                    "registration_rate_limit": {
+                        "$ref": "#/components/schemas/authserver.RegistrationRateLimitRunConfig"
                     },
                     "schema_version": {
                         "description": "SchemaVersion is the version of the RunConfig schema.",
@@ -722,7 +743,7 @@ const docTemplate = `{
                 "type": "object"
             },
             "authserver.TLSListenerRunConfig": {
-                "description": "TLSListener configures auth server routes to be served over TLS on port 8443.\nIt is currently rejected because the runner does not start this listener.",
+                "description": "TLSListener serves the auth server routes over TLS on port 8443, in\naddition to the MCP port. Required for spiffe_x509 client authentication.",
                 "properties": {
                     "cert_file": {
                         "type": "string"
@@ -829,6 +850,10 @@ const docTemplate = `{
             },
             "authserver.UpstreamRunConfig": {
                 "properties": {
+                    "display_name": {
+                        "description": "DisplayName is an optional human-readable label for this upstream, shown to\nend users on the consent page in place of Name. It is display-only: never\ncompared, stored, or used to route. It is sanitized at render time and never\nrejected by validation. It is shown as trusted text, so it must come from\noperator-controlled configuration only.",
+                        "type": "string"
+                    },
                     "name": {
                         "description": "Name uniquely identifies this upstream.\nUsed for routing decisions and session binding in multi-upstream scenarios.\nIf empty when only one upstream is configured, defaults to \"default\".",
                         "type": "string"
@@ -5490,6 +5515,10 @@ const docTemplate = `{
             "storage.RunConfig": {
                 "description": "Storage configures the storage backend for the auth server.\nIf nil, defaults to in-memory storage.",
                 "properties": {
+                    "max_dcr_clients": {
+                        "description": "MaxDCRClients caps the number of live clients created by\n/oauth/register. At the cap, registration fails with HTTP 503 until a\nclient expires; no existing client is evicted. If omitted, defaults to\n10000; 0 means unlimited, and a negative value is rejected. On Redis the\ncount is shared by every replica.\n\nSizing: a client never used for a token exchange lives 24 hours, so a\ncaller registering at the full rate keeps up to rate x replicas x 86400\nunused clients alive. At the default rate of 1/s that is about 86400 per\nreplica: one replica fills the default cap in about 2.8 hours, and new\nregistrations then get 503 for up to 24 hours after the traffic stops.\nA client promoted by a token exchange holds its slot for 30 days. The\noperator sets it from the embedded auth server's storage.maxDCRClients.",
+                        "type": "integer"
+                    },
                     "redis_config": {
                         "$ref": "#/components/schemas/storage.RedisRunConfig"
                     },

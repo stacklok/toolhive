@@ -335,17 +335,17 @@ func (mr *MockDeviceCodeStorageMockRecorder) LoadDeviceRequestByUserCode(ctx, us
 }
 
 // MarkDeviceRequestAuthorized mocks base method.
-func (m *MockDeviceCodeStorage) MarkDeviceRequestAuthorized(ctx context.Context, deviceCode, resolvedUserID, resolvedUserName, resolvedUserEmail, sessionID string) error {
+func (m *MockDeviceCodeStorage) MarkDeviceRequestAuthorized(ctx context.Context, deviceCode string, auth storage.DeviceAuthorization) error {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "MarkDeviceRequestAuthorized", ctx, deviceCode, resolvedUserID, resolvedUserName, resolvedUserEmail, sessionID)
+	ret := m.ctrl.Call(m, "MarkDeviceRequestAuthorized", ctx, deviceCode, auth)
 	ret0, _ := ret[0].(error)
 	return ret0
 }
 
 // MarkDeviceRequestAuthorized indicates an expected call of MarkDeviceRequestAuthorized.
-func (mr *MockDeviceCodeStorageMockRecorder) MarkDeviceRequestAuthorized(ctx, deviceCode, resolvedUserID, resolvedUserName, resolvedUserEmail, sessionID any) *gomock.Call {
+func (mr *MockDeviceCodeStorageMockRecorder) MarkDeviceRequestAuthorized(ctx, deviceCode, auth any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "MarkDeviceRequestAuthorized", reflect.TypeOf((*MockDeviceCodeStorage)(nil).MarkDeviceRequestAuthorized), ctx, deviceCode, resolvedUserID, resolvedUserName, resolvedUserEmail, sessionID)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "MarkDeviceRequestAuthorized", reflect.TypeOf((*MockDeviceCodeStorage)(nil).MarkDeviceRequestAuthorized), ctx, deviceCode, auth)
 }
 
 // MarkDeviceRequestDenied mocks base method.

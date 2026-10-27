@@ -5,20 +5,25 @@ package authserver
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"log/slog"
+	"math"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/ory/fosite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"gopkg.in/yaml.v3"
+	"go.yaml.in/yaml/v3"
 
+	"github.com/stacklok/toolhive/pkg/authserver/authorizationdetails"
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
 	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/authserver/server/tokenexchange"
+	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
 	"github.com/stacklok/toolhive/pkg/authserver/upstreamfilter"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
@@ -126,6 +131,15 @@ func TestConfigValidate(t *testing.T) {
 		TokenEndpoint:         "https://idp.example.com/token",
 	}
 	validUpstreams := []UpstreamConfig{{Name: "default", Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstream}}
+	detailsRegistry, err := authorizationdetails.New(map[string]authorizationdetails.Type{
+		"example": {
+			GrantTypes: []string{oauthproto.GrantTypeTokenExchange},
+			Grant: func(_ context.Context, req authorizationdetails.Request) (authorizationdetails.Result, error) {
+				return authorizationdetails.Result{Entries: req.Entries}, nil
+			},
+		},
+	})
+	require.NoError(t, err)
 	validOIDCUpstream := &upstream.OIDCConfig{
 		CommonOAuthConfig: upstream.CommonOAuthConfig{ClientID: "c", RedirectURI: "https://example.com/cb"},
 		Issuer:            "https://accounts.google.com",
@@ -190,6 +204,13 @@ func TestConfigValidate(t *testing.T) {
 		{name: "private-key JWT registration combined with insecure HTTP passes (no secret to protect)", config: Config{Issuer: "http://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, AllowPrivateKeyJWTRegistration: true, InsecureAllowHTTP: true}},
 		{name: "private-key JWT registration combined with token exchange disabled rejects", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, AllowPrivateKeyJWTRegistration: true, DisableTokenExchange: true}, wantErr: true, errMsg: "token-exchange-only"},
 
+		// RefreshGrantHandlers
+		{name: "nil refresh grant handler rejected", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, RefreshGrantHandlers: []fosite.TokenEndpointHandler{&recordingRefreshHandler{}, nil}}, wantErr: true, errMsg: "refresh grant handler 1 is nil"},
+		{name: "typed-nil refresh grant handler rejected", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, RefreshGrantHandlers: []fosite.TokenEndpointHandler{(*recordingRefreshHandler)(nil)}}, wantErr: true, errMsg: "refresh grant handler 0 is nil"},
+		{name: "refresh grant handler accepted", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, RefreshGrantHandlers: []fosite.TokenEndpointHandler{&recordingRefreshHandler{}}}},
+
+		{name: "authorization details registry combined with token exchange disabled rejects", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, AuthorizationDetailsRegistry: detailsRegistry, DisableTokenExchange: true}, wantErr: true, errMsg: "authorization details registry requires token exchange"},
+		{name: "authorization details registry with token exchange enabled passes", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, AuthorizationDetailsRegistry: detailsRegistry}},
 		// Valid configs
 		{name: "valid minimal", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}}},
 		{name: "valid nil key provider", config: Config{Issuer: "https://example.com", HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}}},
@@ -218,6 +239,82 @@ func TestConfigValidate(t *testing.T) {
 			t.Parallel()
 			err := tt.config.Validate()
 			assertError(t, err, tt.wantErr, tt.errMsg)
+		})
+	}
+}
+
+// minimalValidConfig returns a Config that passes Validate, for tests that vary one field.
+func minimalValidConfig(t *testing.T) Config {
+	t.Helper()
+
+	return Config{
+		Issuer:      "https://issuer.example.com",
+		HMACSecrets: &servercrypto.HMACSecrets{Current: make([]byte, 32)},
+		Upstreams: []UpstreamConfig{{
+			Name: "default", Type: UpstreamProviderTypeOAuth2,
+			OAuth2Config: &upstream.OAuth2Config{
+				CommonOAuthConfig:     upstream.CommonOAuthConfig{ClientID: "client", RedirectURI: "https://issuer.example.com/callback"},
+				AuthorizationEndpoint: "https://idp.example.com/authorize",
+				TokenEndpoint:         "https://idp.example.com/token",
+			},
+		}},
+		AllowedAudiences: []string{"https://resource.example.com"},
+	}
+}
+
+func TestConfigValidateSubjectIdentifierAudiences(t *testing.T) {
+	t.Parallel()
+
+	base := minimalValidConfig(t)
+
+	tests := []struct {
+		name      string
+		audiences []string
+		wantErr   bool
+	}{
+		{name: "exact allowed URI", audiences: []string{"https://resource.example.com"}},
+		{name: "all is not special", audiences: []string{"all"}, wantErr: true},
+		{name: "URI outside allowed audiences", audiences: []string{"https://other.example.com"}, wantErr: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := base
+			cfg.SubjectIdentifierAudiences = tc.audiences
+			err := cfg.Validate()
+			if tc.wantErr {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
+func TestConfigValidateAccessTokenType(t *testing.T) {
+	t.Parallel()
+
+	base := minimalValidConfig(t)
+
+	tests := []struct {
+		name    string
+		typ     string
+		wantErr bool
+	}{
+		{name: "at+jwt is accepted", typ: "at+jwt"},
+		{name: "media type prefix is rejected", typ: "application/at+jwt", wantErr: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := base
+			cfg.AccessTokenType = tc.typ
+			err := cfg.Validate()
+			if tc.wantErr {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+			}
 		})
 	}
 }
@@ -729,6 +826,89 @@ func TestRunConfigValidate(t *testing.T) {
 			t.Parallel()
 			err := tt.config.Validate()
 			assertError(t, err, tt.wantErr, tt.errMsg)
+		})
+	}
+}
+
+func TestUpstreamConfig_DisplayNameNeverFailsValidation(t *testing.T) {
+	t.Parallel()
+
+	newConfig := func(name, displayName string) Config {
+		return Config{
+			Issuer: "https://example.com", KeyProvider: keys.NewGeneratingProvider(keys.DefaultAlgorithm),
+			HMACSecrets:      &servercrypto.HMACSecrets{Current: make([]byte, 32)},
+			AllowedAudiences: []string{"https://mcp.example.com"},
+			Upstreams: []UpstreamConfig{{
+				Name: name, DisplayName: displayName, Type: UpstreamProviderTypeOAuth2,
+				OAuth2Config: &upstream.OAuth2Config{
+					CommonOAuthConfig:     upstream.CommonOAuthConfig{ClientID: "c", RedirectURI: "https://example.com/cb"},
+					AuthorizationEndpoint: "https://idp.example.com/authorize",
+					TokenEndpoint:         "https://idp.example.com/token",
+				},
+			}},
+		}
+	}
+	for name, displayName := range map[string]string{
+		"empty":           "",
+		"plain":           "Acme Okta",
+		"control runes":   "Acme\u202e\u200b\nOkta",
+		"whitespace only": " \t ",
+		"html":            "<script>alert(1)</script>",
+		"very long":       strings.Repeat("é", 1000),
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			cfg := newConfig("ffffffff-ffff-ffff-ffff-ffffffffffff", displayName)
+			require.NoError(t, cfg.Validate())
+		})
+	}
+	t.Run("name is still validated", func(t *testing.T) {
+		t.Parallel()
+		cfg := newConfig("Not_A_Label", "Acme Okta")
+		require.Error(t, cfg.Validate())
+	})
+}
+
+// TestRunConfig_DisplayNameRoundTrip pins the display_name key in YAML and JSON,
+// the form operators write in config files and ConfigMaps, and checks that an
+// unset display name is omitted on encode.
+func TestRunConfig_DisplayNameRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	const yamlDoc = `
+upstreams:
+  - name: okta
+    display_name: Acme Okta
+`
+	const jsonDoc = `{"upstreams":[{"name":"okta","display_name":"Acme Okta"}]}`
+	for _, tc := range []struct {
+		name      string
+		unmarshal func([]byte, any) error
+		marshal   func(any) ([]byte, error)
+		doc       string
+	}{
+		{name: "yaml", unmarshal: yaml.Unmarshal, marshal: yaml.Marshal, doc: yamlDoc},
+		{name: "json", unmarshal: json.Unmarshal, marshal: json.Marshal, doc: jsonDoc},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var decoded RunConfig
+			require.NoError(t, tc.unmarshal([]byte(tc.doc), &decoded))
+			require.Len(t, decoded.Upstreams, 1)
+			assert.Equal(t, "okta", decoded.Upstreams[0].Name)
+			assert.Equal(t, "Acme Okta", decoded.Upstreams[0].DisplayName)
+
+			encoded, err := tc.marshal(&decoded)
+			require.NoError(t, err)
+			assert.Contains(t, string(encoded), "display_name")
+			var reDecoded RunConfig
+			require.NoError(t, tc.unmarshal(encoded, &reDecoded))
+			assert.Equal(t, decoded.Upstreams, reDecoded.Upstreams)
+
+			decoded.Upstreams[0].DisplayName = ""
+			encoded, err = tc.marshal(&decoded)
+			require.NoError(t, err)
+			assert.NotContains(t, string(encoded), "display_name")
 		})
 	}
 }
@@ -1317,6 +1497,29 @@ func TestDCRUpstreamConfigValidate(t *testing.T) {
 			},
 			wantErr: true,
 			errMsg:  "rotation_key must be 1-64 characters",
+		},
+		{
+			name: "registration_probe authorizationEndpoint accepts",
+			config: DCRUpstreamConfig{
+				RegistrationEndpoint: "https://idp.example.com/register",
+				RegistrationProbe:    "authorizationEndpoint",
+			},
+		},
+		{
+			name: "registration_probe none accepts",
+			config: DCRUpstreamConfig{
+				RegistrationEndpoint: "https://idp.example.com/register",
+				RegistrationProbe:    "none",
+			},
+		},
+		{
+			name: "unknown registration_probe rejects",
+			config: DCRUpstreamConfig{
+				RegistrationEndpoint: "https://idp.example.com/register",
+				RegistrationProbe:    "userinfo",
+			},
+			wantErr: true,
+			errMsg:  "registration_probe must be one of",
 		},
 		{
 			name: "both initial_access_token_file and initial_access_token_env_var rejects",
@@ -2037,14 +2240,23 @@ func TestRunConfigValidateTLSListener(t *testing.T) {
 	}{
 		{name: "nil listener"},
 		{
-			name:       "empty listener config is rejected as unsupported",
-			config:     &TLSListenerRunConfig{},
-			wantErrMsg: "tls_listener: the TLS listener is not yet supported",
+			name:   "complete listener config",
+			config: &TLSListenerRunConfig{CertFile: "cert", KeyFile: "key"},
 		},
 		{
-			name:       "complete listener config is rejected as unsupported",
-			config:     &TLSListenerRunConfig{CertFile: "cert", KeyFile: "key"},
-			wantErrMsg: "tls_listener: the TLS listener is not yet supported",
+			name:       "missing certificate",
+			config:     &TLSListenerRunConfig{KeyFile: "key"},
+			wantErrMsg: "tls_listener.cert_file",
+		},
+		{
+			name:       "missing key",
+			config:     &TLSListenerRunConfig{CertFile: "cert"},
+			wantErrMsg: "tls_listener.key_file",
+		},
+		{
+			name:       "missing both",
+			config:     &TLSListenerRunConfig{},
+			wantErrMsg: "tls_listener.cert_file and tls_listener.key_file",
 		},
 	}
 	for _, tt := range tests {
@@ -2138,6 +2350,62 @@ func TestConfig_WarnAuthorizeCallbackHostMismatch(t *testing.T) {
 			} else {
 				require.Empty(t, buf.String())
 			}
+		})
+	}
+}
+
+func TestRunConfigValidateDCRRegistrationLimits(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		config     RunConfig
+		wantErrMsg string
+	}{
+		{name: "unset keeps the defaults"},
+		{
+			name:   "positive rate and burst",
+			config: RunConfig{RegistrationRateLimit: &RegistrationRateLimitRunConfig{RequestsPerSecond: 0.5, Burst: 2}},
+		},
+		{
+			name:       "zero rate rejected",
+			config:     RunConfig{RegistrationRateLimit: &RegistrationRateLimitRunConfig{Burst: 2}},
+			wantErrMsg: "requests_per_second must be a positive number",
+		},
+		{
+			name:       "infinite rate rejected",
+			config:     RunConfig{RegistrationRateLimit: &RegistrationRateLimitRunConfig{RequestsPerSecond: math.Inf(1), Burst: 2}},
+			wantErrMsg: "requests_per_second must be a positive number",
+		},
+		{
+			name:       "NaN rate rejected",
+			config:     RunConfig{RegistrationRateLimit: &RegistrationRateLimitRunConfig{RequestsPerSecond: math.NaN(), Burst: 2}},
+			wantErrMsg: "requests_per_second must be a positive number",
+		},
+		{
+			name:       "zero burst rejected",
+			config:     RunConfig{RegistrationRateLimit: &RegistrationRateLimitRunConfig{RequestsPerSecond: 1}},
+			wantErrMsg: "burst must be positive",
+		},
+		{
+			name:   "zero max DCR clients means unlimited",
+			config: RunConfig{Storage: &storage.RunConfig{MaxDCRClients: new(0)}},
+		},
+		{
+			name:       "negative max DCR clients rejected",
+			config:     RunConfig{Storage: &storage.RunConfig{MaxDCRClients: new(-1)}},
+			wantErrMsg: "max_dcr_clients must not be negative",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := tt.config.Validate()
+			if tt.wantErrMsg == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.ErrorContains(t, err, tt.wantErrMsg)
 		})
 	}
 }

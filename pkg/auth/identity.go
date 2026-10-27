@@ -124,8 +124,10 @@ type Identity struct {
 	//                      session at all: local.go, anonymous.go, or middleware
 	//                      validating a JWT from an IdP other than the embedded
 	//                      auth server (see the PlatformUserID note above).
-	//   - empty map      — tsid claim was valid but no providers had a stored
-	//                      access token for the session.
+	//   - empty map      — never produced by TokenValidator, which answers 401
+	//                      when a tsid session holds no usable access token;
+	//                      a consumer that meets one denies it like a session
+	//                      lacking the pinned provider's credential.
 	//   - populated map  — keys are upstream provider names; values are the
 	//                      stored access token strings.
 	//

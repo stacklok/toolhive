@@ -552,8 +552,10 @@ func jwtBearerGrantFactory(
 // that sits between rawStorage and the innermost backend gets an explicit,
 // visible opportunity to intercept or audit assertion-JWT consumption, rather
 // than being silently skipped past. See CIMDStorageDecorator.ConsumeAssertionJWT
-// and SPIFFEStorageDecorator.ConsumeAssertionJWT for the two production
-// decorators that forward it today. A future decorator that omits this method
+// (and the shape guard that NewCIMDShapeGuardStorage returns when CIMD is
+// disabled), SPIFFEStorageDecorator.ConsumeAssertionJWT and
+// ClientAdmissionStorage.ConsumeAssertionJWT for the production decorators
+// that forward it today. A future decorator that omits this method
 // breaks visibly, right here, with an error naming the offending type -- not
 // silently, by having its ConsumeAssertionJWT logic (if any) never run.
 func assertionJWTConsumer(rawStorage fosite.Storage) (storage.AssertionJWTConsumer, error) {

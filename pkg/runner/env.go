@@ -4,8 +4,11 @@
 package runner
 
 import (
+	"bufio"
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"strings"
@@ -53,7 +56,7 @@ func (*DetachedEnvVarValidator) Validate(
 			if isEnvVarProvided(envVar.Name, suppliedEnvVars, secretsList) {
 				continue
 			} else if envVar.Required {
-				return nil, fmt.Errorf("missing required environment variable: %s", envVar.Name)
+				return nil, missingRequiredEnvVarError(envVar, nil)
 			} else if envVar.Default != "" {
 				addAsEnvironmentVariable(envVar, envVar.Default, &suppliedEnvVars)
 			}
@@ -106,6 +109,11 @@ func (v *CLIEnvVarValidator) Validate(
 		// Initialize secrets manager if needed
 		secretsManager := v.initializeSecretsManagerIfNeeded(registryEnvVars)
 
+		// One reader for every prompt in this call: a fresh bufio.Reader per prompt
+		// would throw away any line it had already buffered from os.Stdin, which is
+		// how a piped answer for the next variable would be lost.
+		stdinReader := bufio.NewReader(os.Stdin)
+
 		// Process each environment variable from the registry
 		for _, envVar := range registryEnvVars {
 			if isEnvVarProvided(envVar.Name, envVars, secretsList) {
@@ -133,14 +141,16 @@ func (v *CLIEnvVarValidator) Validate(
 					// If secrets manager unavailable or secret not found, fall through to prompt
 				}
 
-				value, err := promptForEnvironmentVariable(envVar)
+				value, err := promptForEnvironmentVariable(envVar, stdinReader)
 				if err != nil {
-					slog.Warn("failed to read input", "name", envVar.Name, "error", err)
-					continue
+					// The variable is required: without a value the workload starts
+					// misconfigured, so fail instead of warning and skipping it.
+					return nil, missingRequiredEnvVarError(envVar, err)
 				}
-				if value != "" {
-					addNewVariable(ctx, envVar, value, secretsManager, &envVars, &secretsList)
+				if value == "" {
+					return nil, missingRequiredEnvVarError(envVar, nil)
 				}
+				addNewVariable(ctx, envVar, value, secretsManager, &envVars, &secretsList)
 			} else if envVar.Default != "" {
 				addNewVariable(ctx, envVar, envVar.Default, secretsManager, &envVars, &secretsList)
 			}
@@ -153,7 +163,11 @@ func (v *CLIEnvVarValidator) Validate(
 }
 
 // promptForEnvironmentVariable prompts the user for an environment variable value
-func promptForEnvironmentVariable(envVar *registry.EnvVar) (string, error) {
+// and reads it as a whole line. Required registry variables routinely take values
+// containing spaces (a path with a space, a space-separated OAuth scope list),
+// which fmt.Scanln cannot read: it stops after the first whitespace-delimited
+// token and reports "expected newline" for the rest.
+func promptForEnvironmentVariable(envVar *registry.EnvVar, stdin *bufio.Reader) (string, error) {
 	var byteValue []byte
 	var err error
 	if envVar.Secret {
@@ -161,23 +175,39 @@ func promptForEnvironmentVariable(envVar *registry.EnvVar) (string, error) {
 		fmt.Printf("Enter value for %s (input will be hidden): ", envVar.Name)
 		byteValue, err = term.ReadPassword(int(os.Stdin.Fd())) //nolint:gosec // G115: stdin fd is always small
 		fmt.Println()                                          // Move to the next line after hidden input
+		if err != nil {
+			return "", fmt.Errorf("failed to read hidden input: %w", err)
+		}
 	} else {
 		fmt.Printf("Required environment variable: %s (%s)", envVar.Name, envVar.Description)
 		fmt.Printf("Enter value for %s: ", envVar.Name)
-		// For non-secret input, we can use a simple fmt.Scanln or bufio.Scanner
-		var input string
-		_, err = fmt.Scanln(&input)
-		if err != nil {
-			return "", fmt.Errorf("failed to read input for %s: %w", envVar.Name, err)
+		// Read the full line, matching the other interactive prompts in this repo.
+		// A value that arrives without a trailing newline still counts: ReadString
+		// returns the data alongside io.EOF in that case.
+		line, readErr := stdin.ReadString('\n')
+		// EOF is the normal end of a line that arrived without a trailing
+		// newline. Any other error, or EOF before a byte arrived, means the
+		// value is not complete: reject it even when a partial line came back.
+		if readErr != nil && (!errors.Is(readErr, io.EOF) || line == "") {
+			return "", fmt.Errorf("failed to read input: %w", readErr)
 		}
-		byteValue = []byte(input)
-	}
-
-	if err != nil {
-		return "", fmt.Errorf("failed to read input for %s: %w", envVar.Name, err)
+		byteValue = []byte(line)
 	}
 
 	return strings.TrimSpace(string(byteValue)), nil
+}
+
+// missingRequiredEnvVarError explains how to supply a required variable without
+// a prompt, so a non-interactive run does not fail with only io.EOF.
+func missingRequiredEnvVarError(envVar *registry.EnvVar, cause error) error {
+	message := fmt.Sprintf(
+		"missing required environment variable %s (pass it with --env %s=<value> or --secret <name>,target=%s)",
+		envVar.Name, envVar.Name, envVar.Name,
+	)
+	if cause != nil {
+		return fmt.Errorf("%s: %w", message, cause)
+	}
+	return errors.New(message)
 }
 
 // addNewVariable adds an environment variable or secret to the appropriate list

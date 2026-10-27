@@ -7,12 +7,14 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -201,14 +203,79 @@ func TestNewServer_Success(t *testing.T) {
 	}
 	// CIMDEnabled defaults to false in cfg, so newServer wraps stor with the
 	// CIMD shape-guard (decorateStorageForCIMD) rather than passing it through
-	// unchanged — see TestNewServer_CIMDEnabled_WrapsStorage for the enabled
-	// case. Unwrap() must still reach the exact storage this test constructed.
-	if unwrapper, ok := srv.IDPTokenStorage().(interface{ Unwrap() storage.Storage }); ok {
-		if unwrapper.Unwrap() != stor {
-			t.Error("server.IDPTokenStorage().Unwrap() did not return expected storage")
+	// unchanged. The caller's store must stay reachable below client admission.
+	admission := requireSingleClientAdmission(t, srv.IDPTokenStorage())
+	if admission.Unwrap() != stor {
+		t.Error("client admission did not wrap the caller's storage")
+	}
+}
+
+// requireSingleClientAdmission walks the Unwrap chain of s and requires exactly
+// one *storage.ClientAdmissionStorage in it, returning that layer.
+func requireSingleClientAdmission(t *testing.T, s any) *storage.ClientAdmissionStorage {
+	t.Helper()
+	var found *storage.ClientAdmissionStorage
+	for {
+		if a, ok := s.(*storage.ClientAdmissionStorage); ok {
+			require.Nil(t, found, "more than one client admission layer in the chain")
+			found = a
 		}
-	} else {
-		t.Errorf("server.IDPTokenStorage() (%T) does not implement Unwrap()", srv.IDPTokenStorage())
+		unwrapper, ok := s.(interface{ Unwrap() storage.Storage })
+		if !ok {
+			break
+		}
+		s = unwrapper.Unwrap()
+	}
+	require.NotNil(t, found, "no client admission layer in the chain")
+	return found
+}
+
+// TestNewServer_ClientAdmissionWiring pins that the server's storage, which
+// newServer hands to the fosite provider and the handlers, reaches a single
+// client admission layer, so no consumer resolves clients around it. Admission
+// sits directly on the caller's store, below the CIMD layer, with the SPIFFE
+// overlay above both.
+func TestNewServer_ClientAdmissionWiring(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		cimdEnabled bool
+	}{
+		{name: "CIMD disabled"},
+		{name: "CIMD enabled", cimdEnabled: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctrl := gomock.NewController(t)
+			mockUpstream := upstreammocks.NewMockOAuth2Provider(ctrl)
+			stor := storage.NewMemoryStorage()
+
+			cfg := Config{
+				Issuer:           "https://example.com",
+				KeyProvider:      keys.NewGeneratingProvider(keys.DefaultAlgorithm),
+				HMACSecrets:      &servercrypto.HMACSecrets{Current: validHMACSecret()},
+				Upstreams:        []UpstreamConfig{{Name: "default", Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstreamConfig()}},
+				AllowedAudiences: []string{"https://mcp.example.com"},
+				UpstreamFactory: func(_ context.Context, _ *UpstreamConfig) (upstream.OAuth2Provider, error) {
+					return mockUpstream, nil
+				},
+			}
+			if tt.cimdEnabled {
+				cfg.CIMDEnabled = true
+				cfg.CIMDCacheMaxSize = 16
+				cfg.CIMDCacheFallbackTTL = 5 * time.Minute
+			}
+
+			srv, err := newServer(context.Background(), cfg, stor)
+			require.NoError(t, err)
+			t.Cleanup(func() { require.NoError(t, srv.Close()) })
+
+			admission := requireSingleClientAdmission(t, srv.storage)
+			assert.Same(t, stor, admission.Unwrap(), "chain must end at the caller's store")
+		})
 	}
 }
 
@@ -546,6 +613,103 @@ func TestNewServer_CIMDEnabled_WrapsStorage(t *testing.T) {
 	}
 }
 
+// TestServer_TokenEndpoint_CIMDFetchesAreRateLimited is the regression test for
+// GHSA-cmf3-r76g-m472: POST /oauth/token resolves the client_id before it
+// picks a grant handler, so every distinct CIMD URL it carries (form body or
+// an unsigned client_assertion's sub) must be charged against the same
+// outbound-fetch budget as /oauth/authorize.
+func TestServer_TokenEndpoint_CIMDFetchesAreRateLimited(t *testing.T) {
+	t.Parallel()
+
+	const requests = 20
+
+	unsignedAssertion := func(sub string) string {
+		enc := base64.RawURLEncoding
+		header := enc.EncodeToString([]byte(`{"alg":"RS256","typ":"JWT"}`))
+		claims, err := json.Marshal(map[string]any{"iss": sub, "sub": sub, "jti": "j", "exp": time.Now().Add(time.Hour).Unix()})
+		require.NoError(t, err)
+		return header + "." + enc.EncodeToString(claims) + "." + enc.EncodeToString([]byte("sig"))
+	}
+
+	tests := []struct {
+		name string
+		form func(clientID string) url.Values
+	}{
+		{
+			name: "client_id in form body",
+			form: func(clientID string) url.Values {
+				return url.Values{"grant_type": {"authorization_code"}, "code": {"x"}, "client_id": {clientID}}
+			},
+		},
+		{
+			name: "unsigned client_assertion",
+			form: func(clientID string) url.Values {
+				return url.Values{
+					"grant_type":            {"authorization_code"},
+					"code":                  {"x"},
+					"client_assertion_type": {"urn:ietf:params:oauth:client-assertion-type:jwt-bearer"},
+					"client_assertion":      {unsignedAssertion(clientID)},
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var fetches atomic.Int32
+			cimdHost := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				fetches.Add(1)
+				http.NotFound(w, r)
+			}))
+			t.Cleanup(cimdHost.Close)
+
+			stor := storage.NewMemoryStorage()
+			t.Cleanup(func() { _ = stor.Close() })
+			cfg := Config{
+				Issuer:               "https://example.com",
+				KeyProvider:          keys.NewGeneratingProvider(keys.DefaultAlgorithm),
+				HMACSecrets:          &servercrypto.HMACSecrets{Current: validHMACSecret()},
+				Upstreams:            []UpstreamConfig{{Name: "default", Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstreamConfig()}},
+				AllowedAudiences:     []string{"https://mcp.example.com"},
+				CIMDEnabled:          true,
+				CIMDCacheMaxSize:     16,
+				CIMDCacheFallbackTTL: 5 * time.Minute,
+				UpstreamFactory: func(_ context.Context, _ *UpstreamConfig) (upstream.OAuth2Provider, error) {
+					return upstreammocks.NewMockOAuth2Provider(gomock.NewController(t)), nil
+				},
+			}
+			srv, err := newServer(context.Background(), cfg, stor)
+			require.NoError(t, err)
+
+			var unauthorized, limited int
+			for i := 0; i < requests; i++ {
+				form := tt.form(fmt.Sprintf("%s/c%d", cimdHost.URL, i))
+				req := httptest.NewRequest(http.MethodPost, "/oauth/token", strings.NewReader(form.Encode()))
+				req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+				rec := httptest.NewRecorder()
+				srv.Handler().ServeHTTP(rec, req)
+
+				switch rec.Code {
+				case http.StatusUnauthorized:
+					unauthorized++
+				case http.StatusTooManyRequests:
+					limited++
+					assert.Equal(t, "1", rec.Header().Get("Retry-After"))
+				default:
+					t.Fatalf("request %d: unexpected status %d: %s", i, rec.Code, rec.Body.String())
+				}
+			}
+
+			assert.LessOrEqual(t, int(fetches.Load()), 6, "outbound CIMD fetches must be bounded by the limiter")
+			assert.Equal(t, requests, unauthorized+limited)
+			assert.Greater(t, limited, 0, "requests past the burst must be answered 429")
+			assert.Greater(t, unauthorized, 0, "requests within the burst must reach the client lookup and fail with 401")
+		})
+	}
+}
+
 // TestNewServer_UpstreamRefresherSharedInstance verifies the wiring this PR
 // fixes: UpstreamTokenRefresher() must return the single refresher constructed
 // in newServer rather than reallocating one per call. The pre-fix accessor
@@ -754,7 +918,8 @@ func TestNewUpstreamTokenRefresher_NilWhenNoUpstreams(t *testing.T) {
 // use of ReconcileConfiguredClient: registering a delegate client is
 // create-only against a DCR-issued collision (the security fix -- an
 // operator-declared client must never silently overwrite a DCR
-// registration), and idempotent across a restart with unchanged config.
+// registration), and idempotent across a restart with unchanged config. The
+// policy-change case is in TestConfiguredDelegateClientPolicyChangeAcrossRestarts.
 func TestNewServer_DelegateClientReconciliation(t *testing.T) {
 	t.Parallel()
 
@@ -1115,6 +1280,30 @@ func TestBuildUpstreams_DrainsAlreadyBuiltProvidersOnFailure(t *testing.T) {
 	assert.Nil(t, upstreams)
 	assert.Equal(t, int32(1), built.closes.Load(),
 		"the provider built before the failure must be drained")
+}
+
+// TestBuildUpstreams_CopiesDisplayName pins that the display-only label reaches
+// the handler's NamedUpstream alongside the name it never replaces.
+func TestBuildUpstreams_CopiesDisplayName(t *testing.T) {
+	t.Parallel()
+
+	cfg := Config{
+		Upstreams: []UpstreamConfig{
+			{Name: "okta", DisplayName: "Acme Okta", Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstreamConfig()},
+			{Name: "github", Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstreamConfig()},
+		},
+		UpstreamFactory: func(context.Context, *UpstreamConfig) (upstream.OAuth2Provider, error) {
+			return &closeCountingProvider{}, nil
+		},
+	}
+
+	upstreams, err := buildUpstreams(t.Context(), cfg)
+	require.NoError(t, err)
+	require.Len(t, upstreams, 2)
+	assert.Equal(t, "okta", upstreams[0].Name)
+	assert.Equal(t, "Acme Okta", upstreams[0].DisplayName)
+	assert.Equal(t, "github", upstreams[1].Name)
+	assert.Empty(t, upstreams[1].DisplayName)
 }
 
 // TestBuildUpstreams_RejectsNilProvider pins that a custom

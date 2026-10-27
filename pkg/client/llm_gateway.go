@@ -435,12 +435,13 @@ func claudeCodeManagedSettingsDir(goos string) string {
 	}
 }
 
-// IsManaged reports whether an MDM/managed-preferences profile is present for
-// the given client. When true, the client reads config from the managed profile
-// and ignores the local config "thv llm setup" writes, so setup warns the user.
+// IsManaged reports whether a managed configuration source (an MDM profile on
+// macOS, a managed settings file on Linux) is present for the given client.
+// When true, the client reads config from the managed source and ignores the
+// local config "thv llm setup" writes, so setup warns the user.
 func (cm *ClientManager) IsManaged(clientType ClientApp) bool {
 	cfg := cm.lookupClientAppConfig(clientType)
-	return cfg != nil && managedProfilePresent(cfg.LLMManagedProfileDomain)
+	return cfg != nil && managedProfilePresent(cfg)
 }
 
 // LLMGatewayModeFor returns the client's configured gateway integration mode,
@@ -624,6 +625,8 @@ func resolveBedrockField(valueField string, cfg llmgateway.ApplyConfig) (string,
 		v = cfg.BedrockOpusModel
 	case "BedrockSonnetModel":
 		v = cfg.BedrockSonnetModel
+	case "BedrockFableModel":
+		v = cfg.BedrockFableModel
 	default:
 		return "", false
 	}

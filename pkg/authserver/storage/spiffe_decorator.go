@@ -63,8 +63,9 @@ func PreflightSPIFFEStaticClientCollisions(ctx context.Context, base Storage, cl
 // staticClientPlaceholder) — never the real SPIFFE client. Reconciliation is
 // idempotent: a restart with unchanged association config reconstructs the
 // identical placeholder and succeeds silently; a collision with a DCR-issued
-// client, or with a durably-claimed placeholder for a *different* association
-// at the same ID, fails loudly.
+// client, a non-placeholder configured client, or a durably-claimed placeholder
+// for a *different* association at the same ID, fails loudly. Unlike delegate
+// clients, which are replaced on restart, placeholders must match exactly.
 //
 // This closes a cross-replica race that a read-only GetClient check cannot:
 // with Redis and multiple replicas, an older/still-rolling replica without

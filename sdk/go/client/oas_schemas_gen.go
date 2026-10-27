@@ -622,19 +622,33 @@ type AuthenticationDCRUpstreamConfig struct {
 	// method falls back to the resolver's default (client_secret_basic).
 	// Mutually exclusive with DiscoveryURL.
 	RegistrationEndpoint OptString `json:"registration_endpoint"`
+	// RegistrationProbe selects how the resolver checks a cached registration
+	// against the upstream at start. "tokenEndpoint" (the default) redeems a
+	// random authorization code with the cached client and reads
+	// invalid_client as "registration gone"; it decides only for upstreams
+	// that authenticate the client before validating the grant.
+	// "authorizationEndpoint" sends an authorization request for the cached
+	// client without following redirects and reads a direct 400, 401 or 403
+	// that carries an RFC 6749 JSON error object (error invalid_client,
+	// unauthorized_client or invalid_request) as "gone" (RFC 6749 §4.1.2.1),
+	// for upstreams whose token endpoint answers invalid_grant for any
+	// client_id; an HTML page or a bare gateway status is not a verdict. A
+	// false rejection re-registers at every start and, when registration also
+	// fails, fails startup. "none" skips the check; the registration is then
+	// retired only through RotationKey.
+	RegistrationProbe OptString `json:"registration_probe"`
 	// RotationKey is an optional operator-chosen label (1-64 characters from
 	// [A-Za-z0-9._-]) that becomes part of the cached registration's identity
 	// without being sent to the upstream. Changing it makes the next start
 	// register a fresh client instead of reusing the cached one. At start the
-	// resolver checks the cached client at the upstream's token endpoint and
-	// replaces it by itself when the upstream answers invalid_client. Use
-	// RotationKey when the upstream has dropped the registration and that
-	// check cannot tell (an upstream that answers a dropped public client
-	// like a live one, or a private_key_jwt client), so the rejection is only
-	// visible in the user's browser, or when a registration must be rotated
-	// on request. The row written under the previous value is left in place. Upstream refresh tokens
-	// bound to the previous client_id stop refreshing once the client
-	// changes; affected users sign in again.
+	// resolver checks the cached client at the upstream (see RegistrationProbe)
+	// and replaces it by itself when the upstream rejects it. Use RotationKey
+	// when the upstream has dropped the registration and the configured probe
+	// cannot tell, so the rejection may not be visible to the resolver, or when
+	// a registration must be rotated on request. The row written under the
+	// previous value is left in place. Upstream refresh tokens bound to the
+	// previous client_id stop refreshing once the client changes; affected
+	// users sign in again.
 	RotationKey OptString `json:"rotation_key"`
 	// SoftwareID is the RFC 7591 "software_id" registration metadata value,
 	// identifying the client software independent of any particular
@@ -664,6 +678,11 @@ func (s *AuthenticationDCRUpstreamConfig) GetInitialAccessTokenFile() OptString 
 // GetRegistrationEndpoint returns the value of RegistrationEndpoint.
 func (s *AuthenticationDCRUpstreamConfig) GetRegistrationEndpoint() OptString {
 	return s.RegistrationEndpoint
+}
+
+// GetRegistrationProbe returns the value of RegistrationProbe.
+func (s *AuthenticationDCRUpstreamConfig) GetRegistrationProbe() OptString {
+	return s.RegistrationProbe
 }
 
 // GetRotationKey returns the value of RotationKey.
@@ -699,6 +718,11 @@ func (s *AuthenticationDCRUpstreamConfig) SetInitialAccessTokenFile(val OptStrin
 // SetRegistrationEndpoint sets the value of RegistrationEndpoint.
 func (s *AuthenticationDCRUpstreamConfig) SetRegistrationEndpoint(val OptString) {
 	s.RegistrationEndpoint = val
+}
+
+// SetRegistrationProbe sets the value of RegistrationProbe.
+func (s *AuthenticationDCRUpstreamConfig) SetRegistrationProbe(val OptString) {
+	s.RegistrationProbe = val
 }
 
 // SetRotationKey sets the value of RotationKey.
@@ -1459,6 +1483,44 @@ func (s *AuthenticationOIDCUpstreamRunConfigAdditionalTokenParams) init() Authen
 	return m
 }
 
+// RegistrationRateLimit bounds the unauthenticated /oauth/register
+// endpoint. If omitted, defaults to 1 registration per second with a
+// burst of 5. The limiter is per process, so the effective rate is the
+// configured rate multiplied by the replica count. The cap on how many
+// registered clients may exist at once is Storage.MaxDCRClients; unused
+// clients live 24 hours, so a caller at the full rate keeps up to
+// rate x replicas x 86400 of them alive, which at the defaults exceeds the
+// default cap within about 2.8 hours. The operator sets it from the
+// embedded auth server's registrationRateLimit.
+// Ref: #/components/schemas/AuthenticationRegistrationRateLimitRunConfig
+type AuthenticationRegistrationRateLimitRunConfig struct {
+	// Burst is the number of registrations admitted at once before the rate
+	// applies. Must be positive.
+	Burst OptInt `json:"burst"`
+	// RequestsPerSecond is the sustained registration rate. Must be positive.
+	RequestsPerSecond OptFloat64 `json:"requests_per_second"`
+}
+
+// GetBurst returns the value of Burst.
+func (s *AuthenticationRegistrationRateLimitRunConfig) GetBurst() OptInt {
+	return s.Burst
+}
+
+// GetRequestsPerSecond returns the value of RequestsPerSecond.
+func (s *AuthenticationRegistrationRateLimitRunConfig) GetRequestsPerSecond() OptFloat64 {
+	return s.RequestsPerSecond
+}
+
+// SetBurst sets the value of Burst.
+func (s *AuthenticationRegistrationRateLimitRunConfig) SetBurst(val OptInt) {
+	s.Burst = val
+}
+
+// SetRequestsPerSecond sets the value of RequestsPerSecond.
+func (s *AuthenticationRegistrationRateLimitRunConfig) SetRequestsPerSecond(val OptFloat64) {
+	s.RequestsPerSecond = val
+}
+
 // EmbeddedAuthServerConfig contains configuration for the embedded OAuth2/OIDC authorization server.
 // When set, the proxy runner will start an embedded auth server that delegates to upstream IDPs.
 // This is the serializable RunConfig; secrets are referenced by file paths or env var names.
@@ -1470,8 +1532,9 @@ type AuthenticationRunConfig struct {
 	// client_secret_post in addition to "none" (still the default on
 	// omission) and mints a client_secret returned exactly once. Confidential
 	// clients are restricted to https non-loopback redirect URIs, and
-	// registrations idle for more than DefaultDCRClientTTL (30 days) are
-	// evicted and must re-register. This gates registration only: disabling
+	// registrations expire and must re-register when never used within
+	// DefaultUnusedDCRClientTTL (24 hours) or idle for more than
+	// DefaultDCRClientTTL (30 days). This gates registration only: disabling
 	// it does not revoke or reject already-minted secrets at the token
 	// endpoint.
 	// Security: /oauth/register is unauthenticated, so this issues client
@@ -1595,7 +1658,8 @@ type AuthenticationRunConfig struct {
 	// Issuer is the issuer identifier for this authorization server.
 	// This will be included in the "iss" claim of issued tokens.
 	// Must be a valid HTTPS URL (or HTTP for localhost) without query, fragment, or trailing slash.
-	Issuer OptString `json:"issuer"`
+	Issuer                OptString                                       `json:"issuer"`
+	RegistrationRateLimit OptAuthenticationRegistrationRateLimitRunConfig `json:"registration_rate_limit"`
 	// SchemaVersion is the version of the RunConfig schema.
 	SchemaVersion OptString `json:"schema_version"`
 	// ScopesSupported lists the OAuth 2.0 scope values advertised in discovery documents.
@@ -1705,6 +1769,11 @@ func (s *AuthenticationRunConfig) GetInsecureAllowHTTP() OptBool {
 // GetIssuer returns the value of Issuer.
 func (s *AuthenticationRunConfig) GetIssuer() OptString {
 	return s.Issuer
+}
+
+// GetRegistrationRateLimit returns the value of RegistrationRateLimit.
+func (s *AuthenticationRunConfig) GetRegistrationRateLimit() OptAuthenticationRegistrationRateLimitRunConfig {
+	return s.RegistrationRateLimit
 }
 
 // GetSchemaVersion returns the value of SchemaVersion.
@@ -1835,6 +1904,11 @@ func (s *AuthenticationRunConfig) SetInsecureAllowHTTP(val OptBool) {
 // SetIssuer sets the value of Issuer.
 func (s *AuthenticationRunConfig) SetIssuer(val OptString) {
 	s.Issuer = val
+}
+
+// SetRegistrationRateLimit sets the value of RegistrationRateLimit.
+func (s *AuthenticationRunConfig) SetRegistrationRateLimit(val OptAuthenticationRegistrationRateLimitRunConfig) {
+	s.RegistrationRateLimit = val
 }
 
 // SetSchemaVersion sets the value of SchemaVersion.
@@ -2225,8 +2299,8 @@ func (s *AuthenticationSigningKeyRunConfig) SetSigningKeyFile(val OptString) {
 	s.SigningKeyFile = val
 }
 
-// TLSListener configures auth server routes to be served over TLS on port 8443.
-// It is currently rejected because the runner does not start this listener.
+// TLSListener serves the auth server routes over TLS on port 8443, in
+// addition to the MCP port. Required for spiffe_x509 client authentication.
 // Ref: #/components/schemas/AuthenticationTLSListenerRunConfig
 type AuthenticationTLSListenerRunConfig struct {
 	CertFile OptString `json:"cert_file"`
@@ -2463,6 +2537,12 @@ func (s *AuthenticationTokenResponseMappingRunConfig) SetScopePath(val OptString
 
 // Ref: #/components/schemas/AuthenticationUpstreamRunConfig
 type AuthenticationUpstreamRunConfig struct {
+	// DisplayName is an optional human-readable label for this upstream, shown to
+	// end users on the consent page in place of Name. It is display-only: never
+	// compared, stored, or used to route. It is sanitized at render time and never
+	// rejected by validation. It is shown as trusted text, so it must come from
+	// operator-controlled configuration only.
+	DisplayName OptString `json:"display_name"`
 	// Name uniquely identifies this upstream.
 	// Used for routing decisions and session binding in multi-upstream scenarios.
 	// If empty when only one upstream is configured, defaults to "default".
@@ -2471,6 +2551,11 @@ type AuthenticationUpstreamRunConfig struct {
 	OidcConfig   OptAuthenticationOIDCUpstreamRunConfig   `json:"oidc_config"`
 	// Type specifies the provider type: "oidc" or "oauth2".
 	Type OptString `json:"type"`
+}
+
+// GetDisplayName returns the value of DisplayName.
+func (s *AuthenticationUpstreamRunConfig) GetDisplayName() OptString {
+	return s.DisplayName
 }
 
 // GetName returns the value of Name.
@@ -2491,6 +2576,11 @@ func (s *AuthenticationUpstreamRunConfig) GetOidcConfig() OptAuthenticationOIDCU
 // GetType returns the value of Type.
 func (s *AuthenticationUpstreamRunConfig) GetType() OptString {
 	return s.Type
+}
+
+// SetDisplayName sets the value of DisplayName.
+func (s *AuthenticationUpstreamRunConfig) SetDisplayName(val OptString) {
+	s.DisplayName = val
 }
 
 // SetName sets the value of Name.
@@ -7269,6 +7359,52 @@ func (o OptAuthenticationOIDCUpstreamRunConfigAdditionalTokenParams) Or(d Authen
 	return d
 }
 
+// NewOptAuthenticationRegistrationRateLimitRunConfig returns new OptAuthenticationRegistrationRateLimitRunConfig with value set to v.
+func NewOptAuthenticationRegistrationRateLimitRunConfig(v AuthenticationRegistrationRateLimitRunConfig) OptAuthenticationRegistrationRateLimitRunConfig {
+	return OptAuthenticationRegistrationRateLimitRunConfig{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptAuthenticationRegistrationRateLimitRunConfig is optional AuthenticationRegistrationRateLimitRunConfig.
+type OptAuthenticationRegistrationRateLimitRunConfig struct {
+	Value AuthenticationRegistrationRateLimitRunConfig
+	Set   bool
+}
+
+// IsSet returns true if OptAuthenticationRegistrationRateLimitRunConfig was set.
+func (o OptAuthenticationRegistrationRateLimitRunConfig) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptAuthenticationRegistrationRateLimitRunConfig) Reset() {
+	var v AuthenticationRegistrationRateLimitRunConfig
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptAuthenticationRegistrationRateLimitRunConfig) SetTo(v AuthenticationRegistrationRateLimitRunConfig) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptAuthenticationRegistrationRateLimitRunConfig) Get() (v AuthenticationRegistrationRateLimitRunConfig, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptAuthenticationRegistrationRateLimitRunConfig) Or(d AuthenticationRegistrationRateLimitRunConfig) AuthenticationRegistrationRateLimitRunConfig {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
 // NewOptAuthenticationRunConfig returns new OptAuthenticationRunConfig with value set to v.
 func NewOptAuthenticationRunConfig(v AuthenticationRunConfig) OptAuthenticationRunConfig {
 	return OptAuthenticationRunConfig{
@@ -8275,6 +8411,52 @@ func (o OptDeleteSkillScope) Get() (v DeleteSkillScope, ok bool) {
 
 // Or returns value if set, or given parameter if does not.
 func (o OptDeleteSkillScope) Or(d DeleteSkillScope) DeleteSkillScope {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptFloat64 returns new OptFloat64 with value set to v.
+func NewOptFloat64(v float64) OptFloat64 {
+	return OptFloat64{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptFloat64 is optional float64.
+type OptFloat64 struct {
+	Value float64
+	Set   bool
+}
+
+// IsSet returns true if OptFloat64 was set.
+func (o OptFloat64) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptFloat64) Reset() {
+	var v float64
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptFloat64) SetTo(v float64) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptFloat64) Get() (v float64, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptFloat64) Or(d float64) float64 {
 	if v, ok := o.Get(); ok {
 		return v
 	}
@@ -20168,9 +20350,27 @@ func (s *StorageRedisTLSRunConfig) SetInsecureSkipVerify(val OptBool) {
 // If nil, defaults to in-memory storage.
 // Ref: #/components/schemas/StorageRunConfig
 type StorageRunConfig struct {
-	RedisConfig OptStorageRedisRunConfig `json:"redis_config"`
+	// MaxDCRClients caps the number of live clients created by
+	// /oauth/register. At the cap, registration fails with HTTP 503 until a
+	// client expires; no existing client is evicted. If omitted, defaults to
+	// 10000; 0 means unlimited, and a negative value is rejected. On Redis the
+	// count is shared by every replica.
+	// Sizing: a client never used for a token exchange lives 24 hours, so a
+	// caller registering at the full rate keeps up to rate x replicas x 86400
+	// unused clients alive. At the default rate of 1/s that is about 86400 per
+	// replica: one replica fills the default cap in about 2.8 hours, and new
+	// registrations then get 503 for up to 24 hours after the traffic stops.
+	// A client promoted by a token exchange holds its slot for 30 days. The
+	// operator sets it from the embedded auth server's storage.maxDCRClients.
+	MaxDcrClients OptInt                   `json:"max_dcr_clients"`
+	RedisConfig   OptStorageRedisRunConfig `json:"redis_config"`
 	// Type specifies the storage backend type. Defaults to "memory".
 	Type OptString `json:"type"`
+}
+
+// GetMaxDcrClients returns the value of MaxDcrClients.
+func (s *StorageRunConfig) GetMaxDcrClients() OptInt {
+	return s.MaxDcrClients
 }
 
 // GetRedisConfig returns the value of RedisConfig.
@@ -20181,6 +20381,11 @@ func (s *StorageRunConfig) GetRedisConfig() OptStorageRedisRunConfig {
 // GetType returns the value of Type.
 func (s *StorageRunConfig) GetType() OptString {
 	return s.Type
+}
+
+// SetMaxDcrClients sets the value of MaxDcrClients.
+func (s *StorageRunConfig) SetMaxDcrClients(val OptInt) {
+	s.MaxDcrClients = val
 }
 
 // SetRedisConfig sets the value of RedisConfig.

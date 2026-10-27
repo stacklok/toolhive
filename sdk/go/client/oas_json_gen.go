@@ -1052,6 +1052,12 @@ func (s *AuthenticationDCRUpstreamConfig) encodeFields(e *jx.Encoder) {
 		}
 	}
 	{
+		if s.RegistrationProbe.Set {
+			e.FieldStart("registration_probe")
+			s.RegistrationProbe.Encode(e)
+		}
+	}
+	{
 		if s.RotationKey.Set {
 			e.FieldStart("rotation_key")
 			s.RotationKey.Encode(e)
@@ -1071,14 +1077,15 @@ func (s *AuthenticationDCRUpstreamConfig) encodeFields(e *jx.Encoder) {
 	}
 }
 
-var jsonFieldsNameOfAuthenticationDCRUpstreamConfig = [7]string{
+var jsonFieldsNameOfAuthenticationDCRUpstreamConfig = [8]string{
 	0: "discovery_url",
 	1: "initial_access_token_env_var",
 	2: "initial_access_token_file",
 	3: "registration_endpoint",
-	4: "rotation_key",
-	5: "software_id",
-	6: "software_statement",
+	4: "registration_probe",
+	5: "rotation_key",
+	6: "software_id",
+	7: "software_statement",
 }
 
 // Decode decodes AuthenticationDCRUpstreamConfig from json.
@@ -1128,6 +1135,16 @@ func (s *AuthenticationDCRUpstreamConfig) Decode(d *jx.Decoder) error {
 				return nil
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"registration_endpoint\"")
+			}
+		case "registration_probe":
+			if err := func() error {
+				s.RegistrationProbe.Reset()
+				if err := s.RegistrationProbe.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"registration_probe\"")
 			}
 		case "rotation_key":
 			if err := func() error {
@@ -2661,6 +2678,86 @@ func (s *AuthenticationOIDCUpstreamRunConfigAdditionalTokenParams) UnmarshalJSON
 }
 
 // Encode implements json.Marshaler.
+func (s *AuthenticationRegistrationRateLimitRunConfig) Encode(e *jx.Encoder) {
+	e.ObjStart()
+	s.encodeFields(e)
+	e.ObjEnd()
+}
+
+// encodeFields encodes fields.
+func (s *AuthenticationRegistrationRateLimitRunConfig) encodeFields(e *jx.Encoder) {
+	{
+		if s.Burst.Set {
+			e.FieldStart("burst")
+			s.Burst.Encode(e)
+		}
+	}
+	{
+		if s.RequestsPerSecond.Set {
+			e.FieldStart("requests_per_second")
+			s.RequestsPerSecond.Encode(e)
+		}
+	}
+}
+
+var jsonFieldsNameOfAuthenticationRegistrationRateLimitRunConfig = [2]string{
+	0: "burst",
+	1: "requests_per_second",
+}
+
+// Decode decodes AuthenticationRegistrationRateLimitRunConfig from json.
+func (s *AuthenticationRegistrationRateLimitRunConfig) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode AuthenticationRegistrationRateLimitRunConfig to nil")
+	}
+
+	if err := d.ObjBytes(func(d *jx.Decoder, k []byte) error {
+		switch string(k) {
+		case "burst":
+			if err := func() error {
+				s.Burst.Reset()
+				if err := s.Burst.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"burst\"")
+			}
+		case "requests_per_second":
+			if err := func() error {
+				s.RequestsPerSecond.Reset()
+				if err := s.RequestsPerSecond.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"requests_per_second\"")
+			}
+		default:
+			return d.Skip()
+		}
+		return nil
+	}); err != nil {
+		return errors.Wrap(err, "decode AuthenticationRegistrationRateLimitRunConfig")
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *AuthenticationRegistrationRateLimitRunConfig) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *AuthenticationRegistrationRateLimitRunConfig) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode implements json.Marshaler.
 func (s *AuthenticationRunConfig) Encode(e *jx.Encoder) {
 	e.ObjStart()
 	s.encodeFields(e)
@@ -2786,6 +2883,12 @@ func (s *AuthenticationRunConfig) encodeFields(e *jx.Encoder) {
 		}
 	}
 	{
+		if s.RegistrationRateLimit.Set {
+			e.FieldStart("registration_rate_limit")
+			s.RegistrationRateLimit.Encode(e)
+		}
+	}
+	{
 		if s.SchemaVersion.Set {
 			e.FieldStart("schema_version")
 			s.SchemaVersion.Encode(e)
@@ -2863,7 +2966,7 @@ func (s *AuthenticationRunConfig) encodeFields(e *jx.Encoder) {
 	}
 }
 
-var jsonFieldsNameOfAuthenticationRunConfig = [26]string{
+var jsonFieldsNameOfAuthenticationRunConfig = [27]string{
 	0:  "allow_confidential_client_registration",
 	1:  "allow_private_key_jwt_registration",
 	2:  "allowed_audiences",
@@ -2880,16 +2983,17 @@ var jsonFieldsNameOfAuthenticationRunConfig = [26]string{
 	13: "insecure_allow_confidential_over_loopback_http",
 	14: "insecure_allow_http",
 	15: "issuer",
-	16: "schema_version",
-	17: "scopes_supported",
-	18: "signing_key_config",
-	19: "spiffe_trust_domains",
-	20: "storage",
-	21: "tls_listener",
-	22: "token_lifespans",
-	23: "trusted_issuers",
-	24: "upstream_filter",
-	25: "upstreams",
+	16: "registration_rate_limit",
+	17: "schema_version",
+	18: "scopes_supported",
+	19: "signing_key_config",
+	20: "spiffe_trust_domains",
+	21: "storage",
+	22: "tls_listener",
+	23: "token_lifespans",
+	24: "trusted_issuers",
+	25: "upstream_filter",
+	26: "upstreams",
 }
 
 // Decode decodes AuthenticationRunConfig from json.
@@ -3102,6 +3206,16 @@ func (s *AuthenticationRunConfig) Decode(d *jx.Decoder) error {
 				return nil
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"issuer\"")
+			}
+		case "registration_rate_limit":
+			if err := func() error {
+				s.RegistrationRateLimit.Reset()
+				if err := s.RegistrationRateLimit.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"registration_rate_limit\"")
 			}
 		case "schema_version":
 			if err := func() error {
@@ -4731,6 +4845,12 @@ func (s *AuthenticationUpstreamRunConfig) Encode(e *jx.Encoder) {
 // encodeFields encodes fields.
 func (s *AuthenticationUpstreamRunConfig) encodeFields(e *jx.Encoder) {
 	{
+		if s.DisplayName.Set {
+			e.FieldStart("display_name")
+			s.DisplayName.Encode(e)
+		}
+	}
+	{
 		if s.Name.Set {
 			e.FieldStart("name")
 			s.Name.Encode(e)
@@ -4756,11 +4876,12 @@ func (s *AuthenticationUpstreamRunConfig) encodeFields(e *jx.Encoder) {
 	}
 }
 
-var jsonFieldsNameOfAuthenticationUpstreamRunConfig = [4]string{
-	0: "name",
-	1: "oauth2_config",
-	2: "oidc_config",
-	3: "type",
+var jsonFieldsNameOfAuthenticationUpstreamRunConfig = [5]string{
+	0: "display_name",
+	1: "name",
+	2: "oauth2_config",
+	3: "oidc_config",
+	4: "type",
 }
 
 // Decode decodes AuthenticationUpstreamRunConfig from json.
@@ -4771,6 +4892,16 @@ func (s *AuthenticationUpstreamRunConfig) Decode(d *jx.Decoder) error {
 
 	if err := d.ObjBytes(func(d *jx.Decoder, k []byte) error {
 		switch string(k) {
+		case "display_name":
+			if err := func() error {
+				s.DisplayName.Reset()
+				if err := s.DisplayName.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"display_name\"")
+			}
 		case "name":
 			if err := func() error {
 				s.Name.Reset()
@@ -17227,6 +17358,39 @@ func (s *OptAuthenticationOIDCUpstreamRunConfigAdditionalTokenParams) UnmarshalJ
 	return s.Decode(d)
 }
 
+// Encode encodes AuthenticationRegistrationRateLimitRunConfig as json.
+func (o OptAuthenticationRegistrationRateLimitRunConfig) Encode(e *jx.Encoder) {
+	if !o.Set {
+		return
+	}
+	o.Value.Encode(e)
+}
+
+// Decode decodes AuthenticationRegistrationRateLimitRunConfig from json.
+func (o *OptAuthenticationRegistrationRateLimitRunConfig) Decode(d *jx.Decoder) error {
+	if o == nil {
+		return errors.New("invalid: unable to decode OptAuthenticationRegistrationRateLimitRunConfig to nil")
+	}
+	o.Set = true
+	if err := o.Value.Decode(d); err != nil {
+		return err
+	}
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s OptAuthenticationRegistrationRateLimitRunConfig) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *OptAuthenticationRegistrationRateLimitRunConfig) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
 // Encode encodes AuthenticationRunConfig as json.
 func (o OptAuthenticationRunConfig) Encode(e *jx.Encoder) {
 	if !o.Set {
@@ -17889,6 +18053,41 @@ func (s OptCreateRequestToolsOverride) MarshalJSON() ([]byte, error) {
 
 // UnmarshalJSON implements stdjson.Unmarshaler.
 func (s *OptCreateRequestToolsOverride) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes float64 as json.
+func (o OptFloat64) Encode(e *jx.Encoder) {
+	if !o.Set {
+		return
+	}
+	e.Float64(float64(o.Value))
+}
+
+// Decode decodes float64 from json.
+func (o *OptFloat64) Decode(d *jx.Decoder) error {
+	if o == nil {
+		return errors.New("invalid: unable to decode OptFloat64 to nil")
+	}
+	o.Set = true
+	v, err := d.Float64()
+	if err != nil {
+		return err
+	}
+	o.Value = float64(v)
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s OptFloat64) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *OptFloat64) UnmarshalJSON(data []byte) error {
 	d := jx.DecodeBytes(data)
 	return s.Decode(d)
 }
@@ -36265,6 +36464,12 @@ func (s *StorageRunConfig) Encode(e *jx.Encoder) {
 // encodeFields encodes fields.
 func (s *StorageRunConfig) encodeFields(e *jx.Encoder) {
 	{
+		if s.MaxDcrClients.Set {
+			e.FieldStart("max_dcr_clients")
+			s.MaxDcrClients.Encode(e)
+		}
+	}
+	{
 		if s.RedisConfig.Set {
 			e.FieldStart("redis_config")
 			s.RedisConfig.Encode(e)
@@ -36278,9 +36483,10 @@ func (s *StorageRunConfig) encodeFields(e *jx.Encoder) {
 	}
 }
 
-var jsonFieldsNameOfStorageRunConfig = [2]string{
-	0: "redis_config",
-	1: "type",
+var jsonFieldsNameOfStorageRunConfig = [3]string{
+	0: "max_dcr_clients",
+	1: "redis_config",
+	2: "type",
 }
 
 // Decode decodes StorageRunConfig from json.
@@ -36291,6 +36497,16 @@ func (s *StorageRunConfig) Decode(d *jx.Decoder) error {
 
 	if err := d.ObjBytes(func(d *jx.Decoder, k []byte) error {
 		switch string(k) {
+		case "max_dcr_clients":
+			if err := func() error {
+				s.MaxDcrClients.Reset()
+				if err := s.MaxDcrClients.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"max_dcr_clients\"")
+			}
 		case "redis_config":
 			if err := func() error {
 				s.RedisConfig.Reset()

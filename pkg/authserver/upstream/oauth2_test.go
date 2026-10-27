@@ -1027,8 +1027,8 @@ func TestBaseOAuth2Provider_RefreshTokens(t *testing.T) {
 		require.NoError(t, err)
 
 		_, err = provider.RefreshTokens(ctx, "expired-refresh-token", "")
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "invalid_grant")
+		require.ErrorIs(t, err, ErrGrantRejected)
+		assert.Equal(t, "token request failed: invalid_grant - The refresh token has expired", err.Error())
 	})
 
 	t.Run("empty refresh token returns error", func(t *testing.T) {
@@ -1081,6 +1081,7 @@ func TestBaseOAuth2Provider_RefreshTokens(t *testing.T) {
 		_, err = provider.RefreshTokens(ctx, "refresh-token", "")
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "token request failed")
+		assert.NotErrorIs(t, err, ErrGrantRejected)
 	})
 
 	t.Run("refresh request scope parameter", func(t *testing.T) {
@@ -3272,4 +3273,40 @@ func TestInjectedClientRejectsCABundle(t *testing.T) {
 		require.Error(t, err)
 		assert.NotErrorIs(t, err, ErrCABundleWithInjectedClient)
 	})
+}
+
+func TestFormatOAuth2Error_GrantRejected(t *testing.T) {
+	t.Parallel()
+
+	retrieveErr := func(status int, code string) error {
+		return &oauth2.RetrieveError{
+			Response:  &http.Response{StatusCode: status},
+			ErrorCode: code,
+		}
+	}
+
+	tests := []struct {
+		name             string
+		err              error
+		wantInvalidGrant bool
+	}{
+		{name: "invalid_grant with 400", err: retrieveErr(http.StatusBadRequest, "invalid_grant"), wantInvalidGrant: true},
+		{name: "invalid_grant with 401", err: retrieveErr(http.StatusUnauthorized, "invalid_grant"), wantInvalidGrant: true},
+		{name: "invalid_grant with 200", err: retrieveErr(http.StatusOK, "invalid_grant"), wantInvalidGrant: true},
+		{name: "invalid_grant without response", err: &oauth2.RetrieveError{ErrorCode: "invalid_grant"}},
+		{name: "invalid_grant with 429", err: retrieveErr(http.StatusTooManyRequests, "invalid_grant")},
+		{name: "invalid_grant with 5xx", err: retrieveErr(http.StatusBadGateway, "invalid_grant")},
+		{name: "other error code", err: retrieveErr(http.StatusBadRequest, "invalid_client")},
+		{name: "no error code", err: retrieveErr(http.StatusBadRequest, "")},
+		{name: "network error", err: errors.New("dial tcp: connection refused")},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := formatOAuth2Error(tt.err, "token request failed")
+			require.Error(t, err)
+			assert.Equal(t, tt.wantInvalidGrant, errors.Is(err, ErrGrantRejected), "err = %v", err)
+		})
+	}
 }

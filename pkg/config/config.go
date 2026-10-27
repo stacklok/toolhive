@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"github.com/adrg/xdg"
-	"gopkg.in/yaml.v3"
+	"go.yaml.in/yaml/v3"
 
 	"github.com/stacklok/toolhive-core/env"
 	"github.com/stacklok/toolhive/pkg/container/templates"

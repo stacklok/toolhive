@@ -140,6 +140,9 @@ type VirtualMCPServerReconciler struct {
 	Scheme           *runtime.Scheme
 	Recorder         events.EventRecorder
 	PlatformDetector *ctrlutil.SharedPlatformDetector
+	// DefaultRedisConfig is the read-only global Redis snapshot loaded at startup.
+	// Nil means no global fallback is configured.
+	DefaultRedisConfig *ctrlutil.DefaultRedisConfig
 	// ImagePullSecretsDefaults are cluster-wide defaults sourced from the
 	// operator chart that are merged with vmcp.Spec.ImagePullSecrets when
 	// constructing workloads. The zero value is a usable empty Defaults.
@@ -1709,7 +1712,7 @@ func (r *VirtualMCPServerReconciler) ensureDeployment(
 	// Fetch the selected inline auth-server CA content checksum. This is intentionally
 	// computed from the current ConfigMaps so both rollout and drift detection use
 	// the same value.
-	caBundleChecksum, err := ctrlutil.EmbeddedAuthServerCABundleChecksumForConfig(
+	caBundleChecksum, err := ctrlutil.EmbeddedAuthServerConfigMapChecksumForConfig(
 		ctx, r.Client, vmcp.Namespace, vmcp.Spec.AuthServerConfig)
 	if err != nil {
 		// runAuthValidations gates this path, so a terminal bundle error should
@@ -2066,8 +2069,8 @@ func (r *VirtualMCPServerReconciler) podTemplateMetadataNeedsUpdate(
 	if !ctrlutil.MapIsSubset(expectedPodTemplateAnnotations, deployment.Spec.Template.Annotations) {
 		return true
 	}
-	if _, expected := expectedPodTemplateAnnotations[ctrlutil.AuthServerCABundleChecksumAnnotation]; !expected {
-		if _, actual := deployment.Spec.Template.Annotations[ctrlutil.AuthServerCABundleChecksumAnnotation]; actual {
+	if _, expected := expectedPodTemplateAnnotations[ctrlutil.AuthServerConfigMapChecksumAnnotation]; !expected {
+		if _, actual := deployment.Spec.Template.Annotations[ctrlutil.AuthServerConfigMapChecksumAnnotation]; actual {
 			return true
 		}
 	}
@@ -2218,7 +2221,7 @@ func (*VirtualMCPServerReconciler) podTemplateSpecNeedsUpdate(
 // desired no longer wants — MergeAnnotations otherwise preserves them forever
 // once their source field goes empty (#5817, #5818).
 //
-// ctrlutil.AuthServerCABundleChecksumAnnotation is included defensively: today
+// ctrlutil.AuthServerConfigMapChecksumAnnotation is included defensively: today
 // buildDeploymentMetadataForVmcp only ever writes it onto the pod template
 // (see buildPodTemplateMetadata), never onto the Deployment's own annotations,
 // so this branch is a no-op in practice. Kept in case that changes.
@@ -2228,7 +2231,7 @@ func mergeDeploymentAnnotations(desired, live map[string]string) map[string]stri
 		imagePullRefsHashAnnotation,
 		podTemplateSpecHashAnnotation,
 		podVolumesHashAnnotation,
-		ctrlutil.AuthServerCABundleChecksumAnnotation,
+		ctrlutil.AuthServerConfigMapChecksumAnnotation,
 	} {
 		if _, want := desired[key]; !want {
 			delete(merged, key)

@@ -773,6 +773,10 @@ func TestOIDCProviderImpl_ExchangeCodeForIdentity(t *testing.T) {
 		result, err := provider.ExchangeCodeForIdentity(ctx, "test-code", "", "")
 		require.NoError(t, err)
 		assert.Equal(t, "sub-value", result.Subject)
+		assert.Equal(t, mock.issuer, result.VerifiedIssuer)
+		assert.Equal(t, "sub-value", result.VerifiedSubject)
+		assert.Equal(t, "sub", result.VerifiedStableClaim)
+		assert.Equal(t, "sub-value", result.VerifiedStableValue)
 	})
 
 	t.Run("configured SubjectClaim is extracted instead of sub", func(t *testing.T) {
@@ -813,6 +817,12 @@ func TestOIDCProviderImpl_ExchangeCodeForIdentity(t *testing.T) {
 		result, err := provider.ExchangeCodeForIdentity(ctx, "test-code", "", "")
 		require.NoError(t, err)
 		assert.Equal(t, "entra-oid-123", result.Subject)
+		// VerifiedSubject stays the raw ID-token sub even when SubjectClaim maps
+		// Subject to another claim; it is what sub_id discloses.
+		assert.Equal(t, mock.issuer, result.VerifiedIssuer)
+		assert.Equal(t, "rotating-sub", result.VerifiedSubject)
+		assert.Equal(t, "oid", result.VerifiedStableClaim)
+		assert.Equal(t, "entra-oid-123", result.VerifiedStableValue)
 	})
 
 	t.Run("configured SubjectClaim missing from token returns error", func(t *testing.T) {

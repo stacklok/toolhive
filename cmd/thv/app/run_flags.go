@@ -303,9 +303,9 @@ func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
 		"Isolate the container network from the host. Use --isolate-network=false to opt out. "+
 			"Not enforced with --network host or --network none (isolation requires bridge networking).")
 	cmd.Flags().BoolVar(&config.AllowDockerGateway, "allow-docker-gateway", false,
-		"Allow outbound connections to Docker gateway addresses (all daemon bridge gateways, "+
-			"host.docker.internal, and gateway.docker.internal). Only applies when --isolate-network is set. "+
-			"Gateways are snapshotted at deployment; redeploy to include bridges created later. "+
+		"Allow outbound connections to Docker/Podman host addresses (all daemon bridge gateways, runtime host-alias IPs, "+
+			"host.docker.internal, gateway.docker.internal, and host.containers.internal). Only applies when --isolate-network is set. "+
+			"Addresses are snapshotted at deployment; redeploy after runtime network changes. "+
 			"These are blocked by default even when insecure_allow_all is enabled. "+
 			"Gateway access is port-independent: it ignores the permission profile's allowed ports, so once enabled the "+
 			"gateway is reachable on any port.")
@@ -475,7 +475,8 @@ func setupOIDCConfiguration(cmd *cobra.Command, runFlags *RunFlags) (*auth.Token
 	}
 
 	return createOIDCConfig(oidcIssuer, oidcAudience, oidcJwksURL, oidcIntrospectionURL,
-		oidcClientID, oidcClientSecret, runFlags.ResourceURL, runFlags.JWKSAllowPrivateIP, oidcScopes), nil
+		oidcClientID, oidcClientSecret, runFlags.ResourceURL, runFlags.ThvCABundle, runFlags.JWKSAuthTokenFile,
+		runFlags.JWKSAllowPrivateIP, runFlags.InsecureAllowHTTP, oidcScopes), nil
 }
 
 // resolveMetricsOnTransportPort turns the bound bool into a tri-state. Only an
@@ -1229,19 +1230,23 @@ func getTelemetryFromFlags(cmd *cobra.Command, config *cfg.Config, otelEndpoint 
 
 // createOIDCConfig creates an OIDC configuration if any OIDC parameters are provided
 func createOIDCConfig(oidcIssuer, oidcAudience, oidcJwksURL, oidcIntrospectionURL,
-	oidcClientID, oidcClientSecret, resourceURL string, allowPrivateIP bool, scopes []string) *auth.TokenValidatorConfig {
+	oidcClientID, oidcClientSecret, resourceURL, caCertPath, authTokenFile string,
+	allowPrivateIP, insecureAllowHTTP bool, scopes []string) *auth.TokenValidatorConfig {
 	if oidcIssuer != "" || oidcAudience != "" || oidcJwksURL != "" || oidcIntrospectionURL != "" ||
 		oidcClientID != "" || oidcClientSecret != "" || resourceURL != "" {
 		return &auth.TokenValidatorConfig{
-			Issuer:           oidcIssuer,
-			Audience:         oidcAudience,
-			JWKSURL:          oidcJwksURL,
-			IntrospectionURL: oidcIntrospectionURL,
-			ClientID:         oidcClientID,
-			ClientSecret:     oidcClientSecret,
-			ResourceURL:      resourceURL,
-			AllowPrivateIP:   allowPrivateIP,
-			Scopes:           scopes,
+			Issuer:            oidcIssuer,
+			Audience:          oidcAudience,
+			JWKSURL:           oidcJwksURL,
+			IntrospectionURL:  oidcIntrospectionURL,
+			ClientID:          oidcClientID,
+			ClientSecret:      oidcClientSecret,
+			ResourceURL:       resourceURL,
+			CACertPath:        caCertPath,
+			AuthTokenFile:     authTokenFile,
+			AllowPrivateIP:    allowPrivateIP,
+			InsecureAllowHTTP: insecureAllowHTTP,
+			Scopes:            scopes,
 		}
 	}
 	return nil

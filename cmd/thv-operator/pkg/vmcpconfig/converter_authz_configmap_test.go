@@ -140,10 +140,11 @@ func TestConvertAuthzConfig_ConfigMapPath(t *testing.T) {
 						"policies": []string{
 							`permit(principal in ClaimGroup::"engineering", action == Action::"call_tool", resource);`,
 						},
-						"entities_json":     `[{"uid":{"type":"ClaimGroup","id":"engineering"}}]`,
-						"group_claim_name":  "groups",
-						"role_claim_name":   "roles",
-						"group_entity_type": "ClaimGroup",
+						"entities_json":       `[{"uid":{"type":"ClaimGroup","id":"engineering"}}]`,
+						"group_claim_name":    "groups",
+						"role_claim_name":     "roles",
+						"group_entity_type":   "ClaimGroup",
+						"multi_valued_claims": []string{"scope"},
 					}
 				})
 			},
@@ -156,6 +157,7 @@ func TestConvertAuthzConfig_ConfigMapPath(t *testing.T) {
 				assert.Equal(t, "groups", authz.GroupClaimName)
 				assert.Equal(t, "roles", authz.RoleClaimName)
 				assert.Equal(t, "ClaimGroup", authz.GroupEntityType)
+				assertMultiValuedClaims(t, authz)
 			},
 		},
 		{

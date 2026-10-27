@@ -4,6 +4,7 @@
 package vmcpconfig
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -15,6 +16,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	vmcpconfigpkg "github.com/stacklok/toolhive/pkg/vmcp/config"
 )
 
 // newMCPAuthzConfig builds an MCPAuthzConfig of the given type in the "default"
@@ -62,7 +64,16 @@ func newAuthzVmcpForRef(refName string) *mcpv1beta1.VirtualMCPServer {
 func cedarRefPayload() string {
 	return `{"policies":["permit(principal in ClaimGroup::\"engineering\", action == Action::\"call_tool\", resource);"],` +
 		`"entities_json":"[{\"uid\":{\"type\":\"ClaimGroup\",\"id\":\"engineering\"}}]",` +
-		`"group_claim_name":"groups","role_claim_name":"roles","group_entity_type":"ClaimGroup"}`
+		`"group_claim_name":"groups","role_claim_name":"roles","group_entity_type":"ClaimGroup",` +
+		`"multi_valued_claims":["scope"]}`
+}
+
+func assertMultiValuedClaims(t *testing.T, authz *vmcpconfigpkg.AuthzConfig) {
+	t.Helper()
+
+	encoded, err := json.Marshal(authz)
+	require.NoError(t, err)
+	assert.Contains(t, string(encoded), `"multiValuedClaims":["scope"]`)
 }
 
 // TestConvertAuthzConfigRef_CedarSuccess verifies a cedarv1 MCPAuthzConfig
@@ -89,6 +100,7 @@ func TestConvertAuthzConfigRef_CedarSuccess(t *testing.T) {
 	assert.Equal(t, "groups", authz.GroupClaimName)
 	assert.Equal(t, "roles", authz.RoleClaimName)
 	assert.Equal(t, "ClaimGroup", authz.GroupEntityType)
+	assertMultiValuedClaims(t, authz)
 }
 
 // TestConvertAuthzConfigRef_NonCedarFailsFast verifies a non-Cedar

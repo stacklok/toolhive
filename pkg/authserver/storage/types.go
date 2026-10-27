@@ -746,7 +746,7 @@ type PendingAuthorization struct {
 
 	// VerifiedUpstream is the verified identity of the first upstream OIDC login. It
 	// is set only from that login, never replaced by later legs, and zero for
-	// OAuth2-only or synthetic identities.
+	// OAuth2-only or synthetic identities, and not recorded at new logins when SubjectIdentifierAudiences is empty.
 	VerifiedUpstream authsession.UpstreamSubject
 
 	// SingleLeg scopes this authorization to exactly one upstream. When true, the
@@ -837,7 +837,7 @@ type DeviceRequest struct {
 	ResolvedUserID    string
 	ResolvedUserName  string
 	ResolvedUserEmail string
-	VerifiedUpstream  authsession.UpstreamSubject
+	VerifiedUpstream  authsession.UpstreamSubject // zero when SubjectIdentifierAudiences is empty
 	SessionID         string
 
 	CreatedAt time.Time

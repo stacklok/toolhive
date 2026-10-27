@@ -296,7 +296,7 @@ func (h *Handler) CallbackHandler(w http.ResponseWriter, req *http.Request) {
 	}
 
 	// Capture provenance only on the callback that establishes the local ToolHive user.
-	pending = carryFirstUpstreamIdentity(pending, result)
+	pending = carryFirstUpstreamIdentity(pending, h.recordedUpstreamIdentity(result))
 
 	// Place the resolved canonical user in the request context so callback storage
 	// calls that carry no tokens argument — GetAllUpstreamTokens during chain
@@ -500,17 +500,31 @@ func (h *Handler) callbackClient(ctx context.Context, id string) (fosite.Client,
 // carryFirstUpstreamIdentity stores provenance only when this callback establishes the local user.
 // SingleLeg authorizations connect one backend and never establish the user, so the
 // upstream they authenticate against must not become the token's sub_id source.
-func carryFirstUpstreamIdentity(pending *storage.PendingAuthorization, result *upstream.Identity) *storage.PendingAuthorization {
+func carryFirstUpstreamIdentity(
+	pending *storage.PendingAuthorization,
+	verified session.UpstreamSubject,
+) *storage.PendingAuthorization {
 	if pending.ResolvedUserID != "" || pending.SingleLeg {
 		return pending
 	}
-	verified := verifiedUpstreamIdentity(result)
 	if !verified.IsComplete() {
 		return pending
 	}
 	clone := *pending
 	clone.VerifiedUpstream = verified
 	return &clone
+}
+
+// recordedUpstreamIdentity returns the identity a login stores for later sub_id
+// disclosure, or the zero value when SubjectIdentifierAudiences is empty. It decides
+// whether the login records the identity at all: that needs only a non-empty list,
+// while token.go still requires every audience of a token to be listed before it
+// discloses. Do not share a predicate with token.go's per-audience check.
+func (h *Handler) recordedUpstreamIdentity(result *upstream.Identity) session.UpstreamSubject {
+	if len(h.config.SubjectIdentifierAudiences) == 0 {
+		return session.UpstreamSubject{}
+	}
+	return verifiedUpstreamIdentity(result)
 }
 
 // verifiedUpstreamIdentity returns the validated upstream identity, or the zero

@@ -1376,6 +1376,12 @@ type Config struct {
 	// https://toolhive.dev/upstream_subject claim on login-derived access tokens.
 	// Empty disables both claims. Entries must be exact members of
 	// AllowedAudiences. It never grants an audience or client access.
+	//
+	// A login records the upstream identity only when this list is non-empty. Going
+	// from an empty list to a non-empty one adds the claims only for sessions whose
+	// login happened while the list was non-empty; other users get them from their
+	// next login. Adding an audience to a list that is already non-empty applies at
+	// the next refresh. Emptying the list stops the claims at the next refresh.
 	SubjectIdentifierAudiences []string
 
 	// AccessTokenType sets the JOSE "typ" header on every JWT access token this server

@@ -3290,13 +3290,13 @@ func refreshAccessTokenClaims(t *testing.T, serverURL string, ts *testServer, re
 	return decodeTestAccessToken(t, ts, refreshForAccessToken(t, serverURL, refreshToken))
 }
 
-// TestIntegration_SubjectIdentifierPolicyAppliesAtRefresh proves the disclosure
-// decision is made when each token is issued, not frozen at login: two servers
-// share storage, signing key and HMAC secrets but differ in
-// SubjectIdentifierAudiences, and a refresh token minted by one is redeemed on
-// the other. The verified upstream identity must be persisted even when
-// disclosure is off, or turning disclosure on later could never add sub_id.
-func TestIntegration_SubjectIdentifierPolicyAppliesAtRefresh(t *testing.T) {
+// TestIntegration_SubjectIdentifierPolicyChangeAcrossRefresh covers a disclosure
+// policy change between login and refresh: two servers share storage, signing key
+// and HMAC secrets but differ in SubjectIdentifierAudiences, and a refresh token
+// minted by one is redeemed on the other. Turning disclosure off stops sub_id at
+// the refresh. Turning it on does not add sub_id to a session whose login happened
+// while it was off, but a new login on the enabled server does get it.
+func TestIntegration_SubjectIdentifierPolicyChangeAcrossRefresh(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name             string
@@ -3310,8 +3310,8 @@ func TestIntegration_SubjectIdentifierPolicyAppliesAtRefresh(t *testing.T) {
 			loginAudiences: []string{testAudience}, wantLoginSubID: true,
 		},
 		{
-			name:             "disclosure enabled after login adds sub_id on refresh",
-			refreshAudiences: []string{testAudience}, wantRefreshSubID: true,
+			name:             "disclosure enabled after login does not add sub_id to an existing session",
+			refreshAudiences: []string{testAudience},
 		},
 	}
 
@@ -3368,6 +3368,24 @@ func TestIntegration_SubjectIdentifierPolicyAppliesAtRefresh(t *testing.T) {
 					assert.NotContains(t, c.claims, "sub_id", c.stage)
 					assertUpstreamSubject(t, c.claims, nil, c.stage)
 				}
+			}
+
+			if !tc.wantRefreshSubID && len(tc.refreshAudiences) > 0 {
+				// Positive control: a login after the change records the identity.
+				// startMockOIDC queues a single user and the first login consumed it.
+				m.QueueUser(&mockoidc.MockUser{Subject: "mock-user-sub-123", Email: "testuser@example.com"})
+				verifier2 := servercrypto.GeneratePKCEVerifier()
+				authCode2, _ := completeAuthorizationFlow(t, refreshServer.Server.URL, authorizationParams{
+					ClientID: testClientID, RedirectURI: testRedirectURI, State: "policy-change-relogin",
+					Challenge: servercrypto.ComputePKCEChallenge(verifier2),
+					Scope:     "openid profile offline_access", Resource: testAudience, ResponseType: "code",
+				})
+				tokens2 := exchangeCodeForTokens(t, refreshServer.Server.URL, authCode2, verifier2, testAudience)
+				access2, ok := tokens2["access_token"].(string)
+				require.True(t, ok)
+				claims2 := decodeTestAccessToken(t, refreshServer.testServer, access2)
+				assert.Equal(t, wantSubID, claims2["sub_id"], "second login")
+				assertUpstreamSubject(t, claims2, wantStable, "second login")
 			}
 		})
 	}

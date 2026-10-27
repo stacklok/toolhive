@@ -286,7 +286,7 @@ func (h *Handler) completeDeviceLogin(
 	}
 
 	token := rand.Text()
-	verified := verifiedUpstreamIdentity(result)
+	verified := h.recordedUpstreamIdentity(result)
 	confirmation := &storage.PendingDeviceConfirmation{
 		DeviceCode:        device.DeviceCode,
 		UserCode:          device.UserCode,

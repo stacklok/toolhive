@@ -139,8 +139,9 @@ type Session struct {
 	// This ID is used to retrieve the IDP tokens from storage.
 	UpstreamSessionID string
 
-	// VerifiedUpstream is preserved server-side through code/refresh storage. It
-	// becomes the sub_id and upstream subject claims only when policy opts in.
+	// VerifiedUpstream is preserved server-side through code/refresh storage. It is
+	// not recorded at new logins when SubjectIdentifierAudiences is empty, and
+	// becomes the sub_id and upstream subject claims only for listed audiences.
 	VerifiedUpstream UpstreamSubject `json:"verified_upstream,omitzero"`
 }
 

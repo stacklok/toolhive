@@ -1162,8 +1162,12 @@ func validateExchangeGrantRevokeTime(now time.Time) error {
 // ExchangeGrantStorage stores the grant records behind refresh tokens issued
 // through token exchange. It is an optional capability, like DeviceCodeStorage.
 // Callers discover it with storage.Unwrap(stor).(ExchangeGrantStorage) at
-// construction time. Decorators do not forward this interface, so the lookup
-// must go through Unwrap.
+// construction time. ToolHive's own decorators implement Unwrap and do not
+// forward this interface, so the lookup must go through Unwrap. A decorator
+// that does not implement Unwrap (for example an embedder's encrypting
+// decorator, which must not expose its backend) hides the capability unless
+// it forwards the three methods itself; it should forward them, since grant
+// records carry no token value for it to transform.
 //
 // Records are kept until ExpiresAt. Time decisions belong to the caller, which
 // applies ExchangeGrant.Live(now) to every record it reads. Backend expiry is

@@ -101,7 +101,8 @@ func TestConfigureCredentialHelper_WritesConfigMetaAndShim(t *testing.T) {
 	require.NoError(t, err)
 	if runtime.GOOS == "windows" {
 		assert.True(t, strings.HasSuffix(shimPath, "claude-desktop-helper.cmd"))
-		assert.Contains(t, string(shim), `call "`+claudeDesktopTestHelperPath()+`" llm token`)
+		assert.Contains(t, string(shim), `"`+claudeDesktopTestHelperPath()+`" llm token`)
+		assert.NotContains(t, string(shim), "call ")
 	} else {
 		assert.Contains(t, string(shim), `exec '/opt/toolhive/bin/thv' llm token`)
 	}

@@ -251,9 +251,11 @@ func (cm *ClientManager) credentialHelperShimPath() string {
 //
 // tokenHelperPath is the absolute thv path (ApplyConfig.TokenHelperPath). It is
 // quoted into the exec lines rather than resolved via PATH at call time:
-// Claude Desktop is only ever GUI-launched, and GUI apps inherit a minimal
-// environment (launchd on macOS; explorer on Windows), which does not contain
-// thv's install directory — a bare "thv" would never be found. This is what
+// Claude Desktop is only ever GUI-launched. On macOS, GUI apps inherit
+// launchd's environment, which does not contain thv's install directory, so a
+// bare "thv" would never be found. On Windows, explorer does pass the user's
+// PATH, but nothing guarantees thv is on it, and the absolute path pins the thv
+// that ran setup either way. This is what
 // distinguishes Claude Desktop from the direct-mode clients, which deliberately
 // keep the bare, PATH-resolved tokenHelperShellCommand (see pkg/llm/setup.go).
 // POSIX uses quoteForPOSIXShell; Windows writes a .cmd via quoteForCmd.

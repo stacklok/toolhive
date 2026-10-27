@@ -447,7 +447,7 @@ func (c *Client) StopWorkload(ctx context.Context, workloadName string) error {
 	info, err := c.GetWorkloadInfo(ctx, workloadName)
 	if err != nil {
 		// If the container doesn't exist, that's fine - it's already "stopped"
-		if errors.Is(err, ErrContainerNotFound) {
+		if errors.Is(err, ErrContainerNotFound) || errors.Is(err, runtime.ErrWorkloadNotFound) {
 			return nil
 		}
 		return err

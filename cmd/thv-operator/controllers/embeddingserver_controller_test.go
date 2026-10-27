@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -545,7 +546,10 @@ func TestHandleDeletion(t *testing.T) {
 	// handleDeletion must return the error and keep the finalizer in place so
 	// the object is requeued instead of being deleted with an unpersisted
 	// final status.
-	t.Run("status update failure keeps finalizer and returns error", func(t *testing.T) {
+	// #4624 review (ChrisJBurns): a status write that keeps failing must not
+	// pin the finalizer — deletion would hang and stall namespace teardown.
+	// The failure is surfaced as a Warning event instead.
+	t.Run("status update failure does not block deletion", func(t *testing.T) {
 		t.Parallel()
 
 		embedding := v1beta1test.NewEmbeddingServer("test-status-fail", testNamespaceDefault,
@@ -568,35 +572,48 @@ func TestHandleDeletion(t *testing.T) {
 					opts ...client.SubResourceUpdateOption,
 				) error {
 					if subResourceName == "status" {
-						return errors.New("simulated status update failure")
+						return errors.New("simulated permanent status rejection")
 					}
 					return c.SubResource(subResourceName).Update(ctx, obj, opts...)
 				},
 			}).
 			Build()
 
+		recorder := events.NewFakeRecorder(10)
 		reconciler := &EmbeddingServerReconciler{
 			Client:   fakeClient,
 			Scheme:   scheme,
-			Recorder: events.NewFakeRecorder(10),
+			Recorder: recorder,
 		}
 
 		result, done, err := reconciler.handleDeletion(context.TODO(), embedding)
 
-		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "simulated status update failure")
+		// The deletion must complete: no error, nothing to requeue.
+		assert.NoError(t, err)
 		assert.True(t, done)
 		assert.Equal(t, ctrl.Result{}, result)
 
-		// The finalizer must still be present: removal is only allowed after
-		// finalization succeeds.
+		// The finalizer must be gone, so the object can actually be deleted.
 		updatedEmbedding := &mcpv1beta1.EmbeddingServer{}
-		err = fakeClient.Get(context.TODO(), types.NamespacedName{
+		getErr := fakeClient.Get(context.TODO(), types.NamespacedName{
 			Name:      embedding.Name,
 			Namespace: embedding.Namespace,
 		}, updatedEmbedding)
-		require.NoError(t, err)
-		assert.Contains(t, updatedEmbedding.Finalizers, embeddingFinalizerName)
+		if getErr == nil {
+			assert.NotContains(t, updatedEmbedding.Finalizers, embeddingFinalizerName)
+		} else {
+			// Object already gone: deletion completed, which is the point.
+			assert.True(t, apierrors.IsNotFound(getErr))
+		}
+
+		// The failure must still be observable: a Warning event is recorded.
+		select {
+		case ev := <-recorder.Events:
+			assert.Contains(t, ev, corev1.EventTypeWarning)
+			assert.Contains(t, ev, "StatusUpdateFailed")
+		default:
+			t.Fatal("expected a Warning event reporting the failed status update")
+		}
 	})
 
 	for _, tt := range tests {

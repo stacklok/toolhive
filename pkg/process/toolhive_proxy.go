@@ -16,6 +16,14 @@ const (
 	toolHiveBinaryName = "thv"
 )
 
+//go:generate mockgen -destination=mocks/mock_process_metadata.go -package=mocks -source=toolhive_proxy.go -mock_names=processMetadata=MockProcessMetadata
+
+type processMetadata interface {
+	Environ() ([]string, error)
+	Cmdline() (string, error)
+	Exe() (string, error)
+}
+
 // containsThvBinary returns true if s appears to reference the thv binary
 // (e.g. /usr/bin/thv, thv start, thv.exe), avoiding false positives like "toolhive".
 func containsThvBinary(s string) bool {
@@ -80,6 +88,10 @@ func IsTrackedToolHiveProxyForWorkload(pid int, workloadName string) (bool, erro
 	if err != nil {
 		return false, err
 	}
+	return isTrackedToolHiveProxyForWorkload(p, workloadName)
+}
+
+func isTrackedToolHiveProxyForWorkload(p processMetadata, workloadName string) (bool, error) {
 	env, err := p.Environ()
 	if err != nil {
 		return false, err
@@ -101,7 +113,7 @@ func IsTrackedToolHiveProxyForWorkload(pid int, workloadName string) (bool, erro
 
 // isToolHiveProcess returns true if p is a ToolHive process (TOOLHIVE_DETACHED
 // or thv binary in exe/cmdline).
-func isToolHiveProcess(p *gopsutilprocess.Process) bool {
+func isToolHiveProcess(p processMetadata) bool {
 	if hasToolHiveDetachedEnv(p) {
 		return true
 	}
@@ -114,7 +126,7 @@ func isToolHiveProcess(p *gopsutilprocess.Process) bool {
 	return false
 }
 
-func hasToolHiveDetachedEnv(p *gopsutilprocess.Process) bool {
+func hasToolHiveDetachedEnv(p processMetadata) bool {
 	env, err := p.Environ()
 	if err != nil {
 		return false

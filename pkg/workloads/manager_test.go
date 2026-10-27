@@ -9,11 +9,13 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"net"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
 	goruntime "runtime"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -24,12 +26,14 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
+	"github.com/stacklok/toolhive/pkg/client"
 	"github.com/stacklok/toolhive/pkg/config"
 	configMocks "github.com/stacklok/toolhive/pkg/config/mocks"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	runtimeMocks "github.com/stacklok/toolhive/pkg/container/runtime/mocks"
 	"github.com/stacklok/toolhive/pkg/core"
 	"github.com/stacklok/toolhive/pkg/labels"
+	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/process"
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/state"
@@ -1295,6 +1299,119 @@ func TestDefaultManager_RunWorkload_CancelledSupervisorClearsOnlyItsOwnPID(t *te
 	require.NoError(t, manager.RunWorkload(ctx, &runner.RunConfig{BaseName: name}))
 }
 
+func TestDefaultManager_RunWorkload_CancellationPreventsFurtherAttempts(t *testing.T) {
+	t.Parallel()
+
+	for _, stage := range []string{"initial status", "runner", "restart status"} {
+		t.Run(stage, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			t.Cleanup(cancel)
+			ctrl := gomock.NewController(t)
+			sm := statusMocks.NewMockStatusManager(ctrl)
+			const name = "cancel-at-boundary"
+			sm.EXPECT().SetWorkloadStatus(gomock.Any(), name, runtime.WorkloadStatusStarting, "").
+				DoAndReturn(func(context.Context, string, runtime.WorkloadStatus, string) error {
+					if stage == "initial status" {
+						cancel()
+					}
+					return nil
+				})
+			if stage == "restart status" {
+				sm.EXPECT().SetWorkloadStatus(gomock.Any(), name, runtime.WorkloadStatusStarting, "Container exited, restarting").
+					DoAndReturn(func(context.Context, string, runtime.WorkloadStatus, string) error {
+						cancel()
+						return nil
+					})
+			}
+			expectSupervisorPIDCleanup(t, sm, name)
+			attempts := 0
+			manager := &DefaultManager{statuses: sm}
+			withClientManagerFactory(func(context.Context) (client.Manager, error) {
+				return nil, errors.New("client manager unavailable")
+			})(manager)
+			withRunnerFactory(func(*runner.RunConfig, statuses.StatusManager) mcpRunner {
+				attempts++
+				if stage == "runner" {
+					cancel()
+				}
+				return &fakeRunner{err: runner.ErrContainerExitedRestartNeeded}
+			})(manager)
+
+			require.NoError(t, manager.RunWorkload(ctx, &runner.RunConfig{BaseName: name}))
+			require.ErrorIs(t, ctx.Err(), context.Canceled)
+			if stage == "initial status" {
+				assert.Zero(t, attempts, "shutdown must prevent runner creation")
+			} else {
+				assert.Equal(t, 1, attempts, "shutdown must not retry or record a terminal error")
+			}
+		})
+	}
+}
+
+func TestDefaultManager_RunWorkload_FailureSurvivesStatusAndPIDCleanupErrors(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	t.Cleanup(cancel)
+	ctrl := gomock.NewController(t)
+	sm := statusMocks.NewMockStatusManager(ctrl)
+	const name = "failed-supervisor"
+	runErr := errors.New("runner failed")
+	storageErr := errors.New("status storage unavailable")
+	gomock.InOrder(
+		sm.EXPECT().SetWorkloadStatus(gomock.Any(), name, runtime.WorkloadStatusStarting, "").Return(nil),
+		sm.EXPECT().SetWorkloadStatus(gomock.Any(), name, runtime.WorkloadStatusError, runErr.Error()).Return(storageErr),
+		sm.EXPECT().ResetWorkloadPIDIfMatch(gomock.Any(), name, os.Getpid()).
+			DoAndReturn(func(cleanupCtx context.Context, _ string, _ int) error {
+				assert.NoError(t, cleanupCtx.Err())
+				_, bounded := cleanupCtx.Deadline()
+				assert.True(t, bounded)
+				return storageErr
+			}),
+	)
+	manager := &DefaultManager{statuses: sm}
+	withRunnerFactory(func(*runner.RunConfig, statuses.StatusManager) mcpRunner {
+		return &fakeRunner{err: runErr}
+	})(manager)
+
+	require.ErrorIs(t, manager.RunWorkload(ctx, &runner.RunConfig{BaseName: name}), runErr)
+}
+
+func TestDefaultManager_recordWorkloadRunFailure_CancellationDoesNotOverwriteStatus(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	cancel()
+	manager := &DefaultManager{statuses: statusMocks.NewMockStatusManager(gomock.NewController(t))}
+
+	manager.recordWorkloadRunFailure(ctx, "stopping-supervisor", "runner failed during shutdown")
+}
+
+func TestDefaultManager_RunWorkload_RestartStatusFailureDoesNotConsumeExtraAttempts(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	t.Cleanup(cancel)
+	ctrl := gomock.NewController(t)
+	sm := statusMocks.NewMockStatusManager(ctrl)
+	const name = "restart-status-failure"
+	gomock.InOrder(
+		sm.EXPECT().SetWorkloadStatus(gomock.Any(), name, runtime.WorkloadStatusStarting, "").Return(nil),
+		sm.EXPECT().SetWorkloadStatus(gomock.Any(), name, runtime.WorkloadStatusStarting, "Container exited, restarting").
+			Return(errors.New("status storage unavailable")),
+	)
+	expectSupervisorPIDCleanup(t, sm, name)
+	factory := &fakeRunnerFactory{outcomes: []fakeRunOutcome{{err: runner.ErrContainerExitedRestartNeeded}, {}}}
+	manager := &DefaultManager{statuses: sm}
+	withClientManagerFactory(func(context.Context) (client.Manager, error) {
+		return nil, errors.New("client manager unavailable")
+	})(manager)
+	withRunnerFactory(factory.factory())(manager)
+	withRetryConfig(retryConfig{maxRetries: 2, initialDelay: time.Millisecond,
+		maxBackoff: time.Millisecond, stableRunThreshold: time.Minute})(manager)
+
+	require.NoError(t, manager.RunWorkload(ctx, &runner.RunConfig{BaseName: name}))
+	assert.Equal(t, 2, factory.callCount)
+}
+
 //nolint:paralleltest // client configuration isolation uses t.Setenv
 func TestDefaultManager_RunWorkload_RetryCounterReset(t *testing.T) {
 	isolateWorkloadStopState(t)
@@ -2416,6 +2533,7 @@ func persistStopRunConfig(t *testing.T, name string, rc *runner.RunConfig) {
 
 type workloadProxyProcess struct {
 	pid     int
+	port    int
 	exited  chan struct{}
 	waitErr error // Read only after exited is closed by the Wait goroutine.
 }
@@ -2433,13 +2551,25 @@ func TestWorkloadProxyProcess(t *testing.T) {
 	} else {
 		signal.Notify(terminated, syscall.SIGTERM)
 	}
-	fmt.Println("ready")
+	var listener net.Listener
+	if mode == "listen" {
+		var err error
+		listener, err = net.Listen("tcp4", "127.0.0.1:0")
+		require.NoError(t, err)
+		fmt.Printf("ready %d\n", listener.Addr().(*net.TCPAddr).Port)
+	} else {
+		fmt.Println("ready")
+	}
+	exitCode := 0
 	select {
 	case <-terminated:
-		os.Exit(0)
 	case <-time.After(time.Minute):
-		os.Exit(1)
+		exitCode = 1
 	}
+	if listener != nil {
+		require.NoError(t, listener.Close())
+	}
+	os.Exit(exitCode)
 }
 
 func startVerifiedProxyProcess(t *testing.T, name string, args ...string) *workloadProxyProcess {
@@ -2448,6 +2578,11 @@ func startVerifiedProxyProcess(t *testing.T, name string, args ...string) *workl
 }
 
 func startProxyProcess(t *testing.T, name string, ignoreSIGTERM bool, args ...string) *workloadProxyProcess {
+	t.Helper()
+	return startProxyProcessFixture(t, name, ignoreSIGTERM, false, args...)
+}
+
+func startProxyProcessFixture(t *testing.T, name string, ignoreSIGTERM, listen bool, args ...string) *workloadProxyProcess {
 	t.Helper()
 	if goruntime.GOOS == "windows" {
 		t.Skip("proxy helper requires SIGTERM")
@@ -2471,6 +2606,8 @@ func startProxyProcess(t *testing.T, name string, ignoreSIGTERM bool, args ...st
 	mode := "1"
 	if ignoreSIGTERM {
 		mode = "ignore-term"
+	} else if listen {
+		mode = "listen"
 	}
 	cmd.Env = append(cmd.Env, "TOOLHIVE_TEST_PROXY_HELPER="+mode)
 	if detached {
@@ -2499,7 +2636,16 @@ func startProxyProcess(t *testing.T, name string, ignoreSIGTERM bool, args ...st
 	})
 	select {
 	case line := <-ready:
-		require.Equal(t, "ready\n", line)
+		if listen {
+			fields := strings.Fields(line)
+			require.Len(t, fields, 2)
+			require.Equal(t, "ready", fields[0])
+			proxy.port, err = strconv.Atoi(fields[1])
+			require.NoError(t, err)
+			require.Positive(t, proxy.port)
+		} else {
+			require.Equal(t, "ready\n", line)
+		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("proxy helper did not start")
 	}
@@ -2683,7 +2829,8 @@ func TestDefaultManager_stopContainerWorkload_RuntimeStopFailureRecordsErrorAfte
 		assert.True(t, cleanupComplete, "runtime stop must follow proxy cleanup even on failure")
 		return stopErr
 	})
-	sm.EXPECT().SetWorkloadStatus(gomock.Any(), "container", runtime.WorkloadStatusError, stopErr.Error()).Return(nil)
+	sm.EXPECT().SetWorkloadStatus(gomock.Any(), "container", runtime.WorkloadStatusError, stopErr.Error()).
+		Return(errors.New("status storage unavailable"))
 	manager := &DefaultManager{statuses: sm, runtime: rtMock}
 	withPortFreer(func(context.Context, *runner.RunConfig) { cleanupComplete = true })(manager)
 
@@ -2872,6 +3019,126 @@ func TestDefaultManager_stopRemoteWorkload_LiveProxyStatusesEndStopped(t *testin
 	}
 }
 
+//nolint:paralleltest // saved-workload fixtures use t.Setenv
+func TestDefaultManager_stopRemoteWorkload_StatusWriteFailuresDoNotSkipProxyCleanup(t *testing.T) {
+	isolateWorkloadStopState(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	t.Cleanup(cancel)
+	const name = "remote-status-failure"
+	rc := &runner.RunConfig{BaseName: name, RemoteURL: "https://example.com/mcp"}
+	persistStopRunConfig(t, name, rc)
+	ctrl := gomock.NewController(t)
+	sm := statusMocks.NewMockStatusManager(ctrl)
+	storageErr := errors.New("status storage unavailable")
+	fallbackCalls := 0
+	gomock.InOrder(
+		sm.EXPECT().GetWorkload(gomock.Any(), name).Return(core.Workload{Status: runtime.WorkloadStatusRunning}, nil),
+		sm.EXPECT().SetWorkloadStatus(gomock.Any(), name, runtime.WorkloadStatusStopping, "").Return(storageErr),
+		sm.EXPECT().GetWorkloadPID(gomock.Any(), name).Return(0, nil),
+		sm.EXPECT().SetWorkloadStatus(gomock.Any(), name, runtime.WorkloadStatusStopped, "").
+			DoAndReturn(func(context.Context, string, runtime.WorkloadStatus, string) error {
+				assert.Equal(t, 1, fallbackCalls, "proxy cleanup must precede the final status write")
+				return storageErr
+			}),
+	)
+	manager := &DefaultManager{statuses: sm}
+	withPortFreer(func(context.Context, *runner.RunConfig) { fallbackCalls++ })(manager)
+
+	require.NoError(t, manager.stopRemoteWorkload(ctx, name, rc))
+	assert.Equal(t, 1, fallbackCalls)
+}
+
+//nolint:paralleltest // saved-workload fixtures use t.Setenv
+func TestDefaultManager_stopRemoteWorkload_StoppedStatusStillCleansUpProxy(t *testing.T) {
+	isolateWorkloadStopState(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	t.Cleanup(cancel)
+	const name = "already-stopped-remote"
+	ctrl := gomock.NewController(t)
+	sm := statusMocks.NewMockStatusManager(ctrl)
+	sm.EXPECT().GetWorkload(gomock.Any(), name).Return(core.Workload{Status: runtime.WorkloadStatusStopped}, nil)
+	sm.EXPECT().GetWorkloadPID(gomock.Any(), name).Return(0, nil)
+	manager := &DefaultManager{statuses: sm}
+	rc := &runner.RunConfig{BaseName: name}
+	fallbackCalls := 0
+	withPortFreer(func(_ context.Context, got *runner.RunConfig) {
+		assert.Same(t, rc, got)
+		fallbackCalls++
+	})(manager)
+
+	require.NoError(t, manager.stopRemoteWorkload(ctx, name, rc))
+	assert.Equal(t, 1, fallbackCalls, "stale status must not suppress orphan cleanup or create new status")
+}
+
+//nolint:paralleltest // saved-workload fixtures use t.Setenv
+func TestDefaultManager_finishRemoteWorkloadStop_StoreFailureDoesNotWriteStopped(t *testing.T) {
+	isolateWorkloadStopState(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	t.Cleanup(cancel)
+	stateDir := filepath.Join(xdg.StateHome, state.DefaultAppName)
+	require.NoError(t, os.MkdirAll(stateDir, 0750))
+	require.NoError(t, os.WriteFile(filepath.Join(stateDir, state.RunConfigsDir), []byte("not a directory"), 0600))
+	manager := &DefaultManager{statuses: statusMocks.NewMockStatusManager(gomock.NewController(t))}
+
+	err := manager.finishRemoteWorkloadStop(ctx, "remote", &runner.RunConfig{BaseName: "remote"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to open run configuration store after stop")
+}
+
+//nolint:paralleltest // saved-workload fixtures use t.Setenv
+func TestDefaultManager_stopContainerWorkload_StateCheckFailurePreservesRuntimeError(t *testing.T) {
+	isolateWorkloadStopState(t)
+	if goruntime.GOOS == "windows" {
+		t.Skip("state failure fixture requires symlinks")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	t.Cleanup(cancel)
+	const name = "failed-state-check"
+	rc := &runner.RunConfig{BaseName: name}
+	persistStopRunConfig(t, name, rc)
+	path := filepath.Join(xdg.StateHome, state.DefaultAppName, state.RunConfigsDir, name+".json")
+	require.NoError(t, os.Remove(path))
+	require.NoError(t, os.Symlink(path, path))
+	ctrl := gomock.NewController(t)
+	rtMock := runtimeMocks.NewMockRuntime(ctrl)
+	sm := statusMocks.NewMockStatusManager(ctrl)
+	stopErr := errors.New("runtime stop failed")
+	rtMock.EXPECT().GetWorkloadInfo(gomock.Any(), name).Return(runtime.ContainerInfo{}, runtime.ErrWorkloadNotFound)
+	sm.EXPECT().SetWorkloadStatus(gomock.Any(), name, runtime.WorkloadStatusStopping, "").
+		Return(errors.New("status storage unavailable"))
+	sm.EXPECT().GetWorkloadPID(gomock.Any(), name).Return(0, nil)
+	rtMock.EXPECT().StopWorkload(gomock.Any(), name).Return(stopErr)
+	manager := &DefaultManager{statuses: sm, runtime: rtMock}
+	withPortFreer(func(context.Context, *runner.RunConfig) {})(manager)
+
+	err := manager.stopContainerWorkload(ctx, name, rc)
+	require.ErrorIs(t, err, stopErr)
+	require.ErrorIs(t, err, syscall.ELOOP)
+	assert.Contains(t, err.Error(), "failed to check saved workload after stop")
+}
+
+//nolint:paralleltest // saved-workload fixtures use t.Setenv
+func TestDefaultManager_stopSingleContainerWorkload_AuxiliaryNeedsNoSavedStateOrProxy(t *testing.T) {
+	isolateWorkloadStopState(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	t.Cleanup(cancel)
+	const name = "inspector"
+	ctrl := gomock.NewController(t)
+	rtMock := runtimeMocks.NewMockRuntime(ctrl)
+	sm := statusMocks.NewMockStatusManager(ctrl)
+	gomock.InOrder(
+		rtMock.EXPECT().StopWorkload(gomock.Any(), name).Return(nil),
+		sm.EXPECT().SetWorkloadStatus(gomock.Any(), name, runtime.WorkloadStatusStopped, "").Return(nil),
+	)
+	manager := &DefaultManager{runtime: rtMock, statuses: sm}
+	withPortFreer(func(context.Context, *runner.RunConfig) { t.Error("auxiliary workload must not clean up a proxy") })(manager)
+	workload := &runtime.ContainerInfo{Name: name, Labels: map[string]string{
+		labels.LabelBaseName: name, labels.LabelAuxiliary: "true",
+	}}
+
+	require.NoError(t, manager.stopSingleContainerWorkload(ctx, workload, &runner.RunConfig{BaseName: name}))
+}
+
 // TestDefaultManager_stopProcess verifies the boolean contract that the
 // stop/delete port-cleanup fallback relies on: stopProcess reports true only
 // when a tracked, identity-verified proxy exits. A false return (no PID recorded —
@@ -2913,13 +3180,14 @@ func TestDefaultManager_stopProcess(t *testing.T) {
 			want: false,
 		},
 		{
-			name:     "verified proxy exits and returns true",
+			name:     "verified proxy exit succeeds even when PID reset fails",
 			workload: "test-workload",
 			setupMocks: func(t *testing.T, sm *statusMocks.MockStatusManager) {
 				t.Helper()
 				pid := startVerifiedProxyProcess(t, "test-workload").pid
 				sm.EXPECT().GetWorkloadPID(gomock.Any(), "test-workload").Return(pid, nil)
-				sm.EXPECT().ResetWorkloadPIDIfMatch(gomock.Any(), "test-workload", pid).Return(nil)
+				sm.EXPECT().ResetWorkloadPIDIfMatch(gomock.Any(), "test-workload", pid).
+					Return(errors.New("status storage unavailable"))
 			},
 			want: true,
 		},
@@ -2941,6 +3209,33 @@ func TestDefaultManager_stopProcess(t *testing.T) {
 			assert.Equal(t, tt.want, got)
 		})
 	}
+}
+
+func TestDefaultManager_ensureProxyStopped_ExitedPIDCleanupFailureStillFallsBack(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	t.Cleanup(cancel)
+	pid, exited := startKillableProcess(t)
+	child, err := os.FindProcess(pid)
+	require.NoError(t, err)
+	require.NoError(t, child.Kill())
+	select {
+	case <-exited:
+	case <-ctx.Done():
+		t.Fatal("child was not reaped before stale PID cleanup")
+	}
+	ctrl := gomock.NewController(t)
+	sm := statusMocks.NewMockStatusManager(ctrl)
+	const name = "already-exited-proxy"
+	sm.EXPECT().GetWorkloadPID(gomock.Any(), name).Return(pid, nil)
+	sm.EXPECT().ResetWorkloadPIDIfMatch(gomock.Any(), name, pid).
+		Return(errors.New("status storage unavailable"))
+	manager := &DefaultManager{statuses: sm}
+	fallbackCalls := 0
+	withPortFreer(func(context.Context, *runner.RunConfig) { fallbackCalls++ })(manager)
+
+	manager.ensureProxyStopped(ctx, name, name, &runner.RunConfig{BaseName: name})
+	assert.Equal(t, 1, fallbackCalls, "clearing a stale PID is not proof that the port is free")
 }
 
 func TestDefaultManager_ensureProxyStopped_UnverifiedLivePIDIsPreservedWithoutSignaling(t *testing.T) {
@@ -3008,6 +3303,50 @@ func TestDefaultManager_ensureProxyStopped_ExitTimeoutPreservesVerifiedPIDAndFal
 	case <-proxy.exited:
 		t.Error("SIGTERM-ignoring proxy unexpectedly exited")
 	default:
+	}
+}
+
+//nolint:paralleltest // saved-workload fixtures use t.Setenv
+func TestDefaultManager_freePortHolderIfNeeded_WaitsForOwnedProxyExitAndReleasesListener(t *testing.T) {
+	isolateWorkloadStopState(t)
+	if goruntime.GOOS == "darwin" || goruntime.GOOS == "freebsd" {
+		if _, err := exec.LookPath("lsof"); err != nil {
+			t.Skipf("TCP owner discovery requires lsof: %v", err)
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	t.Cleanup(cancel)
+	name := fmt.Sprintf("port-cleanup-%d", time.Now().UnixNano())
+	proxy := startProxyProcessFixture(t, name, false, true)
+	portPID, err := networking.GetProcessOnPort(proxy.port)
+	require.NoError(t, err)
+	require.Equal(t, proxy.pid, portPID, "port discovery must identify only the owned fixture")
+	rc := &runner.RunConfig{BaseName: name, Port: proxy.port}
+	persistStopRunConfig(t, name, rc)
+	saved, err := runner.LoadState(ctx, name)
+	require.NoError(t, err)
+	manager := &DefaultManager{}
+	withProxyExitTimeout(5 * time.Second)(manager)
+
+	wrongWorkload := *saved
+	wrongWorkload.BaseName += "-other"
+	manager.freePortHolderIfNeeded(ctx, &wrongWorkload)
+	alive, err := process.FindProcess(proxy.pid)
+	require.NoError(t, err)
+	require.True(t, alive, "cleanup must not signal another workload's proxy")
+	portPID, err = networking.GetProcessOnPort(proxy.port)
+	require.NoError(t, err)
+	require.Equal(t, proxy.pid, portPID, "identity mismatch must leave the owned listener intact")
+
+	manager.freePortHolderIfNeeded(ctx, saved)
+	listener, err := net.Listen("tcp4", fmt.Sprintf("127.0.0.1:%d", proxy.port))
+	require.NoError(t, err, "cleanup must release the listener before returning")
+	t.Cleanup(func() { assert.NoError(t, listener.Close()) })
+	select {
+	case <-proxy.exited:
+		require.NoError(t, proxy.waitErr, "owned proxy must complete its graceful shutdown")
+	case <-ctx.Done():
+		t.Fatal("port cleanup did not terminate and reap the owned proxy")
 	}
 }
 

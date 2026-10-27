@@ -5,6 +5,7 @@ package process
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -16,6 +17,9 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
+
+	"github.com/stacklok/toolhive/pkg/process/mocks"
 )
 
 func TestIsToolHiveProxyForWorkload_InvalidPID(t *testing.T) {
@@ -53,6 +57,81 @@ func TestIsTrackedToolHiveProxyForWorkload_DetachedRequiresExactWorkload(t *test
 	matched, err = IsTrackedToolHiveProxyForWorkload(pid, "github")
 	require.NoError(t, err)
 	assert.False(t, matched, "a hyphen continues the workload name, not a token boundary")
+}
+
+func TestIsTrackedToolHiveProxyForWorkload_RejectsMissingIdentity(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name     string
+		pid      int
+		workload string
+	}{
+		{name: "zero PID", pid: 0, workload: "github"},
+		{name: "negative PID", pid: -1, workload: "github"},
+		{name: "empty workload", pid: os.Getpid()},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			matched, err := IsTrackedToolHiveProxyForWorkload(tt.pid, tt.workload)
+			require.NoError(t, err)
+			assert.False(t, matched, "both a valid PID and a workload name are required")
+		})
+	}
+}
+
+//nolint:tparallel // owned-child cleanup must finish before the parent looks up its reaped PID
+func TestIsTrackedToolHiveProxyForWorkload_ReapedProcess(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("process identity fixture requires Unix symlinks and process inspection")
+	}
+	var pid int
+	t.Run("owned child", func(t *testing.T) {
+		pid = startIdentityProcess(t, true, "start", "github", "--foreground")
+	})
+	require.Positive(t, pid)
+	// The subtest's cleanup kills and reaps the child before looking up its PID.
+	matched, err := IsTrackedToolHiveProxyForWorkload(pid, "github")
+	require.Error(t, err)
+	assert.False(t, matched, "a stale PID must not identify a workload supervisor")
+}
+
+func TestIsTrackedToolHiveProxyForWorkload_MetadataErrors(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name       string
+		env        []string
+		environErr bool
+	}{
+		{
+			name:       "environment unavailable",
+			env:        []string{ToolHiveDetachedEnv + "=" + ToolHiveDetachedValue},
+			environErr: true,
+		},
+		{
+			name: "detached command line unavailable",
+			env:  []string{ToolHiveDetachedEnv + "=" + ToolHiveDetachedValue},
+		},
+		{name: "foreground command line unavailable"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			metadata := mocks.NewMockProcessMetadata(gomock.NewController(t))
+			metadataErr := errors.New("process metadata unavailable")
+			if tt.environErr {
+				metadata.EXPECT().Environ().Return(tt.env, metadataErr)
+			} else {
+				gomock.InOrder(
+					metadata.EXPECT().Environ().Return(tt.env, nil),
+					metadata.EXPECT().Cmdline().Return("/usr/bin/thv start github --foreground", metadataErr),
+				)
+			}
+
+			matched, err := isTrackedToolHiveProxyForWorkload(metadata, "github")
+			require.ErrorIs(t, err, metadataErr)
+			assert.False(t, matched, "unreadable identity must not authorize stopping a process")
+		})
+	}
 }
 
 func TestIsTrackedToolHiveProxyForWorkload_ForegroundDoesNotRelaxPortIdentity(t *testing.T) {

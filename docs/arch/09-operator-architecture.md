@@ -576,6 +576,14 @@ configuration and CA projection use this startup snapshot without reading the
 environment during reconciliation. Changing the defaults requires restarting the
 operator; the new settings apply as workloads reconcile.
 
+Direct Go callers of `vmcpconfig.NewConverter` must pass global defaults through
+`WithDefaultRedisConfig`. Previously, conversion read those defaults from the
+environment; a two-argument constructor call now uses only explicit session
+storage. Load and validate the defaults once at application startup with
+`controllerutil.LoadDefaultRedisConfigFromEnv`, handle its error, and pass the
+result to the converter option. The operator already forwards this snapshot
+through `VirtualMCPServerReconciler`, preserving its Kubernetes Redis fallback.
+
 The operator renders the existing session TLS configuration and projects the CA
 into the proxy runner or vMCP container. It does not load the CA into its own
 process or transfer it between namespaces. The existing configuration checksum

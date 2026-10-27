@@ -167,13 +167,8 @@ func TestRedisStorage_ExchangeGrantAlreadyExpiredCreate(t *testing.T) {
 
 	g := contractGrant("sig-1")
 	g.ExpiresAt = contractEpoch.Add(-time.Hour)
-	g.SourceExpiresAt = contractEpoch.Add(-time.Hour)
-	require.NoError(t, s.CreateExchangeGrant(ctx, g))
-
-	recordKey := redisKey(s.keyPrefix, KeyTypeExchangeGrant, "sig-1")
-	assert.Equal(t, time.Millisecond, mr.TTL(recordKey), "an expired record gets the 1 ms TTL floor")
-	assert.Equal(t, 0, countKeysWithPrefix(mr, s.keyPrefix+KeyTypeAssertionJWT+":"),
-		"a marker whose window has passed is not written")
+	require.Error(t, s.CreateExchangeGrant(ctx, g))
+	assert.Equal(t, 0, countKeysWithPrefix(mr, s.keyPrefix), "a refused create writes no keys")
 
 	_, err := s.GetExchangeGrant(ctx, "sig-1")
 	assert.ErrorIs(t, err, ErrNotFound)

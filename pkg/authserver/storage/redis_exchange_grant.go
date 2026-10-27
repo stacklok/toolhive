@@ -6,6 +6,7 @@ package storage
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"time"
@@ -147,7 +148,8 @@ func exchangeGrantTTLMillis(deadline, now time.Time) int64 {
 
 // CreateExchangeGrant stores g and, for a top-level grant, its replay marker in
 // one script. See ExchangeGrantStorage for the contract. TTLs and the marker
-// liveness cutoff come from the store clock, never the wall clock.
+// liveness cutoff come from the store clock, never the wall clock. A grant whose
+// ExpiresAt is already past by the store clock is refused before the script runs.
 //
 // The marker window follows Redis's own TTL: the script checks EXISTS, and Go
 // only skips the marker once its window has already passed. The margin absorbs
@@ -159,9 +161,27 @@ func exchangeGrantTTLMillis(deadline, now time.Time) int64 {
 // reachable within about 1 ms plus network latency of expiry, or under clock
 // skew, and either outcome is safe. A hash with no data field is ErrAlreadyExists
 // here but ErrNotFound on Get.
+//
+// An error return does not prove nothing was written. The script is atomic on
+// the server, but if the connection fails after Redis ran it, the caller sees
+// an error while the record and its marker exist. The marker makes a second
+// create for the same jti fail, so a retry is safe but will not succeed.
+//
+// The marker is only as durable as the Redis deployment. Redis replicates
+// asynchronously, so a failover to a replica that had not yet received the
+// write loses the marker, and the same subject token could be exchanged again
+// until SourceExpiresAt + ExchangeGrantMarkerMargin. WAIT and AOF narrow this
+// window but do not close it. Operators who need to bound it set
+// min-replicas-to-write and min-replicas-max-lag, or use a store that
+// acknowledges writes only once they are durable.
 func (s *RedisStorage) CreateExchangeGrant(ctx context.Context, g *ExchangeGrant) error {
 	if err := validateExchangeGrantShape(g); err != nil {
 		return err
+	}
+
+	now := s.now()
+	if now.After(g.ExpiresAt) {
+		return errors.New("exchange grant is already expired")
 	}
 
 	data, err := json.Marshal(exchangeGrantRecord{
@@ -181,10 +201,8 @@ func (s *RedisStorage) CreateExchangeGrant(ctx context.Context, g *ExchangeGrant
 		return fmt.Errorf("failed to marshal exchange grant: %w", err)
 	}
 
-	now := s.now()
-	// An already-expired record still gets a 1 ms TTL, as the memory backend
-	// accepts it and Get then reports it not found.
-	recordTTL := max(exchangeGrantTTLMillis(g.ExpiresAt, now), 1)
+	// ExpiresAt is not past (checked above), so the TTL is at least the slack.
+	recordTTL := exchangeGrantTTLMillis(g.ExpiresAt, now)
 
 	keys := []string{redisKey(s.keyPrefix, KeyTypeExchangeGrant, g.Signature)}
 	var markerTTL int64

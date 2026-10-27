@@ -1184,8 +1184,11 @@ type ExchangeGrantStorage interface {
 	//
 	// It returns fosite.ErrJTIKnown if (g.SourceIssuer, g.SourceJTI) was already
 	// recorded, and ErrAlreadyExists if a grant with g.Signature already exists.
-	// A failed call writes nothing, so the caller can retry with the same record.
-	// Other failures are returned as-is.
+	// A call refused for its shape, ErrJTIKnown or ErrAlreadyExists writes
+	// nothing. After any other error a networked backend may or may not have
+	// written, so callers must not treat an error as proof of absence. The replay
+	// marker is what makes a retry safe: a second create for the same jti is
+	// refused. Other failures are returned as-is.
 	//
 	// A create after the ExpiresAt of an existing grant with the same signature
 	// may succeed or return ErrAlreadyExists, depending on when the backend

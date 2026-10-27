@@ -223,13 +223,13 @@ func isStorageVersionMigratorEnabled() (bool, error) {
 	return enabled, nil
 }
 
-// setupEmbeddedAuthCABundleFieldIndex sets up the shared CA ConfigMap reference index.
-func setupEmbeddedAuthCABundleFieldIndex(mgr ctrl.Manager) error {
+// setupEmbeddedAuthConfigMapRefFieldIndex sets up the shared embedded-auth ConfigMap reference index.
+func setupEmbeddedAuthConfigMapRefFieldIndex(mgr ctrl.Manager) error {
 	if err := mgr.GetFieldIndexer().IndexField(
 		context.Background(),
 		&mcpv1beta1.MCPExternalAuthConfig{},
-		controllers.EmbeddedAuthCABundleConfigMapIndex,
-		controllers.IndexEmbeddedAuthCABundleConfigMaps,
+		controllers.EmbeddedAuthConfigMapRefIndex,
+		controllers.IndexEmbeddedAuthConfigMapRefs,
 	); err != nil {
 		return fmt.Errorf("index MCPExternalAuthConfig CA bundle references: %w", err)
 	}
@@ -298,7 +298,7 @@ func setupGroupRefFieldIndexes(mgr ctrl.Manager) error {
 // imagePullSecretsDefaults are merged with per-CR imagePullSecrets when
 // reconcilers construct workloads.
 func setupServerControllers(mgr ctrl.Manager, imagePullSecretsDefaults imagepullsecrets.Defaults) error {
-	if err := setupEmbeddedAuthCABundleFieldIndex(mgr); err != nil {
+	if err := setupEmbeddedAuthConfigMapRefFieldIndex(mgr); err != nil {
 		return err
 	}
 	if err := setupGroupRefFieldIndexes(mgr); err != nil {

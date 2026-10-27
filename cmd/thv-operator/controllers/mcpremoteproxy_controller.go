@@ -1987,17 +1987,17 @@ func (r *MCPRemoteProxyReconciler) podTemplateMetadataNeedsUpdate(
 
 	configName := ctrlutil.EmbeddedAuthServerConfigName(proxy.Spec.ExternalAuthConfigRef, proxy.Spec.AuthServerRef)
 	if configName != "" {
-		caChecksum, err := ctrlutil.EmbeddedAuthServerCABundleChecksum(ctx, r.Client, proxy.Namespace, configName)
+		caChecksum, err := ctrlutil.EmbeddedAuthServerConfigMapChecksum(ctx, r.Client, proxy.Namespace, configName)
 		if err != nil {
 			log.FromContext(ctx).Error(err, "Failed to calculate auth server CA checksum")
 			return true
 		}
 		if caChecksum != "" {
-			expectedPodTemplateAnnotations[ctrlutil.AuthServerCABundleChecksumAnnotation] = caChecksum
+			expectedPodTemplateAnnotations[ctrlutil.AuthServerConfigMapChecksumAnnotation] = caChecksum
 		}
 	}
 
-	const caChecksumKey = ctrlutil.AuthServerCABundleChecksumAnnotation
+	const caChecksumKey = ctrlutil.AuthServerConfigMapChecksumAnnotation
 	actualCAChecksum, actualCAChecksumSet := deployment.Spec.Template.Annotations[caChecksumKey]
 	expectedCAChecksum, expectedCAChecksumSet := expectedPodTemplateAnnotations[caChecksumKey]
 	if actualCAChecksumSet != expectedCAChecksumSet || actualCAChecksum != expectedCAChecksum {
@@ -2458,7 +2458,7 @@ func (r *MCPRemoteProxyReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		).
 		Watches(
 			&corev1.ConfigMap{},
-			handler.EnqueueRequestsFromMapFunc(r.mapAuthServerCABundleConfigMapToMCPRemoteProxy),
+			handler.EnqueueRequestsFromMapFunc(r.mapAuthServerConfigMapToMCPRemoteProxy),
 			builder.WithPredicates(configMapDataChangedPredicate()),
 		).
 		Complete(r)

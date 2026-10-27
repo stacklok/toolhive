@@ -21,7 +21,7 @@
   "rules": [
     "The ToolHive CLI binary is `thv`. Install it with `brew install stacklok/tap/thv` or `winget install stacklok.thv`.",
     "`thv skill` and `thv ai-plugin` commands go through the ToolHive API, so start `thv serve` first.",
-    "Kubernetes resources use apiVersion `toolhive.stacklok.dev/v1beta1`. Install the `toolhive-operator-crds` Helm chart before the `toolhive-operator` chart.",
+    "ToolHive custom resources use apiVersion `toolhive.stacklok.dev/v1beta1`, except `MCPWebhookConfig`, which uses `toolhive.stacklok.dev/v1alpha1`. Install the `toolhive-operator-crds` Helm chart before the `toolhive-operator` chart.",
     "Store credentials with `thv secret set` and reference them by name rather than passing tokens inline with `-e`.",
     "End-user guides and reference live at docs.stacklok.com/toolhive."
   ]

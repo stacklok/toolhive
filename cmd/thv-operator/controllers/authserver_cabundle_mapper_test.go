@@ -48,17 +48,17 @@ func TestMCPRemoteProxyCABundleChecksumDrift(t *testing.T) {
 	r := &MCPRemoteProxyReconciler{Client: c, Scheme: scheme, PlatformDetector: ctrlutil.NewSharedPlatformDetector()}
 	deployment := r.deploymentForMCPRemoteProxy(t.Context(), proxy, "run")
 	require.NotNil(t, deployment)
-	checksum := deployment.Spec.Template.Annotations[ctrlutil.AuthServerCABundleChecksumAnnotation]
+	checksum := deployment.Spec.Template.Annotations[ctrlutil.AuthServerConfigMapChecksumAnnotation]
 	require.NotEmpty(t, checksum)
 	assert.False(t, r.podTemplateMetadataNeedsUpdate(t.Context(), deployment, proxy, "run"))
 	cm.Data["ca.crt"] = string(mapperTestCertificatePEM(t))
 	require.NoError(t, c.Update(t.Context(), cm))
 	assert.True(t, r.podTemplateMetadataNeedsUpdate(t.Context(), deployment, proxy, "run"))
-	deployment.Spec.Template.Annotations[ctrlutil.AuthServerCABundleChecksumAnnotation] = "stale"
+	deployment.Spec.Template.Annotations[ctrlutil.AuthServerConfigMapChecksumAnnotation] = "stale"
 	assert.True(t, r.podTemplateMetadataNeedsUpdate(t.Context(), deployment, proxy, "run"))
-	newChecksum, err := ctrlutil.EmbeddedAuthServerCABundleChecksum(t.Context(), c, "default", "auth")
+	newChecksum, err := ctrlutil.EmbeddedAuthServerConfigMapChecksum(t.Context(), c, "default", "auth")
 	require.NoError(t, err)
-	deployment.Spec.Template.Annotations[ctrlutil.AuthServerCABundleChecksumAnnotation] = newChecksum
+	deployment.Spec.Template.Annotations[ctrlutil.AuthServerConfigMapChecksumAnnotation] = newChecksum
 	assert.False(t, r.podTemplateMetadataNeedsUpdate(t.Context(), deployment, proxy, "run"))
 	auth.Spec.EmbeddedAuthServer.UpstreamProviders[0].OIDCConfig.CABundleRef = nil
 	require.NoError(t, c.Update(t.Context(), auth))
@@ -86,7 +86,7 @@ func TestMCPServerCABundleChecksumDrift(t *testing.T) {
 	r := newTestMCPServerReconciler(c, scheme, kubernetes.PlatformKubernetes)
 	deployment, err := r.deploymentForMCPServer(t.Context(), server, "run")
 	require.NoError(t, err)
-	checksum := deployment.Spec.Template.Annotations[ctrlutil.AuthServerCABundleChecksumAnnotation]
+	checksum := deployment.Spec.Template.Annotations[ctrlutil.AuthServerConfigMapChecksumAnnotation]
 	require.NotEmpty(t, checksum)
 	assert.False(t, r.deploymentNeedsUpdate(t.Context(), deployment, server, "run"),
 		"matching checksum must not be reported as drift")
@@ -98,10 +98,10 @@ func TestMCPServerCABundleChecksumDrift(t *testing.T) {
 	assert.True(t, r.deploymentNeedsUpdate(t.Context(), deployment, server, "run"),
 		"changed CA bundle content must be reported as drift")
 
-	rotated, err := ctrlutil.EmbeddedAuthServerCABundleChecksum(t.Context(), c, "default", "auth")
+	rotated, err := ctrlutil.EmbeddedAuthServerConfigMapChecksum(t.Context(), c, "default", "auth")
 	require.NoError(t, err)
 	require.NotEqual(t, checksum, rotated)
-	deployment.Spec.Template.Annotations[ctrlutil.AuthServerCABundleChecksumAnnotation] = rotated
+	deployment.Spec.Template.Annotations[ctrlutil.AuthServerConfigMapChecksumAnnotation] = rotated
 
 	// A foreign annotation written by someone else (kubectl rollout restart and
 	// friends) must not be reverted as drift -- see #6344.
@@ -114,7 +114,7 @@ func TestMCPServerCABundleChecksumDrift(t *testing.T) {
 		"removing caBundleRef must be reported as drift so the stale annotation is cleared")
 }
 
-func TestMapAuthServerCABundleConfigMapToMCPServer(t *testing.T) {
+func TestMapAuthServerConfigMapToMCPServer(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
 		name               string
@@ -133,15 +133,15 @@ func TestMapAuthServerCABundleConfigMapToMCPServer(t *testing.T) {
 			cm := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "ca", Namespace: tc.configMapNamespace}}
 			server := v1beta1test.NewMCPServer("server", tc.serverNamespace, v1beta1test.WithExternalAuthConfigRef("auth"))
 			objects := []client.Object{cm, tc.config, server}
-			c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).WithIndex(&mcpv1beta1.MCPExternalAuthConfig{}, EmbeddedAuthCABundleConfigMapIndex, IndexEmbeddedAuthCABundleConfigMaps).WithIndex(&mcpv1beta1.MCPServer{}, EmbeddedAuthConfigIndex, indexMCPServerEmbeddedAuthConfig).Build()
+			c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).WithIndex(&mcpv1beta1.MCPExternalAuthConfig{}, EmbeddedAuthConfigMapRefIndex, IndexEmbeddedAuthConfigMapRefs).WithIndex(&mcpv1beta1.MCPServer{}, EmbeddedAuthConfigIndex, indexMCPServerEmbeddedAuthConfig).Build()
 			r := &MCPServerReconciler{Client: c}
-			requests := r.mapAuthServerCABundleConfigMapToMCPServer(t.Context(), cm)
+			requests := r.mapAuthServerConfigMapToMCPServer(t.Context(), cm)
 			assert.Len(t, requests, tc.want)
 		})
 	}
 }
 
-func TestMapAuthServerCABundleConfigMapToMCPRemoteProxy(t *testing.T) {
+func TestMapAuthServerConfigMapToMCPRemoteProxy(t *testing.T) {
 	t.Parallel()
 	scheme := testutil.NewScheme(t)
 	auth := mapperCABundleConfig("ca")
@@ -149,10 +149,10 @@ func TestMapAuthServerCABundleConfigMapToMCPRemoteProxy(t *testing.T) {
 	proxy2 := v1beta1test.NewMCPRemoteProxy("proxy-two", "default", v1beta1test.WithRemoteProxyExternalAuthConfigRef("auth"))
 	cm := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "ca", Namespace: "default"}}
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(cm, auth, proxy1, proxy2).
-		WithIndex(&mcpv1beta1.MCPExternalAuthConfig{}, EmbeddedAuthCABundleConfigMapIndex, IndexEmbeddedAuthCABundleConfigMaps).
+		WithIndex(&mcpv1beta1.MCPExternalAuthConfig{}, EmbeddedAuthConfigMapRefIndex, IndexEmbeddedAuthConfigMapRefs).
 		WithIndex(&mcpv1beta1.MCPRemoteProxy{}, EmbeddedAuthConfigIndex, indexMCPRemoteProxyEmbeddedAuthConfig).Build()
 	r := &MCPRemoteProxyReconciler{Client: c}
-	requests := r.mapAuthServerCABundleConfigMapToMCPRemoteProxy(t.Context(), cm)
+	requests := r.mapAuthServerConfigMapToMCPRemoteProxy(t.Context(), cm)
 	assert.Len(t, requests, 2)
 }
 
@@ -170,18 +170,18 @@ func TestVirtualMCPServerCABundleChecksumDrift(t *testing.T) {
 	withBundle := r.deploymentForVirtualMCPServer(t.Context(), vmcp, "run", "checksum-a", nil, nil)
 	require.NotNil(t, withBundle)
 	assert.Equal(t, "checksum-a",
-		withBundle.Spec.Template.Annotations[ctrlutil.AuthServerCABundleChecksumAnnotation],
+		withBundle.Spec.Template.Annotations[ctrlutil.AuthServerConfigMapChecksumAnnotation],
 		"the CA checksum must reach the pod template, otherwise a rotation never rolls out")
 
 	rotated := r.deploymentForVirtualMCPServer(t.Context(), vmcp, "run", "checksum-b", nil, nil)
 	require.NotNil(t, rotated)
 	assert.NotEqual(t,
-		withBundle.Spec.Template.Annotations[ctrlutil.AuthServerCABundleChecksumAnnotation],
-		rotated.Spec.Template.Annotations[ctrlutil.AuthServerCABundleChecksumAnnotation],
+		withBundle.Spec.Template.Annotations[ctrlutil.AuthServerConfigMapChecksumAnnotation],
+		rotated.Spec.Template.Annotations[ctrlutil.AuthServerConfigMapChecksumAnnotation],
 		"a rotated bundle must produce a different pod template")
 
 	none := r.deploymentForVirtualMCPServer(t.Context(), vmcp, "run", "", nil, nil)
 	require.NotNil(t, none)
-	assert.NotContains(t, none.Spec.Template.Annotations, ctrlutil.AuthServerCABundleChecksumAnnotation,
+	assert.NotContains(t, none.Spec.Template.Annotations, ctrlutil.AuthServerConfigMapChecksumAnnotation,
 		"no CA bundle configured must not stamp an empty annotation")
 }

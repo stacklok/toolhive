@@ -29,6 +29,7 @@ import (
 	verifiermocks "github.com/stacklok/toolhive/pkg/skills/verifier/mocks"
 	"github.com/stacklok/toolhive/pkg/storage"
 	"github.com/stacklok/toolhive/pkg/storage/sqlite"
+	"github.com/stacklok/toolhive/test/testkit/osperm"
 )
 
 // newLockTestService builds a service backed by a real (temp-file) SQLite
@@ -789,6 +790,7 @@ func TestInstallProjectScope_DependencyJoinsParentGroup(t *testing.T) {
 //
 //nolint:paralleltest // uses t.Setenv via newLockTestService, incompatible with t.Parallel
 func TestUninstall_LockWriteFailureAbortsBeforeDestruction(t *testing.T) {
+	osperm.SkipIfRoot(t)
 	gr, fx := newGitResolverMock(t)
 	fx.register("my-skill", gitSkill("my-skill"))
 	svc, projectRoot := newLockTestService(t, gr)

@@ -10,12 +10,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"gopkg.in/yaml.v3"
+	"go.yaml.in/yaml/v3"
 
 	"github.com/stacklok/toolhive/pkg/client"
 	"github.com/stacklok/toolhive/pkg/config"
@@ -143,15 +142,15 @@ func TestRunLLMSetup_NoDetectedTools(t *testing.T) {
 
 func TestRunLLMSetup_PartialFailure(t *testing.T) {
 	t.Parallel()
-	if runtime.GOOS == "windows" {
-		t.Skip("permission-based failure injection is not reliable on Windows")
-	}
-	// Two tools detected; claude-code directory is read-only (Apply fails).
-	// gemini-cli directory is writable (Apply succeeds) and must be persisted.
+	// Two tools detected; claude-code's settings file is malformed JSON, so
+	// Apply fails on any OS and for any user (unlike a read-only directory,
+	// which root writes through). gemini-cli's Apply succeeds and must be
+	// persisted.
 	dir := t.TempDir()
 
 	claudeDir := filepath.Join(dir, ".claude")
-	require.NoError(t, os.MkdirAll(claudeDir, 0o500)) // no write
+	require.NoError(t, os.MkdirAll(claudeDir, 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(claudeDir, "settings.json"), []byte("{not json"), 0o600))
 	geminiDir := filepath.Join(dir, ".gemini")
 	require.NoError(t, os.MkdirAll(geminiDir, 0o700))
 

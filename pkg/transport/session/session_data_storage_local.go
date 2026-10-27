@@ -60,6 +60,21 @@ func (s *LocalSessionDataStorage) Load(_ context.Context, id string) (map[string
 	return maps.Clone(entry.metadata), nil
 }
 
+// LoadMetadata retrieves session metadata without refreshing its last-access
+// timestamp. Returns ErrSessionNotFound if the session does not exist.
+func (s *LocalSessionDataStorage) LoadMetadata(_ context.Context, id string) (map[string]string, error) {
+	if id == "" {
+		return nil, fmt.Errorf("cannot load session data with empty ID")
+	}
+	s.mu.Lock()
+	entry, ok := s.sessions[id]
+	s.mu.Unlock()
+	if !ok {
+		return nil, ErrSessionNotFound
+	}
+	return maps.Clone(entry.metadata), nil
+}
+
 // Create creates session metadata only if the session ID does not already exist.
 // Returns (true, nil) if created, (false, nil) if the key already existed.
 func (s *LocalSessionDataStorage) Create(_ context.Context, id string, metadata map[string]string) (bool, error) {

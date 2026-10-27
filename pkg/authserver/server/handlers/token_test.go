@@ -23,6 +23,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/stacklok/toolhive/pkg/authserver/server"
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 )
@@ -537,4 +538,111 @@ func simulateAuthorizeFlow(t *testing.T, handler *Handler, storState *testStorag
 	require.NotEmpty(t, code, "callback redirect should include authorization code")
 
 	return code
+}
+
+func TestTokenHandler_CIMDRateLimited(t *testing.T) {
+	t.Parallel()
+	handler, _, _ := handlerTestSetup(t,
+		withGetClientErrorAfterCalls(0, fosite.ErrNotFound.WithWrap(storage.ErrCIMDRateLimited)))
+
+	form := url.Values{
+		"grant_type": {"authorization_code"},
+		"client_id":  {"https://client.example.com/metadata"},
+		"code":       {"some-code"},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/oauth/token", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+
+	handler.TokenHandler(rec, req)
+
+	assertOAuthRateLimited(t, rec)
+}
+
+// markRecordingStorage records, for every GetClient, whether the context it
+// received carries the persisted-client-fallback mark, then reports not found.
+type markRecordingStorage struct {
+	*storage.MemoryStorage
+	mu   sync.Mutex
+	seen []bool
+}
+
+func (s *markRecordingStorage) GetClient(ctx context.Context, _ string) (fosite.Client, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.seen = append(s.seen, storage.PersistedClientFallbackAllowed(ctx))
+	return nil, fosite.ErrNotFound
+}
+
+func (s *markRecordingStorage) recorded() []bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]bool(nil), s.seen...)
+}
+
+// TestPersistedClientFallbackMark_OnlyTokenEndpointSetsIt pins the scope of the
+// persisted-row fallback: only /oauth/token marks its context.
+func TestPersistedClientFallbackMark_OnlyTokenEndpointSetsIt(t *testing.T) {
+	t.Parallel()
+
+	const clientID = "https://client.example.com/metadata"
+	tests := []struct {
+		name     string
+		wantMark bool
+		call     func(h *Handler, rec *httptest.ResponseRecorder)
+	}{
+		{
+			name:     "token endpoint sets the mark",
+			wantMark: true,
+			call: func(h *Handler, rec *httptest.ResponseRecorder) {
+				form := url.Values{"grant_type": {"refresh_token"}, "client_id": {clientID}, "refresh_token": {"x"}}
+				req := httptest.NewRequest(http.MethodPost, "/oauth/token", strings.NewReader(form.Encode()))
+				req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+				h.TokenHandler(rec, req)
+			},
+		},
+		{
+			name: "authorize endpoint does not set the mark",
+			call: func(h *Handler, rec *httptest.ResponseRecorder) {
+				req := httptest.NewRequest(http.MethodGet, "/oauth/authorize?client_id="+url.QueryEscape(clientID), nil)
+				h.AuthorizeHandler(rec, req)
+			},
+		},
+		{
+			name: "device authorization endpoint does not set the mark",
+			call: func(h *Handler, rec *httptest.ResponseRecorder) {
+				form := url.Values{"client_id": {clientID}, "scope": {"openid"}}
+				req := httptest.NewRequest(http.MethodPost, "/oauth/device_authorization", strings.NewReader(form.Encode()))
+				req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+				h.DeviceAuthorizationHandler(rec, req)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			mem := storage.NewMemoryStorage()
+			t.Cleanup(func() { _ = mem.Close() })
+			stor := &markRecordingStorage{MemoryStorage: mem}
+			fositeConfig := &fosite.Config{}
+			provider := fosite.NewOAuth2Provider(stor, fositeConfig)
+			fositeConfig.GetSecretsHasher(context.Background())
+			h, err := NewHandler(provider, &server.AuthorizationServerConfig{
+				Config:            fositeConfig,
+				ScopesSupported:   []string{"openid"},
+				DeviceFlowEnabled: true,
+			}, stor, nil)
+			require.NoError(t, err)
+
+			tt.call(h, httptest.NewRecorder())
+
+			seen := stor.recorded()
+			require.NotEmpty(t, seen, "the endpoint must have looked the client up")
+			for _, marked := range seen {
+				assert.Equal(t, tt.wantMark, marked)
+			}
+		})
+	}
 }

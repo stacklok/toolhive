@@ -50,7 +50,7 @@ func TestCreateSquidContainer_Basics(t *testing.T) {
 
 	c := &Client{
 		api:          api,
-		imageManager: &fakeImageManager{},
+		imageManager: &fakeImageManager{pulledImages: map[string]struct{}{defaultSquidImage: {}}},
 	}
 
 	_, err := createSquidContainer(

@@ -9,7 +9,7 @@ import (
 	"testing"
 
 	"go.uber.org/mock/gomock"
-	"gopkg.in/yaml.v3"
+	"go.yaml.in/yaml/v3"
 
 	"github.com/stacklok/toolhive-core/env/mocks"
 	thvjson "github.com/stacklok/toolhive/pkg/json"

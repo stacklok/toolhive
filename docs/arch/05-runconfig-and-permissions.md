@@ -538,6 +538,45 @@ When `isolate_network: true` in RunConfig:
 
 **Implementation**: `pkg/container/docker/squid.go`, `pkg/networking/`
 
+##### Host gateway protection (Docker and Podman)
+
+For isolated bridge workloads, both Squid and Envoy block host access by default,
+including when outbound permissions allow all traffic. The shared protected set
+contains all daemon bridge gateway IPs and the names `host.docker.internal`,
+`gateway.docker.internal`, and `host.containers.internal`. On Podman it also
+contains every address mapped to those names in the running DNS sidecar's
+`/etc/hosts`; these addresses need not be bridge gateways and are not a fixed
+link-local IP or subnet. Squid checks destination IPs before outbound allows;
+Envoy applies both authority matching and resolved-address filtering.
+
+Podman discovery reads the running DNS sidecar's `/etc/hosts` through the runtime
+archive API before proxy or MCP setup. ToolHive uses `dockurr/dnsmasq:latest` in
+bridge mode with the same endpoint map as its proxies, without mounts or extra
+hosts entries. Workload mounts do not propagate to sidecars. Runtime-generated
+hosts are a prerequisite: ToolHive does not configure image-owned hosts or
+disable runtime hosts management. Rootless sidecars use the same runtime host
+endpoint; all bridge gateways cover rootful Podman's gateway selection.
+Proxy image selection and image entrypoints are unchanged.
+
+`host.containers.internal` must be present with a valid address;
+`host.docker.internal` and `gateway.docker.internal` are protected when present. Missing/malformed/oversized hosts data or runtime read failures
+fail deployment with an error, **even with `--allow-docker-gateway`**. The archive
+read is bounded in size and time, with no host DNS, process-host filesystem, or
+hardcoded-address fallback. No extra discovery container is created.
+
+`--allow-docker-gateway` explicitly allows the same hostnames and exact IPs on
+**any port**, for Podman as well as Docker. Merely adding a host alias to an
+outbound allowlist does not override the default host deny. Previously, Podman
+host aliases resolving to non-bridge IPs could escape that protection; they now
+require this explicit opt-in.
+
+This policy is a **deployment-time snapshot**, taken after DNS startup (including
+any startup network recreation), not continuous runtime discovery. Redeploy
+isolated workloads after changing runtime host mappings, rootless network
+configuration, or bridge networks. Restarting an existing container alone does
+not refresh policy. Docker retains its bridge-discovery path without the hosts
+archive read; Kubernetes uses its separate network policy path.
+
 ##### Network isolation requires bridge networking
 
 Network isolation is a bridge-topology construct: it builds a per-workload

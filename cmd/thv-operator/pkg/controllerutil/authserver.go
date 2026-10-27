@@ -72,8 +72,10 @@ const (
 	// AuthServerTrustedIssuerCABundleMountPath is the base path for trusted issuer CA bundles.
 	AuthServerTrustedIssuerCABundleMountPath = "/etc/toolhive/authserver/issuer-ca"
 
-	// AuthServerCABundleChecksumAnnotation triggers a rollout when a selected CA bundle changes.
-	AuthServerCABundleChecksumAnnotation = "toolhive.stacklok.dev/authserver-ca-checksum"
+	// AuthServerConfigMapChecksumAnnotation triggers a rollout when a selected
+	// auth server ConfigMap (today: a CA bundle) changes. The value keeps its
+	// original "ca" name; changing it would roll every embedded-auth pod on upgrade.
+	AuthServerConfigMapChecksumAnnotation = "toolhive.stacklok.dev/authserver-ca-checksum"
 
 	// AuthServerSPIFFEBundleVolumePrefix is the prefix for SPIFFE trust-bundle ConfigMap volumes.
 	AuthServerSPIFFEBundleVolumePrefix = "authserver-spiffe-bundle-"
@@ -455,10 +457,10 @@ func GenerateAuthServerConfigByName(
 	return volumes, volumeMounts, envVars, nil
 }
 
-// EmbeddedAuthServerCABundleChecksum returns a checksum of the selected bytes in all
+// EmbeddedAuthServerConfigMapChecksum returns a checksum of the selected bytes in all
 // CA ConfigMaps used by an embedded auth server. ConfigMap metadata and unselected
 // keys are deliberately excluded.
-func EmbeddedAuthServerCABundleChecksum(
+func EmbeddedAuthServerConfigMapChecksum(
 	ctx context.Context, c client.Client, namespace, configName string,
 ) (string, error) {
 	config, err := GetExternalAuthConfigByName(ctx, c, namespace, configName)
@@ -468,13 +470,13 @@ func EmbeddedAuthServerCABundleChecksum(
 	if config.Spec.Type != mcpv1beta1.ExternalAuthTypeEmbeddedAuthServer || config.Spec.EmbeddedAuthServer == nil {
 		return "", nil
 	}
-	return EmbeddedAuthServerCABundleChecksumForConfig(ctx, c, namespace, config.Spec.EmbeddedAuthServer)
+	return EmbeddedAuthServerConfigMapChecksumForConfig(ctx, c, namespace, config.Spec.EmbeddedAuthServer)
 }
 
-// EmbeddedAuthServerCABundleChecksumForConfig returns a checksum of the selected
+// EmbeddedAuthServerConfigMapChecksumForConfig returns a checksum of the selected
 // bytes in all CA ConfigMaps used by an inline embedded auth server. ConfigMap
 // metadata and unselected keys are deliberately excluded.
-func EmbeddedAuthServerCABundleChecksumForConfig(
+func EmbeddedAuthServerConfigMapChecksumForConfig(
 	ctx context.Context, c client.Client, namespace string, config *mcpv1beta1.EmbeddedAuthServerConfig,
 ) (string, error) {
 	if config == nil {
@@ -1035,6 +1037,12 @@ func BuildAuthServerRunConfig(
 	}
 	config.Storage = storageCfg
 
+	registrationRateLimit, err := buildRegistrationRateLimitRunConfig(authConfig.RegistrationRateLimit)
+	if err != nil {
+		return nil, err
+	}
+	config.RegistrationRateLimit = registrationRateLimit
+
 	applySimpleAuthServerConfigFields(config, authConfig)
 
 	if err := validateDelegateClientsAndTrustedIssuers(config); err != nil {
@@ -1150,8 +1158,15 @@ func buildStorageRunConfig(
 	mcpServerName string,
 	authConfig *mcpv1beta1.EmbeddedAuthServerConfig,
 ) (*storage.RunConfig, error) {
-	if authConfig.Storage == nil || authConfig.Storage.Type == mcpv1beta1.AuthServerStorageTypeMemory {
+	if authConfig.Storage == nil {
 		return nil, nil
+	}
+	maxDCRClients := maxDCRClientsRunConfig(authConfig.Storage)
+	if authConfig.Storage.Type == mcpv1beta1.AuthServerStorageTypeMemory {
+		if maxDCRClients == nil {
+			return nil, nil
+		}
+		return &storage.RunConfig{Type: string(storage.TypeMemory), MaxDCRClients: maxDCRClients}, nil
 	}
 
 	if authConfig.Storage.Type != mcpv1beta1.AuthServerStorageTypeRedis {
@@ -1212,9 +1227,48 @@ func buildStorageRunConfig(
 	}
 
 	return &storage.RunConfig{
-		Type:        string(storage.TypeRedis),
-		RedisConfig: rc,
+		Type:          string(storage.TypeRedis),
+		RedisConfig:   rc,
+		MaxDCRClients: maxDCRClients,
 	}, nil
+}
+
+// maxDCRClientsRunConfig converts the CRD's DCR client cap. Nil keeps the auth
+// server's default; the CRD schema already rejects a negative value.
+func maxDCRClientsRunConfig(cfg *mcpv1beta1.AuthServerStorageConfig) *int {
+	if cfg.MaxDCRClients == nil {
+		return nil
+	}
+	n := int(*cfg.MaxDCRClients)
+	return &n
+}
+
+// buildRegistrationRateLimitRunConfig converts the CRD's /oauth/register token
+// bucket to the auth server's rate and burst. Nil keeps the auth server's
+// default. maxTokens is the burst and maxTokens/refillPeriod the sustained
+// rate, as for the MCPServer rate limits.
+func buildRegistrationRateLimitRunConfig(
+	b *mcpv1beta1.RateLimitBucket,
+) (*authserver.RegistrationRateLimitRunConfig, error) {
+	if b == nil {
+		return nil, nil
+	}
+	// Defense in depth: mirrors the CRD's Minimum and CEL rules for specs that
+	// did not go through admission (for example, a stale CRD).
+	if b.MaxTokens < 1 {
+		return nil, fmt.Errorf("registrationRateLimit.maxTokens must be >= 1, got %d", b.MaxTokens)
+	}
+	if b.RefillPeriod.Duration <= 0 {
+		return nil, fmt.Errorf("registrationRateLimit.refillPeriod must be positive, got %s", b.RefillPeriod.Duration)
+	}
+	rc := &authserver.RegistrationRateLimitRunConfig{
+		RequestsPerSecond: float64(b.MaxTokens) / b.RefillPeriod.Seconds(),
+		Burst:             int(b.MaxTokens),
+	}
+	if err := rc.Validate(); err != nil {
+		return nil, fmt.Errorf("registrationRateLimit: %w", err)
+	}
+	return rc, nil
 }
 
 // convertRedisTLSConfig converts CRD RedisTLSConfig to RunConfig.
@@ -1449,6 +1503,7 @@ func buildDCRUpstreamRunConfig(
 		DiscoveryURL:         dcr.DiscoveryURL,
 		RegistrationEndpoint: dcr.RegistrationEndpoint,
 		RotationKey:          dcr.RotationKey,
+		RegistrationProbe:    dcr.RegistrationProbe,
 		SoftwareID:           dcr.SoftwareID,
 		SoftwareStatement:    dcr.SoftwareStatement,
 	}

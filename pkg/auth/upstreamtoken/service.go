@@ -150,22 +150,23 @@ func (s *InProcessService) GetValidTokens(ctx context.Context, sessionID, provid
 // GetAllUpstreamCredentials returns access tokens and ID tokens for all upstream
 // providers in a session in a single storage round-trip. Expired access tokens
 // are refreshed transparently; providers whose access token cannot be refreshed
-// are included in the returned failed slice so downstream middleware can return
-// a clean 401 for the access-token use case. The IDToken on a returned entry is
+// are included in the returned failed map, keyed by provider name with the
+// refresh error as the value, so downstream middleware can return a clean 401
+// for the access-token use case. The IDToken on a returned entry is
 // the rotated ID token when a refresh produced one (OIDC Core 1.0 §12.2),
 // otherwise the original JWT captured at the initial OIDC login; it is not
 // independently validated for freshness and may be empty if the upstream login
 // never yielded one. An expired ID token also triggers a refresh (see
 // InProcessService); a failed ID-token-triggered refresh does not put the
-// provider in the failed slice, since its access token is still valid. Callers
+// provider in the failed map, since its access token is still valid. Callers
 // that PRESENT it as a credential must expect expiry to be rejected; callers
 // that only READ ITS CLAIMS are unaffected by expiry. See
 // Identity.UpstreamIDTokens for both consumers.
 //
-// Returns an empty map and nil failed slice (not error) for unknown sessions.
+// Returns an empty map and nil failed map (not error) for unknown sessions.
 func (s *InProcessService) GetAllUpstreamCredentials(
 	ctx context.Context, sessionID string,
-) (map[string]UpstreamCredential, []string, error) {
+) (map[string]UpstreamCredential, map[string]error, error) {
 	allTokens, err := s.storage.GetAllUpstreamTokens(ctx, sessionID)
 	if err != nil {
 		return nil, nil, fmt.Errorf("bulk read upstream tokens: %w", err)
@@ -176,7 +177,13 @@ func (s *InProcessService) GetAllUpstreamCredentials(
 	}
 
 	result := make(map[string]UpstreamCredential, len(allTokens))
-	var failed []string
+	var failed map[string]error
+	fail := func(providerName string, err error) {
+		if failed == nil {
+			failed = make(map[string]error)
+		}
+		failed[providerName] = err
+	}
 	// TODO(auth): Refresh providers in parallel using errgroup to avoid
 	// worst-case latency of N refreshes when multiple providers need refresh.
 	for providerName, tokens := range allTokens {
@@ -194,7 +201,7 @@ func (s *InProcessService) GetAllUpstreamCredentials(
 						"provider", providerName,
 						"error", idErr,
 					)
-					failed = append(failed, providerName)
+					fail(providerName, idErr)
 					continue
 				}
 				result[providerName] = *cred
@@ -215,7 +222,7 @@ func (s *InProcessService) GetAllUpstreamCredentials(
 				"provider", providerName,
 				"error", refreshErr,
 			)
-			failed = append(failed, providerName)
+			fail(providerName, refreshErr)
 			continue
 		}
 		// refreshOrFail carries through the rotated ID token when the provider

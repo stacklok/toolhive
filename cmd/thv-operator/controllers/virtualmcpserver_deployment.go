@@ -278,7 +278,7 @@ func (r *VirtualMCPServerReconciler) buildPodVolumesForVmcp(
 		volumeMounts = append(volumeMounts, authServerMounts...)
 	}
 
-	sessionTLSVolumes, sessionTLSMounts := ctrlutil.SessionRedisTLSVolumes(vmcp.Spec.SessionStorage)
+	sessionTLSVolumes, sessionTLSMounts := ctrlutil.SessionRedisTLSVolumesWithDefault(vmcp.Spec.SessionStorage, r.DefaultRedisConfig)
 	volumes = append(volumes, sessionTLSVolumes...)
 	volumeMounts = append(volumeMounts, sessionTLSMounts...)
 
@@ -520,8 +520,9 @@ func (*VirtualMCPServerReconciler) buildHMACSecretEnvVar(vmcp *mcpv1beta1.Virtua
 
 // buildRedisPasswordEnvVar returns the THV_SESSION_REDIS_PASSWORD env var when
 // sessionStorage.provider == "redis" and passwordRef is set, or when
-// TOOLHIVE_DEFAULT_REDIS_SECRET_NAME is set via the global default.
-func (*VirtualMCPServerReconciler) buildRedisPasswordEnvVar(vmcp *mcpv1beta1.VirtualMCPServer) []corev1.EnvVar {
+// session storage is absent and the injected global default references a password
+// Secret. Explicit storage never inherits a global password.
+func (r *VirtualMCPServerReconciler) buildRedisPasswordEnvVar(vmcp *mcpv1beta1.VirtualMCPServer) []corev1.EnvVar {
 	if vmcp.Spec.SessionStorage != nil {
 		if vmcp.Spec.SessionStorage.Provider == mcpv1beta1.SessionStorageProviderRedis &&
 			vmcp.Spec.SessionStorage.PasswordRef != nil {
@@ -542,7 +543,7 @@ func (*VirtualMCPServerReconciler) buildRedisPasswordEnvVar(vmcp *mcpv1beta1.Vir
 		return nil
 	}
 
-	def := ctrlutil.ReadDefaultRedisConfig()
+	def := r.DefaultRedisConfig
 	if def == nil || def.SecretName == "" {
 		return nil
 	}
@@ -571,11 +572,13 @@ func (r *VirtualMCPServerReconciler) buildOutgoingAuthEnvVars(
 		return env
 	}
 
-	// Mount secrets from discovered ExternalAuthConfigs (discovered mode)
-	if vmcp.Spec.OutgoingAuth.Source == OutgoingAuthSourceDiscovered {
-		discoveredSecrets := r.discoverExternalAuthConfigSecrets(ctx, vmcp, typedWorkloads)
-		env = append(env, discoveredSecrets...)
-	}
+	// Mount secrets for ExternalAuthConfigs referenced by workloads in the group.
+	// Runs in BOTH source modes, mirroring buildOutgoingAuthConfig, which embeds
+	// workload-referenced auth into the config in both. In inline mode that strategy
+	// still reaches the ConfigMap and names the secret env var the vMCP reads at
+	// startup, so gating this on discovered mode left the env var unmounted and
+	// crash-looped the pod (#6837).
+	env = append(env, r.discoverExternalAuthConfigSecrets(ctx, vmcp, typedWorkloads)...)
 
 	// Mount secrets from inline ExternalAuthConfigRefs
 	if vmcp.Spec.OutgoingAuth.Backends != nil {
@@ -745,8 +748,15 @@ func buildHeaderForwardManifestForEntry(entry *mcpv1beta1.MCPServerEntry) (strin
 	return string(out), nil
 }
 
-// discoverExternalAuthConfigSecrets discovers ExternalAuthConfigs from workloads in the group
-// and returns environment variables for their client secrets. This is used for discovered mode.
+// discoverExternalAuthConfigSecrets discovers ExternalAuthConfigs referenced by
+// workloads in the group (via spec.externalAuthConfigRef) and returns environment
+// variables for their secrets.
+//
+// This mirrors discoverExternalAuthConfigs, which embeds those workload-referenced
+// strategies into the vMCP config in BOTH source modes — including the skip for
+// backends that carry an inline override, whose strategy (and therefore whose
+// secret env var) wins instead. A backend is skipped per workload rather than per
+// config, so a config shared with a non-overridden workload is still mounted.
 func (r *VirtualMCPServerReconciler) discoverExternalAuthConfigSecrets(
 	ctx context.Context,
 	vmcp *mcpv1beta1.VirtualMCPServer,
@@ -781,6 +791,16 @@ func (r *VirtualMCPServerReconciler) discoverExternalAuthConfigSecrets(
 			workloadInfo, mcpServerMap, mcpRemoteProxyMap, mcpServerEntryMap)
 		if configName == "" {
 			continue
+		}
+
+		// Skip backends overridden inline — discoverExternalAuthConfigs leaves the
+		// workload-referenced strategy out of the config for those, so its secret
+		// would be mounted for a strategy that never runs. Checked before seenConfigs
+		// so a config another, non-overridden workload references is still mounted.
+		if vmcp.Spec.OutgoingAuth != nil && vmcp.Spec.OutgoingAuth.Backends != nil {
+			if _, overridden := vmcp.Spec.OutgoingAuth.Backends[workloadInfo.Name]; overridden {
+				continue
+			}
 		}
 
 		// Skip if we've already processed this ExternalAuthConfig
@@ -1058,7 +1078,7 @@ func (*VirtualMCPServerReconciler) buildPodTemplateMetadata(
 	// Use the standard checksum package helper for consistency
 	templateAnnotations := checksum.AddRunConfigChecksumToPodTemplate(nil, vmcpConfigChecksum)
 	if caBundleChecksum != "" {
-		templateAnnotations[ctrlutil.AuthServerCABundleChecksumAnnotation] = caBundleChecksum
+		templateAnnotations[ctrlutil.AuthServerConfigMapChecksumAnnotation] = caBundleChecksum
 	}
 
 	return templateLabels, templateAnnotations

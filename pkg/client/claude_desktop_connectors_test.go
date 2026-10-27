@@ -152,7 +152,7 @@ func TestConnectors_LeaveSameNameLocalEntryAlone(t *testing.T) {
 	})
 }
 
-//nolint:paralleltest // slog.SetDefault and managedPreferencesRoot are process-global
+//nolint:paralleltest // slog.SetDefault and the managed-source roots are process-global
 func TestAddConnector_WarnsWhenDesktopWillNotLoadIt(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -162,13 +162,10 @@ func TestAddConnector_WarnsWhenDesktopWillNotLoadIt(t *testing.T) {
 	}{
 		{name: "applied and unmanaged does not warn"},
 		{name: "another config applied", otherApply: true, wantWarn: "different saved configuration"},
-		{name: "managed profile present", managed: true, wantWarn: "managed-preferences profile"},
+		{name: "managed configuration present", managed: true, wantWarn: "managed configuration overrides"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if tc.managed && runtime.GOOS != "darwin" {
-				t.Skip("managed-preferences profiles are only detected on macOS")
-			}
 			cm, configPath := newConnectorManager(t)
 			if tc.otherApply {
 				metaPath := filepath.Join(filepath.Dir(configPath), "_meta.json")
@@ -178,11 +175,13 @@ func TestAddConnector_WarnsWhenDesktopWillNotLoadIt(t *testing.T) {
 			}
 			root := t.TempDir()
 			if tc.managed {
+				// Each platform's managed source, under a shared temp root.
 				require.NoError(t, os.WriteFile(filepath.Join(root, "com.anthropic.claudefordesktop.plist"), nil, 0o600))
+				writeFileUnder(t, root, []string{"claude-desktop", "managed-settings.json"})
 			}
-			previousRoot := managedPreferencesRoot
-			managedPreferencesRoot = root
-			t.Cleanup(func() { managedPreferencesRoot = previousRoot })
+			previousRoot, previousLinuxRoot := managedPreferencesRoot, linuxManagedSettingsRoot
+			managedPreferencesRoot, linuxManagedSettingsRoot = root, root
+			t.Cleanup(func() { managedPreferencesRoot, linuxManagedSettingsRoot = previousRoot, previousLinuxRoot })
 
 			var buf bytes.Buffer
 			previous := slog.Default()

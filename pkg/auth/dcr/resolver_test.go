@@ -1211,6 +1211,16 @@ func TestResolveDCRCredentials_RejectsInvalidInputs(t *testing.T) {
 			cache:      nil,
 			wantErrSub: "credential store is required",
 		},
+		{
+			name: "unknown registration probe",
+			req: &Request{
+				Issuer:               "https://example.com",
+				RegistrationEndpoint: "https://example.com/register",
+				RegistrationProbe:    "userinfo",
+			},
+			cache:      newMemoryDCRStore(t),
+			wantErrSub: "registration_probe must be one of",
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

@@ -32,6 +32,7 @@ import (
 
 	"golang.org/x/oauth2"
 
+	"github.com/stacklok/toolhive/pkg/auth/oautherr"
 	"github.com/stacklok/toolhive/pkg/authserver/oauthparams"
 	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
@@ -328,6 +329,28 @@ type BaseOAuth2Provider struct {
 // trust, so the bundle could never take effect; failing loudly keeps a
 // trust-anchor misconfiguration a boot-time error rather than a silent no-op.
 var ErrCABundleWithInjectedClient = errors.New("caFilePath cannot be combined with an injected HTTP client")
+
+// ErrGrantRejected is wrapped by a token request error when the upstream
+// authorization server rejected the grant with the OAuth 2.0 invalid_grant
+// error code (RFC 6749 Section 5.2). The classification is
+// oautherr.IsRejectedRefreshGrant, shared with the client-side token source:
+// invalid_grant on any response except a 5xx or 429, which are treated as
+// transient, and a response with no HTTP status is not counted. It applies to
+// both token requests a provider makes: on the authorization code exchange it
+// means the code or PKCE verifier was rejected, and on refresh it means the
+// presented upstream refresh token is expired, revoked or otherwise no longer
+// valid, so retrying it cannot succeed. Network failures, 5xx responses and
+// other error codes do not wrap it, so callers can tell a rejection from a
+// transient failure with errors.Is. It is distinct from fosite.ErrInvalidGrant,
+// which is the error the embedded auth server itself returns to its clients.
+//
+// A rejected refresh token does not always mean the session's upstream
+// credential is dead. With a provider that rotates refresh tokens, the
+// replica that loses a cross-process refresh race presents an already-rotated
+// token and gets invalid_grant while the winner holds valid tokens. The auth
+// server's refresher re-reads storage before surfacing the error, which
+// resolves the race once the winner's write has landed, but not before.
+var ErrGrantRejected = errors.New("invalid_grant")
 
 // IdleConnectionCloser is an optional capability an OAuth2Provider may implement
 // to release the idle keep-alive connections held by its HTTP client. It is the
@@ -1001,6 +1024,9 @@ func formatOAuth2Error(err error, prefix string) error {
 	var retrieveErr *oauth2.RetrieveError
 	if errors.As(err, &retrieveErr) {
 		// RetrieveError contains the OAuth error response
+		if oautherr.IsRejectedRefreshGrant(retrieveErr) {
+			return fmt.Errorf("%s: %w - %s", prefix, ErrGrantRejected, retrieveErr.ErrorDescription)
+		}
 		if retrieveErr.ErrorCode != "" {
 			return fmt.Errorf("%s: %s - %s", prefix, retrieveErr.ErrorCode, retrieveErr.ErrorDescription)
 		}

@@ -488,21 +488,20 @@ func buildGatewayDenyRBAC(gatewayIPs []netip.Addr) *envoyHTTPRBAC {
 	}
 }
 
-// gatewayAuthorityPermissions returns RBAC permissions that match the Docker
-// gateways on the :authority header plus the two Docker-internal hostnames.
+// gatewayAuthorityPermissions matches the protected Docker/Podman host IPs
+// and shared host aliases on the :authority header.
 // Matches are anchored, case-insensitive, and tolerate an optional port; IPv6
 // includes every legal compressed, expanded, and dotted-suffix representation.
 // Shared by the deny path (gateway blocked)
 // and the allow path (--allow-docker-gateway).
 func gatewayAuthorityPermissions(gatewayIPs []netip.Addr) []envoyPermission {
-	patterns := make([]string, 0, len(gatewayIPs)+2)
+	patterns := make([]string, 0, len(gatewayIPs)+len(hostGatewayNames))
 	for _, gateway := range gatewayIPs {
 		patterns = append(patterns, gatewayAuthorityRegexes(gateway)...)
 	}
-	patterns = append(patterns,
-		hostMatchRegex(dockerGatewayHostname),
-		hostMatchRegex(dockerAltGatewayHostname),
-	)
+	for _, hostname := range hostGatewayNames {
+		patterns = append(patterns, hostMatchRegex(hostname))
+	}
 	rules := make([]envoyPermission, 0, len(patterns))
 	for _, re := range patterns {
 		rules = append(rules, envoyPermission{

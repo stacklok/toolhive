@@ -57,6 +57,9 @@ type MCPServerReconciler struct {
 	Scheme           *runtime.Scheme
 	Recorder         events.EventRecorder
 	PlatformDetector *ctrlutil.SharedPlatformDetector
+	// DefaultRedisConfig is the read-only global Redis snapshot loaded at startup.
+	// Nil means no global fallback is configured.
+	DefaultRedisConfig *ctrlutil.DefaultRedisConfig
 	// ImagePullSecretsDefaults are cluster-wide defaults sourced from the
 	// operator chart that are merged with the per-CR imagePullSecrets when
 	// constructing workloads. The zero value is a usable empty Defaults.
@@ -1464,7 +1467,7 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 	}
 
 	// Mount the session storage Redis CA bundle when TLS references one.
-	sessionTLSVolumes, sessionTLSMounts := ctrlutil.SessionRedisTLSVolumes(m.Spec.SessionStorage)
+	sessionTLSVolumes, sessionTLSMounts := ctrlutil.SessionRedisTLSVolumesWithDefault(m.Spec.SessionStorage, r.DefaultRedisConfig)
 	volumes = append(volumes, sessionTLSVolumes...)
 	volumeMounts = append(volumeMounts, sessionTLSMounts...)
 
@@ -1513,12 +1516,12 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 	// Add RunConfig checksum annotation to trigger pod rollout when config changes
 	deploymentTemplateAnnotations = checksum.AddRunConfigChecksumToPodTemplate(deploymentTemplateAnnotations, runConfigChecksum)
 	if configName := ctrlutil.EmbeddedAuthServerConfigName(m.Spec.ExternalAuthConfigRef, m.Spec.AuthServerRef); configName != "" {
-		caChecksum, err := ctrlutil.EmbeddedAuthServerCABundleChecksum(ctx, r.Client, m.Namespace, configName)
+		caChecksum, err := ctrlutil.EmbeddedAuthServerConfigMapChecksum(ctx, r.Client, m.Namespace, configName)
 		if err != nil {
 			return nil, fmt.Errorf("failed to calculate auth server CA checksum: %w", err)
 		}
 		if caChecksum != "" {
-			deploymentTemplateAnnotations[ctrlutil.AuthServerCABundleChecksumAnnotation] = caChecksum
+			deploymentTemplateAnnotations[ctrlutil.AuthServerConfigMapChecksumAnnotation] = caChecksum
 		}
 	}
 
@@ -2121,7 +2124,7 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(
 			return true
 		}
 
-		wantSessionTLSVolumes, _ := ctrlutil.SessionRedisTLSVolumes(mcpServer.Spec.SessionStorage)
+		wantSessionTLSVolumes, _ := ctrlutil.SessionRedisTLSVolumesWithDefault(mcpServer.Spec.SessionStorage, r.DefaultRedisConfig)
 		if ctrlutil.SessionRedisTLSVolumeNeedsUpdate(deployment.Spec.Template.Spec.Volumes, wantSessionTLSVolumes) {
 			return true
 		}
@@ -2235,12 +2238,12 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(
 	configName := ctrlutil.EmbeddedAuthServerConfigName(
 		mcpServer.Spec.ExternalAuthConfigRef, mcpServer.Spec.AuthServerRef)
 	if configName != "" {
-		caChecksum, err := ctrlutil.EmbeddedAuthServerCABundleChecksum(ctx, r.Client, mcpServer.Namespace, configName)
+		caChecksum, err := ctrlutil.EmbeddedAuthServerConfigMapChecksum(ctx, r.Client, mcpServer.Namespace, configName)
 		if err != nil {
 			return true
 		}
 		if caChecksum != "" {
-			expectedPodTemplateAnnotations[ctrlutil.AuthServerCABundleChecksumAnnotation] = caChecksum
+			expectedPodTemplateAnnotations[ctrlutil.AuthServerConfigMapChecksumAnnotation] = caChecksum
 		}
 	}
 	// Mirrors deploymentForMCPServer: stamp the MCPServer generation so the
@@ -2265,7 +2268,7 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(
 		return true
 	}
 
-	const caChecksumKey = ctrlutil.AuthServerCABundleChecksumAnnotation
+	const caChecksumKey = ctrlutil.AuthServerConfigMapChecksumAnnotation
 	actualCAChecksum, actualCAChecksumSet := deployment.Spec.Template.Annotations[caChecksumKey]
 	expectedCAChecksum, expectedCAChecksumSet := expectedPodTemplateAnnotations[caChecksumKey]
 	if actualCAChecksumSet != expectedCAChecksumSet || actualCAChecksum != expectedCAChecksum {
@@ -3039,9 +3042,9 @@ func (r *MCPServerReconciler) validateSessionStorageForReplicas(ctx context.Cont
 
 // buildRedisPasswordEnvVar returns the THV_SESSION_REDIS_PASSWORD env var when
 // sessionStorage.provider == "redis" and passwordRef is set, or when
-// spec.sessionStorage is unset and TOOLHIVE_DEFAULT_REDIS_SECRET_NAME is set
-// via the global default; returns nil otherwise.
-func (*MCPServerReconciler) buildRedisPasswordEnvVar(m *mcpv1beta1.MCPServer) []corev1.EnvVar {
+// spec.sessionStorage is unset and the injected global default references a
+// password Secret; returns nil otherwise.
+func (r *MCPServerReconciler) buildRedisPasswordEnvVar(m *mcpv1beta1.MCPServer) []corev1.EnvVar {
 	if m.Spec.SessionStorage != nil {
 		if m.Spec.SessionStorage.Provider == mcpv1beta1.SessionStorageProviderRedis &&
 			m.Spec.SessionStorage.PasswordRef != nil {
@@ -3062,7 +3065,7 @@ func (*MCPServerReconciler) buildRedisPasswordEnvVar(m *mcpv1beta1.MCPServer) []
 		return nil
 	}
 
-	def := ctrlutil.ReadDefaultRedisConfig()
+	def := r.DefaultRedisConfig
 	if def == nil || def.SecretName == "" {
 		return nil
 	}
@@ -3327,7 +3330,7 @@ func (r *MCPServerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(&mcpv1beta1.MCPToolConfig{}, toolConfigHandler).
 		Watches(
 			&corev1.ConfigMap{},
-			handler.EnqueueRequestsFromMapFunc(r.mapAuthServerCABundleConfigMapToMCPServer),
+			handler.EnqueueRequestsFromMapFunc(r.mapAuthServerConfigMapToMCPServer),
 			builder.WithPredicates(configMapDataChangedPredicate()),
 		).
 		Complete(r)

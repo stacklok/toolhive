@@ -159,14 +159,14 @@ Example:
 			"Applied by \"thv llm setup\"; use --short-prompt-cache=false to restore one-hour caching.")
 	cmd.Flags().BoolVar(&bedrockCompat, "bedrock-compat", false,
 		"Persist Bedrock compatibility for Claude Code (CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1 + per-tier "+
-			"Bedrock model IDs). Applied by \"thv llm setup\". Use --bedrock-compat=false to clear.")
+			"Bedrock model IDs discovered from the gateway). Applied by \"thv llm setup\". Use --bedrock-compat=false to clear.")
 	cmd.Flags().BoolVar(&enable1M, "enable-1m", false,
 		"With Bedrock compat, opt into the 1M context window by appending [1m] to opus/sonnet model IDs.")
 	cmd.Flags().StringSliceVar(&models, "models", nil,
 		"Model IDs to persist and apply during \"thv llm setup\", comma-separated or by repeating the flag, e.g. "+
 			"--models=us.anthropic.claude-opus-4-8,us.anthropic.claude-sonnet-5. Credential-helper clients "+
-			"(Claude Desktop) write these as inferenceModels; with Bedrock compat, each ID is also mapped to a "+
-			"Claude Code tier by matching 'haiku', 'opus', or 'sonnet' in the ID.")
+			"(Claude Desktop) write these as inferenceModels; with Bedrock compat, each ID overrides a "+
+			"Claude Code tier by matching 'haiku', 'opus', 'sonnet', or 'fable' in the ID.")
 
 	return cmd
 }
@@ -343,10 +343,17 @@ run and persisted to config only after login and tool patching succeed. This
 lets you combine "config set" and "setup" into a single command.
 
 For a gateway that forwards to AWS Bedrock, add --bedrock-compat to configure
-Claude Code with CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1 and per-tier Bedrock
-model IDs (override with --models; add --enable-1m for the 1M context window on
-opus/sonnet). The setting is persisted and only affects Claude Code. To add it to
-an already-configured Claude Code, re-run:
+Claude Code with CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1 and pin each model tier
+to the newest Bedrock model the gateway advertises (override a tier with --models;
+add --enable-1m for the 1M context window on opus/sonnet). The pins repoint Claude
+Code's built-in Opus/Sonnet/Haiku/Fable rows in the /model picker (via
+ANTHROPIC_DEFAULT_*_MODEL), so selecting a built-in row routes to Bedrock. Setup
+also enables Claude Code's gateway model discovery, which adds any further models
+the gateway serves as separate picker rows without re-running setup. If the
+gateway's model list cannot be fetched, or has no Bedrock model IDs, setup does
+not configure Claude Code (unless --models pins every tier). The setting is
+persisted and only affects Claude Code.
+To add it to an already-configured Claude Code, re-run:
 
   thv llm setup --client claude-code --bedrock-compat
 
@@ -401,14 +408,15 @@ Run "thv llm teardown" to revert all changes.`,
 			"--models=us.anthropic.claude-opus-4-8,us.anthropic.claude-sonnet-5. "+
 			"For Pi these filter its discovered models (Pi does not support --lazy). "+
 			"For credential-helper clients (Claude Desktop) these become inferenceModels. "+
-			"With --bedrock-compat, each ID is also mapped to a Claude Code tier by matching "+
-			"'haiku', 'opus', or 'sonnet' in the ID (IDs matching no tier are ignored with a "+
-			"warning). Omit to use the built-in Bedrock defaults / gateway model discovery.")
+			"With --bedrock-compat, each ID overrides a Claude Code tier by matching "+
+			"'haiku', 'opus', 'sonnet', or 'fable' in the ID (IDs matching no tier are ignored with a "+
+			"warning). Omit to pin each tier to the newest Bedrock model discovered from the gateway.")
 	cmd.Flags().BoolVar(&bedrockCompat, "bedrock-compat", false,
 		"Configure Claude Code for a gateway that forwards to AWS Bedrock: write "+
 			"CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1 (Bedrock rejects the experimental anthropic-beta headers) "+
-			"and pin per-tier Bedrock model IDs (override with --models). Persisted, so a later plain "+
-			"\"thv llm setup\" keeps it; clear with --bedrock-compat=false. Only affects Claude Code.")
+			"and pin each tier to the newest Bedrock model the gateway advertises (override with --models). "+
+			"Persisted, so a later plain \"thv llm setup\" keeps it; clear with --bedrock-compat=false. "+
+			"Only affects Claude Code.")
 	cmd.Flags().BoolVar(&enable1M, "enable-1m", false,
 		"With --bedrock-compat, append the [1m] suffix to the opus and sonnet model IDs to opt into the "+
 			"1M-token context window on Bedrock (never haiku, which is 200K). Off by default.")

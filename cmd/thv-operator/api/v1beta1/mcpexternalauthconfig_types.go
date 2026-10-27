@@ -1229,6 +1229,21 @@ type EmbeddedAuthServerConfig struct {
 	// CIMD configures Client ID Metadata Document support. When omitted, CIMD is disabled.
 	// +optional
 	CIMD *EmbeddedAuthServerCIMDConfig `json:"cimd,omitempty"`
+
+	// RegistrationRateLimit bounds the unauthenticated /oauth/register
+	// endpoint with a token bucket: up to maxTokens registrations at once,
+	// refilled at maxTokens per refillPeriod. For a sustained rate of R per
+	// second with a burst of B, set maxTokens to B and refillPeriod to B/R;
+	// for example, 10 per minute with a burst of 3 is maxTokens 3,
+	// refillPeriod 18s. If omitted, defaults to 1 registration per second
+	// with a burst of 5 (maxTokens 5, refillPeriod 5s). The limit is per
+	// replica, so the effective rate is the configured rate multiplied by the
+	// replica count. Every successful registration stores a client, so a
+	// higher rate fills storage.maxDCRClients sooner, and with maxDCRClients
+	// 0 this limit is the only bound on stored clients.
+	// +kubebuilder:validation:XValidation:rule="duration(self.refillPeriod) > duration('0s')",message="registrationRateLimit.refillPeriod must be positive"
+	// +optional
+	RegistrationRateLimit *RateLimitBucket `json:"registrationRateLimit,omitempty"`
 }
 
 // effectiveInboundGrants is the folded validation view of legacy and canonical
@@ -1879,18 +1894,35 @@ type DCRUpstreamConfig struct {
 	// Change it to make the proxies register a fresh client at their next
 	// start instead of reusing the cached one: for example after the
 	// upstream has dropped the registration, or when a rotation is required.
-	// At start ToolHive checks the cached client at the upstream's token
-	// endpoint and registers a new one by itself when the upstream answers
-	// invalid_client. Where that check cannot tell (an upstream that answers
-	// a dropped public client like a live one, or a private_key_jwt client),
-	// the stale client_id is only rejected in the user's browser, and
-	// changing this key is the remedy. The previous registration's row stays
-	// in storage, and upstream refresh tokens bound to the previous client_id
-	// stop refreshing, so affected users sign in again.
+	// At start ToolHive checks the cached client at the upstream (see
+	// RegistrationProbe) and registers a new one by itself when the upstream
+	// rejects it. Where the configured probe cannot tell, the stale client_id
+	// may only be rejected in the user's browser, and changing this key is
+	// the remedy. The previous registration's row stays in storage, and
+	// upstream refresh tokens bound to the previous client_id stop
+	// refreshing, so affected users sign in again.
 	// +optional
 	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9._-]+$`
 	// +kubebuilder:validation:MaxLength=64
 	RotationKey string `json:"rotationKey,omitempty"`
+
+	// RegistrationProbe selects how ToolHive checks the cached upstream client
+	// at start. tokenEndpoint (the default) redeems a random authorization
+	// code with the cached client and reads invalid_client as "registration
+	// gone"; it decides only for upstreams that authenticate the client
+	// before validating the grant. authorizationEndpoint sends an
+	// authorization request for the cached client without following
+	// redirects and reads a direct 400, 401 or 403 that carries an RFC 6749
+	// JSON error object (error invalid_client, unauthorized_client or
+	// invalid_request) as "gone" (RFC 6749 §4.1.2.1), for upstreams whose
+	// token endpoint answers invalid_grant for any client_id; an HTML page or
+	// a bare gateway status is not a verdict. A false rejection re-registers
+	// at every start and, when registration also fails, fails startup. none
+	// skips the check; the registration is then retired only through
+	// RotationKey.
+	// +optional
+	// +kubebuilder:validation:Enum=tokenEndpoint;authorizationEndpoint;none
+	RegistrationProbe string `json:"registrationProbe,omitempty"`
 
 	// InitialAccessTokenRef is an optional reference to a Kubernetes Secret
 	// carrying an RFC 7591 §3 initial access token. When set, the resolver
@@ -2086,6 +2118,28 @@ type AuthServerStorageConfig struct {
 	// Required when type is "redis".
 	// +optional
 	Redis *RedisStorageConfig `json:"redis,omitempty"`
+
+	// MaxDCRClients caps the number of live clients created by Dynamic Client
+	// Registration (/oauth/register). At the cap, registration fails with HTTP
+	// 503 until a client expires; no existing client is evicted. If omitted,
+	// defaults to 10000. Operator-configured and CIMD clients are not counted.
+	// On Redis the count is shared by every replica; with memory storage each
+	// replica keeps its own count.
+	//
+	// A client never used for a token exchange lives 24 hours, so a caller
+	// registering at the full registrationRateLimit keeps up to
+	// rate x replicas x 86400 unused clients alive; at the default rate one
+	// replica fills the default cap in about 2.8 hours.
+	//
+	// 0 means unlimited. The endpoint is unauthenticated, so 0 leaves stored
+	// clients bounded only by the per-replica registrationRateLimit, about
+	// 86400 per replica per day at the default rate. Use 0 only temporarily,
+	// for example while an existing client population above the cap drains;
+	// a large finite value, such as two to three times the observed live
+	// client count, keeps some protection.
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	MaxDCRClients *int32 `json:"maxDCRClients,omitempty"`
 }
 
 // RedisStorageConfig configures Redis connection for auth server storage.

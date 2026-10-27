@@ -4,6 +4,7 @@
 package handlers
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -12,11 +13,15 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ory/fosite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
 
 	"github.com/stacklok/toolhive/pkg/auth"
+	serveridentity "github.com/stacklok/toolhive/pkg/authserver/identity"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
+	storagemocks "github.com/stacklok/toolhive/pkg/authserver/storage/mocks"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
 )
 
@@ -859,6 +864,23 @@ func TestCallbackHandler_SecondLeg_ReusesChain_DoesNotReRunFilter(t *testing.T) 
 	assert.Equal(t, "provider2-code", provider2.capturedCode)
 }
 
+func assertCallbackContextUser(ctx context.Context, t *testing.T, userID string) {
+	t.Helper()
+	got, ok := serveridentity.CanonicalUserFromContext(ctx)
+	require.True(t, ok, "callback storage call must receive the canonical user in context")
+	require.Equal(t, userID, got)
+	_, hasIdentity := auth.IdentityFromContext(ctx)
+	require.False(t, hasIdentity, "canonical callback context must not contain an authenticated identity")
+}
+
+func assertCallbackContextUsers(t *testing.T, contexts []context.Context, userID string) {
+	t.Helper()
+	require.NotEmpty(t, contexts, "expected callback observation")
+	for _, ctx := range contexts {
+		assertCallbackContextUser(ctx, t, userID)
+	}
+}
+
 func TestCallbackHandler_Filter_ReceivesFirstUpstreamIdentity(t *testing.T) {
 	t.Parallel()
 	filter := &stubUpstreamFilter{keep: []string{"provider-2"}}
@@ -868,9 +890,17 @@ func TestCallbackHandler_Filter_ReceivesFirstUpstreamIdentity(t *testing.T) {
 	// would key on. (The real OIDC provider's capture of these claims is covered by
 	// TestOIDCProviderImpl_ExchangeCodeForIdentity/"captures ID token claims…"; this
 	// test covers the callback -> filter propagation.)
+	const (
+		rawSub        = "raw-oidc-sub"
+		mappedSubject = "mapped-upstream-subject"
+	)
 	provider1.providerType = upstream.ProviderTypeOIDC
+	provider1.exchangeResult.Subject = mappedSubject
+	// No refresh token, so the callback runs the refresh-token carry-forward lookup
+	// (GetLatestUpstreamTokensForUser) and the test can check the context at that call.
+	provider1.exchangeResult.Tokens.RefreshToken = ""
 	provider1.exchangeResult.Claims = map[string]any{
-		"sub":    "user-from-provider1",
+		"sub":    rawSub,
 		"email":  "firstleg@example.com",
 		"groups": []any{"engineering", "admins"},
 	}
@@ -902,21 +932,33 @@ func TestCallbackHandler_Filter_ReceivesFirstUpstreamIdentity(t *testing.T) {
 	require.Equal(t, 1, filter.calls, "filter should be consulted once on the first leg")
 
 	// The filter received the first upstream's resolved identity.
-	assert.Equal(t, "user-from-provider1", filter.capturedPrincipal.Subject,
-		"principal.Subject must be the claim-mapped upstream subject")
-	assert.Equal(t, "firstleg@example.com", filter.capturedPrincipal.Email,
-		"principal.Email must come from the first upstream")
+	assert.Equal(t, mappedSubject, filter.capturedPrincipal.GetSubject(),
+		"principal.GetSubject() must be the claim-mapped upstream subject")
+	assert.Equal(t, "First Leg User", filter.capturedPrincipal.GetName(),
+		"principal.GetName() must come from the first upstream")
+	assert.Equal(t, "firstleg@example.com", filter.capturedPrincipal.GetEmail(),
+		"principal.GetEmail() must come from the first upstream")
 	assert.Equal(t, map[string]any{
-		"sub":    "user-from-provider1",
+		"sub":    rawSub,
 		"email":  "firstleg@example.com",
 		"groups": []any{"engineering", "admins"},
-	}, filter.capturedPrincipal.Claims, "principal.Claims must carry the first upstream's claims")
+	}, filter.capturedPrincipal.GetClaims(), "principal.GetClaims() must carry the first upstream's claims")
 
-	// principal.PlatformUserID is the canonical (resolved) ToolHive user: non-empty
-	// and distinct from the raw upstream subject.
-	assert.NotEmpty(t, filter.capturedPrincipal.PlatformUserID, "platform user ID must be populated")
-	assert.NotEqual(t, "user-from-provider1", filter.capturedPrincipal.PlatformUserID,
-		"platform user ID is the canonical ToolHive user, not the raw upstream subject")
+	canonicalUserID := filter.capturedPrincipal.GetCanonicalUserID()
+	assert.NotEmpty(t, canonicalUserID, "canonical user ID must be populated")
+	assert.NotEqual(t, rawSub, mappedSubject, "raw sub and mapped Subject must remain distinct")
+	assert.NotEqual(t, rawSub, canonicalUserID, "canonical user ID must differ from raw sub")
+	assert.NotEqual(t, mappedSubject, canonicalUserID, "canonical user ID must differ from mapped Subject")
+	stored := storState.upstreamTokens[sessionID+":provider-1"]
+	require.NotNil(t, stored)
+	assert.Equal(t, canonicalUserID, stored.UserID)
+	assert.Equal(t, mappedSubject, stored.UpstreamSubject)
+
+	// Verify the canonical user was already present at each callback storage
+	// boundary, not just on the final chain-read context.
+	assertCallbackContextUsers(t, storState.getLatestUpstreamCtx, canonicalUserID)
+	assertCallbackContextUsers(t, storState.storeUpstreamCtx, canonicalUserID)
+	assertCallbackContextUsers(t, storState.getAllUpstreamCtx, canonicalUserID)
 }
 
 func TestCallbackHandler_SubsequentLeg_MissingChain_FailsClosed(t *testing.T) {
@@ -1663,6 +1705,7 @@ func TestCallbackHandler_Cleanup_ContinuesWhenAProviderDeleteFails(t *testing.T)
 	handler.CallbackHandler(rec, req)
 
 	assert.Equal(t, http.StatusSeeOther, rec.Code)
+	assertCallbackContextUsers(t, storState.deleteForProviderCtx, "correct-user-id")
 
 	// provider-1's delete failed, so its row is still present...
 	assert.Contains(t, storState.upstreamTokens, sessionID+":provider-1",
@@ -1962,23 +2005,12 @@ func TestRoutesIncludeAuthorizeAndCallback(t *testing.T) {
 	}
 }
 
-// TestCallbackHandler_PlacesPlatformUserInContext_OnChainRead verifies that during a
-// subsequent-leg OAuth callback, the chain-consistency read (GetAllUpstreamTokens)
-// runs with the resolved canonical user already in the request context.
-//
-// Why GetAllUpstreamTokens specifically, and not StoreUpstreamTokens: the callback
-// makes several storage calls. StoreUpstreamTokens carries the user in its tokens
-// argument (tokens.UserID), so a user-keyed storage decorator reads the user from
-// there and does not need the context. GetAllUpstreamTokens and DeleteUpstreamTokens
-// take only (ctx, sessionID) — no tokens argument — so the decorator can resolve the
-// user only from ctx. This test pins the contract that the callback places the
-// canonical user (via WithPlatformUser, not a stub Identity) into the context before
-// those context-dependent reads run.
-//
-// The resolved user is carried forward from the first leg (leg1User) and is
-// deliberately different from what provider-2's exchange returns, so the assertion
-// catches the callback using the wrong user rather than merely a self-consistent one.
-func TestCallbackHandler_PlacesPlatformUserInContext_OnChainRead(t *testing.T) {
+// TestCallbackHandler_PlacesCanonicalUserInContext_OnChainRead verifies that during a
+// subsequent-leg OAuth callback, the chain-state reads run with the resolved canonical
+// user already in the request context. These reads cannot obtain a user from token args,
+// so the test checks each storage-call context directly. The first-leg callback test also
+// covers the context on token storage and refresh-token lookup.
+func TestCallbackHandler_PlacesCanonicalUserInContext_OnChainRead(t *testing.T) {
 	t.Parallel()
 	handler, storState, _, _ := multiUpstreamTestSetup(t)
 
@@ -2017,22 +2049,69 @@ func TestCallbackHandler_PlacesPlatformUserInContext_OnChainRead(t *testing.T) {
 	})
 
 	req := newCallbackRequest("code=provider2-code&state="+secondLegState, cookie)
+	holder := &auth.IdentityHolder{}
+	req = req.WithContext(auth.WithIdentityHolder(req.Context(), holder))
 	rec := httptest.NewRecorder()
 	handler.CallbackHandler(rec, req)
 
 	require.Equal(t, http.StatusSeeOther, rec.Code)
 
-	// The callback's chain-consistency check reads GetAllUpstreamTokens; the harness
-	// captured the ctx it ran with. Assert the callback had already placed the
-	// resolved canonical user into that ctx, and that it is the user carried from leg 1.
-	uid, ok := auth.PlatformUserFromContext(storState.getAllUpstreamCtx)
-	require.True(t, ok, "callback must place platform user in ctx before the chain-consistency GetAllUpstreamTokens")
-	require.Equal(t, leg1User, uid)
+	// Both chain-state reads (next-leg lookup and identity verification) must
+	// receive the canonical user at the storage boundary.
+	require.Len(t, storState.getAllUpstreamCtx, 2)
+	assertCallbackContextUsers(t, storState.getAllUpstreamCtx, leg1User)
+	require.Nil(t, holder.Identity, "callback must not publish an identity to the audit holder")
+}
 
-	// The callback must NOT place a stub Identity: a value under the identity key
-	// would read as an authenticated principal to downstream consumers.
-	_, hasIdentity := auth.IdentityFromContext(storState.getAllUpstreamCtx)
-	require.False(t, hasIdentity, "callback must not place an Identity (only a platform user) in ctx")
+func TestCallbackHandler_CanonicalUserContext_ReachesRefresh(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	refresher := storagemocks.NewMockUpstreamTokenRefresher(ctrl)
+	handler, storState, _, _ := multiUpstreamTestSetup(t, WithUpstreamRefresher(refresher))
+
+	sessionID := "callback-refresh-context"
+	expired := &storage.UpstreamTokens{
+		ProviderID:   "provider-2",
+		AccessToken:  "expired-access-token",
+		RefreshToken: "refresh-token",
+		ExpiresAt:    time.Now().Add(-time.Hour),
+		UserID:       "other-provider-user",
+	}
+	storState.upstreamTokens[sessionID+":provider-2"] = expired
+
+	var refreshCtx context.Context
+	refresher.EXPECT().RefreshAndStore(gomock.Any(), sessionID, expired).
+		DoAndReturn(func(ctx context.Context, _ string, _ *storage.UpstreamTokens) (*storage.UpstreamTokens, error) {
+			refreshCtx = ctx
+			return &storage.UpstreamTokens{ProviderID: "provider-2", ExpiresAt: time.Now().Add(time.Hour)}, nil
+		})
+
+	firstLegState := "callback-refresh-context-state"
+	cookie := bindPending(t, storState, firstLegState, &storage.PendingAuthorization{
+		ClientID:             testAuthClientID,
+		RedirectURI:          testAuthRedirectURI,
+		State:                "client-state",
+		PKCEChallenge:        "challenge",
+		PKCEMethod:           "S256",
+		Scopes:               []string{"openid"},
+		InternalState:        firstLegState,
+		UpstreamPKCEVerifier: "refresh-context-verifier-12345678901234",
+		UpstreamNonce:        "refresh-context-nonce",
+		UpstreamProviderName: "provider-1",
+		SessionID:            sessionID,
+		CreatedAt:            time.Now(),
+	})
+
+	req := newCallbackRequest("code=provider1-code&state="+firstLegState, cookie)
+	rec := httptest.NewRecorder()
+	handler.CallbackHandler(rec, req)
+
+	require.Equal(t, http.StatusSeeOther, rec.Code)
+	require.NotNil(t, refreshCtx, "expired provider must be refreshed during chain evaluation")
+	stored := storState.upstreamTokens[sessionID+":provider-1"]
+	require.NotNil(t, stored)
+	assertCallbackContextUser(refreshCtx, t, stored.UserID)
 }
 
 // TestCallbackHandler_UpstreamError_LeavesExistingProviderToken is the regression guard
@@ -2294,4 +2373,113 @@ func TestCallbackHandler_TwoUpstreams_EachLegIsBoundToTheBrowser(t *testing.T) {
 		assert.Empty(t, rec2.Header().Get("Location"))
 		assert.Empty(t, provider2.capturedCode, "provider-2's code must not be exchanged")
 	})
+}
+
+// decoratedClientStorage stands in for a CIMD decorator layered over the base
+// storage: GetClient returns err from the (errAfter+1)-th call on, and Unwrap
+// exposes the base like the real decorators, so storage.Unwrap reaches it.
+type decoratedClientStorage struct {
+	storage.Storage
+	errAfter int
+	err      error
+	calls    int
+}
+
+func (d *decoratedClientStorage) GetClient(ctx context.Context, id string) (fosite.Client, error) {
+	d.calls++
+	if d.calls > d.errAfter {
+		return nil, d.err
+	}
+	return d.Storage.GetClient(ctx, id)
+}
+
+func (d *decoratedClientStorage) Unwrap() storage.Storage { return d.Storage }
+
+func TestCallbackHandler_CIMDRateLimited_ClientLookup(t *testing.T) {
+	t.Parallel()
+
+	rateLimited := fosite.ErrNotFound.WithWrap(storage.ErrCIMDRateLimited)
+
+	tests := []struct {
+		name          string
+		decoratedErr  error
+		decoratedOK   int // decorated calls that succeed before decoratedErr
+		baseErr       error
+		baseOK        int // base calls that succeed before baseErr
+		wantCode      bool
+		wantBaseCalls int
+	}{
+		{
+			name:          "rate limited falls back to persisted row",
+			decoratedErr:  rateLimited,
+			wantCode:      true,
+			wantBaseCalls: 2,
+		},
+		{
+			name:          "rate limited and base storage error is an error redirect",
+			decoratedErr:  rateLimited,
+			baseErr:       errors.New("storage unavailable"),
+			baseOK:        1,
+			wantBaseCalls: 2,
+		},
+		{
+			name:          "ordinary error does not consult base storage",
+			decoratedErr:  errors.New("get client unavailable"),
+			decoratedOK:   1,
+			wantBaseCalls: 1,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			var opts []baseTestSetupOption
+			if tc.baseErr != nil {
+				opts = append(opts, withGetClientErrorAfterCalls(tc.baseOK, tc.baseErr))
+			}
+			provider, oauth2Config, stor, storState := baseTestSetup(t, opts...)
+			mockUpstream := &mockIDPProvider{
+				providerType:     upstream.ProviderTypeOAuth2,
+				authorizationURL: "https://idp.example.com/authorize",
+				exchangeResult: &upstream.Identity{
+					Tokens:  &upstream.Tokens{AccessToken: "at", ExpiresAt: time.Now().Add(time.Hour)},
+					Subject: "user-123",
+				},
+			}
+			decorated := &decoratedClientStorage{Storage: stor, errAfter: tc.decoratedOK, err: tc.decoratedErr}
+			handler, err := NewHandler(provider, oauth2Config, decorated,
+				[]NamedUpstream{{Name: "test-upstream", Provider: mockUpstream}})
+			require.NoError(t, err)
+
+			internalState := testInternalState
+			cookie := bindPending(t, storState, internalState, &storage.PendingAuthorization{
+				ClientID:             testAuthClientID,
+				RedirectURI:          testAuthRedirectURI,
+				State:                "client-state",
+				PKCEChallenge:        "challenge123",
+				PKCEMethod:           "S256",
+				Scopes:               []string{"openid"},
+				InternalState:        internalState,
+				UpstreamPKCEVerifier: "test-upstream-pkce-verifier-12345678901234567890",
+				SessionID:            "session-cimd-rl",
+				UpstreamProviderName: "test-upstream",
+				CreatedAt:            time.Now(),
+			})
+
+			rec := httptest.NewRecorder()
+			handler.CallbackHandler(rec, newCallbackRequest("code=upstream-code&state="+internalState, cookie))
+
+			require.Equal(t, http.StatusSeeOther, rec.Code)
+			location := rec.Header().Get("Location")
+			if tc.wantCode {
+				assert.Contains(t, location, "code=")
+				assert.NotContains(t, location, "error=")
+			} else {
+				assert.Contains(t, location, "error=")
+				assert.NotContains(t, location, "code=")
+			}
+			assert.Equal(t, tc.wantBaseCalls, storState.getClientCalls)
+		})
+	}
 }

@@ -100,11 +100,12 @@ type DefaultManager struct {
 	statuses       statuses.StatusManager
 	configProvider config.Provider
 
-	retryConfig      *retryConfig
-	newRunner        mcpRunnerFactory
-	detachedSpawner  detachedProcessSpawner
-	portFreer        portFreer
-	proxyExitTimeout time.Duration
+	retryConfig          *retryConfig
+	newRunner            mcpRunnerFactory
+	detachedSpawner      detachedProcessSpawner
+	portFreer            portFreer
+	proxyExitTimeout     time.Duration
+	clientManagerFactory func(context.Context) (client.Manager, error)
 }
 
 // mcpRunner is the subset of *runner.Runner that RunWorkload's retry loop
@@ -178,6 +179,17 @@ func withPortFreer(f portFreer) managerOption {
 // withProxyExitTimeout bounds proxy-exit waits during stop and restart port cleanup.
 func withProxyExitTimeout(timeout time.Duration) managerOption {
 	return func(d *DefaultManager) { d.proxyExitTimeout = timeout }
+}
+
+func withClientManagerFactory(f func(context.Context) (client.Manager, error)) managerOption {
+	return func(d *DefaultManager) { d.clientManagerFactory = f }
+}
+
+func (d *DefaultManager) newClientManager(ctx context.Context) (client.Manager, error) {
+	if d.clientManagerFactory != nil {
+		return d.clientManagerFactory(ctx)
+	}
+	return client.NewManager(ctx)
 }
 
 func (d *DefaultManager) proxyExitTimeoutOrDefault() time.Duration {
@@ -519,7 +531,7 @@ func (d *DefaultManager) finishRemoteWorkloadStop(ctx context.Context, name stri
 	if !exists {
 		return nil
 	}
-	if err := removeClientConfigurations(name, false); err != nil {
+	if err := d.removeClientConfigurations(name, false); err != nil {
 		slog.Warn("failed to remove client configurations", "error", err)
 	} else {
 		slog.Debug("client configurations removed", "workload", name)
@@ -719,7 +731,7 @@ func (d *DefaultManager) recordWorkloadRunFailure(ctx context.Context, name, rea
 // prepareWorkloadRestart removes stale client configuration and records that
 // the workload is restarting, unless shutdown interrupted client cleanup.
 func (d *DefaultManager) prepareWorkloadRestart(ctx context.Context, runConfig *runner.RunConfig, stable bool) {
-	clientManager, err := client.NewManager(ctx)
+	clientManager, err := d.newClientManager(ctx)
 	if err == nil {
 		slog.Debug("removing from client configurations before restart", "workload", runConfig.BaseName)
 		if err := clientManager.RemoveServerFromClients(ctx, runConfig.BaseName, runConfig.Group); err != nil {
@@ -891,13 +903,15 @@ func (d *DefaultManager) spawnDetached(ctx context.Context, runConfig *runner.Ru
 	}
 
 	// A long-lived parent (thv serve) must reap its detached children too.
-	go func() {
-		if err := detachedCmd.Wait(); err != nil {
-			slog.Debug("detached proxy exited with error", "pid", detachedCmd.Process.Pid, "error", err)
-		}
-	}()
+	go reapDetachedProcess(detachedCmd)
 
 	return detachedCmd.Process.Pid, nil
+}
+
+func reapDetachedProcess(cmd *exec.Cmd) {
+	if err := cmd.Wait(); err != nil {
+		slog.Debug("detached proxy exited with error", "pid", cmd.Process.Pid, "error", err)
+	}
 }
 
 // GetLogs retrieves the logs of a container.
@@ -1146,8 +1160,13 @@ func (d *DefaultManager) stopProcess(ctx context.Context, name string) bool {
 		return false
 	}
 
+	return d.stopVerifiedProxy(ctx, name, pid, process.KillProcess)
+}
+
+// stopVerifiedProxy terminates a proxy whose identity the caller has verified.
+func (d *DefaultManager) stopVerifiedProxy(ctx context.Context, name string, pid int, signal func(int) error) bool {
 	slog.Debug("stopping proxy process", "workload", name, "pid", pid)
-	if err := process.KillProcess(pid); err != nil {
+	if err := signal(pid); err != nil {
 		slog.Debug("failed to kill proxy process", "error", err)
 		return false
 	}
@@ -1302,7 +1321,7 @@ func (d *DefaultManager) cleanupWorkloadResources(ctx context.Context, name, bas
 	}
 
 	// Remove client configurations
-	if err := removeClientConfigurations(name, isAuxiliary); err != nil {
+	if err := d.removeClientConfigurations(name, isAuxiliary); err != nil {
 		slog.Warn("failed to remove client configurations", "error", err)
 	} else {
 		slog.Debug("client configurations removed", "workload", name)
@@ -1498,7 +1517,7 @@ func (d *DefaultManager) maybeSetupRemoteWorkload(
 			slog.Debug("failed to set workload status to stopping", "workload", name, "error", err)
 		}
 		d.stopProxyIfNeeded(ctx, name, runConfig.BaseName)
-		if err := removeClientConfigurations(name, false); err != nil {
+		if err := d.removeClientConfigurations(name, false); err != nil {
 			slog.Warn("failed to remove client configurations", "error", err)
 		}
 		if err := d.statuses.SetWorkloadStatus(ctx, name, rt.WorkloadStatusStopped, ""); err != nil {
@@ -1626,7 +1645,7 @@ func (d *DefaultManager) maybeSetupContainerWorkload(ctx context.Context, name s
 		}
 
 		// Clean up client configurations
-		if err := removeClientConfigurations(workloadName, labels.IsAuxiliaryWorkload(container.Labels)); err != nil {
+		if err := d.removeClientConfigurations(workloadName, labels.IsAuxiliaryWorkload(container.Labels)); err != nil {
 			slog.Warn("failed to remove client configurations", "error", err)
 		}
 
@@ -1686,8 +1705,8 @@ func (d *DefaultManager) startWorkload(ctx context.Context, name string, mcpRunn
 }
 
 // TODO: Move to dedicated config management interface.
-// updateClientConfigurations updates client configuration files with the MCP server URL
-func removeClientConfigurations(containerName string, isAuxiliary bool) error {
+// removeClientConfigurations removes the server from client configuration files.
+func (d *DefaultManager) removeClientConfigurations(containerName string, isAuxiliary bool) error {
 	// Get the workload's group by loading its run config
 	runConfig, err := runner.LoadState(context.Background(), containerName)
 	var group string
@@ -1701,7 +1720,7 @@ func removeClientConfigurations(containerName string, isAuxiliary bool) error {
 		group = runConfig.Group
 	}
 
-	clientManager, err := client.NewManager(context.Background())
+	clientManager, err := d.newClientManager(context.Background())
 	if err != nil {
 		slog.Warn("failed to create client manager, skipping client config removal", "workload", containerName, "error", err)
 		return nil
@@ -1798,7 +1817,7 @@ func (d *DefaultManager) stopSingleContainerWorkload(
 		return nil
 	}
 
-	if err := removeClientConfigurations(name, isAuxiliary); err != nil {
+	if err := d.removeClientConfigurations(name, isAuxiliary); err != nil {
 		slog.Warn("failed to remove client configurations", "error", err)
 	} else {
 		slog.Debug("client configurations removed", "workload", name)

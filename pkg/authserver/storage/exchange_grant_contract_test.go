@@ -92,22 +92,67 @@ func runExchangeGrantStorageContract(t *testing.T, newStore exchangeGrantStoreFa
 		assert.True(t, child.CreatedAt.Equal(got.CreatedAt))
 	})
 
-	t.Run("malformed top-level shape is refused and writes nothing", func(t *testing.T) {
+	t.Run("malformed shape is refused and writes nothing", func(t *testing.T) {
 		t.Parallel()
-		store, _ := newStore(t)
-		cases := map[string]func(g *ExchangeGrant){
-			"jti without issuer": func(g *ExchangeGrant) { g.SourceIssuer = "" },
-			"jti without expiry": func(g *ExchangeGrant) { g.SourceExpiresAt = time.Time{} },
-			"issuer without jti": func(g *ExchangeGrant) { g.SourceJTI = "" },
-			"empty signature":    func(g *ExchangeGrant) { g.Signature = "" },
+		cases := []struct {
+			name   string
+			base   func() *ExchangeGrant // nil means contractGrant("sig-bad")
+			mutate func(g *ExchangeGrant)
+		}{
+			{name: "jti without issuer", mutate: func(g *ExchangeGrant) { g.SourceIssuer = "" }},
+			{name: "jti without expiry", mutate: func(g *ExchangeGrant) { g.SourceExpiresAt = time.Time{} }},
+			{name: "issuer without jti", mutate: func(g *ExchangeGrant) { g.SourceJTI = "" }},
+			{name: "empty signature", mutate: func(g *ExchangeGrant) { g.Signature = "" }},
+			{name: "zero ExpiresAt", mutate: func(g *ExchangeGrant) { g.ExpiresAt = time.Time{} }},
+			{name: "top-level without source", mutate: func(g *ExchangeGrant) {
+				g.SourceIssuer = ""
+				g.SourceJTI = ""
+				g.SourceExpiresAt = time.Time{}
+			}},
+			{name: "child with source", mutate: func(g *ExchangeGrant) { g.ParentSignature = "parent" }},
+			{
+				name: "own parent",
+				base: func() *ExchangeGrant { return contractChild("sig-bad") },
+				mutate: func(g *ExchangeGrant) {
+					g.ParentSignature = "sig-bad"
+				},
+			},
 		}
-		for name, mutate := range cases {
-			g := contractGrant("sig-bad")
-			mutate(g)
-			assert.Error(t, store.CreateExchangeGrant(ctx, g), name)
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				t.Parallel()
+				store, _ := newStore(t)
+				base := tc.base
+				if base == nil {
+					base = func() *ExchangeGrant { return contractGrant("sig-bad") }
+				}
+				g := base()
+				tc.mutate(g)
+				require.Error(t, store.CreateExchangeGrant(ctx, g))
+
+				_, err := store.GetExchangeGrant(ctx, "sig-bad")
+				assert.ErrorIs(t, err, ErrNotFound)
+			})
 		}
-		_, err := store.GetExchangeGrant(ctx, "sig-bad")
+	})
+
+	t.Run("already expired grant is refused and burns no jti", func(t *testing.T) {
+		t.Parallel()
+		store, advance := newStore(t)
+		advance(2 * time.Hour) // past contractGrant's ExpiresAt (epoch + 1h)
+
+		g := contractGrant("sig-1")
+		g.SourceExpiresAt = contractEpoch.Add(3 * time.Hour) // marker window still open
+		require.Error(t, store.CreateExchangeGrant(ctx, g))
+		_, err := store.GetExchangeGrant(ctx, "sig-1")
 		assert.ErrorIs(t, err, ErrNotFound)
+
+		// The failed create must not have consumed the jti.
+		ok := contractGrant("sig-2")
+		ok.SourceJTI = g.SourceJTI
+		ok.SourceExpiresAt = g.SourceExpiresAt
+		ok.ExpiresAt = contractEpoch.Add(4 * time.Hour)
+		require.NoError(t, store.CreateExchangeGrant(ctx, ok))
 	})
 
 	t.Run("revoke with a zero time is an error", func(t *testing.T) {

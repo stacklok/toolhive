@@ -1030,31 +1030,25 @@ func cloneExchangeGrant(g *ExchangeGrant) *ExchangeGrant {
 // -----------------------
 
 // CreateExchangeGrant stores a copy of g and, when g.SourceJTI is set, its
-// replay marker. All checks run first and the writes follow under one lock, so
-// a failed call leaves nothing behind.
+// replay marker. A grant whose shape is invalid, or whose ExpiresAt is already
+// past, is refused. All checks run first and the writes follow under one lock,
+// so a failed call leaves nothing behind.
 //
 // Check order: a duplicate signature is reported before a reused jti. A retry
 // of a create that already succeeded (same signature, same jti) therefore gets
 // ErrAlreadyExists, which says this exact grant exists, instead of ErrJTIKnown.
 func (s *MemoryStorage) CreateExchangeGrant(_ context.Context, g *ExchangeGrant) error {
-	if g == nil {
-		return errors.New("exchange grant is nil")
-	}
-	if g.Signature == "" {
-		return errors.New("exchange grant signature is empty")
-	}
-
-	if (g.SourceJTI == "") != (g.SourceIssuer == "") {
-		return errors.New("exchange grant must set both SourceIssuer and SourceJTI or neither")
-	}
-	if g.SourceJTI != "" && g.SourceExpiresAt.IsZero() {
-		return errors.New("exchange grant with a SourceJTI needs SourceExpiresAt")
+	if err := validateExchangeGrantShape(g); err != nil {
+		return err
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	now := s.now()
+	if now.After(g.ExpiresAt) {
+		return errors.New("exchange grant is already expired")
+	}
 	if existing, ok := s.exchangeGrants[g.Signature]; ok && !now.After(existing.ExpiresAt) {
 		return ErrAlreadyExists
 	}
@@ -1094,8 +1088,8 @@ func (s *MemoryStorage) GetExchangeGrant(_ context.Context, signature string) (*
 // revoked, in which case the first RevokedAt is kept. A missing or expired
 // record returns ErrNotFound.
 func (s *MemoryStorage) RevokeExchangeGrant(_ context.Context, signature string, now time.Time) error {
-	if now.IsZero() {
-		return errors.New("revoke time must not be zero")
+	if err := validateExchangeGrantRevokeTime(now); err != nil {
+		return err
 	}
 
 	s.mu.Lock()

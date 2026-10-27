@@ -1121,6 +1121,44 @@ func (g *ExchangeGrant) Live(now time.Time) error {
 	return nil
 }
 
+// validateExchangeGrantShape checks the parts of a grant that every backend
+// must refuse before writing: it must be non-nil, have a Signature and an
+// ExpiresAt, and be either a top-level grant (no ParentSignature, SourceIssuer
+// and SourceJTI both set, and a SourceExpiresAt) or a child (a ParentSignature
+// other than its own Signature, and no SourceIssuer or SourceJTI).
+func validateExchangeGrantShape(g *ExchangeGrant) error {
+	if g == nil {
+		return errors.New("exchange grant is nil")
+	}
+	if g.Signature == "" {
+		return errors.New("exchange grant signature is empty")
+	}
+	if g.ExpiresAt.IsZero() {
+		return errors.New("exchange grant needs ExpiresAt")
+	}
+	if (g.SourceJTI == "") != (g.SourceIssuer == "") {
+		return errors.New("exchange grant must set both SourceIssuer and SourceJTI or neither")
+	}
+	if (g.ParentSignature != "") == (g.SourceJTI != "") {
+		return errors.New("exchange grant must set exactly one of ParentSignature or SourceIssuer and SourceJTI")
+	}
+	if g.ParentSignature == g.Signature {
+		return errors.New("exchange grant cannot be its own parent")
+	}
+	if g.SourceJTI != "" && g.SourceExpiresAt.IsZero() {
+		return errors.New("exchange grant with a SourceJTI needs SourceExpiresAt")
+	}
+	return nil
+}
+
+// validateExchangeGrantRevokeTime refuses a zero revocation time.
+func validateExchangeGrantRevokeTime(now time.Time) error {
+	if now.IsZero() {
+		return errors.New("revoke time must not be zero")
+	}
+	return nil
+}
+
 // ExchangeGrantStorage stores the grant records behind refresh tokens issued
 // through token exchange. It is an optional capability, like DeviceCodeStorage.
 // Callers discover it with storage.Unwrap(stor).(ExchangeGrantStorage) at
@@ -1135,14 +1173,20 @@ type ExchangeGrantStorage interface {
 	// g.SourceJTI is set, its replay marker are both written, or neither is.
 	// The replay marker is keyed by (g.SourceIssuer, g.SourceJTI) and is live
 	// while now is not after g.SourceExpiresAt + ExchangeGrantMarkerMargin.
-	// SourceIssuer and SourceJTI must both be set (with a non-zero
-	// SourceExpiresAt) for a top-level grant, and both empty for a child; any
-	// other shape is an error and writes nothing.
+	// A top-level grant has no ParentSignature and sets SourceIssuer, SourceJTI
+	// and SourceExpiresAt. A child sets ParentSignature and leaves SourceIssuer
+	// and SourceJTI empty. ExpiresAt must be set and not already past by the
+	// store clock. Any other shape is an error and writes nothing.
 	//
 	// It returns fosite.ErrJTIKnown if (g.SourceIssuer, g.SourceJTI) was already
 	// recorded, and ErrAlreadyExists if a grant with g.Signature already exists.
 	// A failed call writes nothing, so the caller can retry with the same record.
 	// Other failures are returned as-is.
+	//
+	// A create after the ExpiresAt of an existing grant with the same signature
+	// may succeed or return ErrAlreadyExists, depending on when the backend
+	// evicts the old record. Signatures are HMACs of random tokens, so callers
+	// never rely on either outcome.
 	CreateExchangeGrant(ctx context.Context, g *ExchangeGrant) error
 
 	// GetExchangeGrant returns the grant with the given signature. Revoked grants

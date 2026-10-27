@@ -7,7 +7,9 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"slices"
 
+	"github.com/stacklok/toolhive/pkg/oidc"
 	pkgsecrets "github.com/stacklok/toolhive/pkg/secrets"
 )
 
@@ -28,6 +30,9 @@ func (c *Config) SetFields(opts SetOptions) error {
 	}
 	if opts.Audience != "" {
 		c.OIDC.Audience = opts.Audience
+	}
+	if opts.Scopes != nil {
+		c.OIDC.Scopes = oidc.MergeScopes(opts.Scopes)
 	}
 	if opts.ProxyPort != 0 {
 		c.Proxy.ListenPort = opts.ProxyPort
@@ -62,10 +67,14 @@ func (c *Config) SetFields(opts SetOptions) error {
 // field unchanged. TLSSkipVerify uses a pointer so that false can be
 // distinguished from "not provided" (enabling explicit clear via config set).
 type SetOptions struct {
-	GatewayURL       string
-	Issuer           string
-	ClientID         string
-	Audience         string
+	GatewayURL string
+	Issuer     string
+	ClientID   string
+	Audience   string
+	// Scopes are requested in addition to the default OIDC scopes
+	// (openid, offline_access). nil = not provided (leave existing config
+	// unchanged); an empty non-nil slice resets to the defaults.
+	Scopes           []string
 	ProxyPort        int
 	CallbackPort     int
 	TLSSkipVerify    *bool // nil = not provided; &false = explicitly disable
@@ -77,6 +86,29 @@ type SetOptions struct {
 	// Models sets the persisted model IDs (Config.Models). nil = not provided
 	// (leave existing config unchanged); an empty non-nil slice clears them.
 	Models []string
+}
+
+// DeleteCachedTokensOnScopeChange deletes the cached OIDC tokens when applying
+// opts to cfg would change the requested scopes. A refresh-token grant returns
+// only the scopes the token was first issued with, so a changed scope list takes
+// effect only through a fresh login; dropping the cache makes the next login
+// (setup's, or the first token request under --lazy) request the new scopes.
+// It does nothing when opts leaves the scopes unchanged.
+func DeleteCachedTokensOnScopeChange(
+	ctx context.Context, errOut io.Writer, cfg Config, opts SetOptions, getSecretsProvider SecretsProviderFunc,
+) error {
+	if opts.Scopes == nil || slices.Equal(cfg.OIDC.EffectiveScopes(), oidc.MergeScopes(opts.Scopes)) {
+		return nil
+	}
+	provider, err := getSecretsProvider()
+	if err != nil {
+		return fmt.Errorf("failed to get secrets provider: %w", err)
+	}
+	if err := DeleteCachedTokens(ctx, provider); err != nil {
+		return fmt.Errorf("deleting cached tokens for the changed scopes: %w", err)
+	}
+	_, _ = fmt.Fprintln(errOut, "Scopes changed; cached tokens cleared so the next sign-in requests the new scopes.")
+	return nil
 }
 
 // DeleteCachedTokens removes all cached OIDC tokens stored under the LLM

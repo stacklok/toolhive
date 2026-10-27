@@ -84,6 +84,9 @@ func addLLMConnectionFlags(cmd *cobra.Command, opts *llm.SetOptions) {
 	cmd.Flags().StringVar(&opts.Issuer, "issuer", "", "OIDC issuer URL")
 	cmd.Flags().StringVar(&opts.ClientID, "client-id", "", "OIDC client ID")
 	cmd.Flags().StringVar(&opts.Audience, "audience", "", "OIDC audience (optional)")
+	cmd.Flags().StringSliceVar(&opts.Scopes, "scopes", nil,
+		"Additional OIDC scopes to request on top of the defaults (openid, offline_access), comma-separated or "+
+			"by repeating the flag. Omit to keep the current scopes; sign in again for a changed list to take effect")
 	cmd.Flags().IntVar(&opts.ProxyPort, "proxy-port", 0, "Localhost proxy listen port (omit to keep current; default: 14000)")
 	cmd.Flags().IntVar(&opts.CallbackPort, "callback-port", 0, "OIDC callback port (omit to keep current; default: ephemeral)")
 }
@@ -136,6 +139,12 @@ Example:
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			applyChangedLLMFlags(cmd, &opts, tlsSkipVerify, shortPromptCache, bedrockCompat, enable1M, models)
+			if err := llm.DeleteCachedTokensOnScopeChange(
+				cmd.Context(), cmd.ErrOrStderr(), config.NewDefaultProvider().GetConfig().LLM, opts,
+				secrets.GetSystemSecretsProvider,
+			); err != nil {
+				return err
+			}
 			return config.UpdateConfig(func(c *config.Config) error {
 				return c.LLM.SetFields(opts)
 			})
@@ -353,6 +362,12 @@ Run "thv llm teardown" to revert all changes.`,
 			}
 			login := func(ctx context.Context, cfg *llm.Config) error {
 				return oidcLogin(ctx, cfg, skipBrowser)
+			}
+			if err := llm.DeleteCachedTokensOnScopeChange(
+				cmd.Context(), cmd.ErrOrStderr(), config.NewDefaultProvider().GetConfig().LLM, opts,
+				secrets.GetSystemSecretsProvider,
+			); err != nil {
+				return err
 			}
 			return runLLMSetup(
 				cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(),

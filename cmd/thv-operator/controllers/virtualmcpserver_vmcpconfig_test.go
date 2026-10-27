@@ -25,11 +25,13 @@ import (
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
 	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
+	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	oidcmocks "github.com/stacklok/toolhive/cmd/thv-operator/pkg/oidc/mocks"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/virtualmcpserverstatus"
 	statusmocks "github.com/stacklok/toolhive/cmd/thv-operator/pkg/virtualmcpserverstatus/mocks"
 	vmcpconfigconv "github.com/stacklok/toolhive/cmd/thv-operator/pkg/vmcpconfig"
 	thvjson "github.com/stacklok/toolhive/pkg/json"
+	"github.com/stacklok/toolhive/pkg/redisconfig"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/pkg/vmcp/workloads"
@@ -45,11 +47,11 @@ func newNoOpMockResolver(t *testing.T) *oidcmocks.MockResolver {
 }
 
 // newTestConverter creates a Converter with the given resolver, failing the test if creation fails.
-func newTestConverter(t *testing.T, resolver *oidcmocks.MockResolver) *vmcpconfigconv.Converter {
+func newTestConverter(t *testing.T, resolver *oidcmocks.MockResolver, options ...vmcpconfigconv.ConverterOption) *vmcpconfigconv.Converter {
 	t.Helper()
 	scheme := testutil.NewScheme(t)
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
-	converter, err := vmcpconfigconv.NewConverter(resolver, fakeClient)
+	converter, err := vmcpconfigconv.NewConverter(resolver, fakeClient, options...)
 	require.NoError(t, err)
 	return converter
 }
@@ -2268,7 +2270,7 @@ func TestOptimizerEmbeddingServiceURL(t *testing.T) {
 }
 
 // TestConfigMapContent_SessionStorage tests that ensureVmcpConfigConfigMap correctly
-// populates the sessionStorage section in the ConfigMap YAML based on spec.sessionStorage.
+// populates sessionStorage in ConfigMap YAML from the spec or injected global defaults.
 func TestConfigMapContent_SessionStorage(t *testing.T) {
 	t.Parallel()
 
@@ -2280,6 +2282,7 @@ func TestConfigMapContent_SessionStorage(t *testing.T) {
 	tests := []struct {
 		name            string
 		sessionStorage  *mcpv1beta1.SessionStorageConfig
+		defaultRedis    *ctrlutil.DefaultRedisConfig
 		expectedStorage *vmcpconfig.SessionStorageConfig
 		// noLeakStrings are substrings that must NOT appear in config.yaml (secret leakage check).
 		noLeakStrings []string
@@ -2303,6 +2306,49 @@ func TestConfigMapContent_SessionStorage(t *testing.T) {
 			name:            "nil sessionStorage produces no sessionStorage section",
 			sessionStorage:  nil,
 			expectedStorage: nil,
+		},
+		{
+			name:         "injected global Redis address reaches ConfigMap YAML",
+			defaultRedis: &ctrlutil.DefaultRedisConfig{Addr: "global-redis.default.svc:6379"},
+			expectedStorage: &vmcpconfig.SessionStorageConfig{
+				Provider: "redis",
+				Address:  "global-redis.default.svc:6379",
+			},
+		},
+		{
+			name: "injected global Redis TLS reaches ConfigMap YAML without Secret references",
+			defaultRedis: &ctrlutil.DefaultRedisConfig{
+				Addr:       "global-redis.default.svc:6380",
+				SecretName: "global-redis-password",
+				SecretKey:  "password-value",
+				TLS: &mcpv1beta1.RedisTLSConfig{
+					CACertSecretRef: &mcpv1beta1.SecretKeyRef{Name: "global-redis-ca", Key: "bundle.pem"},
+				},
+			},
+			expectedStorage: &vmcpconfig.SessionStorageConfig{
+				Provider: "redis",
+				Address:  "global-redis.default.svc:6380",
+				TLS:      &redisconfig.TLSConfig{CACertFile: "/etc/toolhive/session-redis-tls/ca.crt"},
+			},
+			noLeakStrings: []string{"global-redis-password", "password-value", "global-redis-ca", "bundle.pem"},
+		},
+		{
+			name: "explicit plaintext Redis overrides injected global TLS in ConfigMap YAML",
+			sessionStorage: &mcpv1beta1.SessionStorageConfig{
+				Provider: mcpv1beta1.SessionStorageProviderRedis,
+				Address:  "local-redis.default.svc:6379",
+			},
+			defaultRedis: &ctrlutil.DefaultRedisConfig{
+				Addr: "global-redis.default.svc:6380",
+				TLS: &mcpv1beta1.RedisTLSConfig{
+					CACertSecretRef: &mcpv1beta1.SecretKeyRef{Name: "global-redis-ca", Key: "bundle.pem"},
+				},
+			},
+			expectedStorage: &vmcpconfig.SessionStorageConfig{
+				Provider: "redis",
+				Address:  "local-redis.default.svc:6379",
+			},
+			noLeakStrings: []string{"global-redis.default.svc", "global-redis-ca", "bundle.pem"},
 		},
 		{
 			name:            "memory provider produces no sessionStorage section",
@@ -2357,7 +2403,11 @@ func TestConfigMapContent_SessionStorage(t *testing.T) {
 				WithObjects(vmcpServer, mcpGroup).
 				Build()
 
-			reconciler := &VirtualMCPServerReconciler{Client: fakeClient, Scheme: testScheme}
+			reconciler := &VirtualMCPServerReconciler{
+				Client:             fakeClient,
+				Scheme:             testScheme,
+				DefaultRedisConfig: tt.defaultRedis,
+			}
 
 			workloadDiscoverer := workloads.NewK8SDiscovererWithClient(fakeClient, testNamespace)
 			workloadNames, err := workloadDiscoverer.ListWorkloadsInGroup(ctx, testGroup)

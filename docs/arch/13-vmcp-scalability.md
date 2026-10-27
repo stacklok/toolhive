@@ -154,9 +154,50 @@ logs one startup WARN carrying a `store` attribute, whether or not a password is
 configured. vMCP additionally logs its existing no-authentication WARN when
 `THV_SESSION_REDIS_PASSWORD` is unset; the two cover different gaps.
 
-The operator-wide `defaultRedis` fallback (`TOOLHIVE_DEFAULT_REDIS_ADDR`) does not
-carry TLS settings yet, so workloads that rely on it always log the plaintext WARN.
-To encrypt their connection, set `spec.sessionStorage` with `tls` on the workload.
+The operator-wide Redis fallback supports verified TLS through Helm:
+
+```yaml
+operator:
+  defaultRedis:
+    addr: redis.example.com:6380
+    tls:
+      enabled: true
+      caCertSecretRef:
+        name: redis-ca
+        key: ca.crt
+```
+
+Omit `caCertSecretRef` to verify against system roots. The CA Secret must exist
+in every workload namespace that uses the fallback, alongside any configured
+password Secret. The operator passes references to the workloads; it does not
+copy Secret contents between namespaces or connect to Redis itself.
+
+If the global CA Secret or its configured key is missing, Kubernetes reports a
+`FailedMount` event on each affected pod and leaves it in `ContainerCreating`.
+Inspect `kubectl describe pod` in the workload namespace to identify the missing
+reference. A missing global CA affects every workload using that fallback in the
+namespace; it does not affect workloads with their own Redis configuration.
+
+The chart sets `TOOLHIVE_DEFAULT_REDIS_TLS_ENABLED` and, for a private CA,
+`TOOLHIVE_DEFAULT_REDIS_TLS_CA_SECRET_NAME` and
+`TOOLHIVE_DEFAULT_REDIS_TLS_CA_SECRET_KEY`. Invalid settings stop operator startup.
+The operator reads and validates the defaults once at startup and passes that
+snapshot to the controllers and vMCP converter. Configuration conversion and CA
+projection do not read the environment during reconciliation.
+CA projection, certificate validation, rate-limiter TLS, and restart requirements
+are the same as for per-workload session storage. A change to operator defaults
+is applied as workloads reconcile after the operator restarts.
+
+Explicit per-workload Redis settings override the entire global connection,
+including TLS; omitting TLS on an explicit Redis connection keeps that connection
+plaintext. The default remains plaintext when global TLS is disabled. Global TLS
+always verifies server certificates; it has no `insecureSkipVerify` option.
+
+This change preserves existing provider selection: MCPRemoteProxy suppresses the
+fallback for any explicit `sessionStorage`, while MCPServer and VirtualMCPServer
+can still select global Redis when `provider: memory` is explicit. Their existing
+password-selection behavior is unchanged. Configure an explicit Redis connection
+when overriding global defaults, and avoid relying on this provider inconsistency.
 
 ## File descriptor limits
 

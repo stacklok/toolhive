@@ -46,6 +46,20 @@ operator:
     # -- Key containing the password in `existingSecret`. When empty, uses
     # `global.redis.existingSecretKey`, then `redis-password`.
     existingSecretKey: ""
+    # -- TLS settings for the default Redis or Valkey connection. TLS is
+    # enabled only when explicitly requested and a Redis address is configured.
+    tls:
+      # -- Verify the Redis server certificate using system roots or the
+      # optional CA certificate below. Requires a configured Redis address.
+      enabled: false
+      # -- Optional CA certificate for verifying the Redis server. The Secret
+      # must exist in each workload's namespace, not the operator namespace.
+      caCertSecretRef:
+        # -- Name of an existing Secret containing a PEM-encoded CA certificate.
+        # Leave empty to use system roots.
+        name: ""
+        # -- Key containing the PEM-encoded CA certificate in the Secret.
+        key: ca.crt
 
   # -- Container image for the operator.
   image: ghcr.io/stacklok/toolhive/operator:v0.58.0

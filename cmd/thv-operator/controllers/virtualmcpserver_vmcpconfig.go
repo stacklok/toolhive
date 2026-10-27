@@ -42,7 +42,8 @@ func (r *VirtualMCPServerReconciler) ensureVmcpConfigConfigMap(
 ) error {
 	// Create OIDC resolver and converter for CRD-to-config transformation
 	oidcResolver := oidc.NewResolver(r.Client)
-	converter, err := operatorvmcpconfig.NewConverter(oidcResolver, r.Client)
+	converter, err := operatorvmcpconfig.NewConverter(oidcResolver, r.Client,
+		operatorvmcpconfig.WithDefaultRedisConfig(r.DefaultRedisConfig))
 	if err != nil {
 		return fmt.Errorf("failed to create vmcp converter: %w", err)
 	}

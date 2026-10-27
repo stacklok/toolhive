@@ -86,7 +86,7 @@ func addLLMConnectionFlags(cmd *cobra.Command, opts *llm.SetOptions) {
 	cmd.Flags().StringVar(&opts.Audience, "audience", "", "OIDC audience (optional)")
 	cmd.Flags().StringSliceVar(&opts.Scopes, "scopes", nil,
 		"Additional OIDC scopes to request on top of the defaults (openid, offline_access), comma-separated or "+
-			"by repeating the flag. Omit to keep the current scopes; sign in again for a changed list to take effect")
+			"by repeating the flag. Omit to keep the current scopes. Changing the list clears cached tokens so the next sign-in requests the new scopes")
 	cmd.Flags().IntVar(&opts.ProxyPort, "proxy-port", 0, "Localhost proxy listen port (omit to keep current; default: 14000)")
 	cmd.Flags().IntVar(&opts.CallbackPort, "callback-port", 0, "OIDC callback port (omit to keep current; default: ephemeral)")
 }

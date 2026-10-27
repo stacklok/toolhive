@@ -4,7 +4,13 @@
 package handlers
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/ory/fosite"
 	"github.com/stretchr/testify/assert"
@@ -303,7 +309,7 @@ func TestCarryFirstUpstreamIdentity(t *testing.T) {
 
 			pending := &storage.PendingAuthorization{ResolvedUserID: tt.resolved, SingleLeg: tt.single}
 
-			got := carryFirstUpstreamIdentity(pending, tt.identity)
+			got := carryFirstUpstreamIdentity(pending, verifiedUpstreamIdentity(tt.identity))
 
 			if tt.wantCopy {
 				require.NotSame(t, pending, got)
@@ -313,6 +319,146 @@ func TestCarryFirstUpstreamIdentity(t *testing.T) {
 			}
 			// The input pending is never mutated.
 			assert.Equal(t, session.UpstreamSubject{}, pending.VerifiedUpstream)
+		})
+	}
+}
+
+func verifiedIdentity() *upstream.Identity {
+	return &upstream.Identity{
+		VerifiedIssuer: testSubIDIssuer, VerifiedSubject: testSubIDSubject,
+		VerifiedStableClaim: testSubIDClaim, VerifiedStableValue: testSubIDValue,
+	}
+}
+
+// TestCallbackHandler_RecordsVerifiedUpstreamOnlyWhenDisclosureEnabled checks that
+// the upstream identity is stored on the authorize code session, and carried to the
+// next leg of a chain, only when SubjectIdentifierAudiences is non-empty.
+func TestCallbackHandler_RecordsVerifiedUpstreamOnlyWhenDisclosureEnabled(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		audiences []string
+		want      session.UpstreamSubject
+	}{
+		{name: "disclosure disabled records nothing"},
+		{name: "disclosure enabled records the identity", audiences: []string{testSubIDAudience}, want: testVerifiedUpstream},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name+" - authorization code", func(t *testing.T) {
+			t.Parallel()
+			handler, storState, mockUpstream := handlerTestSetup(t)
+			handler.config.SubjectIdentifierAudiences = tt.audiences
+			id := verifiedIdentity()
+			id.Tokens = mockUpstream.exchangeResult.Tokens
+			id.Subject = "user-123"
+			mockUpstream.exchangeResult = id
+
+			pending := &storage.PendingAuthorization{
+				ClientID: testAuthClientID, RedirectURI: testAuthRedirectURI, State: "client-state",
+				PKCEChallenge: "challenge123", PKCEMethod: "S256", Scopes: []string{"openid"},
+				InternalState: testInternalState, UpstreamPKCEVerifier: "test-upstream-pkce-verifier-12345678901234567890",
+				SessionID: "session-sub-id", UpstreamProviderName: "test-upstream", CreatedAt: time.Now(),
+			}
+			cookie := bindPending(t, storState, testInternalState, pending)
+
+			rec := httptest.NewRecorder()
+			handler.CallbackHandler(rec, newCallbackRequest("code=upstream-code&state="+testInternalState, cookie))
+			require.Equal(t, http.StatusSeeOther, rec.Code)
+
+			require.Len(t, storState.authCodeSessions, 1)
+			for _, req := range storState.authCodeSessions {
+				sess, ok := req.GetSession().(*session.Session)
+				require.True(t, ok)
+				assert.Equal(t, tt.want, sess.VerifiedUpstream)
+			}
+		})
+
+		t.Run(tt.name+" - next leg of a chain", func(t *testing.T) {
+			t.Parallel()
+			handler, storState, provider1, _ := multiUpstreamTestSetup(t)
+			handler.config.SubjectIdentifierAudiences = tt.audiences
+			id := verifiedIdentity()
+			id.Tokens = provider1.exchangeResult.Tokens
+			id.Subject = provider1.exchangeResult.Subject
+			provider1.exchangeResult = id
+
+			firstLegState := "first-leg-state-sub-id"
+			pending := &storage.PendingAuthorization{
+				ClientID: testAuthClientID, RedirectURI: testAuthRedirectURI, State: "client-state",
+				PKCEChallenge: "client-challenge", PKCEMethod: "S256", Scopes: []string{"openid"},
+				InternalState: firstLegState, UpstreamPKCEVerifier: "first-leg-pkce-verifier-123456789012345678",
+				UpstreamNonce: "first-leg-nonce", UpstreamProviderName: "provider-1",
+				SessionID: "chain-session-sub-id", CreatedAt: time.Now(),
+			}
+			cookie := bindPending(t, storState, firstLegState, pending)
+
+			rec := httptest.NewRecorder()
+			handler.CallbackHandler(rec, newCallbackRequest("code=provider1-code&state="+firstLegState, cookie))
+			require.Equal(t, http.StatusFound, rec.Code)
+
+			var next *storage.PendingAuthorization
+			for state, p := range storState.pendingAuths {
+				if state != firstLegState && p.UpstreamProviderName == "provider-2" {
+					next = p
+				}
+			}
+			require.NotNil(t, next)
+			assert.Equal(t, tt.want, next.VerifiedUpstream)
+		})
+	}
+}
+
+// TestDeviceVerificationFlow_RecordsVerifiedUpstreamOnlyWhenDisclosureEnabled checks
+// the pending device confirmation and the authorized device request.
+func TestDeviceVerificationFlow_RecordsVerifiedUpstreamOnlyWhenDisclosureEnabled(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		audiences []string
+		want      session.UpstreamSubject
+	}{
+		{name: "disclosure disabled records nothing"},
+		{name: "disclosure enabled records the identity", audiences: []string{testSubIDAudience}, want: testVerifiedUpstream},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			h, mockUpstream := setupDeviceVerificationHandler(t)
+			h.config.SubjectIdentifierAudiences = tt.audiences
+			id := verifiedIdentity()
+			id.Tokens = mockUpstream.exchangeResult.Tokens
+			id.Subject = mockUpstream.exchangeResult.Subject
+			id.Name, id.Email = "Ada Lovelace", "ada@example.com"
+			mockUpstream.exchangeResult = id
+
+			deviceCode, userCode := issueDeviceCode(t, h)
+			submitRec := postDeviceUserCode(t, h, userCode)
+			require.Equal(t, http.StatusFound, submitRec.Code)
+			state := mockUpstream.capturedState
+
+			callbackRec := httptest.NewRecorder()
+			h.CallbackHandler(callbackRec, newCallbackRequest("code=upstream-code&state="+state, bindingCookieFrom(t, submitRec, state)))
+			require.Equal(t, http.StatusOK, callbackRec.Code)
+			confirmToken := extractConfirmToken(t, callbackRec.Body.String())
+
+			confirmation, err := h.storage.LoadPendingDeviceConfirmation(context.Background(), confirmToken)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, confirmation.VerifiedUpstream)
+
+			confirmForm := url.Values{"confirm_token": {confirmToken}, "action": {"approve"}}
+			confirmReq := httptest.NewRequest(http.MethodPost, "/oauth/device/confirm", strings.NewReader(confirmForm.Encode()))
+			confirmReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			confirmRec := httptest.NewRecorder()
+			h.DeviceVerificationConfirmHandler(confirmRec, confirmReq)
+			require.Equal(t, http.StatusOK, confirmRec.Code)
+
+			device, err := h.deviceStorage.LoadDeviceRequestByDeviceCode(context.Background(), deviceCode)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, device.VerifiedUpstream)
 		})
 	}
 }

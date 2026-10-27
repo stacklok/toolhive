@@ -107,10 +107,14 @@ func WithConsentExemptClientIDs(ids []string) EmbeddedAuthServerOption {
 // keys users on (its subject_claim, or sub). With subject_claim: oid on Entra ID it
 // discloses the tenant-wide oid, so list only first-party resource servers. Each
 // entry must be an exact member of the RunConfig's allowed_audiences, or server
-// construction fails. An empty list disables both claims. The setting never grants
-// an audience. It is deliberately not a RunConfig field yet, so config files and
-// operator CRDs cannot set it. The input is copied when the option is created, and
-// repeated options replace the list.
+// construction fails. An empty list disables both claims, and logins then do not
+// record the upstream identity. Going from an empty list to a non-empty one adds the
+// claims only for sessions whose login happened while the list was non-empty; other
+// users get them from their next login. Adding an audience to a non-empty list
+// applies at the next refresh. The setting never grants an audience. It is
+// deliberately not a RunConfig field yet, so config files and operator CRDs cannot
+// set it. The input is copied when the option is created, and repeated options
+// replace the list.
 func WithSubjectIdentifierAudiences(audiences []string) EmbeddedAuthServerOption {
 	copied := slices.Clone(audiences)
 	return func(options *embeddedAuthServerOptions) {

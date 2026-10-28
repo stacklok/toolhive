@@ -5,26 +5,26 @@
 ### Quick Start with Registry Server
 
 ```bash
-# Run filesystem server
-thv run filesystem
+# Run fetch server
+thv run fetch
 
 # Check it's running
 thv list
 
 # Get detailed status
-thv status filesystem
+thv status fetch
 
 # View capabilities
-thv mcp list tools --server filesystem
+thv mcp list tools --server fetch
 
 # View logs
-thv logs filesystem
+thv logs fetch
 
 # Stop when done
-thv stop filesystem
+thv stop fetch
 
 # Clean up
-thv rm filesystem
+thv rm fetch
 ```
 
 ### Run Server with Custom Configuration
@@ -37,7 +37,7 @@ thv run github \
   -- --toolsets repos
 
 # Server with volume mount
-thv run filesystem \
+thv run <server> \
   --name project-fs \
   -v /home/user/projects:/workspace:ro
 
@@ -139,8 +139,8 @@ thv group create staging
 thv group create production
 
 # Run servers in specific groups
-thv run filesystem --name dev-fs --group development
-thv run filesystem --name prod-fs --group production
+thv run fetch --name dev-fs --group development
+thv run fetch --name prod-fs --group production
 
 # List servers by group
 thv list --group development
@@ -163,8 +163,8 @@ thv client register claude-code --group development
 
 ```bash
 # Restart a single server
-thv start filesystem
-thv restart filesystem          # Same thing (alias)
+thv start fetch
+thv restart fetch          # Same thing (alias)
 
 # Restart all servers in a group
 thv start --group development
@@ -336,16 +336,16 @@ thv run fetch --tools-override overrides.json
 
 ```bash
 # List tools
-thv mcp list tools --server filesystem
+thv mcp list tools --server fetch
 
 # List resources
-thv mcp list resources --server filesystem
+thv mcp list resources --server fetch
 
 # List prompts
-thv mcp list prompts --server filesystem
+thv mcp list prompts --server fetch
 
 # JSON output for parsing
-thv mcp list tools --server filesystem --format json
+thv mcp list tools --server fetch --format json
 ```
 
 ### Invoke a Tool
@@ -355,7 +355,7 @@ thv mcp list tools --server filesystem --format json
 thv mcp call fetch --server fetch --args '{"url":"https://example.com"}'
 
 # Args from a file
-thv mcp call read_file --server filesystem --args-file ./args.json
+thv mcp call fetch --server fetch --args-file ./args.json
 
 # Args from stdin
 echo '{"url":"https://example.com"}' | thv mcp call fetch --server fetch --args-file -
@@ -371,24 +371,24 @@ thv mcp call fetch --server fetch --args '{"url":"not-a-url"}' --ignore-tool-err
 
 ```bash
 # Default ports
-thv inspector filesystem
+thv inspector fetch
 # UI at http://localhost:6274
 
 # Custom ports
-thv inspector filesystem --ui-port 7000 --mcp-proxy-port 7001
+thv inspector fetch --ui-port 7000 --mcp-proxy-port 7001
 ```
 
 ### View Logs
 
 ```bash
 # Container logs
-thv logs filesystem
+thv logs fetch
 
 # Follow in real-time
-thv logs filesystem --follow
+thv logs fetch --follow
 
 # Proxy logs (for debugging HTTP/auth issues)
-thv logs filesystem --proxy
+thv logs fetch --proxy
 ```
 
 ### Verify Runtime
@@ -476,7 +476,7 @@ secrets/
 EOF
 
 # Mount the directory — .thvignore patterns are applied automatically
-thv run filesystem -v /home/user/projects:/workspace:ro
+thv run <server> -v /home/user/projects:/workspace:ro
 ```
 
 Global patterns at `~/.config/toolhive/thvignore` apply to all mounts. Disable with `--ignore-globally=false`.

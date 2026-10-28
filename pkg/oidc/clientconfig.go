@@ -13,29 +13,6 @@ const (
 	DefaultScopes = "openid offline_access"
 )
 
-// MergeScopes returns DefaultScopes followed by extra, dropping blanks and
-// duplicates while preserving order. With no extras it returns just the
-// defaults.
-func MergeScopes(extra []string) []string {
-	merged := strings.Fields(DefaultScopes)
-	seen := make(map[string]struct{}, len(merged)+len(extra))
-	for _, s := range merged {
-		seen[s] = struct{}{}
-	}
-	for _, s := range extra {
-		s = strings.TrimSpace(s)
-		if s == "" {
-			continue
-		}
-		if _, ok := seen[s]; ok {
-			continue
-		}
-		seen[s] = struct{}{}
-		merged = append(merged, s)
-	}
-	return merged
-}
-
 // ClientConfig holds the OIDC provider settings and cached token state shared
 // by both registry OAuth and LLM gateway authentication flows. Token values
 // are never stored here — only references and expiry metadata.

@@ -8,8 +8,9 @@ import (
 	"fmt"
 	"io"
 	"slices"
+	"strings"
+	"time"
 
-	"github.com/stacklok/toolhive/pkg/oidc"
 	pkgsecrets "github.com/stacklok/toolhive/pkg/secrets"
 )
 
@@ -32,7 +33,7 @@ func (c *Config) SetFields(opts SetOptions) error {
 		c.OIDC.Audience = opts.Audience
 	}
 	if opts.Scopes != nil {
-		c.OIDC.Scopes = oidc.MergeScopes(opts.Scopes)
+		c.OIDC.Scopes = requestedScopes(opts.Scopes)
 	}
 	if opts.ProxyPort != 0 {
 		c.Proxy.ListenPort = opts.ProxyPort
@@ -71,9 +72,10 @@ type SetOptions struct {
 	Issuer     string
 	ClientID   string
 	Audience   string
-	// Scopes are requested in addition to the default OIDC scopes
-	// (openid, offline_access). nil = not provided (leave existing config
-	// unchanged); an empty non-nil slice resets to the defaults.
+	// Scopes are the OIDC scopes to request besides offline_access, which is
+	// always requested so the provider returns a refresh token. nil = not
+	// provided (leave existing config unchanged); an empty non-nil slice
+	// resets to the default scopes.
 	Scopes           []string
 	ProxyPort        int
 	CallbackPort     int
@@ -88,26 +90,87 @@ type SetOptions struct {
 	Models []string
 }
 
-// DeleteCachedTokensOnScopeChange deletes the cached OIDC tokens when applying
-// opts to cfg would change the requested scopes. A refresh-token grant returns
-// only the scopes the token was first issued with, so a changed scope list takes
-// effect only through a fresh login; dropping the cache makes the next login
-// (setup's, or the first token request under --lazy) request the new scopes.
-// It does nothing when opts leaves the scopes unchanged.
-func DeleteCachedTokensOnScopeChange(
-	ctx context.Context, errOut io.Writer, cfg Config, opts SetOptions, getSecretsProvider SecretsProviderFunc,
-) error {
-	if opts.Scopes == nil || slices.Equal(cfg.OIDC.EffectiveScopes(), oidc.MergeScopes(opts.Scopes)) {
+// requestedScopes returns offline_access followed by extra, without blanks or
+// duplicates. It returns nil for an empty extra, so a reset leaves the config
+// field unset and EffectiveScopes falls back to the default scopes.
+func requestedScopes(extra []string) []string {
+	var wanted []string
+	for _, s := range extra {
+		if s = strings.TrimSpace(s); s != "" {
+			wanted = append(wanted, s)
+		}
+	}
+	if len(wanted) == 0 {
 		return nil
 	}
-	provider, err := getSecretsProvider()
+	scopes := []string{"offline_access"}
+	for _, s := range wanted {
+		if !slices.Contains(scopes, s) {
+			scopes = append(scopes, s)
+		}
+	}
+	return scopes
+}
+
+// ConfigSet applies opts to the persisted LLM config. When that changes the
+// requested scopes it also drops the cached tokens (see
+// invalidateTokensOnScopeChange). The tokens are dropped only after the new
+// config is written, so a rejected value leaves both untouched.
+func ConfigSet(
+	ctx context.Context, errOut io.Writer, provider ConfigUpdater, opts SetOptions, getSecrets SecretsProviderFunc,
+) error {
+	var before, after Config
+	if err := provider.UpdateLLMConfig(func(c *Config) error {
+		before = *c
+		if err := c.SetFields(opts); err != nil {
+			return err
+		}
+		after = *c
+		return nil
+	}); err != nil {
+		return err
+	}
+	return invalidateTokensOnScopeChange(ctx, errOut, provider, before, after, getSecrets)
+}
+
+// scopesChanged reports whether the two configs request different scope sets.
+// Order is ignored: it does not change what the provider grants.
+func scopesChanged(before, after Config) bool {
+	sorted := func(c Config) []string { return slices.Sorted(slices.Values(c.OIDC.EffectiveScopes())) }
+	return !slices.Equal(sorted(before), sorted(after))
+}
+
+// invalidateTokensOnScopeChange drops the cached OIDC tokens and the persisted
+// reference to them when after requests different scopes than before. A
+// refresh-token grant returns only the scopes the token was first issued with,
+// so a changed list reaches the user only through a fresh login; with the cache
+// gone, the next login requests the new scopes. It does nothing when the scopes
+// are unchanged, so re-running a command keeps the existing session.
+func invalidateTokensOnScopeChange(
+	ctx context.Context, errOut io.Writer, provider ConfigUpdater, before, after Config,
+	getSecrets SecretsProviderFunc,
+) error {
+	if !scopesChanged(before, after) {
+		return nil
+	}
+	secretsProvider, err := getSecrets()
 	if err != nil {
 		return fmt.Errorf("failed to get secrets provider: %w", err)
 	}
-	if err := DeleteCachedTokens(ctx, provider); err != nil {
+	if err := DeleteCachedTokens(ctx, secretsProvider); err != nil {
 		return fmt.Errorf("deleting cached tokens for the changed scopes: %w", err)
 	}
+	if err := provider.UpdateLLMConfig(func(c *Config) error {
+		c.OIDC.CachedRefreshTokenRef = ""
+		c.OIDC.CachedTokenExpiry = time.Time{}
+		return nil
+	}); err != nil {
+		return fmt.Errorf("clearing the cached token reference: %w", err)
+	}
 	_, _ = fmt.Fprintln(errOut, "Scopes changed; cached tokens cleared so the next sign-in requests the new scopes.")
+	_, _ = fmt.Fprintln(errOut,
+		"Stop any running LLM proxy or token helper and start it again; an active process may recreate "+
+			"cached credentials issued for the old scopes.")
 	return nil
 }
 

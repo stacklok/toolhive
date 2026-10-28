@@ -16,6 +16,9 @@ package registration
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/rsa"
 	"math/big"
 	"testing"
@@ -622,32 +625,241 @@ func TestNewClient_EmptySlicesUseDefaults(t *testing.T) {
 	assert.ElementsMatch(t, DefaultScopes, client.GetScopes())
 }
 
-func TestNewStaticDelegateClient(t *testing.T) {
+func TestNewStaticDelegateClient_DefaultInputsKeepTodaysClient(t *testing.T) {
 	t.Parallel()
 
 	client, err := NewStaticDelegateClient(Config{
-		ID:         "delegate",
-		Secret:     "test-secret",
-		GrantTypes: []string{"urn:ietf:params:oauth:grant-type:token-exchange"},
-		Scopes:     []string{"openid"},
-		Audience:   []string{"https://mcp.example"},
+		ID:       "delegate",
+		Secret:   "test-secret",
+		Scopes:   []string{"openid"},
+		Audience: []string{"https://mcp.example"},
 	})
 	require.NoError(t, err)
 
-	assert.IsType(t, &fosite.DefaultClient{}, client)
-	assert.False(t, client.IsPublic())
+	hashed, err := SHA256Hasher.Hash(context.Background(), []byte("test-secret"))
+	require.NoError(t, err)
+	assert.Equal(t, &fosite.DefaultClient{
+		ID:         "delegate",
+		Secret:     hashed,
+		GrantTypes: []string{oauthproto.GrantTypeTokenExchange},
+		Scopes:     []string{"openid"},
+		Audience:   []string{"https://mcp.example"},
+	}, client)
 	assert.False(t, DCRIssued(client))
-	assert.Empty(t, client.GetRedirectURIs())
-	// Asserts on the underlying field, not GetResponseTypes(): fosite.DefaultClient's
-	// getter falls back to Arguments{"code"} whenever ResponseTypes is unset (per the
-	// OIDC dynamic registration default), unless the client type overrides it.
-	assert.Empty(t, client.ResponseTypes)
-	// Use ElementsMatch since fosite returns fosite.Arguments type.
-	assert.ElementsMatch(t, []string{"urn:ietf:params:oauth:grant-type:token-exchange"}, client.GetGrantTypes())
-	assert.ElementsMatch(t, []string{"openid"}, client.GetScopes())
-	assert.ElementsMatch(t, []string{"https://mcp.example"}, client.GetAudience())
-	assert.NoError(t, SHA256Hasher.Compare(context.Background(), client.GetHashedSecret(), []byte("test-secret")))
-	assert.Error(t, SHA256Hasher.Compare(context.Background(), client.GetHashedSecret(), []byte("wrong-secret")))
+	assert.False(t, client.IsPublic())
+	_, isOIDC := client.(fosite.OpenIDConnectClient)
+	assert.False(t, isOIDC, "an unpinned client must not enforce a token endpoint auth method")
+}
+
+func TestNewStaticDelegateClient_Shape(t *testing.T) {
+	t.Parallel()
+
+	jwks := &jose.JSONWebKeySet{Keys: []jose.JSONWebKey{{
+		Key: testRSAPublicKey(t), KeyID: "k1", Use: "sig", Algorithm: string(jose.RS256),
+	}}}
+	tests := []struct {
+		name       string
+		config     Config
+		wantMethod string
+		wantGrants []string
+		wantSecret bool
+	}{
+		{
+			name:       "client_secret_post is pinned",
+			config:     Config{Secret: "s", TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodClientSecretPost},
+			wantMethod: oauthproto.TokenEndpointAuthMethodClientSecretPost,
+			wantGrants: []string{oauthproto.GrantTypeTokenExchange},
+			wantSecret: true,
+		},
+		{
+			name:       "client_secret_basic is pinned",
+			config:     Config{Secret: "s", TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodClientSecretBasic},
+			wantMethod: oauthproto.TokenEndpointAuthMethodClientSecretBasic,
+			wantGrants: []string{oauthproto.GrantTypeTokenExchange},
+			wantSecret: true,
+		},
+		{
+			name: "private_key_jwt carries keys and no secret",
+			config: Config{
+				TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodPrivateKeyJWT,
+				JSONWebKeys:             jwks,
+			},
+			wantMethod: oauthproto.TokenEndpointAuthMethodPrivateKeyJWT,
+			wantGrants: []string{oauthproto.GrantTypeTokenExchange},
+		},
+		{
+			name: "authorization_code with redirect and refresh",
+			config: Config{
+				Secret:       "s",
+				GrantTypes:   []string{oauthproto.GrantTypeTokenExchange, oauthproto.GrantTypeAuthorizationCode, oauthproto.GrantTypeRefreshToken},
+				RedirectURIs: []string{"https://broker.example/callback"},
+			},
+			wantGrants: []string{oauthproto.GrantTypeTokenExchange, oauthproto.GrantTypeAuthorizationCode, oauthproto.GrantTypeRefreshToken},
+			wantSecret: true,
+		},
+		{
+			name: "jwt-bearer",
+			config: Config{
+				Secret:     "s",
+				GrantTypes: []string{oauthproto.GrantTypeTokenExchange, oauthproto.GrantTypeJWTBearer},
+			},
+			wantGrants: []string{oauthproto.GrantTypeTokenExchange, oauthproto.GrantTypeJWTBearer},
+			wantSecret: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg := tt.config
+			cfg.ID = "configured"
+			cfg.Scopes = []string{"openid"}
+			cfg.Audience = []string{"https://mcp.example"}
+			client, err := NewStaticDelegateClient(cfg)
+			require.NoError(t, err)
+
+			assert.False(t, DCRIssued(client))
+			assert.False(t, client.IsPublic())
+			assert.Equal(t, tt.wantGrants, []string(client.GetGrantTypes()))
+			assert.Equal(t, tt.wantSecret, len(client.GetHashedSecret()) > 0)
+			assert.Equal(t, cfg.RedirectURIs, client.GetRedirectURIs())
+			if tt.wantMethod == "" {
+				return
+			}
+			oidc, ok := client.(fosite.OpenIDConnectClient)
+			require.True(t, ok)
+			assert.Equal(t, tt.wantMethod, oidc.GetTokenEndpointAuthMethod())
+			if tt.wantMethod == oauthproto.TokenEndpointAuthMethodPrivateKeyJWT {
+				assert.Equal(t, defaultConfiguredSigningAlgorithm, oidc.GetTokenEndpointAuthSigningAlgorithm())
+				assert.Equal(t, jwks, oidc.GetJSONWebKeys())
+				assert.NotSame(t, jwks, oidc.GetJSONWebKeys())
+				return
+			}
+			assert.Nil(t, oidc.GetJSONWebKeys())
+			// The getter defaults an empty algorithm to RS256, so check the field.
+			assert.Empty(t, oidc.(*fosite.DefaultOpenIDConnectClient).TokenEndpointAuthSigningAlgorithm)
+		})
+	}
+}
+
+func TestValidateConfiguredClient(t *testing.T) {
+	t.Parallel()
+
+	pub := testRSAPublicKey(t)
+	validKey := jose.JSONWebKey{Key: pub, KeyID: "k1", Use: "sig", Algorithm: string(jose.RS256)}
+	keySet := func(keys ...jose.JSONWebKey) *jose.JSONWebKeySet { return &jose.JSONWebKeySet{Keys: keys} }
+	pkjwt := oauthproto.TokenEndpointAuthMethodPrivateKeyJWT
+	exchange := oauthproto.GrantTypeTokenExchange
+	authCode := oauthproto.GrantTypeAuthorizationCode
+	redirect := []string{"https://broker.example/callback"}
+
+	ecKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+
+	noSecret := false
+	tests := []struct {
+		name string
+		spec ConfiguredClientSpec
+		// hasSecret overrides the default of a secret for every method but private_key_jwt.
+		hasSecret *bool
+		wantErr   string
+	}{
+		{name: "defaults", spec: ConfiguredClientSpec{}},
+		{name: "explicit token exchange", spec: ConfiguredClientSpec{GrantTypes: []string{exchange}}},
+		{name: "every grant", spec: ConfiguredClientSpec{
+			GrantTypes:   []string{exchange, authCode, oauthproto.GrantTypeRefreshToken, oauthproto.GrantTypeJWTBearer},
+			RedirectURIs: redirect,
+		}},
+		{name: "grants without token exchange", spec: ConfiguredClientSpec{
+			GrantTypes: []string{oauthproto.GrantTypeJWTBearer},
+		}, wantErr: "must include"},
+		{name: "unsupported grant", spec: ConfiguredClientSpec{
+			GrantTypes: []string{exchange, oauthproto.GrantTypeDeviceCode},
+		}, wantErr: "unsupported grant type"},
+		{name: "duplicate grant", spec: ConfiguredClientSpec{
+			GrantTypes: []string{exchange, exchange},
+		}, wantErr: "duplicate grant type"},
+		{name: "refresh_token without authorization_code", spec: ConfiguredClientSpec{
+			GrantTypes: []string{exchange, oauthproto.GrantTypeRefreshToken},
+		}, wantErr: "with \"refresh_token\""},
+		{name: "authorization_code needs redirect", spec: ConfiguredClientSpec{
+			GrantTypes: []string{exchange, authCode},
+		}, wantErr: "redirect_uris is required"},
+		{name: "redirect without authorization_code", spec: ConfiguredClientSpec{
+			RedirectURIs: redirect,
+		}, wantErr: "only allowed with the authorization_code grant"},
+		{name: "invalid redirect", spec: ConfiguredClientSpec{
+			GrantTypes: []string{exchange, authCode}, RedirectURIs: []string{"/relative"},
+		}, wantErr: "redirect_uris"},
+		{name: "loopback redirect rejected", spec: ConfiguredClientSpec{
+			GrantTypes: []string{exchange, authCode}, RedirectURIs: []string{"http://localhost:8080/callback"},
+		}, wantErr: "redirect_uris"},
+		{name: "custom scheme redirect rejected", spec: ConfiguredClientSpec{
+			GrantTypes: []string{exchange, authCode}, RedirectURIs: []string{"cursor://callback"},
+		}, wantErr: "redirect_uris"},
+		{name: "https redirect accepted", spec: ConfiguredClientSpec{
+			GrantTypes: []string{exchange, authCode}, RedirectURIs: redirect,
+		}},
+		{name: "secret required", spec: ConfiguredClientSpec{}, hasSecret: &noSecret, wantErr: "secret is required"},
+		{name: "secret with private_key_jwt", spec: ConfiguredClientSpec{
+			TokenEndpointAuthMethod: pkjwt, JWKS: keySet(validKey),
+		}, hasSecret: func() *bool { b := true; return &b }(), wantErr: "not allowed with private_key_jwt"},
+		{name: "unknown auth method", spec: ConfiguredClientSpec{
+			TokenEndpointAuthMethod: "none",
+		}, wantErr: "unsupported token_endpoint_auth_method"},
+		{name: "private_key_jwt with public key", spec: ConfiguredClientSpec{
+			TokenEndpointAuthMethod: pkjwt, JWKS: keySet(validKey),
+		}},
+		{name: "private_key_jwt keys pending", spec: ConfiguredClientSpec{
+			TokenEndpointAuthMethod: pkjwt, JWKSPending: true,
+		}},
+		{name: "private_key_jwt without keys", spec: ConfiguredClientSpec{
+			TokenEndpointAuthMethod: pkjwt,
+		}, wantErr: "jwks_file"},
+		{name: "unsupported signing algorithm with keys pending", spec: ConfiguredClientSpec{
+			TokenEndpointAuthMethod: pkjwt, SigningAlgorithm: "HS256", JWKSPending: true,
+		}, wantErr: "unsupported"},
+		{name: "key type does not match default algorithm", spec: ConfiguredClientSpec{
+			TokenEndpointAuthMethod: pkjwt,
+			JWKS: keySet(jose.JSONWebKey{
+				Key: &ecKey.PublicKey, KeyID: "ec", Use: "sig", Algorithm: string(jose.ES256),
+			}),
+		}, wantErr: "jwks_file"},
+		{name: "private key rejected", spec: ConfiguredClientSpec{
+			TokenEndpointAuthMethod: pkjwt,
+			JWKS:                    keySet(jose.JSONWebKey{Key: &rsa.PrivateKey{PublicKey: *pub, D: big.NewInt(1)}, Use: "sig"}),
+		}, wantErr: "public signing keys"},
+		{name: "symmetric key rejected", spec: ConfiguredClientSpec{
+			TokenEndpointAuthMethod: pkjwt,
+			JWKS:                    keySet(jose.JSONWebKey{Key: []byte("0123456789abcdef0123456789abcdef"), Use: "sig"}),
+		}, wantErr: "public signing keys"},
+		{name: "keys with a secret method", spec: ConfiguredClientSpec{
+			TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodClientSecretBasic, JWKS: keySet(validKey),
+		}, wantErr: "only allowed with"},
+		{name: "signing algorithm with a secret method", spec: ConfiguredClientSpec{
+			SigningAlgorithm: string(jose.RS256),
+		}, wantErr: "only allowed with"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			spec := tt.spec
+			spec.HasSecret = spec.TokenEndpointAuthMethod != pkjwt
+			if tt.hasSecret != nil {
+				spec.HasSecret = *tt.hasSecret
+			}
+			err := ValidateConfiguredClient(spec)
+			if tt.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
 }
 
 func TestNewStaticDelegateClient_Validation(t *testing.T) {
@@ -679,20 +891,10 @@ func TestNewStaticDelegateClient_Validation(t *testing.T) {
 				Scopes:     validScopes,
 				Audience:   validAudience,
 			},
-			wantErr: "confidential client requires a secret",
+			wantErr: "secret is required",
 		},
 		{
-			name: "missing grant types",
-			config: Config{
-				ID:       "delegate",
-				Secret:   "test-secret",
-				Scopes:   validScopes,
-				Audience: validAudience,
-			},
-			wantErr: "delegate client grant types must be exactly",
-		},
-		{
-			name: "non-token-exchange grant type",
+			name: "grant types without token exchange",
 			config: Config{
 				ID:         "delegate",
 				Secret:     "test-secret",
@@ -700,18 +902,18 @@ func TestNewStaticDelegateClient_Validation(t *testing.T) {
 				Scopes:     validScopes,
 				Audience:   validAudience,
 			},
-			wantErr: "delegate client grant types must be exactly",
+			wantErr: "must include",
 		},
 		{
-			name: "multiple grant types",
+			name: "secret with private_key_jwt",
 			config: Config{
-				ID:         "delegate",
-				Secret:     "test-secret",
-				GrantTypes: []string{oauthproto.GrantTypeTokenExchange, "authorization_code"},
-				Scopes:     validScopes,
-				Audience:   validAudience,
+				ID:                      "delegate",
+				Secret:                  "test-secret",
+				TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodPrivateKeyJWT,
+				Scopes:                  validScopes,
+				Audience:                validAudience,
 			},
-			wantErr: "delegate client grant types must be exactly",
+			wantErr: "not allowed with private_key_jwt",
 		},
 		{
 			name: "missing scopes",

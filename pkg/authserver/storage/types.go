@@ -1282,10 +1282,11 @@ func sameStringSet(a, b []string) bool {
 // configured client is declared over an existing row at the same ID. How much
 // of it matters depends on the row's kind (see configuredClientConflict):
 // reserved SPIFFE placeholders compare in full, other configured clients only
-// on public. Client secrets are deliberately excluded -- an operator rotating
-// a secret must still be able to reconcile. TokenEndpointAuthMethod is
-// excluded for the same reason: both backends fully overwrite the stored
-// record on a successful reconcile rather than merging.
+// on public; the redirect URI set additionally feeds the replacement WARN
+// (see policyChanged). Client secrets are deliberately excluded -- an
+// operator rotating a secret must still be able to reconcile. JWKS keys are
+// excluded for the same reason: private_key_jwt key rotation must reconcile
+// silently.
 //
 // Deliberately NOT fosite.Client: fosite.DefaultClient's GetGrantTypes/
 // GetResponseTypes substitute an interactive default when the underlying list
@@ -1294,13 +1295,21 @@ func sameStringSet(a, b []string) bool {
 // into this type; the comparison exists once, so memory- and Redis-backed
 // deployments cannot disagree.
 //
-// Grant and response types, like resources and identity, only matter for
-// reserved rows; for non-reserved rows only public is compared.
+// Grant and response types and redirect URIs, like resources and identity,
+// only matter for reserved rows; for non-reserved rows only public is
+// compared.
 type clientFingerprint struct {
 	scopes        []string
 	audience      []string
 	grantTypes    []string
 	responseTypes []string
+	// redirectURIs is empty for reserved placeholders, which never carry
+	// redirect URIs.
+	redirectURIs []string
+	// tokenEndpointAuthMethod is empty for clients that are not a
+	// fosite.OpenIDConnectClient, including unpinned secret clients and
+	// reserved placeholders.
+	tokenEndpointAuthMethod string
 	// resources is the RFC 8707 resource allowlist, distinct from audience
 	// (see resourceScopedClient in spiffe_decorator.go). Only reserved rows
 	// carry it: buildStoredClient persists it for them alone.
@@ -1315,27 +1324,34 @@ type clientFingerprint struct {
 }
 
 // equal reports whether f and o represent the same logical client
-// configuration: equal scope, audience, grant-type, response-type and
-// resource sets, identity, public/confidential class, and reserved kind.
+// configuration: equal scope, audience, grant-type, response-type, resource
+// and redirect URI sets, token endpoint auth method, identity,
+// public/confidential class, and reserved kind.
 func (f clientFingerprint) equal(o clientFingerprint) bool {
 	return sameStringSet(f.scopes, o.scopes) &&
 		sameStringSet(f.audience, o.audience) &&
 		sameStringSet(f.grantTypes, o.grantTypes) &&
 		sameStringSet(f.responseTypes, o.responseTypes) &&
 		sameStringSet(f.resources, o.resources) &&
+		sameStringSet(f.redirectURIs, o.redirectURIs) &&
+		f.tokenEndpointAuthMethod == o.tokenEndpointAuthMethod &&
 		f.identityFingerprint == o.identityFingerprint &&
 		f.public == o.public &&
 		f.reserved == o.reserved
 }
 
-// policyChanged reports whether the scopes or audience differ between f and
-// o, for the operator-visible warning when a configured client is replaced
-// with a different policy. Grant and response types are deliberately not
-// compared, so a grant-type change is replaced without the WARN. Delegate
-// grant types are fixed internally today, so in practice only scopes and
-// audience can change.
+// policyChanged reports whether the scopes, audience, grant types, redirect
+// URIs or token endpoint auth method differ between f and o, for the
+// operator-visible warning when a configured client is replaced with a
+// different policy. Response types and JWKS keys are deliberately not
+// compared, so a private_key_jwt key rotation replaces the stored row
+// silently.
 func (f clientFingerprint) policyChanged(o clientFingerprint) bool {
-	return !sameStringSet(f.scopes, o.scopes) || !sameStringSet(f.audience, o.audience)
+	return !sameStringSet(f.scopes, o.scopes) ||
+		!sameStringSet(f.audience, o.audience) ||
+		!sameStringSet(f.grantTypes, o.grantTypes) ||
+		!sameStringSet(f.redirectURIs, o.redirectURIs) ||
+		f.tokenEndpointAuthMethod != o.tokenEndpointAuthMethod
 }
 
 // configuredClientConflict decides whether incoming may replace existing at
@@ -1375,9 +1391,10 @@ func configuredClientConflict(id string, existing, incoming clientFingerprint) e
 }
 
 // warnConfiguredClientReplaced logs, after a successful replace, that a
-// configured client's scopes or audience changed. During a rolling update with
-// differing configs the replicas overwrite each other, so this is the
-// operator's signal for that flapping. Secrets are never logged.
+// configured client's scopes, audience, grant types, redirect URIs or token
+// endpoint auth method changed. During a rolling update with differing
+// configs the replicas overwrite each other, so this is the operator's signal
+// for that flapping. Secrets are never logged.
 func warnConfiguredClientReplaced(id string, existing, incoming clientFingerprint) {
 	if !existing.policyChanged(incoming) {
 		return
@@ -1385,7 +1402,11 @@ func warnConfiguredClientReplaced(id string, existing, incoming clientFingerprin
 	slog.Warn("configured client replaced with a different policy",
 		"client_id", id,
 		"old_scopes", existing.scopes, "new_scopes", incoming.scopes,
-		"old_audiences", existing.audience, "new_audiences", incoming.audience)
+		"old_audiences", existing.audience, "new_audiences", incoming.audience,
+		"old_grant_types", existing.grantTypes, "new_grant_types", incoming.grantTypes,
+		"old_redirect_uris", existing.redirectURIs, "new_redirect_uris", incoming.redirectURIs,
+		"old_token_endpoint_auth_method", existing.tokenEndpointAuthMethod,
+		"new_token_endpoint_auth_method", incoming.tokenEndpointAuthMethod)
 }
 
 // fingerprintOfClient reads a live fosite.Client. Safe here because a
@@ -1405,15 +1426,21 @@ func fingerprintOfClient(c fosite.Client) clientFingerprint {
 			identityFingerprint = identity.IdentityFingerprint()
 		}
 	}
+	var tokenEndpointAuthMethod string
+	if oidcClient, ok := c.(fosite.OpenIDConnectClient); ok {
+		tokenEndpointAuthMethod = oidcClient.GetTokenEndpointAuthMethod()
+	}
 	return clientFingerprint{
-		scopes:              c.GetScopes(),
-		audience:            c.GetAudience(),
-		grantTypes:          c.GetGrantTypes(),
-		responseTypes:       c.GetResponseTypes(),
-		resources:           resources,
-		identityFingerprint: identityFingerprint,
-		public:              c.IsPublic(),
-		reserved:            reserved,
+		scopes:                  c.GetScopes(),
+		audience:                c.GetAudience(),
+		grantTypes:              c.GetGrantTypes(),
+		responseTypes:           c.GetResponseTypes(),
+		redirectURIs:            c.GetRedirectURIs(),
+		tokenEndpointAuthMethod: tokenEndpointAuthMethod,
+		resources:               resources,
+		identityFingerprint:     identityFingerprint,
+		public:                  c.IsPublic(),
+		reserved:                reserved,
 	}
 }
 

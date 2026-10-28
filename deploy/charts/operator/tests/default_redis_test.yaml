@@ -10,6 +10,10 @@ tests:
           path: 'spec.template.spec.containers[0].env[?(@.name=="TOOLHIVE_DEFAULT_REDIS_ADDR")]'
       - notExists:
           path: 'spec.template.spec.containers[0].env[?(@.name=="TOOLHIVE_DEFAULT_REDIS_SECRET_NAME")]'
+      - notExists:
+          path: 'spec.template.spec.containers[0].env[?(@.name=="TOOLHIVE_DEFAULT_REDIS_TLS_ENABLED")]'
+      - notExists:
+          path: 'spec.template.spec.containers[0].env[?(@.name=="TOOLHIVE_DEFAULT_REDIS_TLS_CA_SECRET_NAME")]'
 
   - it: injects TOOLHIVE_DEFAULT_REDIS_ADDR from operator.defaultRedis.addr
     set:
@@ -73,3 +77,157 @@ tests:
     asserts:
       - notExists:
           path: 'spec.template.spec.containers[0].env[?(@.name=="TOOLHIVE_DEFAULT_REDIS_SECRET_NAME")]'
+
+  - it: leaves TLS disabled for an address on port 6380
+    set:
+      operator.defaultRedis.addr: "myredis:6380"
+      operator.defaultRedis.tls.enabled: false
+    asserts:
+      - notExists:
+          path: 'spec.template.spec.containers[0].env[?(@.name=="TOOLHIVE_DEFAULT_REDIS_TLS_ENABLED")]'
+
+  - it: tolerates an omitted TLS block from older values
+    set:
+      operator.defaultRedis.addr: "myredis:6379"
+      operator.defaultRedis.tls: null
+    asserts:
+      - contains:
+          path: 'spec.template.spec.containers[0].env'
+          content: { name: TOOLHIVE_DEFAULT_REDIS_ADDR, value: "myredis:6379" }
+      - notExists:
+          path: 'spec.template.spec.containers[0].env[?(@.name=="TOOLHIVE_DEFAULT_REDIS_TLS_ENABLED")]'
+
+  - it: enables verified TLS with system roots
+    set:
+      operator.defaultRedis.addr: "myredis:6379"
+      operator.defaultRedis.tls.enabled: true
+    asserts:
+      - contains:
+          path: 'spec.template.spec.containers[0].env'
+          content: { name: TOOLHIVE_DEFAULT_REDIS_TLS_ENABLED, value: "true" }
+      - notExists:
+          path: 'spec.template.spec.containers[0].env[?(@.name=="TOOLHIVE_DEFAULT_REDIS_TLS_CA_SECRET_NAME")]'
+      - notExists:
+          path: 'spec.template.spec.containers[0].env[?(@.name=="TOOLHIVE_DEFAULT_REDIS_TLS_CA_SECRET_KEY")]'
+
+  - it: enables verified TLS with a custom CA certificate Secret
+    set:
+      operator.defaultRedis.addr: "myredis:6379"
+      operator.defaultRedis.tls.enabled: true
+      operator.defaultRedis.tls.caCertSecretRef.name: "redis-ca"
+      operator.defaultRedis.tls.caCertSecretRef.key: "root.pem"
+    asserts:
+      - contains:
+          path: 'spec.template.spec.containers[0].env'
+          content: { name: TOOLHIVE_DEFAULT_REDIS_TLS_ENABLED, value: "true" }
+      - contains:
+          path: 'spec.template.spec.containers[0].env'
+          content: { name: TOOLHIVE_DEFAULT_REDIS_TLS_CA_SECRET_NAME, value: "redis-ca" }
+      - contains:
+          path: 'spec.template.spec.containers[0].env'
+          content: { name: TOOLHIVE_DEFAULT_REDIS_TLS_CA_SECRET_KEY, value: "root.pem" }
+
+  - it: uses the default CA key when only a Secret name is configured
+    set:
+      operator.defaultRedis.addr: "myredis:6379"
+      operator.defaultRedis.tls.enabled: true
+      operator.defaultRedis.tls.caCertSecretRef.name: "redis-ca"
+    asserts:
+      - contains:
+          path: 'spec.template.spec.containers[0].env'
+          content: { name: TOOLHIVE_DEFAULT_REDIS_TLS_CA_SECRET_KEY, value: "ca.crt" }
+
+  - it: enables TLS with the address inherited from the parent chart
+    set:
+      global.redis.host: "global-redis.internal"
+      global.redis.port: 6380
+      operator.defaultRedis.tls.enabled: true
+    asserts:
+      - contains:
+          path: 'spec.template.spec.containers[0].env'
+          content: { name: TOOLHIVE_DEFAULT_REDIS_ADDR, value: "global-redis.internal:6380" }
+      - contains:
+          path: 'spec.template.spec.containers[0].env'
+          content: { name: TOOLHIVE_DEFAULT_REDIS_TLS_ENABLED, value: "true" }
+
+  - it: keeps the explicit address and password Secret precedence with TLS
+    set:
+      operator.defaultRedis.addr: "myredis:6380"
+      operator.defaultRedis.existingSecret: "local-creds"
+      operator.defaultRedis.existingSecretKey: "local-password"
+      operator.defaultRedis.tls.enabled: true
+      global.redis.host: "global-redis.internal"
+      global.redis.existingSecret: "global-creds"
+      global.redis.existingSecretKey: "global-password"
+    asserts:
+      - contains:
+          path: 'spec.template.spec.containers[0].env'
+          content: { name: TOOLHIVE_DEFAULT_REDIS_ADDR, value: "myredis:6380" }
+      - contains:
+          path: 'spec.template.spec.containers[0].env'
+          content: { name: TOOLHIVE_DEFAULT_REDIS_SECRET_NAME, value: "local-creds" }
+      - contains:
+          path: 'spec.template.spec.containers[0].env'
+          content: { name: TOOLHIVE_DEFAULT_REDIS_SECRET_KEY, value: "local-password" }
+      - contains:
+          path: 'spec.template.spec.containers[0].env'
+          content: { name: TOOLHIVE_DEFAULT_REDIS_TLS_ENABLED, value: "true" }
+
+  - it: rejects a non-boolean TLS flag
+    set:
+      operator.defaultRedis.addr: "myredis:6379"
+      operator.defaultRedis.tls.enabled: "true"
+    asserts:
+      - failedTemplate:
+          errorPattern: 'operator.defaultRedis.tls.enabled must be a boolean'
+
+  - it: rejects a non-object TLS block
+    set:
+      operator.defaultRedis.addr: "myredis:6379"
+      operator.defaultRedis.tls: false
+    asserts:
+      - failedTemplate:
+          errorPattern: 'operator.defaultRedis.tls must be an object'
+
+  - it: rejects TLS without a Redis address
+    set:
+      operator.defaultRedis.tls.enabled: true
+    asserts:
+      - failedTemplate:
+          errorPattern: 'operator.defaultRedis.tls.enabled requires operator.defaultRedis.addr or global.redis.host'
+
+  - it: rejects an empty CA Secret key
+    set:
+      operator.defaultRedis.addr: "myredis:6379"
+      operator.defaultRedis.tls.enabled: true
+      operator.defaultRedis.tls.caCertSecretRef.name: "redis-ca"
+      operator.defaultRedis.tls.caCertSecretRef.key: ""
+    asserts:
+      - failedTemplate:
+          errorPattern: 'operator.defaultRedis.tls.caCertSecretRef.key must be non-empty when name is set'
+
+  - it: rejects a CA Secret when TLS is disabled
+    set:
+      operator.defaultRedis.addr: "myredis:6379"
+      operator.defaultRedis.tls.caCertSecretRef.name: "redis-ca"
+    asserts:
+      - failedTemplate:
+          errorPattern: 'operator.defaultRedis.tls.caCertSecretRef.name requires operator.defaultRedis.tls.enabled=true'
+
+  - it: rejects a CA key configured without a Secret name
+    set:
+      operator.defaultRedis.addr: "myredis:6379"
+      operator.defaultRedis.tls.enabled: true
+      operator.defaultRedis.tls.caCertSecretRef.key: "root.pem"
+    asserts:
+      - failedTemplate:
+          errorPattern: 'operator.defaultRedis.tls.caCertSecretRef.key requires a Secret name'
+
+  - it: rejects unsupported insecure TLS options
+    set:
+      operator.defaultRedis.addr: "myredis:6379"
+      operator.defaultRedis.tls.enabled: true
+      operator.defaultRedis.tls.insecureSkipVerify: true
+    asserts:
+      - failedTemplate:
+          errorPattern: 'operator.defaultRedis.tls.insecureSkipVerify is unsupported'

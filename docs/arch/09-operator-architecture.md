@@ -559,6 +559,44 @@ The operator sets `Container.Args` (not `Command`) on the proxy-runner Deploymen
 
 **Implementation**: `cmd/thv-proxyrunner/app/commands.go` (cobra wiring), `cmd/thv-proxyrunner/app/run.go` (`run` command logic)
 
+## Operator-wide Redis session storage
+
+`operator.defaultRedis` in the Helm chart supplies an address and optional password
+Secret reference for workloads using the operator's Redis session storage fallback.
+Enable `operator.defaultRedis.tls.enabled` for verified TLS; an optional
+`operator.defaultRedis.tls.caCertSecretRef` selects a private CA. The password and
+CA Secrets must exist in each workload's namespace.
+If the CA Secret or key is missing, affected pods remain in `ContainerCreating`
+with a Kubernetes `FailedMount` event visible through `kubectl describe pod`.
+
+The chart injects connection settings and Secret references into the operator's
+environment. At startup, the operator reads and validates these defaults once,
+then passes the same configuration to its controllers and vMCP converter. Runtime
+configuration and CA projection use this startup snapshot without reading the
+environment during reconciliation. Changing the defaults requires restarting the
+operator; the new settings apply as workloads reconcile.
+
+Direct Go callers of `vmcpconfig.NewConverter` must pass global defaults through
+`WithDefaultRedisConfig`. Previously, conversion read those defaults from the
+environment; a two-argument constructor call now uses only explicit session
+storage. Load and validate the defaults once at application startup with
+`controllerutil.LoadDefaultRedisConfigFromEnv`, handle its error, and pass the
+result to the converter option. The operator already forwards this snapshot
+through `VirtualMCPServerReconciler`, preserving its Kubernetes Redis fallback.
+
+The operator renders the existing session TLS configuration and projects the CA
+into the proxy runner or vMCP container. It does not load the CA into its own
+process or transfer it between namespaces. The existing configuration checksum
+and CA-volume comparisons trigger Deployment updates when the selected TLS
+configuration or CA reference changes.
+Changing CA contents under the same reference requires restarting workload pods.
+
+Per-workload Redis configuration takes precedence over global address, password,
+and TLS settings. Disabled global TLS preserves plaintext behavior. Provider
+selection retains the existing differences between resource kinds; see
+[Redis transport security](13-vmcp-scalability.md#transport-security) for the
+configuration example, environment variables, and compatibility details.
+
 ## Design Principles
 
 **From**: `cmd/thv-operator/DESIGN.md`

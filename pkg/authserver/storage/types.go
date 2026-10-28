@@ -16,7 +16,7 @@
 // OAuth authorization server.
 package storage
 
-//go:generate mockgen -destination=mocks/mock_storage.go -package=mocks -source=types.go Storage,PendingAuthorizationStorage,DeviceCodeStorage,PendingDeviceLoginStorage,PendingDeviceConfirmationStorage,RememberedConsentStorage,AssertionJWTConsumer,ClientRegistry,UpstreamTokenStorage,UpstreamTokenRefresher,UserStorage,DCRCredentialStore
+//go:generate mockgen -destination=mocks/mock_storage.go -package=mocks -source=types.go Storage,PendingAuthorizationStorage,DeviceCodeStorage,PendingDeviceLoginStorage,PendingDeviceConfirmationStorage,RememberedConsentStorage,AssertionJWTConsumer,ClientRegistry,UpstreamTokenStorage,UpstreamTokenRefresher,UserStorage,DCRCredentialStore,ExchangeGrantStorage
 
 import (
 	"context"
@@ -46,6 +46,11 @@ var (
 
 	// ErrExpired is returned when an item exists but has expired.
 	ErrExpired = errors.New("storage: item expired")
+
+	// ErrRevoked is returned when an item exists but has been revoked, such as
+	// an exchange grant revoked through RFC 7009. Live reports it ahead of
+	// ErrExpired when both apply.
+	ErrRevoked = errors.New("storage: item revoked")
 
 	// ErrAlreadyExists is returned when attempting to create an item that already exists.
 	ErrAlreadyExists = errors.New("storage: item already exists")
@@ -1045,6 +1050,164 @@ type AssertionJWTConsumer interface {
 	ConsumeAssertionJWT(ctx context.Context, purpose, issuer, jti string, exp time.Time) error
 }
 
+// ExchangeGrantMarkerMargin is how long past the subject token's exp the replay
+// marker of an exchange grant stays live. The self-issued validator accepts a
+// token at now == exp, and CreateExchangeGrant runs after the handler's own
+// latency, so a marker that ended exactly at exp could let a token pass
+// validation just before exp and be replayed just after. The marker is live
+// while !now.After(SourceExpiresAt + margin). Every backend uses this value.
+const ExchangeGrantMarkerMargin = time.Minute
+
+// ExchangeGrant is the server-side record behind a refresh token issued through
+// RFC 8693 token exchange. The client holds only the opaque token; the record is
+// found by the token's HMAC signature. A grant either allows exchange for
+// ID-JAGs (id-jag) or for child refresh tokens (refresh_token), fixed at issuance.
+type ExchangeGrant struct {
+	// Signature is the refresh token's HMAC signature. It is also the internal
+	// grant ID. It is never exposed to clients.
+	Signature string
+
+	// ParentSignature is the Signature of the grant this one was derived from.
+	// It is empty for a top-level grant. Depth is 1: a grant with a
+	// ParentSignature cannot be a parent.
+	ParentSignature string
+
+	// ClientID is the ID of the OAuth client the grant was issued to.
+	ClientID string
+
+	// Subject is the subject (sub) of the user the grant acts for.
+	Subject string
+
+	// SubjectIdentifier is the sub_id JSON of the subject, recorded when present.
+	SubjectIdentifier string
+
+	// SourceIssuer is the iss of the subject access token. With SourceJTI it forms
+	// the replay key. Empty for child grants.
+	SourceIssuer string
+
+	// SourceJTI is the jti of the subject access token that authorized issuance.
+	// It is empty for child grants, which have no subject access token.
+	SourceJTI string
+
+	// SourceExpiresAt is the exp of the subject access token. The SourceJTI replay
+	// marker is kept at least until this time.
+	SourceExpiresAt time.Time
+
+	// IssuableTokenTypes holds exactly one token type URN: the ID-JAG URN or the
+	// refresh-token URN. The store does not check this shape; the handler does.
+	IssuableTokenTypes []string
+
+	ExpiresAt time.Time
+	CreatedAt time.Time
+
+	// RevokedAt is zero while the grant is not revoked.
+	RevokedAt time.Time
+}
+
+// Live reports whether the grant can still be used at now. It returns ErrRevoked
+// if the grant has been revoked, and ErrExpired if now is after ExpiresAt. The
+// revocation check comes first, so a grant that is both revoked and expired
+// reports ErrRevoked. A zero ExpiresAt counts as expired, which is the opposite
+// of UpstreamTokens.IsExpired, where zero means no expiry. A grant with
+// now == ExpiresAt is still live. Live checks only this record. A child grant is
+// usable only if its parent is live too; see ExchangeGrantStorage.
+func (g *ExchangeGrant) Live(now time.Time) error {
+	if !g.RevokedAt.IsZero() {
+		return ErrRevoked
+	}
+	if now.After(g.ExpiresAt) {
+		return ErrExpired
+	}
+	return nil
+}
+
+// validateExchangeGrantShape checks the parts of a grant that every backend
+// must refuse before writing: it must be non-nil, have a Signature and an
+// ExpiresAt, and be either a top-level grant (no ParentSignature, SourceIssuer
+// and SourceJTI both set, and a SourceExpiresAt) or a child (a ParentSignature
+// other than its own Signature, and no SourceIssuer or SourceJTI).
+func validateExchangeGrantShape(g *ExchangeGrant) error {
+	if g == nil {
+		return errors.New("exchange grant is nil")
+	}
+	if g.Signature == "" {
+		return errors.New("exchange grant signature is empty")
+	}
+	if g.ExpiresAt.IsZero() {
+		return errors.New("exchange grant needs ExpiresAt")
+	}
+	if (g.SourceJTI == "") != (g.SourceIssuer == "") {
+		return errors.New("exchange grant must set both SourceIssuer and SourceJTI or neither")
+	}
+	if (g.ParentSignature != "") == (g.SourceJTI != "") {
+		return errors.New("exchange grant must set exactly one of ParentSignature or SourceIssuer and SourceJTI")
+	}
+	if g.ParentSignature == g.Signature {
+		return errors.New("exchange grant cannot be its own parent")
+	}
+	if g.SourceJTI != "" && g.SourceExpiresAt.IsZero() {
+		return errors.New("exchange grant with a SourceJTI needs SourceExpiresAt")
+	}
+	return nil
+}
+
+// validateExchangeGrantRevokeTime refuses a zero revocation time.
+func validateExchangeGrantRevokeTime(now time.Time) error {
+	if now.IsZero() {
+		return errors.New("revoke time must not be zero")
+	}
+	return nil
+}
+
+// ExchangeGrantStorage stores the grant records behind refresh tokens issued
+// through token exchange. It is an optional capability, like DeviceCodeStorage.
+// Callers discover it with storage.Unwrap(stor).(ExchangeGrantStorage) at
+// construction time. ToolHive's own decorators implement Unwrap and do not
+// forward this interface, so the lookup must go through Unwrap. A decorator
+// that does not implement Unwrap (for example an embedder's encrypting
+// decorator, which must not expose its backend) hides the capability unless
+// it forwards the three methods itself; it should forward them, since grant
+// records carry no token value for it to transform.
+//
+// Records are kept until ExpiresAt. Time decisions belong to the caller, which
+// applies ExchangeGrant.Live(now) to every record it reads. Backend expiry is
+// only garbage collection.
+type ExchangeGrantStorage interface {
+	// CreateExchangeGrant stores g. The write is atomic: the record and, when
+	// g.SourceJTI is set, its replay marker are both written, or neither is.
+	// The replay marker is keyed by (g.SourceIssuer, g.SourceJTI) and is live
+	// while now is not after g.SourceExpiresAt + ExchangeGrantMarkerMargin.
+	// A top-level grant has no ParentSignature and sets SourceIssuer, SourceJTI
+	// and SourceExpiresAt. A child sets ParentSignature and leaves SourceIssuer
+	// and SourceJTI empty. ExpiresAt must be set and not already past by the
+	// store clock. Any other shape is an error and writes nothing.
+	//
+	// It returns fosite.ErrJTIKnown if (g.SourceIssuer, g.SourceJTI) was already
+	// recorded, and ErrAlreadyExists if a grant with g.Signature already exists.
+	// A failed call writes nothing, so the caller can retry with the same record.
+	// Other failures are returned as-is.
+	//
+	// A create after the ExpiresAt of an existing grant with the same signature
+	// may succeed or return ErrAlreadyExists, depending on when the backend
+	// evicts the old record. Signatures are HMACs of random tokens, so callers
+	// never rely on either outcome.
+	CreateExchangeGrant(ctx context.Context, g *ExchangeGrant) error
+
+	// GetExchangeGrant returns the grant with the given signature. Revoked grants
+	// are returned with RevokedAt set. It returns ErrNotFound if no record exists
+	// or the record is past ExpiresAt. Callers still apply Live to what is
+	// returned, since eviction can lag, and Live decides.
+	GetExchangeGrant(ctx context.Context, signature string) (*ExchangeGrant, error)
+
+	// RevokeExchangeGrant sets RevokedAt to now on the grant with the given
+	// signature. It is idempotent: revoking a grant that is already revoked
+	// succeeds and keeps the original RevokedAt. now must not be zero. It
+	// returns ErrNotFound if no record exists or the record is past ExpiresAt.
+	// It does not touch child grants. A child is dead once its
+	// parent is missing or not live, and callers check that on every use.
+	RevokeExchangeGrant(ctx context.Context, signature string, now time.Time) error
+}
+
 // SyntheticClientIDPrefix marks a client ID minted by NewSyntheticClient. A
 // grant that skips client authentication (fosite's CanSkipClientAuth) has no
 // real registered fosite.Client to attach to its request, but every storage
@@ -1119,10 +1282,11 @@ func sameStringSet(a, b []string) bool {
 // configured client is declared over an existing row at the same ID. How much
 // of it matters depends on the row's kind (see configuredClientConflict):
 // reserved SPIFFE placeholders compare in full, other configured clients only
-// on public. Client secrets are deliberately excluded -- an operator rotating
-// a secret must still be able to reconcile. TokenEndpointAuthMethod is
-// excluded for the same reason: both backends fully overwrite the stored
-// record on a successful reconcile rather than merging.
+// on public; the redirect URI set additionally feeds the replacement WARN
+// (see policyChanged). Client secrets are deliberately excluded -- an
+// operator rotating a secret must still be able to reconcile. JWKS keys are
+// excluded for the same reason: private_key_jwt key rotation must reconcile
+// silently.
 //
 // Deliberately NOT fosite.Client: fosite.DefaultClient's GetGrantTypes/
 // GetResponseTypes substitute an interactive default when the underlying list
@@ -1131,13 +1295,21 @@ func sameStringSet(a, b []string) bool {
 // into this type; the comparison exists once, so memory- and Redis-backed
 // deployments cannot disagree.
 //
-// Grant and response types, like resources and identity, only matter for
-// reserved rows; for non-reserved rows only public is compared.
+// Grant and response types and redirect URIs, like resources and identity,
+// only matter for reserved rows; for non-reserved rows only public is
+// compared.
 type clientFingerprint struct {
 	scopes        []string
 	audience      []string
 	grantTypes    []string
 	responseTypes []string
+	// redirectURIs is empty for reserved placeholders, which never carry
+	// redirect URIs.
+	redirectURIs []string
+	// tokenEndpointAuthMethod is empty for clients that are not a
+	// fosite.OpenIDConnectClient, including unpinned secret clients and
+	// reserved placeholders.
+	tokenEndpointAuthMethod string
 	// resources is the RFC 8707 resource allowlist, distinct from audience
 	// (see resourceScopedClient in spiffe_decorator.go). Only reserved rows
 	// carry it: buildStoredClient persists it for them alone.
@@ -1152,27 +1324,34 @@ type clientFingerprint struct {
 }
 
 // equal reports whether f and o represent the same logical client
-// configuration: equal scope, audience, grant-type, response-type and
-// resource sets, identity, public/confidential class, and reserved kind.
+// configuration: equal scope, audience, grant-type, response-type, resource
+// and redirect URI sets, token endpoint auth method, identity,
+// public/confidential class, and reserved kind.
 func (f clientFingerprint) equal(o clientFingerprint) bool {
 	return sameStringSet(f.scopes, o.scopes) &&
 		sameStringSet(f.audience, o.audience) &&
 		sameStringSet(f.grantTypes, o.grantTypes) &&
 		sameStringSet(f.responseTypes, o.responseTypes) &&
 		sameStringSet(f.resources, o.resources) &&
+		sameStringSet(f.redirectURIs, o.redirectURIs) &&
+		f.tokenEndpointAuthMethod == o.tokenEndpointAuthMethod &&
 		f.identityFingerprint == o.identityFingerprint &&
 		f.public == o.public &&
 		f.reserved == o.reserved
 }
 
-// policyChanged reports whether the scopes or audience differ between f and
-// o, for the operator-visible warning when a configured client is replaced
-// with a different policy. Grant and response types are deliberately not
-// compared, so a grant-type change is replaced without the WARN. Delegate
-// grant types are fixed internally today, so in practice only scopes and
-// audience can change.
+// policyChanged reports whether the scopes, audience, grant types, redirect
+// URIs or token endpoint auth method differ between f and o, for the
+// operator-visible warning when a configured client is replaced with a
+// different policy. Response types and JWKS keys are deliberately not
+// compared, so a private_key_jwt key rotation replaces the stored row
+// silently.
 func (f clientFingerprint) policyChanged(o clientFingerprint) bool {
-	return !sameStringSet(f.scopes, o.scopes) || !sameStringSet(f.audience, o.audience)
+	return !sameStringSet(f.scopes, o.scopes) ||
+		!sameStringSet(f.audience, o.audience) ||
+		!sameStringSet(f.grantTypes, o.grantTypes) ||
+		!sameStringSet(f.redirectURIs, o.redirectURIs) ||
+		f.tokenEndpointAuthMethod != o.tokenEndpointAuthMethod
 }
 
 // configuredClientConflict decides whether incoming may replace existing at
@@ -1212,9 +1391,10 @@ func configuredClientConflict(id string, existing, incoming clientFingerprint) e
 }
 
 // warnConfiguredClientReplaced logs, after a successful replace, that a
-// configured client's scopes or audience changed. During a rolling update with
-// differing configs the replicas overwrite each other, so this is the
-// operator's signal for that flapping. Secrets are never logged.
+// configured client's scopes, audience, grant types, redirect URIs or token
+// endpoint auth method changed. During a rolling update with differing
+// configs the replicas overwrite each other, so this is the operator's signal
+// for that flapping. Secrets are never logged.
 func warnConfiguredClientReplaced(id string, existing, incoming clientFingerprint) {
 	if !existing.policyChanged(incoming) {
 		return
@@ -1222,7 +1402,11 @@ func warnConfiguredClientReplaced(id string, existing, incoming clientFingerprin
 	slog.Warn("configured client replaced with a different policy",
 		"client_id", id,
 		"old_scopes", existing.scopes, "new_scopes", incoming.scopes,
-		"old_audiences", existing.audience, "new_audiences", incoming.audience)
+		"old_audiences", existing.audience, "new_audiences", incoming.audience,
+		"old_grant_types", existing.grantTypes, "new_grant_types", incoming.grantTypes,
+		"old_redirect_uris", existing.redirectURIs, "new_redirect_uris", incoming.redirectURIs,
+		"old_token_endpoint_auth_method", existing.tokenEndpointAuthMethod,
+		"new_token_endpoint_auth_method", incoming.tokenEndpointAuthMethod)
 }
 
 // fingerprintOfClient reads a live fosite.Client. Safe here because a
@@ -1242,15 +1426,21 @@ func fingerprintOfClient(c fosite.Client) clientFingerprint {
 			identityFingerprint = identity.IdentityFingerprint()
 		}
 	}
+	var tokenEndpointAuthMethod string
+	if oidcClient, ok := c.(fosite.OpenIDConnectClient); ok {
+		tokenEndpointAuthMethod = oidcClient.GetTokenEndpointAuthMethod()
+	}
 	return clientFingerprint{
-		scopes:              c.GetScopes(),
-		audience:            c.GetAudience(),
-		grantTypes:          c.GetGrantTypes(),
-		responseTypes:       c.GetResponseTypes(),
-		resources:           resources,
-		identityFingerprint: identityFingerprint,
-		public:              c.IsPublic(),
-		reserved:            reserved,
+		scopes:                  c.GetScopes(),
+		audience:                c.GetAudience(),
+		grantTypes:              c.GetGrantTypes(),
+		responseTypes:           c.GetResponseTypes(),
+		redirectURIs:            c.GetRedirectURIs(),
+		tokenEndpointAuthMethod: tokenEndpointAuthMethod,
+		resources:               resources,
+		identityFingerprint:     identityFingerprint,
+		public:                  c.IsPublic(),
+		reserved:                reserved,
 	}
 }
 

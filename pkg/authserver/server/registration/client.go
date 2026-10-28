@@ -106,12 +106,15 @@ type Config struct {
 
 	// TokenEndpointAuthMethod is the client's registered auth method:
 	// "none" (public client) or one of the client_secret_* methods
-	// (confidential client). Required — there is no default, so callers must
-	// choose explicitly rather than drifting into one.
+	// (confidential client). Required for New — there is no default, so
+	// callers must choose explicitly rather than drifting into one.
+	// NewStaticDelegateClient differs: empty leaves secret authentication
+	// unpinned (both client_secret_basic and client_secret_post work).
 	TokenEndpointAuthMethod string
 
 	// GrantTypes overrides the default grant types.
-	// If nil or empty, defaultGrantTypes is used.
+	// If nil or empty, New uses defaultGrantTypes; NewStaticDelegateClient
+	// uses [token-exchange].
 	GrantTypes []string
 
 	// ResponseTypes overrides the default response types. If nil or empty,
@@ -455,18 +458,25 @@ func NewConfidentialPlain(cfg Config) (fosite.Client, error) {
 }
 
 // NewStaticDelegateClient creates an unmarked, pre-provisioned confidential
-// client for token exchange. A bare DefaultClient intentionally leaves the
-// token endpoint authentication method unpinned, allowing both HTTP Basic and
-// form-body client-secret authentication.
-func NewStaticDelegateClient(cfg Config) (*fosite.DefaultClient, error) {
+// client for token exchange. With no TokenEndpointAuthMethod it is a bare
+// DefaultClient that leaves the method unpinned, allowing both HTTP Basic and
+// form-body client-secret authentication; otherwise it is an OIDC client that
+// pins the method. Empty GrantTypes means [token-exchange]. The result never
+// carries the DCRIssued marker, so storage keeps it out of the DCR TTL and cap.
+func NewStaticDelegateClient(cfg Config) (fosite.Client, error) {
 	if cfg.ID == "" {
 		return nil, fmt.Errorf("delegate client requires an ID")
 	}
-	if cfg.Secret == "" {
-		return nil, fmt.Errorf("confidential client requires a secret")
-	}
-	if len(cfg.GrantTypes) != 1 || cfg.GrantTypes[0] != oauthproto.GrantTypeTokenExchange {
-		return nil, fmt.Errorf("delegate client grant types must be exactly [%q]", oauthproto.GrantTypeTokenExchange)
+	privateKeyJWT := cfg.TokenEndpointAuthMethod == oauthproto.TokenEndpointAuthMethodPrivateKeyJWT
+	if err := ValidateConfiguredClient(ConfiguredClientSpec{
+		TokenEndpointAuthMethod: cfg.TokenEndpointAuthMethod,
+		SigningAlgorithm:        cfg.TokenEndpointAuthSigningAlgorithm,
+		GrantTypes:              cfg.GrantTypes,
+		RedirectURIs:            cfg.RedirectURIs,
+		HasSecret:               cfg.Secret != "",
+		JWKS:                    cfg.JSONWebKeys,
+	}); err != nil {
+		return nil, fmt.Errorf("delegate client: %w", err)
 	}
 	if len(cfg.Scopes) == 0 {
 		return nil, fmt.Errorf("delegate client requires at least one scope")
@@ -475,19 +485,37 @@ func NewStaticDelegateClient(cfg Config) (*fosite.DefaultClient, error) {
 		return nil, fmt.Errorf("delegate client requires at least one audience")
 	}
 
-	hashedSecret, err := SHA256Hasher.Hash(context.Background(), []byte(cfg.Secret))
-	if err != nil {
-		return nil, fmt.Errorf("failed to hash client secret: %w", err)
+	client := &fosite.DefaultClient{
+		ID:           cfg.ID,
+		RedirectURIs: slices.Clone(cfg.RedirectURIs),
+		GrantTypes:   slices.Clone(effectiveConfiguredGrantTypes(cfg.GrantTypes)),
+		Scopes:       slices.Clone(cfg.Scopes),
+		Audience:     slices.Clone(cfg.Audience),
+		Public:       false,
+	}
+	if !privateKeyJWT {
+		hashedSecret, err := SHA256Hasher.Hash(context.Background(), []byte(cfg.Secret))
+		if err != nil {
+			return nil, fmt.Errorf("failed to hash client secret: %w", err)
+		}
+		client.Secret = hashedSecret
+	}
+	if cfg.TokenEndpointAuthMethod == "" {
+		return client, nil
 	}
 
-	return &fosite.DefaultClient{
-		ID:         cfg.ID,
-		Secret:     hashedSecret,
-		GrantTypes: slices.Clone(cfg.GrantTypes),
-		Scopes:     slices.Clone(cfg.Scopes),
-		Audience:   slices.Clone(cfg.Audience),
-		Public:     false,
-	}, nil
+	oidcClient := &fosite.DefaultOpenIDConnectClient{
+		DefaultClient:           client,
+		TokenEndpointAuthMethod: cfg.TokenEndpointAuthMethod,
+	}
+	if privateKeyJWT {
+		oidcClient.JSONWebKeys = cloneJSONWebKeySet(cfg.JSONWebKeys)
+		oidcClient.TokenEndpointAuthSigningAlgorithm = cfg.TokenEndpointAuthSigningAlgorithm
+		if oidcClient.TokenEndpointAuthSigningAlgorithm == "" {
+			oidcClient.TokenEndpointAuthSigningAlgorithm = defaultConfiguredSigningAlgorithm
+		}
+	}
+	return oidcClient, nil
 }
 
 // matchesAsLoopback checks if the requested URI matches the registered URI

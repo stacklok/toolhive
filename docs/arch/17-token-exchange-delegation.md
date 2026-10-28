@@ -32,15 +32,17 @@ even though the JWK specification makes the member optional.
 
 RFC 8693 is reachable through a pre-provisioned **delegate client**. A delegate
 client is a confidential client registered when the embedded authorization server
-starts. It is limited to the token-exchange grant and authenticates at
-`/oauth/token` with `client_secret_basic` or `client_secret_post`.
+starts. By default it is limited to the token-exchange grant and authenticates at
+`/oauth/token` with `client_secret_basic` or `client_secret_post`. See
+[Configured client metadata](#configured-client-metadata) to change either.
 
 ### RunConfig
 
 `RunConfig.delegate_clients` is the portable runtime configuration surface. Each
 client must name a unique `client_id`, a secret **reference**, one or more scopes,
-and one or more audiences. The grant type is fixed internally to
-`urn:ietf:params:oauth:grant-type:token-exchange` and is not configurable.
+and one or more audiences. The grant type defaults to
+`urn:ietf:params:oauth:grant-type:token-exchange`; see
+[Configured client metadata](#configured-client-metadata) for the other options.
 Scopes must be a subset of `scopes_supported` (or the default supported OIDC
 scopes when that field is omitted), and audiences must be a subset of
 `allowed_audiences`. These required narrowing lists prevent a delegate client
@@ -223,7 +225,9 @@ upstream-derived claims.
 The CRD accepts Secret references only: no plaintext secret, redirect URI, or
 arbitrary grant selection is available. A non-empty `clientSecretRef.name` and
 `.key`, at least one scope, and at least one audience are required. Delegate
-clients require an HTTPS issuer at admission.
+clients require an HTTPS issuer at admission. Every delegate client, including
+`private_key_jwt` ones, counts as confidential for the cleartext-transport rule,
+in both the CRD and the RunConfig/`Config` validation paths.
 
 `trustedIssuers` is exposed the same way, on the same shared
 `EmbeddedAuthServerConfig`, and converts directly to `[]tokenexchange.TrustedIssuer`
@@ -288,9 +292,10 @@ Secret does not change the environment of an already running pod. The operator
 has no delegate-client Secret watch or automatic rollout for this feature, so
 restart or otherwise roll out the workload after rotating the secret.
 
-Changing a delegate client's scopes or audiences works the same way. The new
-values replace the stored client row when the server restarts. On Redis, with
-more than one replica, a rolling update can briefly serve either policy. See
+Changing a delegate client's scopes, audiences, grant types, redirect URIs or
+token endpoint auth method works the same way. The new values replace the
+stored client row when the server restarts. On Redis, with more than one
+replica, a rolling update can briefly serve either policy. See
 [Auth Server Storage](11-auth-server-storage.md#configured-clients-across-restarts).
 
 ## Secretless DCR delegate flow
@@ -377,7 +382,8 @@ array with more than one value that contains the issuer. Both are deprecated. A
 later release will require the issuer as the sole value.
 
 This applies to every `private_key_jwt` client. Inbound `private_key_jwt`
-clients come only from Dynamic Client Registration. The `aud` checks on
+clients come from Dynamic Client Registration and from configured delegate
+clients. The `aud` checks on
 RFC 7523 JWT-bearer and ID-JAG assertions, and on SPIFFE JWT-SVID client
 authentication, are unchanged.
 
@@ -546,6 +552,23 @@ being made," with no requirement that the token be validated against the
 identity of the client presenting it as `subject_token`. Applying a
 client-authentication-based policy on top of that — as this exception does —
 is within the authorization server's discretion as the token-exchange STS.
+
+### Configured client metadata
+
+A delegate client can declare more than a secret. All fields below are
+optional; a client that sets none of them is the same client as before.
+
+| Field | Meaning |
+|---|---|
+| `token_endpoint_auth_method` | Omitted: the client authenticates with its secret by HTTP Basic or form body. `client_secret_basic` or `client_secret_post` pins one of them. `private_key_jwt` authenticates with a signed assertion instead of a secret. |
+| `jwks_file` | Path to the client's public JWKS. Required for `private_key_jwt`, forbidden otherwise. Each key must have `use: sig`. Private and symmetric keys are rejected, at most 10 keys are allowed, and the keys must match `token_endpoint_auth_signing_alg` (default `RS256`). |
+| `grant_types` | Omitted or empty means token exchange only. When set, the list must include token exchange. The other allowed values are `authorization_code`, `refresh_token` and the JWT-bearer grant. `refresh_token` is allowed only together with `authorization_code`. |
+| `redirect_uris` | Required with `authorization_code`, forbidden without it. Each URI must be https and not loopback, as for any other confidential client. |
+
+One validator in the `registration` package checks these fields. It runs when
+`RunConfig` is validated (with the JWKS contents still unloaded) and when the
+client is built (with the keys loaded). The built client is never marked as
+DCR-issued, so it has no TTL and does not count against `max_dcr_clients`.
 
 ### Worked example
 

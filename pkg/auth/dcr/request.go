@@ -164,6 +164,10 @@ type Request struct {
 	// RegistrationProbe constants for when each strategy can decide.
 	RegistrationProbe RegistrationProbe
 
+	// Periodic marks a re-check of an already-resolved registration; the
+	// staleness warning is logged at Debug so it repeats only at start.
+	Periodic bool
+
 	// CodeChallengeMethodsSupported lists the PKCE challenge methods the
 	// upstream advertises. Only consulted when RegistrationEndpoint is set;
 	// on the DiscoveryURL branch the resolver reads this value from the

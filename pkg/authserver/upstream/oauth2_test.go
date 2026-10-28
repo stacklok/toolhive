@@ -369,7 +369,7 @@ func TestNewOAuth2Provider_TokenEndpointAuthMethod(t *testing.T) {
 
 			provider, err := NewOAuth2Provider(config)
 			require.NoError(t, err)
-			assert.Equal(t, tt.wantAuthStyle, provider.oauth2Config.Endpoint.AuthStyle,
+			assert.Equal(t, tt.wantAuthStyle, provider.client.Load().oauth2.Endpoint.AuthStyle,
 				"oauth2 endpoint auth style must reflect the negotiated method")
 
 			_, err = provider.exchangeCodeForTokens(context.Background(), "auth-code", "")

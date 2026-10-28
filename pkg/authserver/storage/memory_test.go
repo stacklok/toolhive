@@ -20,6 +20,7 @@ package storage
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/rsa"
 	"errors"
 	"fmt"
@@ -362,6 +363,102 @@ func TestMemoryStorage_RegisterClient_AlwaysCreateOnly(t *testing.T) {
 			assert.Equal(t, existing, retrieved)
 		})
 	}
+}
+
+// newConfiguredPrivateKeyJWTClient builds a pre-provisioned private_key_jwt
+// client holding a fresh public key.
+func newConfiguredPrivateKeyJWTClient(t *testing.T, id string) fosite.Client {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+	client, err := registration.NewStaticDelegateClient(registration.Config{
+		ID:                      id,
+		TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodPrivateKeyJWT,
+		JSONWebKeys: &jose.JSONWebKeySet{Keys: []jose.JSONWebKey{{
+			Key: &key.PublicKey, KeyID: "k", Use: "sig", Algorithm: string(jose.RS256),
+		}}},
+		Scopes:   []string{"openid"},
+		Audience: []string{"https://mcp.example"},
+	})
+	require.NoError(t, err)
+	return client
+}
+
+// requireKeyRotationOverwrites reconciles two private_key_jwt clients with the
+// same ID but different keys and checks the second replaces the first.
+func requireKeyRotationOverwrites(t *testing.T, s Storage) {
+	t.Helper()
+	ctx := t.Context()
+	first := newConfiguredPrivateKeyJWTClient(t, "broker")
+	require.NoError(t, s.ReconcileConfiguredClient(ctx, first))
+	rotated := newConfiguredPrivateKeyJWTClient(t, "broker")
+	require.NoError(t, s.ReconcileConfiguredClient(ctx, rotated))
+
+	got, err := s.GetClient(ctx, "broker")
+	require.NoError(t, err)
+	assert.False(t, registration.DCRIssued(got))
+	oidc, ok := got.(fosite.OpenIDConnectClient)
+	require.True(t, ok)
+	assert.Equal(t, oauthproto.TokenEndpointAuthMethodPrivateKeyJWT, oidc.GetTokenEndpointAuthMethod())
+	assert.Equal(t, rotated.(fosite.OpenIDConnectClient).GetJSONWebKeys().Keys[0].Key, oidc.GetJSONWebKeys().Keys[0].Key)
+}
+
+// requireSecretClientShapes round-trips an unpinned and a client_secret_post
+// pinned delegate client, then reconciles the same ID from unpinned to pinned
+// and checks the stored row switches shape.
+func requireSecretClientShapes(t *testing.T, s Storage) {
+	t.Helper()
+	ctx := t.Context()
+	build := func(id, method string) fosite.Client {
+		client, err := registration.NewStaticDelegateClient(registration.Config{
+			ID:                      id,
+			Secret:                  "a-delegate-secret-of-sufficient-length",
+			TokenEndpointAuthMethod: method,
+			Scopes:                  []string{"openid"},
+			Audience:                []string{"https://mcp.example"},
+		})
+		require.NoError(t, err)
+		return client
+	}
+
+	require.NoError(t, s.ReconcileConfiguredClient(ctx, build("unpinned", "")))
+	require.NoError(t, s.ReconcileConfiguredClient(ctx, build("pinned", oauthproto.TokenEndpointAuthMethodClientSecretPost)))
+
+	unpinned, err := s.GetClient(ctx, "unpinned")
+	require.NoError(t, err)
+	assert.NotImplements(t, (*fosite.OpenIDConnectClient)(nil), unpinned)
+	assert.NotEmpty(t, unpinned.GetHashedSecret())
+	assert.False(t, registration.DCRIssued(unpinned))
+
+	pinned, err := s.GetClient(ctx, "pinned")
+	require.NoError(t, err)
+	assert.Implements(t, (*fosite.OpenIDConnectClient)(nil), pinned)
+	assert.Equal(t, oauthproto.TokenEndpointAuthMethodClientSecretPost,
+		pinned.(fosite.OpenIDConnectClient).GetTokenEndpointAuthMethod())
+	assert.NotEmpty(t, pinned.GetHashedSecret())
+	assert.False(t, registration.DCRIssued(pinned))
+
+	require.NoError(t, s.ReconcileConfiguredClient(ctx, build("unpinned", oauthproto.TokenEndpointAuthMethodClientSecretPost)))
+	switched, err := s.GetClient(ctx, "unpinned")
+	require.NoError(t, err)
+	assert.Implements(t, (*fosite.OpenIDConnectClient)(nil), switched)
+	assert.Equal(t, oauthproto.TokenEndpointAuthMethodClientSecretPost,
+		switched.(fosite.OpenIDConnectClient).GetTokenEndpointAuthMethod())
+	assert.NotEmpty(t, switched.GetHashedSecret())
+}
+
+func TestMemoryStorage_ReconcileConfiguredSecretClientShapes(t *testing.T) {
+	t.Parallel()
+	s := NewMemoryStorage()
+	defer s.Close()
+	requireSecretClientShapes(t, s)
+}
+
+func TestMemoryStorage_ReconcileConfiguredPrivateKeyJWTClient(t *testing.T) {
+	t.Parallel()
+	s := NewMemoryStorage()
+	defer s.Close()
+	requireKeyRotationOverwrites(t, s)
 }
 
 // TestMemoryStorage_ReconcileConfiguredClient covers the create/idempotent/
@@ -3992,4 +4089,77 @@ func TestScopesHash_DistinctForDistinctScopes(t *testing.T) {
 	assert.NotEqual(t, b, c)
 	assert.NotEqual(t, a, d)
 	assert.Equal(t, d, e)
+}
+
+func TestMemoryStorage_ExchangeGrantContract(t *testing.T) {
+	t.Parallel()
+	runExchangeGrantStorageContract(t, func(t *testing.T) (ExchangeGrantStorage, func(time.Duration)) {
+		t.Helper()
+		clock := &manualClock{now: contractEpoch}
+		s := NewMemoryStorage(withClientClock(clock.Now))
+		t.Cleanup(func() { _ = s.Close() })
+		return s, clock.Advance
+	})
+}
+
+func TestMemoryStorage_ExchangeGrantCleanup(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	clock := &manualClock{now: contractEpoch}
+	s := NewMemoryStorage(withClientClock(clock.Now))
+	t.Cleanup(func() { _ = s.Close() })
+
+	require.NoError(t, s.CreateExchangeGrant(ctx, contractGrant("sig-1")))
+
+	// The marker (10m + margin) ends before the record (1h).
+	clock.Advance(11*time.Minute + ExchangeGrantMarkerMargin)
+	s.cleanupExpired()
+	s.mu.RLock()
+	assert.Len(t, s.exchangeGrants, 1)
+	assert.Empty(t, s.exchangeGrantJTIs)
+	s.mu.RUnlock()
+
+	clock.Advance(time.Hour)
+	s.cleanupExpired()
+	s.mu.RLock()
+	assert.Empty(t, s.exchangeGrants)
+	s.mu.RUnlock()
+}
+
+func TestMemoryStorage_ExchangeGrantMarkerHoldsSignature(t *testing.T) {
+	t.Parallel()
+	s := NewMemoryStorage()
+	t.Cleanup(func() { _ = s.Close() })
+	g := contractGrant("sig-1")
+	g.SourceExpiresAt = time.Now().Add(time.Hour)
+	g.ExpiresAt = time.Now().Add(time.Hour)
+	require.NoError(t, s.CreateExchangeGrant(context.Background(), g))
+
+	key := assertionJWTKey{purpose: "exchange-grant", issuer: g.SourceIssuer, jti: g.SourceJTI}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	assert.Equal(t, "sig-1", s.exchangeGrantJTIs[key].signature)
+	assert.Empty(t, s.assertionJWTs, "ConsumeAssertionJWT state must stay untouched")
+}
+
+func TestMemoryStorage_ExchangeGrantChildrenWriteNoMarker(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	s := NewMemoryStorage(withClientClock(newManualClock().Now))
+	t.Cleanup(func() { _ = s.Close() })
+
+	parent := contractGrant("parent")
+	parent.SourceExpiresAt = newManualClock().Now().Add(10 * time.Minute)
+	parent.ExpiresAt = newManualClock().Now().Add(time.Hour)
+	require.NoError(t, s.CreateExchangeGrant(ctx, parent))
+	for _, sig := range []string{"child-1", "child-2"} {
+		c := contractChild(sig)
+		c.ExpiresAt = parent.ExpiresAt
+		require.NoError(t, s.CreateExchangeGrant(ctx, c))
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	assert.Len(t, s.exchangeGrants, 3)
+	assert.Len(t, s.exchangeGrantJTIs, 1)
 }

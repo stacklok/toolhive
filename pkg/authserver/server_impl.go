@@ -30,7 +30,6 @@ import (
 	spiffeauth "github.com/stacklok/toolhive/pkg/authserver/spiffe"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
-	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
 // server is the internal implementation of the Server interface.
@@ -433,11 +432,15 @@ func validateConsentExemptClients(ctx context.Context, stor storage.Storage, cli
 func registerDelegateClients(ctx context.Context, stor storage.Storage, delegateClients []DelegateClient) error {
 	for _, delegateClient := range delegateClients {
 		client, err := registration.NewStaticDelegateClient(registration.Config{
-			ID:         delegateClient.ClientID,
-			Secret:     delegateClient.ClientSecret,
-			GrantTypes: []string{oauthproto.GrantTypeTokenExchange},
-			Scopes:     delegateClient.Scopes,
-			Audience:   delegateClient.Audiences,
+			ID:                                delegateClient.ClientID,
+			Secret:                            delegateClient.ClientSecret,
+			TokenEndpointAuthMethod:           delegateClient.TokenEndpointAuthMethod,
+			TokenEndpointAuthSigningAlgorithm: delegateClient.TokenEndpointAuthSigningAlg,
+			JSONWebKeys:                       delegateClient.JSONWebKeys,
+			GrantTypes:                        delegateClient.GrantTypes,
+			RedirectURIs:                      delegateClient.RedirectURIs,
+			Scopes:                            delegateClient.Scopes,
+			Audience:                          delegateClient.Audiences,
 		})
 		if err != nil {
 			return fmt.Errorf("failed to create delegate client %q: %w", delegateClient.ClientID, err)
@@ -803,6 +806,22 @@ func (s *server) SPIFFEX509Authorities() []*x509.Certificate {
 // the package-level CloseIdleConnections function for the contract.
 func (s *server) CloseIdleConnections() {
 	closeUpstreamIdleConnections(s.upstreams)
+}
+
+// UpdateUpstreamClientCredentials implements UpstreamCredentialsUpdater.
+func (s *server) UpdateUpstreamClientCredentials(name string, creds upstream.ClientCredentials) error {
+	name = ResolveUpstreamName(name)
+	for _, u := range s.upstreams {
+		if u.Name != name {
+			continue
+		}
+		updater, ok := u.Provider.(upstream.ClientCredentialsUpdater)
+		if !ok {
+			return fmt.Errorf("upstream %q cannot replace its client registration", name)
+		}
+		return updater.UpdateClientCredentials(creds)
+	}
+	return fmt.Errorf("unknown upstream %q", name)
 }
 
 // Close releases resources held by the server: it drains upstream idle

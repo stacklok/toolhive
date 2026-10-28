@@ -637,6 +637,17 @@ type AuthenticationDCRUpstreamConfig struct {
 	// fails, fails startup. "none" skips the check; the registration is then
 	// retired only through RotationKey.
 	RegistrationProbe OptString `json:"registration_probe"`
+	// RegistrationProbeInterval, when set, repeats the start-time resolution
+	// while the server runs, as a Go duration of at least 1m (e.g. "5m"): the
+	// cached registration is re-read and checked with RegistrationProbe, a
+	// rejected one is replaced, a missing one is registered, and when the
+	// result differs from the client the server holds (also when another
+	// replica replaced the row) the server switches to it without a restart.
+	// Each check sends at most one RegistrationProbe request to the upstream
+	// (none with RegistrationProbe none), plus a registration request when
+	// the probe rejects the client; 5m to 15m suits most upstreams. Empty
+	// keeps the check at start only.
+	RegistrationProbeInterval OptString `json:"registration_probe_interval"`
 	// RotationKey is an optional operator-chosen label (1-64 characters from
 	// [A-Za-z0-9._-]) that becomes part of the cached registration's identity
 	// without being sent to the upstream. Changing it makes the next start
@@ -685,6 +696,11 @@ func (s *AuthenticationDCRUpstreamConfig) GetRegistrationProbe() OptString {
 	return s.RegistrationProbe
 }
 
+// GetRegistrationProbeInterval returns the value of RegistrationProbeInterval.
+func (s *AuthenticationDCRUpstreamConfig) GetRegistrationProbeInterval() OptString {
+	return s.RegistrationProbeInterval
+}
+
 // GetRotationKey returns the value of RotationKey.
 func (s *AuthenticationDCRUpstreamConfig) GetRotationKey() OptString {
 	return s.RotationKey
@@ -725,6 +741,11 @@ func (s *AuthenticationDCRUpstreamConfig) SetRegistrationProbe(val OptString) {
 	s.RegistrationProbe = val
 }
 
+// SetRegistrationProbeInterval sets the value of RegistrationProbeInterval.
+func (s *AuthenticationDCRUpstreamConfig) SetRegistrationProbeInterval(val OptString) {
+	s.RegistrationProbeInterval = val
+}
+
 // SetRotationKey sets the value of RotationKey.
 func (s *AuthenticationDCRUpstreamConfig) SetRotationKey(val OptString) {
 	s.RotationKey = val
@@ -750,16 +771,37 @@ type AuthenticationDelegateClientRunConfig struct {
 	// ClientID is the OAuth client_id this client presents at the token endpoint.
 	ClientID OptString `json:"client_id"`
 	// ClientSecretEnvVar is the name of an environment variable containing
-	// the client secret. One of ClientSecretFile or ClientSecretEnvVar is
-	// required.
+	// the client secret. Unless the client uses private_key_jwt, one of
+	// ClientSecretFile or ClientSecretEnvVar is required.
 	ClientSecretEnvVar OptString `json:"client_secret_env_var"`
 	// ClientSecretFile is the path to a file containing the client secret.
 	// If both this and ClientSecretEnvVar are set, the file takes precedence.
+	// Forbidden with private_key_jwt.
 	ClientSecretFile OptString `json:"client_secret_file"`
+	// GrantTypes are the grants this client may use. If omitted or empty, it
+	// is [urn:ietf:params:oauth:grant-type:token-exchange]. When set, it must
+	// include token exchange. Allowed values are authorization_code,
+	// refresh_token, the token-exchange grant and the jwt-bearer grant.
+	GrantTypes []string `json:"grant_types"`
+	// JWKSFile is the path to a file containing the client's public JWKS.
+	// Required for private_key_jwt and forbidden otherwise. The keys must be
+	// public signing keys.
+	JwksFile OptString `json:"jwks_file"`
+	// RedirectURIs are the registered redirect URIs. Required with the
+	// authorization_code grant and forbidden without it.
+	RedirectUris []string `json:"redirect_uris"`
 	// Scopes are the OAuth scopes this client may request. Required, and
 	// must be a subset of RunConfig.ScopesSupported: a declared client must
 	// not receive every supported scope just because this was left empty.
 	Scopes []string `json:"scopes"`
+	// TokenEndpointAuthMethod pins how the client authenticates at the token
+	// endpoint: client_secret_basic, client_secret_post or private_key_jwt.
+	// If omitted, the client authenticates with its secret by either HTTP
+	// Basic or form body.
+	TokenEndpointAuthMethod OptString `json:"token_endpoint_auth_method"`
+	// TokenEndpointAuthSigningAlg is the private_key_jwt signing algorithm.
+	// Defaults to RS256.
+	TokenEndpointAuthSigningAlg OptString `json:"token_endpoint_auth_signing_alg"`
 }
 
 // GetAudiences returns the value of Audiences.
@@ -782,9 +824,34 @@ func (s *AuthenticationDelegateClientRunConfig) GetClientSecretFile() OptString 
 	return s.ClientSecretFile
 }
 
+// GetGrantTypes returns the value of GrantTypes.
+func (s *AuthenticationDelegateClientRunConfig) GetGrantTypes() []string {
+	return s.GrantTypes
+}
+
+// GetJwksFile returns the value of JwksFile.
+func (s *AuthenticationDelegateClientRunConfig) GetJwksFile() OptString {
+	return s.JwksFile
+}
+
+// GetRedirectUris returns the value of RedirectUris.
+func (s *AuthenticationDelegateClientRunConfig) GetRedirectUris() []string {
+	return s.RedirectUris
+}
+
 // GetScopes returns the value of Scopes.
 func (s *AuthenticationDelegateClientRunConfig) GetScopes() []string {
 	return s.Scopes
+}
+
+// GetTokenEndpointAuthMethod returns the value of TokenEndpointAuthMethod.
+func (s *AuthenticationDelegateClientRunConfig) GetTokenEndpointAuthMethod() OptString {
+	return s.TokenEndpointAuthMethod
+}
+
+// GetTokenEndpointAuthSigningAlg returns the value of TokenEndpointAuthSigningAlg.
+func (s *AuthenticationDelegateClientRunConfig) GetTokenEndpointAuthSigningAlg() OptString {
+	return s.TokenEndpointAuthSigningAlg
 }
 
 // SetAudiences sets the value of Audiences.
@@ -807,9 +874,34 @@ func (s *AuthenticationDelegateClientRunConfig) SetClientSecretFile(val OptStrin
 	s.ClientSecretFile = val
 }
 
+// SetGrantTypes sets the value of GrantTypes.
+func (s *AuthenticationDelegateClientRunConfig) SetGrantTypes(val []string) {
+	s.GrantTypes = val
+}
+
+// SetJwksFile sets the value of JwksFile.
+func (s *AuthenticationDelegateClientRunConfig) SetJwksFile(val OptString) {
+	s.JwksFile = val
+}
+
+// SetRedirectUris sets the value of RedirectUris.
+func (s *AuthenticationDelegateClientRunConfig) SetRedirectUris(val []string) {
+	s.RedirectUris = val
+}
+
 // SetScopes sets the value of Scopes.
 func (s *AuthenticationDelegateClientRunConfig) SetScopes(val []string) {
 	s.Scopes = val
+}
+
+// SetTokenEndpointAuthMethod sets the value of TokenEndpointAuthMethod.
+func (s *AuthenticationDelegateClientRunConfig) SetTokenEndpointAuthMethod(val OptString) {
+	s.TokenEndpointAuthMethod = val
+}
+
+// SetTokenEndpointAuthSigningAlg sets the value of TokenEndpointAuthSigningAlg.
+func (s *AuthenticationDelegateClientRunConfig) SetTokenEndpointAuthSigningAlg(val OptString) {
+	s.TokenEndpointAuthSigningAlg = val
 }
 
 // IdentityFromToken extracts user identity (subject, name, email) directly from the
@@ -1642,11 +1734,12 @@ type AuthenticationRunConfig struct {
 	// local development (the traffic never leaves the machine), but client
 	// secrets would otherwise travel over cleartext. Defaults to false. Has no
 	// effect when there are no confidential clients or Issuer is https.
-	// Applies identically to delegate clients and DCR-registered clients. The
-	// Kubernetes CRD requires the explicit opt-in for a delegate client with an
-	// HTTP issuer; the shared transport validator enforces that its host is
-	// loopback — see EmbeddedAuthServerConfig's doc comment.
-	// private_key_jwt registration has no equivalent flag or transport
+	// Applies identically to every delegate client (including private_key_jwt
+	// delegates) and DCR-registered confidential clients. The Kubernetes CRD
+	// requires the explicit opt-in for a delegate client with an HTTP issuer;
+	// the shared transport validator enforces that its host is loopback — see
+	// EmbeddedAuthServerConfig's doc comment.
+	// DCR private_key_jwt registration has no equivalent flag or transport
 	// restriction: unlike confidential registration, it never returns a
 	// client_secret (or any other secret) in the DCR response, so there is
 	// nothing here for cleartext HTTP to expose.

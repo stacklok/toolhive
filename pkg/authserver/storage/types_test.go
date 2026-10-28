@@ -28,6 +28,62 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestExchangeGrantLive(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 10, 24, 12, 0, 0, 0, time.UTC)
+	future := now.Add(time.Hour)
+	past := now.Add(-time.Hour)
+
+	tests := []struct {
+		name    string
+		grant   ExchangeGrant
+		wantErr error
+	}{
+		{
+			name:  "live",
+			grant: ExchangeGrant{ExpiresAt: future},
+		},
+		{
+			name:    "expired",
+			grant:   ExchangeGrant{ExpiresAt: past},
+			wantErr: ErrExpired,
+		},
+		{
+			name:    "revoked",
+			grant:   ExchangeGrant{ExpiresAt: future, RevokedAt: past},
+			wantErr: ErrRevoked,
+		},
+		{
+			name:    "revoked and expired reports revoked",
+			grant:   ExchangeGrant{ExpiresAt: past, RevokedAt: past},
+			wantErr: ErrRevoked,
+		},
+		{
+			name:    "zero expiry counts as expired",
+			grant:   ExchangeGrant{},
+			wantErr: ErrExpired,
+		},
+		{
+			name:  "now equal to expiry is still live",
+			grant: ExchangeGrant{ExpiresAt: now},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := tt.grant.Live(now)
+			if tt.wantErr == nil {
+				assert.NoError(t, err)
+				return
+			}
+			assert.ErrorIs(t, err, tt.wantErr)
+		})
+	}
+}
+
 func TestNotFoundRFC6749Error(t *testing.T) {
 	t.Parallel()
 
@@ -214,11 +270,13 @@ func TestClientFingerprintFieldsAreJustified(t *testing.T) {
 	t.Parallel()
 
 	justifications := map[string]string{
-		"scopes":        "placeholders must not roll to a different OAuth scope set without a manual delete",
-		"audience":      "placeholders must not roll to a different RFC 8707/8693 audience allowlist",
-		"grantTypes":    "placeholders must not roll to a different grant-type set",
-		"responseTypes": "placeholders must not roll to a different response-type set",
-		"resources":     "placeholders must not roll to a different RFC 8707 resource allowlist (#6473)",
+		"scopes":                  "placeholders must not roll to a different OAuth scope set without a manual delete",
+		"audience":                "placeholders must not roll to a different RFC 8707/8693 audience allowlist",
+		"grantTypes":              "placeholders must not roll to a different grant-type set",
+		"responseTypes":           "placeholders must not roll to a different response-type set",
+		"redirectURIs":            "placeholders carry no redirect URIs; one appearing is a different client",
+		"tokenEndpointAuthMethod": "placeholders never carry an auth method; one appearing is a different client",
+		"resources":               "placeholders must not roll to a different RFC 8707 resource allowlist (#6473)",
 		"identityFingerprint": "a different SPIFFE association identity (trust domain, principal, methods) " +
 			"behind the same placeholder ID is a different association",
 		"public": "public vs. confidential is a different client class",
@@ -247,6 +305,7 @@ func TestClientFingerprintFieldsAreJustified(t *testing.T) {
 		audience:            []string{"audience-a"},
 		grantTypes:          []string{"grant-a"},
 		responseTypes:       []string{"response-a"},
+		redirectURIs:        []string{"https://a.example/cb"},
 		resources:           []string{"resource-a"},
 		identityFingerprint: "identity-a",
 		public:              false,
@@ -267,6 +326,10 @@ func TestClientFingerprintFieldsAreJustified(t *testing.T) {
 				other.grantTypes = []string{"grant-b"}
 			case "responseTypes":
 				other.responseTypes = []string{"response-b"}
+			case "redirectURIs":
+				other.redirectURIs = []string{"https://b.example/cb"}
+			case "tokenEndpointAuthMethod":
+				other.tokenEndpointAuthMethod = "private_key_jwt"
 			case "resources":
 				other.resources = []string{"resource-b"}
 			case "identityFingerprint":
@@ -413,9 +476,30 @@ func TestClientFingerprintPolicyChanged(t *testing.T) {
 			want:  true,
 		},
 		{
-			name: "grant type change alone is not a policy change",
+			name: "grant type change is a policy change",
 			other: clientFingerprint{
 				scopes: []string{"a", "b"}, audience: []string{"x"}, grantTypes: []string{"g"},
+			},
+			want: true,
+		},
+		{
+			name: "auth method change is a policy change",
+			other: clientFingerprint{
+				scopes: []string{"a", "b"}, audience: []string{"x"}, tokenEndpointAuthMethod: "private_key_jwt",
+			},
+			want: true,
+		},
+		{
+			name: "redirect URI change is a policy change",
+			other: clientFingerprint{
+				scopes: []string{"a", "b"}, audience: []string{"x"}, redirectURIs: []string{"https://a.example/cb"},
+			},
+			want: true,
+		},
+		{
+			name: "response type change alone is not a policy change",
+			other: clientFingerprint{
+				scopes: []string{"a", "b"}, audience: []string{"x"}, responseTypes: []string{"code"},
 			},
 			want: false,
 		},
@@ -427,6 +511,18 @@ func TestClientFingerprintPolicyChanged(t *testing.T) {
 			assert.Equal(t, tt.want, base.policyChanged(tt.other))
 		})
 	}
+}
+
+func TestClientFingerprintPolicyChanged_RedirectURIs(t *testing.T) {
+	t.Parallel()
+
+	base := clientFingerprint{redirectURIs: []string{"https://a.example/cb", "https://b.example/cb"}}
+
+	assert.False(t, base.policyChanged(clientFingerprint{
+		redirectURIs: []string{"https://b.example/cb", "https://a.example/cb", "https://a.example/cb"},
+	}), "reordering or duplicating redirect URIs is not a change")
+	assert.True(t, base.policyChanged(clientFingerprint{redirectURIs: []string{"https://a.example/cb"}}))
+	assert.True(t, base.policyChanged(clientFingerprint{}))
 }
 
 // resourceIdentityClient is a non-placeholder client that implements both

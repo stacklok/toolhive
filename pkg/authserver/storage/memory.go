@@ -16,6 +16,7 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/url"
@@ -53,6 +54,14 @@ type assertionJWTKey struct {
 	purpose string
 	issuer  string
 	jti     string
+}
+
+// exchangeGrantMarker is the replay marker for the subject access token behind
+// a top-level exchange grant. It holds the grant's signature so a later
+// replay-revoke can find the grant.
+type exchangeGrantMarker struct {
+	signature string
+	expiresAt time.Time
 }
 
 // MemoryStorage implements the Storage interface with in-memory maps.
@@ -117,7 +126,8 @@ type MemoryStorage struct {
 	// row costs at most a document refetch. RedisStorage has no such cap.
 	maxCIMDClients int
 
-	// now returns the current time for client expiry.
+	// now returns the current time. It governs client expiry and exchange
+	// grant expiry; the other maps use time.Now.
 	now func() time.Time
 
 	// authCodes maps authorization code -> Requester. Codes are one-time-use;
@@ -173,6 +183,18 @@ type MemoryStorage struct {
 
 	// assertionJWTs tracks consumed assertion JWTs by purpose, issuer, and JTI.
 	assertionJWTs map[assertionJWTKey]time.Time
+
+	// exchangeGrants maps grant signature -> record for refresh tokens issued
+	// through token exchange. Records are stored as private copies and removed by
+	// cleanupExpired after ExpiresAt.
+	exchangeGrants map[string]*ExchangeGrant
+
+	// exchangeGrantJTIs holds the replay markers of top-level exchange grants,
+	// keyed like assertionJWTs (purpose, issuer, jti). It is separate from
+	// assertionJWTs because its values carry the grant signature, and so
+	// ConsumeAssertionJWT behaves exactly as before. A marker lives until the
+	// subject token's exp plus ExchangeGrantMarkerMargin.
+	exchangeGrantJTIs map[assertionJWTKey]exchangeGrantMarker
 
 	// users maps user ID -> User for user account lookup.
 	// Users are not subject to TTL-based cleanup as they represent persistent accounts.
@@ -247,8 +269,8 @@ func withMaxCIMDClients(n int) MemoryStorageOption {
 	}
 }
 
-// withClientClock sets the clock used for client expiry, so tests can move
-// past a TTL without sleeping.
+// withClientClock sets the clock used for client expiry and exchange grants,
+// so tests can move past a TTL without sleeping.
 func withClientClock(now func() time.Time) MemoryStorageOption {
 	return func(s *MemoryStorage) {
 		s.now = now
@@ -275,6 +297,8 @@ func NewMemoryStorage(opts ...MemoryStorageOption) *MemoryStorage {
 		invalidatedCodes:           make(map[string]*timedEntry[bool]),
 		clientAssertionJWTs:        make(map[string]time.Time),
 		assertionJWTs:              make(map[assertionJWTKey]time.Time),
+		exchangeGrants:             make(map[string]*ExchangeGrant),
+		exchangeGrantJTIs:          make(map[assertionJWTKey]exchangeGrantMarker),
 		users:                      make(map[string]*User),
 		providerIdentities:         make(map[string]*ProviderIdentity),
 		dcrCredentials:             make(map[DCRKey]*DCRCredentials),
@@ -441,6 +465,21 @@ func (s *MemoryStorage) cleanupExpired() {
 		}
 	}
 
+	storeNow := s.now()
+	var expiredExchangeGrants []string
+	for k, g := range s.exchangeGrants {
+		if storeNow.After(g.ExpiresAt) {
+			expiredExchangeGrants = append(expiredExchangeGrants, k)
+		}
+	}
+
+	var expiredExchangeGrantJTIs []assertionJWTKey
+	for k, m := range s.exchangeGrantJTIs {
+		if storeNow.After(m.expiresAt) {
+			expiredExchangeGrantJTIs = append(expiredExchangeGrantJTIs, k)
+		}
+	}
+
 	clientNow := s.now()
 	var expiredClients []string
 	for _, expiry := range []map[string]time.Time{s.dcrClientExpiry, s.cimdClientExpiry} {
@@ -468,7 +507,9 @@ func (s *MemoryStorage) cleanupExpired() {
 		len(expiredPendingDeviceLogins) == 0 &&
 		len(expiredPendingDeviceConfirmations) == 0 &&
 		len(expiredJWTs) == 0 &&
-		len(expiredAssertionJWTs) == 0 {
+		len(expiredAssertionJWTs) == 0 &&
+		len(expiredExchangeGrants) == 0 &&
+		len(expiredExchangeGrantJTIs) == 0 {
 		return
 	}
 
@@ -548,6 +589,18 @@ func (s *MemoryStorage) cleanupExpired() {
 	for _, k := range expiredAssertionJWTs {
 		if exp, ok := s.assertionJWTs[k]; ok && now.After(exp) {
 			delete(s.assertionJWTs, k)
+		}
+	}
+
+	for _, k := range expiredExchangeGrants {
+		if g, ok := s.exchangeGrants[k]; ok && storeNow.After(g.ExpiresAt) {
+			delete(s.exchangeGrants, k)
+		}
+	}
+
+	for _, k := range expiredExchangeGrantJTIs {
+		if m, ok := s.exchangeGrantJTIs[k]; ok && storeNow.After(m.expiresAt) {
+			delete(s.exchangeGrantJTIs, k)
 		}
 	}
 }
@@ -956,6 +1009,100 @@ func (s *MemoryStorage) ConsumeAssertionJWT(_ context.Context, purpose, issuer, 
 	}
 
 	s.assertionJWTs[key] = exp
+	return nil
+}
+
+// exchangeGrantAssertionPurpose scopes exchange-grant replay markers, mirroring
+// the purpose argument of ConsumeAssertionJWT. The literal pins the wire string
+// the Redis backend must match.
+const exchangeGrantAssertionPurpose = "exchange-grant"
+
+// cloneExchangeGrant returns a deep copy of g, so neither the caller nor the
+// store can change the other's slices.
+func cloneExchangeGrant(g *ExchangeGrant) *ExchangeGrant {
+	c := *g
+	c.IssuableTokenTypes = slices.Clone(g.IssuableTokenTypes)
+	return &c
+}
+
+// -----------------------
+// ExchangeGrantStorage
+// -----------------------
+
+// CreateExchangeGrant stores a copy of g and, when g.SourceJTI is set, its
+// replay marker. A grant whose shape is invalid, or whose ExpiresAt is already
+// past, is refused. All checks run first and the writes follow under one lock,
+// so a failed call leaves nothing behind.
+//
+// Check order: a duplicate signature is reported before a reused jti. A retry
+// of a create that already succeeded (same signature, same jti) therefore gets
+// ErrAlreadyExists, which says this exact grant exists, instead of ErrJTIKnown.
+func (s *MemoryStorage) CreateExchangeGrant(_ context.Context, g *ExchangeGrant) error {
+	if err := validateExchangeGrantShape(g); err != nil {
+		return err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	now := s.now()
+	if now.After(g.ExpiresAt) {
+		return errors.New("exchange grant is already expired")
+	}
+	if existing, ok := s.exchangeGrants[g.Signature]; ok && !now.After(existing.ExpiresAt) {
+		return ErrAlreadyExists
+	}
+
+	var key assertionJWTKey
+	if g.SourceJTI != "" {
+		key = assertionJWTKey{purpose: exchangeGrantAssertionPurpose, issuer: g.SourceIssuer, jti: g.SourceJTI}
+		if m, ok := s.exchangeGrantJTIs[key]; ok && !now.After(m.expiresAt) {
+			return fosite.ErrJTIKnown
+		}
+	}
+
+	s.exchangeGrants[g.Signature] = cloneExchangeGrant(g)
+	if g.SourceJTI != "" {
+		s.exchangeGrantJTIs[key] = exchangeGrantMarker{
+			signature: g.Signature, expiresAt: g.SourceExpiresAt.Add(ExchangeGrantMarkerMargin),
+		}
+	}
+	return nil
+}
+
+// GetExchangeGrant returns a copy of the grant, including revoked grants. A
+// record past its ExpiresAt is reported as ErrNotFound even if cleanup has not
+// removed it yet.
+func (s *MemoryStorage) GetExchangeGrant(_ context.Context, signature string) (*ExchangeGrant, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	g, ok := s.exchangeGrants[signature]
+	if !ok || s.now().After(g.ExpiresAt) {
+		return nil, ErrNotFound
+	}
+	return cloneExchangeGrant(g), nil
+}
+
+// RevokeExchangeGrant sets RevokedAt to now unless the grant is already
+// revoked, in which case the first RevokedAt is kept. A missing or expired
+// record returns ErrNotFound.
+func (s *MemoryStorage) RevokeExchangeGrant(_ context.Context, signature string, now time.Time) error {
+	if err := validateExchangeGrantRevokeTime(now); err != nil {
+		return err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// now is only the timestamp written; expiry follows the store clock.
+	g, ok := s.exchangeGrants[signature]
+	if !ok || s.now().After(g.ExpiresAt) {
+		return ErrNotFound
+	}
+	if g.RevokedAt.IsZero() {
+		g.RevokedAt = now
+	}
 	return nil
 }
 
@@ -2395,4 +2542,5 @@ var (
 	_ UserStorage                      = (*MemoryStorage)(nil)
 	_ DCRCredentialStore               = (*MemoryStorage)(nil)
 	_ AssertionJWTConsumer             = (*MemoryStorage)(nil)
+	_ ExchangeGrantStorage             = (*MemoryStorage)(nil)
 )

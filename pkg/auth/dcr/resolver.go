@@ -338,8 +338,9 @@ func newDCRStepError(step, issuer, redirectURI string, err error) *dcrStepError 
 //
 // The check runs only here, so a registration the upstream drops while the
 // caller keeps using a returned resolution is recovered on the next
-// ResolveCredentials call (for the embedded authserver, its next start), not
-// in place.
+// ResolveCredentials call: for the embedded authserver, its next start or,
+// with DCRUpstreamConfig.RegistrationProbeInterval, its next periodic
+// re-check, which switches the running provider to the result.
 //
 // req.Issuer is *this caller's* logical issuer identifier, NOT the upstream's.
 // It is used to key the cache and to default the redirect URI to
@@ -429,7 +430,7 @@ func ResolveCredentials(
 				res = nil
 			}
 		}()
-		cached, hit, err := lookupCachedResolution(ctx, cache, key, req.Issuer, redirectURI)
+		cached, hit, err := lookupCachedResolution(ctx, cache, key, req.Issuer, redirectURI, req.Periodic)
 		if err != nil {
 			return nil, newDCRStepError(dcrStepCacheRead, req.Issuer, redirectURI, err)
 		}
@@ -859,6 +860,7 @@ func lookupCachedResolution(
 	cache CredentialStore,
 	key Key,
 	localIssuer, redirectURI string,
+	periodic bool,
 ) (*Resolution, bool, error) {
 	cached, ok, err := cache.Get(ctx, key)
 	if err != nil {
@@ -893,8 +895,14 @@ func lookupCachedResolution(
 	)
 
 	if age > dcrStaleAgeThreshold {
+		// The warning depends only on configuration and stored state, so a
+		// periodic re-check repeats it at Debug rather than every interval.
+		level := slog.LevelWarn
+		if periodic {
+			level = slog.LevelDebug
+		}
 		//nolint:gosec // G706: client_id is public metadata per RFC 7591.
-		slog.Warn(
+		slog.Log(ctx, level,
 			"dcr: cached registration exceeds staleness threshold; "+
 				"to rotate it, change dcrConfig.rotationKey and restart",
 			"local_issuer", localIssuer,

@@ -805,6 +805,22 @@ func (s *server) CloseIdleConnections() {
 	closeUpstreamIdleConnections(s.upstreams)
 }
 
+// UpdateUpstreamClientCredentials implements UpstreamCredentialsUpdater.
+func (s *server) UpdateUpstreamClientCredentials(name string, creds upstream.ClientCredentials) error {
+	name = ResolveUpstreamName(name)
+	for _, u := range s.upstreams {
+		if u.Name != name {
+			continue
+		}
+		updater, ok := u.Provider.(upstream.ClientCredentialsUpdater)
+		if !ok {
+			return fmt.Errorf("upstream %q cannot replace its client registration", name)
+		}
+		return updater.UpdateClientCredentials(creds)
+	}
+	return fmt.Errorf("unknown upstream %q", name)
+}
+
 // Close releases resources held by the server: it drains upstream idle
 // connections, unregisters the handler's metric callback, shuts down its
 // SPIFFE bundle and trusted-issuer refresh workers, and closes storage. Shutdown errors are joined so neither hides

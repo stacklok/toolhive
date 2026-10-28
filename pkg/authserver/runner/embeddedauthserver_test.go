@@ -1462,7 +1462,7 @@ func TestBuildUpstreamConfigs_CopiesDisplayName(t *testing.T) {
 				t.Parallel()
 				rc := rc
 				rc.DisplayName = displayName
-				got, err := buildUpstreamConfigs(context.Background(), []authserver.UpstreamRunConfig{rc},
+				got, _, err := buildUpstreamConfigs(context.Background(), []authserver.UpstreamRunConfig{rc},
 					"http://localhost:8080", newMemoryDCRStore(t), false)
 				require.NoError(t, err)
 				require.Len(t, got, 1)
@@ -2956,7 +2956,7 @@ func TestBuildUpstreamConfigs_DCR(t *testing.T) {
 		}
 
 		store := newMemoryDCRStore(t)
-		got, err := buildUpstreamConfigs(context.Background(), cfg.Upstreams, cfg.Issuer, store, false)
+		got, _, err := buildUpstreamConfigs(context.Background(), cfg.Upstreams, cfg.Issuer, store, false)
 		require.NoError(t, err)
 		require.Len(t, got, 1)
 
@@ -3023,7 +3023,7 @@ func TestBuildUpstreamConfigs_DCR(t *testing.T) {
 		store := newMemoryDCRStore(t)
 
 		// First call: populates the store.
-		_, err := buildUpstreamConfigs(context.Background(), cfg.Upstreams, cfg.Issuer, store, false)
+		_, _, err := buildUpstreamConfigs(context.Background(), cfg.Upstreams, cfg.Issuer, store, false)
 		require.NoError(t, err)
 		firstCallRequests := atomic.LoadInt32(requestCount)
 		require.Greater(t, firstCallRequests, int32(0),
@@ -3032,7 +3032,7 @@ func TestBuildUpstreamConfigs_DCR(t *testing.T) {
 		// Second call: must reuse the cache. Its only HTTP request is the
 		// token-endpoint verification of the cached client, which the mock
 		// AS answers with a non-OAuth 404, so the cached client is kept.
-		got, err := buildUpstreamConfigs(context.Background(), cfg.Upstreams, cfg.Issuer, store, false)
+		got, _, err := buildUpstreamConfigs(context.Background(), cfg.Upstreams, cfg.Issuer, store, false)
 		require.NoError(t, err)
 		require.Len(t, got, 1)
 		assert.Equal(t, "dcr-client-id", got[0].OAuth2Config.ClientID)

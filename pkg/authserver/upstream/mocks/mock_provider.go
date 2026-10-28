@@ -140,3 +140,41 @@ func (mr *MockIdleConnectionCloserMockRecorder) CloseIdleConnections() *gomock.C
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CloseIdleConnections", reflect.TypeOf((*MockIdleConnectionCloser)(nil).CloseIdleConnections))
 }
+
+// MockClientCredentialsUpdater is a mock of ClientCredentialsUpdater interface.
+type MockClientCredentialsUpdater struct {
+	ctrl     *gomock.Controller
+	recorder *MockClientCredentialsUpdaterMockRecorder
+	isgomock struct{}
+}
+
+// MockClientCredentialsUpdaterMockRecorder is the mock recorder for MockClientCredentialsUpdater.
+type MockClientCredentialsUpdaterMockRecorder struct {
+	mock *MockClientCredentialsUpdater
+}
+
+// NewMockClientCredentialsUpdater creates a new mock instance.
+func NewMockClientCredentialsUpdater(ctrl *gomock.Controller) *MockClientCredentialsUpdater {
+	mock := &MockClientCredentialsUpdater{ctrl: ctrl}
+	mock.recorder = &MockClientCredentialsUpdaterMockRecorder{mock}
+	return mock
+}
+
+// EXPECT returns an object that allows the caller to indicate expected use.
+func (m *MockClientCredentialsUpdater) EXPECT() *MockClientCredentialsUpdaterMockRecorder {
+	return m.recorder
+}
+
+// UpdateClientCredentials mocks base method.
+func (m *MockClientCredentialsUpdater) UpdateClientCredentials(creds upstream.ClientCredentials) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "UpdateClientCredentials", creds)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// UpdateClientCredentials indicates an expected call of UpdateClientCredentials.
+func (mr *MockClientCredentialsUpdaterMockRecorder) UpdateClientCredentials(creds any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpdateClientCredentials", reflect.TypeOf((*MockClientCredentialsUpdater)(nil).UpdateClientCredentials), creds)
+}

@@ -1522,6 +1522,31 @@ func TestDCRUpstreamConfigValidate(t *testing.T) {
 			errMsg:  "registration_probe must be one of",
 		},
 		{
+			name: "registration_probe_interval of 5m accepts",
+			config: DCRUpstreamConfig{
+				RegistrationEndpoint:      "https://idp.example.com/register",
+				RegistrationProbeInterval: "5m",
+			},
+		},
+		{
+			name: "registration_probe_interval under 1m rejects",
+			config: DCRUpstreamConfig{
+				RegistrationEndpoint:      "https://idp.example.com/register",
+				RegistrationProbeInterval: "59s",
+			},
+			wantErr: true,
+			errMsg:  "registration_probe_interval must be at least 1m0s",
+		},
+		{
+			name: "unparsable registration_probe_interval rejects",
+			config: DCRUpstreamConfig{
+				RegistrationEndpoint:      "https://idp.example.com/register",
+				RegistrationProbeInterval: "five minutes",
+			},
+			wantErr: true,
+			errMsg:  "invalid registration_probe_interval",
+		},
+		{
 			name: "both initial_access_token_file and initial_access_token_env_var rejects",
 			config: DCRUpstreamConfig{
 				RegistrationEndpoint:     "https://idp.example.com/register",

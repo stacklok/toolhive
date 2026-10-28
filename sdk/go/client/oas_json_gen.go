@@ -1058,6 +1058,12 @@ func (s *AuthenticationDCRUpstreamConfig) encodeFields(e *jx.Encoder) {
 		}
 	}
 	{
+		if s.RegistrationProbeInterval.Set {
+			e.FieldStart("registration_probe_interval")
+			s.RegistrationProbeInterval.Encode(e)
+		}
+	}
+	{
 		if s.RotationKey.Set {
 			e.FieldStart("rotation_key")
 			s.RotationKey.Encode(e)
@@ -1077,15 +1083,16 @@ func (s *AuthenticationDCRUpstreamConfig) encodeFields(e *jx.Encoder) {
 	}
 }
 
-var jsonFieldsNameOfAuthenticationDCRUpstreamConfig = [8]string{
+var jsonFieldsNameOfAuthenticationDCRUpstreamConfig = [9]string{
 	0: "discovery_url",
 	1: "initial_access_token_env_var",
 	2: "initial_access_token_file",
 	3: "registration_endpoint",
 	4: "registration_probe",
-	5: "rotation_key",
-	6: "software_id",
-	7: "software_statement",
+	5: "registration_probe_interval",
+	6: "rotation_key",
+	7: "software_id",
+	8: "software_statement",
 }
 
 // Decode decodes AuthenticationDCRUpstreamConfig from json.
@@ -1145,6 +1152,16 @@ func (s *AuthenticationDCRUpstreamConfig) Decode(d *jx.Decoder) error {
 				return nil
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"registration_probe\"")
+			}
+		case "registration_probe_interval":
+			if err := func() error {
+				s.RegistrationProbeInterval.Reset()
+				if err := s.RegistrationProbeInterval.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"registration_probe_interval\"")
 			}
 		case "rotation_key":
 			if err := func() error {

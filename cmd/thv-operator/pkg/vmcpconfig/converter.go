@@ -46,6 +46,19 @@ const (
 type Converter struct {
 	oidcResolver oidc.Resolver
 	k8sClient    client.Client
+	defaultRedis *controllerutil.DefaultRedisConfig
+}
+
+// ConverterOption configures a Converter's injected dependencies.
+type ConverterOption func(*Converter)
+
+// WithDefaultRedisConfig supplies the read-only global Redis snapshot loaded at
+// operator startup. Nil disables the global fallback. It does not read Secrets or
+// connect to Redis; the controller projects referenced Secrets into workloads.
+func WithDefaultRedisConfig(defaults *controllerutil.DefaultRedisConfig) ConverterOption {
+	return func(c *Converter) {
+		c.defaultRedis = defaults
+	}
 }
 
 // DelegateClientConfigValidationError marks an invalid delegate-client
@@ -68,18 +81,24 @@ func (e *DelegateClientConfigValidationError) Unwrap() error {
 // (kubernetes, configMap, inline). Use a mock resolver in tests.
 // k8sClient is required for resolving MCPToolConfig references and fetching referenced
 // VirtualMCPCompositeToolDefinition resources.
+// Without WithDefaultRedisConfig, only explicit session storage is configured;
+// conversion does not read the operator's environment.
 // Returns an error if oidcResolver or k8sClient is nil.
-func NewConverter(oidcResolver oidc.Resolver, k8sClient client.Client) (*Converter, error) {
+func NewConverter(oidcResolver oidc.Resolver, k8sClient client.Client, options ...ConverterOption) (*Converter, error) {
 	if oidcResolver == nil {
 		return nil, fmt.Errorf("oidcResolver is required")
 	}
 	if k8sClient == nil {
 		return nil, fmt.Errorf("k8sClient is required")
 	}
-	return &Converter{
+	c := &Converter{
 		oidcResolver: oidcResolver,
 		k8sClient:    k8sClient,
-	}, nil
+	}
+	for _, option := range options {
+		option(c)
+	}
+	return c, nil
 }
 
 // Convert converts VirtualMCPServer CRD spec to a vmcp Config and an optional
@@ -165,7 +184,7 @@ func (c *Converter) Convert(
 		config.Audit.Component = vmcp.Name
 	}
 
-	config.SessionStorage = convertSessionStorage(vmcp)
+	config.SessionStorage = convertSessionStorage(vmcp, c.defaultRedis)
 
 	// Apply operational defaults (fills missing values)
 	config.EnsureOperationalDefaults()
@@ -518,10 +537,13 @@ func (*Converter) normalizeTelemetry(
 }
 
 // convertSessionStorage populates SessionStorage from the VirtualMCPServer spec.
-// Falls back to TOOLHIVE_DEFAULT_REDIS_ADDR when spec.sessionStorage is nil.
+// Uses the injected global Redis default for absent or non-Redis storage,
+// preserving the existing VirtualMCPServer fallback policy.
 // PasswordRef is K8s-specific and is resolved separately; the password is injected
 // as the THV_SESSION_REDIS_PASSWORD environment variable by the deployment builder.
-func convertSessionStorage(vmcp *mcpv1beta1.VirtualMCPServer) *vmcpconfig.SessionStorageConfig {
+func convertSessionStorage(
+	vmcp *mcpv1beta1.VirtualMCPServer, defaults *controllerutil.DefaultRedisConfig,
+) *vmcpconfig.SessionStorageConfig {
 	if vmcp.Spec.SessionStorage != nil &&
 		vmcp.Spec.SessionStorage.Provider == mcpv1beta1.SessionStorageProviderRedis {
 		return &vmcpconfig.SessionStorageConfig{
@@ -529,17 +551,18 @@ func convertSessionStorage(vmcp *mcpv1beta1.VirtualMCPServer) *vmcpconfig.Sessio
 			Address:   vmcp.Spec.SessionStorage.Address,
 			DB:        vmcp.Spec.SessionStorage.DB,
 			KeyPrefix: vmcp.Spec.SessionStorage.KeyPrefix,
-			// spec.sessionStorage.tls is the only TLS source (CEL rejects
+			// Explicit spec.sessionStorage.tls overrides global defaults (CEL rejects
 			// spec.config.sessionStorage.tls); CACertFile points at the CA bundle
 			// the deployment builder mounts from caCertSecretRef.
 			TLS: controllerutil.SessionRedisTLSConfig(vmcp.Spec.SessionStorage),
 		}
 	}
 
-	if def := controllerutil.ReadDefaultRedisConfig(); def != nil {
+	if def := defaults; def != nil {
 		return &vmcpconfig.SessionStorageConfig{
 			Provider: mcpv1beta1.SessionStorageProviderRedis,
 			Address:  def.Addr,
+			TLS:      controllerutil.SessionRedisTLSConfig(def.SessionStorage()),
 		}
 	}
 	return nil

@@ -45,6 +45,9 @@ type MCPRemoteProxyReconciler struct {
 	Scheme           *runtime.Scheme
 	Recorder         events.EventRecorder
 	PlatformDetector *ctrlutil.SharedPlatformDetector
+	// DefaultRedisConfig is the read-only global Redis snapshot loaded at startup.
+	// Nil means no global fallback is configured.
+	DefaultRedisConfig *ctrlutil.DefaultRedisConfig
 	// ImagePullSecretsDefaults are cluster-wide defaults sourced from the
 	// operator chart that are merged with the per-CR imagePullSecrets when
 	// constructing workloads. The zero value is a usable empty Defaults.
@@ -2097,7 +2100,11 @@ func (r *MCPRemoteProxyReconciler) podSpecNeedsUpdate(
 		return true
 	}
 
-	wantSessionTLSVolumes, _ := ctrlutil.SessionRedisTLSVolumes(proxy.Spec.SessionStorage)
+	storage := proxy.Spec.SessionStorage
+	if storage == nil {
+		storage = r.DefaultRedisConfig.SessionStorage()
+	}
+	wantSessionTLSVolumes, _ := ctrlutil.SessionRedisTLSVolumes(storage)
 	if ctrlutil.SessionRedisTLSVolumeNeedsUpdate(deployment.Spec.Template.Spec.Volumes, wantSessionTLSVolumes) {
 		return true
 	}

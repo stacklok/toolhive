@@ -14,8 +14,10 @@ on:
     paths:
       - 'VERSION'
 
+# GITHUB_TOKEN only checks out the repository. The tag push and the GitHub
+# Release use the release app token.
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   verify:

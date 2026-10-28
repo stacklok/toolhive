@@ -82,7 +82,7 @@ The --network flag accepts any Docker-compatible network mode.
 
 Examples:
   # Run a server from the registry
-  thv run filesystem
+  thv run fetch
 
   # Run a server with custom arguments and toolsets
   thv run github -- --toolsets repos
@@ -97,7 +97,7 @@ Examples:
   thv run npx://@modelcontextprotocol/server-everything
 
   # Run a server in a specific group
-  thv run filesystem --group production
+  thv run fetch --group production
 
 # Run a remote GitHub MCP server with authentication
 thv run github-remote --remote-auth \

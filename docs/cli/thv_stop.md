@@ -17,10 +17,10 @@ Stop one or more MCP servers
 
 Stop one or more running MCP servers managed by ToolHive. Examples:
   # Stop a single MCP server
-  thv stop filesystem
+  thv stop fetch
 
   # Stop multiple MCP servers
-  thv stop filesystem github slack
+  thv stop fetch github slack
 
   # Stop all running MCP servers
   thv stop --all

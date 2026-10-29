@@ -1157,11 +1157,18 @@ func formatOAuth2Error(err error) error {
 // *oauth2.RetrieveError so callers can classify the failure with the
 // pkg/auth/oautherr predicates.
 //
-// The RetrieveError in the chain is a copy with Body cleared: its own Error()
-// embeds the raw response body, which is untrusted and can echo back bearer
-// material, so a caller that formats the unwrapped cause cannot log it.
-// Response is kept, as in pkg/auth/tokensource, because the oautherr predicates
-// read its status code; neither Error() prints it.
+// The RetrieveError in the chain is a scrubbed copy, unlike tokenexchange and
+// jwtbearer, which clear Body on the caller's error in place. Body is cleared
+// because RetrieveError.Error() embeds it when ErrorCode is empty, and the raw
+// response is untrusted and can echo back bearer material. Response is reduced
+// to its status code and status, the only fields the oautherr predicates read:
+// the original also links the outgoing request, whose Authorization header and
+// form body carry the client secret, refresh token, code and PKCE verifier, so
+// a caller that dumps the unwrapped cause cannot leak them.
+//
+// Unwrap returns two errors because neither error can wrap the other: msg may
+// wrap ErrGrantRejected, and adding the RetrieveError to it as a second %w
+// would change Error().
 type tokenRequestError struct {
 	// msg is the sanitized error; it may itself wrap ErrGrantRejected.
 	msg   error
@@ -1171,6 +1178,9 @@ type tokenRequestError struct {
 func newTokenRequestError(msg error, retrieveErr *oauth2.RetrieveError) *tokenRequestError {
 	scrubbed := *retrieveErr
 	scrubbed.Body = nil
+	if r := retrieveErr.Response; r != nil {
+		scrubbed.Response = &http.Response{StatusCode: r.StatusCode, Status: r.Status}
+	}
 	return &tokenRequestError{msg: msg, cause: &scrubbed}
 }
 

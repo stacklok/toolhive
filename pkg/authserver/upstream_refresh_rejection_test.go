@@ -14,6 +14,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/oauth2"
 
 	"github.com/stacklok/toolhive/pkg/auth/oautherr"
 	"github.com/stacklok/toolhive/pkg/auth/upstreamtoken"
@@ -36,6 +37,9 @@ func TestUpstreamRefreshRejection_ReachesServiceCallers(t *testing.T) {
 		closeBeforeUse   bool
 		wantInvalidGrant bool
 		wantPermanent    bool
+		// wantStatus is the token endpoint's HTTP status, or 0 when no
+		// response arrived and no RetrieveError should be in the chain.
+		wantStatus int
 	}{
 		{
 			name: "invalid_grant is definitive",
@@ -46,6 +50,7 @@ func TestUpstreamRefreshRejection_ReachesServiceCallers(t *testing.T) {
 			},
 			wantInvalidGrant: true,
 			wantPermanent:    true,
+			wantStatus:       http.StatusBadRequest,
 		},
 		{
 			name: "other 4xx error code is not invalid_grant",
@@ -55,18 +60,21 @@ func TestUpstreamRefreshRejection_ReachesServiceCallers(t *testing.T) {
 				_, _ = w.Write([]byte(`{"error":"invalid_client"}`))
 			},
 			wantPermanent: true,
+			wantStatus:    http.StatusUnauthorized,
 		},
 		{
 			name: "5xx is transient",
 			tokenEndpoint: func(w http.ResponseWriter, _ *http.Request) {
 				w.WriteHeader(http.StatusServiceUnavailable)
 			},
+			wantStatus: http.StatusServiceUnavailable,
 		},
 		{
 			name: "429 is transient",
 			tokenEndpoint: func(w http.ResponseWriter, _ *http.Request) {
 				w.WriteHeader(http.StatusTooManyRequests)
 			},
+			wantStatus: http.StatusTooManyRequests,
 		},
 		{
 			name: "4xx without an OAuth error code is transient",
@@ -75,6 +83,7 @@ func TestUpstreamRefreshRejection_ReachesServiceCallers(t *testing.T) {
 				w.WriteHeader(http.StatusForbidden)
 				_, _ = w.Write([]byte(`<html>blocked by WAF</html>`))
 			},
+			wantStatus: http.StatusForbidden,
 		},
 		{
 			name:           "network error is transient",
@@ -134,7 +143,7 @@ func TestUpstreamRefreshRejection_ReachesServiceCallers(t *testing.T) {
 			assert.Equal(t, tt.wantInvalidGrant, errors.Is(err, upstream.ErrGrantRejected), "GetValidTokens: %v", err)
 			assert.Equal(t, tt.wantInvalidGrant, oautherr.IsRejectedRefreshGrant(err), "GetValidTokens: %v", err)
 			assert.Equal(t, tt.wantPermanent, oautherr.IsPermanentCredentialError(err), "GetValidTokens: %v", err)
-			assert.NotContains(t, err.Error(), "blocked by WAF")
+			assertRetrieveErrorInChain(t, err, tt.wantStatus)
 
 			creds, failed, err := svc.GetAllUpstreamCredentials(ctx, "session")
 			require.NoError(t, err)
@@ -147,7 +156,24 @@ func TestUpstreamRefreshRejection_ReachesServiceCallers(t *testing.T) {
 				"GetAllUpstreamCredentials: %v", failed["idp"])
 			assert.Equal(t, tt.wantPermanent, oautherr.IsPermanentCredentialError(failed["idp"]),
 				"GetAllUpstreamCredentials: %v", failed["idp"])
-			assert.NotContains(t, failed["idp"].Error(), "blocked by WAF")
+			assertRetrieveErrorInChain(t, failed["idp"], tt.wantStatus)
 		})
 	}
+}
+
+// assertRetrieveErrorInChain checks that err carries the token endpoint's
+// *oauth2.RetrieveError with wantStatus and no response body, or carries none
+// when wantStatus is 0.
+func assertRetrieveErrorInChain(t *testing.T, err error, wantStatus int) {
+	t.Helper()
+	got, ok := errors.AsType[*oauth2.RetrieveError](err)
+	if wantStatus == 0 {
+		assert.False(t, ok, "unexpected RetrieveError in chain: %v", err)
+		return
+	}
+	require.True(t, ok, "RetrieveError not in chain: %v", err)
+	require.NotNil(t, got.Response)
+	assert.Equal(t, wantStatus, got.Response.StatusCode)
+	assert.Nil(t, got.Response.Request)
+	assert.Empty(t, got.Body)
 }

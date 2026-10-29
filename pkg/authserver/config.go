@@ -420,6 +420,7 @@ type DelegateClientTokenExchange struct {
 	// client_id or one of AllowedSourceClients, and a may_act claim naming
 	// this client does not lift that restriction. With any, the client may
 	// exchange any self-issued token.
+	//nolint:lll // field tags require full JSON+YAML names
 	SelfIssuedSubjectTokens SelfIssuedSubjectTokens `json:"self_issued_subject_tokens" yaml:"self_issued_subject_tokens" binding:"required"`
 
 	// AllowedSourceClients are client_id values, as they appear in the subject

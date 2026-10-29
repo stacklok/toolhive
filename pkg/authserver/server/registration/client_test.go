@@ -956,7 +956,7 @@ func TestValidateConfiguredClient(t *testing.T) {
 			wantErr: "unknown unit"},
 		{name: "exchange refresh tokens id-jag cap without unit", spec: exchangeRefreshSpec("12", ""),
 			wantErr: "missing unit"},
-		{name: "exchange refresh tokens unparseable cap", spec: exchangeRefreshSpec("twelve", ""),
+		{name: "exchange refresh tokens unparsable cap", spec: exchangeRefreshSpec("twelve", ""),
 			wantErr: "token_exchange.exchange_refresh_tokens.id_jag_max_lifetime"},
 		{name: "exchange refresh tokens without api audience", spec: func() ConfiguredClientSpec {
 			s := exchangeRefreshSpec("12h", "")

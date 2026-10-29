@@ -42,7 +42,7 @@ func TestExchangeRefreshTokenCaps(t *testing.T) {
 		assert.Equal(t, map[string]time.Duration{oauthproto.TokenTypeRefreshToken: time.Hour}, caps)
 	})
 
-	t.Run("unparseable cap is an error", func(t *testing.T) {
+	t.Run("unparsable cap is an error", func(t *testing.T) {
 		t.Parallel()
 		_, err := exchangeRefreshTokenCaps(&DelegateClientExchangeRefreshTokens{IDJAGMaxLifetime: "soon"})
 		require.ErrorContains(t, err, "id_jag_max_lifetime")

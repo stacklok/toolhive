@@ -1340,7 +1340,7 @@ func TestDelegateClientExchangeRefreshTokensValidate(t *testing.T) {
 			wantErr: "unknown unit"},
 		{name: "id-jag cap without unit", block: block("12", ""), apiAudience: audience,
 			wantErr: "missing unit"},
-		{name: "unparseable cap", block: block("soon", ""), apiAudience: audience,
+		{name: "unparsable cap", block: block("soon", ""), apiAudience: audience,
 			wantErr: "token_exchange.exchange_refresh_tokens.id_jag_max_lifetime"},
 		{name: "api audience missing", block: block("12h", ""), apiAudience: "",
 			wantErr: "api_audience is required with token_exchange.exchange_refresh_tokens"},

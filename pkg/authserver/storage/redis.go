@@ -111,7 +111,8 @@ type RedisStorage struct {
 	// so every replica sharing this Redis enforces one cap.
 	maxDCRClients int
 
-	// now is the clock DCR cap index scores are computed from.
+	// now is the clock every DCR cap index score, exchange grant TTL and
+	// exchange grant expiry decision is computed from.
 	now func() time.Time
 }
 
@@ -131,8 +132,9 @@ func WithRedisMaxDCRClients(n int) RedisStorageOption {
 	}
 }
 
-// withRedisClock sets the clock DCR cap index scores are computed from, so
-// tests can keep it in step with miniredis's key TTLs.
+// withRedisClock sets the clock that drives DCR cap index scores and every
+// exchange grant TTL and expiry decision, so tests can keep it in step with
+// miniredis's key TTLs.
 func withRedisClock(now func() time.Time) RedisStorageOption {
 	return func(s *RedisStorage) {
 		s.now = now

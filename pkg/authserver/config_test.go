@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"math"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -2887,6 +2888,72 @@ func TestDelegateClientRunConfigTokenExchangeRoundTrip(t *testing.T) {
 			var reYAML DelegateClientRunConfig
 			require.NoError(t, yaml.Unmarshal(encoded, &reYAML))
 			check(t, reYAML)
+		})
+	}
+}
+
+func TestDelegateClientTokenExchangeClone(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		policy *DelegateClientTokenExchange
+	}{
+		{name: "nil policy clones to nil"},
+		{
+			name: "nil refresh block stays nil",
+			policy: &DelegateClientTokenExchange{
+				SelfIssuedSubjectTokens: SelfIssuedSubjectTokensRestricted,
+				AllowedSourceClients:    []string{"source-a"},
+			},
+		},
+		{
+			name: "refresh block and source clients are not shared",
+			policy: &DelegateClientTokenExchange{
+				SelfIssuedSubjectTokens: SelfIssuedSubjectTokensRestricted,
+				AllowedSourceClients:    []string{"source-a", "source-b"},
+				APIAudience:             "api",
+				ExchangeRefreshTokens: &DelegateClientExchangeRefreshTokens{
+					IDJAGMaxLifetime:        "1h",
+					RefreshTokenMaxLifetime: "12h",
+				},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if tt.policy == nil {
+				assert.Nil(t, tt.policy.Clone())
+				return
+			}
+
+			clone := tt.policy.Clone()
+			require.NotNil(t, clone)
+			assert.Equal(t, tt.policy, clone)
+
+			wantSources := slices.Clone(tt.policy.AllowedSourceClients)
+			var wantRefresh DelegateClientExchangeRefreshTokens
+			if tt.policy.ExchangeRefreshTokens == nil {
+				assert.Nil(t, clone.ExchangeRefreshTokens)
+			} else {
+				require.NotNil(t, clone.ExchangeRefreshTokens)
+				assert.NotSame(t, tt.policy.ExchangeRefreshTokens, clone.ExchangeRefreshTokens)
+				wantRefresh = *tt.policy.ExchangeRefreshTokens
+				clone.ExchangeRefreshTokens.IDJAGMaxLifetime = "2h"
+				clone.ExchangeRefreshTokens.RefreshTokenMaxLifetime = ""
+			}
+			if len(clone.AllowedSourceClients) > 0 {
+				clone.AllowedSourceClients[0] = "changed"
+				clone.AllowedSourceClients = append(clone.AllowedSourceClients, "added")
+			}
+
+			if tt.policy.ExchangeRefreshTokens != nil {
+				assert.Equal(t, wantRefresh, *tt.policy.ExchangeRefreshTokens)
+			}
+			assert.Equal(t, wantSources, tt.policy.AllowedSourceClients)
 		})
 	}
 }

@@ -460,13 +460,18 @@ type DelegateClientExchangeRefreshTokens struct {
 	RefreshTokenMaxLifetime string `json:"refresh_token_max_lifetime,omitempty" yaml:"refresh_token_max_lifetime,omitempty"`
 }
 
-// Clone returns a copy that shares no slices with t. A nil policy clones to nil.
+// Clone returns a copy that shares no slices or pointers with t. A nil policy
+// clones to nil.
 func (t *DelegateClientTokenExchange) Clone() *DelegateClientTokenExchange {
 	if t == nil {
 		return nil
 	}
 	cloned := *t
 	cloned.AllowedSourceClients = slices.Clone(t.AllowedSourceClients)
+	if t.ExchangeRefreshTokens != nil {
+		refreshTokens := *t.ExchangeRefreshTokens
+		cloned.ExchangeRefreshTokens = &refreshTokens
+	}
 	return &cloned
 }
 

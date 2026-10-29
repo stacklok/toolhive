@@ -737,6 +737,7 @@ Before this rule, a changed delegate scope or audience on Redis failed startup w
 - A replica that restarts with the older config writes its old policy back. That policy stays until any replica next restarts.
 - One request can combine the delegate status of one replica with the policy of another. Delegate status comes from each replica's own config. The policy comes from the shared row.
 - Secret rotation already behaves this way.
+- The ID-JAG grant gate (a client that sets `grant_types` must list the JWT-bearer grant) also depends on each replica's own config, because the set of clients it applies to comes from that config while the client's grants come from the shared row.
 - SPIFFE clients are not affected. Each replica serves them from its own config, and the placeholder row carries no policy that a request uses.
 - A replica can grant scopes and audiences from the shared row that its own config would reject. The request-time checks in `pkg/authserver/server/tokenexchange/handler.go` for requested scopes (`grantScopes`) and for audiences requested through the `audience` parameter (`grantAudiences`) use only the stored client's scopes and audience. A `resource` parameter (`grantResourceAudience`) and the default audience (`grantDefaultAudience`) are also checked against the replica's own `allowedAudiences` on every request. So narrowing a delegate is not a reliable revocation until every replica runs the new config and no old-config pod restarts. If an old-config pod restarts after the rollout, the wider policy stays in the row until a new-config pod restarts. The subject token still bounds what is granted.
 
@@ -771,6 +772,7 @@ What this means for a delegate you remove from `delegate_clients`, after the nex
 - It is not found. It cannot authenticate at the token endpoint, so it cannot exchange tokens.
 - Access JWTs already issued to it stay valid until they expire. Admission does not revoke them.
 - A self-issued subject token issued to it can still be exchanged by other delegates until it expires. This is an accepted exposure.
+- On Redis, if you add the same ID back, its stored refresh tokens work again until the configured refresh-token lifespan ends (7 days by default, at most 30). This applies to configured login clients. Rotate the credential when you re-add a client.
 - To remove the row as well, delete it manually: `DEL thv:auth:{ns:name}:client:<id>`.
 
 A pending request for a removed client is refused too. Consent and the upstream callback (including an upstream error response) answer a plain-text HTTP 400 containing `invalid_client`, send nothing upstream, and write no upstream tokens or user rows. On the device verification page, submitting the user code (`POST /oauth/device`), completing the upstream login (`/oauth/callback`) and confirming (`POST /oauth/device/confirm`) each check that the device request's client still resolves. When it no longer resolves, the page answers HTTP 400 before any upstream redirect or code exchange, and the device request is never authorized. Denying still closes the request, because deny runs before the check. Any client lookup that ends in not-found gets this answer, including a CIMD document fetch that fails transiently; storage and transport failures answer HTTP 500.
@@ -782,7 +784,7 @@ A pending request for a removed client is refused too. Consent and the upstream 
 
 **What admission does not cover.** The Redis session lookup that rebuilds the client for a stored authorization-code, PKCE, refresh-token or access-token session (`unmarshalRequester`) reads the backend directly, so it is identity-only. That is safe because fosite compares the session's client ID with the client that authenticated through the admitted store. Do not treat a rehydrated client as an authentication result. Device requests store only a client ID string. Code that reads the backend directly also bypasses admission, as does a binary that lacks it.
 
-**Embedders.** Clients an embedder writes with `RegisterClient` are Unmarked and are always served, except a row that matches the legacy delegate shape above. No declaration is needed and nothing changes for the usual embedder clients (public clients, or clients with other grant types). A later change (#6937) will add `ProvisionedClients` to the config so embedders can declare them. A consent-exempt ID does not vouch for a client. Delegates are token-exchange-only and can never be consent-exempt; see [Administrator consent preauthorization](#administrator-consent-preauthorization).
+**Embedders.** Clients an embedder writes with `RegisterClient` are Unmarked and are always served, except a row that matches the legacy delegate shape above. No declaration is needed and nothing changes for the usual embedder clients (public clients, or clients with other grant types). A later change (#6937) will add `ProvisionedClients` to the config so embedders can declare them. A consent-exempt ID does not vouch for a client. A delegate client is consent-exempt only if it is a configured login client; see [Administrator consent preauthorization](#administrator-consent-preauthorization).
 
 With the memory backend, a restarted server starts empty and registers only the configured delegates (`pkg/authserver/server_impl.go`). See [Token Exchange and Delegation](17-token-exchange-delegation.md).
 
@@ -888,8 +890,11 @@ grant (`urn:ietf:params:oauth:grant-type:token-exchange`) and cannot request the
 authorization-code or refresh-token grants. If `grant_types` is omitted, this
 exchange grant is supplied automatically. Discovery advertises
 `private_key_jwt` and the supported signing algorithms only when
-`allowPrivateKeyJWTRegistration` is enabled; token exchange itself is always
-advertised because the embedded server supports it for self-issued tokens.
+`allowPrivateKeyJWTRegistration` is enabled or a configured delegate client
+uses `private_key_jwt`. It advertises `client_secret_basic` and
+`client_secret_post` when confidential DCR is enabled or a configured delegate
+client authenticates with a secret. Token exchange is advertised by default and is
+omitted when `inbound_grants` leaves out `token_exchange`.
 
 The registration and token endpoints must use HTTPS for confidential-client
 registration, exactly as described above. `private_key_jwt` registration has

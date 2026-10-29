@@ -442,10 +442,13 @@ func TestAuthorizeHandler_PlainChallengeMethodAcceptedButValidatedAtToken(t *tes
 func TestAuthorizeHandler_ResourceSelection(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
-		name      string
-		allowed   []string
-		resources []string
-		want      string
+		name            string
+		allowed         []string
+		clientAudiences []string // nil means the client holds the same list as allowed
+		resources       []string
+		strategy        fosite.AudienceMatchingStrategy // nil keeps the handler's default
+		want            string
+		wantDescription string
 	}{
 		{name: "sole default", allowed: []string{"https://api.example.com"}, want: "https://api.example.com"},
 		{name: "explicit", allowed: []string{"https://api.example.com", "https://other.example.com"}, resources: []string{"https://other.example.com"}, want: "https://other.example.com"},
@@ -455,11 +458,62 @@ func TestAuthorizeHandler_ResourceSelection(t *testing.T) {
 		{name: "empty", allowed: []string{"https://api.example.com"}, resources: []string{""}},
 		{name: "unknown", allowed: []string{"https://api.example.com"}, resources: []string{"https://other.example.com"}},
 		{name: "malformed", allowed: []string{"https://api.example.com", "relative"}, resources: []string{"relative"}},
+		{
+			name:            "outside client audiences",
+			allowed:         []string{"https://api.example.com", "https://other.example.com"},
+			clientAudiences: []string{"https://api.example.com"},
+			resources:       []string{"https://other.example.com"},
+			wantDescription: "not permitted to request resource",
+		},
+		{
+			name:            "path below the client audience",
+			allowed:         []string{"https://api.example.com/v1"},
+			clientAudiences: []string{"https://api.example.com"},
+			resources:       []string{"https://api.example.com/v1"},
+			want:            "https://api.example.com/v1",
+		},
+		{
+			name:            "sibling of the client audience path",
+			allowed:         []string{"https://api.example.com/v1x"},
+			clientAudiences: []string{"https://api.example.com/v1"},
+			resources:       []string{"https://api.example.com/v1x"},
+			wantDescription: "not permitted to request resource",
+		},
+		{
+			name:            "client without audiences",
+			allowed:         []string{"https://api.example.com"},
+			clientAudiences: []string{},
+			wantDescription: "not permitted to request resource",
+		},
+		{
+			// The default path-prefix strategy accepts this resource (see "path below
+			// the client audience"); exact matching does not.
+			name:            "configured audience strategy is applied",
+			allowed:         []string{"https://api.example.com/v1"},
+			clientAudiences: []string{"https://api.example.com"},
+			resources:       []string{"https://api.example.com/v1"},
+			strategy:        fosite.ExactAudienceMatchingStrategy,
+			wantDescription: "not permitted to request resource",
+		},
+		{
+			name:            "defaulted resource outside client",
+			allowed:         []string{"https://api.example.com"},
+			clientAudiences: []string{"https://other.example.com"},
+			wantDescription: "not permitted to request resource",
+		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			handler, state, upstream := handlerTestSetup(t)
 			handler.config.AllowedAudiences = tt.allowed
+			if tt.strategy != nil {
+				handler.config.AudienceMatchingStrategy = tt.strategy
+			}
+			clientAudiences := tt.clientAudiences
+			if clientAudiences == nil {
+				clientAudiences = tt.allowed
+			}
+			state.clients[testAuthClientID].(*fosite.DefaultClient).Audience = clientAudiences
 			params := url.Values{
 				"client_id": {testAuthClientID}, "redirect_uri": {testAuthRedirectURI},
 				"response_type": {"code"}, "state": {"client-state"},
@@ -473,6 +527,11 @@ func TestAuthorizeHandler_ResourceSelection(t *testing.T) {
 			if tt.want == "" {
 				assert.Equal(t, http.StatusSeeOther, rec.Code)
 				assert.Contains(t, rec.Header().Get("Location"), "error=invalid_target")
+				if tt.wantDescription != "" {
+					location, err := url.Parse(rec.Header().Get("Location"))
+					require.NoError(t, err)
+					assert.Contains(t, location.Query().Get("error_description"), tt.wantDescription)
+				}
 				assert.Empty(t, upstream.capturedState)
 				assert.Empty(t, state.pendingAuths)
 				return

@@ -277,14 +277,15 @@ Both `/.well-known/oauth-authorization-server` and
 (`Config.DisableTokenExchange`, `AuthorizationServerConfig.TokenExchangeEnabled`)
 — the same flag governs both registration with fosite and discovery
 advertisement, so they cannot drift out of sync. `token_endpoint_auth_methods_supported` always
-includes `none`; it also includes `client_secret_basic` and
-`client_secret_post` when confidential DCR is enabled or a static delegate
-client is configured, and includes `private_key_jwt` when
-`allowPrivateKeyJWTRegistration` is enabled. In the latter case,
-`token_endpoint_auth_signing_alg_values_supported` lists the implemented
-algorithms. The RFC 7523 §2.1 JWT-bearer grant is advertised only when a trusted
-issuer opts into it. A private-key JWT DCR client is limited to token exchange;
-it is not an authorization-code client.
+includes `none`. It also includes `client_secret_basic` and
+`client_secret_post` when confidential DCR is enabled or a configured delegate
+client authenticates with a secret, so a deployment whose delegate clients all
+use `private_key_jwt` does not advertise them. It includes `private_key_jwt`, together with
+`token_endpoint_auth_signing_alg_values_supported` (the implemented algorithms),
+when `allowPrivateKeyJWTRegistration` is enabled or a configured delegate client
+uses `private_key_jwt`. The RFC 7523 §2.1 JWT-bearer grant is advertised only
+when a trusted issuer opts into it. A private-key JWT DCR client is limited to
+token exchange; it is not an authorization-code client.
 
 On Kubernetes, a delegate-client Secret is injected as a pod environment
 variable and is resolved when the authorization server starts. Updating that
@@ -561,14 +562,82 @@ optional; a client that sets none of them is the same client as before.
 | Field | Meaning |
 |---|---|
 | `token_endpoint_auth_method` | Omitted: the client authenticates with its secret by HTTP Basic or form body. `client_secret_basic` or `client_secret_post` pins one of them. `private_key_jwt` authenticates with a signed assertion instead of a secret. |
-| `jwks_file` | Path to the client's public JWKS. Required for `private_key_jwt`, forbidden otherwise. Each key must have `use: sig`. Private and symmetric keys are rejected, at most 10 keys are allowed, and the keys must match `token_endpoint_auth_signing_alg` (default `RS256`). |
+| `jwks_file` | Path to the client's public JWKS. Required for `private_key_jwt`, forbidden otherwise. Each key must have `use: sig`. Private and symmetric keys are rejected, at most 10 keys are allowed, and the keys must match `token_endpoint_auth_signing_alg` (default `RS256`). When the file holds more than one key, every key must have a unique, non-empty `kid`, and the client must send the `kid` of its signing key in the assertion header: fosite checks an assertion that has no `kid` only against the first signing key of the matching type, so a key added during a rotation would never be used otherwise. The `kid` rule is checked when the keys are loaded at startup, not when `RunConfig` is validated. |
 | `grant_types` | Omitted or empty means token exchange only. When set, the list must include token exchange. The other allowed values are `authorization_code`, `refresh_token` and the JWT-bearer grant. `refresh_token` is allowed only together with `authorization_code`. |
 | `redirect_uris` | Required with `authorization_code`, forbidden without it. Each URI must be https and not loopback, as for any other confidential client. |
+
+A delegate's `audiences` limit what it may request. List the narrowest
+audience the client needs: with the default path-prefix strategy, an audience
+such as `https://h/` covers every child path that is also in the server's
+`allowed_audiences` (see "Grants and audiences" below).
 
 One validator in the `registration` package checks these fields. It runs when
 `RunConfig` is validated (with the JWKS contents still unloaded) and when the
 client is built (with the keys loaded). The built client is never marked as
 DCR-issued, so it has no TTL and does not count against `max_dcr_clients`.
+
+At startup the runner reads each `jwks_file` next to the existing
+`client_secret_file` handling, so rotating a key means replacing the file and
+restarting. The stored client keeps its `client_id`; the new key set replaces
+the old one. Discovery lists the client authentication methods as described in
+[Discovery and secret rotation](#discovery-and-secret-rotation). The
+cleartext-transport rule is separate: every delegate client, `private_key_jwt`
+ones included, counts as confidential there.
+
+The server builds each configured delegate client in memory and checks it as
+consent-exempt before it writes the client. A configured login client can
+therefore be listed in `WithConsentExemptClientIDs`, and a bad ID aborts startup
+without leaving delegate rows in storage. When an ID names both a configured
+delegate and a stored row, the delegate as built is the one checked.
+
+`/authorize` treats every client without the `authorization_code` grant as
+back-channel only and answers `invalid_client`, as it does for an unknown
+client, so the response does not show whether such a client exists. RFC 6749
+section 4.1.2.1 would use `unauthorized_client` for a known client; the server
+returns `invalid_client` deliberately. A client that holds `authorization_code`
+in addition to other grants can log users in.
+
+#### Grants and audiences
+
+- **Client audiences.** `/authorize` refuses a `resource` that the client may
+  not request, with `invalid_target`. A `resource` that is omitted defaults to
+  the server's sole allowed audience and is checked the same way. The check
+  applies to every client, including dynamically registered and CIMD clients.
+  It uses the client's own `audiences`, or its resource allowlist for SPIFFE
+  clients, and the server's configured audience matching strategy (fosite's
+  path-prefix strategy by default), which is the rule the authorization code
+  callback and the refresh grant already apply to a client's audiences. For a
+  client without a separate resource list, a request the check accepts therefore
+  cannot fail the callback's audience check later, and a client with no
+  audiences, which could never complete the callback, fails at `/authorize`
+  with `invalid_target`, before the upstream login. The server-level and the
+  client-level refusal return the same error text, so an unauthenticated caller
+  cannot tell which of the two refused a resource. (SPIFFE clients, which keep
+  a resource list, are token-exchange only and never reach `/authorize`.) The
+  default strategy compares scheme and host exactly and accepts a path that
+  equals the client's audience path or extends it at a segment boundary
+  (`https://api.example.com/v1` matches an audience of
+  `https://api.example.com`, but `/v1x` does not match `/v1`). The resource must still be an exact member of the server's allowed
+  audiences, which is checked first. The RFC 8693 `resource` check uses the
+  same strategy. Code redemption reuses the audience bound at `/authorize`, and
+  refresh is enforced by fosite.
+- **Dynamically registered clients.** A DCR client keeps the audience list the
+  server had when it registered, and that list is never refreshed. After an
+  operator adds an audience, an existing DCR client that asks for it gets
+  `invalid_target` at `/authorize`, before the upstream login. The client has to
+  register again to use the new audience.
+- **ID-JAG redemption.** The `resource` of an ID-JAG gets the same client
+  check, except for DCR and CIMD clients, which are not narrowed. They hold a
+  copy of the server's allowed audiences taken at registration, not a
+  per-client policy, so checking them adds nothing while the copy is current
+  and would wrongly refuse an audience added since. The resource must still be
+  an exact member of the server's allowed audiences. Every other client is
+  checked, so a client with no audiences, or an empty resource allowlist,
+  permits nothing. A client that sets `grant_types` explicitly must also list
+  the JWT-bearer grant, or the redemption fails with `unauthorized_client`. A
+  client that omits `grant_types` is stored with token exchange alone but is
+  not gated, for backward compatibility. The plain JWT-bearer grant is not
+  gated this way, because it can run without client authentication.
 
 ### Worked example
 
@@ -966,7 +1035,9 @@ Where the two differ is the trust model — the ID-JAG handler is **bound**:
   A public client suffices here because the assertion itself is the primary
   credential: single-use, short-lived, and audience-pinned to this AS. The
   client's registered `grant_types` metadata is deliberately not consulted —
-  with open DCR, self-asserted metadata authorizes nothing.
+  with open DCR, self-asserted metadata authorizes nothing. The exception is an
+  operator-configured client that sets `grant_types` explicitly: those grants
+  are operator policy, so they are enforced.
 - **`jti` is required.** The draft requires it, and it is what makes the
   assertion single-use; there is no assertion-hash fallback like the plain
   handler's. Replay consumption uses its own purpose (`"id-jag"`,

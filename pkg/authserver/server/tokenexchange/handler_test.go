@@ -893,7 +893,7 @@ func TestTokenExchangeHandler_HandleTokenEndpointRequest(t *testing.T) {
 			},
 			lifespan:     15 * time.Minute,
 			wantErr:      true,
-			hintContains: "not a registered audience",
+			hintContains: "not permitted to request resource",
 		},
 		{
 			name:   "multiple resource parameters rejected",

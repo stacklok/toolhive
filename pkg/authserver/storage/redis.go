@@ -334,8 +334,9 @@ func publicJSONWebKeySet(jwks *jose.JSONWebKeySet) *jose.JSONWebKeySet {
 //     reports correctly because it reads the Public field directly
 //     (fosite.DefaultClient.IsPublic() returns c.Public, uninfluenced by the
 //     auth method).
-//   - A row with a method was written by registration.New (the only path
-//     that populates the column), so it is rebuilt as a
+//   - A row with a method was written by registration.New or by
+//     registration.NewStaticDelegateClient with a pinned method (the only
+//     paths that populate the column), so it is rebuilt as a
 //     *fosite.DefaultOpenIDConnectClient — fosite enforces the pinned method
 //     at the token endpoint. IsPublic is derived as
 //     (Public && method == "none"): a row that somehow carries both

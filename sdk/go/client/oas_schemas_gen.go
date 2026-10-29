@@ -778,10 +778,14 @@ type AuthenticationDelegateClientRunConfig struct {
 	// If both this and ClientSecretEnvVar are set, the file takes precedence.
 	// Forbidden with private_key_jwt.
 	ClientSecretFile OptString `json:"client_secret_file"`
-	// GrantTypes are the grants this client may use. If omitted or empty, it
-	// is [urn:ietf:params:oauth:grant-type:token-exchange]. When set, it must
-	// include token exchange. Allowed values are authorization_code,
-	// refresh_token, the token-exchange grant and the jwt-bearer grant.
+	// GrantTypes are the grants this client may use. If omitted or empty, the
+	// client is stored with [urn:ietf:params:oauth:grant-type:token-exchange]
+	// and its ID-JAG redemption (a JWT-bearer assertion of typ
+	// oauth-id-jag+jwt) is not gated, for backward compatibility. When set, the
+	// list is complete: it must include token exchange, and it must include the
+	// jwt-bearer grant to keep ID-JAG redemption. Allowed values are
+	// authorization_code, refresh_token, the token-exchange grant and the
+	// jwt-bearer grant.
 	GrantTypes []string `json:"grant_types"`
 	// JWKSFile is the path to a file containing the client's public JWKS.
 	// Required for private_key_jwt and forbidden otherwise. The keys must be

@@ -34,7 +34,9 @@ type ConfiguredClientSpec struct {
 	// defaultConfiguredSigningAlgorithm.
 	SigningAlgorithm string
 
-	// GrantTypes empty means the default [token-exchange].
+	// GrantTypes empty means the stored client holds [token-exchange] alone.
+	// ID-JAG redemption is still not gated for such a client, for backward
+	// compatibility; only a client that sets GrantTypes must list jwt-bearer.
 	GrantTypes []string
 
 	RedirectURIs []string
@@ -165,6 +167,27 @@ func validateConfiguredKeys(spec ConfiguredClientSpec) error {
 	}
 	if dcrErr := validatePrivateKeyJWTKeySet(spec.JWKS, alg); dcrErr != nil {
 		return fmt.Errorf("jwks_file: %s", dcrErr.ErrorDescription)
+	}
+	return validateConfiguredKeyIDs(spec.JWKS)
+}
+
+// validateConfiguredKeyIDs requires every key of a multi-key set to carry a
+// unique kid. fosite verifies an assertion that has no kid against the first
+// signing key of the matching type, so during a key rotation an assertion
+// signed by the second key would fail without one.
+func validateConfiguredKeyIDs(jwks *jose.JSONWebKeySet) error {
+	if jwks == nil || len(jwks.Keys) < 2 {
+		return nil
+	}
+	for i, key := range jwks.Keys {
+		if key.KeyID == "" {
+			return fmt.Errorf("jwks_file: key %d has no kid; every key needs a kid when the file holds more than one", i)
+		}
+		// Key is the lookup fosite uses to find the verification key for an
+		// assertion's kid, so a kid that matches two keys is ambiguous.
+		if len(jwks.Key(key.KeyID)) > 1 {
+			return fmt.Errorf("jwks_file: kid %q is used by more than one key", key.KeyID)
+		}
 	}
 	return nil
 }

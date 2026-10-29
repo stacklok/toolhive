@@ -94,6 +94,13 @@ type ConfiguredClientPolicy struct {
 	// APIAudience is the audience the client may be granted without subject
 	// token coverage. Empty means none.
 	APIAudience string
+	// ExchangeRefreshTokens caps the lifetime of refresh tokens this client may
+	// obtain through token exchange, keyed by the token-type URN of the grant
+	// (oauthproto.TokenTypeIDJAG or oauthproto.TokenTypeRefreshToken). A missing
+	// key means that grant kind is refused, so look up with the comma-ok form.
+	// Every present value is > 0 and <= 720h, as config validation enforces. Nil
+	// when the client has no exchange_refresh_tokens block.
+	ExchangeRefreshTokens map[string]time.Duration
 }
 
 // formParams holds the validated RFC 8693 form parameters extracted from a

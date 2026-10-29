@@ -1218,6 +1218,86 @@ func (s *AuthenticationDCRUpstreamConfig) UnmarshalJSON(data []byte) error {
 }
 
 // Encode implements json.Marshaler.
+func (s *AuthenticationDelegateClientExchangeRefreshTokens) Encode(e *jx.Encoder) {
+	e.ObjStart()
+	s.encodeFields(e)
+	e.ObjEnd()
+}
+
+// encodeFields encodes fields.
+func (s *AuthenticationDelegateClientExchangeRefreshTokens) encodeFields(e *jx.Encoder) {
+	{
+		if s.IDJagMaxLifetime.Set {
+			e.FieldStart("id_jag_max_lifetime")
+			s.IDJagMaxLifetime.Encode(e)
+		}
+	}
+	{
+		if s.RefreshTokenMaxLifetime.Set {
+			e.FieldStart("refresh_token_max_lifetime")
+			s.RefreshTokenMaxLifetime.Encode(e)
+		}
+	}
+}
+
+var jsonFieldsNameOfAuthenticationDelegateClientExchangeRefreshTokens = [2]string{
+	0: "id_jag_max_lifetime",
+	1: "refresh_token_max_lifetime",
+}
+
+// Decode decodes AuthenticationDelegateClientExchangeRefreshTokens from json.
+func (s *AuthenticationDelegateClientExchangeRefreshTokens) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode AuthenticationDelegateClientExchangeRefreshTokens to nil")
+	}
+
+	if err := d.ObjBytes(func(d *jx.Decoder, k []byte) error {
+		switch string(k) {
+		case "id_jag_max_lifetime":
+			if err := func() error {
+				s.IDJagMaxLifetime.Reset()
+				if err := s.IDJagMaxLifetime.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"id_jag_max_lifetime\"")
+			}
+		case "refresh_token_max_lifetime":
+			if err := func() error {
+				s.RefreshTokenMaxLifetime.Reset()
+				if err := s.RefreshTokenMaxLifetime.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"refresh_token_max_lifetime\"")
+			}
+		default:
+			return d.Skip()
+		}
+		return nil
+	}); err != nil {
+		return errors.Wrap(err, "decode AuthenticationDelegateClientExchangeRefreshTokens")
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *AuthenticationDelegateClientExchangeRefreshTokens) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *AuthenticationDelegateClientExchangeRefreshTokens) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode implements json.Marshaler.
 func (s *AuthenticationDelegateClientRunConfig) Encode(e *jx.Encoder) {
 	e.ObjStart()
 	s.encodeFields(e)
@@ -1528,15 +1608,22 @@ func (s *AuthenticationDelegateClientTokenExchange) encodeFields(e *jx.Encoder) 
 		}
 	}
 	{
+		if s.ExchangeRefreshTokens.Set {
+			e.FieldStart("exchange_refresh_tokens")
+			s.ExchangeRefreshTokens.Encode(e)
+		}
+	}
+	{
 		e.FieldStart("self_issued_subject_tokens")
 		e.Str(s.SelfIssuedSubjectTokens)
 	}
 }
 
-var jsonFieldsNameOfAuthenticationDelegateClientTokenExchange = [3]string{
+var jsonFieldsNameOfAuthenticationDelegateClientTokenExchange = [4]string{
 	0: "allowed_source_clients",
 	1: "api_audience",
-	2: "self_issued_subject_tokens",
+	2: "exchange_refresh_tokens",
+	3: "self_issued_subject_tokens",
 }
 
 // Decode decodes AuthenticationDelegateClientTokenExchange from json.
@@ -1577,8 +1664,18 @@ func (s *AuthenticationDelegateClientTokenExchange) Decode(d *jx.Decoder) error 
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"api_audience\"")
 			}
+		case "exchange_refresh_tokens":
+			if err := func() error {
+				s.ExchangeRefreshTokens.Reset()
+				if err := s.ExchangeRefreshTokens.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"exchange_refresh_tokens\"")
+			}
 		case "self_issued_subject_tokens":
-			requiredBitSet[0] |= 1 << 2
+			requiredBitSet[0] |= 1 << 3
 			if err := func() error {
 				v, err := d.Str()
 				s.SelfIssuedSubjectTokens = string(v)
@@ -1599,7 +1696,7 @@ func (s *AuthenticationDelegateClientTokenExchange) Decode(d *jx.Decoder) error 
 	// Validate required fields.
 	var failures []validate.FieldError
 	for i, mask := range [1]uint8{
-		0b00000100,
+		0b00001000,
 	} {
 		if result := (requiredBitSet[i] & mask) ^ mask; result != 0 {
 			// Mask only required fields and check equality to mask using XOR.
@@ -17341,6 +17438,39 @@ func (s OptAuthenticationDCRUpstreamConfig) MarshalJSON() ([]byte, error) {
 
 // UnmarshalJSON implements stdjson.Unmarshaler.
 func (s *OptAuthenticationDCRUpstreamConfig) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes AuthenticationDelegateClientExchangeRefreshTokens as json.
+func (o OptAuthenticationDelegateClientExchangeRefreshTokens) Encode(e *jx.Encoder) {
+	if !o.Set {
+		return
+	}
+	o.Value.Encode(e)
+}
+
+// Decode decodes AuthenticationDelegateClientExchangeRefreshTokens from json.
+func (o *OptAuthenticationDelegateClientExchangeRefreshTokens) Decode(d *jx.Decoder) error {
+	if o == nil {
+		return errors.New("invalid: unable to decode OptAuthenticationDelegateClientExchangeRefreshTokens to nil")
+	}
+	o.Set = true
+	if err := o.Value.Decode(d); err != nil {
+		return err
+	}
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s OptAuthenticationDelegateClientExchangeRefreshTokens) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *OptAuthenticationDelegateClientExchangeRefreshTokens) UnmarshalJSON(data []byte) error {
 	d := jx.DecodeBytes(data)
 	return s.Decode(d)
 }

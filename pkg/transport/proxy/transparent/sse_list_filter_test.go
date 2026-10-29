@@ -9,7 +9,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -32,6 +31,19 @@ func freeTCPPort(t *testing.T) int {
 	port := l.Addr().(*net.TCPAddr).Port
 	require.NoError(t, l.Close())
 	return port
+}
+
+// startBackend serves handler on a plain http.Server. httptest.Server.Close
+// calls CloseIdleConnections on http.DefaultTransport, which breaks requests
+// that parallel tests in this package have in flight on that shared transport.
+func startBackend(t *testing.T, handler http.Handler) string {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	srv := &http.Server{Handler: handler, ReadHeaderTimeout: 5 * time.Second}
+	go func() { _ = srv.Serve(l) }()
+	t.Cleanup(func() { _ = srv.Close() })
+	return "http://" + l.Addr().String()
 }
 
 // denyNamedTool authorizes every tool except the one named deniedTool.
@@ -71,12 +83,11 @@ func TestSSEStreamListAnswerIsFilteredThroughProxy(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			backendURL := startBackend(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				w.Header().Set("Content-Type", "text/event-stream")
 				w.WriteHeader(http.StatusOK)
 				_, _ = io.WriteString(w, "event: message\ndata: "+tc.event+"\n\n")
 			}))
-			t.Cleanup(backend.Close)
 
 			authzMiddleware := types.NamedMiddleware{
 				Name: "authz",
@@ -85,12 +96,16 @@ func TestSSEStreamListAnswerIsFilteredThroughProxy(t *testing.T) {
 				},
 			}
 			port := freeTCPPort(t)
-			p := transparent.NewTransparentProxy("127.0.0.1", port, backend.URL, nil, nil, nil, false, false, "sse", nil, nil, "", false, authzMiddleware)
+			p := transparent.NewTransparentProxy("127.0.0.1", port, backendURL, nil, nil, nil, false, false, "sse", nil, nil, "", false, authzMiddleware)
 			require.NoError(t, p.Start(t.Context()))
 			t.Cleanup(func() { _ = p.Stop(context.Background()) })
 			time.Sleep(150 * time.Millisecond)
 
-			resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/sse", port)) //nolint:gosec // test-only URL
+			// A dedicated transport keeps this request off http.DefaultTransport,
+			// which other parallel tests in the package share.
+			client := &http.Client{Transport: &http.Transport{}}
+			t.Cleanup(client.CloseIdleConnections)
+			resp, err := client.Get(fmt.Sprintf("http://127.0.0.1:%d/sse", port))
 			require.NoError(t, err)
 			t.Cleanup(func() { _ = resp.Body.Close() })
 			body, err := io.ReadAll(resp.Body)

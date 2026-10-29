@@ -62,6 +62,13 @@ var _ = BeforeSuite(func() {
 	}).SetupWithManager(suiteEnv.Manager)
 	Expect(err).ToNot(HaveOccurred())
 
+	// Register shared OIDC config validation and its lifecycle watches.
+	err = (&controllers.MCPOIDCConfigReconciler{
+		Client: suiteEnv.Manager.GetClient(),
+		Scheme: suiteEnv.Manager.GetScheme(),
+	}).SetupWithManager(suiteEnv.Manager)
+	Expect(err).ToNot(HaveOccurred())
+
 	// Register the VirtualMCPServer controller
 	err = (&controllers.VirtualMCPServerReconciler{
 		Client:           suiteEnv.Manager.GetClient(),

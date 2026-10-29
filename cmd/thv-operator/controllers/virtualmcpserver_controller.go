@@ -428,7 +428,7 @@ func (r *VirtualMCPServerReconciler) applyStatusUpdates(
 // runValidations runs all pre-reconciliation validations in order: schema-level
 // spec validation, PodTemplateSpec, GroupRef, CompositeToolRefs, EmbeddingServerRef,
 // auth-related checks (inline AuthServerConfig + AuthzConfig/upstream coherence,
-// delegated to runAuthValidations), and the advisory SessionStorage warning.
+// delegated to runAuthValidations), and advisory OIDC CA bundle and SessionStorage checks.
 // Returns (true, nil) to continue reconciliation.
 // Returns (false, nil) for spec validation errors that should NOT trigger requeue
 // (user must fix the spec; next reconciliation is triggered by spec changes).
@@ -490,6 +490,9 @@ func (r *VirtualMCPServerReconciler) runValidations(
 
 	// Advisory: warn when replicas > 1 but session storage is not Redis-backed.
 	r.validateSessionStorageForReplicas(vmcp, statusManager)
+	if err := r.validateCABundleRef(ctx, vmcp, statusManager); err != nil {
+		return false, err
+	}
 
 	return true, nil
 }
@@ -3190,6 +3193,20 @@ func (r *VirtualMCPServerReconciler) mapEmbeddingServerToVirtualMCPServer(
 
 // SetupWithManager sets up the controller with the Manager
 func (r *VirtualMCPServerReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	// vMCP owns these indexes so CA change handling also works when the shared
+	// OIDC config controller is not registered with this manager.
+	if err := mgr.GetFieldIndexer().IndexField(
+		context.Background(), &mcpv1beta1.MCPOIDCConfig{},
+		oidcConfigCABundleConfigMapIndex, indexOIDCConfigByCABundleConfigMap,
+	); err != nil {
+		return fmt.Errorf("failed to set up OIDC CA bundle ConfigMap index: %w", err)
+	}
+	if err := mgr.GetFieldIndexer().IndexField(
+		context.Background(), &mcpv1beta1.VirtualMCPServer{},
+		virtualMCPServerOIDCConfigRefIndex, indexVirtualMCPServerByOIDCConfigRef,
+	); err != nil {
+		return fmt.Errorf("failed to set up VirtualMCPServer OIDC reference index: %w", err)
+	}
 	if err := mgr.GetFieldIndexer().IndexField(
 		context.Background(), &mcpv1beta1.VirtualMCPServer{},
 		virtualMCPServerConfigMapIndex, indexVirtualMCPServerConfigMaps,
@@ -3243,6 +3260,13 @@ func (r *VirtualMCPServerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(
 			&corev1.ConfigMap{},
 			handler.EnqueueRequestsFromMapFunc(r.mapAuthzConfigMapToVirtualMCPServer),
+			builder.WithPredicates(configMapDataChangedPredicate()),
+		).
+		// Incoming OIDC CA references live in the shared MCPOIDCConfig rather
+		// than on vMCP itself, so follow both indexed reference edges.
+		Watches(
+			&corev1.ConfigMap{},
+			handler.EnqueueRequestsFromMapFunc(r.mapOIDCCABundleConfigMapToVirtualMCPServer),
 			builder.WithPredicates(configMapDataChangedPredicate()),
 		).
 		Complete(r)

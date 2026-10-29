@@ -433,6 +433,18 @@ VirtualMCPServer creates a virtual MCP server that aggregates tools, resources, 
 - Backend count
 - Detailed conditions for validation, discovery, and readiness
 
+For incoming OIDC authentication, `CABundleRefValidated` reports whether the CA
+ConfigMap and selected key referenced through `spec.incomingAuth.oidcConfigRef`
+exist. It is `True` with reason `CABundleRefValid`, or `False` with reason
+`CABundleRefNotFound` for a missing ConfigMap and `CABundleRefInvalid` for an
+invalid reference or missing key. The key defaults to `ca.crt`. This condition is
+advisory: it adds diagnostics without changing deployment or TLS behavior or
+adding CRD spec fields. Removing the CA reference removes the condition. Indexed
+ConfigMap watches follow the shared OIDC configuration back to its vMCP consumers
+and refresh the condition when the ConfigMap is created, updated, or deleted.
+Transient ConfigMap read errors preserve the previous condition and retry
+reconciliation.
+
 **References**: MCPGroup (via `spec.groupRef.name`)
 
 **Controller**: `cmd/thv-operator/controllers/virtualmcpserver_controller.go`

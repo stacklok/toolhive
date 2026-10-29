@@ -134,6 +134,7 @@ func TestUpstreamRefreshRejection_ReachesServiceCallers(t *testing.T) {
 			assert.Equal(t, tt.wantInvalidGrant, errors.Is(err, upstream.ErrGrantRejected), "GetValidTokens: %v", err)
 			assert.Equal(t, tt.wantInvalidGrant, oautherr.IsRejectedRefreshGrant(err), "GetValidTokens: %v", err)
 			assert.Equal(t, tt.wantPermanent, oautherr.IsPermanentCredentialError(err), "GetValidTokens: %v", err)
+			assert.NotContains(t, err.Error(), "blocked by WAF")
 
 			creds, failed, err := svc.GetAllUpstreamCredentials(ctx, "session")
 			require.NoError(t, err)

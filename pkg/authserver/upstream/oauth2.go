@@ -1126,6 +1126,8 @@ func (p *BaseOAuth2Provider) fetchUserInfo(ctx context.Context, accessToken stri
 }
 
 // formatOAuth2Error extracts error details from oauth2.RetrieveError for better error messages.
+// A token endpoint answer comes back as a *tokenRequestError, so the
+// RetrieveError stays reachable through errors.As for the oautherr predicates.
 func formatOAuth2Error(err error) error {
 	const prefix = "token request failed"
 	var retrieveErr *oauth2.RetrieveError
@@ -1158,6 +1160,8 @@ func formatOAuth2Error(err error) error {
 // The RetrieveError in the chain is a copy with Body cleared: its own Error()
 // embeds the raw response body, which is untrusted and can echo back bearer
 // material, so a caller that formats the unwrapped cause cannot log it.
+// Response is kept, as in pkg/auth/tokensource, because the oautherr predicates
+// read its status code; neither Error() prints it.
 type tokenRequestError struct {
 	// msg is the sanitized error; it may itself wrap ErrGrantRejected.
 	msg   error

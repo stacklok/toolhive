@@ -207,6 +207,15 @@ func Middleware(a authorizers.Authorizer, next http.Handler, passThroughTools ma
 	annotationCache := NewAnnotationCache()
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// A GET opens the server-to-client event stream. Its list answers are
+		// filtered per event as they arrive, by the shape of each result.
+		if r.Method == http.MethodGet {
+			stream := newSSEStreamFilterWriter(w, a, r, annotationCache, passThroughTools)
+			next.ServeHTTP(stream, r)
+			stream.finish()
+			return
+		}
+
 		// Check if we should skip authorization before checking parsed data
 		if shouldSkipInitialAuthorization(r) {
 			next.ServeHTTP(w, r)

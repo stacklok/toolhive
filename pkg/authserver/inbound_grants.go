@@ -235,6 +235,7 @@ func cloneDelegateClients(clients []DelegateClientRunConfig) []DelegateClientRun
 		cloned[i].Audiences = slices.Clone(cloned[i].Audiences)
 		cloned[i].GrantTypes = slices.Clone(cloned[i].GrantTypes)
 		cloned[i].RedirectURIs = slices.Clone(cloned[i].RedirectURIs)
+		cloned[i].TokenExchange = cloned[i].TokenExchange.Clone()
 	}
 	return cloned
 }

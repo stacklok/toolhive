@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/stacklok/toolhive/pkg/auth/oautherr"
 	"github.com/stacklok/toolhive/pkg/auth/upstreamtoken"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
@@ -23,7 +24,9 @@ import (
 // TestUpstreamRefreshRejection_ReachesServiceCallers verifies that an IdP's
 // invalid_grant answer to an upstream refresh survives the provider, the
 // refresher and the upstream token service, so both GetValidTokens and
-// GetAllUpstreamCredentials callers can tell it from a transient failure.
+// GetAllUpstreamCredentials callers can tell it from a transient failure. The
+// token endpoint's *oauth2.RetrieveError survives the same path, so the
+// oautherr predicates classify every other answer too.
 func TestUpstreamRefreshRejection_ReachesServiceCallers(t *testing.T) {
 	t.Parallel()
 
@@ -32,6 +35,7 @@ func TestUpstreamRefreshRejection_ReachesServiceCallers(t *testing.T) {
 		tokenEndpoint    http.HandlerFunc
 		closeBeforeUse   bool
 		wantInvalidGrant bool
+		wantPermanent    bool
 	}{
 		{
 			name: "invalid_grant is definitive",
@@ -41,6 +45,7 @@ func TestUpstreamRefreshRejection_ReachesServiceCallers(t *testing.T) {
 				_, _ = w.Write([]byte(`{"error":"invalid_grant","error_description":"refresh token revoked"}`))
 			},
 			wantInvalidGrant: true,
+			wantPermanent:    true,
 		},
 		{
 			name: "other 4xx error code is not invalid_grant",
@@ -49,11 +54,26 @@ func TestUpstreamRefreshRejection_ReachesServiceCallers(t *testing.T) {
 				w.WriteHeader(http.StatusUnauthorized)
 				_, _ = w.Write([]byte(`{"error":"invalid_client"}`))
 			},
+			wantPermanent: true,
 		},
 		{
 			name: "5xx is transient",
 			tokenEndpoint: func(w http.ResponseWriter, _ *http.Request) {
 				w.WriteHeader(http.StatusServiceUnavailable)
+			},
+		},
+		{
+			name: "429 is transient",
+			tokenEndpoint: func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusTooManyRequests)
+			},
+		},
+		{
+			name: "4xx without an OAuth error code is transient",
+			tokenEndpoint: func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "text/html")
+				w.WriteHeader(http.StatusForbidden)
+				_, _ = w.Write([]byte(`<html>blocked by WAF</html>`))
 			},
 		},
 		{
@@ -112,6 +132,8 @@ func TestUpstreamRefreshRejection_ReachesServiceCallers(t *testing.T) {
 			_, err = svc.GetValidTokens(ctx, "session", "idp")
 			require.ErrorIs(t, err, upstreamtoken.ErrRefreshFailed)
 			assert.Equal(t, tt.wantInvalidGrant, errors.Is(err, upstream.ErrGrantRejected), "GetValidTokens: %v", err)
+			assert.Equal(t, tt.wantInvalidGrant, oautherr.IsRejectedRefreshGrant(err), "GetValidTokens: %v", err)
+			assert.Equal(t, tt.wantPermanent, oautherr.IsPermanentCredentialError(err), "GetValidTokens: %v", err)
 
 			creds, failed, err := svc.GetAllUpstreamCredentials(ctx, "session")
 			require.NoError(t, err)
@@ -120,6 +142,11 @@ func TestUpstreamRefreshRejection_ReachesServiceCallers(t *testing.T) {
 			require.ErrorIs(t, failed["idp"], upstreamtoken.ErrRefreshFailed)
 			assert.Equal(t, tt.wantInvalidGrant, errors.Is(failed["idp"], upstream.ErrGrantRejected),
 				"GetAllUpstreamCredentials: %v", failed["idp"])
+			assert.Equal(t, tt.wantInvalidGrant, oautherr.IsRejectedRefreshGrant(failed["idp"]),
+				"GetAllUpstreamCredentials: %v", failed["idp"])
+			assert.Equal(t, tt.wantPermanent, oautherr.IsPermanentCredentialError(failed["idp"]),
+				"GetAllUpstreamCredentials: %v", failed["idp"])
+			assert.NotContains(t, failed["idp"].Error(), "blocked by WAF")
 		})
 	}
 }

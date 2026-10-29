@@ -80,7 +80,10 @@ type TokenReader interface {
 	// return HTTP 401 + WWW-Authenticate so the client can re-authenticate. An
 	// upstream that definitively rejected the refresh (the IdP answered
 	// invalid_grant) satisfies errors.Is(err, upstream.ErrGrantRejected); a
-	// network or 5xx failure does not.
+	// network or 5xx failure does not. When the token endpoint answered, the
+	// error also carries its *oauth2.RetrieveError, so oautherr's
+	// IsPermanentCredentialError tells a definitive OAuth verdict (such as
+	// invalid_client) from an outage (5xx, 429, or a 4xx with no OAuth code).
 	//
 	// Each returned IDToken is the rotated ID token when a refresh produced
 	// one (OIDC Core 1.0 §12.2), otherwise the original JWT captured at OIDC
@@ -107,7 +110,8 @@ type Service interface {
 	//   - ErrRefreshFailed if the refresh attempt fails (e.g., revoked refresh token).
 	//     When the upstream IdP definitively rejected the refresh with
 	//     invalid_grant, the error also satisfies errors.Is(err, upstream.ErrGrantRejected);
-	//     a network or 5xx failure does not.
+	//     a network or 5xx failure does not. Any token endpoint answer also keeps
+	//     its *oauth2.RetrieveError in the chain for the oautherr predicates.
 	//
 	// The returned UpstreamCredential.IDToken may be empty or expired. Callers that
 	// PRESENT it as a credential (e.g. as the subject_token of an RFC 8693 token

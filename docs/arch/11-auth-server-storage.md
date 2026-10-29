@@ -468,6 +468,14 @@ lost race rather than a dead credential. The refresher and
 per-provider errors that `GetAllUpstreamCredentials` returns in its `failed`
 map.
 
+Every other answer from the token endpoint keeps its `*oauth2.RetrieveError`
+in the same chain, behind an error whose message is the provider's sanitized
+text (no response body; the chained copy has its body cleared too). Callers
+classify it with the `oautherr` predicates: `IsPermanentCredentialError` is
+true for a structured OAuth verdict such as `invalid_client` and false for a
+5xx, a 429, or a 4xx with no OAuth error code; `IsRejectedRefreshGrant` stays
+true only for the definitive `invalid_grant` case.
+
 The embedded auth server's own `refresh_token` grant keeps the token session
 (`tsid`). A refreshed access token therefore points at the same upstream
 credential. If that credential is dead, the bearer validator answers 401

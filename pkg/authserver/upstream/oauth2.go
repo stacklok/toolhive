@@ -921,7 +921,7 @@ func (p *BaseOAuth2Provider) exchangeCodeForTokensWith(
 
 	token, err := client.oauth2.Exchange(ctx, code, opts...)
 	if err != nil {
-		return nil, formatOAuth2Error(err, "token request failed")
+		return nil, formatOAuth2Error(err)
 	}
 
 	tokens, err := convertOAuth2Token(token)
@@ -1000,7 +1000,7 @@ func (p *BaseOAuth2Provider) refreshTokensWith(ctx context.Context, state *clien
 
 	token, err := client.Exchange(ctx, "", opts...)
 	if err != nil {
-		return nil, formatOAuth2Error(err, "token request failed")
+		return nil, formatOAuth2Error(err)
 	}
 
 	tokens, err := convertOAuth2Token(token)
@@ -1126,25 +1126,55 @@ func (p *BaseOAuth2Provider) fetchUserInfo(ctx context.Context, accessToken stri
 }
 
 // formatOAuth2Error extracts error details from oauth2.RetrieveError for better error messages.
-func formatOAuth2Error(err error, prefix string) error {
+func formatOAuth2Error(err error) error {
+	const prefix = "token request failed"
 	var retrieveErr *oauth2.RetrieveError
 	if errors.As(err, &retrieveErr) {
 		// RetrieveError contains the OAuth error response
 		if oautherr.IsRejectedRefreshGrant(retrieveErr) {
-			return fmt.Errorf("%s: %w - %s", prefix, ErrGrantRejected, retrieveErr.ErrorDescription)
+			return newTokenRequestError(
+				fmt.Errorf("%s: %w - %s", prefix, ErrGrantRejected, retrieveErr.ErrorDescription), retrieveErr)
 		}
 		if retrieveErr.ErrorCode != "" {
-			return fmt.Errorf("%s: %s - %s", prefix, retrieveErr.ErrorCode, retrieveErr.ErrorDescription)
+			return newTokenRequestError(
+				fmt.Errorf("%s: %s - %s", prefix, retrieveErr.ErrorCode, retrieveErr.ErrorDescription), retrieveErr)
 		}
 		// Log full response for debugging, but return sanitized error to prevent information disclosure
 		slog.Debug("token request failed",
 			"status", retrieveErr.Response.StatusCode,
 			"body", string(retrieveErr.Body))
-		return fmt.Errorf("%s with status %d", prefix, retrieveErr.Response.StatusCode)
+		return newTokenRequestError(
+			fmt.Errorf("%s with status %d", prefix, retrieveErr.Response.StatusCode), retrieveErr)
 	}
 	// For other errors (network errors, etc.), wrap with context
 	return fmt.Errorf("request failed: %w", err)
 }
+
+// tokenRequestError is a token endpoint failure whose message is the sanitized
+// text built by formatOAuth2Error, while errors.As can still reach the
+// *oauth2.RetrieveError so callers can classify the failure with the
+// pkg/auth/oautherr predicates.
+//
+// The RetrieveError in the chain is a copy with Body cleared: its own Error()
+// embeds the raw response body, which is untrusted and can echo back bearer
+// material, so a caller that formats the unwrapped cause cannot log it.
+type tokenRequestError struct {
+	// msg is the sanitized error; it may itself wrap ErrGrantRejected.
+	msg   error
+	cause *oauth2.RetrieveError
+}
+
+func newTokenRequestError(msg error, retrieveErr *oauth2.RetrieveError) *tokenRequestError {
+	scrubbed := *retrieveErr
+	scrubbed.Body = nil
+	return &tokenRequestError{msg: msg, cause: &scrubbed}
+}
+
+func (e *tokenRequestError) Error() string { return e.msg.Error() }
+
+// Unwrap exposes both the sanitized error (and any sentinel it wraps) and the
+// *oauth2.RetrieveError to errors.Is / errors.As.
+func (e *tokenRequestError) Unwrap() []error { return []error{e.msg, e.cause} }
 
 // newHTTPClientForHost creates an HTTP client configured for the given host.
 // It enables HTTP and private IPs only for localhost (development/testing),

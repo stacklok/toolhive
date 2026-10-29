@@ -647,6 +647,22 @@ func externalOrigin(validatedClaims *ValidatedClaims) string {
 	return prior
 }
 
+// qualifiedSubjectSeparator joins the external issuer and subject in the
+// "issuer#subject" form that every minter of an externally derived token uses.
+const qualifiedSubjectSeparator = "#"
+
+// derivedFromExternalIdentity reports whether the subject token comes from an
+// external identity. It is true when externalOrigin finds an external issuer,
+// or when the subject has the "issuer#subject" form. The subject check covers
+// tokens minted by the jwt-bearer and ID-JAG handlers: they carry that subject
+// form but no external_issuer claim. The separator is the one those minters
+// use; native login subjects are ToolHive user IDs (UUIDs) or synthesized
+// "tk-" plus hex values, and never contain it.
+func derivedFromExternalIdentity(validatedClaims *ValidatedClaims) bool {
+	return externalOrigin(validatedClaims) != "" ||
+		strings.Contains(validatedClaims.Subject, qualifiedSubjectSeparator)
+}
+
 // chainToAct rebuilds a nested RFC 8693 act structure from a parsed
 // delegation chain, keeping only each hop's iss/sub — never the hop's extra
 // claims, which coreaudit.ParseDelegationChain deliberately keeps out of the
@@ -891,11 +907,12 @@ func (h *Handler) grantAndBoundAudiences(
 		return err
 	}
 	// The api_audience exception applies only to self-issued subject tokens
-	// with no external token in their ancestry: externalOrigin also sees a
-	// re-exchanged token's signed external_issuer claim, so a token derived
-	// from an external one stays bound by its own audience.
+	// with no external identity in their ancestry: derivedFromExternalIdentity
+	// sees a re-exchanged token's external_issuer claim and the issuer#subject
+	// subject of an ID-JAG or jwt-bearer token, so those stay bound by their
+	// own audience.
 	apiAudience := func() string {
-		if externalOrigin(validatedClaims) != "" {
+		if derivedFromExternalIdentity(validatedClaims) {
 			return ""
 		}
 		return h.clientPolicies[client.GetID()].APIAudience

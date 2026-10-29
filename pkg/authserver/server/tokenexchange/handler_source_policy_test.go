@@ -193,20 +193,25 @@ func TestTokenExchangeHandler_APIAudienceNotForExternalIssuerTokens(t *testing.T
 	requireHint(t, h.HandleTokenEndpointRequest(context.Background(), req), "not covered by the subject token")
 }
 
-// TestTokenExchangeHandler_APIAudienceNotForReExchangedExternalTokens pins that
-// a self-issued token carrying an external_issuer claim, as a re-exchange of an
-// external token does, loses the api_audience exception.
-func TestTokenExchangeHandler_APIAudienceNotForReExchangedExternalTokens(t *testing.T) {
+// TestTokenExchangeHandler_APIAudienceNotForExternallyDerivedTokens pins that a
+// self-issued token derived from an external identity loses the api_audience
+// exception, whether it carries an external_issuer claim or only the
+// issuer#subject subject that ID-JAG and jwt-bearer tokens have.
+func TestTokenExchangeHandler_APIAudienceNotForExternallyDerivedTokens(t *testing.T) {
 	t.Parallel()
 
 	tj := newTestJWKS(t)
 	tests := []struct {
 		name           string
+		subject        string
 		externalIssuer string
 		wantErr        bool
 	}{
-		{name: "derived from an external token", externalIssuer: testExternalIssuer, wantErr: true},
-		{name: "not derived from an external token"},
+		{name: "external_issuer claim", subject: "user-123", externalIssuer: testExternalIssuer, wantErr: true},
+		{name: "issuer#subject subject without claim", subject: testExternalIssuer + "#alice", wantErr: true},
+		{name: "issuer#subject subject with claim", subject: testExternalIssuer + "#alice",
+			externalIssuer: testExternalIssuer, wantErr: true},
+		{name: "native subject without marker", subject: "user-123"},
 	}
 
 	for _, tt := range tests {
@@ -216,12 +221,14 @@ func TestTokenExchangeHandler_APIAudienceNotForReExchangedExternalTokens(t *test
 			if tt.externalIssuer != "" {
 				extra["external_issuer"] = tt.externalIssuer
 			}
+			claims := validClaims()
+			claims.Subject = tt.subject
 			h := sourcePolicyHandler(t, tj, &ConfiguredClientPolicy{APIAudience: testAPIAudience})
 			client := defaultClient()
 			client.Audience = []string{testIssuer, testAPIAudience}
 			req := newAccessRequest(t, client, url.Values{
 				"grant_type":         {oauthproto.GrantTypeTokenExchange},
-				"subject_token":      {tj.signToken(t, validClaims(), extra)},
+				"subject_token":      {tj.signToken(t, claims, extra)},
 				"subject_token_type": {oauthproto.TokenTypeAccessToken},
 				"resource":           {testAPIAudience},
 			})

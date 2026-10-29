@@ -534,7 +534,7 @@ and `grantAndBoundAudiences`'s `ensureAudienceSubsetOfSubject` still narrow
 the delegated token to what both the delegate client and the subject token
 are authorized for, with one exception: a restricted client's `api_audience`
 may be granted without subject-token coverage when the subject token is
-self-issued and not derived from an external-issuer token (see [Source policy
+self-issued and not derived from an external identity (see [Source policy
 and API audience](#source-policy-and-api-audience)). The delegated token's
 lifetime is still capped by `min(subject token's remaining lifetime,
 configured delegationLifespan)`.
@@ -718,7 +718,10 @@ self-issued subject tokens only; an external-issuer token must cover every
 audience, as before. The exception also does not apply to a token derived from
 an external-issuer token: a self-issued token that carries an `external_issuer`
 claim, as a re-exchange of an external token does, is bound by its own audience
-too. Every other granted audience must still be covered by the subject token.
+too. So is a self-issued token minted by redeeming an ID-JAG or a JWT-bearer
+assertion: its subject has the `issuer#subject` form, which marks it as derived
+from an external identity even without an `external_issuer` claim. Every
+other granted audience must still be covered by the subject token.
 
 Policy edits take effect on restart. The policy is built once at startup and
 is not stored with the client.

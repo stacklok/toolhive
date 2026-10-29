@@ -64,6 +64,11 @@ type dcrTestHandlerConfig struct {
 	// endpoint. Defaults to "test-client-id". Distinct values let a test
 	// prove two upstreams received distinct dynamically-registered clients.
 	clientID string
+
+	// registeredAuthMethod, when set, is the token_endpoint_auth_method the
+	// registration response names in place of echoing the requested one
+	// (RFC 7591 §3.2.1 lets the server replace requested metadata).
+	registeredAuthMethod string
 }
 
 // newDCRTestServer mounts RFC 8414 metadata and a DCR endpoint on a single
@@ -116,6 +121,9 @@ func newDCRTestServer(t *testing.T, cfg dcrTestHandlerConfig) *httptest.Server {
 		clientID := cfg.clientID
 		if clientID == "" {
 			clientID = "test-client-id"
+		}
+		if cfg.registeredAuthMethod != "" {
+			req.TokenEndpointAuthMethod = cfg.registeredAuthMethod
 		}
 		resp := oauthproto.DynamicClientRegistrationResponse{
 			ClientID:                clientID,
@@ -941,6 +949,111 @@ func TestResolveDCRCredentials_AuthMethodPreference(t *testing.T) {
 			res, err := ResolveCredentials(context.Background(), req, cache)
 			require.NoError(t, err)
 			assert.Equal(t, tc.expected, res.TokenEndpointAuthMethod)
+		})
+	}
+}
+
+// TestResolveDCRCredentials_ConfiguredAuthMethod pins
+// Request.TokenEndpointAuthMethod: the client registers with the configured
+// method in place of the preferred one, and a configured method the upstream
+// cannot honour fails the registration instead of falling back.
+func TestResolveDCRCredentials_ConfiguredAuthMethod(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		supported     []string
+		codeChallenge []string
+		registeredAs  string
+		publicClient  bool
+		configured    string
+		want          string
+		wantErrSub    string
+	}{
+		{
+			name:       "configured client_secret_post wins over the preferred client_secret_basic",
+			supported:  []string{"client_secret_basic", "client_secret_post"},
+			configured: "client_secret_post",
+			want:       "client_secret_post",
+		},
+		{
+			name:       "configured method is used when the upstream advertises no methods",
+			configured: "client_secret_post",
+			want:       "client_secret_post",
+		},
+		{
+			name:          "configured none is used when S256 is advertised",
+			supported:     []string{"client_secret_basic", "none"},
+			codeChallenge: []string{"S256"},
+			configured:    "none",
+			want:          "none",
+		},
+		{
+			name:       "configured method the upstream does not advertise is refused",
+			supported:  []string{"client_secret_basic"},
+			configured: "client_secret_post",
+			wantErrSub: "is not among the upstream's",
+		},
+		{
+			name:       "configured none without S256 is refused",
+			supported:  []string{"none"},
+			configured: "none",
+			wantErrSub: "S256",
+		},
+		{
+			name:       "unsupported configured method is refused",
+			configured: "private_key_jwt",
+			wantErrSub: "unsupported token_endpoint_auth_method",
+		},
+		{
+			name:          "public client cannot configure a confidential method",
+			supported:     []string{"none"},
+			codeChallenge: []string{"S256"},
+			publicClient:  true,
+			configured:    "client_secret_post",
+			wantErrSub:    "public client",
+		},
+		{
+			name:         "registration the upstream switched to another method is refused",
+			supported:    []string{"client_secret_basic", "client_secret_post"},
+			registeredAs: "client_secret_basic",
+			configured:   "client_secret_post",
+			wantErrSub:   "not the configured",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			var requested atomic.Value
+			server := newDCRTestServer(t, dcrTestHandlerConfig{
+				tokenEndpointAuthMethodsSupported: tc.supported,
+				codeChallengeMethodsSupported:     tc.codeChallenge,
+				registeredAuthMethod:              tc.registeredAs,
+				observeRegistration: func(_ *http.Request, body []byte) {
+					var reg oauthproto.DynamicClientRegistrationRequest
+					if json.Unmarshal(body, &reg) == nil {
+						requested.Store(reg.TokenEndpointAuthMethod)
+					}
+				},
+			})
+			issuer := server.URL
+			req := &Request{
+				Issuer:                  issuer,
+				Scopes:                  []string{"openid"},
+				DiscoveryURL:            issuer + "/.well-known/oauth-authorization-server",
+				PublicClient:            tc.publicClient,
+				TokenEndpointAuthMethod: tc.configured,
+			}
+
+			res, err := ResolveCredentials(context.Background(), req, newMemoryDCRStore(t))
+			if tc.wantErrSub != "" {
+				require.ErrorContains(t, err, tc.wantErrSub)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, res.TokenEndpointAuthMethod)
+			assert.Equal(t, tc.want, requested.Load(), "the registration must request the configured method")
 		})
 	}
 }

@@ -285,6 +285,7 @@ func TestNewDCRRequest(t *testing.T) {
 		wantCAFilePath         string
 		wantRotationKey        string
 		wantRegistrationProbe  dcr.RegistrationProbe
+		wantAuthMethod         string
 	}{
 		{
 			name: "discovery_url branch resolves file-based initial access token",
@@ -367,6 +368,23 @@ func TestNewDCRRequest(t *testing.T) {
 			wantRegistrationProbe: dcr.ProbeAuthorizationEndpoint,
 		},
 		{
+			// Pins the TokenEndpointAuthMethod copy onto dcr.Request: without
+			// it the client would register with the method the resolver
+			// prefers, which is the one the operator configured away from.
+			name: "token_endpoint_auth_method propagates from run-config",
+			rc: &authserver.OAuth2UpstreamRunConfig{
+				Scopes:                  []string{"openid"},
+				TokenEndpointAuthMethod: "client_secret_post",
+				DCRConfig: &authserver.DCRUpstreamConfig{
+					RegistrationEndpoint: "https://idp.example.com/register",
+				},
+			},
+			localIssuer:      "https://thv.example.com",
+			wantIssuer:       "https://thv.example.com",
+			wantRegistration: "https://idp.example.com/register",
+			wantAuthMethod:   "client_secret_post",
+		},
+		{
 			name:        "nil run-config rejected",
 			rc:          nil,
 			localIssuer: "https://thv.example.com",
@@ -392,6 +410,7 @@ func TestNewDCRRequest(t *testing.T) {
 			assert.Equal(t, tc.wantCAFilePath, req.CAFilePath)
 			assert.Equal(t, tc.wantRotationKey, req.RotationKey)
 			assert.Equal(t, tc.wantRegistrationProbe, req.RegistrationProbe)
+			assert.Equal(t, tc.wantAuthMethod, req.TokenEndpointAuthMethod)
 		})
 	}
 }

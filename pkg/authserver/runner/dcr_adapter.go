@@ -46,6 +46,7 @@ func newDCRRequest(rc *authserver.UpstreamRunConfig, localIssuer string) (*dcr.R
 		allowPrivateIPs       bool
 		authorizationEndpoint string
 		tokenEndpoint         string
+		authMethod            string
 	)
 	switch rc.Type {
 	case authserver.UpstreamProviderTypeOIDC:
@@ -69,6 +70,9 @@ func newDCRRequest(rc *authserver.UpstreamRunConfig, localIssuer string) (*dcr.R
 		caFilePath = rc.OAuth2Config.CAFilePath
 		allowPrivateIPs = rc.OAuth2Config.AllowPrivateIPs
 		authorizationEndpoint, tokenEndpoint = rc.OAuth2Config.AuthorizationEndpoint, rc.OAuth2Config.TokenEndpoint
+		// With DCR the configured method is the one to register with; the
+		// resolution then carries it back (applyResolutionToOAuth2Config).
+		authMethod = rc.OAuth2Config.TokenEndpointAuthMethod
 	default:
 		return nil, fmt.Errorf("unsupported upstream type: %s", rc.Type)
 	}
@@ -87,9 +91,10 @@ func newDCRRequest(rc *authserver.UpstreamRunConfig, localIssuer string) (*dcr.R
 	return &dcr.Request{
 		Issuer: localIssuer, RedirectURI: redirectURI, Scopes: scopes,
 		DiscoveryURL: discoveryURL, RegistrationEndpoint: dcrConfig.RegistrationEndpoint,
-		RotationKey:           dcrConfig.RotationKey,
-		RegistrationProbe:     dcr.RegistrationProbe(dcrConfig.RegistrationProbe),
-		AuthorizationEndpoint: authorizationEndpoint, TokenEndpoint: tokenEndpoint,
+		RotationKey:             dcrConfig.RotationKey,
+		RegistrationProbe:       dcr.RegistrationProbe(dcrConfig.RegistrationProbe),
+		TokenEndpointAuthMethod: authMethod,
+		AuthorizationEndpoint:   authorizationEndpoint, TokenEndpoint: tokenEndpoint,
 		InitialAccessToken: initialAccessToken, CAFilePath: caFilePath, AllowPrivateIPs: allowPrivateIPs,
 	}, nil
 }

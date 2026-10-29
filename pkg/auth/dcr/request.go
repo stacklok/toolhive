@@ -168,6 +168,21 @@ type Request struct {
 	// staleness warning is logged at Debug so it repeats only at start.
 	Periodic bool
 
+	// TokenEndpointAuthMethod, when non-empty, is the token endpoint auth
+	// method to register with, in place of the one the resolver picks from
+	// the upstream's advertised methods (client_secret_basic, then
+	// client_secret_post, then none). It is for an upstream whose token
+	// endpoint does not accept the method the resolver would pick, for
+	// example one that advertises client_secret_basic but reads client
+	// credentials only from the request body. It must be none,
+	// client_secret_basic or client_secret_post, and one of the upstream's
+	// advertised methods when the upstream advertises any.
+	//
+	// A cached registration made with a different method is replaced with
+	// a new registration on the next resolve, and a registration response
+	// that names a different method is refused.
+	TokenEndpointAuthMethod string
+
 	// CodeChallengeMethodsSupported lists the PKCE challenge methods the
 	// upstream advertises. Only consulted when RegistrationEndpoint is set;
 	// on the DiscoveryURL branch the resolver reads this value from the

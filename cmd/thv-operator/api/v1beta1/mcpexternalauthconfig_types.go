@@ -1743,6 +1743,11 @@ type OAuth2UpstreamConfig struct {
 	// client_secret_post-shaped default). Set this to client_secret_basic explicitly
 	// for providers that require HTTP Basic auth. Public clients without a secret use
 	// the "none" method.
+	// With DCRConfig, it is the method the client registers with, in place of the one
+	// ToolHive picks from the upstream's advertised methods (client_secret_basic, then
+	// client_secret_post, then none). Set it for an upstream whose token endpoint does
+	// not accept the method ToolHive picks. A cached registration made with another
+	// method is replaced with a new one at the next start.
 	// +kubebuilder:validation:Enum=none;client_secret_basic;client_secret_post
 	// +optional
 	TokenEndpointAuthMethod string `json:"tokenEndpointAuthMethod,omitempty"`

@@ -447,14 +447,17 @@ func ResolveCredentials(
 
 // revalidateCachedResolution is the cache-hit body of ResolveCredentials
 // wrapped by the singleflight. It keeps cached unless the upstream rejects
-// the client, in which case it registers a new client and replaces the
-// stale entry with Replacer.ReplaceIfUnchanged so concurrent replicas
-// converge on a single registration. A failed re-registration is returned
-// as an error rather than falling back to cached: the upstream has just said
-// that client no longer exists.
+// the client, or cached was registered with a token endpoint auth method
+// other than the configured Request.TokenEndpointAuthMethod. Either way it
+// registers a new client and replaces the stale entry with
+// Replacer.ReplaceIfUnchanged so concurrent replicas converge on a single
+// registration. A failed re-registration is returned as an error rather than
+// falling back to cached: the upstream has just said that client no longer
+// exists, or the operator has said its auth method does not work.
 //
-// A cache that does not implement Replacer could not act on a rejection, so
-// the upstream is not contacted at all and cached is returned unchecked.
+// A cache that does not implement Replacer could not act on either, so the
+// upstream is not contacted at all: cached is returned unchecked, or an error
+// when its auth method contradicts the configured one.
 func revalidateCachedResolution(
 	ctx context.Context,
 	req *Request,
@@ -464,9 +467,31 @@ func revalidateCachedResolution(
 	cache CredentialStore,
 	cached *Resolution,
 ) (*Resolution, error) {
+	methodMismatch := req.TokenEndpointAuthMethod != "" &&
+		cached.TokenEndpointAuthMethod != req.TokenEndpointAuthMethod
 	replacer, ok := cache.(Replacer)
 	if !ok {
+		if methodMismatch {
+			return nil, newDCRStepError(dcrStepCacheRead, req.Issuer, redirectURI, fmt.Errorf(
+				"cached client %q uses token_endpoint_auth_method %q, not the configured %q, and the "+
+					"credential store cannot replace it; change the rotation key to register a new client",
+				cached.ClientID, cached.TokenEndpointAuthMethod, req.TokenEndpointAuthMethod))
+		}
 		return cached, nil
+	}
+
+	if methodMismatch {
+		//nolint:gosec // G706: client_id is public metadata per RFC 7591.
+		slog.Warn("dcr: cached client registration uses another token endpoint auth method; registering a new client",
+			"local_issuer", req.Issuer,
+			"upstream_id", key.UpstreamID,
+			"redirect_uri", redirectURI,
+			"rotation_key", key.RotationKey,
+			"client_id", cached.ClientID,
+			"token_endpoint_auth_method", cached.TokenEndpointAuthMethod,
+			"configured_token_endpoint_auth_method", req.TokenEndpointAuthMethod,
+		)
+		return replaceCachedRegistration(ctx, req, redirectURI, scopes, key, replacer, cached)
 	}
 
 	status, reason := verifyCachedRegistration(ctx, req, cached)
@@ -486,6 +511,21 @@ func revalidateCachedResolution(
 		"registration_probe", string(req.RegistrationProbe.effective()),
 		"client_id", cached.ClientID,
 	)
+	return replaceCachedRegistration(ctx, req, redirectURI, scopes, key, replacer, cached)
+}
+
+// replaceCachedRegistration registers a new client for key and swaps it in
+// for cached with Replacer.ReplaceIfUnchanged, so concurrent replicas
+// converge on one registration.
+func replaceCachedRegistration(
+	ctx context.Context,
+	req *Request,
+	redirectURI string,
+	scopes []string,
+	key Key,
+	replacer Replacer,
+	cached *Resolution,
+) (*Resolution, error) {
 	resolution, err := registerClient(ctx, req, redirectURI, scopes)
 	if err != nil {
 		return nil, err
@@ -497,8 +537,8 @@ func revalidateCachedResolution(
 	}
 	if authoritative.ClientID == cached.ClientID {
 		// A concurrent rewrite of the same row won the compare-and-set and
-		// left the rejected client in place; using it would only reproduce
-		// the upstream's invalid_client.
+		// left the retired client in place; using it would only reproduce
+		// the failure that retired it.
 		return nil, newDCRStepError(dcrStepCacheWrite, req.Issuer, redirectURI,
 			errors.New("cache replace: the rejected registration is still stored"))
 	}
@@ -591,16 +631,17 @@ func registerClient(
 		return nil, newDCRStepError(dcrStepMetadata, req.Issuer, redirectURI, err)
 	}
 
-	// Token-endpoint auth method: intersect server support with our
-	// preference order; default to client_secret_basic if the server does
-	// not advertise the field at all. When the caller declared the
-	// registration is for a public PKCE client (CLI flow), force
-	// token_endpoint_auth_method=none while still enforcing the S256
-	// PKCE gate.
+	// Token-endpoint auth method: the caller's configured method when set,
+	// otherwise intersect server support with our preference order; default
+	// to client_secret_basic if the server does not advertise the field at
+	// all. When the caller declared the registration is for a public PKCE
+	// client (CLI flow), force token_endpoint_auth_method=none while still
+	// enforcing the S256 PKCE gate.
 	authMethod, err := selectTokenEndpointAuthMethod(
 		endpoints.tokenEndpointAuthMethodsSupported,
 		endpoints.codeChallengeMethodsSupported,
 		req.PublicClient,
+		req.TokenEndpointAuthMethod,
 	)
 	if err != nil {
 		return nil, newDCRStepError(dcrStepSelectAuthMethod, req.Issuer, redirectURI, err)
@@ -615,7 +656,17 @@ func registerClient(
 		return nil, newDCRStepError(dcrStepRegister, req.Issuer, redirectURI, err)
 	}
 
-	return buildResolution(response, endpoints, authMethod, redirectURI), nil
+	resolution := buildResolution(response, endpoints, authMethod, redirectURI)
+	if req.TokenEndpointAuthMethod != "" && resolution.TokenEndpointAuthMethod != req.TokenEndpointAuthMethod {
+		// RFC 7591 §3.2.1 lets the upstream replace requested metadata. The
+		// method was configured because the upstream's own choice does not
+		// work, so a registration the upstream changed is refused rather
+		// than used.
+		return nil, newDCRStepError(dcrStepRegister, req.Issuer, redirectURI, fmt.Errorf(
+			"upstream registered client %q with token_endpoint_auth_method %q, not the configured %q",
+			resolution.ClientID, resolution.TokenEndpointAuthMethod, req.TokenEndpointAuthMethod))
+	}
+	return resolution, nil
 }
 
 // checkAuthoritativeResolution vets the durable value a cache write returned
@@ -827,6 +878,9 @@ func validateResolveInputs(
 	}
 	if err := req.RegistrationProbe.Validate(); err != nil {
 		return fmt.Errorf("dcr: %w", err)
+	}
+	if err := validateConfiguredAuthMethod(req.TokenEndpointAuthMethod, req.PublicClient); err != nil {
+		return err
 	}
 	if cache == nil {
 		return fmt.Errorf("dcr: credential store is required")
@@ -1518,7 +1572,14 @@ func validateUpstreamEndpointURL(rawURL, label string) error {
 // only if S256 PKCE is advertised. Any other outcome is an error — the
 // caller has declared intent and the resolver must not silently switch to
 // a confidential-client method.
-func selectTokenEndpointAuthMethod(serverSupported, codeChallengeMethodsSupported []string, publicClient bool) (string, error) {
+//
+// configured: when non-empty (Request.TokenEndpointAuthMethod), it replaces
+// the preference order. It is returned when the upstream advertises it or
+// advertises no methods at all, with the same S256 gate on "none"; any other
+// outcome is an error for the same reason as publicClient.
+func selectTokenEndpointAuthMethod(
+	serverSupported, codeChallengeMethodsSupported []string, publicClient bool, configured string,
+) (string, error) {
 	pkceS256Advertised := slices.Contains(codeChallengeMethodsSupported, oauthproto.PKCEMethodS256)
 
 	if publicClient {
@@ -1541,6 +1602,10 @@ func selectTokenEndpointAuthMethod(serverSupported, codeChallengeMethodsSupporte
 			}
 		}
 		return "none", nil
+	}
+
+	if configured != "" {
+		return configuredTokenEndpointAuthMethod(configured, serverSupported, pkceS256Advertised)
 	}
 
 	if len(serverSupported) == 0 {
@@ -1707,4 +1772,41 @@ func hostFromURL(rawURL string) (string, error) {
 		return "", fmt.Errorf("dcr: url missing host: %q", rawURL)
 	}
 	return u.Host, nil
+}
+
+// configuredTokenEndpointAuthMethod checks the caller's configured method
+// against the upstream's advertised set. An upstream that advertises no
+// methods leaves the choice to the caller; "none" still needs S256 PKCE
+// (RFC 7636 / OAuth 2.1), as in the preference path.
+func configuredTokenEndpointAuthMethod(configured string, serverSupported []string, pkceS256Advertised bool) (string, error) {
+	if len(serverSupported) > 0 && !slices.Contains(serverSupported, configured) {
+		return "", fmt.Errorf(
+			"configured token_endpoint_auth_method %q is not among the upstream's "+
+				"token_endpoint_auth_methods_supported %v", configured, serverSupported)
+	}
+	if configured == oauthproto.TokenEndpointAuthMethodNone && !pkceS256Advertised {
+		return "", fmt.Errorf(
+			"configured token_endpoint_auth_method none requires the upstream to advertise S256 in " +
+				"code_challenge_methods_supported per RFC 7636 / OAuth 2.1")
+	}
+	return configured, nil
+}
+
+// validateConfiguredAuthMethod checks Request.TokenEndpointAuthMethod: empty,
+// or one of the methods the OAuth2 runtime can present. A public client
+// registers with none, so it cannot configure a confidential method.
+func validateConfiguredAuthMethod(method string, publicClient bool) error {
+	switch method {
+	case "":
+		return nil
+	case oauthproto.TokenEndpointAuthMethodNone,
+		oauthproto.TokenEndpointAuthMethodClientSecretBasic,
+		oauthproto.TokenEndpointAuthMethodClientSecretPost:
+	default:
+		return fmt.Errorf("dcr: unsupported token_endpoint_auth_method %q", method)
+	}
+	if publicClient && method != oauthproto.TokenEndpointAuthMethodNone {
+		return fmt.Errorf("dcr: a public client registers with token_endpoint_auth_method none, not %q", method)
+	}
+	return nil
 }

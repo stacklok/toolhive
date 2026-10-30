@@ -382,6 +382,12 @@ func (h *RefreshTokenHandler) decideChild(
 	if err != nil {
 		return nil, err
 	}
+	// expires_at is whole seconds, so a parent with no whole second left is
+	// refused like an expired one. A sub-second remainder must not get a
+	// different answer from the expired case.
+	if parent.ExpiresAt.Unix() <= now.Unix() {
+		return nil, refuse(ctx, log, refuseUnknownGrant, errorsx.WithStack(errUnknownGrant))
+	}
 
 	echo, tokenType, expiresAt, err := decideChildEntry(ctx, pending, clientID, parent, policy, now)
 	if err != nil {

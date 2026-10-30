@@ -619,7 +619,7 @@ func processJSONBuffer(config *toolMiddlewareConfig, buffer []byte, w io.Writer)
 		return fmt.Errorf("%w: %w", errKeepBuffering, err)
 	}
 	if err == nil && toolsListResponse.Result.Tools != nil {
-		return processToolsListResponse(config, toolsListResponse, w)
+		return processToolsListResponse(config, buffer, toolsListResponse, w)
 	}
 
 	_, err = w.Write(buffer)
@@ -664,7 +664,7 @@ func processUnrecognizedMimeType(
 
 	var candidate toolsListResponse
 	if err := json.Unmarshal(buffer, &candidate); err == nil && candidate.Result.Tools != nil {
-		return processToolsListResponse(config, candidate, w)
+		return processToolsListResponse(config, buffer, candidate, w)
 	}
 
 	if sniffSSEToolsList(buffer) {
@@ -675,116 +675,172 @@ func processUnrecognizedMimeType(
 }
 
 // sniffSSEToolsList reports whether buffer contains an SSE "data:" line whose
-// payload decodes to a tools list. It's a lightweight detector only, used to
+// payload decodes to a tools list, under either reading of a line that
+// processEventStream applies. It's a lightweight detector only, used to
 // decide whether a mislabeled/untyped 2xx body needs the full SSE processing
-// path (which enforces its own completeness and separator rules).
+// path (which enforces its own completeness rules).
 func sniffSSEToolsList(buffer []byte) bool {
-	normalized := bytes.ReplaceAll(buffer, []byte("\r\n"), []byte("\n"))
-	normalized = bytes.ReplaceAll(normalized, []byte("\r"), []byte("\n"))
-
-	for _, line := range bytes.Split(normalized, []byte("\n")) {
-		data, ok := bytes.CutPrefix(line, []byte("data:"))
-		if !ok {
-			continue
-		}
-
-		var candidate toolsListResponse
-		if json.Unmarshal(bytes.TrimSpace(data), &candidate) == nil && candidate.Result.Tools != nil {
+	for _, segment := range splitEventStreamSegments(buffer) {
+		lines := splitEventStreamLines(segment)
+		if _, _, ok := toolsListData(bytes.TrimRight(segment, "\r\n")); ok && len(lines) > 1 {
 			return true
+		}
+		for _, line := range lines {
+			if _, _, ok := toolsListData(line.content); ok {
+				return true
+			}
 		}
 	}
 
 	return false
 }
 
-//nolint:gocyclo
+// processEventStream writes buffer, the lines of an event stream, to w with
+// every data line that carries a tools list replaced by the filtered list.
+// Every other line goes back as it arrived, blank lines included, and every
+// line ends with the ending it arrived with, so an event whose lines end
+// differently keeps the empty line that ends it and the client dispatches
+// it. A buffer that does not end in a line break waits for more.
+//
+// A line is read two ways, because clients differ: the SSE specification
+// ends a line at CRLF, LF or CR (splitEventStreamLines), and go-sdk ends one
+// at LF alone (splitEventStreamSegments). A lone CR is a line break under the
+// first reading and white space inside a JSON value under the second, so a
+// list value that holds one is also decoded as go-sdk reads it: split the
+// first way alone, its pieces decode as nothing, go back as they arrived, and
+// reach a go-sdk client whole and unfiltered.
 func processEventStream(
 	config *toolMiddlewareConfig,
 	buffer []byte,
 	w io.Writer,
 ) error {
-	if len(buffer) > 1 && buffer[len(buffer)-1] != '\n' && buffer[len(buffer)-1] != '\r' {
+	if len(buffer) > 0 && buffer[len(buffer)-1] != '\n' && buffer[len(buffer)-1] != '\r' {
 		return fmt.Errorf("%w: %v", errKeepBuffering, "event separator not found")
 	}
 
-	// NOTE: this looks uglier, but is more efficient than scanning the whole buffer
-	var linesep []byte
-	if len(buffer) >= 2 && bytes.Equal(buffer[len(buffer)-2:], []byte("\r\n")) {
-		linesep = []byte("\r\n")
-	} else if len(buffer) >= 1 && buffer[len(buffer)-1] == '\n' {
-		linesep = []byte("\n")
-	} else if len(buffer) >= 1 && buffer[len(buffer)-1] == '\r' {
-		linesep = []byte("\r")
-	} else {
-		// Length only, not the buffer: buffer is the full pre-filter payload
-		// (e.g. the unfiltered tools/list), and this error is logged upstream.
-		return fmt.Errorf("unsupported SSE line separator in %d-byte buffer", len(buffer))
-	}
-
-	var linesepTotal, linesepCount int
-	linesepTotal = bytes.Count(buffer, linesep)
-	lines := bytes.Split(buffer, linesep)
-	for _, line := range lines {
-		if len(line) == 0 {
-			continue
-		}
-
-		var written bool
-		if data, ok := bytes.CutPrefix(line, []byte("data:")); ok {
-			var toolsListResponse toolsListResponse
-			if err := json.Unmarshal(data, &toolsListResponse); err == nil && toolsListResponse.Result.Tools != nil {
-				// We got to the point of processing a real tools list response,
-				// so we need to write the "data: " prefix first.
-				_, err := w.Write([]byte("data: "))
-				if err != nil {
-					return fmt.Errorf("%w: %w", errBug, err)
-				}
-
-				if err := processToolsListResponse(config, toolsListResponse, w); err != nil {
-					return err
-				}
-				written = true
-			}
-		}
-
-		if !written {
-			_, err := w.Write(line)
-			if err != nil {
-				return fmt.Errorf("%w: %w", errBug, err)
-			}
-		}
-
-		_, err := w.Write(linesep)
-		if err != nil {
-			return fmt.Errorf("%w: %w", errBug, err)
-		}
-		linesepCount++
-	}
-
-	// This ensures we don't send too few line separators, which might break
-	// SSE parsing.
-	if linesepCount < linesepTotal {
-		_, err := w.Write(linesep)
-		if err != nil {
-			return fmt.Errorf("%w: %w", errBug, err)
+	for _, segment := range splitEventStreamSegments(buffer) {
+		if err := writeEventStreamSegment(config, segment, w); err != nil {
+			return err
 		}
 	}
 
 	return nil
 }
 
-// processToolsListResponse processes a tools list response filtering out
-// tools that are not in the filter list.
+// writeEventStreamSegment writes segment, one line as go-sdk reads it, to w
+// line by line as the SSE specification splits it. When the two readings
+// differ, that is when the specification splits segment into several lines,
+// and segment is a tools list data line to go-sdk, the list is filtered as
+// go-sdk reads it instead and written as data lines ended by the first line
+// ending of segment's tail, the rest of the tail following them.
+func writeEventStreamSegment(config *toolMiddlewareConfig, segment []byte, w io.Writer) error {
+	lines := splitEventStreamLines(segment)
+	if len(lines) > 1 {
+		content := bytes.TrimRight(segment, "\r\n")
+		if data, response, ok := toolsListData(content); ok {
+			// The tail is never empty: every segment ends with LF, or with the
+			// CR the buffer ends with, since a buffer without a line break at
+			// its end waits for more.
+			tail := segment[len(content):]
+			ending := splitEventStreamLines(tail)[0].ending
+			if err := writeToolsListData(config, data, response, ending, w); err != nil {
+				return err
+			}
+			return writeChunks(w, tail[len(ending):])
+		}
+	}
+
+	for _, line := range lines {
+		if data, response, ok := toolsListData(line.content); ok {
+			if err := writeToolsListData(config, data, response, line.ending, w); err != nil {
+				return err
+			}
+			continue
+		}
+
+		if err := writeChunks(w, line.content, line.ending); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// toolsListData reports whether line, the content of an event-stream line, is
+// a data line whose value decodes to a tools list, and returns the value and
+// the decoded response when it is.
+func toolsListData(line []byte) ([]byte, toolsListResponse, bool) {
+	data, ok := bytes.CutPrefix(line, []byte("data:"))
+	if !ok {
+		return nil, toolsListResponse{}, false
+	}
+	var response toolsListResponse
+	if err := json.Unmarshal(data, &response); err != nil || response.Result.Tools == nil {
+		return nil, toolsListResponse{}, false
+	}
+	return data, response, true
+}
+
+// writeToolsListData writes data, the value of a data line that carries a
+// tools list response decoded into response, back to w as the data lines
+// that carry the filtered list, each ended by ending, the ending the line
+// arrived with. A value read as one line of the specification's split holds
+// no line break, since a line ends at any of CRLF, LF and CR, and the filter
+// adds none: encoding/json and the member encoders write none, and
+// processToolsListResponse ends its output with the one newline trimmed
+// here, so such a list goes out as one data line. A value read as go-sdk
+// reads it can hold a lone CR inside a member the backend sent, which the
+// filter keeps as sent; that list goes out as one data line per line of it,
+// and a client joins the data lines of an event with a newline, legal white
+// space where the CR stood.
+func writeToolsListData(
+	config *toolMiddlewareConfig,
+	data []byte,
+	response toolsListResponse,
+	ending []byte,
+	w io.Writer,
+) error {
+	var filtered bytes.Buffer
+	if err := processToolsListResponse(config, data, response, &filtered); err != nil {
+		return err
+	}
+	for _, part := range splitEventStreamLines(bytes.TrimSuffix(filtered.Bytes(), []byte("\n"))) {
+		if err := writeChunks(w, []byte("data: "), part.content, ending); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// writeChunks writes the non-empty chunks to w in order.
+func writeChunks(w io.Writer, chunks ...[]byte) error {
+	for _, chunk := range chunks {
+		if len(chunk) == 0 {
+			continue
+		}
+		if _, err := w.Write(chunk); err != nil {
+			return fmt.Errorf("%w: %w", errBug, err)
+		}
+	}
+	return nil
+}
+
+// processToolsListResponse writes body, a tools list response that decodes
+// into response, to w followed by a newline, with the tools that are not in
+// the filter list left out and the overrides applied to the rest. Every other
+// member of the message and of its result reaches the client as the backend
+// sent it: see encodeToolsListResponse.
 func processToolsListResponse(
 	config *toolMiddlewareConfig,
-	toolsListResponse toolsListResponse,
+	body []byte,
+	response toolsListResponse,
 	w io.Writer,
 ) error {
 	// Convert to SimpleTool format for shared processing
-	simpleTools := make([]SimpleTool, 0, len(*toolsListResponse.Result.Tools))
-	toolMaps := make([]map[string]any, 0, len(*toolsListResponse.Result.Tools))
+	simpleTools := make([]SimpleTool, 0, len(*response.Result.Tools))
+	toolMaps := make([]map[string]any, 0, len(*response.Result.Tools))
 
-	for _, tool := range *toolsListResponse.Result.Tools {
+	for _, tool := range *response.Result.Tools {
 		// NOTE: the spec does not allow for name to be missing.
 		toolName, ok := tool["name"].(string)
 		if !ok {
@@ -834,8 +890,11 @@ func processToolsListResponse(
 		}
 	}
 
-	toolsListResponse.Result.Tools = &filteredTools
-	if err := json.NewEncoder(w).Encode(toolsListResponse); err != nil {
+	encoded, err := encodeToolsListResponse(body, response, filteredTools)
+	if err != nil {
+		return fmt.Errorf("%w: %w", errBug, err)
+	}
+	if _, err := w.Write(append(encoded, '\n')); err != nil {
 		return fmt.Errorf("%w: %w", errBug, err)
 	}
 

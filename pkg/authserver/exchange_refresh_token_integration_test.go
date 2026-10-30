@@ -375,6 +375,8 @@ func runExchangeRefreshTokenGrantFlows(t *testing.T, env *xrtEnv) {
 		assert.Equal(t, "invalid_grant", res.body["error"])
 		assert.NotContains(t, res.body, "access_token", "nothing is issued")
 	})
+
+	runDeriveFlows(t, env)
 }
 
 // runExchangeRefreshTokenRefusals runs the subtests that refuse a request before
@@ -383,7 +385,7 @@ func runExchangeRefreshTokenRefusals(t *testing.T, env *xrtEnv) {
 	t.Helper()
 	t.Run("routing", func(t *testing.T) {
 		// subject_token_type=refresh_token is claimed by the refresh-token handler,
-		// which has no derive path yet and refuses it.
+		// which refuses it unless the request asks for a refresh token.
 		res := env.requestRefreshToken(t, env.broker, "irrelevant", func(f url.Values) {
 			f.Set("subject_token_type", oauthproto.TokenTypeRefreshToken)
 			f.Set("requested_token_type", oauthproto.TokenTypeIDJAG)

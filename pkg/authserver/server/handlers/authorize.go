@@ -54,14 +54,17 @@ func newUpstreamAuthSecrets() *upstreamAuthSecrets {
 func (h *Handler) AuthorizeHandler(w http.ResponseWriter, req *http.Request) {
 	ctx := req.Context()
 
+	// The request-object check does not look up the client, so it runs first:
+	// running it after a client-dependent rejection would answer differently
+	// for configured and unknown clients.
+	if h.rejectUnsafeRequestObject(ctx, w, req) {
+		return
+	}
 	// Back-channel-only clients must be indistinguishable from unknown clients
 	// at this unauthenticated endpoint. This runs before redirect URI matching
 	// (including the loopback matcher below), which would otherwise expose that
 	// the client is configured through an invalid_request response.
 	if h.rejectBackChannelOnlyAuthorizeClient(ctx, w, req) {
-		return
-	}
-	if h.rejectUnsafeRequestObject(ctx, w, req) {
 		return
 	}
 

@@ -340,6 +340,19 @@ func TestAuthorizeHandler_BackChannelOnlyClientsMatchMissingClient(t *testing.T)
 			assert.Equal(t, missing.Code, configured.Code)
 			assert.Equal(t, missing.Body.String(), configured.Body.String())
 			assert.Contains(t, configured.Body.String(), "invalid_client")
+
+			// A malformed request object must not distinguish the two either.
+			const badRequestObject = "&request=not-a-jws"
+			missingBadRequest := httptest.NewRecorder()
+			handler.AuthorizeHandler(missingBadRequest, httptest.NewRequest(http.MethodGet,
+				"/oauth/authorize?client_id=missing-client&redirect_uri=https://invalid.example/callback"+badRequestObject, nil))
+
+			configuredBadRequest := httptest.NewRecorder()
+			handler.AuthorizeHandler(configuredBadRequest, httptest.NewRequest(http.MethodGet,
+				"/oauth/authorize?client_id="+client.GetID()+"&redirect_uri=https://invalid.example/callback"+badRequestObject, nil))
+
+			assert.Equal(t, missingBadRequest.Code, configuredBadRequest.Code)
+			assert.Equal(t, missingBadRequest.Body.String(), configuredBadRequest.Body.String())
 		})
 	}
 }

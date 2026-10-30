@@ -1575,15 +1575,15 @@ applied. From step 5 on, the reasons are exact `error_description` values with
 
 A child entry fails with `invalid_authorization_details` and one of these
 reasons: `token_type_not_permitted` (the child lists `refresh_token`, or its
-kind of token is not enabled for the client), `invalid_expires_at`, or
-`parent_expired` (the parent has no lifetime left). A store failure is
-`server_error`.
+kind of token is not enabled for the client) or `invalid_expires_at`. A store
+failure is `server_error`.
 
 Both stores report a grant past its `ExpiresAt` as not found, before the
 liveness check runs. So an expired grant gets the same `grant_invalid` error as
 an unknown token on both backends. A child never outlives its parent, since its
 `expires_at` is capped to the parent's, so a child whose parent has expired has
-expired too and gets `grant_invalid` as well. The server log says
+expired too and gets `grant_invalid` as well. A presented grant with no whole second
+left is refused the same way, because `expires_at` is whole seconds. The server log says
 `not_found_or_other_client` for these. The legitimate client knows the expiry
 from the `expires_at` in the response that issued the grant, so a separate reason
 would tell it nothing. The handler checks expiry before revocation, so an expired

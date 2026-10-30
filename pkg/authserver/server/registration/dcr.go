@@ -22,9 +22,10 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/go-jose/go-jose/v3"
+	"github.com/go-jose/go-jose/v4"
 	"github.com/ory/fosite"
 
+	"github.com/stacklok/toolhive/pkg/authserver/internal/fositejose"
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
@@ -360,7 +361,7 @@ func ValidatePrivateKeyJWTClientKeys(client fosite.Client) *DCRError {
 		return nil
 	}
 	return validatePrivateKeyJWTMetadata(&oauthproto.DynamicClientRegistrationRequest{
-		JWKS:                        c.GetJSONWebKeys(),
+		JWKS:                        fositejose.FromFositeKeySet(c.GetJSONWebKeys()),
 		TokenEndpointAuthSigningAlg: c.GetTokenEndpointAuthSigningAlgorithm(),
 	}, oauthproto.TokenEndpointAuthMethodPrivateKeyJWT)
 }

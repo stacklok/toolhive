@@ -24,11 +24,12 @@ import (
 	"math/big"
 	"testing"
 
-	"github.com/go-jose/go-jose/v3"
+	"github.com/go-jose/go-jose/v4"
 	"github.com/ory/fosite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/stacklok/toolhive/pkg/authserver/internal/fositejose"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
@@ -434,8 +435,7 @@ func TestNewClient_PrivateKeyJWT(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, oauthproto.TokenEndpointAuthMethodPrivateKeyJWT, oidc.GetTokenEndpointAuthMethod())
 	assert.Equal(t, string(jose.RS256), oidc.GetTokenEndpointAuthSigningAlgorithm())
-	assert.Equal(t, jwks, oidc.GetJSONWebKeys())
-	assert.NotSame(t, jwks, oidc.GetJSONWebKeys())
+	assert.Equal(t, jwks, fositejose.FromFositeKeySet(oidc.GetJSONWebKeys()))
 }
 
 func TestNewClient_ConfidentialClient(t *testing.T) {
@@ -733,8 +733,7 @@ func TestNewStaticDelegateClient_Shape(t *testing.T) {
 			assert.Equal(t, tt.wantMethod, oidc.GetTokenEndpointAuthMethod())
 			if tt.wantMethod == oauthproto.TokenEndpointAuthMethodPrivateKeyJWT {
 				assert.Equal(t, defaultConfiguredSigningAlgorithm, oidc.GetTokenEndpointAuthSigningAlgorithm())
-				assert.Equal(t, jwks, oidc.GetJSONWebKeys())
-				assert.NotSame(t, jwks, oidc.GetJSONWebKeys())
+				assert.Equal(t, jwks, fositejose.FromFositeKeySet(oidc.GetJSONWebKeys()))
 				return
 			}
 			assert.Nil(t, oidc.GetJSONWebKeys())

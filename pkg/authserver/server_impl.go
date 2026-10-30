@@ -529,13 +529,14 @@ func warnBlanketSelfIssuedExchange(delegateClients []DelegateClient, jwtBearerEn
 		attrs := []any{
 			"client_id", delegateClient.ClientID, "scopes", delegateClient.Scopes, "audiences", delegateClient.Audiences,
 		}
-		// A client with grant_types must declare its mode, so reaching here
-		// means it chose any explicitly. A client without grant_types can
-		// also redeem an ID-JAG when jwt-bearer is enabled, minting its own
-		// self-issued tokens to exchange.
-		if len(delegateClient.GrantTypes) > 0 {
+		// A client with grant_types or private_key_jwt must declare its mode,
+		// so reaching here means it chose any explicitly. A client without
+		// grant_types can also redeem an ID-JAG when jwt-bearer is enabled,
+		// minting its own self-issued tokens to exchange.
+		if trustModeRequired(delegateClient.GrantTypes, delegateClient.TokenEndpointAuthMethod) {
 			attrs = append(attrs, "explicit_any", true)
-		} else if jwtBearerEnabled {
+		}
+		if len(delegateClient.GrantTypes) == 0 && jwtBearerEnabled {
 			attrs = append(attrs, "redeems_id_jag", true)
 		}
 		slog.Warn("delegate client has blanket self-issued token exchange rights: "+

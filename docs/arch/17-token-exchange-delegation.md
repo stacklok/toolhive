@@ -518,10 +518,11 @@ until a real ID-token validation profile is implemented.
 
 ### Delegate clients and self-issued token exchange
 
-A configured delegate client in `any` mode, or without a `token_exchange`
-block, can convert *any* self-issued ToolHive access token it can obtain — for
-any user, regardless of which client originally obtained that token — into a
-delegated token asserting that user's `sub`.
+A configured delegate client in `any` mode, or a secret-authenticated delegate
+client that omits both `grant_types` and the `token_exchange` block, can
+convert *any* self-issued ToolHive access token it can obtain — for any user,
+regardless of which client originally obtained that token — into a delegated
+token asserting that user's `sub`.
 This is an intentional blanket-trust model, not an oversight: delegate
 clients are declared by the operator at server startup (`RunConfig`/CRD),
 not obtained through self-service registration, so the same trust already
@@ -577,7 +578,7 @@ optional; a client that sets none of them is the same client as before.
 |---|---|
 | `token_endpoint_auth_method` | Omitted: the client authenticates with its secret by HTTP Basic or form body. `client_secret_basic` or `client_secret_post` pins one of them. `private_key_jwt` authenticates with a signed assertion instead of a secret. |
 | `jwks_file` | Path to the client's public JWKS. Required for `private_key_jwt`, forbidden otherwise. Each key must have `use: sig`. Private and symmetric keys are rejected, at most 10 keys are allowed, and the keys must match `token_endpoint_auth_signing_alg`. When that field is omitted, it is derived from the keys: each key's `alg`, or `ES256`, `ES384` or `ES512` from an EC key's curve; RSA keys without `alg` use `RS256`; keys that disagree are rejected and the field must be set. When the file holds more than one key, every key must have a unique, non-empty `kid`, and the client must send the `kid` of its signing key in the assertion header: fosite checks an assertion that has no `kid` only against the first signing key of the matching type, so a key added during a rotation would never be used otherwise. The `kid` rule is checked when the keys are loaded at startup, not when `RunConfig` is validated. |
-| `grant_types` | Omitted or empty means token exchange only. When set, the list must include token exchange. The other allowed values are `authorization_code`, `refresh_token` and the JWT-bearer grant. `refresh_token` is allowed only together with `authorization_code`. A client that sets `grant_types` must also declare a `token_exchange` block with `self_issued_subject_tokens` (see [Source policy and API audience](#source-policy-and-api-audience)). |
+| `grant_types` | Omitted or empty means token exchange only. When set, the list must include token exchange. The other allowed values are `authorization_code`, `refresh_token` and the JWT-bearer grant. `refresh_token` is allowed only together with `authorization_code`. A client that sets `grant_types`, or uses `private_key_jwt`, must also declare a `token_exchange` block with `self_issued_subject_tokens` (see [Source policy and API audience](#source-policy-and-api-audience)). |
 | `redirect_uris` | Required with `authorization_code`, forbidden without it. Each URI must be https and not loopback, as for any other confidential client. |
 
 A delegate's `audiences` limit what it may request. List the narrowest
@@ -681,16 +682,19 @@ including an empty `token_exchange: {}`, fails validation. It has two values:
   authenticated client. Both checks must pass and neither overrides the other.
 - **`any`.** The client keeps the blanket trust described above: it may
   exchange any self-issued subject token. The startup WARN is logged with
-  `explicit_any=true` when the client also sets `grant_types`.
+  `explicit_any=true` when the client also sets `grant_types` or uses
+  `private_key_jwt`, because such a client must declare its mode. It also
+  carries `redeems_id_jag=true` when the client sets no `grant_types` and a
+  trusted issuer has the JWT-bearer grant enabled.
 
-The block may be omitted only when the client's `grant_types` is omitted or
-empty. Such a client behaves as `any` and logs the startup WARN; when a
-trusted issuer has the JWT-bearer grant enabled, the WARN carries
-`redeems_id_jag=true`, because the client can also redeem an ID-JAG and so
-mint its own self-issued tokens. A client that sets `grant_types` must
-declare the block and the mode, so a client written for the newer metadata
-never falls back to blanket trust because a block was dropped. A client with
-`restricted` logs no startup WARN.
+The block may be omitted only by a secret-authenticated client whose
+`grant_types` is omitted or empty. Such a client behaves as `any` and logs the
+startup WARN; when a trusted issuer has the JWT-bearer grant enabled, the WARN
+carries `redeems_id_jag=true`, because the client can also redeem an ID-JAG
+and so mint its own self-issued tokens. A client that sets `grant_types`, or
+uses `private_key_jwt`, must declare the block and the mode, so a client
+written for the newer metadata never falls back to blanket trust because a
+block was dropped. A client with `restricted` logs no startup WARN.
 
 **External-issuer subject tokens** are never governed by
 `self_issued_subject_tokens`, in either mode. The trusted issuer's policy
@@ -728,9 +732,10 @@ is not stored with the client.
 
 **User-facing change.** A delegate client with `self_issued_subject_tokens:
 restricted` stops accepting every self-issued token. It accepts only tokens
-issued to itself and to its listed source clients. A delegate client without
-`grant_types` and without the block behaves as before. A client that sets
-`grant_types` must now declare the block and the mode.
+issued to itself and to its listed source clients. A secret-authenticated
+delegate client without `grant_types` and without the block behaves as before.
+A client that sets `grant_types`, or uses `private_key_jwt`, must now declare
+the block and the mode.
 
 ### Worked example
 

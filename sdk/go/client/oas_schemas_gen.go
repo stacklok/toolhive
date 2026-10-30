@@ -960,9 +960,10 @@ func (s *AuthenticationDelegateClientRunConfig) SetTokenExchange(val OptAuthenti
 // TokenExchange is the client's token-exchange policy. Its
 // SelfIssuedSubjectTokens field selects which self-issued subject tokens
 // the client may exchange and is required whenever the block is present.
-// The block may be omitted only when GrantTypes is omitted or empty; such
-// a client keeps the legacy rule (any) and may exchange any self-issued
-// token. A client that sets GrantTypes must declare the block.
+// The block may be omitted only by a secret-authenticated client whose
+// GrantTypes is omitted or empty; such a client keeps the legacy rule (any)
+// and may exchange any self-issued token. A client that sets GrantTypes or
+// uses private_key_jwt must declare the block.
 // Ref: #/components/schemas/AuthenticationDelegateClientTokenExchange
 type AuthenticationDelegateClientTokenExchange struct {
 	// AllowedSourceClients are client_id values, as they appear in the subject

@@ -1152,7 +1152,7 @@ func TestDelegateClientRunConfigValidate(t *testing.T) {
 		clients []DelegateClientRunConfig
 		wantErr string
 	}{
-		{name: "valid", clients: []DelegateClientRunConfig{validClient}},
+		{name: "secret client without grant types or block keeps legacy trust", clients: []DelegateClientRunConfig{validClient}},
 		{name: "empty ID", clients: []DelegateClientRunConfig{{ClientSecretEnvVar: "SECRET", Scopes: validClient.Scopes, Audiences: validClient.Audiences}}, wantErr: "client_id is required"},
 		{name: "duplicate ID", clients: []DelegateClientRunConfig{validClient, validClient}, wantErr: "duplicate client_id"},
 		{name: "missing secret reference", clients: []DelegateClientRunConfig{{ClientID: "delegate", Scopes: validClient.Scopes, Audiences: validClient.Audiences}}, wantErr: "secret is required"},
@@ -1160,9 +1160,14 @@ func TestDelegateClientRunConfigValidate(t *testing.T) {
 		{name: "scope outside supported", clients: []DelegateClientRunConfig{{ClientID: "delegate", ClientSecretEnvVar: "SECRET", Scopes: []string{"admin"}, Audiences: validClient.Audiences}}, wantErr: `"admin" which is not in scopes_supported`},
 		{name: "missing audiences", clients: []DelegateClientRunConfig{{ClientID: "delegate", ClientSecretEnvVar: "SECRET", Scopes: validClient.Scopes}}, wantErr: "audiences is required"},
 		{name: "audience outside allowed", clients: []DelegateClientRunConfig{{ClientID: "delegate", ClientSecretEnvVar: "SECRET", Scopes: validClient.Scopes, Audiences: []string{"https://other.example.com"}}}, wantErr: "is not in allowed_audiences"},
-		{name: "private_key_jwt with jwks file", clients: []DelegateClientRunConfig{{
+		{name: "private_key_jwt without token exchange block", clients: []DelegateClientRunConfig{{
 			ClientID: "delegate", TokenEndpointAuthMethod: "private_key_jwt", JWKSFile: "/keys/jwks.json",
 			Scopes: validClient.Scopes, Audiences: validClient.Audiences,
+		}}, wantErr: "private_key_jwt clients must declare a token_exchange block"},
+		{name: "private_key_jwt with jwks file", clients: []DelegateClientRunConfig{{
+			ClientID: "delegate", TokenEndpointAuthMethod: "private_key_jwt", JWKSFile: "/keys/jwks.json",
+			TokenExchange: &DelegateClientTokenExchange{SelfIssuedSubjectTokens: SelfIssuedSubjectTokensAny},
+			Scopes:        validClient.Scopes, Audiences: validClient.Audiences,
 		}}},
 		{name: "private_key_jwt without jwks file", clients: []DelegateClientRunConfig{{
 			ClientID: "delegate", TokenEndpointAuthMethod: "private_key_jwt",
@@ -1481,7 +1486,8 @@ func TestRunConfigValidate_DelegateClientTransport(t *testing.T) {
 	}
 	keyClient := DelegateClientRunConfig{
 		ClientID: "key-client", TokenEndpointAuthMethod: "private_key_jwt", JWKSFile: "/keys/jwks.json",
-		Scopes: []string{"openid"}, Audiences: []string{"https://mcp.example.com"},
+		TokenExchange: &DelegateClientTokenExchange{SelfIssuedSubjectTokens: SelfIssuedSubjectTokensAny},
+		Scopes:        []string{"openid"}, Audiences: []string{"https://mcp.example.com"},
 	}
 	tests := []struct {
 		name              string
@@ -1563,9 +1569,14 @@ func TestConfigValidateDelegateClients(t *testing.T) {
 		wantErr       string
 	}{
 		{name: "valid resolved client", clients: []DelegateClient{validClient}},
-		{name: "resolved private_key_jwt client", clients: []DelegateClient{{
+		{name: "resolved private_key_jwt client without token exchange block", clients: []DelegateClient{{
 			ClientID: "delegate", TokenEndpointAuthMethod: "private_key_jwt", JSONWebKeys: publicKeySet,
 			Scopes: validClient.Scopes, Audiences: validClient.Audiences,
+		}}, wantErr: "private_key_jwt clients must declare a token_exchange block"},
+		{name: "resolved private_key_jwt client", clients: []DelegateClient{{
+			ClientID: "delegate", TokenEndpointAuthMethod: "private_key_jwt", JSONWebKeys: publicKeySet,
+			TokenExchange: &DelegateClientTokenExchange{SelfIssuedSubjectTokens: SelfIssuedSubjectTokensAny},
+			Scopes:        validClient.Scopes, Audiences: validClient.Audiences,
 		}}},
 		{name: "private_key_jwt with nil keys", clients: []DelegateClient{{
 			ClientID: "delegate", TokenEndpointAuthMethod: "private_key_jwt",
@@ -1618,19 +1629,23 @@ func TestConfigValidateDelegateClients(t *testing.T) {
 		{name: "static client rejects loopback HTTP without opt-in", clients: []DelegateClient{validClient}, issuer: "http://localhost:8080", wantErr: "insecure_allow_confidential_over_loopback_http"},
 		{name: "private_key_jwt only rejects insecure HTTP", clients: []DelegateClient{{
 			ClientID: "delegate", TokenEndpointAuthMethod: "private_key_jwt", JSONWebKeys: publicKeySet,
-			Scopes: validClient.Scopes, Audiences: validClient.Audiences,
+			TokenExchange: &DelegateClientTokenExchange{SelfIssuedSubjectTokens: SelfIssuedSubjectTokensAny},
+			Scopes:        validClient.Scopes, Audiences: validClient.Audiences,
 		}}, issuer: "http://auth.example.com", wantErr: "combined with insecure_allow_http:"},
 		{name: "private_key_jwt only rejects loopback HTTP without opt-in", clients: []DelegateClient{{
 			ClientID: "delegate", TokenEndpointAuthMethod: "private_key_jwt", JSONWebKeys: publicKeySet,
-			Scopes: validClient.Scopes, Audiences: validClient.Audiences,
+			TokenExchange: &DelegateClientTokenExchange{SelfIssuedSubjectTokens: SelfIssuedSubjectTokensAny},
+			Scopes:        validClient.Scopes, Audiences: validClient.Audiences,
 		}}, issuer: "http://localhost:8080", wantErr: "insecure_allow_confidential_over_loopback_http"},
 		{name: "private_key_jwt only passes with loopback HTTP and opt-in", clients: []DelegateClient{{
 			ClientID: "delegate", TokenEndpointAuthMethod: "private_key_jwt", JSONWebKeys: publicKeySet,
-			Scopes: validClient.Scopes, Audiences: validClient.Audiences,
+			TokenExchange: &DelegateClientTokenExchange{SelfIssuedSubjectTokens: SelfIssuedSubjectTokensAny},
+			Scopes:        validClient.Scopes, Audiences: validClient.Audiences,
 		}}, issuer: "http://localhost:8080", loopbackOptIn: true},
 		{name: "mixed secret and private_key_jwt rejects insecure HTTP", clients: []DelegateClient{validClient, {
 			ClientID: "key-delegate", TokenEndpointAuthMethod: "private_key_jwt", JSONWebKeys: publicKeySet,
-			Scopes: validClient.Scopes, Audiences: validClient.Audiences,
+			TokenExchange: &DelegateClientTokenExchange{SelfIssuedSubjectTokens: SelfIssuedSubjectTokensAny},
+			Scopes:        validClient.Scopes, Audiences: validClient.Audiences,
 		}}, issuer: "http://auth.example.com", wantErr: "combined with insecure_allow_http:"},
 	}
 

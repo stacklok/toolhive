@@ -348,7 +348,9 @@ type DelegateClientRunConfig struct {
 	JWKSFile string `json:"jwks_file,omitempty" yaml:"jwks_file,omitempty"`
 
 	// TokenEndpointAuthSigningAlg is the private_key_jwt signing algorithm.
-	// Defaults to RS256.
+	// If omitted, it is derived from the keys: each key's alg, or ES256, ES384
+	// or ES512 from an EC key's curve. RSA keys without alg use RS256. Keys
+	// that disagree must set it.
 	//nolint:lll // field tags require full JSON+YAML names
 	TokenEndpointAuthSigningAlg string `json:"token_endpoint_auth_signing_alg,omitempty" yaml:"token_endpoint_auth_signing_alg,omitempty"`
 

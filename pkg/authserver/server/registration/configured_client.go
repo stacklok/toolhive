@@ -4,18 +4,18 @@
 package registration
 
 import (
+	"crypto/ecdsa"
+	"crypto/rsa"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/go-jose/go-jose/v3"
 
+	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
-
-// defaultConfiguredSigningAlgorithm is the private_key_jwt signing algorithm
-// a configured client uses when none is declared.
-const defaultConfiguredSigningAlgorithm = "RS256"
 
 // maxAllowedSourceClients bounds token_exchange.allowed_source_clients.
 const maxAllowedSourceClients = 20
@@ -44,8 +44,10 @@ type ConfiguredClientSpec struct {
 	// client_secret_basic, client_secret_post, or private_key_jwt.
 	TokenEndpointAuthMethod string
 
-	// SigningAlgorithm is the private_key_jwt algorithm. Empty means
-	// defaultConfiguredSigningAlgorithm.
+	// SigningAlgorithm is the private_key_jwt algorithm. Empty means it is
+	// derived from the keys: each key's alg, or ES256, ES384 or ES512 from an
+	// EC key's curve. RSA keys without alg use RS256. Keys that disagree must
+	// set it.
 	SigningAlgorithm string
 
 	// GrantTypes empty means the stored client holds [token-exchange] alone.
@@ -114,26 +116,93 @@ func effectiveConfiguredGrantTypes(grantTypes []string) []string {
 // ValidateConfiguredClient checks the metadata of an operator-configured
 // client: the auth method, the key set, the grant set and the redirect URIs.
 func ValidateConfiguredClient(spec ConfiguredClientSpec) error {
+	_, err := validateConfiguredClient(spec)
+	return err
+}
+
+// validateConfiguredClient is ValidateConfiguredClient, also returning the resolved signing algorithm.
+func validateConfiguredClient(spec ConfiguredClientSpec) (string, error) {
 	if err := validateConfiguredAuthMethod(spec); err != nil {
-		return err
+		return "", err
 	}
-	if err := validateConfiguredKeys(spec); err != nil {
-		return err
+	alg, err := validateConfiguredKeys(spec)
+	if err != nil {
+		return "", err
 	}
 	grants := effectiveConfiguredGrantTypes(spec.GrantTypes)
 	if err := validateConfiguredGrants(grants); err != nil {
-		return err
+		return "", err
 	}
 	if err := validateConfiguredRedirects(spec.RedirectURIs, grants); err != nil {
-		return err
+		return "", err
 	}
 	if err := validateConfiguredTokenExchange(spec); err != nil {
-		return err
+		return "", err
 	}
 	if err := validateConfiguredExchangeRefreshTokens(spec); err != nil {
-		return err
+		return "", err
 	}
-	return validateConfiguredRedirectURIs(spec.RedirectURIs)
+	if err := validateConfiguredRedirectURIs(spec.RedirectURIs); err != nil {
+		return "", err
+	}
+	return alg, nil
+}
+
+// defaultConfiguredSigningAlgorithm is the private_key_jwt signing algorithm
+// a configured client uses when none is declared and the keys do not say.
+const defaultConfiguredSigningAlgorithm = "RS256"
+
+// ecSigningAlgorithms are the algorithms an EC key can carry, one per curve.
+var ecSigningAlgorithms = []string{"ES256", "ES384", "ES512"}
+
+// resolveConfiguredSigningAlgorithm returns the private_key_jwt signing
+// algorithm of a configured client. A declared algorithm is returned as is.
+// Otherwise it comes from the keys: each key's alg, or ES256, ES384 or ES512
+// from an EC key's curve, or RS256 for an RSA key without alg (RS and PS are
+// both possible). With no keys the result is RS256. Keys of any other type say
+// nothing, so the key-set validation reports them. Keys that disagree are an
+// error.
+func resolveConfiguredSigningAlgorithm(configured string, jwks *jose.JSONWebKeySet) (string, error) {
+	if configured != "" {
+		return configured, nil
+	}
+	if jwks == nil || len(jwks.Keys) == 0 {
+		return defaultConfiguredSigningAlgorithm, nil
+	}
+	var found []string
+	for i := range jwks.Keys {
+		if alg := keySigningAlgorithm(&jwks.Keys[i]); alg != "" && !slices.Contains(found, alg) {
+			found = append(found, alg)
+		}
+	}
+	switch len(found) {
+	case 0:
+		return defaultConfiguredSigningAlgorithm, nil
+	case 1:
+		return found[0], nil
+	}
+	slices.Sort(found)
+	return "", fmt.Errorf("jwks_file keys have different signing algorithms (%s): "+
+		"set token_endpoint_auth_signing_alg", strings.Join(found, ", "))
+}
+
+// keySigningAlgorithm returns the algorithm a key implies, or "" for a key
+// type that implies none.
+func keySigningAlgorithm(key *jose.JSONWebKey) string {
+	if key.Algorithm != "" {
+		return key.Algorithm
+	}
+	switch key.Key.(type) {
+	case *rsa.PublicKey:
+		return defaultConfiguredSigningAlgorithm
+	case *ecdsa.PublicKey:
+		for _, alg := range ecSigningAlgorithms {
+			if servercrypto.ValidateAlgorithmForPublicKey(alg, key.Key) == nil {
+				return alg
+			}
+		}
+	}
+	return ""
 }
 
 func validateConfiguredAuthMethod(spec ConfiguredClientSpec) error {
@@ -201,36 +270,43 @@ func validateConfiguredRedirectURIs(redirectURIs []string) error {
 	return nil
 }
 
-func validateConfiguredKeys(spec ConfiguredClientSpec) error {
+func validateConfiguredKeys(spec ConfiguredClientSpec) (string, error) {
 	if spec.TokenEndpointAuthMethod != oauthproto.TokenEndpointAuthMethodPrivateKeyJWT {
 		if spec.JWKS != nil || spec.JWKSPending {
-			return fmt.Errorf("jwks_file is only allowed with token_endpoint_auth_method %q",
+			return "", fmt.Errorf("jwks_file is only allowed with token_endpoint_auth_method %q",
 				oauthproto.TokenEndpointAuthMethodPrivateKeyJWT)
 		}
 		if spec.SigningAlgorithm != "" {
-			return fmt.Errorf("token_endpoint_auth_signing_alg is only allowed with token_endpoint_auth_method %q",
+			return "", fmt.Errorf("token_endpoint_auth_signing_alg is only allowed with token_endpoint_auth_method %q",
 				oauthproto.TokenEndpointAuthMethodPrivateKeyJWT)
 		}
-		return nil
+		return "", nil
 	}
 
 	if !spec.JWKSPending && (spec.JWKS == nil || len(spec.JWKS.Keys) == 0) {
-		return fmt.Errorf("private_key_jwt requires jwks_file with at least one key")
+		return "", fmt.Errorf("private_key_jwt requires jwks_file with at least one key")
 	}
-	alg := spec.SigningAlgorithm
-	if alg == "" {
-		alg = defaultConfiguredSigningAlgorithm
+	alg, err := resolveConfiguredSigningAlgorithm(spec.SigningAlgorithm, spec.JWKS)
+	if err != nil {
+		return "", err
 	}
 	if spec.JWKSPending && spec.JWKS == nil {
 		if !supportedSigningAlgorithm(alg) {
-			return fmt.Errorf("token_endpoint_auth_signing_alg %q is unsupported", alg)
+			return "", fmt.Errorf("token_endpoint_auth_signing_alg %q is unsupported", alg)
 		}
-		return nil
+		return alg, nil
 	}
 	if dcrErr := validatePrivateKeyJWTKeySet(spec.JWKS, alg); dcrErr != nil {
-		return fmt.Errorf("jwks_file: %s", dcrErr.ErrorDescription)
+		if spec.SigningAlgorithm == "" {
+			return "", fmt.Errorf("jwks_file: %s (token_endpoint_auth_signing_alg not set; %s derived from the keys)",
+				dcrErr.ErrorDescription, alg)
+		}
+		return "", fmt.Errorf("jwks_file: %s", dcrErr.ErrorDescription)
 	}
-	return validateConfiguredKeyIDs(spec.JWKS)
+	if err := validateConfiguredKeyIDs(spec.JWKS); err != nil {
+		return "", err
+	}
+	return alg, nil
 }
 
 // validateConfiguredKeyIDs requires every key of a multi-key set to carry a

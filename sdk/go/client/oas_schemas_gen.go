@@ -840,7 +840,9 @@ type AuthenticationDelegateClientRunConfig struct {
 	// Basic or form body.
 	TokenEndpointAuthMethod OptString `json:"token_endpoint_auth_method"`
 	// TokenEndpointAuthSigningAlg is the private_key_jwt signing algorithm.
-	// Defaults to RS256.
+	// If omitted, it is derived from the keys: each key's alg, or ES256, ES384
+	// or ES512 from an EC key's curve. RSA keys without alg use RS256. Keys
+	// that disagree must set it.
 	TokenEndpointAuthSigningAlg OptString                                    `json:"token_endpoint_auth_signing_alg"`
 	TokenExchange               OptAuthenticationDelegateClientTokenExchange `json:"token_exchange"`
 }

@@ -468,14 +468,15 @@ func NewStaticDelegateClient(cfg Config) (fosite.Client, error) {
 		return nil, fmt.Errorf("delegate client requires an ID")
 	}
 	privateKeyJWT := cfg.TokenEndpointAuthMethod == oauthproto.TokenEndpointAuthMethodPrivateKeyJWT
-	if err := ValidateConfiguredClient(ConfiguredClientSpec{
+	alg, err := validateConfiguredClient(ConfiguredClientSpec{
 		TokenEndpointAuthMethod: cfg.TokenEndpointAuthMethod,
 		SigningAlgorithm:        cfg.TokenEndpointAuthSigningAlgorithm,
 		GrantTypes:              cfg.GrantTypes,
 		RedirectURIs:            cfg.RedirectURIs,
 		HasSecret:               cfg.Secret != "",
 		JWKS:                    cfg.JSONWebKeys,
-	}); err != nil {
+	})
+	if err != nil {
 		return nil, fmt.Errorf("delegate client: %w", err)
 	}
 	if len(cfg.Scopes) == 0 {
@@ -510,10 +511,7 @@ func NewStaticDelegateClient(cfg Config) (fosite.Client, error) {
 	}
 	if privateKeyJWT {
 		oidcClient.JSONWebKeys = cloneJSONWebKeySet(cfg.JSONWebKeys)
-		oidcClient.TokenEndpointAuthSigningAlgorithm = cfg.TokenEndpointAuthSigningAlgorithm
-		if oidcClient.TokenEndpointAuthSigningAlgorithm == "" {
-			oidcClient.TokenEndpointAuthSigningAlgorithm = defaultConfiguredSigningAlgorithm
-		}
+		oidcClient.TokenEndpointAuthSigningAlgorithm = alg
 	}
 	return oidcClient, nil
 }

@@ -82,13 +82,27 @@ func newAssertionKey(t *testing.T, keyID string) assertionKey {
 	return assertionKey{private: private, keyID: keyID}
 }
 
-// writeJWKS writes the public half of keys to path as a JWKS document.
+// writeJWKS writes the public half of keys to path as a JWKS document, each
+// key carrying alg ES256.
 func writeJWKS(t *testing.T, path string, keys ...assertionKey) {
+	t.Helper()
+	writeJWKSWithAlg(t, path, "ES256", keys...)
+}
+
+// writeJWKSWithoutAlg is writeJWKS with no alg member on the keys.
+func writeJWKSWithoutAlg(t *testing.T, path string, keys ...assertionKey) {
+	t.Helper()
+	writeJWKSWithAlg(t, path, "", keys...)
+}
+
+// writeJWKSWithAlg writes the public half of keys to path, setting alg on each
+// key, or omitting it when alg is empty.
+func writeJWKSWithAlg(t *testing.T, path, alg string, keys ...assertionKey) {
 	t.Helper()
 	set := josev3.JSONWebKeySet{}
 	for _, k := range keys {
 		set.Keys = append(set.Keys, josev3.JSONWebKey{
-			Key: &k.private.PublicKey, KeyID: k.keyID, Use: "sig", Algorithm: "ES256",
+			Key: &k.private.PublicKey, KeyID: k.keyID, Use: "sig", Algorithm: alg,
 		})
 	}
 	data, err := json.Marshal(set)
@@ -531,6 +545,32 @@ func TestConfiguredPrivateKeyJWTClientKeepsIDAcrossKeyRotation(t *testing.T) {
 	refused := exchange(srv, oldKey)
 	assert.Equal(t, http.StatusBadRequest, refused.status, refused.body)
 	assert.Contains(t, refused.body["error_description"], "old-key", "the refused key is reported by its kid")
+}
+
+// TestConfiguredPrivateKeyJWTClientDerivesAlgorithmFromKey pins that a
+// private_key_jwt client with no token_endpoint_auth_signing_alg, whose JWKS
+// key carries no alg, authenticates with ES256, the algorithm its P-256 key
+// implies.
+func TestConfiguredPrivateKeyJWTClientDerivesAlgorithmFromKey(t *testing.T) {
+	t.Parallel()
+
+	brokerKey := newAssertionKey(t, "broker-key")
+	jwksFile := filepath.Join(t.TempDir(), "broker.jwks")
+	writeJWKSWithoutAlg(t, jwksFile, brokerKey)
+
+	client := brokerClient(jwksFile)
+	client.TokenEndpointAuthSigningAlg = ""
+	srv, issuer, embedded, _ := startEmbeddedAuthServer(t, func(cfg *authserver.RunConfig, _ string) {
+		configuredClients(client)(cfg)
+	}, newStorageForBackend(t, "memory"))
+
+	result := postToken(t, srv.URL, clientAuth{clientID: cfgBrokerID, key: &brokerKey}, url.Values{
+		"grant_type":         {oauthproto.GrantTypeTokenExchange},
+		"subject_token":      {signedSubjectTokenWithScopes(t, embedded, issuer, cfgBrokerID, "openid profile")},
+		"subject_token_type": {oauthproto.TokenTypeAccessToken},
+		"scope":              {"openid profile"}, "audience": {cfgAudienceA},
+	})
+	require.Equal(t, http.StatusOK, result.status, result.body)
 }
 
 // TestConfiguredLoginClientRefreshTokenSurvivesRemovalAndReAdd pins that a

@@ -4,10 +4,22 @@
 package process
 
 import (
+	"bufio"
+	"errors"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
+
+	"github.com/stacklok/toolhive/pkg/process/mocks"
 )
 
 func TestIsToolHiveProxyForWorkload_InvalidPID(t *testing.T) {
@@ -33,6 +45,194 @@ func TestIsToolHiveProxyForWorkload_NonToolHiveProcess(t *testing.T) {
 	}
 	require.NoError(t, err)
 	assert.False(t, isToolHive)
+}
+
+func TestIsTrackedToolHiveProxyForWorkload_DetachedRequiresExactWorkload(t *testing.T) {
+	t.Parallel()
+	pid := startIdentityProcess(t, true, "start", "github-extra", "--foreground")
+
+	matched, err := IsTrackedToolHiveProxyForWorkload(pid, "github-extra")
+	require.NoError(t, err)
+	assert.True(t, matched, "detached supervisor must match its complete workload name")
+	matched, err = IsTrackedToolHiveProxyForWorkload(pid, "github")
+	require.NoError(t, err)
+	assert.False(t, matched, "a hyphen continues the workload name, not a token boundary")
+}
+
+func TestIsTrackedToolHiveProxyForWorkload_RejectsMissingIdentity(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name     string
+		pid      int
+		workload string
+	}{
+		{name: "zero PID", pid: 0, workload: "github"},
+		{name: "negative PID", pid: -1, workload: "github"},
+		{name: "empty workload", pid: os.Getpid()},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			matched, err := IsTrackedToolHiveProxyForWorkload(tt.pid, tt.workload)
+			require.NoError(t, err)
+			assert.False(t, matched, "both a valid PID and a workload name are required")
+		})
+	}
+}
+
+//nolint:tparallel // owned-child cleanup must finish before the parent looks up its reaped PID
+func TestIsTrackedToolHiveProxyForWorkload_ReapedProcess(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("process identity fixture requires Unix symlinks and process inspection")
+	}
+	var pid int
+	t.Run("owned child", func(t *testing.T) {
+		pid = startIdentityProcess(t, true, "start", "github", "--foreground")
+	})
+	require.Positive(t, pid)
+	// The subtest's cleanup kills and reaps the child before looking up its PID.
+	matched, err := IsTrackedToolHiveProxyForWorkload(pid, "github")
+	require.Error(t, err)
+	assert.False(t, matched, "a stale PID must not identify a workload supervisor")
+}
+
+func TestIsTrackedToolHiveProxyForWorkload_MetadataErrors(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name       string
+		env        []string
+		environErr bool
+	}{
+		{
+			name:       "environment unavailable",
+			env:        []string{ToolHiveDetachedEnv + "=" + ToolHiveDetachedValue},
+			environErr: true,
+		},
+		{
+			name: "detached command line unavailable",
+			env:  []string{ToolHiveDetachedEnv + "=" + ToolHiveDetachedValue},
+		},
+		{name: "foreground command line unavailable"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			metadata := mocks.NewMockProcessMetadata(gomock.NewController(t))
+			metadataErr := errors.New("process metadata unavailable")
+			if tt.environErr {
+				metadata.EXPECT().Environ().Return(tt.env, metadataErr)
+			} else {
+				gomock.InOrder(
+					metadata.EXPECT().Environ().Return(tt.env, nil),
+					metadata.EXPECT().Cmdline().Return("/usr/bin/thv start github --foreground", metadataErr),
+				)
+			}
+
+			matched, err := isTrackedToolHiveProxyForWorkload(metadata, "github")
+			require.ErrorIs(t, err, metadataErr)
+			assert.False(t, matched, "unreadable identity must not authorize stopping a process")
+		})
+	}
+}
+
+func TestIsTrackedToolHiveProxyForWorkload_ForegroundDoesNotRelaxPortIdentity(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range []struct {
+		name string
+		args []string
+	}{
+		{name: "unnamed run", args: []string{"run", "--foreground", "example/server"}},
+		{name: "named run", args: []string{"run", "--foreground", "--name", "derived-workload-name", "example/server"}},
+		{name: "start", args: []string{"start", "derived-workload-name", "--foreground"}},
+		{name: "restart", args: []string{"restart", "derived-workload-name", "--foreground"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			pid := startIdentityProcess(t, false, tt.args...)
+			matched, err := IsTrackedToolHiveProxyForWorkload(pid, "derived-workload-name")
+			require.NoError(t, err)
+			assert.True(t, matched, "tracked foreground supervisors must remain stoppable")
+			if tt.args[0] != "start" {
+				matched, err = IsToolHiveProxyForWorkload(pid, "derived-workload-name")
+				require.NoError(t, err)
+				assert.False(t, matched, "port-discovered foreground supervisor still requires start-workload identity")
+			}
+		})
+	}
+}
+
+func TestIsTrackedToolHiveProxyForWorkload_RejectsForegroundServe(t *testing.T) {
+	t.Parallel()
+	pid := startIdentityProcess(t, false, "serve")
+
+	toolHive, err := IsToolHiveProxyForWorkload(pid, "")
+	require.NoError(t, err)
+	require.True(t, toolHive, "fixture must have ToolHive binary identity without a detached marker")
+	matched, err := IsTrackedToolHiveProxyForWorkload(pid, "stale-workload")
+	require.NoError(t, err)
+	assert.False(t, matched, "a stale supervisor PID must not identify ToolHive serve as a workload supervisor")
+}
+
+func TestToolHiveIdentityProcess(t *testing.T) {
+	t.Parallel()
+	if os.Getenv("TOOLHIVE_TEST_IDENTITY_HELPER") != "1" {
+		return
+	}
+	fmt.Println("ready")
+	<-time.After(time.Minute)
+	os.Exit(1)
+}
+
+func startIdentityProcess(t *testing.T, detached bool, args ...string) int {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("process identity fixture requires Unix symlinks and process inspection")
+	}
+	executable, err := os.Executable()
+	require.NoError(t, err)
+	if !detached {
+		thv := filepath.Join(t.TempDir(), "thv")
+		require.NoError(t, os.Symlink(executable, thv))
+		executable = thv
+	}
+	cmd := exec.Command(executable, append([]string{"-test.run=^TestToolHiveIdentityProcess$", "--"}, args...)...)
+	for _, entry := range os.Environ() {
+		if !strings.HasPrefix(entry, ToolHiveDetachedEnv+"=") {
+			cmd.Env = append(cmd.Env, entry)
+		}
+	}
+	cmd.Env = append(cmd.Env, "TOOLHIVE_TEST_IDENTITY_HELPER=1")
+	if detached {
+		cmd.Env = append(cmd.Env, ToolHiveDetachedEnv+"="+ToolHiveDetachedValue)
+	}
+	stdout, err := cmd.StdoutPipe()
+	require.NoError(t, err)
+	require.NoError(t, cmd.Start())
+	exited := make(chan struct{})
+	go func() {
+		_ = cmd.Wait()
+		close(exited)
+	}()
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		select {
+		case <-exited:
+		case <-time.After(5 * time.Second):
+			t.Error("identity helper was not reaped")
+		}
+	})
+	ready := make(chan string, 1)
+	go func() {
+		line, _ := bufio.NewReader(stdout).ReadString('\n')
+		ready <- line
+	}()
+	select {
+	case line := <-ready:
+		require.Equal(t, "ready\n", line)
+	case <-time.After(5 * time.Second):
+		t.Fatal("identity helper did not start")
+	}
+	return cmd.Process.Pid
 }
 
 func TestContainsThvBinary(t *testing.T) {
@@ -74,6 +274,7 @@ func TestCmdlineContainsWorkload(t *testing.T) {
 		{"matches at end", "thv start myworkload", "myworkload", true},
 		{"rejects different workload", "/usr/bin/thv start slack --foreground", "github", false},
 		{"rejects partial match", "thv start github --foreground", "git", false},
+		{"rejects hyphenated name prefix", "thv start github-extra --foreground", "github", false},
 		{"rejects suffix match", "thv start github --foreground", "hub", false},
 		{"empty workload", "thv start github --foreground", "", false},
 	}

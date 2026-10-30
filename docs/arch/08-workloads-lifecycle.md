@@ -81,7 +81,21 @@ thv stop my-server
 
 **Container workload**: Stops proxy process → stops container → preserves state
 
+Explicit named stop attempts proxy cleanup even when the primary container has
+exited or disappeared. After cleanup, it makes a fresh attempt to stop the
+container by name. For an existing saved workload, successful stop writes
+`Stopped`, replacing prior `Error` or `PolicyStopped` status and context.
+Auxiliary workloads skip proxy cleanup.
+
+The unchanged `--all` and `--group` selection still excludes `Starting` workloads,
+including supervisors waiting in restart backoff. This recovery applies to
+explicit named stop, not all stop forms.
+
+Stop preserves saved run configuration, but a foreground `run` still deletes its workload during normal exit cleanup. The bounded five-second exit wait means explicit stop can return before the foreground owner's cleanup completes. Stop rechecks saved configuration before writing final status and skips that write if configuration is already gone. This recheck and the status write are not atomic against concurrent deletion, so deletion races remain. Stop does not create status for an unknown missing name.
+
 **Remote workload**: Stops proxy → preserves state
+
+Successful explicit stop transitions a remote workload from `Running`, `Starting`, `AuthRetrying`, `Unauthenticated`, or `Unhealthy` to `Stopped`, subject to the saved-state recheck above. Terminal status handling is unchanged.
 
 **Implementation**: `pkg/workloads/manager.go`
 
@@ -136,9 +150,13 @@ The same `Applier` backs both the CLI (`thv upgrade apply`) and the API (`POST /
 
 ### Proxy termination
 
-Stop and delete terminate the proxy using its recorded PID. When PID-based termination is unavailable or fails (for example, the status file is missing, records no PID, or the process is already gone), they fall back to port-based cleanup: the process holding the proxy port is terminated only after it is confirmed to be this workload's proxy. This prevents an orphaned proxy from continuing to hold the port after the container has been stopped or removed.
+Stop and delete verify that the PID recorded in workload status belongs to a ToolHive process. Non-detached supervisors must also have a `run`, `start`, or `restart` token in their arguments. An unnamed `run` may omit its derived workload name from arguments. Foreground `start` and `restart` include the name, but all three use only the recorded PID for workload binding, without a process-birth-time check. Detached supervisors must match the exact workload name. A live PID whose identity cannot be verified remains recorded and is not signaled.
 
-**Implementation**: `pkg/workloads/manager.go`
+On Unix, termination uses SIGTERM without escalation. On Windows, it uses TerminateProcess, a hard stop. Both paths wait up to five seconds for exit. If PID-based termination is unavailable or incomplete, they attempt port-based cleanup when saved configuration permits it. This fallback requires an exact workload identity match for the port holder and also waits up to five seconds for exit. Cleanup is best-effort and can leave a proxy running or its port occupied.
+
+The supervisor keeps its PID registered across container restart attempts, including backoff. Shutdown cancels the backoff. On final exit, PID cleanup clears the recorded PID only if it still matches the exiting process.
+
+**Implementation**: `pkg/workloads/manager.go`, `pkg/runner/runner.go`
 
 ### List
 

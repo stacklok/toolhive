@@ -6,15 +6,26 @@ package authz
 import (
 	"context"
 	"log/slog"
+	"time"
 
 	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
 	"github.com/stacklok/toolhive/pkg/authz/authorizers"
 )
 
 // authorizedToolIndexes returns the positions, in tools, of the tools the caller
-// (identified by JWT claims in ctx) is authorized to call, so a filter can keep
-// the matching raw descriptors. If authorizer is nil, every position is returned.
+// (identified by JWT claims in ctx) is authorized to read, so a filter can keep
+// the matching raw descriptors. Visibility is decided by tool:read; the
+// authorizer decorator makes tool:call imply tool:read. If authorizer is nil,
+// every position is returned.
 func authorizedToolIndexes(ctx context.Context, a authorizers.Authorizer, tools []mcp.Tool) []int {
+	return authorizedToolIndexesWithin(ctx, a, tools, maxDerivedAuthzBudget)
+}
+
+// authorizedToolIndexesWithin is authorizedToolIndexes with an explicit shared
+// deadline, so tests can exercise the deadline without waiting 30 seconds.
+func authorizedToolIndexesWithin(
+	ctx context.Context, a authorizers.Authorizer, tools []mcp.Tool, budget time.Duration,
+) []int {
 	if a == nil {
 		indexes := make([]int, len(tools))
 		for i := range tools {
@@ -22,6 +33,11 @@ func authorizedToolIndexes(ctx context.Context, a authorizers.Authorizer, tools 
 		}
 		return indexes
 	}
+
+	// One deadline covers the whole list, so a slow PDP cannot stretch tools/list by
+	// the tool count. Tools checked after it expires are hidden.
+	ctx, cancel := context.WithTimeout(ctx, budget)
+	defer cancel()
 
 	authorizedIndexes := make([]int, 0, len(tools))
 	for i, tool := range tools {
@@ -35,8 +51,15 @@ func authorizedToolIndexes(ctx context.Context, a authorizers.Authorizer, tools 
 			toolCtx = authorizers.WithToolAnnotations(toolCtx, convertMCPAnnotation(ann))
 		}
 
-		authorized, err := authorizeToolCall(toolCtx, a, tool.Name, nil)
+		authorized, err := authorizeToolRead(toolCtx, a, tool.Name, nil)
 		if err != nil {
+			if ctx.Err() != nil {
+				// The shared deadline expired or the request was cancelled. The rest of
+				// the list is hidden, so one warning is enough.
+				slog.Warn("Authorization deadline reached while filtering tools, hiding the rest",
+					"tool", tool.Name, "error", err)
+				break
+			}
 			slog.Warn("Authorization check failed for tool, skipping",
 				"tool", tool.Name, "error", err)
 			continue
@@ -58,10 +81,10 @@ func authorizedToolIndexes(ctx context.Context, a authorizers.Authorizer, tools 
 	return authorizedIndexes
 }
 
-// authorizeToolCall checks whether the caller is authorized to call a specific tool
-// with the given arguments. Returns true if authorized, false if denied.
-// If authorizer is nil, returns true (no-op).
-func authorizeToolCall(
+// authorizeToolRead checks whether the caller is authorized to read (see) a specific
+// tool. Returns true if authorized, false if denied. If authorizer is nil, returns
+// true (no-op).
+func authorizeToolRead(
 	ctx context.Context, a authorizers.Authorizer, toolName string, arguments map[string]interface{},
 ) (bool, error) {
 	if a == nil {
@@ -71,7 +94,7 @@ func authorizeToolCall(
 	return a.AuthorizeWithJWTClaims(
 		ctx,
 		authorizers.MCPFeatureTool,
-		authorizers.MCPOperationCall,
+		authorizers.MCPOperationRead,
 		toolName,
 		arguments,
 	)

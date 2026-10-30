@@ -753,7 +753,7 @@ func (rfw *ResponseFilteringWriter) filterToolsResponse(response *jsonrpc2.Respo
 
 	// authorizedToolIndexes checks each tool against the caller's Cedar policies
 	// (injecting annotations into context for when-clause evaluation) and returns
-	// the positions of the tools the caller is authorized to call.
+	// the positions of the tools the caller is authorized to read.
 	for _, index := range authorizedToolIndexes(rfw.request.Context(), rfw.authorizer, regular) {
 		permitted = append(permitted, rawTools[regularIndexes[index]])
 	}

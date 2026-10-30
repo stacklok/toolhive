@@ -7,6 +7,7 @@ import (
 	"context"
 	stderrors "errors"
 	"fmt"
+	"maps"
 	"strings"
 	"testing"
 	"time"
@@ -15,6 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 	"go.yaml.in/yaml/v3"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -27,6 +29,7 @@ import (
 	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	oidcmocks "github.com/stacklok/toolhive/cmd/thv-operator/pkg/oidc/mocks"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/virtualmcpserverstatus"
 	statusmocks "github.com/stacklok/toolhive/cmd/thv-operator/pkg/virtualmcpserverstatus/mocks"
 	vmcpconfigconv "github.com/stacklok/toolhive/cmd/thv-operator/pkg/vmcpconfig"
@@ -1730,6 +1733,140 @@ func TestConfigMapContent_StaticModeWithDiscovery(t *testing.T) {
 	t.Log("Static mode ConfigMap contains both auth configs, backend URLs/transports, and metadata")
 }
 
+// TestConfigMapContent_StaticMode_BackendChanges distinguishes transient health
+// changes from configuration changes that must still trigger gateway rollouts.
+func TestConfigMapContent_StaticMode_BackendChanges(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	scheme := testutil.NewScheme(t)
+	group := &mcpv1beta1.MCPGroup{ObjectMeta: metav1.ObjectMeta{Name: "test-group", Namespace: "default"}}
+	server := v1beta1test.NewMCPServer("server", "default",
+		v1beta1test.WithMCPGroupRef(group.Name),
+		v1beta1test.WithTransport("sse"),
+		v1beta1test.WithStatus(mcpv1beta1.MCPServerStatus{
+			Phase: mcpv1beta1.MCPServerPhaseReady, URL: "http://server:8080/sse",
+		}),
+	)
+	proxy := v1beta1test.NewMCPRemoteProxy("proxy", "default",
+		v1beta1test.WithRemoteProxyGroupRef(group.Name),
+		v1beta1test.WithRemoteProxyTransport("streamable-http"),
+		v1beta1test.WithRemoteProxyStatus(mcpv1beta1.MCPRemoteProxyStatus{
+			Phase: mcpv1beta1.MCPRemoteProxyPhaseReady, URL: "http://proxy:8080/mcp",
+		}),
+	)
+	vmcpServer := v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+		v1beta1test.WithVMCPGroupRef(group.Name),
+		v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{Type: "anonymous"}),
+		v1beta1test.WithVMCPOutgoingAuth(&mcpv1beta1.OutgoingAuthConfig{Source: "inline"}),
+	)
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).
+		WithObjects(vmcpServer, group, server, proxy).
+		WithStatusSubresource(server, proxy).Build()
+	reconciler := &VirtualMCPServerReconciler{Client: fakeClient, Scheme: scheme}
+	discoverer := workloads.NewK8SDiscovererWithClient(fakeClient, "default")
+
+	generateConfig := func(t *testing.T, backendCount int) *corev1.ConfigMap {
+		t.Helper()
+		typedWorkloads, err := discoverer.ListWorkloadsInGroup(ctx, group.Name)
+		require.NoError(t, err)
+		require.NoError(t, reconciler.ensureVmcpConfigConfigMap(ctx, vmcpServer, typedWorkloads, nil,
+			virtualmcpserverstatus.NewStatusManager(vmcpServer)))
+		cm := &corev1.ConfigMap{}
+		require.NoError(t, fakeClient.Get(ctx, client.ObjectKey{
+			Name: vmcpConfigMapName(vmcpServer.Name), Namespace: vmcpServer.Namespace,
+		}, cm))
+		var config vmcpconfig.Config
+		require.NoError(t, yaml.Unmarshal([]byte(cm.Data["config.yaml"]), &config))
+		require.Len(t, config.Backends, backendCount)
+		for _, backend := range config.Backends {
+			assert.NotContains(t, backend.Metadata, "workload_status")
+		}
+		return cm
+	}
+	setServerStatus := func(t *testing.T, phase mcpv1beta1.MCPServerPhase, url string) {
+		t.Helper()
+		require.NoError(t, fakeClient.Get(ctx, client.ObjectKeyFromObject(server), server))
+		require.NoError(t, ctrlutil.MutateAndPatchStatus(ctx, fakeClient, server, func(s *mcpv1beta1.MCPServer) {
+			s.Status.Phase, s.Status.URL = phase, url
+		}))
+	}
+	baseline := generateConfig(t, 2)
+	baselineChecksum := baseline.Annotations[checksum.ContentChecksumAnnotation]
+	require.NotEmpty(t, baselineChecksum)
+	labels, annotations := reconciler.buildPodTemplateMetadata(
+		labelsForVirtualMCPServer(vmcpServer.Name), vmcpServer, baselineChecksum, "")
+	deployment := &appsv1.Deployment{Spec: appsv1.DeploymentSpec{Template: corev1.PodTemplateSpec{
+		ObjectMeta: metav1.ObjectMeta{Labels: labels, Annotations: annotations},
+	}}}
+
+	for _, step := range []struct {
+		name        string
+		serverPhase mcpv1beta1.MCPServerPhase
+		proxyPhase  mcpv1beta1.MCPRemoteProxyPhase
+	}{
+		{"server pending", mcpv1beta1.MCPServerPhasePending, mcpv1beta1.MCPRemoteProxyPhaseReady},
+		{"server recovered", mcpv1beta1.MCPServerPhaseReady, mcpv1beta1.MCPRemoteProxyPhaseReady},
+		{"proxy pending", mcpv1beta1.MCPServerPhaseReady, mcpv1beta1.MCPRemoteProxyPhasePending},
+		{"proxy recovered", mcpv1beta1.MCPServerPhaseReady, mcpv1beta1.MCPRemoteProxyPhaseReady},
+	} {
+		t.Log(step.name)
+		setServerStatus(t, step.serverPhase, server.Status.URL)
+		require.NoError(t, fakeClient.Get(ctx, client.ObjectKeyFromObject(proxy), proxy))
+		require.NoError(t, ctrlutil.MutateAndPatchStatus(ctx, fakeClient, proxy, func(p *mcpv1beta1.MCPRemoteProxy) {
+			p.Status.Phase = step.proxyPhase
+		}))
+		current := generateConfig(t, 2)
+		assert.Equal(t, baseline.Data, current.Data, "%s: phase-only changes must preserve static configuration", step.name)
+		currentChecksum := current.Annotations[checksum.ContentChecksumAnnotation]
+		assert.Equal(t, baselineChecksum, currentChecksum, step.name)
+		assert.False(t, reconciler.podTemplateMetadataNeedsUpdate(deployment, vmcpServer, currentChecksum, ""), step.name)
+	}
+
+	extraServer := v1beta1test.NewMCPServer("extra", "default",
+		v1beta1test.WithMCPGroupRef(group.Name), v1beta1test.WithTransport("sse"),
+		v1beta1test.WithStatus(mcpv1beta1.MCPServerStatus{
+			Phase: mcpv1beta1.MCPServerPhaseReady, URL: "http://extra:8080/sse",
+		}),
+	)
+	previous := baseline
+	for _, step := range []struct {
+		name         string
+		mutate       func(*testing.T)
+		backendCount int
+	}{
+		{"endpoint changed", func(t *testing.T) {
+			t.Helper()
+			setServerStatus(t, mcpv1beta1.MCPServerPhaseReady, "http://replacement:8080/sse")
+		}, 2},
+		{"transport changed", func(t *testing.T) {
+			t.Helper()
+			require.NoError(t, fakeClient.Get(ctx, client.ObjectKeyFromObject(server), server))
+			require.NoError(t, ctrlutil.MutateAndPatchSpec(ctx, fakeClient, server, func(s *mcpv1beta1.MCPServer) {
+				s.Spec.Transport = "streamable-http"
+			}))
+		}, 2},
+		{"member added", func(t *testing.T) {
+			t.Helper()
+			require.NoError(t, fakeClient.Create(ctx, extraServer))
+		}, 3},
+		{"member removed", func(t *testing.T) {
+			t.Helper()
+			require.NoError(t, fakeClient.Delete(ctx, extraServer))
+		}, 2},
+	} {
+		t.Log(step.name)
+		step.mutate(t)
+		current := generateConfig(t, step.backendCount)
+		assert.NotEqual(t, previous.Data, current.Data, "%s: real configuration changes must update static configuration", step.name)
+		assert.NotEqual(t, previous.Annotations[checksum.ContentChecksumAnnotation],
+			current.Annotations[checksum.ContentChecksumAnnotation], step.name)
+		assert.True(t, reconciler.podTemplateMetadataNeedsUpdate(deployment, vmcpServer,
+			current.Annotations[checksum.ContentChecksumAnnotation], ""), step.name)
+		previous = current
+	}
+}
+
 // TestConfigMapContent_StaticMode_ExcludesBackendWithFailedAuth is a regression test for the
 // fail-open bug where a backend whose outgoing auth strategy failed to build (here, an xaa
 // strategy with an empty SubjectProviderName made ambiguous by 2 configured upstreams) was
@@ -2090,6 +2227,45 @@ func TestConvertBackendsToStaticBackends_SkipsInvalidBackends(t *testing.T) {
 	assert.Equal(t, "http://backend1:8080", result[0].URL)
 	assert.Equal(t, "sse", result[0].Transport)
 	assert.Equal(t, "value", result[0].Metadata["key"])
+}
+
+func TestConvertBackendsToStaticBackends_Metadata(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range []struct {
+		name     string
+		metadata map[string]string
+		expected map[string]string
+	}{
+		{name: "nil metadata"},
+		{name: "stable metadata", metadata: map[string]string{"env": "prod"}, expected: map[string]string{"env": "prod"}},
+		{
+			name: "transient phase omitted",
+			metadata: map[string]string{
+				"workload_status": "Pending", "group": "test-group", "tool_type": "mcp",
+				"workload_type": "mcp_server", "namespace": "default", "env": "prod",
+			},
+			expected: map[string]string{
+				"group": "test-group", "tool_type": "mcp", "workload_type": "mcp_server",
+				"namespace": "default", "env": "prod",
+			},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			original := maps.Clone(tt.metadata)
+			backends := []vmcp.Backend{{Name: "backend", BaseURL: "http://backend:8080", Metadata: tt.metadata}}
+			result := convertBackendsToStaticBackends(context.Background(), backends,
+				map[string]string{"backend": "sse"}, nil, nil)
+			require.Len(t, result, 1)
+			assert.Equal(t, tt.expected, result[0].Metadata)
+			assert.Equal(t, original, backends[0].Metadata, "conversion must not mutate discovered metadata")
+			if result[0].Metadata != nil {
+				result[0].Metadata["env"] = "changed"
+				assert.Equal(t, original, backends[0].Metadata, "static metadata must not alias discovered metadata")
+			}
+		})
+	}
 }
 
 // TestConvertBackendsToStaticBackends_ExcludesFailedAuthBackends verifies that a backend

@@ -3058,7 +3058,7 @@ func resolveFirstUpstreamProvider(embeddedCfg *mcpv1beta1.EmbeddedAuthServerConf
 }
 
 // convertBackendsToStaticBackends converts Backend objects to StaticBackendConfig for ConfigMap embedding.
-// Preserves metadata and uses transport types from workload Specs.
+// Preserves metadata except transient workload status and uses transport types from workload Specs.
 // Logs warnings when backends are skipped due to missing URL or transport information.
 // caBundlePathMap maps backend names to their CA bundle mount paths (populated for MCPServerEntry backends).
 // excludedBackends names backends whose outgoing auth strategy failed to build (see
@@ -3093,11 +3093,15 @@ func convertBackendsToStaticBackends(
 			continue
 		}
 
+		// Backend phase is runtime state and must not change the configuration checksum that triggers rollouts.
+		metadata := maps.Clone(backend.Metadata)
+		delete(metadata, "workload_status")
+
 		cfg := vmcpconfig.StaticBackendConfig{
 			Name:      backend.Name,
 			URL:       backend.BaseURL,
 			Transport: transport,
-			Metadata:  backend.Metadata,
+			Metadata:  metadata,
 		}
 
 		if caBundlePath, ok := caBundlePathMap[backend.Name]; ok {

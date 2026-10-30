@@ -131,14 +131,25 @@ func runDeriveFlows(t *testing.T, env *xrtEnv) {
 				"invalid_request", "not_issuable")
 		})
 
-		t.Run("expired grant is the grant_invalid error", func(t *testing.T) {
+		t.Run("expired grants are the grant_invalid error", func(t *testing.T) {
+			// Both grants expire three seconds from now. One sleep covers both.
+			// Both stores report an expired record as not found, revoked or not.
 			soon := time.Now().Add(3 * time.Second).Unix()
-			parent := env.grantToken(t, env.broker, oauthproto.TokenTypeRefreshToken, &soon).str(t, "access_token")
-			require.Equal(t, http.StatusOK, env.derive(t, env.broker, parent, oauthproto.TokenTypeIDJAG, nil).status)
+			expired := env.grantToken(t, env.broker, oauthproto.TokenTypeRefreshToken, &soon).str(t, "access_token")
+			revokedThenExpired := env.grantToken(t, env.broker, oauthproto.TokenTypeRefreshToken, &soon).str(t, "access_token")
+			require.Equal(t, http.StatusOK, env.derive(t, env.broker, expired, oauthproto.TokenTypeIDJAG, nil).status)
+			env.revoke(t, revokedThenExpired)
+			requireError(t, env.derive(t, env.broker, revokedThenExpired, oauthproto.TokenTypeIDJAG, nil),
+				"invalid_request", "revoked")
 			time.Sleep(4 * time.Second)
-			res := env.derive(t, env.broker, parent, oauthproto.TokenTypeIDJAG, nil)
-			assert.Equal(t, http.StatusBadRequest, res.status)
-			assert.Equal(t, map[string]any{"error": "invalid_request", "error_description": "grant_invalid"}, res.body)
+			for _, tc := range []struct{ name, token string }{
+				{"expired", expired},
+				{"revoked then expired", revokedThenExpired},
+			} {
+				res := env.derive(t, env.broker, tc.token, oauthproto.TokenTypeIDJAG, nil)
+				assert.Equal(t, http.StatusBadRequest, res.status, tc.name)
+				assert.Equal(t, map[string]any{"error": "invalid_request", "error_description": "grant_invalid"}, res.body, tc.name)
+			}
 		})
 
 		t.Run("revoked parent", func(t *testing.T) {

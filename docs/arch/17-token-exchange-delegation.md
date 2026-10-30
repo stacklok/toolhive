@@ -1441,7 +1441,7 @@ client receives them.
 | Subject token expired, invalid, or not a login token (delegated, external, no upstream session, no `client_id` or `jti`) | `invalid_request` | `subject_token_invalid` |
 | Subject token has no audience of the client's API, or was issued to a client that is not in `allowed_source_clients` (this includes the exchanging client itself) | `invalid_request` | `subject_token_audience` or `subject_token_source_client` |
 | Subject token already used | `invalid_request` | `token_used` |
-| Derive: the refresh token fails its HMAC check, is unknown, belongs to another client, or is a login refresh token | `invalid_request` | `grant_invalid` (one code for all of these cases, on purpose) |
+| Derive: the refresh token fails its HMAC check, is unknown, belongs to another client, is a login refresh token, or has expired | `invalid_request` | `grant_invalid` (one code for all of these cases, on purpose) |
 | Derive: the presented grant or its parent cannot be used, or it does not allow `refresh_token` | `invalid_request` | `revoked`, `parent_revoked` or `not_issuable` |
 | Store failure | `server_error` | generic text, then the hint `The refresh token could not be issued.` |
 | Internal failure while processing `authorization_details` | `server_error` | `The authorization_details could not be processed.` |
@@ -1562,15 +1562,18 @@ first that fails:
 3. The grant is read by the token's signature.
 4. The grant belongs to the presenting client. If the grant is missing or
    belongs to another client, the request fails with the same error as step 2.
-5. The grant is not revoked (`revoked`). The store treats an expired grant as
-   missing, so it already failed at step 3 or 4 (see below).
+5. The grant has not expired and is not revoked (`revoked`). An expired grant
+   gets `grant_invalid` whether or not it is revoked (see below).
 6. If the grant has a parent, the parent exists and is live. A parent that is
-   missing, revoked or expired gives `parent_revoked`.
+   missing, revoked or expired gives `parent_revoked`. An expired parent always
+   means the child has expired too, because a child's `expires_at` is never later
+   than its parent's. So the child fails at step 3 or 4 with `grant_invalid`.
 7. The grant allows `refresh_token`, else `not_issuable`. A child fails here.
 8. The child entry passes the rules above.
 
-Nothing about the token is revealed before step 4. A forged token, an unknown
-token, another client's token and a login refresh token all get one error:
+Nothing about the token is revealed until step 4 has passed. A forged token, an
+unknown token, another client's token, a login refresh token and an expired grant
+all get one error:
 `invalid_request` with the `error_description` `grant_invalid`. This is one code
 for all of these cases on purpose, so a caller learns nothing about which one
 applied. From step 5 on, the reasons are exact `error_description` values with
@@ -1589,12 +1592,15 @@ kind of token is not enabled for the client), `invalid_expires_at`, or
 `server_error`.
 
 Both stores report a grant past its `ExpiresAt` as not found, before the
-liveness check runs. So an expired grant, or a child whose parent has expired,
-gets the same `grant_invalid` error as an unknown token on both backends. The
-server log says `not_found_or_other_client` for it. The legitimate client knows the expiry
-from the `expires_at` in the response that issued the grant. The `expired`
-reason can appear only if the server clock and the store clock disagree, and the
-server does not otherwise rely on it.
+liveness check runs. So an expired grant gets the same `grant_invalid` error as
+an unknown token on both backends. A child never outlives its parent, since its
+`expires_at` is capped to the parent's, so a child whose parent has expired has
+expired too and gets `grant_invalid` as well. The server log says
+`not_found_or_other_client` for these. The legitimate client knows the expiry
+from the `expires_at` in the response that issued the grant, so a separate reason
+would tell it nothing. The handler checks expiry before revocation, so an expired
+grant gets `grant_invalid` whether or not it was revoked, and `revoked` is
+reported only while the grant has not expired.
 
 Removing `refresh_token_max_lifetime` from a client's configuration while keeping
 `id_jag_max_lifetime` does not stop deriving from parents the client already

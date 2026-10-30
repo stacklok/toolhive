@@ -55,6 +55,7 @@ func idJAGResolvedIssuers(t *testing.T) []TrustedIssuer {
 			SubjectBindings: []JWTBearerSubjectBinding{
 				{Subject: idJAGTestSubject, AllowedResources: []string{idJAGTestResource}},
 			},
+			AcceptedAssertionTypes: []JWTBearerAssertionType{JWTBearerAssertionTypeIDJAG},
 		},
 	}})
 	require.NoError(t, err)
@@ -399,4 +400,289 @@ func TestIDJAGIssuanceFactory_RequiresSharedValidator(t *testing.T) {
 	_, err := IDJAGIssuanceFactory(idJAGResolvedIssuers(t), nil, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "shared validator")
+}
+
+// TestIDJAGIssuanceHandler_RegistersWithNoIDJAGIssuers proves the
+// diagnostics fix: newIDJAGIssuanceHandler must still construct successfully
+// when zero trusted issuers accept id_jag assertions, so a well-formed
+// "oauth-id-jag+jwt" assertion is claimed and rejected with the precise
+// "issuer is not enabled for this grant" hint rather than falling through
+// every registered fosite handler to the generic invalid_request.
+func TestIDJAGIssuanceHandler_RegistersWithNoIDJAGIssuers(t *testing.T) {
+	t.Parallel()
+
+	resolved, err := ResolveJWTBearerGrantPolicies([]TrustedIssuer{{
+		IssuerURL:              idJAGTestIssuer,
+		AllowedDelegateClients: []string{anyDelegateClient},
+		JWTBearerGrant: &JWTBearerGrantPolicy{
+			MaxAssertionAge: time.Hour.String(),
+			SubjectBindings: []JWTBearerSubjectBinding{
+				{Subject: idJAGTestSubject, AllowedResources: []string{idJAGTestResource}},
+			},
+			// jwt_bearer only, so no issuer accepts id_jag and the resolved
+			// policy map handed to newIDJAGIssuanceHandler is empty.
+			AcceptedAssertionTypes: []JWTBearerAssertionType{JWTBearerAssertionTypeJWTBearer},
+		},
+	}})
+	require.NoError(t, err)
+
+	handler, err := newIDJAGIssuanceHandler(
+		&testJWTBearerAssertionValidator{claims: validIDJAGClaims()},
+		testTokenEndpoint,
+		&recordingAssertionConsumer{},
+		&fosite.Config{AccessTokenLifespan: time.Hour},
+		&mockAccessTokenStrategy{},
+		&mockAccessTokenStorage{},
+		IssuersAcceptingAssertionType(resolved, JWTBearerAssertionTypeIDJAG),
+		nil,
+	)
+	require.NoError(t, err, "the bound handler must register even with no id_jag issuers")
+
+	tj := newTestJWKS(t)
+	req := newIDJAGRequest(t, tj, idJAGTestClientID)
+	assert.True(t, handler.CanHandleTokenEndpointRequest(context.Background(), req),
+		"a recognized ID-JAG assertion must still be claimed by the registered handler")
+	assertIssuerNotEnabled(t, handler.HandleTokenEndpointRequest(context.Background(), req))
+}
+
+// assertIssuerNotEnabled asserts err is the "issuer not enabled for this
+// grant" invalid_grant rejection both handlers return for an issuer left out
+// of their policy map.
+func assertIssuerNotEnabled(t *testing.T, err error) {
+	t.Helper()
+	require.Error(t, err)
+	assert.ErrorIs(t, err, fosite.ErrInvalidGrant)
+	var rfcErr *fosite.RFC6749Error
+	require.True(t, errors.As(err, &rfcErr))
+	assert.Contains(t, rfcErr.Reason(), "not enabled for this grant")
+}
+
+// TestJWTBearerAssertionTypeGating proves AcceptedAssertionTypes decides, per
+// issuer, which assertion form(s) the jwt-bearer grant accepts: unset accepts
+// both (the pre-field behavior every existing config relies on), {id_jag}
+// refuses plain assertions, and {jwt_bearer} refuses ID-JAG.
+func TestJWTBearerAssertionTypeGating(t *testing.T) {
+	t.Parallel()
+
+	const (
+		defaultIssuer   = "https://default-issuer.example.com"
+		acceptedIssuer  = "https://id-jag-only-issuer.example.com"
+		plainOnlyIssuer = "https://plain-only-issuer.example.com"
+	)
+	resolved, err := ResolveJWTBearerGrantPolicies([]TrustedIssuer{
+		{
+			IssuerURL:              defaultIssuer,
+			AllowedDelegateClients: []string{anyDelegateClient},
+			JWTBearerGrant: &JWTBearerGrantPolicy{
+				MaxAssertionAge: time.Hour.String(),
+				SubjectBindings: []JWTBearerSubjectBinding{
+					{Subject: idJAGTestSubject, AllowedResources: []string{idJAGTestResource}},
+				},
+				// AcceptedAssertionTypes deliberately left unset.
+			},
+		},
+		{
+			IssuerURL:              acceptedIssuer,
+			AllowedDelegateClients: []string{anyDelegateClient},
+			JWTBearerGrant: &JWTBearerGrantPolicy{
+				MaxAssertionAge: time.Hour.String(),
+				SubjectBindings: []JWTBearerSubjectBinding{
+					{Subject: idJAGTestSubject, AllowedResources: []string{idJAGTestResource}},
+				},
+				AcceptedAssertionTypes: []JWTBearerAssertionType{JWTBearerAssertionTypeIDJAG},
+			},
+		},
+		{
+			IssuerURL:              plainOnlyIssuer,
+			AllowedDelegateClients: []string{anyDelegateClient},
+			JWTBearerGrant: &JWTBearerGrantPolicy{
+				MaxAssertionAge: time.Hour.String(),
+				SubjectBindings: []JWTBearerSubjectBinding{
+					{Subject: idJAGTestSubject, AllowedResources: []string{idJAGTestResource}},
+				},
+				AcceptedAssertionTypes: []JWTBearerAssertionType{JWTBearerAssertionTypeJWTBearer},
+			},
+		},
+	})
+	require.NoError(t, err)
+
+	tj := newTestJWKS(t)
+	newPlainHandler := func(t *testing.T, issuer string) *JWTBearerHandler {
+		t.Helper()
+		claims := &ValidatedClaims{
+			Issuer: issuer, Subject: idJAGTestSubject,
+			IssuedAt: time.Now(), Expiry: time.Now().Add(5 * time.Minute),
+		}
+		handler, err := newJWTBearerIssuanceHandler(
+			&testJWTBearerAssertionValidator{claims: claims},
+			testTokenEndpoint, &recordingAssertionConsumer{},
+			&fosite.Config{AccessTokenLifespan: time.Hour},
+			&mockAccessTokenStrategy{}, &mockAccessTokenStorage{},
+			IssuersAcceptingAssertionType(resolved, JWTBearerAssertionTypeJWTBearer),
+		)
+		require.NoError(t, err)
+		return handler
+	}
+	// The request form doesn't carry the issuer; newPlainHandler already bound
+	// it into the validator's returned claims, which is what policy lookup
+	// keys on.
+	newPlainRequest := func() *fosite.AccessRequest {
+		req := fosite.NewAccessRequest(&session.Session{})
+		req.GrantTypes = fosite.Arguments{oauthproto.GrantTypeJWTBearer}
+		req.Form = url.Values{
+			"assertion": {signAssertionWithType(t, tj, nil)},
+			"resource":  {idJAGTestResource},
+		}
+		return req
+	}
+	newIDJAGHandlerFor := func(t *testing.T, issuer string) *IDJAGHandler {
+		t.Helper()
+		claims := validIDJAGClaims()
+		claims.Issuer = issuer
+		handler, err := newIDJAGIssuanceHandler(
+			&testJWTBearerAssertionValidator{claims: claims},
+			testTokenEndpoint, &recordingAssertionConsumer{},
+			&fosite.Config{AccessTokenLifespan: time.Hour},
+			&mockAccessTokenStrategy{}, &mockAccessTokenStorage{},
+			resolved,
+			nil,
+		)
+		require.NoError(t, err)
+		return handler
+	}
+
+	t.Run("nil AcceptedAssertionTypes accepts both plain and ID-JAG", func(t *testing.T) {
+		t.Parallel()
+		plain := newPlainHandler(t, defaultIssuer)
+		assert.NoError(t, plain.HandleTokenEndpointRequest(context.Background(), newPlainRequest()))
+
+		idJAG := newIDJAGHandlerFor(t, defaultIssuer)
+		req := newIDJAGRequest(t, tj, idJAGTestClientID)
+		assert.NoError(t, idJAG.HandleTokenEndpointRequest(context.Background(), req))
+	})
+
+	t.Run("jwt_bearer-only AcceptedAssertionTypes accepts plain and rejects ID-JAG", func(t *testing.T) {
+		t.Parallel()
+		plain := newPlainHandler(t, plainOnlyIssuer)
+		assert.NoError(t, plain.HandleTokenEndpointRequest(context.Background(), newPlainRequest()))
+
+		idJAG := newIDJAGHandlerFor(t, plainOnlyIssuer)
+		req := newIDJAGRequest(t, tj, idJAGTestClientID)
+		assertIssuerNotEnabled(t, idJAG.HandleTokenEndpointRequest(context.Background(), req))
+	})
+
+	t.Run("id_jag-only AcceptedAssertionTypes rejects plain and accepts ID-JAG", func(t *testing.T) {
+		t.Parallel()
+		plain := newPlainHandler(t, acceptedIssuer)
+		assertIssuerNotEnabled(t, plain.HandleTokenEndpointRequest(context.Background(), newPlainRequest()))
+
+		idJAG := newIDJAGHandlerFor(t, acceptedIssuer)
+		req := newIDJAGRequest(t, tj, idJAGTestClientID)
+		assert.NoError(t, idJAG.HandleTokenEndpointRequest(context.Background(), req))
+	})
+}
+
+// jwtBearerFactoryStorage satisfies the factory closure's storage parameter:
+// fosite.Storage, oauth2.AccessTokenStorage and storage.AssertionJWTConsumer.
+type jwtBearerFactoryStorage struct {
+	fakeFactoryStorage
+	*recordingAssertionConsumer
+}
+
+// TestJWTBearerIssuanceFactory_GatesOnAcceptedAssertionTypes drives the
+// production JWTBearerIssuanceFactory, whose filtering is the only thing that
+// keeps an id_jag-only issuer off the plain (client-auth-skippable) path.
+func TestJWTBearerIssuanceFactory_GatesOnAcceptedAssertionTypes(t *testing.T) {
+	t.Parallel()
+
+	const (
+		plainIssuer  = "https://plain-issuer.example.com"
+		idJAGIssuer  = "https://id-jag-only-issuer.example.com"
+		bearerIssuer = "https://bearer-only-issuer.example.com"
+	)
+	issuer := func(issuerURL string, types ...JWTBearerAssertionType) TrustedIssuer {
+		return TrustedIssuer{
+			IssuerURL:              issuerURL,
+			ExpectedAudience:       idJAGTestResource,
+			AllowedDelegateClients: []string{anyDelegateClient},
+			JWTBearerGrant: &JWTBearerGrantPolicy{
+				MaxAssertionAge:   time.Hour.String(),
+				AcceptedAudiences: []string{"https://auth.example.com"},
+				SubjectBindings: []JWTBearerSubjectBinding{
+					{Subject: idJAGTestSubject, AllowedResources: []string{idJAGTestResource}},
+				},
+				AcceptedAssertionTypes: types,
+			},
+		}
+	}
+
+	tests := []struct {
+		name         string
+		issuers      []TrustedIssuer
+		acceptIssuer string
+		rejectIssuer string
+	}{
+		{
+			name: "mixed issuers keep the id_jag-only issuer off the plain path",
+			issuers: []TrustedIssuer{
+				issuer(plainIssuer),
+				issuer(bearerIssuer, JWTBearerAssertionTypeJWTBearer),
+				issuer(idJAGIssuer, JWTBearerAssertionTypeIDJAG),
+			},
+			acceptIssuer: plainIssuer,
+			rejectIssuer: idJAGIssuer,
+		},
+		{
+			name:         "only id_jag issuers builds a plain handler that rejects every issuer",
+			issuers:      []TrustedIssuer{issuer(idJAGIssuer, JWTBearerAssertionTypeIDJAG)},
+			rejectIssuer: idJAGIssuer,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg := buildTestAuthServerConfig(t)
+			shared, err := NewSharedTrustedIssuerValidator(cfg, tt.issuers)
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = shared.Close() })
+
+			f, err := JWTBearerIssuanceFactory(tt.issuers, shared)
+			require.NoError(t, err)
+			result, err := f(cfg, &jwtBearerFactoryStorage{
+				fakeFactoryStorage:         fakeFactoryStorage{mockAccessTokenStorage: &mockAccessTokenStorage{}},
+				recordingAssertionConsumer: &recordingAssertionConsumer{},
+			}, &mockAccessTokenStrategy{})
+			require.NoError(t, err)
+			handler, ok := result.(*JWTBearerHandler)
+			require.True(t, ok, "factory closure must return *JWTBearerHandler, got %T", result)
+
+			tj := newTestJWKS(t)
+			plainRequest := func() *fosite.AccessRequest {
+				req := fosite.NewAccessRequest(&session.Session{})
+				req.GrantTypes = fosite.Arguments{oauthproto.GrantTypeJWTBearer}
+				req.Form = url.Values{
+					"assertion": {signAssertionWithType(t, tj, nil)},
+					"resource":  {idJAGTestResource},
+				}
+				return req
+			}
+			claimsFor := func(iss string) *testJWTBearerAssertionValidator {
+				return &testJWTBearerAssertionValidator{claims: &ValidatedClaims{
+					Issuer: iss, Subject: idJAGTestSubject,
+					IssuedAt: time.Now(), Expiry: time.Now().Add(5 * time.Minute),
+				}}
+			}
+
+			// The factory fixes the validator to the shared real one; swap in
+			// a fake so claims (and so the issuer policy lookup) are controlled.
+			if tt.acceptIssuer != "" {
+				handler.validator = claimsFor(tt.acceptIssuer)
+				assert.NoError(t, handler.HandleTokenEndpointRequest(context.Background(), plainRequest()))
+			}
+
+			handler.validator = claimsFor(tt.rejectIssuer)
+			assertIssuerNotEnabled(t, handler.HandleTokenEndpointRequest(context.Background(), plainRequest()))
+		})
+	}
 }

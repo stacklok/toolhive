@@ -295,33 +295,13 @@ func buildTrustedIssuerRunConfigs(issuers []mcpv1beta1.TrustedIssuerConfig) []to
 			ActorMatcher:           ti.ActorMatcher,
 			AllowedDelegateClients: append([]string(nil), ti.AllowedDelegateClients...),
 			AllowMayAct:            ti.AllowMayAct,
-			JWTBearerGrant:         buildJWTBearerGrantPolicy(ti.JWTBearerGrant),
+			JWTBearerGrant:         mcpv1beta1.BuildJWTBearerGrantPolicy(ti.JWTBearerGrant),
 		}
 		if ti.CABundleRef != nil {
 			configs[i].CAFilePath = trustedIssuerCABundleFilePath(i)
 		}
 	}
 	return configs
-}
-
-func buildJWTBearerGrantPolicy(config *mcpv1beta1.JWTBearerGrantConfig) *tokenexchange.JWTBearerGrantPolicy {
-	if config == nil {
-		return nil
-	}
-	policy := &tokenexchange.JWTBearerGrantPolicy{
-		SubjectBindings:   make([]tokenexchange.JWTBearerSubjectBinding, len(config.SubjectBindings)),
-		AcceptedAudiences: append([]string(nil), config.AcceptedAudiences...),
-	}
-	if config.MaxAssertionAge != nil {
-		policy.MaxAssertionAge = config.MaxAssertionAge.Duration.String()
-	}
-	for i, binding := range config.SubjectBindings {
-		policy.SubjectBindings[i] = tokenexchange.JWTBearerSubjectBinding{
-			Subject:          binding.Subject,
-			AllowedResources: append([]string(nil), binding.AllowedResources...),
-		}
-	}
-	return policy
 }
 
 // buildSPIFFETrustDomainRunConfigs converts CRD SPIFFETrustDomainConfig
@@ -940,15 +920,29 @@ func buildInboundGrantsRunConfig(
 				return nil, fmt.Errorf("jwtBearer.issuerPolicies[%d].maxAssertionAge is required", i)
 			}
 			policies[i] = authserver.JWTBearerIssuerPolicyRunConfig{
-				IssuerRef:         policy.IssuerRef,
-				MaxAssertionAge:   policy.MaxAssertionAge.Duration.String(),
-				SubjectBindings:   buildJWTBearerSubjectBindings(policy.SubjectBindings),
-				AcceptedAudiences: append([]string(nil), policy.AcceptedAudiences...),
+				IssuerRef:              policy.IssuerRef,
+				MaxAssertionAge:        policy.MaxAssertionAge.Duration.String(),
+				SubjectBindings:        buildJWTBearerSubjectBindings(policy.SubjectBindings),
+				AcceptedAudiences:      append([]string(nil), policy.AcceptedAudiences...),
+				AcceptedAssertionTypes: buildJWTBearerAssertionTypes(policy.AcceptedAssertionTypes),
 			}
 		}
 		grants.JWTBearer = &authserver.JWTBearerInboundGrantRunConfig{IssuerPolicies: policies}
 	}
 	return grants, nil
+}
+
+func buildJWTBearerAssertionTypes(
+	types []mcpv1beta1.JWTBearerAssertionType,
+) []tokenexchange.JWTBearerAssertionType {
+	if types == nil {
+		return nil
+	}
+	converted := make([]tokenexchange.JWTBearerAssertionType, len(types))
+	for i, assertionType := range types {
+		converted[i] = tokenexchange.JWTBearerAssertionType(assertionType)
+	}
+	return converted
 }
 
 func buildJWTBearerSubjectBindings(

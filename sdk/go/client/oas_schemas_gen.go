@@ -1132,10 +1132,18 @@ func (s *AuthenticationJWTBearerInboundGrantRunConfig) SetIssuerPolicies(val []A
 
 // Ref: #/components/schemas/AuthenticationJWTBearerIssuerPolicyRunConfig
 type AuthenticationJWTBearerIssuerPolicyRunConfig struct {
-	AcceptedAudiences []string                                                   `json:"accepted_audiences"`
-	IssuerRef         OptString                                                  `json:"issuer_ref"`
-	MaxAssertionAge   OptString                                                  `json:"max_assertion_age"`
-	SubjectBindings   []AuthenticationServerTokenExchangeJWTBearerSubjectBinding `json:"subject_bindings"`
+	// AcceptedAssertionTypes mirrors JWTBearerGrantPolicy.AcceptedAssertionTypes
+	// for the canonical config path; unset accepts both jwt_bearer and id_jag.
+	AcceptedAssertionTypes []AuthenticationServerTokenExchangeJWTBearerAssertionType  `json:"accepted_assertion_types"`
+	AcceptedAudiences      []string                                                   `json:"accepted_audiences"`
+	IssuerRef              OptString                                                  `json:"issuer_ref"`
+	MaxAssertionAge        OptString                                                  `json:"max_assertion_age"`
+	SubjectBindings        []AuthenticationServerTokenExchangeJWTBearerSubjectBinding `json:"subject_bindings"`
+}
+
+// GetAcceptedAssertionTypes returns the value of AcceptedAssertionTypes.
+func (s *AuthenticationJWTBearerIssuerPolicyRunConfig) GetAcceptedAssertionTypes() []AuthenticationServerTokenExchangeJWTBearerAssertionType {
+	return s.AcceptedAssertionTypes
 }
 
 // GetAcceptedAudiences returns the value of AcceptedAudiences.
@@ -1156,6 +1164,11 @@ func (s *AuthenticationJWTBearerIssuerPolicyRunConfig) GetMaxAssertionAge() OptS
 // GetSubjectBindings returns the value of SubjectBindings.
 func (s *AuthenticationJWTBearerIssuerPolicyRunConfig) GetSubjectBindings() []AuthenticationServerTokenExchangeJWTBearerSubjectBinding {
 	return s.SubjectBindings
+}
+
+// SetAcceptedAssertionTypes sets the value of AcceptedAssertionTypes.
+func (s *AuthenticationJWTBearerIssuerPolicyRunConfig) SetAcceptedAssertionTypes(val []AuthenticationServerTokenExchangeJWTBearerAssertionType) {
+	s.AcceptedAssertionTypes = val
 }
 
 // SetAcceptedAudiences sets the value of AcceptedAudiences.
@@ -2445,6 +2458,48 @@ func (s *AuthenticationSPIFFETrustDomainRunConfig) SetTrustDomain(val OptString)
 
 // Ref: #/components/schemas/AuthenticationSPIFFEWorkloadAPIBundleSourceRunConfig
 type AuthenticationSPIFFEWorkloadAPIBundleSourceRunConfig struct{}
+
+// Ref: #/components/schemas/AuthenticationServerTokenExchangeJWTBearerAssertionType
+type AuthenticationServerTokenExchangeJWTBearerAssertionType string
+
+const (
+	AuthenticationServerTokenExchangeJWTBearerAssertionTypeJwtBearer AuthenticationServerTokenExchangeJWTBearerAssertionType = "jwt_bearer"
+	AuthenticationServerTokenExchangeJWTBearerAssertionTypeIDJag     AuthenticationServerTokenExchangeJWTBearerAssertionType = "id_jag"
+)
+
+// AllValues returns all AuthenticationServerTokenExchangeJWTBearerAssertionType values.
+func (AuthenticationServerTokenExchangeJWTBearerAssertionType) AllValues() []AuthenticationServerTokenExchangeJWTBearerAssertionType {
+	return []AuthenticationServerTokenExchangeJWTBearerAssertionType{
+		AuthenticationServerTokenExchangeJWTBearerAssertionTypeJwtBearer,
+		AuthenticationServerTokenExchangeJWTBearerAssertionTypeIDJag,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s AuthenticationServerTokenExchangeJWTBearerAssertionType) MarshalText() ([]byte, error) {
+	switch s {
+	case AuthenticationServerTokenExchangeJWTBearerAssertionTypeJwtBearer:
+		return []byte(s), nil
+	case AuthenticationServerTokenExchangeJWTBearerAssertionTypeIDJag:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *AuthenticationServerTokenExchangeJWTBearerAssertionType) UnmarshalText(data []byte) error {
+	switch AuthenticationServerTokenExchangeJWTBearerAssertionType(data) {
+	case AuthenticationServerTokenExchangeJWTBearerAssertionTypeJwtBearer:
+		*s = AuthenticationServerTokenExchangeJWTBearerAssertionTypeJwtBearer
+		return nil
+	case AuthenticationServerTokenExchangeJWTBearerAssertionTypeIDJag:
+		*s = AuthenticationServerTokenExchangeJWTBearerAssertionTypeIDJag
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
 
 // Ref: #/components/schemas/AuthenticationServerTokenExchangeJWTBearerSubjectBinding
 type AuthenticationServerTokenExchangeJWTBearerSubjectBinding struct {
@@ -21443,6 +21498,15 @@ func (s *TokenExchangeConfig) SetTokenURL(val OptString) {
 // inbound_grants.jwt_bearer.issuer_policies.
 // Ref: #/components/schemas/TokenExchangeJWTBearerGrantPolicy
 type TokenExchangeJWTBearerGrantPolicy struct {
+	// AcceptedAssertionTypes selects which assertion form(s) this issuer's
+	// jwt-bearer grant accepts. nil/empty accepts both jwt_bearer and id_jag
+	// (the behavior before this field existed). Set {id_jag} to restrict an IdP
+	// issuer to Cross-App-Access grants so its other signed JWTs cannot be
+	// redeemed on the credential-free plain path; set {jwt_bearer} to refuse
+	// ID-JAG. Listing id_jag explicitly requires AcceptedAudiences to include
+	// this AS's issuer. SubjectBindings are shared by both forms. See
+	// docs/arch/17-token-exchange-delegation.md.
+	AcceptedAssertionTypes []TokenExchangeJWTBearerGrantPolicyAcceptedAssertionTypesItem `json:"accepted_assertion_types"`
 	// AcceptedAudiences is the set of "this AS" identity strings an
 	// assertion's "aud" claim must intersect — e.g. to support migrating
 	// this server's issuer/token-endpoint URL, or exposing it under more
@@ -21455,6 +21519,11 @@ type TokenExchangeJWTBearerGrantPolicy struct {
 	AcceptedAudiences []string                               `json:"accepted_audiences"`
 	MaxAssertionAge   OptString                              `json:"max_assertion_age"`
 	SubjectBindings   []TokenExchangeJWTBearerSubjectBinding `json:"subject_bindings"`
+}
+
+// GetAcceptedAssertionTypes returns the value of AcceptedAssertionTypes.
+func (s *TokenExchangeJWTBearerGrantPolicy) GetAcceptedAssertionTypes() []TokenExchangeJWTBearerGrantPolicyAcceptedAssertionTypesItem {
+	return s.AcceptedAssertionTypes
 }
 
 // GetAcceptedAudiences returns the value of AcceptedAudiences.
@@ -21472,6 +21541,11 @@ func (s *TokenExchangeJWTBearerGrantPolicy) GetSubjectBindings() []TokenExchange
 	return s.SubjectBindings
 }
 
+// SetAcceptedAssertionTypes sets the value of AcceptedAssertionTypes.
+func (s *TokenExchangeJWTBearerGrantPolicy) SetAcceptedAssertionTypes(val []TokenExchangeJWTBearerGrantPolicyAcceptedAssertionTypesItem) {
+	s.AcceptedAssertionTypes = val
+}
+
 // SetAcceptedAudiences sets the value of AcceptedAudiences.
 func (s *TokenExchangeJWTBearerGrantPolicy) SetAcceptedAudiences(val []string) {
 	s.AcceptedAudiences = val
@@ -21485,6 +21559,47 @@ func (s *TokenExchangeJWTBearerGrantPolicy) SetMaxAssertionAge(val OptString) {
 // SetSubjectBindings sets the value of SubjectBindings.
 func (s *TokenExchangeJWTBearerGrantPolicy) SetSubjectBindings(val []TokenExchangeJWTBearerSubjectBinding) {
 	s.SubjectBindings = val
+}
+
+type TokenExchangeJWTBearerGrantPolicyAcceptedAssertionTypesItem string
+
+const (
+	TokenExchangeJWTBearerGrantPolicyAcceptedAssertionTypesItemJwtBearer TokenExchangeJWTBearerGrantPolicyAcceptedAssertionTypesItem = "jwt_bearer"
+	TokenExchangeJWTBearerGrantPolicyAcceptedAssertionTypesItemIDJag     TokenExchangeJWTBearerGrantPolicyAcceptedAssertionTypesItem = "id_jag"
+)
+
+// AllValues returns all TokenExchangeJWTBearerGrantPolicyAcceptedAssertionTypesItem values.
+func (TokenExchangeJWTBearerGrantPolicyAcceptedAssertionTypesItem) AllValues() []TokenExchangeJWTBearerGrantPolicyAcceptedAssertionTypesItem {
+	return []TokenExchangeJWTBearerGrantPolicyAcceptedAssertionTypesItem{
+		TokenExchangeJWTBearerGrantPolicyAcceptedAssertionTypesItemJwtBearer,
+		TokenExchangeJWTBearerGrantPolicyAcceptedAssertionTypesItemIDJag,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s TokenExchangeJWTBearerGrantPolicyAcceptedAssertionTypesItem) MarshalText() ([]byte, error) {
+	switch s {
+	case TokenExchangeJWTBearerGrantPolicyAcceptedAssertionTypesItemJwtBearer:
+		return []byte(s), nil
+	case TokenExchangeJWTBearerGrantPolicyAcceptedAssertionTypesItemIDJag:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *TokenExchangeJWTBearerGrantPolicyAcceptedAssertionTypesItem) UnmarshalText(data []byte) error {
+	switch TokenExchangeJWTBearerGrantPolicyAcceptedAssertionTypesItem(data) {
+	case TokenExchangeJWTBearerGrantPolicyAcceptedAssertionTypesItemJwtBearer:
+		*s = TokenExchangeJWTBearerGrantPolicyAcceptedAssertionTypesItemJwtBearer
+		return nil
+	case TokenExchangeJWTBearerGrantPolicyAcceptedAssertionTypesItemIDJag:
+		*s = TokenExchangeJWTBearerGrantPolicyAcceptedAssertionTypesItemIDJag
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
 }
 
 // Ref: #/components/schemas/TokenExchangeJWTBearerSubjectBinding

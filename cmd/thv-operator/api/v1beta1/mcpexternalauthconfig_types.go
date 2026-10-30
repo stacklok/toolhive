@@ -531,6 +531,20 @@ type TrustedIssuerConfig struct {
 	JWTBearerGrant *JWTBearerGrantConfig `json:"jwtBearerGrant,omitempty"`
 }
 
+// JWTBearerAssertionType identifies one assertion form the RFC 7523
+// jwt-bearer grant may accept for a trusted issuer.
+type JWTBearerAssertionType string
+
+const (
+	// JWTBearerAssertionTypeJWTBearer accepts plain RFC 7523 assertions
+	// (typ absent, empty, or "JWT") — e.g. service-account/machine credentials.
+	JWTBearerAssertionTypeJWTBearer JWTBearerAssertionType = "jwt_bearer"
+	// JWTBearerAssertionTypeIDJAG accepts Identity Assertion Authorization
+	// Grant assertions (typ: oauth-id-jag+jwt) — cross-app-access grants
+	// minted by this issuer acting as IdP for a different resource owner.
+	JWTBearerAssertionTypeIDJAG JWTBearerAssertionType = "id_jag"
+)
+
 // JWTBearerGrantConfig limits RFC 7523 JWT-bearer assertions for one trusted
 // issuer. Each assertion subject must have an exact binding and request exactly
 // one of that binding's allowed resources.
@@ -562,6 +576,27 @@ type JWTBearerGrantConfig struct {
 	// +listType=atomic
 	// +optional
 	AcceptedAudiences []string `json:"acceptedAudiences,omitempty"`
+
+	// AcceptedAssertionTypes selects which assertion form(s) this issuer's
+	// jwt-bearer grant accepts. When omitted, both "jwt_bearer" and "id_jag"
+	// are accepted, which is the behavior before this field existed. Set
+	// ["id_jag"] to restrict an IdP issuer (e.g. Okta acting as a
+	// Cross-App-Access IdP) to ID-JAG grants, so its other signed JWTs cannot
+	// be redeemed on the credential-free plain jwt-bearer path. Set
+	// ["jwt_bearer"] to refuse ID-JAG.
+	//
+	// When "id_jag" is listed explicitly, acceptedAudiences must include this
+	// AS's own issuer identifier (the ID-JAG's "aud" per
+	// draft-ietf-oauth-identity-assertion-authz-grant §4.4.1), not just the
+	// token endpoint URL. Subject bindings are shared between both forms, so
+	// each binding also authorizes a plain jwt-bearer assertion from that
+	// subject whenever "jwt_bearer" is accepted.
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=2
+	// +kubebuilder:validation:items:Enum=jwt_bearer;id_jag
+	// +listType=set
+	// +optional
+	AcceptedAssertionTypes []JWTBearerAssertionType `json:"acceptedAssertionTypes,omitempty"`
 }
 
 // JWTBearerSubjectBinding configures the exact subject and allowed resources
@@ -1382,7 +1417,7 @@ func applyEffectiveJWTBearer(
 			return err
 		}
 		seen[policy.IssuerRef] = i
-		result.trustedIssuers[issuerIndex].JWTBearerGrant = buildJWTBearerGrantPolicy(&policy.JWTBearerGrantConfig)
+		result.trustedIssuers[issuerIndex].JWTBearerGrant = BuildJWTBearerGrantPolicy(&policy.JWTBearerGrantConfig)
 	}
 	return nil
 }
@@ -2903,15 +2938,16 @@ func buildTrustedIssuerConfigs(issuers []TrustedIssuerConfig) []tokenexchange.Tr
 			ActorMatcher:           issuer.ActorMatcher,
 			AllowedDelegateClients: slices.Clone(issuer.AllowedDelegateClients),
 			AllowMayAct:            issuer.AllowMayAct,
-			JWTBearerGrant:         buildJWTBearerGrantPolicy(issuer.JWTBearerGrant),
+			JWTBearerGrant:         BuildJWTBearerGrantPolicy(issuer.JWTBearerGrant),
 		}
 	}
 	return configs
 }
 
-// buildJWTBearerGrantPolicy converts the CRD's JWT-bearer grant config to the
-// runtime policy type without sharing caller-owned slices.
-func buildJWTBearerGrantPolicy(grant *JWTBearerGrantConfig) *tokenexchange.JWTBearerGrantPolicy {
+// BuildJWTBearerGrantPolicy converts the CRD's JWT-bearer grant config to the
+// runtime policy type without sharing caller-owned slices. It is the single
+// converter used by reconcile-time validation and RunConfig generation.
+func BuildJWTBearerGrantPolicy(grant *JWTBearerGrantConfig) *tokenexchange.JWTBearerGrantPolicy {
 	if grant == nil {
 		return nil
 	}
@@ -2922,11 +2958,20 @@ func buildJWTBearerGrantPolicy(grant *JWTBearerGrantConfig) *tokenexchange.JWTBe
 			AllowedResources: slices.Clone(binding.AllowedResources),
 		}
 	}
-	return &tokenexchange.JWTBearerGrantPolicy{
-		MaxAssertionAge:   grant.MaxAssertionAge.Duration.String(),
+	policy := &tokenexchange.JWTBearerGrantPolicy{
 		SubjectBindings:   bindings,
 		AcceptedAudiences: slices.Clone(grant.AcceptedAudiences),
 	}
+	if grant.MaxAssertionAge != nil {
+		policy.MaxAssertionAge = grant.MaxAssertionAge.Duration.String()
+	}
+	if grant.AcceptedAssertionTypes != nil {
+		policy.AcceptedAssertionTypes = make([]tokenexchange.JWTBearerAssertionType, len(grant.AcceptedAssertionTypes))
+		for i, assertionType := range grant.AcceptedAssertionTypes {
+			policy.AcceptedAssertionTypes[i] = tokenexchange.JWTBearerAssertionType(assertionType)
+		}
+	}
+	return policy
 }
 
 // validateUpstreamProvider validates a single upstream provider configuration.

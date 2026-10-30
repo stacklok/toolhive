@@ -12,6 +12,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	"github.com/stacklok/toolhive/pkg/authserver/server/tokenexchange"
 )
 
 // makeStringOfLen returns a string of exactly n ASCII bytes.
@@ -1208,6 +1210,92 @@ func TestEmbeddedAuthServerConfig_ValidateInboundGrants_TrustedIssuerEndpoints(t
 				return
 			}
 			require.ErrorContains(t, err, tt.wantErr)
+		})
+	}
+}
+
+func TestEmbeddedAuthServerConfig_ValidateInboundGrants_JWTBearerAssertionTypes(t *testing.T) {
+	t.Parallel()
+
+	const selfIssuer = "https://auth.example.com"
+	grant := func(types []JWTBearerAssertionType, audiences []string) JWTBearerGrantConfig {
+		return JWTBearerGrantConfig{
+			MaxAssertionAge: &metav1.Duration{Duration: time.Minute},
+			SubjectBindings: []JWTBearerSubjectBinding{{
+				Subject: "workload", AllowedResources: []string{"https://mcp.example.com"},
+			}},
+			AcceptedAssertionTypes: types,
+			AcceptedAudiences:      audiences,
+		}
+	}
+	newConfig := func(canonical bool, g JWTBearerGrantConfig) EmbeddedAuthServerConfig {
+		issuer := TrustedIssuerConfig{Name: "external", IssuerURL: "https://issuer.example.com"}
+		config := EmbeddedAuthServerConfig{Issuer: selfIssuer}
+		if canonical {
+			config.TrustedIssuers = []TrustedIssuerConfig{issuer}
+			config.InboundGrants = &InboundGrantsConfig{JWTBearer: &JWTBearerInboundGrantConfig{
+				IssuerPolicies: []JWTBearerIssuerPolicyConfig{{IssuerRef: "external", JWTBearerGrantConfig: g}},
+			}}
+			return config
+		}
+		issuer.JWTBearerGrant = &g
+		config.TrustedIssuers = []TrustedIssuerConfig{issuer}
+		return config
+	}
+
+	idJAG := []JWTBearerAssertionType{JWTBearerAssertionTypeIDJAG}
+	tests := []struct {
+		name      string
+		types     []JWTBearerAssertionType
+		audiences []string
+		wantErr   string
+	}{
+		{name: "id_jag without issuer audience rejected", types: idJAG, audiences: []string{"https://other.example.com"},
+			wantErr: "must include the authorization server issuer"},
+		{name: "id_jag with issuer audience accepted", types: idJAG, audiences: []string{selfIssuer}},
+		{name: "unsupported assertion type rejected", types: []JWTBearerAssertionType{"bogus"},
+			wantErr: "unsupported value"},
+		{name: "unset assertion types keep prior behavior", audiences: []string{"https://other.example.com"}},
+	}
+
+	for _, tt := range tests {
+		for _, canonical := range []bool{false, true} {
+			shape := map[bool]string{false: "legacy", true: "canonical"}[canonical]
+			t.Run(shape+" "+tt.name, func(t *testing.T) {
+				t.Parallel()
+				config := newConfig(canonical, grant(tt.types, tt.audiences))
+				err := config.ValidateInboundGrants()
+				if tt.wantErr == "" {
+					require.NoError(t, err)
+					return
+				}
+				require.ErrorContains(t, err, tt.wantErr)
+			})
+		}
+	}
+}
+
+func TestBuildJWTBearerGrantPolicy_AssertionTypes(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		types []JWTBearerAssertionType
+		want  []tokenexchange.JWTBearerAssertionType
+	}{
+		{name: "nil stays nil"},
+		{name: "empty stays empty non-nil", types: []JWTBearerAssertionType{}, want: []tokenexchange.JWTBearerAssertionType{}},
+		{name: "values converted", types: []JWTBearerAssertionType{JWTBearerAssertionTypeJWTBearer, JWTBearerAssertionTypeIDJAG},
+			want: []tokenexchange.JWTBearerAssertionType{
+				tokenexchange.JWTBearerAssertionTypeJWTBearer, tokenexchange.JWTBearerAssertionTypeIDJAG}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			policy := BuildJWTBearerGrantPolicy(&JWTBearerGrantConfig{AcceptedAssertionTypes: tt.types})
+			require.NotNil(t, policy)
+			assert.Equal(t, tt.want, policy.AcceptedAssertionTypes)
+			assert.Empty(t, policy.MaxAssertionAge, "nil maxAssertionAge must not panic")
 		})
 	}
 }

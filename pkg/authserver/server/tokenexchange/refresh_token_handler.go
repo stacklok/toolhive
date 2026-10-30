@@ -407,8 +407,8 @@ func (h *RefreshTokenHandler) decideChild(
 // order is fixed: the HMAC check, which needs no store
 // (ValidateRefreshToken is called with a session that has no refresh expiry, so
 // it checks only the HMAC; RefreshTokenSignature does not verify it); the
-// lookup; the client check; the grant's own liveness; its parent's liveness;
-// then the refresh_token type.
+// lookup; the client check; then checkParentGrant: the grant's own liveness,
+// its parent's liveness, and the refresh_token type.
 // Nothing about the presented token is revealed before the client check. A
 // child grant never lists refresh_token, so it fails the last check: depth is 1.
 func (h *RefreshTokenHandler) presentedGrant(
@@ -433,32 +433,43 @@ func (h *RefreshTokenHandler) presentedGrant(
 	if grant.SubjectIdentifier != "" {
 		log = log.With("sub_id", grant.SubjectIdentifier)
 	}
+	if err := h.checkParentGrant(ctx, grant, now, log); err != nil {
+		return nil, log, err
+	}
+	return grant, log, nil
+}
 
+// checkParentGrant applies the checks after the client check to a grant of the
+// presenting client: its own liveness, its parent's liveness, then the
+// refresh_token type. It logs the refusal it returns.
+func (h *RefreshTokenHandler) checkParentGrant(
+	ctx context.Context, grant *storage.ExchangeGrant, now time.Time, log *slog.Logger,
+) error {
 	// Expiry is checked before Live, which reports a revoked grant first. An
 	// expired grant is answered like an unknown one whatever its revocation.
 	if now.After(grant.ExpiresAt) {
-		return nil, log, refuse(ctx, log, refuseUnknownGrant, errorsx.WithStack(errUnknownGrant))
+		return refuse(ctx, log, refuseUnknownGrant, errorsx.WithStack(errUnknownGrant))
 	}
 	if err := grant.Live(now); err != nil {
 		if errors.Is(err, storage.ErrRevoked) {
-			return nil, log, refuseWithReason(ctx, log, reasonRevoked)
+			return refuseWithReason(ctx, log, reasonRevoked)
 		}
-		return nil, log, refuse(ctx, log, refuseUnknownGrant, errorsx.WithStack(errUnknownGrant))
+		return refuse(ctx, log, refuseUnknownGrant, errorsx.WithStack(errUnknownGrant))
 	}
 	if grant.ParentSignature != "" {
 		parent, err := h.store.GetExchangeGrant(ctx, grant.ParentSignature)
 		switch {
 		case err != nil && !errors.Is(err, storage.ErrNotFound):
 			log.WarnContext(ctx, "Exchange grant refused", "reason", refuseStore, "error", err)
-			return nil, log, issueFailed()
+			return issueFailed()
 		case err != nil || parent.Live(now) != nil:
-			return nil, log, refuseWithReason(ctx, log, reasonParentRevoked)
+			return refuseWithReason(ctx, log, reasonParentRevoked)
 		}
 	}
 	if grant.ParentSignature != "" || !slices.Contains(grant.IssuableTokenTypes, oauthproto.TokenTypeRefreshToken) {
-		return nil, log, refuseWithReason(ctx, log, reasonNotIssuable)
+		return refuseWithReason(ctx, log, reasonNotIssuable)
 	}
-	return grant, log, nil
+	return nil
 }
 
 // refuseWithReason logs the refusal and returns invalid_request whose whole

@@ -393,9 +393,10 @@ type DelegateClientRunConfig struct {
 	// TokenExchange is the client's token-exchange policy. Its
 	// SelfIssuedSubjectTokens field selects which self-issued subject tokens
 	// the client may exchange and is required whenever the block is present.
-	// The block may be omitted only when GrantTypes is omitted or empty; such
-	// a client keeps the legacy rule (any) and may exchange any self-issued
-	// token. A client that sets GrantTypes must declare the block.
+	// The block may be omitted only by a secret-authenticated client whose
+	// GrantTypes is omitted or empty; such a client keeps the legacy rule (any)
+	// and may exchange any self-issued token. A client that sets GrantTypes or
+	// uses private_key_jwt must declare the block.
 	TokenExchange *DelegateClientTokenExchange `json:"token_exchange,omitempty" yaml:"token_exchange,omitempty"`
 }
 
@@ -812,17 +813,29 @@ func setExchangeRefreshTokensSpec(spec *registration.ConfiguredClientSpec, refre
 	spec.RefreshTokenMaxLifetime = refresh.RefreshTokenMaxLifetime
 }
 
-// requireDeclaredTrustMode refuses a client that declares grant_types without
-// a token_exchange block. Only the legacy shape (no grants, no block) keeps
-// blanket trust implicitly; a client written against the newer metadata must
-// state its trust mode for self-issued subject tokens.
+// requireDeclaredTrustMode refuses a client that declares grant_types or uses
+// private_key_jwt without a token_exchange block. The legacy implicit blanket
+// trust is only for secret-authenticated clients with no grant_types; every
+// other client must state its trust mode for self-issued subject tokens.
 func requireDeclaredTrustMode(client delegateClientView) error {
-	if len(client.Spec.GrantTypes) > 0 && client.TokenExchange == nil {
+	if client.TokenExchange != nil || !trustModeRequired(client.Spec.GrantTypes, client.Spec.TokenEndpointAuthMethod) {
+		return nil
+	}
+	if len(client.Spec.GrantTypes) > 0 {
 		return fmt.Errorf("delegate_clients: client_id %q: grant_types is set, so a token_exchange block "+
 			"with self_issued_subject_tokens (%q or %q) is required",
 			client.ClientID, SelfIssuedSubjectTokensAny, SelfIssuedSubjectTokensRestricted)
 	}
-	return nil
+	return fmt.Errorf("delegate_clients: client_id %q: private_key_jwt clients must declare a token_exchange block "+
+		"with self_issued_subject_tokens (%q or %q)",
+		client.ClientID, SelfIssuedSubjectTokensAny, SelfIssuedSubjectTokensRestricted)
+}
+
+// trustModeRequired reports whether a delegate client with these grant types
+// and token endpoint auth method must declare a token_exchange block. Only a
+// secret-authenticated client without grant_types may omit it.
+func trustModeRequired(grantTypes []string, authMethod string) bool {
+	return len(grantTypes) > 0 || authMethod == oauthproto.TokenEndpointAuthMethodPrivateKeyJWT
 }
 
 // minDelegateClientSecretLength is the minimum accepted length for a resolved

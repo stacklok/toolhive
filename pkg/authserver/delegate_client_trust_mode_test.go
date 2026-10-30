@@ -105,18 +105,21 @@ func TestRestrictedClientPolicies(t *testing.T) {
 
 // TestWarnBlanketSelfIssuedExchange checks that every delegate
 // left with blanket trust logs one WARN, with explicit_any for a client that
-// declared any alongside grant_types and redeems_id_jag for a client without
-// grant_types while jwt-bearer is enabled.
+// had to declare any (it sets grant_types or uses private_key_jwt) and
+// redeems_id_jag for a client without grant_types while jwt-bearer is enabled.
 //
 //nolint:paralleltest // captures the package-global slog.Default()
 func TestWarnBlanketSelfIssuedExchange(t *testing.T) {
 	exchangeOnly := []string{oauthproto.GrantTypeTokenExchange}
 	anyMode := &DelegateClientTokenExchange{SelfIssuedSubjectTokens: SelfIssuedSubjectTokensAny}
 	restricted := &DelegateClientTokenExchange{SelfIssuedSubjectTokens: SelfIssuedSubjectTokensRestricted}
+	keyAny := trustModeTestClient("key-any", nil, anyMode)
+	keyAny.TokenEndpointAuthMethod = oauthproto.TokenEndpointAuthMethodPrivateKeyJWT
 	clients := []DelegateClient{
 		trustModeTestClient("legacy", nil, nil),
 		trustModeTestClient("no-grants-any", nil, anyMode),
 		trustModeTestClient("explicit-any", exchangeOnly, anyMode),
+		keyAny,
 		trustModeTestClient("restricted", exchangeOnly, restricted),
 	}
 
@@ -129,11 +132,13 @@ func TestWarnBlanketSelfIssuedExchange(t *testing.T) {
 			"legacy":        {},
 			"no-grants-any": {},
 			"explicit-any":  {"explicit_any": true},
+			"key-any":       {"explicit_any": true},
 		}},
 		{name: "jwt-bearer enabled", jwtBearerEnabled: true, want: map[string]map[string]bool{
 			"legacy":        {"redeems_id_jag": true},
 			"no-grants-any": {"redeems_id_jag": true},
 			"explicit-any":  {"explicit_any": true},
+			"key-any":       {"explicit_any": true, "redeems_id_jag": true},
 		}},
 	}
 

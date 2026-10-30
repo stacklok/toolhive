@@ -64,6 +64,11 @@ type dcrTestHandlerConfig struct {
 	// endpoint. Defaults to "test-client-id". Distinct values let a test
 	// prove two upstreams received distinct dynamically-registered clients.
 	clientID string
+
+	// registeredAuthMethod, when set, is the token_endpoint_auth_method the
+	// registration response names in place of echoing the requested one
+	// (RFC 7591 §3.2.1 lets the server replace requested metadata).
+	registeredAuthMethod string
 }
 
 // newDCRTestServer mounts RFC 8414 metadata and a DCR endpoint on a single
@@ -116,6 +121,9 @@ func newDCRTestServer(t *testing.T, cfg dcrTestHandlerConfig) *httptest.Server {
 		clientID := cfg.clientID
 		if clientID == "" {
 			clientID = "test-client-id"
+		}
+		if cfg.registeredAuthMethod != "" {
+			req.TokenEndpointAuthMethod = cfg.registeredAuthMethod
 		}
 		resp := oauthproto.DynamicClientRegistrationResponse{
 			ClientID:                clientID,
@@ -941,6 +949,111 @@ func TestResolveDCRCredentials_AuthMethodPreference(t *testing.T) {
 			res, err := ResolveCredentials(context.Background(), req, cache)
 			require.NoError(t, err)
 			assert.Equal(t, tc.expected, res.TokenEndpointAuthMethod)
+		})
+	}
+}
+
+// TestResolveDCRCredentials_ConfiguredAuthMethod pins
+// Request.TokenEndpointAuthMethod: the client registers with the configured
+// method in place of the preferred one, and a configured method the upstream
+// cannot honour fails the registration instead of falling back.
+func TestResolveDCRCredentials_ConfiguredAuthMethod(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		supported     []string
+		codeChallenge []string
+		registeredAs  string
+		publicClient  bool
+		configured    string
+		want          string
+		wantErrSub    string
+	}{
+		{
+			name:       "configured client_secret_post wins over the preferred client_secret_basic",
+			supported:  []string{"client_secret_basic", "client_secret_post"},
+			configured: "client_secret_post",
+			want:       "client_secret_post",
+		},
+		{
+			name:       "configured method is used when the upstream advertises no methods",
+			configured: "client_secret_post",
+			want:       "client_secret_post",
+		},
+		{
+			name:          "configured none is used when S256 is advertised",
+			supported:     []string{"client_secret_basic", "none"},
+			codeChallenge: []string{"S256"},
+			configured:    "none",
+			want:          "none",
+		},
+		{
+			name:       "configured method the upstream does not advertise is refused",
+			supported:  []string{"client_secret_basic"},
+			configured: "client_secret_post",
+			wantErrSub: "is not among the upstream's",
+		},
+		{
+			name:       "configured none without S256 is refused",
+			supported:  []string{"none"},
+			configured: "none",
+			wantErrSub: "S256",
+		},
+		{
+			name:       "unsupported configured method is refused",
+			configured: "private_key_jwt",
+			wantErrSub: "unsupported token_endpoint_auth_method",
+		},
+		{
+			name:          "public client cannot configure a confidential method",
+			supported:     []string{"none"},
+			codeChallenge: []string{"S256"},
+			publicClient:  true,
+			configured:    "client_secret_post",
+			wantErrSub:    "public client",
+		},
+		{
+			name:         "registration the upstream switched to another method is refused",
+			supported:    []string{"client_secret_basic", "client_secret_post"},
+			registeredAs: "client_secret_basic",
+			configured:   "client_secret_post",
+			wantErrSub:   "not the configured",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			var requested atomic.Value
+			server := newDCRTestServer(t, dcrTestHandlerConfig{
+				tokenEndpointAuthMethodsSupported: tc.supported,
+				codeChallengeMethodsSupported:     tc.codeChallenge,
+				registeredAuthMethod:              tc.registeredAs,
+				observeRegistration: func(_ *http.Request, body []byte) {
+					var reg oauthproto.DynamicClientRegistrationRequest
+					if json.Unmarshal(body, &reg) == nil {
+						requested.Store(reg.TokenEndpointAuthMethod)
+					}
+				},
+			})
+			issuer := server.URL
+			req := &Request{
+				Issuer:                  issuer,
+				Scopes:                  []string{"openid"},
+				DiscoveryURL:            issuer + "/.well-known/oauth-authorization-server",
+				PublicClient:            tc.publicClient,
+				TokenEndpointAuthMethod: tc.configured,
+			}
+
+			res, err := ResolveCredentials(context.Background(), req, newMemoryDCRStore(t))
+			if tc.wantErrSub != "" {
+				require.ErrorContains(t, err, tc.wantErrSub)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, res.TokenEndpointAuthMethod)
+			assert.Equal(t, tc.want, requested.Load(), "the registration must request the configured method")
 		})
 	}
 }
@@ -1942,23 +2055,23 @@ func TestResolveDCRCredentials_CachePutFailureWrapped(t *testing.T) {
 		"the wrap message is part of the operator-debugging contract")
 }
 
-// expiredWinnerDCRStore simulates a concurrent claimant that already won the
-// durable claim with a credential that is already expired. This mirrors
+// winnerDCRStore simulates a concurrent claimant that already won the
+// durable claim. PutIfAbsent returns winner regardless of the resolution the
+// caller tried to store, exactly as a real "someone else already claimed
+// this key" response would. With an expired winner it mirrors
 // dcrClaimOrReturnWinner (pkg/authserver/storage/redis.go) when both the
 // existing stored row and the incoming registration are already expired: it
 // deliberately returns the existing row without error rather than retrying
-// forever. PutIfAbsent here returns winner regardless of the resolution the
-// caller tried to store, exactly as a real "someone else already claimed
-// this key" response would.
-type expiredWinnerDCRStore struct {
+// forever.
+type winnerDCRStore struct {
 	winner *Resolution
 }
 
-func (expiredWinnerDCRStore) Get(_ context.Context, _ Key) (*Resolution, bool, error) {
+func (winnerDCRStore) Get(_ context.Context, _ Key) (*Resolution, bool, error) {
 	return nil, false, nil
 }
 
-func (s expiredWinnerDCRStore) PutIfAbsent(_ context.Context, _ Key, _ *Resolution) (*Resolution, error) {
+func (s winnerDCRStore) PutIfAbsent(_ context.Context, _ Key, _ *Resolution) (*Resolution, error) {
 	return s.winner, nil
 }
 
@@ -1974,7 +2087,7 @@ func TestResolveDCRCredentials_ExpiredAuthoritativeCredentialErrors(t *testing.T
 
 	server := newDCRTestServer(t, dcrTestHandlerConfig{})
 
-	store := expiredWinnerDCRStore{
+	store := winnerDCRStore{
 		winner: &Resolution{
 			ClientID:              "winner-client-id",
 			ClientSecret:          "winner-client-secret",
@@ -1993,6 +2106,40 @@ func TestResolveDCRCredentials_ExpiredAuthoritativeCredentialErrors(t *testing.T
 	assert.Nil(t, res)
 	assert.Contains(t, err.Error(), dcrStepExpiredCredential,
 		"step identifier is part of the operator-debugging contract")
+}
+
+// TestResolveDCRCredentials_AuthoritativeWinnerWithOtherAuthMethodErrors
+// covers a rollout: a replica still on a configuration without
+// TokenEndpointAuthMethod wins the durable claim with a client_secret_basic
+// registration, and a replica configured for client_secret_post gets that row
+// back from PutIfAbsent. Using it would fail at the token endpoint the way the
+// configured method exists to avoid, so the resolution is refused.
+func TestResolveDCRCredentials_AuthoritativeWinnerWithOtherAuthMethodErrors(t *testing.T) {
+	t.Parallel()
+
+	server := newDCRTestServer(t, dcrTestHandlerConfig{
+		tokenEndpointAuthMethodsSupported: []string{"client_secret_basic", "client_secret_post"},
+	})
+	store := winnerDCRStore{
+		winner: &Resolution{
+			ClientID:                "winner-client-id",
+			ClientSecret:            "winner-client-secret",
+			TokenEndpointAuthMethod: "client_secret_basic",
+		},
+	}
+	req := &Request{
+		Issuer:                  server.URL,
+		Scopes:                  []string{"openid"},
+		DiscoveryURL:            server.URL + "/.well-known/oauth-authorization-server",
+		TokenEndpointAuthMethod: "client_secret_post",
+	}
+
+	res, err := ResolveCredentials(context.Background(), req, store)
+	require.Error(t, err, "a stored row with another method must not be returned as a success")
+	assert.Nil(t, res)
+	assert.Contains(t, err.Error(), dcrStepAuthMethod,
+		"step identifier is part of the operator-debugging contract")
+	assert.Contains(t, err.Error(), "winner-client-id")
 }
 
 // TestBuildResolution_PopulatesRFC7591ExpiryFields covers the conversion of

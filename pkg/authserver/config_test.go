@@ -667,6 +667,17 @@ func TestOAuth2UpstreamRunConfigValidate(t *testing.T) {
 				TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodClientSecretBasic,
 			},
 		},
+		{
+			// The secret comes from the registration, so the method only
+			// selects how the client registers.
+			name: "client_secret_post with dcr_config and no secret source is valid",
+			config: OAuth2UpstreamRunConfig{
+				DCRConfig: &DCRUpstreamConfig{
+					DiscoveryURL: "https://idp.example.com/.well-known/oauth-authorization-server",
+				},
+				TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodClientSecretPost,
+			},
+		},
 	}
 
 	for _, tt := range tests {

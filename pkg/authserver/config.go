@@ -1118,6 +1118,11 @@ type OAuth2UpstreamRunConfig struct {
 	// client_secret_post-shaped default). Set this to client_secret_basic explicitly
 	// for providers that require HTTP Basic auth. Public clients without a secret use
 	// the "none" method.
+	// With DCRConfig, it is the method the client registers with, in place of the one
+	// ToolHive picks from the upstream's advertised methods (client_secret_basic, then
+	// client_secret_post, then none). Set it for an upstream whose token endpoint does
+	// not accept the method ToolHive picks. A cached registration made with another
+	// method is replaced with a new one at the next start.
 	TokenEndpointAuthMethod string `json:"token_endpoint_auth_method,omitempty" yaml:"token_endpoint_auth_method,omitempty"`
 
 	// RedirectURI is the callback URL where the upstream IDP will redirect after authentication.
@@ -1277,7 +1282,9 @@ type DCRUpstreamConfig struct {
 	// for upstreams whose token endpoint answers invalid_grant for any
 	// client_id; an HTML page or a bare gateway status is not a verdict. A
 	// false rejection re-registers at every start and, when registration also
-	// fails, fails startup. "none" skips the check; the registration is then
+	// fails, fails startup. "none" skips the check: the upstream is not
+	// contacted, but a registration made with another method than a configured
+	// TokenEndpointAuthMethod is still replaced. Otherwise the registration is
 	// retired only through RotationKey.
 	RegistrationProbe string `json:"registration_probe,omitempty" yaml:"registration_probe,omitempty"`
 
@@ -2122,9 +2129,12 @@ func (c *OAuth2UpstreamRunConfig) Validate() error {
 // validateTokenEndpointAuthMethod checks TokenEndpointAuthMethod against the
 // set of methods buildPureOAuth2Config/authStyleFromMethod support, and that
 // the method is consistent with whether a client secret source is configured.
+// With DCRConfig the method selects how the client registers and the secret
+// comes from the registration, so no secret source is expected.
 // Split out of Validate to keep that method's cyclomatic complexity down.
 func (c *OAuth2UpstreamRunConfig) validateTokenEndpointAuthMethod() error {
 	hasSecretSource := c.ClientSecretFile != "" || c.ClientSecretEnvVar != ""
+	usesDCR := c.DCRConfig != nil
 
 	switch c.TokenEndpointAuthMethod {
 	case "":
@@ -2135,7 +2145,7 @@ func (c *OAuth2UpstreamRunConfig) validateTokenEndpointAuthMethod() error {
 			return fmt.Errorf("oauth2 upstream: token_endpoint_auth_method none cannot be used with a client secret")
 		}
 	case oauthproto.TokenEndpointAuthMethodClientSecretBasic, oauthproto.TokenEndpointAuthMethodClientSecretPost:
-		if !hasSecretSource {
+		if !hasSecretSource && !usesDCR {
 			return fmt.Errorf(
 				"oauth2 upstream: token_endpoint_auth_method %q requires client_secret_file or client_secret_env_var",
 				c.TokenEndpointAuthMethod)

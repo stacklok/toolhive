@@ -634,7 +634,9 @@ type AuthenticationDCRUpstreamConfig struct {
 	// for upstreams whose token endpoint answers invalid_grant for any
 	// client_id; an HTML page or a bare gateway status is not a verdict. A
 	// false rejection re-registers at every start and, when registration also
-	// fails, fails startup. "none" skips the check; the registration is then
+	// fails, fails startup. "none" skips the check: the upstream is not
+	// contacted, but a registration made with another method than a configured
+	// TokenEndpointAuthMethod is still replaced. Otherwise the registration is
 	// retired only through RotationKey.
 	RegistrationProbe OptString `json:"registration_probe"`
 	// RegistrationProbeInterval, when set, repeats the start-time resolution
@@ -1239,6 +1241,11 @@ type AuthenticationOAuth2UpstreamRunConfig struct {
 	// client_secret_post-shaped default). Set this to client_secret_basic explicitly
 	// for providers that require HTTP Basic auth. Public clients without a secret use
 	// the "none" method.
+	// With DCRConfig, it is the method the client registers with, in place of the one
+	// ToolHive picks from the upstream's advertised methods (client_secret_basic, then
+	// client_secret_post, then none). Set it for an upstream whose token endpoint does
+	// not accept the method ToolHive picks. A cached registration made with another
+	// method is replaced with a new one at the next start.
 	TokenEndpointAuthMethod OptString                                      `json:"token_endpoint_auth_method"`
 	TokenResponseMapping    OptAuthenticationTokenResponseMappingRunConfig `json:"token_response_mapping"`
 	Userinfo                OptAuthenticationUserInfoRunConfig             `json:"userinfo"`

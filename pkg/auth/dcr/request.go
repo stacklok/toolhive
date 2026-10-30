@@ -33,8 +33,11 @@ const (
 	// also fails, fails startup.
 	ProbeAuthorizationEndpoint RegistrationProbe = "authorizationEndpoint"
 
-	// ProbeNone never contacts the upstream on a cache hit; the cached
-	// registration is used as-is and retired only through RotationKey.
+	// ProbeNone never contacts the upstream on a cache hit. It turns off
+	// the upstream probe only: a cached registration made with another
+	// method than a configured TokenEndpointAuthMethod is still replaced.
+	// Otherwise the cached registration is used as-is and retired only
+	// through RotationKey.
 	ProbeNone RegistrationProbe = "none"
 )
 
@@ -167,6 +170,23 @@ type Request struct {
 	// Periodic marks a re-check of an already-resolved registration; the
 	// staleness warning is logged at Debug so it repeats only at start.
 	Periodic bool
+
+	// TokenEndpointAuthMethod, when non-empty, is the token endpoint auth
+	// method to register with, in place of the one the resolver picks from
+	// the upstream's advertised methods (client_secret_basic, then
+	// client_secret_post, then none). It is for an upstream whose token
+	// endpoint does not accept the method the resolver would pick, for
+	// example one that advertises client_secret_basic but reads client
+	// credentials only from the request body. It must be none,
+	// client_secret_basic or client_secret_post, and one of the upstream's
+	// advertised methods when the upstream advertises any.
+	//
+	// A cached registration made with a different method is replaced with
+	// a new registration on the next resolve, whatever RegistrationProbe
+	// says. A registration response that names a different method is
+	// refused, and so is a resolution that still names one, such as a row
+	// a replica on an older configuration stored first.
+	TokenEndpointAuthMethod string
 
 	// CodeChallengeMethodsSupported lists the PKCE challenge methods the
 	// upstream advertises. Only consulted when RegistrationEndpoint is set;

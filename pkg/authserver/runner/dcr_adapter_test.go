@@ -67,29 +67,41 @@ func TestConsumeResolution_FillsMissingEndpoints(t *testing.T) {
 	assert.Equal(t, "https://discovered/token", rc.TokenEndpoint)
 }
 
-// TestConsumeResolution_ClearsDCRConfig pins the contract that
-// consumeResolution clears DCRConfig on the returned run-config copy
-// after writing the resolved ClientID. Without this,
-// OAuth2UpstreamRunConfig.Validate (run by buildPureOAuth2Config
-// downstream) trips its ClientID-xor-DCRConfig rule on the resolved copy
-// and rejects the upstream at boot.
-func TestConsumeResolution_ClearsDCRConfig(t *testing.T) {
+// TestConsumeResolution_ClearsDCRFields pins the contract that
+// consumeResolution clears DCRConfig and TokenEndpointAuthMethod on the
+// returned run-config copy after writing the resolved ClientID. Without
+// this, OAuth2UpstreamRunConfig.Validate (run by buildPureOAuth2Config
+// downstream) rejects the resolved copy at boot: a set DCRConfig trips its
+// ClientID-xor-DCRConfig rule, and a configured confidential method with no
+// DCRConfig and no secret source reads as a client without a secret. The
+// resolution's method reaches the built config through
+// applyResolutionToOAuth2Config instead.
+func TestConsumeResolution_ClearsDCRFields(t *testing.T) {
 	t.Parallel()
 
 	rc := authserver.OAuth2UpstreamRunConfig{
+		AuthorizationEndpoint:   "https://idp.example.com/authorize",
+		TokenEndpoint:           "https://idp.example.com/token",
+		RedirectURI:             "https://as.example.com/oauth/callback",
+		TokenEndpointAuthMethod: "client_secret_post",
 		DCRConfig: &authserver.DCRUpstreamConfig{
 			RegistrationEndpoint: "https://idp.example.com/register",
 		},
 	}
 	res := &dcr.Resolution{
-		ClientID: "dcr-issued-client",
+		ClientID:                "dcr-issued-client",
+		TokenEndpointAuthMethod: "client_secret_post",
 	}
 
-	rc = consumeResolution(rc, res)
+	resolved := consumeResolution(rc, res)
 
-	assert.Equal(t, "dcr-issued-client", rc.ClientID)
-	assert.Nil(t, rc.DCRConfig,
+	assert.Equal(t, "dcr-issued-client", resolved.ClientID)
+	assert.Nil(t, resolved.DCRConfig,
 		"consumeResolution must clear DCRConfig so the resolved copy satisfies the ClientID-xor-DCRConfig invariant")
+	assert.Empty(t, resolved.TokenEndpointAuthMethod,
+		"consumeResolution must clear the method; the resolution carries it to the built config")
+	require.NoError(t, resolved.Validate(), "the resolved copy must pass the validation buildPureOAuth2Config runs")
+	assert.Equal(t, "client_secret_post", rc.TokenEndpointAuthMethod, "the caller's copy must be unchanged")
 }
 
 // TestConsumeResolution_DoesNotOverwritePreProvisionedClientID verifies
@@ -285,6 +297,7 @@ func TestNewDCRRequest(t *testing.T) {
 		wantCAFilePath         string
 		wantRotationKey        string
 		wantRegistrationProbe  dcr.RegistrationProbe
+		wantAuthMethod         string
 	}{
 		{
 			name: "discovery_url branch resolves file-based initial access token",
@@ -367,6 +380,23 @@ func TestNewDCRRequest(t *testing.T) {
 			wantRegistrationProbe: dcr.ProbeAuthorizationEndpoint,
 		},
 		{
+			// Pins the TokenEndpointAuthMethod copy onto dcr.Request: without
+			// it the client would register with the method the resolver
+			// prefers, which is the one the operator configured away from.
+			name: "token_endpoint_auth_method propagates from run-config",
+			rc: &authserver.OAuth2UpstreamRunConfig{
+				Scopes:                  []string{"openid"},
+				TokenEndpointAuthMethod: "client_secret_post",
+				DCRConfig: &authserver.DCRUpstreamConfig{
+					RegistrationEndpoint: "https://idp.example.com/register",
+				},
+			},
+			localIssuer:      "https://thv.example.com",
+			wantIssuer:       "https://thv.example.com",
+			wantRegistration: "https://idp.example.com/register",
+			wantAuthMethod:   "client_secret_post",
+		},
+		{
 			name:        "nil run-config rejected",
 			rc:          nil,
 			localIssuer: "https://thv.example.com",
@@ -392,6 +422,7 @@ func TestNewDCRRequest(t *testing.T) {
 			assert.Equal(t, tc.wantCAFilePath, req.CAFilePath)
 			assert.Equal(t, tc.wantRotationKey, req.RotationKey)
 			assert.Equal(t, tc.wantRegistrationProbe, req.RegistrationProbe)
+			assert.Equal(t, tc.wantAuthMethod, req.TokenEndpointAuthMethod)
 		})
 	}
 }

@@ -348,8 +348,11 @@ func TestRefreshTokenHandlerInternalFailureIsGeneric(t *testing.T) {
 			leaks:    []string{"kid-42"},
 		},
 		{
-			name:  "details hook error",
-			setup: func(t *testing.T, h *RefreshTokenHandler, _ *fakeGrantStore) { h.registry = failingRegistry(t) },
+			name: "details hook error",
+			setup: func(t *testing.T, h *RefreshTokenHandler, _ *fakeGrantStore) {
+				t.Helper()
+				h.registry = failingRegistry(t)
+			},
 			leaks: []string{"internal detail"},
 		},
 	}
@@ -445,7 +448,7 @@ func TestRefreshTokenFactoryClosure(t *testing.T) {
 			configure: func(c *server.AuthorizationServerConfig) { c.SigningJWKS = nil },
 			wantErr:   "JWKS must not be nil"},
 		{name: "no access token issuer", strategy: fakeRefreshStrategy{},
-			configure: func(c *server.AuthorizationServerConfig) { c.Config.AccessTokenIssuer = "" },
+			configure: func(c *server.AuthorizationServerConfig) { c.AccessTokenIssuer = "" },
 			wantErr:   "issuer must not be empty"},
 		{name: "valid", strategy: fakeRefreshStrategy{}},
 	}

@@ -21,6 +21,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/events"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -3033,6 +3034,93 @@ func TestBuildCABundlePathMap(t *testing.T) {
 			result, err := r.buildCABundlePathMap(t.Context(), "default", tt.typedWorkloads)
 			require.NoError(t, err)
 			assert.Equal(t, tt.expectedMap, result)
+		})
+	}
+}
+
+// The ConfigMap is rebuilt on every reconcile, so embedding-service warnings
+// must fire once per spec change rather than once per loop.
+func TestEmbeddingServiceWarningsEmitOncePerGeneration(t *testing.T) {
+	t.Parallel()
+
+	const (
+		namespace = "default"
+		manualURL = "http://manual-embedding.default.svc.cluster.local:8080"
+		refName   = "shared-embedding"
+		refURL    = "http://shared-embedding.default.svc.cluster.local:9090"
+	)
+
+	drainEvents := func(recorder *events.FakeRecorder) []string {
+		var emitted []string
+		for {
+			select {
+			case event := <-recorder.Events:
+				emitted = append(emitted, event)
+			default:
+				return emitted
+			}
+		}
+	}
+
+	tests := []struct {
+		name    string
+		vmcp    *mcpv1beta1.VirtualMCPServer
+		objects []client.Object
+		config  *vmcpconfig.Config
+		reason  string
+	}{
+		{
+			name: "manual embedding service without a ref",
+			vmcp: v1beta1test.NewVirtualMCPServer("manual-embedding", namespace),
+			config: &vmcpconfig.Config{
+				Optimizer: &vmcpconfig.OptimizerConfig{EmbeddingService: manualURL},
+			},
+			reason: "EmbeddingServiceManual",
+		},
+		{
+			name: "ref overrides a manual embedding service",
+			vmcp: v1beta1test.NewVirtualMCPServer("ref-embedding", namespace,
+				v1beta1test.WithVMCPEmbeddingServerRef(refName)),
+			objects: []client.Object{
+				v1beta1test.NewEmbeddingServer(refName, namespace,
+					v1beta1test.WithEmbeddingStatus(mcpv1beta1.EmbeddingServerStatus{URL: refURL}),
+				),
+			},
+			config: &vmcpconfig.Config{
+				Optimizer: &vmcpconfig.OptimizerConfig{EmbeddingService: manualURL},
+			},
+			reason: "EmbeddingServiceOverridden",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			// The spec changed since the last observed generation.
+			tt.vmcp.Generation = 2
+			tt.vmcp.Status.ObservedGeneration = 1
+
+			recorder := events.NewFakeRecorder(10)
+			r, _ := newTestVirtualMCPServerReconciler(t, tt.objects...)
+			r.Recorder = recorder
+
+			require.NoError(t, r.populateOptimizerEmbeddingService(t.Context(), tt.vmcp, tt.config))
+			emitted := drainEvents(recorder)
+			require.Len(t, emitted, 1, "a spec change should warn once")
+			assert.Contains(t, emitted[0], tt.reason)
+
+			// The reconcile applies status, so a rebuild of the same ConfigMap
+			// at the same generation must stay silent.
+			tt.vmcp.Status.ObservedGeneration = tt.vmcp.Generation
+			require.NoError(t, r.populateOptimizerEmbeddingService(t.Context(), tt.vmcp, tt.config))
+			assert.Empty(t, drainEvents(recorder), "an unchanged spec must not warn again")
+
+			// A later spec change bumps the generation, so the warning is news
+			// again.
+			tt.vmcp.Generation++
+			require.NoError(t, r.populateOptimizerEmbeddingService(t.Context(), tt.vmcp, tt.config))
+			assert.Len(t, drainEvents(recorder), 1)
 		})
 	}
 }

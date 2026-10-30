@@ -32,15 +32,17 @@ even though the JWK specification makes the member optional.
 
 RFC 8693 is reachable through a pre-provisioned **delegate client**. A delegate
 client is a confidential client registered when the embedded authorization server
-starts. It is limited to the token-exchange grant and authenticates at
-`/oauth/token` with `client_secret_basic` or `client_secret_post`.
+starts. By default it is limited to the token-exchange grant and authenticates at
+`/oauth/token` with `client_secret_basic` or `client_secret_post`. See
+[Configured client metadata](#configured-client-metadata) to change either.
 
 ### RunConfig
 
 `RunConfig.delegate_clients` is the portable runtime configuration surface. Each
 client must name a unique `client_id`, a secret **reference**, one or more scopes,
-and one or more audiences. The grant type is fixed internally to
-`urn:ietf:params:oauth:grant-type:token-exchange` and is not configurable.
+and one or more audiences. The grant type defaults to
+`urn:ietf:params:oauth:grant-type:token-exchange`; see
+[Configured client metadata](#configured-client-metadata) for the other options.
 Scopes must be a subset of `scopes_supported` (or the default supported OIDC
 scopes when that field is omitted), and audiences must be a subset of
 `allowed_audiences`. These required narrowing lists prevent a delegate client
@@ -223,7 +225,9 @@ upstream-derived claims.
 The CRD accepts Secret references only: no plaintext secret, redirect URI, or
 arbitrary grant selection is available. A non-empty `clientSecretRef.name` and
 `.key`, at least one scope, and at least one audience are required. Delegate
-clients require an HTTPS issuer at admission.
+clients require an HTTPS issuer at admission. Every delegate client, including
+`private_key_jwt` ones, counts as confidential for the cleartext-transport rule,
+in both the CRD and the RunConfig/`Config` validation paths.
 
 `trustedIssuers` is exposed the same way, on the same shared
 `EmbeddedAuthServerConfig`, and converts directly to `[]tokenexchange.TrustedIssuer`
@@ -273,14 +277,15 @@ Both `/.well-known/oauth-authorization-server` and
 (`Config.DisableTokenExchange`, `AuthorizationServerConfig.TokenExchangeEnabled`)
 — the same flag governs both registration with fosite and discovery
 advertisement, so they cannot drift out of sync. `token_endpoint_auth_methods_supported` always
-includes `none`; it also includes `client_secret_basic` and
-`client_secret_post` when confidential DCR is enabled or a static delegate
-client is configured, and includes `private_key_jwt` when
-`allowPrivateKeyJWTRegistration` is enabled. In the latter case,
-`token_endpoint_auth_signing_alg_values_supported` lists the implemented
-algorithms. The RFC 7523 §2.1 JWT-bearer grant is advertised only when a trusted
-issuer opts into it. A private-key JWT DCR client is limited to token exchange;
-it is not an authorization-code client.
+includes `none`. It also includes `client_secret_basic` and
+`client_secret_post` when confidential DCR is enabled or a configured delegate
+client authenticates with a secret, so a deployment whose delegate clients all
+use `private_key_jwt` does not advertise them. It includes `private_key_jwt`, together with
+`token_endpoint_auth_signing_alg_values_supported` (the implemented algorithms),
+when `allowPrivateKeyJWTRegistration` is enabled or a configured delegate client
+uses `private_key_jwt`. The RFC 7523 §2.1 JWT-bearer grant is advertised only
+when a trusted issuer opts into it. A private-key JWT DCR client is limited to
+token exchange; it is not an authorization-code client.
 
 On Kubernetes, a delegate-client Secret is injected as a pod environment
 variable and is resolved when the authorization server starts. Updating that
@@ -288,9 +293,10 @@ Secret does not change the environment of an already running pod. The operator
 has no delegate-client Secret watch or automatic rollout for this feature, so
 restart or otherwise roll out the workload after rotating the secret.
 
-Changing a delegate client's scopes or audiences works the same way. The new
-values replace the stored client row when the server restarts. On Redis, with
-more than one replica, a rolling update can briefly serve either policy. See
+Changing a delegate client's scopes, audiences, grant types, redirect URIs or
+token endpoint auth method works the same way. The new values replace the
+stored client row when the server restarts. On Redis, with more than one
+replica, a rolling update can briefly serve either policy. See
 [Auth Server Storage](11-auth-server-storage.md#configured-clients-across-restarts).
 
 ## Secretless DCR delegate flow
@@ -377,7 +383,8 @@ array with more than one value that contains the issuer. Both are deprecated. A
 later release will require the issuer as the sole value.
 
 This applies to every `private_key_jwt` client. Inbound `private_key_jwt`
-clients come only from Dynamic Client Registration. The `aud` checks on
+clients come from Dynamic Client Registration and from configured delegate
+clients. The `aud` checks on
 RFC 7523 JWT-bearer and ID-JAG assertions, and on SPIFFE JWT-SVID client
 authentication, are unchanged.
 
@@ -400,7 +407,9 @@ external-issuer authorization and — when it matches — sets
 `ValidatedClaims.ExternalActorAuthorized` (and `ValidatedClaims.ExternalActor`
 when the allowlist path resolved an actor claim). `checkDelegationConsent`
 (`pkg/authserver/server/tokenexchange/handler.go`) runs afterwards and decides
-whether to grant the exchange, in this order:
+whether to grant the exchange, in this order. For a configured delegate client
+with a `token_exchange` block, `checkSourcePolicy` runs before all of these
+(see [Source policy and API audience](#source-policy-and-api-audience)):
 
 1. **`may_act` (RFC 8693 §4.4).** A trusted issuer must explicitly set
    `allow_may_act: true` before its well-formed `may_act` claim is considered.
@@ -457,8 +466,13 @@ whether to grant the exchange, in this order:
    client (`Handler.configuredDelegateClients`, sourced from
    `Config.DelegateClients`), in which case the binding is skipped and any
    self-issued subject token is accepted regardless of which client it was
-   originally issued to. This exception applies only on the self-issued path
-   (`ExternalIssuer == ""`); a delegate client presenting an externally-issued
+   originally issued to. The exception is narrower for a delegate client whose
+   `token_exchange.self_issued_subject_tokens` is `restricted`:
+   `checkSourcePolicy` has already limited it to tokens issued to itself or to
+   its `allowed_source_clients` (see [Source policy and API
+   audience](#source-policy-and-api-audience)). This exception applies only on
+   the self-issued path (`ExternalIssuer == ""`); a delegate client presenting
+   an externally-issued
    token with a mismatched `client_id` is still rejected here.
 4. **No binding.** If none of the above apply, the token carries no
    verifiable client binding and the exchange is rejected.
@@ -504,9 +518,10 @@ until a real ID-token validation profile is implemented.
 
 ### Delegate clients and self-issued token exchange
 
-A configured delegate client can convert *any* self-issued ToolHive access
-token it can obtain — for any user, regardless of which client originally
-obtained that token — into a delegated token asserting that user's `sub`.
+A configured delegate client in `any` mode, or without a `token_exchange`
+block, can convert *any* self-issued ToolHive access token it can obtain — for
+any user, regardless of which client originally obtained that token — into a
+delegated token asserting that user's `sub`.
 This is an intentional blanket-trust model, not an oversight: delegate
 clients are declared by the operator at server startup (`RunConfig`/CRD),
 not obtained through self-service registration, so the same trust already
@@ -517,8 +532,12 @@ client.
 The relaxation is bounded the same way every other exchange is: `grantScopes`
 and `grantAndBoundAudiences`'s `ensureAudienceSubsetOfSubject` still narrow
 the delegated token to what both the delegate client and the subject token
-are authorized for, and the delegated token's lifetime is still capped by
-`min(subject token's remaining lifetime, configured delegationLifespan)`.
+are authorized for, with one exception: a restricted client's `api_audience`
+may be granted without subject-token coverage when the subject token is
+self-issued and not derived from an external identity (see [Source policy
+and API audience](#source-policy-and-api-audience)). The delegated token's
+lifetime is still capped by `min(subject token's remaining lifetime,
+configured delegationLifespan)`.
 It is **not** bounded by per-`jti` single-use enforcement — there is none in
 this codebase today, for any token-exchange path, self-issued or external
 (see the `Handler` doc comment in `handler.go` for why: replay is bounded by
@@ -533,7 +552,9 @@ The stored row is not deleted. Access tokens already issued to the client stay
 valid until they expire. Self-issued subject tokens whose `client_id` is the
 removed client can still be exchanged by other configured delegates until those
 subject tokens expire, because the exchange checks the subject token's own
-claims and does not look the original client up again. A binary without client
+claims and does not look the original client up again. A delegate client with
+`self_issued_subject_tokens: restricted` refuses those tokens unless the removed
+client is listed in its `allowed_source_clients`. A binary without client
 admission still honors the stored row.
 
 Admission is per replica. A newly added delegate is served reliably only once
@@ -546,6 +567,170 @@ being made," with no requirement that the token be validated against the
 identity of the client presenting it as `subject_token`. Applying a
 client-authentication-based policy on top of that — as this exception does —
 is within the authorization server's discretion as the token-exchange STS.
+
+### Configured client metadata
+
+A delegate client can declare more than a secret. All fields below are
+optional; a client that sets none of them is the same client as before.
+
+| Field | Meaning |
+|---|---|
+| `token_endpoint_auth_method` | Omitted: the client authenticates with its secret by HTTP Basic or form body. `client_secret_basic` or `client_secret_post` pins one of them. `private_key_jwt` authenticates with a signed assertion instead of a secret. |
+| `jwks_file` | Path to the client's public JWKS. Required for `private_key_jwt`, forbidden otherwise. Each key must have `use: sig`. Private and symmetric keys are rejected, at most 10 keys are allowed, and the keys must match `token_endpoint_auth_signing_alg` (default `RS256`). When the file holds more than one key, every key must have a unique, non-empty `kid`, and the client must send the `kid` of its signing key in the assertion header: fosite checks an assertion that has no `kid` only against the first signing key of the matching type, so a key added during a rotation would never be used otherwise. The `kid` rule is checked when the keys are loaded at startup, not when `RunConfig` is validated. |
+| `grant_types` | Omitted or empty means token exchange only. When set, the list must include token exchange. The other allowed values are `authorization_code`, `refresh_token` and the JWT-bearer grant. `refresh_token` is allowed only together with `authorization_code`. A client that sets `grant_types` must also declare a `token_exchange` block with `self_issued_subject_tokens` (see [Source policy and API audience](#source-policy-and-api-audience)). |
+| `redirect_uris` | Required with `authorization_code`, forbidden without it. Each URI must be https and not loopback, as for any other confidential client. |
+
+A delegate's `audiences` limit what it may request. List the narrowest
+audience the client needs: with the default path-prefix strategy, an audience
+such as `https://h/` covers every child path that is also in the server's
+`allowed_audiences` (see "Grants and audiences" below).
+
+One validator in the `registration` package checks these fields. It runs when
+`RunConfig` is validated (with the JWKS contents still unloaded) and when the
+client is built (with the keys loaded). The built client is never marked as
+DCR-issued, so it has no TTL and does not count against `max_dcr_clients`.
+
+At startup the runner reads each `jwks_file` next to the existing
+`client_secret_file` handling, so rotating a key means replacing the file and
+restarting. The stored client keeps its `client_id`; the new key set replaces
+the old one. Discovery lists the client authentication methods as described in
+[Discovery and secret rotation](#discovery-and-secret-rotation). The
+cleartext-transport rule is separate: every delegate client, `private_key_jwt`
+ones included, counts as confidential there.
+
+The server builds each configured delegate client in memory and checks it as
+consent-exempt before it writes the client. A configured login client can
+therefore be listed in `WithConsentExemptClientIDs`, and a bad ID aborts startup
+without leaving delegate rows in storage. When an ID names both a configured
+delegate and a stored row, the delegate as built is the one checked.
+
+`/authorize` treats every client without the `authorization_code` grant as
+back-channel only and answers `invalid_client`, as it does for an unknown
+client, so the response does not show whether such a client exists. RFC 6749
+section 4.1.2.1 would use `unauthorized_client` for a known client; the server
+returns `invalid_client` deliberately. A client that holds `authorization_code`
+in addition to other grants can log users in.
+
+#### Grants and audiences
+
+- **Client audiences.** `/authorize` refuses a `resource` that the client may
+  not request, with `invalid_target`. A `resource` that is omitted defaults to
+  the server's sole allowed audience and is checked the same way. The check
+  applies to every client, including dynamically registered and CIMD clients.
+  It uses the client's own `audiences`, or its resource allowlist for SPIFFE
+  clients, and the server's configured audience matching strategy (fosite's
+  path-prefix strategy by default), which is the rule the authorization code
+  callback and the refresh grant already apply to a client's audiences. For a
+  client without a separate resource list, a request the check accepts therefore
+  cannot fail the callback's audience check later, and a client with no
+  audiences, which could never complete the callback, fails at `/authorize`
+  with `invalid_target`, before the upstream login. The server-level and the
+  client-level refusal return the same error text, so an unauthenticated caller
+  cannot tell which of the two refused a resource. (SPIFFE clients, which keep
+  a resource list, are token-exchange only and never reach `/authorize`.) The
+  default strategy compares scheme and host exactly and accepts a path that
+  equals the client's audience path or extends it at a segment boundary
+  (`https://api.example.com/v1` matches an audience of
+  `https://api.example.com`, but `/v1x` does not match `/v1`). The resource must still be an exact member of the server's allowed
+  audiences, which is checked first. The RFC 8693 `resource` check uses the
+  same strategy. Code redemption reuses the audience bound at `/authorize`, and
+  refresh is enforced by fosite.
+- **Dynamically registered clients.** A DCR client keeps the audience list the
+  server had when it registered, and that list is never refreshed. After an
+  operator adds an audience, an existing DCR client that asks for it gets
+  `invalid_target` at `/authorize`, before the upstream login. The client has to
+  register again to use the new audience.
+- **ID-JAG redemption.** The `resource` of an ID-JAG gets the same client
+  check, except for DCR and CIMD clients, which are not narrowed. They hold a
+  copy of the server's allowed audiences taken at registration, not a
+  per-client policy, so checking them adds nothing while the copy is current
+  and would wrongly refuse an audience added since. The resource must still be
+  an exact member of the server's allowed audiences. Every other client is
+  checked, so a client with no audiences, or an empty resource allowlist,
+  permits nothing. A client that sets `grant_types` explicitly must also list
+  the JWT-bearer grant, or the redemption fails with `unauthorized_client`. A
+  client that omits `grant_types` is stored with token exchange alone but is
+  not gated, for backward compatibility. The plain JWT-bearer grant is not
+  gated this way, because it can run without client authentication.
+
+#### Source policy and API audience
+
+A delegate client can carry a `token_exchange` block:
+
+```yaml
+token_exchange:
+  self_issued_subject_tokens: restricted
+  allowed_source_clients: [tui-client-id]
+  api_audience: https://api.example.com
+```
+
+`self_issued_subject_tokens` selects the trust rule for self-issued subject
+tokens. It is required whenever the block is present; a block without it,
+including an empty `token_exchange: {}`, fails validation. It has two values:
+
+- **`restricted`.** The blanket trust ends. A self-issued subject token must
+  carry a `client_id` equal to the client itself or to one of
+  `allowed_source_clients`. With an empty or absent list, the client accepts
+  only tokens issued to itself. A token issued to any other client is refused
+  with `invalid_grant`. This check runs before the `may_act` consent check, so
+  it also narrows `may_act`: a token whose `may_act` names this client is still
+  refused when the client it was issued to is not listed. If the token passes
+  and also carries `may_act`, `may_act.sub` must match the resolved actor as
+  well: the `actor_token` subject when one is supplied, otherwise the
+  authenticated client ID. The source check itself always uses the
+  authenticated client. Both checks must pass and neither overrides the other.
+- **`any`.** The client keeps the blanket trust described above: it may
+  exchange any self-issued subject token. The startup WARN is logged with
+  `explicit_any=true` when the client also sets `grant_types`.
+
+The block may be omitted only when the client's `grant_types` is omitted or
+empty. Such a client behaves as `any` and logs the startup WARN; when a
+trusted issuer has the JWT-bearer grant enabled, the WARN carries
+`redeems_id_jag=true`, because the client can also redeem an ID-JAG and so
+mint its own self-issued tokens. A client that sets `grant_types` must
+declare the block and the mode, so a client written for the newer metadata
+never falls back to blanket trust because a block was dropped. A client with
+`restricted` logs no startup WARN.
+
+**External-issuer subject tokens** are never governed by
+`self_issued_subject_tokens`, in either mode. The trusted issuer's policy
+(`allowed_actors`, `actor_matcher`, `may_act`, and `allowed_delegate_clients`
+naming this client) decides them.
+
+`allowed_source_clients` and `api_audience` are valid only with
+`restricted`; setting either with `any` fails validation.
+
+`allowed_source_clients` holds `client_id` values as they appear in the subject
+token. They are user-facing clients such as a TUI, which register at
+runtime (DCR or CIMD), so startup cannot check that they exist. A configured
+delegate client cannot be listed: a token it obtains carries the delegate's
+own `client_id`, so listing it would trust everything that delegate accepts.
+The list has at most 20 entries, with no duplicates and no `*` wildcard. A
+client cannot list its own `client_id` (validation rejects it, because its own
+tokens are always accepted). A DCR `client_id` is a poor fit for this list: the
+server generates it, and it changes when the registration expires and the
+client registers again.
+
+`api_audience` is the client's own API audience. It must be one of the
+client's `audiences` (and so one of `allowed_audiences`). The client can
+request it even when the subject token does not cover it. This applies to
+self-issued subject tokens only; an external-issuer token must cover every
+audience, as before. The exception also does not apply to a token derived from
+an external-issuer token: a self-issued token that carries an `external_issuer`
+claim, as a re-exchange of an external token does, is bound by its own audience
+too. So is a self-issued token minted by redeeming an ID-JAG or a JWT-bearer
+assertion: its subject has the `issuer#subject` form, which marks it as derived
+from an external identity even without an `external_issuer` claim. Every
+other granted audience must still be covered by the subject token.
+
+Policy edits take effect on restart. The policy is built once at startup and
+is not stored with the client.
+
+**User-facing change.** A delegate client with `self_issued_subject_tokens:
+restricted` stops accepting every self-issued token. It accepts only tokens
+issued to itself and to its listed source clients. A delegate client without
+`grant_types` and without the block behaves as before. A client that sets
+`grant_types` must now declare the block and the mode.
 
 ### Worked example
 
@@ -943,7 +1128,9 @@ Where the two differ is the trust model — the ID-JAG handler is **bound**:
   A public client suffices here because the assertion itself is the primary
   credential: single-use, short-lived, and audience-pinned to this AS. The
   client's registered `grant_types` metadata is deliberately not consulted —
-  with open DCR, self-asserted metadata authorizes nothing.
+  with open DCR, self-asserted metadata authorizes nothing. The exception is an
+  operator-configured client that sets `grant_types` explicitly: those grants
+  are operator policy, so they are enforced.
 - **`jti` is required.** The draft requires it, and it is what makes the
   assertion single-use; there is no assertion-hash fallback like the plain
   handler's. Replay consumption uses its own purpose (`"id-jag"`,
@@ -1065,9 +1252,9 @@ containers.
 **Check order.** Fosite authenticates the client. The handler then checks for a
 public client, the grant type and the required parameters. Next come the
 repeated-value rejection and shape parsing, then the `requested_token_type`,
-subject token, actor, delegation consent, scope and audience checks. Then each
-type's `Grant` hook runs once, with all of that type's entries and the request
-context. After the hooks, the handler still builds the `act` claim and checks
+subject token, actor, source policy (restricted delegate clients), delegation
+consent, scope and audience checks. Then each type's `Grant` hook runs once,
+with all of that type's entries and the request context. After the hooks, the handler still builds the `act` claim and checks
 the subject token's remaining lifetime, and either can fail the request before
 the token is issued. Token issuance comes last, so hooks are decide-only: a hook
 may read state but must not commit it, because the request can still fail after
@@ -1122,7 +1309,7 @@ registry, err := authorizationdetails.New(map[string]authorizationdetails.Type{
 
 ## Implementation
 
-- `pkg/authserver/server/tokenexchange/handler.go` — `checkDelegationConsent`, `grantScopes`, `grantAndBoundAudiences`
+- `pkg/authserver/server/tokenexchange/handler.go` — `checkSourcePolicy`, `ConfiguredClientPolicy`, `checkDelegationConsent`, `grantScopes`, `grantAndBoundAudiences`, `externalOrigin`
 - `pkg/authserver/server/tokenexchange/multi_issuer_validator.go` — `MultiIssuerTokenValidator`, `TrustedIssuer`, `resolveActorAuthorization`, `ValidateJWKSURL`
 - `pkg/authserver/server/tokenexchange/validator.go` — `assignClaim`, `buildValidatedClaims`, `validateMayActShape`, `scpToScopeString`
 - `pkg/authserver/config.go` — `DelegateClientRunConfig`, delegate-client validation, `validateTrustedIssuerURL`, `validateJWKSEndpointURL`, `validateTrustedIssuers`, `warnTrustedIssuerAudiences`

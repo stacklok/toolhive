@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/alicebob/miniredis/v2"
+	josev3 "github.com/go-jose/go-jose/v3"
 	"github.com/ory/fosite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -1462,7 +1463,7 @@ func TestBuildUpstreamConfigs_CopiesDisplayName(t *testing.T) {
 				t.Parallel()
 				rc := rc
 				rc.DisplayName = displayName
-				got, err := buildUpstreamConfigs(context.Background(), []authserver.UpstreamRunConfig{rc},
+				got, _, err := buildUpstreamConfigs(context.Background(), []authserver.UpstreamRunConfig{rc},
 					"http://localhost:8080", newMemoryDCRStore(t), false)
 				require.NoError(t, err)
 				require.Len(t, got, 1)
@@ -2956,7 +2957,7 @@ func TestBuildUpstreamConfigs_DCR(t *testing.T) {
 		}
 
 		store := newMemoryDCRStore(t)
-		got, err := buildUpstreamConfigs(context.Background(), cfg.Upstreams, cfg.Issuer, store, false)
+		got, _, err := buildUpstreamConfigs(context.Background(), cfg.Upstreams, cfg.Issuer, store, false)
 		require.NoError(t, err)
 		require.Len(t, got, 1)
 
@@ -3023,7 +3024,7 @@ func TestBuildUpstreamConfigs_DCR(t *testing.T) {
 		store := newMemoryDCRStore(t)
 
 		// First call: populates the store.
-		_, err := buildUpstreamConfigs(context.Background(), cfg.Upstreams, cfg.Issuer, store, false)
+		_, _, err := buildUpstreamConfigs(context.Background(), cfg.Upstreams, cfg.Issuer, store, false)
 		require.NoError(t, err)
 		firstCallRequests := atomic.LoadInt32(requestCount)
 		require.Greater(t, firstCallRequests, int32(0),
@@ -3032,7 +3033,7 @@ func TestBuildUpstreamConfigs_DCR(t *testing.T) {
 		// Second call: must reuse the cache. Its only HTTP request is the
 		// token-endpoint verification of the cached client, which the mock
 		// AS answers with a non-OAuth 404, so the cached client is kept.
-		got, err := buildUpstreamConfigs(context.Background(), cfg.Upstreams, cfg.Issuer, store, false)
+		got, _, err := buildUpstreamConfigs(context.Background(), cfg.Upstreams, cfg.Issuer, store, false)
 		require.NoError(t, err)
 		require.Len(t, got, 1)
 		assert.Equal(t, "dcr-client-id", got[0].OAuth2Config.ClientID)
@@ -3937,11 +3938,24 @@ func TestResolveDelegateClients(t *testing.T) {
 	t.Setenv("TEST_DELEGATE_SECRET", "env-secret")
 	t.Setenv("TEST_EMPTY_DELEGATE_SECRET", "")
 
+	dir := t.TempDir()
+	badJWKSFile := filepath.Join(dir, "bad.jwks")
+	require.NoError(t, os.WriteFile(badJWKSFile, []byte("not json"), 0600))
+	jwksKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	jwksJSON, err := json.Marshal(josev3.JSONWebKeySet{Keys: []josev3.JSONWebKey{{
+		Key: &jwksKey.PublicKey, KeyID: "delegate-key", Algorithm: "ES256", Use: "sig",
+	}}})
+	require.NoError(t, err)
+	goodJWKSFile := filepath.Join(dir, "good.jwks")
+	require.NoError(t, os.WriteFile(goodJWKSFile, jwksJSON, 0600))
+
 	tests := []struct {
-		name    string
-		clients []authserver.DelegateClientRunConfig
-		want    string
-		wantErr string
+		name     string
+		clients  []authserver.DelegateClientRunConfig
+		want     string
+		wantKeys int
+		wantErr  string
 	}{
 		{
 			name: "file takes precedence and is trimmed",
@@ -3979,6 +3993,30 @@ func TestResolveDelegateClients(t *testing.T) {
 			clients: []authserver.DelegateClientRunConfig{{ClientID: "delegate", ClientSecretEnvVar: "TEST_EMPTY_DELEGATE_SECRET"}},
 			wantErr: "is not set",
 		},
+		{
+			name: "private_key_jwt with missing jwks file is rejected",
+			clients: []authserver.DelegateClientRunConfig{{
+				ClientID: "delegate", TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodPrivateKeyJWT,
+				JWKSFile: filepath.Join(dir, "missing.jwks"),
+			}},
+			wantErr: "failed to read jwks file",
+		},
+		{
+			name: "private_key_jwt with malformed jwks file is rejected",
+			clients: []authserver.DelegateClientRunConfig{{
+				ClientID: "delegate", TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodPrivateKeyJWT,
+				JWKSFile: badJWKSFile,
+			}},
+			wantErr: "failed to parse jwks file",
+		},
+		{
+			name: "private_key_jwt loads keys and ignores secret references",
+			clients: []authserver.DelegateClientRunConfig{{
+				ClientID: "delegate", TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodPrivateKeyJWT,
+				JWKSFile: goodJWKSFile, ClientSecretEnvVar: "TEST_DELEGATE_SECRET",
+			}},
+			wantKeys: 1,
+		},
 	}
 
 	for _, tt := range tests {
@@ -3996,14 +4034,44 @@ func TestResolveDelegateClients(t *testing.T) {
 			require.NoError(t, err)
 			require.Len(t, got, 1)
 			assert.Equal(t, tt.want, got[0].ClientSecret)
+			if tt.wantKeys > 0 {
+				require.NotNil(t, got[0].JSONWebKeys)
+				assert.Len(t, got[0].JSONWebKeys.Keys, tt.wantKeys)
+			}
 		})
 	}
+}
+
+func TestResolveDelegateClients_CarriesExchangeRefreshTokens(t *testing.T) {
+	t.Setenv("TEST_DELEGATE_REFRESH_SECRET", "0123456789abcdef0123456789abcdef")
+
+	clients := []authserver.DelegateClientRunConfig{{
+		ClientID: "delegate", ClientSecretEnvVar: "TEST_DELEGATE_REFRESH_SECRET",
+		Scopes: []string{"openid"}, Audiences: []string{"https://mcp.example.com"},
+		TokenExchange: &authserver.DelegateClientTokenExchange{
+			SelfIssuedSubjectTokens: authserver.SelfIssuedSubjectTokensRestricted,
+			APIAudience:             "https://mcp.example.com",
+			ExchangeRefreshTokens: &authserver.DelegateClientExchangeRefreshTokens{
+				IDJAGMaxLifetime: "12h", RefreshTokenMaxLifetime: "720h",
+			},
+		},
+	}}
+
+	got, err := resolveDelegateClients(clients)
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	require.NotNil(t, got[0].TokenExchange)
+	require.NotNil(t, got[0].TokenExchange.ExchangeRefreshTokens)
+	assert.Equal(t, "12h", got[0].TokenExchange.ExchangeRefreshTokens.IDJAGMaxLifetime)
+	assert.Equal(t, "720h", got[0].TokenExchange.ExchangeRefreshTokens.RefreshTokenMaxLifetime)
 }
 
 func TestResolveDelegateClients_ClonesPermissions(t *testing.T) {
 	clients := []authserver.DelegateClientRunConfig{{
 		ClientID: "delegate", ClientSecretEnvVar: "TEST_DELEGATE_CLONE_SECRET",
 		Scopes: []string{"openid"}, Audiences: []string{"audience"},
+		GrantTypes:   []string{oauthproto.GrantTypeTokenExchange},
+		RedirectURIs: []string{"https://client.example/callback"},
 	}}
 	t.Setenv("TEST_DELEGATE_CLONE_SECRET", "secret")
 
@@ -4011,9 +4079,13 @@ func TestResolveDelegateClients_ClonesPermissions(t *testing.T) {
 	require.NoError(t, err)
 	clients[0].Scopes[0] = "changed"
 	clients[0].Audiences[0] = "changed"
+	clients[0].GrantTypes[0] = "changed"
+	clients[0].RedirectURIs[0] = "changed"
 
 	assert.Equal(t, "openid", resolved[0].Scopes[0])
 	assert.Equal(t, "audience", resolved[0].Audiences[0])
+	assert.Equal(t, oauthproto.GrantTypeTokenExchange, resolved[0].GrantTypes[0])
+	assert.Equal(t, "https://client.example/callback", resolved[0].RedirectURIs[0])
 }
 
 // TestCloseIdleConnectionsDelegates pins that the wrapper forwards to the

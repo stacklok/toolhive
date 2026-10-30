@@ -58,6 +58,7 @@ const (
 	removedClientSurvivorID  = "surviving-delegate"
 	removedClientSurvivorPwd = "surviving-delegate-secret-well-above-minimum-length"
 	removedClientRedirectURI = "http://127.0.0.1:9/callback"
+	removedLoginRedirectURI  = "https://login-client.example.com/callback"
 	removedClientUpstream    = "test-upstream"
 )
 
@@ -67,7 +68,10 @@ type removedClientKind int
 
 const (
 	// kindDelegate is a configured delegate: declared on the first start only.
-	// Served before the restart, refused after.
+	// Served before the restart, refused after. With login set it is a
+	// configured login client (a delegate that also has the browser grants and
+	// a redirect URI); with authMethod set its token endpoint auth method is
+	// pinned.
 	kindDelegate removedClientKind = iota
 	// kindEmbedder is a client an embedder writes with RegisterClient and never
 	// declares. Served before and after the restart.
@@ -83,6 +87,8 @@ const (
 type removedClientFixture struct {
 	name, id, secret string
 	kind             removedClientKind
+	login            bool
+	authMethod       string
 }
 
 func (f removedClientFixture) servedBefore() bool { return f.kind != kindLegacy }
@@ -90,10 +96,24 @@ func (f removedClientFixture) servedAfter() bool  { return f.kind == kindEmbedde
 
 // authCapable reports whether the client can run the authorization-code and
 // device flows, so "served" can be shown beyond the token endpoint.
-func (f removedClientFixture) authCapable() bool { return f.kind == kindEmbedder }
+func (f removedClientFixture) authCapable() bool { return f.kind == kindEmbedder || f.login }
+
+// redirectURI is the fixture's registered redirect URI; configured clients may
+// not use loopback HTTP, so the login client has its own.
+func (f removedClientFixture) redirectURI() string {
+	if f.login {
+		return removedLoginRedirectURI
+	}
+	return removedClientRedirectURI
+}
 
 var removedClientFixtures = []removedClientFixture{
 	{name: "delegate", id: "removed-delegate", secret: "removed-delegate-secret-well-above-minimum-length"},
+	{name: "login", id: "removed-login", secret: "removed-login-secret-well-above-minimum-length", login: true},
+	{
+		name: "pinned auth method", id: "removed-pinned", secret: "removed-pinned-secret-well-above-minimum-length",
+		authMethod: oauthproto.TokenEndpointAuthMethodClientSecretPost,
+	},
 	{name: "embedder", id: "embedder-client", secret: "embedder-client-secret-well-above-minimum-length", kind: kindEmbedder},
 	{name: "legacy", id: "removed-legacy", secret: "removed-legacy-secret-well-above-minimum-length", kind: kindLegacy},
 }
@@ -102,8 +122,8 @@ var removedClientFixtures = []removedClientFixture{
 // start and may seed state; after runs on the second start, once the delegate
 // has left the configuration, and must show each fixture served or refused as
 // its kind says. A probe with once set runs a single time with a zero fixture;
-// otherwise it runs for the delegate, and for every other fixture too when
-// forAll is set.
+// otherwise it runs for the delegates that cannot log in, and for every other
+// fixture too when forAll is set.
 type removalProbe struct {
 	name   string
 	covers []string
@@ -242,7 +262,7 @@ var removalProbes = []removalProbe{
 			t.Helper()
 			id, ok := state.(string)
 			require.True(t, ok, "before state is %T, not a client_id string", state)
-			resp := w.authorize(t, id)
+			resp := w.authorize(t, id, removedClientRedirectURI)
 			assert.Equal(t, http.StatusOK, resp.status, "a registered client must reach the consent page: %s", resp.raw)
 		},
 	},
@@ -250,10 +270,11 @@ var removalProbes = []removalProbe{
 
 // assertAuthorize checks the authorization endpoint: a served client that can
 // authorize reaches the consent page; a refused one gets invalid_client and no
-// code. A served delegate cannot authorize, so nothing is asserted for it.
+// code. A served delegate without the login grants cannot authorize, so nothing
+// is asserted for it.
 func assertAuthorize(t *testing.T, w *removedClientWorld, f removedClientFixture, served bool) {
 	t.Helper()
-	resp := w.authorize(t, f.id)
+	resp := w.authorize(t, f.id, f.redirectURI())
 	if served {
 		if f.authCapable() {
 			assert.Equal(t, http.StatusOK, resp.status, "a served client must reach the consent page: %s", resp.raw)
@@ -297,7 +318,7 @@ func TestRemovedClientsAreNotServedAfterRestart(t *testing.T) {
 				fixtures = []removedClientFixture{{}}
 			}
 			for _, f := range fixtures {
-				if f.kind != kindDelegate && !p.forAll {
+				if (f.kind != kindDelegate || f.login) && !p.forAll {
 					continue
 				}
 				key := p.name + "/" + f.id
@@ -514,11 +535,11 @@ func (w *removedClientWorld) start(t *testing.T, fixtures []removedClientFixture
 		RedisConfig: &storage.RedisRunConfig{Addr: w.mr.Addr(), KeyPrefix: removedClientKeyPrefix},
 	}
 
-	delegates := map[string]string{removedClientSurvivorID: removedClientSurvivorPwd}
+	delegates := []removedClientFixture{{id: removedClientSurvivorID, secret: removedClientSurvivorPwd}}
 	for _, f := range fixtures {
 		switch f.kind {
 		case kindDelegate:
-			delegates[f.id] = f.secret
+			delegates = append(delegates, f)
 		case kindEmbedder:
 			hashed, err := registration.SHA256Hasher.Hash(t.Context(), []byte(f.secret))
 			require.NoError(t, err)
@@ -535,12 +556,24 @@ func (w *removedClientWorld) start(t *testing.T, fixtures []removedClientFixture
 		}
 	}
 	dir := t.TempDir()
-	for id, secret := range delegates {
-		file := filepath.Join(dir, id)
-		require.NoError(t, os.WriteFile(file, []byte(secret), 0o600))
-		cfg.DelegateClients = append(cfg.DelegateClients, authserver.DelegateClientRunConfig{
-			ClientID: id, ClientSecretFile: file, Scopes: []string{"scope-a"}, Audiences: []string{delegateAudience},
-		})
+	for _, f := range delegates {
+		file := filepath.Join(dir, f.id)
+		require.NoError(t, os.WriteFile(file, []byte(f.secret), 0o600))
+		client := authserver.DelegateClientRunConfig{
+			ClientID: f.id, ClientSecretFile: file, Scopes: []string{"scope-a"}, Audiences: []string{delegateAudience},
+			TokenEndpointAuthMethod: f.authMethod,
+		}
+		if f.login {
+			client.GrantTypes = []string{
+				oauthproto.GrantTypeAuthorizationCode, oauthproto.GrantTypeRefreshToken,
+				oauthproto.GrantTypeTokenExchange, oauthproto.GrantTypeJWTBearer,
+			}
+			client.RedirectURIs = []string{f.redirectURI()}
+			client.TokenExchange = &authserver.DelegateClientTokenExchange{
+				SelfIssuedSubjectTokens: authserver.SelfIssuedSubjectTokensAny,
+			}
+		}
+		cfg.DelegateClients = append(cfg.DelegateClients, client)
 	}
 
 	embedded, err := authserverrunner.NewEmbeddedAuthServer(t.Context(), cfg)
@@ -617,11 +650,11 @@ func basicAuth(id, secret string) func(*http.Request) {
 	return func(r *http.Request) { r.SetBasicAuth(id, secret) }
 }
 
-func (w *removedClientWorld) authorize(t *testing.T, clientID string) removedClientResponse {
+func (w *removedClientWorld) authorize(t *testing.T, clientID, redirectURI string) removedClientResponse {
 	t.Helper()
 	sum := sha256.Sum256([]byte("removed-client-pkce-verifier-0123456789-0123456789"))
 	q := url.Values{
-		"response_type": {"code"}, "client_id": {clientID}, "redirect_uri": {removedClientRedirectURI},
+		"response_type": {"code"}, "client_id": {clientID}, "redirect_uri": {redirectURI},
 		"scope": {"scope-a"}, "state": {"state-value-0123456789"}, "resource": {delegateAudience},
 		"code_challenge": {base64.RawURLEncoding.EncodeToString(sum[:])}, "code_challenge_method": {"S256"},
 	}
@@ -640,11 +673,18 @@ func (w *removedClientWorld) tokenExchange(t *testing.T) removedClientResponse {
 	}, basicAuth(removedClientSurvivorID, removedClientSurvivorPwd))
 }
 
-// tokenRequest authenticates as the fixture at the token endpoint. A served
-// client gets a grant error for this empty exchange, never invalid_client.
+// tokenRequest authenticates as the fixture at the token endpoint, with the
+// method it pins. A served client gets a grant error for this empty exchange,
+// never invalid_client.
 func (w *removedClientWorld) tokenRequest(t *testing.T, f removedClientFixture) removedClientResponse {
 	t.Helper()
-	return w.post(t, "/oauth/token", url.Values{"grant_type": {oauthproto.GrantTypeTokenExchange}}, basicAuth(f.id, f.secret))
+	form := url.Values{"grant_type": {oauthproto.GrantTypeTokenExchange}}
+	if f.authMethod == oauthproto.TokenEndpointAuthMethodClientSecretPost {
+		form.Set("client_id", f.id)
+		form.Set("client_secret", f.secret)
+		return w.post(t, "/oauth/token", form)
+	}
+	return w.post(t, "/oauth/token", form, basicAuth(f.id, f.secret))
 }
 
 // removedClientPending is a seeded pair of pending authorizations, one awaiting
@@ -658,7 +698,7 @@ func (w *removedClientWorld) seedPending(t *testing.T, f removedClientFixture, s
 	bindingHash := base64.RawURLEncoding.EncodeToString(hash[:])
 	for handle, stage := range map[string]string{p.awaiting: storage.ConsentStageAwaiting, p.approved: storage.ConsentStageApproved} {
 		require.NoError(t, w.base.StorePendingAuthorization(t.Context(), handle, &storage.PendingAuthorization{
-			ClientID: f.id, RedirectURI: removedClientRedirectURI, State: "client-state",
+			ClientID: f.id, RedirectURI: f.redirectURI(), State: "client-state",
 			PKCEChallenge: bindingHash, PKCEMethod: "S256", Scopes: []string{"scope-a"}, Resource: delegateAudience,
 			ConsentStage: stage, InternalState: handle, UpstreamProviderName: removedClientUpstream,
 			SessionID: "session-" + handle, BrowserBindingHash: bindingHash, CreatedAt: time.Now(),

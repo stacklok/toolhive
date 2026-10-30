@@ -296,6 +296,19 @@ components:
                         fails, fails startup. "none" skips the check; the registration is then
                         retired only through RotationKey.
                     type: string
+                registration_probe_interval:
+                    description: |-
+                        RegistrationProbeInterval, when set, repeats the start-time resolution
+                        while the server runs, as a Go duration of at least 1m (e.g. "5m"): the
+                        cached registration is re-read and checked with RegistrationProbe, a
+                        rejected one is replaced, a missing one is registered, and when the
+                        result differs from the client the server holds (also when another
+                        replica replaced the row) the server switches to it without a restart.
+                        Each check sends at most one RegistrationProbe request to the upstream
+                        (none with RegistrationProbe none), plus a registration request when
+                        the probe rejects the client; 5m to 15m suits most upstreams. Empty
+                        keeps the check at start only.
+                    type: string
                 rotation_key:
                     description: |-
                         RotationKey is an optional operator-chosen label (1-64 characters from
@@ -324,6 +337,24 @@ components:
                         server trusts.
                     type: string
             type: object
+        AuthenticationDelegateClientExchangeRefreshTokens:
+            description: |-
+                ExchangeRefreshTokens enables refresh-token issuance through token
+                exchange for this client. Presence of the block enables it; a nil block
+                refuses both grant kinds. Valid only with restricted, and requires
+                APIAudience.
+            properties:
+                id_jag_max_lifetime:
+                    description: |-
+                        IDJAGMaxLifetime caps the lifetime of grants that can be exchanged for
+                        ID-JAGs. Empty refuses those grants.
+                    type: string
+                refresh_token_max_lifetime:
+                    description: |-
+                        RefreshTokenMaxLifetime caps the lifetime of grants that can be exchanged
+                        for child refresh tokens. Empty refuses those grants.
+                    type: string
+            type: object
         AuthenticationDelegateClientRunConfig:
             properties:
                 audiences:
@@ -342,14 +373,43 @@ components:
                 client_secret_env_var:
                     description: |-
                         ClientSecretEnvVar is the name of an environment variable containing
-                        the client secret. One of ClientSecretFile or ClientSecretEnvVar is
-                        required.
+                        the client secret. Unless the client uses private_key_jwt, one of
+                        ClientSecretFile or ClientSecretEnvVar is required.
                     type: string
                 client_secret_file:
                     description: |-
                         ClientSecretFile is the path to a file containing the client secret.
                         If both this and ClientSecretEnvVar are set, the file takes precedence.
+                        Forbidden with private_key_jwt.
                     type: string
+                grant_types:
+                    description: |-
+                        GrantTypes are the grants this client may use. If omitted or empty, the
+                        client is stored with [urn:ietf:params:oauth:grant-type:token-exchange]
+                        and its ID-JAG redemption (a JWT-bearer assertion of typ
+                        oauth-id-jag+jwt) is not gated, for backward compatibility. When set, the
+                        list is complete: it must include token exchange, and it must include the
+                        jwt-bearer grant to keep ID-JAG redemption. Allowed values are
+                        authorization_code, refresh_token, the token-exchange grant and the
+                        jwt-bearer grant.
+                    items:
+                        type: string
+                    type: array
+                    uniqueItems: false
+                jwks_file:
+                    description: |-
+                        JWKSFile is the path to a file containing the client's public JWKS.
+                        Required for private_key_jwt and forbidden otherwise. The keys must be
+                        public signing keys.
+                    type: string
+                redirect_uris:
+                    description: |-
+                        RedirectURIs are the registered redirect URIs. Required with the
+                        authorization_code grant and forbidden without it.
+                    items:
+                        type: string
+                    type: array
+                    uniqueItems: false
                 scopes:
                     description: |-
                         Scopes are the OAuth scopes this client may request. Required, and
@@ -359,6 +419,61 @@ components:
                         type: string
                     type: array
                     uniqueItems: false
+                token_endpoint_auth_method:
+                    description: |-
+                        TokenEndpointAuthMethod pins how the client authenticates at the token
+                        endpoint: client_secret_basic, client_secret_post or private_key_jwt.
+                        If omitted, the client authenticates with its secret by either HTTP
+                        Basic or form body.
+                    type: string
+                token_endpoint_auth_signing_alg:
+                    description: |-
+                        TokenEndpointAuthSigningAlg is the private_key_jwt signing algorithm.
+                        Defaults to RS256.
+                    type: string
+                token_exchange:
+                    $ref: '#/components/schemas/AuthenticationDelegateClientTokenExchange'
+            type: object
+        AuthenticationDelegateClientTokenExchange:
+            description: |-
+                TokenExchange is the client's token-exchange policy. Its
+                SelfIssuedSubjectTokens field selects which self-issued subject tokens
+                the client may exchange and is required whenever the block is present.
+                The block may be omitted only when GrantTypes is omitted or empty; such
+                a client keeps the legacy rule (any) and may exchange any self-issued
+                token. A client that sets GrantTypes must declare the block.
+            properties:
+                allowed_source_clients:
+                    description: |-
+                        AllowedSourceClients are client_id values, as they appear in the subject
+                        token's client_id claim, whose self-issued tokens this client may
+                        exchange in addition to its own. They must be user-facing clients that
+                        register at runtime (DCR or CIMD), so startup cannot check that they
+                        exist. A configured delegate client cannot be listed: its tokens carry
+                        its own client_id, so listing it would trust everything it accepts.
+                        Valid only with restricted; empty means the client's own tokens only.
+                    items:
+                        type: string
+                    type: array
+                    uniqueItems: false
+                api_audience:
+                    description: |-
+                        APIAudience is the client's own API audience. The client may request it
+                        even when the subject token does not cover it. It must be one of the
+                        client's Audiences. Valid only with restricted.
+                    type: string
+                exchange_refresh_tokens:
+                    $ref: '#/components/schemas/AuthenticationDelegateClientExchangeRefreshTokens'
+                self_issued_subject_tokens:
+                    description: |-
+                        SelfIssuedSubjectTokens is any or restricted, and is required. With
+                        restricted, a self-issued subject token must carry the client's own
+                        client_id or one of AllowedSourceClients, and a may_act claim naming
+                        this client does not lift that restriction. With any, the client may
+                        exchange any self-issued token.
+                    type: string
+            required:
+                - self_issued_subject_tokens
             type: object
         AuthenticationIdentityFromTokenRunConfig:
             description: |-
@@ -819,12 +934,13 @@ components:
                         secrets would otherwise travel over cleartext. Defaults to false. Has no
                         effect when there are no confidential clients or Issuer is https.
 
-                        Applies identically to delegate clients and DCR-registered clients. The
-                        Kubernetes CRD requires the explicit opt-in for a delegate client with an
-                        HTTP issuer; the shared transport validator enforces that its host is
-                        loopback — see EmbeddedAuthServerConfig's doc comment.
+                        Applies identically to every delegate client (including private_key_jwt
+                        delegates) and DCR-registered confidential clients. The Kubernetes CRD
+                        requires the explicit opt-in for a delegate client with an HTTP issuer;
+                        the shared transport validator enforces that its host is loopback — see
+                        EmbeddedAuthServerConfig's doc comment.
 
-                        private_key_jwt registration has no equivalent flag or transport
+                        DCR private_key_jwt registration has no equivalent flag or transport
                         restriction: unlike confidential registration, it never returns a
                         client_secret (or any other secret) in the DCR response, so there is
                         nothing here for cleartext HTTP to expose.

@@ -5,6 +5,7 @@ package tokenexchange
 
 import (
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/ory/fosite"
@@ -80,12 +81,18 @@ func WithAuthorizationDetailsRegistry(registry *authorizationdetails.Registry) F
 // set is read once at process construction, so removing a client from
 // config revokes its trust on the next restart rather than requiring any
 // explicit revocation step against storage.
+//
+// clientPolicies holds the source policy of the configured delegate clients
+// whose self_issued_subject_tokens is restricted, keyed by client ID. A
+// configured client without an entry keeps blanket trust of self-issued
+// subject tokens. It is read-only after construction.
 func Factory(
 	delegationLifespan time.Duration, trustedIssuers []TrustedIssuer, configuredDelegateClients []string,
+	clientPolicies map[string]ConfiguredClientPolicy,
 	options ...FactoryOption,
 ) (server.Factory, error) {
 	return FactoryWithSharedTrustedIssuerValidator(
-		delegationLifespan, trustedIssuers, configuredDelegateClients, nil, options...)
+		delegationLifespan, trustedIssuers, configuredDelegateClients, clientPolicies, nil, options...)
 }
 
 // FactoryWithSharedTrustedIssuerValidator is Factory with a shared
@@ -98,7 +105,7 @@ func Factory(
 // 7523 JWT-bearer grants.
 func FactoryWithSharedTrustedIssuerValidator(
 	delegationLifespan time.Duration, trustedIssuers []TrustedIssuer, configuredDelegateClients []string,
-	shared *MultiIssuerTokenValidator, options ...FactoryOption,
+	clientPolicies map[string]ConfiguredClientPolicy, shared *MultiIssuerTokenValidator, options ...FactoryOption,
 ) (server.Factory, error) {
 	if delegationLifespan <= 0 || delegationLifespan > server.MaxAccessTokenLifespan {
 		return nil, fmt.Errorf("tokenexchange: delegationLifespan must be between %v and %v, got %v",
@@ -107,6 +114,11 @@ func FactoryWithSharedTrustedIssuerValidator(
 	for _, id := range configuredDelegateClients {
 		if id == "" {
 			return nil, fmt.Errorf("tokenexchange: configuredDelegateClients must not contain an empty client ID")
+		}
+	}
+	for id := range clientPolicies {
+		if !slices.Contains(configuredDelegateClients, id) {
+			return nil, fmt.Errorf("tokenexchange: clientPolicies names %q, which is not a configured delegate client", id)
 		}
 	}
 	// A trusted-issuer validator owns per-issuer JWKS refresh worker pools that
@@ -163,6 +175,7 @@ func FactoryWithSharedTrustedIssuerValidator(
 			config:                       config.Config,
 			allowedAudiences:             config.AllowedAudiences,
 			configuredDelegateClients:    configuredDelegateClients,
+			clientPolicies:               clientPolicies,
 			authorizationDetailsRegistry: resolved.authorizationDetailsRegistry,
 		}, nil
 	}, nil

@@ -17,7 +17,8 @@ var (
 	// ErrRefreshFailed indicates a refresh failure (e.g., the
 	// refresh token was revoked by the upstream IDP). It wraps the underlying
 	// cause, so a definitive upstream rejection is also reachable with
-	// errors.Is(err, upstream.ErrGrantRejected).
+	// errors.Is(err, upstream.ErrGrantRejected), and a token endpoint answer
+	// keeps its *oauth2.RetrieveError reachable for the oautherr predicates.
 	ErrRefreshFailed = errors.New("upstream token refresh failed")
 
 	// ErrInvalidBinding indicates token binding validation failed (e.g.,

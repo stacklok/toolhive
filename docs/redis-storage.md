@@ -361,6 +361,10 @@ All keys use the prefix `thv:auth:{namespace:name}:` where `{namespace:name}` is
 | `{prefix}consent:approval:{pair_hash}` | One approval per user/client; `pair_hash` is SHA-256 of the JSON-encoded `[userID, clientID]` pair | Remaining fixed lifetime, at most 30 days |
 | `{prefix}invalidated:{code}` | Replay detection for auth codes | 30 minutes |
 | `{prefix}jwt:{jti}` | Client assertion JWT replay prevention | Matches JWT `exp` |
+| `{prefix}xgrant:{signature}` | HASH holding one exchange grant, the record behind a refresh token issued through token exchange. Field `data` is the immutable JSON record; field `rev_ms` (Unix ms) appears only after revocation | Grant `ExpiresAt`; revoke does not change it |
+| `{prefix}assertion-jwt:{digest}` | Replay marker. For JWT-bearer assertions it is kept until the assertion's `exp`. For an exchange grant it records the subject access token's `(issuer, jti)`, holds the grant signature, and is written only for a top-level grant | JWT-bearer: assertion `exp`. Exchange grant: access token `exp` plus 1 minute |
+
+Exchange grant keys need AOF persistence to survive a restart. Without AOF, or after a failover to a replica that had not received the latest writes, replay markers and revocations can be lost: a lost marker allows a second exchange of the same access token, and a lost revocation makes a grant usable again until it expires. See [Auth Server Storage](arch/11-auth-server-storage.md#exchange-grant-storage).
 
 For how configured (delegate and SPIFFE) client rows behave across restarts and rollbacks, see [Configured clients across restarts](arch/11-auth-server-storage.md#configured-clients-across-restarts).
 

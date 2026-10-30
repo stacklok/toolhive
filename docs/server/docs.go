@@ -161,6 +161,10 @@ const docTemplate = `{
                         "description": "RegistrationProbe selects how the resolver checks a cached registration\nagainst the upstream at start. \"tokenEndpoint\" (the default) redeems a\nrandom authorization code with the cached client and reads\ninvalid_client as \"registration gone\"; it decides only for upstreams\nthat authenticate the client before validating the grant.\n\"authorizationEndpoint\" sends an authorization request for the cached\nclient without following redirects and reads a direct 400, 401 or 403\nthat carries an RFC 6749 JSON error object (error invalid_client,\nunauthorized_client or invalid_request) as \"gone\" (RFC 6749 §4.1.2.1),\nfor upstreams whose token endpoint answers invalid_grant for any\nclient_id; an HTML page or a bare gateway status is not a verdict. A\nfalse rejection re-registers at every start and, when registration also\nfails, fails startup. \"none\" skips the check; the registration is then\nretired only through RotationKey.",
                         "type": "string"
                     },
+                    "registration_probe_interval": {
+                        "description": "RegistrationProbeInterval, when set, repeats the start-time resolution\nwhile the server runs, as a Go duration of at least 1m (e.g. \"5m\"): the\ncached registration is re-read and checked with RegistrationProbe, a\nrejected one is replaced, a missing one is registered, and when the\nresult differs from the client the server holds (also when another\nreplica replaced the row) the server switches to it without a restart.\nEach check sends at most one RegistrationProbe request to the upstream\n(none with RegistrationProbe none), plus a registration request when\nthe probe rejects the client; 5m to 15m suits most upstreams. Empty\nkeeps the check at start only.",
+                        "type": "string"
+                    },
                     "rotation_key": {
                         "description": "RotationKey is an optional operator-chosen label (1-64 characters from\n[A-Za-z0-9._-]) that becomes part of the cached registration's identity\nwithout being sent to the upstream. Changing it makes the next start\nregister a fresh client instead of reusing the cached one. At start the\nresolver checks the cached client at the upstream (see RegistrationProbe)\nand replaces it by itself when the upstream rejects it. Use RotationKey\nwhen the upstream has dropped the registration and the configured probe\ncannot tell, so the rejection may not be visible to the resolver, or when\na registration must be rotated on request. The row written under the\nprevious value is left in place. Upstream refresh tokens bound to the\nprevious client_id stop refreshing once the client changes; affected\nusers sign in again.",
                         "type": "string"
@@ -171,6 +175,20 @@ const docTemplate = `{
                     },
                     "software_statement": {
                         "description": "SoftwareStatement is the RFC 7591 \"software_statement\" JWT asserting\nmetadata about the client software, signed by a party the authorization\nserver trusts.",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "authserver.DelegateClientExchangeRefreshTokens": {
+                "description": "ExchangeRefreshTokens enables refresh-token issuance through token\nexchange for this client. Presence of the block enables it; a nil block\nrefuses both grant kinds. Valid only with restricted, and requires\nAPIAudience.",
+                "properties": {
+                    "id_jag_max_lifetime": {
+                        "description": "IDJAGMaxLifetime caps the lifetime of grants that can be exchanged for\nID-JAGs. Empty refuses those grants.",
+                        "type": "string"
+                    },
+                    "refresh_token_max_lifetime": {
+                        "description": "RefreshTokenMaxLifetime caps the lifetime of grants that can be exchanged\nfor child refresh tokens. Empty refuses those grants.",
                         "type": "string"
                     }
                 },
@@ -191,12 +209,32 @@ const docTemplate = `{
                         "type": "string"
                     },
                     "client_secret_env_var": {
-                        "description": "ClientSecretEnvVar is the name of an environment variable containing\nthe client secret. One of ClientSecretFile or ClientSecretEnvVar is\nrequired.",
+                        "description": "ClientSecretEnvVar is the name of an environment variable containing\nthe client secret. Unless the client uses private_key_jwt, one of\nClientSecretFile or ClientSecretEnvVar is required.",
                         "type": "string"
                     },
                     "client_secret_file": {
-                        "description": "ClientSecretFile is the path to a file containing the client secret.\nIf both this and ClientSecretEnvVar are set, the file takes precedence.",
+                        "description": "ClientSecretFile is the path to a file containing the client secret.\nIf both this and ClientSecretEnvVar are set, the file takes precedence.\nForbidden with private_key_jwt.",
                         "type": "string"
+                    },
+                    "grant_types": {
+                        "description": "GrantTypes are the grants this client may use. If omitted or empty, the\nclient is stored with [urn:ietf:params:oauth:grant-type:token-exchange]\nand its ID-JAG redemption (a JWT-bearer assertion of typ\noauth-id-jag+jwt) is not gated, for backward compatibility. When set, the\nlist is complete: it must include token exchange, and it must include the\njwt-bearer grant to keep ID-JAG redemption. Allowed values are\nauthorization_code, refresh_token, the token-exchange grant and the\njwt-bearer grant.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "jwks_file": {
+                        "description": "JWKSFile is the path to a file containing the client's public JWKS.\nRequired for private_key_jwt and forbidden otherwise. The keys must be\npublic signing keys.",
+                        "type": "string"
+                    },
+                    "redirect_uris": {
+                        "description": "RedirectURIs are the registered redirect URIs. Required with the\nauthorization_code grant and forbidden without it.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
                     },
                     "scopes": {
                         "description": "Scopes are the OAuth scopes this client may request. Required, and\nmust be a subset of RunConfig.ScopesSupported: a declared client must\nnot receive every supported scope just because this was left empty.",
@@ -205,8 +243,47 @@ const docTemplate = `{
                         },
                         "type": "array",
                         "uniqueItems": false
+                    },
+                    "token_endpoint_auth_method": {
+                        "description": "TokenEndpointAuthMethod pins how the client authenticates at the token\nendpoint: client_secret_basic, client_secret_post or private_key_jwt.\nIf omitted, the client authenticates with its secret by either HTTP\nBasic or form body.",
+                        "type": "string"
+                    },
+                    "token_endpoint_auth_signing_alg": {
+                        "description": "TokenEndpointAuthSigningAlg is the private_key_jwt signing algorithm.\nDefaults to RS256.",
+                        "type": "string"
+                    },
+                    "token_exchange": {
+                        "$ref": "#/components/schemas/authserver.DelegateClientTokenExchange"
                     }
                 },
+                "type": "object"
+            },
+            "authserver.DelegateClientTokenExchange": {
+                "description": "TokenExchange is the client's token-exchange policy. Its\nSelfIssuedSubjectTokens field selects which self-issued subject tokens\nthe client may exchange and is required whenever the block is present.\nThe block may be omitted only when GrantTypes is omitted or empty; such\na client keeps the legacy rule (any) and may exchange any self-issued\ntoken. A client that sets GrantTypes must declare the block.",
+                "properties": {
+                    "allowed_source_clients": {
+                        "description": "AllowedSourceClients are client_id values, as they appear in the subject\ntoken's client_id claim, whose self-issued tokens this client may\nexchange in addition to its own. They must be user-facing clients that\nregister at runtime (DCR or CIMD), so startup cannot check that they\nexist. A configured delegate client cannot be listed: its tokens carry\nits own client_id, so listing it would trust everything it accepts.\nValid only with restricted; empty means the client's own tokens only.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "api_audience": {
+                        "description": "APIAudience is the client's own API audience. The client may request it\neven when the subject token does not cover it. It must be one of the\nclient's Audiences. Valid only with restricted.",
+                        "type": "string"
+                    },
+                    "exchange_refresh_tokens": {
+                        "$ref": "#/components/schemas/authserver.DelegateClientExchangeRefreshTokens"
+                    },
+                    "self_issued_subject_tokens": {
+                        "description": "SelfIssuedSubjectTokens is any or restricted, and is required. With\nrestricted, a self-issued subject token must carry the client's own\nclient_id or one of AllowedSourceClients, and a may_act claim naming\nthis client does not lift that restriction. With any, the client may\nexchange any self-issued token.",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "self_issued_subject_tokens"
+                ],
                 "type": "object"
             },
             "authserver.IdentityFromTokenRunConfig": {
@@ -531,7 +608,7 @@ const docTemplate = `{
                         "$ref": "#/components/schemas/authserver.InboundGrantsRunConfig"
                     },
                     "insecure_allow_confidential_over_loopback_http": {
-                        "description": "InsecureAllowConfidentialOverLoopbackHTTP opts in to confidential clients\nwhen Issuer is a plain-HTTP loopback URL. Without this flag, that\ncombination is rejected: a loopback http:// issuer is normally fine for\nlocal development (the traffic never leaves the machine), but client\nsecrets would otherwise travel over cleartext. Defaults to false. Has no\neffect when there are no confidential clients or Issuer is https.\n\nApplies identically to delegate clients and DCR-registered clients. The\nKubernetes CRD requires the explicit opt-in for a delegate client with an\nHTTP issuer; the shared transport validator enforces that its host is\nloopback — see EmbeddedAuthServerConfig's doc comment.\n\nprivate_key_jwt registration has no equivalent flag or transport\nrestriction: unlike confidential registration, it never returns a\nclient_secret (or any other secret) in the DCR response, so there is\nnothing here for cleartext HTTP to expose.",
+                        "description": "InsecureAllowConfidentialOverLoopbackHTTP opts in to confidential clients\nwhen Issuer is a plain-HTTP loopback URL. Without this flag, that\ncombination is rejected: a loopback http:// issuer is normally fine for\nlocal development (the traffic never leaves the machine), but client\nsecrets would otherwise travel over cleartext. Defaults to false. Has no\neffect when there are no confidential clients or Issuer is https.\n\nApplies identically to every delegate client (including private_key_jwt\ndelegates) and DCR-registered confidential clients. The Kubernetes CRD\nrequires the explicit opt-in for a delegate client with an HTTP issuer;\nthe shared transport validator enforces that its host is loopback — see\nEmbeddedAuthServerConfig's doc comment.\n\nDCR private_key_jwt registration has no equivalent flag or transport\nrestriction: unlike confidential registration, it never returns a\nclient_secret (or any other secret) in the DCR response, so there is\nnothing here for cleartext HTTP to expose.",
                         "type": "boolean"
                     },
                     "insecure_allow_http": {

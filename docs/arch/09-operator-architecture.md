@@ -437,6 +437,14 @@ VirtualMCPServer creates a virtual MCP server that aggregates tools, resources, 
 
 **Controller**: `cmd/thv-operator/controllers/virtualmcpserver_controller.go`
 
+In static mode (`outgoingAuth.source: inline`), the operator embeds backend configuration
+in a ConfigMap and uses its checksum on the Deployment pod template to trigger rollouts.
+Generated static backends omit transient `workload_status` metadata, so a backend's
+`Ready → Pending → Ready` transition leaves the checksum unchanged when membership,
+endpoints, and other configuration remain unchanged. Runtime probes and status reporting
+continue tracking backend health. Actual configuration or membership changes still update
+the checksum and trigger the required rollout.
+
 **Key features:**
 
 1. **Conflict Resolution Strategies**:

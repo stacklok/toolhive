@@ -111,7 +111,8 @@ type RedisStorage struct {
 	// so every replica sharing this Redis enforces one cap.
 	maxDCRClients int
 
-	// now is the clock DCR cap index scores are computed from.
+	// now is the clock every DCR cap index score, exchange grant TTL and
+	// exchange grant expiry decision is computed from.
 	now func() time.Time
 }
 
@@ -131,8 +132,9 @@ func WithRedisMaxDCRClients(n int) RedisStorageOption {
 	}
 }
 
-// withRedisClock sets the clock DCR cap index scores are computed from, so
-// tests can keep it in step with miniredis's key TTLs.
+// withRedisClock sets the clock that drives DCR cap index scores and every
+// exchange grant TTL and expiry decision, so tests can keep it in step with
+// miniredis's key TTLs.
 func withRedisClock(now func() time.Time) RedisStorageOption {
 	return func(s *RedisStorage) {
 		s.now = now
@@ -332,8 +334,9 @@ func publicJSONWebKeySet(jwks *jose.JSONWebKeySet) *jose.JSONWebKeySet {
 //     reports correctly because it reads the Public field directly
 //     (fosite.DefaultClient.IsPublic() returns c.Public, uninfluenced by the
 //     auth method).
-//   - A row with a method was written by registration.New (the only path
-//     that populates the column), so it is rebuilt as a
+//   - A row with a method was written by registration.New or by
+//     registration.NewStaticDelegateClient with a pinned method (the only
+//     paths that populate the column), so it is rebuilt as a
 //     *fosite.DefaultOpenIDConnectClient — fosite enforces the pinned method
 //     at the token endpoint. IsPublic is derived as
 //     (Public && method == "none"): a row that somehow carries both
@@ -717,14 +720,16 @@ func (s *RedisStorage) UpsertDCRIssuedClient(ctx context.Context, client fosite.
 // directly sidesteps that defaulting entirely.
 func (s storedClient) fingerprint() clientFingerprint {
 	return clientFingerprint{
-		scopes:              s.Scopes,
-		audience:            s.Audience,
-		grantTypes:          s.GrantTypes,
-		responseTypes:       s.ResponseTypes,
-		resources:           s.Resources,
-		identityFingerprint: s.IdentityFingerprint,
-		public:              s.Public,
-		reserved:            s.Reserved,
+		scopes:                  s.Scopes,
+		audience:                s.Audience,
+		grantTypes:              s.GrantTypes,
+		responseTypes:           s.ResponseTypes,
+		redirectURIs:            s.RedirectURIs,
+		tokenEndpointAuthMethod: s.TokenEndpointAuthMethod,
+		resources:               s.Resources,
+		identityFingerprint:     s.IdentityFingerprint,
+		public:                  s.Public,
+		reserved:                s.Reserved,
 	}
 }
 

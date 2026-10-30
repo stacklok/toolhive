@@ -376,9 +376,11 @@ func claimJSON(extra map[string]any, key string) (string, error) {
 
 // decideChild decides a request that exchanges a refresh token for a child
 // grant. The request parameters are checked first; they say nothing about the
-// presented token. presentedGrant then applies the checks in the order that
-// reveals nothing before the client check. The presented grant is the source:
-// it becomes the parent of the new child.
+// presented token. presentedGrant then runs its checks in the order its own
+// comment describes, so nothing is revealed before the client check. Only then
+// must the presented grant be top-level and list refresh_token, so a child
+// grant is refused here: depth is 1. The presented grant is the source: it
+// becomes the parent of the new child.
 func (h *RefreshTokenHandler) decideChild(
 	ctx context.Context, requester fosite.AccessRequester, policy ConfiguredClientPolicy,
 	log *slog.Logger, now time.Time,
@@ -396,6 +398,9 @@ func (h *RefreshTokenHandler) decideChild(
 	source, log, err := h.presentedGrant(ctx, clientID, form.Get("subject_token"), now, log)
 	if err != nil {
 		return nil, err
+	}
+	if source.ParentSignature != "" || !slices.Contains(source.IssuableTokenTypes, oauthproto.TokenTypeRefreshToken) {
+		return nil, refuseWithReason(ctx, log, reasonNotIssuable)
 	}
 
 	echo, tokenType, expiresAt, err := decideChildEntry(ctx, pending, clientID, source, policy, now)
@@ -417,20 +422,20 @@ func (h *RefreshTokenHandler) decideChild(
 	return &exchangeGrantDecision{grant: grant, echo: echo, now: now, log: log}, nil
 }
 
-// presentedGrant returns the live grant behind a presented refresh token that
-// may be derived from (the source grant), with the logger extended by what the
-// grant tells. The order is fixed: the HMAC check, which needs no store
+// presentedGrant returns the live grant behind a presented refresh token (the
+// source grant), with the logger extended by what the grant tells. The order is
+// fixed: the HMAC check, which needs no store
 // (ValidateRefreshToken is called with a session that has no refresh expiry, so
 // it checks only the HMAC; RefreshTokenSignature does not verify it); the
 // lookup, which is storage.LiveExchangeGrant: the grant's own liveness and its
 // parent's; the client check; the whole-second check; then checkPresentedGrant,
-// which turns the lookup's result into a refusal and checks the refresh_token
-// type.
+// which turns the lookup's result into a refusal.
 // Nothing about the presented token is revealed before the client check. The
 // whole-second check comes right after it: expires_at is whole seconds, so a
 // grant with no whole second left is refused like an expired one
-// (reasonGrantInvalid), whatever else is wrong with it. A child grant never
-// lists refresh_token, so it fails the last check: depth is 1.
+// (reasonGrantInvalid), whatever else is wrong with it. Which output the grant
+// may produce is not checked here; the caller (decideChild) checks that after
+// this returns.
 func (h *RefreshTokenHandler) presentedGrant(
 	ctx context.Context, clientID, token string, now time.Time, log *slog.Logger,
 ) (*storage.ExchangeGrant, *slog.Logger, error) {
@@ -454,18 +459,17 @@ func (h *RefreshTokenHandler) presentedGrant(
 	if grant != nil && grant.ExpiresAt.Unix() <= now.Unix() {
 		return nil, log, refuse(ctx, log, refuseUnknownGrant, errorsx.WithStack(errUnknownGrant))
 	}
-	if err := checkPresentedGrant(ctx, grant, err, log); err != nil {
+	if err := checkPresentedGrant(ctx, err, log); err != nil {
 		return nil, log, err
 	}
 	return grant, log, nil
 }
 
 // checkPresentedGrant maps the result of storage.LiveExchangeGrant for a grant
-// of the presenting client to a refusal, then applies the refresh_token type
-// check. liveErr is the error LiveExchangeGrant returned. ErrParentNotLive
-// means the presented grant's own parent is not live. It logs the refusal it
-// returns.
-func checkPresentedGrant(ctx context.Context, grant *storage.ExchangeGrant, liveErr error, log *slog.Logger) error {
+// of the presenting client to a refusal. liveErr is the error LiveExchangeGrant
+// returned. ErrParentNotLive means the presented grant's own parent is not
+// live. It logs the refusal it returns.
+func checkPresentedGrant(ctx context.Context, liveErr error, log *slog.Logger) error {
 	switch {
 	case liveErr == nil:
 	case errors.Is(liveErr, storage.ErrExpired):
@@ -479,9 +483,6 @@ func checkPresentedGrant(ctx context.Context, grant *storage.ExchangeGrant, live
 	default:
 		log.WarnContext(ctx, "Exchange grant refused", "reason", refuseStore, "error", liveErr)
 		return issueFailed()
-	}
-	if grant.ParentSignature != "" || !slices.Contains(grant.IssuableTokenTypes, oauthproto.TokenTypeRefreshToken) {
-		return refuseWithReason(ctx, log, reasonNotIssuable)
 	}
 	return nil
 }

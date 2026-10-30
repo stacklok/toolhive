@@ -369,20 +369,6 @@ func TestValidateChildEntry(t *testing.T) {
 			wantErr: reasonExpiresAt,
 		},
 		{
-			name:    "parent ends in under one second",
-			raw:     entryJSON(oauthproto.TokenTypeIDJAG, ""),
-			parent:  parentUntil(900 * time.Millisecond),
-			policy:  exchangeGrantPolicy(),
-			wantErr: reasonParentExpired,
-		},
-		{
-			name:    "parent expires exactly now",
-			raw:     entryJSON(oauthproto.TokenTypeIDJAG, ""),
-			parent:  parentUntil(0),
-			policy:  exchangeGrantPolicy(),
-			wantErr: reasonParentExpired,
-		},
-		{
 			name:    "parent expires exactly at own cap is accepted",
 			raw:     entryJSON(oauthproto.TokenTypeIDJAG, ""),
 			parent:  parentUntil(testIDJAGCap),

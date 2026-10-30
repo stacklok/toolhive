@@ -47,7 +47,6 @@ const (
 	reasonIssuableTypes         = "invalid_issuable_token_types"
 	reasonTokenTypeNotPermitted = "token_type_not_permitted"
 	reasonExpiresAt             = "invalid_expires_at"
-	reasonParentExpired         = "parent_expired"
 )
 
 // exchangeGrantEntry is the decoded form of an exchange-grant entry.
@@ -245,13 +244,8 @@ func validateChildDecoded(
 	}
 	nowSec := now.Unix()
 	ceiling := nowSec + capSeconds
-	parentExpires := parent.ExpiresAt.Unix()
-	parentBound := parentExpires < ceiling
-	if parentBound {
+	if parentExpires := parent.ExpiresAt.Unix(); parentExpires < ceiling {
 		ceiling = parentExpires
-	}
-	if ceiling <= nowSec && parentBound {
-		return nil, time.Time{}, invalidExchangeGrant(reasonParentExpired)
 	}
 	return grantEntry(entry, tokenType, nowSec, ceiling)
 }

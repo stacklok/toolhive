@@ -241,6 +241,10 @@ applies its default of `10 × GOMAXPROCS` connections per pool. Total Redis
 connections therefore scale as `replicas × (10 × GOMAXPROCS)`. Size the Redis
 `maxclients` setting accordingly.
 
+A vMCP that runs the optimizer with semantic search opens a second client for
+the shared embedding cache (see [Optimizer embeddings](#optimizer-embeddings)),
+so count two pools per pod in that case.
+
 **Eviction policy:** Use `allkeys-lru` so Redis can shed stale sessions under
 memory pressure rather than returning errors on new writes.
 
@@ -248,6 +252,43 @@ memory pressure rather than returning errors on new writes.
 Redis pod restarts, all active sessions are lost and MCP clients must reconnect.
 For production deployments where session continuity is critical, use a
 `StatefulSet` with a PVC and enable RDB/AOF persistence.
+
+## Optimizer embeddings
+
+Each replica keeps its optimizer index in its own in-memory SQLite database.
+Building a session's optimizer upserts the session's tools, and a tool is
+embedded only when no stored vector matches its content key: a SHA-256 over
+the embedded text and the embedding backend's identity (provider, endpoint,
+and the model id read live from the backend).
+
+Two mechanisms keep the first sessions after a deploy from each embedding the
+whole catalogue:
+
+- **Within a replica**, builds that need new vectors take turns. A build that
+  waited looks up the store again and reuses what the build ahead of it
+  committed, so concurrent sessions on a cold replica embed the catalogue once.
+  Builds whose tools are all stored never wait.
+- **Across replicas**, when session storage is Redis, every vector embedded
+  under a verified model identity is also written to Redis, and a replica looks
+  there for the vectors it lacks before embedding them. Vectors embedded while
+  the model id could not be read stay local, as they are not reusable anywhere.
+
+| Parameter | Value |
+| --------- | ----- |
+| Key | `<keyPrefix>optimizer:embedding:<content key>` |
+| Value | Raw little-endian float32 vector, 4 bytes per dimension |
+| TTL | 7 days from the last write |
+
+Memory is one vector per distinct tool text per model: about 1.5 KB for a
+384-dimension model, so 1,000 tools take about 1.5 MB.
+
+The cache only removes repeat work. Replicas do not coordinate the embedding
+call, so two that miss the same vectors at the same moment both embed them. A
+Redis error after startup is logged at WARN and costs reuse, never a session.
+Anyone who can write the keyspace can replace vectors and so change
+`find_tool` ranking. Results stay limited to the tools the caller may see, and
+`call_tool` is still authorized, but treat write access to the instance as you
+would for the session data it already holds.
 
 ## Stateful backends and pod restarts
 
@@ -293,6 +334,7 @@ for session affinity design details.
 | Redis dial timeout | 5 s | `toolhive-core/redis/config.go:DefaultDialTimeout` | Via `tcredis.Config.DialTimeout` |
 | Redis read timeout | 3 s | `toolhive-core/redis/config.go:DefaultReadTimeout` | Via `tcredis.Config.ReadTimeout` |
 | Redis write timeout | 3 s | `toolhive-core/redis/config.go:DefaultWriteTimeout` | Via `tcredis.Config.WriteTimeout` |
+| Shared optimizer embedding TTL | 7 days | `vmcp/optimizer/internal/toolstore/embedding_cache.go:sharedEmbeddingTTL` | No |
 | forEach max iterations | 1,000 | `vmcp/config/composite_validation.go:MaxForEachIterations` | Via `WorkflowStepConfig.MaxIterations` (capped at 1,000) |
 
 ## Related

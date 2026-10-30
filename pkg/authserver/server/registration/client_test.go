@@ -838,12 +838,19 @@ func TestValidateConfiguredClient(t *testing.T) {
 		{name: "unsupported signing algorithm with keys pending", spec: ConfiguredClientSpec{
 			TokenEndpointAuthMethod: pkjwt, SigningAlgorithm: "HS256", JWKSPending: true,
 		}, wantErr: "unsupported"},
-		{name: "key type does not match default algorithm", spec: ConfiguredClientSpec{
+		{name: "key type does not match configured algorithm", spec: ConfiguredClientSpec{
 			TokenEndpointAuthMethod: pkjwt,
+			SigningAlgorithm:        string(jose.RS256),
 			JWKS: keySet(jose.JSONWebKey{
 				Key: &ecKey.PublicKey, KeyID: "ec", Use: "sig", Algorithm: string(jose.ES256),
 			}),
 		}, wantErr: "jwks_file"},
+		{name: "EC key derives its algorithm", spec: ConfiguredClientSpec{
+			TokenEndpointAuthMethod: pkjwt,
+			JWKS: keySet(jose.JSONWebKey{
+				Key: &ecKey.PublicKey, KeyID: "ec", Use: "sig",
+			}),
+		}},
 		{name: "private key rejected", spec: ConfiguredClientSpec{
 			TokenEndpointAuthMethod: pkjwt,
 			JWKS:                    keySet(jose.JSONWebKey{Key: &rsa.PrivateKey{PublicKey: *pub, D: big.NewInt(1)}, Use: "sig"}),

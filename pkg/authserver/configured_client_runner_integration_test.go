@@ -644,7 +644,7 @@ func accessTokenClaims(t *testing.T, embedded *authserverrunner.EmbeddedAuthServ
 
 func signIDJAGAssertion(t *testing.T, key *rsa.PrivateKey, issuer, clientID, jti string) string {
 	t.Helper()
-	return signAssertionOfType(t, key, "oauth-id-jag+jwt", issuer, clientID, jti)
+	return signAssertionOfType(t, key, oauthproto.JWTTypeIDJAG, issuer, clientID, jti)
 }
 
 // signAssertionOfType signs a trusted-issuer assertion with the given JOSE typ:

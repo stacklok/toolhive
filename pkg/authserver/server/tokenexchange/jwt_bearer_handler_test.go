@@ -106,7 +106,7 @@ func TestJWTBearerHandler_MatchingAndClientAuth(t *testing.T) {
 		{
 			name:         "ID-JAG assertion is left for its bound handler",
 			grantTypes:   fosite.Arguments{oauthproto.GrantTypeJWTBearer},
-			assertion:    signAssertionWithType(t, tj, idJAGJWTType),
+			assertion:    signAssertionWithType(t, tj, oauthproto.JWTTypeIDJAG),
 			wantHandles:  false,
 			wantSkipAuth: false,
 		},
@@ -389,7 +389,7 @@ func TestValidateAssertionType_Typ(t *testing.T) {
 		{name: "absent typ is accepted", typ: nil, wantAccept: true},
 		{name: "empty typ is accepted", typ: "", wantAccept: true},
 		{name: "JWT typ is accepted", typ: "JWT", wantAccept: true},
-		{name: "ID-JAG typ is accepted", typ: idJAGJWTType, wantAccept: true},
+		{name: "ID-JAG typ is accepted", typ: oauthproto.JWTTypeIDJAG, wantAccept: true},
 		// An access token from this server must not be accepted as a JWT-bearer assertion.
 		{name: "at+jwt typ is refused", typ: "at+jwt", wantAccept: false},
 		{name: "media-type at+jwt typ is refused", typ: "application/at+jwt", wantAccept: false},

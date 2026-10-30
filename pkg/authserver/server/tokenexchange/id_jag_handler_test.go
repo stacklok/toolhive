@@ -100,7 +100,7 @@ func newIDJAGRequest(t *testing.T, tj *testJWKS, clientID string) *fosite.Access
 	req := fosite.NewAccessRequest(&session.Session{})
 	req.GrantTypes = fosite.Arguments{oauthproto.GrantTypeJWTBearer}
 	req.Form = url.Values{
-		"assertion": {signAssertionWithType(t, tj, idJAGJWTType)},
+		"assertion": {signAssertionWithType(t, tj, oauthproto.JWTTypeIDJAG)},
 		"resource":  {idJAGTestResource},
 	}
 	if clientID != "" {
@@ -124,7 +124,7 @@ func TestIDJAGHandler_MatchingAndClientAuth(t *testing.T) {
 		{
 			name:        "ID-JAG assertion matches",
 			grantTypes:  fosite.Arguments{oauthproto.GrantTypeJWTBearer},
-			assertion:   signAssertionWithType(t, tj, idJAGJWTType),
+			assertion:   signAssertionWithType(t, tj, oauthproto.JWTTypeIDJAG),
 			wantHandles: true,
 		},
 		{
@@ -140,7 +140,7 @@ func TestIDJAGHandler_MatchingAndClientAuth(t *testing.T) {
 		{
 			name:       "other grant does not match",
 			grantTypes: fosite.Arguments{"client_credentials"},
-			assertion:  signAssertionWithType(t, tj, idJAGJWTType),
+			assertion:  signAssertionWithType(t, tj, oauthproto.JWTTypeIDJAG),
 		},
 	}
 	for _, tt := range tests {

@@ -577,7 +577,7 @@ func setupJWTBearerGrantTestServer(t *testing.T, opts ...testServerOption) (*tes
 	require.NoError(t, err)
 	idjagSigner, err := jose.NewSigner(
 		jose.SigningKey{Algorithm: jose.RS256, Key: externalKey},
-		(&jose.SignerOptions{}).WithHeader("kid", "external-key").WithType("oauth-id-jag+jwt"),
+		(&jose.SignerOptions{}).WithHeader("kid", "external-key").WithType(oauthproto.JWTTypeIDJAG),
 	)
 	require.NoError(t, err)
 

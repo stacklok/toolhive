@@ -18,6 +18,8 @@ import (
 	"github.com/ory/fosite/token/jwt"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
 func newTestJWTSigner(t *testing.T) *jwt.DefaultSigner {
@@ -73,8 +75,8 @@ func TestATJWTAccessTokenSigner_Generate(t *testing.T) {
 		},
 		{
 			name:    "non-access JWT keeps its typ",
-			header:  &jwt.Headers{Extra: map[string]any{"typ": "oauth-id-jag+jwt"}},
-			wantTyp: "oauth-id-jag+jwt",
+			header:  &jwt.Headers{Extra: map[string]any{"typ": oauthproto.JWTTypeIDJAG}},
+			wantTyp: oauthproto.JWTTypeIDJAG,
 		},
 		{
 			name:    "untyped nil mapper",

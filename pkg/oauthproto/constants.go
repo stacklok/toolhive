@@ -93,6 +93,10 @@ const (
 	// asked to mint an ID-JAG for a target application.
 	TokenTypeIDJAG = "urn:ietf:params:oauth:token-type:id-jag"
 
+	// JWTTypeIDJAG is the JOSE `typ` header value of an ID-JAG, as defined by
+	// draft-ietf-oauth-identity-assertion-authz-grant.
+	JWTTypeIDJAG = "oauth-id-jag+jwt"
+
 	// TokenTypeRefreshToken indicates an OAuth 2.0 refresh token (RFC 8693 Section 3).
 	TokenTypeRefreshToken = "urn:ietf:params:oauth:token-type:refresh_token"
 )

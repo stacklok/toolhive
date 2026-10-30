@@ -519,7 +519,7 @@ func runExchangeRefreshTokenRefusals(t *testing.T, env *xrtEnv) {
 			requireError(t, env.requestRefreshToken(t, env.broker, "garbage", nil), "invalid_request", "subject_token_invalid")
 		})
 
-		for name, typ := range map[string]string{"JWT-bearer-issued token": "JWT", "ID-JAG-issued token": "oauth-id-jag+jwt"} {
+		for name, typ := range map[string]string{"JWT-bearer-issued token": "JWT", "ID-JAG-issued token": oauthproto.JWTTypeIDJAG} {
 			t.Run(name, func(t *testing.T) {
 				assertion := signAssertionOfType(t, env.idpKey, typ, env.issuer, cfgNoCodeID, "jti-"+strings.ReplaceAll(typ, "+", "-")+"-"+t.Name())
 				issued := postToken(t, env.srv.URL, env.noCode, url.Values{

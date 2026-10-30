@@ -450,11 +450,14 @@ resurrect the deleted row.
 
 ### Upstream Refresh Rejections and the Refresh Grant
 
-An upstream refresh fails in one of two ways. In a definitive rejection, the
+An upstream refresh fails in one of three ways. In a definitive rejection, the
 IdP answers with the OAuth `invalid_grant` code on anything but a 5xx or 429,
-and that upstream refresh token will never work again. Any other failure (a
-network error, a 5xx, a 429, storage) is transient. The classification is
-`oautherr.IsRejectedRefreshGrant`, shared with the client-side token source.
+and that upstream refresh token will never work again. In another structured
+verdict, the IdP answers with a different OAuth error code (for example
+`invalid_client`) on a 4xx: retrying will not help, but the refresh token is
+not what was rejected. Any other failure (a network error, a 5xx, a 429, a 4xx
+with no OAuth error code, storage) is transient. The definitive classification
+is `oautherr.IsRejectedRefreshGrant`, shared with the client-side token source.
 The provider wraps
 `upstream.ErrGrantRejected` only for the definitive case. Under the
 cross-replica race described above, a rotating IdP also answers
@@ -467,6 +470,18 @@ lost race rather than a dead credential. The refresher and
 `errors.Is` on the error from `GetValidTokens`. It can also be detected on the
 per-provider errors that `GetAllUpstreamCredentials` returns in its `failed`
 map.
+
+Every answer from the token endpoint, on refresh and on the authorization code
+exchange alike, also keeps its `*oauth2.RetrieveError` in the same chain,
+behind an error whose message is the provider's sanitized text. The chained
+copy carries no response body and only the response's status code and status,
+so it cannot reach the outgoing request or its credentials. Callers classify
+it with the `oautherr` predicates: `IsPermanentCredentialError` is true for any
+structured verdict, `invalid_grant` or `invalid_client` alike, and false for a
+transient failure. "Permanent" means only that retrying will not help;
+`invalid_client` indicts the client registration, so a fresh login would fail
+the same way. A caller deciding whether to ask the user to reconnect a provider
+keys off `IsRejectedRefreshGrant`.
 
 The embedded auth server's own `refresh_token` grant keeps the token session
 (`tsid`). A refreshed access token therefore points at the same upstream

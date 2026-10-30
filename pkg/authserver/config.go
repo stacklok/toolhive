@@ -1136,7 +1136,9 @@ type DCRUpstreamConfig struct {
 	// for upstreams whose token endpoint answers invalid_grant for any
 	// client_id; an HTML page or a bare gateway status is not a verdict. A
 	// false rejection re-registers at every start and, when registration also
-	// fails, fails startup. "none" skips the check; the registration is then
+	// fails, fails startup. "none" skips the check: the upstream is not
+	// contacted, but a registration made with another method than a configured
+	// TokenEndpointAuthMethod is still replaced. Otherwise the registration is
 	// retired only through RotationKey.
 	RegistrationProbe string `json:"registration_probe,omitempty" yaml:"registration_probe,omitempty"`
 

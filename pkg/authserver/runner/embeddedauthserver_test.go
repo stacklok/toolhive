@@ -2372,7 +2372,7 @@ func newMockAuthorizationServer(t *testing.T) (*httptest.Server, *int32) {
 			AuthorizationEndpoint:             server.URL + "/authorize",
 			TokenEndpoint:                     server.URL + "/token",
 			RegistrationEndpoint:              server.URL + "/register",
-			TokenEndpointAuthMethodsSupported: []string{"client_secret_basic"},
+			TokenEndpointAuthMethodsSupported: []string{"client_secret_basic", "client_secret_post"},
 			ScopesSupported:                   []string{"openid", "profile"},
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -3047,6 +3047,53 @@ func TestBuildUpstreamConfigs_DCR(t *testing.T) {
 		assert.NotNil(t, cfg.Upstreams[0].OAuth2Config.DCRConfig,
 			"original OAuth2Config.DCRConfig must remain set after both calls")
 	})
+}
+
+// TestBuildUpstreamConfigs_DCRConfiguredAuthMethod drives a DCR upstream
+// with a configured token endpoint auth method through registration and a
+// cache hit, and checks the built OAuth2Config presents the registered
+// secret with that method. The resolved run config has no DCRConfig and no
+// secret source, so validating it with the method still set would reject
+// it as a confidential client without a secret.
+func TestBuildUpstreamConfigs_DCRConfiguredAuthMethod(t *testing.T) {
+	t.Parallel()
+
+	for _, method := range []string{
+		oauthproto.TokenEndpointAuthMethodClientSecretPost,
+		oauthproto.TokenEndpointAuthMethodClientSecretBasic,
+	} {
+		t.Run(method, func(t *testing.T) {
+			t.Parallel()
+
+			server, _ := newMockAuthorizationServer(t)
+			upstreams := []authserver.UpstreamRunConfig{{
+				Name: "dcr-upstream",
+				Type: authserver.UpstreamProviderTypeOAuth2,
+				OAuth2Config: &authserver.OAuth2UpstreamRunConfig{
+					AuthorizationEndpoint:   server.URL + "/authorize",
+					TokenEndpoint:           server.URL + "/token",
+					TokenEndpointAuthMethod: method,
+					Scopes:                  []string{"openid", "profile"},
+					DCRConfig: &authserver.DCRUpstreamConfig{
+						DiscoveryURL: server.URL + "/.well-known/oauth-authorization-server",
+					},
+				},
+			}}
+			store := newMemoryDCRStore(t)
+
+			for _, pass := range []string{"registration", "cache hit"} {
+				got, _, err := buildUpstreamConfigs(context.Background(), upstreams, server.URL, store, false)
+				require.NoError(t, err, pass)
+				require.Len(t, got, 1, pass)
+				require.NotNil(t, got[0].OAuth2Config, pass)
+				assert.Equal(t, "dcr-client-id", got[0].OAuth2Config.ClientID, pass)
+				assert.Equal(t, "dcr-client-secret", got[0].OAuth2Config.ClientSecret, pass)
+				assert.Equal(t, method, got[0].OAuth2Config.TokenEndpointAuthMethod, pass)
+			}
+			assert.Equal(t, method, upstreams[0].OAuth2Config.TokenEndpointAuthMethod,
+				"the caller's run config must keep its configured method")
+		})
+	}
 }
 
 // TestNewEmbeddedAuthServer_DCRBoot drives the full NewEmbeddedAuthServer

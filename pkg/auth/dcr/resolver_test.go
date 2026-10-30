@@ -2055,23 +2055,23 @@ func TestResolveDCRCredentials_CachePutFailureWrapped(t *testing.T) {
 		"the wrap message is part of the operator-debugging contract")
 }
 
-// expiredWinnerDCRStore simulates a concurrent claimant that already won the
-// durable claim with a credential that is already expired. This mirrors
+// winnerDCRStore simulates a concurrent claimant that already won the
+// durable claim. PutIfAbsent returns winner regardless of the resolution the
+// caller tried to store, exactly as a real "someone else already claimed
+// this key" response would. With an expired winner it mirrors
 // dcrClaimOrReturnWinner (pkg/authserver/storage/redis.go) when both the
 // existing stored row and the incoming registration are already expired: it
 // deliberately returns the existing row without error rather than retrying
-// forever. PutIfAbsent here returns winner regardless of the resolution the
-// caller tried to store, exactly as a real "someone else already claimed
-// this key" response would.
-type expiredWinnerDCRStore struct {
+// forever.
+type winnerDCRStore struct {
 	winner *Resolution
 }
 
-func (expiredWinnerDCRStore) Get(_ context.Context, _ Key) (*Resolution, bool, error) {
+func (winnerDCRStore) Get(_ context.Context, _ Key) (*Resolution, bool, error) {
 	return nil, false, nil
 }
 
-func (s expiredWinnerDCRStore) PutIfAbsent(_ context.Context, _ Key, _ *Resolution) (*Resolution, error) {
+func (s winnerDCRStore) PutIfAbsent(_ context.Context, _ Key, _ *Resolution) (*Resolution, error) {
 	return s.winner, nil
 }
 
@@ -2087,7 +2087,7 @@ func TestResolveDCRCredentials_ExpiredAuthoritativeCredentialErrors(t *testing.T
 
 	server := newDCRTestServer(t, dcrTestHandlerConfig{})
 
-	store := expiredWinnerDCRStore{
+	store := winnerDCRStore{
 		winner: &Resolution{
 			ClientID:              "winner-client-id",
 			ClientSecret:          "winner-client-secret",
@@ -2106,6 +2106,40 @@ func TestResolveDCRCredentials_ExpiredAuthoritativeCredentialErrors(t *testing.T
 	assert.Nil(t, res)
 	assert.Contains(t, err.Error(), dcrStepExpiredCredential,
 		"step identifier is part of the operator-debugging contract")
+}
+
+// TestResolveDCRCredentials_AuthoritativeWinnerWithOtherAuthMethodErrors
+// covers a rollout: a replica still on a configuration without
+// TokenEndpointAuthMethod wins the durable claim with a client_secret_basic
+// registration, and a replica configured for client_secret_post gets that row
+// back from PutIfAbsent. Using it would fail at the token endpoint the way the
+// configured method exists to avoid, so the resolution is refused.
+func TestResolveDCRCredentials_AuthoritativeWinnerWithOtherAuthMethodErrors(t *testing.T) {
+	t.Parallel()
+
+	server := newDCRTestServer(t, dcrTestHandlerConfig{
+		tokenEndpointAuthMethodsSupported: []string{"client_secret_basic", "client_secret_post"},
+	})
+	store := winnerDCRStore{
+		winner: &Resolution{
+			ClientID:                "winner-client-id",
+			ClientSecret:            "winner-client-secret",
+			TokenEndpointAuthMethod: "client_secret_basic",
+		},
+	}
+	req := &Request{
+		Issuer:                  server.URL,
+		Scopes:                  []string{"openid"},
+		DiscoveryURL:            server.URL + "/.well-known/oauth-authorization-server",
+		TokenEndpointAuthMethod: "client_secret_post",
+	}
+
+	res, err := ResolveCredentials(context.Background(), req, store)
+	require.Error(t, err, "a stored row with another method must not be returned as a success")
+	assert.Nil(t, res)
+	assert.Contains(t, err.Error(), dcrStepAuthMethod,
+		"step identifier is part of the operator-debugging contract")
+	assert.Contains(t, err.Error(), "winner-client-id")
 }
 
 // TestBuildResolution_PopulatesRFC7591ExpiryFields covers the conversion of

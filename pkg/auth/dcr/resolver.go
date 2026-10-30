@@ -272,6 +272,7 @@ const (
 	dcrStepCacheWrite       = "cache_write"
 	//nolint:gosec // G101: this is a log/error "step" tag, not a credential value.
 	dcrStepExpiredCredential = "expired_credential"
+	dcrStepAuthMethod        = "auth_method_mismatch"
 )
 
 // dcrStepError annotates a resolver error with the phase it was produced
@@ -442,7 +443,27 @@ func ResolveCredentials(
 	if err != nil {
 		return nil, err
 	}
-	return resolutionAny.(*Resolution), nil
+	return checkConfiguredAuthMethod(req, redirectURI, resolutionAny.(*Resolution))
+}
+
+// checkConfiguredAuthMethod refuses a resolution whose token endpoint auth
+// method differs from the configured Request.TokenEndpointAuthMethod. The
+// paths inside the flight check the registrations they make, but the result
+// can still carry another method: a cache write returns the row a replica
+// still on an older configuration stored first, and the flight key does not
+// include the method, so a concurrent caller configured differently shares
+// the leader's result. Using such a resolution would reproduce the token
+// endpoint failure the method was configured to avoid. The next resolution,
+// at the next start or periodic recheck, finds the row on a cache hit and
+// replaces it (see revalidateCachedResolution).
+func checkConfiguredAuthMethod(req *Request, redirectURI string, resolution *Resolution) (*Resolution, error) {
+	if req.TokenEndpointAuthMethod == "" || resolution.TokenEndpointAuthMethod == req.TokenEndpointAuthMethod {
+		return resolution, nil
+	}
+	return nil, newDCRStepError(dcrStepAuthMethod, req.Issuer, redirectURI, fmt.Errorf(
+		"client %q uses token_endpoint_auth_method %q, not the configured %q; "+
+			"the next start or registration recheck replaces it",
+		resolution.ClientID, resolution.TokenEndpointAuthMethod, req.TokenEndpointAuthMethod))
 }
 
 // revalidateCachedResolution is the cache-hit body of ResolveCredentials

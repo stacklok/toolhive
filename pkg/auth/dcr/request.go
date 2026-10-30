@@ -33,8 +33,11 @@ const (
 	// also fails, fails startup.
 	ProbeAuthorizationEndpoint RegistrationProbe = "authorizationEndpoint"
 
-	// ProbeNone never contacts the upstream on a cache hit; the cached
-	// registration is used as-is and retired only through RotationKey.
+	// ProbeNone never contacts the upstream on a cache hit. It turns off
+	// the upstream probe only: a cached registration made with another
+	// method than a configured TokenEndpointAuthMethod is still replaced.
+	// Otherwise the cached registration is used as-is and retired only
+	// through RotationKey.
 	ProbeNone RegistrationProbe = "none"
 )
 
@@ -179,8 +182,10 @@ type Request struct {
 	// advertised methods when the upstream advertises any.
 	//
 	// A cached registration made with a different method is replaced with
-	// a new registration on the next resolve, and a registration response
-	// that names a different method is refused.
+	// a new registration on the next resolve, whatever RegistrationProbe
+	// says. A registration response that names a different method is
+	// refused, and so is a resolution that still names one, such as a row
+	// a replica on an older configuration stored first.
 	TokenEndpointAuthMethod string
 
 	// CodeChallengeMethodsSupported lists the PKCE challenge methods the

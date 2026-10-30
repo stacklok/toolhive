@@ -120,6 +120,13 @@ func newDCRRequest(rc *authserver.UpstreamRunConfig, localIssuer string) (*dcr.R
 // ClientID xor DCRConfig — a resolved copy that left DCRConfig set would
 // fail the validator that runs downstream in buildPureOAuth2Config.
 //
+// Why TokenEndpointAuthMethod is cleared: with DCR the configured method
+// only selects how the client registers, and the resolver guarantees the
+// resolution carries that method. applyResolutionToOAuth2Config sets it on
+// the built config together with the registered secret. Left on this copy,
+// which has neither DCRConfig nor a secret source, a confidential method
+// would fail the same downstream validation as a client with no secret.
+//
 // ClientID, the endpoints, and RedirectURI are written only when rc leaves
 // them empty — explicit caller configuration always wins. The conditional
 // ClientID write is defence-in-depth against future call sites that bypass
@@ -147,6 +154,7 @@ func consumeResolution(rc authserver.OAuth2UpstreamRunConfig, res *dcr.Resolutio
 		rc.ClientID = res.ClientID
 	}
 	rc.DCRConfig = nil
+	rc.TokenEndpointAuthMethod = ""
 	if rc.AuthorizationEndpoint == "" {
 		rc.AuthorizationEndpoint = res.AuthorizationEndpoint
 	}

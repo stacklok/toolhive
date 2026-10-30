@@ -29,7 +29,6 @@ import (
 	"time"
 
 	"github.com/alicebob/miniredis/v2"
-	josev3 "github.com/go-jose/go-jose/v3"
 	"github.com/go-jose/go-jose/v4"
 	"github.com/go-jose/go-jose/v4/jwt"
 	"github.com/oauth2-proxy/mockoidc"
@@ -6711,7 +6710,7 @@ func TestIntegration_PrivateKeyJWTDCRTokenExchange(t *testing.T) {
 			clientKey, err := rsa.GenerateKey(rand.Reader, 2048)
 			require.NoError(t, err)
 			const signingAlgorithm = "RS256"
-			jwks := &josev3.JSONWebKeySet{Keys: []josev3.JSONWebKey{{
+			jwks := &jose.JSONWebKeySet{Keys: []jose.JSONWebKey{{
 				Key:       clientKey.Public(),
 				KeyID:     "dcr-client-key",
 				Algorithm: signingAlgorithm,
@@ -6831,7 +6830,7 @@ func TestIntegration_PrivateKeyJWTClientAssertionAudience(t *testing.T) {
 		TokenEndpointAuthMethod:     oauthproto.TokenEndpointAuthMethodPrivateKeyJWT,
 		TokenEndpointAuthSigningAlg: "RS256",
 		GrantTypes:                  []string{oauthproto.GrantTypeTokenExchange},
-		JWKS: &josev3.JSONWebKeySet{Keys: []josev3.JSONWebKey{{
+		JWKS: &jose.JSONWebKeySet{Keys: []jose.JSONWebKey{{
 			Key: clientKey.Public(), KeyID: "k1", Algorithm: "RS256", Use: "sig",
 		}}},
 	})

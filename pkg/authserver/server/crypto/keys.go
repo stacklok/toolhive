@@ -42,6 +42,18 @@ const MinRSAKeyBits = 2048
 // MaxRSAKeyBits is the maximum accepted RSA public modulus size in bits.
 const MaxRSAKeyBits = 8192
 
+// go-jose v4.1.6 rejects RSA JWKs with a modulus above 4096 bits while parsing
+// (GHSA-mgcc-cww5-fp2q), which would turn away client keys this package
+// accepts before policy validation runs, and fail the load of stored clients
+// already registered with them. Align its parse limit with MaxRSAKeyBits.
+// go-jose reads the limit at parse time and asks that it be set before any
+// parsing occurs; package initialization runs before any request is served.
+// The variable is process-wide, so this also applies to every other go-jose
+// v4 user in the same binary.
+func init() {
+	jose.MaxRSAModulusBits = MaxRSAKeyBits
+}
+
 // MaxRSAPublicExponent is the largest accepted public exponent for client RSA keys.
 const MaxRSAPublicExponent = 65537
 

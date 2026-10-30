@@ -23,7 +23,6 @@ import (
 	"time"
 
 	"github.com/alicebob/miniredis/v2"
-	josev3 "github.com/go-jose/go-jose/v3"
 	"github.com/go-jose/go-jose/v4"
 	"github.com/go-jose/go-jose/v4/jwt"
 	"github.com/redis/go-redis/v9"
@@ -99,9 +98,9 @@ func writeJWKSWithoutAlg(t *testing.T, path string, keys ...assertionKey) {
 // key, or omitting it when alg is empty.
 func writeJWKSWithAlg(t *testing.T, path, alg string, keys ...assertionKey) {
 	t.Helper()
-	set := josev3.JSONWebKeySet{}
+	set := jose.JSONWebKeySet{}
 	for _, k := range keys {
-		set.Keys = append(set.Keys, josev3.JSONWebKey{
+		set.Keys = append(set.Keys, jose.JSONWebKey{
 			Key: &k.private.PublicKey, KeyID: k.keyID, Use: "sig", Algorithm: alg,
 		})
 	}

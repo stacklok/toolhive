@@ -27,7 +27,7 @@ import (
 	"time"
 
 	"github.com/alicebob/miniredis/v2"
-	josev3 "github.com/go-jose/go-jose/v3"
+	"github.com/go-jose/go-jose/v4"
 	"github.com/ory/fosite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -3990,7 +3990,7 @@ func TestResolveDelegateClients(t *testing.T) {
 	require.NoError(t, os.WriteFile(badJWKSFile, []byte("not json"), 0600))
 	jwksKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	require.NoError(t, err)
-	jwksJSON, err := json.Marshal(josev3.JSONWebKeySet{Keys: []josev3.JSONWebKey{{
+	jwksJSON, err := json.Marshal(jose.JSONWebKeySet{Keys: []jose.JSONWebKey{{
 		Key: &jwksKey.PublicKey, KeyID: "delegate-key", Algorithm: "ES256", Use: "sig",
 	}}})
 	require.NoError(t, err)

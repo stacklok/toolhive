@@ -27,9 +27,10 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/go-jose/go-jose/v3"
+	"github.com/go-jose/go-jose/v4"
 	"github.com/ory/fosite"
 
+	"github.com/stacklok/toolhive/pkg/authserver/internal/fositejose"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
@@ -375,7 +376,7 @@ func New(cfg Config) (fosite.Client, error) {
 	oidcClient := &fosite.DefaultOpenIDConnectClient{
 		DefaultClient:                     defaultClient,
 		TokenEndpointAuthMethod:           cfg.TokenEndpointAuthMethod,
-		JSONWebKeys:                       cloneJSONWebKeySet(cfg.JSONWebKeys),
+		JSONWebKeys:                       fositejose.ToFositeKeySet(cfg.JSONWebKeys),
 		TokenEndpointAuthSigningAlgorithm: cfg.TokenEndpointAuthSigningAlgorithm,
 	}
 
@@ -510,7 +511,7 @@ func NewStaticDelegateClient(cfg Config) (fosite.Client, error) {
 		TokenEndpointAuthMethod: cfg.TokenEndpointAuthMethod,
 	}
 	if privateKeyJWT {
-		oidcClient.JSONWebKeys = cloneJSONWebKeySet(cfg.JSONWebKeys)
+		oidcClient.JSONWebKeys = fositejose.ToFositeKeySet(cfg.JSONWebKeys)
 		oidcClient.TokenEndpointAuthSigningAlgorithm = alg
 	}
 	return oidcClient, nil

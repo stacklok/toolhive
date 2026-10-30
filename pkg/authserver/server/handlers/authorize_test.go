@@ -6,6 +6,7 @@ package handlers
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
 	"mime/multipart"
 	"net/http"
@@ -178,6 +179,32 @@ func TestAuthorizeHandler_ClientNotFound(t *testing.T) {
 	// fosite returns 401 with invalid_client for unknown clients
 	assert.Equal(t, http.StatusUnauthorized, rec.Code)
 	assert.Contains(t, rec.Body.String(), "invalid_client")
+}
+
+func TestAuthorizeHandler_RejectsRequestObjectWithEmbeddedJWK(t *testing.T) {
+	t.Parallel()
+	handler, _, _ := handlerTestSetup(t)
+
+	enc := base64.RawURLEncoding
+	requestObject := enc.EncodeToString([]byte(`{"alg":"RS256","jwk":{"kty":"RSA"}}`)) +
+		"." + enc.EncodeToString([]byte(`{}`)) + ".c2ln"
+	query := url.Values{
+		"client_id":     {testAuthClientID},
+		"redirect_uri":  {testAuthRedirectURI},
+		"response_type": {oauthproto.ResponseTypeCode},
+		"scope":         {"openid"},
+		"request":       {requestObject},
+	}
+	req := httptest.NewRequest(http.MethodGet, "/oauth/authorize?"+query.Encode(), nil)
+	rec := httptest.NewRecorder()
+
+	handler.AuthorizeHandler(rec, req)
+
+	// The request is answered directly rather than redirected: nothing about
+	// the client or redirect_uri has been validated yet.
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.Empty(t, rec.Header().Get("Location"))
+	assert.Contains(t, rec.Body.String(), "invalid_request_object")
 }
 
 func TestAuthorizeRoutes_RejectsMultipartCIMDRequestBeforeLookup(t *testing.T) {

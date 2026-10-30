@@ -632,9 +632,13 @@ func NewAuthorizationServer(
 		}
 		return provider.DefaultClientAuthenticationStrategy
 	}()
-	fositeConfig.ClientAuthenticationStrategy = newSPIFFEClientAuthenticationStrategy(
-		defaultStrategy, config.GetAccessTokenIssuer(),
-		config.SPIFFEJWTBundleSource, providerConfig.SPIFFEClientResolver,
+	// The embedded-key guard is outermost so it runs before any strategy parses
+	// a client assertion (see IsUnsafeFositeJWS).
+	fositeConfig.ClientAuthenticationStrategy = newEmbeddedJWKGuardClientAuthenticationStrategy(
+		newSPIFFEClientAuthenticationStrategy(
+			defaultStrategy, config.GetAccessTokenIssuer(),
+			config.SPIFFEJWTBundleSource, providerConfig.SPIFFEClientResolver,
+		),
 	)
 
 	for _, factory := range factories {

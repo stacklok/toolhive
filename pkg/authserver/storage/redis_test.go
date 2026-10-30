@@ -12,10 +12,12 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"math/big"
 	"net/url"
 	"reflect"
 	"strings"
@@ -25,7 +27,7 @@ import (
 	"time"
 
 	"github.com/alicebob/miniredis/v2"
-	"github.com/go-jose/go-jose/v3"
+	"github.com/go-jose/go-jose/v4"
 	"github.com/ory/fosite"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
@@ -586,6 +588,48 @@ func TestRedisStorage_GetClientRechecksPrivateKeyJWTKeys(t *testing.T) {
 				require.NoError(t, err)
 				assert.Equal(t, client.GetID(), got.GetID())
 			})
+		})
+	}
+}
+
+func TestStoredJWKS_JSONRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	oversized := `{"keys":[{"kty":"RSA","n":"` +
+		base64.RawURLEncoding.EncodeToString(new(big.Int).Lsh(big.NewInt(1), 8193).Bytes()) +
+		`","e":"AQAB"}]}`
+	valid := func() string {
+		key, err := rsa.GenerateKey(rand.Reader, 2048)
+		require.NoError(t, err)
+		data, err := json.Marshal(jose.JSONWebKeySet{Keys: []jose.JSONWebKey{{Key: &key.PublicKey, KeyID: "k1"}}})
+		require.NoError(t, err)
+		return string(data)
+	}()
+
+	tests := []struct {
+		name        string
+		jwks        string
+		wantInvalid bool
+	}{
+		{name: "valid key set decodes", jwks: valid},
+		{name: "modulus above the go-jose limit is kept invalid", jwks: oversized, wantInvalid: true},
+		{name: "non-object key set is kept invalid", jwks: `5`, wantInvalid: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var stored storedClient
+			require.NoError(t, json.Unmarshal([]byte(`{"id":"c1","jwks":`+tt.jwks+`}`), &stored))
+			require.NotNil(t, stored.JSONWebKeys)
+			assert.Equal(t, tt.wantInvalid, stored.JSONWebKeys.invalid)
+			assert.Equal(t, tt.wantInvalid, stored.JSONWebKeys.keySet() == nil)
+
+			// Rewriting the row preserves the key set as stored.
+			rewritten, err := json.Marshal(stored)
+			require.NoError(t, err)
+			var fields map[string]json.RawMessage
+			require.NoError(t, json.Unmarshal(rewritten, &fields))
+			assert.JSONEq(t, tt.jwks, string(fields["jwks"]))
 		})
 	}
 }

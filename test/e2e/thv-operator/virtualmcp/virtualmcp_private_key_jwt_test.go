@@ -18,7 +18,6 @@ import (
 	"strings"
 	"time"
 
-	josev3 "github.com/go-jose/go-jose/v3"
 	"github.com/go-jose/go-jose/v4"
 	"github.com/go-jose/go-jose/v4/jwt"
 	"github.com/onsi/ginkgo/v2"
@@ -190,7 +189,7 @@ var _ = ginkgo.Describe("VirtualMCPServer private_key_jwt DCR delegation", ginkg
 var privateKeyJWTHTTPClient = &http.Client{Timeout: 30 * time.Second}
 
 func registerPrivateKeyJWTClient(endpoint string, privateKey *rsa.PrivateKey) oauthproto.DynamicClientRegistrationResponse {
-	jwks := &josev3.JSONWebKeySet{Keys: []josev3.JSONWebKey{{Key: privateKey.Public(), KeyID: "dcr-client-key", Algorithm: "RS256", Use: "sig"}}}
+	jwks := &jose.JSONWebKeySet{Keys: []jose.JSONWebKey{{Key: privateKey.Public(), KeyID: "dcr-client-key", Algorithm: "RS256", Use: "sig"}}}
 	requestBody, err := json.Marshal(oauthproto.DynamicClientRegistrationRequest{
 		RedirectURIs: []string{}, TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodPrivateKeyJWT,
 		TokenEndpointAuthSigningAlg: "RS256", GrantTypes: []string{oauthproto.GrantTypeTokenExchange}, JWKS: jwks,

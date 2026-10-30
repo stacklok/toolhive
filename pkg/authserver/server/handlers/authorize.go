@@ -61,6 +61,9 @@ func (h *Handler) AuthorizeHandler(w http.ResponseWriter, req *http.Request) {
 	if h.rejectBackChannelOnlyAuthorizeClient(ctx, w, req) {
 		return
 	}
+	if h.rejectUnsafeRequestObject(ctx, w, req) {
+		return
+	}
 
 	// See rewriteLoopbackRedirectURI's doc comment for what this does and why.
 	// Keep the parsed form before any rewrite so exemption checks can distinguish
@@ -337,6 +340,30 @@ func (h *Handler) rejectBackChannelOnlyAuthorizeClient(ctx context.Context, w ht
 		w,
 		authorizeRequest,
 		fosite.ErrInvalidClient.WithHint("The requested OAuth 2.0 Client does not exist."),
+	)
+	return true
+}
+
+// rejectUnsafeRequestObject refuses an OpenID Connect request object that
+// server.IsUnsafeFositeJWS flags, before fosite parses it with go-jose v3.
+// Every value of a repeated request parameter is checked, and the check does
+// not depend on the openid scope that fosite consults, so a difference in how
+// the two read the form cannot let an unsafe value through. The error is
+// written without a redirect because neither the client nor its redirect_uri
+// has been validated yet.
+func (h *Handler) rejectUnsafeRequestObject(ctx context.Context, w http.ResponseWriter, req *http.Request) bool {
+	if err := req.ParseForm(); err != nil {
+		return false
+	}
+	if !slices.ContainsFunc(req.Form["request"], server.IsUnsafeFositeJWS) {
+		return false
+	}
+	slog.Warn("rejected request object with an embedded key or non-compact encoding")
+	h.provider.WriteAuthorizeError(
+		ctx,
+		w,
+		fosite.NewAuthorizeRequest(),
+		fosite.ErrInvalidRequestObject.WithHint("The request object must be a compact JWS without an embedded JSON Web Key."),
 	)
 	return true
 }

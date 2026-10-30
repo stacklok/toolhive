@@ -181,7 +181,7 @@
                         "type": "string"
                     },
                     "refresh_token_max_lifetime": {
-                        "description": "RefreshTokenMaxLifetime caps the lifetime of grants that can be exchanged\nfor child refresh tokens. Empty refuses those grants.",
+                        "description": "RefreshTokenMaxLifetime caps the lifetime of grants that can be exchanged\nfor child refresh tokens. Empty refuses those grants. Deriving a child also\nneeds id_jag_max_lifetime, because a child allows ID-JAGs and is capped by\nthat value; without it every derive is refused with token_type_not_permitted.",
                         "type": "string"
                     }
                 },

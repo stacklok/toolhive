@@ -41,12 +41,30 @@ const (
 	refuseRequestParam    = "request_parameter_refused"
 	refuseDetailsInvalid  = "authorization_details_invalid"
 	refuseReplay          = "token_used"
+	refuseBadToken        = "token_invalid"
+	refuseUnknownGrant    = "not_found_or_other_client"
 	refuseInternal        = "internal_error"
 	refuseStore           = "store_failure"
 )
 
-// reasonTokenUsed is the error_description of a reused subject token.
-const reasonTokenUsed = "token_used"
+// Reasons returned to the client as the whole error_description when a derive
+// request presents a grant of its own client that cannot be used. They are
+// stable strings. A grant that is unknown, forged or another client's gets the
+// one code reasonGrantInvalid (errUnknownGrant).
+const (
+	reasonTokenUsed     = "token_used"
+	reasonRevoked       = "revoked"
+	reasonParentRevoked = "parent_revoked"
+	reasonExpired       = "expired"
+	reasonNotIssuable   = "not_issuable"
+	reasonGrantInvalid  = "grant_invalid"
+)
+
+// errUnknownGrant is the one error returned when the presented refresh token
+// fails its HMAC check, is not found, belongs to another client, or is not an
+// exchange grant at all (a login refresh token). Its error_description is the
+// same code for all of these, so a caller cannot tell the cases apart.
+var errUnknownGrant = exactReason(fosite.ErrInvalidRequest.ErrorField, reasonGrantInvalid)
 
 // Reasons for a refused subject token that are also sent to the client, as the
 // error_description. reasonSubjectInvalid is the one logged and sent for every
@@ -79,10 +97,16 @@ func isRefreshTokenExchange(form url.Values) bool {
 // token_used. The check and the write are one atomic store call, made in
 // PopulateTokenEndpointResponse, so two concurrent exchanges produce one grant.
 //
+// A refresh-token subject is exchanged for a child grant (decideChild). Two
+// derives from one grant give two independent children, since a child has no
+// replay marker. If the response of a derive is lost, the child stays until its
+// parent ends; this is accepted.
+//
 // A client without exchange_refresh_tokens is refused with the unsupported
-// requested_token_type text (unsupportedTokenType). A request whose subject is a
-// refresh token is refused with the unsupported subject_token_type text that
-// validateFormParams returns. Both are invalid_request.
+// requested_token_type text (unsupportedTokenType), or with the unsupported
+// subject_token_type text that validateFormParams returns when its subject is a
+// refresh token. A refresh-token subject asking for any type but a refresh
+// token is refused with the same subject text. All are invalid_request.
 //
 // The exchange grant is the only profile this handler issues today; a later
 // profile would be chosen where decide checks the client's exchange_refresh_tokens.
@@ -167,7 +191,8 @@ func (h *RefreshTokenHandler) HandleTokenEndpointRequest(ctx context.Context, re
 // PopulateTokenEndpointResponse decides the request again and issues the refresh
 // token. The second decision verifies the subject token right before it is
 // consumed. The grant carries the subject token's (iss, jti), so a reused
-// subject token fails in issue with token_used. The response is the RFC 8693
+// subject token fails in issue with token_used. A child grant has no (iss, jti)
+// marker, so token_used applies only to top-level grants. The response is the RFC 8693
 // shape with token_type N_A and no refresh_token member; fosite writes
 // Cache-Control: no-store and Pragma: no-cache.
 func (h *RefreshTokenHandler) PopulateTokenEndpointResponse(
@@ -207,15 +232,15 @@ type exchangeGrantDecision struct {
 
 // decide validates the request, the subject token and the authorization_details
 // entry, and returns what to issue. It writes nothing to the store and consumes
-// nothing; its only effect is the refusal log line, so it can run more than once
-// per request. A request logs at most one refusal, because a refusal in
-// HandleTokenEndpointRequest ends the request.
-// decide runs twice per request (in HandleTokenEndpointRequest and again in
-// PopulateTokenEndpointResponse), so the authorization_details shape hook
-// (pending.Grant) runs twice and must be idempotent and free of side effects.
-// A new kind of subject (a refresh token) is a new branch here that builds the
-// same exchangeGrantDecision, which issue then writes. That is a different axis
-// from a new profile, which changes what the grant allows, not what it is derived from.
+// nothing; its only effect is the refusal log line. It runs twice per request
+// (in HandleTokenEndpointRequest and again in PopulateTokenEndpointResponse), so
+// the authorization_details shape hook (pending.Grant) must be idempotent and
+// free of side effects. A request logs at most one refusal, because a refusal in
+// HandleTokenEndpointRequest ends the request. Each kind of subject has its own
+// branch (decideTopLevel for a login access token, decideChild for a refresh
+// token) that builds the same exchangeGrantDecision, which issue then writes.
+// That is a different axis from a new profile, which changes what the grant
+// allows, not what it is derived from.
 func (h *RefreshTokenHandler) decide(
 	ctx context.Context, requester fosite.AccessRequester, now time.Time,
 ) (*exchangeGrantDecision, error) {
@@ -232,10 +257,15 @@ func (h *RefreshTokenHandler) decide(
 			"The OAuth 2.0 Client is not allowed to use authorization grant 'token-exchange'."))
 	}
 
-	// A refresh-token subject is refused until it can be derived from; the text
-	// is the one validateFormParams returns for an unsupported subject type.
+	// The policy gate comes first: a client that has not enabled the feature gets
+	// the unsupported-type text. A refresh-token subject that does not ask for a
+	// refresh token is refused too; the text is the one validateFormParams returns
+	// for an unsupported subject type.
 	policy := h.clientPolicies[client.GetID()]
-	if subjectType := form.Get("subject_token_type"); subjectType == oauthproto.TokenTypeRefreshToken {
+	subjectType := form.Get("subject_token_type")
+	derive := subjectType == oauthproto.TokenTypeRefreshToken
+	if derive && (len(policy.ExchangeRefreshTokens) == 0 ||
+		form.Get("requested_token_type") != oauthproto.TokenTypeRefreshToken) {
 		return nil, refuse(ctx, log, refuseUnsupportedType, errorsx.WithStack(fosite.ErrInvalidRequest.WithHintf(
 			"The 'subject_token_type' value %q is not supported. Use %q or %q.",
 			subjectType, oauthproto.TokenTypeAccessToken, oauthproto.TokenTypeJWT)))
@@ -248,6 +278,9 @@ func (h *RefreshTokenHandler) decide(
 	if len(policy.ExchangeRefreshTokens) == 0 {
 		return nil, refuse(ctx, log, refuseUnsupportedType,
 			errorsx.WithStack(unsupportedTokenType("requested_token_type", form.Get("requested_token_type"))))
+	}
+	if derive {
+		return h.decideChild(ctx, requester, policy, log.With("has_parent", true), now)
 	}
 	return h.decideTopLevel(ctx, requester, policy, log, now)
 }
@@ -326,6 +359,136 @@ func claimJSON(extra map[string]any, key string) (string, error) {
 	return string(encoded), nil
 }
 
+// decideChild decides a request that exchanges a refresh token for a child
+// grant. The request parameters are checked first; they say nothing about the
+// presented token. presentedGrant then applies the checks in the order that
+// reveals nothing before the client check.
+func (h *RefreshTokenHandler) decideChild(
+	ctx context.Context, requester fosite.AccessRequester, policy ConfiguredClientPolicy,
+	log *slog.Logger, now time.Time,
+) (*exchangeGrantDecision, error) {
+	clientID := requester.GetClient().GetID()
+	form := requester.GetRequestForm()
+	if reason, err := checkDeriveRequest(requester, form); err != nil {
+		return nil, refuse(ctx, log, reason, errorsx.WithStack(err))
+	}
+	pending, err := parseExchangeGrantDetails(h.registry, form)
+	if err != nil {
+		reason, clientErr := exchangeGrantDetailsError(err)
+		return nil, refuse(ctx, log, reason, clientErr)
+	}
+	parent, log, err := h.presentedGrant(ctx, clientID, form.Get("subject_token"), now, log)
+	if err != nil {
+		return nil, err
+	}
+
+	echo, tokenType, expiresAt, err := decideChildEntry(ctx, pending, clientID, parent, policy, now)
+	if err != nil {
+		reason, clientErr := exchangeGrantDetailsError(err)
+		return nil, refuse(ctx, log, reason, clientErr)
+	}
+	grant := storage.ExchangeGrant{
+		ClientID:           parent.ClientID,
+		Subject:            parent.Subject,
+		SubjectIdentifier:  parent.SubjectIdentifier,
+		ParentSignature:    parent.Signature,
+		IssuableTokenTypes: []string{tokenType},
+		ExpiresAt:          expiresAt,
+		CreatedAt:          now,
+	}
+	log = log.With("issuable_token_type", tokenType, "expires_at", expiresAt.Unix())
+	return &exchangeGrantDecision{grant: grant, echo: echo, now: now, log: log}, nil
+}
+
+// presentedGrant returns the live grant behind a presented refresh token that
+// may be derived from, with the logger extended by what the grant tells. The
+// order is fixed: the HMAC check, which needs no store
+// (ValidateRefreshToken is called with a session that has no refresh expiry, so
+// it checks only the HMAC; RefreshTokenSignature does not verify it); the
+// lookup; the client check; the grant's own liveness; its parent's liveness;
+// then the refresh_token type.
+// Nothing about the presented token is revealed before the client check. A
+// child grant never lists refresh_token, so it fails the last check: depth is 1.
+func (h *RefreshTokenHandler) presentedGrant(
+	ctx context.Context, clientID, token string, now time.Time, log *slog.Logger,
+) (*storage.ExchangeGrant, *slog.Logger, error) {
+	if h.store == nil {
+		return nil, log, refuse(ctx, log, refuseInternal, issueFailed())
+	}
+	hmacOnly := &fosite.Request{Session: &fosite.DefaultSession{}}
+	if err := h.strategy.ValidateRefreshToken(ctx, hmacOnly, token); err != nil {
+		return nil, log, refuse(ctx, log, refuseBadToken, errorsx.WithStack(errUnknownGrant))
+	}
+	grant, err := h.store.GetExchangeGrant(ctx, h.strategy.RefreshTokenSignature(ctx, token))
+	switch {
+	case errors.Is(err, storage.ErrNotFound), err == nil && grant.ClientID != clientID:
+		return nil, log, refuse(ctx, log, refuseUnknownGrant, errorsx.WithStack(errUnknownGrant))
+	case err != nil:
+		log.WarnContext(ctx, "Exchange grant refused", "reason", refuseStore, "error", err)
+		return nil, log, issueFailed()
+	}
+	log = log.With("sub", grant.Subject)
+	if grant.SubjectIdentifier != "" {
+		log = log.With("sub_id", grant.SubjectIdentifier)
+	}
+
+	if err := grant.Live(now); err != nil {
+		reason := reasonExpired
+		if errors.Is(err, storage.ErrRevoked) {
+			reason = reasonRevoked
+		}
+		return nil, log, refuseWithReason(ctx, log, reason)
+	}
+	if grant.ParentSignature != "" {
+		parent, err := h.store.GetExchangeGrant(ctx, grant.ParentSignature)
+		switch {
+		case err != nil && !errors.Is(err, storage.ErrNotFound):
+			log.WarnContext(ctx, "Exchange grant refused", "reason", refuseStore, "error", err)
+			return nil, log, issueFailed()
+		case err != nil || parent.Live(now) != nil:
+			return nil, log, refuseWithReason(ctx, log, reasonParentRevoked)
+		}
+	}
+	if grant.ParentSignature != "" || !slices.Contains(grant.IssuableTokenTypes, oauthproto.TokenTypeRefreshToken) {
+		return nil, log, refuseWithReason(ctx, log, reasonNotIssuable)
+	}
+	return grant, log, nil
+}
+
+// refuseWithReason logs the refusal and returns invalid_request whose whole
+// error_description is reason.
+func refuseWithReason(ctx context.Context, log *slog.Logger, reason string) error {
+	return refuse(ctx, log, reason, errorsx.WithStack(exactReason(fosite.ErrInvalidRequest.ErrorField, reason)))
+}
+
+// decideChildEntry is decideEntry for a child: the shape hook returns the one
+// entry and validateChildEntry applies the client's policy and the parent's
+// lifetime to it. It also returns the token type the child allows.
+func decideChildEntry(
+	ctx context.Context, pending *authorizationdetails.Pending, clientID string,
+	parent *storage.ExchangeGrant, policy ConfiguredClientPolicy, now time.Time,
+) (json.RawMessage, string, time.Time, error) {
+	granted, err := pending.Grant(ctx, authorizationdetails.Request{
+		ClientID:           clientID,
+		Actor:              clientID,
+		RequestedTokenType: oauthproto.TokenTypeRefreshToken,
+		Subject:            authorizationdetails.Subject{Subject: parent.Subject, ClientID: parent.ClientID},
+	})
+	if err != nil {
+		return nil, "", time.Time{}, err
+	}
+	rawEntry, err := singleGrantedEntry(granted)
+	if err != nil {
+		return nil, "", time.Time{}, err
+	}
+	entry, err := decodeExchangeGrantEntry(rawEntry)
+	if err != nil {
+		return nil, "", time.Time{}, err
+	}
+	echo, expiresAt, err := validateChildDecoded(entry, parent, policy, now)
+	return echo, entry.IssuableTokenTypes[0], expiresAt, err
+}
+
 // decideEntry asks the shape hook for the one entry and applies the client's
 // policy to it. The returned echo comes from validateTopLevelDecoded, not from the
 // hook, which returns the request unchanged. It also returns the token type the
@@ -402,7 +565,11 @@ func (h *RefreshTokenHandler) issue(
 	responder.SetExtra("issued_token_type", oauthproto.TokenTypeRefreshToken)
 	// RFC 9396 section 7.1: the response member is an array of the granted entries.
 	responder.SetExtra(authorizationDetailsParam, []json.RawMessage{d.echo})
-	log.DebugContext(ctx, "Exchange grant created")
+	if grant.ParentSignature != "" {
+		log.DebugContext(ctx, "Exchange grant derived")
+	} else {
+		log.DebugContext(ctx, "Exchange grant created")
+	}
 	return nil
 }
 
@@ -421,18 +588,42 @@ func issueFailed() error {
 }
 
 // checkRefreshTokenRequest checks the request parameters of an access-token
-// subject exchanged for a refresh token. It returns the refusal reason to log
-// with the error for the client.
+// subject exchanged for a refresh token: the subject token is present and is an
+// access token, then the shared checks of checkRefreshTokenParams. It returns the
+// refusal reason to log with the error for the client.
 func checkRefreshTokenRequest(requester fosite.AccessRequester, form url.Values) (string, error) {
-	if form.Get("subject_token") == "" {
-		return refuseRequestParam, fosite.ErrInvalidRequest.WithHint(
-			"The 'subject_token' parameter is required for token exchange.")
+	if reason, err := checkSubjectTokenPresent(form); err != nil {
+		return reason, err
 	}
 	if got := form.Get("subject_token_type"); got != oauthproto.TokenTypeAccessToken {
 		return refuseRequestParam, fosite.ErrInvalidRequest.WithHintf(
 			"The 'subject_token_type' value %q is not supported when requesting a refresh token. Use %q.",
 			got, oauthproto.TokenTypeAccessToken)
 	}
+	return checkRefreshTokenParams(requester, form)
+}
+
+// checkDeriveRequest checks the request parameters of a refresh-token subject
+// exchanged for a child. decide has already checked the subject and requested
+// token types.
+func checkDeriveRequest(requester fosite.AccessRequester, form url.Values) (string, error) {
+	if reason, err := checkSubjectTokenPresent(form); err != nil {
+		return reason, err
+	}
+	return checkRefreshTokenParams(requester, form)
+}
+
+func checkSubjectTokenPresent(form url.Values) (string, error) {
+	if form.Get("subject_token") == "" {
+		return refuseRequestParam, fosite.ErrInvalidRequest.WithHint(
+			"The 'subject_token' parameter is required for token exchange.")
+	}
+	return "", nil
+}
+
+// checkRefreshTokenParams checks the parameters that no request for a refresh
+// token may carry: an actor token, scope, resource or audience.
+func checkRefreshTokenParams(requester fosite.AccessRequester, form url.Values) (string, error) {
 	if form.Has("actor_token") || form.Has("actor_token_type") {
 		return refuseRequestParam, fosite.ErrInvalidRequest.WithHint(
 			"The 'actor_token' parameter is not supported when requesting a refresh token.")

@@ -229,6 +229,9 @@ func TestExchangeRefreshTokensThroughEmbeddedAuthServer(t *testing.T) {
 			runExchangeRefreshTokenGrantFlows(t, startXRTServer(t, backend))
 		})
 	}
+	// Every refusal fails before any store access, so the backend cannot change
+	// the outcome. Refusals that touch the store (replay, and not consuming the
+	// subject token on refusal) run on both backends above.
 	t.Run("refusals", func(t *testing.T) {
 		t.Parallel()
 		runExchangeRefreshTokenRefusals(t, startXRTServer(t, "memory"))
@@ -345,10 +348,12 @@ func runExchangeRefreshTokenGrantFlows(t *testing.T, env *xrtEnv) {
 		close(start)
 		wg.Wait()
 		ok := 0
+		var winner string
 		for _, res := range results {
 			require.NoError(t, res.err)
 			if res.status == http.StatusOK {
 				ok++
+				winner, _ = res.body["access_token"].(string)
 				continue
 			}
 			assert.Equal(t, http.StatusBadRequest, res.status, res.body)
@@ -356,6 +361,8 @@ func runExchangeRefreshTokenGrantFlows(t *testing.T, env *xrtEnv) {
 			assert.Equal(t, "token_used", res.body["error_description"], res.body)
 		}
 		assert.Equal(t, 1, ok, "exactly one exchange succeeds")
+		require.NotEmpty(t, winner, "the winning response carries a refresh token")
+		assert.NotNil(t, env.grant(t, winner), "the winning token resolves to a stored grant")
 	})
 
 	t.Run("the issued token is not a login refresh token", func(t *testing.T) {

@@ -1373,11 +1373,18 @@ one that is not a number, is refused.
 There is no `refresh_token` member. The echoed `expires_at` is the granted value
 and equals the whole second of the response time plus `expires_in`.
 
+The token is stored only in the exchange-grant store, not in fosite's store. The
+server has no revocation or introspection endpoint today. One added later must
+look these tokens up in the exchange-grant store.
+
 **Single use of the subject token.** Each subject token can open one grant. The
 server records the token's issuer and `jti` together with the grant in one
 atomic store call, so a second exchange of the same token, including a
 concurrent one, fails with `token_used`. A request that is refused for any other
-reason does not use up the token.
+reason does not use up the token. The grant made by the first exchange is not
+revoked when the token is reused. It stays valid until it expires or is revoked.
+Revoking it on reuse is planned in
+[#6973](https://github.com/stacklok/toolhive/issues/6973).
 
 **Recorded subject data.** The grant records the subject token's `sub`, and, when
 present, its `sub_id` claim and its `https://toolhive.dev/upstream_subject` claim

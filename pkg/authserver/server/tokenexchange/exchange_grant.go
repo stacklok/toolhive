@@ -186,8 +186,9 @@ func decodeExchangeGrantEntry(raw json.RawMessage) (exchangeGrantEntry, error) {
 // It is deliberately not bounded by the subject token's exp: the grant exists
 // for use after that token and the login have ended (RFC 8693 section 2.2.1).
 // The stored SourceExpiresAt only sets how long the subject's replay marker is
-// kept. Logout and upstream revocation do not end the grant; only revocation
-// or expiry does.
+// kept. Logout and upstream revocation do not end the grant by themselves; it
+// ends at expiry or through revocation, which a user-wide revocation would
+// also use once there is one.
 func validateTopLevelEntry(
 	raw json.RawMessage, policy ConfiguredClientPolicy, now time.Time,
 ) (json.RawMessage, time.Time, error) {

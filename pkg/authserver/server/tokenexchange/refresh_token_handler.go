@@ -71,8 +71,9 @@ func isRefreshTokenExchange(form url.Values) bool {
 // RefreshTokenHandler implements RFC 8693 token exchange for refresh tokens: a
 // configured client presents a user's login access token and receives an
 // opaque, non-rotating refresh token whose allowed use is fixed at issuance
-// (see exchangeGrantType). The token is not a fosite refresh token. Nothing is
-// written to fosite's store, so grant_type=refresh_token cannot redeem it.
+// (see exchangeGrantType). The token is not stored as a fosite refresh token.
+// Nothing is written to fosite's store, so grant_type=refresh_token cannot
+// redeem it.
 //
 // Unlike Handler, the subject access token is single-use: the grant records its
 // (iss, jti), and a second exchange of the same token is refused with
@@ -372,7 +373,9 @@ func (h *RefreshTokenHandler) issue(
 	// The token uses fosite's refresh-token format and key, so it looks like an
 	// ordinary refresh token. The format prefix is not covered by the signature
 	// and is not a boundary. A distinct prefix is a follow-up to decide before
-	// release.
+	// release. The server has no revocation or introspection endpoint today; one
+	// added later must look these tokens up in ExchangeGrantStorage, because
+	// fosite's store does not hold them.
 	token, signature, err := h.strategy.GenerateRefreshToken(ctx, requester)
 	if err != nil {
 		log.WarnContext(ctx, "Exchange grant refused", "reason", refuseInternal, "error", err)

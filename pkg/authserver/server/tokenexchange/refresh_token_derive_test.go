@@ -207,6 +207,38 @@ func TestDeriveCheckOrder(t *testing.T) {
 	})
 }
 
+// TestDeriveParentWithNoWholeSecondLeftIsGrantInvalid pins that a parent with
+// under one whole second left gets the same answer as one that expired earlier.
+// Stored expires_at is whole seconds, so the first case is built from a
+// fractional ExpiresAt directly in the store.
+func TestDeriveParentWithNoWholeSecondLeftIsGrantInvalid(t *testing.T) {
+	t.Parallel()
+
+	wholeSecond := time.Unix(time.Now().Unix(), 0)
+	tests := []struct {
+		name    string
+		expires time.Time
+	}{
+		{name: "live by under one second", expires: wholeSecond.Add(500 * time.Millisecond)},
+		{name: "expired earlier", expires: time.Now().Add(-time.Hour)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			store := &fakeGrantStoreWithRecords{recordStore: recordStore{grants: map[string]storage.ExchangeGrant{
+				"ok": {Signature: "ok", ClientID: testRefreshClient, Subject: "user-1",
+					IssuableTokenTypes: []string{oauthproto.TokenTypeRefreshToken}, ExpiresAt: tt.expires},
+			}}}
+			h := deriveHandler(t, store)
+			req := deriveRequest("x.ok", oauthproto.TokenTypeIDJAG)
+			requireOAuthError(t, h.HandleTokenEndpointRequest(t.Context(), req), "invalid_request", reasonGrantInvalid)
+			requireOAuthError(t, h.PopulateTokenEndpointResponse(t.Context(), req, fosite.NewAccessResponse()),
+				"invalid_request", reasonGrantInvalid)
+			assert.Empty(t, store.created)
+		})
+	}
+}
+
 // fakeGrantStoreWithRecords adds creation to recordStore.
 type fakeGrantStoreWithRecords struct {
 	recordStore

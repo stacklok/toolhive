@@ -4098,6 +4098,7 @@ func TestResolveDelegateClients_CarriesExchangeRefreshTokens(t *testing.T) {
 		TokenExchange: &authserver.DelegateClientTokenExchange{
 			SelfIssuedSubjectTokens: authserver.SelfIssuedSubjectTokensRestricted,
 			APIAudience:             "https://mcp.example.com",
+			AllowedSourceClients:    []string{"tui"},
 			ExchangeRefreshTokens: &authserver.DelegateClientExchangeRefreshTokens{
 				IDJAGMaxLifetime: "12h", RefreshTokenMaxLifetime: "720h",
 			},

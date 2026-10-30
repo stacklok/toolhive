@@ -970,15 +970,22 @@ func TestValidateConfiguredClient(t *testing.T) {
 			s.APIAudience = ""
 			return s
 		}(), wantErr: "api_audience is required with token_exchange.exchange_refresh_tokens"},
+		{name: "exchange refresh tokens without allowed source clients", spec: func() ConfiguredClientSpec {
+			s := exchangeRefreshSpec("12h", "")
+			s.AllowedSourceClients = nil
+			return s
+		}(), wantErr: "allowed_source_clients is required with token_exchange.exchange_refresh_tokens"},
 		{name: "exchange refresh tokens with any", spec: func() ConfiguredClientSpec {
 			s := exchangeRefreshSpec("12h", "")
 			s.SelfIssuedSubjectTokens = selfIssuedSubjectTokensAny
+			s.AllowedSourceClients = nil
 			s.APIAudience = ""
 			return s
 		}(), wantErr: `token_exchange.exchange_refresh_tokens requires self_issued_subject_tokens "restricted"`},
 		{name: "exchange refresh tokens with any and api audience", spec: func() ConfiguredClientSpec {
 			s := exchangeRefreshSpec("12h", "")
 			s.SelfIssuedSubjectTokens = selfIssuedSubjectTokensAny
+			s.AllowedSourceClients = nil
 			return s
 		}(), wantErr: "token_exchange.api_audience is valid only with"},
 	}
@@ -1011,6 +1018,7 @@ func exchangeRefreshSpec(idJAG, refresh string) ConfiguredClientSpec {
 		SelfIssuedSubjectTokens: selfIssuedSubjectTokensRestricted,
 		Audiences:               []string{"https://api.example"},
 		APIAudience:             "https://api.example",
+		AllowedSourceClients:    []string{"tui"},
 		ExchangeRefreshTokens:   true,
 		IDJAGMaxLifetime:        idJAG,
 		RefreshTokenMaxLifetime: refresh,

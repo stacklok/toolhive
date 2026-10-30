@@ -68,7 +68,7 @@ func TestConfiguredClientPolicies(t *testing.T) {
 		},
 		{
 			ClientID:      "id-jag-only",
-			TokenExchange: &DelegateClientTokenExchange{SelfIssuedSubjectTokens: SelfIssuedSubjectTokensRestricted, ExchangeRefreshTokens: &DelegateClientExchangeRefreshTokens{IDJAGMaxLifetime: "1h"}},
+			TokenExchange: &DelegateClientTokenExchange{SelfIssuedSubjectTokens: SelfIssuedSubjectTokensRestricted, AllowedSourceClients: []string{"tui"}, ExchangeRefreshTokens: &DelegateClientExchangeRefreshTokens{IDJAGMaxLifetime: "1h"}},
 		},
 	}
 

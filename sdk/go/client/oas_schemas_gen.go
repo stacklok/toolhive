@@ -971,7 +971,9 @@ type AuthenticationDelegateClientTokenExchange struct {
 	// register at runtime (DCR or CIMD), so startup cannot check that they
 	// exist. A configured delegate client cannot be listed: its tokens carry
 	// its own client_id, so listing it would trust everything it accepts.
-	// Valid only with restricted; empty means the client's own tokens only.
+	// Valid only with restricted; empty means the client's own tokens only,
+	// except that exchange_refresh_tokens requires a non-empty list and does
+	// not accept the client's own tokens.
 	AllowedSourceClients []string `json:"allowed_source_clients"`
 	// APIAudience is the client's own API audience. The client may request it
 	// even when the subject token does not cover it. It must be one of the

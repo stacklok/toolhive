@@ -427,7 +427,7 @@ func TestRemovedClientHandlerTypes(t *testing.T) {
 	}
 	assert.ElementsMatch(t, []string{
 		"*oauth2.AuthorizeExplicitGrantHandler", "*oauth2.RefreshTokenGrantHandler", "*pkce.Handler", "*tokenexchange.Handler",
-		jwtBearerHandler, "*tokenexchange.IDJAGHandler", "*deviceflow.Handler",
+		"*tokenexchange.RefreshTokenHandler", jwtBearerHandler, "*tokenexchange.IDJAGHandler", "*deviceflow.Handler",
 		"*authserver.refreshGrantValidators",
 	}, gotToken, "token endpoint handlers changed: decide whether the new one authenticates the client")
 	assert.ElementsMatch(t, []string{"*oauth2.AuthorizeExplicitGrantHandler", "*pkce.Handler"}, gotAuthorize,

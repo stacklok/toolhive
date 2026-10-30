@@ -1321,6 +1321,7 @@ func TestDelegateClientExchangeRefreshTokensValidate(t *testing.T) {
 		block       *DelegateClientExchangeRefreshTokens
 		apiAudience string
 		mode        SelfIssuedSubjectTokens
+		noSources   bool
 		wantErr     string
 	}{
 		{name: "id-jag cap only", block: block("12h", ""), apiAudience: audience},
@@ -1356,6 +1357,8 @@ func TestDelegateClientExchangeRefreshTokensValidate(t *testing.T) {
 			wantErr: "token_exchange.exchange_refresh_tokens.id_jag_max_lifetime"},
 		{name: "api audience missing", block: block("12h", ""), apiAudience: "",
 			wantErr: "api_audience is required with token_exchange.exchange_refresh_tokens"},
+		{name: "allowed source clients missing", block: block("12h", ""), apiAudience: audience, noSources: true,
+			wantErr: "allowed_source_clients is required with token_exchange.exchange_refresh_tokens"},
 		{name: "any mode", block: block("12h", ""), mode: SelfIssuedSubjectTokensAny,
 			wantErr: `token_exchange.exchange_refresh_tokens requires self_issued_subject_tokens "restricted"`},
 		{name: "any mode with api audience", block: block("12h", ""), apiAudience: audience,
@@ -1375,6 +1378,9 @@ func TestDelegateClientExchangeRefreshTokensValidate(t *testing.T) {
 				SelfIssuedSubjectTokens: mode,
 				APIAudience:             tt.apiAudience,
 				ExchangeRefreshTokens:   tt.block,
+			}
+			if tt.block != nil && !tt.noSources && mode == SelfIssuedSubjectTokensRestricted {
+				tokenExchange.AllowedSourceClients = []string{"tui"}
 			}
 			runConfigClients := []DelegateClientRunConfig{{
 				ClientID: "delegate", ClientSecretEnvVar: "SECRET", TokenExchange: tokenExchange,

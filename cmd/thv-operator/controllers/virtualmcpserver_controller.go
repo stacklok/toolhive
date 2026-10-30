@@ -3193,19 +3193,13 @@ func (r *VirtualMCPServerReconciler) mapEmbeddingServerToVirtualMCPServer(
 
 // SetupWithManager sets up the controller with the Manager
 func (r *VirtualMCPServerReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	// vMCP owns these indexes so CA change handling also works when the shared
-	// OIDC config controller is not registered with this manager.
+	// Index the CA dependency; the mapper's vMCP -> OIDC config lookup reuses
+	// vmcpOIDCConfigRefIndexKey, registered by MCPOIDCConfigReconciler.
 	if err := mgr.GetFieldIndexer().IndexField(
 		context.Background(), &mcpv1beta1.MCPOIDCConfig{},
 		oidcConfigCABundleConfigMapIndex, indexOIDCConfigByCABundleConfigMap,
 	); err != nil {
 		return fmt.Errorf("failed to set up OIDC CA bundle ConfigMap index: %w", err)
-	}
-	if err := mgr.GetFieldIndexer().IndexField(
-		context.Background(), &mcpv1beta1.VirtualMCPServer{},
-		virtualMCPServerOIDCConfigRefIndex, indexVirtualMCPServerByOIDCConfigRef,
-	); err != nil {
-		return fmt.Errorf("failed to set up VirtualMCPServer OIDC reference index: %w", err)
 	}
 	if err := mgr.GetFieldIndexer().IndexField(
 		context.Background(), &mcpv1beta1.VirtualMCPServer{},

@@ -21,14 +21,12 @@ import (
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/virtualmcpserverstatus"
 )
 
-const (
-	oidcConfigCABundleConfigMapIndex   = "toolhive.stacklok.dev/oidcconfig-cabundle-configmap"
-	virtualMCPServerOIDCConfigRefIndex = "toolhive.stacklok.dev/virtualmcpserver-oidcconfig"
-)
+const oidcConfigCABundleConfigMapIndex = "toolhive.stacklok.dev/oidcconfig-cabundle-configmap"
 
-// validateCABundleRef reports incoming OIDC CA reference problems without blocking
-// reconciliation, matching MCPServer and MCPRemoteProxy's advisory conditions.
-// Transient CA ConfigMap read errors are returned for retry without changing status.
+// validateCABundleRef records missing or invalid incoming OIDC CA references as
+// advisory conditions and returns nil so reconciliation can continue. A transient
+// CA ConfigMap read error preserves the existing condition and returns an error
+// for retry: Reconcile stops before resource reconciliation and the status flush.
 func (r *VirtualMCPServerReconciler) validateCABundleRef(
 	ctx context.Context, vmcp *mcpv1beta1.VirtualMCPServer, statusManager virtualmcpserverstatus.StatusManager,
 ) error {
@@ -111,7 +109,7 @@ func (r *VirtualMCPServerReconciler) mapOIDCCABundleConfigMapToVirtualMCPServer(
 	for _, config := range configs.Items {
 		servers := &mcpv1beta1.VirtualMCPServerList{}
 		if err := r.List(ctx, servers, client.InNamespace(cm.Namespace),
-			client.MatchingFields{virtualMCPServerOIDCConfigRefIndex: config.Name}); err != nil {
+			client.MatchingFields{vmcpOIDCConfigRefIndexKey: config.Name}); err != nil {
 			log.FromContext(ctx).Error(err, "Failed to list VirtualMCPServers for CA bundle ConfigMap watch")
 			continue
 		}

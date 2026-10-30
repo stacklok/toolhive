@@ -392,6 +392,7 @@ func (h *RefreshTokenHandler) decideChild(
 		ClientID:           parent.ClientID,
 		Subject:            parent.Subject,
 		SubjectIdentifier:  parent.SubjectIdentifier,
+		UpstreamSubject:    parent.UpstreamSubject,
 		ParentSignature:    parent.Signature,
 		IssuableTokenTypes: []string{tokenType},
 		ExpiresAt:          expiresAt,

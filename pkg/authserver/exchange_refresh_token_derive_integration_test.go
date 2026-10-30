@@ -11,11 +11,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-jose/go-jose/v4/jwt"
 	"github.com/ory/fosite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/stacklok/toolhive/pkg/authserver/server"
+	"github.com/stacklok/toolhive/pkg/authserver/server/session"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
@@ -129,6 +131,23 @@ func runDeriveFlows(t *testing.T, env *xrtEnv) {
 			require.Equal(t, http.StatusOK, child.status, child.body)
 			requireError(t, env.derive(t, env.broker, child.str(t, "access_token"), oauthproto.TokenTypeIDJAG, nil),
 				"invalid_request", "not_issuable")
+		})
+
+		t.Run("a child copies sub_id and upstream_subject from its parent", func(t *testing.T) {
+			subID := map[string]any{"format": "iss_sub", "iss": env.issuer, "sub": "user-1"}
+			upstream := map[string]any{"iss": "https://idp.example", "claim": "oid", "value": "obj-1"}
+			subject := env.mint(t, func(_ *jwt.Claims, x map[string]any) {
+				x["sub_id"] = subID
+				x[session.UpstreamSubjectClaimKey] = upstream
+			})
+			parent := env.requestRefreshToken(t, env.broker, subject, nil)
+			require.Equal(t, http.StatusOK, parent.status, parent.body)
+			child := env.derive(t, env.broker, parent.str(t, "access_token"), oauthproto.TokenTypeIDJAG, nil)
+			require.Equal(t, http.StatusOK, child.status, child.body)
+
+			grant := env.grant(t, child.str(t, "access_token"))
+			assertJSONEqual(t, subID, grant.SubjectIdentifier)
+			assertJSONEqual(t, upstream, grant.UpstreamSubject)
 		})
 
 		t.Run("expired grants are the grant_invalid error", func(t *testing.T) {

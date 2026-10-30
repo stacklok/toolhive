@@ -1545,8 +1545,8 @@ child entry lists exactly one kind of token. It is never `refresh_token`, so a
 child cannot be derived from: depth is 1. The child's kind of token must be enabled for the
 client, and its `expires_at` is at most the lesser of the parent's `expires_at`
 and now plus the client's cap for the child's kind of token. A request above
-that is capped. The child copies the parent's client and subject. It has no
-subject-token `jti`, so it has no single-use marker.
+that is capped. The child copies the parent's client, subject, `sub_id` and
+`upstream_subject`. It has no subject-token `jti`, so it has no single-use marker.
 
 **Check order.** The server runs these checks in this order and stops at the
 first that fails:

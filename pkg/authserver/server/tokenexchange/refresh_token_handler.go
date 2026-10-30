@@ -47,23 +47,23 @@ const (
 	refuseStore           = "store_failure"
 )
 
-// Reasons returned to the client as the whole error_description when a derive
-// request presents a grant of its own client that cannot be used. They are
-// stable strings. A grant that is unknown, forged or another client's gets the
-// one code reasonGrantInvalid (errUnknownGrant).
+// Reasons returned to the client as the whole error_description when a request
+// presents a grant of its own client that cannot be used: token_used, revoked,
+// parent_revoked and not_issuable. They are stable strings. A grant that is
+// unknown, forged, another client's or expired gets the one code
+// reasonGrantInvalid (errUnknownGrant).
 const (
 	reasonTokenUsed     = "token_used"
 	reasonRevoked       = "revoked"
 	reasonParentRevoked = "parent_revoked"
-	reasonExpired       = "expired"
 	reasonNotIssuable   = "not_issuable"
 	reasonGrantInvalid  = "grant_invalid"
 )
 
 // errUnknownGrant is the one error returned when the presented refresh token
-// fails its HMAC check, is not found, belongs to another client, or is not an
-// exchange grant at all (a login refresh token). Its error_description is the
-// same code for all of these, so a caller cannot tell the cases apart.
+// fails its HMAC check, is not found, belongs to another client, has expired, or
+// is not an exchange grant at all (a login refresh token). Its error_description
+// is the same code for all of these, so a caller cannot tell the cases apart.
 var errUnknownGrant = exactReason(fosite.ErrInvalidRequest.ErrorField, reasonGrantInvalid)
 
 // Reasons for a refused subject token that are also sent to the client, as the
@@ -432,12 +432,16 @@ func (h *RefreshTokenHandler) presentedGrant(
 		log = log.With("sub_id", grant.SubjectIdentifier)
 	}
 
+	// Expiry is checked before Live, which reports a revoked grant first. An
+	// expired grant is answered like an unknown one whatever its revocation.
+	if now.After(grant.ExpiresAt) {
+		return nil, log, refuse(ctx, log, refuseUnknownGrant, errorsx.WithStack(errUnknownGrant))
+	}
 	if err := grant.Live(now); err != nil {
-		reason := reasonExpired
 		if errors.Is(err, storage.ErrRevoked) {
-			reason = reasonRevoked
+			return nil, log, refuseWithReason(ctx, log, reasonRevoked)
 		}
-		return nil, log, refuseWithReason(ctx, log, reason)
+		return nil, log, refuse(ctx, log, refuseUnknownGrant, errorsx.WithStack(errUnknownGrant))
 	}
 	if grant.ParentSignature != "" {
 		parent, err := h.store.GetExchangeGrant(ctx, grant.ParentSignature)

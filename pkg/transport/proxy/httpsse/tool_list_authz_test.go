@@ -57,7 +57,7 @@ func TestSSEToolsListIsFilteredByAuthz(t *testing.T) {
 	require.NoError(t, proxy.Start(t.Context()))
 	t.Cleanup(func() { require.NoError(t, proxy.Stop(context.Background())) })
 	base := fmt.Sprintf("http://127.0.0.1:%d", port)
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := &http.Client{Timeout: 10 * time.Second, Transport: &http.Transport{DisableKeepAlives: true}}
 
 	// Open the SSE stream and learn the session id from the endpoint event.
 	streamReq, err := http.NewRequestWithContext(t.Context(), http.MethodGet, base+"/sse", nil)
@@ -85,7 +85,7 @@ func TestSSEToolsListIsFilteredByAuthz(t *testing.T) {
 	require.Equal(t, http.StatusAccepted, post.StatusCode)
 
 	// Play the backend: answer the forwarded request with two tools.
-	forwarded := <-proxy.GetMessageChannel()
+	forwarded := nextForwarded(t, proxy.GetMessageChannel())
 	result, err := json.Marshal(map[string]any{"tools": []map[string]string{{"name": "weather"}, {"name": "secret"}}})
 	require.NoError(t, err)
 	require.NoError(t, proxy.ForwardResponseToClients(t.Context(), &jsonrpc2.Response{
@@ -135,7 +135,7 @@ func TestSSEPromptsListIsFilteredByAuthz(t *testing.T) {
 	require.NoError(t, proxy.Start(t.Context()))
 	t.Cleanup(func() { require.NoError(t, proxy.Stop(context.Background())) })
 	base := fmt.Sprintf("http://127.0.0.1:%d", port)
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := &http.Client{Timeout: 10 * time.Second, Transport: &http.Transport{DisableKeepAlives: true}}
 
 	streamReq, err := http.NewRequestWithContext(t.Context(), http.MethodGet, base+"/sse", nil)
 	require.NoError(t, err)
@@ -161,7 +161,7 @@ func TestSSEPromptsListIsFilteredByAuthz(t *testing.T) {
 	require.Equal(t, http.StatusAccepted, post.StatusCode)
 
 	// Play the backend: answer the forwarded prompts/list with two prompts.
-	forwarded := <-proxy.GetMessageChannel()
+	forwarded := nextForwarded(t, proxy.GetMessageChannel())
 	result, err := json.Marshal(map[string]any{"prompts": []map[string]string{{"name": "public_summary"}, {"name": "internal_audit"}}})
 	require.NoError(t, err)
 	require.NoError(t, proxy.ForwardResponseToClients(t.Context(), &jsonrpc2.Response{
@@ -217,4 +217,17 @@ func freePort(t *testing.T) int {
 	port := l.Addr().(*net.TCPAddr).Port
 	require.NoError(t, l.Close())
 	return port
+}
+
+// nextForwarded waits for the message the proxy forwards to the backend. The
+// wait is bounded so a missing forward fails the test instead of hanging it.
+func nextForwarded(t *testing.T, ch chan jsonrpc2.Message) jsonrpc2.Message {
+	t.Helper()
+	select {
+	case msg := <-ch:
+		return msg
+	case <-time.After(10 * time.Second):
+		require.FailNow(t, "timed out waiting for the forwarded request")
+		return nil
+	}
 }

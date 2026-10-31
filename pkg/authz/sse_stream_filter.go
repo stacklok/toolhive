@@ -108,7 +108,9 @@ func (w *sseStreamFilterWriter) finish() {
 }
 
 // decide picks the mode once, from the Content-Type the handler set. Only an
-// event stream is parsed. Any other body is passed through unchanged.
+// event stream is parsed. Any other body is passed through unchanged. A parsed
+// stream carries caller-specific list answers, so it is marked uncacheable
+// before its headers are committed, the same as the POST path.
 func (w *sseStreamFilterWriter) decide() {
 	if w.decided {
 		return
@@ -116,6 +118,9 @@ func (w *sseStreamFilterWriter) decide() {
 	w.decided = true
 	mediaType, _, _ := mime.ParseMediaType(w.ResponseWriter.Header().Get("Content-Type"))
 	w.passThrough = mediaType != "text/event-stream"
+	if !w.passThrough {
+		w.ResponseWriter.Header().Set("Cache-Control", "private, no-store")
+	}
 }
 
 // drainCompleteEvents writes every event that is complete in the buffer and

@@ -6,6 +6,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -34,6 +35,12 @@ type SkillsListResult struct {
 	Skills     []*thvregistry.Skill
 	NextCursor string
 }
+
+// ErrSkillsEndpointNotServed marks a 404 on the first page of a skills listing:
+// the registry does not serve the skills endpoint at all, so it has no skills.
+// A 404 on a later page is a real failure, because the endpoint answered on the
+// first page, and is returned as the plain HTTP error.
+var ErrSkillsEndpointNotServed = errors.New("registry does not serve the skills endpoint")
 
 // SkillsClient provides access to the ToolHive Skills extension API.
 type SkillsClient interface {
@@ -110,13 +117,24 @@ func (c *mcpSkillsClient) ListSkills(ctx context.Context, opts *SkillsListOption
 
 	var allSkills []*thvregistry.Skill
 	cursor := opts.Cursor
+	firstPage := cursor == ""
 
 	// Pagination loop - continue until no more cursors
 	for {
 		page, nextCursor, err := c.fetchSkillsPage(ctx, cursor, opts)
 		if err != nil {
+			// Only the first request can mean "this registry has no skills
+			// endpoint": every later one was answered by the endpoint, so a
+			// failure there is a real one.
+			if firstPage {
+				var httpErr *RegistryHTTPError
+				if errors.As(err, &httpErr) && httpErr.StatusCode == http.StatusNotFound {
+					return nil, fmt.Errorf("%w: %s", ErrSkillsEndpointNotServed, httpErr.Error())
+				}
+			}
 			return nil, err
 		}
+		firstPage = false
 
 		allSkills = append(allSkills, page...)
 

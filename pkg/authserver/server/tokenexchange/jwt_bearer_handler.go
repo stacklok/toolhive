@@ -394,6 +394,16 @@ func validateAssertionType(assertion string) error {
 	return errorsx.WithStack(fosite.ErrInvalidGrant.WithHint("The assertion JOSE typ header is not supported."))
 }
 
+// assertionType returns the raw JOSE typ header of the assertion, with no
+// normalization. JWT-bearer and ID-JAG routing (CanHandleTokenEndpointRequest
+// of both handlers, and CanSkipClientAuth) and validateAssertionType compare
+// this value exactly to "oauth-id-jag+jwt". That does not follow RFC 7515
+// Section 4.1.9, which says typ is compared case-insensitively and a value
+// without "/" is treated as if "application/" were prepended. So an ID-JAG
+// whose typ differs in case or carries the "application/" prefix is not routed
+// to IDJAGHandler, and validateAssertionType refuses it. This is a known gap;
+// it fails closed. rejectIDJAGType and pkg/auth already compare with
+// oauthproto.IsJOSEType.
 func assertionType(assertion string) string {
 	parsed, err := jwt.ParseSigned(assertion, allowedSignatureAlgorithms)
 	if err != nil || len(parsed.Headers) != 1 {

@@ -285,7 +285,7 @@ func (*XAAStrategy) performIDPExchange(
 		// an unvalidated assertion to the target AS.
 		return "", fmt.Errorf("IdP exchange: ID-JAG assertion is not a valid JWT: %w", parseErr)
 	}
-	if typ, _ := parsed.Header["typ"].(string); !strings.EqualFold(typ, oauthproto.JWTTypeIDJAG) {
+	if typ, _ := parsed.Header["typ"].(string); !oauthproto.IsJOSEType(typ, oauthproto.JWTTypeIDJAG) {
 		slog.Debug("xaa: ID-JAG JWT typ header mismatch",
 			"got", typ, "want", oauthproto.JWTTypeIDJAG,
 		)

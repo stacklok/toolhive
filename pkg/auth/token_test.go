@@ -470,6 +470,100 @@ func writeTestServerCert(t *testing.T, server *httptest.Server) string {
 	return tmpFile.Name()
 }
 
+// TestTokenValidator_IDJAGTypeWithoutAudience pins that a validator with no
+// audience configured, which skips the audience check, still refuses a token
+// typed as an ID-JAG on both key lookup paths (RFC 8725 Section 3.12).
+func TestTokenValidator_IDJAGTypeWithoutAudience(t *testing.T) {
+	t.Parallel()
+
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+
+	key, err := jwk.Import[jwk.Key](&privateKey.PublicKey)
+	require.NoError(t, err)
+	require.NoError(t, key.Set(jwk.KeyIDKey, testKeyID))
+	require.NoError(t, key.Set(jwk.AlgorithmKey, "RS256"))
+	require.NoError(t, key.Set(jwk.KeyUsageKey, "sig"))
+	keySet := jwk.NewSet()
+	require.NoError(t, keySet.AddKey(key))
+	jwksServer, caCertPath := createTestJWKSServer(t, keySet)
+	t.Cleanup(jwksServer.Close)
+
+	newValidator := func(t *testing.T, withKeyProvider bool) *TokenValidator {
+		t.Helper()
+		ctrl := gomock.NewController(t)
+		mockEnv := envmocks.NewMockReader(ctrl)
+		mockEnv.EXPECT().Getenv(gomock.Any()).Return("").AnyTimes()
+		opts := []TokenValidatorOption{WithEnvReader(mockEnv)}
+		if withKeyProvider {
+			provider := keysmocks.NewMockPublicKeyProvider(ctrl)
+			provider.EXPECT().PublicKeys(gomock.Any()).Return([]*keys.PublicKeyData{
+				{KeyID: testKeyID, Algorithm: "RS256", PublicKey: &privateKey.PublicKey},
+			}, nil).AnyTimes()
+			opts = append(opts, WithKeyProvider(provider))
+		}
+		validator, err := NewTokenValidator(context.Background(), TokenValidatorConfig{
+			Issuer:         "test-issuer",
+			JWKSURL:        jwksServer.URL,
+			ClientID:       "test-client",
+			CACertPath:     caCertPath,
+			AllowPrivateIP: true,
+		}, opts...)
+		require.NoError(t, err)
+		return validator
+	}
+
+	lookups := []struct {
+		name            string
+		withKeyProvider bool
+	}{
+		{name: "JWKS lookup"},
+		{name: "local key provider", withKeyProvider: true},
+	}
+	types := []struct {
+		name    string
+		typ     string
+		omitTyp bool
+		wantErr bool
+	}{
+		{name: "ID-JAG typ", typ: "Application/OAuth-ID-JAG+JWT", wantErr: true},
+		{name: "absent typ", omitTyp: true},
+	}
+	for _, lookup := range lookups {
+		for _, tc := range types {
+			t.Run(lookup.name+"/"+tc.name, func(t *testing.T) {
+				t.Parallel()
+				validator := newValidator(t, lookup.withKeyProvider)
+
+				token := jwt.NewWithClaims(jwt.SigningMethodRS256, jwt.MapClaims{
+					"iss": "test-issuer",
+					"aud": "https://some-other-resource.example.com",
+					"exp": time.Now().Add(time.Hour).Unix(),
+				})
+				token.Header["kid"] = testKeyID
+				if tc.omitTyp {
+					delete(token.Header, "typ")
+				} else {
+					token.Header["typ"] = tc.typ
+				}
+				tokenString, err := token.SignedString(privateKey)
+				require.NoError(t, err)
+
+				claims, err := validator.ValidateToken(context.Background(), tokenString)
+				if tc.wantErr {
+					require.Error(t, err)
+					require.Contains(t, err.Error(), "ID-JAG")
+					require.NotContains(t, err.Error(), tokenString)
+					require.Nil(t, claims)
+					return
+				}
+				require.NoError(t, err)
+				require.Equal(t, "test-issuer", claims["iss"])
+			})
+		}
+	}
+}
+
 // createTestJWKSServer creates a test JWKS server with TLS and returns the server and CA cert path
 func createTestJWKSServer(t *testing.T, keySet jwk.Set) (*httptest.Server, string) {
 	t.Helper()

@@ -167,6 +167,7 @@ sequenceDiagram
 
 **Responsibilities**:
 - Validate JWT token signature and expiration
+- Return 401 Unauthorized for a token whose JOSE `typ` header is `oauth-id-jag+jwt` (compared case-insensitively, with or without the `application/` prefix), even when its signature and claims are valid. This applies to tokens from every configured issuer, including external identity providers, and to vMCP incoming authentication. An ID-JAG is not an access token. An issuer that signs ID-JAGs with the same key as its access tokens (an external identity provider today, and the embedded auth server once it issues ID-JAGs) would otherwise have them accepted in place of access tokens (RFC 8725 Section 3.12). Configuring an expected audience is the main defence against one token type being used in place of another; this check is a backup for deployments without one.
 - Extract JWT claims (sub, name, roles, etc.)
 - Add claims to request context for downstream middleware
 - With the embedded auth server, load the token session's upstream provider credentials (the `tsid` claim) into `Identity.UpstreamTokens` and `Identity.UpstreamIDTokens`, refreshing expired access tokens

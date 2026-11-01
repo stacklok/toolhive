@@ -13,6 +13,8 @@ import (
 
 	"github.com/go-jose/go-jose/v4"
 	"github.com/go-jose/go-jose/v4/jwt"
+
+	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
 // allowedSignatureAlgorithms lists the signing algorithms accepted during JWT verification.
@@ -189,6 +191,10 @@ func (v *SelfIssuedTokenValidator) Validate(_ context.Context, rawToken string) 
 		return nil, err
 	}
 
+	if err := rejectIDJAGType(parsedToken); err != nil {
+		return nil, err
+	}
+
 	// Validate issuer and expiry. Audience is intentionally excluded from
 	// jwt.Expected here — go-jose's AnyAudience check is skipped entirely when
 	// empty, which is the opposite of this server's secure default (empty
@@ -232,6 +238,38 @@ func (v *SelfIssuedTokenValidator) Validate(_ context.Context, rawToken string) 
 	}
 
 	return buildValidatedClaims(standardClaims, extraClaims), nil
+}
+
+// rejectIDJAGType refuses a token whose JOSE typ header is the ID-JAG type. It
+// is called from SelfIssuedTokenValidator.Validate and
+// MultiIssuerTokenValidator.validateExternalToken. That covers the
+// token-exchange subject token (MultiIssuerTokenValidator, which hands this
+// server's own tokens to SelfIssuedTokenValidator), the actor token
+// (SelfIssuedTokenValidator only), and the subject token a top-level exchange
+// grant is created from (decideTopLevel, SelfIssuedTokenValidator).
+// It must run only after the signature has verified, so the header is
+// trustworthy, and it is deliberately separate from verifySignature, which
+// ID-JAG and JWT-bearer redemption share and which must keep accepting ID-JAGs.
+//
+// An absent typ, or a typ that is not a string, is accepted, as the pkg/auth
+// token validator does: neither can name the ID-JAG type. The one-signature
+// check is defensive; jwt.ParseSigned only accepts compact serialization, which
+// always has exactly one signature.
+//
+// RFC 8725 Section 3.12: validation rules for different token types must be
+// mutually exclusive. An issuer that signs ID-JAGs with the same key as its
+// access tokens (a trusted external issuer today, and this authorization
+// server once it issues ID-JAGs) could otherwise have one presented in their
+// place.
+func rejectIDJAGType(token *jwt.JSONWebToken) error {
+	if len(token.Headers) != 1 {
+		return errors.New("token must contain exactly one JOSE signature")
+	}
+	typ, _ := token.Headers[0].ExtraHeaders[jose.HeaderType].(string)
+	if oauthproto.IsJOSEType(typ, oauthproto.JWTTypeIDJAG) {
+		return errors.New("token is an ID-JAG, which is not accepted in place of an access token")
+	}
+	return nil
 }
 
 // verifySignature attempts to verify the JWT signature using the provided public keys.

@@ -9,6 +9,7 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
+	"encoding/base64"
 	"testing"
 	"time"
 
@@ -57,11 +58,19 @@ func (tj *testJWKS) publicJWKS() *jose.JSONWebKeySet {
 // signToken creates a signed JWT with the given claims using the test JWKS key.
 func (tj *testJWKS) signToken(t *testing.T, claims jwt.Claims, extraClaims map[string]any) string {
 	t.Helper()
+	return tj.signTokenWithType(t, "JWT", claims, extraClaims)
+}
 
-	signer, err := jose.NewSigner(
-		jose.SigningKey{Algorithm: jose.ES256, Key: tj.jwk},
-		(&jose.SignerOptions{}).WithType("JWT"),
-	)
+// signTokenWithType is signToken with the JOSE typ header set to typ, or left
+// out when typ is empty.
+func (tj *testJWKS) signTokenWithType(t *testing.T, typ string, claims jwt.Claims, extraClaims map[string]any) string {
+	t.Helper()
+
+	options := &jose.SignerOptions{}
+	if typ != "" {
+		options.WithType(jose.ContentType(typ))
+	}
+	signer, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.ES256, Key: tj.jwk}, options)
 	require.NoError(t, err)
 
 	builder := jwt.Signed(signer).Claims(claims)
@@ -440,6 +449,56 @@ func TestSelfIssuedTokenValidator_AudienceValidation(t *testing.T) {
 			require.NotNil(t, result)
 		})
 	}
+}
+
+// TestSelfIssuedTokenValidator_IDJAGType pins that an ID-JAG signed by this
+// server's key is refused as a subject token even when its audience is allowed,
+// so only the typ stops it (RFC 8725 Section 3.12).
+func TestSelfIssuedTokenValidator_IDJAGType(t *testing.T) {
+	t.Parallel()
+
+	tj := newTestJWKS(t)
+	validator, err := NewSelfIssuedTokenValidator(tj.publicJWKS(), testIssuer, []string{testIssuer})
+	require.NoError(t, err)
+
+	tests := []struct {
+		name    string
+		typ     string
+		wantErr bool
+	}{
+		{name: "ID-JAG typ", typ: "Application/OAuth-ID-JAG+JWT", wantErr: true},
+		{name: "absent typ", typ: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			raw := tj.signTokenWithType(t, tt.typ, validClaims(), validExtraClaims())
+
+			result, err := validator.Validate(context.Background(), raw)
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "ID-JAG")
+				assert.Nil(t, result)
+				return
+			}
+			require.NoError(t, err)
+			require.NotNil(t, result)
+		})
+	}
+}
+
+// TestRejectIDJAGType pins that rejectIDJAGType accepts a non-string typ header,
+// since it cannot name the ID-JAG type. The signature is never checked there,
+// so the hand-built token carries a bogus one.
+func TestRejectIDJAGType(t *testing.T) {
+	t.Parallel()
+
+	b64 := func(s string) string { return base64.RawURLEncoding.EncodeToString([]byte(s)) }
+	token := b64(`{"alg":"ES256","typ":123}`) + "." + b64(`{"iss":"x"}`) + "." + b64("bogus-signature")
+
+	parsed, err := jwt.ParseSigned(token, allowedSignatureAlgorithms)
+	require.NoError(t, err)
+	require.NoError(t, rejectIDJAGType(parsed))
 }
 
 // newECDSAJWK generates a fresh ECDSA P-256 key with the given key ID. The

@@ -90,3 +90,89 @@ func TestParseMCPResponse(t *testing.T) {
 		})
 	}
 }
+
+func TestParseTruncatedMCPResponse(t *testing.T) {
+	t.Parallel()
+
+	full := `{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"` + strings.Repeat("a", 600) + `"}}`
+
+	tests := []struct {
+		name         string
+		body         string
+		wantHasError bool
+		wantCode     int
+		wantMessage  string
+	}{
+		{
+			name:         "complete error",
+			body:         `{"jsonrpc":"2.0","id":1,"error":{"code":-32603,"message":"boom"}}`,
+			wantHasError: true,
+			wantCode:     -32603,
+			wantMessage:  "boom",
+		},
+		{
+			name:         "cut inside message string keeps code",
+			body:         full[:200],
+			wantHasError: true,
+			wantCode:     -32000,
+		},
+		{
+			name:         "cut right after code",
+			body:         `{"jsonrpc":"2.0","id":1,"error":{"code":-32000,`,
+			wantHasError: true,
+			wantCode:     -32000,
+		},
+		{
+			name:         "cut inside the error key name",
+			body:         `{"jsonrpc":"2.0","id":1,"err`,
+			wantHasError: false,
+		},
+		{
+			name:         "cut right after the error key opens",
+			body:         `{"jsonrpc":"2.0","id":1,"error":{`,
+			wantHasError: true,
+		},
+		{
+			name:         "data before message is skipped",
+			body:         `{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"data":{"a":[1,2]},"message":"late"}}`,
+			wantHasError: true,
+			wantCode:     -32000,
+			wantMessage:  "late",
+		},
+		{
+			name:         "truncated result is not an error",
+			body:         `{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"` + strings.Repeat("a", 600),
+			wantHasError: false,
+		},
+		{
+			name:         "nested error key is ignored",
+			body:         `{"jsonrpc":"2.0","id":1,"result":{"error":{"code":1,"message":"x"},"pad":"` + strings.Repeat("a", 600),
+			wantHasError: false,
+		},
+		{
+			name:         "null error",
+			body:         `{"jsonrpc":"2.0","id":1,"error":null}`,
+			wantHasError: false,
+		},
+		{
+			name:         "not an object",
+			body:         `[{"error":{"code":1}}`,
+			wantHasError: false,
+		},
+		{
+			name:         "empty",
+			body:         "",
+			wantHasError: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := ParseTruncatedMCPResponse([]byte(tt.body))
+			assert.Equal(t, tt.wantHasError, got.HasError)
+			assert.Equal(t, tt.wantCode, got.ErrorCode)
+			assert.Equal(t, tt.wantMessage, got.ErrorMessage)
+		})
+	}
+}

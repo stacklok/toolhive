@@ -165,70 +165,51 @@ func TestRegisterClientHandler_PrivateKeyJWTPaddedJWKS(t *testing.T) {
 	n := base64.URLEncoding.EncodeToString(pub.N.Bytes())
 	require.True(t, strings.HasSuffix(n, "="), "test needs a padded modulus")
 	e := base64.RawURLEncoding.EncodeToString(big.NewInt(int64(pub.E)).Bytes())
+	jwk := fmt.Sprintf(`{"kty":"RSA","kid":"k1","use":"sig","alg":"RS256","n":%q,"e":%q}`, n, e)
 
-	tests := []struct {
-		name       string
-		jwk        string
-		wantStatus int
-	}{
-		{
-			name:       "padded modulus",
-			jwk:        fmt.Sprintf(`{"kty":"RSA","kid":"k1","use":"sig","alg":"RS256","n":%q,"e":%q}`, n, e),
-			wantStatus: http.StatusCreated,
-		},
-		{
-			name:       "unpadded modulus",
-			jwk:        fmt.Sprintf(`{"kty":"RSA","kid":"k1","use":"sig","alg":"RS256","n":%q,"e":%q}`, strings.TrimRight(n, "="), e),
-			wantStatus: http.StatusCreated,
-		},
-		{
-			name:       "invalid base64url is still rejected",
-			jwk:        `{"kty":"RSA","kid":"k1","use":"sig","alg":"RS256","n":"!!!=","e":"AQAB"}`,
-			wantStatus: http.StatusBadRequest,
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
+	handler, storedClient := newPrivateKeyJWTRegistrationHandler(t, false)
+	body := fmt.Sprintf(`{"redirect_uris":["https://example.com/callback"],`+
+		`"grant_types":[%q],"token_endpoint_auth_method":"private_key_jwt",`+
+		`"token_endpoint_auth_signing_alg":"RS256","jwks":{"keys":[%s]}}`,
+		oauthproto.GrantTypeTokenExchange, jwk)
 
-			ctrl := gomock.NewController(t)
-			stor := mocks.NewMockStorage(ctrl)
-			var stored fosite.Client
-			stor.EXPECT().RegisterClient(gomock.Any(), gomock.Any()).DoAndReturn(
-				func(_ context.Context, client fosite.Client) error {
-					stored = client
-					return nil
-				}).AnyTimes()
-			handler := &Handler{
-				storage: stor,
-				config: &server.AuthorizationServerConfig{
-					Config:                         &fosite.Config{AccessTokenIssuer: "https://test-authserver"},
-					ScopesSupported:                registration.DefaultScopes,
-					AllowPrivateKeyJWTRegistration: true,
-					TokenExchangeEnabled:           true,
-				},
-			}
-			body := fmt.Sprintf(`{"redirect_uris":["https://example.com/callback"],`+
-				`"grant_types":[%q],"token_endpoint_auth_method":"private_key_jwt",`+
-				`"token_endpoint_auth_signing_alg":"RS256","jwks":{"keys":[%s]}}`,
-				oauthproto.GrantTypeTokenExchange, tt.jwk)
+	req := httptest.NewRequest(http.MethodPost, "/oauth/register", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	handler.RegisterClientHandler(w, req)
 
-			req := httptest.NewRequest(http.MethodPost, "/oauth/register", strings.NewReader(body))
-			req.Header.Set("Content-Type", "application/json")
-			w := httptest.NewRecorder()
-			handler.RegisterClientHandler(w, req)
+	require.Equal(t, http.StatusCreated, w.Code, w.Body.String())
+	oidc, ok := storedClient().(fosite.OpenIDConnectClient)
+	require.True(t, ok)
+	got, ok := oidc.GetJSONWebKeys().Keys[0].Key.(*rsa.PublicKey)
+	require.True(t, ok)
+	assert.True(t, pub.Equal(got))
+}
 
-			require.Equal(t, tt.wantStatus, w.Code, w.Body.String())
-			if tt.wantStatus != http.StatusCreated {
-				return
-			}
-			oidc, ok := stored.(fosite.OpenIDConnectClient)
-			require.True(t, ok)
-			got, ok := oidc.GetJSONWebKeys().Keys[0].Key.(*rsa.PublicKey)
-			require.True(t, ok)
-			assert.True(t, pub.Equal(got))
+// newPrivateKeyJWTRegistrationHandler returns a handler whose storage accepts exactly one
+// registration. The returned func yields the client that storage received.
+func newPrivateKeyJWTRegistrationHandler(t *testing.T, tokenOnly bool) (*Handler, func() fosite.Client) {
+	t.Helper()
+
+	ctrl := gomock.NewController(t)
+	stor := mocks.NewMockStorage(ctrl)
+	var stored fosite.Client
+	stor.EXPECT().RegisterClient(gomock.Any(), gomock.Any()).DoAndReturn(
+		func(_ context.Context, client fosite.Client) error {
+			stored = client
+			return nil
 		})
+	handler := &Handler{
+		storage:   stor,
+		tokenOnly: tokenOnly,
+		config: &server.AuthorizationServerConfig{
+			Config:                         &fosite.Config{AccessTokenIssuer: "https://test-authserver"},
+			ScopesSupported:                registration.DefaultScopes,
+			AllowPrivateKeyJWTRegistration: true,
+			TokenExchangeEnabled:           true,
+		},
 	}
+	return handler, func() fosite.Client { return stored }
 }
 
 func TestRegisterClientHandler_PrivateKeyJWTResponseAndClient(t *testing.T) {
@@ -252,24 +233,7 @@ func testRegisterClientHandlerPrivateKeyJWTResponseAndClient(t *testing.T, token
 		Use:       "sig",
 		Algorithm: string(jose.RS256),
 	}}}
-	ctrl := gomock.NewController(t)
-	stor := mocks.NewMockStorage(ctrl)
-	var stored fosite.Client
-	stor.EXPECT().RegisterClient(gomock.Any(), gomock.Any()).DoAndReturn(
-		func(_ context.Context, client fosite.Client) error {
-			stored = client
-			return nil
-		})
-	handler := &Handler{
-		storage:   stor,
-		tokenOnly: tokenOnly,
-		config: &server.AuthorizationServerConfig{
-			Config:                         &fosite.Config{AccessTokenIssuer: "https://test-authserver"},
-			ScopesSupported:                registration.DefaultScopes,
-			AllowPrivateKeyJWTRegistration: true,
-			TokenExchangeEnabled:           true,
-		},
-	}
+	handler, storedClient := newPrivateKeyJWTRegistrationHandler(t, tokenOnly)
 	body, err := json.Marshal(oauthproto.DynamicClientRegistrationRequest{
 		RedirectURIs:                []string{"https://example.com/callback"},
 		GrantTypes:                  []string{oauthproto.GrantTypeTokenExchange},
@@ -298,6 +262,7 @@ func testRegisterClientHandlerPrivateKeyJWTResponseAndClient(t *testing.T, token
 	assert.Equal(t, jwks.Keys[0].KeyID, response.JWKS.Keys[0].KeyID)
 	assert.Equal(t, jwks.Keys[0].Algorithm, response.JWKS.Keys[0].Algorithm)
 	assert.Equal(t, jwks.Keys[0].Use, response.JWKS.Keys[0].Use)
+	stored := storedClient()
 	assert.NotNil(t, stored)
 	assert.False(t, stored.IsPublic())
 	assert.True(t, registration.DCRIssued(stored))

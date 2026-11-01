@@ -4100,36 +4100,15 @@ func TestLoadJWKSFile_PaddedBase64URL(t *testing.T) {
 	require.NoError(t, err)
 	padded := base64.URLEncoding.EncodeToString(key.N.Bytes())
 	require.True(t, strings.HasSuffix(padded, "="))
-	jwksWithN := func(n string) string {
-		return fmt.Sprintf(`{"keys":[{"kty":"RSA","kid":"k1","use":"sig","alg":"RS256","n":%q,"e":"AQAB"}]}`, n)
-	}
+	content := fmt.Sprintf(`{"keys":[{"kty":"RSA","kid":"k1","use":"sig","alg":"RS256","n":%q,"e":"AQAB"}]}`, padded)
 
-	tests := []struct {
-		name    string
-		content string
-		wantErr bool
-	}{
-		{name: "padded modulus", content: jwksWithN(padded)},
-		{name: "unpadded modulus", content: jwksWithN(strings.TrimRight(padded, "="))},
-		{name: "invalid base64url", content: jwksWithN("!!!="), wantErr: true},
-		{name: "not JSON", content: "not json", wantErr: true},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			path := filepath.Join(t.TempDir(), "keys.jwks")
-			require.NoError(t, os.WriteFile(path, []byte(tt.content), 0600))
+	path := filepath.Join(t.TempDir(), "keys.jwks")
+	require.NoError(t, os.WriteFile(path, []byte(content), 0600))
 
-			got, err := loadJWKSFile(path)
-			if tt.wantErr {
-				require.Error(t, err)
-				return
-			}
-			require.NoError(t, err)
-			require.Len(t, got.Keys, 1)
-			assert.True(t, key.PublicKey.Equal(got.Keys[0].Key))
-		})
-	}
+	got, err := loadJWKSFile(path)
+	require.NoError(t, err)
+	require.Len(t, got.Keys, 1)
+	assert.True(t, key.PublicKey.Equal(got.Keys[0].Key))
 }
 
 func TestResolveDelegateClients_CarriesExchangeRefreshTokens(t *testing.T) {

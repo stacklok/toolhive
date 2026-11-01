@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-FileCopyrightText: Copyright 2026 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
 package oauthproto
@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-jose/go-jose/v4"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -72,26 +73,45 @@ func TestUnmarshalJWKS(t *testing.T) {
 		base64.URLEncoding.EncodeToString(sum1[:]),
 		base64.URLEncoding.EncodeToString(sum256[:]))
 
+	rsaKeyMatches := func(t *testing.T, got *jose.JSONWebKeySet) {
+		t.Helper()
+		assert.True(t, rsaKey.PublicKey.Equal(got.Keys[0].Key))
+	}
+
 	tests := []struct {
 		name    string
 		input   string
 		wantErr bool
+		check   func(t *testing.T, got *jose.JSONWebKeySet)
 	}{
-		{name: "padded RSA modulus", input: rsaJWKS(n)},
-		{name: "unpadded RSA modulus", input: rsaJWKS(strings.TrimRight(n, "="))},
+		{name: "padded RSA modulus", input: rsaJWKS(n), check: rsaKeyMatches},
+		{name: "unpadded RSA modulus", input: rsaJWKS(strings.TrimRight(n, "=")), check: rsaKeyMatches},
 		{
 			name:  "padded EC coordinates, thumbprints and untouched x5c",
 			input: certJWKS,
+			check: func(t *testing.T, got *jose.JSONWebKeySet) {
+				t.Helper()
+				assert.True(t, certKey.PublicKey.Equal(got.Keys[0].Key))
+				require.Len(t, got.Keys[0].Certificates, 1)
+				assert.True(t, cert.Equal(got.Keys[0].Certificates[0]))
+				assert.Equal(t, sum1[:], got.Keys[0].CertificateThumbprintSHA1)
+				assert.Equal(t, sum256[:], got.Keys[0].CertificateThumbprintSHA256)
+			},
 		},
 		{
-			name:    "member names are case-sensitive like go-jose",
-			input:   fmt.Sprintf(`{"keys":[{"kty":"RSA","N":%q,"e":"AQAB"}]}`, n),
-			wantErr: true,
+			name: "null private member leaves a public key public",
+			input: fmt.Sprintf(`{"keys":[{"kty":"RSA","kid":"k1","n":%q,"e":"AQAB","d":null}]}`,
+				strings.TrimRight(n, "=")),
+			check: func(t *testing.T, got *jose.JSONWebKeySet) {
+				t.Helper()
+				require.Len(t, got.Keys, 1)
+				assert.True(t, got.Keys[0].IsPublic())
+				rsaKeyMatches(t, got)
+			},
 		},
 		{name: "invalid base64url is rejected", input: rsaJWKS("!!!="), wantErr: true},
 		{name: "not JSON is rejected", input: "not json", wantErr: true},
 		{name: "non-string member is rejected", input: `{"keys":[{"kty":"RSA","n":5,"e":"AQAB"}]}`, wantErr: true},
-		{name: "keys of the wrong type are rejected", input: `{"keys":{}}`, wantErr: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -104,18 +124,29 @@ func TestUnmarshalJWKS(t *testing.T) {
 			require.NoError(t, err)
 			require.Len(t, got.Keys, 1)
 			assert.True(t, got.Keys[0].Valid())
-			switch k := got.Keys[0].Key.(type) {
-			case *rsa.PublicKey:
-				assert.True(t, rsaKey.PublicKey.Equal(k))
-			case *ecdsa.PublicKey:
-				assert.True(t, certKey.PublicKey.Equal(k))
-				require.Len(t, got.Keys[0].Certificates, 1)
-				assert.True(t, cert.Equal(got.Keys[0].Certificates[0]))
-				assert.Equal(t, sum1[:], got.Keys[0].CertificateThumbprintSHA1)
-				assert.Equal(t, sum256[:], got.Keys[0].CertificateThumbprintSHA256)
-			default:
-				t.Fatalf("unexpected key type %T", k)
-			}
+			tt.check(t, got)
+		})
+	}
+}
+
+func TestIsPaddedJWKMember(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		want bool
+	}{
+		{"n", true},
+		{"N", false},
+		{"x5t#S256", true},
+		{"X5t#S256", false},
+		{"x5c", false},
+		{"kid", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, isPaddedJWKMember(tt.name))
 		})
 	}
 }

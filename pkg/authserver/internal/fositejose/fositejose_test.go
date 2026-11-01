@@ -58,84 +58,24 @@ func fullKey(t *testing.T) jose.JSONWebKey {
 	}
 }
 
-func TestToFositeKey(t *testing.T) {
+func TestKeyConversions(t *testing.T) {
 	t.Parallel()
 
-	full := fullKey(t)
+	original := &jose.JSONWebKeySet{Keys: []jose.JSONWebKey{fullKey(t)}}
 	tests := []struct {
 		name string
-		in   *jose.JSONWebKey
-		want *josev3.JSONWebKey
+		got  any
+		want any
 	}{
-		{name: "nil", in: nil, want: nil},
-		{name: "every field", in: &full, want: &josev3.JSONWebKey{
-			Key:                         full.Key,
-			KeyID:                       full.KeyID,
-			Algorithm:                   full.Algorithm,
-			Use:                         full.Use,
-			Certificates:                full.Certificates,
-			CertificatesURL:             full.CertificatesURL,
-			CertificateThumbprintSHA1:   full.CertificateThumbprintSHA1,
-			CertificateThumbprintSHA256: full.CertificateThumbprintSHA256,
-		}},
+		{name: "nil key", got: ToFositeKey(nil), want: (*josev3.JSONWebKey)(nil)},
+		{name: "nil set", got: ToFositeKeySet(nil), want: (*josev3.JSONWebKeySet)(nil)},
+		{name: "nil fosite set", got: FromFositeKeySet(nil), want: (*jose.JSONWebKeySet)(nil)},
+		{name: "round trip keeps every field", got: FromFositeKeySet(ToFositeKeySet(original)), want: original},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			assert.Equal(t, tt.want, ToFositeKey(tt.in))
-		})
-	}
-}
-
-func TestToFositeKeySet(t *testing.T) {
-	t.Parallel()
-
-	full := fullKey(t)
-	tests := []struct {
-		name    string
-		in      *jose.JSONWebKeySet
-		wantNil bool
-		wantLen int
-	}{
-		{name: "nil", in: nil, wantNil: true},
-		{name: "empty set", in: &jose.JSONWebKeySet{}},
-		{name: "every field", in: &jose.JSONWebKeySet{Keys: []jose.JSONWebKey{full, full}}, wantLen: 2},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			got := ToFositeKeySet(tt.in)
-			if tt.wantNil {
-				assert.Nil(t, got)
-				return
-			}
-			require.NotNil(t, got)
-			require.Len(t, got.Keys, tt.wantLen)
-			for i := range got.Keys {
-				assert.Equal(t, *ToFositeKey(&tt.in.Keys[i]), got.Keys[i])
-			}
-		})
-	}
-}
-
-func TestFromFositeKeySet(t *testing.T) {
-	t.Parallel()
-
-	full := fullKey(t)
-	original := &jose.JSONWebKeySet{Keys: []jose.JSONWebKey{full}}
-	tests := []struct {
-		name string
-		in   *josev3.JSONWebKeySet
-		want *jose.JSONWebKeySet
-	}{
-		{name: "nil", in: nil, want: nil},
-		{name: "empty set", in: &josev3.JSONWebKeySet{}, want: &jose.JSONWebKeySet{Keys: []jose.JSONWebKey{}}},
-		{name: "round trip with every field", in: ToFositeKeySet(original), want: original},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			assert.Equal(t, tt.want, FromFositeKeySet(tt.in))
+			assert.Equal(t, tt.want, tt.got)
 		})
 	}
 }

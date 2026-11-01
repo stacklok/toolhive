@@ -6,10 +6,12 @@
 package workloads
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -98,10 +100,12 @@ type DefaultManager struct {
 	statuses       statuses.StatusManager
 	configProvider config.Provider
 
-	retryConfig     *retryConfig
-	newRunner       mcpRunnerFactory
-	detachedSpawner detachedProcessSpawner
-	portFreer       portFreer
+	retryConfig          *retryConfig
+	newRunner            mcpRunnerFactory
+	detachedSpawner      detachedProcessSpawner
+	portFreer            portFreer
+	proxyExitTimeout     time.Duration
+	clientManagerFactory func(context.Context) (client.Manager, error)
 }
 
 // mcpRunner is the subset of *runner.Runner that RunWorkload's retry loop
@@ -172,6 +176,29 @@ func withPortFreer(f portFreer) managerOption {
 	return func(d *DefaultManager) { d.portFreer = f }
 }
 
+// withProxyExitTimeout bounds proxy-exit waits during stop and restart port cleanup.
+func withProxyExitTimeout(timeout time.Duration) managerOption {
+	return func(d *DefaultManager) { d.proxyExitTimeout = timeout }
+}
+
+func withClientManagerFactory(f func(context.Context) (client.Manager, error)) managerOption {
+	return func(d *DefaultManager) { d.clientManagerFactory = f }
+}
+
+func (d *DefaultManager) newClientManager(ctx context.Context) (client.Manager, error) {
+	if d.clientManagerFactory != nil {
+		return d.clientManagerFactory(ctx)
+	}
+	return client.NewManager(ctx)
+}
+
+func (d *DefaultManager) proxyExitTimeoutOrDefault() time.Duration {
+	if d.proxyExitTimeout > 0 {
+		return d.proxyExitTimeout
+	}
+	return defaultProxyExitTimeout
+}
+
 // retryConfigOrDefault returns the manager's retryConfig if set, otherwise defaults.
 func (d *DefaultManager) retryConfigOrDefault() retryConfig {
 	if d.retryConfig == nil {
@@ -212,6 +239,9 @@ func (d *DefaultManager) portFreerOrDefault() portFreer {
 var ErrWorkloadNotRunning = fmt.Errorf("workload not running")
 
 const (
+	defaultProxyExitTimeout   = 5 * time.Second
+	workloadPIDCleanupTimeout = 5 * time.Second
+
 	// AsyncOperationTimeout is the timeout for async workload operations
 	AsyncOperationTimeout = 5 * time.Minute
 )
@@ -458,22 +488,24 @@ func (d *DefaultManager) stopRemoteWorkload(ctx context.Context, name string, ru
 	// A remote workload's proxy can outlive its recorded status (e.g. the status
 	// file went missing), so we always try to free an orphaned proxy below — only
 	// the status transitions and client-config cleanup are gated on the workload
-	// actually running.
+	// running, starting, retrying authentication, unauthenticated, or unhealthy.
 	workload, err := d.statuses.GetWorkload(ctx, name)
 	if err != nil && !errors.Is(err, rt.ErrWorkloadNotFound) {
 		return fmt.Errorf("failed to find workload %s: %w", name, err)
 	}
-	running := err == nil && workload.Status == rt.WorkloadStatusRunning
+	stoppable := err == nil && (workload.Status == rt.WorkloadStatusRunning || workload.Status == rt.WorkloadStatusStarting ||
+		workload.Status == rt.WorkloadStatusAuthRetrying || workload.Status == rt.WorkloadStatusUnauthenticated ||
+		workload.Status == rt.WorkloadStatusUnhealthy)
 	switch {
 	case err != nil:
 		// Status is gone (e.g. a missing status file); don't fail the operation,
 		// but still free an orphaned proxy below.
 		slog.Warn("failed to stop workload", "workload", name, "error", err)
-	case !running:
+	case !stoppable:
 		slog.Warn("Failed to stop workload", "workload", name, "error", ErrWorkloadNotRunning)
 	}
 
-	if running {
+	if stoppable {
 		if err := d.statuses.SetWorkloadStatus(ctx, name, rt.WorkloadStatusStopping, ""); err != nil {
 			slog.Debug("failed to set workload status to stopping", "workload", name, "error", err)
 		}
@@ -485,41 +517,78 @@ func (d *DefaultManager) stopRemoteWorkload(ctx context.Context, name string, ru
 		d.ensureProxyStopped(ctx, name, runConfig.BaseName, runConfig)
 	}
 
-	if running {
-		// For remote workloads we only need to clean up client configurations; the
-		// saved state is preserved for restart capability.
-		if err := removeClientConfigurations(name, false); err != nil {
-			slog.Warn("failed to remove client configurations", "error", err)
-		} else {
-			slog.Debug("client configurations removed", "workload", name)
-		}
-		if err := d.statuses.SetWorkloadStatus(ctx, name, rt.WorkloadStatusStopped, ""); err != nil {
-			slog.Debug("failed to set workload status to stopped", "workload", name, "error", err)
-		}
-		slog.Debug("remote workload stopped", "workload", name)
+	if stoppable {
+		return d.finishRemoteWorkloadStop(ctx, name, runConfig)
 	}
 	return nil
 }
 
+func (d *DefaultManager) finishRemoteWorkloadStop(ctx context.Context, name string, runConfig *runner.RunConfig) error {
+	exists, err := savedWorkloadStillExists(ctx, name, runConfig, false)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return nil
+	}
+	if err := d.removeClientConfigurations(name, false); err != nil {
+		slog.Warn("failed to remove client configurations", "error", err)
+	} else {
+		slog.Debug("client configurations removed", "workload", name)
+	}
+	if err := d.statuses.SetWorkloadStatus(ctx, name, rt.WorkloadStatusStopped, ""); err != nil {
+		slog.Debug("failed to set workload status to stopped", "workload", name, "error", err)
+	}
+	slog.Debug("remote workload stopped", "workload", name)
+	return nil
+}
+
+// Foreground shutdown can delete saved state before the proxy process exits.
+// Recheck after cleanup so stop does not recreate its status or repeat client
+// cleanup for a deleted workload. Auxiliary/no-config paths retain
+// their existing behavior because they need not have their own saved state.
+func savedWorkloadStillExists(ctx context.Context, name string, runConfig *runner.RunConfig, isAuxiliary bool) (bool, error) {
+	if runConfig == nil || isAuxiliary {
+		return true, nil
+	}
+	store, err := state.NewRunConfigStore(state.DefaultAppName)
+	if err != nil {
+		return false, fmt.Errorf("failed to open run configuration store after stop: %w", err)
+	}
+	exists, err := store.Exists(ctx, cmp.Or(runConfig.BaseName, name))
+	if err != nil {
+		return false, fmt.Errorf("failed to check saved workload after stop: %w", err)
+	}
+	return exists, nil
+}
+
 // stopContainerWorkload stops a container-based workload. runConfig may be nil
-// when the run config could not be loaded; it is used only for port-based proxy
-// cleanup when the tracked PID is unavailable.
+// when the run config could not be loaded; otherwise it provides saved labels
+// if the container is missing and enables port-based proxy cleanup.
 func (d *DefaultManager) stopContainerWorkload(ctx context.Context, name string, runConfig *runner.RunConfig) error {
 	container, err := d.runtime.GetWorkloadInfo(ctx, name)
 	if err != nil {
-		if errors.Is(err, rt.ErrWorkloadNotFound) {
-			// Log but don't fail the entire operation for not found containers
-			slog.Warn("failed to stop workload", "workload", name, "error", err)
+		if !errors.Is(err, rt.ErrWorkloadNotFound) {
+			return fmt.Errorf("failed to find workload %s: %w", name, err)
+		}
+		slog.Debug("container not found, proceeding with proxy cleanup", "workload", name)
+		if runConfig == nil {
+			// Without saved state, attempt cleanup by the requested name without
+			// creating a status entry or changing client configurations.
+			d.ensureProxyStopped(ctx, name, name, nil)
+			if err := d.runtime.StopWorkload(ctx, name); err != nil {
+				return fmt.Errorf("failed to stop container: %w", err)
+			}
 			return nil
 		}
-		return fmt.Errorf("failed to find workload %s: %w", name, err)
-	}
 
-	running := container.IsRunning()
-	if !running {
-		// Log but don't fail the entire operation for not running containers
-		slog.Warn("Failed to stop workload", "workload", name, "error", ErrWorkloadNotRunning)
-		return nil
+		container = rt.ContainerInfo{Name: cmp.Or(runConfig.ContainerName, name), Labels: maps.Clone(runConfig.ContainerLabels)}
+		if container.Labels == nil {
+			container.Labels = make(map[string]string)
+		}
+		if labels.GetContainerBaseName(container.Labels) == "" {
+			container.Labels[labels.LabelBaseName] = cmp.Or(runConfig.BaseName, name)
+		}
 	}
 
 	// Transition workload to `stopping` state.
@@ -527,12 +596,22 @@ func (d *DefaultManager) stopContainerWorkload(ctx context.Context, name string,
 		slog.Debug("failed to set workload status to stopping", "workload", name, "error", err)
 	}
 
-	// Use the existing stopWorkloads method for container workloads
+	// Clean up the proxy before stopping by name, even if the initial container
+	// was exited or missing: its supervisor may have recreated it since inspection.
 	return d.stopSingleContainerWorkload(ctx, &container, runConfig)
 }
 
 // RunWorkload runs a workload in the foreground with automatic restart on container exit.
-func (d *DefaultManager) RunWorkload(ctx context.Context, runConfig *runner.RunConfig) error {
+func (d *DefaultManager) RunWorkload(ctx context.Context, runConfig *runner.RunConfig) (runErr error) {
+	// The supervisor owns its PID across runner attempts, including backoff.
+	// Final cleanup must survive cancellation without clearing a replacement PID.
+	defer func() {
+		runErr = d.finishWorkloadRun(ctx, runConfig.BaseName, runErr)
+	}()
+
+	if ctx.Err() != nil {
+		return nil
+	}
 	// Ensure that the workload has a status entry before starting the process.
 	if err := d.statuses.SetWorkloadStatus(ctx, runConfig.BaseName, rt.WorkloadStatusStarting, ""); err != nil {
 		// Failure to create the initial state is a fatal error.
@@ -549,19 +628,28 @@ func (d *DefaultManager) RunWorkload(ctx context.Context, runConfig *runner.RunC
 	for attempt <= maxRetries {
 		if attempt > 1 {
 			slog.Info("restart attempt", "attempt", attempt, "maxRetries", maxRetries, "workload", runConfig.BaseName, "delay", retryDelay)
-			time.Sleep(retryDelay)
+			timer := time.NewTimer(retryDelay)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return nil
+			case <-timer.C:
+			}
 
 			// Exponential backoff: 5s, 10s, 20s, 40s, 60s (capped)
-			retryDelay *= 2
-			if retryDelay > cfg.maxBackoff {
-				retryDelay = cfg.maxBackoff
-			}
+			retryDelay = min(retryDelay*2, cfg.maxBackoff)
 		}
 
+		if ctx.Err() != nil {
+			return nil
+		}
 		mcpRunner := newRunner(runConfig, d.statuses)
 		runStartTime := time.Now()
 		err := mcpRunner.Run(ctx)
 		runDuration := time.Since(runStartTime)
+		if ctx.Err() != nil {
+			return nil
+		}
 
 		if err != nil {
 			// Check if this is a "container exited, restart needed" error
@@ -570,33 +658,14 @@ func (d *DefaultManager) RunWorkload(ctx context.Context, runConfig *runner.RunC
 					"workload", runConfig.BaseName, "attempt", attempt, "maxRetries", maxRetries,
 					"runDuration", runDuration)
 
-				// Remove from client config so clients notice the restart
-				clientManager, clientErr := client.NewManager(ctx)
-				if clientErr == nil {
-					slog.Debug("removing from client configurations before restart", "workload", runConfig.BaseName)
-					if removeErr := clientManager.RemoveServerFromClients(ctx, runConfig.BaseName, runConfig.Group); removeErr != nil {
-						slog.Warn("failed to remove from client config", "error", removeErr)
-					}
-				}
-
 				// A "stable" run reached at least stableRunThreshold of runtime before
 				// failing — long enough that we treat the next attempt as a fresh
 				// failure rather than another tick of the current retry sequence.
 				stable := runDuration >= cfg.stableRunThreshold
 
-				// Set status to starting (since we're restarting)
-				statusReason := "Container exited, restarting"
-				if stable {
-					statusReason = "Container exited after stable run, restarting"
-				}
-				statusErr := d.statuses.SetWorkloadStatus(
-					ctx,
-					runConfig.BaseName,
-					rt.WorkloadStatusStarting,
-					statusReason,
-				)
-				if statusErr != nil {
-					slog.Warn("failed to set workload status to starting", "workload", runConfig.BaseName, "error", statusErr)
+				d.prepareWorkloadRestart(ctx, runConfig, stable)
+				if ctx.Err() != nil {
+					return nil
 				}
 
 				// Without this reset of the attempt count, sustained external
@@ -620,23 +689,13 @@ func (d *DefaultManager) RunWorkload(ctx context.Context, runConfig *runner.RunC
 
 				// Exhausted all retries
 				slog.Error("failed to restart after max attempts, giving up", "workload", runConfig.BaseName, "maxRetries", maxRetries)
-				statusErr = d.statuses.SetWorkloadStatus(
-					ctx,
-					runConfig.BaseName,
-					rt.WorkloadStatusError,
-					"Failed to restart after container exit",
-				)
-				if statusErr != nil {
-					slog.Warn("failed to set workload status to error", "workload", runConfig.BaseName, "error", statusErr)
-				}
+				d.recordWorkloadRunFailure(ctx, runConfig.BaseName, "Failed to restart after container exit")
 				return fmt.Errorf("container restart failed after %d attempts", maxRetries)
 			}
 
 			// Some other error - don't retry
 			slog.Error("workload failed with error", "workload", runConfig.BaseName, "error", err)
-			if statusErr := d.statuses.SetWorkloadStatus(ctx, runConfig.BaseName, rt.WorkloadStatusError, err.Error()); statusErr != nil {
-				slog.Warn("Failed to set workload status to error", "workload", runConfig.BaseName, "error", statusErr)
-			}
+			d.recordWorkloadRunFailure(ctx, runConfig.BaseName, err.Error())
 			return err
 		}
 
@@ -646,6 +705,50 @@ func (d *DefaultManager) RunWorkload(ctx context.Context, runConfig *runner.RunC
 
 	// Should not reach here, but just in case
 	return fmt.Errorf("unexpected end of retry loop for %s", runConfig.BaseName)
+}
+
+func (d *DefaultManager) finishWorkloadRun(ctx context.Context, name string, runErr error) error {
+	cleanupCtx, cancel := context.WithTimeout(context.Background(), workloadPIDCleanupTimeout)
+	defer cancel()
+	if err := d.statuses.ResetWorkloadPIDIfMatch(cleanupCtx, name, os.Getpid()); err != nil {
+		slog.Warn("failed to reset workload PID", "workload", name, "error", err)
+	}
+	if ctx.Err() != nil {
+		return nil
+	}
+	return runErr
+}
+
+func (d *DefaultManager) recordWorkloadRunFailure(ctx context.Context, name, reason string) {
+	if ctx.Err() != nil {
+		return
+	}
+	if err := d.statuses.SetWorkloadStatus(ctx, name, rt.WorkloadStatusError, reason); err != nil {
+		slog.Warn("failed to set workload status to error", "workload", name, "error", err)
+	}
+}
+
+// prepareWorkloadRestart removes stale client configuration and records that
+// the workload is restarting, unless shutdown interrupted client cleanup.
+func (d *DefaultManager) prepareWorkloadRestart(ctx context.Context, runConfig *runner.RunConfig, stable bool) {
+	clientManager, err := d.newClientManager(ctx)
+	if err == nil {
+		slog.Debug("removing from client configurations before restart", "workload", runConfig.BaseName)
+		if err := clientManager.RemoveServerFromClients(ctx, runConfig.BaseName, runConfig.Group); err != nil {
+			slog.Warn("failed to remove from client config", "error", err)
+		}
+	}
+	if ctx.Err() != nil {
+		return
+	}
+
+	statusReason := "Container exited, restarting"
+	if stable {
+		statusReason = "Container exited after stable run, restarting"
+	}
+	if err := d.statuses.SetWorkloadStatus(ctx, runConfig.BaseName, rt.WorkloadStatusStarting, statusReason); err != nil {
+		slog.Warn("failed to set workload status to starting", "workload", runConfig.BaseName, "error", err)
+	}
 }
 
 // validateSecretParameters validates the secret parameters for a workload.
@@ -799,7 +902,16 @@ func (d *DefaultManager) spawnDetached(ctx context.Context, runConfig *runner.Ru
 		return 0, err
 	}
 
+	// A long-lived parent (thv serve) must reap its detached children too.
+	go reapDetachedProcess(detachedCmd)
+
 	return detachedCmd.Process.Pid, nil
+}
+
+func reapDetachedProcess(cmd *exec.Cmd) {
+	if err := cmd.Wait(); err != nil {
+		slog.Debug("detached proxy exited with error", "pid", cmd.Process.Pid, "error", err)
+	}
 }
 
 // GetLogs retrieves the logs of a container.
@@ -1016,39 +1128,62 @@ func (d *DefaultManager) isSupervisorProcessAlive(ctx context.Context, name stri
 }
 
 // stopProcess stops the proxy process associated with the container. It reports
-// whether a tracked proxy process was actually stopped: true only when a valid
-// PID was found and killed. A false return (no PID recorded, e.g. a missing
-// status file, or the kill failed) signals callers to fall back to port-based
-// cleanup so an orphaned proxy does not keep holding the workload's port.
+// whether a verified proxy exited after termination. A false return signals
+// callers to try port-based cleanup. Unverified PIDs are cleared only if the
+// process is confirmed gone; otherwise they remain available for a later retry.
 func (d *DefaultManager) stopProcess(ctx context.Context, name string) bool {
 	if name == "" {
 		slog.Warn("could not find base container name in labels")
 		return false
 	}
 
-	// Try to read the PID and kill the process
 	pid, err := d.statuses.GetWorkloadPID(ctx, name)
-	if err != nil {
+	if err != nil || pid <= 0 {
 		slog.Debug("no PID found, proxy may not be running in detached mode", "workload", name)
 		return false
 	}
 
-	// PID found, try to kill the process
-	slog.Debug("stopping proxy process", "pid", pid)
-	stopped := false
-	if err := process.KillProcess(pid); err != nil {
-		slog.Debug("failed to kill proxy process", "error", err)
-	} else {
-		slog.Debug("proxy process stopped")
-		stopped = true
+	// Foreground runs rely on the status entry for workload binding; detached
+	// supervisors additionally have a verifiable workload name in their command.
+	isToolHiveProxy, err := process.IsTrackedToolHiveProxyForWorkload(pid, name)
+	if err != nil || !isToolHiveProxy {
+		alive, findErr := process.FindProcess(pid)
+		if findErr != nil || alive {
+			slog.Warn("could not verify tracked proxy identity, preserving PID without signaling",
+				"workload", name, "pid", pid, "identityError", err, "error", findErr)
+			return false
+		}
+		slog.Debug("tracked proxy is gone, clearing PID", "workload", name, "pid", pid)
+		if err := d.statuses.ResetWorkloadPIDIfMatch(ctx, name, pid); err != nil {
+			slog.Warn("failed to reset workload PID", "workload", name, "error", err)
+		}
+		return false
 	}
 
-	// Remove the PID of the terminated process
-	if err := d.statuses.ResetWorkloadPID(ctx, name); err != nil {
+	return d.stopVerifiedProxy(ctx, name, pid, process.KillProcess)
+}
+
+// stopVerifiedProxy terminates a proxy whose identity the caller has verified.
+func (d *DefaultManager) stopVerifiedProxy(ctx context.Context, name string, pid int, signal func(int) error) bool {
+	slog.Debug("stopping proxy process", "workload", name, "pid", pid)
+	if err := signal(pid); err != nil {
+		slog.Debug("failed to kill proxy process", "error", err)
+		return false
+	}
+
+	waitCtx, cancel := context.WithTimeout(ctx, d.proxyExitTimeoutOrDefault())
+	defer cancel()
+	if err := process.WaitForExit(waitCtx, pid); err != nil {
+		slog.Warn("failed waiting for proxy process to exit", "workload", name, "pid", pid, "error", err)
+		return false
+	}
+
+	slog.Debug("proxy process stopped", "workload", name, "pid", pid)
+	if err := d.statuses.ResetWorkloadPIDIfMatch(ctx, name, pid); err != nil {
 		slog.Warn("failed to reset workload PID", "workload", name, "error", err)
 	}
 
-	return stopped
+	return true
 }
 
 // stopProxyIfNeeded stops the proxy process if the workload has a base name. It
@@ -1062,11 +1197,14 @@ func (d *DefaultManager) stopProxyIfNeeded(ctx context.Context, name, baseName s
 	return d.stopProcess(ctx, baseName)
 }
 
-// ensureProxyStopped stops the workload's proxy and guarantees its port is freed.
+// ensureProxyStopped makes a best-effort attempt to stop the workload's proxy
+// and free its port.
 // It first stops the tracked PID (stopProxyIfNeeded); if that does not stop a
-// proxy — no PID is recorded (e.g. the status file is missing) or the kill fails
-// (e.g. a stale PID whose process is already gone) — it falls back to port-based
-// cleanup, which only kills a process verified to be this workload's own proxy.
+// proxy — no PID is recorded, identity verification fails, or termination does
+// not complete — it falls back to port-based cleanup, which only kills a process
+// verified to be this workload's own proxy.
+// On Unix, a timed-out wait can result in another SIGTERM via the fallback, but
+// neither path escalates to SIGKILL. Windows uses hard TerminateProcess instead.
 // runConfig may be nil (no port fallback then). Used by the stop and delete
 // paths; the restart path instead frees the port itself, just before the child
 // re-binds.
@@ -1083,7 +1221,7 @@ func (d *DefaultManager) ensureProxyStopped(ctx context.Context, name, baseName 
 //     "address already in use"), and
 //   - stop/delete, as a fallback when PID-based termination is unavailable or
 //     fails, so an orphaned proxy does not keep holding the port.
-func (*DefaultManager) freePortHolderIfNeeded(ctx context.Context, runConfig *runner.RunConfig) {
+func (d *DefaultManager) freePortHolderIfNeeded(ctx context.Context, runConfig *runner.RunConfig) {
 	if runConfig == nil || runConfig.Port <= 0 {
 		return
 	}
@@ -1126,7 +1264,7 @@ func (*DefaultManager) freePortHolderIfNeeded(ctx context.Context, runConfig *ru
 		return
 	}
 
-	waitCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	waitCtx, cancel := context.WithTimeout(ctx, d.proxyExitTimeoutOrDefault())
 	defer cancel()
 	if err := process.WaitForExit(waitCtx, portPID); err != nil {
 		slog.Warn("timeout waiting for process to exit", "pid", portPID, "error", err)
@@ -1183,7 +1321,7 @@ func (d *DefaultManager) cleanupWorkloadResources(ctx context.Context, name, bas
 	}
 
 	// Remove client configurations
-	if err := removeClientConfigurations(name, isAuxiliary); err != nil {
+	if err := d.removeClientConfigurations(name, isAuxiliary); err != nil {
 		slog.Warn("failed to remove client configurations", "error", err)
 	} else {
 		slog.Debug("client configurations removed", "workload", name)
@@ -1379,7 +1517,7 @@ func (d *DefaultManager) maybeSetupRemoteWorkload(
 			slog.Debug("failed to set workload status to stopping", "workload", name, "error", err)
 		}
 		d.stopProxyIfNeeded(ctx, name, runConfig.BaseName)
-		if err := removeClientConfigurations(name, false); err != nil {
+		if err := d.removeClientConfigurations(name, false); err != nil {
 			slog.Warn("failed to remove client configurations", "error", err)
 		}
 		if err := d.statuses.SetWorkloadStatus(ctx, name, rt.WorkloadStatusStopped, ""); err != nil {
@@ -1507,7 +1645,7 @@ func (d *DefaultManager) maybeSetupContainerWorkload(ctx context.Context, name s
 		}
 
 		// Clean up client configurations
-		if err := removeClientConfigurations(workloadName, labels.IsAuxiliaryWorkload(container.Labels)); err != nil {
+		if err := d.removeClientConfigurations(workloadName, labels.IsAuxiliaryWorkload(container.Labels)); err != nil {
 			slog.Warn("failed to remove client configurations", "error", err)
 		}
 
@@ -1567,8 +1705,8 @@ func (d *DefaultManager) startWorkload(ctx context.Context, name string, mcpRunn
 }
 
 // TODO: Move to dedicated config management interface.
-// updateClientConfigurations updates client configuration files with the MCP server URL
-func removeClientConfigurations(containerName string, isAuxiliary bool) error {
+// removeClientConfigurations removes the server from client configuration files.
+func (d *DefaultManager) removeClientConfigurations(containerName string, isAuxiliary bool) error {
 	// Get the workload's group by loading its run config
 	runConfig, err := runner.LoadState(context.Background(), containerName)
 	var group string
@@ -1582,7 +1720,7 @@ func removeClientConfigurations(containerName string, isAuxiliary bool) error {
 		group = runConfig.Group
 	}
 
-	clientManager, err := client.NewManager(context.Background())
+	clientManager, err := d.newClientManager(context.Background())
 	if err != nil {
 		slog.Warn("failed to create client manager, skipping client config removal", "workload", containerName, "error", err)
 		return nil
@@ -1652,8 +1790,9 @@ func (d *DefaultManager) stopSingleContainerWorkload(
 	defer cancel()
 
 	name := labels.GetContainerBaseName(workload.Labels)
+	isAuxiliary := labels.IsAuxiliaryWorkload(workload.Labels)
 	// Stop the proxy process (skip for auxiliary workloads like inspector)
-	if labels.IsAuxiliaryWorkload(workload.Labels) {
+	if isAuxiliary {
 		slog.Debug("skipping proxy stop for auxiliary workload", "workload", name)
 	} else {
 		d.ensureProxyStopped(ctx, name, name, runConfig)
@@ -1661,14 +1800,24 @@ func (d *DefaultManager) stopSingleContainerWorkload(
 
 	slog.Debug("stopping containers", "workload", name)
 	// Stop the container
-	if err := d.runtime.StopWorkload(childCtx, workload.Name); err != nil {
-		if statusErr := d.statuses.SetWorkloadStatus(childCtx, name, rt.WorkloadStatusError, err.Error()); statusErr != nil {
-			slog.Warn("Failed to set workload status to error", "workload", name, "error", statusErr)
+	stopErr := d.runtime.StopWorkload(childCtx, workload.Name)
+	exists, err := savedWorkloadStillExists(childCtx, name, runConfig, isAuxiliary)
+	if err != nil {
+		return errors.Join(err, stopErr)
+	}
+	if stopErr != nil {
+		if exists {
+			if statusErr := d.statuses.SetWorkloadStatus(childCtx, name, rt.WorkloadStatusError, stopErr.Error()); statusErr != nil {
+				slog.Warn("Failed to set workload status to error", "workload", name, "error", statusErr)
+			}
 		}
-		return fmt.Errorf("failed to stop container: %w", err)
+		return fmt.Errorf("failed to stop container: %w", stopErr)
+	}
+	if !exists {
+		return nil
 	}
 
-	if err := removeClientConfigurations(name, labels.IsAuxiliaryWorkload(workload.Labels)); err != nil {
+	if err := d.removeClientConfigurations(name, isAuxiliary); err != nil {
 		slog.Warn("failed to remove client configurations", "error", err)
 	} else {
 		slog.Debug("client configurations removed", "workload", name)

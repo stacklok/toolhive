@@ -17,6 +17,7 @@ import (
 	"github.com/ory/fosite"
 
 	"github.com/stacklok/toolhive/pkg/authserver/internal/consentpolicy"
+	"github.com/stacklok/toolhive/pkg/authserver/internal/fositejose"
 	"github.com/stacklok/toolhive/pkg/authserver/server"
 	"github.com/stacklok/toolhive/pkg/authserver/server/crypto"
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
@@ -348,7 +349,7 @@ func (h *Handler) rejectBackChannelOnlyAuthorizeClient(ctx context.Context, w ht
 }
 
 // rejectUnsafeRequestObject refuses an OpenID Connect request object that
-// server.IsUnsafeFositeJWS flags, before fosite parses it with go-jose v3.
+// fositejose.IsUnsafeJWS flags, before fosite parses it with go-jose v3.
 // Every value of a repeated request parameter is checked, and the check does
 // not depend on the openid scope that fosite consults, so a difference in how
 // the two read the form cannot let an unsafe value through. The error is
@@ -358,7 +359,7 @@ func (h *Handler) rejectUnsafeRequestObject(ctx context.Context, w http.Response
 	if err := req.ParseForm(); err != nil {
 		return false
 	}
-	if !slices.ContainsFunc(req.Form["request"], server.IsUnsafeFositeJWS) {
+	if !slices.ContainsFunc(req.Form["request"], fositejose.IsUnsafeJWS) {
 		return false
 	}
 	slog.Warn("rejected request object with an embedded key or non-compact encoding")

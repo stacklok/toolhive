@@ -633,7 +633,7 @@ func NewAuthorizationServer(
 		return provider.DefaultClientAuthenticationStrategy
 	}()
 	// The embedded-key guard is outermost so it runs before any strategy parses
-	// a client assertion (see IsUnsafeFositeJWS).
+	// a client assertion (see fositejose.IsUnsafeJWS).
 	fositeConfig.ClientAuthenticationStrategy = newEmbeddedJWKGuardClientAuthenticationStrategy(
 		newSPIFFEClientAuthenticationStrategy(
 			defaultStrategy, config.GetAccessTokenIssuer(),

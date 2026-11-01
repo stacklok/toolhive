@@ -9,7 +9,9 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/rsa"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
@@ -4085,6 +4087,47 @@ func TestResolveDelegateClients(t *testing.T) {
 				require.NotNil(t, got[0].JSONWebKeys)
 				assert.Len(t, got[0].JSONWebKeys.Keys, tt.wantKeys)
 			}
+		})
+	}
+}
+
+// go-jose v3 accepted trailing "=" on base64url JWK members; v4 does not, so
+// an existing delegate JWKS file written with padding must still load.
+func TestLoadJWKSFile_PaddedBase64URL(t *testing.T) {
+	t.Parallel()
+
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+	padded := base64.URLEncoding.EncodeToString(key.N.Bytes())
+	require.True(t, strings.HasSuffix(padded, "="))
+	jwksWithN := func(n string) string {
+		return fmt.Sprintf(`{"keys":[{"kty":"RSA","kid":"k1","use":"sig","alg":"RS256","n":%q,"e":"AQAB"}]}`, n)
+	}
+
+	tests := []struct {
+		name    string
+		content string
+		wantErr bool
+	}{
+		{name: "padded modulus", content: jwksWithN(padded)},
+		{name: "unpadded modulus", content: jwksWithN(strings.TrimRight(padded, "="))},
+		{name: "invalid base64url", content: jwksWithN("!!!="), wantErr: true},
+		{name: "not JSON", content: "not json", wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			path := filepath.Join(t.TempDir(), "keys.jwks")
+			require.NoError(t, os.WriteFile(path, []byte(tt.content), 0600))
+
+			got, err := loadJWKSFile(path)
+			if tt.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			require.Len(t, got.Keys, 1)
+			assert.True(t, key.PublicKey.Equal(got.Keys[0].Key))
 		})
 	}
 }

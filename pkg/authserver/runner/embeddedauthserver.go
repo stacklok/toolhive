@@ -8,7 +8,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/x509"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -1246,11 +1245,11 @@ func loadJWKSFile(path string) (*jose.JSONWebKeySet, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to read jwks file %q: %w", path, err)
 	}
-	var jwks jose.JSONWebKeySet
-	if err := json.Unmarshal(data, &jwks); err != nil {
+	jwks, err := oauthproto.UnmarshalJWKS(data)
+	if err != nil {
 		return nil, fmt.Errorf("failed to parse jwks file %q: %w", path, err)
 	}
-	return &jwks, nil
+	return jwks, nil
 }
 
 // resolveDelegateClients resolves secret and JWKS file references and copies

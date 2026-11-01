@@ -8,9 +8,11 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
@@ -152,6 +154,81 @@ func testRSAPublicKey(t *testing.T) *rsa.PublicKey {
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	require.NoError(t, err)
 	return &key.PublicKey
+}
+
+// go-jose v3 accepted trailing "=" on base64url JWK members; v4 does not, so
+// the handler restores that for inline jwks.
+func TestRegisterClientHandler_PrivateKeyJWTPaddedJWKS(t *testing.T) {
+	t.Parallel()
+
+	pub := testRSAPublicKey(t)
+	n := base64.URLEncoding.EncodeToString(pub.N.Bytes())
+	require.True(t, strings.HasSuffix(n, "="), "test needs a padded modulus")
+	e := base64.RawURLEncoding.EncodeToString(big.NewInt(int64(pub.E)).Bytes())
+
+	tests := []struct {
+		name       string
+		jwk        string
+		wantStatus int
+	}{
+		{
+			name:       "padded modulus",
+			jwk:        fmt.Sprintf(`{"kty":"RSA","kid":"k1","use":"sig","alg":"RS256","n":%q,"e":%q}`, n, e),
+			wantStatus: http.StatusCreated,
+		},
+		{
+			name:       "unpadded modulus",
+			jwk:        fmt.Sprintf(`{"kty":"RSA","kid":"k1","use":"sig","alg":"RS256","n":%q,"e":%q}`, strings.TrimRight(n, "="), e),
+			wantStatus: http.StatusCreated,
+		},
+		{
+			name:       "invalid base64url is still rejected",
+			jwk:        `{"kty":"RSA","kid":"k1","use":"sig","alg":"RS256","n":"!!!=","e":"AQAB"}`,
+			wantStatus: http.StatusBadRequest,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctrl := gomock.NewController(t)
+			stor := mocks.NewMockStorage(ctrl)
+			var stored fosite.Client
+			stor.EXPECT().RegisterClient(gomock.Any(), gomock.Any()).DoAndReturn(
+				func(_ context.Context, client fosite.Client) error {
+					stored = client
+					return nil
+				}).AnyTimes()
+			handler := &Handler{
+				storage: stor,
+				config: &server.AuthorizationServerConfig{
+					Config:                         &fosite.Config{AccessTokenIssuer: "https://test-authserver"},
+					ScopesSupported:                registration.DefaultScopes,
+					AllowPrivateKeyJWTRegistration: true,
+					TokenExchangeEnabled:           true,
+				},
+			}
+			body := fmt.Sprintf(`{"redirect_uris":["https://example.com/callback"],`+
+				`"grant_types":[%q],"token_endpoint_auth_method":"private_key_jwt",`+
+				`"token_endpoint_auth_signing_alg":"RS256","jwks":{"keys":[%s]}}`,
+				oauthproto.GrantTypeTokenExchange, tt.jwk)
+
+			req := httptest.NewRequest(http.MethodPost, "/oauth/register", strings.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			w := httptest.NewRecorder()
+			handler.RegisterClientHandler(w, req)
+
+			require.Equal(t, tt.wantStatus, w.Code, w.Body.String())
+			if tt.wantStatus != http.StatusCreated {
+				return
+			}
+			oidc, ok := stored.(fosite.OpenIDConnectClient)
+			require.True(t, ok)
+			got, ok := oidc.GetJSONWebKeys().Keys[0].Key.(*rsa.PublicKey)
+			require.True(t, ok)
+			assert.True(t, pub.Equal(got))
+		})
+	}
 }
 
 func TestRegisterClientHandler_PrivateKeyJWTResponseAndClient(t *testing.T) {

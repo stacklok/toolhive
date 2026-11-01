@@ -71,28 +71,3 @@ func UnmarshalJWKS(data []byte) (*jose.JSONWebKeySet, error) {
 func isPaddedJWKMember(name string) bool {
 	return slices.Contains(paddedJWKMembers, name)
 }
-
-// UnmarshalJSON decodes the request, accepting trailing "=" padding in the
-// base64url members of an inline "jwks" as go-jose v3 did. It is the inbound
-// registration path's only use; the field type is unchanged so the outbound
-// client is unaffected.
-func (r *DynamicClientRegistrationRequest) UnmarshalJSON(data []byte) error {
-	type plain DynamicClientRegistrationRequest
-	aux := struct {
-		*plain
-		JWKS json.RawMessage `json:"jwks,omitempty"`
-	}{plain: (*plain)(r)}
-	if err := json.Unmarshal(data, &aux); err != nil {
-		return err
-	}
-	r.JWKS = nil
-	if len(aux.JWKS) == 0 || string(aux.JWKS) == "null" {
-		return nil
-	}
-	jwks, err := UnmarshalJWKS(aux.JWKS)
-	if err != nil {
-		return err
-	}
-	r.JWKS = jwks
-	return nil
-}

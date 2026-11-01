@@ -14,6 +14,7 @@ import (
 	"encoding/base64"
 	"math/big"
 	"net/url"
+	"reflect"
 	"testing"
 	"time"
 
@@ -46,7 +47,7 @@ func fullKey(t *testing.T) jose.JSONWebKey {
 	require.NoError(t, err)
 	sum1 := sha1.Sum(cert.Raw) // #nosec G401 -- x5t is a SHA-1 thumbprint by definition
 	sum256 := sha256.Sum256(cert.Raw)
-	return jose.JSONWebKey{
+	key := jose.JSONWebKey{
 		Key:                         &priv.PublicKey,
 		KeyID:                       "kid-1",
 		Algorithm:                   "ES256",
@@ -56,6 +57,15 @@ func fullKey(t *testing.T) jose.JSONWebKey {
 		CertificateThumbprintSHA1:   sum1[:],
 		CertificateThumbprintSHA256: sum256[:],
 	}
+	typ := reflect.TypeOf(key)
+	val := reflect.ValueOf(key)
+	for i := 0; i < typ.NumField(); i++ {
+		if !typ.Field(i).IsExported() {
+			continue
+		}
+		require.Falsef(t, val.Field(i).IsZero(), "fullKey must set %s so the round trip covers it", typ.Field(i).Name)
+	}
+	return key
 }
 
 func TestKeyConversions(t *testing.T) {

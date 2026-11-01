@@ -8,14 +8,17 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"slices"
 
 	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
 	"github.com/stacklok/toolhive-core/mcpcompat/server"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/pkg/vmcp/conversion"
 	"github.com/stacklok/toolhive/pkg/vmcp/optimizer"
 	"github.com/stacklok/toolhive/pkg/vmcp/schema"
+	"github.com/stacklok/toolhive/pkg/vmcp/server/sessionmanager"
 	"github.com/stacklok/toolhive/pkg/vmcp/session/optimizerdec"
 )
 
@@ -37,6 +40,27 @@ import (
 // second, divergent set, the session factory's optimizer decorator is skipped on
 // this path (FactoryConfig.AdvertiseFromCore); the resolved factory is consumed
 // directly here via s.optimizerFactory.
+
+// withSharedEmbeddings returns a copy of smCfg whose optimizer shares tool
+// embeddings through the session-storage Redis and key prefix, so replicas
+// reuse each other's vectors. smCfg is returned as is when the optimizer is not
+// built from config or session storage is in-process.
+func withSharedEmbeddings(
+	storage *vmcpconfig.SessionStorageConfig, smCfg *sessionmanager.FactoryConfig,
+) (*sessionmanager.FactoryConfig, error) {
+	if smCfg.OptimizerConfig == nil || smCfg.OptimizerFactory != nil ||
+		storage == nil || storage.Provider != "redis" {
+		return smCfg, nil
+	}
+	redisCfg, keyPrefix, err := sessionRedisConfig(storage)
+	if err != nil {
+		return nil, err
+	}
+	extended := *smCfg
+	extended.OptimizerOptions = append(slices.Clone(smCfg.OptimizerOptions),
+		optimizer.WithSharedEmbeddings(redisCfg, keyPrefix))
+	return &extended, nil
+}
 
 // serveSessionTools returns the SDK tools to advertise for a Serve-path session:
 // the core's advertised set, or — when the optimizer is enabled — the find_tool /

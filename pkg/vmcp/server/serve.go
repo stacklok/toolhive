@@ -306,7 +306,11 @@ func Serve(ctx context.Context, v core.VMCP, cfg *ServerConfig) (*Server, error)
 		}
 	}()
 
-	vmcpSessMgr, optimizerCleanup, err := sessionmanager.New(sessionDataStorage, cfg.SessionManagerConfig, cfg.BackendRegistry)
+	sessMgrCfg, err := withSharedEmbeddings(serveCfg.SessionStorage, cfg.SessionManagerConfig)
+	if err != nil {
+		return nil, err
+	}
+	vmcpSessMgr, optimizerCleanup, err := sessionmanager.New(sessionDataStorage, sessMgrCfg, cfg.BackendRegistry)
 	if err != nil {
 		return nil, err
 	}

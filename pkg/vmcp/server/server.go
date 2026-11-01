@@ -393,28 +393,9 @@ func buildSessionDataStorage(ctx context.Context, cfg *Config) (transportsession
 		return nil, fmt.Errorf("unsupported session storage provider %q (supported: \"memory\", \"redis\")",
 			cfg.SessionStorage.Provider)
 	}
-	keyPrefix := cfg.SessionStorage.KeyPrefix
-	if keyPrefix == "" {
-		keyPrefix = "thv:vmcp:session:"
-	}
-	password, passwordSet := os.LookupEnv(vmcpconfig.RedisPasswordEnvVar)
-	// A set-but-empty password is a misconfiguration (the operator injected the
-	// var from a passwordRef whose secret resolved empty), not a no-auth request.
-	// Fail loudly rather than silently downgrading a store that holds session data.
-	if passwordSet && password == "" {
-		return nil, fmt.Errorf(
-			"%s is set but empty; unset it for a no-auth connection or fix the referenced secret",
-			vmcpconfig.RedisPasswordEnvVar)
-	}
-	tlsCfg, err := cfg.SessionStorage.TLS.Load()
+	redisCfg, keyPrefix, err := sessionRedisConfig(cfg.SessionStorage)
 	if err != nil {
-		return nil, fmt.Errorf("redis session storage TLS configuration: %w", err)
-	}
-	redisCfg := redisconn.Config{
-		Addr:     cfg.SessionStorage.Address,
-		Password: password,
-		DB:       int(cfg.SessionStorage.DB),
-		TLS:      tlsCfg,
+		return nil, err
 	}
 	// Distinguish an authenticated connection (INFO) from a no-auth one (WARN):
 	// an unset password is an intended no-auth connection, but the downgrade
@@ -422,7 +403,9 @@ func buildSessionDataStorage(ctx context.Context, cfg *Config) (transportsession
 	// data, so name it either way. Both records carry a "store" attribute matching
 	// the embedded auth server's no-auth WARN (convertRedisRunConfig), so a single
 	// log-based alert can match one key across both Redis consumers.
-	if !passwordSet {
+	// sessionRedisConfig rejects a set-but-empty password, so an empty one here
+	// means the variable is unset.
+	if redisCfg.Password == "" {
 		slog.Warn("vMCP Redis session storage connecting without authentication "+
 			"(THV_SESSION_REDIS_PASSWORD is not set)",
 			"store", cfg.SessionStorage.Address,
@@ -439,6 +422,35 @@ func buildSessionDataStorage(ctx context.Context, cfg *Config) (transportsession
 		)
 	}
 	return transportsession.NewRedisSessionDataStorage(ctx, redisCfg, keyPrefix, cfg.SessionTTL)
+}
+
+// sessionRedisConfig resolves the connection and key prefix of Redis session
+// storage, which the optimizer's shared embeddings reuse (withSharedEmbeddings).
+// The password comes from THV_SESSION_REDIS_PASSWORD.
+func sessionRedisConfig(storage *vmcpconfig.SessionStorageConfig) (redisconn.Config, string, error) {
+	keyPrefix := storage.KeyPrefix
+	if keyPrefix == "" {
+		keyPrefix = "thv:vmcp:session:"
+	}
+	password, passwordSet := os.LookupEnv(vmcpconfig.RedisPasswordEnvVar)
+	// A set-but-empty password is a misconfiguration (the operator injected the
+	// var from a passwordRef whose secret resolved empty), not a no-auth request.
+	// Fail loudly rather than silently downgrading a store that holds session data.
+	if passwordSet && password == "" {
+		return redisconn.Config{}, "", fmt.Errorf(
+			"%s is set but empty; unset it for a no-auth connection or fix the referenced secret",
+			vmcpconfig.RedisPasswordEnvVar)
+	}
+	tlsCfg, err := storage.TLS.Load()
+	if err != nil {
+		return redisconn.Config{}, "", fmt.Errorf("redis session storage TLS configuration: %w", err)
+	}
+	return redisconn.Config{
+		Addr:     storage.Address,
+		Password: password,
+		DB:       int(storage.DB),
+		TLS:      tlsCfg,
+	}, keyPrefix, nil
 }
 
 // New creates a Virtual MCP Server by composing the domain core (core.New) with the

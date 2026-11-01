@@ -49,6 +49,10 @@ type FactoryConfig struct {
 	// factory from this config and returns a cleanup function.
 	OptimizerConfig *optimizer.Config
 
+	// OptimizerOptions are passed to optimizer.NewOptimizerFactory when the
+	// factory is built from OptimizerConfig. Ignored with OptimizerFactory.
+	OptimizerOptions []optimizer.FactoryOption
+
 	// OptimizerFactory is an optional pre-built optimizer factory.
 	// If set, takes precedence over OptimizerConfig.
 	// If nil and OptimizerConfig is also nil, the optimizer is disabled.
@@ -127,7 +131,7 @@ func resolveOptimizer(cfg *FactoryConfig) (
 		return factory, noopCleanup, nil
 	case cfg.OptimizerConfig != nil:
 		var rawCleanup func(context.Context) error
-		factory, rawCleanup, err = optimizer.NewOptimizerFactory(cfg.OptimizerConfig)
+		factory, rawCleanup, err = optimizer.NewOptimizerFactory(cfg.OptimizerConfig, cfg.OptimizerOptions...)
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to create optimizer factory: %w", err)
 		}

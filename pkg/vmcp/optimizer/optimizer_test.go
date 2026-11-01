@@ -12,12 +12,14 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/alicebob/miniredis/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
 	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
 	"github.com/stacklok/toolhive-core/mcpcompat/server"
+	"github.com/stacklok/toolhive-core/redisconn"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/pkg/vmcp/optimizer/internal/tokencounter"
 	"github.com/stacklok/toolhive/pkg/vmcp/optimizer/internal/types"
@@ -1027,4 +1029,49 @@ func TestCallToolArgToolNameMatchesStructTag(t *testing.T) {
 	f, ok := reflect.TypeOf(CallToolInput{}).FieldByName("ToolName")
 	require.True(t, ok, "CallToolInput must have a ToolName field")
 	assert.Equal(t, callToolArgToolName, f.Tag.Get("json"))
+}
+
+// TestNewOptimizerFactory_SharedEmbeddings pins that the shared embedding cache
+// is connected at startup when semantic search is on, so an unreachable Redis
+// fails loudly instead of silently disabling reuse, and that it is skipped
+// when there are no embeddings to share.
+func TestNewOptimizerFactory_SharedEmbeddings(t *testing.T) {
+	t.Parallel()
+
+	live := miniredis.RunT(t)
+	closed := miniredis.RunT(t)
+	closedAddr := closed.Addr()
+	closed.Close()
+
+	// Nothing listens on port 1, so the TEI client's startup probe fails fast
+	// and falls back to its defaults; no embedding call is made here.
+	const unreachableTEI = "http://127.0.0.1:1"
+
+	for _, tc := range []struct {
+		name             string
+		embeddingService string
+		redisAddr        string
+		wantErr          string
+	}{
+		{name: "connects the shared cache", embeddingService: unreachableTEI, redisAddr: live.Addr()},
+		{name: "unreachable redis fails startup", embeddingService: unreachableTEI, redisAddr: closedAddr,
+			wantErr: "failed to create shared embedding cache"},
+		{name: "keyword-only search needs no cache", redisAddr: closedAddr},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			factory, cleanup, err := NewOptimizerFactory(
+				&Config{EmbeddingService: tc.embeddingService},
+				WithSharedEmbeddings(redisconn.Config{Addr: tc.redisAddr}, "thv:vmcp:session:"),
+			)
+			if tc.wantErr != "" {
+				require.ErrorContains(t, err, tc.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			require.NotNil(t, factory)
+			require.NoError(t, cleanup(context.Background()))
+		})
+	}
 }

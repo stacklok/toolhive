@@ -15,11 +15,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/go-jose/go-jose/v3"
+	"github.com/go-jose/go-jose/v4"
 	"github.com/ory/fosite"
 	"github.com/redis/go-redis/v9"
 
 	"github.com/stacklok/toolhive-core/redisconn"
+	"github.com/stacklok/toolhive/pkg/authserver/internal/fositejose"
 	"github.com/stacklok/toolhive/pkg/authserver/server"
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/authserver/server/session"
@@ -288,8 +289,57 @@ type storedClient struct {
 	Configured bool `json:"configured,omitempty"`
 	// JSONWebKeys stores only the inline public keys used by private_key_jwt.
 	// JSONWebKeysURI and other assertion material are intentionally not stored.
-	JSONWebKeys                       *jose.JSONWebKeySet `json:"jwks,omitempty"`
-	TokenEndpointAuthSigningAlgorithm string              `json:"token_endpoint_auth_signing_alg,omitempty"`
+	JSONWebKeys                       *storedJWKS `json:"jwks,omitempty"`
+	TokenEndpointAuthSigningAlgorithm string      `json:"token_endpoint_auth_signing_alg,omitempty"`
+}
+
+// storedJWKS is the persisted form of a client's inline key set. Decoding it
+// never fails the surrounding row: a key set go-jose rejects (for example an
+// RSA modulus above jose.MaxRSAModulusBits, from a registration made before
+// the key limits existed) is kept as raw JSON and marked invalid. GetClient
+// then answers invalid_client for that row, as it does for keys that fail
+// registration.ValidatePrivateKeyJWTClientKeys, instead of a decode error,
+// and other readers of the row (overwrite checks, index backfill) still work.
+type storedJWKS struct {
+	keys    *jose.JSONWebKeySet
+	raw     json.RawMessage
+	invalid bool
+}
+
+func newStoredJWKS(keys *jose.JSONWebKeySet) *storedJWKS {
+	if keys == nil {
+		return nil
+	}
+	return &storedJWKS{keys: keys}
+}
+
+// MarshalJSON writes an invalid key set back exactly as it was read, so
+// rewriting the row does not silently drop it.
+func (s storedJWKS) MarshalJSON() ([]byte, error) {
+	if s.invalid {
+		return s.raw, nil
+	}
+	return json.Marshal(s.keys)
+}
+
+// UnmarshalJSON records a key set that does not decode as invalid rather than
+// returning the error.
+func (s *storedJWKS) UnmarshalJSON(data []byte) error {
+	var keys jose.JSONWebKeySet
+	if err := json.Unmarshal(data, &keys); err != nil {
+		*s = storedJWKS{raw: slices.Clone(data), invalid: true}
+		return nil
+	}
+	*s = storedJWKS{keys: &keys}
+	return nil
+}
+
+// keySet returns the decoded key set, or nil when it is absent or invalid.
+func (s *storedJWKS) keySet() *jose.JSONWebKeySet {
+	if s == nil || s.invalid {
+		return nil
+	}
+	return s.keys
 }
 
 // publicJSONWebKeySet copies an inline JWKS while removing private and
@@ -417,7 +467,7 @@ func clientFromStored(stored storedClient, hasTTL bool) fosite.Client {
 			Public:        stored.Public && method == oauthproto.TokenEndpointAuthMethodNone,
 		},
 		TokenEndpointAuthMethod:           method,
-		JSONWebKeys:                       stored.JSONWebKeys,
+		JSONWebKeys:                       fositejose.ToFositeKeySet(stored.JSONWebKeys.keySet()),
 		TokenEndpointAuthSigningAlgorithm: stored.TokenEndpointAuthSigningAlgorithm,
 	}
 	if stored.Configured {
@@ -475,7 +525,7 @@ func buildStoredClient(client fosite.Client) storedClient {
 	}
 	if oidcClient, ok := client.(fosite.OpenIDConnectClient); ok {
 		stored.TokenEndpointAuthMethod = oidcClient.GetTokenEndpointAuthMethod()
-		stored.JSONWebKeys = publicJSONWebKeySet(oidcClient.GetJSONWebKeys())
+		stored.JSONWebKeys = newStoredJWKS(publicJSONWebKeySet(fositejose.FromFositeKeySet(oidcClient.GetJSONWebKeys())))
 		stored.TokenEndpointAuthSigningAlgorithm = oidcClient.GetTokenEndpointAuthSigningAlgorithm()
 	}
 	stored.DCRIssued = registration.DCRIssued(client)
@@ -887,6 +937,11 @@ func (s *RedisStorage) GetClient(ctx context.Context, id string) (fosite.Client,
 		return nil, fmt.Errorf("failed to unmarshal client: %w", err)
 	}
 
+	if stored.JSONWebKeys != nil && stored.JSONWebKeys.invalid {
+		slog.DebugContext(ctx, "rejecting client whose signing keys no longer meet server policy",
+			"client_id", id, "reason", "stored JSON Web Key Set does not decode")
+		return nil, fosite.ErrInvalidClient.WithHint("client signing keys no longer meet server policy")
+	}
 	client := clientFromStored(stored, hasTTL)
 	if dcrErr := registration.ValidatePrivateKeyJWTClientKeys(client); dcrErr != nil {
 		slog.DebugContext(ctx, "rejecting client whose signing keys no longer meet server policy",

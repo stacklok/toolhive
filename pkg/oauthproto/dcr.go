@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/go-jose/go-jose/v3"
+	"github.com/go-jose/go-jose/v4"
 )
 
 // ToolHiveMCPClientName is the name advertised in dynamic client registration requests.

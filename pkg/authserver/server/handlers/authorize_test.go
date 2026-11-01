@@ -6,6 +6,7 @@ package handlers
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
 	"mime/multipart"
 	"net/http"
@@ -180,6 +181,32 @@ func TestAuthorizeHandler_ClientNotFound(t *testing.T) {
 	assert.Contains(t, rec.Body.String(), "invalid_client")
 }
 
+func TestAuthorizeHandler_RejectsRequestObjectWithEmbeddedJWK(t *testing.T) {
+	t.Parallel()
+	handler, _, _ := handlerTestSetup(t)
+
+	enc := base64.RawURLEncoding
+	requestObject := enc.EncodeToString([]byte(`{"alg":"RS256","jwk":{"kty":"RSA"}}`)) +
+		"." + enc.EncodeToString([]byte(`{}`)) + ".c2ln"
+	query := url.Values{
+		"client_id":     {testAuthClientID},
+		"redirect_uri":  {testAuthRedirectURI},
+		"response_type": {oauthproto.ResponseTypeCode},
+		"scope":         {"openid"},
+		"request":       {requestObject},
+	}
+	req := httptest.NewRequest(http.MethodGet, "/oauth/authorize?"+query.Encode(), nil)
+	rec := httptest.NewRecorder()
+
+	handler.AuthorizeHandler(rec, req)
+
+	// The request is answered directly rather than redirected: nothing about
+	// the client or redirect_uri has been validated yet.
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.Empty(t, rec.Header().Get("Location"))
+	assert.Contains(t, rec.Body.String(), "invalid_request_object")
+}
+
 func TestAuthorizeRoutes_RejectsMultipartCIMDRequestBeforeLookup(t *testing.T) {
 	t.Parallel()
 
@@ -313,6 +340,19 @@ func TestAuthorizeHandler_BackChannelOnlyClientsMatchMissingClient(t *testing.T)
 			assert.Equal(t, missing.Code, configured.Code)
 			assert.Equal(t, missing.Body.String(), configured.Body.String())
 			assert.Contains(t, configured.Body.String(), "invalid_client")
+
+			// A malformed request object must not distinguish the two either.
+			const badRequestObject = "&request=not-a-jws"
+			missingBadRequest := httptest.NewRecorder()
+			handler.AuthorizeHandler(missingBadRequest, httptest.NewRequest(http.MethodGet,
+				"/oauth/authorize?client_id=missing-client&redirect_uri=https://invalid.example/callback"+badRequestObject, nil))
+
+			configuredBadRequest := httptest.NewRecorder()
+			handler.AuthorizeHandler(configuredBadRequest, httptest.NewRequest(http.MethodGet,
+				"/oauth/authorize?client_id="+client.GetID()+"&redirect_uri=https://invalid.example/callback"+badRequestObject, nil))
+
+			assert.Equal(t, missingBadRequest.Code, configuredBadRequest.Code)
+			assert.Equal(t, missingBadRequest.Body.String(), configuredBadRequest.Body.String())
 		})
 	}
 }

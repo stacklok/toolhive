@@ -20,7 +20,7 @@ import (
 	"sync"
 	"time"
 
-	josev3 "github.com/go-jose/go-jose/v3"
+	"github.com/go-jose/go-jose/v4"
 
 	"github.com/stacklok/toolhive-core/redisconn"
 	"github.com/stacklok/toolhive/pkg/auth/dcr"
@@ -1240,13 +1240,13 @@ func resolveSecret(file, envVar string) (string, error) {
 
 // loadJWKSFile reads a public JWKS document. Key contents are validated later
 // by the shared configured-client validator.
-func loadJWKSFile(path string) (*josev3.JSONWebKeySet, error) {
+func loadJWKSFile(path string) (*jose.JSONWebKeySet, error) {
 	// #nosec G304 - file path is from configuration, not user input
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read jwks file %q: %w", path, err)
 	}
-	var jwks josev3.JSONWebKeySet
+	var jwks jose.JSONWebKeySet
 	if err := json.Unmarshal(data, &jwks); err != nil {
 		return nil, fmt.Errorf("failed to parse jwks file %q: %w", path, err)
 	}

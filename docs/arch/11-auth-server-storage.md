@@ -900,6 +900,16 @@ level with its `client_id`) and must re-register. Re-registration issues a new
 `client_id`, so update any `AllowedDelegateClients` entries that name the old
 one.
 
+A `client_assertion` must be a compact JWS whose protected header carries no
+`jwk` member; otherwise the token and device-authorization endpoints answer
+`invalid_client` before parsing it. An OpenID Connect `request` object on
+`/oauth/authorize` gets the same check, before the client is looked up, and is answered with
+`invalid_request_object`, without a redirect. Keys are always resolved from the
+client's registered JWKS, so an embedded key was never used. The check keeps
+untrusted JWTs away from the go-jose v3 parser inside the pinned fosite
+version (GHSA-mgcc-cww5-fp2q) and goes away once fosite moves to go-jose v4.
+Each rejection is logged at warn level.
+
 A `private_key_jwt` DCR registration is restricted to the RFC 8693 token-exchange
 grant (`urn:ietf:params:oauth:grant-type:token-exchange`) and cannot request the
 authorization-code or refresh-token grants. If `grant_types` is omitted, this

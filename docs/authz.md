@@ -299,6 +299,9 @@ Then `tools/list` will only show the "weather" tool for that user.
 
 A filtered list depends on the caller's permissions, so `tools/list`, `prompts/list`, and `resources/list` responses carry the HTTP header `Cache-Control: private, no-store`, and a `cacheScope` or `ttlMs` member the backend sent in the result is replaced with `"private"` or `0`. The proxy does not add either member when the backend omitted it, so a list from a backend on an MCP revision that predates these members reaches the client without them. A result that repeats `cacheScope` or `ttlMs`, or spells one with a case-insensitive alias, fails closed with a generic internal JSON-RPC error. `resources/templates/list` responses carry the same header, and their result always includes `cacheScope: "private"` and `ttlMs: 0`.
 
+The SSE transport (`--transport sse`) filters list answers the same way. Before this change, an SSE client received the unfiltered `tools/list`, `prompts/list`, `resources/list`, `resources/templates/list` and `skills/list` answers, so a tool, prompt, resource or skill it was not permitted to use could appear in the list. Now the proxy filters each event on the `GET` event stream as it arrives. It picks the filter from the shape of the result (`tools`, `prompts`, `resources`, `resourceTemplates` or `skills`), not from the request method. A result that carries more than one of these members, or a frame that is not a JSON-RPC response but still carries a result, fails closed with a JSON-RPC error. Other results, such as `tools/call` answers, pass through unchanged. A non-stream response on that path is passed through unchanged, because it is not parsed as an event stream.
+
+
 ##### Methods covered by a prompt or resource policy
 
 Some MCP methods do not name a capability directly but still act on one. They are

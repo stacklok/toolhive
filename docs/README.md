@@ -38,6 +38,7 @@ For information on the ToolHive Operator, see the
 - **[Runtime Implementation Guide](runtime-implementation-guide.md)** - Guide for implementing new container runtime support
 - **[Runtime Version Customization](runtime-version-customization.md)** - Customizing base images and packages for protocol-scheme builds
 - **[Remote MCP Authentication](remote-mcp-authentication.md)** - How ToolHive authenticates to remote MCP servers
+- **[Optional TOA runtime gate](toa-optional-runtime-gate.md)** - Offline delivery-evidence verify before promote / runtime enable
 - **[Server API Documentation](server/README.md)** - How the OpenAPI docs for the `thv serve` REST API are generated and served
 
 ### Operator Documentation

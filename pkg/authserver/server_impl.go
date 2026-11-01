@@ -14,7 +14,6 @@ import (
 	"slices"
 	"time"
 
-	josev3 "github.com/go-jose/go-jose/v3"
 	"github.com/ory/fosite"
 	"github.com/ory/fosite/compose"
 	"github.com/spiffe/go-spiffe/v2/bundle/jwtbundle"
@@ -22,6 +21,7 @@ import (
 	"golang.org/x/time/rate"
 
 	"github.com/stacklok/toolhive/pkg/authserver/internal/consentpolicy"
+	"github.com/stacklok/toolhive/pkg/authserver/internal/fositejose"
 	oauthserver "github.com/stacklok/toolhive/pkg/authserver/server"
 	"github.com/stacklok/toolhive/pkg/authserver/server/deviceflow"
 	"github.com/stacklok/toolhive/pkg/authserver/server/handlers"
@@ -1080,13 +1080,7 @@ func createProvider(
 	// Fosite v0.49.0 depends on go-jose/v3, while we use v4 internally.
 	// This ensures the "kid" (key ID) is included in JWT headers so resource
 	// servers can look up the correct public key from our JWKS endpoint.
-	signingKeyV4 := authServerConfig.SigningKey
-	signingKeyV3 := &josev3.JSONWebKey{
-		Key:       signingKeyV4.Key,
-		KeyID:     signingKeyV4.KeyID,
-		Algorithm: signingKeyV4.Algorithm,
-		Use:       signingKeyV4.Use,
-	}
+	signingKeyV3 := fositejose.ToFositeKey(authServerConfig.SigningKey)
 
 	// Create a composed token strategy:
 	// - JWT strategy (outer): signs access tokens as JWTs using the asymmetric signing key

@@ -356,9 +356,12 @@ func (h *Handler) rejectBackChannelOnlyAuthorizeClient(ctx context.Context, w ht
 // written without a redirect because neither the client nor its redirect_uri
 // has been validated yet.
 func (h *Handler) rejectUnsafeRequestObject(ctx context.Context, w http.ResponseWriter, req *http.Request) bool {
-	if err := req.ParseForm(); err != nil {
-		return false
-	}
+	// ParseForm's error is ignored on purpose. net/http still fills req.Form
+	// with every pair that parsed (e.g. "request" in "?request=a.b.c&x=%zz")
+	// and returns only the first error. fosite never sees that error: its
+	// ParseMultipartForm call skips ParseForm once req.Form is set, and it
+	// reads those pairs. So the check must read them too.
+	_ = req.ParseForm()
 	if !slices.ContainsFunc(req.Form["request"], fositejose.IsUnsafeJWS) {
 		return false
 	}

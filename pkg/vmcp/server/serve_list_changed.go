@@ -240,6 +240,18 @@ func (s *Server) runListChangedResync(
 	var err error
 	switch kind {
 	case vmcpsession.KindTools:
+		// Optimizer mode (#5786 PR2): rebuild the session's optimizer index in
+		// place and leave the advertised meta-tools alone — their names do not
+		// change, so replacing the tool store would emit a downstream
+		// notifications/tools/list_changed carrying no news. A session with no
+		// registered handle (health monitoring disabled) falls through to the
+		// rebuild-and-replace path below, preserving pre-PR2 behavior.
+		if s.optimizerFactory != nil {
+			var handled bool
+			if handled, err = s.reindexSessionOptimizer(ctx, sessionID, identity); handled {
+				break
+			}
+		}
 		err = s.resyncSessionTools(ctx, session, sessionID, identity)
 	case vmcpsession.KindResources:
 		err = s.resyncSessionResources(ctx, session, sessionID, identity)

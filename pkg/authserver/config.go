@@ -461,7 +461,9 @@ type DelegateClientExchangeRefreshTokens struct {
 	IDJAGMaxLifetime string `json:"id_jag_max_lifetime,omitempty" yaml:"id_jag_max_lifetime,omitempty"`
 
 	// RefreshTokenMaxLifetime caps the lifetime of grants that can be exchanged
-	// for child refresh tokens. Empty refuses those grants.
+	// for child refresh tokens. Empty refuses those grants. Deriving a child also
+	// needs id_jag_max_lifetime, because a child allows ID-JAGs and is capped by
+	// that value; without it every derive is refused with token_type_not_permitted.
 	RefreshTokenMaxLifetime string `json:"refresh_token_max_lifetime,omitempty" yaml:"refresh_token_max_lifetime,omitempty"`
 }
 

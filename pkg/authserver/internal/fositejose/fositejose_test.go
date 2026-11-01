@@ -4,10 +4,23 @@
 package fositejose
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/sha1" // #nosec G505 -- x5t is a SHA-1 thumbprint by definition
+	"crypto/sha256"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/base64"
+	"math/big"
+	"net/url"
 	"testing"
+	"time"
 
+	josev3 "github.com/go-jose/go-jose/v3"
+	"github.com/go-jose/go-jose/v4"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // compactJWS builds a compact JWS whose protected header is the given JSON.
@@ -15,6 +28,116 @@ import (
 func compactJWS(header string) string {
 	enc := base64.RawURLEncoding
 	return enc.EncodeToString([]byte(header)) + "." + enc.EncodeToString([]byte(`{}`)) + ".c2ln"
+}
+
+// fullKey returns a go-jose v4 key with every field the conversions copy set.
+func fullKey(t *testing.T) jose.JSONWebKey {
+	t.Helper()
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	der, err := x509.CreateCertificate(rand.Reader, &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "fositejose-test"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(time.Hour),
+	}, &x509.Certificate{}, &priv.PublicKey, priv)
+	require.NoError(t, err)
+	cert, err := x509.ParseCertificate(der)
+	require.NoError(t, err)
+	sum1 := sha1.Sum(cert.Raw) // #nosec G401 -- x5t is a SHA-1 thumbprint by definition
+	sum256 := sha256.Sum256(cert.Raw)
+	return jose.JSONWebKey{
+		Key:                         &priv.PublicKey,
+		KeyID:                       "kid-1",
+		Algorithm:                   "ES256",
+		Use:                         "sig",
+		Certificates:                []*x509.Certificate{cert},
+		CertificatesURL:             &url.URL{Scheme: "https", Host: "example.com", Path: "/cert.pem"},
+		CertificateThumbprintSHA1:   sum1[:],
+		CertificateThumbprintSHA256: sum256[:],
+	}
+}
+
+func TestToFositeKey(t *testing.T) {
+	t.Parallel()
+
+	full := fullKey(t)
+	tests := []struct {
+		name string
+		in   *jose.JSONWebKey
+		want *josev3.JSONWebKey
+	}{
+		{name: "nil", in: nil, want: nil},
+		{name: "every field", in: &full, want: &josev3.JSONWebKey{
+			Key:                         full.Key,
+			KeyID:                       full.KeyID,
+			Algorithm:                   full.Algorithm,
+			Use:                         full.Use,
+			Certificates:                full.Certificates,
+			CertificatesURL:             full.CertificatesURL,
+			CertificateThumbprintSHA1:   full.CertificateThumbprintSHA1,
+			CertificateThumbprintSHA256: full.CertificateThumbprintSHA256,
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, ToFositeKey(tt.in))
+		})
+	}
+}
+
+func TestToFositeKeySet(t *testing.T) {
+	t.Parallel()
+
+	full := fullKey(t)
+	tests := []struct {
+		name    string
+		in      *jose.JSONWebKeySet
+		wantNil bool
+		wantLen int
+	}{
+		{name: "nil", in: nil, wantNil: true},
+		{name: "empty set", in: &jose.JSONWebKeySet{}},
+		{name: "every field", in: &jose.JSONWebKeySet{Keys: []jose.JSONWebKey{full, full}}, wantLen: 2},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := ToFositeKeySet(tt.in)
+			if tt.wantNil {
+				assert.Nil(t, got)
+				return
+			}
+			require.NotNil(t, got)
+			require.Len(t, got.Keys, tt.wantLen)
+			for i := range got.Keys {
+				assert.Equal(t, *ToFositeKey(&tt.in.Keys[i]), got.Keys[i])
+			}
+		})
+	}
+}
+
+func TestFromFositeKeySet(t *testing.T) {
+	t.Parallel()
+
+	full := fullKey(t)
+	original := &jose.JSONWebKeySet{Keys: []jose.JSONWebKey{full}}
+	tests := []struct {
+		name string
+		in   *josev3.JSONWebKeySet
+		want *jose.JSONWebKeySet
+	}{
+		{name: "nil", in: nil, want: nil},
+		{name: "empty set", in: &josev3.JSONWebKeySet{}, want: &jose.JSONWebKeySet{Keys: []jose.JSONWebKey{}}},
+		{name: "round trip with every field", in: ToFositeKeySet(original), want: original},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, FromFositeKeySet(tt.in))
+		})
+	}
 }
 
 func TestIsUnsafeJWS(t *testing.T) {

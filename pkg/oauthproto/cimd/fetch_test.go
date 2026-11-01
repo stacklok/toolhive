@@ -6,12 +6,14 @@ package cimd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -243,6 +245,124 @@ func TestFetchClientMetadataDocument(t *testing.T) {
 				assert.Contains(t, err.Error(), "private address")
 			})
 		}
+	})
+}
+
+// TestFetchClientMetadataDocument_ErrDocumentUnavailable pins which fetch
+// failures carry ErrDocumentUnavailable: those in which the host delivered no
+// usable response (no connection, a refusal by the dial-time SSRF guard, a
+// timeout, a 200 body cut short or stalled) or answered 5xx, 408, or 429. A
+// host that answers any other non-200 status, whatever happened to the body,
+// a body that is not a document, and a document that fails validation are
+// definitive.
+func TestFetchClientMetadataDocument_ErrDocumentUnavailable(t *testing.T) {
+	t.Parallel()
+
+	serveStatus := func(status int) http.HandlerFunc {
+		return func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(status) }
+	}
+	serveJSON := func(body string) http.HandlerFunc {
+		return func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(body))
+		}
+	}
+	// truncatedBody declares a longer body than it writes, so the client's
+	// read ends with io.ErrUnexpectedEOF after the status arrived.
+	truncatedBody := func(status int) http.HandlerFunc {
+		return func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Content-Length", "1000")
+			w.WriteHeader(status)
+			_, _ = w.Write([]byte(`{"client_id":"x"`))
+		}
+	}
+	// stalledBody sends the status and part of the body, then holds the
+	// connection open until the fetch gives up.
+	stalledBody := func(status int) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Length", "1000")
+			w.WriteHeader(status)
+			_, _ = w.Write([]byte(`{"client_id":"x"`))
+			w.(http.Flusher).Flush()
+			<-r.Context().Done()
+		}
+	}
+
+	tests := []struct {
+		name string
+		// handler answers the fetch; nil means the host is closed before the fetch.
+		handler http.HandlerFunc
+		// ctxTimeout, when set, bounds the fetch so a handler that never answers times out.
+		ctxTimeout time.Duration
+		// rawURL, when set, is fetched instead of a test server's URL; no server is started.
+		rawURL          string
+		wantUnavailable bool
+	}{
+		{name: "connection refused", handler: nil, wantUnavailable: true},
+		{name: "SSRF guard refuses a private address", rawURL: "https://10.255.255.1/metadata.json", wantUnavailable: true},
+		{name: "200 whose body is cut short", handler: truncatedBody(http.StatusOK), wantUnavailable: true},
+		{name: "200 whose body stalls past the fetch timeout", handler: stalledBody(http.StatusOK),
+			ctxTimeout: time.Second, wantUnavailable: true},
+		{name: "fetch times out", handler: func(w http.ResponseWriter, r *http.Request) {
+			<-r.Context().Done()
+			w.WriteHeader(http.StatusOK)
+		}, ctxTimeout: 100 * time.Millisecond, wantUnavailable: true},
+		{name: "500 internal server error", handler: serveStatus(http.StatusInternalServerError), wantUnavailable: true},
+		{name: "502 bad gateway", handler: serveStatus(http.StatusBadGateway), wantUnavailable: true},
+		{name: "503 service unavailable", handler: serveStatus(http.StatusServiceUnavailable), wantUnavailable: true},
+		{name: "504 gateway timeout", handler: serveStatus(http.StatusGatewayTimeout), wantUnavailable: true},
+		{name: "503 whose body is cut short", handler: truncatedBody(http.StatusServiceUnavailable), wantUnavailable: true},
+		{name: "408 request timeout", handler: serveStatus(http.StatusRequestTimeout), wantUnavailable: true},
+		{name: "429 too many requests", handler: serveStatus(http.StatusTooManyRequests), wantUnavailable: true},
+		{name: "404 not found", handler: serveStatus(http.StatusNotFound)},
+		{name: "403 forbidden", handler: serveStatus(http.StatusForbidden)},
+		{name: "410 gone", handler: serveStatus(http.StatusGone)},
+		{name: "404 whose body is cut short", handler: truncatedBody(http.StatusNotFound)},
+		{name: "410 whose body stalls past the fetch timeout", handler: stalledBody(http.StatusGone), ctxTimeout: time.Second},
+		{name: "302 redirect", handler: func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Location", "https://example.com/moved.json")
+			w.WriteHeader(http.StatusFound)
+		}},
+		{name: "unexpected content type", handler: func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/html")
+			_, _ = w.Write([]byte("<html></html>"))
+		}},
+		{name: "malformed body", handler: serveJSON(`{"client_id":`)},
+		{name: "document fails validation", handler: serveJSON(`{"client_id":"https://other.example.com/meta.json","redirect_uris":["https://example.com/cb"]}`)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			rawURL := tt.rawURL
+			if rawURL == "" {
+				server := httptest.NewServer(tt.handler)
+				t.Cleanup(server.Close)
+				rawURL = server.URL + "/metadata.json"
+				if tt.handler == nil {
+					server.Close()
+				}
+			}
+
+			ctx := context.Background()
+			if tt.ctxTimeout > 0 {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithTimeout(ctx, tt.ctxTimeout)
+				t.Cleanup(cancel)
+			}
+
+			_, err := FetchClientMetadataDocument(ctx, rawURL)
+			require.Error(t, err)
+			assert.Equal(t, tt.wantUnavailable, errors.Is(err, ErrDocumentUnavailable),
+				"ErrDocumentUnavailable classification for %q: %v", tt.name, err)
+		})
+	}
+
+	t.Run("invalid client_id URL is definitive", func(t *testing.T) {
+		t.Parallel()
+		_, err := FetchClientMetadataDocument(context.Background(), "http://example.com/metadata.json")
+		require.Error(t, err)
+		assert.False(t, errors.Is(err, ErrDocumentUnavailable))
 	})
 }
 

@@ -53,8 +53,19 @@ func runCallFailureWithID(
 	t *testing.T, method string, id any, meta map[string]any, err error,
 ) (int, map[string]any, string) {
 	t.Helper()
+	return runCallFailureWithParams(t, method, id, meta, nil, err)
+}
+
+// runCallFailureWithParams is runCallFailureWithID with the request's raw
+// params, which the decline check reads inputResponses from.
+func runCallFailureWithParams(
+	t *testing.T, method string, id any, meta map[string]any, params json.RawMessage, err error,
+) (int, map[string]any, string) {
+	t.Helper()
 	_, refusal := withCapabilityRefusalRecorder(context.Background())
-	parsed := &mcpparser.ParsedMCPRequest{Method: method, IsRequest: true, ID: id, Meta: meta}
+	parsed := &mcpparser.ParsedMCPRequest{
+		Method: method, IsRequest: true, ID: id, Meta: meta, Params: params,
+	}
 	rec := httptest.NewRecorder()
 	if method == "tools/call" {
 		writeModernToolCallFailure(rec, parsed, refusal, "vmcp-test", "1.2.3", err)
@@ -139,7 +150,8 @@ func TestWriteModernCallFailure_URLElicitationInputRequired(t *testing.T) {
 
 // TestWriteModernCallFailure_URLElicitationFallback pins the Modern fallback
 // at the unit level: any declaration short of elicitation.url gets -32021
-// naming {elicitation: {url: {}}} at HTTP 200, and no URL.
+// naming {elicitation: {url: {}}} at HTTP 400, with the elicitation message
+// and no URL.
 func TestWriteModernCallFailure_URLElicitationFallback(t *testing.T) {
 	t.Parallel()
 
@@ -155,11 +167,13 @@ func TestWriteModernCallFailure_URLElicitationFallback(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			status, decoded, body := runCallFailure(t, "tools/call", meta, answer)
-			require.Equal(t, http.StatusOK, status, body)
+			require.Equal(t, http.StatusBadRequest, status, body)
 			errObj, _ := decoded["error"].(map[string]any)
 			require.NotNil(t, errObj, body)
 			assert.EqualValues(t, mcpparser.CodeMissingClientCapability, errObj["code"])
 			assert.Contains(t, errObj["message"], "elicitation.url")
+			assert.Contains(t, errObj["message"], "Reconnect GitHub to continue",
+				"the embedder's message must reach a client that cannot receive the URL")
 			assert.Equal(t, map[string]any{
 				"requiredCapabilities": map[string]any{"elicitation": map[string]any{"url": map[string]any{}}},
 			}, errObj["data"])
@@ -175,11 +189,77 @@ func TestWriteModernURLElicitationUnsupported_OmitsAbsentID(t *testing.T) {
 	t.Parallel()
 
 	status, decoded, body := runCallFailureWithID(t, "tools/call", nil, clientCapsMeta(map[string]any{}), testURLAnswer(t))
-	require.Equal(t, http.StatusOK, status, body)
+	require.Equal(t, http.StatusBadRequest, status, body)
 	assert.NotContains(t, decoded, "id", body)
 	errObj, _ := decoded["error"].(map[string]any)
 	require.NotNil(t, errObj, body)
 	assert.EqualValues(t, mcpparser.CodeMissingClientCapability, errObj["code"])
+}
+
+// TestWriteModernMissingCapability_StatusBadRequest pins the status of the
+// backend mid-call refusal's -32021: HTTP 400 as SEP-2575 requires, shared
+// with the URL elicitation fallback through writeModernMissingCapabilityError.
+func TestWriteModernMissingCapability_StatusBadRequest(t *testing.T) {
+	t.Parallel()
+
+	rec := httptest.NewRecorder()
+	writeModernMissingCapability(rec, float64(3), capabilityElicitation)
+	require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+	var decoded map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &decoded))
+	errObj, _ := decoded["error"].(map[string]any)
+	require.NotNil(t, errObj, rec.Body.String())
+	assert.EqualValues(t, mcpparser.CodeMissingClientCapability, errObj["code"])
+	assert.Equal(t, map[string]any{
+		"requiredCapabilities": map[string]any{capabilityElicitation: map[string]any{}},
+	}, errObj["data"])
+	assert.EqualValues(t, 3, decoded["id"])
+}
+
+// TestWriteModernToolCallFailure_URLElicitationRefused pins decline and
+// cancel handling: a retry whose inputResponses decline or cancel an
+// elicitation the answer asks for again gets a complete isError tool result
+// with the message and no URL, instead of another input_required. An accept,
+// a response for another key, or unusable params ask again.
+func TestWriteModernToolCallFailure_URLElicitationRefused(t *testing.T) {
+	t.Parallel()
+
+	answer := testURLAnswer(t)
+	responses := func(key, action string) json.RawMessage {
+		return json.RawMessage(`{"name":"echo","inputResponses":{"` + key + `":{"action":"` + action + `"}}}`)
+	}
+	tests := []struct {
+		name        string
+		params      json.RawMessage
+		wantRefused bool
+	}{
+		{name: "decline", params: responses("github", "decline"), wantRefused: true},
+		{name: "cancel", params: responses("github", "cancel"), wantRefused: true},
+		{name: "accept asks again", params: responses("github", "accept")},
+		{name: "decline for another key asks again", params: responses("jira", "decline")},
+		{name: "no inputResponses asks again", params: json.RawMessage(`{"name":"echo"}`)},
+		{name: "no params asks again", params: nil},
+		{name: "params that do not decode ask again", params: json.RawMessage(`{"inputResponses":[1]}`)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			status, decoded, body := runCallFailureWithParams(
+				t, "tools/call", float64(7), declaredURLMeta, tt.params, answer)
+			require.Equal(t, http.StatusOK, status, body)
+			result, _ := decoded["result"].(map[string]any)
+			require.NotNil(t, result, body)
+			if !tt.wantRefused {
+				assert.Equal(t, "input_required", result["resultType"], body)
+				return
+			}
+			assert.Equal(t, "complete", result["resultType"], body)
+			assert.Equal(t, true, result["isError"], body)
+			assert.Equal(t, []any{map[string]any{"type": "text", "text": "Reconnect GitHub to continue"}},
+				result["content"], body)
+			assert.NotContains(t, body, "connect.example.com")
+		})
+	}
 }
 
 // TestWriteModernCallFailure_URLElicitationOnlyOnToolsCall pins the scope:

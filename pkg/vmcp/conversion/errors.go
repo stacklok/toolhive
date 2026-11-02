@@ -5,7 +5,6 @@ package conversion
 
 import (
 	"errors"
-	"strings"
 
 	sdkmcp "github.com/stacklok/toolhive-core/mcpcompat/mcp"
 	thvmcp "github.com/stacklok/toolhive/pkg/mcp"
@@ -59,14 +58,10 @@ func CodedErrorResult(err error, coded thvmcp.CodedError) *sdkmcp.CallToolResult
 }
 
 // urlElicitationFallbackResult renders the URL elicitation answer for a
-// client that cannot receive a URL elicitation: the elicitation messages,
-// joined, without the URL. A model reading the result cannot follow a link
-// it never sees, so it cannot skip the user consent step URL mode exists for.
+// client that cannot receive a URL elicitation: the elicitation messages
+// (answer.Message, the same text Error embeds), without the URL. A model
+// reading the result cannot follow a link it never sees, so it cannot skip
+// the user consent step URL mode exists for.
 func urlElicitationFallbackResult(answer *vmcp.URLElicitationRequiredError) *sdkmcp.CallToolResult {
-	elicitations := answer.Elicitations()
-	messages := make([]string, 0, len(elicitations))
-	for _, e := range elicitations {
-		messages = append(messages, e.Message())
-	}
-	return sdkmcp.NewToolResultError(strings.Join(messages, "\n"))
+	return sdkmcp.NewToolResultError(answer.Message())
 }

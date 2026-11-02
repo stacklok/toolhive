@@ -110,11 +110,13 @@ func (e URLElicitation) LogValue() slog.Value {
 // vMCP renders it per negotiated protocol at the tools/call render seam:
 //   - A Modern (2026-07-28) client that declared elicitation.url receives an
 //     InputRequiredResult carrying one elicitation/create request with
-//     mode "url" per elicitation.
+//     mode "url" per elicitation. On a retry that declined or cancelled one
+//     of those elicitations, it receives an isError tool result carrying
+//     Message(), without the URL, instead of being asked again.
 //   - Any other Modern client receives -32021 naming elicitation.url as the
-//     required capability, without the URL.
+//     required capability, with Message() and without the URL.
 //   - A Legacy (2025-11-25) session receives an isError tool result whose
-//     text is the elicitation message, without the URL.
+//     text is Message(), without the URL.
 //
 // On resources/read and prompts/get the answer renders as a generic error.
 //
@@ -157,14 +159,22 @@ func (e *URLElicitationRequiredError) Elicitations() []URLElicitation {
 	return slices.Clone(e.elicitations)
 }
 
-// Error names the condition and the elicitation messages. It never includes a
-// URL.
-func (e *URLElicitationRequiredError) Error() string {
+// Message returns the elicitation messages joined by "; ", in order. It is
+// the one rendering of the messages every fallback shows (the Legacy isError
+// text, the Modern -32021 message and decline result) and that Error embeds,
+// so all of them read the same. It never includes a URL.
+func (e *URLElicitationRequiredError) Message() string {
 	messages := make([]string, 0, len(e.elicitations))
 	for _, el := range e.elicitations {
 		messages = append(messages, el.message)
 	}
-	return "URL elicitation required: " + strings.Join(messages, "; ")
+	return strings.Join(messages, "; ")
+}
+
+// Error names the condition and the elicitation messages. It never includes a
+// URL.
+func (e *URLElicitationRequiredError) Error() string {
+	return "URL elicitation required: " + e.Message()
 }
 
 // GoString is the %#v rendering Format delegates to. It renders each

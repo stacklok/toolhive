@@ -296,18 +296,14 @@ func TestIntegration_Modern_RealBackend_UnknownMethod(t *testing.T) {
 // call MUST resolve promptly (postModern is deadline-bounded) to an explicit
 // JSON-RPC error — never a hang, never a fabricated success, and never a
 // resultType "input_required" envelope, which this dispatcher does not emit
-// (client-polled multi-round retrieval, SEP-2322, is unimplemented;
-// modernResultTypeComplete is the only resultType modern_envelope.go builds).
+// for a backend's mid-call request (relaying a backend round, SEP-2322, is
+// unimplemented; vMCP emits input_required only for the in-process URL
+// elicitation answer).
 //
-// Deliberately NOT pinned: the specific error code. Today it is -32603, but
-// the spec MUSTs -32021 MissingRequiredClientCapability for the undeclared
-// case (at HTTP 400, which go-sdk's client escalates to permanent session
-// death — the follow-up therefore plans -32021 at HTTP 200 as a documented
-// deviation; see the "unavailable to Modern clients" section of
-// docs/arch/10-virtual-mcp-architecture.md). Pinning -32603 here would make
-// that spec-correcting follow-up look like a regression. TODO(follow-up):
-// once the two-path capability-error contract lands, assert -32021 +
-// data.requiredCapabilities for the undeclared case.
+// Deliberately NOT pinned here: the specific error code and status. This
+// request declares no capability, so it gets -32021 at HTTP 400;
+// TestIntegration_Modern_RealBackend_MidCallCapabilityContract pins the code,
+// status, and message for both the undeclared and the declared case.
 //
 // This is the honest-unsupported contract for the surface the 2026-07-28
 // revision removed: server-initiated requests need a live session, Modern
@@ -334,9 +330,6 @@ func TestIntegration_Modern_RealBackend_ElicitingToolFailsCleanly(t *testing.T) 
 			resp, decoded := postModern(t, ts.URL, "tools/call", map[string]any{"name": tc.tool}, 1, tc.tool)
 			defer resp.Body.Close()
 
-			// Both today's -32603 and the follow-up's -32021 (documented HTTP
-			// 200 deviation) ride HTTP 200, so this holds across the fix.
-			require.Equal(t, http.StatusOK, resp.StatusCode, "decoded: %+v", decoded)
 			require.NotContains(t, decoded, "result",
 				"must not fabricate a success or an input_required envelope: %+v", decoded)
 			_, ok := decoded["error"].(map[string]any)
@@ -499,10 +492,9 @@ func TestIntegration_Modern_RealBackend_MalformedArguments(t *testing.T) {
 //
 //   - capability NOT declared in _meta clientCapabilities: the draft schema's
 //     MissingRequiredClientCapabilityError — code -32021 with
-//     data.requiredCapabilities typed as a ClientCapabilities object — served
-//     at HTTP 200, a deliberate, documented deviation from the spec-mandated
-//     400 (go-sdk treats a non-transient 4xx as permanent connection death;
-//     see writeModernMissingCapability and go-sdk#1117).
+//     data.requiredCapabilities typed as a ClientCapabilities object — at
+//     HTTP 400, as the spec requires (see writeModernMissingCapabilityError).
+//     The declared case's -32603 rides HTTP 200, per writeModernError.
 //   - capability DECLARED: -32021 would wrongly blame the client, and the
 //     2026-07-28 vocabulary has no "operation not supported" code, so it is
 //     an explicit -32603 whose vMCP-owned message names the real cause:
@@ -543,9 +535,13 @@ func TestIntegration_Modern_RealBackend_MidCallCapabilityContract(t *testing.T) 
 			resp, decoded := postModern(t, ts.URL, "tools/call", params, 1, tc.tool)
 			defer resp.Body.Close()
 
-			// Both paths ride HTTP 200: -32603 per writeModernError's mapping,
-			// -32021 per writeModernMissingCapability's documented deviation.
-			require.Equal(t, http.StatusOK, resp.StatusCode, "decoded: %+v", decoded)
+			// -32603 rides HTTP 200 per writeModernError's mapping; -32021
+			// rides HTTP 400 per writeModernMissingCapabilityError.
+			wantStatus := http.StatusOK
+			if !tc.declared {
+				wantStatus = http.StatusBadRequest
+			}
+			require.Equal(t, wantStatus, resp.StatusCode, "decoded: %+v", decoded)
 			require.NotContains(t, decoded, "result",
 				"must not fabricate a success or an input_required envelope: %+v", decoded)
 			errObj, ok := decoded["error"].(map[string]any)

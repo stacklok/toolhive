@@ -200,14 +200,21 @@ decides from the tool `name` and the caller's `identity`.
 
 vMCP renders the answer per protocol. A Modern client that declared
 `elicitation.url` gets the URL; every other client gets a fallback carrying
-only the message. See
+your elicitation messages and not the URL. See
 [10-virtual-mcp-architecture.md](10-virtual-mcp-architecture.md#answering-a-call-with-a-url-elicitation)
 for the render table. You own the connect page, its identity check, and the
 credential store; vMCP owns only the protocol rendering. Your obligations:
 
 - **Put nothing sensitive in the URL.** No credentials, tokens, PII, or
   pre-authenticated links. A client that declared URL mode shows the URL to
-  the user and may log it.
+  the user and may log it, and with audit `includeResponseData` on, vMCP's
+  own audit log stores it too.
+- **Expect your decorator to be called on the retry.** vMCP does not pass the
+  client's `inputResponses` to your decorator, so it answers the retry from
+  its own state. If it answers again after the user declined or cancelled,
+  vMCP ends the loop with an `isError` result carrying your message instead
+  of asking again. If it answers again after an accept, the user is asked
+  again, until the client's retry cap.
 - **Verify who opens the page.** The page must check that the user who opens
   it is the same vMCP-authenticated subject the answer was issued to (for
   example, by requiring the same sign-in and comparing the issuer and
@@ -217,11 +224,13 @@ credential store; vMCP owns only the protocol rendering. Your obligations:
   (`core.Config.TelemetryProvider` set), vMCP's backend telemetry wraps the
   `BackendClient` you pass as `core.Config.BackendClient`, so an answer
   returned from that decorator is recorded as a failed backend call: it
-  increments the error counter and marks the span as an error. Only the
+  increments the error counter and marks the span as an error. The
   `mcp.client.operation.duration` histogram carries `error.type`, the Go
   type of the returned error (`*vmcp.URLElicitationRequiredError` when
-  returned unwrapped), which tells it apart from real failures there. The
-  error counter and span carry no such label. A `VMCP` decorator sits above
+  returned unwrapped), and the span's `exception` event carries the same
+  type as `exception.type`, so both tell an answer apart from a real backend
+  failure. `exception.message` is `Error()`, which has no URL. Only the
+  legacy error counter has no type label. A `VMCP` decorator sits above
   the core, so its answers never reach backend telemetry, and without
   telemetry nothing is recorded. Count answers in your decorator if you need
   a dedicated metric.

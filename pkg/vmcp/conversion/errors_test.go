@@ -53,7 +53,7 @@ func TestErrorToToolResult(t *testing.T) {
 		{
 			name:     "several elicitations render every message",
 			err:      two,
-			wantText: "Reconnect GitHub\nReconnect Jira",
+			wantText: "Reconnect GitHub; Reconnect Jira",
 		},
 		{
 			name:     "denial outranks the URL elicitation answer",

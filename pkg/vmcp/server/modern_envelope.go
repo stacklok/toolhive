@@ -612,20 +612,19 @@ type modernURLElicitParams struct {
 // domain InputRequiredResult writeModernInputRequired renders, keyed by
 // elicitation ID, with no requestState (vMCP holds no round state, and the
 // retry is an ordinary tools/call).
-func inputRequiredFromURLElicitation(answer *vmcp.URLElicitationRequiredError) (*vmcp.InputRequiredResult, error) {
+func inputRequiredFromURLElicitation(answer *vmcp.URLElicitationRequiredError) *vmcp.InputRequiredResult {
 	elicitations := answer.Elicitations()
 	requests := make(map[string]json.RawMessage, len(elicitations))
 	for _, e := range elicitations {
-		raw, err := json.Marshal(modernURLElicitRequest{
+		// The struct holds three strings, which always marshal; the error is
+		// ignored for that reason.
+		raw, _ := json.Marshal(modernURLElicitRequest{
 			Method: string(mcp.MethodElicitationCreate),
 			Params: modernURLElicitParams{Mode: elicitationModeURL, Message: e.Message(), URL: e.URL()},
 		})
-		if err != nil {
-			return nil, fmt.Errorf("encode URL elicitation %q: %w", e.ElicitationID(), err)
-		}
 		requests[e.ElicitationID()] = raw
 	}
-	return &vmcp.InputRequiredResult{InputRequests: requests}, nil
+	return &vmcp.InputRequiredResult{InputRequests: requests}
 }
 
 // writeModernError writes a JSON-RPC error envelope, deriving the HTTP
@@ -682,8 +681,8 @@ func writeModernError(w http.ResponseWriter, id any, code int, msg string) {
 // discarded unread. 200 is the only status on which the client surfaces the
 // coded error to the caller. The request was accepted and processed; the
 // failure is an application-level JSON-RPC error riding the transport.
-// (writeModernMissingCapability in modern_dispatch.go documents a related
-// but distinct 200-over-4xx deviation for -32021.)
+// (-32021 is not mapped here: writeModernMissingCapabilityError in
+// modern_dispatch.go writes it at 400.)
 //
 // id follows writeModernError: absent (via transportsession.HasJSONRPCID) is
 // encoded by omitting the "id" key, never as null.

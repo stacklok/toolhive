@@ -446,13 +446,13 @@ Verified against go-sdk `v1.7.0-pre.3` (the transitive pin via
    are only used on Legacy sessions — but it forecloses any notion of
    re-enabling server-initiated requests for a capability-declaring Modern
    client. Accounted for, no action.
-5. **`-32021` at HTTP 400 is unshippable** with current go-sdk clients (their
-   transient set is 500/502/503/504/429; any other 4xx is permanent session
-   death), which is why the undeclared-capability error lands at HTTP 200 as
-   a documented deviation — implemented by #6061
-   (`writeModernMissingCapability`), tracked upstream as go-sdk#1117; MRTR
-   does not change it, it *removes the case* for capabilities the client
-   does declare against Modern backends.
+5. **`-32021` rides HTTP 400, as the spec requires.** go-sdk clients from
+   v1.7.0 decode the JSON-RPC body of a non-2xx response, so the 400 fails
+   the call and keeps the session (go-sdk#1117, fixed upstream). The
+   undeclared-capability error (#6061, `writeModernMissingCapability`) and
+   the URL elicitation fallback share `writeModernMissingCapabilityError`.
+   MRTR does not change it; it *removes the case* for capabilities the
+   client does declare against Modern backends.
 
 ## Sequencing (collision-aware)
 
@@ -491,7 +491,9 @@ merges:
    renders through today (doc 10, "Answering a call with a URL elicitation").
    This slice reuses it for relayed backend rounds rather than adding a second
    writer. Retries already pass through the parser untouched, so this slice
-   adds the threading, not acceptance. Post-#6061, the rendering branch
+   adds the threading, not acceptance. Today `dispatchModern` reads
+   `inputResponses` only to honor a decline or cancel of the URL elicitation
+   answer (`writeModernToolCallFailure`); it does not pass them on. Post-#6061, the rendering branch
    hooks into the Modern call-failure classifiers via
    `vmcp.InputRequiredFromError`: `writeModernToolCallFailure` for
    `tools/call` (which already handles the URL elicitation answer there) and
@@ -507,8 +509,7 @@ merges:
    goes live end-to-end. The `requestState` open decision above (verbatim vs
    #6059's routing-context wrapper) must be resolved here at the latest. The `-32021`-shaped
    undeclared-capability error contract landed ahead of this in #6061
-   (merged 2026-07-28; `-32021` at HTTP 200 as the documented deviation,
-   upstream go-sdk#1117). When this slice lands, #6061's declared-capability
+   (merged 2026-07-28; `-32021`, now at HTTP 400). When this slice lands, #6061's declared-capability
    `-32603` message ("multi-round retrieval … which this server does not
    implement") stops being true for Modern backends and needs rescoping to
    the Legacy-backend cell it permanently serves.

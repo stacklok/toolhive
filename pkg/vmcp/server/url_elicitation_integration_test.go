@@ -329,7 +329,8 @@ func TestIntegration_Modern_URLElicitation_RetryIsStateless(t *testing.T) {
 
 // TestIntegration_Modern_URLElicitation_UndeclaredFallsBack pins AC3.1: a
 // Modern client that did not declare elicitation.url receives -32021 naming
-// it, at HTTP 200, without the URL.
+// it, at HTTP 400, with the elicitation message and without the URL. A real
+// go-sdk client keeps its session across that 400.
 func TestIntegration_Modern_URLElicitation_UndeclaredFallsBack(t *testing.T) {
 	t.Parallel()
 
@@ -349,15 +350,83 @@ func TestIntegration_Modern_URLElicitation_UndeclaredFallsBack(t *testing.T) {
 			raw, err := io.ReadAll(resp.Body)
 			require.NoError(t, err)
 
-			require.Equal(t, http.StatusOK, resp.StatusCode, "decoded: %+v", decoded)
+			require.Equal(t, http.StatusBadRequest, resp.StatusCode, "decoded: %+v", decoded)
 			errObj, ok := decoded["error"].(map[string]any)
 			require.True(t, ok, "decoded: %+v", decoded)
 			assert.EqualValues(t, mcpparser.CodeMissingClientCapability, errObj["code"])
+			assert.Contains(t, errObj["message"], urlElicitationMessage)
 			assert.Contains(t, errObj["message"], `declare the "elicitation.url" client capability and retry`)
 			assert.Equal(t, map[string]any{
 				"requiredCapabilities": map[string]any{"elicitation": map[string]any{"url": map[string]any{}}},
 			}, errObj["data"])
 			assert.NotContains(t, string(raw), urlElicitationHost)
+		})
+	}
+
+	t.Run("go-sdk client session survives the 400", func(t *testing.T) {
+		t.Parallel()
+		answering := answeringFlag(true)
+		ts := httptest.NewServer(newURLElicitingHandler(t, backendURL, answering))
+		t.Cleanup(ts.Close)
+
+		client := gosdk.NewClient(&gosdk.Implementation{Name: "no-url-mode", Version: "1.0.0"}, nil)
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		t.Cleanup(cancel)
+		cs, err := client.Connect(ctx, &gosdk.StreamableClientTransport{Endpoint: ts.URL + "/mcp"}, nil)
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = cs.Close() })
+		require.Equal(t, mcpparser.MCPVersionModern, cs.InitializeResult().ProtocolVersion)
+
+		_, err = callEcho(t, cs, "echo", map[string]any{"input": "x"})
+		require.Error(t, err, "the -32021 must fail the call")
+		assert.Contains(t, err.Error(), urlElicitationMessage)
+		assert.NotContains(t, err.Error(), urlElicitationHost)
+
+		// The same session serves the next call once the decorator stops
+		// answering: the 400 failed one call, not the connection.
+		answering.Store(false)
+		res, err := callEcho(t, cs, "echo", map[string]any{"input": "same session"})
+		require.NoError(t, err)
+		require.False(t, res.IsError, "%+v", res)
+		text, ok := res.Content[0].(*gosdk.TextContent)
+		require.True(t, ok)
+		assert.Equal(t, "same session", text.Text)
+	})
+}
+
+// TestIntegration_Modern_URLElicitation_DeclineEndsTheLoop pins decline and
+// cancel handling with a real go-sdk client: the user refuses the elicitation,
+// the client retries with that response, the decorator answers again, and
+// vMCP ends the loop with an isError result carrying the message and no URL,
+// after one prompt.
+func TestIntegration_Modern_URLElicitation_DeclineEndsTheLoop(t *testing.T) {
+	t.Parallel()
+
+	backendURL := startRealMCPBackend(t)
+	for _, action := range []string{"decline", "cancel"} {
+		t.Run(action, func(t *testing.T) {
+			t.Parallel()
+			front, baseURL := newRecordingFront(t, newURLElicitingHandler(t, backendURL, answeringFlag(true)))
+
+			var prompts atomic.Int32
+			cs := urlModeClient(t, baseURL, func(*gosdk.ElicitRequest) (*gosdk.ElicitResult, error) {
+				prompts.Add(1)
+				return &gosdk.ElicitResult{Action: action}, nil
+			})
+
+			res, err := callEcho(t, cs, "echo", map[string]any{"input": "x"})
+			require.NoError(t, err)
+			require.True(t, res.IsError, "%+v", res)
+			require.Len(t, res.Content, 1)
+			text, ok := res.Content[0].(*gosdk.TextContent)
+			require.True(t, ok)
+			assert.Equal(t, urlElicitationMessage, text.Text)
+			raw, err := json.Marshal(res)
+			require.NoError(t, err)
+			assert.NotContains(t, string(raw), urlElicitationHost)
+
+			assert.EqualValues(t, 1, prompts.Load(), "the user must be asked once")
+			assert.Len(t, front.toolCalls(), 2, "one input_required round, then the refused retry")
 		})
 	}
 }

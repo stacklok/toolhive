@@ -369,9 +369,10 @@ call: `input_required` results flow back through the ordinary return path —
   workflow first when the caller is the composer);
 - server: `dispatchModern` renders it as the `resultType:"input_required"`
   envelope through `writeModernInputRequired`, and accepts
-  `inputResponses`/`requestState` params on the retry. The writer landed
-  first for the URL elicitation answer (`vmcp.URLElicitationRequiredError`),
-  which is converted to an `InputRequiredResult` at render time.
+  `inputResponses`/`requestState` params on the retry. The writer is shared:
+  today it renders the URL elicitation answer
+  (`vmcp.URLElicitationRequiredError`), converted to an `InputRequiredResult`
+  at render time.
 
 ## Sampling: deprecated pass-through, no feature work
 
@@ -483,8 +484,8 @@ merges:
    hook), `pkg/vmcp/client/modern_mrtr.go` — none touched by #6033.
 2. **Ingress envelope + retry params (after #6050/#6033).** `dispatchModern`
    accepts `inputResponses`/`requestState`, threads them through
-   `core.CallTool`→`BackendClient`, and renders `input_required` envelopes;
-   parser vocabulary for the two params. The envelope writer already exists:
+   `core.CallTool`→`BackendClient`, and renders `input_required` envelopes.
+   The envelope writer already exists:
    `writeModernInputRequired` (`pkg/vmcp/server/modern_envelope.go`, #7022)
    takes a `*vmcp.InputRequiredResult` and is what the URL elicitation answer
    renders through today (doc 10, "Answering a call with a URL elicitation").
@@ -515,7 +516,7 @@ merges:
    dispatch, owner-mismatch audit signal.
 
 Slices 2–5 each update doc 10's client-edge limitation section (whose current
-text truthfully says MRTR is unserved) and the forwarding-test dispositions
+text says backend-relayed MRTR is unserved) and the forwarding-test dispositions
 from #6051 as their claims become false.
 
 ## Testing strategy

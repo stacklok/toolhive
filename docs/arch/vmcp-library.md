@@ -170,7 +170,8 @@ Watch the [ToolHive changelog](https://github.com/stacklok/toolhive/releases) fo
 
 To send the user to a page of yours (for example, to reconnect one backend's
 credential) and then have the client retry, return the URL elicitation answer
-from a `BackendClient` (or `VMCP`) decorator's `CallTool`:
+from a `BackendClient` or `VMCP` decorator's `CallTool` (the two differ in
+telemetry, below):
 
 ```go
 func (d *connectDecorator) CallTool(ctx context.Context, target *vmcp.BackendTarget,
@@ -207,12 +208,18 @@ credential store; vMCP owns only the protocol rendering. Your obligations:
   example, by requiring the same sign-in and comparing the issuer and
   subject), so a forwarded or leaked link cannot bind a credential to the
   wrong user.
-- **Expect telemetry to count it as a backend error.** vMCP's backend
-  telemetry wraps the `BackendClient` you pass in, so an answer returned from
-  your decorator is recorded as a failed backend call. Its `error.type` is the
-  Go type of the returned error (`*vmcp.URLElicitationRequiredError` when
-  returned unwrapped), which tells it apart from real failures. Count answers
-  in your decorator if you need a dedicated metric.
+- **Know how telemetry sees it.** With telemetry enabled
+  (`core.Config.TelemetryProvider` set), vMCP's backend telemetry wraps the
+  `BackendClient` you pass as `core.Config.BackendClient`, so an answer
+  returned from that decorator is recorded as a failed backend call: it
+  increments the error counter and marks the span as an error. Only the
+  `mcp.client.operation.duration` histogram carries `error.type`, the Go
+  type of the returned error (`*vmcp.URLElicitationRequiredError` when
+  returned unwrapped), which tells it apart from real failures there. The
+  error counter and span carry no such label. A `VMCP` decorator sits above
+  the core, so its answers never reach backend telemetry, and without
+  telemetry nothing is recorded. Count answers in your decorator if you need
+  a dedicated metric.
 
 vMCP meets the spec's requirement to bind the elicitation to the requesting
 user by rendering it in-band, on the same authenticated request, and holding

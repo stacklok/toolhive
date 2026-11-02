@@ -649,8 +649,10 @@ DCR-issued, so it has no TTL and does not count against `max_dcr_clients`.
 
 At startup the runner reads each `jwks_file` next to the existing
 `client_secret_file` handling, so rotating a key means replacing the file and
-restarting. The stored client keeps its `client_id`; the new key set replaces
-the old one. Discovery lists the client authentication methods as described in
+restarting. When the operator manages the client, edit the JWKS ConfigMap
+instead: the pod rolls on the edit, because the JWKS bytes are part of the
+pod-template checksum. The stored client keeps its `client_id`; the new key set
+replaces the old one. Discovery lists the client authentication methods as described in
 [Discovery and secret rotation](#discovery-and-secret-rotation). The
 cleartext-transport rule is separate: every delegate client, `private_key_jwt`
 ones included, counts as confidential there.

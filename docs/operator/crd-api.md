@@ -2012,9 +2012,11 @@ _Appears in:_
 | `tokenExchange` _[api.v1beta1.DelegateClientTokenExchangeConfig](#apiv1beta1delegateclienttokenexchangeconfig)_ | TokenExchange is the client's token-exchange policy. Its<br />selfIssuedSubjectTokens field is required whenever the block is present.<br />The block may be omitted only by a secret-authenticated client without<br />grantTypes; such a client keeps the legacy rule (any) and may exchange any<br />self-issued token. A client that sets grantTypes or uses private_key_jwt<br />must declare the block. |  | Optional: \{\} <br /> |
 
 
+
+
 #### api.v1beta1.DelegateClientTokenExchangeConfig
 
-_Underlying type:_ _struct{SelfIssuedSubjectTokens string "json:\"selfIssuedSubjectTokens\""; AllowedSourceClients []string "json:\"allowedSourceClients,omitempty\""; APIAudience string "json:\"apiAudience,omitempty\""}_
+_Underlying type:_ _struct{SelfIssuedSubjectTokens string "json:\"selfIssuedSubjectTokens\""; AllowedSourceClients []string "json:\"allowedSourceClients,omitempty\""; APIAudience string "json:\"apiAudience,omitempty\""; ExchangeRefreshTokens *DelegateClientExchangeRefreshTokensConfig "json:\"exchangeRefreshTokens,omitempty\""}_
 
 DelegateClientTokenExchangeConfig is the token-exchange policy of one
 delegate client. External-issuer subject tokens are not affected by it: the

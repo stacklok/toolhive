@@ -44,8 +44,17 @@ func runCallFailure(
 	t *testing.T, method string, meta map[string]any, err error,
 ) (int, map[string]any, string) {
 	t.Helper()
+	return runCallFailureWithID(t, method, float64(7), meta, err)
+}
+
+// runCallFailureWithID is runCallFailure with the request id as a parameter;
+// a nil id is an absent one.
+func runCallFailureWithID(
+	t *testing.T, method string, id any, meta map[string]any, err error,
+) (int, map[string]any, string) {
+	t.Helper()
 	_, refusal := withCapabilityRefusalRecorder(context.Background())
-	parsed := &mcpparser.ParsedMCPRequest{Method: method, IsRequest: true, ID: float64(7), Meta: meta}
+	parsed := &mcpparser.ParsedMCPRequest{Method: method, IsRequest: true, ID: id, Meta: meta}
 	rec := httptest.NewRecorder()
 	if method == "tools/call" {
 		writeModernToolCallFailure(rec, parsed, refusal, "vmcp-test", "1.2.3", err)
@@ -157,6 +166,20 @@ func TestWriteModernCallFailure_URLElicitationFallback(t *testing.T) {
 			assert.NotContains(t, body, "connect.example.com")
 		})
 	}
+}
+
+// TestWriteModernURLElicitationUnsupported_OmitsAbsentID pins the
+// JSON-RPC envelope rule for the hand-built -32021 fallback: an absent request
+// id omits the "id" key rather than writing "id": null.
+func TestWriteModernURLElicitationUnsupported_OmitsAbsentID(t *testing.T) {
+	t.Parallel()
+
+	status, decoded, body := runCallFailureWithID(t, "tools/call", nil, clientCapsMeta(map[string]any{}), testURLAnswer(t))
+	require.Equal(t, http.StatusOK, status, body)
+	assert.NotContains(t, decoded, "id", body)
+	errObj, _ := decoded["error"].(map[string]any)
+	require.NotNil(t, errObj, body)
+	assert.EqualValues(t, mcpparser.CodeMissingClientCapability, errObj["code"])
 }
 
 // TestWriteModernCallFailure_URLElicitationOnlyOnToolsCall pins the scope:

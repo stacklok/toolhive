@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -37,6 +38,11 @@ const backendConnectURL = "https://attacker.example.com/connect"
 func TestBackendURLElicitationIsNotRendered_Legacy(t *testing.T) {
 	t.Parallel()
 
+	// backendMessage is distinctive so the assertion below proves the error
+	// came from decoding the backend's -32042, not from a failed initialize
+	// or a transport error.
+	const backendMessage = "backend-32042-marker: connect first"
+	var toolCalls atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		body, err := io.ReadAll(r.Body)
@@ -52,12 +58,13 @@ func TestBackendURLElicitationIsNotRendered_Legacy(t *testing.T) {
 				"serverInfo": {"name": "url-eliciting-backend", "version": "1.0.0"}
 			}`)})
 		case "tools/call":
+			toolCalls.Add(1)
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"jsonrpc": "2.0",
 				"id":      req.ID,
 				"error": map[string]any{
 					"code":    -32042,
-					"message": "URL elicitation required",
+					"message": backendMessage,
 					"data": map[string]any{"elicitations": []any{map[string]any{
 						"mode": "url", "elicitationId": "e1", "message": "connect", "url": backendConnectURL,
 					}}},
@@ -87,6 +94,8 @@ func TestBackendURLElicitationIsNotRendered_Legacy(t *testing.T) {
 	defer cancel()
 	_, err := h.CallTool(ctx, target, "echo", map[string]any{}, nil, nil)
 	require.Error(t, err, "a -32042 from the backend must fail the call")
+	require.Contains(t, err.Error(), backendMessage, "the error must be the decoded -32042 response")
+	require.EqualValues(t, 1, toolCalls.Load(), "the backend must have answered exactly one tools/call")
 
 	_, isAnswer := vmcp.URLElicitationFromError(err)
 	assert.False(t, isAnswer, "a backend's -32042 must not decode into the URL elicitation answer")

@@ -23,7 +23,9 @@ import (
 
 // postModern sends a single Modern (2026-07-28) stateless JSON-RPC request to
 // baseURL+"/mcp", hand-rolled per pkg/mcp/revision.go's wire contract rather
-// than through go-sdk (importing it here would force an MVS bump): the
+// than through a go-sdk client, so tests control and observe the exact wire
+// shape (tests that need a real client's behavior, such as
+// url_elicitation_integration_test.go, use go-sdk directly): the
 // MCP-Protocol-Version and Mcp-Method headers are mandatory on every Modern
 // POST, Mcp-Name is set when non-empty (required only for tools/call,
 // resources/read, prompts/get -- see nameRequiredMethods in revision.go), and

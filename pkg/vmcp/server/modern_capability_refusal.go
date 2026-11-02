@@ -33,6 +33,21 @@ func modernClientDeclaredCapability(meta map[string]any, capability string) bool
 	return ok
 }
 
+// elicitationModeURL is the ElicitationCapabilities key a client declares to
+// accept URL-mode elicitation. An elicitation object without it means form
+// mode only, so a bare elicitation: {} does not declare URL mode.
+const elicitationModeURL = "url"
+
+// modernClientDeclaredURLElicitation reports whether the request's _meta
+// declared clientCapabilities.elicitation.url. MCP 2026-07-28 says servers
+// MUST NOT send elicitation requests with modes the client does not support.
+func modernClientDeclaredURLElicitation(meta map[string]any) bool {
+	caps, _ := meta[modernClientCapabilitiesKey].(map[string]any)
+	elicitation, _ := caps[capabilityElicitation].(map[string]any)
+	_, ok := elicitation[elicitationModeURL]
+	return ok
+}
+
 // capabilityRefusalRecorder captures, in-process, which client capability a
 // backend's mid-call server-initiated request needed when there was no
 // downstream session to forward it to (Modern ingress). dispatchModern's call

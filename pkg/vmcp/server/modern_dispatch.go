@@ -547,12 +547,24 @@ func writeModernPageError(ctx context.Context, w http.ResponseWriter, id any, me
 }
 
 // writeModernCallFailure classifies a POST-dispatch error from the three call
-// verbs (tools/call, resources/read, prompts/get), layering the mid-call
-// capability-refusal case on top of writeModernDispatchError's authz/generic
-// classification:
+// verbs (tools/call, resources/read, prompts/get), layering the URL
+// elicitation answer and the mid-call capability-refusal case on top of
+// writeModernDispatchError's authz/generic classification:
 //
 //   - Authorization denials keep absolute priority (403 + denyMsg, so the
-//     audit middleware still logs "denied") — a refusal can never mask one.
+//     audit middleware still logs "denied") — neither a URL elicitation
+//     answer nor a refusal can mask one. Both branches below guard on
+//     ErrAuthorizationFailed explicitly, since the denial itself is only
+//     checked inside writeModernDispatchError.
+//   - A URL elicitation answer (vmcp.URLElicitationRequiredError) on
+//     tools/call, from a client that did not declare
+//     clientCapabilities.elicitation.url, renders as -32021 naming
+//     elicitation.url, without the URL (writeModernURLElicitationUnsupported):
+//     the spec forbids sending a mode the client did not declare, and the
+//     URL must not reach a client that would hand it to a model instead of a
+//     user. On resources/read and prompts/get the answer falls through to
+//     writeModernDispatchError's generic -32603, whose message (the answer's
+//     Error()) never contains the URL.
 //   - A recorded refusal with the capability NOT declared in the request's
 //     _meta clientCapabilities is the draft schema's
 //     MissingRequiredClientCapabilityError: code -32021 with
@@ -564,7 +576,9 @@ func writeModernPageError(ctx context.Context, w http.ResponseWriter, id any, me
 //     -32021: the client did declare it, so blaming the client would be
 //     wrong, and declaring the capability on a retry cannot help. The spec's answer for a declared
 //     capability is resultType "input_required" (multi-round retrieval,
-//     SEP-2322), which this dispatcher does not implement — and the
+//     SEP-2322), which this dispatcher cannot produce for a backend's
+//     mid-call request: the request arrives over a Legacy backend session
+//     and has nothing to relay it through — and the
 //     2026-07-28 error vocabulary has no "operation not supported" code, so
 //     there is no conformant code for this case at all (see the "unavailable
 //     to Modern clients" limitation in
@@ -580,6 +594,12 @@ func writeModernCallFailure(
 	w http.ResponseWriter, parsed *mcpparser.ParsedMCPRequest, refusal *capabilityRefusalRecorder,
 	denyMsg string, err error,
 ) {
+	if _, ok := vmcp.URLElicitationFromError(err); ok &&
+		parsed.Method == "tools/call" && !errors.Is(err, vmcp.ErrAuthorizationFailed) &&
+		!modernClientDeclaredURLElicitation(parsed.Meta) {
+		writeModernURLElicitationUnsupported(w, parsed.ID)
+		return
+	}
 	if capName := refusal.refused(); capName != "" && !errors.Is(err, vmcp.ErrAuthorizationFailed) {
 		if !modernClientDeclaredCapability(parsed.Meta, capName) {
 			writeModernMissingCapability(w, parsed.ID, capName)
@@ -613,10 +633,13 @@ func writeModernCallFailure(
 // callers (pre-dispatch classification rejections a client never retries on a
 // live session) and must not be changed for this one.
 //
-// The message names both the capability AND the gateway limitation, so a
-// caller that reacts to -32021 by declaring the capability on a retry
-// learns immediately that doing so will not help here (the declared case is served by
-// writeModernCallFailure's -32603 branch, not by MRTR).
+// It serves only a backend's mid-call refusal. The message names both the
+// capability AND the gateway limitation, so a caller that reacts to -32021 by
+// declaring the capability on a retry learns immediately that doing so will
+// not help here: a backend's mid-call request cannot be relayed as
+// input_required (the declared case is served by writeModernCallFailure's
+// -32603 branch). The URL elicitation answer, where declaring the capability
+// does help, has its own writer, writeModernURLElicitationUnsupported.
 //
 // id follows writeModernError (modern_envelope.go): absent (via
 // transportsession.HasJSONRPCID) is encoded by omitting the "id" key, never
@@ -633,6 +656,39 @@ func writeModernMissingCapability(w http.ResponseWriter, id any, capName string)
 				capName, mcpparser.MCPVersionModern),
 			"data": map[string]any{
 				"requiredCapabilities": map[string]any{capName: map[string]any{}},
+			},
+		},
+	}
+	if transportsession.HasJSONRPCID(id) {
+		envelope["id"] = id
+	}
+	writeModernEnvelope(w, http.StatusOK, envelope)
+}
+
+// writeModernURLElicitationUnsupported writes the fallback for a URL
+// elicitation answer when the Modern client did not declare
+// clientCapabilities.elicitation.url: -32021 with data.requiredCapabilities
+// {elicitation: {url: {}}}, at HTTP 200 for the go-sdk#1117 reason
+// writeModernMissingCapability documents.
+//
+// Unlike writeModernMissingCapability, the message tells the client that
+// declaring elicitation.url and retrying will work, because here it does.
+// Neither the message nor the data carries the URL: a client that did not
+// declare URL mode may hand the error to a model, which could follow the link
+// and skip the user consent step URL mode exists for.
+//
+// id follows writeModernError: absent is encoded by omitting the "id" key.
+func writeModernURLElicitationUnsupported(w http.ResponseWriter, id any) {
+	envelope := map[string]any{
+		"jsonrpc": "2.0",
+		"error": map[string]any{
+			"code": mcpparser.CodeMissingClientCapability,
+			"message": "this tool call needs the user to visit a URL, which requires URL-mode elicitation; " +
+				`declare the "elicitation.url" client capability and retry the call`,
+			"data": map[string]any{
+				"requiredCapabilities": map[string]any{
+					capabilityElicitation: map[string]any{elicitationModeURL: map[string]any{}},
+				},
 			},
 		},
 	}

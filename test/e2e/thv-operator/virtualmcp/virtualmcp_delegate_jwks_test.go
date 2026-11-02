@@ -41,11 +41,15 @@ import (
 // The client authenticates the way an embedding broker does: an ES256 client
 // assertion with a kid header, exchanging a self-issued subject token. Admission
 // rules are covered by envtest; these cases prove the runtime behaviour.
+
+// jwksDelegateClientID is the delegate client every case in this suite exchanges as.
+const jwksDelegateClientID = "e2e-jwks-delegate"
+
 var _ = ginkgo.Describe("VirtualMCPServer delegate client jwksRef", ginkgo.Ordered, func() {
 	const (
 		timeout       = 5 * time.Minute
 		pollInterval  = 2 * time.Second
-		delegateID    = "e2e-jwks-delegate"
+		delegateID    = jwksDelegateClientID
 		allowedSource = "e2e-jwks-allowed-source"
 		foreignSource = "e2e-jwks-foreign-source"
 		subject       = "jwks-subject"
@@ -278,9 +282,9 @@ var _ = ginkgo.Describe("VirtualMCPServer delegate client jwksRef", ginkgo.Order
 		localURL, cleanup := portForwardDelegateAuthServer(vmcpName)
 		defer cleanup()
 		// keyB is the load-bearing check: it only succeeds once the new JWKS is loaded.
-		eventuallyDelegateExchange(localURL, delegateID, issuer, subjectToken(delegateID), keyB, kidB, http.StatusOK)
+		eventuallyDelegateExchange(localURL, issuer, subjectToken(delegateID), keyB, kidB, http.StatusOK)
 		// keyA is a control: the old key must keep working during the overlap.
-		eventuallyDelegateExchange(localURL, delegateID, issuer, subjectToken(delegateID), keyA, kidA, http.StatusOK)
+		eventuallyDelegateExchange(localURL, issuer, subjectToken(delegateID), keyA, kidA, http.StatusOK)
 		cleanup()
 
 		ginkgo.By("retiring the old key")
@@ -291,10 +295,10 @@ var _ = ginkgo.Describe("VirtualMCPServer delegate client jwksRef", ginkgo.Order
 		// The kid is no longer registered, so fosite rejects the assertion as a malformed
 		// request (400 invalid_request, "kid ... could not be found"), not as a wrong key
 		// under a registered kid (401 invalid_client, as in the wrong-key case above).
-		body := eventuallyDelegateExchange(localURL, delegateID, issuer, subjectToken(delegateID), keyA, kidA, http.StatusBadRequest)
+		body := eventuallyDelegateExchange(localURL, issuer, subjectToken(delegateID), keyA, kidA, http.StatusBadRequest)
 		gomega.Expect(delegateOAuthError(body)).To(gomega.Equal("invalid_request"), string(body))
 		// keyB is a control: the surviving key must still be accepted.
-		eventuallyDelegateExchange(localURL, delegateID, issuer, subjectToken(delegateID), keyB, kidB, http.StatusOK)
+		eventuallyDelegateExchange(localURL, issuer, subjectToken(delegateID), keyB, kidB, http.StatusOK)
 	})
 })
 
@@ -360,12 +364,12 @@ func exchangeWithDelegateAssertion(endpoint, clientID, assertion, subjectToken, 
 // eventuallyDelegateExchange retries with a fresh assertion each attempt until
 // the endpoint answers wantStatus, and returns that response body.
 func eventuallyDelegateExchange(
-	endpoint, clientID, audience, subjectToken string, key *ecdsa.PrivateKey, kid string, wantStatus int,
+	endpoint, audience, subjectToken string, key *ecdsa.PrivateKey, kid string, wantStatus int,
 ) []byte {
 	var lastBody []byte
 	gomega.Eventually(func() int {
-		status, body, err := exchangeWithDelegateAssertion(endpoint, clientID,
-			signDelegateAssertion(key, kid, clientID, audience), subjectToken, audience)
+		status, body, err := exchangeWithDelegateAssertion(endpoint, jwksDelegateClientID,
+			signDelegateAssertion(key, kid, jwksDelegateClientID, audience), subjectToken, audience)
 		if err != nil {
 			return 0
 		}

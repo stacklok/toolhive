@@ -31,27 +31,11 @@ func indexVirtualMCPServerConfigMaps(obj client.Object) []string {
 	}
 
 	names := make(map[string]struct{})
-	if vmcp.Spec.IncomingAuth != nil && vmcp.Spec.IncomingAuth.AuthzConfig != nil &&
-		vmcp.Spec.IncomingAuth.AuthzConfig.Type == mcpv1beta1.AuthzConfigTypeConfigMap &&
-		vmcp.Spec.IncomingAuth.AuthzConfig.ConfigMap != nil &&
-		vmcp.Spec.IncomingAuth.AuthzConfig.ConfigMap.Name != "" {
-		names[vmcp.Spec.IncomingAuth.AuthzConfig.ConfigMap.Name] = struct{}{}
+	if name := authzConfigMapName(vmcp); name != "" {
+		names[name] = struct{}{}
 	}
-	if vmcp.Spec.AuthServerConfig != nil {
-		for _, provider := range vmcp.Spec.AuthServerConfig.UpstreamProviders {
-			if name := providerCABundleConfigMapName(provider); name != "" {
-				names[name] = struct{}{}
-			}
-		}
-		for i := range vmcp.Spec.AuthServerConfig.TrustedIssuers {
-			ref := vmcp.Spec.AuthServerConfig.TrustedIssuers[i].CABundleRef
-			if ref != nil && ref.ConfigMapRef != nil && ref.ConfigMapRef.Name != "" {
-				names[ref.ConfigMapRef.Name] = struct{}{}
-			}
-		}
-		for _, name := range ctrlutil.DelegateClientJWKSConfigMapNames(vmcp.Spec.AuthServerConfig) {
-			names[name] = struct{}{}
-		}
+	for _, name := range authServerConfigMapNames(vmcp.Spec.AuthServerConfig) {
+		names[name] = struct{}{}
 	}
 
 	result := make([]string, 0, len(names))
@@ -59,6 +43,37 @@ func indexVirtualMCPServerConfigMaps(obj client.Object) []string {
 		result = append(result, name)
 	}
 	return result
+}
+
+// authzConfigMapName returns the authz ConfigMap name the server references, or "".
+func authzConfigMapName(vmcp *mcpv1beta1.VirtualMCPServer) string {
+	if vmcp.Spec.IncomingAuth == nil || vmcp.Spec.IncomingAuth.AuthzConfig == nil ||
+		vmcp.Spec.IncomingAuth.AuthzConfig.Type != mcpv1beta1.AuthzConfigTypeConfigMap ||
+		vmcp.Spec.IncomingAuth.AuthzConfig.ConfigMap == nil {
+		return ""
+	}
+	return vmcp.Spec.IncomingAuth.AuthzConfig.ConfigMap.Name
+}
+
+// authServerConfigMapNames returns the ConfigMaps the inline auth server reads:
+// upstream and trusted-issuer CA bundles, and delegate client JWKS.
+func authServerConfigMapNames(cfg *mcpv1beta1.EmbeddedAuthServerConfig) []string {
+	if cfg == nil {
+		return nil
+	}
+	var names []string
+	for _, provider := range cfg.UpstreamProviders {
+		if name := providerCABundleConfigMapName(provider); name != "" {
+			names = append(names, name)
+		}
+	}
+	for i := range cfg.TrustedIssuers {
+		ref := cfg.TrustedIssuers[i].CABundleRef
+		if ref != nil && ref.ConfigMapRef != nil && ref.ConfigMapRef.Name != "" {
+			names = append(names, ref.ConfigMapRef.Name)
+		}
+	}
+	return append(names, ctrlutil.DelegateClientJWKSConfigMapNames(cfg)...)
 }
 
 // mapAuthzConfigMapToVirtualMCPServer maps ConfigMap changes to VirtualMCPServer reconciliation

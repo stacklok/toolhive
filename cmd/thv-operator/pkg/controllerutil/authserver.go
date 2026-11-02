@@ -506,8 +506,9 @@ func EmbeddedAuthServerConfigMapChecksum(
 }
 
 // EmbeddedAuthServerConfigMapChecksumForConfig returns a checksum of the selected
-// bytes in all CA ConfigMaps used by an inline embedded auth server. ConfigMap
-// metadata and unselected keys are deliberately excluded.
+// bytes in all CA ConfigMaps and delegate client JWKS ConfigMaps used by an inline
+// embedded auth server. ConfigMap metadata and unselected keys are deliberately
+// excluded.
 func EmbeddedAuthServerConfigMapChecksumForConfig(
 	ctx context.Context, c client.Client, namespace string, config *mcpv1beta1.EmbeddedAuthServerConfig,
 ) (string, error) {
@@ -548,10 +549,73 @@ func EmbeddedAuthServerConfigMapChecksumForConfig(
 		_, _ = hash.Write([]byte{0})
 		found = true
 	}
+	// The JWKS section is hashed only when a delegate client references one, behind
+	// its own marker, so the checksum of every config without a jwksRef is unchanged.
+	wroteJWKSMarker := false
+	delegateClients := effectiveDelegateClients(config)
+	for i := range delegateClients {
+		ref := delegateClients[i].JWKSRef
+		if ref == nil {
+			continue
+		}
+		value, err := resolveDelegateClientJWKS(ctx, c, namespace, i, ref)
+		if err != nil {
+			return "", err
+		}
+		if !wroteJWKSMarker {
+			_, _ = hash.Write([]byte("delegateClientJWKS\x00"))
+			wroteJWKSMarker = true
+		}
+		_, _ = hash.Write(value)
+		_, _ = hash.Write([]byte{0})
+		found = true
+	}
 	if !found {
 		return "", nil
 	}
 	return hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+// resolveDelegateClientJWKS returns the bytes of a delegate client's JWKS
+// ConfigMap key, looking in data first and then binaryData. A missing key is an
+// *InvalidCABundleError (terminal); a failed ConfigMap read is returned
+// unwrapped because it may be transient.
+func resolveDelegateClientJWKS(
+	ctx context.Context, c client.Reader, namespace string, index int, ref *mcpv1beta1.ConfigMapKeyRef,
+) ([]byte, error) {
+	if ref.Name == "" || ref.Key == "" {
+		return nil, invalidCABundleError(fmt.Errorf("delegateClients[%d].jwksRef.name and jwksRef.key are required", index))
+	}
+	configMap := &corev1.ConfigMap{}
+	if err := c.Get(ctx, client.ObjectKey{Namespace: namespace, Name: ref.Name}, configMap); err != nil {
+		return nil, fmt.Errorf("delegateClients[%d].jwksRef: failed to get ConfigMap %q in namespace %q: %w",
+			index, ref.Name, namespace, err)
+	}
+	if value, ok := configMap.Data[ref.Key]; ok {
+		return []byte(value), nil
+	}
+	if value, ok := configMap.BinaryData[ref.Key]; ok {
+		return value, nil
+	}
+	return nil, invalidCABundleError(fmt.Errorf(
+		"delegateClients[%d].jwksRef: ConfigMap %q does not contain key %q in data or binaryData", index, ref.Name, ref.Key))
+}
+
+// DelegateClientJWKSConfigMapNames returns the names of the ConfigMaps that
+// hold the public JWKS of the delegate clients the runtime config is built
+// from (the canonical list, or the deprecated one when the canonical block is
+// absent). Field indexes use it so a JWKS edit enqueues reconciles.
+func DelegateClientJWKSConfigMapNames(config *mcpv1beta1.EmbeddedAuthServerConfig) []string {
+	if config == nil {
+		return nil
+	}
+	var names []string
+	for _, delegateClient := range effectiveDelegateClients(config) {
+		if ref := delegateClient.JWKSRef; ref != nil && ref.Name != "" {
+			names = append(names, ref.Name)
+		}
+	}
+	return names
 }
 
 // GenerateAuthServerVolumes generates volumes and mounts for auth server

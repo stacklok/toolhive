@@ -16,12 +16,14 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 )
 
 const virtualMCPServerConfigMapIndex = "toolhive.stacklok.dev/virtualmcpserver-configmap"
 
 // indexVirtualMCPServerConfigMaps returns namespace-local ConfigMap references
-// whose data changes require the VirtualMCPServer to reconcile.
+// whose data changes require the VirtualMCPServer to reconcile: the authz
+// ConfigMap, and the auth server's CA bundle and delegate client JWKS ConfigMaps.
 func indexVirtualMCPServerConfigMaps(obj client.Object) []string {
 	vmcp, ok := obj.(*mcpv1beta1.VirtualMCPServer)
 	if !ok {
@@ -46,6 +48,9 @@ func indexVirtualMCPServerConfigMaps(obj client.Object) []string {
 			if ref != nil && ref.ConfigMapRef != nil && ref.ConfigMapRef.Name != "" {
 				names[ref.ConfigMapRef.Name] = struct{}{}
 			}
+		}
+		for _, name := range ctrlutil.DelegateClientJWKSConfigMapNames(vmcp.Spec.AuthServerConfig) {
+			names[name] = struct{}{}
 		}
 	}
 

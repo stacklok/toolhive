@@ -565,16 +565,15 @@ func writeModernPageError(ctx context.Context, w http.ResponseWriter, id any, me
 //     see writeModernMissingCapability.
 //   - A recorded refusal with the capability DECLARED is deliberately NOT
 //     -32021: the client did declare it, so blaming the client would be
-//     wrong, and declaring the capability on a retry cannot help. The spec's answer for a declared
-//     capability is resultType "input_required" (multi-round retrieval,
-//     SEP-2322), which this dispatcher cannot produce for a backend's
-//     mid-call request: the request arrives over a Legacy backend session
-//     and has nothing to relay it through (vMCP renders input_required only
-//     for the in-process URL elicitation answer, in
-//     writeModernToolCallFailure) — and the
-//     2026-07-28 error vocabulary has no "operation not supported" code, so
-//     there is no conformant code for this case at all (see the "unavailable
-//     to Modern clients" limitation in
+//     wrong, and declaring the capability on a retry cannot help. The spec's
+//     answer for a declared capability is resultType "input_required"
+//     (multi-round retrieval, SEP-2322), which this dispatcher cannot produce
+//     for a backend's mid-call request: the request arrives over a Legacy
+//     backend session and has nothing to relay it through (vMCP renders
+//     input_required only for the in-process URL elicitation answer, in
+//     writeModernToolCallFailure) — and the 2026-07-28 error vocabulary has
+//     no "operation not supported" code, so there is no conformant code for
+//     this case at all (see the "unavailable to Modern clients" limitation in
 //     docs/arch/10-virtual-mcp-architecture.md). It stays -32603, with a
 //     vMCP-owned message that names the real cause instead of the backend's
 //     laundered error string.

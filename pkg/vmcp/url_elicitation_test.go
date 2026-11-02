@@ -189,10 +189,12 @@ func TestURLElicitation_FormattingOmitsURL(t *testing.T) {
 		"pointer":       &e,
 		"elicitations":  answer.Elicitations(),
 		"answer":        answer,
+		"answer value":  *answer,
 		"wrapped value": struct{ E vmcp.URLElicitation }{E: e},
+		"wrapped error": fmt.Errorf("step failed: %w", answer),
 	}
 	for name, v := range values {
-		for _, verb := range []string{"%v", "%+v", "%#v", "%s"} {
+		for _, verb := range []string{"%v", "%+v", "%#v", "%s", "%q", "%x", "%d", "%T %[1]v"} {
 			t.Run(name+" "+verb, func(t *testing.T) {
 				t.Parallel()
 				out := fmt.Sprintf(verb, v)
@@ -203,6 +205,8 @@ func TestURLElicitation_FormattingOmitsURL(t *testing.T) {
 	}
 	assert.Contains(t, fmt.Sprintf("%v", e), "github")
 	assert.Contains(t, fmt.Sprintf("%v", e), "Reconnect GitHub")
+	assert.Equal(t, answer.Error(), fmt.Sprintf("%v", answer), "%v of the answer is its Error()")
+	assert.Equal(t, answer.Error(), fmt.Sprintf("%d", *answer))
 
 	for name, newHandler := range map[string]func(*bytes.Buffer) slog.Handler{
 		"text": func(b *bytes.Buffer) slog.Handler { return slog.NewTextHandler(b, nil) },

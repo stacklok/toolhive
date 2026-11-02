@@ -492,8 +492,11 @@ merges:
    This slice reuses it for relayed backend rounds rather than adding a second
    writer. Retries already pass through the parser untouched, so this slice
    adds the threading, not acceptance. Post-#6061, the rendering branch
-   hooks into `writeModernCallFailure` via `vmcp.InputRequiredFromError`,
-   alongside (never instead of) its authz-priority and capability-refusal
+   hooks into the Modern call-failure classifiers via
+   `vmcp.InputRequiredFromError`: `writeModernToolCallFailure` for
+   `tools/call` (which already handles the URL elicitation answer there) and
+   `writeModernCallFailure` for `resources/read` and `prompts/get`. It sits
+   alongside (never instead of) their authz-priority and capability-refusal
    branches — the two cannot co-occur: the refusal recorder fires only on
    the Legacy-backend forwarding seams, `input_required` only from a Modern
    backend's envelope.

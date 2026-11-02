@@ -6,6 +6,7 @@ package vmcp
 import (
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/url"
@@ -21,9 +22,9 @@ import (
 // which validates them. The zero value is not a valid elicitation, and
 // NewURLElicitationRequiredError rejects it.
 //
-// String, GoString, and LogValue omit the URL, so formatting the value with
-// any fmt verb or logging it through slog does not print it. Only URL()
-// returns it.
+// Format, String, GoString, and LogValue omit the URL, so formatting the
+// value with any fmt verb or logging it through slog does not print it. Only
+// URL() returns it.
 type URLElicitation struct {
 	elicitationID string
 	url           string
@@ -35,9 +36,9 @@ type URLElicitation struct {
 // elicitationID identifies the elicitation within one answer; the Modern
 // renderer uses it as the inputRequests key. message is the human-readable
 // reason shown to the user. Both must contain a non-whitespace character.
-// rawURL must be an absolute https URL with a host
-// and no userinfo; http is accepted only for a loopback host (localhost,
-// 127.0.0.0/8, or ::1), for local development.
+// rawURL must be an absolute https URL with a host and no userinfo; http is
+// accepted only for a loopback host (localhost, 127.0.0.0/8, or ::1), for
+// local development.
 //
 // The URL is the one value vMCP shows only to a client that declared URL-mode
 // elicitation. It must not carry credentials, PII, or a pre-authenticated
@@ -75,6 +76,17 @@ func (e URLElicitation) String() string {
 // URL field.
 func (e URLElicitation) GoString() string { return e.String() }
 
+// Format implements fmt.Formatter so that every verb, not only the ones fmt
+// routes to String and GoString, prints the ID and message and never
+// reflects over the unexported URL field.
+func (e URLElicitation) Format(f fmt.State, verb rune) {
+	if verb == 'v' && f.Flag('#') {
+		_, _ = io.WriteString(f, e.GoString())
+		return
+	}
+	_, _ = io.WriteString(f, e.String())
+}
+
 // LogValue logs the elicitation as its ID and message. It never includes the
 // URL.
 func (e URLElicitation) LogValue() slog.Value {
@@ -107,7 +119,8 @@ func (e URLElicitation) LogValue() slog.Value {
 // The type deliberately does not implement pkg/mcp.CodedError: -32042 exists
 // only in the 2025-11-25 revision, and a CodedError would render it on Modern.
 // Error() never includes a URL, so code paths that stringify the error
-// (composite workflows, code-mode scripts, logs) cannot leak it.
+// (composite workflows, code-mode scripts, logs) cannot leak it. Format does
+// the same for every fmt verb, on the pointer and on a dereferenced value.
 type URLElicitationRequiredError struct {
 	elicitations []URLElicitation
 }
@@ -155,6 +168,19 @@ func (e *URLElicitationRequiredError) Error() string {
 // %#v verb does not reflect over the unexported slice and print the URLs.
 func (e *URLElicitationRequiredError) GoString() string {
 	return fmt.Sprintf("&vmcp.URLElicitationRequiredError{elicitations: %#v}", e.elicitations)
+}
+
+// Format implements fmt.Formatter on the value receiver, so it is in the
+// method set of both the pointer and a dereferenced value. Without it, a
+// dereferenced answer has no Error or GoString, and fmt would reflect over
+// the unexported slice and print every URL. %#v prints GoString; every other
+// verb prints Error.
+func (e URLElicitationRequiredError) Format(f fmt.State, verb rune) {
+	if verb == 'v' && f.Flag('#') {
+		_, _ = io.WriteString(f, e.GoString())
+		return
+	}
+	_, _ = io.WriteString(f, e.Error())
 }
 
 // URLElicitationFromError extracts the URL elicitation answer from an error

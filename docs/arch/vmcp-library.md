@@ -171,7 +171,8 @@ Watch the [ToolHive changelog](https://github.com/stacklok/toolhive/releases) fo
 To send the user to a page of yours (for example, to reconnect one backend's
 credential) and then have the client retry, return the URL elicitation answer
 from a `BackendClient` or `VMCP` decorator's `CallTool` (the two differ in
-telemetry, below):
+telemetry, below). The example is a `BackendClient` decorator, which keys
+off the backend target:
 
 ```go
 func (d *connectDecorator) CallTool(ctx context.Context, target *vmcp.BackendTarget,
@@ -192,6 +193,10 @@ func (d *connectDecorator) CallTool(ctx context.Context, target *vmcp.BackendTar
 	return d.BackendClient.CallTool(ctx, target, name, args, meta, headers)
 }
 ```
+
+A `VMCP` decorator returns the same answer from
+`CallTool(ctx, identity, name, args, meta)`. It has no backend target, so it
+decides from the tool `name` and the caller's `identity`.
 
 vMCP renders the answer per protocol. A Modern client that declared
 `elicitation.url` gets the URL; every other client gets a fallback carrying

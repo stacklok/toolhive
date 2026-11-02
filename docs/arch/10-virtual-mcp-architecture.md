@@ -552,10 +552,11 @@ Properties worth knowing:
   `-32042`, which needs the session's declared capabilities (#7023).
   `notifications/elicitation/complete` is not sent.
 - **Audit outcome.** An `input_required` answer is an HTTP 200 JSON-RPC
-  result, so the audit log records it with outcome `success`, while the
-  undeclared `-32021` fallback records as `application_error`. To count "needs the
-  user to visit a URL" separately, count answers in the decorator that
-  returns them.
+  result, so the audit log records it with outcome `success`. The undeclared
+  `-32021` fallback records as `application_error` when application-error
+  detection is on (the default; `detectApplicationErrors: false` records it
+  as `success` too). To count "needs the user to visit a URL" separately,
+  count answers in the decorator that returns them.
 
 Embedder obligations for the connect page are in
 [vmcp-library.md](vmcp-library.md#answering-a-call-with-a-url-elicitation).

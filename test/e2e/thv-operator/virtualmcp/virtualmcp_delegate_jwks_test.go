@@ -206,8 +206,8 @@ var _ = ginkgo.Describe("VirtualMCPServer delegate client jwksRef", ginkgo.Order
 
 		localURL, cleanup := portForwardDelegateAuthServer(vmcpName)
 		defer cleanup()
-		status, body, err := exchangeWithDelegateAssertion(localURL, delegateID,
-			signDelegateAssertion(keyA, kidA, delegateID, issuer), subjectToken(delegateID), issuer)
+		status, body, err := exchangeWithDelegateAssertion(localURL,
+			signDelegateAssertion(keyA, kidA, issuer), subjectToken(delegateID), issuer)
 		gomega.Expect(err).NotTo(gomega.HaveOccurred())
 		gomega.Expect(status).To(gomega.Equal(http.StatusOK), string(body))
 		var token struct {
@@ -226,15 +226,15 @@ var _ = ginkgo.Describe("VirtualMCPServer delegate client jwksRef", ginkgo.Order
 		localURL, cleanup := portForwardDelegateAuthServer(vmcpName)
 		defer cleanup()
 
-		status, body, err := exchangeWithDelegateAssertion(localURL, delegateID,
-			signDelegateAssertion(strangerKey, kidA, delegateID, issuer), subjectToken(delegateID), issuer)
+		status, body, err := exchangeWithDelegateAssertion(localURL,
+			signDelegateAssertion(strangerKey, kidA, issuer), subjectToken(delegateID), issuer)
 		gomega.Expect(err).NotTo(gomega.HaveOccurred())
 		gomega.Expect(status).To(gomega.Equal(http.StatusUnauthorized), string(body))
 		gomega.Expect(delegateOAuthError(body)).To(gomega.Equal("invalid_client"), string(body))
 
 		ginkgo.By("accepting the same subject token with the registered key")
-		status, body, err = exchangeWithDelegateAssertion(localURL, delegateID,
-			signDelegateAssertion(keyA, kidA, delegateID, issuer), subjectToken(delegateID), issuer)
+		status, body, err = exchangeWithDelegateAssertion(localURL,
+			signDelegateAssertion(keyA, kidA, issuer), subjectToken(delegateID), issuer)
 		gomega.Expect(err).NotTo(gomega.HaveOccurred())
 		gomega.Expect(status).To(gomega.Equal(http.StatusOK), string(body))
 	})
@@ -243,8 +243,8 @@ var _ = ginkgo.Describe("VirtualMCPServer delegate client jwksRef", ginkgo.Order
 		localURL, cleanup := portForwardDelegateAuthServer(vmcpName)
 		defer cleanup()
 		exchange := func(sourceClient string) (int, []byte) {
-			status, body, err := exchangeWithDelegateAssertion(localURL, delegateID,
-				signDelegateAssertion(keyA, kidA, delegateID, issuer), subjectToken(sourceClient), issuer)
+			status, body, err := exchangeWithDelegateAssertion(localURL,
+				signDelegateAssertion(keyA, kidA, issuer), subjectToken(sourceClient), issuer)
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
 			return status, body
 		}
@@ -326,7 +326,8 @@ func delegateJWKSDocument(entries ...delegateJWKSEntry) string {
 	return string(doc)
 }
 
-func signDelegateAssertion(key *ecdsa.PrivateKey, kid, clientID, audience string) string {
+func signDelegateAssertion(key *ecdsa.PrivateKey, kid, audience string) string {
+	clientID := jwksDelegateClientID
 	signer, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.ES256, Key: key},
 		(&jose.SignerOptions{}).WithType("client-authentication+jwt").WithHeader("kid", kid))
 	gomega.Expect(err).NotTo(gomega.HaveOccurred())
@@ -341,7 +342,8 @@ func signDelegateAssertion(key *ecdsa.PrivateKey, kid, clientID, audience string
 
 // exchangeWithDelegateAssertion returns transport errors instead of asserting
 // so callers can poll across a pod roll.
-func exchangeWithDelegateAssertion(endpoint, clientID, assertion, subjectToken, audience string) (int, []byte, error) {
+func exchangeWithDelegateAssertion(endpoint, assertion, subjectToken, audience string) (int, []byte, error) {
+	clientID := jwksDelegateClientID
 	form := url.Values{
 		"grant_type": {oauthproto.GrantTypeTokenExchange}, "subject_token": {subjectToken},
 		"subject_token_type": {oauthproto.TokenTypeJWT}, "audience": {audience}, "client_id": {clientID},
@@ -368,8 +370,8 @@ func eventuallyDelegateExchange(
 ) []byte {
 	var lastBody []byte
 	gomega.Eventually(func() int {
-		status, body, err := exchangeWithDelegateAssertion(endpoint, jwksDelegateClientID,
-			signDelegateAssertion(key, kid, jwksDelegateClientID, audience), subjectToken, audience)
+		status, body, err := exchangeWithDelegateAssertion(endpoint,
+			signDelegateAssertion(key, kid, audience), subjectToken, audience)
 		if err != nil {
 			return 0
 		}

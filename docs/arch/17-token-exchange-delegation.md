@@ -165,16 +165,16 @@ remain incompatible because they would add credentials after the strip.
 The operator exposes delegate clients on the shared
 `EmbeddedAuthServerConfig`, which has two supported consumers:
 
-- `MCPExternalAuthConfig.spec.embeddedAuthServer.delegateClients`, for an
-  embedded authorization server referenced by an `MCPServer` or
+- `MCPExternalAuthConfig.spec.embeddedAuthServer.inboundGrants.tokenExchange.delegateClients`,
+  for an embedded authorization server referenced by an `MCPServer` or
   `MCPRemoteProxy`.
-- `VirtualMCPServer.spec.authServerConfig.delegateClients`, for a vMCP's inline
-  embedded authorization server.
+- `VirtualMCPServer.spec.authServerConfig.inboundGrants.tokenExchange.delegateClients`,
+  for a vMCP's inline embedded authorization server.
 
 The following `MCPExternalAuthConfig` excerpt declares the same client. The
 operator converts the Secret reference into a pod environment-variable reference
-and always supplies the token-exchange grant; it does not copy the secret into
-the generated ConfigMap or `RunConfig`.
+and copies `grantTypes` as written; an omitted list means token exchange only. It does
+not copy the secret into the generated ConfigMap or `RunConfig`.
 
 ```yaml
 apiVersion: toolhive.stacklok.dev/v1beta1
@@ -187,13 +187,15 @@ spec:
     issuer: https://auth.example.com
     # Other required embedded-auth-server fields, including upstreamProviders,
     # are omitted here.
-    delegateClients:
-      - clientId: reporting-delegate
-        clientSecretRef:
-          name: reporting-delegate-secret
-          key: client-secret
-        scopes: [openid]
-        audiences: [https://mcp.example.com]
+    inboundGrants:
+      tokenExchange:
+        delegateClients:
+          - clientId: reporting-delegate
+            clientSecretRef:
+              name: reporting-delegate-secret
+              key: client-secret
+            scopes: [openid]
+            audiences: [https://mcp.example.com]
 ```
 
 For a `VirtualMCPServer`, place the list under `spec.authServerConfig`:
@@ -209,25 +211,79 @@ spec:
     issuer: https://auth.example.com
     # Other required embedded-auth-server fields, including upstreamProviders,
     # are omitted here.
-    delegateClients:
-      - clientId: reporting-delegate
-        clientSecretRef:
-          name: reporting-delegate-secret
-          key: client-secret
-        scopes: [openid]
-        audiences: [https://mcp.example.com]
+    inboundGrants:
+      tokenExchange:
+        delegateClients:
+          - clientId: reporting-delegate
+            clientSecretRef:
+              name: reporting-delegate-secret
+              key: client-secret
+            scopes: [openid]
+            audiences: [https://mcp.example.com]
 ```
 
 A token-only vMCP cannot use Cedar authorization: grant-only issuance does not
 create the provenance-bound upstream-token entries Cedar needs for
 upstream-derived claims.
 
-The CRD accepts Secret references only: no plaintext secret, redirect URI, or
-arbitrary grant selection is available. A non-empty `clientSecretRef.name` and
-`.key`, at least one scope, and at least one audience are required. Delegate
-clients require an HTTPS issuer at admission. Every delegate client, including
-`private_key_jwt` ones, counts as confidential for the cleartext-transport rule,
-in both the CRD and the RunConfig/`Config` validation paths.
+The CRD accepts no plaintext credentials. A client secret is a Secret reference
+(`clientSecretRef`), and a public JWKS is a ConfigMap reference (`jwksRef`). Each
+reference needs a non-empty `name` and `key`. Every delegate client needs at
+least one scope and at least one audience. A `private_key_jwt` client sets `jwksRef` instead of
+`clientSecretRef`, and the CRD forbids a secret on it. Every delegate client, whatever its
+auth method, requires an HTTPS issuer, or the loopback opt-in
+`insecureAllowConfidentialOverLoopbackHTTP` for a loopback HTTP issuer, and is
+rejected with `insecureAllowHTTP`.
+
+The CRD admission rules, the RunConfig validator and the `Config` validator all
+count every delegate client as confidential for the cleartext-transport rule,
+`private_key_jwt` included. Such a client sends no secret, but it can still hold
+`authorization_code` and `refresh_token` grants, so codes and tokens would cross
+plain HTTP too.
+
+#### Pre-provisioned clients on `inboundGrants.tokenExchange.delegateClients`
+
+The canonical list `inboundGrants.tokenExchange.delegateClients` accepts more
+fields. The deprecated top-level `delegateClients` accepts only `clientId`,
+`clientSecretRef`, `scopes` and `audiences`; the API rejects the fields in the
+table below on it. Put them on the canonical list.
+
+| Field | Meaning |
+|---|---|
+| `tokenEndpointAuthMethod` | `client_secret_basic`, `client_secret_post` or `private_key_jwt`. |
+| `jwksRef` | ConfigMap key holding the client's public JWKS. Required for `private_key_jwt`; forbidden otherwise. The field `optional` does not exist; an object that sets it has the key removed by the API server. |
+| `tokenEndpointAuthSigningAlg` | The `private_key_jwt` signing algorithm. If omitted, it is derived from the keys: each key's `alg`, or `ES256`, `ES384` or `ES512` from an EC key's curve. RSA keys without `alg` use `RS256`. Keys that disagree must set it. |
+| `grantTypes` | A subset of `authorization_code`, `refresh_token`, token exchange and JWT-bearer. When set, it must include token exchange. When set, the list is complete: include the JWT-bearer grant (`urn:ietf:params:oauth:grant-type:jwt-bearer`) to keep ID-JAG redemption. |
+| `redirectUris` | Required with `authorization_code`. They sit under `tokenExchange.delegateClients` because a delegate client is a token-exchange client that may also log in. |
+| `tokenExchange` | `selfIssuedSubjectTokens` (`any` or `restricted`, required in the block, no default), `allowedSourceClients` and `apiAudience`. The block is required when `grantTypes` is set and for every `private_key_jwt` client. It may be omitted only by a secret-authenticated client without `grantTypes`, which keeps the legacy blanket trust (`any`). See [Source policy and API audience](#source-policy-and-api-audience). |
+
+`clientSecretRef` is required unless the method is `private_key_jwt`, where it is
+forbidden. CEL admission enforces this, the token-exchange rule for `grantTypes`,
+`redirectUris` (required with `authorization_code` and forbidden without it),
+`refresh_token` only together with `authorization_code`, the `tokenExchange` block
+when `grantTypes` is set or the method is `private_key_jwt`, `allowedSourceClients` and `apiAudience` only with
+`restricted`, and `tokenEndpointAuthSigningAlg` only with `private_key_jwt` and
+only from the supported algorithms (`RS256`, `RS384`, `RS512`, `PS256`, `PS384`,
+`PS512`, `ES256`, `ES384`, `ES512`). `selfIssuedSubjectTokens` has no schema default on purpose: a
+default would be applied before CEL runs, so "set it explicitly" could not be
+enforced, and it would also be applied to objects read back from etcd, turning a
+stored `tokenExchange: {}` into blanket trust. The shared Go validator checks
+everything else (public keys only, redirect-URI policy, source-client rules).
+
+Admission checks three rules for each delegate client. `apiAudience` must be one
+of the client's `audiences`. `allowedSourceClients` must not contain the client's
+own `clientId` or `*`. Redirect URIs must use `https` and must not contain a
+fragment. The operator checks two more rules when it reconciles, not at
+admission: `allowedSourceClients` must not name another configured delegate
+client, and a loopback redirect URI is refused. A `VirtualMCPServer` reports
+`AuthServerConfigValidated=False` for this; an `MCPExternalAuthConfig` reports
+`Valid=False`.
+
+For `jwksRef`, the operator mounts the ConfigMap key read-only at
+`/etc/toolhive/authserver/delegate-jwks/<index>/jwks.json` and sets `jwks_file` to
+that path, where `<index>` is the client's position in the list. The runner reads
+the file at startup. The file is public key material, so the ConfigMap needs no
+special protection beyond controlling who can write it.
 
 `trustedIssuers` is exposed the same way, on the same shared
 `EmbeddedAuthServerConfig`, and converts directly to `[]tokenexchange.TrustedIssuer`
@@ -578,7 +634,7 @@ optional; a client that sets none of them is the same client as before.
 |---|---|
 | `token_endpoint_auth_method` | Omitted: the client authenticates with its secret by HTTP Basic or form body. `client_secret_basic` or `client_secret_post` pins one of them. `private_key_jwt` authenticates with a signed assertion instead of a secret. |
 | `jwks_file` | Path to the client's public JWKS. Required for `private_key_jwt`, forbidden otherwise. Each key must have `use: sig`. Private and symmetric keys are rejected, at most 10 keys are allowed, and the keys must match `token_endpoint_auth_signing_alg`. When that field is omitted, it is derived from the keys: each key's `alg`, or `ES256`, `ES384` or `ES512` from an EC key's curve; RSA keys without `alg` use `RS256`; keys that disagree are rejected and the field must be set. When the file holds more than one key, every key must have a unique, non-empty `kid`, and the client must send the `kid` of its signing key in the assertion header: fosite checks an assertion that has no `kid` only against the first signing key of the matching type, so a key added during a rotation would never be used otherwise. The `kid` rule is checked when the keys are loaded at startup, not when `RunConfig` is validated. |
-| `grant_types` | Omitted or empty means token exchange only. When set, the list must include token exchange. The other allowed values are `authorization_code`, `refresh_token` and the JWT-bearer grant. `refresh_token` is allowed only together with `authorization_code`. A client that sets `grant_types`, or uses `private_key_jwt`, must also declare a `token_exchange` block with `self_issued_subject_tokens` (see [Source policy and API audience](#source-policy-and-api-audience)). |
+| `grant_types` | Omitted or empty means token exchange only. When set, the list must include token exchange. The other allowed values are `authorization_code`, `refresh_token` and the JWT-bearer grant. `refresh_token` is allowed only together with `authorization_code`. A client that sets `grant_types`, or uses `private_key_jwt`, must also declare a `token_exchange` block with `self_issued_subject_tokens` (see [Source policy and API audience](#source-policy-and-api-audience)). When set, the list is complete: include the JWT-bearer grant to keep ID-JAG redemption. |
 | `redirect_uris` | Required with `authorization_code`, forbidden without it. Each URI must be https and not loopback, as for any other confidential client. |
 
 A delegate's `audiences` limit what it may request. List the narrowest

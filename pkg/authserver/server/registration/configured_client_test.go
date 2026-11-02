@@ -58,7 +58,7 @@ func TestResolveConfiguredSigningAlgorithm(t *testing.T) {
 		{name: "unsupported key type is left to the key-set check", jwks: set(oct), want: "RS256"},
 		{
 			name: "RSA and EC keys disagree", jwks: set(rsaPlain, ec256),
-			wantErr: []string{"ES256, RS256", "have different signing algorithms", "token_endpoint_auth_signing_alg"},
+			wantErr: []string{"ES256, RS256", "have different signing algorithms", "token_endpoint_auth_signing_alg", "tokenEndpointAuthSigningAlg on the CRD"},
 		},
 		{
 			name: "found algorithms are sorted and deduplicated", jwks: set(rsaRS256, ec521, rsaPlain, ec384, ec521),
@@ -152,11 +152,11 @@ func TestConfiguredClientDerivedSigningAlgorithm(t *testing.T) {
 		name       string
 		jwks       *jose.JSONWebKeySet
 		wantAlg    string
-		wantErrMsg string
+		wantErrMsg []string
 	}{
 		{name: "EC key without alg", jwks: set(ec256), wantAlg: "ES256"},
 		{name: "RSA key without alg", jwks: set(rsaKey), wantAlg: "RS256"},
-		{name: "keys that disagree", jwks: set(ec256, rsaKey), wantErrMsg: "have different signing algorithms"},
+		{name: "keys that disagree", jwks: set(ec256, rsaKey), wantErrMsg: []string{"have different signing algorithms", "tokenEndpointAuthSigningAlg on the CRD"}},
 	}
 
 	for _, tt := range tests {
@@ -167,9 +167,11 @@ func TestConfiguredClientDerivedSigningAlgorithm(t *testing.T) {
 				ID: "configured", Scopes: []string{"openid"}, Audience: []string{"https://mcp.example"},
 				TokenEndpointAuthMethod: pkjwt, JSONWebKeys: tt.jwks,
 			})
-			if tt.wantErrMsg != "" {
+			if len(tt.wantErrMsg) > 0 {
 				require.Error(t, err)
-				assert.Contains(t, err.Error(), tt.wantErrMsg)
+				for _, want := range tt.wantErrMsg {
+					assert.Contains(t, err.Error(), want)
+				}
 				return
 			}
 			require.NoError(t, err)

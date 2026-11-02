@@ -12,7 +12,9 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/authserver"
 	"github.com/stacklok/toolhive/pkg/authserver/oauthparams"
+	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/authserver/server/tokenexchange"
+	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
 // External auth configuration types
@@ -351,11 +353,21 @@ type BearerTokenConfig struct {
 	TokenSecretRef *SecretKeyRef `json:"tokenSecretRef"`
 }
 
-// DelegateClientConfig configures a pre-provisioned confidential OAuth client
-// for RFC 8693 token exchange. Its secret is referenced from a Kubernetes
-// Secret and is never represented inline.
+// DelegateClientConfig configures a pre-provisioned confidential OAuth client.
+// By default it is a token-exchange client (RFC 8693). Its credential is either
+// a client secret, referenced from a Kubernetes Secret and never represented
+// inline, or a public JWKS for private_key_jwt, referenced from a ConfigMap.
 //
-// +kubebuilder:validation:XValidation:rule="has(self.clientSecretRef) && size(self.clientSecretRef.name) > 0 && size(self.clientSecretRef.key) > 0",message="clientSecretRef.name and clientSecretRef.key are required and must be non-empty"
+// +kubebuilder:validation:XValidation:rule="has(self.tokenEndpointAuthMethod) && self.tokenEndpointAuthMethod == 'private_key_jwt' ? (has(self.jwksRef) && !has(self.clientSecretRef)) : (has(self.clientSecretRef) && size(self.clientSecretRef.name) > 0 && size(self.clientSecretRef.key) > 0 && !has(self.jwksRef))",message="private_key_jwt requires a non-empty jwksRef and forbids clientSecretRef; any other tokenEndpointAuthMethod (or none) requires a non-empty clientSecretRef and forbids jwksRef"
+// +kubebuilder:validation:XValidation:rule="!has(self.grantTypes) || size(self.grantTypes) == 0 || 'urn:ietf:params:oauth:grant-type:token-exchange' in self.grantTypes",message="grantTypes must include urn:ietf:params:oauth:grant-type:token-exchange when set"
+// +kubebuilder:validation:XValidation:rule="!has(self.grantTypes) || !('authorization_code' in self.grantTypes) || (has(self.redirectUris) && size(self.redirectUris) > 0)",message="redirectUris is required when grantTypes includes authorization_code"
+// +kubebuilder:validation:XValidation:rule="!has(self.grantTypes) || size(self.grantTypes) == 0 || has(self.tokenExchange)",message="tokenExchange.selfIssuedSubjectTokens is required when grantTypes is set"
+// +kubebuilder:validation:XValidation:rule="!(has(self.tokenEndpointAuthMethod) && self.tokenEndpointAuthMethod == 'private_key_jwt') || has(self.tokenExchange)",message="tokenExchange.selfIssuedSubjectTokens is required for private_key_jwt clients"
+// +kubebuilder:validation:XValidation:rule="!has(self.tokenExchange) || !has(self.tokenExchange.apiAudience) || size(self.tokenExchange.apiAudience) == 0 || self.tokenExchange.apiAudience in self.audiences",message="tokenExchange.apiAudience must be one of the client's audiences"
+// +kubebuilder:validation:XValidation:rule="!has(self.tokenExchange) || !has(self.tokenExchange.allowedSourceClients) || (!(self.clientId in self.tokenExchange.allowedSourceClients) && !('*' in self.tokenExchange.allowedSourceClients))",message="tokenExchange.allowedSourceClients must not contain the client's own clientId or the \"*\" wildcard"
+// +kubebuilder:validation:XValidation:rule="!has(self.redirectUris) || size(self.redirectUris) == 0 || (has(self.grantTypes) && 'authorization_code' in self.grantTypes)",message="redirectUris is only allowed with the authorization_code grant"
+// +kubebuilder:validation:XValidation:rule="!has(self.grantTypes) || !('refresh_token' in self.grantTypes) || 'authorization_code' in self.grantTypes",message="grantTypes must include authorization_code with refresh_token"
+// +kubebuilder:validation:XValidation:rule="!has(self.tokenEndpointAuthSigningAlg) || size(self.tokenEndpointAuthSigningAlg) == 0 || (has(self.tokenEndpointAuthMethod) && self.tokenEndpointAuthMethod == 'private_key_jwt')",message="tokenEndpointAuthSigningAlg is only allowed with private_key_jwt"
 //
 //nolint:lll // CEL validation rule exceeds line length limit
 type DelegateClientConfig struct {
@@ -365,9 +377,61 @@ type DelegateClientConfig struct {
 	// +kubebuilder:validation:MaxLength=256
 	ClientID string `json:"clientId"`
 
+	// TokenEndpointAuthMethod pins how the client authenticates at the token
+	// endpoint. If omitted, the client authenticates with its secret by either
+	// HTTP Basic or form body.
+	// +kubebuilder:validation:Enum=client_secret_basic;client_secret_post;private_key_jwt
+	// +optional
+	TokenEndpointAuthMethod string `json:"tokenEndpointAuthMethod,omitempty"`
+
 	// ClientSecretRef references the Kubernetes Secret key containing the client secret.
-	// +kubebuilder:validation:Required
-	ClientSecretRef *SecretKeyRef `json:"clientSecretRef"`
+	// Required unless tokenEndpointAuthMethod is private_key_jwt, where it is forbidden.
+	// +optional
+	ClientSecretRef *SecretKeyRef `json:"clientSecretRef,omitempty"`
+
+	// JWKSRef references the ConfigMap key holding the client's public JWKS
+	// document. Required with private_key_jwt and forbidden otherwise. The
+	// document must contain public keys only.
+	// +optional
+	JWKSRef *ConfigMapKeyRef `json:"jwksRef,omitempty"`
+
+	// TokenEndpointAuthSigningAlg is the private_key_jwt signing algorithm,
+	// for example RS256 or ES256. If omitted, it is derived from the keys:
+	// each key's alg, or ES256, ES384 or ES512 from an EC key's curve. RSA
+	// keys without alg use RS256. Keys that disagree must set it.
+	// +kubebuilder:validation:Enum=RS256;RS384;RS512;PS256;PS384;PS512;ES256;ES384;ES512
+	// +optional
+	TokenEndpointAuthSigningAlg string `json:"tokenEndpointAuthSigningAlg,omitempty"`
+
+	// GrantTypes are the grants this client may use. If omitted or empty, the
+	// client is token-exchange only. When set, the list must include
+	// urn:ietf:params:oauth:grant-type:token-exchange: a delegate client is a
+	// token-exchange client that may also log in or redeem other grants. When set,
+	// the list is complete: include urn:ietf:params:oauth:grant-type:jwt-bearer to
+	// keep ID-JAG redemption.
+	// +kubebuilder:validation:MaxItems=4
+	// +kubebuilder:validation:items:Enum=authorization_code;refresh_token;"urn:ietf:params:oauth:grant-type:token-exchange";"urn:ietf:params:oauth:grant-type:jwt-bearer"
+	// +listType=set
+	// +optional
+	GrantTypes []string `json:"grantTypes,omitempty"`
+
+	// RedirectURIs are the registered redirect URIs. They are required with the
+	// authorization_code grant and forbidden without it. They sit here, under
+	// tokenExchange.delegateClients, because a delegate client is a
+	// token-exchange client that may also log in (authorization_code).
+	//
+	// The pattern is stricter than the runtime for uppercase "HTTPS://": the
+	// runtime accepts it, the pattern does not. The scheme check is
+	// case-sensitive, as in forceConfidentialRedirectUris. Query strings and
+	// fragments behave the same as the runtime: a query string is allowed, and
+	// a fragment is rejected.
+	// +kubebuilder:validation:MaxItems=10
+	// +kubebuilder:validation:items:MinLength=1
+	// +kubebuilder:validation:items:MaxLength=2048
+	// +kubebuilder:validation:items:Pattern=`^https://[^\s#]+$`
+	// +listType=set
+	// +optional
+	RedirectURIs []string `json:"redirectUris,omitempty"`
 
 	// Scopes is the narrowed set of OAuth scopes this client may request.
 	// +kubebuilder:validation:Required
@@ -386,6 +450,54 @@ type DelegateClientConfig struct {
 	// +kubebuilder:validation:items:MaxLength=2048
 	// +listType=atomic
 	Audiences []string `json:"audiences"`
+
+	// TokenExchange is the client's token-exchange policy. Its
+	// selfIssuedSubjectTokens field is required whenever the block is present.
+	// The block may be omitted only by a secret-authenticated client without
+	// grantTypes; such a client keeps the legacy rule (any) and may exchange any
+	// self-issued token. A client that sets grantTypes or uses private_key_jwt
+	// must declare the block.
+	// +optional
+	TokenExchange *DelegateClientTokenExchangeConfig `json:"tokenExchange,omitempty"`
+}
+
+// DelegateClientTokenExchangeConfig is the token-exchange policy of one
+// delegate client. External-issuer subject tokens are not affected by it: the
+// trusted issuer's own policy decides those.
+//
+// +kubebuilder:validation:XValidation:rule="self.selfIssuedSubjectTokens == 'restricted' || ((!has(self.allowedSourceClients) || size(self.allowedSourceClients) == 0) && (!has(self.apiAudience) || size(self.apiAudience) == 0))",message="tokenExchange.allowedSourceClients and tokenExchange.apiAudience are valid only when selfIssuedSubjectTokens is restricted"
+//
+//nolint:lll // CEL validation rule exceeds line length limit
+type DelegateClientTokenExchangeConfig struct {
+	// SelfIssuedSubjectTokens selects which self-issued subject tokens the
+	// client may exchange. With restricted, a self-issued subject token must
+	// carry the client's own client_id or one of allowedSourceClients, and a
+	// may_act claim naming this client does not lift that restriction. With
+	// any, the client may exchange any self-issued token. It has no default
+	// and must be set explicitly.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Enum=any;restricted
+	SelfIssuedSubjectTokens string `json:"selfIssuedSubjectTokens"`
+
+	// AllowedSourceClients are client_id values, as they appear in the subject
+	// token's client_id claim, whose self-issued tokens this client may
+	// exchange in addition to its own. They must be user-facing clients that
+	// register at runtime (DCR or CIMD). A configured delegate client cannot be
+	// listed here. Valid only with restricted; empty means the client's own
+	// tokens only.
+	// +kubebuilder:validation:MaxItems=20
+	// +kubebuilder:validation:items:MinLength=1
+	// +kubebuilder:validation:items:MaxLength=256
+	// +listType=set
+	// +optional
+	AllowedSourceClients []string `json:"allowedSourceClients,omitempty"`
+
+	// APIAudience is the client's own API audience. The client may request it
+	// even when the subject token does not cover it. It must be one of the
+	// client's audiences. Valid only with restricted.
+	// +kubebuilder:validation:MaxLength=2048
+	// +optional
+	APIAudience string `json:"apiAudience,omitempty"`
 }
 
 // TrustedIssuerConfig configures an external OIDC issuer whose tokens are
@@ -939,6 +1051,7 @@ type JWTBearerIssuerPolicyConfig struct {
 // +kubebuilder:validation:XValidation:rule="!has(self.inboundGrants) || !has(self.inboundGrants.spiffeClientAuth) || self.inboundGrants.spiffeClientAuth.all(client, self.inboundGrants.spiffeClientAuth.filter(other, other.principalPattern == client.principalPattern).size() == 1)",message="spiffeClientAuth must not contain duplicate principal patterns"
 // +kubebuilder:validation:XValidation:rule="!has(self.inboundGrants) || !has(self.inboundGrants.spiffeClientAuth) || self.inboundGrants.spiffeClientAuth.all(client, !client.clientId.startsWith('synthetic:'))",message="spiffeClientAuth clientId must not use the reserved synthetic: prefix"
 // +kubebuilder:validation:XValidation:rule="!has(self.inboundGrants) || !has(self.inboundGrants.spiffeClientAuth) || self.inboundGrants.spiffeClientAuth.all(client, !client.clientId.matches('^[A-Za-z][A-Za-z0-9+.-]*://.+'))",message="spiffeClientAuth clientId must not be an absolute URL"
+// +kubebuilder:validation:XValidation:rule="!has(self.delegateClients) || self.delegateClients.all(c, !has(c.jwksRef) && !has(c.tokenEndpointAuthMethod) && !has(c.grantTypes) && !has(c.redirectUris) && !has(c.tokenExchange) && !has(c.tokenEndpointAuthSigningAlg))",message="delegateClients is deprecated and accepts only clientId, clientSecretRef, scopes and audiences; use inboundGrants.tokenExchange.delegateClients for jwksRef, tokenEndpointAuthMethod, grantTypes, redirectUris, tokenExchange and tokenEndpointAuthSigningAlg"
 //
 // +kubebuilder:validation:XValidation:rule="!(has(self.insecureAllowHTTP) && self.insecureAllowHTTP && ((has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration) || (has(self.delegateClients) && size(self.delegateClients) > 0) || (has(self.inboundGrants) && has(self.inboundGrants.tokenExchange) && has(self.inboundGrants.tokenExchange.delegateClients) && size(self.inboundGrants.tokenExchange.delegateClients) > 0)))",message="insecureAllowHTTP cannot be combined with confidential client registration or delegateClients; client secrets would be issued or used in cleartext over an unauthenticated endpoint"
 // +kubebuilder:validation:XValidation:rule="(!has(self.forceConfidentialRedirectUris) || size(self.forceConfidentialRedirectUris) == 0) || (has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration)",message="forceConfidentialRedirectUris requires allowConfidentialClientRegistration to be true"
@@ -1160,19 +1273,24 @@ type EmbeddedAuthServerConfig struct {
 	// the non-loopback host check. Has no effect when there are no confidential
 	// clients or issuer is https.
 	//
-	// private_key_jwt registration has no equivalent flag or transport
+	// private_key_jwt registration (DCR) has no equivalent flag or transport
 	// restriction: unlike confidential registration, it never returns a
 	// client_secret (or any other secret) in the DCR response, so there is
-	// nothing here for cleartext HTTP to expose.
+	// nothing here for cleartext HTTP to expose. Delegate clients count as
+	// confidential whatever their tokenEndpointAuthMethod, private_key_jwt
+	// included, because they can hold authorization_code and refresh_token grants.
 	// +kubebuilder:default=false
 	// +optional
 	InsecureAllowConfidentialOverLoopbackHTTP bool `json:"insecureAllowConfidentialOverLoopbackHTTP,omitempty"`
 
 	// DelegateClients configures pre-provisioned confidential clients for RFC 8693
 	// token exchange. Each secret is referenced from a Kubernetes Secret; no
-	// plaintext secret, redirect URI, or grant selection is accepted here. The
-	// operator always supplies the token-exchange grant when it converts this
-	// configuration to the runtime contract.
+	// plaintext secret is accepted here. The supported path is
+	// inboundGrants.tokenExchange.delegateClients. This field shares its type
+	// with the canonical list, but accepts only clientId, clientSecretRef,
+	// scopes and audiences. The newer fields (tokenEndpointAuthMethod,
+	// tokenEndpointAuthSigningAlg, jwksRef, grantTypes, redirectUris,
+	// tokenExchange) are rejected here; set them on the canonical list.
 	//
 	// This is independent of allowConfidentialClientRegistration: it neither
 	// enables nor requires unauthenticated confidential dynamic client
@@ -1428,14 +1546,12 @@ func resolveEffectiveIssuerRef(byName, seen map[string]int, ref, path string) (i
 }
 
 func cloneDelegateClientConfigs(clients []DelegateClientConfig) []DelegateClientConfig {
-	cloned := slices.Clone(clients)
-	for i := range cloned {
-		cloned[i].Scopes = slices.Clone(cloned[i].Scopes)
-		cloned[i].Audiences = slices.Clone(cloned[i].Audiences)
-		if cloned[i].ClientSecretRef != nil {
-			secretRef := *cloned[i].ClientSecretRef
-			cloned[i].ClientSecretRef = &secretRef
-		}
+	if clients == nil {
+		return nil
+	}
+	cloned := make([]DelegateClientConfig, len(clients))
+	for i := range clients {
+		cloned[i] = *clients[i].DeepCopy()
 	}
 	return cloned
 }
@@ -2317,6 +2433,19 @@ type SecretKeyRef struct {
 	Key string `json:"key"`
 }
 
+// ConfigMapKeyRef is a reference to a key within a ConfigMap in the same namespace.
+type ConfigMapKeyRef struct {
+	// Name is the name of the ConfigMap
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	Name string `json:"name"`
+
+	// Key is the key within the ConfigMap
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	Key string `json:"key"`
+}
+
 // AWSStsConfig holds configuration for AWS STS authentication with SigV4 request signing.
 // This configuration exchanges incoming authentication tokens (typically OIDC JWT) for AWS STS
 // temporary credentials, then signs requests to AWS services using SigV4.
@@ -2742,6 +2871,8 @@ func (r *MCPExternalAuthConfig) validateTypeConfigConsistency() error {
 
 // validateEmbeddedAuthServer validates embeddedAuthServer type configuration.
 // This performs complex business logic validation that CEL cannot express.
+//
+//nolint:gocyclo // a flat sequence of independent spec checks, each delegated to a helper
 func (r *MCPExternalAuthConfig) validateEmbeddedAuthServer() error {
 	// Validate upstream providers
 	cfg := r.Spec.EmbeddedAuthServer
@@ -2791,6 +2922,9 @@ func (r *MCPExternalAuthConfig) validateEmbeddedAuthServer() error {
 	); err != nil {
 		return err
 	}
+	if err := validateEmbeddedDelegateClientTrustModes(cfg); err != nil {
+		return err
+	}
 
 	seen := make(map[string]bool, len(cfg.UpstreamProviders))
 	for i, provider := range cfg.UpstreamProviders {
@@ -2807,6 +2941,109 @@ func (r *MCPExternalAuthConfig) validateEmbeddedAuthServer() error {
 	for i := range cfg.TrustedIssuers {
 		if err := validateUpstreamCABundleRef(cfg.TrustedIssuers[i].CABundleRef); err != nil {
 			return fmt.Errorf("trustedIssuers[%d] (%q) caBundleRef: %w", i, cfg.TrustedIssuers[i].IssuerURL, err)
+		}
+	}
+	return nil
+}
+
+// ValidateEmbeddedAuthServerDelegateClients runs the delegate client checks
+// (trust modes, loopback redirect URIs, sibling source clients) over both the
+// deprecated and the canonical delegate client lists. It is the same check
+// MCPExternalAuthConfig runs, exported so VirtualMCPServer reports the same
+// failures.
+func ValidateEmbeddedAuthServerDelegateClients(cfg *EmbeddedAuthServerConfig) error {
+	return validateEmbeddedDelegateClientTrustModes(cfg)
+}
+
+// validateEmbeddedDelegateClientTrustModes checks both the deprecated and the
+// canonical delegate client lists, which share DelegateClientConfig.
+func validateEmbeddedDelegateClientTrustModes(cfg *EmbeddedAuthServerConfig) error {
+	if err := validateDelegateClientTrustModes(cfg.DelegateClients, "delegateClients"); err != nil {
+		return err
+	}
+	if cfg.InboundGrants == nil || cfg.InboundGrants.TokenExchange == nil {
+		return nil
+	}
+	return validateDelegateClientTrustModes(
+		cfg.InboundGrants.TokenExchange.DelegateClients, "inboundGrants.tokenExchange.delegateClients")
+}
+
+// validateDelegateClientTrustModes checks the trust mode of each delegate
+// client's tokenExchange block. Defense-in-depth with CEL: the
+// DelegateClientConfig and DelegateClientTokenExchangeConfig XValidation rules
+// and the selfIssuedSubjectTokens Required/Enum markers enforce the same rules
+// at admission; this catches an object stored before those rules existed, so
+// the condition names the field instead of failing later in RunConfig
+// validation. Keep the missing-block conditions in step with
+// requireDeclaredTrustMode in pkg/authserver/config.go.
+func validateDelegateClientTrustModes(clients []DelegateClientConfig, path string) error {
+	for i, client := range clients {
+		if err := validateDelegateClientRedirectURIs(client, path, i); err != nil {
+			return err
+		}
+		if err := validateDelegateClientSourceClients(client, clients, path, i); err != nil {
+			return err
+		}
+		policy := client.TokenExchange
+		if policy == nil {
+			if len(client.GrantTypes) > 0 {
+				return fmt.Errorf("%s[%d] (%q): tokenExchange.selfIssuedSubjectTokens is required when grantTypes is set",
+					path, i, client.ClientID)
+			}
+			if client.TokenEndpointAuthMethod == oauthproto.TokenEndpointAuthMethodPrivateKeyJWT {
+				return fmt.Errorf("%s[%d] (%q): tokenExchange.selfIssuedSubjectTokens is required for private_key_jwt clients",
+					path, i, client.ClientID)
+			}
+			continue
+		}
+		switch authserver.SelfIssuedSubjectTokens(policy.SelfIssuedSubjectTokens) {
+		case authserver.SelfIssuedSubjectTokensRestricted:
+		case authserver.SelfIssuedSubjectTokensAny:
+			if len(policy.AllowedSourceClients) > 0 || policy.APIAudience != "" {
+				return fmt.Errorf("%s[%d] (%q): tokenExchange.allowedSourceClients and tokenExchange.apiAudience "+
+					"are valid only when selfIssuedSubjectTokens is restricted", path, i, client.ClientID)
+			}
+		default:
+			return fmt.Errorf("%s[%d] (%q): tokenExchange.selfIssuedSubjectTokens must be %q or %q, got %q",
+				path, i, client.ClientID, authserver.SelfIssuedSubjectTokensAny,
+				authserver.SelfIssuedSubjectTokensRestricted, policy.SelfIssuedSubjectTokens)
+		}
+	}
+	return nil
+}
+
+// validateDelegateClientRedirectURIs rejects loopback redirect URIs, which the
+// auth server refuses at startup. Not CEL-expressible: it needs URL parsing
+// and IP-literal detection. The https scheme is enforced by CEL.
+func validateDelegateClientRedirectURIs(client DelegateClientConfig, path string, i int) error {
+	for _, uri := range client.RedirectURIs {
+		if registration.IsLoopbackRedirectURI(uri) {
+			return fmt.Errorf("%s[%d] (%q): redirectUris must not be loopback (offending redirect URI: %s)",
+				path, i, client.ClientID, uri)
+		}
+	}
+	return nil
+}
+
+// validateDelegateClientSourceClients rejects an allowedSourceClients entry
+// that names another configured delegate client. Defense-in-depth with the
+// auth server's own check; CEL cannot see sibling list items from the nested
+// client. The own-clientId and wildcard cases are covered by CEL.
+func validateDelegateClientSourceClients(
+	client DelegateClientConfig, clients []DelegateClientConfig, path string, i int,
+) error {
+	if client.TokenExchange == nil {
+		return nil
+	}
+	for _, id := range client.TokenExchange.AllowedSourceClients {
+		if id == client.ClientID {
+			continue
+		}
+		for _, other := range clients {
+			if other.ClientID == id {
+				return fmt.Errorf("%s[%d] (%q): tokenExchange.allowedSourceClients lists %q, a configured delegate client; "+
+					"source clients must be user-facing clients", path, i, client.ClientID, id)
+			}
 		}
 	}
 	return nil

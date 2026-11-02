@@ -884,7 +884,7 @@ func TestRegisterClientHandler_ConfidentialDCR(t *testing.T) {
 	// public (none) registrations — a secret must not ship inside a distributed
 	// native binary. This is a rejection about the redirect URI itself (RFC
 	// 7591 §3.2.2's invalid_redirect_uri), whether it is caught by the
-	// isLoopbackURI check or by strict ValidateRedirectURI.
+	// IsLoopbackRedirectURI check or by strict ValidateRedirectURI.
 	for _, tc := range []struct {
 		name                   string
 		uris                   []string
@@ -892,7 +892,7 @@ func TestRegisterClientHandler_ConfidentialDCR(t *testing.T) {
 	}{
 		{"loopback localhost", []string{"http://localhost:1234/cb"}, true},
 		{"loopback 127.0.0.1", []string{"http://127.0.0.1/cb"}, true},
-		// Passes RedirectURIPolicyStrict and is caught only by the isLoopbackURI
+		// Passes RedirectURIPolicyStrict and is caught only by the IsLoopbackRedirectURI
 		// check (bracket-stripping + IsLoopback, three indirections deep).
 		{"IPv6 loopback", []string{"https://[::1]/cb"}, true},
 		// Every URI in the list must be checked, not just redirectURIs[0].

@@ -183,7 +183,7 @@ func resolveConfiguredSigningAlgorithm(configured string, jwks *jose.JSONWebKeyS
 	}
 	slices.Sort(found)
 	return "", fmt.Errorf("jwks_file keys have different signing algorithms (%s): "+
-		"set token_endpoint_auth_signing_alg", strings.Join(found, ", "))
+		"set token_endpoint_auth_signing_alg (tokenEndpointAuthSigningAlg on the CRD)", strings.Join(found, ", "))
 }
 
 // keySigningAlgorithm returns the algorithm a key carries or its curve fixes,
@@ -263,7 +263,7 @@ func validateConfiguredRedirectURIs(redirectURIs []string) error {
 		if err := oauthproto.ValidateRedirectURI(uri, oauthproto.RedirectURIPolicyStrict); err != nil {
 			return fmt.Errorf("redirect_uris: %w", err)
 		}
-		if isLoopbackURI(uri) {
+		if IsLoopbackRedirectURI(uri) {
 			return fmt.Errorf("redirect_uris must be https and not loopback (offending redirect_uri: %s)", uri)
 		}
 	}

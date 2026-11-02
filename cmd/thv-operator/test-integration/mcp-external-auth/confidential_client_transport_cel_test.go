@@ -18,17 +18,22 @@ import (
 // These tests exercise the CEL XValidation rules on EmbeddedAuthServerConfig
 // through the real apiserver (envtest). insecureAllowHTTP rejects every
 // configuration that issues or uses a client secret: confidential registration
-// and legacy or canonical delegate clients. private_key_jwt registration has no
-// equivalent rule because it never returns a secret. URL-specific delegate-client
-// transport policy is handled by the shared Go validator because CEL cannot
-// safely parse URLs. EmbeddedAuthServerConfig is shared by MCPExternalAuthConfig
+// and legacy or canonical delegate clients, whatever their auth method.
+// private_key_jwt registration has no equivalent rule because it never returns
+// a secret. URL-specific delegate-client transport policy is handled by the
+// shared Go validator because CEL cannot safely parse URLs. EmbeddedAuthServerConfig is shared by MCPExternalAuthConfig
 // and VirtualMCPServer, so exercising the rule through one CRD's generated
 // schema covers both.
 var _ = Describe("EmbeddedAuthServerConfig confidential-client-transport CEL validation", func() {
-	const namespace = "default"
+	const (
+		namespace         = "default"
+		delegateKindJWT   = "private_key_jwt"
+		delegateKindMixed = "mixed"
+	)
 
 	makeAuthConfig := func(
 		name string, allowConfidential, allowPrivateKeyJWT, insecureHTTP, httpsIssuer, delegateClient, canonicalDelegateClient, loopbackHTTP, loopbackOptIn bool,
+		delegateKind string,
 	) *mcpv1beta1.MCPExternalAuthConfig {
 		issuer := "https://auth.example.com"
 		if insecureHTTP && !httpsIssuer {
@@ -60,18 +65,33 @@ var _ = Describe("EmbeddedAuthServerConfig confidential-client-transport CEL val
 			},
 		}
 		if delegateClient {
-			delegate := mcpv1beta1.DelegateClientConfig{
+			secretDelegate := mcpv1beta1.DelegateClientConfig{
 				ClientID:        "delegate-client",
 				ClientSecretRef: &mcpv1beta1.SecretKeyRef{Name: "delegate-secret", Key: "credential"},
 				Scopes:          []string{"openid"},
 				Audiences:       []string{"https://api.example.com"},
 			}
+			jwtDelegate := mcpv1beta1.DelegateClientConfig{
+				ClientID:                "jwt-delegate-client",
+				TokenEndpointAuthMethod: "private_key_jwt",
+				JWKSRef:                 &mcpv1beta1.ConfigMapKeyRef{Name: "jwt-delegate-jwks", Key: "jwks.json"},
+				Scopes:                  []string{"openid"},
+				Audiences:               []string{"https://api.example.com"},
+				TokenExchange:           &mcpv1beta1.DelegateClientTokenExchangeConfig{SelfIssuedSubjectTokens: "any"},
+			}
+			delegates := []mcpv1beta1.DelegateClientConfig{secretDelegate}
+			switch delegateKind {
+			case delegateKindJWT:
+				delegates = []mcpv1beta1.DelegateClientConfig{jwtDelegate}
+			case delegateKindMixed:
+				delegates = []mcpv1beta1.DelegateClientConfig{jwtDelegate, secretDelegate}
+			}
 			if canonicalDelegateClient {
 				config.Spec.EmbeddedAuthServer.InboundGrants = &mcpv1beta1.InboundGrantsConfig{
-					TokenExchange: &mcpv1beta1.TokenExchangeInboundGrantConfig{DelegateClients: []mcpv1beta1.DelegateClientConfig{delegate}},
+					TokenExchange: &mcpv1beta1.TokenExchangeInboundGrantConfig{DelegateClients: delegates},
 				}
 			} else {
-				config.Spec.EmbeddedAuthServer.DelegateClients = []mcpv1beta1.DelegateClientConfig{delegate}
+				config.Spec.EmbeddedAuthServer.DelegateClients = delegates
 			}
 		}
 		return config
@@ -91,6 +111,7 @@ var _ = Describe("EmbeddedAuthServerConfig confidential-client-transport CEL val
 		canonicalDelegateClient bool
 		loopbackHTTP            bool
 		loopbackOptIn           bool
+		delegateKind            string
 		shouldAdmit             bool
 		expectedMessage         string
 	}
@@ -191,13 +212,40 @@ var _ = Describe("EmbeddedAuthServerConfig confidential-client-transport CEL val
 			loopbackOptIn:           true,
 			shouldAdmit:             true,
 		},
+		{
+			name:                    "private_key_jwt delegate clients with loopback HTTP issuer without opt-in",
+			delegateClient:          true,
+			canonicalDelegateClient: true,
+			delegateKind:            delegateKindJWT,
+			loopbackHTTP:            true,
+			shouldAdmit:             false,
+			expectedMessage:         "confidential client registration or delegateClients with an HTTP issuer require insecureAllowConfidentialOverLoopbackHTTP",
+		},
+		{
+			name:                    "private_key_jwt delegate clients with insecureAllowHTTP",
+			delegateClient:          true,
+			canonicalDelegateClient: true,
+			delegateKind:            delegateKindJWT,
+			insecureHTTP:            true,
+			shouldAdmit:             false,
+			expectedMessage:         "insecureAllowHTTP cannot be combined with confidential client registration or delegateClients",
+		},
+		{
+			name:                    "mixed delegate clients with loopback HTTP issuer without opt-in",
+			delegateClient:          true,
+			canonicalDelegateClient: true,
+			delegateKind:            delegateKindMixed,
+			loopbackHTTP:            true,
+			shouldAdmit:             false,
+			expectedMessage:         "confidential client registration or delegateClients with an HTTP issuer require insecureAllowConfidentialOverLoopbackHTTP",
+		},
 	}
 
 	for i, c := range cases {
 		name := fmt.Sprintf("confidential-client-transport-%d", i)
 		It(c.name, func() {
 			cfg := makeAuthConfig(
-				name, c.allowConfidential, c.allowPrivateKeyJWT, c.insecureHTTP, c.httpsIssuer, c.delegateClient, c.canonicalDelegateClient, c.loopbackHTTP, c.loopbackOptIn)
+				name, c.allowConfidential, c.allowPrivateKeyJWT, c.insecureHTTP, c.httpsIssuer, c.delegateClient, c.canonicalDelegateClient, c.loopbackHTTP, c.loopbackOptIn, c.delegateKind)
 			err := k8sClient.Create(ctx, cfg)
 			if c.shouldAdmit {
 				Expect(err).NotTo(HaveOccurred(),

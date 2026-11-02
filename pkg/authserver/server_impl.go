@@ -22,7 +22,6 @@ import (
 	"golang.org/x/time/rate"
 
 	"github.com/stacklok/toolhive/pkg/authserver/internal/consentpolicy"
-	"github.com/stacklok/toolhive/pkg/authserver/internal/fositejose"
 	oauthserver "github.com/stacklok/toolhive/pkg/authserver/server"
 	"github.com/stacklok/toolhive/pkg/authserver/server/deviceflow"
 	"github.com/stacklok/toolhive/pkg/authserver/server/handlers"
@@ -861,8 +860,10 @@ func buildProvider(
 		}
 	}()
 
+	signer := oauthserver.NewSigner(authServerConfig.SigningKey)
 	factories := make([]oauthserver.Factory, 0, 4)
-	tokenExchangeFactories, err := buildTokenExchangeFactories(cfg, delegateIDs, clientPolicies, shared, exchangeGrantStore)
+	tokenExchangeFactories, err := buildTokenExchangeFactories(
+		cfg, delegateIDs, clientPolicies, shared, exchangeGrantStore, signer)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -888,7 +889,7 @@ func buildProvider(
 		return nil, nil, err
 	}
 	factories = append(factories, refreshGrantHandlerFactories(validators)...)
-	provider, err := createProvider(authServerConfig, stor, factories...)
+	provider, err := createProvider(authServerConfig, stor, signer, factories...)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -901,6 +902,7 @@ func buildProvider(
 func buildTokenExchangeFactories(
 	cfg Config, delegateIDs []string, clientPolicies map[string]tokenexchange.ConfiguredClientPolicy,
 	shared *tokenexchange.MultiIssuerTokenValidator, exchangeGrantStore storage.ExchangeGrantStorage,
+	signer *oauthserver.Signer,
 ) ([]oauthserver.Factory, error) {
 	if cfg.DisableTokenExchange {
 		return nil, nil
@@ -916,7 +918,7 @@ func buildTokenExchangeFactories(
 	// Registered with token exchange so a request for a refresh token
 	// always reaches it, even for a client that has not enabled the feature.
 	refreshTokenFactory, err := tokenexchange.RefreshTokenFactory(
-		clientPolicies, tokenexchange.WithExchangeGrantStorage(exchangeGrantStore))
+		clientPolicies, signer, tokenexchange.WithExchangeGrantStorage(exchangeGrantStore))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create refresh token exchange factory: %w", err)
 	}
@@ -1131,9 +1133,12 @@ func (s *server) Close() error {
 //   - PKCE (RFC 7636) for public client security
 //   - Any extra factories passed in (e.g., RFC 8693 token exchange, or the
 //     embedder's Config.RefreshGrantHandlers), registered after the built-ins
+//
+// signer is the server's signer, which supplies the access-token strategy.
 func createProvider(
 	authServerConfig *oauthserver.AuthorizationServerConfig,
 	stor storage.Storage,
+	signer *oauthserver.Signer,
 	extraFactories ...oauthserver.Factory,
 ) (fosite.OAuth2Provider, error) {
 	slog.Debug("configuring fosite OAuth2 provider",
@@ -1141,33 +1146,16 @@ func createProvider(
 		"algorithm", authServerConfig.SigningKey.Algorithm,
 	)
 
-	// Convert go-jose/v4 JWK to go-jose/v3 JWK for fosite compatibility.
-	// Fosite v0.49.0 depends on go-jose/v3, while we use v4 internally.
-	// This ensures the "kid" (key ID) is included in JWT headers so resource
-	// servers can look up the correct public key from our JWKS endpoint.
-	signingKeyV3 := fositejose.ToFositeKey(authServerConfig.SigningKey)
-
 	// Create a composed token strategy:
 	// - JWT strategy (outer): signs access tokens as JWTs using the asymmetric signing key
 	// - HMAC strategy (inner): signs authorization codes and refresh tokens using HMACSecret
 	//
 	// Access tokens are JWTs so resource servers can validate them without calling us.
 	// Auth codes and refresh tokens are opaque HMAC tokens since only we validate them.
-	jwtStrategy := compose.NewOAuth2JWTStrategy(
-		func(_ context.Context) (interface{}, error) { return signingKeyV3, nil },
-		compose.NewOAuth2HMACStrategy(authServerConfig.Config),
-		authServerConfig.Config,
-	)
-	// This signer signs only access tokens: auth codes and refresh tokens use
-	// the HMAC strategy, and no ID-token strategy is registered. The type is
-	// set at signing time, not in the session, because storage persists the
-	// session's JWT header and a per-session typ would survive a configuration
-	// change across refreshes. Tokens signed through this signer get typ: at+jwt
-	// unless they set their own typ, so any future JWT that is not an access
-	// token, such as an ID-JAG (#6898), must set its own typ or sign with its
-	// own signer.
-	if authServerConfig.AccessTokenType == oauthserver.AccessTokenTypeATJWT {
-		jwtStrategy.Signer = oauthserver.NewATJWTAccessTokenSigner(jwtStrategy.Signer)
+	jwtStrategy, err := signer.AccessTokenStrategy(
+		authServerConfig.Config, authServerConfig.AccessTokenType == oauthserver.AccessTokenTypeATJWT)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build the access token strategy: %w", err)
 	}
 
 	commonStrategy := &compose.CommonStrategy{CoreStrategy: jwtStrategy}

@@ -13,7 +13,6 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/authserver/authorizationdetails"
 	"github.com/stacklok/toolhive/pkg/authserver/server"
-	"github.com/stacklok/toolhive/pkg/authserver/storage"
 )
 
 // NewSharedTrustedIssuerValidator builds the single MultiIssuerTokenValidator
@@ -43,26 +42,12 @@ func NewSharedTrustedIssuerValidator(
 	return NewMultiIssuerTokenValidator(selfValidator, config.GetAccessTokenIssuer(), trustedIssuers, config.AllowedAudiences)
 }
 
-// FactoryOption configures a token-exchange Handler factory.
+// FactoryOption configures Factory and FactoryWithSharedTrustedIssuerValidator.
+// RefreshTokenFactory takes RefreshTokenOption instead.
 type FactoryOption func(*factoryOptions)
 
-// factoryOptions is shared by Factory and RefreshTokenFactory. Each factory
-// reads the options it needs and ignores the rest, so passing the same option
-// list to both is fine. That also means an option meant for the other factory
-// (for example WithAuthorizationDetailsRegistry on RefreshTokenFactory) is
-// ignored without an error; give each factory its own option type when a second
-// profile lands.
 type factoryOptions struct {
 	authorizationDetailsRegistry *authorizationdetails.Registry
-	exchangeGrantStore           storage.ExchangeGrantStorage
-}
-
-// WithExchangeGrantStorage gives RefreshTokenFactory the store that holds the
-// grants behind issued refresh tokens. It may be nil when no client enables
-// exchange_refresh_tokens; the handler then refuses every request for a refresh
-// token before it needs the store.
-func WithExchangeGrantStorage(store storage.ExchangeGrantStorage) FactoryOption {
-	return func(o *factoryOptions) { o.exchangeGrantStore = store }
 }
 
 // WithAuthorizationDetailsRegistry configures the factory to pass the registry

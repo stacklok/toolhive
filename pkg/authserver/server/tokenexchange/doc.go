@@ -8,4 +8,8 @@
 // redemption handlers validate assertions from trusted issuers. Both groups
 // share the trust layer: the issuer and JWKS validation code that checks where
 // a token came from.
+//
+// The package also mints ID-JAGs through one generic core that checks the
+// request, selects the subject claims, runs the policy, signs the token and
+// writes the response, whatever the subject came from.
 package tokenexchange

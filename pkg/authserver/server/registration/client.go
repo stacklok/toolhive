@@ -592,12 +592,12 @@ func matchesAsLoopback(requestedURI, registeredURI string) bool {
 	return true
 }
 
-// isLoopbackURI reports whether uri's host is a loopback address (an IP
+// IsLoopbackRedirectURI reports whether uri's host is a loopback address (an IP
 // loopback literal or "localhost", case-insensitively) — a hostname-only
 // check, with no DNS resolution. Used by ValidateConfidentialRedirectURIs in
 // dcr.go to reject a confidential registration's redirect_uri that targets
 // loopback, which RFC 8252 §7.3 reserves for native/public clients.
-func isLoopbackURI(uri string) bool {
+func IsLoopbackRedirectURI(uri string) bool {
 	parsed, err := url.Parse(uri)
 	if err != nil {
 		return false

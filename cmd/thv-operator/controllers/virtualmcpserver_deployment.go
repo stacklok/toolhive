@@ -1229,7 +1229,7 @@ func (r *VirtualMCPServerReconciler) validateSecretReferences(
 	// controller checks only the Secret metadata and key presence; it never reads
 	// or copies credential values.
 	if vmcp.Spec.AuthServerConfig != nil {
-		for _, delegateClient := range vmcp.Spec.AuthServerConfig.DelegateClients {
+		for _, delegateClient := range ctrlutil.EffectiveDelegateClients(vmcp.Spec.AuthServerConfig) {
 			if err := r.validateSecretKeyRef(ctx, vmcp.Namespace, delegateClient.ClientSecretRef,
 				fmt.Sprintf("delegate client %q", delegateClient.ClientID)); err != nil {
 				return err

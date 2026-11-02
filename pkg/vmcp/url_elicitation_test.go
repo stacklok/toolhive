@@ -33,7 +33,7 @@ func TestNewURLElicitation_Validation(t *testing.T) {
 
 		{name: "empty message", id: "e1", url: "https://example.com", message: "", wantErr: "message is required"},
 		{name: "empty elicitation ID", id: "", url: "https://example.com", message: "m", wantErr: "elicitation ID is required"},
-		{name: "unparseable URL", id: "e1", url: "https://exa mple.com/%zz", message: "m", wantErr: "does not parse"},
+		{name: "URL that does not parse", id: "e1", url: "https://exa mple.com/%zz", message: "m", wantErr: "does not parse"},
 		{name: "relative URL has no host", id: "e1", url: "/connect", message: "m", wantErr: "must have a host"},
 		{name: "empty URL", id: "e1", url: "", message: "m", wantErr: "must have a host"},
 		{name: "empty host with port", id: "e1", url: "https://:443/connect", message: "m", wantErr: "must have a host"},
@@ -69,7 +69,7 @@ func TestNewURLElicitationRequiredError_Validation(t *testing.T) {
 
 	a := mustURLElicitation(t, "a", "https://example.com/a", "connect A")
 	b := mustURLElicitation(t, "b", "https://example.com/b", "connect B")
-	aAgain := mustURLElicitation(t, "a", "https://example.com/other", "connect A again")
+	duplicateOfA := mustURLElicitation(t, "a", "https://example.com/other", "connect A again")
 
 	t.Run("zero elicitations rejected", func(t *testing.T) {
 		t.Parallel()
@@ -80,7 +80,7 @@ func TestNewURLElicitationRequiredError_Validation(t *testing.T) {
 
 	t.Run("duplicate elicitation IDs rejected", func(t *testing.T) {
 		t.Parallel()
-		got, err := vmcp.NewURLElicitationRequiredError(a, b, aAgain)
+		got, err := vmcp.NewURLElicitationRequiredError(a, b, duplicateOfA)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), `duplicate elicitation ID "a"`)
 		assert.Nil(t, got)

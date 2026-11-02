@@ -4,8 +4,10 @@
 package vmcp_test
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
+	"log/slog"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -32,7 +34,9 @@ func TestNewURLElicitation_Validation(t *testing.T) {
 		{name: "http ::1 accepted", id: "e1", url: "http://[::1]:9000/connect", message: "m"},
 
 		{name: "empty message", id: "e1", url: "https://example.com", message: "", wantErr: "message is required"},
+		{name: "whitespace-only message", id: "e1", url: "https://example.com", message: " \n\t", wantErr: "message is required"},
 		{name: "empty elicitation ID", id: "", url: "https://example.com", message: "m", wantErr: "elicitation ID is required"},
+		{name: "whitespace-only elicitation ID", id: "  ", url: "https://example.com", message: "m", wantErr: "elicitation ID is required"},
 		{name: "URL that does not parse", id: "e1", url: "https://exa mple.com/%zz", message: "m", wantErr: "does not parse"},
 		{name: "relative URL has no host", id: "e1", url: "/connect", message: "m", wantErr: "must have a host"},
 		{name: "empty URL", id: "e1", url: "", message: "m", wantErr: "must have a host"},
@@ -167,6 +171,51 @@ func TestURLElicitationRequiredError_ErrorOmitsURL(t *testing.T) {
 	// Stringifying through a wrapper, as composite workflows and logs do, is
 	// equally clean.
 	assert.NotContains(t, fmt.Sprintf("step failed: %v", answer), "connect.example.com")
+}
+
+// TestURLElicitation_FormattingOmitsURL pins that no fmt verb and no slog
+// handler prints the URL of an elicitation, of the Elicitations() slice, or of
+// the answer itself.
+func TestURLElicitation_FormattingOmitsURL(t *testing.T) {
+	t.Parallel()
+
+	const secretURL = "https://connect.example.com/a?state=secret-a"
+	e := mustURLElicitation(t, "github", secretURL, "Reconnect GitHub")
+	answer, err := vmcp.NewURLElicitationRequiredError(e)
+	require.NoError(t, err)
+
+	values := map[string]any{
+		"elicitation":   e,
+		"pointer":       &e,
+		"elicitations":  answer.Elicitations(),
+		"answer":        answer,
+		"wrapped value": struct{ E vmcp.URLElicitation }{E: e},
+	}
+	for name, v := range values {
+		for _, verb := range []string{"%v", "%+v", "%#v", "%s"} {
+			t.Run(name+" "+verb, func(t *testing.T) {
+				t.Parallel()
+				out := fmt.Sprintf(verb, v)
+				assert.NotContains(t, out, "connect.example.com", out)
+				assert.NotContains(t, out, "secret-a", out)
+			})
+		}
+	}
+	assert.Contains(t, fmt.Sprintf("%v", e), "github")
+	assert.Contains(t, fmt.Sprintf("%v", e), "Reconnect GitHub")
+
+	for name, newHandler := range map[string]func(*bytes.Buffer) slog.Handler{
+		"text": func(b *bytes.Buffer) slog.Handler { return slog.NewTextHandler(b, nil) },
+		"json": func(b *bytes.Buffer) slog.Handler { return slog.NewJSONHandler(b, nil) },
+	} {
+		t.Run("slog "+name, func(t *testing.T) {
+			t.Parallel()
+			var buf bytes.Buffer
+			slog.New(newHandler(&buf)).Info("answer", "elicitation", e, "elicitations", answer.Elicitations())
+			assert.NotContains(t, buf.String(), "connect.example.com", buf.String())
+			assert.Contains(t, buf.String(), "github")
+		})
+	}
 }
 
 func mustURLElicitation(t *testing.T, id, rawURL, message string) vmcp.URLElicitation {

@@ -9,23 +9,25 @@ import (
 	"fmt"
 )
 
-// InputRequiredResult carries a Modern (2026-07-28) backend's
-// resultType:"input_required" envelope — a Multi Round-Trip Request round
-// (SEP-2322): the backend cannot complete the call until the caller fulfills
-// InputRequests and retries the original request echoing RequestState.
+// InputRequiredResult carries a Modern (2026-07-28) resultType:"input_required"
+// envelope — a Multi Round-Trip Request round (SEP-2322): the call cannot
+// complete until the caller fulfills InputRequests and retries the original
+// request echoing RequestState.
 //
-// This is the domain-typed egress surface of MRTR (the seam the client-edge
-// limitation in docs/arch/10-virtual-mcp-architecture.md names): the backend
-// client decodes the envelope into this type and surfaces it through
-// InputRequiredError, so upper layers can relay a round to a Modern
-// downstream client or fulfill it in-request for a Legacy one. Full flow
-// design in docs/arch/16-vmcp-mrtr.md.
+// It has two producers. The backend client decodes a Modern backend's
+// envelope into this type and surfaces it through InputRequiredError (the
+// egress seam the client-edge limitation in
+// docs/arch/10-virtual-mcp-architecture.md names); relaying that round to a
+// downstream client is still to come (docs/arch/16-vmcp-mrtr.md, #6059).
+// vMCP also builds one itself from a URLElicitationRequiredError, keyed by
+// elicitation ID with a nil RequestState, and renders it to a Modern client
+// as the input_required result.
 type InputRequiredResult struct {
 	// InputRequests maps the backend's server-assigned keys to raw request
 	// objects (ElicitRequest, CreateMessageRequest, or ListRootsRequest —
 	// schema/draft's InputRequest union). Values are deliberately opaque
-	// json.RawMessage: on the pass-through path vMCP relays them verbatim and
-	// must not reinterpret them. Use Methods to inspect only the wire method
+	// json.RawMessage: on the pass-through path vMCP will relay them verbatim
+	// and must not reinterpret them. Use Methods to inspect only the wire method
 	// names (e.g. for capability gating). Nil on a load-shedding round
 	// (RequestState only).
 	InputRequests map[string]json.RawMessage
@@ -111,8 +113,9 @@ func (e *InputRequiredError) Unwrap() error { return e.Sentinel }
 //
 //	if round, ok := vmcp.InputRequiredFromError(err); ok { ... relay round ... }
 //
-// This is the seam the ingress half (dispatchModern's input_required envelope
-// and the Legacy-client bridge; docs/arch/16-vmcp-mrtr.md slices 2-4) consumes.
+// This is the seam the backend-round relay (docs/arch/16-vmcp-mrtr.md slices
+// 2-4) will consume: dispatchModern's input_required writer already exists,
+// and the Legacy-client bridge does not yet.
 func InputRequiredFromError(err error) (*InputRequiredResult, bool) {
 	var ire *InputRequiredError
 	if errors.As(err, &ire) && ire.Result != nil {

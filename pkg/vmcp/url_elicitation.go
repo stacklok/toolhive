@@ -6,6 +6,7 @@ package vmcp
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/url"
 	"slices"
@@ -19,6 +20,10 @@ import (
 // The fields are unexported so a value can only come from NewURLElicitation,
 // which validates them. The zero value is not a valid elicitation, and
 // NewURLElicitationRequiredError rejects it.
+//
+// String, GoString, and LogValue omit the URL, so formatting the value with
+// any fmt verb or logging it through slog does not print it. Only URL()
+// returns it.
 type URLElicitation struct {
 	elicitationID string
 	url           string
@@ -29,7 +34,8 @@ type URLElicitation struct {
 //
 // elicitationID identifies the elicitation within one answer; the Modern
 // renderer uses it as the inputRequests key. message is the human-readable
-// reason shown to the user. rawURL must be an absolute https URL with a host
+// reason shown to the user. Both must contain a non-whitespace character.
+// rawURL must be an absolute https URL with a host
 // and no userinfo; http is accepted only for a loopback host (localhost,
 // 127.0.0.0/8, or ::1), for local development.
 //
@@ -38,10 +44,10 @@ type URLElicitation struct {
 // token: the page it points at verifies who opens it (see
 // docs/arch/vmcp-library.md).
 func NewURLElicitation(elicitationID, rawURL, message string) (URLElicitation, error) {
-	if elicitationID == "" {
+	if strings.TrimSpace(elicitationID) == "" {
 		return URLElicitation{}, errors.New("url elicitation: elicitation ID is required")
 	}
-	if message == "" {
+	if strings.TrimSpace(message) == "" {
 		return URLElicitation{}, errors.New("url elicitation: message is required")
 	}
 	if err := validateElicitationURL(rawURL); err != nil {
@@ -58,6 +64,25 @@ func (e URLElicitation) URL() string { return e.url }
 
 // Message returns the human-readable reason shown to the user.
 func (e URLElicitation) Message() string { return e.message }
+
+// String describes the elicitation by ID and message. It never includes the
+// URL.
+func (e URLElicitation) String() string {
+	return fmt.Sprintf("URLElicitation{id: %q, message: %q}", e.elicitationID, e.message)
+}
+
+// GoString is String, so the %#v verb does not reflect over the unexported
+// URL field.
+func (e URLElicitation) GoString() string { return e.String() }
+
+// LogValue logs the elicitation as its ID and message. It never includes the
+// URL.
+func (e URLElicitation) LogValue() slog.Value {
+	return slog.GroupValue(
+		slog.String("elicitation_id", e.elicitationID),
+		slog.String("message", e.message),
+	)
+}
 
 // URLElicitationRequiredError is the URL elicitation answer: the typed error a
 // tools/call implementation returns to ask the client to send the user to one
@@ -124,6 +149,12 @@ func (e *URLElicitationRequiredError) Error() string {
 		messages = append(messages, el.message)
 	}
 	return "URL elicitation required: " + strings.Join(messages, "; ")
+}
+
+// GoString describes the answer through its elicitations' GoString, so the
+// %#v verb does not reflect over the unexported slice and print the URLs.
+func (e *URLElicitationRequiredError) GoString() string {
+	return fmt.Sprintf("&vmcp.URLElicitationRequiredError{elicitations: %#v}", e.elicitations)
 }
 
 // URLElicitationFromError extracts the URL elicitation answer from an error

@@ -28,17 +28,18 @@ import (
 // A future go-sdk bump cannot just delete these structs and marshal SDK result
 // types directly -- the Modern annotations would vanish with them.
 //
-// modernResultTypeComplete is the resultType of every success result built
-// here. The one other value, modernResultTypeInputRequired, is written only by
-// writeModernInputRequired: dispatchModern still performs single-shot
-// dispatch and keeps no state between rounds, so an input_required result
-// asks the client to fulfil inputRequests and send a fresh request. Do not add
-// Legacy-conditional branching to these structs -- this file is reached only
-// for Modern requests.
+// The file also writes the SEP-2322 input_required result
+// (writeModernInputRequired). Do not add Legacy-conditional branching to
+// these structs -- this file is reached only for Modern requests.
+//
+// modernResultTypeComplete is the resultType of every single-shot success
+// result built here.
 const modernResultTypeComplete = "complete"
 
-// modernResultTypeInputRequired is the SEP-2322 multi-round resultType. See
-// writeModernInputRequired.
+// modernResultTypeInputRequired is the SEP-2322 multi-round resultType,
+// written only by writeModernInputRequired. dispatchModern keeps no state
+// between rounds, so an input_required result asks the client to fulfil
+// inputRequests and send a fresh request.
 const modernResultTypeInputRequired = "input_required"
 
 // modernServerInfoKey is the go-sdk's MetaKeyServerInfo
@@ -617,7 +618,7 @@ func inputRequiredFromURLElicitation(answer *vmcp.URLElicitationRequiredError) (
 	for _, e := range elicitations {
 		raw, err := json.Marshal(modernURLElicitRequest{
 			Method: string(mcp.MethodElicitationCreate),
-			Params: modernURLElicitParams{Mode: "url", Message: e.Message(), URL: e.URL()},
+			Params: modernURLElicitParams{Mode: elicitationModeURL, Message: e.Message(), URL: e.URL()},
 		})
 		if err != nil {
 			return nil, fmt.Errorf("encode URL elicitation %q: %w", e.ElicitationID(), err)

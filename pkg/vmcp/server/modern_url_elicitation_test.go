@@ -36,8 +36,10 @@ func clientCapsMeta(caps map[string]any) map[string]any {
 
 var declaredURLMeta = clientCapsMeta(map[string]any{"elicitation": map[string]any{"url": map[string]any{}}})
 
-// runCallFailure drives writeModernCallFailure with no recorded refusal and
-// returns the status, the decoded envelope, and the raw body.
+// runCallFailure drives the Modern call-failure renderer for method with no
+// recorded refusal: writeModernToolCallFailure for tools/call, and
+// writeModernCallFailure for the other call verbs. It returns the status, the
+// decoded envelope, and the raw body.
 func runCallFailure(
 	t *testing.T, method string, meta map[string]any, err error,
 ) (int, map[string]any, string) {
@@ -45,8 +47,11 @@ func runCallFailure(
 	_, refusal := withCapabilityRefusalRecorder(context.Background())
 	parsed := &mcpparser.ParsedMCPRequest{Method: method, IsRequest: true, ID: float64(7), Meta: meta}
 	rec := httptest.NewRecorder()
-	writeModernCallFailure(rec, parsed, refusal,
-		modernServerInfo{Name: "vmcp-test", Version: "1.2.3"}, vmcp.DenyMessageToolCall, err)
+	if method == "tools/call" {
+		writeModernToolCallFailure(rec, parsed, refusal, "vmcp-test", "1.2.3", err)
+	} else {
+		writeModernCallFailure(rec, parsed, refusal, vmcp.DenyMessageToolCall, err)
+	}
 	var decoded map[string]any
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &decoded), rec.Body.String())
 	return rec.Code, decoded, rec.Body.String()
@@ -136,6 +141,7 @@ func TestWriteModernCallFailure_URLElicitationFallback(t *testing.T) {
 		"no elicitation":       clientCapsMeta(map[string]any{"sampling": map[string]any{}}),
 		"url at the wrong key": clientCapsMeta(map[string]any{"url": map[string]any{}}),
 		"no _meta":             nil,
+		"url null":             clientCapsMeta(map[string]any{"elicitation": map[string]any{"url": nil}}),
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
@@ -215,6 +221,12 @@ func TestModernClientDeclaredURLElicitation(t *testing.T) {
 		{name: "form only", meta: clientCapsMeta(map[string]any{
 			"elicitation": map[string]any{"form": map[string]any{}}}), want: false},
 		{name: "elicitation not an object", meta: clientCapsMeta(map[string]any{"elicitation": "url"}), want: false},
+		{name: "url null", meta: clientCapsMeta(map[string]any{
+			"elicitation": map[string]any{"url": nil}}), want: false},
+		{name: "url false", meta: clientCapsMeta(map[string]any{
+			"elicitation": map[string]any{"url": false}}), want: false},
+		{name: "url a string", meta: clientCapsMeta(map[string]any{
+			"elicitation": map[string]any{"url": "x"}}), want: false},
 		{name: "url declared", meta: declaredURLMeta, want: true},
 		{name: "form and url declared", meta: clientCapsMeta(map[string]any{
 			"elicitation": map[string]any{"form": map[string]any{}, "url": map[string]any{}}}), want: true},

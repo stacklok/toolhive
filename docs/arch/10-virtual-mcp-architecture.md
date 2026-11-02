@@ -523,7 +523,7 @@ capabilities. Callers get no capability query (vmcp-anti-patterns #1 and #8).
 | Modern | `elicitation: {}`, only `form`, or no elicitation | `-32021` at HTTP 200 (the go-sdk#1117 deviation above), `data.requiredCapabilities: {elicitation: {url: {}}}`, a message telling the client to declare `elicitation.url` and retry. No URL |
 | Legacy (2025-11-25) | any | `isError` tool result whose text is the elicitation message, through a direct `tools/call` and through the optimizer's `call_tool`. No URL |
 
-The renderers are `writeModernCallFailure` (`pkg/vmcp/server`; its writers
+The renderers are `writeModernToolCallFailure` (`pkg/vmcp/server`; its writers
 `writeModernInputRequired` and `writeModernURLElicitationUnsupported`) and
 `conversion.ErrorToToolResult` for Legacy. Each has the same precedence: an
 authorization denial outranks the answer, so an error carrying both is the

@@ -23,8 +23,11 @@ import (
 // NewURLElicitationRequiredError rejects it.
 //
 // Format, String, GoString, and LogValue omit the URL, so formatting the
-// value with any fmt verb or logging it through slog does not print it. Only
-// URL() returns it.
+// value with the standard fmt verbs or logging it through slog does not print
+// it. Only URL() returns it. Two paths bypass Format and are outside this
+// guarantee: %p on a non-pointer (a go vet error), and a copy held in an
+// unexported field of another type, which fmt reflects over without calling
+// its methods.
 type URLElicitation struct {
 	elicitationID string
 	url           string
@@ -72,13 +75,12 @@ func (e URLElicitation) String() string {
 	return fmt.Sprintf("URLElicitation{id: %q, message: %q}", e.elicitationID, e.message)
 }
 
-// GoString is String, so the %#v verb does not reflect over the unexported
-// URL field.
+// GoString is the %#v rendering Format delegates to: the same text as
+// String.
 func (e URLElicitation) GoString() string { return e.String() }
 
-// Format implements fmt.Formatter so that every verb, not only the ones fmt
-// routes to String and GoString, prints the ID and message and never
-// reflects over the unexported URL field.
+// Format implements fmt.Formatter and is the redaction entry point for fmt:
+// %#v prints GoString, and every other verb prints String.
 func (e URLElicitation) Format(f fmt.State, verb rune) {
 	if verb == 'v' && f.Flag('#') {
 		_, _ = io.WriteString(f, e.GoString())
@@ -119,8 +121,9 @@ func (e URLElicitation) LogValue() slog.Value {
 // The type deliberately does not implement pkg/mcp.CodedError: -32042 exists
 // only in the 2025-11-25 revision, and a CodedError would render it on Modern.
 // Error() never includes a URL, so code paths that stringify the error
-// (composite workflows, code-mode scripts, logs) cannot leak it. Format does
-// the same for every fmt verb, on the pointer and on a dereferenced value.
+// (composite workflows, code-mode scripts, logs) cannot leak it. Format keeps
+// the URL out of fmt output too, on the pointer and on a dereferenced value,
+// within the limits the URLElicitation comment states.
 type URLElicitationRequiredError struct {
 	elicitations []URLElicitation
 }
@@ -164,8 +167,8 @@ func (e *URLElicitationRequiredError) Error() string {
 	return "URL elicitation required: " + strings.Join(messages, "; ")
 }
 
-// GoString describes the answer through its elicitations' GoString, so the
-// %#v verb does not reflect over the unexported slice and print the URLs.
+// GoString is the %#v rendering Format delegates to. It renders each
+// elicitation through its own GoString, never the URL.
 func (e *URLElicitationRequiredError) GoString() string {
 	return fmt.Sprintf("&vmcp.URLElicitationRequiredError{elicitations: %#v}", e.elicitations)
 }

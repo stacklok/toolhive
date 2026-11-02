@@ -35,9 +35,9 @@ type InputRequiredResult struct {
 	// RequestState is the producer's opaque round-trip state. Per SEP-2322 the
 	// client "MUST echo back the exact value" on retry — vMCP relays it
 	// verbatim and never interprets it. Nil when the producer set no
-	// requestState field (always, for a result vMCP builds itself), which the retry must preserve: client requirement 2
-	// says that if the result does not contain the field, the client "MUST NOT
-	// include one in the retry". The schema puts no minimum length on the
+	// requestState field (always, for a result vMCP builds itself), which the
+	// retry must preserve: client requirement 2 says that if the result does
+	// not contain the field, the client "MUST NOT include one in the retry". The schema puts no minimum length on the
 	// field, so present-and-empty ("") is legal, distinct from absent, and
 	// must be echoed as the empty string.
 	RequestState *string
@@ -124,7 +124,7 @@ func InputRequiredFromError(err error) (*InputRequiredResult, bool) {
 }
 
 // Methods returns the JSON-RPC method name of each input request, keyed by
-// the backend's request key. An entry whose value does not decode as an
+// the producer's request key. An entry whose value does not decode as an
 // object with a "method" field maps to the empty string, so callers gating on
 // method (capability checks) fail closed on malformed entries instead of
 // skipping them.

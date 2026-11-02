@@ -37,9 +37,10 @@ type InputRequiredResult struct {
 	// verbatim and never interprets it. Nil when the producer set no
 	// requestState field (always, for a result vMCP builds itself), which the
 	// retry must preserve: client requirement 2 says that if the result does
-	// not contain the field, the client "MUST NOT include one in the retry". The schema puts no minimum length on the
-	// field, so present-and-empty ("") is legal, distinct from absent, and
-	// must be echoed as the empty string.
+	// not contain the field, the client "MUST NOT include one in the retry".
+	// The schema puts no minimum length on the field, so present-and-empty
+	// ("") is legal, distinct from absent, and must be echoed as the empty
+	// string.
 	RequestState *string
 }
 

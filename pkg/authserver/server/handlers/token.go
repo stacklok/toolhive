@@ -6,6 +6,7 @@ package handlers
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"slices"
@@ -75,7 +76,23 @@ func (h *Handler) TokenHandler(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	if h.applyResourceAudience(ctx, w, accessRequest) {
+	ownsResource := server.OwnsResourceParameter(accessRequest)
+	if ownsResource {
+		// DPoP-bound ID-JAGs are unsupported: the server cannot bind a cnf claim
+		// yet, and ignoring the proof would issue an unbound token. The handler's
+		// own phase-1 refusals come first, in NewAccessRequest.
+		if len(req.Header.Values("DPoP")) > 0 {
+			slog.Warn("DPoP-bound ID-JAGs are not supported; request refused",
+				"client_id", accessRequest.GetClient().GetID(),
+			)
+			h.provider.WriteAccessError(ctx, w, accessRequest, &fosite.RFC6749Error{
+				ErrorField:       fosite.ErrInvalidRequest.ErrorField,
+				DescriptionField: server.ReasonDPoPNotSupported,
+				CodeField:        http.StatusBadRequest,
+			})
+			return
+		}
+	} else if h.applyResourceAudience(ctx, w, accessRequest) {
 		return
 	}
 	h.applySubjectIdentifier(accessRequest)
@@ -88,6 +105,20 @@ func (h *Handler) TokenHandler(w http.ResponseWriter, req *http.Request) {
 		// silently swallowed at Debug level.
 		logAccessError(ctx, "failed to create access response", err)
 		h.provider.WriteAccessError(ctx, w, accessRequest, err)
+		return
+	}
+
+	// Only a server defect can reach this: a handler claimed the request without
+	// owning the resource. Its side effects are not undone, but nothing is sent.
+	if ownsResource && (response.GetExtra(oauthproto.ParamIssuedTokenType) != oauthproto.TokenTypeIDJAG ||
+		len(accessRequest.GetGrantedAudience()) > 0) {
+		slog.Error("token response for an ID-JAG request is not a bare ID-JAG; request refused",
+			"client_id", accessRequest.GetClient().GetID(),
+			"issued_token_type", fmt.Sprint(response.GetExtra(oauthproto.ParamIssuedTokenType)),
+			"granted_audience_count", len(accessRequest.GetGrantedAudience()),
+		)
+		h.provider.WriteAccessError(ctx, w, accessRequest,
+			fosite.ErrServerError.WithHint("The token could not be issued."))
 		return
 	}
 

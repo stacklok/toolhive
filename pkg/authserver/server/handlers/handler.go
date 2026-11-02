@@ -336,7 +336,7 @@ func (h *Handler) OAuthRoutes(r chi.Router) {
 	// /oauth/authorize set, so it must be served on the same host (see
 	// browser_binding.go).
 	r.Get("/oauth/callback", h.CallbackHandler)
-	r.Post("/oauth/token", h.TokenHandler)
+	r.Post(server.TokenEndpointPath, h.TokenHandler)
 	r.Post("/oauth/register", h.rateLimitRegister(h.RegisterClientHandler))
 	if h.config.DeviceFlowEnabled {
 		r.Post("/oauth/device_authorization", h.rateLimitDeviceAuthorization(h.DeviceAuthorizationHandler))

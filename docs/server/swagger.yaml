@@ -283,6 +283,71 @@ components:
             value; validation rejects refresh_token_max_lifetime without it.
           type: string
       type: object
+    authserver.DelegateClientIDJAG:
+      description: |-
+        IDJAG lists the authorization servers this client may ask for an
+        Identity Assertion JWT Authorization Grant (ID-JAG) for. Valid only with
+        restricted, with exchange_refresh_tokens.id_jag_max_lifetime set, and with
+        token exchange enabled.
+      properties:
+        targets:
+          description: |-
+            Targets are the authorization servers the client may ask for an ID-JAG
+            for. At least one is required.
+          items:
+            $ref: '#/components/schemas/authserver.DelegateClientIDJAGTarget'
+          type: array
+          uniqueItems: false
+      type: object
+    authserver.DelegateClientIDJAGTarget:
+      properties:
+        client_id:
+          description: ClientID is this client's client_id at the other authorization
+            server.
+          type: string
+        issuer:
+          description: |-
+            Issuer is the issuer of the other authorization server. The client sends
+            it as the request's audience, and it becomes the ID-JAG's aud as written
+            here. It must be an absolute https URL, or http on a loopback host, with
+            no query, fragment or userinfo, and must be in canonical form: no dot
+            segments, empty path segments, unneeded percent-encoding or leading zeros
+            in the port. One trailing slash is allowed. It must not be this server's
+            issuer, token endpoint or one of its allowed_audiences, and must be unique
+            within the client. The (issuer, client_id) pair must be unique across
+            delegate clients. These comparisons ignore case, a default port and one
+            trailing slash.
+          type: string
+        lifetime:
+          description: |-
+            Lifetime is how long each ID-JAG lives, as a Go duration string in whole
+            seconds (e.g. "60s"). Defaults to 60s; at most 300s.
+          type: string
+        required_subject_claims:
+          description: |-
+            RequiredSubjectClaims are subject claims every ID-JAG for this target
+            must carry. Allowed values are upstream_subject (the user's identity at
+            the upstream identity provider) and sub_id (the RFC 9493 subject
+            identifier). ID-JAGs for this target will carry only the listed subject
+            claims. Each entry needs every subject_token_audiences entry in the
+            server's SubjectIdentifierAudiences, which is not a RunConfig field yet,
+            so a non-empty list fails startup when set from a config file or
+            CRD-generated RunConfig.
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+        resources:
+          description: |-
+            Resources are the resources behind the other authorization server, such
+            as an MCP endpoint, that the client may name as the request's resource.
+            At least one is required. Each must be a valid RFC 8707 resource URI,
+            listed once.
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+      type: object
     authserver.DelegateClientRunConfig:
       properties:
         audiences:
@@ -396,6 +461,8 @@ components:
           uniqueItems: false
         exchange_refresh_tokens:
           $ref: '#/components/schemas/authserver.DelegateClientExchangeRefreshTokens'
+        id_jag:
+          $ref: '#/components/schemas/authserver.DelegateClientIDJAG'
         self_issued_subject_tokens:
           description: |-
             SelfIssuedSubjectTokens is any or restricted, and is required. With

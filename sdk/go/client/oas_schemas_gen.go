@@ -799,6 +799,111 @@ func (s *AuthenticationDelegateClientExchangeRefreshTokens) SetRefreshTokenMaxLi
 	s.RefreshTokenMaxLifetime = val
 }
 
+// IDJAG lists the authorization servers this client may ask for an
+// Identity Assertion JWT Authorization Grant (ID-JAG) for. Valid only with
+// restricted, with exchange_refresh_tokens.id_jag_max_lifetime set, and with
+// token exchange enabled.
+// Ref: #/components/schemas/AuthenticationDelegateClientIDJAG
+type AuthenticationDelegateClientIDJAG struct {
+	// Targets are the authorization servers the client may ask for an ID-JAG
+	// for. At least one is required.
+	Targets []AuthenticationDelegateClientIDJAGTarget `json:"targets"`
+}
+
+// GetTargets returns the value of Targets.
+func (s *AuthenticationDelegateClientIDJAG) GetTargets() []AuthenticationDelegateClientIDJAGTarget {
+	return s.Targets
+}
+
+// SetTargets sets the value of Targets.
+func (s *AuthenticationDelegateClientIDJAG) SetTargets(val []AuthenticationDelegateClientIDJAGTarget) {
+	s.Targets = val
+}
+
+// Ref: #/components/schemas/AuthenticationDelegateClientIDJAGTarget
+type AuthenticationDelegateClientIDJAGTarget struct {
+	// ClientID is this client's client_id at the other authorization server.
+	ClientID OptString `json:"client_id"`
+	// Issuer is the issuer of the other authorization server. The client sends
+	// it as the request's audience, and it becomes the ID-JAG's aud as written
+	// here. It must be an absolute https URL, or http on a loopback host, with
+	// no query, fragment or userinfo, and must be in canonical form: no dot
+	// segments, empty path segments, unneeded percent-encoding or leading zeros
+	// in the port. One trailing slash is allowed. It must not be this server's
+	// issuer, token endpoint or one of its allowed_audiences, and must be unique
+	// within the client. The (issuer, client_id) pair must be unique across
+	// delegate clients. These comparisons ignore case, a default port and one
+	// trailing slash.
+	Issuer OptString `json:"issuer"`
+	// Lifetime is how long each ID-JAG lives, as a Go duration string in whole
+	// seconds (e.g. "60s"). Defaults to 60s; at most 300s.
+	Lifetime OptString `json:"lifetime"`
+	// RequiredSubjectClaims are subject claims every ID-JAG for this target
+	// must carry. Allowed values are upstream_subject (the user's identity at
+	// the upstream identity provider) and sub_id (the RFC 9493 subject
+	// identifier). ID-JAGs for this target will carry only the listed subject
+	// claims. Each entry needs every subject_token_audiences entry in the
+	// server's SubjectIdentifierAudiences, which is not a RunConfig field yet,
+	// so a non-empty list fails startup when set from a config file or
+	// CRD-generated RunConfig.
+	RequiredSubjectClaims []string `json:"required_subject_claims"`
+	// Resources are the resources behind the other authorization server, such
+	// as an MCP endpoint, that the client may name as the request's resource.
+	// At least one is required. Each must be a valid RFC 8707 resource URI,
+	// listed once.
+	Resources []string `json:"resources"`
+}
+
+// GetClientID returns the value of ClientID.
+func (s *AuthenticationDelegateClientIDJAGTarget) GetClientID() OptString {
+	return s.ClientID
+}
+
+// GetIssuer returns the value of Issuer.
+func (s *AuthenticationDelegateClientIDJAGTarget) GetIssuer() OptString {
+	return s.Issuer
+}
+
+// GetLifetime returns the value of Lifetime.
+func (s *AuthenticationDelegateClientIDJAGTarget) GetLifetime() OptString {
+	return s.Lifetime
+}
+
+// GetRequiredSubjectClaims returns the value of RequiredSubjectClaims.
+func (s *AuthenticationDelegateClientIDJAGTarget) GetRequiredSubjectClaims() []string {
+	return s.RequiredSubjectClaims
+}
+
+// GetResources returns the value of Resources.
+func (s *AuthenticationDelegateClientIDJAGTarget) GetResources() []string {
+	return s.Resources
+}
+
+// SetClientID sets the value of ClientID.
+func (s *AuthenticationDelegateClientIDJAGTarget) SetClientID(val OptString) {
+	s.ClientID = val
+}
+
+// SetIssuer sets the value of Issuer.
+func (s *AuthenticationDelegateClientIDJAGTarget) SetIssuer(val OptString) {
+	s.Issuer = val
+}
+
+// SetLifetime sets the value of Lifetime.
+func (s *AuthenticationDelegateClientIDJAGTarget) SetLifetime(val OptString) {
+	s.Lifetime = val
+}
+
+// SetRequiredSubjectClaims sets the value of RequiredSubjectClaims.
+func (s *AuthenticationDelegateClientIDJAGTarget) SetRequiredSubjectClaims(val []string) {
+	s.RequiredSubjectClaims = val
+}
+
+// SetResources sets the value of Resources.
+func (s *AuthenticationDelegateClientIDJAGTarget) SetResources(val []string) {
+	s.Resources = val
+}
+
 // Ref: #/components/schemas/AuthenticationDelegateClientRunConfig
 type AuthenticationDelegateClientRunConfig struct {
 	// Audiences are output only: the upper bound on the audiences of the
@@ -983,6 +1088,7 @@ type AuthenticationDelegateClientTokenExchange struct {
 	// the list must be non-empty there.
 	AllowedSourceClients  []string                                             `json:"allowed_source_clients"`
 	ExchangeRefreshTokens OptAuthenticationDelegateClientExchangeRefreshTokens `json:"exchange_refresh_tokens"`
+	IDJag                 OptAuthenticationDelegateClientIDJAG                 `json:"id_jag"`
 	// SelfIssuedSubjectTokens is any or restricted, and is required. With
 	// restricted, a self-issued subject token must carry the client's own
 	// client_id or one of AllowedSourceClients, and a may_act claim naming
@@ -1011,6 +1117,11 @@ func (s *AuthenticationDelegateClientTokenExchange) GetExchangeRefreshTokens() O
 	return s.ExchangeRefreshTokens
 }
 
+// GetIDJag returns the value of IDJag.
+func (s *AuthenticationDelegateClientTokenExchange) GetIDJag() OptAuthenticationDelegateClientIDJAG {
+	return s.IDJag
+}
+
 // GetSelfIssuedSubjectTokens returns the value of SelfIssuedSubjectTokens.
 func (s *AuthenticationDelegateClientTokenExchange) GetSelfIssuedSubjectTokens() string {
 	return s.SelfIssuedSubjectTokens
@@ -1029,6 +1140,11 @@ func (s *AuthenticationDelegateClientTokenExchange) SetAllowedSourceClients(val 
 // SetExchangeRefreshTokens sets the value of ExchangeRefreshTokens.
 func (s *AuthenticationDelegateClientTokenExchange) SetExchangeRefreshTokens(val OptAuthenticationDelegateClientExchangeRefreshTokens) {
 	s.ExchangeRefreshTokens = val
+}
+
+// SetIDJag sets the value of IDJag.
+func (s *AuthenticationDelegateClientTokenExchange) SetIDJag(val OptAuthenticationDelegateClientIDJAG) {
+	s.IDJag = val
 }
 
 // SetSelfIssuedSubjectTokens sets the value of SelfIssuedSubjectTokens.
@@ -7218,6 +7334,52 @@ func (o OptAuthenticationDelegateClientExchangeRefreshTokens) Get() (v Authentic
 
 // Or returns value if set, or given parameter if does not.
 func (o OptAuthenticationDelegateClientExchangeRefreshTokens) Or(d AuthenticationDelegateClientExchangeRefreshTokens) AuthenticationDelegateClientExchangeRefreshTokens {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptAuthenticationDelegateClientIDJAG returns new OptAuthenticationDelegateClientIDJAG with value set to v.
+func NewOptAuthenticationDelegateClientIDJAG(v AuthenticationDelegateClientIDJAG) OptAuthenticationDelegateClientIDJAG {
+	return OptAuthenticationDelegateClientIDJAG{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptAuthenticationDelegateClientIDJAG is optional AuthenticationDelegateClientIDJAG.
+type OptAuthenticationDelegateClientIDJAG struct {
+	Value AuthenticationDelegateClientIDJAG
+	Set   bool
+}
+
+// IsSet returns true if OptAuthenticationDelegateClientIDJAG was set.
+func (o OptAuthenticationDelegateClientIDJAG) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptAuthenticationDelegateClientIDJAG) Reset() {
+	var v AuthenticationDelegateClientIDJAG
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptAuthenticationDelegateClientIDJAG) SetTo(v AuthenticationDelegateClientIDJAG) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptAuthenticationDelegateClientIDJAG) Get() (v AuthenticationDelegateClientIDJAG, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptAuthenticationDelegateClientIDJAG) Or(d AuthenticationDelegateClientIDJAG) AuthenticationDelegateClientIDJAG {
 	if v, ok := o.Get(); ok {
 		return v
 	}

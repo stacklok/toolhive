@@ -22,6 +22,7 @@ import (
 
 	"github.com/ory/fosite"
 
+	"github.com/stacklok/toolhive/pkg/authserver/server"
 	"github.com/stacklok/toolhive/pkg/authserver/server/crypto"
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	sharedobauth "github.com/stacklok/toolhive/pkg/oauthproto"
@@ -107,7 +108,7 @@ func (h *Handler) buildOAuthMetadata() sharedobauth.AuthorizationServerMetadata 
 		Issuer: issuer,
 
 		// RECOMMENDED
-		TokenEndpoint:   issuer + "/oauth/token",
+		TokenEndpoint:   issuer + server.TokenEndpointPath,
 		JWKSURI:         issuer + "/.well-known/jwks.json",
 		ScopesSupported: h.config.ScopesSupported,
 

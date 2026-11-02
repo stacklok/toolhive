@@ -1319,6 +1319,64 @@ func TestConsentPolicyRejectsBeforeUpstreamDiscovery(t *testing.T) {
 	assert.Zero(t, tracker.closeCount.Load(), "supplied storage is borrowed even on early validation failure")
 }
 
+func TestIDJAGSubjectClaimsRejectBeforeUpstreamRegistration(t *testing.T) {
+	t.Parallel()
+
+	var requestCount atomic.Int32
+	upstreamServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requestCount.Add(1)
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	t.Cleanup(upstreamServer.Close)
+
+	secretFile := filepath.Join(t.TempDir(), "secret")
+	require.NoError(t, os.WriteFile(secretFile, []byte("0123456789abcdef0123456789abcdef"), 0o600))
+
+	cfg := &authserver.RunConfig{
+		SchemaVersion:    authserver.CurrentSchemaVersion,
+		Issuer:           "https://as1.example.com",
+		ScopesSupported:  []string{"openid", "offline_access"},
+		AllowedAudiences: []string{"https://mcp.example.com", "https://broker.example.com/api"},
+		Upstreams: []authserver.UpstreamRunConfig{{
+			Name: "dcr-upstream",
+			Type: authserver.UpstreamProviderTypeOAuth2,
+			OAuth2Config: &authserver.OAuth2UpstreamRunConfig{
+				AuthorizationEndpoint: upstreamServer.URL + "/authorize",
+				TokenEndpoint:         upstreamServer.URL + "/token",
+				DCRConfig: &authserver.DCRUpstreamConfig{
+					DiscoveryURL: upstreamServer.URL + "/.well-known/oauth-authorization-server",
+				},
+			},
+		}},
+		DelegateClients: []authserver.DelegateClientRunConfig{{
+			ClientID:         "broker",
+			ClientSecretFile: secretFile,
+			Scopes:           []string{"openid"},
+			Audiences:        []string{"https://mcp.example.com"},
+			TokenExchange: &authserver.DelegateClientTokenExchange{
+				SelfIssuedSubjectTokens: authserver.SelfIssuedSubjectTokensRestricted,
+				AllowedSourceClients:    []string{"mcp-client"},
+				SubjectTokenAudiences:   []string{"https://broker.example.com/api"},
+				ExchangeRefreshTokens:   &authserver.DelegateClientExchangeRefreshTokens{IDJAGMaxLifetime: "12h"},
+				IDJAG: &authserver.DelegateClientIDJAG{Targets: []authserver.DelegateClientIDJAGTarget{{
+					Issuer:                "https://as2.example.com",
+					ClientID:              "broker-at-as2",
+					Resources:             []string{"https://gw.example.com/mcp"},
+					RequiredSubjectClaims: []string{"sub_id"},
+				}}},
+			},
+		}},
+	}
+
+	tracker := &closeTrackingStorage{Storage: storage.NewMemoryStorage()}
+	_, err := NewEmbeddedAuthServerWithStorage(context.Background(), cfg, tracker)
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "required_subject_claims needs every token_exchange.subject_token_audiences entry")
+	assert.ErrorContains(t, err, "not a RunConfig field yet")
+	assert.Zero(t, requestCount.Load(), "an unsatisfiable required_subject_claims must be refused before upstream DCR")
+	assert.Zero(t, tracker.closeCount.Load(), "supplied storage is borrowed even on early validation failure")
+}
+
 func minimalRunnerConsentConfig(issuer string) *authserver.RunConfig {
 	return &authserver.RunConfig{
 		SchemaVersion:    authserver.CurrentSchemaVersion,

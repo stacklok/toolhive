@@ -382,6 +382,11 @@ func newEmbeddedAuthServerWithStorage(
 	if options.authorizationDetailsRegistry != nil && !normalized.Capabilities.TokenExchange {
 		return nil, fmt.Errorf("authorization details registry requires token exchange to be enabled")
 	}
+	// Refuse a required_subject_claims that cannot be satisfied before upstream
+	// resolution, which may register this server at an upstream via DCR.
+	if err := authserver.ValidateIDJAGSubjectClaims(delegateClients, options.subjectIdentifierAudiences); err != nil {
+		return nil, err
+	}
 
 	if err := authserver.PreflightSPIFFEStaticClientCollisions(ctx, stor, spiffeTrust); err != nil {
 		return nil, fmt.Errorf("preflight SPIFFE static client collisions: %w", err)

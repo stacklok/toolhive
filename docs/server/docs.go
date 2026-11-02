@@ -194,6 +194,53 @@ const docTemplate = `{
                 },
                 "type": "object"
             },
+            "authserver.DelegateClientIDJAG": {
+                "description": "IDJAG lists the authorization servers this client may ask for an\nIdentity Assertion JWT Authorization Grant (ID-JAG) for. Valid only with\nrestricted, with exchange_refresh_tokens.id_jag_max_lifetime set, and with\ntoken exchange enabled.",
+                "properties": {
+                    "targets": {
+                        "description": "Targets are the authorization servers the client may ask for an ID-JAG\nfor. At least one is required.",
+                        "items": {
+                            "$ref": "#/components/schemas/authserver.DelegateClientIDJAGTarget"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    }
+                },
+                "type": "object"
+            },
+            "authserver.DelegateClientIDJAGTarget": {
+                "properties": {
+                    "client_id": {
+                        "description": "ClientID is this client's client_id at the other authorization server.",
+                        "type": "string"
+                    },
+                    "issuer": {
+                        "description": "Issuer is the issuer of the other authorization server. The client sends\nit as the request's audience, and it becomes the ID-JAG's aud as written\nhere. It must be an absolute https URL, or http on a loopback host, with\nno query, fragment or userinfo, and must be in canonical form: no dot\nsegments, empty path segments, unneeded percent-encoding or leading zeros\nin the port. One trailing slash is allowed. It must not be this server's\nissuer, token endpoint or one of its allowed_audiences, and must be unique\nwithin the client. The (issuer, client_id) pair must be unique across\ndelegate clients. These comparisons ignore case, a default port and one\ntrailing slash.",
+                        "type": "string"
+                    },
+                    "lifetime": {
+                        "description": "Lifetime is how long each ID-JAG lives, as a Go duration string in whole\nseconds (e.g. \"60s\"). Defaults to 60s; at most 300s.",
+                        "type": "string"
+                    },
+                    "required_subject_claims": {
+                        "description": "RequiredSubjectClaims are subject claims every ID-JAG for this target\nmust carry. Allowed values are upstream_subject (the user's identity at\nthe upstream identity provider) and sub_id (the RFC 9493 subject\nidentifier). ID-JAGs for this target will carry only the listed subject\nclaims. Each entry needs every subject_token_audiences entry in the\nserver's SubjectIdentifierAudiences, which is not a RunConfig field yet,\nso a non-empty list fails startup when set from a config file or\nCRD-generated RunConfig.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "resources": {
+                        "description": "Resources are the resources behind the other authorization server, such\nas an MCP endpoint, that the client may name as the request's resource.\nAt least one is required. Each must be a valid RFC 8707 resource URI,\nlisted once.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    }
+                },
+                "type": "object"
+            },
             "authserver.DelegateClientRunConfig": {
                 "properties": {
                     "audiences": {
@@ -271,6 +318,9 @@ const docTemplate = `{
                     },
                     "exchange_refresh_tokens": {
                         "$ref": "#/components/schemas/authserver.DelegateClientExchangeRefreshTokens"
+                    },
+                    "id_jag": {
+                        "$ref": "#/components/schemas/authserver.DelegateClientIDJAG"
                     },
                     "self_issued_subject_tokens": {
                         "description": "SelfIssuedSubjectTokens is any or restricted, and is required. With\nrestricted, a self-issued subject token must carry the client's own\nclient_id or one of AllowedSourceClients, and a may_act claim naming\nthis client does not lift that restriction. With any, the client may\nexchange any self-issued token.",

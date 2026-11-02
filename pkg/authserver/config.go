@@ -460,6 +460,58 @@ type DelegateClientTokenExchange struct {
 	// SubjectTokenAudiences and offline_access or offline in scopes_supported.
 	//nolint:lll // field tags require full JSON+YAML names
 	ExchangeRefreshTokens *DelegateClientExchangeRefreshTokens `json:"exchange_refresh_tokens,omitempty" yaml:"exchange_refresh_tokens,omitempty"`
+
+	// IDJAG lists the authorization servers this client may ask for an
+	// Identity Assertion JWT Authorization Grant (ID-JAG) for. Valid only with
+	// restricted, with exchange_refresh_tokens.id_jag_max_lifetime set, and with
+	// token exchange enabled.
+	IDJAG *DelegateClientIDJAG `json:"id_jag,omitempty" yaml:"id_jag,omitempty"`
+}
+
+// DelegateClientIDJAG configures the ID-JAGs a delegate client may ask for.
+type DelegateClientIDJAG struct {
+	// Targets are the authorization servers the client may ask for an ID-JAG
+	// for. At least one is required.
+	Targets []DelegateClientIDJAGTarget `json:"targets" yaml:"targets"`
+}
+
+// DelegateClientIDJAGTarget is one authorization server a delegate client may
+// ask for an ID-JAG for.
+type DelegateClientIDJAGTarget struct {
+	// Issuer is the issuer of the other authorization server. The client sends
+	// it as the request's audience, and it becomes the ID-JAG's aud as written
+	// here. It must be an absolute https URL, or http on a loopback host, with
+	// no query, fragment or userinfo, and must be in canonical form: no dot
+	// segments, empty path segments, unneeded percent-encoding or leading zeros
+	// in the port. One trailing slash is allowed. It must not be this server's
+	// issuer, token endpoint or one of its allowed_audiences, and must be unique
+	// within the client. The (issuer, client_id) pair must be unique across
+	// delegate clients. These comparisons ignore case, a default port and one
+	// trailing slash.
+	Issuer string `json:"issuer" yaml:"issuer"`
+
+	// ClientID is this client's client_id at the other authorization server.
+	ClientID string `json:"client_id" yaml:"client_id"`
+
+	// Resources are the resources behind the other authorization server, such
+	// as an MCP endpoint, that the client may name as the request's resource.
+	// At least one is required. Each must be a valid RFC 8707 resource URI,
+	// listed once.
+	Resources []string `json:"resources" yaml:"resources"`
+
+	// Lifetime is how long each ID-JAG lives, as a Go duration string in whole
+	// seconds (e.g. "60s"). Defaults to 60s; at most 300s.
+	Lifetime string `json:"lifetime,omitempty" yaml:"lifetime,omitempty"`
+
+	// RequiredSubjectClaims are subject claims every ID-JAG for this target
+	// must carry. Allowed values are upstream_subject (the user's identity at
+	// the upstream identity provider) and sub_id (the RFC 9493 subject
+	// identifier). ID-JAGs for this target will carry only the listed subject
+	// claims. Each entry needs every subject_token_audiences entry in the
+	// server's SubjectIdentifierAudiences, which is not a RunConfig field yet,
+	// so a non-empty list fails startup when set from a config file or
+	// CRD-generated RunConfig.
+	RequiredSubjectClaims []string `json:"required_subject_claims,omitempty" yaml:"required_subject_claims,omitempty"`
 }
 
 // DelegateClientExchangeRefreshTokens holds the lifetime caps for refresh
@@ -492,6 +544,18 @@ func (t *DelegateClientTokenExchange) Clone() *DelegateClientTokenExchange {
 	if t.ExchangeRefreshTokens != nil {
 		refreshTokens := *t.ExchangeRefreshTokens
 		cloned.ExchangeRefreshTokens = &refreshTokens
+	}
+	if t.IDJAG != nil {
+		targets := make([]DelegateClientIDJAGTarget, len(t.IDJAG.Targets))
+		for i, target := range t.IDJAG.Targets {
+			target.Resources = slices.Clone(target.Resources)
+			target.RequiredSubjectClaims = slices.Clone(target.RequiredSubjectClaims)
+			targets[i] = target
+		}
+		if t.IDJAG.Targets == nil {
+			targets = nil
+		}
+		cloned.IDJAG = &DelegateClientIDJAG{Targets: targets}
 	}
 	return &cloned
 }
@@ -530,7 +594,9 @@ func (c *RunConfig) Validate() error {
 	if err != nil {
 		return err
 	}
-	if err := validateDelegateClients(normalized.DelegateClients, c.ScopesSupported, c.AllowedAudiences); err != nil {
+	if err := validateDelegateClients(
+		normalized.DelegateClients, c.ScopesSupported, c.AllowedAudiences, c.Issuer, normalized.Capabilities.TokenExchange,
+	); err != nil {
 		return err
 	}
 	if err := validateTrustedIssuers(normalized.TrustedIssuers, c.Issuer, c.AllowedAudiences); err != nil {
@@ -718,7 +784,7 @@ func validateAllowedAudiences(audiences []string) error {
 // subsets of the server-supported values so a declared client never defaults
 // to every supported scope or audience.
 func validateDelegateClients(
-	clients []DelegateClientRunConfig, scopesSupported, allowedAudiences []string,
+	clients []DelegateClientRunConfig, scopesSupported, allowedAudiences []string, issuer string, exchangeEnabled bool,
 ) error {
 	views := make([]delegateClientView, len(clients))
 	for i, client := range clients {
@@ -737,7 +803,7 @@ func validateDelegateClients(
 			},
 		}
 	}
-	return validateDelegateClientViews(views, scopesSupported, allowedAudiences)
+	return validateDelegateClientViews(views, scopesSupported, allowedAudiences, issuer, exchangeEnabled)
 }
 
 // delegateClientView is the part of a delegate client that both the RunConfig
@@ -754,8 +820,9 @@ type delegateClientView struct {
 }
 
 func validateDelegateClientViews(
-	clients []delegateClientView, scopesSupported, allowedAudiences []string,
+	clients []delegateClientView, scopesSupported, allowedAudiences []string, issuer string, exchangeEnabled bool,
 ) error {
+	tokenEndpoint := issuer + oauthserver.TokenEndpointPath
 	effectiveScopes := scopesSupported
 	if len(effectiveScopes) == 0 {
 		effectiveScopes = registration.DefaultScopes
@@ -767,6 +834,7 @@ func validateDelegateClientViews(
 	}
 
 	seen := make(map[string]struct{}, len(clients))
+	idJAGTargetOwners := make(map[idJAGTargetKey]string)
 	for _, client := range clients {
 		if client.ClientID == "" {
 			return fmt.Errorf("delegate_clients: client_id is required")
@@ -808,19 +876,37 @@ func validateDelegateClientViews(
 		if err := requireDeclaredTrustMode(client); err != nil {
 			return err
 		}
-		if len(client.Scopes) == 0 {
-			return fmt.Errorf("delegate_clients: client_id %q: scopes is required", client.ClientID)
-		}
-		if err := registration.ValidateScopeSubset(
-			client.Scopes, effectiveScopes, fmt.Sprintf("delegate_clients[%s].scopes", client.ClientID)); err != nil {
+		if err := validateDelegateClientNarrowing(client, effectiveScopes, allowedAudiences); err != nil {
 			return err
 		}
-		if err := validateDelegateClientAudiences(client, allowedAudiences); err != nil {
-			return fmt.Errorf("delegate_clients: client_id %q: %w", client.ClientID, err)
+		if err := validateIDJAG(
+			client.ClientID, client.TokenExchange, issuer, tokenEndpoint, allowedAudiences, exchangeEnabled,
+		); err != nil {
+			return err
 		}
-		if err := validateExchangeRefreshTokenScopes(client, effectiveScopes); err != nil {
-			return fmt.Errorf("delegate_clients: client_id %q: %w", client.ClientID, err)
+		if err := claimIDJAGTargets(idJAGTargetOwners, client.ClientID, client.TokenExchange); err != nil {
+			return err
 		}
+	}
+	return nil
+}
+
+// validateDelegateClientNarrowing requires a client's scopes and checks that
+// they are a subset of the server's, then applies the audience rules and the
+// refresh-token scope rule.
+func validateDelegateClientNarrowing(client delegateClientView, effectiveScopes, allowedAudiences []string) error {
+	if len(client.Scopes) == 0 {
+		return fmt.Errorf("delegate_clients: client_id %q: scopes is required", client.ClientID)
+	}
+	if err := registration.ValidateScopeSubset(
+		client.Scopes, effectiveScopes, fmt.Sprintf("delegate_clients[%s].scopes", client.ClientID)); err != nil {
+		return err
+	}
+	if err := validateDelegateClientAudiences(client, allowedAudiences); err != nil {
+		return fmt.Errorf("delegate_clients: client_id %q: %w", client.ClientID, err)
+	}
+	if err := validateExchangeRefreshTokenScopes(client, effectiveScopes); err != nil {
+		return fmt.Errorf("delegate_clients: client_id %q: %w", client.ClientID, err)
 	}
 	return nil
 }
@@ -952,7 +1038,7 @@ const minDelegateClientSecretLength = 32
 // unlike DCR-minted secrets, a delegate-client secret's entropy is never
 // otherwise checked. private_key_jwt clients carry keys instead of a secret.
 func validateResolvedDelegateClients(
-	clients []DelegateClient, scopesSupported, allowedAudiences []string,
+	clients []DelegateClient, scopesSupported, allowedAudiences []string, issuer string, exchangeEnabled bool,
 ) error {
 	views := make([]delegateClientView, len(clients))
 	for i, client := range clients {
@@ -981,7 +1067,7 @@ func validateResolvedDelegateClients(
 			},
 		}
 	}
-	return validateDelegateClientViews(views, scopesSupported, allowedAudiences)
+	return validateDelegateClientViews(views, scopesSupported, allowedAudiences, issuer, exchangeEnabled)
 }
 
 // CIMDRunConfig controls client_id metadata document (CIMD) support.
@@ -2058,7 +2144,12 @@ func (c *Config) validateBaselineClientScopes() error {
 // validateDelegationConfig validates delegate clients, their separation from
 // SPIFFE client associations, and trusted issuers for callers that construct a runtime Config directly.
 func (c *Config) validateDelegationConfig() error {
-	if err := validateResolvedDelegateClients(c.DelegateClients, c.ScopesSupported, c.AllowedAudiences); err != nil {
+	if err := validateResolvedDelegateClients(
+		c.DelegateClients, c.ScopesSupported, c.AllowedAudiences, c.Issuer, !c.DisableTokenExchange,
+	); err != nil {
+		return err
+	}
+	if err := ValidateIDJAGSubjectClaims(c.DelegateClients, c.SubjectIdentifierAudiences); err != nil {
 		return err
 	}
 	spiffeIDs := make([]string, 0, len(c.SPIFFETrust.Associations()))
@@ -2753,15 +2844,8 @@ func validateIssuerURLCore(issuer string, insecureAllowHTTP bool) error {
 		return fmt.Errorf("must not contain userinfo (credentials in the URL)")
 	}
 
-	// HTTPS is required unless it's a loopback address (for development, and
-	// only when localhostExempt) or insecureAllowHTTP is explicitly set.
-	if parsed.Scheme != "https" {
-		if parsed.Scheme != "http" {
-			return fmt.Errorf("scheme must be https (or http for localhost)")
-		}
-		if !insecureAllowHTTP && !networking.IsLocalhost(parsed.Host) {
-			return fmt.Errorf("http scheme is only allowed for localhost, use https")
-		}
+	if err := validateIssuerScheme(parsed, insecureAllowHTTP); err != nil {
+		return err
 	}
 
 	// ToolHive's own issuer is held to this stricter, self-imposed rule
@@ -2770,5 +2854,318 @@ func validateIssuerURLCore(issuer string, insecureAllowHTTP bool) error {
 		return fmt.Errorf("must not have trailing slash")
 	}
 
+	return nil
+}
+
+// validateIssuerScheme requires https, or http on a loopback host. With
+// insecureAllowHTTP, http is allowed on any host.
+func validateIssuerScheme(parsed *url.URL, insecureAllowHTTP bool) error {
+	if parsed.Scheme == "https" {
+		return nil
+	}
+	if parsed.Scheme != "http" {
+		return fmt.Errorf("scheme must be https (or http for localhost)")
+	}
+	if !insecureAllowHTTP && !networking.IsLocalhost(parsed.Host) {
+		return fmt.Errorf("http scheme is only allowed for localhost, use https")
+	}
+	return nil
+}
+
+const (
+	// defaultIDJAGLifetime is the ID-JAG lifetime of a target that sets none.
+	defaultIDJAGLifetime = 60 * time.Second
+	// maxIDJAGLifetime is the longest ID-JAG lifetime a target may set.
+	maxIDJAGLifetime = 300 * time.Second
+)
+
+// Subject claim tokens a target may list in required_subject_claims.
+const (
+	idJAGSubjectClaimUpstreamSubject = "upstream_subject"
+	idJAGSubjectClaimSubID           = "sub_id"
+)
+
+var (
+	errIDJAGRequiresTokenExchange = errors.New("token_exchange.id_jag requires token exchange to be enabled")
+	errIDJAGRequiresRestricted    = errors.New(`token_exchange.id_jag requires self_issued_subject_tokens "restricted"`)
+	errIDJAGRequiresSubjectSource = errors.New("token_exchange.id_jag requires a subject source: " +
+		"set token_exchange.exchange_refresh_tokens.id_jag_max_lifetime")
+	errIDJAGNoTargets          = errors.New("token_exchange.id_jag.targets must list at least one target")
+	errIDJAGIssuerForm         = errors.New("issuer must be an absolute URL with no query, fragment or userinfo")
+	errIDJAGIssuerScheme       = errors.New("issuer must use https, or http on a loopback host")
+	errIDJAGIssuerNotCanonical = errors.New("issuer must be in canonical form: no dot segments, " +
+		"empty path segments, unneeded percent-encoding or leading zeros in the port")
+	errIDJAGIssuerDuplicate           = errors.New("issuer is already listed by another target of this client")
+	errIDJAGIssuerIsServerIssuer      = errors.New("issuer must not be this server's own issuer")
+	errIDJAGIssuerIsTokenEndpoint     = errors.New("issuer must not be this server's token endpoint")
+	errIDJAGIssuerIsAudience          = errors.New("issuer must not be one of this server's allowed_audiences")
+	errIDJAGClientIDRequired          = errors.New("client_id is required")
+	errIDJAGTargetReused              = errors.New("issuer and client_id are already used by another delegate client")
+	errIDJAGResourcesRequired         = errors.New("resources must list at least one resource")
+	errIDJAGResourceInvalid           = errors.New("resource is not a valid resource URI")
+	errIDJAGResourceDuplicate         = errors.New("resource is listed more than once")
+	errIDJAGLifetime                  = errors.New("lifetime must be a positive whole number of seconds, at most 300s")
+	errIDJAGSubjectClaimUnknown       = errors.New(`required_subject_claims entry must be "upstream_subject" or "sub_id"`)
+	errIDJAGSubjectClaimDuplicate     = errors.New("required_subject_claims entry is listed more than once")
+	errIDJAGSubjectClaimsNeedAudience = errors.New(
+		"required_subject_claims needs every token_exchange.subject_token_audiences entry in SubjectIdentifierAudiences")
+)
+
+// validateIDJAG checks a delegate client's token_exchange.id_jag block. A nil
+// policy or a policy without the block is valid.
+//
+// It lives here and not in registration.ValidateConfiguredClient because it
+// compares every target against the values this server accepts as aud on its
+// own tokens: its issuer, its token endpoint and its allowed_audiences, which
+// registration does not know. A target equal to any of them would make an
+// ID-JAG look like one of this server's own tokens. Trusted issuers'
+// jwt_bearer_grant.accepted_audiences are not reserved, because they are only
+// checked on assertions from external issuers. The
+// comparisons use oauthserver.NormalizeIssuer; the configured spelling is kept for
+// use as the ID-JAG's aud.
+func validateIDJAG(
+	clientID string, te *DelegateClientTokenExchange,
+	issuer, tokenEndpoint string, allowedAudiences []string, exchangeEnabled bool,
+) error {
+	if te == nil || te.IDJAG == nil {
+		return nil
+	}
+	prefix := fmt.Sprintf("delegate_clients: client_id %q", clientID)
+	if !exchangeEnabled {
+		return fmt.Errorf("%s: %w", prefix, errIDJAGRequiresTokenExchange)
+	}
+	if !te.Restricted() {
+		return fmt.Errorf("%s: %w", prefix, errIDJAGRequiresRestricted)
+	}
+	if te.ExchangeRefreshTokens == nil || te.ExchangeRefreshTokens.IDJAGMaxLifetime == "" {
+		return fmt.Errorf("%s: %w", prefix, errIDJAGRequiresSubjectSource)
+	}
+	if len(te.IDJAG.Targets) == 0 {
+		return fmt.Errorf("%s: %w", prefix, errIDJAGNoTargets)
+	}
+
+	reserved := map[string]error{
+		oauthserver.NormalizeIssuer(issuer):        errIDJAGIssuerIsServerIssuer,
+		oauthserver.NormalizeIssuer(tokenEndpoint): errIDJAGIssuerIsTokenEndpoint,
+	}
+	for _, audience := range allowedAudiences {
+		normalized := oauthserver.NormalizeIssuer(audience)
+		if _, ok := reserved[normalized]; !ok {
+			reserved[normalized] = errIDJAGIssuerIsAudience
+		}
+	}
+
+	issuers := make(map[string]struct{}, len(te.IDJAG.Targets))
+	for i, target := range te.IDJAG.Targets {
+		if err := validateIDJAGTarget(target, reserved, issuers); err != nil {
+			return fmt.Errorf("%s: token_exchange.id_jag.targets[%d]: %w", prefix, i, err)
+		}
+	}
+	return nil
+}
+
+// validateIDJAGTarget checks one target. reserved maps normalized URLs the
+// issuer must not equal to the error to return; issuers collects the
+// normalized issuers of the client's earlier targets.
+func validateIDJAGTarget(
+	target DelegateClientIDJAGTarget, reserved map[string]error, issuers map[string]struct{},
+) error {
+	if err := validateIDJAGTargetIssuer(target.Issuer); err != nil {
+		return err
+	}
+	normalized := oauthserver.NormalizeIssuer(target.Issuer)
+	if err, ok := reserved[normalized]; ok {
+		return fmt.Errorf("%w: %q", err, target.Issuer)
+	}
+	if _, ok := issuers[normalized]; ok {
+		return fmt.Errorf("%w: %q", errIDJAGIssuerDuplicate, target.Issuer)
+	}
+	issuers[normalized] = struct{}{}
+
+	if target.ClientID == "" {
+		return errIDJAGClientIDRequired
+	}
+
+	if err := validateIDJAGTargetResources(target.Resources); err != nil {
+		return err
+	}
+
+	if _, err := idJAGTargetLifetime(target.Lifetime); err != nil {
+		return err
+	}
+
+	claims := make(map[string]struct{}, len(target.RequiredSubjectClaims))
+	for _, claim := range target.RequiredSubjectClaims {
+		if claim != idJAGSubjectClaimUpstreamSubject && claim != idJAGSubjectClaimSubID {
+			return fmt.Errorf("%w: %q", errIDJAGSubjectClaimUnknown, claim)
+		}
+		if _, ok := claims[claim]; ok {
+			return fmt.Errorf("%w: %q", errIDJAGSubjectClaimDuplicate, claim)
+		}
+		claims[claim] = struct{}{}
+	}
+	return nil
+}
+
+// validateIDJAGTargetResources requires at least one resource, each a valid
+// RFC 8707 resource URI and listed once.
+func validateIDJAGTargetResources(resources []string) error {
+	if len(resources) == 0 {
+		return errIDJAGResourcesRequired
+	}
+	seen := make(map[string]struct{}, len(resources))
+	for _, resource := range resources {
+		if resource == "" {
+			return fmt.Errorf("%w: empty resource", errIDJAGResourceInvalid)
+		}
+		if err := oauthserver.ValidateAudienceURI(resource); err != nil {
+			// The RFC 6749 error's Error() is only the error code; the hint
+			// says what is wrong with the URI.
+			reason := err.Error()
+			var rfcErr *fosite.RFC6749Error
+			if errors.As(err, &rfcErr) && rfcErr.HintField != "" {
+				reason = rfcErr.HintField
+			}
+			return fmt.Errorf("%w: %q: %s", errIDJAGResourceInvalid, resource, reason)
+		}
+		if _, ok := seen[resource]; ok {
+			return fmt.Errorf("%w: %q", errIDJAGResourceDuplicate, resource)
+		}
+		seen[resource] = struct{}{}
+	}
+	return nil
+}
+
+// validateIDJAGTargetIssuer checks the form and scheme of a target issuer. The
+// scheme rule is this server's own: https, or http on a loopback host. Unlike
+// this server's issuer, one trailing slash is allowed. The issuer must be in
+// canonical form, so that NormalizeIssuer only has to fold case, a default port
+// and one trailing slash.
+func validateIDJAGTargetIssuer(issuer string) error {
+	parsed, err := url.Parse(issuer)
+	if err != nil || !parsed.IsAbs() || parsed.Hostname() == "" ||
+		parsed.RawQuery != "" || parsed.ForceQuery || parsed.Fragment != "" || parsed.User != nil {
+		return fmt.Errorf("%w: %q", errIDJAGIssuerForm, issuer)
+	}
+	if err := validateIssuerScheme(parsed, false); err != nil {
+		return fmt.Errorf("%w: %q", errIDJAGIssuerScheme, issuer)
+	}
+	if !idJAGIssuerCanonical(parsed) {
+		return fmt.Errorf("%w: %q", errIDJAGIssuerNotCanonical, issuer)
+	}
+	return nil
+}
+
+// idJAGIssuerCanonical reports whether a parsed issuer has no dot segments,
+// no empty path segments, no percent-encoding that differs from Go's default
+// encoding, and no empty or zero-padded port. One trailing slash is allowed.
+func idJAGIssuerCanonical(parsed *url.URL) bool {
+	if parsed.RawPath != "" {
+		return false
+	}
+	if strings.HasSuffix(parsed.Host, ":") {
+		return false
+	}
+	if port := parsed.Port(); len(port) > 1 && port[0] == '0' {
+		return false
+	}
+	path := strings.TrimSuffix(parsed.Path, "/")
+	if path == "" {
+		return true
+	}
+	for _, segment := range strings.Split(path[1:], "/") {
+		if segment == "" || segment == "." || segment == ".." {
+			return false
+		}
+	}
+	return true
+}
+
+// idJAGTargetLifetime parses a target's lifetime. Empty means
+// defaultIDJAGLifetime.
+func idJAGTargetLifetime(lifetime string) (time.Duration, error) {
+	if lifetime == "" {
+		return defaultIDJAGLifetime, nil
+	}
+	d, err := time.ParseDuration(lifetime)
+	if err != nil {
+		return 0, fmt.Errorf("%w: %q: %w", errIDJAGLifetime, lifetime, err)
+	}
+	if d <= 0 || d%time.Second != 0 || d > maxIDJAGLifetime {
+		return 0, fmt.Errorf("%w: %q", errIDJAGLifetime, lifetime)
+	}
+	return d, nil
+}
+
+// idJAGTargetKey identifies an ID-JAG target across delegate clients.
+type idJAGTargetKey struct {
+	issuer   string
+	clientID string
+}
+
+// claimIDJAGTargets records the (issuer, client_id) pairs of a delegate
+// client's targets in owners, keyed by normalized issuer, and refuses a pair
+// another delegate client already uses: the other authorization server could
+// not tell their ID-JAGs apart.
+func claimIDJAGTargets(owners map[idJAGTargetKey]string, clientID string, te *DelegateClientTokenExchange) error {
+	if te == nil || te.IDJAG == nil {
+		return nil
+	}
+	for i, target := range te.IDJAG.Targets {
+		key := idJAGTargetKey{issuer: oauthserver.NormalizeIssuer(target.Issuer), clientID: target.ClientID}
+		if owner, ok := owners[key]; ok && owner != clientID {
+			return fmt.Errorf(
+				"delegate_clients: client_id %q: token_exchange.id_jag.targets[%d]: %w: issuer %q, client_id %q, used by %q",
+				clientID, i, errIDJAGTargetReused, target.Issuer, target.ClientID, owner)
+		}
+		owners[key] = clientID
+	}
+	return nil
+}
+
+// ValidateIDJAGSubjectClaims runs validateIDJAGSubjectClaims for every client.
+// The runner calls it before upstream registration, so a bad configuration
+// fails before any side effect; Config.Validate calls it for Go callers that
+// build a Config directly.
+func ValidateIDJAGSubjectClaims(clients []DelegateClient, subjectIdentifierAudiences []string) error {
+	for _, client := range clients {
+		if err := validateIDJAGSubjectClaims(client.ClientID, client.TokenExchange, subjectIdentifierAudiences); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// validateIDJAGSubjectClaims refuses a target that lists required_subject_claims
+// when one of the client's subject_token_audiences is not in
+// subjectIdentifierAudiences. A subject token is accepted when it carries any
+// one of those audiences, and an access token for an audience that is not in
+// subjectIdentifierAudiences never carries the subject claims, so grants built
+// from it could never supply the claim. Every entry must therefore be listed.
+// SubjectIdentifierAudiences is not a RunConfig field, so a RunConfig can
+// satisfy this only through the runner's WithSubjectIdentifierAudiences option.
+func validateIDJAGSubjectClaims(
+	clientID string, te *DelegateClientTokenExchange, subjectIdentifierAudiences []string,
+) error {
+	if te == nil || te.IDJAG == nil {
+		return nil
+	}
+	missing := slices.IndexFunc(te.SubjectTokenAudiences, func(audience string) bool {
+		return !slices.Contains(subjectIdentifierAudiences, audience)
+	})
+	if missing < 0 {
+		return nil
+	}
+	for i, target := range te.IDJAG.Targets {
+		if len(target.RequiredSubjectClaims) == 0 {
+			continue
+		}
+		return fmt.Errorf(
+			"delegate_clients: client_id %q: token_exchange.id_jag.targets[%d] (issuer %q) requires subject claim %q: "+
+				"%w; add %q to SubjectIdentifierAudiences, which is set only through the WithSubjectIdentifierAudiences "+
+				"Go option and is not a RunConfig field yet",
+			clientID, i, target.Issuer, target.RequiredSubjectClaims[0], errIDJAGSubjectClaimsNeedAudience,
+			te.SubjectTokenAudiences[missing])
+	}
 	return nil
 }

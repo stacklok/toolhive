@@ -716,6 +716,11 @@ func exchangeRefreshTokenCaps(block *DelegateClientExchangeRefreshTokens) (map[s
 // client whose self_issued_subject_tokens is restricted, keyed by client_id; an
 // entry means restricted. A client with any, or without a token_exchange block,
 // gets no entry and so keeps blanket trust of self-issued subject tokens.
+//
+// It also logs once, at DEBUG until ID-JAG issuance exists, for every client
+// that can hold ID-JAG grants but has no id_jag.targets. It runs once per
+// start, unlike config validation, which can run on both the RunConfig and the
+// Config path.
 func configuredClientPolicies(
 	clients []DelegateClient,
 ) (map[string]tokenexchange.ConfiguredClientPolicy, error) {
@@ -731,13 +736,45 @@ func configuredClientPolicies(
 		if err != nil {
 			return nil, fmt.Errorf("delegate client %q: %w", c.ClientID, err)
 		}
+		idJAGTargets, err := idJAGTargetPolicies(c.TokenExchange.IDJAG)
+		if err != nil {
+			return nil, fmt.Errorf("delegate client %q: %w", c.ClientID, err)
+		}
+		if _, holdsIDJAGGrants := refreshCaps[oauthproto.TokenTypeIDJAG]; holdsIDJAGGrants && len(idJAGTargets) == 0 {
+			slog.Debug("delegate client can hold ID-JAG grants but has no id_jag.targets; it cannot mint ID-JAGs",
+				"client_id", c.ClientID)
+		}
 		policies[c.ClientID] = tokenexchange.ConfiguredClientPolicy{
 			AllowedSourceClients:  slices.Clone(c.TokenExchange.AllowedSourceClients),
 			SubjectTokenAudiences: slices.Clone(c.TokenExchange.SubjectTokenAudiences),
 			ExchangeRefreshTokens: refreshCaps,
+			IDJAGTargets:          idJAGTargets,
 		}
 	}
 	return policies, nil
+}
+
+// idJAGTargetPolicies builds the runtime targets of an id_jag block, keyed by
+// normalized issuer, with the default lifetime applied. A nil block gives nil.
+func idJAGTargetPolicies(block *DelegateClientIDJAG) (map[string]tokenexchange.IDJAGTarget, error) {
+	if block == nil {
+		return nil, nil
+	}
+	targets := make(map[string]tokenexchange.IDJAGTarget, len(block.Targets))
+	for i, target := range block.Targets {
+		lifetime, err := idJAGTargetLifetime(target.Lifetime)
+		if err != nil {
+			return nil, fmt.Errorf("token_exchange.id_jag.targets[%d]: %w", i, err)
+		}
+		targets[oauthserver.NormalizeIssuer(target.Issuer)] = tokenexchange.IDJAGTarget{
+			Issuer:                target.Issuer,
+			ClientID:              target.ClientID,
+			Resources:             slices.Clone(target.Resources),
+			Lifetime:              lifetime,
+			RequiredSubjectClaims: slices.Clone(target.RequiredSubjectClaims),
+		}
+	}
+	return targets, nil
 }
 
 // discoverExchangeGrantStorage finds the optional ExchangeGrantStorage

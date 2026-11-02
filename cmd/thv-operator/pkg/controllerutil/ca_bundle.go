@@ -109,7 +109,11 @@ func validatePEMCertificates(value []byte) error {
 	return nil
 }
 
-// ValidateEmbeddedAuthServerCABundles resolves every embedded auth server CA reference.
+// ValidateEmbeddedAuthServerCABundles resolves every embedded auth server CA
+// reference and every delegate client JWKS reference. The JWKS references share
+// this entry point so every caller that gates on CA bundles gets the same
+// terminal-vs-transient handling: a missing key is an *InvalidCABundleError, a
+// failed ConfigMap read is not.
 func ValidateEmbeddedAuthServerCABundles(
 	ctx context.Context, c client.Reader, namespace string, cfg *mcpv1beta1.EmbeddedAuthServerConfig,
 ) error {
@@ -130,6 +134,14 @@ func ValidateEmbeddedAuthServerCABundles(
 		if issuer.CABundleRef != nil {
 			if _, err := ResolveCABundle(ctx, c, namespace, issuer.CABundleRef); err != nil {
 				return fmt.Errorf("trustedIssuers[%d] (%q) caBundleRef: %w", i, issuer.IssuerURL, err)
+			}
+		}
+	}
+	delegateClients := effectiveDelegateClients(cfg)
+	for i := range delegateClients {
+		if ref := delegateClients[i].JWKSRef; ref != nil {
+			if _, err := resolveDelegateClientJWKS(ctx, c, namespace, i, ref); err != nil {
+				return err
 			}
 		}
 	}

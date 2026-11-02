@@ -325,7 +325,8 @@ func (s *Server) dispatchModernToolCall(
 			writeModernError(w, parsed.ID, jsonRPCCodeInvalidParams, "unknown tool")
 			return
 		}
-		writeModernCallFailure(w, parsed, refusal, vmcp.DenyMessageToolCall, err)
+		writeModernCallFailure(w, parsed, refusal,
+			modernServerInfo{Name: s.config.Name, Version: s.config.Version}, vmcp.DenyMessageToolCall, err)
 		return
 	}
 	// Label the audit backend on the success path only. The stateless dispatcher
@@ -355,7 +356,8 @@ func (s *Server) dispatchModernResourceRead(
 	ctx, refusal := withCapabilityRefusalRecorder(ctx)
 	result, err := s.core.ReadResource(ctx, identity, parsed.ResourceID)
 	if err != nil {
-		writeModernCallFailure(w, parsed, refusal, vmcp.DenyMessageResourceRead, err)
+		writeModernCallFailure(w, parsed, refusal,
+			modernServerInfo{Name: s.config.Name, Version: s.config.Version}, vmcp.DenyMessageResourceRead, err)
 		return
 	}
 	if result.BackendID != "" {
@@ -388,7 +390,8 @@ func (s *Server) dispatchModernPromptGet(
 	ctx, refusal := withCapabilityRefusalRecorder(ctx)
 	result, err := s.core.GetPrompt(ctx, identity, parsed.ResourceID, parsed.Arguments)
 	if err != nil {
-		writeModernCallFailure(w, parsed, refusal, vmcp.DenyMessagePromptGet, err)
+		writeModernCallFailure(w, parsed, refusal,
+			modernServerInfo{Name: s.config.Name, Version: s.config.Version}, vmcp.DenyMessagePromptGet, err)
 		return
 	}
 	if result.BackendID != "" {
@@ -557,8 +560,10 @@ func writeModernPageError(ctx context.Context, w http.ResponseWriter, id any, me
 //     ErrAuthorizationFailed explicitly, since the denial itself is only
 //     checked inside writeModernDispatchError.
 //   - A URL elicitation answer (vmcp.URLElicitationRequiredError) on
-//     tools/call, from a client that did not declare
-//     clientCapabilities.elicitation.url, renders as -32021 naming
+//     tools/call renders as resultType "input_required" carrying one
+//     elicitation/create request with mode "url" per elicitation, when the
+//     client declared clientCapabilities.elicitation.url
+//     (writeModernInputRequired). Otherwise it renders as -32021 naming
 //     elicitation.url, without the URL (writeModernURLElicitationUnsupported):
 //     the spec forbids sending a mode the client did not declare, and the
 //     URL must not reach a client that would hand it to a model instead of a
@@ -578,7 +583,8 @@ func writeModernPageError(ctx context.Context, w http.ResponseWriter, id any, me
 //     capability is resultType "input_required" (multi-round retrieval,
 //     SEP-2322), which this dispatcher cannot produce for a backend's
 //     mid-call request: the request arrives over a Legacy backend session
-//     and has nothing to relay it through — and the
+//     and has nothing to relay it through (vMCP renders input_required only
+//     for the in-process URL elicitation answer above) — and the
 //     2026-07-28 error vocabulary has no "operation not supported" code, so
 //     there is no conformant code for this case at all (see the "unavailable
 //     to Modern clients" limitation in
@@ -592,12 +598,23 @@ func writeModernPageError(ctx context.Context, w http.ResponseWriter, id any, me
 // has no spec-defined classification).
 func writeModernCallFailure(
 	w http.ResponseWriter, parsed *mcpparser.ParsedMCPRequest, refusal *capabilityRefusalRecorder,
-	denyMsg string, err error,
+	serverInfo modernServerInfo, denyMsg string, err error,
 ) {
-	if _, ok := vmcp.URLElicitationFromError(err); ok &&
-		parsed.Method == "tools/call" && !errors.Is(err, vmcp.ErrAuthorizationFailed) &&
-		!modernClientDeclaredURLElicitation(parsed.Meta) {
-		writeModernURLElicitationUnsupported(w, parsed.ID)
+	if answer, ok := vmcp.URLElicitationFromError(err); ok &&
+		parsed.Method == "tools/call" && !errors.Is(err, vmcp.ErrAuthorizationFailed) {
+		if !modernClientDeclaredURLElicitation(parsed.Meta) {
+			writeModernURLElicitationUnsupported(w, parsed.ID)
+			return
+		}
+		result, convErr := inputRequiredFromURLElicitation(answer)
+		if convErr != nil {
+			// Unreachable in practice: the entries are plain strings. Fail
+			// with a message that carries no URL.
+			slog.Error("failed to render URL elicitation answer", "error", convErr)
+			writeModernError(w, parsed.ID, jsonRPCCodeInternalError, "failed to render URL elicitation")
+			return
+		}
+		writeModernInputRequired(w, parsed.ID, result, serverInfo.Name, serverInfo.Version)
 		return
 	}
 	if capName := refusal.refused(); capName != "" && !errors.Is(err, vmcp.ErrAuthorizationFailed) {

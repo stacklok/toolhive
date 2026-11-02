@@ -45,7 +45,8 @@ func runCallFailure(
 	_, refusal := withCapabilityRefusalRecorder(context.Background())
 	parsed := &mcpparser.ParsedMCPRequest{Method: method, IsRequest: true, ID: float64(7), Meta: meta}
 	rec := httptest.NewRecorder()
-	writeModernCallFailure(rec, parsed, refusal, vmcp.DenyMessageToolCall, err)
+	writeModernCallFailure(rec, parsed, refusal,
+		modernServerInfo{Name: "vmcp-test", Version: "1.2.3"}, vmcp.DenyMessageToolCall, err)
 	var decoded map[string]any
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &decoded), rec.Body.String())
 	return rec.Code, decoded, rec.Body.String()
@@ -79,6 +80,47 @@ func TestWriteModernCallFailure_DenialOutranksURLElicitation(t *testing.T) {
 			assert.NotContains(t, body, "input_required")
 		})
 	}
+}
+
+// TestWriteModernCallFailure_URLElicitationInputRequired pins the envelope
+// shape AC2.1 names, at the unit level: resultType "input_required" with
+// inputRequests keyed by elicitation ID, each an elicitation/create in URL
+// mode carrying message and url only, no requestState, under the request's
+// own id at HTTP 200.
+func TestWriteModernCallFailure_URLElicitationInputRequired(t *testing.T) {
+	t.Parallel()
+
+	first, err := vmcp.NewURLElicitation("github", testConnectURL, "Reconnect GitHub")
+	require.NoError(t, err)
+	second, err := vmcp.NewURLElicitation("jira", "http://127.0.0.1:9000/jira", "Reconnect Jira")
+	require.NoError(t, err)
+	answer, err := vmcp.NewURLElicitationRequiredError(first, second)
+	require.NoError(t, err)
+
+	status, decoded, body := runCallFailure(t, "tools/call", declaredURLMeta,
+		fmt.Errorf("backend github: %w", answer))
+	require.Equal(t, http.StatusOK, status, body)
+	assert.EqualValues(t, 7, decoded["id"])
+	assert.NotContains(t, decoded, "error")
+
+	result, _ := decoded["result"].(map[string]any)
+	require.NotNil(t, result, body)
+	assert.Equal(t, "input_required", result["resultType"])
+	assert.NotContains(t, result, "requestState")
+	meta, _ := result["_meta"].(map[string]any)
+	assert.Equal(t, map[string]any{"name": "vmcp-test", "version": "1.2.3"},
+		meta["io.modelcontextprotocol/serverInfo"])
+
+	assert.Equal(t, map[string]any{
+		"github": map[string]any{
+			"method": "elicitation/create",
+			"params": map[string]any{"mode": "url", "message": "Reconnect GitHub", "url": testConnectURL},
+		},
+		"jira": map[string]any{
+			"method": "elicitation/create",
+			"params": map[string]any{"mode": "url", "message": "Reconnect Jira", "url": "http://127.0.0.1:9000/jira"},
+		},
+	}, result["inputRequests"])
 }
 
 // TestWriteModernCallFailure_URLElicitationFallback pins the Modern fallback

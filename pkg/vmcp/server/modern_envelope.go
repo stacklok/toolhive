@@ -28,12 +28,18 @@ import (
 // A future go-sdk bump cannot just delete these structs and marshal SDK result
 // types directly -- the Modern annotations would vanish with them.
 //
-// modernResultTypeComplete is the sole value dispatchModern ever needs: this
-// package only performs single-shot dispatch, never the elicitation retry
-// loop (resultType "input_required"), so every result built here is
-// unconditionally "complete". Do not add Legacy-conditional branching to
-// these structs -- this file is reached only for Modern requests.
+// modernResultTypeComplete is the resultType of every success result built
+// here. The one other value, modernResultTypeInputRequired, is written only by
+// writeModernInputRequired: dispatchModern still performs single-shot
+// dispatch and keeps no state between rounds, so an input_required result
+// asks the client to fulfil inputRequests and send a fresh request. Do not add
+// Legacy-conditional branching to these structs -- this file is reached only
+// for Modern requests.
 const modernResultTypeComplete = "complete"
+
+// modernResultTypeInputRequired is the SEP-2322 multi-round resultType. See
+// writeModernInputRequired.
+const modernResultTypeInputRequired = "input_required"
 
 // modernServerInfoKey is the go-sdk's MetaKeyServerInfo
 // (protocol.go:2367 in go-sdk@v1.7.0-pre.3), reproduced by hand since
@@ -552,6 +558,73 @@ func writeModernResult(w http.ResponseWriter, id, result any) {
 		"id":      id,
 		"result":  result,
 	})
+}
+
+// modernInputRequiredResult is the SEP-2322 InputRequiredResult wire result.
+// InputRequests values are relayed as opaque raw request objects, and
+// RequestState is omitted when nil: client requirement 2 says a client MUST
+// NOT echo a requestState the result did not carry.
+type modernInputRequiredResult struct {
+	ResultType    string                     `json:"resultType"`
+	InputRequests map[string]json.RawMessage `json:"inputRequests,omitempty"`
+	RequestState  *string                    `json:"requestState,omitempty"`
+	Meta          modernMeta                 `json:"_meta"`
+}
+
+// writeModernInputRequired writes result as a resultType "input_required"
+// success envelope at HTTP 200 under the request's own id, in the same single
+// application/json response as every other Modern result: no SSE stream, no
+// session, and no vMCP-side state. The client fulfils inputRequests and
+// retries with a fresh request.
+//
+// It takes the domain vmcp.InputRequiredResult so every producer shares one
+// writer: today the URL elicitation answer (converted by
+// inputRequiredFromURLElicitation), and later the backend rounds that
+// docs/arch/16-vmcp-mrtr.md slice 2 relays.
+func writeModernInputRequired(
+	w http.ResponseWriter, id any, result *vmcp.InputRequiredResult, serverName, serverVersion string,
+) {
+	writeModernResult(w, id, modernInputRequiredResult{
+		ResultType:    modernResultTypeInputRequired,
+		InputRequests: result.InputRequests,
+		RequestState:  result.RequestState,
+		Meta:          newModernMeta(serverName, serverVersion),
+	})
+}
+
+// modernURLElicitRequest is one InputRequest entry for a URL elicitation:
+// {method: "elicitation/create", params: {mode: "url", message, url}}. The
+// 2026-07-28 URL-mode params carry no elicitationId; the elicitation ID is the
+// inputRequests key instead.
+type modernURLElicitRequest struct {
+	Method string                `json:"method"`
+	Params modernURLElicitParams `json:"params"`
+}
+
+type modernURLElicitParams struct {
+	Mode    string `json:"mode"`
+	Message string `json:"message"`
+	URL     string `json:"url"`
+}
+
+// inputRequiredFromURLElicitation converts the URL elicitation answer into the
+// domain InputRequiredResult writeModernInputRequired renders, keyed by
+// elicitation ID, with no requestState (vMCP holds no round state, and the
+// retry is an ordinary tools/call).
+func inputRequiredFromURLElicitation(answer *vmcp.URLElicitationRequiredError) (*vmcp.InputRequiredResult, error) {
+	elicitations := answer.Elicitations()
+	requests := make(map[string]json.RawMessage, len(elicitations))
+	for _, e := range elicitations {
+		raw, err := json.Marshal(modernURLElicitRequest{
+			Method: string(mcp.MethodElicitationCreate),
+			Params: modernURLElicitParams{Mode: "url", Message: e.Message(), URL: e.URL()},
+		})
+		if err != nil {
+			return nil, fmt.Errorf("encode URL elicitation %q: %w", e.ElicitationID(), err)
+		}
+		requests[e.ElicitationID()] = raw
+	}
+	return &vmcp.InputRequiredResult{InputRequests: requests}, nil
 }
 
 // writeModernError writes a JSON-RPC error envelope, deriving the HTTP

@@ -170,6 +170,14 @@ vMCP adds **no state of its own**:
    round (routing is deterministic by capability name through the routing
    table) and forwards both fields verbatim to the backend.
 
+**Open question: does the relay pass URL mode through?** A backend's
+`inputRequests` can include `elicitation/create` with `mode: "url"`, which
+would put a backend-chosen URL in front of the user. Today no backend can do
+that: the only URL elicitation vMCP renders is the in-process answer an
+embedder's decorator returns (#7022), and a backend's round renders as
+`-32603`. Whether the relay forwards URL-mode requests verbatim, filters them,
+or requires an opt-in is #6059's call, raised there.
+
 Round-trip state lives **only** in the backend's `requestState`, whose
 integrity/user-binding obligations sit with the backend that minted it, per
 the spec. Whether the end-to-end principal binding survives that division of
@@ -360,7 +368,10 @@ call: `input_required` results flow back through the ordinary return path —
 - core: `core.CallTool`/`ReadResource`/`GetPrompt` propagate it (suspending a
   workflow first when the caller is the composer);
 - server: `dispatchModern` renders it as the `resultType:"input_required"`
-  envelope, and accepts `inputResponses`/`requestState` params on the retry.
+  envelope through `writeModernInputRequired`, and accepts
+  `inputResponses`/`requestState` params on the retry. The writer landed
+  first for the URL elicitation answer (`vmcp.URLElicitationRequiredError`),
+  which is converted to an `InputRequiredResult` at render time.
 
 ## Sampling: deprecated pass-through, no feature work
 
@@ -473,7 +484,13 @@ merges:
 2. **Ingress envelope + retry params (after #6050/#6033).** `dispatchModern`
    accepts `inputResponses`/`requestState`, threads them through
    `core.CallTool`→`BackendClient`, and renders `input_required` envelopes;
-   parser vocabulary for the two params. Post-#6061, the rendering branch
+   parser vocabulary for the two params. The envelope writer already exists:
+   `writeModernInputRequired` (`pkg/vmcp/server/modern_envelope.go`, #7022)
+   takes a `*vmcp.InputRequiredResult` and is what the URL elicitation answer
+   renders through today (doc 10, "Answering a call with a URL elicitation").
+   This slice reuses it for relayed backend rounds rather than adding a second
+   writer. Retries already pass through the parser untouched, so this slice
+   adds the threading, not acceptance. Post-#6061, the rendering branch
    hooks into `writeModernCallFailure` via `vmcp.InputRequiredFromError`,
    alongside (never instead of) its authz-priority and capability-refusal
    branches — the two cannot co-occur: the refusal recorder fires only on

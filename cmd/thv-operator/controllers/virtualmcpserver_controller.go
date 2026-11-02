@@ -683,6 +683,23 @@ func (*VirtualMCPServerReconciler) validateSessionStorageForReplicas(
 	}
 }
 
+// validateAuthServerSpec runs the spec-level checks on an inline AuthServerConfig:
+// the issuer is set, the inbound grants are consistent, and the delegate clients
+// (including the redirect URI and source client rules) are valid. The messages are
+// the ones the AuthServerConfigValidated condition reports.
+func validateAuthServerSpec(cfg *mcpv1beta1.EmbeddedAuthServerConfig) error {
+	if cfg.Issuer == "" {
+		return stderrors.New("spec.authServerConfig.issuer is required")
+	}
+	if err := cfg.ValidateInboundGrants(); err != nil {
+		return fmt.Errorf("spec.authServerConfig: %w", err)
+	}
+	if err := mcpv1beta1.ValidateEmbeddedAuthServerDelegateClients(cfg); err != nil {
+		return fmt.Errorf("spec.authServerConfig: %w", err)
+	}
+	return nil
+}
+
 // validateAuthServerConfig validates inline AuthServerConfig and sets the
 // AuthServerConfigValidated condition. Returns an error when validation fails
 // (caller should NOT requeue — user must fix the spec).
@@ -692,33 +709,8 @@ func (*VirtualMCPServerReconciler) validateAuthServerConfig(
 ) error {
 	cfg := vmcp.Spec.AuthServerConfig
 
-	if cfg.Issuer == "" {
-		message := "spec.authServerConfig.issuer is required"
-		statusManager.SetPhase(mcpv1beta1.VirtualMCPServerPhaseFailed)
-		statusManager.SetMessage(message)
-		statusManager.SetAuthServerConfigValidatedCondition(
-			mcpv1beta1.ConditionReasonAuthServerConfigInvalid,
-			message,
-			metav1.ConditionFalse,
-		)
-		statusManager.SetObservedGeneration(vmcp.Generation)
-		return stderrors.New(message)
-	}
-
-	if err := cfg.ValidateInboundGrants(); err != nil {
-		message := fmt.Sprintf("spec.authServerConfig: %v", err)
-		statusManager.SetPhase(mcpv1beta1.VirtualMCPServerPhaseFailed)
-		statusManager.SetMessage(message)
-		statusManager.SetAuthServerConfigValidatedCondition(
-			mcpv1beta1.ConditionReasonAuthServerConfigInvalid,
-			message,
-			metav1.ConditionFalse,
-		)
-		statusManager.SetObservedGeneration(vmcp.Generation)
-		return stderrors.New(message)
-	}
-	if err := mcpv1beta1.ValidateEmbeddedAuthServerDelegateClients(cfg); err != nil {
-		message := fmt.Sprintf("spec.authServerConfig: %v", err)
+	if err := validateAuthServerSpec(cfg); err != nil {
+		message := err.Error()
 		statusManager.SetPhase(mcpv1beta1.VirtualMCPServerPhaseFailed)
 		statusManager.SetMessage(message)
 		statusManager.SetAuthServerConfigValidatedCondition(

@@ -12,9 +12,9 @@ import (
 	"github.com/ory/fosite"
 )
 
-// jwtBearerClientAssertionType is the client_assertion_type for private_key_jwt
+// privateKeyJWTAssertionType is the client_assertion_type for private_key_jwt
 // client authentication (RFC 7523 section 2.2).
-const jwtBearerClientAssertionType = "urn:ietf:params:oauth:client-assertion-type:jwt-bearer"
+const privateKeyJWTAssertionType = "urn:ietf:params:oauth:client-assertion-type:jwt-bearer"
 
 // clientAssertionClaimErrors are the messages of the claim validation errors
 // that fosite returns unwrapped, as plain errors, when it parses a client
@@ -68,7 +68,7 @@ func NewClientAssertionStoreFailureContext(ctx context.Context) (context.Context
 // RecordClientAssertionStoreFailure and returned as server_error (HTTP 500).
 func newClientAssertionErrorStrategy(next fosite.ClientAuthenticationStrategy) fosite.ClientAuthenticationStrategy {
 	return func(ctx context.Context, r *http.Request, form url.Values) (fosite.Client, error) {
-		if form.Get("client_assertion_type") != jwtBearerClientAssertionType || form.Get("client_assertion") == "" {
+		if form.Get("client_assertion_type") != privateKeyJWTAssertionType || form.Get("client_assertion") == "" {
 			return next(ctx, r, form)
 		}
 		ctx, storeFailure := NewClientAssertionStoreFailureContext(ctx)

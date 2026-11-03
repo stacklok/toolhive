@@ -142,13 +142,11 @@ func serveInstructionsHarness(t *testing.T, fc *fakeCore, cfg *vmcpconfig.Instru
 	return ts.URL
 }
 
-// The Serve-based tests below (TestServe_*) are deliberately NOT parallel:
-// each closes an httptest.Server, and httptest.Server.Close closes
-// http.DefaultTransport's idle connections, which makes a parallel test's
-// in-flight request on http.DefaultClient (postServeMCP) fail with
-// "CloseIdleConnections called". Running them in the serial phase keeps that
-// race away from the rest of the package, and their own requests use a
-// private transport for the same reason.
+// instructionsHTTPClient is the transport the Serve-based tests below post
+// with. httptest.Server.Close closes http.DefaultTransport's idle connections,
+// so a parallel test's in-flight request on http.DefaultClient can fail with
+// "CloseIdleConnections called". Keep-alives off and a transport of our own
+// keep these tests out of that race.
 var instructionsHTTPClient = &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
 
 // initializeAs sends one Legacy initialize to baseURL as subject (empty =
@@ -187,6 +185,7 @@ func serveInitialize(t *testing.T, fc *fakeCore, cfg *vmcpconfig.InstructionsCon
 // the per-backend text the core returns reaches the initialize result through
 // the SDK shim's WithInstructionsFunc, only when forwarding is enabled.
 func TestServe_InitializeForwardsBackendInstructions(t *testing.T) {
+	t.Parallel()
 
 	newCore := func() *fakeCore {
 		return &fakeCore{
@@ -196,14 +195,17 @@ func TestServe_InitializeForwardsBackendInstructions(t *testing.T) {
 	}
 
 	t.Run("off by default", func(t *testing.T) {
+		t.Parallel()
 		_, raw := serveInitialize(t, newCore(), nil)
 		assert.NotContains(t, raw, `"instructions"`)
 	})
 	t.Run("forwarded, one block per backend", func(t *testing.T) {
+		t.Parallel()
 		result, _ := serveInitialize(t, newCore(), &vmcpconfig.InstructionsConfig{Forward: true})
 		assert.Equal(t, "[echo]\nCall echo once.\n\n[jira]\nSearch first.", result["instructions"])
 	})
 	t.Run("forwarded but nothing to say", func(t *testing.T) {
+		t.Parallel()
 		fc := newCore()
 		fc.backendInstructions = nil
 		_, raw := serveInitialize(t, fc, &vmcpconfig.InstructionsConfig{Forward: true})
@@ -217,6 +219,7 @@ func TestServe_InitializeForwardsBackendInstructions(t *testing.T) {
 // bridge, so two callers on one server get their own text, and an anonymous
 // caller gets what the core returns for a nil identity.
 func TestServe_InitializeInstructionsFollowCaller(t *testing.T) {
+	t.Parallel()
 
 	fc := &fakeCore{
 		tools: []vmcp.Tool{{Name: "echo", Description: "echoes"}},

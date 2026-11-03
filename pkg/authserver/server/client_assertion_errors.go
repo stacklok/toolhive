@@ -28,20 +28,6 @@ var clientAssertionClaimErrors = map[string]struct{}{
 	"Token is not valid yet":   {},
 }
 
-// newClientAssertionErrorStrategy makes every rejected private_key_jwt client
-// assertion surface as invalid_client, as RFC 6749 section 5.2 requires for a
-// failed client authentication.
-//
-// fosite already does this for most failures, but a few escape with another
-// error: an expired, not-yet-valid or future-issued assertion comes back as a
-// plain error (HTTP 500 server_error), and an unknown signing key or a reused
-// jti comes back as invalid_request / jti_known (HTTP 400). A request that sets
-// client_assertion_type but omits client_assertion stays invalid_request (HTTP
-// 400), as RFC 6749 section 5.2 says for a missing parameter. Errors that are
-// not a verdict on the assertion are not rewritten into invalid_client: a
-// misconfiguration is returned unchanged, and a storage failure while checking
-// the jti is reported by the storage backend through
-// RecordClientAssertionStoreFailure and returned as server_error (HTTP 500).
 type clientAssertionStoreFailureKey struct{}
 
 type clientAssertionStoreFailure struct{ err error }
@@ -66,6 +52,20 @@ func NewClientAssertionStoreFailureContext(ctx context.Context) (context.Context
 	return context.WithValue(ctx, clientAssertionStoreFailureKey{}, failure), func() error { return failure.err }
 }
 
+// newClientAssertionErrorStrategy makes every rejected private_key_jwt client
+// assertion surface as invalid_client, as RFC 6749 section 5.2 requires for a
+// failed client authentication.
+//
+// fosite already does this for most failures, but a few escape with another
+// error: an expired, not-yet-valid or future-issued assertion comes back as a
+// plain error (HTTP 500 server_error), and an unknown signing key or a reused
+// jti comes back as invalid_request / jti_known (HTTP 400). A request that sets
+// client_assertion_type but omits client_assertion stays invalid_request (HTTP
+// 400), as RFC 6749 section 5.2 says for a missing parameter. Errors that are
+// not a verdict on the assertion are not rewritten into invalid_client: a
+// misconfiguration is returned unchanged, and a storage failure while checking
+// the jti is reported by the storage backend through
+// RecordClientAssertionStoreFailure and returned as server_error (HTTP 500).
 func newClientAssertionErrorStrategy(next fosite.ClientAuthenticationStrategy) fosite.ClientAuthenticationStrategy {
 	return func(ctx context.Context, r *http.Request, form url.Values) (fosite.Client, error) {
 		if form.Get("client_assertion_type") != jwtBearerClientAssertionType || form.Get("client_assertion") == "" {

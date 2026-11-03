@@ -38,9 +38,10 @@ var _ = Describe("Workloads API", Label("api", "api-workloads", "workloads", "e2
 			workloadName = e2e.GenerateUniqueServerName("api-workload")
 		})
 
-		// Each spec removes the workloads it creates (deleteAPIWorkloadOnCleanup), so they
-		// do not hold Docker networks for the rest of the suite. The suite-level CLI cleanup
-		// in e2e_suite_test.go remains as a backstop.
+		// Each spec removes the workloads it creates (deleteAPIWorkloadOnCleanup), after
+		// letting them leave the starting state, so they do not hold Docker networks for
+		// the rest of the suite. The suite-level CLI cleanup in e2e_suite_test.go remains
+		// as a backstop.
 
 		Context("when creating workload from registry", func() {
 			It("should successfully create OSV server workload", func() {
@@ -328,7 +329,7 @@ var _ = Describe("Workloads API", Label("api", "api-workloads", "workloads", "e2
 				Expect(resp.StatusCode).To(Equal(http.StatusCreated))
 				deleteAPIWorkloadOnCleanup(apiServer, workloadName)
 
-				By("Waiting for workload to be running")
+				By("Waiting for workload to be listed")
 				Eventually(func() bool {
 					workloads := listWorkloads(apiServer, true) // Use all=true to see all states
 					for _, w := range workloads {
@@ -384,7 +385,7 @@ var _ = Describe("Workloads API", Label("api", "api-workloads", "workloads", "e2
 				Expect(resp.StatusCode).To(Equal(http.StatusCreated))
 				deleteAPIWorkloadOnCleanup(apiServer, workloadName)
 
-				By("Waiting for workload to be running")
+				By("Waiting for workload to be listed")
 				Eventually(func() bool {
 					workloads := listWorkloads(apiServer, true) // Use all=true to see all states
 					for _, w := range workloads {
@@ -632,8 +633,22 @@ const apiWorkloadRemovalTimeout = 2 * time.Minute
 // in reverse order, so call this after StartServer. A workload that is still
 // listed when the wait ends is logged rather than failing the spec; the
 // suite-level cleanup in e2e_suite_test.go remains as a backstop.
+//
+// Before deleting, it waits (up to ServerReadyTimeout) for the workload to
+// leave the starting state. Deleting a workload whose detached start is still
+// running returns at once, and the start then creates the workload's network
+// after the removal, leaking it (#7043). A spec that ends right after the
+// create, or after only checking that the workload is listed, would otherwise
+// hit that race. A workload still starting when the wait ends is deleted
+// anyway.
 func deleteAPIWorkloadOnCleanup(server *e2e.Server, name string) {
 	DeferCleanup(func() {
+		settleDeadline := time.Now().Add(e2e.ServerReadyTimeout())
+		for time.Now().Before(settleDeadline) && slices.ContainsFunc(listWorkloads(server, true),
+			func(w core.Workload) bool { return w.Name == name && w.Status == runtime.WorkloadStatusStarting }) {
+			time.Sleep(time.Second)
+		}
+
 		resp := deleteWorkloadAsync(server, name)
 		_ = resp.Body.Close()
 

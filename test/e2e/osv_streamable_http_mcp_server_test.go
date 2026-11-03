@@ -5,12 +5,14 @@ package e2e_test
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/test/e2e"
 )
 
@@ -378,35 +380,45 @@ var _ = Describe("OsvStreamableHttpMcpServer", Label("mcp", "mcp-protocol", "str
 				}
 			})
 
-			It("should fail when trying to use stdio transport with OSV if not supported [Serial]", func() {
+			// thv run is detached, so it can either reject stdio up front or accept
+			// the start and leave a stdio workload behind. Both pass, but an
+			// accepted start must get as far as creating its container, so the
+			// removal below cannot race the detached start (#7043).
+			It("should reject stdio transport for OSV or start it as a removable stdio workload [Serial]", func() {
 				By("Trying to run OSV with stdio transport")
-				// Note: This test assumes OSV doesn't support stdio.
-				// If it does, this test should be adjusted or removed.
 				stdout, stderr, err := e2e.NewTHVCommand(config, "run",
 					"--name", serverName,
 					"--transport", "stdio",
 					"osv").Run()
 
-				// Check if the command succeeded or failed
 				if err != nil {
-					// If it failed, that's expected for Streamable HTTP-only servers
+					By("Verifying the rejection names the transport")
 					Expect(stderr).To(ContainSubstring("transport"), "Error should mention transport issue")
-				} else {
-					// If it succeeded, OSV supports both transports
-					GinkgoWriter.Printf("Note: OSV server supports stdio transport: %s\n", stdout)
-					// OSV does not serve stdio, so the workload restart-loops and never
-					// reaches running. Removing it before the detached start has created
-					// its container returns at once, and the start then creates the
-					// workload's network after the removal, leaking it (#7043). The
-					// network is created before the container, and logs succeed only once
-					// the container exists, so wait for logs before removing it.
-					Eventually(func() error {
-						_, _, err := e2e.NewTHVCommand(config, "logs", serverName).Run()
-						return err
-					}, e2e.ServerReadyTimeout(), time.Second).Should(Succeed(),
-						"the stdio workload's container should exist before it is removed")
-					_ = e2e.StopAndRemoveMCPServer(config, serverName)
+					return
 				}
+
+				GinkgoWriter.Printf("Note: thv accepted the OSV stdio start: %s\n", stdout)
+				// OSV does not serve stdio, so the workload restart-loops and never
+				// reaches running. Removing it before the detached start has created
+				// its container returns at once, and the start then creates the
+				// workload's network after the removal, leaking it (#7043). The
+				// network is created before the container, and logs succeed only once
+				// the container exists, so wait for logs before removing it. Status
+				// "error" is terminal, so fail at once rather than wait out the timeout.
+				By("Waiting for the stdio workload's container to exist")
+				Eventually(func() error {
+					workload, findErr := e2e.FindWorkload(func(args ...string) *e2e.THVCommand {
+						return e2e.NewTHVCommand(config, args...)
+					}, serverName)
+					if findErr == nil && workload != nil && workload.Status == runtime.WorkloadStatusError {
+						StopTrying(fmt.Sprintf("stdio workload %s entered terminal status %q: %s",
+							serverName, workload.Status, workload.StatusContext)).Now()
+					}
+					_, _, logsErr := e2e.NewTHVCommand(config, "logs", serverName).Run()
+					return logsErr
+				}, e2e.ServerReadyTimeout(), time.Second).Should(Succeed(),
+					"the stdio workload's container should exist before it is removed")
+				_ = e2e.StopAndRemoveMCPServer(config, serverName)
 			})
 		})
 	})

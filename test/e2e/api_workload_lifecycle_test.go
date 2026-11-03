@@ -428,7 +428,7 @@ var _ = Describe("Workload Lifecycle API", Label("api", "api-workloads", "worklo
 				Expect(resp.StatusCode).To(Equal(http.StatusCreated))
 				deleteAPIWorkloadOnCleanup(apiServer, workloadName)
 
-				By("Waiting for workload to be running")
+				By("Waiting for workload to be listed")
 				Eventually(func() bool {
 					workloads := listWorkloads(apiServer, true)
 					for _, w := range workloads {
@@ -562,7 +562,7 @@ var _ = Describe("Workload Lifecycle API", Label("api", "api-workloads", "worklo
 				Expect(resp.StatusCode).To(Equal(http.StatusCreated))
 				deleteAPIWorkloadOnCleanup(apiServer, workloadName)
 
-				By("Waiting for workload to be running")
+				By("Waiting for workload to be listed")
 				Eventually(func() bool {
 					workloads := listWorkloads(apiServer, true)
 					for _, w := range workloads {

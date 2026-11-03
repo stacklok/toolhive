@@ -301,10 +301,16 @@ func TestCheckIDJAGRequest(t *testing.T) {
 		{name: "valid request", mutate: func(url.Values) {}},
 		{name: "valid request from a client with an actor profile fails closed",
 			mutate: func(url.Values) {}, profiled: true,
-			wantCode: "server_error", wantParam: "Actor-token validation is not available"},
+			wantCode: "unauthorized_client", wantParam: "Actor-token validation is not available"},
+		{name: "actor profile is refused even when an actor token is sent",
+			mutate: func(f url.Values) {
+				f.Set("actor_token", "agent-token")
+				f.Set("actor_token_type", oauthproto.TokenTypeJWT)
+			}, profiled: true,
+			wantCode: "unauthorized_client", wantParam: "Actor-token validation is not available"},
 		{name: "actor profile is refused before the request is read",
 			mutate: func(f url.Values) { f.Del("subject_token") }, profiled: true,
-			wantCode: "server_error", wantParam: "Actor-token validation is not available"},
+			wantCode: "unauthorized_client", wantParam: "Actor-token validation is not available"},
 		{name: "empty first audience is a single audience",
 			mutate: func(f url.Values) { f[mintTestAudienceParam] = []string{"", mintTestTargetIssuer} }},
 		{name: "empty first resource is a single resource",
@@ -324,7 +330,7 @@ func TestCheckIDJAGRequest(t *testing.T) {
 			wantCode: "invalid_request", wantParam: "'audience'"},
 		{name: "repeated audience",
 			mutate:   func(f url.Values) { f[mintTestAudienceParam] = []string{mintTestTargetIssuer, mintTestTargetIssuer} },
-			wantCode: "invalid_target", wantParam: "'audience'"},
+			wantCode: "invalid_request", wantParam: "'audience'"},
 		{name: "missing resource", mutate: func(f url.Values) { f.Del("resource") },
 			wantCode: "invalid_target", wantParam: "'resource'"},
 		{name: "only empty resource values", mutate: func(f url.Values) { f["resource"] = []string{"", ""} },
@@ -372,7 +378,7 @@ func TestCheckIDJAGRequest(t *testing.T) {
 				f[mintTestAudienceParam] = []string{mintTestTargetIssuer, mintTestTargetIssuer}
 				f["resource"] = []string{mintTestResource, "https://gw.example.com/other"}
 			},
-			wantCode: "invalid_target", wantParam: "'audience'"},
+			wantCode: "invalid_request", wantParam: "'audience'"},
 		{name: "order: repeated resource wins over scope",
 			mutate: func(f url.Values) {
 				f["resource"] = []string{mintTestResource, "https://gw.example.com/other"}

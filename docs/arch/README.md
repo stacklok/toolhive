@@ -140,6 +140,7 @@ Welcome to the ToolHive architecture documentation. This directory contains comp
     - RFC 7523 JWT-bearer assertions, audience configuration, and replay protection
     - Confused-deputy trust model and the `may_act` / allowlist consent signals
     - Accepted limitations: client-set equivalence, disjoint subject namespaces, partial provenance
+    - Minting ID-JAGs from exchange grants: roles and conformance, request and error contract, target configuration, claims, redeemer guidance, known gaps
     - Operational gotchas: audience/scope binding, discovery redirects, JWKS caching, diagnostics
     - RFC 9396 `authorization_details` on token exchange: Go-only type registry, validation and echo
 

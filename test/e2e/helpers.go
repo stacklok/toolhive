@@ -176,7 +176,12 @@ func ServerReadyTimeout() time.Duration {
 // name appears somewhere and some workload is running", which can return while
 // the named workload is still starting. A timeout reports the last status
 // observed and dumps the server state, so a CI log shows whether the workload
-// was still starting, had errored, or never appeared at all.
+// was still starting or never appeared at all.
+//
+// A workload that reports error fails the wait at once, with its status
+// context and a dump of the server state. The runner sets that status only
+// after it has given up (restarts exhausted, or a setup failure it does not
+// retry), so waiting out the timeout cannot change the outcome.
 func WaitForMCPServer(config *TestConfig, serverName string, timeout time.Duration) error {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
@@ -197,6 +202,10 @@ func WaitForMCPServer(config *TestConfig, serverName string, timeout time.Durati
 			lastObserved = "not listed"
 		case workload.Status == rt.WorkloadStatusRunning:
 			return nil
+		case workload.Status == rt.WorkloadStatusError:
+			DebugServerState(config, serverName)
+			return fmt.Errorf("MCP server %s entered terminal status %q: %s",
+				serverName, workload.Status, workload.StatusContext)
 		default:
 			lastObserved = fmt.Sprintf("status %q", workload.Status)
 			if workload.StatusContext != "" {

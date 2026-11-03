@@ -35,8 +35,6 @@ var _ = Describe("Workload Lifecycle API", Label("api", "api-workloads", "worklo
 			workloadName = e2e.GenerateUniqueServerName("api-stop-test")
 		})
 
-		// Note: Workload cleanup handled by suite-level CLI cleanup
-
 		Context("when stopping a workload", func() {
 			It("should successfully stop a running workload", func() {
 				By("Creating a running workload")
@@ -47,17 +45,10 @@ var _ = Describe("Workload Lifecycle API", Label("api", "api-workloads", "worklo
 				resp := createWorkload(apiServer, createReq)
 				resp.Body.Close()
 				Expect(resp.StatusCode).To(Equal(http.StatusCreated))
+				deleteAPIWorkloadOnCleanup(apiServer, workloadName)
 
 				By("Waiting for workload to be running")
-				Eventually(func() bool {
-					workloads := listWorkloads(apiServer, true)
-					for _, w := range workloads {
-						if w.Name == workloadName && w.Status == runtime.WorkloadStatusRunning {
-							return true
-						}
-					}
-					return false
-				}, 60*time.Second, 2*time.Second).Should(BeTrue(),
+				waitForAPIWorkloadRunning(apiServer, workloadName, 60*time.Second,
 					"Workload should be running before stopping")
 
 				By("Stopping the workload")
@@ -90,16 +81,9 @@ var _ = Describe("Workload Lifecycle API", Label("api", "api-workloads", "worklo
 				resp := createWorkload(apiServer, createReq)
 				resp.Body.Close()
 				Expect(resp.StatusCode).To(Equal(http.StatusCreated))
+				deleteAPIWorkloadOnCleanup(apiServer, workloadName)
 
-				Eventually(func() bool {
-					workloads := listWorkloads(apiServer, true)
-					for _, w := range workloads {
-						if w.Name == workloadName && w.Status == runtime.WorkloadStatusRunning {
-							return true
-						}
-					}
-					return false
-				}, 60*time.Second, 2*time.Second).Should(BeTrue())
+				waitForAPIWorkloadRunning(apiServer, workloadName, 60*time.Second)
 
 				stopResp := stopWorkload(apiServer, workloadName)
 				stopResp.Body.Close()
@@ -145,8 +129,6 @@ var _ = Describe("Workload Lifecycle API", Label("api", "api-workloads", "worklo
 			workloadName = e2e.GenerateUniqueServerName("api-restart-test")
 		})
 
-		// Note: Workload cleanup handled by suite-level CLI cleanup
-
 		Context("when restarting a workload", func() {
 			It("should successfully restart a running workload and keep same URL", func() {
 				By("Creating a running workload")
@@ -157,12 +139,14 @@ var _ = Describe("Workload Lifecycle API", Label("api", "api-workloads", "worklo
 				resp := createWorkload(apiServer, createReq)
 				resp.Body.Close()
 				Expect(resp.StatusCode).To(Equal(http.StatusCreated))
+				deleteAPIWorkloadOnCleanup(apiServer, workloadName)
 
 				By("Waiting for workload to be running and getting original URL")
 				var originalURL string
 				Eventually(func() bool {
 					workloads := listWorkloads(apiServer, true)
 					for _, w := range workloads {
+						stopTryingIfAPIWorkloadErrored(w, workloadName)
 						if w.Name == workloadName && w.Status == runtime.WorkloadStatusRunning {
 							originalURL = w.URL
 							return true
@@ -185,6 +169,7 @@ var _ = Describe("Workload Lifecycle API", Label("api", "api-workloads", "worklo
 				Eventually(func() bool {
 					workloads := listWorkloads(apiServer, true)
 					for _, w := range workloads {
+						stopTryingIfAPIWorkloadErrored(w, workloadName)
 						if w.Name == workloadName && w.Status == runtime.WorkloadStatusRunning {
 							GinkgoWriter.Printf("Workload URL after restart: %s (original: %s)\n", w.URL, originalURL)
 							return w.URL == originalURL
@@ -204,16 +189,9 @@ var _ = Describe("Workload Lifecycle API", Label("api", "api-workloads", "worklo
 				resp := createWorkload(apiServer, createReq)
 				resp.Body.Close()
 				Expect(resp.StatusCode).To(Equal(http.StatusCreated))
+				deleteAPIWorkloadOnCleanup(apiServer, workloadName)
 
-				Eventually(func() bool {
-					workloads := listWorkloads(apiServer, true)
-					for _, w := range workloads {
-						if w.Name == workloadName && w.Status == runtime.WorkloadStatusRunning {
-							return true
-						}
-					}
-					return false
-				}, 60*time.Second, 2*time.Second).Should(BeTrue())
+				waitForAPIWorkloadRunning(apiServer, workloadName, 60*time.Second)
 
 				stopResp := stopWorkload(apiServer, workloadName)
 				stopResp.Body.Close()
@@ -237,15 +215,7 @@ var _ = Describe("Workload Lifecycle API", Label("api", "api-workloads", "worklo
 				Expect(restartResp.StatusCode).To(Equal(http.StatusAccepted))
 
 				By("Verifying workload is running again")
-				Eventually(func() bool {
-					workloads := listWorkloads(apiServer, true)
-					for _, w := range workloads {
-						if w.Name == workloadName && w.Status == runtime.WorkloadStatusRunning {
-							return true
-						}
-					}
-					return false
-				}, 60*time.Second, 2*time.Second).Should(BeTrue(),
+				waitForAPIWorkloadRunning(apiServer, workloadName, 60*time.Second,
 					"Stopped workload should be running after restart")
 			})
 
@@ -270,8 +240,6 @@ var _ = Describe("Workload Lifecycle API", Label("api", "api-workloads", "worklo
 			workloadName = e2e.GenerateUniqueServerName("api-status-test")
 		})
 
-		// Note: Workload cleanup handled by suite-level CLI cleanup
-
 		Context("when getting workload status", func() {
 			It("should return status of a running workload", func() {
 				By("Creating a running workload")
@@ -282,17 +250,10 @@ var _ = Describe("Workload Lifecycle API", Label("api", "api-workloads", "worklo
 				resp := createWorkload(apiServer, createReq)
 				resp.Body.Close()
 				Expect(resp.StatusCode).To(Equal(http.StatusCreated))
+				deleteAPIWorkloadOnCleanup(apiServer, workloadName)
 
 				By("Waiting for workload to be running")
-				Eventually(func() bool {
-					workloads := listWorkloads(apiServer, true)
-					for _, w := range workloads {
-						if w.Name == workloadName && w.Status == runtime.WorkloadStatusRunning {
-							return true
-						}
-					}
-					return false
-				}, 60*time.Second, 2*time.Second).Should(BeTrue())
+				waitForAPIWorkloadRunning(apiServer, workloadName, 60*time.Second)
 
 				By("Getting workload status")
 				statusResp, err := apiServer.Get(fmt.Sprintf("/api/v1beta/workloads/%s/status", workloadName))
@@ -322,16 +283,9 @@ var _ = Describe("Workload Lifecycle API", Label("api", "api-workloads", "worklo
 				resp := createWorkload(apiServer, createReq)
 				resp.Body.Close()
 				Expect(resp.StatusCode).To(Equal(http.StatusCreated))
+				deleteAPIWorkloadOnCleanup(apiServer, workloadName)
 
-				Eventually(func() bool {
-					workloads := listWorkloads(apiServer, true)
-					for _, w := range workloads {
-						if w.Name == workloadName && w.Status == runtime.WorkloadStatusRunning {
-							return true
-						}
-					}
-					return false
-				}, 60*time.Second, 2*time.Second).Should(BeTrue())
+				waitForAPIWorkloadRunning(apiServer, workloadName, 60*time.Second)
 
 				stopResp := stopWorkload(apiServer, workloadName)
 				stopResp.Body.Close()
@@ -385,8 +339,6 @@ var _ = Describe("Workload Lifecycle API", Label("api", "api-workloads", "worklo
 			workloadName = e2e.GenerateUniqueServerName("api-update-test")
 		})
 
-		// Note: Workload cleanup handled by suite-level CLI cleanup
-
 		Context("when updating a workload", func() {
 			It("should successfully update workload environment variables", func() {
 				By("Creating a workload")
@@ -397,17 +349,10 @@ var _ = Describe("Workload Lifecycle API", Label("api", "api-workloads", "worklo
 				resp := createWorkload(apiServer, createReq)
 				resp.Body.Close()
 				Expect(resp.StatusCode).To(Equal(http.StatusCreated))
+				deleteAPIWorkloadOnCleanup(apiServer, workloadName)
 
 				By("Waiting for workload to be running")
-				Eventually(func() bool {
-					workloads := listWorkloads(apiServer, true)
-					for _, w := range workloads {
-						if w.Name == workloadName && w.Status == runtime.WorkloadStatusRunning {
-							return true
-						}
-					}
-					return false
-				}, 60*time.Second, 2*time.Second).Should(BeTrue())
+				waitForAPIWorkloadRunning(apiServer, workloadName, 60*time.Second)
 
 				By("Updating the workload with environment variables")
 				updateReq := map[string]interface{}{
@@ -452,6 +397,7 @@ var _ = Describe("Workload Lifecycle API", Label("api", "api-workloads", "worklo
 				resp := createWorkload(apiServer, createReq)
 				resp.Body.Close()
 				Expect(resp.StatusCode).To(Equal(http.StatusCreated))
+				deleteAPIWorkloadOnCleanup(apiServer, workloadName)
 
 				By("Waiting for workload to be running")
 				Eventually(func() bool {
@@ -482,8 +428,6 @@ var _ = Describe("Workload Lifecycle API", Label("api", "api-workloads", "worklo
 			workloadName = e2e.GenerateUniqueServerName("api-logs-test")
 		})
 
-		// Note: Workload cleanup handled by suite-level CLI cleanup
-
 		Context("when getting workload logs", func() {
 			It("should return logs for running workload", func() {
 				By("Creating a workload")
@@ -494,17 +438,10 @@ var _ = Describe("Workload Lifecycle API", Label("api", "api-workloads", "worklo
 				resp := createWorkload(apiServer, createReq)
 				resp.Body.Close()
 				Expect(resp.StatusCode).To(Equal(http.StatusCreated))
+				deleteAPIWorkloadOnCleanup(apiServer, workloadName)
 
 				By("Waiting for workload to be running")
-				Eventually(func() bool {
-					workloads := listWorkloads(apiServer, true)
-					for _, w := range workloads {
-						if w.Name == workloadName && w.Status == runtime.WorkloadStatusRunning {
-							return true
-						}
-					}
-					return false
-				}, 60*time.Second, 2*time.Second).Should(BeTrue())
+				waitForAPIWorkloadRunning(apiServer, workloadName, 60*time.Second)
 
 				By("Getting workload logs")
 				logsResp, err := apiServer.Get(fmt.Sprintf("/api/v1beta/workloads/%s/logs", workloadName))
@@ -537,8 +474,6 @@ var _ = Describe("Workload Lifecycle API", Label("api", "api-workloads", "worklo
 			workloadName = e2e.GenerateUniqueServerName("api-proxy-logs-test")
 		})
 
-		// Note: Workload cleanup handled by suite-level CLI cleanup
-
 		Context("when getting proxy logs", func() {
 			It("should return 404 when workload has no proxy", func() {
 				By("Creating a workload without proxy")
@@ -549,17 +484,10 @@ var _ = Describe("Workload Lifecycle API", Label("api", "api-workloads", "worklo
 				resp := createWorkload(apiServer, createReq)
 				resp.Body.Close()
 				Expect(resp.StatusCode).To(Equal(http.StatusCreated))
+				deleteAPIWorkloadOnCleanup(apiServer, workloadName)
 
 				By("Waiting for workload to be running")
-				Eventually(func() bool {
-					workloads := listWorkloads(apiServer, true)
-					for _, w := range workloads {
-						if w.Name == workloadName && w.Status == runtime.WorkloadStatusRunning {
-							return true
-						}
-					}
-					return false
-				}, 60*time.Second, 2*time.Second).Should(BeTrue())
+				waitForAPIWorkloadRunning(apiServer, workloadName, 60*time.Second)
 
 				By("Attempting to get proxy logs")
 				logsResp, err := apiServer.Get(fmt.Sprintf("/api/v1beta/workloads/%s/proxy-logs", workloadName))
@@ -590,8 +518,6 @@ var _ = Describe("Workload Lifecycle API", Label("api", "api-workloads", "worklo
 			workloadName = e2e.GenerateUniqueServerName("api-export-test")
 		})
 
-		// Note: Workload cleanup handled by suite-level CLI cleanup
-
 		Context("when exporting workload configuration", func() {
 			It("should export workload as RunConfig JSON", func() {
 				By("Creating a workload with environment variables")
@@ -605,6 +531,7 @@ var _ = Describe("Workload Lifecycle API", Label("api", "api-workloads", "worklo
 				resp := createWorkload(apiServer, createReq)
 				resp.Body.Close()
 				Expect(resp.StatusCode).To(Equal(http.StatusCreated))
+				deleteAPIWorkloadOnCleanup(apiServer, workloadName)
 
 				By("Waiting for workload to be running")
 				Eventually(func() bool {
@@ -655,8 +582,6 @@ var _ = Describe("Workload Lifecycle API", Label("api", "api-workloads", "worklo
 			}
 		})
 
-		// Note: Workload cleanup handled by suite-level CLI cleanup
-
 		Context("when stopping workloads in bulk by names", func() {
 			It("should stop multiple workloads", func() {
 				By("Creating multiple workloads")
@@ -668,6 +593,7 @@ var _ = Describe("Workload Lifecycle API", Label("api", "api-workloads", "worklo
 					resp := createWorkload(apiServer, createReq)
 					resp.Body.Close()
 					Expect(resp.StatusCode).To(Equal(http.StatusCreated))
+					deleteAPIWorkloadOnCleanup(apiServer, name)
 				}
 
 				By("Waiting for all workloads to be running")
@@ -676,6 +602,7 @@ var _ = Describe("Workload Lifecycle API", Label("api", "api-workloads", "worklo
 					workloads := listWorkloads(apiServer, true)
 					for _, w := range workloads {
 						for _, name := range workloadNames {
+							stopTryingIfAPIWorkloadErrored(w, name)
 							if w.Name == name && w.Status == runtime.WorkloadStatusRunning {
 								runningCount++
 							}
@@ -750,7 +677,6 @@ var _ = Describe("Workload Lifecycle API", Label("api", "api-workloads", "worklo
 			})
 
 			AfterEach(func() {
-				// Note: Workload cleanup handled by suite-level CLI cleanup
 				deleteGroup(apiServer, groupName)
 			})
 
@@ -782,6 +708,7 @@ var _ = Describe("Workload Lifecycle API", Label("api", "api-workloads", "worklo
 					resp := createWorkload(apiServer, createReq)
 					resp.Body.Close()
 					Expect(resp.StatusCode).To(Equal(http.StatusCreated))
+					deleteAPIWorkloadOnCleanup(apiServer, name)
 				}
 
 				By("Waiting for all workloads to be running")
@@ -790,6 +717,7 @@ var _ = Describe("Workload Lifecycle API", Label("api", "api-workloads", "worklo
 					workloads := listWorkloads(apiServer, true)
 					for _, w := range workloads {
 						for _, name := range workloadNames {
+							stopTryingIfAPIWorkloadErrored(w, name)
 							if w.Name == name && w.Status == runtime.WorkloadStatusRunning {
 								runningCount++
 							}
@@ -880,8 +808,6 @@ var _ = Describe("Workload Lifecycle API", Label("api", "api-workloads", "worklo
 			}
 		})
 
-		// Note: Workload cleanup handled by suite-level CLI cleanup
-
 		Context("when restarting workloads in bulk", func() {
 			It("should restart multiple workloads", func() {
 				By("Creating multiple workloads")
@@ -893,6 +819,7 @@ var _ = Describe("Workload Lifecycle API", Label("api", "api-workloads", "worklo
 					resp := createWorkload(apiServer, createReq)
 					resp.Body.Close()
 					Expect(resp.StatusCode).To(Equal(http.StatusCreated))
+					deleteAPIWorkloadOnCleanup(apiServer, name)
 				}
 
 				By("Waiting for all workloads to be running")
@@ -901,6 +828,7 @@ var _ = Describe("Workload Lifecycle API", Label("api", "api-workloads", "worklo
 					workloads := listWorkloads(apiServer, true)
 					for _, w := range workloads {
 						for _, name := range workloadNames {
+							stopTryingIfAPIWorkloadErrored(w, name)
 							if w.Name == name && w.Status == runtime.WorkloadStatusRunning {
 								runningCount++
 							}
@@ -925,6 +853,7 @@ var _ = Describe("Workload Lifecycle API", Label("api", "api-workloads", "worklo
 					workloads := listWorkloads(apiServer, true)
 					for _, w := range workloads {
 						for _, name := range workloadNames {
+							stopTryingIfAPIWorkloadErrored(w, name)
 							if w.Name == name && w.Status == runtime.WorkloadStatusRunning {
 								runningCount++
 							}
@@ -974,7 +903,6 @@ var _ = Describe("Workload Lifecycle API", Label("api", "api-workloads", "worklo
 			})
 
 			AfterEach(func() {
-				// Note: Workload cleanup handled by suite-level CLI cleanup
 				deleteGroup(apiServer, groupName)
 			})
 
@@ -1006,6 +934,7 @@ var _ = Describe("Workload Lifecycle API", Label("api", "api-workloads", "worklo
 					resp := createWorkload(apiServer, createReq)
 					resp.Body.Close()
 					Expect(resp.StatusCode).To(Equal(http.StatusCreated))
+					deleteAPIWorkloadOnCleanup(apiServer, name)
 				}
 
 				By("Waiting for all workloads to be running")
@@ -1014,6 +943,7 @@ var _ = Describe("Workload Lifecycle API", Label("api", "api-workloads", "worklo
 					workloads := listWorkloads(apiServer, true)
 					for _, w := range workloads {
 						for _, name := range workloadNames {
+							stopTryingIfAPIWorkloadErrored(w, name)
 							if w.Name == name && w.Status == runtime.WorkloadStatusRunning {
 								runningCount++
 							}
@@ -1038,6 +968,7 @@ var _ = Describe("Workload Lifecycle API", Label("api", "api-workloads", "worklo
 					workloads := listWorkloads(apiServer, true)
 					for _, w := range workloads {
 						for _, name := range workloadNames {
+							stopTryingIfAPIWorkloadErrored(w, name)
 							if w.Name == name && w.Status == runtime.WorkloadStatusRunning {
 								runningCount++
 							}
@@ -1074,6 +1005,7 @@ var _ = Describe("Workload Lifecycle API", Label("api", "api-workloads", "worklo
 					resp := createWorkload(apiServer, createReq)
 					resp.Body.Close()
 					Expect(resp.StatusCode).To(Equal(http.StatusCreated))
+					deleteAPIWorkloadOnCleanup(apiServer, name)
 				}
 
 				By("Waiting for all workloads to be running")
@@ -1082,6 +1014,7 @@ var _ = Describe("Workload Lifecycle API", Label("api", "api-workloads", "worklo
 					workloads := listWorkloads(apiServer, true)
 					for _, w := range workloads {
 						for _, name := range workloadNames {
+							stopTryingIfAPIWorkloadErrored(w, name)
 							if w.Name == name && w.Status == runtime.WorkloadStatusRunning {
 								runningCount++
 							}
@@ -1128,6 +1061,7 @@ var _ = Describe("Workload Lifecycle API", Label("api", "api-workloads", "worklo
 					workloads := listWorkloads(apiServer, true)
 					for _, w := range workloads {
 						for _, name := range workloadNames {
+							stopTryingIfAPIWorkloadErrored(w, name)
 							if w.Name == name && w.Status == runtime.WorkloadStatusRunning {
 								runningCount++
 							}
@@ -1193,8 +1127,6 @@ var _ = Describe("Workload Lifecycle API", Label("api", "api-workloads", "worklo
 			}
 		})
 
-		// Note: Workload cleanup handled by suite-level CLI cleanup
-
 		Context("when deleting workloads in bulk", func() {
 			It("should delete multiple workloads", func() {
 				By("Creating multiple workloads")
@@ -1206,6 +1138,7 @@ var _ = Describe("Workload Lifecycle API", Label("api", "api-workloads", "worklo
 					resp := createWorkload(apiServer, createReq)
 					resp.Body.Close()
 					Expect(resp.StatusCode).To(Equal(http.StatusCreated))
+					deleteAPIWorkloadOnCleanup(apiServer, name)
 				}
 
 				By("Waiting for all workloads to be running")
@@ -1214,6 +1147,7 @@ var _ = Describe("Workload Lifecycle API", Label("api", "api-workloads", "worklo
 					workloads := listWorkloads(apiServer, true)
 					for _, w := range workloads {
 						for _, name := range workloadNames {
+							stopTryingIfAPIWorkloadErrored(w, name)
 							if w.Name == name && w.Status == runtime.WorkloadStatusRunning {
 								runningCount++
 							}
@@ -1297,7 +1231,6 @@ var _ = Describe("Workload Lifecycle API", Label("api", "api-workloads", "worklo
 			})
 
 			AfterEach(func() {
-				// Note: Workload cleanup handled by suite-level CLI cleanup
 				deleteGroup(apiServer, groupName)
 			})
 
@@ -1329,6 +1262,7 @@ var _ = Describe("Workload Lifecycle API", Label("api", "api-workloads", "worklo
 					resp := createWorkload(apiServer, createReq)
 					resp.Body.Close()
 					Expect(resp.StatusCode).To(Equal(http.StatusCreated))
+					deleteAPIWorkloadOnCleanup(apiServer, name)
 				}
 
 				By("Waiting for all workloads to be running")
@@ -1337,6 +1271,7 @@ var _ = Describe("Workload Lifecycle API", Label("api", "api-workloads", "worklo
 					workloads := listWorkloads(apiServer, true)
 					for _, w := range workloads {
 						for _, name := range workloadNames {
+							stopTryingIfAPIWorkloadErrored(w, name)
 							if w.Name == name && w.Status == runtime.WorkloadStatusRunning {
 								runningCount++
 							}
@@ -1398,6 +1333,7 @@ var _ = Describe("Workload Lifecycle API", Label("api", "api-workloads", "worklo
 					resp := createWorkload(apiServer, createReq)
 					resp.Body.Close()
 					Expect(resp.StatusCode).To(Equal(http.StatusCreated))
+					deleteAPIWorkloadOnCleanup(apiServer, name)
 				}
 
 				By("Waiting for all workloads to be running")
@@ -1406,6 +1342,7 @@ var _ = Describe("Workload Lifecycle API", Label("api", "api-workloads", "worklo
 					workloads := listWorkloads(apiServer, true)
 					for _, w := range workloads {
 						for _, name := range workloadNames {
+							stopTryingIfAPIWorkloadErrored(w, name)
 							if w.Name == name && w.Status == runtime.WorkloadStatusRunning {
 								runningCount++
 							}

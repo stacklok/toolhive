@@ -170,6 +170,14 @@ vMCP adds **no state of its own**:
    round (routing is deterministic by capability name through the routing
    table) and forwards both fields verbatim to the backend.
 
+**Open question: does the relay pass URL mode through?** A backend's
+`inputRequests` can include `elicitation/create` with `mode: "url"`, which
+would put a backend-chosen URL in front of the user. Today no backend can do
+that: the only URL elicitation vMCP renders is the in-process answer an
+embedder's decorator returns (#7022), and a backend's round renders as
+`-32603`. Whether the relay forwards URL-mode requests verbatim, filters them,
+or requires an opt-in is #6059's call, raised there.
+
 Round-trip state lives **only** in the backend's `requestState`, whose
 integrity/user-binding obligations sit with the backend that minted it, per
 the spec. Whether the end-to-end principal binding survives that division of
@@ -360,7 +368,11 @@ call: `input_required` results flow back through the ordinary return path —
 - core: `core.CallTool`/`ReadResource`/`GetPrompt` propagate it (suspending a
   workflow first when the caller is the composer);
 - server: `dispatchModern` renders it as the `resultType:"input_required"`
-  envelope, and accepts `inputResponses`/`requestState` params on the retry.
+  envelope through `writeModernInputRequired`, and accepts
+  `inputResponses`/`requestState` params on the retry. The writer is shared:
+  today it renders the URL elicitation answer
+  (`vmcp.URLElicitationRequiredError`), converted to an `InputRequiredResult`
+  at render time.
 
 ## Sampling: deprecated pass-through, no feature work
 
@@ -434,13 +446,13 @@ Verified against go-sdk `v1.7.0-pre.3` (the transitive pin via
    are only used on Legacy sessions — but it forecloses any notion of
    re-enabling server-initiated requests for a capability-declaring Modern
    client. Accounted for, no action.
-5. **`-32021` at HTTP 400 is unshippable** with current go-sdk clients (their
-   transient set is 500/502/503/504/429; any other 4xx is permanent session
-   death), which is why the undeclared-capability error lands at HTTP 200 as
-   a documented deviation — implemented by #6061
-   (`writeModernMissingCapability`), tracked upstream as go-sdk#1117; MRTR
-   does not change it, it *removes the case* for capabilities the client
-   does declare against Modern backends.
+5. **`-32021` rides HTTP 400, as the spec requires.** go-sdk clients from
+   v1.7.0 decode the JSON-RPC body of a non-2xx response, so the 400 fails
+   the call and keeps the session (go-sdk#1117, fixed upstream). The
+   undeclared-capability error (#6061, `writeModernMissingCapability`) and
+   the URL elicitation fallback share `writeModernMissingCapabilityError`.
+   MRTR does not change it; it *removes the case* for capabilities the
+   client does declare against Modern backends.
 
 ## Sequencing (collision-aware)
 
@@ -472,10 +484,21 @@ merges:
    hook), `pkg/vmcp/client/modern_mrtr.go` — none touched by #6033.
 2. **Ingress envelope + retry params (after #6050/#6033).** `dispatchModern`
    accepts `inputResponses`/`requestState`, threads them through
-   `core.CallTool`→`BackendClient`, and renders `input_required` envelopes;
-   parser vocabulary for the two params. Post-#6061, the rendering branch
-   hooks into `writeModernCallFailure` via `vmcp.InputRequiredFromError`,
-   alongside (never instead of) its authz-priority and capability-refusal
+   `core.CallTool`→`BackendClient`, and renders `input_required` envelopes.
+   The envelope writer already exists:
+   `writeModernInputRequired` (`pkg/vmcp/server/modern_envelope.go`, #7022)
+   takes a `*vmcp.InputRequiredResult` and is what the URL elicitation answer
+   renders through today (doc 10, "Answering a call with a URL elicitation").
+   This slice reuses it for relayed backend rounds rather than adding a second
+   writer. Retries already pass through the parser untouched, so this slice
+   adds the threading, not acceptance. Today `dispatchModern` reads
+   `inputResponses` only to honor a decline or cancel of the URL elicitation
+   answer (`writeModernToolCallFailure`); it does not pass them on. Post-#6061, the rendering branch
+   hooks into the Modern call-failure classifiers via
+   `vmcp.InputRequiredFromError`: `writeModernToolCallFailure` for
+   `tools/call` (which already handles the URL elicitation answer there) and
+   `writeModernCallFailure` for `resources/read` and `prompts/get`. It sits
+   alongside (never instead of) their authz-priority and capability-refusal
    branches — the two cannot co-occur: the refusal recorder fires only on
    the Legacy-backend forwarding seams, `input_required` only from a Modern
    backend's envelope.
@@ -486,8 +509,7 @@ merges:
    goes live end-to-end. The `requestState` open decision above (verbatim vs
    #6059's routing-context wrapper) must be resolved here at the latest. The `-32021`-shaped
    undeclared-capability error contract landed ahead of this in #6061
-   (merged 2026-07-28; `-32021` at HTTP 200 as the documented deviation,
-   upstream go-sdk#1117). When this slice lands, #6061's declared-capability
+   (merged 2026-07-28; `-32021`, now at HTTP 400). When this slice lands, #6061's declared-capability
    `-32603` message ("multi-round retrieval … which this server does not
    implement") stops being true for Modern backends and needs rescoping to
    the Legacy-backend cell it permanently serves.
@@ -498,7 +520,7 @@ merges:
    dispatch, owner-mismatch audit signal.
 
 Slices 2–5 each update doc 10's client-edge limitation section (whose current
-text truthfully says MRTR is unserved) and the forwarding-test dispositions
+text says backend-relayed MRTR is unserved) and the forwarding-test dispositions
 from #6051 as their claims become false.
 
 ## Testing strategy

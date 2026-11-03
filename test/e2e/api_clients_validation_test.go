@@ -13,7 +13,6 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/test/e2e"
 )
@@ -32,7 +31,6 @@ var _ = Describe("Clients API Validation", Label("api", "api-clients", "clients"
 	Describe("Invalid client type validation", func() {
 		It("should return 400 Bad Request for unsupported client type", func() {
 			workloadName := e2e.GenerateUniqueServerName("validation-workload")
-			// Note: Workload cleanup handled by suite-level CLI cleanup
 
 			By("Creating a workload in the default group")
 			workloadReq := map[string]interface{}{
@@ -43,17 +41,10 @@ var _ = Describe("Clients API Validation", Label("api", "api-clients", "clients"
 			workloadResp := createWorkload(apiServer, workloadReq)
 			workloadResp.Body.Close()
 			Expect(workloadResp.StatusCode).To(Equal(http.StatusCreated))
+			deleteAPIWorkloadOnCleanup(apiServer, workloadName)
 
 			// Wait for workload to be running
-			Eventually(func() bool {
-				workloads := listWorkloads(apiServer, true)
-				for _, w := range workloads {
-					if w.Name == workloadName && w.Status == runtime.WorkloadStatusRunning {
-						return true
-					}
-				}
-				return false
-			}, 90*time.Second, 2*time.Second).Should(BeTrue())
+			waitForAPIWorkloadRunning(apiServer, workloadName, 90*time.Second)
 
 			By("Attempting to register with an invalid client type")
 			invalidClientName := fmt.Sprintf("invalid-client-%d", time.Now().UnixNano())
@@ -86,7 +77,6 @@ var _ = Describe("Clients API Validation", Label("api", "api-clients", "clients"
 		It("should return 400 Bad Request for bulk registration with invalid client type", func() {
 			workloadName := e2e.GenerateUniqueServerName("bulk-validation-workload")
 			groupName := fmt.Sprintf("bulk-validation-group-%d", time.Now().UnixNano())
-			// Note: Workload cleanup handled by suite-level CLI cleanup
 			defer deleteGroup(apiServer, groupName)
 
 			By("Creating a test group")
@@ -106,16 +96,9 @@ var _ = Describe("Clients API Validation", Label("api", "api-clients", "clients"
 			workloadResp := createWorkload(apiServer, workloadReq)
 			workloadResp.Body.Close()
 			Expect(workloadResp.StatusCode).To(Equal(http.StatusCreated))
+			deleteAPIWorkloadOnCleanup(apiServer, workloadName)
 
-			Eventually(func() bool {
-				workloads := listWorkloads(apiServer, true)
-				for _, w := range workloads {
-					if w.Name == workloadName && w.Status == runtime.WorkloadStatusRunning {
-						return true
-					}
-				}
-				return false
-			}, 90*time.Second, 2*time.Second).Should(BeTrue())
+			waitForAPIWorkloadRunning(apiServer, workloadName, 90*time.Second)
 
 			By("Attempting bulk register with invalid client types")
 			invalidClientName1 := fmt.Sprintf("invalid-bulk-1-%d", time.Now().UnixNano())

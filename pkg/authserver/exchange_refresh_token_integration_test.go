@@ -153,7 +153,7 @@ func (e *xrtEnv) mint(t *testing.T, mutate func(*jwt.Claims, map[string]any)) st
 		Issuer: e.issuer, Subject: "user-1", Audience: jwt.Audience{cfgAudienceA}, ID: hex.EncodeToString(jti),
 		Expiry: jwt.NewNumericDate(now.Add(30 * time.Minute)), IssuedAt: jwt.NewNumericDate(now),
 	}
-	extra := map[string]any{"client_id": xrtSourceApp, "scope": "openid profile"}
+	extra := map[string]any{"client_id": xrtSourceApp, "scope": "openid profile offline_access"}
 	if mutate != nil {
 		mutate(&std, extra)
 	}
@@ -331,6 +331,21 @@ func runExchangeRefreshTokenGrantFlows(t *testing.T, env *xrtEnv) {
 		assertJSONEqual(t, upstream, grant.UpstreamSubject)
 	})
 
+	t.Run("offline and scp spellings of the refresh-token scope open a grant", func(t *testing.T) {
+		for name, mutate := range map[string]func(*jwt.Claims, map[string]any){
+			"offline in scope": func(_ *jwt.Claims, x map[string]any) { x["scope"] = "openid offline" },
+			"offline_access in scp": func(_ *jwt.Claims, x map[string]any) {
+				delete(x, "scope")
+				x["scp"] = []string{"openid", "offline_access"}
+			},
+		} {
+			t.Run(name, func(t *testing.T) {
+				res := env.requestRefreshToken(t, env.broker, env.mint(t, mutate), nil)
+				require.Equal(t, http.StatusOK, res.status, res.body)
+			})
+		}
+	})
+
 	t.Run("a token without either claim still gets a grant with both fields empty", func(t *testing.T) {
 		res := env.requestRefreshToken(t, env.broker, env.mint(t, nil), nil)
 		require.Equal(t, http.StatusOK, res.status, res.body)
@@ -463,6 +478,16 @@ func runExchangeRefreshTokenRefusals(t *testing.T, env *xrtEnv) {
 			// this audience, because startup keeps the broker's audiences apart from
 			// its input audiences, so it is reachable only if that separation is relaxed.
 			{"exchanging client's own token", func(_ *jwt.Claims, x map[string]any) { x["client_id"] = cfgBrokerID }, "subject_token_source_client"},
+			{"scope without offline_access", func(_ *jwt.Claims, x map[string]any) { x["scope"] = "openid profile" }, "subject_token_offline_access"},
+			{"scp array without offline_access", func(_ *jwt.Claims, x map[string]any) {
+				delete(x, "scope")
+				x["scp"] = []string{"openid", "profile"}
+			}, "subject_token_offline_access"},
+			{"no scope at all", func(_ *jwt.Claims, x map[string]any) { delete(x, "scope") }, "subject_token_offline_access"},
+			{"wrong audience and no offline_access reports the audience", func(c *jwt.Claims, x map[string]any) {
+				c.Audience = jwt.Audience{xrtOtherAudience}
+				x["scope"] = "openid"
+			}, "subject_token_audience"},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
 				requireError(t, env.requestRefreshToken(t, env.broker, env.mint(t, tc.mutate), nil),

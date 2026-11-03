@@ -455,7 +455,7 @@ type DelegateClientTokenExchange struct {
 	// ExchangeRefreshTokens enables refresh-token issuance through token
 	// exchange for this client. Presence of the block enables it; a nil block
 	// refuses both grant kinds. Valid only with restricted, and requires
-	// SubjectTokenAudiences.
+	// SubjectTokenAudiences and offline_access or offline in scopes_supported.
 	//nolint:lll // field tags require full JSON+YAML names
 	ExchangeRefreshTokens *DelegateClientExchangeRefreshTokens `json:"exchange_refresh_tokens,omitempty" yaml:"exchange_refresh_tokens,omitempty"`
 }
@@ -802,8 +802,29 @@ func validateDelegateClientViews(
 		if err := validateDelegateClientAudiences(client, allowedAudiences); err != nil {
 			return fmt.Errorf("delegate_clients: client_id %q: %w", client.ClientID, err)
 		}
+		if err := validateExchangeRefreshTokenScopes(client, effectiveScopes); err != nil {
+			return fmt.Errorf("delegate_clients: client_id %q: %w", client.ClientID, err)
+		}
 	}
 	return nil
+}
+
+// validateExchangeRefreshTokenScopes refuses exchange_refresh_tokens when
+// scopes_supported holds none of the refresh-token scopes. Opening an exchange
+// grant needs one of them on the subject token, so with none supported no
+// grant could ever open.
+func validateExchangeRefreshTokenScopes(client delegateClientView, effectiveScopes []string) error {
+	if client.TokenExchange == nil || client.TokenExchange.ExchangeRefreshTokens == nil {
+		return nil
+	}
+	refreshScopes := oauthserver.RefreshTokenScopes()
+	for _, scope := range refreshScopes {
+		if slices.Contains(effectiveScopes, scope) {
+			return nil
+		}
+	}
+	return fmt.Errorf("token_exchange.exchange_refresh_tokens requires one of the refresh-token scopes (%s) in scopes_supported",
+		strings.Join(refreshScopes, ", "))
 }
 
 // validateDelegateClientAudiences checks a client's output audiences, its

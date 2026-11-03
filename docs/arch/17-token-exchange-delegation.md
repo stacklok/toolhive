@@ -1448,6 +1448,10 @@ RunConfig-only for now: no released CRD exposes `token_exchange` or
 `exchangeRefreshTokens`. The storage backend must support
 `storage.ExchangeGrantStorage`; startup fails if a client enables the feature
 and it does not. The memory and Redis backends both support it.
+Startup also refuses the feature when `scopes_supported` contains neither
+`offline_access` nor `offline`: no subject token could carry one, so no grant
+could ever open. An empty `scopes_supported` uses the default scopes, which
+include `offline_access`.
 
 **Request.** `POST /oauth/token` with client authentication and:
 
@@ -1475,6 +1479,16 @@ to other exchanges: for a refresh-token request the client's own tokens are not
 accepted, and the list must not be empty. Startup validation rejects
 `exchange_refresh_tokens` without a non-empty `allowed_source_clients`. Tokens
 made by token exchange, the JWT-bearer grant or an ID-JAG are refused.
+
+Last, its scope must contain `offline_access` or `offline`, the server's
+refresh-token scopes. A grant outlives the sign-in session, so opening one needs
+`offline_access` granted at sign-in. This is ToolHive policy modeled on OIDC
+Core section 11, not something the spec requires. The authorization code flow
+uses the same scopes: when neither is granted, it returns the access token
+without a refresh token and reports no error. A refresh token is the only thing
+this path returns, so here the request is refused instead. The server reads the
+scope from the `scope` claim, or from `scp` when `scope` is absent. Matching is
+case-sensitive. This check applies only when a grant is opened.
 
 **Lifetime.** The grant lasts until the requested `expires_at`, but never longer
 than the client's cap for that kind of token. A request above the cap is capped,
@@ -1556,6 +1570,7 @@ client receives them.
 | Kind of token not enabled for the client | `invalid_authorization_details` | `token_type_not_permitted` |
 | Subject token expired, invalid, or not a login token (delegated, external, no upstream session, no `client_id` or `jti`) | `invalid_request` | `subject_token_invalid` |
 | Subject token's `aud` has none of the client's `subject_token_audiences`, or it was issued to a client that is not in `allowed_source_clients` (this includes the exchanging client itself) | `invalid_request` | `subject_token_audience` or `subject_token_source_client` |
+| Subject token's scope has neither `offline_access` nor `offline` | `invalid_request` | `subject_token_offline_access` |
 | Subject token already used | `invalid_request` | `token_used` |
 | Store failure | `server_error` | generic text, then the hint `The refresh token could not be issued.` |
 | Internal failure while processing `authorization_details` | `server_error` | `The authorization_details could not be processed.` |
@@ -1572,6 +1587,11 @@ these, so the client can refresh its access token and retry. The precise reason
 (for example a delegated token or a missing `jti`) is only in the server log.
 `subject_token_audience` and `subject_token_source_client` mean a configuration
 fault, not a retry: a new access token will be refused the same way.
+`subject_token_offline_access` is not fixed by a new access token either. A
+refreshed access token keeps its original scopes. The user must sign in again,
+and the source client must request `offline_access` or `offline` at sign-in. A
+source client that is not registered for the scope cannot request it: sign-in
+fails with `invalid_scope`.
 
 This path uses `invalid_request` for an expired subject token and for a disallowed
 source client, as RFC 8693 section 2.2.2 requires. The access-token handler uses

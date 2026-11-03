@@ -174,7 +174,7 @@
                 "type": "object"
             },
             "authserver.DelegateClientExchangeRefreshTokens": {
-                "description": "ExchangeRefreshTokens enables refresh-token issuance through token\nexchange for this client. Presence of the block enables it; a nil block\nrefuses both grant kinds. Valid only with restricted, and requires\nSubjectTokenAudiences.",
+                "description": "ExchangeRefreshTokens enables refresh-token issuance through token\nexchange for this client. Presence of the block enables it; a nil block\nrefuses both grant kinds. Valid only with restricted, and requires\nSubjectTokenAudiences and offline_access or offline in scopes_supported.",
                 "properties": {
                     "id_jag_max_lifetime": {
                         "description": "IDJAGMaxLifetime caps the lifetime of grants that can be exchanged for\nID-JAGs. Empty refuses those grants.",

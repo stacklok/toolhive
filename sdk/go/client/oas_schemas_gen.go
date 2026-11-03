@@ -766,7 +766,7 @@ func (s *AuthenticationDCRUpstreamConfig) SetSoftwareStatement(val OptString) {
 // ExchangeRefreshTokens enables refresh-token issuance through token
 // exchange for this client. Presence of the block enables it; a nil block
 // refuses both grant kinds. Valid only with restricted, and requires
-// SubjectTokenAudiences.
+// SubjectTokenAudiences and offline_access or offline in scopes_supported.
 // Ref: #/components/schemas/AuthenticationDelegateClientExchangeRefreshTokens
 type AuthenticationDelegateClientExchangeRefreshTokens struct {
 	// IDJAGMaxLifetime caps the lifetime of grants that can be exchanged for

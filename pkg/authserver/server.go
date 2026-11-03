@@ -6,6 +6,7 @@ package authserver
 import (
 	"context"
 	"crypto/x509"
+	"errors"
 	"log/slog"
 	"net/http"
 
@@ -122,12 +123,38 @@ func SPIFFEX509Authorities(s Server) ([]*x509.Certificate, bool) {
 // server. An embedder retiring a superseded server with this function therefore
 // keeps its JWKS workers until the storage it shares with the replacement can
 // be closed via Close.
+//
+// The same holds for the DCR re-check loops runner.EmbeddedAuthServer runs
+// when an upstream sets RegistrationProbeInterval: they are stopped by Close
+// only, because stopping them here would end recovery on a server that keeps
+// serving. A superseded server retired with this function keeps probing its
+// upstreams, and registering on a rejection, until it is closed.
 func CloseIdleConnections(s Server) bool {
 	closer, ok := s.(idleConnectionCloser)
 	if ok {
 		closer.CloseIdleConnections()
 	}
 	return ok
+}
+
+// UpstreamCredentialsUpdater is the optional capability of a Server to
+// replace an upstream provider's client registration while it serves. The
+// Server returned by New implements it; see UpdateUpstreamClientCredentials.
+type UpstreamCredentialsUpdater interface {
+	UpdateUpstreamClientCredentials(name string, creds upstream.ClientCredentials) error
+}
+
+// UpdateUpstreamClientCredentials replaces the client registration the named
+// upstream provider presents to its upstream, for an embedder that re-checks a
+// DCR registration while the server runs. An empty name is the single unnamed
+// upstream. It fails when s or the provider lacks the capability or the name
+// is unknown; the provider keeps its previous client then.
+func UpdateUpstreamClientCredentials(s Server, name string, creds upstream.ClientCredentials) error {
+	updater, ok := s.(UpstreamCredentialsUpdater)
+	if !ok {
+		return errors.New("server cannot replace upstream client registrations")
+	}
+	return updater.UpdateUpstreamClientCredentials(name, creds)
 }
 
 // New creates a new OAuth authorization server.

@@ -63,7 +63,8 @@ const anyDelegateClient = "*"
 // once. Replay is bounded by the delegated token's lifetime cap
 // (min(subject-remaining, delegation)), not by single-use tracking; per-jti
 // single-use enforcement is deferred to the broader M2M/sender-constrained-
-// token effort.
+// token effort. Single-use applies only to requests for a refresh token (see
+// RefreshTokenHandler).
 type Handler struct {
 	*oauth2.HandleHelper
 	validator          SubjectTokenValidator // for subject tokens (multi-issuer)
@@ -77,6 +78,37 @@ type Handler struct {
 	configuredDelegateClients []string
 	// authorizationDetailsRegistry validates RFC 9396 details on token exchange.
 	authorizationDetailsRegistry *authorizationdetails.Registry
+	// clientPolicies holds the source policy of the delegate clients whose
+	// self_issued_subject_tokens is restricted. It is built once at startup
+	// and never mutated.
+	clientPolicies map[string]ConfiguredClientPolicy
+}
+
+// ConfiguredClientPolicy is the token-exchange policy of a delegate client
+// whose self_issued_subject_tokens is restricted: an entry means restricted.
+// A client with any, or without a token_exchange block, has no entry and keeps
+// blanket trust of self-issued subject tokens.
+type ConfiguredClientPolicy struct {
+	// AllowedSourceClients are the client_id values, besides the client
+	// itself, whose self-issued subject tokens the client may exchange on the
+	// default path. The exchange-grant path accepts only these clients, not the
+	// client's own tokens, so startup requires the list with
+	// exchange_refresh_tokens.
+	AllowedSourceClients []string
+	// SubjectTokenAudiences are the audiences a self-issued subject token must
+	// carry (one of them, matched exactly) on every exchange path, including
+	// the client's own tokens. They are input only and never grant an
+	// access-token audience. Empty means no requirement on the default path
+	// but refuses on the exchange-grant path, which is why startup requires
+	// the list with exchange_refresh_tokens.
+	SubjectTokenAudiences []string
+	// ExchangeRefreshTokens caps the lifetime of refresh tokens this client may
+	// obtain through token exchange, keyed by the token-type URN of the grant
+	// (oauthproto.TokenTypeIDJAG or oauthproto.TokenTypeRefreshToken). A missing
+	// key means that grant kind is refused, so look up with the comma-ok form.
+	// Every present value is > 0 and <= 720h, as config validation enforces. Nil
+	// when the client has no exchange_refresh_tokens block.
+	ExchangeRefreshTokens map[string]time.Duration
 }
 
 // formParams holds the validated RFC 8693 form parameters extracted from a
@@ -94,9 +126,12 @@ type tokenExchangeConfig interface {
 }
 
 // CanHandleTokenEndpointRequest returns true if the request's grant_type is
-// the RFC 8693 token exchange grant type.
+// the RFC 8693 token exchange grant type and the request does not involve a
+// refresh-token type. RefreshTokenHandler claims the opposite, through the same
+// isRefreshTokenExchange predicate, so the two never both handle a request.
 func (*Handler) CanHandleTokenEndpointRequest(_ context.Context, requester fosite.AccessRequester) bool {
-	return requester.GetGrantTypes().ExactOne(oauthproto.GrantTypeTokenExchange)
+	return requester.GetGrantTypes().ExactOne(oauthproto.GrantTypeTokenExchange) &&
+		!isRefreshTokenExchange(requester.GetRequestForm())
 }
 
 // CanSkipClientAuth always returns false: RFC 8693 token exchange requires
@@ -153,9 +188,7 @@ func (h *Handler) HandleTokenEndpointRequest(ctx context.Context, requester fosi
 	// requests a token type the server does not support, the request must fail.
 	requestedTokenType := form.Get("requested_token_type")
 	if requestedTokenType != "" && requestedTokenType != oauthproto.TokenTypeAccessToken {
-		return errorsx.WithStack(fosite.ErrInvalidRequest.WithHintf(
-			"The 'requested_token_type' value %q is not supported. This server only issues %q.",
-			requestedTokenType, oauthproto.TokenTypeAccessToken))
+		return errorsx.WithStack(unsupportedTokenType("requested_token_type", requestedTokenType))
 	}
 
 	// Validate the subject token against the configured token validator.
@@ -168,12 +201,12 @@ func (h *Handler) HandleTokenEndpointRequest(ctx context.Context, requester fosi
 		// RFC 8693 §2.2.2 mandates invalid_request here: "if either the
 		// subject_token or actor_token are invalid for any reason, or are
 		// unacceptable based on policy ... The value of the error parameter
-		// MUST be the invalid_request error code." checkDelegationConsent
-		// below deliberately returns invalid_grant instead for its own
-		// failures — a documented deviation: RFC 6749 §5.2's invalid_grant
-		// covers "was issued to another client", §2.2.2 permits other error
-		// codes for other failures, and both Keycloak and Hydra follow this
-		// same split.
+		// MUST be the invalid_request error code." checkSourcePolicy and
+		// checkDelegationConsent below deliberately return invalid_grant
+		// instead for their own failures (and so does checkSubjectTokenAudience).
+		// This is a documented deviation: RFC 6749 §5.2's invalid_grant covers
+		// "was issued to another client", §2.2.2 permits other error codes for
+		// other failures, and both Keycloak and Hydra follow this same split.
 		return errorsx.WithStack(fosite.ErrInvalidRequest.WithHint(
 			"The subject token is invalid or could not be verified."))
 	}
@@ -241,6 +274,15 @@ func (h *Handler) HandleTokenEndpointRequest(ctx context.Context, requester fosi
 	return nil
 }
 
+// unsupportedTokenType is the invalid_request error for a token-type parameter
+// this client or request cannot use. Both token-exchange handlers return it, so
+// a client sees one text whichever of them refuses.
+func unsupportedTokenType(param, value string) error {
+	return fosite.ErrInvalidRequest.WithHintf(
+		"The '%s' value %q is not supported for this client. The access token type %q is always supported.",
+		param, value, oauthproto.TokenTypeAccessToken)
+}
+
 // PopulateTokenEndpointResponse issues the delegated access token and sets
 // the RFC 8693 issued_token_type in the response. When an authorization_details
 // registry is configured and details were granted, it also echoes the granted
@@ -291,9 +333,10 @@ func (h *Handler) PopulateTokenEndpointResponse(
 	return nil
 }
 
-// authorizeDelegation runs consent, then scopes, then audiences, then the
-// authorization_details hook, in that order, so the hook sees only a request
-// that passed every other check.
+// authorizeDelegation runs the source policy (for clients that have one), then
+// consent, then scopes, then audiences, then the authorization_details hook,
+// in that order, so the hook sees only a request that passed every other
+// check.
 func (h *Handler) authorizeDelegation(
 	ctx context.Context,
 	requester fosite.AccessRequester,
@@ -304,6 +347,14 @@ func (h *Handler) authorizeDelegation(
 	pendingDetails *authorizationdetails.Pending,
 ) error {
 	configuredDelegate := slices.Contains(h.configuredDelegateClients, client.GetID())
+	if policy, ok := h.clientPolicies[client.GetID()]; ok {
+		if err := checkSourcePolicy(validatedClaims, client.GetID(), policy); err != nil {
+			return err
+		}
+		if err := checkSubjectTokenAudience(validatedClaims, policy); err != nil {
+			return err
+		}
+	}
 	if err := checkDelegationConsent(validatedClaims, client.GetID(), actorSub, configuredDelegate); err != nil {
 		return err
 	}
@@ -474,8 +525,9 @@ func (h *Handler) computeLifetime(subjectExpiry time.Time) (time.Duration, error
 // fragment (the OIDC/OAuth "iss" value is a URL without a fragment
 // component, and this validator's own issuer comparison is an exact string
 // match against that value), so strings.Cut(sub, "#") on the qualified
-// subject always recovers (issuerURL, externalSub) uniquely. A native UUID
-// can never collide with a qualified value, since a UUID contains no "#".
+// subject always recovers (issuerURL, externalSub) uniquely. A native subject
+// (a UUID, or a synthesized "tk-" plus hex value) can never collide with a
+// qualified value, since neither contains a "#".
 //
 // Re-exchanging a previously-issued delegated token does not double-qualify:
 // such a token's "iss" is always this server's own issuer (fosite stamps
@@ -609,13 +661,19 @@ func buildActClaim(validatedClaims *ValidatedClaims, issuer, actorID string) (ma
 	// hop, so "original" and "most recent" coincide today; if a design ever
 	// introduces multiple external-issuer hops, this will need to change to
 	// keep tracking the original rather than the latest.
-	externalIssuer := validatedClaims.ExternalIssuer
-	if externalIssuer == "" {
-		if prior, ok := validatedClaims.Extra["external_issuer"].(string); ok {
-			externalIssuer = prior
-		}
+	return act, externalOrigin(validatedClaims), nil
+}
+
+// externalOrigin returns the trusted external issuer the subject token was
+// validated against or, for a self-issued token, the one recorded in its own
+// "external_issuer" claim. It is empty only when no external token is in the
+// token's ancestry.
+func externalOrigin(validatedClaims *ValidatedClaims) string {
+	if validatedClaims.ExternalIssuer != "" {
+		return validatedClaims.ExternalIssuer
 	}
-	return act, externalIssuer, nil
+	prior, _ := validatedClaims.Extra["external_issuer"].(string)
+	return prior
 }
 
 // chainToAct rebuilds a nested RFC 8693 act structure from a parsed
@@ -663,6 +721,52 @@ func chainToAct(hops []coreaudit.DelegatedActor) (map[string]any, error) {
 func delegateClientAllowed(allowedDelegateClients []string, actorID string) bool {
 	return slices.Contains(allowedDelegateClients, anyDelegateClient) ||
 		slices.Contains(allowedDelegateClients, actorID)
+}
+
+// checkSourcePolicy narrows the self-issued blanket trust of a delegate client
+// whose self_issued_subject_tokens is restricted: the subject token must have
+// been issued to the client itself or to one of its allowed source clients.
+// It runs before checkDelegationConsent, so a may_act claim must also match;
+// neither check overrides the other. External-issuer tokens are left to the issuer policy
+// in checkDelegationConsent.
+func checkSourcePolicy(validatedClaims *ValidatedClaims, clientID string, policy ConfiguredClientPolicy) error {
+	if sourceClientAllowed(validatedClaims, clientID, policy) {
+		return nil
+	}
+	return errorsx.WithStack(fosite.ErrInvalidGrant.WithHint(
+		"The subject token was not issued to this client or to one of its allowed source clients."))
+}
+
+// checkSubjectTokenAudience requires a self-issued subject token to carry one
+// of the policy's SubjectTokenAudiences. An empty list sets no requirement, and
+// external-issuer tokens are left to the issuer policy.
+func checkSubjectTokenAudience(validatedClaims *ValidatedClaims, policy ConfiguredClientPolicy) error {
+	if len(policy.SubjectTokenAudiences) == 0 || validatedClaims.ExternalIssuer != "" {
+		return nil
+	}
+	if carriesAnyAudience(validatedClaims, policy.SubjectTokenAudiences) {
+		return nil
+	}
+	return errorsx.WithStack(fosite.ErrInvalidGrant.WithHint(
+		"The subject token was not issued for one of this client's accepted audiences."))
+}
+
+// carriesAnyAudience reports whether the token's aud contains one of accepted,
+// matched exactly.
+func carriesAnyAudience(validatedClaims *ValidatedClaims, accepted []string) bool {
+	return slices.ContainsFunc(validatedClaims.Audience, func(audience string) bool {
+		return slices.Contains(accepted, audience)
+	})
+}
+
+// sourceClientAllowed reports whether the source policy accepts the subject
+// token: it came from a trusted external issuer, or was issued to the client
+// itself or to one of its allowed source clients.
+func sourceClientAllowed(validatedClaims *ValidatedClaims, clientID string, policy ConfiguredClientPolicy) bool {
+	if validatedClaims.ExternalIssuer != "" {
+		return true
+	}
+	return validatedClaims.ClientID == clientID || slices.Contains(policy.AllowedSourceClients, validatedClaims.ClientID)
 }
 
 // checkDelegationConsent enforces the RFC 8693 §4.4 delegation consent check.
@@ -718,8 +822,11 @@ func delegateClientAllowed(allowedDelegateClients []string, actorID string) bool
 //     Config.DelegateClients ID-only) is exempt from this binding when the
 //     subject token is self-issued (ExternalIssuer == ""). Such a client may
 //     present ANY self-issued subject token regardless of which client it was
-//     originally issued to. This is deliberately scoped to the self-issued
-//     path only — see selfIssuedDelegate below — because delegate clients are
+//     originally issued to, unless the client's self_issued_subject_tokens is
+//     restricted, in which case checkSourcePolicy has already limited it to
+//     its own and its listed source clients' tokens. This is deliberately
+//     scoped to the self-issued path only — see selfIssuedDelegate below —
+//     because delegate clients are
 //     operator-declared at server startup, not obtained through self-service
 //     registration (DCR), matching the blanket-trust model already accepted
 //     for the AllowedDelegateClients wildcard (anyDelegateClient) above.
@@ -823,10 +930,10 @@ func (h *Handler) grantScopes(
 // The delegated token must not target a resource the subject token was not
 // itself valid for: every granted audience must be covered by the subject
 // token's audience — delegation narrows, never broadens, the resource
-// boundary. This mirrors grantScopes, which bounds scopes by the subject
-// token; without it a client registered for audiences A and B could exchange a
-// user token minted for A into a token for B, an escalation the user never
-// consented to.
+// boundary, with no exceptions. This mirrors grantScopes, which bounds scopes
+// by the subject token; without it a client registered for audiences A and B
+// could exchange a user token minted for A into a token for B, an escalation
+// the user never consented to.
 func (h *Handler) grantAndBoundAudiences(
 	ctx context.Context, requester fosite.AccessRequester, client fosite.Client, validatedClaims *ValidatedClaims,
 ) error {
@@ -852,17 +959,6 @@ func (h *Handler) grantAudiences(ctx context.Context, requester fosite.AccessReq
 		requester.GrantAudience(aud)
 	}
 	return nil
-}
-
-// resourceScopedClient is implemented by fosite.Client types (e.g.
-// SPIFFEClient) that maintain an RFC 8707 resource allowlist independent of
-// GetAudience's RFC 8693 audience allowlist. Resources and audiences are
-// independent request dimensions: permission in one must never imply
-// permission in the other. A client that doesn't implement this interface
-// falls back to GetAudience for the resource check, preserving prior
-// behavior for clients (e.g. DelegateClient) that only ever had one list.
-type resourceScopedClient interface {
-	Resources() []string
 }
 
 // grantResourceAudience validates the RFC 8707 resource parameter against
@@ -891,13 +987,8 @@ func (h *Handler) grantResourceAudience(ctx context.Context, requester fosite.Ac
 		// resource-bound token, so it must be subject to the client's own
 		// registered allowlist — otherwise a client could bypass its
 		// registration simply by using "resource" instead of "audience".
-		allowedResources := client.GetAudience()
-		if rc, ok := client.(resourceScopedClient); ok {
-			allowedResources = rc.Resources()
-		}
-		if err := h.config.GetAudienceStrategy(ctx)(allowedResources, []string{resource}); err != nil {
-			return errorsx.WithStack(server.ErrInvalidTarget.WithHintf(
-				"The client is not permitted to request a token for resource %q.", resource))
+		if err := server.ValidateClientAudience(resource, client, h.config.GetAudienceStrategy(ctx)); err != nil {
+			return errorsx.WithStack(err)
 		}
 		requester.GrantAudience(resource)
 	}

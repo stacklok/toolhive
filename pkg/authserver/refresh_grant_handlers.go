@@ -14,8 +14,10 @@ import (
 	oauthserver "github.com/stacklok/toolhive/pkg/authserver/server"
 )
 
-// refreshGrantValidators runs the embedder-supplied token endpoint handlers
-// (Config.RefreshGrantHandlers) as validators of the refresh_token grant.
+// refreshGrantValidators runs the refresh-grant validators as validators of
+// the refresh_token grant: the built-in upstream refresh guard, when enabled,
+// followed by the embedder-supplied token endpoint handlers
+// (Config.RefreshGrantHandlers).
 //
 // All handlers live in one registered value because fosite's
 // TokenEndpointHandlers.Append drops a handler whose concrete type is already
@@ -98,8 +100,8 @@ func isNilHandler(h fosite.TokenEndpointHandler) bool {
 }
 
 // refreshGrantHandlerFactories returns the factory that registers the
-// embedder's refresh-grant handlers with createProvider, or none when there
-// are no handlers.
+// refresh-grant validators (see refreshGrantValidatorChain) with
+// createProvider, or none when there are no validators.
 func refreshGrantHandlerFactories(handlers []fosite.TokenEndpointHandler) []oauthserver.Factory {
 	if len(handlers) == 0 {
 		return nil

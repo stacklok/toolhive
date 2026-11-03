@@ -934,7 +934,7 @@ func TestSetup_Lazy_SkipsLoginAndPersistsTools(t *testing.T) {
 	// anthropicPathPrefixSet=true skips the network probe; lazy=true.
 	err := Setup(
 		context.Background(), &stdout, &stderr, gm, provider, login,
-		SetOptions{}, "", true, "", true,
+		SetOptions{}, "", true, "", true, nil,
 	)
 	require.NoError(t, err)
 
@@ -958,7 +958,7 @@ func TestSetup_Lazy_VSCodeSelectionSemantics(t *testing.T) {
 		var stdout, stderr bytes.Buffer
 		err := Setup(context.Background(), &stdout, &stderr, gm, provider,
 			func(_ context.Context, _ *Config) error { loginCalled = true; return nil },
-			SetOptions{}, "", true, "vscode", true)
+			SetOptions{}, "", true, "vscode", true, nil)
 		require.ErrorContains(t, err, "requires non-lazy setup for authenticated model discovery")
 		assert.False(t, loginCalled)
 		assert.Empty(t, gm.configured)
@@ -972,7 +972,7 @@ func TestSetup_Lazy_VSCodeSelectionSemantics(t *testing.T) {
 		var stdout, stderr bytes.Buffer
 		err := Setup(context.Background(), &stdout, &stderr, gm, provider,
 			func(_ context.Context, _ *Config) error { loginCalled = true; return nil },
-			SetOptions{}, "", true, "", true)
+			SetOptions{}, "", true, "", true, nil)
 		require.NoError(t, err)
 		assert.False(t, loginCalled)
 		assert.Equal(t, []string{"cursor"}, gm.configured)
@@ -1028,7 +1028,7 @@ func TestSetupPiModels(t *testing.T) {
 				func(_ context.Context, cfg *Config) error {
 					cfg.SetDiscoveryAccessToken("discovery-token")
 					return nil
-				}, opts, "/anthropic", true, "pi", tt.lazy)
+				}, opts, "/anthropic", true, "pi", tt.lazy, nil)
 			if tt.wantErr != "" {
 				require.ErrorContains(t, err, tt.wantErr)
 				assert.Zero(t, provider.updateCalls)
@@ -1081,7 +1081,7 @@ func TestSetupPiAnthropicPrefix(t *testing.T) {
 			var out, errOut bytes.Buffer
 			err := Setup(context.Background(), &out, &errOut, gm, provider,
 				func(_ context.Context, cfg *Config) error { cfg.SetDiscoveryAccessToken("token"); return nil },
-				SetOptions{}, tt.flag, tt.flagSet, "pi", false)
+				SetOptions{}, tt.flag, tt.flagSet, "pi", false, nil)
 			require.NoError(t, err)
 			require.Len(t, gm.applied, 1)
 			assert.Equal(t, []string{"claude-test"}, gm.applied[0].AnthropicModels)
@@ -1509,7 +1509,7 @@ func TestSetup_VSCodeDiscoversModelsAfterLogin(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	err := Setup(context.Background(), &stdout, &stderr, gm, provider,
 		func(_ context.Context, cfg *Config) error { cfg.SetDiscoveryAccessToken("discovery-token"); return nil },
-		SetOptions{}, "", true, "vscode", false)
+		SetOptions{}, "", true, "vscode", false, nil)
 	require.NoError(t, err)
 	require.Len(t, gm.applied, 1)
 	assert.Equal(t, []string{"model-a", "model-b"}, gm.applied[0].DiscoveredModels)
@@ -1537,7 +1537,7 @@ func TestSetup_VSCodeDiscoveryFailureSelectionSemantics(t *testing.T) {
 			var stdout, stderr bytes.Buffer
 			err := Setup(context.Background(), &stdout, &stderr, gm, provider,
 				func(_ context.Context, cfg *Config) error { cfg.SetDiscoveryAccessToken("token"); return nil },
-				SetOptions{}, "", true, clientType, false)
+				SetOptions{}, "", true, clientType, false, nil)
 			require.ErrorContains(t, err, "discovering gateway models")
 			require.ErrorContains(t, err, "503 Service Unavailable")
 			assert.Empty(t, gm.configured)
@@ -1552,7 +1552,7 @@ func TestSetup_VSCodeDiscoveryFailureSelectionSemantics(t *testing.T) {
 		var stdout, stderr bytes.Buffer
 		err := Setup(context.Background(), &stdout, &stderr, gm, provider,
 			func(_ context.Context, cfg *Config) error { cfg.SetDiscoveryAccessToken("token"); return nil },
-			SetOptions{}, "", true, "", false)
+			SetOptions{}, "", true, "", false, nil)
 		require.NoError(t, err)
 		assert.Equal(t, []string{"cursor"}, gm.configured)
 		assert.Contains(t, stderr.String(), "skipping auto-detected VS Code clients")
@@ -1569,7 +1569,7 @@ func TestSetup_VSCodeDiscoveryFailureSelectionSemantics(t *testing.T) {
 		var stdout, stderr bytes.Buffer
 		err := Setup(context.Background(), &stdout, &stderr, gm, provider,
 			func(_ context.Context, cfg *Config) error { cfg.SetDiscoveryAccessToken("token"); return nil },
-			SetOptions{}, "", true, "", false)
+			SetOptions{}, "", true, "", false, nil)
 		require.NoError(t, err)
 		assert.Empty(t, gm.configured)
 		assert.Zero(t, provider.updateCalls)
@@ -1601,7 +1601,7 @@ func TestSetup_ShortPromptCachePreference(t *testing.T) {
 			err := Setup(
 				context.Background(), &stdout, &stderr, gm, provider,
 				func(context.Context, *Config) error { return nil },
-				SetOptions{ShortPromptCache: tt.inline}, "", true, "", true,
+				SetOptions{ShortPromptCache: tt.inline}, "", true, "", true, nil,
 			)
 			require.NoError(t, err)
 			require.Len(t, gm.applied, 1)
@@ -1631,7 +1631,7 @@ func TestSetup_ShortPromptCacheWarningForNonClaudeClient(t *testing.T) {
 			err := Setup(
 				context.Background(), &stdout, &stderr, gm, provider,
 				func(context.Context, *Config) error { return nil },
-				SetOptions{ShortPromptCache: tt.inline}, "", true, "cursor", true,
+				SetOptions{ShortPromptCache: tt.inline}, "", true, "cursor", true, nil,
 			)
 			require.NoError(t, err)
 			assert.Equal(t, tt.wantWarn, strings.Contains(stderr.String(), "--short-prompt-cache was set"))
@@ -1667,7 +1667,7 @@ func TestSetup_PromptCacheBedrockWarningOnlyForInlineFlag(t *testing.T) {
 				context.Background(), &stdout, &stderr, gm, provider,
 				func(context.Context, *Config) error { return nil },
 				SetOptions{BedrockCompat: tt.inlineBedrock, Models: []string{"us.anthropic.claude-opus-4-8"}},
-				"", true, "", true,
+				"", true, "", true, nil,
 			)
 			require.NoError(t, err)
 			assert.Equal(t, tt.wantCompatibility,
@@ -1709,7 +1709,7 @@ func TestSetup_NonLazy_InvokesLogin(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	err := Setup(
 		context.Background(), &stdout, &stderr, gm, provider, login,
-		SetOptions{}, "", true, "", false,
+		SetOptions{}, "", true, "", false, nil,
 	)
 	require.NoError(t, err)
 
@@ -1755,7 +1755,7 @@ func TestSetup_NonLazy_LoginFailure(t *testing.T) {
 			var stdout, stderr bytes.Buffer
 			err := Setup(
 				context.Background(), &stdout, &stderr, gm, provider, login,
-				SetOptions{}, "", true, "", false,
+				SetOptions{}, "", true, "", false, nil,
 			)
 
 			require.Error(t, err)
@@ -1790,7 +1790,7 @@ func TestSetup_CallbackPortInUseBeforeLogin(t *testing.T) {
 	err = Setup(
 		context.Background(), &stdout, &stderr,
 		&setupGatewayManager{detected: []string{"cursor"}, mode: "proxy"}, provider, login,
-		SetOptions{}, "", true, "", false,
+		SetOptions{}, "", true, "", false, nil,
 	)
 
 	require.Error(t, err)

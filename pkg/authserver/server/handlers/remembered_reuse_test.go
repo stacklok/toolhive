@@ -95,6 +95,8 @@ func TestRememberedApprovalCoverage(t *testing.T) {
 			}
 			if tt.name == "changed resource" {
 				h.config.AllowedAudiences = append(h.config.AllowedAudiences, tt.resource)
+				client := state.clients[testAuthClientID].(*fosite.DefaultClient)
+				client.Audience = append(client.Audience, tt.resource)
 			}
 			if tt.adjust != nil {
 				tt.adjust(t, s)

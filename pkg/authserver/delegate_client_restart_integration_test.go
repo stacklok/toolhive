@@ -8,9 +8,7 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
-	"net"
 	"net/http"
-	"net/http/httptest"
 	"net/url"
 	"os"
 	"strings"
@@ -27,7 +25,6 @@ import (
 	authserverrunner "github.com/stacklok/toolhive/pkg/authserver/runner"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
-	"github.com/stacklok/toolhive/test/integration/authserver/helpers"
 )
 
 const restartKeyPrefix = "test:restart:auth:"
@@ -73,8 +70,7 @@ func (w *warnRecorder) policyWarnsFor(clientID string) []map[string]any {
 	return out
 }
 
-// startRestartableDelegateAuthServer is separate from startConfiguredDelegateAuthServer
-// because it needs shared storage across restarts and an idempotent stop. It starts an embedded auth server whose
+// startRestartableDelegateAuthServer starts an embedded auth server whose
 // storage is the shared miniredis, with one delegate client holding the given
 // scopes. The returned stop func is idempotent and also registered with
 // t.Cleanup, so a test can stop the server mid-way to model a restart.
@@ -83,51 +79,23 @@ func startRestartableDelegateAuthServer(
 ) (serverURL string, embedded *authserverrunner.EmbeddedAuthServer, issuer string, stop func()) {
 	t.Helper()
 
-	upstream := helpers.NewMockUpstreamIDP(t)
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err)
-	issuer = "http://" + listener.Addr().String()
-
 	secretFile := t.TempDir() + "/delegate-client-secret"
 	require.NoError(t, os.WriteFile(secretFile, []byte(delegateClientSecret), 0o600))
 
-	cfg := helpers.NewTestAuthServerConfig(t, upstream.URL(),
-		helpers.WithScopesSupported([]string{"scope-a", "scope-b", "scope-c"}))
-	cfg.Issuer = issuer
-	cfg.Upstreams[0].OAuth2Config.RedirectURI = issuer + "/oauth/callback"
-	cfg.AllowedAudiences = []string{delegateAudience}
-	cfg.InsecureAllowConfidentialOverLoopbackHTTP = true
-	cfg.Storage = &storage.RunConfig{
-		Type:        string(storage.TypeRedis),
-		RedisConfig: &storage.RedisRunConfig{Addr: mr.Addr(), KeyPrefix: restartKeyPrefix},
-	}
-	cfg.DelegateClients = []authserver.DelegateClientRunConfig{{
-		ClientID:         delegateClientID,
-		ClientSecretFile: secretFile,
-		Scopes:           delegateScopes,
-		Audiences:        []string{delegateAudience},
-	}}
-
-	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
-	t.Cleanup(cancel)
-	embedded, err = authserverrunner.NewEmbeddedAuthServer(ctx, cfg)
-	if err != nil {
-		_ = listener.Close()
-		require.NoError(t, err)
-	}
-
-	server := httptest.NewUnstartedServer(embedded.Handler())
-	server.Listener = listener
-	server.Start()
-
-	var once sync.Once
-	stop = func() {
-		once.Do(func() {
-			server.Close()
-			assert.NoError(t, embedded.Close())
-		})
-	}
-	t.Cleanup(stop)
+	server, issuer, embedded, stop := startEmbeddedAuthServer(t, func(cfg *authserver.RunConfig, _ string) {
+		cfg.ScopesSupported = []string{"scope-a", "scope-b", "scope-c"}
+		cfg.AllowedAudiences = []string{delegateAudience}
+		cfg.Storage = &storage.RunConfig{
+			Type:        string(storage.TypeRedis),
+			RedisConfig: &storage.RedisRunConfig{Addr: mr.Addr(), KeyPrefix: restartKeyPrefix},
+		}
+		cfg.DelegateClients = []authserver.DelegateClientRunConfig{{
+			ClientID:         delegateClientID,
+			ClientSecretFile: secretFile,
+			Scopes:           delegateScopes,
+			Audiences:        []string{delegateAudience},
+		}}
+	}, nil)
 	return server.URL, embedded, issuer, stop
 }
 

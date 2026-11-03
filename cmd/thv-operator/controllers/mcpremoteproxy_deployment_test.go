@@ -1258,12 +1258,11 @@ func TestMCPRemoteProxyServiceNeedsUpdate(t *testing.T) {
 }
 
 func TestBuildRedisPasswordEnvVarForRemoteProxy_GlobalDefault(t *testing.T) {
-	t.Setenv("TOOLHIVE_DEFAULT_REDIS_ADDR", "global-redis:6379")
-	t.Setenv("TOOLHIVE_DEFAULT_REDIS_SECRET_NAME", "global-redis-secret")
-	t.Setenv("TOOLHIVE_DEFAULT_REDIS_SECRET_KEY", "redis-password")
+	t.Parallel()
+	defaults := &ctrlutil.DefaultRedisConfig{Addr: "global-redis:6379", SecretName: "global-redis-secret", SecretKey: "redis-password"}
 
 	proxy := v1beta1test.NewMCPRemoteProxy("test-proxy", "default")
-	got := buildRedisPasswordEnvVarForRemoteProxy(proxy)
+	got := buildRedisPasswordEnvVarForRemoteProxy(proxy, defaults)
 
 	require.Len(t, got, 1)
 	assert.Equal(t, session.RedisPasswordEnvVar, got[0].Name)
@@ -1275,20 +1274,21 @@ func TestBuildRedisPasswordEnvVarForRemoteProxy_GlobalDefault(t *testing.T) {
 }
 
 func TestBuildRedisPasswordEnvVarForRemoteProxy_NonRedisProviderNotOverriddenByGlobal(t *testing.T) {
-	t.Setenv("TOOLHIVE_DEFAULT_REDIS_ADDR", "global-redis:6379")
-	t.Setenv("TOOLHIVE_DEFAULT_REDIS_SECRET_NAME", "global-secret")
+	t.Parallel()
+	defaults := &ctrlutil.DefaultRedisConfig{Addr: "global-redis:6379", SecretName: "global-secret", SecretKey: "redis-password"}
 
 	proxy := v1beta1test.NewMCPRemoteProxy("test-proxy", "default",
 		v1beta1test.WithRemoteProxySessionStorage(&mcpv1beta1.SessionStorageConfig{Provider: "memory"}))
-	got := buildRedisPasswordEnvVarForRemoteProxy(proxy)
+	got := buildRedisPasswordEnvVarForRemoteProxy(proxy, defaults)
 	assert.Empty(t, got, "non-Redis provider should not receive global Redis password env var")
 }
 
 func TestBuildRedisPasswordEnvVarForRemoteProxy_PasswordlessGlobalDefault(t *testing.T) {
-	t.Setenv("TOOLHIVE_DEFAULT_REDIS_ADDR", "global-redis:6379")
+	t.Parallel()
+	defaults := &ctrlutil.DefaultRedisConfig{Addr: "global-redis:6379"}
 
 	proxy := v1beta1test.NewMCPRemoteProxy("test-proxy", "default")
-	got := buildRedisPasswordEnvVarForRemoteProxy(proxy)
+	got := buildRedisPasswordEnvVarForRemoteProxy(proxy, defaults)
 	assert.Empty(t, got, "global default without a secret name must not inject a password env var")
 }
 
@@ -1338,7 +1338,7 @@ func TestBuildRedisPasswordEnvVarForRemoteProxy(t *testing.T) {
 			proxy := v1beta1test.NewMCPRemoteProxy("test-proxy", "default",
 				v1beta1test.WithRemoteProxySessionStorage(tc.storage),
 			)
-			env := buildRedisPasswordEnvVarForRemoteProxy(proxy)
+			env := buildRedisPasswordEnvVarForRemoteProxy(proxy, nil)
 			if tc.expectEnVar {
 				require.Len(t, env, 1)
 				assert.Equal(t, session.RedisPasswordEnvVar, env[0].Name)

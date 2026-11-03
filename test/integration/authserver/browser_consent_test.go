@@ -24,6 +24,14 @@ import (
 	"github.com/stacklok/toolhive/test/integration/authserver/helpers"
 )
 
+const (
+	// chromeLaunchTimeout covers the DevToolsActivePort wait and the browser dial.
+	chromeLaunchTimeout = 60 * time.Second
+
+	// consentStepTimeout bounds the consent subtests once Chrome is connected.
+	consentStepTimeout = 40 * time.Second
+)
+
 // TestConsentNativeBrowserForm exercises the real consent page in Chrome. It is
 // optional on builders without Chrome; ordinary HTTP clients cannot check the
 // browser's Origin serialization or CSP redirect enforcement.
@@ -69,14 +77,26 @@ func TestConsentNativeBrowserForm(t *testing.T) {
 	clientID, ok := registered["client_id"].(string)
 	require.True(t, ok)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
-	defer cancel()
 	profile := t.TempDir()
+	stderrPath := filepath.Join(t.TempDir(), "chrome-stderr.log")
+	stderrFile, err := os.Create(stderrPath)
+	require.NoError(t, err)
+	defer stderrFile.Close()
 	processCtx, stopProcess := context.WithCancel(context.Background())
 	defer stopProcess()
+	start := time.Now()
 	cmd := exec.CommandContext(processCtx, chrome, "--headless=new", "--no-first-run", "--no-default-browser-check",
 		"--disable-background-networking", "--remote-debugging-port=0", "--user-data-dir="+profile, "about:blank")
+	cmd.Stderr = stderrFile
+	launchCtx, cancelLaunch := context.WithTimeout(context.Background(), chromeLaunchTimeout)
+	defer cancelLaunch()
 	require.NoError(t, cmd.Start())
+	done := make(chan struct{})
+	var waitErr error
+	go func() {
+		waitErr = cmd.Wait()
+		close(done)
+	}()
 	var browserConn *websocket.Conn
 	defer func() {
 		// Let Chrome stop its helpers before t.TempDir removes the profile.
@@ -92,12 +112,17 @@ func TestConsentNativeBrowserForm(t *testing.T) {
 			}
 			defer browserConn.Close()
 		}
-		// Reap the process; a forced shutdown can return an expected exit error.
-		_ = cmd.Wait()
+		// Wait for Chrome to exit.
+		<-done
 	}()
 
 	var debugPort, browserPath string
-	for ctx.Err() == nil {
+	for launchCtx.Err() == nil {
+		select {
+		case <-done:
+			t.Fatalf("Chrome exited before DevTools was ready (wait result: %v); stderr: %s", waitErr, chromeStderrTail(stderrPath))
+		default:
+		}
 		data, readErr := os.ReadFile(filepath.Join(profile, "DevToolsActivePort"))
 		if readErr == nil {
 			debugPort, browserPath, _ = strings.Cut(string(data), "\n")
@@ -108,14 +133,20 @@ func TestConsentNativeBrowserForm(t *testing.T) {
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	require.NotEmpty(t, debugPort, "Chrome debugging port unavailable")
-	require.NotEmpty(t, browserPath, "Chrome browser endpoint unavailable")
+	if debugPort == "" || browserPath == "" {
+		t.Fatalf("Chrome did not write DevToolsActivePort within %s; stderr: %s", chromeLaunchTimeout, chromeStderrTail(stderrPath))
+	}
+	t.Logf("Chrome DevTools port file ready after %s", time.Since(start))
 	var handshake *http.Response
-	browserConn, handshake, err = websocket.DefaultDialer.DialContext(ctx, "ws://127.0.0.1:"+debugPort+browserPath, nil)
+	browserConn, handshake, err = websocket.DefaultDialer.DialContext(launchCtx, "ws://127.0.0.1:"+debugPort+browserPath, nil)
 	if handshake != nil {
 		require.NoError(t, handshake.Body.Close())
 	}
-	require.NoError(t, err)
+	require.NoErrorf(t, err, "connecting to Chrome DevTools websocket; stderr: %s", chromeStderrTail(stderrPath))
+	cancelLaunch()
+	t.Logf("Chrome DevTools websocket connected after %s", time.Since(start))
+	ctx, cancel := context.WithTimeout(context.Background(), consentStepTimeout)
+	defer cancel()
 	debugURL := "http://127.0.0.1:" + debugPort
 
 	for _, decision := range []string{"approve", "deny"} {
@@ -214,4 +245,16 @@ func TestConsentNativeBrowserForm(t *testing.T) {
 			t.Fatalf("native %s form did not reach %s", decision, want)
 		})
 	}
+}
+
+func chromeStderrTail(path string) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Sprintf("unreadable: %v", err)
+	}
+	const tailBytes = 2048
+	if len(data) > tailBytes {
+		data = data[len(data)-tailBytes:]
+	}
+	return strings.TrimSpace(string(data))
 }

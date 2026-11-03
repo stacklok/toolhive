@@ -12,10 +12,12 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"math/big"
 	"net/url"
 	"reflect"
 	"strings"
@@ -25,13 +27,14 @@ import (
 	"time"
 
 	"github.com/alicebob/miniredis/v2"
-	"github.com/go-jose/go-jose/v3"
+	"github.com/go-jose/go-jose/v4"
 	"github.com/ory/fosite"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/stacklok/toolhive-core/redisconn"
+	"github.com/stacklok/toolhive/pkg/authserver/server"
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/authserver/server/session"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
@@ -590,6 +593,48 @@ func TestRedisStorage_GetClientRechecksPrivateKeyJWTKeys(t *testing.T) {
 	}
 }
 
+func TestStoredJWKS_JSONRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	oversized := `{"keys":[{"kty":"RSA","n":"` +
+		base64.RawURLEncoding.EncodeToString(new(big.Int).Lsh(big.NewInt(1), 8193).Bytes()) +
+		`","e":"AQAB"}]}`
+	valid := func() string {
+		key, err := rsa.GenerateKey(rand.Reader, 2048)
+		require.NoError(t, err)
+		data, err := json.Marshal(jose.JSONWebKeySet{Keys: []jose.JSONWebKey{{Key: &key.PublicKey, KeyID: "k1"}}})
+		require.NoError(t, err)
+		return string(data)
+	}()
+
+	tests := []struct {
+		name        string
+		jwks        string
+		wantInvalid bool
+	}{
+		{name: "valid key set decodes", jwks: valid},
+		{name: "modulus above the go-jose limit is kept invalid", jwks: oversized, wantInvalid: true},
+		{name: "non-object key set is kept invalid", jwks: `5`, wantInvalid: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var stored storedClient
+			require.NoError(t, json.Unmarshal([]byte(`{"id":"c1","jwks":`+tt.jwks+`}`), &stored))
+			require.NotNil(t, stored.JSONWebKeys)
+			assert.Equal(t, tt.wantInvalid, stored.JSONWebKeys.invalid)
+			assert.Equal(t, tt.wantInvalid, stored.JSONWebKeys.keySet() == nil)
+
+			// Rewriting the row preserves the key set as stored.
+			rewritten, err := json.Marshal(stored)
+			require.NoError(t, err)
+			var fields map[string]json.RawMessage
+			require.NoError(t, json.Unmarshal(rewritten, &fields))
+			assert.JSONEq(t, tt.jwks, string(fields["jwks"]))
+		})
+	}
+}
+
 // TestRedisStorage_ForceConfidentialPlainClientRoundTrip pins the storage
 // shape of registration.NewConfidentialPlain (the client the DCR force-
 // confidential override builds): it must round-trip through Redis as a
@@ -796,6 +841,7 @@ func TestClientFingerprint_StoredAndReconstructedAgree(t *testing.T) {
 		Audience:      []string{"https://mcp.example"},
 		GrantTypes:    []string{oauthproto.GrantTypeTokenExchange},
 		ResponseTypes: []string{"token"},
+		RedirectURIs:  []string{"https://app.example/cb"},
 		Public:        false,
 	}
 
@@ -803,6 +849,103 @@ func TestClientFingerprint_StoredAndReconstructedAgree(t *testing.T) {
 
 	assert.True(t, fingerprintOfClient(rebuilt).equal(stored.fingerprint()),
 		"a storedClient's fingerprint must agree with the fingerprint of the fosite.Client it reconstructs to")
+}
+
+// TestBuildStoredClient_StoresRawTokenEndpointAuthMethod pins that the stored
+// token endpoint auth method is the raw field. fosite's
+// DefaultClient.GetGrantTypes and GetResponseTypes substitute defaults for
+// empty fields, which is why storedClient.fingerprint reads the raw fields.
+// GetTokenEndpointAuthMethod must not: if a future fosite version defaults ""
+// to client_secret_basic, rows written before the upgrade would no longer
+// match live clients. The require on the stored method is the guard; the
+// fingerprint check cannot catch it, because both sides read the same getter.
+func TestBuildStoredClient_StoresRawTokenEndpointAuthMethod(t *testing.T) {
+	t.Parallel()
+
+	baseClient := func() *fosite.DefaultClient {
+		return &fosite.DefaultClient{
+			ID:            "configured",
+			Scopes:        []string{"openid", "profile"},
+			Audience:      []string{"https://mcp.example"},
+			GrantTypes:    []string{oauthproto.GrantTypeTokenExchange},
+			ResponseTypes: []string{"token"},
+		}
+	}
+
+	tests := []struct {
+		name       string
+		client     func() fosite.Client
+		wantMethod string
+	}{
+		{
+			name: "oidc client with empty method",
+			client: func() fosite.Client {
+				return &fosite.DefaultOpenIDConnectClient{DefaultClient: baseClient(), TokenEndpointAuthMethod: ""}
+			},
+			wantMethod: "",
+		},
+		{
+			name:       "plain DefaultClient",
+			client:     func() fosite.Client { return baseClient() },
+			wantMethod: "",
+		},
+		{
+			name: "client_secret_basic",
+			client: func() fosite.Client {
+				return &fosite.DefaultOpenIDConnectClient{
+					DefaultClient:           baseClient(),
+					TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodClientSecretBasic,
+				}
+			},
+			wantMethod: oauthproto.TokenEndpointAuthMethodClientSecretBasic,
+		},
+		{
+			name: "client_secret_post",
+			client: func() fosite.Client {
+				return &fosite.DefaultOpenIDConnectClient{
+					DefaultClient:           baseClient(),
+					TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodClientSecretPost,
+				}
+			},
+			wantMethod: oauthproto.TokenEndpointAuthMethodClientSecretPost,
+		},
+		{
+			name: "private_key_jwt",
+			client: func() fosite.Client {
+				return &fosite.DefaultOpenIDConnectClient{
+					DefaultClient:           baseClient(),
+					TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodPrivateKeyJWT,
+				}
+			},
+			wantMethod: oauthproto.TokenEndpointAuthMethodPrivateKeyJWT,
+		},
+		{
+			name: "none (public)",
+			client: func() fosite.Client {
+				c := baseClient()
+				c.Public = true
+				return &fosite.DefaultOpenIDConnectClient{
+					DefaultClient:           c,
+					TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodNone,
+				}
+			},
+			wantMethod: oauthproto.TokenEndpointAuthMethodNone,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			c := tt.client()
+			stored := buildStoredClient(c)
+
+			require.Equal(t, tt.wantMethod, stored.TokenEndpointAuthMethod,
+				"the stored auth method must equal the raw field, not a getter default")
+			assert.True(t, fingerprintOfClient(c).equal(stored.fingerprint()),
+				"the live client's fingerprint must agree with the stored row's fingerprint")
+		})
+	}
 }
 
 // TestRedisStorage_ReconcileConfiguredClient covers the create/idempotent/
@@ -888,6 +1031,19 @@ func TestRedisStorage_CIMDBuiltClientRoundTrip(t *testing.T) {
 		assert.Equal(t, oauthproto.TokenEndpointAuthMethodNone, oidc.GetTokenEndpointAuthMethod())
 		_, ok = registration.RegisteredLoopbackRedirectURI(got, "http://localhost:54321/cb")
 		assert.True(t, ok, "loopback dynamic-port matching must survive the round trip")
+	})
+}
+
+func TestRedisStorage_ReconcileConfiguredSecretClientShapes(t *testing.T) {
+	withRedisStorage(t, func(_ context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+		requireSecretClientShapes(t, s)
+	})
+}
+
+func TestRedisStorage_ReconcileConfiguredPrivateKeyJWTClient(t *testing.T) {
+	withRedisStorage(t, func(_ context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+		requireKeyRotationOverwrites(t, s)
+		assert.Equal(t, time.Duration(0), mr.TTL(redisKey(s.keyPrefix, KeyTypeClient, "broker")))
 	})
 }
 
@@ -1178,6 +1334,36 @@ func TestRedisStorage_ClientAssertionJWT(t *testing.T) {
 			require.NoError(t, s.SetClientAssertionJWT(ctx, "test-jti", time.Now().Add(time.Minute)))
 			err := s.ClientAssertionJWTValid(ctx, "test-jti")
 			assert.ErrorIs(t, err, fosite.ErrJTIKnown)
+		})
+	})
+
+	t.Run("backend failure is recorded for the client authentication strategy", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			ctx, recorded := server.NewClientAssertionStoreFailureContext(ctx)
+			mr.Close()
+			err := s.ClientAssertionJWTValid(ctx, "any-jti")
+			require.Error(t, err)
+			assert.NotErrorIs(t, err, fosite.ErrJTIKnown)
+			assert.Equal(t, err, recorded())
+		})
+	})
+
+	t.Run("replay is not recorded as a backend failure", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			ctx, recorded := server.NewClientAssertionStoreFailureContext(ctx)
+			require.NoError(t, s.SetClientAssertionJWT(ctx, "test-jti", time.Now().Add(time.Minute)))
+			require.ErrorIs(t, s.ClientAssertionJWTValid(ctx, "test-jti"), fosite.ErrJTIKnown)
+			assert.NoError(t, recorded())
+		})
+	})
+
+	t.Run("excessive lifetime is invalid_client", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			err := s.SetClientAssertionJWT(ctx, "long-jti", time.Now().Add(time.Hour))
+			var rfcErr *fosite.RFC6749Error
+			require.ErrorAs(t, err, &rfcErr)
+			assert.Equal(t, fosite.ErrInvalidClient.ErrorField, rfcErr.ErrorField)
+			assert.Equal(t, 401, rfcErr.CodeField)
 		})
 	})
 

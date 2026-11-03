@@ -37,6 +37,14 @@ var (
 
 	// ErrToolCallFailed indicates a tool call failed.
 	ErrToolCallFailed = errors.New("tool call failed")
+
+	// errSkipRemaining is an internal control-flow sentinel used by the
+	// "skip_remaining" elicitation action. It is not a failure: it signals the
+	// DAG executor to stop scheduling further steps so that every step not yet
+	// run is marked skipped and the workflow still completes successfully. It
+	// never escapes ExecuteWorkflow, which converts it into a completed result
+	// (or a timeout/failure if the workflow context ended while the gate waited).
+	errSkipRemaining = errors.New("skip remaining steps")
 )
 
 // ValidationError wraps workflow validation errors.

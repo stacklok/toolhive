@@ -45,6 +45,9 @@ type MCPRemoteProxyReconciler struct {
 	Scheme           *runtime.Scheme
 	Recorder         events.EventRecorder
 	PlatformDetector *ctrlutil.SharedPlatformDetector
+	// DefaultRedisConfig is the read-only global Redis snapshot loaded at startup.
+	// Nil means no global fallback is configured.
+	DefaultRedisConfig *ctrlutil.DefaultRedisConfig
 	// ImagePullSecretsDefaults are cluster-wide defaults sourced from the
 	// operator chart that are merged with the per-CR imagePullSecrets when
 	// constructing workloads. The zero value is a usable empty Defaults.
@@ -1987,17 +1990,17 @@ func (r *MCPRemoteProxyReconciler) podTemplateMetadataNeedsUpdate(
 
 	configName := ctrlutil.EmbeddedAuthServerConfigName(proxy.Spec.ExternalAuthConfigRef, proxy.Spec.AuthServerRef)
 	if configName != "" {
-		caChecksum, err := ctrlutil.EmbeddedAuthServerCABundleChecksum(ctx, r.Client, proxy.Namespace, configName)
+		caChecksum, err := ctrlutil.EmbeddedAuthServerConfigMapChecksum(ctx, r.Client, proxy.Namespace, configName)
 		if err != nil {
 			log.FromContext(ctx).Error(err, "Failed to calculate auth server CA checksum")
 			return true
 		}
 		if caChecksum != "" {
-			expectedPodTemplateAnnotations[ctrlutil.AuthServerCABundleChecksumAnnotation] = caChecksum
+			expectedPodTemplateAnnotations[ctrlutil.AuthServerConfigMapChecksumAnnotation] = caChecksum
 		}
 	}
 
-	const caChecksumKey = ctrlutil.AuthServerCABundleChecksumAnnotation
+	const caChecksumKey = ctrlutil.AuthServerConfigMapChecksumAnnotation
 	actualCAChecksum, actualCAChecksumSet := deployment.Spec.Template.Annotations[caChecksumKey]
 	expectedCAChecksum, expectedCAChecksumSet := expectedPodTemplateAnnotations[caChecksumKey]
 	if actualCAChecksumSet != expectedCAChecksumSet || actualCAChecksum != expectedCAChecksum {
@@ -2097,7 +2100,11 @@ func (r *MCPRemoteProxyReconciler) podSpecNeedsUpdate(
 		return true
 	}
 
-	wantSessionTLSVolumes, _ := ctrlutil.SessionRedisTLSVolumes(proxy.Spec.SessionStorage)
+	storage := proxy.Spec.SessionStorage
+	if storage == nil {
+		storage = r.DefaultRedisConfig.SessionStorage()
+	}
+	wantSessionTLSVolumes, _ := ctrlutil.SessionRedisTLSVolumes(storage)
 	if ctrlutil.SessionRedisTLSVolumeNeedsUpdate(deployment.Spec.Template.Spec.Volumes, wantSessionTLSVolumes) {
 		return true
 	}
@@ -2458,7 +2465,7 @@ func (r *MCPRemoteProxyReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		).
 		Watches(
 			&corev1.ConfigMap{},
-			handler.EnqueueRequestsFromMapFunc(r.mapAuthServerCABundleConfigMapToMCPRemoteProxy),
+			handler.EnqueueRequestsFromMapFunc(r.mapAuthServerConfigMapToMCPRemoteProxy),
 			builder.WithPredicates(configMapDataChangedPredicate()),
 		).
 		Complete(r)

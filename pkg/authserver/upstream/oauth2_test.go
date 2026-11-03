@@ -36,6 +36,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"golang.org/x/oauth2"
 
+	"github.com/stacklok/toolhive/pkg/auth/oautherr"
 	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
@@ -369,7 +370,7 @@ func TestNewOAuth2Provider_TokenEndpointAuthMethod(t *testing.T) {
 
 			provider, err := NewOAuth2Provider(config)
 			require.NoError(t, err)
-			assert.Equal(t, tt.wantAuthStyle, provider.oauth2Config.Endpoint.AuthStyle,
+			assert.Equal(t, tt.wantAuthStyle, provider.client.Load().oauth2.Endpoint.AuthStyle,
 				"oauth2 endpoint auth style must reflect the negotiated method")
 
 			_, err = provider.exchangeCodeForTokens(context.Background(), "auth-code", "")
@@ -3304,9 +3305,143 @@ func TestFormatOAuth2Error_GrantRejected(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			err := formatOAuth2Error(tt.err, "token request failed")
+			err := formatOAuth2Error(tt.err)
 			require.Error(t, err)
 			assert.Equal(t, tt.wantInvalidGrant, errors.Is(err, ErrGrantRejected), "err = %v", err)
+		})
+	}
+}
+
+// TestFormatOAuth2Error_KeepsRetrieveErrorInChain verifies that a token
+// endpoint failure keeps its *oauth2.RetrieveError reachable for the oautherr
+// predicates while its message stays the sanitized text, with no response body.
+func TestFormatOAuth2Error_KeepsRetrieveErrorInChain(t *testing.T) {
+	t.Parallel()
+
+	const body = `secret-response-body`
+	retrieveErr := func(status int, code, desc string) *oauth2.RetrieveError {
+		return &oauth2.RetrieveError{
+			Response: &http.Response{
+				StatusCode: status,
+				Request:    &http.Request{Header: http.Header{"Authorization": {"Basic c2VjcmV0"}}},
+			},
+			Body:             []byte(body),
+			ErrorCode:        code,
+			ErrorDescription: desc,
+		}
+	}
+
+	tests := []struct {
+		name          string
+		err           *oauth2.RetrieveError
+		wantMsg       string
+		wantPermanent bool
+		wantRejected  bool
+	}{
+		{
+			name:          "invalid_grant",
+			err:           retrieveErr(http.StatusBadRequest, "invalid_grant", "revoked"),
+			wantMsg:       "token request failed: invalid_grant - revoked",
+			wantPermanent: true,
+			wantRejected:  true,
+		},
+		{
+			name:          "invalid_client",
+			err:           retrieveErr(http.StatusUnauthorized, "invalid_client", "unknown client"),
+			wantMsg:       "token request failed: invalid_client - unknown client",
+			wantPermanent: true,
+		},
+		{
+			name:    "503",
+			err:     retrieveErr(http.StatusServiceUnavailable, "", ""),
+			wantMsg: "token request failed with status 503",
+		},
+		{
+			name:    "429",
+			err:     retrieveErr(http.StatusTooManyRequests, "", ""),
+			wantMsg: "token request failed with status 429",
+		},
+		{
+			name:    "4xx without an error code",
+			err:     retrieveErr(http.StatusForbidden, "", ""),
+			wantMsg: "token request failed with status 403",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := formatOAuth2Error(tt.err)
+
+			assert.Equal(t, tt.wantMsg, err.Error())
+			assert.Equal(t, tt.wantPermanent, oautherr.IsPermanentCredentialError(err))
+			assert.Equal(t, tt.wantRejected, oautherr.IsRejectedRefreshGrant(err))
+			assert.Equal(t, tt.wantRejected, errors.Is(err, ErrGrantRejected))
+
+			got, ok := errors.AsType[*oauth2.RetrieveError](err)
+			require.True(t, ok, "RetrieveError not in chain: %v", err)
+			assert.Equal(t, tt.err.ErrorCode, got.ErrorCode)
+			require.NotNil(t, got.Response)
+			assert.Equal(t, tt.err.Response.StatusCode, got.Response.StatusCode)
+			assert.Nil(t, got.Response.Request, "unwrapped cause must not reach the outgoing request")
+			assert.Empty(t, got.Body)
+			assert.NotContains(t, got.Error(), body, "unwrapped cause must not carry the response body")
+			assert.Equal(t, []byte(body), tt.err.Body, "caller's RetrieveError must not be mutated")
+			assert.NotNil(t, tt.err.Response.Request, "caller's Response must not be mutated")
+		})
+	}
+}
+
+// TestExchangeCodeForIdentity_KeepsRetrieveErrorInChain verifies that the
+// authorization code exchange, which shares formatOAuth2Error with refresh,
+// also keeps a scrubbed *oauth2.RetrieveError in its error chain.
+func TestExchangeCodeForIdentity_KeepsRetrieveErrorInChain(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		status        int
+		body          string
+		wantPermanent bool
+	}{
+		{name: "invalid_client", status: http.StatusUnauthorized, body: `{"error":"invalid_client"}`, wantPermanent: true},
+		{name: "503", status: http.StatusServiceUnavailable, body: `upstream down`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			idp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				if tt.wantPermanent {
+					w.Header().Set("Content-Type", "application/json")
+				}
+				w.WriteHeader(tt.status)
+				_, _ = w.Write([]byte(tt.body))
+			}))
+			t.Cleanup(idp.Close)
+
+			provider, err := NewOAuth2Provider(&OAuth2Config{
+				CommonOAuthConfig: CommonOAuthConfig{
+					ClientID:     "test-client",
+					ClientSecret: "test-secret",
+					RedirectURI:  "http://localhost:8080/callback",
+				},
+				AuthorizationEndpoint: idp.URL + "/authorize",
+				TokenEndpoint:         idp.URL + "/token",
+			})
+			require.NoError(t, err)
+
+			_, err = provider.ExchangeCodeForIdentity(context.Background(), "code", "verifier", "")
+			require.Error(t, err)
+			assert.Equal(t, tt.wantPermanent, oautherr.IsPermanentCredentialError(err), "err = %v", err)
+
+			got, ok := errors.AsType[*oauth2.RetrieveError](err)
+			require.True(t, ok, "RetrieveError not in chain: %v", err)
+			require.NotNil(t, got.Response)
+			assert.Equal(t, tt.status, got.Response.StatusCode)
+			assert.Nil(t, got.Response.Request)
+			assert.Empty(t, got.Body)
 		})
 	}
 }

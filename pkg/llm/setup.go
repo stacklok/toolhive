@@ -86,11 +86,15 @@ type SecretsProviderFunc func() (pkgsecrets.Provider, error)
 // message is printed telling the user that login will occur on first gateway
 // access. lazy is intended for unattended provisioning (e.g. an MDM profile);
 // it is opt-in and does not change behaviour for interactive users.
+//
+// When inlineOpts changes the requested scopes, the cached tokens are deleted
+// just before login (see invalidateTokensOnScopeChange). getSecrets is called
+// only in that case.
 func Setup(
 	ctx context.Context, out, errOut io.Writer,
 	gm GatewayManager, provider ConfigUpdater, login LoginFunc,
 	inlineOpts SetOptions, anthropicPathPrefix string, anthropicPathPrefixSet bool, targetClient string,
-	lazy bool,
+	lazy bool, getSecrets SecretsProviderFunc,
 ) error {
 	llmCfg, err := prepareSetupConfig(provider, inlineOpts)
 	if err != nil {
@@ -114,6 +118,15 @@ func Setup(
 
 	tokenHelperPath, tokenHelperArgs, err := buildTokenHelperArgv()
 	if err != nil {
+		return err
+	}
+
+	// Changed scopes must not meet the old refresh token, so the cache is dropped
+	// right before login. This runs only once the flags validated and there are
+	// tools to configure, so an early return above never costs the user a session.
+	if err := invalidateTokensOnScopeChange(
+		ctx, errOut, provider, provider.GetLLMConfig(), llmCfg, getSecrets,
+	); err != nil {
 		return err
 	}
 

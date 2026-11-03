@@ -6,13 +6,17 @@ package authserver
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
 	"encoding/json"
 	"log/slog"
 	"math"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/go-jose/go-jose/v4"
 	"github.com/ory/fosite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -200,7 +204,7 @@ func TestConfigValidate(t *testing.T) {
 		{name: "CIMD enabled with valid bounds passes", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, CIMDEnabled: true, CIMDCacheMaxSize: 256, CIMDCacheFallbackTTL: 5 * time.Minute}},
 
 		// Confidential-client transport gate (same predicate RunConfig.Validate uses)
-		{name: "confidential clients combined with insecure HTTP rejects", config: Config{Issuer: "http://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, AllowConfidentialClientRegistration: true, InsecureAllowHTTP: true}, wantErr: true, errMsg: "allow_confidential_client_registration cannot be combined with insecure_allow_http"},
+		{name: "confidential clients combined with insecure HTTP rejects", config: Config{Issuer: "http://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, AllowConfidentialClientRegistration: true, InsecureAllowHTTP: true}, wantErr: true, errMsg: "confidential clients (allow_confidential_client_registration or delegate clients) cannot be combined with insecure_allow_http"},
 		{name: "private-key JWT registration combined with insecure HTTP passes (no secret to protect)", config: Config{Issuer: "http://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, AllowPrivateKeyJWTRegistration: true, InsecureAllowHTTP: true}},
 		{name: "private-key JWT registration combined with token exchange disabled rejects", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, AllowPrivateKeyJWTRegistration: true, DisableTokenExchange: true}, wantErr: true, errMsg: "token-exchange-only"},
 
@@ -243,10 +247,11 @@ func TestConfigValidate(t *testing.T) {
 	}
 }
 
-func TestConfigValidateSubjectIdentifierAudiences(t *testing.T) {
-	t.Parallel()
+// minimalValidConfig returns a Config that passes Validate, for tests that vary one field.
+func minimalValidConfig(t *testing.T) Config {
+	t.Helper()
 
-	base := Config{
+	return Config{
 		Issuer:      "https://issuer.example.com",
 		HMACSecrets: &servercrypto.HMACSecrets{Current: make([]byte, 32)},
 		Upstreams: []UpstreamConfig{{
@@ -259,6 +264,12 @@ func TestConfigValidateSubjectIdentifierAudiences(t *testing.T) {
 		}},
 		AllowedAudiences: []string{"https://resource.example.com"},
 	}
+}
+
+func TestConfigValidateSubjectIdentifierAudiences(t *testing.T) {
+	t.Parallel()
+
+	base := minimalValidConfig(t)
 
 	tests := []struct {
 		name      string
@@ -274,6 +285,34 @@ func TestConfigValidateSubjectIdentifierAudiences(t *testing.T) {
 			t.Parallel()
 			cfg := base
 			cfg.SubjectIdentifierAudiences = tc.audiences
+			err := cfg.Validate()
+			if tc.wantErr {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
+func TestConfigValidateAccessTokenType(t *testing.T) {
+	t.Parallel()
+
+	base := minimalValidConfig(t)
+
+	tests := []struct {
+		name    string
+		typ     string
+		wantErr bool
+	}{
+		{name: "at+jwt is accepted", typ: "at+jwt"},
+		{name: "media type prefix is rejected", typ: "application/at+jwt", wantErr: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := base
+			cfg.AccessTokenType = tc.typ
 			err := cfg.Validate()
 			if tc.wantErr {
 				require.Error(t, err)
@@ -628,6 +667,17 @@ func TestOAuth2UpstreamRunConfigValidate(t *testing.T) {
 				TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodClientSecretBasic,
 			},
 		},
+		{
+			// The secret comes from the registration, so the method only
+			// selects how the client registers.
+			name: "client_secret_post with dcr_config and no secret source is valid",
+			config: OAuth2UpstreamRunConfig{
+				DCRConfig: &DCRUpstreamConfig{
+					DiscoveryURL: "https://idp.example.com/.well-known/oauth-authorization-server",
+				},
+				TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodClientSecretPost,
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -791,6 +841,89 @@ func TestRunConfigValidate(t *testing.T) {
 			t.Parallel()
 			err := tt.config.Validate()
 			assertError(t, err, tt.wantErr, tt.errMsg)
+		})
+	}
+}
+
+func TestUpstreamConfig_DisplayNameNeverFailsValidation(t *testing.T) {
+	t.Parallel()
+
+	newConfig := func(name, displayName string) Config {
+		return Config{
+			Issuer: "https://example.com", KeyProvider: keys.NewGeneratingProvider(keys.DefaultAlgorithm),
+			HMACSecrets:      &servercrypto.HMACSecrets{Current: make([]byte, 32)},
+			AllowedAudiences: []string{"https://mcp.example.com"},
+			Upstreams: []UpstreamConfig{{
+				Name: name, DisplayName: displayName, Type: UpstreamProviderTypeOAuth2,
+				OAuth2Config: &upstream.OAuth2Config{
+					CommonOAuthConfig:     upstream.CommonOAuthConfig{ClientID: "c", RedirectURI: "https://example.com/cb"},
+					AuthorizationEndpoint: "https://idp.example.com/authorize",
+					TokenEndpoint:         "https://idp.example.com/token",
+				},
+			}},
+		}
+	}
+	for name, displayName := range map[string]string{
+		"empty":           "",
+		"plain":           "Acme Okta",
+		"control runes":   "Acme\u202e\u200b\nOkta",
+		"whitespace only": " \t ",
+		"html":            "<script>alert(1)</script>",
+		"very long":       strings.Repeat("é", 1000),
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			cfg := newConfig("ffffffff-ffff-ffff-ffff-ffffffffffff", displayName)
+			require.NoError(t, cfg.Validate())
+		})
+	}
+	t.Run("name is still validated", func(t *testing.T) {
+		t.Parallel()
+		cfg := newConfig("Not_A_Label", "Acme Okta")
+		require.Error(t, cfg.Validate())
+	})
+}
+
+// TestRunConfig_DisplayNameRoundTrip pins the display_name key in YAML and JSON,
+// the form operators write in config files and ConfigMaps, and checks that an
+// unset display name is omitted on encode.
+func TestRunConfig_DisplayNameRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	const yamlDoc = `
+upstreams:
+  - name: okta
+    display_name: Acme Okta
+`
+	const jsonDoc = `{"upstreams":[{"name":"okta","display_name":"Acme Okta"}]}`
+	for _, tc := range []struct {
+		name      string
+		unmarshal func([]byte, any) error
+		marshal   func(any) ([]byte, error)
+		doc       string
+	}{
+		{name: "yaml", unmarshal: yaml.Unmarshal, marshal: yaml.Marshal, doc: yamlDoc},
+		{name: "json", unmarshal: json.Unmarshal, marshal: json.Marshal, doc: jsonDoc},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var decoded RunConfig
+			require.NoError(t, tc.unmarshal([]byte(tc.doc), &decoded))
+			require.Len(t, decoded.Upstreams, 1)
+			assert.Equal(t, "okta", decoded.Upstreams[0].Name)
+			assert.Equal(t, "Acme Okta", decoded.Upstreams[0].DisplayName)
+
+			encoded, err := tc.marshal(&decoded)
+			require.NoError(t, err)
+			assert.Contains(t, string(encoded), "display_name")
+			var reDecoded RunConfig
+			require.NoError(t, tc.unmarshal(encoded, &reDecoded))
+			assert.Equal(t, decoded.Upstreams, reDecoded.Upstreams)
+
+			decoded.Upstreams[0].DisplayName = ""
+			encoded, err = tc.marshal(&decoded)
+			require.NoError(t, err)
+			assert.NotContains(t, string(encoded), "display_name")
 		})
 	}
 }
@@ -1019,14 +1152,139 @@ func TestDelegateClientRunConfigValidate(t *testing.T) {
 		clients []DelegateClientRunConfig
 		wantErr string
 	}{
-		{name: "valid", clients: []DelegateClientRunConfig{validClient}},
+		{name: "secret client without grant types or block keeps legacy trust", clients: []DelegateClientRunConfig{validClient}},
 		{name: "empty ID", clients: []DelegateClientRunConfig{{ClientSecretEnvVar: "SECRET", Scopes: validClient.Scopes, Audiences: validClient.Audiences}}, wantErr: "client_id is required"},
 		{name: "duplicate ID", clients: []DelegateClientRunConfig{validClient, validClient}, wantErr: "duplicate client_id"},
-		{name: "missing secret reference", clients: []DelegateClientRunConfig{{ClientID: "delegate", Scopes: validClient.Scopes, Audiences: validClient.Audiences}}, wantErr: "client_secret_file or client_secret_env_var is required"},
+		{name: "missing secret reference", clients: []DelegateClientRunConfig{{ClientID: "delegate", Scopes: validClient.Scopes, Audiences: validClient.Audiences}}, wantErr: "secret is required"},
 		{name: "missing scopes", clients: []DelegateClientRunConfig{{ClientID: "delegate", ClientSecretEnvVar: "SECRET", Audiences: validClient.Audiences}}, wantErr: "scopes is required"},
 		{name: "scope outside supported", clients: []DelegateClientRunConfig{{ClientID: "delegate", ClientSecretEnvVar: "SECRET", Scopes: []string{"admin"}, Audiences: validClient.Audiences}}, wantErr: `"admin" which is not in scopes_supported`},
 		{name: "missing audiences", clients: []DelegateClientRunConfig{{ClientID: "delegate", ClientSecretEnvVar: "SECRET", Scopes: validClient.Scopes}}, wantErr: "audiences is required"},
 		{name: "audience outside allowed", clients: []DelegateClientRunConfig{{ClientID: "delegate", ClientSecretEnvVar: "SECRET", Scopes: validClient.Scopes, Audiences: []string{"https://other.example.com"}}}, wantErr: "is not in allowed_audiences"},
+		{name: "private_key_jwt without token exchange block", clients: []DelegateClientRunConfig{{
+			ClientID: "delegate", TokenEndpointAuthMethod: "private_key_jwt", JWKSFile: "/keys/jwks.json",
+			Scopes: validClient.Scopes, Audiences: validClient.Audiences,
+		}}, wantErr: "private_key_jwt clients must declare a token_exchange block"},
+		{name: "private_key_jwt with jwks file", clients: []DelegateClientRunConfig{{
+			ClientID: "delegate", TokenEndpointAuthMethod: "private_key_jwt", JWKSFile: "/keys/jwks.json",
+			TokenExchange: &DelegateClientTokenExchange{SelfIssuedSubjectTokens: SelfIssuedSubjectTokensAny},
+			Scopes:        validClient.Scopes, Audiences: validClient.Audiences,
+		}}},
+		{name: "private_key_jwt without jwks file", clients: []DelegateClientRunConfig{{
+			ClientID: "delegate", TokenEndpointAuthMethod: "private_key_jwt",
+			Scopes: validClient.Scopes, Audiences: validClient.Audiences,
+		}}, wantErr: "jwks_file"},
+		{name: "private_key_jwt with a secret", clients: []DelegateClientRunConfig{{
+			ClientID: "delegate", TokenEndpointAuthMethod: "private_key_jwt", JWKSFile: "/keys/jwks.json",
+			ClientSecretEnvVar: "SECRET", Scopes: validClient.Scopes, Audiences: validClient.Audiences,
+		}}, wantErr: "not allowed with private_key_jwt"},
+		{name: "jwks file with a secret method", clients: []DelegateClientRunConfig{{
+			ClientID: "delegate", ClientSecretEnvVar: "SECRET", JWKSFile: "/keys/jwks.json",
+			Scopes: validClient.Scopes, Audiences: validClient.Audiences,
+		}}, wantErr: "only allowed with"},
+		{name: "pinned secret method", clients: []DelegateClientRunConfig{{
+			ClientID: "delegate", TokenEndpointAuthMethod: "client_secret_post", ClientSecretEnvVar: "SECRET",
+			Scopes: validClient.Scopes, Audiences: validClient.Audiences,
+		}}},
+		{name: "grant types without token exchange", clients: []DelegateClientRunConfig{{
+			ClientID: "delegate", ClientSecretEnvVar: "SECRET", GrantTypes: []string{"refresh_token"},
+			Scopes: validClient.Scopes, Audiences: validClient.Audiences,
+		}}, wantErr: "must include"},
+		{name: "authorization_code with redirect", clients: []DelegateClientRunConfig{{
+			ClientID: "delegate", ClientSecretEnvVar: "SECRET",
+			GrantTypes:    []string{"urn:ietf:params:oauth:grant-type:token-exchange", "authorization_code"},
+			RedirectURIs:  []string{"https://broker.example.com/callback"},
+			TokenExchange: &DelegateClientTokenExchange{SelfIssuedSubjectTokens: SelfIssuedSubjectTokensAny},
+			Scopes:        validClient.Scopes, Audiences: validClient.Audiences,
+		}}},
+		{name: "authorization_code without redirect", clients: []DelegateClientRunConfig{{
+			ClientID: "delegate", ClientSecretEnvVar: "SECRET",
+			GrantTypes: []string{"urn:ietf:params:oauth:grant-type:token-exchange", "authorization_code"},
+			Scopes:     validClient.Scopes, Audiences: validClient.Audiences,
+		}}, wantErr: "redirect_uris is required"},
+		{name: "redirect without authorization_code", clients: []DelegateClientRunConfig{{
+			ClientID: "delegate", ClientSecretEnvVar: "SECRET", RedirectURIs: []string{"https://broker.example.com/callback"},
+			Scopes: validClient.Scopes, Audiences: validClient.Audiences,
+		}}, wantErr: "only allowed with the authorization_code grant"},
+		{name: "token_exchange with source client and subject token audiences", clients: []DelegateClientRunConfig{{
+			ClientID: "delegate", ClientSecretEnvVar: "SECRET",
+			TokenExchange: &DelegateClientTokenExchange{
+				SelfIssuedSubjectTokens: SelfIssuedSubjectTokensRestricted,
+				AllowedSourceClients:    []string{"tui"}, SubjectTokenAudiences: []string{"https://mcp.example.com"},
+			},
+			Scopes: validClient.Scopes, Audiences: validClient.Audiences,
+		}}},
+		{name: "token_exchange source client is another delegate client", clients: []DelegateClientRunConfig{
+			validClient,
+			{
+				ClientID: "broker", ClientSecretEnvVar: "SECRET",
+				TokenExchange: &DelegateClientTokenExchange{
+					SelfIssuedSubjectTokens: SelfIssuedSubjectTokensRestricted,
+					AllowedSourceClients:    []string{"delegate"},
+				},
+				Scopes: validClient.Scopes, Audiences: validClient.Audiences,
+			},
+		}, wantErr: "configured delegate client"},
+		{name: "empty token_exchange block", clients: []DelegateClientRunConfig{{
+			ClientID: "delegate", ClientSecretEnvVar: "SECRET", TokenExchange: &DelegateClientTokenExchange{},
+			Scopes: validClient.Scopes, Audiences: validClient.Audiences,
+		}}, wantErr: "self_issued_subject_tokens is required"},
+		{name: "unsupported self_issued_subject_tokens", clients: []DelegateClientRunConfig{{
+			ClientID: "delegate", ClientSecretEnvVar: "SECRET",
+			TokenExchange: &DelegateClientTokenExchange{SelfIssuedSubjectTokens: "blanket"},
+			Scopes:        validClient.Scopes, Audiences: validClient.Audiences,
+		}}, wantErr: `self_issued_subject_tokens "blanket" is not supported`},
+		{name: "grant_types without token_exchange block", clients: []DelegateClientRunConfig{{
+			ClientID: "delegate", ClientSecretEnvVar: "SECRET",
+			GrantTypes: []string{"urn:ietf:params:oauth:grant-type:token-exchange"},
+			Scopes:     validClient.Scopes, Audiences: validClient.Audiences,
+		}}, wantErr: "grant_types is set, so a token_exchange block"},
+		{name: "grant_types with explicit any", clients: []DelegateClientRunConfig{{
+			ClientID: "delegate", ClientSecretEnvVar: "SECRET",
+			GrantTypes:    []string{"urn:ietf:params:oauth:grant-type:token-exchange"},
+			TokenExchange: &DelegateClientTokenExchange{SelfIssuedSubjectTokens: SelfIssuedSubjectTokensAny},
+			Scopes:        validClient.Scopes, Audiences: validClient.Audiences,
+		}}},
+		{name: "empty grant_types without token_exchange block", clients: []DelegateClientRunConfig{{
+			ClientID: "delegate", ClientSecretEnvVar: "SECRET", GrantTypes: []string{},
+			Scopes: validClient.Scopes, Audiences: validClient.Audiences,
+		}}},
+		{name: "restricted with no source clients", clients: []DelegateClientRunConfig{{
+			ClientID: "delegate", ClientSecretEnvVar: "SECRET",
+			GrantTypes: []string{"urn:ietf:params:oauth:grant-type:token-exchange"},
+			TokenExchange: &DelegateClientTokenExchange{
+				SelfIssuedSubjectTokens: SelfIssuedSubjectTokensRestricted, AllowedSourceClients: []string{},
+			},
+			Scopes: validClient.Scopes, Audiences: validClient.Audiences,
+		}}},
+		{name: "any with source clients", clients: []DelegateClientRunConfig{{
+			ClientID: "delegate", ClientSecretEnvVar: "SECRET",
+			TokenExchange: &DelegateClientTokenExchange{
+				SelfIssuedSubjectTokens: SelfIssuedSubjectTokensAny, AllowedSourceClients: []string{"tui"},
+			},
+			Scopes: validClient.Scopes, Audiences: validClient.Audiences,
+		}}, wantErr: "allowed_source_clients is valid only with"},
+		{name: "any with subject token audiences", clients: []DelegateClientRunConfig{{
+			ClientID: "delegate", ClientSecretEnvVar: "SECRET",
+			TokenExchange: &DelegateClientTokenExchange{
+				SelfIssuedSubjectTokens: SelfIssuedSubjectTokensAny, SubjectTokenAudiences: []string{"https://mcp.example.com"},
+			},
+			Scopes: validClient.Scopes, Audiences: validClient.Audiences,
+		}}, wantErr: "subject_token_audiences is valid only with"},
+		{name: "empty subject token audiences list is unset", clients: []DelegateClientRunConfig{{
+			ClientID: "delegate", ClientSecretEnvVar: "SECRET",
+			TokenExchange: &DelegateClientTokenExchange{
+				SelfIssuedSubjectTokens: SelfIssuedSubjectTokensRestricted, SubjectTokenAudiences: []string{},
+			},
+			Scopes: validClient.Scopes, Audiences: validClient.Audiences,
+		}}},
+		{name: "subject token audience not in allowed_audiences", clients: []DelegateClientRunConfig{{
+			ClientID: "delegate", ClientSecretEnvVar: "SECRET",
+			TokenExchange: &DelegateClientTokenExchange{
+				SelfIssuedSubjectTokens: SelfIssuedSubjectTokensRestricted,
+				SubjectTokenAudiences:   []string{"https://other.example.com"},
+			},
+			Scopes: validClient.Scopes, Audiences: validClient.Audiences,
+		}}, wantErr: `token_exchange.subject_token_audiences "https://other.example.com" is not in allowed_audiences`},
 		// P4 (PR #6284 review): a URL-shaped client_id collides with CIMD
 		// client resolution (oauthproto.IsClientIDMetadataDocumentURL) — the
 		// CIMD decorator would shadow this pre-provisioned client on reads,
@@ -1065,6 +1323,236 @@ func TestDelegateClientRunConfigValidate(t *testing.T) {
 	}
 }
 
+// TestDelegateClientExchangeRefreshTokensValidate runs each exchange_refresh_tokens
+// rule through both the RunConfig path and the resolved Config path.
+func TestDelegateClientExchangeRefreshTokensValidate(t *testing.T) {
+	t.Parallel()
+
+	const (
+		audience = "https://mcp.example.com"
+		input    = "https://input.example.com"
+		secret   = "0123456789abcdef0123456789abcdef"
+	)
+	inputs := []string{input}
+	block := func(idJAG, refresh string) *DelegateClientExchangeRefreshTokens {
+		return &DelegateClientExchangeRefreshTokens{IDJAGMaxLifetime: idJAG, RefreshTokenMaxLifetime: refresh}
+	}
+
+	tests := []struct {
+		name             string
+		block            *DelegateClientExchangeRefreshTokens
+		subjectAudiences []string
+		noSources        bool
+		mode             SelfIssuedSubjectTokens
+		noAudiences      bool
+		clientAudiences  []string
+		grantTypes       []string
+		scopesSupported  []string
+		wantErr          string
+	}{
+		{name: "id-jag cap only", block: block("12h", ""), subjectAudiences: inputs},
+		{name: "scopes_supported with offline", block: block("12h", ""), subjectAudiences: inputs,
+			scopesSupported: []string{"openid", "offline"}},
+		{name: "scopes_supported without a refresh-token scope", block: block("12h", ""), subjectAudiences: inputs,
+			scopesSupported: []string{"openid", "profile"},
+			wantErr: "token_exchange.exchange_refresh_tokens requires one of the refresh-token scopes " +
+				"(offline, offline_access) in scopes_supported"},
+		{name: "scopes_supported empty uses the default scopes", block: block("12h", ""), subjectAudiences: inputs,
+			scopesSupported: []string{}},
+		{name: "scopes_supported without a refresh-token scope and no block", block: nil, subjectAudiences: inputs,
+			scopesSupported: []string{"openid"}},
+		{name: "refresh cap only", block: block("", "720h"), subjectAudiences: inputs},
+		{name: "both caps", block: block("1h", "24h"), subjectAudiences: inputs},
+		{name: "absent block", block: nil, subjectAudiences: inputs},
+		{name: "no caps", block: block("", ""), subjectAudiences: inputs,
+			wantErr: "needs id_jag_max_lifetime or refresh_token_max_lifetime"},
+		{name: "zero id-jag cap", block: block("0s", ""), subjectAudiences: inputs,
+			wantErr: "id_jag_max_lifetime must be positive"},
+		{name: "zero refresh cap without unit", block: block("", "0"), subjectAudiences: inputs,
+			wantErr: "refresh_token_max_lifetime must be positive"},
+		{name: "negative id-jag cap", block: block("-1h", ""), subjectAudiences: inputs,
+			wantErr: "id_jag_max_lifetime must be positive"},
+		{name: "negative refresh cap", block: block("", "-1s"), subjectAudiences: inputs,
+			wantErr: "refresh_token_max_lifetime must be positive"},
+		{name: "id-jag cap above 720h", block: block("721h", ""), subjectAudiences: inputs,
+			wantErr: "id_jag_max_lifetime must not exceed 720h"},
+		{name: "refresh cap above 720h", block: block("", "1000h"), subjectAudiences: inputs,
+			wantErr: "refresh_token_max_lifetime must not exceed 720h"},
+		{name: "both caps exactly 720h", block: block("720h", "720h"), subjectAudiences: inputs},
+		{name: "id-jag cap one nanosecond over 720h", block: block("720h0m0.000000001s", ""), subjectAudiences: inputs,
+			wantErr: "id_jag_max_lifetime must not exceed 720h"},
+		{name: "refresh cap one nanosecond over 720h", block: block("", "720h0m0.000000001s"), subjectAudiences: inputs,
+			wantErr: "refresh_token_max_lifetime must not exceed 720h"},
+		{name: "id-jag cap with leading space", block: block(" 12h", ""), subjectAudiences: inputs,
+			wantErr: "invalid duration"},
+		{name: "refresh cap with trailing space", block: block("", "12h "), subjectAudiences: inputs,
+			wantErr: "unknown unit"},
+		{name: "id-jag cap without unit", block: block("12", ""), subjectAudiences: inputs,
+			wantErr: "missing unit"},
+		{name: "unparsable cap", block: block("soon", ""), subjectAudiences: inputs,
+			wantErr: "token_exchange.exchange_refresh_tokens.id_jag_max_lifetime"},
+		{name: "subject token audiences missing", block: block("12h", ""),
+			wantErr: "subject_token_audiences is required with token_exchange.exchange_refresh_tokens"},
+		{name: "allowed source clients missing", block: block("12h", ""), subjectAudiences: inputs, noSources: true,
+			wantErr: "allowed_source_clients is required with token_exchange.exchange_refresh_tokens"},
+		{name: "any mode", block: block("12h", ""), mode: SelfIssuedSubjectTokensAny,
+			wantErr: `token_exchange.exchange_refresh_tokens requires self_issued_subject_tokens "restricted"`},
+		{name: "any mode with subject token audiences", block: block("12h", ""), subjectAudiences: inputs,
+			mode: SelfIssuedSubjectTokensAny, wantErr: "token_exchange.subject_token_audiences is valid only with"},
+		{name: "any mode without block", block: nil, mode: SelfIssuedSubjectTokensAny},
+		{name: "empty audiences with grant_types omitted", block: block("12h", ""), subjectAudiences: inputs,
+			noAudiences: true},
+		{name: "empty audiences with only the token-exchange grant", block: block("12h", ""),
+			subjectAudiences: inputs, noAudiences: true,
+			grantTypes: []string{oauthproto.GrantTypeTokenExchange}},
+		{name: "empty audiences with jwt-bearer", block: block("12h", ""), subjectAudiences: inputs,
+			noAudiences: true, grantTypes: []string{oauthproto.GrantTypeTokenExchange, oauthproto.GrantTypeJWTBearer},
+			wantErr: "audiences must not be empty when grant_types includes grants other than " +
+				oauthproto.GrantTypeTokenExchange},
+		{name: "empty audiences with authorization_code", block: block("12h", ""), subjectAudiences: inputs,
+			noAudiences: true, grantTypes: []string{oauthproto.GrantTypeTokenExchange, oauthproto.GrantTypeAuthorizationCode},
+			wantErr: "audiences must not be empty when grant_types includes grants other than"},
+		{name: "empty audiences without a block", block: nil, noAudiences: true,
+			wantErr: "audiences is required unless token_exchange.exchange_refresh_tokens is set"},
+		{name: "input audience equal to a client audience", block: block("12h", ""),
+			subjectAudiences: []string{audience},
+			wantErr: `subject_token_audiences "https://mcp.example.com" is covered by the client's audience ` +
+				`"https://mcp.example.com": while exchange_refresh_tokens is set, an input audience must not be one the client can obtain`},
+		{name: "input audience under a client audience path", block: block("12h", ""),
+			subjectAudiences: []string{audience + "/v1"}, wantErr: "is covered by the client's audience"},
+		{name: "input audience outside allowed_audiences", block: block("12h", ""),
+			subjectAudiences: []string{"https://elsewhere.example.com"}, wantErr: "is not in allowed_audiences"},
+		{name: "equal non-URL audiences", block: block("12h", ""), clientAudiences: []string{"not-a-url"},
+			subjectAudiences: []string{"not-a-url"}, wantErr: "is covered by the client's audience"},
+		{name: "different non-URL audiences", block: block("12h", ""), clientAudiences: []string{"not-a-url"},
+			subjectAudiences: []string{"other-not-a-url"}},
+		{name: "overlap is allowed without the block", block: nil, subjectAudiences: []string{audience}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			mode := tt.mode
+			if mode == "" {
+				mode = SelfIssuedSubjectTokensRestricted
+			}
+			tokenExchange := &DelegateClientTokenExchange{
+				SelfIssuedSubjectTokens: mode,
+				SubjectTokenAudiences:   tt.subjectAudiences,
+				ExchangeRefreshTokens:   tt.block,
+			}
+			if tt.block != nil && !tt.noSources && mode == SelfIssuedSubjectTokensRestricted {
+				tokenExchange.AllowedSourceClients = []string{"tui"}
+			}
+			audiences := []string{audience}
+			switch {
+			case tt.noAudiences:
+				audiences = nil
+			case tt.clientAudiences != nil:
+				audiences = tt.clientAudiences
+			}
+			allowed := []string{audience, audience + "/v1", input, "not-a-url", "other-not-a-url"}
+			supported := tt.scopesSupported
+			if supported == nil {
+				supported = []string{"openid", "offline_access"}
+			}
+			runConfigClients := []DelegateClientRunConfig{{
+				ClientID: "delegate", ClientSecretEnvVar: "SECRET", TokenExchange: tokenExchange,
+				GrantTypes: tt.grantTypes, RedirectURIs: redirectURIsFor(tt.grantTypes),
+				Scopes: []string{"openid"}, Audiences: audiences,
+			}}
+			assertError(t, validateDelegateClients(runConfigClients, supported, allowed),
+				tt.wantErr != "", tt.wantErr)
+
+			resolvedClients := []DelegateClient{{
+				ClientID: "delegate", ClientSecret: secret, TokenExchange: tokenExchange,
+				GrantTypes: tt.grantTypes, RedirectURIs: redirectURIsFor(tt.grantTypes),
+				Scopes: []string{"openid"}, Audiences: audiences,
+			}}
+			assertError(t, validateResolvedDelegateClients(resolvedClients, supported, allowed),
+				tt.wantErr != "", tt.wantErr)
+		})
+	}
+}
+
+// redirectURIsFor returns a redirect URI for a grant set that includes
+// authorization_code, which requires one.
+func redirectURIsFor(grantTypes []string) []string {
+	if slices.Contains(grantTypes, oauthproto.GrantTypeAuthorizationCode) {
+		return []string{"https://broker.example.com/callback"}
+	}
+	return nil
+}
+
+func TestDelegateClientExchangeRefreshTokensRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		json     string
+		yaml     string
+		wantNil  bool
+		wantIDJA string
+		wantRefr string
+	}{
+		{
+			name:    "absent",
+			json:    `{"client_id":"c","token_exchange":{"self_issued_subject_tokens":"restricted","subject_token_audiences":["a"]}}`,
+			yaml:    "client_id: c\ntoken_exchange:\n  self_issued_subject_tokens: restricted\n  subject_token_audiences: [a]\n",
+			wantNil: true,
+		},
+		{
+			name:     "populated",
+			json:     `{"client_id":"c","token_exchange":{"self_issued_subject_tokens":"restricted","subject_token_audiences":["a"],"exchange_refresh_tokens":{"id_jag_max_lifetime":"12h","refresh_token_max_lifetime":"720h"}}}`,
+			yaml:     "client_id: c\ntoken_exchange:\n  self_issued_subject_tokens: restricted\n  subject_token_audiences: [a]\n  exchange_refresh_tokens:\n    id_jag_max_lifetime: 12h\n    refresh_token_max_lifetime: 720h\n",
+			wantIDJA: "12h",
+			wantRefr: "720h",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			check := func(t *testing.T, got DelegateClientRunConfig) {
+				t.Helper()
+				require.NotNil(t, got.TokenExchange)
+				if tt.wantNil {
+					assert.Nil(t, got.TokenExchange.ExchangeRefreshTokens)
+					return
+				}
+				require.NotNil(t, got.TokenExchange.ExchangeRefreshTokens)
+				assert.Equal(t, tt.wantIDJA, got.TokenExchange.ExchangeRefreshTokens.IDJAGMaxLifetime)
+				assert.Equal(t, tt.wantRefr, got.TokenExchange.ExchangeRefreshTokens.RefreshTokenMaxLifetime)
+			}
+
+			var fromJSON DelegateClientRunConfig
+			require.NoError(t, json.Unmarshal([]byte(tt.json), &fromJSON))
+			check(t, fromJSON)
+			encoded, err := json.Marshal(fromJSON)
+			require.NoError(t, err)
+			if tt.wantNil {
+				assert.NotContains(t, string(encoded), "exchange_refresh_tokens")
+			}
+			var reJSON DelegateClientRunConfig
+			require.NoError(t, json.Unmarshal(encoded, &reJSON))
+			check(t, reJSON)
+
+			var fromYAML DelegateClientRunConfig
+			require.NoError(t, yaml.Unmarshal([]byte(tt.yaml), &fromYAML))
+			check(t, fromYAML)
+			encoded, err = yaml.Marshal(fromYAML)
+			require.NoError(t, err)
+			if tt.wantNil {
+				assert.NotContains(t, string(encoded), "exchange_refresh_tokens")
+			}
+			var reYAML DelegateClientRunConfig
+			require.NoError(t, yaml.Unmarshal(encoded, &reYAML))
+			check(t, reYAML)
+		})
+	}
+}
+
 func TestRunConfigValidateAllowedAudiences(t *testing.T) {
 	t.Parallel()
 
@@ -1074,6 +1562,59 @@ func TestRunConfigValidateAllowedAudiences(t *testing.T) {
 	}
 
 	require.ErrorContains(t, cfg.Validate(), "allowed_audiences contains invalid audience")
+}
+
+func TestRunConfigValidate_DelegateClientTransport(t *testing.T) {
+	t.Parallel()
+
+	secretClient := DelegateClientRunConfig{
+		ClientID: "secret-client", ClientSecretEnvVar: "SECRET",
+		Scopes: []string{"openid"}, Audiences: []string{"https://mcp.example.com"},
+	}
+	keyClient := DelegateClientRunConfig{
+		ClientID: "key-client", TokenEndpointAuthMethod: "private_key_jwt", JWKSFile: "/keys/jwks.json",
+		TokenExchange: &DelegateClientTokenExchange{SelfIssuedSubjectTokens: SelfIssuedSubjectTokensAny},
+		Scopes:        []string{"openid"}, Audiences: []string{"https://mcp.example.com"},
+	}
+	tests := []struct {
+		name              string
+		clients           []DelegateClientRunConfig
+		issuer            string
+		insecureAllowHTTP bool
+		loopbackOptIn     bool
+		wantErr           string
+	}{
+		{name: "private_key_jwt only rejects non-loopback http issuer", clients: []DelegateClientRunConfig{keyClient},
+			issuer: "http://auth.example.com", insecureAllowHTTP: true, wantErr: "combined with insecure_allow_http:"},
+		{name: "private_key_jwt only rejects loopback http issuer without opt-in", clients: []DelegateClientRunConfig{keyClient},
+			issuer: "http://localhost:8080", wantErr: "insecure_allow_confidential_over_loopback_http"},
+		{name: "private_key_jwt only passes with loopback http issuer and opt-in", clients: []DelegateClientRunConfig{keyClient},
+			issuer: "http://localhost:8080", loopbackOptIn: true},
+		{name: "mixed secret and private_key_jwt rejects non-loopback http issuer",
+			clients: []DelegateClientRunConfig{keyClient, secretClient},
+			issuer:  "http://auth.example.com", insecureAllowHTTP: true, wantErr: "combined with insecure_allow_http:"},
+		{name: "mixed secret and private_key_jwt rejects loopback http issuer without opt-in",
+			clients: []DelegateClientRunConfig{keyClient, secretClient},
+			issuer:  "http://localhost:8080", wantErr: "insecure_allow_confidential_over_loopback_http"},
+		{name: "secret only rejects non-loopback http issuer", clients: []DelegateClientRunConfig{secretClient},
+			issuer: "http://auth.example.com", insecureAllowHTTP: true, wantErr: "combined with insecure_allow_http:"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := RunConfig{
+				Issuer:            tt.issuer,
+				InsecureAllowHTTP: tt.insecureAllowHTTP,
+				ScopesSupported:   []string{"openid"},
+				AllowedAudiences:  []string{"https://mcp.example.com"},
+				DelegateClients:   tt.clients,
+
+				InsecureAllowConfidentialOverLoopbackHTTP: tt.loopbackOptIn,
+			}
+			assertError(t, cfg.Validate(), tt.wantErr != "", tt.wantErr)
+		})
+	}
 }
 
 func TestConfigValidateDelegateClients(t *testing.T) {
@@ -1102,17 +1643,97 @@ func TestConfigValidateDelegateClients(t *testing.T) {
 		Scopes:       []string{"openid"},
 		Audiences:    []string{"https://mcp.example.com"},
 	}
+	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+	publicKeySet := &jose.JSONWebKeySet{Keys: []jose.JSONWebKey{{
+		Key: &rsaKey.PublicKey, KeyID: "k", Use: "sig", Algorithm: "RS256",
+	}}}
 	tests := []struct {
-		name    string
-		clients []DelegateClient
-		issuer  string
-		wantErr string
+		name          string
+		clients       []DelegateClient
+		issuer        string
+		loopbackOptIn bool
+		wantErr       string
 	}{
 		{name: "valid resolved client", clients: []DelegateClient{validClient}},
+		{name: "resolved private_key_jwt client without token exchange block", clients: []DelegateClient{{
+			ClientID: "delegate", TokenEndpointAuthMethod: "private_key_jwt", JSONWebKeys: publicKeySet,
+			Scopes: validClient.Scopes, Audiences: validClient.Audiences,
+		}}, wantErr: "private_key_jwt clients must declare a token_exchange block"},
+		{name: "resolved private_key_jwt client", clients: []DelegateClient{{
+			ClientID: "delegate", TokenEndpointAuthMethod: "private_key_jwt", JSONWebKeys: publicKeySet,
+			TokenExchange: &DelegateClientTokenExchange{SelfIssuedSubjectTokens: SelfIssuedSubjectTokensAny},
+			Scopes:        validClient.Scopes, Audiences: validClient.Audiences,
+		}}},
+		{name: "private_key_jwt with nil keys", clients: []DelegateClient{{
+			ClientID: "delegate", TokenEndpointAuthMethod: "private_key_jwt",
+			Scopes: validClient.Scopes, Audiences: validClient.Audiences,
+		}}, wantErr: "requires jwks_file with at least one key"},
+		{name: "private_key_jwt with empty keys", clients: []DelegateClient{{
+			ClientID: "delegate", TokenEndpointAuthMethod: "private_key_jwt", JSONWebKeys: &jose.JSONWebKeySet{},
+			Scopes: validClient.Scopes, Audiences: validClient.Audiences,
+		}}, wantErr: "requires jwks_file with at least one key"},
+		{name: "private_key_jwt with a secret", clients: []DelegateClient{{
+			ClientID: "delegate", TokenEndpointAuthMethod: "private_key_jwt", JSONWebKeys: publicKeySet,
+			ClientSecret: validClient.ClientSecret, Scopes: validClient.Scopes, Audiences: validClient.Audiences,
+		}}, wantErr: "not allowed with private_key_jwt"},
+		{name: "grant types without token exchange", clients: []DelegateClient{{
+			ClientID: "delegate", ClientSecret: validClient.ClientSecret, GrantTypes: []string{"refresh_token"},
+			Scopes: validClient.Scopes, Audiences: validClient.Audiences,
+		}}, wantErr: "must include"},
+		{name: "authorization_code without redirect URIs", clients: []DelegateClient{{
+			ClientID: "delegate", ClientSecret: validClient.ClientSecret,
+			GrantTypes: []string{"urn:ietf:params:oauth:grant-type:token-exchange", "authorization_code"},
+			Scopes:     validClient.Scopes, Audiences: validClient.Audiences,
+		}}, wantErr: "redirect_uris is required"},
+		{name: "redirect URIs without authorization_code", clients: []DelegateClient{{
+			ClientID: "delegate", ClientSecret: validClient.ClientSecret, RedirectURIs: []string{"https://broker.example.com/callback"},
+			Scopes: validClient.Scopes, Audiences: validClient.Audiences,
+		}}, wantErr: "only allowed with the authorization_code grant"},
+		{name: "resolved grant_types without token_exchange block", clients: []DelegateClient{{
+			ClientID: "delegate", ClientSecret: validClient.ClientSecret,
+			GrantTypes: []string{"urn:ietf:params:oauth:grant-type:token-exchange"},
+			Scopes:     validClient.Scopes, Audiences: validClient.Audiences,
+		}}, wantErr: "grant_types is set, so a token_exchange block"},
+		{name: "resolved empty token_exchange block", clients: []DelegateClient{{
+			ClientID: "delegate", ClientSecret: validClient.ClientSecret, TokenExchange: &DelegateClientTokenExchange{},
+			Scopes: validClient.Scopes, Audiences: validClient.Audiences,
+		}}, wantErr: "self_issued_subject_tokens is required"},
+		{name: "resolved any with source clients", clients: []DelegateClient{{
+			ClientID: "delegate", ClientSecret: validClient.ClientSecret,
+			TokenExchange: &DelegateClientTokenExchange{
+				SelfIssuedSubjectTokens: SelfIssuedSubjectTokensAny, AllowedSourceClients: []string{"tui"},
+			},
+			Scopes: validClient.Scopes, Audiences: validClient.Audiences,
+		}}, wantErr: "allowed_source_clients is valid only with"},
+		{name: "unsupported auth method", clients: []DelegateClient{{
+			ClientID: "delegate", ClientSecret: validClient.ClientSecret, TokenEndpointAuthMethod: "none",
+			Scopes: validClient.Scopes, Audiences: validClient.Audiences,
+		}}, wantErr: "unsupported token_endpoint_auth_method"},
 		{name: "missing resolved secret", clients: []DelegateClient{{ClientID: "delegate", Scopes: validClient.Scopes, Audiences: validClient.Audiences}}, wantErr: "resolved client secret is required"},
 		{name: "resolved secret too short", clients: []DelegateClient{{ClientID: "delegate", ClientSecret: "short-secret", Scopes: validClient.Scopes, Audiences: validClient.Audiences}}, wantErr: "resolved client secret must be at least"},
-		{name: "static client rejects insecure HTTP", clients: []DelegateClient{validClient}, issuer: "http://auth.example.com", wantErr: "confidential clients would send secrets over cleartext HTTP"},
+		{name: "static client rejects insecure HTTP", clients: []DelegateClient{validClient}, issuer: "http://auth.example.com", wantErr: "combined with insecure_allow_http:"},
 		{name: "static client rejects loopback HTTP without opt-in", clients: []DelegateClient{validClient}, issuer: "http://localhost:8080", wantErr: "insecure_allow_confidential_over_loopback_http"},
+		{name: "private_key_jwt only rejects insecure HTTP", clients: []DelegateClient{{
+			ClientID: "delegate", TokenEndpointAuthMethod: "private_key_jwt", JSONWebKeys: publicKeySet,
+			TokenExchange: &DelegateClientTokenExchange{SelfIssuedSubjectTokens: SelfIssuedSubjectTokensAny},
+			Scopes:        validClient.Scopes, Audiences: validClient.Audiences,
+		}}, issuer: "http://auth.example.com", wantErr: "combined with insecure_allow_http:"},
+		{name: "private_key_jwt only rejects loopback HTTP without opt-in", clients: []DelegateClient{{
+			ClientID: "delegate", TokenEndpointAuthMethod: "private_key_jwt", JSONWebKeys: publicKeySet,
+			TokenExchange: &DelegateClientTokenExchange{SelfIssuedSubjectTokens: SelfIssuedSubjectTokensAny},
+			Scopes:        validClient.Scopes, Audiences: validClient.Audiences,
+		}}, issuer: "http://localhost:8080", wantErr: "insecure_allow_confidential_over_loopback_http"},
+		{name: "private_key_jwt only passes with loopback HTTP and opt-in", clients: []DelegateClient{{
+			ClientID: "delegate", TokenEndpointAuthMethod: "private_key_jwt", JSONWebKeys: publicKeySet,
+			TokenExchange: &DelegateClientTokenExchange{SelfIssuedSubjectTokens: SelfIssuedSubjectTokensAny},
+			Scopes:        validClient.Scopes, Audiences: validClient.Audiences,
+		}}, issuer: "http://localhost:8080", loopbackOptIn: true},
+		{name: "mixed secret and private_key_jwt rejects insecure HTTP", clients: []DelegateClient{validClient, {
+			ClientID: "key-delegate", TokenEndpointAuthMethod: "private_key_jwt", JSONWebKeys: publicKeySet,
+			TokenExchange: &DelegateClientTokenExchange{SelfIssuedSubjectTokens: SelfIssuedSubjectTokensAny},
+			Scopes:        validClient.Scopes, Audiences: validClient.Audiences,
+		}}, issuer: "http://auth.example.com", wantErr: "combined with insecure_allow_http:"},
 	}
 
 	for _, tt := range tests {
@@ -1124,6 +1745,7 @@ func TestConfigValidateDelegateClients(t *testing.T) {
 				cfg.Issuer = tt.issuer
 				cfg.InsecureAllowHTTP = tt.issuer == "http://auth.example.com"
 			}
+			cfg.InsecureAllowConfidentialOverLoopbackHTTP = tt.loopbackOptIn
 			err := cfg.Validate()
 			assertError(t, err, tt.wantErr != "", tt.wantErr)
 			if err != nil && tt.name == "resolved secret too short" {
@@ -1206,7 +1828,7 @@ func TestValidateConfidentialClientTransport(t *testing.T) {
 		{
 			name:              "confidential with plain-HTTP non-loopback issuer rejects with loopback opt-in",
 			allowConfidential: true, issuer: "http://auth.example.com", allowLoopbackOverride: true,
-			wantErr: true, errContains: "non-loopback issuer",
+			wantErr: true, errContains: "loopback HTTP opt-in",
 		},
 	}
 
@@ -1402,6 +2024,31 @@ func TestDCRUpstreamConfigValidate(t *testing.T) {
 			},
 			wantErr: true,
 			errMsg:  "registration_probe must be one of",
+		},
+		{
+			name: "registration_probe_interval of 5m accepts",
+			config: DCRUpstreamConfig{
+				RegistrationEndpoint:      "https://idp.example.com/register",
+				RegistrationProbeInterval: "5m",
+			},
+		},
+		{
+			name: "registration_probe_interval under 1m rejects",
+			config: DCRUpstreamConfig{
+				RegistrationEndpoint:      "https://idp.example.com/register",
+				RegistrationProbeInterval: "59s",
+			},
+			wantErr: true,
+			errMsg:  "registration_probe_interval must be at least 1m0s",
+		},
+		{
+			name: "unparsable registration_probe_interval rejects",
+			config: DCRUpstreamConfig{
+				RegistrationEndpoint:      "https://idp.example.com/register",
+				RegistrationProbeInterval: "five minutes",
+			},
+			wantErr: true,
+			errMsg:  "invalid registration_probe_interval",
 		},
 		{
 			name: "both initial_access_token_file and initial_access_token_env_var rejects",
@@ -2288,6 +2935,173 @@ func TestRunConfigValidateDCRRegistrationLimits(t *testing.T) {
 				return
 			}
 			require.ErrorContains(t, err, tt.wantErrMsg)
+		})
+	}
+}
+
+func TestDelegateClientRunConfigTokenExchangeRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		json       string
+		yaml       string
+		wantNil    bool
+		wantMode   SelfIssuedSubjectTokens
+		wantSource []string
+		wantAud    []string
+	}{
+		{name: "absent", json: `{"client_id":"c"}`, yaml: "client_id: c\n", wantNil: true},
+		{name: "null", json: `{"client_id":"c","token_exchange":null}`, yaml: "client_id: c\ntoken_exchange:\n", wantNil: true},
+		{name: "empty block", json: `{"client_id":"c","token_exchange":{}}`, yaml: "client_id: c\ntoken_exchange: {}\n"},
+		{
+			name: "populated",
+			json: `{"client_id":"c","token_exchange":{"self_issued_subject_tokens":"restricted",` +
+				`"allowed_source_clients":["tui"],"subject_token_audiences":["a"]}}`,
+			yaml: "client_id: c\ntoken_exchange:\n  self_issued_subject_tokens: restricted\n" +
+				"  allowed_source_clients: [tui]\n  subject_token_audiences: [a]\n",
+			wantMode:   SelfIssuedSubjectTokensRestricted,
+			wantSource: []string{"tui"},
+			wantAud:    []string{"a"},
+		},
+		{
+			name:     "subject token audiences omitted",
+			json:     `{"client_id":"c","token_exchange":{"self_issued_subject_tokens":"restricted"}}`,
+			yaml:     "client_id: c\ntoken_exchange:\n  self_issued_subject_tokens: restricted\n",
+			wantMode: SelfIssuedSubjectTokensRestricted,
+		},
+		{
+			name: "multiple subject token audiences",
+			json: `{"client_id":"c","token_exchange":{"self_issued_subject_tokens":"restricted",` +
+				`"subject_token_audiences":["a","b"]}}`,
+			yaml: "client_id: c\ntoken_exchange:\n  self_issued_subject_tokens: restricted\n" +
+				"  subject_token_audiences: [a, b]\n",
+			wantMode: SelfIssuedSubjectTokensRestricted,
+			wantAud:  []string{"a", "b"},
+		},
+		{
+			name: "explicit empty subject token audiences",
+			json: `{"client_id":"c","token_exchange":{"self_issued_subject_tokens":"restricted",` +
+				`"subject_token_audiences":[]}}`,
+			yaml: "client_id: c\ntoken_exchange:\n  self_issued_subject_tokens: restricted\n" +
+				"  subject_token_audiences: []\n",
+			wantMode: SelfIssuedSubjectTokensRestricted,
+		},
+		{
+			name:     "explicit any",
+			json:     `{"client_id":"c","token_exchange":{"self_issued_subject_tokens":"any"}}`,
+			yaml:     "client_id: c\ntoken_exchange:\n  self_issued_subject_tokens: any\n",
+			wantMode: SelfIssuedSubjectTokensAny,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			check := func(t *testing.T, got DelegateClientRunConfig) {
+				t.Helper()
+				if tt.wantNil {
+					assert.Nil(t, got.TokenExchange)
+					return
+				}
+				require.NotNil(t, got.TokenExchange)
+				assert.Equal(t, tt.wantMode, got.TokenExchange.SelfIssuedSubjectTokens)
+				assert.Equal(t, tt.wantSource, got.TokenExchange.AllowedSourceClients)
+				if len(tt.wantAud) == 0 {
+					assert.Empty(t, got.TokenExchange.SubjectTokenAudiences)
+				} else {
+					assert.Equal(t, tt.wantAud, got.TokenExchange.SubjectTokenAudiences)
+				}
+			}
+
+			var fromJSON DelegateClientRunConfig
+			require.NoError(t, json.Unmarshal([]byte(tt.json), &fromJSON))
+			check(t, fromJSON)
+			encoded, err := json.Marshal(fromJSON)
+			require.NoError(t, err)
+			var reJSON DelegateClientRunConfig
+			require.NoError(t, json.Unmarshal(encoded, &reJSON))
+			check(t, reJSON)
+
+			var fromYAML DelegateClientRunConfig
+			require.NoError(t, yaml.Unmarshal([]byte(tt.yaml), &fromYAML))
+			check(t, fromYAML)
+			encoded, err = yaml.Marshal(fromYAML)
+			require.NoError(t, err)
+			var reYAML DelegateClientRunConfig
+			require.NoError(t, yaml.Unmarshal(encoded, &reYAML))
+			check(t, reYAML)
+		})
+	}
+}
+
+func TestDelegateClientTokenExchangeClone(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		policy *DelegateClientTokenExchange
+	}{
+		{name: "nil policy clones to nil"},
+		{
+			name: "nil refresh block stays nil",
+			policy: &DelegateClientTokenExchange{
+				SelfIssuedSubjectTokens: SelfIssuedSubjectTokensRestricted,
+				AllowedSourceClients:    []string{"source-a"},
+			},
+		},
+		{
+			name: "refresh block, source clients and subject token audiences are not shared",
+			policy: &DelegateClientTokenExchange{
+				SelfIssuedSubjectTokens: SelfIssuedSubjectTokensRestricted,
+				AllowedSourceClients:    []string{"source-a", "source-b"},
+				SubjectTokenAudiences:   []string{"api-a", "api-b"},
+				ExchangeRefreshTokens: &DelegateClientExchangeRefreshTokens{
+					IDJAGMaxLifetime:        "1h",
+					RefreshTokenMaxLifetime: "12h",
+				},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if tt.policy == nil {
+				assert.Nil(t, tt.policy.Clone())
+				return
+			}
+
+			clone := tt.policy.Clone()
+			require.NotNil(t, clone)
+			assert.Equal(t, tt.policy, clone)
+
+			wantSources := slices.Clone(tt.policy.AllowedSourceClients)
+			wantAudiences := slices.Clone(tt.policy.SubjectTokenAudiences)
+			var wantRefresh DelegateClientExchangeRefreshTokens
+			if tt.policy.ExchangeRefreshTokens == nil {
+				assert.Nil(t, clone.ExchangeRefreshTokens)
+			} else {
+				require.NotNil(t, clone.ExchangeRefreshTokens)
+				assert.NotSame(t, tt.policy.ExchangeRefreshTokens, clone.ExchangeRefreshTokens)
+				wantRefresh = *tt.policy.ExchangeRefreshTokens
+				clone.ExchangeRefreshTokens.IDJAGMaxLifetime = "2h"
+				clone.ExchangeRefreshTokens.RefreshTokenMaxLifetime = ""
+			}
+			if len(clone.AllowedSourceClients) > 0 {
+				clone.AllowedSourceClients[0] = "changed"
+				clone.AllowedSourceClients = append(clone.AllowedSourceClients, "added")
+			}
+			if len(clone.SubjectTokenAudiences) > 0 {
+				clone.SubjectTokenAudiences[0] = "changed"
+			}
+
+			if tt.policy.ExchangeRefreshTokens != nil {
+				assert.Equal(t, wantRefresh, *tt.policy.ExchangeRefreshTokens)
+			}
+			assert.Equal(t, wantSources, tt.policy.AllowedSourceClients)
+			assert.Equal(t, wantAudiences, tt.policy.SubjectTokenAudiences)
 		})
 	}
 }

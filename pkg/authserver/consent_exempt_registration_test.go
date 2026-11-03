@@ -4,6 +4,7 @@
 package authserver
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"testing"
@@ -76,12 +77,17 @@ func TestNewValidatesConsentExemptClientRegistrations(t *testing.T) {
 		name      string
 		client    fosite.Client
 		lookupErr error
+		// wantErr defaults to "missing or ineligible".
+		wantErr string
 	}{
 		{name: "missing registration", lookupErr: storage.ErrNotFound},
 		{name: "public client", client: func() fosite.Client { c := eligibleConsentClient(); c.Public = true; return c }()},
 		{name: "explicit back-channel marker", client: &markedBackChannelConsentClient{DefaultClient: eligibleConsentClient()}},
 		{name: "empty response types", client: &noResponseConsentClient{DefaultClient: eligibleConsentClient()}},
-		{name: "token-exchange-only metadata", client: func() fosite.Client {
+		// A confidential token-exchange-only row has the legacy delegate shape, so
+		// admission hides it as an undeclared configured client before eligibility
+		// is checked.
+		{name: "legacy delegate shape is hidden by admission", wantErr: "not_found", client: func() fosite.Client {
 			c := eligibleConsentClient()
 			c.GrantTypes = fosite.Arguments{oauthproto.GrantTypeTokenExchange}
 			return c
@@ -126,7 +132,7 @@ func TestNewValidatesConsentExemptClientRegistrations(t *testing.T) {
 			if tt.lookupErr != nil {
 				require.ErrorIs(t, err, tt.lookupErr)
 			} else {
-				require.ErrorContains(t, err, "missing or ineligible")
+				require.ErrorContains(t, err, cmp.Or(tt.wantErr, "missing or ineligible"))
 			}
 		})
 	}
@@ -166,4 +172,57 @@ func TestNewConsentExemptLookupUsesDecoratedStorage(t *testing.T) {
 	// the effective storage decorator supplied it.
 	_, err = baseStore.GetClient(context.Background(), "exempt-client")
 	require.Error(t, err)
+}
+
+// TestNewConsentExemptValidationPrecedesDelegateRegistration pins that a bad
+// consent-exempt ID aborts startup before any delegate row reaches shared
+// storage. The delegate here has the default token-exchange-only grants, so it
+// cannot be preauthorized.
+func TestNewConsentExemptValidationPrecedesDelegateRegistration(t *testing.T) {
+	t.Parallel()
+
+	baseStore := storage.NewMemoryStorage()
+	t.Cleanup(func() { _ = baseStore.Close() })
+	cfg := consentExemptConfig(func(context.Context, *UpstreamConfig) (upstream.OAuth2Provider, error) {
+		return nil, errors.New("upstream factory should not run")
+	})
+	cfg.DelegateClients = []DelegateClient{{
+		ClientID: "delegate", ClientSecret: "0123456789abcdef0123456789abcdef", Scopes: []string{"openid"}, Audiences: []string{"https://mcp.example.com"},
+	}}
+	cfg.ConsentExemptClientIDs = []string{"delegate"}
+
+	_, err := newServer(context.Background(), cfg, baseStore)
+	require.ErrorContains(t, err, "missing or ineligible")
+
+	_, err = baseStore.GetClient(context.Background(), "delegate")
+	require.ErrorIs(t, err, storage.ErrNotFound, "a failed startup must not leave the delegate row behind")
+}
+
+// TestNewConsentExemptValidationPrefersBuiltDelegate pins that a configured
+// delegate is checked as built, not as a stored row under the same ID. The
+// stored row is eligible, the configured delegate is not, and startup must
+// fail: the stored row is about to be replaced by the delegate.
+func TestNewConsentExemptValidationPrefersBuiltDelegate(t *testing.T) {
+	t.Parallel()
+
+	baseStore := storage.NewMemoryStorage()
+	t.Cleanup(func() { _ = baseStore.Close() })
+	stale := eligibleConsentClient()
+	stale.ID = "delegate"
+	require.NoError(t, baseStore.RegisterClient(context.Background(), stale))
+
+	cfg := consentExemptConfig(func(context.Context, *UpstreamConfig) (upstream.OAuth2Provider, error) {
+		return nil, errors.New("upstream factory should not run")
+	})
+	cfg.DelegateClients = []DelegateClient{{
+		ClientID: "delegate", ClientSecret: "0123456789abcdef0123456789abcdef", Scopes: []string{"openid"}, Audiences: []string{"https://mcp.example.com"},
+	}}
+	cfg.ConsentExemptClientIDs = []string{"delegate"}
+
+	_, err := newServer(context.Background(), cfg, baseStore)
+	require.ErrorContains(t, err, "missing or ineligible")
+
+	got, err := baseStore.GetClient(context.Background(), "delegate")
+	require.NoError(t, err)
+	require.Equal(t, stale.RedirectURIs, got.GetRedirectURIs(), "a failed startup must leave the stored row untouched")
 }

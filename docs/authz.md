@@ -68,7 +68,15 @@ is rejected with **HTTP 403** and a JSON-RPC error whose code is `403`, and the
 denied request is audited with outcome `denied`. The denial message is kind-only
 (for example, `call denied by authorization policy`) and never reveals the
 capability name or whether it exists, so it cannot be used to enumerate the
-server. See the [Virtual MCP architecture](arch/10-virtual-mcp-architecture.md#authorization-enforcement-core-admission-seam--pre-dispatch-gate)
+server.
+
+One ordering differs from the direct `thv run` proxies, where authorization runs
+first: vMCP checks session ownership before the authorization gate. A request that
+carries an `Mcp-Session-Id` the caller does not own, or that does not exist, gets
+**HTTP 404** before any 403. A denied call on the caller's own session still gets
+403.
+
+See the [Virtual MCP architecture](arch/10-virtual-mcp-architecture.md#authorization-enforcement-core-admission-seam--pre-dispatch-gate)
 for details.
 
 ## Configure authorization
@@ -251,6 +259,43 @@ permit(principal, action == Action::"call_tool", resource == Tool::"weather");
 ```
 
 This policy allows any client to call the weather tool.
+
+##### Allow tools from a specific vMCP backend
+
+For tools advertised by a Virtual MCP Server, Cedar receives the logical
+originating backend as a second resource parent:
+
+```text
+Tool::"search"
+  -> MCP::"main-vmcp"
+  -> Backend::"github-mcp"
+```
+
+This allows every tool from one backend without relying on the advertised tool
+name or its conflict-resolution prefix:
+
+```plain
+permit(
+  principal,
+  action == Action::"call_tool",
+  resource in Backend::"github-mcp"
+);
+```
+
+The Backend entity ID is the tool's logical vMCP `BackendID`, not a network
+address. ToolHive obtains it from the aggregated capability and uses the same
+value for list filtering and call authorization. A direct Backend policy does
+not require an entry in `entities_json`: Cedar evaluates it from the Backend UID
+in the Tool entity's parent set. Define the Backend in `entities_json` only when
+it needs attributes or parents for a transitive hierarchy.
+
+Composite tools have no single originating backend, so they have no Backend
+parent. Consequently, neither a backend-scoped `permit` nor a backend-scoped
+`forbid` matches a composite tool. If another policy permits the composite, a
+backend-scoped `forbid` does not prevent its workflow steps from reaching that
+backend because workflow steps are not authorized as separate top-level tool
+calls. Express backend restrictions as conditions on `permit` policies and
+authorize composite tools separately by their `Tool` entity.
 
 ##### Allow a specific prompt
 

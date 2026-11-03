@@ -73,6 +73,7 @@ jobs:
 
   compute-build-flags:
     name: Compute Build Flags
+    needs: [ verify-release ]
     runs-on: ubuntu-slim
     permissions:
       contents: read
@@ -354,6 +355,7 @@ jobs:
   notify-release-failure:
     name: Notify Release Failure
     needs:
+      - verify-release
       - compute-build-flags
       - release-binaries
       - image-build-and-push

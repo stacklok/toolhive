@@ -62,8 +62,9 @@ The storage layer implements multiple interfaces from the [fosite](https://githu
 - `PendingAuthorizationStorage` — In-flight authorization tracking. Interactive requests have a single-use `awaiting` consent stage before upstream login; only an `approved` record can complete a callback. Each `PendingAuthorization` carries a `BrowserBindingHash`, the SHA-256 of a random cookie value set on the user agent. The consent POST and `/oauth/callback` require the matching cookie before consuming their respective records. Only the hash is stored; an older row without a binding or approval stage cannot complete the flow and must be restarted. `PendingDeviceLogin` carries the same browser binding for the separate device-flow verification-page login, which shares `/oauth/callback`.
 - `RememberedConsentStorage` — Optional server-side browser sessions and one approval per `(userID, clientID)`. The browser holds only a random `__Host-thv_consent_<sha256>` secret; storage holds its SHA-256 digest. Each approval records the redirect URI, scopes, and resource selected for that client. Memory and Redis implement this capability; decorators expose the underlying backend via `storage.Unwrap`. See [Interactive client approval](#interactive-client-approval).
 - `UserStorage` — Internal user accounts and provider identity linking
-- `DCRCredentialStore` — DCR client metadata and credential persistence; intentionally NOT embedded in `Storage` (each backend implements it separately and call sites reach it via an explicit `stor.(DCRCredentialStore)` type assertion). Secret-based clients store hashed secrets; `private_key_jwt` clients store their inline public JWKS and signing algorithm. Outbound (upstream) registrations resolved by `pkg/auth/dcr` are keyed by `(Issuer, UpstreamID, RedirectURI, ScopesHash)` plus the optional operator-set `dcrConfig.rotationKey`. Changing the rotation key addresses a new row, so the next start registers a fresh upstream client; the previous row stays in place and carries no TTL unless the upstream asserted `client_secret_expires_at`. On a cache hit the resolver also checks the cached client against the upstream and replaces the row when the upstream rejects it, provided the store implements `dcr.Replacer`. `dcrConfig.registrationProbe` selects the check: `tokenEndpoint` (default) redeems a random authorization code and reads `invalid_client` as "gone"; `authorizationEndpoint` sends an authorization request without following redirects and reads a direct 400/401/403 carrying an RFC 6749 JSON error object with `error` `invalid_client`, `unauthorized_client` or `invalid_request` as "gone" (RFC 6749 §4.1.2.1); `none` skips the check. Each setting has a blind spot the rotation key covers: `tokenEndpoint` misses an upstream that validates the grant before authenticating a public client (it then answers `invalid_grant` for any client_id) and skips `private_key_jwt` clients, which it cannot sign for; `authorizationEndpoint` misses an upstream that renders its unknown-client error with 200, a redirect, or a page rather than a JSON error object; with `none` the rotation key is the only way to retire a registration. A false rejection by either probe re-registers at every start and, when registration also fails, fails startup.
+- `DCRCredentialStore` — DCR client metadata and credential persistence; intentionally NOT embedded in `Storage` (each backend implements it separately and call sites reach it via an explicit `stor.(DCRCredentialStore)` type assertion). Secret-based clients store hashed secrets; `private_key_jwt` clients store their inline public JWKS and signing algorithm. Outbound (upstream) registrations resolved by `pkg/auth/dcr` are keyed by `(Issuer, UpstreamID, RedirectURI, ScopesHash)` plus the optional operator-set `dcrConfig.rotationKey`. Changing the rotation key addresses a new row, so the next start registers a fresh upstream client; the previous row stays in place and carries no TTL unless the upstream asserted `client_secret_expires_at`. The client registers with the token endpoint auth method the resolver prefers among those the upstream advertises (`client_secret_basic`, then `client_secret_post`, then `none`), or with the OAuth2 upstream's `tokenEndpointAuthMethod` when it is set, for an upstream whose token endpoint does not accept the preferred method. A registration response that names another method than the configured one is refused, and so is a resolution that still names one, such as a row a replica on an older configuration stored first; the next start or recheck replaces that row. On a cache hit the resolver also checks the cached client against the upstream and replaces the row when the upstream rejects it, or when the row was registered with another method than the configured `tokenEndpointAuthMethod`, provided the store implements `dcr.Replacer`. `dcrConfig.registrationProbe` selects the check: `tokenEndpoint` (default) redeems a random authorization code and reads `invalid_client` as "gone"; `authorizationEndpoint` sends an authorization request without following redirects and reads a direct 400/401/403 carrying an RFC 6749 JSON error object with `error` `invalid_client`, `unauthorized_client` or `invalid_request` as "gone" (RFC 6749 §4.1.2.1); `none` skips the upstream check but not the method check above. Each setting has a blind spot the rotation key covers: `tokenEndpoint` misses an upstream that validates the grant before authenticating a public client (it then answers `invalid_grant` for any client_id) and skips `private_key_jwt` clients, which it cannot sign for; `authorizationEndpoint` misses an upstream that renders its unknown-client error with 200, a redirect, or a page rather than a JSON error object; with `none` only the rotation key, or a change of the configured method, retires a registration. A false rejection by either probe re-registers at every start and, when registration also fails, fails startup. The check runs at start; `dcrConfig.registrationProbeInterval` (a Go duration of at least `1m`) repeats it while the server runs. Each tick re-runs the resolution against the stored row: a rejected registration is replaced, a missing one is registered, and when the result names a different client than the one in use, including a row another replica replaced, the upstream provider switches to it in place (`upstream.ClientCredentialsUpdater`; OIDC providers also replace their ID token verifier). A failed tick is logged and leaves the provider on its current client. An authorization started under the previous client and completed after the switch redeems its code with the new client, and upstream refresh tokens bound to the previous client stop refreshing, as with a restart. Each tick sends at most one probe request to the upstream from every replica (none with `registrationProbe: none`), plus a registration request when the probe rejects the client; the `tokenEndpoint` probe appears in upstream logs as a failed code redemption, so an interval of 5m to 15m suits most upstreams. Endpoints the run config leaves to discovery follow the new registration, and each replica waits a random part of the interval before its first tick and the interval ±10% after that.
 - `AssertionJWTConsumer` — atomic single-use consumption for validated JWT assertions. It is deliberately separate from `Storage`, so only assertion-grant composition requires replay protection.
+- `ExchangeGrantStorage` — optional server-side records behind refresh tokens issued through RFC 8693 token exchange. A callable discovers it with `storage.Unwrap(stor).(ExchangeGrantStorage)`. Memory and Redis implement it. See [Exchange grant storage](#exchange-grant-storage).
 
 **Implementation:**
 - Interface definitions: `pkg/authserver/storage/types.go`
@@ -120,7 +121,7 @@ server, err := runner.NewEmbeddedAuthServerWithStorage(ctx, runConfig, stor,
 
 The setting is not part of the RunConfig, so config files, `thv`, vMCP and operator CRDs cannot enable it.
 
-Each entry must be an exact member of the allowed audiences, and an empty list disables disclosure. The setting only controls whether `sub_id` and the upstream subject claim appear; it never grants an audience. The setting is re-evaluated for newly issued and refreshed access tokens; it cannot retract identifiers already disclosed in existing tokens. (`claim`, `value`) is fixed when the user logs in. If an operator changes `subject_claim`, the new claim takes effect at the user's next login (which also changes ToolHive's own `sub`), not at refresh. The disclosure setting, in contrast, is applied at every refresh.
+Each entry must be an exact member of the allowed audiences, and an empty list disables disclosure. The setting only controls whether `sub_id` and the upstream subject claim appear; it never grants an audience. The setting is re-evaluated for newly issued and refreshed access tokens, so turning it off stops the claims at the next refresh; it cannot retract identifiers already disclosed in existing tokens. Turning it on adds the claims only to sessions whose login happened while the list was non-empty; other users get them from their next login. Adding an audience to a list that is already non-empty takes effect at the next refresh, because logins record the identity even for unlisted audiences. (`claim`, `value`) is fixed when the user logs in. If an operator changes `subject_claim`, the new claim takes effect at the user's next login (which also changes ToolHive's own `sub`), not at refresh.
 
 Sending `sub_id` and the upstream subject claim together links Entra's pairwise `sub` to the tenant-wide `oid`. RFC 9493 section 6.1 asks transmitters to send several identifiers for one subject together only when the recipient already knows they are related or the correlation is needed. Here the correlation is the purpose of the feature, and only the listed audiences receive it, so list only first-party resource servers. `oid` differs per tenant, so it does not correlate a user across tenants.
 
@@ -153,7 +154,7 @@ The upstream subject claim stays the same across app registrations when `subject
 
 ### Storage and upgrades
 
-The verified upstream identity is kept on the server even when disclosure is off. It is stored on pending authorizations, device requests, pending device confirmations, and in the stored authorization-code, access-token and refresh-token sessions. In Redis it is the JSON key `verified_upstream`, an object with the members `iss`, `sub`, `stable_claim` and `stable_value`. The stored names `stable_claim` and `stable_value` differ from the emitted `claim` and `value` because the stored object also holds the raw `sub`. This lets a policy change take effect at the next refresh without a new login. Sessions created before the upgrade to this version have no stored identity, so they never get `sub_id` or the upstream subject claim, even after disclosure is turned on; the user has to log in again.
+The verified upstream identity is recorded only when disclosure is enabled (`SubjectIdentifierAudiences` is non-empty). When the list is empty, new logins do not record it, because nothing reads it. When it is recorded, it is stored on pending authorizations, device requests, pending device confirmations, and in the stored authorization-code, access-token and refresh-token sessions. In Redis it is the JSON key `verified_upstream`, an object with the members `iss`, `sub`, `stable_claim` and `stable_value`. The stored names `stable_claim` and `stable_value` differ from the emitted `claim` and `value` because the stored object also holds the raw `sub`. Sessions created on v0.57.0, or while the list was non-empty, keep the stored identity until their refresh token expires; there is no cleanup step. Sessions whose login happened while the list was empty have none, so they get no `sub_id` or upstream subject claim until the user logs in again. Do not switch the key you use for a user based on whether `sub_id` is present: a user can lack it until their next login, and nothing in a log, metric or response explains the absence. If disclosure is enabled by a rolling restart, logins served by a replica that still has the empty list record nothing, so those users get no `sub_id` until their next login after every replica has the setting.
 
 The Redis key layout, Lua scripts and TTLs do not change. Replicas running the older version decode every record this version writes; they drop the unknown field.
 
@@ -163,7 +164,30 @@ During a rolling upgrade or after a rollback, replicas running an older version 
 
 The device flow has two more cases. When an older replica handles the device confirmation, or serves any device token poll after the confirmation (each poll rewrites the stored device request), the stored upstream identity is lost and that login gets neither claim.
 
-Rollout order for embedders that enable disclosure: first roll out this version with disclosure off, and enable it only when no older replica is left. To roll back, turn disclosure off and let the new version serve refreshes before going back to the older version.
+Rollout order for embedders that enable disclosure: first roll out this version with disclosure off, and enable it only when no older replica is left. Users get the claims from their next login after that. To roll back, turn disclosure off and let the new version serve refreshes before going back to the older version.
+
+## Access token type (`typ`)
+
+Every JWT has a JOSE header, and its `typ` member says what kind of JWT it is. By default the auth server writes `"typ": "JWT"`. An embedder can opt in to `"typ": "at+jwt"`, the value RFC 9068 section 2.1 defines for JWT access tokens:
+
+```json
+{"alg":"RS256","kid":"…","typ":"at+jwt"}
+```
+
+The setting is Go-only. Set `authserver.Config.AccessTokenType`, or pass `runner.WithAccessTokenType`. The accepted values are `""` and `"JWT"` (the default) and `"at+jwt"`. Any other value makes server construction fail. The setting is not a RunConfig field, so config files, the CLI and operator CRDs cannot set it yet.
+
+When the value is `at+jwt`, every JWT access token the server issues gets that type. This covers the authorization code grant (with PKCE), the refresh grant, the device code grant, RFC 8693 token exchange, the RFC 7523 JWT-bearer grant and ID-JAG redemption. This server has no client credentials grant. Refresh tokens and authorization codes are opaque HMAC tokens, not JWTs, so the setting does not change them. An ID-JAG this server may issue in the future keeps its own type, `oauth-id-jag+jwt`.
+
+The type is written when a token is signed. It is not stored with the session. A change therefore takes effect at the next refresh, including for sessions created before the change.
+
+ToolHive's own consumers accept both types. The token validator in `pkg/auth`, the vMCP (which uses it), and the token exchange grant's check of a subject token issued by this server do not check `typ`.
+
+The JWT-bearer grant only accepts assertions from configured trusted issuers, and the server's own issuer can never be one, so it never accepts this server's own access tokens as assertions. With `at+jwt` enabled, the grant also refuses them by `typ`: it accepts assertions with no `typ`, `""`, `"JWT"` or `"oauth-id-jag+jwt"`.
+
+Compatibility warning: some resource servers reject `at+jwt` by default. Java resource servers built on the default type verifier of Nimbus JOSE+JWT accept only `JWT` or no `typ`, and they reject `at+jwt`. This includes Spring Security before 6.5. Enable `at+jwt` only when every resource server that validates these tokens accepts it.
+
+The default may switch to `at+jwt` in a later release, once the setting is also a RunConfig field.
+
 ## Callback identity and storage context
 
 The first upstream callback passes a `handlers.FilterPrincipal` to `UpstreamFilter`. This public interface is a getter contract (`GetSubject`, `GetCanonicalUserID`, `GetName`, `GetEmail`, `GetClaims`), not a promise that implementations contain only those fields. The callback passes a private concrete projection with only those five credential-free values; tokens and upstream credentials are not included. The claims map is upstream-provided and read-only, and may be nil when unavailable.
@@ -237,6 +261,12 @@ Clients must generate a fresh, unguessable `state` for each request and verify t
 
 The page leads with a plain-language summary and the classified destination of the redirect ("this computer" for loopback, the host plus its punycode form for other http(s) hosts, "an app that opens `<scheme>://` links" for custom schemes, or the full URI when it cannot be classified), followed by the client name, labelled as given by the app and not verified. A collapsed "Technical details" section holds the full redirect URI, client ID, scopes, resource and the first upstream provider's internal name. It does not redirect to the upstream identity provider until a browser-bound, same-origin POST to `/oauth/consent` approves the request. Denial returns `access_denied` to the validated client redirect. The pending consent handle and each upstream callback state are single-use, browser-bound records with a 10-minute absolute lifetime from the initial authorization (not extended by chaining). The device flow uses its separate verification and approval page.
 
+The "You will sign in with … next." line shows the upstream's optional `DisplayName` (`display_name` in `UpstreamRunConfig`; not yet settable from the `MCPExternalAuthConfig` CRD), falling back to its `Name` when the display name is unset, empty after sanitizing, or when the pending authorization's upstream is no longer configured. Technical details keep showing `Name` as the internal name. The label is resolved at render time from the handler's upstream list, so a handler rebuilt with a different upstream set shows the current value while pending authorizations in shared storage stay valid. `DisplayName` is display-only: it is never compared, persisted, or used as a key. Upstream token storage, remembered consent (`ProviderID`), pending authorizations (`UpstreamProviderName`) and callback routing all stay keyed by `Name`, so changing a display name leaves every stored record valid.
+
+At render, control and format runes (bidi overrides, zero-width characters, newlines) are dropped, surrounding whitespace is trimmed, the result is capped at `maxConsentTextRunes` with a trailing ellipsis, and the template HTML-escapes it. Sanitizing removes only those runes: other invisible characters, such as Hangul fillers, are kept and can render as a blank label. A malformed label is cleaned at render and never rejected by validation, so a cosmetic field cannot fail server start or an embedder's rebuild of its upstreams.
+
+**Embedder obligation.** Sanitizing does not judge meaning: printable misleading text such as "Acme Okta (verified)" is shown in full, and the page presents the label as trusted text on the anti-phishing gate. An embedder must therefore populate `DisplayName` only from operator-controlled values, never from tenant-, admin- or client-writable input, and not from metadata fetched from the upstream, such as its discovery document.
+
 The form action uses the configured browser-facing authorization base, including any path prefix. The POST accepts only that base's browser-serialized Origin (including normalized IP addresses, domain names and ports), not a missing, null, or foreign Origin. `Referrer-Policy: same-origin` preserves Origin on native same-origin form submissions without leaking the consent URL to other sites.
 
 The page's CSP blocks scripts, framing and base URL changes. It deliberately omits `form-action 'self'`: browsers also apply that restriction to the POST's redirect to an external IdP or validated client URI, including dynamic loopback ports. The template has only the escaped, configured form target, and the POST additionally requires the single-use browser-binding cookie. No COOP header is set on the consent page, to avoid severing an OAuth popup's opener.
@@ -258,6 +288,8 @@ An ID qualifies only when explicitly allowlisted and its current registration is
 This is an administrator trust decision over the registration currently at the ID, not user consent scoped to an account, redirect, scope, audience or grant. Replacing the registration's credentials or redirect URIs transfers the exemption to the replacement. Expanding its permitted scopes, audiences or grants can expand what is preauthorized. An embedder must control registration writes for exempt IDs. HTTP Dynamic Client Registration (DCR) can qualify when its server-minted ID is explicitly allowlisted and eligible, but DCR IDs are server-generated and registration is create-only: a DCR caller cannot choose or overwrite an exempt ID. CIMD replacement targets URL-shaped IDs, which this allowlist excludes. These registration-write restrictions do not restrict access to the authorization endpoint. A privileged provisioner with registration-write access can still replace an exempt registration; this policy does not protect against that.
 
 `DCRIssued` continues to govern its existing retention and replacement behavior; it is not an exemption-eligibility signal. DCR-issued exempt clients remain subject to the existing TTL and in-memory eviction behavior. A client can expire or be evicted and then needs to be reprovisioned. The exemption does not change retention. Removing an ID restores ordinary consent decision-making for new authorization requests only: it does not revoke tokens or automatically cancel already-approved flows.
+
+A consent-exempt ID does not make client admission serve a client. A stored client that admission hides is not found, so it is not eligible for the exemption. See "Client admission" in [Configured clients across restarts](#configured-clients-across-restarts). Listing such an ID fails startup.
 
 This behavior is a deliberate standards trade-off. The [stable MCP authorization specification](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization) states: “MCP proxy servers using static client IDs MUST obtain user consent for each dynamically registered client before forwarding to third-party authorization servers.” ToolHive is that proxy. Allowlisting a dynamically registered client is a deliberate deviation from this requirement, not an exception. More broadly, administrator preauthorization trades individual user approval for the embedder's control over the allowlist and registration writes.
 
@@ -342,6 +374,23 @@ thv:auth:{default:my-server}:reqid:access:{request-id}  → {sig1, sig2}
 thv:auth:{default:my-server}:user:upstream:{user-id}     → {session1, session2}
 ```
 
+### Exchange grant storage
+
+`ExchangeGrantStorage` keeps one record per refresh token issued through token exchange, found by the token's HMAC signature. Time decisions for records (live, expired, revoked) are made in Go against the store clock; the record's Redis TTL is only garbage collection. The replay marker is different: its window follows Redis's own TTL. The create script checks whether the marker key exists, and Go only skips the marker once its window has already passed. `ExchangeGrantMarkerMargin` absorbs clock skew and the time between reading the clock and running the script. Both effects can only lengthen the window, which is the safe direction.
+
+| Key | Type | Contents | TTL |
+|---|---|---|---|
+| `{prefix}xgrant:{signature}` | HASH | `data`: immutable JSON of the record without `RevokedAt`. `rev_ms`: revocation time in Unix ms, absent while the grant is live | `ExpiresAt` (plus 1 ms, see below) |
+| `{prefix}assertion-jwt:{digest}` | STRING | Replay marker for the subject access token's `(issuer, jti)`, built with the `exchange-grant` purpose. The value is the grant signature. Written only for a top-level grant | `SourceExpiresAt` plus `ExchangeGrantMarkerMargin` (1 minute), plus 1 ms |
+
+Creating a grant is one Lua script. It runs every check before any write: a key of the wrong type is an error, then an existing record returns `ErrAlreadyExists`, then an existing marker returns `fosite.ErrJTIKnown`. Only then does it write the record, set its TTL, and write the marker. Concurrent creates for one `jti` therefore admit exactly one. The script touches only its declared keys, which share the `{ns:name}` hash tag of the store prefix, so it is safe on Redis Cluster.
+
+Revoking is a single `HSETNX` of `rev_ms` (inside a small script that first checks the record exists, since a bare `HSETNX` would create a HASH with no TTL). It is idempotent, keeps the first revocation time, and does not change either TTL. Get and revoke return `ErrNotFound` for a record past `ExpiresAt` even if Redis has not evicted it.
+
+Each TTL has 1 ms added because liveness is inclusive: a grant is usable at exactly `ExpiresAt`, and a marker still blocks replay at exactly `SourceExpiresAt` plus the margin. miniredis deletes a key when its TTL reaches zero, so the extra millisecond keeps the boundary instant inclusive there. On real Redis it only extends a key's life by 1 ms. For a record, Go decides, so the extra time only affects garbage collection. For a marker it lengthens blocking by at most 1 ms, which is the safe direction. TTLs are capped at 100 years so a far-future `exp` cannot overflow.
+
+**Persistence expectation.** Recent writes can be lost when Redis restarts without AOF, or when it fails over to a replica that had not yet received them. A lost replay marker allows a second exchange of the subject access token. A lost revocation makes the grant, and its children, usable again until `ExpiresAt`. A lost record only makes its refresh token unusable. Enable AOF (and prefer a strict fsync policy) if these losses matter.
+
 ### Consistency Model
 
 The implementation uses different strategies based on consistency requirements:
@@ -401,11 +450,14 @@ resurrect the deleted row.
 
 ### Upstream Refresh Rejections and the Refresh Grant
 
-An upstream refresh fails in one of two ways. In a definitive rejection, the
+An upstream refresh fails in one of three ways. In a definitive rejection, the
 IdP answers with the OAuth `invalid_grant` code on anything but a 5xx or 429,
-and that upstream refresh token will never work again. Any other failure (a
-network error, a 5xx, a 429, storage) is transient. The classification is
-`oautherr.IsRejectedRefreshGrant`, shared with the client-side token source.
+and that upstream refresh token will never work again. In another structured
+verdict, the IdP answers with a different OAuth error code (for example
+`invalid_client`) on a 4xx: retrying will not help, but the refresh token is
+not what was rejected. Any other failure (a network error, a 5xx, a 429, a 4xx
+with no OAuth error code, storage) is transient. The definitive classification
+is `oautherr.IsRejectedRefreshGrant`, shared with the client-side token source.
 The provider wraps
 `upstream.ErrGrantRejected` only for the definitive case. Under the
 cross-replica race described above, a rotating IdP also answers
@@ -419,22 +471,117 @@ lost race rather than a dead credential. The refresher and
 per-provider errors that `GetAllUpstreamCredentials` returns in its `failed`
 map.
 
+Every answer from the token endpoint, on refresh and on the authorization code
+exchange alike, also keeps its `*oauth2.RetrieveError` in the same chain,
+behind an error whose message is the provider's sanitized text. The chained
+copy carries no response body and only the response's status code and status,
+so it cannot reach the outgoing request or its credentials. Callers classify
+it with the `oautherr` predicates: `IsPermanentCredentialError` is true for any
+structured verdict, `invalid_grant` or `invalid_client` alike, and false for a
+transient failure. "Permanent" means only that retrying will not help;
+`invalid_client` indicts the client registration, so a fresh login would fail
+the same way. A caller deciding whether to ask the user to reconnect a provider
+keys off `IsRejectedRefreshGrant`.
+
 The embedded auth server's own `refresh_token` grant keeps the token session
 (`tsid`). A refreshed access token therefore points at the same upstream
 credential. If that credential is dead, the bearer validator answers 401
-again, and a client that only ever refreshes loops. `Config.RefreshGrantHandlers`
-lets an embedder refuse such a grant. The handlers run in order, only on the
-`refresh_token` grant, after fosite's built-in refresh handler has
-authenticated the client and loaded the refresh session. They run before any
-tokens are issued or the refresh token is rotated. Returning
-`fosite.ErrInvalidGrant` answers HTTP 400 `invalid_grant`, which pushes the
-client into a full authorization that creates a new `tsid`. Another fosite
-error keeps its own status and code, and a plain Go error answers HTTP 500.
-Only the handlers' request phase is delegated:
-their response phase and client-authentication skip are never called, so the
-seam can refuse a grant but not change what is issued. All handlers are
-registered as one fosite handler, because fosite drops a second handler of
-the same concrete type. No handler is registered by default.
+again, and a client that only ever refreshes loops. A built-in upstream
+refresh guard breaks the loop by default (see below). Beyond it,
+`Config.RefreshGrantHandlers` lets an embedder add its own refresh-grant
+checks. The guard and the handlers run in order, only on the `refresh_token`
+grant, after fosite's built-in refresh handler has authenticated the client
+and loaded the refresh session. They run before any tokens are issued or the
+refresh token is rotated. Returning `fosite.ErrInvalidGrant` answers HTTP 400
+`invalid_grant`, which pushes the client into a full authorization that
+creates a new `tsid`. Another fosite error keeps its own status and code, and
+a plain Go error answers HTTP 500. Only the request phase is delegated: the
+response phase and client-authentication skip are never called, so the seam
+can refuse a grant but not change what is issued. The guard and the
+handlers are registered as one fosite handler, because fosite drops a second
+handler of the same concrete type.
+
+#### Upstream refresh guard
+
+The guard is registered whenever at least one upstream is configured, ahead
+of the embedder's handlers, which therefore see only grants it accepted. It
+refuses the grant with `invalid_grant` when the token session's upstream
+credential is definitively dead. This is the canonical list; the code and the
+other docs link here.
+
+| Cause | Refresh token revoked |
+|---|---|
+| The session has no readable upstream rows | No |
+| Rows exist but none holds an access token | Yes |
+| A row's access token is expired and its provider is no longer configured, so nothing can refresh it | No |
+| A row's access token is expired and the row has no refresh token | Yes |
+| The row was deleted while the guard refreshed it | No |
+| The IdP rejects the row's refresh with `invalid_grant` (`upstream.ErrGrantRejected`) | No (the session's upstream rows are deleted) |
+
+A revoking refusal also revokes the grant's access tokens, as an RFC 7009
+revocation of the refresh token would. It applies only when the stored rows
+prove the credential can never be used again. The other refusals keep the
+refresh token, because their cause could be wrong: a rotating IdP also
+answers `invalid_grant` to a replica that lost a refresh race, and Redis's
+bulk read skips a row it cannot parse (for example one written by another
+version during a rolling upgrade) and reports none. An unconfigured provider
+is decided by the serving replica's config rather than by the stored rows, and
+during a rolling deploy that adds an upstream an old replica does not know it
+yet. If such a refusal is wrong, the client's next refresh succeeds; otherwise
+it is refused again.
+
+A kept token can be retried, and public clients (`token_endpoint_auth_method`
+`none`, the DCR default) need nothing but the token to do so. A retry of the
+cheap causes repeats a storage read. For an IdP rejection, a retry would
+repeat an upstream refresh call and the 500ms recheck, so once the rejection
+is confirmed the guard deletes all of the session's upstream rows. The client
+is sent to a new `tsid`, so nothing reads them again, and a retry is refused
+as having no rows, on any replica. Every row goes, not only the rejected
+provider's: with the siblings kept, a retry would see only usable rows and be
+granted a token that never gets a credential for the rejected provider. The
+rows are not the refresh token, so a lost race still costs one
+re-authorization rather than the grant, though the refusal can no longer
+correct itself on a retry.
+
+A refusal is logged at WARN when it revokes or follows a confirmed IdP
+rejection, which the row deletion limits to once per session. The other
+refusals repeat on every retry of a kept token (for example after logout), so
+they are logged at DEBUG.
+
+The guard refreshes an expired row through the shared refresher before
+deciding, one provider at a time. Upstream refresh is otherwise lazy, so an
+idle client's stored token is often expired while its upstream refresh token
+still works, and refusing on stored state alone would force every idle client
+to sign in again. Any other outcome is uncertain and grants the refresh, since
+the bearer validator answers those with 503 or a retryable 401 anyway:
+
+- a transient upstream failure (network, 5xx, 429);
+- a storage error;
+- the request being cancelled; or
+- the check running past its 10-second budget. A refresh still in flight then
+  completes in the background and stores its result.
+
+To tolerate the lost-race window described above, the guard does not refuse
+on the first rejection. It waits briefly (500ms) and re-reads the row, and a
+row now holding any different refresh token counts as live. This is a
+heuristic: a winner whose write lands after the wait is missed. The client is
+refused and its rows deleted, so the winner's write fails, but it keeps its
+refresh token. A recheck that cannot
+complete (the request is cancelled, or the read fails) is uncertain too. A
+session without a `tsid` (a session-less grant) is not checked.
+
+**Upgrade impact.** The guard is on by default. After an upgrade, a session
+whose upstream credential is already dead is refused on its first refresh
+instead of looping. A refresh token's useful life is now also bounded by the
+upstream credential's liveness, even in a deployment whose resource server
+never reads upstream tokens: once the upstream refresh token stops working,
+the client signs in again.
+
+**Opt-out.** `Config.DisableUpstreamRefreshGuard` turns the guard off. It is
+available only to Go embedders of `pkg/authserver`; the RunConfig, CLI and
+operator CRDs do not expose it, so `thv`, vMCP and the operator always run the
+guard. Exposing the switch is tracked in
+[#6931](https://github.com/stacklok/toolhive/issues/6931).
 
 ### Serialization
 
@@ -596,7 +743,7 @@ Operator-declared clients are written at startup by `ReconcileConfiguredClient`.
 - A DCR-issued client is never overwritten. Startup fails.
 - A SPIFFE placeholder and a non-placeholder client never replace each other, in either direction. Startup fails.
 - Two SPIFFE placeholders must match in full (scopes, audiences, resources, SPIFFE identity). A mismatch fails startup. See [SPIFFE Association Declarations](18-spiffe-association-declarations.md).
-- Two non-placeholder clients, such as delegate clients, are replaced. A changed scope or audience takes effect on restart, and so does a rotated secret. The one refusal is a flip between public and confidential, which fails startup. When scopes or audiences change, the server logs a WARN, `configured client replaced with a different policy`, with the `client_id` and the old and new scopes and audiences. An unchanged restart does not log this warning (the per-delegate startup WARN from `registerDelegateClients` still fires on every start).
+- Two non-placeholder clients, such as delegate clients, are replaced. A changed scope, audience, grant type, redirect URI or token endpoint auth method takes effect on restart, and so does a rotated secret or JWKS key. The one refusal is a flip between public and confidential, which fails startup. When scopes, audiences, grant types, redirect URIs or the token endpoint auth method change, the server logs a WARN, `configured client replaced with a different policy`, with the `client_id` and the old and new values of each. This covers replicas that roll out with different redirect URIs and overwrite each other's shared row. Secret and JWKS rotation and response type changes do not log it. An unchanged restart does not log this warning (the per-delegate startup WARN from `warnBlanketSelfIssuedExchange` still fires on every start for delegates whose `token_exchange.self_issued_subject_tokens` is `any` or that have no `token_exchange` block).
 
 Before this rule, a changed delegate scope or audience on Redis failed startup with "already registered as a different configured client", and the new pod never became ready. The memory backend never hit this, because it starts empty.
 
@@ -605,6 +752,7 @@ Before this rule, a changed delegate scope or audience on Redis failed startup w
 - A replica that restarts with the older config writes its old policy back. That policy stays until any replica next restarts.
 - One request can combine the delegate status of one replica with the policy of another. Delegate status comes from each replica's own config. The policy comes from the shared row.
 - Secret rotation already behaves this way.
+- The ID-JAG grant gate (a client that sets `grant_types` must list the JWT-bearer grant) also depends on each replica's own config, because the set of clients it applies to comes from that config while the client's grants come from the shared row.
 - SPIFFE clients are not affected. Each replica serves them from its own config, and the placeholder row carries no policy that a request uses.
 - A replica can grant scopes and audiences from the shared row that its own config would reject. The request-time checks in `pkg/authserver/server/tokenexchange/handler.go` for requested scopes (`grantScopes`) and for audiences requested through the `audience` parameter (`grantAudiences`) use only the stored client's scopes and audience. A `resource` parameter (`grantResourceAudience`) and the default audience (`grantDefaultAudience`) are also checked against the replica's own `allowedAudiences` on every request. So narrowing a delegate is not a reliable revocation until every replica runs the new config and no old-config pod restarts. If an old-config pod restarts after the rollout, the wider policy stays in the row until a new-config pod restarts. The subject token still bounds what is granted.
 
@@ -613,11 +761,49 @@ Before this rule, a changed delegate scope or audience on Redis failed startup w
 1. Roll out the previous policy on the new binary so the row goes back, then roll back the binary.
 2. Delete the stored row immediately before rolling back to the older binary with the older config.
 
-A binary-only rollback works when the older binary's config already matches the stored row. During an upgrade, an older-binary pod that restarts (crash, eviction) after new pods replaced the row with a different policy fails startup and crash-loops until the rollout finishes. No new stored field was added, so older binaries can still read the rows.
-
-**Removed delegates.** With the Redis backend, nothing deletes a delegate's row when you remove it from config. The client still authenticates with its stored secret and, while token exchange stays enabled on the server, keeps the token-exchange grant. It loses only the self-issued subject token exemption, because that check uses the running config (`pkg/authserver/server/tokenexchange/handler.go`, `configuredDelegate` in the exchange path and `checkDelegationConsent`). It also still passes external-issuer consent checks when an issuer's `allowedDelegateClients` is `["*"]` or lists its ID (`delegateClientAllowed`). Deleting the stored row is the only full revocation on Redis. With the memory backend, a restarted server starts empty and registers only the configured delegates (`pkg/authserver/server_impl.go`), so the removed client is gone from restarted replicas. See [Token Exchange and Delegation](17-token-exchange-delegation.md).
+A binary-only rollback works when the older binary's config already matches the stored row. During an upgrade, an older-binary pod that restarts (crash, eviction) after new pods replaced the row with a different policy fails startup and crash-loops until the rollout finishes. Newer binaries add a `configured` field to delegate rows. Older binaries ignore it, so they can still read the rows. A row an older binary rewrites loses the field and is then recognized by the legacy delegate shape (see "Client admission" below).
 
 **Implementation:** `configuredClientConflict` in `pkg/authserver/storage/types.go`, called by both backends.
+
+**Client admission.** A configured client removed from config must stop working even though its row is still in the backend. `ClientAdmissionStorage` (`pkg/authserver/storage/client_admission.go`) wraps the caller's store and overrides only `GetClient`. It classifies the stored row by what the row itself shows, in this order:
+
+| Class | How the row is recognized | Served when |
+|---|---|---|
+| Placeholder | the inert SPIFFE reservation row | never from storage (the SPIFFE overlay serves SPIFFE clients from config) |
+| Configured | the stamp that `ReconcileConfiguredClient` writes, or the legacy delegate shape (below) | its ID is a configured delegate client in this server's config |
+| Registered | the registration marker (DCR and CIMD) | always |
+| Unmarked | anything else, such as a client an embedder writes with `RegisterClient` | always |
+
+The Configured and Registered classes never overlap.
+
+The stamp is a `configured` field on the Redis row and a side map in the memory backend. Only `ReconcileConfiguredClient` sets it. It is not part of the client fingerprint, so it never causes a "different policy" conflict.
+
+**Legacy delegate shape.** Every delegate row written by any release since v0.43.0 has one shape: a bare `*fosite.DefaultClient` that is confidential, has grant types of exactly `urn:ietf:params:oauth:grant-type:token-exchange`, and has no token endpoint auth method. A row with that shape and no stamp is classed as Configured. This covers delegates removed before the upgrade, and rows an older binary rewrote without the stamp. Public clients, clients with other grant types, and DCR or CIMD rows do not match. The rule does not look at who wrote the row. An embedder row that is confidential, has grant types of exactly token-exchange and has no token endpoint auth method matches it too, and is hidden unless its ID is a configured delegate. On Redis this also covers such a client registered as an OIDC client with an empty auth method, because it reads back as a plain client. The memory backend serves that OIDC case.
+
+A row that is Configured but not declared, or a Placeholder, is reported as not found, the same error an unknown ID gets. The server logs one WARN per client ID for the life of the server instance. The wrapper sits directly on the caller's store, below the CIMD decorator and the SPIFFE overlay. Admission never deletes or rewrites a row.
+
+What this means for a delegate you remove from `delegate_clients`, after the next restart, on both backends:
+
+- It is not found. It cannot authenticate at the token endpoint, so it cannot exchange tokens.
+- Access JWTs already issued to it stay valid until they expire. Admission does not revoke them.
+- A self-issued subject token issued to it can still be exchanged by other delegates until it expires. This is an accepted exposure.
+- On Redis, if you add the same ID back, its stored refresh tokens work again until the configured refresh-token lifespan ends (7 days by default, at most 30). This applies to configured login clients. Rotate the credential when you re-add a client.
+- To remove the row as well, delete it manually: `DEL thv:auth:{ns:name}:client:<id>`.
+
+A pending request for a removed client is refused too. Consent and the upstream callback (including an upstream error response) answer a plain-text HTTP 400 containing `invalid_client`, send nothing upstream, and write no upstream tokens or user rows. On the device verification page, submitting the user code (`POST /oauth/device`), completing the upstream login (`/oauth/callback`) and confirming (`POST /oauth/device/confirm`) each check that the device request's client still resolves. When it no longer resolves, the page answers HTTP 400 before any upstream redirect or code exchange, and the device request is never authorized. Denying still closes the request, because deny runs before the check. Any client lookup that ends in not-found gets this answer, including a CIMD document fetch that fails transiently; storage and transport failures answer HTTP 500.
+
+**Rolling updates.** Admission is per replica, so a rollout is not atomic in either direction:
+
+- A removed delegate is fully revoked only after every replica restarts on the new binary and config. A replica still on the old config, or on a binary without admission, keeps serving it.
+- A newly added delegate gets `invalid_client` on a replica that runs client admission but still has the old config, because that replica does not declare it. It works once that replica restarts. A replica on a binary without admission serves it.
+
+**What admission does not cover.** The Redis session lookup that rebuilds the client for a stored authorization-code, PKCE, refresh-token or access-token session (`unmarshalRequester`) reads the backend directly, so it is identity-only. That is safe because fosite compares the session's client ID with the client that authenticated through the admitted store. Do not treat a rehydrated client as an authentication result. Device requests store only a client ID string. Code that reads the backend directly also bypasses admission, as does a binary that lacks it.
+
+**Embedders.** Clients an embedder writes with `RegisterClient` are Unmarked and are always served, except a row that matches the legacy delegate shape above. No declaration is needed and nothing changes for the usual embedder clients (public clients, or clients with other grant types). A later change (#6937) will add `ProvisionedClients` to the config so embedders can declare them. A consent-exempt ID does not vouch for a client. A delegate client is consent-exempt only if it is a configured login client; see [Administrator consent preauthorization](#administrator-consent-preauthorization).
+
+With the memory backend, a restarted server starts empty and registers only the configured delegates (`pkg/authserver/server_impl.go`). See [Token Exchange and Delegation](17-token-exchange-delegation.md).
+
+**Implementation:** `ClientAdmissionStorage` in `pkg/authserver/storage/client_admission.go`, installed by `newClientAdmissionStorage` in `pkg/authserver/server_impl.go`.
 
 ## Configuration
 
@@ -714,13 +900,26 @@ level with its `client_id`) and must re-register. Re-registration issues a new
 `client_id`, so update any `AllowedDelegateClients` entries that name the old
 one.
 
+A `client_assertion` must be a compact JWS whose protected header carries no
+`jwk` member; otherwise the token and device-authorization endpoints answer
+`invalid_client` before parsing it. An OpenID Connect `request` object on
+`/oauth/authorize` gets the same check, before the client is looked up, and is answered with
+`invalid_request_object`, without a redirect. Keys are always resolved from the
+client's registered JWKS, so an embedded key was never used. The check keeps
+untrusted JWTs away from the go-jose v3 parser inside the pinned fosite
+version (GHSA-mgcc-cww5-fp2q) and goes away once fosite moves to go-jose v4.
+Each rejection is logged at warn level.
+
 A `private_key_jwt` DCR registration is restricted to the RFC 8693 token-exchange
 grant (`urn:ietf:params:oauth:grant-type:token-exchange`) and cannot request the
 authorization-code or refresh-token grants. If `grant_types` is omitted, this
 exchange grant is supplied automatically. Discovery advertises
 `private_key_jwt` and the supported signing algorithms only when
-`allowPrivateKeyJWTRegistration` is enabled; token exchange itself is always
-advertised because the embedded server supports it for self-issued tokens.
+`allowPrivateKeyJWTRegistration` is enabled or a configured delegate client
+uses `private_key_jwt`. It advertises `client_secret_basic` and
+`client_secret_post` when confidential DCR is enabled or a configured delegate
+client authenticates with a secret. Token exchange is advertised by default and is
+omitted when `inbound_grants` leaves out `token_exchange`.
 
 The registration and token endpoints must use HTTPS for confidential-client
 registration, exactly as described above. `private_key_jwt` registration has
@@ -732,7 +931,9 @@ is needed or offered.
 
 A client proves possession of its private key by sending a signed
 `client_assertion` at `/oauth/token`; ToolHive stores only the registered public
-JWKS. Assertion replay markers are retained until the assertion `exp` in both
+JWKS. The assertion's `aud` may be the issuer or the token endpoint URL; see
+[Client-assertion audience](17-token-exchange-delegation.md#client-assertion-audience).
+Assertion replay markers are retained until the assertion `exp` in both
 storage backends. Redis also persists the registered client and its JWKS under
 the auth server's isolated key prefix, so replicas sharing Redis can use the
 same registration. The in-memory backend is process-local and loses registrations
@@ -802,8 +1003,9 @@ When `authServer.cimd.enabled: true` is set, the embedded authorization server w
 
    This widens but does not close the lockout. Stale serving does not cover a cold cache (first use, or after a restart), other replicas that have not cached the client, or an entry evicted from the LRU, for example by an attacker hosting enough valid documents to push it out.
 
-   Persisted-row fallbacks. The persisted client row is written on every successful fetch. Two routes read it when the limiter refuses and no stale cache entry is servable. They differ on purpose, and unifying them is deferred.
-   - `/oauth/callback` and the consent step (`callbackClient` in `handlers/callback.go`) read the row through `storage.Unwrap` on any `ErrCIMDRateLimited`. There is no drift check, and if the read fails the caller gets the base lookup's error. They need the row because the pending authorization is already consumed and the login could not be retried. The snapshot is bounded by the pending-authorization lifetime plus the cache TTL plus `MaxStale`.
+   Persisted-row fallbacks. The persisted client row is written on every successful fetch. Three places read it when the limiter refuses and no stale cache entry is servable. They differ on purpose, and unifying them is deferred.
+   - `/oauth/callback` and the consent step (`callbackClient` in `handlers/callback.go`) read the row through `storage.ClientStoreBelowCIMD` on any `ErrCIMDRateLimited`; that walk stops at `ClientAdmissionStorage`, so the fallback still passes client admission. There is no drift check, and if the read fails the caller gets the base lookup's error. They need the row because the pending authorization is already consumed and the login could not be retried. The snapshot is bounded by the pending-authorization lifetime plus the cache TTL plus `MaxStale`.
+   - Device verification: the device submit, the device upstream-login completion, and `POST /oauth/device/confirm` (all through `rejectUnresolvableDeviceClient` in `handlers/device_verification.go`, which calls `callbackClient`) read the row the same way. Nothing is consumed at these steps, and the lookup only decides yes or no; the resolved client is not used to issue anything. The device request was created only after `/oauth/device_authorization` resolved the client, so the snapshot is bounded by the device code lifetime plus the cache TTL plus `MaxStale`.
    - `/oauth/token` only. Some clients discard their stored session when a token request fails, so a 429 on a refresh would log the user out. The handler marks the request (`storage.WithPersistedClientFallback`), and the decorator then reads the row from the layer under it. A drift check applies first: the row must be a public client written by the CIMD fetch for this id, every grant type on it must still be one the server allows for CIMD clients, the row's audience must equal the configured allowed audiences, and when `scopes_supported` is set every row scope must be in `scopes_supported` or the baseline scopes. This protects against an operator changing that configuration before a restart. When the row is missing, the storage read fails, or the check fails, the caller gets the original rate-limit error (429), never the base error. `/oauth/authorize` and `/oauth/device_authorization` still return 429. The row is shared by all replicas on Redis, so a replica that never served the client benefits. The memory backend loses its rows on restart, so it gets no protection right after one (its sessions also end on restart).
 
    The `/oauth/token` fallback skips re-validation against the document. The decorator does not renew CIMD rows when a token request succeeds, because every successful fetch already writes the row again. The age of the row is therefore bounded the same way on both backends:
@@ -836,13 +1038,13 @@ All other `Storage` methods (`RegisterClient`, token storage, upstream token sto
 
 ### Unwrap pattern
 
-The storage decorators (`CIMDStorageDecorator`, the CIMD shape guard and `SPIFFEStorageDecorator`) implement `Unwrap() Storage`, and `storage.Unwrap` follows the chain to the concrete backend. Runtime code depends on this at these places:
+The storage decorators (`CIMDStorageDecorator`, the CIMD shape guard, `SPIFFEStorageDecorator` and `ClientAdmissionStorage`) implement `Unwrap() Storage`, and `storage.Unwrap` follows the chain to the concrete backend. Runtime code depends on this at these places:
 
 - **`DCRCredentialStore` assertion** (`newServer`): The `DCRCredentialStore` interface is narrower than `Storage` and not embedded in it. `storage.Unwrap(stor).(storage.DCRCredentialStore)` reaches the concrete backend through the decorators.
 - **`RedisStorage` migration** (`runLegacyMigration`): A type assertion to `*storage.RedisStorage` is needed to run a one-shot data migration.
 - **`DeviceCodeStorage` assertion** (`buildDeviceFlowFactory` and `handlers.NewHandler`): The device flow reaches the device-code store on the concrete backend.
 - **`RememberedConsentStorage` assertion** (`handlers.NewHandler`): Remembered consent is only offered when the concrete backend implements it.
-- **`callbackClient`** (`handlers/callback.go`): This one deliberately bypasses the decorator. When the CIMD fetch limiter refuses a lookup during callback or consent, it reads the persisted client row straight from the base storage.
+- **`callbackClient`** (`handlers/callback.go`): deliberately bypasses the CIMD decorator. When the CIMD fetch limiter refuses a lookup during callback, consent, or device verification, it reads the persisted client row through `storage.ClientStoreBelowCIMD`, which stops at `ClientAdmissionStorage`, so the fallback still passes client admission and never reaches the raw backend.
 
 The `AssertionJWTConsumer` capability is separate: `CIMDStorageDecorator` implements `ConsumeAssertionJWT` and forwards it to a capable backend. If the backend lacks the capability, the decorator returns an error instead of accepting an assertion with unknown replay status; replay protection therefore fails closed.
 
@@ -860,7 +1062,7 @@ When top-level `spiffeTrustDomains` and `inboundGrants.spiffeClientAuth` are con
 
 ### What it does
 
-`SPIFFEStorageDecorator` embeds the full `storage.Storage` interface and overrides `GetClient`, `RegisterClient`, and `ReconcileConfiguredClient`. `GetClient` checks its static client map first and only falls through to the wrapped storage (CIMD, then DCR) when the requested client ID is not one of the configured associations. `RegisterClient` and `ReconcileConfiguredClient` reject any DCR, delegate-client, or configured-client attempt that targets a client ID reserved by a static SPIFFE association. CIMD never calls `RegisterClient`; it durably persists resolved clients via `UpsertDCRIssuedClient` instead (a best-effort write-through for token-endpoint session rehydration — see the CIMD section above), which explicitly refuses to clobber a configured/SPIFFE-reconciled client at the same ID, so it cannot collide with a static association.
+`SPIFFEStorageDecorator` embeds the full `storage.Storage` interface and overrides `GetClient`, `RegisterClient`, and `ReconcileConfiguredClient`. `GetClient` checks its static client map first and only falls through to the wrapped storage (CIMD or the shape guard, then client admission, then the backend) when the requested client ID is not one of the configured associations. `RegisterClient` and `ReconcileConfiguredClient` reject any DCR, delegate-client, or configured-client attempt that targets a client ID reserved by a static SPIFFE association. CIMD never calls `RegisterClient`; it durably persists resolved clients via `UpsertDCRIssuedClient` instead (a best-effort write-through for token-endpoint session rehydration — see the CIMD section above), which explicitly refuses to clobber a configured/SPIFFE-reconciled client at the same ID, so it cannot collide with a static association.
 
 Its clients come entirely from the configured SPIFFE trust-domain and client-association declarations (see [SPIFFE Association Declarations](18-spiffe-association-declarations.md)). They are built once at startup, held in memory, and never written to the storage backend (memory or Redis); they are never eligible for dynamic registration or replacement.
 

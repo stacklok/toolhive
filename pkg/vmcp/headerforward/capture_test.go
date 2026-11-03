@@ -62,12 +62,13 @@ func TestCaptureMiddleware(t *testing.T) {
 		assert.False(t, valueSet, "no context value should be set for an empty allowlist")
 	})
 
-	t.Run("no_matching_header_sets_no_context_value", func(t *testing.T) {
+	t.Run("no_matching_header_sets_empty_context_value", func(t *testing.T) {
 		t.Parallel()
 		// Allowlist present but the request carries none of the listed headers.
 		got, valueSet := runCapture(t, []string{"X-Api-Key"}, map[string]string{"X-Other": "v"})
-		assert.Nil(t, got)
-		assert.False(t, valueSet, "context value must be skipped when nothing is captured")
+		assert.True(t, valueSet, "an empty map must be attached so it shadows any earlier request's values")
+		require.NotNil(t, got)
+		assert.Empty(t, got)
 	})
 
 	t.Run("header_matched_case_insensitively_canonical_form", func(t *testing.T) {

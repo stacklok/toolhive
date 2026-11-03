@@ -1692,7 +1692,8 @@ func TestCreateRunConfigFromMCPServer_RateLimiting(t *testing.T) {
 }
 
 func TestPopulateScalingConfig_GlobalRedisDefault(t *testing.T) {
-	t.Setenv("TOOLHIVE_DEFAULT_REDIS_ADDR", "global-redis:6379")
+	t.Parallel()
+	defaults := &ctrlutil.DefaultRedisConfig{Addr: "global-redis:6379"}
 
 	m := &mcpv1beta1.MCPServer{
 		Spec: mcpv1beta1.MCPServerSpec{
@@ -1700,7 +1701,7 @@ func TestPopulateScalingConfig_GlobalRedisDefault(t *testing.T) {
 		},
 	}
 	runConfig := &runner.RunConfig{}
-	populateScalingConfig(runConfig, m)
+	populateScalingConfig(runConfig, m, defaults)
 
 	require.NotNil(t, runConfig.ScalingConfig)
 	require.NotNil(t, runConfig.ScalingConfig.SessionRedis)
@@ -1708,7 +1709,8 @@ func TestPopulateScalingConfig_GlobalRedisDefault(t *testing.T) {
 }
 
 func TestPopulateScalingConfig_SpecTakesPrecedenceOverGlobal(t *testing.T) {
-	t.Setenv("TOOLHIVE_DEFAULT_REDIS_ADDR", "global-redis:6379")
+	t.Parallel()
+	defaults := &ctrlutil.DefaultRedisConfig{Addr: "global-redis:6379"}
 
 	m := &mcpv1beta1.MCPServer{
 		Spec: mcpv1beta1.MCPServerSpec{
@@ -1719,18 +1721,18 @@ func TestPopulateScalingConfig_SpecTakesPrecedenceOverGlobal(t *testing.T) {
 		},
 	}
 	runConfig := &runner.RunConfig{}
-	populateScalingConfig(runConfig, m)
+	populateScalingConfig(runConfig, m, defaults)
 
 	require.NotNil(t, runConfig.ScalingConfig.SessionRedis)
 	assert.Equal(t, "local-redis:6379", runConfig.ScalingConfig.SessionRedis.Address)
 }
 
 func TestPopulateScalingConfig_NoGlobalNoSpec(t *testing.T) {
-	t.Setenv("TOOLHIVE_DEFAULT_REDIS_ADDR", "")
+	t.Parallel()
 
 	m := &mcpv1beta1.MCPServer{Spec: mcpv1beta1.MCPServerSpec{}}
 	runConfig := &runner.RunConfig{}
-	populateScalingConfig(runConfig, m)
+	populateScalingConfig(runConfig, m, nil)
 
 	assert.Nil(t, runConfig.ScalingConfig)
 }

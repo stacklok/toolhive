@@ -22,9 +22,10 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/go-jose/go-jose/v3"
+	"github.com/go-jose/go-jose/v4"
 	"github.com/ory/fosite"
 
+	"github.com/stacklok/toolhive/pkg/authserver/internal/fositejose"
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
@@ -360,7 +361,7 @@ func ValidatePrivateKeyJWTClientKeys(client fosite.Client) *DCRError {
 		return nil
 	}
 	return validatePrivateKeyJWTMetadata(&oauthproto.DynamicClientRegistrationRequest{
-		JWKS:                        c.GetJSONWebKeys(),
+		JWKS:                        fositejose.FromFositeKeySet(c.GetJSONWebKeys()),
 		TokenEndpointAuthSigningAlg: c.GetTokenEndpointAuthSigningAlgorithm(),
 	}, oauthproto.TokenEndpointAuthMethodPrivateKeyJWT)
 }
@@ -375,24 +376,30 @@ func validatePrivateKeyJWTMetadata(req *oauthproto.DynamicClientRegistrationRequ
 	if req.JWKSURI != "" {
 		return &DCRError{Error: DCRErrorInvalidClientMetadata, ErrorDescription: "jwks_uri is not supported; provide inline jwks"}
 	}
-	if req.JWKS == nil || len(req.JWKS.Keys) == 0 {
+	return validatePrivateKeyJWTKeySet(req.JWKS, req.TokenEndpointAuthSigningAlg)
+}
+
+// validatePrivateKeyJWTKeySet is the key check shared by DCR registrations and
+// operator-configured private_key_jwt clients.
+func validatePrivateKeyJWTKeySet(jwks *jose.JSONWebKeySet, algorithm string) *DCRError {
+	if jwks == nil || len(jwks.Keys) == 0 {
 		return &DCRError{Error: DCRErrorInvalidClientMetadata, ErrorDescription: "private_key_jwt requires a non-empty inline jwks"}
 	}
-	if len(req.JWKS.Keys) > maxInlineJWKSKeys {
+	if len(jwks.Keys) > maxInlineJWKSKeys {
 		return &DCRError{
 			Error:            DCRErrorInvalidClientMetadata,
 			ErrorDescription: fmt.Sprintf("too many inline jwks keys (maximum %d)", maxInlineJWKSKeys),
 		}
 	}
-	if !supportedSigningAlgorithm(req.TokenEndpointAuthSigningAlg) {
+	if !supportedSigningAlgorithm(algorithm) {
 		return &DCRError{
 			Error:            DCRErrorInvalidClientMetadata,
 			ErrorDescription: "token_endpoint_auth_signing_alg is missing or unsupported",
 		}
 	}
 	matching := false
-	for i := range req.JWKS.Keys {
-		keyMatches, dcrErr := validatePrivateKeyJWTKey(&req.JWKS.Keys[i], req.TokenEndpointAuthSigningAlg)
+	for i := range jwks.Keys {
+		keyMatches, dcrErr := validatePrivateKeyJWTKey(&jwks.Keys[i], algorithm)
 		if dcrErr != nil {
 			return dcrErr
 		}

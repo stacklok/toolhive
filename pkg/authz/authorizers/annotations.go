@@ -42,10 +42,21 @@ func WithToolAnnotations(ctx context.Context, annotations *ToolAnnotations) cont
 }
 
 // ToolAnnotationsFromContext retrieves tool annotations previously stored with
-// WithToolAnnotations. It returns nil when no annotations are present.
+// WithToolAnnotations or as part of ResourceMetadata. It returns nil when no
+// annotations are present.
 func ToolAnnotationsFromContext(ctx context.Context) *ToolAnnotations {
-	v, _ := ctx.Value(toolAnnotationsKey{}).(*ToolAnnotations)
-	return v
+	return effectiveToolAnnotationsFromContext(ctx)
+}
+
+// effectiveToolAnnotationsFromContext keeps the legacy and unified metadata
+// readers consistent when both context channels are present. Unified resource
+// metadata is authoritative; the legacy value is a compatibility fallback.
+func effectiveToolAnnotationsFromContext(ctx context.Context) *ToolAnnotations {
+	if metadata, ok := ctx.Value(resourceMetadataKey{}).(ResourceMetadata); ok && metadata.Annotations != nil {
+		return metadata.Annotations
+	}
+	annotations, _ := ctx.Value(toolAnnotationsKey{}).(*ToolAnnotations)
+	return annotations
 }
 
 // AnnotationsToMap converts non-nil annotation fields to a flat map suitable

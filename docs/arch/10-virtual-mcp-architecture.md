@@ -269,7 +269,11 @@ Step dependencies form a DAG (Directed Acyclic Graph). Steps without dependencie
 
 Steps can be of three types:
 - **tool**: Execute a backend tool
-- **elicitation**: Request user input via MCP elicitation protocol
+- **elicitation**: Request user input via MCP elicitation protocol. `onDecline` and `onCancel` (a timeout uses `onCancel`) choose what happens when the user does not accept: `abort` fails the workflow; `skip_remaining` stops it, marking every step that has not run as `skipped`, and completes it successfully; `continue` proceeds to the next steps, which should then guard themselves with a `condition` on the elicitation output. Details for `skip_remaining`:
+  - Steps that depend on the elicitation step (directly or through `dependsOn` chains) never run. A step that does not depend on it may already have run, or may be running at the same time. If it is still running when the workflow stops, it is cancelled and reported as `failed`, so a completed workflow can contain a failed step.
+  - Skipped steps take their `defaultResults`. If the composite tool's `output` uses a field of a skipped step that has no `defaultResults` entry, output construction can fail or render a placeholder. Give such steps `defaultResults`.
+  - With no `output` configured, the tool result is the output of the last step that completed. Normally that is the elicitation step's output, `{"action": "decline"|"cancel"|"timeout", "skipped": true}`, but a parallel step that finishes after the gate would be returned instead.
+  - If the workflow timeout expires or the request is cancelled while the step waits, the workflow is still reported as a timeout or failure.
 - **forEach**: Iterate over a collection from a previous step, executing an inner tool step per item with bounded parallelism
 
 **Tool annotations**: Composite tools advertise MCP tool annotations computed at advertise time via a derive-then-merge ordering. First, a safety floor is derived from the annotations of the step tools (including `forEach` inner steps): `readOnlyHint` is the AND across steps, `destructiveHint` and `openWorldHint` are the OR across steps (unknown steps taint conservatively), and `idempotentHint` is never derived. Then any explicit `annotations` declared on the composite tool definition are merged over the floor, with explicitly set fields winning. An explicit hint may be more conservative than the floor, but if it would make the tool look safer than its steps allow (e.g. `readOnlyHint: true` when a step is not read-only), the composite tool is dropped from `tools/list` with a warning rather than advertised misleadingly.
@@ -1076,9 +1080,10 @@ Middleware is applied by wrapping handlers, so execution order is outer-to-inner
 | 10 | MCP Parsing | Always | Validates every MCP POST regardless of `Content-Type`, including when auth is nil; publishes calls and notifications for downstream controls. A second application skips already-parsed requests. |
 | 11 | Telemetry | Optional | OpenTelemetry instrumentation |
 | 12 | Loopback Host guard | Always | DNS-rebinding protection: on a connection that arrived over loopback, rejects a non-loopback `Host` header with 403 before classification, so Legacy and Modern requests are held to the same rule. Mirrors go-sdk's localhost protection, which covers only Legacy requests that reach `StreamableHTTPHandler`; Modern requests (`dispatchModern`) and cross-replica Legacy sessions rehydrated by toolhive-core's `mcpcompat` did not pass through it, and the guard covers all of them. mcpcompat also runs session cleanup for a Legacy DELETE around go-sdk's Host check, so without the guard a DELETE with a forged `Host` and a known session ID could end that session even though go-sdk answered 403; the guard runs first and stops this. Only the MCP route is guarded: `/health`, `/ping`, `/readyz`, `/status`, `/api/backends/health`, `/metrics`, `/.well-known/` and the embedded auth server routes are deliberately left unguarded because they are unauthenticated by design and expose only operational metadata. Connections on a non-loopback local address (e.g. a pod IP) are unaffected; a loopback hop that preserves a non-loopback `Host` must rewrite it. See `pkg/vmcp/server/loopback_host_guard.go`. |
-| 13 | Pre-dispatch authorization gate | Optional | Innermost: runs inside the Streamable HTTP transport before session validation and SDK dispatch. Rejects a Cedar-denied `tools/call` / `resources/read` / `prompts/get` with HTTP 403 + JSON-RPC code 403, reusing the core admission decision. Installed only when Authorization is configured. See "Authorization Enforcement" below. |
+| 13 | Session ownership | Always | After Modern/Legacy classification (Legacy only), rejects any request carrying the `Mcp-Session-Id` of a session the authenticated caller does not own with a non-disclosing plain-text 404, before the Streamable HTTP transport routes it. See "Session Ownership" below. |
+| 14 | Pre-dispatch authorization gate | Optional | Innermost: runs inside the Streamable HTTP transport after the session-ownership check (row 13) and before the transport's session-existence validation and SDK dispatch, so a foreign or unknown session gets 404 before any 403. Rejects a Cedar-denied `tools/call` / `resources/read` / `prompts/get` with HTTP 403 + JSON-RPC code 403, reusing the core admission decision. Installed only when Authorization is configured. See "Authorization Enforcement" below. |
 
-> On the New/Serve path, authorization is enforced by the **core admission seam**, not by rows 6–8 as standalone HTTP middleware; row 13 is the transport-level projection of that decision. See [Authorization Enforcement](#authorization-enforcement-core-admission-seam--pre-dispatch-gate).
+> On the New/Serve path, authorization is enforced by the **core admission seam**, not by rows 6–8 as standalone HTTP middleware; row 14 is the transport-level projection of that decision. See [Authorization Enforcement](#authorization-enforcement-core-admission-seam--pre-dispatch-gate).
 
 Every MCP POST passes shared envelope validation before Modern dispatch or the
 Legacy SDK, with or without authentication. Malformed, ambiguous, mixed
@@ -1086,6 +1091,54 @@ request/response, and batch bodies are rejected rather than forwarded without a
 policy input. A leading UTF-8 BOM is removed from the forwarded body so webhook
 consumers see the same JSON as the parser; `Content-Type` is not relabeled. The
 Legacy SDK may still reject otherwise valid non-JSON media types with HTTP 415.
+
+### Session Ownership
+
+Every vMCP session is bound at creation to the issuer and subject of the
+identity that initialized it (`vmcp.identity.binding`, the format shared with
+`pkg/auth/sessionbinding`). `sessionOwnershipMiddleware`
+(`pkg/vmcp/server/session_ownership.go`) checks that binding on **every**
+request that carries `Mcp-Session-Id`, after authentication and before the
+Streamable HTTP transport routes the request: the standalone GET stream, DELETE,
+list methods, calls, client responses and notifications, and cross-replica
+rehydration. Sessionless requests (initialize) pass through; Modern (2026-07-28)
+requests are dispatched by `classifyingHandler` before this middleware and never
+reach it.
+
+- The owner is read from the session store (`Manager.LookupOwner`) without
+  restoring the session or refreshing its TTL, so with Redis-backed storage the
+  check holds on a replica that did not create the session, before it is
+  rehydrated there, and a rejected caller cannot keep the session alive.
+- The caller is compared with `sessionbinding.Validate`, the check shared with
+  the other proxies: the same issuer and subject (refreshed tokens work), or, for
+  a session created with no identity at all (authentication disabled), no
+  identity. A non-nil identity without valid `iss` and `sub` claims never
+  matches, even a session bound to the unauthenticated sentinel.
+- The owner is persisted before the client learns the session ID: the SDK shim
+  runs `OnRegisterSession` (and so `CreateSession`) synchronously inside the
+  initialize dispatch. A record without an owner is a session still being
+  created or whose creation failed, and is rejected.
+- Missing, unowned (still being created), foreign and ambiguous-carrier
+  requests all get the same plain-text 404 `Session terminated`, byte for byte.
+  Unlike the direct proxies' JSON-RPC 404, it has no JSON-RPC body: go-sdk 1.7+
+  clients treat a JSON-RPC error body on a 404 as a per-call rejection and never
+  re-initialize, while a plain-text 404 (what the transport returns for an
+  unknown session) makes them start a new session.
+  A store failure gets 503. A rejected request never terminates or otherwise
+  disturbs the owner's session. Rejections of foreign callers are logged at WARN.
+- Because the check precedes the pre-dispatch authorization gate, a denied call
+  on a foreign or unknown session ID gets 404 rather than 403.
+- The middleware answers 404 for absent sessions before the transport runs, so
+  the transport's cleanup of its pod-local session copy no longer happens on that
+  path. `Handler` therefore sets the transport's session idle timeout to
+  `SessionTTL`: a copy with no POST for that long is released, the stored record is
+  left alone, and a returning client is rehydrated if the session is still valid.
+  An open standalone GET stream alone does not count as activity, so a client that
+  only listens must send a POST (for example a ping) within `SessionTTL` to keep this
+  pod's copy; otherwise the stream is closed, and a reconnecting GET is rehydrated if
+  the stored record is still valid and answered 404 if not.
+- `enforceSessionBinding` still re-checks the binding inside the call handlers,
+  for embedders that mount the MCP server without this middleware.
 
 ### Discovery Middleware
 
@@ -1136,6 +1189,22 @@ the list side (`ListTools`/`ListResources`/`ListPrompts` filter the advertised s
 the call side (`CallTool`/`ReadResource`/`GetPrompt` deny before dispatch), closing the
 "list says yes / call says no" gap.
 
+For tool decisions, admission carries the advertised capability's trusted logical
+`BackendID` into Cedar. The request's `Tool` entity remains a child of the vMCP's
+`MCP` entity and also becomes a child of `Backend::<BackendID>`. Direct
+`resource in Backend::"..."` policies evaluate from that parent UID without a
+Backend entity in the request map; `entities_json` is needed only when the Backend
+has attributes or participates in a transitive hierarchy. Tool names and arguments
+are never used to infer backend membership.
+
+Composite tools have no single origin and therefore no Backend parent. Neither a
+backend-scoped `permit` nor a backend-scoped `forbid` matches them. A composite
+authorized by another policy may still invoke steps on a backend named by such a
+`forbid`, because workflow steps route internally rather than entering admission as
+separate top-level tool calls. Policies that restrict backends must encode the
+allowed backends in `permit` conditions and authorize composite Tool entities
+separately.
+
 Because the SDK maps a call-side deny to a tool result, a raw denied `tools/call` would
 otherwise return **HTTP 200** (either the SDK's `-32602 "not found"` for a list-filtered
 tool, or a `200 + IsError` tool result for an argument-gated deny). To make a denial a
@@ -1154,8 +1223,10 @@ policies are configured:
   names the capability or reveals advertised-vs-nonexistent, so a denial is not an
   **enumeration oracle**: a filtered tool, an argument-gated deny, and a nonexistent tool
   under a default-deny policy all converge on the same 403.
-- The gate runs **before session validation** (403-before-404): a denial is determinable
-  from the caller's own identity without session state.
+- The gate runs **before the transport's session-existence validation**: a denial is
+  determinable from the caller's own identity without session state. Session *ownership*
+  is checked earlier still (see [Session Ownership](#session-ownership)), so a denied
+  call on a foreign or unknown session ID gets 404 before any 403.
 - It sits **inside the audit middleware**, so a denied call is audited with outcome
   `denied` (403 → `OutcomeDenied`) with no audit-layer changes.
 - An authorizer error fails **closed** (treated as a denial); a non-authorization

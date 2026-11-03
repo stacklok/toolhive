@@ -71,6 +71,21 @@ func (s *RedisSessionDataStorage) Load(ctx context.Context, id string) (map[stri
 		return nil, fmt.Errorf("cannot load session data with empty ID")
 	}
 	data, err := s.client.GetEx(ctx, s.key(id), s.ttl).Bytes()
+	return decodeRedisSessionData(data, err)
+}
+
+// LoadMetadata retrieves metadata from Redis with a plain GET, leaving the
+// key's TTL unchanged. Returns ErrSessionNotFound if the key does not exist.
+func (s *RedisSessionDataStorage) LoadMetadata(ctx context.Context, id string) (map[string]string, error) {
+	if id == "" {
+		return nil, fmt.Errorf("cannot load session data with empty ID")
+	}
+	data, err := s.client.Get(ctx, s.key(id)).Bytes()
+	return decodeRedisSessionData(data, err)
+}
+
+// decodeRedisSessionData maps a Redis read result to session metadata.
+func decodeRedisSessionData(data []byte, err error) (map[string]string, error) {
 	if err != nil {
 		if errors.Is(err, redis.Nil) {
 			return nil, ErrSessionNotFound

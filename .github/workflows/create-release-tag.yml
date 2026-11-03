@@ -1,7 +1,8 @@
 # Create Release Tag Workflow
 #
 # This workflow is triggered when the VERSION file is updated on main.
-# It verifies the release PR, creates a git tag, and creates a GitHub Release.
+# It verifies the release PR, waits for an approval on the `release`
+# environment, then creates a git tag and a GitHub Release.
 # The tag then triggers the releaser workflow for image and Helm chart publishing.
 
 name: Create Release Tag
@@ -13,30 +14,22 @@ on:
     paths:
       - 'VERSION'
 
+# GITHUB_TOKEN only checks out the repository. The tag push and the GitHub
+# Release use the release app token.
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  create-tag:
+  verify:
+    name: Verify release commit
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      triggered_by: ${{ steps.actor.outputs.triggered_by }}
     steps:
-      - name: Generate release app token
-        id: app-token
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
-        with:
-          client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
-          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
-          # Without this the token carries every permission the app
-          # installation holds. It is used to push the tag and to create the
-          # GitHub Release, both of which are contents.
-          permission-contents: write
-
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          fetch-depth: 0
-          # The one push in this job supplies its token in the remote URL, so
-          # the credential actions/checkout persists is never used.
           persist-credentials: false
 
       - name: Read version
@@ -126,10 +119,52 @@ jobs:
             echo "triggered_by=" >> $GITHUB_OUTPUT
           fi
 
+      - name: Summarize the release for the approver
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          TRIGGERED_BY: ${{ steps.actor.outputs.triggered_by }}
+          COMMIT_URL: ${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}
+        run: |
+          {
+            echo "## Release v${VERSION}"
+            echo ""
+            echo "- Commit: [\`${GITHUB_SHA:0:12}\`](${COMMIT_URL}) — $(git log -1 --format=%s)"
+            echo "- Release PR triggered by: ${TRIGGERED_BY:-unknown}"
+            echo "- Merged by: ${GITHUB_ACTOR}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # Waits for a reviewer on the `release` environment, other than the person
+  # who merged, to approve before the tag and GitHub Release are created. The
+  # approver reads the verify job's summary.
+  create-tag:
+    name: Create tag and GitHub Release
+    needs: [verify]
+    runs-on: ubuntu-latest
+    environment: release
+    steps:
+      - name: Generate release app token
+        id: app-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          # Without this the token carries every permission the app
+          # installation holds. It is used to push the tag and to create the
+          # GitHub Release, both of which are contents.
+          permission-contents: write
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          # The one push in this job supplies its token in the remote URL, so
+          # the credential actions/checkout persists is never used.
+          persist-credentials: false
+
       - name: Check if tag exists
         id: check-tag
         env:
-          VERSION: ${{ steps.version.outputs.version }}
+          VERSION: ${{ needs.verify.outputs.version }}
         run: |
           TAG="v${VERSION}"
           if git rev-parse "$TAG" >/dev/null 2>&1; then
@@ -144,7 +179,7 @@ jobs:
         if: steps.check-tag.outputs.exists == 'false'
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          VERSION: ${{ steps.version.outputs.version }}
+          VERSION: ${{ needs.verify.outputs.version }}
           REPOSITORY: ${{ github.repository }}
         run: |
           TAG="v${VERSION}"
@@ -161,7 +196,7 @@ jobs:
         id: check-release
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          VERSION: ${{ steps.version.outputs.version }}
+          VERSION: ${{ needs.verify.outputs.version }}
         run: |
           TAG="v${VERSION}"
           if gh release view "$TAG" >/dev/null 2>&1; then
@@ -194,15 +229,15 @@ jobs:
           echo "Created GitHub Release: $TAG"
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          VERSION: ${{ steps.version.outputs.version }}
+          VERSION: ${{ needs.verify.outputs.version }}
           # Read out of a git commit trailer, so unlike the version — which is
           # checked against a semver pattern before use — this one is not
           # constrained by anything. Bound rather than interpolated.
-          TRIGGERED_BY: ${{ steps.actor.outputs.triggered_by }}
+          TRIGGERED_BY: ${{ needs.verify.outputs.triggered_by }}
 
       - name: Summary
         env:
-          VERSION: ${{ steps.version.outputs.version }}
+          VERSION: ${{ needs.verify.outputs.version }}
           TAG_EXISTED: ${{ steps.check-tag.outputs.exists }}
           RELEASE_EXISTED: ${{ steps.check-release.outputs.exists }}
         run: |

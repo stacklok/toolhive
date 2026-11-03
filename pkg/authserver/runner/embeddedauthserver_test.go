@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/alicebob/miniredis/v2"
+	"github.com/go-jose/go-jose/v4"
 	"github.com/ory/fosite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -1075,6 +1076,18 @@ func TestNewEmbeddedAuthServer(t *testing.T) {
 		require.NoError(t, server.Close())
 	})
 
+	// This rejection is the case that proves the option reaches Config.Validate.
+	t.Run("unsupported access token type returns error", func(t *testing.T) {
+		t.Parallel()
+
+		cfg := createMinimalValidConfig()
+
+		server, err := NewEmbeddedAuthServer(context.Background(), cfg,
+			WithAccessTokenType("application/at+jwt"))
+		require.ErrorContains(t, err, "unsupported access token type")
+		assert.Nil(t, server)
+	})
+
 	t.Run("missing allowed audiences returns error", func(t *testing.T) {
 		t.Parallel()
 
@@ -1119,6 +1132,16 @@ func TestWithSubjectIdentifierAudiencesCopiesAndReplaces(t *testing.T) {
 	second[0] = "https://also-mutated.example.com"
 	options = resolveEmbeddedAuthServerOptions([]EmbeddedAuthServerOption{firstOption, secondOption})
 	assert.Equal(t, []string{"https://second.example.com"}, options.subjectIdentifierAudiences)
+}
+
+func TestWithAccessTokenTypeReplacesValue(t *testing.T) {
+	t.Parallel()
+
+	options := resolveEmbeddedAuthServerOptions([]EmbeddedAuthServerOption{
+		WithAccessTokenType("at+jwt"),
+		WithAccessTokenType("JWT"),
+	})
+	assert.Equal(t, "JWT", options.accessTokenType)
 }
 
 func TestRunConfigAndResolvedConfigShareConsentPolicyValidation(t *testing.T) {
@@ -1403,6 +1426,52 @@ func TestEmbeddedAuthServer_KeyProvider(t *testing.T) {
 		require.NoError(t, err)
 		assert.NotEmpty(t, pubKeys, "KeyProvider should have at least one public key")
 	})
+}
+
+// TestBuildUpstreamConfigs_CopiesDisplayName drives buildUpstreamConfigs, which runs
+// validateUpstreamRunConfig, so the runner's upstream validation is shown to never
+// reject a display name. The label is copied through unchanged for both upstream
+// types; sanitizing happens only when the consent page renders it.
+func TestBuildUpstreamConfigs_CopiesDisplayName(t *testing.T) {
+	t.Parallel()
+
+	upstreams := []authserver.UpstreamRunConfig{
+		{
+			Name: "okta", Type: authserver.UpstreamProviderTypeOIDC,
+			OIDCConfig: &authserver.OIDCUpstreamRunConfig{
+				IssuerURL: "https://okta.example.com", ClientID: "c", RedirectURI: "http://localhost:8080/callback",
+			},
+		},
+		{
+			Name: "okta", Type: authserver.UpstreamProviderTypeOAuth2,
+			OAuth2Config: &authserver.OAuth2UpstreamRunConfig{
+				AuthorizationEndpoint: "https://okta.example.com/authorize", TokenEndpoint: "https://okta.example.com/token",
+				ClientID: "c", RedirectURI: "http://localhost:8080/callback",
+			},
+		},
+	}
+	displayNames := map[string]string{
+		"plain":           "Acme Okta",
+		"control runes":   "Acme\u202e\u200b\nOkta",
+		"whitespace only": " \t ",
+		"html":            "<script>alert(1)</script>",
+		"very long":       strings.Repeat("é", 1000),
+	}
+	for _, rc := range upstreams {
+		for name, displayName := range displayNames {
+			t.Run(string(rc.Type)+"/"+name, func(t *testing.T) {
+				t.Parallel()
+				rc := rc
+				rc.DisplayName = displayName
+				got, _, err := buildUpstreamConfigs(context.Background(), []authserver.UpstreamRunConfig{rc},
+					"http://localhost:8080", newMemoryDCRStore(t), false)
+				require.NoError(t, err)
+				require.Len(t, got, 1)
+				assert.Equal(t, "okta", got[0].Name)
+				assert.Equal(t, displayName, got[0].DisplayName)
+			})
+		}
+	}
 }
 
 func TestBuildUpstreamConfig(t *testing.T) {
@@ -2304,7 +2373,7 @@ func newMockAuthorizationServer(t *testing.T) (*httptest.Server, *int32) {
 			AuthorizationEndpoint:             server.URL + "/authorize",
 			TokenEndpoint:                     server.URL + "/token",
 			RegistrationEndpoint:              server.URL + "/register",
-			TokenEndpointAuthMethodsSupported: []string{"client_secret_basic"},
+			TokenEndpointAuthMethodsSupported: []string{"client_secret_basic", "client_secret_post"},
 			ScopesSupported:                   []string{"openid", "profile"},
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -2888,7 +2957,7 @@ func TestBuildUpstreamConfigs_DCR(t *testing.T) {
 		}
 
 		store := newMemoryDCRStore(t)
-		got, err := buildUpstreamConfigs(context.Background(), cfg.Upstreams, cfg.Issuer, store, false)
+		got, _, err := buildUpstreamConfigs(context.Background(), cfg.Upstreams, cfg.Issuer, store, false)
 		require.NoError(t, err)
 		require.Len(t, got, 1)
 
@@ -2955,7 +3024,7 @@ func TestBuildUpstreamConfigs_DCR(t *testing.T) {
 		store := newMemoryDCRStore(t)
 
 		// First call: populates the store.
-		_, err := buildUpstreamConfigs(context.Background(), cfg.Upstreams, cfg.Issuer, store, false)
+		_, _, err := buildUpstreamConfigs(context.Background(), cfg.Upstreams, cfg.Issuer, store, false)
 		require.NoError(t, err)
 		firstCallRequests := atomic.LoadInt32(requestCount)
 		require.Greater(t, firstCallRequests, int32(0),
@@ -2964,7 +3033,7 @@ func TestBuildUpstreamConfigs_DCR(t *testing.T) {
 		// Second call: must reuse the cache. Its only HTTP request is the
 		// token-endpoint verification of the cached client, which the mock
 		// AS answers with a non-OAuth 404, so the cached client is kept.
-		got, err := buildUpstreamConfigs(context.Background(), cfg.Upstreams, cfg.Issuer, store, false)
+		got, _, err := buildUpstreamConfigs(context.Background(), cfg.Upstreams, cfg.Issuer, store, false)
 		require.NoError(t, err)
 		require.Len(t, got, 1)
 		assert.Equal(t, "dcr-client-id", got[0].OAuth2Config.ClientID)
@@ -2979,6 +3048,53 @@ func TestBuildUpstreamConfigs_DCR(t *testing.T) {
 		assert.NotNil(t, cfg.Upstreams[0].OAuth2Config.DCRConfig,
 			"original OAuth2Config.DCRConfig must remain set after both calls")
 	})
+}
+
+// TestBuildUpstreamConfigs_DCRConfiguredAuthMethod drives a DCR upstream
+// with a configured token endpoint auth method through registration and a
+// cache hit, and checks the built OAuth2Config presents the registered
+// secret with that method. The resolved run config has no DCRConfig and no
+// secret source, so validating it with the method still set would reject
+// it as a confidential client without a secret.
+func TestBuildUpstreamConfigs_DCRConfiguredAuthMethod(t *testing.T) {
+	t.Parallel()
+
+	for _, method := range []string{
+		oauthproto.TokenEndpointAuthMethodClientSecretPost,
+		oauthproto.TokenEndpointAuthMethodClientSecretBasic,
+	} {
+		t.Run(method, func(t *testing.T) {
+			t.Parallel()
+
+			server, _ := newMockAuthorizationServer(t)
+			upstreams := []authserver.UpstreamRunConfig{{
+				Name: "dcr-upstream",
+				Type: authserver.UpstreamProviderTypeOAuth2,
+				OAuth2Config: &authserver.OAuth2UpstreamRunConfig{
+					AuthorizationEndpoint:   server.URL + "/authorize",
+					TokenEndpoint:           server.URL + "/token",
+					TokenEndpointAuthMethod: method,
+					Scopes:                  []string{"openid", "profile"},
+					DCRConfig: &authserver.DCRUpstreamConfig{
+						DiscoveryURL: server.URL + "/.well-known/oauth-authorization-server",
+					},
+				},
+			}}
+			store := newMemoryDCRStore(t)
+
+			for _, pass := range []string{"registration", "cache hit"} {
+				got, _, err := buildUpstreamConfigs(context.Background(), upstreams, server.URL, store, false)
+				require.NoError(t, err, pass)
+				require.Len(t, got, 1, pass)
+				require.NotNil(t, got[0].OAuth2Config, pass)
+				assert.Equal(t, "dcr-client-id", got[0].OAuth2Config.ClientID, pass)
+				assert.Equal(t, "dcr-client-secret", got[0].OAuth2Config.ClientSecret, pass)
+				assert.Equal(t, method, got[0].OAuth2Config.TokenEndpointAuthMethod, pass)
+			}
+			assert.Equal(t, method, upstreams[0].OAuth2Config.TokenEndpointAuthMethod,
+				"the caller's run config must keep its configured method")
+		})
+	}
 }
 
 // TestNewEmbeddedAuthServer_DCRBoot drives the full NewEmbeddedAuthServer
@@ -3869,11 +3985,24 @@ func TestResolveDelegateClients(t *testing.T) {
 	t.Setenv("TEST_DELEGATE_SECRET", "env-secret")
 	t.Setenv("TEST_EMPTY_DELEGATE_SECRET", "")
 
+	dir := t.TempDir()
+	badJWKSFile := filepath.Join(dir, "bad.jwks")
+	require.NoError(t, os.WriteFile(badJWKSFile, []byte("not json"), 0600))
+	jwksKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	jwksJSON, err := json.Marshal(jose.JSONWebKeySet{Keys: []jose.JSONWebKey{{
+		Key: &jwksKey.PublicKey, KeyID: "delegate-key", Algorithm: "ES256", Use: "sig",
+	}}})
+	require.NoError(t, err)
+	goodJWKSFile := filepath.Join(dir, "good.jwks")
+	require.NoError(t, os.WriteFile(goodJWKSFile, jwksJSON, 0600))
+
 	tests := []struct {
-		name    string
-		clients []authserver.DelegateClientRunConfig
-		want    string
-		wantErr string
+		name     string
+		clients  []authserver.DelegateClientRunConfig
+		want     string
+		wantKeys int
+		wantErr  string
 	}{
 		{
 			name: "file takes precedence and is trimmed",
@@ -3911,6 +4040,30 @@ func TestResolveDelegateClients(t *testing.T) {
 			clients: []authserver.DelegateClientRunConfig{{ClientID: "delegate", ClientSecretEnvVar: "TEST_EMPTY_DELEGATE_SECRET"}},
 			wantErr: "is not set",
 		},
+		{
+			name: "private_key_jwt with missing jwks file is rejected",
+			clients: []authserver.DelegateClientRunConfig{{
+				ClientID: "delegate", TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodPrivateKeyJWT,
+				JWKSFile: filepath.Join(dir, "missing.jwks"),
+			}},
+			wantErr: "failed to read jwks file",
+		},
+		{
+			name: "private_key_jwt with malformed jwks file is rejected",
+			clients: []authserver.DelegateClientRunConfig{{
+				ClientID: "delegate", TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodPrivateKeyJWT,
+				JWKSFile: badJWKSFile,
+			}},
+			wantErr: "failed to parse jwks file",
+		},
+		{
+			name: "private_key_jwt loads keys and ignores secret references",
+			clients: []authserver.DelegateClientRunConfig{{
+				ClientID: "delegate", TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodPrivateKeyJWT,
+				JWKSFile: goodJWKSFile, ClientSecretEnvVar: "TEST_DELEGATE_SECRET",
+			}},
+			wantKeys: 1,
+		},
 	}
 
 	for _, tt := range tests {
@@ -3928,14 +4081,46 @@ func TestResolveDelegateClients(t *testing.T) {
 			require.NoError(t, err)
 			require.Len(t, got, 1)
 			assert.Equal(t, tt.want, got[0].ClientSecret)
+			if tt.wantKeys > 0 {
+				require.NotNil(t, got[0].JSONWebKeys)
+				assert.Len(t, got[0].JSONWebKeys.Keys, tt.wantKeys)
+			}
 		})
 	}
+}
+
+func TestResolveDelegateClients_CarriesExchangeRefreshTokens(t *testing.T) {
+	t.Setenv("TEST_DELEGATE_REFRESH_SECRET", "0123456789abcdef0123456789abcdef")
+
+	clients := []authserver.DelegateClientRunConfig{{
+		ClientID: "delegate", ClientSecretEnvVar: "TEST_DELEGATE_REFRESH_SECRET",
+		Scopes: []string{"openid"}, Audiences: []string{"https://mcp.example.com"},
+		TokenExchange: &authserver.DelegateClientTokenExchange{
+			SelfIssuedSubjectTokens: authserver.SelfIssuedSubjectTokensRestricted,
+			SubjectTokenAudiences:   []string{"https://input.example.com"},
+			AllowedSourceClients:    []string{"tui"},
+			ExchangeRefreshTokens: &authserver.DelegateClientExchangeRefreshTokens{
+				IDJAGMaxLifetime: "12h", RefreshTokenMaxLifetime: "720h",
+			},
+		},
+	}}
+
+	got, err := resolveDelegateClients(clients)
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	require.NotNil(t, got[0].TokenExchange)
+	assert.Equal(t, []string{"https://input.example.com"}, got[0].TokenExchange.SubjectTokenAudiences)
+	require.NotNil(t, got[0].TokenExchange.ExchangeRefreshTokens)
+	assert.Equal(t, "12h", got[0].TokenExchange.ExchangeRefreshTokens.IDJAGMaxLifetime)
+	assert.Equal(t, "720h", got[0].TokenExchange.ExchangeRefreshTokens.RefreshTokenMaxLifetime)
 }
 
 func TestResolveDelegateClients_ClonesPermissions(t *testing.T) {
 	clients := []authserver.DelegateClientRunConfig{{
 		ClientID: "delegate", ClientSecretEnvVar: "TEST_DELEGATE_CLONE_SECRET",
 		Scopes: []string{"openid"}, Audiences: []string{"audience"},
+		GrantTypes:   []string{oauthproto.GrantTypeTokenExchange},
+		RedirectURIs: []string{"https://client.example/callback"},
 	}}
 	t.Setenv("TEST_DELEGATE_CLONE_SECRET", "secret")
 
@@ -3943,9 +4128,13 @@ func TestResolveDelegateClients_ClonesPermissions(t *testing.T) {
 	require.NoError(t, err)
 	clients[0].Scopes[0] = "changed"
 	clients[0].Audiences[0] = "changed"
+	clients[0].GrantTypes[0] = "changed"
+	clients[0].RedirectURIs[0] = "changed"
 
 	assert.Equal(t, "openid", resolved[0].Scopes[0])
 	assert.Equal(t, "audience", resolved[0].Audiences[0])
+	assert.Equal(t, oauthproto.GrantTypeTokenExchange, resolved[0].GrantTypes[0])
+	assert.Equal(t, "https://client.example/callback", resolved[0].RedirectURIs[0])
 }
 
 // TestCloseIdleConnectionsDelegates pins that the wrapper forwards to the

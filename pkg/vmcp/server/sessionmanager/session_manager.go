@@ -493,6 +493,34 @@ func (sm *Manager) Validate(sessionID string) (isTerminated bool, err error) {
 	return false, nil
 }
 
+// LookupOwner returns the identity binding persisted for sessionID, the value
+// the HTTP layer checks the caller against before a session-bearing request is
+// routed (see sessionbinding.Lookup). It reads only the session metadata: it
+// never restores the live MultiSession or contacts a backend, so a foreign
+// caller is rejected before any per-session state is built on this replica.
+//
+// An absent or terminated session yields transportsession.ErrSessionNotFound. A
+// Phase 1 placeholder has no owner yet and yields an empty binding, which the
+// caller must treat as unowned. Any other error is a storage failure.
+//
+// With Redis-backed storage the binding is shared across replicas, so the check
+// holds on a replica that did not create the session; this does not provide
+// live-stream affinity. Unlike Validate, the read does not refresh the session
+// TTL, so a caller that is then rejected cannot keep someone else's session alive.
+func (sm *Manager) LookupOwner(ctx context.Context, sessionID string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, validateTimeout)
+	defer cancel()
+
+	metadata, err := sm.storage.LoadMetadata(ctx, sessionID)
+	if err != nil {
+		return "", err
+	}
+	if metadata[MetadataKeyTerminated] == MetadataValTrue {
+		return "", transportsession.ErrSessionNotFound
+	}
+	return metadata[sessiontypes.MetadataKeyIdentityBinding], nil
+}
+
 // Terminate implements the SDK's SessionIdManager.Terminate().
 //
 // The two session types are handled asymmetrically to prevent a race condition

@@ -84,6 +84,11 @@ func addLLMConnectionFlags(cmd *cobra.Command, opts *llm.SetOptions) {
 	cmd.Flags().StringVar(&opts.Issuer, "issuer", "", "OIDC issuer URL")
 	cmd.Flags().StringVar(&opts.ClientID, "client-id", "", "OIDC client ID")
 	cmd.Flags().StringVar(&opts.Audience, "audience", "", "OIDC audience (optional)")
+	cmd.Flags().StringSliceVar(&opts.Scopes, "scopes", nil,
+		"OIDC scopes to request, comma-separated or by repeating the flag. offline_access is always requested; "+
+			"pass openid explicitly if the provider needs it (the default scopes are openid and offline_access). "+
+			"Omit to keep the current scopes; an empty value restores the defaults. Changing the list clears "+
+			"cached tokens so the next sign-in requests the new scopes")
 	cmd.Flags().IntVar(&opts.ProxyPort, "proxy-port", 0, "Localhost proxy listen port (omit to keep current; default: 14000)")
 	cmd.Flags().IntVar(&opts.CallbackPort, "callback-port", 0, "OIDC callback port (omit to keep current; default: ephemeral)")
 }
@@ -136,9 +141,10 @@ Example:
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			applyChangedLLMFlags(cmd, &opts, tlsSkipVerify, shortPromptCache, bedrockCompat, enable1M, models)
-			return config.UpdateConfig(func(c *config.Config) error {
-				return c.LLM.SetFields(opts)
-			})
+			return llm.ConfigSet(
+				cmd.Context(), cmd.ErrOrStderr(), &configUpdaterAdapter{config.NewDefaultProvider()}, opts,
+				secrets.GetSystemSecretsProvider,
+			)
 		},
 	}
 
@@ -433,6 +439,7 @@ func runLLMSetup(
 		ctx, out, errOut,
 		&clientManagerAdapter{cm}, &configUpdaterAdapter{provider}, login,
 		inlineOpts, anthropicPathPrefix, anthropicPathPrefixSet, targetClient, lazy,
+		secrets.GetSystemSecretsProvider,
 	)
 }
 

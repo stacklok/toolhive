@@ -746,7 +746,7 @@ func TestMCPExternalAuthConfig_validateEmbeddedAuthServer(t *testing.T) {
 				},
 			},
 			expectErr: true,
-			errMsg:    "allow_confidential_client_registration cannot be combined with insecure_allow_http",
+			errMsg:    "confidential clients (allow_confidential_client_registration or delegate clients) cannot be combined with insecure_allow_http",
 		},
 		{
 			name: "confidential clients with plain-HTTP loopback issuer without opt-in - invalid",

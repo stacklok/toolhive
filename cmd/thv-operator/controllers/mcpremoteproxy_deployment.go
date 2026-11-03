@@ -44,7 +44,11 @@ func (r *MCPRemoteProxyReconciler) deploymentForMCPRemoteProxy(
 	env := r.buildEnvVarsForProxy(ctx, proxy)
 
 	// Mount the session storage Redis CA bundle when TLS references one.
-	sessionTLSVolumes, sessionTLSMounts := ctrlutil.SessionRedisTLSVolumes(proxy.Spec.SessionStorage)
+	storage := proxy.Spec.SessionStorage
+	if storage == nil {
+		storage = r.DefaultRedisConfig.SessionStorage()
+	}
+	sessionTLSVolumes, sessionTLSMounts := ctrlutil.SessionRedisTLSVolumes(storage)
 	volumes = append(volumes, sessionTLSVolumes...)
 	volumeMounts = append(volumeMounts, sessionTLSMounts...)
 
@@ -67,13 +71,13 @@ func (r *MCPRemoteProxyReconciler) deploymentForMCPRemoteProxy(
 	deploymentLabels, deploymentAnnotations := r.buildDeploymentMetadata(ls, proxy)
 	deploymentTemplateLabels, deploymentTemplateAnnotations := r.buildPodTemplateMetadata(ls, proxy, runConfigChecksum)
 	if configName != "" {
-		caChecksum, err := ctrlutil.EmbeddedAuthServerCABundleChecksum(ctx, r.Client, proxy.Namespace, configName)
+		caChecksum, err := ctrlutil.EmbeddedAuthServerConfigMapChecksum(ctx, r.Client, proxy.Namespace, configName)
 		if err != nil {
 			log.FromContext(ctx).Error(err, "Failed to calculate auth server CA checksum")
 			return nil
 		}
 		if caChecksum != "" {
-			deploymentTemplateAnnotations[ctrlutil.AuthServerCABundleChecksumAnnotation] = caChecksum
+			deploymentTemplateAnnotations[ctrlutil.AuthServerConfigMapChecksumAnnotation] = caChecksum
 		}
 	}
 	podSecurityContext, containerSecurityContext := r.buildSecurityContexts(ctx, proxy)
@@ -326,7 +330,7 @@ func (r *MCPRemoteProxyReconciler) buildEnvVarsForProxy(
 	// The non-sensitive parts (address/db/keyPrefix) are populated into the
 	// runconfig by populateScalingConfigForRemoteProxy; the password is
 	// injected separately so it never lands in the ConfigMap.
-	env = append(env, buildRedisPasswordEnvVarForRemoteProxy(proxy)...)
+	env = append(env, buildRedisPasswordEnvVarForRemoteProxy(proxy, r.DefaultRedisConfig)...)
 
 	return ctrlutil.EnsureRequiredEnvVars(ctx, env)
 }
@@ -334,10 +338,12 @@ func (r *MCPRemoteProxyReconciler) buildEnvVarsForProxy(
 // buildRedisPasswordEnvVarForRemoteProxy returns the THV_SESSION_REDIS_PASSWORD
 // env var sourced from spec.sessionStorage.passwordRef when sessionStorage uses
 // the redis provider, or from the global default Redis secret when
-// spec.sessionStorage is unset and TOOLHIVE_DEFAULT_REDIS_SECRET_NAME is set;
+// spec.sessionStorage is unset and the injected default references a password Secret;
 // returns nil otherwise. Mirrors VirtualMCPServer's buildRedisPasswordEnvVar
 // in virtualmcpserver_deployment.go.
-func buildRedisPasswordEnvVarForRemoteProxy(proxy *mcpv1beta1.MCPRemoteProxy) []corev1.EnvVar {
+func buildRedisPasswordEnvVarForRemoteProxy(
+	proxy *mcpv1beta1.MCPRemoteProxy, defaults *ctrlutil.DefaultRedisConfig,
+) []corev1.EnvVar {
 	if proxy.Spec.SessionStorage != nil {
 		if proxy.Spec.SessionStorage.Provider == mcpv1beta1.SessionStorageProviderRedis &&
 			proxy.Spec.SessionStorage.PasswordRef != nil {
@@ -358,7 +364,7 @@ func buildRedisPasswordEnvVarForRemoteProxy(proxy *mcpv1beta1.MCPRemoteProxy) []
 		return nil
 	}
 
-	def := ctrlutil.ReadDefaultRedisConfig()
+	def := defaults
 	if def == nil || def.SecretName == "" {
 		return nil
 	}

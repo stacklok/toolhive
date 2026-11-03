@@ -111,16 +111,39 @@ func TestTokenValidator(t *testing.T) {
 	testCases := []struct {
 		name      string
 		claims    jwt.MapClaims
+		typ       string
+		omitTyp   bool
 		expectErr bool
 		errType   error
 	}{
+		// The validator must accept an absent typ, JWT and at+jwt, because tokens from ToolHive's embedded AS may be typed at+jwt (RFC 9068).
 		{
-			name: "Valid token",
+			name: "Valid token without typ header",
 			claims: jwt.MapClaims{
 				"iss": "test-issuer",
 				"aud": "test-audience",
 				"exp": time.Now().Add(time.Hour).Unix(),
 			},
+			omitTyp:   true,
+			expectErr: false,
+		},
+		{
+			name: "Valid token typed JWT (library default)",
+			claims: jwt.MapClaims{
+				"iss": "test-issuer",
+				"aud": "test-audience",
+				"exp": time.Now().Add(time.Hour).Unix(),
+			},
+			expectErr: false,
+		},
+		{
+			name: "Valid token typed at+jwt",
+			claims: jwt.MapClaims{
+				"iss": "test-issuer",
+				"aud": "test-audience",
+				"exp": time.Now().Add(time.Hour).Unix(),
+			},
+			typ:       "at+jwt",
 			expectErr: false,
 		},
 		{
@@ -162,6 +185,12 @@ func TestTokenValidator(t *testing.T) {
 			// Create a token with the test claims
 			token := jwt.NewWithClaims(jwt.SigningMethodRS256, tc.claims)
 			token.Header["kid"] = testKeyID
+			if tc.typ != "" {
+				token.Header["typ"] = tc.typ
+			}
+			if tc.omitTyp {
+				delete(token.Header, "typ")
+			}
 
 			// Sign the token
 			tokenString, err := token.SignedString(privateKey)

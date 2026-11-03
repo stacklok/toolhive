@@ -74,8 +74,9 @@ const (
 //
 // The bool return is false whenever a response has already been written
 // (either the device-login completion, a storage error, a browser-binding
-// failure, or a not-found/corrupted error) and the caller must return
-// immediately without doing anything further.
+// failure, a not-found/corrupted error, or a failed lookup of the pending
+// authorization's client) and the caller must return immediately without doing
+// anything further.
 func (h *Handler) loadPendingOrCompleteDeviceLogin(
 	ctx context.Context, w http.ResponseWriter, req *http.Request, internalState, code string,
 ) (*storage.PendingAuthorization, fosite.AuthorizeRequester, bool) {
@@ -103,7 +104,11 @@ func (h *Handler) loadPendingOrCompleteDeviceLogin(
 		return nil, nil, false
 	}
 
-	ar := h.buildAuthorizeRequesterFromPending(ctx, pending)
+	ar, err := h.buildAuthorizeRequesterFromPending(ctx, pending)
+	if err != nil {
+		writePendingClientError(w, pending.ClientID, err)
+		return nil, nil, false
+	}
 	if ar == nil {
 		// Stored redirect URI was corrupt - cannot redirect, show error page
 		http.Error(w, "authorization request data corrupted", http.StatusInternalServerError)
@@ -291,7 +296,7 @@ func (h *Handler) CallbackHandler(w http.ResponseWriter, req *http.Request) {
 	}
 
 	// Capture provenance only on the callback that establishes the local ToolHive user.
-	pending = carryFirstUpstreamIdentity(pending, result)
+	pending = carryFirstUpstreamIdentity(pending, h.recordedUpstreamIdentity(result))
 
 	// Place the resolved canonical user in the request context so callback storage
 	// calls that carry no tokens argument — GetAllUpstreamTokens during chain
@@ -452,12 +457,14 @@ func (h *Handler) maybeCarryForwardRefreshToken(
 	}
 }
 
-// callbackClient resolves the client for /oauth/callback and the consent step
-// (which reaches it through buildAuthorizeRequesterFromPending). If the CIMD fetch
-// limiter refuses the lookup (ErrCIMDRateLimited means no cached entry within
-// the decorator's MaxStale could be served, e.g. a cold cache after a restart
-// or an LRU eviction), it reads the persisted row from the base storage
-// instead: the pending authorization was already consumed, so a 429 here
+// callbackClient resolves the client for /oauth/callback, the consent step
+// (which reaches it through buildAuthorizeRequesterFromPending), the
+// upstream-error branch (handleUpstreamError) and device verification. If the
+// CIMD fetch limiter refuses the lookup (ErrCIMDRateLimited means no cached
+// entry within the decorator's MaxStale could be served, e.g. a cold cache
+// after a restart or an LRU eviction), it reads the persisted row from the
+// storage below the CIMD decorator (still behind client admission) instead:
+// the pending authorization was already consumed, so a 429 here
 // would make the login unrecoverable.
 //
 // This is safe because the base row was written by the same fetch that
@@ -467,6 +474,16 @@ func (h *Handler) maybeCarryForwardRefreshToken(
 // the CIMD cache TTL plus the decorator's MaxStale, and does not depend on the
 // row's own TTL.
 //
+// Device verification callers use the lookup only as a yes/no gate, because the
+// resolved client is not used to issue anything. At device submit nothing has
+// been consumed yet, but at login completion and at confirm the single-use
+// pending record is already deleted, so, as on the callback, a 429 there would
+// make the flow unrecoverable.
+//
+// The device request was created only after /oauth/device_authorization resolved
+// the client, so the stale-row window there is bounded by the device code
+// lifetime plus the CIMD cache TTL plus MaxStale.
+//
 // The base-row fallback is still needed even with stale serving, which only
 // covers entries already cached in this process (not a cold cache). The shape
 // guard used when CIMD is disabled returns plain not-found and never
@@ -475,7 +492,7 @@ func (h *Handler) maybeCarryForwardRefreshToken(
 func (h *Handler) callbackClient(ctx context.Context, id string) (fosite.Client, error) {
 	client, err := h.storage.GetClient(ctx, id)
 	if errors.Is(err, storage.ErrCIMDRateLimited) {
-		return storage.Unwrap(h.storage).GetClient(ctx, id)
+		return storage.ClientStoreBelowCIMD(h.storage).GetClient(ctx, id)
 	}
 	return client, err
 }
@@ -483,17 +500,31 @@ func (h *Handler) callbackClient(ctx context.Context, id string) (fosite.Client,
 // carryFirstUpstreamIdentity stores provenance only when this callback establishes the local user.
 // SingleLeg authorizations connect one backend and never establish the user, so the
 // upstream they authenticate against must not become the token's sub_id source.
-func carryFirstUpstreamIdentity(pending *storage.PendingAuthorization, result *upstream.Identity) *storage.PendingAuthorization {
+func carryFirstUpstreamIdentity(
+	pending *storage.PendingAuthorization,
+	verified session.UpstreamSubject,
+) *storage.PendingAuthorization {
 	if pending.ResolvedUserID != "" || pending.SingleLeg {
 		return pending
 	}
-	verified := verifiedUpstreamIdentity(result)
 	if !verified.IsComplete() {
 		return pending
 	}
 	clone := *pending
 	clone.VerifiedUpstream = verified
 	return &clone
+}
+
+// recordedUpstreamIdentity returns the identity a login stores for later sub_id
+// disclosure, or the zero value when SubjectIdentifierAudiences is empty. It decides
+// whether the login records the identity at all: that needs only a non-empty list,
+// while token.go still requires every audience of a token to be listed before it
+// discloses. Do not share a predicate with token.go's per-audience check.
+func (h *Handler) recordedUpstreamIdentity(result *upstream.Identity) session.UpstreamSubject {
+	if len(h.config.SubjectIdentifierAudiences) == 0 {
+		return session.UpstreamSubject{}
+	}
+	return verifiedUpstreamIdentity(result)
 }
 
 // verifiedUpstreamIdentity returns the validated upstream identity, or the zero
@@ -607,13 +638,42 @@ func (h *Handler) writeAuthorizationResponse(
 	return nil
 }
 
-// buildAuthorizeRequesterFromPending creates a minimal AuthorizeRequester for error responses.
-// This allows using fosite's WriteAuthorizeError for consistent RFC 6749 error handling.
-// Returns nil if the stored redirect URI cannot be parsed (indicates storage corruption).
+// isUnresolvedClient reports whether a client lookup failed because the client
+// could not be resolved, as opposed to a storage or transport failure. A
+// transient CIMD fetch failure also surfaces as fosite.ErrNotFound, so this does
+// not mean the client was removed.
+func isUnresolvedClient(err error) bool {
+	return errors.Is(err, storage.ErrNotFound) || errors.Is(err, fosite.ErrNotFound) ||
+		errors.Is(err, fosite.ErrInvalidClient)
+}
+
+// writePendingClientError answers a failed client lookup for a pending
+// authorization: invalid_client for an unresolved client, 500 otherwise.
+// This is a browser-facing endpoint, so the body is plain text rather than the
+// JSON used on the token endpoints.
+func writePendingClientError(w http.ResponseWriter, clientID string, err error) {
+	if isUnresolvedClient(err) {
+		slog.Debug("client for pending authorization could not be resolved", "client_id", clientID, "error", err)
+		http.Error(w, "invalid_client: the client could not be resolved", http.StatusBadRequest)
+		return
+	}
+	slog.Error("failed to resolve client for pending authorization", "client_id", clientID, "error", err)
+	http.Error(w, "internal server error", http.StatusInternalServerError)
+}
+
+// buildAuthorizeRequesterFromPending creates the AuthorizeRequester for a pending
+// authorization, used for error responses and to continue the authorization.
+// It fails with the client lookup error instead of falling back to an empty
+// client, so a removed client cannot go on to an upstream exchange. A nil
+// requester with a nil error means the stored redirect URI is corrupt.
 func (h *Handler) buildAuthorizeRequesterFromPending(
 	ctx context.Context,
 	pending *storage.PendingAuthorization,
-) fosite.AuthorizeRequester {
+) (fosite.AuthorizeRequester, error) {
+	client, err := h.callbackClient(ctx, pending.ClientID)
+	if err != nil {
+		return nil, err
+	}
 	ar := fosite.NewAuthorizeRequest()
 	ar.State = pending.State
 
@@ -625,13 +685,11 @@ func (h *Handler) buildAuthorizeRequesterFromPending(
 			"redirect_uri", pending.RedirectURI,
 			"error", err,
 		)
-		return nil
+		return nil, nil
 	}
 	ar.RedirectURI = redirectURI
 
-	if client, err := h.callbackClient(ctx, pending.ClientID); err == nil {
-		ar.Client = client
-	}
+	ar.Client = client
 
 	// ar.RedirectURI keeps the real dynamic-port URI from pending.RedirectURI.
 	// fosite's own IsRedirectURIValid can't recognize "localhost" as loopback
@@ -641,7 +699,7 @@ func (h *Handler) buildAuthorizeRequesterFromPending(
 	// validity (see loopbackAuthorizeRequester.IsRedirectURIValid), so a
 	// non-loopback or confidential client keeps exactly the validity fosite
 	// would have given it.
-	return wrapLoopbackErrorRequester(ar, pending.RedirectURI)
+	return wrapLoopbackErrorRequester(ar, pending.RedirectURI), nil
 }
 
 // handleUpstreamError handles error responses from the upstream IDP.
@@ -676,7 +734,11 @@ func (h *Handler) handleUpstreamError(
 			if !h.validateAndConsumePending(ctx, w, req, internalState, pending, storage.ConsentStageApproved) {
 				return
 			}
-			ar := h.buildAuthorizeRequesterFromPending(ctx, pending)
+			ar, clientErr := h.buildAuthorizeRequesterFromPending(ctx, pending)
+			if clientErr != nil {
+				writePendingClientError(w, pending.ClientID, clientErr)
+				return
+			}
 			if ar != nil {
 				// Use generic error hint to avoid exposing upstream IDP details to clients.
 				// Detailed error information is logged above for server-side diagnostics.

@@ -175,6 +175,9 @@ func (*stubSessionManager) Validate(string) (bool, error) {
 	panic("stubSessionManager: Validate unexpected")
 }
 func (*stubSessionManager) Terminate(string) (bool, error) { return false, nil }
+func (*stubSessionManager) LookupOwner(context.Context, string) (string, error) {
+	panic("stubSessionManager: LookupOwner unexpected")
+}
 func (*stubSessionManager) CreateSession(
 	context.Context, string, vmcpsession.ListChangedSink,
 ) (vmcpsession.MultiSession, error) {

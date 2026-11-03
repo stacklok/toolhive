@@ -72,8 +72,10 @@ const (
 	// AuthServerTrustedIssuerCABundleMountPath is the base path for trusted issuer CA bundles.
 	AuthServerTrustedIssuerCABundleMountPath = "/etc/toolhive/authserver/issuer-ca"
 
-	// AuthServerCABundleChecksumAnnotation triggers a rollout when a selected CA bundle changes.
-	AuthServerCABundleChecksumAnnotation = "toolhive.stacklok.dev/authserver-ca-checksum"
+	// AuthServerConfigMapChecksumAnnotation triggers a rollout when a selected
+	// auth server ConfigMap (today: a CA bundle) changes. The value keeps its
+	// original "ca" name; changing it would roll every embedded-auth pod on upgrade.
+	AuthServerConfigMapChecksumAnnotation = "toolhive.stacklok.dev/authserver-ca-checksum"
 
 	// AuthServerSPIFFEBundleVolumePrefix is the prefix for SPIFFE trust-bundle ConfigMap volumes.
 	AuthServerSPIFFEBundleVolumePrefix = "authserver-spiffe-bundle-"
@@ -455,10 +457,10 @@ func GenerateAuthServerConfigByName(
 	return volumes, volumeMounts, envVars, nil
 }
 
-// EmbeddedAuthServerCABundleChecksum returns a checksum of the selected bytes in all
+// EmbeddedAuthServerConfigMapChecksum returns a checksum of the selected bytes in all
 // CA ConfigMaps used by an embedded auth server. ConfigMap metadata and unselected
 // keys are deliberately excluded.
-func EmbeddedAuthServerCABundleChecksum(
+func EmbeddedAuthServerConfigMapChecksum(
 	ctx context.Context, c client.Client, namespace, configName string,
 ) (string, error) {
 	config, err := GetExternalAuthConfigByName(ctx, c, namespace, configName)
@@ -468,13 +470,13 @@ func EmbeddedAuthServerCABundleChecksum(
 	if config.Spec.Type != mcpv1beta1.ExternalAuthTypeEmbeddedAuthServer || config.Spec.EmbeddedAuthServer == nil {
 		return "", nil
 	}
-	return EmbeddedAuthServerCABundleChecksumForConfig(ctx, c, namespace, config.Spec.EmbeddedAuthServer)
+	return EmbeddedAuthServerConfigMapChecksumForConfig(ctx, c, namespace, config.Spec.EmbeddedAuthServer)
 }
 
-// EmbeddedAuthServerCABundleChecksumForConfig returns a checksum of the selected
+// EmbeddedAuthServerConfigMapChecksumForConfig returns a checksum of the selected
 // bytes in all CA ConfigMaps used by an inline embedded auth server. ConfigMap
 // metadata and unselected keys are deliberately excluded.
-func EmbeddedAuthServerCABundleChecksumForConfig(
+func EmbeddedAuthServerConfigMapChecksumForConfig(
 	ctx context.Context, c client.Client, namespace string, config *mcpv1beta1.EmbeddedAuthServerConfig,
 ) (string, error) {
 	if config == nil {
@@ -1504,6 +1506,9 @@ func buildDCRUpstreamRunConfig(
 		RegistrationProbe:    dcr.RegistrationProbe,
 		SoftwareID:           dcr.SoftwareID,
 		SoftwareStatement:    dcr.SoftwareStatement,
+	}
+	if dcr.RegistrationProbeInterval != nil {
+		rc.RegistrationProbeInterval = dcr.RegistrationProbeInterval.Duration.String()
 	}
 	if dcr.InitialAccessTokenRef != nil {
 		rc.InitialAccessTokenEnvVar = initialAccessTokenEnvVar

@@ -77,6 +77,19 @@ func TestNewAuthorizationServerConfig(t *testing.T) {
 	clientKeys, err := authzServerConfig.JWKSFetcherStrategy.Resolve(t.Context(), "https://client.example.com/jwks", false)
 	assert.Nil(t, clientKeys)
 	require.ErrorIs(t, err, fosite.ErrInvalidClient, "remote client key sets must be rejected, not fetched")
+
+	assert.Equal(t, []string{"offline", "offline_access"}, authzServerConfig.RefreshTokenScopes)
+}
+
+func TestRefreshTokenScopes(t *testing.T) {
+	t.Parallel()
+
+	first := RefreshTokenScopes()
+	first[0] = "changed"
+	assert.Equal(t, []string{"offline", "offline_access"}, RefreshTokenScopes(),
+		"mutating one result must not change the next call")
+	assert.Equal(t, (&fosite.Config{}).GetRefreshTokenScopes(t.Context()), RefreshTokenScopes(),
+		"must equal fosite's default so authorization_code behavior is unchanged")
 }
 
 // TestNewAuthorizationServerConfig_ConfidentialClientCapabilities pins the
@@ -92,13 +105,18 @@ func TestNewAuthorizationServerConfig_ConfidentialClientCapabilities(t *testing.
 		allowConfidential       bool
 		allowPrivateKeyJWT      bool
 		hasStaticDelegateClient bool
+		hasStaticSecret         bool
+		hasStaticPrivateKeyJWT  bool
 		disableTokenExchange    bool
 		jwtBearerGrantEnabled   bool
 	}{
 		{name: "public only", allowConfidential: false, hasStaticDelegateClient: false},
 		{name: "confidential DCR", allowConfidential: true, hasStaticDelegateClient: false},
 		{name: "private-key JWT registration", allowPrivateKeyJWT: true, hasStaticDelegateClient: false},
-		{name: "static delegate client", allowConfidential: false, hasStaticDelegateClient: true},
+		{name: "static secret delegate client", hasStaticDelegateClient: true, hasStaticSecret: true},
+		{name: "static private-key JWT delegate client", hasStaticDelegateClient: true, hasStaticPrivateKeyJWT: true},
+		{name: "mixed static delegate clients", hasStaticDelegateClient: true, hasStaticSecret: true,
+			hasStaticPrivateKeyJWT: true},
 		{name: "JWT bearer without token exchange", disableTokenExchange: true, jwtBearerGrantEnabled: true},
 	}
 	for _, tt := range tests {
@@ -116,6 +134,8 @@ func TestNewAuthorizationServerConfig_ConfidentialClientCapabilities(t *testing.
 				AllowConfidentialClientRegistration: tt.allowConfidential,
 				AllowPrivateKeyJWTRegistration:      tt.allowPrivateKeyJWT,
 				HasStaticDelegateClients:            tt.hasStaticDelegateClient,
+				HasStaticSecretClients:              tt.hasStaticSecret,
+				HasStaticPrivateKeyJWTClients:       tt.hasStaticPrivateKeyJWT,
 				DisableTokenExchange:                tt.disableTokenExchange,
 				JWTBearerGrantEnabled:               tt.jwtBearerGrantEnabled,
 			})
@@ -123,6 +143,8 @@ func TestNewAuthorizationServerConfig_ConfidentialClientCapabilities(t *testing.
 			assert.Equal(t, tt.allowConfidential, config.AllowConfidentialClientRegistration)
 			assert.Equal(t, tt.allowPrivateKeyJWT, config.AllowPrivateKeyJWTRegistration)
 			assert.Equal(t, tt.hasStaticDelegateClient, config.HasStaticDelegateClients)
+			assert.Equal(t, tt.hasStaticSecret, config.HasStaticSecretClients)
+			assert.Equal(t, tt.hasStaticPrivateKeyJWT, config.HasStaticPrivateKeyJWTClients)
 			assert.Equal(t, !tt.disableTokenExchange, config.TokenExchangeEnabled)
 			assert.Equal(t, tt.jwtBearerGrantEnabled, config.JWTBearerGrantEnabled)
 		})
@@ -154,6 +176,13 @@ func TestNewAuthorizationServerConfig_ConfidentialHTTPTransport(t *testing.T) {
 		{name: "static delegate client rejects non-loopback HTTP", mutate: func(p *AuthorizationServerParams) {
 			p.Issuer = "http://auth.example.com"
 			p.HasStaticDelegateClients = true
+		}, wantErr: "plain-HTTP non-loopback"},
+		// A private_key_jwt delegate counts as confidential for the transport check
+		// even though it never advertises client_secret_* methods.
+		{name: "key-only static delegate client rejects non-loopback HTTP", mutate: func(p *AuthorizationServerParams) {
+			p.Issuer = "http://auth.example.com"
+			p.HasStaticDelegateClients = true
+			p.HasStaticPrivateKeyJWTClients = true
 		}, wantErr: "plain-HTTP non-loopback"},
 		{name: "loopback opt-in permits confidential HTTP", mutate: func(p *AuthorizationServerParams) {
 			p.Issuer = "http://localhost:8080"
@@ -673,6 +702,82 @@ func TestNewAuthorizationServerConfig_PublishesFallbackKeys(t *testing.T) {
 
 	publicJWKS := authzServerConfig.PublicJWKS()
 	require.Len(t, publicJWKS.Keys, 2)
+}
+
+func TestValidateAccessTokenType(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		typ     string
+		wantErr bool
+	}{
+		{"empty is accepted", "", false},
+		{"JWT", "JWT", false},
+		{"at+jwt", "at+jwt", false},
+		{"uppercase suffix", "at+JWT", true},
+		{"all uppercase", "AT+JWT", true},
+		{"media type prefix", "application/at+jwt", true},
+		{"missing prefix", "jwt", true},
+		{"unknown", "foo", true},
+		{"leading space", " at+jwt", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := ValidateAccessTokenType(tt.typ)
+			if tt.wantErr {
+				assert.Error(t, err, "typ: %q", tt.typ)
+			} else {
+				assert.NoError(t, err, "typ: %q", tt.typ)
+			}
+		})
+	}
+}
+
+func TestNewAuthorizationServerConfig_AccessTokenType(t *testing.T) {
+	t.Parallel()
+
+	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+
+	tests := []struct {
+		name    string
+		typ     string
+		want    string
+		wantErr bool
+	}{
+		{name: "empty defaults to JWT", typ: "", want: AccessTokenTypeJWT},
+		{name: "at+jwt is kept", typ: AccessTokenTypeATJWT, want: AccessTokenTypeATJWT},
+		{name: "unsupported value is rejected", typ: "bogus", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			params := &AuthorizationServerParams{
+				Issuer:               "https://auth.example.com",
+				AccessTokenLifespan:  time.Hour,
+				RefreshTokenLifespan: time.Hour * 24,
+				AuthCodeLifespan:     time.Minute * 10,
+				HMACSecrets:          servercrypto.NewHMACSecrets([]byte("test-secret-with-32-bytes-long!!")),
+				SigningKeyID:         "key-1",
+				SigningKeyAlgorithm:  "RS256",
+				SigningKey:           rsaKey,
+				AccessTokenType:      tt.typ,
+			}
+
+			cfg, err := NewAuthorizationServerConfig(params)
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Nil(t, cfg)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, cfg.AccessTokenType)
+		})
+	}
 }
 
 // mockStorage is a minimal fosite.Storage implementation for testing.

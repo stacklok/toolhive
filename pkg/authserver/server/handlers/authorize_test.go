@@ -6,6 +6,7 @@ package handlers
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
 	"mime/multipart"
 	"net/http"
@@ -180,6 +181,32 @@ func TestAuthorizeHandler_ClientNotFound(t *testing.T) {
 	assert.Contains(t, rec.Body.String(), "invalid_client")
 }
 
+func TestAuthorizeHandler_RejectsRequestObjectWithEmbeddedJWK(t *testing.T) {
+	t.Parallel()
+	handler, _, _ := handlerTestSetup(t)
+
+	enc := base64.RawURLEncoding
+	requestObject := enc.EncodeToString([]byte(`{"alg":"RS256","jwk":{"kty":"RSA"}}`)) +
+		"." + enc.EncodeToString([]byte(`{}`)) + ".c2ln"
+	query := url.Values{
+		"client_id":     {testAuthClientID},
+		"redirect_uri":  {testAuthRedirectURI},
+		"response_type": {oauthproto.ResponseTypeCode},
+		"scope":         {"openid"},
+		"request":       {requestObject},
+	}
+	req := httptest.NewRequest(http.MethodGet, "/oauth/authorize?"+query.Encode(), nil)
+	rec := httptest.NewRecorder()
+
+	handler.AuthorizeHandler(rec, req)
+
+	// The request is answered directly rather than redirected: nothing about
+	// the client or redirect_uri has been validated yet.
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.Empty(t, rec.Header().Get("Location"))
+	assert.Contains(t, rec.Body.String(), "invalid_request_object")
+}
+
 func TestAuthorizeRoutes_RejectsMultipartCIMDRequestBeforeLookup(t *testing.T) {
 	t.Parallel()
 
@@ -313,6 +340,19 @@ func TestAuthorizeHandler_BackChannelOnlyClientsMatchMissingClient(t *testing.T)
 			assert.Equal(t, missing.Code, configured.Code)
 			assert.Equal(t, missing.Body.String(), configured.Body.String())
 			assert.Contains(t, configured.Body.String(), "invalid_client")
+
+			// A malformed request object must not distinguish the two either.
+			const badRequestObject = "&request=not-a-jws"
+			missingBadRequest := httptest.NewRecorder()
+			handler.AuthorizeHandler(missingBadRequest, httptest.NewRequest(http.MethodGet,
+				"/oauth/authorize?client_id=missing-client&redirect_uri=https://invalid.example/callback"+badRequestObject, nil))
+
+			configuredBadRequest := httptest.NewRecorder()
+			handler.AuthorizeHandler(configuredBadRequest, httptest.NewRequest(http.MethodGet,
+				"/oauth/authorize?client_id="+client.GetID()+"&redirect_uri=https://invalid.example/callback"+badRequestObject, nil))
+
+			assert.Equal(t, missingBadRequest.Code, configuredBadRequest.Code)
+			assert.Equal(t, missingBadRequest.Body.String(), configuredBadRequest.Body.String())
 		})
 	}
 }
@@ -442,10 +482,13 @@ func TestAuthorizeHandler_PlainChallengeMethodAcceptedButValidatedAtToken(t *tes
 func TestAuthorizeHandler_ResourceSelection(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
-		name      string
-		allowed   []string
-		resources []string
-		want      string
+		name            string
+		allowed         []string
+		clientAudiences []string // nil means the client holds the same list as allowed
+		resources       []string
+		strategy        fosite.AudienceMatchingStrategy // nil keeps the handler's default
+		want            string
+		wantDescription string
 	}{
 		{name: "sole default", allowed: []string{"https://api.example.com"}, want: "https://api.example.com"},
 		{name: "explicit", allowed: []string{"https://api.example.com", "https://other.example.com"}, resources: []string{"https://other.example.com"}, want: "https://other.example.com"},
@@ -455,11 +498,62 @@ func TestAuthorizeHandler_ResourceSelection(t *testing.T) {
 		{name: "empty", allowed: []string{"https://api.example.com"}, resources: []string{""}},
 		{name: "unknown", allowed: []string{"https://api.example.com"}, resources: []string{"https://other.example.com"}},
 		{name: "malformed", allowed: []string{"https://api.example.com", "relative"}, resources: []string{"relative"}},
+		{
+			name:            "outside client audiences",
+			allowed:         []string{"https://api.example.com", "https://other.example.com"},
+			clientAudiences: []string{"https://api.example.com"},
+			resources:       []string{"https://other.example.com"},
+			wantDescription: "not permitted to request resource",
+		},
+		{
+			name:            "path below the client audience",
+			allowed:         []string{"https://api.example.com/v1"},
+			clientAudiences: []string{"https://api.example.com"},
+			resources:       []string{"https://api.example.com/v1"},
+			want:            "https://api.example.com/v1",
+		},
+		{
+			name:            "sibling of the client audience path",
+			allowed:         []string{"https://api.example.com/v1x"},
+			clientAudiences: []string{"https://api.example.com/v1"},
+			resources:       []string{"https://api.example.com/v1x"},
+			wantDescription: "not permitted to request resource",
+		},
+		{
+			name:            "client without audiences",
+			allowed:         []string{"https://api.example.com"},
+			clientAudiences: []string{},
+			wantDescription: "not permitted to request resource",
+		},
+		{
+			// The default path-prefix strategy accepts this resource (see "path below
+			// the client audience"); exact matching does not.
+			name:            "configured audience strategy is applied",
+			allowed:         []string{"https://api.example.com/v1"},
+			clientAudiences: []string{"https://api.example.com"},
+			resources:       []string{"https://api.example.com/v1"},
+			strategy:        fosite.ExactAudienceMatchingStrategy,
+			wantDescription: "not permitted to request resource",
+		},
+		{
+			name:            "defaulted resource outside client",
+			allowed:         []string{"https://api.example.com"},
+			clientAudiences: []string{"https://other.example.com"},
+			wantDescription: "not permitted to request resource",
+		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			handler, state, upstream := handlerTestSetup(t)
 			handler.config.AllowedAudiences = tt.allowed
+			if tt.strategy != nil {
+				handler.config.AudienceMatchingStrategy = tt.strategy
+			}
+			clientAudiences := tt.clientAudiences
+			if clientAudiences == nil {
+				clientAudiences = tt.allowed
+			}
+			state.clients[testAuthClientID].(*fosite.DefaultClient).Audience = clientAudiences
 			params := url.Values{
 				"client_id": {testAuthClientID}, "redirect_uri": {testAuthRedirectURI},
 				"response_type": {"code"}, "state": {"client-state"},
@@ -473,6 +567,11 @@ func TestAuthorizeHandler_ResourceSelection(t *testing.T) {
 			if tt.want == "" {
 				assert.Equal(t, http.StatusSeeOther, rec.Code)
 				assert.Contains(t, rec.Header().Get("Location"), "error=invalid_target")
+				if tt.wantDescription != "" {
+					location, err := url.Parse(rec.Header().Get("Location"))
+					require.NoError(t, err)
+					assert.Contains(t, location.Query().Get("error_description"), tt.wantDescription)
+				}
 				assert.Empty(t, upstream.capturedState)
 				assert.Empty(t, state.pendingAuths)
 				return

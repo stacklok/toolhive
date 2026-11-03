@@ -13,15 +13,15 @@ import (
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 )
 
-// mapAuthServerCABundleConfigMapToMCPServer enqueues MCPServers whose embedded
-// auth-server configuration references the changed ConfigMap. References are
-// namespace-local and resolved through field indexes.
-func (r *MCPServerReconciler) mapAuthServerCABundleConfigMapToMCPServer(
+// mapAuthServerConfigMapToMCPRemoteProxy enqueues proxies whose
+// referenced embedded auth-server configuration uses the changed ConfigMap.
+// References are namespace-local and resolved through field indexes.
+func (r *MCPRemoteProxyReconciler) mapAuthServerConfigMapToMCPRemoteProxy(
 	ctx context.Context, obj client.Object) []reconcile.Request {
 	var configs mcpv1beta1.MCPExternalAuthConfigList
 	if err := r.List(ctx, &configs,
 		client.InNamespace(obj.GetNamespace()),
-		client.MatchingFields{EmbeddedAuthCABundleConfigMapIndex: obj.GetName()},
+		client.MatchingFields{EmbeddedAuthConfigMapRefIndex: obj.GetName()},
 	); err != nil {
 		log.FromContext(ctx).Error(err, "Failed to list MCPExternalAuthConfigs for CA bundle ConfigMap watch")
 		return nil
@@ -29,16 +29,16 @@ func (r *MCPServerReconciler) mapAuthServerCABundleConfigMapToMCPServer(
 
 	requests := make([]reconcile.Request, 0)
 	for i := range configs.Items {
-		var servers mcpv1beta1.MCPServerList
-		if err := r.List(ctx, &servers,
+		var proxies mcpv1beta1.MCPRemoteProxyList
+		if err := r.List(ctx, &proxies,
 			client.InNamespace(obj.GetNamespace()),
 			client.MatchingFields{EmbeddedAuthConfigIndex: configs.Items[i].Name},
 		); err != nil {
-			log.FromContext(ctx).Error(err, "Failed to list MCPServers for CA bundle ConfigMap watch")
+			log.FromContext(ctx).Error(err, "Failed to list MCPRemoteProxies for CA bundle ConfigMap watch")
 			return nil
 		}
-		for j := range servers.Items {
-			requests = append(requests, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(&servers.Items[j])})
+		for j := range proxies.Items {
+			requests = append(requests, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(&proxies.Items[j])})
 		}
 	}
 	return requests

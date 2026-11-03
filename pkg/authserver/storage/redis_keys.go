@@ -96,6 +96,11 @@ const (
 	// which holds the authserver's *own* OAuth clients — DCR entries are credentials
 	// that *this* authserver registered against an *upstream* authorization server.
 	KeyTypeDCR = "dcr"
+
+	// KeyTypeExchangeGrant is the key type for the HASH holding the server-side
+	// record behind a refresh token issued through token exchange, keyed by the
+	// token's HMAC signature.
+	KeyTypeExchangeGrant = "xgrant"
 )
 
 // DeriveKeyPrefix creates the key prefix from the Kubernetes namespace and MCP server name.

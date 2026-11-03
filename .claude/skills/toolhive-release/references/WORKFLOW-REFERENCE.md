@@ -21,6 +21,7 @@ Detailed documentation of the ToolHive release workflow chain.
 │ create-release-tag.yml  │  ← Auto trigger (push to main, VERSION changed)
 │                         │
 └───────────┬─────────────┘
+            │ Waits for approval on the `release` environment
             │ Creates tag + GitHub Release
             ▼
 ┌─────────────────────────┐
@@ -62,16 +63,23 @@ Detailed documentation of the ToolHive release workflow chain.
 
 **What it does**:
 
+The `verify` job:
+
 1. Read and validate VERSION file (must be valid semver)
 2. Verify commit came from release PR:
    - Commit message matches `Release vX.Y.Z` or merge from `release/vX.Y.Z`
    - Version in commit message matches VERSION file
-3. Check if tag already exists (skip if so)
-4. Create annotated git tag `vX.Y.Z`
-5. Push tag using a GitHub App installation token (required to trigger downstream workflows; `GITHUB_TOKEN`-authored events do not)
-6. Create GitHub Release with auto-generated notes
+3. Write a job summary for the approver: version, commit, who triggered the release PR, and who merged it
+
+The `create-tag` job runs on the `release` environment, so it waits for a reviewer, other than the person who merged, to approve the run. Then:
+
+4. Check if tag already exists (skip if so)
+5. Create annotated git tag `vX.Y.Z`
+6. Push tag using a GitHub App installation token (required to trigger downstream workflows; `GITHUB_TOKEN`-authored events do not)
+7. Create GitHub Release with auto-generated notes
 
 **Requirements**:
+- `release` environment with required reviewers
 - GitHub App installed on the repo with `contents: write` permission
 - `RELEASE_APP_CLIENT_ID` repository **variable** (the app's Client ID)
 - `RELEASE_APP_PRIVATE_KEY` repository **secret** (the app's private key in PEM)
@@ -160,6 +168,10 @@ If a previous Create Release PR run failed after creating the branch but before 
 
 - Ensure commit message matches expected pattern: `Release vX.Y.Z`
 - Check that VERSION file was actually modified in the PR
+
+### Release PR merged but no tag created
+
+- The `create-release-tag.yml` run is probably waiting for approval at the `create-tag` job. A reviewer on the `release` environment, other than the person who merged, approves it from the run page.
 
 ### Tag creation fails
 

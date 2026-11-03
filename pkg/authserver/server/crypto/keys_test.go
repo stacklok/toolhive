@@ -22,12 +22,15 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
+	"encoding/base64"
+	"encoding/json"
 	"encoding/pem"
 	"math/big"
 	"os"
 	"path/filepath"
 	"testing"
 
+	"github.com/go-jose/go-jose/v4"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -291,6 +294,40 @@ func TestValidateAlgorithmForKeyDoesNotBoundRSA(t *testing.T) {
 		key := &rsa.PrivateKey{PublicKey: pub}
 		assert.NoError(t, ValidateAlgorithmForKey("RS256", key))
 		assert.Error(t, ValidateAlgorithmForPublicKey("RS256", &key.PublicKey))
+	}
+}
+
+// TestJWKDecodeAcceptsMaxRSAKeyBits pins that go-jose's parse limit matches
+// MaxRSAKeyBits, so client keys above go-jose's 4096-bit default still decode.
+func TestJWKDecodeAcceptsMaxRSAKeyBits(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		bits    int
+		wantErr bool
+	}{
+		{name: "above go-jose default", bits: 4097},
+		{name: "maximum modulus", bits: MaxRSAKeyBits},
+		{name: "above maximum modulus", bits: MaxRSAKeyBits + 1, wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			// A synthetic modulus of exactly tt.bits bits avoids generating a key.
+			n := new(big.Int).Lsh(big.NewInt(1), uint(tt.bits-1))
+			n.SetBit(n, 0, 1)
+			data := `{"kty":"RSA","n":"` + base64.RawURLEncoding.EncodeToString(n.Bytes()) + `","e":"AQAB"}`
+
+			var key jose.JSONWebKey
+			err := json.Unmarshal([]byte(data), &key)
+			if tt.wantErr {
+				assert.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.bits, key.Key.(*rsa.PublicKey).N.BitLen())
+		})
 	}
 }
 

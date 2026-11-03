@@ -634,9 +634,22 @@ type AuthenticationDCRUpstreamConfig struct {
 	// for upstreams whose token endpoint answers invalid_grant for any
 	// client_id; an HTML page or a bare gateway status is not a verdict. A
 	// false rejection re-registers at every start and, when registration also
-	// fails, fails startup. "none" skips the check; the registration is then
+	// fails, fails startup. "none" skips the check: the upstream is not
+	// contacted, but a registration made with another method than a configured
+	// TokenEndpointAuthMethod is still replaced. Otherwise the registration is
 	// retired only through RotationKey.
 	RegistrationProbe OptString `json:"registration_probe"`
+	// RegistrationProbeInterval, when set, repeats the start-time resolution
+	// while the server runs, as a Go duration of at least 1m (e.g. "5m"): the
+	// cached registration is re-read and checked with RegistrationProbe, a
+	// rejected one is replaced, a missing one is registered, and when the
+	// result differs from the client the server holds (also when another
+	// replica replaced the row) the server switches to it without a restart.
+	// Each check sends at most one RegistrationProbe request to the upstream
+	// (none with RegistrationProbe none), plus a registration request when
+	// the probe rejects the client; 5m to 15m suits most upstreams. Empty
+	// keeps the check at start only.
+	RegistrationProbeInterval OptString `json:"registration_probe_interval"`
 	// RotationKey is an optional operator-chosen label (1-64 characters from
 	// [A-Za-z0-9._-]) that becomes part of the cached registration's identity
 	// without being sent to the upstream. Changing it makes the next start
@@ -685,6 +698,11 @@ func (s *AuthenticationDCRUpstreamConfig) GetRegistrationProbe() OptString {
 	return s.RegistrationProbe
 }
 
+// GetRegistrationProbeInterval returns the value of RegistrationProbeInterval.
+func (s *AuthenticationDCRUpstreamConfig) GetRegistrationProbeInterval() OptString {
+	return s.RegistrationProbeInterval
+}
+
 // GetRotationKey returns the value of RotationKey.
 func (s *AuthenticationDCRUpstreamConfig) GetRotationKey() OptString {
 	return s.RotationKey
@@ -725,6 +743,11 @@ func (s *AuthenticationDCRUpstreamConfig) SetRegistrationProbe(val OptString) {
 	s.RegistrationProbe = val
 }
 
+// SetRegistrationProbeInterval sets the value of RegistrationProbeInterval.
+func (s *AuthenticationDCRUpstreamConfig) SetRegistrationProbeInterval(val OptString) {
+	s.RegistrationProbeInterval = val
+}
+
 // SetRotationKey sets the value of RotationKey.
 func (s *AuthenticationDCRUpstreamConfig) SetRotationKey(val OptString) {
 	s.RotationKey = val
@@ -740,26 +763,93 @@ func (s *AuthenticationDCRUpstreamConfig) SetSoftwareStatement(val OptString) {
 	s.SoftwareStatement = val
 }
 
+// ExchangeRefreshTokens enables refresh-token issuance through token
+// exchange for this client. Presence of the block enables it; a nil block
+// refuses both grant kinds. Valid only with restricted, and requires
+// SubjectTokenAudiences and offline_access or offline in scopes_supported.
+// Ref: #/components/schemas/AuthenticationDelegateClientExchangeRefreshTokens
+type AuthenticationDelegateClientExchangeRefreshTokens struct {
+	// IDJAGMaxLifetime caps the lifetime of grants that can be exchanged for
+	// ID-JAGs. Empty refuses those grants.
+	IDJagMaxLifetime OptString `json:"id_jag_max_lifetime"`
+	// RefreshTokenMaxLifetime caps the lifetime of grants that can be exchanged
+	// for child refresh tokens. Empty refuses those grants. Deriving a child also
+	// needs id_jag_max_lifetime, because a child allows ID-JAGs and is capped by
+	// that value; without it every derive is refused with token_type_not_permitted.
+	RefreshTokenMaxLifetime OptString `json:"refresh_token_max_lifetime"`
+}
+
+// GetIDJagMaxLifetime returns the value of IDJagMaxLifetime.
+func (s *AuthenticationDelegateClientExchangeRefreshTokens) GetIDJagMaxLifetime() OptString {
+	return s.IDJagMaxLifetime
+}
+
+// GetRefreshTokenMaxLifetime returns the value of RefreshTokenMaxLifetime.
+func (s *AuthenticationDelegateClientExchangeRefreshTokens) GetRefreshTokenMaxLifetime() OptString {
+	return s.RefreshTokenMaxLifetime
+}
+
+// SetIDJagMaxLifetime sets the value of IDJagMaxLifetime.
+func (s *AuthenticationDelegateClientExchangeRefreshTokens) SetIDJagMaxLifetime(val OptString) {
+	s.IDJagMaxLifetime = val
+}
+
+// SetRefreshTokenMaxLifetime sets the value of RefreshTokenMaxLifetime.
+func (s *AuthenticationDelegateClientExchangeRefreshTokens) SetRefreshTokenMaxLifetime(val OptString) {
+	s.RefreshTokenMaxLifetime = val
+}
+
 // Ref: #/components/schemas/AuthenticationDelegateClientRunConfig
 type AuthenticationDelegateClientRunConfig struct {
-	// Audiences are the RFC 8707 resource values this client may request a
-	// token for. Required, and must be a subset of RunConfig.AllowedAudiences:
-	// a declared client must not receive every allowed audience just because
-	// this was left empty.
+	// Audiences are output only: the upper bound on the audiences of the
+	// access tokens this client can obtain through any grant. They must be a
+	// subset of RunConfig.AllowedAudiences: a declared client must not receive
+	// every allowed audience just because this was left empty. Required, unless
+	// token_exchange.exchange_refresh_tokens is set and token exchange is the
+	// client's only grant (grant_types omitted, or just the token-exchange
+	// grant), in which case it may be empty.
 	Audiences []string `json:"audiences"`
 	// ClientID is the OAuth client_id this client presents at the token endpoint.
 	ClientID OptString `json:"client_id"`
 	// ClientSecretEnvVar is the name of an environment variable containing
-	// the client secret. One of ClientSecretFile or ClientSecretEnvVar is
-	// required.
+	// the client secret. Unless the client uses private_key_jwt, one of
+	// ClientSecretFile or ClientSecretEnvVar is required.
 	ClientSecretEnvVar OptString `json:"client_secret_env_var"`
 	// ClientSecretFile is the path to a file containing the client secret.
 	// If both this and ClientSecretEnvVar are set, the file takes precedence.
+	// Forbidden with private_key_jwt.
 	ClientSecretFile OptString `json:"client_secret_file"`
+	// GrantTypes are the grants this client may use. If omitted or empty, the
+	// client is stored with [urn:ietf:params:oauth:grant-type:token-exchange]
+	// and its ID-JAG redemption (a JWT-bearer assertion of typ
+	// oauth-id-jag+jwt) is not gated, for backward compatibility. When set, the
+	// list is complete: it must include token exchange, and it must include the
+	// jwt-bearer grant to keep ID-JAG redemption. Allowed values are
+	// authorization_code, refresh_token, the token-exchange grant and the
+	// jwt-bearer grant.
+	GrantTypes []string `json:"grant_types"`
+	// JWKSFile is the path to a file containing the client's public JWKS.
+	// Required for private_key_jwt and forbidden otherwise. The keys must be
+	// public signing keys.
+	JwksFile OptString `json:"jwks_file"`
+	// RedirectURIs are the registered redirect URIs. Required with the
+	// authorization_code grant and forbidden without it.
+	RedirectUris []string `json:"redirect_uris"`
 	// Scopes are the OAuth scopes this client may request. Required, and
 	// must be a subset of RunConfig.ScopesSupported: a declared client must
 	// not receive every supported scope just because this was left empty.
 	Scopes []string `json:"scopes"`
+	// TokenEndpointAuthMethod pins how the client authenticates at the token
+	// endpoint: client_secret_basic, client_secret_post or private_key_jwt.
+	// If omitted, the client authenticates with its secret by either HTTP
+	// Basic or form body.
+	TokenEndpointAuthMethod OptString `json:"token_endpoint_auth_method"`
+	// TokenEndpointAuthSigningAlg is the private_key_jwt signing algorithm.
+	// If omitted, it is derived from the keys: each key's alg, or ES256, ES384
+	// or ES512 from an EC key's curve. RSA keys without alg use RS256. Keys
+	// that disagree must set it.
+	TokenEndpointAuthSigningAlg OptString                                    `json:"token_endpoint_auth_signing_alg"`
+	TokenExchange               OptAuthenticationDelegateClientTokenExchange `json:"token_exchange"`
 }
 
 // GetAudiences returns the value of Audiences.
@@ -782,9 +872,39 @@ func (s *AuthenticationDelegateClientRunConfig) GetClientSecretFile() OptString 
 	return s.ClientSecretFile
 }
 
+// GetGrantTypes returns the value of GrantTypes.
+func (s *AuthenticationDelegateClientRunConfig) GetGrantTypes() []string {
+	return s.GrantTypes
+}
+
+// GetJwksFile returns the value of JwksFile.
+func (s *AuthenticationDelegateClientRunConfig) GetJwksFile() OptString {
+	return s.JwksFile
+}
+
+// GetRedirectUris returns the value of RedirectUris.
+func (s *AuthenticationDelegateClientRunConfig) GetRedirectUris() []string {
+	return s.RedirectUris
+}
+
 // GetScopes returns the value of Scopes.
 func (s *AuthenticationDelegateClientRunConfig) GetScopes() []string {
 	return s.Scopes
+}
+
+// GetTokenEndpointAuthMethod returns the value of TokenEndpointAuthMethod.
+func (s *AuthenticationDelegateClientRunConfig) GetTokenEndpointAuthMethod() OptString {
+	return s.TokenEndpointAuthMethod
+}
+
+// GetTokenEndpointAuthSigningAlg returns the value of TokenEndpointAuthSigningAlg.
+func (s *AuthenticationDelegateClientRunConfig) GetTokenEndpointAuthSigningAlg() OptString {
+	return s.TokenEndpointAuthSigningAlg
+}
+
+// GetTokenExchange returns the value of TokenExchange.
+func (s *AuthenticationDelegateClientRunConfig) GetTokenExchange() OptAuthenticationDelegateClientTokenExchange {
+	return s.TokenExchange
 }
 
 // SetAudiences sets the value of Audiences.
@@ -807,9 +927,118 @@ func (s *AuthenticationDelegateClientRunConfig) SetClientSecretFile(val OptStrin
 	s.ClientSecretFile = val
 }
 
+// SetGrantTypes sets the value of GrantTypes.
+func (s *AuthenticationDelegateClientRunConfig) SetGrantTypes(val []string) {
+	s.GrantTypes = val
+}
+
+// SetJwksFile sets the value of JwksFile.
+func (s *AuthenticationDelegateClientRunConfig) SetJwksFile(val OptString) {
+	s.JwksFile = val
+}
+
+// SetRedirectUris sets the value of RedirectUris.
+func (s *AuthenticationDelegateClientRunConfig) SetRedirectUris(val []string) {
+	s.RedirectUris = val
+}
+
 // SetScopes sets the value of Scopes.
 func (s *AuthenticationDelegateClientRunConfig) SetScopes(val []string) {
 	s.Scopes = val
+}
+
+// SetTokenEndpointAuthMethod sets the value of TokenEndpointAuthMethod.
+func (s *AuthenticationDelegateClientRunConfig) SetTokenEndpointAuthMethod(val OptString) {
+	s.TokenEndpointAuthMethod = val
+}
+
+// SetTokenEndpointAuthSigningAlg sets the value of TokenEndpointAuthSigningAlg.
+func (s *AuthenticationDelegateClientRunConfig) SetTokenEndpointAuthSigningAlg(val OptString) {
+	s.TokenEndpointAuthSigningAlg = val
+}
+
+// SetTokenExchange sets the value of TokenExchange.
+func (s *AuthenticationDelegateClientRunConfig) SetTokenExchange(val OptAuthenticationDelegateClientTokenExchange) {
+	s.TokenExchange = val
+}
+
+// TokenExchange is the client's token-exchange policy. Its
+// SelfIssuedSubjectTokens field selects which self-issued subject tokens
+// the client may exchange and is required whenever the block is present.
+// The block may be omitted only by a secret-authenticated client whose
+// GrantTypes is omitted or empty; such a client keeps the legacy rule (any)
+// and may exchange any self-issued token. A client that sets GrantTypes or
+// uses private_key_jwt must declare the block.
+// Ref: #/components/schemas/AuthenticationDelegateClientTokenExchange
+type AuthenticationDelegateClientTokenExchange struct {
+	// AllowedSourceClients are client_id values, as they appear in the subject
+	// token's client_id claim, whose self-issued tokens this client may
+	// exchange in addition to its own. They must be user-facing clients that
+	// register at runtime (DCR or CIMD), so startup cannot check that they
+	// exist. A configured delegate client cannot be listed: its tokens carry
+	// its own client_id, so listing it would trust everything it accepts.
+	// Valid only with restricted. On plain token exchange, empty means the
+	// client's own tokens only. The exchange-grant path (exchange_refresh_tokens)
+	// accepts only the listed source clients, never the client's own tokens, so
+	// the list must be non-empty there.
+	AllowedSourceClients  []string                                             `json:"allowed_source_clients"`
+	ExchangeRefreshTokens OptAuthenticationDelegateClientExchangeRefreshTokens `json:"exchange_refresh_tokens"`
+	// SelfIssuedSubjectTokens is any or restricted, and is required. With
+	// restricted, a self-issued subject token must carry the client's own
+	// client_id or one of AllowedSourceClients, and a may_act claim naming
+	// this client does not lift that restriction. With any, the client may
+	// exchange any self-issued token.
+	SelfIssuedSubjectTokens string `json:"self_issued_subject_tokens"`
+	// SubjectTokenAudiences are the audiences a self-issued subject token must
+	// carry, matched exactly: the token must contain at least one of them. The
+	// check applies on every exchange path, including the client's own tokens.
+	// Listing a value grants nothing: the client can receive that audience only
+	// if its audiences also cover it, and startup refuses that while
+	// exchange_refresh_tokens is set. Each entry must be one of the server's
+	// allowed_audiences. Valid only with restricted, and required with
+	// exchange_refresh_tokens. An empty list is the same as an omitted one:
+	// no requirement.
+	SubjectTokenAudiences []string `json:"subject_token_audiences"`
+}
+
+// GetAllowedSourceClients returns the value of AllowedSourceClients.
+func (s *AuthenticationDelegateClientTokenExchange) GetAllowedSourceClients() []string {
+	return s.AllowedSourceClients
+}
+
+// GetExchangeRefreshTokens returns the value of ExchangeRefreshTokens.
+func (s *AuthenticationDelegateClientTokenExchange) GetExchangeRefreshTokens() OptAuthenticationDelegateClientExchangeRefreshTokens {
+	return s.ExchangeRefreshTokens
+}
+
+// GetSelfIssuedSubjectTokens returns the value of SelfIssuedSubjectTokens.
+func (s *AuthenticationDelegateClientTokenExchange) GetSelfIssuedSubjectTokens() string {
+	return s.SelfIssuedSubjectTokens
+}
+
+// GetSubjectTokenAudiences returns the value of SubjectTokenAudiences.
+func (s *AuthenticationDelegateClientTokenExchange) GetSubjectTokenAudiences() []string {
+	return s.SubjectTokenAudiences
+}
+
+// SetAllowedSourceClients sets the value of AllowedSourceClients.
+func (s *AuthenticationDelegateClientTokenExchange) SetAllowedSourceClients(val []string) {
+	s.AllowedSourceClients = val
+}
+
+// SetExchangeRefreshTokens sets the value of ExchangeRefreshTokens.
+func (s *AuthenticationDelegateClientTokenExchange) SetExchangeRefreshTokens(val OptAuthenticationDelegateClientExchangeRefreshTokens) {
+	s.ExchangeRefreshTokens = val
+}
+
+// SetSelfIssuedSubjectTokens sets the value of SelfIssuedSubjectTokens.
+func (s *AuthenticationDelegateClientTokenExchange) SetSelfIssuedSubjectTokens(val string) {
+	s.SelfIssuedSubjectTokens = val
+}
+
+// SetSubjectTokenAudiences sets the value of SubjectTokenAudiences.
+func (s *AuthenticationDelegateClientTokenExchange) SetSubjectTokenAudiences(val []string) {
+	s.SubjectTokenAudiences = val
 }
 
 // IdentityFromToken extracts user identity (subject, name, email) directly from the
@@ -1029,6 +1258,11 @@ type AuthenticationOAuth2UpstreamRunConfig struct {
 	// client_secret_post-shaped default). Set this to client_secret_basic explicitly
 	// for providers that require HTTP Basic auth. Public clients without a secret use
 	// the "none" method.
+	// With DCRConfig, it is the method the client registers with, in place of the one
+	// ToolHive picks from the upstream's advertised methods (client_secret_basic, then
+	// client_secret_post, then none). Set it for an upstream whose token endpoint does
+	// not accept the method ToolHive picks. A cached registration made with another
+	// method is replaced with a new one at the next start.
 	TokenEndpointAuthMethod OptString                                      `json:"token_endpoint_auth_method"`
 	TokenResponseMapping    OptAuthenticationTokenResponseMappingRunConfig `json:"token_response_mapping"`
 	Userinfo                OptAuthenticationUserInfoRunConfig             `json:"userinfo"`
@@ -1642,11 +1876,12 @@ type AuthenticationRunConfig struct {
 	// local development (the traffic never leaves the machine), but client
 	// secrets would otherwise travel over cleartext. Defaults to false. Has no
 	// effect when there are no confidential clients or Issuer is https.
-	// Applies identically to delegate clients and DCR-registered clients. The
-	// Kubernetes CRD requires the explicit opt-in for a delegate client with an
-	// HTTP issuer; the shared transport validator enforces that its host is
-	// loopback — see EmbeddedAuthServerConfig's doc comment.
-	// private_key_jwt registration has no equivalent flag or transport
+	// Applies identically to every delegate client (including private_key_jwt
+	// delegates) and DCR-registered confidential clients. The Kubernetes CRD
+	// requires the explicit opt-in for a delegate client with an HTTP issuer;
+	// the shared transport validator enforces that its host is loopback — see
+	// EmbeddedAuthServerConfig's doc comment.
+	// DCR private_key_jwt registration has no equivalent flag or transport
 	// restriction: unlike confidential registration, it never returns a
 	// client_secret (or any other secret) in the DCR response, so there is
 	// nothing here for cleartext HTTP to expose.
@@ -2537,6 +2772,12 @@ func (s *AuthenticationTokenResponseMappingRunConfig) SetScopePath(val OptString
 
 // Ref: #/components/schemas/AuthenticationUpstreamRunConfig
 type AuthenticationUpstreamRunConfig struct {
+	// DisplayName is an optional human-readable label for this upstream, shown to
+	// end users on the consent page in place of Name. It is display-only: never
+	// compared, stored, or used to route. It is sanitized at render time and never
+	// rejected by validation. It is shown as trusted text, so it must come from
+	// operator-controlled configuration only.
+	DisplayName OptString `json:"display_name"`
 	// Name uniquely identifies this upstream.
 	// Used for routing decisions and session binding in multi-upstream scenarios.
 	// If empty when only one upstream is configured, defaults to "default".
@@ -2545,6 +2786,11 @@ type AuthenticationUpstreamRunConfig struct {
 	OidcConfig   OptAuthenticationOIDCUpstreamRunConfig   `json:"oidc_config"`
 	// Type specifies the provider type: "oidc" or "oauth2".
 	Type OptString `json:"type"`
+}
+
+// GetDisplayName returns the value of DisplayName.
+func (s *AuthenticationUpstreamRunConfig) GetDisplayName() OptString {
+	return s.DisplayName
 }
 
 // GetName returns the value of Name.
@@ -2565,6 +2811,11 @@ func (s *AuthenticationUpstreamRunConfig) GetOidcConfig() OptAuthenticationOIDCU
 // GetType returns the value of Type.
 func (s *AuthenticationUpstreamRunConfig) GetType() OptString {
 	return s.Type
+}
+
+// SetDisplayName sets the value of DisplayName.
+func (s *AuthenticationUpstreamRunConfig) SetDisplayName(val OptString) {
+	s.DisplayName = val
 }
 
 // SetName sets the value of Name.
@@ -6919,6 +7170,98 @@ func (o OptAuthenticationDCRUpstreamConfig) Get() (v AuthenticationDCRUpstreamCo
 
 // Or returns value if set, or given parameter if does not.
 func (o OptAuthenticationDCRUpstreamConfig) Or(d AuthenticationDCRUpstreamConfig) AuthenticationDCRUpstreamConfig {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptAuthenticationDelegateClientExchangeRefreshTokens returns new OptAuthenticationDelegateClientExchangeRefreshTokens with value set to v.
+func NewOptAuthenticationDelegateClientExchangeRefreshTokens(v AuthenticationDelegateClientExchangeRefreshTokens) OptAuthenticationDelegateClientExchangeRefreshTokens {
+	return OptAuthenticationDelegateClientExchangeRefreshTokens{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptAuthenticationDelegateClientExchangeRefreshTokens is optional AuthenticationDelegateClientExchangeRefreshTokens.
+type OptAuthenticationDelegateClientExchangeRefreshTokens struct {
+	Value AuthenticationDelegateClientExchangeRefreshTokens
+	Set   bool
+}
+
+// IsSet returns true if OptAuthenticationDelegateClientExchangeRefreshTokens was set.
+func (o OptAuthenticationDelegateClientExchangeRefreshTokens) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptAuthenticationDelegateClientExchangeRefreshTokens) Reset() {
+	var v AuthenticationDelegateClientExchangeRefreshTokens
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptAuthenticationDelegateClientExchangeRefreshTokens) SetTo(v AuthenticationDelegateClientExchangeRefreshTokens) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptAuthenticationDelegateClientExchangeRefreshTokens) Get() (v AuthenticationDelegateClientExchangeRefreshTokens, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptAuthenticationDelegateClientExchangeRefreshTokens) Or(d AuthenticationDelegateClientExchangeRefreshTokens) AuthenticationDelegateClientExchangeRefreshTokens {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
+// NewOptAuthenticationDelegateClientTokenExchange returns new OptAuthenticationDelegateClientTokenExchange with value set to v.
+func NewOptAuthenticationDelegateClientTokenExchange(v AuthenticationDelegateClientTokenExchange) OptAuthenticationDelegateClientTokenExchange {
+	return OptAuthenticationDelegateClientTokenExchange{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptAuthenticationDelegateClientTokenExchange is optional AuthenticationDelegateClientTokenExchange.
+type OptAuthenticationDelegateClientTokenExchange struct {
+	Value AuthenticationDelegateClientTokenExchange
+	Set   bool
+}
+
+// IsSet returns true if OptAuthenticationDelegateClientTokenExchange was set.
+func (o OptAuthenticationDelegateClientTokenExchange) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptAuthenticationDelegateClientTokenExchange) Reset() {
+	var v AuthenticationDelegateClientTokenExchange
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptAuthenticationDelegateClientTokenExchange) SetTo(v AuthenticationDelegateClientTokenExchange) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptAuthenticationDelegateClientTokenExchange) Get() (v AuthenticationDelegateClientTokenExchange, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptAuthenticationDelegateClientTokenExchange) Or(d AuthenticationDelegateClientTokenExchange) AuthenticationDelegateClientTokenExchange {
 	if v, ok := o.Get(); ok {
 		return v
 	}

@@ -90,6 +90,10 @@ func (h *Handler) DeviceVerificationSubmitHandler(w http.ResponseWriter, req *ht
 		return
 	}
 
+	if h.rejectUnresolvableDeviceClient(ctx, w, device.ClientID) {
+		return
+	}
+
 	// Device flow has no client_id/redirect_uri of its own to route on (see
 	// this function's doc comment), so it cannot pick the upstream
 	// appropriate for device.ClientID the way AuthorizeHandler's per-client
@@ -238,15 +242,9 @@ func (h *Handler) completeDeviceLogin(
 		return
 	}
 
-	result, err := upstreamProvider.ExchangeCodeForIdentity(ctx, code, pending.UpstreamPKCEVerifier, pending.UpstreamNonce)
-	if err != nil {
-		slog.Error("device verification: failed to exchange code or resolve identity", "error", err)
-		renderError(w, http.StatusInternalServerError, "Sign-in failed. Please try again.")
-		return
-	}
-
 	// Time has passed during login: re-check the device request is still
-	// pending/unexpired before proceeding.
+	// pending/unexpired, and its client still resolves, before spending the
+	// upstream code.
 	device, err := h.deviceStorage.LoadDeviceRequestByUserCode(ctx, pending.UserCode)
 	if err != nil && !isNotFoundOrExpired(err) {
 		slog.Error("device verification: failed to re-check device request", "error", err)
@@ -257,6 +255,17 @@ func (h *Handler) completeDeviceLogin(
 		slog.Debug("device verification: device request no longer pending", "error", err)
 		renderError(w, http.StatusBadRequest,
 			"This device request is no longer valid. Please try again from your device.")
+		return
+	}
+
+	if h.rejectUnresolvableDeviceClient(ctx, w, device.ClientID) {
+		return
+	}
+
+	result, err := upstreamProvider.ExchangeCodeForIdentity(ctx, code, pending.UpstreamPKCEVerifier, pending.UpstreamNonce)
+	if err != nil {
+		slog.Error("device verification: failed to exchange code or resolve identity", "error", err)
+		renderError(w, http.StatusInternalServerError, "Sign-in failed. Please try again.")
 		return
 	}
 
@@ -277,7 +286,7 @@ func (h *Handler) completeDeviceLogin(
 	}
 
 	token := rand.Text()
-	verified := verifiedUpstreamIdentity(result)
+	verified := h.recordedUpstreamIdentity(result)
 	confirmation := &storage.PendingDeviceConfirmation{
 		DeviceCode:        device.DeviceCode,
 		UserCode:          device.UserCode,
@@ -360,6 +369,17 @@ func (h *Handler) DeviceVerificationConfirmHandler(w http.ResponseWriter, req *h
 		return
 	}
 
+	// The confirmation page does not carry the client, but the upstream tokens
+	// captured at login do. A record without them is corrupt, not a removed client.
+	if confirmation.UpstreamTokens == nil {
+		slog.Error("device verification: pending confirmation has no upstream tokens")
+		renderError(w, http.StatusInternalServerError, "Something went wrong. Please try again.")
+		return
+	}
+	if h.rejectUnresolvableDeviceClient(ctx, w, confirmation.UpstreamTokens.ClientID) {
+		return
+	}
+
 	sessionID := rand.Text()
 	if err := h.persistDeviceSessionTokens(ctx, confirmation, sessionID); err != nil {
 		slog.Error("device verification: failed to store upstream tokens", "error", err)
@@ -409,4 +429,26 @@ func (h *Handler) persistDeviceSessionTokens(
 	)
 
 	return h.storage.StoreUpstreamTokens(ctx, sessionID, storageTokens.ProviderID, &storageTokens)
+}
+
+// rejectUnresolvableDeviceClient looks up the device request's client in the
+// admitted store and, when it no longer resolves, writes the error page and
+// returns true: a client removed from configuration must not get an upstream
+// login, a stored identity or an authorized device request. A lookup failure
+// other than not-found is a 500. Like the callback, it uses callbackClient so a
+// live CIMD client behind the fetch limiter still resolves.
+func (h *Handler) rejectUnresolvableDeviceClient(ctx context.Context, w http.ResponseWriter, clientID string) bool {
+	_, err := h.callbackClient(ctx, clientID)
+	switch {
+	case err == nil:
+		return false
+	case isUnresolvedClient(err):
+		slog.Debug("device verification: client did not resolve", "client_id", clientID, "error", err)
+		renderError(w, http.StatusBadRequest,
+			"This device request is no longer valid. Please try again from your device.")
+	default:
+		slog.Error("device verification: failed to resolve client", "client_id", clientID, "error", err)
+		renderError(w, http.StatusInternalServerError, "Something went wrong. Please try again.")
+	}
+	return true
 }

@@ -249,6 +249,10 @@ func (c *Client) DeployWorkload(
 	}
 
 	networkIsolation := false
+	// mcpCreated is set once the MCP container exists. From then on `thv rm`
+	// can find the auxiliary containers and network through it, and removing
+	// them here would leave the MCP container without its network.
+	mcpCreated := false
 	// pspec and egress are populated in the isolation block and reused by
 	// SetupIngress after the MCP container is created.
 	var (
@@ -266,9 +270,9 @@ func (c *Client) DeployWorkload(
 		}
 		// The internal network and the dns/egress/ingress containers are not
 		// tied to the MCP container yet, so `thv rm` cannot find them if setup
-		// fails from here on. Remove whatever was created before returning.
+		// fails before the MCP container is created. Remove them in that case.
 		defer func() {
-			if retErr != nil {
+			if retErr != nil && !mcpCreated {
 				c.ops.cleanupFailedIsolation(context.WithoutCancel(ctx), name, networkName)
 			}
 		}()
@@ -350,6 +354,7 @@ func (c *Client) DeployWorkload(
 	if err != nil {
 		return 0, fmt.Errorf("failed to create mcp container: %w", err)
 	}
+	mcpCreated = true
 
 	// Don't try and set up an ingress proxy if the transport type is stdio.
 	if transportType == "stdio" {

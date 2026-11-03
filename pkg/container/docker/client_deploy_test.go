@@ -638,6 +638,29 @@ func TestDeployWorkload_IsolatedSetupFailure_CleansUpNetworkAndDNS(t *testing.T)
 	}
 }
 
+func TestDeployWorkload_IngressFailureAfterMcpCreated_DoesNotCleanUp(t *testing.T) {
+	t.Parallel()
+
+	for name, fops := range map[string]*fakeDeployOps{
+		"mcp ip lookup fails": {errMcpIP: errors.New("boom")},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			client := newClientWithOps(fops)
+			opts := runtime.NewDeployWorkloadOptions()
+			opts.ExposedPorts = map[string]struct{}{"8080/tcp": {}}
+			opts.PortBindings = map[string][]runtime.PortBinding{"8080/tcp": {{HostIP: "127.0.0.1", HostPort: ""}}}
+			_, err := client.DeployWorkload(
+				t.Context(), "image", "app", nil, nil, map[string]string{},
+				&permissions.Profile{}, "sse", opts, true,
+			)
+			require.Error(t, err)
+			assert.True(t, fops.mcpCalled)
+			assert.Empty(t, fops.cleanupCalls, "MCP container exists, so thv rm can clean up")
+		})
+	}
+}
+
 func TestDeployWorkload_NoIsolationFailure_DoesNotCleanUp(t *testing.T) {
 	t.Parallel()
 

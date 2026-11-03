@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	k8sptr "k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -85,6 +86,18 @@ const (
 
 	// AuthServerSPIFFEBundleFileName is the controlled filename for a projected trust bundle.
 	AuthServerSPIFFEBundleFileName = "bundle.json"
+
+	// AuthServerTLSVolumeName is the projected volume holding the auth server TLS listener certificate and key.
+	AuthServerTLSVolumeName = "authserver-tls-listener"
+
+	// AuthServerTLSMountPath is the directory where listener TLS credentials are mounted.
+	AuthServerTLSMountPath = "/etc/toolhive/authserver/tls"
+
+	// AuthServerTLSCertFileName is the listener TLS certificate filename.
+	AuthServerTLSCertFileName = "tls.crt"
+
+	// AuthServerTLSKeyFileName is the listener TLS private key filename.
+	AuthServerTLSKeyFileName = "tls.key"
 
 	// UpstreamClientSecretEnvVar is the prefix for upstream client secret environment variables.
 	// Actual names are TOOLHIVE_UPSTREAM_CLIENT_SECRET_<PROVIDER> where PROVIDER is the
@@ -417,6 +430,53 @@ func EmbeddedAuthServerConfigName(
 	return ""
 }
 
+// ValidateEmbeddedAuthServerTLSListenerPort rejects a workload proxy port that
+// equals the fixed port of the embedded auth server TLS listener. It applies
+// only when the referenced embedded auth server configures tlsListener. A
+// missing or non-embedded MCPExternalAuthConfig is left to the other handlers
+// for those references; other Get failures are returned as retryable errors.
+// The clash is returned as an *InvalidEmbeddedAuthServerConfigError so callers
+// record it as a terminal spec error.
+func ValidateEmbeddedAuthServerTLSListenerPort(
+	ctx context.Context,
+	c client.Client,
+	namespace string,
+	extAuthRef *mcpv1beta1.ExternalAuthConfigRef,
+	authServerRef *mcpv1beta1.AuthServerRef,
+	proxyPort int32,
+) error {
+	if proxyPort != authrunner.TLSListenerPort {
+		return nil
+	}
+	name := EmbeddedAuthServerConfigName(extAuthRef, authServerRef)
+	if name == "" {
+		return nil
+	}
+	source := EmbeddedAuthServerConfigSourceExternalAuthConfigRef
+	if authServerRef != nil {
+		source = EmbeddedAuthServerConfigSourceAuthServerRef
+	}
+
+	externalAuthConfig, err := GetExternalAuthConfigByName(ctx, c, namespace, name)
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+		return err
+	}
+	if externalAuthConfig.Spec.Type != mcpv1beta1.ExternalAuthTypeEmbeddedAuthServer ||
+		externalAuthConfig.Spec.EmbeddedAuthServer == nil ||
+		externalAuthConfig.Spec.EmbeddedAuthServer.TLSListener == nil {
+		return nil
+	}
+	// The clash is reported through the auth server reference's validated
+	// condition on purpose: it exists only because the referenced config
+	// enables tlsListener, and the message tells the user to change proxyPort.
+	return invalidEmbeddedAuthServerConfigFrom(source, fmt.Errorf(
+		"proxyPort %d conflicts with the embedded auth server TLS listener port; choose a different proxyPort",
+		proxyPort))
+}
+
 // GenerateAuthServerConfigByName fetches an MCPExternalAuthConfig by name and, if its type
 // is embeddedAuthServer, returns the corresponding volumes, volume mounts, and env vars.
 // Returns empty slices (no error) if the config type is not embeddedAuthServer, because
@@ -522,13 +582,104 @@ func EmbeddedAuthServerConfigMapChecksumForConfig(
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
+// generateTLSListenerVolumes projects the listener TLS credentials as a directory
+// because kubelet updates projected volumes when Secrets change, but never updates
+// files mounted with subPath; the listener re-reads the files when their contents change.
+func generateTLSListenerVolumes(
+	tlsListener *mcpv1beta1.TLSListenerConfig,
+) ([]corev1.Volume, []corev1.VolumeMount) {
+	if tlsListener == nil || tlsListener.CertificateSecretRef == nil || tlsListener.PrivateKeySecretRef == nil {
+		return nil, nil
+	}
+
+	cert := tlsListener.CertificateSecretRef
+	key := tlsListener.PrivateKeySecretRef
+	sources := []corev1.VolumeProjection{{
+		Secret: &corev1.SecretProjection{
+			Name:  cert.Name,
+			Items: []corev1.KeyToPath{{Key: cert.Key, Path: AuthServerTLSCertFileName}},
+		},
+	}}
+	if cert.Name == key.Name {
+		sources[0].Secret.Items = append(sources[0].Secret.Items, corev1.KeyToPath{
+			Key: key.Key, Path: AuthServerTLSKeyFileName,
+		})
+	} else {
+		sources = append(sources, corev1.VolumeProjection{
+			Secret: &corev1.SecretProjection{
+				Name:  key.Name,
+				Items: []corev1.KeyToPath{{Key: key.Key, Path: AuthServerTLSKeyFileName}},
+			},
+		})
+	}
+
+	return []corev1.Volume{{
+		Name: AuthServerTLSVolumeName,
+		VolumeSource: corev1.VolumeSource{Projected: &corev1.ProjectedVolumeSource{
+			Sources:     sources,
+			DefaultMode: k8sptr.To(int32(0400)),
+		}},
+	}}, []corev1.VolumeMount{{
+		Name:      AuthServerTLSVolumeName,
+		MountPath: AuthServerTLSMountPath,
+		ReadOnly:  true,
+	}}
+}
+
+// AuthServerVolumesNeedUpdate reports whether any auth server volume that
+// carries a user-referenced Secret differs between the live and desired
+// volumes. It compares the TLS listener, signing key, HMAC secret, SPIFFE
+// trust bundle and Redis CA volumes. Upstream and trusted-issuer CA bundle
+// volumes are not compared here. EmbeddedAuthServerCABundleChecksumForConfig
+// hashes only the resolved bundle bytes, so it catches content changes but not
+// a reference change to a different ConfigMap with identical content. The
+// RunConfig checksum does not change when only the referenced name or key
+// changes, because the mounted file paths are fixed, so the difference is only
+// visible in the volume.
+//
+// Like SessionRedisTLSVolumeNeedsUpdate, callers should pass volumes that are
+// consistent with any pod template patching they apply. MCPServer, and
+// MCPRemoteProxy without a podTemplateSpec, pass the raw generated volumes.
+// MCPRemoteProxy with a podTemplateSpec passes the volumes of the patched
+// expected Deployment (see patchedPodSpecNeedsUpdate).
+func AuthServerVolumesNeedUpdate(live, desired []corev1.Volume) bool {
+	got := authServerOwnedVolumes(live)
+	want := authServerOwnedVolumes(desired)
+	if len(got) != len(want) {
+		return true
+	}
+	for name, wantVolume := range want {
+		gotVolume, ok := got[name]
+		if !ok || !equality.Semantic.DeepEqual(gotVolume.VolumeSource, wantVolume.VolumeSource) {
+			return true
+		}
+	}
+	return false
+}
+
+func authServerOwnedVolumes(volumes []corev1.Volume) map[string]corev1.Volume {
+	owned := make(map[string]corev1.Volume)
+	for _, volume := range volumes {
+		if volume.Name == AuthServerTLSVolumeName ||
+			strings.HasPrefix(volume.Name, AuthServerKeysVolumePrefix) ||
+			strings.HasPrefix(volume.Name, AuthServerHMACVolumePrefix) ||
+			strings.HasPrefix(volume.Name, AuthServerSPIFFEBundleVolumePrefix) ||
+			strings.HasPrefix(volume.Name, RedisTLSCACertVolumePrefix) {
+			owned[volume.Name] = volume
+		}
+	}
+	return owned
+}
+
 // GenerateAuthServerVolumes generates volumes and mounts for auth server
-// signing keys, HMAC secrets, Redis CA certificates, and CA bundles.
+// signing keys, HMAC secrets, the TLS listener certificate and key, Redis CA
+// certificates, and CA bundles.
 // Returns an error when a CA bundle reference is malformed.
 // Secret-backed key volumes use 0400; trust material is projected read-only.
 //
 // For signing keys, files are mounted at /etc/toolhive/authserver/keys/key-{N}.pem
 // For HMAC secrets, files are mounted at /etc/toolhive/authserver/hmac/hmac-{N}
+// For the TLS listener, files are mounted at /etc/toolhive/authserver/tls/{tls.crt,tls.key}
 //
 // Returns nil slices if authConfig is nil.
 func GenerateAuthServerVolumes(
@@ -540,6 +691,10 @@ func GenerateAuthServerVolumes(
 
 	var volumes []corev1.Volume
 	var volumeMounts []corev1.VolumeMount
+
+	tlsListenerVolumes, tlsListenerMounts := generateTLSListenerVolumes(authConfig.TLSListener)
+	volumes = append(volumes, tlsListenerVolumes...)
+	volumeMounts = append(volumeMounts, tlsListenerMounts...)
 
 	// Generate volumes for signing keys
 	for idx, keyRef := range authConfig.SigningKeySecretRefs {
@@ -986,6 +1141,9 @@ func BuildAuthServerRunConfig(
 		}
 	}()
 
+	if err := authConfig.ValidateTLSListener(); err != nil {
+		return nil, err
+	}
 	if err := authConfig.ValidateInboundGrants(); err != nil {
 		return nil, err
 	}
@@ -1002,6 +1160,12 @@ func BuildAuthServerRunConfig(
 		BaselineClientScopes:         authConfig.BaselineClientScopes,
 		InboundGrants:                inboundGrants,
 		SPIFFETrustDomains:           buildSPIFFETrustDomainRunConfigs(authConfig.SPIFFETrustDomains),
+	}
+	if authConfig.TLSListener != nil {
+		config.TLSListener = &authserver.TLSListenerRunConfig{
+			CertFile: fmt.Sprintf("%s/%s", AuthServerTLSMountPath, AuthServerTLSCertFileName),
+			KeyFile:  fmt.Sprintf("%s/%s", AuthServerTLSMountPath, AuthServerTLSKeyFileName),
+		}
 	}
 
 	if len(authConfig.DelegateClients) > 0 {
@@ -1144,6 +1308,7 @@ func validateDelegateClientsAndTrustedIssuers(config *authserver.RunConfig) erro
 		TrustedIssuers:     config.TrustedIssuers,
 		InboundGrants:      config.InboundGrants,
 		SPIFFETrustDomains: config.SPIFFETrustDomains,
+		TLSListener:        config.TLSListener,
 	}
 	if err := validationConfig.Validate(); err != nil {
 		return fmt.Errorf("invalid embedded auth server delegate clients or trusted issuers: %w", err)

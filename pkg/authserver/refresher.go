@@ -177,11 +177,14 @@ func (r *upstreamTokenRefresher) RefreshAndStore(
 //
 // Holding the lease is what stops two replicas redeeming the same single-use
 // refresh token. A replica that cannot take it must therefore never fall
-// through to the upstream provider: it waits, re-reading the row, until either
-// the holder's refreshed row appears — which is the result it was waiting for —
-// or the lease becomes free, in which case the holder died or its lease expired
-// and this replica takes over as leader. Running out of refreshCtx while
-// waiting is a failure, not a licence to redeem uncoordinated.
+// through to the upstream provider: it waits, re-reading the row, and returns
+// the row a holder stored as soon as that row is usable. When no usable row
+// has appeared it retries acquisition, and whichever attempt succeeds re-reads
+// the row before deciding whether an upstream refresh is still needed. A free
+// lease is not by itself evidence that anything went wrong — the holder
+// releases it on its normal success path too — so taking it is not a licence
+// to redeem without looking. Running out of refreshCtx while waiting is a
+// failure, not a licence to redeem uncoordinated.
 //
 // A backend without the capability (locker nil) refreshes directly, exactly as
 // before this layer existed: correct for a single-process backend, and
@@ -274,9 +277,11 @@ func (r *upstreamTokenRefresher) refreshHoldingLease(
 // The test is deliberately the same one refreshAuthoritativeRow short-circuits
 // on — unexpired AND different from the row the caller arrived with — so a
 // waiter accepts exactly what a leader would have accepted on its own re-read.
-// Anything else (the row unchanged, still expired, or a read failure) means
-// the holder has not finished, so the caller keeps waiting rather than
-// treating a transient read as a refusal.
+// Anything else (the row unchanged, still expired, or a read failure) is not
+// a result, so the caller goes back to contending for the lease rather than
+// treating a transient read as a refusal. It is deliberately silent about WHY
+// there is nothing to return: the holder may still be working, or it may have
+// died — the caller's next move is the same either way.
 func (r *upstreamTokenRefresher) refreshedByLeaseHolder(
 	ctx context.Context, sessionID string, caller *storage.UpstreamTokens,
 ) *storage.UpstreamTokens {
@@ -537,9 +542,10 @@ func (r *upstreamTokenRefresher) resolveConcurrentRefreshConflict(
 // stored a valid row. The refresh lease (see coordinatedRefresh) is what
 // normally stops two replicas reaching the provider at all, so this path now
 // covers the cases it cannot: a backend that provides no lease, and a lease
-// that expired under a holder slow enough for a waiter to take over. If the stored row now holds a different refresh token
-// and an unexpired access token, that row is the result to use, so a lost race
-// is not reported as a dead upstream credential.
+// that expired under a holder slow enough for a waiter to take over. If the
+// stored row now holds a different refresh token and an unexpired access
+// token, that row is the result to use, so a lost race is not reported as a
+// dead upstream credential.
 //
 // "Another process refreshed" is tested by refresh-token inequality, unlike
 // rowChanged, which also compares the access token, ID token and expiry. The

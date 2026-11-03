@@ -467,10 +467,11 @@ A replica that cannot take the lease never falls through to the provider. It
 waits on a capped exponential backoff, re-reading the row after each wait, and
 returns the holder's row as soon as that row satisfies the same test the
 leader uses on its own re-read: unexpired *and* different from the row the
-caller arrived with. If the lease becomes free while the row is unchanged —
-the holder crashed, or its lease expired — the waiter takes over as leader. If
-`refreshTimeout` runs out first, the refresh fails; running out of time is not
-a licence to redeem uncoordinated. An acquisition that fails for any reason
+caller arrived with. If no usable updated row is available, the waiter retries
+lease acquisition. After acquiring the lease, it re-reads the row before
+deciding whether an upstream refresh is still needed. If `refreshTimeout` runs
+out first, the refresh fails; running out of time is not a licence to redeem
+uncoordinated. An acquisition that fails for any reason
 other than "held by someone else" also fails closed, because a replica that
 cannot reach the backend cannot know whether another one is redeeming.
 

@@ -5,6 +5,8 @@ package storage
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1808,6 +1810,86 @@ func (s *RedisStorage) ResolveUpstreamTokenRowID(_ context.Context, sessionID, p
 		return "", fosite.ErrInvalidRequest.WithHint("provider name cannot be empty")
 	}
 	return upstreamTokenRowID(redisUpstreamKey(s.keyPrefix, sessionID, providerName)), nil
+}
+
+// releaseUpstreamRefreshLockScript gives up a refresh lease only when the
+// caller still owns it. The owner token is compared inside the script so the
+// read and the delete cannot interleave with another replica's acquisition:
+// without it, a holder whose lease had already expired could delete the lease
+// a second replica legitimately took in the meantime, and both would then
+// redeem the same refresh token — precisely the race the lease exists to
+// prevent.
+//
+// KEYS[1] = lease key
+// ARGV[1] = owner token this holder wrote on acquisition
+//
+// Returns 1 when this holder's lease was deleted, 0 when the stored lease
+// belongs to someone else or has already expired.
+var releaseUpstreamRefreshLockScript = redis.NewScript(`
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+    return redis.call('DEL', KEYS[1])
+end
+return 0
+`)
+
+// redisUpstreamRefreshLease is a held lease from AcquireUpstreamRefreshLock.
+type redisUpstreamRefreshLease struct {
+	client redis.UniversalClient
+	key    string
+	owner  string
+}
+
+// Release implements UpstreamRefreshLease. It is idempotent: releasing a lease
+// that already expired, or that a later holder now owns, deletes nothing and
+// reports no error, because in both cases this holder no longer has anything
+// to give up.
+func (l *redisUpstreamRefreshLease) Release(ctx context.Context) error {
+	if _, err := releaseUpstreamRefreshLockScript.Run(ctx, l.client, []string{l.key}, l.owner).Result(); err != nil {
+		return fmt.Errorf("failed to release upstream refresh lock: %w", err)
+	}
+	return nil
+}
+
+// AcquireUpstreamRefreshLock implements UpstreamRefreshLocker over Redis with
+// a SET NX PX of a random owner token. See the interface doc for the
+// coordination contract and for why this layer exists on top of
+// CompareAndSwapUpstreamTokens.
+//
+// The TTL is what bounds a crashed holder's lease, so it must outlast the
+// whole read-redeem-write sequence the caller runs while holding it;
+// the caller supplies it (pkg/authserver sets it from its own refresh
+// deadline). An acquisition that cannot reach Redis returns the error rather
+// than a lease, so the caller fails closed instead of redeeming
+// uncoordinated.
+func (s *RedisStorage) AcquireUpstreamRefreshLock(
+	ctx context.Context, rowID UpstreamTokenRowID, ttl time.Duration,
+) (UpstreamRefreshLease, error) {
+	if rowID == "" {
+		return nil, fosite.ErrInvalidRequest.WithHint("upstream token row ID cannot be empty")
+	}
+	if ttl <= 0 {
+		return nil, fosite.ErrInvalidRequest.WithHint("upstream refresh lock TTL must be positive")
+	}
+
+	// The owner token only has to be unpredictable enough that no other holder
+	// writes the same value, so a losing release can never delete a winner's
+	// lease. It is never persisted beyond the lease's own TTL.
+	ownerBytes := make([]byte, 16)
+	if _, err := rand.Read(ownerBytes); err != nil {
+		return nil, fmt.Errorf("failed to generate upstream refresh lock owner: %w", err)
+	}
+	owner := hex.EncodeToString(ownerBytes)
+
+	key := redisUpstreamRefreshLockKey(s.keyPrefix, rowID)
+	acquired, err := s.client.SetNX(ctx, key, owner, ttl).Result()
+	if err != nil {
+		return nil, fmt.Errorf("failed to acquire upstream refresh lock: %w", err)
+	}
+	if !acquired {
+		return nil, ErrUpstreamRefreshLockHeld
+	}
+
+	return &redisUpstreamRefreshLease{client: s.client, key: key, owner: owner}, nil
 }
 
 // GetUpstreamTokens retrieves the upstream IDP tokens for a session and provider.
@@ -3742,6 +3824,7 @@ var (
 	_ PendingDeviceConfirmationStorage = (*RedisStorage)(nil)
 	_ ClientRegistry                   = (*RedisStorage)(nil)
 	_ UpstreamTokenStorage             = (*RedisStorage)(nil)
+	_ UpstreamRefreshLocker            = (*RedisStorage)(nil)
 	_ UserStorage                      = (*RedisStorage)(nil)
 	_ DCRCredentialStore               = (*RedisStorage)(nil)
 	_ AssertionJWTConsumer             = (*RedisStorage)(nil)

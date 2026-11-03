@@ -35,16 +35,32 @@ type blockingProvider struct {
 
 	// entered is closed when the first call reaches the provider.
 	entered chan struct{}
-	// release is closed by the test to let that call finish.
+	// release is closed to let a parked call finish, by the test on its happy
+	// path and by releaseAll on teardown.
 	release chan struct{}
 
 	enteredOnce sync.Once
+	releaseOnce sync.Once
 }
 
-func (p *blockingProvider) RefreshTokens(_ context.Context, _, _ string) (*upstream.Tokens, error) {
+// releaseAll unparks every call still waiting. It is idempotent so the test's
+// own release and the teardown release cannot double-close.
+func (p *blockingProvider) releaseAll() {
+	p.releaseOnce.Do(func() { close(p.release) })
+}
+
+func (p *blockingProvider) RefreshTokens(ctx context.Context, _, _ string) (*upstream.Tokens, error) {
 	p.calls.Add(1)
 	p.enteredOnce.Do(func() { close(p.entered) })
-	<-p.release
+	// ctx is a backstop only. RefreshAndStore detaches its refresh context
+	// (context.WithoutCancel), so cancelling the test's context does not reach
+	// here; what actually unparks this call when the test fails early is the
+	// teardown releaseAll below.
+	select {
+	case <-p.release:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 	return &upstream.Tokens{
 		AccessToken:  "new-access",
 		RefreshToken: "new-refresh",
@@ -130,6 +146,15 @@ func TestRefreshAndStore_TwoReplicasRedeemOnce(t *testing.T) {
 		wg                   sync.WaitGroup
 	)
 
+	// Registered after the storage cleanup, so it runs BEFORE it (cleanups are
+	// LIFO): any goroutine still parked in the provider is unparked and
+	// drained while Redis is still up. Without this, a t.Fatal before the
+	// release below would leave a refresher blocked for the rest of the run.
+	t.Cleanup(func() {
+		provider.releaseAll()
+		wg.Wait()
+	})
+
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -167,7 +192,7 @@ func TestRefreshAndStore_TwoReplicasRedeemOnce(t *testing.T) {
 	assert.Equal(t, int32(1), provider.calls.Load(),
 		"the waiter must not redeem the refresh token while another replica holds the lease")
 
-	close(provider.release)
+	provider.releaseAll()
 	wg.Wait()
 
 	require.NoError(t, leaderErr)

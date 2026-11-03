@@ -122,6 +122,9 @@ type deployOps interface {
 	) error
 	getContainerNetworkIP(ctx context.Context, containerName, networkName string) (string, error)
 	discoverBridgeGateways(ctx context.Context) ([]netip.Addr, error)
+	// cleanupFailedIsolation best-effort removes the auxiliary containers and
+	// the internal network created for a workload whose setup failed.
+	cleanupFailedIsolation(ctx context.Context, name, networkName string)
 }
 
 // Client implements the Deployer interface for Docker (and compatible runtimes)
@@ -183,7 +186,7 @@ func (c *Client) DeployWorkload(
 	transportType string,
 	options *runtime.DeployWorkloadOptions,
 	isolateNetwork bool,
-) (int, error) {
+) (_ int, retErr error) {
 	// Get permission config from profile
 	var ignoreConfig *ignore.Config
 	if options != nil {
@@ -261,6 +264,14 @@ func (c *Client) DeployWorkload(
 		if err != nil {
 			return 0, fmt.Errorf("failed to create internal network: %w", err)
 		}
+		// The internal network and the dns/egress/ingress containers are not
+		// tied to the MCP container yet, so `thv rm` cannot find them if setup
+		// fails from here on. Remove whatever was created before returning.
+		defer func() {
+			if retErr != nil {
+				c.ops.cleanupFailedIsolation(context.WithoutCancel(ctx), name, networkName)
+			}
+		}()
 
 		// Start or reuse DNS normally before reading Podman's generated hosts.
 		dnsContainerName := fmt.Sprintf("%s-dns", name)
@@ -1373,6 +1384,20 @@ func (c *Client) deleteNetwork(ctx context.Context, name string) error {
 		return fmt.Errorf("failed to remove network %s: %w", name, err)
 	}
 	return nil
+}
+
+// cleanupFailedIsolation best-effort removes the dns, egress and ingress
+// containers and the internal network of a workload whose setup failed.
+// Failures are logged: the original setup error is what the caller needs.
+func (c *Client) cleanupFailedIsolation(ctx context.Context, name, networkName string) {
+	labels := map[string]string{}
+	lb.AddNetworkIsolationLabel(labels, true)
+	if err := c.removeProxyContainers(ctx, name, labels); err != nil {
+		slog.Warn("failed to remove proxy containers after failed setup", "name", name, "error", err)
+	}
+	if err := c.deleteNetwork(ctx, networkName); err != nil {
+		slog.Warn("failed to remove internal network after failed setup", "name", networkName, "error", err)
+	}
 }
 
 // removeContainer removes a container by ID, without removing any associated networks or proxy containers.

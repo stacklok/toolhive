@@ -38,13 +38,21 @@ type assertionStore struct {
 	client         fosite.Client
 	seen           map[string]struct{}
 	setErr         error
+	validErr       error // returned by ClientAssertionJWTValid
+	recordValidErr bool  // report validErr as a storage failure, like RedisStorage
 }
 
 func (s *assertionStore) GetClient(context.Context, string) (fosite.Client, error) {
 	return s.client, nil
 }
 
-func (s *assertionStore) ClientAssertionJWTValid(_ context.Context, jti string) error {
+func (s *assertionStore) ClientAssertionJWTValid(ctx context.Context, jti string) error {
+	if s.validErr != nil {
+		if s.recordValidErr {
+			RecordClientAssertionStoreFailure(ctx, s.validErr)
+		}
+		return s.validErr
+	}
 	if _, ok := s.seen[jti]; ok {
 		return fosite.ErrJTIKnown
 	}
@@ -78,6 +86,9 @@ func TestClientAssertionErrorStrategy(t *testing.T) {
 		signingKey *ecdsa.PrivateKey
 		reuse      bool
 		setErr     error
+		validErr   error
+		recordErr  bool
+		noAssert   bool   // client_assertion_type set, client_assertion empty
 		wantErr    string // empty means authentication succeeds
 		wantStatus int
 	}{
@@ -121,6 +132,24 @@ func TestClientAssertionErrorStrategy(t *testing.T) {
 			wantErr: "invalid_client", wantStatus: http.StatusUnauthorized,
 		},
 		{
+			name:     "jti check backend failure is a server error",
+			mutate:   valid,
+			validErr: storageDown, recordErr: true,
+			wantErr: "server_error", wantStatus: http.StatusInternalServerError,
+		},
+		{
+			name:     "jti known without a recorded failure stays invalid_client",
+			mutate:   valid,
+			validErr: fosite.ErrJTIKnown,
+			wantErr:  "invalid_client", wantStatus: http.StatusUnauthorized,
+		},
+		{
+			name:     "missing client_assertion is invalid_request",
+			mutate:   valid,
+			noAssert: true,
+			wantErr:  "invalid_request", wantStatus: http.StatusBadRequest,
+		},
+		{
 			name:    "storage failure is not an authentication verdict",
 			mutate:  valid,
 			setErr:  storageDown,
@@ -134,7 +163,7 @@ func TestClientAssertionErrorStrategy(t *testing.T) {
 
 			store := &assertionStore{
 				seen:   map[string]struct{}{},
-				setErr: tt.setErr,
+				setErr: tt.setErr, validErr: tt.validErr, recordValidErr: tt.recordErr,
 				client: &fosite.DefaultOpenIDConnectClient{
 					DefaultClient: &fosite.DefaultClient{ID: assertionTestClientID},
 					JSONWebKeys: &josev3.JSONWebKeySet{Keys: []josev3.JSONWebKey{{
@@ -170,6 +199,9 @@ func TestClientAssertionErrorStrategy(t *testing.T) {
 			}
 			assertion := signAssertion(t, signer, kid, claims)
 
+			if tt.noAssert {
+				assertion = ""
+			}
 			form := url.Values{
 				"client_assertion_type": {jwtBearerClientAssertionType},
 				"client_assertion":      {assertion},

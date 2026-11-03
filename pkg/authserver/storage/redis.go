@@ -1016,7 +1016,9 @@ func (s *RedisStorage) ClientAssertionJWTValid(ctx context.Context, jti string) 
 		if errors.Is(err, redis.Nil) {
 			return fosite.ErrJTIKnown
 		}
-		return fmt.Errorf("failed to reserve JWT: %w", err)
+		err = fmt.Errorf("failed to reserve JWT: %w", err)
+		server.RecordClientAssertionStoreFailure(ctx, err)
+		return err
 	}
 	return nil
 }

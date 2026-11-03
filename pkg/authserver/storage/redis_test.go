@@ -34,6 +34,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/stacklok/toolhive-core/redisconn"
+	"github.com/stacklok/toolhive/pkg/authserver/server"
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/authserver/server/session"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
@@ -1333,6 +1334,26 @@ func TestRedisStorage_ClientAssertionJWT(t *testing.T) {
 			require.NoError(t, s.SetClientAssertionJWT(ctx, "test-jti", time.Now().Add(time.Minute)))
 			err := s.ClientAssertionJWTValid(ctx, "test-jti")
 			assert.ErrorIs(t, err, fosite.ErrJTIKnown)
+		})
+	})
+
+	t.Run("backend failure is recorded for the client authentication strategy", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			ctx, recorded := server.NewClientAssertionStoreFailureContext(ctx)
+			mr.Close()
+			err := s.ClientAssertionJWTValid(ctx, "any-jti")
+			require.Error(t, err)
+			assert.NotErrorIs(t, err, fosite.ErrJTIKnown)
+			assert.Equal(t, err, recorded())
+		})
+	})
+
+	t.Run("replay is not recorded as a backend failure", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			ctx, recorded := server.NewClientAssertionStoreFailureContext(ctx)
+			require.NoError(t, s.SetClientAssertionJWT(ctx, "test-jti", time.Now().Add(time.Minute)))
+			require.ErrorIs(t, s.ClientAssertionJWTValid(ctx, "test-jti"), fosite.ErrJTIKnown)
+			assert.NoError(t, recorded())
 		})
 	})
 

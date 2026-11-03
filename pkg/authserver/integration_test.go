@@ -6807,7 +6807,8 @@ func TestIntegration_PrivateKeyJWTDCRTokenExchange(t *testing.T) {
 				t.Run(negative.name, func(t *testing.T) {
 					response, body := request(negative.assertion, subjectToken)
 					t.Cleanup(func() { response.Body.Close() })
-					assert.NotEqual(t, http.StatusOK, response.StatusCode, body)
+					assert.Equal(t, http.StatusUnauthorized, response.StatusCode, body)
+					assert.Equal(t, "invalid_client", body["error"])
 				})
 			}
 		})

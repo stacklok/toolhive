@@ -104,7 +104,7 @@ func runDeriveFlows(t *testing.T, env *xrtEnv) {
 			for name, res := range map[string]tokenResult{
 				"forged key part":      env.derive(t, env.broker, forged, oauthproto.TokenTypeIDJAG, nil),
 				"fails the HMAC check": env.derive(t, env.broker, "garbage", oauthproto.TokenTypeIDJAG, nil),
-				"another client":       env.derive(t, env.secretIn, parent, oauthproto.TokenTypeIDJAG, nil),
+				"another client":       env.derive(t, env.otherRefresh, parent, oauthproto.TokenTypeIDJAG, nil),
 				"login refresh token":  env.derive(t, env.broker, env.loginRefreshToken(t), oauthproto.TokenTypeIDJAG, nil),
 			} {
 				assert.Equal(t, http.StatusBadRequest, res.status, name)
@@ -149,27 +149,6 @@ func runDeriveFlows(t *testing.T, env *xrtEnv) {
 			grant := env.grant(t, child.str(t, "access_token"))
 			assertJSONEqual(t, subID, grant.SubjectIdentifier)
 			assertJSONEqual(t, upstream, grant.UpstreamSubject)
-		})
-
-		t.Run("expired grants are the grant_invalid error", func(t *testing.T) {
-			// Both grants expire three seconds from now. One sleep covers both.
-			// Both stores report an expired record as not found, revoked or not.
-			soon := time.Now().Add(3 * time.Second).Unix()
-			expired := env.grantToken(t, env.broker, oauthproto.TokenTypeRefreshToken, &soon).str(t, "access_token")
-			revokedThenExpired := env.grantToken(t, env.broker, oauthproto.TokenTypeRefreshToken, &soon).str(t, "access_token")
-			require.Equal(t, http.StatusOK, env.derive(t, env.broker, expired, oauthproto.TokenTypeIDJAG, nil).status)
-			env.revoke(t, revokedThenExpired)
-			requireError(t, env.derive(t, env.broker, revokedThenExpired, oauthproto.TokenTypeIDJAG, nil),
-				"invalid_request", "revoked")
-			time.Sleep(4 * time.Second)
-			for _, tc := range []struct{ name, token string }{
-				{"expired", expired},
-				{"revoked then expired", revokedThenExpired},
-			} {
-				res := env.derive(t, env.broker, tc.token, oauthproto.TokenTypeIDJAG, nil)
-				assert.Equal(t, http.StatusBadRequest, res.status, tc.name)
-				assert.Equal(t, map[string]any{"error": "invalid_request", "error_description": "grant_invalid"}, res.body, tc.name)
-			}
 		})
 
 		t.Run("revoked parent", func(t *testing.T) {

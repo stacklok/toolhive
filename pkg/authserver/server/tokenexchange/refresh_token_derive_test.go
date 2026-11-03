@@ -209,18 +209,20 @@ func TestDeriveCheckOrder(t *testing.T) {
 
 // TestDeriveParentWithNoWholeSecondLeftIsGrantInvalid pins that a parent with
 // under one whole second left gets the same answer as one that expired earlier.
-// Stored expires_at is whole seconds, so the first case is built from a
-// fractional ExpiresAt directly in the store.
+// The clock is fixed: now is 100ms past a whole second and the parent expires
+// 400ms after now, so the parent is live (Live passes) and the whole-second
+// check is the one that refuses it. Wall-clock timing would run that check
+// only part of the time.
 func TestDeriveParentWithNoWholeSecondLeftIsGrantInvalid(t *testing.T) {
 	t.Parallel()
 
-	wholeSecond := time.Unix(time.Now().Unix(), 0)
+	now := time.Unix(1_900_000_000, 100_000_000)
 	tests := []struct {
 		name    string
 		expires time.Time
 	}{
-		{name: "live by under one second", expires: wholeSecond.Add(500 * time.Millisecond)},
-		{name: "expired earlier", expires: time.Now().Add(-time.Hour)},
+		{name: "live by under one second", expires: now.Add(400 * time.Millisecond)},
+		{name: "expired earlier", expires: now.Add(-time.Hour)},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -230,10 +232,8 @@ func TestDeriveParentWithNoWholeSecondLeftIsGrantInvalid(t *testing.T) {
 					IssuableTokenTypes: []string{oauthproto.TokenTypeRefreshToken}, ExpiresAt: tt.expires},
 			}}}
 			h := deriveHandler(t, store)
-			req := deriveRequest("x.ok", oauthproto.TokenTypeIDJAG)
-			requireOAuthError(t, h.HandleTokenEndpointRequest(t.Context(), req), "invalid_request", reasonGrantInvalid)
-			requireOAuthError(t, h.PopulateTokenEndpointResponse(t.Context(), req, fosite.NewAccessResponse()),
-				"invalid_request", reasonGrantInvalid)
+			_, err := h.decide(t.Context(), deriveRequest("x.ok", oauthproto.TokenTypeIDJAG), now)
+			requireOAuthError(t, err, "invalid_request", reasonGrantInvalid)
 			assert.Empty(t, store.created)
 		})
 	}
@@ -306,4 +306,27 @@ func TestDeriveChildTypeMustBeConfigured(t *testing.T) {
 		"invalid_authorization_details", "token_type_not_permitted")
 	requireOAuthError(t, h.PopulateTokenEndpointResponse(t.Context(), req, fosite.NewAccessResponse()),
 		"invalid_authorization_details", "token_type_not_permitted")
+}
+
+// TestDeriveNeedsRefreshTokenStillAllowed pins that a client whose policy no
+// longer allows refresh tokens is refused before the parent is looked up. The
+// store holds a live parent; reads stays 0 because the gate refuses first.
+func TestDeriveNeedsRefreshTokenStillAllowed(t *testing.T) {
+	t.Parallel()
+
+	store := &recordStore{grants: map[string]storage.ExchangeGrant{
+		"ok": {Signature: "ok", ClientID: testRefreshClient, Subject: "user-1",
+			IssuableTokenTypes: []string{oauthproto.TokenTypeRefreshToken}, ExpiresAt: time.Now().Add(time.Hour)},
+	}}
+	h := deriveHandler(t, store)
+	h.clientPolicies[testRefreshClient] = ConfiguredClientPolicy{ExchangeRefreshTokens: map[string]time.Duration{
+		oauthproto.TokenTypeIDJAG: 12 * time.Hour,
+	}}
+	req := deriveRequest("x.ok", oauthproto.TokenTypeIDJAG)
+	var oauthErr *fosite.RFC6749Error
+	err := h.HandleTokenEndpointRequest(t.Context(), req)
+	require.ErrorAs(t, err, &oauthErr)
+	assert.Equal(t, "invalid_request", oauthErr.ErrorField)
+	assert.Contains(t, oauthErr.GetDescription(), "is not supported")
+	assert.Zero(t, store.reads, "the gate must refuse before any lookup")
 }

@@ -36,28 +36,30 @@ import (
 )
 
 const (
-	xrtGrantType       = "https://toolhive.dev/exchange_grant"
-	xrtIDJAGOnlyClient = "configured-idjag-only"
-	xrtSourceApp       = "dcr-app"
-	xrtOtherApp        = "other-app"
-	xrtOtherAudience   = "https://other.test.local"
-	xrtIDJAGCap        = 12 * time.Hour
-	xrtRefreshCap      = 720 * time.Hour
+	xrtGrantType          = "https://toolhive.dev/exchange_grant"
+	xrtIDJAGOnlyClient    = "configured-idjag-only"
+	xrtOtherRefreshClient = "configured-other-refresh"
+	xrtSourceApp          = "dcr-app"
+	xrtOtherApp           = "other-app"
+	xrtOtherAudience      = "https://other.test.local"
+	xrtIDJAGCap           = 12 * time.Hour
+	xrtRefreshCap         = 720 * time.Hour
 )
 
 // xrtEnv is an embedded auth server with a broker client that may exchange
 // login tokens for refresh tokens, plus clients that may not.
 type xrtEnv struct {
-	srv       *httptest.Server
-	issuer    string
-	embedded  *authserverrunner.EmbeddedAuthServer
-	store     storage.Storage
-	brokerKey assertionKey
-	broker    clientAuth
-	secretIn  clientAuth // configured-idjag-only
-	exchange  clientAuth // configured-exchange-only, no exchange_refresh_tokens
-	noCode    clientAuth // configured-no-code, for the JWT-bearer grant
-	idpKey    *rsa.PrivateKey
+	srv          *httptest.Server
+	issuer       string
+	embedded     *authserverrunner.EmbeddedAuthServer
+	store        storage.Storage
+	brokerKey    assertionKey
+	broker       clientAuth
+	secretIn     clientAuth // configured-idjag-only
+	otherRefresh clientAuth // configured-other-refresh: may derive, but does not own the grant
+	exchange     clientAuth // configured-exchange-only, no exchange_refresh_tokens
+	noCode       clientAuth // configured-no-code, for the JWT-bearer grant
+	idpKey       *rsa.PrivateKey
 }
 
 func xrtClients(t *testing.T, jwksFile string) []authserver.DelegateClientRunConfig {
@@ -67,6 +69,16 @@ func xrtClients(t *testing.T, jwksFile string) []authserver.DelegateClientRunCon
 	// input audience, so the broker can never obtain an access token for it.
 	broker.Audiences = []string{xrtOtherAudience}
 	broker.TokenExchange = &authserver.DelegateClientTokenExchange{
+		SelfIssuedSubjectTokens: authserver.SelfIssuedSubjectTokensRestricted,
+		SubjectTokenAudiences:   []string{cfgAudienceA},
+		AllowedSourceClients:    []string{xrtSourceApp},
+		ExchangeRefreshTokens: &authserver.DelegateClientExchangeRefreshTokens{
+			IDJAGMaxLifetime: xrtIDJAGCap.String(), RefreshTokenMaxLifetime: xrtRefreshCap.String(),
+		},
+	}
+	otherRefresh := secretClient(t, xrtOtherRefreshClient, []string{oauthproto.GrantTypeTokenExchange})
+	otherRefresh.Audiences = nil
+	otherRefresh.TokenExchange = &authserver.DelegateClientTokenExchange{
 		SelfIssuedSubjectTokens: authserver.SelfIssuedSubjectTokensRestricted,
 		SubjectTokenAudiences:   []string{cfgAudienceA},
 		AllowedSourceClients:    []string{xrtSourceApp},
@@ -86,6 +98,7 @@ func xrtClients(t *testing.T, jwksFile string) []authserver.DelegateClientRunCon
 	}
 	return []authserver.DelegateClientRunConfig{
 		broker,
+		otherRefresh,
 		idJAGOnly,
 		secretClient(t, cfgExchangeOnly, []string{oauthproto.GrantTypeTokenExchange}),
 		secretClient(t, cfgNoCodeID, []string{oauthproto.GrantTypeTokenExchange, oauthproto.GrantTypeJWTBearer}),
@@ -128,10 +141,11 @@ func startXRTServer(t *testing.T, backend string) *xrtEnv {
 	}, stor)
 	return &xrtEnv{
 		srv: srv, issuer: issuer, embedded: embedded, store: stor, brokerKey: brokerKey, idpKey: idpKey,
-		broker:   clientAuth{clientID: cfgBrokerID, key: &brokerKey},
-		secretIn: clientAuth{clientID: xrtIDJAGOnlyClient, secret: cfgClientSecret},
-		exchange: clientAuth{clientID: cfgExchangeOnly, secret: cfgClientSecret},
-		noCode:   clientAuth{clientID: cfgNoCodeID, secret: cfgClientSecret},
+		broker:       clientAuth{clientID: cfgBrokerID, key: &brokerKey},
+		secretIn:     clientAuth{clientID: xrtIDJAGOnlyClient, secret: cfgClientSecret},
+		otherRefresh: clientAuth{clientID: xrtOtherRefreshClient, secret: cfgClientSecret},
+		exchange:     clientAuth{clientID: cfgExchangeOnly, secret: cfgClientSecret},
+		noCode:       clientAuth{clientID: cfgNoCodeID, secret: cfgClientSecret},
 	}
 }
 

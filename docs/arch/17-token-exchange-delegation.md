@@ -1742,9 +1742,13 @@ would tell it nothing. The handler checks expiry before revocation, so an expire
 grant gets `grant_invalid` whether or not it was revoked, and `revoked` is
 reported only while the grant has not expired.
 
-Removing `refresh_token_max_lifetime` from a client's configuration while keeping
-`id_jag_max_lifetime` does not stop deriving from parents the client already
-holds. Only removing the whole `exchange_refresh_tokens` block does.
+A derive needs the client's current policy to allow `refresh_token`, so removing
+`refresh_token_max_lifetime` from a client's configuration stops deriving from
+parents the client already holds. The derive gate refuses such a request with
+`unsupported_token_type` (`invalid_request`, "The 'subject_token_type' value ...
+is not supported"), before the parent is looked up. The child's cap comes from
+its own type's key, so removing `id_jag_max_lifetime` makes derives of ID-JAG
+children fail with `token_type_not_permitted`.
 
 A parent can be derived from many times; each call creates an independent child.
 If the response is lost, the child stays until its parent ends (revoked or

@@ -265,13 +265,16 @@ func (h *RefreshTokenHandler) decide(
 	}
 
 	// The policy gate comes first: a client that has not enabled the feature gets
-	// the unsupported-type text. A refresh-token subject that does not ask for a
-	// refresh token is refused too; the text is the one validateFormParams returns
-	// for an unsupported subject type.
+	// the unsupported-type text. A refresh-token subject is refused too when it
+	// does not ask for a refresh token, or when the client's policy no longer
+	// allows refresh tokens, so removing the cap stops derives from parents the
+	// client already holds. The text is the one validateFormParams returns for an
+	// unsupported subject type.
 	policy := h.clientPolicies[client.GetID()]
 	subjectType := form.Get("subject_token_type")
 	derive := subjectType == oauthproto.TokenTypeRefreshToken
-	if derive && (len(policy.ExchangeRefreshTokens) == 0 ||
+	_, refreshAllowed := policy.ExchangeRefreshTokens[oauthproto.TokenTypeRefreshToken]
+	if derive && (!refreshAllowed ||
 		form.Get("requested_token_type") != oauthproto.TokenTypeRefreshToken) {
 		return nil, refuse(ctx, log, refuseUnsupportedType, errorsx.WithStack(fosite.ErrInvalidRequest.WithHintf(
 			"The 'subject_token_type' value %q is not supported. Use %q or %q.",
@@ -424,8 +427,9 @@ func (h *RefreshTokenHandler) decideChild(
 // order is fixed: the HMAC check, which needs no store
 // (ValidateRefreshToken is called with a session that has no refresh expiry, so
 // it checks only the HMAC; RefreshTokenSignature does not verify it); the
-// lookup; the client check; then checkParentGrant: the grant's own liveness,
-// its parent's liveness, and the refresh_token type.
+// lookup, which is storage.LiveExchangeGrant: the grant's own liveness and its
+// parent's; the client check; then checkParentGrant, which turns the lookup's
+// result into a refusal and checks the refresh_token type.
 // Nothing about the presented token is revealed before the client check. A
 // child grant never lists refresh_token, so it fails the last check: depth is 1.
 func (h *RefreshTokenHandler) presentedGrant(
@@ -438,50 +442,39 @@ func (h *RefreshTokenHandler) presentedGrant(
 	if err := h.strategy.ValidateRefreshToken(ctx, hmacOnly, token); err != nil {
 		return nil, log, refuse(ctx, log, refuseBadToken, errorsx.WithStack(errUnknownGrant))
 	}
-	grant, err := h.store.GetExchangeGrant(ctx, h.strategy.RefreshTokenSignature(ctx, token))
-	switch {
-	case errors.Is(err, storage.ErrNotFound), err == nil && grant.ClientID != clientID:
+	grant, err := storage.LiveExchangeGrant(ctx, h.store, h.strategy.RefreshTokenSignature(ctx, token), now)
+	if errors.Is(err, storage.ErrNotFound) || grant != nil && grant.ClientID != clientID {
 		return nil, log, refuse(ctx, log, refuseUnknownGrant, errorsx.WithStack(errUnknownGrant))
-	case err != nil:
-		log.WarnContext(ctx, "Exchange grant refused", "reason", refuseStore, "error", err)
-		return nil, log, issueFailed()
 	}
-	log = log.With("sub", grant.Subject)
-	if grant.SubjectIdentifier != "" {
-		log = log.With("sub_id", grant.SubjectIdentifier)
+	if grant != nil {
+		log = log.With("sub", grant.Subject)
+		if grant.SubjectIdentifier != "" {
+			log = log.With("sub_id", grant.SubjectIdentifier)
+		}
 	}
-	if err := h.checkParentGrant(ctx, grant, now, log); err != nil {
+	if err := checkParentGrant(ctx, grant, err, log); err != nil {
 		return nil, log, err
 	}
 	return grant, log, nil
 }
 
-// checkParentGrant applies the checks after the client check to a grant of the
-// presenting client: its own liveness, its parent's liveness, then the
-// refresh_token type. It logs the refusal it returns.
-func (h *RefreshTokenHandler) checkParentGrant(
-	ctx context.Context, grant *storage.ExchangeGrant, now time.Time, log *slog.Logger,
-) error {
-	// Expiry is checked before Live, which reports a revoked grant first. An
-	// expired grant is answered like an unknown one whatever its revocation.
-	if now.After(grant.ExpiresAt) {
+// checkParentGrant maps the result of storage.LiveExchangeGrant for a grant of
+// the presenting client to a refusal, then applies the refresh_token type
+// check. liveErr is the error LiveExchangeGrant returned. It logs the refusal
+// it returns.
+func checkParentGrant(ctx context.Context, grant *storage.ExchangeGrant, liveErr error, log *slog.Logger) error {
+	switch {
+	case liveErr == nil:
+	case errors.Is(liveErr, storage.ErrExpired):
+		// An expired grant is answered like an unknown one whatever its revocation.
 		return refuse(ctx, log, refuseUnknownGrant, errorsx.WithStack(errUnknownGrant))
-	}
-	if err := grant.Live(now); err != nil {
-		if errors.Is(err, storage.ErrRevoked) {
-			return refuseWithReason(ctx, log, reasonRevoked)
-		}
-		return refuse(ctx, log, refuseUnknownGrant, errorsx.WithStack(errUnknownGrant))
-	}
-	if grant.ParentSignature != "" {
-		parent, err := h.store.GetExchangeGrant(ctx, grant.ParentSignature)
-		switch {
-		case err != nil && !errors.Is(err, storage.ErrNotFound):
-			log.WarnContext(ctx, "Exchange grant refused", "reason", refuseStore, "error", err)
-			return issueFailed()
-		case err != nil || parent.Live(now) != nil:
-			return refuseWithReason(ctx, log, reasonParentRevoked)
-		}
+	case errors.Is(liveErr, storage.ErrRevoked):
+		return refuseWithReason(ctx, log, reasonRevoked)
+	case errors.Is(liveErr, storage.ErrParentNotLive):
+		return refuseWithReason(ctx, log, reasonParentRevoked)
+	default:
+		log.WarnContext(ctx, "Exchange grant refused", "reason", refuseStore, "error", liveErr)
+		return issueFailed()
 	}
 	if grant.ParentSignature != "" || !slices.Contains(grant.IssuableTokenTypes, oauthproto.TokenTypeRefreshToken) {
 		return refuseWithReason(ctx, log, reasonNotIssuable)
@@ -520,7 +513,10 @@ func decideChildEntry(
 		return nil, "", time.Time{}, err
 	}
 	echo, expiresAt, err := validateChildDecoded(entry, parent, policy, now)
-	return echo, entry.IssuableTokenTypes[0], expiresAt, err
+	if err != nil {
+		return nil, "", time.Time{}, err
+	}
+	return echo, entry.IssuableTokenTypes[0], expiresAt, nil
 }
 
 // decideEntry asks the shape hook for the one entry and applies the client's
@@ -553,7 +549,10 @@ func decideEntry(
 		return nil, "", time.Time{}, err
 	}
 	echo, expiresAt, err := validateTopLevelDecoded(entry, policy, now)
-	return echo, entry.IssuableTokenTypes[0], expiresAt, err
+	if err != nil {
+		return nil, "", time.Time{}, err
+	}
+	return echo, entry.IssuableTokenTypes[0], expiresAt, nil
 }
 
 // issue generates the refresh token, writes the grant and sets the response. It

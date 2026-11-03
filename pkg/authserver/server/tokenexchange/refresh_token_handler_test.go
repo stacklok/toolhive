@@ -125,6 +125,123 @@ func TestCheckLoginToken(t *testing.T) {
 	}
 }
 
+func TestCheckOfflineAccess(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		scopes        string
+		refreshScopes []string
+		want          string
+	}{
+		{name: "offline_access", scopes: "openid offline_access", refreshScopes: server.RefreshTokenScopes()},
+		{name: "offline", scopes: "openid offline", refreshScopes: server.RefreshTokenScopes()},
+		{name: "both", scopes: "offline offline_access", refreshScopes: server.RefreshTokenScopes()},
+		{name: "neither", scopes: "openid profile", refreshScopes: server.RefreshTokenScopes(),
+			want: reasonSubjectOfflineAccess},
+		{name: "no scopes", scopes: "", refreshScopes: server.RefreshTokenScopes(), want: reasonSubjectOfflineAccess},
+		{name: "scope names are not substrings", scopes: "offline_access_extra", refreshScopes: server.RefreshTokenScopes(),
+			want: reasonSubjectOfflineAccess},
+		{name: "matching is case-sensitive", scopes: "OFFLINE_ACCESS Offline", refreshScopes: server.RefreshTokenScopes(),
+			want: reasonSubjectOfflineAccess},
+		{name: "empty list is no gate", scopes: "openid", refreshScopes: []string{}},
+		{name: "nil list is no gate", scopes: "", refreshScopes: nil},
+		{name: "custom scope present", scopes: "openid keep", refreshScopes: []string{"keep"}},
+		{name: "custom scope replaces the defaults", scopes: "offline_access", refreshScopes: []string{"keep"},
+			want: reasonSubjectOfflineAccess},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, checkOfflineAccess(&ValidatedClaims{Scopes: tt.scopes}, tt.refreshScopes))
+		})
+	}
+}
+
+func TestCheckOfflineAccessReadsScopeAndScp(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		extra map[string]any
+		want  string
+	}{
+		{name: "scope string with offline_access", extra: map[string]any{"scope": "openid offline_access"}},
+		{name: "scp array with offline_access", extra: map[string]any{"scp": []string{"openid", "offline_access"}}},
+		{name: "scp array with offline", extra: map[string]any{"scp": []string{"openid", "offline"}}},
+		{name: "scope string without it", extra: map[string]any{"scope": "openid profile"}, want: reasonSubjectOfflineAccess},
+		{name: "scp array without it", extra: map[string]any{"scp": []string{"openid", "profile"}},
+			want: reasonSubjectOfflineAccess},
+		{name: "no scope claim", extra: map[string]any{}, want: reasonSubjectOfflineAccess},
+	}
+	tj := newTestJWKS(t)
+	validator, err := NewSelfIssuedTokenValidator(tj.publicJWKS(), testIssuer, []string{testIssuer})
+	require.NoError(t, err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			extra := validExtraClaims()
+			for k, v := range tt.extra {
+				extra[k] = v
+			}
+			claims, err := validator.Validate(t.Context(), tj.signToken(t, validClaims(), extra))
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, checkOfflineAccess(claims, server.RefreshTokenScopes()))
+		})
+	}
+}
+
+func TestRefreshTokenHandlerOfflineAccess(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		mutate        func(*ValidatedClaims)
+		refreshScopes []string
+		wantReason    string
+	}{
+		{name: "offline_access opens the grant", mutate: func(*ValidatedClaims) {}},
+		{name: "neither scope is refused", mutate: func(c *ValidatedClaims) { c.Scopes = "openid profile" },
+			wantReason: reasonSubjectOfflineAccess},
+		{name: "empty list means no gate",
+			mutate: func(c *ValidatedClaims) { c.Scopes = "openid profile" }, refreshScopes: []string{}},
+		{name: "audience is reported before offline_access",
+			mutate: func(c *ValidatedClaims) {
+				c.Scopes = "openid"
+				c.Audience = []string{"https://other"}
+			},
+			wantReason: reasonSubjectAudience},
+		{name: "source client is reported before offline_access",
+			mutate: func(c *ValidatedClaims) {
+				c.Scopes = "openid"
+				c.ClientID = "stranger"
+			},
+			wantReason: reasonSubjectSourceClient},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			claims := validLoginClaims()
+			tt.mutate(claims)
+			store := &fakeGrantStore{}
+			h := newRefreshHandlerForTest(t, &stubSubjectValidator{claims: claims}, store)
+			if tt.refreshScopes != nil {
+				h.refreshScopes = &fosite.Config{RefreshTokenScopes: tt.refreshScopes}
+			}
+			req := refreshRequestForTest(brokerClientForTest())
+			err := h.HandleTokenEndpointRequest(t.Context(), req)
+			if tt.wantReason == "" {
+				require.NoError(t, err)
+				return
+			}
+			requireOAuthError(t, err, "invalid_request", tt.wantReason)
+			err = h.PopulateTokenEndpointResponse(t.Context(), req, fosite.NewAccessResponse())
+			requireOAuthError(t, err, "invalid_request", tt.wantReason)
+			assert.Empty(t, store.created, "a refusal creates no grant")
+		})
+	}
+}
+
 func TestCheckExchangeGrantSubject(t *testing.T) {
 	t.Parallel()
 
@@ -222,6 +339,7 @@ func newRefreshHandlerForTest(t *testing.T, v *stubSubjectValidator, store *fake
 		store:         store,
 		selfValidator: v,
 		registry:      registry,
+		refreshScopes: &fosite.Config{RefreshTokenScopes: server.RefreshTokenScopes()},
 		clientPolicies: map[string]ConfiguredClientPolicy{testRefreshClient: {
 			SubjectTokenAudiences: []string{testRefreshAPIAud},
 			AllowedSourceClients:  []string{testRefreshSourceClient},
@@ -255,6 +373,7 @@ func validLoginClaims() *ValidatedClaims {
 	return &ValidatedClaims{
 		Subject: "user-1", Issuer: "https://issuer.example.com", ClientID: testRefreshSourceClient, JWTID: "jti-1",
 		Audience: []string{testRefreshAPIAud}, Expiry: time.Now().Add(30 * time.Minute), Extra: map[string]any{},
+		Scopes: "openid profile offline_access",
 	}
 }
 

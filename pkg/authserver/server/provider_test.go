@@ -77,6 +77,19 @@ func TestNewAuthorizationServerConfig(t *testing.T) {
 	clientKeys, err := authzServerConfig.JWKSFetcherStrategy.Resolve(t.Context(), "https://client.example.com/jwks", false)
 	assert.Nil(t, clientKeys)
 	require.ErrorIs(t, err, fosite.ErrInvalidClient, "remote client key sets must be rejected, not fetched")
+
+	assert.Equal(t, []string{"offline", "offline_access"}, authzServerConfig.RefreshTokenScopes)
+}
+
+func TestRefreshTokenScopes(t *testing.T) {
+	t.Parallel()
+
+	first := RefreshTokenScopes()
+	first[0] = "changed"
+	assert.Equal(t, []string{"offline", "offline_access"}, RefreshTokenScopes(),
+		"mutating one result must not change the next call")
+	assert.Equal(t, (&fosite.Config{}).GetRefreshTokenScopes(t.Context()), RefreshTokenScopes(),
+		"must equal fosite's default so authorization_code behavior is unchanged")
 }
 
 // TestNewAuthorizationServerConfig_ConfidentialClientCapabilities pins the

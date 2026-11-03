@@ -50,12 +50,16 @@ const reasonTokenUsed = "token_used"
 
 // Reasons for a refused subject token that are also sent to the client, as the
 // error_description. reasonSubjectInvalid is the one logged and sent for every
-// refusal a fresh login access token fixes; the other two are configuration
-// faults that checkExchangeGrantSubject returns.
+// refusal a fresh login access token fixes. The audience and source-client
+// reasons are configuration faults that checkExchangeGrantSubject returns.
+// reasonSubjectOfflineAccess is not fixed by a fresh access token either. The
+// user must sign in again, and the source client must request offline_access or
+// offline at sign-in; a refreshed token keeps its original scopes.
 const (
-	reasonSubjectInvalid      = "subject_token_invalid"
-	reasonSubjectAudience     = "subject_token_audience"
-	reasonSubjectSourceClient = "subject_token_source_client"
+	reasonSubjectInvalid       = "subject_token_invalid"
+	reasonSubjectAudience      = "subject_token_audience"
+	reasonSubjectSourceClient  = "subject_token_source_client"
+	reasonSubjectOfflineAccess = "subject_token_offline_access"
 )
 
 // isRefreshTokenExchange reports whether a token-exchange request involves the
@@ -93,6 +97,7 @@ type RefreshTokenHandler struct {
 	selfValidator  SubjectTokenValidator        // refresh tokens only come from self-issued login tokens
 	registry       *authorizationdetails.Registry
 	clientPolicies map[string]ConfiguredClientPolicy
+	refreshScopes  fosite.RefreshTokenScopesProvider
 }
 
 // RefreshTokenFactory returns a server.Factory that creates the
@@ -137,6 +142,7 @@ func RefreshTokenFactory(
 			selfValidator:  selfValidator,
 			registry:       registry,
 			clientPolicies: clientPolicies,
+			refreshScopes:  config,
 		}, nil
 	}, nil
 }
@@ -280,6 +286,11 @@ func (h *RefreshTokenHandler) decideTopLevel(
 	refusal := checkLoginToken(claims)
 	if refusal == "" {
 		refusal = checkExchangeGrantSubject(claims, policy)
+	}
+	// Configuration faults are reported first; a missing offline_access is fixed
+	// only by a new sign-in that grants it.
+	if refusal == "" {
+		refusal = checkOfflineAccess(claims, h.refreshScopes.GetRefreshTokenScopes(ctx))
 	}
 	if refusal != "" {
 		return nil, refuse(ctx, log, refusal, errorsx.WithStack(loginSubjectError(refusal)))
@@ -451,13 +462,16 @@ func checkRefreshTokenRequest(requester fosite.AccessRequester, form url.Values)
 	return "", nil
 }
 
-// loginSubjectError is the error for a reason from checkLoginToken or
-// checkExchangeGrantSubject. An expired, invalid or wrong-kind subject token is
-// fixed by a fresh access token, so the client gets reasonSubjectInvalid and the
-// precise reason stays in the log. A token without one of the client's
-// subject_token_audiences or from a client that is not an allowed source is a
-// configuration fault that a new access token cannot fix, so those carry their
-// own reason code.
+// loginSubjectError is the error for a reason from checkLoginToken,
+// checkExchangeGrantSubject or checkOfflineAccess. An expired, invalid or
+// wrong-kind subject token is fixed by a fresh access token, so the client gets
+// reasonSubjectInvalid and the precise reason stays in the log. A token without
+// one of the client's subject_token_audiences or from a client that is not an
+// allowed source is a configuration fault that a new access token cannot fix,
+// so those carry their own reason code. So does a token without
+// offline_access. The user must sign in again, and the source client must
+// request offline_access or offline at sign-in; a refreshed token keeps its
+// original scopes.
 //
 // This path returns invalid_request for an expired subject token, for a wrong
 // audience and for one from a client that is not an allowed source, as RFC 8693
@@ -466,7 +480,7 @@ func checkRefreshTokenRequest(requester fosite.AccessRequester, form url.Values)
 // handler.go). The difference is deliberate.
 func loginSubjectError(reason string) error {
 	switch reason {
-	case reasonSubjectAudience, reasonSubjectSourceClient:
+	case reasonSubjectAudience, reasonSubjectSourceClient, reasonSubjectOfflineAccess:
 		return exactReason(fosite.ErrInvalidRequest.ErrorField, reason)
 	}
 	return exactReason(fosite.ErrInvalidRequest.ErrorField, reasonSubjectInvalid)
@@ -520,6 +534,35 @@ func checkExchangeGrantSubject(claims *ValidatedClaims, policy ConfiguredClientP
 		return reasonSubjectSourceClient
 	}
 	return ""
+}
+
+// checkOfflineAccess reports reasonSubjectOfflineAccess when the subject
+// token's scope contains none of refreshScopes, or "" if it does. An exchange
+// grant outlives the sign-in session, so opening one needs offline_access
+// granted at sign-in. This is ToolHive policy modeled on OIDC Core section 11,
+// which also allows refresh tokens in other contexts; the spec does not
+// require it.
+//
+// The scope set and the empty-list semantics (an empty refreshScopes means no
+// gate) are those of fosite's canIssueRefreshToken. Matching differs: it is
+// case-sensitive, as RFC 6749 section 3.3 scopes are, while fosite's HasOneOf
+// ignores case. fosite also silently omits the refresh token where this path
+// refuses the request, because the refresh token is this path's only output.
+//
+// Only opening a grant is checked here. A child grant derived from a refresh
+// token must not be checked again: the scope was checked when the parent grant
+// opened, and a refresh-token subject carries no scope.
+func checkOfflineAccess(claims *ValidatedClaims, refreshScopes []string) string {
+	if len(refreshScopes) == 0 {
+		return ""
+	}
+	granted := strings.Fields(claims.Scopes)
+	for _, scope := range refreshScopes {
+		if slices.Contains(granted, scope) {
+			return ""
+		}
+	}
+	return reasonSubjectOfflineAccess
 }
 
 // exchangeGrantDetailsError maps an error from the exchange-grant rules to the

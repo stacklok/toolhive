@@ -75,6 +75,24 @@ func AudienceMatchingStrategy(haystack, needle []string) error {
 	return fosite.DefaultAudienceMatchingStrategy(haystack, needle)
 }
 
+// RefreshTokenScopes returns the scopes that grant offline access. It is the
+// one definition shared by fosite's gating of refresh tokens (the
+// authorization_code and resource-owner flows, and the refresh_token grant),
+// the exchange-grant rule and startup validation. It equals fosite's default,
+// so fosite's behavior does not change. It returns a new slice on every call,
+// so a caller cannot change what the next caller sees.
+//
+// The basis is OIDC Core section 11: offline_access asks for a refresh token
+// that stays usable while the user is absent. An exchange grant outlives the
+// sign-in session, so opening one needs offline_access granted at sign-in. The
+// scope set and the empty-list semantics (an empty list means no gate) are
+// those of fosite's canIssueRefreshToken. Where fosite silently omits the
+// refresh token from the authorization_code response, the exchange-grant path
+// refuses the request, because the refresh token is its only output.
+func RefreshTokenScopes() []string {
+	return []string{"offline", "offline_access"}
+}
+
 // DefaultDeviceCodeInterval is RFC 8628's suggested default minimum interval
 // between device-flow polls of the token endpoint, applied whenever
 // AuthorizationServerConfig.DeviceCodeInterval / AuthorizationServerParams.DeviceCodeInterval
@@ -549,6 +567,10 @@ func NewAuthorizationServerConfig(cfg *AuthorizationServerParams) (*Authorizatio
 		// an unsynchronized write that races between concurrent requests.
 		AudienceMatchingStrategy: AudienceMatchingStrategy,
 		JWKSFetcherStrategy:      unsupportedJWKSFetcher{},
+		// RefreshTokenScopes is set explicitly so fosite's refresh-token gating
+		// (authorization_code, resource-owner and refresh_token grants), the
+		// exchange-grant rule and startup validation share one definition.
+		RefreshTokenScopes: RefreshTokenScopes(),
 		// ClientSecretsHasher compares client secrets at the token endpoint.
 		// Plain SHA-256 is correct here: the secrets are 256 bits of CSPRNG
 		// output, never client-chosen, so a password-stretching KDF protects

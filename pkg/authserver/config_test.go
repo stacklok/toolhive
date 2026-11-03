@@ -1347,9 +1347,20 @@ func TestDelegateClientExchangeRefreshTokensValidate(t *testing.T) {
 		noAudiences      bool
 		clientAudiences  []string
 		grantTypes       []string
+		scopesSupported  []string
 		wantErr          string
 	}{
 		{name: "id-jag cap only", block: block("12h", ""), subjectAudiences: inputs},
+		{name: "scopes_supported with offline", block: block("12h", ""), subjectAudiences: inputs,
+			scopesSupported: []string{"openid", "offline"}},
+		{name: "scopes_supported without a refresh-token scope", block: block("12h", ""), subjectAudiences: inputs,
+			scopesSupported: []string{"openid", "profile"},
+			wantErr: "token_exchange.exchange_refresh_tokens requires one of the refresh-token scopes " +
+				"(offline, offline_access) in scopes_supported"},
+		{name: "scopes_supported empty uses the default scopes", block: block("12h", ""), subjectAudiences: inputs,
+			scopesSupported: []string{}},
+		{name: "scopes_supported without a refresh-token scope and no block", block: nil, subjectAudiences: inputs,
+			scopesSupported: []string{"openid"}},
 		{name: "refresh cap only", block: block("", "720h"), subjectAudiences: inputs},
 		{name: "both caps", block: block("1h", "24h"), subjectAudiences: inputs},
 		{name: "absent block", block: nil, subjectAudiences: inputs},
@@ -1442,12 +1453,16 @@ func TestDelegateClientExchangeRefreshTokensValidate(t *testing.T) {
 				audiences = tt.clientAudiences
 			}
 			allowed := []string{audience, audience + "/v1", input, "not-a-url", "other-not-a-url"}
+			supported := tt.scopesSupported
+			if supported == nil {
+				supported = []string{"openid", "offline_access"}
+			}
 			runConfigClients := []DelegateClientRunConfig{{
 				ClientID: "delegate", ClientSecretEnvVar: "SECRET", TokenExchange: tokenExchange,
 				GrantTypes: tt.grantTypes, RedirectURIs: redirectURIsFor(tt.grantTypes),
 				Scopes: []string{"openid"}, Audiences: audiences,
 			}}
-			assertError(t, validateDelegateClients(runConfigClients, []string{"openid"}, allowed),
+			assertError(t, validateDelegateClients(runConfigClients, supported, allowed),
 				tt.wantErr != "", tt.wantErr)
 
 			resolvedClients := []DelegateClient{{
@@ -1455,7 +1470,7 @@ func TestDelegateClientExchangeRefreshTokensValidate(t *testing.T) {
 				GrantTypes: tt.grantTypes, RedirectURIs: redirectURIsFor(tt.grantTypes),
 				Scopes: []string{"openid"}, Audiences: audiences,
 			}}
-			assertError(t, validateResolvedDelegateClients(resolvedClients, []string{"openid"}, allowed),
+			assertError(t, validateResolvedDelegateClients(resolvedClients, supported, allowed),
 				tt.wantErr != "", tt.wantErr)
 		})
 	}

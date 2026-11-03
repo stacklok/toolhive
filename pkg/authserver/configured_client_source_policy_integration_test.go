@@ -73,7 +73,7 @@ func TestTokenExchangeSourcePolicyWithRealClientLogins(t *testing.T) {
 		AllowedSourceClients:    []string{tuiID}, APIAudience: cfgAudienceB,
 	}
 	clients := configuredClients(broker)
-	srv, _, embedded, _ := startEmbeddedAuthServer(t, func(cfg *authserver.RunConfig, _ string) {
+	srv, _, _, _ := startEmbeddedAuthServer(t, func(cfg *authserver.RunConfig, _ string) {
 		clients(cfg)
 		cfg.AllowedAudiences = []string{cfgAudienceA, cfgAudienceB}
 	}, newRedisStorage(redisServer))
@@ -95,8 +95,14 @@ func TestTokenExchangeSourcePolicyWithRealClientLogins(t *testing.T) {
 	require.Equal(t, http.StatusOK, listed.status, listed.body)
 
 	apiAudience := exchange(tuiToken, cfgAudienceB)
-	require.Equal(t, http.StatusOK, apiAudience.status, "api_audience needs no subject coverage: %v", apiAudience.body)
-	assert.Equal(t, []any{cfgAudienceB}, accessTokenClaims(t, embedded, apiAudience.str(t, "access_token"))["aud"])
+	assert.Equal(t, http.StatusBadRequest, apiAudience.status, apiAudience.body)
+	assert.Equal(t, "invalid_target", apiAudience.body["error"])
+	assert.Contains(t, apiAudience.body["error_description"], "not covered by the subject token")
+
+	reExchanged := exchange(listed.str(t, "access_token"), cfgAudienceB)
+	assert.Equal(t, http.StatusBadRequest, reExchanged.status, reExchanged.body)
+	assert.Equal(t, "invalid_target", reExchanged.body["error"])
+	assert.Contains(t, reExchanged.body["error_description"], "not covered by the subject token")
 
 	unlisted := exchange(otherToken, cfgAudienceA)
 	assert.Equal(t, http.StatusBadRequest, unlisted.status, unlisted.body)

@@ -488,7 +488,8 @@ func checkLoginToken(claims *ValidatedClaims) string {
 	case hasAct:
 		return "subject_token_delegated"
 	// claims.ExternalIssuer is always empty for the self-issued validator; it is
-	// checked as defense in depth.
+	// checked as defense in depth. Native login subjects never contain "#"; see
+	// delegatedSubject for the qualified form.
 	case hasExternalIssuer || claims.ExternalIssuer != "" || strings.Contains(claims.Subject, "#"):
 		return "subject_token_external"
 	case noUpstream:

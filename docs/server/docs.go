@@ -270,7 +270,7 @@ const docTemplate = `{
                         "uniqueItems": false
                     },
                     "api_audience": {
-                        "description": "APIAudience is the client's own API audience. The client may request it\neven when the subject token does not cover it. It must be one of the\nclient's Audiences. Valid only with restricted.",
+                        "description": "APIAudience is the audience a subject token must carry to open an\nexchange grant (exchange_refresh_tokens). It grants no access-token\naudience. It must be one of the client's Audiences. Valid only with\nrestricted.",
                         "type": "string"
                     },
                     "exchange_refresh_tokens": {

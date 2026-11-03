@@ -92,8 +92,9 @@ type ConfiguredClientPolicy struct {
 	// AllowedSourceClients are the client_id values, besides the client
 	// itself, whose self-issued subject tokens the client may exchange.
 	AllowedSourceClients []string
-	// APIAudience is the audience the client may be granted without subject
-	// token coverage. Empty means none.
+	// APIAudience is the audience a subject token must carry to open an
+	// exchange grant. It grants no access-token audience. Empty refuses
+	// exchange grants.
 	APIAudience string
 	// ExchangeRefreshTokens caps the lifetime of refresh tokens this client may
 	// obtain through token exchange, keyed by the token-type URN of the grant
@@ -515,8 +516,9 @@ func (h *Handler) computeLifetime(subjectExpiry time.Time) (time.Duration, error
 // fragment (the OIDC/OAuth "iss" value is a URL without a fragment
 // component, and this validator's own issuer comparison is an exact string
 // match against that value), so strings.Cut(sub, "#") on the qualified
-// subject always recovers (issuerURL, externalSub) uniquely. A native UUID
-// can never collide with a qualified value, since a UUID contains no "#".
+// subject always recovers (issuerURL, externalSub) uniquely. A native subject
+// (a UUID, or a synthesized "tk-" plus hex value) can never collide with a
+// qualified value, since neither contains a "#".
 //
 // Re-exchanging a previously-issued delegated token does not double-qualify:
 // such a token's "iss" is always this server's own issuer (fosite stamps
@@ -663,22 +665,6 @@ func externalOrigin(validatedClaims *ValidatedClaims) string {
 	}
 	prior, _ := validatedClaims.Extra["external_issuer"].(string)
 	return prior
-}
-
-// qualifiedSubjectSeparator joins the external issuer and subject in the
-// "issuer#subject" form that every minter of an externally derived token uses.
-const qualifiedSubjectSeparator = "#"
-
-// derivedFromExternalIdentity reports whether the subject token comes from an
-// external identity. It is true when externalOrigin finds an external issuer,
-// or when the subject has the "issuer#subject" form. The subject check covers
-// tokens minted by the jwt-bearer and ID-JAG handlers: they carry that subject
-// form but no external_issuer claim. The separator is the one those minters
-// use; native login subjects are ToolHive user IDs (UUIDs) or synthesized
-// "tk-" plus hex values, and never contain it.
-func derivedFromExternalIdentity(validatedClaims *ValidatedClaims) bool {
-	return externalOrigin(validatedClaims) != "" ||
-		strings.Contains(validatedClaims.Subject, qualifiedSubjectSeparator)
 }
 
 // chainToAct rebuilds a nested RFC 8693 act structure from a parsed
@@ -913,12 +899,10 @@ func (h *Handler) grantScopes(
 // The delegated token must not target a resource the subject token was not
 // itself valid for: every granted audience must be covered by the subject
 // token's audience — delegation narrows, never broadens, the resource
-// boundary. The one exception is the client's api_audience, which may be
-// granted without coverage when the subject token is self-issued and not
-// derived from an external-issuer token. This mirrors grantScopes, which
-// bounds scopes by the subject token; without it a client registered for
-// audiences A and B could exchange a user token minted for A into a token for
-// B, an escalation the user never consented to.
+// boundary, with no exceptions. This mirrors grantScopes, which bounds scopes
+// by the subject token; without it a client registered for audiences A and B
+// could exchange a user token minted for A into a token for B, an escalation
+// the user never consented to.
 func (h *Handler) grantAndBoundAudiences(
 	ctx context.Context, requester fosite.AccessRequester, client fosite.Client, validatedClaims *ValidatedClaims,
 ) error {
@@ -931,18 +915,7 @@ func (h *Handler) grantAndBoundAudiences(
 	if err := h.grantDefaultAudience(ctx, requester, client); err != nil {
 		return err
 	}
-	// The api_audience exception applies only to self-issued subject tokens
-	// with no external identity in their ancestry: derivedFromExternalIdentity
-	// sees a re-exchanged token's external_issuer claim and the issuer#subject
-	// subject of an ID-JAG or jwt-bearer token, so those stay bound by their
-	// own audience.
-	apiAudience := func() string {
-		if derivedFromExternalIdentity(validatedClaims) {
-			return ""
-		}
-		return h.clientPolicies[client.GetID()].APIAudience
-	}()
-	return ensureAudienceSubsetOfSubject(requester.GetGrantedAudience(), validatedClaims.Audience, apiAudience)
+	return ensureAudienceSubsetOfSubject(requester.GetGrantedAudience(), validatedClaims.Audience)
 }
 
 // grantAudiences validates that the requested audience is allowed for this
@@ -1032,18 +1005,13 @@ func (h *Handler) grantDefaultAudience(ctx context.Context, requester fosite.Acc
 // issuer's own configured ExpectedAudience, which has no required
 // relationship to AllowedAudiences — see the TrustedIssuers field doc
 // comment in pkg/authserver/config.go for the operator-facing consequence.
-//
-// apiAudience is the client's own configured API audience; it is exempt from
-// the coverage rule. Empty means the client has none. Granted audiences are
-// never empty: fosite drops empty "audience" values, and grantResourceAudience
-// skips an empty "resource". So an empty apiAudience exempts nothing.
-func ensureAudienceSubsetOfSubject(granted, subjectAud []string, apiAudience string) error {
+func ensureAudienceSubsetOfSubject(granted, subjectAud []string) error {
 	subj := make(map[string]bool, len(subjectAud))
 	for _, a := range subjectAud {
 		subj[a] = true
 	}
 	for _, a := range granted {
-		if !subj[a] && a != apiAudience {
+		if !subj[a] {
 			return errorsx.WithStack(server.ErrInvalidTarget.WithHintf(
 				"The delegated token audience %q is not covered by the subject token's audience.", a))
 		}

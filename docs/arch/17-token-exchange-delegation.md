@@ -541,12 +541,8 @@ client.
 The relaxation is bounded the same way every other exchange is: `grantScopes`
 and `grantAndBoundAudiences`'s `ensureAudienceSubsetOfSubject` still narrow
 the delegated token to what both the delegate client and the subject token
-are authorized for, with one exception: a restricted client's `api_audience`
-may be granted without subject-token coverage when the subject token is
-self-issued and not derived from an external identity (see [Source policy
-and API audience](#source-policy-and-api-audience)). The delegated token's
-lifetime is still capped by `min(subject token's remaining lifetime,
-configured delegationLifespan)`.
+are authorized for. The delegated token's lifetime is still capped by
+`min(subject token's remaining lifetime, configured delegationLifespan)`.
 It is **not** bounded by per-`jti` single-use enforcement — there is none in
 this codebase today, for any token-exchange path, self-issued or external
 (see the `Handler` doc comment in `handler.go` for why: replay is bounded by
@@ -723,17 +719,10 @@ tokens are always accepted). A DCR `client_id` is a poor fit for this list: the
 server generates it, and it changes when the registration expires and the
 client registers again.
 
-`api_audience` is the client's own API audience. It must be one of the
-client's `audiences` (and so one of `allowed_audiences`). The client can
-request it even when the subject token does not cover it. This applies to
-self-issued subject tokens only; an external-issuer token must cover every
-audience, as before. The exception also does not apply to a token derived from
-an external-issuer token: a self-issued token that carries an `external_issuer`
-claim, as a re-exchange of an external token does, is bound by its own audience
-too. So is a self-issued token minted by redeeming an ID-JAG or a JWT-bearer
-assertion: its subject has the `issuer#subject` form, which marks it as derived
-from an external identity even without an `external_issuer` claim. Every
-other granted audience must still be covered by the subject token.
+`api_audience` is the audience a subject token must carry to open an exchange
+grant. It must be one of the client's `audiences` (and so one of
+`allowed_audiences`). It is not an exemption from coverage: every audience the
+client is granted on token exchange must be covered by the subject token.
 
 Policy edits take effect on restart. The policy is built once at startup and
 is not stored with the client.

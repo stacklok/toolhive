@@ -68,8 +68,9 @@ type ConfiguredClientSpec struct {
 	// the key contents cannot be checked.
 	JWKSPending bool
 
-	// Audiences are the client's own audiences. api_audience must be one of
-	// them; the caller has already checked them against the server's allowed
+	// Audiences are the client's own audiences. api_audience, the audience a
+	// subject token must carry to open an exchange grant, must be one of them;
+	// the caller has already checked them against the server's allowed
 	// audiences, so api_audience is within those too.
 	Audiences []string
 

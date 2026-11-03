@@ -976,9 +976,10 @@ type AuthenticationDelegateClientTokenExchange struct {
 	// except that exchange_refresh_tokens requires a non-empty list and does
 	// not accept the client's own tokens.
 	AllowedSourceClients []string `json:"allowed_source_clients"`
-	// APIAudience is the client's own API audience. The client may request it
-	// even when the subject token does not cover it. It must be one of the
-	// client's Audiences. Valid only with restricted.
+	// APIAudience is the audience a subject token must carry to open an
+	// exchange grant (exchange_refresh_tokens). It grants no access-token
+	// audience. It must be one of the client's Audiences. Valid only with
+	// restricted.
 	APIAudience           OptString                                            `json:"api_audience"`
 	ExchangeRefreshTokens OptAuthenticationDelegateClientExchangeRefreshTokens `json:"exchange_refresh_tokens"`
 	// SelfIssuedSubjectTokens is any or restricted, and is required. With

@@ -158,115 +158,51 @@ func TestTokenExchangeHandler_SourcePolicyExternalIssuer(t *testing.T) {
 	}
 }
 
-// TestTokenExchangeHandler_APIAudienceNotForExternalIssuerTokens pins that the
-// api_audience exception does not extend to external-issuer subject tokens.
-func TestTokenExchangeHandler_APIAudienceNotForExternalIssuerTokens(t *testing.T) {
-	t.Parallel()
-
-	selfJWKS := newTestJWKS(t)
-	externalJWKS := newTestJWKS(t)
-	jwksServer := startJWKSServer(t, externalJWKS)
-	claims := externalClaims()
-	claims.Audience = jwt.Audience{testExternalAudience, testIssuer}
-	subjectToken := externalJWKS.signToken(t, claims, map[string]any{"azp": "trusted-app"})
-
-	validator := newMultiValidator(t, selfJWKS, []TrustedIssuer{{
-		IssuerURL:              testExternalIssuer,
-		ExpectedAudience:       testExternalAudience,
-		JWKSURL:                jwksServer.URL + "/jwks",
-		ActorMatcher:           `claims.azp == "trusted-app"`,
-		AllowedDelegateClients: []string{testAgentClientID},
-	}})
-	h := newTestHandlerWithValidator(validator)
-	h.allowedAudiences = []string{testIssuer, testAPIAudience}
-	h.configuredDelegateClients = []string{testAgentClientID}
-	h.clientPolicies = map[string]ConfiguredClientPolicy{testAgentClientID: {APIAudience: testAPIAudience}}
-
-	client := defaultClient()
-	client.Audience = []string{testIssuer, testAPIAudience}
-	req := newAccessRequest(t, client, url.Values{
-		"grant_type":         {oauthproto.GrantTypeTokenExchange},
-		"subject_token":      {subjectToken},
-		"subject_token_type": {oauthproto.TokenTypeAccessToken},
-		"resource":           {testAPIAudience},
-	})
-	requireHint(t, h.HandleTokenEndpointRequest(context.Background(), req), "not covered by the subject token")
-}
-
-// TestTokenExchangeHandler_APIAudienceNotForExternallyDerivedTokens pins that a
-// self-issued token derived from an external identity loses the api_audience
-// exception, whether it carries an external_issuer claim or only the
-// issuer#subject subject that ID-JAG and jwt-bearer tokens have.
-func TestTokenExchangeHandler_APIAudienceNotForExternallyDerivedTokens(t *testing.T) {
-	t.Parallel()
-
-	tj := newTestJWKS(t)
-	tests := []struct {
-		name           string
-		subject        string
-		externalIssuer string
-		wantErr        bool
-	}{
-		{name: "external_issuer claim", subject: "user-123", externalIssuer: testExternalIssuer, wantErr: true},
-		{name: "issuer#subject subject without claim", subject: testExternalIssuer + "#alice", wantErr: true},
-		{name: "issuer#subject subject with claim", subject: testExternalIssuer + "#alice",
-			externalIssuer: testExternalIssuer, wantErr: true},
-		{name: "native subject without marker", subject: "user-123"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			extra := validExtraClaims()
-			if tt.externalIssuer != "" {
-				extra["external_issuer"] = tt.externalIssuer
-			}
-			claims := validClaims()
-			claims.Subject = tt.subject
-			h := sourcePolicyHandler(t, tj, &ConfiguredClientPolicy{APIAudience: testAPIAudience})
-			client := defaultClient()
-			client.Audience = []string{testIssuer, testAPIAudience}
-			req := newAccessRequest(t, client, url.Values{
-				"grant_type":         {oauthproto.GrantTypeTokenExchange},
-				"subject_token":      {tj.signToken(t, claims, extra)},
-				"subject_token_type": {oauthproto.TokenTypeAccessToken},
-				"resource":           {testAPIAudience},
-			})
-
-			err := h.HandleTokenEndpointRequest(context.Background(), req)
-			if tt.wantErr {
-				requireHint(t, err, "not covered by the subject token")
-				return
-			}
-			require.NoError(t, err)
-			assert.Contains(t, req.GetGrantedAudience(), testAPIAudience)
-		})
-	}
-}
-
+// TestTokenExchangeHandler_APIAudience pins that a configured api_audience
+// grants no exemption from subject-token audience coverage: the delegated
+// token's audience must be one the subject token already carries.
 func TestTokenExchangeHandler_APIAudience(t *testing.T) {
 	t.Parallel()
 
 	tj := newTestJWKS(t)
 	const uncoveredAudience = "https://other.example.com"
+	delegateAct := map[string]any{"act": map[string]any{"iss": testIssuer, "sub": testAgentClientID}}
 
 	tests := []struct {
-		name     string
-		policy   *ConfiguredClientPolicy
-		resource string
-		wantErr  bool
+		name         string
+		policy       *ConfiguredClientPolicy
+		subjectAud   []string
+		subjectExtra map[string]any
+		resource     string
+		wantErr      bool
 	}{
 		{
-			name:   "api audience granted without subject coverage",
+			name:   "self-issued user token not covering the api audience refused",
+			policy: &ConfiguredClientPolicy{APIAudience: testAPIAudience}, resource: testAPIAudience, wantErr: true,
+		},
+		{
+			name:   "api audience covered by the subject token granted",
 			policy: &ConfiguredClientPolicy{APIAudience: testAPIAudience}, resource: testAPIAudience,
+			subjectAud: []string{testIssuer, testAPIAudience},
 		},
 		{
 			name:   "another uncovered audience refused",
-			policy: &ConfiguredClientPolicy{APIAudience: testAPIAudience}, resource: uncoveredAudience, wantErr: true,
+			policy: &ConfiguredClientPolicy{APIAudience: testAPIAudience}, resource: uncoveredAudience,
+			subjectAud: []string{testIssuer, testAPIAudience}, wantErr: true,
 		},
 		{
 			name:   "uncovered audience refused without an api audience",
 			policy: &ConfiguredClientPolicy{}, resource: testAPIAudience, wantErr: true,
+		},
+		{
+			name:   "delegate's own exchanged token not covering the api audience refused",
+			policy: &ConfiguredClientPolicy{APIAudience: testAPIAudience}, resource: testAPIAudience,
+			subjectExtra: delegateAct, wantErr: true,
+		},
+		{
+			name:   "delegate's own exchanged token covering the api audience granted",
+			policy: &ConfiguredClientPolicy{APIAudience: testAPIAudience}, resource: testAPIAudience,
+			subjectAud: []string{testIssuer, testAPIAudience}, subjectExtra: delegateAct,
 		},
 	}
 
@@ -278,9 +214,20 @@ func TestTokenExchangeHandler_APIAudience(t *testing.T) {
 			client := defaultClient()
 			client.Audience = []string{testIssuer, testAPIAudience, uncoveredAudience}
 
-			form := defaultFormValues(t, tj)
-			form.Set("resource", tt.resource)
-			req := newAccessRequest(t, client, form)
+			claims := validClaims()
+			if tt.subjectAud != nil {
+				claims.Audience = jwt.Audience(tt.subjectAud)
+			}
+			extra := validExtraClaims()
+			for k, v := range tt.subjectExtra {
+				extra[k] = v
+			}
+			req := newAccessRequest(t, client, url.Values{
+				"grant_type":         {oauthproto.GrantTypeTokenExchange},
+				"subject_token":      {tj.signToken(t, claims, extra)},
+				"subject_token_type": {oauthproto.TokenTypeAccessToken},
+				"resource":           {tt.resource},
+			})
 
 			err := h.HandleTokenEndpointRequest(context.Background(), req)
 			if tt.wantErr {

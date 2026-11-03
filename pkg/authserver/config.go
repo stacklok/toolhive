@@ -437,9 +437,10 @@ type DelegateClientTokenExchange struct {
 	// not accept the client's own tokens.
 	AllowedSourceClients []string `json:"allowed_source_clients,omitempty" yaml:"allowed_source_clients,omitempty"`
 
-	// APIAudience is the client's own API audience. The client may request it
-	// even when the subject token does not cover it. It must be one of the
-	// client's Audiences. Valid only with restricted.
+	// APIAudience is the audience a subject token must carry to open an
+	// exchange grant (exchange_refresh_tokens). It grants no access-token
+	// audience. It must be one of the client's Audiences. Valid only with
+	// restricted.
 	APIAudience string `json:"api_audience,omitempty" yaml:"api_audience,omitempty"`
 
 	// ExchangeRefreshTokens enables refresh-token issuance through token

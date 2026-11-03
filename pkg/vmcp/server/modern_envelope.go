@@ -17,13 +17,11 @@ import (
 )
 
 // This file hand-rolls the MCP 2026-07-28 ("Modern") stateless response
-// envelope: the wire shape go-sdk@v1.7.0-pre.3 produces for a single-shot
+// envelope: the wire shape go-sdk v1.8.0 produces for a single-shot
 // tools/list, resources/list, resources/templates/list, prompts/list,
-// tools/call, resources/read, and prompts/get. Even in that version -- the one
-// mcpcompat (ToolHive's go-sdk import path) now depends on -- these Modern
-// types remain unexported, so this is a durable parallel serializer, not a
-// stopgap: resultType and _meta.serverInfo are set by unexported SDK functions
-// (setCompleteResultType, annotateServerInfo) that run inside the exact
+// tools/call, resources/read, and prompts/get. In v1.8.0, these Modern
+// annotations still depend on unexported SDK functions (resultType,
+// setCompleteResultType, annotateServerInfo) that run inside the exact
 // ServerSession dispatch this package bypasses for Modern stateless requests.
 // A future go-sdk bump cannot just delete these structs and marshal SDK result
 // types directly -- the Modern annotations would vanish with them.
@@ -42,10 +40,9 @@ const modernResultTypeComplete = "complete"
 // inputRequests and send a fresh request.
 const modernResultTypeInputRequired = "input_required"
 
-// modernServerInfoKey is the go-sdk's MetaKeyServerInfo
-// (protocol.go:2367 in go-sdk@v1.7.0-pre.3), reproduced by hand since
-// mcpcompat/mcp (ToolHive's mcp import) does not re-export it, even though
-// go-sdk itself does.
+// modernServerInfoKey is the go-sdk's MetaKeyServerInfo (protocol.go),
+// reproduced by hand since mcpcompat/mcp (ToolHive's mcp import) does not
+// re-export it, even though go-sdk itself does.
 const modernServerInfoKey = "io.modelcontextprotocol/serverInfo"
 
 // modernServerInfo mirrors the go-sdk's Implementation type.
@@ -180,10 +177,9 @@ type modernGetPromptResult struct {
 	Meta        map[string]any      `json:"_meta"`
 }
 
-// modernCompletionDetails mirrors the go-sdk's CompletionResultDetails
-// (protocol.go:653 in go-sdk@v1.7.0-pre.3): Values has no omitempty tag
-// there, so it doesn't here either -- an empty result still marshals
-// "values":[] rather than omitting the field.
+// modernCompletionDetails mirrors go-sdk v1.8.0's CompletionResultDetails:
+// Values has no omitempty tag there, so it doesn't here either -- an empty
+// result still marshals "values":[] rather than omitting the field.
 type modernCompletionDetails struct {
 	Values  []string `json:"values"`
 	Total   int      `json:"total,omitempty"`
@@ -674,15 +670,11 @@ func writeModernError(w http.ResponseWriter, id any, code int, msg string) {
 // conversion.CodedErrorResult, the Legacy seam's rendering of the same
 // errors).
 //
-// Status is HTTP 200 deliberately: go-sdk's streamable client
-// (v1.7.0-pre.3) rejects a non-200 POST response in checkResponse BEFORE
-// decoding its body, so on any 4xx the JSON-RPC error object below —
-// including data.retryAfterSeconds on the rate limiter's 429 — would be
-// discarded unread. 200 is the only status on which the client surfaces the
-// coded error to the caller. The request was accepted and processed; the
-// failure is an application-level JSON-RPC error riding the transport.
-// (-32021 is not mapped here: writeModernMissingCapabilityError in
-// modern_dispatch.go writes it at 400.)
+// Status follows the Modern protocol's required mappings: -32601 -> 404, and
+// -32602, -32020, -32021, and -32022 -> 400. Other coded errors stay at HTTP
+// 200 and keep their data, for example data.retryAfterSeconds on the rate
+// limiter's error. The go-sdk streamable client decodes non-2xx JSON-RPC
+// bodies by default, so the 4xx protocol rejections stay visible to callers.
 //
 // id follows writeModernError: absent (via transportsession.HasJSONRPCID) is
 // encoded by omitting the "id" key, never as null.
@@ -701,7 +693,17 @@ func writeModernCodedError(w http.ResponseWriter, id any, err error, coded mcppa
 	if transportsession.HasJSONRPCID(id) {
 		envelope["id"] = id
 	}
-	writeModernEnvelope(w, http.StatusOK, envelope)
+	status := http.StatusOK
+	switch coded.Code() {
+	case jsonRPCCodeMethodNotFound:
+		status = http.StatusNotFound
+	case jsonRPCCodeInvalidParams,
+		mcpparser.CodeHeaderMismatch,
+		mcpparser.CodeMissingClientCapability,
+		mcpparser.CodeUnsupportedProtocolVersion:
+		status = http.StatusBadRequest
+	}
+	writeModernEnvelope(w, status, envelope)
 }
 
 // writeModernDenied writes a JSON-RPC error envelope at HTTP 403 with

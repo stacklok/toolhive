@@ -104,15 +104,14 @@ func (s *Server) dispatchModern(w http.ResponseWriter, r *http.Request, parsed *
 		// change that would require gating it.
 		s.dispatchModernSubscriptionsListen(ctx, w, parsed, identity)
 	case "ping":
-		// ping does NOT exist in 2026-07-28: `ping` appears nowhere in
-		// schema/draft/schema.ts, and go-sdk lists it among the methods removed
-		// for this revision (server.go:1880), answering -32601. So answering it
-		// at all is deliberate LENIENCY toward a client that pings anyway, not
-		// spec conformance -- an earlier version of this comment claimed the
-		// latter, which was wrong twice over: the method is gone, and the bare {}
-		// below omits `resultType`, which schema.ts's Result MUSTs on every
-		// result ("Servers implementing this protocol version MUST include this
-		// field").
+		// ping does NOT exist in 2026-07-28: it appears nowhere in the final
+		// schema, and go-sdk v1.8.0 removes it for this revision, answering
+		// -32601. So answering it at all is deliberate LENIENCY toward a client
+		// that pings anyway, not spec conformance -- an earlier version of this
+		// comment claimed the latter, which was wrong twice over: the method is
+		// gone, and the bare {} below omits `resultType`, which the 2026-07-28
+		// schema's Result MUSTs on every result ("Servers implementing this
+		// protocol version MUST include this field").
 		//
 		// Kept as-is rather than switched to -32601 because that is a behavior
 		// change to a pre-existing path, out of scope for the change that
@@ -400,15 +399,13 @@ func (s *Server) dispatchModernPromptGet(
 }
 
 // modernCompleteWireParams is the completion/complete request params, decoded
-// directly from parsed.Params. It mirrors go-sdk's CompleteParams/
-// CompleteReference/CompleteParamsArgument/CompleteContext field-for-field
-// (protocol.go:577-648 in go-sdk@v1.7.0-pre.3) rather than reusing an SDK
-// type: mcpcompat/mcp (ToolHive's import, now built on go-sdk v1.7.0-pre.3)
-// carries an equivalent CompleteParams, but its Ref field is untyped (any), so
-// there is no strongly-typed Modern reference shape to decode into directly.
-// It stays local rather than adding JSON tags to vmcp.CompletionRef -- the
-// domain type intentionally carries no wire coupling (anti-pattern #5, no
-// mcp-go types crossing the core boundary).
+// directly from parsed.Params. It mirrors go-sdk v1.8.0's CompleteParams,
+// CompleteReference, CompleteParamsArgument, and CompleteContext field-for-field
+// rather than reusing an SDK type. toolhive-core v0.0.58's mcpcompat/mcp
+// CompleteParams has an untyped Ref field (any), so there is no strongly-typed
+// Modern reference shape to decode into directly. It stays local rather than
+// adding JSON tags to vmcp.CompletionRef -- the domain type intentionally carries
+// no wire coupling (anti-pattern #5, no mcp-go types crossing the core boundary).
 type modernCompleteWireParams struct {
 	Ref *struct {
 		Type string `json:"type"`
@@ -557,12 +554,11 @@ func writeModernPageError(ctx context.Context, w http.ResponseWriter, id any, me
 //   - Authorization denials keep absolute priority (403 + denyMsg, so the
 //     audit middleware still logs "denied") — a refusal can never mask one.
 //   - A recorded refusal with the capability NOT declared in the request's
-//     _meta clientCapabilities is the draft schema's
+//     _meta clientCapabilities is the 2026-07-28 schema's
 //     MissingRequiredClientCapabilityError: code -32021 with
 //     data.requiredCapabilities naming what the server needed (an actionable
-//     code a client can surface, where -32603 is opaque) — served at HTTP
-//     200, a deliberate, documented deviation from the spec-mandated 400;
-//     see writeModernMissingCapability.
+//     code a client can surface, where -32603 is opaque), served at the
+//     spec-required HTTP 400; see writeModernMissingCapability.
 //   - A recorded refusal with the capability DECLARED is deliberately NOT
 //     -32021: the client did declare it, so blaming the client would be
 //     wrong, and declaring the capability on a retry cannot help. The spec's

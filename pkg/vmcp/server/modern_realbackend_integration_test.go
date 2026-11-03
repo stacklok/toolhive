@@ -10,9 +10,12 @@ import (
 	"io"
 	"maps"
 	"net/http"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -110,6 +113,19 @@ func postModern(
 		_ = json.Unmarshal(respBody, &decoded)
 	}
 	return resp, decoded
+}
+
+type modernStatusRecordingRoundTripper struct {
+	base   http.RoundTripper
+	status atomic.Int32
+}
+
+func (rt *modernStatusRecordingRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, err := rt.base.RoundTrip(req)
+	if resp != nil {
+		rt.status.Store(int32(resp.StatusCode))
+	}
+	return resp, err
 }
 
 // ---------------------------------------------------------------------------
@@ -273,8 +289,8 @@ func TestIntegration_Modern_RealBackend_Notification(t *testing.T) {
 
 // TestIntegration_Modern_RealBackend_UnknownMethod verifies a syntactically
 // well-formed Modern request naming a method dispatchModern does not
-// recognize is rejected with 404 + JSON-RPC -32601, per the draft spec's
-// MUST-404-unimplemented-method rule (writeModernError).
+// recognize is rejected with 404 + JSON-RPC -32601, per the final
+// 2026-07-28 spec's MUST-404-unimplemented-method rule (writeModernError).
 func TestIntegration_Modern_RealBackend_UnknownMethod(t *testing.T) {
 	t.Parallel()
 
@@ -330,21 +346,57 @@ func TestIntegration_Modern_RealBackend_ElicitingToolFailsCleanly(t *testing.T) 
 			resp, decoded := postModern(t, ts.URL, "tools/call", map[string]any{"name": tc.tool}, 1, tc.tool)
 			defer resp.Body.Close()
 
+			// Both fixtures require an undeclared capability, so each returns the
+			// spec-required -32021 JSON-RPC error with HTTP 400.
+			require.Equal(t, http.StatusBadRequest, resp.StatusCode, "decoded: %+v", decoded)
 			require.NotContains(t, decoded, "result",
 				"must not fabricate a success or an input_required envelope: %+v", decoded)
 			_, ok := decoded["error"].(map[string]any)
 			require.True(t, ok, "the failure must be an explicit JSON-RPC error: %+v", decoded)
 
-			// Nothing about the MESSAGE is asserted, deliberately. The refused
-			// request's name (elicitation/create etc.) reaches it only via
-			// go-sdk's "calling %q" error wrapping — a dependency's string
-			// (testing.md, test scope) — and the message also carries the
-			// pre-existing backend-workload-ID leak, which the follow-up
-			// capability-error contract fixes with vMCP-owned messages. Both
-			// message properties (names our string, no backend ID) are asserted
-			// THERE, where vMCP owns the text.
+			// The two-path contract test asserts the ToolHive-owned message and
+			// required-capability payload for this refusal.
 		})
 	}
+}
+
+// TestIntegration_Modern_RealBackend_GoSDKClientErrorRecovery verifies a real
+// go-sdk v1.8.0 client receives the JSON-RPC -32021 body from a 400 response
+// and can continue using the same session for a later request.
+func TestIntegration_Modern_RealBackend_GoSDKClientErrorRecovery(t *testing.T) {
+	t.Parallel()
+
+	backendURL := startForwardingBackend(t)
+	ts := newRealTestServer(t, backendURL)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	t.Cleanup(cancel)
+
+	rt := &modernStatusRecordingRoundTripper{base: http.DefaultTransport}
+	client := mcp.NewClient(&mcp.Implementation{Name: "toolhive-test", Version: "1.0.0"}, nil)
+	session, err := client.Connect(ctx, &mcp.StreamableClientTransport{
+		Endpoint:   ts.URL + "/mcp",
+		HTTPClient: &http.Client{Transport: rt},
+	}, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { assert.NoError(t, session.Close()) })
+
+	tools, err := session.ListTools(ctx, nil)
+	require.NoError(t, err)
+	require.NotEmpty(t, tools.Tools)
+
+	_, err = session.CallTool(ctx, &mcp.CallToolParams{Name: fwdElicitTool})
+	require.Error(t, err)
+	var rpcErr *jsonrpc.Error
+	require.ErrorAs(t, err, &rpcErr)
+	assert.Equal(t, int64(-32021), rpcErr.Code)
+	assert.Equal(t, int32(http.StatusBadRequest), rt.status.Load(), "the JSON-RPC error must arrive over HTTP 400")
+
+	result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: fwdProgressTool})
+	require.NoError(t, err, "the 400 rejection must not break the go-sdk client session")
+	require.NotNil(t, result)
+	assert.False(t, result.IsError)
+	assert.Equal(t, int32(http.StatusOK), rt.status.Load(), "the follow-up call must reach the server")
 }
 
 // TestIntegration_Modern_RealBackend_ProgressDropped pins today's Modern
@@ -396,12 +448,12 @@ func TestIntegration_Modern_RealBackend_ProgressDropped(t *testing.T) {
 //   - A WELL-FORMED Modern logging/setLevel is an unknown method to
 //     dispatchModern: 404 + -32601, matching go-sdk's own server ("method
 //     removed in the new protocol").
-//   - The request go-sdk v1.7.x ACTUALLY sends is malformed — its
+//   - The request go-sdk v1.8.0 sends is malformed — its
 //     SetLoggingLevel omits the per-request _meta injection, producing a Modern
 //     header with no _meta protocolVersion — and vMCP's classifier CORRECTLY
 //     rejects that shape with 400 + -32020 (HeaderMismatch). Loosening this to
 //     accept the malformed request would be worse than the failing upstream
-//     call. This malformed shape is a permanent go-sdk v1.7.x fixture:
+//     call. This malformed shape is still present in go-sdk v1.8.0:
 //     modelcontextprotocol/go-sdk#1116 was closed wont-fix-by-design (the RPC
 //     is removed on Modern), so -32020 is the standing contract for any caller
 //     still using the removed RPC on a Modern session, not a temporary bug
@@ -490,7 +542,7 @@ func TestIntegration_Modern_RealBackend_MalformedArguments(t *testing.T) {
 // elicitation/sampling during a Modern client's tools/call
 // (writeModernCallFailure):
 //
-//   - capability NOT declared in _meta clientCapabilities: the draft schema's
+//   - capability NOT declared in _meta clientCapabilities: the
 //     MissingRequiredClientCapabilityError — code -32021 with
 //     data.requiredCapabilities typed as a ClientCapabilities object — at
 //     HTTP 400, as the spec requires (see writeModernMissingCapabilityError).

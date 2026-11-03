@@ -40,13 +40,15 @@ starts. By default it is limited to the token-exchange grant and authenticates a
 
 `RunConfig.delegate_clients` is the portable runtime configuration surface. Each
 client must name a unique `client_id`, a secret **reference**, one or more scopes,
-and one or more audiences. The grant type defaults to
+and one or more audiences (a client that only gets refresh tokens may have none;
+see [Source policy and subject token audiences](#source-policy-and-subject-token-audiences)).
+The grant type defaults to
 `urn:ietf:params:oauth:grant-type:token-exchange`; see
 [Configured client metadata](#configured-client-metadata) for the other options.
 Scopes must be a subset of `scopes_supported` (or the default supported OIDC
-scopes when that field is omitted), and audiences must be a subset of
-`allowed_audiences`. These required narrowing lists prevent a delegate client
-from inheriting every server scope or resource.
+scopes when that field is omitted), and audiences, when present, must be a subset
+of `allowed_audiences`. These narrowing lists prevent a delegate client from
+inheriting every server scope or resource.
 
 The following is a relevant `RunConfig` excerpt. `client_secret_env_var` may be
 replaced by `client_secret_file`; an inline secret is not supported. Generate
@@ -416,8 +418,9 @@ external-issuer authorization and — when it matches — sets
 when the allowlist path resolved an actor claim). `checkDelegationConsent`
 (`pkg/authserver/server/tokenexchange/handler.go`) runs afterwards and decides
 whether to grant the exchange, in this order. For a configured delegate client
-with a `token_exchange` block, `checkSourcePolicy` runs before all of these
-(see [Source policy and API audience](#source-policy-and-api-audience)):
+with a `token_exchange` block, `checkSourcePolicy` and
+`checkSubjectTokenAudience` run before all of these
+(see [Source policy and subject token audiences](#source-policy-and-subject-token-audiences)):
 
 1. **`may_act` (RFC 8693 §4.4).** A trusted issuer must explicitly set
    `allow_may_act: true` before its well-formed `may_act` claim is considered.
@@ -477,8 +480,8 @@ with a `token_exchange` block, `checkSourcePolicy` runs before all of these
    originally issued to. The exception is narrower for a delegate client whose
    `token_exchange.self_issued_subject_tokens` is `restricted`:
    `checkSourcePolicy` has already limited it to tokens issued to itself or to
-   its `allowed_source_clients` (see [Source policy and API
-   audience](#source-policy-and-api-audience)). This exception applies only on
+   its `allowed_source_clients` (see [Source policy and subject token
+   audiences](#source-policy-and-subject-token-audiences)). This exception applies only on
    the self-issued path (`ExternalIssuer == ""`); a delegate client presenting
    an externally-issued
    token with a mismatched `client_id` is still rejected here.
@@ -582,7 +585,7 @@ optional; a client that sets none of them is the same client as before.
 |---|---|
 | `token_endpoint_auth_method` | Omitted: the client authenticates with its secret by HTTP Basic or form body. `client_secret_basic` or `client_secret_post` pins one of them. `private_key_jwt` authenticates with a signed assertion instead of a secret. |
 | `jwks_file` | Path to the client's public JWKS. Required for `private_key_jwt`, forbidden otherwise. Each key must have `use: sig`. Private and symmetric keys are rejected, at most 10 keys are allowed, and the keys must match `token_endpoint_auth_signing_alg`. When that field is omitted, it is derived from the keys: each key's `alg`, or `ES256`, `ES384` or `ES512` from an EC key's curve; RSA keys without `alg` use `RS256`; keys that disagree are rejected and the field must be set. When the file holds more than one key, every key must have a unique, non-empty `kid`, and the client must send the `kid` of its signing key in the assertion header: fosite checks an assertion that has no `kid` only against the first signing key of the matching type, so a key added during a rotation would never be used otherwise. The `kid` rule is checked when the keys are loaded at startup, not when `RunConfig` is validated. |
-| `grant_types` | Omitted or empty means token exchange only. When set, the list must include token exchange. The other allowed values are `authorization_code`, `refresh_token` and the JWT-bearer grant. `refresh_token` is allowed only together with `authorization_code`. A client that sets `grant_types`, or uses `private_key_jwt`, must also declare a `token_exchange` block with `self_issued_subject_tokens` (see [Source policy and API audience](#source-policy-and-api-audience)). |
+| `grant_types` | Omitted or empty means token exchange only. When set, the list must include token exchange. The other allowed values are `authorization_code`, `refresh_token` and the JWT-bearer grant. `refresh_token` is allowed only together with `authorization_code`. A client that sets `grant_types`, or uses `private_key_jwt`, must also declare a `token_exchange` block with `self_issued_subject_tokens` (see [Source policy and subject token audiences](#source-policy-and-subject-token-audiences)). |
 | `redirect_uris` | Required with `authorization_code`, forbidden without it. Each URI must be https and not loopback, as for any other confidential client. |
 
 A delegate's `audiences` limit what it may request. List the narrowest
@@ -658,7 +661,7 @@ in addition to other grants can log users in.
   not gated, for backward compatibility. The plain JWT-bearer grant is not
   gated this way, because it can run without client authentication.
 
-#### Source policy and API audience
+#### Source policy and subject token audiences
 
 A delegate client can carry a `token_exchange` block:
 
@@ -666,7 +669,7 @@ A delegate client can carry a `token_exchange` block:
 token_exchange:
   self_issued_subject_tokens: restricted
   allowed_source_clients: [tui-client-id]
-  api_audience: https://api.example.com
+  subject_token_audiences: [https://api.example.com]
 ```
 
 `self_issued_subject_tokens` selects the trust rule for self-issued subject
@@ -705,8 +708,10 @@ block was dropped. A client with `restricted` logs no startup WARN.
 (`allowed_actors`, `actor_matcher`, `may_act`, and `allowed_delegate_clients`
 naming this client) decides them.
 
-`allowed_source_clients` and `api_audience` are valid only with
-`restricted`; setting either with `any` fails validation.
+`allowed_source_clients` and `subject_token_audiences` are valid only with
+`restricted`; setting either with `any` fails validation. A client in `any`
+mode has no per-client policy at runtime, so the audience check would never
+run. The setting is not supported with `any`.
 
 `allowed_source_clients` holds `client_id` values as they appear in the subject
 token. They are user-facing clients such as a TUI, which register at
@@ -715,24 +720,138 @@ delegate client cannot be listed: a token it obtains carries the delegate's
 own `client_id`, so listing it would trust everything that delegate accepts.
 The list has at most 20 entries, with no duplicates and no `*` wildcard. A
 client cannot list its own `client_id` (validation rejects it, because its own
-tokens are always accepted). A DCR `client_id` is a poor fit for this list: the
+tokens are accepted on plain token exchange without being listed). A DCR `client_id` is a poor fit for this list: the
 server generates it, and it changes when the registration expires and the
 client registers again.
 
-`api_audience` is the audience a subject token must carry to open an exchange
-grant. It must be one of the client's `audiences` (and so one of
-`allowed_audiences`). It is not an exemption from coverage: every audience the
-client is granted on token exchange must be covered by the subject token.
+`subject_token_audiences` says what a self-issued subject token is for. It is
+about the subject token's `aud` claim, not RFC 8693's `audience` request
+parameter. When it is set, the token's `aud` must contain one of the listed
+values. The match is exact, not path prefix, so a token for a sub-path or
+sibling path of the API does not qualify.
+
+The check runs on plain token exchange and on refresh-token requests. It also
+applies to tokens issued to the client itself. On plain token exchange a token
+that fails it is refused with `invalid_grant` (the same documented deviation
+from RFC 8693 section 2.2.2 as the source-client check). For refresh-token
+requests, see [Refresh tokens through token
+exchange](#refresh-tokens-through-token-exchange). Subject tokens from an
+external issuer are not checked: that issuer's policy decides them. Listing a
+value here grants nothing. The client can receive it only if its `audiences`
+also covers it, and startup refuses that while `exchange_refresh_tokens` is set.
+
+Take a client that sets `subject_token_audiences: [X]` and `audiences: [Y]`.
+Plain exchange needs a subject token that carries both X (the input rule) and Y
+(the coverage rule). A token from `/authorize` carries one audience, so in
+practice such a client gets only refresh tokens. A client in `any` mode, a DCR or
+CIMD client, and a restricted client without the field or with an empty list are
+not affected.
+
+An input setting limits which subject tokens the client accepts. An output
+setting limits which tokens the client receives.
+
+| Setting | Meaning |
+|---|---|
+| `allowed_source_clients` | Input. Who the subject token was issued to. On plain token exchange, a self-issued subject token must carry the client's own `client_id` or one listed here. On the exchange-grant path, only the listed clients are accepted, and the list must not be empty. |
+| `subject_token_audiences` | Input. What the subject token is for. |
+| `audiences` (client level) | Output. The audiences of the access tokens the client can receive. |
+| `allowed_audiences` (server level) | Every audience the server accepts. The entries of the two audience lists above must be in it. |
+
+`audiences` limits the access tokens the client can receive. It applies to
+`audience`, `resource` and the default audience on token exchange, to ID-JAG
+redemption, to `/authorize` and to the refresh grant. What it holds depends on
+the client type:
+
+- **Configured delegate clients.** A per-client allowlist. `audience` matches by
+  path prefix. `resource` must also be an exact member of `allowed_audiences`.
+- **SPIFFE clients.** `audience` is checked the same way. `resource` is checked
+  against the client's own resource list.
+- **DCR and CIMD clients.** A copy of the server's list taken at registration.
+  ID-JAG redemption does not narrow them, so only the server list applies.
+- **Device flow.** The client receives all of its `audiences`.
+
+On token exchange, every audience the client receives must also appear, exactly,
+in the subject token's `aud`, with no exceptions (`ensureAudienceSubsetOfSubject`).
+Otherwise a client registered for audiences A and B could turn a user's token
+for A into one for B. This holds for every delegate, whether or not it sets
+`subject_token_audiences`.
+
+An empty `audiences` means the client can receive no access tokens. Startup
+accepts it only when `exchange_refresh_tokens` is set and token exchange is the
+client's only grant.
+
+While `exchange_refresh_tokens` is set, startup refuses a
+`subject_token_audiences` entry that one of the client's `audiences` covers.
+Reason: a refresh token issued from a token for `https://api.example.com` must
+not let the client receive access tokens for `https://api.example.com`.
+
+Here "covers" means the server's audience matching rule (path prefix on parsed
+URLs), the function the token endpoint calls (`AudienceMatchingStrategy`). A
+value the matcher cannot parse counts only when it is equal. The rule is
+conservative with `urn:` values: any two `urn:` audiences cover each other,
+because they parse to an empty host and path.
+
+Example: a refresh-token-only broker client. It can receive no access tokens.
+For self-issued subject tokens, it accepts only tokens issued to `tui-client-id`
+or to itself whose `aud` contains `https://api.example.com`. That audience must
+be in the server's `allowed_audiences`. Listing it in `audiences` too would fail
+startup.
+
+```yaml
+delegate_clients:
+  - client_id: token-broker
+    client_secret_env_var: TOKEN_BROKER_CLIENT_SECRET
+    scopes: [openid]
+    audiences: []
+    grant_types: [urn:ietf:params:oauth:grant-type:token-exchange]
+    token_exchange:
+      self_issued_subject_tokens: restricted
+      allowed_source_clients: [tui-client-id]
+      subject_token_audiences: [https://api.example.com]
+      exchange_refresh_tokens:
+        id_jag_max_lifetime: 12h
+```
+
+Example: a plain access-token delegate. For self-issued subject tokens, it
+accepts tokens issued to `chat-ui` or to `coding-agent` itself whose `aud`
+contains `https://api.example.com`. Tokens from an external issuer are decided by
+that issuer's policy. The audience must be in `allowed_audiences`. The client can
+receive only audiences that the subject token already carries.
+
+```yaml
+delegate_clients:
+  - client_id: coding-agent
+    client_secret_env_var: CODING_AGENT_CLIENT_SECRET
+    scopes: [openid]
+    audiences: [https://api.example.com]
+    token_exchange:
+      self_issued_subject_tokens: restricted
+      allowed_source_clients: [chat-ui]
+      subject_token_audiences: [https://api.example.com]
+```
+
+Startup refuses a configuration that breaks any of these rules:
+
+- `subject_token_audiences` has an empty or duplicate entry, or has more than 20
+  entries. An empty list is the same as an omitted field: no requirement.
+- `subject_token_audiences` is set with `self_issued_subject_tokens: any`.
+- A `subject_token_audiences` entry is not one of `allowed_audiences`.
+- `exchange_refresh_tokens` is set without `subject_token_audiences` (an empty
+  list counts as without).
+- `exchange_refresh_tokens` is set without a non-empty `allowed_source_clients`.
+- `exchange_refresh_tokens` is set and a `subject_token_audiences` entry is
+  covered by one of the client's `audiences`.
+- `audiences` is empty without `exchange_refresh_tokens`, or is empty while
+  `grant_types` includes a grant other than token exchange.
 
 Policy edits take effect on restart. The policy is built once at startup and
 is not stored with the client.
 
-**User-facing change.** A delegate client with `self_issued_subject_tokens:
-restricted` stops accepting every self-issued token. It accepts only tokens
-issued to itself and to its listed source clients. A secret-authenticated
-delegate client without `grant_types` and without the block behaves as before.
-A client that sets `grant_types`, or uses `private_key_jwt`, must now declare
-the block and the mode.
+A delegate client with `self_issued_subject_tokens: restricted` accepts only
+self-issued tokens issued to itself and to its listed source clients. A
+secret-authenticated delegate client may omit both `grant_types` and the block. A
+client that sets `grant_types`, or uses `private_key_jwt`, must declare the block
+and the mode.
 
 ### Worked example
 
@@ -1321,9 +1440,12 @@ child token from it, and revoking it, are not covered here yet.
 `id_jag_max_lifetime` and/or `refresh_token_max_lifetime` (each at most 720h; a
 missing value refuses that kind of token). The client also needs
 `token_exchange.self_issued_subject_tokens: restricted` and
-`token_exchange.api_audience`; validation refuses the feature with `any`
-(CRD: `exchangeRefreshTokens` requires `selfIssuedSubjectTokens: restricted`).
-The storage backend must support
+`token_exchange.subject_token_audiences`. Validation refuses the feature with
+`any`. The client must be confidential and must have the token-exchange grant.
+`allowed_source_clients` must not be empty. Setting the block enables the feature. Each
+kind of grant is issued only when its lifetime cap is set. These settings are
+RunConfig-only for now: no released CRD exposes `token_exchange` or
+`exchangeRefreshTokens`. The storage backend must support
 `storage.ExchangeGrantStorage`; startup fails if a client enables the feature
 and it does not. The memory and Redis backends both support it.
 
@@ -1343,10 +1465,11 @@ is optional, in whole seconds since the epoch. The array must hold exactly one
 entry, and no other member is accepted. `actor_token`, `scope`, `resource` and
 `audience` are refused.
 
-**Subject token.** It must be a login access token: self-issued, with no `act`,
-`external_issuer` or no-upstream-session claim, no `#` in `sub`, a `client_id`
-and a `jti`, and not an ID token. Its `aud` must contain the client's
-`api_audience`, and its `client_id` must be one of the client's
+**Subject token.** The checks run in this order. It must be a login access token
+(`checkLoginToken`): self-issued, with no `act`, `external_issuer` or
+no-upstream-session claim, no `#` in `sub`, a `client_id` and a `jti`, and not
+an ID token. Its `aud` must contain one of the client's
+`subject_token_audiences`. Its `client_id` must be one of the client's
 `allowed_source_clients`. This differs from the rule `checkSourcePolicy` applies
 to other exchanges: for a refresh-token request the client's own tokens are not
 accepted, and the list must not be empty. Startup validation rejects
@@ -1432,7 +1555,7 @@ client receives them.
 | `expires_at` in the past, fractional, or not a number | `invalid_authorization_details` | `invalid_expires_at` |
 | Kind of token not enabled for the client | `invalid_authorization_details` | `token_type_not_permitted` |
 | Subject token expired, invalid, or not a login token (delegated, external, no upstream session, no `client_id` or `jti`) | `invalid_request` | `subject_token_invalid` |
-| Subject token has no audience of the client's API, or was issued to a client that is not in `allowed_source_clients` (this includes the exchanging client itself) | `invalid_request` | `subject_token_audience` or `subject_token_source_client` |
+| Subject token's `aud` has none of the client's `subject_token_audiences`, or it was issued to a client that is not in `allowed_source_clients` (this includes the exchanging client itself) | `invalid_request` | `subject_token_audience` or `subject_token_source_client` |
 | Subject token already used | `invalid_request` | `token_used` |
 | Store failure | `server_error` | generic text, then the hint `The refresh token could not be issued.` |
 | Internal failure while processing `authorization_details` | `server_error` | `The authorization_details could not be processed.` |

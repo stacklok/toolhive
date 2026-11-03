@@ -15,3 +15,23 @@ func Unwrap(stor Storage) Storage {
 		stor = unwrapper.Unwrap()
 	}
 }
+
+// UpstreamRefreshLockerFrom returns the UpstreamRefreshLocker capability of
+// stor, peeling any storage decorators that expose Unwrap, and nil when no
+// layer in the chain provides it. Decorators embed the Storage interface and
+// so do not carry optional capabilities of the backend they wrap, which is why
+// the type assertion alone is not enough — mirrors the Unwrap use at the
+// ExchangeGrantStorage discovery boundary.
+func UpstreamRefreshLockerFrom(stor UpstreamTokenStorage) UpstreamRefreshLocker {
+	for stor != nil {
+		if locker, ok := stor.(UpstreamRefreshLocker); ok {
+			return locker
+		}
+		unwrapper, ok := stor.(interface{ Unwrap() Storage })
+		if !ok {
+			return nil
+		}
+		stor = unwrapper.Unwrap()
+	}
+	return nil
+}

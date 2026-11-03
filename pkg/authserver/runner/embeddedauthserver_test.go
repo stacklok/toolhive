@@ -9,7 +9,9 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/rsa"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
@@ -4087,6 +4089,26 @@ func TestResolveDelegateClients(t *testing.T) {
 			}
 		})
 	}
+}
+
+// go-jose v3 accepted trailing "=" on base64url JWK members; v4 does not, so
+// an existing delegate JWKS file written with padding must still load.
+func TestLoadJWKSFile_PaddedBase64URL(t *testing.T) {
+	t.Parallel()
+
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+	padded := base64.URLEncoding.EncodeToString(key.N.Bytes())
+	require.True(t, strings.HasSuffix(padded, "="))
+	content := fmt.Sprintf(`{"keys":[{"kty":"RSA","kid":"k1","use":"sig","alg":"RS256","n":%q,"e":"AQAB"}]}`, padded)
+
+	path := filepath.Join(t.TempDir(), "keys.jwks")
+	require.NoError(t, os.WriteFile(path, []byte(content), 0600))
+
+	got, err := loadJWKSFile(path)
+	require.NoError(t, err)
+	require.Len(t, got.Keys, 1)
+	assert.True(t, key.PublicKey.Equal(got.Keys[0].Key))
 }
 
 func TestResolveDelegateClients_CarriesExchangeRefreshTokens(t *testing.T) {

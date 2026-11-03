@@ -183,7 +183,6 @@ func TestAuthorizeHandler_ClientNotFound(t *testing.T) {
 
 func TestAuthorizeHandler_RejectsRequestObjectWithEmbeddedJWK(t *testing.T) {
 	t.Parallel()
-	handler, _, _ := handlerTestSetup(t)
 
 	enc := base64.RawURLEncoding
 	requestObject := enc.EncodeToString([]byte(`{"alg":"RS256","jwk":{"kty":"RSA"}}`)) +
@@ -194,17 +193,33 @@ func TestAuthorizeHandler_RejectsRequestObjectWithEmbeddedJWK(t *testing.T) {
 		"response_type": {oauthproto.ResponseTypeCode},
 		"scope":         {"openid"},
 		"request":       {requestObject},
+	}.Encode()
+
+	tests := []struct {
+		name  string
+		query string
+	}{
+		{name: "well-formed query", query: query},
+		// ParseForm returns an error for the bad escape but keeps the pairs
+		// that parsed, and fosite later reads them from req.Form.
+		{name: "malformed pair elsewhere in the query", query: query + "&x=%zz"},
 	}
-	req := httptest.NewRequest(http.MethodGet, "/oauth/authorize?"+query.Encode(), nil)
-	rec := httptest.NewRecorder()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			handler, _, _ := handlerTestSetup(t)
+			req := httptest.NewRequest(http.MethodGet, "/oauth/authorize?"+tt.query, nil)
+			rec := httptest.NewRecorder()
 
-	handler.AuthorizeHandler(rec, req)
+			handler.AuthorizeHandler(rec, req)
 
-	// The request is answered directly rather than redirected: nothing about
-	// the client or redirect_uri has been validated yet.
-	assert.Equal(t, http.StatusBadRequest, rec.Code)
-	assert.Empty(t, rec.Header().Get("Location"))
-	assert.Contains(t, rec.Body.String(), "invalid_request_object")
+			// The request is answered directly rather than redirected: nothing
+			// about the client or redirect_uri has been validated yet.
+			assert.Equal(t, http.StatusBadRequest, rec.Code)
+			assert.Empty(t, rec.Header().Get("Location"))
+			assert.Contains(t, rec.Body.String(), "invalid_request_object")
+		})
+	}
 }
 
 func TestAuthorizeRoutes_RejectsMultipartCIMDRequestBeforeLookup(t *testing.T) {

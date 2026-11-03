@@ -373,6 +373,35 @@ var _ = Describe("Workload Lifecycle API", Label("api", "api-workloads", "worklo
 				err := json.NewDecoder(updateResp.Body).Decode(&result)
 				Expect(err).ToNot(HaveOccurred())
 				Expect(result["name"]).To(Equal(workloadName))
+
+				// The edit endpoint returns before the update runs: in the
+				// background it stops, deletes, and recreates the workload. If
+				// the spec ended here, the cleanup's delete could land while
+				// the old workload is gone and the new one is not yet listed,
+				// and the recreate would then leave its network behind. Wait
+				// until the new config is saved and the recreated workload is
+				// running.
+				By("Waiting for the update to take effect")
+				Eventually(func() (map[string]string, error) {
+					exportResp, err := apiServer.Get(fmt.Sprintf("/api/v1beta/workloads/%s/export", workloadName))
+					if err != nil {
+						return nil, err
+					}
+					defer exportResp.Body.Close()
+					if exportResp.StatusCode != http.StatusOK {
+						return nil, fmt.Errorf("export returned %d", exportResp.StatusCode)
+					}
+					var exported struct {
+						EnvVars map[string]string `json:"env_vars"`
+					}
+					if err := json.NewDecoder(exportResp.Body).Decode(&exported); err != nil {
+						return nil, err
+					}
+					return exported.EnvVars, nil
+				}, 60*time.Second, 2*time.Second).Should(HaveKeyWithValue("TEST_VAR", "test-value"),
+					"the updated config should be saved")
+				waitForAPIWorkloadRunning(apiServer, workloadName, 60*time.Second,
+					"the recreated workload should be running")
 			})
 
 			It("should return 404 for non-existent workload", func() {

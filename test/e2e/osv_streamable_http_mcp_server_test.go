@@ -394,7 +394,11 @@ var _ = Describe("OsvStreamableHttpMcpServer", Label("mcp", "mcp-protocol", "str
 				} else {
 					// If it succeeded, OSV supports both transports
 					GinkgoWriter.Printf("Note: OSV server supports stdio transport: %s\n", stdout)
-					// Clean up the successfully started server
+					// Let the detached start finish before removing it. Removing a
+					// workload that is still starting returns at once, and the start
+					// then creates its network after the removal, leaking it.
+					Expect(e2e.WaitForMCPServer(config, serverName, e2e.ServerReadyTimeout())).To(Succeed(),
+						"the stdio workload should start before it is removed")
 					_ = e2e.StopAndRemoveMCPServer(config, serverName)
 				}
 			})

@@ -292,11 +292,11 @@ var _ = ginkgo.Describe("VirtualMCPServer delegate client jwksRef", ginkgo.Order
 		localURL, cleanupAfter := portForwardDelegateAuthServer(vmcpName)
 		defer cleanupAfter()
 		// keyA rejection is the load-bearing check: it only holds once the retired key is gone.
-		// The kid is no longer registered, so fosite rejects the assertion as a malformed
-		// request (400 invalid_request, "kid ... could not be found"), not as a wrong key
-		// under a registered kid (401 invalid_client, as in the wrong-key case above).
-		body := eventuallyDelegateExchange(localURL, issuer, subjectToken(delegateID), keyA, kidA, http.StatusBadRequest)
-		gomega.Expect(delegateOAuthError(body)).To(gomega.Equal("invalid_request"), string(body))
+		// The kid is no longer registered. A failed client assertion is answered as
+		// 401 invalid_client whether the kid is unknown or the key is wrong, the same
+		// as the wrong-key case above.
+		body := eventuallyDelegateExchange(localURL, issuer, subjectToken(delegateID), keyA, kidA, http.StatusUnauthorized)
+		gomega.Expect(delegateOAuthError(body)).To(gomega.Equal("invalid_client"), string(body))
 		// keyB is a control: the surviving key must still be accepted.
 		eventuallyDelegateExchange(localURL, issuer, subjectToken(delegateID), keyB, kidB, http.StatusOK)
 	})

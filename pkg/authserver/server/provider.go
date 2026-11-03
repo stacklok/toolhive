@@ -636,7 +636,7 @@ func NewAuthorizationServer(
 	// a client assertion (see IsUnsafeFositeJWS).
 	fositeConfig.ClientAuthenticationStrategy = newEmbeddedJWKGuardClientAuthenticationStrategy(
 		newSPIFFEClientAuthenticationStrategy(
-			defaultStrategy, config.GetAccessTokenIssuer(),
+			newClientAssertionErrorStrategy(defaultStrategy), config.GetAccessTokenIssuer(),
 			config.SPIFFEJWTBundleSource, providerConfig.SPIFFEClientResolver,
 		),
 	)

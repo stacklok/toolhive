@@ -977,7 +977,8 @@ func (s *MemoryStorage) ClientAssertionJWTValid(_ context.Context, jti string) e
 // ClientAssertionJWTValid's reservation reaches this call.
 func (s *MemoryStorage) SetClientAssertionJWT(_ context.Context, jti string, exp time.Time) error {
 	if time.Until(exp) > server.MaxAssertionLifespan {
-		return fmt.Errorf("assertion lifetime exceeds maximum of %s", server.MaxAssertionLifespan)
+		return fosite.ErrInvalidClient.WithHintf(
+			"The 'client_assertion' lifetime exceeds the maximum of %s.", server.MaxAssertionLifespan)
 	}
 
 	s.mu.Lock()

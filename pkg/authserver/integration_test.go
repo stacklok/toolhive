@@ -6793,8 +6793,8 @@ func TestIntegration_PrivateKeyJWTDCRTokenExchange(t *testing.T) {
 			// valid subject token on the real token endpoint.
 			replayResponse, replayBody := request(assertion, subjectToken)
 			t.Cleanup(func() { replayResponse.Body.Close() })
-			assert.Equal(t, http.StatusBadRequest, replayResponse.StatusCode, replayBody)
-			assert.Equal(t, "jti_known", replayBody["error"])
+			assert.Equal(t, http.StatusUnauthorized, replayResponse.StatusCode, replayBody)
+			assert.Equal(t, "invalid_client", replayBody["error"])
 
 			for _, negative := range []struct {
 				name      string
@@ -6807,7 +6807,8 @@ func TestIntegration_PrivateKeyJWTDCRTokenExchange(t *testing.T) {
 				t.Run(negative.name, func(t *testing.T) {
 					response, body := request(negative.assertion, subjectToken)
 					t.Cleanup(func() { response.Body.Close() })
-					assert.NotEqual(t, http.StatusOK, response.StatusCode, body)
+					assert.Equal(t, http.StatusUnauthorized, response.StatusCode, body)
+					assert.Equal(t, "invalid_client", body["error"])
 				})
 			}
 		})

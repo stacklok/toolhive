@@ -1016,7 +1016,9 @@ func (s *RedisStorage) ClientAssertionJWTValid(ctx context.Context, jti string) 
 		if errors.Is(err, redis.Nil) {
 			return fosite.ErrJTIKnown
 		}
-		return fmt.Errorf("failed to reserve JWT: %w", err)
+		err = fmt.Errorf("failed to reserve JWT: %w", err)
+		server.RecordClientAssertionStoreFailure(ctx, err)
+		return err
 	}
 	return nil
 }
@@ -1034,7 +1036,8 @@ func (s *RedisStorage) ClientAssertionJWTValid(ctx context.Context, jti string) 
 // JTI lookup.
 func (s *RedisStorage) SetClientAssertionJWT(ctx context.Context, jti string, exp time.Time) error {
 	if time.Until(exp) > server.MaxAssertionLifespan {
-		return fmt.Errorf("assertion lifetime exceeds maximum of %s", server.MaxAssertionLifespan)
+		return fosite.ErrInvalidClient.WithHintf(
+			"The 'client_assertion' lifetime exceeds the maximum of %s.", server.MaxAssertionLifespan)
 	}
 
 	key := redisKey(s.keyPrefix, KeyTypeJWT, jti)

@@ -344,6 +344,14 @@ server verifies it against the stored inline JWKS and rejects replay while the
 assertion is valid. No `client_secret` is included in registration or token
 exchange.
 
+Every failed assertion check (unknown `kid`, bad signature, wrong `iss`, `sub`
+or `aud`, expired or not yet valid, `exp` more than 5 minutes ahead, reused
+`jti`) is refused with HTTP 401 `invalid_client`. The `error_description`
+names the check that failed. A storage failure while checking or recording
+the `jti` is HTTP 500 `server_error`, so clients can retry it. A request
+that sets `client_assertion_type` but omits `client_assertion` is HTTP 400
+`invalid_request`.
+
 Private-key JWT registration accepts only inline `jwks`; `jwks_uri`, SPIFFE/SVID
 authentication, AWS STS `act` mapping, and ID-JAG chaining are deferred and out
 of scope. `token_endpoint_auth_signing_alg` is required and the supported

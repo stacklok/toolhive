@@ -233,9 +233,9 @@ func WithListChangedFilter(allowed func(workloadID string) bool) MultiSessionFac
 // WithRevisionLookup supplies a function that reports a backend's cached MCP
 // revision (Legacy vs. Modern) by workload ID, so initOneBackend can skip
 // connecting to a backend known to speak the stateless Modern (2026-07-28)
-// revision. The connect attempt fails there anyway, and skipping it avoids
-// both the resulting WARN and the wasted work — see initOneBackend's doc
-// comment for the exact failure mechanism.
+// revision. The Modern request path does not use this persistent backend
+// session, so skipping it avoids unnecessary connection setup — see
+// initOneBackend's doc comment for the rationale.
 //
 // The lookup's second return distinguishes "known Modern" from "unprobed"
 // (including RevisionLegacy's zero value): only a confirmed Modern result
@@ -333,33 +333,16 @@ type initResult struct {
 // skipped. The second return is true when the skip is a deliberate Modern
 // (2026-07-28 revision) skip rather than a failure.
 //
-// Why the connect is worth skipping — the sequence fails, but NOT at a Legacy
-// handshake. Measured against a real stateless backend: go-sdk v1.7's Connect
-// is Modern-first, so server/discover SUCCEEDS and Modern is negotiated; no
-// raw Legacy initialize is ever sent. Connect then opens a
-// subscriptions/listen stream, because mcpcompat's Initialize unconditionally
-// installs the three list-changed notification handlers
-// (mcpcompat/client.installNotificationHandlers) and go-sdk opens that stream
-// whenever any of them is set. The stateless server rejects it with
-// "session not found", which fails Connect, tears the connection down, and in
-// turn fails the follow-up tools/list in initAndQueryCapabilities. The connector
-// therefore returns (nil, nil, err).
-//
-// That rejection is a go-sdk v1.7.0-pre.3 artifact, NOT a spec requirement: the
-// Modern revision has no sessions, so nothing in it says subscriptions/listen
-// needs one. Do not read this as "Modern requires a session" — it is the SDK's
-// stateless server refusing a subscribe it has no session to hang the stream on.
-//
-// So the wasted work is a whole sequence (discover, a failed subscribe, a
-// failed tools/list, teardown), not one round-trip, and it ends in a WARN that
-// looks exactly like a genuinely dead backend. Skipping is also correct on its
-// own terms: all three purposes of a persistent per-backend connection are
-// inapplicable to a Modern backend — list_changed propagation (Modern removed
-// server-initiated notifications; its push channel is subscriptions/listen,
-// which vMCP does not implement), backend-session-id resume hints (no
-// Mcp-Session-Id), and identity-binding metadata. The first of those is
-// precisely what makes the connect fail: vMCP asks for a notification stream
-// the backend cannot give it.
+// Why a known Modern backend is skipped. go-sdk v1.8.0 can negotiate Modern
+// through server/discover, and its stateful-server rejection is no longer the
+// `session not found` behavior described by the old v1.7 comment. The v1.8 client
+// can open subscriptions/listen when the backend advertises push capabilities;
+// that is a long-lived per-request stream, not a session the vMCP factory needs
+// to retain. This factory holds backend sessions for the Legacy session path
+// (including list_changed forwarding and resume hints), while Modern calls use
+// the request-scoped `modernCall` path and carry their protocol metadata on each
+// request. A confirmed Modern backend therefore has no useful persistent
+// BackendClient session to add to this MultiSession.
 //
 // Known caveat (#5992): the direction that matters here — a backend redeployed
 // stateless→stateful, so a cached Modern label is now wrong — self-corrects only
@@ -375,12 +358,11 @@ type initResult struct {
 //
 // Cold start: the revision cache is populated by the first backend call
 // through dispatch (probeRevision) or, when configured, the health monitor's
-// periodic check — neither is ordered before the first client session. So EVERY
-// session created before the first backend call still pays the failing sequence
-// above for each Modern backend, and its WARN is not suppressed, because the
-// cache is still cold when the post-error re-check below runs. N clients that
-// connect without calling anything each pay it; there is no per-process bound.
-// Sessions created after the cache is warm skip the connect entirely.
+// periodic check — neither is ordered before the first client session. Until
+// that cache is warm, each new session may ask the connector to create a
+// backend client before vMCP knows it is Modern; those sessions can therefore
+// incur unnecessary connection setup. Sessions created after the cache is warm
+// skip the Modern backend connection.
 func (f *defaultMultiSessionFactory) initOneBackend(
 	ctx context.Context,
 	b *vmcp.Backend,

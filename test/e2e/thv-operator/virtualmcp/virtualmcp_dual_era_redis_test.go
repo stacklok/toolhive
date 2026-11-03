@@ -511,7 +511,7 @@ var _ = Describe("VirtualMCPServer Dual-Era Backends over Redis Session Storage"
 		// also 503 via sessionmanager.Manager.Validate's local-session branch,
 		// which returns (false, err) on Redis's transient error
 		// (session_manager.go:444-471,
-		// toolhive-core@v0.0.34/mcpcompat/server/transports.go:462-496). A
+		// toolhive-core v0.0.58 mcpcompat StreamableHTTPServer). A
 		// client that instead runs "initialize" DURING the outage gets a 200
 		// with NO Mcp-Session-Id -- Manager.Generate returns "" after two
 		// failed storage.Create attempts (session_manager.go:238-267), and

@@ -42,22 +42,22 @@ func (r Revision) String() string {
 }
 
 // metaKeyProtocolVersion is the reserved _meta key that carries the per-request
-// protocol version on Modern (stateless) MCP requests, per the draft MCP schema's
-// RequestMetaObject.
+// protocol version on Modern (stateless) MCP requests, per the 2026-07-28 MCP
+// specification's RequestMetaObject.
 const metaKeyProtocolVersion = "io.modelcontextprotocol/protocolVersion"
 
 // metaKeyClientInfo is the reserved _meta key that carries the per-request client
-// implementation info on Modern (stateless) MCP requests, per the draft MCP
-// schema's RequestMetaObject.
+// implementation info on Modern (stateless) MCP requests, per the 2026-07-28 MCP
+// specification's RequestMetaObject.
 const metaKeyClientInfo = "io.modelcontextprotocol/clientInfo"
 
 // metaKeyClientCapabilities is the reserved _meta key that carries the per-request
-// client capabilities on Modern (stateless) MCP requests, per the draft MCP
-// schema's RequestMetaObject.
+// client capabilities on Modern (stateless) MCP requests, per the 2026-07-28 MCP
+// specification's RequestMetaObject.
 const metaKeyClientCapabilities = "io.modelcontextprotocol/clientCapabilities"
 
 // MetaKeyLogLevel carries the per-request minimum log level on Modern
-// (2026-07-28) requests (draft schema RequestMetaObject; go-sdk protocol.go).
+// (2026-07-28) requests (RequestMetaObject; go-sdk protocol.go).
 // It is a reserved per-hop key that must be stripped before a Legacy backend
 // hop, but — unlike the other reserved keys — its mere presence is NOT a claim
 // of the Modern revision: go-sdk's validateRequestMeta gates Modern-ness purely
@@ -148,7 +148,7 @@ var modernSignalMetaKeys = []string{
 // Use it on BOTH hops, in both directions, wherever a _meta map crosses vMCP:
 //
 //   - Legacy backend egress (request): a downstream Modern caller's
-//     _meta.protocolVersion is only valid on a stateless Modern hop. go-sdk v1.7
+//     _meta.protocolVersion is only valid on a stateless Modern hop. go-sdk v1.8.0
 //     rejects the request outright (HTTP 400: "protocol version ... is only
 //     supported on stateless HTTP servers") for ANY _meta.protocolVersion on a
 //     stateful streamable-HTTP server, regardless of its value.
@@ -205,34 +205,30 @@ func ModernRequestMeta(clientName, clientVersion string) map[string]any {
 	}
 }
 
-// The following JSON-RPC error codes are defined by the draft MCP spec
-// (schema/draft/schema.ts) for the stateless "Modern" revision, except for the
-// last three, which are standard JSON-RPC 2.0 codes rather than draft-spec-
-// specific ones. They are declared as local literals, matching this repo's
-// existing convention for JSON-RPC codes (e.g. streamable_proxy.go's -32603).
-// The only SDK with equivalents, modelcontextprotocol/go-sdk, is reachable
-// solely as a transitive dependency (via toolhive-core's mcpcompat) and is
-// pinned to an older draft snapshot (2026-06-30, CodeHeaderMismatch = -32001)
-// with no equivalents at all for the other two codes below, so importing it
-// would risk wiring in stale values. Revisit once the go-sdk dependency is
-// bumped to a revision that matches MCPVersionModern.
+// The following JSON-RPC error codes are defined by the final 2026-07-28 MCP
+// specification for the stateless "Modern" revision, except for the last three,
+// which are standard JSON-RPC 2.0 codes. go-sdk v1.8.0 defines -32020, -32021,
+// -32022, and -32042, and toolhive-core/mcpcompat re-exports them. These remain
+// local package values, matching this repo's existing convention for JSON-RPC
+// codes (e.g. streamable_proxy.go's -32603), rather than adding a dependency
+// solely to share constants.
 //
 // These are exported so other packages (e.g. the HTTP layer) can reference
 // the same wire values instead of hardcoding or redeclaring them.
 const (
 	// CodeHeaderMismatch signals a mismatch between the MCP-Protocol-Version
-	// header and the _meta protocol version (schema.ts HeaderMismatchError).
+	// header and the _meta protocol version (2026-07-28 schema HeaderMismatchError).
 	// Also reused by RequestHeaderMismatchError for the Mcp-Method/Mcp-Name
 	// headers: keep both error types' Code() in sync with this constant.
 	CodeHeaderMismatch int64 = -32020
 	// CodeMissingClientCapability signals that _meta is missing a client
-	// capability required for the request (schema.ts MissingRequiredClientCapabilityError).
+	// capability required for the request (2026-07-28 schema MissingRequiredClientCapabilityError).
 	CodeMissingClientCapability int64 = -32021
 	// CodeUnsupportedProtocolVersion signals that the _meta protocol version
-	// is not one this server supports (schema.ts UnsupportedProtocolVersionError).
+	// is not one this server supports (2026-07-28 schema UnsupportedProtocolVersionError).
 	CodeUnsupportedProtocolVersion int64 = -32022
 	// CodeInvalidParams is the standard JSON-RPC Invalid Params code, used
-	// as a fallback when the draft spec defines no dedicated code for the failure.
+	// as a fallback when the 2026-07-28 specification defines no dedicated code for the failure.
 	CodeInvalidParams int64 = -32602
 	// CodeInvalidRequest is the standard JSON-RPC Invalid Request code. ToolHive
 	// uses it to reject a message whose shape is not a valid single request for
@@ -348,10 +344,10 @@ func (e *UnsupportedVersionError) Data() map[string]any {
 }
 
 // MissingClientCapabilityError indicates a Modern request's _meta is missing
-// clientCapabilities (clientInfo is optional per the draft schema and is not
+// clientCapabilities (clientInfo is optional per the 2026-07-28 schema and is not
 // checked here).
 //
-// The draft types MissingRequiredClientCapabilityError.data.requiredCapabilities
+// The 2026-07-28 schema types MissingRequiredClientCapabilityError.data.requiredCapabilities
 // as a ClientCapabilities object, not a list of names. The classifier cannot
 // compute per-method required capabilities (that check is deferred to the
 // caller/handler layer), so RequiredCapabilities is populated best-effort and
@@ -379,7 +375,7 @@ func (e *MissingClientCapabilityError) Data() map[string]any {
 // MCP-Protocol-Version header present at all — but _meta carried no valid
 // protocolVersion. (When a header IS present, a missing or invalid body
 // protocolVersion is a header/body mismatch instead; see HeaderMismatchError.)
-// The draft spec defines no dedicated error code for this reserved-key-only
+// The 2026-07-28 specification defines no dedicated error code for this reserved-key-only
 // case, so it falls back to the standard JSON-RPC Invalid Params code.
 type MissingModernMetadataError struct{}
 
@@ -433,7 +429,7 @@ func (*MissingModernMetadataError) Data() map[string]any { return map[string]any
 //  3. if protoHeader is non-empty it must equal the body version, or the two
 //     conflict (*HeaderMismatchError, a hard rejection — neither value wins).
 //  4. _meta must carry clientCapabilities (clientInfo is optional per the
-//     draft schema), or the client capabilities are missing
+//     2026-07-28 schema), or the client capabilities are missing
 //     (*MissingClientCapabilityError, with per-method requirements deferred to
 //     the caller).
 //
@@ -473,7 +469,7 @@ func ClassifyRevision(method string, meta map[string]any, protoHeader string) (R
 		}
 		// TODO: this always returns -32602, but ClassifyRevision is transport-agnostic
 		// and cannot tell "stdio, no header concept" (where -32602 is correct) apart from
-		// "HTTP, header omitted" (where the draft's Server Validation rules make a missing
+		// "HTTP, header omitted" (where the 2026-07-28 Server Validation rules make a missing
 		// MCP-Protocol-Version header itself a -32020 HeaderMismatch condition). Revisit
 		// once the classifier is wired into the HTTP request path and can be given
 		// transport context.
@@ -495,8 +491,8 @@ func ClassifyRevision(method string, meta map[string]any, protoHeader string) (R
 	return RevisionModern, nil
 }
 
-// nameRequiredMethods are the Modern (2026-07-28) methods for which the draft
-// spec's "Server Validation" section requires a Mcp-Name header naming the
+// nameRequiredMethods are the Modern (2026-07-28) methods for which the final
+// 2026-07-28 MCP specification's "Server Validation" section requires a Mcp-Name header naming the
 // body's tool/resource/prompt identifier. Methods outside this set (e.g.
 // tools/list) have no per-request name to check, so Mcp-Name is never
 // required for them — though if a client sends one anyway, it is still
@@ -533,8 +529,8 @@ func IsNameRequiredMethod(method string) bool {
 // Mcp-Name is required only for the methods in nameRequiredMethods
 // (tools/call, resources/read, prompts/get) — for any other method, an
 // absent Mcp-Name header is fine. When present, it is decoded via
-// decodeSentinelName before comparison against ResourceID, since the draft
-// spec allows it to be sentinel-encoded; a decode failure or mismatch is a
+// decodeSentinelName before comparison against ResourceID, since the 2026-07-28
+// specification allows it to be sentinel-encoded; a decode failure or mismatch is a
 // rejection.
 func ValidateHeaderConsistency(parsed *ParsedMCPRequest) error {
 	if parsed.MCPMethodHeader == "" {
@@ -648,7 +644,7 @@ func objectMetaValue(meta map[string]any, key string) (map[string]any, bool) {
 }
 
 // sentinelPrefix and sentinelSuffix wrap a base64-encoded Mcp-Name header
-// value per the draft MCP spec. This is NOT RFC 2047 encoded-word syntax
+// value per the final 2026-07-28 MCP specification. This is NOT RFC 2047 encoded-word syntax
 // (there is no encoding-letter field); both markers are literal and
 // case-sensitive.
 const (
@@ -657,7 +653,7 @@ const (
 )
 
 // decodeSentinelName decodes a Mcp-Name header value that may be wrapped in
-// the draft spec's base64 sentinel format (=?base64?<payload>?=). A value
+// the final 2026-07-28 specification's base64 sentinel format (=?base64?<payload>?=). A value
 // that isn't wrapped in the sentinel markers is returned unchanged, since it
 // is already the plain name/uri. A wrapped value whose payload fails to
 // base64-decode is reported as an error.
@@ -674,7 +670,7 @@ func decodeSentinelName(v string) (string, error) {
 	return string(decoded), nil
 }
 
-// EncodeSentinelName encodes v into the draft spec's base64 sentinel format
+// EncodeSentinelName encodes v into the final 2026-07-28 specification's base64 sentinel format
 // (=?base64?<payload>?=) when required — the mirror of decodeSentinelName.
 // Encoding is required when EITHER:
 //   - v is empty: a plain empty HTTP header value is indistinguishable from an

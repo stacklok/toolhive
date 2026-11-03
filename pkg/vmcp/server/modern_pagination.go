@@ -38,9 +38,9 @@ import (
 // sessions, so a cursor may not denote server-held iteration state -- there is
 // nowhere to keep it, and any two requests may land on different replicas.
 //
-// The governing text is the DRAFT pagination page
-// (docs/specification/draft/server/utilities/pagination.mdx), not the 2025-11-25
-// one: they differ, and the draft is what 2026-07-28 ships. Its normative rules:
+// The governing text is the final 2026-07-28 pagination page
+// (docs/specification/2026-07-28/server/utilities/pagination.mdx), not the
+// 2025-11-25 one: they differ. Its normative rules:
 //
 //   - the cursor is "an opaque string token, representing a position in the
 //     result set" (Pagination Model);
@@ -55,14 +55,14 @@ import (
 // interpret the token, the server is free to encode position INTO it rather than
 // remembering it. No further justification is needed.
 //
-// ONE DRAFT-ONLY AMENDMENT, and it is load-bearing here. The 2025-11-25 bullet
-// "Don't persist cursors across sessions" is GONE, replaced by: "Don't make any
+// ONE 2026-07-28-ONLY AMENDMENT, and it is load-bearing here. The 2025-11-25
+// bullet "Don't persist cursors across sessions" is GONE, replaced by: "Don't make any
 // determination based on cursor value other than whether a non-null value was
 // provided (e.g. an empty string is a valid cursor and thus MUST NOT be treated
 // as the end of results)." The reason for the deletion is recorded in
 // docs/seps/2567-sessionless-mcp.md under "Consequential spec edits" -- note that
 // SEP is a list of directed edits, i.e. rationale, NOT the normative surface;
-// the draft page above is.
+// the final 2026-07-28 page above is.
 //
 // The consequence here: end-of-results MUST be signalled by OMITTING nextCursor,
 // never by emitting an empty string, because a conformant client treats "" as a
@@ -101,21 +101,19 @@ import (
 // go-sdk changes its default, the Legacy path follows automatically and this one
 // does not, silently falsifying the equality claimed above.
 //
-// KNOWN GAP, stated rather than papered over: nothing currently detects that
-// drift. The Modern side IS pinned behaviourally in-package (a 1001-item corpus
-// must yield a 1000-item first page), but not end-to-end:
-// test/integration/vmcp's Over1000Tools regression exercises the Legacy split
-// only -- its helpers are mcpcompat-backed, and mcpcompat cannot request
-// 2026-07-28 (#5911) -- so no in-tree integration test pins the Modern split
-// end-to-end. (A per-request Legacy/Modern pinning mechanism now exists in
-// test/e2e's RawMCPClient, but the integration-tier helpers are still
-// mcpcompat-backed.)
+// KNOWN GAP, stated rather than papered over: nothing currently detects drift
+// between the two page-size values. The in-package Modern tests pin behaviorally
+// that a 1001-item corpus yields a 1000-item first page. The integration-tier
+// Over1000Tools regression uses the core v0.0.58 mcpcompat client (backed by
+// go-sdk v1.8.0, which probes Modern first), but it does not assert the negotiated
+// protocol version; if the Modern gate closes, the test can still pass on the
+// Legacy split. The e2e RawMCPClient can pin a revision explicitly, but there is
+// no integration-tier assertion that the Modern endpoint returns these page
+// boundaries end-to-end.
 //
-// So: treat the equality claimed above as an invariant maintained by REVIEW, not
-// by CI, and re-check it on any go-sdk bump. This deliberately does not name a
-// mechanism the missing Modern end-to-end coverage should use; whether that is a
-// pinning harness, a loud failure at negotiation, or something else is
-// undecided, and this comment must not go stale by presuming one.
+// Treat the equality claimed above as an invariant maintained by REVIEW, not by
+// CI, and re-check it on any go-sdk bump. A test that pins the page-size parity
+// across both revisions remains a follow-up.
 const modernPageSize = 1000
 
 // modernCursorMaxLen caps an inbound cursor before it is decoded.
@@ -143,7 +141,7 @@ const (
 
 // errInvalidModernCursor marks a cursor that is over-long, malformed, not a JSON
 // string, or well-formed but minted for a different list verb. Callers map it to
-// -32602, which the draft pagination page's Error Handling section requires
+// -32602, which the final 2026-07-28 pagination page's Error Handling section requires
 // ("Invalid cursors SHOULD result in an error with code -32602") and which
 // schema.ts classifies under invalid-params ("Pagination: Invalid or expired
 // cursor values"). go-sdk does the same, returning ErrInvalidParams for a cursor
@@ -316,7 +314,7 @@ func paginateModern[T any](items []T, keyOf func(T) string, kind, cursor string)
 // An absent or explicitly null cursor reads as "first page" -- the field is
 // optional, so neither is an error. A cursor that is PRESENT but not a string
 // (e.g. `{"cursor": 123}`) is rejected with errInvalidModernCursor rather than
-// silently read as "first page": the draft's Error Handling section requires
+// silently read as "first page": the final 2026-07-28 Error Handling section requires
 // invalid cursors to yield -32602, and schema.ts lists "Pagination: Invalid or
 // expired cursor values" under the invalid-params class.
 //

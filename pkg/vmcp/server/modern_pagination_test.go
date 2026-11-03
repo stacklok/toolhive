@@ -566,11 +566,11 @@ func TestDispatchModernList_CursorNotReplayableAcrossVerbs(t *testing.T) {
 	}
 }
 
-// TestModernList_EndOfResultsOmitsCursor pins the draft-only pagination
-// amendment: end-of-results MUST be signalled by OMITTING nextCursor, never by
-// emitting an empty string. Per the draft's Implementation Guidelines, "an empty
-// string is a valid cursor and thus MUST NOT be treated as the end of results" --
-// so a client receiving `nextCursor: ""` would re-request with `cursor: ""`,
+// TestModernList_EndOfResultsOmitsCursor pins the 2026-07-28 pagination
+// requirement: end-of-results MUST be signalled by OMITTING nextCursor, never by
+// emitting an empty string. The final pagination page's Implementation Guidelines
+// say that "an empty string is a valid cursor and thus MUST NOT be treated as the end
+// of results", so a client receiving `nextCursor: ""` would re-request with `cursor: ""`,
 // which reads as "first page", and loop forever being served page one.
 //
 // This is a wire-serialization guarantee (the `omitempty` struct tags in

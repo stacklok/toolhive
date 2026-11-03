@@ -43,7 +43,8 @@ type ParsedMCPRequest struct {
 	// such as progress tokens, trace IDs, or custom namespaced metadata
 	Meta map[string]interface{}
 	// MCPMethodHeader is the value of the Modern (stateless MCP) "Mcp-Method"
-	// request header, if present. Mandatory on every Modern POST per the draft spec.
+	// request header, if present. Mandatory on every Modern POST per the final
+	// 2026-07-28 MCP specification.
 	MCPMethodHeader string
 	// MCPNameHeader is the raw, as-received value of the Modern (stateless MCP)
 	// "Mcp-Name" request header, if present. Required for tools/call,

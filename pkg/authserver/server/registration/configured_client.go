@@ -449,6 +449,13 @@ func validateConfiguredExchangeRefreshTokens(spec ConfiguredClientSpec) error {
 	if len(spec.AllowedSourceClients) == 0 {
 		return fmt.Errorf("token_exchange.allowed_source_clients is required with token_exchange.exchange_refresh_tokens")
 	}
+	return validateExchangeRefreshTokenCaps(spec)
+}
+
+// validateExchangeRefreshTokenCaps checks the two lifetime caps of the
+// exchange_refresh_tokens block: at least one is set, each is valid, and a
+// refresh-token cap needs the ID-JAG cap.
+func validateExchangeRefreshTokenCaps(spec ConfiguredClientSpec) error {
 	if spec.IDJAGMaxLifetime == "" && spec.RefreshTokenMaxLifetime == "" {
 		return fmt.Errorf("token_exchange.exchange_refresh_tokens needs id_jag_max_lifetime or refresh_token_max_lifetime")
 	}
@@ -461,6 +468,13 @@ func validateConfiguredExchangeRefreshTokens(spec ConfiguredClientSpec) error {
 		if err := validateExchangeRefreshTokenLifetime("refresh_token_max_lifetime", spec.RefreshTokenMaxLifetime); err != nil {
 			return err
 		}
+	}
+	// A child refresh token allows ID-JAGs and takes its cap from
+	// id_jag_max_lifetime, so without it every derive is refused with
+	// token_type_not_permitted. Refuse the configuration at startup instead.
+	if spec.RefreshTokenMaxLifetime != "" && spec.IDJAGMaxLifetime == "" {
+		return fmt.Errorf("token_exchange.exchange_refresh_tokens.refresh_token_max_lifetime requires " +
+			"id_jag_max_lifetime, because a derived child refresh token is capped by it")
 	}
 	return nil
 }

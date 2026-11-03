@@ -153,8 +153,8 @@ func TestDeriveCheckOrder(t *testing.T) {
 		{name: "parent expired", token: "x.child-of-expired", code: "invalid_request", want: "parent_revoked"},
 		{name: "parent gone", token: "x.orphan", code: "invalid_request", want: "parent_revoked"},
 		{name: "does not allow refresh_token", token: "x.id-jag-only", code: "invalid_request", want: "not_issuable"},
-		{name: "a child is not a parent", token: "x.child", code: "invalid_request", want: "not_issuable"},
-		{name: "a child that lists refresh_token is still not a parent", token: "x.child-lists-refresh",
+		{name: "a child is not a source", token: "x.child", code: "invalid_request", want: "not_issuable"},
+		{name: "a child that lists refresh_token is still not a source", token: "x.child-lists-refresh",
 			code: "invalid_request", want: "not_issuable"},
 	}
 	for _, tt := range tests {
@@ -172,7 +172,7 @@ func TestDeriveCheckOrder(t *testing.T) {
 		})
 	}
 
-	t.Run("a live grant is derived from, and the child records its parent", func(t *testing.T) {
+	t.Run("a live grant is derived from, and the child records it as its parent", func(t *testing.T) {
 		t.Parallel()
 		store := &fakeGrantStoreWithRecords{recordStore: recordStore{grants: records}}
 		h := deriveHandler(t, store)
@@ -187,7 +187,7 @@ func TestDeriveCheckOrder(t *testing.T) {
 		assert.Equal(t, "user-1", child.Subject)
 		assert.Empty(t, child.SourceJTI, "a child has no replay marker")
 		assert.Equal(t, []string{idJAG}, child.IssuableTokenTypes)
-		assert.Equal(t, live.Unix(), child.ExpiresAt.Unix(), "capped to the parent, which is below the 12h id-jag cap")
+		assert.Equal(t, live.Unix(), child.ExpiresAt.Unix(), "capped to the source, which is below the 12h id-jag cap")
 	})
 
 	t.Run("a grant revoked between handling and the response is caught", func(t *testing.T) {
@@ -207,30 +207,46 @@ func TestDeriveCheckOrder(t *testing.T) {
 	})
 }
 
-// TestDeriveParentWithNoWholeSecondLeftIsGrantInvalid pins that a parent with
-// under one whole second left gets the same answer as one that expired earlier.
-// The clock is fixed: now is 100ms past a whole second and the parent expires
-// 400ms after now, so the parent is live (Live passes) and the whole-second
-// check is the one that refuses it. Wall-clock timing would run that check
-// only part of the time.
-func TestDeriveParentWithNoWholeSecondLeftIsGrantInvalid(t *testing.T) {
+// TestDeriveSourceWithNoWholeSecondLeftIsGrantInvalid pins that a presented
+// grant (the source) with under one whole second left gets the same answer as
+// one that expired earlier, whatever else is wrong with it: revoked, or with a
+// revoked parent of its own. The clock is fixed: now is 100ms past a whole
+// second and the source expires 400ms after now, so Live passes on expiry and
+// the whole-second check is the one that refuses it. Wall-clock timing would
+// run that check only part of the time.
+func TestDeriveSourceWithNoWholeSecondLeftIsGrantInvalid(t *testing.T) {
 	t.Parallel()
 
 	now := time.Unix(1_900_000_000, 100_000_000)
 	tests := []struct {
-		name    string
-		expires time.Time
+		name          string
+		expires       time.Time
+		revoked       bool
+		parentRevoked bool
 	}{
 		{name: "live by under one second", expires: now.Add(400 * time.Millisecond)},
 		{name: "expired earlier", expires: now.Add(-time.Hour)},
+		{name: "revoked with under one second left", expires: now.Add(400 * time.Millisecond), revoked: true},
+		{name: "own parent revoked with under one second left", expires: now.Add(400 * time.Millisecond),
+			parentRevoked: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			store := &fakeGrantStoreWithRecords{recordStore: recordStore{grants: map[string]storage.ExchangeGrant{
-				"ok": {Signature: "ok", ClientID: testRefreshClient, Subject: "user-1",
-					IssuableTokenTypes: []string{oauthproto.TokenTypeRefreshToken}, ExpiresAt: tt.expires},
-			}}}
+			source := storage.ExchangeGrant{Signature: "ok", ClientID: testRefreshClient, Subject: "user-1",
+				IssuableTokenTypes: []string{oauthproto.TokenTypeRefreshToken}, ExpiresAt: tt.expires}
+			if tt.revoked {
+				source.RevokedAt = now
+			}
+			grants := map[string]storage.ExchangeGrant{}
+			if tt.parentRevoked {
+				source.ParentSignature = "parent"
+				grants["parent"] = storage.ExchangeGrant{Signature: "parent", ClientID: testRefreshClient,
+					Subject: "user-1", IssuableTokenTypes: []string{oauthproto.TokenTypeRefreshToken},
+					ExpiresAt: now.Add(time.Hour), RevokedAt: now}
+			}
+			grants["ok"] = source
+			store := &fakeGrantStoreWithRecords{recordStore: recordStore{grants: grants}}
 			h := deriveHandler(t, store)
 			_, err := h.decide(t.Context(), deriveRequest("x.ok", oauthproto.TokenTypeIDJAG), now)
 			requireOAuthError(t, err, "invalid_request", reasonGrantInvalid)
@@ -291,7 +307,11 @@ func (s *failingParentStore) GetExchangeGrant(ctx context.Context, signature str
 	return s.recordStore.GetExchangeGrant(ctx, signature)
 }
 
-func TestDeriveChildTypeMustBeConfigured(t *testing.T) {
+// TestDeriveChildTypeNotConfiguredFallback covers a refresh-only policy. Startup
+// validation rejects such a policy, so a configured client never reaches this
+// refusal. The test pins it for a handler built with that policy directly: both
+// Handle and Populate refuse with token_type_not_permitted.
+func TestDeriveChildTypeNotConfiguredFallback(t *testing.T) {
 	t.Parallel()
 
 	h := deriveHandler(t, &recordStore{grants: map[string]storage.ExchangeGrant{
@@ -309,8 +329,8 @@ func TestDeriveChildTypeMustBeConfigured(t *testing.T) {
 }
 
 // TestDeriveNeedsRefreshTokenStillAllowed pins that a client whose policy no
-// longer allows refresh tokens is refused before the parent is looked up. The
-// store holds a live parent; reads stays 0 because the gate refuses first.
+// longer allows refresh tokens is refused before the source grant is looked up.
+// The store holds a live source grant; reads stays 0 because the gate refuses first.
 func TestDeriveNeedsRefreshTokenStillAllowed(t *testing.T) {
 	t.Parallel()
 

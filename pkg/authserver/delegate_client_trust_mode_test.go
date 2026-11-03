@@ -86,10 +86,10 @@ func TestRestrictedClientPolicies(t *testing.T) {
 			trustModeTestClient("broker", exchangeOnly, &DelegateClientTokenExchange{
 				SelfIssuedSubjectTokens: SelfIssuedSubjectTokensRestricted,
 				AllowedSourceClients:    []string{"tui"},
-				APIAudience:             "https://mcp.example.com",
+				SubjectTokenAudiences:   []string{"https://mcp.example.com"},
 			}),
 		}, want: map[string]tokenexchange.ConfiguredClientPolicy{"broker": {
-			AllowedSourceClients: []string{"tui"}, APIAudience: "https://mcp.example.com",
+			AllowedSourceClients: []string{"tui"}, SubjectTokenAudiences: []string{"https://mcp.example.com"},
 		}}},
 	}
 

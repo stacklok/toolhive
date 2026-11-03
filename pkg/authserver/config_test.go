@@ -1205,11 +1205,11 @@ func TestDelegateClientRunConfigValidate(t *testing.T) {
 			ClientID: "delegate", ClientSecretEnvVar: "SECRET", RedirectURIs: []string{"https://broker.example.com/callback"},
 			Scopes: validClient.Scopes, Audiences: validClient.Audiences,
 		}}, wantErr: "only allowed with the authorization_code grant"},
-		{name: "token_exchange with source client and api audience", clients: []DelegateClientRunConfig{{
+		{name: "token_exchange with source client and subject token audiences", clients: []DelegateClientRunConfig{{
 			ClientID: "delegate", ClientSecretEnvVar: "SECRET",
 			TokenExchange: &DelegateClientTokenExchange{
 				SelfIssuedSubjectTokens: SelfIssuedSubjectTokensRestricted,
-				AllowedSourceClients:    []string{"tui"}, APIAudience: "https://mcp.example.com",
+				AllowedSourceClients:    []string{"tui"}, SubjectTokenAudiences: []string{"https://mcp.example.com"},
 			},
 			Scopes: validClient.Scopes, Audiences: validClient.Audiences,
 		}}},
@@ -1263,13 +1263,28 @@ func TestDelegateClientRunConfigValidate(t *testing.T) {
 			},
 			Scopes: validClient.Scopes, Audiences: validClient.Audiences,
 		}}, wantErr: "allowed_source_clients is valid only with"},
-		{name: "any with api audience", clients: []DelegateClientRunConfig{{
+		{name: "any with subject token audiences", clients: []DelegateClientRunConfig{{
 			ClientID: "delegate", ClientSecretEnvVar: "SECRET",
 			TokenExchange: &DelegateClientTokenExchange{
-				SelfIssuedSubjectTokens: SelfIssuedSubjectTokensAny, APIAudience: "https://mcp.example.com",
+				SelfIssuedSubjectTokens: SelfIssuedSubjectTokensAny, SubjectTokenAudiences: []string{"https://mcp.example.com"},
 			},
 			Scopes: validClient.Scopes, Audiences: validClient.Audiences,
-		}}, wantErr: "api_audience is valid only with"},
+		}}, wantErr: "subject_token_audiences is valid only with"},
+		{name: "empty subject token audiences list is unset", clients: []DelegateClientRunConfig{{
+			ClientID: "delegate", ClientSecretEnvVar: "SECRET",
+			TokenExchange: &DelegateClientTokenExchange{
+				SelfIssuedSubjectTokens: SelfIssuedSubjectTokensRestricted, SubjectTokenAudiences: []string{},
+			},
+			Scopes: validClient.Scopes, Audiences: validClient.Audiences,
+		}}},
+		{name: "subject token audience not in allowed_audiences", clients: []DelegateClientRunConfig{{
+			ClientID: "delegate", ClientSecretEnvVar: "SECRET",
+			TokenExchange: &DelegateClientTokenExchange{
+				SelfIssuedSubjectTokens: SelfIssuedSubjectTokensRestricted,
+				SubjectTokenAudiences:   []string{"https://other.example.com"},
+			},
+			Scopes: validClient.Scopes, Audiences: validClient.Audiences,
+		}}, wantErr: `token_exchange.subject_token_audiences "https://other.example.com" is not in allowed_audiences`},
 		// P4 (PR #6284 review): a URL-shaped client_id collides with CIMD
 		// client resolution (oauthproto.IsClientIDMetadataDocumentURL) — the
 		// CIMD decorator would shadow this pre-provisioned client on reads,
@@ -1315,60 +1330,92 @@ func TestDelegateClientExchangeRefreshTokensValidate(t *testing.T) {
 
 	const (
 		audience = "https://mcp.example.com"
+		input    = "https://input.example.com"
 		secret   = "0123456789abcdef0123456789abcdef"
 	)
+	inputs := []string{input}
 	block := func(idJAG, refresh string) *DelegateClientExchangeRefreshTokens {
 		return &DelegateClientExchangeRefreshTokens{IDJAGMaxLifetime: idJAG, RefreshTokenMaxLifetime: refresh}
 	}
 
 	tests := []struct {
-		name        string
-		block       *DelegateClientExchangeRefreshTokens
-		apiAudience string
-		mode        SelfIssuedSubjectTokens
-		noSources   bool
-		wantErr     string
+		name             string
+		block            *DelegateClientExchangeRefreshTokens
+		subjectAudiences []string
+		noSources        bool
+		mode             SelfIssuedSubjectTokens
+		noAudiences      bool
+		clientAudiences  []string
+		grantTypes       []string
+		wantErr          string
 	}{
-		{name: "id-jag cap only", block: block("12h", ""), apiAudience: audience},
-		{name: "refresh cap only", block: block("", "720h"), apiAudience: audience},
-		{name: "both caps", block: block("1h", "24h"), apiAudience: audience},
-		{name: "absent block", block: nil, apiAudience: audience},
-		{name: "no caps", block: block("", ""), apiAudience: audience,
+		{name: "id-jag cap only", block: block("12h", ""), subjectAudiences: inputs},
+		{name: "refresh cap only", block: block("", "720h"), subjectAudiences: inputs},
+		{name: "both caps", block: block("1h", "24h"), subjectAudiences: inputs},
+		{name: "absent block", block: nil, subjectAudiences: inputs},
+		{name: "no caps", block: block("", ""), subjectAudiences: inputs,
 			wantErr: "needs id_jag_max_lifetime or refresh_token_max_lifetime"},
-		{name: "zero id-jag cap", block: block("0s", ""), apiAudience: audience,
+		{name: "zero id-jag cap", block: block("0s", ""), subjectAudiences: inputs,
 			wantErr: "id_jag_max_lifetime must be positive"},
-		{name: "zero refresh cap without unit", block: block("", "0"), apiAudience: audience,
+		{name: "zero refresh cap without unit", block: block("", "0"), subjectAudiences: inputs,
 			wantErr: "refresh_token_max_lifetime must be positive"},
-		{name: "negative id-jag cap", block: block("-1h", ""), apiAudience: audience,
+		{name: "negative id-jag cap", block: block("-1h", ""), subjectAudiences: inputs,
 			wantErr: "id_jag_max_lifetime must be positive"},
-		{name: "negative refresh cap", block: block("", "-1s"), apiAudience: audience,
+		{name: "negative refresh cap", block: block("", "-1s"), subjectAudiences: inputs,
 			wantErr: "refresh_token_max_lifetime must be positive"},
-		{name: "id-jag cap above 720h", block: block("721h", ""), apiAudience: audience,
+		{name: "id-jag cap above 720h", block: block("721h", ""), subjectAudiences: inputs,
 			wantErr: "id_jag_max_lifetime must not exceed 720h"},
-		{name: "refresh cap above 720h", block: block("", "1000h"), apiAudience: audience,
+		{name: "refresh cap above 720h", block: block("", "1000h"), subjectAudiences: inputs,
 			wantErr: "refresh_token_max_lifetime must not exceed 720h"},
-		{name: "both caps exactly 720h", block: block("720h", "720h"), apiAudience: audience},
-		{name: "id-jag cap one nanosecond over 720h", block: block("720h0m0.000000001s", ""), apiAudience: audience,
+		{name: "both caps exactly 720h", block: block("720h", "720h"), subjectAudiences: inputs},
+		{name: "id-jag cap one nanosecond over 720h", block: block("720h0m0.000000001s", ""), subjectAudiences: inputs,
 			wantErr: "id_jag_max_lifetime must not exceed 720h"},
-		{name: "refresh cap one nanosecond over 720h", block: block("", "720h0m0.000000001s"), apiAudience: audience,
+		{name: "refresh cap one nanosecond over 720h", block: block("", "720h0m0.000000001s"), subjectAudiences: inputs,
 			wantErr: "refresh_token_max_lifetime must not exceed 720h"},
-		{name: "id-jag cap with leading space", block: block(" 12h", ""), apiAudience: audience,
+		{name: "id-jag cap with leading space", block: block(" 12h", ""), subjectAudiences: inputs,
 			wantErr: "invalid duration"},
-		{name: "refresh cap with trailing space", block: block("", "12h "), apiAudience: audience,
+		{name: "refresh cap with trailing space", block: block("", "12h "), subjectAudiences: inputs,
 			wantErr: "unknown unit"},
-		{name: "id-jag cap without unit", block: block("12", ""), apiAudience: audience,
+		{name: "id-jag cap without unit", block: block("12", ""), subjectAudiences: inputs,
 			wantErr: "missing unit"},
-		{name: "unparsable cap", block: block("soon", ""), apiAudience: audience,
+		{name: "unparsable cap", block: block("soon", ""), subjectAudiences: inputs,
 			wantErr: "token_exchange.exchange_refresh_tokens.id_jag_max_lifetime"},
-		{name: "api audience missing", block: block("12h", ""), apiAudience: "",
-			wantErr: "api_audience is required with token_exchange.exchange_refresh_tokens"},
-		{name: "allowed source clients missing", block: block("12h", ""), apiAudience: audience, noSources: true,
+		{name: "subject token audiences missing", block: block("12h", ""),
+			wantErr: "subject_token_audiences is required with token_exchange.exchange_refresh_tokens"},
+		{name: "allowed source clients missing", block: block("12h", ""), subjectAudiences: inputs, noSources: true,
 			wantErr: "allowed_source_clients is required with token_exchange.exchange_refresh_tokens"},
 		{name: "any mode", block: block("12h", ""), mode: SelfIssuedSubjectTokensAny,
 			wantErr: `token_exchange.exchange_refresh_tokens requires self_issued_subject_tokens "restricted"`},
-		{name: "any mode with api audience", block: block("12h", ""), apiAudience: audience,
-			mode: SelfIssuedSubjectTokensAny, wantErr: "token_exchange.api_audience is valid only with"},
+		{name: "any mode with subject token audiences", block: block("12h", ""), subjectAudiences: inputs,
+			mode: SelfIssuedSubjectTokensAny, wantErr: "token_exchange.subject_token_audiences is valid only with"},
 		{name: "any mode without block", block: nil, mode: SelfIssuedSubjectTokensAny},
+		{name: "empty audiences with grant_types omitted", block: block("12h", ""), subjectAudiences: inputs,
+			noAudiences: true},
+		{name: "empty audiences with only the token-exchange grant", block: block("12h", ""),
+			subjectAudiences: inputs, noAudiences: true,
+			grantTypes: []string{oauthproto.GrantTypeTokenExchange}},
+		{name: "empty audiences with jwt-bearer", block: block("12h", ""), subjectAudiences: inputs,
+			noAudiences: true, grantTypes: []string{oauthproto.GrantTypeTokenExchange, oauthproto.GrantTypeJWTBearer},
+			wantErr: "audiences must not be empty when grant_types includes grants other than " +
+				oauthproto.GrantTypeTokenExchange},
+		{name: "empty audiences with authorization_code", block: block("12h", ""), subjectAudiences: inputs,
+			noAudiences: true, grantTypes: []string{oauthproto.GrantTypeTokenExchange, oauthproto.GrantTypeAuthorizationCode},
+			wantErr: "audiences must not be empty when grant_types includes grants other than"},
+		{name: "empty audiences without a block", block: nil, noAudiences: true,
+			wantErr: "audiences is required unless token_exchange.exchange_refresh_tokens is set"},
+		{name: "input audience equal to a client audience", block: block("12h", ""),
+			subjectAudiences: []string{audience},
+			wantErr: `subject_token_audiences "https://mcp.example.com" is covered by the client's audience ` +
+				`"https://mcp.example.com": while exchange_refresh_tokens is set, an input audience must not be one the client can obtain`},
+		{name: "input audience under a client audience path", block: block("12h", ""),
+			subjectAudiences: []string{audience + "/v1"}, wantErr: "is covered by the client's audience"},
+		{name: "input audience outside allowed_audiences", block: block("12h", ""),
+			subjectAudiences: []string{"https://elsewhere.example.com"}, wantErr: "is not in allowed_audiences"},
+		{name: "equal non-URL audiences", block: block("12h", ""), clientAudiences: []string{"not-a-url"},
+			subjectAudiences: []string{"not-a-url"}, wantErr: "is covered by the client's audience"},
+		{name: "different non-URL audiences", block: block("12h", ""), clientAudiences: []string{"not-a-url"},
+			subjectAudiences: []string{"other-not-a-url"}},
+		{name: "overlap is allowed without the block", block: nil, subjectAudiences: []string{audience}},
 	}
 
 	for _, tt := range tests {
@@ -1381,27 +1428,46 @@ func TestDelegateClientExchangeRefreshTokensValidate(t *testing.T) {
 			}
 			tokenExchange := &DelegateClientTokenExchange{
 				SelfIssuedSubjectTokens: mode,
-				APIAudience:             tt.apiAudience,
+				SubjectTokenAudiences:   tt.subjectAudiences,
 				ExchangeRefreshTokens:   tt.block,
 			}
 			if tt.block != nil && !tt.noSources && mode == SelfIssuedSubjectTokensRestricted {
 				tokenExchange.AllowedSourceClients = []string{"tui"}
 			}
+			audiences := []string{audience}
+			switch {
+			case tt.noAudiences:
+				audiences = nil
+			case tt.clientAudiences != nil:
+				audiences = tt.clientAudiences
+			}
+			allowed := []string{audience, audience + "/v1", input, "not-a-url", "other-not-a-url"}
 			runConfigClients := []DelegateClientRunConfig{{
 				ClientID: "delegate", ClientSecretEnvVar: "SECRET", TokenExchange: tokenExchange,
-				Scopes: []string{"openid"}, Audiences: []string{audience},
+				GrantTypes: tt.grantTypes, RedirectURIs: redirectURIsFor(tt.grantTypes),
+				Scopes: []string{"openid"}, Audiences: audiences,
 			}}
-			assertError(t, validateDelegateClients(runConfigClients, []string{"openid"}, []string{audience}),
+			assertError(t, validateDelegateClients(runConfigClients, []string{"openid"}, allowed),
 				tt.wantErr != "", tt.wantErr)
 
 			resolvedClients := []DelegateClient{{
 				ClientID: "delegate", ClientSecret: secret, TokenExchange: tokenExchange,
-				Scopes: []string{"openid"}, Audiences: []string{audience},
+				GrantTypes: tt.grantTypes, RedirectURIs: redirectURIsFor(tt.grantTypes),
+				Scopes: []string{"openid"}, Audiences: audiences,
 			}}
-			assertError(t, validateResolvedDelegateClients(resolvedClients, []string{"openid"}, []string{audience}),
+			assertError(t, validateResolvedDelegateClients(resolvedClients, []string{"openid"}, allowed),
 				tt.wantErr != "", tt.wantErr)
 		})
 	}
+}
+
+// redirectURIsFor returns a redirect URI for a grant set that includes
+// authorization_code, which requires one.
+func redirectURIsFor(grantTypes []string) []string {
+	if slices.Contains(grantTypes, oauthproto.GrantTypeAuthorizationCode) {
+		return []string{"https://broker.example.com/callback"}
+	}
+	return nil
 }
 
 func TestDelegateClientExchangeRefreshTokensRoundTrip(t *testing.T) {
@@ -1417,14 +1483,14 @@ func TestDelegateClientExchangeRefreshTokensRoundTrip(t *testing.T) {
 	}{
 		{
 			name:    "absent",
-			json:    `{"client_id":"c","token_exchange":{"self_issued_subject_tokens":"restricted","api_audience":"a"}}`,
-			yaml:    "client_id: c\ntoken_exchange:\n  self_issued_subject_tokens: restricted\n  api_audience: a\n",
+			json:    `{"client_id":"c","token_exchange":{"self_issued_subject_tokens":"restricted","subject_token_audiences":["a"]}}`,
+			yaml:    "client_id: c\ntoken_exchange:\n  self_issued_subject_tokens: restricted\n  subject_token_audiences: [a]\n",
 			wantNil: true,
 		},
 		{
 			name:     "populated",
-			json:     `{"client_id":"c","token_exchange":{"self_issued_subject_tokens":"restricted","api_audience":"a","exchange_refresh_tokens":{"id_jag_max_lifetime":"12h","refresh_token_max_lifetime":"720h"}}}`,
-			yaml:     "client_id: c\ntoken_exchange:\n  self_issued_subject_tokens: restricted\n  api_audience: a\n  exchange_refresh_tokens:\n    id_jag_max_lifetime: 12h\n    refresh_token_max_lifetime: 720h\n",
+			json:     `{"client_id":"c","token_exchange":{"self_issued_subject_tokens":"restricted","subject_token_audiences":["a"],"exchange_refresh_tokens":{"id_jag_max_lifetime":"12h","refresh_token_max_lifetime":"720h"}}}`,
+			yaml:     "client_id: c\ntoken_exchange:\n  self_issued_subject_tokens: restricted\n  subject_token_audiences: [a]\n  exchange_refresh_tokens:\n    id_jag_max_lifetime: 12h\n    refresh_token_max_lifetime: 720h\n",
 			wantIDJA: "12h",
 			wantRefr: "720h",
 		},
@@ -2868,6 +2934,7 @@ func TestDelegateClientRunConfigTokenExchangeRoundTrip(t *testing.T) {
 		wantNil    bool
 		wantMode   SelfIssuedSubjectTokens
 		wantSource []string
+		wantAud    []string
 	}{
 		{name: "absent", json: `{"client_id":"c"}`, yaml: "client_id: c\n", wantNil: true},
 		{name: "null", json: `{"client_id":"c","token_exchange":null}`, yaml: "client_id: c\ntoken_exchange:\n", wantNil: true},
@@ -2875,11 +2942,35 @@ func TestDelegateClientRunConfigTokenExchangeRoundTrip(t *testing.T) {
 		{
 			name: "populated",
 			json: `{"client_id":"c","token_exchange":{"self_issued_subject_tokens":"restricted",` +
-				`"allowed_source_clients":["tui"],"api_audience":"a"}}`,
+				`"allowed_source_clients":["tui"],"subject_token_audiences":["a"]}}`,
 			yaml: "client_id: c\ntoken_exchange:\n  self_issued_subject_tokens: restricted\n" +
-				"  allowed_source_clients: [tui]\n  api_audience: a\n",
+				"  allowed_source_clients: [tui]\n  subject_token_audiences: [a]\n",
 			wantMode:   SelfIssuedSubjectTokensRestricted,
 			wantSource: []string{"tui"},
+			wantAud:    []string{"a"},
+		},
+		{
+			name:     "subject token audiences omitted",
+			json:     `{"client_id":"c","token_exchange":{"self_issued_subject_tokens":"restricted"}}`,
+			yaml:     "client_id: c\ntoken_exchange:\n  self_issued_subject_tokens: restricted\n",
+			wantMode: SelfIssuedSubjectTokensRestricted,
+		},
+		{
+			name: "multiple subject token audiences",
+			json: `{"client_id":"c","token_exchange":{"self_issued_subject_tokens":"restricted",` +
+				`"subject_token_audiences":["a","b"]}}`,
+			yaml: "client_id: c\ntoken_exchange:\n  self_issued_subject_tokens: restricted\n" +
+				"  subject_token_audiences: [a, b]\n",
+			wantMode: SelfIssuedSubjectTokensRestricted,
+			wantAud:  []string{"a", "b"},
+		},
+		{
+			name: "explicit empty subject token audiences",
+			json: `{"client_id":"c","token_exchange":{"self_issued_subject_tokens":"restricted",` +
+				`"subject_token_audiences":[]}}`,
+			yaml: "client_id: c\ntoken_exchange:\n  self_issued_subject_tokens: restricted\n" +
+				"  subject_token_audiences: []\n",
+			wantMode: SelfIssuedSubjectTokensRestricted,
 		},
 		{
 			name:     "explicit any",
@@ -2901,6 +2992,11 @@ func TestDelegateClientRunConfigTokenExchangeRoundTrip(t *testing.T) {
 				require.NotNil(t, got.TokenExchange)
 				assert.Equal(t, tt.wantMode, got.TokenExchange.SelfIssuedSubjectTokens)
 				assert.Equal(t, tt.wantSource, got.TokenExchange.AllowedSourceClients)
+				if len(tt.wantAud) == 0 {
+					assert.Empty(t, got.TokenExchange.SubjectTokenAudiences)
+				} else {
+					assert.Equal(t, tt.wantAud, got.TokenExchange.SubjectTokenAudiences)
+				}
 			}
 
 			var fromJSON DelegateClientRunConfig
@@ -2940,11 +3036,11 @@ func TestDelegateClientTokenExchangeClone(t *testing.T) {
 			},
 		},
 		{
-			name: "refresh block and source clients are not shared",
+			name: "refresh block, source clients and subject token audiences are not shared",
 			policy: &DelegateClientTokenExchange{
 				SelfIssuedSubjectTokens: SelfIssuedSubjectTokensRestricted,
 				AllowedSourceClients:    []string{"source-a", "source-b"},
-				APIAudience:             "api",
+				SubjectTokenAudiences:   []string{"api-a", "api-b"},
 				ExchangeRefreshTokens: &DelegateClientExchangeRefreshTokens{
 					IDJAGMaxLifetime:        "1h",
 					RefreshTokenMaxLifetime: "12h",
@@ -2967,6 +3063,7 @@ func TestDelegateClientTokenExchangeClone(t *testing.T) {
 			assert.Equal(t, tt.policy, clone)
 
 			wantSources := slices.Clone(tt.policy.AllowedSourceClients)
+			wantAudiences := slices.Clone(tt.policy.SubjectTokenAudiences)
 			var wantRefresh DelegateClientExchangeRefreshTokens
 			if tt.policy.ExchangeRefreshTokens == nil {
 				assert.Nil(t, clone.ExchangeRefreshTokens)
@@ -2981,11 +3078,15 @@ func TestDelegateClientTokenExchangeClone(t *testing.T) {
 				clone.AllowedSourceClients[0] = "changed"
 				clone.AllowedSourceClients = append(clone.AllowedSourceClients, "added")
 			}
+			if len(clone.SubjectTokenAudiences) > 0 {
+				clone.SubjectTokenAudiences[0] = "changed"
+			}
 
 			if tt.policy.ExchangeRefreshTokens != nil {
 				assert.Equal(t, wantRefresh, *tt.policy.ExchangeRefreshTokens)
 			}
 			assert.Equal(t, wantSources, tt.policy.AllowedSourceClients)
+			assert.Equal(t, wantAudiences, tt.policy.SubjectTokenAudiences)
 		})
 	}
 }

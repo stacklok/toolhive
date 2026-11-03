@@ -141,7 +141,11 @@ func TestTokenExchangeHandler_SourcePolicyExternalIssuer(t *testing.T) {
 			}})
 			h := newTestHandlerWithValidator(validator)
 			h.configuredDelegateClients = []string{testAgentClientID}
-			h.clientPolicies = map[string]ConfiguredClientPolicy{testAgentClientID: {}}
+			// The subject token carries none of these audiences: the check applies
+			// to self-issued subject tokens only.
+			h.clientPolicies = map[string]ConfiguredClientPolicy{testAgentClientID: {
+				SubjectTokenAudiences: []string{"https://not-in-token.example.com"},
+			}}
 
 			req := newAccessRequest(t, defaultClient(), url.Values{
 				"grant_type":         {oauthproto.GrantTypeTokenExchange},
@@ -158,84 +162,167 @@ func TestTokenExchangeHandler_SourcePolicyExternalIssuer(t *testing.T) {
 	}
 }
 
-// TestTokenExchangeHandler_APIAudience pins that a configured api_audience
-// grants no exemption from subject-token audience coverage: the delegated
-// token's audience must be one the subject token already carries.
-func TestTokenExchangeHandler_APIAudience(t *testing.T) {
+func TestTokenExchangeHandler_SubjectTokenAudiences(t *testing.T) {
 	t.Parallel()
 
 	tj := newTestJWKS(t)
-	const uncoveredAudience = "https://other.example.com"
-	delegateAct := map[string]any{"act": map[string]any{"iss": testIssuer, "sub": testAgentClientID}}
+	const otherAudience = "https://other.example.com"
+	listed := []string{testAPIAudience}
 
 	tests := []struct {
 		name         string
 		policy       *ConfiguredClientPolicy
 		subjectAud   []string
 		subjectExtra map[string]any
-		resource     string
 		wantErr      bool
 	}{
 		{
-			name:   "self-issued user token not covering the api audience refused",
-			policy: &ConfiguredClientPolicy{APIAudience: testAPIAudience}, resource: testAPIAudience, wantErr: true,
-		},
-		{
-			name:   "api audience covered by the subject token granted",
-			policy: &ConfiguredClientPolicy{APIAudience: testAPIAudience}, resource: testAPIAudience,
+			name:       "subject token carrying a listed audience accepted",
+			policy:     &ConfiguredClientPolicy{SubjectTokenAudiences: listed},
 			subjectAud: []string{testIssuer, testAPIAudience},
 		},
 		{
-			name:   "another uncovered audience refused",
-			policy: &ConfiguredClientPolicy{APIAudience: testAPIAudience}, resource: uncoveredAudience,
-			subjectAud: []string{testIssuer, testAPIAudience}, wantErr: true,
+			name:       "subject token carrying only another audience refused",
+			policy:     &ConfiguredClientPolicy{SubjectTokenAudiences: listed},
+			subjectAud: []string{testIssuer, otherAudience}, wantErr: true,
 		},
 		{
-			name:   "uncovered audience refused without an api audience",
-			policy: &ConfiguredClientPolicy{}, resource: testAPIAudience, wantErr: true,
+			name:       "audience matches exactly, not by path prefix",
+			policy:     &ConfiguredClientPolicy{SubjectTokenAudiences: listed},
+			subjectAud: []string{testIssuer, testAPIAudience + "/v1"}, wantErr: true,
 		},
 		{
-			name:   "delegate's own exchanged token not covering the api audience refused",
-			policy: &ConfiguredClientPolicy{APIAudience: testAPIAudience}, resource: testAPIAudience,
-			subjectExtra: delegateAct, wantErr: true,
+			name:       "client's own exchanged token without a listed audience refused",
+			policy:     &ConfiguredClientPolicy{SubjectTokenAudiences: listed},
+			subjectAud: []string{testIssuer},
+			subjectExtra: map[string]any{
+				"act": map[string]any{"iss": testIssuer, "sub": testAgentClientID},
+			},
+			wantErr: true,
 		},
 		{
-			name:   "delegate's own exchanged token covering the api audience granted",
-			policy: &ConfiguredClientPolicy{APIAudience: testAPIAudience}, resource: testAPIAudience,
-			subjectAud: []string{testIssuer, testAPIAudience}, subjectExtra: delegateAct,
+			name:       "no subject token audiences sets no requirement for any audience",
+			policy:     &ConfiguredClientPolicy{AllowedSourceClients: []string{testTUIClientID}},
+			subjectAud: []string{testIssuer, otherAudience},
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			h := sourcePolicyHandler(t, tj, tt.policy)
-			h.allowedAudiences = append(h.allowedAudiences, uncoveredAudience)
-			client := defaultClient()
-			client.Audience = []string{testIssuer, testAPIAudience, uncoveredAudience}
-
 			claims := validClaims()
-			if tt.subjectAud != nil {
-				claims.Audience = jwt.Audience(tt.subjectAud)
-			}
+			claims.Audience = jwt.Audience(tt.subjectAud)
 			extra := validExtraClaims()
 			for k, v := range tt.subjectExtra {
 				extra[k] = v
 			}
-			req := newAccessRequest(t, client, url.Values{
+			req := newAccessRequest(t, defaultClient(), url.Values{
 				"grant_type":         {oauthproto.GrantTypeTokenExchange},
 				"subject_token":      {tj.signToken(t, claims, extra)},
 				"subject_token_type": {oauthproto.TokenTypeAccessToken},
-				"resource":           {tt.resource},
+				"resource":           {testIssuer},
 			})
 
-			err := h.HandleTokenEndpointRequest(context.Background(), req)
+			err := sourcePolicyHandler(t, tj, tt.policy).HandleTokenEndpointRequest(context.Background(), req)
 			if tt.wantErr {
-				requireHint(t, err, "not covered by the subject token")
+				requireHint(t, err, "not issued for one of this client's accepted audiences")
+				var rfcErr *fosite.RFC6749Error
+				require.ErrorAs(t, err, &rfcErr)
+				assert.Equal(t, fosite.ErrInvalidGrant.ErrorField, rfcErr.ErrorField)
 				return
 			}
 			require.NoError(t, err)
-			assert.Contains(t, req.GetGrantedAudience(), tt.resource)
+		})
+	}
+}
+
+// TestTokenExchangeHandler_InputAudienceNotObtainable pins the issue case: a
+// refresh-token-only client has no output audiences, so a subject token that
+// covers its input audience still cannot be exchanged for an access token for
+// that audience, however the audience is requested.
+func TestTokenExchangeHandler_InputAudienceNotObtainable(t *testing.T) {
+	t.Parallel()
+
+	tj := newTestJWKS(t)
+	policy := &ConfiguredClientPolicy{
+		AllowedSourceClients:  []string{testTUIClientID},
+		SubjectTokenAudiences: []string{testAPIAudience},
+	}
+
+	tests := []struct {
+		name        string
+		form        url.Values
+		soleDefault bool
+		// requestedAudience stands in for the audience parameter, which fosite
+		// copies into the request before the handler runs.
+		requestedAudience []string
+		// clientAudience is the client's output audiences; the positive rows
+		// pin the refusals to it being empty.
+		clientAudience []string
+		wantCode       string // empty means the exchange succeeds
+		wantHint       string
+	}{
+		{
+			name: "audience parameter", requestedAudience: []string{testAPIAudience},
+			wantCode: fosite.ErrInvalidRequest.ErrorField, wantHint: "has not been whitelisted by the OAuth 2.0 Client",
+		},
+		{
+			name: "resource parameter", form: url.Values{"resource": {testAPIAudience}},
+			wantCode: "invalid_target", wantHint: "The client is not permitted to request resource",
+		},
+		{
+			name: "sole allowed audience as the default", soleDefault: true,
+			wantCode: fosite.ErrInvalidRequest.ErrorField,
+			wantHint: "The client is not permitted to request a token for the default audience",
+		},
+		{
+			name:              "audience parameter succeeds when the client's audiences include it",
+			requestedAudience: []string{testAPIAudience}, clientAudience: []string{testAPIAudience},
+		},
+		{
+			name: "resource parameter succeeds when the client's audiences include it",
+			form: url.Values{"resource": {testAPIAudience}}, clientAudience: []string{testAPIAudience},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			h := sourcePolicyHandler(t, tj, policy)
+			if tt.soleDefault {
+				h.allowedAudiences = []string{testAPIAudience}
+			}
+			client := defaultClient()
+			client.Audience = tt.clientAudience
+
+			claims := validClaims()
+			claims.Audience = jwt.Audience{testIssuer, testAPIAudience}
+			extra := validExtraClaims()
+			extra["client_id"] = testTUIClientID
+			form := url.Values{
+				"grant_type":         {oauthproto.GrantTypeTokenExchange},
+				"subject_token":      {tj.signToken(t, claims, extra)},
+				"subject_token_type": {oauthproto.TokenTypeAccessToken},
+			}
+			for k, v := range tt.form {
+				form[k] = v
+			}
+			req := newAccessRequest(t, client, form)
+			if tt.requestedAudience != nil {
+				req.SetRequestedAudience(tt.requestedAudience)
+			}
+
+			err := h.HandleTokenEndpointRequest(context.Background(), req)
+			if tt.wantCode == "" {
+				require.NoError(t, err)
+				assert.Contains(t, req.GetGrantedAudience(), testAPIAudience)
+				return
+			}
+			var rfcErr *fosite.RFC6749Error
+			require.ErrorAs(t, err, &rfcErr)
+			assert.Equal(t, tt.wantCode, rfcErr.ErrorField)
+			assert.Contains(t, rfcErr.Reason(), tt.wantHint)
+			assert.Empty(t, req.GetGrantedAudience())
 		})
 	}
 }

@@ -60,11 +60,11 @@ func TestConfiguredClientPolicies(t *testing.T) {
 		},
 		{
 			ClientID:      "with-caps",
-			TokenExchange: &DelegateClientTokenExchange{SelfIssuedSubjectTokens: SelfIssuedSubjectTokensRestricted, APIAudience: "https://api.example.com", AllowedSourceClients: []string{"tui"}, ExchangeRefreshTokens: &DelegateClientExchangeRefreshTokens{IDJAGMaxLifetime: "12h", RefreshTokenMaxLifetime: "720h"}},
+			TokenExchange: &DelegateClientTokenExchange{SelfIssuedSubjectTokens: SelfIssuedSubjectTokensRestricted, SubjectTokenAudiences: []string{"https://api.example.com"}, AllowedSourceClients: []string{"tui"}, ExchangeRefreshTokens: &DelegateClientExchangeRefreshTokens{IDJAGMaxLifetime: "12h", RefreshTokenMaxLifetime: "720h"}},
 		},
 		{
 			ClientID:      "token-exchange-only",
-			TokenExchange: &DelegateClientTokenExchange{SelfIssuedSubjectTokens: SelfIssuedSubjectTokensRestricted, APIAudience: "https://api.example.com"},
+			TokenExchange: &DelegateClientTokenExchange{SelfIssuedSubjectTokens: SelfIssuedSubjectTokensRestricted, SubjectTokenAudiences: []string{"https://api.example.com"}},
 		},
 		{
 			ClientID:      "id-jag-only",
@@ -83,7 +83,10 @@ func TestConfiguredClientPolicies(t *testing.T) {
 	require.Contains(t, policies, "id-jag-only")
 
 	assert.Equal(t, []string{"tui"}, policies["with-caps"].AllowedSourceClients)
-	assert.Equal(t, "https://api.example.com", policies["with-caps"].APIAudience)
+	assert.Equal(t, []string{"https://api.example.com"}, policies["with-caps"].SubjectTokenAudiences)
+	clients[2].TokenExchange.SubjectTokenAudiences[0] = "changed"
+	assert.Equal(t, []string{"https://api.example.com"}, policies["with-caps"].SubjectTokenAudiences,
+		"the policy must not share the config's list")
 	assert.Equal(t, map[string]time.Duration{
 		oauthproto.TokenTypeIDJAG:        12 * time.Hour,
 		oauthproto.TokenTypeRefreshToken: 720 * time.Hour,

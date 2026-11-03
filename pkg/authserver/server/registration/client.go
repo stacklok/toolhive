@@ -464,6 +464,10 @@ func NewConfidentialPlain(cfg Config) (fosite.Client, error) {
 // form-body client-secret authentication; otherwise it is an OIDC client that
 // pins the method. Empty GrantTypes means [token-exchange]. The result never
 // carries the DCRIssued marker, so storage keeps it out of the DCR TTL and cap.
+//
+// It does not check audiences. Callers must validate audiences first; the
+// empty-audiences rule is enforced by the authorization server's config
+// validation.
 func NewStaticDelegateClient(cfg Config) (fosite.Client, error) {
 	if cfg.ID == "" {
 		return nil, fmt.Errorf("delegate client requires an ID")
@@ -482,9 +486,6 @@ func NewStaticDelegateClient(cfg Config) (fosite.Client, error) {
 	}
 	if len(cfg.Scopes) == 0 {
 		return nil, fmt.Errorf("delegate client requires at least one scope")
-	}
-	if len(cfg.Audience) == 0 {
-		return nil, fmt.Errorf("delegate client requires at least one audience")
 	}
 
 	client := &fosite.DefaultClient{

@@ -66,6 +66,15 @@ const (
 	MaxAssertionJTILength = 256
 )
 
+// AudienceMatchingStrategy is the single audience-matching rule shared by the
+// token endpoint and startup validation: every needle must be covered by a
+// haystack entry, by path-prefix matching on parsed URLs. Both use this
+// function, so the startup checks and the token endpoint cannot disagree about
+// what one audience covers.
+func AudienceMatchingStrategy(haystack, needle []string) error {
+	return fosite.DefaultAudienceMatchingStrategy(haystack, needle)
+}
+
 // DefaultDeviceCodeInterval is RFC 8628's suggested default minimum interval
 // between device-flow polls of the token endpoint, applied whenever
 // AuthorizationServerConfig.DeviceCodeInterval / AuthorizationServerParams.DeviceCodeInterval
@@ -538,7 +547,7 @@ func NewAuthorizationServerConfig(cfg *AuthorizationServerParams) (*Authorizatio
 		// AudienceMatchingStrategy and JWKSFetcherStrategy are set explicitly
 		// because fosite's getters lazily assign their defaults on first use,
 		// an unsynchronized write that races between concurrent requests.
-		AudienceMatchingStrategy: fosite.DefaultAudienceMatchingStrategy,
+		AudienceMatchingStrategy: AudienceMatchingStrategy,
 		JWKSFetcherStrategy:      unsupportedJWKSFetcher{},
 		// ClientSecretsHasher compares client secrets at the token endpoint.
 		// Plain SHA-256 is correct here: the secrets are 256 bits of CSPRNG

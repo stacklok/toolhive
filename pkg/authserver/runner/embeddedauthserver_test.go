@@ -4097,7 +4097,7 @@ func TestResolveDelegateClients_CarriesExchangeRefreshTokens(t *testing.T) {
 		Scopes: []string{"openid"}, Audiences: []string{"https://mcp.example.com"},
 		TokenExchange: &authserver.DelegateClientTokenExchange{
 			SelfIssuedSubjectTokens: authserver.SelfIssuedSubjectTokensRestricted,
-			APIAudience:             "https://mcp.example.com",
+			SubjectTokenAudiences:   []string{"https://input.example.com"},
 			AllowedSourceClients:    []string{"tui"},
 			ExchangeRefreshTokens: &authserver.DelegateClientExchangeRefreshTokens{
 				IDJAGMaxLifetime: "12h", RefreshTokenMaxLifetime: "720h",
@@ -4109,6 +4109,7 @@ func TestResolveDelegateClients_CarriesExchangeRefreshTokens(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, got, 1)
 	require.NotNil(t, got[0].TokenExchange)
+	assert.Equal(t, []string{"https://input.example.com"}, got[0].TokenExchange.SubjectTokenAudiences)
 	require.NotNil(t, got[0].TokenExchange.ExchangeRefreshTokens)
 	assert.Equal(t, "12h", got[0].TokenExchange.ExchangeRefreshTokens.IDJAGMaxLifetime)
 	assert.Equal(t, "720h", got[0].TokenExchange.ExchangeRefreshTokens.RefreshTokenMaxLifetime)

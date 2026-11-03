@@ -85,17 +85,23 @@ type Handler struct {
 }
 
 // ConfiguredClientPolicy is the token-exchange policy of a delegate client
-// whose self_issued_subject_tokens is restricted. A client with any, or
-// without a token_exchange block, has no entry and keeps blanket trust of
-// self-issued subject tokens.
+// whose self_issued_subject_tokens is restricted: an entry means restricted.
+// A client with any, or without a token_exchange block, has no entry and keeps
+// blanket trust of self-issued subject tokens.
 type ConfiguredClientPolicy struct {
 	// AllowedSourceClients are the client_id values, besides the client
-	// itself, whose self-issued subject tokens the client may exchange.
+	// itself, whose self-issued subject tokens the client may exchange on the
+	// default path. The exchange-grant path accepts only these clients, not the
+	// client's own tokens, so startup requires the list with
+	// exchange_refresh_tokens.
 	AllowedSourceClients []string
-	// APIAudience is the audience a subject token must carry to open an
-	// exchange grant. It grants no access-token audience. Empty refuses
-	// exchange grants.
-	APIAudience string
+	// SubjectTokenAudiences are the audiences a self-issued subject token must
+	// carry (one of them, matched exactly) on every exchange path, including
+	// the client's own tokens. They are input only and never grant an
+	// access-token audience. Empty means no requirement on the default path
+	// but refuses on the exchange-grant path, which is why startup requires
+	// the list with exchange_refresh_tokens.
+	SubjectTokenAudiences []string
 	// ExchangeRefreshTokens caps the lifetime of refresh tokens this client may
 	// obtain through token exchange, keyed by the token-type URN of the grant
 	// (oauthproto.TokenTypeIDJAG or oauthproto.TokenTypeRefreshToken). A missing
@@ -197,10 +203,10 @@ func (h *Handler) HandleTokenEndpointRequest(ctx context.Context, requester fosi
 		// unacceptable based on policy ... The value of the error parameter
 		// MUST be the invalid_request error code." checkSourcePolicy and
 		// checkDelegationConsent below deliberately return invalid_grant
-		// instead for their own failures — a documented deviation: RFC 6749 §5.2's invalid_grant
-		// covers "was issued to another client", §2.2.2 permits other error
-		// codes for other failures, and both Keycloak and Hydra follow this
-		// same split.
+		// instead for their own failures (and so does checkSubjectTokenAudience).
+		// This is a documented deviation: RFC 6749 §5.2's invalid_grant covers
+		// "was issued to another client", §2.2.2 permits other error codes for
+		// other failures, and both Keycloak and Hydra follow this same split.
 		return errorsx.WithStack(fosite.ErrInvalidRequest.WithHint(
 			"The subject token is invalid or could not be verified."))
 	}
@@ -343,6 +349,9 @@ func (h *Handler) authorizeDelegation(
 	configuredDelegate := slices.Contains(h.configuredDelegateClients, client.GetID())
 	if policy, ok := h.clientPolicies[client.GetID()]; ok {
 		if err := checkSourcePolicy(validatedClaims, client.GetID(), policy); err != nil {
+			return err
+		}
+		if err := checkSubjectTokenAudience(validatedClaims, policy); err != nil {
 			return err
 		}
 	}
@@ -726,6 +735,28 @@ func checkSourcePolicy(validatedClaims *ValidatedClaims, clientID string, policy
 	}
 	return errorsx.WithStack(fosite.ErrInvalidGrant.WithHint(
 		"The subject token was not issued to this client or to one of its allowed source clients."))
+}
+
+// checkSubjectTokenAudience requires a self-issued subject token to carry one
+// of the policy's SubjectTokenAudiences. An empty list sets no requirement, and
+// external-issuer tokens are left to the issuer policy.
+func checkSubjectTokenAudience(validatedClaims *ValidatedClaims, policy ConfiguredClientPolicy) error {
+	if len(policy.SubjectTokenAudiences) == 0 || validatedClaims.ExternalIssuer != "" {
+		return nil
+	}
+	if carriesAnyAudience(validatedClaims, policy.SubjectTokenAudiences) {
+		return nil
+	}
+	return errorsx.WithStack(fosite.ErrInvalidGrant.WithHint(
+		"The subject token was not issued for one of this client's accepted audiences."))
+}
+
+// carriesAnyAudience reports whether the token's aud contains one of accepted,
+// matched exactly.
+func carriesAnyAudience(validatedClaims *ValidatedClaims, accepted []string) bool {
+	return slices.ContainsFunc(validatedClaims.Audience, func(audience string) bool {
+		return slices.Contains(accepted, audience)
+	})
 }
 
 // sourceClientAllowed reports whether the source policy accepts the subject

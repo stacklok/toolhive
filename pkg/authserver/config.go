@@ -384,10 +384,13 @@ type DelegateClientRunConfig struct {
 	// not receive every supported scope just because this was left empty.
 	Scopes []string `json:"scopes" yaml:"scopes"`
 
-	// Audiences are the RFC 8707 resource values this client may request a
-	// token for. Required, and must be a subset of RunConfig.AllowedAudiences:
-	// a declared client must not receive every allowed audience just because
-	// this was left empty.
+	// Audiences are output only: the upper bound on the audiences of the
+	// access tokens this client can obtain through any grant. They must be a
+	// subset of RunConfig.AllowedAudiences: a declared client must not receive
+	// every allowed audience just because this was left empty. Required, unless
+	// token_exchange.exchange_refresh_tokens is set and token exchange is the
+	// client's only grant (grant_types omitted, or just the token-exchange
+	// grant), in which case it may be empty.
 	Audiences []string `json:"audiences" yaml:"audiences"`
 
 	// TokenExchange is the client's token-exchange policy. Its
@@ -432,21 +435,27 @@ type DelegateClientTokenExchange struct {
 	// register at runtime (DCR or CIMD), so startup cannot check that they
 	// exist. A configured delegate client cannot be listed: its tokens carry
 	// its own client_id, so listing it would trust everything it accepts.
-	// Valid only with restricted; empty means the client's own tokens only,
-	// except that exchange_refresh_tokens requires a non-empty list and does
-	// not accept the client's own tokens.
+	// Valid only with restricted. On plain token exchange, empty means the
+	// client's own tokens only. The exchange-grant path (exchange_refresh_tokens)
+	// accepts only the listed source clients, never the client's own tokens, so
+	// the list must be non-empty there.
 	AllowedSourceClients []string `json:"allowed_source_clients,omitempty" yaml:"allowed_source_clients,omitempty"`
 
-	// APIAudience is the audience a subject token must carry to open an
-	// exchange grant (exchange_refresh_tokens). It grants no access-token
-	// audience. It must be one of the client's Audiences. Valid only with
-	// restricted.
-	APIAudience string `json:"api_audience,omitempty" yaml:"api_audience,omitempty"`
+	// SubjectTokenAudiences are the audiences a self-issued subject token must
+	// carry, matched exactly: the token must contain at least one of them. The
+	// check applies on every exchange path, including the client's own tokens.
+	// Listing a value grants nothing: the client can receive that audience only
+	// if its audiences also cover it, and startup refuses that while
+	// exchange_refresh_tokens is set. Each entry must be one of the server's
+	// allowed_audiences. Valid only with restricted, and required with
+	// exchange_refresh_tokens. An empty list is the same as an omitted one:
+	// no requirement.
+	SubjectTokenAudiences []string `json:"subject_token_audiences,omitempty" yaml:"subject_token_audiences,omitempty"`
 
 	// ExchangeRefreshTokens enables refresh-token issuance through token
 	// exchange for this client. Presence of the block enables it; a nil block
 	// refuses both grant kinds. Valid only with restricted, and requires
-	// APIAudience.
+	// SubjectTokenAudiences.
 	//nolint:lll // field tags require full JSON+YAML names
 	ExchangeRefreshTokens *DelegateClientExchangeRefreshTokens `json:"exchange_refresh_tokens,omitempty" yaml:"exchange_refresh_tokens,omitempty"`
 }
@@ -474,6 +483,7 @@ func (t *DelegateClientTokenExchange) Clone() *DelegateClientTokenExchange {
 	}
 	cloned := *t
 	cloned.AllowedSourceClients = slices.Clone(t.AllowedSourceClients)
+	cloned.SubjectTokenAudiences = slices.Clone(t.SubjectTokenAudiences)
 	if t.ExchangeRefreshTokens != nil {
 		refreshTokens := *t.ExchangeRefreshTokens
 		cloned.ExchangeRefreshTokens = &refreshTokens
@@ -767,14 +777,13 @@ func validateDelegateClientViews(
 		}
 
 		spec := client.Spec
-		spec.Audiences = client.Audiences
 		spec.ClientID = client.ClientID
 		spec.DelegateClientIDs = delegateIDs
 		if client.TokenExchange != nil {
 			spec.TokenExchange = true
 			spec.SelfIssuedSubjectTokens = string(client.TokenExchange.SelfIssuedSubjectTokens)
 			spec.AllowedSourceClients = client.TokenExchange.AllowedSourceClients
-			spec.APIAudience = client.TokenExchange.APIAudience
+			spec.SubjectTokenAudiences = client.TokenExchange.SubjectTokenAudiences
 			setExchangeRefreshTokensSpec(&spec, client.TokenExchange.ExchangeRefreshTokens)
 		}
 		if err := registration.ValidateConfiguredClient(spec); err != nil {
@@ -790,17 +799,65 @@ func validateDelegateClientViews(
 			client.Scopes, effectiveScopes, fmt.Sprintf("delegate_clients[%s].scopes", client.ClientID)); err != nil {
 			return err
 		}
-		if len(client.Audiences) == 0 {
-			return fmt.Errorf("delegate_clients: client_id %q: audiences is required", client.ClientID)
+		if err := validateDelegateClientAudiences(client, allowedAudiences); err != nil {
+			return fmt.Errorf("delegate_clients: client_id %q: %w", client.ClientID, err)
 		}
-		for _, audience := range client.Audiences {
-			if !slices.Contains(allowedAudiences, audience) {
-				return fmt.Errorf(
-					"delegate_clients: client_id %q: audience %q is not in allowed_audiences", client.ClientID, audience)
+	}
+	return nil
+}
+
+// validateDelegateClientAudiences checks a client's output audiences, its
+// subject_token_audiences, and that the two stay apart while it can open
+// exchange grants. It owns every audience rule: registration cannot apply the
+// ones that need the server's audience matching strategy (server imports
+// registration). NewStaticDelegateClient does not check audiences.
+// Empty audiences are allowed only for a client that opens exchange grants and
+// has no other grant: any other grant, such as jwt-bearer or authorization_code,
+// would need an audience to be useful.
+func validateDelegateClientAudiences(client delegateClientView, allowedAudiences []string) error {
+	refreshTokens := client.TokenExchange != nil && client.TokenExchange.ExchangeRefreshTokens != nil
+	if len(client.Audiences) == 0 {
+		if !refreshTokens {
+			return fmt.Errorf("audiences is required unless token_exchange.exchange_refresh_tokens is set")
+		}
+		if !registration.OnlyTokenExchangeGrant(client.Spec.GrantTypes) {
+			return fmt.Errorf("audiences must not be empty when grant_types includes grants other than %s",
+				oauthproto.GrantTypeTokenExchange)
+		}
+	}
+	for _, audience := range client.Audiences {
+		if !slices.Contains(allowedAudiences, audience) {
+			return fmt.Errorf("audience %q is not in allowed_audiences", audience)
+		}
+	}
+	if client.TokenExchange == nil {
+		return nil
+	}
+	for _, input := range client.TokenExchange.SubjectTokenAudiences {
+		if !slices.Contains(allowedAudiences, input) {
+			return fmt.Errorf("token_exchange.subject_token_audiences %q is not in allowed_audiences", input)
+		}
+		if !refreshTokens {
+			continue
+		}
+		for _, output := range client.Audiences {
+			if audienceCovers(output, input) {
+				return fmt.Errorf("token_exchange.subject_token_audiences %q is covered by the client's audience %q: "+
+					"while exchange_refresh_tokens is set, an input audience must not be one the client can obtain",
+					input, output)
 			}
 		}
 	}
 	return nil
+}
+
+// audienceCovers reports whether the server would accept input as an audience
+// of a client that may use output. Equality always counts, and a value the
+// strategy cannot parse counts only through equality. Under the strategy any
+// two urn: values cover each other (empty host and path), so such configs are
+// refused conservatively.
+func audienceCovers(output, input string) bool {
+	return output == input || oauthserver.AudienceMatchingStrategy([]string{output}, []string{input}) == nil
 }
 
 // setExchangeRefreshTokensSpec copies an exchange_refresh_tokens block into the

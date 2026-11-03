@@ -63,18 +63,22 @@ type xrtEnv struct {
 func xrtClients(t *testing.T, jwksFile string) []authserver.DelegateClientRunConfig {
 	t.Helper()
 	broker := brokerClient(jwksFile)
+	// The broker's output audience is xrtOtherAudience; cfgAudienceA is only an
+	// input audience, so the broker can never obtain an access token for it.
+	broker.Audiences = []string{xrtOtherAudience}
 	broker.TokenExchange = &authserver.DelegateClientTokenExchange{
 		SelfIssuedSubjectTokens: authserver.SelfIssuedSubjectTokensRestricted,
-		APIAudience:             cfgAudienceA,
+		SubjectTokenAudiences:   []string{cfgAudienceA},
 		AllowedSourceClients:    []string{xrtSourceApp},
 		ExchangeRefreshTokens: &authserver.DelegateClientExchangeRefreshTokens{
 			IDJAGMaxLifetime: xrtIDJAGCap.String(), RefreshTokenMaxLifetime: xrtRefreshCap.String(),
 		},
 	}
 	idJAGOnly := secretClient(t, xrtIDJAGOnlyClient, []string{oauthproto.GrantTypeTokenExchange})
+	idJAGOnly.Audiences = nil
 	idJAGOnly.TokenExchange = &authserver.DelegateClientTokenExchange{
 		SelfIssuedSubjectTokens: authserver.SelfIssuedSubjectTokensRestricted,
-		APIAudience:             cfgAudienceA,
+		SubjectTokenAudiences:   []string{cfgAudienceA},
 		AllowedSourceClients:    []string{xrtSourceApp},
 		ExchangeRefreshTokens: &authserver.DelegateClientExchangeRefreshTokens{
 			IDJAGMaxLifetime: xrtIDJAGCap.String(),
@@ -156,6 +160,12 @@ func (e *xrtEnv) mint(t *testing.T, mutate func(*jwt.Claims, map[string]any)) st
 	token, err := jwt.Signed(signer).Claims(std).Claims(extra).Serialize()
 	require.NoError(t, err)
 	return token
+}
+
+// coversOutputAudience makes a minted subject token carry the broker's output
+// audience as well as its input audience.
+func coversOutputAudience(c *jwt.Claims, _ map[string]any) {
+	c.Audience = jwt.Audience{cfgAudienceA, xrtOtherAudience}
 }
 
 func xrtEntry(tokenType string, expiresAt *int64) string {
@@ -248,6 +258,30 @@ func runExchangeRefreshTokenGrantFlows(t *testing.T, env *xrtEnv) {
 		after := time.Now()
 		require.Equal(t, http.StatusOK, res.status, res.body)
 		assertRefreshTokenResponse(t, res, oauthproto.TokenTypeRefreshToken, before, after, xrtRefreshCap)
+	})
+
+	t.Run("a client that may open grants cannot exchange the token for its input audience", func(t *testing.T) {
+		const idJAGOnlyEntry = `[{"type":"` + xrtGrantType + `","issuable_token_types":["` + oauthproto.TokenTypeIDJAG + `"]}]`
+		for param, wantCode := range map[string]string{"audience": "invalid_request", "resource": "invalid_target"} {
+			t.Run(param, func(t *testing.T) {
+				subject := env.mint(t, nil)
+				refused := postToken(t, env.srv.URL, env.secretIn, url.Values{
+					"grant_type":         {oauthproto.GrantTypeTokenExchange},
+					"subject_token":      {subject},
+					"subject_token_type": {oauthproto.TokenTypeAccessToken},
+					param:                {cfgAudienceA},
+				})
+				assert.Equal(t, http.StatusBadRequest, refused.status, refused.body)
+				assert.Equal(t, wantCode, refused.body["error"])
+				assert.NotContains(t, refused.body, "access_token")
+
+				// The same token still opens an exchange grant: it was not consumed.
+				opened := env.requestRefreshToken(t, env.secretIn, subject, func(f url.Values) {
+					f.Set("authorization_details", idJAGOnlyEntry)
+				})
+				require.Equal(t, http.StatusOK, opened.status, opened.body)
+			})
+		}
 	})
 
 	t.Run("token response shape and echo", func(t *testing.T) {
@@ -396,9 +430,9 @@ func runExchangeRefreshTokenRefusals(t *testing.T, env *xrtEnv) {
 		// A plain access-token exchange still reaches the original handler.
 		plain := postToken(t, env.srv.URL, env.broker, url.Values{
 			"grant_type":         {oauthproto.GrantTypeTokenExchange},
-			"subject_token":      {env.mint(t, nil)},
+			"subject_token":      {env.mint(t, coversOutputAudience)},
 			"subject_token_type": {oauthproto.TokenTypeAccessToken},
-			"scope":              {"openid profile"}, "audience": {cfgAudienceA},
+			"scope":              {"openid profile"}, "audience": {xrtOtherAudience},
 		})
 		require.Equal(t, http.StatusOK, plain.status, plain.body)
 		assert.Equal(t, oauthproto.TokenTypeAccessToken, plain.body["issued_token_type"])
@@ -423,9 +457,12 @@ func runExchangeRefreshTokenRefusals(t *testing.T, env *xrtEnv) {
 			{"no upstream session claim", func(_ *jwt.Claims, x map[string]any) { x["https://toolhive.dev/no_upstream_session"] = true }, "subject_token_invalid"},
 			{"missing client_id", func(_ *jwt.Claims, x map[string]any) { delete(x, "client_id") }, "subject_token_invalid"},
 			{"missing jti", func(c *jwt.Claims, _ map[string]any) { c.ID = "" }, "subject_token_invalid"},
-			{"audience without the API audience", func(c *jwt.Claims, _ map[string]any) { c.Audience = jwt.Audience{xrtOtherAudience} }, "subject_token_audience"},
-			{"issued to the exchanging client", func(_ *jwt.Claims, x map[string]any) { x["client_id"] = cfgBrokerID }, "subject_token_source_client"},
+			{"audience not among subject_token_audiences", func(c *jwt.Claims, _ map[string]any) { c.Audience = jwt.Audience{xrtOtherAudience} }, "subject_token_audience"},
 			{"source client not allowed", func(_ *jwt.Claims, x map[string]any) { x["client_id"] = xrtOtherApp }, "subject_token_source_client"},
+			// Backstop for the source-client check. A real broker token cannot carry
+			// this audience, because startup keeps the broker's audiences apart from
+			// its input audiences, so it is reachable only if that separation is relaxed.
+			{"exchanging client's own token", func(_ *jwt.Claims, x map[string]any) { x["client_id"] = cfgBrokerID }, "subject_token_source_client"},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
 				requireError(t, env.requestRefreshToken(t, env.broker, env.mint(t, tc.mutate), nil),
@@ -525,9 +562,9 @@ func runExchangeRefreshTokenRefusals(t *testing.T, env *xrtEnv) {
 	t.Run("a delegated token is refused as a subject", func(t *testing.T) {
 		delegated := postToken(t, env.srv.URL, env.broker, url.Values{
 			"grant_type":         {oauthproto.GrantTypeTokenExchange},
-			"subject_token":      {env.mint(t, nil)},
+			"subject_token":      {env.mint(t, coversOutputAudience)},
 			"subject_token_type": {oauthproto.TokenTypeAccessToken},
-			"scope":              {"openid profile"}, "audience": {cfgAudienceA},
+			"scope":              {"openid profile"}, "audience": {xrtOtherAudience},
 		})
 		require.Equal(t, http.StatusOK, delegated.status, delegated.body)
 		res := env.requestRefreshToken(t, env.broker, delegated.str(t, "access_token"), nil)
@@ -622,6 +659,7 @@ func TestExchangeRefreshTokensRequireTheStorageCapability(t *testing.T) {
 		cfg.Upstreams[0].OAuth2Config.RedirectURI = cfg.Issuer + "/oauth/callback"
 		cfg.InsecureAllowConfidentialOverLoopbackHTTP = true
 		configuredClients(clients...)(cfg)
+		cfg.AllowedAudiences = []string{cfgAudienceA, xrtOtherAudience}
 		embedded, err := authserverrunner.NewEmbeddedAuthServerWithStorage(t.Context(), cfg, newHidden())
 		if err == nil {
 			assert.NoError(t, embedded.Close())

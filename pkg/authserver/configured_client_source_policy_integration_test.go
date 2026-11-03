@@ -70,7 +70,7 @@ func TestTokenExchangeSourcePolicyWithRealClientLogins(t *testing.T) {
 	broker.Audiences = []string{cfgAudienceA, cfgAudienceB}
 	broker.TokenExchange = &authserver.DelegateClientTokenExchange{
 		SelfIssuedSubjectTokens: authserver.SelfIssuedSubjectTokensRestricted,
-		AllowedSourceClients:    []string{tuiID}, APIAudience: cfgAudienceB,
+		AllowedSourceClients:    []string{tuiID},
 	}
 	clients := configuredClients(broker)
 	srv, _, _, _ := startEmbeddedAuthServer(t, func(cfg *authserver.RunConfig, _ string) {

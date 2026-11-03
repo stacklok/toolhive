@@ -268,7 +268,7 @@ components:
         ExchangeRefreshTokens enables refresh-token issuance through token
         exchange for this client. Presence of the block enables it; a nil block
         refuses both grant kinds. Valid only with restricted, and requires
-        APIAudience.
+        SubjectTokenAudiences.
       properties:
         id_jag_max_lifetime:
           description: |-
@@ -285,10 +285,13 @@ components:
       properties:
         audiences:
           description: |-
-            Audiences are the RFC 8707 resource values this client may request a
-            token for. Required, and must be a subset of RunConfig.AllowedAudiences:
-            a declared client must not receive every allowed audience just because
-            this was left empty.
+            Audiences are output only: the upper bound on the audiences of the
+            access tokens this client can obtain through any grant. They must be a
+            subset of RunConfig.AllowedAudiences: a declared client must not receive
+            every allowed audience just because this was left empty. Required, unless
+            token_exchange.exchange_refresh_tokens is set and token exchange is the
+            client's only grant (grant_types omitted, or just the token-exchange
+            grant), in which case it may be empty.
           items:
             type: string
           type: array
@@ -381,20 +384,14 @@ components:
             register at runtime (DCR or CIMD), so startup cannot check that they
             exist. A configured delegate client cannot be listed: its tokens carry
             its own client_id, so listing it would trust everything it accepts.
-            Valid only with restricted; empty means the client's own tokens only,
-            except that exchange_refresh_tokens requires a non-empty list and does
-            not accept the client's own tokens.
+            Valid only with restricted. On plain token exchange, empty means the
+            client's own tokens only. The exchange-grant path (exchange_refresh_tokens)
+            accepts only the listed source clients, never the client's own tokens, so
+            the list must be non-empty there.
           items:
             type: string
           type: array
           uniqueItems: false
-        api_audience:
-          description: |-
-            APIAudience is the audience a subject token must carry to open an
-            exchange grant (exchange_refresh_tokens). It grants no access-token
-            audience. It must be one of the client's Audiences. Valid only with
-            restricted.
-          type: string
         exchange_refresh_tokens:
           $ref: '#/components/schemas/authserver.DelegateClientExchangeRefreshTokens'
         self_issued_subject_tokens:
@@ -405,6 +402,21 @@ components:
             this client does not lift that restriction. With any, the client may
             exchange any self-issued token.
           type: string
+        subject_token_audiences:
+          description: |-
+            SubjectTokenAudiences are the audiences a self-issued subject token must
+            carry, matched exactly: the token must contain at least one of them. The
+            check applies on every exchange path, including the client's own tokens.
+            Listing a value grants nothing: the client can receive that audience only
+            if its audiences also cover it, and startup refuses that while
+            exchange_refresh_tokens is set. Each entry must be one of the server's
+            allowed_audiences. Valid only with restricted, and required with
+            exchange_refresh_tokens. An empty list is the same as an omitted one:
+            no requirement.
+          items:
+            type: string
+          type: array
+          uniqueItems: false
       required:
       - self_issued_subject_tokens
       type: object

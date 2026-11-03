@@ -766,7 +766,7 @@ func (s *AuthenticationDCRUpstreamConfig) SetSoftwareStatement(val OptString) {
 // ExchangeRefreshTokens enables refresh-token issuance through token
 // exchange for this client. Presence of the block enables it; a nil block
 // refuses both grant kinds. Valid only with restricted, and requires
-// APIAudience.
+// SubjectTokenAudiences.
 // Ref: #/components/schemas/AuthenticationDelegateClientExchangeRefreshTokens
 type AuthenticationDelegateClientExchangeRefreshTokens struct {
 	// IDJAGMaxLifetime caps the lifetime of grants that can be exchanged for
@@ -799,10 +799,13 @@ func (s *AuthenticationDelegateClientExchangeRefreshTokens) SetRefreshTokenMaxLi
 
 // Ref: #/components/schemas/AuthenticationDelegateClientRunConfig
 type AuthenticationDelegateClientRunConfig struct {
-	// Audiences are the RFC 8707 resource values this client may request a
-	// token for. Required, and must be a subset of RunConfig.AllowedAudiences:
-	// a declared client must not receive every allowed audience just because
-	// this was left empty.
+	// Audiences are output only: the upper bound on the audiences of the
+	// access tokens this client can obtain through any grant. They must be a
+	// subset of RunConfig.AllowedAudiences: a declared client must not receive
+	// every allowed audience just because this was left empty. Required, unless
+	// token_exchange.exchange_refresh_tokens is set and token exchange is the
+	// client's only grant (grant_types omitted, or just the token-exchange
+	// grant), in which case it may be empty.
 	Audiences []string `json:"audiences"`
 	// ClientID is the OAuth client_id this client presents at the token endpoint.
 	ClientID OptString `json:"client_id"`
@@ -972,15 +975,11 @@ type AuthenticationDelegateClientTokenExchange struct {
 	// register at runtime (DCR or CIMD), so startup cannot check that they
 	// exist. A configured delegate client cannot be listed: its tokens carry
 	// its own client_id, so listing it would trust everything it accepts.
-	// Valid only with restricted; empty means the client's own tokens only,
-	// except that exchange_refresh_tokens requires a non-empty list and does
-	// not accept the client's own tokens.
-	AllowedSourceClients []string `json:"allowed_source_clients"`
-	// APIAudience is the audience a subject token must carry to open an
-	// exchange grant (exchange_refresh_tokens). It grants no access-token
-	// audience. It must be one of the client's Audiences. Valid only with
-	// restricted.
-	APIAudience           OptString                                            `json:"api_audience"`
+	// Valid only with restricted. On plain token exchange, empty means the
+	// client's own tokens only. The exchange-grant path (exchange_refresh_tokens)
+	// accepts only the listed source clients, never the client's own tokens, so
+	// the list must be non-empty there.
+	AllowedSourceClients  []string                                             `json:"allowed_source_clients"`
 	ExchangeRefreshTokens OptAuthenticationDelegateClientExchangeRefreshTokens `json:"exchange_refresh_tokens"`
 	// SelfIssuedSubjectTokens is any or restricted, and is required. With
 	// restricted, a self-issued subject token must carry the client's own
@@ -988,16 +987,21 @@ type AuthenticationDelegateClientTokenExchange struct {
 	// this client does not lift that restriction. With any, the client may
 	// exchange any self-issued token.
 	SelfIssuedSubjectTokens string `json:"self_issued_subject_tokens"`
+	// SubjectTokenAudiences are the audiences a self-issued subject token must
+	// carry, matched exactly: the token must contain at least one of them. The
+	// check applies on every exchange path, including the client's own tokens.
+	// Listing a value grants nothing: the client can receive that audience only
+	// if its audiences also cover it, and startup refuses that while
+	// exchange_refresh_tokens is set. Each entry must be one of the server's
+	// allowed_audiences. Valid only with restricted, and required with
+	// exchange_refresh_tokens. An empty list is the same as an omitted one:
+	// no requirement.
+	SubjectTokenAudiences []string `json:"subject_token_audiences"`
 }
 
 // GetAllowedSourceClients returns the value of AllowedSourceClients.
 func (s *AuthenticationDelegateClientTokenExchange) GetAllowedSourceClients() []string {
 	return s.AllowedSourceClients
-}
-
-// GetAPIAudience returns the value of APIAudience.
-func (s *AuthenticationDelegateClientTokenExchange) GetAPIAudience() OptString {
-	return s.APIAudience
 }
 
 // GetExchangeRefreshTokens returns the value of ExchangeRefreshTokens.
@@ -1010,14 +1014,14 @@ func (s *AuthenticationDelegateClientTokenExchange) GetSelfIssuedSubjectTokens()
 	return s.SelfIssuedSubjectTokens
 }
 
+// GetSubjectTokenAudiences returns the value of SubjectTokenAudiences.
+func (s *AuthenticationDelegateClientTokenExchange) GetSubjectTokenAudiences() []string {
+	return s.SubjectTokenAudiences
+}
+
 // SetAllowedSourceClients sets the value of AllowedSourceClients.
 func (s *AuthenticationDelegateClientTokenExchange) SetAllowedSourceClients(val []string) {
 	s.AllowedSourceClients = val
-}
-
-// SetAPIAudience sets the value of APIAudience.
-func (s *AuthenticationDelegateClientTokenExchange) SetAPIAudience(val OptString) {
-	s.APIAudience = val
 }
 
 // SetExchangeRefreshTokens sets the value of ExchangeRefreshTokens.
@@ -1028,6 +1032,11 @@ func (s *AuthenticationDelegateClientTokenExchange) SetExchangeRefreshTokens(val
 // SetSelfIssuedSubjectTokens sets the value of SelfIssuedSubjectTokens.
 func (s *AuthenticationDelegateClientTokenExchange) SetSelfIssuedSubjectTokens(val string) {
 	s.SelfIssuedSubjectTokens = val
+}
+
+// SetSubjectTokenAudiences sets the value of SubjectTokenAudiences.
+func (s *AuthenticationDelegateClientTokenExchange) SetSubjectTokenAudiences(val []string) {
+	s.SubjectTokenAudiences = val
 }
 
 // IdentityFromToken extracts user identity (subject, name, email) directly from the

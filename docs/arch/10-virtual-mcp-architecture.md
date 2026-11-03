@@ -245,6 +245,52 @@ Enforcement](#authorization-enforcement-core-admission-seam--pre-dispatch-gate))
 
 **Implementation**: `pkg/vmcp/aggregator/`
 
+### Backend Instructions
+
+An MCP server can send a server-level `instructions` text in its `initialize`
+(Legacy) or `server/discover` (Modern) result: usage guidance for the whole
+server, such as which tool to call first. vMCP records that text per backend
+when it queries capabilities (`CapabilityList.Instructions`,
+`AggregatedCapabilities.BackendInstructions`) but, by default, advertises none
+of it: the virtual server's own `initialize` and `server/discover` results carry
+no `instructions` field.
+
+`aggregation.instructions.forward: true` turns forwarding on. The result then
+carries one block per backend, in backend ID order, labelled with the backend
+ID (the workload name, as used in `aggregation.tools`; under the prefix
+strategy it is also the tool-name prefix), joined by a blank line:
+
+```
+[github]
+Use the repository's full name in every call.
+
+[jira]
+Search for an existing issue before creating one.
+```
+
+The set of backends follows the caller: `core.Discover` returns the text of
+exactly the backends on which the identity is admitted at least one capability,
+through the same admission and health filters as `tools/list`, so a caller never
+reads the guidance of a backend it cannot use. Backends that send no text
+contribute no block, and when no block remains the field is omitted.
+
+`aggregation.instructions.maxLength` (bytes, default 16384) caps the merged
+text. A block that would push the text past the cap is skipped whole and logged
+at WARN (once per handshake); later, shorter blocks may still fit. Each block's
+text is forwarded as the backend sent it (leading and trailing whitespace
+trimmed), so the label is a convention for the client, not a boundary: a
+backend is a trusted component chosen by the operator, and it could emit a line
+that looks like another backend's label.
+
+On the Legacy path the text is applied per request by the SDK shim's
+`WithInstructionsFunc` (toolhive-core `mcpcompat/server`), because go-sdk
+serves `ServerOptions.Instructions` verbatim to every session. On the Modern
+path `dispatchModernDiscover` sets it on the discover result directly; with the
+Modern capability gate closed, `server/discover` is routed to the SDK and goes
+through the same shim hook as `initialize`.
+
+**Implementation**: `pkg/vmcp/server/instructions.go`, `pkg/vmcp/core/core_vmcp.go` (`Discover`)
+
 ## Composite Tools
 
 Composite tools are new tools defined in vMCP that orchestrate calls to multiple backend tools. They enable complex workflows without client awareness of the underlying backends.

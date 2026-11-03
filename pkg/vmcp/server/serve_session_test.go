@@ -155,6 +155,11 @@ type fakeCore struct {
 	lastCompleteRef atomic.Value // vmcp.CompletionRef
 	completeValues  []string     // returned by Complete when completeErr is nil
 
+	backendInstructions map[string]string // returned by Discover as BackendInstructions
+	// instructionsFor, when set, overrides backendInstructions per identity, so a
+	// wire test can prove the identity of the initialize request reaches Discover.
+	instructionsFor func(identity *auth.Identity) map[string]string
+
 	callErr           error          // when set, CallTool returns it (e.g. vmcp.ErrAuthorizationFailed)
 	readErr           error          // when set, ReadResource returns it
 	readMeta          map[string]any // when set, ReadResource sets it as result.Meta on success
@@ -366,8 +371,11 @@ func (*fakeCore) LookupBackend(context.Context, *auth.Identity, string) (*vmcp.B
 	return nil, vmcp.ErrNotFound
 }
 
-func (*fakeCore) Discover(context.Context, *auth.Identity) (core.DiscoverCapabilities, error) {
-	return core.DiscoverCapabilities{}, nil
+func (f *fakeCore) Discover(_ context.Context, identity *auth.Identity) (core.DiscoverCapabilities, error) {
+	if f.instructionsFor != nil {
+		return core.DiscoverCapabilities{BackendInstructions: f.instructionsFor(identity)}, nil
+	}
+	return core.DiscoverCapabilities{BackendInstructions: f.backendInstructions}, nil
 }
 
 func (*fakeCore) Close() error { return nil }

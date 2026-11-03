@@ -86,6 +86,7 @@ func deriveServerConfig(
 		Watcher:                 cfg.Watcher,
 		BackendRegistry:         backendRegistry,
 		SessionStorage:          cfg.SessionStorage,
+		Instructions:            cfg.Instructions,
 		SessionManagerConfig:    sessionManagerConfig,
 		// Cross-cutting (also on core.Config) — R3, not a clean partition:
 		TelemetryProvider: cfg.TelemetryProvider,

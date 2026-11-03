@@ -230,7 +230,11 @@ type modernDiscoverResult struct {
 	modernCacheable
 	SupportedVersions []string               `json:"supportedVersions"`
 	Capabilities      mcp.ServerCapabilities `json:"capabilities"`
-	Meta              modernMeta             `json:"_meta"`
+	// Instructions is the merged backend instructions text (renderInstructions),
+	// present only when forwarding is enabled and the identity may reach at
+	// least one backend that sent some.
+	Instructions string     `json:"instructions,omitempty"`
+	Meta         modernMeta `json:"_meta"`
 }
 
 // newModernDiscover builds the server/discover wire result. The capability
@@ -255,13 +259,14 @@ type modernDiscoverResult struct {
 // source of the version list. Anyone re-routing gated discover to
 // dispatchModern must revisit this.
 func newModernDiscover(
-	hasTools, hasResources, hasTemplates, hasPrompts bool, serverName, serverVersion string,
+	hasTools, hasResources, hasTemplates, hasPrompts bool, instructions, serverName, serverVersion string,
 ) modernDiscoverResult {
 	return modernDiscoverResult{
 		ResultType:        modernResultTypeComplete,
 		modernCacheable:   newModernCacheable(),
 		SupportedVersions: []string{mcpparser.MCPVersionModern, mcp.LATEST_PROTOCOL_VERSION},
 		Capabilities:      newModernCapabilities(hasTools, hasResources, hasTemplates, hasPrompts),
+		Instructions:      instructions,
 		Meta:              newModernMeta(serverName, serverVersion),
 	}
 }

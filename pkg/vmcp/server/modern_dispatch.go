@@ -271,6 +271,7 @@ func (s *Server) dispatchModernDiscover(
 	}
 	result := newModernDiscover(
 		caps.HasTools, caps.HasResources, caps.HasResourceTemplates, caps.HasPrompts,
+		s.renderInstructions(ctx, caps.BackendInstructions),
 		s.config.Name, s.config.Version,
 	)
 	writeModernResult(w, parsed.ID, result)

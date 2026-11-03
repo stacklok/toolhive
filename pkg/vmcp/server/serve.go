@@ -106,6 +106,10 @@ type ServerConfig struct {
 	// "memory", local in-process storage is used.
 	SessionStorage *vmcpconfig.SessionStorageConfig
 
+	// Instructions controls whether the backends' `instructions` text is
+	// forwarded to clients (see Config.Instructions). nil forwards nothing.
+	Instructions *vmcpconfig.InstructionsConfig
+
 	// SessionManagerConfig is the pre-built construction config for the vMCP session
 	// manager (sessionmanager.New). FactoryConfig.Base is the required underlying
 	// MultiSessionFactory; the config also carries the optimizer factory/config, the
@@ -275,9 +279,7 @@ func Serve(ctx context.Context, v core.VMCP, cfg *ServerConfig) (*Server, error)
 	// returns (each session's advertised set still comes solely from its own
 	// overlay). See docs/arch/10-virtual-mcp-architecture.md for the
 	// propagation writeup.
-	mcpServer := server.NewMCPServer(
-		serveCfg.Name,
-		serveCfg.Version,
+	serverOpts := []server.ServerOption{
 		server.WithToolCapabilities(true),
 		server.WithResourceCapabilities(true, true),
 		server.WithPromptCapabilities(true),
@@ -285,7 +287,18 @@ func Serve(ctx context.Context, v core.VMCP, cfg *ServerConfig) (*Server, error)
 		server.WithHooks(hooks),
 		server.WithCompletionHandler(completionHandler),
 		server.WithSubscribeHandlers(subscribeHandler, unsubscribeHandler),
-	)
+	}
+	// Backend instructions are opt-in (aggregation.instructions.forward). The
+	// func closes over the late-assigned srv like the handlers above; the shim
+	// invokes it per initialize/server/discover request, after the SDK built
+	// the result, with the request context that carries the caller's identity
+	// (see instructionsFor).
+	if serveCfg.Instructions.ForwardEnabled() {
+		serverOpts = append(serverOpts, server.WithInstructionsFunc(func(ctx context.Context) string {
+			return srv.instructionsFor(ctx)
+		}))
+	}
+	mcpServer := server.NewMCPServer(serveCfg.Name, serveCfg.Version, serverOpts...)
 
 	// Two-phase session-creation wiring (relocated from server.New). The pluggable
 	// data storage holds serialisable session metadata (memory or Redis, reading
@@ -438,5 +451,6 @@ func buildServeConfig(cfg *ServerConfig) *Config {
 		StatusReportingInterval: cfg.StatusReportingInterval,
 		Watcher:                 cfg.Watcher,
 		SessionStorage:          cfg.SessionStorage,
+		Instructions:            cfg.Instructions,
 	}
 }

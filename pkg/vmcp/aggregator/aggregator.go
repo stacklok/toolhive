@@ -85,6 +85,10 @@ type BackendCapabilities struct {
 
 	// SupportsSampling indicates if the backend supports MCP sampling.
 	SupportsSampling bool
+
+	// Instructions is the server-level usage text the backend advertised at
+	// its handshake (see vmcp.CapabilityList.Instructions). Empty when none.
+	Instructions string
 }
 
 // ResolvedCapabilities contains capabilities after conflict resolution.
@@ -189,6 +193,12 @@ type AggregatedCapabilities struct {
 
 	// RoutingTable maps capabilities to their backend targets.
 	RoutingTable *vmcp.RoutingTable
+
+	// BackendInstructions is the `instructions` text each backend advertised
+	// at its handshake, keyed by backend ID. A backend that sent none is
+	// absent. The text is kept raw and per backend: the server layer decides,
+	// per caller, which backends' text to advertise and how to render it.
+	BackendInstructions map[string]string
 
 	// Metadata contains aggregation statistics and info.
 	Metadata *AggregationMetadata

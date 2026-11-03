@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -152,6 +153,17 @@ func startXRTServer(t *testing.T, backend string) *xrtEnv {
 // RunConfig has no field for it.
 func startXRTServerWith(t *testing.T, backend string, mutate func(cfg *authserver.RunConfig, issuer string)) *xrtEnv {
 	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	return startXRTServerOn(t, backend, listener, mutate)
+}
+
+// startXRTServerOn is startXRTServerWith on a listener the caller has already
+// bound, for a test that must know this server's issuer before it starts.
+func startXRTServerOn(
+	t *testing.T, backend string, listener net.Listener, mutate func(cfg *authserver.RunConfig, issuer string),
+) *xrtEnv {
+	t.Helper()
 	brokerKey := newAssertionKey(t, "broker-key")
 	jwksFile := filepath.Join(t.TempDir(), "broker.jwks")
 	writeJWKS(t, jwksFile, brokerKey)
@@ -175,7 +187,7 @@ func startXRTServerWith(t *testing.T, backend string, mutate func(cfg *authserve
 		GrantTypes:    []string{oauthproto.GrantTypeAuthorizationCode, oauthproto.GrantTypeRefreshToken},
 		Scopes:        []string{"openid", "profile", "offline_access"}, Audience: []string{cfgAudienceA},
 	}))
-	srv, issuer, embedded, _ := startEmbeddedAuthServer(t, func(cfg *authserver.RunConfig, issuer string) {
+	srv, issuer, embedded, _ := startEmbeddedAuthServerOn(t, listener, func(cfg *authserver.RunConfig, issuer string) {
 		clients(cfg)
 		cfg.AllowedAudiences = []string{cfgAudienceA, xrtOtherAudience}
 		cfg.InboundGrants.JWTBearer = &authserver.JWTBearerInboundGrantRunConfig{

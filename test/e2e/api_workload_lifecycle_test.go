@@ -357,7 +357,7 @@ var _ = Describe("Workload Lifecycle API", Label("api", "api-workloads", "worklo
 				By("Updating the workload with environment variables")
 				updateReq := map[string]interface{}{
 					"image": "osv",
-					"env": map[string]string{
+					"env_vars": map[string]string{
 						"TEST_VAR": "test-value",
 					},
 				}
@@ -553,7 +553,7 @@ var _ = Describe("Workload Lifecycle API", Label("api", "api-workloads", "worklo
 				createReq := map[string]interface{}{
 					"name":  workloadName,
 					"image": "osv",
-					"env": map[string]string{
+					"env_vars": map[string]string{
 						"TEST_VAR": "test-value",
 					},
 				}

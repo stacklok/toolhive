@@ -1336,6 +1336,16 @@ func TestRedisStorage_ClientAssertionJWT(t *testing.T) {
 		})
 	})
 
+	t.Run("excessive lifetime is invalid_client", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
+			err := s.SetClientAssertionJWT(ctx, "long-jti", time.Now().Add(time.Hour))
+			var rfcErr *fosite.RFC6749Error
+			require.ErrorAs(t, err, &rfcErr)
+			assert.Equal(t, fosite.ErrInvalidClient.ErrorField, rfcErr.ErrorField)
+			assert.Equal(t, 401, rfcErr.CodeField)
+		})
+	})
+
 	t.Run("expired JTI is not stored", func(t *testing.T) {
 		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
 			require.NoError(t, s.SetClientAssertionJWT(ctx, "expired-jti", time.Now().Add(-time.Hour)))

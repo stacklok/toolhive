@@ -543,7 +543,8 @@ func TestConfiguredPrivateKeyJWTClientKeepsIDAcrossKeyRotation(t *testing.T) {
 	srv = start()
 	assert.Equal(t, http.StatusOK, exchange(srv, newKey).status, "new key is accepted under the same client_id")
 	refused := exchange(srv, oldKey)
-	assert.Equal(t, http.StatusBadRequest, refused.status, refused.body)
+	assert.Equal(t, http.StatusUnauthorized, refused.status, refused.body)
+	assert.Equal(t, "invalid_client", refused.body["error"])
 	assert.Contains(t, refused.body["error_description"], "old-key", "the refused key is reported by its kid")
 }
 

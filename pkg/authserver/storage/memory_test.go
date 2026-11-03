@@ -954,6 +954,17 @@ func TestMemoryStorage_RenewClientTTL(t *testing.T) {
 	})
 }
 
+func TestMemoryStorage_SetClientAssertionJWT_RejectsExcessiveLifetime(t *testing.T) {
+	withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+		err := s.SetClientAssertionJWT(ctx, "long-jti", time.Now().Add(time.Hour))
+
+		var rfcErr *fosite.RFC6749Error
+		require.ErrorAs(t, err, &rfcErr)
+		assert.Equal(t, fosite.ErrInvalidClient.ErrorField, rfcErr.ErrorField)
+		assert.Equal(t, 401, rfcErr.CodeField)
+	})
+}
+
 func TestMemoryStorage_ClientAssertionJWT(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

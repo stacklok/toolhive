@@ -586,6 +586,8 @@ var _ = Describe("Workload Lifecycle API", Label("api", "api-workloads", "worklo
 				err = json.NewDecoder(exportResp.Body).Decode(&runConfig)
 				Expect(err).ToNot(HaveOccurred(), "Response should be valid JSON")
 				Expect(runConfig).To(HaveKey("container_name"))
+				Expect(runConfig).To(HaveKeyWithValue("env_vars", HaveKeyWithValue("TEST_VAR", "test-value")),
+					"the export should include the env vars the workload was created with")
 			})
 
 			It("should return 404 for non-existent workload", func() {

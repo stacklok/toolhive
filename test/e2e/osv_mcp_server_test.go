@@ -5,7 +5,6 @@ package e2e_test
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -393,7 +392,7 @@ var _ = Describe("OsvMcpServer", Label("mcp", "mcp-run", "streamable-http", "e2e
 			// the start and leave a stdio workload behind. Both pass, but an
 			// accepted start must get as far as creating its container, so the
 			// removal below cannot race the detached start (#7043).
-			It("should reject stdio transport for OSV or start it as a removable stdio workload [Serial]", func() {
+			It("should reject stdio transport for OSV or start a stdio workload whose container exists [Serial]", func() {
 				By("Trying to run OSV with stdio transport")
 				stdout, stderr, err := e2e.NewTHVCommand(config, "run",
 					"--name", serverName,
@@ -408,24 +407,10 @@ var _ = Describe("OsvMcpServer", Label("mcp", "mcp-run", "streamable-http", "e2e
 
 				GinkgoWriter.Printf("Note: thv accepted the OSV stdio start: %s\n", stdout)
 				// OSV does not serve stdio, so the workload restart-loops and never
-				// reaches running. Removing it before the detached start has created
-				// its container returns at once, and the start then creates the
-				// workload's network after the removal, leaking it (#7043). The
-				// network is created before the container, and logs succeed only once
-				// the container exists, so wait for logs before removing it. Status
-				// "error" is terminal, so fail at once rather than wait out the timeout.
+				// reaches running. Wait for its container instead, so the removal
+				// below cannot race the detached start (#7043).
 				By("Waiting for the stdio workload's container to exist")
-				Eventually(func() error {
-					workload, findErr := e2e.FindWorkload(func(args ...string) *e2e.THVCommand {
-						return e2e.NewTHVCommand(config, args...)
-					}, serverName)
-					if findErr == nil && workload != nil && workload.Status == runtime.WorkloadStatusError {
-						StopTrying(fmt.Sprintf("stdio workload %s entered terminal status %q: %s",
-							serverName, workload.Status, workload.StatusContext)).Now()
-					}
-					_, _, logsErr := e2e.NewTHVCommand(config, "logs", serverName).Run()
-					return logsErr
-				}, e2e.ServerReadyTimeout(), time.Second).Should(Succeed(),
+				Expect(e2e.WaitForWorkloadContainer(config, serverName, e2e.ServerReadyTimeout())).To(Succeed(),
 					"the stdio workload's container should exist before it is removed")
 				_ = e2e.StopAndRemoveMCPServer(config, serverName)
 			})

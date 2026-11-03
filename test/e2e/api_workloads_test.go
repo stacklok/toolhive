@@ -627,20 +627,24 @@ const apiWorkloadRemovalTimeout = 2 * time.Minute
 // that it does not keep holding a Docker network for the rest of the suite. A
 // workload the spec already deleted is tolerated.
 //
-// The API deletes in the background, and the thv serve process is killed by
-// the cleanup StartServer registered, so this waits for the workload to leave
-// the list; otherwise the kill could interrupt the deletion. DeferCleanup runs
-// in reverse order, so call this after StartServer. A workload that is still
-// listed when the wait ends is logged rather than failing the spec; the
-// suite-level cleanup in e2e_suite_test.go remains as a backstop.
+// Settle wait: before deleting, it waits (up to ServerReadyTimeout) for the
+// workload to leave the starting state. Deleting a workload whose detached
+// start is still running returns at once, and the start then creates the
+// workload's network after the removal, leaking it (#7043). A spec that ends
+// right after the create, or after only checking that the workload is listed,
+// would otherwise hit that race. A workload still starting when this wait ends
+// is deleted anyway.
 //
-// Before deleting, it waits (up to ServerReadyTimeout) for the workload to
-// leave the starting state. Deleting a workload whose detached start is still
-// running returns at once, and the start then creates the workload's network
-// after the removal, leaking it (#7043). A spec that ends right after the
-// create, or after only checking that the workload is listed, would otherwise
-// hit that race. A workload still starting when the wait ends is deleted
-// anyway.
+// Removal wait: the API deletes in the background, so after the delete it
+// waits (up to apiWorkloadRemovalTimeout) for the workload to leave the list.
+// A workload still listed when this wait ends is logged rather than failing
+// the spec; the suite-level cleanup in e2e_suite_test.go remains as a
+// backstop.
+//
+// The removal wait matters because the thv serve process is killed by the
+// cleanup StartServer registered, which could otherwise interrupt the
+// deletion. DeferCleanup runs in reverse order, so call this after
+// StartServer.
 func deleteAPIWorkloadOnCleanup(server *e2e.Server, name string) {
 	DeferCleanup(func() {
 		settleDeadline := time.Now().Add(e2e.ServerReadyTimeout())

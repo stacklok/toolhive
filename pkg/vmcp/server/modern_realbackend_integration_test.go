@@ -361,7 +361,7 @@ func TestIntegration_Modern_RealBackend_ElicitingToolFailsCleanly(t *testing.T) 
 }
 
 // TestIntegration_Modern_RealBackend_GoSDKClientErrorRecovery verifies a real
-// go-sdk v1.8.0 client receives the JSON-RPC -32021 body from a 400 response
+// go-sdk client receives the JSON-RPC -32021 body from a 400 response
 // and can continue using the same session for a later request.
 func TestIntegration_Modern_RealBackend_GoSDKClientErrorRecovery(t *testing.T) {
 	t.Parallel()
@@ -448,12 +448,12 @@ func TestIntegration_Modern_RealBackend_ProgressDropped(t *testing.T) {
 //   - A WELL-FORMED Modern logging/setLevel is an unknown method to
 //     dispatchModern: 404 + -32601, matching go-sdk's own server ("method
 //     removed in the new protocol").
-//   - The request go-sdk v1.8.0 sends is malformed — its
+//   - The request go-sdk sends is malformed — its
 //     SetLoggingLevel omits the per-request _meta injection, producing a Modern
 //     header with no _meta protocolVersion — and vMCP's classifier CORRECTLY
 //     rejects that shape with 400 + -32020 (HeaderMismatch). Loosening this to
 //     accept the malformed request would be worse than the failing upstream
-//     call. This malformed shape is still present in go-sdk v1.8.0:
+//     call. This malformed shape is still present in go-sdk:
 //     modelcontextprotocol/go-sdk#1116 was closed wont-fix-by-design (the RPC
 //     is removed on Modern), so -32020 is the standing contract for any caller
 //     still using the removed RPC on a Modern session, not a temporary bug

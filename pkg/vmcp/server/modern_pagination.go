@@ -105,7 +105,7 @@ import (
 // between the two page-size values. The in-package Modern tests pin behaviorally
 // that a 1001-item corpus yields a 1000-item first page. The integration-tier
 // Over1000Tools regression uses the core v0.0.58 mcpcompat client (backed by
-// go-sdk v1.8.0, which probes Modern first), but it does not assert the negotiated
+// go-sdk, which probes Modern first), but it does not assert the negotiated
 // protocol version; if the Modern gate closes, the test can still pass on the
 // Legacy split. The e2e RawMCPClient can pin a revision explicitly, but there is
 // no integration-tier assertion that the Modern endpoint returns these page

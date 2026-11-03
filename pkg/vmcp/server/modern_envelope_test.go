@@ -453,7 +453,7 @@ func TestModernCompleteTolerateNil(t *testing.T) {
 }
 
 // TestModernComplete pins the completion/complete wire shape from
-// newModernComplete against go-sdk v1.8.0's CompleteResult and
+// newModernComplete against go-sdk's CompleteResult and
 // CompletionResultDetails: a "completion" object with values/total/hasMore,
 // values/total/hasMore, resultType, and _meta.serverInfo -- no Cacheable,
 // matching the SDK (CompleteResult never embeds it). JSONEq's exact-match

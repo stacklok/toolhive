@@ -55,7 +55,7 @@ const dualEraRedisKeyPrefix = "thv:vmcp:dualera:"
 // ~:538-541, ~:562-564) already defaults Transport to "streamable-http" and
 // prepends a TRANSPORT env entry itself -- see the Legacy backend's Env
 // comment below.) Setting BACKEND_MODE explicitly is deliberate: since #6004
-// yardstick-server is a single go-sdk v1.7 build serving both MCP eras, and a
+// yardstick-server is a single go-sdk build serving both MCP eras, and a
 // forgotten STATELESS would silently collapse this "mixed" backend set into
 // two Legacy backends -- every assertion in this file would still pass while
 // testing one era twice.
@@ -67,7 +67,7 @@ const dualEraRedisKeyPrefix = "thv:vmcp:dualera:"
 //
 // IMPORTANT -- this spec must NOT use CreateInitializedMCPClient, WaitForExpectedTools,
 // or ToolsContainAll (all in helpers.go / wait_for_tools_helpers.go). Those build a
-// go-sdk/mcpcompat client, and go-sdk v1.7's Connect is Modern-first: it sends
+// go-sdk/mcpcompat client, and go-sdk's Connect is Modern-first: it sends
 // server/discover before anything else. This vMCP serves Modern (Redis session
 // storage does not close the capability gate -- see the header above), so
 // classifyingHandler routes server/discover to dispatchModern instead of the
@@ -511,7 +511,7 @@ var _ = Describe("VirtualMCPServer Dual-Era Backends over Redis Session Storage"
 		// also 503 via sessionmanager.Manager.Validate's local-session branch,
 		// which returns (false, err) on Redis's transient error
 		// (session_manager.go:444-471,
-		// toolhive-core v0.0.58 mcpcompat StreamableHTTPServer). A
+		// toolhive-core mcpcompat StreamableHTTPServer). A
 		// client that instead runs "initialize" DURING the outage gets a 200
 		// with NO Mcp-Session-Id -- Manager.Generate returns "" after two
 		// failed storage.Create attempts (session_manager.go:238-267), and

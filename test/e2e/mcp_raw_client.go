@@ -41,7 +41,7 @@ const (
 	// HeaderMCPSessionID is the HTTP header carrying the Legacy session id.
 	HeaderMCPSessionID = "Mcp-Session-Id"
 	// HeaderMCPMethod is the HTTP header carrying the JSON-RPC method on Modern
-	// requests. A real go-sdk v1.7 streamable-HTTP server requires it on every
+	// requests. A real go-sdk streamable-HTTP server requires it on every
 	// Modern request (see pkg/mcp/revision.go ValidateHeaderConsistency); the
 	// ToolHive single-server proxy does not read it, but a Modern backend does.
 	HeaderMCPMethod = "Mcp-Method"
@@ -123,7 +123,7 @@ func NewModernRequest(method string, params map[string]any) (*RawRequest, error)
 }
 
 // modernNameHeader returns the plain Mcp-Name header value for a name-bearing
-// Modern method, mirroring go-sdk v1.8.0's streamable-HTTP encoding and
+// Modern method, mirroring go-sdk's streamable-HTTP encoding and
 // pkg/mcp's ValidateHeaderConsistency: tools/call and prompts/get name the
 // "name" param, resources/read names the "uri" param. Any other method (e.g.
 // tools/list, server/discover) carries no Mcp-Name, and sending one there

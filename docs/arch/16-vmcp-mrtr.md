@@ -79,7 +79,7 @@ halves of these cells were built in #6006; this table is the MRTR overlay.
 | Downstream client | Backend | MRTR shape |
 |---|---|---|
 | Modern | Modern | **Stateless pass-through** (the core design, below) |
-| Modern | Legacy | **No MRTR bridge — deliberate.** Parking a live Legacy backend call server-side to synthesize `input_required` rounds is per-round server state with token-capability and replica-affinity costs: the session the revision removed, in different clothes. Costed and rejected in the client-edge limitation section of doc 10; the sanctioned stateful path is the Tasks extension (SEP-2663). The call fails with the two-path contract #6061 implements in `writeModernCallFailure`: `-32021` at HTTP 400 with `data.requiredCapabilities` when the client did not declare the capability (go-sdk v1.8.0 clients decode the JSON-RPC error body without permanently breaking the connection), or an explicit `-32603` at HTTP 200 naming SEP-2322 when it did. That contract is **permanent for this cell** — MRTR slices supersede it only where the backend is Modern. |
+| Modern | Legacy | **No MRTR bridge — deliberate.** Parking a live Legacy backend call server-side to synthesize `input_required` rounds is per-round server state with token-capability and replica-affinity costs: the session the revision removed, in different clothes. Costed and rejected in the client-edge limitation section of doc 10; the sanctioned stateful path is the Tasks extension (SEP-2663). The call fails with the two-path contract #6061 implements in `writeModernCallFailure`: `-32021` at HTTP 400 with `data.requiredCapabilities` when the client did not declare the capability (go-sdk clients decode the JSON-RPC error body without permanently breaking the connection), or an explicit `-32603` at HTTP 200 naming SEP-2322 when it did. That contract is **permanent for this cell** — MRTR slices supersede it only where the backend is Modern. |
 | Legacy | Modern | **In-request bridge**: vMCP fulfills the backend's `inputRequests` through the existing Legacy forwarding seams and retries the backend call itself (below) |
 | Legacy | Legacy | Today's server-initiated forwarding, unchanged |
 
@@ -220,7 +220,7 @@ pod — fulfills each `inputRequest` through the existing server-initiated
 forwarding seams (`vmcp.ElicitationRequester`, `vmcp.SamplingRequester`, both
 capability-gated on what the Legacy client advertised at `initialize`), then
 retries the backend call with the collected `inputResponses` and echoed
-`requestState`. Precedent: go-sdk v1.8.0's `serverMultiRoundTripMiddleware`
+`requestState`. Precedent: go-sdk's `serverMultiRoundTripMiddleware`
 performs exactly this bridge for its handlers ("When a handler returns
 InputRequests and the client does not support multi-round-trip, the middleware
 fulfills the requests by calling the client directly and reinvokes the
@@ -366,7 +366,7 @@ relay-only transit on cell 1 and an explicit refusal on cell 3.
 
 ## Gaps in the pinned SDK surface (upstream candidates for toolhive-core)
 
-Verified against go-sdk v1.8.0 and toolhive-core v0.0.58's `mcpcompat`:
+Verified against go-sdk and toolhive-core's `mcpcompat`:
 
 1. **mcpcompat still drops MRTR fields in both directions.** go-sdk's
    `mcp.CallToolResult` exports `InputRequests` and `RequestState`, but
@@ -376,7 +376,7 @@ Verified against go-sdk v1.8.0 and toolhive-core v0.0.58's `mcpcompat`:
    `requestState`, so its public client cannot carry a retry round. The payload
    is lost on decode and cannot be sent back on retry. Upstream ask: add both
    field pairs to the compatibility types.
-2. **No public one-shot client call path.** go-sdk v1.8.0 and mcpcompat can
+2. **No public one-shot client call path.** go-sdk and mcpcompat can
    negotiate Modern with `server/discover` and issue calls through a
    `ClientSession`. ToolHive's `modernCall` intentionally uses a one-request,
    identity-scoped HTTP path instead, without retaining a backend
@@ -391,11 +391,11 @@ Verified against go-sdk v1.8.0 and toolhive-core v0.0.58's `mcpcompat`:
    emit `resultType` and `_meta.serverInfo` correctly. An upstream ask is to
    expose stateless client/server MRTR primitives.
 4. **`ServerSession.assertServerInitiatedRequestAllowed` is version-based.** In
-   go-sdk v1.8.0 it rejects elicitation, sampling, and roots on protocol version
+   go-sdk it rejects elicitation, sampling, and roots on protocol version
    2026-07-28 without consulting per-request capabilities. That matches the
    final revision's removal of server-initiated requests; a declared capability
    does not restore the Legacy request path.
-5. **The old -32021 status workaround is obsolete.** go-sdk v1.8.0 decodes a
+5. **The old -32021 status workaround is obsolete.** go-sdk decodes a
    non-2xx JSON-RPC error body and wraps it with `ErrRejected`, so a per-call
    HTTP 400 does not permanently break the client connection by default. ToolHive
    now sends the undeclared-capability `-32021` at the required HTTP 400; the

@@ -305,7 +305,7 @@ Modern-first — it asks, rather than assuming Legacy:
    reads `supportedVersions`.
 
 **`supportedVersions` is the authoritative signal — a clean `server/discover`
-response is not, by itself, proof of Modern.** The go-sdk v1.8.0 compatibility
+response is not, by itself, proof of Modern.** The go-sdk compatibility
 shim answers `server/discover` even when it is negotiating *down* to Legacy, so
 vMCP requires `supportedVersions` to actually contain `2026-07-28`; if it does
 not, the probe fails with `errModernNegotiatedDown` and the backend is
@@ -361,7 +361,7 @@ under that prefix (except the end-to-end passthrough keys — `related-task`,
 
 - **Request egress** — before any Legacy backend call (`pkg/vmcp/client`,
   `pkg/vmcp/session/internal/backend`) and on the Modern request path, which
-  overlays vMCP's own authoritative values afterwards. go-sdk v1.8.0 validates
+  overlays vMCP's own authoritative values afterwards. go-sdk validates
   `_meta.protocolVersion`; a mismatch is rejected as JSON-RPC `-32020` at
   HTTP 400.
 - **Response/request egress to the client** — Legacy strips inside
@@ -392,7 +392,7 @@ naming explicitly rather than leaving to be inferred:
 **Mid-call elicitation and sampling forwarding, which vMCP *does* implement for
 Legacy backends (`forwardingClientOptions`), is structurally unavailable for
 Modern backends.** A spec-compliant Modern backend that needs caller input
-returns `-32021` with `data.requiredCapabilities` at HTTP 400. go-sdk v1.8.0
+returns `-32021` with `data.requiredCapabilities` at HTTP 400. go-sdk
 decodes non-2xx JSON-RPC error bodies by default and wraps the error with
 `ErrRejected`, so this response does not permanently break the backend client
 connection. vMCP still cannot fulfill the missing input because it declared no
@@ -423,7 +423,7 @@ client that did NOT declare the needed capability in its per-request
 `clientCapabilities`, SEP-2575 requires `-32021`
 `MissingRequiredClientCapabilityError` at **HTTP 400**, with
 `data.requiredCapabilities`. ToolHive now sends that response from
-`writeModernMissingCapability`. go-sdk v1.8.0's Streamable HTTP client decodes
+`writeModernMissingCapability`. go-sdk's Streamable HTTP client decodes
 non-2xx JSON-RPC error bodies by default and wraps the error with `ErrRejected`,
 so this individual 400 does not permanently break the client connection. The
 `MCPGODEBUG=noprotocolerrorbody=1` setting restores the older behavior. The
@@ -615,7 +615,7 @@ limiting does not gate Modern either: the limiter is a core decorator
 (`pkg/vmcp/ratelimit`), so both eras meter the same `CallTool` seam, and the
 Modern dispatcher preserves the limiter's coded error on the wire — a real
 JSON-RPC error object, `429` with `data.retryAfterSeconds`
-(`writeModernCodedError`, at HTTP 200 deliberately: go-sdk v1.8.0 treats an HTTP
+(`writeModernCodedError`, at HTTP 200 deliberately: go-sdk treats an HTTP
 429 as transient and returns before decoding the body, so the retry details would
 be lost if the transport status were 429) — where the Legacy SDK seam can only
 smuggle the same code and data into an `IsError` tool result's
@@ -640,7 +640,7 @@ doc comment).
 
 Wire behavior when the gate is closed:
 
-- **`server/discover` falls through to the SDK** instead of dispatching. go-sdk v1.8.0's
+- **`server/discover` falls through to the SDK** instead of dispatching. go-sdk's
   `filterSupportedVersions` keeps every version the transport's
   `SupportsProtocolVersion` accepts, and the stateful transport excludes only
   >= 2026-07-28 (those require `Stateless`), so the probe answer is the
@@ -864,7 +864,7 @@ session's own list actually returns.
 
 **Scope**: additions AND removals propagate for tools. For resources
 (including resource templates) and prompts, only **additions** propagate
-today: toolhive-core's mcpcompat per-session sync for resources/resource
+today: toolhive-core mcpcompat per-session sync for resources/resource
 templates/prompts (`syncSessionResources`/`syncSessionResourceTemplates`/
 `syncSessionPrompts` in `mcpcompat/server/session.go`) is add-only — unlike
 `syncSessionTools`, which also calls `RemoveTools` — so a backend-removed
@@ -1195,7 +1195,7 @@ reach it.
   created or whose creation failed, and is rejected.
 - Missing, unowned (still being created), foreign and ambiguous-carrier
   requests all get the same plain-text 404 `Session terminated`, byte for byte.
-  Unlike the direct proxies' JSON-RPC 404, it has no JSON-RPC body: go-sdk 1.7+
+  Unlike the direct proxies' JSON-RPC 404, it has no JSON-RPC body: go-sdk
   clients treat a JSON-RPC error body on a 404 as a per-call rejection and never
   re-initialize, while a plain-text 404 (what the transport returns for an
   unknown session) makes them start a new session.

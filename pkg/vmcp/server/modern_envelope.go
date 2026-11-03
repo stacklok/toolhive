@@ -17,9 +17,9 @@ import (
 )
 
 // This file hand-rolls the MCP 2026-07-28 ("Modern") stateless response
-// envelope: the wire shape go-sdk v1.8.0 produces for a single-shot
+// envelope: the wire shape go-sdk produces for a single-shot
 // tools/list, resources/list, resources/templates/list, prompts/list,
-// tools/call, resources/read, and prompts/get. In v1.8.0, these Modern
+// tools/call, resources/read, and prompts/get. In the current go-sdk, these Modern
 // annotations still depend on unexported SDK functions (resultType,
 // setCompleteResultType, annotateServerInfo) that run inside the exact
 // ServerSession dispatch this package bypasses for Modern stateless requests.
@@ -177,7 +177,7 @@ type modernGetPromptResult struct {
 	Meta        map[string]any      `json:"_meta"`
 }
 
-// modernCompletionDetails mirrors go-sdk v1.8.0's CompletionResultDetails:
+// modernCompletionDetails mirrors go-sdk's CompletionResultDetails:
 // Values has no omitempty tag there, so it doesn't here either -- an empty
 // result still marshals "values":[] rather than omitting the field.
 type modernCompletionDetails struct {

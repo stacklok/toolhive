@@ -109,7 +109,7 @@ var errModernTransient = errors.New("modern backend returned a transient error")
 // CANONICAL RATIONALE for the negotiate-down rule. Per SEP-2575, the advertised
 // version list — not a clean discover response or a bare -32022 alone — is the
 // authoritative signal of whether a peer actually speaks the Modern (2026-07-28)
-// revision: a go-sdk v1.8.0 shim answers both server/discover and protocol errors
+// revision: a go-sdk shim answers both server/discover and protocol errors
 // even for a backend negotiating down to Legacy, so neither on its own is proof
 // of Modern. go-sdk's own reference client applies the same rule to discover
 // results and to the `data.supported` list in -32022 errors.
@@ -511,7 +511,7 @@ func isModernProtocolCode(code int) bool {
 
 // classifyUnsupportedProtocolVersion resolves a -32022
 // (CodeUnsupportedProtocolVersion) error into a Modern-positive or
-// negotiated-down signal. go-sdk v1.8.0's reference client reads the -32022
+// negotiated-down signal. go-sdk's reference client reads the -32022
 // `data.supported` list and retries Modern when it finds a mutually supported
 // version >= 2026-07-28 (a range check), falling back to Legacy initialize
 // otherwise. This diverges from that: it exact-matches

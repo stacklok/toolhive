@@ -121,7 +121,7 @@ func (s *Server) classifyingHandler(next http.Handler) http.Handler {
 		// its truthful supported list is Legacy only. Preserve this ToolHive-owned
 		// -32022 response with data.supported; it is distinct from the SDK's default
 		// stateful-server rejection, which is also JSON-RPC -32022 / HTTP 400 with
-		// data.supported in go-sdk v1.8.0 (plain text only with
+		// data.supported in go-sdk (plain text only with
 		// MCPGODEBUG=plaintextstatefulrejection=1).
 		//
 		// server/discover is deliberately exempt: it is how a client learns which
@@ -130,7 +130,7 @@ func (s *Server) classifyingHandler(next http.Handler) http.Handler {
 		// and its stateful path answers discover with the transport-filtered version
 		// list -- which excludes 2026-07-28 for a stateful transport -- so the
 		// fall-through is not just tolerable but the correct advertisement: a
-		// Modern-first client (go-sdk v1.8.0 probes discover before initialize)
+		// Modern-first client (go-sdk probes discover before initialize)
 		// reads it and lands on the Legacy handshake without ever seeing an error.
 		if blocked := s.modernDispatchBlockers(); len(blocked) > 0 {
 			if parsed.Method == methodServerDiscover {

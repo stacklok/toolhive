@@ -333,9 +333,9 @@ type initResult struct {
 // skipped. The second return is true when the skip is a deliberate Modern
 // (2026-07-28 revision) skip rather than a failure.
 //
-// Why a known Modern backend is skipped. go-sdk v1.8.0 can negotiate Modern
+// Why a known Modern backend is skipped. go-sdk can negotiate Modern
 // through server/discover, and its stateful-server rejection is no longer the
-// `session not found` behavior described by the old v1.7 comment. The v1.8 client
+// `session not found` behavior described by the earlier comment. The go-sdk client
 // can open subscriptions/listen when the backend advertises push capabilities;
 // that is a long-lived per-request stream, not a session the vMCP factory needs
 // to retain. This factory holds backend sessions for the Legacy session path

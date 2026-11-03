@@ -21,11 +21,11 @@ import (
 // this method for unsolicited notifications.
 //
 // WHY THIS HANDLER EXISTS. vMCP advertises Modern capabilities with all push
-// and listChanged flags false. Accordingly, go-sdk v1.8.0's client.Connect does
+// and listChanged flags false. Accordingly, go-sdk's client.Connect does
 // not open subscriptions/listen for vMCP: it opens a listen stream only when the
-// corresponding server listChanged capability is advertised. mcpcompat v0.0.58
+// corresponding server listChanged capability is advertised. mcpcompat
 // still installs notification handlers unconditionally, but that does not make
-// go-sdk v1.8.0 Connect open a stream. This handler serves spec-conformant
+// go-sdk Connect open a stream. This handler serves spec-conformant
 // clients that do request subscriptions/listen; currently it honestly
 // acknowledges none, because vMCP advertises no push capabilities.
 //
@@ -47,7 +47,7 @@ import (
 // vMCP to first start ADVERTISING a push capability in newModernCapabilities;
 // until then there is deliberately nothing for this stream to carry.
 //
-// Known limitation worth stating plainly: go-sdk v1.8.0's client ignores the
+// Known limitation worth stating plainly: go-sdk's client ignores the
 // acknowledgement (its callSubscriptionsAckHandler returns (nil, nil)), so
 // observable in behavior. It is correct on the wire regardless, and the
 // alternative -- holding a stream open forever delivering nothing -- is strictly
@@ -73,7 +73,7 @@ import (
 //     binds a DELIVERY implementation rather than this handler (which delivers
 //     nothing); it is restated at the #5743 hand-off below so it is not lost.
 //
-// go-sdk v1.8.0 agrees and can be read as a cross-check: its protocol types and
+// go-sdk agrees and can be read as a cross-check: its protocol types and
 // server implementation use the same subscription ID and acknowledgement rules,
 // but the final schema is the authority. An earlier version of this comment
 // attributed these to the SDK because the accompanying spec prose does not
@@ -86,7 +86,7 @@ const (
 
 // notificationSubscriptions is the per-type, per-URI opt-in set carried by both
 // subscriptions/listen params and the acknowledgement. It mirrors the
-// go-sdk v1.8.0 NotificationSubscriptions type; mcpcompat does not re-export it,
+// go-sdk NotificationSubscriptions type; mcpcompat does not re-export it,
 // so like the rest of the Modern envelope this is a hand-rolled serializer.
 //
 // These four are the ENTIRE subscribable universe under the 2026-07-28 spec. Progress,
@@ -108,7 +108,7 @@ func (n notificationSubscriptions) isEmpty() bool {
 
 // subscriptionsListenParams is the decoded subscriptions/listen request params.
 // Notifications is a pointer so an absent field is distinguishable from an
-// explicit empty object: the spec makes it REQUIRED, and go-sdk v1.8.0 rejects
+// explicit empty object: the spec makes it REQUIRED, and go-sdk rejects
 // a nil value with invalid-params, so vMCP must too.
 type subscriptionsListenParams struct {
 	Notifications *notificationSubscriptions `json:"notifications"`
@@ -122,7 +122,7 @@ type subscriptionsAcknowledgedParams struct {
 }
 
 // subscriptionsListenResult is the response to subscriptions/listen, signalling
-// that the subscription ended gracefully. Mirrors go-sdk v1.8.0's
+// that the subscription ended gracefully. Mirrors go-sdk's
 // SubscriptionsListenResult: resultType "complete" plus a subscriptionId-tagged
 // _meta.
 type subscriptionsListenResult struct {
@@ -143,7 +143,7 @@ type subscriptionsListenResult struct {
 //
 // The response is an SSE stream, not a single JSON body, because the protocol
 // requires two messages on it: the acknowledgement notification first, then the
-// result. go-sdk v1.8.0 also forces SSE for this method. The stream is closed as
+// result. go-sdk also forces SSE for this method. The stream is closed as
 // soon as both are written because the honored set is empty and there is
 // consequently nothing to keep it open for -- matching go-sdk's reference server,
 // which blocks on the request context only when it has agreed to honor at least

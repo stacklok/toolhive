@@ -148,7 +148,7 @@ var modernSignalMetaKeys = []string{
 // Use it on BOTH hops, in both directions, wherever a _meta map crosses vMCP:
 //
 //   - Legacy backend egress (request): a downstream Modern caller's
-//     _meta.protocolVersion is only valid on a stateless Modern hop. go-sdk v1.8.0
+//     _meta.protocolVersion is only valid on a stateless Modern hop. go-sdk
 //     rejects the request outright (HTTP 400: "protocol version ... is only
 //     supported on stateless HTTP servers") for ANY _meta.protocolVersion on a
 //     stateful streamable-HTTP server, regardless of its value.
@@ -207,7 +207,7 @@ func ModernRequestMeta(clientName, clientVersion string) map[string]any {
 
 // The following JSON-RPC error codes are defined by the final 2026-07-28 MCP
 // specification for the stateless "Modern" revision, except for the last three,
-// which are standard JSON-RPC 2.0 codes. go-sdk v1.8.0 defines -32020, -32021,
+// which are standard JSON-RPC 2.0 codes. go-sdk defines -32020, -32021,
 // -32022, and -32042, and toolhive-core/mcpcompat re-exports them. These remain
 // local package values, matching this repo's existing convention for JSON-RPC
 // codes (e.g. streamable_proxy.go's -32603), rather than adding a dependency

@@ -105,7 +105,7 @@ func (s *Server) dispatchModern(w http.ResponseWriter, r *http.Request, parsed *
 		s.dispatchModernSubscriptionsListen(ctx, w, parsed, identity)
 	case "ping":
 		// ping does NOT exist in 2026-07-28: it appears nowhere in the final
-		// schema, and go-sdk v1.8.0 removes it for this revision, answering
+		// schema, and go-sdk removes it for this revision, answering
 		// -32601. So answering it at all is deliberate LENIENCY toward a client
 		// that pings anyway, not spec conformance -- an earlier version of this
 		// comment claimed the latter, which was wrong twice over: the method is
@@ -399,9 +399,9 @@ func (s *Server) dispatchModernPromptGet(
 }
 
 // modernCompleteWireParams is the completion/complete request params, decoded
-// directly from parsed.Params. It mirrors go-sdk v1.8.0's CompleteParams,
+// directly from parsed.Params. It mirrors go-sdk's CompleteParams,
 // CompleteReference, CompleteParamsArgument, and CompleteContext field-for-field
-// rather than reusing an SDK type. toolhive-core v0.0.58's mcpcompat/mcp
+// rather than reusing an SDK type. toolhive-core mcpcompat/mcp
 // CompleteParams has an untyped Ref field (any), so there is no strongly-typed
 // Modern reference shape to decode into directly. It stays local rather than
 // adding JSON tags to vmcp.CompletionRef -- the domain type intentionally carries
@@ -690,7 +690,7 @@ func writeModernURLElicitationUnsupported(w http.ResponseWriter, id any, answer 
 // data.requiredCapabilities (a ClientCapabilities object). Both -32021 writers
 // go through it, so the status is chosen in one place.
 //
-// The 400 is safe for a go-sdk client from v1.7.0 on: it decodes the JSON-RPC
+// The 400 is safe for a current go-sdk client: it decodes the JSON-RPC
 // body of a non-2xx response and wraps it in jsonrpc2.ErrRejected, so the call
 // fails and the session survives (go-sdk#1117, fixed upstream). Earlier
 // go-sdk clients treat a non-transient 4xx as a connection failure and close

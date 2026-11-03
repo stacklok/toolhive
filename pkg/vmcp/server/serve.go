@@ -250,7 +250,7 @@ func Serve(ctx context.Context, v core.VMCP, cfg *ServerConfig) (*Server, error)
 	// initialize, violating MCP 2025-11-25's "Servers that support prompts MUST
 	// declare the prompts capability during initialization".
 	//
-	// R1 (verified against toolhive-core v0.0.58 / go-sdk v1.8.0): go-sdk's own
+	// R1 (verified against toolhive-core / go-sdk): go-sdk's own
 	// AddTool/RemoveTools (and the resource/prompt equivalents) call a shared
 	// changeAndNotify that debounces (10ms) and then broadcasts the
 	// notification to EVERY session currently connected to this *gosdk.Server

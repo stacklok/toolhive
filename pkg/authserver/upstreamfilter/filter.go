@@ -8,13 +8,12 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/stacklok/toolhive/pkg/authserver/server/handlers"
 	"github.com/stacklok/toolhive/pkg/oauthproto/claims"
 )
 
 const defaultClaimName = "groups"
 
-// GroupBasedFilter implements handlers.UpstreamFilter by matching the
+// GroupBasedFilter implements UpstreamFilter by matching the
 // principal's group claim against configured rules and returning the union of
 // the matching rules' upstream provider sets. See package documentation and
 // GroupBasedFilterConfig for semantics.
@@ -26,7 +25,7 @@ type GroupBasedFilter struct {
 
 // Compile-time assertion that GroupBasedFilter satisfies the UpstreamFilter
 // contract.
-var _ handlers.UpstreamFilter = (*GroupBasedFilter)(nil)
+var _ UpstreamFilter = (*GroupBasedFilter)(nil)
 
 // NewGroupBasedFilter constructs and validates a GroupBasedFilter.
 //
@@ -79,7 +78,7 @@ func NewGroupBasedFilter(cfg GroupBasedFilterConfig, configuredUpstreams []strin
 	}, nil
 }
 
-// FilterUpstreams implements handlers.UpstreamFilter.
+// FilterUpstreams implements UpstreamFilter.
 //
 // It reads principal.GetClaims()[filter.claim], decodes it as a []string via the
 // strict OAuth claims decoder, and returns the union of every matching rule's
@@ -103,7 +102,7 @@ func NewGroupBasedFilter(cfg GroupBasedFilterConfig, configuredUpstreams []strin
 // redundant with the handler layer's own drop-unknown behavior.
 func (f *GroupBasedFilter) FilterUpstreams(
 	_ context.Context,
-	principal handlers.FilterPrincipal,
+	principal FilterPrincipal,
 	_ []string,
 ) ([]string, error) {
 	principalClaims := principal.GetClaims()

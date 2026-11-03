@@ -3854,7 +3854,8 @@ func TestBuildAuthServerRunConfig_CanonicalDelegateClientFields(t *testing.T) {
 					Audiences:    []string{"https://resource.example.com"},
 					TokenExchange: &mcpv1beta1.DelegateClientTokenExchangeConfig{
 						SelfIssuedSubjectTokens: "restricted",
-						AllowedSourceClients:    []string{"tui"}, APIAudience: "https://resource.example.com",
+						AllowedSourceClients:    []string{"tui"},
+						SubjectTokenAudiences:   []string{"https://resource.example.com"},
 					},
 				},
 				{
@@ -3897,7 +3898,7 @@ func TestBuildAuthServerRunConfig_CanonicalDelegateClientFields(t *testing.T) {
 	require.NotNil(t, broker.TokenExchange)
 	assert.Equal(t, authserver.SelfIssuedSubjectTokensRestricted, broker.TokenExchange.SelfIssuedSubjectTokens)
 	assert.Equal(t, []string{"tui"}, broker.TokenExchange.AllowedSourceClients)
-	assert.Equal(t, "https://resource.example.com", broker.TokenExchange.APIAudience)
+	assert.Equal(t, []string{"https://resource.example.com"}, broker.TokenExchange.SubjectTokenAudiences)
 
 	// restricted with an empty source list maps to own tokens only, while an
 	// absent block keeps the legacy blanket trust.

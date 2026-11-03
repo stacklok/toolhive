@@ -299,8 +299,8 @@ func buildDelegateClientRunConfigs(
 			runConfig.TokenExchange = &authserver.DelegateClientTokenExchange{
 				SelfIssuedSubjectTokens: authserver.SelfIssuedSubjectTokens(
 					delegateClient.TokenExchange.SelfIssuedSubjectTokens),
-				AllowedSourceClients: slices.Clone(delegateClient.TokenExchange.AllowedSourceClients),
-				APIAudience:          delegateClient.TokenExchange.APIAudience,
+				AllowedSourceClients:  slices.Clone(delegateClient.TokenExchange.AllowedSourceClients),
+				SubjectTokenAudiences: slices.Clone(delegateClient.TokenExchange.SubjectTokenAudiences),
 			}
 		}
 		configs[i] = runConfig

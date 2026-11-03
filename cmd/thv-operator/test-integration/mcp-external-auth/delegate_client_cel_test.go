@@ -68,13 +68,6 @@ var _ = Describe("MCPExternalAuthConfig delegate client CEL validation", func() 
 			mutate: func(c *mcpv1beta1.DelegateClientConfig) { c.JWKSRef.Key = "" }},
 		{name: "jwksRef with an empty name", base: jwksClient, errMatch: "jwksRef.name",
 			mutate: func(c *mcpv1beta1.DelegateClientConfig) { c.JWKSRef.Name = "" }},
-		{name: "apiAudience not in audiences", base: secretClient,
-			errMatch: "tokenExchange.apiAudience must be one of the client's audiences",
-			mutate: func(c *mcpv1beta1.DelegateClientConfig) {
-				c.TokenExchange = &mcpv1beta1.DelegateClientTokenExchangeConfig{
-					SelfIssuedSubjectTokens: "restricted", APIAudience: "https://other.example.com",
-				}
-			}},
 		{name: "redirect URI with a query string", base: secretClient,
 			mutate: func(c *mcpv1beta1.DelegateClientConfig) {
 				c.GrantTypes = []string{"authorization_code", tokenExchange}
@@ -123,12 +116,12 @@ var _ = Describe("MCPExternalAuthConfig delegate client CEL validation", func() 
 			mutate: func(c *mcpv1beta1.DelegateClientConfig) {
 				c.TokenExchange = &mcpv1beta1.DelegateClientTokenExchangeConfig{SelfIssuedSubjectTokens: "all"}
 			}},
-		{name: "restricted with source clients and api audience", base: secretClient,
+		{name: "restricted with source clients and subject token audiences", base: secretClient,
 			mutate: func(c *mcpv1beta1.DelegateClientConfig) {
 				c.GrantTypes = []string{tokenExchange}
 				c.TokenExchange = &mcpv1beta1.DelegateClientTokenExchangeConfig{
 					SelfIssuedSubjectTokens: "restricted", AllowedSourceClients: []string{"tui"},
-					APIAudience: "https://mcp.example.com",
+					SubjectTokenAudiences: []string{"https://mcp.example.com"},
 				}
 			}},
 		{name: "any with source clients", base: secretClient, errMatch: "valid only when selfIssuedSubjectTokens is restricted",
@@ -137,10 +130,10 @@ var _ = Describe("MCPExternalAuthConfig delegate client CEL validation", func() 
 					SelfIssuedSubjectTokens: "any", AllowedSourceClients: []string{"tui"},
 				}
 			}},
-		{name: "any with api audience", base: secretClient, errMatch: "valid only when selfIssuedSubjectTokens is restricted",
+		{name: "any with subject token audiences", base: secretClient, errMatch: "valid only when selfIssuedSubjectTokens is restricted",
 			mutate: func(c *mcpv1beta1.DelegateClientConfig) {
 				c.TokenExchange = &mcpv1beta1.DelegateClientTokenExchangeConfig{
-					SelfIssuedSubjectTokens: "any", APIAudience: "https://mcp.example.com",
+					SelfIssuedSubjectTokens: "any", SubjectTokenAudiences: []string{"https://mcp.example.com"},
 				}
 			}},
 		{name: "grantTypes without token exchange", base: secretClient, errMatch: "grantTypes must include",
@@ -281,12 +274,12 @@ var _ = Describe("MCPExternalAuthConfig delegate client CEL validation", func() 
 		{name: "restricted with an explicit empty source list", tokenExchange: map[string]interface{}{
 			"selfIssuedSubjectTokens": "restricted", "allowedSourceClients": []interface{}{},
 		}},
-		{name: "restricted with an explicit empty api audience", tokenExchange: map[string]interface{}{
-			"selfIssuedSubjectTokens": "restricted", "apiAudience": "",
-		}},
-		{name: "any with an explicit empty source list and api audience", tokenExchange: map[string]interface{}{
-			"selfIssuedSubjectTokens": "any", "allowedSourceClients": []interface{}{}, "apiAudience": "",
-		}},
+		{name: "restricted with an explicit empty subject token audiences", tokenExchange: map[string]interface{}{
+			"selfIssuedSubjectTokens": "restricted", "subjectTokenAudiences": []interface{}{},
+		}, errMatch: "subjectTokenAudiences"},
+		{name: "any with an explicit empty source list and subject token audiences", tokenExchange: map[string]interface{}{
+			"selfIssuedSubjectTokens": "any", "allowedSourceClients": []interface{}{}, "subjectTokenAudiences": []interface{}{},
+		}, errMatch: "subjectTokenAudiences"},
 	}
 
 	for i, test := range rawCases {

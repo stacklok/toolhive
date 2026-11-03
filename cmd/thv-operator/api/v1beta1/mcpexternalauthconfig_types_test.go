@@ -2255,8 +2255,8 @@ func TestMCPExternalAuthConfig_DelegateClientTrustModes(t *testing.T) {
 		{name: "any with source clients", client: client(exchangeOnly, &DelegateClientTokenExchangeConfig{
 			SelfIssuedSubjectTokens: "any", AllowedSourceClients: []string{"tui"},
 		}), wantErr: "valid only when selfIssuedSubjectTokens is restricted"},
-		{name: "any with api audience", client: client(exchangeOnly, &DelegateClientTokenExchangeConfig{
-			SelfIssuedSubjectTokens: "any", APIAudience: "https://api.example.com",
+		{name: "any with subject token audiences", client: client(exchangeOnly, &DelegateClientTokenExchangeConfig{
+			SelfIssuedSubjectTokens: "any", SubjectTokenAudiences: []string{"https://api.example.com"},
 		}), wantErr: "valid only when selfIssuedSubjectTokens is restricted"},
 	}
 

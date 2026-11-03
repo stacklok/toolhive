@@ -257,14 +257,15 @@ table below on it. Put them on the canonical list.
 | `tokenEndpointAuthSigningAlg` | The `private_key_jwt` signing algorithm. If omitted, it is derived from the keys: each key's `alg`, or `ES256`, `ES384` or `ES512` from an EC key's curve. RSA keys without `alg` use `RS256`. Keys that disagree must set it. |
 | `grantTypes` | A subset of `authorization_code`, `refresh_token`, token exchange and JWT-bearer. When set, it must include token exchange. When set, the list is complete: include the JWT-bearer grant (`urn:ietf:params:oauth:grant-type:jwt-bearer`) to keep ID-JAG redemption. |
 | `redirectUris` | Required with `authorization_code`. They sit under `tokenExchange.delegateClients` because a delegate client is a token-exchange client that may also log in. |
-| `tokenExchange` | `selfIssuedSubjectTokens` (`any` or `restricted`, required in the block, no default), `allowedSourceClients` and `apiAudience`. The block is required when `grantTypes` is set and for every `private_key_jwt` client. It may be omitted only by a secret-authenticated client without `grantTypes`, which keeps the legacy blanket trust (`any`). See [Source policy and API audience](#source-policy-and-api-audience). |
+| `tokenExchange` | `selfIssuedSubjectTokens` (`any` or `restricted`, required in the block, no default), `allowedSourceClients` and `subjectTokenAudiences`. The block is required when `grantTypes` is set and for every `private_key_jwt` client. It may be omitted only by a secret-authenticated client without `grantTypes`, which keeps the legacy blanket trust (`any`). See [Source policy and subject token audiences](#source-policy-and-subject-token-audiences). |
 
 `clientSecretRef` is required unless the method is `private_key_jwt`, where it is
 forbidden. CEL admission enforces this, the token-exchange rule for `grantTypes`,
 `redirectUris` (required with `authorization_code` and forbidden without it),
 `refresh_token` only together with `authorization_code`, the `tokenExchange` block
-when `grantTypes` is set or the method is `private_key_jwt`, `allowedSourceClients` and `apiAudience` only with
-`restricted`, and `tokenEndpointAuthSigningAlg` only with `private_key_jwt` and
+when `grantTypes` is set or the method is `private_key_jwt`, `allowedSourceClients`
+and `subjectTokenAudiences` only with `restricted`, and `tokenEndpointAuthSigningAlg`
+only with `private_key_jwt` and
 only from the supported algorithms (`RS256`, `RS384`, `RS512`, `PS256`, `PS384`,
 `PS512`, `ES256`, `ES384`, `ES512`). `selfIssuedSubjectTokens` has no schema default on purpose: a
 default would be applied before CEL runs, so "set it explicitly" could not be
@@ -272,9 +273,9 @@ enforced, and it would also be applied to objects read back from etcd, turning a
 stored `tokenExchange: {}` into blanket trust. The shared Go validator checks
 everything else (public keys only, redirect-URI policy, source-client rules).
 
-Admission checks three rules for each delegate client. `apiAudience` must be one
-of the client's `audiences`. `allowedSourceClients` must not contain the client's
-own `clientId` or `*`. Redirect URIs must use `https` and must not contain a
+Admission checks three rules for each delegate client. `subjectTokenAudiences`
+holds 1 to 20 entries. `allowedSourceClients` must not contain the client's own
+`clientId` or `*`. Redirect URIs must use `https` and must not contain a
 fragment. The operator checks two more rules when it reconciles, not at
 admission: `allowedSourceClients` must not name another configured delegate
 client, and a loopback redirect URI is refused. A `VirtualMCPServer` reports

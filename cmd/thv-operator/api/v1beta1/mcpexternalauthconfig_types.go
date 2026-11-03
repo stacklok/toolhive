@@ -363,7 +363,6 @@ type BearerTokenConfig struct {
 // +kubebuilder:validation:XValidation:rule="!has(self.grantTypes) || !('authorization_code' in self.grantTypes) || (has(self.redirectUris) && size(self.redirectUris) > 0)",message="redirectUris is required when grantTypes includes authorization_code"
 // +kubebuilder:validation:XValidation:rule="!has(self.grantTypes) || size(self.grantTypes) == 0 || has(self.tokenExchange)",message="tokenExchange.selfIssuedSubjectTokens is required when grantTypes is set"
 // +kubebuilder:validation:XValidation:rule="!(has(self.tokenEndpointAuthMethod) && self.tokenEndpointAuthMethod == 'private_key_jwt') || has(self.tokenExchange)",message="tokenExchange.selfIssuedSubjectTokens is required for private_key_jwt clients"
-// +kubebuilder:validation:XValidation:rule="!has(self.tokenExchange) || !has(self.tokenExchange.apiAudience) || size(self.tokenExchange.apiAudience) == 0 || self.tokenExchange.apiAudience in self.audiences",message="tokenExchange.apiAudience must be one of the client's audiences"
 // +kubebuilder:validation:XValidation:rule="!has(self.tokenExchange) || !has(self.tokenExchange.allowedSourceClients) || (!(self.clientId in self.tokenExchange.allowedSourceClients) && !('*' in self.tokenExchange.allowedSourceClients))",message="tokenExchange.allowedSourceClients must not contain the client's own clientId or the \"*\" wildcard"
 // +kubebuilder:validation:XValidation:rule="!has(self.redirectUris) || size(self.redirectUris) == 0 || (has(self.grantTypes) && 'authorization_code' in self.grantTypes)",message="redirectUris is only allowed with the authorization_code grant"
 // +kubebuilder:validation:XValidation:rule="!has(self.grantTypes) || !('refresh_token' in self.grantTypes) || 'authorization_code' in self.grantTypes",message="grantTypes must include authorization_code with refresh_token"
@@ -465,7 +464,7 @@ type DelegateClientConfig struct {
 // delegate client. External-issuer subject tokens are not affected by it: the
 // trusted issuer's own policy decides those.
 //
-// +kubebuilder:validation:XValidation:rule="self.selfIssuedSubjectTokens == 'restricted' || ((!has(self.allowedSourceClients) || size(self.allowedSourceClients) == 0) && (!has(self.apiAudience) || size(self.apiAudience) == 0))",message="tokenExchange.allowedSourceClients and tokenExchange.apiAudience are valid only when selfIssuedSubjectTokens is restricted"
+// +kubebuilder:validation:XValidation:rule="self.selfIssuedSubjectTokens == 'restricted' || ((!has(self.allowedSourceClients) || size(self.allowedSourceClients) == 0) && (!has(self.subjectTokenAudiences) || size(self.subjectTokenAudiences) == 0))",message="tokenExchange.allowedSourceClients and tokenExchange.subjectTokenAudiences are valid only when selfIssuedSubjectTokens is restricted"
 //
 //nolint:lll // CEL validation rule exceeds line length limit
 type DelegateClientTokenExchangeConfig struct {
@@ -492,12 +491,20 @@ type DelegateClientTokenExchangeConfig struct {
 	// +optional
 	AllowedSourceClients []string `json:"allowedSourceClients,omitempty"`
 
-	// APIAudience is the client's own API audience. The client may request it
-	// even when the subject token does not cover it. It must be one of the
-	// client's audiences. Valid only with restricted.
-	// +kubebuilder:validation:MaxLength=2048
+	// SubjectTokenAudiences lists audiences that a self-issued subject token's
+	// aud claim must contain at least one of, matched exactly. Listing a value
+	// grants nothing: the client can receive that audience only if its own
+	// audiences also cover it. Each entry must be one of the server's allowed
+	// audiences; the server checks that when it loads the configuration.
+	// Valid only with restricted. An explicit empty list is refused; omit the
+	// field for no requirement.
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=20
+	// +kubebuilder:validation:items:MinLength=1
+	// +kubebuilder:validation:items:MaxLength=2048
+	// +listType=set
 	// +optional
-	APIAudience string `json:"apiAudience,omitempty"`
+	SubjectTokenAudiences []string `json:"subjectTokenAudiences,omitempty"`
 }
 
 // TrustedIssuerConfig configures an external OIDC issuer whose tokens are
@@ -2999,8 +3006,8 @@ func validateDelegateClientTrustModes(clients []DelegateClientConfig, path strin
 		switch authserver.SelfIssuedSubjectTokens(policy.SelfIssuedSubjectTokens) {
 		case authserver.SelfIssuedSubjectTokensRestricted:
 		case authserver.SelfIssuedSubjectTokensAny:
-			if len(policy.AllowedSourceClients) > 0 || policy.APIAudience != "" {
-				return fmt.Errorf("%s[%d] (%q): tokenExchange.allowedSourceClients and tokenExchange.apiAudience "+
+			if len(policy.AllowedSourceClients) > 0 || len(policy.SubjectTokenAudiences) > 0 {
+				return fmt.Errorf("%s[%d] (%q): tokenExchange.allowedSourceClients and tokenExchange.subjectTokenAudiences "+
 					"are valid only when selfIssuedSubjectTokens is restricted", path, i, client.ClientID)
 			}
 		default:

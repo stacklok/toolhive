@@ -475,13 +475,6 @@ spec:
                               maxItems: 20
                               type: array
                               x-kubernetes-list-type: set
-                            apiAudience:
-                              description: |-
-                                APIAudience is the client's own API audience. The client may request it
-                                even when the subject token does not cover it. It must be one of the
-                                client's audiences. Valid only with restricted.
-                              maxLength: 2048
-                              type: string
                             selfIssuedSubjectTokens:
                               description: |-
                                 SelfIssuedSubjectTokens selects which self-issued subject tokens the
@@ -494,15 +487,32 @@ spec:
                               - any
                               - restricted
                               type: string
+                            subjectTokenAudiences:
+                              description: |-
+                                SubjectTokenAudiences lists audiences that a self-issued subject token's
+                                aud claim must contain at least one of, matched exactly. Listing a value
+                                grants nothing: the client can receive that audience only if its own
+                                audiences also cover it. Each entry must be one of the server's allowed
+                                audiences; the server checks that when it loads the configuration.
+                                Valid only with restricted. An explicit empty list is refused; omit the
+                                field for no requirement.
+                              items:
+                                maxLength: 2048
+                                minLength: 1
+                                type: string
+                              maxItems: 20
+                              minItems: 1
+                              type: array
+                              x-kubernetes-list-type: set
                           required:
                           - selfIssuedSubjectTokens
                           type: object
                           x-kubernetes-validations:
-                          - message: tokenExchange.allowedSourceClients and tokenExchange.apiAudience
+                          - message: tokenExchange.allowedSourceClients and tokenExchange.subjectTokenAudiences
                               are valid only when selfIssuedSubjectTokens is restricted
                             rule: self.selfIssuedSubjectTokens == 'restricted' ||
                               ((!has(self.allowedSourceClients) || size(self.allowedSourceClients)
-                              == 0) && (!has(self.apiAudience) || size(self.apiAudience)
+                              == 0) && (!has(self.subjectTokenAudiences) || size(self.subjectTokenAudiences)
                               == 0))
                       required:
                       - audiences
@@ -536,11 +546,6 @@ spec:
                           for private_key_jwt clients
                         rule: '!(has(self.tokenEndpointAuthMethod) && self.tokenEndpointAuthMethod
                           == ''private_key_jwt'') || has(self.tokenExchange)'
-                      - message: tokenExchange.apiAudience must be one of the client's
-                          audiences
-                        rule: '!has(self.tokenExchange) || !has(self.tokenExchange.apiAudience)
-                          || size(self.tokenExchange.apiAudience) == 0 || self.tokenExchange.apiAudience
-                          in self.audiences'
                       - message: tokenExchange.allowedSourceClients must not contain
                           the client's own clientId or the "*" wildcard
                         rule: '!has(self.tokenExchange) || !has(self.tokenExchange.allowedSourceClients)
@@ -1002,13 +1007,6 @@ spec:
                                       maxItems: 20
                                       type: array
                                       x-kubernetes-list-type: set
-                                    apiAudience:
-                                      description: |-
-                                        APIAudience is the client's own API audience. The client may request it
-                                        even when the subject token does not cover it. It must be one of the
-                                        client's audiences. Valid only with restricted.
-                                      maxLength: 2048
-                                      type: string
                                     selfIssuedSubjectTokens:
                                       description: |-
                                         SelfIssuedSubjectTokens selects which self-issued subject tokens the
@@ -1021,17 +1019,34 @@ spec:
                                       - any
                                       - restricted
                                       type: string
+                                    subjectTokenAudiences:
+                                      description: |-
+                                        SubjectTokenAudiences lists audiences that a self-issued subject token's
+                                        aud claim must contain at least one of, matched exactly. Listing a value
+                                        grants nothing: the client can receive that audience only if its own
+                                        audiences also cover it. Each entry must be one of the server's allowed
+                                        audiences; the server checks that when it loads the configuration.
+                                        Valid only with restricted. An explicit empty list is refused; omit the
+                                        field for no requirement.
+                                      items:
+                                        maxLength: 2048
+                                        minLength: 1
+                                        type: string
+                                      maxItems: 20
+                                      minItems: 1
+                                      type: array
+                                      x-kubernetes-list-type: set
                                   required:
                                   - selfIssuedSubjectTokens
                                   type: object
                                   x-kubernetes-validations:
                                   - message: tokenExchange.allowedSourceClients and
-                                      tokenExchange.apiAudience are valid only when
-                                      selfIssuedSubjectTokens is restricted
+                                      tokenExchange.subjectTokenAudiences are valid
+                                      only when selfIssuedSubjectTokens is restricted
                                     rule: self.selfIssuedSubjectTokens == 'restricted'
                                       || ((!has(self.allowedSourceClients) || size(self.allowedSourceClients)
-                                      == 0) && (!has(self.apiAudience) || size(self.apiAudience)
-                                      == 0))
+                                      == 0) && (!has(self.subjectTokenAudiences) ||
+                                      size(self.subjectTokenAudiences) == 0))
                               required:
                               - audiences
                               - clientId
@@ -1064,11 +1079,6 @@ spec:
                                   required for private_key_jwt clients
                                 rule: '!(has(self.tokenEndpointAuthMethod) && self.tokenEndpointAuthMethod
                                   == ''private_key_jwt'') || has(self.tokenExchange)'
-                              - message: tokenExchange.apiAudience must be one of
-                                  the client's audiences
-                                rule: '!has(self.tokenExchange) || !has(self.tokenExchange.apiAudience)
-                                  || size(self.tokenExchange.apiAudience) == 0 ||
-                                  self.tokenExchange.apiAudience in self.audiences'
                               - message: tokenExchange.allowedSourceClients must not
                                   contain the client's own clientId or the "*" wildcard
                                 rule: '!has(self.tokenExchange) || !has(self.tokenExchange.allowedSourceClients)
@@ -3947,13 +3957,6 @@ spec:
                               maxItems: 20
                               type: array
                               x-kubernetes-list-type: set
-                            apiAudience:
-                              description: |-
-                                APIAudience is the client's own API audience. The client may request it
-                                even when the subject token does not cover it. It must be one of the
-                                client's audiences. Valid only with restricted.
-                              maxLength: 2048
-                              type: string
                             selfIssuedSubjectTokens:
                               description: |-
                                 SelfIssuedSubjectTokens selects which self-issued subject tokens the
@@ -3966,15 +3969,32 @@ spec:
                               - any
                               - restricted
                               type: string
+                            subjectTokenAudiences:
+                              description: |-
+                                SubjectTokenAudiences lists audiences that a self-issued subject token's
+                                aud claim must contain at least one of, matched exactly. Listing a value
+                                grants nothing: the client can receive that audience only if its own
+                                audiences also cover it. Each entry must be one of the server's allowed
+                                audiences; the server checks that when it loads the configuration.
+                                Valid only with restricted. An explicit empty list is refused; omit the
+                                field for no requirement.
+                              items:
+                                maxLength: 2048
+                                minLength: 1
+                                type: string
+                              maxItems: 20
+                              minItems: 1
+                              type: array
+                              x-kubernetes-list-type: set
                           required:
                           - selfIssuedSubjectTokens
                           type: object
                           x-kubernetes-validations:
-                          - message: tokenExchange.allowedSourceClients and tokenExchange.apiAudience
+                          - message: tokenExchange.allowedSourceClients and tokenExchange.subjectTokenAudiences
                               are valid only when selfIssuedSubjectTokens is restricted
                             rule: self.selfIssuedSubjectTokens == 'restricted' ||
                               ((!has(self.allowedSourceClients) || size(self.allowedSourceClients)
-                              == 0) && (!has(self.apiAudience) || size(self.apiAudience)
+                              == 0) && (!has(self.subjectTokenAudiences) || size(self.subjectTokenAudiences)
                               == 0))
                       required:
                       - audiences
@@ -4008,11 +4028,6 @@ spec:
                           for private_key_jwt clients
                         rule: '!(has(self.tokenEndpointAuthMethod) && self.tokenEndpointAuthMethod
                           == ''private_key_jwt'') || has(self.tokenExchange)'
-                      - message: tokenExchange.apiAudience must be one of the client's
-                          audiences
-                        rule: '!has(self.tokenExchange) || !has(self.tokenExchange.apiAudience)
-                          || size(self.tokenExchange.apiAudience) == 0 || self.tokenExchange.apiAudience
-                          in self.audiences'
                       - message: tokenExchange.allowedSourceClients must not contain
                           the client's own clientId or the "*" wildcard
                         rule: '!has(self.tokenExchange) || !has(self.tokenExchange.allowedSourceClients)
@@ -4474,13 +4489,6 @@ spec:
                                       maxItems: 20
                                       type: array
                                       x-kubernetes-list-type: set
-                                    apiAudience:
-                                      description: |-
-                                        APIAudience is the client's own API audience. The client may request it
-                                        even when the subject token does not cover it. It must be one of the
-                                        client's audiences. Valid only with restricted.
-                                      maxLength: 2048
-                                      type: string
                                     selfIssuedSubjectTokens:
                                       description: |-
                                         SelfIssuedSubjectTokens selects which self-issued subject tokens the
@@ -4493,17 +4501,34 @@ spec:
                                       - any
                                       - restricted
                                       type: string
+                                    subjectTokenAudiences:
+                                      description: |-
+                                        SubjectTokenAudiences lists audiences that a self-issued subject token's
+                                        aud claim must contain at least one of, matched exactly. Listing a value
+                                        grants nothing: the client can receive that audience only if its own
+                                        audiences also cover it. Each entry must be one of the server's allowed
+                                        audiences; the server checks that when it loads the configuration.
+                                        Valid only with restricted. An explicit empty list is refused; omit the
+                                        field for no requirement.
+                                      items:
+                                        maxLength: 2048
+                                        minLength: 1
+                                        type: string
+                                      maxItems: 20
+                                      minItems: 1
+                                      type: array
+                                      x-kubernetes-list-type: set
                                   required:
                                   - selfIssuedSubjectTokens
                                   type: object
                                   x-kubernetes-validations:
                                   - message: tokenExchange.allowedSourceClients and
-                                      tokenExchange.apiAudience are valid only when
-                                      selfIssuedSubjectTokens is restricted
+                                      tokenExchange.subjectTokenAudiences are valid
+                                      only when selfIssuedSubjectTokens is restricted
                                     rule: self.selfIssuedSubjectTokens == 'restricted'
                                       || ((!has(self.allowedSourceClients) || size(self.allowedSourceClients)
-                                      == 0) && (!has(self.apiAudience) || size(self.apiAudience)
-                                      == 0))
+                                      == 0) && (!has(self.subjectTokenAudiences) ||
+                                      size(self.subjectTokenAudiences) == 0))
                               required:
                               - audiences
                               - clientId
@@ -4536,11 +4561,6 @@ spec:
                                   required for private_key_jwt clients
                                 rule: '!(has(self.tokenEndpointAuthMethod) && self.tokenEndpointAuthMethod
                                   == ''private_key_jwt'') || has(self.tokenExchange)'
-                              - message: tokenExchange.apiAudience must be one of
-                                  the client's audiences
-                                rule: '!has(self.tokenExchange) || !has(self.tokenExchange.apiAudience)
-                                  || size(self.tokenExchange.apiAudience) == 0 ||
-                                  self.tokenExchange.apiAudience in self.audiences'
                               - message: tokenExchange.allowedSourceClients must not
                                   contain the client's own clientId or the "*" wildcard
                                 rule: '!has(self.tokenExchange) || !has(self.tokenExchange.allowedSourceClients)

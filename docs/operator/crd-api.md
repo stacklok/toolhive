@@ -2014,7 +2014,7 @@ _Appears in:_
 
 #### api.v1beta1.DelegateClientTokenExchangeConfig
 
-_Underlying type:_ _struct{SelfIssuedSubjectTokens string "json:\"selfIssuedSubjectTokens\""; AllowedSourceClients []string "json:\"allowedSourceClients,omitempty\""; APIAudience string "json:\"apiAudience,omitempty\""}_
+_Underlying type:_ _struct{SelfIssuedSubjectTokens string "json:\"selfIssuedSubjectTokens\""; AllowedSourceClients []string "json:\"allowedSourceClients,omitempty\""; SubjectTokenAudiences []string "json:\"subjectTokenAudiences,omitempty\""}_
 
 DelegateClientTokenExchangeConfig is the token-exchange policy of one
 delegate client. External-issuer subject tokens are not affected by it: the

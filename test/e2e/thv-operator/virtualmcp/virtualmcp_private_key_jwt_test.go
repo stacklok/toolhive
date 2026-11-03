@@ -176,10 +176,10 @@ var _ = ginkgo.Describe("VirtualMCPServer private_key_jwt DCR delegation", ginkg
 		gomega.Expect(status).To(gomega.Equal(http.StatusUnauthorized), string(body))
 
 		status, body = requestPrivateKeyJWTExchange(endpoint, registered.ClientID, assertion, subjectToken, issuer)
-		gomega.Expect(status).To(gomega.Equal(http.StatusBadRequest), string(body))
+		gomega.Expect(status).To(gomega.Equal(http.StatusUnauthorized), string(body))
 		var replayError map[string]any
 		gomega.Expect(json.Unmarshal(body, &replayError)).To(gomega.Succeed())
-		gomega.Expect(replayError["error"]).To(gomega.Equal("jti_known"))
+		gomega.Expect(replayError["error"]).To(gomega.Equal("invalid_client"))
 	})
 })
 

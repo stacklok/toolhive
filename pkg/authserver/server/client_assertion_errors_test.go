@@ -76,7 +76,7 @@ func TestClientAssertionErrorStrategy(t *testing.T) {
 	require.NoError(t, err)
 
 	now := time.Now()
-	valid := func(c *jwt.Claims) {}
+	valid := func(_ *jwt.Claims) {}
 	storageDown := errors.New("redis: connection refused")
 
 	tests := []struct {
@@ -203,7 +203,7 @@ func TestClientAssertionErrorStrategy(t *testing.T) {
 				assertion = ""
 			}
 			form := url.Values{
-				"client_assertion_type": {jwtBearerClientAssertionType},
+				"client_assertion_type": {privateKeyJWTAssertionType},
 				"client_assertion":      {assertion},
 			}
 			req := httptest.NewRequest(http.MethodPost, assertionTestTokenURL, strings.NewReader(form.Encode()))

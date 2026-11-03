@@ -313,24 +313,38 @@ func Teardown(
 
 	// Revert tool config files best-effort; warn on failure but do not undo
 	// the config update above (the user can re-run setup+teardown to reconcile).
-	for _, tc := range toRevert {
-		if revertToolConfig(out, errOut, gm, tc) && llmCfg.Bedrock.Compat {
-			warnBedrockSettingsRemoved(errOut, tc)
-		}
-	}
+	revertTeardownTools(out, errOut, gm, toRevert, llmCfg.Bedrock.Compat)
 
 	if shouldPurge {
-		_, _ = fmt.Fprintln(out,
-			"Deleted locally cached LLM tokens. This does not revoke tokens at the identity provider or sign out the browser session.")
-		_, _ = fmt.Fprintln(out,
-			"Stop any running LLM proxy or token helper before relying on cleanup; an active process may recreate cached credentials.")
-		if purgeTokens && !fullTeardown {
-			_, _ = fmt.Fprintln(out,
-				"Remaining configured tools share this session and will need to authenticate again.")
-		}
+		printTokenPurgeNotice(out, purgeTokens, fullTeardown)
 	}
 
 	return nil
+}
+
+// revertTeardownTools reverts each tool's config files best-effort, warning on
+// failure. When bedrockCompat was on, it also names the Bedrock settings each
+// successful revert removed.
+func revertTeardownTools(out, errOut io.Writer, gm GatewayManager, toRevert []ToolConfig, bedrockCompat bool) {
+	for _, tc := range toRevert {
+		if revertToolConfig(out, errOut, gm, tc) && bedrockCompat {
+			warnBedrockSettingsRemoved(errOut, tc)
+		}
+	}
+}
+
+// printTokenPurgeNotice tells the user what deleting the cached LLM tokens does
+// and does not cover. An explicit purge that leaves tools configured also warns
+// that those tools share the purged session and must authenticate again.
+func printTokenPurgeNotice(out io.Writer, purgeTokens, fullTeardown bool) {
+	_, _ = fmt.Fprintln(out,
+		"Deleted locally cached LLM tokens. This does not revoke tokens at the identity provider or sign out the browser session.")
+	_, _ = fmt.Fprintln(out,
+		"Stop any running LLM proxy or token helper before relying on cleanup; an active process may recreate cached credentials.")
+	if purgeTokens && !fullTeardown {
+		_, _ = fmt.Fprintln(out,
+			"Remaining configured tools share this session and will need to authenticate again.")
+	}
 }
 
 // applyTeardownToConfig updates the persisted LLM config for a teardown that
@@ -688,6 +702,16 @@ func discoverSetupModels(
 		return nil, catalog, err
 	}
 	warnModelDiscovery(errOut, hasVSCode, hasPi, piMissing, catalog, openErr, anthropicErr)
+	warnBedrockDiscovery(errOut, clients, bedrockErrs, needsCodexModel, openErr)
+	return keepDiscoverableClients(clients, openErr, piMissing, bedrockErrs), catalog, nil
+}
+
+// warnBedrockDiscovery warns about each auto-detected client skipped because
+// its Bedrock model discovery failed, and about a pinned Codex that is
+// configured without the metadata the OpenAI listing would have supplied.
+func warnBedrockDiscovery(
+	errOut io.Writer, clients []string, bedrockErrs map[string]error, needsCodexModel bool, openErr error,
+) {
 	for _, clientType := range clients {
 		if err := bedrockErrs[clientType]; err != nil {
 			_, _ = fmt.Fprintf(errOut, "Warning: skipping auto-detected %s because Bedrock model discovery "+
@@ -700,7 +724,6 @@ func discoverSetupModels(
 		_, _ = fmt.Fprintf(errOut, "Warning: could not read Codex model metadata from the gateway, so Codex "+
 			"uses its fallback metadata: %v\n", openErr)
 	}
-	return keepDiscoverableClients(clients, openErr, piMissing, bedrockErrs), catalog, nil
 }
 
 // bedrockDiscoveryError reports why bedrock-compat Claude Code cannot pin its

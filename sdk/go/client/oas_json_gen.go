@@ -1602,12 +1602,6 @@ func (s *AuthenticationDelegateClientTokenExchange) encodeFields(e *jx.Encoder) 
 		}
 	}
 	{
-		if s.APIAudience.Set {
-			e.FieldStart("api_audience")
-			s.APIAudience.Encode(e)
-		}
-	}
-	{
 		if s.ExchangeRefreshTokens.Set {
 			e.FieldStart("exchange_refresh_tokens")
 			s.ExchangeRefreshTokens.Encode(e)
@@ -1617,13 +1611,23 @@ func (s *AuthenticationDelegateClientTokenExchange) encodeFields(e *jx.Encoder) 
 		e.FieldStart("self_issued_subject_tokens")
 		e.Str(s.SelfIssuedSubjectTokens)
 	}
+	{
+		if s.SubjectTokenAudiences != nil {
+			e.FieldStart("subject_token_audiences")
+			e.ArrStart()
+			for _, elem := range s.SubjectTokenAudiences {
+				e.Str(elem)
+			}
+			e.ArrEnd()
+		}
+	}
 }
 
 var jsonFieldsNameOfAuthenticationDelegateClientTokenExchange = [4]string{
 	0: "allowed_source_clients",
-	1: "api_audience",
-	2: "exchange_refresh_tokens",
-	3: "self_issued_subject_tokens",
+	1: "exchange_refresh_tokens",
+	2: "self_issued_subject_tokens",
+	3: "subject_token_audiences",
 }
 
 // Decode decodes AuthenticationDelegateClientTokenExchange from json.
@@ -1654,16 +1658,6 @@ func (s *AuthenticationDelegateClientTokenExchange) Decode(d *jx.Decoder) error 
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"allowed_source_clients\"")
 			}
-		case "api_audience":
-			if err := func() error {
-				s.APIAudience.Reset()
-				if err := s.APIAudience.Decode(d); err != nil {
-					return err
-				}
-				return nil
-			}(); err != nil {
-				return errors.Wrap(err, "decode field \"api_audience\"")
-			}
 		case "exchange_refresh_tokens":
 			if err := func() error {
 				s.ExchangeRefreshTokens.Reset()
@@ -1675,7 +1669,7 @@ func (s *AuthenticationDelegateClientTokenExchange) Decode(d *jx.Decoder) error 
 				return errors.Wrap(err, "decode field \"exchange_refresh_tokens\"")
 			}
 		case "self_issued_subject_tokens":
-			requiredBitSet[0] |= 1 << 3
+			requiredBitSet[0] |= 1 << 2
 			if err := func() error {
 				v, err := d.Str()
 				s.SelfIssuedSubjectTokens = string(v)
@@ -1685,6 +1679,25 @@ func (s *AuthenticationDelegateClientTokenExchange) Decode(d *jx.Decoder) error 
 				return nil
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"self_issued_subject_tokens\"")
+			}
+		case "subject_token_audiences":
+			if err := func() error {
+				s.SubjectTokenAudiences = make([]string, 0)
+				if err := d.Arr(func(d *jx.Decoder) error {
+					var elem string
+					v, err := d.Str()
+					elem = string(v)
+					if err != nil {
+						return err
+					}
+					s.SubjectTokenAudiences = append(s.SubjectTokenAudiences, elem)
+					return nil
+				}); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"subject_token_audiences\"")
 			}
 		default:
 			return d.Skip()
@@ -1696,7 +1709,7 @@ func (s *AuthenticationDelegateClientTokenExchange) Decode(d *jx.Decoder) error 
 	// Validate required fields.
 	var failures []validate.FieldError
 	for i, mask := range [1]uint8{
-		0b00001000,
+		0b00000100,
 	} {
 		if result := (requiredBitSet[i] & mask) ^ mask; result != 0 {
 			// Mask only required fields and check equality to mask using XOR.

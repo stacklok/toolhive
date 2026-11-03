@@ -233,6 +233,7 @@ func TestIDJAGHandler_ClientGrantAndAudience(t *testing.T) {
 		audience   []string
 		strategy   fosite.AudienceMatchingStrategy // nil keeps the default
 		dcrIssued  bool
+		client     fosite.Client // overrides the client built from grantTypes and audience
 		wantErrIs  error
 	}{
 		{
@@ -265,6 +266,22 @@ func TestIDJAGHandler_ClientGrantAndAudience(t *testing.T) {
 			wantErrIs:  server.ErrInvalidTarget,
 		},
 		{
+			// Config validation, not the handler, forbids empty audiences with
+			// jwt-bearer in real configs; this client is constructible only
+			// because NewStaticDelegateClient leaves that rule to config.
+			name:  "static client with jwt-bearer and no audiences is refused the resource",
+			gated: true,
+			client: func() fosite.Client {
+				c, err := registration.NewStaticDelegateClient(registration.Config{
+					ID: idJAGTestClientID, Secret: "s", Scopes: []string{"openid"},
+					GrantTypes: []string{oauthproto.GrantTypeTokenExchange, oauthproto.GrantTypeJWTBearer},
+				})
+				require.NoError(t, err)
+				return c
+			}(),
+			wantErrIs: server.ErrInvalidTarget,
+		},
+		{
 			name:       "configured audience strategy is applied",
 			grantTypes: []string{oauthproto.GrantTypeJWTBearer},
 			audience:   []string{idJAGTestResource},
@@ -292,6 +309,9 @@ func TestIDJAGHandler_ClientGrantAndAudience(t *testing.T) {
 				h.core.config.(*fosite.Config).AudienceMatchingStrategy = tt.strategy
 			}
 			var client fosite.Client = &fosite.DefaultClient{ID: idJAGTestClientID, GrantTypes: tt.grantTypes, Audience: tt.audience}
+			if tt.client != nil {
+				client = tt.client
+			}
 			if tt.dcrIssued {
 				client = registration.MarkDCRIssued(client)
 			}

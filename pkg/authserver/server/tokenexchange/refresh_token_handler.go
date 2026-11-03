@@ -454,14 +454,16 @@ func checkRefreshTokenRequest(requester fosite.AccessRequester, form url.Values)
 // loginSubjectError is the error for a reason from checkLoginToken or
 // checkExchangeGrantSubject. An expired, invalid or wrong-kind subject token is
 // fixed by a fresh access token, so the client gets reasonSubjectInvalid and the
-// precise reason stays in the log. A token without the client's API audience or
-// from a client that is not an allowed source is a configuration fault that a
-// new access token cannot fix, so those carry their own reason code.
+// precise reason stays in the log. A token without one of the client's
+// subject_token_audiences or from a client that is not an allowed source is a
+// configuration fault that a new access token cannot fix, so those carry their
+// own reason code.
 //
-// This path returns invalid_request for an expired subject token and for one
-// from a client that is not an allowed source, as RFC 8693 section 2.2.2
-// requires. Handler returns invalid_grant for the same cases (see checkSourcePolicy
-// and computeLifetime in handler.go). The difference is deliberate.
+// This path returns invalid_request for an expired subject token, for a wrong
+// audience and for one from a client that is not an allowed source, as RFC 8693
+// section 2.2.2 requires. Handler returns invalid_grant for the same cases (see
+// checkSourcePolicy, checkSubjectTokenAudience and computeLifetime in
+// handler.go). The difference is deliberate.
 func loginSubjectError(reason string) error {
 	switch reason {
 	case reasonSubjectAudience, reasonSubjectSourceClient:
@@ -488,7 +490,8 @@ func checkLoginToken(claims *ValidatedClaims) string {
 	case hasAct:
 		return "subject_token_delegated"
 	// claims.ExternalIssuer is always empty for the self-issued validator; it is
-	// checked as defense in depth.
+	// checked as defense in depth. Native login subjects never contain "#"; see
+	// delegatedSubject for the qualified form.
 	case hasExternalIssuer || claims.ExternalIssuer != "" || strings.Contains(claims.Subject, "#"):
 		return "subject_token_external"
 	case noUpstream:
@@ -503,13 +506,15 @@ func checkLoginToken(claims *ValidatedClaims) string {
 
 // checkExchangeGrantSubject reports why a login token is not acceptable to the
 // exchange-grant profile, or "" if it is. The audience and source-client rules
-// are the profile's own policy; the jti is checked in checkLoginToken. Unlike
-// checkSourcePolicy, the token must have been issued to one of
-// the policy's allowed source clients; the exchanging client's own tokens are
-// not accepted.
+// are the profile's own policy; the jti is checked in checkLoginToken. The token
+// must carry one of the policy's SubjectTokenAudiences (an empty list refuses).
+// Unlike checkSourcePolicy, the token must also have been issued to one of the
+// policy's allowed source clients; the exchanging client's own tokens are not
+// accepted. The audience is checked first, so a token that fails both reports
+// the audience.
 func checkExchangeGrantSubject(claims *ValidatedClaims, policy ConfiguredClientPolicy) string {
 	switch {
-	case policy.APIAudience == "" || !slices.Contains(claims.Audience, policy.APIAudience):
+	case !carriesAnyAudience(claims, policy.SubjectTokenAudiences):
 		return reasonSubjectAudience
 	case !slices.Contains(policy.AllowedSourceClients, claims.ClientID):
 		return reasonSubjectSourceClient

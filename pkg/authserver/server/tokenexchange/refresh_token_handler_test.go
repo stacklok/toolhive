@@ -128,7 +128,10 @@ func TestCheckLoginToken(t *testing.T) {
 func TestCheckExchangeGrantSubject(t *testing.T) {
 	t.Parallel()
 
-	policy := ConfiguredClientPolicy{APIAudience: "https://api.example.com", AllowedSourceClients: []string{"app"}}
+	policy := ConfiguredClientPolicy{
+		SubjectTokenAudiences: []string{"https://api.example.com", "https://second.example.com"},
+		AllowedSourceClients:  []string{"app"},
+	}
 	valid := func() *ValidatedClaims {
 		return &ValidatedClaims{ClientID: "app", Audience: []string{"https://api.example.com"}}
 	}
@@ -141,6 +144,9 @@ func TestCheckExchangeGrantSubject(t *testing.T) {
 		{name: "audience", mutate: func(c *ValidatedClaims) { c.Audience = []string{"https://other"} }, want: "subject_token_audience"},
 		{name: "exchanging client's own token", mutate: func(c *ValidatedClaims) { c.ClientID = "broker" },
 			want: "subject_token_source_client"},
+		{name: "second listed audience", mutate: func(c *ValidatedClaims) {
+			c.Audience = []string{"https://other", "https://second.example.com"}
+		}},
 		{name: "other source client", mutate: func(c *ValidatedClaims) { c.ClientID = "stranger" }, want: "subject_token_source_client"},
 		{name: "audience and non-allowed source", mutate: func(c *ValidatedClaims) {
 			c.Audience = []string{"https://other"}
@@ -156,9 +162,9 @@ func TestCheckExchangeGrantSubject(t *testing.T) {
 		})
 	}
 	assert.Equal(t, "subject_token_audience", checkExchangeGrantSubject(valid(), ConfiguredClientPolicy{}),
-		"a policy without an API audience accepts no subject token")
+		"a policy without subject token audiences accepts no subject token")
 	assert.Equal(t, "subject_token_source_client",
-		checkExchangeGrantSubject(valid(), ConfiguredClientPolicy{APIAudience: policy.APIAudience}),
+		checkExchangeGrantSubject(valid(), ConfiguredClientPolicy{SubjectTokenAudiences: policy.SubjectTokenAudiences}),
 		"a policy without allowed source clients accepts no subject token")
 }
 
@@ -217,7 +223,7 @@ func newRefreshHandlerForTest(t *testing.T, v *stubSubjectValidator, store *fake
 		selfValidator: v,
 		registry:      registry,
 		clientPolicies: map[string]ConfiguredClientPolicy{testRefreshClient: {
-			APIAudience:           testRefreshAPIAud,
+			SubjectTokenAudiences: []string{testRefreshAPIAud},
 			AllowedSourceClients:  []string{testRefreshSourceClient},
 			ExchangeRefreshTokens: map[string]time.Duration{oauthproto.TokenTypeRefreshToken: 720 * time.Hour},
 		}},

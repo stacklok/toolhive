@@ -20,6 +20,9 @@ import (
 // maxAllowedSourceClients bounds token_exchange.allowed_source_clients.
 const maxAllowedSourceClients = 20
 
+// maxSubjectTokenAudiences bounds token_exchange.subject_token_audiences.
+const maxSubjectTokenAudiences = 20
+
 // Values of token_exchange.self_issued_subject_tokens. They mirror
 // authserver.SelfIssuedSubjectTokens, which this package cannot import.
 const (
@@ -68,11 +71,6 @@ type ConfiguredClientSpec struct {
 	// the key contents cannot be checked.
 	JWKSPending bool
 
-	// Audiences are the client's own audiences. api_audience must be one of
-	// them; the caller has already checked them against the server's allowed
-	// audiences, so api_audience is within those too.
-	Audiences []string
-
 	// TokenExchange reports a token_exchange block.
 	TokenExchange bool
 
@@ -80,10 +78,11 @@ type ConfiguredClientSpec struct {
 	// It is required when TokenExchange is set.
 	SelfIssuedSubjectTokens string
 
-	// AllowedSourceClients and APIAudience are the token_exchange fields.
-	// Both are valid only with the restricted mode.
-	AllowedSourceClients []string
-	APIAudience          string
+	// AllowedSourceClients and SubjectTokenAudiences are the token_exchange
+	// fields. Both are valid only with the restricted mode. An empty
+	// SubjectTokenAudiences is the same as an omitted one.
+	AllowedSourceClients  []string
+	SubjectTokenAudiences []string
 
 	// ExchangeRefreshTokens reports an exchange_refresh_tokens block. It is
 	// only meaningful with TokenExchange set, and valid only with the
@@ -111,6 +110,14 @@ func effectiveConfiguredGrantTypes(grantTypes []string) []string {
 		return []string{oauthproto.GrantTypeTokenExchange}
 	}
 	return grantTypes
+}
+
+// OnlyTokenExchangeGrant reports whether token exchange is the only effective
+// grant: grantTypes is empty (the default) or lists just the token-exchange
+// grant.
+func OnlyTokenExchangeGrant(grantTypes []string) bool {
+	effective := effectiveConfiguredGrantTypes(grantTypes)
+	return len(effective) == 1 && effective[0] == oauthproto.GrantTypeTokenExchange
 }
 
 // ValidateConfiguredClient checks the metadata of an operator-configured
@@ -351,7 +358,7 @@ func validateConfiguredTokenExchange(spec ConfiguredClientSpec) error {
 		}
 		if id == spec.ClientID {
 			return fmt.Errorf("token_exchange.allowed_source_clients lists the client's own client_id %q: "+
-				"its own tokens are always accepted, so it must not be listed", id)
+				"its own tokens are accepted on plain token exchange without being listed", id)
 		}
 		if slices.Contains(spec.DelegateClientIDs, id) {
 			return fmt.Errorf("token_exchange.allowed_source_clients lists %q, a configured delegate client: "+
@@ -363,14 +370,36 @@ func validateConfiguredTokenExchange(spec ConfiguredClientSpec) error {
 		}
 		seen[id] = struct{}{}
 	}
-	if spec.APIAudience != "" && !slices.Contains(spec.Audiences, spec.APIAudience) {
-		return fmt.Errorf("token_exchange.api_audience %q is not one of the client's audiences", spec.APIAudience)
+	return validateSubjectTokenAudiences(spec.SubjectTokenAudiences)
+}
+
+// validateSubjectTokenAudiences checks the list's shape. An empty list is
+// unset, because the field is omitempty and an empty list cannot be told from
+// an omitted one after serialization. Membership in allowed_audiences and the
+// input/output rule need server context, so the caller checks them.
+func validateSubjectTokenAudiences(audiences []string) error {
+	if len(audiences) == 0 {
+		return nil
+	}
+	if len(audiences) > maxSubjectTokenAudiences {
+		return fmt.Errorf("token_exchange.subject_token_audiences has %d entries, at most %d are allowed",
+			len(audiences), maxSubjectTokenAudiences)
+	}
+	seen := make(map[string]struct{}, len(audiences))
+	for _, audience := range audiences {
+		if audience == "" {
+			return fmt.Errorf("token_exchange.subject_token_audiences must not contain an empty audience")
+		}
+		if _, dup := seen[audience]; dup {
+			return fmt.Errorf("token_exchange.subject_token_audiences lists %q more than once", audience)
+		}
+		seen[audience] = struct{}{}
 	}
 	return nil
 }
 
 // validateSelfIssuedSubjectTokens checks the trust mode of a token_exchange
-// block: it is required, and the source list and api_audience narrow a
+// block: it is required, and the source list and subject_token_audiences narrow a
 // restricted client only, so they are refused with any.
 func validateSelfIssuedSubjectTokens(spec ConfiguredClientSpec) error {
 	switch spec.SelfIssuedSubjectTokens {
@@ -381,8 +410,8 @@ func validateSelfIssuedSubjectTokens(spec ConfiguredClientSpec) error {
 			return fmt.Errorf("token_exchange.allowed_source_clients is valid only with "+
 				"self_issued_subject_tokens %q", selfIssuedSubjectTokensRestricted)
 		}
-		if spec.APIAudience != "" {
-			return fmt.Errorf("token_exchange.api_audience is valid only with "+
+		if len(spec.SubjectTokenAudiences) > 0 {
+			return fmt.Errorf("token_exchange.subject_token_audiences is valid only with "+
 				"self_issued_subject_tokens %q", selfIssuedSubjectTokensRestricted)
 		}
 		return nil
@@ -414,8 +443,8 @@ func validateConfiguredExchangeRefreshTokens(spec ConfiguredClientSpec) error {
 		return fmt.Errorf("token_exchange.exchange_refresh_tokens requires self_issued_subject_tokens %q",
 			selfIssuedSubjectTokensRestricted)
 	}
-	if spec.APIAudience == "" {
-		return fmt.Errorf("token_exchange.api_audience is required with token_exchange.exchange_refresh_tokens")
+	if len(spec.SubjectTokenAudiences) == 0 {
+		return fmt.Errorf("token_exchange.subject_token_audiences is required with token_exchange.exchange_refresh_tokens")
 	}
 	if len(spec.AllowedSourceClients) == 0 {
 		return fmt.Errorf("token_exchange.allowed_source_clients is required with token_exchange.exchange_refresh_tokens")

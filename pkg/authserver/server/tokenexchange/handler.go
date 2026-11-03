@@ -85,16 +85,23 @@ type Handler struct {
 }
 
 // ConfiguredClientPolicy is the token-exchange policy of a delegate client
-// whose self_issued_subject_tokens is restricted. A client with any, or
-// without a token_exchange block, has no entry and keeps blanket trust of
-// self-issued subject tokens.
+// whose self_issued_subject_tokens is restricted: an entry means restricted.
+// A client with any, or without a token_exchange block, has no entry and keeps
+// blanket trust of self-issued subject tokens.
 type ConfiguredClientPolicy struct {
 	// AllowedSourceClients are the client_id values, besides the client
-	// itself, whose self-issued subject tokens the client may exchange.
+	// itself, whose self-issued subject tokens the client may exchange on the
+	// default path. The exchange-grant path accepts only these clients, not the
+	// client's own tokens, so startup requires the list with
+	// exchange_refresh_tokens.
 	AllowedSourceClients []string
-	// APIAudience is the audience the client may be granted without subject
-	// token coverage. Empty means none.
-	APIAudience string
+	// SubjectTokenAudiences are the audiences a self-issued subject token must
+	// carry (one of them, matched exactly) on every exchange path, including
+	// the client's own tokens. They are input only and never grant an
+	// access-token audience. Empty means no requirement on the default path
+	// but refuses on the exchange-grant path, which is why startup requires
+	// the list with exchange_refresh_tokens.
+	SubjectTokenAudiences []string
 	// ExchangeRefreshTokens caps the lifetime of refresh tokens this client may
 	// obtain through token exchange, keyed by the token-type URN of the grant
 	// (oauthproto.TokenTypeIDJAG or oauthproto.TokenTypeRefreshToken). A missing
@@ -196,10 +203,10 @@ func (h *Handler) HandleTokenEndpointRequest(ctx context.Context, requester fosi
 		// unacceptable based on policy ... The value of the error parameter
 		// MUST be the invalid_request error code." checkSourcePolicy and
 		// checkDelegationConsent below deliberately return invalid_grant
-		// instead for their own failures — a documented deviation: RFC 6749 §5.2's invalid_grant
-		// covers "was issued to another client", §2.2.2 permits other error
-		// codes for other failures, and both Keycloak and Hydra follow this
-		// same split.
+		// instead for their own failures (and so does checkSubjectTokenAudience).
+		// This is a documented deviation: RFC 6749 §5.2's invalid_grant covers
+		// "was issued to another client", §2.2.2 permits other error codes for
+		// other failures, and both Keycloak and Hydra follow this same split.
 		return errorsx.WithStack(fosite.ErrInvalidRequest.WithHint(
 			"The subject token is invalid or could not be verified."))
 	}
@@ -342,6 +349,9 @@ func (h *Handler) authorizeDelegation(
 	configuredDelegate := slices.Contains(h.configuredDelegateClients, client.GetID())
 	if policy, ok := h.clientPolicies[client.GetID()]; ok {
 		if err := checkSourcePolicy(validatedClaims, client.GetID(), policy); err != nil {
+			return err
+		}
+		if err := checkSubjectTokenAudience(validatedClaims, policy); err != nil {
 			return err
 		}
 	}
@@ -515,8 +525,9 @@ func (h *Handler) computeLifetime(subjectExpiry time.Time) (time.Duration, error
 // fragment (the OIDC/OAuth "iss" value is a URL without a fragment
 // component, and this validator's own issuer comparison is an exact string
 // match against that value), so strings.Cut(sub, "#") on the qualified
-// subject always recovers (issuerURL, externalSub) uniquely. A native UUID
-// can never collide with a qualified value, since a UUID contains no "#".
+// subject always recovers (issuerURL, externalSub) uniquely. A native subject
+// (a UUID, or a synthesized "tk-" plus hex value) can never collide with a
+// qualified value, since neither contains a "#".
 //
 // Re-exchanging a previously-issued delegated token does not double-qualify:
 // such a token's "iss" is always this server's own issuer (fosite stamps
@@ -665,22 +676,6 @@ func externalOrigin(validatedClaims *ValidatedClaims) string {
 	return prior
 }
 
-// qualifiedSubjectSeparator joins the external issuer and subject in the
-// "issuer#subject" form that every minter of an externally derived token uses.
-const qualifiedSubjectSeparator = "#"
-
-// derivedFromExternalIdentity reports whether the subject token comes from an
-// external identity. It is true when externalOrigin finds an external issuer,
-// or when the subject has the "issuer#subject" form. The subject check covers
-// tokens minted by the jwt-bearer and ID-JAG handlers: they carry that subject
-// form but no external_issuer claim. The separator is the one those minters
-// use; native login subjects are ToolHive user IDs (UUIDs) or synthesized
-// "tk-" plus hex values, and never contain it.
-func derivedFromExternalIdentity(validatedClaims *ValidatedClaims) bool {
-	return externalOrigin(validatedClaims) != "" ||
-		strings.Contains(validatedClaims.Subject, qualifiedSubjectSeparator)
-}
-
 // chainToAct rebuilds a nested RFC 8693 act structure from a parsed
 // delegation chain, keeping only each hop's iss/sub — never the hop's extra
 // claims, which coreaudit.ParseDelegationChain deliberately keeps out of the
@@ -740,6 +735,28 @@ func checkSourcePolicy(validatedClaims *ValidatedClaims, clientID string, policy
 	}
 	return errorsx.WithStack(fosite.ErrInvalidGrant.WithHint(
 		"The subject token was not issued to this client or to one of its allowed source clients."))
+}
+
+// checkSubjectTokenAudience requires a self-issued subject token to carry one
+// of the policy's SubjectTokenAudiences. An empty list sets no requirement, and
+// external-issuer tokens are left to the issuer policy.
+func checkSubjectTokenAudience(validatedClaims *ValidatedClaims, policy ConfiguredClientPolicy) error {
+	if len(policy.SubjectTokenAudiences) == 0 || validatedClaims.ExternalIssuer != "" {
+		return nil
+	}
+	if carriesAnyAudience(validatedClaims, policy.SubjectTokenAudiences) {
+		return nil
+	}
+	return errorsx.WithStack(fosite.ErrInvalidGrant.WithHint(
+		"The subject token was not issued for one of this client's accepted audiences."))
+}
+
+// carriesAnyAudience reports whether the token's aud contains one of accepted,
+// matched exactly.
+func carriesAnyAudience(validatedClaims *ValidatedClaims, accepted []string) bool {
+	return slices.ContainsFunc(validatedClaims.Audience, func(audience string) bool {
+		return slices.Contains(accepted, audience)
+	})
 }
 
 // sourceClientAllowed reports whether the source policy accepts the subject
@@ -913,12 +930,10 @@ func (h *Handler) grantScopes(
 // The delegated token must not target a resource the subject token was not
 // itself valid for: every granted audience must be covered by the subject
 // token's audience — delegation narrows, never broadens, the resource
-// boundary. The one exception is the client's api_audience, which may be
-// granted without coverage when the subject token is self-issued and not
-// derived from an external-issuer token. This mirrors grantScopes, which
-// bounds scopes by the subject token; without it a client registered for
-// audiences A and B could exchange a user token minted for A into a token for
-// B, an escalation the user never consented to.
+// boundary, with no exceptions. This mirrors grantScopes, which bounds scopes
+// by the subject token; without it a client registered for audiences A and B
+// could exchange a user token minted for A into a token for B, an escalation
+// the user never consented to.
 func (h *Handler) grantAndBoundAudiences(
 	ctx context.Context, requester fosite.AccessRequester, client fosite.Client, validatedClaims *ValidatedClaims,
 ) error {
@@ -931,18 +946,7 @@ func (h *Handler) grantAndBoundAudiences(
 	if err := h.grantDefaultAudience(ctx, requester, client); err != nil {
 		return err
 	}
-	// The api_audience exception applies only to self-issued subject tokens
-	// with no external identity in their ancestry: derivedFromExternalIdentity
-	// sees a re-exchanged token's external_issuer claim and the issuer#subject
-	// subject of an ID-JAG or jwt-bearer token, so those stay bound by their
-	// own audience.
-	apiAudience := func() string {
-		if derivedFromExternalIdentity(validatedClaims) {
-			return ""
-		}
-		return h.clientPolicies[client.GetID()].APIAudience
-	}()
-	return ensureAudienceSubsetOfSubject(requester.GetGrantedAudience(), validatedClaims.Audience, apiAudience)
+	return ensureAudienceSubsetOfSubject(requester.GetGrantedAudience(), validatedClaims.Audience)
 }
 
 // grantAudiences validates that the requested audience is allowed for this
@@ -1032,18 +1036,13 @@ func (h *Handler) grantDefaultAudience(ctx context.Context, requester fosite.Acc
 // issuer's own configured ExpectedAudience, which has no required
 // relationship to AllowedAudiences — see the TrustedIssuers field doc
 // comment in pkg/authserver/config.go for the operator-facing consequence.
-//
-// apiAudience is the client's own configured API audience; it is exempt from
-// the coverage rule. Empty means the client has none. Granted audiences are
-// never empty: fosite drops empty "audience" values, and grantResourceAudience
-// skips an empty "resource". So an empty apiAudience exempts nothing.
-func ensureAudienceSubsetOfSubject(granted, subjectAud []string, apiAudience string) error {
+func ensureAudienceSubsetOfSubject(granted, subjectAud []string) error {
 	subj := make(map[string]bool, len(subjectAud))
 	for _, a := range subjectAud {
 		subj[a] = true
 	}
 	for _, a := range granted {
-		if !subj[a] && a != apiAudience {
+		if !subj[a] {
 			return errorsx.WithStack(server.ErrInvalidTarget.WithHintf(
 				"The delegated token audience %q is not covered by the subject token's audience.", a))
 		}

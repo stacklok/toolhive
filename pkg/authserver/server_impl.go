@@ -683,9 +683,9 @@ func exchangeRefreshTokenCaps(block *DelegateClientExchangeRefreshTokens) (map[s
 }
 
 // configuredClientPolicies builds the token-exchange policy of every delegate
-// client whose self_issued_subject_tokens is restricted, keyed by client_id. A
-// client with any, or without a token_exchange block, gets no entry and so
-// keeps blanket trust of self-issued subject tokens.
+// client whose self_issued_subject_tokens is restricted, keyed by client_id; an
+// entry means restricted. A client with any, or without a token_exchange block,
+// gets no entry and so keeps blanket trust of self-issued subject tokens.
 func configuredClientPolicies(
 	clients []DelegateClient,
 ) (map[string]tokenexchange.ConfiguredClientPolicy, error) {
@@ -703,7 +703,7 @@ func configuredClientPolicies(
 		}
 		policies[c.ClientID] = tokenexchange.ConfiguredClientPolicy{
 			AllowedSourceClients:  slices.Clone(c.TokenExchange.AllowedSourceClients),
-			APIAudience:           c.TokenExchange.APIAudience,
+			SubjectTokenAudiences: slices.Clone(c.TokenExchange.SubjectTokenAudiences),
 			ExchangeRefreshTokens: refreshCaps,
 		}
 	}

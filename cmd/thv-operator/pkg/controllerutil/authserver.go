@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"slices"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
@@ -22,6 +23,7 @@ import (
 	authrunner "github.com/stacklok/toolhive/pkg/authserver/runner"
 	"github.com/stacklok/toolhive/pkg/authserver/server/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
+	"github.com/stacklok/toolhive/pkg/oauthproto"
 	"github.com/stacklok/toolhive/pkg/runner"
 )
 
@@ -71,6 +73,15 @@ const (
 
 	// AuthServerTrustedIssuerCABundleMountPath is the base path for trusted issuer CA bundles.
 	AuthServerTrustedIssuerCABundleMountPath = "/etc/toolhive/authserver/issuer-ca"
+
+	// AuthServerDelegateClientJWKSVolumePrefix is the prefix for delegate-client JWKS ConfigMap volume names.
+	AuthServerDelegateClientJWKSVolumePrefix = "authserver-delegate-jwks-"
+
+	// AuthServerDelegateClientJWKSMountPath is the base directory for delegate-client public JWKS files.
+	AuthServerDelegateClientJWKSMountPath = "/etc/toolhive/authserver/delegate-jwks"
+
+	// AuthServerDelegateClientJWKSFileName is the controlled filename for a projected delegate-client JWKS.
+	AuthServerDelegateClientJWKSFileName = "jwks.json"
 
 	// AuthServerConfigMapChecksumAnnotation triggers a rollout when a selected
 	// auth server ConfigMap (today: a CA bundle) changes. The value keeps its
@@ -262,16 +273,37 @@ func buildDelegateClientRunConfigs(
 ) ([]authserver.DelegateClientRunConfig, error) {
 	configs := make([]authserver.DelegateClientRunConfig, len(clients))
 	for i, delegateClient := range clients {
-		secretRef := delegateClient.ClientSecretRef
-		if secretRef == nil || secretRef.Name == "" || secretRef.Key == "" {
-			return nil, fmt.Errorf("delegateClients[%d].clientSecretRef.name and clientSecretRef.key are required", i)
+		runConfig := authserver.DelegateClientRunConfig{
+			ClientID:                    delegateClient.ClientID,
+			TokenEndpointAuthMethod:     delegateClient.TokenEndpointAuthMethod,
+			TokenEndpointAuthSigningAlg: delegateClient.TokenEndpointAuthSigningAlg,
+			GrantTypes:                  slices.Clone(delegateClient.GrantTypes),
+			RedirectURIs:                slices.Clone(delegateClient.RedirectURIs),
+			Scopes:                      slices.Clone(delegateClient.Scopes),
+			Audiences:                   slices.Clone(delegateClient.Audiences),
 		}
-		configs[i] = authserver.DelegateClientRunConfig{
-			ClientID:           delegateClient.ClientID,
-			ClientSecretEnvVar: delegateClientSecretEnvVarName(i),
-			Scopes:             append([]string(nil), delegateClient.Scopes...),
-			Audiences:          append([]string(nil), delegateClient.Audiences...),
+		if delegateClient.TokenEndpointAuthMethod == oauthproto.TokenEndpointAuthMethodPrivateKeyJWT {
+			ref := delegateClient.JWKSRef
+			if ref == nil || ref.Name == "" || ref.Key == "" {
+				return nil, fmt.Errorf("delegateClients[%d].jwksRef.name and jwksRef.key are required for private_key_jwt", i)
+			}
+			runConfig.JWKSFile = delegateClientJWKSFilePath(i)
+		} else {
+			secretRef := delegateClient.ClientSecretRef
+			if secretRef == nil || secretRef.Name == "" || secretRef.Key == "" {
+				return nil, fmt.Errorf("delegateClients[%d].clientSecretRef.name and clientSecretRef.key are required", i)
+			}
+			runConfig.ClientSecretEnvVar = delegateClientSecretEnvVarName(i)
 		}
+		if delegateClient.TokenExchange != nil {
+			runConfig.TokenExchange = &authserver.DelegateClientTokenExchange{
+				SelfIssuedSubjectTokens: authserver.SelfIssuedSubjectTokens(
+					delegateClient.TokenExchange.SelfIssuedSubjectTokens),
+				AllowedSourceClients:  slices.Clone(delegateClient.TokenExchange.AllowedSourceClients),
+				SubjectTokenAudiences: slices.Clone(delegateClient.TokenExchange.SubjectTokenAudiences),
+			}
+		}
+		configs[i] = runConfig
 	}
 	return configs, nil
 }
@@ -474,8 +506,9 @@ func EmbeddedAuthServerConfigMapChecksum(
 }
 
 // EmbeddedAuthServerConfigMapChecksumForConfig returns a checksum of the selected
-// bytes in all CA ConfigMaps used by an inline embedded auth server. ConfigMap
-// metadata and unselected keys are deliberately excluded.
+// bytes in all CA ConfigMaps and delegate client JWKS ConfigMaps used by an inline
+// embedded auth server. ConfigMap metadata and unselected keys are deliberately
+// excluded.
 func EmbeddedAuthServerConfigMapChecksumForConfig(
 	ctx context.Context, c client.Client, namespace string, config *mcpv1beta1.EmbeddedAuthServerConfig,
 ) (string, error) {
@@ -516,10 +549,73 @@ func EmbeddedAuthServerConfigMapChecksumForConfig(
 		_, _ = hash.Write([]byte{0})
 		found = true
 	}
+	// The JWKS section is hashed only when a delegate client references one, behind
+	// its own marker, so the checksum of every config without a jwksRef is unchanged.
+	wroteJWKSMarker := false
+	delegateClients := effectiveDelegateClients(config)
+	for i := range delegateClients {
+		ref := delegateClients[i].JWKSRef
+		if ref == nil {
+			continue
+		}
+		value, err := resolveDelegateClientJWKS(ctx, c, namespace, i, ref)
+		if err != nil {
+			return "", err
+		}
+		if !wroteJWKSMarker {
+			_, _ = hash.Write([]byte("delegateClientJWKS\x00"))
+			wroteJWKSMarker = true
+		}
+		_, _ = hash.Write(value)
+		_, _ = hash.Write([]byte{0})
+		found = true
+	}
 	if !found {
 		return "", nil
 	}
 	return hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+// resolveDelegateClientJWKS returns the bytes of a delegate client's JWKS
+// ConfigMap key, looking in data first and then binaryData. A missing key is an
+// *InvalidCABundleError (terminal); a failed ConfigMap read is returned
+// unwrapped because it may be transient.
+func resolveDelegateClientJWKS(
+	ctx context.Context, c client.Reader, namespace string, index int, ref *mcpv1beta1.ConfigMapKeyRef,
+) ([]byte, error) {
+	if ref.Name == "" || ref.Key == "" {
+		return nil, invalidCABundleError(fmt.Errorf("delegateClients[%d].jwksRef.name and jwksRef.key are required", index))
+	}
+	configMap := &corev1.ConfigMap{}
+	if err := c.Get(ctx, client.ObjectKey{Namespace: namespace, Name: ref.Name}, configMap); err != nil {
+		return nil, fmt.Errorf("delegateClients[%d].jwksRef: failed to get ConfigMap %q in namespace %q: %w",
+			index, ref.Name, namespace, err)
+	}
+	if value, ok := configMap.Data[ref.Key]; ok {
+		return []byte(value), nil
+	}
+	if value, ok := configMap.BinaryData[ref.Key]; ok {
+		return value, nil
+	}
+	return nil, invalidCABundleError(fmt.Errorf(
+		"delegateClients[%d].jwksRef: ConfigMap %q does not contain key %q in data or binaryData", index, ref.Name, ref.Key))
+}
+
+// DelegateClientJWKSConfigMapNames returns the names of the ConfigMaps that
+// hold the public JWKS of the delegate clients the runtime config is built
+// from (the canonical list, or the deprecated one when the canonical block is
+// absent). Field indexes use it so a JWKS edit enqueues reconciles.
+func DelegateClientJWKSConfigMapNames(config *mcpv1beta1.EmbeddedAuthServerConfig) []string {
+	if config == nil {
+		return nil
+	}
+	var names []string
+	for _, delegateClient := range effectiveDelegateClients(config) {
+		if ref := delegateClient.JWKSRef; ref != nil && ref.Name != "" {
+			names = append(names, ref.Name)
+		}
+	}
+	return names
 }
 
 // GenerateAuthServerVolumes generates volumes and mounts for auth server
@@ -644,10 +740,16 @@ func GenerateAuthServerVolumes(
 	if err != nil {
 		return nil, nil, err
 	}
+	jwksVolumes, jwksMounts, err := generateDelegateClientJWKSVolumes(effectiveDelegateClients(authConfig))
+	if err != nil {
+		return nil, nil, err
+	}
 	volumes = append(volumes, upstreamVolumes...)
 	volumes = append(volumes, trustedIssuerVolumes...)
+	volumes = append(volumes, jwksVolumes...)
 	volumeMounts = append(volumeMounts, upstreamMounts...)
 	volumeMounts = append(volumeMounts, trustedIssuerMounts...)
+	volumeMounts = append(volumeMounts, jwksMounts...)
 
 	return volumes, volumeMounts, nil
 }
@@ -706,6 +808,61 @@ func generateCABundleVolumes(
 	return volumes, mounts, nil
 }
 
+// effectiveDelegateClients returns the delegate clients the runtime config is
+// built from: the canonical inboundGrants list when the block is present,
+// otherwise the deprecated top-level list.
+func effectiveDelegateClients(authConfig *mcpv1beta1.EmbeddedAuthServerConfig) []mcpv1beta1.DelegateClientConfig {
+	if authConfig.InboundGrants != nil && authConfig.InboundGrants.TokenExchange != nil {
+		return authConfig.InboundGrants.TokenExchange.DelegateClients
+	}
+	return authConfig.DelegateClients
+}
+
+// EffectiveDelegateClients returns the delegate clients the runtime config is
+// built from: the canonical inboundGrants list when the block is present,
+// otherwise the deprecated top-level list.
+func EffectiveDelegateClients(authConfig *mcpv1beta1.EmbeddedAuthServerConfig) []mcpv1beta1.DelegateClientConfig {
+	return effectiveDelegateClients(authConfig)
+}
+
+// generateDelegateClientJWKSVolumes mounts each private_key_jwt delegate
+// client's public JWKS ConfigMap key as a read-only file. The index in the
+// path is the client's position in the list, matching buildDelegateClientRunConfigs.
+func generateDelegateClientJWKSVolumes(
+	clients []mcpv1beta1.DelegateClientConfig,
+) ([]corev1.Volume, []corev1.VolumeMount, error) {
+	var volumes []corev1.Volume
+	var mounts []corev1.VolumeMount
+	for index, delegate := range clients {
+		ref := delegate.JWKSRef
+		if ref == nil {
+			continue
+		}
+		if ref.Name == "" || ref.Key == "" {
+			return nil, nil, fmt.Errorf("delegateClients[%d].jwksRef.name and jwksRef.key are required", index)
+		}
+		volumeName := fmt.Sprintf("%s%d", AuthServerDelegateClientJWKSVolumePrefix, index)
+		volumes = append(volumes, corev1.Volume{
+			Name: volumeName,
+			VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{
+				LocalObjectReference: corev1.LocalObjectReference{Name: ref.Name},
+				Items:                []corev1.KeyToPath{{Key: ref.Key, Path: AuthServerDelegateClientJWKSFileName}},
+			}},
+		})
+		mounts = append(mounts, corev1.VolumeMount{
+			Name: volumeName, MountPath: delegateClientJWKSFilePath(index),
+			SubPath: AuthServerDelegateClientJWKSFileName, ReadOnly: true,
+		})
+	}
+	return volumes, mounts, nil
+}
+
+// delegateClientJWKSFilePath returns the JWKS path for the delegate client at
+// the given index. The index must match the client's position in the list.
+func delegateClientJWKSFilePath(index int) string {
+	return fmt.Sprintf("%s/%d/%s", AuthServerDelegateClientJWKSMountPath, index, AuthServerDelegateClientJWKSFileName)
+}
+
 // upstreamCABundleFilePath returns the path for the provider at the given index.
 // The index must match the provider's position in UpstreamProviders.
 func upstreamCABundleFilePath(index int) string {
@@ -745,11 +902,7 @@ func GenerateAuthServerEnvVars(
 	// Generate env vars for static delegate client secrets. Their names are
 	// indexed by list position to avoid deriving a reserved env-var name from
 	// arbitrary client ID text.
-	delegateClients := authConfig.DelegateClients
-	if authConfig.InboundGrants != nil && authConfig.InboundGrants.TokenExchange != nil {
-		delegateClients = authConfig.InboundGrants.TokenExchange.DelegateClients
-	}
-	for i, delegateClient := range delegateClients {
+	for i, delegateClient := range effectiveDelegateClients(authConfig) {
 		if delegateClient.ClientSecretRef != nil {
 			envVars = append(envVars, envVarFromSecretRef(
 				delegateClientSecretEnvVarName(i), delegateClient.ClientSecretRef))

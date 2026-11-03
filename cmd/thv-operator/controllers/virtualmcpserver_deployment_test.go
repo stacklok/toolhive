@@ -124,6 +124,58 @@ func TestDeploymentForVirtualMCPServer_WithDelegateClientSecrets(t *testing.T) {
 	t.Fatal("delegate client secret environment variable was not generated")
 }
 
+func TestDeploymentForVirtualMCPServer_WithDelegateClientJWKS(t *testing.T) {
+	t.Parallel()
+
+	vmcp := v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+		v1beta1test.WithVMCPGroupRef("test-group"),
+	)
+	vmcp.Spec.AuthServerConfig = &mcpv1beta1.EmbeddedAuthServerConfig{
+		InboundGrants: &mcpv1beta1.InboundGrantsConfig{
+			TokenExchange: &mcpv1beta1.TokenExchangeInboundGrantConfig{
+				DelegateClients: []mcpv1beta1.DelegateClientConfig{
+					{
+						ClientID:                "broker",
+						TokenEndpointAuthMethod: "private_key_jwt",
+						JWKSRef:                 &mcpv1beta1.ConfigMapKeyRef{Name: "broker-jwks", Key: "jwks.json"},
+						Scopes:                  []string{"openid"},
+						Audiences:               []string{"https://resource.example.com"},
+						TokenExchange:           &mcpv1beta1.DelegateClientTokenExchangeConfig{SelfIssuedSubjectTokens: "any"},
+					},
+				},
+			},
+		},
+	}
+
+	r := &VirtualMCPServerReconciler{
+		Scheme:           testutil.NewScheme(t),
+		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
+	}
+	deployment := r.deploymentForVirtualMCPServer(context.Background(), vmcp, "test-checksum", "", nil, nil)
+	require.NotNil(t, deployment)
+
+	podSpec := deployment.Spec.Template.Spec
+	var volumeName string
+	for _, volume := range podSpec.Volumes {
+		if volume.ConfigMap != nil && volume.ConfigMap.Name == "broker-jwks" {
+			volumeName = volume.Name
+		}
+	}
+	require.NotEmpty(t, volumeName, "JWKS ConfigMap volume was not added to the pod")
+	assert.Equal(t, ctrlutil.AuthServerDelegateClientJWKSVolumePrefix+"0", volumeName)
+
+	require.Len(t, podSpec.Containers, 1)
+	var mountFound bool
+	for _, mount := range podSpec.Containers[0].VolumeMounts {
+		if mount.Name == volumeName {
+			assert.Equal(t, "/etc/toolhive/authserver/delegate-jwks/0/jwks.json", mount.MountPath)
+			assert.True(t, mount.ReadOnly)
+			mountFound = true
+		}
+	}
+	assert.True(t, mountFound, "JWKS volume was not mounted into the container")
+}
+
 // TestDeploymentForVirtualMCPServer_WithRedisPassword tests that the deployment pod
 // spec includes THV_SESSION_REDIS_PASSWORD when spec.sessionStorage has a passwordRef.
 func TestDeploymentForVirtualMCPServer_WithRedisPassword(t *testing.T) {

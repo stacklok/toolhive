@@ -194,7 +194,7 @@ func (c *Converter) Convert(
 	if vmcp.Spec.AuthServerConfig != nil {
 		rc, err := c.convertAuthServerConfig(vmcp, config)
 		if err != nil {
-			if len(vmcp.Spec.AuthServerConfig.DelegateClients) > 0 {
+			if len(controllerutil.EffectiveDelegateClients(vmcp.Spec.AuthServerConfig)) > 0 {
 				return nil, nil, &DelegateClientConfigValidationError{Err: err}
 			}
 			return nil, nil, fmt.Errorf("failed to convert auth server config: %w", err)

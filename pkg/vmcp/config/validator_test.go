@@ -1706,3 +1706,47 @@ func TestValidator_ValidateStaticBackends(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateAuthServerRunConfig_DelegateClients(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		rc      *authserver.RunConfig
+		wantErr bool
+	}{
+		{
+			name: "canonical delegate client satisfies the upstream requirement",
+			rc: &authserver.RunConfig{
+				Issuer:           "https://auth.example.com",
+				AllowedAudiences: []string{"https://my-vmcp"},
+				InboundGrants: &authserver.InboundGrantsRunConfig{
+					TokenExchange: &authserver.TokenExchangeInboundGrantRunConfig{
+						DelegateClients: []authserver.DelegateClientRunConfig{{ClientID: "delegate"}},
+					},
+				},
+			},
+		},
+		{
+			name: "no upstream, delegate client or trusted issuer fails",
+			rc: &authserver.RunConfig{
+				Issuer:           "https://auth.example.com",
+				AllowedAudiences: []string{"https://my-vmcp"},
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := validateAuthServerRunConfig(tt.rc)
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "auth server requires at least one upstream unless delegate clients")
+				return
+			}
+			require.NoError(t, err)
+		})
+	}
+}

@@ -673,7 +673,12 @@ func validateAuthServerRunConfig(rc *authserver.RunConfig) error {
 	if rc.Issuer == "" {
 		return fmt.Errorf("auth server issuer is required")
 	}
-	if len(rc.Upstreams) == 0 && len(rc.DelegateClients) == 0 &&
+	// Delegate clients live in the deprecated top-level list or, when the
+	// operator builds the config from inboundGrants, in the canonical list.
+	hasDelegateClients := len(rc.DelegateClients) > 0 ||
+		(rc.InboundGrants != nil && rc.InboundGrants.TokenExchange != nil &&
+			len(rc.InboundGrants.TokenExchange.DelegateClients) > 0)
+	if len(rc.Upstreams) == 0 && !hasDelegateClients &&
 		!authserver.JWTBearerGrantEnabled(rc.TrustedIssuers) {
 		return fmt.Errorf("auth server requires at least one upstream unless delegate clients or a " +
 			"trusted issuer with JWT bearer grant is configured")

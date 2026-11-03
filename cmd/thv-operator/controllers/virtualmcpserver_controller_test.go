@@ -4799,6 +4799,62 @@ func TestVirtualMCPServerValidateAuthServerConfig_InsecureAllowHTTP(t *testing.T
 	}
 }
 
+func TestVirtualMCPServerValidateAuthServerConfig_DelegateClients(t *testing.T) {
+	t.Parallel()
+
+	const tokenExchangeGrant = "urn:ietf:params:oauth:grant-type:token-exchange"
+	loopbackClient := mcpv1beta1.DelegateClientConfig{
+		ClientID:        "delegate",
+		ClientSecretRef: &mcpv1beta1.SecretKeyRef{Name: "delegate-secret", Key: "secret"},
+		GrantTypes:      []string{"authorization_code", tokenExchangeGrant},
+		RedirectURIs:    []string{"https://localhost/callback"},
+		TokenExchange:   &mcpv1beta1.DelegateClientTokenExchangeConfig{SelfIssuedSubjectTokens: "any"},
+	}
+
+	tests := []struct {
+		name string
+		cfg  *mcpv1beta1.EmbeddedAuthServerConfig
+	}{
+		{
+			name: "loopback https redirect URI on a canonical delegate client",
+			cfg: &mcpv1beta1.EmbeddedAuthServerConfig{
+				Issuer: "https://authserver.example.com",
+				InboundGrants: &mcpv1beta1.InboundGrantsConfig{
+					TokenExchange: &mcpv1beta1.TokenExchangeInboundGrantConfig{
+						DelegateClients: []mcpv1beta1.DelegateClientConfig{loopbackClient},
+					},
+				},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			vmcp := v1beta1test.NewVirtualMCPServer(testVmcpName, "default",
+				v1beta1test.WithVMCPGroupRef("test-group"),
+				v1beta1test.WithVMCPAuthServerConfig(tt.cfg),
+				v1beta1test.MutateVMCP(func(v *mcpv1beta1.VirtualMCPServer) {
+					v.Generation = 1
+				}),
+			)
+
+			statusManager := virtualmcpserverstatus.NewStatusManager(vmcp)
+			err := (&VirtualMCPServerReconciler{}).validateAuthServerConfig(vmcp, statusManager)
+			statusManager.UpdateStatus(t.Context(), &vmcp.Status)
+
+			require.Error(t, err)
+			cond := findCondition(vmcp.Status.Conditions, mcpv1beta1.ConditionTypeAuthServerConfigValidated)
+			require.NotNil(t, cond, "AuthServerConfigValidated condition must be set")
+			assert.Equal(t, metav1.ConditionFalse, cond.Status)
+			assert.Equal(t, mcpv1beta1.ConditionReasonAuthServerConfigInvalid, cond.Reason)
+			assert.Contains(t, cond.Message, "inboundGrants.tokenExchange.delegateClients[0]")
+			assert.Contains(t, cond.Message, "redirectUris must not be loopback")
+		})
+	}
+}
+
 func TestVirtualMCPServerValidateAuthServerConfig_ZeroUpstreamAlternatives(t *testing.T) {
 	t.Parallel()
 

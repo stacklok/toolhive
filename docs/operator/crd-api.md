@@ -1933,6 +1933,19 @@ _Appears in:_
 | `key` _string_ | Key is the key in the ConfigMap that contains the authorization configuration | authz.json | Optional: \{\} <br /> |
 
 
+#### api.v1beta1.ConfigMapKeyRef
+
+_Underlying type:_ _struct{Name string "json:\"name\""; Key string "json:\"key\""}_
+
+ConfigMapKeyRef is a reference to a key within a ConfigMap in the same namespace.
+
+
+
+_Appears in:_
+- [api.v1beta1.DelegateClientConfig](#apiv1beta1delegateclientconfig)
+
+
+
 #### api.v1beta1.DCRUpstreamConfig
 
 
@@ -1974,9 +1987,10 @@ _Appears in:_
 
 
 
-DelegateClientConfig configures a pre-provisioned confidential OAuth client
-for RFC 8693 token exchange. Its secret is referenced from a Kubernetes
-Secret and is never represented inline.
+DelegateClientConfig configures a pre-provisioned confidential OAuth client.
+By default it is a token-exchange client (RFC 8693). Its credential is either
+a client secret, referenced from a Kubernetes Secret and never represented
+inline, or a public JWKS for private_key_jwt, referenced from a ConfigMap.
 
 
 
@@ -1987,9 +2001,30 @@ _Appears in:_
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `clientId` _string_ | ClientID is the OAuth client_id presented at the token endpoint. |  | MaxLength: 256 <br />MinLength: 1 <br />Required: \{\} <br /> |
-| `clientSecretRef` _[api.v1beta1.SecretKeyRef](#apiv1beta1secretkeyref)_ | ClientSecretRef references the Kubernetes Secret key containing the client secret. |  | Required: \{\} <br /> |
+| `tokenEndpointAuthMethod` _string_ | TokenEndpointAuthMethod pins how the client authenticates at the token<br />endpoint. If omitted, the client authenticates with its secret by either<br />HTTP Basic or form body. |  | Enum: [client_secret_basic client_secret_post private_key_jwt] <br />Optional: \{\} <br /> |
+| `clientSecretRef` _[api.v1beta1.SecretKeyRef](#apiv1beta1secretkeyref)_ | ClientSecretRef references the Kubernetes Secret key containing the client secret.<br />Required unless tokenEndpointAuthMethod is private_key_jwt, where it is forbidden. |  | Optional: \{\} <br /> |
+| `jwksRef` _[api.v1beta1.ConfigMapKeyRef](#apiv1beta1configmapkeyref)_ | JWKSRef references the ConfigMap key holding the client's public JWKS<br />document. Required with private_key_jwt and forbidden otherwise. The<br />document must contain public keys only. |  | Optional: \{\} <br /> |
+| `tokenEndpointAuthSigningAlg` _string_ | TokenEndpointAuthSigningAlg is the private_key_jwt signing algorithm,<br />for example RS256 or ES256. If omitted, it is derived from the keys:<br />each key's alg, or ES256, ES384 or ES512 from an EC key's curve. RSA<br />keys without alg use RS256. Keys that disagree must set it. |  | Enum: [RS256 RS384 RS512 PS256 PS384 PS512 ES256 ES384 ES512] <br />Optional: \{\} <br /> |
+| `grantTypes` _string array_ | GrantTypes are the grants this client may use. If omitted or empty, the<br />client is token-exchange only. When set, the list must include<br />urn:ietf:params:oauth:grant-type:token-exchange: a delegate client is a<br />token-exchange client that may also log in or redeem other grants. When set,<br />the list is complete: include urn:ietf:params:oauth:grant-type:jwt-bearer to<br />keep ID-JAG redemption. |  | MaxItems: 4 <br />items:Enum: [authorization_code refresh_token urn:ietf:params:oauth:grant-type:token-exchange urn:ietf:params:oauth:grant-type:jwt-bearer] <br />Optional: \{\} <br /> |
+| `redirectUris` _string array_ | RedirectURIs are the registered redirect URIs. They are required with the<br />authorization_code grant and forbidden without it. They sit here, under<br />tokenExchange.delegateClients, because a delegate client is a<br />token-exchange client that may also log in (authorization_code).<br />The pattern is stricter than the runtime for uppercase "HTTPS://": the<br />runtime accepts it, the pattern does not. The scheme check is<br />case-sensitive, as in forceConfidentialRedirectUris. Query strings and<br />fragments behave the same as the runtime: a query string is allowed, and<br />a fragment is rejected. |  | MaxItems: 10 <br />items:MaxLength: 2048 <br />items:MinLength: 1 <br />items:Pattern: `^https://[^\s#]+$` <br />Optional: \{\} <br /> |
 | `scopes` _string array_ | Scopes is the narrowed set of OAuth scopes this client may request. |  | MaxItems: 10 <br />MinItems: 1 <br />Required: \{\} <br />items:MaxLength: 256 <br />items:MinLength: 1 <br /> |
 | `audiences` _string array_ | Audiences is the narrowed set of RFC 8707 resources this client may request. |  | MaxItems: 10 <br />MinItems: 1 <br />Required: \{\} <br />items:MaxLength: 2048 <br />items:MinLength: 1 <br /> |
+| `tokenExchange` _[api.v1beta1.DelegateClientTokenExchangeConfig](#apiv1beta1delegateclienttokenexchangeconfig)_ | TokenExchange is the client's token-exchange policy. Its<br />selfIssuedSubjectTokens field is required whenever the block is present.<br />The block may be omitted only by a secret-authenticated client without<br />grantTypes; such a client keeps the legacy rule (any) and may exchange any<br />self-issued token. A client that sets grantTypes or uses private_key_jwt<br />must declare the block. |  | Optional: \{\} <br /> |
+
+
+#### api.v1beta1.DelegateClientTokenExchangeConfig
+
+_Underlying type:_ _struct{SelfIssuedSubjectTokens string "json:\"selfIssuedSubjectTokens\""; AllowedSourceClients []string "json:\"allowedSourceClients,omitempty\""; SubjectTokenAudiences []string "json:\"subjectTokenAudiences,omitempty\""}_
+
+DelegateClientTokenExchangeConfig is the token-exchange policy of one
+delegate client. External-issuer subject tokens are not affected by it: the
+trusted issuer's own policy decides those.
+
+
+
+_Appears in:_
+- [api.v1beta1.DelegateClientConfig](#apiv1beta1delegateclientconfig)
+
 
 
 #### api.v1beta1.DiscoveredBackend
@@ -2068,8 +2103,8 @@ _Appears in:_
 | `baselineClientScopes` _string array_ | BaselineClientScopes is a baseline set of OAuth 2.0 scopes guaranteed to be<br />included in every client registration. The embedded auth server unions these<br />scopes into the registered set returned by RFC 7591 Dynamic Client<br />Registration, so a client that narrows the `scope` field at /oauth/register<br />can still request the baseline scopes at /oauth/authorize. All values must<br />be present in the upstream-derived scopesSupported set; the auth server<br />fails to start if any value is missing.<br />Security: every client registered via /oauth/register will gain the<br />ability to request these scopes at /oauth/authorize, regardless of what<br />the client itself requested. Keep the baseline narrow (typically<br />"openid" and "offline_access"). Adding a privileged scope here — e.g.<br />"admin:read" — would grant it to every DCR-registered client, including<br />public clients like Claude Code, Cursor, and VS Code.<br />When cimd.enabled is true, every dynamically resolved CIMD client will<br />also gain the ability to request these scopes, including third-party<br />clients resolved from arbitrary HTTPS URLs. |  | MaxItems: 10 <br />items:MinLength: 1 <br />items:Pattern: `^[\x21\x23-\x5B\x5D-\x7E]+$` <br />Optional: \{\} <br /> |
 | `allowConfidentialClientRegistration` _boolean_ | AllowConfidentialClientRegistration permits RFC 7591 Dynamic Client<br />Registration of confidential clients: when true, /oauth/register<br />accepts token_endpoint_auth_method values client_secret_basic and<br />client_secret_post in addition to "none" (still the default on<br />omission) and mints a client_secret returned exactly once.<br />Confidential registrations are restricted to https non-loopback<br />redirect URIs, and on the Redis storage backend all DCR-issued<br />registrations are evicted after 30 days of inactivity and must<br />re-register. This gates registration only: disabling it does not<br />revoke or reject already-minted secrets at the token endpoint.<br />Security: registration is unauthenticated, so enabling this lets any<br />caller who can reach the endpoint obtain a client credential.<br />Combining it with insecureAllowHTTP is rejected at validation. | false | Optional: \{\} <br /> |
 | `allowPrivateKeyJWTRegistration` _boolean_ | AllowPrivateKeyJWTRegistration permits Dynamic Client Registration of<br />clients using private_key_jwt authentication. Registration behavior is<br />intentionally configured separately from confidential-client registration.<br />Security: registration is unauthenticated, so enabling this lets any<br />caller who can reach the endpoint register a private_key_jwt client.<br />Unlike allowConfidentialClientRegistration, this is NOT rejected when<br />combined with insecureAllowHTTP: registration never returns a secret<br />for a private_key_jwt client, so there is nothing for cleartext HTTP<br />to expose. | false | Optional: \{\} <br /> |
-| `insecureAllowConfidentialOverLoopbackHTTP` _boolean_ | InsecureAllowConfidentialOverLoopbackHTTP opts in to confidential<br />Dynamic Client Registration (DCR) and delegate clients when issuer is a<br />plain-HTTP loopback URL (e.g. "http://localhost:8080"). Without this<br />flag, that combination is rejected at reconcile time: a loopback http://<br />issuer is normally fine for local development since the traffic never<br />leaves the machine, but confidential clients send secrets over cleartext.<br />Forcing TLS onto every loopback deployment instead would just push<br />operators toward insecureAllowHTTP, which is worse: that also disables<br />the non-loopback host check. Has no effect when there are no confidential<br />clients or issuer is https.<br />private_key_jwt registration has no equivalent flag or transport<br />restriction: unlike confidential registration, it never returns a<br />client_secret (or any other secret) in the DCR response, so there is<br />nothing here for cleartext HTTP to expose. | false | Optional: \{\} <br /> |
-| `delegateClients` _[api.v1beta1.DelegateClientConfig](#apiv1beta1delegateclientconfig) array_ | DelegateClients configures pre-provisioned confidential clients for RFC 8693<br />token exchange. Each secret is referenced from a Kubernetes Secret; no<br />plaintext secret, redirect URI, or grant selection is accepted here. The<br />operator always supplies the token-exchange grant when it converts this<br />configuration to the runtime contract.<br />This is independent of allowConfidentialClientRegistration: it neither<br />enables nor requires unauthenticated confidential dynamic client<br />registration.<br />This legacy field is deprecated; use inboundGrants.tokenExchange.delegateClients. |  | MaxItems: 10 <br />Optional: \{\} <br /> |
+| `insecureAllowConfidentialOverLoopbackHTTP` _boolean_ | InsecureAllowConfidentialOverLoopbackHTTP opts in to confidential<br />Dynamic Client Registration (DCR) and delegate clients when issuer is a<br />plain-HTTP loopback URL (e.g. "http://localhost:8080"). Without this<br />flag, that combination is rejected at reconcile time: a loopback http://<br />issuer is normally fine for local development since the traffic never<br />leaves the machine, but confidential clients send secrets over cleartext.<br />Forcing TLS onto every loopback deployment instead would just push<br />operators toward insecureAllowHTTP, which is worse: that also disables<br />the non-loopback host check. Has no effect when there are no confidential<br />clients or issuer is https.<br />private_key_jwt registration (DCR) has no equivalent flag or transport<br />restriction: unlike confidential registration, it never returns a<br />client_secret (or any other secret) in the DCR response, so there is<br />nothing here for cleartext HTTP to expose. Delegate clients count as<br />confidential whatever their tokenEndpointAuthMethod, private_key_jwt<br />included, because they can hold authorization_code and refresh_token grants. | false | Optional: \{\} <br /> |
+| `delegateClients` _[api.v1beta1.DelegateClientConfig](#apiv1beta1delegateclientconfig) array_ | DelegateClients configures pre-provisioned confidential clients for RFC 8693<br />token exchange. Each secret is referenced from a Kubernetes Secret; no<br />plaintext secret is accepted here. The supported path is<br />inboundGrants.tokenExchange.delegateClients. This field shares its type<br />with the canonical list, but accepts only clientId, clientSecretRef,<br />scopes and audiences. The newer fields (tokenEndpointAuthMethod,<br />tokenEndpointAuthSigningAlg, jwksRef, grantTypes, redirectUris,<br />tokenExchange) are rejected here; set them on the canonical list.<br />This is independent of allowConfidentialClientRegistration: it neither<br />enables nor requires unauthenticated confidential dynamic client<br />registration.<br />This legacy field is deprecated; use inboundGrants.tokenExchange.delegateClients. |  | MaxItems: 10 <br />Optional: \{\} <br /> |
 | `trustedIssuers` _[api.v1beta1.TrustedIssuerConfig](#apiv1beta1trustedissuerconfig) array_ | TrustedIssuers configures external OIDC issuers whose tokens are<br />accepted as RFC 8693 subject tokens during token exchange, in addition<br />to self-issued subject tokens. Empty (the default) means only<br />self-issued subject tokens are accepted. See<br />docs/arch/17-token-exchange-delegation.md for the trust model. |  | MaxItems: 20 <br />Optional: \{\} <br /> |
 | `forceConfidentialRedirectUris` _string array_ | ForceConfidentialRedirectURIs lists redirect URIs that must be<br />registered as confidential clients regardless of the<br />token_endpoint_auth_method the DCR request declares. A registration<br />whose redirectUris contains an EXACT match for one of these entries is<br />issued a real client_secret and reported back as<br />token_endpoint_auth_method "client_secret_post", even if the request<br />said "none" or omitted the field.<br />Intended for MCP clients that declare themselves public<br />(token_endpoint_auth_method: "none") per RFC 7591 but then refuse to<br />proceed because the response carries no client_secret — a<br />self-contradictory request. RFC 7591 §3.2.1 permits the server to<br />substitute client metadata, so this takes such a client at its word<br />that it wants a secret. Remove an entry once the client is fixed to<br />handle "none" registrations correctly.<br />Exact matching is deliberate: an attacker who registers with someone<br />else's callback URI is issued a secret for a client whose<br />authorization codes are delivered to that someone else's redirect<br />endpoint, not to the attacker, so this is not a way to obtain a usable<br />credential for another client.<br />Requires allowConfidentialClientRegistration to be true. Every entry<br />must be an https non-loopback URI — a loopback client is a public<br />client by construction (OAuth 2.1 §2.1) and must not be issued a<br />secret; this is enforced at reconcile time since CEL cannot express<br />the loopback-hostname check. |  | MaxItems: 10 <br />items:Pattern: `^https://[^\s?#]+$` <br />Optional: \{\} <br /> |
 | `cimd` _[api.v1beta1.EmbeddedAuthServerCIMDConfig](#apiv1beta1embeddedauthservercimdconfig)_ | CIMD configures Client ID Metadata Document support. When omitted, CIMD is disabled. |  | Optional: \{\} <br /> |

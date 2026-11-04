@@ -109,11 +109,10 @@ var errModernTransient = errors.New("modern backend returned a transient error")
 // CANONICAL RATIONALE for the negotiate-down rule. Per SEP-2575, the advertised
 // version list — not a clean discover response or a bare -32022 alone — is the
 // authoritative signal of whether a peer actually speaks the Modern (2026-07-28)
-// revision: a go-sdk v1.7 shim answers both server/discover and protocol errors
+// revision: a go-sdk shim answers both server/discover and protocol errors
 // even for a backend negotiating down to Legacy, so neither on its own is proof
-// of Modern. go-sdk's own reference client applies the same rule at both
-// sources above — mcp/client.go:428-444 for (1), the discover/supportedVersions
-// path, and mcp/client.go:360-369 for (2), the -32022/data.supported path.
+// of Modern. go-sdk's own reference client applies the same rule to discover
+// results and to the `data.supported` list in -32022 errors.
 //
 // modernDiscover and probeRevision (client.go) both depend on this rule and
 // back-reference it here rather than restating it. Keep the explanation in one
@@ -143,12 +142,15 @@ var modernRequestID atomic.Int64
 // modernCall issues a single MCP 2026-07-28 ("Modern") stateless JSON-RPC request
 // over HTTP POST and decodes the Modern response envelope into out.
 //
-// It hand-rolls the Modern wire shape that mcpcompat's public Client API still
-// cannot express, even now that the underlying go-sdk is v1.7.0-pre.3 (its only
-// no-initialize primitive is the private, Legacy-shaped resumeCall), mirroring
-// the server envelope in pkg/vmcp/server/modern_envelope.go: no initialize
-// handshake, no Mcp-Session-Id, protocol metadata carried per-request in
-// _meta, and a Mcp-Method header on every call.
+// It uses a one-request HTTP path rather than mcpcompat's session-oriented
+// Client API: each call retains the identity-scoped HTTP client and header chain
+// supplied by its caller, and no backend ClientSession is held between calls.
+// The current mcpcompat client can negotiate Modern through server/discover,
+// but replacing this request-scoped path with it requires a separate design for
+// the per-identity projection, error mapping, and per-request build cost.
+// The wire shape mirrors the server envelope in pkg/vmcp/server/modern_envelope.go:
+// no legacy initialize handshake, no Mcp-Session-Id, protocol metadata carried
+// per-request in _meta, and an Mcp-Method header on every call.
 //
 // params may carry a caller "_meta"; its three reserved io.modelcontextprotocol/*
 // keys are stripped and vMCP's authoritative values overlaid last (vMCP, not the
@@ -509,10 +511,10 @@ func isModernProtocolCode(code int) bool {
 
 // classifyUnsupportedProtocolVersion resolves a -32022
 // (CodeUnsupportedProtocolVersion) error into a Modern-positive or
-// negotiated-down signal. go-sdk v1.7's reference client (mcp/client.go:360-369)
-// decodes the error's `data.supported` list and retries Modern when it finds a
-// mutually-supported version >= 2026-07-28 (a range check), falling back to
-// Legacy initialize otherwise. This diverges from that: it exact-matches
+// negotiated-down signal. go-sdk's reference client reads the -32022
+// `data.supported` list and retries Modern when it finds a mutually supported
+// version >= 2026-07-28 (a range check), falling back to Legacy initialize
+// otherwise. This diverges from that: it exact-matches
 // MCPVersionModern instead of a range, same as discoverModernCapabilities'
 // exact-match (client.go) and safe for the same reason — vMCP's shim only
 // speaks that one Modern wire shape, and a dual-era peer offering a future

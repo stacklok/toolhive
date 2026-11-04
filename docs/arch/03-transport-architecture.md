@@ -846,7 +846,7 @@ JSON-RPC id) rather than per session ID since Modern has no sessions, an initial
 `serverStreamRegistry` remains the sensible seam for the piece still missing:
 actual **delivery** of notifications on a Modern listen stream (#5743). That work
 needs per-notification-type AND per-URI opt-in filtering rather than blanket
-fan-out, and per `schema/draft/schema.ts` must tag *every* notification with the
+fan-out, and per `schema/2026-07-28/schema.ts` must tag *every* notification with the
 subscription id, not just the acknowledgement. `dispatcher_streams.go` is
 therefore still intentionally kept transport-agnostic (no HTTP types), so that
 when delivery lands it does not also require rewriting the fan-out primitives.

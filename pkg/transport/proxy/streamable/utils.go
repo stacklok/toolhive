@@ -181,10 +181,9 @@ func rewriteRequestParam(req *jsonrpc2.Request, key string, value any) (*jsonrpc
 
 // supportedMCPVersions is the set of MCP protocol revision dates this proxy
 // recognizes when strict validation is enabled (WithStrictProtocolValidation).
-// The upcoming stateless revision is sourced from mcp.MCPVersionModern rather
+// The 2026-07-28 stateless revision is sourced from mcp.MCPVersionModern rather
 // than duplicated as a literal, so the strict gate and the ClassifyRevision
-// routing path (which keys off the same constant) cannot drift if that draft
-// date changes before it is finalized.
+// routing path (which keys off the same constant) cannot drift apart.
 var supportedMCPVersions = map[string]struct{}{
 	"2024-11-05":         {},
 	"2025-03-26":         {},

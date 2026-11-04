@@ -182,6 +182,28 @@ permit|forbid(principal, action, resource) when { conditions };
 - `conditions`: Optional conditions that must be satisfied for the policy to
   apply.
 
+#### Policy limits
+
+Inline policies on an `MCPRemoteProxy` are limited to 8 KiB (8192 bytes) each.
+The operator checks this limit together with the policy syntax. A policy over
+the limit is rejected the same way as one with a syntax error: the
+`ConfigurationValid` condition is set to `False` with reason
+`AuthzPolicySyntaxInvalid`, the proxy phase is `Failed`, and the operator emits
+a Warning event that names the policy index and the limit, for example
+`cedar policy at index 2 rejected: policy is too large (9120 bytes, max 8192)`.
+The `Ready` and `AuthConfigured` conditions also become `False`, and the
+operator retries with backoff until the policy is fixed. The existing
+Deployment, Service and authorization ConfigMap keep their last valid
+configuration in the meantime.
+
+Inline policies on `MCPServer` and `VirtualMCPServer`, and policies in a
+referenced ConfigMap, are not size-checked.
+
+For large allowlists, use group or claim membership, or `entitiesJson`,
+instead of listing every value in a policy. Do not split a `forbid ... unless`
+allowlist across several list entries: each entry is evaluated on its own, so
+splitting changes what the policy means.
+
 #### MCP entities
 
 In the context of MCP servers, the following entities are used:

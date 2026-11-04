@@ -137,6 +137,12 @@ func (r *MCPRemoteProxyReconciler) createRunConfigFromMCPRemoteProxy(
 		return nil, err
 	}
 
+	if err := ctrlutil.ValidateEmbeddedAuthServerTLSListenerPort(
+		apiCtx, r.Client, proxy.Namespace, proxy.Spec.ExternalAuthConfigRef, proxy.Spec.AuthServerRef, proxy.GetProxyPort(),
+	); err != nil {
+		return nil, err
+	}
+
 	// Add external auth configuration if specified (updated call)
 	// Will fail if embedded auth server is used without OIDC config or resourceUrl
 	if err := ctrlutil.AddExternalAuthConfigOptions(

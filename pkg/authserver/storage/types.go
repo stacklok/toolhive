@@ -52,6 +52,10 @@ var (
 	// ErrExpired when both apply.
 	ErrRevoked = errors.New("storage: item revoked")
 
+	// ErrParentNotLive is returned by LiveExchangeGrant when a child grant's
+	// parent is missing, revoked or expired.
+	ErrParentNotLive = errors.New("storage: parent grant not live")
+
 	// ErrAlreadyExists is returned when attempting to create an item that already exists.
 	ErrAlreadyExists = errors.New("storage: item already exists")
 
@@ -1081,6 +1085,11 @@ type ExchangeGrant struct {
 	// SubjectIdentifier is the sub_id JSON of the subject, recorded when present.
 	SubjectIdentifier string
 
+	// UpstreamSubject is the JSON of the subject token's
+	// https://toolhive.dev/upstream_subject claim (iss, claim, value), recorded
+	// when present.
+	UpstreamSubject string
+
 	// SourceIssuer is the iss of the subject access token. With SourceJTI it forms
 	// the replay key. Empty for child grants.
 	SourceIssuer string
@@ -1109,8 +1118,9 @@ type ExchangeGrant struct {
 // revocation check comes first, so a grant that is both revoked and expired
 // reports ErrRevoked. A zero ExpiresAt counts as expired, which is the opposite
 // of UpstreamTokens.IsExpired, where zero means no expiry. A grant with
-// now == ExpiresAt is still live. Live checks only this record. A child grant is
-// usable only if its parent is live too; see ExchangeGrantStorage.
+// now == ExpiresAt is still live. Live checks only this record. A caller deciding
+// whether a child grant can be used must call LiveExchangeGrant instead, which
+// also checks the parent.
 func (g *ExchangeGrant) Live(now time.Time) error {
 	if !g.RevokedAt.IsZero() {
 		return ErrRevoked
@@ -1119,6 +1129,50 @@ func (g *ExchangeGrant) Live(now time.Time) error {
 		return ErrExpired
 	}
 	return nil
+}
+
+// LiveExchangeGrant returns the grant with the given signature if it and, for a
+// child, its parent are both live at now. It is the one check a caller must use
+// to decide whether a grant can be used; GetExchangeGrant and
+// ExchangeGrant.Live look at a single record.
+//
+// The child is checked first. A child past its ExpiresAt reports ErrExpired even
+// if it is also revoked; otherwise a revoked child reports ErrRevoked. A child
+// whose parent is missing (ErrNotFound), revoked or expired reports
+// ErrParentNotLive. Store errors other than ErrNotFound for the parent are
+// returned unchanged, and so is any error from fetching the child.
+//
+// When the child record exists but is not live, the grant is returned together
+// with the error so the caller can check the grant's owner before it says why
+// the grant is dead. The grant is nil when the fetch itself fails.
+func LiveExchangeGrant(
+	ctx context.Context, s ExchangeGrantStorage, signature string, now time.Time,
+) (*ExchangeGrant, error) {
+	grant, err := s.GetExchangeGrant(ctx, signature)
+	if err != nil {
+		return nil, err
+	}
+	// Live reports a revoked grant first; expiry is checked before it so that an
+	// expired grant is expired whatever its revocation.
+	if now.After(grant.ExpiresAt) {
+		return grant, ErrExpired
+	}
+	if err := grant.Live(now); err != nil {
+		return grant, err
+	}
+	if grant.ParentSignature == "" {
+		return grant, nil
+	}
+	parent, err := s.GetExchangeGrant(ctx, grant.ParentSignature)
+	switch {
+	case errors.Is(err, ErrNotFound):
+		return grant, ErrParentNotLive
+	case err != nil:
+		return grant, err
+	case parent.Live(now) != nil:
+		return grant, ErrParentNotLive
+	}
+	return grant, nil
 }
 
 // validateExchangeGrantShape checks the parts of a grant that every backend
@@ -1169,9 +1223,10 @@ func validateExchangeGrantRevokeTime(now time.Time) error {
 // it forwards the three methods itself; it should forward them, since grant
 // records carry no token value for it to transform.
 //
-// Records are kept until ExpiresAt. Time decisions belong to the caller, which
-// applies ExchangeGrant.Live(now) to every record it reads. Backend expiry is
-// only garbage collection.
+// Records are kept until ExpiresAt. Time decisions belong to the caller. To
+// decide whether a grant can be used, call LiveExchangeGrant, which also checks
+// the parent; applying ExchangeGrant.Live(now) to one record is not enough.
+// Backend expiry is only garbage collection.
 type ExchangeGrantStorage interface {
 	// CreateExchangeGrant stores g. The write is atomic: the record and, when
 	// g.SourceJTI is set, its replay marker are both written, or neither is.
@@ -1184,8 +1239,11 @@ type ExchangeGrantStorage interface {
 	//
 	// It returns fosite.ErrJTIKnown if (g.SourceIssuer, g.SourceJTI) was already
 	// recorded, and ErrAlreadyExists if a grant with g.Signature already exists.
-	// A failed call writes nothing, so the caller can retry with the same record.
-	// Other failures are returned as-is.
+	// A call refused for its shape, ErrJTIKnown or ErrAlreadyExists writes
+	// nothing. After any other error a networked backend may or may not have
+	// written, so callers must not treat an error as proof of absence. The replay
+	// marker is what makes a retry safe: a second create for the same jti is
+	// refused. Other failures are returned as-is.
 	//
 	// A create after the ExpiresAt of an existing grant with the same signature
 	// may succeed or return ErrAlreadyExists, depending on when the backend
@@ -1196,7 +1254,9 @@ type ExchangeGrantStorage interface {
 	// GetExchangeGrant returns the grant with the given signature. Revoked grants
 	// are returned with RevokedAt set. It returns ErrNotFound if no record exists
 	// or the record is past ExpiresAt. Callers still apply Live to what is
-	// returned, since eviction can lag, and Live decides.
+	// returned, since eviction can lag, and Live decides. This checks only the one
+	// record. A caller deciding whether a child grant can be used must call
+	// LiveExchangeGrant, which also checks the parent.
 	GetExchangeGrant(ctx context.Context, signature string) (*ExchangeGrant, error)
 
 	// RevokeExchangeGrant sets RevokedAt to now on the grant with the given

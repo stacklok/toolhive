@@ -46,11 +46,13 @@ func newProbeUpstream(t *testing.T, token http.HandlerFunc, registerStatus int) 
 	mux.HandleFunc("/.well-known/oauth-authorization-server", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(oauthproto.AuthorizationServerMetadata{
-			Issuer:                            u.URL,
-			AuthorizationEndpoint:             u.URL + "/authorize",
-			TokenEndpoint:                     u.URL + "/token",
-			RegistrationEndpoint:              u.URL + "/register",
-			TokenEndpointAuthMethodsSupported: []string{"client_secret_basic"},
+			Issuer:                u.URL,
+			AuthorizationEndpoint: u.URL + "/authorize",
+			TokenEndpoint:         u.URL + "/token",
+			RegistrationEndpoint:  u.URL + "/register",
+			// client_secret_post is advertised too so a test can configure
+			// it; the preference order still selects client_secret_basic.
+			TokenEndpointAuthMethodsSupported: []string{"client_secret_basic", "client_secret_post"},
 		})
 	})
 	mux.HandleFunc("/register", func(w http.ResponseWriter, r *http.Request) {
@@ -373,6 +375,72 @@ func TestResolveCredentials_CacheHitWithoutReplacerSkipsProbe(t *testing.T) {
 	assert.Equal(t, "cached-client-id", got.ClientID)
 	assert.Zero(t, upstream.tokenRequests.Load(), "a store without Replacer must not be probed")
 	assert.Zero(t, upstream.registrations.Load())
+}
+
+// TestResolveCredentials_CacheHitConfiguredAuthMethod pins
+// Request.TokenEndpointAuthMethod on a cache hit: a registration made with
+// another method is replaced without probing it, one made with the configured
+// method is kept, and a store that cannot replace a registration fails rather
+// than handing back a client with the wrong method.
+func TestResolveCredentials_CacheHitConfiguredAuthMethod(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name              string
+		cachedAuthMethod  string
+		replaceable       bool
+		wantClientID      string
+		wantRegistrations int32
+		wantTokenRequests int32
+		wantErrSub        string
+	}{
+		{
+			name:              "registration made with another method is replaced",
+			cachedAuthMethod:  "client_secret_basic",
+			replaceable:       true,
+			wantClientID:      "fresh-client-id",
+			wantRegistrations: 1,
+		},
+		{
+			name:              "registration made with the configured method is kept",
+			cachedAuthMethod:  "client_secret_post",
+			replaceable:       true,
+			wantClientID:      "cached-client-id",
+			wantTokenRequests: 1,
+		},
+		{
+			name:             "store that cannot replace the registration fails",
+			cachedAuthMethod: "client_secret_basic",
+			wantErrSub:       "cannot replace it",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			upstream := newProbeUpstream(t, oauthErrorResponse(http.StatusBadRequest, "invalid_grant"), http.StatusCreated)
+			cache := func() CredentialStore {
+				if tc.replaceable {
+					return newMemoryDCRStore(t)
+				}
+				return struct{ CredentialStore }{newMemoryDCRStore(t)}
+			}()
+			req := preloadCachedRegistration(t, cache, upstream, tc.cachedAuthMethod)
+			req.TokenEndpointAuthMethod = "client_secret_post"
+
+			got, err := ResolveCredentials(context.Background(), req, cache)
+			if tc.wantErrSub != "" {
+				require.ErrorContains(t, err, tc.wantErrSub)
+				assert.Zero(t, upstream.registrations.Load())
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.wantClientID, got.ClientID)
+			assert.Equal(t, "client_secret_post", got.TokenEndpointAuthMethod)
+			assert.Equal(t, tc.wantRegistrations, upstream.registrations.Load())
+			assert.Equal(t, tc.wantTokenRequests, upstream.tokenRequests.Load())
+		})
+	}
 }
 
 // readHookStore runs afterFirstRead once, after its first Get has read the

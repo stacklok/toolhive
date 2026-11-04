@@ -7,7 +7,6 @@ import (
 	"context"
 	"encoding/json"
 	"io"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -27,7 +26,6 @@ import (
 	authserverrunner "github.com/stacklok/toolhive/pkg/authserver/runner"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
-	"github.com/stacklok/toolhive/test/integration/authserver/helpers"
 )
 
 const (
@@ -385,43 +383,23 @@ func startConfiguredDelegateAuthServerWithOptions(
 ) (*httptest.Server, string, *authserverrunner.EmbeddedAuthServer) {
 	t.Helper()
 
-	upstream := helpers.NewMockUpstreamIDP(t)
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err)
-	issuer := "http://" + listener.Addr().String()
-
 	secretFile := t.TempDir() + "/delegate-client-secret"
 	require.NoError(t, os.WriteFile(secretFile, []byte(delegateClientSecret), 0o600))
 
-	cfg := helpers.NewTestAuthServerConfig(t, upstream.URL(), helpers.WithScopesSupported([]string{"openid", "profile", ungrantedScope}))
-	cfg.Issuer = issuer
-	cfg.Upstreams[0].OAuth2Config.RedirectURI = issuer + "/oauth/callback"
-	cfg.AllowedAudiences = []string{delegateAudience, ungrantedAudience}
-	cfg.InsecureAllowConfidentialOverLoopbackHTTP = true
-	cfg.DelegateClients = []authserver.DelegateClientRunConfig{{
-		ClientID:         delegateClientID,
-		ClientSecretFile: secretFile,
-		Scopes:           []string{"openid", "profile"},
-		Audiences:        []string{delegateAudience},
-	}}
-
-	var embedded *authserverrunner.EmbeddedAuthServer
+	var stor storage.Storage
 	if withStorage {
-		embedded, err = authserverrunner.NewEmbeddedAuthServerWithStorage(
-			t.Context(), cfg, storage.NewMemoryStorage(), options...)
-	} else {
-		embedded, err = authserverrunner.NewEmbeddedAuthServer(t.Context(), cfg, options...)
+		stor = storage.NewMemoryStorage()
 	}
-	require.NoError(t, err)
-
-	server := httptest.NewUnstartedServer(embedded.Handler())
-	server.Listener = listener
-	server.Start()
-	t.Cleanup(func() {
-		server.Close()
-		require.NoError(t, embedded.Close())
-	})
-
+	server, issuer, embedded, _ := startEmbeddedAuthServer(t, func(cfg *authserver.RunConfig, _ string) {
+		cfg.ScopesSupported = []string{"openid", "profile", ungrantedScope}
+		cfg.AllowedAudiences = []string{delegateAudience, ungrantedAudience}
+		cfg.DelegateClients = []authserver.DelegateClientRunConfig{{
+			ClientID:         delegateClientID,
+			ClientSecretFile: secretFile,
+			Scopes:           []string{"openid", "profile"},
+			Audiences:        []string{delegateAudience},
+		}}
+	}, stor, options...)
 	return server, issuer, embedded
 }
 

@@ -19,6 +19,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/go-jose/go-jose/v4"
+
 	"github.com/stacklok/toolhive-core/redisconn"
 	"github.com/stacklok/toolhive/pkg/auth/dcr"
 	"github.com/stacklok/toolhive/pkg/authserver"
@@ -31,7 +33,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
 	"github.com/stacklok/toolhive/pkg/authserver/upstreamfilter"
-	"github.com/stacklok/toolhive/pkg/bodylimit"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 	"github.com/stacklok/toolhive/pkg/redisconfig"
 )
@@ -53,10 +54,6 @@ const (
 	// RedisPasswordEnvVar is the environment variable for the Redis ACL password.
 	// #nosec G101 -- This is an environment variable name, not a hardcoded credential
 	RedisPasswordEnvVar = "TOOLHIVE_AUTH_SERVER_REDIS_PASSWORD"
-
-	// maxAuthServerBodySize caps auth-server request bodies; shared with the DCR
-	// endpoint via handlers.MaxDCRBodySize so the two bounds cannot drift.
-	maxAuthServerBodySize = handlers.MaxDCRBodySize
 )
 
 // EmbeddedAuthServerOption configures an EmbeddedAuthServer.
@@ -585,15 +582,11 @@ func (e *EmbeddedAuthServer) attachTLSListener(cfg *authserver.RunConfig, keyPai
 //   - /oauth/authorize, /oauth/callback, /oauth/token, /oauth/register
 //   - /.well-known/jwks.json, /.well-known/oauth-authorization-server, /.well-known/openid-configuration
 //
-// All auth-server endpoints are body-size-limited to handlers.MaxDCRBodySize
-// (64KB) and reject oversized requests with HTTP 413 Request Entity Too Large.
+// The underlying authserver.Server rejects bodies with a declared Content-Length
+// over 64 KiB early with HTTP 413. Bodies with unknown or understated lengths are
+// limited to 64 KiB when downstream handlers read them.
 func (e *EmbeddedAuthServer) Handler() http.Handler {
-	// Cap request bodies on all auth-server endpoints (e.g. POST /oauth/token,
-	// /oauth/register) so they cannot be used for memory-exhaustion DoS. These
-	// routes are mounted outside the MCP middleware chain (the proxies and vMCP
-	// mount them via Routes()/RegisterHandlers, which derive from this handler),
-	// so the cap is applied here to cover every consumer.
-	return bodylimit.Middleware(maxAuthServerBodySize)(e.server.Handler())
+	return e.server.Handler()
 }
 
 // Start binds Host:TLSListenerPort synchronously and serves in a goroutine.
@@ -1235,11 +1228,45 @@ func resolveSecret(file, envVar string) (string, error) {
 	return "", nil
 }
 
-// resolveDelegateClients resolves secret references and copies authorization
-// permissions before configuration crosses into the running authorization server.
+// loadJWKSFile reads a public JWKS document. Key contents are validated later
+// by the shared configured-client validator.
+func loadJWKSFile(path string) (*jose.JSONWebKeySet, error) {
+	// #nosec G304 - file path is from configuration, not user input
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read jwks file %q: %w", path, err)
+	}
+	jwks, err := oauthproto.UnmarshalJWKS(data)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse jwks file %q: %w", path, err)
+	}
+	return jwks, nil
+}
+
+// resolveDelegateClients resolves secret and JWKS file references and copies
+// authorization permissions before configuration crosses into the running
+// authorization server.
 func resolveDelegateClients(clients []authserver.DelegateClientRunConfig) ([]authserver.DelegateClient, error) {
 	resolved := make([]authserver.DelegateClient, len(clients))
 	for i, client := range clients {
+		resolved[i] = authserver.DelegateClient{
+			ClientID:                    client.ClientID,
+			Scopes:                      slices.Clone(client.Scopes),
+			Audiences:                   slices.Clone(client.Audiences),
+			TokenEndpointAuthMethod:     client.TokenEndpointAuthMethod,
+			TokenEndpointAuthSigningAlg: client.TokenEndpointAuthSigningAlg,
+			GrantTypes:                  slices.Clone(client.GrantTypes),
+			RedirectURIs:                slices.Clone(client.RedirectURIs),
+			TokenExchange:               client.TokenExchange.Clone(),
+		}
+		if client.TokenEndpointAuthMethod == oauthproto.TokenEndpointAuthMethodPrivateKeyJWT {
+			jwks, err := loadJWKSFile(client.JWKSFile)
+			if err != nil {
+				return nil, fmt.Errorf("delegate client %q: %w", client.ClientID, err)
+			}
+			resolved[i].JSONWebKeys = jwks
+			continue
+		}
 		secret, err := resolveSecret(client.ClientSecretFile, client.ClientSecretEnvVar)
 		if err != nil {
 			return nil, fmt.Errorf("delegate client %q: %w", client.ClientID, err)
@@ -1247,12 +1274,7 @@ func resolveDelegateClients(clients []authserver.DelegateClientRunConfig) ([]aut
 		if secret == "" {
 			return nil, fmt.Errorf("delegate client %q: resolved client secret is empty", client.ClientID)
 		}
-		resolved[i] = authserver.DelegateClient{
-			ClientID:     client.ClientID,
-			ClientSecret: secret,
-			Scopes:       slices.Clone(client.Scopes),
-			Audiences:    slices.Clone(client.Audiences),
-		}
+		resolved[i].ClientSecret = secret
 	}
 	return resolved, nil
 }

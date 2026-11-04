@@ -9,7 +9,9 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/rsa"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
@@ -27,6 +29,7 @@ import (
 	"time"
 
 	"github.com/alicebob/miniredis/v2"
+	"github.com/go-jose/go-jose/v4"
 	"github.com/ory/fosite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -2372,7 +2375,7 @@ func newMockAuthorizationServer(t *testing.T) (*httptest.Server, *int32) {
 			AuthorizationEndpoint:             server.URL + "/authorize",
 			TokenEndpoint:                     server.URL + "/token",
 			RegistrationEndpoint:              server.URL + "/register",
-			TokenEndpointAuthMethodsSupported: []string{"client_secret_basic"},
+			TokenEndpointAuthMethodsSupported: []string{"client_secret_basic", "client_secret_post"},
 			ScopesSupported:                   []string{"openid", "profile"},
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -2646,6 +2649,7 @@ func TestEmbeddedAuthServer_SPIFFESerializedRestartPolicy(t *testing.T) {
 		if !includeAssociation {
 			return cfg
 		}
+		cfg.TLSListener = &authserver.TLSListenerRunConfig{CertFile: "/tls/tls.crt", KeyFile: "/tls/tls.key"}
 		cfg.SPIFFETrustDomains = []authserver.SPIFFETrustDomainRunConfig{{
 			Name:        "production",
 			TrustDomain: "example.org",
@@ -3047,6 +3051,53 @@ func TestBuildUpstreamConfigs_DCR(t *testing.T) {
 		assert.NotNil(t, cfg.Upstreams[0].OAuth2Config.DCRConfig,
 			"original OAuth2Config.DCRConfig must remain set after both calls")
 	})
+}
+
+// TestBuildUpstreamConfigs_DCRConfiguredAuthMethod drives a DCR upstream
+// with a configured token endpoint auth method through registration and a
+// cache hit, and checks the built OAuth2Config presents the registered
+// secret with that method. The resolved run config has no DCRConfig and no
+// secret source, so validating it with the method still set would reject
+// it as a confidential client without a secret.
+func TestBuildUpstreamConfigs_DCRConfiguredAuthMethod(t *testing.T) {
+	t.Parallel()
+
+	for _, method := range []string{
+		oauthproto.TokenEndpointAuthMethodClientSecretPost,
+		oauthproto.TokenEndpointAuthMethodClientSecretBasic,
+	} {
+		t.Run(method, func(t *testing.T) {
+			t.Parallel()
+
+			server, _ := newMockAuthorizationServer(t)
+			upstreams := []authserver.UpstreamRunConfig{{
+				Name: "dcr-upstream",
+				Type: authserver.UpstreamProviderTypeOAuth2,
+				OAuth2Config: &authserver.OAuth2UpstreamRunConfig{
+					AuthorizationEndpoint:   server.URL + "/authorize",
+					TokenEndpoint:           server.URL + "/token",
+					TokenEndpointAuthMethod: method,
+					Scopes:                  []string{"openid", "profile"},
+					DCRConfig: &authserver.DCRUpstreamConfig{
+						DiscoveryURL: server.URL + "/.well-known/oauth-authorization-server",
+					},
+				},
+			}}
+			store := newMemoryDCRStore(t)
+
+			for _, pass := range []string{"registration", "cache hit"} {
+				got, _, err := buildUpstreamConfigs(context.Background(), upstreams, server.URL, store, false)
+				require.NoError(t, err, pass)
+				require.Len(t, got, 1, pass)
+				require.NotNil(t, got[0].OAuth2Config, pass)
+				assert.Equal(t, "dcr-client-id", got[0].OAuth2Config.ClientID, pass)
+				assert.Equal(t, "dcr-client-secret", got[0].OAuth2Config.ClientSecret, pass)
+				assert.Equal(t, method, got[0].OAuth2Config.TokenEndpointAuthMethod, pass)
+			}
+			assert.Equal(t, method, upstreams[0].OAuth2Config.TokenEndpointAuthMethod,
+				"the caller's run config must keep its configured method")
+		})
+	}
 }
 
 // TestNewEmbeddedAuthServer_DCRBoot drives the full NewEmbeddedAuthServer
@@ -3937,11 +3988,24 @@ func TestResolveDelegateClients(t *testing.T) {
 	t.Setenv("TEST_DELEGATE_SECRET", "env-secret")
 	t.Setenv("TEST_EMPTY_DELEGATE_SECRET", "")
 
+	dir := t.TempDir()
+	badJWKSFile := filepath.Join(dir, "bad.jwks")
+	require.NoError(t, os.WriteFile(badJWKSFile, []byte("not json"), 0600))
+	jwksKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	jwksJSON, err := json.Marshal(jose.JSONWebKeySet{Keys: []jose.JSONWebKey{{
+		Key: &jwksKey.PublicKey, KeyID: "delegate-key", Algorithm: "ES256", Use: "sig",
+	}}})
+	require.NoError(t, err)
+	goodJWKSFile := filepath.Join(dir, "good.jwks")
+	require.NoError(t, os.WriteFile(goodJWKSFile, jwksJSON, 0600))
+
 	tests := []struct {
-		name    string
-		clients []authserver.DelegateClientRunConfig
-		want    string
-		wantErr string
+		name     string
+		clients  []authserver.DelegateClientRunConfig
+		want     string
+		wantKeys int
+		wantErr  string
 	}{
 		{
 			name: "file takes precedence and is trimmed",
@@ -3979,6 +4043,30 @@ func TestResolveDelegateClients(t *testing.T) {
 			clients: []authserver.DelegateClientRunConfig{{ClientID: "delegate", ClientSecretEnvVar: "TEST_EMPTY_DELEGATE_SECRET"}},
 			wantErr: "is not set",
 		},
+		{
+			name: "private_key_jwt with missing jwks file is rejected",
+			clients: []authserver.DelegateClientRunConfig{{
+				ClientID: "delegate", TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodPrivateKeyJWT,
+				JWKSFile: filepath.Join(dir, "missing.jwks"),
+			}},
+			wantErr: "failed to read jwks file",
+		},
+		{
+			name: "private_key_jwt with malformed jwks file is rejected",
+			clients: []authserver.DelegateClientRunConfig{{
+				ClientID: "delegate", TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodPrivateKeyJWT,
+				JWKSFile: badJWKSFile,
+			}},
+			wantErr: "failed to parse jwks file",
+		},
+		{
+			name: "private_key_jwt loads keys and ignores secret references",
+			clients: []authserver.DelegateClientRunConfig{{
+				ClientID: "delegate", TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodPrivateKeyJWT,
+				JWKSFile: goodJWKSFile, ClientSecretEnvVar: "TEST_DELEGATE_SECRET",
+			}},
+			wantKeys: 1,
+		},
 	}
 
 	for _, tt := range tests {
@@ -3996,14 +4084,66 @@ func TestResolveDelegateClients(t *testing.T) {
 			require.NoError(t, err)
 			require.Len(t, got, 1)
 			assert.Equal(t, tt.want, got[0].ClientSecret)
+			if tt.wantKeys > 0 {
+				require.NotNil(t, got[0].JSONWebKeys)
+				assert.Len(t, got[0].JSONWebKeys.Keys, tt.wantKeys)
+			}
 		})
 	}
+}
+
+// go-jose v3 accepted trailing "=" on base64url JWK members; v4 does not, so
+// an existing delegate JWKS file written with padding must still load.
+func TestLoadJWKSFile_PaddedBase64URL(t *testing.T) {
+	t.Parallel()
+
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+	padded := base64.URLEncoding.EncodeToString(key.N.Bytes())
+	require.True(t, strings.HasSuffix(padded, "="))
+	content := fmt.Sprintf(`{"keys":[{"kty":"RSA","kid":"k1","use":"sig","alg":"RS256","n":%q,"e":"AQAB"}]}`, padded)
+
+	path := filepath.Join(t.TempDir(), "keys.jwks")
+	require.NoError(t, os.WriteFile(path, []byte(content), 0600))
+
+	got, err := loadJWKSFile(path)
+	require.NoError(t, err)
+	require.Len(t, got.Keys, 1)
+	assert.True(t, key.PublicKey.Equal(got.Keys[0].Key))
+}
+
+func TestResolveDelegateClients_CarriesExchangeRefreshTokens(t *testing.T) {
+	t.Setenv("TEST_DELEGATE_REFRESH_SECRET", "0123456789abcdef0123456789abcdef")
+
+	clients := []authserver.DelegateClientRunConfig{{
+		ClientID: "delegate", ClientSecretEnvVar: "TEST_DELEGATE_REFRESH_SECRET",
+		Scopes: []string{"openid"}, Audiences: []string{"https://mcp.example.com"},
+		TokenExchange: &authserver.DelegateClientTokenExchange{
+			SelfIssuedSubjectTokens: authserver.SelfIssuedSubjectTokensRestricted,
+			SubjectTokenAudiences:   []string{"https://input.example.com"},
+			AllowedSourceClients:    []string{"tui"},
+			ExchangeRefreshTokens: &authserver.DelegateClientExchangeRefreshTokens{
+				IDJAGMaxLifetime: "12h", RefreshTokenMaxLifetime: "720h",
+			},
+		},
+	}}
+
+	got, err := resolveDelegateClients(clients)
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	require.NotNil(t, got[0].TokenExchange)
+	assert.Equal(t, []string{"https://input.example.com"}, got[0].TokenExchange.SubjectTokenAudiences)
+	require.NotNil(t, got[0].TokenExchange.ExchangeRefreshTokens)
+	assert.Equal(t, "12h", got[0].TokenExchange.ExchangeRefreshTokens.IDJAGMaxLifetime)
+	assert.Equal(t, "720h", got[0].TokenExchange.ExchangeRefreshTokens.RefreshTokenMaxLifetime)
 }
 
 func TestResolveDelegateClients_ClonesPermissions(t *testing.T) {
 	clients := []authserver.DelegateClientRunConfig{{
 		ClientID: "delegate", ClientSecretEnvVar: "TEST_DELEGATE_CLONE_SECRET",
 		Scopes: []string{"openid"}, Audiences: []string{"audience"},
+		GrantTypes:   []string{oauthproto.GrantTypeTokenExchange},
+		RedirectURIs: []string{"https://client.example/callback"},
 	}}
 	t.Setenv("TEST_DELEGATE_CLONE_SECRET", "secret")
 
@@ -4011,9 +4151,13 @@ func TestResolveDelegateClients_ClonesPermissions(t *testing.T) {
 	require.NoError(t, err)
 	clients[0].Scopes[0] = "changed"
 	clients[0].Audiences[0] = "changed"
+	clients[0].GrantTypes[0] = "changed"
+	clients[0].RedirectURIs[0] = "changed"
 
 	assert.Equal(t, "openid", resolved[0].Scopes[0])
 	assert.Equal(t, "audience", resolved[0].Audiences[0])
+	assert.Equal(t, oauthproto.GrantTypeTokenExchange, resolved[0].GrantTypes[0])
+	assert.Equal(t, "https://client.example/callback", resolved[0].RedirectURIs[0])
 }
 
 // TestCloseIdleConnectionsDelegates pins that the wrapper forwards to the

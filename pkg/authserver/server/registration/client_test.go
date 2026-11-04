@@ -20,14 +20,16 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
+	"fmt"
 	"math/big"
 	"testing"
 
-	"github.com/go-jose/go-jose/v3"
+	"github.com/go-jose/go-jose/v4"
 	"github.com/ory/fosite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/stacklok/toolhive/pkg/authserver/internal/fositejose"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
@@ -433,8 +435,7 @@ func TestNewClient_PrivateKeyJWT(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, oauthproto.TokenEndpointAuthMethodPrivateKeyJWT, oidc.GetTokenEndpointAuthMethod())
 	assert.Equal(t, string(jose.RS256), oidc.GetTokenEndpointAuthSigningAlgorithm())
-	assert.Equal(t, jwks, oidc.GetJSONWebKeys())
-	assert.NotSame(t, jwks, oidc.GetJSONWebKeys())
+	assert.Equal(t, jwks, fositejose.FromFositeKeySet(oidc.GetJSONWebKeys()))
 }
 
 func TestNewClient_ConfidentialClient(t *testing.T) {
@@ -732,8 +733,7 @@ func TestNewStaticDelegateClient_Shape(t *testing.T) {
 			assert.Equal(t, tt.wantMethod, oidc.GetTokenEndpointAuthMethod())
 			if tt.wantMethod == oauthproto.TokenEndpointAuthMethodPrivateKeyJWT {
 				assert.Equal(t, defaultConfiguredSigningAlgorithm, oidc.GetTokenEndpointAuthSigningAlgorithm())
-				assert.Equal(t, jwks, oidc.GetJSONWebKeys())
-				assert.NotSame(t, jwks, oidc.GetJSONWebKeys())
+				assert.Equal(t, jwks, fositejose.FromFositeKeySet(oidc.GetJSONWebKeys()))
 				return
 			}
 			assert.Nil(t, oidc.GetJSONWebKeys())
@@ -753,9 +753,14 @@ func TestValidateConfiguredClient(t *testing.T) {
 	exchange := oauthproto.GrantTypeTokenExchange
 	authCode := oauthproto.GrantTypeAuthorizationCode
 	redirect := []string{"https://broker.example/callback"}
+	restricted := selfIssuedSubjectTokensRestricted
 
 	ecKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	require.NoError(t, err)
+	secondKey := jose.JSONWebKey{Key: testRSAPublicKey(t), KeyID: "k2", Use: "sig", Algorithm: string(jose.RS256)}
+	keyWithoutKID := jose.JSONWebKey{Key: testRSAPublicKey(t), Use: "sig", Algorithm: string(jose.RS256)}
+	duplicateKID := secondKey
+	duplicateKID.KeyID = validKey.KeyID
 
 	noSecret := false
 	tests := []struct {
@@ -811,6 +816,18 @@ func TestValidateConfiguredClient(t *testing.T) {
 		{name: "private_key_jwt with public key", spec: ConfiguredClientSpec{
 			TokenEndpointAuthMethod: pkjwt, JWKS: keySet(validKey),
 		}},
+		{name: "rotation with unique kids", spec: ConfiguredClientSpec{
+			TokenEndpointAuthMethod: pkjwt, JWKS: keySet(validKey, secondKey),
+		}},
+		{name: "single key without kid", spec: ConfiguredClientSpec{
+			TokenEndpointAuthMethod: pkjwt, JWKS: keySet(keyWithoutKID),
+		}},
+		{name: "rotation with a key lacking kid", spec: ConfiguredClientSpec{
+			TokenEndpointAuthMethod: pkjwt, JWKS: keySet(validKey, keyWithoutKID),
+		}, wantErr: "has no kid"},
+		{name: "rotation with duplicate kids", spec: ConfiguredClientSpec{
+			TokenEndpointAuthMethod: pkjwt, JWKS: keySet(validKey, duplicateKID),
+		}, wantErr: "used by more than one key"},
 		{name: "private_key_jwt keys pending", spec: ConfiguredClientSpec{
 			TokenEndpointAuthMethod: pkjwt, JWKSPending: true,
 		}},
@@ -820,12 +837,19 @@ func TestValidateConfiguredClient(t *testing.T) {
 		{name: "unsupported signing algorithm with keys pending", spec: ConfiguredClientSpec{
 			TokenEndpointAuthMethod: pkjwt, SigningAlgorithm: "HS256", JWKSPending: true,
 		}, wantErr: "unsupported"},
-		{name: "key type does not match default algorithm", spec: ConfiguredClientSpec{
+		{name: "key type does not match configured algorithm", spec: ConfiguredClientSpec{
 			TokenEndpointAuthMethod: pkjwt,
+			SigningAlgorithm:        string(jose.RS256),
 			JWKS: keySet(jose.JSONWebKey{
 				Key: &ecKey.PublicKey, KeyID: "ec", Use: "sig", Algorithm: string(jose.ES256),
 			}),
 		}, wantErr: "jwks_file"},
+		{name: "EC key derives its algorithm", spec: ConfiguredClientSpec{
+			TokenEndpointAuthMethod: pkjwt,
+			JWKS: keySet(jose.JSONWebKey{
+				Key: &ecKey.PublicKey, KeyID: "ec", Use: "sig",
+			}),
+		}},
 		{name: "private key rejected", spec: ConfiguredClientSpec{
 			TokenEndpointAuthMethod: pkjwt,
 			JWKS:                    keySet(jose.JSONWebKey{Key: &rsa.PrivateKey{PublicKey: *pub, D: big.NewInt(1)}, Use: "sig"}),
@@ -840,6 +864,157 @@ func TestValidateConfiguredClient(t *testing.T) {
 		{name: "signing algorithm with a secret method", spec: ConfiguredClientSpec{
 			SigningAlgorithm: string(jose.RS256),
 		}, wantErr: "only allowed with"},
+		{name: "token_exchange block without a mode", spec: ConfiguredClientSpec{TokenExchange: true},
+			wantErr: "self_issued_subject_tokens is required"},
+		{name: "unsupported self_issued_subject_tokens", spec: ConfiguredClientSpec{
+			TokenExchange: true, SelfIssuedSubjectTokens: "Restricted",
+		}, wantErr: "is not supported"},
+		{name: "restricted with no source clients", spec: ConfiguredClientSpec{
+			TokenExchange: true, SelfIssuedSubjectTokens: restricted,
+		}},
+		{name: "any with no other fields", spec: ConfiguredClientSpec{
+			TokenExchange: true, SelfIssuedSubjectTokens: selfIssuedSubjectTokensAny,
+		}},
+		{name: "any with source clients", spec: ConfiguredClientSpec{
+			TokenExchange: true, SelfIssuedSubjectTokens: selfIssuedSubjectTokensAny,
+			AllowedSourceClients: []string{"tui"},
+		}, wantErr: "allowed_source_clients is valid only with"},
+		{name: "any with subject token audiences", spec: ConfiguredClientSpec{
+			TokenExchange: true, SelfIssuedSubjectTokens: selfIssuedSubjectTokensAny,
+			SubjectTokenAudiences: []string{"https://a.example"},
+		}, wantErr: `token_exchange.subject_token_audiences is valid only with self_issued_subject_tokens "restricted"`},
+		{name: "any with an empty subject token audiences list", spec: ConfiguredClientSpec{
+			TokenExchange: true, SelfIssuedSubjectTokens: selfIssuedSubjectTokensAny,
+			SubjectTokenAudiences: []string{},
+		}},
+		{name: "token_exchange with sources and subject token audiences", spec: ConfiguredClientSpec{
+			TokenExchange: true, SelfIssuedSubjectTokens: restricted,
+			AllowedSourceClients:  []string{"tui", "web"},
+			SubjectTokenAudiences: []string{"https://api.example", "https://other.example"},
+		}},
+		{name: "empty subject token audiences list is unset", spec: ConfiguredClientSpec{
+			TokenExchange: true, SelfIssuedSubjectTokens: restricted,
+			SubjectTokenAudiences: []string{},
+		}},
+		{name: "empty subject token audience entry", spec: ConfiguredClientSpec{
+			TokenExchange: true, SelfIssuedSubjectTokens: restricted,
+			SubjectTokenAudiences: []string{"https://a.example", ""},
+		}, wantErr: "subject_token_audiences must not contain an empty audience"},
+		{name: "duplicate subject token audience", spec: ConfiguredClientSpec{
+			TokenExchange: true, SelfIssuedSubjectTokens: restricted,
+			SubjectTokenAudiences: []string{"https://a.example", "https://a.example"},
+		}, wantErr: `subject_token_audiences lists "https://a.example" more than once`},
+		{name: "too many subject token audiences", spec: ConfiguredClientSpec{
+			TokenExchange: true, SelfIssuedSubjectTokens: restricted,
+			SubjectTokenAudiences: func() []string {
+				audiences := make([]string, maxSubjectTokenAudiences+1)
+				for i := range audiences {
+					audiences[i] = fmt.Sprintf("https://api-%d.example", i)
+				}
+				return audiences
+			}(),
+		}, wantErr: "subject_token_audiences has 21 entries, at most 20 are allowed"},
+		{name: "duplicate source client", spec: ConfiguredClientSpec{
+			TokenExchange: true, SelfIssuedSubjectTokens: restricted,
+			AllowedSourceClients: []string{"tui", "tui"},
+		}, wantErr: "more than once"},
+		{name: "wildcard source client", spec: ConfiguredClientSpec{
+			TokenExchange: true, SelfIssuedSubjectTokens: restricted,
+			AllowedSourceClients: []string{"*"},
+		}, wantErr: "wildcard"},
+		{name: "empty source client", spec: ConfiguredClientSpec{
+			TokenExchange: true, SelfIssuedSubjectTokens: restricted,
+			AllowedSourceClients: []string{"tui", ""},
+		}, wantErr: "empty client_id"},
+		{name: "too many source clients", spec: ConfiguredClientSpec{
+			TokenExchange: true, SelfIssuedSubjectTokens: restricted,
+			AllowedSourceClients: func() []string {
+				ids := make([]string, maxAllowedSourceClients+1)
+				for i := range ids {
+					ids[i] = fmt.Sprintf("client-%d", i)
+				}
+				return ids
+			}(),
+		}, wantErr: "at most"},
+		{name: "source client that is a delegate client", spec: ConfiguredClientSpec{
+			TokenExchange: true, SelfIssuedSubjectTokens: restricted,
+			AllowedSourceClients: []string{"tui", "other-broker"},
+			DelegateClientIDs:    []string{"broker", "other-broker"},
+		}, wantErr: "configured delegate client"},
+		{name: "source client that is the client itself", spec: ConfiguredClientSpec{
+			ClientID: "broker", TokenExchange: true, SelfIssuedSubjectTokens: restricted,
+			AllowedSourceClients: []string{"broker"},
+			DelegateClientIDs:    []string{"broker"},
+		}, wantErr: "its own tokens are accepted on plain token exchange without being listed"},
+		{name: "source client that is not a delegate client", spec: ConfiguredClientSpec{
+			TokenExchange: true, SelfIssuedSubjectTokens: restricted,
+			AllowedSourceClients: []string{"tui"}, DelegateClientIDs: []string{"broker"},
+		}},
+		{name: "exchange refresh tokens with id-jag cap", spec: exchangeRefreshSpec("12h", "")},
+		{name: "exchange refresh tokens with refresh cap", spec: exchangeRefreshSpec("", "720h")},
+		{name: "exchange refresh tokens with both caps", spec: exchangeRefreshSpec("1h", "24h")},
+		{name: "exchange refresh tokens with private_key_jwt", spec: func() ConfiguredClientSpec {
+			s := exchangeRefreshSpec("12h", "")
+			s.TokenEndpointAuthMethod = pkjwt
+			s.JWKS = keySet(validKey)
+			return s
+		}()},
+		{name: "exchange refresh tokens without caps", spec: exchangeRefreshSpec("", ""),
+			wantErr: "needs id_jag_max_lifetime or refresh_token_max_lifetime"},
+		{name: "exchange refresh tokens zero id-jag cap", spec: exchangeRefreshSpec("0s", ""),
+			wantErr: "id_jag_max_lifetime must be positive"},
+		{name: "exchange refresh tokens zero refresh cap without unit", spec: exchangeRefreshSpec("", "0"),
+			wantErr: "refresh_token_max_lifetime must be positive"},
+		{name: "exchange refresh tokens negative refresh cap", spec: exchangeRefreshSpec("", "-1h"),
+			wantErr: "refresh_token_max_lifetime must be positive"},
+		{name: "exchange refresh tokens id-jag cap above 720h", spec: exchangeRefreshSpec("721h", ""),
+			wantErr: "id_jag_max_lifetime must not exceed 720h"},
+		{name: "exchange refresh tokens refresh cap above 720h", spec: exchangeRefreshSpec("", "1000h"),
+			wantErr: "refresh_token_max_lifetime must not exceed 720h"},
+		{name: "exchange refresh tokens both caps exactly 720h", spec: exchangeRefreshSpec("720h", "720h")},
+		{name: "exchange refresh tokens id-jag cap one nanosecond over 720h",
+			spec:    exchangeRefreshSpec("720h0m0.000000001s", ""),
+			wantErr: "id_jag_max_lifetime must not exceed 720h"},
+		{name: "exchange refresh tokens refresh cap one nanosecond over 720h",
+			spec:    exchangeRefreshSpec("", "720h0m0.000000001s"),
+			wantErr: "refresh_token_max_lifetime must not exceed 720h"},
+		{name: "exchange refresh tokens id-jag cap with leading space", spec: exchangeRefreshSpec(" 12h", ""),
+			wantErr: "invalid duration"},
+		{name: "exchange refresh tokens refresh cap with trailing space", spec: exchangeRefreshSpec("", "12h "),
+			wantErr: "unknown unit"},
+		{name: "exchange refresh tokens id-jag cap without unit", spec: exchangeRefreshSpec("12", ""),
+			wantErr: "missing unit"},
+		{name: "exchange refresh tokens unparsable cap", spec: exchangeRefreshSpec("twelve", ""),
+			wantErr: "token_exchange.exchange_refresh_tokens.id_jag_max_lifetime"},
+		{name: "exchange refresh tokens without subject token audiences", spec: func() ConfiguredClientSpec {
+			s := exchangeRefreshSpec("12h", "")
+			s.SubjectTokenAudiences = nil
+			return s
+		}(), wantErr: "token_exchange.subject_token_audiences is required with token_exchange.exchange_refresh_tokens"},
+		{name: "exchange refresh tokens with an empty subject token audiences list",
+			spec: func() ConfiguredClientSpec {
+				s := exchangeRefreshSpec("12h", "")
+				s.SubjectTokenAudiences = []string{}
+				return s
+			}(), wantErr: "token_exchange.subject_token_audiences is required with token_exchange.exchange_refresh_tokens"},
+		{name: "exchange refresh tokens with empty allowed source clients", spec: func() ConfiguredClientSpec {
+			s := exchangeRefreshSpec("12h", "")
+			s.AllowedSourceClients = nil
+			return s
+		}(), wantErr: "token_exchange.allowed_source_clients is required with token_exchange.exchange_refresh_tokens"},
+		{name: "exchange refresh tokens with any", spec: func() ConfiguredClientSpec {
+			s := exchangeRefreshSpec("12h", "")
+			s.SelfIssuedSubjectTokens = selfIssuedSubjectTokensAny
+			s.AllowedSourceClients = nil
+			s.SubjectTokenAudiences = nil
+			return s
+		}(), wantErr: `token_exchange.exchange_refresh_tokens requires self_issued_subject_tokens "restricted"`},
+		{name: "exchange refresh tokens with any and subject token audiences", spec: func() ConfiguredClientSpec {
+			s := exchangeRefreshSpec("12h", "")
+			s.SelfIssuedSubjectTokens = selfIssuedSubjectTokensAny
+			s.AllowedSourceClients = nil
+			return s
+		}(), wantErr: "token_exchange.subject_token_audiences is valid only with"},
 	}
 
 	for _, tt := range tests {
@@ -852,6 +1027,58 @@ func TestValidateConfiguredClient(t *testing.T) {
 				spec.HasSecret = *tt.hasSecret
 			}
 			err := ValidateConfiguredClient(spec)
+			if tt.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
+}
+
+// exchangeRefreshSpec is a valid confidential token-exchange client with an
+// exchange_refresh_tokens block carrying the given caps.
+func exchangeRefreshSpec(idJAG, refresh string) ConfiguredClientSpec {
+	return ConfiguredClientSpec{
+		TokenExchange:           true,
+		SelfIssuedSubjectTokens: selfIssuedSubjectTokensRestricted,
+		SubjectTokenAudiences:   []string{"https://api.example"},
+		AllowedSourceClients:    []string{"tui"},
+		ExchangeRefreshTokens:   true,
+		IDJAGMaxLifetime:        idJAG,
+		RefreshTokenMaxLifetime: refresh,
+		HasSecret:               true,
+	}
+}
+
+// The confidential and token-exchange-grant rules are already enforced earlier
+// in ValidateConfiguredClient, so these cases call the block check directly.
+func TestValidateConfiguredExchangeRefreshTokensGuards(t *testing.T) {
+	t.Parallel()
+
+	noSecret := exchangeRefreshSpec("12h", "")
+	noSecret.HasSecret = false
+	noExchangeGrant := exchangeRefreshSpec("12h", "")
+	noExchangeGrant.GrantTypes = []string{oauthproto.GrantTypeJWTBearer}
+	anyMode := exchangeRefreshSpec("12h", "")
+	anyMode.SelfIssuedSubjectTokens = selfIssuedSubjectTokensAny
+
+	tests := []struct {
+		name    string
+		spec    ConfiguredClientSpec
+		wantErr string
+	}{
+		{name: "confidential secret client", spec: exchangeRefreshSpec("12h", "")},
+		{name: "no secret and not private_key_jwt", spec: noSecret, wantErr: "requires a confidential client"},
+		{name: "token exchange grant missing", spec: noExchangeGrant, wantErr: "exchange_refresh_tokens requires the"},
+		{name: "any mode", spec: anyMode, wantErr: `requires self_issued_subject_tokens "restricted"`},
+		{name: "block absent is not checked", spec: ConfiguredClientSpec{HasSecret: false}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := validateConfiguredExchangeRefreshTokens(tt.spec)
 			if tt.wantErr == "" {
 				require.NoError(t, err)
 				return
@@ -925,16 +1152,6 @@ func TestNewStaticDelegateClient_Validation(t *testing.T) {
 			},
 			wantErr: "delegate client requires at least one scope",
 		},
-		{
-			name: "missing audience",
-			config: Config{
-				ID:         "delegate",
-				Secret:     "test-secret",
-				GrantTypes: validGrantTypes,
-				Scopes:     validScopes,
-			},
-			wantErr: "delegate client requires at least one audience",
-		},
 	}
 
 	for _, tt := range tests {
@@ -946,6 +1163,44 @@ func TestNewStaticDelegateClient_Validation(t *testing.T) {
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), tt.wantErr)
 			assert.NotContains(t, err.Error(), "test-secret")
+		})
+	}
+}
+
+// Config validation owns the audiences rule: a refresh-token-only delegate
+// client may have no audiences at all.
+func TestNewStaticDelegateClient_AcceptsEmptyAudience(t *testing.T) {
+	t.Parallel()
+
+	client, err := NewStaticDelegateClient(Config{
+		ID:         "delegate",
+		Secret:     "test-secret",
+		GrantTypes: []string{oauthproto.GrantTypeTokenExchange},
+		Scopes:     []string{"openid"},
+	})
+	require.NoError(t, err)
+	assert.Empty(t, client.GetAudience())
+}
+
+func TestOnlyTokenExchangeGrant(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		grantTypes []string
+		want       bool
+	}{
+		{name: "nil defaults to token exchange", grantTypes: nil, want: true},
+		{name: "empty defaults to token exchange", grantTypes: []string{}, want: true},
+		{name: "explicit token exchange", grantTypes: []string{oauthproto.GrantTypeTokenExchange}, want: true},
+		{name: "with jwt-bearer", grantTypes: []string{oauthproto.GrantTypeTokenExchange, oauthproto.GrantTypeJWTBearer}},
+		{name: "with authorization_code", grantTypes: []string{oauthproto.GrantTypeTokenExchange, oauthproto.GrantTypeAuthorizationCode}},
+		{name: "without token exchange", grantTypes: []string{oauthproto.GrantTypeJWTBearer}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, OnlyTokenExchangeGrant(tt.grantTypes))
 		})
 	}
 }

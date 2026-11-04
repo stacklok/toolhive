@@ -10,12 +10,14 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	dto "github.com/prometheus/client_model/go"
+	"github.com/prometheus/common/expfmt"
+	"github.com/prometheus/common/model"
 
 	"github.com/stacklok/toolhive/pkg/diagnostics"
 	"github.com/stacklok/toolhive/test/e2e"
@@ -172,6 +174,14 @@ var _ = Describe("OSV MCP Server with Authorization", Label("middleware", "authz
 				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 				defer cancel()
 
+				By("Snapshotting metrics baseline before making requests")
+
+				metricsURL, err := extractMetricsURL(serverURL)
+				Expect(err).ToNot(HaveOccurred(), "Should be able to construct metrics URL")
+				GinkgoWriter.Printf("Fetching metrics from: %s\n", metricsURL)
+
+				beforeFamilies, _ := scrapeMetrics(metricsURL)
+
 				By("Making both authorized and unauthorized requests to generate metrics")
 
 				// Make an authorized request
@@ -194,7 +204,7 @@ var _ = Describe("OSV MCP Server with Authorization", Label("middleware", "authz
 						},
 					},
 				}
-				_, err := mcpClient.CallTool(ctx, "query_vulnerabilities_batch", unauthorizedArgs)
+				_, err = mcpClient.CallTool(ctx, "query_vulnerabilities_batch", unauthorizedArgs)
 				Expect(err).To(HaveOccurred(), "Should fail to call unauthorized tool")
 				GinkgoWriter.Printf("Unauthorized request correctly denied\n")
 
@@ -202,83 +212,73 @@ var _ = Describe("OSV MCP Server with Authorization", Label("middleware", "authz
 				unauthorizedArgs2 := map[string]interface{}{
 					"id": "GHSA-vqj2-4v8m-8vrq",
 				}
-				_, err = mcpClient.CallTool(ctx, "get_vulnerability", unauthorizedArgs2)
+				// The go-sdk client records the first 403 as a write error and fails every
+				// later call on the same connection with "client is closing", without
+				// sending it. Use a fresh client so the second denial reaches the server.
+				freshClient, err := e2e.NewMCPClientForSSE(config, serverURL)
+				Expect(err).ToNot(HaveOccurred())
+				defer freshClient.Close()
+				Expect(freshClient.Initialize(ctx)).To(Succeed())
+
+				_, err = freshClient.CallTool(ctx, "get_vulnerability", unauthorizedArgs2)
 				Expect(err).To(HaveOccurred(), "Should fail to call unauthorized tool")
 				GinkgoWriter.Printf("Second unauthorized request correctly denied\n")
 
 				By("Fetching Prometheus metrics to verify authorization statistics")
 
-				// Extract the port from the server URL and construct metrics URL
-				metricsURL, err := extractMetricsURL(serverURL)
-				Expect(err).ToNot(HaveOccurred(), "Should be able to construct metrics URL")
+				afterFamilies, afterBody := scrapeMetrics(metricsURL)
+				GinkgoWriter.Printf("Metrics response length: %d bytes\n", len(afterBody))
 
-				GinkgoWriter.Printf("Fetching metrics from: %s\n", metricsURL)
+				By("Analyzing per-tool metric deltas for authorization patterns")
 
-				// Fetch metrics with retry logic
-				var metricsBody string
-				Eventually(func() error {
-					resp, err := http.Get(metricsURL)
-					if err != nil {
-						return fmt.Errorf("failed to fetch metrics: %w", err)
-					}
-					defer resp.Body.Close()
-
-					if resp.StatusCode != http.StatusOK {
-						return fmt.Errorf("metrics endpoint returned status %d", resp.StatusCode)
-					}
-
-					bodyBytes, err := io.ReadAll(resp.Body)
-					if err != nil {
-						return fmt.Errorf("failed to read metrics response: %w", err)
-					}
-
-					metricsBody = string(bodyBytes)
-					return nil
-				}, 10*time.Second, 1*time.Second).Should(Succeed(), "Should be able to fetch metrics")
-
-				By("Analyzing metrics for authorization patterns")
-
-				GinkgoWriter.Printf("Metrics response length: %d bytes\n", len(metricsBody))
-
-				// Look for ToolHive-specific metrics
-				Expect(metricsBody).To(ContainSubstring("toolhive_mcp_requests_total"),
+				Expect(afterBody).To(ContainSubstring("toolhive_mcp_requests_total"),
 					"Should contain ToolHive MCP request counter")
 
-				// Parse and verify metrics contain both success and error status codes
-				successCount := extractMetricValue(metricsBody, "toolhive_mcp_requests_total", "status=\"success\"")
-				errorCount := extractMetricValue(metricsBody, "toolhive_mcp_requests_total", "status=\"error\"")
+				// Each tool is its own series, so sum all matches and compare against the
+				// baseline: the server is shared with earlier specs in this container.
+				requestDelta := func(tool, status, statusCode string) (float64, string) {
+					labels := map[string]string{
+						"mcp_method":      "tools/call",
+						"mcp_resource_id": tool,
+						"status":          status,
+					}
+					if statusCode != "" {
+						labels["status_code"] = statusCode
+					}
+					delta := sumCounter(afterFamilies, requestsMetric, labels) -
+						sumCounter(beforeFamilies, requestsMetric, labels)
+					series := fmt.Sprintf("tool=%s status=%s status_code=%q delta=%v\n  before: %v\n  after:  %v",
+						tool, status, statusCode, delta,
+						matchingSeries(beforeFamilies, requestsMetric, labels),
+						matchingSeries(afterFamilies, requestsMetric, labels))
+					GinkgoWriter.Printf("%s\n", series)
+					return delta, series
+				}
 
-				GinkgoWriter.Printf("Success requests: %d\n", successCount)
-				GinkgoWriter.Printf("Error requests: %d\n", errorCount)
+				authorizedDelta, authorizedSeries := requestDelta("query_vulnerability", "success", "")
+				Expect(authorizedDelta).To(BeNumerically(">=", 1),
+					"Should have at least 1 successful request for the authorized tool:\n%s", authorizedSeries)
 
-				// We should have at least 1 successful request (authorized) and 2 error requests (unauthorized)
-				Expect(successCount).To(BeNumerically(">=", 1),
-					"Should have at least 1 successful request")
-				Expect(errorCount).To(BeNumerically(">=", 2),
-					"Should have at least 2 error requests (authorization denials)")
-
-				// Look for specific status codes
-				status200Count := extractMetricValue(metricsBody, "toolhive_mcp_requests_total", "status_code=\"200\"")
-				status403Count := extractMetricValue(metricsBody, "toolhive_mcp_requests_total", "status_code=\"403\"")
-
-				GinkgoWriter.Printf("HTTP 200 responses: %d\n", status200Count)
-				GinkgoWriter.Printf("HTTP 403 responses: %d\n", status403Count)
-
-				// We should see 403 responses for authorization denials
-				Expect(status403Count).To(BeNumerically(">=", 2),
-					"Should have at least 2 HTTP 403 responses for authorization denials")
+				for _, tool := range []string{"query_vulnerabilities_batch", "get_vulnerability"} {
+					deniedDelta, deniedSeries := requestDelta(tool, "error", "403")
+					Expect(deniedDelta).To(BeNumerically(">=", 1),
+						"Should have at least 1 HTTP 403 error request for the denied tool:\n%s", deniedSeries)
+				}
 
 				// Look for tool-specific metrics
-				if strings.Contains(metricsBody, "toolhive_mcp_tool_calls_total") {
-					toolCallsCount := extractMetricValue(metricsBody, "toolhive_mcp_tool_calls_total", "tool=\"query_vulnerability\"")
-					GinkgoWriter.Printf("Tool calls for query_vulnerability: %d\n", toolCallsCount)
+				if metricFamily(afterFamilies, toolCallsMetric) != nil {
+					toolLabels := map[string]string{"tool": "query_vulnerability"}
+					toolCallsDelta := sumCounter(afterFamilies, toolCallsMetric, toolLabels) -
+						sumCounter(beforeFamilies, toolCallsMetric, toolLabels)
+					GinkgoWriter.Printf("Tool calls delta for query_vulnerability: %v (series after: %v)\n",
+						toolCallsDelta, matchingSeries(afterFamilies, toolCallsMetric, toolLabels))
 
-					Expect(toolCallsCount).To(BeNumerically(">=", 1),
+					Expect(toolCallsDelta).To(BeNumerically(">=", 1),
 						"Should have at least 1 successful tool call for query_vulnerability")
 				}
 
 				By("Verifying server name is included in metrics")
-				Expect(metricsBody).To(ContainSubstring(fmt.Sprintf("server=\"%s\"", serverName)),
+				Expect(afterBody).To(ContainSubstring(fmt.Sprintf("server=\"%s\"", serverName)),
 					"Metrics should include the server name")
 
 				GinkgoWriter.Printf("✅ Authorization metrics verification completed successfully\n")
@@ -316,41 +316,106 @@ func extractMetricsURL(serverURL string) (string, error) {
 	return metricsURL, nil
 }
 
-// extractMetricValue parses Prometheus metrics text and extracts the value for a specific metric with labels
-func extractMetricValue(metricsBody, metricName, labelFilter string) int {
-	lines := strings.Split(metricsBody, "\n")
+const (
+	requestsMetric  = "toolhive_mcp_requests_total"
+	toolCallsMetric = "toolhive_mcp_tool_calls_total"
+)
 
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
+// scrapeMetrics fetches the metrics endpoint, retrying until it responds, and
+// returns the parsed families together with the raw body.
+func scrapeMetrics(metricsURL string) (map[string]*dto.MetricFamily, string) {
+	GinkgoHelper()
 
-		// Skip comments and empty lines
-		if strings.HasPrefix(line, "#") || line == "" {
-			continue
+	var (
+		families map[string]*dto.MetricFamily
+		body     string
+	)
+	Eventually(func() error {
+		resp, err := http.Get(metricsURL)
+		if err != nil {
+			return fmt.Errorf("failed to fetch metrics: %w", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			_, _ = io.Copy(io.Discard, resp.Body)
+			return fmt.Errorf("metrics endpoint returned status %d", resp.StatusCode)
 		}
 
-		// Check if this line contains our metric
-		if !strings.HasPrefix(line, metricName) {
-			continue
+		bodyBytes, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return fmt.Errorf("failed to read metrics response: %w", err)
 		}
 
-		// Check if the line contains our label filter
-		if labelFilter != "" && !strings.Contains(line, labelFilter) {
-			continue
+		parser := expfmt.NewTextParser(model.UTF8Validation)
+		parsed, err := parser.TextToMetricFamilies(strings.NewReader(string(bodyBytes)))
+		if err != nil {
+			return fmt.Errorf("failed to parse metrics response: %w", err)
 		}
 
-		// Extract the value (last part after space)
-		parts := strings.Fields(line)
-		if len(parts) >= 2 {
-			valueStr := parts[len(parts)-1]
-			if value, err := strconv.Atoi(valueStr); err == nil {
-				return value
-			}
-			// Try parsing as float and convert to int
-			if valueFloat, err := strconv.ParseFloat(valueStr, 64); err == nil {
-				return int(valueFloat)
-			}
+		families = parsed
+		body = string(bodyBytes)
+		return nil
+	}, 10*time.Second, 1*time.Second).Should(Succeed(), "Should be able to fetch metrics")
+
+	return families, body
+}
+
+// metricFamily looks up a family by name, also accepting the name without a
+// "_total" suffix in case the parser or exporter strips it.
+func metricFamily(families map[string]*dto.MetricFamily, name string) *dto.MetricFamily {
+	if family, ok := families[name]; ok {
+		return family
+	}
+	return families[strings.TrimSuffix(name, "_total")]
+}
+
+// sumCounter adds up every counter series in the named family whose labels
+// include all of wantLabels.
+func sumCounter(families map[string]*dto.MetricFamily, name string, wantLabels map[string]string) float64 {
+	family := metricFamily(families, name)
+	if family == nil {
+		return 0
+	}
+	var sum float64
+	for _, metric := range family.Metric {
+		if metric.Counter != nil && prometheusLabelsMatch(metric, wantLabels) {
+			sum += metric.Counter.GetValue()
 		}
 	}
+	return sum
+}
 
-	return 0
+// matchingSeries renders the series counted by sumCounter as "labels=value"
+// strings for failure diagnostics.
+func matchingSeries(families map[string]*dto.MetricFamily, name string, wantLabels map[string]string) []string {
+	family := metricFamily(families, name)
+	if family == nil {
+		return nil
+	}
+	var series []string
+	for _, metric := range family.Metric {
+		if metric.Counter == nil || !prometheusLabelsMatch(metric, wantLabels) {
+			continue
+		}
+		pairs := make([]string, 0, len(metric.Label))
+		for _, pair := range metric.Label {
+			pairs = append(pairs, fmt.Sprintf("%s=%q", pair.GetName(), pair.GetValue()))
+		}
+		series = append(series, fmt.Sprintf("{%s}=%v", strings.Join(pairs, ","), metric.Counter.GetValue()))
+	}
+	return series
+}
+
+func prometheusLabelsMatch(metric *dto.Metric, want map[string]string) bool {
+	labels := make(map[string]string, len(metric.Label))
+	for _, pair := range metric.Label {
+		labels[pair.GetName()] = pair.GetValue()
+	}
+	for name, value := range want {
+		if labels[name] != value {
+			return false
+		}
+	}
+	return true
 }

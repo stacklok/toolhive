@@ -158,7 +158,7 @@ const docTemplate = `{
                         "type": "string"
                     },
                     "registration_probe": {
-                        "description": "RegistrationProbe selects how the resolver checks a cached registration\nagainst the upstream at start. \"tokenEndpoint\" (the default) redeems a\nrandom authorization code with the cached client and reads\ninvalid_client as \"registration gone\"; it decides only for upstreams\nthat authenticate the client before validating the grant.\n\"authorizationEndpoint\" sends an authorization request for the cached\nclient without following redirects and reads a direct 400, 401 or 403\nthat carries an RFC 6749 JSON error object (error invalid_client,\nunauthorized_client or invalid_request) as \"gone\" (RFC 6749 §4.1.2.1),\nfor upstreams whose token endpoint answers invalid_grant for any\nclient_id; an HTML page or a bare gateway status is not a verdict. A\nfalse rejection re-registers at every start and, when registration also\nfails, fails startup. \"none\" skips the check; the registration is then\nretired only through RotationKey.",
+                        "description": "RegistrationProbe selects how the resolver checks a cached registration\nagainst the upstream at start. \"tokenEndpoint\" (the default) redeems a\nrandom authorization code with the cached client and reads\ninvalid_client as \"registration gone\"; it decides only for upstreams\nthat authenticate the client before validating the grant.\n\"authorizationEndpoint\" sends an authorization request for the cached\nclient without following redirects and reads a direct 400, 401 or 403\nthat carries an RFC 6749 JSON error object (error invalid_client,\nunauthorized_client or invalid_request) as \"gone\" (RFC 6749 §4.1.2.1),\nfor upstreams whose token endpoint answers invalid_grant for any\nclient_id; an HTML page or a bare gateway status is not a verdict. A\nfalse rejection re-registers at every start and, when registration also\nfails, fails startup. \"none\" skips the check: the upstream is not\ncontacted, but a registration made with another method than a configured\nTokenEndpointAuthMethod is still replaced. Otherwise the registration is\nretired only through RotationKey.",
                         "type": "string"
                     },
                     "registration_probe_interval": {
@@ -180,10 +180,24 @@ const docTemplate = `{
                 },
                 "type": "object"
             },
+            "authserver.DelegateClientExchangeRefreshTokens": {
+                "description": "ExchangeRefreshTokens enables refresh-token issuance through token\nexchange for this client. Presence of the block enables it; a nil block\nrefuses both grant kinds. Valid only with restricted, and requires\nSubjectTokenAudiences and offline_access or offline in scopes_supported.",
+                "properties": {
+                    "id_jag_max_lifetime": {
+                        "description": "IDJAGMaxLifetime caps the lifetime of grants that can be exchanged for\nID-JAGs. Empty refuses those grants.",
+                        "type": "string"
+                    },
+                    "refresh_token_max_lifetime": {
+                        "description": "RefreshTokenMaxLifetime caps the lifetime of grants that can be exchanged\nfor child refresh tokens. Empty refuses those grants. Deriving a child also\nneeds id_jag_max_lifetime, because a child allows ID-JAGs and is capped by\nthat value; without it every derive is refused with token_type_not_permitted.",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
             "authserver.DelegateClientRunConfig": {
                 "properties": {
                     "audiences": {
-                        "description": "Audiences are the RFC 8707 resource values this client may request a\ntoken for. Required, and must be a subset of RunConfig.AllowedAudiences:\na declared client must not receive every allowed audience just because\nthis was left empty.",
+                        "description": "Audiences are output only: the upper bound on the audiences of the\naccess tokens this client can obtain through any grant. They must be a\nsubset of RunConfig.AllowedAudiences: a declared client must not receive\nevery allowed audience just because this was left empty. Required, unless\ntoken_exchange.exchange_refresh_tokens is set and token exchange is the\nclient's only grant (grant_types omitted, or just the token-exchange\ngrant), in which case it may be empty.",
                         "items": {
                             "type": "string"
                         },
@@ -203,7 +217,7 @@ const docTemplate = `{
                         "type": "string"
                     },
                     "grant_types": {
-                        "description": "GrantTypes are the grants this client may use. If omitted or empty, it\nis [urn:ietf:params:oauth:grant-type:token-exchange]. When set, it must\ninclude token exchange. Allowed values are authorization_code,\nrefresh_token, the token-exchange grant and the jwt-bearer grant.",
+                        "description": "GrantTypes are the grants this client may use. If omitted or empty, the\nclient is stored with [urn:ietf:params:oauth:grant-type:token-exchange]\nand its ID-JAG redemption (a JWT-bearer assertion of typ\noauth-id-jag+jwt) is not gated, for backward compatibility. When set, the\nlist is complete: it must include token exchange, and it must include the\njwt-bearer grant to keep ID-JAG redemption. Allowed values are\nauthorization_code, refresh_token, the token-exchange grant and the\njwt-bearer grant.",
                         "items": {
                             "type": "string"
                         },
@@ -235,10 +249,45 @@ const docTemplate = `{
                         "type": "string"
                     },
                     "token_endpoint_auth_signing_alg": {
-                        "description": "TokenEndpointAuthSigningAlg is the private_key_jwt signing algorithm.\nDefaults to RS256.",
+                        "description": "TokenEndpointAuthSigningAlg is the private_key_jwt signing algorithm.\nIf omitted, it is derived from the keys: each key's alg, or ES256, ES384\nor ES512 from an EC key's curve. RSA keys without alg use RS256. Keys\nthat disagree must set it.",
                         "type": "string"
+                    },
+                    "token_exchange": {
+                        "$ref": "#/components/schemas/authserver.DelegateClientTokenExchange"
                     }
                 },
+                "type": "object"
+            },
+            "authserver.DelegateClientTokenExchange": {
+                "description": "TokenExchange is the client's token-exchange policy. Its\nSelfIssuedSubjectTokens field selects which self-issued subject tokens\nthe client may exchange and is required whenever the block is present.\nThe block may be omitted only by a secret-authenticated client whose\nGrantTypes is omitted or empty; such a client keeps the legacy rule (any)\nand may exchange any self-issued token. A client that sets GrantTypes or\nuses private_key_jwt must declare the block.",
+                "properties": {
+                    "allowed_source_clients": {
+                        "description": "AllowedSourceClients are client_id values, as they appear in the subject\ntoken's client_id claim, whose self-issued tokens this client may\nexchange in addition to its own. They must be user-facing clients that\nregister at runtime (DCR or CIMD), so startup cannot check that they\nexist. A configured delegate client cannot be listed: its tokens carry\nits own client_id, so listing it would trust everything it accepts.\nValid only with restricted. On plain token exchange, empty means the\nclient's own tokens only. The exchange-grant path (exchange_refresh_tokens)\naccepts only the listed source clients, never the client's own tokens, so\nthe list must be non-empty there.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "exchange_refresh_tokens": {
+                        "$ref": "#/components/schemas/authserver.DelegateClientExchangeRefreshTokens"
+                    },
+                    "self_issued_subject_tokens": {
+                        "description": "SelfIssuedSubjectTokens is any or restricted, and is required. With\nrestricted, a self-issued subject token must carry the client's own\nclient_id or one of AllowedSourceClients, and a may_act claim naming\nthis client does not lift that restriction. With any, the client may\nexchange any self-issued token.",
+                        "type": "string"
+                    },
+                    "subject_token_audiences": {
+                        "description": "SubjectTokenAudiences are the audiences a self-issued subject token must\ncarry, matched exactly: the token must contain at least one of them. The\ncheck applies on every exchange path, including the client's own tokens.\nListing a value grants nothing: the client can receive that audience only\nif its audiences also cover it, and startup refuses that while\nexchange_refresh_tokens is set. Each entry must be one of the server's\nallowed_audiences. Valid only with restricted, and required with\nexchange_refresh_tokens. An empty list is the same as an omitted one:\nno requirement.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    }
+                },
+                "required": [
+                    "self_issued_subject_tokens"
+                ],
                 "type": "object"
             },
             "authserver.IdentityFromTokenRunConfig": {
@@ -389,7 +438,7 @@ const docTemplate = `{
                         "type": "string"
                     },
                     "token_endpoint_auth_method": {
-                        "description": "TokenEndpointAuthMethod selects how the client authenticates at the OAuth token\nendpoint. When empty, credentials are sent in the request body (the historical\nclient_secret_post-shaped default). Set this to client_secret_basic explicitly\nfor providers that require HTTP Basic auth. Public clients without a secret use\nthe \"none\" method.",
+                        "description": "TokenEndpointAuthMethod selects how the client authenticates at the OAuth token\nendpoint. When empty, credentials are sent in the request body (the historical\nclient_secret_post-shaped default). Set this to client_secret_basic explicitly\nfor providers that require HTTP Basic auth. Public clients without a secret use\nthe \"none\" method.\nWith DCRConfig, it is the method the client registers with, in place of the one\nToolHive picks from the upstream's advertised methods (client_secret_basic, then\nclient_secret_post, then none). Set it for an upstream whose token endpoint does\nnot accept the method ToolHive picks. A cached registration made with another\nmethod is replaced with a new one at the next start.",
                         "type": "string"
                     },
                     "token_response_mapping": {

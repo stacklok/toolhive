@@ -347,8 +347,10 @@ func deviceCodeInterval(configured time.Duration) time.Duration {
 }
 
 // Routes returns a router with all OAuth/OIDC endpoints registered.
-func (h *Handler) Routes() http.Handler {
+// Optional middleware is installed before registering routes.
+func (h *Handler) Routes(middlewares ...func(http.Handler) http.Handler) http.Handler {
 	r := chi.NewRouter()
+	r.Use(middlewares...)
 	h.OAuthRoutes(r)
 	h.WellKnownRoutes(r)
 	return r

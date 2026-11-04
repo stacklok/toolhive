@@ -40,13 +40,15 @@ starts. By default it is limited to the token-exchange grant and authenticates a
 
 `RunConfig.delegate_clients` is the portable runtime configuration surface. Each
 client must name a unique `client_id`, a secret **reference**, one or more scopes,
-and one or more audiences. The grant type defaults to
+and one or more audiences (a client that only gets refresh tokens may have none;
+see [Source policy and subject token audiences](#source-policy-and-subject-token-audiences)).
+The grant type defaults to
 `urn:ietf:params:oauth:grant-type:token-exchange`; see
 [Configured client metadata](#configured-client-metadata) for the other options.
 Scopes must be a subset of `scopes_supported` (or the default supported OIDC
-scopes when that field is omitted), and audiences must be a subset of
-`allowed_audiences`. These required narrowing lists prevent a delegate client
-from inheriting every server scope or resource.
+scopes when that field is omitted), and audiences, when present, must be a subset
+of `allowed_audiences`. These narrowing lists prevent a delegate client from
+inheriting every server scope or resource.
 
 The following is a relevant `RunConfig` excerpt. `client_secret_env_var` may be
 replaced by `client_secret_file`; an inline secret is not supported. Generate
@@ -277,14 +279,15 @@ Both `/.well-known/oauth-authorization-server` and
 (`Config.DisableTokenExchange`, `AuthorizationServerConfig.TokenExchangeEnabled`)
 — the same flag governs both registration with fosite and discovery
 advertisement, so they cannot drift out of sync. `token_endpoint_auth_methods_supported` always
-includes `none`; it also includes `client_secret_basic` and
-`client_secret_post` when confidential DCR is enabled or a static delegate
-client is configured, and includes `private_key_jwt` when
-`allowPrivateKeyJWTRegistration` is enabled. In the latter case,
-`token_endpoint_auth_signing_alg_values_supported` lists the implemented
-algorithms. The RFC 7523 §2.1 JWT-bearer grant is advertised only when a trusted
-issuer opts into it. A private-key JWT DCR client is limited to token exchange;
-it is not an authorization-code client.
+includes `none`. It also includes `client_secret_basic` and
+`client_secret_post` when confidential DCR is enabled or a configured delegate
+client authenticates with a secret, so a deployment whose delegate clients all
+use `private_key_jwt` does not advertise them. It includes `private_key_jwt`, together with
+`token_endpoint_auth_signing_alg_values_supported` (the implemented algorithms),
+when `allowPrivateKeyJWTRegistration` is enabled or a configured delegate client
+uses `private_key_jwt`. The RFC 7523 §2.1 JWT-bearer grant is advertised only
+when a trusted issuer opts into it. A private-key JWT DCR client is limited to
+token exchange; it is not an authorization-code client.
 
 On Kubernetes, a delegate-client Secret is injected as a pod environment
 variable and is resolved when the authorization server starts. Updating that
@@ -342,6 +345,14 @@ the token endpoint in `aud`, and includes a unique `jti` and an `exp`. The
 server verifies it against the stored inline JWKS and rejects replay while the
 assertion is valid. No `client_secret` is included in registration or token
 exchange.
+
+Every failed assertion check (unknown `kid`, bad signature, wrong `iss`, `sub`
+or `aud`, expired or not yet valid, `exp` more than 5 minutes ahead, reused
+`jti`) is refused with HTTP 401 `invalid_client`. The `error_description`
+names the check that failed. A storage failure while checking or recording
+the `jti` is HTTP 500 `server_error`, so clients can retry it. A request
+that sets `client_assertion_type` but omits `client_assertion` is HTTP 400
+`invalid_request`.
 
 Private-key JWT registration accepts only inline `jwks`; `jwks_uri`, SPIFFE/SVID
 authentication, AWS STS `act` mapping, and ID-JAG chaining are deferred and out
@@ -406,7 +417,10 @@ external-issuer authorization and — when it matches — sets
 `ValidatedClaims.ExternalActorAuthorized` (and `ValidatedClaims.ExternalActor`
 when the allowlist path resolved an actor claim). `checkDelegationConsent`
 (`pkg/authserver/server/tokenexchange/handler.go`) runs afterwards and decides
-whether to grant the exchange, in this order:
+whether to grant the exchange, in this order. For a configured delegate client
+with a `token_exchange` block, `checkSourcePolicy` and
+`checkSubjectTokenAudience` run before all of these
+(see [Source policy and subject token audiences](#source-policy-and-subject-token-audiences)):
 
 1. **`may_act` (RFC 8693 §4.4).** A trusted issuer must explicitly set
    `allow_may_act: true` before its well-formed `may_act` claim is considered.
@@ -463,8 +477,13 @@ whether to grant the exchange, in this order:
    client (`Handler.configuredDelegateClients`, sourced from
    `Config.DelegateClients`), in which case the binding is skipped and any
    self-issued subject token is accepted regardless of which client it was
-   originally issued to. This exception applies only on the self-issued path
-   (`ExternalIssuer == ""`); a delegate client presenting an externally-issued
+   originally issued to. The exception is narrower for a delegate client whose
+   `token_exchange.self_issued_subject_tokens` is `restricted`:
+   `checkSourcePolicy` has already limited it to tokens issued to itself or to
+   its `allowed_source_clients` (see [Source policy and subject token
+   audiences](#source-policy-and-subject-token-audiences)). This exception applies only on
+   the self-issued path (`ExternalIssuer == ""`); a delegate client presenting
+   an externally-issued
    token with a mismatched `client_id` is still rejected here.
 4. **No binding.** If none of the above apply, the token carries no
    verifiable client binding and the exchange is rejected.
@@ -510,9 +529,11 @@ until a real ID-token validation profile is implemented.
 
 ### Delegate clients and self-issued token exchange
 
-A configured delegate client can convert *any* self-issued ToolHive access
-token it can obtain — for any user, regardless of which client originally
-obtained that token — into a delegated token asserting that user's `sub`.
+A configured delegate client in `any` mode, or a secret-authenticated delegate
+client that omits both `grant_types` and the `token_exchange` block, can
+convert *any* self-issued ToolHive access token it can obtain — for any user,
+regardless of which client originally obtained that token — into a delegated
+token asserting that user's `sub`.
 This is an intentional blanket-trust model, not an oversight: delegate
 clients are declared by the operator at server startup (`RunConfig`/CRD),
 not obtained through self-service registration, so the same trust already
@@ -523,7 +544,7 @@ client.
 The relaxation is bounded the same way every other exchange is: `grantScopes`
 and `grantAndBoundAudiences`'s `ensureAudienceSubsetOfSubject` still narrow
 the delegated token to what both the delegate client and the subject token
-are authorized for, and the delegated token's lifetime is still capped by
+are authorized for. The delegated token's lifetime is still capped by
 `min(subject token's remaining lifetime, configured delegationLifespan)`.
 It is **not** bounded by per-`jti` single-use enforcement — there is none in
 this codebase today, for any token-exchange path, self-issued or external
@@ -539,7 +560,9 @@ The stored row is not deleted. Access tokens already issued to the client stay
 valid until they expire. Self-issued subject tokens whose `client_id` is the
 removed client can still be exchanged by other configured delegates until those
 subject tokens expire, because the exchange checks the subject token's own
-claims and does not look the original client up again. A binary without client
+claims and does not look the original client up again. A delegate client with
+`self_issued_subject_tokens: restricted` refuses those tokens unless the removed
+client is listed in its `allowed_source_clients`. A binary without client
 admission still honors the stored row.
 
 Admission is per replica. A newly added delegate is served reliably only once
@@ -561,14 +584,274 @@ optional; a client that sets none of them is the same client as before.
 | Field | Meaning |
 |---|---|
 | `token_endpoint_auth_method` | Omitted: the client authenticates with its secret by HTTP Basic or form body. `client_secret_basic` or `client_secret_post` pins one of them. `private_key_jwt` authenticates with a signed assertion instead of a secret. |
-| `jwks_file` | Path to the client's public JWKS. Required for `private_key_jwt`, forbidden otherwise. Each key must have `use: sig`. Private and symmetric keys are rejected, at most 10 keys are allowed, and the keys must match `token_endpoint_auth_signing_alg` (default `RS256`). |
-| `grant_types` | Omitted or empty means token exchange only. When set, the list must include token exchange. The other allowed values are `authorization_code`, `refresh_token` and the JWT-bearer grant. `refresh_token` is allowed only together with `authorization_code`. |
+| `jwks_file` | Path to the client's public JWKS. Required for `private_key_jwt`, forbidden otherwise. Each key must have `use: sig`. Private and symmetric keys are rejected, at most 10 keys are allowed, and the keys must match `token_endpoint_auth_signing_alg`. When that field is omitted, it is derived from the keys: each key's `alg`, or `ES256`, `ES384` or `ES512` from an EC key's curve; RSA keys without `alg` use `RS256`; keys that disagree are rejected and the field must be set. When the file holds more than one key, every key must have a unique, non-empty `kid`, and the client must send the `kid` of its signing key in the assertion header: fosite checks an assertion that has no `kid` only against the first signing key of the matching type, so a key added during a rotation would never be used otherwise. The `kid` rule is checked when the keys are loaded at startup, not when `RunConfig` is validated. |
+| `grant_types` | Omitted or empty means token exchange only. When set, the list must include token exchange. The other allowed values are `authorization_code`, `refresh_token` and the JWT-bearer grant. `refresh_token` is allowed only together with `authorization_code`. A client that sets `grant_types`, or uses `private_key_jwt`, must also declare a `token_exchange` block with `self_issued_subject_tokens` (see [Source policy and subject token audiences](#source-policy-and-subject-token-audiences)). |
 | `redirect_uris` | Required with `authorization_code`, forbidden without it. Each URI must be https and not loopback, as for any other confidential client. |
+
+A delegate's `audiences` limit what it may request. List the narrowest
+audience the client needs: with the default path-prefix strategy, an audience
+such as `https://h/` covers every child path that is also in the server's
+`allowed_audiences` (see "Grants and audiences" below).
 
 One validator in the `registration` package checks these fields. It runs when
 `RunConfig` is validated (with the JWKS contents still unloaded) and when the
 client is built (with the keys loaded). The built client is never marked as
 DCR-issued, so it has no TTL and does not count against `max_dcr_clients`.
+
+At startup the runner reads each `jwks_file` next to the existing
+`client_secret_file` handling, so rotating a key means replacing the file and
+restarting. The stored client keeps its `client_id`; the new key set replaces
+the old one. Discovery lists the client authentication methods as described in
+[Discovery and secret rotation](#discovery-and-secret-rotation). The
+cleartext-transport rule is separate: every delegate client, `private_key_jwt`
+ones included, counts as confidential there.
+
+The server builds each configured delegate client in memory and checks it as
+consent-exempt before it writes the client. A configured login client can
+therefore be listed in `WithConsentExemptClientIDs`, and a bad ID aborts startup
+without leaving delegate rows in storage. When an ID names both a configured
+delegate and a stored row, the delegate as built is the one checked.
+
+`/authorize` treats every client without the `authorization_code` grant as
+back-channel only and answers `invalid_client`, as it does for an unknown
+client, so the response does not show whether such a client exists. RFC 6749
+section 4.1.2.1 would use `unauthorized_client` for a known client; the server
+returns `invalid_client` deliberately. A client that holds `authorization_code`
+in addition to other grants can log users in.
+
+#### Grants and audiences
+
+- **Client audiences.** `/authorize` refuses a `resource` that the client may
+  not request, with `invalid_target`. A `resource` that is omitted defaults to
+  the server's sole allowed audience and is checked the same way. The check
+  applies to every client, including dynamically registered and CIMD clients.
+  It uses the client's own `audiences`, or its resource allowlist for SPIFFE
+  clients, and the server's configured audience matching strategy (fosite's
+  path-prefix strategy by default), which is the rule the authorization code
+  callback and the refresh grant already apply to a client's audiences. For a
+  client without a separate resource list, a request the check accepts therefore
+  cannot fail the callback's audience check later, and a client with no
+  audiences, which could never complete the callback, fails at `/authorize`
+  with `invalid_target`, before the upstream login. The server-level and the
+  client-level refusal return the same error text, so an unauthenticated caller
+  cannot tell which of the two refused a resource. (SPIFFE clients, which keep
+  a resource list, are token-exchange only and never reach `/authorize`.) The
+  default strategy compares scheme and host exactly and accepts a path that
+  equals the client's audience path or extends it at a segment boundary
+  (`https://api.example.com/v1` matches an audience of
+  `https://api.example.com`, but `/v1x` does not match `/v1`). The resource must still be an exact member of the server's allowed
+  audiences, which is checked first. The RFC 8693 `resource` check uses the
+  same strategy. Code redemption reuses the audience bound at `/authorize`, and
+  refresh is enforced by fosite.
+- **Dynamically registered clients.** A DCR client keeps the audience list the
+  server had when it registered, and that list is never refreshed. After an
+  operator adds an audience, an existing DCR client that asks for it gets
+  `invalid_target` at `/authorize`, before the upstream login. The client has to
+  register again to use the new audience.
+- **ID-JAG redemption.** The `resource` of an ID-JAG gets the same client
+  check, except for DCR and CIMD clients, which are not narrowed. They hold a
+  copy of the server's allowed audiences taken at registration, not a
+  per-client policy, so checking them adds nothing while the copy is current
+  and would wrongly refuse an audience added since. The resource must still be
+  an exact member of the server's allowed audiences. Every other client is
+  checked, so a client with no audiences, or an empty resource allowlist,
+  permits nothing. A client that sets `grant_types` explicitly must also list
+  the JWT-bearer grant, or the redemption fails with `unauthorized_client`. A
+  client that omits `grant_types` is stored with token exchange alone but is
+  not gated, for backward compatibility. The plain JWT-bearer grant is not
+  gated this way, because it can run without client authentication.
+
+#### Source policy and subject token audiences
+
+A delegate client can carry a `token_exchange` block:
+
+```yaml
+token_exchange:
+  self_issued_subject_tokens: restricted
+  allowed_source_clients: [tui-client-id]
+  subject_token_audiences: [https://api.example.com]
+```
+
+`self_issued_subject_tokens` selects the trust rule for self-issued subject
+tokens. It is required whenever the block is present; a block without it,
+including an empty `token_exchange: {}`, fails validation. It has two values:
+
+- **`restricted`.** The blanket trust ends. A self-issued subject token must
+  carry a `client_id` equal to the client itself or to one of
+  `allowed_source_clients`. With an empty or absent list, the client accepts
+  only tokens issued to itself. A token issued to any other client is refused
+  with `invalid_grant`. This check runs before the `may_act` consent check, so
+  it also narrows `may_act`: a token whose `may_act` names this client is still
+  refused when the client it was issued to is not listed. If the token passes
+  and also carries `may_act`, `may_act.sub` must match the resolved actor as
+  well: the `actor_token` subject when one is supplied, otherwise the
+  authenticated client ID. The source check itself always uses the
+  authenticated client. Both checks must pass and neither overrides the other.
+- **`any`.** The client keeps the blanket trust described above: it may
+  exchange any self-issued subject token. The startup WARN is logged with
+  `explicit_any=true` when the client also sets `grant_types` or uses
+  `private_key_jwt`, because such a client must declare its mode. It also
+  carries `redeems_id_jag=true` when the client sets no `grant_types` and a
+  trusted issuer has the JWT-bearer grant enabled.
+
+The block may be omitted only by a secret-authenticated client whose
+`grant_types` is omitted or empty. Such a client behaves as `any` and logs the
+startup WARN; when a trusted issuer has the JWT-bearer grant enabled, the WARN
+carries `redeems_id_jag=true`, because the client can also redeem an ID-JAG
+and so mint its own self-issued tokens. A client that sets `grant_types`, or
+uses `private_key_jwt`, must declare the block and the mode, so a client
+written for the newer metadata never falls back to blanket trust because a
+block was dropped. A client with `restricted` logs no startup WARN.
+
+**External-issuer subject tokens** are never governed by
+`self_issued_subject_tokens`, in either mode. The trusted issuer's policy
+(`allowed_actors`, `actor_matcher`, `may_act`, and `allowed_delegate_clients`
+naming this client) decides them.
+
+`allowed_source_clients` and `subject_token_audiences` are valid only with
+`restricted`; setting either with `any` fails validation. A client in `any`
+mode has no per-client policy at runtime, so the audience check would never
+run. The setting is not supported with `any`.
+
+`allowed_source_clients` holds `client_id` values as they appear in the subject
+token. They are user-facing clients such as a TUI, which register at
+runtime (DCR or CIMD), so startup cannot check that they exist. A configured
+delegate client cannot be listed: a token it obtains carries the delegate's
+own `client_id`, so listing it would trust everything that delegate accepts.
+The list has at most 20 entries, with no duplicates and no `*` wildcard. A
+client cannot list its own `client_id` (validation rejects it, because its own
+tokens are accepted on plain token exchange without being listed). A DCR `client_id` is a poor fit for this list: the
+server generates it, and it changes when the registration expires and the
+client registers again.
+
+`subject_token_audiences` says what a self-issued subject token is for. It is
+about the subject token's `aud` claim, not RFC 8693's `audience` request
+parameter. When it is set, the token's `aud` must contain one of the listed
+values. The match is exact, not path prefix, so a token for a sub-path or
+sibling path of the API does not qualify.
+
+The check runs on plain token exchange and on refresh-token requests. It also
+applies to tokens issued to the client itself. On plain token exchange a token
+that fails it is refused with `invalid_grant` (the same documented deviation
+from RFC 8693 section 2.2.2 as the source-client check). For refresh-token
+requests, see [Refresh tokens through token
+exchange](#refresh-tokens-through-token-exchange). Subject tokens from an
+external issuer are not checked: that issuer's policy decides them. Listing a
+value here grants nothing. The client can receive it only if its `audiences`
+also covers it, and startup refuses that while `exchange_refresh_tokens` is set.
+
+Take a client that sets `subject_token_audiences: [X]` and `audiences: [Y]`.
+Plain exchange needs a subject token that carries both X (the input rule) and Y
+(the coverage rule). A token from `/authorize` carries one audience, so in
+practice such a client gets only refresh tokens. A client in `any` mode, a DCR or
+CIMD client, and a restricted client without the field or with an empty list are
+not affected.
+
+An input setting limits which subject tokens the client accepts. An output
+setting limits which tokens the client receives.
+
+| Setting | Meaning |
+|---|---|
+| `allowed_source_clients` | Input. Who the subject token was issued to. On plain token exchange, a self-issued subject token must carry the client's own `client_id` or one listed here. On the exchange-grant path, only the listed clients are accepted, and the list must not be empty. |
+| `subject_token_audiences` | Input. What the subject token is for. |
+| `audiences` (client level) | Output. The audiences of the access tokens the client can receive. |
+| `allowed_audiences` (server level) | Every audience the server accepts. The entries of the two audience lists above must be in it. |
+
+`audiences` limits the access tokens the client can receive. It applies to
+`audience`, `resource` and the default audience on token exchange, to ID-JAG
+redemption, to `/authorize` and to the refresh grant. What it holds depends on
+the client type:
+
+- **Configured delegate clients.** A per-client allowlist. `audience` matches by
+  path prefix. `resource` must also be an exact member of `allowed_audiences`.
+- **SPIFFE clients.** `audience` is checked the same way. `resource` is checked
+  against the client's own resource list.
+- **DCR and CIMD clients.** A copy of the server's list taken at registration.
+  ID-JAG redemption does not narrow them, so only the server list applies.
+- **Device flow.** The client receives all of its `audiences`.
+
+On token exchange, every audience the client receives must also appear, exactly,
+in the subject token's `aud`, with no exceptions (`ensureAudienceSubsetOfSubject`).
+Otherwise a client registered for audiences A and B could turn a user's token
+for A into one for B. This holds for every delegate, whether or not it sets
+`subject_token_audiences`.
+
+An empty `audiences` means the client can receive no access tokens. Startup
+accepts it only when `exchange_refresh_tokens` is set and token exchange is the
+client's only grant.
+
+While `exchange_refresh_tokens` is set, startup refuses a
+`subject_token_audiences` entry that one of the client's `audiences` covers.
+Reason: a refresh token issued from a token for `https://api.example.com` must
+not let the client receive access tokens for `https://api.example.com`.
+
+Here "covers" means the server's audience matching rule (path prefix on parsed
+URLs), the function the token endpoint calls (`AudienceMatchingStrategy`). A
+value the matcher cannot parse counts only when it is equal. The rule is
+conservative with `urn:` values: any two `urn:` audiences cover each other,
+because they parse to an empty host and path.
+
+Example: a refresh-token-only broker client. It can receive no access tokens.
+For self-issued subject tokens, it accepts only tokens issued to `tui-client-id`
+or to itself whose `aud` contains `https://api.example.com`. That audience must
+be in the server's `allowed_audiences`. Listing it in `audiences` too would fail
+startup.
+
+```yaml
+delegate_clients:
+  - client_id: token-broker
+    client_secret_env_var: TOKEN_BROKER_CLIENT_SECRET
+    scopes: [openid]
+    audiences: []
+    grant_types: [urn:ietf:params:oauth:grant-type:token-exchange]
+    token_exchange:
+      self_issued_subject_tokens: restricted
+      allowed_source_clients: [tui-client-id]
+      subject_token_audiences: [https://api.example.com]
+      exchange_refresh_tokens:
+        id_jag_max_lifetime: 12h
+```
+
+Example: a plain access-token delegate. For self-issued subject tokens, it
+accepts tokens issued to `chat-ui` or to `coding-agent` itself whose `aud`
+contains `https://api.example.com`. Tokens from an external issuer are decided by
+that issuer's policy. The audience must be in `allowed_audiences`. The client can
+receive only audiences that the subject token already carries.
+
+```yaml
+delegate_clients:
+  - client_id: coding-agent
+    client_secret_env_var: CODING_AGENT_CLIENT_SECRET
+    scopes: [openid]
+    audiences: [https://api.example.com]
+    token_exchange:
+      self_issued_subject_tokens: restricted
+      allowed_source_clients: [chat-ui]
+      subject_token_audiences: [https://api.example.com]
+```
+
+Startup refuses a configuration that breaks any of these rules:
+
+- `subject_token_audiences` has an empty or duplicate entry, or has more than 20
+  entries. An empty list is the same as an omitted field: no requirement.
+- `subject_token_audiences` is set with `self_issued_subject_tokens: any`.
+- A `subject_token_audiences` entry is not one of `allowed_audiences`.
+- `exchange_refresh_tokens` is set without `subject_token_audiences` (an empty
+  list counts as without).
+- `exchange_refresh_tokens` is set without a non-empty `allowed_source_clients`.
+- `exchange_refresh_tokens` is set and a `subject_token_audiences` entry is
+  covered by one of the client's `audiences`.
+- `audiences` is empty without `exchange_refresh_tokens`, or is empty while
+  `grant_types` includes a grant other than token exchange.
+
+Policy edits take effect on restart. The policy is built once at startup and
+is not stored with the client.
+
+A delegate client with `self_issued_subject_tokens: restricted` accepts only
+self-issued tokens issued to itself and to its listed source clients. A
+secret-authenticated delegate client may omit both `grant_types` and the block. A
+client that sets `grant_types`, or uses `private_key_jwt`, must declare the block
+and the mode.
 
 ### Worked example
 
@@ -966,7 +1249,9 @@ Where the two differ is the trust model — the ID-JAG handler is **bound**:
   A public client suffices here because the assertion itself is the primary
   credential: single-use, short-lived, and audience-pinned to this AS. The
   client's registered `grant_types` metadata is deliberately not consulted —
-  with open DCR, self-asserted metadata authorizes nothing.
+  with open DCR, self-asserted metadata authorizes nothing. The exception is an
+  operator-configured client that sets `grant_types` explicitly: those grants
+  are operator policy, so they are enforced.
 - **`jti` is required.** The draft requires it, and it is what makes the
   assertion single-use; there is no assertion-hash fallback like the plain
   handler's. Replay consumption uses its own purpose (`"id-jag"`,
@@ -1088,9 +1373,9 @@ containers.
 **Check order.** Fosite authenticates the client. The handler then checks for a
 public client, the grant type and the required parameters. Next come the
 repeated-value rejection and shape parsing, then the `requested_token_type`,
-subject token, actor, delegation consent, scope and audience checks. Then each
-type's `Grant` hook runs once, with all of that type's entries and the request
-context. After the hooks, the handler still builds the `act` claim and checks
+subject token, actor, source policy (restricted delegate clients), delegation
+consent, scope and audience checks. Then each type's `Grant` hook runs once,
+with all of that type's entries and the request context. After the hooks, the handler still builds the `act` claim and checks
 the subject token's remaining lifetime, and either can fail the request before
 the token is issued. Token issuance comes last, so hooks are decide-only: a hook
 may read state but must not commit it, because the request can still fail after
@@ -1123,9 +1408,9 @@ logged at any level, and the submitted value is never logged.
 conveyed to resource servers yet. Register only types ToolHive itself enforces,
 such as a session-binding type. Conveying details to resource servers is
 tracked in [#6909](https://github.com/stacklok/toolhive/issues/6909), and grant
-storage in [#6895](https://github.com/stacklok/toolhive/issues/6895). Requesting
-a refresh token as the output of token exchange remains unsupported
-(#6896/#6897).
+storage in [#6895](https://github.com/stacklok/toolhive/issues/6895). Refresh
+tokens issued through token exchange use their own entry type and registry; see
+[Refresh tokens through token exchange](#refresh-tokens-through-token-exchange).
 
 **Wiring.** Pass `runner.WithAuthorizationDetailsRegistry` to
 `NewEmbeddedAuthServer` or `NewEmbeddedAuthServerWithStorage`, or set
@@ -1143,9 +1428,346 @@ registry, err := authorizationdetails.New(map[string]authorizationdetails.Type{
 })
 ```
 
+## Refresh tokens through token exchange
+
+A configured confidential client can exchange a user's login access token for
+an opaque refresh token. The token is not redeemable at `grant_type=refresh_token`;
+only token exchange accepts it. What the token may be used for is fixed when it
+is issued. This section describes issuing it from an access token and deriving a
+child token from it. Revoking it is not covered here yet, and issuing an ID-JAG
+from a grant is not implemented yet.
+
+**Enabling.** Set `token_exchange.exchange_refresh_tokens` on the client, with
+`id_jag_max_lifetime` and/or `refresh_token_max_lifetime` (each at most 720h; a
+missing value refuses that kind of token). The client also needs
+`token_exchange.self_issued_subject_tokens: restricted` and
+`token_exchange.subject_token_audiences`. Validation refuses the feature with
+`any`. The client must be confidential and must have the token-exchange grant.
+`allowed_source_clients` must not be empty. Setting the block enables the feature. Each
+kind of grant is issued only when its lifetime cap is set. These settings are
+RunConfig-only for now: no released CRD exposes `token_exchange` or
+`exchangeRefreshTokens`. The storage backend must support
+`storage.ExchangeGrantStorage`; startup fails if a client enables the feature
+and it does not. The memory and Redis backends both support it.
+Startup also refuses the feature when `scopes_supported` contains neither
+`offline_access` nor `offline`: no subject token could carry one, so no grant
+could ever open. An empty `scopes_supported` uses the default scopes, which
+include `offline_access`.
+
+**Request.** `POST /oauth/token` with client authentication and:
+
+| Parameter | Value |
+| --- | --- |
+| `grant_type` | `urn:ietf:params:oauth:grant-type:token-exchange` |
+| `subject_token` | A login access token (see below) |
+| `subject_token_type` | `urn:ietf:params:oauth:token-type:access_token` |
+| `requested_token_type` | `urn:ietf:params:oauth:token-type:refresh_token` |
+| `authorization_details` | `[{"type":"https://toolhive.dev/exchange_grant","issuable_token_types":["<one URN>"],"expires_at":<seconds>}]` |
+
+`issuable_token_types` holds exactly one of the ID-JAG URN
+(`urn:ietf:params:oauth:token-type:id-jag`) or the refresh-token URN. `expires_at`
+is optional, in whole seconds since the epoch. The array must hold exactly one
+entry, and no other member is accepted. `actor_token`, `scope`, `resource` and
+`audience` are refused.
+
+**Subject token.** The checks run in this order. It must be a login access token
+(`checkLoginToken`): self-issued, with no `act`, `external_issuer` or
+no-upstream-session claim, no `#` in `sub`, a `client_id` and a `jti`, and not
+an ID token. Its `aud` must contain one of the client's
+`subject_token_audiences`. Its `client_id` must be one of the client's
+`allowed_source_clients`. This differs from the rule `checkSourcePolicy` applies
+to other exchanges: for a refresh-token request the client's own tokens are not
+accepted, and the list must not be empty. Startup validation rejects
+`exchange_refresh_tokens` without a non-empty `allowed_source_clients`. Tokens
+made by token exchange, the JWT-bearer grant or an ID-JAG are refused.
+
+Last, its scope must contain `offline_access` or `offline`, the server's
+refresh-token scopes. A grant outlives the sign-in session, so opening one needs
+`offline_access` granted at sign-in. This is ToolHive policy modeled on OIDC
+Core section 11, not something the spec requires. The authorization code flow
+uses the same scopes: when neither is granted, it returns the access token
+without a refresh token and reports no error. A refresh token is the only thing
+this path returns, so here the request is refused instead. The server reads the
+scope from the `scope` claim, or from `scp` when `scope` is absent. Matching is
+case-sensitive. This check applies only when a grant is opened.
+
+**Lifetime.** The grant lasts until the requested `expires_at`, but never longer
+than the client's cap for that kind of token. A request above the cap is capped,
+not refused. A missing `expires_at` gets the cap. A past or fractional value, or
+one that is not a number, is refused.
+
+**Response.** `200` with `Cache-Control: no-store` and `Pragma: no-cache`:
+
+```json
+{
+  "access_token": "<the refresh token>",
+  "token_type": "N_A",
+  "issued_token_type": "urn:ietf:params:oauth:token-type:refresh_token",
+  "expires_in": 2591999,
+  "authorization_details": [{"type": "https://toolhive.dev/exchange_grant",
+    "issuable_token_types": ["urn:ietf:params:oauth:token-type:refresh_token"],
+    "expires_at": 1893456000}]
+}
+```
+
+There is no `refresh_token` member. The echoed `expires_at` is the granted value
+and equals the whole second of the response time plus `expires_in`.
+
+The token is stored only in the exchange-grant store, not in fosite's store. The
+server has no revocation or introspection endpoint today. One added later must
+look these tokens up in the exchange-grant store.
+
+**Single use of the subject token.** Each subject token can open one grant. The
+server records the token's issuer and `jti` together with the grant in one
+atomic store call, so a second exchange of the same token, including a
+concurrent one, fails with `token_used`. A request that is refused for any other
+reason does not use up the token. The grant made by the first exchange is not
+revoked when the token is reused. It stays valid until it expires or is revoked.
+Revoking it on reuse is planned in
+[#6973](https://github.com/stacklok/toolhive/issues/6973).
+
+**Recorded subject data.** The grant records the subject token's `sub`, and, when
+present, its `sub_id` claim and its `https://toolhive.dev/upstream_subject` claim
+(`iss`, `claim`, `value`) as JSON. They are copied at creation because the access
+token is gone when the grant is used later, and `upstream_subject` cannot be
+derived from `sub_id`: on some identity providers `sub_id` carries the
+per-application `sub`, while `upstream_subject` carries a tenant-wide object ID.
+A token without either claim still gets a grant with the field empty. The Redis
+record holds the upstream subject in an optional JSON member, so records written
+before it existed load with an empty field.
+
+**Routing.** A token-exchange request whose `requested_token_type` or
+`subject_token_type` is the refresh-token URN is handled by the refresh-token
+handler (`RefreshTokenHandler`); every other token-exchange request is handled by
+the access-token handler. Both use one predicate, `isRefreshTokenExchange`, so a
+request goes to exactly one. A refresh-token `subject_token_type` is a derive
+request (see "Deriving a child token") when `requested_token_type` is also the
+refresh-token URN. With any other `requested_token_type`, or from a client without
+`exchange_refresh_tokens`, it is refused with the unsupported `subject_token_type`
+text in the error table.
+
+**Errors.** Each `error_description` is one of two kinds. The reason-code rows,
+the `authorization_details` rows and the internal-failure row are exact: the
+client gets the text shown. Every other row with text is a hint built with
+fosite's `WithHint`. For those, the client gets fosite's generic description for
+the `error` code, then a space, then the hint. fosite also replaces every double
+quote with a single quote, so the quoted values below show single quotes as the
+client receives them.
+
+| Condition | `error` | `error_description` |
+| --- | --- | --- |
+| Client is public | `invalid_grant` | generic text, then a fixed hint |
+| Client lacks the token-exchange grant | `unauthorized_client` | generic text, then a fixed hint |
+| `subject_token_type` is the refresh-token URN, and the client has no `exchange_refresh_tokens` or `requested_token_type` is not the refresh-token URN | `invalid_request` | generic text, then `The 'subject_token_type' value '<URN>' is not supported. Use '<access token URN>' or '<JWT URN>'.` (unchanged from before) |
+| `requested_token_type` is the refresh-token URN and the client has no `exchange_refresh_tokens` | `invalid_request` | generic text, then the unsupported `requested_token_type` hint (see below) |
+| Missing `subject_token` | `invalid_request` | generic text, then a fixed hint |
+| For an access-token subject: `subject_token_type` is not the access-token URN. For any subject: `actor_token` or `actor_token_type` is present | `invalid_request` | generic text, then a fixed hint |
+| `scope` | `invalid_scope` | generic text, then a fixed hint |
+| `resource` or `audience` | `invalid_target` | generic text, then a fixed hint |
+| `authorization_details` repeated | `invalid_request` | `The authorization_details parameter must not be repeated.` |
+| `authorization_details` absent or a single empty value | `invalid_request` | `The authorization_details parameter is required.` |
+| `authorization_details` is `[]` or not exactly one entry | `invalid_authorization_details` | `single_entry_required` |
+| Not valid JSON, or an entry with no known `type` | `invalid_authorization_details` | `The authorization_details parameter is invalid.` |
+| Unknown member in the entry | `invalid_authorization_details` | `malformed_entry` |
+| `issuable_token_types` not exactly one known URN | `invalid_authorization_details` | `invalid_issuable_token_types` |
+| `expires_at` in the past, fractional, or not a number | `invalid_authorization_details` | `invalid_expires_at` |
+| Kind of token not enabled for the client | `invalid_authorization_details` | `token_type_not_permitted` |
+| Subject token expired, invalid, or not a login token (delegated, external, no upstream session, no `client_id` or `jti`) | `invalid_request` | `subject_token_invalid` |
+| Subject token's `aud` has none of the client's `subject_token_audiences`, or it was issued to a client that is not in `allowed_source_clients` (this includes the exchanging client itself) | `invalid_request` | `subject_token_audience` or `subject_token_source_client` |
+| Subject token's scope has neither `offline_access` nor `offline` | `invalid_request` | `subject_token_offline_access` |
+| Subject token already used | `invalid_request` | `token_used` |
+| Derive: the refresh token fails its HMAC check, is unknown, belongs to another client, is a login refresh token, or has expired | `invalid_request` | `grant_invalid` (one code for all of these cases, on purpose) |
+| Derive: the presented grant or its parent cannot be used, or it does not allow `refresh_token` | `invalid_request` | `revoked`, `parent_revoked` or `not_issuable` |
+| Store failure | `server_error` | generic text, then the hint `The refresh token could not be issued.` |
+| Internal failure while processing `authorization_details` | `server_error` | `The authorization_details could not be processed.` |
+
+Checks run in this order, after the public-client, grant, subject-type and feature
+checks: request parameters, then `authorization_details` presence and parsing,
+then the subject token (validation, then the login-subject checks), then the
+entry content. A request with an expired subject token and a bad entry therefore
+gets the subject-token error.
+
+A subject token that is expired, invalid, or not a login token gets
+`error_description` `subject_token_invalid`. A fresh login access token fixes
+these, so the client can refresh its access token and retry. The precise reason
+(for example a delegated token or a missing `jti`) is only in the server log.
+`subject_token_audience` and `subject_token_source_client` mean a configuration
+fault, not a retry: a new access token will be refused the same way.
+`subject_token_offline_access` is not fixed by a new access token either. A
+refreshed access token keeps its original scopes. The user must sign in again,
+and the source client must request `offline_access` or `offline` at sign-in. A
+source client that is not registered for the scope cannot request it: sign-in
+fails with `invalid_scope`.
+
+This path uses `invalid_request` for an expired subject token and for a disallowed
+source client, as RFC 8693 section 2.2.2 requires. The access-token handler uses
+`invalid_grant` for the same cases. The difference is deliberate.
+
+The reason strings are stable. Reasons that come from the entry are fixed
+strings. Some fixed texts echo a request parameter value, for example the
+unsupported `subject_token_type` and `requested_token_type` texts.
+
+An entry of another `type` is refused earlier, by the parse step, with the
+generic text above, because only the exchange-grant type is registered on this
+path.
+
+**Before and after.** Any `requested_token_type` other than the access-token URN
+now gets a new text on every deployment, whether or not the feature is enabled.
+Before: `The 'requested_token_type' value '<v>' is not supported. This server only
+issues '<access token URN>'.` After: `The 'requested_token_type' value '<v>' is
+not supported for this client. The access token type '<access token URN>' is
+always supported.` Both are hints after the generic `invalid_request` text. The
+code is still `invalid_request`. A request whose
+`subject_token_type` is the refresh-token URN now goes to the refresh-token
+handler. A request with the refresh-token URN as both `subject_token_type` and `requested_token_type`, from a client with
+`exchange_refresh_tokens`, was refused before and is now a derive request (see
+"Deriving a child token"). For every other client or `requested_token_type`, the
+refusal text is unchanged. Check precedence changed for a refresh-token subject
+in one way: the `subject_token_type` refusal now comes before a missing
+`subject_token`. For `requested_token_type` set to the refresh-token URN from a
+client without `exchange_refresh_tokens`, the request is now refused right after
+the public-client and grant checks. The embedder's `authorization_details`
+registry is no longer consulted, and problems with `subject_token`,
+`subject_token_type`, the actor parameters or `authorization_details` are no
+longer reported first.
+
+**Logging.** The server logs "Exchange grant created" and "Exchange grant derived"
+at debug level when it issues a token, and "Exchange grant refused" at warn level
+for refusals after the public-client and grant checks. The public-client and
+missing-grant refusals are not logged this way. Each line carries `client_id`,
+plus `sub`, `source_jti`, `sub_id`, `has_parent`, `issuable_token_type` and
+`expires_at` once they are known, and a stable `reason` on a refusal. The refresh
+token, its signature and the subject token are never logged.
+
+**Accepted limits.** A client can hold one top-level grant per login access
+token `jti`, and any number of children of each grant that allows
+`refresh_token`; there is no other bound on the number of grants. A Redis
+instance that does not persist its data (no AOF) can lose the `jti` markers, which reopens the single-use
+check for tokens that have not yet expired. Revoked JWT access tokens stay valid at
+resource servers until they expire. A grant's `ExpiresAt` is a whole second, so a
+cap under one second would make every request fail with `invalid_expires_at`;
+configuration should not allow it.
+
+If the response is lost after the grant is stored, that login access token's
+`jti` is used up. The client needs a new login access token to try again.
+
+**Other profiles.** The `refresh_token` URN is bound to this feature, and the
+exchange grant is the only profile today. Ordinary refresh tokens could be added in
+two ways: the access-token handler returns a `refresh_token` member (RFC 8693
+section 2.2.1), or a second profile under the same URN is chosen by client
+configuration. Either needs:
+
+- a single-use marker shared with the exchange grant, so one login access token
+  cannot open one grant of each kind;
+- revocation across both stores (there is no revoke or introspect route today);
+- a decision on lifetime: a redeemable token ends with the login, while an
+  exchange grant does not.
+
+### Deriving a child token
+
+A client that holds a grant allowing `refresh_token` can exchange it for a child
+grant that allows one other kind of token. `POST /oauth/token` with client
+authentication and:
+
+| Parameter | Value |
+| --- | --- |
+| `grant_type` | `urn:ietf:params:oauth:grant-type:token-exchange` |
+| `subject_token` | The refresh token to derive from |
+| `subject_token_type` | `urn:ietf:params:oauth:token-type:refresh_token` |
+| `requested_token_type` | `urn:ietf:params:oauth:token-type:refresh_token` |
+| `authorization_details` | One exchange-grant entry, as above |
+
+`actor_token`, `actor_token_type`, `scope`, `resource` and `audience` are
+refused as for an access-token subject. The response has the same shape as for an access token
+subject: `access_token` holds the child token, `issued_token_type` is the
+refresh-token URN, and `authorization_details` echoes the granted entry. The
+child entry lists exactly one kind of token. It is never `refresh_token`, so a
+child cannot be derived from: depth is 1. The child's kind of token must be enabled for the
+client, and its `expires_at` is at most the lesser of the parent's `expires_at`
+and now plus the client's cap for the child's kind of token. A request above
+that is capped. The child copies the parent's client, subject, `sub_id` and
+`upstream_subject`. It has no subject-token `jti`, so it has no single-use marker.
+
+**Check order.** The server runs these checks in this order and stops at the
+first that fails:
+
+1. The request parameters are valid (`subject_token` present, no `actor_token`,
+   `scope`, `resource` or `audience`), then `authorization_details` is present
+   and parses, as for an access-token subject. These checks say nothing about
+   the presented token, so a forged token with no `authorization_details` gets
+   `invalid_request` with "The authorization_details parameter is required.",
+   not `grant_invalid`.
+2. The token passes the HMAC check. This needs no store, so a forged token
+   causes no lookup.
+3. The grant is read by the token's signature.
+4. The grant belongs to the presenting client. If the grant is missing or
+   belongs to another client, the request fails with the same error as step 2.
+5. The grant has not expired and is not revoked (`revoked`). An expired grant
+   gets `grant_invalid` whether or not it is revoked (see below).
+6. If the grant has a parent, the parent exists and is live. A parent that is
+   missing, revoked or expired gives `parent_revoked`. An expired parent always
+   means the child has expired too, because a child's `expires_at` is never later
+   than its parent's. So the child fails at step 3 or 4 with `grant_invalid`.
+7. The grant allows `refresh_token`, else `not_issuable`. A child fails here.
+8. The child entry passes the rules above.
+
+Nothing about the token is revealed until step 4 has passed. A forged token, an
+unknown token, another client's token, a login refresh token and an expired grant
+all get one error:
+`invalid_request` with the `error_description` `grant_invalid`. This is one code
+for all of these cases on purpose, so a caller learns nothing about which one
+applied. From step 5 on, the reasons are exact `error_description` values with
+`invalid_request`:
+
+| Condition | `error_description` |
+| --- | --- |
+| Presented grant is revoked | `revoked` |
+| Parent of the presented grant is revoked, expired or gone | `parent_revoked` |
+| Presented grant does not allow `refresh_token` (this includes a child) | `not_issuable` |
+
+A child entry fails with `invalid_authorization_details` and one of these
+reasons: `token_type_not_permitted` (the child lists `refresh_token`, or its
+kind of token is not enabled for the client) or `invalid_expires_at`. A store
+failure is `server_error`.
+
+Both stores report a grant past its `ExpiresAt` as not found, before the
+liveness check runs. So an expired grant gets the same `grant_invalid` error as
+an unknown token on both backends. A child never outlives its parent, since its
+`expires_at` is capped to the parent's, so a child whose parent has expired has
+expired too and gets `grant_invalid` as well. A presented grant with no whole second
+left is refused the same way, because `expires_at` is whole seconds. The server log says
+`not_found_or_other_client` for these. The legitimate client knows the expiry
+from the `expires_at` in the response that issued the grant, so a separate reason
+would tell it nothing. The handler checks expiry before revocation, so an expired
+grant gets `grant_invalid` whether or not it was revoked, and `revoked` is
+reported only while the grant has not expired.
+
+A derive needs the client's current policy to allow `refresh_token`, so removing
+`refresh_token_max_lifetime` from a client's configuration stops deriving from
+parents the client already holds. The derive gate refuses such a request with
+`unsupported_token_type` (`invalid_request`, "The 'subject_token_type' value ...
+is not supported"), before the parent is looked up. The child's cap comes from
+its own type's key, so removing `id_jag_max_lifetime` makes derives of ID-JAG
+children fail with `token_type_not_permitted`.
+
+A parent can be derived from many times; each call creates an independent child.
+If the response is lost, the child stays until its parent ends (revoked or
+expired). This is accepted. Today the derive path checks the parent on every
+use. The ID-JAG issuance path is not built yet, and it must check the parent's
+liveness too, because a child is usable only while its parent is live.
+
+**Logging.** A derive logs "Exchange grant derived" at debug level with
+`has_parent=true`. Every refusal after the public-client and grant checks is
+logged as "Exchange grant refused", including a failed HMAC check
+(`token_invalid`) and request-parameter refusals. The log reason for the
+`grant_invalid` error (`not_found_or_other_client` or `token_invalid`) is
+internal and is never sent to the client.
+
 ## Implementation
 
-- `pkg/authserver/server/tokenexchange/handler.go` — `checkDelegationConsent`, `grantScopes`, `grantAndBoundAudiences`
+- `pkg/authserver/server/tokenexchange/handler.go` — `checkSourcePolicy`, `ConfiguredClientPolicy`, `checkDelegationConsent`, `grantScopes`, `grantAndBoundAudiences`, `externalOrigin`
+- `pkg/authserver/server/tokenexchange/refresh_token_handler.go` — `RefreshTokenHandler`, `isRefreshTokenExchange`, `checkLoginToken`, `checkExchangeGrantSubject`
+- `pkg/authserver/server/tokenexchange/exchange_grant.go` — the exchange-grant entry type and its validation
 - `pkg/authserver/server/tokenexchange/multi_issuer_validator.go` — `MultiIssuerTokenValidator`, `TrustedIssuer`, `resolveActorAuthorization`, `ValidateJWKSURL`
 - `pkg/authserver/server/tokenexchange/validator.go` — `assignClaim`, `buildValidatedClaims`, `validateMayActShape`, `scpToScopeString`
 - `pkg/authserver/config.go` — `DelegateClientRunConfig`, delegate-client validation, `validateTrustedIssuerURL`, `validateJWKSEndpointURL`, `validateTrustedIssuers`, `warnTrustedIssuerAudiences`

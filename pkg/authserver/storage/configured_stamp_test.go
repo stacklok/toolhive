@@ -9,11 +9,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-jose/go-jose/v3"
+	"github.com/go-jose/go-jose/v4"
 	"github.com/ory/fosite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/stacklok/toolhive/pkg/authserver/internal/fositejose"
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
@@ -139,9 +140,9 @@ func TestConfiguredStamp_OIDCClientKeepsJWKS(t *testing.T) {
 		},
 		TokenEndpointAuthMethod:           oauthproto.TokenEndpointAuthMethodPrivateKeyJWT,
 		TokenEndpointAuthSigningAlgorithm: "RS256",
-		JSONWebKeys: &jose.JSONWebKeySet{Keys: []jose.JSONWebKey{{
+		JSONWebKeys: fositejose.ToFositeKeySet(&jose.JSONWebKeySet{Keys: []jose.JSONWebKey{{
 			Key: &privateKey.PublicKey, KeyID: "client-key", Algorithm: "RS256", Use: "sig",
-		}}},
+		}}}),
 	}
 
 	for _, backend := range configuredClientBackends() {

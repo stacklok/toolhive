@@ -274,9 +274,11 @@ func TestTokenExchangeHandler_HandleTokenEndpointRequest(t *testing.T) {
 				t.Helper()
 				token := tj.signToken(t, validClaims(), validExtraClaims())
 				return url.Values{
-					"grant_type":         {oauthproto.GrantTypeTokenExchange},
-					"subject_token":      {token},
-					"subject_token_type": {"urn:ietf:params:oauth:token-type:refresh_token"},
+					"grant_type":    {oauthproto.GrantTypeTokenExchange},
+					"subject_token": {token},
+					// A refresh-token subject belongs to RefreshTokenHandler now, so this
+					// case uses another type the access-token handler does not accept.
+					"subject_token_type": {"urn:ietf:params:oauth:token-type:id_token"},
 				}
 			},
 			lifespan:     15 * time.Minute,
@@ -893,7 +895,7 @@ func TestTokenExchangeHandler_HandleTokenEndpointRequest(t *testing.T) {
 			},
 			lifespan:     15 * time.Minute,
 			wantErr:      true,
-			hintContains: "not a registered audience",
+			hintContains: "not permitted to request resource",
 		},
 		{
 			name:   "multiple resource parameters rejected",

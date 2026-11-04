@@ -5,6 +5,7 @@ package tokenexchange
 
 import (
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/ory/fosite"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/authserver/authorizationdetails"
 	"github.com/stacklok/toolhive/pkg/authserver/server"
+	"github.com/stacklok/toolhive/pkg/authserver/storage"
 )
 
 // NewSharedTrustedIssuerValidator builds the single MultiIssuerTokenValidator
@@ -44,8 +46,23 @@ func NewSharedTrustedIssuerValidator(
 // FactoryOption configures a token-exchange Handler factory.
 type FactoryOption func(*factoryOptions)
 
+// factoryOptions is shared by Factory and RefreshTokenFactory. Each factory
+// reads the options it needs and ignores the rest, so passing the same option
+// list to both is fine. That also means an option meant for the other factory
+// (for example WithAuthorizationDetailsRegistry on RefreshTokenFactory) is
+// ignored without an error; give each factory its own option type when a second
+// profile lands.
 type factoryOptions struct {
 	authorizationDetailsRegistry *authorizationdetails.Registry
+	exchangeGrantStore           storage.ExchangeGrantStorage
+}
+
+// WithExchangeGrantStorage gives RefreshTokenFactory the store that holds the
+// grants behind issued refresh tokens. It may be nil when no client enables
+// exchange_refresh_tokens; the handler then refuses every request for a refresh
+// token before it needs the store.
+func WithExchangeGrantStorage(store storage.ExchangeGrantStorage) FactoryOption {
+	return func(o *factoryOptions) { o.exchangeGrantStore = store }
 }
 
 // WithAuthorizationDetailsRegistry configures the factory to pass the registry
@@ -56,6 +73,9 @@ func WithAuthorizationDetailsRegistry(registry *authorizationdetails.Registry) F
 }
 
 // Factory returns a server.Factory that creates a token exchange Handler.
+// RefreshTokenFactory must be registered alongside it: Handler does not claim
+// requests that involve the refresh-token type, and without that handler they
+// would be unhandled.
 // The delegationLifespan parameter sets the maximum lifetime for delegated tokens;
 // the actual lifetime is the minimum of this value and the subject token's remaining lifetime.
 // Returns an error if delegationLifespan is not in (0, server.MaxAccessTokenLifespan]: a zero
@@ -80,12 +100,18 @@ func WithAuthorizationDetailsRegistry(registry *authorizationdetails.Registry) F
 // set is read once at process construction, so removing a client from
 // config revokes its trust on the next restart rather than requiring any
 // explicit revocation step against storage.
+//
+// clientPolicies holds the source policy of the configured delegate clients
+// whose self_issued_subject_tokens is restricted, keyed by client ID. A
+// configured client without an entry keeps blanket trust of self-issued
+// subject tokens. It is read-only after construction.
 func Factory(
 	delegationLifespan time.Duration, trustedIssuers []TrustedIssuer, configuredDelegateClients []string,
+	clientPolicies map[string]ConfiguredClientPolicy,
 	options ...FactoryOption,
 ) (server.Factory, error) {
 	return FactoryWithSharedTrustedIssuerValidator(
-		delegationLifespan, trustedIssuers, configuredDelegateClients, nil, options...)
+		delegationLifespan, trustedIssuers, configuredDelegateClients, clientPolicies, nil, options...)
 }
 
 // FactoryWithSharedTrustedIssuerValidator is Factory with a shared
@@ -98,7 +124,7 @@ func Factory(
 // 7523 JWT-bearer grants.
 func FactoryWithSharedTrustedIssuerValidator(
 	delegationLifespan time.Duration, trustedIssuers []TrustedIssuer, configuredDelegateClients []string,
-	shared *MultiIssuerTokenValidator, options ...FactoryOption,
+	clientPolicies map[string]ConfiguredClientPolicy, shared *MultiIssuerTokenValidator, options ...FactoryOption,
 ) (server.Factory, error) {
 	if delegationLifespan <= 0 || delegationLifespan > server.MaxAccessTokenLifespan {
 		return nil, fmt.Errorf("tokenexchange: delegationLifespan must be between %v and %v, got %v",
@@ -107,6 +133,11 @@ func FactoryWithSharedTrustedIssuerValidator(
 	for _, id := range configuredDelegateClients {
 		if id == "" {
 			return nil, fmt.Errorf("tokenexchange: configuredDelegateClients must not contain an empty client ID")
+		}
+	}
+	for id := range clientPolicies {
+		if !slices.Contains(configuredDelegateClients, id) {
+			return nil, fmt.Errorf("tokenexchange: clientPolicies names %q, which is not a configured delegate client", id)
 		}
 	}
 	// A trusted-issuer validator owns per-issuer JWKS refresh worker pools that
@@ -163,6 +194,7 @@ func FactoryWithSharedTrustedIssuerValidator(
 			config:                       config.Config,
 			allowedAudiences:             config.AllowedAudiences,
 			configuredDelegateClients:    configuredDelegateClients,
+			clientPolicies:               clientPolicies,
 			authorizationDetailsRegistry: resolved.authorizationDetailsRegistry,
 		}, nil
 	}, nil

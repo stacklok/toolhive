@@ -227,6 +227,12 @@ func (r *MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1beta1.MCPServ
 		}
 	}
 
+	if err := ctrlutil.ValidateEmbeddedAuthServerTLSListenerPort(
+		ctx, r.Client, m.Namespace, m.Spec.ExternalAuthConfigRef, m.Spec.AuthServerRef, m.GetProxyPort(),
+	); err != nil {
+		return nil, err
+	}
+
 	// Add external auth configuration if specified (updated call)
 	// Will fail if embedded auth server is used without OIDC config or resourceUrl
 	if err := ctrlutil.AddExternalAuthConfigOptions(

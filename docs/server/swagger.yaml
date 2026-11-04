@@ -217,7 +217,9 @@ components:
             for upstreams whose token endpoint answers invalid_grant for any
             client_id; an HTML page or a bare gateway status is not a verdict. A
             false rejection re-registers at every start and, when registration also
-            fails, fails startup. "none" skips the check; the registration is then
+            fails, fails startup. "none" skips the check: the upstream is not
+            contacted, but a registration made with another method than a configured
+            TokenEndpointAuthMethod is still replaced. Otherwise the registration is
             retired only through RotationKey.
           type: string
         registration_probe_interval:
@@ -261,14 +263,37 @@ components:
             server trusts.
           type: string
       type: object
+    authserver.DelegateClientExchangeRefreshTokens:
+      description: |-
+        ExchangeRefreshTokens enables refresh-token issuance through token
+        exchange for this client. Presence of the block enables it; a nil block
+        refuses both grant kinds. Valid only with restricted, and requires
+        SubjectTokenAudiences and offline_access or offline in scopes_supported.
+      properties:
+        id_jag_max_lifetime:
+          description: |-
+            IDJAGMaxLifetime caps the lifetime of grants that can be exchanged for
+            ID-JAGs. Empty refuses those grants.
+          type: string
+        refresh_token_max_lifetime:
+          description: |-
+            RefreshTokenMaxLifetime caps the lifetime of grants that can be exchanged
+            for child refresh tokens. Empty refuses those grants. Deriving a child also
+            needs id_jag_max_lifetime, because a child allows ID-JAGs and is capped by
+            that value; without it every derive is refused with token_type_not_permitted.
+          type: string
+      type: object
     authserver.DelegateClientRunConfig:
       properties:
         audiences:
           description: |-
-            Audiences are the RFC 8707 resource values this client may request a
-            token for. Required, and must be a subset of RunConfig.AllowedAudiences:
-            a declared client must not receive every allowed audience just because
-            this was left empty.
+            Audiences are output only: the upper bound on the audiences of the
+            access tokens this client can obtain through any grant. They must be a
+            subset of RunConfig.AllowedAudiences: a declared client must not receive
+            every allowed audience just because this was left empty. Required, unless
+            token_exchange.exchange_refresh_tokens is set and token exchange is the
+            client's only grant (grant_types omitted, or just the token-exchange
+            grant), in which case it may be empty.
           items:
             type: string
           type: array
@@ -291,10 +316,14 @@ components:
           type: string
         grant_types:
           description: |-
-            GrantTypes are the grants this client may use. If omitted or empty, it
-            is [urn:ietf:params:oauth:grant-type:token-exchange]. When set, it must
-            include token exchange. Allowed values are authorization_code,
-            refresh_token, the token-exchange grant and the jwt-bearer grant.
+            GrantTypes are the grants this client may use. If omitted or empty, the
+            client is stored with [urn:ietf:params:oauth:grant-type:token-exchange]
+            and its ID-JAG redemption (a JWT-bearer assertion of typ
+            oauth-id-jag+jwt) is not gated, for backward compatibility. When set, the
+            list is complete: it must include token exchange, and it must include the
+            jwt-bearer grant to keep ID-JAG redemption. Allowed values are
+            authorization_code, refresh_token, the token-exchange grant and the
+            jwt-bearer grant.
           items:
             type: string
           type: array
@@ -332,8 +361,66 @@ components:
         token_endpoint_auth_signing_alg:
           description: |-
             TokenEndpointAuthSigningAlg is the private_key_jwt signing algorithm.
-            Defaults to RS256.
+            If omitted, it is derived from the keys: each key's alg, or ES256, ES384
+            or ES512 from an EC key's curve. RSA keys without alg use RS256. Keys
+            that disagree must set it.
           type: string
+        token_exchange:
+          $ref: '#/components/schemas/authserver.DelegateClientTokenExchange'
+      type: object
+    authserver.DelegateClientTokenExchange:
+      description: |-
+        TokenExchange is the client's token-exchange policy. Its
+        SelfIssuedSubjectTokens field selects which self-issued subject tokens
+        the client may exchange and is required whenever the block is present.
+        The block may be omitted only by a secret-authenticated client whose
+        GrantTypes is omitted or empty; such a client keeps the legacy rule (any)
+        and may exchange any self-issued token. A client that sets GrantTypes or
+        uses private_key_jwt must declare the block.
+      properties:
+        allowed_source_clients:
+          description: |-
+            AllowedSourceClients are client_id values, as they appear in the subject
+            token's client_id claim, whose self-issued tokens this client may
+            exchange in addition to its own. They must be user-facing clients that
+            register at runtime (DCR or CIMD), so startup cannot check that they
+            exist. A configured delegate client cannot be listed: its tokens carry
+            its own client_id, so listing it would trust everything it accepts.
+            Valid only with restricted. On plain token exchange, empty means the
+            client's own tokens only. The exchange-grant path (exchange_refresh_tokens)
+            accepts only the listed source clients, never the client's own tokens, so
+            the list must be non-empty there.
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+        exchange_refresh_tokens:
+          $ref: '#/components/schemas/authserver.DelegateClientExchangeRefreshTokens'
+        self_issued_subject_tokens:
+          description: |-
+            SelfIssuedSubjectTokens is any or restricted, and is required. With
+            restricted, a self-issued subject token must carry the client's own
+            client_id or one of AllowedSourceClients, and a may_act claim naming
+            this client does not lift that restriction. With any, the client may
+            exchange any self-issued token.
+          type: string
+        subject_token_audiences:
+          description: |-
+            SubjectTokenAudiences are the audiences a self-issued subject token must
+            carry, matched exactly: the token must contain at least one of them. The
+            check applies on every exchange path, including the client's own tokens.
+            Listing a value grants nothing: the client can receive that audience only
+            if its audiences also cover it, and startup refuses that while
+            exchange_refresh_tokens is set. Each entry must be one of the server's
+            allowed_audiences. Valid only with restricted, and required with
+            exchange_refresh_tokens. An empty list is the same as an omitted one:
+            no requirement.
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+      required:
+      - self_issued_subject_tokens
       type: object
     authserver.IdentityFromTokenRunConfig:
       description: |-
@@ -501,6 +588,11 @@ components:
             client_secret_post-shaped default). Set this to client_secret_basic explicitly
             for providers that require HTTP Basic auth. Public clients without a secret use
             the "none" method.
+            With DCRConfig, it is the method the client registers with, in place of the one
+            ToolHive picks from the upstream's advertised methods (client_secret_basic, then
+            client_secret_post, then none). Set it for an upstream whose token endpoint does
+            not accept the method ToolHive picks. A cached registration made with another
+            method is replaced with a new one at the next start.
           type: string
         token_response_mapping:
           $ref: '#/components/schemas/authserver.TokenResponseMappingRunConfig'

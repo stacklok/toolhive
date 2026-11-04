@@ -401,36 +401,40 @@ mid-call forwarding section below for the Legacy behaviour this contrasts with.
 ### Limitation: elicitation and sampling are unavailable to Modern clients
 
 The client edge mirrors the backend edge. The Modern dispatcher
-(`pkg/vmcp/server`'s `dispatchModern`) is single-shot: every result it builds is
-`resultType: "complete"`, and it never emits `"input_required"` — MRTR
-(SEP-2322) is unimplemented on this edge too. When a backend tool issues a
+(`pkg/vmcp/server`'s `dispatchModern`) is single-shot and keeps no state
+between rounds. It emits `resultType: "input_required"` for exactly one
+producer, the in-process URL elicitation answer (see
+[Answering a call with a URL elicitation](#answering-a-call-with-a-url-elicitation)).
+It does not relay a backend's mid-call requests as `input_required`: that
+relay is MRTR (SEP-2322) slices 2 and 3 in
+[16-vmcp-mrtr.md](16-vmcp-mrtr.md). When a backend tool issues a
 mid-call server-initiated request during a **Modern** client's `tools/call`,
 there is no client session to forward it to, so the call fails with an explicit
 error naming the refused request (pinned by
 `TestIntegration_Modern_RealBackend_ElicitingToolFailsCleanly`). This is a
 deliberate honest-unsupported error, not a gap left by accident:
 
-**The `-32603` is a documented deviation, not the spec's answer — and the
-spec's answer is unshippable today.** For a client that did NOT declare the
-needed capability in its per-request `clientCapabilities`, SEP-2575 MUSTs a
-`-32021` `MissingRequiredClientCapabilityError` at **HTTP 400**, with
-explicitly execution-time language ("if processing a request requires a
-capability…") — go-sdk's own doc comment on the error type tells handlers to
-return it mid-execution, so the mid-call timing is not the problem. The
-problem is the transport: go-sdk's streamable client treats any non-transient
-4xx (its transient set is only 500/502/503/504/429) as a **connection**
-failure — `checkResponse` → `fail()` → a one-shot, permanent session death —
-so a conformant 400 would tear down the entire client session to punish one
-call. And for a client that DID declare the capability, the 2026-07-28
-vocabulary has no conformant code at all: no "operation not supported", MRTR
-is not a server-advertised capability, and SEP-2322 has no decline mechanism.
-**#6061 (merged) implements exactly that two-path contract** in
+**The declared case's `-32603` is a documented spec gap; the undeclared case
+gets the spec's answer.** For a client that did NOT declare the needed
+capability in its per-request `clientCapabilities`, SEP-2575 MUSTs a `-32021`
+`MissingRequiredClientCapabilityError` at **HTTP 400**, with explicitly
+execution-time language ("if processing a request requires a capability…") —
+go-sdk's own doc comment on the error type tells handlers to return it
+mid-execution, so the mid-call timing is not a problem. go-sdk's streamable
+client from v1.7.0 on decodes the JSON-RPC body of a non-2xx response and
+wraps it in `jsonrpc2.ErrRejected`, so a 400 fails the one call and the
+session survives (go-sdk#1117, fixed upstream). Older go-sdk clients treat a
+non-transient 4xx as a connection failure and close the session. For a client
+that DID declare the capability, the 2026-07-28 vocabulary has no conformant
+code at all: no "operation not supported", MRTR is not a server-advertised
+capability, and SEP-2322 has no decline mechanism. **#6061 (merged)
+implements that two-path contract** in
 `writeModernCallFailure`/`writeModernMissingCapability` (`pkg/vmcp/server`):
-`-32021` with `data.requiredCapabilities` and a message naming both the
-capability and the gateway limitation, served at **HTTP 200** for the
-undeclared case — deviating from the mandated 400 for exactly the reason
-above (tracked upstream as go-sdk#1117) — and an explicit `-32603` naming
-SEP-2322 for the declared case, as a documented spec gap. The MRTR design
+`-32021` at **HTTP 400** with `data.requiredCapabilities` and a message naming
+both the capability and the gateway limitation for the undeclared case
+(written by `writeModernMissingCapabilityError`, which the URL elicitation
+fallback shares), and an explicit `-32603` naming SEP-2322 for the declared
+case, as a documented spec gap. The MRTR design
 ([16-vmcp-mrtr.md](16-vmcp-mrtr.md)) supersedes this contract slice by slice
 where the backend is Modern; it is permanent for the Modern-client ↔ Legacy-
 backend cell.
@@ -495,6 +499,78 @@ POST-initiated SSE response stream (SEP-2260 requires messages on that stream
 to relate to the originating request; `progressToken` is unchanged), which the
 single-shot dispatcher does not produce today — a vMCP streaming-dispatch gap,
 not a spec absence.
+
+### Answering a call with a URL elicitation
+
+An embedder can answer a `tools/call` with an MCP URL-mode elicitation: "send
+the user to this URL, then retry". The use case is per-backend credentials.
+When one backend's credential is dead, the embedder points the user at a
+connect page for that one backend instead of answering HTTP 401, which would
+send the client through sign-in for every provider.
+
+The **URL elicitation answer** is `vmcp.URLElicitationRequiredError`, built
+with `vmcp.NewURLElicitation` and `vmcp.NewURLElicitationRequiredError`, which
+validate every field (an `https` URL, or `http` on a loopback host; no
+userinfo; a non-empty message and elicitation ID; unique IDs). A `VMCP` or
+`BackendClient` decorator returns it from `CallTool`; the `VMCP` contract lets
+a decorator refuse a call, and this is a refusal. vMCP decides the rendering
+at the render seam from the negotiated protocol and the request's declared
+capabilities. Callers get no capability query (vmcp-anti-patterns #1 and #8).
+
+| Client | Declared | Rendered |
+|---|---|---|
+| Modern (2026-07-28) | `elicitation.url` | `resultType: "input_required"` at HTTP 200, `inputRequests` keyed by elicitation ID, each `{method: "elicitation/create", params: {mode: "url", message, url}}`. No `requestState`, no `elicitationId` in params |
+| Modern | `elicitation.url`, on a retry whose `inputResponses` decline or cancel one of the answer's elicitations | Complete `isError` tool result at HTTP 200 whose text is the elicitation message. No URL |
+| Modern | `elicitation: {}`, only `form`, or no elicitation | `-32021` at HTTP 400, `data.requiredCapabilities: {elicitation: {url: {}}}`, a message carrying the elicitation message and telling the client to declare `elicitation.url` and retry. No URL |
+| Legacy (2025-11-25) | any | `isError` tool result whose text is the elicitation message, through a direct `tools/call` and through the optimizer's `call_tool`. No URL |
+
+The renderers are `writeModernToolCallFailure` (`pkg/vmcp/server`; its writers
+`writeModernInputRequired` and `writeModernURLElicitationUnsupported`) and
+`conversion.ErrorToToolResult` for Legacy. Each has the same precedence: an
+authorization denial outranks the answer, so an error carrying both renders
+as the denial: the 403 on Modern, the denial `isError` result on Legacy.
+
+Properties worth knowing:
+
+- **No vMCP state.** The retry is an ordinary `tools/call` carrying the
+  client's `inputResponses`, served by any replica. The decorator decides
+  again whether to answer; vMCP does not pass `inputResponses` to it yet
+  (#6059 slice 2).
+- **Decline and cancel end the loop.** When the decorator answers the retry
+  again and the retry's `inputResponses` decline or cancel one of the
+  answer's elicitation IDs, vMCP returns the `isError` result above instead
+  of asking again, as the spec requires servers to handle decline and cancel.
+  An accept that the decorator answers again asks again, bounded by the
+  client's retry budget (go-sdk stops at 10 rounds).
+- **The URL reaches only a client that declared URL mode.** Every fallback
+  carries the elicitation messages and never the URL, so a model cannot
+  follow a link and skip the user consent step URL mode exists for. All of
+  them use the same text, `URLElicitationRequiredError.Message()` (the
+  messages joined by `"; "`). `Error()` never includes the URL either,
+  so composite workflows and code-mode scripts, which flatten step errors
+  into `isError` results, and log lines that stringify the error do not leak it.
+- **Only in-process code produces the answer.** Backend errors never decode
+  into it. A Legacy backend's `-32042` stays a generic backend tool error,
+  and a Modern backend's `input_required` round stays a
+  `vmcp.InputRequiredError` that renders as `-32603`. Whether the future
+  backend relay passes URL mode through is #6059's call.
+- **Scope.** `tools/call` only; on `resources/read` and `prompts/get` the
+  answer renders as the generic `-32603`. Legacy sessions never get
+  `-32042`, which needs the session's declared capabilities (#7023).
+  `notifications/elicitation/complete` is not sent.
+- **Audit outcome.** An `input_required` answer is an HTTP 200 JSON-RPC
+  result, so the audit log records it with outcome `success`. So do the
+  Legacy fallback and the Modern decline result, which are `isError` tool
+  results inside a successful response. The undeclared `-32021` fallback is
+  HTTP 400 and records as `failure`. To count "needs the user to visit a URL"
+  separately, count answers in the decorator that returns them.
+- **Audit response data.** With `includeResponseData` on, the audit log
+  stores the whole response body, so an `input_required` answer's URL
+  (`inputRequests.*.params.url`) lands in vMCP's own audit log. The URL must
+  not be sensitive for that reason too.
+
+Embedder obligations for the connect page are in
+[vmcp-library.md](vmcp-library.md#answering-a-call-with-a-url-elicitation).
 
 ## Served MCP Capabilities
 

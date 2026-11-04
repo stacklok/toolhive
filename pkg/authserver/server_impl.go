@@ -11,9 +11,9 @@ import (
 	"log/slog"
 	"net/http"
 	"reflect"
+	"slices"
 	"time"
 
-	josev3 "github.com/go-jose/go-jose/v3"
 	"github.com/ory/fosite"
 	"github.com/ory/fosite/compose"
 	"github.com/spiffe/go-spiffe/v2/bundle/jwtbundle"
@@ -21,6 +21,7 @@ import (
 	"golang.org/x/time/rate"
 
 	"github.com/stacklok/toolhive/pkg/authserver/internal/consentpolicy"
+	"github.com/stacklok/toolhive/pkg/authserver/internal/fositejose"
 	oauthserver "github.com/stacklok/toolhive/pkg/authserver/server"
 	"github.com/stacklok/toolhive/pkg/authserver/server/deviceflow"
 	"github.com/stacklok/toolhive/pkg/authserver/server/handlers"
@@ -30,6 +31,8 @@ import (
 	spiffeauth "github.com/stacklok/toolhive/pkg/authserver/spiffe"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
+	"github.com/stacklok/toolhive/pkg/bodylimit/httplimit"
+	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
 // server is the internal implementation of the Server interface.
@@ -219,9 +222,11 @@ func authorizationServerParams(
 		AllowConfidentialClientRegistration:       cfg.AllowConfidentialClientRegistration,
 		AllowPrivateKeyJWTRegistration:            cfg.AllowPrivateKeyJWTRegistration,
 		HasStaticDelegateClients:                  len(cfg.DelegateClients) > 0,
+		HasStaticSecretClients:                    hasSecretDelegateClient(cfg.DelegateClients),
 		InsecureAllowHTTP:                         cfg.InsecureAllowHTTP,
 		InsecureAllowConfidentialOverLoopbackHTTP: cfg.InsecureAllowConfidentialOverLoopbackHTTP,
 		ForceConfidentialRedirectURIs:             cfg.ForceConfidentialRedirectURIs,
+		HasStaticPrivateKeyJWTClients:             hasPrivateKeyJWTDelegateClient(cfg.DelegateClients),
 		DisableTokenExchange:                      cfg.DisableTokenExchange,
 		JWTBearerGrantEnabled:                     JWTBearerGrantEnabled(cfg.TrustedIssuers),
 		DeviceFlowEnabled:                         cfg.DeviceFlowEnabled,
@@ -323,8 +328,8 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage) (_ *server
 		return nil, fmt.Errorf("failed to create handler: %w", err)
 	}
 
-	// Create HTTP handler serving all endpoints
-	router := handlerInstance.Routes()
+	// Cap every endpoint for direct embedders as well as runner-hosted servers.
+	router := handlerInstance.Routes(httplimit.Middleware(handlers.MaxDCRBodySize))
 
 	slog.Debug("oauth authorization server initialized",
 		"issuer", cfg.Issuer,
@@ -344,9 +349,12 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage) (_ *server
 	}, nil
 }
 
-// prepareServerStorageAndRegisterClients decorates storage, validates configured
-// consent-exempt clients against the prepared registration view, and registers
-// delegate clients before returning the storage handles used by server construction.
+// prepareServerStorageAndRegisterClients decorates storage, builds the delegate
+// clients, validates configured consent-exempt clients, and then registers the
+// delegate clients, before returning the storage handles used by server
+// construction. A configured login client is checked as built, so it need not
+// be stored yet, and a bad consent-exempt ID aborts startup before any
+// delegate row is written to shared storage.
 func prepareServerStorageAndRegisterClients(
 	ctx context.Context, cfg Config, stor storage.Storage,
 ) (prepared storage.Storage, dcrStore storage.DCRCredentialStore,
@@ -385,12 +393,17 @@ func prepareServerStorageAndRegisterClients(
 	if retErr != nil {
 		return nil, nil, nil, nil, retErr
 	}
-	if retErr = validateConsentExemptClients(ctx, prepared, cfg.ConsentExemptClientIDs); retErr != nil {
+	delegates, err := buildDelegateClients(cfg.DelegateClients)
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+	if retErr = validateConsentExemptClients(ctx, prepared, delegates, cfg.ConsentExemptClientIDs); retErr != nil {
 		return nil, nil, nil, nil, retErr
 	}
-	if retErr = registerDelegateClients(ctx, prepared, cfg.DelegateClients); retErr != nil {
+	if retErr = registerDelegateClients(ctx, prepared, delegates); retErr != nil {
 		return nil, nil, nil, nil, retErr
 	}
+	warnBlanketSelfIssuedExchange(cfg.DelegateClients, JWTBearerGrantEnabled(cfg.TrustedIssuers))
 	return prepared, dcrStore, bundleSource, spiffeRegistry, nil
 }
 
@@ -399,6 +412,19 @@ func delegateClientIDs(delegateClients []DelegateClient) []string {
 	ids := make([]string, len(delegateClients))
 	for i, c := range delegateClients {
 		ids[i] = c.ClientID
+	}
+	return ids
+}
+
+// explicitGrantClientIDs lists the IDs of delegate clients that set
+// grant_types explicitly. The ID-JAG handler gates these clients on the
+// jwt-bearer grant.
+func explicitGrantClientIDs(clients []DelegateClient) []string {
+	var ids []string
+	for _, c := range clients {
+		if len(c.GrantTypes) > 0 {
+			ids = append(ids, c.ClientID)
+		}
 	}
 	return ids
 }
@@ -416,11 +442,40 @@ func newClientAdmissionStorage(cfg Config, stor storage.Storage) (storage.Storag
 	return admission, nil
 }
 
-func validateConsentExemptClients(ctx context.Context, stor storage.Storage, clientIDs []string) error {
+// hasSecretDelegateClient reports whether any delegate client authenticates
+// with a client secret, which is every method other than private_key_jwt.
+func hasSecretDelegateClient(clients []DelegateClient) bool {
+	return slices.ContainsFunc(clients, func(c DelegateClient) bool {
+		return c.TokenEndpointAuthMethod != oauthproto.TokenEndpointAuthMethodPrivateKeyJWT
+	})
+}
+
+// hasPrivateKeyJWTDelegateClient reports whether any delegate client
+// authenticates with private_key_jwt.
+func hasPrivateKeyJWTDelegateClient(clients []DelegateClient) bool {
+	return slices.ContainsFunc(clients, func(c DelegateClient) bool {
+		return c.TokenEndpointAuthMethod == oauthproto.TokenEndpointAuthMethodPrivateKeyJWT
+	})
+}
+
+// validateConsentExemptClients checks that every consent-exempt ID names a
+// client that can be preauthorized. A configured delegate client is checked as
+// built, before it is written, so a bad ID aborts startup without leaving new
+// delegate rows in shared storage; any other ID is read from stor.
+func validateConsentExemptClients(
+	ctx context.Context, stor storage.Storage, delegates []fosite.Client, clientIDs []string,
+) error {
+	byID := make(map[string]fosite.Client, len(delegates))
+	for _, delegate := range delegates {
+		byID[delegate.GetID()] = delegate
+	}
 	for _, clientID := range clientIDs {
-		client, err := stor.GetClient(ctx, clientID)
-		if err != nil {
-			return fmt.Errorf("failed to resolve consent-exempt client %q: %w", clientID, err)
+		client, ok := byID[clientID]
+		if !ok {
+			var err error
+			if client, err = stor.GetClient(ctx, clientID); err != nil {
+				return fmt.Errorf("failed to resolve consent-exempt client %q: %w", clientID, err)
+			}
 		}
 		if !consentpolicy.IsEligibleClient(client) {
 			return fmt.Errorf("consent-exempt client %q is missing or ineligible", clientID)
@@ -429,7 +484,10 @@ func validateConsentExemptClients(ctx context.Context, stor storage.Storage, cli
 	return nil
 }
 
-func registerDelegateClients(ctx context.Context, stor storage.Storage, delegateClients []DelegateClient) error {
+// buildDelegateClients builds the configured delegate clients in memory
+// without touching storage.
+func buildDelegateClients(delegateClients []DelegateClient) ([]fosite.Client, error) {
+	clients := make([]fosite.Client, 0, len(delegateClients))
 	for _, delegateClient := range delegateClients {
 		client, err := registration.NewStaticDelegateClient(registration.Config{
 			ID:                                delegateClient.ClientID,
@@ -443,17 +501,50 @@ func registerDelegateClients(ctx context.Context, stor storage.Storage, delegate
 			Audience:                          delegateClient.Audiences,
 		})
 		if err != nil {
-			return fmt.Errorf("failed to create delegate client %q: %w", delegateClient.ClientID, err)
+			return nil, fmt.Errorf("failed to create delegate client %q: %w", delegateClient.ClientID, err)
 		}
+		clients = append(clients, client)
+	}
+	return clients, nil
+}
+
+// registerDelegateClients writes the built delegate clients to stor, replacing
+// any stored row at the same ID.
+func registerDelegateClients(ctx context.Context, stor storage.Storage, clients []fosite.Client) error {
+	for _, client := range clients {
 		if err := stor.ReconcileConfiguredClient(ctx, client); err != nil {
-			return fmt.Errorf("failed to register delegate client %q: %w", delegateClient.ClientID, err)
+			return fmt.Errorf("failed to register delegate client %q: %w", client.GetID(), err)
+		}
+	}
+	return nil
+}
+
+// warnBlanketSelfIssuedExchange logs a startup WARN for every delegate client
+// that may exchange any user's self-issued token, i.e. one whose token_exchange
+// block does not restrict self_issued_subject_tokens.
+func warnBlanketSelfIssuedExchange(delegateClients []DelegateClient, jwtBearerEnabled bool) {
+	for _, delegateClient := range delegateClients {
+		if delegateClient.TokenExchange.Restricted() {
+			continue
+		}
+		attrs := []any{
+			"client_id", delegateClient.ClientID, "scopes", delegateClient.Scopes, "audiences", delegateClient.Audiences,
+		}
+		// A client with grant_types or private_key_jwt must declare its mode,
+		// so reaching here means it chose any explicitly. A client without
+		// grant_types can also redeem an ID-JAG when jwt-bearer is enabled,
+		// minting its own self-issued tokens to exchange.
+		if trustModeRequired(delegateClient.GrantTypes, delegateClient.TokenEndpointAuthMethod) {
+			attrs = append(attrs, "explicit_any", true)
+		}
+		if len(delegateClient.GrantTypes) == 0 && jwtBearerEnabled {
+			attrs = append(attrs, "redeems_id_jag", true)
 		}
 		slog.Warn("delegate client has blanket self-issued token exchange rights: "+
 			"it may exchange any user's self-issued ToolHive token for a delegated token, "+
 			"with no per-subject binding to the client that originally obtained that token",
-			"client_id", delegateClient.ClientID, "scopes", delegateClient.Scopes, "audiences", delegateClient.Audiences)
+			attrs...)
 	}
-	return nil
 }
 
 // decorateStorageForSPIFFE resolves the immutable association registry from the
@@ -566,6 +657,81 @@ func JWTBearerGrantEnabled(trustedIssuers []tokenexchange.TrustedIssuer) bool {
 	return false
 }
 
+// exchangeRefreshTokenCaps converts a delegate client's exchange_refresh_tokens
+// block into the lifetime caps of its token-exchange policy, keyed by the
+// token-type URN of the grant. A nil block gives nil; an empty cap is left out.
+// Config validation has already checked the durations.
+func exchangeRefreshTokenCaps(block *DelegateClientExchangeRefreshTokens) (map[string]time.Duration, error) {
+	if block == nil {
+		return nil, nil
+	}
+	caps := make(map[string]time.Duration, 2)
+	if block.IDJAGMaxLifetime != "" {
+		d, err := time.ParseDuration(block.IDJAGMaxLifetime)
+		if err != nil {
+			return nil, fmt.Errorf("token_exchange.exchange_refresh_tokens.id_jag_max_lifetime: %w", err)
+		}
+		caps[oauthproto.TokenTypeIDJAG] = d
+	}
+	if block.RefreshTokenMaxLifetime != "" {
+		d, err := time.ParseDuration(block.RefreshTokenMaxLifetime)
+		if err != nil {
+			return nil, fmt.Errorf("token_exchange.exchange_refresh_tokens.refresh_token_max_lifetime: %w", err)
+		}
+		caps[oauthproto.TokenTypeRefreshToken] = d
+	}
+	return caps, nil
+}
+
+// configuredClientPolicies builds the token-exchange policy of every delegate
+// client whose self_issued_subject_tokens is restricted, keyed by client_id; an
+// entry means restricted. A client with any, or without a token_exchange block,
+// gets no entry and so keeps blanket trust of self-issued subject tokens.
+func configuredClientPolicies(
+	clients []DelegateClient,
+) (map[string]tokenexchange.ConfiguredClientPolicy, error) {
+	var policies map[string]tokenexchange.ConfiguredClientPolicy
+	for _, c := range clients {
+		if !c.TokenExchange.Restricted() {
+			continue
+		}
+		if policies == nil {
+			policies = make(map[string]tokenexchange.ConfiguredClientPolicy)
+		}
+		refreshCaps, err := exchangeRefreshTokenCaps(c.TokenExchange.ExchangeRefreshTokens)
+		if err != nil {
+			return nil, fmt.Errorf("delegate client %q: %w", c.ClientID, err)
+		}
+		policies[c.ClientID] = tokenexchange.ConfiguredClientPolicy{
+			AllowedSourceClients:  slices.Clone(c.TokenExchange.AllowedSourceClients),
+			SubjectTokenAudiences: slices.Clone(c.TokenExchange.SubjectTokenAudiences),
+			ExchangeRefreshTokens: refreshCaps,
+		}
+	}
+	return policies, nil
+}
+
+// discoverExchangeGrantStorage finds the optional ExchangeGrantStorage
+// capability of stor. A backend without it is fine until a client sets
+// exchange_refresh_tokens, which then fails startup rather than the first
+// request. The result is nil when the capability is absent.
+func discoverExchangeGrantStorage(
+	clients []DelegateClient, stor storage.Storage,
+) (storage.ExchangeGrantStorage, error) {
+	store, ok := storage.Unwrap(stor).(storage.ExchangeGrantStorage)
+	if ok {
+		return store, nil
+	}
+	for _, c := range clients {
+		if c.TokenExchange != nil && c.TokenExchange.ExchangeRefreshTokens != nil {
+			return nil, fmt.Errorf(
+				"delegate client %q sets exchange_refresh_tokens but storage backend %T does not implement storage.ExchangeGrantStorage",
+				c.ClientID, storage.Unwrap(stor))
+		}
+	}
+	return nil, nil
+}
+
 // buildProvider assembles the fosite OAuth2 provider, registering the RFC 8693
 // token-exchange handler and/or the RFC 7523 JWT-bearer handler as extension
 // grants alongside the standard grants -- whichever of the two are enabled
@@ -586,7 +752,15 @@ func buildProvider(
 	refresher storage.UpstreamTokenRefresher, upstreams []handlers.NamedUpstream,
 ) (_ fosite.OAuth2Provider, _ *tokenexchange.MultiIssuerTokenValidator, retErr error) {
 	delegateIDs := delegateClientIDs(cfg.DelegateClients)
+	clientPolicies, policyErr := configuredClientPolicies(cfg.DelegateClients)
+	if policyErr != nil {
+		return nil, nil, policyErr
+	}
 	jwtBearerEnabled := JWTBearerGrantEnabled(cfg.TrustedIssuers)
+	exchangeGrantStore, storeErr := discoverExchangeGrantStorage(cfg.DelegateClients, stor)
+	if storeErr != nil {
+		return nil, nil, storeErr
+	}
 
 	// Built once, up front, and handed to whichever factories below actually
 	// need it: otherwise each factory closure would build its own
@@ -622,18 +796,13 @@ func buildProvider(
 	}()
 
 	factories := make([]oauthserver.Factory, 0, 4)
-	if !cfg.DisableTokenExchange {
-		tokenExchangeFactory, err := tokenexchange.FactoryWithSharedTrustedIssuerValidator(
-			cfg.DelegationTokenLifespan, cfg.TrustedIssuers, delegateIDs, shared,
-			tokenexchange.WithAuthorizationDetailsRegistry(cfg.AuthorizationDetailsRegistry),
-		)
-		if err != nil {
-			return nil, nil, fmt.Errorf("failed to create token exchange factory: %w", err)
-		}
-		factories = append(factories, tokenExchangeFactory)
+	tokenExchangeFactories, err := buildTokenExchangeFactories(cfg, delegateIDs, clientPolicies, shared, exchangeGrantStore)
+	if err != nil {
+		return nil, nil, err
 	}
+	factories = append(factories, tokenExchangeFactories...)
 	if jwtBearerEnabled {
-		jwtBearerFactories, err := buildJWTBearerFactories(cfg.TrustedIssuers, shared)
+		jwtBearerFactories, err := buildJWTBearerFactories(cfg.TrustedIssuers, shared, explicitGrantClientIDs(cfg.DelegateClients))
 		if err != nil {
 			return nil, nil, err
 		}
@@ -658,6 +827,34 @@ func buildProvider(
 		return nil, nil, err
 	}
 	return provider, shared, nil
+}
+
+// buildTokenExchangeFactories builds the RFC 8693 token-exchange factory
+// together with the factory that issues refresh tokens through token exchange.
+// It returns none when token exchange is disabled.
+func buildTokenExchangeFactories(
+	cfg Config, delegateIDs []string, clientPolicies map[string]tokenexchange.ConfiguredClientPolicy,
+	shared *tokenexchange.MultiIssuerTokenValidator, exchangeGrantStore storage.ExchangeGrantStorage,
+) ([]oauthserver.Factory, error) {
+	if cfg.DisableTokenExchange {
+		return nil, nil
+	}
+	tokenExchangeFactory, err := tokenexchange.FactoryWithSharedTrustedIssuerValidator(
+		cfg.DelegationTokenLifespan, cfg.TrustedIssuers, delegateIDs, clientPolicies, shared,
+		tokenexchange.WithAuthorizationDetailsRegistry(cfg.AuthorizationDetailsRegistry),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create token exchange factory: %w", err)
+	}
+
+	// Registered with token exchange so a request for a refresh token
+	// always reaches it, even for a client that has not enabled the feature.
+	refreshTokenFactory, err := tokenexchange.RefreshTokenFactory(
+		clientPolicies, tokenexchange.WithExchangeGrantStorage(exchangeGrantStore))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create refresh token exchange factory: %w", err)
+	}
+	return []oauthserver.Factory{tokenExchangeFactory, refreshTokenFactory}, nil
 }
 
 // refreshGrantValidatorChain returns the refresh-grant validators in run
@@ -686,15 +883,17 @@ func refreshGrantValidatorChain(
 // with the bound ID-JAG factory. The bound ID-JAG handler rides the same
 // per-issuer JWT-bearer policy: enabling the grant enables both assertion
 // forms, split by JOSE typ (plain assertions to JWTBearerHandler,
-// oauth-id-jag+jwt to IDJAGHandler).
+// oauth-id-jag+jwt to IDJAGHandler). explicitGrantClientIDs names the clients
+// whose registered grant_types the ID-JAG handler enforces.
 func buildJWTBearerFactories(
 	trustedIssuers []tokenexchange.TrustedIssuer, shared *tokenexchange.MultiIssuerTokenValidator,
+	explicitGrantClientIDs []string,
 ) ([]oauthserver.Factory, error) {
 	jwtBearerFactory, err := tokenexchange.JWTBearerIssuanceFactory(trustedIssuers, shared)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create JWT-bearer factory: %w", err)
 	}
-	idJAGFactory, err := tokenexchange.IDJAGIssuanceFactory(trustedIssuers, shared)
+	idJAGFactory, err := tokenexchange.IDJAGIssuanceFactory(trustedIssuers, shared, explicitGrantClientIDs)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create ID-JAG factory: %w", err)
 	}
@@ -882,13 +1081,7 @@ func createProvider(
 	// Fosite v0.49.0 depends on go-jose/v3, while we use v4 internally.
 	// This ensures the "kid" (key ID) is included in JWT headers so resource
 	// servers can look up the correct public key from our JWKS endpoint.
-	signingKeyV4 := authServerConfig.SigningKey
-	signingKeyV3 := &josev3.JSONWebKey{
-		Key:       signingKeyV4.Key,
-		KeyID:     signingKeyV4.KeyID,
-		Algorithm: signingKeyV4.Algorithm,
-		Use:       signingKeyV4.Use,
-	}
+	signingKeyV3 := fositejose.ToFositeKey(authServerConfig.SigningKey)
 
 	// Create a composed token strategy:
 	// - JWT strategy (outer): signs access tokens as JWTs using the asymmetric signing key

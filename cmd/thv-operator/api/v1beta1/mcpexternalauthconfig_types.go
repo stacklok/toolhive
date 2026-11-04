@@ -1021,6 +1021,19 @@ type EmbeddedAuthServerConfig struct {
 	// +optional
 	InboundGrants *InboundGrantsConfig `json:"inboundGrants,omitempty"`
 
+	// TLSListener configures an additional TLS listener on port 8443 that
+	// serves the embedded authorization server's routes. MCP traffic, health
+	// probes and metrics stay on plain HTTP. Both certificateSecretRef and
+	// privateKeySecretRef are required. It is required when
+	// inboundGrants.spiffeClientAuth enables spiffe_x509. That requirement is
+	// checked when the resource is reconciled and reported in status
+	// conditions; the API server does not reject it. The listener is
+	// reachable on the pod only: the operator does not yet add port 8443 to
+	// the Service or container ports. Updates to the referenced Secret
+	// contents are picked up without a pod restart.
+	// +optional
+	TLSListener *TLSListenerConfig `json:"tlsListener,omitempty"`
+
 	// UpstreamProviders configures connections to upstream Identity Providers.
 	// When configured, the embedded auth server delegates interactive authentication
 	// to these providers. It may be omitted only when delegateClients or a trusted
@@ -1408,6 +1421,47 @@ func (c *EmbeddedAuthServerConfig) ValidateInboundGrants() error {
 	return nil
 }
 
+// ValidateTLSListener rejects a tlsListener whose certificate or private key
+// Secret reference is missing or has an empty name or key, and a SPIFFE X.509
+// client association configured without a tlsListener. Only
+// inboundGrants.spiffeClientAuth[].methods counts for the second rule;
+// spiffeTrustDomains alone does not require a listener. It runs at reconcile
+// time, not in the API server.
+//
+// The X.509 rule is enforced in Go because a nested exists() over
+// spiffeClientAuth[].methods pushed the schema's estimated CEL cost over the
+// apiserver budget. There is no CEL mirror.
+func (c *EmbeddedAuthServerConfig) ValidateTLSListener() error {
+	if c.TLSListener != nil {
+		if c.TLSListener.CertificateSecretRef == nil || c.TLSListener.PrivateKeySecretRef == nil {
+			return fmt.Errorf("tlsListener.certificateSecretRef and tlsListener.privateKeySecretRef are required")
+		}
+		for _, f := range []struct {
+			field string
+			ref   *SecretKeyRef
+		}{
+			{"certificateSecretRef", c.TLSListener.CertificateSecretRef},
+			{"privateKeySecretRef", c.TLSListener.PrivateKeySecretRef},
+		} {
+			if f.ref.Name == "" || f.ref.Key == "" {
+				return fmt.Errorf("tlsListener.%[1]s.name and tlsListener.%[1]s.key are required", f.field)
+			}
+		}
+		return nil
+	}
+	if c.InboundGrants == nil {
+		return nil
+	}
+	for _, association := range c.InboundGrants.SPIFFEClientAuth {
+		for _, method := range association.Methods {
+			if method == SPIFFEAuthenticationMethodX509 {
+				return fmt.Errorf("tlsListener is required when SPIFFE X.509 client authentication is configured")
+			}
+		}
+	}
+	return nil
+}
+
 func hasLegacyTokenExchangePolicy(issuer TrustedIssuerConfig) bool {
 	return issuer.ExpectedAudience != "" || issuer.ActorClaim != "" || len(issuer.AllowedActors) > 0 ||
 		issuer.ActorMatcher != "" || len(issuer.AllowedDelegateClients) > 0 || issuer.AllowMayAct
@@ -1743,6 +1797,11 @@ type OAuth2UpstreamConfig struct {
 	// client_secret_post-shaped default). Set this to client_secret_basic explicitly
 	// for providers that require HTTP Basic auth. Public clients without a secret use
 	// the "none" method.
+	// With DCRConfig, it is the method the client registers with, in place of the one
+	// ToolHive picks from the upstream's advertised methods (client_secret_basic, then
+	// client_secret_post, then none). Set it for an upstream whose token endpoint does
+	// not accept the method ToolHive picks. A cached registration made with another
+	// method is replaced with a new one at the next start.
 	// +kubebuilder:validation:Enum=none;client_secret_basic;client_secret_post
 	// +optional
 	TokenEndpointAuthMethod string `json:"tokenEndpointAuthMethod,omitempty"`
@@ -1918,7 +1977,9 @@ type DCRUpstreamConfig struct {
 	// token endpoint answers invalid_grant for any client_id; an HTML page or
 	// a bare gateway status is not a verdict. A false rejection re-registers
 	// at every start and, when registration also fails, fails startup. none
-	// skips the check; the registration is then retired only through
+	// skips the check: the upstream is not contacted, but a registration made
+	// with another method than a configured tokenEndpointAuthMethod is still
+	// replaced. Otherwise the registration is retired only through
 	// RotationKey.
 	// +optional
 	// +kubebuilder:validation:Enum=tokenEndpoint;authorizationEndpoint;none
@@ -2297,6 +2358,18 @@ type RedisACLUserConfig struct {
 	// PasswordSecretRef references a Secret containing the Redis ACL password.
 	// +kubebuilder:validation:Required
 	PasswordSecretRef *SecretKeyRef `json:"passwordSecretRef"`
+}
+
+// TLSListenerConfig configures the certificate served by the embedded auth
+// server's TLS listener. Both secret references are required.
+type TLSListenerConfig struct {
+	// CertificateSecretRef references the PEM-encoded TLS certificate.
+	// +kubebuilder:validation:Required
+	CertificateSecretRef *SecretKeyRef `json:"certificateSecretRef"`
+
+	// PrivateKeySecretRef references the PEM-encoded TLS private key.
+	// +kubebuilder:validation:Required
+	PrivateKeySecretRef *SecretKeyRef `json:"privateKeySecretRef"`
 }
 
 // SecretKeyRef is a reference to a key within a Secret
@@ -2750,6 +2823,10 @@ func (r *MCPExternalAuthConfig) validateEmbeddedAuthServer() error {
 	// (MCPServer, MCPRemoteProxy) enforce single-upstream restrictions;
 	// VirtualMCPServer allows multiple upstreams.
 
+	// Reject an incomplete tlsListener, or an X.509 association without one.
+	if err := cfg.ValidateTLSListener(); err != nil {
+		return err
+	}
 	// Defense-in-depth with the shared runtime policy. This folds legacy and
 	// canonical grant declarations before checking confidential transport and
 	// trusted issuer policy.
@@ -2785,8 +2862,15 @@ func (r *MCPExternalAuthConfig) validateEmbeddedAuthServer() error {
 		return err
 	}
 
-	seen := make(map[string]bool, len(cfg.UpstreamProviders))
-	for i, provider := range cfg.UpstreamProviders {
+	if err := r.validateUpstreamProviders(cfg.UpstreamProviders); err != nil {
+		return err
+	}
+	return validateTrustedIssuerCABundles(cfg.TrustedIssuers)
+}
+
+func (r *MCPExternalAuthConfig) validateUpstreamProviders(providers []UpstreamProviderConfig) error {
+	seen := make(map[string]bool, len(providers))
+	for i, provider := range providers {
 		if seen[provider.Name] {
 			return fmt.Errorf("upstreamProviders[%d]: duplicate name %q", i, provider.Name)
 		}
@@ -2796,10 +2880,13 @@ func (r *MCPExternalAuthConfig) validateEmbeddedAuthServer() error {
 			return err
 		}
 	}
+	return nil
+}
 
-	for i := range cfg.TrustedIssuers {
-		if err := validateUpstreamCABundleRef(cfg.TrustedIssuers[i].CABundleRef); err != nil {
-			return fmt.Errorf("trustedIssuers[%d] (%q) caBundleRef: %w", i, cfg.TrustedIssuers[i].IssuerURL, err)
+func validateTrustedIssuerCABundles(issuers []TrustedIssuerConfig) error {
+	for i := range issuers {
+		if err := validateUpstreamCABundleRef(issuers[i].CABundleRef); err != nil {
+			return fmt.Errorf("trustedIssuers[%d] (%q) caBundleRef: %w", i, issuers[i].IssuerURL, err)
 		}
 	}
 	return nil

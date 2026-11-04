@@ -27,9 +27,10 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/go-jose/go-jose/v3"
+	"github.com/go-jose/go-jose/v4"
 	"github.com/ory/fosite"
 
+	"github.com/stacklok/toolhive/pkg/authserver/internal/fositejose"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
@@ -375,7 +376,7 @@ func New(cfg Config) (fosite.Client, error) {
 	oidcClient := &fosite.DefaultOpenIDConnectClient{
 		DefaultClient:                     defaultClient,
 		TokenEndpointAuthMethod:           cfg.TokenEndpointAuthMethod,
-		JSONWebKeys:                       cloneJSONWebKeySet(cfg.JSONWebKeys),
+		JSONWebKeys:                       fositejose.ToFositeKeySet(cfg.JSONWebKeys),
 		TokenEndpointAuthSigningAlgorithm: cfg.TokenEndpointAuthSigningAlgorithm,
 	}
 
@@ -463,26 +464,28 @@ func NewConfidentialPlain(cfg Config) (fosite.Client, error) {
 // form-body client-secret authentication; otherwise it is an OIDC client that
 // pins the method. Empty GrantTypes means [token-exchange]. The result never
 // carries the DCRIssued marker, so storage keeps it out of the DCR TTL and cap.
+//
+// It does not check audiences. Callers must validate audiences first; the
+// empty-audiences rule is enforced by the authorization server's config
+// validation.
 func NewStaticDelegateClient(cfg Config) (fosite.Client, error) {
 	if cfg.ID == "" {
 		return nil, fmt.Errorf("delegate client requires an ID")
 	}
 	privateKeyJWT := cfg.TokenEndpointAuthMethod == oauthproto.TokenEndpointAuthMethodPrivateKeyJWT
-	if err := ValidateConfiguredClient(ConfiguredClientSpec{
+	alg, err := validateConfiguredClient(ConfiguredClientSpec{
 		TokenEndpointAuthMethod: cfg.TokenEndpointAuthMethod,
 		SigningAlgorithm:        cfg.TokenEndpointAuthSigningAlgorithm,
 		GrantTypes:              cfg.GrantTypes,
 		RedirectURIs:            cfg.RedirectURIs,
 		HasSecret:               cfg.Secret != "",
 		JWKS:                    cfg.JSONWebKeys,
-	}); err != nil {
+	})
+	if err != nil {
 		return nil, fmt.Errorf("delegate client: %w", err)
 	}
 	if len(cfg.Scopes) == 0 {
 		return nil, fmt.Errorf("delegate client requires at least one scope")
-	}
-	if len(cfg.Audience) == 0 {
-		return nil, fmt.Errorf("delegate client requires at least one audience")
 	}
 
 	client := &fosite.DefaultClient{
@@ -509,11 +512,8 @@ func NewStaticDelegateClient(cfg Config) (fosite.Client, error) {
 		TokenEndpointAuthMethod: cfg.TokenEndpointAuthMethod,
 	}
 	if privateKeyJWT {
-		oidcClient.JSONWebKeys = cloneJSONWebKeySet(cfg.JSONWebKeys)
-		oidcClient.TokenEndpointAuthSigningAlgorithm = cfg.TokenEndpointAuthSigningAlgorithm
-		if oidcClient.TokenEndpointAuthSigningAlgorithm == "" {
-			oidcClient.TokenEndpointAuthSigningAlgorithm = defaultConfiguredSigningAlgorithm
-		}
+		oidcClient.JSONWebKeys = fositejose.ToFositeKeySet(cfg.JSONWebKeys)
+		oidcClient.TokenEndpointAuthSigningAlgorithm = alg
 	}
 	return oidcClient, nil
 }

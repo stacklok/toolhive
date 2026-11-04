@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/go-jose/go-jose/v3"
+	"github.com/go-jose/go-jose/v4"
 	"github.com/google/uuid"
 	"github.com/ory/fosite"
 
@@ -27,9 +27,9 @@ import (
 // This prevents DoS attacks via extremely large payloads while being generous
 // enough for legitimate requests with multiple redirect URIs.
 //
-// It is exported to serve as the single source of truth for the auth-server
-// body-size cap: the embedded auth server (pkg/authserver/runner) derives its
-// own request-body limit from this constant so the two cannot drift.
+// It is also the single source of truth for the auth server's endpoint-wide
+// request-body limit, keeping that outer limit aligned with the DCR handler's
+// defense-in-depth limit.
 const MaxDCRBodySize = 64 * 1024
 
 // RegisterClientHandler handles POST /oauth/register requests.

@@ -66,6 +66,33 @@ const (
 	MaxAssertionJTILength = 256
 )
 
+// AudienceMatchingStrategy is the single audience-matching rule shared by the
+// token endpoint and startup validation: every needle must be covered by a
+// haystack entry, by path-prefix matching on parsed URLs. Both use this
+// function, so the startup checks and the token endpoint cannot disagree about
+// what one audience covers.
+func AudienceMatchingStrategy(haystack, needle []string) error {
+	return fosite.DefaultAudienceMatchingStrategy(haystack, needle)
+}
+
+// RefreshTokenScopes returns the scopes that grant offline access. It is the
+// one definition shared by fosite's gating of refresh tokens (the
+// authorization_code and resource-owner flows, and the refresh_token grant),
+// the exchange-grant rule and startup validation. It equals fosite's default,
+// so fosite's behavior does not change. It returns a new slice on every call,
+// so a caller cannot change what the next caller sees.
+//
+// The basis is OIDC Core section 11: offline_access asks for a refresh token
+// that stays usable while the user is absent. An exchange grant outlives the
+// sign-in session, so opening one needs offline_access granted at sign-in. The
+// scope set and the empty-list semantics (an empty list means no gate) are
+// those of fosite's canIssueRefreshToken. Where fosite silently omits the
+// refresh token from the authorization_code response, the exchange-grant path
+// refuses the request, because the refresh token is its only output.
+func RefreshTokenScopes() []string {
+	return []string{"offline", "offline_access"}
+}
+
 // DefaultDeviceCodeInterval is RFC 8628's suggested default minimum interval
 // between device-flow polls of the token endpoint, applied whenever
 // AuthorizationServerConfig.DeviceCodeInterval / AuthorizationServerParams.DeviceCodeInterval
@@ -132,10 +159,23 @@ type AuthorizationServerConfig struct {
 	// private_key_jwt authentication. This is independent of confidential-client
 	// registration and is used by DCR validation and discovery advertisement.
 	AllowPrivateKeyJWTRegistration bool
-	// HasStaticDelegateClients indicates whether any pre-provisioned confidential
-	// delegate client is registered at startup. Discovery advertises client-secret
-	// authentication methods when this is true.
+	// HasStaticDelegateClients indicates whether any pre-provisioned delegate
+	// client is registered at startup. Every such client counts as confidential
+	// for the cleartext-transport check, whatever its auth method. It does not
+	// drive discovery; see HasStaticSecretClients and
+	// HasStaticPrivateKeyJWTClients.
 	HasStaticDelegateClients bool
+	// HasStaticSecretClients indicates whether any pre-provisioned delegate
+	// client authenticates with a client secret (an empty, client_secret_basic
+	// or client_secret_post token endpoint auth method). Discovery advertises
+	// the client_secret_* methods when this is true. It is deliberately separate
+	// from HasStaticDelegateClients, which counts private_key_jwt delegates too
+	// because the cleartext-transport check does.
+	HasStaticSecretClients bool
+	// HasStaticPrivateKeyJWTClients indicates whether any pre-provisioned
+	// delegate client authenticates with private_key_jwt. Discovery advertises
+	// that method and its signing algorithms when this is true.
+	HasStaticPrivateKeyJWTClients bool
 	// InsecureAllowHTTP permits a non-loopback HTTP issuer. It is incompatible
 	// with confidential clients.
 	InsecureAllowHTTP bool
@@ -242,10 +282,23 @@ type AuthorizationServerParams struct {
 	// private_key_jwt authentication. This is independent of confidential-client
 	// registration and is used by DCR validation and discovery advertisement.
 	AllowPrivateKeyJWTRegistration bool
-	// HasStaticDelegateClients indicates whether any pre-provisioned confidential
-	// delegate client is registered at startup. Discovery advertises client-secret
-	// authentication methods when this is true.
+	// HasStaticDelegateClients indicates whether any pre-provisioned delegate
+	// client is registered at startup. Every such client counts as confidential
+	// for the cleartext-transport check, whatever its auth method. It does not
+	// drive discovery; see HasStaticSecretClients and
+	// HasStaticPrivateKeyJWTClients.
 	HasStaticDelegateClients bool
+	// HasStaticSecretClients indicates whether any pre-provisioned delegate
+	// client authenticates with a client secret (an empty, client_secret_basic
+	// or client_secret_post token endpoint auth method). Discovery advertises
+	// the client_secret_* methods when this is true. It is deliberately separate
+	// from HasStaticDelegateClients, which counts private_key_jwt delegates too
+	// because the cleartext-transport check does.
+	HasStaticSecretClients bool
+	// HasStaticPrivateKeyJWTClients indicates whether any pre-provisioned
+	// delegate client authenticates with private_key_jwt. Discovery advertises
+	// that method and its signing algorithms when this is true.
+	HasStaticPrivateKeyJWTClients bool
 	// InsecureAllowHTTP permits a non-loopback HTTP issuer. It is incompatible
 	// with confidential clients.
 	InsecureAllowHTTP bool
@@ -512,8 +565,12 @@ func NewAuthorizationServerConfig(cfg *AuthorizationServerParams) (*Authorizatio
 		// AudienceMatchingStrategy and JWKSFetcherStrategy are set explicitly
 		// because fosite's getters lazily assign their defaults on first use,
 		// an unsynchronized write that races between concurrent requests.
-		AudienceMatchingStrategy: fosite.DefaultAudienceMatchingStrategy,
+		AudienceMatchingStrategy: AudienceMatchingStrategy,
 		JWKSFetcherStrategy:      unsupportedJWKSFetcher{},
+		// RefreshTokenScopes is set explicitly so fosite's refresh-token gating
+		// (authorization_code, resource-owner and refresh_token grants), the
+		// exchange-grant rule and startup validation share one definition.
+		RefreshTokenScopes: RefreshTokenScopes(),
 		// ClientSecretsHasher compares client secrets at the token endpoint.
 		// Plain SHA-256 is correct here: the secrets are 256 bits of CSPRNG
 		// output, never client-chosen, so a password-stretching KDF protects
@@ -544,6 +601,8 @@ func NewAuthorizationServerConfig(cfg *AuthorizationServerParams) (*Authorizatio
 		AllowConfidentialClientRegistration:       cfg.AllowConfidentialClientRegistration,
 		AllowPrivateKeyJWTRegistration:            cfg.AllowPrivateKeyJWTRegistration,
 		HasStaticDelegateClients:                  cfg.HasStaticDelegateClients,
+		HasStaticSecretClients:                    cfg.HasStaticSecretClients,
+		HasStaticPrivateKeyJWTClients:             cfg.HasStaticPrivateKeyJWTClients,
 		InsecureAllowHTTP:                         cfg.InsecureAllowHTTP,
 		InsecureAllowConfidentialOverLoopbackHTTP: cfg.InsecureAllowConfidentialOverLoopbackHTTP,
 		ForceConfidentialRedirectURIs:             cfg.ForceConfidentialRedirectURIs,
@@ -604,9 +663,13 @@ func NewAuthorizationServer(
 		}
 		return provider.DefaultClientAuthenticationStrategy
 	}()
-	fositeConfig.ClientAuthenticationStrategy = newSPIFFEClientAuthenticationStrategy(
-		defaultStrategy, config.GetAccessTokenIssuer(),
-		config.SPIFFEJWTBundleSource, providerConfig.SPIFFEClientResolver,
+	// The embedded-key guard is outermost so it runs before any strategy parses
+	// a client assertion (see fositejose.IsUnsafeJWS).
+	fositeConfig.ClientAuthenticationStrategy = newEmbeddedJWKGuardClientAuthenticationStrategy(
+		newSPIFFEClientAuthenticationStrategy(
+			newClientAssertionErrorStrategy(defaultStrategy), config.GetAccessTokenIssuer(),
+			config.SPIFFEJWTBundleSource, providerConfig.SPIFFEClientResolver,
+		),
 	)
 
 	for _, factory := range factories {

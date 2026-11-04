@@ -4,17 +4,34 @@
 package registration
 
 import (
+	"crypto/ecdsa"
+	"crypto/rsa"
 	"fmt"
 	"slices"
+	"strings"
+	"time"
 
-	"github.com/go-jose/go-jose/v3"
+	"github.com/go-jose/go-jose/v4"
 
+	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
-// defaultConfiguredSigningAlgorithm is the private_key_jwt signing algorithm
-// a configured client uses when none is declared.
-const defaultConfiguredSigningAlgorithm = "RS256"
+// maxAllowedSourceClients bounds token_exchange.allowed_source_clients.
+const maxAllowedSourceClients = 20
+
+// maxSubjectTokenAudiences bounds token_exchange.subject_token_audiences.
+const maxSubjectTokenAudiences = 20
+
+// Values of token_exchange.self_issued_subject_tokens. They mirror
+// authserver.SelfIssuedSubjectTokens, which this package cannot import.
+const (
+	selfIssuedSubjectTokensAny        = "any"
+	selfIssuedSubjectTokensRestricted = "restricted"
+)
+
+// maxExchangeRefreshTokenLifetime bounds each exchange_refresh_tokens lifetime cap.
+const maxExchangeRefreshTokenLifetime = 720 * time.Hour
 
 // configuredGrantTypes are the grants an operator-configured client may hold.
 var configuredGrantTypes = []string{
@@ -30,11 +47,15 @@ type ConfiguredClientSpec struct {
 	// client_secret_basic, client_secret_post, or private_key_jwt.
 	TokenEndpointAuthMethod string
 
-	// SigningAlgorithm is the private_key_jwt algorithm. Empty means
-	// defaultConfiguredSigningAlgorithm.
+	// SigningAlgorithm is the private_key_jwt algorithm. Empty means it is
+	// derived from the keys: each key's alg, or ES256, ES384 or ES512 from an
+	// EC key's curve. RSA keys without alg use RS256. Keys that disagree must
+	// set it.
 	SigningAlgorithm string
 
-	// GrantTypes empty means the default [token-exchange].
+	// GrantTypes empty means the stored client holds [token-exchange] alone.
+	// ID-JAG redemption is still not gated for such a client, for backward
+	// compatibility; only a client that sets GrantTypes must list jwt-bearer.
 	GrantTypes []string
 
 	RedirectURIs []string
@@ -49,6 +70,37 @@ type ConfiguredClientSpec struct {
 	// JWKSPending reports keys configured by reference but not loaded yet, so
 	// the key contents cannot be checked.
 	JWKSPending bool
+
+	// TokenExchange reports a token_exchange block.
+	TokenExchange bool
+
+	// SelfIssuedSubjectTokens is the block's trust mode, any or restricted.
+	// It is required when TokenExchange is set.
+	SelfIssuedSubjectTokens string
+
+	// AllowedSourceClients and SubjectTokenAudiences are the token_exchange
+	// fields. Both are valid only with the restricted mode. An empty
+	// SubjectTokenAudiences is the same as an omitted one.
+	AllowedSourceClients  []string
+	SubjectTokenAudiences []string
+
+	// ExchangeRefreshTokens reports an exchange_refresh_tokens block. It is
+	// only meaningful with TokenExchange set, and valid only with the
+	// restricted mode.
+	ExchangeRefreshTokens bool
+
+	// IDJAGMaxLifetime and RefreshTokenMaxLifetime are the block's lifetime
+	// caps as written, as Go duration strings. Empty means not set.
+	IDJAGMaxLifetime        string
+	RefreshTokenMaxLifetime string
+
+	// ClientID is the client's own client_id, which must not be listed as a
+	// source client.
+	ClientID string
+
+	// DelegateClientIDs are the client_ids of every configured delegate
+	// client. None may be an allowed source client.
+	DelegateClientIDs []string
 }
 
 // effectiveConfiguredGrantTypes returns grantTypes, or the default
@@ -60,20 +112,104 @@ func effectiveConfiguredGrantTypes(grantTypes []string) []string {
 	return grantTypes
 }
 
+// OnlyTokenExchangeGrant reports whether token exchange is the only effective
+// grant: grantTypes is empty (the default) or lists just the token-exchange
+// grant.
+func OnlyTokenExchangeGrant(grantTypes []string) bool {
+	effective := effectiveConfiguredGrantTypes(grantTypes)
+	return len(effective) == 1 && effective[0] == oauthproto.GrantTypeTokenExchange
+}
+
 // ValidateConfiguredClient checks the metadata of an operator-configured
 // client: the auth method, the key set, the grant set and the redirect URIs.
 func ValidateConfiguredClient(spec ConfiguredClientSpec) error {
+	_, err := validateConfiguredClient(spec)
+	return err
+}
+
+// validateConfiguredClient is ValidateConfiguredClient, also returning the resolved signing algorithm.
+func validateConfiguredClient(spec ConfiguredClientSpec) (string, error) {
 	if err := validateConfiguredAuthMethod(spec); err != nil {
-		return err
+		return "", err
 	}
-	if err := validateConfiguredKeys(spec); err != nil {
-		return err
+	alg, err := validateConfiguredKeys(spec)
+	if err != nil {
+		return "", err
 	}
 	grants := effectiveConfiguredGrantTypes(spec.GrantTypes)
 	if err := validateConfiguredGrants(grants); err != nil {
-		return err
+		return "", err
 	}
-	return validateConfiguredRedirects(spec.RedirectURIs, grants)
+	if err := validateConfiguredRedirects(spec.RedirectURIs, grants); err != nil {
+		return "", err
+	}
+	if err := validateConfiguredTokenExchange(spec); err != nil {
+		return "", err
+	}
+	if err := validateConfiguredExchangeRefreshTokens(spec); err != nil {
+		return "", err
+	}
+	if err := validateConfiguredRedirectURIs(spec.RedirectURIs); err != nil {
+		return "", err
+	}
+	return alg, nil
+}
+
+// defaultConfiguredSigningAlgorithm is the private_key_jwt signing algorithm
+// a configured client uses when none is declared and the keys do not say.
+const defaultConfiguredSigningAlgorithm = "RS256"
+
+// ecSigningAlgorithms are the algorithms an EC key can carry, one per curve.
+var ecSigningAlgorithms = []string{"ES256", "ES384", "ES512"}
+
+// resolveConfiguredSigningAlgorithm returns the private_key_jwt signing
+// algorithm of a configured client. A declared algorithm is returned as is.
+// Otherwise it comes from the keys: each key's alg, or ES256, ES384 or ES512
+// from an EC key's curve, or RS256 for an RSA key without alg (RS and PS are
+// both possible). With no keys the result is RS256. Keys of any other type say
+// nothing, so the key-set validation reports them. Keys that disagree are an
+// error.
+func resolveConfiguredSigningAlgorithm(configured string, jwks *jose.JSONWebKeySet) (string, error) {
+	if configured != "" {
+		return configured, nil
+	}
+	if jwks == nil || len(jwks.Keys) == 0 {
+		return defaultConfiguredSigningAlgorithm, nil
+	}
+	var found []string
+	for i := range jwks.Keys {
+		if alg := keySigningAlgorithm(&jwks.Keys[i]); alg != "" && !slices.Contains(found, alg) {
+			found = append(found, alg)
+		}
+	}
+	switch len(found) {
+	case 0:
+		return defaultConfiguredSigningAlgorithm, nil
+	case 1:
+		return found[0], nil
+	}
+	slices.Sort(found)
+	return "", fmt.Errorf("jwks_file keys have different signing algorithms (%s): "+
+		"set token_endpoint_auth_signing_alg", strings.Join(found, ", "))
+}
+
+// keySigningAlgorithm returns the algorithm a key implies, or "" for a key
+// type that implies none.
+func keySigningAlgorithm(key *jose.JSONWebKey) string {
+	if key.Algorithm != "" {
+		return key.Algorithm
+	}
+	switch key.Key.(type) {
+	case *rsa.PublicKey:
+		return defaultConfiguredSigningAlgorithm
+	case *ecdsa.PublicKey:
+		for _, alg := range ecSigningAlgorithms {
+			if servercrypto.ValidateAlgorithmForPublicKey(alg, key.Key) == nil {
+				return alg
+			}
+		}
+	}
+	return ""
 }
 
 func validateConfiguredAuthMethod(spec ConfiguredClientSpec) error {
@@ -126,6 +262,10 @@ func validateConfiguredRedirects(redirectURIs, grants []string) error {
 		return fmt.Errorf("grant_types must include %q with %q",
 			oauthproto.GrantTypeAuthorizationCode, oauthproto.GrantTypeRefreshToken)
 	}
+	return nil
+}
+
+func validateConfiguredRedirectURIs(redirectURIs []string) error {
 	for _, uri := range redirectURIs {
 		if err := oauthproto.ValidateRedirectURI(uri, oauthproto.RedirectURIPolicyStrict); err != nil {
 			return fmt.Errorf("redirect_uris: %w", err)
@@ -137,34 +277,207 @@ func validateConfiguredRedirects(redirectURIs, grants []string) error {
 	return nil
 }
 
-func validateConfiguredKeys(spec ConfiguredClientSpec) error {
+func validateConfiguredKeys(spec ConfiguredClientSpec) (string, error) {
 	if spec.TokenEndpointAuthMethod != oauthproto.TokenEndpointAuthMethodPrivateKeyJWT {
 		if spec.JWKS != nil || spec.JWKSPending {
-			return fmt.Errorf("jwks_file is only allowed with token_endpoint_auth_method %q",
+			return "", fmt.Errorf("jwks_file is only allowed with token_endpoint_auth_method %q",
 				oauthproto.TokenEndpointAuthMethodPrivateKeyJWT)
 		}
 		if spec.SigningAlgorithm != "" {
-			return fmt.Errorf("token_endpoint_auth_signing_alg is only allowed with token_endpoint_auth_method %q",
+			return "", fmt.Errorf("token_endpoint_auth_signing_alg is only allowed with token_endpoint_auth_method %q",
 				oauthproto.TokenEndpointAuthMethodPrivateKeyJWT)
 		}
-		return nil
+		return "", nil
 	}
 
 	if !spec.JWKSPending && (spec.JWKS == nil || len(spec.JWKS.Keys) == 0) {
-		return fmt.Errorf("private_key_jwt requires jwks_file with at least one key")
+		return "", fmt.Errorf("private_key_jwt requires jwks_file with at least one key")
 	}
-	alg := spec.SigningAlgorithm
-	if alg == "" {
-		alg = defaultConfiguredSigningAlgorithm
+	alg, err := resolveConfiguredSigningAlgorithm(spec.SigningAlgorithm, spec.JWKS)
+	if err != nil {
+		return "", err
 	}
 	if spec.JWKSPending && spec.JWKS == nil {
 		if !supportedSigningAlgorithm(alg) {
-			return fmt.Errorf("token_endpoint_auth_signing_alg %q is unsupported", alg)
+			return "", fmt.Errorf("token_endpoint_auth_signing_alg %q is unsupported", alg)
 		}
-		return nil
+		return alg, nil
 	}
 	if dcrErr := validatePrivateKeyJWTKeySet(spec.JWKS, alg); dcrErr != nil {
-		return fmt.Errorf("jwks_file: %s", dcrErr.ErrorDescription)
+		if spec.SigningAlgorithm == "" {
+			return "", fmt.Errorf("jwks_file: %s (token_endpoint_auth_signing_alg not set; %s derived from the keys)",
+				dcrErr.ErrorDescription, alg)
+		}
+		return "", fmt.Errorf("jwks_file: %s", dcrErr.ErrorDescription)
+	}
+	if err := validateConfiguredKeyIDs(spec.JWKS); err != nil {
+		return "", err
+	}
+	return alg, nil
+}
+
+// validateConfiguredKeyIDs requires every key of a multi-key set to carry a
+// unique kid. fosite verifies an assertion that has no kid against the first
+// signing key of the matching type, so during a key rotation an assertion
+// signed by the second key would fail without one.
+func validateConfiguredKeyIDs(jwks *jose.JSONWebKeySet) error {
+	if jwks == nil || len(jwks.Keys) < 2 {
+		return nil
+	}
+	for i, key := range jwks.Keys {
+		if key.KeyID == "" {
+			return fmt.Errorf("jwks_file: key %d has no kid; every key needs a kid when the file holds more than one", i)
+		}
+		// Key is the lookup fosite uses to find the verification key for an
+		// assertion's kid, so a kid that matches two keys is ambiguous.
+		if len(jwks.Key(key.KeyID)) > 1 {
+			return fmt.Errorf("jwks_file: kid %q is used by more than one key", key.KeyID)
+		}
+	}
+	return nil
+}
+
+func validateConfiguredTokenExchange(spec ConfiguredClientSpec) error {
+	if !spec.TokenExchange {
+		return nil
+	}
+	if err := validateSelfIssuedSubjectTokens(spec); err != nil {
+		return err
+	}
+	if len(spec.AllowedSourceClients) > maxAllowedSourceClients {
+		return fmt.Errorf("token_exchange.allowed_source_clients has %d entries, at most %d are allowed",
+			len(spec.AllowedSourceClients), maxAllowedSourceClients)
+	}
+	seen := make(map[string]struct{}, len(spec.AllowedSourceClients))
+	for _, id := range spec.AllowedSourceClients {
+		switch id {
+		case "":
+			return fmt.Errorf("token_exchange.allowed_source_clients must not contain an empty client_id")
+		case "*":
+			return fmt.Errorf("token_exchange.allowed_source_clients does not support the \"*\" wildcard")
+		}
+		if id == spec.ClientID {
+			return fmt.Errorf("token_exchange.allowed_source_clients lists the client's own client_id %q: "+
+				"its own tokens are accepted on plain token exchange without being listed", id)
+		}
+		if slices.Contains(spec.DelegateClientIDs, id) {
+			return fmt.Errorf("token_exchange.allowed_source_clients lists %q, a configured delegate client: "+
+				"source clients must be user-facing clients, and a delegate client's tokens carry its own client_id, "+
+				"so listing it would trust everything it accepts", id)
+		}
+		if _, dup := seen[id]; dup {
+			return fmt.Errorf("token_exchange.allowed_source_clients lists %q more than once", id)
+		}
+		seen[id] = struct{}{}
+	}
+	return validateSubjectTokenAudiences(spec.SubjectTokenAudiences)
+}
+
+// validateSubjectTokenAudiences checks the list's shape. An empty list is
+// unset, because the field is omitempty and an empty list cannot be told from
+// an omitted one after serialization. Membership in allowed_audiences and the
+// input/output rule need server context, so the caller checks them.
+func validateSubjectTokenAudiences(audiences []string) error {
+	if len(audiences) == 0 {
+		return nil
+	}
+	if len(audiences) > maxSubjectTokenAudiences {
+		return fmt.Errorf("token_exchange.subject_token_audiences has %d entries, at most %d are allowed",
+			len(audiences), maxSubjectTokenAudiences)
+	}
+	seen := make(map[string]struct{}, len(audiences))
+	for _, audience := range audiences {
+		if audience == "" {
+			return fmt.Errorf("token_exchange.subject_token_audiences must not contain an empty audience")
+		}
+		if _, dup := seen[audience]; dup {
+			return fmt.Errorf("token_exchange.subject_token_audiences lists %q more than once", audience)
+		}
+		seen[audience] = struct{}{}
+	}
+	return nil
+}
+
+// validateSelfIssuedSubjectTokens checks the trust mode of a token_exchange
+// block: it is required, and the source list and subject_token_audiences narrow a
+// restricted client only, so they are refused with any.
+func validateSelfIssuedSubjectTokens(spec ConfiguredClientSpec) error {
+	switch spec.SelfIssuedSubjectTokens {
+	case selfIssuedSubjectTokensRestricted:
+		return nil
+	case selfIssuedSubjectTokensAny:
+		if len(spec.AllowedSourceClients) > 0 {
+			return fmt.Errorf("token_exchange.allowed_source_clients is valid only with "+
+				"self_issued_subject_tokens %q", selfIssuedSubjectTokensRestricted)
+		}
+		if len(spec.SubjectTokenAudiences) > 0 {
+			return fmt.Errorf("token_exchange.subject_token_audiences is valid only with "+
+				"self_issued_subject_tokens %q", selfIssuedSubjectTokensRestricted)
+		}
+		return nil
+	case "":
+		return fmt.Errorf("token_exchange.self_issued_subject_tokens is required: set %q or %q",
+			selfIssuedSubjectTokensAny, selfIssuedSubjectTokensRestricted)
+	default:
+		return fmt.Errorf("token_exchange.self_issued_subject_tokens %q is not supported: set %q or %q",
+			spec.SelfIssuedSubjectTokens, selfIssuedSubjectTokensAny, selfIssuedSubjectTokensRestricted)
+	}
+}
+
+// validateConfiguredExchangeRefreshTokens checks the exchange_refresh_tokens
+// block. The confidential-client and token-exchange-grant checks are also
+// enforced for every configured client in ValidateConfiguredClient. They are
+// kept here so the block stays gated if those client-wide rules are relaxed.
+func validateConfiguredExchangeRefreshTokens(spec ConfiguredClientSpec) error {
+	if !spec.ExchangeRefreshTokens {
+		return nil
+	}
+	usesKey := spec.TokenEndpointAuthMethod == oauthproto.TokenEndpointAuthMethodPrivateKeyJWT
+	if !usesKey && !spec.HasSecret {
+		return fmt.Errorf("token_exchange.exchange_refresh_tokens requires a confidential client")
+	}
+	if !slices.Contains(effectiveConfiguredGrantTypes(spec.GrantTypes), oauthproto.GrantTypeTokenExchange) {
+		return fmt.Errorf("token_exchange.exchange_refresh_tokens requires the %q grant", oauthproto.GrantTypeTokenExchange)
+	}
+	if spec.SelfIssuedSubjectTokens != selfIssuedSubjectTokensRestricted {
+		return fmt.Errorf("token_exchange.exchange_refresh_tokens requires self_issued_subject_tokens %q",
+			selfIssuedSubjectTokensRestricted)
+	}
+	if len(spec.SubjectTokenAudiences) == 0 {
+		return fmt.Errorf("token_exchange.subject_token_audiences is required with token_exchange.exchange_refresh_tokens")
+	}
+	if len(spec.AllowedSourceClients) == 0 {
+		return fmt.Errorf("token_exchange.allowed_source_clients is required with token_exchange.exchange_refresh_tokens")
+	}
+	if spec.IDJAGMaxLifetime == "" && spec.RefreshTokenMaxLifetime == "" {
+		return fmt.Errorf("token_exchange.exchange_refresh_tokens needs id_jag_max_lifetime or refresh_token_max_lifetime")
+	}
+	if spec.IDJAGMaxLifetime != "" {
+		if err := validateExchangeRefreshTokenLifetime("id_jag_max_lifetime", spec.IDJAGMaxLifetime); err != nil {
+			return err
+		}
+	}
+	if spec.RefreshTokenMaxLifetime != "" {
+		if err := validateExchangeRefreshTokenLifetime("refresh_token_max_lifetime", spec.RefreshTokenMaxLifetime); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// validateExchangeRefreshTokenLifetime checks one lifetime cap: a Go duration
+// string that is positive and at most maxExchangeRefreshTokenLifetime.
+func validateExchangeRefreshTokenLifetime(field, value string) error {
+	d, err := time.ParseDuration(value)
+	if err != nil {
+		return fmt.Errorf("token_exchange.exchange_refresh_tokens.%s: %w", field, err)
+	}
+	if d <= 0 {
+		return fmt.Errorf("token_exchange.exchange_refresh_tokens.%s must be positive, got %q", field, value)
+	}
+	if d > maxExchangeRefreshTokenLifetime {
+		return fmt.Errorf("token_exchange.exchange_refresh_tokens.%s must not exceed %v, got %q",
+			field, maxExchangeRefreshTokenLifetime, value)
 	}
 	return nil
 }

@@ -552,8 +552,8 @@ const defaultCIMDTokenEndpointAuthMethod = "none"
 // The supported set this function negotiates against is deliberately the
 // defaultCIMDTokenEndpointAuthMethod constant alone, never the AS discovery
 // document's own token_endpoint_auth_methods_supported: discovery legitimately
-// advertises client_secret_basic/client_secret_post when confidential DCR or
-// static delegate clients are enabled, and the CIMD draft (§4.1) forbids those
+// advertises client_secret_basic/client_secret_post when confidential DCR is
+// enabled or a configured delegate client uses a secret, and the CIMD draft (§4.1) forbids those
 // symmetric methods in CIMD documents outright. Deriving the negotiated set
 // from discovery would let a CIMD document negotiate its way into a forbidden
 // method, so no such config plumbing is introduced.

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"maps"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -439,17 +440,32 @@ func TestSessionManager_CreateSession(t *testing.T) {
 
 		ctrl := gomock.NewController(t)
 
-		// We need a session that expects Close() to be called exactly once
-		// (the second terminated check closes the session)
-		var createdSess *sessionmocks.MockMultiSession
+		// entered signals that CreateSession is inside MakeSessionWithID (past the
+		// first terminated check); the factory then blocks until release is closed.
+		entered := make(chan struct{})
+		release := make(chan struct{})
+		done := make(chan struct{})
+		var releaseOnce sync.Once
+		releaseFactory := func() { releaseOnce.Do(func() { close(release) }) }
+
+		// Release the factory and wait for the CreateSession goroutine to exit, so a
+		// failed assertion cannot leave it running after gomock has finished.
+		t.Cleanup(func() {
+			releaseFactory()
+			select {
+			case <-done:
+			case <-time.After(5 * time.Second):
+				t.Error("timed out waiting for CreateSession goroutine to exit")
+			}
+		})
+
 		factory := sessionfactorymocks.NewMockMultiSessionFactory(ctrl)
 		factory.EXPECT().
 			MakeSessionWithID(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
 			DoAndReturn(func(_ context.Context, id string, _ *auth.Identity, _ []*vmcp.Backend, _ vmcpsession.ListChangedSink) (vmcpsession.MultiSession, error) {
-				// Sleep to simulate slow backend initialization, creating a window
-				// where the client can terminate the session after the first check passes.
-				time.Sleep(50 * time.Millisecond)
-				createdSess = newMockSession(t, ctrl, id, []vmcp.Tool{{Name: "tool-a"}})
+				close(entered)
+				<-release
+				createdSess := newMockSession(t, ctrl, id, []vmcp.Tool{{Name: "tool-a"}})
 				// Close() will be called exactly once when the second terminated check fails
 				createdSess.EXPECT().Close().Return(nil).Times(1)
 				return createdSess, nil
@@ -463,26 +479,36 @@ func TestSessionManager_CreateSession(t *testing.T) {
 		require.NotEmpty(t, sessionID)
 
 		// Start CreateSession in a goroutine — it will pass the first terminated
-		// check and then sleep during MakeSessionWithID.
+		// check and then block in MakeSessionWithID until released.
 		errChan := make(chan error, 1)
 		go func() {
+			defer close(done)
 			_, err := sm.CreateSession(context.Background(), sessionID, nil)
 			errChan <- err
 		}()
 
-		// Give the goroutine time to pass the first check and enter MakeSessionWithID.
-		time.Sleep(10 * time.Millisecond)
+		// Wait until the goroutine has passed the first check and entered MakeSessionWithID.
+		select {
+		case <-entered:
+		case <-time.After(5 * time.Second):
+			t.Fatal("timed out waiting for CreateSession to enter MakeSessionWithID")
+		}
 
 		// Terminate the session while MakeSessionWithID is running. This sets
 		// terminated=true on the placeholder (does not delete it).
 		_, terminateErr := sm.Terminate(sessionID)
 		require.NoError(t, terminateErr)
+		releaseFactory()
 
 		// Wait for CreateSession to complete. The second terminated check (after
 		// MakeSessionWithID) should detect terminated=true and fail.
-		createErr := <-errChan
-		require.Error(t, createErr)
-		assert.ErrorContains(t, createErr, "was terminated during backend init")
+		select {
+		case createErr := <-errChan:
+			require.Error(t, createErr)
+			assert.ErrorContains(t, createErr, "was terminated during backend init")
+		case <-time.After(5 * time.Second):
+			t.Fatal("timed out waiting for CreateSession to return")
+		}
 	})
 }
 

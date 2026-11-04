@@ -32,11 +32,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-jose/go-jose/v3"
+	"github.com/go-jose/go-jose/v4"
 	"github.com/ory/fosite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/stacklok/toolhive/pkg/authserver/internal/fositejose"
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	authsession "github.com/stacklok/toolhive/pkg/authserver/server/session"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
@@ -281,7 +282,7 @@ func storedPrivateKeyJWTClient(id string, keys []jose.JSONWebKey) *fosite.Defaul
 		DefaultClient:                     &fosite.DefaultClient{ID: id},
 		TokenEndpointAuthMethod:           oauthproto.TokenEndpointAuthMethodPrivateKeyJWT,
 		TokenEndpointAuthSigningAlgorithm: "RS256",
-		JSONWebKeys:                       &jose.JSONWebKeySet{Keys: keys},
+		JSONWebKeys:                       fositejose.ToFositeKeySet(&jose.JSONWebKeySet{Keys: keys}),
 	}
 }
 
@@ -985,6 +986,17 @@ func TestMemoryStorage_ClientAssertionJWT(t *testing.T) {
 			})
 		})
 	}
+
+	t.Run("excessive lifetime is invalid_client", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			err := s.SetClientAssertionJWT(ctx, "long-jti", time.Now().Add(time.Hour))
+
+			var rfcErr *fosite.RFC6749Error
+			require.ErrorAs(t, err, &rfcErr)
+			assert.Equal(t, fosite.ErrInvalidClient.ErrorField, rfcErr.ErrorField)
+			assert.Equal(t, 401, rfcErr.CodeField)
+		})
+	})
 
 	t.Run("cleanup expired JTIs on valid check", func(t *testing.T) {
 		withStorage(t, func(ctx context.Context, s *MemoryStorage) {

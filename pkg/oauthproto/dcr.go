@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/go-jose/go-jose/v3"
+	"github.com/go-jose/go-jose/v4"
 )
 
 // ToolHiveMCPClientName is the name advertised in dynamic client registration requests.
@@ -40,6 +40,31 @@ type DynamicClientRegistrationRequest struct {
 	// for the client software. Optional; servers may capture it for audit
 	// or telemetry but it is not required to register.
 	SoftwareID string `json:"software_id,omitempty"`
+}
+
+// UnmarshalJSON decodes the request, accepting trailing "=" padding in the
+// base64url members of an inline "jwks" as go-jose v3 did. It is the inbound
+// registration path's only use; the field type is unchanged so the outbound
+// client is unaffected.
+func (r *DynamicClientRegistrationRequest) UnmarshalJSON(data []byte) error {
+	type plain DynamicClientRegistrationRequest
+	aux := struct {
+		*plain
+		JWKS json.RawMessage `json:"jwks,omitempty"`
+	}{plain: (*plain)(r)}
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	r.JWKS = nil
+	if len(aux.JWKS) == 0 || string(aux.JWKS) == "null" {
+		return nil
+	}
+	jwks, err := UnmarshalJWKS(aux.JWKS)
+	if err != nil {
+		return err
+	}
+	r.JWKS = jwks
+	return nil
 }
 
 // ScopeList represents the "scope" field in both dynamic client registration requests and responses.

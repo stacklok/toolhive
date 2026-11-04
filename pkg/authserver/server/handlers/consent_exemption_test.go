@@ -279,6 +279,7 @@ func TestAuthorizeHandler_ConsentExemptionRuntimeEligibilityLossShowsConsent(t *
 		GrantTypes:    fosite.Arguments{oauthproto.GrantTypeAuthorizationCode},
 		ResponseTypes: fosite.Arguments{oauthproto.ResponseTypeCode},
 		RedirectURIs:  []string{testAuthRedirectURI},
+		Audience:      []string{"https://api.example.com"},
 	}
 	params := consentExemptAuthorizeParams(testAuthRedirectURI)
 	rec := httptest.NewRecorder()

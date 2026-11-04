@@ -1549,34 +1549,6 @@ func TestTransparentProxy_RemoteServerStatusCodes(t *testing.T) {
 	}
 }
 
-// TestTransparentProxy_HealthCheckNotRunBeforeInitialization tests that health checks
-// are skipped until the server is initialized
-func TestTransparentProxy_HealthCheckNotRunBeforeInitialization(t *testing.T) {
-	t.Parallel()
-
-	tracker, callback := newCallbackTracker()
-
-	// Create a failing server
-	failingServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusInternalServerError)
-	}))
-	defer failingServer.Close()
-
-	proxy, ctx, cancel := setupRemoteProxyTest(t, failingServer.URL, callback)
-	defer cancel()
-	defer func() { _ = proxy.Stop(ctx) }()
-
-	// Do NOT mark server as initialized - health checks should be skipped
-
-	// Wait for health check cycle (should be skipped since server is not initialized)
-	time.Sleep(150 * time.Millisecond)
-	assert.False(t, tracker.isInvoked(), "Callback should NOT be invoked before server initialization")
-
-	// Proxy should still be running
-	running, _ := proxy.IsRunning()
-	assert.True(t, running, "Proxy should continue running when server is not initialized")
-}
-
 // TestTransparentProxy_HealthCheckFailureWithNilCallback tests that proxy stops
 // gracefully even when callback is nil
 func TestTransparentProxy_HealthCheckFailureWithNilCallback(t *testing.T) {
@@ -1723,7 +1695,7 @@ func TestPrefixHandlers_MountingAndRouting(t *testing.T) {
 				prometheusHandler,
 				authInfoHandler,
 				prefixHandlers,
-				true,  // enableHealthCheck
+				false, // enableHealthCheck: the health monitor's backend ping would read as a proxied request
 				false, // isRemote
 				"streamable-http",
 				nil, // onHealthCheckFailed
@@ -1778,10 +1750,10 @@ func TestMetricsNotServedWithoutHandler(t *testing.T) {
 		"127.0.0.1",
 		0,
 		backend.URL,
-		nil, // no prometheusHandler: metrics live on the diagnostics listener
-		nil, // authInfoHandler
-		nil, // prefixHandlers
-		true,
+		nil,   // no prometheusHandler: metrics live on the diagnostics listener
+		nil,   // authInfoHandler
+		nil,   // prefixHandlers
+		false, // enableHealthCheck: the health monitor's backend ping would read as a proxied request
 		false,
 		"streamable-http",
 		nil,

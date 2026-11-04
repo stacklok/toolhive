@@ -118,6 +118,8 @@ thv rm my-server
 
 **Container workload**: Stops proxy → removes container → deletes state
 
+Deletion attempts supervisor shutdown before removing the container. It makes a fresh removal attempt even if the initial container lookup finds no container, because startup may still be in flight. If removal fails, deletion preserves the saved run configuration for retry. Supervisor shutdown remains best-effort and is not a strict barrier: a foreground supervisor may handle SIGTERM by running its own deletion cleanup, which can overlap manager removal if the proxy wait expires; see [Proxy termination](#proxy-termination).
+
 **Remote workload**: Stops proxy → deletes state
 
 **Implementation**: `pkg/workloads/manager.go`

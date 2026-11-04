@@ -1048,33 +1048,48 @@ func (d *DefaultManager) deleteContainerWorkload(ctx context.Context, name strin
 		slog.Warn("failed to set workload status to removing", "workload", name, "error", err)
 	}
 
-	// Determine baseName and isAuxiliary for cleanup (needed even if container doesn't exist)
-	var baseName string
-	var isAuxiliary bool
-
+	// Use live labels when available, falling back to saved identity if startup
+	// has not created the container yet.
+	var containerLabels map[string]string
 	if container != nil {
-		containerLabels := container.Labels
-		baseName = labels.GetContainerBaseName(containerLabels)
-		isAuxiliary = labels.IsAuxiliaryWorkload(containerLabels)
-
-		// Remove the container first
-		if err := d.removeContainer(ctx, name); err != nil {
-			return err
-		}
-	} else {
-		// Container doesn't exist, but we still need to clean up state
-		// Use the workload name as baseName (they're typically the same)
-		baseName = name
-		isAuxiliary = false
-		slog.Debug("container not found for workload, proceeding with state cleanup", "workload", name)
+		containerLabels = container.Labels
+	} else if runConfig != nil {
+		containerLabels = runConfig.ContainerLabels
 	}
+	baseName := labels.GetContainerBaseName(containerLabels)
+	if baseName == "" {
+		if runConfig != nil && runConfig.BaseName != "" {
+			baseName = runConfig.BaseName
+		} else {
+			baseName = name
+		}
+	}
+	isAuxiliary := labels.IsAuxiliaryWorkload(containerLabels)
 
-	// Stop proxy-runner process AFTER container removal to prevent recreation
-	// Skip for auxiliary workloads like inspector that don't use proxy processes
+	// Attempt supervisor shutdown before removal, rather than letting removal
+	// itself trigger a restart. Shutdown is best-effort and may time out;
+	// foreground SIGTERM cleanup can then overlap this deletion.
+	// Auxiliary workloads like inspector do not use proxy processes.
 	if !isAuxiliary {
-		d.ensureProxyStopped(ctx, name, baseName, runConfig)
+		proxyConfig := runConfig
+		if runConfig != nil {
+			configCopy := *runConfig
+			configCopy.BaseName = baseName
+			proxyConfig = &configCopy
+		}
+		d.ensureProxyStopped(ctx, name, baseName, proxyConfig)
 	} else {
 		slog.Debug("skipping proxy-runner stop for auxiliary workload", "workload", name)
+	}
+
+	// Always perform a fresh removal: a container absent during inspection may
+	// have been created in flight before the supervisor stopped.
+	runtimeName := name
+	if container == nil && runConfig != nil && runConfig.ContainerName != "" {
+		runtimeName = runConfig.ContainerName
+	}
+	if err := d.removeContainer(ctx, name, runtimeName); err != nil {
+		return err
 	}
 
 	// Clean up associated resources (must happen even if container doesn't exist)
@@ -1092,7 +1107,7 @@ func (d *DefaultManager) deleteContainerWorkload(ctx context.Context, name strin
 func (d *DefaultManager) getWorkloadContainer(ctx context.Context, name string) (*rt.ContainerInfo, error) {
 	container, err := d.runtime.GetWorkloadInfo(ctx, name)
 	if err != nil {
-		if errors.Is(err, rt.ErrWorkloadNotFound) {
+		if errors.Is(err, rt.ErrWorkloadNotFound) || errors.Is(err, rt.ErrContainerNotFound) {
 			// Log but don't fail the entire operation for not found containers
 			slog.Warn("failed to get workload", "workload", name, "error", err)
 			return nil, nil
@@ -1271,14 +1286,15 @@ func (d *DefaultManager) freePortHolderIfNeeded(ctx context.Context, runConfig *
 	}
 }
 
-// removeContainer removes the container from the runtime
-func (d *DefaultManager) removeContainer(ctx context.Context, name string) error {
+// removeContainer removes and verifies runtimeName while keeping status and
+// diagnostics associated with the original workload name.
+func (d *DefaultManager) removeContainer(ctx context.Context, name, runtimeName string) error {
 	slog.Debug("removing container", "workload", name)
-	if err := d.runtime.RemoveWorkload(ctx, name); err != nil {
+	if err := d.runtime.RemoveWorkload(ctx, runtimeName); err != nil {
 		if statusErr := d.statuses.SetWorkloadStatus(ctx, name, rt.WorkloadStatusError, err.Error()); statusErr != nil {
 			slog.Warn("Failed to set workload status to error", "workload", name, "error", statusErr)
 		}
-		return fmt.Errorf("failed to remove container: %w", err)
+		return fmt.Errorf("failed to remove container for workload %s: %w", name, err)
 	}
 
 	// Wait for the container to actually be removed from the runtime
@@ -1286,21 +1302,21 @@ func (d *DefaultManager) removeContainer(ctx context.Context, name string) error
 	const maxRetries = 30
 	const retryDelay = 100 * time.Millisecond
 	for range maxRetries {
-		_, err := d.runtime.GetWorkloadInfo(ctx, name)
+		_, err := d.runtime.GetWorkloadInfo(ctx, runtimeName)
 		if err != nil {
-			if errors.Is(err, rt.ErrWorkloadNotFound) {
+			if errors.Is(err, rt.ErrWorkloadNotFound) || errors.Is(err, rt.ErrContainerNotFound) {
 				// Container is gone, deletion complete
 				slog.Debug("container removed from runtime", "workload", name)
 				return nil
 			}
 			// Some other error occurred
 			slog.Warn("error checking container status during removal", "error", err)
-			return fmt.Errorf("failed to verify container removal: %w", err)
+			return fmt.Errorf("failed to verify container removal for workload %s: %w", name, err)
 		}
 		// Container still exists, wait and retry
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("context cancelled while waiting for container removal: %w", ctx.Err())
+			return fmt.Errorf("context cancelled while waiting for container removal for workload %s: %w", name, ctx.Err())
 		case <-time.After(retryDelay):
 			continue
 		}

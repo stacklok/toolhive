@@ -1710,7 +1710,7 @@ func TestDefaultManager_removeContainer(t *testing.T) {
 			}
 
 			ctx := context.Background()
-			err := manager.removeContainer(ctx, tt.workloadName)
+			err := manager.removeContainer(ctx, tt.workloadName, tt.workloadName)
 
 			if tt.expectError {
 				require.Error(t, err)
@@ -2187,7 +2187,10 @@ func TestDefaultManager_updateSingleWorkload(t *testing.T) {
 				pid := startVerifiedProxyProcess(t, "test-workload").pid
 				sm.EXPECT().GetWorkloadPID(gomock.Any(), "test-workload").Return(pid, nil)
 				rt.EXPECT().StopWorkload(gomock.Any(), "test-workload").Return(nil)
-				sm.EXPECT().ResetWorkloadPIDIfMatch(gomock.Any(), "test-workload", pid).Return(nil)
+				resetPID := sm.EXPECT().ResetWorkloadPIDIfMatch(gomock.Any(), "test-workload", pid).Return(nil)
+				// Delete observes the PID already cleared by stop.
+				sm.EXPECT().GetWorkloadPID(gomock.Any(), "test-workload").
+					Return(0, nil).After(resetPID)
 
 				// Mock delete operation - workload exists and can be deleted
 				rt.EXPECT().GetWorkloadInfo(gomock.Any(), "test-workload").
@@ -2231,7 +2234,10 @@ func TestDefaultManager_updateSingleWorkload(t *testing.T) {
 				pid := startVerifiedProxyProcess(t, "test-workload").pid
 				sm.EXPECT().GetWorkloadPID(gomock.Any(), "test-workload").Return(pid, nil)
 				rt.EXPECT().StopWorkload(gomock.Any(), "test-workload").Return(nil)
-				sm.EXPECT().ResetWorkloadPIDIfMatch(gomock.Any(), "test-workload", pid).Return(nil)
+				resetPID := sm.EXPECT().ResetWorkloadPIDIfMatch(gomock.Any(), "test-workload", pid).Return(nil)
+				// Delete observes the PID already cleared by stop.
+				sm.EXPECT().GetWorkloadPID(gomock.Any(), "test-workload").
+					Return(0, nil).After(resetPID)
 
 				// Mock failed delete
 				rt.EXPECT().GetWorkloadInfo(gomock.Any(), "test-workload").

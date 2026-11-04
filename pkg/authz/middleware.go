@@ -202,6 +202,10 @@ func rejectInvalidMCPRequest(w http.ResponseWriter) {
 // which can be created using authz.CreateMiddlewareFromConfig() or directly
 // from an authorizer package (e.g., cedar.NewCedarAuthorizer()).
 func Middleware(a authorizers.Authorizer, next http.Handler, passThroughTools map[string]struct{}) http.Handler {
+	// Wrap once, when the middleware is built, so tool:call implies tool:read for every
+	// check below, including the tools/list filter. tool:call checks pass straight through.
+	a = authorizers.WithToolCallImpliesRead(a)
+
 	// Cache is shared across requests for the same proxy.
 	// Populated from tools/list responses, read during tools/call.
 	annotationCache := NewAnnotationCache()
@@ -513,7 +517,7 @@ func handleToolsCall(
 			return
 		}
 		// find_tool: allow through but filter the tools list in the response so
-		// callers cannot discover tools they are not authorized to call.
+		// callers cannot discover tools they are not authorized to read.
 		if parsedRequest.ResourceID == optimizerdec.FindToolName {
 			filteringWriter := NewResponseFilteringWriter(w, a, r, optimizerdec.FindToolName, annotationCache, passThroughTools)
 			next.ServeHTTP(filteringWriter, r)

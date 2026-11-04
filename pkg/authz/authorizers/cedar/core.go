@@ -1293,6 +1293,14 @@ func (a *Authorizer) AuthorizeWithJWTClaims(
 	resourceID string,
 	arguments map[string]interface{},
 ) (bool, error) {
+	// Cedar has no read_tool action, so tool:read is a plain deny. The tool:call
+	// decorator then lets call_tool policies decide visibility. Returning here, before
+	// claims and upstream tokens are resolved, avoids that work for a result that is
+	// always discarded on every tools/list.
+	if feature == authorizers.MCPFeatureTool && operation == authorizers.MCPOperationRead {
+		return false, nil
+	}
+
 	// Extract Identity from the context
 	identity, ok := auth.IdentityFromContext(ctx)
 	if !ok {

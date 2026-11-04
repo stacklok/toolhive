@@ -142,4 +142,7 @@ const (
 	MetadataExtraKeyStepCount = coreaudit.MetadataExtraKeyStepCount
 	// MetadataExtraKeyTimeout is the key for the workflow timeout in milliseconds
 	MetadataExtraKeyTimeout = coreaudit.MetadataExtraKeyTimeout
+	// MetadataExtraKeyDiscoveryFallbackCount is set on a tools/list or find_tool event to the number of
+	// tools listed only because the caller holds tool:call (tool:read was not granted).
+	MetadataExtraKeyDiscoveryFallbackCount = "discovery_fallback_count"
 )

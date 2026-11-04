@@ -1346,22 +1346,9 @@ func configureDetectedToolsWithDiscovery(
 	for _, clientType := range detected {
 		mode := gm.LLMGatewayModeFor(clientType)
 
-		// Apply the Anthropic path prefix for tools that talk the Anthropic API
-		// directly — direct-mode (ANTHROPIC_BASE_URL) and credential-helper mode
-		// (Claude Desktop's inferenceGatewayBaseUrl). Proxy-mode tools (Cursor,
-		// VS Code, Xcode) do not use it.
-		anthropicBaseURL := ""
-		if usesAnthropicBaseURL(mode) && anthropicPathPrefix != "" {
-			// Trim any leading slash: url.JoinPath docs say elements should not
-			// start with "/", and path.Join already handles the join correctly.
-			if joined, err := url.JoinPath(gatewayURL, strings.TrimLeft(anthropicPathPrefix, "/")); err == nil {
-				anthropicBaseURL = joined
-			}
-		}
-
 		applyCfg := llmgateway.ApplyConfig{
 			GatewayURL:                    gatewayURL,
-			AnthropicBaseURL:              anthropicBaseURL,
+			AnthropicBaseURL:              anthropicBaseURLFor(mode, gatewayURL, anthropicPathPrefix),
 			ProxyBaseURL:                  proxyBaseURL,
 			TokenHelperCommand:            tokenHelperShellCommand,
 			TokenHelperPath:               tokenHelperPath,
@@ -1425,6 +1412,24 @@ func configureDetectedToolsWithDiscovery(
 		return nil, fmt.Errorf("failed to configure any detected tools")
 	}
 	return configured, nil
+}
+
+// anthropicBaseURLFor returns the gateway URL joined with the Anthropic path
+// prefix for tools that talk the Anthropic API directly: direct mode
+// (ANTHROPIC_BASE_URL) and credential-helper mode (Claude Desktop's
+// inferenceGatewayBaseUrl). Proxy-mode tools (Cursor, VS Code, Xcode) do not
+// use it, so they, and a setup without a prefix, get "".
+func anthropicBaseURLFor(mode, gatewayURL, anthropicPathPrefix string) string {
+	if !usesAnthropicBaseURL(mode) || anthropicPathPrefix == "" {
+		return ""
+	}
+	// Trim any leading slash: url.JoinPath docs say elements should not
+	// start with "/", and path.Join already handles the join correctly.
+	joined, err := url.JoinPath(gatewayURL, strings.TrimLeft(anthropicPathPrefix, "/"))
+	if err != nil {
+		return ""
+	}
+	return joined
 }
 
 // applyBedrockSettings resolves the Bedrock-compat settings for clientType onto

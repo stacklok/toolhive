@@ -110,17 +110,9 @@ func applyLLMGatewayKeys(v *hujson.Value, specs []LLMGatewayKeySpec, cfg llmgate
 
 	// Resolve all values up front so an unknown ValueField fails fast before
 	// any file is modified.
-	values := make([]string, len(specs))
-	for i, spec := range specs {
-		if spec.Literal != "" {
-			values[i] = spec.Literal
-		} else {
-			v, err := llmValueForSpec(spec.ValueField, cfg)
-			if err != nil {
-				return err
-			}
-			values[i] = v
-		}
+	values, err := resolveLLMKeyValues(specs, cfg)
+	if err != nil {
+		return err
 	}
 
 	// Ensure ancestors only for specs that will be written (not removed).
@@ -152,6 +144,24 @@ func applyLLMGatewayKeys(v *hujson.Value, specs []LLMGatewayKeySpec, cfg llmgate
 		}
 	}
 	return nil
+}
+
+// resolveLLMKeyValues returns the value each spec writes, in spec order: its
+// Literal when set, otherwise the cfg field named by its ValueField.
+func resolveLLMKeyValues(specs []LLMGatewayKeySpec, cfg llmgateway.ApplyConfig) ([]string, error) {
+	values := make([]string, len(specs))
+	for i, spec := range specs {
+		if spec.Literal != "" {
+			values[i] = spec.Literal
+			continue
+		}
+		v, err := llmValueForSpec(spec.ValueField, cfg)
+		if err != nil {
+			return nil, err
+		}
+		values[i] = v
+	}
+	return values, nil
 }
 
 // removeLLMKey removes the key at ptr from v if it exists. standardized is

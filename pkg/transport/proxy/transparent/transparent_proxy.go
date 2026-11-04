@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"net/http/httptrace"
 	"net/http/httputil"
+	"net/textproto"
 	"net/url"
 	"os"
 	"strconv"
@@ -1342,7 +1343,7 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 	// 5. Catch-all proxy handler (least specific - ServeMux routing handles precedence)
 	// Note: No manual path checking needed - ServeMux longest-match routing ensures
 	// more specific paths registered above take precedence over this catch-all.
-	finalHandler = p.methodGate(finalHandler)
+	finalHandler = rejectConnectionNamedHeaders(p.methodGate(finalHandler))
 	mux.Handle("/", finalHandler)
 
 	// Use ListenConfig with SO_REUSEADDR to allow port reuse after unclean shutdown
@@ -1603,6 +1604,75 @@ func (*TransparentProxy) SendMessageToDestination(_ jsonrpc2.Message) error {
 // This is not used in the TransparentProxy implementation as it forwards HTTP requests directly.
 func (*TransparentProxy) ForwardResponseToClients(_ context.Context, _ jsonrpc2.Message) error {
 	return fmt.Errorf("ForwardResponseToClients not implemented for TransparentProxy")
+}
+
+// connectionHopByHopTokens are the only values a client may list in its
+// Connection header: "close" and the standard hop-by-hop header names
+// (RFC 9110 §7.6.1, plus HTTP2-Settings for h2c upgrades). Keys are in
+// canonical form (http.CanonicalHeaderKey).
+var connectionHopByHopTokens = map[string]bool{
+	"Close":               true,
+	"Connection":          true,
+	"Keep-Alive":          true,
+	"Proxy-Authenticate":  true,
+	"Proxy-Authorization": true,
+	"Proxy-Connection":    true,
+	"Te":                  true,
+	"Trailer":             true,
+	"Transfer-Encoding":   true,
+	"Upgrade":             true,
+	"Http2-Settings":      true,
+}
+
+// maxLoggedConnectionToken caps how much of a rejected Connection token is
+// written to the log.
+const maxLoggedConnectionToken = 64
+
+// rejectConnectionNamedHeaders rejects with 400 any request whose Connection
+// header names something other than a hop-by-hop header.
+//
+// httputil.ReverseProxy removes every header named in Connection from the
+// outbound request, after the middleware chain has run. Middlewares that
+// inject headers (the upstream token, operator-configured headers) set them
+// on the inbound request, so a client sending "Connection: X-Tenant-ID" or
+// "Connection: Authorization" could otherwise have those injected headers
+// removed before the request reaches the upstream.
+//
+// Rejecting is used instead of removing the named headers before the chain
+// runs, because removal would also hide headers from middlewares that
+// validate them only when present: "Origin: <disallowed>" together with
+// "Connection: Origin" would then pass Origin validation. MCP clients and
+// common intermediaries do not name end-to-end headers in Connection. Header
+// forwarding cannot inject any of the allowed names (see
+// middleware.RestrictedHeaders).
+//
+// This runs outermost, before any middleware.
+func rejectConnectionNamedHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		for _, value := range r.Header["Connection"] {
+			for token := range strings.SplitSeq(value, ",") {
+				token = textproto.TrimString(token)
+				if token == "" || connectionHopByHopTokens[http.CanonicalHeaderKey(token)] {
+					continue
+				}
+				// The token is caller-controlled and can be up to the
+				// server's header size limit, so cap what is logged.
+				logged := token
+				if len(logged) > maxLoggedConnectionToken {
+					logged = logged[:maxLoggedConnectionToken] + "..."
+				}
+				slog.Warn("rejecting request that names an end-to-end header in Connection",
+					"header", logged,
+					"method", r.Method,
+					"path", r.URL.Path,
+					"remote", r.RemoteAddr,
+				)
+				http.Error(w, "Connection header may only name hop-by-hop headers", http.StatusBadRequest)
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // methodGate wraps a handler to reject GET, HEAD, and DELETE requests with 405

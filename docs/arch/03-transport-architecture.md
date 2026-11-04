@@ -157,7 +157,12 @@ ToolHive uses two different proxy implementations:
 **How it works:**
 - Uses Go's `httputil.ReverseProxy`
 - Validates every POST routed to the backend-forwarding MCP handler with shared MCP message admission, regardless of path or Content-Type
-- Forwards admitted body bytes and headers without reserializing the envelope
+- Forwards admitted body bytes and headers without reserializing the envelope.
+  The one exception is `Accept-Encoding`, which the authorization middleware
+  (on requests whose response it filters) and the tool filter (on every request)
+  withhold, so that Go's
+  transport negotiates and decodes the encoding itself (see
+  [Middleware Architecture](../middleware.md))
 - Applies the MCP middleware chain only to traffic routed to the backend-forwarding handler
 - Detects session IDs from headers/body for tracking
 - Rejects malformed, trailing, batched, ambiguous, or mixed JSON-RPC envelopes before forwarding

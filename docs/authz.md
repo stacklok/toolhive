@@ -494,6 +494,18 @@ for the corresponding operations:
 - `skills/list` shows only skill entries the user can get (based on `get_skill` policies); entries
   without exactly one non-empty string `uri` fail closed with a generic internal JSON-RPC error.
 
+Filtering means reading the response body, so a compressed body would be opaque
+to the filter. For the methods listed above (and for `find_tool`), ToolHive drops
+the client's `Accept-Encoding` before forwarding the request and lets Go's
+transport negotiate `gzip` on its own, which it decodes before the filter runs.
+Those responses therefore reach the client uncompressed, while every other
+method — `features/list` included — keeps end-to-end compression. If a backend
+compresses one of them without being asked, the filter cannot read it and will
+not forward it unfiltered: the client receives HTTP 500 with a generic JSON-RPC
+internal error, and ToolHive logs a `WARN` naming the encoding and the backend's
+status. An encoded non-2xx response is exempt, since it cannot carry a list, and
+is forwarded with its status and body intact.
+
 For example, if you have this policy:
 ```plain
 permit(principal, action == Action::"call_tool", resource == Tool::"weather");

@@ -284,6 +284,15 @@ This order is critical because:
 - Allow or deny the request based on policy evaluation
 - Filter list responses based on user permissions
 
+**Response compression**: filtering requires reading the response body, so for the
+methods whose responses are filtered (the list methods and `find_tool`) this
+middleware forwards the request without the client's `Accept-Encoding` and lets
+Go's transport negotiate and decode `gzip` itself. Those responses reach the
+client uncompressed; all other traffic, `features/list` included, keeps
+end-to-end compression. A 2xx response that still arrives content-encoded cannot
+be filtered and is replaced with an HTTP 500 JSON-RPC internal error rather than
+forwarded. See [Authorization framework](authz.md) for the user-facing detail.
+
 **Dependencies**:
 - Requires JWT claims from Authentication middleware
 - Requires parsed MCP data from MCP Parsing middleware

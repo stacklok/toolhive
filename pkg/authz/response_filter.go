@@ -35,6 +35,14 @@ type ResponseFilteringWriter struct {
 	statusCode       int
 	annotationCache  *AnnotationCache
 	passThroughTools map[string]struct{}
+	// contentEncoding latches the backend's Content-Encoding value the first
+	// time any method observes one, because the header is rewritten before
+	// FlushAndFilter runs. Empty means the backend declared no encoding.
+	contentEncoding string
+	// rejected records that an encoded response was replaced by an error, so
+	// the rewrite and its log line happen once whether Flush or FlushAndFilter
+	// reaches it first.
+	rejected bool
 }
 
 // NewResponseFilteringWriter creates a new response filtering writer.
@@ -60,12 +68,16 @@ func NewResponseFilteringWriter(
 
 // Write captures the response body for filtering
 func (rfw *ResponseFilteringWriter) Write(data []byte) (int, error) {
+	// A handler may call Write without WriteHeader, which Go treats as an
+	// implicit 200, so the encoding must be observed here too.
+	rfw.recordContentEncoding()
 	return rfw.buffer.Write(data)
 }
 
 // WriteHeader captures the status code
 func (rfw *ResponseFilteringWriter) WriteHeader(statusCode int) {
 	rfw.statusCode = statusCode
+	rfw.recordContentEncoding()
 }
 
 // FlushAndFilter processes the captured response and applies filtering if needed.
@@ -81,6 +93,17 @@ func (rfw *ResponseFilteringWriter) FlushAndFilter() error {
 	}
 
 	rawResponse := rfw.buffer.Bytes()
+
+	// A body still carrying a Content-Encoding is opaque to every decode and
+	// sniff below, which would pass it through unfiltered. Callers withhold the
+	// client's Accept-Encoding from the backend so Go's transport decodes gzip
+	// itself, but a backend can compress unprompted. Fail closed rather than
+	// forward bytes that cannot be filtered. If Flush already committed the
+	// rejection's headers, the error body is owed even when nothing was buffered.
+	if rfw.shouldRejectEncoded() && (len(rawResponse) > 0 || rfw.rejected) {
+		rfw.rejectEncodedResponse()
+		return rfw.writeRejectionBody(rfw.requestID())
+	}
 
 	// A client strips a leading BOM per the WHATWG UTF-8 decode algorithm
 	// before parsing, so strip it here too. Otherwise a BOM-prefixed list
@@ -151,6 +174,49 @@ func (rfw *ResponseFilteringWriter) FlushAndFilter() error {
 	}
 }
 
+// recordContentEncoding latches the backend's Content-Encoding value. It never
+// clears the latch: later header rewrites must not hide an encoding already seen.
+func (rfw *ResponseFilteringWriter) recordContentEncoding() {
+	if rfw.contentEncoding == "" && mcpparser.HasContentEncoding(rfw.Header()) {
+		rfw.contentEncoding = strings.Join(rfw.Header().Values("Content-Encoding"), ", ")
+	}
+}
+
+// shouldRejectEncoded reports whether the buffered response must be replaced by
+// an error because it carries an encoding this filter cannot read.
+//
+// Only a 2xx response can carry a list, so an encoded non-2xx (a 404 from a
+// backend whose session expired, say) is forwarded untouched: replacing it with
+// an opaque 500 would cost the client the signal it needs to start a new
+// session, and there is no list in it to leak. Once a rejection is latched the
+// status has already been rewritten to 500, so the latch answers instead of the
+// status check.
+func (rfw *ResponseFilteringWriter) shouldRejectEncoded() bool {
+	if rfw.rejected {
+		return true
+	}
+	rfw.recordContentEncoding()
+	return rfw.contentEncoding != "" &&
+		rfw.statusCode >= http.StatusOK && rfw.statusCode < http.StatusMultipleChoices
+}
+
+// rejectEncodedResponse rewrites the response head for the plain JSON error that
+// replaces an encoded body: status 500, JSON media type, and none of the
+// backend's entity headers. It must run before the headers are committed, which
+// is why Flush calls it as well as FlushAndFilter. It is idempotent.
+func (rfw *ResponseFilteringWriter) rejectEncodedResponse() {
+	if rfw.rejected {
+		return
+	}
+	rfw.rejected = true
+	slog.Warn("dropping content-encoded response to a filtered method; its body cannot be filtered",
+		"method", rfw.method, "contentEncoding", truncateForLog(rfw.contentEncoding),
+		"backendStatus", rfw.statusCode)
+	mcpparser.DeleteEntityHeaders(rfw.Header())
+	rfw.ResponseWriter.Header().Set("Content-Type", "application/json")
+	rfw.statusCode = http.StatusInternalServerError
+}
+
 // Flush implements http.Flusher if the underlying ResponseWriter supports it.
 // This method is required for streaming support (SSE, streamable-http).
 //
@@ -170,6 +236,12 @@ func (rfw *ResponseFilteringWriter) Flush() {
 	if flusher, ok := rfw.ResponseWriter.(http.Flusher); ok {
 		rfw.applyResponseCachePolicy()
 		rfw.ResponseWriter.Header().Del("Content-Length")
+		// An encoded body to a filtered method is replaced by FlushAndFilter with
+		// a plain error, and headers cannot change once committed here, so the
+		// error's status and headers are fixed before the commit.
+		if requiresResponseFiltering(rfw.method) && rfw.shouldRejectEncoded() {
+			rfw.rejectEncodedResponse()
+		}
 		rfw.ResponseWriter.WriteHeader(rfw.statusCode)
 		flusher.Flush()
 	}
@@ -1235,6 +1307,13 @@ func (rfw *ResponseFilteringWriter) filterSkillsResponse(response *jsonrpc2.Resp
 // correlate the error with its request.
 func (rfw *ResponseFilteringWriter) errorResponseBody(id jsonrpc2.ID, err error) []byte {
 	slog.Error("error filtering response", "method", rfw.method, "error", err)
+	return encodeErrorBody(id)
+}
+
+// encodeErrorBody encodes the generic JSON-RPC internal error without logging.
+// Callers that have already reported the reason themselves use this, so one
+// rejection does not produce two log lines describing it.
+func encodeErrorBody(id jsonrpc2.ID) []byte {
 	errorResponse := &jsonrpc2.Response{
 		ID:    id,
 		Error: jsonrpc2.NewError(mcpparser.CodeInternalError, "internal error"),
@@ -1262,6 +1341,20 @@ func (rfw *ResponseFilteringWriter) errorResponseBody(id jsonrpc2.ID, err error)
 func (rfw *ResponseFilteringWriter) writeErrorResponse(id jsonrpc2.ID, err error) error {
 	rfw.ResponseWriter.WriteHeader(http.StatusInternalServerError)
 	_, writeErr := rfw.ResponseWriter.Write(rfw.errorResponseBody(id, err))
+	return writeErr
+}
+
+// writeRejectionBody writes the JSON-RPC error that replaces a content-encoded
+// body the filter refused. rejectEncodedResponse has already logged the reason
+// at WARN and named the encoding, so nothing is logged again here.
+//
+// Unlike writeErrorResponse this is safe to reach after Flush() has committed
+// the headers, which is the case for a flushed event stream: Flush calls
+// rejectEncodedResponse first, so the head it commits is already the 500 with
+// the JSON media type, and the WriteHeader below is the no-op it should be.
+func (rfw *ResponseFilteringWriter) writeRejectionBody(id jsonrpc2.ID) error {
+	rfw.ResponseWriter.WriteHeader(http.StatusInternalServerError)
+	_, writeErr := rfw.ResponseWriter.Write(encodeErrorBody(id))
 	return writeErr
 }
 

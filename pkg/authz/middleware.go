@@ -342,7 +342,16 @@ func authorizeListAndServe(
 	filteringWriter := NewResponseFilteringWriter(
 		w, a, r, parsedRequest.Method, annotationCache, passThroughTools,
 	)
-	next.ServeHTTP(filteringWriter, r)
+	// Own the encoding negotiation so the backend's reply is decodable here, but
+	// only for the methods whose response is actually filtered. Others reach this
+	// path too (features/list, for one) and keep end-to-end compression.
+	serveRequest := func() *http.Request {
+		if requiresResponseFiltering(parsedRequest.Method) {
+			return mcp.WithoutAcceptEncoding(r)
+		}
+		return r
+	}()
+	next.ServeHTTP(filteringWriter, serveRequest)
 
 	if err := filteringWriter.FlushAndFilter(); err != nil {
 		// The response may already be committed, so filtering errors can only be logged here.
@@ -548,7 +557,7 @@ func handleToolsCall(
 		// callers cannot discover tools they are not authorized to call.
 		if parsedRequest.ResourceID == optimizerdec.FindToolName {
 			filteringWriter := NewResponseFilteringWriter(w, a, r, optimizerdec.FindToolName, annotationCache, passThroughTools)
-			next.ServeHTTP(filteringWriter, r)
+			next.ServeHTTP(filteringWriter, mcp.WithoutAcceptEncoding(r))
 			if err := filteringWriter.FlushAndFilter(); err != nil {
 				slog.Warn("error filtering find_tool response", "error", err)
 			}

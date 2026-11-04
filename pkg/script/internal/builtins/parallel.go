@@ -15,6 +15,9 @@ import (
 // newParallel creates a parallel() Starlark builtin that executes a list
 // of zero-arg callables concurrently and returns results in order.
 //
+// The list is snapshotted at call time, so later changes to it (including
+// by the callables themselves) do not affect which callables run.
+//
 // Uses a bounded worker pool (via foreach.Concurrent) so the goroutine
 // count matches maxConcurrency, not the task count. The step budget is
 // divided evenly across children to prevent amplification.
@@ -27,7 +30,19 @@ func newParallel(ctx context.Context, stepLimit uint64, maxConcurrency int) *sta
 			return nil, err
 		}
 
-		n := fns.Len()
+		// This snapshot closes the index race on fns only; children sharing
+		// other mutable values is tracked separately.
+		callables := make([]starlark.Callable, fns.Len())
+		for i := range callables {
+			v := fns.Index(i)
+			c, ok := v.(starlark.Callable)
+			if !ok {
+				return nil, fmt.Errorf("parallel: element %d is not callable (got %s)", i, v.Type())
+			}
+			callables[i] = c
+		}
+
+		n := len(callables)
 		if n == 0 {
 			return starlark.NewList(nil), nil
 		}
@@ -42,11 +57,7 @@ func newParallel(ctx context.Context, stepLimit uint64, maxConcurrency int) *sta
 
 		results, err := foreach.Concurrent(ctx, n, maxConcurrency,
 			func(_ context.Context, idx int) (starlark.Value, error) {
-				callable, ok := fns.Index(idx).(starlark.Callable)
-				if !ok {
-					return nil, fmt.Errorf("parallel: element %d is not callable (got %s)",
-						idx, fns.Index(idx).Type())
-				}
+				callable := callables[idx]
 
 				// Each child gets its own log buffer to avoid data races
 				var logs []string

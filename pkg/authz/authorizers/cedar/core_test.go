@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"strings"
 	"sync"
 	"testing"
 
@@ -3952,8 +3953,18 @@ func TestPreprocessArguments(t *testing.T) {
 			want: map[string]interface{}{"arg_name": "test", "arg_count": 5, "arg_flag": true},
 		},
 		{
-			name: "complex_type_gets_present_marker",
+			name: "object_only_sets_present_flag",
 			args: map[string]interface{}{"data": map[string]interface{}{"nested": true}},
+			want: map[string]interface{}{"arg_data_present": true},
+		},
+		{
+			name: "array_only_sets_present_flag",
+			args: map[string]interface{}{"data": []interface{}{1.0}},
+			want: map[string]interface{}{"arg_data_present": true},
+		},
+		{
+			name: "null_only_sets_present_flag",
+			args: map[string]interface{}{"data": nil},
 			want: map[string]interface{}{"arg_data_present": true},
 		},
 		{
@@ -4694,6 +4705,234 @@ func TestAuthorizeWithJWTClaims_ClaimSourceAttribute(t *testing.T) {
 			)
 			require.NoError(t, err)
 			assert.Equal(t, tt.wantAuthorize, authorized)
+		})
+	}
+}
+
+// authorizeWithClaims runs one request through AuthorizeWithJWTClaims with the
+// given policies and claims.
+func authorizeWithClaims(
+	t *testing.T,
+	policies []string,
+	claims jwt.MapClaims,
+	feature authorizers.MCPFeature,
+	operation authorizers.MCPOperation,
+	resourceID string,
+	args map[string]interface{},
+) (bool, error) {
+	t.Helper()
+
+	authorizer, err := NewCedarAuthorizer(ConfigOptions{Policies: policies, EntitiesJSON: `[]`}, "")
+	require.NoError(t, err)
+
+	if claims == nil {
+		claims = jwt.MapClaims{"sub": "test-user"}
+	}
+	identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{Subject: "test-user", Claims: claims}}
+	ctx := auth.WithIdentity(context.Background(), identity)
+	return authorizer.AuthorizeWithJWTClaims(ctx, feature, operation, resourceID, args)
+}
+
+// TestAuthorizeNumericValuesNeverDropped checks that numbers a Cedar decimal
+// cannot hold exactly, and over-deep claim values, reach the policy as a marker
+// instead of being dropped, so rules that read them deny. Numeric inputs are
+// float64 literals on purpose: a Go int would become a Cedar Long.
+func TestAuthorizeNumericValuesNeverDropped(t *testing.T) {
+	t.Parallel()
+
+	const (
+		permitAll  = `permit(principal, action, resource);`
+		guardedCap = `forbid(principal, action, resource) when {
+			context has arg_a && context.arg_a.greaterThan(decimal("1000.0")) };`
+		unguardCap = `forbid(principal, action, resource) when {
+			context.arg_a.greaterThan(decimal("1000.0")) };`
+		resourceCap = `forbid(principal, action, resource) when {
+			resource has arg_a && resource.arg_a.greaterThan(decimal("1000.0")) };`
+		promptCap = `forbid(principal, action == Action::"get_prompt", resource) when {
+			context has arg_a && context.arg_a.greaterThan(decimal("1000.0")) };`
+		allowList = `permit(principal, action, resource) when {
+			context.arg_a.lessThanOrEqual(decimal("1000.0")) };`
+		lowerForbid = `forbid(principal, action, resource) when {
+			context.arg_a.lessThan(decimal("-1000.0")) };`
+		claimGuard = `forbid(principal, action, resource) when {
+			context has claim_lvl && context.claim_lvl.greaterThan(decimal("10.0")) };`
+		principalLv = `forbid(principal, action, resource) when {
+			principal has claim_lvl && principal.claim_lvl.greaterThan(decimal("1000.0")) };`
+		geoPermit   = `permit(principal, action == Action::"call_tool", resource == Tool::"geo");`
+		eqStringArg = `permit(principal, action, resource) when { context.arg_id == "100000000000000000000" };`
+		likeArg     = `permit(principal, action, resource) when { context.arg_id like "1*" };`
+		hasOnly     = `permit(principal, action, resource) when { context has arg_a };`
+		hasProbe    = `permit(principal, action, resource) when { !(context.arg_a has thv_unrepresentable) };`
+		neDecimal   = `permit(principal, action, resource) when { context.arg_a != decimal("0.0") };`
+		eqClaim     = `permit(principal, action, resource) when {
+			context.arg_account == principal.claim_account_id };`
+		claimsNe = `forbid(principal, action, resource) when {
+			principal has claim_a && principal has claim_b && principal.claim_a != principal.claim_b };`
+		rolesPermit = `permit(principal, action, resource) when {
+			principal.claim_roles.containsAny(["admin"]) };`
+	)
+	// Reads through the nested "nested" keys down to the too-deep marker.
+	deepForbid := fmt.Sprintf(`forbid(principal, action, resource) when {
+		principal has claim_deep &&
+		principal.claim_deep%s.greaterThan(decimal("1.0")) };`,
+		strings.Repeat(".nested", maxClaimNestingDepth+1))
+
+	const typeErr = "type error"
+	a := func(v interface{}) map[string]interface{} { return map[string]interface{}{"a": v} }
+
+	testCases := []struct {
+		name     string
+		policies []string
+		feature  authorizers.MCPFeature
+		op       authorizers.MCPOperation
+		resource string
+		args     map[string]interface{}
+		claims   jwt.MapClaims
+		allowed  bool
+		wantErr  string // substring of the error; empty means no error
+	}{
+		{name: "guarded forbid: small allowed", policies: []string{permitAll, guardedCap}, args: a(5.0), allowed: true},
+		{name: "guarded forbid: large denied", policies: []string{permitAll, guardedCap}, args: a(5000.0)},
+		{name: "guarded forbid: above range", policies: []string{permitAll, guardedCap}, args: a(922337203685478.0), wantErr: typeErr},
+		{name: "guarded forbid: 1e15", policies: []string{permitAll, guardedCap}, args: a(1e15), wantErr: typeErr},
+		{name: "guarded forbid: -1e15", policies: []string{permitAll, guardedCap}, args: a(-1e15), wantErr: typeErr},
+		{name: "guarded forbid: long fraction", policies: []string{permitAll, guardedCap}, args: a(1000.00001), wantErr: typeErr},
+		{name: "unguarded forbid: wrap boundary", policies: []string{permitAll, unguardCap}, args: a(922337203685477.6), wantErr: typeErr},
+		{name: "unguarded forbid: long fraction", policies: []string{permitAll, unguardCap}, args: a(1000.00001), wantErr: typeErr},
+		{name: "allow-list: small allowed", policies: []string{allowList}, args: a(5.0), allowed: true},
+		{name: "allow-list: wrap boundary", policies: []string{allowList}, args: a(922337203685477.6), wantErr: typeErr},
+		{name: "allow-list: negative wrap boundary", policies: []string{allowList}, args: a(-922337203685477.6), wantErr: typeErr},
+		{name: "allow-list: 1e15", policies: []string{allowList}, args: a(1e15), wantErr: typeErr},
+		{name: "allow-list: long fraction", policies: []string{allowList}, args: a(1000.00001), wantErr: typeErr},
+		{name: "matching permit plus erroring policy denies", policies: []string{permitAll, allowList}, args: a(1e15), wantErr: typeErr},
+		{name: "negative long fraction under lessThan forbid", policies: []string{permitAll, lowerForbid}, args: a(-1000.00001), wantErr: typeErr},
+		{name: "number cannot equal a string", policies: []string{eqStringArg}, args: map[string]interface{}{"id": 1e20}},
+		{name: "number cannot match like", policies: []string{likeArg}, args: map[string]interface{}{"id": 1e20}, wantErr: typeErr},
+		{name: "out-of-range number satisfies has arg_a", policies: []string{hasOnly}, args: a(1e15), allowed: true},
+		{name: "out-of-range number differs from a decimal", policies: []string{neDecimal}, args: a(1e15), allowed: true},
+		{name: "has on a plain decimal is an error, so markers cannot be probed", policies: []string{hasProbe}, args: a(5.0), wantErr: typeErr},
+		{
+			name:     "numbers that round to the same float64 never match ==",
+			policies: []string{eqClaim},
+			args:     map[string]interface{}{"account": 1234567890123456790.0},
+			claims:   jwt.MapClaims{"sub": "u", "account_id": 1234567890123456789.0},
+		},
+		{
+			name:     "an identical large number in argument and claim never matches ==",
+			policies: []string{eqClaim},
+			args:     map[string]interface{}{"account": 1234567890123456789.0},
+			claims:   jwt.MapClaims{"sub": "u", "account_id": 1234567890123456789.0},
+		},
+		{name: "resource attribute above range", policies: []string{permitAll, resourceCap}, args: a(1e15), wantErr: typeErr},
+		{
+			name:     "prompt argument above range",
+			policies: []string{permitAll, promptCap},
+			feature:  authorizers.MCPFeaturePrompt,
+			op:       authorizers.MCPOperationGet,
+			resource: "greet",
+			args:     a(1e15),
+			wantErr:  typeErr,
+		},
+		{
+			name:     "policy that ignores the arguments is unaffected",
+			policies: []string{geoPermit},
+			resource: "geo",
+			args:     map[string]interface{}{"lat": 52.520008, "id": 1e15},
+			allowed:  true,
+		},
+		{name: "claim above range", policies: []string{permitAll, claimGuard}, claims: jwt.MapClaims{"sub": "u", "lvl": 1e15}, wantErr: typeErr},
+		{name: "principal-side claim above range", policies: []string{permitAll, principalLv}, claims: jwt.MapClaims{"sub": "u", "lvl": 1e15}, wantErr: typeErr},
+		{name: "claim in range", policies: []string{permitAll, claimGuard}, claims: jwt.MapClaims{"sub": "u", "lvl": 5.0}, allowed: true},
+		{
+			name:     "claim set holding a marker still matches a permit",
+			policies: []string{rolesPermit},
+			claims:   jwt.MapClaims{"sub": "u", "roles": []interface{}{nil, 1e15, "admin"}},
+			allowed:  true,
+		},
+		{
+			name:     "too-deep claim denies when a rule reads through it",
+			policies: []string{permitAll, deepForbid},
+			claims:   jwt.MapClaims{"sub": "u", "deep": buildNestedMap(maxClaimNestingDepth+2, 5.0)},
+			wantErr:  typeErr,
+		},
+		{
+			name:     "different too-deep claims are not equal",
+			policies: []string{permitAll, claimsNe},
+			claims: jwt.MapClaims{
+				"sub": "u",
+				"a":   buildNestedMap(maxClaimNestingDepth+2, "x"),
+				"b":   buildNestedMap(maxClaimNestingDepth+2, "y"),
+			},
+		},
+		{
+			name:     "identical too-deep claims are equal",
+			policies: []string{permitAll, claimsNe},
+			claims: jwt.MapClaims{
+				"sub": "u",
+				"a":   buildNestedMap(maxClaimNestingDepth+2, "x"),
+				"b":   buildNestedMap(maxClaimNestingDepth+2, "x"),
+			},
+			allowed: true,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			feature, op, resource := tc.feature, tc.op, tc.resource
+			if feature == "" {
+				feature, op = authorizers.MCPFeatureTool, authorizers.MCPOperationCall
+			}
+			if resource == "" {
+				resource = "calc"
+			}
+			authorized, err := authorizeWithClaims(t, tc.policies, tc.claims, feature, op, resource, tc.args)
+			assert.Equal(t, tc.allowed, authorized)
+			if tc.wantErr != "" {
+				assert.ErrorContains(t, err, tc.wantErr)
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+}
+
+// TestAuthorizeNonScalarArguments pins how array, object and null arguments
+// reach policies: only arg_<k>_present is set, and arg_<k> stays absent.
+func TestAuthorizeNonScalarArguments(t *testing.T) {
+	t.Parallel()
+
+	const (
+		permitAll  = `permit(principal, action, resource);`
+		guardedCap = `forbid(principal, action, resource) when {
+			context has arg_a && context.arg_a.greaterThan(decimal("1000.0")) };`
+		hasOnly     = `permit(principal, action, resource) when { context has arg_a };`
+		presentRule = `forbid(principal, action, resource) when { context has arg_a_present };`
+	)
+
+	testCases := []struct {
+		name     string
+		policies []string
+		args     map[string]interface{}
+		allowed  bool
+	}{
+		{name: "array under guarded forbid is skipped", policies: []string{permitAll, guardedCap}, args: map[string]interface{}{"a": []interface{}{5000.0}}, allowed: true},
+		{name: "object under guarded forbid is skipped", policies: []string{permitAll, guardedCap}, args: map[string]interface{}{"a": map[string]interface{}{"v": 5000.0}}, allowed: true},
+		{name: "null under guarded forbid is skipped", policies: []string{permitAll, guardedCap}, args: map[string]interface{}{"a": nil}, allowed: true},
+		{name: "array does not satisfy has arg_a", policies: []string{hasOnly}, args: map[string]interface{}{"a": []interface{}{5000.0}}},
+		{name: "array is caught by a has arg_a_present forbid", policies: []string{permitAll, presentRule}, args: map[string]interface{}{"a": []interface{}{5000.0}}},
+		{name: "scalar does not set arg_a_present", policies: []string{permitAll, presentRule}, args: map[string]interface{}{"a": 5.0}, allowed: true},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			authorized, err := authorizeWithClaims(t, tc.policies, nil,
+				authorizers.MCPFeatureTool, authorizers.MCPOperationCall, "calc", tc.args)
+			require.NoError(t, err)
+			assert.Equal(t, tc.allowed, authorized)
 		})
 	}
 }

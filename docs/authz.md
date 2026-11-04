@@ -680,6 +680,95 @@ Both approaches work and can be used to make authorization decisions based on
 the specific parameters of the request. This policy allows any client to call the
 weather tool, but only for the locations "New York" and "London".
 
+JSON numbers become Cedar `decimal` values, so compare them with the decimal
+methods (`greaterThan`, `lessThanOrEqual`, and so on) and `decimal("...")`
+literals. The `<`, `<=`, `>` and `>=` operators do not accept decimals and raise
+an error on one. ToolHive reads every JSON number as a 64-bit floating-point
+value first, so a number with more than about 15 significant digits may be
+rounded, and the rules below apply to the rounded value.
+
+A decimal holds at most four fractional digits and values up to about
++/-922337203685477.5. A number within that range and with at most four
+fractional digits is converted exactly (the rounded value, see above). Any other
+number is passed as a marker record instead of being left out. Prompt arguments
+(`prompts/get`) on the proxy path get the same `arg_` treatment as tool
+arguments. vMCP does not expose prompt arguments to policies.
+
+A number marker equals nothing, not even another marker for the same number, so
+`==` against it is false and `!=` is true. Compare numeric IDs as strings, not
+as numbers. A too-deep or unsupported claim marker equals only a marker for an
+identical value. `context has arg_n` is true for an out-of-range number, because the
+argument is present. Typed operations on a marker are an evaluation error,
+including decimal methods, `<`, `<=`, `>`, `>=`, `like`, boolean operators, set
+methods called on the marker, `in`, `is`, and reading any attribute other than
+the marker's own. `==`, `!=`, `has`, `set.contains(marker)` and reading the
+marker's own attributes evaluate without error. ToolHive always denies a
+request when a policy evaluation returns an error. A policy that never reads the
+argument is unaffected, and a rule that does a typed operation on a marker
+denies every request that the policy's scope matches and that sends it, including
+requests that another policy would permit.
+
+Cedar cannot test whether a value is a marker without raising an error on other
+types: `context.arg_x has thv_unrepresentable` is a type error on a string, bool
+or decimal. Treat a marker as a value that equals nothing and errors on every
+typed operation, and write rules as positive permits. The shape of a marker (its
+attribute names and contents) is not a stable interface.
+
+An argument that is an array, an object or `null` is not available as
+`arg_<name>`. Only `arg_<name>_present` is set, to `true`. A scalar argument
+does not set `_present` (except one literally named `<name>_present`), so
+`context has arg_x_present` normally means the call sent a non-scalar value.
+Use it only as a deny signal, never as a permit condition.
+
+A `forbid` guarded by `context has arg_x` is skipped for such a call, because
+`context has arg_x` is false. Do not use a `forbid` on an argument value as your
+only control. If a backend might coerce an array into a scalar (for example
+`["rm"]` into `"rm"` or `[5000]` into 5000), add a rule that rejects non-scalar
+values:
+
+```plain
+forbid(principal, action, resource) when { context has arg_x_present };
+```
+
+Prefer a `permit` that states the allowed values positively, for example
+`permit(principal, action == Action::"call_tool", resource == Tool::"x") when { context has arg_x && context.arg_x == "safe" }`.
+A non-scalar call does not match it, so it is denied.
+
+A `forbid` that works only because an evaluation error denies the request looks
+like a no-op in other Cedar tools (the CLI, policy analysis), which skip a policy
+that errors. Guard with `has` and state the allowed values positively.
+
+Numeric JWT claims follow the same rules for numbers. Maps and arrays in a claim may nest
+11 levels deep, counting the claim value itself. A deeper map or array is passed
+as a marker, and a top-level `null` claim is treated as absent. Claim arrays and
+objects stay real Cedar sets and records. `null` elements in a claim array and
+`null` values inside a claim object are dropped. `has` on a marker is false for any attribute other than the
+marker's own, so a `has`-guarded rule on a claim path deeper than the nesting limit is still
+skipped.
+
+**Upgrading:** numeric values reach policies differently from earlier versions.
+Check these:
+
+- Any `permit` whose only condition on a numeric argument or claim is `has` or
+  `!=`. An out-of-range number now matches it.
+- Policies that compare arguments which legitimately carry more than four
+  fractional digits (coordinates, prices). Rules that use decimal methods on
+  them now deny those calls, and `==` rules stop matching (a `==` permit no
+  longer allows, and a `==` forbid no longer fires). Remove the comparison or
+  have the client round.
+- Policies that use `arg_` and `claim_` attributes with decimal methods.
+- Boundary values such as 0.57. Numbers with up to four fractional digits are now
+  exact, where some were previously off by 0.0001 (0.57 arrived as 0.5699), so
+  results at an exact boundary may flip in either direction.
+- Claim values past the nesting limit, which are now markers instead of being
+  dropped.
+- Out-of-range or long-fraction numbers inside a claim array. They used to be
+  dropped from the set (`[1e20, 5]` became `{5}`, and `[1e20]` became `{}`).
+  They are now markers in the set, so `containsAll`, `isEmpty()` and `==` on that
+  claim set can change result.
+
+Array, object and `null` arguments, and `null` claim elements, are unchanged.
+
 #### Combining JWT claims and tool arguments
 
 You can combine JWT claims and tool arguments in your policies to create more sophisticated authorization rules:
@@ -687,11 +776,11 @@ You can combine JWT claims and tool arguments in your policies to create more so
 ```plain
 permit(principal, action == Action::"call_tool", resource == Tool::"sensitive_data") when {
   principal.claim_roles.contains("data_analyst") &&
-  resource.arg_data_level <= principal.claim_clearance_level
+  resource.arg_data_level.lessThanOrEqual(principal.claim_clearance_level)
 };
 ```
 
-This policy allows clients with the "data_analyst" role to access the sensitive_data tool, but only if their clearance level (from JWT claims) is sufficient for the requested data level (from tool arguments).
+This policy allows clients with the "data_analyst" role to access the sensitive_data tool, but only if their clearance level (from JWT claims) is sufficient for the requested data level (from tool arguments). Both values must be JSON numbers with at most four fractional digits and within about +/-922337203685477.5, or the request is denied.
 
 ### Advanced Cedar topics
 

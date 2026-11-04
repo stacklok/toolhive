@@ -1026,8 +1026,10 @@ func multiValuedTokens(claimName string, elems []interface{}) []string {
 	return tokens
 }
 
-// preprocessArguments adds an "arg_" prefix to all argument keys.
-// For complex types, it just notes their presence with an "_present" suffix.
+// preprocessArguments adds an "arg_" prefix to all argument keys. Arrays,
+// objects and null only set an "_present" flag and stay absent as "arg_<key>":
+// making them present would let a permit gated on `has` or `!=` match them.
+// See "Using tool arguments in policies" in docs/authz.md.
 func preprocessArguments(arguments map[string]interface{}) map[string]interface{} {
 	if arguments == nil {
 		return nil
@@ -1040,7 +1042,6 @@ func preprocessArguments(arguments map[string]interface{}) map[string]interface{
 		case string, bool, int, int64, float64:
 			preprocessed[argKey] = val
 		default:
-			// For complex types, just note their presence
 			preprocessed[argKey+"_present"] = true
 		}
 	}

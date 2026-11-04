@@ -710,8 +710,19 @@ func (r *VirtualMCPServer) ExplicitPrimaryUpstreamProvider() (name string, fromD
 	return "", false
 }
 
+// ApplyDefaults applies controller-side defaults that are intentionally not
+// persisted to the API server. Call it before Validate during reconciliation.
+// Keeping defaulting out of Validate makes validation pure: it runs against
+// cached objects and its mutations would never be written back to the API.
+func (r *VirtualMCPServer) ApplyDefaults() {
+	if r.Spec.EmbeddingServerRef != nil && r.Spec.Config.Optimizer == nil {
+		r.Spec.Config.Optimizer = &config.OptimizerConfig{}
+	}
+}
+
 // Validate performs validation for VirtualMCPServer
-// This method is called by the controller during reconciliation
+// This method is called by the controller during reconciliation.
+// It must not mutate the spec; use ApplyDefaults for defaulting.
 func (r *VirtualMCPServer) Validate() error {
 	// Validate Group is set — spec.groupRef.name is required
 	// Note: CEL cannot validate embedded types from other packages
@@ -755,8 +766,9 @@ func (r *VirtualMCPServer) Validate() error {
 // Rules:
 // - embeddingServerRef.name must be non-empty when ref is provided
 // - optimizer requires either embeddingServerRef or a manually set embeddingService
-// - if embeddingServerRef is set without optimizer, auto-populate optimizer with defaults
 //
+// EmbeddingServerRef without an optimizer is materialized by ApplyDefaults before
+// validation; validation itself must stay side-effect free.
 // The controller handles the remaining cases at runtime (event emission, URL population).
 func (r *VirtualMCPServer) validateEmbeddingServer() error {
 	// Validate ref name is non-empty
@@ -774,13 +786,6 @@ func (r *VirtualMCPServer) validateEmbeddingServer() error {
 		return fmt.Errorf(
 			"spec.config.optimizer requires an embedding service: " +
 				"set spec.embeddingServerRef (recommended) or spec.config.optimizer.embeddingService")
-	}
-
-	// EmbeddingServerRef is set but optimizer is not configured: auto-populate
-	// optimizer with default values so the embedding server is actually used.
-	// The controller emits a Kubernetes event for this case.
-	if hasRef && !hasOptimizer {
-		r.Spec.Config.Optimizer = &config.OptimizerConfig{}
 	}
 
 	return nil

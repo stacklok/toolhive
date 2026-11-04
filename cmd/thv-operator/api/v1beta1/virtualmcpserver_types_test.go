@@ -395,7 +395,7 @@ func TestValidateEmbeddingServer(t *testing.T) {
 		expectOptimizer bool
 	}{
 		{
-			name: "ref_without_optimizer_auto_populates_defaults",
+			name: "ref_without_optimizer_defaults_before_validation",
 			server: &VirtualMCPServer{
 				Spec: VirtualMCPServerSpec{
 					GroupRef: &MCPGroupRef{Name: "test-group"},
@@ -460,6 +460,9 @@ func TestValidateEmbeddingServer(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
+			// Defaulting is now an explicit pre-validation step (#4628);
+			// Validate itself must not mutate the spec.
+			tt.server.ApplyDefaults()
 			err := tt.server.Validate()
 			if tt.expectError {
 				require.Error(t, err)
@@ -472,7 +475,7 @@ func TestValidateEmbeddingServer(t *testing.T) {
 
 			if tt.expectOptimizer {
 				assert.NotNil(t, tt.server.Spec.Config.Optimizer,
-					"Optimizer should be populated after validation")
+					"Optimizer should be populated after ApplyDefaults")
 			} else {
 				assert.Nil(t, tt.server.Spec.Config.Optimizer,
 					"Optimizer should remain nil")
@@ -761,4 +764,40 @@ func TestAuthzConfigRef_DeprecatedInlinePrimaryUpstreamProvider(t *testing.T) {
 			assert.Equal(t, tt.want, tt.ref.DeprecatedInlinePrimaryUpstreamProvider())
 		})
 	}
+}
+
+// TestValidateDoesNotDefaultEmbeddingOptimizer is a regression test for #4628:
+// defaulting must happen in ApplyDefaults, not as a side effect of Validate.
+// Validate runs against cached objects and its mutations are never persisted,
+// so it must leave the spec untouched.
+func TestValidateDoesNotDefaultEmbeddingOptimizer(t *testing.T) {
+	t.Parallel()
+
+	vmcp := &VirtualMCPServer{
+		Spec: VirtualMCPServerSpec{
+			GroupRef:           &MCPGroupRef{Name: "test-group"},
+			EmbeddingServerRef: &EmbeddingServerRef{Name: "shared-embedding"},
+		},
+	}
+
+	require.NoError(t, vmcp.Validate())
+	assert.Nil(t, vmcp.Spec.Config.Optimizer,
+		"Validate must not mutate spec; embedding optimizer defaulting belongs in ApplyDefaults")
+}
+
+// TestApplyDefaultsEmbeddingOptimizer verifies the extracted defaulting step
+// preserves the previous behavior: an EmbeddingServerRef without an optimizer
+// gets a default optimizer so the referenced embedding server is used.
+func TestApplyDefaultsEmbeddingOptimizer(t *testing.T) {
+	t.Parallel()
+
+	vmcp := &VirtualMCPServer{
+		Spec: VirtualMCPServerSpec{
+			GroupRef:           &MCPGroupRef{Name: "test-group"},
+			EmbeddingServerRef: &EmbeddingServerRef{Name: "shared-embedding"},
+		},
+	}
+
+	vmcp.ApplyDefaults()
+	require.NotNil(t, vmcp.Spec.Config.Optimizer)
 }

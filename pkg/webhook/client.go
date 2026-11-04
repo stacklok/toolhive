@@ -69,7 +69,7 @@ func NewClient(cfg Config, webhookType Type, hmacSecret []byte) (*Client, error)
 func (c *Client) Call(ctx context.Context, req *Request) (*Response, error) {
 	body, err := json.Marshal(req)
 	if err != nil {
-		return nil, NewInvalidResponseError(c.config.Name, fmt.Errorf("failed to marshal request: %w", err), 0)
+		return nil, NewLocalError(c.config.Name, fmt.Errorf("failed to marshal request: %w", err))
 	}
 
 	respBody, err := c.doHTTPCall(ctx, body)
@@ -89,7 +89,7 @@ func (c *Client) Call(ctx context.Context, req *Request) (*Response, error) {
 func (c *Client) CallMutating(ctx context.Context, req *Request) (*MutatingResponse, error) {
 	body, err := json.Marshal(req)
 	if err != nil {
-		return nil, NewInvalidResponseError(c.config.Name, fmt.Errorf("failed to marshal request: %w", err), 0)
+		return nil, NewLocalError(c.config.Name, fmt.Errorf("failed to marshal request: %w", err))
 	}
 
 	respBody, err := c.doHTTPCall(ctx, body)
@@ -110,13 +110,13 @@ func (c *Client) CallMutating(ctx context.Context, req *Request) (*MutatingRespo
 func (c *Client) doHTTPCall(ctx context.Context, body []byte) ([]byte, error) {
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.config.URL, bytes.NewReader(body))
 	if err != nil {
-		return nil, NewNetworkError(c.config.Name, fmt.Errorf("failed to create HTTP request: %w", err))
+		return nil, NewLocalError(c.config.Name, fmt.Errorf("failed to create HTTP request: %w", err))
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 
 	hmacSecret, err := c.hmacSecretForRequest(ctx)
 	if err != nil {
-		return nil, NewNetworkError(c.config.Name, fmt.Errorf("failed to resolve HMAC secret: %w", err))
+		return nil, NewLocalError(c.config.Name, fmt.Errorf("failed to resolve HMAC secret: %w", err))
 	}
 
 	// Apply HMAC signing if configured.

@@ -215,7 +215,8 @@ func executeSingleMutation(
 			return nil, err
 		}
 
-		if exec.config.FailurePolicy == webhook.FailurePolicyIgnore {
+		// A local error means the webhook was never consulted, so it is never ignored.
+		if exec.config.FailurePolicy == webhook.FailurePolicyIgnore && !webhook.IsLocalError(err) {
 			slog.Warn("Mutating webhook error ignored due to fail-open policy", "webhook", whName, "error", err)
 			return currentBody, nil
 		}

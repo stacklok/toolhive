@@ -108,7 +108,7 @@ func Setup(
 	// files are patched, preserving the guarantee that a failed login leaves no
 	// state.
 	detected, done, err := setupClients(
-		gm, targetClient, lazy, llmCfg.Bedrock.Compat, len(llmCfg.Models) > 0, out, errOut)
+		gm, targetClient, lazy, llmCfg.Bedrock.Compat, llmCfg.Models, out, errOut)
 	if err != nil {
 		return err
 	}
@@ -179,6 +179,9 @@ func Setup(
 	// later setup that omits claude-code. llmCfg.Bedrock.Compat is the effective
 	// (persisted + inline) compat state used for the --enable-1m check.
 	warnBedrockNoEffect(errOut, inlineOpts, llmCfg.Bedrock.Compat, configured)
+	// The persisted config still holds the previous compat state here, since
+	// it is only updated below.
+	warnBedrockTurnedOff(errOut, provider.GetLLMConfig().Bedrock.Compat, llmCfg.Bedrock.Compat, configured)
 	warnShortPromptCacheNoEffect(errOut, inlineOpts, configured)
 	warnPromptCacheBedrockCompatibility(errOut, inlineOpts, llmCfg.ShortPromptCache, configured)
 
@@ -310,22 +313,38 @@ func Teardown(
 
 	// Revert tool config files best-effort; warn on failure but do not undo
 	// the config update above (the user can re-run setup+teardown to reconcile).
-	for _, tc := range toRevert {
-		revertToolConfig(out, errOut, gm, tc)
-	}
+	revertTeardownTools(out, errOut, gm, toRevert, llmCfg.Bedrock.Compat)
 
 	if shouldPurge {
-		_, _ = fmt.Fprintln(out,
-			"Deleted locally cached LLM tokens. This does not revoke tokens at the identity provider or sign out the browser session.")
-		_, _ = fmt.Fprintln(out,
-			"Stop any running LLM proxy or token helper before relying on cleanup; an active process may recreate cached credentials.")
-		if purgeTokens && !fullTeardown {
-			_, _ = fmt.Fprintln(out,
-				"Remaining configured tools share this session and will need to authenticate again.")
-		}
+		printTokenPurgeNotice(out, purgeTokens, fullTeardown)
 	}
 
 	return nil
+}
+
+// revertTeardownTools reverts each tool's config files best-effort, warning on
+// failure. When bedrockCompat was on, it also names the Bedrock settings each
+// successful revert removed.
+func revertTeardownTools(out, errOut io.Writer, gm GatewayManager, toRevert []ToolConfig, bedrockCompat bool) {
+	for _, tc := range toRevert {
+		if revertToolConfig(out, errOut, gm, tc) && bedrockCompat {
+			warnBedrockSettingsRemoved(errOut, tc)
+		}
+	}
+}
+
+// printTokenPurgeNotice tells the user what deleting the cached LLM tokens does
+// and does not cover. An explicit purge that leaves tools configured also warns
+// that those tools share the purged session and must authenticate again.
+func printTokenPurgeNotice(out io.Writer, purgeTokens, fullTeardown bool) {
+	_, _ = fmt.Fprintln(out,
+		"Deleted locally cached LLM tokens. This does not revoke tokens at the identity provider or sign out the browser session.")
+	_, _ = fmt.Fprintln(out,
+		"Stop any running LLM proxy or token helper before relying on cleanup; an active process may recreate cached credentials.")
+	if purgeTokens && !fullTeardown {
+		_, _ = fmt.Fprintln(out,
+			"Remaining configured tools share this session and will need to authenticate again.")
+	}
 }
 
 // applyTeardownToConfig updates the persisted LLM config for a teardown that
@@ -508,7 +527,7 @@ func filterDetectedClients(gm GatewayManager, targetClient string) ([]string, er
 }
 
 func setupClients(
-	gm GatewayManager, targetClient string, lazy, bedrockCompat, hasModels bool, out, errOut io.Writer,
+	gm GatewayManager, targetClient string, lazy, bedrockCompat bool, models []string, out, errOut io.Writer,
 ) ([]string, bool, error) {
 	detected, err := filterDetectedClients(gm, targetClient)
 	if err != nil {
@@ -518,10 +537,16 @@ func setupClients(
 		_, _ = fmt.Fprintln(out, "No supported AI tools detected.")
 		return nil, true, nil
 	}
-	if !lazy {
-		return detected, false, nil
+	// A --models pin Codex cannot use is refused here, before login, since no
+	// discovery result could make it usable.
+	detected, err = filterCodexBedrockPin(detected, targetClient, bedrockCompat, models, errOut)
+	if err != nil {
+		return nil, false, err
 	}
-	detected, err = filterLazyModelDiscoveryClients(detected, targetClient, bedrockCompat, hasModels, errOut)
+	if !lazy {
+		return detected, len(detected) == 0, nil
+	}
+	detected, err = filterLazyModelDiscoveryClients(detected, targetClient, bedrockCompat, models, errOut)
 	if err != nil {
 		return nil, false, err
 	}
@@ -554,7 +579,7 @@ func hasVSCodeClient(clients []string) bool {
 }
 
 func filterLazyModelDiscoveryClients(
-	clients []string, targetClient string, bedrockCompat, hasModels bool, errOut io.Writer,
+	clients []string, targetClient string, bedrockCompat bool, models []string, errOut io.Writer,
 ) ([]string, error) {
 	if targetClient == "pi" {
 		return nil, fmt.Errorf("client %q does not support --lazy: Pi needs authenticated model discovery "+
@@ -565,13 +590,8 @@ func filterLazyModelDiscoveryClients(
 			"client %q does not support --lazy: VS Code requires non-lazy setup for authenticated model discovery; "+
 				"rerun without --lazy", targetClient)
 	}
-	// --bedrock-compat pins each tier to a Bedrock model discovered from the
-	// gateway, which lazy mode cannot do (it never logs in). Without pins, Claude
-	// Code falls back to Anthropic-form IDs a Bedrock-only gateway rejects — so
-	// refuse unless the user pins the tiers explicitly with --models.
-	if targetClient == claudeCodeClient && bedrockCompat && !hasModels {
-		return nil, fmt.Errorf("client %q does not support --lazy with --bedrock-compat: Bedrock tiers need "+
-			"authenticated model discovery; pass --models to pin them, or rerun without --lazy", targetClient)
+	if refusal, _ := lazyBedrockGap(targetClient, bedrockCompat, models); refusal != "" {
+		return nil, errors.New(refusal)
 	}
 	filtered := make([]string, 0, len(clients))
 	for _, clientType := range clients {
@@ -587,14 +607,43 @@ func filterLazyModelDiscoveryClients(
 			)
 			continue
 		}
-		if clientType == claudeCodeClient && bedrockCompat && !hasModels {
-			_, _ = fmt.Fprintln(errOut, "Warning: skipping claude-code in lazy mode; --bedrock-compat needs "+
-				"authenticated model discovery to pin tiers. Pass --models to pin them, or rerun without --lazy.")
+		if _, warning := lazyBedrockGap(clientType, bedrockCompat, models); warning != "" {
+			_, _ = fmt.Fprintln(errOut, warning)
 			continue
 		}
 		filtered = append(filtered, clientType)
 	}
 	return filtered, nil
+}
+
+// lazyBedrockGap reports whether a Bedrock-mode client needs model discovery
+// that lazy mode cannot run (it never logs in), returning the error for a
+// --client target and the warning for an auto-detected client, or two empty
+// strings when lazy setup can proceed. Claude Code and Codex pin each tier from
+// the gateway listing; without --models pins, Claude Code would fall back to
+// Anthropic-form IDs and Codex to OpenAI model names, both of which a
+// Bedrock-only gateway rejects. The gate only asks whether --models is set for
+// Claude Code, not whether an entry pins a tier: a list that pins none leaves
+// Claude Code on its built-in IDs, which fails visibly on the first request
+// (setup also warns about every unpinned tier). Codex has no built-in model to
+// fall back to, so it needs an actual Codex pin.
+func lazyBedrockGap(clientType string, bedrockCompat bool, models []string) (string, string) {
+	switch {
+	case !bedrockCompat:
+		return "", ""
+	case clientType == claudeCodeClient && len(models) == 0:
+		return fmt.Sprintf("client %q does not support --lazy with --bedrock-compat: Bedrock tiers need "+
+				"authenticated model discovery; pass --models to pin them, or rerun without --lazy", clientType),
+			"Warning: skipping claude-code in lazy mode; --bedrock-compat needs authenticated model discovery " +
+				"to pin tiers. Pass --models to pin them, or rerun without --lazy."
+	case clientType == codexClient && !hasCodexPin(models):
+		return fmt.Sprintf("client %q does not support --lazy with --bedrock-compat: picking a Bedrock "+
+				"model needs authenticated model discovery; pass --models to pin one, or rerun without --lazy", clientType),
+			"Warning: skipping codex in lazy mode; --bedrock-compat needs authenticated model discovery " +
+				"to pick a model. Pass --models to pin one, or rerun without --lazy."
+	default:
+		return "", ""
+	}
 }
 
 type discoveredGatewayModels struct {
@@ -606,37 +655,75 @@ type discoveredGatewayModels struct {
 	anthropicAdaptive       map[string]bool
 }
 
+// bedrockClients are the clients Bedrock compat configures: the name setup uses
+// for each in messages, and the settings ToolHive owns in its config, which a
+// setup without Bedrock and teardown remove whatever they hold.
+var bedrockClients = map[string]struct{ name, keys string }{
+	claudeCodeClient: {
+		name: "Claude Code",
+		keys: "env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS and env.ANTHROPIC_DEFAULT_{HAIKU,OPUS,SONNET,FABLE}_MODEL",
+	},
+	codexClient: {
+		name: "Codex",
+		keys: "model, web_search, model_context_window, memories.consolidation_model and memories.extract_model",
+	},
+}
+
 func discoverSetupModels(
 	ctx context.Context, errOut io.Writer, clients []string, targetClient string, cfg Config, anthropicPrefix string,
 ) ([]string, discoveredGatewayModels, error) {
 	hasPi := slices.Contains(clients, "pi")
 	hasVSCode := hasVSCodeClient(clients)
-	// Bedrock-compat Claude Code pins each tier to the newest Bedrock model the
-	// gateway advertises, so it needs the Anthropic catalogue too.
-	needsBedrockTiers := cfg.Bedrock.Compat && slices.Contains(clients, claudeCodeClient)
+	// Bedrock-compat clients pick their models from the gateway listing: Claude
+	// Code each tier from the Anthropic catalogue, Codex each tier (and the main
+	// model's context window) from the OpenAI listing. Lazy
+	// mode has no token to list with; filterLazyModelDiscoveryClients already
+	// gates it on --models.
+	listsBedrock := cfg.Bedrock.Compat && cfg.discoveryAccessToken != ""
+	needsBedrockTiers := listsBedrock && slices.Contains(clients, claudeCodeClient)
+	needsCodexModel := listsBedrock && slices.Contains(clients, codexClient)
 	catalog, openErr, anthropicErr := fetchSetupModelCatalog(
-		ctx, cfg, hasPi || needsBedrockTiers, hasVSCode || hasPi, anthropicPrefix)
+		ctx, cfg, hasPi || needsBedrockTiers, hasVSCode || hasPi || needsCodexModel, anthropicPrefix)
 	piMissing := hasPi && len(catalog.openAI) == 0 && len(catalog.anthropic) == 0
-	// Bedrock-compat Claude Code cannot derive its tier pins when the Anthropic
-	// catalogue fetch failed, or succeeded without a single Bedrock-form ID. Treat
-	// that like the Pi/VS Code discovery failures: abort when the client was named
-	// explicitly, skip it with a warning when it was auto-detected (so the user is
-	// not left with a Claude Code that routes built-in Anthropic IDs a Bedrock-only
-	// gateway rejects). --models pinning every tier needs no discovery. Lazy mode
-	// never fetches the catalogue (no access token); filterLazyModelDiscoveryClients
-	// already gates it on --models.
-	bedrockErr := bedrockDiscoveryError(
-		needsBedrockTiers && cfg.discoveryAccessToken != "", cfg.Models, catalog.anthropic, anthropicErr)
-	bedrockMissing := bedrockErr != nil
-	if err := explicitDiscoveryFailure(targetClient, piMissing, openErr, anthropicErr, bedrockErr); err != nil {
+	// A Bedrock-compat client cannot pick its models when the listing it needs
+	// failed, or holds no usable Bedrock model. Treat that like the Pi/VS Code
+	// discovery failures: abort when the client was named explicitly, skip it
+	// with a warning when it was auto-detected, so the user is not left with a
+	// client that requests models a Bedrock-only gateway rejects. A --models pin
+	// covering the client needs no discovery.
+	bedrockErrs := make(map[string]error, len(bedrockClients))
+	if err := bedrockDiscoveryError(needsBedrockTiers, cfg.Models, catalog.anthropic, anthropicErr); err != nil {
+		bedrockErrs[claudeCodeClient] = err
+	}
+	if err := codexDiscoveryError(needsCodexModel, cfg.Models, catalog.openAI, openErr); err != nil {
+		bedrockErrs[codexClient] = err
+	}
+	if err := explicitDiscoveryFailure(targetClient, piMissing, openErr, anthropicErr, bedrockErrs); err != nil {
 		return nil, catalog, err
 	}
 	warnModelDiscovery(errOut, hasVSCode, hasPi, piMissing, catalog, openErr, anthropicErr)
-	if bedrockMissing {
-		_, _ = fmt.Fprintf(errOut, "Warning: skipping auto-detected claude-code because Bedrock model discovery "+
-			"failed: %v\n", bedrockErr)
+	warnBedrockDiscovery(errOut, clients, bedrockErrs, needsCodexModel, openErr)
+	return keepDiscoverableClients(clients, openErr, piMissing, bedrockErrs), catalog, nil
+}
+
+// warnBedrockDiscovery warns about each auto-detected client skipped because
+// its Bedrock model discovery failed, and about a pinned Codex that is
+// configured without the metadata the OpenAI listing would have supplied.
+func warnBedrockDiscovery(
+	errOut io.Writer, clients []string, bedrockErrs map[string]error, needsCodexModel bool, openErr error,
+) {
+	for _, clientType := range clients {
+		if err := bedrockErrs[clientType]; err != nil {
+			_, _ = fmt.Fprintf(errOut, "Warning: skipping auto-detected %s because Bedrock model discovery "+
+				"failed: %v\n", clientType, err)
+		}
 	}
-	return keepDiscoverableClients(clients, openErr, piMissing, bedrockMissing), catalog, nil
+	if needsCodexModel && bedrockErrs[codexClient] == nil && openErr != nil {
+		// Pinned with --models, so Codex is configured anyway, just without the
+		// context window the listing would have supplied.
+		_, _ = fmt.Fprintf(errOut, "Warning: could not read Codex model metadata from the gateway, so Codex "+
+			"uses its fallback metadata: %v\n", openErr)
+	}
 }
 
 // bedrockDiscoveryError reports why bedrock-compat Claude Code cannot pin its
@@ -661,15 +748,19 @@ func bedrockDiscoveryError(needsBedrockTiers bool, models, discovered []string, 
 
 // explicitDiscoveryFailure returns an error when the explicitly named client
 // cannot be configured because its model discovery failed, so setup aborts
-// rather than writing a half-configured client.
-func explicitDiscoveryFailure(targetClient string, piMissing bool, openErr, anthropicErr, bedrockErr error) error {
+// rather than writing a half-configured client. bedrockErrs holds the
+// Bedrock-compat discovery failure of each affected client.
+func explicitDiscoveryFailure(
+	targetClient string, piMissing bool, openErr, anthropicErr error, bedrockErrs map[string]error,
+) error {
 	switch {
 	case isVSCodeClient(targetClient) && openErr != nil:
 		return fmt.Errorf("discovering gateway models: %w", openErr)
 	case targetClient == "pi" && piMissing:
 		return fmt.Errorf("discovering Pi models: %w", errors.Join(openErr, anthropicErr))
-	case targetClient == claudeCodeClient && bedrockErr != nil:
-		return fmt.Errorf("discovering Bedrock models for Claude Code: %w", bedrockErr)
+	case bedrockErrs[targetClient] != nil:
+		return fmt.Errorf("discovering Bedrock models for %s: %w",
+			bedrockClients[targetClient].name, bedrockErrs[targetClient])
 	default:
 		return nil
 	}
@@ -677,11 +768,13 @@ func explicitDiscoveryFailure(targetClient string, piMissing bool, openErr, anth
 
 // keepDiscoverableClients drops the auto-detected clients whose required model
 // discovery failed, leaving the rest to be configured.
-func keepDiscoverableClients(clients []string, openErr error, piMissing, bedrockMissing bool) []string {
+func keepDiscoverableClients(
+	clients []string, openErr error, piMissing bool, bedrockErrs map[string]error,
+) []string {
 	filtered := make([]string, 0, len(clients))
 	for _, clientType := range clients {
 		if (isVSCodeClient(clientType) && openErr != nil) || (clientType == "pi" && piMissing) ||
-			(clientType == claudeCodeClient && bedrockMissing) {
+			bedrockErrs[clientType] != nil {
 			continue
 		}
 		filtered = append(filtered, clientType)
@@ -1072,10 +1165,11 @@ func newestBedrockTiers(discovered []string) bedrockTiers {
 	return tiers
 }
 
-// applyBedrockCompat resolves the per-tier Bedrock model IDs for Claude Code and
-// writes them onto applyCfg, surfacing override diagnostics and naming any tier
-// that could not be pinned. Called only for bedrock-compat Claude Code.
-func applyBedrockCompat(
+// applyClaudeCodeBedrock resolves the per-tier Bedrock model IDs for Claude
+// Code and writes them onto applyCfg, with the experimental anthropic-beta
+// headers Bedrock rejects disabled, surfacing override diagnostics and naming
+// any tier that could not be pinned. Called only for bedrock-compat Claude Code.
+func applyClaudeCodeBedrock(
 	errOut io.Writer, applyCfg *llmgateway.ApplyConfig, models, discoveredAnthropic []string, enable1M bool,
 ) {
 	tiers, warnings := resolveBedrockModels(models, discoveredAnthropic, enable1M)
@@ -1118,9 +1212,14 @@ func resolveBedrockModels(models, discovered []string, enable1M bool) (bedrockTi
 	// the same tier is reported rather than silently winning last-write.
 	assigned := make(map[string]string, 4)
 	for _, m := range models {
+		// An OpenAI GPT ID is Codex's to pin, not a Claude tier; skip it without
+		// the no-tier warning so pinning both tools in one --models list is quiet.
+		if isCodexModelID(m) {
+			continue
+		}
 		lower := strings.ToLower(m)
 		family := ""
-		for _, f := range []string{"haiku", "opus", "sonnet", "fable"} {
+		for _, f := range bedrockFamilies {
 			if strings.Contains(lower, f) {
 				family = f
 				break
@@ -1163,15 +1262,16 @@ func withOneMSuffix(id string) string {
 // to decide whether an inline --enable-1m is inert.
 //
 // Two cases:
-//   - --bedrock-compat passed this run but Claude Code was not among the configured
-//     tools (the keys only attach to Claude Code), and
+//   - --bedrock-compat passed this run but neither Claude Code nor Codex was among
+//     the configured tools (the settings only attach to those two), and
 //   - --enable-1m passed this run while compat is off (the 1M suffix rides the
 //     Bedrock model-ID path, so it is inert without compat) — otherwise a silent
 //     no-op.
 func warnBedrockNoEffect(errOut io.Writer, opts SetOptions, effectiveCompat bool, configured []ToolConfig) {
-	if opts.BedrockCompat != nil && *opts.BedrockCompat && !isTarget(configured, claudeCodeClient) {
+	if opts.BedrockCompat != nil && *opts.BedrockCompat &&
+		!isTarget(configured, claudeCodeClient) && !isTarget(configured, codexClient) {
 		_, _ = fmt.Fprintln(errOut,
-			"Warning: --bedrock-compat was set but Claude Code was not configured; the flag had no effect.")
+			"Warning: --bedrock-compat was set but neither Claude Code nor Codex was configured; the flag had no effect.")
 	}
 	if opts.Enable1M != nil && *opts.Enable1M && !effectiveCompat {
 		_, _ = fmt.Fprintln(errOut,
@@ -1253,13 +1353,11 @@ func configureDetectedToolsWithDiscovery(
 			applyCfg.ShortPromptCache = shortPromptCache
 		}
 
-		// Bedrock-compat applies only to Claude Code: it disables the experimental
-		// anthropic-beta headers Bedrock rejects and pins each tier to the newest
-		// discovered Bedrock model (or the --models override). Resolve tier
-		// selection and the optional [1m] suffix here so pkg/client only writes
-		// the resolved values.
-		if bedrock.Compat && clientType == claudeCodeClient {
-			applyBedrockCompat(errOut, &applyCfg, models, discovered.anthropic, bedrock.Enable1M)
+		if bedrock.Compat {
+			if err := applyBedrockSettings(errOut, clientType, &applyCfg, models, discovered, bedrock.Enable1M); err != nil {
+				_, _ = fmt.Fprintf(errOut, "Warning: failed to configure %s: %v\n", clientType, err)
+				continue
+			}
 		}
 
 		configPath, err := gm.ConfigureLLMGateway(clientType, applyCfg)
@@ -1291,6 +1389,23 @@ func configureDetectedToolsWithDiscovery(
 		return nil, fmt.Errorf("failed to configure any detected tools")
 	}
 	return configured, nil
+}
+
+// applyBedrockSettings resolves the Bedrock-compat settings for clientType onto
+// applyCfg, so pkg/client only writes resolved values. Bedrock compat affects
+// only Claude Code (applyClaudeCodeBedrock) and Codex (applyCodexBedrock);
+// other clients are left unchanged.
+func applyBedrockSettings(
+	errOut io.Writer, clientType string, applyCfg *llmgateway.ApplyConfig,
+	models []string, discovered discoveredGatewayModels, enable1M bool,
+) error {
+	switch clientType {
+	case claudeCodeClient:
+		applyClaudeCodeBedrock(errOut, applyCfg, models, discovered.anthropic, enable1M)
+	case codexClient:
+		return applyCodexBedrock(errOut, applyCfg, models, discovered)
+	}
+	return nil
 }
 
 func warnPromptCacheConflict(errOut io.Writer, gm GatewayManager, clientType string) {
@@ -1449,7 +1564,7 @@ func warnCredentialHelperTools(out, errOut io.Writer, gm GatewayManager, configu
 
 // revertToolConfig reverts the settings-file and .env patches for a single
 // tool. Errors are logged as warnings so the caller can continue with others.
-func revertToolConfig(out, errOut io.Writer, gm GatewayManager, tc ToolConfig) {
+func revertToolConfig(out, errOut io.Writer, gm GatewayManager, tc ToolConfig) bool {
 	ok := true
 	if err := gm.RevertLLMGateway(tc.Tool, tc.ConfigPath); err != nil {
 		_, _ = fmt.Fprintf(errOut, "Warning: failed to revert %s settings: %v\n", tc.Tool, err)
@@ -1464,6 +1579,35 @@ func revertToolConfig(out, errOut io.Writer, gm GatewayManager, tc ToolConfig) {
 	if ok {
 		_, _ = fmt.Fprintf(out, "Reverted %s  (%s)\n", tc.Tool, tc.ConfigPath)
 	}
+	return ok
+}
+
+// warnBedrockTurnedOff warns, for each configured Bedrock-compat client, that
+// this setup removed the Bedrock settings a previous Bedrock setup wrote. A
+// setup without Bedrock removes them the same way teardown does, whatever they
+// hold, so it warns the same way. It only fires when this run turns Bedrock
+// off, not on every setup without it.
+func warnBedrockTurnedOff(errOut io.Writer, wasCompat, compat bool, configured []ToolConfig) {
+	if !wasCompat || compat {
+		return
+	}
+	for _, tc := range configured {
+		warnBedrockSettingsRemoved(errOut, tc)
+	}
+}
+
+// warnBedrockSettingsRemoved tells the user which Bedrock settings teardown, or
+// a setup that turned Bedrock off, removed from a Bedrock-compat client. ToolHive owns these keys, as it owns
+// every key it writes: revert removes them whatever they hold and restores no
+// earlier value, so a value the user had set before setup is gone too.
+func warnBedrockSettingsRemoved(errOut io.Writer, tc ToolConfig) {
+	client, ok := bedrockClients[tc.Tool]
+	if !ok {
+		return
+	}
+	_, _ = fmt.Fprintf(errOut, "Warning: removed the Bedrock settings ToolHive manages for %s (%s) from %s, "+
+		"whatever they held. If you had set any of them yourself, set them again.\n",
+		client.name, client.keys, tc.ConfigPath)
 }
 
 // rollbackConfiguredTools reverts the settings-file and .env patches for every
@@ -1471,7 +1615,7 @@ func revertToolConfig(out, errOut io.Writer, gm GatewayManager, tc ToolConfig) {
 func rollbackConfiguredTools(errOut io.Writer, gm GatewayManager, configured []ToolConfig) {
 	// Use a discard writer for the "Reverted" line — rollback is silent on success.
 	for _, tc := range configured {
-		revertToolConfig(io.Discard, errOut, gm, tc)
+		_ = revertToolConfig(io.Discard, errOut, gm, tc)
 	}
 }
 

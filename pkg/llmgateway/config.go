@@ -136,9 +136,10 @@ type ApplyConfig struct {
 	// prompt-cache lifetime and restores their shorter default.
 	ShortPromptCache bool
 	// BedrockCompat and the per-tier Bedrock model IDs configure Claude Code for a
-	// gateway that forwards to AWS Bedrock. When BedrockCompat is true, Claude Code
-	// is configured with CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1 (Bedrock rejects
-	// the experimental anthropic-beta headers) and the per-tier model IDs.
+	// gateway that forwards to AWS Bedrock (BedrockCompat also gates the Codex
+	// fields below). When BedrockCompat is true, Claude Code is configured with
+	// CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1 (Bedrock rejects the experimental
+	// anthropic-beta headers) and the per-tier model IDs.
 	// The caller (pkg/llm) resolves tier selection and the optional "[1m]"
 	// suffix; pkg/client only writes the resolved values. An empty tier is left
 	// unpinned. All are empty/false for non-Bedrock setups.
@@ -147,4 +148,18 @@ type ApplyConfig struct {
 	BedrockOpusModel   string
 	BedrockSonnetModel string
 	BedrockFableModel  string
+	// BedrockCodexModel and the fields after it configure Codex for a gateway
+	// that serves Bedrock's OpenAI-compatible API. They apply only when
+	// BedrockCompat is true and BedrockCodexModel is non-empty: Codex's
+	// config.toml then gets BedrockCodexModel as the top-level model,
+	// web_search = "disabled" (Bedrock rejects Codex's hosted web_search tool
+	// mid-stream), the context window as model_context_window when positive
+	// (Codex has no built-in metadata for Bedrock model IDs), and the background
+	// memory models as memories.consolidation_model and memories.extract_model.
+	// pkg/llm maps Codex's sol, terra and luna tiers onto these; pkg/client only
+	// writes them, and removes them for any other setup.
+	BedrockCodexModel              string
+	BedrockCodexContextWindow      int
+	BedrockCodexConsolidationModel string
+	BedrockCodexExtractModel       string
 }

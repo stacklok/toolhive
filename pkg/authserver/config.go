@@ -911,8 +911,9 @@ func requireDeclaredTrustMode(client delegateClientView) error {
 			client.ClientID, SelfIssuedSubjectTokensAny, SelfIssuedSubjectTokensRestricted)
 	}
 	return fmt.Errorf("delegate_clients: client_id %q: private_key_jwt clients must declare a token_exchange block "+
-		"with self_issued_subject_tokens (%q or %q)",
-		client.ClientID, SelfIssuedSubjectTokensAny, SelfIssuedSubjectTokensRestricted)
+		"with self_issued_subject_tokens (%q or %q); to keep the implicit any behaviour of earlier releases, "+
+		"set token_exchange.self_issued_subject_tokens to %q",
+		client.ClientID, SelfIssuedSubjectTokensAny, SelfIssuedSubjectTokensRestricted, SelfIssuedSubjectTokensAny)
 }
 
 // trustModeRequired reports whether a delegate client with these grant types

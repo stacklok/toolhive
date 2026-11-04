@@ -606,6 +606,27 @@ the old one. Discovery lists the client authentication methods as described in
 cleartext-transport rule is separate: every delegate client, `private_key_jwt`
 ones included, counts as confidential there.
 
+To rotate the key of a configured `private_key_jwt` delegate client without
+refusing the client in between:
+
+1. Add the new key to the JWKS file next to the old one, each with its own
+   `kid`, and restart the auth server. An assertion is accepted with either key,
+   as long as it carries the `kid` of the key that signed it. The new key must
+   imply the same signing algorithm as the old one: its `alg`, the algorithm its
+   EC curve fixes, or RS256 for an RSA key without `alg`. Keys that disagree stop
+   startup. Setting `token_endpoint_auth_signing_alg` helps only when every key
+   can sign with that one algorithm and none carries a different `alg`, for
+   example RSA keys without `alg` next to an RSA key labelled PS256.
+2. Switch the client to sign with the new key.
+3. Remove the old key from the file and restart again. An assertion signed with
+   the old key now gets `401 invalid_client`, and the `error_description` names
+   the refused `kid`.
+
+The order matters: a client that signs with a key the server has not loaded gets
+`401 invalid_client`, so do step 2 only after step 1 has taken effect. With
+memory storage a restart also drops everything the auth server had stored, such
+as issued refresh tokens. Use shared storage (Redis) when that matters.
+
 The server builds each configured delegate client in memory and checks it as
 consent-exempt before it writes the client. A configured login client can
 therefore be listed in `WithConsentExemptClientIDs`, and a bad ID aborts startup

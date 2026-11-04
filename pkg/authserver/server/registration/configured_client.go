@@ -193,8 +193,8 @@ func resolveConfiguredSigningAlgorithm(configured string, jwks *jose.JSONWebKeyS
 		"set token_endpoint_auth_signing_alg", strings.Join(found, ", "))
 }
 
-// keySigningAlgorithm returns the algorithm a key implies, or "" for a key
-// type that implies none.
+// keySigningAlgorithm returns the algorithm a key carries or its curve fixes,
+// RS256 for an RSA key without alg, or "" for any other key type.
 func keySigningAlgorithm(key *jose.JSONWebKey) string {
 	if key.Algorithm != "" {
 		return key.Algorithm

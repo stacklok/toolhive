@@ -367,15 +367,15 @@ for uses the main model. web_search is set to
 closed GPT models served through us. or global. inference profiles (e.g.
 us.openai.gpt-6.1-sol) speak the Responses API Codex uses; the open-weight
 models (nvidia.*, qwen.*, deepseek.*, openai.gpt-oss-*) serve only Chat
-Completions, so setup never picks them for Codex and refuses an
-openai.gpt-oss-* pin. Override a tier with --models:
+Completions, so setup never picks them for Codex, and a --models entry naming
+one is left to the other tools that can use it. Override a tier with --models:
 
   thv llm setup --client codex --bedrock-compat --models us.openai.gpt-6.1-sol
 
-Like Claude Code's Bedrock keys, these Codex keys belong to ToolHive: a setup
-without --bedrock-compat and "thv llm teardown" remove them, whatever they
-hold. Teardown, and a setup that turns --bedrock-compat off, warn which keys
-they removed.
+Like Claude Code's Bedrock keys, these Codex keys belong to ToolHive once a
+setup with --bedrock-compat has written them: a later setup without it and
+"thv llm teardown" remove them, whatever they hold, and warn which keys they
+removed. If no Bedrock setup wrote them, they are left as you set them.
 
 Re-running is idempotent and uses the cached token (no browser prompt).
 
@@ -425,8 +425,8 @@ Run "thv llm teardown" to revert all changes.`,
 			"With --bedrock-compat, each ID overrides a Claude Code tier by matching "+
 			"'haiku', 'opus', 'sonnet', or 'fable' in the ID (IDs matching no tier are ignored with a "+
 			"warning), and a us./global.openai.gpt-* ID overrides a Codex tier by matching 'sol', 'terra', or "+
-			"'luna' (an ID naming none pins the main model; openai.gpt-oss-* IDs are refused for Codex; "+
-			"other vendors' IDs are left to other tools). "+
+			"'luna' (an ID naming none pins the main model; openai.gpt-oss-* and other vendors' IDs are "+
+			"left to other tools). "+
 			"Omit to pin each tier, and Codex, to the newest Bedrock model discovered from the gateway.")
 	cmd.Flags().BoolVar(&bedrockCompat, "bedrock-compat", false,
 		"Configure Claude Code for a gateway that forwards to AWS Bedrock: write "+
@@ -588,8 +588,8 @@ func (a *clientManagerAdapter) RevertEnvFile(clientType, envFilePath string) err
 	return a.cm.RevertEnvFile(client.ClientApp(clientType), envFilePath)
 }
 
-func (a *clientManagerAdapter) RevertLLMGateway(clientType, configPath string) error {
-	return a.cm.RevertLLMGateway(client.ClientApp(clientType), configPath)
+func (a *clientManagerAdapter) RevertLLMGateway(clientType, configPath string, clearBedrockKeys bool) error {
+	return a.cm.RevertLLMGateway(client.ClientApp(clientType), configPath, clearBedrockKeys)
 }
 
 // configUpdaterAdapter adapts config.Provider to llm.ConfigUpdater.

@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -98,8 +99,15 @@ func (cm *ClientManager) ConfigureLLMGateway(clientType ClientApp, cfg llmgatewa
 // applyLLMGatewayKeys writes or removes each key spec into v according to cfg.
 // Specs with ClearWhenEmpty=true are removed when their resolved value is empty,
 // allowing conditional keys (e.g. NODE_TLS_REJECT_UNAUTHORIZED) to be cleaned
-// up when the associated flag is cleared.
+// up when the associated flag is cleared. The Bedrock keys of a setup without
+// Bedrock compat are the exception: they are removed only when
+// cfg.ClearBedrockKeys says the previous setup wrote them, and are otherwise
+// left as the user set them.
 func applyLLMGatewayKeys(v *hujson.Value, specs []LLMGatewayKeySpec, cfg llmgateway.ApplyConfig, filePath string) error {
+	if !cfg.BedrockCompat && !cfg.ClearBedrockKeys {
+		specs = withoutBedrockKeys(specs)
+	}
+
 	// Resolve all values up front so an unknown ValueField fails fast before
 	// any file is modified.
 	values := make([]string, len(specs))
@@ -179,9 +187,12 @@ func addLLMKey(v *hujson.Value, ptr, value, filePath string) error {
 }
 
 // RevertLLMGateway removes the LLM gateway keys from the tool's settings file.
-// If the file does not exist the call is a no-op. Comments and trailing commas
-// in JSONC settings files are preserved.
-func (cm *ClientManager) RevertLLMGateway(clientType ClientApp, configPath string) error {
+// The Bedrock keys of Claude Code and Codex are removed only when
+// clearBedrockKeys is set, i.e. when the setup being reverted wrote them;
+// otherwise they are the user's own and are left alone. Other clients have no
+// Bedrock keys and ignore it. If the file does not exist the call is a no-op.
+// Comments and trailing commas in JSONC settings files are preserved.
+func (cm *ClientManager) RevertLLMGateway(clientType ClientApp, configPath string, clearBedrockKeys bool) error {
 	appCfg := cm.lookupClientAppConfig(clientType)
 	if appCfg == nil || appCfg.LLMGatewayMode == "" {
 		return fmt.Errorf("client %q does not support LLM gateway configuration", clientType)
@@ -193,7 +204,7 @@ func (cm *ClientManager) RevertLLMGateway(clientType ClientApp, configPath strin
 	}
 	// Codex reverts via its dedicated TOML writer.
 	if appCfg.LLMGatewayMode == llmgateway.ModeCodexAuth {
-		return cm.revertCodexAuth(appCfg, configPath)
+		return cm.revertCodexAuth(appCfg, configPath, clearBedrockKeys)
 	}
 	if appCfg.LLMGatewayMode == llmgateway.ModePi {
 		return cm.revertPi(appCfg, configPath)
@@ -202,13 +213,25 @@ func (cm *ClientManager) RevertLLMGateway(clientType ClientApp, configPath strin
 		return cm.revertVSCode(appCfg, configPath)
 	}
 
-	return revertJSONPointerGateway(appCfg, configPath)
+	specs := appCfg.LLMGatewayKeys
+	if !clearBedrockKeys {
+		specs = withoutBedrockKeys(specs)
+	}
+	return revertJSONPointerGateway(specs, configPath)
 }
 
-// revertJSONPointerGateway removes appCfg.LLMGatewayKeys from configPath, the
+// withoutBedrockKeys returns specs minus the Bedrock-compat keys, for a setup
+// or revert that must leave them as the user set them.
+func withoutBedrockKeys(specs []LLMGatewayKeySpec) []LLMGatewayKeySpec {
+	return slices.DeleteFunc(slices.Clone(specs), func(spec LLMGatewayKeySpec) bool {
+		return isBedrockValueField(spec.ValueField)
+	})
+}
+
+// revertJSONPointerGateway removes the keys in specs from configPath, the
 // JSON-Pointer-based revert path shared by every LLM-gateway mode except
 // ModeCredentialHelper and ModeCodexAuth (which use dedicated writers).
-func revertJSONPointerGateway(appCfg *clientAppConfig, configPath string) error {
+func revertJSONPointerGateway(specs []LLMGatewayKeySpec, configPath string) error {
 	// Guard against a missing file (or deleted parent directory) before trying
 	// to acquire the lock — WithFileLock creates configPath+".lock", which
 	// fails when the directory no longer exists.
@@ -239,7 +262,7 @@ func revertJSONPointerGateway(appCfg *clientAppConfig, configPath string) error 
 			return err
 		}
 
-		for _, spec := range appCfg.LLMGatewayKeys {
+		for _, spec := range specs {
 			// Skip keys that are already absent — avoids brittle error-string matching.
 			if !jsonPointerExists(standardized, spec.JSONPointer) {
 				continue
@@ -634,6 +657,13 @@ func resolveBedrockField(valueField string, cfg llmgateway.ApplyConfig) (string,
 		return "", true
 	}
 	return v, true
+}
+
+// isBedrockValueField reports whether valueField names a Bedrock-compat value,
+// the keys ToolHive owns only while a Bedrock setup has written them.
+func isBedrockValueField(valueField string) bool {
+	_, ok := resolveBedrockField(valueField, llmgateway.ApplyConfig{})
+	return ok
 }
 
 // llmValueForSpec returns the config value for a settings-file key spec.

@@ -577,7 +577,9 @@ var supportedClientIntegrations = []clientAppConfig{
 			// Bedrock-compat keys (written only with --bedrock-compat). Bedrock rejects
 			// Claude Code's experimental anthropic-beta headers, so betas are disabled;
 			// the per-tier model IDs pin Bedrock inference-profile IDs. All use
-			// ClearWhenEmpty so a non-Bedrock setup removes any stale keys.
+			// ClearWhenEmpty so a non-Bedrock setup removes the keys a previous
+			// Bedrock setup wrote (ApplyConfig.ClearBedrockKeys); without one they
+			// are left as the user set them.
 			{
 				JSONPointer:    "/env/CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS",
 				ValueField:     "BedrockDisableExperimentalBetas",

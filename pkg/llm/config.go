@@ -85,6 +85,24 @@ type ToolConfig struct {
 	// EnvFilePath is the absolute path to the .env file written during setup,
 	// or empty if no .env file was managed for this tool.
 	EnvFilePath string `yaml:"env_file_path,omitempty" json:"env_file_path,omitempty"`
+	// BedrockCompat records whether setup wrote the Bedrock-compat keys into
+	// ConfigPath (Claude Code and Codex only), so the next setup and teardown
+	// remove them only when ToolHive put them there. It is kept per tool rather
+	// than read from Config.Bedrock, which "thv llm config set" can change
+	// without touching any tool's files. Nil on a record written before this
+	// field existed; see bedrockKeysWritten. SetFields pins such a record to the
+	// old setting before changing it.
+	BedrockCompat *bool `yaml:"bedrock_compat,omitempty" json:"bedrock_compat,omitempty"`
+}
+
+// bedrockKeysWritten reports whether tc's config file holds Bedrock keys
+// ToolHive wrote. A record written before ToolConfig.BedrockCompat existed
+// falls back to compat, the persisted Bedrock-compat setting.
+func (tc ToolConfig) bedrockKeysWritten(compat bool) bool {
+	if tc.BedrockCompat != nil {
+		return *tc.BedrockCompat
+	}
+	return compat
 }
 
 // IsConfigured reports whether the minimum required fields are present for the

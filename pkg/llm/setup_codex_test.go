@@ -63,14 +63,26 @@ func TestResolveCodexTiers(t *testing.T) {
 			},
 		},
 		{
-			name:       "an invalid pin is refused even when discovery has models",
-			models:     []string{"us.openai.gpt-oss-120b"},
+			// A --models list shared with Pi, which can use the open-weight models.
+			name:       "gpt-oss entries are left to other tools",
+			models:     []string{"us.openai.gpt-oss-120b", "OpenAI.GPT-OSS-20B"},
 			discovered: discovered,
-			wantErr:    `"us.openai.gpt-oss-120b" is an open-weight model, which Bedrock serves only over Chat Completions`,
+			want:       newest,
 		},
 		{
-			name:    "a GPT model without a profile prefix is refused with the prefixed form",
-			models:  []string{"openai.gpt-6.1-sol"},
+			name:    "a mixed-case pin is refused with its lowercase form",
+			models:  []string{"US.OpenAI.GPT-6.1-Terra"},
+			wantErr: `"US.OpenAI.GPT-6.1-Terra" is not lowercase; Bedrock model IDs are, so use "us.openai.gpt-6.1-terra"`,
+		},
+		{
+			name:       "an invalid pin is refused even when discovery has models",
+			models:     []string{"openai.gpt-6.1-sol"},
+			discovered: discovered,
+			wantErr:    "has no inference-profile prefix; Bedrock serves GPT models through us. or global. profiles (e.g. us.openai.gpt-6.1-sol)",
+		},
+		{
+			name:    "a mixed-case GPT model without a profile prefix is refused with the prefixed form",
+			models:  []string{"OpenAI.gpt-6.1-sol"},
 			wantErr: "has no inference-profile prefix; Bedrock serves GPT models through us. or global. profiles (e.g. us.openai.gpt-6.1-sol)",
 		},
 		{
@@ -80,18 +92,17 @@ func TestResolveCodexTiers(t *testing.T) {
 		},
 		{
 			name:    "the first invalid entry is reported",
-			models:  []string{"openai.gpt-oss-20b", "openai.gpt-6.1-sol"},
-			wantErr: `"openai.gpt-oss-20b"`,
+			models:  []string{"gpt-6.1", "openai.gpt-6.1-sol"},
+			wantErr: `"gpt-6.1"`,
 		},
 		{
 			name:   "a valid pin wins over an invalid entry, which is ignored with a warning",
-			models: []string{"openai.gpt-oss-20b", "us.openai.gpt-6.1-sol"},
+			models: []string{"gpt-6.1", "us.openai.gpt-6.1-sol"},
 			want:   codexTiers{sol: "us.openai.gpt-6.1-sol"},
 			wantWarnings: []string{
-				`--models entry "openai.gpt-oss-20b" is an open-weight model, which Bedrock serves only over ` +
-					`Chat Completions; Codex speaks only the Responses API. To use Codex, pin a Bedrock GPT ` +
-					`inference profile such as us.openai.gpt-6.1-sol, or drop it from --models to use the newest ` +
-					`one the gateway lists; ignored`,
+				`--models entry "gpt-6.1" is not a Bedrock GPT inference profile; only those serve the ` +
+					`Responses API Codex speaks. To use Codex, pin a Bedrock GPT inference profile such as ` +
+					`us.openai.gpt-6.1-sol, or drop it from --models to use the newest one the gateway lists; ignored`,
 			},
 		},
 	}
@@ -190,8 +201,8 @@ func TestFilterCodexBedrockPin(t *testing.T) {
 			clients:       []string{codexClient},
 			targetClient:  codexClient,
 			bedrockCompat: true,
-			models:        []string{"us.openai.gpt-oss-120b"},
-			wantErr:       "configuring Codex for Bedrock: --models entry \"us.openai.gpt-oss-120b\" is an open-weight model",
+			models:        []string{"openai.gpt-6.1-sol"},
+			wantErr:       "configuring Codex for Bedrock: --models entry \"openai.gpt-6.1-sol\" has no inference-profile prefix",
 		},
 		{
 			name:          "an invalid pin skips auto-detected codex with a warning",
@@ -202,10 +213,11 @@ func TestFilterCodexBedrockPin(t *testing.T) {
 			wantWarning:   "Warning: skipping auto-detected codex: --models entry \"openai.gpt-6.1-sol\"",
 		},
 		{
-			name:          "another vendor's entry is left to other tools and keeps codex",
+			name:          "other vendors' and gpt-oss entries are left to other tools and keep explicit codex",
 			clients:       []string{"pi", codexClient},
+			targetClient:  codexClient,
 			bedrockCompat: true,
-			models:        []string{"nvidia.nemotron-super-v1"},
+			models:        []string{"nvidia.nemotron-super-v1", "us.openai.gpt-oss-120b"},
 			wantClients:   []string{"pi", codexClient},
 		},
 	}
@@ -255,7 +267,7 @@ func TestSetupClients_CodexPinFilter(t *testing.T) {
 			var out, errOut bytes.Buffer
 
 			clients, done, err := setupClients(
-				gm, "", tt.lazy, true, []string{"us.openai.gpt-oss-120b"}, &out, &errOut)
+				gm, "", tt.lazy, true, []string{"openai.gpt-6.1-sol"}, &out, &errOut)
 
 			require.NoError(t, err)
 			assert.Equal(t, tt.wantDone, done)
@@ -377,7 +389,9 @@ func TestDiscoverSetupModelsBedrockCodex(t *testing.T) {
 }
 
 // TestConfigureDetectedTools_BedrockCodex checks that bedrock-compat resolves
-// Codex's tiers into the ApplyConfig, and leaves them empty without compat.
+// Codex's tiers into the ApplyConfig and leaves them empty without compat, that
+// the tool record says whether this run wrote them, and that the previous
+// setup's record decides whether a run without compat clears them.
 func TestConfigureDetectedTools_BedrockCodex(t *testing.T) {
 	t.Parallel()
 
@@ -397,6 +411,8 @@ func TestConfigureDetectedTools_BedrockCodex(t *testing.T) {
 	tests := []struct {
 		name              string
 		compat            bool
+		targetClient      string
+		previousBedrock   bool
 		models            []string
 		discovered        discoveredGatewayModels
 		wantModel         string
@@ -438,8 +454,16 @@ func TestConfigureDetectedTools_BedrockCodex(t *testing.T) {
 		},
 		{name: "without bedrock compat the tiers are left alone", discovered: discovered},
 		{
-			name: "no resolvable model skips codex", compat: true,
+			name: "after a bedrock setup, a run without compat clears the keys", discovered: discovered,
+			previousBedrock: true,
+		},
+		{
+			name: "no resolvable model skips auto-detected codex", compat: true,
 			wantErr: "failed to configure any detected tools", wantWarning: "Warning: failed to configure codex",
+		},
+		{
+			name: "no resolvable model is an error for explicit codex", compat: true, targetClient: codexClient,
+			wantErr: "configuring codex for Bedrock: " + errNoCodexBedrockModels.Error(),
 		},
 	}
 
@@ -449,11 +473,12 @@ func TestConfigureDetectedTools_BedrockCodex(t *testing.T) {
 			gm := &capturingGatewayManager{mode: llmgateway.ModeCodexAuth}
 			var out, errOut bytes.Buffer
 
-			_, err := configureDetectedToolsWithDiscovery(
-				&out, &errOut, gm, []string{codexClient},
+			configured, err := configureDetectedToolsWithDiscovery(
+				&out, &errOut, gm, []string{codexClient}, tt.targetClient,
 				"https://gw.example.com", "http://localhost:14000/v1",
 				"/usr/local/bin/thv", []string{"llm", "token", "--skip-browser"},
 				false, "", tt.models, tt.discovered, false, BedrockConfig{Compat: tt.compat},
+				map[string]bool{codexClient: tt.previousBedrock},
 			)
 			if tt.wantWarning != "" {
 				assert.Contains(t, errOut.String(), tt.wantWarning)
@@ -473,6 +498,9 @@ func TestConfigureDetectedTools_BedrockCodex(t *testing.T) {
 			assert.Equal(t, tt.wantContext, got.BedrockCodexContextWindow)
 			assert.Equal(t, tt.wantConsolidation, got.BedrockCodexConsolidationModel)
 			assert.Equal(t, tt.wantExtract, got.BedrockCodexExtractModel)
+			assert.Equal(t, tt.previousBedrock, got.ClearBedrockKeys)
+			require.Len(t, configured, 1)
+			assert.Equal(t, new(tt.compat), configured[0].BedrockCompat)
 		})
 	}
 }

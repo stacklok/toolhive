@@ -31,7 +31,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/runner"
 )
 
-func TestEmbeddedAuthServerCABundleChecksumForConfig(t *testing.T) {
+func TestEmbeddedAuthServerConfigMapChecksumForConfig(t *testing.T) {
 	t.Parallel()
 
 	pemData := testCertificatePEM(t)
@@ -78,7 +78,7 @@ func TestEmbeddedAuthServerCABundleChecksumForConfig(t *testing.T) {
 			} else {
 				c = newClient(tt.configMap)
 			}
-			got, err := EmbeddedAuthServerCABundleChecksumForConfig(t.Context(), c, "ns", cfg)
+			got, err := EmbeddedAuthServerConfigMapChecksumForConfig(t.Context(), c, "ns", cfg)
 			if tt.wantErr {
 				require.Error(t, err)
 				return
@@ -103,7 +103,7 @@ func TestEmbeddedAuthServerTrustedIssuerCABundleChecksum(t *testing.T) {
 	}}}
 	configMap := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "bundle", Namespace: "ns"}, Data: map[string]string{"ca.crt": string(pemData)}}
 	c := fake.NewClientBuilder().WithObjects(configMap).Build()
-	issuerOnly, err := EmbeddedAuthServerCABundleChecksumForConfig(t.Context(), c, "ns", config)
+	issuerOnly, err := EmbeddedAuthServerConfigMapChecksumForConfig(t.Context(), c, "ns", config)
 	require.NoError(t, err)
 	require.NotEmpty(t, issuerOnly)
 
@@ -113,12 +113,12 @@ func TestEmbeddedAuthServerTrustedIssuerCABundleChecksum(t *testing.T) {
 		Name: "issuer", Type: mcpv1beta1.UpstreamProviderTypeOIDC,
 		OIDCConfig: &mcpv1beta1.OIDCUpstreamConfig{CABundleRef: caBundleTestRef("")},
 	}}
-	upstreamChecksum, err := EmbeddedAuthServerCABundleChecksumForConfig(t.Context(), c, "ns", upstreamOnly)
+	upstreamChecksum, err := EmbeddedAuthServerConfigMapChecksumForConfig(t.Context(), c, "ns", upstreamOnly)
 	require.NoError(t, err)
 	assert.NotEqual(t, upstreamChecksum, issuerOnly)
 }
 
-func TestEmbeddedAuthServerCABundleChecksumStability(t *testing.T) {
+func TestEmbeddedAuthServerConfigMapChecksumStability(t *testing.T) {
 	t.Parallel()
 
 	pemData := testCertificatePEM(t)
@@ -138,15 +138,15 @@ func TestEmbeddedAuthServerCABundleChecksumStability(t *testing.T) {
 		return builder.Build()
 	}
 	changed := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "bundle", Namespace: "ns", Labels: map[string]string{"initial": "yes"}}, Data: map[string]string{"ca.crt": string(pemData), "other": "unchanged"}}
-	first, err := EmbeddedAuthServerCABundleChecksumForConfig(t.Context(), newClient(changed), "ns", config)
+	first, err := EmbeddedAuthServerConfigMapChecksumForConfig(t.Context(), newClient(changed), "ns", config)
 	require.NoError(t, err)
 	changed.Data["other"] = "changed"
 	changed.Labels["changed"] = "yes"
-	second, err := EmbeddedAuthServerCABundleChecksumForConfig(t.Context(), newClient(changed), "ns", config)
+	second, err := EmbeddedAuthServerConfigMapChecksumForConfig(t.Context(), newClient(changed), "ns", config)
 	require.NoError(t, err)
 	assert.Equal(t, first, second)
 	changed.Data["ca.crt"] = string(testCertificatePEM(t))
-	second, err = EmbeddedAuthServerCABundleChecksumForConfig(t.Context(), newClient(changed), "ns", config)
+	second, err = EmbeddedAuthServerConfigMapChecksumForConfig(t.Context(), newClient(changed), "ns", config)
 	require.NoError(t, err)
 	assert.NotEqual(t, first, second)
 
@@ -156,10 +156,10 @@ func TestEmbeddedAuthServerCABundleChecksumStability(t *testing.T) {
 		OAuth2Config: &mcpv1beta1.OAuth2UpstreamConfig{CABundleRef: &mcpv1beta1.CABundleSource{ConfigMapRef: &corev1.ConfigMapKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: "bundle-two"}}}},
 	})
 	secondMap := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "bundle-two", Namespace: "ns"}, Data: map[string]string{"ca.crt": string(pemData)}}
-	baseline, err := EmbeddedAuthServerCABundleChecksumForConfig(t.Context(), newClient(changed, secondMap), "ns", secondConfig)
+	baseline, err := EmbeddedAuthServerConfigMapChecksumForConfig(t.Context(), newClient(changed, secondMap), "ns", secondConfig)
 	require.NoError(t, err)
 	secondMap.Data["ca.crt"] = string(testCertificatePEM(t))
-	rotated, err := EmbeddedAuthServerCABundleChecksumForConfig(t.Context(), newClient(changed, secondMap), "ns", secondConfig)
+	rotated, err := EmbeddedAuthServerConfigMapChecksumForConfig(t.Context(), newClient(changed, secondMap), "ns", secondConfig)
 	require.NoError(t, err)
 	assert.NotEqual(t, baseline, rotated)
 }
@@ -1542,6 +1542,75 @@ func TestBuildAuthServerRunConfig(t *testing.T) {
 			},
 		},
 		{
+			name: "OIDC upstream propagates OmitScopeOnRefresh",
+			authConfig: &mcpv1beta1.EmbeddedAuthServerConfig{
+				Issuer: "https://auth.example.com",
+				SigningKeySecretRefs: []mcpv1beta1.SecretKeyRef{
+					{Name: "signing-key", Key: "private.pem"},
+				},
+				HMACSecretRefs: []mcpv1beta1.SecretKeyRef{
+					{Name: "hmac-secret", Key: "hmac"},
+				},
+				UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{
+					{
+						Name: "okta",
+						Type: mcpv1beta1.UpstreamProviderTypeOIDC,
+						OIDCConfig: &mcpv1beta1.OIDCUpstreamConfig{
+							IssuerURL:          "https://okta.example.com",
+							ClientID:           "okta-client-id",
+							RedirectURI:        "https://auth.example.com/callback",
+							Scopes:             []string{"openid", "profile"},
+							OmitScopeOnRefresh: true,
+						},
+					},
+				},
+			},
+			allowedAudiences: defaultAudiences,
+			scopesSupported:  defaultScopes,
+			checkFunc: func(t *testing.T, config *authserver.RunConfig) {
+				t.Helper()
+				require.Len(t, config.Upstreams, 1)
+				upstream := config.Upstreams[0]
+				require.NotNil(t, upstream.OIDCConfig)
+				assert.True(t, upstream.OIDCConfig.OmitScopeOnRefresh)
+			},
+		},
+		{
+			name: "OAuth2 upstream propagates OmitScopeOnRefresh",
+			authConfig: &mcpv1beta1.EmbeddedAuthServerConfig{
+				Issuer: "https://auth.example.com",
+				SigningKeySecretRefs: []mcpv1beta1.SecretKeyRef{
+					{Name: "signing-key", Key: "private.pem"},
+				},
+				HMACSecretRefs: []mcpv1beta1.SecretKeyRef{
+					{Name: "hmac-secret", Key: "hmac"},
+				},
+				UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{
+					{
+						Name: "salesforce",
+						Type: mcpv1beta1.UpstreamProviderTypeOAuth2,
+						OAuth2Config: &mcpv1beta1.OAuth2UpstreamConfig{
+							AuthorizationEndpoint: "https://login.salesforce.com/services/oauth2/authorize",
+							TokenEndpoint:         "https://login.salesforce.com/services/oauth2/token",
+							ClientID:              "salesforce-client-id",
+							RedirectURI:           "https://auth.example.com/callback",
+							Scopes:                []string{"api", "refresh_token"},
+							OmitScopeOnRefresh:    true,
+						},
+					},
+				},
+			},
+			allowedAudiences: defaultAudiences,
+			scopesSupported:  defaultScopes,
+			checkFunc: func(t *testing.T, config *authserver.RunConfig) {
+				t.Helper()
+				require.Len(t, config.Upstreams, 1)
+				upstream := config.Upstreams[0]
+				require.NotNil(t, upstream.OAuth2Config)
+				assert.True(t, upstream.OAuth2Config.OmitScopeOnRefresh)
+			},
+		},
+		{
 			name:        "OIDC upstream with empty redirectUri defaults to resourceURL/oauth/callback",
 			resourceURL: "https://mcp.example.com",
 			authConfig: &mcpv1beta1.EmbeddedAuthServerConfig{
@@ -1744,7 +1813,10 @@ func TestBuildAuthServerRunConfig(t *testing.T) {
 							Scopes:                []string{"openid"},
 							UserInfo:              &mcpv1beta1.UserInfoConfig{EndpointURL: "https://idp.example.com/userinfo"},
 							DCRConfig: &mcpv1beta1.DCRUpstreamConfig{
-								RegistrationEndpoint: "https://idp.example.com/register",
+								RegistrationEndpoint:      "https://idp.example.com/register",
+								RotationKey:               "2026-10",
+								RegistrationProbe:         "authorizationEndpoint",
+								RegistrationProbeInterval: &metav1.Duration{Duration: 5 * time.Minute},
 							},
 						},
 					},
@@ -1761,6 +1833,9 @@ func TestBuildAuthServerRunConfig(t *testing.T) {
 				assert.Equal(t, "https://idp.example.com/register",
 					upstream.OAuth2Config.DCRConfig.RegistrationEndpoint)
 				assert.Empty(t, upstream.OAuth2Config.DCRConfig.DiscoveryURL)
+				assert.Equal(t, "2026-10", upstream.OAuth2Config.DCRConfig.RotationKey)
+				assert.Equal(t, "authorizationEndpoint", upstream.OAuth2Config.DCRConfig.RegistrationProbe)
+				assert.Equal(t, "5m0s", upstream.OAuth2Config.DCRConfig.RegistrationProbeInterval)
 				// No InitialAccessTokenRef set: env var name should stay empty.
 				assert.Empty(t, upstream.OAuth2Config.DCRConfig.InitialAccessTokenEnvVar)
 			},
@@ -3577,9 +3652,19 @@ func TestBuildSPIFFETrustDomainRunConfigs(t *testing.T) {
 				},
 			},
 		},
+		{
+			Name: "development", TrustDomain: "dev.example.org", Methods: methods,
+			BundleSource: mcpv1beta1.SPIFFEBundleSourceConfig{
+				Type: mcpv1beta1.SPIFFEBundleSourceTypeFile,
+				File: &mcpv1beta1.SPIFFEFileBundleSourceConfig{
+					ConfigMapName: "spire-bundle",
+					ConfigMapKey:  "bundle.json",
+				},
+			},
+		},
 	})
 
-	require.Len(t, configs, 2)
+	require.Len(t, configs, 3)
 	assert.Equal(t, "example", configs[0].Name)
 	assert.Equal(t, "example.org", configs[0].TrustDomain)
 	assert.Equal(t, []authserver.SPIFFEAuthenticationMethod{authserver.SPIFFEAuthenticationMethodX509}, configs[0].Methods)
@@ -3592,6 +3677,15 @@ func TestBuildSPIFFETrustDomainRunConfigs(t *testing.T) {
 	assert.Equal(t, "https://bundle.example.com", configs[1].BundleSource.Endpoint.URL)
 	assert.Equal(t, authserver.SPIFFEBundleEndpointProfileHTTPSWeb, configs[1].BundleSource.Endpoint.Profile)
 	assert.Nil(t, configs[1].BundleSource.WorkloadAPI)
+
+	// The runtime file source carries a derived, index-scoped mount path —
+	// not the CRD's configMapName/configMapKey — matching the volume
+	// GenerateAuthServerVolumes projects that ConfigMap key to.
+	assert.Equal(t, authserver.SPIFFEBundleSourceTypeFile, configs[2].BundleSource.Type)
+	require.NotNil(t, configs[2].BundleSource.File)
+	assert.Equal(t, AuthServerSPIFFEBundleMountPath+"/2/"+AuthServerSPIFFEBundleFileName, configs[2].BundleSource.File.Path)
+	assert.Nil(t, configs[2].BundleSource.Endpoint)
+	assert.Nil(t, configs[2].BundleSource.WorkloadAPI)
 
 	// The runtime type must not retain the CRD object's backing slices.
 	methods[0] = mcpv1beta1.SPIFFEAuthenticationMethodJWT
@@ -3644,6 +3738,10 @@ func TestBuildAuthServerRunConfigInvalidSPIFFEIsTypedAndNotYetEnforced(t *testin
 	t.Parallel()
 
 	_, err := BuildAuthServerRunConfig("default", "test-server", &mcpv1beta1.EmbeddedAuthServerConfig{
+		TLSListener: &mcpv1beta1.TLSListenerConfig{
+			CertificateSecretRef: &mcpv1beta1.SecretKeyRef{Name: "listener-tls", Key: "certificate"},
+			PrivateKeySecretRef:  &mcpv1beta1.SecretKeyRef{Name: "listener-tls", Key: "private-key"},
+		},
 		SPIFFETrustDomains: []mcpv1beta1.SPIFFETrustDomainConfig{{
 			Name: "example", TrustDomain: "example.org",
 			Methods: []mcpv1beta1.SPIFFEAuthenticationMethod{mcpv1beta1.SPIFFEAuthenticationMethodX509},
@@ -3685,6 +3783,10 @@ func TestBuildAuthServerRunConfigSPIFFEResourcesAndScopesValidateOnceDerivedValu
 
 	authConfig := func(resource string) *mcpv1beta1.EmbeddedAuthServerConfig {
 		return &mcpv1beta1.EmbeddedAuthServerConfig{
+			TLSListener: &mcpv1beta1.TLSListenerConfig{
+				CertificateSecretRef: &mcpv1beta1.SecretKeyRef{Name: "listener-tls", Key: "certificate"},
+				PrivateKeySecretRef:  &mcpv1beta1.SecretKeyRef{Name: "listener-tls", Key: "private-key"},
+			},
 			SPIFFETrustDomains: []mcpv1beta1.SPIFFETrustDomainConfig{{
 				Name: "example", TrustDomain: "example.org",
 				Methods: []mcpv1beta1.SPIFFEAuthenticationMethod{mcpv1beta1.SPIFFEAuthenticationMethodX509},
@@ -3727,4 +3829,11 @@ func TestBuildAuthServerRunConfigSPIFFEResourcesAndScopesValidateOnceDerivedValu
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "resource")
 	assert.Contains(t, err.Error(), "not allowed by allowed_audiences")
+}
+
+func TestAuthServerConfigMapChecksumAnnotationValue(t *testing.T) {
+	t.Parallel()
+
+	// Changing this value rolls every embedded-auth pod on operator upgrade.
+	assert.Equal(t, "toolhive.stacklok.dev/authserver-ca-checksum", AuthServerConfigMapChecksumAnnotation)
 }

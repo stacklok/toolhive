@@ -92,9 +92,16 @@ func (c *coreVMCP) authorizeToolCall(
 // authorizer error fails closed, classified as ErrAuthorizationFailed (see
 // authorizeToolCall). Shared by ReadResource and CheckResourceRead.
 func (c *coreVMCP) authorizeResourceRead(ctx context.Context, identity *auth.Identity, uri string) error {
+	overCap := len(uri) > vmcp.MaxResourceURILength
 	if allowed, err := c.admission.AllowResourceRead(ctx, identity, &vmcp.Resource{URI: uri}); err != nil {
+		if overCap {
+			return fmt.Errorf("%w: resource URI exceeds %d bytes: %w", vmcp.ErrAuthorizationFailed, vmcp.MaxResourceURILength, err)
+		}
 		return fmt.Errorf("%w: resource %q: %w", vmcp.ErrAuthorizationFailed, uri, err)
 	} else if !allowed {
+		if overCap {
+			return fmt.Errorf("%w: resource URI exceeds %d bytes", vmcp.ErrAuthorizationFailed, vmcp.MaxResourceURILength)
+		}
 		return fmt.Errorf("%w: resource %q", vmcp.ErrAuthorizationFailed, uri)
 	}
 	return nil

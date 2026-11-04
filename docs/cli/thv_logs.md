@@ -22,13 +22,13 @@ Use --proxy to view the logs from the ToolHive proxy process instead.
 
 Examples:
   # View logs of an MCP server
-  thv logs filesystem
+  thv logs fetch
 
   # Follow logs in real-time
-  thv logs filesystem --follow
+  thv logs fetch --follow
 
   # View proxy logs instead of container logs
-  thv logs filesystem --proxy
+  thv logs fetch --proxy
 
   # Clean up old log files
   thv logs prune

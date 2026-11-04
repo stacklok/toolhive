@@ -6,6 +6,7 @@ package docker
 import (
 	"context"
 	"fmt"
+	"net/netip"
 	"os"
 
 	"github.com/moby/moby/api/types/network"
@@ -67,11 +68,11 @@ type proxySpec struct {
 	// Permissions holds the network permission profile from the workload's
 	// permission profile, governing what outbound traffic is allowed.
 	Permissions *permissions.NetworkPermissions
-	// AllowDockerGateway, when true, skips the docker-gateway deny rules in the
-	// egress proxy configuration.
+	// AllowDockerGateway explicitly allows Docker/Podman host IPs and aliases
+	// on any port, replacing the default deny rules.
 	AllowDockerGateway bool
-	// GatewayIP is the Docker bridge gateway IP resolved at runtime.
-	GatewayIP string
+	// GatewayIPs is the canonical set of bridge gateways and runtime host-alias addresses.
+	GatewayIPs []netip.Addr
 	// TransportType is the MCP transport in use (e.g. "stdio", "sse",
 	// "streamable-http"). A value of "stdio" suppresses ingress proxy creation.
 	TransportType string

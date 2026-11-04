@@ -68,7 +68,15 @@ is rejected with **HTTP 403** and a JSON-RPC error whose code is `403`, and the
 denied request is audited with outcome `denied`. The denial message is kind-only
 (for example, `call denied by authorization policy`) and never reveals the
 capability name or whether it exists, so it cannot be used to enumerate the
-server. See the [Virtual MCP architecture](arch/10-virtual-mcp-architecture.md#authorization-enforcement-core-admission-seam--pre-dispatch-gate)
+server.
+
+One ordering differs from the direct `thv run` proxies, where authorization runs
+first: vMCP checks session ownership before the authorization gate. A request that
+carries an `Mcp-Session-Id` the caller does not own, or that does not exist, gets
+**HTTP 404** before any 403. A denied call on the caller's own session still gets
+403.
+
+See the [Virtual MCP architecture](arch/10-virtual-mcp-architecture.md#authorization-enforcement-core-admission-seam--pre-dispatch-gate)
 for details.
 
 ## Configure authorization
@@ -216,13 +224,18 @@ In the context of MCP servers, the following entities are used:
   every URI character is ordinary, but `"` and `\` must be escaped (for example
   `Resource::"file://C:\\share\\data"`).
 
+Requests that identify their target only by `params.name` or `params.uri` (`tools/call`,
+`prompts/get`, `resources/read`, `resources/subscribe`, `resources/unsubscribe`, and
+`skills/get`) are rejected with a 403 when that value is missing, empty, or not a string. The proxy denies these before any policy is evaluated or
+the backend is called, so a permit that does not name the target cannot match an empty
+identifier.
+
 #### Skills (SEP-2640 direct proxy)
 
 Direct proxies authorize `skills/get` with `Action::"get_skill"` on an exact
 `Skill::"<params.uri>"` entity. The URI is passed through verbatim: it is not
-canonicalized and no scheme or suffix is validated. A missing, empty, or non-string
-`params.uri` is denied before the authorizer or backend is called. Requests with duplicate
-immediate `params.uri` members are likewise denied so the proxy and backend cannot
+canonicalized and no scheme or suffix is validated. Requests with duplicate
+immediate `params.uri` members are denied so the proxy and backend cannot
 interpret an ambiguous URI differently.
 
 `skills/list` itself has no separate list policy. It is forwarded and each entry is
@@ -246,6 +259,43 @@ permit(principal, action == Action::"call_tool", resource == Tool::"weather");
 ```
 
 This policy allows any client to call the weather tool.
+
+##### Allow tools from a specific vMCP backend
+
+For tools advertised by a Virtual MCP Server, Cedar receives the logical
+originating backend as a second resource parent:
+
+```text
+Tool::"search"
+  -> MCP::"main-vmcp"
+  -> Backend::"github-mcp"
+```
+
+This allows every tool from one backend without relying on the advertised tool
+name or its conflict-resolution prefix:
+
+```plain
+permit(
+  principal,
+  action == Action::"call_tool",
+  resource in Backend::"github-mcp"
+);
+```
+
+The Backend entity ID is the tool's logical vMCP `BackendID`, not a network
+address. ToolHive obtains it from the aggregated capability and uses the same
+value for list filtering and call authorization. A direct Backend policy does
+not require an entry in `entities_json`: Cedar evaluates it from the Backend UID
+in the Tool entity's parent set. Define the Backend in `entities_json` only when
+it needs attributes or parents for a transitive hierarchy.
+
+Composite tools have no single originating backend, so they have no Backend
+parent. Consequently, neither a backend-scoped `permit` nor a backend-scoped
+`forbid` matches a composite tool. If another policy permits the composite, a
+backend-scoped `forbid` does not prevent its workflow steps from reaching that
+backend because workflow steps are not authorized as separate top-level tool
+calls. Express backend restrictions as conditions on `permit` policies and
+authorize composite tools separately by their `Tool` entity.
 
 ##### Allow a specific prompt
 
@@ -279,7 +329,7 @@ List operations (`tools/list`, `prompts/list`, `resources/list`, `skills/list`) 
 They are always allowed but the response is automatically filtered based on the user's permissions
 for the corresponding operations:
 
-- `tools/list` shows only tools the user can call (based on `call_tool` policies)
+- `tools/list` shows only tools the user can call (based on `call_tool` policies); a result in which a tool repeats `name`, `annotations`, or the annotation `title` or a hint such as `readOnlyHint`, or spells one with a case-insensitive alias, fails closed with a generic internal JSON-RPC error, so policies evaluate exactly the hints the client receives.
 - `prompts/list` shows only prompts the user can get (based on `get_prompt` policies)
 - `resources/list` shows only resources the user can read (based on `read_resource` policies)
 - `skills/list` shows only skill entries the user can get (based on `get_skill` policies); entries
@@ -291,6 +341,8 @@ permit(principal, action == Action::"call_tool", resource == Tool::"weather");
 ```
 
 Then `tools/list` will only show the "weather" tool for that user.
+
+A filtered list depends on the caller's permissions, so `tools/list`, `prompts/list`, and `resources/list` responses carry the HTTP header `Cache-Control: private, no-store`, and a `cacheScope` or `ttlMs` member the backend sent in the result is replaced with `"private"` or `0`. The proxy does not add either member when the backend omitted it, so a list from a backend on an MCP revision that predates these members reaches the client without them. A result that repeats `cacheScope` or `ttlMs`, or spells one with a case-insensitive alias, fails closed with a generic internal JSON-RPC error. `resources/templates/list` responses carry the same header, and their result always includes `cacheScope: "private"` and `ttlMs: 0`.
 
 ##### Methods covered by a prompt or resource policy
 
@@ -561,7 +613,11 @@ Two consequences worth planning around:
 Everything else stays closed. A token that simply arrives without upstream
 credentials and says nothing about why — an anonymous or local identity, or a
 bearer token from an IdP other than the pinned one — is denied, as is a session
-that exists but holds no credential for the pinned provider.
+that holds credentials for other providers but none for the pinned one. A session
+whose stored upstream credentials have all expired or been deleted never reaches
+the authorizer: the authentication middleware answers it with 401 and a
+`WWW-Authenticate` challenge so the client signs in again (see
+[Middleware Architecture](middleware.md)).
 
 **Upgrading:** JWT-bearer tokens minted by an authorization server running a
 version before this marker existed carry no marker, so a pinned deployment

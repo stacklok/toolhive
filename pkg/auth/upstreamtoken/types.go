@@ -34,7 +34,9 @@ const NoUpstreamSessionClaimKey = "https://toolhive.dev/no_upstream_session"
 // The IDToken is the rotated ID token when a refresh produced one (OIDC Core
 // 1.0 §12.2 permits but does not require a new id_token on refresh), otherwise
 // the original JWT captured at the initial OIDC login (OIDC Core 1.0 §3.1.3.7).
-// It is not independently validated for freshness.
+// InProcessService refreshes when the stored ID token has expired, so it is
+// usually current, but it is not guaranteed to be: it can still be expired when
+// the provider omits id_token on refresh or the refresh fails.
 //
 // Callers that PRESENT it as a credential — e.g. as the subject_token of an
 // RFC 8693 token exchange — are subject to expiry and must either check its `exp`
@@ -70,11 +72,22 @@ type TokenReader interface {
 	// given session ID. Returns an empty map if the session has no stored
 	// upstream tokens.
 	//
-	// The second return value contains the names of providers whose access tokens
-	// were expired and could not be refreshed (e.g. the refresh token is missing
-	// or the upstream IDP rejected the refresh). Those providers are omitted from
-	// the creds map. Callers should treat a non-empty failed list as a signal to
-	// return HTTP 401 + WWW-Authenticate so the client can re-authenticate.
+	// The second return value maps each provider whose access token was expired
+	// and could not be refreshed (e.g. the refresh token is missing or the
+	// upstream IDP rejected the refresh) to the reason, using the same sentinel
+	// errors as Service.GetValidTokens. Those providers are omitted from the
+	// creds map. Callers should treat a non-empty failed map as a signal to
+	// return HTTP 401 + WWW-Authenticate so the client can re-authenticate. An
+	// upstream that definitively rejected the refresh (the IdP answered
+	// invalid_grant) satisfies errors.Is(err, upstream.ErrGrantRejected); a
+	// network or 5xx failure does not. When the token endpoint answered, the
+	// error also carries its *oauth2.RetrieveError, so oautherr's
+	// IsPermanentCredentialError tells a structured OAuth verdict (such as
+	// invalid_client) from an outage (5xx, 429, or a 4xx with no OAuth code).
+	// "Permanent" means only that retrying will not help: invalid_client
+	// indicts the client registration, not the refresh token, so a caller
+	// deciding whether to ask the user to reconnect wants
+	// oautherr.IsRejectedRefreshGrant.
 	//
 	// Each returned IDToken is the rotated ID token when a refresh produced
 	// one (OIDC Core 1.0 §12.2), otherwise the original JWT captured at OIDC
@@ -83,9 +96,9 @@ type TokenReader interface {
 	// first or handle the resulting rejection; callers that only READ ITS CLAIMS
 	// are unaffected by expiry. See UpstreamCredential for both consumers.
 	//
-	// Returns an empty map and nil failed slice (not error) for unknown sessions.
+	// Returns an empty map and nil failed map (not error) for unknown sessions.
 	GetAllUpstreamCredentials(ctx context.Context, sessionID string) (
-		creds map[string]UpstreamCredential, failed []string, err error)
+		creds map[string]UpstreamCredential, failed map[string]error, err error)
 }
 
 // Service owns the upstream token lifecycle: read, refresh, error handling.
@@ -98,7 +111,13 @@ type Service interface {
 	//   - *UpstreamCredential on success
 	//   - ErrSessionNotFound if no upstream tokens exist for the session/provider
 	//   - ErrNoRefreshToken if the access token is expired and no refresh token is available
-	//   - ErrRefreshFailed if the refresh attempt fails (e.g., revoked refresh token)
+	//   - ErrRefreshFailed if the refresh attempt fails (e.g., revoked refresh token).
+	//     When the upstream IdP definitively rejected the refresh with
+	//     invalid_grant, the error also satisfies errors.Is(err, upstream.ErrGrantRejected);
+	//     a network or 5xx failure does not. Any token endpoint answer also keeps
+	//     its *oauth2.RetrieveError in the chain for the oautherr predicates; use
+	//     IsRejectedRefreshGrant, not IsPermanentCredentialError, to decide
+	//     whether the user must log in again.
 	//
 	// The returned UpstreamCredential.IDToken may be empty or expired. Callers that
 	// PRESENT it as a credential (e.g. as the subject_token of an RFC 8693 token

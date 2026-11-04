@@ -336,7 +336,8 @@ func (c *RawMCPClient) Send(ctx context.Context, url string, req *RawRequest) (*
 
 // SendRaw POSTs body verbatim to url with the given headers — for batches
 // built with NewBatchBody, or any payload (truncated, oversized, garbage)
-// not expressible via RawRequest.
+// not expressible via RawRequest. A "Host" entry in headers overrides the
+// request's Host header.
 func (c *RawMCPClient) SendRaw(ctx context.Context, url string, headers map[string]string, body []byte) (*RawResponse, error) {
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
@@ -344,6 +345,13 @@ func (c *RawMCPClient) SendRaw(ctx context.Context, url string, headers map[stri
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	for k, v := range headers {
+		// net/http ignores a Host entry in Header and sends Request.Host, so
+		// route it there; this lets a test forge the Host header (e.g. the
+		// rebound hostname a DNS-rebinding page sends).
+		if http.CanonicalHeaderKey(k) == "Host" {
+			httpReq.Host = v
+			continue
+		}
 		httpReq.Header.Set(k, v)
 	}
 

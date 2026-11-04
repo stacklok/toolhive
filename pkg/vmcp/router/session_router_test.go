@@ -5,6 +5,7 @@ package router_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -344,6 +345,31 @@ func TestSessionRouter_RouteResource_TemplateFallback(t *testing.T) {
 			expectedID: "users-backend",
 		},
 		{
+			// Template matching cost grows with URI length, so a URI at the cap
+			// must still route; the case below pins the first byte over it.
+			name: "URI exactly at the length cap still matches a template",
+			routingTable: &vmcp.RoutingTable{
+				Resources: map[string]*vmcp.BackendTarget{},
+				ResourceTemplates: map[string]*vmcp.BackendTarget{
+					"file:///logs/{date}.txt": {WorkloadID: "logs-backend"},
+				},
+			},
+			uri:        uriOfLength("file:///logs/", ".txt", vmcp.MaxResourceURILength),
+			expectedID: "logs-backend",
+		},
+		{
+			name: "URI over the length cap is not template-matched",
+			routingTable: &vmcp.RoutingTable{
+				Resources: map[string]*vmcp.BackendTarget{},
+				ResourceTemplates: map[string]*vmcp.BackendTarget{
+					"file:///logs/{date}.txt": {WorkloadID: "logs-backend"},
+				},
+			},
+			uri:           uriOfLength("file:///logs/", ".txt", vmcp.MaxResourceURILength+1),
+			expectError:   true,
+			errorContains: "resource not found",
+		},
+		{
 			name: "invalid template is skipped, valid one still matches",
 			routingTable: &vmcp.RoutingTable{
 				Resources: map[string]*vmcp.BackendTarget{},
@@ -523,4 +549,10 @@ func TestSessionRouter_ConcurrentAccess(t *testing.T) {
 	target, err := r.RouteTool(ctx, "tool1")
 	require.NoError(t, err)
 	assert.Equal(t, "backend1", target.WorkloadID)
+}
+
+// uriOfLength returns prefix + padding + suffix, exactly n bytes long, with
+// padding drawn from characters a template variable accepts.
+func uriOfLength(prefix, suffix string, n int) string {
+	return prefix + strings.Repeat("a", n-len(prefix)-len(suffix)) + suffix
 }

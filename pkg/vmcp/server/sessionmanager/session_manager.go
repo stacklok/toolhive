@@ -493,18 +493,52 @@ func (sm *Manager) Validate(sessionID string) (isTerminated bool, err error) {
 	return false, nil
 }
 
+// LookupOwner returns the identity binding persisted for sessionID, the value
+// the HTTP layer checks the caller against before a session-bearing request is
+// routed (see sessionbinding.Lookup). It reads only the session metadata: it
+// never restores the live MultiSession or contacts a backend, so a foreign
+// caller is rejected before any per-session state is built on this replica.
+//
+// An absent or terminated session yields transportsession.ErrSessionNotFound. A
+// Phase 1 placeholder has no owner yet and yields an empty binding, which the
+// caller must treat as unowned. Any other error is a storage failure.
+//
+// With Redis-backed storage the binding is shared across replicas, so the check
+// holds on a replica that did not create the session; this does not provide
+// live-stream affinity. Unlike Validate, the read does not refresh the session
+// TTL, so a caller that is then rejected cannot keep someone else's session alive.
+func (sm *Manager) LookupOwner(ctx context.Context, sessionID string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, validateTimeout)
+	defer cancel()
+
+	metadata, err := sm.storage.LoadMetadata(ctx, sessionID)
+	if err != nil {
+		return "", err
+	}
+	if metadata[MetadataKeyTerminated] == MetadataValTrue {
+		return "", transportsession.ErrSessionNotFound
+	}
+	return metadata[sessiontypes.MetadataKeyIdentityBinding], nil
+}
+
 // Terminate implements the SDK's SessionIdManager.Terminate().
 //
 // The two session types are handled asymmetrically to prevent a race condition
 // where client termination during the Phase 1→Phase 2 window could resurrect
 // sessions with open backend connections:
 //
-//   - MultiSession (Phase 2): the storage key is deleted. The node-local cache
-//     self-heals on the next Get: checkSession detects ErrSessionNotFound,
-//     evicts the entry, and onEvict closes backend connections. After deletion
-//     Validate() reports the absent key as (isTerminated=true, nil), so the next
-//     request — on this or any other replica — is rejected with a definitive 404
-//     and the client re-initializes instead of retrying the dead session.
+//   - MultiSession (Phase 2): the storage key is deleted and the node-local
+//     cache entry is removed, eagerly scheduling onEvict to close the session's
+//     backend connections. Storage is deleted first so that a loadSession whose
+//     metadata Update runs after the delete is rejected by the pre-existing SET
+//     XX guard; the residual race between that Update succeeding and the cache
+//     insertion is out of scope here. Removal drains evictions, but a concurrent
+//     operation may claim the callback, so Terminate can return before Close
+//     finishes. After deletion Validate() reports the absent key as
+//     (isTerminated=true, nil), so the next request — on this or any other
+//     replica — is rejected with a definitive 404 and the client re-initializes
+//     instead of retrying the dead session. Other replicas still self-heal
+//     through checkSession on their next cache access.
 //
 //   - Placeholder (Phase 1): the session is marked terminated=true and left
 //     for TTL cleanup. This prevents CreateSession() from opening backend
@@ -534,11 +568,30 @@ func (sm *Manager) Terminate(sessionID string) (isNotAllowed bool, err error) {
 	}
 
 	if _, isFullSession := metadata[sessiontypes.MetadataKeyIdentityBinding]; isFullSession {
-		// Phase 2 (full MultiSession): delete from storage. The cache entry will be
-		// evicted lazily on the next Get when checkSession finds the session gone.
+		// Phase 2 (full MultiSession): delete from storage, then remove the
+		// node-local cache entry to eagerly schedule backend cleanup. A
+		// concurrent eviction drain can claim onEvict, so Terminate need not
+		// wait for Close to finish.
+		//
+		// Order matters. Deleting the storage record first means a loadSession
+		// whose metadata Update runs after this delete is rejected by the
+		// pre-existing SET XX guard, so it cannot resurrect the session.
+		// This does not make termination race-free: the window between that
+		// Update returning true and the cache insertion on the Get miss path
+		// is pre-existing and out of scope for this change.
+		//
+		// Relying on lazy eviction alone is not enough: checkSession only runs
+		// on the cache-hit path, and a well-behaved client stops using a
+		// terminated session ID, so that Get may never come. The entry would
+		// then hold its backend connections and capability copies until some
+		// unrelated eviction trigger fires. See #6762.
 		if deleteErr := sm.storage.Delete(ctx, sessionID); deleteErr != nil {
 			return false, fmt.Errorf("Manager.Terminate: failed to delete session from storage: %w", deleteErr)
 		}
+		// onEvict closes the session's backend connections, so no extra
+		// teardown is needed here. Other replicas still self-heal through
+		// checkSession on their next cache access.
+		sm.sessions.Remove(sessionID)
 		slog.Info("Manager.Terminate: session terminated", "session_id", sessionID)
 		return false, nil
 	}

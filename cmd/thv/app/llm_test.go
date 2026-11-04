@@ -7,14 +7,14 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"gopkg.in/yaml.v3"
+	"go.yaml.in/yaml/v3"
 
 	"github.com/stacklok/toolhive/pkg/client"
 	"github.com/stacklok/toolhive/pkg/config"
@@ -46,6 +46,43 @@ func llmProvider(t *testing.T, llmCfg llm.Config) config.Provider {
 // noopLogin is a LoginFunc that always succeeds without touching the keyring.
 // Use it in tests that don't exercise the authentication path.
 var noopLogin llm.LoginFunc = func(context.Context, *llm.Config) error { return nil }
+
+func TestConfigSetCommand_ShortPromptCacheFlagWiring(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		flagValue *bool
+	}{
+		{name: "omitted"},
+		{name: "enabled", flagValue: boolPtr(true)},
+		{name: "explicitly disabled", flagValue: boolPtr(false)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cmd := newConfigSetCommand()
+			flag := cmd.Flags().Lookup("short-prompt-cache")
+			require.NotNil(t, flag)
+			assert.Nil(t, cmd.Flags().Lookup("extended-ttl-cache"))
+			if tt.flagValue != nil {
+				require.NoError(t, cmd.Flags().Set("short-prompt-cache", fmt.Sprintf("%t", *tt.flagValue)))
+			}
+
+			parsed, err := cmd.Flags().GetBool("short-prompt-cache")
+			require.NoError(t, err)
+			var opts llm.SetOptions
+			applyChangedLLMFlags(cmd, &opts, false, parsed, false, false, nil)
+
+			if tt.flagValue == nil {
+				assert.Nil(t, opts.ShortPromptCache)
+				return
+			}
+			require.NotNil(t, opts.ShortPromptCache)
+			assert.Equal(t, *tt.flagValue, *opts.ShortPromptCache)
+		})
+	}
+}
 
 // errOnUpdateProvider wraps a base Provider but returns a fixed error from
 // UpdateConfig. Used to inject deterministic failures without relying on
@@ -105,15 +142,15 @@ func TestRunLLMSetup_NoDetectedTools(t *testing.T) {
 
 func TestRunLLMSetup_PartialFailure(t *testing.T) {
 	t.Parallel()
-	if runtime.GOOS == "windows" {
-		t.Skip("permission-based failure injection is not reliable on Windows")
-	}
-	// Two tools detected; claude-code directory is read-only (Apply fails).
-	// gemini-cli directory is writable (Apply succeeds) and must be persisted.
+	// Two tools detected; claude-code's settings file is malformed JSON, so
+	// Apply fails on any OS and for any user (unlike a read-only directory,
+	// which root writes through). gemini-cli's Apply succeeds and must be
+	// persisted.
 	dir := t.TempDir()
 
 	claudeDir := filepath.Join(dir, ".claude")
-	require.NoError(t, os.MkdirAll(claudeDir, 0o500)) // no write
+	require.NoError(t, os.MkdirAll(claudeDir, 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(claudeDir, "settings.json"), []byte("{not json"), 0o600))
 	geminiDir := filepath.Join(dir, ".gemini")
 	require.NoError(t, os.MkdirAll(geminiDir, 0o700))
 

@@ -184,3 +184,37 @@ func TestDeviceAuthorizationHandler_ClientAuthentication(t *testing.T) {
 		})
 	}
 }
+
+type cimdRateLimitedStorage struct {
+	*storage.MemoryStorage
+}
+
+func (cimdRateLimitedStorage) GetClient(context.Context, string) (fosite.Client, error) {
+	return nil, fosite.ErrNotFound.WithWrap(storage.ErrCIMDRateLimited)
+}
+
+func TestDeviceAuthorizationHandler_CIMDRateLimited(t *testing.T) {
+	t.Parallel()
+
+	mem := storage.NewMemoryStorage()
+	t.Cleanup(func() { _ = mem.Close() })
+	stor := cimdRateLimitedStorage{MemoryStorage: mem}
+	fositeConfig := &fosite.Config{}
+	provider := fosite.NewOAuth2Provider(stor, fositeConfig)
+	fositeConfig.GetSecretsHasher(context.Background())
+	h, err := NewHandler(provider, &server.AuthorizationServerConfig{
+		Config:            fositeConfig,
+		ScopesSupported:   []string{"openid"},
+		DeviceFlowEnabled: true,
+	}, stor, nil)
+	require.NoError(t, err)
+
+	form := url.Values{"client_id": {"https://client.example.com/metadata"}, "scope": {"openid"}}
+	req := httptest.NewRequest(http.MethodPost, "/oauth/device_authorization", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+
+	h.DeviceAuthorizationHandler(rec, req)
+
+	assertOAuthRateLimited(t, rec)
+}

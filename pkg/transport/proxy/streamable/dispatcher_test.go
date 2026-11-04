@@ -33,9 +33,9 @@ func TestDispatchResponses_ResponseRoutesToWaiter(t *testing.T) {
 	t.Parallel()
 	proxy := newDispatcherTestProxy(t)
 
-	waitCh, cleanup := proxy.createWaiter("sess-1", jsonrpc2.StringID("req-1"))
+	waitCh, ck, cleanup, err := proxy.createWaiter("sess-1", jsonrpc2.StringID("req-1"))
+	require.NoError(t, err)
 	defer cleanup()
-	ck := compositeKey("sess-1", idKeyFromID(jsonrpc2.StringID("req-1")))
 
 	resp, err := jsonrpc2.NewResponse(jsonrpc2.StringID(ck), "result", nil)
 	require.NoError(t, err)
@@ -48,6 +48,69 @@ func TestDispatchResponses_ResponseRoutesToWaiter(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for response to reach waiter")
 	}
+}
+
+// TestDoRequest_SameSessionSameIDDoesNotCrossResponses is the regression test
+// for GHSA-5cgx-5frr-fgv5: a client chooses its own JSON-RPC id, so two
+// in-flight requests in one session may carry the same id. Each must receive
+// the backend response to its own request (never the other's), and each must
+// see its original id restored.
+func TestDoRequest_SameSessionSameIDDoesNotCrossResponses(t *testing.T) {
+	t.Parallel()
+	proxy := newDispatcherTestProxy(t)
+
+	methods := []string{"tools/list", "ping"}
+	type outcome struct {
+		method string
+		msg    jsonrpc2.Message
+		err    error
+	}
+	outcomes := make(chan outcome, len(methods))
+	for _, method := range methods {
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			req := &jsonrpc2.Request{ID: jsonrpc2.Int64ID(1), Method: method}
+			msg, err := proxy.doRequest(ctx, "sess-1", req)
+			outcomes <- outcome{method: method, msg: msg, err: err}
+		}()
+	}
+
+	// Fake backend: collect both in-flight requests, then answer them in the
+	// reverse of arrival order, tagging each result with the request's method.
+	var inflight []*jsonrpc2.Request
+	for len(inflight) < len(methods) {
+		select {
+		case msg := <-proxy.messageCh:
+			req, ok := msg.(*jsonrpc2.Request)
+			require.True(t, ok)
+			inflight = append(inflight, req)
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for both requests to reach the backend")
+		}
+	}
+	for i := len(inflight) - 1; i >= 0; i-- {
+		resp, err := jsonrpc2.NewResponse(inflight[i].ID, inflight[i].Method, nil)
+		require.NoError(t, err)
+		proxy.responseCh <- resp
+	}
+
+	for range methods {
+		select {
+		case got := <-outcomes:
+			require.NoError(t, got.err, "request %q must not time out or fail", got.method)
+			resp, ok := got.msg.(*jsonrpc2.Response)
+			require.True(t, ok)
+			assert.JSONEq(t, `"`+got.method+`"`, string(resp.Result),
+				"request %q received another request's response", got.method)
+			assert.Equal(t, jsonrpc2.Int64ID(1), resp.ID, "original client id must be restored")
+		case <-time.After(5 * time.Second):
+			t.Fatal("timed out waiting for doRequest to return")
+		}
+	}
+
+	assert.Zero(t, syncMapLen(&proxy.waiters), "waiters must be cleaned up")
+	assert.Zero(t, syncMapLen(&proxy.idRestore), "idRestore must be cleaned up")
 }
 
 // TestDispatchResponses_UnknownCompositeKeyResponseIsDropped verifies a

@@ -25,11 +25,14 @@ type OIDCConfig = pkgoidc.ClientConfig
 // Config holds all LLM gateway settings persisted under the llm: key in
 // ToolHive's config.yaml.
 type Config struct {
-	GatewayURL    string        `yaml:"gateway_url,omitempty"       json:"gateway_url,omitempty"`
-	TLSSkipVerify bool          `yaml:"tls_skip_verify,omitempty"   json:"tls_skip_verify,omitempty"`
-	OIDC          OIDCConfig    `yaml:"oidc,omitempty"              json:"oidc,omitempty"`
-	Proxy         ProxyConfig   `yaml:"proxy,omitempty"             json:"proxy,omitempty"`
-	Bedrock       BedrockConfig `yaml:"bedrock,omitempty"           json:"bedrock,omitempty"`
+	GatewayURL    string `yaml:"gateway_url,omitempty"       json:"gateway_url,omitempty"`
+	TLSSkipVerify bool   `yaml:"tls_skip_verify,omitempty"   json:"tls_skip_verify,omitempty"`
+	// ShortPromptCache opts Claude Code out of ToolHive's default one-hour
+	// prompt-cache lifetime and restores Claude Code's five-minute default.
+	ShortPromptCache bool          `yaml:"short_prompt_cache,omitempty" json:"short_prompt_cache,omitempty"`
+	OIDC             OIDCConfig    `yaml:"oidc,omitempty"              json:"oidc,omitempty"`
+	Proxy            ProxyConfig   `yaml:"proxy,omitempty"             json:"proxy,omitempty"`
+	Bedrock          BedrockConfig `yaml:"bedrock,omitempty"           json:"bedrock,omitempty"`
 	// Models is the persisted, single source of truth for the model IDs applied
 	// during setup. It feeds two consumers: credential-helper clients (Claude
 	// Desktop) write it verbatim as inferenceModels, and — when Bedrock compat is

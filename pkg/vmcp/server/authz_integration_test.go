@@ -150,7 +150,7 @@ func buildCedarAuthzServerWithConfig(
 				id := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{
 					Subject: principal,
 					Name:    "Test User",
-					Claims:  map[string]any{"sub": principal, "name": "Test User"},
+					Claims:  map[string]any{"iss": "https://issuer.example.com", "sub": principal, "name": "Test User"},
 				}}
 				withParser.ServeHTTP(w, r.WithContext(auth.WithIdentity(r.Context(), id)))
 			})

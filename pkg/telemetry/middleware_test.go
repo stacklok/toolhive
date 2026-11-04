@@ -907,6 +907,48 @@ func TestHTTPMiddleware_addEnvironmentAttributes(t *testing.T) {
 	}
 }
 
+// TestHTTPMiddleware_addEnvironmentAttributes_SkipsAssignments verifies that
+// empty names and "NAME=value" entries (which may carry a credential) never
+// become span attribute names, while other names are emitted unchanged.
+func TestHTTPMiddleware_addEnvironmentAttributes_SkipsAssignments(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		envVars  []string
+		expected map[string]interface{}
+	}{
+		{
+			name:     "assignments and empty names are skipped",
+			envVars:  []string{"OTEL_EXPORTER_OTLP_HEADERS=Authorization=Basic dG9rZW46cHc=", "b=2", ""},
+			expected: map[string]interface{}{},
+		},
+		{
+			name:    "non-portable names are emitted",
+			envVars: []string{"my-var", "my.var", "1ABC", "PLAIN_NAME"},
+			expected: map[string]interface{}{
+				"environment.my-var":     "",
+				"environment.my.var":     "",
+				"environment.1ABC":       "",
+				"environment.PLAIN_NAME": "",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			span := &mockSpan{attributes: make(map[string]interface{})}
+			middleware := &HTTPMiddleware{config: Config{EnvironmentVariables: tt.envVars}}
+
+			middleware.addEnvironmentAttributes(span)
+
+			assert.Equal(t, tt.expected, span.attributes)
+		})
+	}
+}
+
 // mockSpan implements trace.Span for testing
 type mockSpan struct {
 	trace.Span

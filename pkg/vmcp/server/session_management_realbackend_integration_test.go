@@ -24,6 +24,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/auth/strategies"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 	vmcpclient "github.com/stacklok/toolhive/pkg/vmcp/client"
+	"github.com/stacklok/toolhive/pkg/vmcp/composer"
 	"github.com/stacklok/toolhive/pkg/vmcp/mocks"
 	"github.com/stacklok/toolhive/pkg/vmcp/router"
 	"github.com/stacklok/toolhive/pkg/vmcp/server"
@@ -42,6 +43,35 @@ import (
 // SDK path. It is the low-level helper used by newRealTestServer and any test
 // that needs control over the httptest.Server configuration (e.g. WriteTimeout).
 func newRealTestHandler(t *testing.T, backendURL string, configure ...func(*server.Config)) http.Handler {
+	t.Helper()
+	return newRealTestHandlerWithWorkflows(t, backendURL, nil, configure...)
+}
+
+// newRealTestHandlerWithWorkflows is newRealTestHandler with composite-tool
+// workflow definitions registered on the server, so a test can drive a real
+// composite tool whose steps route to the real backend at backendURL.
+func newRealTestHandlerWithWorkflows(
+	t *testing.T,
+	backendURL string,
+	workflowDefs map[string]*composer.WorkflowDefinition,
+	configure ...func(*server.Config),
+) http.Handler {
+	t.Helper()
+	return newRealTestHandlerWithBackendClient(t, backendURL, workflowDefs, nil, configure...)
+}
+
+// newRealTestHandlerWithBackendClient is newRealTestHandlerWithWorkflows with
+// an optional decorator around the BackendClient the server routes calls
+// through, the way an embedder wraps it. A nil decorate leaves the real client
+// undecorated. Discovery keeps using the undecorated client, so a decorator
+// that refuses calls does not hide the backend's tools.
+func newRealTestHandlerWithBackendClient(
+	t *testing.T,
+	backendURL string,
+	workflowDefs map[string]*composer.WorkflowDefinition,
+	decorate func(vmcp.BackendClient) vmcp.BackendClient,
+	configure ...func(*server.Config),
+) http.Handler {
 	t.Helper()
 
 	ctrl := gomock.NewController(t)
@@ -88,13 +118,17 @@ func newRealTestHandler(t *testing.T, backendURL string, configure ...func(*serv
 	for _, configure := range configure {
 		configure(cfg)
 	}
+	callClient := vmcp.BackendClient(backendClient)
+	if decorate != nil {
+		callClient = decorate(callClient)
+	}
 	srv, err := server.New(
 		context.Background(),
 		cfg,
 		rt,
-		backendClient,
+		callClient,
 		mockBackendRegistry,
-		nil,
+		workflowDefs,
 	)
 	require.NoError(t, err)
 

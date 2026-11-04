@@ -17,6 +17,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/audit"
 	thvjson "github.com/stacklok/toolhive/pkg/json"
 	ratelimittypes "github.com/stacklok/toolhive/pkg/ratelimit/types"
+	"github.com/stacklok/toolhive/pkg/redisconfig"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
@@ -195,10 +196,14 @@ type Config struct {
 	RateLimiting *ratelimittypes.RateLimitConfig `json:"rateLimiting,omitempty" yaml:"rateLimiting,omitempty"`
 
 	// PassthroughHeaders is an allowlist of incoming client request header names
-	// forwarded verbatim to all backends. Captured at the vMCP incoming edge by
-	// headerforward.CaptureMiddleware and consumed once at session creation
-	// when the per-session backend client's HeaderForwardConfig is built. Names
-	// must not be in the restricted set (Host, hop-by-hop, X-Forwarded-*, etc.).
+	// forwarded verbatim to all backends. Captured per request at the vMCP
+	// incoming edge by headerforward.CaptureMiddleware: tool calls, resource
+	// reads and prompt gets carry the values from the request that triggered
+	// them, and a header absent on that request is not forwarded. Session-scoped
+	// work (the session's backend connections, its advertised capability list,
+	// and background capability resyncs) uses the values from the request that
+	// created the session. Names must not be in the restricted set (Host,
+	// hop-by-hop, X-Forwarded-*, etc.).
 	// +optional
 	// +listType=atomic
 	PassthroughHeaders []string `json:"passthroughHeaders,omitempty" yaml:"passthroughHeaders,omitempty"`
@@ -1256,6 +1261,13 @@ type SessionStorageConfig struct {
 	// KeyPrefix is an optional prefix for all Redis keys used by ToolHive.
 	// +optional
 	KeyPrefix string `json:"keyPrefix,omitempty" yaml:"keyPrefix,omitempty"`
+
+	// TLS enables TLS for session storage and rate limiting. An empty
+	// configuration verifies the Redis server using system roots.
+	// On Kubernetes, set spec.sessionStorage.tls instead: the operator derives this
+	// field from it and rejects a value set under spec.config.sessionStorage.
+	// +optional
+	TLS *redisconfig.TLSConfig `json:"tls,omitempty" yaml:"tls,omitempty"`
 }
 
 // Validator validates configuration.

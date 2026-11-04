@@ -23,7 +23,7 @@ import (
 )
 
 // startProxy starts a streamable-HTTP TransparentProxy for routing and recovery tests.
-func startProxy(t *testing.T, targetURL string) (proxy *TransparentProxy, addr string) {
+func startProxy(t *testing.T, targetURL string, options ...Option) (proxy *TransparentProxy, addr string) {
 	t.Helper()
 	proxy = NewTransparentProxyWithOptions(
 		"127.0.0.1", 0, targetURL,
@@ -31,6 +31,7 @@ func startProxy(t *testing.T, targetURL string) (proxy *TransparentProxy, addr s
 		false, false, "streamable-http",
 		nil, nil, "", false,
 		nil,
+		options...,
 	)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	t.Cleanup(func() {
@@ -42,6 +43,141 @@ func startProxy(t *testing.T, targetURL string) (proxy *TransparentProxy, addr s
 	require.NoError(t, proxy.Start(ctx))
 	addr = proxy.listener.Addr().String()
 	return proxy, addr
+}
+
+func TestConsentCookieOutbound(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name  string
+		strip bool
+		want  []string
+	}{
+		{"embedded auth server", true, []string{"backend", "__Host-thv_consentish", "second"}},
+		{"ordinary proxy", false, []string{"backend", "__Host-thv_consent_a", "__Host-thv_consentish", "second", "__Host-thv_consent_nonhex", "__Host-thv_consent_a"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var got []string
+			backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				for _, cookie := range r.Cookies() {
+					got = append(got, cookie.Name)
+				}
+				w.WriteHeader(http.StatusOK)
+			}))
+			t.Cleanup(backend.Close)
+
+			var options []Option
+			if tt.strip {
+				options = append(options, WithStripConsentCookie())
+			}
+			proxy, _ := startProxy(t, backend.URL, options...)
+			req := httptest.NewRequest(http.MethodPost, "http://proxy/mcp",
+				strings.NewReader(`{"jsonrpc":"2.0","method":"tools/list"}`))
+			req.Header["Cookie"] = []string{
+				"backend=one; __Host-thv_consent_a=secret; __Host-thv_consentish=ok",
+				"second=two; __Host-thv_consent_nonhex=another; __Host-thv_consent_a=duplicate",
+			}
+			original := req.Header.Clone()
+			rec := httptest.NewRecorder()
+			proxy.server.Handler.ServeHTTP(rec, req)
+			require.Equal(t, http.StatusOK, rec.Code)
+			assert.Equal(t, tt.want, got)
+			assert.Equal(t, original, req.Header, "inbound headers must remain unchanged")
+		})
+	}
+}
+
+func TestStripConsentCookieWhitespace(t *testing.T) {
+	t.Parallel()
+	header := http.Header{"Cookie": {"backend=one; __Host-thv_consent_a =secret; other=two"}, "cOoKiE": {"__Host-thv_consent_?=x; safe=y"}}
+	stripConsentCookie(header)
+	assert.ElementsMatch(t, []string{"backend=one; other=two", " safe=y"}, header["Cookie"])
+}
+
+func TestStripConsentCookieRemovesAllFamilyHeaders(t *testing.T) {
+	t.Parallel()
+	header := http.Header{
+		"Cookie": {"__Host-thv_consent_a=one; __Host-thv_consent_nonhex =two", "__Host-thv_consent_a=duplicate"},
+		"cOoKiE": {"__Host-thv_consent_?=three"},
+	}
+	stripConsentCookie(header)
+	require.Empty(t, header)
+}
+
+func TestConsentCookieRedirectAndRecovery(t *testing.T) {
+	t.Parallel()
+	const backendCookie = "backend=one; __Host-thv_consentish=ok"
+	assertCookies := func(t *testing.T, r *http.Request) {
+		t.Helper()
+		var names []string
+		for _, cookie := range r.Cookies() {
+			names = append(names, cookie.Name)
+		}
+		assert.Equal(t, []string{"backend", "__Host-thv_consentish"}, names)
+	}
+
+	t.Run("redirect", func(t *testing.T) {
+		t.Parallel()
+		var hits int
+		backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			assertCookies(t, r)
+			hits++
+			if r.URL.Path == "/mcp" {
+				w.Header().Set("Location", "/final")
+				w.WriteHeader(http.StatusTemporaryRedirect)
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+		}))
+		t.Cleanup(backend.Close)
+		proxy, _ := startProxy(t, backend.URL, WithStripConsentCookie())
+		req := httptest.NewRequest(http.MethodPost, "http://proxy/mcp",
+			strings.NewReader(`{"jsonrpc":"2.0","method":"tools/list"}`))
+		req.Header["Cookie"] = []string{backendCookie, "__Host-thv_consent_a=secret; __Host-thv_consent_z=other"}
+		original := req.Header.Clone()
+		rec := httptest.NewRecorder()
+		proxy.server.Handler.ServeHTTP(rec, req)
+		require.Equal(t, http.StatusOK, rec.Code)
+		assert.Equal(t, 2, hits)
+		assert.Equal(t, original, req.Header)
+	})
+
+	t.Run("reinitialize and replay", func(t *testing.T) {
+		t.Parallel()
+		var hits int
+		stale := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			assertCookies(t, r)
+			w.WriteHeader(http.StatusNotFound)
+		}))
+		t.Cleanup(stale.Close)
+		fresh := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			assertCookies(t, r)
+			hits++
+			body, _ := io.ReadAll(r.Body)
+			if strings.Contains(string(body), `"initialize"`) {
+				w.Header().Set("Mcp-Session-Id", uuid.NewString())
+			}
+			w.WriteHeader(http.StatusOK)
+		}))
+		t.Cleanup(fresh.Close)
+		proxy, _ := startProxy(t, fresh.URL, WithStripConsentCookie())
+		sid := uuid.NewString()
+		sess := session.NewProxySession(sid)
+		sess.SetMetadata(sessionMetadataBackendURL, stale.URL)
+		sess.SetMetadata(sessionMetadataInitBody, `{"jsonrpc":"2.0","id":1,"method":"initialize"}`)
+		sess.SetMetadata(session.MetadataKeyIdentityBinding, "unauthenticated")
+		require.NoError(t, proxy.sessionManager.AddSession(sess))
+		req := httptest.NewRequest(http.MethodPost, "http://proxy/mcp",
+			strings.NewReader(`{"jsonrpc":"2.0","method":"tools/list"}`))
+		req.Header.Set("Mcp-Session-Id", sid)
+		req.Header["Cookie"] = []string{backendCookie, "__Host-thv_consent_a=secret; __Host-thv_consent_z=other"}
+		original := req.Header.Clone()
+		rec := httptest.NewRecorder()
+		proxy.server.Handler.ServeHTTP(rec, req)
+		require.Equal(t, http.StatusOK, rec.Code)
+		assert.Equal(t, 2, hits, "reinitialize and replay must both use sanitized headers")
+		assert.Equal(t, original, req.Header)
+	})
 }
 
 // TestRewriteRoutesViaBackendURL verifies that a request with a session whose

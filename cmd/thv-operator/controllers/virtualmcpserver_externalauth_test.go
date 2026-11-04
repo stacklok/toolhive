@@ -2015,3 +2015,248 @@ func TestGetExternalAuthConfigSecretEnvVars_OBO(t *testing.T) {
 	assert.NotContains(t, err.Error(), "unsupported external auth type")
 	assert.NotContains(t, err.Error(), "unknown middleware type")
 }
+
+// headerInjectionAuthConfig builds an MCPExternalAuthConfig of type headerInjection
+// whose value comes from a Secret, so getExternalAuthConfigSecretEnvVars emits
+// TOOLHIVE_HEADER_INJECTION_VALUE_<NAME>.
+func headerInjectionAuthConfig(name, secretName string) *mcpv1beta1.MCPExternalAuthConfig {
+	return &mcpv1beta1.MCPExternalAuthConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
+		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+			Type: mcpv1beta1.ExternalAuthTypeHeaderInjection,
+			HeaderInjection: &mcpv1beta1.HeaderInjectionConfig{
+				HeaderName:     "Authorization",
+				ValueSecretRef: &mcpv1beta1.SecretKeyRef{Name: secretName, Key: "token"},
+			},
+		},
+	}
+}
+
+// mcpServerEntryWithAuthRef builds a remote MCPServerEntry carrying
+// spec.externalAuthConfigRef, the shape reported in #6837.
+func mcpServerEntryWithAuthRef(name, authConfigName string) *mcpv1beta1.MCPServerEntry {
+	return &mcpv1beta1.MCPServerEntry{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
+		Spec: mcpv1beta1.MCPServerEntrySpec{
+			RemoteURL:             "https://" + name + ".example.com/mcp",
+			Transport:             "streamable-http",
+			GroupRef:              &mcpv1beta1.MCPGroupRef{Name: "test-group"},
+			ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{Name: authConfigName},
+		},
+	}
+}
+
+// TestBuildOutgoingAuthEnvVars_WorkloadRefsAcrossSourceModes covers the mismatch
+// reported in #6837: buildOutgoingAuthConfig embeds a workload's
+// spec.externalAuthConfigRef strategy into the vMCP config in both source modes,
+// but buildOutgoingAuthEnvVars only mounted the secret it names in discovered
+// mode. With outgoingAuth.source: inline the vMCP then exited at startup with
+// "environment variable TOOLHIVE_HEADER_INJECTION_VALUE_<CONFIG> not set or empty".
+//
+// The two paths must agree, including on the inline-override skip: a backend
+// overridden under spec.outgoingAuth.backends gets the override's strategy in the
+// config, so only the override's secret belongs on the Deployment.
+func TestBuildOutgoingAuthEnvVars_WorkloadRefsAcrossSourceModes(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		source      string
+		backends    map[string]mcpv1beta1.BackendAuthConfig
+		entries     []*mcpv1beta1.MCPServerEntry
+		authConfigs []*mcpv1beta1.MCPExternalAuthConfig
+		workloads   []workloads.TypedWorkload
+		// expectEnvVars maps expected env var name to the "secretName/key" it reads.
+		expectEnvVars map[string]string
+	}{
+		{
+			// The exact combination from the issue: entry carries the ref, the
+			// vMCP has no inline entry for that backend.
+			name:   "inline mode mounts secret for entry without inline override",
+			source: "inline",
+			entries: []*mcpv1beta1.MCPServerEntry{
+				mcpServerEntryWithAuthRef("my-backend", "my-backend-auth"),
+			},
+			authConfigs: []*mcpv1beta1.MCPExternalAuthConfig{
+				headerInjectionAuthConfig("my-backend-auth", "my-backend-secret"),
+			},
+			workloads: []workloads.TypedWorkload{
+				{Name: "my-backend", Type: workloads.WorkloadTypeMCPServerEntry},
+			},
+			expectEnvVars: map[string]string{
+				"TOOLHIVE_HEADER_INJECTION_VALUE_MY_BACKEND_AUTH": "my-backend-secret/token",
+			},
+		},
+		{
+			name:   "discovered mode mounts secret for entry",
+			source: "discovered",
+			entries: []*mcpv1beta1.MCPServerEntry{
+				mcpServerEntryWithAuthRef("my-backend", "my-backend-auth"),
+			},
+			authConfigs: []*mcpv1beta1.MCPExternalAuthConfig{
+				headerInjectionAuthConfig("my-backend-auth", "my-backend-secret"),
+			},
+			workloads: []workloads.TypedWorkload{
+				{Name: "my-backend", Type: workloads.WorkloadTypeMCPServerEntry},
+			},
+			expectEnvVars: map[string]string{
+				"TOOLHIVE_HEADER_INJECTION_VALUE_MY_BACKEND_AUTH": "my-backend-secret/token",
+			},
+		},
+		{
+			// The override's strategy is what buildOutgoingAuthConfig writes for
+			// this backend, so the entry's own secret must stay unmounted.
+			name:   "inline override replaces the workload secret",
+			source: "inline",
+			backends: map[string]mcpv1beta1.BackendAuthConfig{
+				"my-backend": {
+					Type:                  mcpv1beta1.BackendAuthTypeExternalAuthConfigRef,
+					ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{Name: "override-auth"},
+				},
+			},
+			entries: []*mcpv1beta1.MCPServerEntry{
+				mcpServerEntryWithAuthRef("my-backend", "my-backend-auth"),
+			},
+			authConfigs: []*mcpv1beta1.MCPExternalAuthConfig{
+				headerInjectionAuthConfig("my-backend-auth", "my-backend-secret"),
+				headerInjectionAuthConfig("override-auth", "override-secret"),
+			},
+			workloads: []workloads.TypedWorkload{
+				{Name: "my-backend", Type: workloads.WorkloadTypeMCPServerEntry},
+			},
+			expectEnvVars: map[string]string{
+				"TOOLHIVE_HEADER_INJECTION_VALUE_OVERRIDE_AUTH": "override-secret/token",
+			},
+		},
+		{
+			// The skip is per workload, not per config: backend-b still needs
+			// shared-auth even though backend-a is overridden.
+			name:   "shared config still mounted for a non-overridden workload",
+			source: "inline",
+			backends: map[string]mcpv1beta1.BackendAuthConfig{
+				"backend-a": {
+					Type:                  mcpv1beta1.BackendAuthTypeExternalAuthConfigRef,
+					ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{Name: "override-auth"},
+				},
+			},
+			entries: []*mcpv1beta1.MCPServerEntry{
+				mcpServerEntryWithAuthRef("backend-a", "shared-auth"),
+				mcpServerEntryWithAuthRef("backend-b", "shared-auth"),
+			},
+			authConfigs: []*mcpv1beta1.MCPExternalAuthConfig{
+				headerInjectionAuthConfig("shared-auth", "shared-secret"),
+				headerInjectionAuthConfig("override-auth", "override-secret"),
+			},
+			workloads: []workloads.TypedWorkload{
+				{Name: "backend-a", Type: workloads.WorkloadTypeMCPServerEntry},
+				{Name: "backend-b", Type: workloads.WorkloadTypeMCPServerEntry},
+			},
+			expectEnvVars: map[string]string{
+				"TOOLHIVE_HEADER_INJECTION_VALUE_SHARED_AUTH":   "shared-secret/token",
+				"TOOLHIVE_HEADER_INJECTION_VALUE_OVERRIDE_AUTH": "override-secret/token",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			scheme := testutil.NewScheme(t)
+
+			vmcp := v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+				v1beta1test.WithVMCPGroupRef("test-group"),
+				v1beta1test.WithVMCPOutgoingAuth(&mcpv1beta1.OutgoingAuthConfig{
+					Source:   tt.source,
+					Backends: tt.backends,
+				}),
+			)
+
+			objects := []client.Object{vmcp}
+			for _, entry := range tt.entries {
+				objects = append(objects, entry)
+			}
+			for _, cfg := range tt.authConfigs {
+				objects = append(objects, cfg)
+			}
+
+			fakeClient := fake.NewClientBuilder().
+				WithScheme(scheme).
+				WithObjects(objects...).
+				Build()
+
+			r := &VirtualMCPServerReconciler{
+				Client:           fakeClient,
+				Scheme:           scheme,
+				PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
+			}
+
+			envVars := r.buildOutgoingAuthEnvVars(context.Background(), vmcp, tt.workloads)
+
+			got := make(map[string]string, len(envVars))
+			for _, ev := range envVars {
+				require.NotNil(t, ev.ValueFrom, "env var %s must come from a secret", ev.Name)
+				require.NotNil(t, ev.ValueFrom.SecretKeyRef, "env var %s must come from a secret", ev.Name)
+				_, duplicate := got[ev.Name]
+				assert.False(t, duplicate, "env var %s emitted twice", ev.Name)
+				got[ev.Name] = ev.ValueFrom.SecretKeyRef.Name + "/" + ev.ValueFrom.SecretKeyRef.Key
+			}
+
+			assert.Equal(t, tt.expectEnvVars, got)
+		})
+	}
+}
+
+// TestBuildOutgoingAuthConfig_InlineModeKeepsWorkloadRefWithoutOverride pins the
+// config half of #6837: in inline mode a backend whose workload carries
+// spec.externalAuthConfigRef and has no entry under spec.outgoingAuth.backends
+// still gets that strategy written into the vMCP config. The pre-existing
+// "inline mode ignores discovered configs" case uses one MCPExternalAuthConfig
+// for both the workload ref and the inline override, so it cannot tell the two
+// paths apart or cover this combination.
+func TestBuildOutgoingAuthConfig_InlineModeKeepsWorkloadRefWithoutOverride(t *testing.T) {
+	t.Parallel()
+
+	scheme := testutil.NewScheme(t)
+
+	vmcp := v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+		v1beta1test.WithVMCPGroupRef("test-group"),
+		v1beta1test.WithVMCPOutgoingAuth(&mcpv1beta1.OutgoingAuthConfig{
+			Source: "inline",
+			Backends: map[string]mcpv1beta1.BackendAuthConfig{
+				"other-backend": {
+					Type:                  mcpv1beta1.BackendAuthTypeExternalAuthConfigRef,
+					ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{Name: "override-auth"},
+				},
+			},
+		}),
+	)
+
+	objects := []client.Object{
+		vmcp,
+		mcpServerEntryWithAuthRef("my-backend", "my-backend-auth"),
+		headerInjectionAuthConfig("my-backend-auth", "my-backend-secret"),
+		headerInjectionAuthConfig("override-auth", "override-secret"),
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(objects...).
+		Build()
+
+	r := &VirtualMCPServerReconciler{
+		Client:           fakeClient,
+		Scheme:           scheme,
+		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
+	}
+
+	config, _, authErrors := r.buildOutgoingAuthConfig(context.Background(), vmcp, []workloads.TypedWorkload{
+		{Name: "my-backend", Type: workloads.WorkloadTypeMCPServerEntry},
+	})
+
+	require.Empty(t, authErrors)
+	require.NotNil(t, config)
+	require.Contains(t, config.Backends, "my-backend",
+		"inline mode must keep the workload-referenced strategy for a backend with no inline override")
+	assert.Equal(t, "header_injection", config.Backends["my-backend"].Type)
+}

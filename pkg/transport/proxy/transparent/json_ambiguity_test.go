@@ -61,7 +61,7 @@ func TestTransparentProxyRejectsAmbiguousJSONAndPreservesValidRequests(t *testin
 			require.NoError(t, proxy.sessionManager.AddSession(owned))
 			proxyURL := fmt.Sprintf("http://%s/", proxy.listener.Addr().String())
 
-			valid := `{"jsonrpc":"2.0", "id":2, "method":"tools/call", "params":{"name":"allowed","arguments":{"count":1e1000},"extension":{"keep":true}}}`
+			valid := `{"jsonrpc":"2.0", "id":2, "method":"tools/call", "params":{"name":"allowed","arguments":{"count":1.0e2},"extension":{"keep":true}}}`
 			for _, tc := range []struct {
 				name, body, contentType string
 				status                  int

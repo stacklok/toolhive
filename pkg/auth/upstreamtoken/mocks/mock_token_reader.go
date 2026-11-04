@@ -42,11 +42,11 @@ func (m *MockTokenReader) EXPECT() *MockTokenReaderMockRecorder {
 }
 
 // GetAllUpstreamCredentials mocks base method.
-func (m *MockTokenReader) GetAllUpstreamCredentials(ctx context.Context, sessionID string) (map[string]upstreamtoken.UpstreamCredential, []string, error) {
+func (m *MockTokenReader) GetAllUpstreamCredentials(ctx context.Context, sessionID string) (map[string]upstreamtoken.UpstreamCredential, map[string]error, error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "GetAllUpstreamCredentials", ctx, sessionID)
 	ret0, _ := ret[0].(map[string]upstreamtoken.UpstreamCredential)
-	ret1, _ := ret[1].([]string)
+	ret1, _ := ret[1].(map[string]error)
 	ret2, _ := ret[2].(error)
 	return ret0, ret1, ret2
 }

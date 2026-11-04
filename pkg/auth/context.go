@@ -11,6 +11,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 
 	"github.com/stacklok/toolhive-core/audit"
+	serveridentity "github.com/stacklok/toolhive/pkg/authserver/identity"
 )
 
 // DefaultMaxDelegationDepth is ToolHive's default cap on how many RFC 8693
@@ -25,8 +26,9 @@ import (
 // Truncated=true could not have been minted by ToolHive's own issuance path.
 const DefaultMaxDelegationDepth = 10
 
-// IdentityContextKey is the key used to store Identity in the request context.
-// This provides type-safe context storage and retrieval for authenticated identities.
+// IdentityContextKey is the key used to store a host Identity in the request context.
+// Authentication middleware typically attaches it on authenticated request paths;
+// its presence in a context alone does not prove that authentication succeeded.
 //
 // Using an empty struct as the key prevents collisions with other context keys,
 // as each empty struct type is distinct even if they have the same name in different packages.
@@ -96,19 +98,18 @@ func IdentityHolderFromContext(ctx context.Context) (*IdentityHolder, bool) {
 	return holder, ok && holder != nil
 }
 
-// IdentityFromContext retrieves an Identity from the context.
+// IdentityFromContext retrieves the host Identity from the context.
 // Returns the identity and true if a non-nil identity is present, nil and false otherwise.
 // A typed-nil *Identity stored directly in the context (bypassing WithIdentity) is
 // treated as absent so callers can safely gate on the boolean without nil checks.
-//
-// This function is typically called by authorization middleware or handlers that need
-// to check who the authenticated user is.
+// Authentication middleware typically attaches this Identity on authenticated
+// request paths, but context lookup alone does not prove that authentication succeeded.
 //
 // Example:
 //
 //	identity, ok := IdentityFromContext(ctx)
 //	if !ok {
-//	    return errors.New("no authenticated identity")
+//	    return errors.New("no identity in context")
 //	}
 //	log.Printf("Request from user: %s", identity.Subject)
 func IdentityFromContext(ctx context.Context) (*Identity, bool) {
@@ -116,59 +117,60 @@ func IdentityFromContext(ctx context.Context) (*Identity, bool) {
 	return identity, ok && identity != nil
 }
 
-// PlatformUserContextKey is the key used to store the platform's canonical user
-// identifier in the request context. It is deliberately distinct from
+// PlatformUserContextKey is a compatibility alias for the authserver's
+// credential-free canonical-user context key. It is deliberately distinct from
 // IdentityContextKey.
 //
 // A value under this key means only "this is the canonical user to key storage
 // on" — it is NOT proof that an authenticated principal is present. The two are
-// kept structurally separate so a storage-scoped user id can never be mistaken
-// for a validated identity: authorizers and other consumers that need the
-// authenticated caller use IdentityFromContext (which carries the validated token
-// and claims), while storage layers that key on the canonical user use
-// CanonicalUserFromContext.
-type PlatformUserContextKey struct{}
+// kept structurally separate so a storage-scoped user id cannot be mistaken for a
+// host Identity. Consumers that need the authenticated caller may retrieve the host
+// Identity with IdentityFromContext on trusted authenticated request paths, but the
+// context lookup alone is not proof that the Identity was validated. Storage layers
+// that key on the canonical user use CanonicalUserFromContext.
+type PlatformUserContextKey = serveridentity.CanonicalUserContextKey
 
-// WithPlatformUser stores the platform's canonical user identifier in the context.
-// If userID is empty, the original context is returned unchanged.
+// WithPlatformUser stores the platform's canonical user identifier in the
+// context using the authserver's shared canonical-user contract. If userID is
+// empty, the original context is returned unchanged.
 //
 // Use this — not WithIdentity — on paths that have resolved the user but have no
-// validated identity to assert (e.g. the OAuth callback, which resolves the user
-// while it is still minting the ToolHive bearer, so no validated token/claims
-// exist yet). Reusing WithIdentity there would place a credential-free stub under
-// the identity key that later readers could mistake for an authenticated principal.
+// host Identity to attach (e.g. the OAuth callback, which resolves the user while
+// it is still minting the ToolHive bearer, so no validated token/claims exist yet).
+// Reusing WithIdentity there would place a credential-free stub under the identity
+// key that later readers could mistake for an authenticated principal.
 //
-// Request-serving paths that already carry a validated identity do NOT need to
-// call this — CanonicalUserFromContext falls back to the Identity's PlatformUserID
-// there, so the canonical user is read from one accessor without storing it twice.
+// Request-serving paths that already carry the host Identity, typically attached
+// after authentication, do NOT need to call this — CanonicalUserFromContext falls
+// back to that Identity's PlatformUserID, so the canonical user is read from one
+// accessor without storing it twice.
 func WithPlatformUser(ctx context.Context, userID string) context.Context {
-	if userID == "" {
-		return ctx
-	}
-	return context.WithValue(ctx, PlatformUserContextKey{}, userID)
+	return serveridentity.WithCanonicalUser(ctx, userID)
 }
 
 // PlatformUserFromContext retrieves the platform's canonical user identifier from
-// the dedicated platform-user key. Returns the identifier and true if present,
-// "" and false otherwise.
+// the shared canonical-user key. Returns the identifier and true if present,
+// including when an empty string was stored directly; returns "" and false when
+// absent or stored with a non-string type.
 //
 // Most callers should use CanonicalUserFromContext, which also resolves the user
-// from a validated Identity on request-serving paths. Use this only when you
-// specifically need the dedicated key and must NOT fall back to an Identity.
+// from the host Identity, typically attached on authenticated request paths. Context
+// lookup alone is not proof of authentication. Use this only when you specifically
+// need the dedicated key and must NOT fall back to an Identity.
 func PlatformUserFromContext(ctx context.Context) (string, bool) {
-	userID, ok := ctx.Value(PlatformUserContextKey{}).(string)
-	return userID, ok
+	return serveridentity.CanonicalUserFromContext(ctx)
 }
 
 // CanonicalUserFromContext returns the platform's canonical user identifier for
 // storage keying. It is the single accessor storage layers should use, regardless
 // of which path produced the context.
 //
-// It prefers the dedicated platform-user key (set on identity-less paths such as
-// the OAuth callback) and falls back to the authenticated Identity's
-// PlatformUserID (set on request-serving paths). Returns "" and false if neither
-// is present. The dedicated key wins so an explicit WithPlatformUser can override
-// the identity-derived value.
+// It prefers the dedicated canonical-user key (set on identity-less paths such as
+// the OAuth callback) and falls back to the host Identity's PlatformUserID (typically
+// attached on authenticated request paths). Context lookup alone does not prove that
+// authentication succeeded. Returns "" and false if neither is present. A string
+// directly stored under the canonical-user key wins even if empty, so an explicit
+// value overrides the identity-derived value.
 func CanonicalUserFromContext(ctx context.Context) (string, bool) {
 	if userID, ok := PlatformUserFromContext(ctx); ok {
 		return userID, true

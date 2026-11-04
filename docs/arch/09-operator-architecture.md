@@ -167,7 +167,7 @@ Defines an MCP server deployment, including container images, transports, middle
 
 **Implementation**: `cmd/thv-operator/api/v1beta1/mcpserver_types.go`
 
-MCPServer resources support various transport types (stdio, SSE, streamable-http), permission profiles, OIDC authentication, and Cedar-based authorization policies. The operator reconciles these resources into Kubernetes Deployments, Services, and StatefulSets.
+MCPServer resources support various transport types (stdio, SSE, streamable-http), OIDC authentication, and Cedar-based authorization policies. The operator reconciles these resources into Kubernetes Deployments, Services, and StatefulSets. The legacy `permissionProfile` field is retained for API compatibility but is deprecated and ignored; Kubernetes-native workload and network controls provide enforcement in operator deployments.
 
 MCPServer supports referencing shared configuration CRDs:
 - `oidcConfigRef` — references an MCPOIDCConfig for shared OIDC settings
@@ -238,7 +238,7 @@ MCPExternalAuthConfig resources can be referenced via two paths:
 
 **Controller**: `cmd/thv-operator/controllers/mcpexternalauthconfig_controller.go`
 
-`EmbeddedAuthServerConfig` can also carry top-level SPIFFE trust-domain declarations in `spiffeTrustDomains` and canonical client associations in `inboundGrants.spiffeClientAuth` (`cmd/thv-operator/api/v1beta1/mcpexternalauthconfig_types.go`). The operator converts these CRD fields into runtime config via `buildSPIFFETrustDomainRunConfigs`/`buildSPIFFEClientAuthRunConfigs` in `cmd/thv-operator/pkg/controllerutil/authserver.go`, which flow into the RunConfig delivered to the proxy-runner alongside the rest of the embedded auth server settings. See [SPIFFE Association Declarations](18-spiffe-association-declarations.md) for the full configuration and policy model — **any non-empty configuration here is currently rejected by `RunConfig.Validate()` before the runner starts**, pending real SVID verification; the CRD fields, conversion, and runtime model exist, but this is not yet a deployable feature.
+`EmbeddedAuthServerConfig` can carry top-level SPIFFE trust-domain declarations in `spiffeTrustDomains` and canonical client associations in `inboundGrants.spiffeClientAuth` (`cmd/thv-operator/api/v1beta1/mcpexternalauthconfig_types.go`). The operator converts these CRD fields into runtime config via `buildSPIFFETrustDomainRunConfigs`/`buildSPIFFEClientAuthRunConfigs` in `cmd/thv-operator/pkg/controllerutil/authserver.go`, and projects file-source ConfigMap data read-only. `newServer` constructs the configured bundle source and passes its X.509 and JWT views to the authorization server. However, `RunConfig.Validate()` still rejects any non-empty SPIFFE trust configuration before the runner starts, so this wiring is not reachable for SPIFFE authentication in normal deployment. The proxy runner and vMCP can start the auth-server TLS listener on fixed port 8443, but X.509-SVID verification is not implemented. The operator's `embeddedAuthServer.tlsListener` field, its validation and the pod rollout rules are described in the [Operator configuration](18-spiffe-association-declarations.md#operator-configuration) section of that document. See [SPIFFE Association Declarations](18-spiffe-association-declarations.md) for current scope.
 
 ### MCPOIDCConfig
 
@@ -437,6 +437,14 @@ VirtualMCPServer creates a virtual MCP server that aggregates tools, resources, 
 
 **Controller**: `cmd/thv-operator/controllers/virtualmcpserver_controller.go`
 
+In static mode (`outgoingAuth.source: inline`), the operator embeds backend configuration
+in a ConfigMap and uses its checksum on the Deployment pod template to trigger rollouts.
+Generated static backends omit transient `workload_status` metadata, so a backend's
+`Ready → Pending → Ready` transition leaves the checksum unchanged when membership,
+endpoints, and other configuration remain unchanged. Runtime probes and status reporting
+continue tracking backend health. Actual configuration or membership changes still update
+the checksum and trigger the required rollout.
+
 **Key features:**
 
 1. **Conflict Resolution Strategies**:
@@ -558,6 +566,44 @@ The operator sets `Container.Args` (not `Command`) on the proxy-runner Deploymen
 - In-cluster Kubernetes client
 
 **Implementation**: `cmd/thv-proxyrunner/app/commands.go` (cobra wiring), `cmd/thv-proxyrunner/app/run.go` (`run` command logic)
+
+## Operator-wide Redis session storage
+
+`operator.defaultRedis` in the Helm chart supplies an address and optional password
+Secret reference for workloads using the operator's Redis session storage fallback.
+Enable `operator.defaultRedis.tls.enabled` for verified TLS; an optional
+`operator.defaultRedis.tls.caCertSecretRef` selects a private CA. The password and
+CA Secrets must exist in each workload's namespace.
+If the CA Secret or key is missing, affected pods remain in `ContainerCreating`
+with a Kubernetes `FailedMount` event visible through `kubectl describe pod`.
+
+The chart injects connection settings and Secret references into the operator's
+environment. At startup, the operator reads and validates these defaults once,
+then passes the same configuration to its controllers and vMCP converter. Runtime
+configuration and CA projection use this startup snapshot without reading the
+environment during reconciliation. Changing the defaults requires restarting the
+operator; the new settings apply as workloads reconcile.
+
+Direct Go callers of `vmcpconfig.NewConverter` must pass global defaults through
+`WithDefaultRedisConfig`. Previously, conversion read those defaults from the
+environment; a two-argument constructor call now uses only explicit session
+storage. Load and validate the defaults once at application startup with
+`controllerutil.LoadDefaultRedisConfigFromEnv`, handle its error, and pass the
+result to the converter option. The operator already forwards this snapshot
+through `VirtualMCPServerReconciler`, preserving its Kubernetes Redis fallback.
+
+The operator renders the existing session TLS configuration and projects the CA
+into the proxy runner or vMCP container. It does not load the CA into its own
+process or transfer it between namespaces. The existing configuration checksum
+and CA-volume comparisons trigger Deployment updates when the selected TLS
+configuration or CA reference changes.
+Changing CA contents under the same reference requires restarting workload pods.
+
+Per-workload Redis configuration takes precedence over global address, password,
+and TLS settings. Disabled global TLS preserves plaintext behavior. Provider
+selection retains the existing differences between resource kinds; see
+[Redis transport security](13-vmcp-scalability.md#transport-security) for the
+configuration example, environment variables, and compatibility details.
 
 ## Design Principles
 

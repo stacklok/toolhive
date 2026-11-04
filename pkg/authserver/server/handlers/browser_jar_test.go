@@ -129,7 +129,20 @@ func TestAuthorizeFlow_CookieJar_BrowserFacingHostReachesCallback(t *testing.T) 
 	}
 	resp, err := client.Get(browserBase + "/oauth/authorize?" + params.Encode())
 	require.NoError(t, err)
-	require.Equal(t, http.StatusFound, resp.StatusCode, readBody(t, resp))
+	page := readBody(t, resp)
+	require.Equal(t, http.StatusOK, resp.StatusCode, page)
+	_, rest, ok := strings.Cut(page, `name="handle" value="`)
+	require.True(t, ok)
+	handle, _, ok := strings.Cut(rest, `"`)
+	require.True(t, ok)
+	form := url.Values{"handle": {handle}, "decision": {"approve"}}
+	req, err := http.NewRequest(http.MethodPost, browserBase+"/oauth/consent", strings.NewReader(form.Encode()))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Origin", browserBase)
+	resp, err = client.Do(req)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusSeeOther, resp.StatusCode, readBody(t, resp))
 	state := mockUpstream.capturedState
 	require.NotEmpty(t, state)
 

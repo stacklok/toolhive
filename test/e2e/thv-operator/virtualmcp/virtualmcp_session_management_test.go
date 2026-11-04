@@ -544,8 +544,8 @@ var _ = ginkgo.Describe("VirtualMCPServer Session Management", func() {
 
 			ginkgo.By("Bob tries to call a tool using Alice's session ID")
 			// Bob sends a raw JSON-RPC request with Alice's session ID but his own Authorization header.
-			// The server must reject this because the token hash stored in Alice's session does not
-			// match Bob's token hash.
+			// The server must reject this because Bob is not the principal (issuer and
+			// subject) that created Alice's session.
 			// Use "echo" — the tool exposed by the yardstick backend — with a valid
 			// argument so that rejection is unambiguously from token-binding, not from
 			// a missing tool or argument validation error.
@@ -565,28 +565,31 @@ var _ = ginkgo.Describe("VirtualMCPServer Session Management", func() {
 			body, readErr := io.ReadAll(resp.Body)
 			gomega.Expect(readErr).ToNot(gomega.HaveOccurred())
 
-			// The session manager handles ErrUnauthorizedCaller by terminating the
-			// session and returning mcp.NewToolResultError — always HTTP 200 with
-			// result.isError=true. A non-200 response here (e.g. 401 from the auth
-			// middleware) would mean Bob's JWT was unexpectedly rejected before the
-			// token-binding check could run, which is a different failure and should
-			// not silently pass as "hijacking was blocked".
-			gomega.Expect(resp.StatusCode).To(gomega.Equal(http.StatusOK),
-				"expected HTTP 200 with MCP-level isError rejection, got body: %s", string(body))
+			// vMCP's session-ownership check rejects Bob's request before the transport
+			// routes it, with the same plain-text 404 an unknown session gets. A
+			// different status (e.g. 401 from the auth middleware) would mean Bob's JWT
+			// was unexpectedly rejected before the ownership check could run, which is
+			// a different failure and should not silently pass as "hijacking was blocked".
+			gomega.Expect(resp.StatusCode).To(gomega.Equal(http.StatusNotFound),
+				"expected HTTP 404 from the session ownership check, got body: %s", string(body))
+			gomega.Expect(string(body)).To(gomega.Equal("Session terminated\n"),
+				"the rejection body must not disclose why the session was refused")
 
-			var rpcResp struct {
-				Error *struct {
-					Code int `json:"code"`
-				} `json:"error"`
-				Result *struct {
-					IsError bool `json:"isError"`
-				} `json:"result"`
+			ginkgo.By("Verifying Alice's session is still usable")
+			tools, err := legacySessionListTools(rawClient, serverURL, aliceSessionID, bearerHeader(aliceToken))
+			gomega.Expect(err).ToNot(gomega.HaveOccurred())
+			var echoToolName string
+			for _, name := range tools {
+				if strings.Contains(name, "echo") {
+					echoToolName = name
+					break
+				}
 			}
-			gomega.Expect(json.Unmarshal(body, &rpcResp)).To(gomega.Succeed())
-
-			rejected := (rpcResp.Error != nil) || (rpcResp.Result != nil && rpcResp.Result.IsError)
-			gomega.Expect(rejected).To(gomega.BeTrue(),
-				"expected session hijacking to be rejected via MCP isError, got: %s", string(body))
+			gomega.Expect(echoToolName).NotTo(gomega.BeEmpty(), "should find an echo tool in the tool list")
+			aliceResp, err := legacySessionCallTool(rawClient, serverURL, aliceSessionID, echoToolName,
+				map[string]any{"input": "alicestillworks"}, bearerHeader(aliceToken))
+			gomega.Expect(err).ToNot(gomega.HaveOccurred())
+			gomega.Expect(dualEraEchoErr(aliceResp, "alicestillworks", "")).To(gomega.Succeed())
 		})
 
 		ginkgo.It("Each client gets their own independent session", func() {

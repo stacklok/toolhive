@@ -10,7 +10,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"gopkg.in/yaml.v3"
+	"go.yaml.in/yaml/v3"
 )
 
 func TestParseSkillMD(t *testing.T) {
@@ -187,6 +187,13 @@ toolhive.requires: |
 		{
 			name:    "invalid yaml",
 			content: "---\n: : invalid\n---\n",
+			wantErr: "invalid frontmatter",
+		},
+		{
+			// OSS-Fuzz 4870994700075008: a merge key next to a mapping-valued
+			// key panicked gopkg.in/yaml.v3 with "hash of unhashable type".
+			name:    "merge key beside unhashable mapping key",
+			content: "---\n? {a: b}\n: c\n<<: {name: x}\n---\n",
 			wantErr: "invalid frontmatter",
 		},
 		{

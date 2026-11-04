@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"maps"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -56,15 +57,19 @@ type MCPServerReconciler struct {
 	Scheme           *runtime.Scheme
 	Recorder         events.EventRecorder
 	PlatformDetector *ctrlutil.SharedPlatformDetector
+	// DefaultRedisConfig is the read-only global Redis snapshot loaded at startup.
+	// Nil means no global fallback is configured.
+	DefaultRedisConfig *ctrlutil.DefaultRedisConfig
 	// ImagePullSecretsDefaults are cluster-wide defaults sourced from the
 	// operator chart that are merged with the per-CR imagePullSecrets when
 	// constructing workloads. The zero value is a usable empty Defaults.
 	ImagePullSecretsDefaults imagepullsecrets.Defaults
 }
 
-// defaultRBACRules are the default RBAC rules that the
-// ToolHive ProxyRunner and/or MCP server needs to have in order to run.
+// defaultRBACRules are the RBAC rules that the ToolHive ProxyRunner and/or MCP
+// server needs to have in order to run, whatever transport is configured.
 // These permissions are needed for MCPServer which deploys and manages MCP server containers.
+// Transport-specific rules are added on top; see rbacRulesForTransport.
 var defaultRBACRules = []rbacv1.PolicyRule{
 	{
 		APIGroups: []string{"apps"},
@@ -93,14 +98,39 @@ var defaultRBACRules = []rbacv1.PolicyRule{
 	},
 	{
 		APIGroups: []string{""},
-		Resources: []string{"pods/attach"},
-		Verbs:     []string{"create", "get"},
-	},
-	{
-		APIGroups: []string{""},
 		Resources: []string{"configmaps"},
 		Verbs:     []string{"get", "list", "watch"},
 	},
+}
+
+// stdioRBACRules are granted on top of defaultRBACRules for stdio transport only.
+// The proxy runner talks to a stdio MCP server by attaching to the pod's stdio
+// (Client.AttachToWorkload, reached only from the stdio transport); the HTTP
+// transports speak to the pod over the network and never attach. Security
+// auditors treat pods/attach as equivalent to pod exec, so withhold it where it
+// cannot be used.
+var stdioRBACRules = []rbacv1.PolicyRule{
+	{
+		APIGroups: []string{""},
+		Resources: []string{"pods/attach"},
+		Verbs:     []string{"create", "get"},
+	},
+}
+
+// rbacRulesForTransport returns the proxy-runner Role rules for the given
+// MCPServer transport. An empty transport is treated as stdio: the CRD defaults
+// the field to stdio, so an object can only reach here with an empty value if it
+// predates that default or was built in Go, and granting the extra permission
+// keeps such a server working rather than breaking it.
+//
+// The result is always a fresh slice — appending to defaultRBACRules directly
+// would let a future rule share its backing array.
+func rbacRulesForTransport(mcpTransport string) []rbacv1.PolicyRule {
+	rules := slices.Clone(defaultRBACRules)
+	if mcpTransport == stdioTransport || mcpTransport == "" {
+		rules = append(rules, stdioRBACRules...)
+	}
+	return rules
 }
 
 // remoteProxyRBACRules defines minimal RBAC permissions for MCPRemoteProxy.
@@ -150,6 +180,11 @@ const (
 const defaultTerminationGracePeriodSeconds = int64(30)
 
 const stdioTransport = "stdio"
+
+const (
+	permissionProfileUnsupportedEventReason = "PermissionProfileUnsupported"
+	permissionProfileUnsupportedEventAction = "IgnorePermissionProfile"
+)
 
 // detectPlatform detects the Kubernetes platform type (Kubernetes vs OpenShift)
 // It uses the shared platform detector to ensure detection is only performed once and cached
@@ -278,6 +313,8 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		}
 		return ctrl.Result{}, nil
 	}
+
+	r.emitPermissionProfileUnsupportedEvent(mcpServer)
 
 	// Add finalizer for this CR
 	if !controllerutil.ContainsFinalizer(mcpServer, MCPServerFinalizerName) {
@@ -655,6 +692,27 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	}
 
 	return ctrl.Result{}, nil
+}
+
+// emitPermissionProfileUnsupportedEvent emits a Warning when an MCPServer
+// configures the deprecated spec.permissionProfile field. The operator keeps
+// the field for API compatibility but does not apply it to Kubernetes
+// workloads.
+//
+// The generation==observedGeneration guard suppresses the event after a
+// successful reconcile advances status. Retries that fail before
+// observedGeneration is updated can re-emit; Kubernetes event aggregation
+// is the practical dedupe in that window.
+func (r *MCPServerReconciler) emitPermissionProfileUnsupportedEvent(mcpServer *mcpv1beta1.MCPServer) {
+	if mcpServer.Spec.PermissionProfile == nil || r.Recorder == nil {
+		return
+	}
+	if mcpServer.Generation == mcpServer.Status.ObservedGeneration {
+		return
+	}
+	r.Recorder.Eventf(mcpServer, nil, corev1.EventTypeWarning,
+		permissionProfileUnsupportedEventReason, permissionProfileUnsupportedEventAction,
+		"spec.permissionProfile is deprecated and unsupported by the Kubernetes operator; it has no effect")
 }
 
 func (r *MCPServerReconciler) validateGroupRef(ctx context.Context, mcpServer *mcpv1beta1.MCPServer) {
@@ -1083,7 +1141,7 @@ func (r *MCPServerReconciler) ensureRBACResources(ctx context.Context, mcpServer
 	if _, err := rbacClient.EnsureRBACResources(ctx, rbac.EnsureRBACResourcesParams{
 		Name:             proxyRunnerNameForRBAC,
 		Namespace:        mcpServer.Namespace,
-		Rules:            defaultRBACRules,
+		Rules:            rbacRulesForTransport(mcpServer.Spec.Transport),
 		Owner:            mcpServer,
 		ImagePullSecrets: imagePullSecrets,
 	}); err != nil {
@@ -1243,7 +1301,7 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 		},
 	})
 
-	// Pod template patch, permission profile, OIDC, authorization, audit, environment variables,
+	// Pod template patch, OIDC, authorization, audit, environment variables,
 	// tools filter, and telemetry configuration are all included in the ConfigMap
 	// so we don't need to add them as individual flags
 
@@ -1382,26 +1440,6 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 		})
 	}
 
-	// Add volume mount for permission profile if using configmap
-	if m.Spec.PermissionProfile != nil && m.Spec.PermissionProfile.Type == mcpv1beta1.PermissionProfileTypeConfigMap {
-		volumeMounts = append(volumeMounts, corev1.VolumeMount{
-			Name:      "permission-profile",
-			MountPath: "/etc/toolhive/profiles",
-			ReadOnly:  true,
-		})
-
-		volumes = append(volumes, corev1.Volume{
-			Name: "permission-profile",
-			VolumeSource: corev1.VolumeSource{
-				ConfigMap: &corev1.ConfigMapVolumeSource{
-					LocalObjectReference: corev1.LocalObjectReference{
-						Name: m.Spec.PermissionProfile.Name,
-					},
-				},
-			},
-		})
-	}
-
 	// Add volume mounts for authorization configuration (inline spec.authzConfig).
 	// A referenced MCPAuthzConfig (spec.authzConfigRef) is not mounted: it is
 	// enforced via the authz config embedded in the RunConfig, not a file mount.
@@ -1433,6 +1471,11 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 			volumeMounts = append(volumeMounts, caMounts...)
 		}
 	}
+
+	// Mount the session storage Redis CA bundle when TLS references one.
+	sessionTLSVolumes, sessionTLSMounts := ctrlutil.SessionRedisTLSVolumesWithDefault(m.Spec.SessionStorage, r.DefaultRedisConfig)
+	volumes = append(volumes, sessionTLSVolumes...)
+	volumeMounts = append(volumeMounts, sessionTLSMounts...)
 
 	// Add embedded auth server volumes and env vars. AuthServerRef takes precedence;
 	// externalAuthConfigRef is used as a fallback (legacy path).
@@ -1479,12 +1522,12 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 	// Add RunConfig checksum annotation to trigger pod rollout when config changes
 	deploymentTemplateAnnotations = checksum.AddRunConfigChecksumToPodTemplate(deploymentTemplateAnnotations, runConfigChecksum)
 	if configName := ctrlutil.EmbeddedAuthServerConfigName(m.Spec.ExternalAuthConfigRef, m.Spec.AuthServerRef); configName != "" {
-		caChecksum, err := ctrlutil.EmbeddedAuthServerCABundleChecksum(ctx, r.Client, m.Namespace, configName)
+		caChecksum, err := ctrlutil.EmbeddedAuthServerConfigMapChecksum(ctx, r.Client, m.Namespace, configName)
 		if err != nil {
 			return nil, fmt.Errorf("failed to calculate auth server CA checksum: %w", err)
 		}
 		if caChecksum != "" {
-			deploymentTemplateAnnotations[ctrlutil.AuthServerCABundleChecksumAnnotation] = caChecksum
+			deploymentTemplateAnnotations[ctrlutil.AuthServerConfigMapChecksumAnnotation] = caChecksum
 		}
 	}
 
@@ -2070,20 +2113,31 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(
 
 		// Add embedded auth server environment variables. AuthServerRef takes precedence;
 		// externalAuthConfigRef is used as a fallback (legacy path).
+		var wantAuthServerVolumes []corev1.Volume
 		if configName := ctrlutil.EmbeddedAuthServerConfigName(
 			mcpServer.Spec.ExternalAuthConfigRef, mcpServer.Spec.AuthServerRef,
 		); configName != "" {
-			_, _, authServerEnvVars, err := ctrlutil.GenerateAuthServerConfigByName(
+			authServerVolumes, _, authServerEnvVars, err := ctrlutil.GenerateAuthServerConfigByName(
 				ctx, r.Client, mcpServer.Namespace, configName,
 			)
 			if err != nil {
 				return true
 			}
+			wantAuthServerVolumes = authServerVolumes
 			expectedProxyEnv = append(expectedProxyEnv, authServerEnvVars...)
 		}
 		// Add default environment variables that are always injected
 		expectedProxyEnv = ctrlutil.EnsureRequiredEnvVars(ctx, expectedProxyEnv)
 		if !equality.Semantic.DeepEqual(container.Env, expectedProxyEnv) {
+			return true
+		}
+
+		wantSessionTLSVolumes, _ := ctrlutil.SessionRedisTLSVolumesWithDefault(mcpServer.Spec.SessionStorage, r.DefaultRedisConfig)
+		if ctrlutil.SessionRedisTLSVolumeNeedsUpdate(deployment.Spec.Template.Spec.Volumes, wantSessionTLSVolumes) {
+			return true
+		}
+
+		if ctrlutil.AuthServerVolumesNeedUpdate(deployment.Spec.Template.Spec.Volumes, wantAuthServerVolumes) {
 			return true
 		}
 
@@ -2196,12 +2250,12 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(
 	configName := ctrlutil.EmbeddedAuthServerConfigName(
 		mcpServer.Spec.ExternalAuthConfigRef, mcpServer.Spec.AuthServerRef)
 	if configName != "" {
-		caChecksum, err := ctrlutil.EmbeddedAuthServerCABundleChecksum(ctx, r.Client, mcpServer.Namespace, configName)
+		caChecksum, err := ctrlutil.EmbeddedAuthServerConfigMapChecksum(ctx, r.Client, mcpServer.Namespace, configName)
 		if err != nil {
 			return true
 		}
 		if caChecksum != "" {
-			expectedPodTemplateAnnotations[ctrlutil.AuthServerCABundleChecksumAnnotation] = caChecksum
+			expectedPodTemplateAnnotations[ctrlutil.AuthServerConfigMapChecksumAnnotation] = caChecksum
 		}
 	}
 	// Mirrors deploymentForMCPServer: stamp the MCPServer generation so the
@@ -2226,7 +2280,7 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(
 		return true
 	}
 
-	const caChecksumKey = ctrlutil.AuthServerCABundleChecksumAnnotation
+	const caChecksumKey = ctrlutil.AuthServerConfigMapChecksumAnnotation
 	actualCAChecksum, actualCAChecksumSet := deployment.Spec.Template.Annotations[caChecksumKey]
 	expectedCAChecksum, expectedCAChecksumSet := expectedPodTemplateAnnotations[caChecksumKey]
 	if actualCAChecksumSet != expectedCAChecksumSet || actualCAChecksum != expectedCAChecksum {
@@ -3000,9 +3054,9 @@ func (r *MCPServerReconciler) validateSessionStorageForReplicas(ctx context.Cont
 
 // buildRedisPasswordEnvVar returns the THV_SESSION_REDIS_PASSWORD env var when
 // sessionStorage.provider == "redis" and passwordRef is set, or when
-// spec.sessionStorage is unset and TOOLHIVE_DEFAULT_REDIS_SECRET_NAME is set
-// via the global default; returns nil otherwise.
-func (*MCPServerReconciler) buildRedisPasswordEnvVar(m *mcpv1beta1.MCPServer) []corev1.EnvVar {
+// spec.sessionStorage is unset and the injected global default references a
+// password Secret; returns nil otherwise.
+func (r *MCPServerReconciler) buildRedisPasswordEnvVar(m *mcpv1beta1.MCPServer) []corev1.EnvVar {
 	if m.Spec.SessionStorage != nil {
 		if m.Spec.SessionStorage.Provider == mcpv1beta1.SessionStorageProviderRedis &&
 			m.Spec.SessionStorage.PasswordRef != nil {
@@ -3023,7 +3077,7 @@ func (*MCPServerReconciler) buildRedisPasswordEnvVar(m *mcpv1beta1.MCPServer) []
 		return nil
 	}
 
-	def := ctrlutil.ReadDefaultRedisConfig()
+	def := r.DefaultRedisConfig
 	if def == nil || def.SecretName == "" {
 		return nil
 	}
@@ -3288,7 +3342,7 @@ func (r *MCPServerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(&mcpv1beta1.MCPToolConfig{}, toolConfigHandler).
 		Watches(
 			&corev1.ConfigMap{},
-			handler.EnqueueRequestsFromMapFunc(r.mapAuthServerCABundleConfigMapToMCPServer),
+			handler.EnqueueRequestsFromMapFunc(r.mapAuthServerConfigMapToMCPServer),
 			builder.WithPredicates(configMapDataChangedPredicate()),
 		).
 		Complete(r)

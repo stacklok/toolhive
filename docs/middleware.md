@@ -169,6 +169,8 @@ sequenceDiagram
 - Validate JWT token signature and expiration
 - Extract JWT claims (sub, name, roles, etc.)
 - Add claims to request context for downstream middleware
+- With the embedded auth server, load the token session's upstream provider credentials (the `tsid` claim) into `Identity.UpstreamTokens` and `Identity.UpstreamIDTokens`, refreshing expired access tokens
+- Return 401 Unauthorized with a `WWW-Authenticate: Bearer error="invalid_token"` challenge when a provider's access token can no longer be refreshed, or when the token session holds no usable upstream access token at all (every stored row has expired or been deleted), so the client signs in again instead of receiving a policy denial from a later middleware; the answer does not depend on whether a later middleware reads the credential. A client that answers this 401 by redeeming its refresh token gets HTTP 400 `invalid_grant` from the embedded auth server when the upstream credential is definitively dead (for example, no row is stored or the IdP rejected its refresh; see [Upstream refresh guard](arch/11-auth-server-storage.md#upstream-refresh-guard) for the full list), which sends it to a full authorization instead of looping on refresh
 
 **Context Data Added**:
 - JWT claims with `claim_` prefix (e.g., `claim_sub`, `claim_name`)
@@ -204,7 +206,7 @@ sequenceDiagram
 **Context Data Used**:
 - `Identity.UpstreamTokens` map populated by the Authentication middleware during JWT validation
 
-**Note**: This middleware is a simple map reader. All upstream token loading, refresh, and error handling occurs in the Authentication middleware (Step 3), which populates `Identity.UpstreamTokens` from the token session ID (`tsid`) claim during JWT validation.
+**Note**: This middleware is a simple map reader. All upstream token loading, refresh, and error handling occurs in the Authentication middleware, which populates `Identity.UpstreamTokens` from the token session ID (`tsid`) claim during JWT validation. A `tsid` session that holds no upstream access token at all is answered 401 there; the 401 this middleware returns covers the remaining cases: an identity without a `tsid` claim, and a session whose stored tokens belong to providers other than the configured one.
 
 ---
 
@@ -744,7 +746,7 @@ graph TD
 ```
 
 **Error Responses**:
-- `401 Unauthorized` - Invalid or missing JWT token
+- `401 Unauthorized` - Invalid or missing JWT token, or a token session whose upstream credentials can no longer be refreshed or are no longer stored
 - `403 Forbidden` - Valid token but insufficient permissions
 - `400 Bad Request` - Malformed MCP POST envelope or unreadable body
 - `413 Request Entity Too Large` - Request body exceeds the configured limit

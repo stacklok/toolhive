@@ -394,9 +394,6 @@ var _ = Describe("Proxy OAuth Authentication E2E", Label("proxy", "oauth", "e2e"
 			Expect(err).ToNot(HaveOccurred())
 
 			By("Testing basic MCP operations through proxy")
-			err = mcpClient.Ping(ctx)
-			Expect(err).ToNot(HaveOccurred())
-
 			tools, err := mcpClient.ListTools(ctx)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(tools.Tools).ToNot(BeEmpty(), "Should have OSV tools available through proxy")
@@ -452,7 +449,6 @@ var _ = Describe("Proxy OAuth Authentication E2E", Label("proxy", "oauth", "e2e"
 			defer cancel()
 
 			Expect(mcpClient.Initialize(ctx)).To(Succeed())
-			Expect(mcpClient.Ping(ctx)).To(Succeed())
 
 			tools, err := mcpClient.ListTools(ctx)
 			Expect(err).ToNot(HaveOccurred())

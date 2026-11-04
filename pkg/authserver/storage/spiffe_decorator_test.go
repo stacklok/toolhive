@@ -221,18 +221,16 @@ func TestSPIFFEStorageDecoratorRejectsDurableCollision(t *testing.T) {
 }
 
 // TestSPIFFEStorageDecoratorRejectsDifferentConfiguredClientCollision covers
-// the case ReconcileConfiguredClient's fingerprint check adds: a *different*
+// the case ReconcileConfiguredClient's kind check adds: a non-placeholder
 // configured client (not DCR-issued) already durably claiming a reserved ID
-// -- e.g. a stale placeholder from a prior, differently-scoped association --
-// must still fail construction loudly rather than silently diverging.
+// must fail construction loudly rather than be replaced by the placeholder.
 func TestSPIFFEStorageDecoratorRejectsDifferentConfiguredClientCollision(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	base := NewMemoryStorage()
 	t.Cleanup(func() { _ = base.Close() })
 
-	// Pre-seed a durably-claimed placeholder with a different fingerprint
-	// (mismatched scopes) than the one the real association will produce.
+	// Pre-seed a plain (non-placeholder) configured client at the reserved ID.
 	mismatched := &fosite.DefaultClient{ID: "spiffe-client", Scopes: []string{"a-different-scope"}}
 	require.NoError(t, base.ReconcileConfiguredClient(ctx, mismatched))
 
@@ -521,4 +519,43 @@ func TestSPIFFEStorageDecorator_ConsumeAssertionJWTFailsClosedWithoutBackendCapa
 	err := decorated.ConsumeAssertionJWT(ctx, "jwt-bearer", "https://issuer.example", "jti", time.Now().Add(time.Hour))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "does not support assertion JWT replay consumption")
+}
+
+func TestSPIFFEStorageDecoratorKeepsReservedIDsAwayFromDelegates(t *testing.T) {
+	t.Parallel()
+
+	for _, backend := range configuredClientBackends() {
+		t.Run(backend.name+"/orphan placeholder still blocks a delegate", func(t *testing.T) {
+			t.Parallel()
+			ctx := t.Context()
+			base := backend.new(t)
+			_, err := NewSPIFFEStorageDecorator(ctx, base, testSPIFFEClients(t))
+			require.NoError(t, err)
+
+			// With no clients NewSPIFFEStorageDecorator returns the base store,
+			// so using base directly models a restart without the association.
+			// The association is gone from config, but its durable placeholder remains.
+			delegate := testDelegateClient(t, "spiffe-client", "secret", []string{"openid"}, []string{"https://mcp.example"})
+			err = base.ReconcileConfiguredClient(ctx, delegate)
+
+			require.ErrorIs(t, err, ErrAlreadyExists)
+			assert.Contains(t, err.Error(), "different configured client")
+			assert.Contains(t, err.Error(), "stored row is a SPIFFE-reserved placeholder")
+		})
+
+		t.Run(backend.name+"/delegate at a configured SPIFFE ID is refused without a durable row", func(t *testing.T) {
+			t.Parallel()
+			ctx := t.Context()
+			base := backend.new(t)
+			decorated := &SPIFFEStorageDecorator{Storage: base, clients: testSPIFFEClients(t)}
+
+			delegate := testDelegateClient(t, "spiffe-client", "secret", []string{"openid"}, []string{"https://mcp.example"})
+			err := decorated.ReconcileConfiguredClient(ctx, delegate)
+
+			require.ErrorIs(t, err, ErrAlreadyExists)
+			assert.Contains(t, err.Error(), "reserved for a static SPIFFE client")
+			_, getErr := base.GetClient(ctx, "spiffe-client")
+			require.Error(t, getErr, "the refused delegate must not have been stored")
+		})
+	}
 }

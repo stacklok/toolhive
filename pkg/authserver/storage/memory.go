@@ -16,8 +16,10 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"slices"
 	"sync"
 	"time"
@@ -27,6 +29,11 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver/server"
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 )
+
+// defaultMaxMemoryCIMDClients caps the live CIMD rows MemoryStorage keeps.
+// Each distinct client metadata document URL is one row, so real deployments
+// sit far below it.
+const defaultMaxMemoryCIMDClients = 10000
 
 // timedEntry wraps a value with its creation time for TTL tracking.
 type timedEntry[T any] struct {
@@ -49,12 +56,12 @@ type assertionJWTKey struct {
 	jti     string
 }
 
-// clientOrderEntry is one position in MemoryStorage.clientOrder: a client ID
-// and the time it was placed at the back of the eviction queue (registration
-// or renewal). touchedAt backs the minClientAge grace window.
-type clientOrderEntry struct {
-	id        string
-	touchedAt time.Time
+// exchangeGrantMarker is the replay marker for the subject access token behind
+// a top-level exchange grant. It holds the grant's signature so a later
+// replay-revoke can find the grant.
+type exchangeGrantMarker struct {
+	signature string
+	expiresAt time.Time
 }
 
 // MemoryStorage implements the Storage interface with in-memory maps.
@@ -83,36 +90,45 @@ type MemoryStorage struct {
 	// marker is needed here.
 	clients map[string]fosite.Client
 
-	// clientOrder is the least-recently-proven-used order of clients: a
-	// registration starts at the back, and RenewClientTTL moves a DCR-issued
-	// client to the back again on proven use (a successful token
-	// exchange/refresh), mirroring RedisStorage.RenewClientTTL's TTL bump.
-	// Each entry's touchedAt records when it was placed at the back
-	// (registration or renewal), which oldestEvictableClientIndex uses to
-	// apply the minClientAge grace window. Eviction in RegisterClient walks
-	// from the front and takes the first entry that both carries the
-	// registration.DCRIssued marker and has aged past minClientAge.
-	// /oauth/register is unauthenticated and every call mints an entry, so an
-	// uncapped map is a memory-exhaustion DoS in the same process as the
-	// proxy. RegisterClient evicts an aged DCR-issued client when safe;
-	// otherwise it rejects the registration to preserve the configured cap.
-	clientOrder []clientOrderEntry
+	// dcrClientExpiry holds the expiry of every client in clients counted by
+	// countsTowardDCRCap, and cimdClientExpiry that of every other client
+	// carrying the registration.DCRIssued marker (the CIMD rows), mirroring
+	// the key TTL RedisStorage gives the same rows. They are split so each
+	// cap walks only the clients it bounds. A client in neither never
+	// expires. Every read treats an expired client as absent, and
+	// cleanupExpired removes it.
+	dcrClientExpiry  map[string]time.Time
+	cimdClientExpiry map[string]time.Time
 
-	// maxClients caps the client map; zero means unlimited. RegisterClient
-	// evicts the oldest DCR-issued entry once the cap is reached; a
-	// pre-provisioned client (no DCRIssued marker) is never evicted.
-	maxClients int
+	// configured holds the ID of every client in clients that was last
+	// written by ReconcileConfiguredClient. It is a side map, not a wrapper
+	// around the stored value: wrapping a SPIFFE placeholder would break
+	// isReservedPlaceholder and make a second reconcile of it fail. GetClient
+	// wraps non-reserved stamped clients on the way out. Every other write,
+	// delete and expiry of an ID clears its entry.
+	configured map[string]struct{}
 
-	// minClientAge is the grace window below which a DCR-issued client is
-	// never evicted, regardless of position in clientOrder. Without it, a
-	// legitimately registered but not-yet-used client sits at the front of
-	// the queue (RenewClientTTL only fires on a successful token exchange),
-	// so an attacker filling the map at capacity can evict that specific
-	// victim on demand — the rate limiter bounds the speed of this but not
-	// the outcome. The floor removes that targeted-victim primitive while
-	// keeping the anti-bloat bound: if every current entry is younger than
-	// the floor, RegisterClient returns ErrClientCapacity.
-	minClientAge time.Duration
+	// maxDCRClients caps the live clients counted by countsTowardDCRCap; zero
+	// means unlimited. /oauth/register is unauthenticated and every call
+	// mints an entry, so an uncapped map is a memory-exhaustion DoS in the
+	// same process as the proxy. At the cap RegisterClient rejects with a
+	// *ClientCapacityError and evicts nothing: evicting would let a caller
+	// registering at the full rate push out every idle real client. A full
+	// map drains as entries expire.
+	maxDCRClients int
+
+	// maxCIMDClients caps the live CIMD rows UpsertDCRIssuedClient writes.
+	// Unauthenticated /oauth/authorize traffic mints them, bounded otherwise
+	// only by the per-process CIMD rate limit and their 30-day TTL. At the cap
+	// a new row is refused with a *ClientCapacityError. The CIMD decorator's
+	// write-through is best-effort, and this backend keeps sessions as Go
+	// values rather than rehydrating their client from the row, so a refused
+	// row costs at most a document refetch. RedisStorage has no such cap.
+	maxCIMDClients int
+
+	// now returns the current time. It governs client expiry and exchange
+	// grant expiry; the other maps use time.Now.
+	now func() time.Time
 
 	// authCodes maps authorization code -> Requester. Codes are one-time-use;
 	// invalidatedCodes tracks used codes to return ErrInvalidatedAuthorizeCode.
@@ -135,6 +151,8 @@ type MemoryStorage struct {
 
 	// pendingAuthorizations tracks authorization requests awaiting upstream IDP callback
 	pendingAuthorizations map[string]*timedEntry[*PendingAuthorization]
+	consentSessions       map[string]*timedEntry[*ConsentSession]
+	clientApprovals       map[[2]string]*timedEntry[*ClientApproval]
 
 	// deviceRequests maps device_code -> timedEntry[*DeviceRequest]. The
 	// canonical store; TTL-bounded like pendingAuthorizations.
@@ -166,6 +184,18 @@ type MemoryStorage struct {
 	// assertionJWTs tracks consumed assertion JWTs by purpose, issuer, and JTI.
 	assertionJWTs map[assertionJWTKey]time.Time
 
+	// exchangeGrants maps grant signature -> record for refresh tokens issued
+	// through token exchange. Records are stored as private copies and removed by
+	// cleanupExpired after ExpiresAt.
+	exchangeGrants map[string]*ExchangeGrant
+
+	// exchangeGrantJTIs holds the replay markers of top-level exchange grants,
+	// keyed like assertionJWTs (purpose, issuer, jti). It is separate from
+	// assertionJWTs because its values carry the grant signature, and so
+	// ConsumeAssertionJWT behaves exactly as before. A marker lives until the
+	// subject token's exp plus ExchangeGrantMarkerMargin.
+	exchangeGrantJTIs map[assertionJWTKey]exchangeGrantMarker
+
 	// users maps user ID -> User for user account lookup.
 	// Users are not subject to TTL-based cleanup as they represent persistent accounts.
 	users map[string]*User
@@ -179,7 +209,7 @@ type MemoryStorage struct {
 	// acting as a DCR client to register itself against a configured upstream
 	// IdP (see pkg/auth/dcr/store.go, the only caller of StoreDCRCredentialsIfAbsent).
 	// This is not reachable from the inbound, unauthenticated /oauth/register
-	// handler, so unlike clients (bounded by maxClients/clientOrder because
+	// handler, so unlike clients (bounded by maxDCRClients and the client expiry maps because
 	// every inbound registration call mints an entry), growth here is bounded
 	// by the number of configured upstreams, which the operator controls, not
 	// by request volume — hence no eviction or cap on this map.
@@ -217,36 +247,33 @@ func WithCleanupInterval(interval time.Duration) MemoryStorageOption {
 	}
 }
 
-// DefaultMaxClients is the default cap on the in-memory client map.
-// /oauth/register is unauthenticated and mints an entry per call; the cap
-// bounds memory growth while staying far above any legitimate client count
-// (clients register once and reuse their client_id).
-const DefaultMaxClients = 10000
-
-// WithMaxClients sets the client-map cap. Once reached, RegisterClient evicts
-// the oldest DCR-issued registration that has aged past minClientAge
-// (oldest-first). A pre-provisioned client (no registration.DCRIssued marker)
-// is never evicted; if no DCR-issued client can be safely evicted,
-// RegisterClient returns ErrClientCapacity.
-func WithMaxClients(n int) MemoryStorageOption {
+// WithMaxDCRClients sets the cap on live clients counted by
+// countsTowardDCRCap; zero means unlimited. At the cap RegisterClient returns a
+// *ClientCapacityError and evicts nothing. Operator-configured and CIMD
+// clients are never counted. It panics on a negative n, which
+// RunConfig.ResolvedMaxDCRClients already rejects.
+func WithMaxDCRClients(n int) MemoryStorageOption {
+	if n < 0 {
+		panic(fmt.Sprintf("max DCR clients must not be negative, got %d", n))
+	}
 	return func(s *MemoryStorage) {
-		s.maxClients = n
+		s.maxDCRClients = n
 	}
 }
 
-// DefaultMinClientAge is the default grace window below which a DCR-issued
-// client is never evicted. See the minClientAge field doc for why the floor
-// exists: without it, a freshly registered but not-yet-used client can be
-// evicted on demand by an attacker filling the map to capacity.
-const DefaultMinClientAge = time.Hour
-
-// WithMinClientAge overrides the grace window below which a DCR-issued
-// client is protected from eviction regardless of queue position. Tests use
-// this to drive the floor down (e.g. to zero) instead of sleeping for real
-// wall-clock time.
-func WithMinClientAge(d time.Duration) MemoryStorageOption {
+// withMaxCIMDClients overrides defaultMaxMemoryCIMDClients, so tests can
+// reach the CIMD cap.
+func withMaxCIMDClients(n int) MemoryStorageOption {
 	return func(s *MemoryStorage) {
-		s.minClientAge = d
+		s.maxCIMDClients = n
+	}
+}
+
+// withClientClock sets the clock used for client expiry and exchange grants,
+// so tests can move past a TTL without sleeping.
+func withClientClock(now func() time.Time) MemoryStorageOption {
+	return func(s *MemoryStorage) {
+		s.now = now
 	}
 }
 
@@ -261,6 +288,8 @@ func NewMemoryStorage(opts ...MemoryStorageOption) *MemoryStorage {
 		pkceRequests:               make(map[string]*timedEntry[fosite.Requester]),
 		upstreamTokens:             make(map[upstreamKey]*timedEntry[*UpstreamTokens]),
 		pendingAuthorizations:      make(map[string]*timedEntry[*PendingAuthorization]),
+		consentSessions:            make(map[string]*timedEntry[*ConsentSession]),
+		clientApprovals:            make(map[[2]string]*timedEntry[*ClientApproval]),
 		deviceRequests:             make(map[string]*timedEntry[*DeviceRequest]),
 		deviceRequestsByUserCode:   make(map[string]string),
 		pendingDeviceLogins:        make(map[string]*timedEntry[*PendingDeviceLogin]),
@@ -268,12 +297,18 @@ func NewMemoryStorage(opts ...MemoryStorageOption) *MemoryStorage {
 		invalidatedCodes:           make(map[string]*timedEntry[bool]),
 		clientAssertionJWTs:        make(map[string]time.Time),
 		assertionJWTs:              make(map[assertionJWTKey]time.Time),
+		exchangeGrants:             make(map[string]*ExchangeGrant),
+		exchangeGrantJTIs:          make(map[assertionJWTKey]exchangeGrantMarker),
 		users:                      make(map[string]*User),
 		providerIdentities:         make(map[string]*ProviderIdentity),
 		dcrCredentials:             make(map[DCRKey]*DCRCredentials),
 		cleanupInterval:            DefaultCleanupInterval,
-		maxClients:                 DefaultMaxClients,
-		minClientAge:               DefaultMinClientAge,
+		dcrClientExpiry:            make(map[string]time.Time),
+		cimdClientExpiry:           make(map[string]time.Time),
+		configured:                 make(map[string]struct{}),
+		maxDCRClients:              DefaultMaxDCRClients,
+		maxCIMDClients:             defaultMaxMemoryCIMDClients,
+		now:                        time.Now,
 		stopCleanup:                make(chan struct{}),
 		cleanupDone:                make(chan struct{}),
 	}
@@ -382,6 +417,19 @@ func (s *MemoryStorage) cleanupExpired() {
 		}
 	}
 
+	var expiredConsentSessions []string
+	var expiredClientApprovals [][2]string
+	for k, v := range s.consentSessions {
+		if !now.Before(v.expiresAt) {
+			expiredConsentSessions = append(expiredConsentSessions, k)
+		}
+	}
+	for k, v := range s.clientApprovals {
+		if !now.Before(v.expiresAt) {
+			expiredClientApprovals = append(expiredClientApprovals, k)
+		}
+	}
+
 	var expiredDeviceRequests []string
 	for k, v := range s.deviceRequests {
 		if now.After(v.expiresAt) {
@@ -417,27 +465,67 @@ func (s *MemoryStorage) cleanupExpired() {
 		}
 	}
 
+	storeNow := s.now()
+	var expiredExchangeGrants []string
+	for k, g := range s.exchangeGrants {
+		if storeNow.After(g.ExpiresAt) {
+			expiredExchangeGrants = append(expiredExchangeGrants, k)
+		}
+	}
+
+	var expiredExchangeGrantJTIs []assertionJWTKey
+	for k, m := range s.exchangeGrantJTIs {
+		if storeNow.After(m.expiresAt) {
+			expiredExchangeGrantJTIs = append(expiredExchangeGrantJTIs, k)
+		}
+	}
+
+	clientNow := s.now()
+	var expiredClients []string
+	for _, expiry := range []map[string]time.Time{s.dcrClientExpiry, s.cimdClientExpiry} {
+		for k, v := range expiry {
+			if !clientNow.Before(v) {
+				expiredClients = append(expiredClients, k)
+			}
+		}
+	}
+
 	s.mu.RUnlock()
 
 	// Phase 2: Early return if nothing to delete (no write lock needed)
-	if len(expiredAuthCodes) == 0 &&
+	if len(expiredClients) == 0 &&
+		len(expiredAuthCodes) == 0 &&
 		len(expiredInvalidatedCodes) == 0 &&
 		len(expiredAccessTokens) == 0 &&
 		len(expiredRefreshTokens) == 0 &&
 		len(expiredPKCERequests) == 0 &&
 		len(expiredUpstreamTokens) == 0 &&
 		len(expiredPendingAuthorizations) == 0 &&
+		len(expiredConsentSessions) == 0 &&
+		len(expiredClientApprovals) == 0 &&
 		len(expiredDeviceRequests) == 0 &&
 		len(expiredPendingDeviceLogins) == 0 &&
 		len(expiredPendingDeviceConfirmations) == 0 &&
 		len(expiredJWTs) == 0 &&
-		len(expiredAssertionJWTs) == 0 {
+		len(expiredAssertionJWTs) == 0 &&
+		len(expiredExchangeGrants) == 0 &&
+		len(expiredExchangeGrantJTIs) == 0 {
 		return
 	}
 
 	// Phase 3: Delete collected keys under write lock
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	for _, k := range expiredClients {
+		// RenewClientTTL may have extended the client between the phases.
+		if exp, ok := s.clientExpiryLocked(k); ok && !clientNow.Before(exp) {
+			delete(s.clients, k)
+			delete(s.dcrClientExpiry, k)
+			delete(s.cimdClientExpiry, k)
+			delete(s.configured, k)
+		}
+	}
 
 	for _, k := range expiredAuthCodes {
 		delete(s.authCodes, k)
@@ -468,6 +556,17 @@ func (s *MemoryStorage) cleanupExpired() {
 		delete(s.pendingAuthorizations, k)
 	}
 
+	for _, k := range expiredConsentSessions {
+		if v, ok := s.consentSessions[k]; ok && !now.Before(v.expiresAt) {
+			delete(s.consentSessions, k)
+		}
+	}
+	for _, k := range expiredClientApprovals {
+		if v, ok := s.clientApprovals[k]; ok && !now.Before(v.expiresAt) {
+			delete(s.clientApprovals, k)
+		}
+	}
+
 	for _, k := range expiredDeviceRequests {
 		if entry, ok := s.deviceRequests[k]; ok {
 			delete(s.deviceRequestsByUserCode, entry.value.UserCode)
@@ -492,6 +591,52 @@ func (s *MemoryStorage) cleanupExpired() {
 			delete(s.assertionJWTs, k)
 		}
 	}
+
+	for _, k := range expiredExchangeGrants {
+		if g, ok := s.exchangeGrants[k]; ok && storeNow.After(g.ExpiresAt) {
+			delete(s.exchangeGrants, k)
+		}
+	}
+
+	for _, k := range expiredExchangeGrantJTIs {
+		if m, ok := s.exchangeGrantJTIs[k]; ok && storeNow.After(m.expiresAt) {
+			delete(s.exchangeGrantJTIs, k)
+		}
+	}
+}
+
+// snapshotRequester copies request-owned data while retaining the concrete client reference.
+// GetID may initialize an empty ID on the caller's Request during creation.
+func snapshotRequester(request fosite.Requester) *fosite.Request {
+	form := request.GetRequestForm()
+	var formCopy url.Values
+	if form != nil {
+		formCopy = make(url.Values, len(form))
+		for key, values := range form {
+			formCopy[key] = slices.Clone(values)
+		}
+	}
+
+	snapshot := &fosite.Request{
+		ID:                request.GetID(),
+		RequestedAt:       request.GetRequestedAt(),
+		Client:            request.GetClient(),
+		RequestedScope:    slices.Clone(request.GetRequestedScopes()),
+		GrantedScope:      slices.Clone(request.GetGrantedScopes()),
+		RequestedAudience: slices.Clone(request.GetRequestedAudience()),
+		GrantedAudience:   slices.Clone(request.GetGrantedAudience()),
+		Form:              formCopy,
+	}
+	if session := request.GetSession(); session != nil {
+		snapshot.Session = session.Clone()
+	}
+	if langContext, ok := request.(fosite.G11NContext); ok {
+		snapshot.Lang = langContext.GetLang()
+	}
+	// Requester implementations other than fosite.Request may return an empty ID.
+	// Initialize the copy before publishing it so Get never writes under RLock.
+	snapshot.GetID()
+	return snapshot
 }
 
 // getExpirationFromRequester extracts expiration time from a fosite.Requester session.
@@ -526,6 +671,9 @@ func getExpirationFromRequester(request fosite.Requester, tokenType fosite.Token
 // reconcile through ReconcileConfiguredClient instead.
 func (s *MemoryStorage) RegisterClient(_ context.Context, client fosite.Client) error {
 	id := client.GetID()
+	if registration.IsConfigured(client) {
+		return fmt.Errorf("client %q must not carry the configured stamp; use ReconcileConfiguredClient", id)
+	}
 	if err := ValidateRegisterableClientID(id); err != nil {
 		return err
 	}
@@ -533,18 +681,32 @@ func (s *MemoryStorage) RegisterClient(_ context.Context, client fosite.Client) 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if _, exists := s.clients[id]; exists {
+	now := s.now()
+	if _, exists := s.liveClientLocked(id, now); exists {
 		return fmt.Errorf("%w: client %q", ErrAlreadyExists, id)
 	}
-	return s.insertClientLocked(id, client)
+	if !registration.DCRIssued(client) {
+		s.putPermanentClientLocked(id, client)
+		return nil
+	}
+	if s.maxDCRClients > 0 && countsTowardDCRCap(client) {
+		if count, oldestExpiry := countLiveLocked(s.dcrClientExpiry, now); count >= s.maxDCRClients {
+			return newClientCapacityError(s.maxDCRClients, oldestExpiry, now)
+		}
+	}
+	s.putExpiringClientLocked(id, client, now.Add(DefaultUnusedDCRClientTTL))
+	return nil
 }
 
 // UpsertDCRIssuedClient creates or replaces a DCR-issued client at
 // client.GetID(). Unlike RegisterClient, an existing row is replaced (and its
-// eviction position refreshed) rather than rejected -- but only when the
-// existing row is itself DCR-issued; a configured/SPIFFE-reconciled row at
+// expiry reset to DefaultDCRClientTTL) rather than rejected -- but only when
+// the existing row is itself DCR-issued; a configured/SPIFFE-reconciled row at
 // the same ID is protected and refuses with ErrAlreadyExists. See the
-// ClientRegistry interface doc for the full contract.
+// ClientRegistry interface doc for the full contract. A client counted
+// against the DCR cap is refused, so this path cannot bypass the cap. A new
+// CIMD row beyond maxCIMDClients is refused with a *ClientCapacityError;
+// replacing an existing one always succeeds.
 func (s *MemoryStorage) UpsertDCRIssuedClient(_ context.Context, client fosite.Client) error {
 	if !registration.DCRIssued(client) {
 		return fmt.Errorf("client %q must carry the DCR-issued marker to use UpsertDCRIssuedClient", client.GetID())
@@ -553,111 +715,171 @@ func (s *MemoryStorage) UpsertDCRIssuedClient(_ context.Context, client fosite.C
 	if err := ValidateRegisterableClientID(id); err != nil {
 		return err
 	}
+	if countsTowardDCRCap(client) {
+		return fmt.Errorf("client %q counts against the DCR client cap and must use RegisterClient", id)
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	existing, exists := s.clients[id]
-	if !exists {
-		return s.insertClientLocked(id, client)
-	}
-	if !registration.DCRIssued(existing) {
+	now := s.now()
+	existing, exists := s.liveClientLocked(id, now)
+	if exists && !registration.DCRIssued(existing) {
 		return fmt.Errorf("%w: client %q", ErrAlreadyExists, id)
 	}
-
-	s.clientOrder = slices.DeleteFunc(s.clientOrder, func(e clientOrderEntry) bool { return e.id == id })
-	s.clientOrder = append(s.clientOrder, clientOrderEntry{id: id, touchedAt: time.Now()})
-	s.clients[id] = client
+	if !exists && s.maxCIMDClients > 0 {
+		if count, oldestExpiry := countLiveLocked(s.cimdClientExpiry, now); count >= s.maxCIMDClients {
+			return newClientCapacityError(s.maxCIMDClients, oldestExpiry, now)
+		}
+	}
+	s.putExpiringClientLocked(id, client, now.Add(DefaultDCRClientTTL))
 	return nil
 }
 
 // ReconcileConfiguredClient applies an operator-declared client: creates it
-// if absent, idempotently replaces a matching-fingerprint configured client
-// (the restart-with-unchanged-config case), or refuses with ErrAlreadyExists
-// when the existing record is DCR-issued or a different configured client.
-// See the ClientRegistry interface doc for the full contract.
+// if absent, otherwise replaces the existing record unless
+// configuredClientConflict refuses (or the record is DCR-issued), in which
+// case it returns ErrAlreadyExists. See the ClientRegistry interface doc for
+// the full contract.
 func (s *MemoryStorage) ReconcileConfiguredClient(_ context.Context, client fosite.Client) error {
 	if registration.DCRIssued(client) {
 		return fmt.Errorf("configured client %q must not carry the DCR-issued marker", client.GetID())
+	}
+	if err := checkConfiguredClientType(client); err != nil {
+		return err
 	}
 	id := client.GetID()
 	if err := ValidateRegisterableClientID(id); err != nil {
 		return err
 	}
 
+	existingFP, incomingFP, replaced, err := s.reconcileConfiguredClientLocked(id, client)
+	if err != nil {
+		return err
+	}
+	if replaced {
+		warnConfiguredClientReplaced(id, existingFP, incomingFP)
+	}
+	return nil
+}
+
+// reconcileConfiguredClientLocked stores client under s.mu and reports the
+// fingerprints of the row it replaced, or replaced=false when it created a
+// new row. The caller logs the replacement after the lock is released.
+func (s *MemoryStorage) reconcileConfiguredClientLocked(
+	id string, client fosite.Client,
+) (existingFP, incomingFP clientFingerprint, replaced bool, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	existing, exists := s.clients[id]
+	now := s.now()
+	existing, exists := s.liveClientLocked(id, now)
 	if !exists {
-		return s.insertClientLocked(id, client)
+		s.putPermanentClientLocked(id, client)
+		s.configured[id] = struct{}{}
+		return existingFP, incomingFP, false, nil
 	}
 	if registration.DCRIssued(existing) {
-		return fmt.Errorf("%w: client %q is DCR-issued, refusing to overwrite with a configured client",
+		return existingFP, incomingFP, false, fmt.Errorf(
+			"%w: client %q is DCR-issued, refusing to overwrite with a configured client",
 			ErrAlreadyExists, id)
 	}
-	if !fingerprintOfClient(existing).equal(fingerprintOfClient(client)) {
-		return fmt.Errorf("%w: client %q is already registered as a different configured client",
-			ErrAlreadyExists, id)
+	existingFP, incomingFP = fingerprintOfClient(existing), fingerprintOfClient(client)
+	if err := configuredClientConflict(id, existingFP, incomingFP); err != nil {
+		return existingFP, incomingFP, false, err
 	}
 
-	// Idempotent restart with unchanged config: refresh the eviction position
-	// and replace the stored value so secret rotation still takes effect.
-	s.clientOrder = slices.DeleteFunc(s.clientOrder, func(e clientOrderEntry) bool { return e.id == id })
-	s.clientOrder = append(s.clientOrder, clientOrderEntry{id: id, touchedAt: time.Now()})
-	s.clients[id] = client
-	return nil
+	// Replace the stored value so secret rotation and policy changes take
+	// effect.
+	s.putPermanentClientLocked(id, client)
+	s.configured[id] = struct{}{}
+	return existingFP, incomingFP, true, nil
 }
 
-// insertClientLocked inserts client under id, evicting the oldest eligible
-// DCR-issued client if the map is at capacity. Callers must hold s.mu and
-// must have already verified that no client currently exists at id.
-func (s *MemoryStorage) insertClientLocked(id string, client fosite.Client) error {
-	now := time.Now()
-	if s.maxClients > 0 && len(s.clients) >= s.maxClients {
-		if idx := s.oldestEvictableClientIndex(now); idx >= 0 {
-			victim := s.clientOrder[idx].id
-			s.clientOrder = append(s.clientOrder[:idx], s.clientOrder[idx+1:]...)
-			delete(s.clients, victim)
-			slog.Debug("evicted oldest DCR-issued client registration at capacity",
-				"client_id", victim, "max_clients", s.maxClients)
-		} else {
-			slog.Debug("client map at capacity with no safely evictable DCR-issued client",
-				"max_clients", s.maxClients)
-			return fmt.Errorf("%w: no DCR-issued client can be safely evicted", ErrClientCapacity)
-		}
+// liveClientLocked returns the client stored at id, or false when there is
+// none or it has expired. Callers must hold s.mu.
+func (s *MemoryStorage) liveClientLocked(id string, now time.Time) (fosite.Client, bool) {
+	client, ok := s.clients[id]
+	if !ok {
+		return nil, false
 	}
-	s.clientOrder = append(s.clientOrder, clientOrderEntry{id: id, touchedAt: now})
-	s.clients[id] = client
-	return nil
+	if exp, ok := s.clientExpiryLocked(id); ok && !now.Before(exp) {
+		return nil, false
+	}
+	return client, true
 }
 
-// oldestEvictableClientIndex returns the clientOrder index of the oldest
-// (frontmost) client that carries the registration.DCRIssued marker and has
-// aged past minClientAge as of now, or -1 if no current entry is evictable.
-// Callers must hold s.mu.
-func (s *MemoryStorage) oldestEvictableClientIndex(now time.Time) int {
-	for i, entry := range s.clientOrder {
-		if now.Sub(entry.touchedAt) < s.minClientAge {
+// clientExpiryLocked returns the expiry of the client stored at id, or false
+// when it never expires. Callers must hold s.mu.
+func (s *MemoryStorage) clientExpiryLocked(id string) (time.Time, bool) {
+	if exp, ok := s.dcrClientExpiry[id]; ok {
+		return exp, true
+	}
+	exp, ok := s.cimdClientExpiry[id]
+	return exp, ok
+}
+
+// expiryMapFor returns the expiry map a DCR-issued client belongs in.
+func (s *MemoryStorage) expiryMapFor(client fosite.Client) map[string]time.Time {
+	if countsTowardDCRCap(client) {
+		return s.dcrClientExpiry
+	}
+	return s.cimdClientExpiry
+}
+
+// putExpiringClientLocked stores a DCR-issued client at id, expiring at
+// expiry. Callers must hold s.mu for writing.
+func (s *MemoryStorage) putExpiringClientLocked(id string, client fosite.Client, expiry time.Time) {
+	s.clients[id] = client
+	delete(s.dcrClientExpiry, id)
+	delete(s.cimdClientExpiry, id)
+	delete(s.configured, id)
+	s.expiryMapFor(client)[id] = expiry
+}
+
+// putPermanentClientLocked stores a client without the DCR-issued marker at
+// id; it never expires. It clears the configured stamp; the caller sets it
+// afterwards when the write is a reconcile. Callers must hold s.mu for writing.
+func (s *MemoryStorage) putPermanentClientLocked(id string, client fosite.Client) {
+	s.clients[id] = client
+	delete(s.dcrClientExpiry, id)
+	delete(s.cimdClientExpiry, id)
+	delete(s.configured, id)
+}
+
+// countLiveLocked returns the number of entries in expiry that have not
+// expired by now and the earliest expiry among them. Callers must hold s.mu.
+// It walks one expiry map, which its cap bounds (plus entries expired since
+// the last cleanup), on every write that map's cap checks and on a metric
+// collection.
+func countLiveLocked(expiry map[string]time.Time, now time.Time) (int, time.Time) {
+	var count int
+	var oldest time.Time
+	for _, exp := range expiry {
+		if !now.Before(exp) {
 			continue
 		}
-		if client, ok := s.clients[entry.id]; ok && registration.DCRIssued(client) {
-			return i
+		count++
+		if oldest.IsZero() || exp.Before(oldest) {
+			oldest = exp
 		}
 	}
-	return -1
+	return count, oldest
 }
 
-// RenewClientTTL moves a DCR-issued client to the back of clientOrder on
-// proven use (a successful token exchange/refresh), the same signal
-// RedisStorage.RenewClientTTL uses to extend a Redis TTL. The in-memory
-// backend holds no wall-clock TTL, so "renewal" here means "make this client
-// the least-eligible-for-eviction" rather than resetting an expiry: FIFO
-// eviction order thereby becomes least-recently-proven-used order. Only
-// DCR-issued clients are repositioned; a pre-provisioned client is never
-// evicted so it needs no renewal. A client absent from the map (already
-// evicted, or never persisted) is a no-op, matching RedisStorage's EXPIRE
-// no-op on a missing key.
+// CountDCRClients implements DCRClientCounter.
+func (s *MemoryStorage) CountDCRClients(_ context.Context) (int64, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	count, _ := countLiveLocked(s.dcrClientExpiry, s.now())
+	return int64(count), nil
+}
+
+// RenewClientTTL sets a live DCR-issued client's expiry to DefaultDCRClientTTL
+// from now on proven use (a successful token exchange/refresh), the same
+// signal RedisStorage.RenewClientTTL uses. A pre-provisioned client never
+// expires, so it needs no renewal. A client that is absent or expired stays
+// absent, matching RedisStorage's PEXPIRE no-op on a missing key.
 func (s *MemoryStorage) RenewClientTTL(_ context.Context, client fosite.Client) error {
 	if client == nil || !registration.DCRIssued(client) {
 		return nil
@@ -667,11 +889,12 @@ func (s *MemoryStorage) RenewClientTTL(_ context.Context, client fosite.Client) 
 	defer s.mu.Unlock()
 
 	id := client.GetID()
-	if _, exists := s.clients[id]; !exists {
+	now := s.now()
+	stored, exists := s.liveClientLocked(id, now)
+	if !exists || !registration.DCRIssued(stored) {
 		return nil
 	}
-	s.clientOrder = slices.DeleteFunc(s.clientOrder, func(e clientOrderEntry) bool { return e.id == id })
-	s.clientOrder = append(s.clientOrder, clientOrderEntry{id: id, touchedAt: time.Now()})
+	s.expiryMapFor(stored)[id] = now.Add(DefaultDCRClientTTL)
 	return nil
 }
 
@@ -684,10 +907,22 @@ func (s *MemoryStorage) GetClient(_ context.Context, id string) (fosite.Client, 
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	client, ok := s.clients[id]
+	client, ok := s.liveClientLocked(id, s.now())
 	if !ok {
 		slog.Debug("client not found", "client_id", id)
 		return nil, notFoundRFC6749Error("Client not found")
+	}
+	if dcrErr := registration.ValidatePrivateKeyJWTClientKeys(client); dcrErr != nil {
+		slog.Debug("rejecting client whose signing keys no longer meet server policy",
+			"client_id", id, "reason", dcrErr.ErrorDescription)
+		return nil, fosite.ErrInvalidClient.WithHint("client signing keys no longer meet server policy")
+	}
+	if _, stamped := s.configured[id]; stamped && !isReservedPlaceholder(client) {
+		marked, ok := registration.MarkConfigured(client)
+		if !ok {
+			return nil, notFoundRFC6749Error("Client not found")
+		}
+		return marked, nil
 	}
 	return client, nil
 }
@@ -742,7 +977,8 @@ func (s *MemoryStorage) ClientAssertionJWTValid(_ context.Context, jti string) e
 // ClientAssertionJWTValid's reservation reaches this call.
 func (s *MemoryStorage) SetClientAssertionJWT(_ context.Context, jti string, exp time.Time) error {
 	if time.Until(exp) > server.MaxAssertionLifespan {
-		return fmt.Errorf("assertion lifetime exceeds maximum of %s", server.MaxAssertionLifespan)
+		return fosite.ErrInvalidClient.WithHintf(
+			"The 'client_assertion' lifetime exceeds the maximum of %s.", server.MaxAssertionLifespan)
 	}
 
 	s.mu.Lock()
@@ -777,6 +1013,100 @@ func (s *MemoryStorage) ConsumeAssertionJWT(_ context.Context, purpose, issuer, 
 	return nil
 }
 
+// exchangeGrantAssertionPurpose scopes exchange-grant replay markers, mirroring
+// the purpose argument of ConsumeAssertionJWT. The literal pins the wire string
+// the Redis backend must match.
+const exchangeGrantAssertionPurpose = "exchange-grant"
+
+// cloneExchangeGrant returns a deep copy of g, so neither the caller nor the
+// store can change the other's slices.
+func cloneExchangeGrant(g *ExchangeGrant) *ExchangeGrant {
+	c := *g
+	c.IssuableTokenTypes = slices.Clone(g.IssuableTokenTypes)
+	return &c
+}
+
+// -----------------------
+// ExchangeGrantStorage
+// -----------------------
+
+// CreateExchangeGrant stores a copy of g and, when g.SourceJTI is set, its
+// replay marker. A grant whose shape is invalid, or whose ExpiresAt is already
+// past, is refused. All checks run first and the writes follow under one lock,
+// so a failed call leaves nothing behind.
+//
+// Check order: a duplicate signature is reported before a reused jti. A retry
+// of a create that already succeeded (same signature, same jti) therefore gets
+// ErrAlreadyExists, which says this exact grant exists, instead of ErrJTIKnown.
+func (s *MemoryStorage) CreateExchangeGrant(_ context.Context, g *ExchangeGrant) error {
+	if err := validateExchangeGrantShape(g); err != nil {
+		return err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	now := s.now()
+	if now.After(g.ExpiresAt) {
+		return errors.New("exchange grant is already expired")
+	}
+	if existing, ok := s.exchangeGrants[g.Signature]; ok && !now.After(existing.ExpiresAt) {
+		return ErrAlreadyExists
+	}
+
+	var key assertionJWTKey
+	if g.SourceJTI != "" {
+		key = assertionJWTKey{purpose: exchangeGrantAssertionPurpose, issuer: g.SourceIssuer, jti: g.SourceJTI}
+		if m, ok := s.exchangeGrantJTIs[key]; ok && !now.After(m.expiresAt) {
+			return fosite.ErrJTIKnown
+		}
+	}
+
+	s.exchangeGrants[g.Signature] = cloneExchangeGrant(g)
+	if g.SourceJTI != "" {
+		s.exchangeGrantJTIs[key] = exchangeGrantMarker{
+			signature: g.Signature, expiresAt: g.SourceExpiresAt.Add(ExchangeGrantMarkerMargin),
+		}
+	}
+	return nil
+}
+
+// GetExchangeGrant returns a copy of the grant, including revoked grants. A
+// record past its ExpiresAt is reported as ErrNotFound even if cleanup has not
+// removed it yet.
+func (s *MemoryStorage) GetExchangeGrant(_ context.Context, signature string) (*ExchangeGrant, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	g, ok := s.exchangeGrants[signature]
+	if !ok || s.now().After(g.ExpiresAt) {
+		return nil, ErrNotFound
+	}
+	return cloneExchangeGrant(g), nil
+}
+
+// RevokeExchangeGrant sets RevokedAt to now unless the grant is already
+// revoked, in which case the first RevokedAt is kept. A missing or expired
+// record returns ErrNotFound.
+func (s *MemoryStorage) RevokeExchangeGrant(_ context.Context, signature string, now time.Time) error {
+	if err := validateExchangeGrantRevokeTime(now); err != nil {
+		return err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// now is only the timestamp written; expiry follows the store clock.
+	g, ok := s.exchangeGrants[signature]
+	if !ok || s.now().After(g.ExpiresAt) {
+		return ErrNotFound
+	}
+	if g.RevokedAt.IsZero() {
+		g.RevokedAt = now
+	}
+	return nil
+}
+
 // -----------------------
 // oauth2.AuthorizeCodeStorage
 // -----------------------
@@ -794,10 +1124,11 @@ func (s *MemoryStorage) CreateAuthorizeCodeSession(_ context.Context, code strin
 	defer s.mu.Unlock()
 
 	now := time.Now()
-	expiresAt := getExpirationFromRequester(request, fosite.AuthorizeCode, DefaultAuthCodeTTL)
+	stored := snapshotRequester(request)
+	expiresAt := getExpirationFromRequester(stored, fosite.AuthorizeCode, DefaultAuthCodeTTL)
 
 	s.authCodes[code] = &timedEntry[fosite.Requester]{
-		value:     request,
+		value:     stored,
 		createdAt: now,
 		expiresAt: expiresAt,
 	}
@@ -806,7 +1137,8 @@ func (s *MemoryStorage) CreateAuthorizeCodeSession(_ context.Context, code strin
 
 // GetAuthorizeCodeSession retrieves the authorization request for a given code.
 // If the authorization code has been invalidated, it returns ErrInvalidatedAuthorizeCode
-// along with the request (as required by fosite).
+// along with the request (as required by fosite). Expired codes are rejected
+// with a not-found error, after the invalidation check so reuse is still detected.
 func (s *MemoryStorage) GetAuthorizeCodeSession(_ context.Context, code string, _ fosite.Session) (fosite.Requester, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -820,10 +1152,15 @@ func (s *MemoryStorage) GetAuthorizeCodeSession(_ context.Context, code string, 
 	// Check if the code has been invalidated
 	if s.invalidatedCodes[code] != nil {
 		// Must return the request along with the error as per fosite documentation
-		return entry.value, fosite.ErrInvalidatedAuthorizeCode
+		return snapshotRequester(entry.value), fosite.ErrInvalidatedAuthorizeCode
 	}
 
-	return entry.value, nil
+	if time.Now().After(entry.expiresAt) {
+		slog.Debug("authorization code expired")
+		return nil, notFoundRFC6749Error("Authorization code expired")
+	}
+
+	return snapshotRequester(entry.value), nil
 }
 
 // InvalidateAuthorizeCodeSession marks an authorization code as used/invalid.
@@ -863,10 +1200,11 @@ func (s *MemoryStorage) CreateAccessTokenSession(_ context.Context, signature st
 	defer s.mu.Unlock()
 
 	now := time.Now()
-	expiresAt := getExpirationFromRequester(request, fosite.AccessToken, DefaultAccessTokenTTL)
+	stored := snapshotRequester(request)
+	expiresAt := getExpirationFromRequester(stored, fosite.AccessToken, DefaultAccessTokenTTL)
 
 	s.accessTokens[signature] = &timedEntry[fosite.Requester]{
-		value:     request,
+		value:     stored,
 		createdAt: now,
 		expiresAt: expiresAt,
 	}
@@ -876,8 +1214,8 @@ func (s *MemoryStorage) CreateAccessTokenSession(_ context.Context, signature st
 // GetAccessTokenSession retrieves the access token session by its signature.
 //
 // The session parameter is a prototype for deserialization in persistent backends.
-// Our in-memory implementation ignores it since we store live Requester objects.
-// Persistent backends (SQL, Redis) use it to know what concrete type to deserialize into.
+// Our in-memory implementation ignores it because it snapshots Requesters in memory.
+// A persistent backend may instead use it to choose a deserialization type.
 func (s *MemoryStorage) GetAccessTokenSession(_ context.Context, signature string, _ fosite.Session) (fosite.Requester, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -887,7 +1225,7 @@ func (s *MemoryStorage) GetAccessTokenSession(_ context.Context, signature strin
 		slog.Debug("access token not found")
 		return nil, notFoundRFC6749Error("Access token not found")
 	}
-	return entry.value, nil
+	return snapshotRequester(entry.value), nil
 }
 
 // DeleteAccessTokenSession removes the access token session.
@@ -922,10 +1260,11 @@ func (s *MemoryStorage) CreateRefreshTokenSession(_ context.Context, signature s
 	defer s.mu.Unlock()
 
 	now := time.Now()
-	expiresAt := getExpirationFromRequester(request, fosite.RefreshToken, DefaultRefreshTokenTTL)
+	stored := snapshotRequester(request)
+	expiresAt := getExpirationFromRequester(stored, fosite.RefreshToken, DefaultRefreshTokenTTL)
 
 	s.refreshTokens[signature] = &timedEntry[fosite.Requester]{
-		value:     request,
+		value:     stored,
 		createdAt: now,
 		expiresAt: expiresAt,
 	}
@@ -942,7 +1281,7 @@ func (s *MemoryStorage) GetRefreshTokenSession(_ context.Context, signature stri
 		slog.Debug("refresh token not found")
 		return nil, notFoundRFC6749Error("Refresh token not found")
 	}
-	return entry.value, nil
+	return snapshotRequester(entry.value), nil
 }
 
 // DeleteRefreshTokenSession removes the refresh token session.
@@ -1050,10 +1389,11 @@ func (s *MemoryStorage) CreatePKCERequestSession(_ context.Context, signature st
 	defer s.mu.Unlock()
 
 	now := time.Now()
-	expiresAt := getExpirationFromRequester(request, fosite.AuthorizeCode, DefaultPKCETTL)
+	stored := snapshotRequester(request)
+	expiresAt := getExpirationFromRequester(stored, fosite.AuthorizeCode, DefaultPKCETTL)
 
 	s.pkceRequests[signature] = &timedEntry[fosite.Requester]{
-		value:     request,
+		value:     stored,
 		createdAt: now,
 		expiresAt: expiresAt,
 	}
@@ -1070,7 +1410,7 @@ func (s *MemoryStorage) GetPKCERequestSession(_ context.Context, signature strin
 		slog.Debug("pkce request not found")
 		return nil, notFoundRFC6749Error("PKCE request not found")
 	}
-	return entry.value, nil
+	return snapshotRequester(entry.value), nil
 }
 
 // DeletePKCERequestSession removes the PKCE request session.
@@ -1354,28 +1694,39 @@ func (s *MemoryStorage) StorePendingAuthorization(_ context.Context, state strin
 	defer s.mu.Unlock()
 
 	now := time.Now()
-	expiresAt := now.Add(DefaultPendingAuthorizationTTL)
+	expiresAt := pending.CreatedAt.Add(DefaultPendingAuthorizationTTL)
+	if !expiresAt.After(now) {
+		return ErrExpired
+	}
 
 	// Make a defensive copy to prevent aliasing issues
 	pendingCopy := &PendingAuthorization{
-		ClientID:             pending.ClientID,
-		RedirectURI:          pending.RedirectURI,
-		State:                pending.State,
-		PKCEChallenge:        pending.PKCEChallenge,
-		PKCEMethod:           pending.PKCEMethod,
-		Scopes:               slices.Clone(pending.Scopes),
-		InternalState:        pending.InternalState,
-		UpstreamPKCEVerifier: pending.UpstreamPKCEVerifier,
-		UpstreamNonce:        pending.UpstreamNonce,
-		BrowserBindingHash:   pending.BrowserBindingHash,
-		UpstreamProviderName: pending.UpstreamProviderName,
-		SessionID:            pending.SessionID,
-		ResolvedUserID:       pending.ResolvedUserID,
-		ResolvedUserName:     pending.ResolvedUserName,
-		ResolvedUserEmail:    pending.ResolvedUserEmail,
-		SingleLeg:            pending.SingleLeg,
-		ChainUpstreams:       slices.Clone(pending.ChainUpstreams),
-		CreatedAt:            pending.CreatedAt,
+		ClientID:                pending.ClientID,
+		RedirectURI:             pending.RedirectURI,
+		State:                   pending.State,
+		PKCEChallenge:           pending.PKCEChallenge,
+		PKCEMethod:              pending.PKCEMethod,
+		Scopes:                  slices.Clone(pending.Scopes),
+		Resource:                pending.Resource,
+		ConsentStage:            pending.ConsentStage,
+		RememberConsent:         pending.RememberConsent,
+		FirstProviderSubject:    pending.FirstProviderSubject,
+		ExpectedUserID:          pending.ExpectedUserID,
+		ExpectedProviderSubject: pending.ExpectedProviderSubject,
+		ConsentSessionDigest:    pending.ConsentSessionDigest,
+		InternalState:           pending.InternalState,
+		UpstreamPKCEVerifier:    pending.UpstreamPKCEVerifier,
+		UpstreamNonce:           pending.UpstreamNonce,
+		BrowserBindingHash:      pending.BrowserBindingHash,
+		UpstreamProviderName:    pending.UpstreamProviderName,
+		SessionID:               pending.SessionID,
+		ResolvedUserID:          pending.ResolvedUserID,
+		ResolvedUserName:        pending.ResolvedUserName,
+		ResolvedUserEmail:       pending.ResolvedUserEmail,
+		VerifiedUpstream:        pending.VerifiedUpstream,
+		SingleLeg:               pending.SingleLeg,
+		ChainUpstreams:          slices.Clone(pending.ChainUpstreams),
+		CreatedAt:               pending.CreatedAt,
 	}
 
 	s.pendingAuthorizations[state] = &timedEntry[*PendingAuthorization]{
@@ -1399,7 +1750,7 @@ func (s *MemoryStorage) LoadPendingAuthorization(_ context.Context, state string
 	}
 
 	// Check if expired
-	if time.Now().After(entry.expiresAt) {
+	if !entry.expiresAt.After(time.Now()) {
 		slog.Debug("pending authorization expired")
 		return nil, ErrExpired
 	}
@@ -1410,24 +1761,32 @@ func (s *MemoryStorage) LoadPendingAuthorization(_ context.Context, state string
 		return nil, nil
 	}
 	return &PendingAuthorization{
-		ClientID:             pending.ClientID,
-		RedirectURI:          pending.RedirectURI,
-		State:                pending.State,
-		PKCEChallenge:        pending.PKCEChallenge,
-		PKCEMethod:           pending.PKCEMethod,
-		Scopes:               slices.Clone(pending.Scopes),
-		InternalState:        pending.InternalState,
-		UpstreamPKCEVerifier: pending.UpstreamPKCEVerifier,
-		UpstreamNonce:        pending.UpstreamNonce,
-		BrowserBindingHash:   pending.BrowserBindingHash,
-		UpstreamProviderName: pending.UpstreamProviderName,
-		SessionID:            pending.SessionID,
-		ResolvedUserID:       pending.ResolvedUserID,
-		ResolvedUserName:     pending.ResolvedUserName,
-		ResolvedUserEmail:    pending.ResolvedUserEmail,
-		SingleLeg:            pending.SingleLeg,
-		ChainUpstreams:       slices.Clone(pending.ChainUpstreams),
-		CreatedAt:            pending.CreatedAt,
+		ClientID:                pending.ClientID,
+		RedirectURI:             pending.RedirectURI,
+		State:                   pending.State,
+		PKCEChallenge:           pending.PKCEChallenge,
+		PKCEMethod:              pending.PKCEMethod,
+		Scopes:                  slices.Clone(pending.Scopes),
+		Resource:                pending.Resource,
+		ConsentStage:            pending.ConsentStage,
+		RememberConsent:         pending.RememberConsent,
+		FirstProviderSubject:    pending.FirstProviderSubject,
+		ExpectedUserID:          pending.ExpectedUserID,
+		ExpectedProviderSubject: pending.ExpectedProviderSubject,
+		ConsentSessionDigest:    pending.ConsentSessionDigest,
+		InternalState:           pending.InternalState,
+		UpstreamPKCEVerifier:    pending.UpstreamPKCEVerifier,
+		UpstreamNonce:           pending.UpstreamNonce,
+		BrowserBindingHash:      pending.BrowserBindingHash,
+		UpstreamProviderName:    pending.UpstreamProviderName,
+		SessionID:               pending.SessionID,
+		ResolvedUserID:          pending.ResolvedUserID,
+		ResolvedUserName:        pending.ResolvedUserName,
+		ResolvedUserEmail:       pending.ResolvedUserEmail,
+		VerifiedUpstream:        pending.VerifiedUpstream,
+		SingleLeg:               pending.SingleLeg,
+		ChainUpstreams:          slices.Clone(pending.ChainUpstreams),
+		CreatedAt:               pending.CreatedAt,
 	}, nil
 }
 
@@ -1546,6 +1905,7 @@ func (s *MemoryStorage) StorePendingDeviceConfirmation(
 		ResolvedUserID:    pending.ResolvedUserID,
 		ResolvedUserName:  pending.ResolvedUserName,
 		ResolvedUserEmail: pending.ResolvedUserEmail,
+		VerifiedUpstream:  pending.VerifiedUpstream,
 		UpstreamTokens:    cloneUpstreamTokens(pending.UpstreamTokens),
 		Synthetic:         pending.Synthetic,
 		CreatedAt:         pending.CreatedAt,
@@ -1582,6 +1942,7 @@ func (s *MemoryStorage) LoadPendingDeviceConfirmation(
 		ResolvedUserID:    pending.ResolvedUserID,
 		ResolvedUserName:  pending.ResolvedUserName,
 		ResolvedUserEmail: pending.ResolvedUserEmail,
+		VerifiedUpstream:  pending.VerifiedUpstream,
 		UpstreamTokens:    cloneUpstreamTokens(pending.UpstreamTokens),
 		Synthetic:         pending.Synthetic,
 		CreatedAt:         pending.CreatedAt,
@@ -1620,6 +1981,7 @@ func cloneDeviceRequest(device *DeviceRequest) *DeviceRequest {
 		ResolvedUserID:    device.ResolvedUserID,
 		ResolvedUserName:  device.ResolvedUserName,
 		ResolvedUserEmail: device.ResolvedUserEmail,
+		VerifiedUpstream:  device.VerifiedUpstream,
 		SessionID:         device.SessionID,
 		CreatedAt:         device.CreatedAt,
 	}
@@ -1708,7 +2070,7 @@ func (s *MemoryStorage) LoadDeviceRequestByUserCode(_ context.Context, userCode 
 // MarkDeviceRequestAuthorized transitions a pending device request to
 // authorized, attaching the resolved identity.
 func (s *MemoryStorage) MarkDeviceRequestAuthorized(
-	_ context.Context, deviceCode string, resolvedUserID, resolvedUserName, resolvedUserEmail, sessionID string,
+	_ context.Context, deviceCode string, auth DeviceAuthorization,
 ) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1722,10 +2084,11 @@ func (s *MemoryStorage) MarkDeviceRequestAuthorized(
 	}
 
 	entry.value.Status = DeviceRequestStatusAuthorized
-	entry.value.ResolvedUserID = resolvedUserID
-	entry.value.ResolvedUserName = resolvedUserName
-	entry.value.ResolvedUserEmail = resolvedUserEmail
-	entry.value.SessionID = sessionID
+	entry.value.ResolvedUserID = auth.UserID
+	entry.value.ResolvedUserName = auth.UserName
+	entry.value.ResolvedUserEmail = auth.UserEmail
+	entry.value.VerifiedUpstream = auth.VerifiedUpstream
+	entry.value.SessionID = auth.SessionID
 	return nil
 }
 
@@ -2058,6 +2421,55 @@ func (s *MemoryStorage) UpdateDCRCredentialsIfPresent(_ context.Context, creds *
 	return cloneDCRCredentials(creds), nil
 }
 
+// UpdateDCRCredentialsIfUnchanged replaces the entry at creds.Key with creds
+// only when the stored entry still equals expected, returning ErrNotFound
+// (wrapped) when no entry exists and ErrDCRCredentialsChanged when it differs.
+// The compare and the write happen under s.mu, so no other writer can slip in
+// between them. Presence and ClientSecretExpiresAt handling are identical to
+// UpdateDCRCredentialsIfPresent.
+func (s *MemoryStorage) UpdateDCRCredentialsIfUnchanged(
+	_ context.Context, creds, expected *DCRCredentials,
+) (*DCRCredentials, error) {
+	if err := validateDCRCompareAndSet(creds, expected); err != nil {
+		return nil, err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	existing, ok := s.dcrCredentials[creds.Key]
+	if !ok {
+		return nil, notFoundRFC6749Error("DCR credentials not found")
+	}
+	if !dcrCredentialsEqual(existing, expected) {
+		return nil, ErrDCRCredentialsChanged
+	}
+
+	s.dcrCredentials[creds.Key] = cloneDCRCredentials(creds)
+	return cloneDCRCredentials(creds), nil
+}
+
+// dcrCredentialsEqual reports whether a and b hold the same persisted values.
+// Time fields are compared with time.Time.Equal rather than ==, so two values
+// for the same instant compare equal regardless of monotonic-clock reading or
+// location.
+//
+// The final == covers every other field and only compiles while
+// DCRCredentials stays comparable. A new time.Time field added to
+// DCRCredentials MUST be compared with Equal and zeroed here alongside the
+// existing two; == on it would reintroduce the monotonic-clock/location
+// mismatch. TestDCRCredentialsEqual_TimeFieldsCompareByInstant fails if one
+// is missed.
+func dcrCredentialsEqual(a, b *DCRCredentials) bool {
+	ac, bc := *a, *b
+	if !ac.CreatedAt.Equal(bc.CreatedAt) || !ac.ClientSecretExpiresAt.Equal(bc.ClientSecretExpiresAt) {
+		return false
+	}
+	ac.CreatedAt, bc.CreatedAt = time.Time{}, time.Time{}
+	ac.ClientSecretExpiresAt, bc.ClientSecretExpiresAt = time.Time{}, time.Time{}
+	return ac == bc
+}
+
 // GetDCRCredentials retrieves DCR credentials by key.
 // Returns a defensive copy; returns ErrNotFound (wrapped) on miss.
 func (s *MemoryStorage) GetDCRCredentials(_ context.Context, key DCRKey) (*DCRCredentials, error) {
@@ -2131,4 +2543,5 @@ var (
 	_ UserStorage                      = (*MemoryStorage)(nil)
 	_ DCRCredentialStore               = (*MemoryStorage)(nil)
 	_ AssertionJWTConsumer             = (*MemoryStorage)(nil)
+	_ ExchangeGrantStorage             = (*MemoryStorage)(nil)
 )

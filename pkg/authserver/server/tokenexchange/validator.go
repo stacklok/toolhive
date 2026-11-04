@@ -105,6 +105,10 @@ type ValidatedClaims struct {
 	AllowedDelegateClients []string
 	// Extra contains all non-standard claims not captured by other fields.
 	Extra map[string]any
+	// Claims holds every verified claim as decoded, registered ones included.
+	// It is shared with the validator's decode result: treat it as read-only
+	// and deep-copy before handing it to code that may modify it.
+	Claims map[string]any
 }
 
 // MayActClaim represents the RFC 8693 §4.4 may_act claim from a subject token.
@@ -327,6 +331,7 @@ func buildValidatedClaims(
 		Audience: []string(standard.Audience),
 		JWTID:    standard.ID,
 		Extra:    make(map[string]any),
+		Claims:   extra,
 	}
 
 	if standard.Expiry != nil {

@@ -141,6 +141,39 @@ Request user input during workflow execution.
   defaultResponse: false
 ```
 
+**Handling decline, cancel and timeout**: Use `onDecline` and `onCancel` to choose what happens when the user does not accept. Each takes an `action` of `abort`, `skip_remaining` or `continue`. The default is `abort`. When the step's own `timeout` expires, `onCancel` applies. If the workflow timeout or the client's request deadline ends while the step waits, the workflow is reported as a timeout or failure instead.
+
+| Action | Effect |
+|--------|--------|
+| `abort` | The workflow fails. |
+| `skip_remaining` | The workflow stops. Steps that have not run are marked `skipped`. The workflow completes successfully. |
+| `continue` | The workflow goes on. Later steps should use a `condition` to check the answer. |
+
+```yaml
+- id: confirm
+  type: elicitation
+  message: "Deploy to production?"
+  schema:
+    type: object
+    properties:
+      proceed:
+        type: boolean
+  onDecline:
+    action: skip_remaining
+  onCancel:
+    action: abort
+
+- id: deploy
+  type: tool
+  tool: kubectl.apply
+  dependsOn: [confirm]
+```
+
+- When `skip_remaining` stops the workflow, only steps that depend on the elicitation step, directly or through a chain of `dependsOn`, are guaranteed not to run. A step that does not depend on it may already have run, or may be running at the same time. If it is still running when the workflow stops, it is cancelled and reported as `failed`.
+- With `continue`, the elicitation step output has an `action` field: `decline`, `cancel` or `timeout`. When the user accepts, `action` is `accept` and the answers are in `content`. Guard every later step, not only the next one, with a condition such as `{{eq .steps.confirm.output.action "accept"}}`. A step skipped by its condition does not stop the steps that depend on it.
+- With `skip_remaining` and no `output:` section, the client normally gets `{"action": "decline"|"cancel"|"timeout", "skipped": true}`. This is the output of the last step that completed.
+- If `output:` reads a field of a step that comes after the gate, give that step `defaultResults`. Skipped steps use these values.
+
 #### forEach
 Iterate over a collection produced by a previous step, executing an inner tool step for each item with configurable parallelism.
 

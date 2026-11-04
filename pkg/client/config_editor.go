@@ -44,7 +44,7 @@ import (
 	"github.com/pelletier/go-toml/v2"
 	"github.com/tailscale/hujson"
 	"github.com/tidwall/gjson"
-	"gopkg.in/yaml.v3"
+	"go.yaml.in/yaml/v3"
 
 	"github.com/stacklok/toolhive/pkg/fileutils"
 )

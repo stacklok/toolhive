@@ -44,6 +44,7 @@ import (
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/virtualmcpserverstatus"
 	operatorvmcpconfig "github.com/stacklok/toolhive/cmd/thv-operator/pkg/vmcpconfig"
 	"github.com/stacklok/toolhive/pkg/authserver"
+	"github.com/stacklok/toolhive/pkg/authserver/upstreamfilter"
 	"github.com/stacklok/toolhive/pkg/networking"
 	vmcptypes "github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/auth/converters"
@@ -139,6 +140,9 @@ type VirtualMCPServerReconciler struct {
 	Scheme           *runtime.Scheme
 	Recorder         events.EventRecorder
 	PlatformDetector *ctrlutil.SharedPlatformDetector
+	// DefaultRedisConfig is the read-only global Redis snapshot loaded at startup.
+	// Nil means no global fallback is configured.
+	DefaultRedisConfig *ctrlutil.DefaultRedisConfig
 	// ImagePullSecretsDefaults are cluster-wide defaults sourced from the
 	// operator chart that are merged with vmcp.Spec.ImagePullSecrets when
 	// constructing workloads. The zero value is a usable empty Defaults.
@@ -533,6 +537,22 @@ func (r *VirtualMCPServerReconciler) runAuthValidations(
 		statusManager.RemoveConditionsWithPrefix(mcpv1beta1.ConditionTypeIdentitySynthesized, []string{})
 	}
 
+	// Re-check the upstream filter's full static invariants against the
+	// configured upstream providers. CEL enforces only cheap structural
+	// invariants at admission time (filter requires authServerConfig, min
+	// two upstream providers); deeper reference-integrity checks (every
+	// referenced provider exists, no reference to the mandatory first
+	// provider, no duplicates, no empty values) are enforced here before
+	// the ConfigMap is written. Runs regardless of AuthServerConfig
+	// presence so a filter set without a corresponding AuthServerConfig
+	// also surfaces as a terminal spec error.
+	if err := r.validateAuthServerUpstreamFilter(vmcp, statusManager); err != nil {
+		if applyErr := r.applyStatusUpdates(ctx, vmcp, statusManager); applyErr != nil {
+			return false, applyErr
+		}
+		return false, nil
+	}
+
 	// Validate that authz policies have an upstream IDP available to source
 	// claims from. Runs after the AuthServerConfig branch so it can set the
 	// AuthServerConfigValidated condition without being clobbered by the
@@ -545,6 +565,62 @@ func (r *VirtualMCPServerReconciler) runAuthValidations(
 	}
 
 	return true, nil
+}
+
+// validateAuthServerUpstreamFilter re-checks the upstream filter's static
+// invariants against the configured upstream providers. This repeats the CEL
+// admission rules so a resource that bypassed admission (fake client, pre-CEL
+// stored object) is still rejected before its ConfigMap is written.
+//
+// Returns a terminal validation error — the caller should surface the
+// condition and return without requeueing. Returns nil when no filter is
+// configured.
+func (*VirtualMCPServerReconciler) validateAuthServerUpstreamFilter(
+	vmcp *mcpv1beta1.VirtualMCPServer,
+	statusManager virtualmcpserverstatus.StatusManager,
+) error {
+	filter := vmcp.Spec.AuthServerUpstreamFilter
+	if filter == nil {
+		return nil
+	}
+	cfg := vmcp.Spec.AuthServerConfig
+	if cfg == nil {
+		return setAuthServerUpstreamFilterError(vmcp, statusManager,
+			"spec.authServerUpstreamFilter requires spec.authServerConfig to be set")
+	}
+
+	configured := make([]string, len(cfg.UpstreamProviders))
+	for i := range cfg.UpstreamProviders {
+		configured[i] = cfg.UpstreamProviders[i].Name
+	}
+
+	runtimeCfg := operatorvmcpconfig.ConvertUpstreamFilter(filter)
+	if _, err := upstreamfilter.NewGroupBasedFilter(*runtimeCfg, configured); err != nil {
+		return setAuthServerUpstreamFilterError(vmcp, statusManager,
+			fmt.Sprintf("spec.authServerUpstreamFilter: %v", err))
+	}
+	return nil
+}
+
+// setAuthServerUpstreamFilterError stamps a terminal AuthServerUpstreamFilter
+// validation failure onto status. Reuses ConditionTypeAuthServerConfigValidated
+// (rather than introducing a new condition type) so operators observe all
+// auth-server spec defects through a single surface; the message carries the
+// precise field path.
+func setAuthServerUpstreamFilterError(
+	vmcp *mcpv1beta1.VirtualMCPServer,
+	statusManager virtualmcpserverstatus.StatusManager,
+	message string,
+) error {
+	statusManager.SetPhase(mcpv1beta1.VirtualMCPServerPhaseFailed)
+	statusManager.SetMessage(message)
+	statusManager.SetAuthServerConfigValidatedCondition(
+		mcpv1beta1.ConditionReasonAuthServerConfigInvalid,
+		message,
+		metav1.ConditionFalse,
+	)
+	statusManager.SetObservedGeneration(vmcp.Generation)
+	return stderrors.New(message)
 }
 
 // validateAuthServerConfigCABundles resolves inline upstream CA dependencies.
@@ -618,72 +694,30 @@ func (*VirtualMCPServerReconciler) validateAuthServerConfig(
 	cfg := vmcp.Spec.AuthServerConfig
 
 	if cfg.Issuer == "" {
-		message := "spec.authServerConfig.issuer is required"
-		statusManager.SetPhase(mcpv1beta1.VirtualMCPServerPhaseFailed)
-		statusManager.SetMessage(message)
-		statusManager.SetAuthServerConfigValidatedCondition(
-			mcpv1beta1.ConditionReasonAuthServerConfigInvalid,
-			message,
-			metav1.ConditionFalse,
-		)
-		statusManager.SetObservedGeneration(vmcp.Generation)
-		return stderrors.New(message)
+		return failAuthServerConfig(vmcp, statusManager, "spec.authServerConfig.issuer is required")
+	}
+
+	if err := cfg.ValidateTLSListener(); err != nil {
+		return failAuthServerConfig(vmcp, statusManager, fmt.Sprintf("spec.authServerConfig: %v", err))
 	}
 
 	if err := cfg.ValidateInboundGrants(); err != nil {
-		message := fmt.Sprintf("spec.authServerConfig: %v", err)
-		statusManager.SetPhase(mcpv1beta1.VirtualMCPServerPhaseFailed)
-		statusManager.SetMessage(message)
-		statusManager.SetAuthServerConfigValidatedCondition(
-			mcpv1beta1.ConditionReasonAuthServerConfigInvalid,
-			message,
-			metav1.ConditionFalse,
-		)
-		statusManager.SetObservedGeneration(vmcp.Generation)
-		return stderrors.New(message)
+		return failAuthServerConfig(vmcp, statusManager, fmt.Sprintf("spec.authServerConfig: %v", err))
 	}
 
 	// Admission-time check: http:// issuers for non-localhost hosts require
 	// insecureAllowHTTP to be set explicitly. Without it the proxyrunner pod
 	// will crash at startup with a validateIssuerURL failure.
-	if strings.HasPrefix(cfg.Issuer, "http://") {
-		// url.Parse succeeds for any URL that passes the CRD regex; the
-		// parsed.Host != "" guard defends against the degenerate empty-host case.
-		parsed, err := url.Parse(cfg.Issuer)
-		if err == nil && parsed.Host != "" && !networking.IsLocalhost(parsed.Host) && !cfg.InsecureAllowHTTP {
-			message := fmt.Sprintf(
-				"spec.authServerConfig.issuer %q uses http:// with a non-localhost host; "+
-					"set spec.authServerConfig.insecureAllowHTTP: true to allow this for trusted "+
-					"in-cluster deployments, or use https:// for production deployments",
-				cfg.Issuer,
-			)
-			statusManager.SetPhase(mcpv1beta1.VirtualMCPServerPhaseFailed)
-			statusManager.SetMessage(message)
-			statusManager.SetAuthServerConfigValidatedCondition(
-				mcpv1beta1.ConditionReasonAuthServerConfigInvalid,
-				message,
-				metav1.ConditionFalse,
-			)
-			statusManager.SetObservedGeneration(vmcp.Generation)
-			return stderrors.New(message)
-		}
+	if message := insecureHTTPIssuerMessage(cfg); message != "" {
+		return failAuthServerConfig(vmcp, statusManager, message)
 	}
 
 	if len(cfg.UpstreamProviders) == 0 && len(cfg.DelegateClients) == 0 && cfg.InboundGrants == nil &&
 		!slices.ContainsFunc(cfg.TrustedIssuers, func(issuer mcpv1beta1.TrustedIssuerConfig) bool {
 			return issuer.JWTBearerGrant != nil
 		}) {
-		message := "spec.authServerConfig requires at least one upstream provider unless " +
-			"delegateClients, inboundGrants, or a trustedIssuer with jwtBearerGrant is configured"
-		statusManager.SetPhase(mcpv1beta1.VirtualMCPServerPhaseFailed)
-		statusManager.SetMessage(message)
-		statusManager.SetAuthServerConfigValidatedCondition(
-			mcpv1beta1.ConditionReasonAuthServerConfigInvalid,
-			message,
-			metav1.ConditionFalse,
-		)
-		statusManager.SetObservedGeneration(vmcp.Generation)
-		return stderrors.New(message)
+		return failAuthServerConfig(vmcp, statusManager, "spec.authServerConfig requires at least one upstream provider unless "+
+			"delegateClients, inboundGrants, or a trustedIssuer with jwtBearerGrant is configured")
 	}
 
 	// Validate additionalAuthorizationParams / additionalTokenParams on each
@@ -696,16 +730,7 @@ func (*VirtualMCPServerReconciler) validateAuthServerConfig(
 			err = mcpv1beta1.ValidateAdditionalTokenParams(prefix, cfg.UpstreamProviders[i].AdditionalTokenParams())
 		}
 		if err != nil {
-			message := err.Error()
-			statusManager.SetPhase(mcpv1beta1.VirtualMCPServerPhaseFailed)
-			statusManager.SetMessage(message)
-			statusManager.SetAuthServerConfigValidatedCondition(
-				mcpv1beta1.ConditionReasonAuthServerConfigInvalid,
-				message,
-				metav1.ConditionFalse,
-			)
-			statusManager.SetObservedGeneration(vmcp.Generation)
-			return stderrors.New(message)
+			return failAuthServerConfig(vmcp, statusManager, err.Error())
 		}
 	}
 
@@ -718,6 +743,45 @@ func (*VirtualMCPServerReconciler) validateAuthServerConfig(
 	statusManager.SetObservedGeneration(vmcp.Generation)
 
 	return nil
+}
+
+// failAuthServerConfig records an invalid AuthServerConfig on the status and
+// returns the message as an error.
+func failAuthServerConfig(
+	vmcp *mcpv1beta1.VirtualMCPServer,
+	statusManager virtualmcpserverstatus.StatusManager,
+	message string,
+) error {
+	statusManager.SetPhase(mcpv1beta1.VirtualMCPServerPhaseFailed)
+	statusManager.SetMessage(message)
+	statusManager.SetAuthServerConfigValidatedCondition(
+		mcpv1beta1.ConditionReasonAuthServerConfigInvalid,
+		message,
+		metav1.ConditionFalse,
+	)
+	statusManager.SetObservedGeneration(vmcp.Generation)
+	return stderrors.New(message)
+}
+
+// insecureHTTPIssuerMessage returns the rejection message for an http://
+// issuer on a non-localhost host without insecureAllowHTTP, or "" when the
+// issuer is acceptable.
+func insecureHTTPIssuerMessage(cfg *mcpv1beta1.EmbeddedAuthServerConfig) string {
+	if !strings.HasPrefix(cfg.Issuer, "http://") {
+		return ""
+	}
+	// url.Parse succeeds for any URL that passes the CRD regex; the
+	// parsed.Host != "" guard defends against the degenerate empty-host case.
+	parsed, err := url.Parse(cfg.Issuer)
+	if err != nil || parsed.Host == "" || networking.IsLocalhost(parsed.Host) || cfg.InsecureAllowHTTP {
+		return ""
+	}
+	return fmt.Sprintf(
+		"spec.authServerConfig.issuer %q uses http:// with a non-localhost host; "+
+			"set spec.authServerConfig.insecureAllowHTTP: true to allow this for trusted "+
+			"in-cluster deployments, or use https:// for production deployments",
+		cfg.Issuer,
+	)
 }
 
 // applyAuthServerIdentitySynthesizedCondition surfaces the IdentitySynthesized
@@ -1637,7 +1701,7 @@ func (r *VirtualMCPServerReconciler) ensureDeployment(
 	// Fetch the selected inline auth-server CA content checksum. This is intentionally
 	// computed from the current ConfigMaps so both rollout and drift detection use
 	// the same value.
-	caBundleChecksum, err := ctrlutil.EmbeddedAuthServerCABundleChecksumForConfig(
+	caBundleChecksum, err := ctrlutil.EmbeddedAuthServerConfigMapChecksumForConfig(
 		ctx, r.Client, vmcp.Namespace, vmcp.Spec.AuthServerConfig)
 	if err != nil {
 		// runAuthValidations gates this path, so a terminal bundle error should
@@ -1994,8 +2058,8 @@ func (r *VirtualMCPServerReconciler) podTemplateMetadataNeedsUpdate(
 	if !ctrlutil.MapIsSubset(expectedPodTemplateAnnotations, deployment.Spec.Template.Annotations) {
 		return true
 	}
-	if _, expected := expectedPodTemplateAnnotations[ctrlutil.AuthServerCABundleChecksumAnnotation]; !expected {
-		if _, actual := deployment.Spec.Template.Annotations[ctrlutil.AuthServerCABundleChecksumAnnotation]; actual {
+	if _, expected := expectedPodTemplateAnnotations[ctrlutil.AuthServerConfigMapChecksumAnnotation]; !expected {
+		if _, actual := deployment.Spec.Template.Annotations[ctrlutil.AuthServerConfigMapChecksumAnnotation]; actual {
 			return true
 		}
 	}
@@ -2146,7 +2210,7 @@ func (*VirtualMCPServerReconciler) podTemplateSpecNeedsUpdate(
 // desired no longer wants — MergeAnnotations otherwise preserves them forever
 // once their source field goes empty (#5817, #5818).
 //
-// ctrlutil.AuthServerCABundleChecksumAnnotation is included defensively: today
+// ctrlutil.AuthServerConfigMapChecksumAnnotation is included defensively: today
 // buildDeploymentMetadataForVmcp only ever writes it onto the pod template
 // (see buildPodTemplateMetadata), never onto the Deployment's own annotations,
 // so this branch is a no-op in practice. Kept in case that changes.
@@ -2156,7 +2220,7 @@ func mergeDeploymentAnnotations(desired, live map[string]string) map[string]stri
 		imagePullRefsHashAnnotation,
 		podTemplateSpecHashAnnotation,
 		podVolumesHashAnnotation,
-		ctrlutil.AuthServerCABundleChecksumAnnotation,
+		ctrlutil.AuthServerConfigMapChecksumAnnotation,
 	} {
 		if _, want := desired[key]; !want {
 			delete(merged, key)
@@ -2983,7 +3047,7 @@ func resolveFirstUpstreamProvider(embeddedCfg *mcpv1beta1.EmbeddedAuthServerConf
 }
 
 // convertBackendsToStaticBackends converts Backend objects to StaticBackendConfig for ConfigMap embedding.
-// Preserves metadata and uses transport types from workload Specs.
+// Preserves metadata except transient workload status and uses transport types from workload Specs.
 // Logs warnings when backends are skipped due to missing URL or transport information.
 // caBundlePathMap maps backend names to their CA bundle mount paths (populated for MCPServerEntry backends).
 // excludedBackends names backends whose outgoing auth strategy failed to build (see
@@ -3018,11 +3082,15 @@ func convertBackendsToStaticBackends(
 			continue
 		}
 
+		// Backend phase is runtime state and must not change the configuration checksum that triggers rollouts.
+		metadata := maps.Clone(backend.Metadata)
+		delete(metadata, "workload_status")
+
 		cfg := vmcpconfig.StaticBackendConfig{
 			Name:      backend.Name,
 			URL:       backend.BaseURL,
 			Transport: transport,
-			Metadata:  backend.Metadata,
+			Metadata:  metadata,
 		}
 
 		if caBundlePath, ok := caBundlePathMap[backend.Name]; ok {

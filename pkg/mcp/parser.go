@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"mime"
 	"net/http"
 	"strconv"
@@ -95,6 +96,20 @@ func ParsingMiddleware(next http.Handler) http.Handler {
 
 		// Check if we should parse this request
 		if !shouldParseMCPRequest(r) {
+			// Only a POST body is parsed as an MCP message. Rather than forward a
+			// body the chain has not inspected, reject any non-POST request that
+			// carries one. A bodyless GET (SSE stream), DELETE (session
+			// termination) or OPTIONS (CORS preflight) passes through unchanged;
+			// the method itself may be legitimate, so this is a 400 for the
+			// unexpected body, not a 405. Method-specific 405/Allow responses are
+			// left to the transport handlers, which know the methods their
+			// endpoint serves. Method names are case-sensitive (RFC 9110 §9.1).
+			if requestCarriesBody(r) {
+				slog.WarnContext(r.Context(), "rejected request body on a non-POST method",
+					"method", r.Method)
+				http.Error(w, "request body is only accepted on POST", http.StatusBadRequest)
+				return
+			}
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -124,7 +139,11 @@ func ParsingMiddleware(next http.Handler) http.Handler {
 		}
 
 		// Responses remain transport-owned and do not populate request context.
-		parsedRequest := parsedMCPMessage(msg)
+		parsedRequest, err := parsedMCPMessage(msg)
+		if err != nil {
+			WriteClassificationError(w, nil, err)
+			return
+		}
 		if parsedRequest != nil {
 			parsedRequest.MCPMethodHeader = r.Header.Get("Mcp-Method")
 			parsedRequest.MCPNameHeader = r.Header.Get("Mcp-Name")
@@ -167,7 +186,10 @@ func RepublishParsedMCPRequest(r *http.Request, body []byte) (*http.Request, err
 	if err != nil {
 		return nil, err
 	}
-	parsed := parsedMCPMessage(msg)
+	parsed, err := parsedMCPMessage(msg)
+	if err != nil {
+		return nil, err
+	}
 	if parsed == nil {
 		return nil, errors.New("republished body is not a valid JSON-RPC request")
 	}
@@ -276,20 +298,52 @@ func GetParsedMCPRequest(ctx context.Context) *ParsedMCPRequest {
 // ToolHive's proxies forward as given. Any POST may carry an MCP message,
 // regardless of Content-Type (not mandated by all supported MCP revisions).
 // Path or media-type gates would bypass downstream request-level controls.
+// ParsingMiddleware rejects a body sent with any other method instead of
+// forwarding it unparsed (see requestCarriesBody).
 func shouldParseMCPRequest(r *http.Request) bool {
 	return r.Method == http.MethodPost
 }
 
-func parsedMCPMessage(msg jsonrpc2.Message) *ParsedMCPRequest {
+// requestCarriesBody reports whether r has a non-empty body. When the length
+// is unknown (chunked) it reads one byte and puts it back, so the body
+// forwarded downstream is unchanged. A read error other than EOF counts as a
+// body: the request is rejected rather than forwarded unexamined.
+func requestCarriesBody(r *http.Request) bool {
+	if r.Body == nil || r.Body == http.NoBody || r.ContentLength == 0 {
+		return false
+	}
+	if r.ContentLength > 0 {
+		return true
+	}
+	var first [1]byte
+	n, err := io.ReadFull(r.Body, first[:])
+	if n > 0 {
+		r.Body = struct {
+			io.Reader
+			io.Closer
+		}{io.MultiReader(bytes.NewReader(first[:n]), r.Body), r.Body}
+		return true
+	}
+	return !errors.Is(err, io.EOF)
+}
+
+// parsedMCPMessage returns nil, nil for responses. Request params that do not
+// decode fail closed with a CodedError rather than yielding an empty resource ID.
+func parsedMCPMessage(msg jsonrpc2.Message) (*ParsedMCPRequest, error) {
 	// Handle only request messages (both calls with ID and notifications without ID)
 	req, ok := msg.(*jsonrpc2.Request)
 	if !ok {
 		// Response or error messages are not parsed here
-		return nil
+		return nil, nil
 	}
 
 	// Extract resource ID, arguments, and meta based on the method
-	resourceID, arguments, meta := extractResourceAndArguments(req.Method, req.Params)
+	resourceID, arguments, meta, err := extractResourceAndArguments(req.Method, req.Params)
+	if err != nil {
+		// The decode error text can quote the offending literal, so log a fixed reason only.
+		slog.Warn("rejected invalid MCP JSON-RPC message", "reason", "undecodable_params")
+		return nil, newUndecodableParams(req.ID)
+	}
 	clientInfo, protocolVersion := extractModernMeta(meta)
 
 	// Determine the ID - will be nil for notifications
@@ -311,11 +365,9 @@ func parsedMCPMessage(msg jsonrpc2.Message) *ParsedMCPRequest {
 		// Batches are rejected in ParsingMiddleware before reaching here, so a
 		// parsed request is always a single, non-batch message.
 		IsBatch: false,
-	}
+	}, nil
 }
 
-// extractResourceAndArguments extracts the resource ID, arguments, and _meta field from the JSON-RPC params
-// based on the MCP method type.
 // methodHandler defines a function type for handling specific MCP methods
 type methodHandler func(map[string]interface{}) (string, map[string]interface{})
 
@@ -361,20 +413,24 @@ var staticResourceIDs = map[string]string{
 	"server/discover":                      "discover",
 }
 
-func extractResourceAndArguments(method string, params json.RawMessage) (string, map[string]interface{}, map[string]interface{}) {
+// extractResourceAndArguments extracts the resource ID, arguments, and _meta field from the JSON-RPC params
+// based on the MCP method type. It returns an error if params do not decode as an object.
+func extractResourceAndArguments(
+	method string, params json.RawMessage,
+) (string, map[string]interface{}, map[string]interface{}, error) {
 	if params == nil {
-		return getStaticResourceID(method), nil, nil
+		return getStaticResourceID(method), nil, nil, nil
 	}
 
-	var paramsMap map[string]interface{}
-	if err := json.Unmarshal(params, &paramsMap); err != nil {
-		return getStaticResourceID(method), nil, nil
+	paramsMap, err := decodeParams(params)
+	if err != nil {
+		return "", nil, nil, err
 	}
 
 	meta := metaFromParamsMap(paramsMap)
 
 	resourceID, arguments := processMethodWithHandler(method, paramsMap)
-	return resourceID, arguments, meta
+	return resourceID, arguments, meta, nil
 }
 
 // extractModernMeta surfaces the Modern (stateless MCP) clientInfo and

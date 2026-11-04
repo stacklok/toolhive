@@ -149,6 +149,9 @@ func (c *coreVMCP) ReadResource(
 	target, err := router.NewSessionRouter(agg.RoutingTable).RouteResource(ctx, uri)
 	if err != nil {
 		if errors.Is(err, router.ErrResourceNotFound) {
+			if len(uri) > vmcp.MaxResourceURILength {
+				return nil, fmt.Errorf("%w: resource URI exceeds %d bytes", vmcp.ErrNotFound, vmcp.MaxResourceURILength)
+			}
 			return nil, fmt.Errorf("%w: resource %q", vmcp.ErrNotFound, uri)
 		}
 		return nil, fmt.Errorf("routing resource %q: %w", uri, err)

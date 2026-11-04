@@ -81,6 +81,12 @@ func Run() {
 	// Bridge to slog for consistency with the rest of the ToolHive codebase.
 	ctrl.SetLogger(logr.FromSlogHandler(slog.Default().Handler()))
 
+	defaultRedis, err := ctrlutil.LoadDefaultRedisConfigFromEnv()
+	if err != nil {
+		setupLog.Error(err, "invalid global Redis configuration")
+		os.Exit(1)
+	}
+
 	podNamespace, _ := os.LookupEnv("POD_NAMESPACE")
 
 	options := ctrl.Options{
@@ -131,7 +137,7 @@ func Run() {
 		)
 	}
 
-	if err := setupControllersAndWebhooks(mgr, imagePullSecretsDefaults); err != nil {
+	if err := setupControllersAndWebhooks(mgr, imagePullSecretsDefaults, defaultRedis); err != nil {
 		setupLog.Error(err, "unable to setup controllers and webhooks")
 		os.Exit(1)
 	}
@@ -163,14 +169,18 @@ func Run() {
 // setupControllersAndWebhooks sets up all controllers and webhooks with the manager.
 // The imagePullSecretsDefaults are propagated to controllers that construct
 // workloads so that chart-level defaults are applied alongside per-CR overrides.
-func setupControllersAndWebhooks(mgr ctrl.Manager, imagePullSecretsDefaults imagepullsecrets.Defaults) error {
-	if err := setupServerControllers(mgr, imagePullSecretsDefaults); err != nil {
+// defaultRedis is the validated, read-only snapshot shared by session storage
+// configuration and workload construction; controllers do not re-read the env.
+func setupControllersAndWebhooks(
+	mgr ctrl.Manager, imagePullSecretsDefaults imagepullsecrets.Defaults, defaultRedis *ctrlutil.DefaultRedisConfig,
+) error {
+	if err := setupServerControllers(mgr, imagePullSecretsDefaults, defaultRedis); err != nil {
 		return err
 	}
 	if err := setupRegistryController(mgr, imagePullSecretsDefaults); err != nil {
 		return err
 	}
-	if err := setupAggregationControllers(mgr, imagePullSecretsDefaults); err != nil {
+	if err := setupAggregationControllers(mgr, imagePullSecretsDefaults, defaultRedis); err != nil {
 		return err
 	}
 	enabled, err := isStorageVersionMigratorEnabled()
@@ -223,13 +233,13 @@ func isStorageVersionMigratorEnabled() (bool, error) {
 	return enabled, nil
 }
 
-// setupEmbeddedAuthCABundleFieldIndex sets up the shared CA ConfigMap reference index.
-func setupEmbeddedAuthCABundleFieldIndex(mgr ctrl.Manager) error {
+// setupEmbeddedAuthConfigMapRefFieldIndex sets up the shared embedded-auth ConfigMap reference index.
+func setupEmbeddedAuthConfigMapRefFieldIndex(mgr ctrl.Manager) error {
 	if err := mgr.GetFieldIndexer().IndexField(
 		context.Background(),
 		&mcpv1beta1.MCPExternalAuthConfig{},
-		controllers.EmbeddedAuthCABundleConfigMapIndex,
-		controllers.IndexEmbeddedAuthCABundleConfigMaps,
+		controllers.EmbeddedAuthConfigMapRefIndex,
+		controllers.IndexEmbeddedAuthConfigMapRefs,
 	); err != nil {
 		return fmt.Errorf("index MCPExternalAuthConfig CA bundle references: %w", err)
 	}
@@ -296,9 +306,11 @@ func setupGroupRefFieldIndexes(mgr ctrl.Manager) error {
 // setupServerControllers sets up server-related controllers
 // (MCPServer, MCPExternalAuthConfig, MCPRemoteProxy, MCPServerEntry, ToolConfig).
 // imagePullSecretsDefaults are merged with per-CR imagePullSecrets when
-// reconcilers construct workloads.
-func setupServerControllers(mgr ctrl.Manager, imagePullSecretsDefaults imagepullsecrets.Defaults) error {
-	if err := setupEmbeddedAuthCABundleFieldIndex(mgr); err != nil {
+// reconcilers construct workloads. defaultRedis is shared without modification.
+func setupServerControllers(
+	mgr ctrl.Manager, imagePullSecretsDefaults imagepullsecrets.Defaults, defaultRedis *ctrlutil.DefaultRedisConfig,
+) error {
+	if err := setupEmbeddedAuthConfigMapRefFieldIndex(mgr); err != nil {
 		return err
 	}
 	if err := setupGroupRefFieldIndexes(mgr); err != nil {
@@ -312,6 +324,7 @@ func setupServerControllers(mgr ctrl.Manager, imagePullSecretsDefaults imagepull
 		Recorder:                 mgr.GetEventRecorder("mcpserver-controller"),
 		PlatformDetector:         ctrlutil.NewSharedPlatformDetector(),
 		ImagePullSecretsDefaults: imagePullSecretsDefaults,
+		DefaultRedisConfig:       defaultRedis,
 	}
 	if err := rec.SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("unable to create controller MCPServer: %w", err)
@@ -375,6 +388,7 @@ func setupServerControllers(mgr ctrl.Manager, imagePullSecretsDefaults imagepull
 		Recorder:                 mgr.GetEventRecorder("mcpremoteproxy-controller"),
 		PlatformDetector:         ctrlutil.NewSharedPlatformDetector(),
 		ImagePullSecretsDefaults: imagePullSecretsDefaults,
+		DefaultRedisConfig:       defaultRedis,
 	}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("unable to create controller MCPRemoteProxy: %w", err)
 	}
@@ -417,8 +431,10 @@ func setupRegistryController(mgr ctrl.Manager, imagePullSecretsDefaults imagepul
 // setupServerControllers, which creates the MCPServer.Spec.GroupRef field index
 // these controllers depend on.
 // imagePullSecretsDefaults are merged with vmcp.Spec.ImagePullSecrets when the
-// VirtualMCPServer Deployment is constructed.
-func setupAggregationControllers(mgr ctrl.Manager, imagePullSecretsDefaults imagepullsecrets.Defaults) error {
+// VirtualMCPServer Deployment is constructed. defaultRedis is shared without modification.
+func setupAggregationControllers(
+	mgr ctrl.Manager, imagePullSecretsDefaults imagepullsecrets.Defaults, defaultRedis *ctrlutil.DefaultRedisConfig,
+) error {
 	// Set up MCPGroup controller
 	if err := (&controllers.MCPGroupReconciler{
 		Client: mgr.GetClient(),
@@ -433,6 +449,7 @@ func setupAggregationControllers(mgr ctrl.Manager, imagePullSecretsDefaults imag
 		Recorder:                 mgr.GetEventRecorder("virtualmcpserver-controller"),
 		PlatformDetector:         ctrlutil.NewSharedPlatformDetector(),
 		ImagePullSecretsDefaults: imagePullSecretsDefaults,
+		DefaultRedisConfig:       defaultRedis,
 	}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("unable to create controller VirtualMCPServer: %w", err)
 	}

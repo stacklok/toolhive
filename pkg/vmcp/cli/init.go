@@ -14,7 +14,7 @@ import (
 	"strings"
 	"text/template"
 
-	"gopkg.in/yaml.v3"
+	"go.yaml.in/yaml/v3"
 
 	groupval "github.com/stacklok/toolhive-core/validation/group"
 	"github.com/stacklok/toolhive/pkg/fileutils"
@@ -131,7 +131,7 @@ func Init(ctx context.Context, cfg InitConfig) error {
 }
 
 // yamlScalar marshals a string to a properly quoted/escaped YAML scalar value
-// using gopkg.in/yaml.v3, ensuring characters like '#' or ':' in names and
+// using go.yaml.in/yaml/v3, ensuring characters like '#' or ':' in names and
 // URLs do not corrupt the rendered YAML.
 func yamlScalar(v string) (string, error) {
 	b, err := yaml.Marshal(v)

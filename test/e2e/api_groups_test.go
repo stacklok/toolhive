@@ -14,7 +14,6 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/test/e2e"
 )
@@ -347,17 +346,10 @@ var _ = Describe("Groups API", Label("api", "api-misc", "groups", "e2e"), func()
 				workloadResp := createWorkload(apiServer, workloadReq)
 				workloadResp.Body.Close()
 				Expect(workloadResp.StatusCode).To(Equal(http.StatusCreated))
+				deleteAPIWorkloadOnCleanup(apiServer, workloadName)
 
 				By("Waiting for workload to be running")
-				Eventually(func() bool {
-					workloads := listWorkloads(apiServer, true)
-					for _, w := range workloads {
-						if w.Name == workloadName && w.Status == runtime.WorkloadStatusRunning {
-							return true
-						}
-					}
-					return false
-				}, 90*time.Second, 2*time.Second).Should(BeTrue(),
+				waitForAPIWorkloadRunning(apiServer, workloadName, 90*time.Second,
 					"Workload should reach running state before deletion")
 
 				By("Deleting the group with workloads")
@@ -409,6 +401,7 @@ var _ = Describe("Groups API", Label("api", "api-misc", "groups", "e2e"), func()
 				workloadResp := createWorkload(apiServer, workloadReq)
 				workloadResp.Body.Close()
 				Expect(workloadResp.StatusCode).To(Equal(http.StatusCreated))
+				deleteAPIWorkloadOnCleanup(apiServer, workloadName)
 
 				Eventually(func() bool {
 					workloads := listWorkloads(apiServer, true)
@@ -438,8 +431,6 @@ var _ = Describe("Groups API", Label("api", "api-misc", "groups", "e2e"), func()
 					return false
 				}, 10*time.Second, 1*time.Second).Should(BeTrue(),
 					"Workload should still exist after group deletion")
-
-				// Note: Workload cleanup handled by suite-level CLI cleanup
 			})
 
 			It("should return 404 when deleting non-existent group", func() {

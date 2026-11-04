@@ -7,12 +7,12 @@ import (
 	"context"
 	"encoding/json"
 	"io"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -22,9 +22,10 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/stacklok/toolhive/pkg/authserver"
+	"github.com/stacklok/toolhive/pkg/authserver/authorizationdetails"
 	authserverrunner "github.com/stacklok/toolhive/pkg/authserver/runner"
+	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
-	"github.com/stacklok/toolhive/test/integration/authserver/helpers"
 )
 
 const (
@@ -305,40 +306,100 @@ func assertConfiguredDelegateDiscovery(t *testing.T, serverURL string) {
 	}
 }
 
+func TestConfiguredAuthorizationDetailsRegistryThroughRunnerConstructors(t *testing.T) {
+	t.Parallel()
+
+	for _, useStorage := range []bool{false, true} {
+		name := "NewEmbeddedAuthServer"
+		if useStorage {
+			name = "NewEmbeddedAuthServerWithStorage"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			var callbacks atomic.Int32
+			registry, err := authorizationdetails.New(map[string]authorizationdetails.Type{
+				"custom": {
+					GrantTypes: []string{oauthproto.GrantTypeTokenExchange},
+					Grant: func(_ context.Context, _ authorizationdetails.Request) (authorizationdetails.Result, error) {
+						callbacks.Add(1)
+						return authorizationdetails.Result{Entries: []json.RawMessage{
+							json.RawMessage(`{"type":"custom","granted":true}`),
+						}}, nil
+					},
+				},
+			})
+			require.NoError(t, err)
+			server, issuer, embedded := startConfiguredDelegateAuthServerWithOptions(
+				t, useStorage, authserverrunner.WithAuthorizationDetailsRegistry(registry),
+			)
+			subjectToken := signedDelegateSubjectToken(t, embedded, issuer)
+
+			request := func(details string) (int, map[string]json.RawMessage) {
+				t.Helper()
+				values := url.Values{
+					"grant_type":            {tokenExchangeGrantType},
+					"subject_token":         {subjectToken},
+					"subject_token_type":    {oauthproto.TokenTypeAccessToken},
+					"scope":                 {"openid profile"},
+					"audience":              {delegateAudience},
+					"client_id":             {delegateClientID},
+					"client_secret":         {delegateClientSecret},
+					"authorization_details": {details},
+				}
+				req, err := http.NewRequest(http.MethodPost, server.URL+"/oauth/token", strings.NewReader(values.Encode()))
+				require.NoError(t, err)
+				req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+				response, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
+				require.NoError(t, err)
+				defer response.Body.Close()
+				var body map[string]json.RawMessage
+				require.NoError(t, json.NewDecoder(response.Body).Decode(&body))
+				return response.StatusCode, body
+			}
+
+			status, body := request(`[{"type":"custom","nested":{"amount":12345678901234567890,"value":null}}]`)
+			require.Equal(t, http.StatusOK, status, body)
+			assert.Equal(t, `[{"type":"custom","granted":true}]`, string(body["authorization_details"]),
+				"the response carries what the hook granted, not the request")
+			assert.NotEmpty(t, body["access_token"])
+			assert.EqualValues(t, 1, callbacks.Load(), "registry callback must be reached through constructor wiring")
+
+			status, body = request(`[{"type":"unregistered"}]`)
+			assert.Equal(t, http.StatusBadRequest, status, body)
+			assert.Equal(t, `"invalid_authorization_details"`, string(body["error"]))
+			assert.EqualValues(t, 1, callbacks.Load(), "unknown types must be rejected before the hook is invoked")
+		})
+	}
+}
+
 func startConfiguredDelegateAuthServer(t *testing.T) (*httptest.Server, string, *authserverrunner.EmbeddedAuthServer) {
 	t.Helper()
+	return startConfiguredDelegateAuthServerWithOptions(t, false)
+}
 
-	upstream := helpers.NewMockUpstreamIDP(t)
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err)
-	issuer := "http://" + listener.Addr().String()
+func startConfiguredDelegateAuthServerWithOptions(
+	t *testing.T, withStorage bool, options ...authserverrunner.EmbeddedAuthServerOption,
+) (*httptest.Server, string, *authserverrunner.EmbeddedAuthServer) {
+	t.Helper()
 
 	secretFile := t.TempDir() + "/delegate-client-secret"
 	require.NoError(t, os.WriteFile(secretFile, []byte(delegateClientSecret), 0o600))
 
-	cfg := helpers.NewTestAuthServerConfig(t, upstream.URL(), helpers.WithScopesSupported([]string{"openid", "profile", ungrantedScope}))
-	cfg.Issuer = issuer
-	cfg.Upstreams[0].OAuth2Config.RedirectURI = issuer + "/oauth/callback"
-	cfg.AllowedAudiences = []string{delegateAudience, ungrantedAudience}
-	cfg.InsecureAllowConfidentialOverLoopbackHTTP = true
-	cfg.DelegateClients = []authserver.DelegateClientRunConfig{{
-		ClientID:         delegateClientID,
-		ClientSecretFile: secretFile,
-		Scopes:           []string{"openid", "profile"},
-		Audiences:        []string{delegateAudience},
-	}}
-
-	embedded, err := authserverrunner.NewEmbeddedAuthServer(t.Context(), cfg)
-	require.NoError(t, err)
-
-	server := httptest.NewUnstartedServer(embedded.Handler())
-	server.Listener = listener
-	server.Start()
-	t.Cleanup(func() {
-		server.Close()
-		require.NoError(t, embedded.Close())
-	})
-
+	var stor storage.Storage
+	if withStorage {
+		stor = storage.NewMemoryStorage()
+	}
+	server, issuer, embedded, _ := startEmbeddedAuthServer(t, func(cfg *authserver.RunConfig, _ string) {
+		cfg.ScopesSupported = []string{"openid", "profile", ungrantedScope}
+		cfg.AllowedAudiences = []string{delegateAudience, ungrantedAudience}
+		cfg.DelegateClients = []authserver.DelegateClientRunConfig{{
+			ClientID:         delegateClientID,
+			ClientSecretFile: secretFile,
+			Scopes:           []string{"openid", "profile"},
+			Audiences:        []string{delegateAudience},
+		}}
+	}, stor, options...)
 	return server, issuer, embedded
 }
 
@@ -361,6 +422,17 @@ func signedSubjectTokenForClient(
 	issuer, clientID string,
 ) string {
 	t.Helper()
+	return signedSubjectTokenWithScopes(t, embedded, issuer, clientID, "openid profile")
+}
+
+// signedSubjectTokenWithScopes is signedSubjectTokenForClient with an explicit
+// scope claim. A token exchange can only request scopes the subject token holds.
+func signedSubjectTokenWithScopes(
+	t *testing.T,
+	embedded *authserverrunner.EmbeddedAuthServer,
+	issuer, clientID, scopes string,
+) string {
+	t.Helper()
 
 	signingKey, err := embedded.KeyProvider().SigningKey(context.Background())
 	require.NoError(t, err)
@@ -379,7 +451,7 @@ func signedSubjectTokenForClient(
 		IssuedAt: jwt.NewNumericDate(now),
 	}).Claims(map[string]any{
 		"client_id": clientID,
-		"scope":     "openid profile",
+		"scope":     scopes,
 	}).Serialize()
 	require.NoError(t, err)
 	return token

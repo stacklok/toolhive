@@ -18,9 +18,11 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
@@ -699,6 +701,10 @@ func (r *MCPExternalAuthConfigReconciler) SetupWithManager(mgr ctrl.Manager) err
 
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&mcpv1beta1.MCPExternalAuthConfig{}).
+		Watches(&mcpv1beta1.MCPServer{}, enqueueReferencedConfig(indexMCPServerByExternalAuthConfigRef),
+			builder.WithPredicates(predicate.GenerationChangedPredicate{})).
+		Watches(&mcpv1beta1.MCPRemoteProxy{}, enqueueReferencedConfig(indexMCPRemoteProxyByExternalAuthConfigRef),
+			builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Complete(r)
 }
 

@@ -113,12 +113,15 @@ func (cm *ClientManager) IsClientInstalled(clientType ClientApp) bool {
 	if cfg == nil || cfg.LLMGatewayOnly {
 		return false
 	}
-	var pathToCheck string
-	if len(cfg.RelPath) == 0 && len(cfg.PlatformPrefix) == 0 {
-		pathToCheck = filepath.Join(cm.homeDir, cfg.SettingsFile)
-	} else {
-		pathToCheck = buildConfigDirectoryPath(cfg.RelPath, cfg.PlatformPrefix, []string{cm.homeDir})
-	}
+	pathToCheck := func() string {
+		if dir := cm.configDirOverride(cfg); dir != "" {
+			return dir
+		}
+		if len(cfg.RelPath) == 0 && len(cfg.PlatformPrefix) == 0 {
+			return filepath.Join(cm.homeDir, cfg.SettingsFile)
+		}
+		return buildConfigDirectoryPath(cfg.RelPath, cfg.PlatformPrefix, []string{cm.homeDir})
+	}()
 	_, err := os.Stat(pathToCheck)
 	return err == nil
 }

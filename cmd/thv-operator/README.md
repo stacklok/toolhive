@@ -229,33 +229,13 @@ kubectl describe mcpserver <name>
 | `volumes`           | Volumes to mount in the container                  | No       | -       |
 | `resources`         | Resource requirements for the container            | No       | -       |
 | `secrets`           | References to secrets to mount in the container    | No       | -       |
-| `permissionProfile` | Permission profile configuration (not implemented) | No       | -       |
+| `permissionProfile` | Deprecated compatibility field; ignored by the operator | No       | -       |
 | `tools`             | Allow-list filter on the list of tools             | No       | -       |
 
-<!-- not implemented; commenting out until a decision is made on removal
-### Permission Profiles
-
-Permission profiles can be configured in two ways:
-
-1. Using a built-in profile:
-
-```yaml
-permissionProfile:
-  type: builtin
-  name: network  # or "none"
-```
-
-2. Using a ConfigMap:
-
-```yaml
-permissionProfile:
-  type: configmap
-  name: my-permission-profile
-  key: profile.json
-```
-
-The ConfigMap should contain a JSON permission profile.
--->
+`permissionProfile` is retained so existing manifests remain compatible, but
+the operator does not apply it to Kubernetes workloads. When the field is set,
+the operator ignores it and emits a Warning event. Use Kubernetes-native
+controls such as `podTemplateSpec` and network policies to secure workloads.
 
 ### Creating an MCP Registry
 

@@ -5,6 +5,7 @@ package tokenexchange
 
 import (
 	"context"
+	"slices"
 	"time"
 
 	"github.com/ory/fosite"
@@ -45,9 +46,13 @@ const idJAGReplayPurpose = "id-jag"
 // the redeeming client is a real registered one.
 //
 // The redeeming client's registered grant_types metadata is deliberately not
-// consulted: with open dynamic client registration, self-asserted metadata
-// authorizes nothing. What authorizes the grant is the per-issuer policy
-// plus the client_id binding the IdP administrator configured.
+// consulted, except for the operator-configured clients that set grant_types:
+// with open dynamic client registration, self-asserted metadata authorizes
+// nothing, but a configured client's grants are operator policy. What
+// authorizes the grant is the per-issuer policy plus the client_id binding the
+// IdP administrator configured. A configured client that omits grant_types is
+// stored with token exchange alone but is not gated, for backward
+// compatibility; one that sets grant_types must list the jwt-bearer grant.
 type IDJAGHandler struct {
 	// core supplies the shared assertion/policy/issuance machinery
 	// (validator, per-issuer policies, replay consumer, HandleHelper). It is
@@ -57,6 +62,10 @@ type IDJAGHandler struct {
 	// the embedded receiver, there is no virtual dispatch) and reject every
 	// ID-JAG request as unknown.
 	core *JWTBearerHandler
+
+	// explicitGrantClients holds the IDs of clients that must list the
+	// jwt-bearer grant in their registered grant types.
+	explicitGrantClients map[string]struct{}
 }
 
 // newIDJAGIssuanceHandler constructs the production bound handler over the
@@ -65,14 +74,18 @@ type IDJAGHandler struct {
 func newIDJAGIssuanceHandler(
 	validator JWTBearerAssertionValidator, tokenEndpoint string, consumer storage.AssertionJWTConsumer,
 	config *fosite.Config, strategy oauth2.AccessTokenStrategy, tokenStorage oauth2.AccessTokenStorage,
-	trustedIssuers []TrustedIssuer,
+	trustedIssuers []TrustedIssuer, explicitGrantClientIDs []string,
 ) (*IDJAGHandler, error) {
 	core, err := newJWTBearerIssuanceHandler(
 		validator, tokenEndpoint, consumer, config, strategy, tokenStorage, trustedIssuers)
 	if err != nil {
 		return nil, err
 	}
-	return &IDJAGHandler{core: core}, nil
+	explicitGrantClients := make(map[string]struct{}, len(explicitGrantClientIDs))
+	for _, id := range explicitGrantClientIDs {
+		explicitGrantClients[id] = struct{}{}
+	}
+	return &IDJAGHandler{core: core, explicitGrantClients: explicitGrantClients}, nil
 }
 
 // CanHandleTokenEndpointRequest claims only recognized ID-JAG assertions —
@@ -100,6 +113,9 @@ func (*IDJAGHandler) CanSkipClientAuth(context.Context, fosite.AccessRequester) 
 func (h *IDJAGHandler) HandleTokenEndpointRequest(ctx context.Context, requester fosite.AccessRequester) error {
 	if !h.CanHandleTokenEndpointRequest(ctx, requester) {
 		return errorsx.WithStack(fosite.ErrUnknownRequest)
+	}
+	if err := h.checkClientGrant(requester); err != nil {
+		return err
 	}
 	assertion, err := validateJWTBearerAssertionForm(requester.GetRequestForm())
 	if err != nil {
@@ -130,6 +146,10 @@ func (h *IDJAGHandler) HandleTokenEndpointRequest(ctx context.Context, requester
 	}
 	resource, err := validateJWTBearerPolicy(requester.GetRequestForm(), claims, policy)
 	if err != nil {
+		return err
+	}
+	if err := server.ValidateIDJAGClientAudience(
+		resource, requester.GetClient(), h.core.config.GetAudienceStrategy(ctx)); err != nil {
 		return err
 	}
 	// Consume before issuing — fails closed like the plain handler: if
@@ -178,6 +198,19 @@ func (h *IDJAGHandler) PopulateTokenEndpointResponse(
 	return h.core.populateAccessTokenResponse(ctx, requester, responder)
 }
 
+// checkClientGrant refuses an explicit-grant client whose registered grant types
+// do not include jwt-bearer.
+func (h *IDJAGHandler) checkClientGrant(requester fosite.AccessRequester) error {
+	client := requester.GetClient()
+	if _, explicit := h.explicitGrantClients[client.GetID()]; !explicit {
+		return nil
+	}
+	if !slices.Contains(client.GetGrantTypes(), oauthproto.GrantTypeJWTBearer) {
+		return errorsx.WithStack(fosite.ErrUnauthorizedClient.WithHint("The client is not registered for the jwt-bearer grant."))
+	}
+	return nil
+}
+
 // checkClientBinding enforces the draft's §4.4.1 client_id continuity: the
 // assertion's client_id claim (minted by the IdP from its resource
 // connection) must name the client fosite resolved for this request. Both
@@ -203,9 +236,12 @@ func (*IDJAGHandler) checkClientBinding(requester fosite.AccessRequester, claims
 // registered alongside JWTBearerIssuanceFactory whenever any trusted issuer
 // enables the JWT-bearer grant: the two handlers share the per-issuer policy
 // and split one grant type by assertion typ, so enabling the grant enables
-// both assertion forms. See JWTBearerIssuanceFactory for the shared
-// validator's ownership contract.
-func IDJAGIssuanceFactory(trustedIssuers []TrustedIssuer, shared *MultiIssuerTokenValidator) (server.Factory, error) {
+// both assertion forms. explicitGrantClientIDs names the clients that must list
+// the jwt-bearer grant in their registered grant types. See
+// JWTBearerIssuanceFactory for the shared validator's ownership contract.
+func IDJAGIssuanceFactory(
+	trustedIssuers []TrustedIssuer, shared *MultiIssuerTokenValidator, explicitGrantClientIDs []string,
+) (server.Factory, error) {
 	return jwtBearerGrantFactory(trustedIssuers, shared,
 		func(
 			validator JWTBearerAssertionValidator, tokenEndpoint string, consumer storage.AssertionJWTConsumer,
@@ -213,7 +249,7 @@ func IDJAGIssuanceFactory(trustedIssuers []TrustedIssuer, shared *MultiIssuerTok
 			resolvedIssuers []TrustedIssuer,
 		) (any, error) {
 			return newIDJAGIssuanceHandler(
-				validator, tokenEndpoint, consumer, config, strategy, tokenStorage, resolvedIssuers)
+				validator, tokenEndpoint, consumer, config, strategy, tokenStorage, resolvedIssuers, explicitGrantClientIDs)
 		})
 }
 

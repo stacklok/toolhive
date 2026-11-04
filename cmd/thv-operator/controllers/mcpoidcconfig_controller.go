@@ -15,9 +15,12 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
@@ -357,6 +360,31 @@ func (r *MCPOIDCConfigReconciler) findReferencingWorkloads(
 	return refs, nil
 }
 
+// oidcConfigRefChangedPredicate builds the watch predicate for a workload type
+// that references an MCPOIDCConfig. Create and Delete events pass through so a
+// new or removed referrer wakes the config; Update events are admitted only when
+// the referenced config name changes, so unrelated spec churn (image, routing,
+// authentication, status) does not enqueue no-op config reconciles. extractRef
+// is the same field-index extractor used to build the reverse-reference index,
+// which keeps the predicate and the index in agreement on what counts as a
+// reference.
+func oidcConfigRefChangedPredicate(extractRef func(client.Object) []string) predicate.Predicate {
+	refName := func(obj client.Object) string {
+		if names := extractRef(obj); len(names) > 0 {
+			return names[0]
+		}
+		return ""
+	}
+	return predicate.Funcs{
+		UpdateFunc: func(e event.UpdateEvent) bool {
+			return refName(e.ObjectOld) != refName(e.ObjectNew)
+		},
+		CreateFunc:  func(_ event.CreateEvent) bool { return true },
+		DeleteFunc:  func(_ event.DeleteEvent) bool { return true },
+		GenericFunc: func(_ event.GenericEvent) bool { return false },
+	}
+}
+
 // SetupWithManager sets up the controller with the Manager.
 func (r *MCPOIDCConfigReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// Field indexes backing findReferencingWorkloads: each lets the controller
@@ -380,5 +408,11 @@ func (r *MCPOIDCConfigReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&mcpv1beta1.MCPOIDCConfig{}).
+		Watches(&mcpv1beta1.MCPServer{}, enqueueReferencedConfig(indexMCPServerByOIDCConfigRef),
+			builder.WithPredicates(oidcConfigRefChangedPredicate(indexMCPServerByOIDCConfigRef))).
+		Watches(&mcpv1beta1.VirtualMCPServer{}, enqueueReferencedConfig(indexVirtualMCPServerByOIDCConfigRef),
+			builder.WithPredicates(oidcConfigRefChangedPredicate(indexVirtualMCPServerByOIDCConfigRef))).
+		Watches(&mcpv1beta1.MCPRemoteProxy{}, enqueueReferencedConfig(indexMCPRemoteProxyByOIDCConfigRef),
+			builder.WithPredicates(oidcConfigRefChangedPredicate(indexMCPRemoteProxyByOIDCConfigRef))).
 		Complete(r)
 }

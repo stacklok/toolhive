@@ -649,8 +649,12 @@ func createMCPClient(
 	base = &identityRoundTripper{base: base, fallbackIdentity: identity}
 	// Forwarded headers ride the request context (set by headerforward.CaptureMiddleware
 	// at the vMCP server's incoming edge) and are merged into the per-session backend
-	// header-forward config here. The session is created once per request, so the
-	// captured headers are stable for the session's lifetime.
+	// header-forward config here. This connection is built once, from the request
+	// that creates the session, so it carries that request's headers for its whole
+	// lifetime, including the requests it makes when the session is torn down. On
+	// the vMCP server's Serve path, tool calls, resource reads and prompt gets go
+	// through the per-request backend client (pkg/vmcp/client) instead, which reads
+	// each request's own headers.
 	mergedHeaderForward, err := mergeForwardedHeaders(target.HeaderForward, headerforward.ForwardedHeadersFromContext(ctx))
 	if err != nil {
 		return nil, fmt.Errorf("backend %s: %w", target.WorkloadID, err)
@@ -850,8 +854,21 @@ func queryBackendTools(ctx context.Context, c *mcpclient.Client, target *vmcp.Ba
 // queryBackendResources lists the backend's resources with cursor-following pagination.
 // A backend that advertises the resources capability but does not implement
 // resources/list (JSON-RPC -32601, e.g. Atlassian Rovo, see #5231) is tolerated: it
-// returns no resources instead of failing the whole discovery. HTTP-level method absence
-// remains fatal.
+// returns no resources instead of failing the whole discovery.
+//
+// The tolerance covers -32601 wherever it is carried. Protocol version 2026-07-28
+// requires a server to answer an unknown method with HTTP 404 carrying the -32601
+// body; the tests cover 405 and 501 alongside it as the defensive scope named in
+// #5242, not as spec requirements. The SDK decodes the JSON-RPC error out of such a
+// non-2xx response and keeps the connection open, so it reaches the check below like
+// any other -32601. That decoding is what makes recovery safe here, and it is
+// disabled by MCPGODEBUG=noprotocolerrorbody=1.
+//
+// An error status with NO JSON-RPC body stays fatal. By the time that surfaces the SDK
+// has already closed the connection, so tolerating it would return a session that
+// advertises tools it can no longer call — worse than dropping the backend. The status
+// alone does not mean the method is missing either: before 2026-07-28 a bare 404 means
+// the session is gone.
 func queryBackendResources(ctx context.Context, c *mcpclient.Client, target *vmcp.BackendTarget) ([]vmcp.Resource, error) {
 	resources, err := pagination.ListAll(ctx, func(ctx context.Context, cursor mcp.Cursor) ([]mcp.Resource, mcp.Cursor, error) {
 		req := mcp.ListResourcesRequest{}
@@ -885,7 +902,8 @@ func queryBackendResources(ctx context.Context, c *mcpclient.Client, target *vmc
 
 // queryBackendPrompts lists the backend's prompts with cursor-following pagination.
 // Like queryBackendResources, it tolerates a -32601 from a backend that advertises the
-// prompts capability without implementing prompts/list.
+// prompts capability without implementing prompts/list, including one carried under an
+// HTTP error status. See queryBackendResources for what that covers and what stays fatal.
 func queryBackendPrompts(ctx context.Context, c *mcpclient.Client, target *vmcp.BackendTarget) ([]vmcp.Prompt, error) {
 	prompts, err := pagination.ListAll(ctx, func(ctx context.Context, cursor mcp.Cursor) ([]mcp.Prompt, mcp.Cursor, error) {
 		req := mcp.ListPromptsRequest{}

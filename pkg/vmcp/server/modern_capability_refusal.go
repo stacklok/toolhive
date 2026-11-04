@@ -33,6 +33,28 @@ func modernClientDeclaredCapability(meta map[string]any, capability string) bool
 	return ok
 }
 
+// elicitationModeURL names URL-mode elicitation. It is both the
+// ElicitationCapabilities key a client declares to accept URL mode and the
+// elicitation/create params "mode" value. An elicitation object without the
+// key means form mode only, so a bare elicitation: {} does not declare URL
+// mode.
+const elicitationModeURL = "url"
+
+// modernClientDeclaredURLElicitation reports whether the request's _meta
+// declared clientCapabilities.elicitation.url. MCP 2026-07-28 says servers
+// MUST NOT send elicitation requests with modes the client does not support.
+//
+// Unlike modernClientDeclaredCapability, presence of the key is not enough:
+// the value must be an object. A typed client decodes url: null as "not
+// supported", and false or a string is not a capabilities object, so sending
+// the URL on any of those would send a mode the client did not declare.
+func modernClientDeclaredURLElicitation(meta map[string]any) bool {
+	caps, _ := meta[modernClientCapabilitiesKey].(map[string]any)
+	elicitation, _ := caps[capabilityElicitation].(map[string]any)
+	urlCaps, ok := elicitation[elicitationModeURL].(map[string]any)
+	return ok && urlCaps != nil
+}
+
 // capabilityRefusalRecorder captures, in-process, which client capability a
 // backend's mid-call server-initiated request needed when there was no
 // downstream session to forward it to (Modern ingress). dispatchModern's call

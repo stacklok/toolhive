@@ -257,6 +257,12 @@ func BindSession(
 	}
 
 	allowAnonymous := sessiontypes.ShouldAllowAnonymous(identity)
+	if allowAnonymous && identity != nil {
+		slog.Warn("identity carries no token and no valid string iss and sub claims, " +
+			"so the session is bound as unauthenticated; behind vMCP's HTTP handler, follow-up " +
+			"requests carrying this identity will be rejected by the session ownership check; " +
+			"the auth middleware must set string iss and sub claims")
+	}
 
 	// Determine the binding value to write. For bound sessions, extract the
 	// (iss, sub) binding before touching session metadata — if extraction fails,

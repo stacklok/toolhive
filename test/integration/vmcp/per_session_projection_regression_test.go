@@ -92,7 +92,7 @@ func newCedarVMCPServer(t *testing.T, backendURL string, policies ...string) *ht
 			id := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{
 				Subject: principal,
 				Name:    principal,
-				Claims:  map[string]any{"sub": principal, "name": principal},
+				Claims:  map[string]any{"iss": "https://issuer.example.com", "sub": principal, "name": principal},
 			}}
 			next.ServeHTTP(w, r.WithContext(auth.WithIdentity(r.Context(), id)))
 		})

@@ -304,6 +304,55 @@ func TestHttpClientBuilder_WithPrivateIPs(t *testing.T) {
 	}
 }
 
+func TestHttpClientBuilder_WithResponseHeaderTimeout(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		configure func(*HttpClientBuilder) *HttpClientBuilder
+		want      time.Duration
+	}{
+		{
+			name:      "default applies when not overridden",
+			configure: func(b *HttpClientBuilder) *HttpClientBuilder { return b },
+			want:      10 * time.Second,
+		},
+		{
+			name: "custom value overrides the default",
+			configure: func(b *HttpClientBuilder) *HttpClientBuilder {
+				return b.WithResponseHeaderTimeout(25 * time.Second)
+			},
+			want: 25 * time.Second,
+		},
+		{
+			name: "zero removes the limit",
+			configure: func(b *HttpClientBuilder) *HttpClientBuilder {
+				return b.WithResponseHeaderTimeout(0)
+			},
+			want: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			builder := NewHttpClientBuilder()
+			assert.Same(t, builder, tt.configure(builder)) // fluent interface
+
+			client, err := builder.Build()
+			require.NoError(t, err)
+
+			validating, ok := client.Transport.(*ValidatingTransport)
+			require.True(t, ok, "unexpected client transport %T", client.Transport)
+			transport, ok := validating.Transport.(*http.Transport)
+			require.True(t, ok, "unexpected base transport %T", validating.Transport)
+			assert.Equal(t, tt.want, transport.ResponseHeaderTimeout)
+			assert.Equal(t, HttpTimeout, client.Timeout, "the client timeout must not change")
+		})
+	}
+}
+
 func TestHttpClientBuilder_Build(t *testing.T) {
 	t.Parallel()
 

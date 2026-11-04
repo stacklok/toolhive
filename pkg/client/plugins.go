@@ -112,5 +112,5 @@ func (cm *ClientManager) GetConfigPath(clientType ClientApp) (string, error) {
 	if cfg == nil {
 		return "", fmt.Errorf("%w: %s", ErrUnsupportedClientType, clientType)
 	}
-	return buildConfigFilePath(cfg.SettingsFile, cfg.RelPath, cfg.PlatformPrefix, []string{cm.homeDir}), nil
+	return cm.buildMCPConfigPath(cfg), nil
 }

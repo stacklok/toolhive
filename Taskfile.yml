@@ -244,6 +244,18 @@ tasks:
     cmds:
       - cmd: .\\test\\e2e\\run_tests.bat
 
+  test-e2e-podman-native:
+    desc: Run opt-in native rootless Podman isolation regressions (no cleanup sweep)
+    platforms: [linux]
+    vars:
+      PODMAN_NATIVE_RUNNER: '{{.PODMAN_NATIVE_RUNNER | default ""}}'
+    cmds:
+      - task: build
+      - go install github.com/onsi/ginkgo/v2/ginkgo
+      - >-
+        {{.PODMAN_NATIVE_RUNNER}} env THV_BINARY="{{.ROOT_DIR}}/bin/thv" TOOLHIVE_DEV=true
+        ginkgo --label-filter=podman-native --procs=1 --timeout=20m --fail-on-empty --vv ./test/e2e
+
   test-e2e:
     desc: Run end-to-end tests
     deps: [build]

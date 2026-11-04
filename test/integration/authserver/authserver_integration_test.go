@@ -165,12 +165,16 @@ func TestEmbeddedAuthServer_AuthorizationFlow(t *testing.T) {
 
 		resp, err := client.StartAuthorization(params)
 		require.NoError(t, err)
-		defer resp.Body.Close()
+		require.Equal(t, http.StatusOK, resp.StatusCode, "authorization requires consent")
+		approved, err := client.ApproveConsent(resp, cfg.Issuer)
+		require.NoError(t, resp.Body.Close())
+		require.NoError(t, err)
+		defer approved.Body.Close()
 
-		// Should redirect to upstream IDP
-		assert.Equal(t, http.StatusFound, resp.StatusCode)
+		// Approval redirects to the upstream IDP.
+		assert.Equal(t, http.StatusSeeOther, approved.StatusCode)
 
-		location := resp.Header.Get("Location")
+		location := approved.Header.Get("Location")
 		assert.NotEmpty(t, location)
 
 		// Verify redirect points to upstream authorization endpoint
@@ -180,7 +184,7 @@ func TestEmbeddedAuthServer_AuthorizationFlow(t *testing.T) {
 		assert.Contains(t, redirectURL.Path, "/authorize")
 	})
 
-	t.Run("Authorization without resource parameter returns error", func(t *testing.T) {
+	t.Run("Authorization without resource defaults to sole audience", func(t *testing.T) {
 		params := url.Values{
 			"response_type": {"code"},
 			"client_id":     {clientID},
@@ -192,14 +196,15 @@ func TestEmbeddedAuthServer_AuthorizationFlow(t *testing.T) {
 
 		resp, err := client.StartAuthorization(params)
 		require.NoError(t, err)
-		defer resp.Body.Close()
+		require.Equal(t, http.StatusOK, resp.StatusCode, "authorization requires consent")
+		approved, err := client.ApproveConsent(resp, cfg.Issuer)
+		require.NoError(t, resp.Body.Close())
+		require.NoError(t, err)
+		defer approved.Body.Close()
 
-		// MCP compliance requires resource parameter (RFC 8707)
-		// Should return error redirect or direct error response
-		assert.True(t,
-			resp.StatusCode == http.StatusBadRequest || resp.StatusCode == http.StatusFound,
-			"should reject request without resource parameter",
-		)
+		// A sole configured audience is unambiguous without an explicit resource.
+		assert.Equal(t, http.StatusSeeOther, approved.StatusCode)
+		assert.Contains(t, approved.Header.Get("Location"), upstream.URL())
 	})
 }
 
@@ -239,9 +244,13 @@ func TestEmbeddedAuthServer_CallbackCompletesAuthorization(t *testing.T) {
 	}
 	resp, err := client.StartAuthorization(authParams)
 	require.NoError(t, err)
-	location := resp.Header.Get("Location")
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	approved, err := client.ApproveConsent(resp, cfg.Issuer)
 	require.NoError(t, resp.Body.Close())
-	require.Equal(t, http.StatusFound, resp.StatusCode, "authorize should redirect to the upstream")
+	require.NoError(t, err)
+	location := approved.Header.Get("Location")
+	require.NoError(t, approved.Body.Close())
+	require.Equal(t, http.StatusSeeOther, approved.StatusCode, "consent approval should redirect to the upstream")
 	internalState := stateParam(t, location)
 	require.NotEmpty(t, internalState, "authorize must thread an internal state to the upstream")
 
@@ -301,9 +310,13 @@ func TestEmbeddedAuthServer_MultiUpstreamChain(t *testing.T) {
 	// Leg 1: authorize → redirect to the first upstream.
 	resp, err := client.StartAuthorization(authParams)
 	require.NoError(t, err)
-	locA := resp.Header.Get("Location")
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	approved, err := client.ApproveConsent(resp, cfg.Issuer)
 	require.NoError(t, resp.Body.Close())
-	require.Equal(t, http.StatusFound, resp.StatusCode)
+	require.NoError(t, err)
+	locA := approved.Header.Get("Location")
+	require.NoError(t, approved.Body.Close())
+	require.Equal(t, http.StatusSeeOther, approved.StatusCode)
 	assert.Contains(t, locA, upstreamA.URL(), "first leg targets provider-a")
 	stateA := stateParam(t, locA)
 	require.NotEmpty(t, stateA)
@@ -712,11 +725,14 @@ func TestEmbeddedAuthServer_BaselineClientScopes_RegressionForDCRScopeNarrowing(
 			resp.Body.Close()
 		}()
 
-		// Must redirect to upstream — NOT a 400 invalid_scope.
-		assert.Equal(t, http.StatusFound, resp.StatusCode,
-			"authorize must accept the full scope set that includes the baseline; pre-fix this returned 400 invalid_scope")
+		// Must reach the upstream after consent — NOT a 400 invalid_scope.
+		require.Equal(t, http.StatusOK, resp.StatusCode, "authorize must accept the baseline scope set")
+		approved, err := client.ApproveConsent(resp, cfg.Issuer)
+		require.NoError(t, err)
+		defer approved.Body.Close()
+		assert.Equal(t, http.StatusSeeOther, approved.StatusCode)
 
-		location := resp.Header.Get("Location")
+		location := approved.Header.Get("Location")
 		assert.NotEmpty(t, location)
 
 		redirectURL, err := url.Parse(location)

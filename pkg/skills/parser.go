@@ -8,7 +8,7 @@ import (
 	"errors"
 	"fmt"
 
-	"gopkg.in/yaml.v3"
+	"go.yaml.in/yaml/v3"
 )
 
 // frontmatterDelimiter is the YAML frontmatter delimiter.

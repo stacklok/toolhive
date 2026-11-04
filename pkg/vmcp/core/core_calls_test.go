@@ -6,6 +6,8 @@ package core
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -264,6 +266,21 @@ func TestReadResource_NotFound(t *testing.T) {
 
 	_, err = c.ReadResource(context.Background(), nil, "file://missing")
 	assert.ErrorIs(t, err, vmcp.ErrNotFound)
+}
+
+func TestReadResource_OverCapNotFound(t *testing.T) {
+	t.Parallel()
+	cfg, m := baseConfig(t)
+	expectAggregation(m, &aggregator.AggregatedCapabilities{RoutingTable: &vmcp.RoutingTable{}})
+
+	c, err := New(cfg)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = c.Close() })
+
+	uri := strings.Repeat("a", vmcp.MaxResourceURILength+1)
+	_, err = c.ReadResource(context.Background(), nil, uri)
+	assert.ErrorIs(t, err, vmcp.ErrNotFound)
+	assert.Less(t, len(err.Error()), 256, "over-cap URI must not be echoed in the error")
 }
 
 func TestGetPrompt(t *testing.T) {
@@ -820,6 +837,38 @@ func TestExecuteComposite(t *testing.T) {
 			if tt.wantOutput != nil {
 				assert.Equal(t, tt.wantOutput, got.StructuredContent)
 			}
+		})
+	}
+}
+
+// TestExecuteComposite_URLElicitationFromStepFlattens pins AC4.3: a workflow
+// step that returns the URL elicitation answer does not surface it at the
+// render seam. executeComposite flattens it into an isError workflow failure
+// whose text is the answer's URL-free Error(), whichever way the engine
+// reports the step failure.
+func TestExecuteComposite_URLElicitationFromStepFlattens(t *testing.T) {
+	t.Parallel()
+
+	elicitation, err := vmcp.NewURLElicitation("github", "https://connect.example.com/github", "Reconnect GitHub")
+	require.NoError(t, err)
+	answer, err := vmcp.NewURLElicitationRequiredError(elicitation)
+	require.NoError(t, err)
+	stepErr := fmt.Errorf("step %q failed: %w", "fetch", answer)
+
+	def := &composer.WorkflowDefinition{Name: "wf"}
+	for name, c := range map[string]stubComposer{
+		"execution error":      {err: stepErr},
+		"result carries error": {result: &composer.WorkflowResult{Error: stepErr}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			got, err := executeComposite(context.Background(), c, def, nil)
+			require.NoError(t, err, "the answer must not escape as an error the render seam would see")
+			require.NotNil(t, got)
+			assert.True(t, got.IsError)
+			require.Len(t, got.Content, 1)
+			assert.Contains(t, got.Content[0].Text, "Reconnect GitHub")
+			assert.NotContains(t, got.Content[0].Text, "connect.example.com")
 		})
 	}
 }

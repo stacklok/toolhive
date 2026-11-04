@@ -14,6 +14,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/stacklok/toolhive/pkg/authserver"
+	authserverrunner "github.com/stacklok/toolhive/pkg/authserver/runner"
 	"github.com/stacklok/toolhive/pkg/diagnostics"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/transport"
@@ -69,6 +71,50 @@ func stopRunnerDiagnostics(t *testing.T, r *Runner) {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		assert.NoError(t, r.stopDiagnosticsServer(ctx))
+	})
+}
+
+func TestStartEmbeddedAuthServerListenerPortConflicts(t *testing.T) {
+	t.Parallel()
+
+	listenerConfig := &authserver.RunConfig{
+		TLSListener: &authserver.TLSListenerRunConfig{CertFile: "cert", KeyFile: "key"},
+	}
+	newRunner := func(port, diagnosticsPort int, prometheus bool, config *authserver.RunConfig) *Runner {
+		var handler http.Handler
+		if prometheus {
+			handler = testMetricsHandler()
+		}
+		return &Runner{
+			Config: &RunConfig{
+				Port:                     port,
+				TelemetryConfig:          &telemetry.Config{PrometheusPort: diagnosticsPort},
+				EmbeddedAuthServerConfig: config,
+			},
+			embeddedAuthServer: &authserverrunner.EmbeddedAuthServer{},
+			prometheusHandler:  handler,
+		}
+	}
+
+	t.Run("proxy port conflicts", func(t *testing.T) {
+		t.Parallel()
+		err := newRunner(authserverrunner.TLSListenerPort, 0, false, listenerConfig).startEmbeddedAuthServerListener()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "8443")
+	})
+	t.Run("diagnostics port conflicts when metrics are enabled", func(t *testing.T) {
+		t.Parallel()
+		err := newRunner(8080, authserverrunner.TLSListenerPort, true, listenerConfig).startEmbeddedAuthServerListener()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "8443")
+	})
+	t.Run("no listener is a no-op", func(t *testing.T) {
+		t.Parallel()
+		require.NoError(t, newRunner(8080, authserverrunner.TLSListenerPort, true, &authserver.RunConfig{}).startEmbeddedAuthServerListener())
+	})
+	t.Run("diagnostics port does not conflict without metrics", func(t *testing.T) {
+		t.Parallel()
+		require.NoError(t, newRunner(8080, authserverrunner.TLSListenerPort, false, listenerConfig).startEmbeddedAuthServerListener())
 	})
 }
 

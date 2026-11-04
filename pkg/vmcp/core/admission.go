@@ -37,7 +37,7 @@ import (
 // legacy server.New path, which retains the HTTP authz middleware).
 type Admission interface {
 	// FilterTools returns the subset of tools the identity may call. Mirrors
-	// pkg/authz filterToolsByPolicy: a per-tool AuthorizeWithJWTClaims(call) using
+	// pkg/authz authorizedToolIndexes: a per-tool AuthorizeWithJWTClaims(call) using
 	// the tool's annotations; a per-tool authorizer error skips that tool
 	// (log-and-continue), it is not a hard failure.
 	FilterTools(ctx context.Context, identity *auth.Identity, tools []vmcp.Tool) ([]vmcp.Tool, error)
@@ -139,24 +139,25 @@ func newCedarAdmission(a authorizers.Authorizer, opts ...cedarOption) *cedarAdmi
 	return adm
 }
 
-// FilterTools mirrors pkg/authz filterToolsByPolicy: each tool is authorized for
+// FilterTools mirrors pkg/authz authorizedToolIndexes: each tool is authorized for
 // call with its annotations injected, and a per-tool authorizer error skips that
 // tool (log-and-continue).
 func (a *cedarAdmission) FilterTools(
 	ctx context.Context, identity *auth.Identity, tools []vmcp.Tool,
 ) ([]vmcp.Tool, error) {
 	ctx = auth.WithIdentity(ctx, identity)
-	// A filter returns a subset, so build a fresh non-nil slice — mirroring
-	// pkg/authz filterToolsByPolicy (its configured-authorizer path is also
-	// non-nil; its nil-authorizer no-op, like the allow-all seam here, returns the
-	// input as-is). nil-vs-[] wire normalization is the Serve layer's concern.
+	// A filter returns a subset, so build a fresh non-nil slice. The allow-all
+	// seam returns the input as-is instead. nil-vs-[] wire normalization is the
+	// Serve layer's concern.
 	filtered := make([]vmcp.Tool, 0, len(tools))
 	for i := range tools {
 		tool := &tools[i]
-		toolCtx := ctx
-		if ann := convertAnnotations(tool.Annotations); ann != nil {
-			toolCtx = authorizers.WithToolAnnotations(toolCtx, ann)
-		}
+		// An empty BackendID is deliberate: composites have no Backend parent,
+		// so backend-scoped permits fail closed for them.
+		toolCtx := authorizers.WithResourceMetadata(ctx, authorizers.ResourceMetadata{
+			BackendID:   tool.BackendID,
+			Annotations: convertAnnotations(tool.Annotations),
+		})
 		allowed, err := a.authorizer.AuthorizeWithJWTClaims(
 			toolCtx, authorizers.MCPFeatureTool, authorizers.MCPOperationCall, tool.Name, nil)
 		if err != nil {
@@ -180,9 +181,11 @@ func (a *cedarAdmission) AllowToolCall(
 	ctx context.Context, identity *auth.Identity, tool *vmcp.Tool, args map[string]any,
 ) (bool, error) {
 	ctx = auth.WithIdentity(ctx, identity)
-	if ann := convertAnnotations(tool.Annotations); ann != nil {
-		ctx = authorizers.WithToolAnnotations(ctx, ann)
-	}
+	// Keep the list and call paths identical for backendless composite tools.
+	ctx = authorizers.WithResourceMetadata(ctx, authorizers.ResourceMetadata{
+		BackendID:   tool.BackendID,
+		Annotations: convertAnnotations(tool.Annotations),
+	})
 	return a.authorizer.AuthorizeWithJWTClaims(
 		ctx, authorizers.MCPFeatureTool, authorizers.MCPOperationCall, tool.Name, args)
 }

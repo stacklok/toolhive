@@ -75,7 +75,7 @@ func TestFactory(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			f, err := Factory(tt.delegationLifespan, nil, tt.configuredDelegateClients)
+			f, err := Factory(tt.delegationLifespan, nil, tt.configuredDelegateClients, nil)
 			if tt.wantErr != "" {
 				require.Error(t, err)
 				assert.Contains(t, err.Error(), tt.wantErr)
@@ -156,7 +156,7 @@ func TestFactory_ValidatorSelection(t *testing.T) {
 	t.Run("no trusted issuers builds self-issued validator", func(t *testing.T) {
 		t.Parallel()
 
-		f, err := Factory(15*time.Minute, nil, nil)
+		f, err := Factory(15*time.Minute, nil, nil, nil)
 		require.NoError(t, err)
 
 		cfg := buildTestAuthServerConfig(t)
@@ -174,7 +174,7 @@ func TestFactory_ValidatorSelection(t *testing.T) {
 		// The bare Factory has no way to release a MultiIssuerTokenValidator's
 		// JWKS workers, so it must reject trusted issuers outright rather than
 		// build a leaked validator inside the compose-time closure.
-		_, err := Factory(15*time.Minute, []TrustedIssuer{validIssuer}, nil)
+		_, err := Factory(15*time.Minute, []TrustedIssuer{validIssuer}, nil, nil)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "require a shared validator")
 	})
@@ -187,7 +187,7 @@ func TestFactory_ValidatorSelection(t *testing.T) {
 		require.NoError(t, err)
 		t.Cleanup(func() { _ = shared.Close() })
 
-		f, err := FactoryWithSharedTrustedIssuerValidator(15*time.Minute, []TrustedIssuer{validIssuer}, nil, shared)
+		f, err := FactoryWithSharedTrustedIssuerValidator(15*time.Minute, []TrustedIssuer{validIssuer}, nil, nil, shared)
 		require.NoError(t, err)
 
 		result, err := f(cfg, &fakeFactoryStorage{mockAccessTokenStorage: &mockAccessTokenStorage{}}, &mockAccessTokenStrategy{})
@@ -197,4 +197,15 @@ func TestFactory_ValidatorSelection(t *testing.T) {
 		require.True(t, ok, "closure must return *Handler, got %T", result)
 		assert.Same(t, shared, handler.validator, "the caller-owned shared validator must be used verbatim")
 	})
+}
+
+func TestFactory_ClientPolicyMustNameConfiguredClient(t *testing.T) {
+	t.Parallel()
+
+	_, err := Factory(15*time.Minute, nil, []string{"broker"}, map[string]ConfiguredClientPolicy{"ghost": {}})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not a configured delegate client")
+
+	_, err = Factory(15*time.Minute, nil, []string{"broker"}, map[string]ConfiguredClientPolicy{"broker": {}})
+	require.NoError(t, err)
 }

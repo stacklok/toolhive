@@ -129,12 +129,22 @@ func shouldSkipSubsequentAuthorization(method string) bool {
 	return false
 }
 
-// invalidSkillGet reports whether a skills/get request lacks a valid URI.
-func invalidSkillGet(featureOp featureOperation, resourceID string) bool {
-	if featureOp.Feature != authorizers.MCPFeatureSkill || featureOp.Operation != authorizers.MCPOperationGet {
-		return false
-	}
-	return resourceID == ""
+// missingTargetID reports whether a request that identifies its target by
+// params.name or params.uri (tools/call, prompts/get, resources/read,
+// skills/get) lacks a valid one. The parser yields an empty resource ID for an
+// absent, empty or non-string value.
+func missingTargetID(featureOp featureOperation, resourceID string) bool {
+	_, targeted := targetedOperations[featureOp]
+	return targeted && resourceID == ""
+}
+
+// targetedOperations are the feature/operations whose authorization target is
+// params.name or params.uri.
+var targetedOperations = map[featureOperation]struct{}{
+	{Feature: authorizers.MCPFeatureTool, Operation: authorizers.MCPOperationCall}:     {},
+	{Feature: authorizers.MCPFeaturePrompt, Operation: authorizers.MCPOperationGet}:    {},
+	{Feature: authorizers.MCPFeatureResource, Operation: authorizers.MCPOperationRead}: {},
+	{Feature: authorizers.MCPFeatureSkill, Operation: authorizers.MCPOperationGet}:     {},
 }
 
 // handleUnauthorized handles unauthorized requests. The client always sees the fixed
@@ -248,10 +258,12 @@ func Middleware(a authorizers.Authorizer, next http.Handler, passThroughTools ma
 			return
 		}
 
-		// skills/get identifies its target only by params.uri. An absent, empty,
-		// or non-string URI must never reach an authorizer, whose policy might
-		// otherwise accidentally permit an empty identifier.
-		if invalidSkillGet(featureOp, parsedRequest.ResourceID) {
+		// These methods identify their target only by params.name or params.uri.
+		// An absent, empty, or non-string value must never reach an authorizer,
+		// whose policy might otherwise accidentally permit an empty identifier
+		// (e.g. a permit that does not name the tool, beside a forbid that does).
+		if missingTargetID(featureOp, parsedRequest.ResourceID) {
+			slog.Warn("denied MCP request without a valid target name or URI", "method", parsedRequest.Method)
 			handleUnauthorized(w, parsedRequest.ID, nil)
 			return
 		}

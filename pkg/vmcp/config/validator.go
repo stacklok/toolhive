@@ -72,6 +72,10 @@ func (v *DefaultValidator) Validate(cfg *Config) error {
 		errors = append(errors, err.Error())
 	}
 
+	if cfg.SessionStorage != nil && cfg.SessionStorage.TLS != nil && cfg.SessionStorage.Provider != "redis" {
+		errors = append(errors, "session storage TLS requires provider redis")
+	}
+
 	// Validate static backends
 	if err := v.validateStaticBackends(cfg.Backends); err != nil {
 		errors = append(errors, err.Error())

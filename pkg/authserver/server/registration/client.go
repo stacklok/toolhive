@@ -27,9 +27,10 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/go-jose/go-jose/v3"
+	"github.com/go-jose/go-jose/v4"
 	"github.com/ory/fosite"
 
+	"github.com/stacklok/toolhive/pkg/authserver/internal/fositejose"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
@@ -94,6 +95,9 @@ type Config struct {
 	// ID is the unique client identifier.
 	ID string
 
+	// ClientName is unverified, display-only metadata supplied at registration.
+	ClientName string
+
 	// Secret is the client secret for confidential clients.
 	// Required for client_secret_basic / client_secret_post; ignored for "none".
 	Secret string //nolint:gosec // G117: field legitimately holds sensitive data
@@ -103,12 +107,15 @@ type Config struct {
 
 	// TokenEndpointAuthMethod is the client's registered auth method:
 	// "none" (public client) or one of the client_secret_* methods
-	// (confidential client). Required — there is no default, so callers must
-	// choose explicitly rather than drifting into one.
+	// (confidential client). Required for New — there is no default, so
+	// callers must choose explicitly rather than drifting into one.
+	// NewStaticDelegateClient differs: empty leaves secret authentication
+	// unpinned (both client_secret_basic and client_secret_post work).
 	TokenEndpointAuthMethod string
 
 	// GrantTypes overrides the default grant types.
-	// If nil or empty, defaultGrantTypes is used.
+	// If nil or empty, New uses defaultGrantTypes; NewStaticDelegateClient
+	// uses [token-exchange].
 	GrantTypes []string
 
 	// ResponseTypes overrides the default response types. If nil or empty,
@@ -149,6 +156,14 @@ func DCRIssued(client fosite.Client) bool {
 	return ok
 }
 
+// ClientName returns the unverified display name of a DCR client, if supplied.
+func ClientName(client fosite.Client) string {
+	if named, ok := client.(interface{ GetClientName() string }); ok {
+		return named.GetClientName()
+	}
+	return ""
+}
+
 // MarkDCRIssued wraps a client rebuilt from persisted DCR-issued form so the
 // DCRIssued marker — and with it the anti-bloat TTL behaviour in storage —
 // survives the storage round-trip. Callers must only mark clients they know
@@ -172,11 +187,16 @@ func DCRIssued(client fosite.Client) bool {
 // DCRIssued marker and so stops renewing its TTL, which is recoverable —
 // unlike a panic on an unauthenticated request path.
 func MarkDCRIssued(client fosite.Client) fosite.Client {
+	return MarkDCRIssuedWithName(client, "")
+}
+
+// MarkDCRIssuedWithName restores a DCR-issued client's unverified display name.
+func MarkDCRIssuedWithName(client fosite.Client, name string) fosite.Client {
 	switch c := client.(type) {
 	case *fosite.DefaultOpenIDConnectClient:
-		return &markedDCRIssuedOIDC{DefaultOpenIDConnectClient: c}
+		return &markedDCRIssuedOIDC{DefaultOpenIDConnectClient: c, clientName: name}
 	case *fosite.DefaultClient:
-		return &markedDCRIssuedDefault{DefaultClient: c}
+		return &markedDCRIssuedDefault{DefaultClient: c, clientName: name}
 	default:
 		slog.Error("registration: MarkDCRIssued: unsupported concrete client type, returning unmarked",
 			"type", fmt.Sprintf("%T", client))
@@ -186,15 +206,19 @@ func MarkDCRIssued(client fosite.Client) fosite.Client {
 
 type markedDCRIssuedOIDC struct {
 	*fosite.DefaultOpenIDConnectClient
+	clientName string
 }
 
-func (markedDCRIssuedOIDC) dcrIssued() {}
+func (c *markedDCRIssuedOIDC) GetClientName() string { return c.clientName }
+func (markedDCRIssuedOIDC) dcrIssued()               {}
 
 type markedDCRIssuedDefault struct {
 	*fosite.DefaultClient
+	clientName string
 }
 
-func (markedDCRIssuedDefault) dcrIssued() {}
+func (c *markedDCRIssuedDefault) GetClientName() string { return c.clientName }
+func (markedDCRIssuedDefault) dcrIssued()               {}
 
 type dcrIssuedMarker struct{}
 
@@ -233,7 +257,10 @@ func (BackChannelOnlyMarker) backChannelOnly() {}
 type publicClient struct {
 	dcrIssuedMarker
 	*fosite.DefaultOpenIDConnectClient
+	clientName string
 }
+
+func (c *publicClient) GetClientName() string { return c.clientName }
 
 // confidentialClient is the DCR-issued confidential client shape: an OIDC
 // client so fosite pins and enforces the registered auth method at the token
@@ -242,7 +269,10 @@ type publicClient struct {
 type confidentialClient struct {
 	dcrIssuedMarker
 	*fosite.DefaultOpenIDConnectClient
+	clientName string
 }
+
+func (c *confidentialClient) GetClientName() string { return c.clientName }
 
 // privateKeyJWTClient is a DCR-issued client authenticated with an inline
 // public key rather than a client secret. It is non-public because it must
@@ -250,7 +280,10 @@ type confidentialClient struct {
 type privateKeyJWTClient struct {
 	dcrIssuedMarker
 	*fosite.DefaultOpenIDConnectClient
+	clientName string
 }
+
+func (c *privateKeyJWTClient) GetClientName() string { return c.clientName }
 
 // GetResponseTypes prevents fosite.DefaultClient's implicit ["code"] default
 // from representing this token-exchange-only client as an authorization-code
@@ -343,17 +376,17 @@ func New(cfg Config) (fosite.Client, error) {
 	oidcClient := &fosite.DefaultOpenIDConnectClient{
 		DefaultClient:                     defaultClient,
 		TokenEndpointAuthMethod:           cfg.TokenEndpointAuthMethod,
-		JSONWebKeys:                       cloneJSONWebKeySet(cfg.JSONWebKeys),
+		JSONWebKeys:                       fositejose.ToFositeKeySet(cfg.JSONWebKeys),
 		TokenEndpointAuthSigningAlgorithm: cfg.TokenEndpointAuthSigningAlgorithm,
 	}
 
 	if public {
-		return &publicClient{DefaultOpenIDConnectClient: oidcClient}, nil
+		return &publicClient{DefaultOpenIDConnectClient: oidcClient, clientName: cfg.ClientName}, nil
 	}
 	if privateKeyJWT {
-		return &privateKeyJWTClient{DefaultOpenIDConnectClient: oidcClient}, nil
+		return &privateKeyJWTClient{DefaultOpenIDConnectClient: oidcClient, clientName: cfg.ClientName}, nil
 	}
-	return &confidentialClient{DefaultOpenIDConnectClient: oidcClient}, nil
+	return &confidentialClient{DefaultOpenIDConnectClient: oidcClient, clientName: cfg.ClientName}, nil
 }
 
 func cloneJSONWebKeySet(jwks *jose.JSONWebKeySet) *jose.JSONWebKeySet {
@@ -422,43 +455,67 @@ func NewConfidentialPlain(cfg Config) (fosite.Client, error) {
 		Public:        false,
 	}
 
-	return MarkDCRIssued(defaultClient), nil
+	return MarkDCRIssuedWithName(defaultClient, cfg.ClientName), nil
 }
 
 // NewStaticDelegateClient creates an unmarked, pre-provisioned confidential
-// client for token exchange. A bare DefaultClient intentionally leaves the
-// token endpoint authentication method unpinned, allowing both HTTP Basic and
-// form-body client-secret authentication.
-func NewStaticDelegateClient(cfg Config) (*fosite.DefaultClient, error) {
+// client for token exchange. With no TokenEndpointAuthMethod it is a bare
+// DefaultClient that leaves the method unpinned, allowing both HTTP Basic and
+// form-body client-secret authentication; otherwise it is an OIDC client that
+// pins the method. Empty GrantTypes means [token-exchange]. The result never
+// carries the DCRIssued marker, so storage keeps it out of the DCR TTL and cap.
+//
+// It does not check audiences. Callers must validate audiences first; the
+// empty-audiences rule is enforced by the authorization server's config
+// validation.
+func NewStaticDelegateClient(cfg Config) (fosite.Client, error) {
 	if cfg.ID == "" {
 		return nil, fmt.Errorf("delegate client requires an ID")
 	}
-	if cfg.Secret == "" {
-		return nil, fmt.Errorf("confidential client requires a secret")
-	}
-	if len(cfg.GrantTypes) != 1 || cfg.GrantTypes[0] != oauthproto.GrantTypeTokenExchange {
-		return nil, fmt.Errorf("delegate client grant types must be exactly [%q]", oauthproto.GrantTypeTokenExchange)
+	privateKeyJWT := cfg.TokenEndpointAuthMethod == oauthproto.TokenEndpointAuthMethodPrivateKeyJWT
+	alg, err := validateConfiguredClient(ConfiguredClientSpec{
+		TokenEndpointAuthMethod: cfg.TokenEndpointAuthMethod,
+		SigningAlgorithm:        cfg.TokenEndpointAuthSigningAlgorithm,
+		GrantTypes:              cfg.GrantTypes,
+		RedirectURIs:            cfg.RedirectURIs,
+		HasSecret:               cfg.Secret != "",
+		JWKS:                    cfg.JSONWebKeys,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("delegate client: %w", err)
 	}
 	if len(cfg.Scopes) == 0 {
 		return nil, fmt.Errorf("delegate client requires at least one scope")
 	}
-	if len(cfg.Audience) == 0 {
-		return nil, fmt.Errorf("delegate client requires at least one audience")
+
+	client := &fosite.DefaultClient{
+		ID:           cfg.ID,
+		RedirectURIs: slices.Clone(cfg.RedirectURIs),
+		GrantTypes:   slices.Clone(effectiveConfiguredGrantTypes(cfg.GrantTypes)),
+		Scopes:       slices.Clone(cfg.Scopes),
+		Audience:     slices.Clone(cfg.Audience),
+		Public:       false,
+	}
+	if !privateKeyJWT {
+		hashedSecret, err := SHA256Hasher.Hash(context.Background(), []byte(cfg.Secret))
+		if err != nil {
+			return nil, fmt.Errorf("failed to hash client secret: %w", err)
+		}
+		client.Secret = hashedSecret
+	}
+	if cfg.TokenEndpointAuthMethod == "" {
+		return client, nil
 	}
 
-	hashedSecret, err := SHA256Hasher.Hash(context.Background(), []byte(cfg.Secret))
-	if err != nil {
-		return nil, fmt.Errorf("failed to hash client secret: %w", err)
+	oidcClient := &fosite.DefaultOpenIDConnectClient{
+		DefaultClient:           client,
+		TokenEndpointAuthMethod: cfg.TokenEndpointAuthMethod,
 	}
-
-	return &fosite.DefaultClient{
-		ID:         cfg.ID,
-		Secret:     hashedSecret,
-		GrantTypes: slices.Clone(cfg.GrantTypes),
-		Scopes:     slices.Clone(cfg.Scopes),
-		Audience:   slices.Clone(cfg.Audience),
-		Public:     false,
-	}, nil
+	if privateKeyJWT {
+		oidcClient.JSONWebKeys = fositejose.ToFositeKeySet(cfg.JSONWebKeys)
+		oidcClient.TokenEndpointAuthSigningAlgorithm = alg
+	}
+	return oidcClient, nil
 }
 
 // matchesAsLoopback checks if the requested URI matches the registered URI

@@ -164,25 +164,6 @@ func (r *MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1beta1.MCPServ
 		options = append(options, runner.WithToolsOverride(toolsOverride))
 	}
 
-	// Add permission profile if specified
-	if m.Spec.PermissionProfile != nil {
-		switch m.Spec.PermissionProfile.Type {
-		case mcpv1beta1.PermissionProfileTypeBuiltin:
-			options = append(options,
-				runner.WithPermissionProfileNameOrPath(
-					m.Spec.PermissionProfile.Name,
-				),
-			)
-		case mcpv1beta1.PermissionProfileTypeConfigMap:
-			// For ConfigMap-based permission profiles, we store the path
-			options = append(options,
-				runner.WithPermissionProfileNameOrPath(
-					fmt.Sprintf("/etc/toolhive/profiles/%s", m.Spec.PermissionProfile.Key),
-				),
-			)
-		}
-	}
-
 	// Create context for API operations
 	ctx, cancel := context.WithTimeout(context.Background(), defaultAPITimeout)
 	defer cancel()
@@ -246,6 +227,12 @@ func (r *MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1beta1.MCPServ
 		}
 	}
 
+	if err := ctrlutil.ValidateEmbeddedAuthServerTLSListenerPort(
+		ctx, r.Client, m.Namespace, m.Spec.ExternalAuthConfigRef, m.Spec.AuthServerRef, m.GetProxyPort(),
+	); err != nil {
+		return nil, err
+	}
+
 	// Add external auth configuration if specified (updated call)
 	// Will fail if embedded auth server is used without OIDC config or resourceUrl
 	if err := ctrlutil.AddExternalAuthConfigOptions(
@@ -296,9 +283,9 @@ func (r *MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1beta1.MCPServ
 	}
 
 	// Populate scaling config (BackendReplicas and Redis session storage).
-	// Both fields use nil-passthrough: only set when explicitly configured in the spec.
+	// Backend replicas come from the spec; Redis can also use the injected global default.
 	// Must run before PopulateMiddlewareConfigs because rate limiting reads SessionRedis.
-	populateScalingConfig(runConfig, m)
+	populateScalingConfig(runConfig, m, r.DefaultRedisConfig)
 
 	// Populate middleware configs from the configuration fields
 	// This ensures that middleware_configs is properly set for serialization
@@ -310,16 +297,14 @@ func (r *MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1beta1.MCPServ
 }
 
 // populateScalingConfig sets BackendReplicas and SessionRedis on the RunConfig from the MCPServer spec.
-// When spec.sessionStorage is nil, falls back to TOOLHIVE_DEFAULT_REDIS_ADDR if set.
-// Fields are only set when present in the spec or env; nil means "not configured" and is left as-is.
-func populateScalingConfig(runConfig *runner.RunConfig, m *mcpv1beta1.MCPServer) {
+// When spec.sessionStorage is absent or non-Redis, uses the injected global Redis
+// default if configured, preserving the existing MCPServer fallback policy.
+// Fields are only set when configured; nil means "not configured" and is left as-is.
+func populateScalingConfig(
+	runConfig *runner.RunConfig, m *mcpv1beta1.MCPServer, defaultRedis *ctrlutil.DefaultRedisConfig,
+) {
 	hasBackendReplicas := m.Spec.BackendReplicas != nil
 	hasRedis := m.Spec.SessionStorage != nil && m.Spec.SessionStorage.Provider == mcpv1beta1.SessionStorageProviderRedis
-
-	var defaultRedis *ctrlutil.DefaultRedisConfig
-	if !hasRedis {
-		defaultRedis = ctrlutil.ReadDefaultRedisConfig()
-	}
 
 	if !hasBackendReplicas && !hasRedis && defaultRedis == nil {
 		return
@@ -339,10 +324,12 @@ func populateScalingConfig(runConfig *runner.RunConfig, m *mcpv1beta1.MCPServer)
 			Address:   m.Spec.SessionStorage.Address,
 			DB:        m.Spec.SessionStorage.DB,
 			KeyPrefix: m.Spec.SessionStorage.KeyPrefix,
+			TLS:       ctrlutil.SessionRedisTLSConfig(m.Spec.SessionStorage),
 		}
 	} else if defaultRedis != nil {
 		runConfig.ScalingConfig.SessionRedis = &runner.SessionRedisConfig{
 			Address: defaultRedis.Addr,
+			TLS:     ctrlutil.SessionRedisTLSConfig(defaultRedis.SessionStorage()),
 		}
 	}
 }

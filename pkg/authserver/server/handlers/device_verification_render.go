@@ -221,13 +221,8 @@ var resultPageTemplate = template.Must(template.New("device-result").Parse(`<!DO
 </body>
 </html>`))
 
-// setHTMLSecurityHeaders sets the headers common to every rendered device-flow
-// page: HTML content type, no caching (these pages carry a confirm_token or
-// resolved-identity content that must not be cached), and anti-framing
-// headers. This is the first interactive human UI surface in pkg/authserver
-// -- every other handler writes JSON with no framing risk -- so the
-// Approve/Deny confirmation page is the first place a clickjacking defense is
-// needed here.
+// setHTMLSecurityHeaders sets the headers common to the interactive auth pages:
+// HTML content type, no caching, and anti-framing protection.
 func setHTMLSecurityHeaders(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")

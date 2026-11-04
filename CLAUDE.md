@@ -88,6 +88,8 @@ Detailed rules are in `.claude/rules/` (loaded automatically when matching files
 
 When making changes that affect architecture, update relevant docs in `docs/arch/`. See the [architecture documentation index](docs/arch/README.md) for structure and the per-component documents.
 
+Behavior a client or operator can observe is documented in the same PR as well. When a change adds or alters a response member, header, or status code, changes a default, or makes a request succeed or fail differently, update the subsystem's page under `docs/` (for example `docs/middleware.md` or `docs/authz.md`) and describe the change in the PR body's user-facing section as before and after. State a deliberate deviation from how a sibling code path handles the same case, or an accepted trade-off, in the PR body or in a comment at the site, so reviewers do not have to guess whether it was intended.
+
 ## Things That Will Bite You
 
 - Running `go test ./...` or `golangci-lint run` directly skips Taskfile configuration (exclusions, flags, formatting). Always use `task test`, `task lint-fix`, etc.

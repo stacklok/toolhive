@@ -27,6 +27,10 @@ const (
 	testServerName      = "test-server"
 	testImage           = "test-image:latest"
 	toolConfigFinalizer = "toolhive.stacklok.dev/toolconfig-finalizer"
+
+	// deletionUnblockTimeout is far below the 30s requeue so a regression to
+	// requeue-only unblocking fails the spec.
+	deletionUnblockTimeout = 10 * time.Second
 )
 
 var _ = Describe("MCPToolConfig Controller Integration Tests", func() {
@@ -480,7 +484,7 @@ var _ = Describe("MCPToolConfig Controller Integration Tests", func() {
 			// Delete the MCPServer to remove the reference
 			Expect(k8sClient.Delete(ctx, mcpServer)).Should(Succeed())
 
-			// The MCPToolConfig should eventually be fully deleted
+			// The MCPToolConfig should be deleted, unblocked by the workload watch rather than the 30s requeue.
 			Eventually(func() bool {
 				updated := &mcpv1beta1.MCPToolConfig{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
@@ -488,7 +492,7 @@ var _ = Describe("MCPToolConfig Controller Integration Tests", func() {
 					Namespace: namespace,
 				}, updated)
 				return errors.IsNotFound(err)
-			}, timeout, interval).Should(BeTrue())
+			}, deletionUnblockTimeout, interval).Should(BeTrue())
 		})
 	})
 

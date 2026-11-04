@@ -16,6 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/stacklok/toolhive/pkg/secrets/aes"
+	"github.com/stacklok/toolhive/test/testkit/osperm"
 )
 
 // Helper functions specific to encrypted tests
@@ -623,9 +624,7 @@ func TestEncryptedManager_UpgradeProtection(t *testing.T) {
 }
 
 func TestEncryptedManager_UpgradeProtectionFailurePreservesLegacyFile(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("root can bypass directory permissions")
-	}
+	osperm.SkipIfRoot(t)
 	t.Parallel()
 
 	tempFile := createTempFile(t)

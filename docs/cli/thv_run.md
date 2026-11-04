@@ -82,7 +82,7 @@ The --network flag accepts any Docker-compatible network mode.
 
 Examples:
   # Run a server from the registry
-  thv run filesystem
+  thv run fetch
 
   # Run a server with custom arguments and toolsets
   thv run github -- --toolsets repos
@@ -97,7 +97,7 @@ Examples:
   thv run npx://@modelcontextprotocol/server-everything
 
   # Run a server in a specific group
-  thv run filesystem --group production
+  thv run fetch --group production
 
 # Run a remote GitHub MCP server with authentication
 thv run github-remote --remote-auth \
@@ -111,7 +111,7 @@ thv run [flags] SERVER_OR_IMAGE_OR_PROTOCOL [-- ARGS...]
 ### Options
 
 ```
-      --allow-docker-gateway                        Allow outbound connections to Docker gateway addresses (host.docker.internal, gateway.docker.internal, 172.17.0.1). Only applies when --isolate-network is set. These are blocked by default even when insecure_allow_all is enabled. Gateway access is port-independent: it ignores the permission profile's allowed ports, so once enabled the gateway is reachable on any port.
+      --allow-docker-gateway                        Allow outbound connections to Docker/Podman host addresses (all daemon bridge gateways, runtime host-alias IPs, host.docker.internal, gateway.docker.internal, and host.containers.internal). Only applies when --isolate-network is set. Addresses are snapshotted at deployment; redeploy after runtime network changes. These are blocked by default even when insecure_allow_all is enabled. Gateway access is port-independent: it ignores the permission profile's allowed ports, so once enabled the gateway is reachable on any port.
       --allowed-origins stringArray                 Exact-match allowlist for the HTTP Origin header (repeatable). Recommended when binding publicly; loopback binds derive a default allowlist automatically, non-loopback binds log a warning when no value is supplied. Example: https://my-mcp.example.com
       --audit-config string                         Path to the audit configuration file
       --authz-config string                         Path to the authorization configuration file

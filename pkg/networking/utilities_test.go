@@ -457,6 +457,17 @@ func TestIsPrivateIP(t *testing.T) {
 		// is blocked regardless of what the low 32 bits would decode to.
 		{"Teredo simple address", "2001::1", true},
 		{"Teredo address decoding to a public-looking IPv4", "2001:0:4136:e378:8000:63bf:3fff:fdf6", true},
+
+		// IPv4-compatible (RFC 4291) and IPv4-translated (RFC 2765) addresses:
+		// classified by the IPv4 in the low 32 bits.
+		{"IPv4-compatible -> loopback", "::7f00:1", true},
+		{"IPv4-compatible -> link-local", "::a9fe:a9fe", true},
+		{"IPv4-compatible -> RFC1918 10.x", "::a00:1", true},
+		{"IPv4-compatible -> public", "::8.8.8.8", false},
+		{"IPv4-translated -> loopback", "::ffff:0:7f00:1", true},
+		{"IPv4-translated -> link-local", "::ffff:0:a9fe:a9fe", true},
+		{"IPv4-translated -> RFC1918 192.168.x", "::ffff:0:c0a8:1", true},
+		{"IPv4-translated -> public", "::ffff:0:808:808", false},
 	}
 
 	for _, tt := range tests {

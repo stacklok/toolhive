@@ -67,29 +67,41 @@ func TestConsumeResolution_FillsMissingEndpoints(t *testing.T) {
 	assert.Equal(t, "https://discovered/token", rc.TokenEndpoint)
 }
 
-// TestConsumeResolution_ClearsDCRConfig pins the contract that
-// consumeResolution clears DCRConfig on the returned run-config copy
-// after writing the resolved ClientID. Without this,
-// OAuth2UpstreamRunConfig.Validate (run by buildPureOAuth2Config
-// downstream) trips its ClientID-xor-DCRConfig rule on the resolved copy
-// and rejects the upstream at boot.
-func TestConsumeResolution_ClearsDCRConfig(t *testing.T) {
+// TestConsumeResolution_ClearsDCRFields pins the contract that
+// consumeResolution clears DCRConfig and TokenEndpointAuthMethod on the
+// returned run-config copy after writing the resolved ClientID. Without
+// this, OAuth2UpstreamRunConfig.Validate (run by buildPureOAuth2Config
+// downstream) rejects the resolved copy at boot: a set DCRConfig trips its
+// ClientID-xor-DCRConfig rule, and a configured confidential method with no
+// DCRConfig and no secret source reads as a client without a secret. The
+// resolution's method reaches the built config through
+// applyResolutionToOAuth2Config instead.
+func TestConsumeResolution_ClearsDCRFields(t *testing.T) {
 	t.Parallel()
 
 	rc := authserver.OAuth2UpstreamRunConfig{
+		AuthorizationEndpoint:   "https://idp.example.com/authorize",
+		TokenEndpoint:           "https://idp.example.com/token",
+		RedirectURI:             "https://as.example.com/oauth/callback",
+		TokenEndpointAuthMethod: "client_secret_post",
 		DCRConfig: &authserver.DCRUpstreamConfig{
 			RegistrationEndpoint: "https://idp.example.com/register",
 		},
 	}
 	res := &dcr.Resolution{
-		ClientID: "dcr-issued-client",
+		ClientID:                "dcr-issued-client",
+		TokenEndpointAuthMethod: "client_secret_post",
 	}
 
-	rc = consumeResolution(rc, res)
+	resolved := consumeResolution(rc, res)
 
-	assert.Equal(t, "dcr-issued-client", rc.ClientID)
-	assert.Nil(t, rc.DCRConfig,
+	assert.Equal(t, "dcr-issued-client", resolved.ClientID)
+	assert.Nil(t, resolved.DCRConfig,
 		"consumeResolution must clear DCRConfig so the resolved copy satisfies the ClientID-xor-DCRConfig invariant")
+	assert.Empty(t, resolved.TokenEndpointAuthMethod,
+		"consumeResolution must clear the method; the resolution carries it to the built config")
+	require.NoError(t, resolved.Validate(), "the resolved copy must pass the validation buildPureOAuth2Config runs")
+	assert.Equal(t, "client_secret_post", rc.TokenEndpointAuthMethod, "the caller's copy must be unchanged")
 }
 
 // TestConsumeResolution_DoesNotOverwritePreProvisionedClientID verifies
@@ -172,6 +184,47 @@ func TestApplyResolutionToOAuth2Config(t *testing.T) {
 	assert.Equal(t, cfg, unchanged)
 }
 
+// TestDCRResolution_PreservesOmitScopeOnRefresh pins that a DCR-registered
+// upstream still honours OmitScopeOnRefresh. The flag is configured on the
+// run-config, and a DCR upstream reaches upstream.OAuth2Config through the
+// same pair of calls as any other: consumeResolution rewrites the run-config
+// and applyResolutionToOAuth2Config rewrites the built config. Both only
+// overwrite client credentials and endpoints, so the flag must survive. A
+// refactor that rebuilds either config from the resolution alone would drop
+// it and silently reintroduce the scope parameter on refresh.
+func TestDCRResolution_PreservesOmitScopeOnRefresh(t *testing.T) {
+	t.Parallel()
+
+	rc := authserver.OAuth2UpstreamRunConfig{
+		RedirectURI:        "https://auth.example.com/callback",
+		Scopes:             []string{"api", "refresh_token"},
+		OmitScopeOnRefresh: true,
+		DCRConfig: &authserver.DCRUpstreamConfig{
+			RegistrationEndpoint: "https://idp.example.com/register",
+		},
+	}
+	res := &dcr.Resolution{
+		ClientID:              "dcr-issued-client",
+		ClientSecret:          "dcr-issued-secret",
+		AuthorizationEndpoint: "https://idp.example.com/authorize",
+		TokenEndpoint:         "https://idp.example.com/token",
+	}
+
+	resolved := consumeResolution(rc, res)
+	require.True(t, resolved.OmitScopeOnRefresh)
+
+	cfg, err := buildPureOAuth2Config(&authserver.UpstreamRunConfig{
+		Type:         authserver.UpstreamProviderTypeOAuth2,
+		OAuth2Config: &resolved,
+	}, false)
+	require.NoError(t, err)
+
+	out := applyResolutionToOAuth2Config(*cfg, res)
+	assert.True(t, out.OmitScopeOnRefresh)
+	assert.Equal(t, "dcr-issued-secret", out.ClientSecret,
+		"sanity: the resolution was applied")
+}
+
 // TestConsumeResolution_AloneLeavesClientSecretEmpty is a tripwire
 // regression test for the two-call invariant documented on
 // applyResolutionToOAuth2Config. The contract is:
@@ -242,6 +295,9 @@ func TestNewDCRRequest(t *testing.T) {
 		wantRegistration       string
 		wantAllowPrivateIPs    bool
 		wantCAFilePath         string
+		wantRotationKey        string
+		wantRegistrationProbe  dcr.RegistrationProbe
+		wantAuthMethod         string
 	}{
 		{
 			name: "discovery_url branch resolves file-based initial access token",
@@ -290,6 +346,57 @@ func TestNewDCRRequest(t *testing.T) {
 			wantCAFilePath:      "/var/run/toolhive/upstream-ca/ca.crt",
 		},
 		{
+			// Pins the RotationKey copy onto dcr.Request: without it a
+			// rotation configured on the run-config would silently keep
+			// addressing the pre-rotation cache row.
+			name: "rotation_key propagates from run-config",
+			rc: &authserver.OAuth2UpstreamRunConfig{
+				Scopes: []string{"openid"},
+				DCRConfig: &authserver.DCRUpstreamConfig{
+					RegistrationEndpoint: "https://idp.example.com/register",
+					RotationKey:          "2026-10",
+				},
+			},
+			localIssuer:      "https://thv.example.com",
+			wantIssuer:       "https://thv.example.com",
+			wantRegistration: "https://idp.example.com/register",
+			wantRotationKey:  "2026-10",
+		},
+		{
+			// Pins the RegistrationProbe copy onto dcr.Request: without it an
+			// upstream configured for the authorization-endpoint probe would
+			// silently be probed at its token endpoint.
+			name: "registration_probe propagates from run-config",
+			rc: &authserver.OAuth2UpstreamRunConfig{
+				Scopes: []string{"openid"},
+				DCRConfig: &authserver.DCRUpstreamConfig{
+					RegistrationEndpoint: "https://idp.example.com/register",
+					RegistrationProbe:    "authorizationEndpoint",
+				},
+			},
+			localIssuer:           "https://thv.example.com",
+			wantIssuer:            "https://thv.example.com",
+			wantRegistration:      "https://idp.example.com/register",
+			wantRegistrationProbe: dcr.ProbeAuthorizationEndpoint,
+		},
+		{
+			// Pins the TokenEndpointAuthMethod copy onto dcr.Request: without
+			// it the client would register with the method the resolver
+			// prefers, which is the one the operator configured away from.
+			name: "token_endpoint_auth_method propagates from run-config",
+			rc: &authserver.OAuth2UpstreamRunConfig{
+				Scopes:                  []string{"openid"},
+				TokenEndpointAuthMethod: "client_secret_post",
+				DCRConfig: &authserver.DCRUpstreamConfig{
+					RegistrationEndpoint: "https://idp.example.com/register",
+				},
+			},
+			localIssuer:      "https://thv.example.com",
+			wantIssuer:       "https://thv.example.com",
+			wantRegistration: "https://idp.example.com/register",
+			wantAuthMethod:   "client_secret_post",
+		},
+		{
 			name:        "nil run-config rejected",
 			rc:          nil,
 			localIssuer: "https://thv.example.com",
@@ -313,6 +420,9 @@ func TestNewDCRRequest(t *testing.T) {
 			assert.Equal(t, tc.wantRegistration, req.RegistrationEndpoint)
 			assert.Equal(t, tc.wantAllowPrivateIPs, req.AllowPrivateIPs)
 			assert.Equal(t, tc.wantCAFilePath, req.CAFilePath)
+			assert.Equal(t, tc.wantRotationKey, req.RotationKey)
+			assert.Equal(t, tc.wantRegistrationProbe, req.RegistrationProbe)
+			assert.Equal(t, tc.wantAuthMethod, req.TokenEndpointAuthMethod)
 		})
 	}
 }

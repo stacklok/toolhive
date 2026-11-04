@@ -108,6 +108,9 @@ type TransparentProxy struct {
 	// stateless indicates the server is POST-only (no SSE/GET support)
 	stateless bool
 
+	// stripConsentCookie prevents the embedded AS session from reaching the backend.
+	stripConsentCookie bool
+
 	// Callback when health check fails (for remote servers)
 	onHealthCheckFailed types.HealthCheckFailedCallback
 
@@ -257,6 +260,14 @@ func WithRemoteRawQuery(rawQuery string) Option {
 		if rawQuery != "" {
 			p.remoteRawQuery = rawQuery
 		}
+	}
+}
+
+// WithStripConsentCookie removes the entire embedded auth server browser session
+// cookie family from outbound backend requests. Enable only when that server is mounted.
+func WithStripConsentCookie() Option {
+	return func(p *TransparentProxy) {
+		p.stripConsentCookie = true
 	}
 }
 
@@ -501,14 +512,18 @@ func NewTransparentProxyWithOptions(
 
 	// Create health checker always for Kubernetes probes
 	var mcpPinger healthcheck.MCPPinger
+	var healthCheckerOpts []healthcheck.Option
 	if enableHealthCheck {
 		if proxy.stateless {
 			mcpPinger = NewStatelessMCPPingerWithTimeout(targetURI, proxy.healthCheckPingTimeout)
 		} else {
 			mcpPinger = NewMCPPingerWithTimeout(targetURI, proxy.healthCheckPingTimeout)
 		}
+		// monitorHealth pings the backend on its own schedule, and /health answers
+		// from its last result, so a slow backend cannot hold a probe past its timeout.
+		healthCheckerOpts = append(healthCheckerOpts, healthcheck.WithLastResult())
 	}
-	proxy.healthChecker = healthcheck.NewHealthChecker(transportType, mcpPinger)
+	proxy.healthChecker = healthcheck.NewHealthChecker(transportType, mcpPinger, healthCheckerOpts...)
 
 	return proxy
 }
@@ -774,8 +789,8 @@ func (t *tracingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 
 		// Modern (2026-07-28, stateless) has no initialize handshake, so use the
 		// first successful (HTTP 200) Modern request as the readiness signal: it
-		// lets the background health monitor begin probing this backend, which
-		// otherwise never starts for a pure-Modern server. See #5831.
+		// lets the background health monitor's failures count toward shutdown,
+		// which otherwise never happens for a pure-Modern server. See #5831.
 		if revision == mcp.RevisionModern && !t.p.serverInitialized() {
 			t.p.setServerInitialized()
 		}
@@ -1161,6 +1176,43 @@ func (p *TransparentProxy) setXForwardedHeaders(pr *httputil.ProxyRequest, upstr
 	}
 }
 
+// stripConsentCookie removes the embedded AS cookie family, retaining other cookie
+// pairs across all Cookie header lines. The caller supplies the outbound header.
+func stripConsentCookie(header http.Header) {
+	var kept []string
+	removed := false
+	for key, values := range header {
+		if !strings.EqualFold(key, "Cookie") {
+			continue
+		}
+		for _, value := range values {
+			var pairs []string
+			for _, pair := range strings.Split(value, ";") {
+				name, _, ok := strings.Cut(strings.TrimSpace(pair), "=")
+				if ok && strings.HasPrefix(strings.TrimSpace(name), "__Host-thv_consent_") {
+					removed = true
+					continue
+				}
+				pairs = append(pairs, pair)
+			}
+			if len(pairs) > 0 {
+				kept = append(kept, strings.Join(pairs, ";"))
+			}
+		}
+	}
+	if !removed {
+		return
+	}
+	for key := range header {
+		if strings.EqualFold(key, "Cookie") {
+			delete(header, key)
+		}
+	}
+	if len(kept) > 0 {
+		header["Cookie"] = kept
+	}
+}
+
 // Start starts the transparent proxy.
 // nolint:gocyclo // This function handles multiple startup scenarios and is complex by design
 func (p *TransparentProxy) Start(ctx context.Context) error {
@@ -1183,6 +1235,9 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 		FlushInterval: -1,
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.SetURL(targetURL)
+			if p.stripConsentCookie {
+				stripConsentCookie(pr.Out.Header)
+			}
 			p.setXForwardedHeaders(pr, targetURL.Scheme)
 
 			// Stash the original inbound request in the outbound request's
@@ -1408,6 +1463,10 @@ func (p *TransparentProxy) monitorHealth(parentCtx context.Context) {
 	ticker := time.NewTicker(p.healthCheckInterval)
 	defer ticker.Stop()
 
+	// With health checks enabled, each check records the result /health answers
+	// from, so check once before the first tick.
+	p.healthChecker.CheckHealth(parentCtx)
+
 	consecutiveFailures := 0
 
 	for {
@@ -1421,14 +1480,16 @@ func (p *TransparentProxy) monitorHealth(parentCtx context.Context) {
 			slog.Debug("shutdown initiated, stopping health monitor", "target", p.targetURI)
 			return
 		case <-ticker.C:
+			alive := p.healthChecker.CheckHealth(parentCtx)
+
+			// Failures count toward shutdown only once the MCP server is initialized.
 			if !p.serverInitialized() {
 				//nolint:gosec // G706: logging target URI from config
-				slog.Debug("mcp server not initialized yet, skipping health check",
-					"target", p.targetURI)
+				slog.Debug("mcp server not initialized yet, not counting health check",
+					"target", p.targetURI, "status", alive.Status)
 				continue
 			}
 
-			alive := p.healthChecker.CheckHealth(parentCtx)
 			if alive.Status != healthcheck.StatusHealthy {
 				var shouldContinue bool
 				consecutiveFailures, shouldContinue = p.handleHealthCheckFailure(parentCtx, consecutiveFailures, alive.Status)

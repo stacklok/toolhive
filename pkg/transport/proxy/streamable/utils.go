@@ -135,28 +135,11 @@ func writeJSONRPC(w http.ResponseWriter, msg jsonrpc2.Message) error {
 	return err
 }
 
-// idKeyFromID returns a stable string key for a jsonrpc2.ID using its raw value.
-// We prefix with type to avoid collisions between numeric and string IDs.
-func idKeyFromID(id jsonrpc2.ID) string {
-	raw := id.Raw()
-	switch v := raw.(type) {
-	case string:
-		return "s:" + v
-	case float64:
-		// JSON numbers decode to float64
-		return fmt.Sprintf("n:%v", v)
-	case json.Number:
-		return "n:" + v.String()
-	case nil:
-		return "nil"
-	default:
-		return fmt.Sprintf("%T:%v", v, v)
-	}
-}
-
-// compositeKey builds a stable composite key from session ID and request ID key.
-func compositeKey(sessID, idKey string) string {
-	return sessID + "|" + idKey
+// compositeKey builds the upstream correlation key from the session ID and a
+// per-request token. The token must be unique per in-flight request (see
+// createWaiter); it must never be derived from the client-chosen JSON-RPC id.
+func compositeKey(sessID, requestToken string) string {
+	return sessID + "|" + requestToken
 }
 
 // extractStringParam returns params[key] as a string, and whether it was

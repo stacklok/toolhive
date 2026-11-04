@@ -3,8 +3,6 @@
 # This example demonstrates a composite tool workflow with elicitation steps:
 # - User interaction via elicitation steps (prompt for input/confirmation)
 # - OnDecline and OnCancel handlers for user responses
-# - Conditional execution based on user choices
-# - Integration of user input into subsequent tool calls
 #
 # Use case: Deploy an application with user confirmation and environment selection
 #
@@ -76,9 +74,6 @@ spec:
   # Total workflow timeout (including time for user responses)
   timeout: 30m
 
-  # Abort on first failure for safety
-  failureMode: abort
-
   # Input parameters schema (for demonstration purposes only)
   parameters:
     type: object
@@ -124,11 +119,14 @@ spec:
 
       timeout: 10m
 
-      # If user declines, skip remaining deployment steps
+      # If user declines, skip every remaining step (select_environment,
+      # deploy_app, send_notification) and complete the workflow successfully.
+      # Use skip_remaining when a decline should stop the workflow gracefully;
+      # use abort (below) when a refusal should fail the workflow instead.
       onDecline:
         action: skip_remaining
 
-      # If user cancels, abort the entire workflow
+      # If user cancels, abort the entire workflow (fails with an error)
       onCancel:
         action: abort
 
@@ -158,9 +156,11 @@ spec:
 
       timeout: 5m
 
-      # If user declines environment selection, continue with default (staging)
+      # If user declines environment selection, skip every remaining step
+      # (deploy_app, send_notification) so that declining any approval prompt
+      # stops the deployment, and complete the workflow successfully.
       onDecline:
-        action: continue
+        action: skip_remaining
 
       # If user cancels, abort the workflow
       onCancel:
@@ -180,7 +180,7 @@ spec:
       timeout: 15m
       onError:
         action: retry
-        maxRetries: 2
+        retryCount: 2
         retryDelay: 30s
 
     # ============================================

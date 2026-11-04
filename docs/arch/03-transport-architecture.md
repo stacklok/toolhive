@@ -179,6 +179,7 @@ Current admission is stricter than base JSON-RPC:
 - IDs, when present, must be strings or signed-int64 values written as lexical JSON integers. `null`, fractional spellings such as `1.0`, and exponent spellings such as `1e0` are rejected.
 - Valid client error responses may omit the ID, as MCP permits; successful responses require an ID. Client responses remain subject to transport and authorization handling.
 - Invalid envelopes and unreadable bodies return `400`; bodies exceeding the configured limit return `413`.
+- Only a `POST` body is parsed as an MCP message. A request carrying a body on any other method (matched case-sensitively, so `post` is not `POST`) is rejected with `400` rather than forwarded unparsed: forwarding it would skip the request-level middleware that act on the parsed message. Bodyless `GET` (SSE stream), `DELETE` (session termination), and `OPTIONS` (CORS preflight) pass through unchanged; method-specific `405`/`Allow` responses stay with the transport handlers, which know the methods their endpoint serves.
 
 **Why transparent:**
 - Container already speaks HTTP
@@ -248,6 +249,12 @@ actually absent identity uses the unauthenticated sentinel. Non-nil identities
 (including synthetic anonymous/local identities) require valid nonempty string
 `iss` and `sub` claims without NUL bytes. Ownership never comes from outbound
 Authorization headers. Shared metadata does not replace live-stream affinity.
+
+vMCP applies the same check (`sessionbinding.Validate`) to every request carrying
+`Mcp-Session-Id`, with the shared carrier parsing. Its 404 is a plain-text
+`Session terminated` rather than the proxies' JSON-RPC body, so go-sdk clients
+re-initialize. See *Session
+Ownership* in [Virtual MCP](10-virtual-mcp-architecture.md).
 
 ### Middleware Integration
 
@@ -463,6 +470,10 @@ Duration values use Go's `time.ParseDuration` format (e.g., `10s`, `500ms`, `1m3
 **Threshold of 1**: Setting `TOOLHIVE_HEALTH_CHECK_FAILURE_THRESHOLD=1` means the proxy shuts down on the first health check failure with no retries.
 
 **Failure window**: With the defaults, the proxy tolerates roughly `(threshold-1) × (interval + retryDelay)` before shutting down — approximately 60 seconds with default values. This is designed to survive transient network disruptions without prematurely killing healthy backends. If `TOOLHIVE_HEALTH_CHECK_PING_TIMEOUT` exceeds `TOOLHIVE_HEALTH_CHECK_INTERVAL`, each health check cycle takes longer than one interval tick, extending the failure window beyond what the formula predicts.
+
+**Before initialization**: The background monitor checks the backend when the proxy starts and on every interval tick from then on, but a failure counts toward the threshold only once the MCP server has been initialized: a successful `initialize` exchange, or, for a server on the stateless 2026-07-28 revision, its first successful request. Before that, the checks only keep the `/health` answer current.
+
+**What `/health` answers**: With health checks enabled, `/health` answers from the monitor's most recent check instead of pinging the backend for each request, so a backend that is slow to answer cannot hold a Kubernetes probe past its timeout, and the ping timeout no longer has to stay below the probe timeouts. The answer is at most about one interval plus one ping timeout old, or two ping timeouts if the ping timeout exceeds the interval; once the MCP server is initialized, a failed check that is retried can instead leave the answer up to two ping timeouts plus the retry delay old, whichever is longer (15 seconds with the defaults); its `timestamp` and `mcp.last_checked` members say when the check started. Until the first check completes, `/health` reports `healthy` without the `mcp` member. A failed check is reported as `degraded` with HTTP 200, as before. With health checks disabled, as for remote workloads by default, `/health` reports the proxy alone. The HTTP-SSE and streamable HTTP proxies, whose `/health` never waits on a backend, still build their answer per request.
 
 **Usage example** (increase tolerance for a flaky network):
 ```bash

@@ -14,8 +14,8 @@ Do NOT leave optional sections empty or with only placeholder/template text. Eit
 
 - **Changes**: File-by-file table for PRs touching more than a few files.
 - **Implementation plan**: Include when the PR was planned with an AI assistant. Paste the approved plan inside the collapsible `<details>` block. This gives reviewers visibility into the intended design and tradeoffs. Remove the section entirely for PRs that were not AI-planned.
-- **Does this introduce a user-facing change?**: Describe the change from the user's perspective. Write "No" if not applicable.
-- **Special notes for reviewers**: Non-obvious design decisions, known limitations, areas wanting extra scrutiny, or planned follow-up work.
+- **Does this introduce a user-facing change?**: Fill it in whenever a client or operator can observe the change (a new or changed response member, header, or status code, a default, or a request that now succeeds or fails differently), described from the user's perspective as before and after. Write "No", or drop the section, only when nothing observable changed.
+- **Special notes for reviewers**: Non-obvious design decisions, a deliberate deviation from how a sibling code path handles the same case and why, known limitations, areas wanting extra scrutiny, or planned follow-up work.
 
 ## PR Scope
 

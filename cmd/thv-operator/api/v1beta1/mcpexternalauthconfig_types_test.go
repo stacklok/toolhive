@@ -746,7 +746,7 @@ func TestMCPExternalAuthConfig_validateEmbeddedAuthServer(t *testing.T) {
 				},
 			},
 			expectErr: true,
-			errMsg:    "allow_confidential_client_registration cannot be combined with insecure_allow_http",
+			errMsg:    "confidential clients (allow_confidential_client_registration or delegate clients) cannot be combined with insecure_allow_http",
 		},
 		{
 			name: "confidential clients with plain-HTTP loopback issuer without opt-in - invalid",
@@ -952,6 +952,10 @@ func TestMCPExternalAuthConfig_validateEmbeddedAuthServer(t *testing.T) {
 					Type: ExternalAuthTypeEmbeddedAuthServer,
 					EmbeddedAuthServer: &EmbeddedAuthServerConfig{
 						Issuer: "https://auth.example.com",
+						TLSListener: &TLSListenerConfig{
+							CertificateSecretRef: &SecretKeyRef{Name: "listener-tls", Key: "certificate"},
+							PrivateKeySecretRef:  &SecretKeyRef{Name: "listener-tls", Key: "private-key"},
+						},
 						UpstreamProviders: []UpstreamProviderConfig{{
 							Name:       "github",
 							Type:       UpstreamProviderTypeOIDC,
@@ -1037,6 +1041,11 @@ func TestMCPExternalAuthConfig_validateEmbeddedAuthServer(t *testing.T) {
 		{
 			name:      "spiffe bundle-endpoint URL accepts a valid https URL",
 			config:    mustEmbeddedAuthServerConfigWithBundleEndpoint("https://bundle.example.com"),
+			expectErr: false,
+		},
+		{
+			name:      "spiffe file bundle source is valid",
+			config:    mustEmbeddedAuthServerConfigWithFileBundleSource("spire-bundle", "bundle.json"),
 			expectErr: false,
 		},
 		{
@@ -1277,6 +1286,36 @@ func mustEmbeddedAuthServerConfigWithBundleEndpoint(url string) *MCPExternalAuth
 	}
 }
 
+// mustEmbeddedAuthServerConfigWithFileBundleSource builds a minimal valid
+// MCPExternalAuthConfig with a single spiffeTrustDomains entry whose
+// bundleSource is a file source referencing the given ConfigMap name and key.
+func mustEmbeddedAuthServerConfigWithFileBundleSource(configMapName, configMapKey string) *MCPExternalAuthConfig {
+	return &MCPExternalAuthConfig{
+		Spec: MCPExternalAuthConfigSpec{
+			Type: ExternalAuthTypeEmbeddedAuthServer,
+			EmbeddedAuthServer: &EmbeddedAuthServerConfig{
+				Issuer: "https://auth.example.com",
+				UpstreamProviders: []UpstreamProviderConfig{{
+					Name:       "github",
+					Type:       UpstreamProviderTypeOIDC,
+					OIDCConfig: &OIDCUpstreamConfig{IssuerURL: "https://github.com", ClientID: "client-id"},
+				}},
+				SPIFFETrustDomains: []SPIFFETrustDomainConfig{{
+					Name: "example", TrustDomain: "example.org",
+					Methods: []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509},
+					BundleSource: SPIFFEBundleSourceConfig{
+						Type: SPIFFEBundleSourceTypeFile,
+						File: &SPIFFEFileBundleSourceConfig{
+							ConfigMapName: configMapName,
+							ConfigMapKey:  configMapKey,
+						},
+					},
+				}},
+			},
+		},
+	}
+}
+
 // mustEmbeddedAuthServerConfigWithPrincipalPatterns builds a minimal valid
 // MCPExternalAuthConfig with two spiffeClientAuth entries using the given
 // principal patterns, for exercising validateSPIFFEPrincipalPatternOverlap
@@ -1287,6 +1326,10 @@ func mustEmbeddedAuthServerConfigWithPrincipalPatterns(first, second string) *MC
 			Type: ExternalAuthTypeEmbeddedAuthServer,
 			EmbeddedAuthServer: &EmbeddedAuthServerConfig{
 				Issuer: "https://auth.example.com",
+				TLSListener: &TLSListenerConfig{
+					CertificateSecretRef: &SecretKeyRef{Name: "listener-tls", Key: "certificate"},
+					PrivateKeySecretRef:  &SecretKeyRef{Name: "listener-tls", Key: "private-key"},
+				},
 				UpstreamProviders: []UpstreamProviderConfig{{
 					Name:       "github",
 					Type:       UpstreamProviderTypeOIDC,
@@ -1329,6 +1372,10 @@ func mustEmbeddedAuthServerConfigWithResource(resource string) *MCPExternalAuthC
 			Type: ExternalAuthTypeEmbeddedAuthServer,
 			EmbeddedAuthServer: &EmbeddedAuthServerConfig{
 				Issuer: "https://auth.example.com",
+				TLSListener: &TLSListenerConfig{
+					CertificateSecretRef: &SecretKeyRef{Name: "listener-tls", Key: "certificate"},
+					PrivateKeySecretRef:  &SecretKeyRef{Name: "listener-tls", Key: "private-key"},
+				},
 				UpstreamProviders: []UpstreamProviderConfig{{
 					Name:       "github",
 					Type:       UpstreamProviderTypeOIDC,
@@ -2229,6 +2276,166 @@ func TestEmbeddedAuthServerConfig_SyntheticIdentityUpstreams(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			assert.Equal(t, tc.want, tc.cfg.SyntheticIdentityUpstreams())
+		})
+	}
+}
+
+func TestEmbeddedAuthServerConfig_ValidateTLSListener(t *testing.T) {
+	t.Parallel()
+
+	const (
+		errListenerRequired = "tlsListener is required when SPIFFE X.509 client authentication is configured"
+		errSecretRefs       = "tlsListener.certificateSecretRef and tlsListener.privateKeySecretRef are required"
+		errCertRef          = "tlsListener.certificateSecretRef.name and tlsListener.certificateSecretRef.key are required"
+		errKeyRef           = "tlsListener.privateKeySecretRef.name and tlsListener.privateKeySecretRef.key are required"
+	)
+	listener := &TLSListenerConfig{
+		CertificateSecretRef: &SecretKeyRef{Name: "listener-tls", Key: "certificate"},
+		PrivateKeySecretRef:  &SecretKeyRef{Name: "listener-tls", Key: "private-key"},
+	}
+	grants := func(method SPIFFEAuthenticationMethod) *InboundGrantsConfig {
+		return &InboundGrantsConfig{SPIFFEClientAuth: []SPIFFEClientConfig{{
+			TrustDomainRef: "example", PrincipalPattern: "spiffe://example.org/ns/default/agent",
+			ClientID: "spiffe-client", Methods: []SPIFFEAuthenticationMethod{method},
+		}}}
+	}
+	trustDomains := []SPIFFETrustDomainConfig{{
+		Name: "example", TrustDomain: "example.org",
+		Methods: []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509},
+		BundleSource: SPIFFEBundleSourceConfig{
+			Type:        SPIFFEBundleSourceTypeWorkloadAPI,
+			WorkloadAPI: &SPIFFEWorkloadAPIBundleSourceConfig{},
+		},
+	}}
+
+	tests := []struct {
+		name        string
+		cfg         EmbeddedAuthServerConfig
+		wantErr     string
+		viaValidate bool
+	}{
+		{
+			name:        "x509 association without listener",
+			cfg:         EmbeddedAuthServerConfig{InboundGrants: grants(SPIFFEAuthenticationMethodX509)},
+			wantErr:     errListenerRequired,
+			viaValidate: true,
+		},
+		{
+			name: "listener without certificate reference",
+			cfg: EmbeddedAuthServerConfig{TLSListener: &TLSListenerConfig{
+				PrivateKeySecretRef: listener.PrivateKeySecretRef,
+			}},
+			wantErr: errSecretRefs,
+		},
+		{
+			name: "listener without private key reference",
+			cfg: EmbeddedAuthServerConfig{TLSListener: &TLSListenerConfig{
+				CertificateSecretRef: listener.CertificateSecretRef,
+			}},
+			wantErr: errSecretRefs,
+		},
+		{
+			name:    "listener without any reference",
+			cfg:     EmbeddedAuthServerConfig{TLSListener: &TLSListenerConfig{}},
+			wantErr: errSecretRefs,
+		},
+		{
+			name: "certificate reference with empty name",
+			cfg: EmbeddedAuthServerConfig{TLSListener: &TLSListenerConfig{
+				CertificateSecretRef: &SecretKeyRef{Key: "certificate"},
+				PrivateKeySecretRef:  listener.PrivateKeySecretRef,
+			}},
+			wantErr: errCertRef,
+		},
+		{
+			name: "certificate reference with empty key",
+			cfg: EmbeddedAuthServerConfig{TLSListener: &TLSListenerConfig{
+				CertificateSecretRef: &SecretKeyRef{Name: "listener-tls"},
+				PrivateKeySecretRef:  listener.PrivateKeySecretRef,
+			}},
+			wantErr: errCertRef,
+		},
+		{
+			name: "private key reference with empty name",
+			cfg: EmbeddedAuthServerConfig{TLSListener: &TLSListenerConfig{
+				CertificateSecretRef: listener.CertificateSecretRef,
+				PrivateKeySecretRef:  &SecretKeyRef{Key: "private-key"},
+			}},
+			wantErr: errKeyRef,
+		},
+		{
+			name: "private key reference with empty key",
+			cfg: EmbeddedAuthServerConfig{TLSListener: &TLSListenerConfig{
+				CertificateSecretRef: listener.CertificateSecretRef,
+				PrivateKeySecretRef:  &SecretKeyRef{Name: "listener-tls"},
+			}},
+			wantErr: errKeyRef,
+		},
+		{
+			name: "incomplete listener is rejected before the x509 rule",
+			cfg: EmbeddedAuthServerConfig{
+				InboundGrants: grants(SPIFFEAuthenticationMethodX509),
+				TLSListener:   &TLSListenerConfig{CertificateSecretRef: listener.CertificateSecretRef},
+			},
+			wantErr: errSecretRefs,
+		},
+		{
+			name:        "complete listener",
+			cfg:         EmbeddedAuthServerConfig{TLSListener: listener},
+			viaValidate: true,
+		},
+		{
+			name: "x509 association with listener",
+			cfg:  EmbeddedAuthServerConfig{InboundGrants: grants(SPIFFEAuthenticationMethodX509), TLSListener: listener},
+		},
+		{
+			name: "jwt-only association without listener",
+			cfg:  EmbeddedAuthServerConfig{InboundGrants: grants(SPIFFEAuthenticationMethodJWT)},
+		},
+		{
+			name: "x509 only in trust domains without listener",
+			cfg: EmbeddedAuthServerConfig{
+				SPIFFETrustDomains: trustDomains,
+				InboundGrants:      grants(SPIFFEAuthenticationMethodJWT),
+			},
+		},
+		{
+			name: "nil inbound grants without listener",
+			cfg:  EmbeddedAuthServerConfig{SPIFFETrustDomains: trustDomains},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := tt.cfg.ValidateTLSListener()
+			if tt.wantErr != "" {
+				require.EqualError(t, err, tt.wantErr)
+			} else {
+				require.NoError(t, err)
+			}
+
+			if !tt.viaValidate {
+				return
+			}
+
+			// Validate() must surface the same rejection.
+			cfg := tt.cfg
+			cfg.Issuer = "https://auth.example.com"
+			cfg.UpstreamProviders = []UpstreamProviderConfig{{
+				Name:       "github",
+				Type:       UpstreamProviderTypeOIDC,
+				OIDCConfig: &OIDCUpstreamConfig{IssuerURL: "https://github.com", ClientID: "client-id"},
+			}}
+			validateErr := (&MCPExternalAuthConfig{Spec: MCPExternalAuthConfigSpec{
+				Type:               ExternalAuthTypeEmbeddedAuthServer,
+				EmbeddedAuthServer: &cfg,
+			}}).Validate()
+			if tt.wantErr != "" {
+				require.ErrorContains(t, validateErr, tt.wantErr)
+			} else {
+				require.NoError(t, validateErr)
+			}
 		})
 	}
 }

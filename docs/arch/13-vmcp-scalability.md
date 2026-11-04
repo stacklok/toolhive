@@ -54,6 +54,13 @@ and the client must reinitialize. Backend connections held by the cached
 `MultiSession` are only released when the LRU cache evicts the entry or the
 session is explicitly terminated.
 
+The Streamable HTTP transport also reaps its own pod-local copy of a session
+(the go-sdk session and its per-session server) after one TTL with no POST
+request. The session ownership middleware answers 404 for absent or terminated
+sessions before the transport runs, so the transport's usual cleanup on that path
+no longer happens. This releases only the pod-local copy, never the stored
+metadata, so a client that returns within the stored TTL is rehydrated.
+
 The TTL is configurable via `server.Config.SessionTTL` but is not currently
 exposed through the operator CRD.
 
@@ -75,6 +82,12 @@ resets the key's TTL atomically (see `pkg/transport/session/storage_redis.go`,
 - Idle sessions expire automatically after the full TTL elapses with no access.
 - There is no absolute maximum session lifetime enforced by Redis storage.
 
+For the pod-local copy described above, an open standalone GET stream alone
+does not count as activity, so a client that only listens must send a POST (for
+example a ping) within `SessionTTL` to keep the copy on that pod. Otherwise the stream is closed,
+and a reconnecting GET is rehydrated if the stored record is still valid and
+answered 404 if not.
+
 ### Session garbage collection
 
 | Trigger | Mechanism |
@@ -91,6 +104,11 @@ key `vmcp.identity.binding`. The canonical format is defined in
 authenticated sessions, and the literal string `"unauthenticated"` for sessions
 without an auth identity.
 
+Every replica checks the stored binding against the authenticated caller on each
+request that carries `Mcp-Session-Id`, reading it from the shared store before the
+session is rehydrated locally, so a session is usable only by its owner on any
+replica. See *Session Ownership* in [Virtual MCP](10-virtual-mcp-architecture.md).
+
 The binding is stored as **plaintext** in the session store (Redis/Valkey). It is
 not a credential — it identifies but does not authenticate a principal — but it is
 personally-identifying information (a combination of issuer URL and user subject).
@@ -106,6 +124,80 @@ of breaking on every legitimate OAuth token refresh. The current scheme accepts
 plaintext PII at rest as the price of correctness; operators who require additional
 protection against a Redis compromise must layer Redis-side access controls as
 described above.
+
+### Transport security
+
+`spec.sessionStorage.tls` (shared by `VirtualMCPServer`, `MCPServer` and
+`MCPRemoteProxy`) enables TLS for the session-storage connection and for the rate
+limiter's client to the same Redis. Standalone vMCP uses `sessionStorage.tls` in its
+YAML (`caCertFile`, `insecureSkipVerify`), and proxy RunConfigs use
+`scaling_config.session_redis.tls`; both map to `pkg/redisconfig.TLSConfig`.
+
+- An empty `tls` object verifies the server certificate against the system roots.
+- `caCertSecretRef` mounts a private CA at `/etc/toolhive/session-redis-tls/ca.crt`
+  in the proxy runner or vMCP pod.
+- `insecureSkipVerify` disables verification and is meant for testing only. The API
+  rejects it together with `caCertSecretRef`, and rejects `tls` with a non-Redis
+  provider.
+- A failed handshake never falls back to plaintext.
+- If the referenced CA Secret or key does not exist, the pod stays in
+  `ContainerCreating`. This is fail-closed, as for the embedded auth server's Redis CA.
+- The CA is mounted with `subPath`, so rotating the Secret's content requires a pod
+  restart. Switching to a different Secret rolls the Deployment.
+- On a `VirtualMCPServer`, the API rejects `spec.config.sessionStorage.tls`,
+  because the operator derives the vMCP setting from `spec.sessionStorage.tls`.
+- The API rejects a `caCertSecretRef` with an empty name or key.
+
+When `tls` is omitted, the connection stays unencrypted for backward compatibility.
+If TLS is omitted, or `insecureSkipVerify` is set, the session store constructor
+logs one startup WARN carrying a `store` attribute, whether or not a password is
+configured. vMCP additionally logs its existing no-authentication WARN when
+`THV_SESSION_REDIS_PASSWORD` is unset; the two cover different gaps.
+
+The operator-wide Redis fallback supports verified TLS through Helm:
+
+```yaml
+operator:
+  defaultRedis:
+    addr: redis.example.com:6380
+    tls:
+      enabled: true
+      caCertSecretRef:
+        name: redis-ca
+        key: ca.crt
+```
+
+Omit `caCertSecretRef` to verify against system roots. The CA Secret must exist
+in every workload namespace that uses the fallback, alongside any configured
+password Secret. The operator passes references to the workloads; it does not
+copy Secret contents between namespaces or connect to Redis itself.
+
+If the global CA Secret or its configured key is missing, Kubernetes reports a
+`FailedMount` event on each affected pod and leaves it in `ContainerCreating`.
+Inspect `kubectl describe pod` in the workload namespace to identify the missing
+reference. A missing global CA affects every workload using that fallback in the
+namespace; it does not affect workloads with their own Redis configuration.
+
+The chart sets `TOOLHIVE_DEFAULT_REDIS_TLS_ENABLED` and, for a private CA,
+`TOOLHIVE_DEFAULT_REDIS_TLS_CA_SECRET_NAME` and
+`TOOLHIVE_DEFAULT_REDIS_TLS_CA_SECRET_KEY`. Invalid settings stop operator startup.
+The operator reads and validates the defaults once at startup and passes that
+snapshot to the controllers and vMCP converter. Configuration conversion and CA
+projection do not read the environment during reconciliation.
+CA projection, certificate validation, rate-limiter TLS, and restart requirements
+are the same as for per-workload session storage. A change to operator defaults
+is applied as workloads reconcile after the operator restarts.
+
+Explicit per-workload Redis settings override the entire global connection,
+including TLS; omitting TLS on an explicit Redis connection keeps that connection
+plaintext. The default remains plaintext when global TLS is disabled. Global TLS
+always verifies server certificates; it has no `insecureSkipVerify` option.
+
+This change preserves existing provider selection: MCPRemoteProxy suppresses the
+fallback for any explicit `sessionStorage`, while MCPServer and VirtualMCPServer
+can still select global Redis when `provider: memory` is explicit. Their existing
+password-selection behavior is unchanged. Configure an explicit Redis connection
+when overriding global defaults, and avoid relying on this provider inconsistency.
 
 ## File descriptor limits
 
@@ -195,6 +287,7 @@ for session affinity design details.
 | Limit | Value | Source | Tunable? |
 | ----- | ----- | ------ | -------- |
 | Per-pod session cache | 1,000 sessions | `sessionmanager/factory.go:defaultCacheCapacity` | No (internal field) |
+| Resource URI template-match cap | 2048 bytes | vmcp/types.go:MaxResourceURILength | No |
 | vMCP session TTL | 30 minutes | `vmcp/server/server.go:defaultSessionTTL` | Via `server.Config.SessionTTL` (not CRD-exposed) |
 | MCPServer proxy session TTL | 2 hours | `transport/session/proxy_session.go:DefaultSessionTTL` | No |
 | Redis dial timeout | 5 s | `toolhive-core/redis/config.go:DefaultDialTimeout` | Via `tcredis.Config.DialTimeout` |

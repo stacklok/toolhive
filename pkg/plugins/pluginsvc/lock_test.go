@@ -30,6 +30,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/skills/lockfile"
 	"github.com/stacklok/toolhive/pkg/storage"
 	"github.com/stacklok/toolhive/pkg/storage/sqlite"
+	"github.com/stacklok/toolhive/test/testkit/osperm"
 )
 
 // extractingAdapter materializes by ExtractPlugin into <base>/<name>, matching
@@ -377,6 +378,7 @@ func TestInstallProjectScope_RollbackCompensationErrorIsJoined(t *testing.T) {
 //
 //nolint:paralleltest // serial: real sqlite + on-disk client materialization per test
 func TestInstallProjectScope_RollbackKeepsPreExistingGroupMembership(t *testing.T) {
+	osperm.SkipIfRoot(t)
 	svc, projectRoot := newLockTestService(t)
 	ctrl := gomock.NewController(t)
 	gm := groupmocks.NewMockManager(ctrl)
@@ -432,6 +434,7 @@ func TestUninstall_RemovesPluginLockEntry(t *testing.T) {
 
 //nolint:paralleltest // serial: real sqlite + on-disk client materialization per test
 func TestUninstall_LockWriteFailureAbortsBeforeDestruction(t *testing.T) {
+	osperm.SkipIfRoot(t)
 	svc, projectRoot := newLockTestService(t)
 	installTestPlugin(t, svc, projectRoot, validLockDigest())
 

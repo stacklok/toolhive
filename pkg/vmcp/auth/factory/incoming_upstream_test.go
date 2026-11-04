@@ -114,7 +114,7 @@ func TestNewOIDCAuthMiddleware_UpstreamTokenReaderWiring(t *testing.T) {
 			GetAllUpstreamCredentials(gomock.Any(), "session-abc").
 			Return(map[string]upstreamtoken.UpstreamCredential{
 				"google": {AccessToken: "gcp-access-token", IDToken: "gcp-id-token"},
-			}, []string(nil), nil)
+			}, map[string]error(nil), nil)
 
 		authMw, _, err := newOIDCAuthMiddleware(t.Context(), oidcCfg, reader, nil, "")
 		require.NoError(t, err, "middleware creation should succeed with non-nil reader")

@@ -773,31 +773,71 @@ func TestAuthzConfigRef_DeprecatedInlinePrimaryUpstreamProvider(t *testing.T) {
 func TestValidateDoesNotDefaultEmbeddingOptimizer(t *testing.T) {
 	t.Parallel()
 
-	vmcp := &VirtualMCPServer{
+	server := &VirtualMCPServer{
 		Spec: VirtualMCPServerSpec{
 			GroupRef:           &MCPGroupRef{Name: "test-group"},
 			EmbeddingServerRef: &EmbeddingServerRef{Name: "shared-embedding"},
 		},
 	}
 
-	require.NoError(t, vmcp.Validate())
-	assert.Nil(t, vmcp.Spec.Config.Optimizer,
+	require.NoError(t, server.Validate())
+	assert.Nil(t, server.Spec.Config.Optimizer,
 		"Validate must not mutate spec; embedding optimizer defaulting belongs in ApplyDefaults")
 }
 
-// TestApplyDefaultsEmbeddingOptimizer verifies the extracted defaulting step
-// preserves the previous behavior: an EmbeddingServerRef without an optimizer
-// gets a default optimizer so the referenced embedding server is used.
+// TestApplyDefaultsEmbeddingOptimizer verifies that defaulting creates an optimizer
+// only when an embedding server is referenced and preserves explicit settings.
 func TestApplyDefaultsEmbeddingOptimizer(t *testing.T) {
 	t.Parallel()
 
-	vmcp := &VirtualMCPServer{
-		Spec: VirtualMCPServerSpec{
-			GroupRef:           &MCPGroupRef{Name: "test-group"},
-			EmbeddingServerRef: &EmbeddingServerRef{Name: "shared-embedding"},
+	tests := []struct {
+		name               string
+		embeddingServerRef *EmbeddingServerRef
+		optimizer          *config.OptimizerConfig
+		wantOptimizer      *config.OptimizerConfig
+	}{
+		{
+			name:               "reference creates optimizer",
+			embeddingServerRef: &EmbeddingServerRef{Name: "shared-embedding"},
+			wantOptimizer:      &config.OptimizerConfig{},
+		},
+		{
+			name: "no reference leaves optimizer unset",
+		},
+		{
+			name:               "reference preserves explicit optimizer",
+			embeddingServerRef: &EmbeddingServerRef{Name: "shared-embedding"},
+			optimizer:          &config.OptimizerConfig{EmbeddingService: "http://custom-embedding:8080"},
+			wantOptimizer:      &config.OptimizerConfig{EmbeddingService: "http://custom-embedding:8080"},
+		},
+		{
+			name:          "no reference preserves explicit optimizer",
+			optimizer:     &config.OptimizerConfig{EmbeddingService: "http://custom-embedding:8080"},
+			wantOptimizer: &config.OptimizerConfig{EmbeddingService: "http://custom-embedding:8080"},
 		},
 	}
 
-	vmcp.ApplyDefaults()
-	require.NotNil(t, vmcp.Spec.Config.Optimizer)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			server := &VirtualMCPServer{
+				Spec: VirtualMCPServerSpec{
+					GroupRef:           &MCPGroupRef{Name: "test-group"},
+					EmbeddingServerRef: tt.embeddingServerRef,
+					Config:             config.Config{Optimizer: tt.optimizer},
+				},
+			}
+
+			server.ApplyDefaults()
+			assert.Equal(t, tt.wantOptimizer, server.Spec.Config.Optimizer)
+			if tt.optimizer != nil {
+				assert.Same(t, tt.optimizer, server.Spec.Config.Optimizer)
+			}
+
+			defaulted := server.DeepCopy()
+			server.ApplyDefaults()
+			assert.Equal(t, defaulted, server, "ApplyDefaults must be idempotent")
+		})
+	}
 }

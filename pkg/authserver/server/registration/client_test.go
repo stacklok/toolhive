@@ -951,7 +951,8 @@ func TestValidateConfiguredClient(t *testing.T) {
 			AllowedSourceClients: []string{"tui"}, DelegateClientIDs: []string{"broker"},
 		}},
 		{name: "exchange refresh tokens with id-jag cap", spec: exchangeRefreshSpec("12h", "")},
-		{name: "exchange refresh tokens with refresh cap", spec: exchangeRefreshSpec("", "720h")},
+		{name: "exchange refresh tokens with refresh cap only", spec: exchangeRefreshSpec("", "720h"),
+			wantErr: "refresh_token_max_lifetime requires id_jag_max_lifetime"},
 		{name: "exchange refresh tokens with both caps", spec: exchangeRefreshSpec("1h", "24h")},
 		{name: "exchange refresh tokens with private_key_jwt", spec: func() ConfiguredClientSpec {
 			s := exchangeRefreshSpec("12h", "")

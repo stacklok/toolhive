@@ -162,6 +162,49 @@ func TestBuild_Parallel_ErrorPropagation(t *testing.T) {
 	require.Contains(t, err.Error(), "intentional failure")
 }
 
+func TestBuild_Parallel_NonCallableElement(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		script    string
+		expectErr string
+	}{
+		{
+			name:      "non-callable in the middle",
+			script:    `return parallel([lambda: count(), lambda: count(), 42, lambda: count()])`,
+			expectErr: "parallel: element 2 is not callable (got int)",
+		},
+		{
+			name:      "non-callable last",
+			script:    `return parallel([lambda: count(), "x"])`,
+			expectErr: "parallel: element 1 is not callable (got string)",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var calls atomic.Int32
+			counter := starlark.NewBuiltin("count", func(
+				_ *starlark.Thread, _ *starlark.Builtin, _ starlark.Tuple, _ []starlark.Tuple,
+			) (starlark.Value, error) {
+				calls.Add(1)
+				return starlark.None, nil
+			})
+
+			globals := Build(context.Background(), nil, 100_000, 0)
+			globals["count"] = counter
+
+			_, err := core.Execute(tt.script, globals, 100_000)
+			require.Error(t, err)
+			require.Contains(t, err.Error(), tt.expectErr)
+			require.Zero(t, calls.Load(), "no callable may run when any element is invalid")
+		})
+	}
+}
+
 func TestBuild_Parallel_ConcurrencyLimit(t *testing.T) {
 	t.Parallel()
 

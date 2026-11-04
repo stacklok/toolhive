@@ -131,11 +131,29 @@ func shouldSkipSubsequentAuthorization(method string) bool {
 
 // missingTargetID reports whether a request that identifies its target by
 // params.name or params.uri (tools/call, prompts/get, resources/read,
-// skills/get) lacks a valid one. The parser yields an empty resource ID for an
-// absent, empty or non-string value.
+// resources/subscribe, resources/unsubscribe, skills/get) lacks a valid one.
+// The parser yields an empty resource ID for an absent, empty or non-string
+// value.
 func missingTargetID(featureOp featureOperation, resourceID string) bool {
 	_, targeted := targetedOperations[featureOp]
 	return targeted && resourceID == ""
+}
+
+// resourceURIError returns the error from authorizers.CheckResourceURI when a
+// request carries a concrete resource URI that is not in canonical form, or nil.
+// It does not look at an empty URI; missingTargetID covers that.
+//
+// The check applies to resources/read, resources/subscribe and
+// resources/unsubscribe only because those methods map to the resource/read
+// feature and operation (see MCPMethodToFeatureOperation).
+func resourceURIError(featureOp featureOperation, resourceID string) error {
+	if featureOp != (featureOperation{
+		Feature:   authorizers.MCPFeatureResource,
+		Operation: authorizers.MCPOperationRead,
+	}) {
+		return nil
+	}
+	return authorizers.CheckResourceURI(resourceID)
 }
 
 // targetedOperations are the feature/operations whose authorization target is
@@ -264,6 +282,16 @@ func Middleware(a authorizers.Authorizer, next http.Handler, passThroughTools ma
 		// (e.g. a permit that does not name the tool, beside a forbid that does).
 		if missingTargetID(featureOp, parsedRequest.ResourceID) {
 			slog.Warn("denied MCP request without a valid target name or URI", "method", parsedRequest.Method)
+			handleUnauthorized(w, parsedRequest.ID, nil)
+			return
+		}
+
+		// A URI that is not in canonical form is denied before any policy sees
+		// it. The URI is not logged: it is caller-chosen and may carry control
+		// characters.
+		if err := resourceURIError(featureOp, parsedRequest.ResourceID); err != nil {
+			slog.Warn("denied MCP request with a resource URI not in canonical form",
+				"method", parsedRequest.Method, "rule", authorizers.ResourceURIRule(err))
 			handleUnauthorized(w, parsedRequest.ID, nil)
 			return
 		}
@@ -415,18 +443,22 @@ func authorizeDerivedAndServe(
 	if err != nil {
 		// WARN, not Debug: every derive failure is a request-SHAPE rejection (a
 		// legacy bare-string ref, an unrecognised notifications member, a list over
-		// the cap, undecodable params), not a policy decision. Each one means a
-		// client or a policy needs updating, which is the repo's stated use for WARN
-		// -- and it is the only signal an operator gets that an upgrade started
-		// refusing traffic that previously passed. Policy denials stay silent, so
-		// this does not log ordinary authorization outcomes.
+		// the cap, a resource URI with a control character or space, undecodable
+		// params), not a policy decision. Each one means a client or a policy needs
+		// updating, which is the repo's stated use for WARN -- and it is the only
+		// signal an operator gets that an upgrade started refusing traffic that
+		// previously passed. Policy denials stay silent, so this does not log
+		// ordinary authorization outcomes.
 		//
 		// The reason is logged but never returned: the response body stays the fixed
 		// "Unauthorized" so a prober cannot learn how its probe was malformed. Values
 		// interpolated into these errors are truncated at the source, bounding what a
 		// caller can write per line.
-		slog.Warn("MCP request denied: no resolvable authorization target",
-			"method", parsedRequest.Method, "error", err)
+		logArgs := []any{"method", parsedRequest.Method, "error", err}
+		if rule := authorizers.ResourceURIRule(err); rule != "" {
+			logArgs = append(logArgs, "rule", rule)
+		}
+		slog.Warn("MCP request denied: no resolvable authorization target", logArgs...)
 		handleUnauthorized(w, parsedRequest.ID, nil)
 		return
 	}

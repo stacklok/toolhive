@@ -8,7 +8,7 @@ import (
 	"sync"
 )
 
-// Client capability names as they appear in the draft schema's
+// Client capability names as they appear in the final 2026-07-28 schema's
 // ClientCapabilities object — the keys a Modern client declares under
 // _meta's io.modelcontextprotocol/clientCapabilities and the keys a
 // MissingRequiredClientCapabilityError reports back in
@@ -61,8 +61,8 @@ func modernClientDeclaredURLElicitation(meta map[string]any) bool {
 // verbs install one before dispatching; the SDK requester adapters
 // (sdk_elicitation_adapter.go, sdk_sampling_adapter.go) record into it at the
 // exact point of refusal (mcpcompat's ErrNoActiveSession); the dispatcher
-// reads it after a failed call to classify the failure as the draft schema's
-// MissingRequiredClientCapabilityError (-32021) when the client did not
+// reads it after a failed call to classify the failure as the final 2026-07-28
+// schema's MissingRequiredClientCapabilityError (-32021) when the client did not
 // declare the capability.
 //
 // Why this rides the context rather than a parameter or the error chain: the

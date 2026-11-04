@@ -464,16 +464,17 @@ type DelegateClientTokenExchange struct {
 // tokens that a delegate client obtains through token exchange. Durations are
 // Go duration strings (e.g. "12h"), as in TokenLifespanRunConfig. Each cap must
 // be positive and at most 720h. An empty cap refuses the matching grant kind
-// for this client, and at least one cap must be set.
+// for this client, and at least one cap must be set. refresh_token_max_lifetime
+// is only valid together with id_jag_max_lifetime.
 type DelegateClientExchangeRefreshTokens struct {
 	// IDJAGMaxLifetime caps the lifetime of grants that can be exchanged for
 	// ID-JAGs. Empty refuses those grants.
 	IDJAGMaxLifetime string `json:"id_jag_max_lifetime,omitempty" yaml:"id_jag_max_lifetime,omitempty"`
 
 	// RefreshTokenMaxLifetime caps the lifetime of grants that can be exchanged
-	// for child refresh tokens. Empty refuses those grants. Deriving a child also
-	// needs id_jag_max_lifetime, because a child allows ID-JAGs and is capped by
-	// that value; without it every derive is refused with token_type_not_permitted.
+	// for child refresh tokens. Empty refuses those grants. Setting it also needs
+	// id_jag_max_lifetime, because a child allows ID-JAGs and is capped by that
+	// value; validation rejects refresh_token_max_lifetime without it.
 	RefreshTokenMaxLifetime string `json:"refresh_token_max_lifetime,omitempty" yaml:"refresh_token_max_lifetime,omitempty"`
 }
 
@@ -911,8 +912,9 @@ func requireDeclaredTrustMode(client delegateClientView) error {
 			client.ClientID, SelfIssuedSubjectTokensAny, SelfIssuedSubjectTokensRestricted)
 	}
 	return fmt.Errorf("delegate_clients: client_id %q: private_key_jwt clients must declare a token_exchange block "+
-		"with self_issued_subject_tokens (%q or %q)",
-		client.ClientID, SelfIssuedSubjectTokensAny, SelfIssuedSubjectTokensRestricted)
+		"with self_issued_subject_tokens (%q or %q); to keep the implicit any behaviour of earlier releases, "+
+		"set token_exchange.self_issued_subject_tokens to %q",
+		client.ClientID, SelfIssuedSubjectTokensAny, SelfIssuedSubjectTokensRestricted, SelfIssuedSubjectTokensAny)
 }
 
 // trustModeRequired reports whether a delegate client with these grant types

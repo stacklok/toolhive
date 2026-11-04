@@ -70,6 +70,12 @@ denied request is audited with outcome `denied`. The denial message is kind-only
 capability name or whether it exists, so it cannot be used to enumerate the
 server.
 
+Virtual MCP applies the same resource URI rules (see [MCP entities](#mcp-entities)) to
+`resources/read` and to `completion/complete` with a `ref/resource`: a read of a URI
+that is not in canonical form is denied, and a completion ref is refused only when it
+is empty or contains a space or control character. For `completion/complete` the denial
+is a JSON-RPC error, not an HTTP 403.
+
 One ordering differs from the direct `thv run` proxies, where authorization runs
 first: vMCP checks session ownership before the authorization gate. A request that
 carries an `Mcp-Session-Id` the caller does not own, or that does not exist, gets
@@ -182,6 +188,28 @@ permit|forbid(principal, action, resource) when { conditions };
 - `conditions`: Optional conditions that must be satisfied for the policy to
   apply.
 
+#### Policy limits
+
+Inline policies on an `MCPRemoteProxy` are limited to 8 KiB (8192 bytes) each.
+The operator checks this limit together with the policy syntax. A policy over
+the limit is rejected the same way as one with a syntax error: the
+`ConfigurationValid` condition is set to `False` with reason
+`AuthzPolicySyntaxInvalid`, the proxy phase is `Failed`, and the operator emits
+a Warning event that names the policy index and the limit, for example
+`cedar policy at index 2 rejected: policy is too large (9120 bytes, max 8192)`.
+The `Ready` and `AuthConfigured` conditions also become `False`, and the
+operator retries with backoff until the policy is fixed. The existing
+Deployment, Service and authorization ConfigMap keep their last valid
+configuration in the meantime.
+
+Inline policies on `MCPServer` and `VirtualMCPServer`, and policies in a
+referenced ConfigMap, are not size-checked.
+
+For large allowlists, use group or claim membership, or `entitiesJson`,
+instead of listing every value in a policy. Do not split a `forbid ... unless`
+allowlist across several list entries: each entry is evaluated on its own, so
+splitting changes what the policy means.
+
 #### MCP entities
 
 In the context of MCP servers, the following entities are used:
@@ -223,6 +251,76 @@ In the context of MCP servers, the following entities are used:
   escaping rules. In Cedar source the ID is a double-quoted string literal, so almost
   every URI character is ordinary, but `"` and `\` must be escaped (for example
   `Resource::"file://C:\\share\\data"`).
+
+**Write policies with the canonical URI.** The proxy compares the URI exactly as the
+client sent it, and it accepts a resource URI only when it is already in canonical
+form. A URI in any other form is rejected with a 403 before any policy is evaluated.
+This applies to `resources/read`, `resources/subscribe`, `resources/unsubscribe` and
+each URI in a `subscriptions/listen` request.
+
+The reason is that some MCP servers look a resource up by a cleaned-up form of the
+URI. We verified this for the TypeScript SDK and for the Python SDK, whose URL type
+(pydantic `AnyUrl`) cleans up URIs the same way the TypeScript SDK does. The people who
+reported the problem showed that the C# SDK cleans up URIs too. A `forbid` on one
+spelling would not cover the other spellings that reach the same resource. Because
+only one spelling per resource gets through, one exact comparison is the whole
+decision.
+
+A URI is canonical when WHATWG URL serialization (the browser standard) leaves it
+unchanged and it also passes a few RFC 3986 normalization rules. In practice:
+
+- **The scheme is lower case.** `HARNESS://host/x` is refused; use `harness://host/x`.
+  A scheme is required.
+- **The host is lower case for `http`, `https`, `ws`, `wss`, `ftp` and `file`.**
+  `http://EXAMPLE.com/x` is refused; use `http://example.com/x`. Other schemes keep the
+  case of the host (`repo://Stacklok/toolhive/README.md` is fine). A host holds only
+  letters, digits, `-` and `_`, in dot-separated labels with no empty label and no
+  trailing dot.
+- **Percent-encoding uses upper-case hex.** `%3a` is refused; use `%3A`.
+- **Letters, digits and `-._~` are not percent-encoded.** `%41` and `%7e` are refused;
+  use `A` and `~`.
+- **There are no `.` or `..` segments**, written plainly or as `%2e`. The refused
+  `harness://host/a/../b` and `harness://host/%2e%2e/b` are both written
+  `harness://host/b`.
+- **User information is plain.** A user name, and an optional password after one `:`,
+  are allowed when each is not empty and uses only letters, digits, `-._~!$&'()*+,` and
+  upper-case `%XX`. `postgres://user@host:5432/db/table/schema` and
+  `harness://u:p@host/x` are fine. These are refused: an empty user or password
+  (`harness://@host/x`, `harness://:@host/x`, `harness://u:@host/x`), a second `:` or an
+  `@` in it, and `;` or `=` (`harness://u;x@host/x`), which parsers encode. User
+  information is never allowed in a `file` URI, and it needs a host.
+- **A port is plain.** It has a host, no leading zero, is not `0`, is at most 65535
+  and is not the default port for the scheme. `http://example.com:80/x` is refused; use
+  `http://example.com/x`. So are `harness://host:/x` (empty port) and
+  `harness://host:080/x`.
+- **`http`, `https`, `ws`, `wss` and `ftp` have a host and a path.**
+  `http://example.com` is refused; use `http://example.com/`. A numeric host must be a
+  full dotted quad: `http://127.1/` is refused, `http://127.0.0.1/` is fine.
+- **`xn--` (punycode) labels are not allowed in the host** of these schemes and
+  `file`.
+- **A query does not contain `'`** for those schemes and `file`. Write it as `%27`.
+- **`file` URIs are written `file:///path`.** The forms `file:/path`,
+  `file://localhost/path` and `file://host:8080/path` are refused, and the path must
+  not start with `//`. A drive letter is allowed only with an empty host:
+  `file:///C:/x` is fine, `file://host/C:/x` is refused.
+- **Only these bytes appear:** letters, digits, and `- . _ ~ ! $ & ' ( ) * + , ; = : @ / ? %`.
+  A space, a control character (`0x00` to `0x1F`, `0x7F`), a non-ASCII character and
+  any of `"`, `<`, `>`, `\`, `^`, a backtick, `{`, `|`, `}`, `[` and `]` are refused.
+  Percent-encode them: a space is `%20` and `café` is `caf%C3%A9`.
+- **There is no fragment** (`#...`) and **no IPv6 literal host** (`[::1]`). Both are
+  refused.
+
+For example, `Resource::"harness://static/a%20b"` and `Resource::"file:///C:/x"` match
+the URIs a client sends, and the canonical spelling is the only one that can match.
+
+A server that lists a resource under a URI that is not in canonical form (for example
+`file:///My Docs/x`) can still show it in `resources/list`, but a read of it is
+refused. The server should list the canonical URI.
+
+The reference in `completion/complete` with a `ref/resource` is a resource template
+such as `file:///{name}`. A template is not a URI, and SDKs match it by exact string.
+So the proxy refuses it only when it is empty or contains a space or control
+character, and otherwise authorizes it exactly as sent.
 
 Requests that identify their target only by `params.name` or `params.uri` (`tools/call`,
 `prompts/get`, `resources/read`, `resources/subscribe`, `resources/unsubscribe`, and
@@ -322,6 +420,67 @@ permit(
   resource == Resource::"file:///etc/passwd"
 );
 ```
+
+##### Forbid a specific resource
+
+A `forbid` on a resource URI, next to a broader `permit`, holds against servers built
+on the TypeScript SDK and the Python SDK. Those SDKs parse the URI and look the
+resource up by the cleaned-up form (lower-case scheme, no `.` or `..` segments, and so
+on). The proxy refuses every URI that is not in canonical form before the policy runs,
+so a client cannot reach the resource through a different spelling:
+
+```plain
+permit(principal, action == Action::"read_resource", resource);
+forbid(
+  principal,
+  action == Action::"read_resource",
+  resource == Resource::"harness://host/secret"
+);
+```
+
+With this policy, `HARNESS://host/secret`, `harness://host/./secret` and
+`harness://host/%2e%2e/secret` are all refused with a 403, and the exact URI
+`harness://host/secret` is denied by the `forbid`.
+
+Some cases the proxy does not close:
+
+- **The C# SDK.** The people who reported the problem showed that it cleans up URIs,
+  for example `harness://STATIC/text` reaches `harness://static/text`. The canonical
+  check closes what it shares with the browser standard (a lower-case scheme and
+  host for `http` and `https`, dot segments, and so on), but not these:
+  - the case of the host for other schemes, which the proxy keeps as sent;
+  - user information, which the proxy accepts as plain text (we did not verify whether
+    C# ignores or changes it);
+  - possibly decoded `!'()*` escapes, and the default ports of other schemes.
+
+  If a backend uses the C# SDK, use an allow-list.
+- **A resource template handler that changes the URI it receives.** For example, a
+  handler that decodes `%2F` to `/` can reach a resource the `forbid` names under a
+  different spelling. So can a handler that rebuilds the resource from the host or path
+  of the parsed URL, because it ignores the user information and the port:
+  `harness://u@static:99/secret` can reach what a `forbid` on
+  `harness://static/secret` names. Check what your handlers do with the URI, or use an
+  allow-list.
+- **A server's own URI handling** beyond these SDKs.
+
+The safest policy is an allow-list. Permit only the URIs that a client may read, and
+rely on default deny for everything else:
+
+```plain
+permit(
+  principal,
+  action == Action::"read_resource",
+  resource == Resource::"harness://host/public"
+);
+```
+
+Any other URI matches no `permit` and is denied.
+
+Do not rely on a pattern in a condition to block part of a URI space. A guard such as
+`when { resource.uri like "harness://host/public/*" }`, a `contains` check or a test for
+`..` matches the text of the URI, not the resource the server picks. For example,
+`%2e%2e` is a `..` segment that a text check for `..` does not see, and a server may
+treat `\` as `/`. Name each URI exactly.
 
 ##### List operations
 
@@ -658,6 +817,95 @@ Both approaches work and can be used to make authorization decisions based on
 the specific parameters of the request. This policy allows any client to call the
 weather tool, but only for the locations "New York" and "London".
 
+JSON numbers become Cedar `decimal` values, so compare them with the decimal
+methods (`greaterThan`, `lessThanOrEqual`, and so on) and `decimal("...")`
+literals. The `<`, `<=`, `>` and `>=` operators do not accept decimals and raise
+an error on one. ToolHive reads every JSON number as a 64-bit floating-point
+value first, so a number with more than about 15 significant digits may be
+rounded, and the rules below apply to the rounded value.
+
+A decimal holds at most four fractional digits and values up to about
++/-922337203685477.5. A number within that range and with at most four
+fractional digits is converted exactly (the rounded value, see above). Any other
+number is passed as a marker record instead of being left out. Prompt arguments
+(`prompts/get`) on the proxy path get the same `arg_` treatment as tool
+arguments. vMCP does not expose prompt arguments to policies.
+
+A number marker equals nothing, not even another marker for the same number, so
+`==` against it is false and `!=` is true. Compare numeric IDs as strings, not
+as numbers. A too-deep or unsupported claim marker equals only a marker for an
+identical value. `context has arg_n` is true for an out-of-range number, because the
+argument is present. Typed operations on a marker are an evaluation error,
+including decimal methods, `<`, `<=`, `>`, `>=`, `like`, boolean operators, set
+methods called on the marker, `in`, `is`, and reading any attribute other than
+the marker's own. `==`, `!=`, `has`, `set.contains(marker)` and reading the
+marker's own attributes evaluate without error. ToolHive always denies a
+request when a policy evaluation returns an error. A policy that never reads the
+argument is unaffected, and a rule that does a typed operation on a marker
+denies every request that the policy's scope matches and that sends it, including
+requests that another policy would permit.
+
+Cedar cannot test whether a value is a marker without raising an error on other
+types: `context.arg_x has thv_unrepresentable` is a type error on a string, bool
+or decimal. Treat a marker as a value that equals nothing and errors on every
+typed operation, and write rules as positive permits. The shape of a marker (its
+attribute names and contents) is not a stable interface.
+
+An argument that is an array, an object or `null` is not available as
+`arg_<name>`. Only `arg_<name>_present` is set, to `true`. A scalar argument
+does not set `_present` (except one literally named `<name>_present`), so
+`context has arg_x_present` normally means the call sent a non-scalar value.
+Use it only as a deny signal, never as a permit condition.
+
+A `forbid` guarded by `context has arg_x` is skipped for such a call, because
+`context has arg_x` is false. Do not use a `forbid` on an argument value as your
+only control. If a backend might coerce an array into a scalar (for example
+`["rm"]` into `"rm"` or `[5000]` into 5000), add a rule that rejects non-scalar
+values:
+
+```plain
+forbid(principal, action, resource) when { context has arg_x_present };
+```
+
+Prefer a `permit` that states the allowed values positively, for example
+`permit(principal, action == Action::"call_tool", resource == Tool::"x") when { context has arg_x && context.arg_x == "safe" }`.
+A non-scalar call does not match it, so it is denied.
+
+A `forbid` that works only because an evaluation error denies the request looks
+like a no-op in other Cedar tools (the CLI, policy analysis), which skip a policy
+that errors. Guard with `has` and state the allowed values positively.
+
+Numeric JWT claims follow the same rules for numbers. Maps and arrays in a claim may nest
+11 levels deep, counting the claim value itself. A deeper map or array is passed
+as a marker, and a top-level `null` claim is treated as absent. Claim arrays and
+objects stay real Cedar sets and records. `null` elements in a claim array and
+`null` values inside a claim object are dropped. `has` on a marker is false for any attribute other than the
+marker's own, so a `has`-guarded rule on a claim path deeper than the nesting limit is still
+skipped.
+
+**Upgrading:** numeric values reach policies differently from earlier versions.
+Check these:
+
+- Any `permit` whose only condition on a numeric argument or claim is `has` or
+  `!=`. An out-of-range number now matches it.
+- Policies that compare arguments which legitimately carry more than four
+  fractional digits (coordinates, prices). Rules that use decimal methods on
+  them now deny those calls, and `==` rules stop matching (a `==` permit no
+  longer allows, and a `==` forbid no longer fires). Remove the comparison or
+  have the client round.
+- Policies that use `arg_` and `claim_` attributes with decimal methods.
+- Boundary values such as 0.57. Numbers with up to four fractional digits are now
+  exact, where some were previously off by 0.0001 (0.57 arrived as 0.5699), so
+  results at an exact boundary may flip in either direction.
+- Claim values past the nesting limit, which are now markers instead of being
+  dropped.
+- Out-of-range or long-fraction numbers inside a claim array. They used to be
+  dropped from the set (`[1e20, 5]` became `{5}`, and `[1e20]` became `{}`).
+  They are now markers in the set, so `containsAll`, `isEmpty()` and `==` on that
+  claim set can change result.
+
+Array, object and `null` arguments, and `null` claim elements, are unchanged.
+
 #### Combining JWT claims and tool arguments
 
 You can combine JWT claims and tool arguments in your policies to create more sophisticated authorization rules:
@@ -665,11 +913,11 @@ You can combine JWT claims and tool arguments in your policies to create more so
 ```plain
 permit(principal, action == Action::"call_tool", resource == Tool::"sensitive_data") when {
   principal.claim_roles.contains("data_analyst") &&
-  resource.arg_data_level <= principal.claim_clearance_level
+  resource.arg_data_level.lessThanOrEqual(principal.claim_clearance_level)
 };
 ```
 
-This policy allows clients with the "data_analyst" role to access the sensitive_data tool, but only if their clearance level (from JWT claims) is sufficient for the requested data level (from tool arguments).
+This policy allows clients with the "data_analyst" role to access the sensitive_data tool, but only if their clearance level (from JWT claims) is sufficient for the requested data level (from tool arguments). Both values must be JSON numbers with at most four fractional digits and within about +/-922337203685477.5, or the request is denied.
 
 ### Advanced Cedar topics
 

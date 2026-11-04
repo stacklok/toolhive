@@ -606,6 +606,27 @@ the old one. Discovery lists the client authentication methods as described in
 cleartext-transport rule is separate: every delegate client, `private_key_jwt`
 ones included, counts as confidential there.
 
+To rotate the key of a configured `private_key_jwt` delegate client without
+refusing the client in between:
+
+1. Add the new key to the JWKS file next to the old one, each with its own
+   `kid`, and restart the auth server. An assertion is accepted with either key,
+   as long as it carries the `kid` of the key that signed it. The new key must
+   imply the same signing algorithm as the old one: its `alg`, the algorithm its
+   EC curve fixes, or RS256 for an RSA key without `alg`. Keys that disagree stop
+   startup. Setting `token_endpoint_auth_signing_alg` helps only when every key
+   can sign with that one algorithm and none carries a different `alg`, for
+   example RSA keys without `alg` next to an RSA key labelled PS256.
+2. Switch the client to sign with the new key.
+3. Remove the old key from the file and restart again. An assertion signed with
+   the old key now gets `401 invalid_client`, and the `error_description` names
+   the refused `kid`.
+
+The order matters: a client that signs with a key the server has not loaded gets
+`401 invalid_client`, so do step 2 only after step 1 has taken effect. With
+memory storage a restart also drops everything the auth server had stored, such
+as issued refresh tokens. Use shared storage (Redis) when that matters.
+
 The server builds each configured delegate client in memory and checks it as
 consent-exempt before it writes the client. A configured login client can
 therefore be listed in `WithConsentExemptClientIDs`, and a bad ID aborts startup
@@ -1438,8 +1459,11 @@ child token from it. Revoking it is not covered here yet, and issuing an ID-JAG
 from a grant is not implemented yet.
 
 **Enabling.** Set `token_exchange.exchange_refresh_tokens` on the client, with
-`id_jag_max_lifetime` and/or `refresh_token_max_lifetime` (each at most 720h; a
-missing value refuses that kind of token). The client also needs
+`id_jag_max_lifetime` or both `id_jag_max_lifetime` and `refresh_token_max_lifetime`
+(each at most 720h; a missing value refuses that kind of token).
+`refresh_token_max_lifetime` without `id_jag_max_lifetime` is a startup error,
+because a derived child is capped by `id_jag_max_lifetime` and every derive would
+be refused with `token_type_not_permitted`. The client also needs
 `token_exchange.self_issued_subject_tokens: restricted` and
 `token_exchange.subject_token_audiences`. Validation refuses the feature with
 `any`. The client must be confidential and must have the token-exchange grant.
@@ -1683,9 +1707,9 @@ subject: `access_token` holds the child token, `issued_token_type` is the
 refresh-token URN, and `authorization_details` echoes the granted entry. The
 child entry lists exactly one kind of token. It is never `refresh_token`, so a
 child cannot be derived from: depth is 1. The child's kind of token must be enabled for the
-client, and its `expires_at` is at most the lesser of the parent's `expires_at`
+client, and its `expires_at` is at most the lesser of the source grant's `expires_at`
 and now plus the client's cap for the child's kind of token. A request above
-that is capped. The child copies the parent's client, subject, `sub_id` and
+that is capped. The child copies the source grant's client, subject, `sub_id` and
 `upstream_subject`. It has no subject-token `jti`, so it has no single-use marker.
 
 **Check order.** The server runs these checks in this order and stops at the
@@ -1702,21 +1726,23 @@ first that fails:
 3. The grant is read by the token's signature.
 4. The grant belongs to the presenting client. If the grant is missing or
    belongs to another client, the request fails with the same error as step 2.
-5. The grant has not expired and is not revoked (`revoked`). An expired grant
-   gets `grant_invalid` whether or not it is revoked (see below).
-6. If the grant has a parent, the parent exists and is live. A parent that is
+5. The grant has at least one whole second left, because `expires_at` is whole
+   seconds. If not, the request fails with `grant_invalid`, whatever else is
+   wrong with the grant (revoked, or its own parent not live).
+6. The grant is not revoked (`revoked`). Expiry is checked at step 5, before this.
+7. If the grant has a parent, the parent exists and is live. A parent that is
    missing, revoked or expired gives `parent_revoked`. An expired parent always
    means the child has expired too, because a child's `expires_at` is never later
-   than its parent's. So the child fails at step 3 or 4 with `grant_invalid`.
-7. The grant allows `refresh_token`, else `not_issuable`. A child fails here.
-8. The child entry passes the rules above.
+   than its parent's. So the child fails at step 3 or 5 with `grant_invalid`.
+8. The grant allows `refresh_token`, else `not_issuable`. A child fails here.
+9. The child entry passes the rules above.
 
 Nothing about the token is revealed until step 4 has passed. A forged token, an
 unknown token, another client's token, a login refresh token and an expired grant
 all get one error:
 `invalid_request` with the `error_description` `grant_invalid`. This is one code
 for all of these cases on purpose, so a caller learns nothing about which one
-applied. From step 5 on, the reasons are exact `error_description` values with
+applied. From step 6 on, the reasons are exact `error_description` values with
 `invalid_request`:
 
 | Condition | `error_description` |
@@ -1727,7 +1753,8 @@ applied. From step 5 on, the reasons are exact `error_description` values with
 
 A child entry fails with `invalid_authorization_details` and one of these
 reasons: `token_type_not_permitted` (the child lists `refresh_token`, or its
-kind of token is not enabled for the client) or `invalid_expires_at`. A store
+kind of token is not enabled for the client; the second only for a handler built
+without config validation) or `invalid_expires_at`. A store
 failure is `server_error`.
 
 Both stores report a grant past its `ExpiresAt` as not found, before the
@@ -1735,20 +1762,28 @@ liveness check runs. So an expired grant gets the same `grant_invalid` error as
 an unknown token on both backends. A child never outlives its parent, since its
 `expires_at` is capped to the parent's, so a child whose parent has expired has
 expired too and gets `grant_invalid` as well. A presented grant with no whole second
-left is refused the same way, because `expires_at` is whole seconds. The server log says
+left is refused the same way, because `expires_at` is whole seconds, whether or
+not it is revoked and whether or not its own parent is live. The check runs right
+after the client check, before the liveness answers, so it never gives
+`revoked`, `parent_revoked` or `not_issuable`. The server log says
 `not_found_or_other_client` for these. The legitimate client knows the expiry
 from the `expires_at` in the response that issued the grant, so a separate reason
 would tell it nothing. The handler checks expiry before revocation, so an expired
 grant gets `grant_invalid` whether or not it was revoked, and `revoked` is
-reported only while the grant has not expired.
+reported only while the grant has at least one whole second left.
 
 A derive needs the client's current policy to allow `refresh_token`, so removing
 `refresh_token_max_lifetime` from a client's configuration stops deriving from
-parents the client already holds. The derive gate refuses such a request with
+source grants the client already holds. The derive gate refuses such a request with
 `unsupported_token_type` (`invalid_request`, "The 'subject_token_type' value ...
-is not supported"), before the parent is looked up. The child's cap comes from
-its own type's key, so removing `id_jag_max_lifetime` makes derives of ID-JAG
-children fail with `token_type_not_permitted`.
+is not supported"), before the source grant is looked up. The child's cap comes from
+its own type's key. Removing `id_jag_max_lifetime` while keeping
+`refresh_token_max_lifetime` is refused at startup. The policy is the client's
+current configuration, and validation requires `id_jag_max_lifetime` whenever
+`refresh_token_max_lifetime` is set, so a configured client never reaches the
+missing-cap case. For a child, `token_type_not_permitted` then means the child
+lists `refresh_token`. The missing-cap refusal only applies to a handler built
+without config validation.
 
 A parent can be derived from many times; each call creates an independent child.
 If the response is lost, the child stays until its parent ends (revoked or

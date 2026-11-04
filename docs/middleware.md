@@ -654,7 +654,7 @@ The following headers cannot be configured for forwarding due to security concer
 | Category | Headers |
 |----------|---------|
 | Routing manipulation | `Host` |
-| Hop-by-hop (RFC 7230, 7540) | `Connection`, `Keep-Alive`, `Te`, `Trailer`, `Upgrade`, `Http2-Settings` |
+| Hop-by-hop (RFC 7230, 7540) | `Connection`, `Keep-Alive`, `Te`, `Trailer`, `Upgrade`, `Http2-Settings`, `Close` |
 | Proxy headers | `Proxy-Authorization`, `Proxy-Authenticate`, `Proxy-Connection` |
 | Request smuggling vectors | `Transfer-Encoding`, `Content-Length` |
 | Identity spoofing | `Forwarded`, `X-Forwarded-For`, `X-Forwarded-Host`, `X-Forwarded-Proto`, `X-Real-Ip` |
@@ -664,6 +664,8 @@ The following headers cannot be configured for forwarding due to security concer
 - Logs configured header names at startup (never logs values for security)
 - Warns if `Authorization` header is configured (ensure value is appropriate for target)
 - Returns error if any restricted header is configured
+
+A client cannot remove injected headers by naming them in its `Connection` header; see [Client `Connection` header](#client-connection-header).
 
 **CLI Usage**:
 
@@ -1086,8 +1088,16 @@ The middleware chain execution order is critical and controlled by the order in 
 - Middleware that rewrites the request body must republish the parsed request via `mcp.RepublishParsedMCPRequest` and refresh `r.ContentLength` — `ParsingMiddleware` deliberately parses only once, so downstream consumers read the refreshed context while outer audit and telemetry wrappers read the refreshed `mcp.ParsedRequestHolder` after the inner chain returns
 - Header Forward executes close to the backend handler (innermost position)
 - Recovery is always last in config, making it the innermost wrapper (the chain wraps in reverse config order, so the first entry is the outermost and runs first)
-- Body-size limit and Origin validation stay OUTSIDE audit: oversized bodies must be rejected before audit buffers request data, and origin validation is a pre-auth DNS-rebind guard. Their rejections (413/403) are the only ones not audited.
+- Body-size limit and Origin validation stay OUTSIDE audit: oversized bodies must be rejected before audit buffers request data, and origin validation is a pre-auth DNS-rebind guard. The transparent proxy's `Connection` header check (see [Client `Connection` header](#client-connection-header)) runs before all of them. Their rejections (400/413/403) are the only ones not audited.
 - The list above (steps 1-15) describes the operator/proxyrunner path (`PopulateMiddlewareConfigs` in `pkg/runner/middleware.go`). The CLI flag path (`WithMiddlewareFromFlags` in `pkg/runner/config_builder.go`) has no rate limiting at all, and orders Usage Metrics before the webhooks rather than after (see the comment at `pkg/runner/config_builder.go:700`) — both paths still run Mutating before Validating webhooks and both before Authorization.
+
+### Client `Connection` header
+
+This applies to the transparent proxy (`pkg/transport/proxy/transparent`), which serves remote MCP servers and container servers that use the SSE or streamable HTTP transport. The stdio proxies build their own requests and are not affected.
+
+Before any middleware runs, the transparent proxy rejects with `400 Bad Request` any request whose `Connection` header names something other than `close` or a standard hop-by-hop header (`Keep-Alive`, `Upgrade`, `Te`, `Trailer`, `Transfer-Encoding`, `Proxy-Connection`, `Proxy-Authenticate`, `Proxy-Authorization`, `HTTP2-Settings`). It logs each rejection at WARN with the header name. Requests such as `Connection: keep-alive` or `Connection: Upgrade` pass unchanged, so WebSocket upgrades still work.
+
+The reverse proxy removes every header named in `Connection` (RFC 9110 §7.6.1), and it does so after the middlewares have run. Without this check, a client could send `Connection: X-Tenant-ID` or `Connection: Authorization` and have a header or token injected by a middleware (Header Forward, token injection, Token Exchange, Upstream Token Swap) removed before the request reached the upstream. The proxy rejects these requests instead of removing the named headers itself, because removing them would also hide them from middlewares that check a header only when it is present. For example, `Origin: <disallowed>` together with `Connection: Origin` would then pass Origin validation.
 
 ### Custom Authorization Policies
 

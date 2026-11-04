@@ -295,7 +295,7 @@ Defines reusable validating and mutating webhook middleware configurations that 
 MCPWebhookConfig declares one or more `validating` and/or `mutating` webhooks (URL, timeout, failure policy, optional TLS, optional HMAC signing). At least one webhook must be defined (CEL-enforced). The MCPServer references it via `spec.webhookConfigRef`, and the proxy-runner injects the corresponding middleware into the request chain.
 
 **Key features:**
-- Per-webhook `failurePolicy` (`fail` or `ignore`) for handling webhook errors
+- Per-webhook `failurePolicy` (`fail` or `ignore`) for handling webhook errors. `ignore` applies to timeouts, network errors and invalid webhook responses; a failure inside ToolHive before the call (encoding the payload, building the request, reading the HMAC secret) always denies the request
 - Optional `tlsConfig` with CA bundle, mTLS client cert, or `insecureSkipVerify`
 - Optional `hmacSecretRef` adds the `X-Toolhive-Signature` header to outgoing payloads
 

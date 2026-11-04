@@ -44,9 +44,15 @@ type Admission interface {
 	// AllowToolCall mirrors pkg/authz authorizeToolCall (MCPFeatureTool/Call),
 	// sourcing the tool's annotations for when-clause evaluation.
 	AllowToolCall(ctx context.Context, identity *auth.Identity, tool *vmcp.Tool, args map[string]any) (bool, error)
-	// FilterResources / AllowResourceRead use MCPFeatureResource/Read.
+	// FilterResources / AllowResourceRead / AllowResourceTemplateRead use
+	// MCPFeatureResource/Read. Implementations may refuse a URI that
+	// authorizers.CheckResourceURI rejects (AllowResourceRead) or a template that
+	// authorizers.CheckResourceTemplateURI rejects (AllowResourceTemplateRead),
+	// returning authorizers.ErrInvalidResourceURI. The allow-all admission
+	// refuses nothing. FilterResources applies neither check.
 	FilterResources(ctx context.Context, identity *auth.Identity, resources []vmcp.Resource) ([]vmcp.Resource, error)
 	AllowResourceRead(ctx context.Context, identity *auth.Identity, resource *vmcp.Resource) (bool, error)
+	AllowResourceTemplateRead(ctx context.Context, identity *auth.Identity, tmpl *vmcp.ResourceTemplate) (bool, error)
 	// FilterPrompts / AllowPromptGet use MCPFeaturePrompt/Get.
 	FilterPrompts(ctx context.Context, identity *auth.Identity, prompts []vmcp.Prompt) ([]vmcp.Prompt, error)
 	AllowPromptGet(ctx context.Context, identity *auth.Identity, prompt *vmcp.Prompt) (bool, error)
@@ -112,17 +118,18 @@ func newAdmission(authzCfg *authorizers.Config, serverName string) (Admission, e
 // uniformly — no optimizer meta-tool carve-out (see the [Admission] doc).
 type cedarAdmission struct {
 	authorizer authorizers.Authorizer
-	// logger receives the per-item "skipping" warnings. It defaults to
-	// slog.Default(); tests inject a buffer-backed logger (via withLogger) so they
-	// can assert on output WITHOUT swapping the process-global slog default — that
-	// global swap races (-race) against parallel sibling tests that also log.
+	// logger receives the per-item "skipping" warnings and the invalid-resource-URI
+	// denial warning. It defaults to slog.Default(); tests inject a buffer-backed
+	// logger (via withLogger) so they can assert on output WITHOUT swapping the
+	// process-global slog default — that global swap races (-race) against
+	// parallel sibling tests that also log.
 	logger *slog.Logger
 }
 
 // cedarOption configures a cedarAdmission at construction.
 type cedarOption func(*cedarAdmission)
 
-// withLogger overrides the logger the seam emits skip warnings to. Used by tests
+// withLogger overrides the logger the seam emits its warnings to. Used by tests
 // to capture log output without mutating the global slog default.
 func withLogger(logger *slog.Logger) cedarOption {
 	return func(c *cedarAdmission) { c.logger = logger }
@@ -213,12 +220,53 @@ func (a *cedarAdmission) FilterResources(
 }
 
 // AllowResourceRead authorizes a single resource read (MCPFeatureResource/Read).
+// A URI that is not in canonical form (authorizers.CheckResourceURI) is refused
+// with authorizers.ErrInvalidResourceURI before any policy is evaluated, because
+// a backend that normalizes the URI could resolve it to a resource the policy
+// names by its exact spelling. FilterResources does not apply this check.
 func (a *cedarAdmission) AllowResourceRead(
 	ctx context.Context, identity *auth.Identity, resource *vmcp.Resource,
 ) (bool, error) {
+	if err := authorizers.CheckResourceURI(resource.URI); err != nil {
+		// The URI is caller-chosen and may carry control characters, so it is not
+		// logged. Logging here and returning the error is not a double log: the core
+		// wraps it into ErrAuthorizationFailed and the transport replaces that with a
+		// fixed deny message without logging it. This relies on call_gate.go
+		// (gateDenied), serve_handlers.go and modern_dispatch.go not logging
+		// ErrAuthorizationFailed.
+		a.logger.Warn("admission: denied resource URI not in canonical form",
+			"rule", authorizers.ResourceURIRule(err))
+		return false, err
+	}
 	ctx = auth.WithIdentity(ctx, identity)
 	return a.authorizer.AuthorizeWithJWTClaims(
 		ctx, authorizers.MCPFeatureResource, authorizers.MCPOperationRead, resource.URI, nil)
+}
+
+// AllowResourceTemplateRead authorizes a completion on a resource template
+// (MCPFeatureResource/Read on the raw template string). A template is not a URI
+// and SDKs match template refs by exact string, so it is refused with
+// authorizers.ErrInvalidResourceURI only when it contains a control character or
+// space (authorizers.CheckResourceTemplateURI) or is empty, before any policy is
+// evaluated. FilterResources does not apply this check.
+func (a *cedarAdmission) AllowResourceTemplateRead(
+	ctx context.Context, identity *auth.Identity, tmpl *vmcp.ResourceTemplate,
+) (bool, error) {
+	// An empty template must never reach a policy, whose permit might otherwise
+	// match an empty identifier; pkg/authz refuses it the same way.
+	if tmpl.URITemplate == "" {
+		a.logger.Warn("admission: denied empty resource template")
+		return false, authorizers.ErrInvalidResourceURI
+	}
+	if err := authorizers.CheckResourceTemplateURI(tmpl.URITemplate); err != nil {
+		// Not logged with the template: it is caller-chosen. See AllowResourceRead
+		// for why logging here and returning the error is not a double log.
+		a.logger.Warn("admission: denied resource template with a control character or space")
+		return false, err
+	}
+	ctx = auth.WithIdentity(ctx, identity)
+	return a.authorizer.AuthorizeWithJWTClaims(
+		ctx, authorizers.MCPFeatureResource, authorizers.MCPOperationRead, tmpl.URITemplate, nil)
 }
 
 // FilterPrompts mirrors the response filter's filterPromptsResponse
@@ -277,6 +325,12 @@ func (allowAllAdmission) FilterResources(
 }
 
 func (allowAllAdmission) AllowResourceRead(_ context.Context, _ *auth.Identity, _ *vmcp.Resource) (bool, error) {
+	return true, nil
+}
+
+func (allowAllAdmission) AllowResourceTemplateRead(
+	_ context.Context, _ *auth.Identity, _ *vmcp.ResourceTemplate,
+) (bool, error) {
 	return true, nil
 }
 

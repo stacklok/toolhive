@@ -815,7 +815,7 @@ func TestIntegrationGroupBasedNonListOperations(t *testing.T) {
 				"groups": []interface{}{"devs"},
 			},
 			method:        string(mcp.MethodResourcesRead),
-			params:        map[string]interface{}{"uri": "public_data"},
+			params:        map[string]interface{}{"uri": "harness://static/public_data"},
 			expectAllowed: true,
 		},
 	}

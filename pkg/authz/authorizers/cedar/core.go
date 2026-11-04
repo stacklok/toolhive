@@ -1181,6 +1181,10 @@ func (a *Authorizer) authorizeResourceRead(
 	// so " and \ need escaping in policy source; see docs/authz.md.) A lossy
 	// mapping would let distinct URIs collide onto one entity ID, and a
 	// policy grant on one URI would then silently cover every colliding URI.
+	// Callers refuse a URI that is not in canonical form before this point
+	// (authorizers.CheckResourceURI), which is what lets an exact match protect a
+	// forbid rule against servers that normalize the URI; see "Forbid a specific
+	// resource" in docs/authz.md for the cases it does not cover.
 	resource := fmt.Sprintf("Resource::%s", resourceURI)
 
 	// Create attributes for the entities

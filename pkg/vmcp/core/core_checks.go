@@ -92,13 +92,29 @@ func (c *coreVMCP) authorizeToolCall(
 // authorizer error fails closed, classified as ErrAuthorizationFailed (see
 // authorizeToolCall). Shared by ReadResource and CheckResourceRead.
 func (c *coreVMCP) authorizeResourceRead(ctx context.Context, identity *auth.Identity, uri string) error {
+	allowed, err := c.admission.AllowResourceRead(ctx, identity, &vmcp.Resource{URI: uri})
+	return resourceReadDecisionError(uri, allowed, err)
+}
+
+// authorizeResourceTemplateRead is authorizeResourceRead for a completion on a
+// resource template: the string is a template, not a concrete URI, so admission
+// applies its template check instead of the canonical-form check.
+func (c *coreVMCP) authorizeResourceTemplateRead(ctx context.Context, identity *auth.Identity, tmpl string) error {
+	allowed, err := c.admission.AllowResourceTemplateRead(ctx, identity, &vmcp.ResourceTemplate{URITemplate: tmpl})
+	return resourceReadDecisionError(tmpl, allowed, err)
+}
+
+// resourceReadDecisionError maps a resource admission decision to nil (allowed)
+// or an error wrapping ErrAuthorizationFailed. An over-length URI is never echoed.
+func resourceReadDecisionError(uri string, allowed bool, err error) error {
 	overCap := len(uri) > vmcp.MaxResourceURILength
-	if allowed, err := c.admission.AllowResourceRead(ctx, identity, &vmcp.Resource{URI: uri}); err != nil {
+	if err != nil {
 		if overCap {
 			return fmt.Errorf("%w: resource URI exceeds %d bytes: %w", vmcp.ErrAuthorizationFailed, vmcp.MaxResourceURILength, err)
 		}
 		return fmt.Errorf("%w: resource %q: %w", vmcp.ErrAuthorizationFailed, uri, err)
-	} else if !allowed {
+	}
+	if !allowed {
 		if overCap {
 			return fmt.Errorf("%w: resource URI exceeds %d bytes", vmcp.ErrAuthorizationFailed, vmcp.MaxResourceURILength)
 		}

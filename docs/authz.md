@@ -70,6 +70,12 @@ denied request is audited with outcome `denied`. The denial message is kind-only
 capability name or whether it exists, so it cannot be used to enumerate the
 server.
 
+Virtual MCP applies the same resource URI rules (see [MCP entities](#mcp-entities)) to
+`resources/read` and to `completion/complete` with a `ref/resource`: a read of a URI
+that is not in canonical form is denied, and a completion ref is refused only when it
+is empty or contains a space or control character. For `completion/complete` the denial
+is a JSON-RPC error, not an HTTP 403.
+
 One ordering differs from the direct `thv run` proxies, where authorization runs
 first: vMCP checks session ownership before the authorization gate. A request that
 carries an `Mcp-Session-Id` the caller does not own, or that does not exist, gets
@@ -246,6 +252,76 @@ In the context of MCP servers, the following entities are used:
   every URI character is ordinary, but `"` and `\` must be escaped (for example
   `Resource::"file://C:\\share\\data"`).
 
+**Write policies with the canonical URI.** The proxy compares the URI exactly as the
+client sent it, and it accepts a resource URI only when it is already in canonical
+form. A URI in any other form is rejected with a 403 before any policy is evaluated.
+This applies to `resources/read`, `resources/subscribe`, `resources/unsubscribe` and
+each URI in a `subscriptions/listen` request.
+
+The reason is that some MCP servers look a resource up by a cleaned-up form of the
+URI. We verified this for the TypeScript SDK and for the Python SDK, whose URL type
+(pydantic `AnyUrl`) cleans up URIs the same way the TypeScript SDK does. The people who
+reported the problem showed that the C# SDK cleans up URIs too. A `forbid` on one
+spelling would not cover the other spellings that reach the same resource. Because
+only one spelling per resource gets through, one exact comparison is the whole
+decision.
+
+A URI is canonical when WHATWG URL serialization (the browser standard) leaves it
+unchanged and it also passes a few RFC 3986 normalization rules. In practice:
+
+- **The scheme is lower case.** `HARNESS://host/x` is refused; use `harness://host/x`.
+  A scheme is required.
+- **The host is lower case for `http`, `https`, `ws`, `wss`, `ftp` and `file`.**
+  `http://EXAMPLE.com/x` is refused; use `http://example.com/x`. Other schemes keep the
+  case of the host (`repo://Stacklok/toolhive/README.md` is fine). A host holds only
+  letters, digits, `-` and `_`, in dot-separated labels with no empty label and no
+  trailing dot.
+- **Percent-encoding uses upper-case hex.** `%3a` is refused; use `%3A`.
+- **Letters, digits and `-._~` are not percent-encoded.** `%41` and `%7e` are refused;
+  use `A` and `~`.
+- **There are no `.` or `..` segments**, written plainly or as `%2e`. The refused
+  `harness://host/a/../b` and `harness://host/%2e%2e/b` are both written
+  `harness://host/b`.
+- **User information is plain.** A user name, and an optional password after one `:`,
+  are allowed when each is not empty and uses only letters, digits, `-._~!$&'()*+,` and
+  upper-case `%XX`. `postgres://user@host:5432/db/table/schema` and
+  `harness://u:p@host/x` are fine. These are refused: an empty user or password
+  (`harness://@host/x`, `harness://:@host/x`, `harness://u:@host/x`), a second `:` or an
+  `@` in it, and `;` or `=` (`harness://u;x@host/x`), which parsers encode. User
+  information is never allowed in a `file` URI, and it needs a host.
+- **A port is plain.** It has a host, no leading zero, is not `0`, is at most 65535
+  and is not the default port for the scheme. `http://example.com:80/x` is refused; use
+  `http://example.com/x`. So are `harness://host:/x` (empty port) and
+  `harness://host:080/x`.
+- **`http`, `https`, `ws`, `wss` and `ftp` have a host and a path.**
+  `http://example.com` is refused; use `http://example.com/`. A numeric host must be a
+  full dotted quad: `http://127.1/` is refused, `http://127.0.0.1/` is fine.
+- **`xn--` (punycode) labels are not allowed in the host** of these schemes and
+  `file`.
+- **A query does not contain `'`** for those schemes and `file`. Write it as `%27`.
+- **`file` URIs are written `file:///path`.** The forms `file:/path`,
+  `file://localhost/path` and `file://host:8080/path` are refused, and the path must
+  not start with `//`. A drive letter is allowed only with an empty host:
+  `file:///C:/x` is fine, `file://host/C:/x` is refused.
+- **Only these bytes appear:** letters, digits, and `- . _ ~ ! $ & ' ( ) * + , ; = : @ / ? %`.
+  A space, a control character (`0x00` to `0x1F`, `0x7F`), a non-ASCII character and
+  any of `"`, `<`, `>`, `\`, `^`, a backtick, `{`, `|`, `}`, `[` and `]` are refused.
+  Percent-encode them: a space is `%20` and `café` is `caf%C3%A9`.
+- **There is no fragment** (`#...`) and **no IPv6 literal host** (`[::1]`). Both are
+  refused.
+
+For example, `Resource::"harness://static/a%20b"` and `Resource::"file:///C:/x"` match
+the URIs a client sends, and the canonical spelling is the only one that can match.
+
+A server that lists a resource under a URI that is not in canonical form (for example
+`file:///My Docs/x`) can still show it in `resources/list`, but a read of it is
+refused. The server should list the canonical URI.
+
+The reference in `completion/complete` with a `ref/resource` is a resource template
+such as `file:///{name}`. A template is not a URI, and SDKs match it by exact string.
+So the proxy refuses it only when it is empty or contains a space or control
+character, and otherwise authorizes it exactly as sent.
+
 Requests that identify their target only by `params.name` or `params.uri` (`tools/call`,
 `prompts/get`, `resources/read`, `resources/subscribe`, `resources/unsubscribe`, and
 `skills/get`) are rejected with a 403 when that value is missing, empty, or not a string. The proxy denies these before any policy is evaluated or
@@ -344,6 +420,67 @@ permit(
   resource == Resource::"file:///etc/passwd"
 );
 ```
+
+##### Forbid a specific resource
+
+A `forbid` on a resource URI, next to a broader `permit`, holds against servers built
+on the TypeScript SDK and the Python SDK. Those SDKs parse the URI and look the
+resource up by the cleaned-up form (lower-case scheme, no `.` or `..` segments, and so
+on). The proxy refuses every URI that is not in canonical form before the policy runs,
+so a client cannot reach the resource through a different spelling:
+
+```plain
+permit(principal, action == Action::"read_resource", resource);
+forbid(
+  principal,
+  action == Action::"read_resource",
+  resource == Resource::"harness://host/secret"
+);
+```
+
+With this policy, `HARNESS://host/secret`, `harness://host/./secret` and
+`harness://host/%2e%2e/secret` are all refused with a 403, and the exact URI
+`harness://host/secret` is denied by the `forbid`.
+
+Some cases the proxy does not close:
+
+- **The C# SDK.** The people who reported the problem showed that it cleans up URIs,
+  for example `harness://STATIC/text` reaches `harness://static/text`. The canonical
+  check closes what it shares with the browser standard (a lower-case scheme and
+  host for `http` and `https`, dot segments, and so on), but not these:
+  - the case of the host for other schemes, which the proxy keeps as sent;
+  - user information, which the proxy accepts as plain text (we did not verify whether
+    C# ignores or changes it);
+  - possibly decoded `!'()*` escapes, and the default ports of other schemes.
+
+  If a backend uses the C# SDK, use an allow-list.
+- **A resource template handler that changes the URI it receives.** For example, a
+  handler that decodes `%2F` to `/` can reach a resource the `forbid` names under a
+  different spelling. So can a handler that rebuilds the resource from the host or path
+  of the parsed URL, because it ignores the user information and the port:
+  `harness://u@static:99/secret` can reach what a `forbid` on
+  `harness://static/secret` names. Check what your handlers do with the URI, or use an
+  allow-list.
+- **A server's own URI handling** beyond these SDKs.
+
+The safest policy is an allow-list. Permit only the URIs that a client may read, and
+rely on default deny for everything else:
+
+```plain
+permit(
+  principal,
+  action == Action::"read_resource",
+  resource == Resource::"harness://host/public"
+);
+```
+
+Any other URI matches no `permit` and is denied.
+
+Do not rely on a pattern in a condition to block part of a URI space. A guard such as
+`when { resource.uri like "harness://host/public/*" }`, a `contains` check or a test for
+`..` matches the text of the URI, not the resource the server picks. For example,
+`%2e%2e` is a `..` segment that a text check for `..` does not see, and a server may
+treat `\` as `/`. Name each URI exactly.
 
 ##### List operations
 

@@ -464,7 +464,13 @@ func (*Auditor) detectApplicationError(rw *responseWriter) *mcp.ParsedMCPRespons
 		prefix = rw.errorDetectionBody.Bytes()
 	}
 	if len(prefix) > 0 && prefix[0] == '{' {
-		return mcp.ParseMCPResponse(prefix)
+		parsed := mcp.ParseMCPResponse(prefix)
+		// A full buffer may be a cut-off response, which does not unmarshal.
+		// Fall back to a token walk that only needs the bytes before the cut.
+		if !parsed.HasError && len(prefix) >= errorDetectionBufferSize {
+			return mcp.ParseTruncatedMCPResponse(prefix)
+		}
+		return parsed
 	}
 	return nil
 }

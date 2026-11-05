@@ -1042,11 +1042,10 @@ func createServicePorts(options *runtime.DeployWorkloadOptions) ([]*corev1apply.
 
 		// If there are bindings with a host port, use the first one as node port
 		if len(bindings) > 0 && bindings[0].HostPort != "" {
-			hostPort, err := strconv.Atoi(bindings[0].HostPort)
+			hostPort, err := strconv.ParseInt(bindings[0].HostPort, 10, 32)
 			if err == nil && hostPort >= 30000 && hostPort <= 32767 {
-				// NodePort must be in range 30000-32767, well within int32 range
-				nodePort := int32(hostPort)
-				servicePort = servicePort.WithNodePort(nodePort)
+				// NodePort must be in range 30000-32767
+				servicePort = servicePort.WithNodePort(int32(hostPort))
 			}
 		}
 

@@ -51,13 +51,15 @@ var codexFamilies = []string{"sol", "terra", "luna"}
 // "us." or "global." inference-profile prefix, the "openai." vendor segment, and
 // "gpt-<major>[.<minor>]" with optional hyphenated variant tokens (captured, the
 // family among them) and Bedrock revision suffix. "gpt-oss-…" does not match,
-// since "oss" is not a version.
+// since "oss" is not a version. Matching ignores case, as isCodexModelID does,
+// so a mixed-case pin is recognised and refused by codexBedrockModelProblem
+// with the lowercase ID rather than as an unknown model.
 var codexBedrockModelPattern = regexp.MustCompile(
-	`^(?:us|global)\.openai\.gpt-(\d+)(?:\.(\d+))?((?:-[a-z0-9]+)*)(?::\d+)?$`)
+	`(?i)^(?:us|global)\.openai\.gpt-(\d+)(?:\.(\d+))?((?:-[a-z0-9]+)*)(?::\d+)?$`)
 
 // bareBedrockGPTPattern matches a closed Bedrock GPT model ID without an
 // inference-profile prefix, which Bedrock does not serve on demand.
-var bareBedrockGPTPattern = regexp.MustCompile(`^openai\.gpt-\d`)
+var bareBedrockGPTPattern = regexp.MustCompile(`(?i)^openai\.gpt-\d`)
 
 // errNoCodexBedrockModels reports a gateway model list with no
 // Responses-capable Bedrock GPT model, so Codex has nothing to use.
@@ -112,11 +114,22 @@ func (t *codexTiers) mainModel() string {
 // isCodexModelID reports whether a --models entry names an OpenAI GPT model,
 // which makes it Codex's to pin rather than a Claude Code tier or a filter for
 // another tool (Pi, Claude Desktop). Entries for other vendors (nvidia.*,
-// qwen.*, ...) are left to those tools, so a --models list shared across tools
-// does not refuse Codex.
+// qwen.*, ...) and OpenAI's open-weight gpt-oss models, which Codex cannot use,
+// are left to those tools, so a --models list shared across tools does not
+// refuse Codex.
 func isCodexModelID(id string) bool {
 	lower := strings.ToLower(id)
+	if isOpenWeightGPT(lower) {
+		return false
+	}
 	return strings.Contains(lower, "openai.") || strings.HasPrefix(lower, "gpt-")
+}
+
+// isOpenWeightGPT reports whether lowerID, a lowercased model ID, names one of
+// OpenAI's open-weight gpt-oss models, which Bedrock serves only over Chat
+// Completions.
+func isOpenWeightGPT(lowerID string) bool {
+	return strings.Contains(lowerID, "gpt-oss")
 }
 
 // parseCodexBedrockModel reports whether id is a Responses-capable Bedrock GPT
@@ -132,7 +145,7 @@ func parseCodexBedrockModel(id string) (family string, version []int, ok bool) {
 	if m[2] != "" {
 		minor, _ = strconv.Atoi(m[2])
 	}
-	for _, tok := range strings.Split(strings.TrimPrefix(m[3], "-"), "-") {
+	for _, tok := range strings.Split(strings.ToLower(strings.TrimPrefix(m[3], "-")), "-") {
 		if slices.Contains(codexFamilies, tok) {
 			family = tok
 			break
@@ -146,15 +159,15 @@ func parseCodexBedrockModel(id string) (family string, version []int, ok bool) {
 func codexBedrockModelProblem(id string) error {
 	const hint = "pin a Bedrock GPT inference profile such as us.openai.gpt-6.1-sol, " +
 		"or drop it from --models to use the newest one the gateway lists"
+	lower := strings.ToLower(id)
 	switch {
-	case codexBedrockModelPattern.MatchString(id):
+	case codexBedrockModelPattern.MatchString(id) && id == lower:
 		return nil
-	case strings.Contains(id, "gpt-oss"):
-		return fmt.Errorf("--models entry %q is an open-weight model, which Bedrock serves only over "+
-			"Chat Completions; Codex speaks only the Responses API. To use Codex, %s", id, hint)
+	case codexBedrockModelPattern.MatchString(id):
+		return fmt.Errorf("--models entry %q is not lowercase; Bedrock model IDs are, so use %q", id, lower)
 	case bareBedrockGPTPattern.MatchString(id):
 		return fmt.Errorf("--models entry %q has no inference-profile prefix; Bedrock serves GPT models "+
-			"through us. or global. profiles (e.g. us.%s)", id, id)
+			"through us. or global. profiles (e.g. us.%s)", id, lower)
 	default:
 		return fmt.Errorf("--models entry %q is not a Bedrock GPT inference profile; only those serve the "+
 			"Responses API Codex speaks. To use Codex, %s", id, hint)

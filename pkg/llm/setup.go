@@ -53,8 +53,10 @@ type GatewayManager interface {
 	// RevertEnvFile removes the .env file entries that setup wrote. envFilePath
 	// is the value returned by ConfigureEnvFile; a no-op when empty.
 	RevertEnvFile(clientType, envFilePath string) error
-	// RevertLLMGateway removes the LLM gateway settings from the tool's config file.
-	RevertLLMGateway(clientType, configPath string) error
+	// RevertLLMGateway removes the LLM gateway settings from the tool's config
+	// file, and the Bedrock settings too when clearBedrockKeys is set (the setup
+	// being reverted wrote them).
+	RevertLLMGateway(clientType, configPath string, clearBedrockKeys bool) error
 }
 
 // ConfigUpdater is the subset of config.Provider used by Setup and Teardown.
@@ -163,10 +165,13 @@ func Setup(
 		return nil
 	}
 
+	// The persisted config still holds the previous setup's tool records here,
+	// since it is only updated below.
+	previousBedrock := previousBedrockKeys(provider.GetLLMConfig())
 	configured, err := configureDetectedToolsWithDiscovery(
-		out, errOut, gm, detected, llmCfg.GatewayURL, proxyBaseURL,
+		out, errOut, gm, detected, targetClient, llmCfg.GatewayURL, proxyBaseURL,
 		tokenHelperPath, tokenHelperArgs, llmCfg.TLSSkipVerify, anthropicPrefix,
-		llmCfg.Models, discoveredModels, llmCfg.ShortPromptCache, llmCfg.Bedrock,
+		llmCfg.Models, discoveredModels, llmCfg.ShortPromptCache, llmCfg.Bedrock, previousBedrock,
 	)
 	if err != nil {
 		return err
@@ -179,9 +184,7 @@ func Setup(
 	// later setup that omits claude-code. llmCfg.Bedrock.Compat is the effective
 	// (persisted + inline) compat state used for the --enable-1m check.
 	warnBedrockNoEffect(errOut, inlineOpts, llmCfg.Bedrock.Compat, configured)
-	// The persisted config still holds the previous compat state here, since
-	// it is only updated below.
-	warnBedrockTurnedOff(errOut, provider.GetLLMConfig().Bedrock.Compat, llmCfg.Bedrock.Compat, configured)
+	warnBedrockTurnedOff(errOut, previousBedrock, configured)
 	warnShortPromptCacheNoEffect(errOut, inlineOpts, configured)
 	warnPromptCacheBedrockCompatibility(errOut, inlineOpts, llmCfg.ShortPromptCache, configured)
 
@@ -312,7 +315,8 @@ func Teardown(
 	}
 
 	// Revert tool config files best-effort; warn on failure but do not undo
-	// the config update above (the user can re-run setup+teardown to reconcile).
+	// the config update above (the user can re-run setup, with the same
+	// --bedrock-compat, and teardown to reconcile).
 	revertTeardownTools(out, errOut, gm, toRevert, llmCfg.Bedrock.Compat)
 
 	if shouldPurge {
@@ -323,14 +327,28 @@ func Teardown(
 }
 
 // revertTeardownTools reverts each tool's config files best-effort, warning on
-// failure. When bedrockCompat was on, it also names the Bedrock settings each
-// successful revert removed.
+// failure. A tool whose setup wrote Bedrock keys (bedrockCompat is the
+// persisted setting, the fallback for records that predate the per-tool one)
+// has them removed too, and each successful revert names the ones it removed.
+// Otherwise those keys are the user's own and are left alone.
 func revertTeardownTools(out, errOut io.Writer, gm GatewayManager, toRevert []ToolConfig, bedrockCompat bool) {
 	for _, tc := range toRevert {
-		if revertToolConfig(out, errOut, gm, tc) && bedrockCompat {
+		clearBedrock := tc.bedrockKeysWritten(bedrockCompat)
+		if revertToolConfig(out, errOut, gm, tc, clearBedrock) && clearBedrock {
 			warnBedrockSettingsRemoved(errOut, tc)
 		}
 	}
+}
+
+// previousBedrockKeys reports, for each tool cfg records as configured, whether
+// its config file holds Bedrock keys the setup that configured it wrote, so the
+// next setup removes them only then.
+func previousBedrockKeys(cfg Config) map[string]bool {
+	written := make(map[string]bool, len(cfg.ConfiguredTools))
+	for _, tc := range cfg.ConfiguredTools {
+		written[tc.Tool] = tc.bedrockKeysWritten(cfg.Bedrock.Compat)
+	}
+	return written
 }
 
 // printTokenPurgeNotice tells the user what deleting the cached LLM tokens does
@@ -656,8 +674,9 @@ type discoveredGatewayModels struct {
 }
 
 // bedrockClients are the clients Bedrock compat configures: the name setup uses
-// for each in messages, and the settings ToolHive owns in its config, which a
-// setup without Bedrock and teardown remove whatever they hold.
+// for each in messages, and the settings ToolHive owns in its config once a
+// Bedrock setup has written them, which a later setup without Bedrock and
+// teardown then remove whatever they hold.
 var bedrockClients = map[string]struct{ name, keys string }{
 	claudeCodeClient: {
 		name: "Claude Code",
@@ -1214,6 +1233,8 @@ func resolveBedrockModels(models, discovered []string, enable1M bool) (bedrockTi
 	for _, m := range models {
 		// An OpenAI GPT ID is Codex's to pin, not a Claude tier; skip it without
 		// the no-tier warning so pinning both tools in one --models list is quiet.
+		// gpt-oss and other vendors' IDs get the warning, as entries meant for
+		// another tool (Pi).
 		if isCodexModelID(m) {
 			continue
 		}
@@ -1306,35 +1327,28 @@ func warnPromptCacheBedrockCompatibility(
 			"Verify the effective lifetime with: %s\n", promptCacheVerificationCommand)
 }
 
-// configureDetectedTools patches each detected tool's config file and returns
-// the list of successfully configured tools. An error is returned only when no
-// tool was configured successfully.
+// configureDetectedToolsWithDiscovery patches each detected tool's config file
+// and returns the list of successfully configured tools. A tool that fails is
+// skipped with a warning, except that a Bedrock-settings failure for the
+// client named with --client (targetClient) is returned as an error, as the
+// discovery failures before it are. Otherwise an error is returned only when
+// no tool was configured successfully. previousBedrock reports, per tool,
+// whether its previous setup wrote Bedrock keys, which a setup without Bedrock
+// then removes.
 func configureDetectedToolsWithDiscovery(
-	out, errOut io.Writer, gm GatewayManager, detected []string,
+	out, errOut io.Writer, gm GatewayManager, detected []string, targetClient string,
 	gatewayURL, proxyBaseURL, tokenHelperPath string, tokenHelperArgs []string,
 	tlsSkipVerify bool, anthropicPathPrefix string,
 	models []string, discovered discoveredGatewayModels, shortPromptCache bool, bedrock BedrockConfig,
+	previousBedrock map[string]bool,
 ) ([]ToolConfig, error) {
 	var configured []ToolConfig
 	for _, clientType := range detected {
 		mode := gm.LLMGatewayModeFor(clientType)
 
-		// Apply the Anthropic path prefix for tools that talk the Anthropic API
-		// directly — direct-mode (ANTHROPIC_BASE_URL) and credential-helper mode
-		// (Claude Desktop's inferenceGatewayBaseUrl). Proxy-mode tools (Cursor,
-		// VS Code, Xcode) do not use it.
-		anthropicBaseURL := ""
-		if usesAnthropicBaseURL(mode) && anthropicPathPrefix != "" {
-			// Trim any leading slash: url.JoinPath docs say elements should not
-			// start with "/", and path.Join already handles the join correctly.
-			if joined, err := url.JoinPath(gatewayURL, strings.TrimLeft(anthropicPathPrefix, "/")); err == nil {
-				anthropicBaseURL = joined
-			}
-		}
-
 		applyCfg := llmgateway.ApplyConfig{
 			GatewayURL:                    gatewayURL,
-			AnthropicBaseURL:              anthropicBaseURL,
+			AnthropicBaseURL:              anthropicBaseURLFor(mode, gatewayURL, anthropicPathPrefix),
 			ProxyBaseURL:                  proxyBaseURL,
 			TokenHelperCommand:            tokenHelperShellCommand,
 			TokenHelperPath:               tokenHelperPath,
@@ -1347,6 +1361,7 @@ func configureDetectedToolsWithDiscovery(
 			AnthropicModelContextWindows:  discovered.anthropicContextWindows,
 			AnthropicModelReasoning:       discovered.anthropicReasoning,
 			AnthropicModelAdaptive:        discovered.anthropicAdaptive,
+			ClearBedrockKeys:              previousBedrock[clientType],
 		}
 
 		if clientType == claudeCodeClient {
@@ -1355,6 +1370,9 @@ func configureDetectedToolsWithDiscovery(
 
 		if bedrock.Compat {
 			if err := applyBedrockSettings(errOut, clientType, &applyCfg, models, discovered, bedrock.Enable1M); err != nil {
+				if clientType == targetClient {
+					return nil, fmt.Errorf("configuring %s for Bedrock: %w", clientType, err)
+				}
 				_, _ = fmt.Fprintf(errOut, "Warning: failed to configure %s: %v\n", clientType, err)
 				continue
 			}
@@ -1368,18 +1386,23 @@ func configureDetectedToolsWithDiscovery(
 		envFilePath, err := gm.ConfigureEnvFile(clientType, applyCfg)
 		if err != nil {
 			_, _ = fmt.Fprintf(errOut, "Warning: failed to write .env for %s: %v\n", clientType, err)
-			// Roll back the settings-file patch we just made.
-			if revertErr := gm.RevertLLMGateway(clientType, configPath); revertErr != nil {
+			// Roll back the settings-file patch we just made, including any
+			// Bedrock keys it wrote.
+			if revertErr := gm.RevertLLMGateway(clientType, configPath, applyCfg.BedrockCompat); revertErr != nil {
 				_, _ = fmt.Fprintf(errOut, "Warning: rollback of %s failed: %v\n", clientType, revertErr)
 			}
 			continue
 		}
-		configured = append(configured, ToolConfig{
+		tc := ToolConfig{
 			Tool:        clientType,
 			Mode:        mode,
 			ConfigPath:  configPath,
 			EnvFilePath: envFilePath,
-		})
+		}
+		if _, ok := bedrockClients[clientType]; ok {
+			tc.BedrockCompat = new(applyCfg.BedrockCompat)
+		}
+		configured = append(configured, tc)
 		_, _ = fmt.Fprintf(out, "Configured %s (%s mode)  →  %s\n", clientType, mode, configPath)
 		if clientType == claudeCodeClient && !shortPromptCache {
 			warnPromptCacheConflict(errOut, gm, clientType)
@@ -1389,6 +1412,24 @@ func configureDetectedToolsWithDiscovery(
 		return nil, fmt.Errorf("failed to configure any detected tools")
 	}
 	return configured, nil
+}
+
+// anthropicBaseURLFor returns the gateway URL joined with the Anthropic path
+// prefix for tools that talk the Anthropic API directly: direct mode
+// (ANTHROPIC_BASE_URL) and credential-helper mode (Claude Desktop's
+// inferenceGatewayBaseUrl). Proxy-mode tools (Cursor, VS Code, Xcode) do not
+// use it, so they, and a setup without a prefix, get "".
+func anthropicBaseURLFor(mode, gatewayURL, anthropicPathPrefix string) string {
+	if !usesAnthropicBaseURL(mode) || anthropicPathPrefix == "" {
+		return ""
+	}
+	// Trim any leading slash: url.JoinPath docs say elements should not
+	// start with "/", and path.Join already handles the join correctly.
+	joined, err := url.JoinPath(gatewayURL, strings.TrimLeft(anthropicPathPrefix, "/"))
+	if err != nil {
+		return ""
+	}
+	return joined
 }
 
 // applyBedrockSettings resolves the Bedrock-compat settings for clientType onto
@@ -1564,9 +1605,9 @@ func warnCredentialHelperTools(out, errOut io.Writer, gm GatewayManager, configu
 
 // revertToolConfig reverts the settings-file and .env patches for a single
 // tool. Errors are logged as warnings so the caller can continue with others.
-func revertToolConfig(out, errOut io.Writer, gm GatewayManager, tc ToolConfig) bool {
+func revertToolConfig(out, errOut io.Writer, gm GatewayManager, tc ToolConfig, clearBedrockKeys bool) bool {
 	ok := true
-	if err := gm.RevertLLMGateway(tc.Tool, tc.ConfigPath); err != nil {
+	if err := gm.RevertLLMGateway(tc.Tool, tc.ConfigPath, clearBedrockKeys); err != nil {
 		_, _ = fmt.Fprintf(errOut, "Warning: failed to revert %s settings: %v\n", tc.Tool, err)
 		ok = false
 	}
@@ -1582,24 +1623,24 @@ func revertToolConfig(out, errOut io.Writer, gm GatewayManager, tc ToolConfig) b
 	return ok
 }
 
-// warnBedrockTurnedOff warns, for each configured Bedrock-compat client, that
-// this setup removed the Bedrock settings a previous Bedrock setup wrote. A
+// warnBedrockTurnedOff warns, for each configured client whose previous setup
+// wrote Bedrock settings and this one did not, that this setup removed them. A
 // setup without Bedrock removes them the same way teardown does, whatever they
 // hold, so it warns the same way. It only fires when this run turns Bedrock
-// off, not on every setup without it.
-func warnBedrockTurnedOff(errOut io.Writer, wasCompat, compat bool, configured []ToolConfig) {
-	if !wasCompat || compat {
-		return
-	}
+// off for a client, not on every setup without it.
+func warnBedrockTurnedOff(errOut io.Writer, previousBedrock map[string]bool, configured []ToolConfig) {
 	for _, tc := range configured {
-		warnBedrockSettingsRemoved(errOut, tc)
+		if previousBedrock[tc.Tool] && !tc.bedrockKeysWritten(false) {
+			warnBedrockSettingsRemoved(errOut, tc)
+		}
 	}
 }
 
 // warnBedrockSettingsRemoved tells the user which Bedrock settings teardown, or
-// a setup that turned Bedrock off, removed from a Bedrock-compat client. ToolHive owns these keys, as it owns
-// every key it writes: revert removes them whatever they hold and restores no
-// earlier value, so a value the user had set before setup is gone too.
+// a setup that turned Bedrock off, removed from a Bedrock-compat client.
+// ToolHive owns these keys once it has written them: revert removes them
+// whatever they hold and restores no earlier value, so a value the user had set
+// before the Bedrock setup is gone too.
 func warnBedrockSettingsRemoved(errOut io.Writer, tc ToolConfig) {
 	client, ok := bedrockClients[tc.Tool]
 	if !ok {
@@ -1615,7 +1656,9 @@ func warnBedrockSettingsRemoved(errOut io.Writer, tc ToolConfig) {
 func rollbackConfiguredTools(errOut io.Writer, gm GatewayManager, configured []ToolConfig) {
 	// Use a discard writer for the "Reverted" line — rollback is silent on success.
 	for _, tc := range configured {
-		_ = revertToolConfig(io.Discard, errOut, gm, tc)
+		// This run's record: a setup without Bedrock has already removed the
+		// keys a previous one wrote.
+		_ = revertToolConfig(io.Discard, errOut, gm, tc, tc.bedrockKeysWritten(false))
 	}
 }
 

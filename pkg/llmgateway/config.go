@@ -157,9 +157,14 @@ type ApplyConfig struct {
 	// (Codex has no built-in metadata for Bedrock model IDs), and the background
 	// memory models as memories.consolidation_model and memories.extract_model.
 	// pkg/llm maps Codex's sol, terra and luna tiers onto these; pkg/client only
-	// writes them, and removes them for any other setup.
+	// writes them.
 	BedrockCodexModel              string
 	BedrockCodexContextWindow      int
 	BedrockCodexConsolidationModel string
 	BedrockCodexExtractModel       string
+	// ClearBedrockKeys makes a setup that writes no Bedrock settings remove the
+	// Bedrock keys from Claude Code's and Codex's config. pkg/llm sets it when
+	// the client's previous setup wrote them. Otherwise any value under those
+	// keys is the user's own, so it is left alone.
+	ClearBedrockKeys bool
 }

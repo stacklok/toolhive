@@ -34,9 +34,11 @@ const codexProviderID = "toolhive-gateway"
 // tiers Codex otherwise defaults to OpenAI names for (gpt-5.6-terra and
 // gpt-5.6-luna), which a Bedrock-only gateway does not serve.
 //
-// ToolHive treats these keys as its own, the way it treats Claude Code's
-// Bedrock env keys (ClearWhenEmpty): setup writes them in Bedrock mode and
-// removes them otherwise, and revert removes them whatever they hold.
+// ToolHive treats these keys as its own once it has written them, the way it
+// treats Claude Code's Bedrock env keys: setup writes them in Bedrock mode, and
+// a later setup without Bedrock, or revert, removes them whatever they hold. It
+// only does so when the previous setup wrote them (ClearBedrockKeys), so a
+// user's own model or web_search is left alone when Bedrock was never on.
 const (
 	codexModelKey              = "model"
 	codexWebSearchKey          = "web_search"
@@ -122,16 +124,17 @@ func (cm *ClientManager) configureCodexAuth(appCfg *clientAppConfig, cfg llmgate
 // model_providers.<id> table (leaving any other providers untouched) and
 // clears model_provider only if it still points at ToolHive's entry — a value
 // changed since setup (by the user or another tool) is left alone, mirroring
-// revertCredentialHelper's appliedId check for Claude Desktop. It also removes
-// the Bedrock keys (model, web_search, model_context_window and the memory
-// models) whatever they hold, the same as Claude Code's Bedrock env keys. A
-// missing file is treated as already-reverted.
+// revertCredentialHelper's appliedId check for Claude Desktop. When
+// clearBedrockKeys is set (the setup being reverted wrote them), it also
+// removes the Bedrock keys (model, web_search, model_context_window and the
+// memory models) whatever they hold, the same as Claude Code's Bedrock env
+// keys. A missing file is treated as already-reverted.
 //
 // Revert removes these keys rather than restoring whatever they were before
 // setup: configureCodexAuth does not stash the prior values, so a user who had
-// e.g. model_provider = "openai" or their own model before setup is left with
-// none after revert (Codex then falls back to its own default).
-func (*ClientManager) revertCodexAuth(_ *clientAppConfig, configPath string) error {
+// e.g. model_provider = "openai" or their own model before a Bedrock setup is
+// left with none after revert (Codex then falls back to its own default).
+func (*ClientManager) revertCodexAuth(_ *clientAppConfig, configPath string, clearBedrockKeys bool) error {
 	if configPath == "" || !fileExistsAt(configPath) {
 		return nil
 	}
@@ -142,7 +145,9 @@ func (*ClientManager) revertCodexAuth(_ *clientAppConfig, configPath string) err
 			return err
 		}
 
-		clearCodexBedrockKeys(config)
+		if clearBedrockKeys {
+			clearCodexBedrockKeys(config)
+		}
 
 		if providers, ok := config["model_providers"].(map[string]any); ok {
 			delete(providers, codexProviderID)
@@ -158,13 +163,17 @@ func (*ClientManager) revertCodexAuth(_ *clientAppConfig, configPath string) err
 }
 
 // applyCodexBedrockKeys writes the Bedrock keys into config when cfg is a
-// Bedrock setup, and removes them otherwise, so a re-run that turns Bedrock off
-// leaves no stale model behind. pkg/llm resolves every value; this only writes
-// them. It refuses to overwrite a memories entry that is not a table, as
+// Bedrock setup. Otherwise it removes them only when cfg.ClearBedrockKeys says
+// the previous setup wrote them, so a re-run that turns Bedrock off leaves no
+// stale model behind, while a user's own model and web_search survive a setup
+// that never used Bedrock. pkg/llm resolves every value; this only writes them.
+// It refuses to overwrite a memories entry that is not a table, as
 // configureCodexAuth does for model_providers.
 func applyCodexBedrockKeys(config map[string]any, cfg llmgateway.ApplyConfig, path string) error {
 	if !cfg.BedrockCompat || cfg.BedrockCodexModel == "" {
-		clearCodexBedrockKeys(config)
+		if cfg.ClearBedrockKeys {
+			clearCodexBedrockKeys(config)
+		}
 		return nil
 	}
 	memories, err := existingTOMLTable(config, codexMemoriesKey, path)

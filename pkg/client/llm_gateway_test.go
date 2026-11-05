@@ -142,7 +142,7 @@ func TestRealClientConfigs_ConfigureAndRevert(t *testing.T) {
 			}
 
 			// Revert and verify every pointer is gone.
-			require.NoError(t, cm.RevertLLMGateway(tc.clientType, path))
+			require.NoError(t, cm.RevertLLMGateway(tc.clientType, path, true))
 
 			data, err = os.ReadFile(path)
 			require.NoError(t, err)
@@ -270,7 +270,7 @@ func TestRevertLLMGateway_VSCodeMigratesLegacyConfigPath(t *testing.T) {
 		"github.copilot.advanced.apiKey": "thv-proxy"
 	}`), 0o600))
 
-	require.NoError(t, cm.RevertLLMGateway(VSCode, legacyPath))
+	require.NoError(t, cm.RevertLLMGateway(VSCode, legacyPath, true))
 	data, err := os.ReadFile(legacyPath)
 	require.NoError(t, err)
 	assert.Contains(t, string(data), `"editor.fontSize"`)
@@ -324,7 +324,7 @@ func TestRevertLLMGateway_VSCodePreservesUnrelatedGroups(t *testing.T) {
 	]`)
 	require.NoError(t, os.WriteFile(path, data, 0o600))
 
-	require.NoError(t, cm.RevertLLMGateway(VSCodeInsider, path))
+	require.NoError(t, cm.RevertLLMGateway(VSCodeInsider, path, true))
 	result, err := os.ReadFile(path)
 	require.NoError(t, err)
 	var groups []vsCodeProviderGroup
@@ -398,6 +398,79 @@ func TestConfigureLLMGateway_ClaudeCodeBedrock(t *testing.T) {
 	})
 }
 
+// TestClaudeCodeBedrockKeys_SetupAndRevert covers the ownership rule for
+// Claude Code's Bedrock env keys: a setup without Bedrock and revert remove
+// them only when the previous setup wrote them, and otherwise leave the user's
+// own values alone. Non-Bedrock keys are reverted either way.
+func TestClaudeCodeBedrockKeys_SetupAndRevert(t *testing.T) {
+	t.Parallel()
+
+	userEnv := map[string]string{
+		"/env/CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS": "1",
+		"/env/ANTHROPIC_DEFAULT_OPUS_MODEL":           "claude-opus-own",
+	}
+
+	tests := []struct {
+		name string
+		// clear is both the setup's ClearBedrockKeys and revert's clearBedrockKeys.
+		clear       bool
+		wantPresent bool
+	}{
+		{name: "without a previous Bedrock setup the keys are left alone", wantPresent: true},
+		{name: "after a Bedrock setup the keys are removed", clear: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			home := t.TempDir()
+			cm := NewTestClientManager(home, nil, supportedClientIntegrations, nil)
+			settingsPath := filepath.Join(home, ".claude", "settings.json")
+			require.NoError(t, os.MkdirAll(filepath.Dir(settingsPath), 0o700))
+			require.NoError(t, os.WriteFile(settingsPath, []byte(`{"env": {
+				"CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS": "1",
+				"ANTHROPIC_DEFAULT_OPUS_MODEL": "claude-opus-own"
+			}}`), 0o600))
+
+			assertBedrockKeys := func(stage string) {
+				t.Helper()
+				data, err := os.ReadFile(settingsPath)
+				require.NoError(t, err)
+				for ptr, want := range userEnv {
+					got, ok := jsonPointerGet(data, ptr)
+					assert.Equal(t, tt.wantPresent, ok, "%s: presence of %q", stage, ptr)
+					if tt.wantPresent {
+						assert.Equal(t, want, got, "%s: value of %q", stage, ptr)
+					}
+				}
+			}
+
+			path, err := cm.ConfigureLLMGateway(ClaudeCode, llmgateway.ApplyConfig{
+				GatewayURL:         "https://gw.example.com",
+				TokenHelperCommand: `thv llm token`,
+				ClearBedrockKeys:   tt.clear,
+			})
+			require.NoError(t, err)
+			assertBedrockKeys("after setup")
+
+			// Put back what the user had, so revert is tested on its own.
+			if !tt.wantPresent {
+				require.NoError(t, os.WriteFile(settingsPath, []byte(`{"apiKeyHelper": "thv llm token", "env": {
+					"CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS": "1",
+					"ANTHROPIC_DEFAULT_OPUS_MODEL": "claude-opus-own"
+				}}`), 0o600))
+			}
+			require.NoError(t, cm.RevertLLMGateway(ClaudeCode, path, tt.clear))
+			assertBedrockKeys("after revert")
+
+			data, err := os.ReadFile(settingsPath)
+			require.NoError(t, err)
+			_, ok := jsonPointerGet(data, "/apiKeyHelper")
+			assert.False(t, ok, "revert removes the non-Bedrock keys either way")
+		})
+	}
+}
+
 func TestConfigureLLMGateway_ClaudeCodePromptCache(t *testing.T) {
 	t.Parallel()
 
@@ -468,7 +541,7 @@ func TestConfigureLLMGateway_ClaudeCodePromptCache(t *testing.T) {
 
 		path, err := cm.ConfigureLLMGateway(ClaudeCode, baseCfg)
 		require.NoError(t, err)
-		require.NoError(t, cm.RevertLLMGateway(ClaudeCode, path))
+		require.NoError(t, cm.RevertLLMGateway(ClaudeCode, path, true))
 
 		data, err := os.ReadFile(path)
 		require.NoError(t, err)
@@ -784,7 +857,7 @@ func TestRevertLLMGateway_RemovesKey(t *testing.T) {
 	require.NoError(t, os.WriteFile(settingsPath,
 		[]byte(`{"apiKeyHelper":"thv llm token","permissions":{"allow":["read"]}}`), 0o600))
 
-	require.NoError(t, cm.RevertLLMGateway(ClaudeCode, settingsPath))
+	require.NoError(t, cm.RevertLLMGateway(ClaudeCode, settingsPath, true))
 
 	data, err := os.ReadFile(settingsPath)
 	require.NoError(t, err)
@@ -799,7 +872,7 @@ func TestRevertLLMGateway_MissingFile(t *testing.T) {
 
 	// File does not exist → no-op, no error
 	missing := filepath.Join(home, ".claude", "settings.json")
-	assert.NoError(t, cm.RevertLLMGateway(ClaudeCode, missing))
+	assert.NoError(t, cm.RevertLLMGateway(ClaudeCode, missing, true))
 }
 
 func TestRevertLLMGateway_MissingDir(t *testing.T) {
@@ -808,7 +881,7 @@ func TestRevertLLMGateway_MissingDir(t *testing.T) {
 
 	// Neither the dir nor the file exist → no-op, no error
 	missing := filepath.Join(home, ".no-such-dir", "settings.json")
-	assert.NoError(t, cm.RevertLLMGateway(ClaudeCode, missing))
+	assert.NoError(t, cm.RevertLLMGateway(ClaudeCode, missing, true))
 }
 
 func TestRevertLLMGateway_EmptyFile(t *testing.T) {
@@ -820,7 +893,7 @@ func TestRevertLLMGateway_EmptyFile(t *testing.T) {
 	settingsPath := filepath.Join(claudeDir, "settings.json")
 	require.NoError(t, os.WriteFile(settingsPath, []byte{}, 0o600))
 
-	assert.NoError(t, cm.RevertLLMGateway(ClaudeCode, settingsPath))
+	assert.NoError(t, cm.RevertLLMGateway(ClaudeCode, settingsPath, true))
 }
 
 func TestRevertLLMGateway_UnsupportedClient(t *testing.T) {
@@ -828,7 +901,7 @@ func TestRevertLLMGateway_UnsupportedClient(t *testing.T) {
 	home := t.TempDir()
 	cm := NewTestClientManager(home, nil, nil, nil)
 
-	err := cm.RevertLLMGateway(ClaudeCode, "/some/path")
+	err := cm.RevertLLMGateway(ClaudeCode, "/some/path", true)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "does not support LLM gateway")
 }

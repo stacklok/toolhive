@@ -144,7 +144,7 @@ func TestRevertCodexAuth_RemovesProviderOnly(t *testing.T) {
 	path, err := cm.ConfigureLLMGateway(ClientApp(Codex), codexApplyCfg())
 	require.NoError(t, err)
 
-	require.NoError(t, cm.RevertLLMGateway(ClientApp(Codex), path))
+	require.NoError(t, cm.RevertLLMGateway(ClientApp(Codex), path, true))
 
 	config, err := readTOMLConfig(configPath)
 	require.NoError(t, err)
@@ -170,7 +170,7 @@ func TestRevertCodexAuth_LeavesForeignModelProviderIntact(t *testing.T) {
 	config["model_provider"] = "my-bedrock"
 	require.NoError(t, writeTOMLConfig(configPath, config))
 
-	require.NoError(t, cm.RevertLLMGateway(ClientApp(Codex), path))
+	require.NoError(t, cm.RevertLLMGateway(ClientApp(Codex), path, true))
 
 	config, err = readTOMLConfig(configPath)
 	require.NoError(t, err)
@@ -211,7 +211,7 @@ func TestRevertCodexAuth_MissingFileIsNoOp(t *testing.T) {
 	t.Parallel()
 	cm, configPath := newCodexManager(t)
 
-	require.NoError(t, cm.RevertLLMGateway(ClientApp(Codex), configPath))
+	require.NoError(t, cm.RevertLLMGateway(ClientApp(Codex), configPath, true))
 	assert.NoFileExists(t, configPath)
 }
 
@@ -222,6 +222,13 @@ func codexBedrockApplyCfg(model string, contextWindow int) llmgateway.ApplyConfi
 	cfg.BedrockCodexContextWindow = contextWindow
 	cfg.BedrockCodexConsolidationModel = "us.openai.gpt-6.1-terra"
 	cfg.BedrockCodexExtractModel = "us.openai.gpt-6-luna"
+	return cfg
+}
+
+// withClearBedrockKeys returns cfg for a setup whose previous run wrote the
+// Bedrock keys.
+func withClearBedrockKeys(cfg llmgateway.ApplyConfig) llmgateway.ApplyConfig {
+	cfg.ClearBedrockKeys = true
 	return cfg
 }
 
@@ -299,8 +306,10 @@ func TestConfigureCodexAuth_BedrockKeys(t *testing.T) {
 }
 
 // TestCodexBedrockKeys_SetupAndRevert covers the ownership rule for the Bedrock
-// keys, the same as Claude Code's Bedrock env keys: a setup without Bedrock and
-// revert remove them whatever they hold, leaving unrelated keys alone.
+// keys, the same as Claude Code's Bedrock env keys: once a Bedrock setup wrote
+// them, a setup without Bedrock and revert remove them whatever they hold,
+// leaving unrelated keys alone. When no Bedrock setup wrote them they are the
+// user's own and both leave them alone.
 func TestCodexBedrockKeys_SetupAndRevert(t *testing.T) {
 	t.Parallel()
 
@@ -318,6 +327,8 @@ func TestCodexBedrockKeys_SetupAndRevert(t *testing.T) {
 		second *llmgateway.ApplyConfig
 		// edit simulates the user changing config.toml before revert.
 		edit func(map[string]any)
+		// keepBedrockOnRevert reverts a setup that wrote no Bedrock keys.
+		keepBedrockOnRevert bool
 		// wantAfterSecond is the whole config after the second setup, without
 		// ToolHive's provider table.
 		wantAfterSecond map[string]any
@@ -361,14 +372,38 @@ func TestCodexBedrockKeys_SetupAndRevert(t *testing.T) {
 			wantAfterRevert: map[string]any{},
 		},
 		{
-			name:   "re-setup without Bedrock removes every Bedrock key, including the memory models",
+			name:   "re-setup without Bedrock after a Bedrock one removes every Bedrock key, including the memory models",
 			seed:   map[string]any{codexModelKey: "gpt-5.5"},
 			first:  codexBedrockApplyCfg(sol, 400000),
-			second: new(codexApplyCfg()),
+			second: new(withClearBedrockKeys(codexApplyCfg())),
+			// The second setup wrote no Bedrock keys, so its revert keeps them.
+			keepBedrockOnRevert: true,
 			wantAfterSecond: map[string]any{
 				"model_provider": codexProviderID,
 			},
 			wantAfterRevert: map[string]any{},
+		},
+		{
+			name: "setup and revert without Bedrock leave the user's own keys alone",
+			seed: map[string]any{
+				codexModelKey:     "gpt-5.5",
+				codexWebSearchKey: "disabled",
+				codexMemoriesKey:  map[string]any{codexConsolidationModelKey: "gpt-5.6-terra"},
+			},
+			first:               codexApplyCfg(),
+			second:              new(codexApplyCfg()),
+			keepBedrockOnRevert: true,
+			wantAfterSecond: map[string]any{
+				"model_provider":  codexProviderID,
+				codexModelKey:     "gpt-5.5",
+				codexWebSearchKey: "disabled",
+				codexMemoriesKey:  map[string]any{codexConsolidationModelKey: "gpt-5.6-terra"},
+			},
+			wantAfterRevert: map[string]any{
+				codexModelKey:     "gpt-5.5",
+				codexWebSearchKey: "disabled",
+				codexMemoriesKey:  map[string]any{codexConsolidationModelKey: "gpt-5.6-terra"},
+			},
 		},
 	}
 
@@ -398,7 +433,7 @@ func TestCodexBedrockKeys_SetupAndRevert(t *testing.T) {
 				require.NoError(t, writeTOMLConfig(configPath, config))
 			}
 
-			require.NoError(t, cm.RevertLLMGateway(ClientApp(Codex), path))
+			require.NoError(t, cm.RevertLLMGateway(ClientApp(Codex), path, !tt.keepBedrockOnRevert))
 
 			config, err := readTOMLConfig(configPath)
 			require.NoError(t, err)

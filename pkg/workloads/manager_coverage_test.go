@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	goruntime "runtime"
 	"strings"
 	"testing"
 	"time"
@@ -112,12 +113,12 @@ func TestDefaultManager_prepareWorkloadRestart_ClientCleanup(t *testing.T) {
 				sm.EXPECT().SetWorkloadStatus(ctx, name, runtime.WorkloadStatusStarting, reason).Return(nil)
 			}
 			manager := &DefaultManager{statuses: sm}
-			withClientManagerFactory(func(context.Context) (client.Manager, error) {
+			manager.clientManagers = testClientManagerProvider(func(context.Context) (client.Manager, error) {
 				if tt.factoryError {
 					return nil, errors.New("client manager unavailable")
 				}
 				return cm, nil
-			})(manager)
+			})
 
 			manager.prepareWorkloadRestart(ctx, &runner.RunConfig{BaseName: name, Group: group}, tt.stable)
 			if tt.cancelCleanup || tt.preCancelled {
@@ -142,13 +143,16 @@ func TestDefaultManager_StopCleanupErrorsDoNotPreventStopped(t *testing.T) {
 				sm := statusMocks.NewMockStatusManager(ctrl)
 				cm := clientMocks.NewMockManager(ctrl)
 				rm := runtimeMocks.NewMockRuntime(ctrl)
-				manager := &DefaultManager{statuses: sm, runtime: rm}
-				withClientManagerFactory(func(context.Context) (client.Manager, error) {
+				manager := &DefaultManager{
+					savedRunConfigs: testSavedRunConfigChecker{exists: true},
+					statuses:        sm, runtime: rm,
+				}
+				manager.clientManagers = testClientManagerProvider(func(context.Context) (client.Manager, error) {
 					if factoryError {
 						return nil, errors.New("client manager unavailable")
 					}
 					return cm, nil
-				})(manager)
+				})
 				var cleanupCall *gomock.Call
 				if !factoryError {
 					cleanupCall = cm.EXPECT().RemoveServerFromClients(gomock.Any(), name, group).
@@ -171,7 +175,7 @@ func TestDefaultManager_StopCleanupErrorsDoNotPreventStopped(t *testing.T) {
 				}
 				require.NoError(t, manager.stopSingleContainerWorkload(ctx, &runtime.ContainerInfo{
 					Name: name, Labels: map[string]string{labels.LabelBaseName: name},
-				}, rc))
+				}, rc, true))
 			})
 		}
 	}
@@ -191,11 +195,31 @@ func TestDefaultManager_stopVerifiedProxy_SignalErrorPreservesPID(t *testing.T) 
 		return errors.New("process signal failed")
 	}
 
-	require.False(t, manager.stopVerifiedProxy(ctx, name, pid, signal), "a failed signal must not reset the saved PID")
+	require.Equal(t, proxyNotStopped, manager.stopVerifiedProxy(ctx, name, pid, signal), "a failed signal must not reset the saved PID")
 	require.True(t, signalled)
 }
 
+func TestDefaultManager_stopVerifiedProxy_ExitTimeout(t *testing.T) {
+	t.Parallel()
+	const name = "signalled-but-exiting"
+	proxy := startProxyProcess(t, name, true)
+	sm := statusMocks.NewMockStatusManager(gomock.NewController(t))
+	manager := &DefaultManager{statuses: sm}
+	withProxyExitTimeout(50 * time.Millisecond)(manager)
+
+	result := manager.stopVerifiedProxy(context.Background(), name, proxy.pid, process.KillProcess)
+	require.Equal(t, proxyExiting, result)
+	select {
+	case <-proxy.exited:
+		t.Error("SIGTERM-ignoring proxy unexpectedly exited")
+	default:
+	}
+}
+
 func TestDefaultManager_spawnDetached_ReapsOwnedChildren(t *testing.T) {
+	if goruntime.GOOS == "windows" {
+		t.Skip("detached fixture requires Unix process reaping")
+	}
 	isolateWorkloadStopState(t)
 	t.Setenv(process.ToolHiveDetachedEnv, "")
 	for _, mode := range []string{"clean", "error"} {

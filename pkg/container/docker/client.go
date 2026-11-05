@@ -1372,6 +1372,11 @@ func (c *Client) deleteNetwork(ctx context.Context, name string) error {
 		return nil
 	}
 
+	if !lb.IsToolHiveContainer(networkToRemove.Labels) || lb.GetContainerName(networkToRemove.Labels) == "" {
+		slog.Debug("network lacks ToolHive ownership labels, skipping deletion", "name", name)
+		return nil
+	}
+
 	if _, err := c.client.NetworkRemove(ctx, networkToRemove.ID, mobyclient.NetworkRemoveOptions{}); err != nil {
 		return fmt.Errorf("failed to remove network %s: %w", name, err)
 	}

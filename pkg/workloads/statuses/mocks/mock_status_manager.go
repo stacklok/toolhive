@@ -156,3 +156,17 @@ func (mr *MockStatusManagerMockRecorder) SetWorkloadStatus(ctx, workloadName, st
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SetWorkloadStatus", reflect.TypeOf((*MockStatusManager)(nil).SetWorkloadStatus), ctx, workloadName, status, contextMsg)
 }
+
+// SetWorkloadStoppedIfOwned mocks base method.
+func (m *MockStatusManager) SetWorkloadStoppedIfOwned(ctx context.Context, workloadName string, ownerPID int) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "SetWorkloadStoppedIfOwned", ctx, workloadName, ownerPID)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// SetWorkloadStoppedIfOwned indicates an expected call of SetWorkloadStoppedIfOwned.
+func (mr *MockStatusManagerMockRecorder) SetWorkloadStoppedIfOwned(ctx, workloadName, ownerPID any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SetWorkloadStoppedIfOwned", reflect.TypeOf((*MockStatusManager)(nil).SetWorkloadStoppedIfOwned), ctx, workloadName, ownerPID)
+}

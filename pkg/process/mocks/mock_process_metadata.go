@@ -54,6 +54,21 @@ func (mr *MockProcessMetadataMockRecorder) Cmdline() *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Cmdline", reflect.TypeOf((*MockProcessMetadata)(nil).Cmdline))
 }
 
+// CmdlineSlice mocks base method.
+func (m *MockProcessMetadata) CmdlineSlice() ([]string, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "CmdlineSlice")
+	ret0, _ := ret[0].([]string)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// CmdlineSlice indicates an expected call of CmdlineSlice.
+func (mr *MockProcessMetadataMockRecorder) CmdlineSlice() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CmdlineSlice", reflect.TypeOf((*MockProcessMetadata)(nil).CmdlineSlice))
+}
+
 // Environ mocks base method.
 func (m *MockProcessMetadata) Environ() ([]string, error) {
 	m.ctrl.T.Helper()

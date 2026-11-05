@@ -66,10 +66,7 @@ func TestDefaultManager_deleteContainerWorkload_StopsSupervisorBeforeFreshRemova
 				return proxy.pid, nil
 			})
 			sm.EXPECT().ResetWorkloadPIDIfMatch(gomock.Any(), name, proxy.pid).Return(nil)
-			removalName := name
-			if tt.missingErr != nil {
-				removalName = containerName
-			}
+			removalName := containerName
 			rtMock.EXPECT().RemoveWorkload(gomock.Any(), removalName).DoAndReturn(func(context.Context, string) error {
 				alive, err := process.FindProcess(proxy.pid)
 				require.NoError(t, err)
@@ -88,13 +85,18 @@ func TestDefaultManager_deleteContainerWorkload_StopsSupervisorBeforeFreshRemova
 				return tt.removeErr
 			})
 			if tt.removeErr != nil {
+				rtMock.EXPECT().GetWorkloadInfo(gomock.Any(), removalName).Return(runtime.ContainerInfo{Name: containerName}, nil)
 				sm.EXPECT().SetWorkloadStatus(gomock.Any(), name, runtime.WorkloadStatusError, tt.removeErr.Error()).Return(nil)
 			} else {
 				rtMock.EXPECT().GetWorkloadInfo(gomock.Any(), removalName).
 					Return(runtime.ContainerInfo{}, fmt.Errorf("removal verification: %w", tt.verifiedErr))
 				sm.EXPECT().DeleteWorkloadStatus(gomock.Any(), name).Return(nil)
 			}
-			manager := &DefaultManager{runtime: rtMock, statuses: sm}
+			manager := &DefaultManager{
+				clientManagers: testClientManagerProvider(unavailableClientManager),
+				runtime:        rtMock,
+				statuses:       sm,
+			}
 			withPortFreer(func(context.Context, *runner.RunConfig) {
 				t.Error("verified supervisor exit must not need port fallback")
 			})(manager)
@@ -136,7 +138,11 @@ func TestDefaultManager_deleteContainerWorkload_AuxiliaryDoesNotStopSupervisorOr
 	rtMock.EXPECT().RemoveWorkload(gomock.Any(), auxiliary).Return(nil)
 	rtMock.EXPECT().GetWorkloadInfo(gomock.Any(), auxiliary).Return(runtime.ContainerInfo{}, runtime.ErrWorkloadNotFound)
 	sm.EXPECT().DeleteWorkloadStatus(gomock.Any(), auxiliary).Return(nil)
-	manager := &DefaultManager{runtime: rtMock, statuses: sm}
+	manager := &DefaultManager{
+		clientManagers: testClientManagerProvider(unavailableClientManager),
+		runtime:        rtMock,
+		statuses:       sm,
+	}
 	withPortFreer(func(context.Context, *runner.RunConfig) { t.Error("auxiliary deletion must not clean up parent proxy") })(manager)
 
 	require.NoError(t, manager.deleteContainerWorkload(ctx, auxiliary, nil))
@@ -151,4 +157,81 @@ func TestDefaultManager_deleteContainerWorkload_AuxiliaryDoesNotStopSupervisorOr
 	after, err := runner.LoadState(ctx, parent)
 	require.NoError(t, err)
 	assert.Equal(t, saved, after)
+}
+
+//nolint:paralleltest // deletion reads and removes saved state
+func TestDefaultManager_deleteContainerWorkload_MissingContainer(t *testing.T) {
+	isolateWorkloadStopState(t)
+	removeErr := errors.New("runtime removal failed")
+	verifyErr := errors.New("runtime inspection failed")
+	for _, tt := range []struct {
+		name      string
+		saved     bool
+		removeErr error
+		verifyErr error
+		appeared  bool
+	}{
+		{name: "no saved configuration skips runtime removal"},
+		{name: "failed removal with no remaining container deletes saved state", saved: true, removeErr: removeErr},
+		{name: "container appearing after failed removal preserves saved state", saved: true, removeErr: removeErr, appeared: true},
+		{name: "failed verification with no remaining container deletes saved state", saved: true, verifyErr: verifyErr},
+		{name: "container appearing after failed verification preserves saved state", saved: true, verifyErr: verifyErr, appeared: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			t.Cleanup(cancel)
+			const name = "missing-delete-workload"
+			const containerName = "missing-delete-workload-20260101"
+			var rc *runner.RunConfig
+			if tt.saved {
+				rc = &runner.RunConfig{BaseName: name, ContainerName: containerName}
+				persistStopRunConfig(t, name, rc)
+			}
+			ctrl := gomock.NewController(t)
+			rtMock := runtimeMocks.NewMockRuntime(ctrl)
+			sm := statusMocks.NewMockStatusManager(ctrl)
+			rtMock.EXPECT().GetWorkloadInfo(gomock.Any(), name).Return(runtime.ContainerInfo{}, runtime.ErrWorkloadNotFound)
+			sm.EXPECT().SetWorkloadStatus(gomock.Any(), name, runtime.WorkloadStatusRemoving, "").Return(nil)
+			sm.EXPECT().GetWorkloadPID(gomock.Any(), name).Return(0, nil)
+			if tt.saved {
+				rtMock.EXPECT().RemoveWorkload(gomock.Any(), containerName).Return(tt.removeErr)
+				if tt.removeErr != nil {
+					sm.EXPECT().SetWorkloadStatus(gomock.Any(), name, runtime.WorkloadStatusError, tt.removeErr.Error()).Return(nil)
+				} else {
+					rtMock.EXPECT().GetWorkloadInfo(gomock.Any(), containerName).Return(runtime.ContainerInfo{}, tt.verifyErr)
+				}
+				if tt.appeared {
+					rtMock.EXPECT().GetWorkloadInfo(gomock.Any(), containerName).Return(runtime.ContainerInfo{Name: containerName}, nil)
+				} else {
+					rtMock.EXPECT().GetWorkloadInfo(gomock.Any(), containerName).Return(runtime.ContainerInfo{}, runtime.ErrContainerNotFound)
+				}
+			}
+			if !tt.appeared {
+				sm.EXPECT().DeleteWorkloadStatus(gomock.Any(), name).Return(nil)
+			}
+			fallbackCalls := 0
+			manager := &DefaultManager{
+				runtime:        rtMock,
+				statuses:       sm,
+				clientManagers: testClientManagerProvider(unavailableClientManager),
+			}
+			withPortFreer(func(context.Context, *runner.RunConfig) { fallbackCalls++ })(manager)
+
+			err := manager.deleteContainerWorkload(ctx, name, rc)
+			assert.Equal(t, 1, fallbackCalls, "missing containers must not suppress orphan proxy cleanup")
+			if tt.appeared {
+				if tt.removeErr != nil {
+					require.ErrorIs(t, err, tt.removeErr)
+				} else {
+					require.ErrorIs(t, err, tt.verifyErr)
+				}
+				_, loadErr := runner.LoadState(ctx, name)
+				require.NoError(t, loadErr, "failed deletion must retain recovery state")
+			} else {
+				require.NoError(t, err)
+				_, loadErr := runner.LoadState(ctx, name)
+				require.Error(t, loadErr, "successful deletion must remove saved state")
+			}
+		})
+	}
 }

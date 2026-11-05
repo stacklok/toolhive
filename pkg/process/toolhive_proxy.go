@@ -21,6 +21,7 @@ const (
 type processMetadata interface {
 	Environ() ([]string, error)
 	Cmdline() (string, error)
+	CmdlineSlice() ([]string, error)
 	Exe() (string, error)
 }
 
@@ -78,7 +79,8 @@ func IsToolHiveProxyForWorkload(pid int, workloadName string) (bool, error) {
 // IsTrackedToolHiveProxyForWorkload verifies a PID read from a workload's status.
 // Detached supervisors must match the workload name. Non-detached ToolHive
 // run/start/restart supervisors use recorded-PID binding without a process-birth-time check.
-// An unnamed run may omit its derived workload name; start/restart include the name.
+// An unnamed run may omit its derived workload name. Named runs must match;
+// start/restart must include the name or select --all or --group.
 // Port-discovered PIDs must use IsToolHiveProxyForWorkload instead.
 func IsTrackedToolHiveProxyForWorkload(pid int, workloadName string) (bool, error) {
 	if pid <= 0 || workloadName == "" {
@@ -103,12 +105,46 @@ func isTrackedToolHiveProxyForWorkload(p processMetadata, workloadName string) (
 		}
 		return cmdlineContainsWorkload(cmdline, workloadName), nil
 	}
-	cmdline, err := p.Cmdline()
+	args, err := p.CmdlineSlice()
 	if err != nil {
 		return false, err
 	}
-	return isToolHiveProcess(p) && (strings.Contains(cmdline, " run ") || strings.Contains(cmdline, " start ") ||
-		strings.Contains(cmdline, " restart ")), nil
+	if !isToolHiveProcess(p) {
+		return false, nil
+	}
+	for i := 1; i < len(args); i++ {
+		switch args[i] {
+		case "run":
+			return trackedRunMatchesWorkload(args[i+1:], workloadName), nil
+		case "start", "restart":
+			return slices.ContainsFunc(args[i+1:], func(arg string) bool {
+				return arg == workloadName || arg == "--all" || arg == "--group" || strings.HasPrefix(arg, "--group=")
+			}), nil
+		}
+	}
+	return false, nil
+}
+
+func trackedRunMatchesWorkload(args []string, workloadName string) bool {
+	named := false
+	for i := 0; i < len(args); i++ {
+		switch {
+		case args[i] == "--name":
+			named = true
+			i++
+			if i >= len(args) || args[i] != workloadName {
+				return false
+			}
+		case strings.HasPrefix(args[i], "--name="):
+			named = true
+			if strings.TrimPrefix(args[i], "--name=") != workloadName {
+				return false
+			}
+		}
+	}
+	return named || slices.ContainsFunc(args, func(arg string) bool {
+		return !strings.HasPrefix(arg, "-")
+	})
 }
 
 // isToolHiveProcess returns true if p is a ToolHive process (TOOLHIVE_DETACHED

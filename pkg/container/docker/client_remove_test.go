@@ -14,9 +14,12 @@ import (
 
 	"github.com/containerd/errdefs"
 	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/network"
 	mobyclient "github.com/moby/moby/client"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/stacklok/toolhive/pkg/labels"
 )
 
 func TestRemoveWorkload_AbsentPrimaryCleansOnlyItsOrphanResources(t *testing.T) {
@@ -63,7 +66,7 @@ func TestRemoveWorkload_AbsentPrimaryCleansOnlyItsOrphanResources(t *testing.T) 
 					// An unrelated workload must keep the shared external network alive.
 					_, _ = w.Write([]byte(`[{"Id":"other","Names":["/other"],"Labels":{"toolhive":"true"}}]`))
 				case path == "/networks":
-					_, _ = w.Write([]byte(`[{"Id":"internal-svc","Name":"toolhive-svc-internal"},{"Id":"internal-other","Name":"toolhive-other-internal"},{"Id":"external","Name":"toolhive-external"}]`))
+					_, _ = w.Write([]byte(`[{"Id":"internal-svc","Name":"toolhive-svc-internal","Labels":{"toolhive":"true","toolhive-name":"toolhive-svc-internal"}},{"Id":"internal-other","Name":"toolhive-other-internal","Labels":{"toolhive":"true","toolhive-name":"toolhive-other-internal"}},{"Id":"external","Name":"toolhive-external","Labels":{"toolhive":"true","toolhive-name":"toolhive-external"}}]`))
 				default:
 					t.Errorf("unexpected Docker request: %s %s", r.Method, path)
 					http.Error(w, `{"message":"unexpected request"}`, http.StatusInternalServerError)
@@ -137,6 +140,72 @@ func TestRemoveWorkload_AbsentPrimaryCleansOnlyItsOrphanResources(t *testing.T) 
 				"/networks/internal-other":      true,
 				"/networks/external":            true,
 			}, remaining, "cleanup must remove owned helpers and private network without deleting helper-name collisions or unrelated networks")
+		})
+	}
+}
+
+func TestRemoveWorkload_AbsentPrimaryRequiresNetworkOwnership(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name          string
+		networkLabels map[string]string
+		wantDeleted   bool
+	}{
+		{name: "unlabelled network"},
+		{name: "missing name label", networkLabels: map[string]string{labels.LabelToolHive: labels.LabelToolHiveValue}},
+		{name: "missing ownership label", networkLabels: map[string]string{labels.LabelName: "network"}},
+		{name: "false ownership label", networkLabels: map[string]string{labels.LabelToolHive: "false", labels.LabelName: "network"}},
+		{name: "empty name label", networkLabels: map[string]string{labels.LabelToolHive: labels.LabelToolHiveValue, labels.LabelName: ""}},
+		{name: "owned network", wantDeleted: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var mu sync.Mutex
+			var deleted []string
+			client := discoveryHTTPClient(t, func(w http.ResponseWriter, r *http.Request) {
+				mu.Lock()
+				defer mu.Unlock()
+				path := strings.TrimPrefix(r.URL.Path, "/v1.44")
+				w.Header().Set("Content-Type", "application/json")
+				switch {
+				case r.Method == http.MethodDelete:
+					deleted = append(deleted, path)
+					w.WriteHeader(http.StatusNoContent)
+				case path == "/containers/json":
+					_, _ = w.Write([]byte(`[]`))
+				case path == "/networks":
+					var networks []network.Summary
+					for _, name := range []string{"toolhive-foo-internal", "toolhive-external"} {
+						networkLabels := tt.networkLabels
+						if tt.wantDeleted {
+							networkLabels = make(map[string]string)
+							labels.AddNetworkLabels(networkLabels, name)
+						}
+						networks = append(networks, network.Summary{Network: network.Network{
+							ID: name, Name: name, Labels: networkLabels,
+						}})
+					}
+					assert.NoError(t, json.NewEncoder(w).Encode(networks))
+				default:
+					t.Errorf("unexpected Docker request: %s %s", r.Method, path)
+					w.WriteHeader(http.StatusInternalServerError)
+				}
+			})
+			api := &fakeDockerAPI{
+				listFunc: func(context.Context, mobyclient.ContainerListOptions) ([]container.Summary, error) {
+					return nil, nil
+				},
+			}
+			c := &Client{api: api, client: client}
+
+			require.NoError(t, c.RemoveWorkload(t.Context(), "foo"))
+			mu.Lock()
+			defer mu.Unlock()
+			if tt.wantDeleted {
+				assert.Equal(t, []string{"/networks/toolhive-foo-internal", "/networks/toolhive-external"}, deleted)
+			} else {
+				assert.Empty(t, deleted, "networks without ToolHive ownership labels must survive removal")
+			}
 		})
 	}
 }

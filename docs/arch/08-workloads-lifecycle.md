@@ -19,7 +19,11 @@ stateDiagram-v2
     Starting --> Running: Success
     Starting --> Error: Failed
 
+    Starting --> Stopping: Stop
     Running --> Stopping: Stop
+    Unhealthy --> Stopping: Stop
+    Unauthenticated --> Stopping: Stop
+    AuthRetrying --> Stopping: Stop
     Running --> Unhealthy: Health Failed
     Running --> Unauthenticated: Auth Failed
     Running --> AuthRetrying: Transient Token Refresh Failures
@@ -81,21 +85,32 @@ thv stop my-server
 
 **Container workload**: Stops proxy process → stops container → preserves state
 
-Explicit named stop attempts proxy cleanup even when the primary container has
-exited or disappeared. After cleanup, it makes a fresh attempt to stop the
-container by name. For an existing saved workload, successful stop writes
-`Stopped`, replacing prior `Error` or `PolicyStopped` status and context.
-Auxiliary workloads skip proxy cleanup.
+Stopping a workload by name always cleans up its proxy and asks the runtime to
+stop the container, even when the container has exited or is gone. This stops a
+supervisor that is waiting in restart backoff. Auxiliary workloads have no proxy
+to clean up.
 
-The unchanged `--all` and `--group` selection still excludes `Starting` workloads,
-including supervisors waiting in restart backoff. This recovery applies to
-explicit named stop, not all stop forms.
+Stop writes `Stopping` and then `Stopped`, and removes client configuration,
+only when something was live: the container was running or a supervisor PID was
+recorded. Otherwise stop leaves the current status alone, so an `Error` or
+`PolicyStopped` workload keeps its status and reason.
 
-Stop preserves saved run configuration, but a foreground `run` still deletes its workload during normal exit cleanup. The bounded five-second exit wait means explicit stop can return before the foreground owner's cleanup completes. Stop rechecks saved configuration before writing final status and skips that write if configuration is already gone. This recheck and the status write are not atomic against concurrent deletion, so deletion races remain. Stop does not create status for an unknown missing name.
+`thv stop --all` and `--group` skip `Starting` workloads, including supervisors
+waiting in restart backoff. Stop them by name.
+
+Stop keeps the saved run configuration, but a foreground `run` deletes its
+workload when it exits. Stop waits at most five seconds for the supervisor to
+exit, so it can return before that cleanup finishes. Before it writes the final
+status, stop checks that the saved configuration still exists, and skips the
+write if it is gone. The check and the write are not atomic, so a concurrent
+delete can still race with stop. Stop does not create status for a name it
+doesn't know.
 
 **Remote workload**: Stops proxy → preserves state
 
-Successful explicit stop transitions a remote workload from `Running`, `Starting`, `AuthRetrying`, `Unauthenticated`, or `Unhealthy` to `Stopped`, subject to the saved-state recheck above. Terminal status handling is unchanged.
+Stop moves a remote workload from `Running`, `Starting`, `AuthRetrying`,
+`Unauthenticated`, or `Unhealthy` to `Stopped`, with the same saved
+configuration check. Other statuses are left alone.
 
 **Implementation**: `pkg/workloads/manager.go`
 
@@ -118,7 +133,25 @@ thv rm my-server
 
 **Container workload**: Stops proxy → removes container → deletes state
 
-Deletion attempts supervisor shutdown before removing the container. It makes a fresh removal attempt even if the initial container lookup finds no container, because startup may still be in flight. If removal fails, deletion preserves the saved run configuration for retry. Supervisor shutdown remains best-effort and is not a strict barrier: a foreground supervisor may handle SIGTERM by running its own deletion cleanup, which can overlap manager removal if the proxy wait expires; see [Proxy termination](#proxy-termination).
+Delete stops the supervisor before it removes the container. If the container
+lookup finds nothing but a saved run configuration exists, delete still asks the
+runtime to remove the workload, because a supervisor in backoff can create the
+container again. If that removal fails and the container still can't be found,
+delete logs the error and cleans up the saved state. If the container now
+exists, delete returns the error and keeps the saved state so you can retry. A
+name with no container and no saved run configuration skips runtime removal.
+
+Delete uses the container's runtime name when it finds one, then the saved
+`ContainerName`, then the workload name.
+
+The Docker runtime only deletes networks that carry the `toolhive=true` and
+workload name labels. It leaves unlabelled networks alone, even when their
+names match ToolHive's naming scheme.
+
+Stopping the supervisor is best-effort. A foreground supervisor runs its own
+cleanup when it gets SIGTERM, and that cleanup can overlap with delete if the
+supervisor takes longer than the exit wait. See
+[Proxy termination](#proxy-termination).
 
 **Remote workload**: Stops proxy → deletes state
 
@@ -152,13 +185,43 @@ The same `Applier` backs both the CLI (`thv upgrade apply`) and the API (`POST /
 
 ### Proxy termination
 
-Stop and delete verify that the PID recorded in workload status belongs to a ToolHive process. Non-detached supervisors must also have a `run`, `start`, or `restart` token in their arguments. An unnamed `run` may omit its derived workload name from arguments. Foreground `start` and `restart` include the name, but all three use only the recorded PID for workload binding, without a process-birth-time check. Detached supervisors must match the exact workload name. A live PID whose identity cannot be verified remains recorded and is not signaled.
+Before signalling the PID in the status file, stop and delete check that it
+belongs to this workload's ToolHive supervisor. A detached supervisor must have
+the exact workload name on its command line. A foreground supervisor must be a
+`thv` process whose first `run`, `start`, or `restart` argument names the
+workload:
 
-On Unix, termination uses SIGTERM without escalation. On Windows, it uses TerminateProcess, a hard stop. Both paths wait up to five seconds for exit. If PID-based termination is unavailable or incomplete, they attempt port-based cleanup when saved configuration permits it. This fallback requires an exact workload identity match for the port holder and also waits up to five seconds for exit. Cleanup is best-effort and can leave a proxy running or its port occupied.
+- `start` and `restart` must have the workload name as a whole argument, unless
+  they use `--all` or `--group`.
+- `run` must have `--name <workload>`, `--name=<workload>`, or the workload name
+  as a positional argument. Only an unnamed `thv run <image>` is accepted
+  without a name, because its name is derived from the image.
 
-The supervisor keeps its PID registered across container restart attempts, including backoff. Shutdown cancels the backoff. On final exit, PID cleanup clears the recorded PID only if it still matches the exiting process.
+There is no process start-time check, so if the OS reuses the PID for another
+matching `thv` command, ToolHive can't tell. A PID that is alive but can't be
+verified is left alone.
 
-**Implementation**: `pkg/workloads/manager.go`, `pkg/runner/runner.go`
+On Unix, stop sends SIGTERM and does not escalate. On Windows, it uses
+TerminateProcess, which is a hard stop. Both wait up to five seconds for the
+process to exit. If the process was signalled but is still exiting after the
+wait, stop doesn't signal it again. If there is no PID to signal, or it can't be
+verified, stop falls back to freeing the proxy port when the saved configuration
+allows it. The port holder must match the workload exactly, and the fallback
+also waits up to five seconds. Cleanup is best-effort and can leave a proxy
+running or its port in use.
+
+The supervisor owns its PID entry. It keeps the PID registered across container
+restart attempts, including backoff, and shutdown cancels the backoff. When it
+exits, it clears the PID only if the entry still holds its own PID. If it was
+cancelled by a signal while `Starting` or `Running`, it writes `Stopped` under
+the status file lock, as long as the recorded PID is unset or its own, and exits
+with status 0.
+
+Start and restart stop any other supervisor whose PID is recorded for the
+workload before they spawn a new one, whatever the current status is. They never
+signal their own PID.
+
+**Implementation**: `pkg/workloads/manager.go`, `pkg/process/toolhive_proxy.go`
 
 ### List
 

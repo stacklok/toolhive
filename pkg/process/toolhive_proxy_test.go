@@ -121,15 +121,58 @@ func TestIsTrackedToolHiveProxyForWorkload_MetadataErrors(t *testing.T) {
 			if tt.environErr {
 				metadata.EXPECT().Environ().Return(tt.env, metadataErr)
 			} else {
-				gomock.InOrder(
-					metadata.EXPECT().Environ().Return(tt.env, nil),
-					metadata.EXPECT().Cmdline().Return("/usr/bin/thv start github --foreground", metadataErr),
-				)
+				metadata.EXPECT().Environ().Return(tt.env, nil)
+				if len(tt.env) > 0 {
+					metadata.EXPECT().Cmdline().Return("/usr/bin/thv start github --foreground", metadataErr)
+				} else {
+					metadata.EXPECT().CmdlineSlice().Return(nil, metadataErr)
+				}
 			}
 
 			matched, err := isTrackedToolHiveProxyForWorkload(metadata, "github")
 			require.ErrorIs(t, err, metadataErr)
 			assert.False(t, matched, "unreadable identity must not authorize stopping a process")
+		})
+	}
+}
+
+func TestIsTrackedToolHiveProxyForWorkload_ForegroundArguments(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name     string
+		args     []string
+		expected bool
+	}{
+		{name: "start another workload", args: []string{"thv", "start", "other", "--foreground"}},
+		{name: "root flag before run", args: []string{"thv", "--debug", "run", "img", "--name", "demo"}, expected: true},
+		{name: "equals name", args: []string{"thv", "run", "img", "--name=demo"}, expected: true},
+		{name: "different name", args: []string{"thv", "run", "img", "--name", "other"}},
+		{name: "different equals name", args: []string{"thv", "run", "demo", "--name=other"}},
+		{name: "missing name value", args: []string{"thv", "run", "img", "--name"}},
+		{name: "empty name value", args: []string{"thv", "run", "img", "--name="}},
+		{name: "unnamed run", args: []string{"thv", "run", "img"}, expected: true},
+		{name: "positional workload", args: []string{"thv", "run", "demo"}, expected: true},
+		{name: "run without image", args: []string{"thv", "run"}},
+		{name: "start all", args: []string{"thv", "start", "--all", "--foreground"}, expected: true},
+		{name: "start group", args: []string{"thv", "start", "--group", "servers"}, expected: true},
+		{name: "restart equals group", args: []string{"thv", "restart", "--group=servers"}, expected: true},
+		{name: "restart workload", args: []string{"thv", "restart", "demo", "--foreground"}, expected: true},
+		{name: "reject partial workload", args: []string{"thv", "start", "demo-extra", "--foreground"}},
+		{name: "reject subcommand substring", args: []string{"thv", "serve", "--description= run img"}},
+		{name: "skip executable", args: []string{"run", "demo"}},
+		{name: "first subcommand wins", args: []string{"thv", "start", "other", "run", "img"}},
+		{name: "empty argv"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			metadata := mocks.NewMockProcessMetadata(gomock.NewController(t))
+			metadata.EXPECT().Environ().Return(nil, nil).Times(2)
+			metadata.EXPECT().CmdlineSlice().Return(tt.args, nil)
+			metadata.EXPECT().Exe().Return("/usr/bin/thv", nil)
+
+			matched, err := isTrackedToolHiveProxyForWorkload(metadata, "demo")
+			require.NoError(t, err)
+			assert.Equal(t, tt.expected, matched)
 		})
 	}
 }

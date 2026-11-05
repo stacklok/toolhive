@@ -161,6 +161,19 @@ func TestIsTrackedToolHiveProxyForWorkload_ForegroundArguments(t *testing.T) {
 		{name: "reject subcommand substring", args: []string{"thv", "serve", "--description= run img"}},
 		{name: "skip executable", args: []string{"run", "demo"}},
 		{name: "first subcommand wins", args: []string{"thv", "start", "other", "run", "img"}},
+		{name: "serve flag value is not a subcommand", args: []string{"thv", "serve", "--sentry-environment", "run", "--port", "8080"}},
+		{name: "server name does not override workload", args: []string{"thv", "run", "--foreground", "--name", "demo", "img", "--", "--name", "backend"}, expected: true},
+		{name: "server name does not select workload", args: []string{"thv", "run", "--foreground", "--name", "backend", "img", "--", "--name", "demo"}},
+		{name: "unnamed run with server name", args: []string{"thv", "run", "img", "--", "--name", "other"}, expected: true},
+		{name: "start shorthand all", args: []string{"thv", "start", "-a", "-f"}, expected: true},
+		{name: "restart shorthand cluster", args: []string{"thv", "restart", "-af"}, expected: true},
+		{name: "start shorthand group", args: []string{"thv", "start", "-g", "servers", "-f"}, expected: true},
+		{name: "restart shorthand equals group", args: []string{"thv", "restart", "-g=servers"}, expected: true},
+		{name: "start explicit all true", args: []string{"thv", "start", "--all=true"}, expected: true},
+		{name: "start explicit all false", args: []string{"thv", "start", "--all=false", "other"}},
+		{name: "run config equals", args: []string{"thv", "run", "--foreground", "--from-config=demo.json"}, expected: true},
+		{name: "run config argument", args: []string{"thv", "run", "--foreground", "--from-config", "demo.json"}, expected: true},
+		{name: "separator before command", args: []string{"thv", "--", "run", "img"}},
 		{name: "empty argv"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -171,6 +184,36 @@ func TestIsTrackedToolHiveProxyForWorkload_ForegroundArguments(t *testing.T) {
 			metadata.EXPECT().Exe().Return("/usr/bin/thv", nil)
 
 			matched, err := isTrackedToolHiveProxyForWorkload(metadata, "demo")
+			require.NoError(t, err)
+			assert.Equal(t, tt.expected, matched)
+		})
+	}
+}
+
+func TestIsForegroundRunSupervisorForWorkload(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name     string
+		detached bool
+		args     []string
+		expected bool
+	}{
+		{name: "detached run", detached: true, args: []string{"thv", "run", "--name", "demo", "img"}},
+		{name: "foreground run", args: []string{"thv", "run", "--name", "demo", "img"}, expected: true},
+		{name: "foreground start", args: []string{"thv", "start", "demo", "--foreground"}},
+		{name: "different workload", args: []string{"thv", "run", "--name", "other", "img"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			metadata := mocks.NewMockProcessMetadata(gomock.NewController(t))
+			if tt.detached {
+				metadata.EXPECT().Environ().Return([]string{ToolHiveDetachedEnv + "=" + ToolHiveDetachedValue}, nil)
+			} else {
+				metadata.EXPECT().Environ().Return(nil, nil).Times(2)
+				metadata.EXPECT().CmdlineSlice().Return(tt.args, nil)
+				metadata.EXPECT().Exe().Return("/usr/bin/thv", nil)
+			}
+			matched, err := isForegroundRunSupervisorForWorkload(metadata, "demo")
 			require.NoError(t, err)
 			assert.Equal(t, tt.expected, matched)
 		})
@@ -238,7 +281,9 @@ func startIdentityProcess(t *testing.T, detached bool, args ...string) int {
 		require.NoError(t, os.Symlink(executable, thv))
 		executable = thv
 	}
-	cmd := exec.Command(executable, append([]string{"-test.run=^TestToolHiveIdentityProcess$", "--"}, args...)...)
+	// Test flag parsing stops at the first non-flag argument, so the ToolHive
+	// subcommand can follow directly without a "--" that would hide it.
+	cmd := exec.Command(executable, append([]string{"-test.run=^TestToolHiveIdentityProcess$"}, args...)...)
 	for _, entry := range os.Environ() {
 		if !strings.HasPrefix(entry, ToolHiveDetachedEnv+"=") {
 			cmd.Env = append(cmd.Env, entry)

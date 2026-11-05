@@ -91,9 +91,10 @@ supervisor that is waiting in restart backoff. Auxiliary workloads have no proxy
 to clean up.
 
 Stop writes `Stopping` and then `Stopped`, and removes client configuration,
-only when something was live: the container was running or a supervisor PID was
-recorded. Otherwise stop leaves the current status alone, so an `Error` or
-`PolicyStopped` workload keeps its status and reason.
+only when something was live: the container was running or the recorded
+supervisor PID belongs to a running process. Otherwise stop leaves the current
+status alone, so an `Error` or `PolicyStopped` workload keeps its status and
+reason, even if a stale PID is still recorded.
 
 `thv stop --all` and `--group` skip `Starting` workloads, including supervisors
 waiting in restart backoff. Stop them by name.
@@ -188,14 +189,15 @@ The same `Applier` backs both the CLI (`thv upgrade apply`) and the API (`POST /
 Before signalling the PID in the status file, stop and delete check that it
 belongs to this workload's ToolHive supervisor. A detached supervisor must have
 the exact workload name on its command line. A foreground supervisor must be a
-`thv` process whose first `run`, `start`, or `restart` argument names the
-workload:
+`thv` process whose subcommand, the first argument that is not a flag, is
+`run`, `start`, or `restart`. Only the ToolHive arguments before `--` are
+checked, because everything after `--` goes to the MCP server.
 
 - `start` and `restart` must have the workload name as a whole argument, unless
-  they use `--all` or `--group`.
-- `run` must have `--name <workload>`, `--name=<workload>`, or the workload name
-  as a positional argument. Only an unnamed `thv run <image>` is accepted
-  without a name, because its name is derived from the image.
+  they select workloads with `--all`/`-a` or `--group`/`-g`.
+- `run` must have `--name <workload>` or `--name=<workload>`. A `run` without
+  `--name`, such as `thv run <image>` or `thv run --from-config <file>`, is
+  accepted without a name, because its name comes from the image or the file.
 
 There is no process start-time check, so if the OS reuses the PID for another
 matching `thv` command, ToolHive can't tell. A PID that is alive but can't be
@@ -217,9 +219,14 @@ cancelled by a signal while `Starting` or `Running`, it writes `Stopped` under
 the status file lock, as long as the recorded PID is unset or its own, and exits
 with status 0.
 
-Start and restart stop any other supervisor whose PID is recorded for the
-workload before they spawn a new one, whatever the current status is. They never
-signal their own PID.
+For container workloads, start and restart try to stop any other supervisor
+whose PID is recorded for the workload before they spawn a new one, whatever
+the current status is. This uses the same best-effort stop, so a supervisor that
+can't be verified or doesn't exit in time can still be running. They never
+signal their own PID. A foreground `thv run` is the exception: it deletes its
+workload when it exits, so start and restart leave it in charge and return as if
+the workload were already running. Remote workloads in `Starting` keep their
+existing supervisor.
 
 **Implementation**: `pkg/workloads/manager.go`, `pkg/process/toolhive_proxy.go`
 

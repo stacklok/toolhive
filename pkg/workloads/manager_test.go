@@ -845,7 +845,7 @@ func TestDefaultManager_restartContainerWorkload(t *testing.T) {
 					Status: runtime.WorkloadStatusRunning,
 				}, nil)
 				// Check if supervisor is alive - return error (supervisor is dead)
-				sm.EXPECT().GetWorkloadPID(gomock.Any(), "container-workload").Return(0, errors.New("no PID found"))
+				sm.EXPECT().GetWorkloadPID(gomock.Any(), "container-workload").Return(0, errors.New("no PID found")).Times(2)
 				// With dead supervisor, restart proceeds with cleanup and restart
 				sm.EXPECT().SetWorkloadStatus(gomock.Any(), "container-workload", runtime.WorkloadStatusStopping, "").Return(nil)
 				sm.EXPECT().GetWorkloadPID(gomock.Any(), "container-workload").Return(0, errors.New("no PID found"))
@@ -1077,7 +1077,7 @@ func TestDefaultManager_restartLogicConsistency(t *testing.T) {
 		}, nil)
 
 		// Check if supervisor is alive - return error (dead supervisor)
-		statusMgr.EXPECT().GetWorkloadPID(gomock.Any(), "test-workload").Return(0, errors.New("no PID found"))
+		statusMgr.EXPECT().GetWorkloadPID(gomock.Any(), "test-workload").Return(0, errors.New("no PID found")).Times(2)
 
 		// When supervisor is dead, expect stop logic to be called
 		statusMgr.EXPECT().SetWorkloadStatus(gomock.Any(), "test-workload", runtime.WorkloadStatusStopping, "").Return(nil)
@@ -1124,7 +1124,7 @@ func TestDefaultManager_restartLogicConsistency(t *testing.T) {
 		}, nil)
 
 		// PID 0 with nil error - simulates ResetWorkloadPID setting process_id to 0
-		statusMgr.EXPECT().GetWorkloadPID(gomock.Any(), "test-workload").Return(0, nil)
+		statusMgr.EXPECT().GetWorkloadPID(gomock.Any(), "test-workload").Return(0, nil).Times(2)
 
 		// When supervisor is treated as dead, expect stop logic
 		statusMgr.EXPECT().SetWorkloadStatus(gomock.Any(), "test-workload", runtime.WorkloadStatusStopping, "").Return(nil)
@@ -2651,7 +2651,7 @@ func startProxyProcessFixture(t *testing.T, name string, ignoreSIGTERM, listen b
 		require.NoError(t, os.Symlink(executable, thv))
 		executable = thv
 	}
-	cmd := exec.Command(executable, append([]string{"-test.run=^TestWorkloadProxyProcess$", "--"}, args...)...)
+	cmd := exec.Command(executable, append([]string{"-test.run=^TestWorkloadProxyProcess$"}, args...)...)
 	for _, entry := range os.Environ() {
 		if !strings.HasPrefix(entry, "TOOLHIVE_DETACHED=") {
 			cmd.Env = append(cmd.Env, entry)
@@ -2775,6 +2775,7 @@ func TestDefaultManager_stopContainerWorkload_MissingContainerUsesSavedLabels(t 
 
 	for _, tt := range []struct {
 		name              string
+		inspectErr        error
 		runConfig         *runner.RunConfig
 		wantContainerName string
 	}{
@@ -2797,6 +2798,12 @@ func TestDefaultManager_stopContainerWorkload_MissingContainerUsesSavedLabels(t 
 			wantContainerName: "requested-container-1730000000",
 		},
 		{
+			name:              "wrapped container not found still stops saved container",
+			inspectErr:        fmt.Errorf("inspect: %w", runtime.ErrContainerNotFound),
+			runConfig:         &runner.RunConfig{BaseName: "requested-container", ContainerName: "requested-container-1730000000"},
+			wantContainerName: "requested-container-1730000000",
+		},
+		{
 			name:              "missing saved container name falls back to workload base",
 			runConfig:         &runner.RunConfig{BaseName: "requested-container"},
 			wantContainerName: "requested-container",
@@ -2810,8 +2817,11 @@ func TestDefaultManager_stopContainerWorkload_MissingContainerUsesSavedLabels(t 
 			ctrl := gomock.NewController(t)
 			sm := statusMocks.NewMockStatusManager(ctrl)
 			rtMock := runtimeMocks.NewMockRuntime(ctrl)
-			rtMock.EXPECT().GetWorkloadInfo(gomock.Any(), "requested-container").Return(runtime.ContainerInfo{},
-				fmt.Errorf("inspect: %w", runtime.ErrWorkloadNotFound))
+			inspectErr := tt.inspectErr
+			if inspectErr == nil {
+				inspectErr = fmt.Errorf("inspect: %w", runtime.ErrWorkloadNotFound)
+			}
+			rtMock.EXPECT().GetWorkloadInfo(gomock.Any(), "requested-container").Return(runtime.ContainerInfo{}, inspectErr)
 
 			sm.EXPECT().GetWorkloadPID(gomock.Any(), "requested-container").Return(0, runtime.ErrWorkloadNotFound).Times(2)
 			fallbackCalls := 0
@@ -2921,8 +2931,16 @@ func TestDefaultManager_stopContainerWorkload_InactivePreservesStatusAndClients(
 	t.Parallel()
 
 	for _, status := range []runtime.WorkloadStatus{runtime.WorkloadStatusError, runtime.WorkloadStatusPolicyStopped} {
-		for _, missing := range []bool{false, true} {
-			t.Run(fmt.Sprintf("%s/missing=%t", status, missing), func(t *testing.T) {
+		for _, tt := range []struct {
+			name     string
+			missing  bool
+			stalePID bool
+		}{
+			{name: "exited"},
+			{name: "missing", missing: true},
+			{name: "exited with reaped supervisor", stalePID: true},
+		} {
+			t.Run(fmt.Sprintf("%s/%s", status, tt.name), func(t *testing.T) {
 				t.Parallel()
 				const name = "inactive-workload"
 				const containerName = "inactive-workload-20260101"
@@ -2932,8 +2950,23 @@ func TestDefaultManager_stopContainerWorkload_InactivePreservesStatusAndClients(
 				cm := clientMocks.NewMockManager(ctrl)
 				previous := core.Workload{Name: name, Status: status, StatusContext: "original failure or policy decision"}
 				sm.EXPECT().GetWorkload(gomock.Any(), name).Return(previous, nil).AnyTimes()
-				sm.EXPECT().GetWorkloadPID(gomock.Any(), name).Return(0, nil).Times(2)
-				if missing {
+				pid := 0
+				if tt.stalePID {
+					var exited <-chan struct{}
+					pid, exited = startKillableProcess(t)
+					child, err := os.FindProcess(pid)
+					require.NoError(t, err)
+					require.NoError(t, child.Kill())
+					require.NoError(t, child.Release())
+					select {
+					case <-exited:
+					case <-time.After(5 * time.Second):
+						t.Fatal("stale supervisor fixture was not reaped")
+					}
+					sm.EXPECT().ResetWorkloadPIDIfMatch(gomock.Any(), name, pid).Return(nil)
+				}
+				sm.EXPECT().GetWorkloadPID(gomock.Any(), name).Return(pid, nil).Times(2)
+				if tt.missing {
 					rtMock.EXPECT().GetWorkloadInfo(gomock.Any(), name).Return(runtime.ContainerInfo{}, runtime.ErrWorkloadNotFound)
 				} else {
 					rtMock.EXPECT().GetWorkloadInfo(gomock.Any(), name).Return(runtime.ContainerInfo{
@@ -2966,6 +2999,33 @@ func TestDefaultManager_stopContainerWorkload_InactivePreservesStatusAndClients(
 	}
 }
 
+func TestDefaultManager_maybeSetupContainerWorkload_ForegroundRunKeepsOwnership(t *testing.T) {
+	t.Parallel()
+	const name = "foreground-restart-backoff"
+	proxy := startVerifiedProxyProcess(t, "", "run", "--foreground", "--name", name, "example/server")
+	ctrl := gomock.NewController(t)
+	rtMock := runtimeMocks.NewMockRuntime(ctrl)
+	sm := statusMocks.NewMockStatusManager(ctrl)
+	rtMock.EXPECT().GetWorkloadInfo(gomock.Any(), name).Return(runtime.ContainerInfo{
+		Name: name, State: "exited", Labels: map[string]string{labels.LabelBaseName: name},
+	}, nil)
+	sm.EXPECT().GetWorkload(gomock.Any(), name).Return(core.Workload{
+		Name: name, Status: runtime.WorkloadStatusStarting,
+	}, nil)
+	sm.EXPECT().GetWorkloadPID(gomock.Any(), name).Return(proxy.pid, nil)
+	manager := &DefaultManager{runtime: rtMock, statuses: sm}
+
+	gotName, gotRunner, err := manager.maybeSetupContainerWorkload(context.Background(), name)
+	require.NoError(t, err)
+	assert.Empty(t, gotName)
+	assert.Nil(t, gotRunner)
+	select {
+	case <-proxy.exited:
+		t.Error("foreground run must retain ownership during restart backoff")
+	default:
+	}
+}
+
 //nolint:paralleltest // runner setup loads saved state
 func TestDefaultManager_maybeSetupContainerWorkload_StartingSupervisor(t *testing.T) {
 	isolateWorkloadStopState(t)
@@ -2989,9 +3049,9 @@ func TestDefaultManager_maybeSetupContainerWorkload_StartingSupervisor(t *testin
 				Name: rc.ContainerName, State: "exited", Labels: map[string]string{labels.LabelBaseName: name},
 			}, nil)
 			sm.EXPECT().GetWorkload(gomock.Any(), name).Return(core.Workload{Name: name, Status: runtime.WorkloadStatusStarting}, nil)
-			pidCall := sm.EXPECT().GetWorkloadPID(gomock.Any(), name).Return(pid, nil)
+			pidCall := sm.EXPECT().GetWorkloadPID(gomock.Any(), name).Return(pid, nil).Times(2)
 			if !ownPID {
-				pidCall.Times(2)
+				pidCall.Times(3)
 				sm.EXPECT().ResetWorkloadPIDIfMatch(gomock.Any(), name, pid).Return(nil)
 			}
 			sm.EXPECT().SetWorkloadStatus(gomock.Any(), name, runtime.WorkloadStatusStarting, "").

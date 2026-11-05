@@ -593,7 +593,7 @@ func (d *DefaultManager) stopContainerWorkload(ctx context.Context, name string,
 	container, err := d.runtime.GetWorkloadInfo(ctx, name)
 	found := err == nil
 	if err != nil {
-		if !errors.Is(err, rt.ErrWorkloadNotFound) {
+		if !errors.Is(err, rt.ErrWorkloadNotFound) && !errors.Is(err, rt.ErrContainerNotFound) {
 			return fmt.Errorf("failed to find workload %s: %w", name, err)
 		}
 		slog.Debug("container not found, proceeding with proxy cleanup", "workload", name)
@@ -616,11 +616,11 @@ func (d *DefaultManager) stopContainerWorkload(ctx context.Context, name string,
 		}
 	}
 
-	// Only a running container or a recorded supervisor gives stop something to
-	// report. Otherwise the existing status (for example error or
+	// Only a running container or a live recorded supervisor gives stop
+	// something to report. Otherwise the existing status (for example error or
 	// policy_stopped) and client configuration stay as they are. Read the PID
 	// before cleanup, because a successful proxy stop clears it.
-	live := (found && container.IsRunning()) || d.isSupervisorProcessAlive(ctx, labels.GetContainerBaseName(container.Labels))
+	live := (found && container.IsRunning()) || d.hasLiveSupervisorPID(ctx, labels.GetContainerBaseName(container.Labels))
 	if live {
 		if err := d.statuses.SetWorkloadStatus(ctx, name, rt.WorkloadStatusStopping, ""); err != nil {
 			slog.Debug("failed to set workload status to stopping", "workload", name, "error", err)
@@ -1209,6 +1209,35 @@ func (d *DefaultManager) isSupervisorProcessAlive(ctx context.Context, name stri
 	return true
 }
 
+// hasLiveSupervisorPID reports whether the workload records a PID whose process
+// still exists. A PID that cannot be inspected counts as live.
+func (d *DefaultManager) hasLiveSupervisorPID(ctx context.Context, name string) bool {
+	if name == "" {
+		return false
+	}
+	pid, err := d.statuses.GetWorkloadPID(ctx, name)
+	if err != nil || pid <= 0 {
+		return false
+	}
+	alive, err := process.FindProcess(pid)
+	return err != nil || alive
+}
+
+// foregroundRunSupervisor returns the PID of a live non-detached `thv run`
+// recorded for the workload, or 0. That process deletes the workload when it
+// exits, so start and restart leave it in charge instead of replacing it.
+func (d *DefaultManager) foregroundRunSupervisor(ctx context.Context, name string) int {
+	pid, err := d.statuses.GetWorkloadPID(ctx, name)
+	if err != nil || pid <= 0 || pid == os.Getpid() {
+		return 0
+	}
+	foreground, err := process.IsForegroundRunSupervisorForWorkload(pid, name)
+	if err != nil || !foreground {
+		return 0
+	}
+	return pid
+}
+
 // proxyStopResult describes the outcome of stopping a tracked proxy PID.
 type proxyStopResult int
 
@@ -1699,6 +1728,14 @@ func (d *DefaultManager) maybeSetupContainerWorkload(ctx context.Context, name s
 
 		// Supervisor is dead/missing - we need to clean up and restart to fix the damaged state
 		slog.Debug("workload is running but supervisor is dead, cleaning up before restart", "workload", workloadName)
+	}
+
+	if !labels.IsAuxiliaryWorkload(container.Labels) {
+		if pid := d.foregroundRunSupervisor(ctx, workloadName); pid != 0 {
+			slog.Info("workload is supervised by a foreground thv run, leaving it in charge",
+				"workload", workloadName, "pid", pid)
+			return "", nil, nil
+		}
 	}
 
 	// Check if we need to stop the workload before restarting

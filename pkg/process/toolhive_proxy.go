@@ -79,8 +79,9 @@ func IsToolHiveProxyForWorkload(pid int, workloadName string) (bool, error) {
 // IsTrackedToolHiveProxyForWorkload verifies a PID read from a workload's status.
 // Detached supervisors must match the workload name. Non-detached ToolHive
 // run/start/restart supervisors use recorded-PID binding without a process-birth-time check.
-// An unnamed run may omit its derived workload name. Named runs must match;
-// start/restart must include the name or select --all or --group.
+// Only the subcommand and its ToolHive arguments before "--" are checked.
+// An unnamed or --from-config run may omit its derived workload name. Named
+// runs must match; start/restart must include the name or select --all or --group.
 // Port-discovered PIDs must use IsToolHiveProxyForWorkload instead.
 func IsTrackedToolHiveProxyForWorkload(pid int, workloadName string) (bool, error) {
 	if pid <= 0 || workloadName == "" {
@@ -112,21 +113,92 @@ func isTrackedToolHiveProxyForWorkload(p processMetadata, workloadName string) (
 	if !isToolHiveProcess(p) {
 		return false, nil
 	}
-	for i := 1; i < len(args); i++ {
-		switch args[i] {
-		case "run":
-			return trackedRunMatchesWorkload(args[i+1:], workloadName), nil
-		case "start", "restart":
-			return slices.ContainsFunc(args[i+1:], func(arg string) bool {
-				return arg == workloadName || arg == "--all" || arg == "--group" || strings.HasPrefix(arg, "--group=")
-			}), nil
-		}
+	switch command, rest := supervisorSubcommand(args); command {
+	case "run":
+		return trackedRunMatchesWorkload(rest, workloadName), nil
+	case "start", "restart":
+		return trackedStartMatchesWorkload(rest, workloadName), nil
 	}
 	return false, nil
 }
 
+// IsForegroundRunSupervisorForWorkload reports whether pid is a non-detached
+// `thv run` supervising workloadName. Such a process deletes its workload when
+// it exits, so it cannot be replaced by another supervisor.
+func IsForegroundRunSupervisorForWorkload(pid int, workloadName string) (bool, error) {
+	if pid <= 0 || workloadName == "" {
+		return false, nil
+	}
+	p, err := gopsutilprocess.NewProcess(int32(pid)) //nolint:gosec // G115: supported platform PIDs fit int32.
+	if err != nil {
+		return false, err
+	}
+	return isForegroundRunSupervisorForWorkload(p, workloadName)
+}
+
+func isForegroundRunSupervisorForWorkload(p processMetadata, workloadName string) (bool, error) {
+	env, err := p.Environ()
+	if err != nil {
+		return false, err
+	}
+	if slices.Contains(env, ToolHiveDetachedEnv+"="+ToolHiveDetachedValue) {
+		return false, nil
+	}
+	args, err := p.CmdlineSlice()
+	if err != nil {
+		return false, err
+	}
+	if !isToolHiveProcess(p) {
+		return false, nil
+	}
+	command, rest := supervisorSubcommand(args)
+	return command == "run" && trackedRunMatchesWorkload(rest, workloadName), nil
+}
+
+// supervisorSubcommand returns the first non-flag argument after argv[0] and
+// the arguments that follow it, up to "--". The only root flag, --debug, takes
+// no value, so the first non-flag argument is the subcommand. Arguments after
+// "--" belong to the MCP server, not ToolHive.
+func supervisorSubcommand(argv []string) (string, []string) {
+	for i := 1; i < len(argv); i++ {
+		if argv[i] == "--" {
+			return "", nil
+		}
+		if strings.HasPrefix(argv[i], "-") {
+			continue
+		}
+		rest := argv[i+1:]
+		if end := slices.Index(rest, "--"); end >= 0 {
+			rest = rest[:end]
+		}
+		return argv[i], rest
+	}
+	return "", nil
+}
+
+// trackedStartMatchesWorkload accepts start/restart arguments that name the
+// workload or select it through --all/-a or --group/-g.
+func trackedStartMatchesWorkload(args []string, workloadName string) bool {
+	return slices.ContainsFunc(args, func(arg string) bool {
+		switch {
+		case arg == workloadName, arg == "--all", arg == "--group", strings.HasPrefix(arg, "--group="):
+			return true
+		case strings.HasPrefix(arg, "--all="):
+			return strings.TrimPrefix(arg, "--all=") != "false"
+		case strings.HasPrefix(arg, "--"):
+			return false
+		case strings.HasPrefix(arg, "-"):
+			// Shorthand cluster such as -a, -af, -g, or -g=name.
+			shorthands, _, _ := strings.Cut(arg[1:], "=")
+			return strings.ContainsAny(shorthands, "ag")
+		}
+		return false
+	})
+}
+
 func trackedRunMatchesWorkload(args []string, workloadName string) bool {
 	named := false
+	fromConfig := false
 	for i := 0; i < len(args); i++ {
 		switch {
 		case args[i] == "--name":
@@ -140,9 +212,12 @@ func trackedRunMatchesWorkload(args []string, workloadName string) bool {
 			if strings.TrimPrefix(args[i], "--name=") != workloadName {
 				return false
 			}
+		case args[i] == "--from-config", strings.HasPrefix(args[i], "--from-config="):
+			// The workload name comes from the config file, like an unnamed run.
+			fromConfig = true
 		}
 	}
-	return named || slices.ContainsFunc(args, func(arg string) bool {
+	return named || fromConfig || slices.ContainsFunc(args, func(arg string) bool {
 		return !strings.HasPrefix(arg, "-")
 	})
 }

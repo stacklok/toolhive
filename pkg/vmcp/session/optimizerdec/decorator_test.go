@@ -52,6 +52,12 @@ func TestOptimizerDecorator_Tools(t *testing.T) {
 		require.Len(t, got, 2)
 		assert.Equal(t, "find_tool", got[0].Name)
 		assert.Equal(t, "call_tool", got[1].Name)
+		require.NotNil(t, got[0].Annotations)
+		assert.True(t, *got[0].Annotations.ReadOnlyHint)
+		assert.False(t, *got[0].Annotations.DestructiveHint)
+		assert.True(t, *got[0].Annotations.IdempotentHint)
+		assert.False(t, *got[0].Annotations.OpenWorldHint)
+		assert.Nil(t, got[1].Annotations)
 		// Both tools must have non-empty input schemas.
 		assert.NotEmpty(t, got[0].InputSchema)
 		assert.NotEmpty(t, got[1].InputSchema)

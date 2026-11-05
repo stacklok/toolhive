@@ -159,6 +159,11 @@ type limitCheck struct {
 	bucket        *bucket.TokenBucket
 	scope         string
 	operationType string
+
+	// toolName is set only for tool-scoped checks. Cardinality is bounded by the
+	// configured per-tool buckets, so it is safe as a metric attribute; server-scoped
+	// checks leave it empty and the attribute is omitted rather than emitted blank.
+	toolName string
 }
 
 func (c limitCheck) rejectionIdentifier() string {
@@ -186,6 +191,10 @@ func (l *limiter) recordFailOpen(ctx context.Context) {
 // Tokens are only consumed if ALL buckets have sufficient capacity, preventing
 // a rejected per-tool or per-user call from draining other budgets.
 func (l *limiter) Allow(ctx context.Context, toolName, userID string) (*Decision, error) {
+	// Attribution for the caller and tool goes on the span, not the metric: userID is
+	// unbounded, so it would multiply the decisions counter by the size of the user base.
+	recordRateLimitSpanAttribution(ctx, toolName, userID)
+
 	// Collect applicable buckets in priority order.
 	var checks []limitCheck
 	if l.serverBucket != nil {
@@ -201,6 +210,7 @@ func (l *limiter) Allow(ctx context.Context, toolName, userID string) (*Decision
 				bucket:        tb,
 				scope:         rateLimitScopeShared,
 				operationType: rateLimitOperationTool,
+				toolName:      toolName,
 			})
 		}
 	}
@@ -238,6 +248,7 @@ func (l *limiter) Allow(ctx context.Context, toolName, userID string) (*Decision
 					),
 					scope:         rateLimitScopePerUser,
 					operationType: rateLimitOperationTool,
+					toolName:      toolName,
 				})
 			}
 		}

@@ -709,3 +709,93 @@ func stringAttributeMap(attributes attribute.Set) map[string]string {
 	}
 	return result
 }
+
+func TestRateLimitMetrics_ToolAttribution(t *testing.T) {
+	t.Parallel()
+	client, _ := newTestClient(t)
+	reader, meterProvider := newRateLimitMeterProvider()
+
+	limiter, err := newLimiter(client, "test-ns", "test-server", &v1beta1.RateLimitConfig{
+		Shared: &v1beta1.RateLimitBucket{
+			MaxTokens:    10,
+			RefillPeriod: metav1.Duration{Duration: time.Minute},
+		},
+		Tools: []v1beta1.ToolRateLimitConfig{
+			{
+				Name: "search",
+				PerUser: &v1beta1.RateLimitBucket{
+					MaxTokens:    1,
+					RefillPeriod: metav1.Duration{Duration: time.Minute},
+				},
+			},
+		},
+	}, meterProvider)
+	require.NoError(t, err)
+
+	first, err := limiter.Allow(t.Context(), "search", "user-1")
+	require.NoError(t, err)
+	require.True(t, first.Allowed)
+
+	second, err := limiter.Allow(t.Context(), "search", "user-1")
+	require.NoError(t, err)
+	require.False(t, second.Allowed, "the per-user tool bucket holds a single token")
+
+	metrics := collectRateLimitMetrics(t, reader)
+	decisions := requireRateLimitMetric(t, metrics, "toolhive_rate_limit_decisions")
+
+	// The rejection is attributable to the tool that caused it.
+	assert.Equal(t, int64(1), counterValueWithAttributes(t, decisions, map[string]string{
+		"decision":       rateLimitDecisionRejected,
+		"scope":          rateLimitScopePerUser,
+		"operation_type": rateLimitOperationTool,
+		"tool_name":      "search",
+	}))
+
+	// Server-scoped decisions carry no tool_name at all, rather than an empty one.
+	sum, ok := decisions.Data.(metricdata.Sum[int64])
+	require.True(t, ok)
+	var sawServerScoped bool
+	for _, point := range sum.DataPoints {
+		operationType, found := point.Attributes.Value(attribute.Key("operation_type"))
+		if !found || operationType.AsString() != rateLimitOperationServer {
+			continue
+		}
+		sawServerScoped = true
+		_, hasTool := point.Attributes.Value(attribute.Key("tool_name"))
+		assert.False(t, hasTool, "server-scoped decisions must not carry tool_name")
+	}
+	assert.True(t, sawServerScoped, "expected at least one server-scoped decision")
+}
+
+func TestRateLimitMetrics_UnconfiguredToolCarriesNoAttribute(t *testing.T) {
+	t.Parallel()
+	client, _ := newTestClient(t)
+	reader, meterProvider := newRateLimitMeterProvider()
+
+	// Only a server-wide bucket is configured: no tool has a bucket of its own.
+	limiter, err := newLimiter(client, "test-ns", "test-server", &v1beta1.RateLimitConfig{
+		Shared: &v1beta1.RateLimitBucket{
+			MaxTokens:    10,
+			RefillPeriod: metav1.Duration{Duration: time.Minute},
+		},
+	}, meterProvider)
+	require.NoError(t, err)
+
+	// A caller-supplied tool name that matches no configured bucket must never reach
+	// the metric: tool_name is only ever set from a successful bucket-map lookup, so
+	// its value set is the operator's configuration, not caller input. This is the
+	// property that keeps the attribute bounded in both cardinality and value length.
+	allowed, err := limiter.Allow(t.Context(), strings.Repeat("a", 4096), "user-1")
+	require.NoError(t, err)
+	require.True(t, allowed.Allowed)
+
+	metrics := collectRateLimitMetrics(t, reader)
+	decisions := requireRateLimitMetric(t, metrics, "toolhive_rate_limit_decisions")
+	sum, ok := decisions.Data.(metricdata.Sum[int64])
+	require.True(t, ok)
+	require.NotEmpty(t, sum.DataPoints)
+	for _, point := range sum.DataPoints {
+		_, hasTool := point.Attributes.Value(attribute.Key("tool_name"))
+		assert.False(t, hasTool, "an unconfigured tool name must not become a label value")
+	}
+}

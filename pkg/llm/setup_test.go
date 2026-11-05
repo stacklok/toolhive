@@ -132,6 +132,11 @@ func TestResolveBedrockModels(t *testing.T) {
 			wantWarnings: []string{`--models entry "some-random-model" did not match a tier (expected haiku/opus/sonnet/fable in the ID); ignored`},
 		},
 		{
+			name:   "a Codex Bedrock GPT pin is skipped without a warning",
+			models: []string{"us.anthropic.claude-opus-x", "us.openai.gpt-6.1-sol"},
+			want:   bedrockTiers{opus: "us.anthropic.claude-opus-x"},
+		},
+		{
 			name:   "matching is case-insensitive",
 			models: []string{"US.ANTHROPIC.CLAUDE-OPUS-X"},
 			want:   bedrockTiers{opus: "US.ANTHROPIC.CLAUDE-OPUS-X"},
@@ -184,11 +189,17 @@ func TestWarnBedrockNoEffect(t *testing.T) {
 			configured:      claudeCode,
 		},
 		{
-			name:            "compat passed this run without claude-code warns",
+			name:            "compat passed this run without claude-code or codex warns",
 			opts:            SetOptions{BedrockCompat: boolPtr(true)},
 			effectiveCompat: true,
 			configured:      cursorOnly,
-			wantWarn:        "--bedrock-compat was set but Claude Code was not configured",
+			wantWarn:        "--bedrock-compat was set but neither Claude Code nor Codex was configured",
+		},
+		{
+			name:            "compat passed this run with only codex configured is silent",
+			opts:            SetOptions{BedrockCompat: boolPtr(true)},
+			effectiveCompat: true,
+			configured:      []ToolConfig{{Tool: codexClient, Mode: llmgateway.ModeCodexAuth}},
 		},
 		{
 			// Regression: bedrock-compat is persisted, so a later run that omits the
@@ -590,6 +601,92 @@ func TestTeardown_KeepTokensResetsConfigWhenLastToolReverted(t *testing.T) {
 			assert.Equal(t, want, provider.cfg,
 				"no tools remain, so every persisted setting except cached token state must be reset")
 			assert.Contains(t, stdout.String(), "Cleared the LLM gateway configuration")
+		})
+	}
+}
+
+// TestTeardown_WarnsAboutRemovedBedrockSettings checks that teardown names the
+// Bedrock keys it removed from Claude Code and Codex, since revert deletes them
+// whatever they hold, and stays quiet for other clients and without compat.
+func TestTeardown_WarnsAboutRemovedBedrockSettings(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		compat       bool
+		wantWarnings []string
+	}{
+		{
+			name:   "bedrock compat warns for claude-code and codex",
+			compat: true,
+			wantWarnings: []string{
+				"Warning: removed the Bedrock settings ToolHive manages for Claude Code " +
+					"(env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS and env.ANTHROPIC_DEFAULT_{HAIKU,OPUS,SONNET,FABLE}_MODEL) " +
+					"from /tmp/claude-code.json, whatever they held. If you had set any of them yourself, set them again.",
+				"Warning: removed the Bedrock settings ToolHive manages for Codex " +
+					"(model, web_search, model_context_window, memories.consolidation_model and memories.extract_model) " +
+					"from /tmp/codex.json, whatever they held. If you had set any of them yourself, set them again.",
+			},
+		},
+		{name: "without bedrock compat there is no warning"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := fullSetupConfig(claudeCodeClient, codexClient, "cursor")
+			cfg.Bedrock.Compat = tt.compat
+			provider := &stubConfigUpdater{cfg: cfg}
+
+			var stdout, stderr bytes.Buffer
+			err := Teardown(context.Background(), &stdout, &stderr,
+				&stubGatewayManager{}, "", true, false, provider, nil)
+			require.NoError(t, err)
+
+			got := strings.Split(strings.TrimSpace(stderr.String()), "\n")
+			if len(tt.wantWarnings) == 0 {
+				assert.Empty(t, stderr.String())
+				return
+			}
+			assert.Equal(t, tt.wantWarnings, got, "one warning per Bedrock client, none for cursor")
+		})
+	}
+}
+
+// TestWarnBedrockTurnedOff checks that setup warns about the Bedrock settings it
+// removed only on the run that turns Bedrock off, and only for Bedrock clients.
+func TestWarnBedrockTurnedOff(t *testing.T) {
+	t.Parallel()
+
+	configured := []ToolConfig{
+		{Tool: codexClient, ConfigPath: "/tmp/codex.toml"},
+		{Tool: "cursor", ConfigPath: "/tmp/cursor.json"},
+	}
+	tests := []struct {
+		name      string
+		wasCompat bool
+		compat    bool
+		wantWarn  bool
+	}{
+		{name: "turning bedrock off warns", wasCompat: true, wantWarn: true},
+		{name: "staying on bedrock is silent", wasCompat: true, compat: true},
+		{name: "turning bedrock on is silent", compat: true},
+		{name: "never on bedrock is silent"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var errOut bytes.Buffer
+			warnBedrockTurnedOff(&errOut, tt.wasCompat, tt.compat, configured)
+			if !tt.wantWarn {
+				assert.Empty(t, errOut.String())
+				return
+			}
+			assert.Equal(t, "Warning: removed the Bedrock settings ToolHive manages for Codex "+
+				"(model, web_search, model_context_window, memories.consolidation_model and memories.extract_model) "+
+				"from /tmp/codex.toml, whatever they held. If you had set any of them yourself, set them again.\n",
+				errOut.String(), "one warning for codex, none for cursor")
 		})
 	}
 }
@@ -1274,7 +1371,7 @@ func TestFilterLazyModelDiscoveryClientsBedrock(t *testing.T) {
 		clients       []string
 		targetClient  string
 		bedrockCompat bool
-		hasModels     bool
+		models        []string
 		wantErr       string
 		wantClients   []string
 		wantWarning   string
@@ -1298,7 +1395,7 @@ func TestFilterLazyModelDiscoveryClientsBedrock(t *testing.T) {
 			clients:       []string{claudeCodeClient},
 			targetClient:  claudeCodeClient,
 			bedrockCompat: true,
-			hasModels:     true,
+			models:        []string{"us.anthropic.claude-opus-4-8"},
 			wantClients:   []string{claudeCodeClient},
 		},
 		{
@@ -1307,6 +1404,29 @@ func TestFilterLazyModelDiscoveryClientsBedrock(t *testing.T) {
 			targetClient: claudeCodeClient,
 			wantClients:  []string{claudeCodeClient},
 		},
+		{
+			name:          "explicit codex with bedrock-compat and no pin is refused",
+			clients:       []string{codexClient},
+			targetClient:  codexClient,
+			bedrockCompat: true,
+			models:        []string{"us.anthropic.claude-opus-4-8"}, // a Claude-only list does not pin Codex
+			wantErr:       "picking a Bedrock model needs authenticated model discovery",
+		},
+		{
+			name:          "auto-detected codex with bedrock-compat and no pin is skipped",
+			clients:       []string{codexClient, "cursor"},
+			bedrockCompat: true,
+			wantClients:   []string{"cursor"},
+			wantWarning:   "skipping codex in lazy mode; --bedrock-compat needs",
+		},
+		{
+			name:          "codex with bedrock-compat and a pin is kept",
+			clients:       []string{codexClient},
+			targetClient:  codexClient,
+			bedrockCompat: true,
+			models:        []string{"us.openai.gpt-6.1-sol"},
+			wantClients:   []string{codexClient},
+		},
 	}
 
 	for _, tt := range tests {
@@ -1314,7 +1434,7 @@ func TestFilterLazyModelDiscoveryClientsBedrock(t *testing.T) {
 			t.Parallel()
 			var warnings strings.Builder
 			got, err := filterLazyModelDiscoveryClients(
-				tt.clients, tt.targetClient, tt.bedrockCompat, tt.hasModels, &warnings)
+				tt.clients, tt.targetClient, tt.bedrockCompat, tt.models, &warnings)
 			if tt.wantErr != "" {
 				require.Error(t, err)
 				assert.Contains(t, err.Error(), tt.wantErr)

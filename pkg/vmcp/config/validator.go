@@ -665,7 +665,10 @@ func ValidateAuthServerIntegration(cfg *Config, rc *authserver.RunConfig) error 
 }
 
 // validateAuthServerRunConfig performs lightweight structural validation of the
-// auth server RunConfig (issuer, upstreams, allowed audiences).
+// auth server RunConfig (issuer, upstreams, allowed audiences). A config with no
+// upstreams must have delegate clients or a JWT bearer issuer policy, judged on
+// the normalized inbound grants, so errors from NormalizeInboundGrants, such as
+// conflicting legacy and canonical grants, are returned here too.
 func validateAuthServerRunConfig(rc *authserver.RunConfig) error {
 	if rc == nil {
 		return nil
@@ -673,10 +676,19 @@ func validateAuthServerRunConfig(rc *authserver.RunConfig) error {
 	if rc.Issuer == "" {
 		return fmt.Errorf("auth server issuer is required")
 	}
-	if len(rc.Upstreams) == 0 && len(rc.DelegateClients) == 0 &&
-		!authserver.JWTBearerGrantEnabled(rc.TrustedIssuers) {
-		return fmt.Errorf("auth server requires at least one upstream unless delegate clients or a " +
-			"trusted issuer with JWT bearer grant is configured")
+	if len(rc.Upstreams) == 0 {
+		// Delegate clients and JWT bearer policies can each be declared in the
+		// deprecated top-level shape or the canonical inbound_grants shape, and
+		// the canonical JWT bearer policy only reaches TrustedIssuers after
+		// normalization. Judge the same effective view the runtime uses.
+		normalized, err := authserver.NormalizeInboundGrants(rc)
+		if err != nil {
+			return fmt.Errorf("auth server inbound grants are invalid: %w", err)
+		}
+		if len(normalized.DelegateClients) == 0 && !authserver.JWTBearerGrantEnabled(normalized.TrustedIssuers) {
+			return fmt.Errorf("auth server requires at least one upstream unless delegate clients or a " +
+				"trusted issuer with JWT bearer grant is configured")
+		}
 	}
 	// AllowedAudiences is required for MCP compliance (RFC 8707).
 	if len(rc.AllowedAudiences) == 0 {

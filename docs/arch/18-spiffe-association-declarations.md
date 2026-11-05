@@ -1,6 +1,6 @@
 # SPIFFE Association Declarations
 
-**Current status: SPIFFE configuration is still rejected at startup.** `RunConfig.Validate()` validates the trust declarations, then `validateSPIFFENotYetEnforced` rejects any non-empty `spiffeTrustDomains` before the runner starts. This branch wires `newServer` to construct the configured bundle source and pass its X.509 and JWT views into the authorization server, and the proxy runner and vMCP can start the auth-server TLS listener. However, X.509-SVID verification is not implemented and SPIFFE client authentication is not deployable yet.
+**Current status: SPIFFE configuration is still rejected at startup.** `RunConfig.Validate()` validates the trust declarations, then `validateSPIFFENotYetEnforced` rejects any non-empty `spiffeTrustDomains` before the runner starts. This branch wires `newServer` to construct the configured bundle source and pass its X.509 and JWT views into the authorization server, and the proxy runner and vMCP can start the auth-server TLS listener. The operator can configure the listener certificate but does not yet add port 8443 to a Service or container port. However, X.509-SVID verification is not implemented and SPIFFE client authentication is not deployable yet.
 
 The embedded authorization server carries the SPIFFE association model across the `RunConfig` boundary, and the file-bundle source can load and poll a local trust-bundle file. The source wiring is present in server construction; the startup validation gate still prevents configured associations from being used. This document describes the implemented components and remaining gaps, not an available SPIFFE deployment capability.
 
@@ -16,9 +16,13 @@ tls_listener:
 
 The listener binds the same host as the MCP listener (the proxy runner's host or vMCP's `--host`, falling back to loopback when unset). A missing or invalid initial certificate/key pair, a bind failure, or a port-8443 conflict with the MCP port (proxy port or vMCP `--port`) or the enabled diagnostics listener fails startup; the listener does not select another port. Certificate files are checked lazily during TLS handshakes, at most once every 30 seconds. A valid changed pair is used for subsequent handshakes; a failed reload keeps serving the last good pair.
 
-This listener serves OAuth/OIDC authorization-server routes only. Those routes remain mounted on the MCP transport port as well; enabling the listener does not make MCP traffic HTTPS. The listener uses the process's bind host, so binding a non-loopback address exposes it on that network interface: restrict network reachability with deployment firewall/network policy controls and protect the certificate key. SPIFFE trust-domain configuration is still rejected at startup, and X.509-SVID verification is not implemented, so this listener does not make SPIFFE authentication deployable. vMCP starts this listener from `vmcp serve` / `thv vmcp serve`; programs that embed the vMCP server library directly do not. Operator configuration and Service/port or certificate-mount exposure for this listener are not supported.
+This listener serves OAuth/OIDC authorization-server routes only. Those routes remain mounted on the MCP transport port as well; enabling the listener does not make MCP traffic HTTPS. The listener uses the process's bind host, so binding a non-loopback address exposes it on that network interface: restrict network reachability with deployment firewall/network policy controls and protect the certificate key. SPIFFE trust-domain configuration is still rejected at startup, and X.509-SVID verification is not implemented, so this listener does not make SPIFFE authentication deployable. vMCP starts this listener from `vmcp serve` / `thv vmcp serve`; programs that embed the vMCP server library directly do not. X.509 client authentication needs TLS passthrough to the listener: a proxy or Ingress that terminates TLS removes the client certificate.
 
 The token-endpoint middleware rejects certificates containing a malformed SPIFFE identity with HTTP 401 and JSON `{"error":"invalid_client"}`, using `Content-Type: application/json` and `Cache-Control: no-store`. Rejected requests do not reach the authentication strategy; certificates without a SPIFFE URI SAN pass through unchanged. Extracting a claimed SPIFFE ID does not verify the certificate or enable SPIFFE authentication.
+
+### Operator configuration
+
+In the operator, set `embeddedAuthServer.tlsListener` with `certificateSecretRef` and `privateKeySecretRef` (both required). The operator mounts them read-only as a directory at `/etc/toolhive/authserver/tls` (`tls.crt` and `tls.key`), so Secret content changes reach the listener's reload without a pod restart; pointing the listener, signing keys, HMAC secrets or the auth server Redis storage CA (`storage.redis.tls` or `sentinelTls` `caCertSecretRef`) at a different Secret or key, or a SPIFFE bundle file at a different ConfigMap or key, rolls the pods. `spiffe_x509` in `inboundGrants.spiffeClientAuth` requires `tlsListener`. The operator checks this when it reconciles the resource, and the runner checks it again when it validates its configuration. The API server does not reject it, so a violation shows up as a failed status condition on the resource that uses the auth server. `spiffeTrustDomains` alone does not require a listener. MCPServer and MCPRemoteProxy reject a `proxyPort` of 8443 when the referenced auth server sets `tlsListener`. This is also reported as a failed status condition, not by the API server. The operator does not yet add port 8443 to a Service or container port.
 
 ## Model and boundaries
 
@@ -55,6 +59,13 @@ spec:
   type: embeddedAuthServer
   embeddedAuthServer:
     issuer: https://auth.example.com
+    tlsListener:
+      certificateSecretRef:
+        name: auth-server-tls
+        key: tls.crt
+      privateKeySecretRef:
+        name: auth-server-tls
+        key: tls.key
     spiffeTrustDomains:
       - name: production
         trustDomain: example.org

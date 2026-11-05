@@ -502,7 +502,9 @@ func TestConfiguredLoginClientConsentExemptStartsOnBothBackends(t *testing.T) {
 }
 
 // TestConfiguredPrivateKeyJWTClientKeepsIDAcrossKeyRotation covers rotating the
-// JWKS file between restarts over shared storage.
+// JWKS file between restarts over shared storage: old key only, then the
+// overlap where both keys are accepted, then new key only, where the old key is
+// refused.
 func TestConfiguredPrivateKeyJWTClientKeepsIDAcrossKeyRotation(t *testing.T) {
 	t.Parallel()
 
@@ -537,6 +539,12 @@ func TestConfiguredPrivateKeyJWTClientKeepsIDAcrossKeyRotation(t *testing.T) {
 	writeJWKS(t, jwksFile, oldKey)
 	srv := start()
 	require.Equal(t, http.StatusOK, exchange(srv, oldKey).status)
+	srv.stop()
+
+	writeJWKS(t, jwksFile, oldKey, newKey)
+	srv = start()
+	assert.Equal(t, http.StatusOK, exchange(srv, oldKey).status, "old key is accepted during the overlap")
+	assert.Equal(t, http.StatusOK, exchange(srv, newKey).status, "new key is accepted during the overlap")
 	srv.stop()
 
 	writeJWKS(t, jwksFile, newKey)

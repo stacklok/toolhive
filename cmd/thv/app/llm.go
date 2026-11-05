@@ -156,14 +156,16 @@ Example:
 			"Applied by \"thv llm setup\"; use --short-prompt-cache=false to restore one-hour caching.")
 	cmd.Flags().BoolVar(&bedrockCompat, "bedrock-compat", false,
 		"Persist Bedrock compatibility for Claude Code (CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1 + per-tier "+
-			"Bedrock model IDs discovered from the gateway). Applied by \"thv llm setup\". Use --bedrock-compat=false to clear.")
+			"Bedrock model IDs discovered from the gateway) and Codex (per-tier Bedrock GPT models + web_search disabled). "+
+			"Applied by \"thv llm setup\". Use --bedrock-compat=false to clear.")
 	cmd.Flags().BoolVar(&enable1M, "enable-1m", false,
 		"With Bedrock compat, opt into the 1M context window by appending [1m] to opus/sonnet model IDs.")
 	cmd.Flags().StringSliceVar(&models, "models", nil,
 		"Model IDs to persist and apply during \"thv llm setup\", comma-separated or by repeating the flag, e.g. "+
 			"--models=us.anthropic.claude-opus-4-8,us.anthropic.claude-sonnet-5. Credential-helper clients "+
 			"(Claude Desktop) write these as inferenceModels; with Bedrock compat, each ID overrides a "+
-			"Claude Code tier by matching 'haiku', 'opus', 'sonnet', or 'fable' in the ID.")
+			"Claude Code tier by matching 'haiku', 'opus', 'sonnet', or 'fable' in the ID, and a "+
+			"us./global.openai.gpt-* ID a Codex tier by matching 'sol', 'terra', or 'luna'.")
 
 	return cmd
 }
@@ -349,10 +351,31 @@ also enables Claude Code's gateway model discovery, which adds any further model
 the gateway serves as separate picker rows without re-running setup. If the
 gateway's model list cannot be fetched, or has no Bedrock model IDs, setup does
 not configure Claude Code (unless --models pins every tier). The setting is
-persisted and only affects Claude Code.
+persisted and affects Claude Code and Codex.
 To add it to an already-configured Claude Code, re-run:
 
   thv llm setup --client claude-code --bedrock-compat
+
+With --bedrock-compat, Codex is pinned per tier to the newest Bedrock GPT model
+of each family the gateway lists: sol as the main model (top-level model in
+config.toml, with its context window as model_context_window when the gateway
+reports one), and terra and luna as the background memory models
+(memories.consolidation_model and memories.extract_model). Without a sol model
+the main model is terra, then luna, and a memory tier the gateway has no model
+for uses the main model. web_search is set to
+"disabled", because Bedrock rejects Codex's hosted web search tool. Only the
+closed GPT models served through us. or global. inference profiles (e.g.
+us.openai.gpt-6.1-sol) speak the Responses API Codex uses; the open-weight
+models (nvidia.*, qwen.*, deepseek.*, openai.gpt-oss-*) serve only Chat
+Completions, so setup never picks them for Codex and refuses an
+openai.gpt-oss-* pin. Override a tier with --models:
+
+  thv llm setup --client codex --bedrock-compat --models us.openai.gpt-6.1-sol
+
+Like Claude Code's Bedrock keys, these Codex keys belong to ToolHive: a setup
+without --bedrock-compat and "thv llm teardown" remove them, whatever they
+hold. Teardown, and a setup that turns --bedrock-compat off, warn which keys
+they removed.
 
 Re-running is idempotent and uses the cached token (no browser prompt).
 
@@ -401,13 +424,18 @@ Run "thv llm teardown" to revert all changes.`,
 			"For credential-helper clients (Claude Desktop) these become inferenceModels. "+
 			"With --bedrock-compat, each ID overrides a Claude Code tier by matching "+
 			"'haiku', 'opus', 'sonnet', or 'fable' in the ID (IDs matching no tier are ignored with a "+
-			"warning). Omit to pin each tier to the newest Bedrock model discovered from the gateway.")
+			"warning), and a us./global.openai.gpt-* ID overrides a Codex tier by matching 'sol', 'terra', or "+
+			"'luna' (an ID naming none pins the main model; openai.gpt-oss-* IDs are refused for Codex; "+
+			"other vendors' IDs are left to other tools). "+
+			"Omit to pin each tier, and Codex, to the newest Bedrock model discovered from the gateway.")
 	cmd.Flags().BoolVar(&bedrockCompat, "bedrock-compat", false,
 		"Configure Claude Code for a gateway that forwards to AWS Bedrock: write "+
 			"CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1 (Bedrock rejects the experimental anthropic-beta headers) "+
 			"and pin each tier to the newest Bedrock model the gateway advertises (override with --models). "+
+			"For Codex, pin the newest Bedrock GPT model per tier (sol main, terra and luna for memories) and set "+
+			"web_search = \"disabled\". "+
 			"Persisted, so a later plain \"thv llm setup\" keeps it; clear with --bedrock-compat=false. "+
-			"Only affects Claude Code.")
+			"Only affects Claude Code and Codex.")
 	cmd.Flags().BoolVar(&enable1M, "enable-1m", false,
 		"With --bedrock-compat, append the [1m] suffix to the opus and sonnet model IDs to opt into the "+
 			"1M-token context window on Bedrock (never haiku, which is 200K). Off by default.")

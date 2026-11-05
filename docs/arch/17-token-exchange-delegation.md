@@ -606,6 +606,27 @@ the old one. Discovery lists the client authentication methods as described in
 cleartext-transport rule is separate: every delegate client, `private_key_jwt`
 ones included, counts as confidential there.
 
+To rotate the key of a configured `private_key_jwt` delegate client without
+refusing the client in between:
+
+1. Add the new key to the JWKS file next to the old one, each with its own
+   `kid`, and restart the auth server. An assertion is accepted with either key,
+   as long as it carries the `kid` of the key that signed it. The new key must
+   imply the same signing algorithm as the old one: its `alg`, the algorithm its
+   EC curve fixes, or RS256 for an RSA key without `alg`. Keys that disagree stop
+   startup. Setting `token_endpoint_auth_signing_alg` helps only when every key
+   can sign with that one algorithm and none carries a different `alg`, for
+   example RSA keys without `alg` next to an RSA key labelled PS256.
+2. Switch the client to sign with the new key.
+3. Remove the old key from the file and restart again. An assertion signed with
+   the old key now gets `401 invalid_client`, and the `error_description` names
+   the refused `kid`.
+
+The order matters: a client that signs with a key the server has not loaded gets
+`401 invalid_client`, so do step 2 only after step 1 has taken effect. With
+memory storage a restart also drops everything the auth server had stored, such
+as issued refresh tokens. Use shared storage (Redis) when that matters.
+
 The server builds each configured delegate client in memory and checks it as
 consent-exempt before it writes the client. A configured login client can
 therefore be listed in `WithConsentExemptClientIDs`, and a bad ID aborts startup
@@ -1433,12 +1454,16 @@ registry, err := authorizationdetails.New(map[string]authorizationdetails.Type{
 A configured confidential client can exchange a user's login access token for
 an opaque refresh token. The token is not redeemable at `grant_type=refresh_token`;
 only token exchange accepts it. What the token may be used for is fixed when it
-is issued. This section describes issuing it from an access token. Deriving a
-child token from it, and revoking it, are not covered here yet.
+is issued. This section describes issuing it from an access token and deriving a
+child token from it. Revoking it is not covered here yet, and issuing an ID-JAG
+from a grant is not implemented yet.
 
 **Enabling.** Set `token_exchange.exchange_refresh_tokens` on the client, with
-`id_jag_max_lifetime` and/or `refresh_token_max_lifetime` (each at most 720h; a
-missing value refuses that kind of token). The client also needs
+`id_jag_max_lifetime` or both `id_jag_max_lifetime` and `refresh_token_max_lifetime`
+(each at most 720h; a missing value refuses that kind of token).
+`refresh_token_max_lifetime` without `id_jag_max_lifetime` is a startup error,
+because a derived child is capped by `id_jag_max_lifetime` and every derive would
+be refused with `token_type_not_permitted`. The client also needs
 `token_exchange.self_issued_subject_tokens: restricted` and
 `token_exchange.subject_token_audiences`. Validation refuses the feature with
 `any`. The client must be confidential and must have the token-exchange grant.
@@ -1539,8 +1564,11 @@ before it existed load with an empty field.
 `subject_token_type` is the refresh-token URN is handled by the refresh-token
 handler (`RefreshTokenHandler`); every other token-exchange request is handled by
 the access-token handler. Both use one predicate, `isRefreshTokenExchange`, so a
-request goes to exactly one. A refresh-token `subject_token_type` is refused for
-now.
+request goes to exactly one. A refresh-token `subject_token_type` is a derive
+request (see "Deriving a child token") when `requested_token_type` is also the
+refresh-token URN. With any other `requested_token_type`, or from a client without
+`exchange_refresh_tokens`, it is refused with the unsupported `subject_token_type`
+text in the error table.
 
 **Errors.** Each `error_description` is one of two kinds. The reason-code rows,
 the `authorization_details` rows and the internal-failure row are exact: the
@@ -1554,10 +1582,10 @@ client receives them.
 | --- | --- | --- |
 | Client is public | `invalid_grant` | generic text, then a fixed hint |
 | Client lacks the token-exchange grant | `unauthorized_client` | generic text, then a fixed hint |
-| `subject_token_type` is the refresh-token URN | `invalid_request` | generic text, then `The 'subject_token_type' value '<URN>' is not supported. Use '<access token URN>' or '<JWT URN>'.` (unchanged from before) |
+| `subject_token_type` is the refresh-token URN, and the client has no `exchange_refresh_tokens` or `requested_token_type` is not the refresh-token URN | `invalid_request` | generic text, then `The 'subject_token_type' value '<URN>' is not supported. Use '<access token URN>' or '<JWT URN>'.` (unchanged from before) |
 | `requested_token_type` is the refresh-token URN and the client has no `exchange_refresh_tokens` | `invalid_request` | generic text, then the unsupported `requested_token_type` hint (see below) |
 | Missing `subject_token` | `invalid_request` | generic text, then a fixed hint |
-| `subject_token_type` is not the access-token URN, or `actor_token` or `actor_token_type` is present | `invalid_request` | generic text, then a fixed hint |
+| For an access-token subject: `subject_token_type` is not the access-token URN. For any subject: `actor_token` or `actor_token_type` is present | `invalid_request` | generic text, then a fixed hint |
 | `scope` | `invalid_scope` | generic text, then a fixed hint |
 | `resource` or `audience` | `invalid_target` | generic text, then a fixed hint |
 | `authorization_details` repeated | `invalid_request` | `The authorization_details parameter must not be repeated.` |
@@ -1572,6 +1600,8 @@ client receives them.
 | Subject token's `aud` has none of the client's `subject_token_audiences`, or it was issued to a client that is not in `allowed_source_clients` (this includes the exchanging client itself) | `invalid_request` | `subject_token_audience` or `subject_token_source_client` |
 | Subject token's scope has neither `offline_access` nor `offline` | `invalid_request` | `subject_token_offline_access` |
 | Subject token already used | `invalid_request` | `token_used` |
+| Derive: the refresh token fails its HMAC check, is unknown, belongs to another client, is a login refresh token, or has expired | `invalid_request` | `grant_invalid` (one code for all of these cases, on purpose) |
+| Derive: the presented grant or its parent cannot be used, or it does not allow `refresh_token` | `invalid_request` | `revoked`, `parent_revoked` or `not_issuable` |
 | Store failure | `server_error` | generic text, then the hint `The refresh token could not be issued.` |
 | Internal failure while processing `authorization_details` | `server_error` | `The authorization_details could not be processed.` |
 
@@ -1613,7 +1643,10 @@ not supported for this client. The access token type '<access token URN>' is
 always supported.` Both are hints after the generic `invalid_request` text. The
 code is still `invalid_request`. A request whose
 `subject_token_type` is the refresh-token URN now goes to the refresh-token
-handler, and its refusal text is unchanged. Check precedence changed for that case
+handler. A request with the refresh-token URN as both `subject_token_type` and `requested_token_type`, from a client with
+`exchange_refresh_tokens`, was refused before and is now a derive request (see
+"Deriving a child token"). For every other client or `requested_token_type`, the
+refusal text is unchanged. Check precedence changed for a refresh-token subject
 in one way: the `subject_token_type` refusal now comes before a missing
 `subject_token`. For `requested_token_type` set to the refresh-token URN from a
 client without `exchange_refresh_tokens`, the request is now refused right after
@@ -1622,17 +1655,18 @@ registry is no longer consulted, and problems with `subject_token`,
 `subject_token_type`, the actor parameters or `authorization_details` are no
 longer reported first.
 
-**Logging.** The server logs "Exchange grant created" at debug level when it issues
-a token, and "Exchange grant refused" at warn level for refusals after the
-public-client and grant checks. The public-client and missing-grant refusals are
-not logged this way. Each line carries `client_id`, plus `sub`, `source_jti`,
-`sub_id`, `issuable_token_type` and `expires_at` once they are known, and a stable
-`reason` on a refusal. The refresh token, its signature and the subject token are
-never logged.
+**Logging.** The server logs "Exchange grant created" and "Exchange grant derived"
+at debug level when it issues a token, and "Exchange grant refused" at warn level
+for refusals after the public-client and grant checks. The public-client and
+missing-grant refusals are not logged this way. Each line carries `client_id`,
+plus `sub`, `source_jti`, `sub_id`, `has_parent`, `issuable_token_type` and
+`expires_at` once they are known, and a stable `reason` on a refusal. The refresh
+token, its signature and the subject token are never logged.
 
-**Accepted limits.** A client can hold one grant per login access token `jti`;
-there is no other bound on the number of grants. A Redis instance that does not
-persist its data (no AOF) can lose the `jti` markers, which reopens the single-use
+**Accepted limits.** A client can hold one top-level grant per login access
+token `jti`, and any number of children of each grant that allows
+`refresh_token`; there is no other bound on the number of grants. A Redis
+instance that does not persist its data (no AOF) can lose the `jti` markers, which reopens the single-use
 check for tokens that have not yet expired. Revoked JWT access tokens stay valid at
 resource servers until they expire. A grant's `ExpiresAt` is a whole second, so a
 cap under one second would make every request fail with `invalid_expires_at`;
@@ -1652,6 +1686,117 @@ configuration. Either needs:
 - revocation across both stores (there is no revoke or introspect route today);
 - a decision on lifetime: a redeemable token ends with the login, while an
   exchange grant does not.
+
+### Deriving a child token
+
+A client that holds a grant allowing `refresh_token` can exchange it for a child
+grant that allows one other kind of token. `POST /oauth/token` with client
+authentication and:
+
+| Parameter | Value |
+| --- | --- |
+| `grant_type` | `urn:ietf:params:oauth:grant-type:token-exchange` |
+| `subject_token` | The refresh token to derive from |
+| `subject_token_type` | `urn:ietf:params:oauth:token-type:refresh_token` |
+| `requested_token_type` | `urn:ietf:params:oauth:token-type:refresh_token` |
+| `authorization_details` | One exchange-grant entry, as above |
+
+`actor_token`, `actor_token_type`, `scope`, `resource` and `audience` are
+refused as for an access-token subject. The response has the same shape as for an access token
+subject: `access_token` holds the child token, `issued_token_type` is the
+refresh-token URN, and `authorization_details` echoes the granted entry. The
+child entry lists exactly one kind of token. It is never `refresh_token`, so a
+child cannot be derived from: depth is 1. The child's kind of token must be enabled for the
+client, and its `expires_at` is at most the lesser of the source grant's `expires_at`
+and now plus the client's cap for the child's kind of token. A request above
+that is capped. The child copies the source grant's client, subject, `sub_id` and
+`upstream_subject`. It has no subject-token `jti`, so it has no single-use marker.
+
+**Check order.** The server runs these checks in this order and stops at the
+first that fails:
+
+1. The request parameters are valid (`subject_token` present, no `actor_token`,
+   `scope`, `resource` or `audience`), then `authorization_details` is present
+   and parses, as for an access-token subject. These checks say nothing about
+   the presented token, so a forged token with no `authorization_details` gets
+   `invalid_request` with "The authorization_details parameter is required.",
+   not `grant_invalid`.
+2. The token passes the HMAC check. This needs no store, so a forged token
+   causes no lookup.
+3. The grant is read by the token's signature.
+4. The grant belongs to the presenting client. If the grant is missing or
+   belongs to another client, the request fails with the same error as step 2.
+5. The grant has at least one whole second left, because `expires_at` is whole
+   seconds. If not, the request fails with `grant_invalid`, whatever else is
+   wrong with the grant (revoked, or its own parent not live).
+6. The grant is not revoked (`revoked`). Expiry is checked at step 5, before this.
+7. If the grant has a parent, the parent exists and is live. A parent that is
+   missing, revoked or expired gives `parent_revoked`. An expired parent always
+   means the child has expired too, because a child's `expires_at` is never later
+   than its parent's. So the child fails at step 3 or 5 with `grant_invalid`.
+8. The grant allows `refresh_token`, else `not_issuable`. A child fails here.
+9. The child entry passes the rules above.
+
+Nothing about the token is revealed until step 4 has passed. A forged token, an
+unknown token, another client's token, a login refresh token and an expired grant
+all get one error:
+`invalid_request` with the `error_description` `grant_invalid`. This is one code
+for all of these cases on purpose, so a caller learns nothing about which one
+applied. From step 6 on, the reasons are exact `error_description` values with
+`invalid_request`:
+
+| Condition | `error_description` |
+| --- | --- |
+| Presented grant is revoked | `revoked` |
+| Parent of the presented grant is revoked, expired or gone | `parent_revoked` |
+| Presented grant does not allow `refresh_token` (this includes a child) | `not_issuable` |
+
+A child entry fails with `invalid_authorization_details` and one of these
+reasons: `token_type_not_permitted` (the child lists `refresh_token`, or its
+kind of token is not enabled for the client; the second only for a handler built
+without config validation) or `invalid_expires_at`. A store
+failure is `server_error`.
+
+Both stores report a grant past its `ExpiresAt` as not found, before the
+liveness check runs. So an expired grant gets the same `grant_invalid` error as
+an unknown token on both backends. A child never outlives its parent, since its
+`expires_at` is capped to the parent's, so a child whose parent has expired has
+expired too and gets `grant_invalid` as well. A presented grant with no whole second
+left is refused the same way, because `expires_at` is whole seconds, whether or
+not it is revoked and whether or not its own parent is live. The check runs right
+after the client check, before the liveness answers, so it never gives
+`revoked`, `parent_revoked` or `not_issuable`. The server log says
+`not_found_or_other_client` for these. The legitimate client knows the expiry
+from the `expires_at` in the response that issued the grant, so a separate reason
+would tell it nothing. The handler checks expiry before revocation, so an expired
+grant gets `grant_invalid` whether or not it was revoked, and `revoked` is
+reported only while the grant has at least one whole second left.
+
+A derive needs the client's current policy to allow `refresh_token`, so removing
+`refresh_token_max_lifetime` from a client's configuration stops deriving from
+source grants the client already holds. The derive gate refuses such a request with
+`unsupported_token_type` (`invalid_request`, "The 'subject_token_type' value ...
+is not supported"), before the source grant is looked up. The child's cap comes from
+its own type's key. Removing `id_jag_max_lifetime` while keeping
+`refresh_token_max_lifetime` is refused at startup. The policy is the client's
+current configuration, and validation requires `id_jag_max_lifetime` whenever
+`refresh_token_max_lifetime` is set, so a configured client never reaches the
+missing-cap case. For a child, `token_type_not_permitted` then means the child
+lists `refresh_token`. The missing-cap refusal only applies to a handler built
+without config validation.
+
+A parent can be derived from many times; each call creates an independent child.
+If the response is lost, the child stays until its parent ends (revoked or
+expired). This is accepted. Today the derive path checks the parent on every
+use. The ID-JAG issuance path is not built yet, and it must check the parent's
+liveness too, because a child is usable only while its parent is live.
+
+**Logging.** A derive logs "Exchange grant derived" at debug level with
+`has_parent=true`. Every refusal after the public-client and grant checks is
+logged as "Exchange grant refused", including a failed HMAC check
+(`token_invalid`) and request-parameter refusals. The log reason for the
+`grant_invalid` error (`not_found_or_other_client` or `token_invalid`) is
+internal and is never sent to the client.
 
 ## Implementation
 

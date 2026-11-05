@@ -2060,6 +2060,7 @@ _Appears in:_
 | `tokenLifespans` _[api.v1beta1.TokenLifespanConfig](#apiv1beta1tokenlifespanconfig)_ | TokenLifespans configures the duration that various tokens are valid.<br />If not specified, defaults are applied (access: 1h, refresh: 7d, authCode: 10m). |  | Optional: \{\} <br /> |
 | `spiffeTrustDomains` _[api.v1beta1.SPIFFETrustDomainConfig](#apiv1beta1spiffetrustdomainconfig) array_ | SPIFFETrustDomains declares SPIFFE trust domains for<br />inboundGrants.spiffeClientAuth associations. See SPIFFETrustDomainConfig's<br />doc comment for why declaring a domain does not by itself enable<br />authentication in this build. |  | MaxItems: 50 <br />MinItems: 1 <br />Optional: \{\} <br /> |
 | `inboundGrants` _[api.v1beta1.InboundGrantsConfig](#apiv1beta1inboundgrantsconfig)_ | InboundGrants configures canonical inbound OAuth grant families. |  | Optional: \{\} <br /> |
+| `tlsListener` _[api.v1beta1.TLSListenerConfig](#apiv1beta1tlslistenerconfig)_ | TLSListener configures an additional TLS listener on port 8443 that<br />serves the embedded authorization server's routes. MCP traffic, health<br />probes and metrics stay on plain HTTP. Both certificateSecretRef and<br />privateKeySecretRef are required. It is required when<br />inboundGrants.spiffeClientAuth enables spiffe_x509. That requirement is<br />checked when the resource is reconciled and reported in status<br />conditions; the API server does not reject it. The listener is<br />reachable on the pod only: the operator does not yet add port 8443 to<br />the Service or container ports. Updates to the referenced Secret<br />contents are picked up without a pod restart. |  | Optional: \{\} <br /> |
 | `upstreamProviders` _[api.v1beta1.UpstreamProviderConfig](#apiv1beta1upstreamproviderconfig) array_ | UpstreamProviders configures connections to upstream Identity Providers.<br />When configured, the embedded auth server delegates interactive authentication<br />to these providers. It may be omitted only when delegateClients or a trusted<br />issuer with jwtBearerGrant enables token-only operation.<br />MCPServer and MCPRemoteProxy support a single upstream; VirtualMCPServer supports multiple. |  | Optional: \{\} <br /> |
 | `primaryUpstreamProvider` _string_ | PrimaryUpstreamProvider names the upstream IDP whose access token Cedar<br />should read claims from when authorising a request. Must match the name<br />of one of the entries in UpstreamProviders. When empty, the controller<br />auto-selects the first entry of UpstreamProviders.<br />Only meaningful on VirtualMCPServer, where multiple upstream providers<br />can be configured and Cedar needs to pick which token's claims to<br />evaluate. The VirtualMCPServer controller validates this field against<br />UpstreamProviders at admission and rejects unresolvable values.<br />On MCPServer and MCPRemoteProxy this field is structurally present (the<br />EmbeddedAuthServerConfig struct is shared) but has no runtime effect:<br />those CRDs are restricted to a single upstream so there is no choice to<br />make. Setting it on those CRDs is silently ignored. |  | MaxLength: 63 <br />MinLength: 1 <br />Pattern: `^[a-z0-9]([a-z0-9-]*[a-z0-9])?$` <br />Optional: \{\} <br /> |
 | `storage` _[api.v1beta1.AuthServerStorageConfig](#apiv1beta1authserverstorageconfig)_ | Storage configures the storage backend for the embedded auth server.<br />If not specified, defaults to in-memory storage. |  | Optional: \{\} <br /> |
@@ -4452,6 +4453,7 @@ _Appears in:_
 - [api.v1beta1.RedisTLSConfig](#apiv1beta1redistlsconfig)
 - [api.v1beta1.SensitiveHeader](#apiv1beta1sensitiveheader)
 - [api.v1beta1.SessionStorageConfig](#apiv1beta1sessionstorageconfig)
+- [api.v1beta1.TLSListenerConfig](#apiv1beta1tlslistenerconfig)
 - [api.v1beta1.TokenExchangeConfig](#apiv1beta1tokenexchangeconfig)
 - [api.v1beta1.WebhookSpec](#apiv1beta1webhookspec)
 - [api.v1beta1.WebhookTLSConfig](#apiv1beta1webhooktlsconfig)
@@ -4540,6 +4542,24 @@ _Appears in:_
 | `keyPrefix` _string_ | KeyPrefix is an optional prefix for all Redis keys used by ToolHive |  | Optional: \{\} <br /> |
 | `passwordRef` _[api.v1beta1.SecretKeyRef](#apiv1beta1secretkeyref)_ | PasswordRef is a reference to a Secret key containing the Redis password |  | Optional: \{\} <br /> |
 | `tls` _[api.v1beta1.RedisTLSConfig](#apiv1beta1redistlsconfig)_ | TLS enables TLS for the Redis session storage connection and, when rate<br />limiting is configured, for the rate-limit connection to the same Redis.<br />When omitted, the connections are plaintext and the Redis password and<br />session data cross the network unencrypted. An empty object enables TLS<br />with server certificate verification against the system root CAs; set<br />caCertSecretRef for a private CA. A failed handshake never falls back to<br />plaintext. Only used when provider is redis. |  | Optional: \{\} <br /> |
+
+
+#### api.v1beta1.TLSListenerConfig
+
+
+
+TLSListenerConfig configures the certificate served by the embedded auth
+server's TLS listener. Both secret references are required.
+
+
+
+_Appears in:_
+- [api.v1beta1.EmbeddedAuthServerConfig](#apiv1beta1embeddedauthserverconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `certificateSecretRef` _[api.v1beta1.SecretKeyRef](#apiv1beta1secretkeyref)_ | CertificateSecretRef references the PEM-encoded TLS certificate. |  | Required: \{\} <br /> |
+| `privateKeySecretRef` _[api.v1beta1.SecretKeyRef](#apiv1beta1secretkeyref)_ | PrivateKeySecretRef references the PEM-encoded TLS private key. |  | Required: \{\} <br /> |
 
 
 #### api.v1beta1.TokenExchangeConfig
@@ -5344,6 +5364,10 @@ This type is shared with the Kubernetes operator CRD (VirtualMCPServer.Status.Di
 | `circuitLastChanged` _[Time](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#time-v1-meta)_ | CircuitLastChanged is the timestamp when the circuit breaker state last changed.<br />Empty when circuit breaker is disabled or has never changed state. |  | Optional: \{\} <br /> |
 | `consecutiveFailures` _integer_ | ConsecutiveFailures is the current count of consecutive health check failures.<br />Resets to 0 when the backend becomes healthy again. |  | Optional: \{\} <br /> |
 | `mcpRevision` _string_ | MCPRevision is the backend's negotiated MCP protocol revision<br />("2026-07-28" or "2025-11-25"). Empty when the backend has not been probed. |  | Optional: \{\} <br /> |
+
+
+
+
 
 
 

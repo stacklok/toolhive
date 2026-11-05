@@ -16,6 +16,13 @@ import (
 // mcp-go tool handlers cannot reliably carry custom JSON-RPC codes by returning
 // Go errors: the SDK maps them to generic internal errors. For domain errors
 // that opt into CodedError, preserve the code/data in StructuredContent instead.
+//
+// This is the Legacy (2025-11-25) render seam for tools/call: the Serve-path
+// tool handler and the optimizer call_tool meta-tool both route errors here.
+// A URL elicitation answer (vmcp.URLElicitationRequiredError) renders as an
+// isError result whose text is the elicitation message, never the URL. The
+// spec's Legacy answer, -32042, needs the session's declared capabilities,
+// which the SDK seam does not expose yet (#7023).
 func ErrorToToolResult(err error) *sdkmcp.CallToolResult {
 	// Denial first (matches writeModernDispatchError): an error that is both a
 	// CodedError and wraps ErrAuthorizationFailed must render as the denial,
@@ -23,6 +30,9 @@ func ErrorToToolResult(err error) *sdkmcp.CallToolResult {
 	// ordering is the invariant).
 	if errors.Is(err, vmcp.ErrAuthorizationFailed) {
 		return sdkmcp.NewToolResultError(vmcp.DenyMessageToolCall)
+	}
+	if answer, ok := vmcp.URLElicitationFromError(err); ok {
+		return urlElicitationFallbackResult(answer)
 	}
 	var coded thvmcp.CodedError
 	if errors.As(err, &coded) {
@@ -45,4 +55,13 @@ func CodedErrorResult(err error, coded thvmcp.CodedError) *sdkmcp.CallToolResult
 	}
 	result.StructuredContent = structured
 	return result
+}
+
+// urlElicitationFallbackResult renders the URL elicitation answer for a
+// client that cannot receive a URL elicitation: the elicitation messages
+// (answer.Message, the same text Error embeds), without the URL. A model
+// reading the result cannot follow a link it never sees, so it cannot skip
+// the user consent step URL mode exists for.
+func urlElicitationFallbackResult(answer *vmcp.URLElicitationRequiredError) *sdkmcp.CallToolResult {
+	return sdkmcp.NewToolResultError(answer.Message())
 }

@@ -166,6 +166,81 @@ Watch the [ToolHive changelog](https://github.com/stacklok/toolhive/releases) fo
 2. Run `go mod tidy` after updating the version.
 3. Ensure your tests cover the vMCP integration paths so breaking changes are caught early.
 
+### Answering a call with a URL elicitation
+
+To send the user to a page of yours (for example, to reconnect one backend's
+credential) and then have the client retry, return the URL elicitation answer
+from a `BackendClient` or `VMCP` decorator's `CallTool` (the two differ in
+telemetry, below). The example is a `BackendClient` decorator, which keys
+off the backend target:
+
+```go
+func (d *connectDecorator) CallTool(ctx context.Context, target *vmcp.BackendTarget,
+	name string, args, meta map[string]any, headers map[string]string,
+) (*vmcp.ToolCallResult, error) {
+	if !d.store.HasCredential(ctx, target.WorkloadID) {
+		e, err := vmcp.NewURLElicitation(target.WorkloadID,
+			"https://connect.example.com/"+target.WorkloadID, "Reconnect "+target.WorkloadName)
+		if err != nil {
+			return nil, err
+		}
+		answer, err := vmcp.NewURLElicitationRequiredError(e)
+		if err != nil {
+			return nil, err
+		}
+		return nil, answer
+	}
+	return d.BackendClient.CallTool(ctx, target, name, args, meta, headers)
+}
+```
+
+A `VMCP` decorator returns the same answer from
+`CallTool(ctx, identity, name, args, meta)`. It has no backend target, so it
+decides from the tool `name` and the caller's `identity`.
+
+vMCP renders the answer per protocol. A Modern client that declared
+`elicitation.url` gets the URL; every other client gets a fallback carrying
+your elicitation messages and not the URL. See
+[10-virtual-mcp-architecture.md](10-virtual-mcp-architecture.md#answering-a-call-with-a-url-elicitation)
+for the render table. You own the connect page, its identity check, and the
+credential store; vMCP owns only the protocol rendering. Your obligations:
+
+- **Put nothing sensitive in the URL.** No credentials, tokens, PII, or
+  pre-authenticated links. A client that declared URL mode shows the URL to
+  the user and may log it, and with audit `includeResponseData` on, vMCP's
+  own audit log stores it too.
+- **Expect your decorator to be called on the retry.** vMCP does not pass the
+  client's `inputResponses` to your decorator, so it answers the retry from
+  its own state. If it answers again after the user declined or cancelled,
+  vMCP ends the loop with an `isError` result carrying your message instead
+  of asking again. If it answers again after an accept, the user is asked
+  again, until the client's retry cap.
+- **Verify who opens the page.** The page must check that the user who opens
+  it is the same vMCP-authenticated subject the answer was issued to (for
+  example, by requiring the same sign-in and comparing the issuer and
+  subject), so a forwarded or leaked link cannot bind a credential to the
+  wrong user.
+- **Know how telemetry sees it.** With telemetry enabled
+  (`core.Config.TelemetryProvider` set), vMCP's backend telemetry wraps the
+  `BackendClient` you pass as `core.Config.BackendClient`, so an answer
+  returned from that decorator is recorded as a failed backend call: it
+  increments the error counter and marks the span as an error. The
+  `mcp.client.operation.duration` histogram carries `error.type`, the Go
+  type of the returned error (`*vmcp.URLElicitationRequiredError` when
+  returned unwrapped), and the span's `exception` event carries the same
+  type as `exception.type`, so both tell an answer apart from a real backend
+  failure. `exception.message` is `Error()`, which has no URL. Only the
+  legacy error counter has no type label. A `VMCP` decorator sits above
+  the core, so its answers never reach backend telemetry, and without
+  telemetry nothing is recorded. Count answers in your decorator if you need
+  a dedicated metric.
+
+vMCP meets the spec's requirement to bind the elicitation to the requesting
+user by rendering it in-band, on the same authenticated request, and holding
+no state: there is no elicitation ID to look up later and nothing a different
+caller can resume. The retry is an ordinary `tools/call`, which your decorator
+answers again from its own state.
+
 ### What ToolHive Does Not Provide for Embedders
 
 - Goroutine leak protection in Experimental/Internal packages — test your shutdown paths.

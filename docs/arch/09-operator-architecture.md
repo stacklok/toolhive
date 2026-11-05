@@ -238,7 +238,7 @@ MCPExternalAuthConfig resources can be referenced via two paths:
 
 **Controller**: `cmd/thv-operator/controllers/mcpexternalauthconfig_controller.go`
 
-`EmbeddedAuthServerConfig` can carry top-level SPIFFE trust-domain declarations in `spiffeTrustDomains` and canonical client associations in `inboundGrants.spiffeClientAuth` (`cmd/thv-operator/api/v1beta1/mcpexternalauthconfig_types.go`). The operator converts these CRD fields into runtime config via `buildSPIFFETrustDomainRunConfigs`/`buildSPIFFEClientAuthRunConfigs` in `cmd/thv-operator/pkg/controllerutil/authserver.go`, and projects file-source ConfigMap data read-only. `newServer` constructs the configured bundle source and passes its X.509 and JWT views to the authorization server. However, `RunConfig.Validate()` still rejects any non-empty SPIFFE trust configuration before the runner starts, so this wiring is not reachable for SPIFFE authentication in normal deployment. The proxy runner and vMCP can start the auth-server TLS listener on fixed port 8443, but X.509-SVID verification is not implemented. Operator configuration and network exposure for this listener are not supported. See [SPIFFE Association Declarations](18-spiffe-association-declarations.md) for current scope.
+`EmbeddedAuthServerConfig` can carry top-level SPIFFE trust-domain declarations in `spiffeTrustDomains` and canonical client associations in `inboundGrants.spiffeClientAuth` (`cmd/thv-operator/api/v1beta1/mcpexternalauthconfig_types.go`). The operator converts these CRD fields into runtime config via `buildSPIFFETrustDomainRunConfigs`/`buildSPIFFEClientAuthRunConfigs` in `cmd/thv-operator/pkg/controllerutil/authserver.go`, and projects file-source ConfigMap data read-only. `newServer` constructs the configured bundle source and passes its X.509 and JWT views to the authorization server. However, `RunConfig.Validate()` still rejects any non-empty SPIFFE trust configuration before the runner starts, so this wiring is not reachable for SPIFFE authentication in normal deployment. The proxy runner and vMCP can start the auth-server TLS listener on fixed port 8443, but X.509-SVID verification is not implemented. The operator's `embeddedAuthServer.tlsListener` field, its validation and the pod rollout rules are described in the [Operator configuration](18-spiffe-association-declarations.md#operator-configuration) section of that document. See [SPIFFE Association Declarations](18-spiffe-association-declarations.md) for current scope.
 
 ### MCPOIDCConfig
 
@@ -295,7 +295,7 @@ Defines reusable validating and mutating webhook middleware configurations that 
 MCPWebhookConfig declares one or more `validating` and/or `mutating` webhooks (URL, timeout, failure policy, optional TLS, optional HMAC signing). At least one webhook must be defined (CEL-enforced). The MCPServer references it via `spec.webhookConfigRef`, and the proxy-runner injects the corresponding middleware into the request chain.
 
 **Key features:**
-- Per-webhook `failurePolicy` (`fail` or `ignore`) for handling webhook errors
+- Per-webhook `failurePolicy` (`fail` or `ignore`) for handling webhook errors. `ignore` applies to timeouts, network errors and invalid webhook responses; a failure inside ToolHive before the call (encoding the payload, building the request, reading the HMAC secret) always denies the request
 - Optional `tlsConfig` with CA bundle, mTLS client cert, or `insecureSkipVerify`
 - Optional `hmacSecretRef` adds the `X-Toolhive-Signature` header to outgoing payloads
 

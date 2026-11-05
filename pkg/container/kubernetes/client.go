@@ -967,18 +967,18 @@ func configureContainerPorts(
 	return containerConfig, nil
 }
 
-// validatePortNumber checks if a port number is within the valid range
-func validatePortNumber(portNum int) error {
+// portToInt32 validates that a port number is within the valid range and
+// converts it to int32. The bounds check and conversion live in the same
+// function so the conversion is provably safe.
+func portToInt32(portNum int) (int32, error) {
 	if portNum < 0 || portNum > 65535 {
-		return fmt.Errorf("port number %d is out of valid range (0-65535)", portNum)
+		return 0, fmt.Errorf("port number %d is out of valid range (0-65535)", portNum)
 	}
-	return nil
+	return int32(portNum), nil
 }
 
 // createServicePortConfig creates a service port configuration for a given port number
-func createServicePortConfig(portNum int) *corev1apply.ServicePortApplyConfiguration {
-	//nolint:gosec // G115: Safe int->int32 conversion, range is checked in validatePortNumber
-	portInt32 := int32(portNum)
+func createServicePortConfig(portInt32 int32) *corev1apply.ServicePortApplyConfiguration {
 	return corev1apply.ServicePort().
 		WithName(fmt.Sprintf("port-%d", portInt32)).
 		WithPort(portInt32).
@@ -997,15 +997,13 @@ func processExposedPorts(
 			return err
 		}
 
-		if err := validatePortNumber(portNum); err != nil {
+		portInt32, err := portToInt32(portNum)
+		if err != nil {
 			return err
 		}
-
-		//nolint:gosec // G115: Safe int->int32 conversion, range is checked in validatePortNumber
-		portInt32 := int32(portNum)
 		// Add port if not already in the map
 		if _, exists := portMap[portInt32]; !exists {
-			portMap[portInt32] = createServicePortConfig(portNum)
+			portMap[portInt32] = createServicePortConfig(portInt32)
 		}
 	}
 	return nil
@@ -1032,33 +1030,27 @@ func createServicePorts(options *runtime.DeployWorkloadOptions) ([]*corev1apply.
 			return nil, err
 		}
 
-		if err := validatePortNumber(portNum); err != nil {
+		portInt32, err := portToInt32(portNum)
+		if err != nil {
 			return nil, err
 		}
-
-		//nolint:gosec // G115: Safe int->int32 conversion, range is checked in validatePortNumber
-		portInt32 := int32(portNum)
 		servicePort := portMap[portInt32]
 		if servicePort == nil {
 			// Create new service port if not in map
-			servicePort = createServicePortConfig(portNum)
+			servicePort = createServicePortConfig(portInt32)
 		}
 
 		// If there are bindings with a host port, use the first one as node port
 		if len(bindings) > 0 && bindings[0].HostPort != "" {
 			hostPort, err := strconv.Atoi(bindings[0].HostPort)
 			if err == nil && hostPort >= 30000 && hostPort <= 32767 {
-				// NodePort must be in range 30000-32767
-				// Safe to convert to int32 since we've verified the range (30000-32767)
-				// which is well within int32 range (-2,147,483,648 to 2,147,483,647)
-				//nolint:gosec // G109: Safe int->int32 conversion, range is checked above
+				// NodePort must be in range 30000-32767, well within int32 range
 				nodePort := int32(hostPort)
 				servicePort = servicePort.WithNodePort(nodePort)
 			}
 		}
 
-		//nolint:gosec // G115: Safe int->int32 conversion, range is checked above
-		portMap[int32(portNum)] = servicePort
+		portMap[portInt32] = servicePort
 	}
 
 	// Convert map to slice

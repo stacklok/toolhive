@@ -664,6 +664,18 @@ in addition to other grants can log users in.
   audiences, which is checked first. The RFC 8693 `resource` check uses the
   same strategy. Code redemption reuses the audience bound at `/authorize`, and
   refresh is enforced by fosite.
+- **Token exchange audience refusal.** The RFC 8693 token exchange refuses an
+  `audience` or a `resource` that is outside the client's audiences with
+  `invalid_target` (HTTP 400), as RFC 8693 §2.2.2 says to. Before this, an
+  `audience` refusal returned fosite's `invalid_request`
+  ("Requested audience ... has not been whitelisted"), so a client that
+  branched on the error code saw a different code depending on which parameter
+  it used. The hint does not say which list refused the audience. An `audience`
+  that is not a parseable URI is still `invalid_request`. When the request
+  names no target and the server's sole default audience is not one of the
+  client's audiences, the refusal stays `invalid_request`: the client named no
+  target, and the fix is to send an explicit `resource` or `audience`, which
+  the hint says.
 - **Dynamically registered clients.** A DCR client keeps the audience list the
   server had when it registered, and that list is never refreshed. After an
   operator adds an audience, an existing DCR client that asks for it gets

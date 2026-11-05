@@ -264,7 +264,7 @@ func TestTokenExchangeHandler_InputAudienceNotObtainable(t *testing.T) {
 	}{
 		{
 			name: "audience parameter", requestedAudience: []string{testAPIAudience},
-			wantCode: fosite.ErrInvalidRequest.ErrorField, wantHint: "has not been whitelisted by the OAuth 2.0 Client",
+			wantCode: "invalid_target", wantHint: "The client is not permitted to request audience",
 		},
 		{
 			name: "resource parameter", form: url.Values{"resource": {testAPIAudience}},

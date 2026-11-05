@@ -102,7 +102,7 @@ func TestConfiguredDelegateClientTokenExchange(t *testing.T) {
 				values.Set("audience", ungrantedAudience)
 			},
 			wantStatus: http.StatusBadRequest,
-			wantError:  "invalid_request",
+			wantError:  "invalid_target",
 		},
 		{
 			name:         "id_token_subject_token_type_rejected",

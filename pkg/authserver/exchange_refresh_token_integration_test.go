@@ -276,7 +276,7 @@ func runExchangeRefreshTokenGrantFlows(t *testing.T, env *xrtEnv) {
 
 	t.Run("a client that may open grants cannot exchange the token for its input audience", func(t *testing.T) {
 		const idJAGOnlyEntry = `[{"type":"` + xrtGrantType + `","issuable_token_types":["` + oauthproto.TokenTypeIDJAG + `"]}]`
-		for param, wantCode := range map[string]string{"audience": "invalid_request", "resource": "invalid_target"} {
+		for param, wantCode := range map[string]string{"audience": "invalid_target", "resource": "invalid_target"} {
 			t.Run(param, func(t *testing.T) {
 				subject := env.mint(t, nil)
 				refused := postToken(t, env.srv.URL, env.secretIn, url.Values{

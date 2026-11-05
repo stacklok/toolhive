@@ -950,10 +950,26 @@ func (h *Handler) grantAndBoundAudiences(
 }
 
 // grantAudiences validates that the requested audience is allowed for this
-// client and grants it.
+// client and grants it. A refused audience is reported as invalid_target, as a
+// refused "resource" is (RFC 8693 §2.2.2); an audience that is not a parseable
+// URI is a malformed request and keeps the strategy's invalid_request.
 func (h *Handler) grantAudiences(ctx context.Context, requester fosite.AccessRequester, client fosite.Client) error {
-	if err := h.config.GetAudienceStrategy(ctx)(client.GetAudience(), requester.GetRequestedAudience()); err != nil {
-		return errorsx.WithStack(err)
+	match := h.config.GetAudienceStrategy(ctx)
+	requested := requester.GetRequestedAudience()
+	if err := match(client.GetAudience(), requested); err != nil {
+		for _, aud := range requested {
+			if _, parseErr := url.Parse(aud); parseErr != nil {
+				return errorsx.WithStack(err)
+			}
+		}
+		refused := strings.Join(requested, " ")
+		for _, aud := range requested {
+			if match(client.GetAudience(), []string{aud}) != nil {
+				refused = aud
+				break
+			}
+		}
+		return errorsx.WithStack(server.ErrAudienceNotPermitted(refused))
 	}
 	for _, aud := range requester.GetRequestedAudience() {
 		requester.GrantAudience(aud)

@@ -547,6 +547,54 @@ type AggregationConfig struct {
 	// +kubebuilder:validation:Enum=allow;deny
 	// +optional
 	DefaultToolVisibility DefaultToolVisibility `json:"defaultToolVisibility,omitempty" yaml:"defaultToolVisibility,omitempty"`
+
+	// Instructions controls whether the backends' `instructions` text (the
+	// server-level usage text an MCP server sends in its initialize or
+	// server/discover result) is forwarded to MCP clients. Unset keeps the
+	// previous behaviour: nothing is forwarded.
+	// +optional
+	Instructions *InstructionsConfig `json:"instructions,omitempty" yaml:"instructions,omitempty"`
+}
+
+// DefaultInstructionsMaxLength is the cap, in bytes, on the merged
+// instructions text when InstructionsConfig.MaxLength is 0.
+const DefaultInstructionsMaxLength = 16384
+
+// InstructionsConfig controls the forwarding of backend `instructions` to MCP
+// clients.
+// +kubebuilder:object:generate=true
+// +gendoc
+type InstructionsConfig struct {
+	// Forward enables forwarding. When true, the initialize and server/discover
+	// results of the virtual server carry one block per backend, labelled with
+	// the backend ID (the workload name, as used in aggregation.tools), for
+	// every backend the calling identity is admitted to at least one capability
+	// of. A backend that sends no instructions contributes no block.
+	// Default: false.
+	// +optional
+	Forward bool `json:"forward,omitempty" yaml:"forward,omitempty"`
+
+	// MaxLength caps the merged text, in bytes. Blocks are added in backend ID
+	// order; a block that would exceed the cap is skipped and logged. 0 means
+	// the default, 16384.
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	MaxLength int `json:"maxLength,omitempty" yaml:"maxLength,omitempty"`
+}
+
+// ForwardEnabled reports whether backend instructions are forwarded. It is
+// nil-safe: an unset config forwards nothing.
+func (c *InstructionsConfig) ForwardEnabled() bool {
+	return c != nil && c.Forward
+}
+
+// EffectiveMaxLength returns the cap to apply: MaxLength, or
+// DefaultInstructionsMaxLength when the config is unset or MaxLength is 0.
+func (c *InstructionsConfig) EffectiveMaxLength() int {
+	if c == nil || c.MaxLength <= 0 {
+		return DefaultInstructionsMaxLength
+	}
+	return c.MaxLength
 }
 
 // DefaultToolVisibility names the advertising default applied to backends with no

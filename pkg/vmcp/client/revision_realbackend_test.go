@@ -432,7 +432,7 @@ func TestEnableBackendLogging_SkipsRemovedRPCOnModernSession(t *testing.T) {
 
 			// The session must be live before SetLoggingLevel can reach the
 			// wire; an unconnected client fails inside the SDK instead.
-			_, _, err = h.legacyInit(context.Background(), c, target)
+			_, err = h.legacyInit(context.Background(), c, target)
 			require.NoError(t, err)
 
 			caps := &mcpmcp.ServerCapabilities{Logging: &struct{}{}}

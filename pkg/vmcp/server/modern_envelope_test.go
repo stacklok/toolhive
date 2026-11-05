@@ -876,7 +876,7 @@ func TestModernDiscover(t *testing.T) {
 			t.Parallel()
 
 			raw, err := json.Marshal(newModernDiscover(
-				tt.hasTools, tt.hasResources, tt.hasTemplates, tt.hasPrompts, testServerName, testServerVersion,
+				tt.hasTools, tt.hasResources, tt.hasTemplates, tt.hasPrompts, "", testServerName, testServerVersion,
 			))
 			require.NoError(t, err)
 			require.JSONEq(t, tt.want, string(raw))

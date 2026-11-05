@@ -2178,7 +2178,7 @@ func TestDefaultClientFactory_SSEForwarding(t *testing.T) {
 			// corresponding handler is installed.
 			initCtx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 			defer cancel()
-			_, _, err = initializeClient(initCtx, c)
+			_, err = initializeClient(initCtx, c)
 			require.NoError(t, err)
 
 			mu.Lock()

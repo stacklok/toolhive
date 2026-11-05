@@ -51,6 +51,7 @@ func populatedLegacyConfig() *Config {
 		Watcher:                 stubWatcher{},
 		StatusReporter:          stubServeReporter{},
 		SessionStorage:          &vmcpconfig.SessionStorageConfig{},
+		Instructions:            &vmcpconfig.InstructionsConfig{Forward: true},
 	}
 }
 
@@ -80,6 +81,7 @@ func TestDeriveServerConfigProjectsTransportFields(t *testing.T) {
 	assert.Equal(t, cfg.PassthroughHeaders, got.PassthroughHeaders)
 	assert.Same(t, cfg.AuthServer, got.AuthServer)
 	assert.Same(t, cfg.SessionStorage, got.SessionStorage)
+	assert.Same(t, cfg.Instructions, got.Instructions)
 	assert.Equal(t, cfg.Watcher, got.Watcher)
 	assert.Equal(t, cfg.StatusReporter, got.StatusReporter)
 

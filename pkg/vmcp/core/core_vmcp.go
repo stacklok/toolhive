@@ -408,7 +408,44 @@ func (c *coreVMCP) Discover(ctx context.Context, identity *auth.Identity) (Disco
 		HasResources:         len(resources) > 0,
 		HasResourceTemplates: len(templates) > 0,
 		HasPrompts:           len(prompts) > 0,
+		BackendInstructions:  admittedInstructions(agg.BackendInstructions, tools, resources, templates, prompts),
 	}, nil
+}
+
+// admittedInstructions keeps the entries of byBackend whose backend owns at
+// least one of the admitted capabilities, so instructions follow the same
+// admission (and health) filter as the capability lists and are never derived
+// from the raw aggregate. Returns nil when nothing survives.
+func admittedInstructions(
+	byBackend map[string]string,
+	tools []vmcp.Tool, resources []vmcp.Resource, templates []vmcp.ResourceTemplate, prompts []vmcp.Prompt,
+) map[string]string {
+	if len(byBackend) == 0 {
+		return nil
+	}
+	allowed := make(map[string]struct{})
+	for i := range tools {
+		allowed[tools[i].BackendID] = struct{}{}
+	}
+	for i := range resources {
+		allowed[resources[i].BackendID] = struct{}{}
+	}
+	for i := range templates {
+		allowed[templates[i].BackendID] = struct{}{}
+	}
+	for i := range prompts {
+		allowed[prompts[i].BackendID] = struct{}{}
+	}
+	out := make(map[string]string)
+	for backendID, text := range byBackend {
+		if _, ok := allowed[backendID]; ok && text != "" {
+			out[backendID] = text
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // LookupTool resolves an advertised tool name (incl. composite tools) to its

@@ -418,6 +418,7 @@ func TestBuildServeConfigMapsSharedFields(t *testing.T) {
 		Watcher:                 stubWatcher{},
 		BackendRegistry:         vmcp.NewImmutableRegistry([]vmcp.Backend{}),
 		SessionStorage:          &vmcpconfig.SessionStorageConfig{},
+		Instructions:            &vmcpconfig.InstructionsConfig{Forward: true},
 		SessionManagerConfig:    testMinimalSessionManagerConfig(),
 		TelemetryProvider:       &telemetry.Provider{},
 		AuditConfig:             &audit.Config{},

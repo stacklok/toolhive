@@ -41,6 +41,14 @@ type DiscoverCapabilities struct {
 	HasResources         bool
 	HasResourceTemplates bool
 	HasPrompts           bool
+
+	// BackendInstructions is the raw `instructions` text of every backend that
+	// owns at least one capability admitted to the identity, keyed by backend
+	// ID (see aggregator.AggregatedCapabilities.BackendInstructions). A backend
+	// the identity cannot reach, or one that sent no text, is absent, so a
+	// caller never sees the usage text of a backend it may not use. nil when
+	// there is nothing to advertise.
+	BackendInstructions map[string]string
 }
 
 // VMCP is the core Virtual MCP domain object.

@@ -760,7 +760,7 @@ func buildProvider(
 	if policyErr != nil {
 		return nil, nil, policyErr
 	}
-	jwtBearerEnabled := JWTBearerGrantEnabled(cfg.TrustedIssuers)
+	jwtBearerEnabled := authServerConfig.JWTBearerGrantEnabled
 	exchangeGrantStore, storeErr := discoverExchangeGrantStorage(cfg.DelegateClients, stor)
 	if storeErr != nil {
 		return nil, nil, storeErr

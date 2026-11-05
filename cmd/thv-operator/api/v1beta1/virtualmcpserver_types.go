@@ -500,6 +500,9 @@ const (
 	// ConditionTypeVirtualMCPServerTelemetryConfigRefValidated indicates whether the TelemetryConfigRef is valid
 	ConditionTypeVirtualMCPServerTelemetryConfigRefValidated = "TelemetryConfigRefValidated"
 
+	// ConditionTypeVirtualMCPServerCABundleRefValidated indicates whether the incoming OIDC CA bundle reference is valid.
+	ConditionTypeVirtualMCPServerCABundleRefValidated = "CABundleRefValidated"
+
 	// ConditionTypeVirtualMCPServerDeprecatedInboundGrantConfiguration reports
 	// whether inline auth uses released legacy inbound grant fields.
 	ConditionTypeVirtualMCPServerDeprecatedInboundGrantConfiguration = "DeprecatedInboundGrantConfiguration"
@@ -615,6 +618,15 @@ const (
 
 	// ConditionReasonVirtualMCPServerTelemetryConfigRefFetchError indicates a transient error occurred fetching the config
 	ConditionReasonVirtualMCPServerTelemetryConfigRefFetchError = "TelemetryConfigRefFetchError"
+
+	// ConditionReasonVirtualMCPServerCABundleRefValid indicates the CA ConfigMap and selected key exist.
+	ConditionReasonVirtualMCPServerCABundleRefValid = "CABundleRefValid"
+
+	// ConditionReasonVirtualMCPServerCABundleRefNotFound indicates the CA ConfigMap does not exist.
+	ConditionReasonVirtualMCPServerCABundleRefNotFound = "CABundleRefNotFound"
+
+	// ConditionReasonVirtualMCPServerCABundleRefInvalid indicates an invalid reference or missing CA key.
+	ConditionReasonVirtualMCPServerCABundleRefInvalid = "CABundleRefInvalid"
 )
 
 // Backend authentication types

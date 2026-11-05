@@ -25,6 +25,8 @@ By default, ToolHive's embedded auth server uses in-memory storage. This works w
 > gcloud redis instances get-server-ca-certs INSTANCE_NAME --region=REGION --format=json
 > ```
 > For connections without a custom CA, TLS uses the system root CAs. To skip verification (self-signed certs only, not for production), set `tls.insecureSkipVerify: true`.
+>
+> In Kubernetes, changing which Secret or key `caCertSecretRef` points to restarts the MCPServer, MCPRemoteProxy and VirtualMCPServer pods that use the auth server.
 
 ### Kubernetes (MCPExternalAuthConfig CRD)
 

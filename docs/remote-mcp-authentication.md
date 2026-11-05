@@ -27,7 +27,7 @@ ToolHive implements BOTH discovery mechanisms required by the MCP specification:
 
 **Method 2: Well-Known URI Fallback (MCP Specification Requirement)**
 - **Location**: [`pkg/auth/discovery/discovery.go:176-254`](../pkg/auth/discovery/discovery.go#L176)
-- **Specification**: [MCP Protected Resource Metadata Discovery Requirements](https://modelcontextprotocol.io/specification/draft/basic/authorization#protected-resource-metadata-discovery-requirements)
+- **Specification**: [MCP Protected Resource Metadata Discovery Requirements](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization#protected-resource-metadata-discovery-requirements)
 - Triggers when no WWW-Authenticate header present
 - Tries endpoint-specific URI: `/.well-known/oauth-protected-resource/{path}`
 - Falls back to root-level URI: `/.well-known/oauth-protected-resource`

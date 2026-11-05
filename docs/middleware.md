@@ -284,6 +284,15 @@ This order is critical because:
 - Allow or deny the request based on policy evaluation
 - Filter list responses based on user permissions
 
+**Response compression**: filtering requires reading the response body, so for the
+methods whose responses are filtered (the list methods and `find_tool`) this
+middleware forwards the request without the client's `Accept-Encoding` and lets
+Go's transport negotiate and decode `gzip` itself. Those responses reach the
+client uncompressed; all other traffic, `features/list` included, keeps
+end-to-end compression. A 2xx response that still arrives content-encoded cannot
+be filtered and is replaced with an HTTP 500 JSON-RPC internal error rather than
+forwarded. See [Authorization framework](authz.md) for the user-facing detail.
+
 **Dependencies**:
 - Requires JWT claims from Authentication middleware
 - Requires parsed MCP data from MCP Parsing middleware
@@ -308,6 +317,26 @@ These features are implemented through two complementary middleware components t
 - Another component handles incoming requests to execute tools
 
 Both components must be in place for the features to work correctly, as they ensure consistency between tool discovery and tool execution.
+
+The component that handles tool lists recognizes a tools list by the shape of the response rather than by the request it answers, because on the SSE transport the list arrives on the shared event stream. It reads a response the way clients do:
+
+- The component drops every byte order mark a body starts with, however many there are, in either form: the three-byte UTF-8 mark, and the six bytes it becomes when a program decodes it as Latin-1 and encodes it as UTF-8 again, which some clients drop from the start of an event stream too. It reads the body the way a client that drops them all reads it, and forwards it without them.
+- A JSON body is read once it is a complete JSON value.
+- An event stream is read event by event: the data lines of an event are one payload, and an event is forwarded once the blank line that ends it arrives. Only a blank line that ends in LF, with or without a CR before it, ends an event for all clients: clients that split lines at LF only read past a blank line that ends in a bare CR, and some split lines at VT, FF, FS, GS, RS, NEL, U+2028 and U+2029 as well, as Python's `str.splitlines()` does. The component holds the events of a stream whose lines end in a bare CR or in one of those characters alone until the response ends.
+- A body at any 2xx status with a missing or unrecognized `Content-Type` is held until the response ends and then read as either format, so the client receives none of it before then, even an event stream. The component passes such a body at any other status through unread.
+- When clients could read the `Content-Type` as either format, because the response carries more than one or its one value names `application/json` or `text/event-stream` besides its own media type (as in `application/json; x=text/event-stream` or `application/json-seq`), the component holds the body until the response ends and then reads it as either format, at any status. The client then receives an event stream only once it ends, not event by event.
+
+Because the component reads the bytes of the body, it forwards the request without the client's `Accept-Encoding`: the HTTP transport that carries the request to the backend then asks for gzip on its own and decodes what it asked for, so the component reads the body in the clear whether or not the backend compresses it. A body that still arrives with a content coding, as with a coding the transport does not decode (`br`, `zstd`), is withheld and logged as a warning whenever the component would have had to read it, and the client receives an error in its place. A response that declares a content coding but carries no body (a 204, a 304, the answer to a HEAD request, an empty 202) is forwarded as it is: there is nothing to read. The request the component received keeps the client's `Accept-Encoding` for the middleware around it.
+
+The component reads the bytes of a body as UTF-8, as MCP clients do. A body whose `Content-Type` declares another charset (`charset=utf-16le`, for example), which a client that decodes by the declared charset reads as different text, is withheld the same way whenever the component would have had to read it, and so is a body whose `Content-Type` names a charset the component cannot parse; `utf-8` and `us-ascii` are read as they are, and a response that declares another charset but carries no body is forwarded as it is.
+
+The component holds at most 16 MiB of an event stream it cannot read yet, an event that has not ended or a stream it holds until the response ends, and at most 100 MiB of any other body it cannot read yet: a JSON body that is not complete, or a body it holds until the response ends because its `Content-Type` is missing or ambiguous. Neither bound is configurable: no command-line flag, Helm value, or custom-resource field sets them. Before it counts what it holds, the component forwards what it can read already: the complete events of a stream, and a body it passes through unread. When a response would still make it hold more, the component logs a warning and sends the client an error. On an event stream whose status it has forwarded, only the event that would make it hold more is withheld: an error event takes that event's place at once when the component can name the request it answers, from the start of the withheld event, when that start names exactly one id beside a result or an error and no method, or else from the request that opened the stream, and otherwise the event is dropped without a replacement; the events after it reach the client, so a stream the backend holds open stays open. Any other response is withheld from then on, and the error takes the place of the rest; the client keeps what the component already forwarded.
+
+The component fails closed. A response that is, or that a client could read as, a tools list but that does not resolve to one unambiguous list is withheld and logged as a warning. That covers, for example, a tool that is not an object, `tools` that is not an array, a case-variant or duplicate spelling of `result`, `tools`, or a tool's `name` or `description`, and an event stream whose line endings clients split differently. The component also withholds a JSON body, a body read as JSON, or event data that starts with `{` or `[` after any leading byte order marks and white space but is not one valid JSON value, whatever request the response answers, and whatever the status: a non-2xx `application/json` body that is not one valid JSON value is answered with the error under HTTP 500 in place of the backend's status and body, while a non-2xx body whose `Content-Type` names neither format passes through unread, and on a non-2xx event stream the backend's status is forwarded and only the event is replaced. Such data may hold values that more lenient clients parse and the component does not, such as `NaN` or deeper nesting, and it includes a truncated JSON body. In an event stream, only the event that fails is withheld, an error takes its place when the component can attribute it to a request (see below), and the events before and after it reach the client. When a line holds a bare CR, or one of VT, FF, FS, GS, RS, NEL, U+2028 and U+2029, clients split the bytes around it into different lines and events, so when any of those readings could carry a tools list the component withholds every complete event it has not forwarded yet when it reads that line, and one error takes their place when the stream answers a request with an id; on a stream a GET request opened they are dropped. A raw NEL, U+2028 or U+2029 inside a JSON string of an event is withheld with it. Every other response passes through unchanged.
+
+The error that takes the place of what the component withholds is a JSON-RPC error with code `-32603` and the message `internal error`, carrying the id of the request it answers. The component forwards the status and headers of an event stream as soon as the backend sends them, so in an event stream the error is an event, sent where the withheld event would have been, and the stream goes on; it carries the id of the withheld event when that event is a response with one, the id the client is waiting on, and otherwise the id of the request that opened the stream. An event the component cannot attribute to a request this way is dropped without a replacement, as is a withheld event the component reads in full and finds to be a request or a notification: an error with no id, or one that answers a request of the server, is read by clients as the answer to a request of their own or ends their session, so the component never writes one to a stream. It forwards the status and headers of any other response only once it has read the body and decided to forward it, so a withheld JSON body, a body without a supported or unambiguous `Content-Type`, and a compressed body are answered with the error alone, under HTTP 500 and `Content-Type: application/json`, carrying the id of the request when it has one and none otherwise, without the backend's status or `Content-Encoding`. That answer fails the one request and nothing else: the MCP client SDKs read the JSON-RPC error out of a non-2xx response and keep their session, so the client's next request goes through as usual. For the same reason the client receives nothing of a JSON reply, not even its status, until the backend has sent the last byte of it: the time to the first byte of a slow JSON reply is the time to its last. An event stream is forwarded event by event and is not delayed this way. Middleware outside the component records the status it sends and middleware inside it records the status the backend sent: for a withheld JSON body the audit middleware, which runs outside the component, records the HTTP 500 and the outcome `error`, while the telemetry middleware, which runs inside it, records the backend's 200. The component forwards informational (1xx) responses as they arrive, and they change nothing: it reads a response by its final status and the headers sent with it, and forwards those headers, so a field the backend sends later as a trailer never becomes a response header.
+
+Filtering a list removes the tools the filter hides and applies the overrides, and nothing else: the other members of the response and its result (such as `id`, `nextCursor`, and `_meta`) and of each remaining tool reach the client as the backend sent them.
 
 **Configuration**:
 - `FilterTools`: List of tool names to expose to clients
@@ -654,7 +683,7 @@ The following headers cannot be configured for forwarding due to security concer
 | Category | Headers |
 |----------|---------|
 | Routing manipulation | `Host` |
-| Hop-by-hop (RFC 7230, 7540) | `Connection`, `Keep-Alive`, `Te`, `Trailer`, `Upgrade`, `Http2-Settings` |
+| Hop-by-hop (RFC 7230, 7540) | `Connection`, `Keep-Alive`, `Te`, `Trailer`, `Upgrade`, `Http2-Settings`, `Close` |
 | Proxy headers | `Proxy-Authorization`, `Proxy-Authenticate`, `Proxy-Connection` |
 | Request smuggling vectors | `Transfer-Encoding`, `Content-Length` |
 | Identity spoofing | `Forwarded`, `X-Forwarded-For`, `X-Forwarded-Host`, `X-Forwarded-Proto`, `X-Real-Ip` |
@@ -664,6 +693,8 @@ The following headers cannot be configured for forwarding due to security concer
 - Logs configured header names at startup (never logs values for security)
 - Warns if `Authorization` header is configured (ensure value is appropriate for target)
 - Returns error if any restricted header is configured
+
+A client cannot remove injected headers by naming them in its `Connection` header; see [Client `Connection` header](#client-connection-header).
 
 **CLI Usage**:
 
@@ -1086,8 +1117,16 @@ The middleware chain execution order is critical and controlled by the order in 
 - Middleware that rewrites the request body must republish the parsed request via `mcp.RepublishParsedMCPRequest` and refresh `r.ContentLength` — `ParsingMiddleware` deliberately parses only once, so downstream consumers read the refreshed context while outer audit and telemetry wrappers read the refreshed `mcp.ParsedRequestHolder` after the inner chain returns
 - Header Forward executes close to the backend handler (innermost position)
 - Recovery is always last in config, making it the innermost wrapper (the chain wraps in reverse config order, so the first entry is the outermost and runs first)
-- Body-size limit and Origin validation stay OUTSIDE audit: oversized bodies must be rejected before audit buffers request data, and origin validation is a pre-auth DNS-rebind guard. Their rejections (413/403) are the only ones not audited.
+- Body-size limit and Origin validation stay OUTSIDE audit: oversized bodies must be rejected before audit buffers request data, and origin validation is a pre-auth DNS-rebind guard. The transparent proxy's `Connection` header check (see [Client `Connection` header](#client-connection-header)) runs before all of them. Their rejections (400/413/403) are the only ones not audited.
 - The list above (steps 1-15) describes the operator/proxyrunner path (`PopulateMiddlewareConfigs` in `pkg/runner/middleware.go`). The CLI flag path (`WithMiddlewareFromFlags` in `pkg/runner/config_builder.go`) has no rate limiting at all, and orders Usage Metrics before the webhooks rather than after (see the comment at `pkg/runner/config_builder.go:700`) — both paths still run Mutating before Validating webhooks and both before Authorization.
+
+### Client `Connection` header
+
+This applies to the transparent proxy (`pkg/transport/proxy/transparent`), which serves remote MCP servers and container servers that use the SSE or streamable HTTP transport. The stdio proxies build their own requests and are not affected.
+
+Before any middleware runs, the transparent proxy rejects with `400 Bad Request` any request whose `Connection` header names something other than `close` or a standard hop-by-hop header (`Keep-Alive`, `Upgrade`, `Te`, `Trailer`, `Transfer-Encoding`, `Proxy-Connection`, `Proxy-Authenticate`, `Proxy-Authorization`, `HTTP2-Settings`). It logs each rejection at WARN with the header name. Requests such as `Connection: keep-alive` or `Connection: Upgrade` pass unchanged, so WebSocket upgrades still work.
+
+The reverse proxy removes every header named in `Connection` (RFC 9110 §7.6.1), and it does so after the middlewares have run. Without this check, a client could send `Connection: X-Tenant-ID` or `Connection: Authorization` and have a header or token injected by a middleware (Header Forward, token injection, Token Exchange, Upstream Token Swap) removed before the request reached the upstream. The proxy rejects these requests instead of removing the named headers itself, because removing them would also hide them from middlewares that check a header only when it is present. For example, `Origin: <disallowed>` together with `Connection: Origin` would then pass Origin validation.
 
 ### Custom Authorization Policies
 

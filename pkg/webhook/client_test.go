@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -686,8 +687,7 @@ func TestClientCallErrors(t *testing.T) {
 		t.Parallel()
 		_, err := client.Call(t.Context(), &Request{})
 		assert.Error(t, err)
-		var networkErr *NetworkError
-		assert.True(t, errors.As(err, &networkErr))
+		assert.True(t, IsLocalError(err), "got %T: %v", err, err)
 	})
 
 	t.Run("unmarshal failure Call", func(t *testing.T) {
@@ -870,5 +870,65 @@ func newTestClient(cfg Config, webhookType Type, hmacSecret []byte) *Client {
 		config:      cfg,
 		hmacSecret:  hmacSecret,
 		webhookType: webhookType,
+	}
+}
+
+// Failures that happen before anything is sent must be reported as LocalError,
+// so the middlewares deny them instead of applying failure_policy: ignore.
+func TestClientLocalFailuresAreLocalErrors(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		secretRef string
+		req       *Request
+	}{
+		{
+			name: "payload cannot be encoded",
+			req:  &Request{Version: APIVersion, MCPRequest: json.RawMessage(`{not json`)},
+		},
+		{
+			name:      "mounted HMAC secret cannot be read",
+			secretRef: filepath.Join(t.TempDir(), "missing"),
+			req:       &Request{Version: APIVersion, MCPRequest: json.RawMessage(`{}`)},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var calls atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				calls.Add(1)
+				w.Header().Set("Content-Type", "application/json")
+				assert.NoError(t, json.NewEncoder(w).Encode(Response{Version: APIVersion, Allowed: true}))
+			}))
+			defer server.Close()
+
+			var secret []byte
+			if tt.secretRef != "" {
+				secret = []byte("startup-secret")
+			}
+			client, err := NewClient(Config{
+				Name:          "local-error",
+				URL:           server.URL,
+				Timeout:       5 * time.Second,
+				FailurePolicy: FailurePolicyIgnore,
+				TLSConfig:     &TLSConfig{InsecureSkipVerify: true},
+				HMACSecretRef: tt.secretRef,
+			}, TypeValidating, secret)
+			require.NoError(t, err)
+
+			_, err = client.Call(t.Context(), tt.req)
+			require.Error(t, err)
+			assert.True(t, IsLocalError(err), "Call: got %T: %v", err, err)
+
+			_, err = client.CallMutating(t.Context(), tt.req)
+			require.Error(t, err)
+			assert.True(t, IsLocalError(err), "CallMutating: got %T: %v", err, err)
+
+			assert.Zero(t, calls.Load(), "nothing should reach the webhook")
+		})
 	}
 }

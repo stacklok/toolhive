@@ -2107,15 +2107,17 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(
 
 		// Add embedded auth server environment variables. AuthServerRef takes precedence;
 		// externalAuthConfigRef is used as a fallback (legacy path).
+		var wantAuthServerVolumes []corev1.Volume
 		if configName := ctrlutil.EmbeddedAuthServerConfigName(
 			mcpServer.Spec.ExternalAuthConfigRef, mcpServer.Spec.AuthServerRef,
 		); configName != "" {
-			_, _, authServerEnvVars, err := ctrlutil.GenerateAuthServerConfigByName(
+			authServerVolumes, _, authServerEnvVars, err := ctrlutil.GenerateAuthServerConfigByName(
 				ctx, r.Client, mcpServer.Namespace, configName,
 			)
 			if err != nil {
 				return true
 			}
+			wantAuthServerVolumes = authServerVolumes
 			expectedProxyEnv = append(expectedProxyEnv, authServerEnvVars...)
 		}
 		// Add default environment variables that are always injected
@@ -2126,6 +2128,10 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(
 
 		wantSessionTLSVolumes, _ := ctrlutil.SessionRedisTLSVolumesWithDefault(mcpServer.Spec.SessionStorage, r.DefaultRedisConfig)
 		if ctrlutil.SessionRedisTLSVolumeNeedsUpdate(deployment.Spec.Template.Spec.Volumes, wantSessionTLSVolumes) {
+			return true
+		}
+
+		if ctrlutil.AuthServerVolumesNeedUpdate(deployment.Spec.Template.Spec.Volumes, wantAuthServerVolumes) {
 			return true
 		}
 

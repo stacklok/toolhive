@@ -17,6 +17,7 @@ package controllers
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -660,6 +661,7 @@ func TestValidateSpecConfigurationConditions(t *testing.T) {
 		errContains     string
 		expectCondition string // expected reason for ConfigurationValid condition
 		conditionStatus metav1.ConditionStatus
+		eventContains   string // optional substring expected in the recorded event
 	}{
 		{
 			name:            "valid proxy with no OIDC config",
@@ -681,6 +683,22 @@ func TestValidateSpecConfigurationConditions(t *testing.T) {
 			errContains:     "invalid syntax",
 			expectCondition: mcpv1beta1.ConditionReasonAuthzPolicySyntaxInvalid,
 			conditionStatus: metav1.ConditionFalse,
+		},
+		{
+			name: "oversized Cedar policy is rejected",
+			proxy: v1beta1test.NewMCPRemoteProxy("oversized-cedar-proxy", "default",
+				v1beta1test.WithRemoteProxyAuthzConfig(&mcpv1beta1.AuthzConfigRef{
+					Type: mcpv1beta1.AuthzConfigTypeInline,
+					Inline: &mcpv1beta1.InlineAuthzConfig{
+						// One byte over the limit in pkg/validation (8192).
+						Policies: []string{"permit (principal, action, resource);//" + strings.Repeat("a", 8192)},
+					},
+				})),
+			expectError:     true,
+			errContains:     "too large",
+			expectCondition: mcpv1beta1.ConditionReasonAuthzPolicySyntaxInvalid,
+			conditionStatus: metav1.ConditionFalse,
+			eventContains:   "too large",
 		},
 		{
 			name: "referenced authz ConfigMap not found is rejected",
@@ -830,6 +848,9 @@ func TestValidateSpecConfigurationConditions(t *testing.T) {
 				select {
 				case event := <-fakeRecorder.Events:
 					assert.Contains(t, event, tt.expectCondition)
+					if tt.eventContains != "" {
+						assert.Contains(t, event, tt.eventContains)
+					}
 				default:
 					t.Error("expected a warning event to be recorded")
 				}

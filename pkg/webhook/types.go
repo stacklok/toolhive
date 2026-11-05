@@ -52,6 +52,10 @@ const (
 	// FailurePolicyFail denies the request on webhook error (fail-closed).
 	FailurePolicyFail FailurePolicy = "fail"
 	// FailurePolicyIgnore allows the request on webhook error (fail-open).
+	// It covers timeouts, network errors and invalid webhook responses only.
+	// A local error (encoding the payload, building the request or resolving
+	// the HMAC secret) still denies the request, because the webhook was never
+	// consulted.
 	FailurePolicyIgnore FailurePolicy = "ignore"
 )
 

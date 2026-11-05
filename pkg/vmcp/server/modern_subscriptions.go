@@ -16,29 +16,29 @@ import (
 )
 
 // This file implements MCP 2026-07-28 ("Modern") subscriptions/listen, the
-// revision's ONLY server->client push channel. Modern removed the standalone
-// HTTP GET stream, so a client that wants unsolicited notifications opens one
-// of these instead.
+// final spec's server->client push channel. Modern removed the standalone HTTP
+// GET stream, so spec-conformant clients that request subscriptions/listen use
+// this method for unsolicited notifications.
 //
-// WHY IT EXISTS EVEN THOUGH vMCP HAS NOTHING TO PUSH. Without a handler for
-// this method a go-sdk v1.7 client cannot talk to vMCP at all: its Connect is
-// Modern-first, and once server/discover succeeds it opens a listen stream
-// whenever any list-changed handler is registered -- which mcpcompat's
-// Initialize does unconditionally (installNotificationHandlers). A -32601 there
-// fails Connect outright and tears the session down. So this handler is what
-// stands between a Modern client and a usable session; it is not a facility
-// nobody reaches.
+// WHY THIS HANDLER EXISTS. vMCP advertises Modern capabilities with all push
+// and listChanged flags false. Accordingly, go-sdk's client.Connect does
+// not open subscriptions/listen for vMCP: it opens a listen stream only when the
+// corresponding server listChanged capability is advertised. mcpcompat
+// still installs notification handlers unconditionally, but that does not make
+// go-sdk Connect open a stream. This handler serves spec-conformant
+// clients that do request subscriptions/listen; currently it honestly
+// acknowledges none, because vMCP advertises no push capabilities.
 //
 // WHAT IT HONORS: nothing, today, and it says so on the wire. The honored set is
 // computed by intersecting the client's requested notification types against
 // newModernCapabilities -- the same builder server/discover publishes -- every
 // push-related flag of which is deliberately false (see its doc comment for why,
 // per flag). An empty honored set is the spec's own way to say "I support none
-// of these", not a stub: SEP-2575 specifies the acknowledgement as carrying
-// "the subset of the requested notifications the server has agreed to honor",
-// and requires unsupported types to be omitted from it. go-sdk's reference
-// server does exactly this, filtering the requested set through its own
-// capabilities (allowedSubscriptions, server.go:1254+ in go-sdk@v1.7.0-pre.3).
+// of these", not a stub: the 2026-07-28 spec specifies the acknowledgement as
+// carrying "the subset of the requested notifications the server has agreed to
+// honor", and requires unsupported types to be omitted from it. go-sdk's
+// reference server does exactly this, filtering the requested set through its
+// own `allowedSubscriptions` filter.
 //
 // The distinction that matters: this is a truthful NEGATIVE declaration, not an
 // empty success. It never reports a subscription as established and then
@@ -48,8 +48,7 @@ import (
 // until then there is deliberately nothing for this stream to carry.
 //
 // Known limitation worth stating plainly: go-sdk's client ignores the
-// acknowledgement (callSubscriptionsAckHandler returns (nil, nil),
-// client.go:1457-1459), so against that client this honest declaration is not
+// acknowledgement (its callSubscriptionsAckHandler returns (nil, nil)), so
 // observable in behavior. It is correct on the wire regardless, and the
 // alternative -- holding a stream open forever delivering nothing -- is strictly
 // worse.
@@ -57,7 +56,7 @@ import (
 // Modern subscription method and notification names, plus the reserved _meta
 // key deliveries are tagged with.
 //
-// All three are NORMATIVE in schema/draft/schema.ts -- do not weaken them to
+// All three are NORMATIVE in the final 2026-07-28 schema -- do not weaken them to
 // "SDK convention". The relevant declarations:
 //
 //   - SubscriptionsListenResultMeta requires (non-optional)
@@ -74,10 +73,11 @@ import (
 //     binds a DELIVERY implementation rather than this handler (which delivers
 //     nothing); it is restated at the #5743 hand-off below so it is not lost.
 //
-// go-sdk agrees and can be read as a cross-check (MetaKeySubscriptionID at
-// protocol.go:2377-2379; server.go:1187-1250), but the schema is the authority.
-// An earlier version of this comment attributed these to the SDK because the
-// SEP-2575 prose does not restate them -- the schema does, and it governs.
+// go-sdk agrees and can be read as a cross-check: its protocol types and
+// server implementation use the same subscription ID and acknowledgement rules,
+// but the final schema is the authority. An earlier version of this comment
+// attributed these to the SDK because the accompanying spec prose does not
+// restate them -- the final schema does, and it governs.
 const (
 	methodSubscriptionsListen      = "subscriptions/listen"
 	notificationSubscriptionsAcked = "notifications/subscriptions/acknowledged"
@@ -85,12 +85,11 @@ const (
 )
 
 // notificationSubscriptions is the per-type, per-URI opt-in set carried by both
-// subscriptions/listen params and the acknowledgement. It mirrors go-sdk's
-// NotificationSubscriptions field-for-field (protocol.go:2070-2082); mcpcompat
-// does not re-export the type, so like the rest of the Modern envelope this is a
-// hand-rolled parallel serializer.
+// subscriptions/listen params and the acknowledgement. It mirrors the
+// go-sdk NotificationSubscriptions type; mcpcompat does not re-export it,
+// so like the rest of the Modern envelope this is a hand-rolled serializer.
 //
-// These four are the ENTIRE subscribable universe under SEP-2575. Progress,
+// These four are the ENTIRE subscribable universe under the 2026-07-28 spec. Progress,
 // logging, elicitation, and sampling are structurally absent -- they are not
 // notification types a client can opt into here, which is why this channel
 // cannot carry them however it is implemented.
@@ -109,8 +108,8 @@ func (n notificationSubscriptions) isEmpty() bool {
 
 // subscriptionsListenParams is the decoded subscriptions/listen request params.
 // Notifications is a pointer so an absent field is distinguishable from an
-// explicit empty object: the spec makes it REQUIRED, and go-sdk rejects a nil
-// one with invalid-params (server.go:1193-1195), so vMCP must too.
+// explicit empty object: the spec makes it REQUIRED, and go-sdk rejects
+// a nil value with invalid-params, so vMCP must too.
 type subscriptionsListenParams struct {
 	Notifications *notificationSubscriptions `json:"notifications"`
 }
@@ -124,8 +123,8 @@ type subscriptionsAcknowledgedParams struct {
 
 // subscriptionsListenResult is the response to subscriptions/listen, signalling
 // that the subscription ended gracefully. Mirrors go-sdk's
-// SubscriptionsListenResult (protocol.go:2110-2118): resultType "complete" plus
-// a subscriptionId-tagged _meta.
+// SubscriptionsListenResult: resultType "complete" plus a subscriptionId-tagged
+// _meta.
 type subscriptionsListenResult struct {
 	ResultType string         `json:"resultType"`
 	Meta       map[string]any `json:"_meta"`
@@ -144,12 +143,11 @@ type subscriptionsListenResult struct {
 //
 // The response is an SSE stream, not a single JSON body, because the protocol
 // requires two messages on it: the acknowledgement notification first, then the
-// result. go-sdk forces SSE for this method for the same reason
-// (streamable.go:1645-1650). The stream is closed as soon as both are written
-// because the honored set is empty and there is consequently nothing to keep it
-// open for -- matching go-sdk's reference server, which blocks on the request
-// context only when it has agreed to honor at least one subscription
-// (server.go:1246-1250).
+// result. go-sdk also forces SSE for this method. The stream is closed as
+// soon as both are written because the honored set is empty and there is
+// consequently nothing to keep it open for -- matching go-sdk's reference server,
+// which blocks on the request context only when it has agreed to honor at least
+// one subscription.
 func (s *Server) dispatchModernSubscriptionsListen(
 	ctx context.Context, w http.ResponseWriter, parsed *mcpparser.ParsedMCPRequest, identity *auth.Identity,
 ) {
@@ -217,7 +215,7 @@ func (s *Server) dispatchModernSubscriptionsListen(
 		// logs instead of presenting as a silently idle client subscription.
 		//
 		// Hand-off note for that work, since it is a MUST and easy to miss: per
-		// schema.ts's NotificationMetaObject, the server MUST include
+		// schema's NotificationMetaObject, the server MUST include
 		// io.modelcontextprotocol/subscriptionId on EVERY notification delivered
 		// via a subscriptions/listen stream -- not just on the acknowledgement
 		// this handler already tags. A delivery implementation that pushes a bare
@@ -240,8 +238,8 @@ func (s *Server) dispatchModernSubscriptionsListen(
 // honoredSubscriptions intersects a client's requested notification set with
 // what vMCP advertises, returning only the types it can actually honor.
 //
-// This is the whole of the per-type AND per-URI opt-in filtering SEP-2575
-// mandates ("the server MUST NOT send notification types the client has not
+// This is the whole of the per-type AND per-URI opt-in filtering the 2026-07-28
+// spec mandates ("the server MUST NOT send notification types the client has not
 // explicitly requested"): a type survives only if the client asked for it AND
 // the matching capability is advertised. Because it takes capabilities as a
 // parameter rather than reading a package-level constant, it needs no edit when
@@ -342,8 +340,8 @@ func writeModernListenStream(w http.ResponseWriter, frames [][]byte) error {
 	// STORE the response and revalidate, which for a per-identity stream is wrong.
 	w.Header().Set("Cache-Control", "no-cache, no-store, no-transform, private")
 	w.Header().Set("Connection", "keep-alive")
-	// Draft Streamable HTTP, "When initiating an SSE stream, servers SHOULD
-	// include the X-Accel-Buffering: no header", so a reverse proxy (nginx and
+	// The final 2026-07-28 Streamable HTTP spec says that when initiating an SSE
+	// stream, servers SHOULD include the X-Accel-Buffering: no header, so a reverse proxy (nginx and
 	// friends) does not accumulate events before forwarding them. This is the
 	// only SSE-emitting path in the codebase, so there is nowhere else to copy
 	// the header from.
@@ -358,8 +356,8 @@ func writeModernListenStream(w http.ResponseWriter, frames [][]byte) error {
 		// nothing, which is exactly the mutation that escaped both this package's
 		// tests and the real-client integration suite.
 		//
-		// The "event: message" line is NOT mandated: the draft Streamable HTTP
-		// page specifies the content type and the stream lifecycle but never an
+		// The "event: message" line is NOT mandated: the final 2026-07-28 Streamable
+		// HTTP spec specifies the content type and the stream lifecycle but never an
 		// SSE event name, and it explicitly drops resumability ("Resumable SSE
 		// streams via Last-Event-ID are not supported"), which is why no "id:"
 		// field is emitted either. The name is kept for symmetry with go-sdk's

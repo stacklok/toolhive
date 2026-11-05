@@ -214,3 +214,195 @@ func TestRevertCodexAuth_MissingFileIsNoOp(t *testing.T) {
 	require.NoError(t, cm.RevertLLMGateway(ClientApp(Codex), configPath))
 	assert.NoFileExists(t, configPath)
 }
+
+func codexBedrockApplyCfg(model string, contextWindow int) llmgateway.ApplyConfig {
+	cfg := codexApplyCfg()
+	cfg.BedrockCompat = true
+	cfg.BedrockCodexModel = model
+	cfg.BedrockCodexContextWindow = contextWindow
+	cfg.BedrockCodexConsolidationModel = "us.openai.gpt-6.1-terra"
+	cfg.BedrockCodexExtractModel = "us.openai.gpt-6-luna"
+	return cfg
+}
+
+func TestConfigureCodexAuth_BedrockKeys(t *testing.T) {
+	t.Parallel()
+
+	compatWithoutModel := codexApplyCfg()
+	compatWithoutModel.BedrockCompat = true
+	wantMemories := map[string]any{
+		codexConsolidationModelKey: "us.openai.gpt-6.1-terra",
+		codexExtractModelKey:       "us.openai.gpt-6-luna",
+	}
+
+	tests := []struct {
+		name string
+		// seed is the config.toml content before setup.
+		seed          map[string]any
+		cfg           llmgateway.ApplyConfig
+		wantModel     any
+		wantWebSearch any
+		wantContext   any
+		wantMemories  any
+		wantErr       string
+	}{
+		{
+			name:          "bedrock writes the model, web_search, context window, and memory models",
+			cfg:           codexBedrockApplyCfg("us.openai.gpt-6.1-sol", 400000),
+			wantModel:     "us.openai.gpt-6.1-sol",
+			wantWebSearch: "disabled",
+			wantContext:   int64(400000),
+			wantMemories:  wantMemories,
+		},
+		{
+			name:          "an unknown context window is not written",
+			cfg:           codexBedrockApplyCfg("us.openai.gpt-6.1-sol", 0),
+			wantModel:     "us.openai.gpt-6.1-sol",
+			wantWebSearch: "disabled",
+			wantMemories:  wantMemories,
+		},
+		{name: "a non-Bedrock setup writes no Bedrock keys", cfg: codexApplyCfg()},
+		{name: "bedrock compat without a resolved model writes no Bedrock keys", cfg: compatWithoutModel},
+		{
+			name:    "a memories entry that is not a table is refused and left alone",
+			seed:    map[string]any{codexMemoriesKey: "not-a-table"},
+			cfg:     codexBedrockApplyCfg("us.openai.gpt-6.1-sol", 0),
+			wantErr: "existing memories",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cm, configPath := newCodexManager(t)
+			if tt.seed != nil {
+				require.NoError(t, os.MkdirAll(filepath.Dir(configPath), 0o700))
+				require.NoError(t, writeTOMLConfig(configPath, tt.seed))
+			}
+
+			_, err := cm.ConfigureLLMGateway(ClientApp(Codex), tt.cfg)
+			config, readErr := readTOMLConfig(configPath)
+			require.NoError(t, readErr)
+			if tt.wantErr != "" {
+				require.ErrorContains(t, err, tt.wantErr)
+				assert.Equal(t, tt.seed, config, "a refused setup must not write config.toml")
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, codexProviderID, config["model_provider"])
+			assert.Equal(t, tt.wantModel, config[codexModelKey])
+			assert.Equal(t, tt.wantWebSearch, config[codexWebSearchKey])
+			assert.Equal(t, tt.wantContext, config[codexContextWindowKey])
+			assert.Equal(t, tt.wantMemories, config[codexMemoriesKey])
+		})
+	}
+}
+
+// TestCodexBedrockKeys_SetupAndRevert covers the ownership rule for the Bedrock
+// keys, the same as Claude Code's Bedrock env keys: a setup without Bedrock and
+// revert remove them whatever they hold, leaving unrelated keys alone.
+func TestCodexBedrockKeys_SetupAndRevert(t *testing.T) {
+	t.Parallel()
+
+	const (
+		sol  = "us.openai.gpt-6.1-sol"
+		luna = "us.openai.gpt-6-luna"
+	)
+
+	tests := []struct {
+		name string
+		// seed is the config.toml content before the first setup.
+		seed map[string]any
+		// first and second are the setups to run; second is skipped when nil.
+		first  llmgateway.ApplyConfig
+		second *llmgateway.ApplyConfig
+		// edit simulates the user changing config.toml before revert.
+		edit func(map[string]any)
+		// wantAfterSecond is the whole config after the second setup, without
+		// ToolHive's provider table.
+		wantAfterSecond map[string]any
+		// wantAfterRevert is the whole config expected after revert.
+		wantAfterRevert map[string]any
+	}{
+		{
+			name:  "revert removes every Bedrock key, even after the user changed them",
+			first: codexBedrockApplyCfg(sol, 400000),
+			edit: func(c map[string]any) {
+				c[codexModelKey] = luna
+				c[codexWebSearchKey] = "cached"
+				c[codexContextWindowKey] = int64(272000)
+				c[codexMemoriesKey] = map[string]any{codexConsolidationModelKey: "gpt-5.6-terra"}
+			},
+			wantAfterRevert: map[string]any{},
+		},
+		{
+			name: "revert keeps unrelated user keys, including other memories settings",
+			seed: map[string]any{
+				"approval_policy": "on-request",
+				codexMemoriesKey:  map[string]any{"generate_memories": true},
+			},
+			first: codexBedrockApplyCfg(sol, 0),
+			wantAfterRevert: map[string]any{
+				"approval_policy": "on-request",
+				codexMemoriesKey:  map[string]any{"generate_memories": true},
+			},
+		},
+		{
+			name:   "re-setup with a new model replaces the old one and drops its stale context window",
+			first:  codexBedrockApplyCfg(sol, 400000),
+			second: new(codexBedrockApplyCfg(luna, 0)),
+			wantAfterSecond: map[string]any{
+				"model_provider": codexProviderID, codexModelKey: luna, codexWebSearchKey: "disabled",
+				codexMemoriesKey: map[string]any{
+					codexConsolidationModelKey: "us.openai.gpt-6.1-terra",
+					codexExtractModelKey:       "us.openai.gpt-6-luna",
+				},
+			},
+			wantAfterRevert: map[string]any{},
+		},
+		{
+			name:   "re-setup without Bedrock removes every Bedrock key, including the memory models",
+			seed:   map[string]any{codexModelKey: "gpt-5.5"},
+			first:  codexBedrockApplyCfg(sol, 400000),
+			second: new(codexApplyCfg()),
+			wantAfterSecond: map[string]any{
+				"model_provider": codexProviderID,
+			},
+			wantAfterRevert: map[string]any{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cm, configPath := newCodexManager(t)
+			if tt.seed != nil {
+				require.NoError(t, os.MkdirAll(filepath.Dir(configPath), 0o700))
+				require.NoError(t, writeTOMLConfig(configPath, tt.seed))
+			}
+
+			path, err := cm.ConfigureLLMGateway(ClientApp(Codex), tt.first)
+			require.NoError(t, err)
+			if tt.second != nil {
+				_, err = cm.ConfigureLLMGateway(ClientApp(Codex), *tt.second)
+				require.NoError(t, err)
+				config, err := readTOMLConfig(configPath)
+				require.NoError(t, err)
+				delete(config, "model_providers")
+				assert.Equal(t, tt.wantAfterSecond, config)
+			}
+			if tt.edit != nil {
+				config, err := readTOMLConfig(configPath)
+				require.NoError(t, err)
+				tt.edit(config)
+				require.NoError(t, writeTOMLConfig(configPath, config))
+			}
+
+			require.NoError(t, cm.RevertLLMGateway(ClientApp(Codex), path))
+
+			config, err := readTOMLConfig(configPath)
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantAfterRevert, config)
+		})
+	}
+}

@@ -84,6 +84,136 @@ func TestExchangeGrantLive(t *testing.T) {
 	}
 }
 
+// grantMapStore is an ExchangeGrantStorage that serves grants from a map. A
+// signature in errs fails with that error; one in neither map is not found.
+// Only GetExchangeGrant is implemented.
+type grantMapStore struct {
+	ExchangeGrantStorage
+	grants map[string]*ExchangeGrant
+	errs   map[string]error
+}
+
+func (s grantMapStore) GetExchangeGrant(_ context.Context, signature string) (*ExchangeGrant, error) {
+	if err := s.errs[signature]; err != nil {
+		return nil, err
+	}
+	g, ok := s.grants[signature]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	return g, nil
+}
+
+func TestLiveExchangeGrant(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 10, 24, 12, 0, 0, 0, time.UTC)
+	future := now.Add(time.Hour)
+	past := now.Add(-time.Hour)
+	errStore := errors.New("store down")
+
+	child := func(expiresAt, revokedAt time.Time) *ExchangeGrant {
+		return &ExchangeGrant{Signature: "child", ParentSignature: "parent", ExpiresAt: expiresAt, RevokedAt: revokedAt}
+	}
+	parent := func(expiresAt, revokedAt time.Time) *ExchangeGrant {
+		return &ExchangeGrant{Signature: "parent", ExpiresAt: expiresAt, RevokedAt: revokedAt}
+	}
+
+	tests := []struct {
+		name      string
+		grants    map[string]*ExchangeGrant
+		errs      map[string]error
+		wantErr   error
+		wantGrant bool
+	}{
+		{
+			name:      "child and parent live",
+			grants:    map[string]*ExchangeGrant{"child": child(future, time.Time{}), "parent": parent(future, time.Time{})},
+			wantGrant: true,
+		},
+		{
+			name:      "no parent",
+			grants:    map[string]*ExchangeGrant{"child": {Signature: "child", ExpiresAt: future}},
+			wantGrant: true,
+		},
+		{
+			name:      "child expired",
+			grants:    map[string]*ExchangeGrant{"child": child(past, time.Time{}), "parent": parent(future, time.Time{})},
+			wantErr:   ErrExpired,
+			wantGrant: true,
+		},
+		{
+			name:      "child revoked",
+			grants:    map[string]*ExchangeGrant{"child": child(future, past), "parent": parent(future, time.Time{})},
+			wantErr:   ErrRevoked,
+			wantGrant: true,
+		},
+		{
+			name:      "child revoked and expired reports expired",
+			grants:    map[string]*ExchangeGrant{"child": child(past, past), "parent": parent(future, time.Time{})},
+			wantErr:   ErrExpired,
+			wantGrant: true,
+		},
+		{
+			name:      "parent missing",
+			grants:    map[string]*ExchangeGrant{"child": child(future, time.Time{})},
+			wantErr:   ErrParentNotLive,
+			wantGrant: true,
+		},
+		{
+			name:      "parent revoked",
+			grants:    map[string]*ExchangeGrant{"child": child(future, time.Time{}), "parent": parent(future, past)},
+			wantErr:   ErrParentNotLive,
+			wantGrant: true,
+		},
+		{
+			name:      "parent expired",
+			grants:    map[string]*ExchangeGrant{"child": child(future, time.Time{}), "parent": parent(past, time.Time{})},
+			wantErr:   ErrParentNotLive,
+			wantGrant: true,
+		},
+		{
+			name:    "child missing",
+			grants:  map[string]*ExchangeGrant{},
+			wantErr: ErrNotFound,
+		},
+		{
+			name:    "child store error passes through",
+			errs:    map[string]error{"child": errStore},
+			wantErr: errStore,
+		},
+		{
+			name:      "parent store error passes through",
+			grants:    map[string]*ExchangeGrant{"child": child(future, time.Time{})},
+			errs:      map[string]error{"parent": errStore},
+			wantErr:   errStore,
+			wantGrant: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := LiveExchangeGrant(t.Context(), grantMapStore{grants: tt.grants, errs: tt.errs}, "child", now)
+			if tt.wantErr == nil {
+				require.NoError(t, err)
+			} else {
+				require.ErrorIs(t, err, tt.wantErr)
+				if !errors.Is(tt.wantErr, ErrParentNotLive) {
+					assert.NotErrorIs(t, err, ErrParentNotLive)
+				}
+			}
+			if tt.wantGrant {
+				require.NotNil(t, got)
+				assert.Equal(t, "child", got.Signature)
+			} else {
+				assert.Nil(t, got)
+			}
+		})
+	}
+}
+
 func TestNotFoundRFC6749Error(t *testing.T) {
 	t.Parallel()
 

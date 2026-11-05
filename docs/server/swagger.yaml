@@ -278,7 +278,9 @@ components:
         refresh_token_max_lifetime:
           description: |-
             RefreshTokenMaxLifetime caps the lifetime of grants that can be exchanged
-            for child refresh tokens. Empty refuses those grants.
+            for child refresh tokens. Empty refuses those grants. Setting it also needs
+            id_jag_max_lifetime, because a child allows ID-JAGs and is capped by that
+            value; validation rejects refresh_token_max_lifetime without it.
           type: string
       type: object
     authserver.DelegateClientRunConfig:

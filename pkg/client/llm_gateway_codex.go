@@ -27,6 +27,26 @@ import (
 // for Claude Desktop's _meta.json entry.
 const codexProviderID = "toolhive-gateway"
 
+// The config.toml keys a Bedrock setup writes. Bedrock's OpenAI-compatible API
+// ends the stream with an error when a request carries Codex's hosted
+// web_search tool, so web_search must be "disabled" (the [tools] web_search
+// toggle does not stop Codex sending it). The memory models are the background
+// tiers Codex otherwise defaults to OpenAI names for (gpt-5.6-terra and
+// gpt-5.6-luna), which a Bedrock-only gateway does not serve.
+//
+// ToolHive treats these keys as its own, the way it treats Claude Code's
+// Bedrock env keys (ClearWhenEmpty): setup writes them in Bedrock mode and
+// removes them otherwise, and revert removes them whatever they hold.
+const (
+	codexModelKey              = "model"
+	codexWebSearchKey          = "web_search"
+	codexContextWindowKey      = "model_context_window"
+	codexMemoriesKey           = "memories"
+	codexConsolidationModelKey = "consolidation_model"
+	codexExtractModelKey       = "extract_model"
+	codexWebSearchDisabled     = "disabled"
+)
+
 // codexBaseURL returns gatewayURL with a "/v1" suffix, avoiding a double
 // "/v1/v1" if the configured gateway URL already ends in one (e.g. a gateway
 // mounted behind its own "/v1" path prefix).
@@ -60,17 +80,16 @@ func (cm *ClientManager) configureCodexAuth(appCfg *clientAppConfig, cfg llmgate
 			return err
 		}
 
+		if err := applyCodexBedrockKeys(config, cfg, path); err != nil {
+			return err
+		}
+
 		config["model_provider"] = codexProviderID
 
-		// Refuse to overwrite a pre-existing model_providers that isn't a table
-		// (malformed file, or a future Codex schema): clobbering it would silently
-		// destroy the user's config. The revert path makes the same ok check.
-		providers, ok := config["model_providers"].(map[string]any)
-		if existing, present := config["model_providers"]; present && !ok {
-			return fmt.Errorf("existing model_providers in %s is not a table (%T); refusing to overwrite", path, existing)
-		}
-		if providers == nil {
-			providers = map[string]any{}
+		// The revert path makes the same table check before touching it.
+		providers, err := existingTOMLTable(config, "model_providers", path)
+		if err != nil {
+			return err
 		}
 		providers[codexProviderID] = map[string]any{
 			"name": "ToolHive Gateway",
@@ -103,13 +122,15 @@ func (cm *ClientManager) configureCodexAuth(appCfg *clientAppConfig, cfg llmgate
 // model_providers.<id> table (leaving any other providers untouched) and
 // clears model_provider only if it still points at ToolHive's entry — a value
 // changed since setup (by the user or another tool) is left alone, mirroring
-// revertCredentialHelper's appliedId check for Claude Desktop. A missing file
-// is treated as already-reverted.
+// revertCredentialHelper's appliedId check for Claude Desktop. It also removes
+// the Bedrock keys (model, web_search, model_context_window and the memory
+// models) whatever they hold, the same as Claude Code's Bedrock env keys. A
+// missing file is treated as already-reverted.
 //
-// Revert removes model_provider rather than restoring whatever it was before
-// setup: configureCodexAuth does not stash the prior selection, so a user who
-// had e.g. model_provider = "openai" before setup is left with none after
-// revert (Codex then falls back to its own default).
+// Revert removes these keys rather than restoring whatever they were before
+// setup: configureCodexAuth does not stash the prior values, so a user who had
+// e.g. model_provider = "openai" or their own model before setup is left with
+// none after revert (Codex then falls back to its own default).
 func (*ClientManager) revertCodexAuth(_ *clientAppConfig, configPath string) error {
 	if configPath == "" || !fileExistsAt(configPath) {
 		return nil
@@ -121,13 +142,11 @@ func (*ClientManager) revertCodexAuth(_ *clientAppConfig, configPath string) err
 			return err
 		}
 
+		clearCodexBedrockKeys(config)
+
 		if providers, ok := config["model_providers"].(map[string]any); ok {
 			delete(providers, codexProviderID)
-			if len(providers) == 0 {
-				delete(config, "model_providers")
-			} else {
-				config["model_providers"] = providers
-			}
+			setOrDeleteTable(config, "model_providers", providers)
 		}
 
 		if provider, ok := config["model_provider"].(string); ok && provider == codexProviderID {
@@ -136,4 +155,79 @@ func (*ClientManager) revertCodexAuth(_ *clientAppConfig, configPath string) err
 
 		return writeTOMLConfig(configPath, config)
 	})
+}
+
+// applyCodexBedrockKeys writes the Bedrock keys into config when cfg is a
+// Bedrock setup, and removes them otherwise, so a re-run that turns Bedrock off
+// leaves no stale model behind. pkg/llm resolves every value; this only writes
+// them. It refuses to overwrite a memories entry that is not a table, as
+// configureCodexAuth does for model_providers.
+func applyCodexBedrockKeys(config map[string]any, cfg llmgateway.ApplyConfig, path string) error {
+	if !cfg.BedrockCompat || cfg.BedrockCodexModel == "" {
+		clearCodexBedrockKeys(config)
+		return nil
+	}
+	memories, err := existingTOMLTable(config, codexMemoriesKey, path)
+	if err != nil {
+		return err
+	}
+
+	config[codexModelKey] = cfg.BedrockCodexModel
+	config[codexWebSearchKey] = codexWebSearchDisabled
+	if cfg.BedrockCodexContextWindow > 0 {
+		config[codexContextWindowKey] = int64(cfg.BedrockCodexContextWindow)
+	} else {
+		delete(config, codexContextWindowKey)
+	}
+	setOrDeleteKey(memories, codexConsolidationModelKey, cfg.BedrockCodexConsolidationModel)
+	setOrDeleteKey(memories, codexExtractModelKey, cfg.BedrockCodexExtractModel)
+	setOrDeleteTable(config, codexMemoriesKey, memories)
+	return nil
+}
+
+// clearCodexBedrockKeys removes every Bedrock key from config, dropping the
+// memories table only when nothing else is left in it.
+func clearCodexBedrockKeys(config map[string]any) {
+	delete(config, codexModelKey)
+	delete(config, codexWebSearchKey)
+	delete(config, codexContextWindowKey)
+	if memories, ok := config[codexMemoriesKey].(map[string]any); ok {
+		delete(memories, codexConsolidationModelKey)
+		delete(memories, codexExtractModelKey)
+		setOrDeleteTable(config, codexMemoriesKey, memories)
+	}
+}
+
+// existingTOMLTable returns the table stored under key in config, or a new
+// empty one when key is absent. It refuses an entry that is not a table
+// (a malformed file, or a future Codex schema), since writing a table over it
+// would silently destroy the user's config.
+func existingTOMLTable(config map[string]any, key, path string) (map[string]any, error) {
+	existing, present := config[key]
+	if !present {
+		return map[string]any{}, nil
+	}
+	table, ok := existing.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("existing %s in %s is not a table (%T); refusing to overwrite", key, path, existing)
+	}
+	return table, nil
+}
+
+// setOrDeleteKey sets table[key] to value, or removes the key when value is empty.
+func setOrDeleteKey(table map[string]any, key, value string) {
+	if value == "" {
+		delete(table, key)
+		return
+	}
+	table[key] = value
+}
+
+// setOrDeleteTable stores table under key, or removes the key when table is empty.
+func setOrDeleteTable(config map[string]any, key string, table map[string]any) {
+	if len(table) == 0 {
+		delete(config, key)
+		return
+	}
+	config[key] = table
 }

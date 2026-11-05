@@ -275,7 +275,7 @@ func TestValidateChildEntry(t *testing.T) {
 	t.Parallel()
 	now := exchangeGrantNow
 
-	parentUntil := func(d time.Duration) *storage.ExchangeGrant {
+	sourceUntil := func(d time.Duration) *storage.ExchangeGrant {
 		return &storage.ExchangeGrant{
 			IssuableTokenTypes: []string{oauthproto.TokenTypeRefreshToken},
 			ExpiresAt:          exchangeGrantNow.Add(d),
@@ -286,7 +286,7 @@ func TestValidateChildEntry(t *testing.T) {
 		name    string
 		now     time.Time
 		raw     string
-		parent  *storage.ExchangeGrant
+		source  *storage.ExchangeGrant
 		policy  ConfiguredClientPolicy
 		wantErr string
 		wantExp time.Time
@@ -294,126 +294,126 @@ func TestValidateChildEntry(t *testing.T) {
 		{
 			name:    "absent expires_at gets own-type cap",
 			raw:     entryJSON(oauthproto.TokenTypeIDJAG, ""),
-			parent:  parentUntil(testRefreshCap),
+			source:  sourceUntil(testRefreshCap),
 			policy:  exchangeGrantPolicy(),
 			wantExp: now.Add(testIDJAGCap),
 		},
 		{
-			name:    "absent expires_at gets parent remaining when sooner",
+			name:    "absent expires_at gets source remaining when sooner",
 			raw:     entryJSON(oauthproto.TokenTypeIDJAG, ""),
-			parent:  parentUntil(time.Hour),
+			source:  sourceUntil(time.Hour),
 			policy:  exchangeGrantPolicy(),
 			wantExp: now.Add(time.Hour),
 		},
 		{
-			name:    "requested above parent is capped to parent",
+			name:    "requested above source is capped to source",
 			raw:     entryJSON(oauthproto.TokenTypeIDJAG, secs(now.Add(10*time.Hour))),
-			parent:  parentUntil(time.Hour),
+			source:  sourceUntil(time.Hour),
 			policy:  exchangeGrantPolicy(),
 			wantExp: now.Add(time.Hour),
 		},
 		{
 			name:    "requested above own cap is capped to own cap",
 			raw:     entryJSON(oauthproto.TokenTypeIDJAG, secs(now.Add(testIDJAGCap+time.Hour))),
-			parent:  parentUntil(testRefreshCap),
+			source:  sourceUntil(testRefreshCap),
 			policy:  exchangeGrantPolicy(),
 			wantExp: now.Add(testIDJAGCap),
 		},
 		{
 			name:    "requested below both kept",
 			raw:     entryJSON(oauthproto.TokenTypeIDJAG, secs(now.Add(time.Minute))),
-			parent:  parentUntil(time.Hour),
+			source:  sourceUntil(time.Hour),
 			policy:  exchangeGrantPolicy(),
 			wantExp: now.Add(time.Minute),
 		},
 		{
-			name:    "exactly the parent is accepted uncapped",
+			name:    "exactly the source is accepted uncapped",
 			raw:     entryJSON(oauthproto.TokenTypeIDJAG, secs(now.Add(time.Hour))),
-			parent:  parentUntil(time.Hour),
+			source:  sourceUntil(time.Hour),
 			policy:  exchangeGrantPolicy(),
 			wantExp: now.Add(time.Hour),
 		},
 		{
-			name:    "one second over parent is capped",
+			name:    "one second over source is capped",
 			raw:     entryJSON(oauthproto.TokenTypeIDJAG, secs(now.Add(time.Hour+time.Second))),
-			parent:  parentUntil(time.Hour),
+			source:  sourceUntil(time.Hour),
 			policy:  exchangeGrantPolicy(),
 			wantExp: now.Add(time.Hour),
 		},
 		{
 			name:    "child lists refresh_token",
 			raw:     entryJSON(oauthproto.TokenTypeRefreshToken, ""),
-			parent:  parentUntil(testRefreshCap),
+			source:  sourceUntil(testRefreshCap),
 			policy:  exchangeGrantPolicy(),
 			wantErr: reasonTokenTypeNotPermitted,
 		},
 		{
 			name:    "child type not configured",
 			raw:     entryJSON(oauthproto.TokenTypeIDJAG, ""),
-			parent:  parentUntil(testRefreshCap),
+			source:  sourceUntil(testRefreshCap),
 			policy:  ConfiguredClientPolicy{ExchangeRefreshTokens: map[string]time.Duration{oauthproto.TokenTypeRefreshToken: testRefreshCap}},
 			wantErr: reasonTokenTypeNotPermitted,
 		},
 		{
 			name:    "expires_at in the past",
 			raw:     entryJSON(oauthproto.TokenTypeIDJAG, secs(now.Add(-time.Second))),
-			parent:  parentUntil(time.Hour),
+			source:  sourceUntil(time.Hour),
 			policy:  exchangeGrantPolicy(),
 			wantErr: reasonExpiresAt,
 		},
 		{
 			name:    "expires_at equal to now",
 			raw:     entryJSON(oauthproto.TokenTypeIDJAG, secs(now)),
-			parent:  parentUntil(time.Hour),
+			source:  sourceUntil(time.Hour),
 			policy:  exchangeGrantPolicy(),
 			wantErr: reasonExpiresAt,
 		},
 		{
-			name:    "parent ends in under one second",
+			name:    "source expires exactly at own cap is accepted",
 			raw:     entryJSON(oauthproto.TokenTypeIDJAG, ""),
-			parent:  parentUntil(900 * time.Millisecond),
-			policy:  exchangeGrantPolicy(),
-			wantErr: reasonParentExpired,
-		},
-		{
-			name:    "parent expires exactly now",
-			raw:     entryJSON(oauthproto.TokenTypeIDJAG, ""),
-			parent:  parentUntil(0),
-			policy:  exchangeGrantPolicy(),
-			wantErr: reasonParentExpired,
-		},
-		{
-			name:    "parent expires exactly at own cap is accepted",
-			raw:     entryJSON(oauthproto.TokenTypeIDJAG, ""),
-			parent:  parentUntil(testIDJAGCap),
+			source:  sourceUntil(testIDJAGCap),
 			policy:  exchangeGrantPolicy(),
 			wantExp: now.Add(testIDJAGCap),
 		},
 		{
+			name:    "source ends in under one second",
+			raw:     entryJSON(oauthproto.TokenTypeIDJAG, ""),
+			source:  sourceUntil(900 * time.Millisecond),
+			policy:  exchangeGrantPolicy(),
+			wantErr: reasonExpiresAt,
+		},
+		{
+			name:    "source expires exactly now",
+			raw:     entryJSON(oauthproto.TokenTypeIDJAG, ""),
+			source:  sourceUntil(0),
+			policy:  exchangeGrantPolicy(),
+			wantErr: reasonExpiresAt,
+		},
+		{
 			name:    "max int64 is capped to own cap, not wrapped",
 			raw:     entryJSON(oauthproto.TokenTypeIDJAG, fmt.Sprint(math.MaxInt64)),
-			parent:  parentUntil(testRefreshCap),
+			source:  sourceUntil(testRefreshCap),
 			policy:  exchangeGrantPolicy(),
 			wantExp: now.Add(testIDJAGCap),
 		},
 		{
 			name:    "min int64 refused",
 			raw:     entryJSON(oauthproto.TokenTypeIDJAG, fmt.Sprint(math.MinInt64)),
-			parent:  parentUntil(testRefreshCap),
+			source:  sourceUntil(testRefreshCap),
 			policy:  exchangeGrantPolicy(),
 			wantErr: reasonExpiresAt,
 		},
 		{
 			name:    "cap under one second leaves no lifetime",
 			raw:     entryJSON(oauthproto.TokenTypeIDJAG, ""),
-			parent:  parentUntil(time.Hour),
+			source:  sourceUntil(time.Hour),
 			policy:  subSecondCapPolicy(),
 			wantErr: reasonExpiresAt,
 		},
 		{
 			name:    "malformed: locations member is refused",
 			raw:     locationsMemberEntry,
-			parent:  parentUntil(time.Hour),
+			source:  sourceUntil(time.Hour),
 			policy:  exchangeGrantPolicy(),
 			wantErr: reasonMalformedEntry,
 		},
@@ -425,7 +425,7 @@ func TestValidateChildEntry(t *testing.T) {
 			if runNow.IsZero() {
 				runNow = now
 			}
-			granted, exp, err := validateChildEntry(json.RawMessage(tc.raw), tc.parent, tc.policy, runNow)
+			granted, exp, err := validateChildEntry(json.RawMessage(tc.raw), tc.source, tc.policy, runNow)
 			if tc.wantErr != "" {
 				requireReason(t, err, tc.wantErr)
 				assert.Nil(t, granted)

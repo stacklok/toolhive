@@ -1303,3 +1303,86 @@ func TestValidatePatchErrors(t *testing.T) {
 	err := ValidatePatch(invalidOps)
 	require.Error(t, err)
 }
+
+// never consulted, so failure_policy: ignore must not let the request through.
+// The request goes through ParsingMiddleware, as in the configured chain.
+func TestMutatingMiddleware_LocalErrorDeniesUnderIgnorePolicy(t *testing.T) {
+	t.Parallel()
+
+	var calls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		w.Header().Set("Content-Type", "application/json")
+		assert.NoError(t, json.NewEncoder(w).Encode(webhook.MutatingResponse{Response: webhook.Response{Version: webhook.APIVersion, Allowed: true}}))
+	}))
+	defer server.Close()
+
+	cfg := webhook.Config{
+		Name:          "local-error",
+		URL:           server.URL,
+		Timeout:       webhook.DefaultTimeout,
+		FailurePolicy: webhook.FailurePolicyIgnore,
+		TLSConfig:     &webhook.TLSConfig{InsecureSkipVerify: true},
+		HMACSecretRef: t.TempDir() + "/missing",
+	}
+	client, err := webhook.NewClient(cfg, webhook.TypeMutating, []byte("startup-secret"))
+	require.NoError(t, err)
+
+	var reachedBackend bool
+	next := http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) { reachedBackend = true })
+	handler := mcp.ParsingMiddleware(
+		createMutatingHandler([]clientExecutor{{client: client, config: cfg}}, "srv", "streamable-http")(next))
+
+	req := httptest.NewRequest(http.MethodPost, "/mcp",
+		bytes.NewReader([]byte(`{"jsonrpc":"2.0","method":"tools/call","id":1,"params":{"name":"x"}}`)))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	assert.Equal(t, http.StatusInternalServerError, rr.Code)
+	assert.False(t, reachedBackend)
+	assert.Zero(t, calls)
+}
+
+// GHSA-wj8g-gmv2-mpmv regression: a BOM-prefixed request must still reach the
+// webhook. ParsingMiddleware strips the BOM before the webhook builds its
+// payload, so the test goes through it rather than injecting a parsed request.
+func TestMutatingMiddleware_LeadingBOMReachesWebhookThroughParser(t *testing.T) {
+	t.Parallel()
+
+	var calls int
+	var received webhook.Request
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		assert.NoError(t, json.NewDecoder(r.Body).Decode(&received))
+		w.Header().Set("Content-Type", "application/json")
+		assert.NoError(t, json.NewEncoder(w).Encode(webhook.MutatingResponse{Response: webhook.Response{Version: webhook.APIVersion, Allowed: false}}))
+	}))
+	defer server.Close()
+
+	cfg := webhook.Config{
+		Name:          "bom",
+		URL:           server.URL,
+		Timeout:       webhook.DefaultTimeout,
+		FailurePolicy: webhook.FailurePolicyIgnore,
+		TLSConfig:     &webhook.TLSConfig{InsecureSkipVerify: true},
+	}
+	client, err := webhook.NewClient(cfg, webhook.TypeMutating, nil)
+	require.NoError(t, err)
+
+	var reachedBackend bool
+	next := http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) { reachedBackend = true })
+	handler := mcp.ParsingMiddleware(
+		createMutatingHandler([]clientExecutor{{client: client, config: cfg}}, "srv", "streamable-http")(next))
+
+	const jsonBody = `{"jsonrpc":"2.0","method":"tools/call","id":1,"params":{"name":"x"}}`
+	req := httptest.NewRequest(http.MethodPost, "/mcp", bytes.NewReader(append(bytes.Clone(mcp.UTF8BOM), jsonBody...)))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	assert.Equal(t, 1, calls, "the webhook must be consulted")
+	assert.JSONEq(t, jsonBody, string(received.MCPRequest))
+	assert.Equal(t, http.StatusForbidden, rr.Code)
+	assert.False(t, reachedBackend)
+}

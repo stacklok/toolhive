@@ -1254,6 +1254,37 @@ func TestValidateAuthServerIntegration(t *testing.T) {
 			errMsg:  "at least one upstream",
 		},
 		{
+			name: "zero upstreams with canonical token exchange and no delegate clients",
+			cfg: &Config{
+				OutgoingAuth: &OutgoingAuthConfig{Source: "inline"},
+			},
+			rc: &authserver.RunConfig{
+				Issuer: "http://localhost:9090",
+				InboundGrants: &authserver.InboundGrantsRunConfig{
+					TokenExchange: &authserver.TokenExchangeInboundGrantRunConfig{},
+				},
+			},
+			wantErr: true,
+			errMsg:  "at least one upstream",
+		},
+		{
+			name: "zero upstreams with legacy and canonical delegate clients",
+			cfg: &Config{
+				OutgoingAuth: &OutgoingAuthConfig{Source: "inline"},
+			},
+			rc: &authserver.RunConfig{
+				Issuer:          "http://localhost:9090",
+				DelegateClients: []authserver.DelegateClientRunConfig{{ClientID: "legacy-client"}},
+				InboundGrants: &authserver.InboundGrantsRunConfig{
+					TokenExchange: &authserver.TokenExchangeInboundGrantRunConfig{
+						DelegateClients: []authserver.DelegateClientRunConfig{{ClientID: "canonical-client"}},
+					},
+				},
+			},
+			wantErr: true,
+			errMsg:  "inbound grants are invalid",
+		},
+		{
 			name: "zero upstreams with delegate client",
 			cfg: &Config{
 				IncomingAuth: &IncomingAuthConfig{Type: IncomingAuthTypeOIDC, OIDC: &OIDCConfig{
@@ -1265,6 +1296,50 @@ func TestValidateAuthServerIntegration(t *testing.T) {
 				Issuer:           "http://localhost:9090",
 				AllowedAudiences: []string{"https://my-vmcp"},
 				DelegateClients:  []authserver.DelegateClientRunConfig{{ClientID: "delegate-client"}},
+			},
+			wantErr: false,
+		},
+		{
+			name: "zero upstreams with canonical delegate client",
+			cfg: &Config{
+				IncomingAuth: &IncomingAuthConfig{Type: IncomingAuthTypeOIDC, OIDC: &OIDCConfig{
+					Issuer: "http://localhost:9090", Audience: "https://my-vmcp",
+				}},
+				OutgoingAuth: &OutgoingAuthConfig{Source: "inline"},
+			},
+			rc: &authserver.RunConfig{
+				Issuer:           "http://localhost:9090",
+				AllowedAudiences: []string{"https://my-vmcp"},
+				InboundGrants: &authserver.InboundGrantsRunConfig{
+					TokenExchange: &authserver.TokenExchangeInboundGrantRunConfig{
+						DelegateClients: []authserver.DelegateClientRunConfig{{ClientID: "delegate-client"}},
+					},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "zero upstreams with canonical JWT bearer policy",
+			cfg: &Config{
+				IncomingAuth: &IncomingAuthConfig{Type: IncomingAuthTypeOIDC, OIDC: &OIDCConfig{
+					Issuer: "http://localhost:9090", Audience: "https://my-vmcp",
+				}},
+				OutgoingAuth: &OutgoingAuthConfig{Source: "inline"},
+			},
+			rc: &authserver.RunConfig{
+				Issuer:           "http://localhost:9090",
+				AllowedAudiences: []string{"https://my-vmcp"},
+				TrustedIssuers: []tokenexchange.TrustedIssuer{{
+					Name:      "idp",
+					IssuerURL: "https://issuer.example.com",
+				}},
+				InboundGrants: &authserver.InboundGrantsRunConfig{
+					JWTBearer: &authserver.JWTBearerInboundGrantRunConfig{
+						IssuerPolicies: []authserver.JWTBearerIssuerPolicyRunConfig{{
+							IssuerRef: "idp", MaxAssertionAge: "5m",
+						}},
+					},
+				},
 			},
 			wantErr: false,
 		},

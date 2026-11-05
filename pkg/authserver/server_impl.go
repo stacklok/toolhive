@@ -14,7 +14,6 @@ import (
 	"slices"
 	"time"
 
-	josev3 "github.com/go-jose/go-jose/v3"
 	"github.com/ory/fosite"
 	"github.com/ory/fosite/compose"
 	"github.com/spiffe/go-spiffe/v2/bundle/jwtbundle"
@@ -22,6 +21,7 @@ import (
 	"golang.org/x/time/rate"
 
 	"github.com/stacklok/toolhive/pkg/authserver/internal/consentpolicy"
+	"github.com/stacklok/toolhive/pkg/authserver/internal/fositejose"
 	oauthserver "github.com/stacklok/toolhive/pkg/authserver/server"
 	"github.com/stacklok/toolhive/pkg/authserver/server/deviceflow"
 	"github.com/stacklok/toolhive/pkg/authserver/server/handlers"
@@ -31,6 +31,7 @@ import (
 	spiffeauth "github.com/stacklok/toolhive/pkg/authserver/spiffe"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
+	"github.com/stacklok/toolhive/pkg/bodylimit/httplimit"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
@@ -327,8 +328,8 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage) (_ *server
 		return nil, fmt.Errorf("failed to create handler: %w", err)
 	}
 
-	// Create HTTP handler serving all endpoints
-	router := handlerInstance.Routes()
+	// Cap every endpoint for direct embedders as well as runner-hosted servers.
+	router := handlerInstance.Routes(httplimit.Middleware(handlers.MaxDCRBodySize))
 
 	slog.Debug("oauth authorization server initialized",
 		"issuer", cfg.Issuer,
@@ -1080,13 +1081,7 @@ func createProvider(
 	// Fosite v0.49.0 depends on go-jose/v3, while we use v4 internally.
 	// This ensures the "kid" (key ID) is included in JWT headers so resource
 	// servers can look up the correct public key from our JWKS endpoint.
-	signingKeyV4 := authServerConfig.SigningKey
-	signingKeyV3 := &josev3.JSONWebKey{
-		Key:       signingKeyV4.Key,
-		KeyID:     signingKeyV4.KeyID,
-		Algorithm: signingKeyV4.Algorithm,
-		Use:       signingKeyV4.Use,
-	}
+	signingKeyV3 := fositejose.ToFositeKey(authServerConfig.SigningKey)
 
 	// Create a composed token strategy:
 	// - JWT strategy (outer): signs access tokens as JWTs using the asymmetric signing key

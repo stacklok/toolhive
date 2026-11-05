@@ -51,25 +51,24 @@ var ErrContainerExitedRestartNeeded = errors.New("container exited, restart need
 // probeProtocolVersion is the MCP protocol revision the readiness probe advertises
 // in the JSON-RPC params.protocolVersion of its initialize handshake.
 //
-// It is deliberately pinned to 2025-11-25 — the current stable revision and the
-// newest one that still defines the `initialize` method — rather than tracking
-// mcp.LATEST_PROTOCOL_VERSION. The upcoming 2026-07-28 revision (draft; subject to
-// change until it ships) removes `initialize` entirely (replaced by server/discover
-// + per-request _meta, SEP-2575), so a probe that sent method:"initialize" with a
-// 2026-07-28 version string would be internally inconsistent. When ToolHive adopts
-// 2026-07-28 (issue #5754) the probe must switch to server/discover — which, like
-// all 2026-07-28 Streamable HTTP POSTs, carries the required Mcp-Method/Mcp-Name
-// headers — and fall back to this initialize path for older backends. Pinning here
-// keeps the probe's method and version consistent regardless of what the SDK later
-// declares "latest".
+// It is deliberately pinned to 2025-11-25 rather than tracking
+// mcp.LATEST_PROTOCOL_VERSION, because this probe uses initialize. The final
+// 2026-07-28 revision removes initialize (replaced by server/discover and
+// per-request _meta, SEP-2575), so sending initialize with a 2026-07-28 version
+// would be internally inconsistent. This readiness probe does not yet support
+// Modern requests; that would require a server/discover probe with the required
+// Mcp-Method/Mcp-Name headers and a fallback to initialize for older backends.
+// Pinning here keeps the probe's method and version consistent regardless of
+// what the SDK later declares "latest".
 //
 // The value is sent only in the request body, NOT as an MCP-Protocol-Version
-// header: the spec scopes that header to requests made AFTER initialization
-// (carrying the negotiated version), and requires a server to reject an unsupported
-// header value with HTTP 400. Sending it on the initialize request itself would let
-// a backend that only supports an older revision 400 the probe — a false
-// "not-ready" — whereas body-based version negotiation degrades gracefully (the
-// server answers HTTP 200 with its own supported version).
+// header: for this 2025-11-25 initialize handshake, the spec scopes that header
+// to requests made AFTER initialization (carrying the negotiated version), and
+// requires a server to reject an unsupported header value with HTTP 400. Sending
+// it on the initialize request itself would let a backend that only supports an
+// older revision 400 the probe — a false "not-ready" — whereas body-based version
+// negotiation degrades gracefully (the server answers HTTP 200 with its own
+// supported version).
 const probeProtocolVersion = "2025-11-25"
 
 // Runner is responsible for running an MCP server with the provided configuration

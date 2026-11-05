@@ -815,6 +815,7 @@ func TestRunConfigValidate(t *testing.T) {
 		{
 			name: "well-formed SPIFFE trust configuration is rejected as not yet enforced",
 			config: RunConfig{
+				TLSListener: &TLSListenerRunConfig{CertFile: "cert", KeyFile: "key"},
 				SPIFFETrustDomains: []SPIFFETrustDomainRunConfig{{
 					Name:         "production",
 					TrustDomain:  "example.org",
@@ -1361,7 +1362,8 @@ func TestDelegateClientExchangeRefreshTokensValidate(t *testing.T) {
 			scopesSupported: []string{}},
 		{name: "scopes_supported without a refresh-token scope and no block", block: nil, subjectAudiences: inputs,
 			scopesSupported: []string{"openid"}},
-		{name: "refresh cap only", block: block("", "720h"), subjectAudiences: inputs},
+		{name: "refresh cap only", block: block("", "720h"), subjectAudiences: inputs,
+			wantErr: "refresh_token_max_lifetime requires id_jag_max_lifetime"},
 		{name: "both caps", block: block("1h", "24h"), subjectAudiences: inputs},
 		{name: "absent block", block: nil, subjectAudiences: inputs},
 		{name: "no caps", block: block("", ""), subjectAudiences: inputs,
@@ -2798,6 +2800,51 @@ func TestRunConfigValidateTLSListener(t *testing.T) {
 				return
 			}
 			require.ErrorContains(t, err, tt.wantErrMsg)
+		})
+	}
+}
+
+func TestRunConfigValidateX509RequiresTLSListener(t *testing.T) {
+	t.Parallel()
+
+	association := func(method SPIFFEAuthenticationMethod) *InboundGrantsRunConfig {
+		return &InboundGrantsRunConfig{SPIFFEClientAuth: []SPIFFEClientAuthRunConfig{{
+			Methods: []SPIFFEAuthenticationMethod{method},
+		}}}
+	}
+	const listenerRule = "tls_listener is required"
+
+	tests := []struct {
+		name string
+		cfg  RunConfig
+		// wantListenerRule is whether Validate must fail on the listener rule.
+		// When false, Validate may still fail on an unrelated check.
+		wantListenerRule bool
+	}{
+		{
+			name:             "x509 association without listener",
+			cfg:              RunConfig{InboundGrants: association(SPIFFEAuthenticationMethodX509)},
+			wantListenerRule: true,
+		},
+		{
+			name: "x509 association with listener",
+			cfg: RunConfig{
+				InboundGrants: association(SPIFFEAuthenticationMethodX509),
+				TLSListener:   &TLSListenerRunConfig{CertFile: "cert", KeyFile: "key"},
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := tt.cfg.Validate()
+			if tt.wantListenerRule {
+				require.EqualError(t, err, "tls_listener is required when a SPIFFE client association enables spiffe_x509")
+				return
+			}
+			if err != nil {
+				assert.NotContains(t, err.Error(), listenerRule)
+			}
 		})
 	}
 }

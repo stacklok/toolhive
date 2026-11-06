@@ -488,6 +488,10 @@ func TLSListenerEnabled(cfg *mcpv1beta1.EmbeddedAuthServerConfig) bool {
 // It returns false with no error when nothing is referenced, the referenced
 // config is not of type embeddedAuthServer, or it does not exist. It does not
 // validate CA bundles, so an unrelated CA error cannot block the Service.
+//
+// Each reconcile step that needs the answer (the Service builder and drift
+// check, the Deployment builder and drift check) resolves it itself from the
+// cached client. A change between two reads is corrected on the next reconcile.
 func ResolveTLSListenerEnabled(
 	ctx context.Context,
 	c client.Client,

@@ -1998,7 +1998,7 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(
 		if ctrlutil.ContainerPortsDrifted(
 			container.Ports,
 			ctrlutil.ProxyContainerPorts(mcpServer.GetProxyPort(), tlsListener),
-			ctrlutil.ProxyOwnedPortNames(),
+			ctrlutil.ProxyContainerPorts(mcpServer.GetProxyPort(), true),
 		) {
 			return true
 		}

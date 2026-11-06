@@ -1973,7 +1973,7 @@ func (r *VirtualMCPServerReconciler) containerNeedsUpdate(
 	if ctrlutil.ContainerPortsDrifted(
 		container.Ports,
 		ctrlutil.ProxyContainerPorts(vmcpDefaultPort, ctrlutil.TLSListenerEnabled(vmcp.Spec.AuthServerConfig)),
-		ctrlutil.ProxyOwnedPortNames(),
+		ctrlutil.ProxyContainerPorts(vmcpDefaultPort, true),
 	) {
 		return true
 	}

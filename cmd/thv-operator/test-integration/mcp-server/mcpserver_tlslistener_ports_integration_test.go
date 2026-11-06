@@ -84,7 +84,7 @@ var _ = Describe("MCPServer TLS listener ports", Label("k8s", "tlslistener"), fu
 			owned := ctrlutil.ProxyOwnedPortNames()
 			Expect(ctrlutil.ServicePortsDrifted(svc.Spec.Ports, ctrlutil.ProxyServicePorts(8080, tlsListener), owned)).
 				To(BeFalse(), "stored Service ports reported as drift")
-			Expect(ctrlutil.ContainerPortsDrifted(dep.Spec.Template.Spec.Containers[0].Ports, ctrlutil.ProxyContainerPorts(8080, tlsListener), owned)).
+			Expect(ctrlutil.ContainerPortsDrifted(dep.Spec.Template.Spec.Containers[0].Ports, ctrlutil.ProxyContainerPorts(8080, tlsListener), ctrlutil.ProxyContainerPorts(8080, true))).
 				To(BeFalse(), "stored container ports reported as drift")
 		}
 		setTLSListener := func(on bool) {
@@ -184,34 +184,59 @@ var _ = Describe("MCPServer TLS listener ports", Label("k8s", "tlslistener"), fu
 			Eventually(containerPorts, timeout, interval).Should(Equal([]corev1.ContainerPort{httpContainerPort}))
 			expectNoPortDrift(false)
 
-			dep, err := getDeployment()
-			Expect(err).NotTo(HaveOccurred())
 			svc, err := getService()
 			Expect(err).NotTo(HaveOccurred())
-			depRV, svcRV, depGen := dep.ResourceVersion, svc.ResourceVersion, dep.Generation
+			svcRV := svc.ResourceVersion
 
+			// A resourceOverrides annotation on the proxy Deployment bumps the CR
+			// generation and changes nothing the operator renders into the Service
+			// or the ports. Waiting for observedGeneration and for the annotation
+			// on the Deployment proves a reconcile ran and finished before the
+			// quiet window starts. The generation is also stamped on the pod
+			// template, so the Deployment may be rewritten for this change; the
+			// window shows it is not rewritten again afterwards.
+			const marker = "test.toolhive.io/reconcile-marker"
 			Eventually(func() error {
 				server := &mcpv1beta1.MCPServer{}
 				if err := k8sClient.Get(ctx, serverKey, server); err != nil {
 					return err
 				}
 				original := server.DeepCopy()
-				if server.Annotations == nil {
-					server.Annotations = map[string]string{}
+				server.Spec.ResourceOverrides = &mcpv1beta1.ResourceOverrides{
+					ProxyDeployment: &mcpv1beta1.ProxyDeploymentOverrides{
+						ResourceMetadataOverrides: mcpv1beta1.ResourceMetadataOverrides{
+							Annotations: map[string]string{marker: "1"},
+						},
+					},
 				}
-				server.Annotations["test.toolhive.io/poke"] = "1"
 				return k8sClient.Patch(ctx, server, client.MergeFrom(original))
 			}, timeout, interval).Should(Succeed())
+
+			Eventually(func(g Gomega) {
+				server := &mcpv1beta1.MCPServer{}
+				g.Expect(k8sClient.Get(ctx, serverKey, server)).To(Succeed())
+				g.Expect(server.Status.ObservedGeneration).To(Equal(server.Generation))
+				d, err := getDeployment()
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(d.Annotations).To(HaveKeyWithValue(marker, "1"))
+			}, timeout, interval).Should(Succeed())
+
+			dep, err := getDeployment()
+			Expect(err).NotTo(HaveOccurred())
+			depRV, depGen := dep.ResourceVersion, dep.Generation
 
 			Consistently(func(g Gomega) {
 				d, err := getDeployment()
 				g.Expect(err).NotTo(HaveOccurred())
 				s, err := getService()
 				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(d.ResourceVersion).To(Equal(depRV), "Deployment was rewritten")
+				g.Expect(d.ResourceVersion).To(Equal(depRV), "Deployment was rewritten again")
 				g.Expect(d.Generation).To(Equal(depGen))
 				g.Expect(s.ResourceVersion).To(Equal(svcRV), "Service was rewritten")
-			}, 5*time.Second, interval).Should(Succeed())
+				g.Expect(s.Spec.Ports).To(Equal([]corev1.ServicePort{httpServicePort}))
+				g.Expect(d.Spec.Template.Spec.Containers[0].Ports).To(Equal([]corev1.ContainerPort{httpContainerPort}))
+			}, 3*time.Second, interval).Should(Succeed())
+			expectNoPortDrift(false)
 		})
 
 		It("leaves ports added by another writer alone", func() {

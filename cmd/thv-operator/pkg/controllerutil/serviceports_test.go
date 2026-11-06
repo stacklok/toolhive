@@ -76,6 +76,8 @@ func TestContainerPortsDrifted(t *testing.T) {
 	tlsPort := corev1.ContainerPort{Name: "https-auth", ContainerPort: 8443, Protocol: corev1.ProtocolTCP}
 	metrics := corev1.ContainerPort{Name: "metrics", ContainerPort: 9090, Protocol: corev1.ProtocolTCP}
 
+	owned := ProxyContainerPorts(8080, true)
+
 	tests := []struct {
 		name    string
 		current []corev1.ContainerPort
@@ -88,7 +90,9 @@ func TestContainerPortsDrifted(t *testing.T) {
 		{"wrong protocol", []corev1.ContainerPort{{Name: "http", ContainerPort: 8080, Protocol: corev1.ProtocolUDP}}, []corev1.ContainerPort{httpPort}, true},
 		{"extra port before http", []corev1.ContainerPort{metrics, httpPort}, []corev1.ContainerPort{httpPort}, false},
 		{"extra port after http", []corev1.ContainerPort{httpPort, metrics}, []corev1.ContainerPort{httpPort}, false},
-		{"leftover https-auth", []corev1.ContainerPort{httpPort, tlsPort}, []corev1.ContainerPort{httpPort}, true},
+		{"listener off and the operator's own https-auth on 8443/TCP is drift", []corev1.ContainerPort{httpPort, tlsPort}, []corev1.ContainerPort{httpPort}, true},
+		{"listener off and a user https-auth on 9443 is not drift", []corev1.ContainerPort{httpPort, {Name: "https-auth", ContainerPort: 9443, Protocol: corev1.ProtocolTCP}}, []corev1.ContainerPort{httpPort}, false},
+		{"listener off and https-auth on 8443/UDP is not drift", []corev1.ContainerPort{httpPort, {Name: "https-auth", ContainerPort: 8443, Protocol: corev1.ProtocolUDP}}, []corev1.ContainerPort{httpPort}, false},
 		{"missing https-auth", []corev1.ContainerPort{httpPort}, []corev1.ContainerPort{httpPort, tlsPort}, true},
 		{"http renamed but same number and protocol is not drift", []corev1.ContainerPort{{Name: "x", ContainerPort: 8080, Protocol: corev1.ProtocolTCP}}, []corev1.ContainerPort{httpPort}, false},
 		{"https-auth renamed to https on 8443 with the listener on is not drift", []corev1.ContainerPort{httpPort, {Name: "https", ContainerPort: 8443, Protocol: corev1.ProtocolTCP}}, []corev1.ContainerPort{httpPort, tlsPort}, false},
@@ -96,13 +100,13 @@ func TestContainerPortsDrifted(t *testing.T) {
 		{"unnamed port on the wanted number and protocol is not drift", []corev1.ContainerPort{{ContainerPort: 8080, Protocol: corev1.ProtocolTCP}}, []corev1.ContainerPort{httpPort}, false},
 		{"empty protocol vs TCP", []corev1.ContainerPort{{Name: "http", ContainerPort: 8080}}, []corev1.ContainerPort{httpPort}, true},
 		{"TCP and UDP on the same number is not drift", []corev1.ContainerPort{{Name: "http", ContainerPort: 8080, Protocol: corev1.ProtocolUDP}, httpPort}, []corev1.ContainerPort{httpPort}, false},
-		{"stale https-auth is not drift when https-auth is desired and 8443 is served as https", []corev1.ContainerPort{httpPort, {Name: "https", ContainerPort: 8443, Protocol: corev1.ProtocolTCP}, {Name: "https-auth", ContainerPort: 9443, Protocol: corev1.ProtocolTCP}}, []corev1.ContainerPort{httpPort, tlsPort}, false},
+		{"https-auth on 9443 is not drift when 8443 is served as https and https-auth is desired", []corev1.ContainerPort{httpPort, {Name: "https", ContainerPort: 8443, Protocol: corev1.ProtocolTCP}, {Name: "https-auth", ContainerPort: 9443, Protocol: corev1.ProtocolTCP}}, []corev1.ContainerPort{httpPort, tlsPort}, false},
 		{"reordered", []corev1.ContainerPort{tlsPort, metrics, httpPort}, []corev1.ContainerPort{httpPort, tlsPort}, false},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			assert.Equal(t, test.want, ContainerPortsDrifted(test.current, test.desired, testOwnedPorts))
+			assert.Equal(t, test.want, ContainerPortsDrifted(test.current, test.desired, owned))
 		})
 	}
 }

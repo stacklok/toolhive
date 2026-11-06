@@ -24,7 +24,7 @@ const (
 )
 
 // ProxyOwnedPortNames returns the names of the ports the operator owns on the
-// proxy container and Service. The slice is freshly allocated on every call.
+// proxy Service. The slice is freshly allocated on every call.
 func ProxyOwnedPortNames() []string {
 	return []string{ProxyHTTPPortName, AuthServerTLSListenerPortName}
 }
@@ -77,13 +77,18 @@ func ProxyServicePorts(port int32, tlsListener bool) []corev1.ServicePort {
 // because existing Deployments may carry a port renamed by spec.podTemplateSpec
 // (its merge key is containerPort), and a rename must not be reported as drift.
 //
-// A port in current whose name is in owned but is not the name of a desired port
-// is also drift, so a port the operator no longer renders is removed. Other
-// ports and the order of ports are ignored.
-func ContainerPortsDrifted(current, desired []corev1.ContainerPort, owned []string) bool {
-	desiredNames := make(map[string]struct{}, len(desired))
+// owned lists every port the operator can render for the workload. A port in
+// current that equals one of them exactly (same Name, ContainerPort and
+// Protocol) but equals none of the desired ports is a leftover, and is drift.
+// A port that only shares a name with an owned port, such as a user-added
+// https-auth on another number, is not a leftover.
+//
+// Other extra ports and a different order do not by themselves trigger an
+// update. Any update the operator makes replaces the pod template, so extra
+// ports are removed at that point, except ports that a vMCP
+// spec.podTemplateSpec adds, which are applied again on every update.
+func ContainerPortsDrifted(current, desired, owned []corev1.ContainerPort) bool {
 	for _, want := range desired {
-		desiredNames[want.Name] = struct{}{}
 		satisfied := slices.ContainsFunc(current, func(got corev1.ContainerPort) bool {
 			return got.ContainerPort == want.ContainerPort && got.Protocol == want.Protocol
 		})
@@ -92,7 +97,7 @@ func ContainerPortsDrifted(current, desired []corev1.ContainerPort, owned []stri
 		}
 	}
 	for _, port := range current {
-		if _, ok := desiredNames[port.Name]; !ok && slices.Contains(owned, port.Name) {
+		if slices.Contains(owned, port) && !slices.Contains(desired, port) {
 			return true
 		}
 	}
@@ -102,8 +107,9 @@ func ContainerPortsDrifted(current, desired []corev1.ContainerPort, owned []stri
 // ServicePortsDrifted reports whether the operator-managed ports are missing or
 // wrong in current. Services are co-owned with external controllers, so extra
 // ports, a different order, NodePort and an AppProtocol on a port where desired
-// sets none are not drift. A port in current whose name is in owned but is not
-// desired is.
+// sets none do not by themselves trigger an update. A port in current whose
+// name is in owned but is not desired does. Any update the operator makes
+// replaces the whole port list, so extra ports are removed at that point.
 func ServicePortsDrifted(current, desired []corev1.ServicePort, owned []string) bool {
 	currentByName := make(map[string]corev1.ServicePort, len(current))
 	for _, port := range current {

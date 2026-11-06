@@ -4,7 +4,10 @@
 package controllers
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -13,7 +16,9 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
@@ -255,6 +260,11 @@ func TestVirtualMCPServerPodTemplateSpecPortDrift(t *testing.T) {
 			tlsListeners: []bool{true},
 		},
 		{
+			name:         "https-auth on another number with the listener off is not drift",
+			podTemplate:  `{"spec":{"containers":[{"name":"vmcp","ports":[{"containerPort":9443,"name":"https-auth"}]}]}}`,
+			tlsListeners: []bool{false},
+		},
+		{
 			name:         "extra port on 8443 with the listener off is not drift",
 			podTemplate:  `{"spec":{"containers":[{"name":"vmcp","ports":[{"containerPort":8443,"name":"https"}]}]}}`,
 			tlsListeners: []bool{false},
@@ -341,4 +351,102 @@ func expectedServicePorts(httpPort int32, tlsListener bool) []corev1.ServicePort
 		})
 	}
 	return ports
+}
+
+// newClientFailingAuthConfigGet returns a fake client that fails only the Get
+// of an MCPExternalAuthConfig, with an error that is not NotFound.
+func newClientFailingAuthConfigGet(t *testing.T, objs ...client.Object) client.Client {
+	t.Helper()
+	return fake.NewClientBuilder().WithScheme(testutil.NewScheme(t)).WithObjects(objs...).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+				if _, ok := obj.(*mcpv1beta1.MCPExternalAuthConfig); ok {
+					return errors.New("boom")
+				}
+				return c.Get(ctx, key, obj, opts...)
+			},
+		}).Build()
+}
+
+// newClientFailingFirstAuthConfigGet returns a fake client holding objs whose
+// first Get of an MCPExternalAuthConfig fails with an error that is not
+// NotFound. Later Gets succeed, so a caller that ignores the first failure
+// sees a valid auth config instead of failing on its own.
+func newClientFailingFirstAuthConfigGet(t *testing.T, objs ...client.Object) client.Client {
+	t.Helper()
+	var failed atomic.Bool
+	return fake.NewClientBuilder().WithScheme(testutil.NewScheme(t)).WithObjects(objs...).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+				if _, ok := obj.(*mcpv1beta1.MCPExternalAuthConfig); ok && failed.CompareAndSwap(false, true) {
+					return errors.New("boom")
+				}
+				return c.Get(ctx, key, obj, opts...)
+			},
+		}).Build()
+}
+
+func TestMCPServerAuthServerTLSListenerLookupFailure(t *testing.T) {
+	t.Parallel()
+
+	scheme := testutil.NewScheme(t)
+	server := v1beta1test.NewMCPServer("server", "default", v1beta1test.WithExternalAuthConfigRef("auth"))
+	working := newTestMCPServerReconciler(fake.NewClientBuilder().WithScheme(scheme).WithObjects(externalAuthConfigWithTLSListener(false)).Build(), scheme, kubernetes.PlatformKubernetes)
+	failing := newTestMCPServerReconciler(newClientFailingAuthConfigGet(t), scheme, kubernetes.PlatformKubernetes)
+	failingFirst := newTestMCPServerReconciler(
+		newClientFailingFirstAuthConfigGet(t, externalAuthConfigWithTLSListener(false)), scheme, kubernetes.PlatformKubernetes)
+
+	existing, err := working.deploymentForMCPServer(t.Context(), server, "checksum")
+	require.NoError(t, err)
+	require.False(t, working.deploymentNeedsUpdate(t.Context(), existing, server, "checksum"))
+
+	deployment, err := failing.deploymentForMCPServer(t.Context(), server, "checksum")
+	require.ErrorContains(t, err, "failed to resolve auth server TLS listener")
+	assert.Nil(t, deployment)
+	assert.True(t, failingFirst.deploymentNeedsUpdate(t.Context(), existing, server, "checksum"))
+}
+
+func TestMCPRemoteProxyAuthServerTLSListenerLookupFailure(t *testing.T) {
+	t.Parallel()
+
+	scheme := testutil.NewScheme(t)
+	proxy := v1beta1test.NewMCPRemoteProxy("proxy", "default", v1beta1test.WithRemoteProxyExternalAuthConfigRef("auth"))
+	working := &MCPRemoteProxyReconciler{
+		Client:           fake.NewClientBuilder().WithScheme(scheme).WithObjects(externalAuthConfigWithTLSListener(false)).Build(),
+		Scheme:           scheme,
+		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
+	}
+	failing := &MCPRemoteProxyReconciler{
+		Client:           newClientFailingAuthConfigGet(t, proxy),
+		Scheme:           scheme,
+		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
+	}
+	failingFirst := &MCPRemoteProxyReconciler{
+		Client:           newClientFailingFirstAuthConfigGet(t, externalAuthConfigWithTLSListener(false)),
+		Scheme:           scheme,
+		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
+	}
+
+	existing := working.deploymentForMCPRemoteProxy(t.Context(), proxy, "checksum")
+	require.NotNil(t, existing)
+	require.False(t, working.generatedContainerNeedsUpdate(t.Context(), existing, proxy))
+
+	assert.True(t, failingFirst.generatedContainerNeedsUpdate(t.Context(), existing, proxy))
+
+	_, err := failing.ensureService(t.Context(), proxy)
+	require.ErrorContains(t, err, "boom")
+}
+
+func TestMCPRemoteProxyEnsureServiceMissingAuthConfig(t *testing.T) {
+	t.Parallel()
+
+	proxy := v1beta1test.NewMCPRemoteProxy("proxy", "default", v1beta1test.WithRemoteProxyExternalAuthConfigRef("missing"))
+	reconciler, c := newTestMCPRemoteProxyReconciler(t, proxy)
+
+	_, err := reconciler.ensureService(t.Context(), proxy)
+	require.NoError(t, err)
+
+	service := &corev1.Service{}
+	require.NoError(t, c.Get(t.Context(), client.ObjectKey{Name: createProxyServiceName(proxy.Name), Namespace: "default"}, service))
+	assert.Equal(t, expectedServicePorts(int32(proxy.GetProxyPort()), false), service.Spec.Ports)
 }

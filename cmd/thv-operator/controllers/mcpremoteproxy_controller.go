@@ -1884,7 +1884,7 @@ func (r *MCPRemoteProxyReconciler) generatedContainerNeedsUpdate(
 	if ctrlutil.ContainerPortsDrifted(
 		container.Ports,
 		ctrlutil.ProxyContainerPorts(int32(proxy.GetProxyPort()), tlsListener),
-		ctrlutil.ProxyOwnedPortNames(),
+		ctrlutil.ProxyContainerPorts(int32(proxy.GetProxyPort()), true),
 	) {
 		return true
 	}

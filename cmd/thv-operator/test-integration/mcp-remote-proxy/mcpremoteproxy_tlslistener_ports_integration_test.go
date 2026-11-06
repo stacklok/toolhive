@@ -65,7 +65,7 @@ var _ = Describe("MCPRemoteProxy TLS listener ports", Label("k8s", "remoteproxy"
 		owned := ctrlutil.ProxyOwnedPortNames()
 		Expect(ctrlutil.ServicePortsDrifted(svc.Spec.Ports, ctrlutil.ProxyServicePorts(8080, tlsListener), owned)).
 			To(BeFalse(), "stored Service ports reported as drift")
-		Expect(ctrlutil.ContainerPortsDrifted(dep.Spec.Template.Spec.Containers[0].Ports, ctrlutil.ProxyContainerPorts(8080, tlsListener), owned)).
+		Expect(ctrlutil.ContainerPortsDrifted(dep.Spec.Template.Spec.Containers[0].Ports, ctrlutil.ProxyContainerPorts(8080, tlsListener), ctrlutil.ProxyContainerPorts(8080, true))).
 			To(BeFalse(), "stored container ports reported as drift")
 	}
 	setTLSListener := func(on bool) {
@@ -112,34 +112,59 @@ var _ = Describe("MCPRemoteProxy TLS listener ports", Label("k8s", "remoteproxy"
 		Eventually(containerPorts, MediumTimeout, DefaultPollingInterval).Should(Equal([]corev1.ContainerPort{httpContainerPort}))
 		expectNoPortDrift(false)
 
-		dep := &appsv1.Deployment{}
-		Expect(k8sClient.Get(testCtx, types.NamespacedName{Name: proxyName, Namespace: namespace}, dep)).To(Succeed())
 		svc := &corev1.Service{}
 		Expect(k8sClient.Get(testCtx, types.NamespacedName{Name: ServiceName(proxyName), Namespace: namespace}, svc)).To(Succeed())
-		depRV, svcRV, depGen := dep.ResourceVersion, svc.ResourceVersion, dep.Generation
+		svcRV := svc.ResourceVersion
 
+		// A resourceOverrides annotation on the proxy Deployment bumps the CR
+		// generation and changes only the Deployment's own metadata: the Service
+		// and the ports are untouched. Waiting for observedGeneration and for the
+		// annotation on the Deployment proves a reconcile ran and finished before
+		// the quiet window starts. The Deployment update rewrites the whole pod
+		// template, which may bump the Deployment generation, so the window
+		// compares against the values read after that update.
+		const marker = "test.toolhive.io/reconcile-marker"
 		Eventually(func() error {
 			proxy := &mcpv1beta1.MCPRemoteProxy{}
 			if err := k8sClient.Get(testCtx, types.NamespacedName{Name: proxyName, Namespace: namespace}, proxy); err != nil {
 				return err
 			}
 			original := proxy.DeepCopy()
-			if proxy.Annotations == nil {
-				proxy.Annotations = map[string]string{}
+			proxy.Spec.ResourceOverrides = &mcpv1beta1.ResourceOverrides{
+				ProxyDeployment: &mcpv1beta1.ProxyDeploymentOverrides{
+					ResourceMetadataOverrides: mcpv1beta1.ResourceMetadataOverrides{
+						Annotations: map[string]string{marker: "1"},
+					},
+				},
 			}
-			proxy.Annotations["test.toolhive.io/poke"] = "1"
 			return k8sClient.Patch(testCtx, proxy, client.MergeFrom(original))
 		}, MediumTimeout, DefaultPollingInterval).Should(Succeed())
+
+		Eventually(func(g Gomega) {
+			proxy := &mcpv1beta1.MCPRemoteProxy{}
+			g.Expect(k8sClient.Get(testCtx, types.NamespacedName{Name: proxyName, Namespace: namespace}, proxy)).To(Succeed())
+			g.Expect(proxy.Status.ObservedGeneration).To(Equal(proxy.Generation))
+			d := &appsv1.Deployment{}
+			g.Expect(k8sClient.Get(testCtx, types.NamespacedName{Name: proxyName, Namespace: namespace}, d)).To(Succeed())
+			g.Expect(d.Annotations).To(HaveKeyWithValue(marker, "1"))
+		}, MediumTimeout, DefaultPollingInterval).Should(Succeed())
+
+		settled := &appsv1.Deployment{}
+		Expect(k8sClient.Get(testCtx, types.NamespacedName{Name: proxyName, Namespace: namespace}, settled)).To(Succeed())
+		depRV, depGen := settled.ResourceVersion, settled.Generation
 
 		Consistently(func(g Gomega) {
 			d := &appsv1.Deployment{}
 			g.Expect(k8sClient.Get(testCtx, types.NamespacedName{Name: proxyName, Namespace: namespace}, d)).To(Succeed())
 			s := &corev1.Service{}
 			g.Expect(k8sClient.Get(testCtx, types.NamespacedName{Name: ServiceName(proxyName), Namespace: namespace}, s)).To(Succeed())
-			g.Expect(d.ResourceVersion).To(Equal(depRV), "Deployment was rewritten")
+			g.Expect(d.ResourceVersion).To(Equal(depRV), "Deployment was rewritten again")
 			g.Expect(d.Generation).To(Equal(depGen))
 			g.Expect(s.ResourceVersion).To(Equal(svcRV), "Service was rewritten")
-		}, 5*time.Second, 250*time.Millisecond).Should(Succeed())
+			g.Expect(s.Spec.Ports).To(Equal([]corev1.ServicePort{httpServicePort}))
+			g.Expect(d.Spec.Template.Spec.Containers[0].Ports).To(Equal([]corev1.ContainerPort{httpContainerPort}))
+		}, 3*time.Second, 250*time.Millisecond).Should(Succeed())
+		expectNoPortDrift(false)
 	})
 
 	It("adds https-auth when the listener is turned on and removes it when turned off", func() {

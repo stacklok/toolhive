@@ -5,7 +5,6 @@ package controllers
 
 import (
 	"encoding/json"
-	"strconv"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -151,27 +150,8 @@ var _ = Describe("VirtualMCPServer TLS listener ports", Label("k8s", "tlslistene
 	}
 	expectContainerPortsNotDrifted := func(name string, tlsListener bool) {
 		_, containerPorts := storedPorts(name)
-		Expect(ctrlutil.ContainerPortsDrifted(containerPorts, ctrlutil.ProxyContainerPorts(vmcpPort, tlsListener), ctrlutil.ProxyOwnedPortNames())).
+		Expect(ctrlutil.ContainerPortsDrifted(containerPorts, ctrlutil.ProxyContainerPorts(vmcpPort, tlsListener), ctrlutil.ProxyContainerPorts(vmcpPort, true))).
 			To(BeFalse(), "stored container ports reported as drift")
-	}
-	// poke patches an incrementing test-only annotation onto the VirtualMCPServer.
-	// The controller's For() has no generation predicate, so this enqueues a
-	// reconcile without changing the spec.
-	pokes := 0
-	poke := func(name string) {
-		pokes++
-		Eventually(func() error {
-			vmcp := &mcpv1beta1.VirtualMCPServer{}
-			if err := k8sClient.Get(ctx, keyOf(name), vmcp); err != nil {
-				return err
-			}
-			original := vmcp.DeepCopy()
-			if vmcp.Annotations == nil {
-				vmcp.Annotations = map[string]string{}
-			}
-			vmcp.Annotations["test.toolhive.io/poke"] = strconv.Itoa(pokes)
-			return k8sClient.Patch(ctx, vmcp, client.MergeFrom(original))
-		}, timeout, interval).Should(Succeed())
 	}
 	// updateSpec applies mutate to the VirtualMCPServer and returns the
 	// resulting metadata.generation.
@@ -199,6 +179,20 @@ var _ = Describe("VirtualMCPServer TLS listener ports", Label("k8s", "tlslistene
 			}
 			return vmcp.Status.ObservedGeneration, nil
 		}, timeout, interval).Should(BeNumerically(">=", gen))
+	}
+	// scaleAndWait sets spec.replicas, which bumps the VirtualMCPServer
+	// generation and changes only Deployment.spec.replicas: the Service, the
+	// pod template and the ports are untouched. Waiting for observedGeneration
+	// and for the new replica count on the Deployment proves a reconcile ran
+	// and finished, so a quiet window after it shows nothing keeps rewriting.
+	scaleAndWait := func(name string, replicas int32) {
+		gen := updateSpec(name, func(v *mcpv1beta1.VirtualMCPServer) { v.Spec.Replicas = ptr.To(replicas) })
+		waitObserved(name, gen)
+		Eventually(func(g Gomega) {
+			dep := &appsv1.Deployment{}
+			g.Expect(k8sClient.Get(ctx, keyOf(name), dep)).To(Succeed())
+			g.Expect(dep.Spec.Replicas).To(Equal(ptr.To(replicas)))
+		}, timeout, interval).Should(Succeed())
 	}
 	deleteVMCP := func(name string) {
 		_ = k8sClient.Delete(ctx, &mcpv1beta1.VirtualMCPServer{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace}})
@@ -233,27 +227,29 @@ var _ = Describe("VirtualMCPServer TLS listener ports", Label("k8s", "tlslistene
 			expectServicePortsNotDrifted(name, false)
 			expectContainerPortsNotDrifted(name, false)
 
-			dep := &appsv1.Deployment{}
-			Expect(k8sClient.Get(ctx, keyOf(name), dep)).To(Succeed())
 			svc := &corev1.Service{}
 			Expect(k8sClient.Get(ctx, svcKeyOf(name), svc)).To(Succeed())
-			depRV, svcRV, depGen := dep.ResourceVersion, svc.ResourceVersion, dep.Generation
+			svcRV := svc.ResourceVersion
 
-			// An annotation change gives no observedGeneration to wait on, so the
-			// window below only detects writes that change the stored objects. The
-			// drift assertions above are the pin for false-positive drift, which
-			// rewrites identical content that the API server does not persist.
-			poke(name)
+			scaleAndWait(name, 2)
+
+			dep := &appsv1.Deployment{}
+			Expect(k8sClient.Get(ctx, keyOf(name), dep)).To(Succeed())
+			depRV, depGen := dep.ResourceVersion, dep.Generation
 
 			Consistently(func(g Gomega) {
 				d := &appsv1.Deployment{}
 				g.Expect(k8sClient.Get(ctx, keyOf(name), d)).To(Succeed())
 				s := &corev1.Service{}
 				g.Expect(k8sClient.Get(ctx, svcKeyOf(name), s)).To(Succeed())
-				g.Expect(d.ResourceVersion).To(Equal(depRV), "Deployment was rewritten")
+				g.Expect(d.ResourceVersion).To(Equal(depRV), "Deployment was rewritten again")
 				g.Expect(d.Generation).To(Equal(depGen))
 				g.Expect(s.ResourceVersion).To(Equal(svcRV), "Service was rewritten")
-			}, 5*time.Second, interval).Should(Succeed())
+				g.Expect(s.Spec.Ports).To(Equal([]corev1.ServicePort{httpServicePort}))
+			}, 3*time.Second, interval).Should(Succeed())
+			Expect(vmcpContainerPorts(name)(Default)).To(Equal([]corev1.ContainerPort{httpContainerPort}))
+			expectServicePortsNotDrifted(name, false)
+			expectContainerPortsNotDrifted(name, false)
 		})
 	})
 
@@ -361,19 +357,22 @@ var _ = Describe("VirtualMCPServer TLS listener ports", Label("k8s", "tlslistene
 			// The renamed port is matched by number and protocol, not by name.
 			expectContainerPortsNotDrifted(name, true)
 
+			scaleAndWait(name, 2)
+
 			dep := &appsv1.Deployment{}
 			Expect(k8sClient.Get(ctx, keyOf(name), dep)).To(Succeed())
 			depRV := dep.ResourceVersion
 
-			// As above: the window only detects writes that change the stored
-			// Deployment; the drift assertion above pins the false-positive case.
-			poke(name)
-
 			Consistently(func(g Gomega) {
 				d := &appsv1.Deployment{}
 				g.Expect(k8sClient.Get(ctx, keyOf(name), d)).To(Succeed())
-				g.Expect(d.ResourceVersion).To(Equal(depRV), "Deployment was rewritten")
-			}, 5*time.Second, interval).Should(Succeed())
+				g.Expect(d.ResourceVersion).To(Equal(depRV), "Deployment was rewritten again")
+			}, 3*time.Second, interval).Should(Succeed())
+			Expect(vmcpContainerPorts(name)(Default)).To(ContainElement(
+				corev1.ContainerPort{Name: "https", ContainerPort: 8443, Protocol: corev1.ProtocolTCP},
+			))
+			Expect(vmcpContainerPorts(name)(Default)).NotTo(ContainElement(HaveField("Name", "https-auth")))
+			expectContainerPortsNotDrifted(name, true)
 		})
 	})
 })

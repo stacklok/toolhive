@@ -622,7 +622,9 @@ func authStyleFromMethod(method string) (oauth2.AuthStyle, error) {
 // NewOAuth2Provider creates a new pure OAuth 2.0 provider.
 // Use this for providers that don't support OIDC discovery.
 // The config must include AuthorizationEndpoint and TokenEndpoint.
+// Identity-extraction modifiers are registered automatically, including for standalone use.
 func NewOAuth2Provider(config *OAuth2Config, opts ...OAuth2ProviderOption) (*BaseOAuth2Provider, error) {
+	RegisterModifiers()
 	if config == nil {
 		return nil, errors.New("config is required")
 	}

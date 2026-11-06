@@ -31,7 +31,7 @@ const idJAGReplayPurpose = "id-jag"
 // half of Cross App Access; the requesting half is
 // pkg/vmcp/auth/strategies/xaa.go). It claims exactly the assertions
 // JWTBearerHandler declines: those whose JOSE typ header is
-// "oauth-id-jag+jwt".
+// "oauth-id-jag+jwt" (oauthproto.JWTTypeIDJAG).
 //
 // "Bound" is the trust-model difference from the plain handler. An ID-JAG
 // names the OAuth client that may redeem it — the IdP mints the draft
@@ -93,7 +93,7 @@ func newIDJAGIssuanceHandler(
 // jwt-bearer request at most one of the two handlers is responsible.
 func (*IDJAGHandler) CanHandleTokenEndpointRequest(_ context.Context, requester fosite.AccessRequester) bool {
 	return requester.GetGrantTypes().ExactOne(oauthproto.GrantTypeJWTBearer) &&
-		assertionType(requester.GetRequestForm().Get("assertion")) == idJAGJWTType
+		assertionType(requester.GetRequestForm().Get("assertion")) == oauthproto.JWTTypeIDJAG
 }
 
 // CanSkipClientAuth never permits skipping client authentication: an ID-JAG

@@ -277,7 +277,6 @@ func (*XAAStrategy) performIDPExchange(
 	// holder/presenter — the target AS validates the ID-JAG in target grant. A
 	// mismatch is deliberately logged rather than fatal; the fatal contract
 	// enforced here is issued_token_type (RFC 8693 §2.2.1, checked above).
-	const idJAGJWTType = "oauth-id-jag+jwt"
 	parser := jwt.NewParser()
 	parsed, _, parseErr := parser.ParseUnverified(assertion, jwt.MapClaims{})
 	if parseErr != nil {
@@ -286,9 +285,9 @@ func (*XAAStrategy) performIDPExchange(
 		// an unvalidated assertion to the target AS.
 		return "", fmt.Errorf("IdP exchange: ID-JAG assertion is not a valid JWT: %w", parseErr)
 	}
-	if typ, _ := parsed.Header["typ"].(string); !strings.EqualFold(typ, idJAGJWTType) {
+	if typ, _ := parsed.Header["typ"].(string); !strings.EqualFold(typ, oauthproto.JWTTypeIDJAG) {
 		slog.Debug("xaa: ID-JAG JWT typ header mismatch",
-			"got", typ, "want", idJAGJWTType,
+			"got", typ, "want", oauthproto.JWTTypeIDJAG,
 		)
 	}
 	// The assertion cannot fail: ParseUnverified was called with a literal

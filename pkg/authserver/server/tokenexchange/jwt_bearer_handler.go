@@ -29,7 +29,6 @@ import (
 )
 
 const (
-	idJAGJWTType                = "oauth-id-jag+jwt"
 	jwtBearerReplayPurpose      = "jwt-bearer"
 	jwtBearerNoJTIReplayPurpose = "jwt-bearer-no-jti" //nolint:gosec // G101: replay-store purpose label, not a credential
 )
@@ -115,7 +114,7 @@ func newJWTBearerIssuanceHandler(
 // unsupported typ values remain this handler's responsibility to reject.
 func (*JWTBearerHandler) CanHandleTokenEndpointRequest(_ context.Context, requester fosite.AccessRequester) bool {
 	return requester.GetGrantTypes().ExactOne(oauthproto.GrantTypeJWTBearer) &&
-		assertionType(requester.GetRequestForm().Get("assertion")) != idJAGJWTType
+		assertionType(requester.GetRequestForm().Get("assertion")) != oauthproto.JWTTypeIDJAG
 }
 
 // CanSkipClientAuth permits a credential-free plain JWT-bearer assertion.
@@ -132,7 +131,7 @@ func (*JWTBearerHandler) CanHandleTokenEndpointRequest(_ context.Context, reques
 // closed rather than open.
 func (*JWTBearerHandler) CanSkipClientAuth(ctx context.Context, requester fosite.AccessRequester) bool {
 	form := requester.GetRequestForm()
-	if assertionType(form.Get("assertion")) == idJAGJWTType ||
+	if assertionType(form.Get("assertion")) == oauthproto.JWTTypeIDJAG ||
 		form.Get("client_id") != "" ||
 		form.Get("client_secret") != "" ||
 		form.Get("client_assertion") != "" ||
@@ -389,7 +388,7 @@ func validateAssertionType(assertion string) error {
 	if !ok {
 		return errorsx.WithStack(fosite.ErrInvalidGrant.WithHint("The assertion JOSE typ header must be a string."))
 	}
-	if value == "" || value == "JWT" || value == idJAGJWTType {
+	if value == "" || value == "JWT" || value == oauthproto.JWTTypeIDJAG {
 		return nil
 	}
 	return errorsx.WithStack(fosite.ErrInvalidGrant.WithHint("The assertion JOSE typ header is not supported."))

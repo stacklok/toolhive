@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/stacklok/toolhive-core/mcpcompat/server"
+	"github.com/stacklok/toolhive/pkg/auth"
 )
 
 // This file holds the backend-health-driven tools resync added by #5786 (PR1,
@@ -149,4 +150,47 @@ func (s *Server) resyncSessionsOnBackendHealthChange(generation uint64) {
 	for _, w := range workers {
 		w.trigger(false)
 	}
+}
+
+// ResyncTools asks every live session whose captured identity satisfies match to
+// re-derive its advertised tools, and returns how many sessions it scheduled. A nil
+// match selects every session. Each selected session's tool store is replaced and the
+// SDK then sends the client notifications/tools/list_changed.
+//
+// An embedder that wraps the core with a per-identity view calls this when that view
+// changes for an identity while the backends themselves have not: neither a backend
+// list_changed notification nor a backend health change fires then, so a connected
+// client would otherwise keep the tool list it was given at registration. match is
+// called with the identity the session was registered for, or nil for an anonymous
+// session. It must not block or modify the identity.
+//
+// The call purges the shared capability cache once, before scheduling, like a health
+// change does: the cached aggregation for an identity can predate the change. It
+// purges nothing when match selects no session. Per-session coalescing bounds the
+// work, so a burst of calls costs each session at most one in-flight re-derivation
+// plus one queued follow-up. The resync runs on the session's own worker, off the
+// caller's goroutine, so a caller does not wait for it.
+//
+// Only sessions registered for health-driven fan-out are reachable: passthrough mode
+// with backend health monitoring enabled. In optimizer mode the advertised set is the
+// find_tool and call_tool meta-tools, which a per-identity change does not alter, so
+// the call does nothing and returns 0.
+func (s *Server) ResyncTools(match func(*auth.Identity) bool) int {
+	if s.optimizerFactory != nil {
+		return 0
+	}
+	var selected []*listChangedResyncWorker
+	for _, w := range s.healthResync.snapshot() {
+		if match == nil || match(w.identity) {
+			selected = append(selected, w)
+		}
+	}
+	if len(selected) == 0 {
+		return 0
+	}
+	s.core.InvalidateCapabilityCache()
+	for _, w := range selected {
+		w.trigger(false)
+	}
+	return len(selected)
 }

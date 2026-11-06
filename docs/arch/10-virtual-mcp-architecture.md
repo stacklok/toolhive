@@ -959,6 +959,15 @@ if the relocated backend serves a different tool set, existing sessions pick
 it up via the backend's own `list_changed` or on reconnect, matching the
 agreed membership-only scope.
 
+**Embedder-triggered resync**: an embedder that wraps the core with a
+per-identity view (for example, one that hides a backend whose credential a
+user has lost) has a change that neither a backend `list_changed` nor a health
+flip reports. `Server.ResyncTools(match)` lets it trigger the same registered
+workers for the sessions whose registration-time identity satisfies `match`
+(nil selects all). It purges the cache once, like the health fan-out, purges
+nothing when no session matches, and is a no-op in optimizer mode. It reaches
+only registered sessions, so it has the same health-monitoring requirement.
+
 **Implementation**: `pkg/vmcp/health/change_notifier.go` (`ChangeListener`,
 debounce), `pkg/vmcp/health/monitor.go` (`OnChange`, fire points),
 `pkg/vmcp/health/status.go` (advertisability-transition detection),

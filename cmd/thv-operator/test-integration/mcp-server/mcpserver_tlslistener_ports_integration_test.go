@@ -271,6 +271,51 @@ var _ = Describe("MCPServer TLS listener ports", Label("k8s", "tlslistener"), fu
 				g.Expect(s.Spec.Ports).To(ContainElement(metricsServicePort))
 			}, 5*time.Second, interval).Should(Succeed())
 			expectNoPortDrift(false)
+
+			// The quiet window above does not show that a reconcile ran. A
+			// resourceOverrides annotation changes nothing the operator renders into
+			// the Service, so waiting for observedGeneration and the annotation on
+			// the Deployment proves a reconcile finished against the extra port.
+			svc, err = getService()
+			Expect(err).NotTo(HaveOccurred())
+			svcRV = svc.ResourceVersion
+
+			const marker = "test.toolhive.io/reconcile-marker"
+			Eventually(func() error {
+				server := &mcpv1beta1.MCPServer{}
+				if err := k8sClient.Get(ctx, serverKey, server); err != nil {
+					return err
+				}
+				original := server.DeepCopy()
+				server.Spec.ResourceOverrides = &mcpv1beta1.ResourceOverrides{
+					ProxyDeployment: &mcpv1beta1.ProxyDeploymentOverrides{
+						ResourceMetadataOverrides: mcpv1beta1.ResourceMetadataOverrides{
+							Annotations: map[string]string{marker: "2"},
+						},
+					},
+				}
+				return k8sClient.Patch(ctx, server, client.MergeFrom(original))
+			}, timeout, interval).Should(Succeed())
+
+			Eventually(func(g Gomega) {
+				server := &mcpv1beta1.MCPServer{}
+				g.Expect(k8sClient.Get(ctx, serverKey, server)).To(Succeed())
+				g.Expect(server.Status.ObservedGeneration).To(Equal(server.Generation))
+				d, err := getDeployment()
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(d.Annotations).To(HaveKeyWithValue(marker, "2"))
+			}, timeout, interval).Should(Succeed())
+
+			s, err := getService()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(s.Spec.Ports).To(ContainElement(metricsServicePort))
+			Expect(s.ResourceVersion).To(Equal(svcRV), "Service was rewritten by the reconcile")
+
+			// The generation is stamped on the pod template, so the Deployment
+			// update replaces the template and drops the extra container port. This
+			// documents that update replaces the template and will change if updates
+			// ever merge ports.
+			Eventually(containerPorts, timeout, interval).Should(Equal([]corev1.ContainerPort{httpContainerPort}))
 		})
 
 		It("adds https-auth when the listener is turned on and removes it when turned off", func() {

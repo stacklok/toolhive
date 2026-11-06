@@ -31,6 +31,7 @@ import (
 	spiffeauth "github.com/stacklok/toolhive/pkg/authserver/spiffe"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
+	"github.com/stacklok/toolhive/pkg/authserver/upstreamfilter"
 	"github.com/stacklok/toolhive/pkg/bodylimit/httplimit"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
@@ -922,7 +923,7 @@ func buildDeviceFlowFactory(cfg Config, stor storage.Storage) (oauthserver.Facto
 // only when the caller supplied a non-empty allowlist.
 func buildHandlerOptions(
 	refresher storage.UpstreamTokenRefresher,
-	filter handlers.UpstreamFilter,
+	filter upstreamfilter.UpstreamFilter,
 	registrationRateLimit *RegistrationRateLimitRunConfig,
 	consentExemptClientIDs []string,
 ) []handlers.Option {

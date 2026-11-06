@@ -24,7 +24,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver/internal/consentpolicy"
 	oauthserver "github.com/stacklok/toolhive/pkg/authserver/server"
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
-	"github.com/stacklok/toolhive/pkg/authserver/server/handlers"
 	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/authserver/server/tokenexchange"
@@ -1685,12 +1684,12 @@ type Config struct {
 	DisableUpstreamRefreshGuard bool
 
 	// UpstreamFilter, when set, narrows the upstream authorization chain after the
-	// first leg resolves (see handlers.WithUpstreamFilter). When nil, all
+	// first leg resolves (see upstreamfilter.UpstreamFilter). When nil, all
 	// configured upstreams are walked — the current behavior. Pass nil itself,
 	// not a nil-valued concrete pointer implementing UpstreamFilter — a typed-nil
 	// interface value is non-nil and will still be wired in. Has no effect with
 	// fewer than 2 configured upstreams; Validate rejects that combination.
-	UpstreamFilter handlers.UpstreamFilter
+	UpstreamFilter upstreamfilter.UpstreamFilter
 
 	// ScopesSupported lists the OAuth 2.0 scope values advertised in discovery documents.
 	// If nil or empty, defaults to registration.DefaultScopes (["openid", "profile", "email", "offline_access"]).

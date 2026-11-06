@@ -27,7 +27,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver/authorizationdetails"
 	"github.com/stacklok/toolhive/pkg/authserver/internal/consentpolicy"
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
-	"github.com/stacklok/toolhive/pkg/authserver/server/handlers"
 	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
 	"github.com/stacklok/toolhive/pkg/authserver/server/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
@@ -308,7 +307,7 @@ func hasSPIFFEClientAuth(cfg *authserver.RunConfig) bool {
 	return cfg.InboundGrants != nil && len(cfg.InboundGrants.SPIFFEClientAuth) > 0
 }
 
-// buildUpstreamFilter constructs a handlers.UpstreamFilter from the RunConfig,
+// buildUpstreamFilter constructs an upstreamfilter.UpstreamFilter from the RunConfig,
 // if one is configured. It returns an untyped nil (not a typed-nil interface
 // value) when cfg.UpstreamFilter is unset so authserver.Config.UpstreamFilter
 // remains truly nil and the handler walks all configured upstreams —
@@ -319,7 +318,7 @@ func hasSPIFFEClientAuth(cfg *authserver.RunConfig) bool {
 // references, fewer-than-two upstreams, etc.), so a Validate-passing cfg will
 // not fail here in practice. The second construction is cheap and acts as a
 // belt-and-suspenders guard for consumers that bypassed Validate.
-func buildUpstreamFilter(cfg *authserver.RunConfig) (handlers.UpstreamFilter, error) {
+func buildUpstreamFilter(cfg *authserver.RunConfig) (upstreamfilter.UpstreamFilter, error) {
 	if cfg.UpstreamFilter == nil {
 		return nil, nil
 	}

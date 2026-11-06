@@ -6,8 +6,8 @@
 // chain based on the first upstream's resolved identity, so users only walk the
 // upstream providers they are entitled to.
 //
-// This package implements the handlers.UpstreamFilter contract defined in
-// pkg/authserver/server/handlers. See that interface's documentation for the
+// This package owns the UpstreamFilter contract and its built-in implementation.
+// See that interface's documentation for the
 // runtime lifecycle: single invocation per authorization on the first leg's
 // callback, principal is read-only, fail-closed on nil/absent claims.
 package upstreamfilter

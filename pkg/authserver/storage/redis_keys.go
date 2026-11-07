@@ -78,6 +78,14 @@ const (
 	// Used by GetAllUpstreamTokens (bulk read) and DeleteUpstreamTokens (bulk delete).
 	KeyTypeUpstreamIdx = "upstream:idx"
 
+	// KeyTypeUpstreamRefreshLock is the key type for the mutual-exclusion lease
+	// an auth server replica takes over one upstream token row before redeeming
+	// its refresh token upstream (see UpstreamRefreshLocker). Like
+	// KeyTypeDCRClientIdx, the name deliberately does not match the "upstream:*"
+	// scan pattern walked by migrateUpstreamTokenKeys, so a live lease can never
+	// be mistaken for a token row by the legacy-key migration.
+	KeyTypeUpstreamRefreshLock = "upstream-lock"
+
 	// KeyTypeUserUpstream is the key type for user to upstream token reverse lookups.
 	KeyTypeUserUpstream = "user:upstream"
 
@@ -205,4 +213,19 @@ func redisUpstreamKey(prefix, sessionID, providerName string) string {
 // Same colon assumption as redisKey: the id must not contain colons.
 func redisSetKey(prefix, keyType, id string) string {
 	return fmt.Sprintf("%s%s:%s", prefix, keyType, id)
+}
+
+// redisUpstreamRefreshLockKey generates a Redis key for the refresh lease over
+// one upstream token row. Format: "{prefix}upstream-lock:{rowID}".
+//
+// The row identity is UpstreamTokenRowID, the same value the auth server's
+// in-process singleflight group is keyed by, so the two coordination layers
+// cover exactly the same set of rows by construction: whatever
+// ResolveUpstreamTokenRowID considers one row holds one lease. It is a
+// SHA-256 hex digest, so it contains no colon and needs no length prefix, and
+// it keeps the session ID out of the key name. The key shares the prefix's
+// {ns:name} hash tag, so it lands in the same Redis Cluster slot as the row it
+// guards.
+func redisUpstreamRefreshLockKey(prefix string, rowID UpstreamTokenRowID) string {
+	return fmt.Sprintf("%s%s:%s", prefix, KeyTypeUpstreamRefreshLock, rowID)
 }

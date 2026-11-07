@@ -15,6 +15,7 @@ package optimizer
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"maps"
@@ -26,6 +27,7 @@ import (
 
 	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
 	"github.com/stacklok/toolhive-core/mcpcompat/server"
+	"github.com/stacklok/toolhive-core/redisconn"
 	httpval "github.com/stacklok/toolhive-core/validation/http"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/pkg/vmcp/optimizer/internal/similarity"
@@ -276,23 +278,73 @@ func (in *CallToolInput) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// FactoryOption configures NewOptimizerFactory.
+type FactoryOption func(*factoryOptions)
+
+type factoryOptions struct {
+	sharedRedis     *redisconn.Config
+	sharedKeyPrefix string
+}
+
+// WithSharedEmbeddings shares tool embeddings through Redis, so each vMCP
+// replica using the same Redis and keyPrefix (which must end with ':') reuses
+// the vectors any of them computed instead of embedding the catalogue again.
+//
+// It shares vectors only: each replica still builds its own index from its own
+// sessions, and replicas that miss the same vectors at the same moment both
+// embed them. Only vectors embedded under a verified model identity are
+// published, and a Redis failure after startup costs reuse, never a session.
+// Anyone who can write the keyspace can replace vectors and so change find_tool
+// ranking, so the instance needs the access control the session data needs.
+func WithSharedEmbeddings(redisCfg redisconn.Config, keyPrefix string) FactoryOption {
+	return func(o *factoryOptions) {
+		o.sharedRedis = &redisCfg
+		o.sharedKeyPrefix = keyPrefix
+	}
+}
+
+// sharedEmbeddingsConnectTimeout bounds the startup connection check.
+const sharedEmbeddingsConnectTimeout = 10 * time.Second
+
 // NewOptimizerFactory creates the embedding client and SQLite tool store from
 // the given OptimizerConfig, then returns an OptimizerFactory and a cleanup
 // function that closes the store. The caller must invoke the cleanup function
-// during shutdown to release resources.
-func NewOptimizerFactory(cfg *Config) (
+// during shutdown to release resources. With WithSharedEmbeddings it also
+// connects to the shared embedding cache, failing if Redis is unreachable.
+func NewOptimizerFactory(cfg *Config, opts ...FactoryOption) (
 	func(context.Context, []server.ServerTool) (Optimizer, error),
 	func(context.Context) error,
 	error,
 ) {
+	var o factoryOptions
+	for _, opt := range opts {
+		opt(&o)
+	}
+
 	embClient, err := similarity.NewEmbeddingClient(cfg)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to create embedding client: %w", err)
 	}
 
-	store, err := toolstore.NewSQLiteToolStore(embClient, cfg)
+	var storeOpts []toolstore.Option
+	var sharedCache toolstore.EmbeddingCache
+	if o.sharedRedis != nil && embClient != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), sharedEmbeddingsConnectTimeout)
+		sharedCache, err = toolstore.NewRedisEmbeddingCache(ctx, *o.sharedRedis, o.sharedKeyPrefix)
+		cancel()
+		if err != nil {
+			return nil, nil, errors.Join(fmt.Errorf("failed to create shared embedding cache: %w", err), embClient.Close())
+		}
+		storeOpts = append(storeOpts, toolstore.WithEmbeddingCache(sharedCache))
+	}
+
+	store, err := toolstore.NewSQLiteToolStore(embClient, cfg, storeOpts...)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to create optimizer store: %w", err)
+		err = fmt.Errorf("failed to create optimizer store: %w", err)
+		if sharedCache != nil {
+			err = errors.Join(err, sharedCache.Close()) // the store owns it only once created
+		}
+		return nil, nil, err
 	}
 
 	factory := newOptimizerFactoryWithStore(store, tokencounter.NewJSONByteCounter())
@@ -303,6 +355,7 @@ func NewOptimizerFactory(cfg *Config) (
 	slog.Debug("optimizer factory created",
 		"embedding_service", cfg.EmbeddingService,
 		"semantic_search_enabled", embClient != nil,
+		"shared_embeddings_enabled", sharedCache != nil,
 	)
 
 	return factory, cleanup, nil

@@ -89,7 +89,8 @@ require (
 	go.starlark.net v0.0.0-20261021141710-4f4267fb140d
 	go.uber.org/mock v0.6.0
 	go.uber.org/zap v1.28.0
-	go.yaml.in/yaml/v3 v3.0.6
+	go.yaml.in/yaml/v3 v3.0.5
+	go.yaml.in/yaml/v4 v4.0.0
 	golang.ngrok.com/ngrok/v2 v2.4.0
 	golang.org/x/crypto v0.58.0
 	golang.org/x/exp/jsonrpc2 v0.0.0-20261106192419-47ce03d25ef0

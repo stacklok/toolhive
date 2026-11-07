@@ -26,11 +26,11 @@ import (
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
-// newDCRCapTestServer builds a server on stor with the given registration
-// rate limit (nil keeps the default) and closes it, and with it stor, at
-// cleanup.
+// newDCRCapTestServer owns stor and closes it after the server at cleanup.
+// A nil registration rate limit keeps the default.
 func newDCRCapTestServer(t *testing.T, stor storage.Storage, rateLimit *RegistrationRateLimitRunConfig) *server {
 	t.Helper()
+	t.Cleanup(func() { _ = stor.Close() })
 	mockUpstream := upstreammocks.NewMockOAuth2Provider(gomock.NewController(t))
 	cfg := Config{
 		Issuer:                "https://example.com",

@@ -134,12 +134,13 @@ func WithAccessTokenType(typ string) EmbeddedAuthServerOption {
 // It handles configuration transformation from authserver.RunConfig to authserver.Config,
 // manages resource lifecycle, and provides HTTP handlers for OAuth/OIDC endpoints.
 //
-// The DCR credential store is owned by the underlying authserver.Server and
+// The DCR credential store is borrowed by the underlying authserver.Server and
 // reached via DCRStore(); see that accessor's doc for SECURITY and lifecycle
 // notes. Storing it twice on this struct would create a drift window with
 // the server's copy, so we delegate through e.server.DCRStore() instead.
 type EmbeddedAuthServer struct {
 	server       authserver.Server
+	ownedStorage storage.Storage
 	keyProvider  keys.KeyProvider
 	tlsListener  *tlsListener
 	listenerHost string
@@ -166,6 +167,8 @@ func resolveEmbeddedAuthServerOptions(opts []EmbeddedAuthServerOption) embeddedA
 //
 // The cfg parameter contains file paths and environment variable names that are
 // resolved at runtime to build the underlying authserver.Config.
+// This constructor owns its storage: it closes it on construction failure or
+// during Close, after runtime shutdown, even when runtime cleanup fails.
 func NewEmbeddedAuthServer(
 	ctx context.Context,
 	cfg *authserver.RunConfig,
@@ -208,7 +211,19 @@ func NewEmbeddedAuthServer(
 	if err != nil {
 		return nil, fmt.Errorf("failed to create storage: %w", err)
 	}
-	return newEmbeddedAuthServerWithStorage(ctx, cfg, stor, nil, options)
+	return newOwnedEmbeddedAuthServer(ctx, cfg, stor, options)
+}
+
+func newOwnedEmbeddedAuthServer(
+	ctx context.Context, cfg *authserver.RunConfig, stor storage.Storage, options embeddedAuthServerOptions,
+) (_ *EmbeddedAuthServer, retErr error) {
+	defer closeStorageOnError(stor, &retErr)
+	e, err := newEmbeddedAuthServerWithStorage(ctx, cfg, stor, nil, options)
+	if err != nil {
+		return nil, err
+	}
+	e.ownedStorage = stor
+	return e, nil
 }
 
 // NewEmbeddedAuthServerWithStorage is the exported core constructor that
@@ -233,17 +248,10 @@ func NewEmbeddedAuthServer(
 // Go-only settings, such as the token-exchange authorization-details registry,
 // are supplied through EmbeddedAuthServerOption and are not part of RunConfig.
 //
-// NewEmbeddedAuthServer dispatches into this helper after running
-// createStorage; tests dispatch into it directly so they can supply a
-// closeTrackingStorage wrapper to verify the deferred-cleanup contract.
-//
-// Resource ownership: on success, the returned EmbeddedAuthServer takes
-// ownership of stor (its Close releases the backend). If the initial nil cfg or
-// stor check fails, stor remains caller-owned. On any subsequent error path,
-// the deferred cleanup closes stor before returning so a
-// crash-looping caller (typical when DCR's network I/O fails) does not
-// leak the Redis client connection pool / MemoryStorage cleanup goroutine
-// on every restart. The named return retErr is the gate.
+// Resource ownership: stor is borrowed on both success and failure. The caller
+// must close it after all servers and other users have stopped. Close releases
+// this instance's listener, DCR re-check loops, and underlying server resources,
+// but never the supplied storage.
 func NewEmbeddedAuthServerWithStorage(
 	ctx context.Context,
 	cfg *authserver.RunConfig,
@@ -348,28 +356,20 @@ func newEmbeddedAuthServerWithStorage(
 	stor storage.Storage,
 	delegateClients []authserver.DelegateClient,
 	options embeddedAuthServerOptions,
-) (retEAS *EmbeddedAuthServer, retErr error) {
-	// Validate required inputs before the deferred cleanup is installed: cfg is
-	// dereferenced during validation and stor is closed by that cleanup.
+) (*EmbeddedAuthServer, error) {
 	if err := validateEmbeddedAuthServerInputs(cfg, stor); err != nil {
 		return nil, err
 	}
 
-	// From here on, any error must close stor before returning.
-	defer closeStorageOnError(stor, &retErr)
-
 	// Validate consent prerequisites before upstream resolution, which may
-	// perform discovery and DCR network I/O. This remains inside the cleanup
-	// gate so caller-supplied storage is closed on constructor failure.
+	// perform discovery and DCR network I/O.
 	if err := validateConsentPolicyForRunConfig(cfg, options); err != nil {
 		return nil, fmt.Errorf("invalid consent policy: %w", err)
 	}
 
 	// Validate cfg here too. NewEmbeddedAuthServer validates before
 	// createStorage, but direct callers of this exported constructor would
-	// otherwise skip the check. Placed inside the deferred-cleanup gate above so
-	// a validation failure still closes the caller-supplied storage per the
-	// resource-ownership contract.
+	// otherwise skip the check.
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid run config: %w", err)
 	}
@@ -599,10 +599,10 @@ func (e *EmbeddedAuthServer) Start() error {
 	return e.tlsListener.start()
 }
 
-// Close releases resources held by the EmbeddedAuthServer.
-// This method is idempotent - subsequent calls after the first will return
-// the same error (if any) without attempting to close resources again.
-// Should be called during runner shutdown.
+// Close releases instance-owned runtime resources, then storage only if it was
+// acquired by NewEmbeddedAuthServer. Caller-supplied storage is never closed.
+// Stop and drain HTTP serving outside this instance's TLS listener first.
+// Concurrent and repeated calls return the same joined shutdown errors.
 func (e *EmbeddedAuthServer) Close() error {
 	e.closeOnce.Do(func() {
 		if e.stopDCRRechecks != nil {
@@ -614,7 +614,12 @@ func (e *EmbeddedAuthServer) Close() error {
 			listenerErr = e.tlsListener.shutdown(ctx)
 			cancel()
 		}
-		e.closeErr = errors.Join(listenerErr, e.server.Close())
+		runtimeErr := errors.Join(listenerErr, e.server.Close())
+		var storageErr error
+		if e.ownedStorage != nil {
+			storageErr = e.ownedStorage.Close()
+		}
+		e.closeErr = errors.Join(runtimeErr, storageErr)
 	})
 	return e.closeErr
 }

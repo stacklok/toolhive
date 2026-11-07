@@ -681,10 +681,10 @@ func TestExchangeRefreshTokensRequireTheStorageCapability(t *testing.T) {
 	t.Parallel()
 
 	// newHidden wraps a fresh memory store so the exchange-grant capability is
-	// not visible through storage.Unwrap. Each start owns its store: the
-	// constructor closes it on failure and EmbeddedAuthServer.Close on success.
+	// not visible through storage.Unwrap. The test owns and closes each store.
 	newHidden := func() storage.Storage {
 		memory := storage.NewMemoryStorage()
+		t.Cleanup(func() { _ = memory.Close() })
 		return struct {
 			storage.Storage
 			storage.DCRCredentialStore

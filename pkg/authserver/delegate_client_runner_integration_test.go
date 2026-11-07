@@ -389,6 +389,7 @@ func startConfiguredDelegateAuthServerWithOptions(
 	var stor storage.Storage
 	if withStorage {
 		stor = storage.NewMemoryStorage()
+		t.Cleanup(func() { _ = stor.Close() })
 	}
 	server, issuer, embedded, _ := startEmbeddedAuthServer(t, func(cfg *authserver.RunConfig, _ string) {
 		cfg.ScopesSupported = []string{"openid", "profile", ungrantedScope}

@@ -46,8 +46,10 @@ func TestEmbeddedAuthServer_DCRRecheckRecoversWithoutRestart(t *testing.T) {
 	downstream := newIndirectServer(t)
 
 	newStore := func() *storage.RedisStorage {
-		return storage.NewRedisStorageWithClient(
+		store := storage.NewRedisStorageWithClient(
 			redis.NewClient(&redis.Options{Addr: downstreamRedis.Addr()}), "downstream:")
+		t.Cleanup(func() { assert.NoError(t, store.Close()) })
+		return store
 	}
 	sessionStore := newStore()
 	client, err := registration.New(registration.Config{
@@ -374,6 +376,7 @@ func TestEmbeddedAuthServer_DCRRecheckFollowsMovedTokenEndpoint(t *testing.T) {
 
 	store := storage.NewRedisStorageWithClient(
 		redis.NewClient(&redis.Options{Addr: miniredis.RunT(t).Addr()}), "downstream:")
+	t.Cleanup(func() { assert.NoError(t, store.Close()) })
 	client, err := registration.New(registration.Config{
 		ID:                      sessionClientID,
 		Secret:                  "session-client-secret-0123456789abcdef",
@@ -443,6 +446,62 @@ func TestEmbeddedAuthServer_DCRRecheckFollowsMovedTokenEndpoint(t *testing.T) {
 		"the code redemption after recovery must reach the moved token endpoint")
 	assert.Equal(t, []string{"iat-1", "iat-2"}, up.registrationTokens,
 		"the re-registration must present the initial access token currently on disk")
+}
+
+func TestEmbeddedAuthServer_DCRRegistrationReusedAfterClose(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	up := newResettingUpstream(t)
+	downstream := newIndirectServer(t)
+	store := storage.NewRedisStorageWithClient(
+		redis.NewClient(&redis.Options{Addr: miniredis.RunT(t).Addr()}), "downstream:")
+	t.Cleanup(func() { require.NoError(t, store.Close()) })
+	client, err := registration.New(registration.Config{
+		ID:                      sessionClientID,
+		Secret:                  "session-client-secret-0123456789abcdef",
+		RedirectURIs:            []string{sessionCallback},
+		TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodClientSecretBasic,
+		GrantTypes:              []string{oauthproto.GrantTypeAuthorizationCode, oauthproto.GrantTypeRefreshToken},
+		ResponseTypes:           []string{oauthproto.ResponseTypeCode},
+		Scopes:                  []string{"openid", "offline_access"},
+		Audience:                []string{downstream.URL},
+	})
+	require.NoError(t, err)
+	require.NoError(t, store.RegisterClient(ctx, client))
+	boot := func() *EmbeddedAuthServer {
+		t.Helper()
+		cfg := minimalRunnerConsentConfig(downstream.URL)
+		cfg.AllowedAudiences = []string{downstream.URL}
+		cfg.Upstreams = []authserver.UpstreamRunConfig{{
+			Name: "upstream",
+			Type: authserver.UpstreamProviderTypeOAuth2,
+			OAuth2Config: &authserver.OAuth2UpstreamRunConfig{
+				RedirectURI: downstream.URL + "/oauth/callback",
+				Scopes:      []string{"openid"},
+				DCRConfig: &authserver.DCRUpstreamConfig{
+					DiscoveryURL: up.URL + "/.well-known/oauth-authorization-server",
+				},
+			},
+		}}
+		as, err := NewEmbeddedAuthServerWithStorage(ctx, cfg, store)
+		require.NoError(t, err)
+		t.Cleanup(func() { require.NoError(t, as.Close()) })
+		downstream.set(as.Handler())
+		return as
+	}
+	first := boot()
+	resp, registered, _ := authorizeThroughDownstream(t, downstream.URL, up.URL+"/authorize")
+	require.Equal(t, http.StatusFound, resp.StatusCode)
+	require.NoError(t, first.Close())
+	require.NoError(t, store.Health(ctx), "Close must leave the supplied Redis connection usable")
+
+	boot()
+	resp, reused, _ := authorizeThroughDownstream(t, downstream.URL, up.URL+"/authorize")
+	require.Equal(t, registered, reused, "the replacement must use the cached upstream client")
+	require.Equal(t, http.StatusFound, resp.StatusCode, "the upstream must accept the replacement's client")
+	up.mu.Lock()
+	defer up.mu.Unlock()
+	require.Equal(t, 1, up.issued, "reboot must not call /register again")
 }
 
 func TestJitterInterval(t *testing.T) {

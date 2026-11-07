@@ -80,7 +80,9 @@ func TestEmbedderUpstreamFilter(t *testing.T) {
 					},
 				})
 			}
-			srv, err := authserver.New(t.Context(), cfg, storage.NewMemoryStorage())
+			stor := storage.NewMemoryStorage()
+			t.Cleanup(func() { assert.NoError(t, stor.Close()) })
+			srv, err := authserver.New(t.Context(), cfg, stor)
 			require.NoError(t, err)
 			t.Cleanup(func() { assert.NoError(t, srv.Close()) })
 			httpServer.Config.Handler = srv.Handler()

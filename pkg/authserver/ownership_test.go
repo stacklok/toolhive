@@ -119,21 +119,15 @@ func TestServerCloseOnce(t *testing.T) {
 	for range 10 {
 		go func() { results <- srv.Close() }()
 	}
-	var first error
 	for i := 0; i < 10; i++ {
 		select {
 		case err := <-results:
-			require.ErrorIs(t, err, closeErr)
-			if i == 0 {
-				first = err
-			} else {
-				assert.Same(t, first, err)
-			}
+			require.NoError(t, err)
 		case <-time.After(5 * time.Second):
 			t.Fatal("timed out waiting for Close")
 		}
 	}
-	assert.Same(t, first, srv.Close())
-	assert.Equal(t, int32(1), stor.calls.Load())
+	require.NoError(t, srv.Close())
+	assert.Zero(t, stor.calls.Load(), "Close must not touch borrowed storage, even if its Close would fail")
 	assert.Equal(t, int32(1), provider.closes.Load())
 }

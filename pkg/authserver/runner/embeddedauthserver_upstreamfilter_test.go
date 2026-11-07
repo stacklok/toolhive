@@ -111,6 +111,7 @@ func newFilterTestServer(
 	ctx := context.Background()
 
 	stor := storage.NewMemoryStorage()
+	t.Cleanup(func() { require.NoError(t, stor.Close()) })
 	eas, err := NewEmbeddedAuthServerWithStorage(ctx, newFilterRunConfig(t, filter, names, ms), stor)
 	require.NoError(t, err)
 

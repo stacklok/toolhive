@@ -15,12 +15,14 @@
 // # Usage
 //
 // The primary entry point is authserver.New(), which creates an OAuth authorization
-// server with a single handler. Storage is a required parameter:
+// server with a single handler. Storage is required and borrowed on success and
+// failure. Stop and drain HTTP serving, close each server instance, then close
+// storage after all users have stopped:
 //
 //	stor := storage.NewMemoryStorage()
+//	defer stor.Close()
 //	server, err := authserver.New(ctx, cfg, stor)
 //	if err != nil {
-//	    _ = stor.Close()
 //	    return err
 //	}
 //	defer server.Close()
@@ -38,9 +40,9 @@
 //	    AllowedAudiences: []string{"https://mcp.example.com"},
 //	}
 //	stor := storage.NewMemoryStorage()
+//	defer stor.Close()
 //	server, err := authserver.New(ctx, cfg, stor)
 //	if err != nil {
-//	    _ = stor.Close()
 //	    return err
 //	}
 //	defer server.Close()
@@ -54,9 +56,9 @@
 // Example with memory storage:
 //
 //	stor := storage.NewMemoryStorage()
+//	defer stor.Close()
 //	server, err := authserver.New(ctx, cfg, stor)
 //	if err != nil {
-//	    _ = stor.Close()
 //	    return err
 //	}
 //	defer server.Close()

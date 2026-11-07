@@ -1008,6 +1008,10 @@ func (r *Runner) persistRefreshToken(
 	if err != nil {
 		return err
 	}
+	previousSecretName := ""
+	if updatedConfig.RemoteAuthConfig != nil {
+		previousSecretName = updatedConfig.RemoteAuthConfig.CachedRefreshTokenRef
+	}
 	secretName, err := authsecrets.GenerateUniqueSecretNameWithPrefix(
 		r.Config.Name,
 		"OAUTH_REFRESH_TOKEN_",
@@ -1033,6 +1037,17 @@ func (r *Runner) persistRefreshToken(
 	// Preserve pointer identity so the auth handler and runner observe the same
 	// complete config only after the durable write succeeds.
 	*r.Config.RemoteAuthConfig = updatedRemoteAuthConfig
+
+	// The new reference is durable. Remove the previous generation so restarts
+	// do not leave orphaned OAUTH_REFRESH_TOKEN_* secrets behind (#3886). This
+	// is best effort: the provider may be read-only, and the new token must not
+	// fail to persist merely because stale cleanup failed.
+	if previousSecretName != "" && previousSecretName != secretName {
+		if err := secretManager.DeleteSecret(ctx, previousSecretName); err != nil {
+			slog.Warn("Failed to delete previous OAuth refresh token secret",
+				"secret_name", previousSecretName, "error", err)
+		}
+	}
 
 	slog.Debug("Stored OAuth refresh token in secret manager", "secret_name", secretName)
 	return nil

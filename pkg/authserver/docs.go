@@ -20,8 +20,10 @@
 //	stor := storage.NewMemoryStorage()
 //	server, err := authserver.New(ctx, cfg, stor)
 //	if err != nil {
+//	    _ = stor.Close()
 //	    return err
 //	}
+//	defer server.Close()
 //	// Mount handler on your HTTP server (serves all OAuth/OIDC endpoints)
 //	mux.Handle("/", server.Handler())
 //
@@ -37,6 +39,11 @@
 //	}
 //	stor := storage.NewMemoryStorage()
 //	server, err := authserver.New(ctx, cfg, stor)
+//	if err != nil {
+//	    _ = stor.Close()
+//	    return err
+//	}
+//	defer server.Close()
 //
 // # Storage
 //
@@ -48,6 +55,11 @@
 //
 //	stor := storage.NewMemoryStorage()
 //	server, err := authserver.New(ctx, cfg, stor)
+//	if err != nil {
+//	    _ = stor.Close()
+//	    return err
+//	}
+//	defer server.Close()
 //
 // # IDP Token Storage
 //

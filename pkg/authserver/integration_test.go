@@ -4664,9 +4664,13 @@ func TestIntegration_MultiUpstreamSequentialChain(t *testing.T) {
 	// This proves provider-1 was used as the identity source (its UpstreamSubject
 	// is from m1's user) and provider-2 contributed only tokens (its UpstreamSubject
 	// is from m2's user). Both share the same internal UserID (sub) from provider-1.
-	assert.Contains(t, tokens1.UpstreamSubject, "provider1.example.com",
+	// SubjectFields is ["sub", "email"], so the subject is the userinfo "sub"
+	// when the mock returns one and the email otherwise. Older mockoidc
+	// versions omit "sub" from userinfo; newer ones include it. Accept both
+	// so the test does not depend on the mockoidc version.
+	assert.Contains(t, []string{"user-from-provider-1", "user1@provider1.example.com"}, tokens1.UpstreamSubject,
 		"provider-1 UpstreamSubject should come from m1's queued user")
-	assert.Contains(t, tokens2.UpstreamSubject, "provider2.example.com",
+	assert.Contains(t, []string{"user-from-provider-2", "user2@provider2.example.com"}, tokens2.UpstreamSubject,
 		"provider-2 UpstreamSubject should come from m2's queued user")
 	assert.NotEqual(t, tokens1.UpstreamSubject, tokens2.UpstreamSubject,
 		"upstream subjects should differ (different IDPs)")

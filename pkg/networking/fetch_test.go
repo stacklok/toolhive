@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -538,4 +539,89 @@ func TestFetchJSONWithForm_AdditionalOptions(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Equal(t, "with auth", result.Data.Message)
+}
+
+// truncatedBody declares a longer body than it writes; net/http then closes
+// the connection after the handler returns, and the client's read ends with
+// io.ErrUnexpectedEOF.
+func truncatedBody(status int) http.HandlerFunc {
+	return func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Length", "1000")
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(`{"error":"x"`))
+	}
+}
+
+// stalledBody sends the status and part of the body, then holds the
+// connection open until the client gives up.
+func stalledBody(status int) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "1000")
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(`{"error":"x"`))
+		w.(http.Flusher).Flush()
+		<-r.Context().Done()
+	}
+}
+
+// TestFetchJSON_StatusDecidesBeforeBodyRead pins that a non-200 status is
+// reported as an HTTPError whether or not the body could be read in full, and
+// that a body-read failure is reported only for a 200.
+func TestFetchJSON_StatusDecidesBeforeBodyRead(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		handler       http.HandlerFunc
+		clientTimeout time.Duration
+		wantStatus    int   // the HTTPError status expected; 0 means no HTTPError
+		wantReadErr   error // the body-read error expected when wantStatus is 0
+	}{
+		{name: "404 with Content-Length longer than written", handler: truncatedBody(http.StatusNotFound), wantStatus: http.StatusNotFound},
+		{name: "404 whose body stalls past the client timeout", handler: stalledBody(http.StatusNotFound), clientTimeout: time.Second, wantStatus: http.StatusNotFound},
+		{name: "503 with Content-Length longer than written", handler: truncatedBody(http.StatusServiceUnavailable), wantStatus: http.StatusServiceUnavailable},
+		{name: "200 with Content-Length longer than written", handler: truncatedBody(http.StatusOK), wantReadErr: io.ErrUnexpectedEOF},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			server := httptest.NewServer(tt.handler)
+			t.Cleanup(server.Close)
+			client := server.Client()
+			if tt.clientTimeout > 0 {
+				client = &http.Client{Timeout: tt.clientTimeout, Transport: client.Transport}
+			}
+
+			result, err := FetchJSON[testResponse](context.Background(), client, server.URL)
+			assert.Nil(t, result)
+			require.Error(t, err)
+			if tt.wantStatus != 0 {
+				var httpErr *HTTPError
+				require.True(t, errors.As(err, &httpErr), "expected an HTTPError, got %v", err)
+				assert.Equal(t, tt.wantStatus, httpErr.StatusCode)
+				assert.Equal(t, fmt.Sprintf("%d %s", tt.wantStatus, http.StatusText(tt.wantStatus)), httpErr.Message)
+				return
+			}
+			assert.False(t, IsHTTPError(err, 0))
+			assert.ErrorIs(t, err, tt.wantReadErr)
+			assert.Contains(t, err.Error(), "failed to read response body")
+		})
+	}
+
+	t.Run("error handler receives the bytes that arrived on a truncated 400", func(t *testing.T) {
+		t.Parallel()
+		server := httptest.NewServer(truncatedBody(http.StatusBadRequest))
+		t.Cleanup(server.Close)
+
+		errSeen := errors.New("handler saw the partial body")
+		handler := func(resp *http.Response, body []byte) error {
+			if resp.StatusCode == http.StatusBadRequest && string(body) == `{"error":"x"` {
+				return errSeen
+			}
+			return nil
+		}
+		_, err := FetchJSON[testResponse](context.Background(), server.Client(), server.URL, WithErrorHandler(handler))
+		require.ErrorIs(t, err, errSeen)
+	})
 }

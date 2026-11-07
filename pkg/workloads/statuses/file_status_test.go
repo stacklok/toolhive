@@ -1910,6 +1910,56 @@ func TestFileStatusManager_ResetWorkloadPIDIfMatch_NonExistentWorkload(t *testin
 	require.NoFileExists(t, statusFile)
 }
 
+func TestFileStatusManager_SetWorkloadStoppedIfOwned(t *testing.T) {
+	t.Parallel()
+	const ownerPID = 12345
+
+	tests := []struct {
+		name        string
+		status      rt.WorkloadStatus
+		pid         int
+		wantStatus  rt.WorkloadStatus
+		wantContext string
+	}{
+		{name: "starting without PID", status: rt.WorkloadStatusStarting, wantStatus: rt.WorkloadStatusStopped},
+		{name: "running with owner PID", status: rt.WorkloadStatusRunning, pid: ownerPID, wantStatus: rt.WorkloadStatusStopped},
+		{name: "replacement PID", status: rt.WorkloadStatusStarting, pid: 99999,
+			wantStatus: rt.WorkloadStatusStarting, wantContext: "original"},
+		{name: "removing", status: rt.WorkloadStatusRemoving, wantStatus: rt.WorkloadStatusRemoving, wantContext: "original"},
+		{name: "error", status: rt.WorkloadStatusError, wantStatus: rt.WorkloadStatusError, wantContext: "original"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			tempDir := t.TempDir()
+			manager := &fileStatusManager{baseDir: tempDir}
+			ctx := context.Background()
+
+			require.NoError(t, manager.SetWorkloadStatus(ctx, "test-workload", tt.status, "original"))
+			require.NoError(t, manager.SetWorkloadPID(ctx, "test-workload", tt.pid))
+
+			require.NoError(t, manager.SetWorkloadStoppedIfOwned(ctx, "test-workload", ownerPID))
+
+			data, err := os.ReadFile(filepath.Join(tempDir, "test-workload.json"))
+			require.NoError(t, err)
+			var statusFileData workloadStatusFile
+			require.NoError(t, json.Unmarshal(data, &statusFileData))
+			assert.Equal(t, tt.wantStatus, statusFileData.Status)
+			assert.Equal(t, tt.wantContext, statusFileData.StatusContext)
+			assert.Equal(t, tt.pid, statusFileData.ProcessID)
+		})
+	}
+
+	t.Run("missing status is not recreated", func(t *testing.T) {
+		t.Parallel()
+		tempDir := t.TempDir()
+		manager := &fileStatusManager{baseDir: tempDir}
+
+		require.NoError(t, manager.SetWorkloadStoppedIfOwned(context.Background(), "test-workload", ownerPID))
+		require.NoFileExists(t, filepath.Join(tempDir, "test-workload.json"))
+	})
+}
+
 // TestFileStatusManager_GetWorkload_PIDMigration tests PID migration from legacy PID files to status files
 func TestFileStatusManager_GetWorkload_PIDMigration(t *testing.T) {
 	t.Parallel()

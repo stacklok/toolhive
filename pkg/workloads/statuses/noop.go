@@ -54,6 +54,11 @@ func (*NoopStatusManager) ResetWorkloadPIDIfMatch(_ context.Context, _ string, _
 	return nil
 }
 
+// SetWorkloadStoppedIfOwned does nothing and returns nil.
+func (*NoopStatusManager) SetWorkloadStoppedIfOwned(_ context.Context, _ string, _ int) error {
+	return nil
+}
+
 // GetWorkloadPID returns 0 and nil error.
 func (*NoopStatusManager) GetWorkloadPID(_ context.Context, _ string) (int, error) {
 	return 0, nil

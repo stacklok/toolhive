@@ -447,7 +447,7 @@ func (c *Client) StopWorkload(ctx context.Context, workloadName string) error {
 	info, err := c.GetWorkloadInfo(ctx, workloadName)
 	if err != nil {
 		// If the container doesn't exist, that's fine - it's already "stopped"
-		if errors.Is(err, ErrContainerNotFound) {
+		if errors.Is(err, ErrContainerNotFound) || errors.Is(err, runtime.ErrWorkloadNotFound) {
 			return nil
 		}
 		return err
@@ -489,33 +489,36 @@ func (c *Client) StopWorkload(ctx context.Context, workloadName string) error {
 	return nil
 }
 
-// RemoveWorkload removes a workload
-// If the workload doesn't exist, it returns success
+// RemoveWorkload removes a workload and its associated helpers and networks.
+// A missing primary does not prevent cleanup of resources derived from the
+// supplied name. Other inspection errors are returned without attempting cleanup.
 func (c *Client) RemoveWorkload(ctx context.Context, workloadName string) error {
-	// get container name from ID
+	// Inspect again at removal time; the supervisor may have created or removed
+	// the primary container since the manager's initial inspection.
 	containerResponse, err := c.inspectContainerByName(ctx, workloadName)
 	if err != nil {
-		slog.Warn("failed to inspect container", "name", workloadName, "error", err)
+		if !errors.Is(err, runtime.ErrWorkloadNotFound) && !errors.Is(err, runtime.ErrContainerNotFound) && !errdefs.IsNotFound(err) {
+			return fmt.Errorf("failed to inspect workload %s for removal: %w", workloadName, err)
+		}
 	}
 
-	// remove the / if it starts with it
-	containerName := containerResponse.Name
-	containerName = strings.TrimPrefix(containerName, "/")
-
-	// remove the workload containers
-	var labels map[string]string
-	if containerResponse.Config != nil {
-		labels = containerResponse.Config.Labels
-	} else {
-		labels = make(map[string]string)
-	}
-	err = c.removeContainer(ctx, containerResponse.ID)
-	if err != nil {
-		return err // removeContainer already wraps the error with context.
+	containerName := workloadName
+	var workloadLabels map[string]string
+	if err == nil {
+		containerName = strings.TrimPrefix(containerResponse.Name, "/")
+		if containerResponse.Config != nil {
+			workloadLabels = containerResponse.Config.Labels
+		}
+		if err := c.removeContainer(ctx, containerResponse.ID); err != nil {
+			return err // removeContainer already wraps the error with context.
+		}
 	}
 
-	// Clean up any proxy containers associated with this workload.
-	err = c.removeProxyContainers(ctx, containerName, labels)
+	// When the primary is absent, only its exact workload-name-derived helper
+	// names are available. Nil labels retain legacy network-isolation cleanup.
+	// Callers must supply the physical container name to clean up timestamped
+	// resources in that case; an unknown physical name cannot be reconstructed.
+	err = c.removeProxyContainers(ctx, containerName, workloadLabels)
 	if err != nil {
 		return err // removeProxyContainers already wraps the error with context.
 	}
@@ -1369,6 +1372,11 @@ func (c *Client) deleteNetwork(ctx context.Context, name string) error {
 		return nil
 	}
 
+	if !lb.IsToolHiveContainer(networkToRemove.Labels) || lb.GetContainerName(networkToRemove.Labels) == "" {
+		slog.Debug("network lacks ToolHive ownership labels, skipping deletion", "name", name)
+		return nil
+	}
+
 	if _, err := c.client.NetworkRemove(ctx, networkToRemove.ID, mobyclient.NetworkRemoveOptions{}); err != nil {
 		return fmt.Errorf("failed to remove network %s: %w", name, err)
 	}
@@ -1391,7 +1399,7 @@ func (c *Client) removeContainer(ctx context.Context, containerID string) error 
 	return nil
 }
 
-// removeProxyContainers removes the MCP server container and any proxy containers.
+// removeProxyContainers removes only exact-name ToolHive auxiliary containers.
 func (c *Client) removeProxyContainers(
 	ctx context.Context,
 	containerName string,
@@ -1414,10 +1422,27 @@ func (c *Client) removeProxyContainers(
 
 	for _, suffix := range suffixes {
 		containerName := fmt.Sprintf("%s-%s", containerName, suffix)
-		containerId, err := c.findExistingContainer(ctx, containerName)
+		result, err := c.api.ContainerList(ctx, mobyclient.ContainerListOptions{
+			All: true,
+			Filters: mobyclient.Filters{}.
+				Add("name", containerName).
+				Add("label", fmt.Sprintf("%s=%s", lb.LabelToolHive, lb.LabelToolHiveValue)).
+				Add("label", fmt.Sprintf("%s=%s", ToolhiveAuxiliaryWorkloadLabel, LabelValueTrue)),
+		})
 		if err != nil {
 			slog.Debug("failed to find container", "type", suffix, "name", containerName, "error", err)
 			continue
+		}
+		var containerId string
+		for _, candidate := range result.Items {
+			if candidate.Labels[lb.LabelToolHive] != lb.LabelToolHiveValue ||
+				candidate.Labels[ToolhiveAuxiliaryWorkloadLabel] != LabelValueTrue {
+				continue
+			}
+			if slices.Contains(candidate.Names, containerName) || slices.Contains(candidate.Names, "/"+containerName) {
+				containerId = candidate.ID
+				break
+			}
 		}
 		if containerId == "" {
 			continue

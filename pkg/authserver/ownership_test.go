@@ -57,6 +57,44 @@ func TestNewFailureLeavesStorageCallerOwned(t *testing.T) {
 	}
 }
 
+func TestNewFailureAfterDelegateRegistration(t *testing.T) {
+	t.Parallel()
+
+	base := storage.NewMemoryStorage()
+	t.Cleanup(func() { assert.NoError(t, base.Close()) })
+	var events []string
+	stor := &eventRecordingStorage{MemoryStorage: base, record: func(event string) { events = append(events, event) }}
+	provider := &closeCountingProvider{}
+	cfg := Config{
+		Issuer:           "https://example.com",
+		KeyProvider:      keys.NewGeneratingProvider(keys.DefaultAlgorithm),
+		AllowedAudiences: []string{"https://mcp.example.com"},
+		DelegateClients: []DelegateClient{{
+			ClientID: "delegate", ClientSecret: "delegate-secret-well-above-the-minimum-length",
+			Scopes: []string{"openid"}, Audiences: []string{"https://mcp.example.com"},
+		}},
+		Upstreams: []UpstreamConfig{
+			{Name: "first", Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstreamConfig()},
+			{Name: "second", Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstreamConfig()},
+		},
+		UpstreamFactory: func(_ context.Context, cfg *UpstreamConfig) (upstream.OAuth2Provider, error) {
+			if cfg.Name == "first" {
+				return provider, nil
+			}
+			return nil, errors.New("upstream unavailable")
+		},
+	}
+
+	srv, err := New(t.Context(), cfg, stor)
+	require.ErrorContains(t, err, "upstream unavailable")
+	require.True(t, srv == nil)
+	assert.Empty(t, events, "storage remains caller-owned")
+	assert.Equal(t, int32(1), provider.closes.Load(), "constructed upstream is drained")
+	client, err := base.GetClient(t.Context(), "delegate")
+	require.NoError(t, err, "failed construction may have written to storage")
+	assert.Equal(t, "delegate", client.GetID())
+}
+
 type failingCloseStorage struct {
 	*storage.MemoryStorage
 	calls atomic.Int32

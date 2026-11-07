@@ -167,9 +167,12 @@ func UpdateUpstreamClientCredentials(s Server, name string, creds upstream.Clien
 // storage.DCRCredentialStore. Use storage.NewMemoryStorage() for single-instance
 // deployments or provide a distributed storage backend for production deployments.
 //
-// If New fails, storage remains caller-owned and is not closed. On success,
-// Server.Close takes responsibility for closing storage. Construction failure
-// releases any upstream pools and validator workers created by the server.
+// If New fails, storage remains caller-owned and is not closed, but construction
+// may already have written to it. On success, Server.Close takes responsibility
+// for closing storage. Unlike New, runner.NewEmbeddedAuthServerWithStorage closes
+// supplied storage on errors after its initial nil-input checks, including config
+// validation errors. Construction failure releases any upstream pools and
+// validator workers created by the server.
 // HTTP clients injected into upstream providers remain caller-owned; the caller
 // is responsible for their connection pools and networking security policy.
 func New(ctx context.Context, cfg Config, stor storage.Storage) (Server, error) {

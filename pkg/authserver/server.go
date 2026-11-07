@@ -68,8 +68,8 @@ type Server interface {
 	// closes storage. It joins shutdown errors. Do not call it on a server whose
 	// storage is shared with another live server; retire that one with
 	// CloseIdleConnections instead.
-	// Call Close only once: repeated calls are not guaranteed to be safe and
-	// may panic, depending on the storage backend.
+	// Close is safe to call repeatedly or concurrently on a server returned by
+	// New; each call returns the same shutdown result.
 	Close() error
 }
 

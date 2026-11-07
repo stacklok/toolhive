@@ -6,11 +6,14 @@ package authserver
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/stacklok/toolhive/pkg/authserver/server/handlers"
 	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
@@ -52,4 +55,47 @@ func TestNewFailureLeavesStorageCallerOwned(t *testing.T) {
 			assert.Empty(t, events, "failed construction must not close caller storage")
 		})
 	}
+}
+
+type failingCloseStorage struct {
+	*storage.MemoryStorage
+	calls atomic.Int32
+	err   error
+}
+
+func (s *failingCloseStorage) Close() error {
+	s.calls.Add(1)
+	return s.err
+}
+
+func TestServerCloseOnce(t *testing.T) {
+	t.Parallel()
+
+	base := storage.NewMemoryStorage()
+	t.Cleanup(func() { assert.NoError(t, base.Close()) })
+	closeErr := errors.New("storage close failed")
+	stor := &failingCloseStorage{MemoryStorage: base, err: closeErr}
+	provider := &closeCountingProvider{}
+	srv := &server{storage: stor, upstreams: []handlers.NamedUpstream{{Name: "first", Provider: provider}}}
+	results := make(chan error, 10)
+	for range 10 {
+		go func() { results <- srv.Close() }()
+	}
+	var first error
+	for i := 0; i < 10; i++ {
+		select {
+		case err := <-results:
+			require.ErrorIs(t, err, closeErr)
+			if i == 0 {
+				first = err
+			} else {
+				assert.Same(t, first, err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("timed out waiting for Close")
+		}
+	}
+	assert.Same(t, first, srv.Close())
+	assert.Equal(t, int32(1), stor.calls.Load())
+	assert.Equal(t, int32(1), provider.closes.Load())
 }

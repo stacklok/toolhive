@@ -21,6 +21,7 @@ import (
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
@@ -565,7 +566,7 @@ func TestResourceOverrides(t *testing.T) {
 				"pod template annotations must contain user overrides plus the runconfig-checksum")
 
 			// Test service creation
-			service := r.serviceForMCPServer(t.Context(), tt.mcpServer)
+			service := r.serviceForMCPServer(t.Context(), tt.mcpServer, false)
 			require.NotNil(t, service)
 
 			assert.Equal(t, tt.expectedServiceLabels, service.Labels)
@@ -1055,7 +1056,7 @@ func TestMCPServerSessionAffinityNone(t *testing.T) {
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
 	r := newTestMCPServerReconciler(client, scheme, kubernetes.PlatformKubernetes)
 
-	service := r.serviceForMCPServer(t.Context(), mcpServer)
+	service := r.serviceForMCPServer(t.Context(), mcpServer, false)
 	require.NotNil(t, service)
 	assert.Equal(t, corev1.ServiceAffinityNone, service.Spec.SessionAffinity)
 }
@@ -1084,7 +1085,10 @@ func TestMCPServerServiceNeedsUpdate(t *testing.T) {
 		Spec: corev1.ServiceSpec{
 			SessionAffinity: corev1.ServiceAffinityClientIP,
 			Ports: []corev1.ServicePort{{
-				Port: 8080,
+				Name:       "http",
+				Port:       8080,
+				TargetPort: intstr.FromInt(8080),
+				Protocol:   corev1.ProtocolTCP,
 			}},
 		},
 	}
@@ -1153,7 +1157,7 @@ func TestMCPServerServiceNeedsUpdate(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			result := serviceNeedsUpdate(tt.service, tt.mcpServer)
+			result := serviceNeedsUpdate(tt.service, tt.mcpServer, false)
 			assert.Equal(t, tt.needsUpdate, result)
 		})
 	}

@@ -30,7 +30,7 @@ require (
 	github.com/go-git/go-billy/v5 v5.9.2
 	github.com/go-git/go-git/v5 v5.19.3
 	github.com/go-jose/go-jose/v3 v3.0.5
-	github.com/go-jose/go-jose/v4 v4.1.7
+	github.com/go-jose/go-jose/v4 v4.1.8
 	github.com/go-logr/logr v1.4.4
 	github.com/gofrs/flock v0.13.1
 	github.com/golang-jwt/jwt/v5 v5.3.1
@@ -46,7 +46,7 @@ require (
 	github.com/moby/moby/client v0.6.2
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 	github.com/modelcontextprotocol/registry v1.8.7
-	github.com/oauth2-proxy/mockoidc v0.0.0-20240214162133-caebfff84d25
+	github.com/oauth2-proxy/mockoidc v0.0.0-20261103160011-e06ed0b7cb7f
 	github.com/olekukonko/tablewriter v1.1.5
 	github.com/onsi/ginkgo/v2 v2.33.1
 	github.com/onsi/gomega v1.44.0

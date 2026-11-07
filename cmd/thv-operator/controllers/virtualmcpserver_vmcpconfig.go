@@ -157,7 +157,7 @@ func (r *VirtualMCPServerReconciler) ensureVmcpConfigConfigMap(
 //	ref nil + optimizer set + svc set → warning: prefer embeddingServerRef
 //	ref nil + optimizer set + svc empty → rejected earlier by Validate()
 //
-// Note: Validate() auto-populates optimizer with defaults when ref is set but optimizer is nil,
+// Note: ApplyDefaults() populates optimizer defaults before validation when ref is set but optimizer is nil,
 // so the "ref set + optimizer nil" case no longer reaches this function.
 func (r *VirtualMCPServerReconciler) populateOptimizerEmbeddingService(
 	ctx context.Context,

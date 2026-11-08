@@ -131,6 +131,7 @@ func (a *defaultAggregator) QueryCapabilities(ctx context.Context, backend vmcp.
 		Prompts:           capabilities.Prompts,
 		SupportsLogging:   capabilities.SupportsLogging,
 		SupportsSampling:  capabilities.SupportsSampling,
+		Instructions:      capabilities.Instructions,
 	}
 
 	span.SetAttributes(
@@ -530,6 +531,10 @@ func (a *defaultAggregator) AggregateCapabilities(
 		return nil, fmt.Errorf("failed to merge capabilities: %w", err)
 	}
 
+	// Instructions need no conflict resolution, so they skip steps 3 and 4
+	// and are attached here, straight from the per-backend query results.
+	aggregated.BackendInstructions = backendInstructions(capabilities)
+
 	// Update metadata with backend count
 	aggregated.Metadata.BackendCount = len(backends)
 
@@ -546,6 +551,18 @@ func (a *defaultAggregator) AggregateCapabilities(
 		"resources", aggregated.Metadata.ResourceCount, "prompts", aggregated.Metadata.PromptCount)
 
 	return aggregated, nil
+}
+
+// backendInstructions collects the non-empty instructions text of each queried
+// backend, keyed by backend ID.
+func backendInstructions(capabilities map[string]*BackendCapabilities) map[string]string {
+	out := make(map[string]string, len(capabilities))
+	for backendID, c := range capabilities {
+		if c != nil && c.Instructions != "" {
+			out[backendID] = c.Instructions
+		}
+	}
+	return out
 }
 
 // mergeResources adds resources to the routing table (keyed by URI) and

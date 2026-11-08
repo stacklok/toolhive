@@ -824,4 +824,9 @@ type CapabilityList struct {
 
 	// SupportsSampling indicates if the backend supports MCP sampling.
 	SupportsSampling bool
+
+	// Instructions is the backend's server-level usage text: the
+	// `instructions` field of its initialize result (Legacy) or of its
+	// server/discover result (Modern). Empty when the backend sends none.
+	Instructions string
 }

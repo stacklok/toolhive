@@ -241,6 +241,9 @@ Defines tool aggregation and conflict resolution strategies.
 - `defaultToolVisibility` (string, optional, default: "allow"): Whether a backend with no `tools` entry is advertised
   - `allow`: every tool from an unlisted backend is advertised
   - `deny`: an unlisted backend contributes no tools, so only backends named in `tools` are advertised
+- `instructions` (InstructionsConfig, optional): Forwarding of the backends' `instructions` text (the usage guidance an MCP server sends in its `initialize` or `server/discover` result). Unset forwards nothing.
+  - `forward` (bool, optional, default: false): When true, the virtual server's `initialize` and `server/discover` results carry one block per backend, labelled `[<backend id>]` (the workload name), for every backend the calling identity may use. Backends that send no text contribute no block.
+  - `maxLength` (int, optional, default: 16384): Cap on the merged text in bytes. A block that would exceed it is skipped and logged.
 
 **Example (prefix strategy)**:
 ```yaml

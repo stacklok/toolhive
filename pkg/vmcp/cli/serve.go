@@ -452,6 +452,7 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 		CodeModeConfig:          codemode.FromConfig(vmcpCfg.CodeMode),
 		SessionFactory:          sessionFactory,
 		SessionStorage:          vmcpCfg.SessionStorage,
+		Instructions:            instructionsConfig(vmcpCfg),
 		// Core collaborators: server.New routes through core.New + Serve, so the core
 		// is the single aggregator and authorizer. The aggregator is the same instance
 		// that backs discovery; Authz feeds the core admission seam (nil = allow-all).
@@ -819,4 +820,13 @@ func runDiscovery(
 
 	slog.Info(fmt.Sprintf("Discovered %d backends", len(backends)))
 	return backends, backendClient, outgoingRegistry, nil
+}
+
+// instructionsConfig returns the aggregation.instructions block of cfg, or nil
+// when aggregation is unset (forwarding then stays off).
+func instructionsConfig(cfg *config.Config) *config.InstructionsConfig {
+	if cfg == nil || cfg.Aggregation == nil {
+		return nil
+	}
+	return cfg.Aggregation.Instructions
 }

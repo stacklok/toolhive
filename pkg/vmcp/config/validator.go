@@ -367,6 +367,11 @@ func (v *DefaultValidator) validateAggregation(agg *AggregationConfig) error {
 		return err
 	}
 
+	// Mirrors the CRD's Minimum=0 for the CLI path.
+	if agg.Instructions != nil && agg.Instructions.MaxLength < 0 {
+		return fmt.Errorf("instructions.maxLength must be >= 0")
+	}
+
 	return v.validateToolConfigurations(agg.Tools)
 }
 

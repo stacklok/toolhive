@@ -249,6 +249,11 @@ type Config struct {
 	// THV_SESSION_REDIS_PASSWORD environment variable.
 	SessionStorage *vmcpconfig.SessionStorageConfig
 
+	// Instructions controls whether the backends' `instructions` text is
+	// forwarded to clients in initialize and server/discover results, and the
+	// cap on the merged text. nil forwards nothing (see renderInstructions).
+	Instructions *vmcpconfig.InstructionsConfig
+
 	// Aggregator merges backend capabilities into the advertised set. It is consumed
 	// by the domain core (core.Config.Aggregator) that New builds via deriveCoreConfig:
 	// the core is the single aggregator on the New/Serve path, so the session factory

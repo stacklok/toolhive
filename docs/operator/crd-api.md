@@ -282,6 +282,7 @@ _Appears in:_
 | `tools` _[vmcp.config.WorkloadToolConfig](#vmcpconfigworkloadtoolconfig) array_ | Tools defines per-workload tool filtering and overrides. |  | Optional: \{\} <br /> |
 | `excludeAllTools` _boolean_ | ExcludeAllTools hides all backend tools from MCP clients when true.<br />Hidden tools are NOT advertised in tools/list responses, but they ARE<br />available in the routing table for composite tools to use.<br />This enables the use case where you want to hide raw backend tools from<br />direct client access while exposing curated composite tool workflows. |  | Optional: \{\} <br /> |
 | `defaultToolVisibility` _[vmcp.config.DefaultToolVisibility](#vmcpconfigdefaulttoolvisibility)_ | DefaultToolVisibility controls whether a backend with NO entry in Tools has its<br />tools advertised to MCP clients.<br />  - allow (default): every tool from an unlisted backend is advertised, so<br />    adding a workload to the group exposes it without further configuration.<br />  - deny: an unlisted backend contributes no tools, so only backends named in<br />    Tools are advertised. Use this when the set of exposed tools must be<br />    enumerated deliberately rather than inherited from group membership.<br />A backend that DOES have a Tools entry is unaffected by this setting: the<br />entry opts it in, and ExcludeAll/Filter on that entry decide the rest. Like<br />every other visibility setting here, this controls advertising only — hidden<br />tools remain in the routing table for composite tools (see the type doc).<br />This gates TOOLS only. An unlisted backend's resources, resource templates,<br />and prompts are still advertised under deny; mergeResources/mergePrompts have<br />no equivalent check. |  | Enum: [allow deny] <br />Optional: \{\} <br /> |
+| `instructions` _[vmcp.config.InstructionsConfig](#vmcpconfiginstructionsconfig)_ | Instructions controls whether the backends' `instructions` text (the<br />server-level usage text an MCP server sends in its initialize or<br />server/discover result) is forwarded to MCP clients. Unset keeps the<br />previous behaviour: nothing is forwarded. |  | Optional: \{\} <br /> |
 
 
 #### vmcp.config.AuthzConfig
@@ -548,6 +549,24 @@ _Appears in:_
 | `type` _string_ | Type is the auth type: "oidc", "local", "anonymous" |  |  |
 | `oidc` _[vmcp.config.OIDCConfig](#vmcpconfigoidcconfig)_ | OIDC contains OIDC configuration (when Type = "oidc"). |  |  |
 | `authz` _[vmcp.config.AuthzConfig](#vmcpconfigauthzconfig)_ | Authz contains authorization configuration (optional). |  |  |
+
+
+#### vmcp.config.InstructionsConfig
+
+
+
+InstructionsConfig controls the forwarding of backend `instructions` to MCP
+clients.
+
+
+
+_Appears in:_
+- [vmcp.config.AggregationConfig](#vmcpconfigaggregationconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `forward` _boolean_ | Forward enables forwarding. When true, the initialize and server/discover<br />results of the virtual server carry one block per backend, labelled with<br />the backend ID (the workload name, as used in aggregation.tools), for<br />every backend the calling identity is admitted to at least one capability<br />of. A backend that sends no instructions contributes no block.<br />Default: false. |  | Optional: \{\} <br /> |
+| `maxLength` _integer_ | MaxLength caps the merged text, in bytes. Blocks are added in backend ID<br />order; a block that would exceed the cap is skipped and logged. 0 means<br />the default, 16384. |  | Minimum: 0 <br />Optional: \{\} <br /> |
 
 
 #### vmcp.config.ListChangedConfig

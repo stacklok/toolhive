@@ -895,12 +895,12 @@ func wrapBackendError(err error, backendID string, operation string) error {
 		vmcp.ErrBackendUnavailable, operation, backendID, err)
 }
 
-// initializeClient performs MCP protocol initialization handshake and returns
-// server capabilities plus the actually-negotiated protocol version. The
-// latter comes straight from the SDK's InitializeResult, so it reflects the
+// initializeClient performs the MCP initialization handshake and returns the
+// SDK's InitializeResult: the server capabilities, the actually-negotiated
+// protocol version and the server's instructions. The version reflects the
 // real negotiation outcome (e.g. a Modern-first Connect() that negotiated
 // down) even though ProtocolVersion is requested as mcp.LATEST_PROTOCOL_VERSION.
-func initializeClient(ctx context.Context, c *client.Client) (*mcp.ServerCapabilities, string, error) {
+func initializeClient(ctx context.Context, c *client.Client) (*mcp.InitializeResult, error) {
 	result, err := c.Initialize(ctx, mcp.InitializeRequest{
 		Params: mcp.InitializeParams{
 			ProtocolVersion: mcp.LATEST_PROTOCOL_VERSION,
@@ -919,9 +919,9 @@ func initializeClient(ctx context.Context, c *client.Client) (*mcp.ServerCapabil
 		},
 	})
 	if err != nil {
-		return nil, "", err
+		return nil, err
 	}
-	return &result.Capabilities, result.ProtocolVersion, nil
+	return result, nil
 }
 
 // queryTools queries tools from a backend if the server advertises tool support.
@@ -1111,10 +1111,10 @@ func newBackendHTTPClient(rt http.RoundTripper, timeout time.Duration) *http.Cli
 // a negotiated-down Legacy backend for Modern.
 func (h *httpBackendClient) modernDiscover(
 	ctx context.Context, target *vmcp.BackendTarget,
-) (*mcp.ServerCapabilities, error) {
+) (*mcp.ServerCapabilities, string, error) {
 	hc, err := h.buildModernHTTPClient(ctx, target)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	defer hc.CloseIdleConnections()
 	return discoverModernCapabilities(ctx, hc, target.BaseURL)
@@ -1125,14 +1125,18 @@ func (h *httpBackendClient) modernDiscover(
 // doc comment for why a clean response alone does not prove Modern). Split out
 // so probeRevision can share this exact check over the *http.Client it must
 // build anyway (to hard-fail on a genuine transport misconfiguration before
-// classifying anything), instead of building the client twice.
-func discoverModernCapabilities(ctx context.Context, hc *http.Client, endpoint string) (*mcp.ServerCapabilities, error) {
+// classifying anything), instead of building the client twice. The second
+// return value is the backend's `instructions` text, empty when it sends none.
+func discoverModernCapabilities(
+	ctx context.Context, hc *http.Client, endpoint string,
+) (*mcp.ServerCapabilities, string, error) {
 	var discover struct {
 		Capabilities      mcp.ServerCapabilities `json:"capabilities"`
 		SupportedVersions []string               `json:"supportedVersions"`
+		Instructions      string                 `json:"instructions"`
 	}
 	if err := modernCall(ctx, hc, endpoint, "server/discover", nil, "", nil, &discover, "", nil); err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	// Exact-match on MCPVersionModern (2026-07-28): vMCP's shim only speaks that
 	// one Modern wire shape, so a backend must advertise exactly it to be driven
@@ -1143,9 +1147,9 @@ func discoverModernCapabilities(ctx context.Context, hc *http.Client, endpoint s
 	// newer-only backend is wrongly classified Legacy — TestProbeRevision_RealBackends
 	// will catch it.
 	if !slices.Contains(discover.SupportedVersions, mcpparser.MCPVersionModern) {
-		return nil, fmt.Errorf("%w: supportedVersions=%v", errModernNegotiatedDown, discover.SupportedVersions)
+		return nil, "", fmt.Errorf("%w: supportedVersions=%v", errModernNegotiatedDown, discover.SupportedVersions)
 	}
-	return &discover.Capabilities, nil
+	return &discover.Capabilities, discover.Instructions, nil
 }
 
 // probeRevision resolves a backend's MCP revision, Modern-first.
@@ -1207,7 +1211,7 @@ func (h *httpBackendClient) probeRevision(
 	}
 	defer hc.CloseIdleConnections()
 
-	_, err = discoverModernCapabilities(ctx, hc, target.BaseURL)
+	_, _, err = discoverModernCapabilities(ctx, hc, target.BaseURL)
 	switch {
 	case err == nil:
 		h.setRevision(target.WorkloadID, mcpparser.RevisionModern)
@@ -1543,11 +1547,16 @@ func (h *httpBackendClient) ListCapabilities(ctx context.Context, target *vmcp.B
 func (h *httpBackendClient) modernListCapabilities(
 	ctx context.Context, target *vmcp.BackendTarget,
 ) (*vmcp.CapabilityList, error) {
-	caps, err := h.modernDiscover(ctx, target)
+	caps, instructions, err := h.modernDiscover(ctx, target)
 	if err != nil && !errors.Is(err, errModernProtocolError) {
 		return nil, wrapBackendError(err, target.WorkloadID, "modern discover")
 	}
-	return h.modernEnumerate(ctx, target, caps)
+	list, err := h.modernEnumerate(ctx, target, caps)
+	if err != nil {
+		return nil, err
+	}
+	list.Instructions = instructions
+	return list, nil
 }
 
 // legacyListCapabilities is the initialize + enumerate path (unchanged behavior).
@@ -1566,10 +1575,11 @@ func (h *httpBackendClient) legacyListCapabilities(
 	}()
 
 	// Initialize the client and get server capabilities
-	serverCaps, _, err := h.legacyInit(ctx, c, target)
+	initRes, err := h.legacyInit(ctx, c, target)
 	if err != nil {
 		return nil, err
 	}
+	serverCaps := &initRes.Capabilities
 
 	slog.Debug("backend capabilities",
 		"backend", target.WorkloadID,
@@ -1605,6 +1615,7 @@ func (h *httpBackendClient) legacyListCapabilities(
 		target.WorkloadID,
 		toolsResp.Tools, resourcesResp.Resources, resourceTemplatesResp.ResourceTemplates, promptsResp.Prompts,
 	)
+	capabilities.Instructions = initRes.Instructions
 
 	// TODO: Query server capabilities to detect logging/sampling support
 	// This requires additional MCP protocol support for capabilities introspection
@@ -1659,14 +1670,15 @@ var errLegacyInitFailed = errors.New("legacy initialize step failed")
 // self-heals within one window instead of never.
 func (h *httpBackendClient) legacyInit(
 	ctx context.Context, c *client.Client, target *vmcp.BackendTarget,
-) (*mcp.ServerCapabilities, string, error) {
+) (*mcp.InitializeResult, error) {
 	backendID := target.WorkloadID
-	caps, negotiatedVersion, err := initializeClient(ctx, c)
+	initRes, err := initializeClient(ctx, c)
 	if err != nil {
-		return nil, "", fmt.Errorf("%w: %w", errLegacyInitFailed, wrapBackendError(err, backendID, "initialize client"))
+		return nil, fmt.Errorf("%w: %w", errLegacyInitFailed, wrapBackendError(err, backendID, "initialize client"))
 	}
+	negotiatedVersion := initRes.ProtocolVersion
 	if negotiatedVersion != mcpparser.MCPVersionModern {
-		return caps, negotiatedVersion, nil
+		return initRes, nil
 	}
 
 	cached, isCached := h.cachedRevision(backendID)
@@ -1685,7 +1697,7 @@ func (h *httpBackendClient) legacyInit(
 			h.modernHintRefuted.Store(backendID, time.Now())
 		}
 	}
-	return caps, negotiatedVersion, nil
+	return initRes, nil
 }
 
 // hintRefuted reports whether backendID's Modern-handshake hint is currently
@@ -1926,10 +1938,11 @@ func (h *httpBackendClient) legacyCallTool(
 	}()
 
 	// Initialize the client and capture the backend's advertised capabilities.
-	serverCaps, negotiatedVersion, err := h.legacyInit(ctx, c, target)
+	initRes, err := h.legacyInit(ctx, c, target)
 	if err != nil {
 		return nil, err
 	}
+	serverCaps, negotiatedVersion := &initRes.Capabilities, initRes.ProtocolVersion
 
 	// When forwarders are bound and the backend advertises logging, request debug
 	// level so the backend emits notifications/message during the call; the
@@ -2127,7 +2140,7 @@ func (h *httpBackendClient) legacyReadResource(
 	}()
 
 	// Initialize the client
-	if _, _, err := h.legacyInit(ctx, c, target); err != nil {
+	if _, err := h.legacyInit(ctx, c, target); err != nil {
 		return nil, err
 	}
 
@@ -2246,7 +2259,7 @@ func (h *httpBackendClient) legacyGetPrompt(
 	}()
 
 	// Initialize the client
-	if _, _, err := h.legacyInit(ctx, c, target); err != nil {
+	if _, err := h.legacyInit(ctx, c, target); err != nil {
 		return nil, err
 	}
 
@@ -2390,10 +2403,11 @@ func (h *httpBackendClient) legacyComplete(
 	}()
 
 	// Initialize the client and capture the backend's advertised capabilities.
-	serverCaps, _, err := h.legacyInit(ctx, c, target)
+	initRes, err := h.legacyInit(ctx, c, target)
 	if err != nil {
 		return nil, err
 	}
+	serverCaps := &initRes.Capabilities
 
 	// Backends that do not advertise completions cannot serve completion/complete;
 	// return an empty result rather than erroring (lenient completion semantics).

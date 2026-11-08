@@ -104,6 +104,12 @@ aggregation:
     # For 'priority' strategy: explicit ordering (commented out)
     # priorityOrder: ["github", "jira", "slack"]
 
+  # Forward the backends' server-level `instructions` text to clients, one
+  # block per backend the caller may use (off by default).
+  # instructions:
+  #   forward: true
+  #   maxLength: 16384  # bytes, cap on the merged text
+
   # Tool filtering and overrides (per workload in the group)
   tools:
     - workload: "github"

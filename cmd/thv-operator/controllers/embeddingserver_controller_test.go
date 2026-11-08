@@ -543,8 +543,8 @@ func TestHandleDeletion(t *testing.T) {
 	}
 
 	// #4624: when the final status update inside finalizeEmbeddingServer fails,
-	// handleDeletion must return the error and keep the finalizer in place so
-	// the object is requeued instead of being deleted with an unpersisted
+	// handleDeletion must complete deletion and remove the finalizer (the status
+	// write failure is surfaced via a Warning event, not by blocking deletion).
 	// final status.
 	// #4624 review (ChrisJBurns): a status write that keeps failing must not
 	// pin the finalizer — deletion would hang and stall namespace teardown.

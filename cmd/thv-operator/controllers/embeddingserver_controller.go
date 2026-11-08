@@ -167,9 +167,11 @@ func (r *EmbeddingServerReconciler) handleDeletion(
 		// If finalization fails (e.g. the final status update errors), requeue
 		// with the finalizer still in place so the status is not silently
 		// lost (#4624). The finalizer is only removed after it succeeds.
-		if err := r.finalizeEmbeddingServer(ctx, embedding); err != nil {
-			return ctrl.Result{}, true, err
-		}
+		// finalizeEmbeddingServer records the Terminating status best-effort
+		// and never blocks deletion: a failing status write is surfaced as a
+		// Warning event, but finalization continues so the finalizer is always
+		// removed and the object is deleted (#4624).
+		r.finalizeEmbeddingServer(ctx, embedding)
 
 		controllerutil.RemoveFinalizer(embedding, embeddingFinalizerName)
 		err := r.Update(ctx, embedding)
@@ -1019,7 +1021,7 @@ func (r *EmbeddingServerReconciler) updateEmbeddingServerStatus(
 // a log line instead, so it is no longer silent (#4624). The error return is
 // kept for future real cleanup steps, whose failures *should* requeue (see
 // finalizeMCPServer).
-func (r *EmbeddingServerReconciler) finalizeEmbeddingServer(ctx context.Context, embedding *mcpv1beta1.EmbeddingServer) error {
+func (r *EmbeddingServerReconciler) finalizeEmbeddingServer(ctx context.Context, embedding *mcpv1beta1.EmbeddingServer) {
 	ctxLogger := log.FromContext(ctx)
 	ctxLogger.Info("Finalizing EmbeddingServer", "name", embedding.Name)
 
@@ -1047,7 +1049,7 @@ func (r *EmbeddingServerReconciler) finalizeEmbeddingServer(ctx context.Context,
 	// For now, Kubernetes will handle cascade deletion of owned resources
 
 	r.Recorder.Eventf(embedding, nil, corev1.EventTypeNormal, "Deleted", "Finalize", "EmbeddingServer has been finalized")
-	return nil
+	// finalization never blocks deletion; errors are surfaced via Warning event
 }
 
 // SetupWithManager sets up the controller with the Manager.

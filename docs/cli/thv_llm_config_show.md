@@ -20,14 +20,14 @@ thv llm config show [flags]
 ### Options
 
 ```
-      --format string   Output format (json, text) (default "text")
-  -h, --help            help for show
+      --format string       Output format (json, text) (default "text")
+  -h, --help[=true|false]   help for show
 ```
 
 ### Options inherited from parent commands
 
 ```
-      --debug   Enable debug mode
+      --debug[=true|false]   Enable debug mode
 ```
 
 ### SEE ALSO

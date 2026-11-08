@@ -20,15 +20,15 @@ thv client connector list [flags]
 ### Options
 
 ```
-      --format string   Output format (json, text) (default "text")
-  -h, --help            help for list
+      --format string       Output format (json, text) (default "text")
+  -h, --help[=true|false]   help for list
 ```
 
 ### Options inherited from parent commands
 
 ```
-      --client string   Client to configure (supported: claude-desktop)
-      --debug           Enable debug mode
+      --client string        Client to configure (supported: claude-desktop)
+      --debug[=true|false]   Enable debug mode
 ```
 
 ### SEE ALSO

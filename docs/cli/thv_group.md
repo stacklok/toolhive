@@ -20,13 +20,13 @@ The group command provides subcommands to manage logical groupings of MCP server
 ### Options
 
 ```
-  -h, --help   help for group
+  -h, --help[=true|false]   help for group
 ```
 
 ### Options inherited from parent commands
 
 ```
-      --debug   Enable debug mode
+      --debug[=true|false]   Enable debug mode
 ```
 
 ### SEE ALSO

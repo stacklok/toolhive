@@ -27,14 +27,14 @@ thv secret upgrade-protection [flags]
 ### Options
 
 ```
-  -h, --help   help for upgrade-protection
-      --yes    Skip the compatibility confirmation
+  -h, --help[=true|false]   help for upgrade-protection
+      --yes[=true|false]    Skip the compatibility confirmation
 ```
 
 ### Options inherited from parent commands
 
 ```
-      --debug   Enable debug mode
+      --debug[=true|false]   Enable debug mode
 ```
 
 ### SEE ALSO

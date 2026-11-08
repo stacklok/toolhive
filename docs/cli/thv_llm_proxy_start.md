@@ -30,15 +30,15 @@ thv llm proxy start [flags]
 ### Options
 
 ```
-  -h, --help              help for start
-      --skip-browser      Print the OIDC authorization URL instead of opening a browser, then wait for the callback. Use in headless/SSH/CI environments where no system browser is available.
-      --tls-skip-verify   Skip TLS certificate verification for the upstream gateway (overrides stored config; local dev only)
+  -h, --help[=true|false]              help for start
+      --skip-browser[=true|false]      Print the OIDC authorization URL instead of opening a browser, then wait for the callback. Use in headless/SSH/CI environments where no system browser is available.
+      --tls-skip-verify[=true|false]   Skip TLS certificate verification for the upstream gateway (overrides stored config; local dev only)
 ```
 
 ### Options inherited from parent commands
 
 ```
-      --debug   Enable debug mode
+      --debug[=true|false]   Enable debug mode
 ```
 
 ### SEE ALSO

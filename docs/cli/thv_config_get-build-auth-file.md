@@ -34,14 +34,14 @@ thv config get-build-auth-file [name] [flags]
 ### Options
 
 ```
-  -h, --help           help for get-build-auth-file
-      --show-content   Show the actual file content (contains credentials) (default false)
+  -h, --help[=true|false]           help for get-build-auth-file
+      --show-content[=true|false]   Show the actual file content (contains credentials) (default false)
 ```
 
 ### Options inherited from parent commands
 
 ```
-      --debug   Enable debug mode
+      --debug[=true|false]   Enable debug mode
 ```
 
 ### SEE ALSO

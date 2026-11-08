@@ -39,22 +39,22 @@ thv skill upgrade [skill-name...] [flags]
 ### Options
 
 ```
-      --allow-ref-change      Permit the artifact to move to a different repository during upgrade
-      --allow-signer-change   Permit upgrading to an artifact signed by a different identity; the new identity replaces the recorded one
-      --clients string        Comma-separated target client apps (e.g. claude-code,opencode), or "all" for every available client
-      --fail-on-changes       Report what would change without installing anything; a CI freshness gate
-      --format string         Output format (json, text) (default "text")
-  -h, --help                  help for upgrade
-      --preview               Report what would change without persisting anything (OCI sources are still fetched to compare digests)
-      --project-root string   Project root path (default: auto-detected from the current directory)
-      --public-key string     Path to a cosign public key proposed as the replacement trust anchor (requires --allow-signer-change)
-      --yes                   Skip the confirmation prompt (required when not running interactively)
+      --allow-ref-change[=true|false]      Permit the artifact to move to a different repository during upgrade
+      --allow-signer-change[=true|false]   Permit upgrading to an artifact signed by a different identity; the new identity replaces the recorded one
+      --clients string                     Comma-separated target client apps (e.g. claude-code,opencode), or "all" for every available client
+      --fail-on-changes[=true|false]       Report what would change without installing anything; a CI freshness gate
+      --format string                      Output format (json, text) (default "text")
+  -h, --help[=true|false]                  help for upgrade
+      --preview[=true|false]               Report what would change without persisting anything (OCI sources are still fetched to compare digests)
+      --project-root string                Project root path (default: auto-detected from the current directory)
+      --public-key string                  Path to a cosign public key proposed as the replacement trust anchor (requires --allow-signer-change)
+      --yes[=true|false]                   Skip the confirmation prompt (required when not running interactively)
 ```
 
 ### Options inherited from parent commands
 
 ```
-      --debug   Enable debug mode
+      --debug[=true|false]   Enable debug mode
 ```
 
 ### SEE ALSO

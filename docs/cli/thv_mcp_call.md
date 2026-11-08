@@ -32,20 +32,20 @@ thv mcp call <tool-name> [flags]
 ### Options
 
 ```
-      --args string         Tool arguments as a JSON object literal
-      --args-file string    Path to a file containing a JSON object of tool arguments (use '-' to read from stdin)
-      --format string       Output format (json, text) (default "text")
-  -h, --help                help for call
-      --ignore-tool-error   Exit zero even when the tool reports an error (default is non-zero)
-      --server string       MCP server URL or name from ToolHive registry (required)
-      --timeout duration    Connection timeout (default 30s)
-      --transport string    Transport type (auto, sse, streamable-http) (default "auto")
+      --args string                      Tool arguments as a JSON object literal
+      --args-file string                 Path to a file containing a JSON object of tool arguments (use '-' to read from stdin)
+      --format string                    Output format (json, text) (default "text")
+  -h, --help[=true|false]                help for call
+      --ignore-tool-error[=true|false]   Exit zero even when the tool reports an error (default is non-zero)
+      --server string                    MCP server URL or name from ToolHive registry (required)
+      --timeout duration                 Connection timeout (default 30s)
+      --transport string                 Transport type (auto, sse, streamable-http) (default "auto")
 ```
 
 ### Options inherited from parent commands
 
 ```
-      --debug   Enable debug mode
+      --debug[=true|false]   Enable debug mode
 ```
 
 ### SEE ALSO

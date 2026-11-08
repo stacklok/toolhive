@@ -30,13 +30,13 @@ thv config get-build-env [KEY] [flags]
 ### Options
 
 ```
-  -h, --help   help for get-build-env
+  -h, --help[=true|false]   help for get-build-env
 ```
 
 ### Options inherited from parent commands
 
 ```
-      --debug   Enable debug mode
+      --debug[=true|false]   Enable debug mode
 ```
 
 ### SEE ALSO

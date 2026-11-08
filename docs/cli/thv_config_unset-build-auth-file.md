@@ -28,14 +28,14 @@ thv config unset-build-auth-file [name] [flags]
 ### Options
 
 ```
-      --all    Remove all build auth files
-  -h, --help   help for unset-build-auth-file
+      --all[=true|false]    Remove all build auth files
+  -h, --help[=true|false]   help for unset-build-auth-file
 ```
 
 ### Options inherited from parent commands
 
 ```
-      --debug   Enable debug mode
+      --debug[=true|false]   Enable debug mode
 ```
 
 ### SEE ALSO

@@ -40,15 +40,15 @@ thv logs [workload-name|prune] [flags]
 ### Options
 
 ```
-  -f, --follow   Follow log output (only for workload logs) (default false)
-  -h, --help     help for logs
-  -p, --proxy    Show proxy logs instead of container logs (default false)
+  -f, --follow[=true|false]   Follow log output (only for workload logs) (default false)
+  -h, --help[=true|false]     help for logs
+  -p, --proxy[=true|false]    Show proxy logs instead of container logs (default false)
 ```
 
 ### Options inherited from parent commands
 
 ```
-      --debug   Enable debug mode
+      --debug[=true|false]   Enable debug mode
 ```
 
 ### SEE ALSO

@@ -26,14 +26,14 @@ thv skill build [path] [flags]
 ### Options
 
 ```
-  -h, --help         help for build
-  -t, --tag string   OCI tag for the built artifact
+  -h, --help[=true|false]   help for build
+  -t, --tag string          OCI tag for the built artifact
 ```
 
 ### Options inherited from parent commands
 
 ```
-      --debug   Enable debug mode
+      --debug[=true|false]   Enable debug mode
 ```
 
 ### SEE ALSO

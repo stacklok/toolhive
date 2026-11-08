@@ -24,13 +24,13 @@ thv client list-registered [flags]
 ### Options
 
 ```
-  -h, --help   help for list-registered
+  -h, --help[=true|false]   help for list-registered
 ```
 
 ### Options inherited from parent commands
 
 ```
-      --debug   Enable debug mode
+      --debug[=true|false]   Enable debug mode
 ```
 
 ### SEE ALSO

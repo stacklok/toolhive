@@ -30,25 +30,25 @@ thv llm config set [flags]
 ### Options
 
 ```
-      --audience string      OIDC audience (optional)
-      --bedrock-compat       Persist Bedrock compatibility for Claude Code (CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1 + per-tier Bedrock model IDs discovered from the gateway) and Codex (per-tier Bedrock GPT models + web_search disabled). Applied by "thv llm setup". Use --bedrock-compat=false to clear.
-      --callback-port int    OIDC callback port (omit to keep current; default: ephemeral)
-      --client-id string     OIDC client ID
-      --enable-1m            With Bedrock compat, opt into the 1M context window by appending [1m] to opus/sonnet model IDs.
-      --gateway-url string   LLM gateway base URL (must use HTTPS)
-  -h, --help                 help for set
-      --issuer string        OIDC issuer URL
-      --models strings       Model IDs to persist and apply during "thv llm setup", comma-separated or by repeating the flag, e.g. --models=us.anthropic.claude-opus-4-8,us.anthropic.claude-sonnet-5. Credential-helper clients (Claude Desktop) write these as inferenceModels; with Bedrock compat, each ID overrides a Claude Code tier by matching 'haiku', 'opus', 'sonnet', or 'fable' in the ID, and a us./global.openai.gpt-* ID a Codex tier by matching 'sol', 'terra', or 'luna'.
-      --proxy-port int       Localhost proxy listen port (omit to keep current; default: 14000)
-      --scopes strings       OIDC scopes to request, comma-separated or by repeating the flag. offline_access is always requested; pass openid explicitly if the provider needs it (the default scopes are openid and offline_access). Omit to keep the current scopes; an empty value restores the defaults. Changing the list clears cached tokens so the next sign-in requests the new scopes
-      --short-prompt-cache   Use Claude Code's five-minute prompt cache instead of ToolHive's one-hour default. Applied by "thv llm setup"; use --short-prompt-cache=false to restore one-hour caching.
-      --tls-skip-verify      Skip TLS certificate verification for the upstream gateway (local dev only; use --tls-skip-verify=false to clear)
+      --audience string                   OIDC audience (optional)
+      --bedrock-compat[=true|false]       Persist Bedrock compatibility for Claude Code (CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1 + per-tier Bedrock model IDs discovered from the gateway) and Codex (per-tier Bedrock GPT models + web_search disabled). Applied by "thv llm setup". Use --bedrock-compat=false to clear.
+      --callback-port int                 OIDC callback port (omit to keep current; default: ephemeral)
+      --client-id string                  OIDC client ID
+      --enable-1m[=true|false]            With Bedrock compat, opt into the 1M context window by appending [1m] to opus/sonnet model IDs.
+      --gateway-url string                LLM gateway base URL (must use HTTPS)
+  -h, --help[=true|false]                 help for set
+      --issuer string                     OIDC issuer URL
+      --models strings                    Model IDs to persist and apply during "thv llm setup", comma-separated or by repeating the flag, e.g. --models=us.anthropic.claude-opus-4-8,us.anthropic.claude-sonnet-5. Credential-helper clients (Claude Desktop) write these as inferenceModels; with Bedrock compat, each ID overrides a Claude Code tier by matching 'haiku', 'opus', 'sonnet', or 'fable' in the ID, and a us./global.openai.gpt-* ID a Codex tier by matching 'sol', 'terra', or 'luna'.
+      --proxy-port int                    Localhost proxy listen port (omit to keep current; default: 14000)
+      --scopes strings                    OIDC scopes to request, comma-separated or by repeating the flag. offline_access is always requested; pass openid explicitly if the provider needs it (the default scopes are openid and offline_access). Omit to keep the current scopes; an empty value restores the defaults. Changing the list clears cached tokens so the next sign-in requests the new scopes
+      --short-prompt-cache[=true|false]   Use Claude Code's five-minute prompt cache instead of ToolHive's one-hour default. Applied by "thv llm setup"; use --short-prompt-cache=false to restore one-hour caching.
+      --tls-skip-verify[=true|false]      Skip TLS certificate verification for the upstream gateway (local dev only; use --tls-skip-verify=false to clear)
 ```
 
 ### Options inherited from parent commands
 
 ```
-      --debug   Enable debug mode
+      --debug[=true|false]   Enable debug mode
 ```
 
 ### SEE ALSO

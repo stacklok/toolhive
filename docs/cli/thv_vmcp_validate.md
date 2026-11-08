@@ -28,14 +28,14 @@ thv vmcp validate [flags]
 ### Options
 
 ```
-  -c, --config string   Path to vMCP configuration file (required)
-  -h, --help            help for validate
+  -c, --config string       Path to vMCP configuration file (required)
+  -h, --help[=true|false]   help for validate
 ```
 
 ### Options inherited from parent commands
 
 ```
-      --debug   Enable debug mode
+      --debug[=true|false]   Enable debug mode
 ```
 
 ### SEE ALSO

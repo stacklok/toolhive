@@ -45,7 +45,7 @@ thv proxy tunnel [flags] TARGET SERVER_NAME
 ### Options
 
 ```
-  -h, --help                     help for tunnel
+  -h, --help[=true|false]        help for tunnel
       --provider-args string     JSON object with provider-specific arguments (default "{}")
       --tunnel-provider string   The provider to use for the tunnel (e.g., 'ngrok') - mandatory
 ```
@@ -53,7 +53,7 @@ thv proxy tunnel [flags] TARGET SERVER_NAME
 ### Options inherited from parent commands
 
 ```
-      --debug   Enable debug mode
+      --debug[=true|false]   Enable debug mode
 ```
 
 ### SEE ALSO

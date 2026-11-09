@@ -33,10 +33,12 @@ type clientAssertionStoreFailureKey struct{}
 type clientAssertionStoreFailure struct{ err error }
 
 // RecordClientAssertionStoreFailure lets a storage backend report that it could
-// not check a client assertion's jti for a reason other than a replay. fosite
-// discards the error ClientAssertionJWTValid returns, so the client
-// authentication strategy reads it from the context instead. Storage
-// decorators must pass ctx through to the backend unchanged.
+// not check or record a client assertion's jti for a reason other than a replay.
+// fosite discards the error ClientAssertionJWTValid returns, so the client
+// authentication strategy reads the recorded error from the context instead. For
+// both calls, the recorded error tells the strategy that the failure is a storage
+// failure rather than a verdict on the assertion, so it is returned as
+// server_error. Storage decorators must pass ctx through to the backend unchanged.
 func RecordClientAssertionStoreFailure(ctx context.Context, err error) {
 	if f, ok := ctx.Value(clientAssertionStoreFailureKey{}).(*clientAssertionStoreFailure); ok {
 		f.err = err
@@ -64,7 +66,7 @@ func NewClientAssertionStoreFailureContext(ctx context.Context) (context.Context
 // 400), as RFC 6749 section 5.2 says for a missing parameter. Errors that are
 // not a verdict on the assertion are not rewritten into invalid_client: a
 // misconfiguration is returned unchanged, and a storage failure while checking
-// the jti is reported by the storage backend through
+// or recording the jti is reported by the storage backend through
 // RecordClientAssertionStoreFailure and returned as server_error (HTTP 500).
 func newClientAssertionErrorStrategy(next fosite.ClientAuthenticationStrategy) fosite.ClientAuthenticationStrategy {
 	return func(ctx context.Context, r *http.Request, form url.Values) (fosite.Client, error) {

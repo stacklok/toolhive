@@ -1370,6 +1370,26 @@ func TestRedisStorage_ClientAssertionJWT(t *testing.T) {
 		assert.Equal(t, err, recorded())
 	})
 
+	tests := []struct {
+		name      string
+		expOffset time.Duration
+	}{
+		{"failure to record the jti is recorded for the client authentication strategy", time.Minute},
+		{"failure to remove the reservation is recorded for the client authentication strategy", -time.Hour},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+				ctx, recorded := server.NewClientAssertionStoreFailureContext(ctx)
+				mr.Close()
+				err := s.SetClientAssertionJWT(ctx, "any-jti", time.Now().Add(tt.expOffset))
+				require.Error(t, err)
+				assert.Equal(t, err, recorded())
+			})
+		})
+	}
+
 	t.Run("replay is not recorded as a backend failure", func(t *testing.T) {
 		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
 			ctx, recorded := server.NewClientAssertionStoreFailureContext(ctx)

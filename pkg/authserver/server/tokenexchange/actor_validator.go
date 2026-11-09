@@ -5,7 +5,12 @@ package tokenexchange
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"time"
+
+	"github.com/ory/fosite"
+	"github.com/ory/x/errorsx"
 
 	"github.com/stacklok/toolhive/pkg/authserver/server/session"
 )
@@ -192,4 +197,97 @@ func (e *ActorDeniedError) Error() string {
 		return "actor denied"
 	}
 	return "actor denied: " + string(e.Reason)
+}
+
+// Reasons logged for an actor validation outcome. They are fixed strings. The
+// three refusal reasons reuse the ActorDeniedReason values the client sees.
+const (
+	refuseActorValidator = "actor_validator_error"
+	refuseActorResult    = "actor_result_invalid"
+)
+
+// maxActorAgentIDLen is the longest AgentID, in bytes, that ToolHive accepts.
+const maxActorAgentIDLen = 255
+
+// mapActorOutcome turns a validator's answer into the accepted result, the
+// reason to log and the error for the client. checkedAt is the time just after
+// the validator returned. On any error the returned result is the zero value,
+// and when err is not nil the result passed in is ignored.
+func mapActorOutcome(res ActorResult, err error, checkedAt time.Time) (ActorResult, string, error) {
+	if err != nil {
+		reason, clientErr := classifyActorError(err)
+		return ActorResult{}, reason, clientErr
+	}
+	if reason, clientErr := checkActorResult(res, checkedAt); clientErr != nil {
+		return ActorResult{}, reason, clientErr
+	}
+	return res, "", nil
+}
+
+// actorRefusal builds the client error for a refusal reason.
+func actorRefusal(reason ActorDeniedReason) error {
+	return errorsx.WithStack(exactReason(fosite.ErrInvalidRequest.ErrorField, string(reason)))
+}
+
+// classifyActorError maps an error returned by a validator. Only a non-nil
+// *ActorDeniedError with a documented reason is a refusal; everything else is a
+// server error.
+func classifyActorError(err error) (string, error) {
+	var denied *ActorDeniedError
+	if !errors.As(err, &denied) || denied == nil {
+		return refuseActorValidator, actorValidationFailed(errors.New(err.Error()))
+	}
+	switch denied.Reason {
+	case ActorDeniedReasonSVIDExpired, ActorDeniedReasonApprovalRequired, ActorDeniedReasonDenied:
+		return string(denied.Reason), actorRefusal(denied.Reason)
+	default:
+		return refuseActorValidator, actorValidationFailed(errors.New(err.Error()))
+	}
+}
+
+// checkActorResult checks an accepted result: the agent ID, then the expiry.
+// Expiry is compared in whole seconds, the resolution of a JWT exp claim.
+func checkActorResult(res ActorResult, checkedAt time.Time) (string, error) {
+	if problem := agentIDProblem(res.AgentID); problem != nil {
+		return refuseActorResult, actorValidationFailed(problem)
+	}
+	if res.ExpiresAt.IsZero() {
+		return refuseActorResult, actorValidationFailed(errors.New("expiry is zero"))
+	}
+	if res.ExpiresAt.Unix() <= checkedAt.Unix() {
+		return string(ActorDeniedReasonSVIDExpired), actorRefusal(ActorDeniedReasonSVIDExpired)
+	}
+	return "", nil
+}
+
+// agentIDProblem returns nil when id is 1 to 255 bytes of printable ASCII ('!'
+// to '~') with no ':'. Otherwise it describes the problem by length, or by the
+// offset and value of the first bad byte, never by the ID itself. It checks
+// bytes, not runes.
+func agentIDProblem(id string) error {
+	if id == "" || len(id) > maxActorAgentIDLen {
+		return fmt.Errorf("agent ID is invalid: length %d", len(id))
+	}
+	for i := 0; i < len(id); i++ {
+		if c := id[i]; c < 0x21 || c > 0x7E || c == ':' {
+			return fmt.Errorf("agent ID is invalid: byte 0x%02x at offset %d", c, i)
+		}
+	}
+	return nil
+}
+
+// actorValidationFailed is the generic server_error for a validator failure the
+// client cannot act on. The cause travels with WithWrap so the caller can log
+// it. Unlike issueFailed in refresh_token_handler.go, which logs its cause where
+// the failure happens, this helper returns the cause, because the validator runs
+// in its own goroutine and the caller logs it once. For a validator error the
+// cause is a flattened text copy, so nothing the validator wrapped is reachable
+// through errors.Is or errors.As: fosite would otherwise react to a wrapped
+// fosite.ErrUnknownRequest. The copy still holds the validator's text
+// unredacted; the caller must replace it with a copy that has the actor token
+// redacted before logging or returning it. Never use WithDebug here: fosite
+// appends the debug text to error_description.
+func actorValidationFailed(cause error) error {
+	return errorsx.WithStack(
+		fosite.ErrServerError.WithHint("The actor token could not be validated.").WithWrap(cause))
 }

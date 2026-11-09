@@ -1046,10 +1046,20 @@ func (s *RedisStorage) SetClientAssertionJWT(ctx context.Context, jti string, ex
 	if ttl <= 0 {
 		slog.Debug("removing reservation for already-expired client assertion JWT",
 			"jti", jti, "exp", exp)
-		return s.client.Del(ctx, key).Err()
+		if err := s.client.Del(ctx, key).Err(); err != nil {
+			err = fmt.Errorf("failed to remove client assertion JWT reservation: %w", err)
+			server.RecordClientAssertionStoreFailure(ctx, err)
+			return err
+		}
+		return nil
 	}
 
-	return s.client.Set(ctx, key, "1", ttl).Err()
+	if err := s.client.Set(ctx, key, "1", ttl).Err(); err != nil {
+		err = fmt.Errorf("failed to record client assertion JWT: %w", err)
+		server.RecordClientAssertionStoreFailure(ctx, err)
+		return err
+	}
+	return nil
 }
 
 // ConsumeAssertionJWT atomically records an assertion JWT as consumed until its

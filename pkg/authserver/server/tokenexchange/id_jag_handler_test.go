@@ -328,6 +328,79 @@ func TestIDJAGHandler_ClientGrantAndAudience(t *testing.T) {
 	}
 }
 
+func TestIDJAGHandler_ResourceClaim(t *testing.T) {
+	t.Parallel()
+
+	const otherResource = "https://other.example.com"
+	tests := []struct {
+		name           string
+		claim          any // nil leaves the assertion without a resource claim
+		omitResource   bool
+		clientAudience []string // nil keeps idJAGTestResource
+		wantErrIs      error
+	}{
+		{name: "requested resource equal to the claim is accepted", claim: idJAGTestResource},
+		{name: "requested resource different from the claim is refused", claim: otherResource, wantErrIs: server.ErrInvalidTarget},
+		{name: "omitted resource uses a single-valued claim", claim: idJAGTestResource, omitResource: true},
+		{
+			name:         "one-element array claim with omitted resource is refused",
+			claim:        []any{idJAGTestResource},
+			omitResource: true,
+			wantErrIs:    fosite.ErrInvalidRequest,
+		},
+		{name: "omitted resource without a claim is refused", omitResource: true, wantErrIs: fosite.ErrInvalidRequest},
+		{
+			name:           "defaulted resource outside the client audiences is refused",
+			claim:          idJAGTestResource,
+			omitResource:   true,
+			clientAudience: []string{otherResource},
+			wantErrIs:      server.ErrInvalidTarget,
+		},
+		{name: "array claim naming the requested resource is accepted", claim: []any{otherResource, idJAGTestResource}},
+		{
+			name:      "array claim not naming the requested resource is refused",
+			claim:     []any{otherResource, "https://third.example.com"},
+			wantErrIs: server.ErrInvalidTarget,
+		},
+		{
+			name:         "array claim with omitted resource is refused as ambiguous",
+			claim:        []any{otherResource, idJAGTestResource},
+			omitResource: true,
+			wantErrIs:    fosite.ErrInvalidRequest,
+		},
+		{name: "non-string claim is refused", claim: 42.0, wantErrIs: fosite.ErrInvalidGrant},
+		{name: "empty array claim is refused", claim: []any{}, wantErrIs: fosite.ErrInvalidGrant},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			tj := newTestJWKS(t)
+			claims := validIDJAGClaims()
+			if tt.claim != nil {
+				claims.Extra["resource"] = tt.claim
+			}
+			consumer := &recordingAssertionConsumer{}
+			h := newIDJAGTestHandler(t, &testJWTBearerAssertionValidator{claims: claims}, consumer)
+			req := newIDJAGRequest(t, tj, idJAGTestClientID)
+			if tt.omitResource {
+				req.Form.Del("resource")
+			}
+			if tt.clientAudience != nil {
+				req.Client = &fosite.DefaultClient{ID: idJAGTestClientID, Audience: tt.clientAudience}
+			}
+
+			err := h.HandleTokenEndpointRequest(t.Context(), req)
+			if tt.wantErrIs == nil {
+				require.NoError(t, err)
+				assert.Equal(t, fosite.Arguments{idJAGTestResource}, req.GetGrantedAudience())
+				return
+			}
+			assert.ErrorIs(t, err, tt.wantErrIs)
+			assert.Empty(t, consumer.key, "a refused redemption must not consume the assertion")
+		})
+	}
+}
+
 func TestIDJAGHandler_IssuesBoundSession(t *testing.T) {
 	t.Parallel()
 

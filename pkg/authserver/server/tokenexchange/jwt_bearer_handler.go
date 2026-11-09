@@ -229,18 +229,17 @@ func validateJWTBearerPolicy(form url.Values, claims *ValidatedClaims, policy *J
 	if claims.IssuedAt.IsZero() || claims.Expiry.IsZero() || claims.Expiry.Sub(claims.IssuedAt) > policy.maxAssertionAge {
 		return "", errorsx.WithStack(fosite.ErrInvalidGrant.WithHint("The JWT bearer assertion exceeds the configured maximum age."))
 	}
-	resources, present := form["resource"]
-	if !present || len(resources) != 1 || resources[0] == "" {
-		return "", errorsx.WithStack(fosite.ErrInvalidRequest.WithHint(
-			"Exactly one resource parameter is required for the JWT-bearer grant."))
+	requested, err := resolveJWTBearerResource(form, claims)
+	if err != nil {
+		return "", err
 	}
-	if err := server.ValidateAudienceURI(resources[0]); err != nil {
+	if err := server.ValidateAudienceURI(requested); err != nil {
 		return "", errorsx.WithStack(err)
 	}
 	for _, binding := range policy.SubjectBindings {
 		if binding.Subject == claims.Subject {
 			for _, resource := range binding.AllowedResources {
-				if resource == resources[0] {
+				if resource == requested {
 					return resource, nil
 				}
 			}
@@ -252,6 +251,71 @@ func validateJWTBearerPolicy(form url.Values, claims *ValidatedClaims, policy *J
 	}
 	return "", errorsx.WithStack(fosite.ErrInvalidGrant.WithHint(
 		"The JWT bearer assertion subject is not configured for this grant."))
+}
+
+// resolveJWTBearerResource picks the resource to issue for. When the assertion
+// carries a resource claim, the request must name one of its values. An
+// omitted resource parameter falls back to a string claim; with an array claim
+// it is ambiguous, and with no claim there is no default.
+func resolveJWTBearerResource(form url.Values, claims *ValidatedClaims) (string, error) {
+	claimed, err := assertionResourceClaim(claims)
+	if err != nil {
+		return "", err
+	}
+	resources, present := form["resource"]
+	if !present {
+		if single, ok := claims.Extra["resource"].(string); ok {
+			return single, nil
+		}
+		if claimed == nil {
+			return "", errorsx.WithStack(fosite.ErrInvalidRequest.WithHint(
+				"A resource parameter is required because the assertion carries no resource claim."))
+		}
+		return "", errorsx.WithStack(fosite.ErrInvalidRequest.WithHint(
+			"A resource parameter is required because the assertion's resource claim is an array."))
+	}
+	if len(resources) != 1 || resources[0] == "" {
+		return "", errorsx.WithStack(fosite.ErrInvalidRequest.WithHint(
+			"Exactly one resource parameter is required for the JWT-bearer grant."))
+	}
+	if claimed != nil && !slices.Contains(claimed, resources[0]) {
+		return "", errorsx.WithStack(server.ErrInvalidTarget.WithHint(
+			"The requested resource is not one the assertion was issued for."))
+	}
+	return resources[0], nil
+}
+
+// assertionResourceClaim returns the assertion's resource claim as a list, or
+// nil when the claim is absent. The claim is a string or an array of strings;
+// any other shape, or an empty value, is refused rather than treated as absent.
+func assertionResourceClaim(claims *ValidatedClaims) ([]string, error) {
+	raw, ok := claims.Extra["resource"]
+	if !ok {
+		return nil, nil
+	}
+	malformed := errorsx.WithStack(fosite.ErrInvalidGrant.WithHint("The assertion's resource claim is malformed."))
+	switch v := raw.(type) {
+	case string:
+		if v == "" {
+			return nil, malformed
+		}
+		return []string{v}, nil
+	case []any:
+		if len(v) == 0 {
+			return nil, malformed
+		}
+		values := make([]string, 0, len(v))
+		for _, e := range v {
+			s, ok := e.(string)
+			if !ok || s == "" {
+				return nil, malformed
+			}
+			values = append(values, s)
+		}
+		return values, nil
+	default:
+		return nil, malformed
+	}
 }
 
 // PopulateTokenEndpointResponse issues only an access token.

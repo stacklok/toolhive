@@ -1184,10 +1184,16 @@ spec:
 
   Beyond cryptographic and claim validation, `JWTBearerGrantPolicy.SubjectBindings`
   is an exact-match allowlist: an assertion's `sub` must have a configured
-  binding, and the request's `resource` parameter (required, exactly one)
-  must be one of that binding's `allowed_resources`. There is no wildcard
-  subject or resource — every accepted assertion subject and resource pair is
-  named explicitly.
+  binding, and the requested resource must be one of that binding's
+  `allowed_resources`. There is no wildcard subject or resource — every
+  accepted assertion subject and resource pair is named explicitly.
+
+  When the assertion carries a `resource` claim (a string or an array), the
+  `resource` parameter must name one of its values, or the grant fails with
+  `invalid_target`. Without the parameter, a string claim is used; an array
+  claim, or no claim, fails with `invalid_request`. The resolved resource then
+  goes through the subject binding and, for an ID-JAG, the client audience
+  check.
 - **Synthetic subject and client identity.** The issued token's `sub` is
   `<assertion issuer>#<assertion subject>` (`session.New`'s first argument,
   matching the delegated-token subject qualification pattern in [Accepted

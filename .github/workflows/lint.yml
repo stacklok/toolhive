@@ -9,9 +9,10 @@ permissions:
 jobs:
   lint-go-code:
     name: Lint Go Code
-    # golangci-lint itself runs for well under a minute here; the job is
-    # dominated by checkout, toolchain setup and cache restore, none of which
-    # scale with cores. The standard runner is free for this public repo.
+    # golangci-lint itself reports "0 issues" in a few minutes on the standard
+    # runner, but the runner's speed varies, and the job has hit the 5m
+    # --timeout below on otherwise clean code. The timeout gives headroom.
+    # The standard runner is free for this public repo.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -56,4 +57,4 @@ jobs:
           # Pin to a known-good release so lint behavior is reproducible.
           version: v2.15.0
           # Enable golangci-lint's built-in caching (removes skip-cache: true)
-          args: --timeout=5m
+          args: --timeout=10m

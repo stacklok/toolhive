@@ -974,9 +974,15 @@ func (s *MemoryStorage) ClientAssertionJWTValid(_ context.Context, jti string) e
 // client's own assertion claims — otherwise a registered caller could set
 // exp decades out and grow this map indefinitely. Unconditional overwrite,
 // not a fresh atomic check: only the caller that already won
-// ClientAssertionJWTValid's reservation reaches this call.
+// ClientAssertionJWTValid's reservation reaches this call. An exp that is not
+// in the future is refused (server.ValidateClientAssertionExp) and leaves the
+// reservation as it was.
 func (s *MemoryStorage) SetClientAssertionJWT(_ context.Context, jti string, exp time.Time) error {
-	if time.Until(exp) > server.MaxAssertionLifespan {
+	now := time.Now()
+	if err := server.ValidateClientAssertionExp(exp, now); err != nil {
+		return err
+	}
+	if exp.Sub(now) > server.MaxAssertionLifespan {
 		return fosite.ErrInvalidClient.WithHintf(
 			"The 'client_assertion' lifetime exceeds the maximum of %s.", server.MaxAssertionLifespan)
 	}

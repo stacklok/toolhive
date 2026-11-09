@@ -397,13 +397,6 @@ func TestIntegration_ClientAssertionJWT(t *testing.T) {
 			assert.ErrorIs(t, s.ClientAssertionJWTValid(ctx, "int-jti"), fosite.ErrJTIKnown)
 		})
 	})
-
-	t.Run("expired JTI not stored", func(t *testing.T) {
-		withIntegrationStorage(t, func(ctx context.Context, s *RedisStorage) {
-			require.NoError(t, s.SetClientAssertionJWT(ctx, "exp-jti", time.Now().Add(-time.Hour)))
-			require.NoError(t, s.ClientAssertionJWTValid(ctx, "exp-jti"))
-		})
-	})
 }
 
 // --- Storage Interface: Authorization Code ---

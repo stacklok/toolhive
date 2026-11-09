@@ -938,7 +938,15 @@ A client proves possession of its private key by sending a signed
 JWKS. The assertion's `aud` may be the issuer or the token endpoint URL; see
 [Client-assertion audience](17-token-exchange-delegation.md#client-assertion-audience).
 Assertion replay markers are retained until the assertion `exp` in both
-storage backends. Redis also persists the registered client and its JWKS under
+storage backends. Both the in-memory and Redis backends refuse a non-future
+`exp` in `SetClientAssertionJWT` through one shared rule,
+`server.ValidateClientAssertionExp` (an `exp` of 0, a wrapped or negative
+value, or a past time), because a backend would otherwise record the marker as
+already expired. The provider also hands fosite a wrapper around the backend
+that applies the same rule, so a backend that skips it is still covered; see
+[Secretless DCR delegate flow](17-token-exchange-delegation.md#secretless-dcr-delegate-flow). A
+refused marker leaves the short reservation in place, so the `jti` stays
+known. Redis also persists the registered client and its JWKS under
 the auth server's isolated key prefix, so replicas sharing Redis can use the
 same registration. The in-memory backend is process-local and loses registrations
 on restart.

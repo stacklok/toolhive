@@ -346,9 +346,22 @@ server verifies it against the stored inline JWKS and rejects replay while the
 assertion is valid. No `client_secret` is included in registration or token
 exchange.
 
+The server keeps the replay marker of each `jti` until `exp`. A deadline in the
+past would end the marker at once and allow replay, so recording the marker
+fails with `invalid_client` unless `exp` is after the current time. This refuses
+an `exp` of 0, which fosite's expiry check skips; an `exp` near the int64
+limit, which wraps to a time before 1970; and an `exp` equal to the current
+whole second, which fosite's `now <= exp` check still accepts. Both backends
+apply the rule in `SetClientAssertionJWT` through
+`server.ValidateClientAssertionExp`, and the storage given to fosite's provider
+is wrapped so the rule holds in front of any backend. The handler factories
+receive the unwrapped storage, because handlers call `storage.Unwrap` and check
+storage capabilities by type assertion, which the wrapper would hide.
+
 Every failed assertion check (unknown `kid`, bad signature, wrong `iss`, `sub`
-or `aud`, expired or not yet valid, `exp` more than 5 minutes ahead, reused
-`jti`) is refused with HTTP 401 `invalid_client`. The `error_description`
+or `aud`, expired or not yet valid, `exp` of 0 or not after the current time,
+`exp` more than 5 minutes ahead, reused `jti`) is refused with HTTP 401
+`invalid_client`. The `error_description`
 names the check that failed. A storage failure while checking or recording
 the `jti` is HTTP 500 `server_error`, so clients can retry it. A request
 that sets `client_assertion_type` but omits `client_assertion` is HTTP 400

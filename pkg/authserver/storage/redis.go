@@ -1029,30 +1029,23 @@ func (s *RedisStorage) ClientAssertionJWTValid(ctx context.Context, jti string) 
 // client's own assertion claims — otherwise a registered caller could set
 // exp decades out and give Redis a key with a correspondingly enormous TTL.
 // Unconditional overwrite, not a fresh atomic check: only the caller that
-// already won ClientAssertionJWTValid's reservation reaches this call. If
-// the JWT has already expired (exp is in the past), this deletes the
-// reservation instead: there is no need to keep it for replay detection
-// since the assertion will be rejected on expiry checks before reaching the
-// JTI lookup.
+// already won ClientAssertionJWTValid's reservation reaches this call.
+// An exp that is not in the future is refused (server.ValidateClientAssertionExp)
+// and the key is left as ClientAssertionJWTValid reserved it. The check must
+// precede Set: go-redis sends no expiry for a non-positive duration other than
+// -1ns, which it sends as KEEPTTL.
 func (s *RedisStorage) SetClientAssertionJWT(ctx context.Context, jti string, exp time.Time) error {
-	if time.Until(exp) > server.MaxAssertionLifespan {
+	now := time.Now()
+	if err := server.ValidateClientAssertionExp(exp, now); err != nil {
+		return err
+	}
+	ttl := exp.Sub(now)
+	if ttl > server.MaxAssertionLifespan {
 		return fosite.ErrInvalidClient.WithHintf(
 			"The 'client_assertion' lifetime exceeds the maximum of %s.", server.MaxAssertionLifespan)
 	}
 
 	key := redisKey(s.keyPrefix, KeyTypeJWT, jti)
-
-	ttl := time.Until(exp)
-	if ttl <= 0 {
-		slog.Debug("removing reservation for already-expired client assertion JWT",
-			"jti", jti, "exp", exp)
-		if err := s.client.Del(ctx, key).Err(); err != nil {
-			err = fmt.Errorf("failed to remove client assertion JWT reservation: %w", err)
-			server.RecordClientAssertionStoreFailure(ctx, err)
-			return err
-		}
-		return nil
-	}
 
 	if err := s.client.Set(ctx, key, "1", ttl).Err(); err != nil {
 		err = fmt.Errorf("failed to record client assertion JWT: %w", err)

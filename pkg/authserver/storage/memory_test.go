@@ -966,8 +966,14 @@ func TestMemoryStorage_ClientAssertionJWT(t *testing.T) {
 		{"known JTI is invalid", func(ctx context.Context, s *MemoryStorage) {
 			_ = s.SetClientAssertionJWT(ctx, "test-jti", time.Now().Add(time.Minute))
 		}, "test-jti", fosite.ErrJTIKnown},
-		{"expired JTI is valid", func(ctx context.Context, s *MemoryStorage) {
-			_ = s.SetClientAssertionJWT(ctx, "expired-jti", time.Now().Add(-time.Hour))
+		{"refused past exp leaves jti reserved", func(ctx context.Context, s *MemoryStorage) {
+			_ = s.ClientAssertionJWTValid(ctx, "past-jti")
+			_ = s.SetClientAssertionJWT(ctx, "past-jti", time.Now().Add(-time.Hour)) // refused
+		}, "past-jti", fosite.ErrJTIKnown},
+		{"expired marker is valid", func(_ context.Context, s *MemoryStorage) {
+			s.mu.Lock()
+			s.clientAssertionJWTs["expired-jti"] = time.Now().Add(-time.Hour)
+			s.mu.Unlock()
 		}, "expired-jti", nil},
 	}
 
@@ -995,6 +1001,21 @@ func TestMemoryStorage_ClientAssertionJWT(t *testing.T) {
 			require.ErrorAs(t, err, &rfcErr)
 			assert.Equal(t, fosite.ErrInvalidClient.ErrorField, rfcErr.ErrorField)
 			assert.Equal(t, 401, rfcErr.CodeField)
+		})
+	})
+
+	t.Run("non-future exp is invalid_client and writes no marker", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			err := s.SetClientAssertionJWT(ctx, "bad-jti", time.Now().Add(-time.Hour))
+
+			var rfcErr *fosite.RFC6749Error
+			require.ErrorAs(t, err, &rfcErr)
+			assert.Equal(t, fosite.ErrInvalidClient.ErrorField, rfcErr.ErrorField)
+			assert.Contains(t, rfcErr.HintField, "'exp' in the future")
+			s.mu.RLock()
+			_, exists := s.clientAssertionJWTs["bad-jti"]
+			s.mu.RUnlock()
+			assert.False(t, exists)
 		})
 	})
 

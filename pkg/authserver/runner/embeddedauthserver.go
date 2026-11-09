@@ -238,8 +238,9 @@ func NewEmbeddedAuthServer(
 // closeTrackingStorage wrapper to verify the deferred-cleanup contract.
 //
 // Resource ownership: on success, the returned EmbeddedAuthServer takes
-// ownership of stor (its Close releases the backend). On any error path
-// after entry, the deferred cleanup closes stor before returning so a
+// ownership of stor (its Close releases the backend). If the initial nil cfg or
+// stor check fails, stor remains caller-owned. On any subsequent error path,
+// the deferred cleanup closes stor before returning so a
 // crash-looping caller (typical when DCR's network I/O fails) does not
 // leak the Redis client connection pool / MemoryStorage cleanup goroutine
 // on every restart. The named return retErr is the gate.

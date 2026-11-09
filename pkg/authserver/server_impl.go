@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"reflect"
 	"slices"
+	"sync"
 	"time"
 
 	"github.com/ory/fosite"
@@ -38,7 +39,9 @@ import (
 
 // server is the internal implementation of the Server interface.
 type server struct {
-	handler http.Handler
+	closeOnce sync.Once
+	closeErr  error
+	handler   http.Handler
 	// oauthHandler is the handler behind handler, kept so Close can release
 	// the metric callback it registered.
 	oauthHandler *handlers.Handler
@@ -1026,31 +1029,34 @@ func (s *server) UpdateUpstreamClientCredentials(name string, creds upstream.Cli
 
 // Close releases resources held by the server: it drains upstream idle
 // connections, unregisters the handler's metric callback, shuts down its
-// SPIFFE bundle and trusted-issuer refresh workers, and closes storage. Shutdown errors are joined so neither hides
-// the other.
+// SPIFFE bundle and trusted-issuer refresh workers, and closes storage. Shutdown
+// errors are joined and the result is retained for subsequent calls.
 func (s *server) Close() error {
-	slog.Debug("closing OAuth authorization server")
-	s.CloseIdleConnections()
-	var errs []error
-	if s.oauthHandler != nil {
-		if err := s.oauthHandler.Close(); err != nil {
+	s.closeOnce.Do(func() {
+		slog.Debug("closing OAuth authorization server")
+		s.CloseIdleConnections()
+		var errs []error
+		if s.oauthHandler != nil {
+			if err := s.oauthHandler.Close(); err != nil {
+				errs = append(errs, err)
+			}
+		}
+		if s.spiffeBundleSource != nil {
+			if err := s.spiffeBundleSource.Close(); err != nil {
+				errs = append(errs, fmt.Errorf("failed to shut down SPIFFE bundle source: %w", err))
+			}
+		}
+		if s.trustedIssuerValidator != nil {
+			if err := s.trustedIssuerValidator.Close(); err != nil {
+				errs = append(errs, fmt.Errorf("failed to shut down trusted-issuer validator: %w", err))
+			}
+		}
+		if err := s.storage.Close(); err != nil {
 			errs = append(errs, err)
 		}
-	}
-	if s.spiffeBundleSource != nil {
-		if err := s.spiffeBundleSource.Close(); err != nil {
-			errs = append(errs, fmt.Errorf("failed to shut down SPIFFE bundle source: %w", err))
-		}
-	}
-	if s.trustedIssuerValidator != nil {
-		if err := s.trustedIssuerValidator.Close(); err != nil {
-			errs = append(errs, fmt.Errorf("failed to shut down trusted-issuer validator: %w", err))
-		}
-	}
-	if err := s.storage.Close(); err != nil {
-		errs = append(errs, err)
-	}
-	return errors.Join(errs...)
+		s.closeErr = errors.Join(errs...)
+	})
+	return s.closeErr
 }
 
 // createProvider creates a fosite OAuth2Provider configured for the authorization code flow.

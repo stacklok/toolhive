@@ -9,9 +9,12 @@ permissions:
 jobs:
   lint-go-code:
     name: Lint Go Code
-    # golangci-lint itself runs for well under a minute here; the job is
-    # dominated by checkout, toolchain setup and cache restore, none of which
-    # scale with cores. The standard runner is free for this public repo.
+    # The job is dominated by cold Go-build and golangci-lint caches. The
+    # build cache is saved in actions/cache's post-job step, which is skipped
+    # when a job fails, so main rarely has a warm cache and each PR writes its
+    # own ~1.4 GB build cache against the 10 GB repo budget. Cold runs take
+    # about 250-340s, so the 10m --timeout below gives headroom without
+    # hiding the cause. The standard runner is free for this public repo.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -56,4 +59,4 @@ jobs:
           # Pin to a known-good release so lint behavior is reproducible.
           version: v2.15.0
           # Enable golangci-lint's built-in caching (removes skip-cache: true)
-          args: --timeout=5m
+          args: --timeout=10m

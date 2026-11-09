@@ -1,0 +1,195 @@
+// SPDX-FileCopyrightText: Copyright 2026 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
+package tokenexchange
+
+import (
+	"context"
+	"time"
+
+	"github.com/stacklok/toolhive/pkg/authserver/server/session"
+)
+
+//go:generate mockgen -destination=mocks/mock_actor_validator.go -package=mocks -source=actor_validator.go ActorTokenValidator
+
+// ActorTokenValidator checks the actor token that a client presents during ID-JAG
+// issuance and reports which agent it belongs to. How a validator is registered and
+// selected is not part of this interface.
+//
+// ValidateActor is called once per issuance, after the grant checks and before the
+// ID-JAG is signed. ToolHive builds the act claim from the answer. A validator never
+// sets claims itself.
+//
+// # Result
+//
+// On success, return an ActorResult with a non-empty AgentID and a non-zero
+// ExpiresAt. ExpiresAt is the time at which the actor credential stops being valid.
+//
+// To refuse, return an *ActorDeniedError, optionally wrapped with %w. Use one of
+// the reasons ActorDeniedReasonSVIDExpired, ActorDeniedReasonApprovalRequired or
+// ActorDeniedReasonDenied. Return a pointer: an ActorDeniedError value does not
+// implement error. A nil *ActorDeniedError returned as the error is a server error,
+// not a refusal.
+//
+// Return a plain error when the validator cannot answer. That includes a validator
+// that is not ready yet, for example one bound late at startup. A plain error is
+// reported as a server error, never as a denial.
+//
+// # Requirements
+//
+//   - Refuse with ActorDeniedReasonSVIDExpired when the actor credential has expired.
+//     If the validator accepts a credential within its own clock-skew allowance, it
+//     may return that credential's past expiry in ExpiresAt. ToolHive then answers
+//     svid_expired, so the client renews the credential and retries.
+//   - Refuse with ActorDeniedReasonApprovalRequired when the user has not approved
+//     this agent. Use it when asking the user could help. For a validator that
+//     decides per target, the approval is for the target in ActorRequest.Target.
+//   - Refuse with ActorDeniedReasonDenied for everything else. That includes an agent
+//     with no record and a record that is disabled. A denial is final for the client.
+//   - Use ActorRequest.Target for decisions that depend on the gateway or connector.
+//     It holds the configured target, not text from the request.
+//   - Find the user by ActorRequest.Grant.UpstreamSubject when the validator binds
+//     users by a per-issuer claim. Check that StableClaim is the claim the validator
+//     expects for that Issuer, then look the user up by StableValue. A mismatch, or an
+//     issuer the validator does not know, is a configuration fault. Return a plain
+//     error for it, not a denial, because a denial is final for the client and would
+//     hide the fault from operators.
+//   - The whole validation shares one fixed budget of 5 seconds, including the
+//     validator's own calls to remote services. A validator that calls a remote
+//     service should set shorter deadlines of its own.
+//   - Honor ctx. ToolHive stops waiting when the budget is spent, but a validator
+//     that ignores ctx keeps running in its goroutine until it returns.
+//   - Never set claims. The issuing code builds act from AgentID and caps the ID-JAG's
+//     exp at ExpiresAt.
+//   - Return an AgentID that is 1 to 255 bytes long, uses only printable ASCII
+//     characters from '!' to '~' (no spaces or control characters), and contains no
+//     ':'. ToolHive rejects any other value as a server error and never rewrites it.
+//     The AgentID must be unique across every client the server serves.
+//   - Parse Grant.SubjectIdentifier as RFC 9493 JSON. Never compare it as text.
+//   - Use ActorResult.CredentialSubject for audit only. It never enters a token.
+//   - Keep credentials out of error text.
+//   - Be safe for concurrent use.
+//
+// # Compatibility
+//
+// ToolHive grows this API under the rules below, so a validator written today keeps
+// working.
+//
+//   - ToolHive never adds a method to ActorTokenValidator. A new capability is a new
+//     field, or a separate exported interface that ToolHive checks with a type
+//     assertion on the registered value.
+//   - ActorRequest, GrantOwner, ActorTarget, ActorResult and ActorDeniedError are
+//     passed by value and only gain fields; none is removed, renamed or retyped.
+//     session.UpstreamSubject belongs to the session package and may gain fields.
+//     Build ActorResult and ActorDeniedError with keyed literals so new fields do not
+//     break your code.
+//   - A new input field is safe to ignore. Its zero value means the value is not
+//     available. Anything a validator must act on to stay safe is opt-in through new
+//     configuration, never a silent new input.
+//   - A new output field is optional. Its zero value keeps today's behavior.
+//   - ToolHive may add refusal reasons. Each new reason is a documented change to the
+//     client-facing API. A reason outside the documented set is a server error, so a
+//     validator cannot break clients by returning a value they do not know.
+//   - Validator names that start with "toolhive." are reserved for built-in
+//     validators; an embedder must not use them.
+//   - Composition belongs to the embedder. A client uses one validator, and
+//     ToolHive offers no chain of validators. An embedder with several checks wraps
+//     them in one validator. A wrapper passes the request through unchanged and returns
+//     the first refusal.
+//   - Not promised: how many times the validator is called for each tool call, the
+//     order of this check relative to other server checks beyond what is stated above,
+//     or that the validator sees requests that ToolHive refuses earlier.
+type ActorTokenValidator interface {
+	ValidateActor(ctx context.Context, req ActorRequest) (ActorResult, error)
+}
+
+// ActorRequest is the input to ActorTokenValidator.ValidateActor.
+type ActorRequest struct {
+	// ActorToken is the raw actor credential presented by the client. It is always set
+	// when the validator is called. Do not log it or put it in an error.
+	ActorToken string
+	// ActorTokenType is the actor_token_type parameter. The caller guarantees it is a
+	// type the client is allowed to present.
+	ActorTokenType string
+	// ClientID is the authenticated client that asked for the ID-JAG. It is always set.
+	ClientID string
+	// Grant describes the user the ID-JAG is issued for.
+	Grant GrantOwner
+	// Target describes the gateway the ID-JAG is for. It is always set when the
+	// validator is called. A validator that does not decide by target may ignore it.
+	Target ActorTarget
+}
+
+// GrantOwner identifies the user that a grant belongs to.
+type GrantOwner struct {
+	// Subject is the user's sub claim as ToolHive knows it. It is always set.
+	Subject string
+	// SubjectIdentifier is the grant's sub_id as the raw RFC 9493 JSON text. Parse it;
+	// do not compare it as text. The zero value means the grant has none.
+	SubjectIdentifier string
+	// UpstreamSubject is the user's identity at the upstream provider. Issuer is the
+	// upstream's issuer URL. Subject is the upstream's raw sub from its validated ID
+	// token. StableClaim names the upstream claim ToolHive keys users on, for example
+	// "uid" or "oid", or "sub". StableValue is that claim's value for this user. A
+	// validator can bind users by a claim that is specific to one issuer. The zero
+	// value means the grant has none. ToolHive passes either a complete identity, with
+	// all four members set so that IsComplete holds, or the zero value.
+	UpstreamSubject session.UpstreamSubject
+}
+
+// ActorTarget describes the gateway that the ID-JAG is issued for.
+type ActorTarget struct {
+	// Issuer is the issuer of the target authorization server as configured. It
+	// becomes the ID-JAG's aud claim. It is always set when the validator is called.
+	Issuer string
+	// Resource is the resource the client requested, which is one of the target's
+	// configured resources. It is always set.
+	Resource string
+}
+
+// ActorResult is a validator's answer for an actor that was accepted.
+type ActorResult struct {
+	// AgentID names the agent instance. ToolHive places it in the act claim as sub. It
+	// must follow the rules in ActorTokenValidator. The zero value is a server error.
+	AgentID string
+	// ExpiresAt is when the actor credential stops being valid. The issuing code caps
+	// the ID-JAG's lifetime at this time. A value at or before the time ToolHive checks the
+	// result, compared in whole seconds, is answered as svid_expired. The zero value is
+	// a server error.
+	ExpiresAt time.Time
+	// CredentialSubject identifies the credential for audit logs. It never enters a
+	// token. The zero value means no subject is recorded.
+	CredentialSubject string
+}
+
+// ActorDeniedReason is the client-facing reason for refusing an actor.
+type ActorDeniedReason string
+
+const (
+	// ActorDeniedReasonSVIDExpired means the actor credential has expired. The client
+	// should renew the credential and retry.
+	ActorDeniedReasonSVIDExpired ActorDeniedReason = "svid_expired"
+	// ActorDeniedReasonApprovalRequired means the user has not approved this agent.
+	// Asking the user may help. Retrying alone will not.
+	ActorDeniedReasonApprovalRequired ActorDeniedReason = "approval_required"
+	// ActorDeniedReasonDenied means the agent is refused and retrying will not help.
+	ActorDeniedReasonDenied ActorDeniedReason = "denied"
+)
+
+// ActorDeniedError is returned by a validator to refuse an actor. Build it with a
+// keyed literal. The zero value has an empty Reason, which ToolHive reports as a
+// server error, because the reason is not one of the documented values.
+type ActorDeniedError struct {
+	// Reason is the client-facing reason. It must be one of the ActorDeniedReason
+	// constants. Any other value, including the zero value, is a server error.
+	Reason ActorDeniedReason
+}
+
+// Error returns "actor denied: <reason>", or "actor denied" when Reason is empty.
+// It is safe to call on a nil receiver, which also returns "actor denied".
+func (e *ActorDeniedError) Error() string {
+	if e == nil || e.Reason == "" {
+		return "actor denied"
+	}
+	return "actor denied: " + string(e.Reason)
+}

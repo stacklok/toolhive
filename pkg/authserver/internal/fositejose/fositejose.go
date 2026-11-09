@@ -8,9 +8,10 @@
 // The key conversions between go-jose v4 and v3 copy already-parsed keys
 // field by field, so key material is never re-parsed by go-jose v3.
 //
-// The embedded-JWK guard, IsUnsafeJWS, refuses JWS input with an embedded
-// key before fosite parses it with go-jose v3. go-jose v3 is affected by
-// GHSA-mgcc-cww5-fp2q and has no patched release.
+// The JWS guard, IsUnsafeJWS, refuses JWS input before fosite parses it with
+// go-jose v3, which has no patched release for two advisories:
+// GHSA-mgcc-cww5-fp2q (an embedded key in the header) and GHSA-vvm8-gf78-28g4
+// (unbounded JSON nesting in the header or payload).
 //
 // Remove this package once fosite moves to go-jose v4.
 package fositejose
@@ -80,18 +81,28 @@ func FromFositeKeySet(jwks *josev3.JSONWebKeySet) *jose.JSONWebKeySet {
 // parses it.
 //
 // fosite v0.49.0 parses client assertions and OpenID Connect request objects
-// with go-jose v3, which validates an RSA key embedded in a JWS header without
-// bounding its size (GHSA-mgcc-cww5-fp2q; no patched v3 exists). An
-// unauthenticated caller can use that to burn CPU before fosite looks up any
-// client. fosite never uses an embedded key, since it resolves keys from the
-// registered client, so refusing them does not affect conforming clients.
+// with go-jose v3 before it verifies their signatures, so an unauthenticated
+// caller reaches two go-jose v3 defects that have no patched v3 release:
+//
+//   - GHSA-mgcc-cww5-fp2q: go-jose v3 validates an RSA key embedded in a JWS
+//     header without bounding its size, which burns CPU before fosite looks up
+//     any client. A header with a "jwk" member is unsafe. fosite never uses an
+//     embedded key, since it resolves keys from the registered client, so
+//     refusing them does not affect conforming clients.
+//   - GHSA-vvm8-gf78-28g4: go-jose v3 decodes JSON with its own decoder, which
+//     recurses once per nesting level with no limit. A deeply nested header or
+//     payload exhausts the goroutine stack, which is a fatal error rather than
+//     a panic, so it stops the process. The header and payload must both be
+//     JSON that encoding/json accepts, and encoding/json refuses nesting
+//     deeper than 10000 levels, far below the depth that overflows go-jose v3.
+//     A JWS header and JWT claims are JSON objects, so conforming tokens pass.
 //
 // The check mirrors how go-jose v3's ParseSigned reads its input: whitespace
 // is stripped, input starting with "{" is the JSON serialization (whose
-// unprotected headers can also carry a key), and the compact form must have
-// exactly three segments. Anything that cannot be decoded as a compact JWS
-// header is reported unsafe, so a parsing difference fails closed. fosite
-// rejects such input anyway.
+// unprotected headers can also carry a key), the compact form must have
+// exactly three segments, and each segment is base64url with optional
+// padding. Anything that cannot be decoded is reported unsafe, so a parsing
+// difference fails closed. fosite rejects such input anyway.
 //
 // Remove this once fosite moves to go-jose v4.1.6 or later.
 func IsUnsafeJWS(token string) bool {
@@ -104,11 +115,13 @@ func IsUnsafeJWS(token string) bool {
 	if strings.HasPrefix(token, "{") || strings.Count(token, ".") != 2 {
 		return true
 	}
-	rawHeader, _, _ := strings.Cut(token, ".")
-	headerJSON, err := base64.RawURLEncoding.DecodeString(strings.TrimRight(rawHeader, "="))
+	rawHeader, rest, _ := strings.Cut(token, ".")
+	rawPayload, _, _ := strings.Cut(rest, ".")
+	headerJSON, err := decodeSegment(rawHeader)
 	if err != nil {
 		return true
 	}
+	// Unmarshal also enforces encoding/json's nesting limit on the header.
 	var header map[string]json.RawMessage
 	if err := json.Unmarshal(headerJSON, &header); err != nil {
 		return true
@@ -118,5 +131,15 @@ func IsUnsafeJWS(token string) bool {
 			return true
 		}
 	}
-	return false
+	payloadJSON, err := decodeSegment(rawPayload)
+	if err != nil {
+		return true
+	}
+	return !json.Valid(payloadJSON)
+}
+
+// decodeSegment decodes a compact JWS segment the way go-jose v3 does:
+// base64url with any trailing padding removed.
+func decodeSegment(segment string) ([]byte, error) {
+	return base64.RawURLEncoding.DecodeString(strings.TrimRight(segment, "="))
 }

@@ -905,14 +905,18 @@ level with its `client_id`) and must re-register. Re-registration issues a new
 one.
 
 A `client_assertion` must be a compact JWS whose protected header carries no
-`jwk` member; otherwise the token and device-authorization endpoints answer
+`jwk` member and whose header and payload are JSON nested no deeper than
+10000 levels; otherwise the token and device-authorization endpoints answer
 `invalid_client` before parsing it. An OpenID Connect `request` object on
 `/oauth/authorize` gets the same check, before the client is looked up, and is answered with
 `invalid_request_object`, without a redirect. Keys are always resolved from the
-client's registered JWKS, so an embedded key was never used. The check keeps
-untrusted JWTs away from the go-jose v3 parser inside the pinned fosite
-version (GHSA-mgcc-cww5-fp2q) and goes away once fosite moves to go-jose v4.
-Each rejection is logged at warn level.
+client's registered JWKS, so an embedded key was never used, and JWT claims
+are a JSON object, so conforming tokens pass. The check keeps untrusted JWTs
+away from the go-jose v3 parser inside the pinned fosite version, which has an
+unbounded embedded-key validation (GHSA-mgcc-cww5-fp2q) and an unbounded JSON
+nesting depth (GHSA-vvm8-gf78-28g4). It goes away once fosite moves to go-jose
+v4. Each rejection is logged at warn level. A `request_uri` is never fetched,
+because no client can register request URIs.
 
 A `private_key_jwt` DCR registration is restricted to the RFC 8693 token-exchange
 grant (`urn:ietf:params:oauth:grant-type:token-exchange`) and cannot request the

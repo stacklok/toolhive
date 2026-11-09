@@ -1026,11 +1026,10 @@ type EmbeddedAuthServerConfig struct {
 	// probes and metrics stay on plain HTTP. Both certificateSecretRef and
 	// privateKeySecretRef are required. It is required when
 	// inboundGrants.spiffeClientAuth enables spiffe_x509. That requirement is
-	// checked when the resource is reconciled and reported in status
-	// conditions; the API server does not reject it. The listener is
-	// reachable on the pod only: the operator does not yet add port 8443 to
-	// the Service or container ports. Updates to the referenced Secret
-	// contents are picked up without a pod restart.
+	// checked when the resource is reconciled and reported in status conditions;
+	// the API server does not reject it. The operator exposes the listener as an
+	// https-auth container port and Service port 8443. Updates to the referenced
+	// Secret contents are picked up without a pod restart.
 	// +optional
 	TLSListener *TLSListenerConfig `json:"tlsListener,omitempty"`
 

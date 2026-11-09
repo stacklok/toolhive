@@ -68,6 +68,8 @@ type Server interface {
 	// closes storage. It joins shutdown errors. Do not call it on a server whose
 	// storage is shared with another live server; retire that one with
 	// CloseIdleConnections instead.
+	// Close is safe to call repeatedly or concurrently on a server returned by
+	// New; each call returns the same shutdown result.
 	Close() error
 }
 
@@ -161,11 +163,24 @@ func UpdateUpstreamClientCredentials(s Server, name string, creds upstream.Clien
 
 // New creates a new OAuth authorization server and initializes the upstream
 // identity-extraction modifiers before constructing providers.
-// The storage parameter is required and determines where OAuth state is persisted.
-// Use storage.NewMemoryStorage() for single-instance deployments or provide
-// a distributed storage backend for production deployments.
+// The storage parameter is required; its unwrapped backend must also implement
+// storage.DCRCredentialStore. Use storage.NewMemoryStorage() for single-instance
+// deployments or provide a distributed storage backend for production deployments.
+//
+// If New fails, storage remains caller-owned and is not closed, but construction
+// may already have written to it. On success, Server.Close takes responsibility
+// for closing storage. Unlike New, runner.NewEmbeddedAuthServerWithStorage closes
+// supplied storage on errors after its initial nil-input checks, including config
+// validation errors. Construction failure releases any upstream pools and
+// validator workers created by the server.
+// HTTP clients injected into upstream providers remain caller-owned; the caller
+// is responsible for their connection pools and networking security policy.
 func New(ctx context.Context, cfg Config, stor storage.Storage) (Server, error) {
 	upstream.RegisterModifiers()
 	slog.Debug("creating new OAuth authorization server", "issuer", cfg.Issuer)
-	return newServer(ctx, cfg, stor)
+	srv, err := newServer(ctx, cfg, stor)
+	if err != nil {
+		return nil, err
+	}
+	return srv, nil
 }

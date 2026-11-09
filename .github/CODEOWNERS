@@ -3,7 +3,8 @@
 # Branch protection does not require code-owner review here, so this file
 # only decides who is auto-requested on a PR. It is kept minimal: list a
 # person only when they want every PR touching that path in their review
-# queue. Lines are LAST-MATCH-WINS.
+# queue, or when a path is sensitive enough to always deserve their look
+# (AI agent configuration, below). Lines are LAST-MATCH-WINS.
 
 # CLI (thv)
 cmd/thv/                               @ChrisJBurns
@@ -52,3 +53,14 @@ pkg/recovery/                          @ChrisJBurns
 
 # Architecture docs
 docs/arch/                             @ChrisJBurns
+
+# AI agent configuration — changes here affect what AI agents can do,
+# including the Claude workflows that run in CI. Kept last so these owners
+# win for agent files anywhere in the tree. Add any new workflow that runs
+# an AI agent here.
+CLAUDE.md                              @JAORMX @jhrozek @rdimitrov @jerm-dro
+AGENTS.md                              @JAORMX @jhrozek @rdimitrov @jerm-dro
+.claude/                               @JAORMX @jhrozek @rdimitrov @jerm-dro
+.github/workflows/claude.yml           @JAORMX @jhrozek @rdimitrov @jerm-dro
+.github/workflows/issue-triage.yml     @JAORMX @jhrozek @rdimitrov @jerm-dro
+.github/workflows/release-notes.yml    @JAORMX @jhrozek @rdimitrov @jerm-dro

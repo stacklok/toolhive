@@ -32,19 +32,19 @@ thv registry login [flags]
 ### Options
 
 ```
-  -p, --allow-private-ip   Allow --registry to reference a private IP address (default false). Mirrors the flag on 'thv config set-registry'.
-      --audience string    OAuth audience parameter for registry authentication (optional)
-      --client-id string   OAuth client ID for registry authentication
-  -h, --help               help for login
-      --issuer string      OIDC issuer URL for registry authentication
-      --registry string    Registry URL
-      --scopes strings     OAuth scopes for registry authentication (defaults to openid,offline_access)
+  -p, --allow-private-ip[=true|false]   Allow --registry to reference a private IP address (default false). Mirrors the flag on 'thv config set-registry'.
+      --audience string                 OAuth audience parameter for registry authentication (optional)
+      --client-id string                OAuth client ID for registry authentication
+  -h, --help[=true|false]               help for login
+      --issuer string                   OIDC issuer URL for registry authentication
+      --registry string                 Registry URL
+      --scopes strings                  OAuth scopes for registry authentication (defaults to openid,offline_access)
 ```
 
 ### Options inherited from parent commands
 
 ```
-      --debug   Enable debug mode
+      --debug[=true|false]   Enable debug mode
 ```
 
 ### SEE ALSO

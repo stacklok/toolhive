@@ -24,13 +24,13 @@ thv config otel get-sampling-rate [flags]
 ### Options
 
 ```
-  -h, --help   help for get-sampling-rate
+  -h, --help[=true|false]   help for get-sampling-rate
 ```
 
 ### Options inherited from parent commands
 
 ```
-      --debug   Enable debug mode
+      --debug[=true|false]   Enable debug mode
 ```
 
 ### SEE ALSO

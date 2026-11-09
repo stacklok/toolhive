@@ -25,13 +25,13 @@ thv llm config reset [flags]
 ### Options
 
 ```
-  -h, --help   help for reset
+  -h, --help[=true|false]   help for reset
 ```
 
 ### Options inherited from parent commands
 
 ```
-      --debug   Enable debug mode
+      --debug[=true|false]   Enable debug mode
 ```
 
 ### SEE ALSO

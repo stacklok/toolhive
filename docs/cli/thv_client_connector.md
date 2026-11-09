@@ -32,14 +32,14 @@ Re-running "thv llm setup --client claude-desktop" keeps existing connectors.
 ### Options
 
 ```
-      --client string   Client to configure (supported: claude-desktop)
-  -h, --help            help for connector
+      --client string       Client to configure (supported: claude-desktop)
+  -h, --help[=true|false]   help for connector
 ```
 
 ### Options inherited from parent commands
 
 ```
-      --debug   Enable debug mode
+      --debug[=true|false]   Enable debug mode
 ```
 
 ### SEE ALSO

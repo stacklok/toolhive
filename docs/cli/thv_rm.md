@@ -36,15 +36,15 @@ thv rm [workload-name...] [flags]
 ### Options
 
 ```
-      --all            Delete all workloads
-  -g, --group string   Filter by group
-  -h, --help           help for rm
+      --all[=true|false]    Delete all workloads
+  -g, --group string        Filter by group
+  -h, --help[=true|false]   help for rm
 ```
 
 ### Options inherited from parent commands
 
 ```
-      --debug   Enable debug mode
+      --debug[=true|false]   Enable debug mode
 ```
 
 ### SEE ALSO

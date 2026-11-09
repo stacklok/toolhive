@@ -24,13 +24,13 @@ thv config otel unset-env-vars [flags]
 ### Options
 
 ```
-  -h, --help   help for unset-env-vars
+  -h, --help[=true|false]   help for unset-env-vars
 ```
 
 ### Options inherited from parent commands
 
 ```
-      --debug   Enable debug mode
+      --debug[=true|false]   Enable debug mode
 ```
 
 ### SEE ALSO

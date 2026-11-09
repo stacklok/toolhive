@@ -32,23 +32,23 @@ thv vmcp serve [flags]
 ### Options
 
 ```
-  -c, --config string            Path to vMCP configuration file
-      --embedding-image string   TEI container image (Tier 2) (default "ghcr.io/huggingface/text-embeddings-inference:cpu-latest")
-      --embedding-model string   HuggingFace model name for semantic search (Tier 2) (default "BAAI/bge-small-en-v1.5")
-      --enable-audit             Enable audit logging with default configuration
-      --group string             ToolHive group name (zero-config quick mode when --config is omitted)
-  -h, --help                     help for serve
-      --host string              Host address to bind to (default "127.0.0.1")
-      --optimizer                Enable FTS5 keyword optimizer (Tier 1): exposes find_tool and call_tool instead of all backend tools
-      --optimizer-embedding      Enable managed TEI semantic optimizer (Tier 2); implies --optimizer
-      --port int                 Port to listen on (default 4483)
-      --session-ttl duration     Session inactivity timeout (e.g., 30m, 2h); zero uses the default (30m)
+  -c, --config string                      Path to vMCP configuration file
+      --embedding-image string             TEI container image (Tier 2) (default "ghcr.io/huggingface/text-embeddings-inference:cpu-latest")
+      --embedding-model string             HuggingFace model name for semantic search (Tier 2) (default "BAAI/bge-small-en-v1.5")
+      --enable-audit[=true|false]          Enable audit logging with default configuration
+      --group string                       ToolHive group name (zero-config quick mode when --config is omitted)
+  -h, --help[=true|false]                  help for serve
+      --host string                        Host address to bind to (default "127.0.0.1")
+      --optimizer[=true|false]             Enable FTS5 keyword optimizer (Tier 1): exposes find_tool and call_tool instead of all backend tools
+      --optimizer-embedding[=true|false]   Enable managed TEI semantic optimizer (Tier 2); implies --optimizer
+      --port int                           Port to listen on (default 4483)
+      --session-ttl duration               Session inactivity timeout (e.g., 30m, 2h); zero uses the default (30m)
 ```
 
 ### Options inherited from parent commands
 
 ```
-      --debug   Enable debug mode
+      --debug[=true|false]   Enable debug mode
 ```
 
 ### SEE ALSO

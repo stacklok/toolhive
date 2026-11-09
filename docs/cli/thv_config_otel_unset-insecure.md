@@ -24,13 +24,13 @@ thv config otel unset-insecure [flags]
 ### Options
 
 ```
-  -h, --help   help for unset-insecure
+  -h, --help[=true|false]   help for unset-insecure
 ```
 
 ### Options inherited from parent commands
 
 ```
-      --debug   Enable debug mode
+      --debug[=true|false]   Enable debug mode
 ```
 
 ### SEE ALSO

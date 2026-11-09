@@ -27,14 +27,14 @@ thv secret list [flags]
 ### Options
 
 ```
-  -h, --help     help for list
-      --system   List system-managed secrets (registry auth, workload tokens)
+  -h, --help[=true|false]     help for list
+      --system[=true|false]   List system-managed secrets (registry auth, workload tokens)
 ```
 
 ### Options inherited from parent commands
 
 ```
-      --debug   Enable debug mode
+      --debug[=true|false]   Enable debug mode
 ```
 
 ### SEE ALSO

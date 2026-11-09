@@ -20,13 +20,13 @@ thv config usage-metrics <enable|disable> [flags]
 ### Options
 
 ```
-  -h, --help   help for usage-metrics
+  -h, --help[=true|false]   help for usage-metrics
 ```
 
 ### Options inherited from parent commands
 
 ```
-      --debug   Enable debug mode
+      --debug[=true|false]   Enable debug mode
 ```
 
 ### SEE ALSO

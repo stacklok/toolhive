@@ -30,13 +30,13 @@ thv secret get <name> [flags]
 ### Options
 
 ```
-  -h, --help   help for get
+  -h, --help[=true|false]   help for get
 ```
 
 ### Options inherited from parent commands
 
 ```
-      --debug   Enable debug mode
+      --debug[=true|false]   Enable debug mode
 ```
 
 ### SEE ALSO

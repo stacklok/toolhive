@@ -20,13 +20,13 @@ The client command provides subcommands to manage MCP client integrations.
 ### Options
 
 ```
-  -h, --help   help for client
+  -h, --help[=true|false]   help for client
 ```
 
 ### Options inherited from parent commands
 
 ```
-      --debug   Enable debug mode
+      --debug[=true|false]   Enable debug mode
 ```
 
 ### SEE ALSO

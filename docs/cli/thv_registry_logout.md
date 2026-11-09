@@ -24,13 +24,13 @@ thv registry logout [flags]
 ### Options
 
 ```
-  -h, --help   help for logout
+  -h, --help[=true|false]   help for logout
 ```
 
 ### Options inherited from parent commands
 
 ```
-      --debug   Enable debug mode
+      --debug[=true|false]   Enable debug mode
 ```
 
 ### SEE ALSO

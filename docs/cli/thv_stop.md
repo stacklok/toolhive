@@ -35,16 +35,16 @@ thv stop [workload-name...] [flags]
 ### Options
 
 ```
-  -a, --all            Stop all running MCP servers
-  -g, --group string   Filter by group
-  -h, --help           help for stop
-      --timeout int    Timeout in seconds before forcibly stopping the workload (default 30)
+  -a, --all[=true|false]    Stop all running MCP servers
+  -g, --group string        Filter by group
+  -h, --help[=true|false]   help for stop
+      --timeout int         Timeout in seconds before forcibly stopping the workload (default 30)
 ```
 
 ### Options inherited from parent commands
 
 ```
-      --debug   Enable debug mode
+      --debug[=true|false]   Enable debug mode
 ```
 
 ### SEE ALSO

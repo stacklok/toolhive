@@ -24,14 +24,14 @@ thv runtime check [flags]
 ### Options
 
 ```
-  -h, --help          help for check
-      --timeout int   Timeout in seconds for runtime checks (default: 30 seconds) (default 30)
+  -h, --help[=true|false]   help for check
+      --timeout int         Timeout in seconds for runtime checks (default: 30 seconds) (default 30)
 ```
 
 ### Options inherited from parent commands
 
 ```
-      --debug   Enable debug mode
+      --debug[=true|false]   Enable debug mode
 ```
 
 ### SEE ALSO

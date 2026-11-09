@@ -9,10 +9,12 @@ permissions:
 jobs:
   lint-go-code:
     name: Lint Go Code
-    # golangci-lint itself reports "0 issues" in a few minutes on the standard
-    # runner, but the runner's speed varies, and the job has hit the 5m
-    # --timeout below on otherwise clean code. The timeout gives headroom.
-    # The standard runner is free for this public repo.
+    # The job is dominated by cold Go-build and golangci-lint caches. The
+    # build cache is saved in actions/cache's post-job step, which is skipped
+    # when a job fails, so main rarely has a warm cache and each PR writes its
+    # own ~1.4 GB build cache against the 10 GB repo budget. Cold runs take
+    # about 250-340s, so the 10m --timeout below gives headroom without
+    # hiding the cause. The standard runner is free for this public repo.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7

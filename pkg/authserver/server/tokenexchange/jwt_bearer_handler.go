@@ -388,7 +388,11 @@ func validateAssertionType(assertion string) error {
 	if !ok {
 		return errorsx.WithStack(fosite.ErrInvalidGrant.WithHint("The assertion JOSE typ header must be a string."))
 	}
-	if value == "" || value == "JWT" || value == oauthproto.JWTTypeIDJAG {
+	// An ID-JAG is not accepted here. Routing sends every assertion whose typ
+	// is exactly oauthproto.JWTTypeIDJAG to IDJAGHandler, so this handler never
+	// sees one, and any other spelling of that type must stay refused: it has
+	// not been through the client authentication IDJAGHandler requires.
+	if value == "" || value == "JWT" {
 		return nil
 	}
 	return errorsx.WithStack(fosite.ErrInvalidGrant.WithHint("The assertion JOSE typ header is not supported."))
@@ -396,14 +400,15 @@ func validateAssertionType(assertion string) error {
 
 // assertionType returns the raw JOSE typ header of the assertion, with no
 // normalization. JWT-bearer and ID-JAG routing (CanHandleTokenEndpointRequest
-// of both handlers, and CanSkipClientAuth) and validateAssertionType compare
-// this value exactly to "oauth-id-jag+jwt". That does not follow RFC 7515
-// Section 4.1.9, which says typ is compared case-insensitively and a value
-// without "/" is treated as if "application/" were prepended. So an ID-JAG
-// whose typ differs in case or carries the "application/" prefix is not routed
-// to IDJAGHandler, and validateAssertionType refuses it. This is a known gap;
-// it fails closed. rejectIDJAGType and pkg/auth already compare with
-// oauthproto.IsJOSEType.
+// of both handlers, and CanSkipClientAuth) compare this value exactly to
+// "oauth-id-jag+jwt", the spelling the ID-JAG draft requires of an issuer.
+// RFC 7515 Section 4.1.9 would also treat a different case, or the
+// "application/" prefix, as the same type, but redemption does not: such an
+// assertion is not routed to IDJAGHandler, and validateAssertionType refuses it
+// with invalid_grant. That narrowness is intended and fails closed. The deny
+// side is the opposite: rejectIDJAGType and pkg/auth compare with
+// oauthproto.IsJOSEType, so no spelling of the ID-JAG type passes as an access
+// token. Revisit this if an issuer is found to emit a variant spelling.
 func assertionType(assertion string) string {
 	parsed, err := jwt.ParseSigned(assertion, allowedSignatureAlgorithms)
 	if err != nil || len(parsed.Headers) != 1 {

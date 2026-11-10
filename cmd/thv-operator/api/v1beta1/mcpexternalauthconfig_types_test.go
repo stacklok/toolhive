@@ -1870,6 +1870,41 @@ func TestMCPExternalAuthConfig_validateUpstreamProvider(t *testing.T) {
 			errMsg:    "dcrConfig.softwareStatement: length",
 		},
 		{
+			name: "OAuth2 provider with DCRConfig clientName at MaxLength is accepted",
+			provider: UpstreamProviderConfig{
+				Name: "dcr-client-name-at-cap",
+				Type: UpstreamProviderTypeOAuth2,
+				OAuth2Config: &OAuth2UpstreamConfig{
+					AuthorizationEndpoint: "https://idp.example.com/authorize",
+					TokenEndpoint:         "https://idp.example.com/token",
+					UserInfo:              &UserInfoConfig{EndpointURL: "https://idp.example.com/userinfo"},
+					DCRConfig: &DCRUpstreamConfig{
+						DiscoveryURL: "https://idp.example.com/.well-known/openid-configuration",
+						ClientName:   makeStringOfLen(MaxDCRClientNameLength),
+					},
+				},
+			},
+			expectErr: false,
+		},
+		{
+			name: "OAuth2 provider with DCRConfig clientName over MaxLength is rejected",
+			provider: UpstreamProviderConfig{
+				Name: "dcr-client-name-over-cap",
+				Type: UpstreamProviderTypeOAuth2,
+				OAuth2Config: &OAuth2UpstreamConfig{
+					AuthorizationEndpoint: "https://idp.example.com/authorize",
+					TokenEndpoint:         "https://idp.example.com/token",
+					UserInfo:              &UserInfoConfig{EndpointURL: "https://idp.example.com/userinfo"},
+					DCRConfig: &DCRUpstreamConfig{
+						DiscoveryURL: "https://idp.example.com/.well-known/openid-configuration",
+						ClientName:   makeStringOfLen(MaxDCRClientNameLength + 1),
+					},
+				},
+			},
+			expectErr: true,
+			errMsg:    "dcrConfig.clientName: length",
+		},
+		{
 			name: "OAuth2 provider with identityFromToken empty subjectPath rejected",
 			provider: UpstreamProviderConfig{
 				Name: "snowflake",

@@ -2005,6 +2005,22 @@ func TestDCRUpstreamConfigValidate(t *testing.T) {
 			errMsg:  "rotation_key must be 1-64 characters",
 		},
 		{
+			name: "client_name at the 256-character cap passes validation",
+			config: DCRUpstreamConfig{
+				RegistrationEndpoint: "https://idp.example.com/register",
+				ClientName:           strings.Repeat("a", registration.MaxClientNameLength),
+			},
+		},
+		{
+			name: "client_name longer than 256 characters rejects",
+			config: DCRUpstreamConfig{
+				RegistrationEndpoint: "https://idp.example.com/register",
+				ClientName:           strings.Repeat("a", registration.MaxClientNameLength+1),
+			},
+			wantErr: true,
+			errMsg:  "client_name must be at most 256 characters",
+		},
+		{
 			name: "registration_probe authorizationEndpoint accepts",
 			config: DCRUpstreamConfig{
 				RegistrationEndpoint: "https://idp.example.com/register",

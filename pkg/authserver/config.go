@@ -1330,6 +1330,20 @@ type OAuth2UpstreamRunConfig struct {
 // surface), this field becomes a confused-deputy SSRF vector. Hardening is
 // tracked in https://github.com/stacklok/toolhive/issues/5135.
 type DCRUpstreamConfig struct {
+	// ClientName is the optional RFC 7591 "client_name" registration metadata
+	// sent when ToolHive registers with the upstream. When empty, ToolHive
+	// registers as "ToolHive MCP Client". It is display-only metadata: the
+	// upstream shows it on its authorization screen, and it is never used as
+	// a key. It is capped at 256 characters, matching the client_name bound
+	// the authserver enforces on inbound registrations.
+	//
+	// Changing it does not rename an already-registered client: the cached
+	// registration is keyed without the client name, so the new value applies
+	// only the next time ToolHive registers a fresh client — for example
+	// after rotating via RotationKey, or when the upstream rejects the cached
+	// registration.
+	ClientName string `json:"client_name,omitempty" yaml:"client_name,omitempty"`
+
 	// DiscoveryURL is the exact RFC 8414 / OIDC Discovery document URL to
 	// fetch at runtime. The resolver issues a single GET against this URL
 	// (no well-known-path fallback) and reads registration_endpoint,
@@ -2281,6 +2295,8 @@ func (c *OAuth2UpstreamRunConfig) validateTokenEndpointAuthMethod() error {
 // were accepted, an operator updating the env-var value would not realize
 // the file source still wins (or vice versa) and would silently keep
 // presenting a stale token at registration.
+//
+//nolint:gocyclo // Field-by-field validation: each DCR field adds a branch.
 func (c *DCRUpstreamConfig) Validate() error {
 	hasDiscovery := c.DiscoveryURL != ""
 	hasRegistration := c.RegistrationEndpoint != ""
@@ -2308,6 +2324,13 @@ func (c *DCRUpstreamConfig) Validate() error {
 	// YAML and CLI run-config paths, which have no admission-time schema.
 	if c.RotationKey != "" && !dcrRotationKeyPattern.MatchString(c.RotationKey) {
 		return fmt.Errorf("dcr_config: rotation_key must be 1-64 characters from [A-Za-z0-9._-]")
+	}
+
+	// Mirrors the CRD's MaxLength marker on clientName and the inbound
+	// registration bound (registration.MaxClientNameLength).
+	if len(c.ClientName) > registration.MaxClientNameLength {
+		return fmt.Errorf("dcr_config: client_name must be at most %d characters",
+			registration.MaxClientNameLength)
 	}
 
 	// Mirrors the CRD's Enum marker on registrationProbe; the resolver owns

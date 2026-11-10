@@ -142,4 +142,8 @@ const (
 	MetadataExtraKeyStepCount = coreaudit.MetadataExtraKeyStepCount
 	// MetadataExtraKeyTimeout is the key for the workflow timeout in milliseconds
 	MetadataExtraKeyTimeout = coreaudit.MetadataExtraKeyTimeout
+	// MetadataExtraKeyTraceID is the key for the W3C trace ID of the request that produced the event
+	MetadataExtraKeyTraceID = "trace_id"
+	// MetadataExtraKeySpanID is the key for the ID of the span active when the event was recorded
+	MetadataExtraKeySpanID = "span_id"
 )

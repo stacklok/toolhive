@@ -96,3 +96,7 @@ The proxy runner is the single enforcement point for:
 Any code that constructs a direct connection to a container — by using a raw host:port, reaching past the proxy interface, or type-asserting to an underlying transport — skips these controls entirely.
 
 **If you find a code path that contacts a container without going through the proxy runner, treat it as a security bug and fix it.**
+
+## Guard JWTs Before go-jose v3 Parses Them
+
+Never hand an untrusted JWT to go-jose v3 or fosite's `token/jwt` package, directly or through a new fosite route or handler, without first refusing it with `fositejose.IsUnsafeJWS`: go-jose v3 decodes JSON with no nesting limit (GHSA-vvm8-gf78-28g4), and the `restrict_go_jose_v3` depguard list in `.golangci.yml` only catches new imports, not new parsing in files already on it.

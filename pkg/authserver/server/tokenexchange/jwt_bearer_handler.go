@@ -406,9 +406,9 @@ func validateAssertionType(assertion string) error {
 // "application/" prefix, as the same type, but redemption does not: such an
 // assertion is not routed to IDJAGHandler, and validateAssertionType refuses it
 // with invalid_grant. That narrowness is intended and fails closed. The deny
-// side is the opposite: rejectIDJAGType and pkg/auth compare with
-// oauthproto.IsJOSEType, so no spelling of the ID-JAG type passes as an access
-// token. Revisit this if an issuer is found to emit a variant spelling.
+// side is the opposite: rejectIDJAGType and pkg/auth call idjag.IsIDJAG, which
+// compares with oauthproto.IsJOSEType, so no spelling of the ID-JAG type passes
+// as an access token. Revisit this if an issuer is found to emit a variant spelling.
 func assertionType(assertion string) string {
 	parsed, err := jwt.ParseSigned(assertion, allowedSignatureAlgorithms)
 	if err != nil || len(parsed.Headers) != 1 {

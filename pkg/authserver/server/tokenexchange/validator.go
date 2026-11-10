@@ -14,7 +14,7 @@ import (
 	"github.com/go-jose/go-jose/v4"
 	"github.com/go-jose/go-jose/v4/jwt"
 
-	"github.com/stacklok/toolhive/pkg/oauthproto"
+	"github.com/stacklok/toolhive/pkg/oauthproto/idjag"
 )
 
 // allowedSignatureAlgorithms lists the signing algorithms accepted during JWT verification.
@@ -266,7 +266,7 @@ func rejectIDJAGType(token *jwt.JSONWebToken) error {
 		return errors.New("token must contain exactly one JOSE signature")
 	}
 	typ, _ := token.Headers[0].ExtraHeaders[jose.HeaderType].(string)
-	if oauthproto.IsJOSEType(typ, oauthproto.JWTTypeIDJAG) {
+	if idjag.IsIDJAG(typ) {
 		return errors.New("token is an ID-JAG, which is not accepted in place of an access token")
 	}
 	return nil

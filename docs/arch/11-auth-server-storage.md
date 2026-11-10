@@ -380,6 +380,13 @@ thv:auth:{default:my-server}:reqid:access:{request-id}  → {sig1, sig2}
 thv:auth:{default:my-server}:user:upstream:{user-id}     → {session1, session2}
 ```
 
+The upstream refresh lease is a plain string key, not an index, holding the
+current holder's random owner token for the lease TTL:
+
+```
+thv:auth:{default:my-server}:upstream-lock:{row-id}      → {owner-token}
+```
+
 ### Exchange grant storage
 
 `ExchangeGrantStorage` keeps one record per refresh token issued through token exchange, found by the token's HMAC signature. Time decisions for records (live, expired, revoked) are made in Go against the store clock; the record's Redis TTL is only garbage collection. The replay marker is different: its window follows Redis's own TTL. The create script checks whether the marker key exists, and Go only skips the marker once its window has already passed. `ExchangeGrantMarkerMargin` absorbs clock skew and the time between reading the clock and running the script. Both effects can only lengthen the window, which is the safe direction.
@@ -413,16 +420,18 @@ Redis, that representation is its row-key format, so two `(sessionID,
 providerName)` pairs that happen to produce the same Redis key resolve to the
 same identity — that's safe because they're the same physical row. What's
 not allowed is aliasing two pairs that are genuinely different rows: the
-auth server uses this identity only as the key for its in-process
-`singleflight` group, then its leader re-reads the row before redeeming its
-refresh token, and it reads/writes under its own sessionID — aliasing
-distinct rows would cross credentials between sessions. This prevents
-duplicate redemption from stale concurrent callers served by the same
-process; the identity is not persisted, logged, or exposed.
+auth server uses this identity as the key for its in-process `singleflight`
+group and for the cross-process redemption lease described below, then its
+leader re-reads the row before redeeming its refresh token, and it
+reads/writes under its own sessionID — aliasing distinct rows would cross
+credentials between sessions. This prevents duplicate redemption from stale
+concurrent callers served by the same process; the identity is never logged
+or returned to a client, and the only place it is written is the lease key a
+backend derives from it, which lives no longer than the lease.
 
 This is deliberately narrower than #4122's original in-process-only scope: it
-does not by itself provide distributed coordination across replicas. That
-coordination now exists as a second, independent layer:
+does not by itself provide distributed coordination across replicas. Two
+further layers do. The first:
 `UpstreamTokenStorage.CompareAndSwapUpstreamTokens` conditions a refresh write
 on the refresh token currently stored still matching the value the caller
 redeemed with, failing the write (`ErrConcurrentRefresh`) instead of
@@ -442,17 +451,57 @@ redemption is safe at the upstream provider. Both replicas still call
 provider enforcing strict single-use rotation (RFC 9700 §4.14.2 replay
 detection), two concurrent redemptions of the same refresh token can still
 be indistinguishable from a replay at the IdP, which may revoke the grant
-regardless of which replica's write wins here. CAS is fully sufficient only
-where the provider tolerates a short grace/leeway window in which more than
-one redeemed child stays valid (e.g. Read.ai's stated behavior) — outside
-that window, closing the gap requires serializing the *redemption* itself
-(a distributed lock around the read-redeem-write sequence), not just the
-write. That lock is a deliberate follow-up, not implemented here: this layer
-only prevents storage corruption from a lost write race, and its own log
-distinguishes a genuine lost race (an unexpired row on re-read) from a row
-that is simply gone (deleted by logout or evicted by TTL, `ErrNotFound` on
-re-read) — the latter is expected behavior, not a race, and refuses to
-resurrect the deleted row.
+regardless of which replica's write wins. CAS alone is therefore sufficient
+only where the provider tolerates a grace/leeway window in which more than
+one redeemed child stays valid (e.g. Read.ai's stated behavior). Closing the
+gap outside that window requires serializing the *redemption*, which is the
+third layer below.
+
+#### Redemption lease (`UpstreamRefreshLocker`)
+
+`UpstreamRefreshLocker` is an optional capability of an
+`UpstreamTokenStorage` backend — segregated from the interface for the same
+reason as `DeviceCodeStorage` and `ExchangeGrantStorage` — that hands out a
+mutual-exclusion lease over one upstream token row, honoured by every process
+sharing the backend. `upstreamTokenRefresher` resolves it once at
+construction via `storage.UpstreamRefreshLockerFrom`, which peels the storage
+decorators (they embed `Storage` and so do not carry the backend's optional
+capabilities), and holds that lease across the whole read-redeem-write
+sequence. Only the holder calls `provider.RefreshTokens`.
+
+A replica that cannot take the lease never falls through to the provider. It
+waits on a capped exponential backoff, re-reading the row after each wait, and
+returns the holder's row as soon as that row satisfies the same test the
+leader uses on its own re-read: unexpired *and* different from the row the
+caller arrived with. If no usable updated row is available, the waiter retries
+lease acquisition. After acquiring the lease, it re-reads the row before
+deciding whether an upstream refresh is still needed. If `refreshTimeout` runs
+out first, the refresh fails; running out of time is not a licence to redeem
+uncoordinated. An acquisition that fails for any reason
+other than "held by someone else" also fails closed, because a replica that
+cannot reach the backend cannot know whether another one is redeeming.
+
+The lease is advisory and bounded by a TTL set above `refreshTimeout`, so a
+holder that dies mid-refresh blocks the row for at most that long. It does not
+replace CAS: both layers run, and the CAS write is what stays correct if a
+lease expires early under load. Redis implements acquisition as `SET NX PX` of
+a random owner token under `{prefix}upstream-lock:{rowID}` — the same row
+identity the in-process `singleflight` group is keyed by, so the two layers
+cover exactly the same set of rows by construction — and release as a Lua
+compare-and-delete on that owner token, so a stale holder can never delete the
+lease a later holder legitimately acquired. The key name deliberately does not
+match the `upstream:*` scan pattern walked by the legacy-key migration.
+`MemoryStorage` implements the same semantics in-process under its existing
+mutex; it is reachable from one process only, where `singleflight` already
+deduplicates, but implementing it for real keeps a caller's behaviour
+independent of which backend it was wired against. A backend providing
+neither leaves `locker` nil and degrades to the CAS-only coordination
+described above.
+
+The storage layer's own log distinguishes a genuine lost race (an unexpired
+row on re-read) from a row that is simply gone (deleted by logout or evicted
+by TTL, `ErrNotFound` on re-read) — the latter is expected behavior, not a
+race, and the row is not resurrected.
 
 ### Upstream Refresh Rejections and the Refresh Grant
 

@@ -33,6 +33,35 @@ const upstreamStoreRetryBackoff = 50 * time.Millisecond
 // attempts does not also kill the delete, which would leave the stale row behind.
 const upstreamDeleteTimeout = 5 * time.Second
 
+// upstreamRefreshLeaseTTL bounds a distributed refresh lease (see
+// storage.UpstreamRefreshLocker). It must outlast the holder's whole
+// read-redeem-write sequence, which refreshCtx caps at refreshTimeout, or the
+// lease could expire mid-redemption and let a waiter redeem the same refresh
+// token — the exact race the lease exists to prevent. The margin above
+// refreshTimeout covers the gap between acquiring the lease and the holder's
+// CAS write landing. It is also the longest a crashed holder can block the
+// row, which is why it is not set far higher.
+const upstreamRefreshLeaseTTL = refreshTimeout + 15*time.Second
+
+// upstreamRefreshLeaseReleaseTimeout bounds the release of a refresh lease. A
+// fresh detached context is used because the refresh context is usually
+// already at or past its deadline by the time the holder unwinds, and a
+// release skipped on that account would make every waiter sit out the full
+// upstreamRefreshLeaseTTL.
+const upstreamRefreshLeaseReleaseTimeout = 5 * time.Second
+
+// upstreamRefreshLockPollInitial and upstreamRefreshLockPollMax bound the
+// backoff a replica waits between attempts while another holder has the lease.
+// Each attempt costs one acquisition and one row read, and the wait can run to
+// refreshTimeout, so a fixed short interval would put hundreds of round-trips
+// per waiting request on the storage backend. Starting small keeps the common
+// case — the holder finishes in well under a second — responsive, and the cap
+// keeps a long wait cheap.
+const (
+	upstreamRefreshLockPollInitial = 25 * time.Millisecond
+	upstreamRefreshLockPollMax     = 500 * time.Millisecond
+)
+
 // upstreamConflictReadTimeout bounds the single re-read resolveConcurrentRefreshConflict
 // performs after a CAS conflict. It is deliberately much shorter than refreshTimeout:
 // the caller of RefreshAndStore is already blocked on refreshTimeout (30s) via the
@@ -53,6 +82,14 @@ const upstreamConflictReadTimeout = 5 * time.Second
 //     identity returned by UpstreamTokenStorage, but only WITHIN THIS PROCESS
 //     — it saves redundant upstream calls and redis round-trips when this
 //     process alone receives several concurrent requests for the same row.
+//   - locker, when the storage backend provides one, serializes the whole
+//     read-redeem-write sequence ACROSS PROCESSES with a lease over the same
+//     row identity singleflight uses, so only the lease holder calls the
+//     upstream provider. This is what keeps a strict single-use-rotation IdP
+//     from seeing two replicas redeem one refresh token as a replay. A
+//     backend that does not provide the capability leaves it nil, and the
+//     refresher falls back to the layer below, which orders the stored row
+//     but cannot prevent the duplicate redemption.
 //   - CompareAndSwapUpstreamTokens (see refreshAndStore) makes the STORED row
 //     deterministic ACROSS PROCESSES: every write is conditioned on the refresh
 //     token this call redeemed still being the one stored, so a replica whose
@@ -67,8 +104,15 @@ const upstreamConflictReadTimeout = 5 * time.Second
 //     the provider-behavior-dependent discussion. singleflight is an
 //     optimization layered on top of the CAS guarantee, not a substitute for it.
 type upstreamTokenRefresher struct {
-	providers            map[string]upstream.OAuth2Provider
-	storage              storage.UpstreamTokenStorage
+	providers map[string]upstream.OAuth2Provider
+	storage   storage.UpstreamTokenStorage
+
+	// locker is the storage backend's optional cross-process refresh lease,
+	// resolved once at construction. It is nil for a backend that does not
+	// provide one, which is harmless for a single-process backend and degrades
+	// to CAS-only coordination for any other.
+	locker storage.UpstreamRefreshLocker
+
 	refreshTokenLifespan time.Duration
 	sfGroup              singleflight.Group
 }
@@ -77,7 +121,10 @@ type upstreamTokenRefresher struct {
 var _ storage.UpstreamTokenRefresher = (*upstreamTokenRefresher)(nil)
 
 // RefreshAndStore validates deterministic input errors before resolving the
-// opaque storage-row identity used to deduplicate a refresh within this process.
+// opaque storage-row identity used to deduplicate a refresh within this process
+// and, when the backend supports it, to take that row's cross-process refresh
+// lease (see coordinatedRefresh).
+//
 // The leader re-reads that row under a detached timeout so it never redeems a
 // stale refresh token supplied by a caller. It only short-circuits on that
 // re-read when the row is unexpired AND differs from the caller's row, i.e.
@@ -112,27 +159,7 @@ func (r *upstreamTokenRefresher) RefreshAndStore(
 		refreshCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), refreshTimeout)
 		defer cancel()
 
-		authoritative, readErr := r.storage.GetUpstreamTokens(refreshCtx, sessionID, expired.ProviderID)
-		if readErr == nil {
-			// Some storage implementations may return tokens without checking
-			// access-token expiry (the interface does not require it; see
-			// storage.UpstreamTokenStorage.GetUpstreamTokens). Only short-circuit
-			// when the re-read row is actually unexpired; otherwise fall through
-			// and refresh using it as the authoritative row.
-			if authoritative == nil {
-				return nil, fmt.Errorf(
-					"upstream token row missing on re-read for provider %q", expired.ProviderID,
-				)
-			}
-			if !authoritative.IsExpired(time.Now()) && rowChanged(expired, authoritative) {
-				return authoritative, nil
-			}
-			return r.refreshAndStore(refreshCtx, sessionID, authoritative)
-		}
-		if !errors.Is(readErr, storage.ErrExpired) || authoritative == nil {
-			return nil, readErr
-		}
-		return r.refreshAndStore(refreshCtx, sessionID, authoritative)
+		return r.coordinatedRefresh(refreshCtx, sessionID, rowID, expired)
 	})
 	if err != nil {
 		return nil, err
@@ -143,6 +170,159 @@ func (r *upstreamTokenRefresher) RefreshAndStore(
 	}
 	refreshedCopy := *refreshed
 	return &refreshedCopy, nil
+}
+
+// coordinatedRefresh runs the leader half of RefreshAndStore under the storage
+// backend's cross-process refresh lease, when it provides one.
+//
+// Holding the lease is what stops two replicas redeeming the same single-use
+// refresh token. A replica that cannot take it must therefore never fall
+// through to the upstream provider: it waits, re-reading the row, and returns
+// the row a holder stored as soon as that row is usable. When no usable row
+// has appeared it retries acquisition, and whichever attempt succeeds re-reads
+// the row before deciding whether an upstream refresh is still needed. A free
+// lease is not by itself evidence that anything went wrong — the holder
+// releases it on its normal success path too — so taking it is not a licence
+// to redeem without looking. Running out of refreshCtx while waiting is a
+// failure, not a licence to redeem uncoordinated.
+//
+// A backend without the capability (locker nil) refreshes directly, exactly as
+// before this layer existed: correct for a single-process backend, and
+// CAS-only coordination for any other.
+func (r *upstreamTokenRefresher) coordinatedRefresh(
+	ctx context.Context,
+	sessionID string,
+	rowID storage.UpstreamTokenRowID,
+	caller *storage.UpstreamTokens,
+) (*storage.UpstreamTokens, error) {
+	if r.locker == nil {
+		return r.refreshAuthoritativeRow(ctx, sessionID, caller)
+	}
+
+	wait := upstreamRefreshLockPollInitial
+	for {
+		// Checked before each attempt so an expiry that coincides with a wait
+		// is reported as the timeout it is, rather than as whatever error the
+		// backend returns for an already-cancelled context.
+		if err := ctx.Err(); err != nil {
+			return nil, fmt.Errorf(
+				"timed out waiting for another replica to refresh upstream tokens for provider %q: %w",
+				caller.ProviderID, err,
+			)
+		}
+
+		lease, err := r.locker.AcquireUpstreamRefreshLock(ctx, rowID, upstreamRefreshLeaseTTL)
+		if err == nil {
+			return r.refreshHoldingLease(ctx, sessionID, lease, caller)
+		}
+		if !errors.Is(err, storage.ErrUpstreamRefreshLockHeld) {
+			// The backend could not be consulted, so this replica cannot know
+			// whether another one is redeeming right now. Fail closed rather
+			// than redeem and risk the IdP seeing a replay.
+			return nil, fmt.Errorf(
+				"could not acquire upstream refresh lock for provider %q: %w", caller.ProviderID, err,
+			)
+		}
+
+		select {
+		case <-ctx.Done():
+			return nil, fmt.Errorf(
+				"timed out waiting for another replica to refresh upstream tokens for provider %q: %w",
+				caller.ProviderID, ctx.Err(),
+			)
+		case <-time.After(wait):
+		}
+		wait = min(wait*2, upstreamRefreshLockPollMax)
+
+		if winner := r.refreshedByLeaseHolder(ctx, sessionID, caller); winner != nil {
+			slog.Debug("another replica refreshed the upstream token row while this one waited",
+				"provider_id", caller.ProviderID,
+			)
+			return winner, nil
+		}
+	}
+}
+
+// refreshHoldingLease runs the leader half and gives the lease back, so a
+// waiter can proceed without sitting out upstreamRefreshLeaseTTL. The release
+// runs on every exit path, including the short-circuit where no upstream call
+// was made at all.
+func (r *upstreamTokenRefresher) refreshHoldingLease(
+	ctx context.Context,
+	sessionID string,
+	lease storage.UpstreamRefreshLease,
+	caller *storage.UpstreamTokens,
+) (*storage.UpstreamTokens, error) {
+	defer func() {
+		releaseCtx, cancel := context.WithTimeout(
+			context.WithoutCancel(ctx), upstreamRefreshLeaseReleaseTimeout,
+		)
+		defer cancel()
+		if err := lease.Release(releaseCtx); err != nil {
+			// Not a correctness failure: the lease expires on its own, so this
+			// only delays the next waiter by at most upstreamRefreshLeaseTTL.
+			slog.Warn("failed to release upstream refresh lock; it expires on its own",
+				"provider_id", caller.ProviderID,
+				"error", err,
+			)
+		}
+	}()
+
+	return r.refreshAuthoritativeRow(ctx, sessionID, caller)
+}
+
+// refreshedByLeaseHolder reports the row a lease holder stored while this
+// caller waited, or nil when there is nothing usable to return yet.
+//
+// The test is deliberately the same one refreshAuthoritativeRow short-circuits
+// on — unexpired AND different from the row the caller arrived with — so a
+// waiter accepts exactly what a leader would have accepted on its own re-read.
+// Anything else (the row unchanged, still expired, or a read failure) is not
+// a result, so the caller goes back to contending for the lease rather than
+// treating a transient read as a refusal. It is deliberately silent about WHY
+// there is nothing to return: the holder may still be working, or it may have
+// died — the caller's next move is the same either way.
+func (r *upstreamTokenRefresher) refreshedByLeaseHolder(
+	ctx context.Context, sessionID string, caller *storage.UpstreamTokens,
+) *storage.UpstreamTokens {
+	stored, err := r.storage.GetUpstreamTokens(ctx, sessionID, caller.ProviderID)
+	if err != nil || stored == nil {
+		return nil
+	}
+	if stored.IsExpired(time.Now()) || !rowChanged(caller, stored) {
+		return nil
+	}
+	return stored
+}
+
+// refreshAuthoritativeRow re-reads the row the caller is refreshing and either
+// returns a row another caller already refreshed or redeems the refresh token
+// itself. It is the leader half of RefreshAndStore, and with a locker present
+// it only ever runs while this process holds that row's lease.
+func (r *upstreamTokenRefresher) refreshAuthoritativeRow(
+	ctx context.Context, sessionID string, caller *storage.UpstreamTokens,
+) (*storage.UpstreamTokens, error) {
+	authoritative, readErr := r.storage.GetUpstreamTokens(ctx, sessionID, caller.ProviderID)
+	if readErr == nil {
+		// Some storage implementations may return tokens without checking
+		// access-token expiry (the interface does not require it; see
+		// storage.UpstreamTokenStorage.GetUpstreamTokens). Only short-circuit
+		// when the re-read row is actually unexpired; otherwise fall through
+		// and refresh using it as the authoritative row.
+		if authoritative == nil {
+			return nil, fmt.Errorf(
+				"upstream token row missing on re-read for provider %q", caller.ProviderID,
+			)
+		}
+		if !authoritative.IsExpired(time.Now()) && rowChanged(caller, authoritative) {
+			return authoritative, nil
+		}
+		return r.refreshAndStore(ctx, sessionID, authoritative)
+	}
+	if !errors.Is(readErr, storage.ErrExpired) || authoritative == nil {
+		return nil, readErr
+	}
+	return r.refreshAndStore(ctx, sessionID, authoritative)
 }
 
 // refreshAndStore performs the actual token refresh and storage write.
@@ -359,9 +539,13 @@ func (r *upstreamTokenRefresher) resolveConcurrentRefreshConflict(
 // call's refresh token with invalid_grant. A rotating provider answers that
 // way to the replica that loses a cross-process refresh race (singleflight
 // only deduplicates within this process), even though the winner has already
-// stored a valid row. If the stored row now holds a different refresh token
-// and an unexpired access token, that row is the result to use, so a lost race
-// is not reported as a dead upstream credential.
+// stored a valid row. The refresh lease (see coordinatedRefresh) is what
+// normally stops two replicas reaching the provider at all, so this path now
+// covers the cases it cannot: a backend that provides no lease, and a lease
+// that expired under a holder slow enough for a waiter to take over. If the
+// stored row now holds a different refresh token and an unexpired access
+// token, that row is the result to use, so a lost race is not reported as a
+// dead upstream credential.
 //
 // "Another process refreshed" is tested by refresh-token inequality, unlike
 // rowChanged, which also compares the access token, ID token and expiry. The

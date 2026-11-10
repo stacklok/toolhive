@@ -703,10 +703,12 @@ func (c *RunConfig) validateRuntimeSPIFFEBundleSources() error {
 	return nil
 }
 
-// ValidateActorProfilesForRunConfig runs the startup checks Config.Validate
-// applies to ActorTokenValidators and to delegate-client actor profiles,
-// against a RunConfig, so an embedder or the runner can fail before storage and
-// upstream work. The ActIssuer checks compare against cfg.Issuer. It does not
+// ValidateActorProfilesForRunConfig checks validators the way Config.Validate
+// does (no empty name, no nil validator, no reserved "toolhive." name, a valid
+// ActIssuer that is not cfg.Issuer) and refuses a delegate client in cfg whose
+// actor_profile names a validator that is not in validators. It does not check
+// a profile's shape; RunConfig.Validate does, so call that first. An embedder or
+// the runner uses it to fail before storage and upstream work. It does not
 // replace Config.Validate.
 func ValidateActorProfilesForRunConfig(
 	cfg *RunConfig,

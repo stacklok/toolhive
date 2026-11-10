@@ -749,8 +749,8 @@ func validateAuthorizationDetailsRegistryForRunConfig(cfg *authserver.RunConfig,
 }
 
 // validateActorProfilesForRunConfig runs authserver.ValidateActorProfilesForRunConfig
-// on the registered validators, so a misconfiguration fails before storage
-// creation and upstream work.
+// on the registered validators. It fails before upstream work in both constructors,
+// and in NewEmbeddedAuthServer also before storage creation.
 func validateActorProfilesForRunConfig(cfg *authserver.RunConfig, options embeddedAuthServerOptions) error {
 	return authserver.ValidateActorProfilesForRunConfig(cfg, options.actorTokenValidators)
 }

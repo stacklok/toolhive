@@ -562,6 +562,10 @@ privilege — the resulting actor identity still has to clear
 `may_act`, `ExternalActor`, the `client_id` binding, or the configured-
 delegate exemption).
 
+Plain token exchange is unchanged for every client, including a client with an
+`actor_profile`. The profile applies only to ID-JAG issuance from an exchange
+grant; see [Actor-token validation at ID-JAG issuance](#actor-token-validation-at-id-jag-issuance).
+
 `actor_token_type` only accepts `access_token` or `jwt`; `id_token` is
 rejected outright. Similarly, `subject_token_type` accepts `access_token` or
 `jwt`, but not `id_token`: this embedded authorization-server endpoint does
@@ -1992,18 +1996,155 @@ logged as "Exchange grant refused", including a failed HMAC check
 `grant_invalid` error (`not_found_or_other_client` or `token_invalid`) is
 internal and is never sent to the client.
 
+### Actor-token validation at ID-JAG issuance
+
+An ID-JAG can name the acting agent in its `act` claim (ID-JAG draft -06,
+`draft-ietf-oauth-identity-assertion-authz-grant-06`, §9.10 "Actor Delegation
+Extensions"). The issuing server cannot see the client's agent registry, so it
+cannot check an actor token or find the agent it names. An embedder that holds
+such a registry registers an in-process **validator**. For a client with an
+actor profile, ID-JAG issuance from an exchange grant will then require an
+`actor_token` (RFC 8693 §2.1), pass it to the validator, and build `act` from
+the answer.
+
+**Status.** Only the configuration and the startup checks exist. Nothing calls
+the validator yet. Until the call is added, ID-JAG issuance refuses every
+request from a client that has an actor profile (see
+[Fail-closed guard](#fail-closed-guard)).
+
+The validator contract (the request, the result, the refusal reasons and the
+rules ToolHive applies when it calls the validator) is in the Go doc comments of
+`pkg/authserver/server/tokenexchange/actor_validator.go`.
+
+#### Configuration
+
+Validators are Go values. There is no YAML or JSON form for them, and no global
+registry.
+
+1. **Register.** An embedder sets `authserver.Config.ActorTokenValidators`, a map from
+   name to `tokenexchange.ActorValidatorRegistration`. Through the runner, it passes
+   `runner.WithActorTokenValidators(...)` with the same map type to
+   `NewEmbeddedAuthServer` or `NewEmbeddedAuthServerWithStorage`. The map is copied
+   when the option is created and again into the server's configuration. The server
+   reads it only at startup. Each validator must be safe for concurrent use.
+
+   ```go
+   validators := map[string]tokenexchange.ActorValidatorRegistration{
+       "mecatl-broker": {
+           Validator: registryValidator,
+           ActIssuer: "spiffe://example.org",
+       },
+   }
+   srv, err := runner.NewEmbeddedAuthServer(ctx, cfg, runner.WithActorTokenValidators(validators))
+   ```
+
+   `ActIssuer` is the value ToolHive will write as `act.iss` in every ID-JAG built
+   from this validator's answer. The validator never sets it, so one validator cannot
+   claim to speak for another issuer's agents. It is the namespace in which an agent's
+   ID is unique (RFC 7519 §4.1.2). It is often the actor token's issuer, but it does
+   not have to be: ToolHive never compares it to the token. A consumer may key agent
+   policy on `(act.iss, act.sub)`, so changing `ActIssuer` renames every agent.
+   ToolHive emits it exactly as configured. Several registrations may share one
+   `ActIssuer`. Their validators must then not return the same agent ID.
+
+   `ActIssuer` is required. It must be an absolute URI of at most 2048 bytes, with no
+   query, userinfo or fragment, in canonical spelling (lower-case scheme and host, no
+   default port, no dot segments, no empty path segments, no unneeded
+   percent-encoding, no empty or zero-padded port), and not this server's own issuer.
+   If it is an `http` or `https` URL, it must name a host, and it must use `https`, or
+   `http` on a loopback host. Other schemes, such as `spiffe://example.org` and
+   `urn:example:agents`, are allowed. ToolHive does not compare it with the token
+   endpoint, the allowed audiences or the ID-JAG target issuers.
+2. **Select.** A delegate client names a validator in its `actor_profile`, under
+   `token_exchange`. The client can be under `delegate_clients` or under
+   `inbound_grants.token_exchange.delegate_clients`. `ActorProfile` is set only from
+   Go, like `RequiredSubjectClaims`. It has no JSON or YAML form, so config files and
+   the exported RunConfig cannot carry it, and the Kubernetes CRD does not expose it.
+   It stays Go-only until ID-JAG issuance checks it.
+
+   ```go
+   authserver.DelegateClient{
+       ClientID: "mecatl",
+       // ...
+       TokenExchange: &authserver.DelegateClientTokenExchange{
+           SelfIssuedSubjectTokens: authserver.SelfIssuedSubjectTokensRestricted,
+           // allowed_source_clients, subject_token_audiences and
+           // exchange_refresh_tokens.id_jag_max_lifetime as usual
+           IDJAG: &authserver.DelegateClientIDJAG{Targets: targets},
+           ActorProfile: &authserver.DelegateClientActorProfile{
+               Validator:      "mecatl-broker",
+               ActorTokenType: oauthproto.TokenTypeJWT,
+           },
+       },
+   }
+   ```
+
+   A profile only affects ID-JAG issuance, so a client needs an `id_jag` block to use
+   one. Without the block, the profile is refused. The `id_jag` block itself needs token
+   exchange enabled, `self_issued_subject_tokens: restricted` and
+   `exchange_refresh_tokens.id_jag_max_lifetime`.
+
+Startup refuses these configurations with these messages. A rule checked earlier, such
+as `exchange_refresh_tokens` requiring `restricted`, may report its own error first.
+The `id_jag` rules report their own errors, for example
+`token_exchange.id_jag requires self_issued_subject_tokens "restricted"`:
+
+- `actor token validator name must not be empty`
+- `actor token validator name %q is reserved for built-in validators`
+- `actor token validator %q is nil`, including a typed-nil pointer
+- `actor token validator %q: ActIssuer is required`
+- `actor token validator %q: ActIssuer %q is not an absolute URI: <reason>`
+- `actor token validator %q: ActIssuer %q is not in canonical form: lower-case scheme and host, no default port, dot segments, empty path segments, unneeded percent-encoding, or an empty or zero-padded port`
+- `actor token validator %q: ActIssuer %q must name a host`
+- `actor token validator %q: ActIssuer %q must use https, or http on a loopback host`
+- `actor token validator %q: ActIssuer must not be this server's issuer`; a trailing slash on the same URL does not change that (a different case is refused earlier as not canonical)
+- `delegate_clients: client_id %q: actor_profile requires id_jag.targets`
+- `delegate_clients: client_id %q: actor_profile.validator is required`
+- `delegate_clients: client_id %q: actor_profile.actor_token_type is required`
+- `delegate_clients: client_id %q: actor_profile.actor_token_type %q is not an absolute URI`
+- `delegate_clients: client_id %q: actor_profile.validator %q is not registered in ActorTokenValidators`
+
+Both runner constructors check this before any upstream work, and `NewEmbeddedAuthServer`
+also checks it before it creates storage, so a configuration error does not leave a
+dynamic client registration behind for a server that never starts. The runner first
+calls `RunConfig.Validate`, which checks each profile's shape. It then calls
+`authserver.ValidateActorProfilesForRunConfig`, which checks the validator map
+(comparing each `ActIssuer` with `RunConfig.Issuer`) and refuses a profile whose
+validator is not registered. `Config.Validate` runs the same checks when the server is
+built. In both paths the unregistered-name rule runs after the shape checks, so a
+malformed profile reports its own error first. In the runner, the shape errors from
+`RunConfig.Validate` reach the operator prefixed with `invalid run config: `. When the
+server builds its per-client policies, it binds each profile to its registered
+validator. It does not check the registration again, because `Config.Validate` has
+already done so.
+
+#### Fail-closed guard
+
+`checkIDJAGRequest` returns `server_error` ("Actor-token validation is not
+available.") for a client that has an actor profile, before it reads any request
+parameter. A client the operator configured to require an actor check therefore gets no
+ID-JAG until the check is wired in. The change that adds the validator call to issuance
+replaces this guard.
+
+**Open.** ToolHive does not check that a SPIFFE agent ID belongs to the trust domain
+named by a `spiffe://` `ActIssuer`. A validator that accepts JWT-SVIDs must verify each
+SVID against the bundle of the trust domain in its `sub`. That check is the binding,
+and it belongs in the embedder's validator.
+
 ## Implementation
 
-- `pkg/authserver/server/tokenexchange/handler.go` — `checkSourcePolicy`, `ConfiguredClientPolicy`, `checkDelegationConsent`, `grantScopes`, `grantAndBoundAudiences`, `externalOrigin`, `IDJAGTarget`, `ConfiguredClientPolicy.IDJAGTargets`
+- `pkg/authserver/server/tokenexchange/actor_validator.go` — `ActorTokenValidator` and its contract, `ActorValidatorRegistration`, `ActIssuerProblem`, `ActorProfile`
+- `pkg/authserver/server/tokenexchange/handler.go` — `checkSourcePolicy`, `ConfiguredClientPolicy`, `checkDelegationConsent`, `grantScopes`, `grantAndBoundAudiences`, `externalOrigin`, `IDJAGTarget`, `ConfiguredClientPolicy.IDJAGTargets`, `ConfiguredClientPolicy.ActorProfile`
+- `pkg/authserver/server/tokenexchange/id_jag_mint.go` — `checkIDJAGRequest`, including the fail-closed guard for a client with an actor profile
 - `pkg/authserver/server/tokenexchange/refresh_token_handler.go` — `RefreshTokenHandler`, `isRefreshTokenExchange`, `checkLoginToken`, `checkExchangeGrantSubject`
 - `pkg/authserver/server/tokenexchange/exchange_grant.go` — the exchange-grant entry type and its validation
 - `pkg/authserver/server/tokenexchange/multi_issuer_validator.go` — `MultiIssuerTokenValidator`, `TrustedIssuer`, `resolveActorAuthorization`, `ValidateJWKSURL`
 - `pkg/authserver/server/tokenexchange/validator.go` — `assignClaim`, `buildValidatedClaims`, `validateMayActShape`, `scpToScopeString`
-- `pkg/authserver/config.go` — `DelegateClientRunConfig`, delegate-client validation, `validateTrustedIssuerURL`, `validateJWKSEndpointURL`, `validateTrustedIssuers`, `warnTrustedIssuerAudiences`, `validateIDJAG`, `validateIDJAGTarget`, `claimIDJAGTargets`, `validateIDJAGSubjectClaims`, the exported `ValidateIDJAGSubjectClaimAudiences` (called by the runner before upstream registration), the issuer comparison used by the reserved check
+- `pkg/authserver/config.go` — `DelegateClientRunConfig`, delegate-client validation, `validateTrustedIssuerURL`, `validateJWKSEndpointURL`, `validateTrustedIssuers`, `warnTrustedIssuerAudiences`, `Config.ActorTokenValidators`, `DelegateClientTokenExchange.ActorProfile`, `validateActorTokenValidatorMap`, `validateActIssuer`, `validateActorProfilesRegistered`, `validateActorProfile`, `validateActorTokenType`, `ValidateActorProfilesForRunConfig`, `validateIDJAG`, `validateIDJAGTarget`, `claimIDJAGTargets`, `validateIDJAGSubjectClaims`, the exported `ValidateIDJAGSubjectClaimAudiences` (called by the runner before upstream registration), the issuer comparison used by the reserved check
 - `cmd/thv-operator/api/v1beta1/mcpexternalauthconfig_types.go` — `DelegateClientConfig`, `TrustedIssuerConfig`, `EmbeddedAuthServerConfig`
 - `cmd/thv-operator/pkg/controllerutil/authserver.go` — `buildDelegateClientRunConfigs`, `buildTrustedIssuerRunConfigs`, `BuildAuthServerRunConfig`
-- `pkg/authserver/runner/embeddedauthserver.go` — delegate-client secret-reference resolution at startup, and the early `id_jag` check
-- `pkg/authserver/server_impl.go` — static delegate-client registration and precedence over an existing storage registration, `idJAGTargetPolicies`, the DEBUG log in `configuredClientPolicies`
+- `pkg/authserver/runner/embeddedauthserver.go` — delegate-client secret-reference resolution at startup, `WithActorTokenValidators`, and the early `id_jag` check
+- `pkg/authserver/server_impl.go` — static delegate-client registration and precedence over an existing storage registration, `idJAGTargetPolicies`, `resolveActorProfile` (binds each profile to its validator), the DEBUG log in `configuredClientPolicies`
 - `pkg/authserver/server/endpoints.go` — `TokenEndpointPath`
 - `pkg/authserver/server/handlers/discovery.go` — advertised token-exchange and JWT-bearer grants, client-secret authentication methods
 - `cmd/thv-operator/api/v1beta1/mcpexternalauthconfig_types.go` — shared `DelegateClientConfig` CRD contract

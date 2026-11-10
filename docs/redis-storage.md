@@ -362,7 +362,7 @@ All keys use the prefix `thv:auth:{namespace:name}:` where `{namespace:name}` is
 | `{prefix}consent:session:{digest}` | SHA-256 digest of the browser session cookie secret (never the raw secret) | Remaining fixed lifetime, at most 7 days |
 | `{prefix}consent:approval:{pair_hash}` | One approval per user/client; `pair_hash` is SHA-256 of the JSON-encoded `[userID, clientID]` pair | Remaining fixed lifetime, at most 30 days |
 | `{prefix}invalidated:{code}` | Replay detection for auth codes | 30 minutes |
-| `{prefix}jwt:{jti}` | Client assertion JWT replay prevention | Matches JWT `exp` |
+| `{prefix}jwt:{jti}` | Client assertion JWT replay prevention | Deadline set by the server: JWT `exp` plus 60 seconds of clock skew and a 5 second grace |
 | `{prefix}xgrant:{signature}` | HASH holding one exchange grant, the record behind a refresh token issued through token exchange. Field `data` is the immutable JSON record; field `rev_ms` (Unix ms) appears only after revocation | Grant `ExpiresAt`; revoke does not change it |
 | `{prefix}assertion-jwt:{digest}` | Replay marker. For JWT-bearer assertions it is kept until the assertion's `exp`. For an exchange grant it records the subject access token's `(issuer, jti)`, holds the grant signature, and is written only for a top-level grant | JWT-bearer: assertion `exp`. Exchange grant: access token `exp` plus 1 minute |
 
@@ -381,6 +381,8 @@ When upgrading to the release that adds the DCR client cap, see the upgrade note
 3. Upgrade the `operator` chart.
 
 With the older CRDs the API server drops the field, and an older operator ignores it; upgrading the operator first enforces the default cap before you can raise it.
+
+When upgrading to the release that adds the 60 second clock margin for `private_key_jwt` client assertions, replicas on the older version keep the `{prefix}jwt:{jti}` marker only until the assertion `exp`. An assertion first used on an older replica can be used again on an upgraded replica until 60 seconds after its `exp`. Wait more than 6 minutes after the last older replica stops before relying on replay protection for that window. See [Secretless DCR delegate flow](arch/17-token-exchange-delegation.md#secretless-dcr-delegate-flow).
 
 When upgrading to the release that adds upstream subject identifiers (`sub_id` and the `https://toolhive.dev/upstream_subject` claim), see [Storage and upgrades](arch/11-auth-server-storage.md#storage-and-upgrades): replicas running an older version drop the stored upstream identity during a rolling upgrade or after a rollback, and can issue a stored `sub_id` or upstream subject claim again without checking the disclosure setting.
 

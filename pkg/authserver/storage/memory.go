@@ -968,29 +968,25 @@ func (s *MemoryStorage) ClientAssertionJWTValid(_ context.Context, jti string) e
 	return nil
 }
 
-// SetClientAssertionJWT extends jti's replay marker to its real expiry,
-// rejecting an exp further than MaxAssertionLifespan in the future. This
-// bounds how long a replay-tracking entry survives regardless of what the
-// client's own assertion claims — otherwise a registered caller could set
-// exp decades out and grow this map indefinitely. Unconditional overwrite,
-// not a fresh atomic check: only the caller that already won
-// ClientAssertionJWTValid's reservation reaches this call. An exp that is not
-// in the future is refused (server.ValidateClientAssertionExp) and leaves the
-// reservation as it was.
-func (s *MemoryStorage) SetClientAssertionJWT(_ context.Context, jti string, exp time.Time) error {
-	now := time.Now()
-	if err := server.ValidateClientAssertionExp(exp, now); err != nil {
+// SetClientAssertionJWT extends jti's replay marker to deadline, which is stored
+// as given. The authorization server hands it the marker deadline
+// (server.ClientAssertionRetainUntil of the assertion's exp), so the marker
+// outlives the clock skew in which the assertion is still accepted. A deadline
+// that server.ValidateClientAssertionMarkerDeadline refuses, because it is not
+// in the future or too far ahead, is rejected with invalid_client and leaves the
+// reservation as it was. The ahead bound keeps a registered caller from setting
+// a deadline decades out and growing this map indefinitely. Unconditional
+// overwrite, not a fresh atomic check: only the caller that already won
+// ClientAssertionJWTValid's reservation reaches this call.
+func (s *MemoryStorage) SetClientAssertionJWT(_ context.Context, jti string, deadline time.Time) error {
+	if err := server.ValidateClientAssertionMarkerDeadline(deadline, time.Now()); err != nil {
 		return err
-	}
-	if exp.Sub(now) > server.MaxAssertionLifespan {
-		return fosite.ErrInvalidClient.WithHintf(
-			"The 'client_assertion' lifetime exceeds the maximum of %s.", server.MaxAssertionLifespan)
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.clientAssertionJWTs[jti] = exp
+	s.clientAssertionJWTs[jti] = deadline
 	return nil
 }
 

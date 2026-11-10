@@ -610,6 +610,7 @@ Redis TTL is used for all time-bounded data. TTL values are derived from OAuth 2
 | DCR-issued clients (public, confidential, and private_key_jwt), never used | 24 hours |
 | DCR-issued clients, after their first successful token exchange | 30 days, renewed on each exchange |
 | JWT-bearer replay markers | Assertion `exp` |
+| `private_key_jwt` client assertion replay markers | Deadline set by the server: assertion `exp` plus 65 seconds |
 | Users / Providers | No expiry |
 
 The in-memory backend applies the same client expiry: each DCR-issued entry
@@ -943,16 +944,33 @@ A client proves possession of its private key by sending a signed
 `client_assertion` at `/oauth/token`; ToolHive stores only the registered public
 JWKS. The assertion's `aud` may be the issuer or the token endpoint URL; see
 [Client-assertion audience](17-token-exchange-delegation.md#client-assertion-audience).
-Assertion replay markers are retained until the assertion `exp` in both
-storage backends. Both the in-memory and Redis backends refuse a non-future
-`exp` in `SetClientAssertionJWT` through one shared rule,
-`server.ValidateClientAssertionExp` (an `exp` of 0, a wrapped or negative
-value, or a past time), because a backend would otherwise record the marker as
-already expired. The provider also hands fosite a wrapper around the backend
-that applies the same rule, so a backend that skips it is still covered; see
-[Secretless DCR delegate flow](17-token-exchange-delegation.md#secretless-dcr-delegate-flow). A
-refused marker leaves the short reservation in place, so the `jti` stays
-known. Redis also persists the registered client and its JWKS under
+The server accepts a clock difference of 60 seconds in the assertion's `exp`,
+`iat` and `nbf`, so an assertion from a client whose clock runs a little fast or
+slow still works. `exp` must be at most 5 minutes plus that 60 seconds ahead of
+the server's current time, and it must not be before `iat`. Refusals use
+`invalid_client` and do not report the server time.
+The server decides the replay marker deadline, 65 seconds after the assertion
+`exp` (the 60 second margin plus a 5 second grace), and hands it to the store, so
+an assertion cannot be replayed during the margin. This holds for any store
+that keeps the `jti` until the deadline it is given, provided the store's
+`ClientAssertionJWTValid` or `SetClientAssertionJWT` is atomic for a `jti`.
+ToolHive's backends reserve the `jti` in `ClientAssertionJWTValid`; fosite's
+`MemoryStore` checks and inserts in `SetClientAssertionJWT`. The grace does not
+cover clock differences between replicas that share Redis, and during an upgrade
+a replica on the older version keeps the marker only until `exp`; see
+[the limits](17-token-exchange-delegation.md#secretless-dcr-delegate-flow) in
+the token exchange page. One shared rule, `server.ValidateClientAssertionExp`, refuses an
+assertion unless that deadline is in the future and `exp` is not too far ahead.
+An `exp` of 0 or a wrapped value fails it, because the marker would otherwise be
+recorded as already expired. The provider and the clock skew fallback use a
+wrapper around the backend that applies the rule and passes on the deadline; see
+[Secretless DCR delegate flow](17-token-exchange-delegation.md#secretless-dcr-delegate-flow).
+The in-memory and Redis backends store the deadline they are given. They refuse
+a deadline in the past or more than 7 minutes 5 seconds ahead
+(`server.ValidateClientAssertionMarkerDeadline`) in `SetClientAssertionJWT`.
+A refused marker leaves the short reservation in place, so the `jti` stays
+known.
+Redis also persists the registered client and its JWKS under
 the auth server's isolated key prefix, so replicas sharing Redis can use the
 same registration. The in-memory backend is process-local and loses registrations
 on restart.

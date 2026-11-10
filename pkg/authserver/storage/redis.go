@@ -1023,31 +1023,27 @@ func (s *RedisStorage) ClientAssertionJWTValid(ctx context.Context, jti string) 
 	return nil
 }
 
-// SetClientAssertionJWT extends jti's replay marker to its real expiry,
-// rejecting an exp further than MaxAssertionLifespan in the future. This
-// bounds how long a replay-tracking entry survives regardless of what the
-// client's own assertion claims — otherwise a registered caller could set
-// exp decades out and give Redis a key with a correspondingly enormous TTL.
-// Unconditional overwrite, not a fresh atomic check: only the caller that
-// already won ClientAssertionJWTValid's reservation reaches this call.
-// An exp that is not in the future is refused (server.ValidateClientAssertionExp)
-// and the key is left as ClientAssertionJWTValid reserved it. The check must
-// precede Set: go-redis sends no expiry for a non-positive duration other than
-// -1ns, which it sends as KEEPTTL.
-func (s *RedisStorage) SetClientAssertionJWT(ctx context.Context, jti string, exp time.Time) error {
+// SetClientAssertionJWT extends jti's replay marker to deadline, which becomes
+// the key's TTL as given. The authorization server hands it the marker deadline
+// (server.ClientAssertionRetainUntil of the assertion's exp), so the marker
+// outlives the clock skew in which the assertion is still accepted. A deadline
+// that server.ValidateClientAssertionMarkerDeadline refuses, because it is not
+// in the future or too far ahead, is rejected with invalid_client and the key is
+// left as ClientAssertionJWTValid reserved it. The ahead bound keeps a
+// registered caller from setting a deadline decades out and giving Redis a key
+// with a correspondingly enormous TTL. Unconditional overwrite, not a fresh
+// atomic check: only the caller that already won ClientAssertionJWTValid's
+// reservation reaches this call. The check must precede Set: go-redis sends no
+// expiry for a non-positive duration other than -1ns, which it sends as KEEPTTL.
+func (s *RedisStorage) SetClientAssertionJWT(ctx context.Context, jti string, deadline time.Time) error {
 	now := time.Now()
-	if err := server.ValidateClientAssertionExp(exp, now); err != nil {
+	if err := server.ValidateClientAssertionMarkerDeadline(deadline, now); err != nil {
 		return err
-	}
-	ttl := exp.Sub(now)
-	if ttl > server.MaxAssertionLifespan {
-		return fosite.ErrInvalidClient.WithHintf(
-			"The 'client_assertion' lifetime exceeds the maximum of %s.", server.MaxAssertionLifespan)
 	}
 
 	key := redisKey(s.keyPrefix, KeyTypeJWT, jti)
 
-	if err := s.client.Set(ctx, key, "1", ttl).Err(); err != nil {
+	if err := s.client.Set(ctx, key, "1", deadline.Sub(now)).Err(); err != nil {
 		err = fmt.Errorf("failed to record client assertion JWT: %w", err)
 		server.RecordClientAssertionStoreFailure(ctx, err)
 		return err

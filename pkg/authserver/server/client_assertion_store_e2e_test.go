@@ -17,10 +17,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alicebob/miniredis/v2"
 	josev3 "github.com/go-jose/go-jose/v3"
 	josev4 "github.com/go-jose/go-jose/v4"
 	"github.com/go-jose/go-jose/v4/jwt"
 	"github.com/ory/fosite"
+	fositestorage "github.com/ory/fosite/storage"
+	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -102,33 +105,109 @@ func authenticate(provider *fosite.Fosite, assertion string) error {
 	return err
 }
 
-// TestClientAssertionExpiry_LastWholeSecond covers the one window where fosite
-// and the wrapper disagree: fosite accepts an assertion while now.Unix() <= exp,
-// but the wrapper requires exp.After(now), so in [exp, exp+1s) fosite passes
-// and the wrapper refuses.
-func TestClientAssertionExpiry_LastWholeSecond(t *testing.T) {
+// requireAuthenticatesOnce proves the assertion authenticates the first time
+// and that its replay is refused because the jti is known.
+func requireAuthenticatesOnce(t *testing.T, provider *fosite.Fosite, assertion string) {
+	t.Helper()
+	require.NoError(t, authenticate(provider, assertion), "first use")
+
+	err := authenticate(provider, assertion)
+	var rfcErr *fosite.RFC6749Error
+	require.ErrorAs(t, err, &rfcErr, "replay")
+	assert.Equal(t, fosite.ErrInvalidClient.ErrorField, rfcErr.ErrorField)
+	assert.Contains(t, rfcErr.HintField, "MUST only be used once")
+}
+
+// TestClientAssertionExpiry_ExpiringWithinTheCurrentSecond covers the window
+// where fosite's whole-second check still accepts an assertion whose exp is at
+// or just before now. Its replay marker is kept until exp plus the skew and the
+// grace, so the assertion authenticates once and cannot be replayed. Whether
+// the second rolls over during the test does not matter: fosite then reports a
+// time error and the clock skew fallback accepts the exp that is 1s ago.
+func TestClientAssertionExpiry_ExpiringWithinTheCurrentSecond(t *testing.T) {
 	t.Parallel()
 	provider, key := newAssertionProvider(t, storage.NewMemoryStorage())
 
-	now := time.Now()
-	if now.Nanosecond() > int(900*time.Millisecond) {
-		t.Skip("too close to a second boundary: fosite could see the next second")
-	}
-	assertion := signE2EAssertion(t, key, "jti-last-second", now.Unix())
+	requireAuthenticatesOnce(t, provider, signE2EAssertion(t, key, "jti-last-second", time.Now().Unix()))
+}
 
-	for attempt := 1; attempt <= 2; attempt++ {
-		err := authenticate(provider, assertion)
+// TestClientAssertionExpiry_ExpiredWithinTheSkew sends an assertion whose exp
+// is 30s ago. fosite refuses it with a time error and the clock skew fallback
+// takes over, through the real provider chain and a real backend.
+func TestClientAssertionExpiry_ExpiredWithinTheSkew(t *testing.T) {
+	t.Parallel()
+	provider, key := newAssertionProvider(t, storage.NewMemoryStorage())
 
-		var rfcErr *fosite.RFC6749Error
-		require.ErrorAs(t, err, &rfcErr, "attempt %d", attempt)
-		assert.Equal(t, fosite.ErrInvalidClient.ErrorField, rfcErr.ErrorField, "attempt %d", attempt)
-		if time.Now().Unix() != now.Unix() {
-			t.Skip("clock crossed a second boundary during the test")
+	requireAuthenticatesOnce(t, provider, signE2EAssertion(t, key, "jti-skewed", time.Now().Add(-30*time.Second).Unix()))
+}
+
+// TestClientAssertionExpiry_ExpiredWithinTheSkewOnRedis is the same check on
+// the Redis backend, so the TTL of the marker is exercised too.
+func TestClientAssertionExpiry_ExpiredWithinTheSkewOnRedis(t *testing.T) {
+	t.Parallel()
+	mr := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	store := storage.NewRedisStorageWithClient(client, "e2e:auth:")
+	t.Cleanup(func() {
+		_ = store.Close()
+		mr.Close()
+	})
+	provider, key := newAssertionProvider(t, store)
+
+	requireAuthenticatesOnce(t, provider, signE2EAssertion(t, key, "jti-skewed-redis", time.Now().Add(-30*time.Second).Unix()))
+}
+
+// fositeMemoryStore adds client registration to fosite's own MemoryStore, which
+// keeps a jti only until the deadline SetClientAssertionJWT is given.
+type fositeMemoryStore struct {
+	*fositestorage.MemoryStore
+}
+
+func (s fositeMemoryStore) RegisterClient(_ context.Context, c fosite.Client) error {
+	s.Clients[c.GetID()] = c
+	return nil
+}
+
+// TestClientAssertionExpiry_ReplayOnStoreKeepingUntilTheGivenDeadline covers a
+// third-party store that, like fosite's MemoryStore, keeps the jti only until
+// the deadline it is given. The server must give it a deadline that outlives
+// the clock skew, otherwise an assertion accepted in the skew window could be
+// replayed until exp plus the skew.
+func TestClientAssertionExpiry_ReplayOnStoreKeepingUntilTheGivenDeadline(t *testing.T) {
+	t.Parallel()
+
+	t.Run("exp already past, accepted through the skew", func(t *testing.T) {
+		t.Parallel()
+		provider, key := newAssertionProvider(t, fositeMemoryStore{fositestorage.NewMemoryStore()})
+		assertion := signE2EAssertion(t, key, "jti-skewed-fosite-store", time.Now().Add(-30*time.Second).Unix())
+
+		require.NoError(t, authenticate(provider, assertion), "first use")
+		for i := range 3 {
+			requireReplayRefused(t, authenticate(provider, assertion), i)
 		}
-		if attempt == 1 {
-			assert.Contains(t, rfcErr.HintField, "'exp' in the future")
+	})
+
+	t.Run("used before exp, replayed after exp", func(t *testing.T) {
+		t.Parallel()
+		provider, key := newAssertionProvider(t, fositeMemoryStore{fositestorage.NewMemoryStore()})
+		exp := time.Now().Add(time.Second)
+		assertion := signE2EAssertion(t, key, "jti-expiring-fosite-store", exp.Unix())
+
+		require.NoError(t, authenticate(provider, assertion), "first use")
+		time.Sleep(time.Until(time.Unix(exp.Unix(), 0)) + 1500*time.Millisecond)
+		require.Greater(t, time.Now().Unix(), exp.Unix(), "exp must be past")
+		for i := range 3 {
+			requireReplayRefused(t, authenticate(provider, assertion), i)
 		}
-	}
+	})
+}
+
+func requireReplayRefused(t *testing.T, err error, attempt int) {
+	t.Helper()
+	var rfcErr *fosite.RFC6749Error
+	require.ErrorAs(t, err, &rfcErr, "replay %d", attempt)
+	assert.Equal(t, fosite.ErrInvalidClient.ErrorField, rfcErr.ErrorField, "replay %d", attempt)
+	assert.Contains(t, rfcErr.HintField, "MUST only be used once", "replay %d", attempt)
 }
 
 // countingAssertionStore records SetClientAssertionJWT calls instead of
@@ -144,8 +223,9 @@ func (s *countingAssertionStore) SetClientAssertionJWT(context.Context, string, 
 }
 
 // TestClientAssertionExpiry_ProviderWrapsStore proves that
-// NewAuthorizationServer hands fosite a wrapper that refuses a non-future exp
-// before the backend sees it, and that an exp-0 assertion cannot be replayed.
+// NewAuthorizationServer hands fosite a wrapper that refuses an exp whose
+// retention has passed before the backend sees it, and that an exp-0 assertion
+// cannot be replayed.
 func TestClientAssertionExpiry_ProviderWrapsStore(t *testing.T) {
 	t.Parallel()
 
@@ -158,7 +238,7 @@ func TestClientAssertionExpiry_ProviderWrapsStore(t *testing.T) {
 	var rfcErr *fosite.RFC6749Error
 	require.ErrorAs(t, err, &rfcErr)
 	assert.Equal(t, fosite.ErrInvalidClient.ErrorField, rfcErr.ErrorField)
-	assert.Contains(t, rfcErr.HintField, "'exp' in the future")
+	assert.Contains(t, rfcErr.HintField, "has expired or has no 'exp'")
 	assert.Zero(t, backend.setCalls.Load(), "the backend must not see a refused marker")
 
 	// The reservation ClientAssertionJWTValid took makes the jti known.

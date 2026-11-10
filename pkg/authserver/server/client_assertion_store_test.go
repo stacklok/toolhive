@@ -20,10 +20,12 @@ import (
 type recordingAssertionStore struct {
 	fosite.Storage // unused methods panic if reached
 	setCalls       int
+	deadline       time.Time // the deadline of the last SetClientAssertionJWT call
 }
 
-func (s *recordingAssertionStore) SetClientAssertionJWT(context.Context, string, time.Time) error {
+func (s *recordingAssertionStore) SetClientAssertionJWT(_ context.Context, _ string, deadline time.Time) error {
 	s.setCalls++
+	s.deadline = deadline
 	return nil
 }
 
@@ -36,19 +38,27 @@ func TestClientAssertionExpiryStore_SetClientAssertionJWT(t *testing.T) {
 	t.Parallel()
 
 	now := time.Unix(1_800_000_000, 0).Add(250 * time.Millisecond)
+	retention := ClientAssertionRetainUntil(now).Sub(now)
+	const (
+		expiredHint = "has expired or has no 'exp'"
+		aheadHint   = "must be at most"
+	)
 	tests := []struct {
-		name    string
-		exp     time.Time
-		refused bool
+		name     string
+		exp      time.Time
+		wantHint string // empty means accepted
 	}{
-		{name: "zero Unix time", exp: time.Unix(0, 0), refused: true},
-		{name: "zero time.Time", exp: time.Time{}, refused: true},
-		{name: "wrapped overflow at MaxInt64", exp: time.Unix(math.MaxInt64, 0), refused: true},
-		{name: "a day in the past", exp: now.Add(-24 * time.Hour), refused: true},
-		{name: "half a second past a whole-second exp", exp: now.Add(-500 * time.Millisecond), refused: true},
-		{name: "exactly now", exp: now, refused: true},
-		{name: "one nanosecond ahead", exp: now.Add(time.Nanosecond)},
+		{name: "zero Unix time", exp: time.Unix(0, 0), wantHint: expiredHint},
+		{name: "zero time.Time", exp: time.Time{}, wantHint: expiredHint},
+		{name: "wrapped overflow at MaxInt64", exp: time.Unix(math.MaxInt64, 0), wantHint: expiredHint},
+		{name: "a day in the past", exp: now.Add(-24 * time.Hour), wantHint: expiredHint},
+		{name: "exactly at the end of the retention", exp: now.Add(-retention), wantHint: expiredHint},
+		{name: "one second inside the retention", exp: now.Add(-retention + time.Second)},
+		{name: "half a second past a whole-second exp", exp: now.Add(-500 * time.Millisecond)},
+		{name: "exactly now", exp: now},
 		{name: "in the future", exp: now.Add(time.Minute)},
+		{name: "exactly the maximum ahead", exp: now.Add(ClientAssertionMaxExpiryAhead)},
+		{name: "one nanosecond beyond the maximum ahead", exp: now.Add(ClientAssertionMaxExpiryAhead + time.Nanosecond), wantHint: aheadHint},
 	}
 
 	for _, tt := range tests {
@@ -60,16 +70,18 @@ func TestClientAssertionExpiryStore_SetClientAssertionJWT(t *testing.T) {
 
 			err := store.SetClientAssertionJWT(context.Background(), "jti", tt.exp)
 
-			if !tt.refused {
+			if tt.wantHint == "" {
 				require.NoError(t, err)
 				assert.Equal(t, 1, inner.setCalls)
+				assert.True(t, ClientAssertionRetainUntil(tt.exp).Equal(inner.deadline),
+					"the backend must get the marker deadline, not the exp: got %s", inner.deadline)
 				return
 			}
 			var rfcErr *fosite.RFC6749Error
 			require.ErrorAs(t, err, &rfcErr)
 			assert.Equal(t, fosite.ErrInvalidClient.ErrorField, rfcErr.ErrorField)
 			assert.Equal(t, http.StatusUnauthorized, rfcErr.CodeField)
-			assert.Contains(t, rfcErr.HintField, "'exp' in the future")
+			assert.Contains(t, rfcErr.HintField, tt.wantHint)
 			assert.Zero(t, inner.setCalls, "a refused marker must not reach the backend")
 		})
 	}

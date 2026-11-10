@@ -10,9 +10,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ory/fosite"
-
 	"github.com/stacklok/toolhive/pkg/oauthproto/dcrkey"
+	"github.com/stacklok/toolhive/pkg/oauthproto/dcrstore"
 )
 
 // dcrStaleAgeThreshold is the age beyond which observers warn about a cached
@@ -34,18 +33,32 @@ type CredentialStore interface {
 	PutIfAbsent(ctx context.Context, key Key, resolution *Resolution) (*Resolution, error)
 }
 
-// Replacer is an optional CredentialStore capability. The resolver probes
-// cached registrations only when this capability is present. Wrappers must
-// explicitly forward it so replacement cannot bypass their write policy.
+// Replacer is an optional CredentialStore capability. The resolver verifies a
+// cached registration against the upstream only when its store implements
+// Replacer; otherwise it returns the cached registration unchecked, without
+// contacting the upstream (see verifyCachedRegistration).
+//
+// It is a separate interface, not a CredentialStore method, so stores
+// implemented outside this package keep compiling and so a wrapper that embeds
+// CredentialStore does not inherit a replacement that skips whatever the
+// wrapper does around writes (key namespacing, a lock that lets only one
+// replica register). A wrapper that supports replacement must implement and
+// forward ReplaceIfUnchanged explicitly; forgetting to do so silently turns
+// the upstream check off.
 type Replacer interface {
 	// ReplaceIfUnchanged replaces the registration identified by expected's
-	// ClientID, or returns the concurrent winner. A missing row is claimed as
+	// ClientID, or returns the concurrent winner. Identity is the ClientID
+	// alone, because DCR mints a new client_id on every registration; the
+	// comparison does not consider expiry. A missing row is claimed as
 	// PutIfAbsent would. Nil expected or replacement is an error. The returned
 	// resolution is authoritative, independent, and non-nil on success.
 	ReplaceIfUnchanged(ctx context.Context, key Key, expected, replacement *Resolution) (*Resolution, error)
 }
 
-// CloseableCredentialStore preserves lifecycle compatibility for callers.
+// CloseableCredentialStore is a CredentialStore that also releases an
+// underlying resource when closed. NewInMemoryStore returns it so callers can
+// call Close directly, with no runtime type assertion that would silently do
+// nothing if the target lacked the capability.
 type CloseableCredentialStore interface {
 	CredentialStore
 	io.Closer
@@ -122,29 +135,8 @@ func (s *inMemoryStore) write(key Key, resolution *Resolution) *Resolution {
 	return &normalized
 }
 
-// validateResolution retains the server storage validation errors without
-// importing server-owned types. Public clients need not carry a secret.
+// validateResolution applies the shared persistence validation so the
+// operation-scoped store rejects what every durable backend rejects.
 func validateResolution(key Key, resolution *Resolution) error {
-	if key.Issuer == "" {
-		return fosite.ErrInvalidRequest.WithHint("dcr credentials key issuer cannot be empty")
-	}
-	if key.UpstreamID == "" {
-		return fosite.ErrInvalidRequest.WithHint("dcr credentials key upstream_id cannot be empty")
-	}
-	if key.RedirectURI == "" {
-		return fosite.ErrInvalidRequest.WithHint("dcr credentials key redirect_uri cannot be empty")
-	}
-	if key.ScopesHash == "" {
-		return fosite.ErrInvalidRequest.WithHint("dcr credentials key scopes_hash cannot be empty")
-	}
-	if resolution.ClientID == "" {
-		return fosite.ErrInvalidRequest.WithHint("dcr credentials client_id cannot be empty")
-	}
-	if resolution.AuthorizationEndpoint == "" {
-		return fosite.ErrInvalidRequest.WithHint("dcr credentials authorization_endpoint cannot be empty")
-	}
-	if resolution.TokenEndpoint == "" {
-		return fosite.ErrInvalidRequest.WithHint("dcr credentials token_endpoint cannot be empty")
-	}
-	return nil
+	return dcrstore.Validate(resolutionToCredentials(key, resolution))
 }

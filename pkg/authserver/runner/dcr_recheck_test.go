@@ -30,6 +30,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
+	"github.com/stacklok/toolhive/pkg/oauthproto/dcrkey"
 )
 
 // TestEmbeddedAuthServer_DCRRecheckRecoversWithoutRestart runs two replicas
@@ -219,7 +220,7 @@ func TestDCRRecheckTick_KeepsCurrentClientOnFailure(t *testing.T) {
 		Issuer:      req.Issuer,
 		UpstreamID:  req.RegistrationEndpoint,
 		RedirectURI: req.RedirectURI,
-		ScopesHash:  storage.ScopesHash(nil),
+		ScopesHash:  dcrkey.ScopesHash(nil),
 	}
 	_, err := store.PutIfAbsent(ctx, key, &dcr.Resolution{
 		ClientID:              "replaced",

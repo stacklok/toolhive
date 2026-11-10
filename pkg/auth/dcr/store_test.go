@@ -14,9 +14,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/ory/fosite"
-
 	"github.com/stacklok/toolhive/pkg/oauthproto/dcrkey"
+	"github.com/stacklok/toolhive/pkg/oauthproto/dcrstore"
 )
 
 func TestInMemoryStore_PutGet_RoundTrip(t *testing.T) {
@@ -545,10 +544,9 @@ func TestInMemoryStore_Validation(t *testing.T) {
 			memory := store.(*inMemoryStore)
 			memory.entries[key] = *valid
 			_, err := store.PutIfAbsent(ctx, key, &candidate)
-			var oauthErr *fosite.RFC6749Error
-			require.ErrorAs(t, err, &oauthErr)
-			assert.Equal(t, fosite.ErrInvalidRequest.ErrorField, oauthErr.ErrorField)
-			assert.Equal(t, "dcr credentials "+tt.field+" cannot be empty", oauthErr.HintField)
+			var validationErr *dcrstore.ValidationError
+			require.ErrorAs(t, err, &validationErr)
+			assert.Equal(t, "dcr credentials "+tt.field+" cannot be empty", validationErr.Hint)
 			// Replacement validates a matching or missing row, but a different
 			// stored identity wins before candidate validation.
 			replacer := store.(Replacer)

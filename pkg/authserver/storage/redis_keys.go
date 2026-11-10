@@ -6,6 +6,8 @@ package storage
 import (
 	"crypto/sha256"
 	"fmt"
+
+	"github.com/stacklok/toolhive/pkg/oauthproto/dcrkey"
 )
 
 // Key type constants for Redis storage.
@@ -142,11 +144,11 @@ func redisProviderKey(prefix, providerID, providerSubject string) string {
 }
 
 // redisDCRKey generates a Redis key for a DCR credential entry, identifying the
-// (Issuer, UpstreamID, RedirectURI, ScopesHash) tuple that DCRKey canonicalises.
+// (Issuer, UpstreamID, RedirectURI, ScopesHash) tuple that dcrkey.Key canonicalises.
 //
 // Format: "{prefix}dcr:<len(issuer)>:<issuer>:<len(upstream_id)>:<upstream_id>:<len(redirect_uri)>:<redirect_uri>:<scopes_hash>"
 //
-// When DCRKey.RotationKey is non-empty a length-prefixed
+// When dcrkey.Key.RotationKey is non-empty a length-prefixed
 // ":<len(rotation_key)>:<rotation_key>" segment follows the scopes hash. An
 // empty RotationKey yields exactly the format above, so rows written before
 // the field existed keep resolving; the hex scopes hash contains no colon, so
@@ -180,7 +182,7 @@ func redisProviderKey(prefix, providerID, providerSubject string) string {
 // consumer that defaults its RedirectURI into either space would need to
 // add the distinguishing component back to the key format alongside an
 // explicit migration story for existing Redis-cached entries.
-func redisDCRKey(prefix string, key DCRKey) string {
+func redisDCRKey(prefix string, key dcrkey.Key) string {
 	base := fmt.Sprintf("%s%s:%d:%s:%d:%s:%d:%s:%s",
 		prefix, KeyTypeDCR,
 		len(key.Issuer), key.Issuer,

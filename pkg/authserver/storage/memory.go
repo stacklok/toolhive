@@ -28,6 +28,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/authserver/server"
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
+	"github.com/stacklok/toolhive/pkg/oauthproto/dcrkey"
 )
 
 // defaultMaxMemoryCIMDClients caps the live CIMD rows MemoryStorage keeps.
@@ -204,10 +205,10 @@ type MemoryStorage struct {
 	// This enables O(1) lookup during authentication callbacks.
 	providerIdentities map[string]*ProviderIdentity
 
-	// dcrCredentials maps DCRKey -> DCRCredentials for RFC 7591 Dynamic Client
+	// dcrCredentials maps dcrkey.Key -> DCRCredentials for RFC 7591 Dynamic Client
 	// Registration credentials. These entries come from OUTBOUND DCR: ToolHive
 	// acting as a DCR client to register itself against a configured upstream
-	// IdP (see pkg/authserver/runner/dcr_store.go, the resolver persistence adapter).
+	// IdP (see pkg/auth/dcr/storage_store.go, the resolver persistence adapter).
 	// This is not reachable from the inbound, unauthenticated /oauth/register
 	// handler, so unlike clients (bounded by maxDCRClients and the client expiry maps because
 	// every inbound registration call mints an entry), growth here is bounded
@@ -225,7 +226,7 @@ type MemoryStorage struct {
 	// re-derived by the resolver) accumulate stale entries that survive until
 	// process restart. The Redis backend's SetEX TTL mitigates this in
 	// production deployments.
-	dcrCredentials map[DCRKey]*DCRCredentials
+	dcrCredentials map[dcrkey.Key]*DCRCredentials
 
 	// cleanupInterval is how often the background cleanup runs
 	cleanupInterval time.Duration
@@ -301,7 +302,7 @@ func NewMemoryStorage(opts ...MemoryStorageOption) *MemoryStorage {
 		exchangeGrantJTIs:          make(map[assertionJWTKey]exchangeGrantMarker),
 		users:                      make(map[string]*User),
 		providerIdentities:         make(map[string]*ProviderIdentity),
-		dcrCredentials:             make(map[DCRKey]*DCRCredentials),
+		dcrCredentials:             make(map[dcrkey.Key]*DCRCredentials),
 		cleanupInterval:            DefaultCleanupInterval,
 		dcrClientExpiry:            make(map[string]time.Time),
 		cimdClientExpiry:           make(map[string]time.Time),
@@ -2476,7 +2477,7 @@ func dcrCredentialsEqual(a, b *DCRCredentials) bool {
 
 // GetDCRCredentials retrieves DCR credentials by key.
 // Returns a defensive copy; returns ErrNotFound (wrapped) on miss.
-func (s *MemoryStorage) GetDCRCredentials(_ context.Context, key DCRKey) (*DCRCredentials, error) {
+func (s *MemoryStorage) GetDCRCredentials(_ context.Context, key dcrkey.Key) (*DCRCredentials, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 

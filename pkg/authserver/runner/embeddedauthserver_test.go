@@ -43,6 +43,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver/server/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
+	"github.com/stacklok/toolhive/pkg/oauthproto/dcrkey"
 )
 
 func TestCreateKeyProvider(t *testing.T) {
@@ -2971,15 +2972,15 @@ func TestBuildUpstreamConfigs_DCR(t *testing.T) {
 
 		// Store now contains the resolution under the canonical dcrkey.Key.
 		redirectURI := server.URL + "/oauth/callback"
-		key := storage.DCRKey{
+		key := dcrkey.Key{
 			Issuer:      server.URL,
 			UpstreamID:  server.URL,
 			RedirectURI: redirectURI,
-			ScopesHash:  storage.ScopesHash([]string{"openid", "profile"}),
+			ScopesHash:  dcrkey.ScopesHash([]string{"openid", "profile"}),
 		}
 		cached, ok, err := store.Get(context.Background(), key)
 		require.NoError(t, err)
-		require.True(t, ok, "store should contain the DCR resolution keyed by storage.DCRKey")
+		require.True(t, ok, "store should contain the DCR resolution keyed by dcrkey.Key")
 		assert.Equal(t, "dcr-client-id", cached.ClientID)
 
 		// First call must have hit the mock AS at least once (metadata +
@@ -3165,11 +3166,11 @@ func TestNewEmbeddedAuthServer_DCRBoot(t *testing.T) {
 	// successful boot persisted the resolution there directly (no
 	// separate in-memory store was created).
 	redirectURI := server.URL + "/oauth/callback"
-	key := storage.DCRKey{
+	key := dcrkey.Key{
 		Issuer:      server.URL,
 		UpstreamID:  server.URL,
 		RedirectURI: redirectURI,
-		ScopesHash:  storage.ScopesHash([]string{"openid", "profile"}),
+		ScopesHash:  dcrkey.ScopesHash([]string{"openid", "profile"}),
 	}
 	cached, err := dcrStore.GetDCRCredentials(context.Background(), key)
 	require.NoError(t, err, "DCR store on EmbeddedAuthServer must hold the DCR resolution")
@@ -3498,11 +3499,11 @@ func TestEmbeddedAuthServer_DCRStorePersistsAcrossClose(t *testing.T) {
 	// replica and cross-restart reuse paths depend on: that the
 	// resolution lives in storage, not in process-local cache state.
 	redirectURI := server.URL + "/oauth/callback"
-	key := storage.DCRKey{
+	key := dcrkey.Key{
 		Issuer:      server.URL,
 		UpstreamID:  server.URL,
 		RedirectURI: redirectURI,
-		ScopesHash:  storage.ScopesHash([]string{"openid", "profile"}),
+		ScopesHash:  dcrkey.ScopesHash([]string{"openid", "profile"}),
 	}
 	creds, err := persistentStore.GetDCRCredentials(context.Background(), key)
 	require.NoError(t, err,

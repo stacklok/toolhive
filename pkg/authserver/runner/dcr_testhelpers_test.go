@@ -11,10 +11,10 @@ import (
 )
 
 // newMemoryDCRStore is a test-only convenience constructor wrapping
-// storage.NewMemoryStorage in the runner-owned adapter. Production deployments
+// storage.NewMemoryStorage in the neutral-contract adapter. Production deployments
 // do NOT reach this constructor — NewEmbeddedAuthServer type-asserts the
 // shared authserver storage to storage.DCRCredentialStore and passes it to
-// NewDCRCredentialStore directly.
+// dcr.NewStorageBackedStore directly.
 //
 // The caller's *testing.T is required because storage.NewMemoryStorage
 // launches a background cleanup goroutine on construction; the helper
@@ -25,5 +25,5 @@ func newMemoryDCRStore(t *testing.T) dcr.CredentialStore {
 	t.Helper()
 	stor := storage.NewMemoryStorage()
 	t.Cleanup(func() { _ = stor.Close() })
-	return NewDCRCredentialStore(stor)
+	return dcr.NewStorageBackedStore(stor)
 }

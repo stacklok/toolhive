@@ -183,14 +183,14 @@ var authMethodPreference = []string{
 // writes in pkg/auth/discovery).
 //
 // MUST update both converters (resolutionToCredentials and
-// credentialsToResolution in pkg/authserver/runner/dcr_store.go) when adding, renaming, or
+// credentialsToResolution in pkg/auth/dcr/storage_store.go) when adding, renaming, or
 // removing a field here. The two converters are the seam between this
-// dcr-package type and the persisted *storage.DCRCredentials shape; a
+// dcr-package type and the persisted *dcrstore.Credentials shape; a
 // field added here without a paired converter update will silently fail
 // to round-trip across an authserver restart, the exact "parallel types
 // drift" failure mode .claude/rules/go-style.md warns about. The
 // round-trip behaviour is pinned by TestResolutionCredentialsRoundTrip
-// in pkg/authserver/runner/dcr_store_test.go.
+// in pkg/auth/dcr/storage_store_test.go.
 type Resolution struct {
 	// ClientID is the RFC 7591 "client_id" returned by the authorization
 	// server.

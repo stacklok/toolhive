@@ -610,6 +610,7 @@ Audit events are logged as structured JSON objects:
   - `duration_ms`: Request duration in milliseconds
   - `transport`: Transport type (`sse`, `streamable-http`, `http`)
   - `response_size_bytes`: Response body size (when capturing response data)
+  - `trace_id`, `span_id`: W3C trace and span IDs of the request (present only when the request carries a valid span context, such as an inbound `traceparent` with tracing enabled)
 - `data`: Captured request/response data (only present if enabled)
   - `request`: Request body (parsed as JSON if possible, otherwise string)
   - `response`: Response body (parsed as JSON if possible, otherwise string)

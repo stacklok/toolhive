@@ -467,6 +467,14 @@ type DelegateClientTokenExchange struct {
 	// restricted, with exchange_refresh_tokens.id_jag_max_lifetime set, and with
 	// token exchange enabled.
 	IDJAG *DelegateClientIDJAG `json:"id_jag,omitempty" yaml:"id_jag,omitempty"`
+
+	// ActorProfile makes this client's ID-JAG issuance from an exchange grant
+	// require an actor token, which the named in-process validator checks. The
+	// embedder registers the validator in Config.ActorTokenValidators. Valid
+	// only with id_jag. It does not change plain token exchange. It is set only
+	// from Go (embedders), like RequiredSubjectClaims, so config files cannot
+	// set it, until ID-JAG issuance checks it.
+	ActorProfile *DelegateClientActorProfile `json:"-" yaml:"-"`
 }
 
 // DelegateClientIDJAG configures the ID-JAGs a delegate client may ask for.
@@ -517,6 +525,17 @@ type DelegateClientIDJAGTarget struct {
 	RequiredSubjectClaims []string `json:"-" yaml:"-"`
 }
 
+// DelegateClientActorProfile names the actor-token check that ID-JAG issuance
+// from an exchange grant requires for a delegate client.
+type DelegateClientActorProfile struct {
+	// Validator is the name of a validator in Config.ActorTokenValidators.
+	Validator string `json:"validator" yaml:"validator" binding:"required"`
+
+	// ActorTokenType is the actor_token_type the client must send, an absolute
+	// URI such as urn:ietf:params:oauth:token-type:jwt.
+	ActorTokenType string `json:"actor_token_type" yaml:"actor_token_type" binding:"required"`
+}
+
 // DelegateClientExchangeRefreshTokens holds the lifetime caps for refresh
 // tokens that a delegate client obtains through token exchange. Durations are
 // Go duration strings (e.g. "12h"), as in TokenLifespanRunConfig. Each cap must
@@ -559,6 +578,10 @@ func (t *DelegateClientTokenExchange) Clone() *DelegateClientTokenExchange {
 			targets = nil
 		}
 		cloned.IDJAG = &DelegateClientIDJAG{Targets: targets}
+	}
+	if t.ActorProfile != nil {
+		profile := *t.ActorProfile
+		cloned.ActorProfile = &profile
 	}
 	return &cloned
 }
@@ -890,6 +913,9 @@ func validateDelegateClientViews(
 		if err := claimIDJAGTargets(idJAGTargetOwners, client.ClientID, client.TokenExchange); err != nil {
 			return err
 		}
+		if err := validateActorProfile(client); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -910,6 +936,38 @@ func validateDelegateClientNarrowing(client delegateClientView, effectiveScopes,
 	}
 	if err := validateExchangeRefreshTokenScopes(client, effectiveScopes); err != nil {
 		return fmt.Errorf("delegate_clients: client_id %q: %w", client.ClientID, err)
+	}
+	return nil
+}
+
+// validateActorProfile checks the actor_profile block: it needs an id_jag block,
+// a validator name and an absolute actor_token_type. A profile only affects
+// ID-JAG issuance, so a client without id_jag can never use it. validateIDJAG
+// runs first and requires token exchange to be enabled, the restricted mode and
+// exchange_refresh_tokens.id_jag_max_lifetime for any client with an id_jag
+// block, so they are not checked again here.
+func validateActorProfile(client delegateClientView) error {
+	if client.TokenExchange == nil || client.TokenExchange.ActorProfile == nil {
+		return nil
+	}
+	if client.TokenExchange.IDJAG == nil {
+		return fmt.Errorf("delegate_clients: client_id %q: actor_profile requires id_jag.targets", client.ClientID)
+	}
+	profile := client.TokenExchange.ActorProfile
+	if profile.Validator == "" {
+		return fmt.Errorf("delegate_clients: client_id %q: actor_profile.validator is required", client.ClientID)
+	}
+	return validateActorTokenType(client.ClientID, profile.ActorTokenType)
+}
+
+// validateActorTokenType requires actor_token_type to be an absolute URI.
+func validateActorTokenType(clientID, actorTokenType string) error {
+	if actorTokenType == "" {
+		return fmt.Errorf("delegate_clients: client_id %q: actor_profile.actor_token_type is required", clientID)
+	}
+	if u, err := url.Parse(actorTokenType); err != nil || !u.IsAbs() {
+		return fmt.Errorf("delegate_clients: client_id %q: actor_profile.actor_token_type %q is not an absolute URI",
+			clientID, actorTokenType)
 	}
 	return nil
 }

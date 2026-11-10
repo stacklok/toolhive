@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/ory/fosite"
@@ -204,7 +205,17 @@ func (e *ActorDeniedError) Error() string {
 const (
 	refuseActorValidator = "actor_validator_error"
 	refuseActorResult    = "actor_result_invalid"
+	refuseActorCanceled  = "actor_validator_canceled"
+	refuseActorTimeout   = "actor_validator_timeout"
+	refuseActorPanic     = "actor_validator_panic"
 )
+
+// actorValidationTimeout is the fixed budget for one validation, including the
+// validator's own calls to remote services.
+const actorValidationTimeout = 5 * time.Second
+
+// redactedActorToken replaces the actor token in text that reaches a log or an error.
+const redactedActorToken = "[redacted]"
 
 // maxActorAgentIDLen is the longest AgentID, in bytes, that ToolHive accepts.
 const maxActorAgentIDLen = 255
@@ -290,4 +301,154 @@ func agentIDProblem(id string) error {
 func actorValidationFailed(cause error) error {
 	return errorsx.WithStack(
 		fosite.ErrServerError.WithHint("The actor token could not be validated.").WithWrap(cause))
+}
+
+// actorOutcome is what the validator goroutine reports: its answer, or a
+// description of the panic it recovered.
+type actorOutcome struct {
+	res      ActorResult
+	err      error
+	panicked bool
+	panicMsg string
+}
+
+// validateActor calls v once and returns the accepted result, the time the
+// result was checked, the reason to log and the error for the client. It logs
+// nothing and caches nothing.
+//
+// The call has timeout to finish, counted from now and also limited by ctx. A
+// validator that ignores its context keeps running in its own goroutine, but
+// validateActor stops waiting. Whichever way the wait ends, the context state
+// decides: a canceled ctx is actor_validator_canceled, an expired timeout is
+// actor_validator_timeout, even when the validator returned an error or an
+// answer at the same moment. A parent context whose own deadline expires first
+// counts as canceled, because the request ended, not the validator's budget. A
+// validator that returns context.DeadlineExceeded from its own shorter deadline,
+// before the budget runs out, is actor_validator_error. A panic in the validator,
+// or in the text of a panic value or error it returns, is recovered and reported
+// as actor_validator_panic.
+//
+// Every server error carries a cause with each occurrence of req.ActorToken
+// replaced by "[redacted]"; unwrap the *fosite.RFC6749Error to read it. A
+// refusal carries no cause. On any error the result is the zero value. checkedAt
+// is clock() read after the validator returned; it is the zero time when the
+// call ends in cancellation, timeout or panic.
+func validateActor(
+	ctx context.Context,
+	v ActorTokenValidator,
+	req ActorRequest,
+	clock func() time.Time,
+	timeout time.Duration,
+) (ActorResult, time.Time, string, error) {
+	if ctx.Err() != nil {
+		return failedActor(refuseActorCanceled, "request canceled while validating the actor", req.ActorToken)
+	}
+	vctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	outCh := make(chan actorOutcome, 1)
+	go runActorValidator(vctx, v, req, outCh)
+
+	var out actorOutcome
+	select {
+	case out = <-outCh:
+	case <-vctx.Done():
+	}
+
+	if reason, cause := actorContextFailure(ctx, vctx, timeout); reason != "" {
+		return failedActor(reason, cause, req.ActorToken)
+	}
+	if out.panicked {
+		return failedActor(refuseActorPanic, out.panicMsg, req.ActorToken)
+	}
+
+	checkedAt := clock()
+	res, reason, err := mapActorOutcome(out.res, out.err, checkedAt)
+	if err != nil {
+		return ActorResult{}, checkedAt, reason, redactActorServerError(err, req.ActorToken)
+	}
+	return res, checkedAt, "", nil
+}
+
+// runActorValidator runs the validator and sends one outcome. The channel has
+// room for it, so a validator that returns late never blocks. All calls into
+// embedder code happen here, under the recover: the validator, and the Error
+// and As methods of the error it returns. The error is normalized to values
+// built by ToolHive before it leaves the goroutine. A validator that ends its
+// goroutine without returning or panicking (runtime.Goexit) sends nothing, and
+// the caller reports it as a timeout.
+func runActorValidator(ctx context.Context, v ActorTokenValidator, req ActorRequest, out chan<- actorOutcome) {
+	defer func() {
+		if p := recover(); p != nil {
+			out <- actorOutcome{panicked: true, panicMsg: panicText(p)}
+		}
+	}()
+	res, err := v.ValidateActor(ctx, req)
+	out <- actorOutcome{res: res, err: normalizeActorError(err)}
+}
+
+// panicText describes a recovered panic value by type and value. A value whose
+// own text panics gets a fixed description.
+func panicText(p any) (s string) {
+	defer func() {
+		if recover() != nil {
+			s = "validator panicked with an unprintable value"
+		}
+	}()
+	return fmt.Sprintf("validator panicked: %T: %v", p, p)
+}
+
+// normalizeActorError replaces a validator's error with a value built by
+// ToolHive: nil stays nil, a non-nil *ActorDeniedError becomes a fresh one, and
+// anything else becomes a flat text copy.
+func normalizeActorError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var denied *ActorDeniedError
+	if errors.As(err, &denied) && denied != nil {
+		return &ActorDeniedError{Reason: denied.Reason}
+	}
+	return errors.New(err.Error())
+}
+
+// actorContextFailure reports the reason and cause when the parent context was
+// canceled or the validation budget ran out, and "" when neither happened.
+func actorContextFailure(parent, derived context.Context, timeout time.Duration) (string, string) {
+	if parent.Err() != nil {
+		return refuseActorCanceled, "request canceled while validating the actor"
+	}
+	if derived.Err() != nil {
+		return refuseActorTimeout, fmt.Sprintf("validator did not return within %s", timeout)
+	}
+	return "", ""
+}
+
+// failedActor builds the zero-result return for a server error with a redacted cause.
+func failedActor(reason, cause, token string) (ActorResult, time.Time, string, error) {
+	return ActorResult{}, time.Time{}, reason, actorValidationFailed(errors.New(redactActorToken(cause, token)))
+}
+
+// redactActorServerError rebuilds a server error from mapActorOutcome with a
+// redacted cause. Refusals carry no cause and pass through unchanged.
+func redactActorServerError(err error, token string) error {
+	var rfc *fosite.RFC6749Error
+	if !errors.As(err, &rfc) || rfc.ErrorField != fosite.ErrServerError.ErrorField {
+		return err
+	}
+	cause := ""
+	if wrapped := errors.Unwrap(rfc); wrapped != nil {
+		cause = wrapped.Error()
+	}
+	return actorValidationFailed(errors.New(redactActorToken(cause, token)))
+}
+
+// redactActorToken replaces every occurrence of the literal token text in s, not
+// other encodings of it. An empty token is never replaced, because ReplaceAll
+// with an empty pattern inserts the replacement between every character.
+func redactActorToken(s, token string) string {
+	if token == "" {
+		return s
+	}
+	return strings.ReplaceAll(s, token, redactedActorToken)
 }

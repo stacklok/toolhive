@@ -68,7 +68,10 @@ The storage layer implements multiple interfaces from the [fosite](https://githu
 
 **Implementation:**
 - Interface definitions: `pkg/authserver/storage/types.go`
-- Canonical outbound DCR cache key and scope hash: `pkg/oauthproto/dcrkey`. Storage retains `DCRKey` as a type alias and `ScopesHash` as a forwarding function for compatibility. Key fields, scope hashing, and Redis key encoding are unchanged; this extraction requires no cache migration. The DCR persistence adapters in `pkg/auth/dcr` still depend on storage.
+- Canonical outbound DCR cache key and scope hash: `pkg/oauthproto/dcrkey`. Storage retains deprecated `DCRKey` and `ScopesHash` compatibility names. Key fields, scope hashing, Redis keys, and singleflight encodings are unchanged; no cache migration is required.
+- Resolver boundary: `pkg/auth/dcr` has no production or test dependency on `pkg/authserver`. Its operation-scoped `NewInMemoryStore` owns a mutex-protected map with no sweeper, capacity policy, or closed state; `Close` remains an idempotent no-op. Reads expose physical expired entries for resolver policy; claims may replace entries strictly after their secret expiry. Copies normalize `RedirectURI` from the key and leave informational `ClientIDIssuedAt` zero, preserving the prior adapter behavior.
+- Server persistence adapter: `runner.NewDCRCredentialStore` in `pkg/authserver/runner/dcr_store.go` converts resolver resolutions to server-owned storage records and supports `dcr.Replacer`. It preserves the supplied decorated backend and does not own its lifecycle. Replacement re-reads the physical row as the CAS witness and claims the authoritative value after conflicts or disappearance. **Source break:** `dcr.NewStorageBackedStore` is removed; migrate server callers to `runner.NewDCRCredentialStore`.
+- Global resolver singleflight remains process-wide and keyed by the existing five-field encoding, not by store identity. Isolation between independent stores with identical keys is deferred; shared storage also does not provide distributed singleflight.
 - Memory backend: `pkg/authserver/storage/memory.go`
 - Redis backend: `pkg/authserver/storage/redis.go`
 

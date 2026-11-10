@@ -138,7 +138,7 @@ func TestDCRResolver_PublicClientRecoversFromEvictedRegistration(t *testing.T) {
 	upstream, upstreamRedis, upstreamStore := newDCRUpstream(t)
 
 	downstreamRedis := miniredis.RunT(t)
-	cache := dcr.NewStorageBackedStore(storage.NewRedisStorageWithClient(
+	cache := NewDCRCredentialStore(storage.NewRedisStorageWithClient(
 		redis.NewClient(&redis.Options{Addr: downstreamRedis.Addr()}), "downstream:"))
 	req := &dcr.Request{
 		Issuer:       "https://downstream.example.com",

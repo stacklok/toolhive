@@ -420,7 +420,7 @@ func newEmbeddedAuthServerWithStorage(
 	// resolutions in dcrStore so re-entrant boot/reload paths reuse
 	// previously-registered upstream clients instead of re-registering.
 	upstreams, dcrRechecks, err := buildUpstreamConfigs(
-		ctx, cfg.Upstreams, cfg.Issuer, dcr.NewStorageBackedStore(dcrStore), cfg.InsecureAllowHTTP,
+		ctx, cfg.Upstreams, cfg.Issuer, NewDCRCredentialStore(dcrStore), cfg.InsecureAllowHTTP,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build upstream configs: %w", err)

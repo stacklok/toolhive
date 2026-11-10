@@ -182,11 +182,14 @@ func (t *UpstreamTokens) IsExpired(now time.Time) bool {
 }
 
 // DCRKey is retained as a compatibility alias for the canonical DCR key.
-// New code should use oauthproto/dcrkey.Key directly.
+//
+// Deprecated: Use dcrkey.Key directly.
 type DCRKey = dcrkey.Key
 
 // ScopesHash forwards to the canonical OAuth-side implementation for
 // compatibility with existing storage callers.
+//
+// Deprecated: Use dcrkey.ScopesHash directly.
 func ScopesHash(scopes []string) string {
 	return dcrkey.ScopesHash(scopes)
 }
@@ -277,14 +280,14 @@ func validateDCRCompareAndSet(creds, expected *DCRCredentials) error {
 // # Converter contract
 //
 // MUST update both converters in
-// pkg/auth/dcr/store.go (resolutionToCredentials and
+// pkg/authserver/runner/dcr_store.go (resolutionToCredentials and
 // credentialsToResolution) when adding, renaming, or removing a field
 // here. The two converters are the only translation seam between this
 // persisted type and the dcr-package *dcr.Resolution; a field added here
 // without a paired converter update will silently fail to round-trip
 // across an authserver restart. The round-trip behaviour is pinned by
 // TestResolutionCredentialsRoundTrip in
-// pkg/auth/dcr/store_test.go.
+// pkg/authserver/runner/dcr_store_test.go.
 type DCRCredentials struct {
 	// Key is the canonical cache key: (Issuer, UpstreamID, RedirectURI,
 	// ScopesHash) plus the optional RotationKey.

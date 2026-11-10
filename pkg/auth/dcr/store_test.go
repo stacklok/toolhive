@@ -14,10 +14,12 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/stacklok/toolhive/pkg/authserver/storage"
+	"github.com/ory/fosite"
+
+	"github.com/stacklok/toolhive/pkg/oauthproto/dcrkey"
 )
 
-func TestStorageBackedStore_PutGet_RoundTrip(t *testing.T) {
+func TestInMemoryStore_PutGet_RoundTrip(t *testing.T) {
 	t.Parallel()
 
 	store := newMemoryDCRStore(t)
@@ -27,7 +29,7 @@ func TestStorageBackedStore_PutGet_RoundTrip(t *testing.T) {
 		Issuer:      "https://idp.example.com",
 		UpstreamID:  "https://upstream.example.com",
 		RedirectURI: "https://toolhive.example.com/oauth/callback",
-		ScopesHash:  storage.ScopesHash([]string{"openid", "profile"}),
+		ScopesHash:  dcrkey.ScopesHash([]string{"openid", "profile"}),
 	}
 	resolution := &Resolution{
 		ClientID:                "client-abc",
@@ -57,7 +59,7 @@ func TestStorageBackedStore_PutGet_RoundTrip(t *testing.T) {
 	assert.Equal(t, resolution.TokenEndpointAuthMethod, got.TokenEndpointAuthMethod)
 }
 
-func TestStorageBackedStore_Get_MissingKey(t *testing.T) {
+func TestInMemoryStore_Get_MissingKey(t *testing.T) {
 	t.Parallel()
 
 	store := newMemoryDCRStore(t)
@@ -69,7 +71,7 @@ func TestStorageBackedStore_Get_MissingKey(t *testing.T) {
 	assert.Nil(t, got)
 }
 
-func TestStorageBackedStore_DistinctKeysDoNotCollide(t *testing.T) {
+func TestInMemoryStore_DistinctKeysDoNotCollide(t *testing.T) {
 	t.Parallel()
 
 	store := newMemoryDCRStore(t)
@@ -79,25 +81,25 @@ func TestStorageBackedStore_DistinctKeysDoNotCollide(t *testing.T) {
 		Issuer:      "https://idp-a.example.com",
 		UpstreamID:  "https://upstream-a.example.com",
 		RedirectURI: "https://toolhive.example.com/oauth/callback",
-		ScopesHash:  storage.ScopesHash([]string{"openid"}),
+		ScopesHash:  dcrkey.ScopesHash([]string{"openid"}),
 	}
 	keyB := Key{
 		Issuer:      "https://idp-b.example.com",
 		UpstreamID:  "https://upstream-a.example.com",
 		RedirectURI: "https://toolhive.example.com/oauth/callback",
-		ScopesHash:  storage.ScopesHash([]string{"openid"}),
+		ScopesHash:  dcrkey.ScopesHash([]string{"openid"}),
 	}
 	keyC := Key{
 		Issuer:      "https://idp-a.example.com",
 		UpstreamID:  "https://upstream-a.example.com",
 		RedirectURI: "https://other.example.com/callback",
-		ScopesHash:  storage.ScopesHash([]string{"openid"}),
+		ScopesHash:  dcrkey.ScopesHash([]string{"openid"}),
 	}
 	keyD := Key{
 		Issuer:      "https://idp-a.example.com",
 		UpstreamID:  "https://upstream-a.example.com",
 		RedirectURI: "https://toolhive.example.com/oauth/callback",
-		ScopesHash:  storage.ScopesHash([]string{"openid", "email"}),
+		ScopesHash:  dcrkey.ScopesHash([]string{"openid", "email"}),
 	}
 	// keyE shares Issuer, RedirectURI, and scopes with keyA and differs only
 	// by UpstreamID — the exact shape of two OAuth2 upstreams inside one
@@ -107,17 +109,14 @@ func TestStorageBackedStore_DistinctKeysDoNotCollide(t *testing.T) {
 		Issuer:      "https://idp-a.example.com",
 		UpstreamID:  "https://upstream-b.example.com",
 		RedirectURI: "https://toolhive.example.com/oauth/callback",
-		ScopesHash:  storage.ScopesHash([]string{"openid"}),
+		ScopesHash:  dcrkey.ScopesHash([]string{"openid"}),
 	}
 	// keyF is keyA under an operator-set RotationKey: the rotation must
 	// address its own entry while keyA's row stays reachable.
 	keyF := keyA
 	keyF.RotationKey = "r2"
 
-	// The persisted *storage.DCRCredentials shape requires non-empty
-	// AuthorizationEndpoint / TokenEndpoint per validateDCRCredentialsForStore;
-	// supply a minimal valid resolution so the storage-backed adapter accepts
-	// the Put, since the test asserts key-distinctness and not field shape.
+	// Supply valid endpoints; this test exercises key isolation.
 	resolution := func(clientID string) *Resolution {
 		return &Resolution{
 			ClientID:              clientID,
@@ -154,7 +153,7 @@ func TestStorageBackedStore_DistinctKeysDoNotCollide(t *testing.T) {
 	}
 }
 
-// TestStorageBackedStore_PutIfAbsent_FirstClaimWins pins the create-if-absent
+// TestInMemoryStore_PutIfAbsent_FirstClaimWins pins the create-if-absent
 // contract that replaced unconditional overwrite (see PutIfAbsent doc): a
 // second PutIfAbsent for a key that already holds a value must NOT overwrite
 // it. Instead it returns the existing (first) resolution as the authoritative
@@ -162,7 +161,7 @@ func TestStorageBackedStore_DistinctKeysDoNotCollide(t *testing.T) {
 // concurrent-replica bug where two callers independently register distinct
 // RFC 7591 clients for the same key — only one registration may ever become
 // the durable, agreed-upon value.
-func TestStorageBackedStore_PutIfAbsent_FirstClaimWins(t *testing.T) {
+func TestInMemoryStore_PutIfAbsent_FirstClaimWins(t *testing.T) {
 	t.Parallel()
 
 	store := newMemoryDCRStore(t)
@@ -172,7 +171,7 @@ func TestStorageBackedStore_PutIfAbsent_FirstClaimWins(t *testing.T) {
 		Issuer:      "https://idp.example.com",
 		UpstreamID:  "https://upstream.example.com",
 		RedirectURI: "https://x.example.com/cb",
-		ScopesHash:  storage.ScopesHash([]string{"openid"}),
+		ScopesHash:  dcrkey.ScopesHash([]string{"openid"}),
 	}
 	endpoints := struct {
 		Authorization string
@@ -204,11 +203,11 @@ func TestStorageBackedStore_PutIfAbsent_FirstClaimWins(t *testing.T) {
 	assert.Equal(t, "first", got.ClientID, "the store must keep the first-claimed entry, not overwrite it")
 }
 
-// TestStorageBackedStore_Put_RejectsNilResolution pins the
+// TestInMemoryStore_Put_RejectsNilResolution pins the
 // fail-loud-on-invalid-input contract: passing nil must error rather than
 // silently no-op. A silent no-op would leave the caller with a successful
 // Put followed by a Get miss and no debug trail to explain it.
-func TestStorageBackedStore_Put_RejectsNilResolution(t *testing.T) {
+func TestInMemoryStore_Put_RejectsNilResolution(t *testing.T) {
 	t.Parallel()
 
 	store := newMemoryDCRStore(t)
@@ -225,7 +224,7 @@ func TestStorageBackedStore_Put_RejectsNilResolution(t *testing.T) {
 	assert.False(t, ok, "rejected Put must not leave any entry behind")
 }
 
-func TestStorageBackedStore_GetReturnsDefensiveCopy(t *testing.T) {
+func TestInMemoryStore_GetReturnsDefensiveCopy(t *testing.T) {
 	t.Parallel()
 
 	store := newMemoryDCRStore(t)
@@ -235,7 +234,7 @@ func TestStorageBackedStore_GetReturnsDefensiveCopy(t *testing.T) {
 		Issuer:      "https://idp.example.com",
 		UpstreamID:  "https://upstream.example.com",
 		RedirectURI: "https://x.example.com/cb",
-		ScopesHash:  storage.ScopesHash([]string{"openid"}),
+		ScopesHash:  dcrkey.ScopesHash([]string{"openid"}),
 	}
 	_, err := store.PutIfAbsent(ctx, key, &Resolution{
 		ClientID:              "orig",
@@ -255,23 +254,11 @@ func TestStorageBackedStore_GetReturnsDefensiveCopy(t *testing.T) {
 	assert.Equal(t, "orig", refetched.ClientID)
 }
 
-// Tests for the canonical scopes-hash form live next to the canonical
-// implementation in pkg/authserver/storage/memory_test.go (TestScopesHash_*).
-// Duplicating the suite here would re-exercise the same code, which is
-// redundant per .claude/rules/testing.md.
+// Canonical scope-hash tests live in pkg/oauthproto/dcrkey.
 
-// TestStorageBackedStore_ConcurrentAccess fans out N goroutines
-// performing alternating Put / Get against overlapping and disjoint keys,
-// exercising the safe-for-concurrent-use contract advertised on the
-// CredentialStore interface. The contract is satisfied by the underlying
-// storage.DCRCredentialStore (which holds the lock); this test runs under
-// `go test -race` so any future regression that drops the storage backend's
-// guarantee, or an adapter change that races on its own state, fails loudly.
-//
-// The test is bounded by a fail-fast deadline so a regression that
-// deadlocks fails loudly with a clear message rather than hanging until
-// the global Go test timeout.
-func TestStorageBackedStore_ConcurrentAccess(t *testing.T) {
+// TestInMemoryStore_ConcurrentAccess exercises overlapping and disjoint keys.
+// The timeout bounds regressions in the mutex-protected map.
+func TestInMemoryStore_ConcurrentAccess(t *testing.T) {
 	t.Parallel()
 
 	store := newMemoryDCRStore(t)
@@ -347,137 +334,17 @@ func TestStorageBackedStore_ConcurrentAccess(t *testing.T) {
 		"no Get/Put should have errored under concurrent access")
 }
 
-// TestResolutionCredentialsRoundTrip pins the field-by-field contract
-// between resolutionToCredentials and credentialsToResolution: which
-// fields survive a round-trip, which are intentionally dropped, and
-// which are recovered from the persisted Key. The test exists
-// because the two converters are the seam where a field added to either
-// Resolution or storage.DCRCredentials must be paired with an update
-// here; without coverage, a future field addition would silently fail
-// to persist across an authserver restart.
-//
-// The "preserved" group asserts equality on round-tripped values. The
-// "dropped" group asserts that the post-round-trip value is the type's
-// zero value (ClientIDIssuedAt is informational per RFC 7591 §3.2.1 and
-// is not persisted). RedirectURI is in its own group because it is
-// dropped from DCRCredentials and recovered via Key.RedirectURI on
-// read.
-//
-// ProviderName is the one DCRCredentials field with no Resolution
-// counterpart. It is documented in storage.DCRCredentials as "debug /
-// audit only — never used as a primary key" and no current consumer
-// reads it. The decision to leave it unpopulated by the runner is
-// recorded here so a future contributor adding ProviderName threading
-// has a single grep target.
-func TestResolutionCredentialsRoundTrip(t *testing.T) {
-	t.Parallel()
-
-	now := time.Now().UTC().Round(time.Second)
-	expiry := now.Add(30 * 24 * time.Hour)
-
-	key := Key{
-		Issuer:      "https://idp.example.com",
-		UpstreamID:  "https://upstream.example.com",
-		RedirectURI: "https://thv.example.com/oauth/callback",
-		ScopesHash:  storage.ScopesHash([]string{"openid", "profile"}),
-		RotationKey: "2026-10",
-	}
-
-	original := &Resolution{
-		ClientID:                "round-trip-client-id",
-		ClientSecret:            "round-trip-secret",
-		AuthorizationEndpoint:   "https://idp.example.com/authorize",
-		TokenEndpoint:           "https://idp.example.com/token",
-		RegistrationAccessToken: "rfc7592-token",
-		RegistrationClientURI:   "https://idp.example.com/register/round-trip-client-id",
-		TokenEndpointAuthMethod: "client_secret_basic",
-		// RedirectURI is recovered from Key on read; pre-populate it on
-		// the input to confirm it survives via the key, not via a
-		// dedicated field on DCRCredentials.
-		RedirectURI:           key.RedirectURI,
-		ClientIDIssuedAt:      now, // intentionally dropped on persist
-		ClientSecretExpiresAt: expiry,
-		CreatedAt:             now,
-	}
-
-	creds := resolutionToCredentials(key, original)
-	require.NotNil(t, creds)
-
-	// Persisted-side assertions: which fields the converter writes to
-	// DCRCredentials, which it leaves zero (the asymmetry F7 documents).
-	assert.Equal(t, key, creds.Key,
-		"Key must round-trip via the explicit parameter")
-	assert.Empty(t, creds.ProviderName,
-		"ProviderName has no Resolution counterpart and is intentionally not populated; "+
-			"a future contributor threading it through must update this assertion and the converters together")
-
-	roundTripped := credentialsToResolution(creds)
-	require.NotNil(t, roundTripped)
-
-	t.Run("preserved fields survive round-trip", func(t *testing.T) {
-		t.Parallel()
-		assert.Equal(t, original.ClientID, roundTripped.ClientID)
-		assert.Equal(t, original.ClientSecret, roundTripped.ClientSecret)
-		assert.Equal(t, original.AuthorizationEndpoint, roundTripped.AuthorizationEndpoint)
-		assert.Equal(t, original.TokenEndpoint, roundTripped.TokenEndpoint)
-		assert.Equal(t, original.RegistrationAccessToken, roundTripped.RegistrationAccessToken)
-		assert.Equal(t, original.RegistrationClientURI, roundTripped.RegistrationClientURI)
-		assert.Equal(t, original.TokenEndpointAuthMethod, roundTripped.TokenEndpointAuthMethod)
-		assert.Equal(t, original.ClientSecretExpiresAt, roundTripped.ClientSecretExpiresAt)
-		assert.Equal(t, original.CreatedAt, roundTripped.CreatedAt)
-	})
-
-	t.Run("RedirectURI is recovered from Key on read", func(t *testing.T) {
-		t.Parallel()
-		assert.Equal(t, key.RedirectURI, roundTripped.RedirectURI,
-			"RedirectURI on the round-tripped resolution must match Key.RedirectURI; "+
-				"the converter does not store it twice")
-	})
-
-	t.Run("dropped fields zero on read", func(t *testing.T) {
-		t.Parallel()
-		// ClientIDIssuedAt is informational (RFC 7591 §3.2.1) and not
-		// persisted; round-tripping must reset it to the zero value
-		// rather than silently re-deriving it from CreatedAt.
-		assert.True(t, roundTripped.ClientIDIssuedAt.IsZero(),
-			"ClientIDIssuedAt must be zero after round-trip; the field is intentionally dropped from DCRCredentials")
-	})
-
-	t.Run("nil inputs short-circuit", func(t *testing.T) {
-		t.Parallel()
-		assert.Nil(t, resolutionToCredentials(key, nil))
-		assert.Nil(t, credentialsToResolution(nil))
-	})
-}
-
-// TestInMemoryStore_CloseIsIdempotent pins the contract that calling
-// Close on the returned CloseableCredentialStore more than once is safe.
-// The underlying storage.MemoryStorage.Close is NOT idempotent — it
-// closes a channel that a second call would re-close, panicking with
-// "close of closed channel" — so the dcr-package wrapper MUST guard
-// against the second call. Without the sync.Once on inMemoryStore, the
-// CLI's `defer store.Close()` plus any future close-on-shortcircuit
-// would crash the process; this test makes the guard load-bearing.
+// TestInMemoryStore_CloseIsIdempotent pins the compatibility no-op contract.
 func TestInMemoryStore_CloseIsIdempotent(t *testing.T) {
 	t.Parallel()
 
 	store := NewInMemoryStore()
 
-	// First Close must succeed and release the cleanup goroutine.
 	require.NoError(t, store.Close())
-
-	// Second Close must NOT panic and must return the same error
-	// (nil here, since the first call succeeded).
-	require.NoError(t, store.Close(),
-		"Close() must be idempotent at the dcr-package boundary; "+
-			"the underlying MemoryStorage.Close is not idempotent and a "+
-			"second call without the guard would panic")
+	require.NoError(t, store.Close())
 }
 
-// TestInMemoryStore_CloseIsIdempotentUnderRace verifies the sync.Once
-// guard holds under concurrent callers. A regression that replaced
-// sync.Once with a non-atomic guard (e.g. a plain bool) would surface
-// here as a panic from a racing channel close.
+// TestInMemoryStore_CloseIsIdempotentUnderRace exercises concurrent Close calls.
 func TestInMemoryStore_CloseIsIdempotentUnderRace(t *testing.T) {
 	t.Parallel()
 
@@ -507,17 +374,8 @@ func TestInMemoryStore_CloseIsIdempotentUnderRace(t *testing.T) {
 	}
 }
 
-// TestInMemoryStore_PutGetCloseShareBackend pins the contract that Put,
-// Get, and Close all operate against the same underlying
-// *storage.MemoryStorage instance. The previous shape held two handles
-// (one in an embedded storageBackedStore.backend, one in a concrete
-// mem field); a constructor regression assigning distinct handles to
-// the two fields would have surfaced as a Close that leaks the
-// cleanup goroutine while Get still serves entries. Today only one
-// handle exists, so this test asserts the observable consequence:
-// after Close, the goroutine is gone (verified by t.Cleanup running
-// without leaking via go test -race goroutine leak checks).
-func TestInMemoryStore_PutGetCloseShareBackend(t *testing.T) {
+// TestInMemoryStore_PutGetAfterClose pins the absence of closed-state semantics.
+func TestInMemoryStore_PutGetAfterClose(t *testing.T) {
 	t.Parallel()
 
 	store := NewInMemoryStore()
@@ -528,7 +386,7 @@ func TestInMemoryStore_PutGetCloseShareBackend(t *testing.T) {
 		Issuer:      "https://idp.example.com",
 		UpstreamID:  "https://upstream.example.com",
 		RedirectURI: "https://toolhive.example.com/oauth/callback",
-		ScopesHash:  storage.ScopesHash([]string{"openid"}),
+		ScopesHash:  dcrkey.ScopesHash([]string{"openid"}),
 	}
 	resolution := &Resolution{
 		ClientID:              "client-abc",
@@ -536,21 +394,17 @@ func TestInMemoryStore_PutGetCloseShareBackend(t *testing.T) {
 		TokenEndpoint:         "https://idp.example.com/token",
 	}
 
+	require.NoError(t, store.Close())
 	_, err := store.PutIfAbsent(ctx, key, resolution)
 	require.NoError(t, err)
 
 	got, ok, err := store.Get(ctx, key)
 	require.NoError(t, err)
-	require.True(t, ok, "Get must see the value PutIfAbsent just wrote — confirms Put and Get share a backend")
+	require.True(t, ok, "Close must not prevent subsequent writes or reads")
 	assert.Equal(t, "client-abc", got.ClientID)
 }
 
-// TestInMemoryStore_PutRejectsNilResolution mirrors the contract pinned
-// for storageBackedStore.PutIfAbsent: a nil resolution is rejected at the
-// adapter boundary rather than silently no-oped, so the next Get miss
-// surfaces with a debug trail. inMemoryStore implements PutIfAbsent directly
-// (not via embedding) — this test guards against a delegation
-// regression that omitted the nil check.
+// TestInMemoryStore_PutRejectsNilResolution checks fail-loud input handling.
 func TestInMemoryStore_PutRejectsNilResolution(t *testing.T) {
 	t.Parallel()
 
@@ -562,11 +416,7 @@ func TestInMemoryStore_PutRejectsNilResolution(t *testing.T) {
 	assert.Contains(t, err.Error(), "resolution must not be nil")
 }
 
-// TestInMemoryStore_GetMissingKeyReturnsMissTuple pins the ErrNotFound
-// translation contract: a missing key surfaces as (nil, false, nil)
-// rather than as a wrapped error. inMemoryStore implements Get directly
-// (not via embedding) — this test guards against a delegation
-// regression that surfaced ErrNotFound as a hard error.
+// TestInMemoryStore_GetMissingKeyReturnsMissTuple pins the miss contract.
 func TestInMemoryStore_GetMissingKeyReturnsMissTuple(t *testing.T) {
 	t.Parallel()
 
@@ -586,7 +436,7 @@ func TestCredentialStore_ReplaceIfUnchanged(t *testing.T) {
 		Issuer:      "https://idp.example.com",
 		UpstreamID:  "https://upstream.example.com",
 		RedirectURI: "https://toolhive.example.com/oauth/callback",
-		ScopesHash:  storage.ScopesHash([]string{"openid"}),
+		ScopesHash:  dcrkey.ScopesHash([]string{"openid"}),
 	}
 	registration := func(clientID string) *Resolution {
 		return &Resolution{
@@ -603,21 +453,13 @@ func TestCredentialStore_ReplaceIfUnchanged(t *testing.T) {
 		CredentialStore
 		Replacer
 	}
-	stores := map[string]func(t *testing.T) replacingStore{
-		"storage-backed": func(t *testing.T) replacingStore {
-			t.Helper()
-			s, ok := newMemoryDCRStore(t).(replacingStore)
-			require.True(t, ok, "the storage-backed store must implement Replacer")
-			return s
-		},
-		"in-memory": func(t *testing.T) replacingStore {
-			t.Helper()
-			s := NewInMemoryStore()
-			t.Cleanup(func() { _ = s.Close() })
-			r, ok := s.(replacingStore)
-			require.True(t, ok, "the in-memory store must implement Replacer")
-			return r
-		},
+	newStore := func(t *testing.T) replacingStore {
+		t.Helper()
+		s := NewInMemoryStore()
+		t.Cleanup(func() { _ = s.Close() })
+		r, ok := s.(replacingStore)
+		require.True(t, ok, "the in-memory store must implement Replacer")
+		return r
 	}
 	tests := []struct {
 		name     string
@@ -629,34 +471,191 @@ func TestCredentialStore_ReplaceIfUnchanged(t *testing.T) {
 		{name: "keeps a registration a concurrent writer already replaced", stored: newer, wantID: "newer-id", wantRead: "newer-id"},
 		{name: "claims the key when the row is gone", stored: nil, wantID: "fresh-id", wantRead: "fresh-id"},
 	}
-	for storeName, newStore := range stores {
-		for _, tt := range tests {
-			t.Run(storeName+"/"+tt.name, func(t *testing.T) {
-				t.Parallel()
-				ctx := context.Background()
-				store := newStore(t)
-				if tt.stored != nil {
-					_, err := store.PutIfAbsent(ctx, key, tt.stored)
-					require.NoError(t, err)
-				}
-
-				got, err := store.ReplaceIfUnchanged(ctx, key, stale, fresh)
-				require.NoError(t, err)
-				assert.Equal(t, tt.wantID, got.ClientID)
-
-				read, ok, err := store.Get(ctx, key)
-				require.NoError(t, err)
-				require.True(t, ok)
-				assert.Equal(t, tt.wantRead, read.ClientID)
-			})
-		}
-		t.Run(storeName+"/rejects nil resolutions", func(t *testing.T) {
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
+			ctx := context.Background()
 			store := newStore(t)
-			_, err := store.ReplaceIfUnchanged(context.Background(), key, nil, fresh)
-			require.Error(t, err)
-			_, err = store.ReplaceIfUnchanged(context.Background(), key, stale, nil)
-			require.Error(t, err)
+			if tt.stored != nil {
+				_, err := store.PutIfAbsent(ctx, key, tt.stored)
+				require.NoError(t, err)
+			}
+
+			candidate := *fresh
+			candidate.RedirectURI = "noncanonical"
+			candidate.ClientIDIssuedAt = time.Now()
+			original := candidate
+			got, err := store.ReplaceIfUnchanged(ctx, key, stale, &candidate)
+			require.NoError(t, err)
+			assert.Equal(t, original, candidate, "replacement must not mutate caller input")
+			assert.Equal(t, tt.wantID, got.ClientID)
+			want := original
+			if tt.stored == newer {
+				want = *newer
+			}
+			want.RedirectURI, want.ClientIDIssuedAt = key.RedirectURI, time.Time{}
+			assert.Equal(t, want, *got)
+			candidate.ClientID, got.ClientID = "input-mutated", "output-mutated"
+
+			read, ok, err := store.Get(ctx, key)
+			require.NoError(t, err)
+			require.True(t, ok)
+			assert.Equal(t, tt.wantRead, read.ClientID)
+			assert.Equal(t, want, *read)
 		})
 	}
+	t.Run("rejects nil resolutions before returning a concurrent winner", func(t *testing.T) {
+		t.Parallel()
+		store := newStore(t)
+		_, err := store.PutIfAbsent(context.Background(), key, newer)
+		require.NoError(t, err)
+		_, err = store.ReplaceIfUnchanged(context.Background(), key, nil, fresh)
+		require.Error(t, err)
+		_, err = store.ReplaceIfUnchanged(context.Background(), key, stale, nil)
+		require.Error(t, err)
+		_, err = store.PutIfAbsent(context.Background(), key, nil)
+		require.Error(t, err)
+	})
+}
+
+func TestInMemoryStore_Validation(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		field      string
+		invalidate func(*Key, *Resolution)
+	}{
+		{"key issuer", func(k *Key, _ *Resolution) { k.Issuer = "" }},
+		{"key upstream_id", func(k *Key, _ *Resolution) { k.UpstreamID = "" }},
+		{"key redirect_uri", func(k *Key, _ *Resolution) { k.RedirectURI = "" }},
+		{"key scopes_hash", func(k *Key, _ *Resolution) { k.ScopesHash = "" }},
+		{"client_id", func(_ *Key, r *Resolution) { r.ClientID = "" }},
+		{"authorization_endpoint", func(_ *Key, r *Resolution) { r.AuthorizationEndpoint = "" }},
+		{"token_endpoint", func(_ *Key, r *Resolution) { r.TokenEndpoint = "" }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.field, func(t *testing.T) {
+			t.Parallel()
+			ctx := context.Background()
+			store := NewInMemoryStore()
+			key := Key{Issuer: "issuer", UpstreamID: "upstream", RedirectURI: "redirect", ScopesHash: dcrkey.ScopesHash(nil)}
+			valid := &Resolution{ClientID: "client", AuthorizationEndpoint: "auth", TokenEndpoint: "token"}
+			candidate := *valid
+			tt.invalidate(&key, &candidate)
+			// Validation must run before looking up even an existing winner.
+			memory := store.(*inMemoryStore)
+			memory.entries[key] = *valid
+			_, err := store.PutIfAbsent(ctx, key, &candidate)
+			var oauthErr *fosite.RFC6749Error
+			require.ErrorAs(t, err, &oauthErr)
+			assert.Equal(t, fosite.ErrInvalidRequest.ErrorField, oauthErr.ErrorField)
+			assert.Equal(t, "dcr credentials "+tt.field+" cannot be empty", oauthErr.HintField)
+			// Replacement validates a matching or missing row, but a different
+			// stored identity wins before candidate validation.
+			replacer := store.(Replacer)
+			_, err = replacer.ReplaceIfUnchanged(ctx, key, valid, &candidate)
+			require.Error(t, err)
+			winner, err := replacer.ReplaceIfUnchanged(ctx, key, &Resolution{ClientID: "other"}, &candidate)
+			require.NoError(t, err)
+			assert.Equal(t, valid.ClientID, winner.ClientID)
+			delete(memory.entries, key)
+			_, err = replacer.ReplaceIfUnchanged(ctx, key, valid, &candidate)
+			require.Error(t, err)
+			_, ok, err := store.Get(ctx, key)
+			require.NoError(t, err)
+			assert.False(t, ok)
+		})
+	}
+}
+
+func TestInMemoryStore_CopiesNormalizationAndExpiry(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	key := Key{Issuer: "issuer", UpstreamID: "upstream", RedirectURI: "canonical", ScopesHash: dcrkey.ScopesHash(nil)}
+	for _, expiry := range []time.Time{{}, time.Now().Add(time.Hour), time.Now().Add(-time.Hour)} {
+		t.Run(fmt.Sprint(expiry), func(t *testing.T) {
+			t.Parallel()
+			store := NewInMemoryStore()
+			original := Resolution{ClientID: "public", AuthorizationEndpoint: "auth", TokenEndpoint: "token", RedirectURI: "ignored", ClientIDIssuedAt: time.Now(), CreatedAt: time.Now().Add(-time.Hour), ClientSecretExpiresAt: expiry}
+			input := original
+			want := original
+			want.RedirectURI = key.RedirectURI
+			want.ClientIDIssuedAt = time.Time{}
+			result, err := store.PutIfAbsent(ctx, key, &input)
+			require.NoError(t, err)
+			assert.Equal(t, original, input)
+			assert.Equal(t, want, *result)
+			input.ClientID, result.ClientID = "input-mutated", "output-mutated"
+			got, ok, err := store.Get(ctx, key)
+			require.NoError(t, err)
+			require.True(t, ok, "even expired physical entries remain readable")
+			assert.Equal(t, want, *got)
+			got.ClientID = "get-mutated"
+			fresh := original
+			fresh.ClientID, fresh.ClientSecretExpiresAt = "fresh", time.Time{}
+			replacement, err := store.PutIfAbsent(ctx, key, &fresh)
+			require.NoError(t, err)
+			wantID := "public"
+			if !expiry.IsZero() && time.Now().After(expiry) {
+				wantID = "fresh"
+			}
+			assert.Equal(t, wantID, replacement.ClientID)
+			replacement.ClientID = "winner-mutated"
+			got, _, err = store.Get(ctx, key)
+			require.NoError(t, err)
+			assert.Equal(t, wantID, got.ClientID)
+		})
+	}
+}
+
+func TestInMemoryStore_ReplacementContention(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store := NewInMemoryStore()
+	key := Key{Issuer: "issuer", UpstreamID: "upstream", RedirectURI: "redirect", ScopesHash: dcrkey.ScopesHash(nil)}
+	stale := &Resolution{ClientID: "stale", AuthorizationEndpoint: "auth", TokenEndpoint: "token", ClientSecretExpiresAt: time.Now().Add(-time.Hour)}
+	_, err := store.PutIfAbsent(ctx, key, stale)
+	require.NoError(t, err)
+	const workers = 16
+	results := make(chan *Resolution, workers)
+	errs := make(chan error, workers)
+	start := make(chan struct{})
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	for i := range workers {
+		go func() {
+			select {
+			case <-start:
+			case <-ctx.Done():
+				return
+			}
+			candidate := *stale
+			candidate.ClientID = fmt.Sprint(i)
+			candidate.ClientSecretExpiresAt = time.Time{}
+			got, err := store.(Replacer).ReplaceIfUnchanged(ctx, key, stale, &candidate)
+			if err != nil {
+				errs <- err
+				return
+			}
+			results <- got
+		}()
+	}
+	close(start)
+	winner := ""
+	for range workers {
+		select {
+		case err := <-errs:
+			require.NoError(t, err)
+		case result := <-results:
+			if winner == "" {
+				winner = result.ClientID
+			}
+			assert.Equal(t, winner, result.ClientID)
+			result.ClientID = "mutated"
+		case <-ctx.Done():
+			t.Fatal("timeout waiting for replacement contenders")
+		}
+	}
+	got, _, err := store.Get(ctx, key)
+	require.NoError(t, err)
+	assert.Equal(t, winner, got.ClientID)
 }

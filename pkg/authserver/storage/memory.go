@@ -207,7 +207,7 @@ type MemoryStorage struct {
 	// dcrCredentials maps DCRKey -> DCRCredentials for RFC 7591 Dynamic Client
 	// Registration credentials. These entries come from OUTBOUND DCR: ToolHive
 	// acting as a DCR client to register itself against a configured upstream
-	// IdP (see pkg/auth/dcr/store.go, the only caller of StoreDCRCredentialsIfAbsent).
+	// IdP (see pkg/authserver/runner/dcr_store.go, the resolver persistence adapter).
 	// This is not reachable from the inbound, unauthenticated /oauth/register
 	// handler, so unlike clients (bounded by maxDCRClients and the client expiry maps because
 	// every inbound registration call mints an entry), growth here is bounded
@@ -2360,12 +2360,10 @@ func cloneDCRCredentials(c *DCRCredentials) *DCRCredentials {
 // calling. A defensive copy is made so subsequent caller mutations do not
 // affect persisted state.
 //
-// Create-if-absent, not overwrite: a single process's dcrFlight singleflight
-// (see pkg/auth/dcr) already prevents concurrent same-key writers within
-// this process, so the check below is not closing a live race here — it is
-// contract symmetry with RedisStorage.StoreDCRCredentialsIfAbsent, which
-// DOES need it to prevent two replicas from independently registering RFC
-// 7591 clients for the same Key and racing on which write wins.
+// Create-if-absent, not overwrite: the resolver's process-wide singleflight
+// coalesces normal same-key resolutions, but direct store callers can race.
+// This check also preserves symmetry with RedisStorage, where concurrent
+// replicas can independently register distinct RFC 7591 clients.
 //
 // The in-memory backend has no native TTL, so "absent" cannot be a plain
 // map-presence check: the Redis backend's rows self-evict via TTL derived

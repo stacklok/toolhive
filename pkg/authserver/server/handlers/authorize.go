@@ -365,12 +365,13 @@ func (h *Handler) rejectUnsafeRequestObject(ctx context.Context, w http.Response
 	if !slices.ContainsFunc(req.Form["request"], fositejose.IsUnsafeJWS) {
 		return false
 	}
-	slog.Warn("rejected request object with an embedded key or non-compact encoding")
+	slog.Warn("rejected request object that is not a compact JWS with a JSON header and payload and no embedded key")
 	h.provider.WriteAuthorizeError(
 		ctx,
 		w,
 		fosite.NewAuthorizeRequest(),
-		fosite.ErrInvalidRequestObject.WithHint("The request object must be a compact JWS without an embedded JSON Web Key."),
+		fosite.ErrInvalidRequestObject.WithHint(
+			"The request object must be a compact JWS with a JSON header and payload and no embedded JSON Web Key."),
 	)
 	return true
 }

@@ -39,6 +39,26 @@ linters:
           deny:
             - pkg: io/ioutil
               desc: this is deprecated
+        # go-jose v3 decodes JSON with no nesting limit (GHSA-vvm8-gf78-28g4),
+        # and fosite's token/jwt package parses tokens with it. Only the files
+        # below may import either, and none of them parses a JWT. A new
+        # importer must refuse fositejose.IsUnsafeJWS tokens before it parses
+        # one, then join this list.
+        restrict_go_jose_v3:
+          list-mode: lax
+          files:
+            - $all
+            - '!$test'
+            - '!**/pkg/authserver/internal/fositejose/fositejose.go'
+            - '!**/pkg/authserver/server/provider.go'
+            - '!**/pkg/authserver/server/access_token_signer.go'
+            - '!**/pkg/authserver/server/session/session.go'
+            - '!**/test/e2e/oidc_mock.go'
+          deny:
+            - pkg: github.com/go-jose/go-jose/v3
+              desc: go-jose v3 has no JSON nesting limit (GHSA-vvm8-gf78-28g4); use go-jose v4, or guard with fositejose.IsUnsafeJWS
+            - pkg: github.com/ory/fosite/token/jwt
+              desc: fosite's JWT parser uses go-jose v3 (GHSA-vvm8-gf78-28g4); guard with fositejose.IsUnsafeJWS before parsing
     ginkgolinter:
       # Suppress the wrong length assertion warning
       suppress-len-assertion: false

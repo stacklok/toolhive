@@ -385,3 +385,66 @@ func TestStringOrSlice_UnmarshalYAML(t *testing.T) {
 		})
 	}
 }
+
+func TestParseSkillMD_DuplicateKeys(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		fm      string
+		wantErr string
+	}{
+		{
+			name:    "duplicate top-level key",
+			fm:      "name: a\ndescription: d\nname: b\n",
+			wantErr: `line 3: mapping key "name" already defined at line 1`,
+		},
+		{
+			name:    "duplicate key in nested mapping",
+			fm:      "name: a\nmetadata:\n  k: v\n  k: w\n",
+			wantErr: `line 4: mapping key "k" already defined at line 3`,
+		},
+		{
+			name:    "duplicate key in unknown field",
+			fm:      "name: a\nextra: {x: 1, x: 2}\n",
+			wantErr: `mapping key "x" already defined`,
+		},
+		{
+			name:    "duplicate key in anchored mapping",
+			fm:      "base: &b {x: 1, x: 2}\nmetadata: *b\n",
+			wantErr: `mapping key "x" already defined`,
+		},
+		{
+			// A frontmatter of nothing but repeated keys used to take tens of
+			// seconds (quadratic duplicate-key reporting in the yaml decoder).
+			name:    "many repeated top-level keys at size limit",
+			fm:      strings.Repeat("a: \n", (MaxFrontmatterSize-8)/4),
+			wantErr: `mapping key "a" already defined`,
+		},
+		{
+			name:    "many repeated flow keys at size limit",
+			fm:      "metadata: {" + strings.Repeat("a: ,", (MaxFrontmatterSize-16)/4) + "}\n",
+			wantErr: `mapping key "a" already defined`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := ParseSkillMD([]byte("---\n" + tt.fm + "---\n"))
+			require.Error(t, err)
+			assert.ErrorIs(t, err, ErrInvalidFrontmatter)
+			assert.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
+}
+
+func TestParseSkillMD_MergeKeysStillWork(t *testing.T) {
+	t.Parallel()
+
+	content := "---\nbase: &b {author: x, team: y}\nname: s\ndescription: d\nmetadata:\n  <<: *b\n  team: z\n---\n"
+	result, err := ParseSkillMD([]byte(content))
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{"author": "x", "team": "z"}, result.Metadata)
+}

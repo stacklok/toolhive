@@ -1370,25 +1370,15 @@ func TestRedisStorage_ClientAssertionJWT(t *testing.T) {
 		assert.Equal(t, err, recorded())
 	})
 
-	tests := []struct {
-		name      string
-		expOffset time.Duration
-	}{
-		{"failure to record the jti is recorded for the client authentication strategy", time.Minute},
-		{"failure to remove the reservation is recorded for the client authentication strategy", -time.Hour},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
-				ctx, recorded := server.NewClientAssertionStoreFailureContext(ctx)
-				mr.Close()
-				err := s.SetClientAssertionJWT(ctx, "any-jti", time.Now().Add(tt.expOffset))
-				require.Error(t, err)
-				assert.Equal(t, err, recorded())
-			})
+	t.Run("failure to record the jti is recorded for the client authentication strategy", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			ctx, recorded := server.NewClientAssertionStoreFailureContext(ctx)
+			mr.Close()
+			err := s.SetClientAssertionJWT(ctx, "any-jti", time.Now().Add(time.Minute))
+			require.Error(t, err)
+			assert.Equal(t, err, recorded())
 		})
-	}
+	})
 
 	t.Run("replay is not recorded as a backend failure", func(t *testing.T) {
 		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
@@ -1399,6 +1389,36 @@ func TestRedisStorage_ClientAssertionJWT(t *testing.T) {
 		})
 	})
 
+	t.Run("exp that is not in the future is invalid_client and leaves the reservation", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			require.NoError(t, s.ClientAssertionJWTValid(ctx, "past-jti"))
+			key := redisKey(s.keyPrefix, KeyTypeJWT, "past-jti")
+			ttlBefore := mr.TTL(key)
+			require.Positive(t, ttlBefore)
+
+			ctx, recorded := server.NewClientAssertionStoreFailureContext(ctx)
+			err := s.SetClientAssertionJWT(ctx, "past-jti", time.Now().Add(-time.Hour))
+			var rfcErr *fosite.RFC6749Error
+			require.ErrorAs(t, err, &rfcErr)
+			assert.Equal(t, fosite.ErrInvalidClient.ErrorField, rfcErr.ErrorField)
+			assert.Equal(t, 401, rfcErr.CodeField)
+			assert.NoError(t, recorded())
+
+			assert.Equal(t, ttlBefore, mr.TTL(key), "the reservation must stay as it was")
+			assert.ErrorIs(t, s.ClientAssertionJWTValid(ctx, "past-jti"), fosite.ErrJTIKnown)
+		})
+	})
+
+	t.Run("future exp sets the key with the matching TTL", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			require.NoError(t, s.ClientAssertionJWTValid(ctx, "ttl-jti"))
+			require.NoError(t, s.SetClientAssertionJWT(ctx, "ttl-jti", time.Now().Add(2*time.Minute)))
+			ttl := mr.TTL(redisKey(s.keyPrefix, KeyTypeJWT, "ttl-jti"))
+			assert.Greater(t, ttl, time.Minute+30*time.Second)
+			assert.LessOrEqual(t, ttl, 2*time.Minute)
+		})
+	})
+
 	t.Run("excessive lifetime is invalid_client", func(t *testing.T) {
 		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
 			err := s.SetClientAssertionJWT(ctx, "long-jti", time.Now().Add(time.Hour))
@@ -1406,14 +1426,6 @@ func TestRedisStorage_ClientAssertionJWT(t *testing.T) {
 			require.ErrorAs(t, err, &rfcErr)
 			assert.Equal(t, fosite.ErrInvalidClient.ErrorField, rfcErr.ErrorField)
 			assert.Equal(t, 401, rfcErr.CodeField)
-		})
-	})
-
-	t.Run("expired JTI is not stored", func(t *testing.T) {
-		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
-			require.NoError(t, s.SetClientAssertionJWT(ctx, "expired-jti", time.Now().Add(-time.Hour)))
-			err := s.ClientAssertionJWTValid(ctx, "expired-jti")
-			require.NoError(t, err) // Should be valid because expired JTI is not stored
 		})
 	})
 }

@@ -157,6 +157,16 @@ func UpdateUpstreamClientCredentials(s Server, name string, creds upstream.Clien
 // workers created by the server. Close releases only instance-owned resources.
 // HTTP clients injected into upstream providers remain caller-owned; the caller
 // is responsible for their connection pools and networking security policy.
+//
+// SPIFFE X.509 client authentication reads the client certificate from the TLS
+// connection that reaches the handler (http.Request.TLS). The embedder must
+// terminate TLS itself and request client certificates. Behind a TLS-terminating
+// proxy X.509-SVID authentication is unavailable; use JWT-SVIDs instead.
+// Identity is never read from forwarded headers such as X-Forwarded-Client-Cert.
+// The authenticated client is whichever peer completes the TLS handshake, so TLS
+// must reach the handler end to end from the workload. A proxy or gateway that
+// opens its own TLS connection to the handler is authenticated as itself, so
+// association principal patterns must not match proxy or gateway identities.
 func New(ctx context.Context, cfg Config, stor storage.Storage) (Server, error) {
 	upstream.RegisterModifiers()
 	slog.Debug("creating new OAuth authorization server", "issuer", cfg.Issuer)

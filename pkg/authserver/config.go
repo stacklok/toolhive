@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"math"
 	"net/url"
 	"regexp"
@@ -87,8 +88,10 @@ type RunConfig struct {
 	DelegationTokenLifespan string `json:"delegation_token_lifespan,omitempty" yaml:"delegation_token_lifespan,omitempty"`
 
 	// Upstreams configures connections to upstream Identity Providers for
-	// interactive authorization. It may be empty only when DelegateClients or a
-	// TrustedIssuer with JWTBearerGrant enables token-only operation.
+	// interactive authorization. It may be empty only when token-only operation
+	// is enabled by DelegateClients (also under InboundGrants.TokenExchange),
+	// InboundGrants.SPIFFEClientAuth, or a TrustedIssuer with JWTBearerGrant
+	// (also under InboundGrants.JWTBearer).
 	// Multiple upstreams are supported for sequential authorization chains.
 	Upstreams []UpstreamRunConfig `json:"upstreams" yaml:"upstreams"`
 
@@ -507,8 +510,8 @@ func (c *RunConfig) Validate() error {
 	if err := c.TLSListener.validate(); err != nil {
 		return err
 	}
-	if c.HasSPIFFEX509ClientAuth() && c.TLSListener == nil {
-		return fmt.Errorf("tls_listener is required when a SPIFFE client association enables spiffe_x509")
+	if err := c.validateSPIFFEX509Listener(); err != nil {
+		return err
 	}
 	if err := c.validateClientAdmission(); err != nil {
 		return err
@@ -533,6 +536,9 @@ func (c *RunConfig) Validate() error {
 	if err := validateTrustedIssuers(normalized.TrustedIssuers, c.Issuer, c.AllowedAudiences); err != nil {
 		return err
 	}
+	if err := c.validateSPIFFEClientIDsNotDelegates(normalized.DelegateClients); err != nil {
+		return err
+	}
 	// Every delegate client counts as confidential here, private_key_jwt ones
 	// included. They send no secret, but unlike token-exchange-only DCR
 	// private_key_jwt clients they can hold authorization_code and refresh_token
@@ -554,13 +560,55 @@ func (c *RunConfig) Validate() error {
 	); err != nil {
 		return err
 	}
-	if err := validateSPIFFENotYetEnforced(c.SPIFFETrustDomains); err != nil {
+	if err := c.validateRuntimeSPIFFEBundleSources(); err != nil {
 		return err
 	}
 	if err := c.validateUpstreamFilter(); err != nil {
 		return err
 	}
 	return c.validateBaselineClientScopes()
+}
+
+// validateSPIFFEX509Listener requires the TLS listener and an https issuer when
+// an association enables spiffe_x509, since only that listener requests a
+// client certificate.
+func (c *RunConfig) validateSPIFFEX509Listener() error {
+	if !c.HasSPIFFEX509ClientAuth() {
+		return nil
+	}
+	if c.TLSListener == nil {
+		return fmt.Errorf("tls_listener is required when a SPIFFE client association enables spiffe_x509")
+	}
+	_, err := ValidateSPIFFEX509Issuer(c.Issuer)
+	return err
+}
+
+func (c *RunConfig) validateSPIFFEClientIDsNotDelegates(delegates []DelegateClientRunConfig) error {
+	if c.InboundGrants == nil {
+		return nil
+	}
+	spiffeIDs := make([]string, 0, len(c.InboundGrants.SPIFFEClientAuth))
+	for _, association := range c.InboundGrants.SPIFFEClientAuth {
+		spiffeIDs = append(spiffeIDs, association.ClientID)
+	}
+	delegateIDs := make([]string, 0, len(delegates))
+	for _, delegate := range delegates {
+		delegateIDs = append(delegateIDs, delegate.ClientID)
+	}
+	return ValidateSPIFFEClientIDsNotDelegates(spiffeIDs, delegateIDs)
+}
+
+// validateRuntimeSPIFFEBundleSources rejects trust domains whose bundle source
+// this build cannot load. It applies the same predicate as the Config check.
+func (c *RunConfig) validateRuntimeSPIFFEBundleSources() error {
+	for i, domain := range c.SPIFFETrustDomains {
+		if err := ValidateRuntimeSPIFFEBundleSourceType(
+			fmt.Sprintf("spiffe_trust_domains[%d] %q bundle_source", i, domain.Name), domain.BundleSource.Type,
+		); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // validateClientAdmission checks the bounds on how unauthenticated callers
@@ -633,43 +681,6 @@ func (c *RunConfig) HasSPIFFEX509ClientAuth() bool {
 		}
 	}
 	return false
-}
-
-// validateSPIFFENotYetEnforced hard-rejects a non-empty SPIFFE trust
-// configuration. ValidateSPIFFETrust above confirms the configuration is
-// well-formed, but well-formed is not the same as enforced: nothing in this
-// build ever verifies an X.509-SVID or JWT-SVID against the configured trust
-// bundle, so a valid, non-empty SPIFFE trust configuration currently has no
-// runtime authentication effect. Accepting it silently would let an operator
-// believe SPIFFE client authentication is active when no credential is ever
-// checked. This rejection must be removed by the future PR that adds real
-// SVID verification against the configured trust bundle.
-func validateSPIFFENotYetEnforced(trustDomains []SPIFFETrustDomainRunConfig) error {
-	if len(trustDomains) == 0 {
-		return nil
-	}
-	return fmt.Errorf(
-		"spiffe_trust_domains: SPIFFE client authentication is not yet enforced by this build " +
-			"(no X.509-SVID or JWT-SVID is verified against the configured trust bundle); " +
-			"remove this configuration until a verification consumer lands")
-}
-
-// validateConfigSPIFFENotYetEnforced is validateSPIFFENotYetEnforced's
-// Config-level counterpart: a caller that constructs Config directly (e.g.
-// authserver.New) bypasses RunConfig.Validate() entirely, so the same
-// fail-loud rejection must also apply to Config.SPIFFETrust -- otherwise a
-// non-empty, well-formed SPIFFE trust policy could start a server through
-// this path with no authentication consumer ever wired to it. Associations
-// is nil-safe and empty for both a nil SPIFFETrust and one with no
-// configured associations.
-func validateConfigSPIFFENotYetEnforced(trust *SPIFFETrustConfig) error {
-	if len(trust.Associations()) == 0 {
-		return nil
-	}
-	return fmt.Errorf(
-		"spiffe_trust: SPIFFE client authentication is not yet enforced by this build " +
-			"(no X.509-SVID or JWT-SVID is verified against the configured trust bundle); " +
-			"remove this configuration until a verification consumer lands")
 }
 
 // validateBaselineClientScopes ensures every entry in BaselineClientScopes is
@@ -1958,6 +1969,9 @@ func (c *Config) validateIssuerAndConsentConfig() error {
 	if err := c.validateAuthorizationDetailsRequiresTokenExchange(); err != nil {
 		return err
 	}
+	if err := c.validateSPIFFEAssociationsRequireTokenExchange(); err != nil {
+		return err
+	}
 	if c.AuthorizationEndpointBaseURL != "" {
 		if err := validateIssuerURL(c.AuthorizationEndpointBaseURL, c.InsecureAllowHTTP); err != nil {
 			return fmt.Errorf("authorization_endpoint_base_url: %w", err)
@@ -1975,7 +1989,7 @@ func (c *Config) validateDelegationAndTrustConfig() error {
 	if err := c.validateDelegationConfig(); err != nil {
 		return err
 	}
-	if err := validateConfigSPIFFENotYetEnforced(c.SPIFFETrust); err != nil {
+	if err := c.validateRuntimeSPIFFEBundleSources(); err != nil {
 		return err
 	}
 	c.warnTrustedIssuerAudiences()
@@ -1999,6 +2013,38 @@ func (c *Config) validateAudienceConfiguration() error {
 	return oauthserver.ValidateSubjectIdentifierAudiences(c.SubjectIdentifierAudiences, c.AllowedAudiences)
 }
 
+// validateRuntimeSPIFFEBundleSources rejects SPIFFE trust domains whose bundle
+// source this build cannot load. It applies the same predicate as the
+// RunConfig check so the two validation paths cannot drift.
+func (c *Config) validateRuntimeSPIFFEBundleSources() error {
+	if c.SPIFFETrust == nil {
+		return nil
+	}
+	for _, name := range slices.Sorted(maps.Keys(c.SPIFFETrust.trustDomains)) {
+		domain := c.SPIFFETrust.trustDomains[name]
+		if err := ValidateRuntimeSPIFFEBundleSourceType(
+			fmt.Sprintf("spiffe_trust: trust domain %q bundle_source", domain.TrustDomain()), domain.BundleSource().Type(),
+		); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ValidateRuntimeSPIFFEBundleSourceType is the single rule for which SPIFFE
+// bundle source types this build can load. Only the file source has a
+// runtime loader; bundle_endpoint and workload_api pass structural validation
+// but would fail at auth-server startup, so they are rejected here. The
+// operator calls it too, so the config CR and RunConfig.Validate agree.
+// subject is the full field path of the bundle_source, used as the error prefix.
+func ValidateRuntimeSPIFFEBundleSourceType(subject string, sourceType SPIFFEBundleSourceType) error {
+	if sourceType == SPIFFEBundleSourceTypeFile {
+		return nil
+	}
+	return fmt.Errorf("%s: type %q is not supported by this build; only %q is supported",
+		subject, sourceType, SPIFFEBundleSourceTypeFile)
+}
+
 // validateBaselineClientScopes ensures every baseline scope is advertised by
 // ScopesSupported. When it is empty, applyDefaults supplies DefaultScopes.
 func (c *Config) validateBaselineClientScopes() error {
@@ -2009,10 +2055,21 @@ func (c *Config) validateBaselineClientScopes() error {
 	return registration.ValidateScopeSubset(c.BaselineClientScopes, effective, "baseline_client_scopes")
 }
 
-// validateDelegationConfig validates delegate clients and trusted issuers for
-// callers that construct a runtime Config directly.
+// validateDelegationConfig validates delegate clients, their separation from
+// SPIFFE client associations, and trusted issuers for callers that construct a runtime Config directly.
 func (c *Config) validateDelegationConfig() error {
 	if err := validateResolvedDelegateClients(c.DelegateClients, c.ScopesSupported, c.AllowedAudiences); err != nil {
+		return err
+	}
+	spiffeIDs := make([]string, 0, len(c.SPIFFETrust.Associations()))
+	for _, association := range c.SPIFFETrust.Associations() {
+		spiffeIDs = append(spiffeIDs, association.ClientID())
+	}
+	delegateIDs := make([]string, 0, len(c.DelegateClients))
+	for _, delegate := range c.DelegateClients {
+		delegateIDs = append(delegateIDs, delegate.ClientID)
+	}
+	if err := ValidateSPIFFEClientIDsNotDelegates(spiffeIDs, delegateIDs); err != nil {
 		return err
 	}
 	return validateTrustedIssuers(c.TrustedIssuers, c.Issuer, c.AllowedAudiences)
@@ -2055,6 +2112,16 @@ func (c *Config) validatePrivateKeyJWTRequiresTokenExchange() error {
 func (c *Config) validateAuthorizationDetailsRequiresTokenExchange() error {
 	if c.AuthorizationDetailsRegistry != nil && c.DisableTokenExchange {
 		return fmt.Errorf("authorization details registry requires token exchange to be enabled")
+	}
+	return nil
+}
+
+// validateSPIFFEAssociationsRequireTokenExchange rejects SPIFFE client
+// associations combined with a disabled token-exchange grant. Every SPIFFE
+// client receives only the RFC 8693 grant, so an association could never be used.
+func (c *Config) validateSPIFFEAssociationsRequireTokenExchange() error {
+	if len(c.SPIFFETrust.Associations()) > 0 && c.DisableTokenExchange {
+		return fmt.Errorf("SPIFFE client associations require token exchange to be enabled")
 	}
 	return nil
 }
@@ -2346,12 +2413,14 @@ func (c *DCRUpstreamConfig) ProbeInterval() (time.Duration, error) {
 // log- and key-safe alphabet; the CRD enforces the same shape at admission.
 var dcrRotationKeyPattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
 
-func validateZeroUpstreamMode(upstreamCount, delegateClientCount int, issuers []tokenexchange.TrustedIssuer) error {
-	if upstreamCount > 0 || delegateClientCount > 0 || JWTBearerGrantEnabled(issuers) {
+func validateZeroUpstreamMode(
+	upstreamCount, delegateClientCount, spiffeAssociationCount int, issuers []tokenexchange.TrustedIssuer,
+) error {
+	if upstreamCount > 0 || delegateClientCount > 0 || spiffeAssociationCount > 0 || JWTBearerGrantEnabled(issuers) {
 		return nil
 	}
-	return fmt.Errorf("at least one upstream is required unless delegate clients or a " +
-		"trusted issuer with JWT bearer grant is configured")
+	return fmt.Errorf("at least one upstream is required unless delegate clients, SPIFFE client associations " +
+		"or a trusted issuer with JWT bearer grant is configured")
 }
 
 // validateUpstreams validates the upstream configurations.
@@ -2377,7 +2446,8 @@ func (c *Config) validateUpstreams() error {
 		}
 	}
 
-	return validateZeroUpstreamMode(len(c.Upstreams), len(c.DelegateClients), c.TrustedIssuers)
+	return validateZeroUpstreamMode(
+		len(c.Upstreams), len(c.DelegateClients), len(c.SPIFFETrust.Associations()), c.TrustedIssuers)
 }
 
 // warnOnAuthorizeCallbackHostMismatch logs a WARN for every upstream whose

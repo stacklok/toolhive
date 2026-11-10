@@ -138,6 +138,17 @@ func (r *SPIFFEAssociationRegistry) Resolve(
 	}, nil
 }
 
+// usesX509 reports whether clientID names an association whose methods include
+// spiffe_x509. It selects the client-authentication arm only; it does not
+// authenticate anything.
+func (r *SPIFFEAssociationRegistry) usesX509(clientID string) bool {
+	if r == nil {
+		return false
+	}
+	association, ok := r.byClientID[clientID]
+	return ok && containsSPIFFEAuthenticationMethod(association.Methods(), SPIFFEAuthenticationMethodX509)
+}
+
 func (r *SPIFFEAssociationRegistry) associationForSPIFFEID(spiffeID string) (SPIFFEClientAuthConfig, bool) {
 	if association, ok := r.byPattern[spiffeID]; ok {
 		return association.clone(), true
@@ -194,9 +205,9 @@ func (r *SPIFFEAssociationRegistry) staticClients() (map[string]fosite.Client, e
 }
 
 // fingerprintSPIFFEAssociation hashes the SPIFFE association identity (trust
-// domain reference, principal pattern, and accepted methods) so two
-// associations with a differing identity durably reconcile as different
-// clients rather than being silently accepted as the same one. Each value is
+// domain reference, principal pattern, and accepted methods). Storage compares
+// it only to set identity_changed in the replacement WARN when an edited
+// association replaces its placeholder. Each value is
 // length-prefixed with an unambiguous decimal-and-colon marker so
 // concatenation can't alias two different value sequences to the same hash,
 // and methods are sorted first so their original order never affects the

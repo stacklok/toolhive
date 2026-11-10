@@ -245,11 +245,13 @@ type AuthorizationServerConfig struct {
 	// (authserver imports server), so the caller supplies it as a closure.
 	SPIFFEClientResolver SPIFFEClientResolver
 	// SPIFFEX509BundleSource provides X.509 bundles for verifying SPIFFE
-	// X.509-SVID client certificates. Not yet read by this package: carried
-	// here, copied through from AuthorizationServerParams, so the X.509 and
-	// JWT SPIFFE client-authentication arms land on a shared field instead of
-	// each independently extending this struct.
+	// X.509-SVID client certificates, read by
+	// newSPIFFEClientAuthenticationStrategy.
 	SPIFFEX509BundleSource x509bundle.Source
+	// SPIFFEX509ClientMatcher reports whether a client_id names an association
+	// enabled for spiffe_x509. Nil when no SPIFFE trust is configured;
+	// required alongside SPIFFEClientResolver and SPIFFEX509BundleSource.
+	SPIFFEX509ClientMatcher SPIFFEX509ClientMatcher
 	// SPIFFEJWTBundleSource provides JWT bundles for verifying SPIFFE
 	// JWT-SVID client assertions, read by newSPIFFEClientAuthenticationStrategy.
 	SPIFFEJWTBundleSource jwtbundle.Source
@@ -362,11 +364,11 @@ type AuthorizationServerParams struct {
 	// See the identically named field on AuthorizationServerConfig.
 	SPIFFEClientResolver SPIFFEClientResolver
 	// SPIFFEX509BundleSource provides X.509 bundles for verifying SPIFFE
-	// X.509-SVID client certificates. Not yet read by this package: threaded
-	// through here so the X.509 and JWT SPIFFE client-authentication arms
-	// land on a shared field instead of each independently extending this
-	// struct.
+	// X.509-SVID client certificates, copied through to
+	// AuthorizationServerConfig.
 	SPIFFEX509BundleSource x509bundle.Source
+	// SPIFFEX509ClientMatcher: see AuthorizationServerConfig.
+	SPIFFEX509ClientMatcher SPIFFEX509ClientMatcher
 	// SPIFFEJWTBundleSource provides JWT bundles for verifying SPIFFE
 	// JWT-SVID client assertions, copied through to AuthorizationServerConfig.
 	SPIFFEJWTBundleSource jwtbundle.Source
@@ -644,8 +646,20 @@ func NewAuthorizationServerConfig(cfg *AuthorizationServerParams) (*Authorizatio
 		DeviceCodeInterval:                        cfg.DeviceCodeInterval,
 		SPIFFEClientResolver:                      cfg.SPIFFEClientResolver,
 		SPIFFEX509BundleSource:                    cfg.SPIFFEX509BundleSource,
+		SPIFFEX509ClientMatcher:                   cfg.SPIFFEX509ClientMatcher,
 		SPIFFEJWTBundleSource:                     cfg.SPIFFEJWTBundleSource,
 	}, nil
+}
+
+// validateSPIFFEX509Wiring rejects a resolver and X.509 bundle source without a
+// matcher. The strategy routes to the X.509 arm only through the matcher, so
+// that combination would leave X.509-SVID authentication silently unreachable.
+func validateSPIFFEX509Wiring(config *AuthorizationServerConfig) error {
+	if config.SPIFFEClientResolver != nil && config.SPIFFEX509BundleSource != nil &&
+		config.SPIFFEX509ClientMatcher == nil {
+		return fmt.Errorf("SPIFFE X.509 bundle source requires an X.509 client matcher")
+	}
+	return nil
 }
 
 // unsupportedJWKSFetcher is the fosite JWKS fetcher for this server. Client
@@ -677,6 +691,9 @@ func NewAuthorizationServer(
 	); err != nil {
 		return nil, err
 	}
+	if err := validateSPIFFEX509Wiring(config); err != nil {
+		return nil, err
+	}
 	providerConfig := *config
 	fositeConfig := *config.Config
 	fositeConfig.AuthorizeEndpointHandlers = slices.Clone(fositeConfig.AuthorizeEndpointHandlers)
@@ -705,7 +722,8 @@ func NewAuthorizationServer(
 			newClientAssertionErrorStrategy(newClientAssertionClockSkewStrategy(
 				defaultStrategy, assertionStore, clientAssertionAudiences(&fositeConfig), time.Now, recoverTimeErrors,
 			)), config.GetAccessTokenIssuer(),
-			config.SPIFFEJWTBundleSource, providerConfig.SPIFFEClientResolver,
+			config.SPIFFEJWTBundleSource, config.SPIFFEX509BundleSource, providerConfig.SPIFFEClientResolver,
+			providerConfig.SPIFFEX509ClientMatcher,
 		),
 	)
 

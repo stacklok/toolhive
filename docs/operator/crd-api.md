@@ -2058,10 +2058,10 @@ _Appears in:_
 | `signingKeySecretRefs` _[api.v1beta1.SecretKeyRef](#apiv1beta1secretkeyref) array_ | SigningKeySecretRefs references Kubernetes Secrets containing signing keys for JWT operations.<br />Supports key rotation by allowing multiple keys (oldest keys are used for verification only).<br />If not specified, an ephemeral signing key will be auto-generated (development only -<br />JWTs will be invalid after restart). |  | MaxItems: 5 <br />Optional: \{\} <br /> |
 | `hmacSecretRefs` _[api.v1beta1.SecretKeyRef](#apiv1beta1secretkeyref) array_ | HMACSecretRefs references Kubernetes Secrets containing symmetric secrets for signing<br />authorization codes and refresh tokens (opaque tokens).<br />Current secret must be at least 32 bytes and cryptographically random.<br />Supports secret rotation via multiple entries (first is current, rest are for verification).<br />If not specified, an ephemeral secret will be auto-generated (development only -<br />auth codes and refresh tokens will be invalid after restart). |  | Optional: \{\} <br /> |
 | `tokenLifespans` _[api.v1beta1.TokenLifespanConfig](#apiv1beta1tokenlifespanconfig)_ | TokenLifespans configures the duration that various tokens are valid.<br />If not specified, defaults are applied (access: 1h, refresh: 7d, authCode: 10m). |  | Optional: \{\} <br /> |
-| `spiffeTrustDomains` _[api.v1beta1.SPIFFETrustDomainConfig](#apiv1beta1spiffetrustdomainconfig) array_ | SPIFFETrustDomains declares SPIFFE trust domains for<br />inboundGrants.spiffeClientAuth associations. See SPIFFETrustDomainConfig's<br />doc comment for why declaring a domain does not by itself enable<br />authentication in this build. |  | MaxItems: 50 <br />MinItems: 1 <br />Optional: \{\} <br /> |
+| `spiffeTrustDomains` _[api.v1beta1.SPIFFETrustDomainConfig](#apiv1beta1spiffetrustdomainconfig) array_ | SPIFFETrustDomains declares SPIFFE trust domains for<br />inboundGrants.spiffeClientAuth associations. Each declaration must be<br />referenced by an inboundGrants.spiffeClientAuth entry. |  | MaxItems: 50 <br />MinItems: 1 <br />Optional: \{\} <br /> |
 | `inboundGrants` _[api.v1beta1.InboundGrantsConfig](#apiv1beta1inboundgrantsconfig)_ | InboundGrants configures canonical inbound OAuth grant families. |  | Optional: \{\} <br /> |
 | `tlsListener` _[api.v1beta1.TLSListenerConfig](#apiv1beta1tlslistenerconfig)_ | TLSListener configures an additional TLS listener on port 8443 that<br />serves the embedded authorization server's routes. MCP traffic, health<br />probes and metrics stay on plain HTTP. Both certificateSecretRef and<br />privateKeySecretRef are required. It is required when<br />inboundGrants.spiffeClientAuth enables spiffe_x509. That requirement is<br />checked when the resource is reconciled and reported in status conditions;<br />the API server does not reject it. The operator exposes the listener as an<br />https-auth container port and Service port 8443. Updates to the referenced<br />Secret contents are picked up without a pod restart. |  | Optional: \{\} <br /> |
-| `upstreamProviders` _[api.v1beta1.UpstreamProviderConfig](#apiv1beta1upstreamproviderconfig) array_ | UpstreamProviders configures connections to upstream Identity Providers.<br />When configured, the embedded auth server delegates interactive authentication<br />to these providers. It may be omitted only when delegateClients or a trusted<br />issuer with jwtBearerGrant enables token-only operation.<br />MCPServer and MCPRemoteProxy support a single upstream; VirtualMCPServer supports multiple. |  | Optional: \{\} <br /> |
+| `upstreamProviders` _[api.v1beta1.UpstreamProviderConfig](#apiv1beta1upstreamproviderconfig) array_ | UpstreamProviders configures connections to upstream Identity Providers.<br />When configured, the embedded auth server delegates interactive authentication<br />to these providers. It may be omitted only when token-only operation is<br />enabled by delegateClients (also under inboundGrants.tokenExchange),<br />inboundGrants.spiffeClientAuth, or a trusted issuer with jwtBearerGrant<br />(also under inboundGrants.jwtBearer).<br />MCPServer and MCPRemoteProxy support a single upstream; VirtualMCPServer supports multiple. |  | Optional: \{\} <br /> |
 | `primaryUpstreamProvider` _string_ | PrimaryUpstreamProvider names the upstream IDP whose access token Cedar<br />should read claims from when authorising a request. Must match the name<br />of one of the entries in UpstreamProviders. When empty, the controller<br />auto-selects the first entry of UpstreamProviders.<br />Only meaningful on VirtualMCPServer, where multiple upstream providers<br />can be configured and Cedar needs to pick which token's claims to<br />evaluate. The VirtualMCPServer controller validates this field against<br />UpstreamProviders at admission and rejects unresolvable values.<br />On MCPServer and MCPRemoteProxy this field is structurally present (the<br />EmbeddedAuthServerConfig struct is shared) but has no runtime effect:<br />those CRDs are restricted to a single upstream so there is no choice to<br />make. Setting it on those CRDs is silently ignored. |  | MaxLength: 63 <br />MinLength: 1 <br />Pattern: `^[a-z0-9]([a-z0-9-]*[a-z0-9])?$` <br />Optional: \{\} <br /> |
 | `storage` _[api.v1beta1.AuthServerStorageConfig](#apiv1beta1authserverstorageconfig)_ | Storage configures the storage backend for the embedded auth server.<br />If not specified, defaults to in-memory storage. |  | Optional: \{\} <br /> |
 | `disableUpstreamTokenInjection` _boolean_ | DisableUpstreamTokenInjection prevents the embedded auth server from injecting<br />upstream IdP tokens into requests forwarded to the backend MCP server.<br />When true, the embedded auth server still handles OAuth flows for clients,<br />but instead of swapping ToolHive JWTs for upstream tokens the proxy STRIPS<br />the client's credential headers (Authorization, Cookie, Proxy-Authorization)<br />after validating the JWT — the backend receives an unauthenticated request.<br />Use headerForward to attach static credentials (e.g. an API key) if the<br />backend needs them. Cannot be combined with token exchange, AWS STS, or OBO<br />middleware, which would re-add credentials after the strip.<br />This is useful when the backend MCP server does not require authentication<br />(e.g., public documentation servers) but you still want client authentication. | false | Optional: \{\} <br /> |
@@ -4303,9 +4303,9 @@ _Appears in:_
 
 
 SPIFFEBundleSourceConfig is a discriminated bundle-source declaration. Type
-determines which, and only which, source payload may be set. The file-bundle
-loader is implemented in isolation, but SPIFFE authentication is not wired
-to any bundle source; endpoint and Workload API loading are not implemented.
+determines which, and only which, source payload may be set. Only the file
+source has a loader in this build; bundle_endpoint and workload_api pass CRD
+validation but are rejected when the auth-server configuration is validated.
 
 
 
@@ -4345,9 +4345,10 @@ _Appears in:_
 
 SPIFFEClientConfig associates one SPIFFE principal pattern from a declared
 trust domain with an explicit OAuth client identity and permissions.
-Configuration is not authentication: configured SPIFFE clients remain
-non-public OAuth clients without a secret until live SPIFFE credential
-validation is implemented (see SPIFFETrustDomainConfig's doc comment).
+Declaring a client does not grant access by itself. SPIFFE clients
+authenticate with a JWT-SVID or an X.509-SVID and have no client secret.
+Trust material comes from the declared bundle source (see
+SPIFFETrustDomainConfig's doc comment).
 
 GrantTypes is deliberately not exposed here: the runtime only accepts
 exactly the RFC 8693 token-exchange grant for a SPIFFE client
@@ -4394,12 +4395,8 @@ _Appears in:_
 
 
 SPIFFETrustDomainConfig declares one SPIFFE trust domain accepted by the
-embedded authorization server. Configuration is not authentication: no
-live X.509-SVID or JWT-SVID validation exists yet, so a declared trust
-domain does not by itself let any workload authenticate — RunConfig.Validate
-(pkg/authserver/config.go) currently hard-rejects any non-empty
-spiffeTrustDomains at authserver startup via validateSPIFFENotYetEnforced,
-a deliberate placeholder until real SVID verification lands.
+embedded authorization server. A declared domain becomes usable only after
+the configured source supplies trust material during auth-server startup.
 
 
 
@@ -4411,7 +4408,7 @@ _Appears in:_
 | `name` _string_ | Name uniquely identifies this declaration and is referenced by<br />inboundGrants.spiffeClientAuth[].trustDomainRef. |  | MaxLength: 253 <br />MinLength: 1 <br />Required: \{\} <br /> |
 | `trustDomain` _string_ | TrustDomain is the SPIFFE trust domain accepted by this declaration.<br />This pattern is a best-effort CRD-level approximation of the SPIFFE<br />trust-domain grammar; runtime parsing via<br />spiffeid.TrustDomainFromString remains authoritative. |  | MaxLength: 255 <br />MinLength: 1 <br />Pattern: `^([a-z0-9_]\|[a-z0-9_]([a-z0-9_-]\|\.[a-z0-9_-])*[a-z0-9_])$` <br />Required: \{\} <br /> |
 | `methods` _[api.v1beta1.SPIFFEAuthenticationMethod](#apiv1beta1spiffeauthenticationmethod) array_ | Methods explicitly enables the supported credential types for this<br />trust domain. |  | MaxItems: 2 <br />MinItems: 1 <br />Required: \{\} <br />items:Enum: [spiffe_x509 spiffe_jwt] <br /> |
-| `bundleSource` _[api.v1beta1.SPIFFEBundleSourceConfig](#apiv1beta1spiffebundlesourceconfig)_ | BundleSource declares exactly one trust-bundle source and is validated for<br />shape here. The standalone file loader exists, but is not wired into SPIFFE<br />authentication. |  | Required: \{\} <br /> |
+| `bundleSource` _[api.v1beta1.SPIFFEBundleSourceConfig](#apiv1beta1spiffebundlesourceconfig)_ | BundleSource declares exactly one trust-bundle source and is validated for<br />shape here. Only the file source is loaded in this build; bundle_endpoint<br />and workload_api are rejected when the auth-server configuration is<br />validated. |  | Required: \{\} <br /> |
 
 
 #### api.v1beta1.SPIFFEWorkloadAPIBundleSourceConfig

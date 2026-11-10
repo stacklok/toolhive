@@ -15,6 +15,7 @@
 package controllers
 
 import (
+	"cmp"
 	"context"
 	stderrors "errors"
 	"maps"
@@ -4823,6 +4824,8 @@ func TestVirtualMCPServerValidateAuthServerConfig_TLSListener(t *testing.T) {
 	tests := []struct {
 		name        string
 		listener    *mcpv1beta1.TLSListenerConfig
+		issuer      string
+		source      *mcpv1beta1.SPIFFEBundleSourceConfig
 		wantMessage string
 	}{
 		{
@@ -4830,22 +4833,42 @@ func TestVirtualMCPServerValidateAuthServerConfig_TLSListener(t *testing.T) {
 			wantMessage: "spec.authServerConfig: tlsListener is required when SPIFFE X.509 client authentication is configured",
 		},
 		{name: "x509 association with listener", listener: listener},
+		{
+			name:        "x509 association with an http issuer",
+			listener:    listener,
+			issuer:      "http://authserver.example.com",
+			wantMessage: "spec.authServerConfig: SPIFFE X.509 authentication requires an https issuer",
+		},
+		{
+			name:     "workload_api bundle source is not supported by this build",
+			listener: listener,
+			source: &mcpv1beta1.SPIFFEBundleSourceConfig{
+				Type:        mcpv1beta1.SPIFFEBundleSourceTypeWorkloadAPI,
+				WorkloadAPI: &mcpv1beta1.SPIFFEWorkloadAPIBundleSourceConfig{},
+			},
+			wantMessage: `spec.authServerConfig: spiffeTrustDomains[0].bundleSource: type "workload_api" is not supported by this build; only "file" is supported`,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
+			bundleSource := mcpv1beta1.SPIFFEBundleSourceConfig{
+				Type: mcpv1beta1.SPIFFEBundleSourceTypeFile,
+				File: &mcpv1beta1.SPIFFEFileBundleSourceConfig{ConfigMapName: "spire-bundle", ConfigMapKey: "bundle.json"},
+			}
+			if tt.source != nil {
+				bundleSource = *tt.source
+			}
+			issuer := cmp.Or(tt.issuer, "https://authserver.example.com")
 			vmcp := v1beta1test.NewVirtualMCPServer(testVmcpName, "default",
 				v1beta1test.WithVMCPGroupRef("test-group"),
 				v1beta1test.WithVMCPAuthServerConfig(&mcpv1beta1.EmbeddedAuthServerConfig{
-					Issuer: "https://authserver.example.com",
+					Issuer: issuer,
 					SPIFFETrustDomains: []mcpv1beta1.SPIFFETrustDomainConfig{{
 						Name: "example", TrustDomain: "example.org",
-						Methods: []mcpv1beta1.SPIFFEAuthenticationMethod{mcpv1beta1.SPIFFEAuthenticationMethodX509},
-						BundleSource: mcpv1beta1.SPIFFEBundleSourceConfig{
-							Type:        mcpv1beta1.SPIFFEBundleSourceTypeWorkloadAPI,
-							WorkloadAPI: &mcpv1beta1.SPIFFEWorkloadAPIBundleSourceConfig{},
-						},
+						Methods:      []mcpv1beta1.SPIFFEAuthenticationMethod{mcpv1beta1.SPIFFEAuthenticationMethodX509},
+						BundleSource: bundleSource,
 					}},
 					InboundGrants: x509Grants,
 					TLSListener:   tt.listener,
@@ -4911,6 +4934,32 @@ func TestVirtualMCPServerValidateAuthServerConfig_ZeroUpstreamAlternatives(t *te
 					IssuerURL:      "https://issuer.example.com",
 					JWTBearerGrant: jwtGrant,
 				}},
+			},
+		},
+		{
+			name: "SPIFFE client associations",
+			config: &mcpv1beta1.EmbeddedAuthServerConfig{
+				Issuer: "https://auth.example.com",
+				TLSListener: &mcpv1beta1.TLSListenerConfig{
+					CertificateSecretRef: &mcpv1beta1.SecretKeyRef{Name: "listener-tls", Key: "certificate"},
+					PrivateKeySecretRef:  &mcpv1beta1.SecretKeyRef{Name: "listener-tls", Key: "private-key"},
+				},
+				SPIFFETrustDomains: []mcpv1beta1.SPIFFETrustDomainConfig{{
+					Name: "example", TrustDomain: "example.org",
+					Methods: []mcpv1beta1.SPIFFEAuthenticationMethod{mcpv1beta1.SPIFFEAuthenticationMethodX509},
+					BundleSource: mcpv1beta1.SPIFFEBundleSourceConfig{
+						Type: mcpv1beta1.SPIFFEBundleSourceTypeFile,
+						File: &mcpv1beta1.SPIFFEFileBundleSourceConfig{ConfigMapName: "spire-bundle", ConfigMapKey: "bundle.json"},
+					},
+				}},
+				InboundGrants: &mcpv1beta1.InboundGrantsConfig{
+					SPIFFEClientAuth: []mcpv1beta1.SPIFFEClientConfig{{
+						TrustDomainRef: "example", PrincipalPattern: "spiffe://example.org/ns/default/agent",
+						ClientID:  "spiffe-client",
+						Methods:   []mcpv1beta1.SPIFFEAuthenticationMethod{mcpv1beta1.SPIFFEAuthenticationMethodX509},
+						Audiences: []string{"https://mcp.example.com"}, Scopes: []string{"openid"},
+					}},
+				},
 			},
 		},
 		{

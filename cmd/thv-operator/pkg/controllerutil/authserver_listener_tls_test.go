@@ -103,8 +103,8 @@ func TestBuildAuthServerRunConfigTLSListener(t *testing.T) {
 			mcpv1beta1.SPIFFEAuthenticationMethodX509, mcpv1beta1.SPIFFEAuthenticationMethodJWT,
 		},
 		BundleSource: mcpv1beta1.SPIFFEBundleSourceConfig{
-			Type:        mcpv1beta1.SPIFFEBundleSourceTypeWorkloadAPI,
-			WorkloadAPI: &mcpv1beta1.SPIFFEWorkloadAPIBundleSourceConfig{},
+			Type: mcpv1beta1.SPIFFEBundleSourceTypeFile,
+			File: &mcpv1beta1.SPIFFEFileBundleSourceConfig{ConfigMapName: "spire-bundle", ConfigMapKey: "bundle.json"},
 		},
 	}}
 	grants := func(method mcpv1beta1.SPIFFEAuthenticationMethod) *mcpv1beta1.InboundGrantsConfig {
@@ -136,14 +136,12 @@ func TestBuildAuthServerRunConfigTLSListener(t *testing.T) {
 			wantErr: "tlsListener is required when SPIFFE X.509 client authentication is configured",
 		},
 		{
-			// These two rows check that a listener satisfies the listener rule
-			// and that the build then fails at the SPIFFE gate.
 			name: "x509 association with listener passes the listener rule",
 			config: &mcpv1beta1.EmbeddedAuthServerConfig{
-				TLSListener: listener, SPIFFETrustDomains: trustDomains,
+				Issuer: "https://auth.example.com", TLSListener: listener, SPIFFETrustDomains: trustDomains,
 				InboundGrants: grants(mcpv1beta1.SPIFFEAuthenticationMethodX509),
 			},
-			wantErr: "SPIFFE client authentication is not yet enforced",
+			wantListener: true,
 		},
 		{
 			name: "jwt-only association without listener passes the listener rule",
@@ -151,7 +149,6 @@ func TestBuildAuthServerRunConfigTLSListener(t *testing.T) {
 				SPIFFETrustDomains: trustDomains,
 				InboundGrants:      grants(mcpv1beta1.SPIFFEAuthenticationMethodJWT),
 			},
-			wantErr: "SPIFFE client authentication is not yet enforced",
 		},
 	}
 	for _, tt := range tests {

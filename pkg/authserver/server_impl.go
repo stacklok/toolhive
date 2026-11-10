@@ -162,9 +162,7 @@ func closeSPIFFEBundleSourceOnConstructionError(source *spiffeMultiDomainBundleS
 	if *retErr == nil || source == nil {
 		return
 	}
-	if err := source.Close(); err != nil {
-		slog.Warn("failed to shut down SPIFFE bundle source during server construction cleanup", "error", err)
-	}
+	_ = source.Close()
 }
 
 func spiffeX509BundleSource(source *spiffeMultiDomainBundleSource) x509bundle.Source {
@@ -237,6 +235,7 @@ func authorizationServerParams(
 		DeviceCodeInterval:                        cfg.DeviceCodeInterval,
 		SPIFFEClientResolver:                      newSPIFFEClientResolver(spiffeRegistry, stor),
 		SPIFFEX509BundleSource:                    spiffeX509BundleSource(bundleSource),
+		SPIFFEX509ClientMatcher:                   newSPIFFEX509ClientMatcher(spiffeRegistry),
 		SPIFFEJWTBundleSource:                     spiffeJWTBundleSource(bundleSource),
 	}
 }
@@ -421,14 +420,29 @@ func delegateClientIDs(delegateClients []DelegateClient) []string {
 }
 
 // explicitGrantClientIDs lists the IDs of delegate clients that set
-// grant_types explicitly. The ID-JAG handler gates these clients on the
-// jwt-bearer grant.
+// grant_types explicitly. See idJAGExplicitGrantClientIDs for the full set the
+// ID-JAG handler gates on the jwt-bearer grant.
 func explicitGrantClientIDs(clients []DelegateClient) []string {
 	var ids []string
 	for _, c := range clients {
 		if len(c.GrantTypes) > 0 {
 			ids = append(ids, c.ClientID)
 		}
+	}
+	return ids
+}
+
+// idJAGExplicitGrantClientIDs lists the clients whose registered grant_types
+// the ID-JAG handler enforces: delegate clients that set grant_types
+// explicitly, and every configured SPIFFE association client. SPIFFE
+// associations are gated too because their static clients are restricted to
+// token-exchange; without this, a jwt-bearer ID-JAG bound to such a client_id
+// would redeem despite the association's grant policy. DCR and CIMD clients
+// are deliberately not in the set and are not held to their grant types.
+func idJAGExplicitGrantClientIDs(cfg Config) []string {
+	ids := explicitGrantClientIDs(cfg.DelegateClients)
+	for _, association := range cfg.SPIFFETrust.Associations() {
+		ids = append(ids, association.ClientID())
 	}
 	return ids
 }
@@ -611,6 +625,17 @@ func newSPIFFEClientResolver(
 		}
 		return stor.GetClient(ctx, principal.ClientID())
 	}
+}
+
+// newSPIFFEX509ClientMatcher returns the matcher the client-authentication
+// strategy uses to select the X.509 arm, or nil when no SPIFFE trust is
+// configured, like newSPIFFEClientResolver. A method value on a nil registry
+// would be non-nil.
+func newSPIFFEX509ClientMatcher(registry *SPIFFEAssociationRegistry) oauthserver.SPIFFEX509ClientMatcher {
+	if registry == nil {
+		return nil
+	}
+	return registry.usesX509
 }
 
 // decorateStorageForCIMD wraps stor with the CIMD decorator when CIMD is
@@ -806,7 +831,7 @@ func buildProvider(
 	}
 	factories = append(factories, tokenExchangeFactories...)
 	if jwtBearerEnabled {
-		jwtBearerFactories, err := buildJWTBearerFactories(cfg.TrustedIssuers, shared, explicitGrantClientIDs(cfg.DelegateClients))
+		jwtBearerFactories, err := buildJWTBearerFactories(cfg.TrustedIssuers, shared, idJAGExplicitGrantClientIDs(cfg))
 		if err != nil {
 			return nil, nil, err
 		}

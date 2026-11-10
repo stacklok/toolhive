@@ -666,9 +666,10 @@ func ValidateAuthServerIntegration(cfg *Config, rc *authserver.RunConfig) error 
 
 // validateAuthServerRunConfig performs lightweight structural validation of the
 // auth server RunConfig (issuer, upstreams, allowed audiences). A config with no
-// upstreams must have delegate clients or a JWT bearer issuer policy, judged on
-// the normalized inbound grants, so errors from NormalizeInboundGrants, such as
-// conflicting legacy and canonical grants, are returned here too.
+// upstreams must have delegate clients, SPIFFE client associations or a JWT
+// bearer issuer policy, judged on the normalized inbound grants, so errors from
+// NormalizeInboundGrants, such as conflicting legacy and canonical grants, are
+// returned here too.
 func validateAuthServerRunConfig(rc *authserver.RunConfig) error {
 	if rc == nil {
 		return nil
@@ -685,9 +686,11 @@ func validateAuthServerRunConfig(rc *authserver.RunConfig) error {
 		if err != nil {
 			return fmt.Errorf("auth server inbound grants are invalid: %w", err)
 		}
-		if len(normalized.DelegateClients) == 0 && !authserver.JWTBearerGrantEnabled(normalized.TrustedIssuers) {
-			return fmt.Errorf("auth server requires at least one upstream unless delegate clients or a " +
-				"trusted issuer with JWT bearer grant is configured")
+		hasSPIFFEClients := rc.InboundGrants != nil && len(rc.InboundGrants.SPIFFEClientAuth) > 0
+		if len(normalized.DelegateClients) == 0 && !hasSPIFFEClients &&
+			!authserver.JWTBearerGrantEnabled(normalized.TrustedIssuers) {
+			return fmt.Errorf("auth server requires at least one upstream unless delegate clients, SPIFFE client " +
+				"associations or a trusted issuer with JWT bearer grant is configured")
 		}
 	}
 	// AllowedAudiences is required for MCP compliance (RFC 8707).

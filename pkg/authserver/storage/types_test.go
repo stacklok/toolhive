@@ -380,36 +380,41 @@ func TestDefaultConfig(t *testing.T) {
 	}
 }
 
-// TestClientFingerprintFieldsAreJustified is a drift guard over
-// clientFingerprint's field set: every field must carry a one-sentence
-// justification here, so a field added to clientFingerprint without a
-// matching entry fails loudly instead of silently compiling green. Unlike a
-// bare []string of names, an unjustified addition can't be satisfied by
-// just appending the name — the reviewer has to say why the field belongs in
-// equal(). Only reserved SPIFFE placeholders compare in full with equal();
-// other configured clients are decided by configuredClientConflict.
-//
-// Listing a field here is not enough on its own: a field added to the struct
-// and to this map, but never wired into equal(), previously still passed
-// this test (only a memory-backend collision test happened to catch it).
-// The second half of this test closes that gap by constructing, for every
-// justified field, two fingerprints that differ ONLY in that field and
-// asserting equal() reports them as different -- proving each field actually
-// participates in the comparison, not just that it exists on the struct.
+// equal is the Redis round-trip oracle: whether f and o represent the same
+// logical client configuration: equal scope, audience, grant-type, response-type, resource
+// and redirect URI sets, token endpoint auth method, identity,
+// public/confidential class, and reserved kind.
+func (f clientFingerprint) equal(o clientFingerprint) bool {
+	return sameStringSet(f.scopes, o.scopes) &&
+		sameStringSet(f.audience, o.audience) &&
+		sameStringSet(f.grantTypes, o.grantTypes) &&
+		sameStringSet(f.responseTypes, o.responseTypes) &&
+		sameStringSet(f.resources, o.resources) &&
+		sameStringSet(f.redirectURIs, o.redirectURIs) &&
+		f.tokenEndpointAuthMethod == o.tokenEndpointAuthMethod &&
+		f.identityFingerprint == o.identityFingerprint &&
+		f.public == o.public &&
+		f.reserved == o.reserved
+}
+
+// TestClientFingerprintFieldsAreJustified is a drift guard: every
+// clientFingerprint field needs a justification here, and a fingerprint
+// differing only in that field must trip policyChanged (the replacement WARN)
+// or, for public and reserved, configuredClientConflict.
 func TestClientFingerprintFieldsAreJustified(t *testing.T) {
 	t.Parallel()
 
 	justifications := map[string]string{
-		"scopes":                  "placeholders must not roll to a different OAuth scope set without a manual delete",
-		"audience":                "placeholders must not roll to a different RFC 8707/8693 audience allowlist",
-		"grantTypes":              "placeholders must not roll to a different grant-type set",
-		"responseTypes":           "placeholders must not roll to a different response-type set",
+		"scopes":                  "a changed scope set is a changed client policy, reported in the replacement WARN",
+		"audience":                "a changed audience allowlist is a changed client policy, reported in the replacement WARN",
+		"grantTypes":              "a changed grant-type set is a changed client policy, reported in the replacement WARN",
+		"responseTypes":           "deliberately ignored: no conflict or WARN acts on a response-type change",
 		"redirectURIs":            "placeholders carry no redirect URIs; one appearing is a different client",
 		"tokenEndpointAuthMethod": "placeholders never carry an auth method; one appearing is a different client",
-		"resources":               "placeholders must not roll to a different RFC 8707 resource allowlist (#6473)",
+		"resources":               "a changed RFC 8707 resource allowlist is reported in the replacement WARN",
 		"identityFingerprint": "a different SPIFFE association identity (trust domain, principal, methods) " +
-			"behind the same placeholder ID is a different association",
-		"public": "public vs. confidential is a different client class",
+			"behind the same placeholder ID is reported in the replacement WARN",
+		"public": "public vs. confidential is a different client class, refused for non-reserved clients",
 		"reserved": "a SPIFFE-reserved placeholder and an ordinary configured client at the same ID " +
 			"are different kinds of client, whatever their other fields say",
 	}
@@ -447,6 +452,7 @@ func TestClientFingerprintFieldsAreJustified(t *testing.T) {
 			t.Parallel()
 
 			other := base
+			conflict := false
 			switch name {
 			case "scopes":
 				other.scopes = []string{"scope-b"}
@@ -466,14 +472,20 @@ func TestClientFingerprintFieldsAreJustified(t *testing.T) {
 				other.identityFingerprint = "identity-b"
 			case "public":
 				other.public = !base.public
+				conflict = true
 			case "reserved":
 				other.reserved = !base.reserved
+				conflict = true
 			default:
 				t.Fatalf("field %q has a justification but no wiring check in this test -- add one", name)
 			}
 
-			assert.False(t, base.equal(other),
-				"clientFingerprint.equal() must report a mismatch when only %q differs", name)
+			if conflict {
+				require.ErrorIs(t, configuredClientConflict("client-1", base, other), ErrAlreadyExists)
+				return
+			}
+			assert.Equal(t, name != "responseTypes", base.policyChanged(other),
+				"policyChanged() must report a change when only %q differs", name)
 		})
 	}
 }
@@ -523,16 +535,13 @@ func TestConfiguredClientConflict(t *testing.T) {
 			incoming: placeholder,
 		},
 		{
-			name:     "placeholder scope change is refused",
+			name:     "reserved placeholders replace each other whatever differs",
 			existing: placeholder,
-			incoming: with(placeholder, func(f *clientFingerprint) { f.scopes = []string{"a", "b"} }),
-			wantErr:  "SPIFFE-reserved clients must match exactly",
-		},
-		{
-			name:     "placeholder identity change is refused",
-			existing: placeholder,
-			incoming: with(placeholder, func(f *clientFingerprint) { f.identityFingerprint = "id-b" }),
-			wantErr:  "SPIFFE-reserved clients must match exactly",
+			incoming: with(placeholder, func(f *clientFingerprint) {
+				f.scopes = []string{"a", "b"}
+				f.resources = []string{"res-b"}
+				f.identityFingerprint = "id-b"
+			}),
 		},
 		{
 			name:     "identical delegates are idempotent",
@@ -623,6 +632,20 @@ func TestClientFingerprintPolicyChanged(t *testing.T) {
 			name: "redirect URI change is a policy change",
 			other: clientFingerprint{
 				scopes: []string{"a", "b"}, audience: []string{"x"}, redirectURIs: []string{"https://a.example/cb"},
+			},
+			want: true,
+		},
+		{
+			name: "resources change is a policy change",
+			other: clientFingerprint{
+				scopes: []string{"a", "b"}, audience: []string{"x"}, resources: []string{"https://r.example"},
+			},
+			want: true,
+		},
+		{
+			name: "SPIFFE identity change is a policy change",
+			other: clientFingerprint{
+				scopes: []string{"a", "b"}, audience: []string{"x"}, identityFingerprint: "id-b",
 			},
 			want: true,
 		},

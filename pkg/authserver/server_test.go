@@ -760,12 +760,8 @@ func TestNewServer_SPIFFEAndCIMD_WrapStorageInOrder(t *testing.T) {
 		SPIFFETrust:          trust,
 	}
 
-	// decorateStorageForSPIFFE is exercised directly, not through newServer,
-	// because Config.SPIFFETrust is hard-rejected by Config.Validate() (and
-	// therefore by newServer, which calls it) until a real SVID-verification
-	// consumer lands -- see validateConfigSPIFFENotYetEnforced. This test's
-	// actual subject, the storage-decoration order, lives entirely below
-	// that policy gate.
+	// decorateStorageForSPIFFE is exercised directly, not through newServer:
+	// this test's subject is the storage-decoration order alone.
 	decorated, _, err := decorateStorageForSPIFFE(context.Background(), cfg, stor)
 	require.NoError(t, err)
 
@@ -1178,8 +1174,8 @@ func TestServer_TrustedIssuerValidatorLifecycle(t *testing.T) {
 			HMACSecrets:      &servercrypto.HMACSecrets{Current: validHMACSecret()},
 			AllowedAudiences: []string{"https://mcp.example.com"},
 			TrustedIssuers:   issuers,
-			// An upstream is required unless delegate clients or a JWT-bearer
-			// issuer is configured; a plain trusted issuer alone does not satisfy
+			// An upstream is required unless delegate clients, SPIFFE associations
+			// or a JWT-bearer issuer is configured; a plain trusted issuer alone does not satisfy
 			// that, so give the config one placeholder upstream.
 			Upstreams: []UpstreamConfig{{Name: "default", Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstreamConfig()}},
 			UpstreamFactory: func(_ context.Context, _ *UpstreamConfig) (upstream.OAuth2Provider, error) {
@@ -1501,4 +1497,20 @@ func TestCloseIdleConnectionsFunction(t *testing.T) {
 
 		assert.False(t, CloseIdleConnections(capabilityFreeServer{}))
 	})
+}
+
+func TestStaticSPIFFEClientServedByRegistryIsSecretlessAndNonPublic(t *testing.T) {
+	t.Parallel()
+
+	registry := newTestSPIFFEAssociationRegistry(t, []SPIFFEClientAuthRunConfig{
+		testSPIFFEAssociation("client", "openid"),
+	})
+	clients, err := registry.staticClients()
+	require.NoError(t, err)
+	served := clients["client"]
+	require.NotNil(t, served)
+	_, isOIDC := served.(fosite.OpenIDConnectClient)
+	assert.False(t, isOIDC)
+	assert.False(t, served.IsPublic())
+	assert.Nil(t, served.GetHashedSecret())
 }

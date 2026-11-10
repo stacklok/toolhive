@@ -1834,7 +1834,9 @@ type Config struct {
 	// for built-in validators. It also refuses an ActIssuer that is empty, is not
 	// an absolute URI without query, userinfo or fragment, is not in canonical
 	// spelling, is an http(s) URL that is neither https nor on a loopback host,
-	// or is this server's own issuer. Registrations may share an ActIssuer.
+	// or is this server's own issuer. Registrations may share an ActIssuer. It
+	// also refuses a delegate client whose actor_profile names a validator that
+	// is not in this map.
 	ActorTokenValidators map[string]tokenexchange.ActorValidatorRegistration
 
 	// DisableUpstreamRefreshGuard turns off the built-in refresh-grant guard.
@@ -2179,6 +2181,25 @@ func validateActIssuer(actIssuer, serverIssuer string) error {
 	return nil
 }
 
+// validateActorProfilesRegistered refuses a delegate client whose actor_profile
+// names a validator that is not in ActorTokenValidators, in configured order. It
+// runs after validateResolvedDelegateClients, so each profile's shape is already
+// valid and the empty-name skip is only defensive.
+func (c *Config) validateActorProfilesRegistered() error {
+	for _, client := range c.DelegateClients {
+		if client.TokenExchange == nil || client.TokenExchange.ActorProfile == nil {
+			continue
+		}
+		name := client.TokenExchange.ActorProfile.Validator
+		if _, ok := c.ActorTokenValidators[name]; !ok && name != "" {
+			return fmt.Errorf(
+				"delegate_clients: client_id %q: actor_profile.validator %q is not registered in ActorTokenValidators",
+				client.ClientID, name)
+		}
+	}
+	return nil
+}
+
 // validateClientAdmission checks the bounds on how unauthenticated callers
 // can create clients: CIMD resolution and the /oauth/register rate.
 func (c *Config) validateClientAdmission() error {
@@ -2309,6 +2330,9 @@ func (c *Config) validateDelegationConfig() error {
 		delegateIDs = append(delegateIDs, delegate.ClientID)
 	}
 	if err := ValidateSPIFFEClientIDsNotDelegates(spiffeIDs, delegateIDs); err != nil {
+		return err
+	}
+	if err := c.validateActorProfilesRegistered(); err != nil {
 		return err
 	}
 	return validateTrustedIssuers(c.TrustedIssuers, c.Issuer, c.AllowedAudiences)

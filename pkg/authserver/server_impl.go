@@ -714,14 +714,16 @@ func exchangeRefreshTokenCaps(block *DelegateClientExchangeRefreshTokens) (map[s
 // configuredClientPolicies builds the token-exchange policy of every delegate
 // client whose self_issued_subject_tokens is restricted, keyed by client_id; an
 // entry means restricted. A client with any, or without a token_exchange block,
-// gets no entry and so keeps blanket trust of self-issued subject tokens.
+// gets no entry and so keeps blanket trust of self-issued subject tokens. It binds
+// each restricted client's actor_profile to its registered validator. It relies
+// on Config.Validate having refused an unregistered or nil validator.
 //
 // It also logs once, at DEBUG until ID-JAG issuance exists, for every client
 // that can hold ID-JAG grants but has no id_jag.targets. It runs once per
 // start, unlike config validation, which can run on both the RunConfig and the
 // Config path.
 func configuredClientPolicies(
-	clients []DelegateClient,
+	clients []DelegateClient, validators map[string]tokenexchange.ActorValidatorRegistration,
 ) (map[string]tokenexchange.ConfiguredClientPolicy, error) {
 	var policies map[string]tokenexchange.ConfiguredClientPolicy
 	for _, c := range clients {
@@ -748,6 +750,7 @@ func configuredClientPolicies(
 			SubjectTokenAudiences: slices.Clone(c.TokenExchange.SubjectTokenAudiences),
 			ExchangeRefreshTokens: refreshCaps,
 			IDJAGTargets:          idJAGTargets,
+			ActorProfile:          resolveActorProfile(c.TokenExchange.ActorProfile, validators),
 		}
 	}
 	return policies, nil
@@ -774,6 +777,23 @@ func idJAGTargetPolicies(block *DelegateClientIDJAG) (map[string]tokenexchange.I
 		}
 	}
 	return targets, nil
+}
+
+// resolveActorProfile binds a client's actor_profile to its registration, which
+// carries the validator and the ActIssuer. It returns nil for a client without a
+// profile. It does not check that the registration exists: Config.Validate has
+// already refused a profile naming a missing or nil validator.
+func resolveActorProfile(
+	profile *DelegateClientActorProfile, validators map[string]tokenexchange.ActorValidatorRegistration,
+) *tokenexchange.ActorProfile {
+	if profile == nil {
+		return nil
+	}
+	return &tokenexchange.ActorProfile{
+		Name:                       profile.Validator,
+		ActorTokenType:             profile.ActorTokenType,
+		ActorValidatorRegistration: validators[profile.Validator],
+	}
 }
 
 // discoverExchangeGrantStorage finds the optional ExchangeGrantStorage
@@ -817,7 +837,7 @@ func buildProvider(
 	refresher storage.UpstreamTokenRefresher, upstreams []handlers.NamedUpstream,
 ) (_ fosite.OAuth2Provider, _ *tokenexchange.MultiIssuerTokenValidator, retErr error) {
 	delegateIDs := delegateClientIDs(cfg.DelegateClients)
-	clientPolicies, policyErr := configuredClientPolicies(cfg.DelegateClients)
+	clientPolicies, policyErr := configuredClientPolicies(cfg.DelegateClients, cfg.ActorTokenValidators)
 	if policyErr != nil {
 		return nil, nil, policyErr
 	}

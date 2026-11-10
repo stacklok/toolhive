@@ -72,7 +72,7 @@ func TestConfiguredClientPolicies(t *testing.T) {
 		},
 	}
 
-	policies, err := configuredClientPolicies(clients)
+	policies, err := configuredClientPolicies(clients, nil)
 	require.NoError(t, err)
 
 	// Only restricted clients get an entry, keyed by their own ID.
@@ -104,7 +104,7 @@ func TestConfiguredClientPolicies(t *testing.T) {
 func TestConfiguredClientPoliciesNoTokenExchange(t *testing.T) {
 	t.Parallel()
 
-	policies, err := configuredClientPolicies([]DelegateClient{{ClientID: "plain"}})
+	policies, err := configuredClientPolicies([]DelegateClient{{ClientID: "plain"}}, nil)
 	require.NoError(t, err)
 	assert.Nil(t, policies)
 }

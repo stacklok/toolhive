@@ -62,6 +62,18 @@ func ActIssuerProblem(s string) error {
 	return nil
 }
 
+// ActorProfile is the actor-token check resolved for one delegate client at startup.
+// It carries the registration the client's actor_profile selects, so Validator and
+// ActIssuer come from the same entry.
+type ActorProfile struct {
+	// Name is the validator's registered name, for logs.
+	Name string
+	// ActorTokenType is the actor_token_type the client must send.
+	ActorTokenType string
+	// ActorValidatorRegistration is the registration that Name selects.
+	ActorValidatorRegistration
+}
+
 // ActorTokenValidator checks the actor token that a client presents during ID-JAG
 // issuance and reports which agent it belongs to. How a validator is registered and
 // selected is not part of this interface.

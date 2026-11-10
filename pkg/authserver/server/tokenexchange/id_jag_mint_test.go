@@ -288,13 +288,23 @@ func TestCheckIDJAGRequest(t *testing.T) {
 	}
 	wantShape := idJAGRequestShape{Target: target, Resource: mintTestResource}
 
+	profiled := policy
+	profiled.ActorProfile = &ActorProfile{Name: "broker", ActorTokenType: oauthproto.TokenTypeJWT}
+
 	tests := []struct {
 		name      string
 		mutate    func(url.Values)
+		profiled  bool   // the client has an actor profile
 		wantCode  string // empty for success
 		wantParam string // a substring of the hint naming the parameter
 	}{
 		{name: "valid request", mutate: func(url.Values) {}},
+		{name: "valid request from a client with an actor profile fails closed",
+			mutate: func(url.Values) {}, profiled: true,
+			wantCode: "server_error", wantParam: "Actor-token validation is not available"},
+		{name: "actor profile is refused before the request is read",
+			mutate: func(f url.Values) { f.Del("subject_token") }, profiled: true,
+			wantCode: "server_error", wantParam: "Actor-token validation is not available"},
 		{name: "empty first audience is a single audience",
 			mutate: func(f url.Values) { f[mintTestAudienceParam] = []string{"", mintTestTargetIssuer} }},
 		{name: "empty first resource is a single resource",
@@ -423,7 +433,11 @@ func TestCheckIDJAGRequest(t *testing.T) {
 			form := validForm()
 			tt.mutate(form)
 
-			shape, err := checkIDJAGRequest(form, policy)
+			p := policy
+			if tt.profiled {
+				p = profiled
+			}
+			shape, err := checkIDJAGRequest(form, p)
 			if tt.wantCode == "" {
 				require.NoError(t, err)
 				assert.Equal(t, wantShape, shape)

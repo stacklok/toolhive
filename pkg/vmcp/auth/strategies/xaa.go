@@ -254,7 +254,7 @@ func (*XAAStrategy) performIDPExchange(
 	// return issued_token_type = urn:ietf:params:oauth:token-type:id-jag. Fail
 	// loudly if it returned anything else so target grant cannot accidentally
 	// be fed a non-assertion token.
-	got, _ := token.Extra("issued_token_type").(string)
+	got, _ := token.Extra(oauthproto.ParamIssuedTokenType).(string)
 	if got != oauthproto.TokenTypeIDJAG {
 		return "", fmt.Errorf("IdP exchange: IdP returned issued_token_type=%q, want %q", got, oauthproto.TokenTypeIDJAG)
 	}
@@ -262,7 +262,7 @@ func (*XAAStrategy) performIDPExchange(
 	// Per draft-ietf-oauth-identity-assertion-authz-grant §5.2, the RFC 8693
 	// response MUST carry token_type=N_A for an assertion that is not usable
 	// as a bearer token at the IdP.
-	if !strings.EqualFold(token.TokenType, "N_A") {
+	if !strings.EqualFold(token.TokenType, oauthproto.TokenTypeNotApplicable) {
 		return "", fmt.Errorf("IdP exchange: IdP returned token_type=%q, want N_A (draft §5.2)", token.TokenType)
 	}
 

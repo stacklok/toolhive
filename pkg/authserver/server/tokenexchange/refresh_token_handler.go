@@ -29,10 +29,6 @@ import (
 // Compile-time check that RefreshTokenHandler implements fosite.TokenEndpointHandler.
 var _ fosite.TokenEndpointHandler = (*RefreshTokenHandler)(nil)
 
-// tokenTypeNotApplicable is the RFC 6749 token_type for a response whose
-// access_token member is not an access token (RFC 8693 section 2.2.1).
-const tokenTypeNotApplicable = "N_A"
-
 // Reasons logged with a refusal. They are fixed strings; the
 // authorization_details reasons are the ones returned to the client.
 const (
@@ -600,9 +596,9 @@ func (h *RefreshTokenHandler) issue(
 	}
 
 	responder.SetAccessToken(token)
-	responder.SetTokenType(tokenTypeNotApplicable)
+	responder.SetTokenType(oauthproto.TokenTypeNotApplicable)
 	responder.SetExpiresIn(exchangeGrantExpiresIn(grant.ExpiresAt, d.now))
-	responder.SetExtra("issued_token_type", oauthproto.TokenTypeRefreshToken)
+	responder.SetExtra(oauthproto.ParamIssuedTokenType, oauthproto.TokenTypeRefreshToken)
 	// RFC 9396 section 7.1: the response member is an array of the granted entries.
 	responder.SetExtra(authorizationDetailsParam, []json.RawMessage{d.echo})
 	if grant.ParentSignature != "" {

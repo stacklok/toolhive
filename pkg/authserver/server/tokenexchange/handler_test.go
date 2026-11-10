@@ -142,6 +142,49 @@ func signActorTokenForClient(t *testing.T, tj *testJWKS, subject, clientID strin
 	})
 }
 
+func TestTokenExchangeHandler_IDJAGActorToken(t *testing.T) {
+	t.Parallel()
+
+	tj := newTestJWKS(t)
+	tests := []struct {
+		name    string
+		typ     string
+		wantErr bool
+	}{
+		{name: "ID-JAG actor rejected", typ: oauthproto.JWTTypeIDJAG, wantErr: true},
+		{name: "ordinary actor accepted", typ: "JWT"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			h := newTestHandler(t, tj, 15*time.Minute)
+			claims := validClaims()
+			claims.Subject = testAgentClientID
+			actorToken := tj.signTokenWithType(t, tt.typ, claims, map[string]any{
+				"client_id": testAgentClientID,
+			})
+			form := defaultFormValues(t, tj)
+			form.Set("actor_token", actorToken)
+			form.Set("actor_token_type", oauthproto.TokenTypeJWT)
+			req := newAccessRequest(t, defaultClient(), form)
+
+			err := h.HandleTokenEndpointRequest(context.Background(), req)
+			if tt.wantErr {
+				require.ErrorIs(t, err, fosite.ErrInvalidRequest)
+				var rfcErr *fosite.RFC6749Error
+				require.ErrorAs(t, err, &rfcErr)
+				assert.Contains(t, rfcErr.Reason(), "actor token is invalid")
+				return
+			}
+			require.NoError(t, err)
+			sess := req.GetSession().(*session.Session)
+			assert.Equal(t, "user-123", sess.JWTClaims.Subject)
+			assert.Equal(t, map[string]any{"iss": testIssuer, "sub": testAgentClientID}, sess.JWTClaims.Extra["act"])
+		})
+	}
+}
+
 func TestTokenExchangeHandler_CanHandleTokenEndpointRequest(t *testing.T) {
 	t.Parallel()
 

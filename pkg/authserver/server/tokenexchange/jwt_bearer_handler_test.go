@@ -111,6 +111,18 @@ func TestJWTBearerHandler_MatchingAndClientAuth(t *testing.T) {
 			wantSkipAuth: false,
 		},
 		{
+			// Routing compares the ID-JAG typ exactly (see assertionType), so a
+			// spec-equivalent spelling stays here and is refused later by
+			// validateAssertionType. Together with the matching case in
+			// TestIDJAGHandler_MatchingAndClientAuth this keeps the two
+			// matchers exact complements.
+			name:         "media-type ID-JAG assertion stays with the plain handler",
+			grantTypes:   fosite.Arguments{oauthproto.GrantTypeJWTBearer},
+			assertion:    signAssertionWithType(t, tj, "application/"+oauthproto.JWTTypeIDJAG),
+			wantHandles:  true,
+			wantSkipAuth: true,
+		},
+		{
 			name:         "other grant does not match",
 			grantTypes:   fosite.Arguments{"client_credentials"},
 			assertion:    signAssertionWithType(t, tj, nil),
@@ -389,7 +401,14 @@ func TestValidateAssertionType_Typ(t *testing.T) {
 		{name: "absent typ is accepted", typ: nil, wantAccept: true},
 		{name: "empty typ is accepted", typ: "", wantAccept: true},
 		{name: "JWT typ is accepted", typ: "JWT", wantAccept: true},
-		{name: "ID-JAG typ is accepted", typ: oauthproto.JWTTypeIDJAG, wantAccept: true},
+		// IDJAGHandler claims the exact ID-JAG typ, so the plain handler never
+		// sees one. If it did, redeeming it here would skip the client
+		// authentication IDJAGHandler requires.
+		{name: "ID-JAG typ is refused", typ: oauthproto.JWTTypeIDJAG, wantAccept: false},
+		// Redemption compares the ID-JAG typ exactly: a spec-equivalent
+		// spelling is not routed to IDJAGHandler and must not be redeemed here.
+		{name: "media-type ID-JAG typ is refused", typ: "application/" + oauthproto.JWTTypeIDJAG, wantAccept: false},
+		{name: "upper-case ID-JAG typ is refused", typ: "OAUTH-ID-JAG+JWT", wantAccept: false},
 		// An access token from this server must not be accepted as a JWT-bearer assertion.
 		{name: "at+jwt typ is refused", typ: "at+jwt", wantAccept: false},
 		{name: "media-type at+jwt typ is refused", typ: "application/at+jwt", wantAccept: false},

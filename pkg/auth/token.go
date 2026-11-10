@@ -890,18 +890,26 @@ func (v *TokenValidator) ensureOIDCDiscovered(ctx context.Context) error {
 	return nil
 }
 
-// getKeyFromLocalProvider attempts to find a verification key from the local
-// key provider (embedded auth server). Returns (key, nil) on success,
-// (nil, nil) to signal fallback to HTTP, or (nil, error) for hard failures.
-// validateTokenHeader checks the signing method is supported (RSA or ECDSA) and
-// extracts the key ID from the token header. Returns an error for unsupported
-// methods or a missing kid claim.
+// validateTokenHeader checks the signing method is supported (RSA or ECDSA),
+// refuses an ID-JAG typ, and extracts the key ID from the token header. Returns
+// an error for unsupported methods, an ID-JAG typ or a missing kid claim.
 func validateTokenHeader(token *jwt.Token) (string, error) {
 	switch token.Method.(type) {
 	case *jwt.SigningMethodRSA, *jwt.SigningMethodECDSA:
 		// Supported signing methods
 	default:
 		return "", fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+	}
+
+	// RFC 8725 Section 3.12: validation rules for different token types must
+	// be mutually exclusive. An ID-JAG is not an access token. An issuer that
+	// signs ID-JAGs with the same key as its access tokens (an external IdP
+	// today, the embedded auth server once it issues ID-JAGs) would otherwise
+	// get one accepted here when no audience is configured. This runs in the
+	// key function, before the signature is verified; that is safe because the
+	// check can only refuse a token.
+	if typ, _ := token.Header["typ"].(string); oauthproto.IsJOSEType(typ, oauthproto.JWTTypeIDJAG) {
+		return "", errors.New("an ID-JAG is not accepted as an access token")
 	}
 
 	kid, ok := token.Header["kid"].(string)
@@ -911,6 +919,9 @@ func validateTokenHeader(token *jwt.Token) (string, error) {
 	return kid, nil
 }
 
+// getKeyFromLocalProvider attempts to find a verification key from the local
+// key provider (embedded auth server). Returns (key, nil) on success,
+// (nil, nil) to signal fallback to HTTP, or (nil, error) for hard failures.
 func (v *TokenValidator) getKeyFromLocalProvider(ctx context.Context, token *jwt.Token) (interface{}, error) {
 	if v.keyProvider == nil {
 		return nil, nil

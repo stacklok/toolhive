@@ -138,6 +138,11 @@ func TestIDJAGHandler_MatchingAndClientAuth(t *testing.T) {
 			assertion:  signAssertionWithType(t, tj, "JWT"),
 		},
 		{
+			name:       "media-type ID-JAG typ is left for the unbound handler",
+			grantTypes: fosite.Arguments{oauthproto.GrantTypeJWTBearer},
+			assertion:  signAssertionWithType(t, tj, "application/"+oauthproto.JWTTypeIDJAG),
+		},
+		{
 			name:       "other grant does not match",
 			grantTypes: fosite.Arguments{"client_credentials"},
 			assertion:  signAssertionWithType(t, tj, oauthproto.JWTTypeIDJAG),

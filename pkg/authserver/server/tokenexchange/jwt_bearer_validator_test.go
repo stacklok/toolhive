@@ -11,6 +11,8 @@ import (
 	"github.com/go-jose/go-jose/v4/jwt"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
 func TestMultiIssuerTokenValidator_ValidateJWTBearerAssertion(t *testing.T) {
@@ -146,6 +148,35 @@ func TestMultiIssuerTokenValidator_ValidateJWTBearerAssertion(t *testing.T) {
 			assert.Equal(t, testExternalIssuer, claims.Issuer)
 		})
 	}
+}
+
+// TestMultiIssuerTokenValidator_ValidateJWTBearerAssertionAcceptsIDJAGType pins
+// that the subject-token typ deny does not reach redemption: an ID-JAG from a
+// trusted issuer still verifies as a JWT-bearer assertion.
+func TestMultiIssuerTokenValidator_ValidateJWTBearerAssertionAcceptsIDJAGType(t *testing.T) {
+	t.Parallel()
+
+	selfJWKS := newTestJWKS(t)
+	externalJWKS := newTestJWKS(t)
+	jwksServer := startJWKSServer(t, externalJWKS)
+	validator := newMultiValidator(t, selfJWKS, []TrustedIssuer{{
+		IssuerURL:              testExternalIssuer,
+		ExpectedAudience:       testExternalAudience,
+		JWKSURL:                jwksServer.URL + "/jwks",
+		AllowedDelegateClients: []string{anyDelegateClient},
+		JWTBearerGrant: &JWTBearerGrantPolicy{
+			MaxAssertionAge: time.Hour.String(),
+			SubjectBindings: []JWTBearerSubjectBinding{{
+				Subject:          "ext-user-456",
+				AllowedResources: []string{"https://mcp.example.com"},
+			}},
+		},
+	}})
+
+	raw := externalJWKS.signTokenWithType(t, oauthproto.JWTTypeIDJAG, jwtBearerExternalClaims(), nil)
+	claims, err := validator.ValidateJWTBearerAssertion(context.Background(), raw, testTokenEndpoint)
+	require.NoError(t, err)
+	assert.Equal(t, "ext-user-456", claims.Subject)
 }
 
 func TestMultiIssuerTokenValidator_ValidateJWTBearerAssertionRejectsIssuerWithoutGrant(t *testing.T) {

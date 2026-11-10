@@ -1146,6 +1146,49 @@ func TestMultiIssuerTokenValidator_Validate(t *testing.T) {
 	}
 }
 
+// TestMultiIssuerTokenValidator_IDJAGSubjectToken pins that an ID-JAG from a
+// trusted issuer is refused as an RFC 8693 subject token even when its audience
+// matches ExpectedAudience, so only the typ stops it (RFC 8725 Section 3.12).
+func TestMultiIssuerTokenValidator_IDJAGSubjectToken(t *testing.T) {
+	t.Parallel()
+
+	selfJWKS := newTestJWKS(t)
+	externalJWKS := newTestJWKS(t)
+	jwksServer := startJWKSServer(t, externalJWKS)
+	validator := newMultiValidator(t, selfJWKS, []TrustedIssuer{{
+		IssuerURL:              testExternalIssuer,
+		ExpectedAudience:       testExternalAudience,
+		JWKSURL:                jwksServer.URL + "/jwks",
+		AllowedActors:          []string{"ext-agent"},
+		AllowedDelegateClients: []string{anyDelegateClient},
+	}})
+
+	tests := []struct {
+		name    string
+		typ     string
+		wantErr bool
+	}{
+		{name: "ID-JAG typ", typ: "Application/OAuth-ID-JAG+JWT", wantErr: true},
+		{name: "absent typ", typ: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			raw := externalJWKS.signTokenWithType(t, tt.typ, externalClaims(), map[string]any{"azp": "ext-agent"})
+
+			claims, err := validator.Validate(context.Background(), raw)
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "ID-JAG")
+				assert.Nil(t, claims)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, testExternalIssuer, claims.ExternalIssuer)
+		})
+	}
+}
+
 // TestMultiIssuerTokenValidator_TrailingSlashIssuerExactMatch covers a
 // trailing-slash issuer_url (e.g. Microsoft Entra ID v1's
 // "https://sts.windows.net/{tenant}/") being accepted as an exact "iss"

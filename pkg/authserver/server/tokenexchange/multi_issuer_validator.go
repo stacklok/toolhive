@@ -690,7 +690,7 @@ func (v *MultiIssuerTokenValidator) ValidateJWTBearerAssertion(
 		return nil, fmt.Errorf("assertion issuer is not enabled for the JWT-bearer grant: %q", issuer)
 	}
 
-	standardClaims, extraClaims, err := v.verifyExternalSignature(ctx, rawToken, issuerConfig)
+	_, standardClaims, extraClaims, err := v.verifyExternalSignature(ctx, rawToken, issuerConfig)
 	if err != nil {
 		return nil, err
 	}
@@ -712,18 +712,19 @@ func (v *MultiIssuerTokenValidator) ValidateJWTBearerAssertion(
 // verifyExternalSignature parses and verifies a JWT using the configured
 // issuer's cached JWKS. Both RFC 8693 subject tokens and RFC 7523 assertions
 // use this path so unknown-kid refreshes and key-use/algorithm restrictions
-// cannot diverge between grant types.
+// cannot diverge between grant types. It also returns the parsed token so
+// callers can inspect the protected header without parsing it again.
 func (v *MultiIssuerTokenValidator) verifyExternalSignature(
 	ctx context.Context, rawToken string, issuerConfig *externalIssuerConfig,
-) (jwt.Claims, map[string]any, error) {
+) (*jwt.JSONWebToken, jwt.Claims, map[string]any, error) {
 	parsedToken, err := jwt.ParseSigned(rawToken, allowedSignatureAlgorithms)
 	if err != nil {
-		return jwt.Claims{}, nil, fmt.Errorf("subject token is not a valid JWT: %w", err)
+		return nil, jwt.Claims{}, nil, fmt.Errorf("subject token is not a valid JWT: %w", err)
 	}
 
 	jwks, err := v.lookupJWKS(ctx, issuerConfig)
 	if err != nil {
-		return jwt.Claims{}, nil, fmt.Errorf("failed to fetch JWKS for issuer %s: %w", issuerConfig.IssuerURL, err)
+		return nil, jwt.Claims{}, nil, fmt.Errorf("failed to fetch JWKS for issuer %s: %w", issuerConfig.IssuerURL, err)
 	}
 
 	standardClaims, extraClaims, kidMatched, err := verifySignature(parsedToken, jwks)
@@ -741,9 +742,9 @@ func (v *MultiIssuerTokenValidator) verifyExternalSignature(
 		}
 	}
 	if err != nil {
-		return jwt.Claims{}, nil, err
+		return nil, jwt.Claims{}, nil, err
 	}
-	return standardClaims, extraClaims, nil
+	return parsedToken, standardClaims, extraClaims, nil
 }
 
 // validateExternalToken verifies a JWT from a trusted external issuer by
@@ -753,8 +754,18 @@ func (v *MultiIssuerTokenValidator) validateExternalToken(
 	rawToken string,
 	issuerConfig *externalIssuerConfig,
 ) (*ValidatedClaims, error) {
-	standardClaims, extraClaims, err := v.verifyExternalSignature(ctx, rawToken, issuerConfig)
+	parsedToken, standardClaims, extraClaims, err := v.verifyExternalSignature(ctx, rawToken, issuerConfig)
 	if err != nil {
+		return nil, err
+	}
+
+	// The signature has verified, so the protected header is trustworthy.
+	// RFC 8725 Section 3.12: an ID-JAG must not be accepted as an RFC 8693
+	// subject token. A trusted issuer that signs ID-JAGs with its access token
+	// key would otherwise let one through here, past the client binding that
+	// ID-JAG redemption applies. The deny is here and not in
+	// verifyExternalSignature, which redemption shares.
+	if err := rejectIDJAGType(parsedToken); err != nil {
 		return nil, err
 	}
 

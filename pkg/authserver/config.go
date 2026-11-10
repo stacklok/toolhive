@@ -703,6 +703,34 @@ func (c *RunConfig) validateRuntimeSPIFFEBundleSources() error {
 	return nil
 }
 
+// ValidateActorProfilesForRunConfig runs the startup checks Config.Validate
+// applies to ActorTokenValidators and to delegate-client actor profiles,
+// against a RunConfig, so an embedder or the runner can fail before storage and
+// upstream work. The ActIssuer checks compare against cfg.Issuer. It does not
+// replace Config.Validate.
+func ValidateActorProfilesForRunConfig(
+	cfg *RunConfig,
+	validators map[string]tokenexchange.ActorValidatorRegistration,
+) error {
+	var serverIssuer string
+	if cfg != nil {
+		serverIssuer = cfg.Issuer
+	}
+	if err := validateActorTokenValidatorMap(validators, serverIssuer); err != nil {
+		return err
+	}
+	normalized, err := NormalizeInboundGrants(cfg)
+	if err != nil {
+		return fmt.Errorf("normalize inbound grants: %w", err)
+	}
+	for _, client := range normalized.DelegateClients {
+		if err := actorProfileNotRegistered(client.ClientID, client.TokenExchange, validators); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // validateClientAdmission checks the bounds on how unauthenticated callers
 // can create clients: CIMD resolution, the /oauth/register rate, and the DCR
 // client cap.
@@ -2116,24 +2144,32 @@ func (c *Config) Validate() error {
 	return c.validateDelegationAndTrustConfig()
 }
 
-// validateActorTokenValidators checks each registered validator in sorted name
-// order, so the first error is the same on every run. For each name, the checks
-// run in this order: the name is not empty, the name is not in the reserved
-// "toolhive." namespace, the validator is not nil, and the ActIssuer passes
-// validateActIssuer.
+// validateActorTokenValidators checks the registered validators with
+// validateActorTokenValidatorMap.
 func (c *Config) validateActorTokenValidators() error {
-	for _, name := range slices.Sorted(maps.Keys(c.ActorTokenValidators)) {
+	return validateActorTokenValidatorMap(c.ActorTokenValidators, c.Issuer)
+}
+
+// validateActorTokenValidatorMap checks each registration in sorted name order,
+// so the first error is the same on every run. For each name, the checks run in
+// this order: the name is not empty, the name is not in the reserved "toolhive."
+// namespace, the validator is not nil, and the ActIssuer passes
+// validateActIssuer against serverIssuer.
+func validateActorTokenValidatorMap(
+	validators map[string]tokenexchange.ActorValidatorRegistration, serverIssuer string,
+) error {
+	for _, name := range slices.Sorted(maps.Keys(validators)) {
 		if name == "" {
 			return errors.New("actor token validator name must not be empty")
 		}
 		if strings.HasPrefix(name, "toolhive.") {
 			return fmt.Errorf("actor token validator name %q is reserved for built-in validators", name)
 		}
-		registration := c.ActorTokenValidators[name]
-		if isNilValue(registration.Validator) {
+		entry := validators[name]
+		if isNilValue(entry.Validator) {
 			return fmt.Errorf("actor token validator %q is nil", name)
 		}
-		if err := validateActIssuer(registration.ActIssuer, c.Issuer); err != nil {
+		if err := validateActIssuer(entry.ActIssuer, serverIssuer); err != nil {
 			return fmt.Errorf("actor token validator %q: %w", name, err)
 		}
 	}
@@ -2187,15 +2223,29 @@ func validateActIssuer(actIssuer, serverIssuer string) error {
 // valid and the empty-name skip is only defensive.
 func (c *Config) validateActorProfilesRegistered() error {
 	for _, client := range c.DelegateClients {
-		if client.TokenExchange == nil || client.TokenExchange.ActorProfile == nil {
-			continue
+		if err := actorProfileNotRegistered(client.ClientID, client.TokenExchange, c.ActorTokenValidators); err != nil {
+			return err
 		}
-		name := client.TokenExchange.ActorProfile.Validator
-		if _, ok := c.ActorTokenValidators[name]; !ok && name != "" {
-			return fmt.Errorf(
-				"delegate_clients: client_id %q: actor_profile.validator %q is not registered in ActorTokenValidators",
-				client.ClientID, name)
-		}
+	}
+	return nil
+}
+
+// actorProfileNotRegistered returns an error when the client's actor_profile
+// names a validator missing from validators. It returns nil when there is no
+// token-exchange policy, no profile or an empty name.
+func actorProfileNotRegistered(
+	clientID string,
+	te *DelegateClientTokenExchange,
+	validators map[string]tokenexchange.ActorValidatorRegistration,
+) error {
+	if te == nil || te.ActorProfile == nil {
+		return nil
+	}
+	name := te.ActorProfile.Validator
+	if _, ok := validators[name]; !ok && name != "" {
+		return fmt.Errorf(
+			"delegate_clients: client_id %q: actor_profile.validator %q is not registered in ActorTokenValidators",
+			clientID, name)
 	}
 	return nil
 }

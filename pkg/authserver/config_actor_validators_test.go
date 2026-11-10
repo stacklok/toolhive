@@ -239,3 +239,91 @@ func actIssuerTestCases(
 		},
 	}
 }
+
+// runConfigActorValidatorsCase is a validator map checked against a RunConfig.
+type runConfigActorValidatorsCase struct {
+	name       string
+	cfg        *RunConfig
+	validators map[string]tokenexchange.ActorValidatorRegistration
+	wantErr    string
+}
+
+func TestValidateActorProfilesForRunConfig(t *testing.T) {
+	t.Parallel()
+
+	const serverIssuer = "https://issuer.example.com"
+	withIssuer := &RunConfig{Issuer: serverIssuer}
+	reg := func(actIssuer string) tokenexchange.ActorValidatorRegistration {
+		return tokenexchange.ActorValidatorRegistration{Validator: &mocks.MockActorTokenValidator{}, ActIssuer: actIssuer}
+	}
+	profileConfig := &RunConfig{InboundGrants: &InboundGrantsRunConfig{
+		TokenExchange: &TokenExchangeInboundGrantRunConfig{DelegateClients: []DelegateClientRunConfig{
+			actorProfileRunConfigClient(actorProfileTestExchange(validActorProfile())),
+		}},
+	}}
+	topLevelConfig := &RunConfig{DelegateClients: []DelegateClientRunConfig{
+		actorProfileRunConfigClient(actorProfileTestExchange(validActorProfile())),
+	}}
+	const unregistered = `delegate_clients: client_id "delegate": ` +
+		`actor_profile.validator "broker" is not registered in ActorTokenValidators`
+
+	tests := []runConfigActorValidatorsCase{
+		{name: "nil map and no profiles passes", cfg: &RunConfig{}},
+		{
+			name:       "empty name",
+			cfg:        withIssuer,
+			validators: map[string]tokenexchange.ActorValidatorRegistration{"": reg("urn:x")},
+			wantErr:    "actor token validator name must not be empty",
+		},
+		{
+			name:       "reserved name",
+			cfg:        withIssuer,
+			validators: map[string]tokenexchange.ActorValidatorRegistration{"toolhive.x": reg("urn:x")},
+			wantErr:    `actor token validator name "toolhive.x" is reserved for built-in validators`,
+		},
+		{
+			name:       "nil value",
+			cfg:        withIssuer,
+			validators: map[string]tokenexchange.ActorValidatorRegistration{"broker": {ActIssuer: "urn:x"}},
+			wantErr:    `actor token validator "broker" is nil`,
+		},
+		{
+			name: "typed nil value",
+			cfg:  withIssuer,
+			validators: map[string]tokenexchange.ActorValidatorRegistration{
+				"broker": {Validator: (*mocks.MockActorTokenValidator)(nil), ActIssuer: "urn:x"},
+			},
+			wantErr: `actor token validator "broker" is nil`,
+		},
+		{name: "unregistered name in inbound_grants", cfg: profileConfig, wantErr: unregistered},
+		{name: "unregistered name in top-level delegate_clients", cfg: topLevelConfig, wantErr: unregistered},
+		{name: "nil config", cfg: nil, wantErr: "normalize inbound grants: config is required"},
+		{
+			name:       "other name registered only",
+			cfg:        profileConfig,
+			validators: map[string]tokenexchange.ActorValidatorRegistration{"other": reg("urn:x")},
+			wantErr:    unregistered,
+		},
+		{
+			name:       "registered name passes",
+			cfg:        profileConfig,
+			validators: map[string]tokenexchange.ActorValidatorRegistration{"broker": reg("spiffe://example.org")},
+		},
+	}
+	for _, c := range actIssuerTestCases(reg) {
+		tests = append(tests, runConfigActorValidatorsCase{
+			name: c.name, cfg: withIssuer, validators: c.validators, wantErr: c.wantErr,
+		})
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := ValidateActorProfilesForRunConfig(tt.cfg, tt.validators)
+			if tt.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.EqualError(t, err, tt.wantErr)
+		})
+	}
+}

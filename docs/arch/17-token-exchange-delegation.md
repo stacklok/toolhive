@@ -346,23 +346,60 @@ server verifies it against the stored inline JWKS and rejects replay while the
 assertion is valid. No `client_secret` is included in registration or token
 exchange.
 
-The server keeps the replay marker of each `jti` until `exp`. A deadline in the
-past would end the marker at once and allow replay, so recording the marker
-fails with `invalid_client` unless `exp` is after the current time. This refuses
-an `exp` of 0, which fosite's expiry check skips; an `exp` near the int64
-limit, which wraps to a time before 1970; and an `exp` equal to the current
-whole second, which fosite's `now <= exp` check still accepts. Both backends
-apply the rule in `SetClientAssertionJWT` through
-`server.ValidateClientAssertionExp`, and the storage given to fosite's provider
-is wrapped so the rule holds in front of any backend. The handler factories
+The `exp`, `iat` and `nbf` claims may differ from the server's clock by up to
+60 seconds: an assertion is accepted until 60 seconds after its `exp`, and
+from 60 seconds before its `iat` or `nbf`. `exp` must not be before `iat`, and
+it may be at most 5 minutes plus 60 seconds ahead of the server's current time.
+Nothing limits the gap between `iat` and `exp`, and `iat` is optional.
+
+The server decides how long the replay marker of each `jti` is kept: until 65
+seconds after `exp`, which is the 60 second margin plus a 5 second grace for the
+gap between clock reads. It hands that deadline to the store, so replay
+protection holds across the margin. This holds for any store that keeps the
+`jti` until the deadline it is given, provided the store's
+`ClientAssertionJWTValid` or `SetClientAssertionJWT` is atomic for a `jti`.
+ToolHive's backends reserve the `jti` in `ClientAssertionJWTValid`; fosite's
+`MemoryStore` checks and inserts in `SetClientAssertionJWT`.
+
+Two limits apply. First, the grace does not cover clock differences between
+replicas. Redis counts the marker's lifetime from the clock of the replica that
+writes it, so replicas whose clocks differ by more than 5 seconds can leave a
+short gap after the margin. Keep replica clocks synchronised. Second, during an
+upgrade, replicas on the older version keep the marker only until `exp`. An
+assertion first used on an older replica can then be used again on an upgraded
+replica until 60 seconds after `exp`, because the older marker is already gone.
+A single replica restarted on this version has the same gap for assertions used
+just before the restart. Protection holds once no older replica has run for more
+than 6 minutes.
+
+A marker whose deadline is already past would allow replay, so one function,
+`server.ValidateClientAssertionExp`, refuses an assertion unless that deadline
+is in the future and `exp` is not too far ahead. This refuses an `exp` of 0,
+which fosite's expiry check skips, and an `exp` near the int64 limit, which
+wraps to a time before 1970. An assertion fosite accepts in the second
+named by its `exp` is accepted.
+
+The storage given to fosite's provider is wrapped, and the clock skew fallback
+uses the same wrapper. The wrapper applies the rule and passes the deadline to
+the backend, so retention is decided in one place. The memory and Redis backends
+store the deadline they are given, and refuse one that is in the past or more
+than 7 minutes 5 seconds ahead
+(`server.ValidateClientAssertionMarkerDeadline`). This also covers a provider
+built over those backends without the wrapper: it passes the raw `exp`, which is
+safe because such a provider accepts nothing after the second named by `exp`,
+and the backend refuses a deadline that has already passed, so a replay in that
+second fails closed. The handler factories
 receive the unwrapped storage, because handlers call `storage.Unwrap` and check
-storage capabilities by type assertion, which the wrapper would hide.
+storage capabilities by type assertion, which the wrapper would hide. The token
+exchange assertion checks elsewhere stay strict, because their `exp` bounds a
+token this server issues.
 
 Every failed assertion check (unknown `kid`, bad signature, wrong `iss`, `sub`
-or `aud`, expired or not yet valid, `exp` of 0 or not after the current time,
-`exp` more than 5 minutes ahead, reused `jti`) is refused with HTTP 401
-`invalid_client`. The `error_description`
-names the check that failed. A storage failure while checking or recording
+or `aud`, a time claim outside the margin, `exp` before `iat`, `exp` more than
+5 minutes plus 60 seconds ahead, reused `jti`) is refused with HTTP 401
+`invalid_client`. The `error_description` names the check that failed, and never
+contains the server time or a claim value. A storage failure while checking or
+recording
 the `jti` is HTTP 500 `server_error`, so clients can retry it. A request
 that sets `client_assertion_type` but omits `client_assertion` is HTTP 400
 `invalid_request`.

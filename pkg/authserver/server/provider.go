@@ -50,21 +50,53 @@ const (
 	MinAuthCodeLifespan = 30 * time.Second
 	// MaxAuthCodeLifespan is the maximum allowed authorization code lifetime (RFC 6749 recommends 10 min max).
 	MaxAuthCodeLifespan = 10 * time.Minute
-	// MaxAssertionLifespan is the maximum allowed exp-now duration for a
-	// private_key_jwt client_assertion. fosite persists the replay marker
-	// (Storage.SetClientAssertionJWT/ConsumeAssertionJWT) with a TTL derived
-	// from the assertion's own exp claim, and neither fosite nor RFC 7523
-	// bounds that value — a client could otherwise set exp decades out and
-	// grow replay-tracking storage indefinitely. A client assertion
-	// authenticates a single token request, so it has no legitimate reason
-	// to outlive that request by more than a small clock-skew margin.
+	// MaxAssertionLifespan is how far ahead of now a private_key_jwt
+	// client_assertion's exp may be. fosite persists the replay marker
+	// (Storage.SetClientAssertionJWT) until a deadline derived from the
+	// assertion's own exp claim, and neither fosite nor RFC 7523 bounds that
+	// value — a client could otherwise set exp decades out and grow
+	// replay-tracking storage indefinitely. A client assertion authenticates a
+	// single token request, so it has no legitimate reason to expire later. The
+	// bound is applied to exp - now, with clientAssertionClockSkew added for a
+	// client whose clock runs fast (see ClientAssertionMaxExpiryAhead and
+	// ValidateClientAssertionExp). Nothing caps exp - iat.
 	MaxAssertionLifespan = 5 * time.Minute
+	// clientAssertionClockSkew is how far a private_key_jwt client assertion's
+	// exp, iat and nbf may be off from this server's clock.
+	clientAssertionClockSkew = 60 * time.Second
+	// clientAssertionReplayGrace is extra retention for a client assertion's
+	// replay marker past exp + clientAssertionClockSkew. The fallback judges the
+	// time claims one last time right after it reserves the jti, so the grace
+	// only has to cover the time from that read to the write of the marker. It
+	// does not bound the latency of the client lookup or of the jti check, and
+	// it does not cover clock differences of more than the grace between
+	// replicas sharing Redis, because Redis counts the lifetime from the writing
+	// replica's clock.
+	clientAssertionReplayGrace = 5 * time.Second
+	// ClientAssertionMaxExpiryAhead is how far ahead of now a storage backend
+	// accepts a client assertion's exp: MaxAssertionLifespan plus the skew for a
+	// client whose clock runs fast.
+	ClientAssertionMaxExpiryAhead = MaxAssertionLifespan + clientAssertionClockSkew
+	// ClientAssertionMaxMarkerAhead is how far ahead of now a storage backend
+	// accepts the replay marker deadline of a client assertion: the deadline of
+	// an exp that is ClientAssertionMaxExpiryAhead ahead.
+	ClientAssertionMaxMarkerAhead = ClientAssertionMaxExpiryAhead + clientAssertionClockSkew + clientAssertionReplayGrace
 	// MaxAssertionJTILength bounds the byte length of a private_key_jwt
 	// client_assertion's jti before it's persisted as a replay marker.
 	// Comfortably fits UUIDs/ULIDs and typical nonce formats with headroom
 	// while capping per-entry storage cost.
 	MaxAssertionJTILength = 256
 )
+
+// ClientAssertionRetainUntil returns the replay marker deadline of a client
+// assertion with the given exp: the time until which a storage backend must
+// keep the marker. The server hands this deadline to the backend, which stores
+// it as given. An assertion is still accepted for clientAssertionClockSkew after
+// its exp, and the grace covers the gap between the last time check and the
+// write of the marker.
+func ClientAssertionRetainUntil(exp time.Time) time.Time {
+	return exp.Add(clientAssertionClockSkew + clientAssertionReplayGrace)
+}
 
 // AudienceMatchingStrategy is the single audience-matching rule shared by the
 // token endpoint and startup validation: every needle must be covered by a
@@ -653,22 +685,26 @@ func NewAuthorizationServer(
 	fositeConfig.RevocationHandlers = slices.Clone(fositeConfig.RevocationHandlers)
 	fositeConfig.PushedAuthorizeEndpointHandlers = slices.Clone(fositeConfig.PushedAuthorizeEndpointHandlers)
 	providerConfig.Config = &fositeConfig
-	provider := fosite.NewOAuth2Provider(
-		newClientAssertionExpiryStore(storage, time.Now), newClientAssertionAudienceConfig(&fositeConfig))
+	assertionStore := newClientAssertionExpiryStore(storage, time.Now)
+	provider := fosite.NewOAuth2Provider(assertionStore, newClientAssertionAudienceConfig(&fositeConfig))
 	// Select the fallback after constructing the provider because fosite's
 	// built-in strategy is a provider method. Preserve a caller-supplied strategy
 	// when present, then install the SPIFFE dispatcher on the provider-local copy.
-	defaultStrategy := func() fosite.ClientAuthenticationStrategy {
-		if fositeConfig.ClientAuthenticationStrategy != nil {
-			return fositeConfig.ClientAuthenticationStrategy
-		}
-		return provider.DefaultClientAuthenticationStrategy
-	}()
+	// The clock skew recovery relies on fosite verifying the signature before it
+	// validates the claims, so it is enabled for fosite's own strategy only.
+	defaultStrategy := fositeConfig.ClientAuthenticationStrategy
+	recoverTimeErrors := false
+	if defaultStrategy == nil {
+		defaultStrategy = provider.DefaultClientAuthenticationStrategy
+		recoverTimeErrors = true
+	}
 	// The JWS guard is outermost so it runs before any strategy parses
 	// a client assertion (see fositejose.IsUnsafeJWS).
 	fositeConfig.ClientAuthenticationStrategy = newUnsafeJWSGuardClientAuthenticationStrategy(
 		newSPIFFEClientAuthenticationStrategy(
-			newClientAssertionErrorStrategy(defaultStrategy), config.GetAccessTokenIssuer(),
+			newClientAssertionErrorStrategy(newClientAssertionClockSkewStrategy(
+				defaultStrategy, assertionStore, clientAssertionAudiences(&fositeConfig), time.Now, recoverTimeErrors,
+			)), config.GetAccessTokenIssuer(),
 			config.SPIFFEJWTBundleSource, providerConfig.SPIFFEClientResolver,
 		),
 	)

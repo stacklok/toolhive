@@ -393,7 +393,7 @@ func TestIntegration_ClientAssertionJWT(t *testing.T) {
 
 	t.Run("known JTI is invalid", func(t *testing.T) {
 		withIntegrationStorage(t, func(ctx context.Context, s *RedisStorage) {
-			require.NoError(t, s.SetClientAssertionJWT(ctx, "int-jti", time.Now().Add(time.Hour)))
+			require.NoError(t, s.SetClientAssertionJWT(ctx, "int-jti", time.Now().Add(time.Minute)))
 			assert.ErrorIs(t, s.ClientAssertionJWTValid(ctx, "int-jti"), fosite.ErrJTIKnown)
 		})
 	})
@@ -1102,6 +1102,19 @@ func TestIntegration_RealTTLExpiration(t *testing.T) {
 			time.Sleep(3 * time.Second)
 
 			require.NoError(t, s.ClientAssertionJWTValid(ctx, "ttl-jti"))
+		})
+	})
+
+	t.Run("deadline in the past is refused and stays reserved", func(t *testing.T) {
+		withIntegrationStorage(t, func(ctx context.Context, s *RedisStorage) {
+			require.NoError(t, s.ClientAssertionJWTValid(ctx, "refused-jti"))
+
+			err := s.SetClientAssertionJWT(ctx, "refused-jti", time.Now().Add(-time.Hour))
+
+			var rfcErr *fosite.RFC6749Error
+			require.ErrorAs(t, err, &rfcErr)
+			assert.Equal(t, fosite.ErrInvalidClient.ErrorField, rfcErr.ErrorField)
+			assert.ErrorIs(t, s.ClientAssertionJWTValid(ctx, "refused-jti"), fosite.ErrJTIKnown)
 		})
 	})
 

@@ -18,6 +18,50 @@ import (
 
 //go:generate mockgen -destination=mocks/mock_actor_validator.go -package=mocks -source=actor_validator.go ActorTokenValidator
 
+// ActorValidatorRegistration is a validator registered with the issuer that
+// ToolHive writes as act.iss for the agents it accepts.
+type ActorValidatorRegistration struct {
+	// Validator checks the actor token. Required.
+	Validator ActorTokenValidator
+	// ActIssuer is the value of act.iss in every ID-JAG built from this
+	// validator's answer. It is the namespace in which AgentID is unique
+	// (RFC 7519 section 4.1.2). It is often the actor token's issuer, but it does
+	// not have to be: ToolHive never compares it to the token. Consumers may key
+	// agent policy on (act.iss, act.sub), so changing ActIssuer renames every
+	// agent. ToolHive emits it exactly as configured. Several registrations may
+	// share an ActIssuer. Their validators must then not return the same AgentID,
+	// which ToolHive cannot check.
+	//
+	// ToolHive does not check that a SPIFFE AgentID belongs to the trust domain
+	// named by a spiffe:// ActIssuer. A validator that accepts JWT-SVIDs must
+	// verify each SVID against the bundle of the trust domain in its sub; that
+	// check is the binding. A later release may refuse, at issuance, an AgentID
+	// outside the trust domain of a spiffe:// ActIssuer.
+	ActIssuer string
+}
+
+// ActIssuerProblem returns nil when s is an acceptable ActorValidatorRegistration
+// ActIssuer syntax: an absolute URI of at most 2048 bytes that follows the same
+// rules as an AgentID URI (printable ASCII, RFC 3986 characters, valid
+// percent-escapes, something after the scheme, no userinfo, no fragment) and also
+// has no query. Otherwise it describes the problem without quoting s. It checks
+// syntax only, not the canonical spelling or which schemes are allowed.
+func ActIssuerProblem(s string) error {
+	if s == "" || len(s) > maxActorAgentURILen {
+		return fmt.Errorf("length %d is outside 1 to %d bytes", len(s), maxActorAgentURILen)
+	}
+	if !strings.Contains(s, ":") {
+		return errors.New("has no scheme")
+	}
+	if err := uriProblem(s); err != nil {
+		return err
+	}
+	if u, err := url.Parse(s); err != nil || u.RawQuery != "" || u.ForceQuery {
+		return errors.New("URI contains a query")
+	}
+	return nil
+}
+
 // ActorTokenValidator checks the actor token that a client presents during ID-JAG
 // issuance and reports which agent it belongs to. How a validator is registered and
 // selected is not part of this interface.
@@ -347,7 +391,10 @@ func agentIDProblem(id string) error {
 		}
 		return nil
 	}
-	return uriProblem(id)
+	if err := uriProblem(id); err != nil {
+		return fmt.Errorf("agent ID is invalid: %w", err)
+	}
+	return nil
 }
 
 // uriAllowedPunctuation holds the RFC 3986 characters other than letters, digits
@@ -363,26 +410,26 @@ func uriProblem(id string) error {
 	for i := 0; i < len(id); i++ {
 		switch c := id[i]; {
 		case c == '#':
-			return fmt.Errorf("agent ID is invalid: URI contains '#' at offset %d", i)
+			return fmt.Errorf("URI contains '#' at offset %d", i)
 		case c == '%':
 			if i+2 >= len(id) || !isHexDigit(id[i+1]) || !isHexDigit(id[i+2]) {
-				return fmt.Errorf("agent ID is invalid: bad percent-escape at offset %d", i)
+				return fmt.Errorf("bad percent-escape at offset %d", i)
 			}
 			i += 2
 		case isASCIILetterOrDigit(c) || strings.IndexByte(uriAllowedPunctuation, c) >= 0:
 		default:
-			return fmt.Errorf("agent ID is invalid: byte 0x%02x at offset %d is not allowed in a URI", c, i)
+			return fmt.Errorf("byte 0x%02x at offset %d is not allowed in a URI", c, i)
 		}
 	}
 	u, err := url.Parse(id)
 	if err != nil || u.Scheme == "" {
-		return errors.New("agent ID is invalid: contains ':' but is not an absolute URI")
+		return errors.New("contains ':' but is not an absolute URI")
 	}
 	if u.User != nil {
-		return errors.New("agent ID is invalid: URI contains userinfo")
+		return errors.New("URI contains userinfo")
 	}
 	if u.Opaque == "" && u.Host == "" && u.Path == "" {
-		return errors.New("agent ID is invalid: URI has nothing after the scheme")
+		return errors.New("URI has nothing after the scheme")
 	}
 	return nil
 }

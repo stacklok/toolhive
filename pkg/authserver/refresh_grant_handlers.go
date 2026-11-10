@@ -6,7 +6,6 @@ package authserver
 import (
 	"context"
 	"errors"
-	"reflect"
 	"slices"
 
 	"github.com/ory/fosite"
@@ -85,18 +84,6 @@ func (*refreshGrantValidators) PopulateTokenEndpointResponse(
 // refresh_token, matching the check fosite's built-in refresh handler makes.
 func isRefreshTokenGrant(requester fosite.AccessRequester) bool {
 	return requester.GetGrantTypes().ExactOne(string(fosite.GrantTypeRefreshToken))
-}
-
-// isNilHandler reports whether h is nil, including a nil pointer (or other
-// nilable value) of a concrete type, which a plain h == nil misses and which
-// would panic on the first refresh grant.
-func isNilHandler(h fosite.TokenEndpointHandler) bool {
-	if h == nil {
-		return true
-	}
-	v := reflect.ValueOf(h)
-	nilable := []reflect.Kind{reflect.Pointer, reflect.Map, reflect.Slice, reflect.Func, reflect.Chan, reflect.Interface}
-	return slices.Contains(nilable, v.Kind()) && v.IsNil()
 }
 
 // refreshGrantHandlerFactories returns the factory that registers the

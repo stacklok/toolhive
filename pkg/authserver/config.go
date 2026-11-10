@@ -1761,6 +1761,24 @@ type Config struct {
 	// DisableUpstreamRefreshGuard), so they see only grants it accepted.
 	RefreshGrantHandlers []fosite.TokenEndpointHandler
 
+	// ActorTokenValidators are the validators an embedder registers for ID-JAG
+	// issuance, keyed by name. Each entry also carries the issuer ToolHive
+	// writes as act.iss (see tokenexchange.ActorValidatorRegistration). Set them
+	// in process. There is no global registry and no YAML or JSON form. A client
+	// selects one by name in its actor profile.
+	//
+	// Issuance calls a validator from many requests at once, so each validator
+	// must be safe for concurrent use. The server reads the map only at startup,
+	// so changing it afterwards has no effect.
+	//
+	// Validate refuses an empty name, a nil Validator (including a nil pointer of
+	// a concrete type) and a name that starts with "toolhive.", which is reserved
+	// for built-in validators. It also refuses an ActIssuer that is empty, is not
+	// an absolute URI without query, userinfo or fragment, is not in canonical
+	// spelling, is an http(s) URL that is neither https nor on a loopback host,
+	// or is this server's own issuer. Registrations may share an ActIssuer.
+	ActorTokenValidators map[string]tokenexchange.ActorValidatorRegistration
+
 	// DisableUpstreamRefreshGuard turns off the built-in refresh-grant guard.
 	// When on (the default, with at least one upstream configured), a
 	// refresh_token grant is refused with invalid_grant when the token
@@ -2000,9 +2018,13 @@ func (c *Config) Validate() error {
 	}
 
 	for i, h := range c.RefreshGrantHandlers {
-		if isNilHandler(h) {
+		if isNilValue(h) {
 			return fmt.Errorf("refresh grant handler %d is nil", i)
 		}
+	}
+
+	if err := c.validateActorTokenValidators(); err != nil {
+		return err
 	}
 
 	if err := c.validateAudienceConfiguration(); err != nil {
@@ -2032,6 +2054,71 @@ func (c *Config) Validate() error {
 	}
 
 	return c.validateDelegationAndTrustConfig()
+}
+
+// validateActorTokenValidators checks each registered validator in sorted name
+// order, so the first error is the same on every run. For each name, the checks
+// run in this order: the name is not empty, the name is not in the reserved
+// "toolhive." namespace, the validator is not nil, and the ActIssuer passes
+// validateActIssuer.
+func (c *Config) validateActorTokenValidators() error {
+	for _, name := range slices.Sorted(maps.Keys(c.ActorTokenValidators)) {
+		if name == "" {
+			return errors.New("actor token validator name must not be empty")
+		}
+		if strings.HasPrefix(name, "toolhive.") {
+			return fmt.Errorf("actor token validator name %q is reserved for built-in validators", name)
+		}
+		registration := c.ActorTokenValidators[name]
+		if isNilValue(registration.Validator) {
+			return fmt.Errorf("actor token validator %q is nil", name)
+		}
+		if err := validateActIssuer(registration.ActIssuer, c.Issuer); err != nil {
+			return fmt.Errorf("actor token validator %q: %w", name, err)
+		}
+	}
+	return nil
+}
+
+// validateActIssuer checks the issuer ToolHive writes as act.iss. It must be an
+// absolute URI (tokenexchange.ActIssuerProblem), spelled in canonical form, name
+// a host and use https or http on a loopback host when it is an http(s) URL, and differ from
+// the server's own issuer. Other schemes, such as spiffe and urn, are allowed.
+// The value is only an identifier, so it is not compared with the token
+// endpoint, the allowed audiences or the target issuers.
+//
+// The canonical-form rule is idJAGIssuerWellFormed, which also fits URIs with no
+// host: it lower-cases the scheme, and it looks at host, port and path only
+// where they exist. The comparison with the server's issuer folds case and a
+// trailing slash, but a non-canonical spelling is refused first.
+func validateActIssuer(actIssuer, serverIssuer string) error {
+	if actIssuer == "" {
+		return errors.New("ActIssuer is required")
+	}
+	if err := tokenexchange.ActIssuerProblem(actIssuer); err != nil {
+		return fmt.Errorf("ActIssuer %q is not an absolute URI: %w", actIssuer, err)
+	}
+	parsed, err := url.Parse(actIssuer)
+	if err != nil {
+		return fmt.Errorf("ActIssuer %q is not an absolute URI", actIssuer)
+	}
+	if !idJAGIssuerWellFormed(actIssuer, parsed) {
+		return fmt.Errorf("ActIssuer %q is not in canonical form: lower-case scheme and host, "+
+			"no default port, dot segments, empty path segments, unneeded percent-encoding, "+
+			"or an empty or zero-padded port", actIssuer)
+	}
+	if parsed.Scheme == "http" || parsed.Scheme == "https" {
+		if parsed.Opaque != "" || parsed.Hostname() == "" {
+			return fmt.Errorf("ActIssuer %q must name a host", actIssuer)
+		}
+		if validateIssuerScheme(parsed, false) != nil {
+			return fmt.Errorf("ActIssuer %q must use https, or http on a loopback host", actIssuer)
+		}
+	}
+	if foldIssuerForComparison(actIssuer) == foldIssuerForComparison(serverIssuer) {
+		return errors.New("ActIssuer must not be this server's issuer")
+	}
+	return nil
 }
 
 // validateClientAdmission checks the bounds on how unauthenticated callers

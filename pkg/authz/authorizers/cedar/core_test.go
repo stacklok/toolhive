@@ -21,7 +21,7 @@ import (
 
 	"github.com/stacklok/toolhive-core/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
-	"github.com/stacklok/toolhive/pkg/auth/upstreamtoken"
+	"github.com/stacklok/toolhive/pkg/authserver/claimnames"
 	"github.com/stacklok/toolhive/pkg/authz/authorizers"
 )
 
@@ -1528,7 +1528,7 @@ func TestAuthorizeWithJWTClaims_UpstreamProvider(t *testing.T) {
 						"sub": "upstream-user",
 						// An RFC 7523 JWT-bearer token: the auth server stamped
 						// this marker because the grant links to no upstream login.
-						upstreamtoken.NoUpstreamSessionClaimKey: true,
+						claimnames.NoUpstreamSessionKey: true,
 					},
 				},
 				UpstreamTokens: nil,
@@ -1613,8 +1613,8 @@ func TestAuthorizeWithJWTClaims_UpstreamProvider(t *testing.T) {
 				PrincipalInfo: auth.PrincipalInfo{
 					Subject: "upstream-user",
 					Claims: map[string]any{
-						"sub":                                   "upstream-user",
-						upstreamtoken.NoUpstreamSessionClaimKey: false,
+						"sub":                           "upstream-user",
+						claimnames.NoUpstreamSessionKey: false,
 					},
 				},
 				UpstreamTokens: nil,
@@ -4623,8 +4623,8 @@ func TestAuthorizeWithJWTClaims_ClaimSourceAttribute(t *testing.T) {
 				PrincipalInfo: auth.PrincipalInfo{
 					Subject: "machine-user",
 					Claims: map[string]any{
-						"sub":                                   "machine-user",
-						upstreamtoken.NoUpstreamSessionClaimKey: true,
+						"sub":                           "machine-user",
+						claimnames.NoUpstreamSessionKey: true,
 					},
 				},
 				SessionlessGrant: true,
@@ -4673,9 +4673,9 @@ func TestAuthorizeWithJWTClaims_ClaimSourceAttribute(t *testing.T) {
 				PrincipalInfo: auth.PrincipalInfo{
 					Subject: "machine-user",
 					Claims: map[string]any{
-						"sub":                                   "machine-user",
-						claimSourceAttr:                         claimSourceUpstreamPrefix + providerName,
-						upstreamtoken.NoUpstreamSessionClaimKey: true,
+						"sub":                           "machine-user",
+						claimSourceAttr:                 claimSourceUpstreamPrefix + providerName,
+						claimnames.NoUpstreamSessionKey: true,
 					},
 				},
 				SessionlessGrant: true,

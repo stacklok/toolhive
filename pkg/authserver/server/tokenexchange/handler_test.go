@@ -2518,7 +2518,7 @@ func TestTokenExchangeHandler_ActChainProvenance(t *testing.T) {
 
 	// reExchange re-submits a first exchange's resulting session as a new
 	// subject_token: the delegated token's own "iss" is always this server's
-	// own issuer (see delegatedSubject's doc comment), so a second exchange
+	// own issuer (see claimnames.QualifySubject's doc comment), so a second exchange
 	// validates it via the self-issued path, not the external-issuer path.
 	// It carries forward exactly the claims a real re-exchange would see on
 	// the wire — client_id, the nested act chain, and external_issuer.

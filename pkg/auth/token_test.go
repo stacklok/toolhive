@@ -27,6 +27,7 @@ import (
 	envmocks "github.com/stacklok/toolhive-core/env/mocks"
 	"github.com/stacklok/toolhive/pkg/auth/upstreamtoken"
 	upstreamtokenmocks "github.com/stacklok/toolhive/pkg/auth/upstreamtoken/mocks"
+	"github.com/stacklok/toolhive/pkg/authserver/claimnames"
 	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
 	keysmocks "github.com/stacklok/toolhive/pkg/authserver/server/keys/mocks"
 	"github.com/stacklok/toolhive/pkg/networking"
@@ -2410,8 +2411,8 @@ func TestLoadUpstreamTokens(t *testing.T) {
 
 		v := &TokenValidator{upstreamTokenReader: reader}
 		creds, failed, err := v.loadUpstreamTokens(context.Background(), jwt.MapClaims{
-			"sub":                                "user123",
-			upstreamtoken.TokenSessionIDClaimKey: "session-abc",
+			"sub":                        "user123",
+			claimnames.TokenSessionIDKey: "session-abc",
 		})
 		require.NoError(t, err)
 		require.Nil(t, failed)
@@ -2441,8 +2442,8 @@ func TestLoadUpstreamTokens(t *testing.T) {
 
 		v := &TokenValidator{upstreamTokenReader: reader}
 		creds, failed, err := v.loadUpstreamTokens(context.Background(), jwt.MapClaims{
-			"sub":                                "user123",
-			upstreamtoken.TokenSessionIDClaimKey: "",
+			"sub":                        "user123",
+			claimnames.TokenSessionIDKey: "",
 		})
 		require.NoError(t, err)
 		require.Nil(t, creds)
@@ -2456,8 +2457,8 @@ func TestLoadUpstreamTokens(t *testing.T) {
 
 		v := &TokenValidator{upstreamTokenReader: reader}
 		creds, failed, err := v.loadUpstreamTokens(context.Background(), jwt.MapClaims{
-			"sub":                                "user123",
-			upstreamtoken.TokenSessionIDClaimKey: 12345,
+			"sub":                        "user123",
+			claimnames.TokenSessionIDKey: 12345,
 		})
 		require.NoError(t, err)
 		require.Nil(t, creds)
@@ -2473,8 +2474,8 @@ func TestLoadUpstreamTokens(t *testing.T) {
 
 		v := &TokenValidator{upstreamTokenReader: reader}
 		creds, failed, err := v.loadUpstreamTokens(context.Background(), jwt.MapClaims{
-			"sub":                                "user123",
-			upstreamtoken.TokenSessionIDClaimKey: "session-abc",
+			"sub":                        "user123",
+			claimnames.TokenSessionIDKey: "session-abc",
 		})
 		require.Error(t, err)
 		require.Nil(t, creds)
@@ -2490,8 +2491,8 @@ func TestLoadUpstreamTokens(t *testing.T) {
 
 		v := &TokenValidator{upstreamTokenReader: reader}
 		creds, failed, err := v.loadUpstreamTokens(context.Background(), jwt.MapClaims{
-			"sub":                                "user123",
-			upstreamtoken.TokenSessionIDClaimKey: "session-abc",
+			"sub":                        "user123",
+			claimnames.TokenSessionIDKey: "session-abc",
 		})
 		require.NoError(t, err)
 		require.Equal(t, map[string]upstreamtoken.UpstreamCredential{}, creds)
@@ -2507,8 +2508,8 @@ func TestLoadUpstreamTokens(t *testing.T) {
 
 		v := &TokenValidator{upstreamTokenReader: reader}
 		creds, failed, err := v.loadUpstreamTokens(context.Background(), jwt.MapClaims{
-			"sub":                                "user123",
-			upstreamtoken.TokenSessionIDClaimKey: "session-abc",
+			"sub":                        "user123",
+			claimnames.TokenSessionIDKey: "session-abc",
 		})
 		require.NoError(t, err)
 		require.Equal(t, map[string]upstreamtoken.UpstreamCredential{}, creds)
@@ -2573,8 +2574,8 @@ func TestMiddleware_UpstreamTokenEnrichment(t *testing.T) {
 
 	claimsWithTsid := jwt.MapClaims{
 		"iss": "test-issuer", "aud": "test-audience", "sub": "test-user",
-		"exp":                                time.Now().Add(time.Hour).Unix(),
-		upstreamtoken.TokenSessionIDClaimKey: "session-xyz",
+		"exp":                        time.Now().Add(time.Hour).Unix(),
+		claimnames.TokenSessionIDKey: "session-xyz",
 	}
 
 	t.Run("enriches identity with upstream tokens", func(t *testing.T) {
@@ -2915,7 +2916,7 @@ func TestMiddleware_UpstreamTokenEnrichment(t *testing.T) {
 				name:           "matching embedded issuer with no upstream session marker",
 				embeddedIssuer: "test-issuer",
 				claims: jwt.MapClaims{
-					upstreamtoken.NoUpstreamSessionClaimKey: true,
+					claimnames.NoUpstreamSessionKey: true,
 				},
 				wantSessionlessGrant: true,
 			},
@@ -2935,7 +2936,7 @@ func TestMiddleware_UpstreamTokenEnrichment(t *testing.T) {
 				name:           "foreign embedded issuer with no upstream session marker",
 				embeddedIssuer: "foreign-issuer",
 				claims: jwt.MapClaims{
-					upstreamtoken.NoUpstreamSessionClaimKey: true,
+					claimnames.NoUpstreamSessionKey: true,
 				},
 			},
 			{
@@ -2943,7 +2944,7 @@ func TestMiddleware_UpstreamTokenEnrichment(t *testing.T) {
 				embeddedIssuer:     "test-issuer",
 				loadUpstreamTokens: true,
 				claims: jwt.MapClaims{
-					upstreamtoken.NoUpstreamSessionClaimKey: true,
+					claimnames.NoUpstreamSessionKey: true,
 				},
 			},
 		}
@@ -2962,7 +2963,7 @@ func TestMiddleware_UpstreamTokenEnrichment(t *testing.T) {
 				if tt.loadUpstreamTokens {
 					ctrl := gomock.NewController(t)
 					reader := upstreamtokenmocks.NewMockTokenReader(ctrl)
-					claims[upstreamtoken.TokenSessionIDClaimKey] = "session-xyz"
+					claims[claimnames.TokenSessionIDKey] = "session-xyz"
 					reader.EXPECT().GetAllUpstreamCredentials(gomock.Any(), "session-xyz").
 						Return(map[string]upstreamtoken.UpstreamCredential{"github": {AccessToken: "gh-token"}}, nil, nil)
 					opts = append(opts, WithUpstreamTokenReader(reader))
@@ -3011,9 +3012,9 @@ func TestMiddleware_UpstreamTokenEnrichment(t *testing.T) {
 		// Everything the gate looks for, self-asserted by the token.
 		claims := jwt.MapClaims{
 			"iss": "test-issuer", "aud": "test-audience", "sub": "test-user",
-			"exp":                                   time.Now().Add(time.Hour).Unix(),
-			upstreamtoken.NoUpstreamSessionClaimKey: true,
-			"act":                                   map[string]any{"sub": "delegated-agent"},
+			"exp":                           time.Now().Add(time.Hour).Unix(),
+			claimnames.NoUpstreamSessionKey: true,
+			"act":                           map[string]any{"sub": "delegated-agent"},
 		}
 
 		var captured *Identity

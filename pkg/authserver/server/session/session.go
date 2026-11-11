@@ -21,6 +21,8 @@ import (
 	"github.com/ory/fosite"
 	"github.com/ory/fosite/handler/oauth2"
 	"github.com/ory/fosite/token/jwt"
+
+	"github.com/stacklok/toolhive/pkg/authserver/claimnames"
 )
 
 // Factory is a function that creates a new session given subject, IDP session ID, and client ID.
@@ -49,31 +51,6 @@ type UpstreamSession interface {
 	oauth2.JWTSessionContainer
 	GetIDPSessionID() string
 }
-
-// TokenSessionIDClaimKey is the JWT claim key for the token session ID.
-// This links JWT access tokens to stored upstream IDP tokens.
-// We use "tsid" instead of "sid" to avoid confusion with OIDC session management
-// which defines "sid" for different purposes (RFC 7519, OIDC Session Management).
-const TokenSessionIDClaimKey = "tsid"
-
-// NoUpstreamSessionClaimKey marks a token this authorization server minted
-// without any link to an upstream IdP login, so no upstream credential exists
-// for it. Today only the RFC 7523 JWT-bearer grant sets it: its subject is a
-// synthetic machine identity (issuer#subject) asserted by a separate trust
-// root, with no end user and no upstream session.
-//
-// It exists so a resource server can distinguish "this token was deliberately
-// minted without an upstream session" from "this identity was never enriched
-// with upstream credentials" — states that are otherwise indistinguishable, as
-// both leave Identity.UpstreamTokens nil. pkg/authz/authorizers/cedar reads it
-// to decide whether request-token claims may drive policy. The RFC 8693
-// delegation grant needs no marker: its "act" claim already says so.
-//
-// The name is collision-resistant per RFC 7519 Section 4.3, so a JWT from
-// another issuer the deployment trusts cannot assert it by accident. It is a
-// private claim; RFC 9068 Section 2.2.3 permits additional claims on an
-// access token.
-const NoUpstreamSessionClaimKey = "https://toolhive.dev/no_upstream_session"
 
 // ClientIDClaimKey is the JWT claim key for the OAuth client ID.
 // This identifies which client was issued the token.
@@ -175,7 +152,7 @@ func New(subject, idpSessionID, clientID string, claims UserClaims) *Session {
 
 	// Add tsid claim if idpSessionID is provided
 	if idpSessionID != "" {
-		claimsExtra[TokenSessionIDClaimKey] = idpSessionID
+		claimsExtra[claimnames.TokenSessionIDKey] = idpSessionID
 	}
 
 	// Add client_id claim for binding verification per RFC 9068

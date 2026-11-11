@@ -15,6 +15,7 @@ import (
 	"github.com/ory/fosite/handler/oauth2"
 	"github.com/ory/x/errorsx"
 
+	"github.com/stacklok/toolhive/pkg/authserver/claimnames"
 	"github.com/stacklok/toolhive/pkg/authserver/server"
 	"github.com/stacklok/toolhive/pkg/authserver/server/session"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
@@ -222,10 +223,11 @@ func (h *IDJAGHandler) HandleTokenEndpointRequest(ctx context.Context, requester
 	// client, unlike there, is the real authenticated one — fosite resolved
 	// it (CanSkipClientAuth is always false), so requester already carries
 	// it and no synthetic replacement happens.
-	issuedSession := session.New(claims.Issuer+"#"+claims.Subject, "", requester.GetClient().GetID(), session.UserClaims{})
+	issuedSession := session.New(claimnames.QualifySubject(claims.Issuer, claims.Subject), "",
+		requester.GetClient().GetID(), session.UserClaims{})
 	// An ID-JAG links to no upstream IdP login at THIS server, same as a
-	// plain assertion; see session.NoUpstreamSessionClaimKey.
-	issuedSession.JWTClaims.Extra[session.NoUpstreamSessionClaimKey] = true
+	// plain assertion; see claimnames.NoUpstreamSessionKey.
+	issuedSession.JWTClaims.Extra[claimnames.NoUpstreamSessionKey] = true
 	// Carry the assertion's actor chain (RFC 8693 §4.1 "act" — for an
 	// Okta-minted ID-JAG, the requesting agent's identity) into the issued
 	// token, so a resource server or auditor can still tell WHICH agent

@@ -7,26 +7,9 @@ package upstreamtoken
 
 //go:generate go run go.uber.org/mock/mockgen -destination=mocks/mock_token_reader.go -package=mocks github.com/stacklok/toolhive/pkg/auth/upstreamtoken TokenReader
 
-import "context"
-
-// TokenSessionIDClaimKey is the JWT claim key for the token session ID.
-// This links JWT access tokens to stored upstream IDP tokens.
-// We use "tsid" instead of "sid" to avoid confusion with OIDC session management
-// which defines "sid" for different purposes (RFC 7519, OIDC Session Management).
-const TokenSessionIDClaimKey = "tsid"
-
-// NoUpstreamSessionClaimKey is the JWT claim key by which the embedded
-// authorization server marks a token it minted with no link to an upstream IdP
-// login. Resource-server mirror of the constant in
-// pkg/authserver/server/session, duplicated for the same reason
-// TokenSessionIDClaimKey is: the token-issuing and token-consuming sides must
-// not import each other. The two spellings must stay identical.
-//
-// Its purpose is to separate "minted without an upstream session" from "never
-// enriched with upstream credentials" — both leave Identity.UpstreamTokens nil,
-// but only the former is a statement by an authorization server this deployment
-// trusts. See the issuing constant for the full contract.
-const NoUpstreamSessionClaimKey = "https://toolhive.dev/no_upstream_session"
+import (
+	"context"
+)
 
 // UpstreamCredential bundles the access token and the ID token for a single
 // upstream provider. Access tokens are refreshed when expired.

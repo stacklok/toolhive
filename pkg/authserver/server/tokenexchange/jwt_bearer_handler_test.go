@@ -20,6 +20,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/stacklok/toolhive/pkg/authserver/claimnames"
 	"github.com/stacklok/toolhive/pkg/authserver/server"
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/authserver/server/session"
@@ -820,7 +821,7 @@ func TestJWTBearerHandler_StampsNoUpstreamSessionClaim(t *testing.T) {
 
 	issued, ok := req.GetSession().(*session.Session)
 	require.True(t, ok, "expected the handler to install a *session.Session")
-	assert.Equal(t, true, issued.JWTClaims.Extra[session.NoUpstreamSessionClaimKey],
+	assert.Equal(t, true, issued.JWTClaims.Extra[claimnames.NoUpstreamSessionKey],
 		"JWT-bearer tokens must declare that they have no upstream session")
 }
 

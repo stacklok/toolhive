@@ -20,6 +20,7 @@ import (
 	"github.com/ory/x/errorsx"
 
 	"github.com/stacklok/toolhive/pkg/authserver/authorizationdetails"
+	"github.com/stacklok/toolhive/pkg/authserver/claimnames"
 	"github.com/stacklok/toolhive/pkg/authserver/server"
 	"github.com/stacklok/toolhive/pkg/authserver/server/session"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
@@ -711,15 +712,15 @@ func loginSubjectError(reason string) error {
 // checkExchangeGrantSubject.
 func checkLoginToken(claims *ValidatedClaims) string {
 	_, hasAct := claims.Extra["act"]
-	_, hasExternalIssuer := claims.Extra["external_issuer"]
-	_, noUpstream := claims.Extra[session.NoUpstreamSessionClaimKey]
+	_, hasExternalIssuer := claims.Extra[claimnames.ExternalIssuerKey]
+	_, noUpstream := claims.Extra[claimnames.NoUpstreamSessionKey]
 	switch {
 	case hasAct:
 		return "subject_token_delegated"
 	// claims.ExternalIssuer is always empty for the self-issued validator; it is
 	// checked as defense in depth. Native login subjects never contain "#"; see
-	// delegatedSubject for the qualified form.
-	case hasExternalIssuer || claims.ExternalIssuer != "" || strings.Contains(claims.Subject, "#"):
+	// claimnames.QualifySubject for the qualified form.
+	case hasExternalIssuer || claims.ExternalIssuer != "" || claimnames.IsQualifiedSubject(claims.Subject):
 		return "subject_token_external"
 	case noUpstream:
 		return "subject_token_no_upstream_session"

@@ -11,6 +11,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 
 	"github.com/stacklok/toolhive-core/audit"
+	"github.com/stacklok/toolhive/pkg/authserver/claimnames"
 	serveridentity "github.com/stacklok/toolhive/pkg/authserver/identity"
 )
 
@@ -237,8 +238,8 @@ func claimsToIdentity(claims jwt.MapClaims, token string) (*Identity, error) {
 
 // internalClaims are JWT claim keys used internally by the auth server
 // that must not be externalized in webhook payloads, audit logs, etc.
-// "tsid" is the token session ID used to look up upstream tokens in storage.
-var internalClaims = []string{"tsid"}
+// The token session ID is used to look up upstream tokens in storage.
+var internalClaims = []string{claimnames.TokenSessionIDKey}
 
 // filterInternalClaims returns a copy of claims with internal keys removed.
 func filterInternalClaims(claims jwt.MapClaims) jwt.MapClaims {

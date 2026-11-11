@@ -45,6 +45,31 @@ graph TB
     style Sentinel fill:#e8f5e9
 ```
 
+## Storage lifecycle
+
+`authserver.New` and `runner.NewEmbeddedAuthServerWithStorage` borrow supplied
+storage on both success and failure. Previously, closing either server closed
+the supplied backend, and the runner also closed it on construction errors.
+Callers must now explicitly close storage after every server and other user has
+stopped. The DCR store accessor is borrowed too; its lifetime follows the storage
+owner rather than the server instance. Construction is not transactional: a
+failure may leave writes in the borrowed backend, even though instance-owned
+runtime resources are released.
+
+`Server.Close` is safe to call concurrently or repeatedly and returns the same
+joined cleanup errors. It releases instance-owned upstream idle connections,
+metric callbacks, SPIFFE bundle workers, and trusted-issuer JWKS workers, but never
+storage. Stop accepting requests and drain in-flight requests before closing a
+superseded instance, even when its replacement shares the same backend.
+`CloseIdleConnections` remains safe on a live server, but is not a retirement
+operation: it does not stop background workers or runner DCR re-check loops.
+
+`runner.NewEmbeddedAuthServer`, which creates its own backend, retains ownership.
+It closes that backend exactly once on construction failure or shutdown, after
+runtime cleanup, even if runtime cleanup reports an error. Its `Close` also stops
+the listener and DCR re-check loops. This does not change `RedisStorage`'s own
+ownership of injected versus internally created Redis clients.
+
 ## Storage Interface
 
 The storage layer implements multiple interfaces from the [fosite](https://github.com/ory/fosite) OAuth 2.0 framework, plus ToolHive-specific extensions:

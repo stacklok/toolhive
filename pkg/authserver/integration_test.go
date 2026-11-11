@@ -315,8 +315,8 @@ func withRedisBackedStorage() testServerOption {
 
 // withSharedMiniredisStorage points the server at an existing miniredis
 // instance instead of starting its own, so several servers built with this
-// option share one storage state. Each server gets its own Redis client, which
-// keeps server.Close() (which closes its client) independent per server.
+// option share one storage state. Each test fixture owns its Redis client and
+// closes it after server shutdown; Server.Close only releases instance resources.
 func withSharedMiniredisStorage(mr *miniredis.Miniredis) testServerOption {
 	return func(opts *testServerOptions) {
 		opts.sharedStorage = true
@@ -394,12 +394,15 @@ func setupTestServer(t *testing.T, opts ...testServerOption) *testServer {
 	// in-memory backend. The mr return value is preserved so tests can
 	// FastForward Redis-side TTLs.
 	var (
-		stor storage.Storage = storage.NewMemoryStorage()
+		stor storage.Storage
 		mr   *miniredis.Miniredis
 	)
 	if options.storageFactory != nil {
 		stor, mr = options.storageFactory(t)
+	} else {
+		stor = storage.NewMemoryStorage()
 	}
+	t.Cleanup(func() { require.NoError(t, stor.Close()) })
 	if options.storageDecorator != nil {
 		stor = options.storageDecorator(stor)
 	}
@@ -3045,12 +3048,15 @@ func setupTestServerWithOIDCProvider(t *testing.T, m *mockoidc.MockOIDC, opts ..
 
 	// 3. Create storage. See setupTestServer for the factory contract.
 	var (
-		stor storage.Storage = storage.NewMemoryStorage()
+		stor storage.Storage
 		mr   *miniredis.Miniredis
 	)
 	if options.storageFactory != nil {
 		stor, mr = options.storageFactory(t)
+	} else {
+		stor = storage.NewMemoryStorage()
 	}
+	t.Cleanup(func() { require.NoError(t, stor.Close()) })
 
 	// 4. Register test client (public client for PKCE)
 	// With shared storage a previous server may have registered the clients
@@ -3530,6 +3536,7 @@ func setupTestServerWithUpstreamChain(t *testing.T, upstreams []UpstreamConfig, 
 	require.NoError(t, err)
 
 	stor := storage.NewMemoryStorage()
+	t.Cleanup(func() { require.NoError(t, stor.Close()) })
 	require.NoError(t, stor.RegisterClient(ctx, &fosite.DefaultClient{
 		ID:            testClientID,
 		RedirectURIs:  []string{testRedirectURI},
@@ -4454,12 +4461,15 @@ func setupTestServerWithTwoUpstreams(t *testing.T, m1, m2 *mockoidc.MockOIDC, op
 
 	// 3. Create storage. See setupTestServer for the factory contract.
 	var (
-		stor storage.Storage = storage.NewMemoryStorage()
+		stor storage.Storage
 		mr   *miniredis.Miniredis
 	)
 	if options.storageFactory != nil {
 		stor, mr = options.storageFactory(t)
+	} else {
+		stor = storage.NewMemoryStorage()
 	}
+	t.Cleanup(func() { require.NoError(t, stor.Close()) })
 
 	// 4. Register test client (public client for PKCE)
 	err = stor.RegisterClient(ctx, &fosite.DefaultClient{

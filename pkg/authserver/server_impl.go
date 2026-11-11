@@ -760,7 +760,7 @@ func buildProvider(
 	if policyErr != nil {
 		return nil, nil, policyErr
 	}
-	jwtBearerEnabled := JWTBearerGrantEnabled(cfg.TrustedIssuers)
+	jwtBearerEnabled := authServerConfig.JWTBearerGrantEnabled
 	exchangeGrantStore, storeErr := discoverExchangeGrantStorage(cfg.DelegateClients, stor)
 	if storeErr != nil {
 		return nil, nil, storeErr
@@ -1027,10 +1027,8 @@ func (s *server) UpdateUpstreamClientCredentials(name string, creds upstream.Cli
 	return fmt.Errorf("unknown upstream %q", name)
 }
 
-// Close releases resources held by the server: it drains upstream idle
-// connections, unregisters the handler's metric callback, shuts down its
-// SPIFFE bundle and trusted-issuer refresh workers, and closes storage. Shutdown
-// errors are joined and the result is retained for subsequent calls.
+// Close releases instance-owned resources, but never the borrowed storage.
+// Concurrent and repeated calls return the same joined shutdown errors.
 func (s *server) Close() error {
 	s.closeOnce.Do(func() {
 		slog.Debug("closing OAuth authorization server")
@@ -1050,9 +1048,6 @@ func (s *server) Close() error {
 			if err := s.trustedIssuerValidator.Close(); err != nil {
 				errs = append(errs, fmt.Errorf("failed to shut down trusted-issuer validator: %w", err))
 			}
-		}
-		if err := s.storage.Close(); err != nil {
-			errs = append(errs, err)
 		}
 		s.closeErr = errors.Join(errs...)
 	})

@@ -117,6 +117,7 @@ func TestNewRegistersIdentityModifiers(t *testing.T) {
 		SubjectPath: "access_token|@upstreamjwt|sub",
 	}
 	stor := storage.NewMemoryStorage()
+	t.Cleanup(func() { assert.NoError(t, stor.Close()) })
 	srv, err := New(t.Context(), Config{
 		Issuer:           "https://example.com",
 		KeyProvider:      keys.NewGeneratingProvider(keys.DefaultAlgorithm),
@@ -128,9 +129,6 @@ func TestNewRegistersIdentityModifiers(t *testing.T) {
 			return upstream.NewOAuth2Provider(cfg.OAuth2Config, upstream.WithOAuth2HTTPClient(tokenServer.Client()))
 		},
 	}, stor)
-	if err != nil {
-		require.NoError(t, stor.Close())
-	}
 	require.NoError(t, err)
 	t.Cleanup(func() { assert.NoError(t, srv.Close()) })
 

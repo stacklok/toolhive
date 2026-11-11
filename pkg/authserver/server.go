@@ -57,19 +57,15 @@ type Server interface {
 	// secrets manager client. Intended for admin / diagnostic code paths and
 	// integration tests, not for general consumers.
 	//
-	// Lifecycle: the returned handle's lifetime is bound to Server.Close —
-	// methods invoked after Close have backend-specific behavior (a
-	// MemoryStorage continues to serve reads; a RedisStorage will error on
-	// its closed connection pool).
+	// Lifecycle: this is a borrowed handle. Its lifetime is controlled by the
+	// storage owner, not Server.Close.
 	DCRStore() storage.DCRCredentialStore
 
-	// Close releases resources held by the server. It drains upstream idle
-	// connections, stops SPIFFE bundle and trusted-issuer refresh workers, and
-	// closes storage. It joins shutdown errors. Do not call it on a server whose
-	// storage is shared with another live server; retire that one with
-	// CloseIdleConnections instead.
-	// Close is safe to call repeatedly or concurrently on a server returned by
-	// New; each call returns the same shutdown result.
+	// Close releases instance-owned resources: upstream idle connections,
+	// handler metric callbacks, and SPIFFE bundle and trusted-issuer workers.
+	// It never closes borrowed storage. Stop serving and drain requests before
+	// calling Close, including when retiring an instance that shares storage.
+	// Concurrent and repeated calls return the same joined shutdown errors.
 	Close() error
 }
 
@@ -108,12 +104,8 @@ func SPIFFEX509Authorities(s Server) ([]*x509.Certificate, bool) {
 // supported the operation. Only an implementation of Server that does not come
 // from New can report false; the production type is checked at compile time.
 //
-// An embedder that reconstructs the server to change its upstream set — passing
-// the same storage.Storage and keys.KeyProvider so token and JWKS continuity is
-// preserved — must retire the superseded server with this function rather than
-// Close, because Close would also close the storage the new server is now
-// serving through. That split is the whole point: without it there is no correct
-// call to make.
+// Use Close after stopping and draining a superseded server, even when its
+// replacement shares storage. This function is only for live-safe pool draining.
 //
 // Safe to call on a server that is still serving: only idle connections are
 // closed and in-flight requests are unaffected. See upstream.IdleConnectionCloser
@@ -124,15 +116,7 @@ func SPIFFEX509Authorities(s Server) ([]*x509.Certificate, bool) {
 // holds one JWKS refresh worker pool per issuer; those are released by Close,
 // not by this function — draining them would stop the background key refresh a
 // still-serving server depends on, and this function is safe to call on a live
-// server. An embedder retiring a superseded server with this function therefore
-// keeps its JWKS workers until the storage it shares with the replacement can
-// be closed via Close.
-//
-// The same holds for the DCR re-check loops runner.EmbeddedAuthServer runs
-// when an upstream sets RegistrationProbeInterval: they are stopped by Close
-// only, because stopping them here would end recovery on a server that keeps
-// serving. A superseded server retired with this function keeps probing its
-// upstreams, and registering on a rejection, until it is closed.
+// server. Runner DCR re-check loops likewise stop only on Close, not here.
 func CloseIdleConnections(s Server) bool {
 	closer, ok := s.(idleConnectionCloser)
 	if ok {
@@ -167,12 +151,10 @@ func UpdateUpstreamClientCredentials(s Server, name string, creds upstream.Clien
 // storage.DCRCredentialStore. Use storage.NewMemoryStorage() for single-instance
 // deployments or provide a distributed storage backend for production deployments.
 //
-// If New fails, storage remains caller-owned and is not closed, but construction
-// may already have written to it. On success, Server.Close takes responsibility
-// for closing storage. Unlike New, runner.NewEmbeddedAuthServerWithStorage closes
-// supplied storage on errors after its initial nil-input checks, including config
-// validation errors. Construction failure releases any upstream pools and
-// validator workers created by the server.
+// Storage is borrowed on both success and failure; the caller must close it
+// after all servers and other users have stopped. Construction may already have
+// written to storage when it fails; it releases any upstream pools and validator
+// workers created by the server. Close releases only instance-owned resources.
 // HTTP clients injected into upstream providers remain caller-owned; the caller
 // is responsible for their connection pools and networking security policy.
 func New(ctx context.Context, cfg Config, stor storage.Storage) (Server, error) {

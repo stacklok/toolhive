@@ -209,16 +209,21 @@ func authorizeProbe(t *testing.T, serverURL, clientID string) (int, string) {
 	return response.StatusCode, ""
 }
 
-func newRedisStorage(mr *miniredis.Miniredis) storage.Storage {
-	return storage.NewRedisStorageWithClient(redis.NewClient(&redis.Options{Addr: mr.Addr()}), "cfgclient:{test}:")
+func newRedisStorage(t *testing.T, mr *miniredis.Miniredis) storage.Storage {
+	t.Helper()
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() { _ = client.Close() })
+	return storage.NewRedisStorageWithClient(client, "cfgclient:{test}:")
 }
 
 func newStorageForBackend(t *testing.T, backend string) storage.Storage {
 	t.Helper()
 	if backend == "redis" {
-		return newRedisStorage(miniredis.RunT(t))
+		return newRedisStorage(t, miniredis.RunT(t))
 	}
-	return storage.NewMemoryStorage()
+	stor := storage.NewMemoryStorage()
+	t.Cleanup(func() { _ = stor.Close() })
+	return stor
 }
 
 // configuredClients configures the scopes, the one allowed audience and the
@@ -524,7 +529,7 @@ func TestConfiguredPrivateKeyJWTClientKeepsIDAcrossKeyRotation(t *testing.T) {
 		srv, issuer, embedded, stop := startEmbeddedAuthServer(t, func(cfg *authserver.RunConfig, _ string) {
 			clients(cfg)
 			pin(cfg)
-		}, newRedisStorage(mr))
+		}, newRedisStorage(t, mr))
 		return running{url: srv.URL, issuer: issuer, embedded: embedded, stop: stop}
 	}
 	exchange := func(srv running, key assertionKey) tokenResult {
@@ -601,7 +606,7 @@ func TestConfiguredLoginClientRefreshTokenSurvivesRemovalAndReAdd(t *testing.T) 
 		srv, _, _, stop := startEmbeddedAuthServer(t, func(cfg *authserver.RunConfig, _ string) {
 			configure(cfg)
 			pin(cfg)
-		}, newRedisStorage(mr))
+		}, newRedisStorage(t, mr))
 		return srv.URL, stop
 	}
 	refresh := func(serverURL, token string) tokenResult {

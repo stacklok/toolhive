@@ -115,13 +115,17 @@ func (e URLElicitation) LogValue() slog.Value {
 //     Message(), without the URL, instead of being asked again.
 //   - Any other Modern client receives -32021 naming elicitation.url as the
 //     required capability, with Message() and without the URL.
-//   - A Legacy (2025-11-25) session receives an isError tool result whose
-//     text is Message(), without the URL.
+//   - A Legacy (2025-11-25) session whose client declared elicitation.url
+//     receives -32042 listing the elicitations, when this instance saw the
+//     session's initialize. Any other Legacy session, including a rehydrated
+//     one, receives an isError tool result whose text is Message(), without
+//     the URL.
 //
 // On resources/read and prompts/get the answer renders as a generic error.
 //
 // The type deliberately does not implement pkg/mcp.CodedError: -32042 exists
-// only in the 2025-11-25 revision, and a CodedError would render it on Modern.
+// only in the 2025-11-25 revision, and a CodedError would render it on Modern
+// and as an isError result on Legacy.
 // Error() never includes a URL, so code paths that stringify the error
 // (composite workflows, code-mode scripts, logs) cannot leak it. Format keeps
 // the URL out of fmt output too, on the pointer and on a dereferenced value,

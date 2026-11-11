@@ -6,8 +6,11 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
+
+	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 
 	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
 	"github.com/stacklok/toolhive-core/mcpcompat/server"
@@ -175,7 +178,8 @@ func (s *Server) optimizerFindToolHandler(sessionID string, opt optimizer.Optimi
 // inner tool name. The core admission seam authorizes the inner target there; a
 // denial surfaces as coreToolHandler's generic "call denied by authorization
 // policy" result (the optimizer returns it verbatim), so no authorizer detail
-// leaks. The MCP result from the optimizer is returned as-is.
+// leaks. The MCP result from the optimizer is returned as-is, and so is the inner
+// handler's -32042 URL elicitation error (legacyToolCallError).
 func (s *Server) optimizerCallToolHandler(sessionID string, opt optimizer.Optimizer) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		caller, _ := auth.IdentityFromContext(ctx)
@@ -197,6 +201,15 @@ func (s *Server) optimizerCallToolHandler(sessionID string, opt optimizer.Optimi
 
 		result, err := opt.CallTool(ctx, input)
 		if err != nil {
+			// The inner tool's handler (coreToolHandler) renders a URL
+			// elicitation answer as a bare -32042 *jsonrpc.Error for a session
+			// that accepts URL mode. Pass it through unwrapped: go-sdk drops
+			// the data of a wrapped *jsonrpc.Error, and the elicitations live
+			// there.
+			var wireErr *jsonrpc.Error
+			if errors.As(err, &wireErr) && wireErr.Code == mcp.URL_ELICITATION_REQUIRED {
+				return nil, wireErr
+			}
 			return conversion.ErrorToToolResult(fmt.Errorf("call_tool failed: %w", err)), nil
 		}
 		// Defensive parity with the legacy optimizerdec handler: the production

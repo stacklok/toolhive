@@ -357,8 +357,10 @@ spec:
                                 acceptedAudiences:
                                   description: |-
                                     AcceptedAudiences identifies this authorization server's accepted
-                                    assertion audiences. When omitted, runtime validation defaults to the
-                                    token endpoint.
+                                    assertion audiences. When omitted, plain JWT-bearer assertions must name
+                                    the token endpoint, and ID-JAG assertions may name the token endpoint or
+                                    this server's issuer identifier, unless the issuer is also an allowed
+                                    resource audience. A configured list replaces these defaults.
                                   items:
                                     maxLength: 2048
                                     minLength: 1
@@ -1427,8 +1429,10 @@ spec:
                             acceptedAudiences:
                               description: |-
                                 AcceptedAudiences identifies this authorization server's accepted
-                                assertion audiences. When omitted, runtime validation defaults to the
-                                token endpoint.
+                                assertion audiences. When omitted, plain JWT-bearer assertions must name
+                                the token endpoint, and ID-JAG assertions may name the token endpoint or
+                                this server's issuer identifier, unless the issuer is also an allowed
+                                resource audience. A configured list replaces these defaults.
                               items:
                                 maxLength: 2048
                                 minLength: 1
@@ -5885,8 +5889,10 @@ spec:
                                 acceptedAudiences:
                                   description: |-
                                     AcceptedAudiences identifies this authorization server's accepted
-                                    assertion audiences. When omitted, runtime validation defaults to the
-                                    token endpoint.
+                                    assertion audiences. When omitted, plain JWT-bearer assertions must name
+                                    the token endpoint, and ID-JAG assertions may name the token endpoint or
+                                    this server's issuer identifier, unless the issuer is also an allowed
+                                    resource audience. A configured list replaces these defaults.
                                   items:
                                     maxLength: 2048
                                     minLength: 1
@@ -6955,8 +6961,10 @@ spec:
                             acceptedAudiences:
                               description: |-
                                 AcceptedAudiences identifies this authorization server's accepted
-                                assertion audiences. When omitted, runtime validation defaults to the
-                                token endpoint.
+                                assertion audiences. When omitted, plain JWT-bearer assertions must name
+                                the token endpoint, and ID-JAG assertions may name the token endpoint or
+                                this server's issuer identifier, unless the issuer is also an allowed
+                                resource audience. A configured list replaces these defaults.
                               items:
                                 maxLength: 2048
                                 minLength: 1

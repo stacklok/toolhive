@@ -10,15 +10,14 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
-	"strings"
 
-	jwt "github.com/golang-jwt/jwt/v5"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/clientcredentials"
 
 	"github.com/stacklok/toolhive-core/env"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
+	"github.com/stacklok/toolhive/pkg/oauthproto/idjag"
 	"github.com/stacklok/toolhive/pkg/oauthproto/jwtbearer"
 	"github.com/stacklok/toolhive/pkg/oauthproto/tokenexchange"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
@@ -223,11 +222,10 @@ func (*XAAStrategy) authenticateWithClientCredentials(
 }
 
 // performIDPExchange runs the RFC 8693 token exchange at the IdP to obtain an
-// ID-JAG. It verifies the response's issued_token_type matches the ID-JAG URN
-// (draft §4.3.3) and that token_type is N_A (draft §5.2), logs a mismatch on
-// the JWT typ header, rejects an empty or unparsable assertion, and validates
-// the aud/resource binding claims against what was requested (confused-deputy
-// defence; see validateIDJAGClaims).
+// ID-JAG, then hands the response to idjag.FromExchange, which checks it
+// against what was requested (draft §4.3.4): issued_token_type, token_type,
+// a parsable JWT, and the aud and resource binding claims (confused-deputy
+// defence).
 func (*XAAStrategy) performIDPExchange(
 	ctx context.Context, idToken string, config *xaaParsedConfig,
 ) (string, error) {
@@ -250,134 +248,11 @@ func (*XAAStrategy) performIDPExchange(
 		return "", fmt.Errorf("IdP exchange: %w", err)
 	}
 
-	// Per draft-ietf-oauth-identity-assertion-authz-grant §4.3.3, the IdP MUST
-	// return issued_token_type = urn:ietf:params:oauth:token-type:id-jag. Fail
-	// loudly if it returned anything else so target grant cannot accidentally
-	// be fed a non-assertion token.
-	got, _ := token.Extra("issued_token_type").(string)
-	if got != oauthproto.TokenTypeIDJAG {
-		return "", fmt.Errorf("IdP exchange: IdP returned issued_token_type=%q, want %q", got, oauthproto.TokenTypeIDJAG)
+	assertion, err := idjag.FromExchange(token, config.targetAudience, config.targetResource)
+	if err != nil {
+		return "", fmt.Errorf("IdP exchange: %w", err)
 	}
-
-	// Per draft-ietf-oauth-identity-assertion-authz-grant §5.2, the RFC 8693
-	// response MUST carry token_type=N_A for an assertion that is not usable
-	// as a bearer token at the IdP.
-	if !strings.EqualFold(token.TokenType, "N_A") {
-		return "", fmt.Errorf("IdP exchange: IdP returned token_type=%q, want N_A (draft §5.2)", token.TokenType)
-	}
-
-	// The AccessToken field holds the ID-JAG per RFC 8693 response format.
-	assertion := token.AccessToken
-	if assertion == "" {
-		return "", fmt.Errorf("IdP exchange: IdP returned an empty ID-JAG assertion")
-	}
-
-	// Defence-in-depth: inspect the JWT typ header. The draft §3.1 MUST for
-	// typ: oauth-id-jag+jwt is on the issuer (IdP); ToolHive is the
-	// holder/presenter — the target AS validates the ID-JAG in target grant. A
-	// mismatch is deliberately logged rather than fatal; the fatal contract
-	// enforced here is issued_token_type (RFC 8693 §2.2.1, checked above).
-	parser := jwt.NewParser()
-	parsed, _, parseErr := parser.ParseUnverified(assertion, jwt.MapClaims{})
-	if parseErr != nil {
-		// A non-parseable assertion cannot carry valid aud/resource claims and
-		// therefore cannot be a valid ID-JAG. Fail fast rather than forwarding
-		// an unvalidated assertion to the target AS.
-		return "", fmt.Errorf("IdP exchange: ID-JAG assertion is not a valid JWT: %w", parseErr)
-	}
-	if typ, _ := parsed.Header["typ"].(string); !oauthproto.IsJOSEType(typ, oauthproto.JWTTypeIDJAG) {
-		slog.Debug("xaa: ID-JAG JWT typ header mismatch",
-			"got", typ, "want", oauthproto.JWTTypeIDJAG,
-		)
-	}
-	// The assertion cannot fail: ParseUnverified was called with a literal
-	// jwt.MapClaims{}, which it decodes into in place. The !ok branch is
-	// defensive.
-	claims, ok := parsed.Claims.(jwt.MapClaims)
-	if !ok {
-		return "", fmt.Errorf("IdP exchange: ID-JAG claims are not MapClaims")
-	}
-	if err := validateIDJAGClaims(claims, config.targetAudience, config.targetResource); err != nil {
-		return "", err
-	}
-
 	return assertion, nil
-}
-
-// validateIDJAGClaims checks the aud and resource claims of the returned ID-JAG
-// JWT against the values requested in the IdP exchange (draft §3.1, §5).
-//
-// Per draft §4.4.1, aud MUST be a single-value issuer identifier: either a JSON
-// string, or a JSON array containing exactly one element. A multi-element aud
-// array is malformed and is rejected (see audMatches). resource is checked
-// only when one was requested (the resource parameter is OPTIONAL per draft
-// §4.3); when one was requested, ToolHive requires the returned ID-JAG to echo
-// it — a deliberate strict-binding policy, stricter than the draft, which
-// leaves resource OPTIONAL in the response even when requested.
-//
-// This is defence-in-depth against token misbinding: if the IdP mints an ID-JAG
-// for a different audience/resource, the target AS should reject it — but
-// ToolHive fails fast rather than forwarding a mismatched assertion.
-//
-// Per RFC 7519 §4.1.3, the aud claim may be a string or an array of strings;
-// golang-jwt/v5 decodes a JSON array as []interface{} whose elements are
-// strings. resource legitimately allows an array of URIs per draft §3.1, so a
-// membership check (claimContainsString) is used there; aud does not permit
-// multiple values, so a dedicated single-value check (audMatches) is used
-// instead.
-func validateIDJAGClaims(claims jwt.MapClaims, wantAudience, wantResource string) error {
-	// aud is REQUIRED and single-valued per draft §4.4.1.
-	if !audMatches(claims, wantAudience) {
-		return fmt.Errorf("IdP exchange: ID-JAG aud claim %v does not match requested audience %q", claims["aud"], wantAudience)
-	}
-
-	// Deliberately stricter than the draft: resource is OPTIONAL in the ID-JAG
-	// even when requested, but ToolHive rejects an ID-JAG that omits it once
-	// the operator has configured a resource to bind to.
-	if wantResource != "" && !claimContainsString(claims, "resource", wantResource) {
-		return fmt.Errorf(
-			"IdP exchange: ID-JAG resource claim %v does not contain requested resource %q",
-			claims["resource"], wantResource,
-		)
-	}
-
-	return nil
-}
-
-// audMatches reports whether the aud claim is a single-value issuer identifier
-// equal to want, per draft §4.4.1: either a JSON string, or a JSON array
-// containing exactly one element. Any other shape — missing, multi-element
-// array, empty array, wrong type, or a non-string element — is rejected.
-func audMatches(claims jwt.MapClaims, want string) bool {
-	switch v := claims["aud"].(type) {
-	case string:
-		return v == want
-	case []interface{}:
-		if len(v) != 1 {
-			return false
-		}
-		s, ok := v[0].(string)
-		return ok && s == want
-	default:
-		return false
-	}
-}
-
-// claimContainsString reports whether the named claim contains want. Per RFC
-// 7519 the claim may be a single string or an array; golang-jwt/v5 decodes JSON
-// arrays as []interface{} whose elements are strings.
-func claimContainsString(claims jwt.MapClaims, key, want string) bool {
-	switch v := claims[key].(type) {
-	case string:
-		return v == want
-	case []interface{}:
-		for _, e := range v {
-			if s, ok := e.(string); ok && s == want {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 // performTargetGrant runs the RFC 7523 JWT Bearer grant at the target AS using

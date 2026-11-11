@@ -129,8 +129,11 @@ type JWTBearerGrantPolicy struct {
 	// authorization server for this grant; it is NOT a resource/API
 	// identifier — a bare resource audience is deliberately not accepted
 	// here, that would let any RFC 8707 resource-scoped token satisfy the
-	// grant instead of only tokens minted for this AS. Defaults to
-	// [tokenEndpoint] when empty, preserving prior exact-match behavior.
+	// grant instead of only tokens minted for this AS. When empty, the plain
+	// JWT-bearer grant accepts the token endpoint, and the ID-JAG grant accepts
+	// the token endpoint and this server's issuer identifier, unless the issuer
+	// is also an allowed resource audience. A configured list replaces both
+	// defaults.
 	AcceptedAudiences []string `json:"accepted_audiences,omitempty" yaml:"accepted_audiences,omitempty"`
 
 	maxAssertionAge time.Duration
@@ -667,15 +670,16 @@ func (v *MultiIssuerTokenValidator) Validate(ctx context.Context, rawToken strin
 // assertion's authorization policy is separate from delegation policy.
 //
 // The assertion audience must intersect the issuer's configured
-// JWTBearerGrant.AcceptedAudiences, or just tokenEndpoint when that is unset.
+// JWTBearerGrant.AcceptedAudiences, or the caller's defaultAudiences when that
+// is unset.
 // The caller is responsible for the phase-specific subject binding, maximum
 // age, replay, and issuance policy after this cryptographic verification
 // succeeds.
 func (v *MultiIssuerTokenValidator) ValidateJWTBearerAssertion(
-	ctx context.Context, rawToken, tokenEndpoint string,
+	ctx context.Context, rawToken string, defaultAudiences []string,
 ) (*ValidatedClaims, error) {
-	if tokenEndpoint == "" {
-		return nil, errors.New("token endpoint must not be empty")
+	if len(defaultAudiences) == 0 || slices.Contains(defaultAudiences, "") {
+		return nil, errors.New("default audiences must not be empty")
 	}
 
 	issuer, err := peekIssuer(rawToken)
@@ -699,7 +703,7 @@ func (v *MultiIssuerTokenValidator) ValidateJWTBearerAssertion(
 		return nil, err
 	}
 
-	acceptedAudiences := []string{tokenEndpoint}
+	acceptedAudiences := defaultAudiences
 	if issuerConfig.JWTBearerGrant != nil && len(issuerConfig.JWTBearerGrant.AcceptedAudiences) > 0 {
 		acceptedAudiences = issuerConfig.JWTBearerGrant.AcceptedAudiences
 	}

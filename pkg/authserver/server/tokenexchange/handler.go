@@ -326,7 +326,7 @@ func (h *Handler) PopulateTokenEndpointResponse(
 	}
 
 	// Per RFC 8693 Section 2.2.1, the response MUST include issued_token_type.
-	responder.SetExtra("issued_token_type", oauthproto.TokenTypeAccessToken)
+	responder.SetExtra(oauthproto.ParamIssuedTokenType, oauthproto.TokenTypeAccessToken)
 
 	h.echoAuthorizationDetails(requester, responder)
 

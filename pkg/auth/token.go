@@ -31,6 +31,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
 	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
+	"github.com/stacklok/toolhive/pkg/oauthproto/idjag"
 )
 
 // TokenIntrospector defines the interface for token introspection providers
@@ -908,7 +909,7 @@ func validateTokenHeader(token *jwt.Token) (string, error) {
 	// get one accepted here when no audience is configured. This runs in the
 	// key function, before the signature is verified; that is safe because the
 	// check can only refuse a token.
-	if typ, _ := token.Header["typ"].(string); oauthproto.IsJOSEType(typ, oauthproto.JWTTypeIDJAG) {
+	if typ, _ := token.Header["typ"].(string); idjag.IsIDJAG(typ) {
 		return "", errors.New("an ID-JAG is not accepted as an access token")
 	}
 

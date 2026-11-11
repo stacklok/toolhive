@@ -101,6 +101,16 @@ const (
 	TokenTypeRefreshToken = "urn:ietf:params:oauth:token-type:refresh_token"
 )
 
+// TokenTypeNotApplicable is the RFC 6749 token_type for a response whose
+// access_token member is not an access token (RFC 8693 Section 2.2.1), that is,
+// a token that cannot be used as a bearer access token. The ID-JAG draft
+// requires it on the response that carries an ID-JAG (Section 4.3.4).
+const TokenTypeNotApplicable = "N_A"
+
+// ParamIssuedTokenType is the name of the token exchange response parameter that
+// carries the type of the issued token (RFC 8693 Section 2.2.1).
+const ParamIssuedTokenType = "issued_token_type" //nolint:gosec // G101: RFC 8693 response parameter name, not a credential
+
 // Grant type URNs for token exchange protocols.
 //
 //nolint:gosec // G101: this is an RFC 8693 grant-type URN identifier, not a credential

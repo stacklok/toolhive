@@ -553,8 +553,10 @@ type JWTBearerGrantConfig struct {
 	SubjectBindings []JWTBearerSubjectBinding `json:"subjectBindings"`
 
 	// AcceptedAudiences identifies this authorization server's accepted
-	// assertion audiences. When omitted, runtime validation defaults to the
-	// token endpoint.
+	// assertion audiences. When omitted, plain JWT-bearer assertions must name
+	// the token endpoint, and ID-JAG assertions may name the token endpoint or
+	// this server's issuer identifier, unless the issuer is also an allowed
+	// resource audience. A configured list replaces these defaults.
 	// +kubebuilder:validation:MaxItems=50
 	// +kubebuilder:validation:items:MinLength=1
 	// +kubebuilder:validation:items:MaxLength=2048

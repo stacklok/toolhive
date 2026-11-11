@@ -8,7 +8,7 @@ import (
 	"errors"
 	"fmt"
 
-	"go.yaml.in/yaml/v3"
+	"github.com/stacklok/toolhive/pkg/yamlutil"
 )
 
 // frontmatterDelimiter is the YAML frontmatter delimiter.
@@ -85,60 +85,16 @@ func extractFrontmatter(content []byte) (*SkillFrontmatter, []byte, error) {
 	body := rest[endIdx+len(frontmatterDelimiter):]
 	body = bytes.TrimPrefix(body, []byte("\n"))
 
-	// Decode in two steps. yaml.Unmarshal straight into a struct checks
-	// mapping keys for duplicates pairwise and formats an error for every
-	// duplicate pair, so a frontmatter of repeated keys costs quadratic time
-	// and memory (minutes for 64KB). Parsing into a yaml.Node skips that
-	// check; rejecting duplicates in linear time first means the struct
-	// decode below never hits the expensive error path.
-	var doc yaml.Node
-	if err := yaml.Unmarshal(frontmatterBytes, &doc); err != nil {
-		return nil, nil, fmt.Errorf("%w: %v", ErrInvalidFrontmatter, err)
-	}
-	if err := checkDuplicateKeys(&doc); err != nil {
-		return nil, nil, fmt.Errorf("%w: %v", ErrInvalidFrontmatter, err)
-	}
-
+	// yamlutil.Unmarshal rejects duplicate keys in linear time before
+	// decoding; yaml.Unmarshal's own check is quadratic on repeated keys.
 	var fm SkillFrontmatter
-	if err := doc.Decode(&fm); err != nil {
+	if err := yamlutil.Unmarshal(frontmatterBytes, &fm); err != nil {
 		return nil, nil, fmt.Errorf("%w: %v", ErrInvalidFrontmatter, err)
 	}
 
 	return &fm, body, nil
 }
 
-// checkDuplicateKeys rejects any mapping in the tree that defines the same
-// key twice, matching the yaml package's own rule (same node kind and value)
-// in linear time. Alias nodes are not followed: the node they point to is
-// already part of the tree where its anchor is defined.
-func checkDuplicateKeys(n *yaml.Node) error {
-	if n.Kind == yaml.MappingNode {
-		type mapKey struct {
-			kind  yaml.Kind
-			value string
-		}
-		seen := make(map[mapKey]int, len(n.Content)/2)
-		for i := 0; i+1 < len(n.Content); i += 2 {
-			k := n.Content[i]
-			mk := mapKey{kind: k.Kind, value: k.Value}
-			if line, ok := seen[mk]; ok {
-				return fmt.Errorf("line %d: mapping key %q already defined at line %d", k.Line, k.Value, line)
-			}
-			seen[mk] = k.Line
-		}
-	}
-	if n.Kind == yaml.AliasNode {
-		return nil
-	}
-	for _, c := range n.Content {
-		if err := checkDuplicateKeys(c); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// toDependencies converts a list of OCI reference strings to Dependencies.
 func toDependencies(refs []string) ([]Dependency, error) {
 	if len(refs) == 0 {
 		return nil, nil

@@ -25,6 +25,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/authserver/server/session"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
+	"github.com/stacklok/toolhive/pkg/oauthproto/dcrkey"
 )
 
 // nullMarker is used to store nil upstream tokens in Redis.
@@ -2224,7 +2225,7 @@ func (s *storedDCRCredentials) toDCRCredentials() *DCRCredentials {
 		clientSecretExpiresAt = time.Unix(s.ClientSecretExpiresAt, 0)
 	}
 	return &DCRCredentials{
-		Key: DCRKey{
+		Key: dcrkey.Key{
 			Issuer:      s.KeyIssuer,
 			UpstreamID:  s.KeyUpstreamID,
 			RedirectURI: s.KeyRedirectURI,
@@ -2589,7 +2590,7 @@ func (s *RedisStorage) UpdateDCRCredentialsIfUnchanged(
 // any stored row because StoreDCRCredentialsIfAbsent rejects such keys, so a Get
 // against one is a normal miss — ErrNotFound — matching
 // MemoryStorage.GetDCRCredentials and the DCRCredentialStore interface contract.
-func (s *RedisStorage) GetDCRCredentials(ctx context.Context, key DCRKey) (*DCRCredentials, error) {
+func (s *RedisStorage) GetDCRCredentials(ctx context.Context, key dcrkey.Key) (*DCRCredentials, error) {
 	redisKey := redisDCRKey(s.keyPrefix, key)
 	data, err := s.client.Get(ctx, redisKey).Bytes()
 	if err != nil {

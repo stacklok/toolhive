@@ -21,9 +21,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
+	"github.com/stacklok/toolhive/pkg/oauthproto/dcrkey"
 )
 
 // dcrTestHandlerConfig controls the behaviour of newDCRTestServer.
@@ -172,7 +172,7 @@ func TestResolveDCRCredentials_CacheHitShortCircuits(t *testing.T) {
 		Issuer:      issuer,
 		UpstreamID:  issuer,
 		RedirectURI: redirectURI,
-		ScopesHash:  storage.ScopesHash([]string{"openid", "profile"}),
+		ScopesHash:  dcrkey.ScopesHash([]string{"openid", "profile"}),
 	}
 	preloaded := &Resolution{
 		ClientID:              "preloaded-id",
@@ -244,7 +244,7 @@ func TestResolveDCRCredentials_RotationKeyForcesFreshRegistration(t *testing.T) 
 		Issuer:      issuer,
 		UpstreamID:  issuer,
 		RedirectURI: issuer + "/oauth/callback",
-		ScopesHash:  storage.ScopesHash([]string{"openid"}),
+		ScopesHash:  dcrkey.ScopesHash([]string{"openid"}),
 	}
 	rotatedKey := baseKey
 	rotatedKey.RotationKey = "r1"
@@ -267,7 +267,7 @@ func TestFlightKeyOf_RotationKey(t *testing.T) {
 		Issuer:      "https://thv.example.com",
 		UpstreamID:  "https://idp.example.com",
 		RedirectURI: "https://thv.example.com/oauth/callback",
-		ScopesHash:  storage.ScopesHash([]string{"openid"}),
+		ScopesHash:  dcrkey.ScopesHash([]string{"openid"}),
 	}
 	legacy := flightKeyOf(key)
 	assert.Equal(t, "23:https://thv.example.com:23:https://idp.example.com:38:https://thv.example.com/oauth/callback:"+key.ScopesHash, legacy)
@@ -320,7 +320,7 @@ func TestResolveDCRCredentials_RegistersOnCacheMiss(t *testing.T) {
 	// Cache was populated. UpstreamID is the issuer origin the resolver
 	// derives from the oauth-authorization-server discovery URL.
 	cached, ok, err := cache.Get(context.Background(),
-		Key{Issuer: issuer, UpstreamID: issuer, RedirectURI: issuer + "/oauth/callback", ScopesHash: storage.ScopesHash([]string{"openid", "profile"})})
+		Key{Issuer: issuer, UpstreamID: issuer, RedirectURI: issuer + "/oauth/callback", ScopesHash: dcrkey.ScopesHash([]string{"openid", "profile"})})
 	require.NoError(t, err)
 	require.True(t, ok)
 	assert.Equal(t, "test-client-id", cached.ClientID)
@@ -385,7 +385,7 @@ func TestResolveDCRCredentials_DistinctUpstreamsSameScopesDoNotCollide(t *testin
 	// Both resolutions coexist in the cache under keys that differ only by
 	// UpstreamID (shared Issuer, RedirectURI, and scopes hash).
 	redirectURI := localIssuer + "/oauth/callback"
-	scopesHash := storage.ScopesHash([]string{"openid", "profile"})
+	scopesHash := dcrkey.ScopesHash([]string{"openid", "profile"})
 	cachedA, okA, err := cache.Get(ctx,
 		Key{Issuer: localIssuer, UpstreamID: serverA.URL, RedirectURI: redirectURI, ScopesHash: scopesHash})
 	require.NoError(t, err)
@@ -529,7 +529,7 @@ func TestResolveDCRCredentials_DistinctRegistrationEndpointsDoNotCollide(t *test
 	// The two entries coexist under keys whose only differing component is
 	// UpstreamID (the registration endpoint URL).
 	redirectURI := localIssuer + "/oauth/callback"
-	scopesHash := storage.ScopesHash([]string{"openid", "profile"})
+	scopesHash := dcrkey.ScopesHash([]string{"openid", "profile"})
 	_, okA, err := cache.Get(ctx,
 		Key{Issuer: localIssuer, UpstreamID: serverA.URL + "/register", RedirectURI: redirectURI, ScopesHash: scopesHash})
 	require.NoError(t, err)

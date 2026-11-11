@@ -857,12 +857,8 @@ func resolveDCRCredentials(
 
 	store := dcr.NewInMemoryStore()
 	defer func() {
-		// Close returns nil today (inMemoryStore.Close is sync.Once-guarded
-		// over an in-memory map), but a future change to the underlying
-		// MemoryStorage.Close — e.g., timeout-aware cleanup goroutine
-		// teardown — could surface a real error. Log it at debug rather
-		// than dropping it so a regression is visible without elevating
-		// every CLI-flow shutdown to WARN.
+		// Close is a no-op for this operation-scoped map. Keep the lifecycle
+		// call explicit for callers of CloseableCredentialStore.
 		if err := store.Close(); err != nil {
 			slog.Debug("dcr: in-memory store close failed", "error", err)
 		}

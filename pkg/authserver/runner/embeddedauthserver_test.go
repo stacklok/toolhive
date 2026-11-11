@@ -44,6 +44,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver/server/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
+	"github.com/stacklok/toolhive/pkg/oauthproto/dcrkey"
 )
 
 func TestCreateKeyProvider(t *testing.T) {
@@ -2983,17 +2984,17 @@ func TestBuildUpstreamConfigs_DCR(t *testing.T) {
 		assert.Equal(t, "dcr-client-id", got[0].OAuth2Config.ClientID)
 		assert.Equal(t, "dcr-client-secret", got[0].OAuth2Config.ClientSecret)
 
-		// Store now contains the resolution under the canonical storage.DCRKey.
+		// Store now contains the resolution under the canonical dcrkey.Key.
 		redirectURI := server.URL + "/oauth/callback"
-		key := storage.DCRKey{
+		key := dcrkey.Key{
 			Issuer:      server.URL,
 			UpstreamID:  server.URL,
 			RedirectURI: redirectURI,
-			ScopesHash:  storage.ScopesHash([]string{"openid", "profile"}),
+			ScopesHash:  dcrkey.ScopesHash([]string{"openid", "profile"}),
 		}
 		cached, ok, err := store.Get(context.Background(), key)
 		require.NoError(t, err)
-		require.True(t, ok, "store should contain the DCR resolution keyed by storage.DCRKey")
+		require.True(t, ok, "store should contain the DCR resolution keyed by dcrkey.Key")
 		assert.Equal(t, "dcr-client-id", cached.ClientID)
 
 		// First call must have hit the mock AS at least once (metadata +
@@ -3120,7 +3121,7 @@ func TestBuildUpstreamConfigs_DCRConfiguredAuthMethod(t *testing.T) {
 // inside the constructor. It verifies that (a) the constructor wires
 // the shared storage.DCRCredentialStore into the DCR resolver (via the
 // dcr.CredentialStore adapter passed to buildUpstreamConfigs), (b) that
-// store is populated with the canonical storage.DCRKey after boot, and
+// store is populated with the canonical dcrkey.Key after boot, and
 // (c) the caller's original RunConfig.Upstreams[i] slice element is
 // unchanged.
 //
@@ -3174,16 +3175,16 @@ func TestNewEmbeddedAuthServer_DCRBoot(t *testing.T) {
 		"DCR boot should have issued network I/O to the mock AS")
 
 	// The store on the EmbeddedAuthServer contains the canonical
-	// storage.DCRKey for this upstream — the accessor delegates to the
+	// dcrkey.Key for this upstream — the accessor delegates to the
 	// same storage.DCRCredentialStore createStorage produced, so a
 	// successful boot persisted the resolution there directly (no
 	// separate in-memory store was created).
 	redirectURI := server.URL + "/oauth/callback"
-	key := storage.DCRKey{
+	key := dcrkey.Key{
 		Issuer:      server.URL,
 		UpstreamID:  server.URL,
 		RedirectURI: redirectURI,
-		ScopesHash:  storage.ScopesHash([]string{"openid", "profile"}),
+		ScopesHash:  dcrkey.ScopesHash([]string{"openid", "profile"}),
 	}
 	cached, err := dcrStore.GetDCRCredentials(context.Background(), key)
 	require.NoError(t, err, "DCR store on EmbeddedAuthServer must hold the DCR resolution")
@@ -3542,11 +3543,11 @@ func TestEmbeddedAuthServer_DCRStoreContainsResolvedCredentials(t *testing.T) {
 	// replica and cross-restart reuse paths depend on: that the
 	// resolution lives in storage, not in process-local cache state.
 	redirectURI := server.URL + "/oauth/callback"
-	key := storage.DCRKey{
+	key := dcrkey.Key{
 		Issuer:      server.URL,
 		UpstreamID:  server.URL,
 		RedirectURI: redirectURI,
-		ScopesHash:  storage.ScopesHash([]string{"openid", "profile"}),
+		ScopesHash:  dcrkey.ScopesHash([]string{"openid", "profile"}),
 	}
 	creds, err := persistentStore.GetDCRCredentials(context.Background(), key)
 	require.NoError(t, err,

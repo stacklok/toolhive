@@ -19,11 +19,37 @@ import (
 // keys costs quadratic time and memory (minutes for 64KB). Parsing into a
 // yaml.Node skips that check.
 //
-// Decoding the returned node into a Go value still compares every pair of
-// keys in each mapping it visits, which stays quadratic in the number of
-// distinct keys. Callers handling large untrusted input should read the
-// values they need from the node tree instead of decoding it.
+// Parse does not limit the number of keys in a mapping. Decoding the returned
+// node into a Go value compares every pair of keys in each mapping it visits,
+// which is quadratic in the number of distinct keys, so read the values you
+// need from the node tree, or use Unmarshal, which caps keys per mapping.
 func Parse(data []byte) (*yaml.Node, error) {
+	return parse(data, 0)
+}
+
+// MaxMappingKeys is the largest number of keys Unmarshal accepts in a single
+// mapping. The yaml decoder compares every pair of keys in a mapping, so this
+// bounds decoding to about MaxMappingKeys comparisons per key. Real documents
+// stay far below it: the largest mapping in the MCP Registry OpenAPI spec has
+// 30 keys, and large public OpenAPI specs have around a thousand paths.
+const MaxMappingKeys = 4096
+
+// Unmarshal decodes YAML data into out like yaml.Unmarshal, with two extra
+// checks done in linear time before decoding: duplicate mapping keys are
+// rejected (the same rule yaml.Unmarshal applies), and so is any mapping with
+// more than MaxMappingKeys keys. Together they keep decoding time
+// proportional to the input size.
+func Unmarshal(data []byte, out any) error {
+	doc, err := parse(data, MaxMappingKeys)
+	if err != nil || doc == nil {
+		return err
+	}
+	return doc.Decode(out)
+}
+
+// parse parses data into a node tree and checks it with checkMappings.
+// It returns nil for an empty document.
+func parse(data []byte, maxKeys int) (*yaml.Node, error) {
 	var doc yaml.Node
 	if err := yaml.Unmarshal(data, &doc); err != nil {
 		return nil, err
@@ -31,30 +57,23 @@ func Parse(data []byte) (*yaml.Node, error) {
 	if doc.Kind == 0 {
 		return nil, nil
 	}
-	if err := checkDuplicateKeys(&doc); err != nil {
+	if err := checkMappings(&doc, maxKeys); err != nil {
 		return nil, err
 	}
 	return &doc, nil
 }
 
-// Unmarshal decodes YAML data into out like yaml.Unmarshal, but rejects
-// duplicate mapping keys in linear time first, so a document of repeated
-// keys cannot trigger the yaml package's quadratic duplicate-key reporting.
-// See Parse for the cost that remains for many distinct keys.
-func Unmarshal(data []byte, out any) error {
-	doc, err := Parse(data)
-	if err != nil || doc == nil {
-		return err
-	}
-	return doc.Decode(out)
-}
-
-// checkDuplicateKeys rejects any mapping in the tree that defines the same
-// key twice, matching the yaml package's own rule (same node kind and value).
-// Alias nodes are not followed: the node they point to is checked where it is
-// defined, and following aliases would revisit shared subtrees.
-func checkDuplicateKeys(n *yaml.Node) error {
+// checkMappings rejects any mapping in the tree that defines the same key
+// twice, matching the yaml package's own rule (same node kind and value), in
+// linear time. If maxKeys is positive, it also rejects any mapping with more
+// than maxKeys keys. Alias nodes are not followed: the node they point to is
+// checked where it is defined, and following aliases would revisit shared
+// subtrees.
+func checkMappings(n *yaml.Node, maxKeys int) error {
 	if n.Kind == yaml.MappingNode {
+		if maxKeys > 0 && len(n.Content)/2 > maxKeys {
+			return fmt.Errorf("line %d: mapping has more than %d keys", n.Line, maxKeys)
+		}
 		type mapKey struct {
 			kind  yaml.Kind
 			value string
@@ -73,7 +92,7 @@ func checkDuplicateKeys(n *yaml.Node) error {
 		return nil
 	}
 	for _, c := range n.Content {
-		if err := checkDuplicateKeys(c); err != nil {
+		if err := checkMappings(c, maxKeys); err != nil {
 			return err
 		}
 	}

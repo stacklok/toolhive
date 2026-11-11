@@ -4,6 +4,7 @@
 package yamlutil
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -21,6 +22,9 @@ func TestParse_DuplicateKeys(t *testing.T) {
 		name    string
 		data    string
 		wantErr string
+		// unmarshalErr overrides wantErr for Unmarshal, which also caps
+		// the number of keys per mapping.
+		unmarshalErr string
 	}{
 		{
 			name:    "duplicate top-level key",
@@ -50,14 +54,16 @@ func TestParse_DuplicateKeys(t *testing.T) {
 		{
 			// A document of nothing but repeated keys takes tens of seconds
 			// through yaml.Unmarshal (quadratic duplicate-key reporting).
-			name:    "many repeated block keys",
-			data:    strings.Repeat("a: \n", size/4),
-			wantErr: `mapping key "a" already defined`,
+			name:         "many repeated block keys",
+			data:         strings.Repeat("a: \n", size/4),
+			wantErr:      `mapping key "a" already defined`,
+			unmarshalErr: "mapping has more than",
 		},
 		{
-			name:    "many repeated flow keys",
-			data:    "m: {" + strings.Repeat("a: ,", size/4) + "}\n",
-			wantErr: `mapping key "a" already defined`,
+			name:         "many repeated flow keys",
+			data:         "m: {" + strings.Repeat("a: ,", size/4) + "}\n",
+			wantErr:      `mapping key "a" already defined`,
+			unmarshalErr: "mapping has more than",
 		},
 	}
 
@@ -69,10 +75,14 @@ func TestParse_DuplicateKeys(t *testing.T) {
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), tt.wantErr)
 
+			want := tt.wantErr
+			if tt.unmarshalErr != "" {
+				want = tt.unmarshalErr
+			}
 			var out map[string]any
 			err = Unmarshal([]byte(tt.data), &out)
 			require.Error(t, err)
-			assert.Contains(t, err.Error(), tt.wantErr)
+			assert.Contains(t, err.Error(), want)
 		})
 	}
 }
@@ -116,6 +126,62 @@ func TestUnmarshal(t *testing.T) {
 	require.NoError(t, Unmarshal([]byte(data), &out))
 	assert.Equal(t, "s", out.Name)
 	assert.Equal(t, map[string]string{"author": "x", "team": "z"}, out.Metadata)
+}
+
+// distinctKeys returns a block mapping of n distinct keys, or of distinct
+// keys filling about size bytes when n is 0.
+func distinctKeys(n, size int) string {
+	var b strings.Builder
+	for i := 0; (n > 0 && i < n) || (n == 0 && b.Len() < size); i++ {
+		fmt.Fprintf(&b, "k%d: \n", i)
+	}
+	return b.String()
+}
+
+func TestUnmarshal_MappingKeyLimit(t *testing.T) {
+	t.Parallel()
+
+	t.Run("at limit decodes", func(t *testing.T) {
+		t.Parallel()
+
+		var out map[string]any
+		require.NoError(t, Unmarshal([]byte(distinctKeys(MaxMappingKeys, 0)), &out))
+		assert.Len(t, out, MaxMappingKeys)
+	})
+
+	t.Run("one over limit is rejected", func(t *testing.T) {
+		t.Parallel()
+
+		var out map[string]any
+		err := Unmarshal([]byte(distinctKeys(MaxMappingKeys+1, 0)), &out)
+		require.ErrorContains(t, err, fmt.Sprintf("mapping has more than %d keys", MaxMappingKeys))
+	})
+
+	t.Run("nested mapping over limit is rejected", func(t *testing.T) {
+		t.Parallel()
+
+		nested := "a:\n" + strings.ReplaceAll(distinctKeys(MaxMappingKeys+1, 0), "k", "  k")
+		var out map[string]any
+		err := Unmarshal([]byte(nested), &out)
+		require.ErrorContains(t, err, "line 2: mapping has more than")
+	})
+
+	t.Run("1 MiB of distinct keys in one mapping is rejected", func(t *testing.T) {
+		t.Parallel()
+
+		// Decoding this took about 35s before the limit.
+		var out map[string]any
+		err := Unmarshal([]byte(distinctKeys(0, 1<<20)), &out)
+		require.ErrorContains(t, err, "mapping has more than")
+	})
+
+	t.Run("Parse does not apply the limit", func(t *testing.T) {
+		t.Parallel()
+
+		doc, err := Parse([]byte(distinctKeys(0, 1<<20)))
+		require.NoError(t, err)
+		require.NotNil(t, MappingValue(doc, "k0"))
+	})
 }
 
 func TestMappingValue(t *testing.T) {

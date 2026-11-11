@@ -3139,6 +3139,9 @@ func TestTokenExchangeHandler_PopulateTokenEndpointResponse(t *testing.T) {
 		require.Error(t, err)
 		assert.True(t, errors.Is(err, fosite.ErrInvalidGrant),
 			"expected ErrInvalidGrant, got: %v", err)
+		var rfcErr *fosite.RFC6749Error
+		require.ErrorAs(t, err, &rfcErr)
+		assert.Equal(t, "The delegated token's bound lifetime has already elapsed.", rfcErr.HintField)
 		assert.Empty(t, responder.GetAccessToken())
 		assert.Nil(t, responder.GetExtra("authorization_details"))
 		assert.Empty(t, storage.createdSig)

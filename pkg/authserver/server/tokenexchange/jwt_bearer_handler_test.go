@@ -927,3 +927,46 @@ func TestJWTBearerHandler_ResourceClaimIsNotADefault(t *testing.T) {
 	require.True(t, errors.As(err, &oauthErr))
 	assert.Equal(t, requestedResourceHint, oauthErr.HintField)
 }
+
+func TestJWTBearerHandler_PopulateFailsClosedOnElapsedExpiry(t *testing.T) {
+	t.Parallel()
+
+	resolvedIssuers, err := ResolveJWTBearerGrantPolicies([]TrustedIssuer{{
+		IssuerURL:              "https://idp.example.com",
+		AllowedDelegateClients: []string{anyDelegateClient},
+		JWTBearerGrant: &JWTBearerGrantPolicy{
+			MaxAssertionAge: time.Hour.String(),
+			SubjectBindings: []JWTBearerSubjectBinding{
+				{Subject: "ext-user", AllowedResources: []string{"https://mcp.example.com"}},
+			},
+		},
+	}})
+	require.NoError(t, err)
+
+	tokenStorage := &mockAccessTokenStorage{}
+	handler, err := newJWTBearerIssuanceHandler(
+		&testJWTBearerAssertionValidator{},
+		testTokenEndpoint,
+		testAssertionJWTConsumer{},
+		&fosite.Config{AccessTokenLifespan: time.Hour},
+		&mockAccessTokenStrategy{},
+		tokenStorage,
+		resolvedIssuers,
+	)
+	require.NoError(t, err)
+
+	sess := session.New("ext-user", "", "client", session.UserClaims{})
+	sess.SetExpiresAt(fosite.AccessToken, time.Now().Add(-time.Second))
+	req := fosite.NewAccessRequest(sess)
+	req.GrantTypes = fosite.Arguments{oauthproto.GrantTypeJWTBearer}
+	responder := fosite.NewAccessResponse()
+
+	err = handler.PopulateTokenEndpointResponse(context.Background(), req, responder)
+
+	require.ErrorIs(t, err, fosite.ErrInvalidGrant)
+	var oauthErr *fosite.RFC6749Error
+	require.ErrorAs(t, err, &oauthErr)
+	assert.Equal(t, "The JWT bearer assertion has expired.", oauthErr.HintField)
+	assert.Empty(t, responder.GetAccessToken())
+	assert.Empty(t, tokenStorage.createdSig)
+}

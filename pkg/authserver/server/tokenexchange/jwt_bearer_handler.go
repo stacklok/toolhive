@@ -180,8 +180,14 @@ func (h *JWTBearerHandler) HandleTokenEndpointRequest(ctx context.Context, reque
 	if h.consumer == nil {
 		return errorsx.WithStack(fosite.ErrServerError.WithHint("The JWT-bearer grant is not fully configured."))
 	}
-	resource, err := validateJWTBearerPolicy(requester.GetRequestForm(), claims, policy)
+	if err := checkAssertionMaxAge(claims, policy); err != nil {
+		return err
+	}
+	resource, err := requestedResource(requester.GetRequestForm())
 	if err != nil {
+		return err
+	}
+	if err := checkSubjectBinding(claims, policy, resource); err != nil {
 		return err
 	}
 	// Consume before issuing. This intentionally fails closed: if issuance fails
@@ -225,10 +231,17 @@ func (h *JWTBearerHandler) HandleTokenEndpointRequest(ctx context.Context, reque
 	return nil
 }
 
-func validateJWTBearerPolicy(form url.Values, claims *ValidatedClaims, policy *JWTBearerGrantPolicy) (string, error) {
+// checkAssertionMaxAge rejects assertions whose lifetime exceeds the policy maximum.
+func checkAssertionMaxAge(claims *ValidatedClaims, policy *JWTBearerGrantPolicy) error {
 	if claims.IssuedAt.IsZero() || claims.Expiry.IsZero() || claims.Expiry.Sub(claims.IssuedAt) > policy.maxAssertionAge {
-		return "", errorsx.WithStack(fosite.ErrInvalidGrant.WithHint("The JWT bearer assertion exceeds the configured maximum age."))
+		return errorsx.WithStack(fosite.ErrInvalidGrant.WithHint("The JWT bearer assertion exceeds the configured maximum age."))
 	}
+	return nil
+}
+
+// requestedResource returns the single resource parameter of the request. Each assertion profile
+// chooses its resource, so this is the choice for plain RFC 7523 and other profiles may differ.
+func requestedResource(form url.Values) (string, error) {
 	resources, present := form["resource"]
 	if !present || len(resources) != 1 || resources[0] == "" {
 		return "", errorsx.WithStack(fosite.ErrInvalidRequest.WithHint(
@@ -237,20 +250,25 @@ func validateJWTBearerPolicy(form url.Values, claims *ValidatedClaims, policy *J
 	if err := server.ValidateAudienceURI(resources[0]); err != nil {
 		return "", errorsx.WithStack(err)
 	}
+	return resources[0], nil
+}
+
+// checkSubjectBinding requires the assertion subject to be bound to the given resource.
+func checkSubjectBinding(claims *ValidatedClaims, policy *JWTBearerGrantPolicy, resource string) error {
 	for _, binding := range policy.SubjectBindings {
 		if binding.Subject == claims.Subject {
-			for _, resource := range binding.AllowedResources {
-				if resource == resources[0] {
-					return resource, nil
+			for _, allowed := range binding.AllowedResources {
+				if allowed == resource {
+					return nil
 				}
 			}
-			return "", errorsx.WithStack(&fosite.RFC6749Error{
+			return errorsx.WithStack(&fosite.RFC6749Error{
 				ErrorField: "invalid_target",
 				CodeField:  http.StatusBadRequest,
 			})
 		}
 	}
-	return "", errorsx.WithStack(fosite.ErrInvalidGrant.WithHint(
+	return errorsx.WithStack(fosite.ErrInvalidGrant.WithHint(
 		"The JWT bearer assertion subject is not configured for this grant."))
 }
 

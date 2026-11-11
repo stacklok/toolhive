@@ -425,3 +425,18 @@ func TestIDJAGIssuanceFactory_RequiresSharedValidator(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "shared validator")
 }
+
+func TestIDJAGHandler_MaxAgeIsCheckedBeforeResource(t *testing.T) {
+	t.Parallel()
+
+	claims := validIDJAGClaims()
+	claims.IssuedAt = time.Now().Add(-2 * time.Hour)
+	h := newIDJAGTestHandler(t, &testJWTBearerAssertionValidator{claims: claims}, &recordingAssertionConsumer{})
+	req := newIDJAGRequest(t, newTestJWKS(t), idJAGTestClientID)
+	delete(req.Form, "resource")
+
+	err := h.HandleTokenEndpointRequest(context.Background(), req)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, fosite.ErrInvalidGrant)
+	assert.NotErrorIs(t, err, fosite.ErrInvalidRequest)
+}

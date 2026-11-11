@@ -144,7 +144,7 @@ func (h *IDJAGHandler) HandleTokenEndpointRequest(ctx context.Context, requester
 	if err := h.checkClientBinding(requester, claims); err != nil {
 		return err
 	}
-	resource, err := validateJWTBearerPolicy(requester.GetRequestForm(), claims, policy)
+	resource, err := checkIDJAGPolicy(requester, claims, policy)
 	if err != nil {
 		return err
 	}
@@ -196,6 +196,25 @@ func (h *IDJAGHandler) PopulateTokenEndpointResponse(
 		return errorsx.WithStack(fosite.ErrUnknownRequest)
 	}
 	return h.core.populateAccessTokenResponse(ctx, requester, responder)
+}
+
+// checkIDJAGPolicy runs the per-issuer policy checks in the same order as
+// the plain handler (assertion age, then resource, then subject binding) and
+// returns the resource the token is for.
+func checkIDJAGPolicy(
+	requester fosite.AccessRequester, claims *ValidatedClaims, policy *JWTBearerGrantPolicy,
+) (string, error) {
+	if err := checkAssertionMaxAge(claims, policy); err != nil {
+		return "", err
+	}
+	resource, err := requestedResource(requester.GetRequestForm())
+	if err != nil {
+		return "", err
+	}
+	if err := checkSubjectBinding(claims, policy, resource); err != nil {
+		return "", err
+	}
+	return resource, nil
 }
 
 // checkClientGrant refuses an explicit-grant client whose registered grant types

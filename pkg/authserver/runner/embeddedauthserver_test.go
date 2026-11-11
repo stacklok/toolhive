@@ -3317,37 +3317,40 @@ type closeTrackingDCRStorage struct {
 func TestNewEmbeddedAuthServer_StorageOnDCRFailure(t *testing.T) {
 	t.Parallel()
 
-	var requests atomic.Int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		requests.Add(1)
-		w.WriteHeader(http.StatusInternalServerError)
-	}))
-	t.Cleanup(server.Close)
-
-	cfg := &authserver.RunConfig{
-		SchemaVersion: authserver.CurrentSchemaVersion,
-		Issuer:        server.URL,
-		Upstreams: []authserver.UpstreamRunConfig{
-			{
-				Name: "dcr-upstream",
-				Type: authserver.UpstreamProviderTypeOAuth2,
-				OAuth2Config: &authserver.OAuth2UpstreamRunConfig{
-					ClientID:              "",
-					AuthorizationEndpoint: server.URL + "/authorize",
-					TokenEndpoint:         server.URL + "/token",
-					Scopes:                []string{"openid", "profile"},
-					DCRConfig: &authserver.DCRUpstreamConfig{
-						DiscoveryURL: server.URL + "/.well-known/oauth-authorization-server",
-					},
-				},
-			},
-		},
-		AllowedAudiences: []string{"https://mcp.example.com"},
-	}
-
 	for _, owned := range []bool{false, true} {
 		t.Run(fmt.Sprintf("owned=%t", owned), func(t *testing.T) {
 			t.Parallel()
+			// Each subtest needs its own upstream. The DCR resolver merges concurrent
+			// resolutions with the same issuer, upstream, redirect URI and scopes, so
+			// with a shared server one subtest can join the other's in-flight request
+			// and never send its own.
+			var requests atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				requests.Add(1)
+				w.WriteHeader(http.StatusInternalServerError)
+			}))
+			t.Cleanup(server.Close)
+
+			cfg := &authserver.RunConfig{
+				SchemaVersion: authserver.CurrentSchemaVersion,
+				Issuer:        server.URL,
+				Upstreams: []authserver.UpstreamRunConfig{
+					{
+						Name: "dcr-upstream",
+						Type: authserver.UpstreamProviderTypeOAuth2,
+						OAuth2Config: &authserver.OAuth2UpstreamRunConfig{
+							ClientID:              "",
+							AuthorizationEndpoint: server.URL + "/authorize",
+							TokenEndpoint:         server.URL + "/token",
+							Scopes:                []string{"openid", "profile"},
+							DCRConfig: &authserver.DCRUpstreamConfig{
+								DiscoveryURL: server.URL + "/.well-known/oauth-authorization-server",
+							},
+						},
+					},
+				},
+				AllowedAudiences: []string{"https://mcp.example.com"},
+			}
 			base := storage.NewMemoryStorage()
 			tracker := &closeTrackingDCRStorage{
 				closeTrackingStorage: &closeTrackingStorage{Storage: base},

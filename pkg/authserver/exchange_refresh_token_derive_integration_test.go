@@ -16,8 +16,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/stacklok/toolhive/pkg/authserver/claimnames"
 	"github.com/stacklok/toolhive/pkg/authserver/server"
-	"github.com/stacklok/toolhive/pkg/authserver/server/session"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
@@ -138,8 +138,8 @@ func runDeriveFlows(t *testing.T, env *xrtEnv) {
 			subID := map[string]any{"format": "iss_sub", "iss": env.issuer, "sub": "user-1"}
 			upstream := map[string]any{"iss": "https://idp.example", "claim": "oid", "value": "obj-1"}
 			subject := env.mint(t, func(_ *jwt.Claims, x map[string]any) {
-				x["sub_id"] = subID
-				x[session.UpstreamSubjectClaimKey] = upstream
+				x[claimnames.SubjectIdentifierKey] = subID
+				x[claimnames.UpstreamSubjectKey] = upstream
 			})
 			parent := env.requestRefreshToken(t, env.broker, subject, nil)
 			require.Equal(t, http.StatusOK, parent.status, parent.body)

@@ -22,7 +22,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver/authorizationdetails"
 	"github.com/stacklok/toolhive/pkg/authserver/claimnames"
 	"github.com/stacklok/toolhive/pkg/authserver/server"
-	"github.com/stacklok/toolhive/pkg/authserver/server/session"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
@@ -345,10 +344,10 @@ func (h *RefreshTokenHandler) decideTopLevel(
 		CreatedAt:          now,
 	}
 	var jsonErr error
-	if grant.SubjectIdentifier, jsonErr = claimJSON(claims.Extra, "sub_id"); jsonErr != nil {
+	if grant.SubjectIdentifier, jsonErr = claimJSON(claims.Extra, claimnames.SubjectIdentifierKey); jsonErr != nil {
 		return nil, refuse(ctx, log, refuseInternal, issueFailed())
 	}
-	if grant.UpstreamSubject, jsonErr = claimJSON(claims.Extra, session.UpstreamSubjectClaimKey); jsonErr != nil {
+	if grant.UpstreamSubject, jsonErr = claimJSON(claims.Extra, claimnames.UpstreamSubjectKey); jsonErr != nil {
 		return nil, refuse(ctx, log, refuseInternal, issueFailed())
 	}
 	if grant.SubjectIdentifier != "" {

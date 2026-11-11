@@ -44,7 +44,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver/server/handlers"
 	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
-	"github.com/stacklok/toolhive/pkg/authserver/server/session"
 	"github.com/stacklok/toolhive/pkg/authserver/server/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
@@ -1342,10 +1341,10 @@ func TestIntegration_TokenExchange_ConfidentialClientHappyPath(t *testing.T) {
 			"client_id": agentClientID,
 			"name":      "Delegated User",
 			"email":     "deleg@example.com",
-			"sub_id": map[string]string{
+			claimnames.SubjectIdentifierKey: map[string]string{
 				"format": "iss_sub", "iss": "https://upstream.example.com", "sub": "upstream-user",
 			},
-			session.UpstreamSubjectClaimKey: map[string]string{
+			claimnames.UpstreamSubjectKey: map[string]string{
 				"iss": "https://upstream.example.com", "claim": "oid", "value": "upstream-oid",
 			},
 		}).
@@ -1385,9 +1384,9 @@ func TestIntegration_TokenExchange_ConfidentialClientHappyPath(t *testing.T) {
 	// RFC 8693 §4.1 "act" (acting party).
 	assert.Equal(t, delegatedUserSub, claims["sub"], "delegated token subject must be the user")
 	assert.Equal(t, testIssuer, claims["iss"])
-	assert.NotContains(t, claims, "sub_id",
+	assert.NotContains(t, claims, claimnames.SubjectIdentifierKey,
 		"token exchange must not carry over a sub_id from the subject token")
-	assert.NotContains(t, claims, session.UpstreamSubjectClaimKey,
+	assert.NotContains(t, claims, claimnames.UpstreamSubjectKey,
 		"token exchange must not carry over the upstream subject claim from the subject token")
 	act, ok := claims["act"].(map[string]any)
 	require.True(t, ok, "delegated token must carry an 'act' claim")
@@ -3154,10 +3153,10 @@ func decodeTestAccessToken(t *testing.T, ts *testServer, raw string) map[string]
 func assertUpstreamSubject(t *testing.T, claims map[string]any, want map[string]any, msgAndArgs ...any) {
 	t.Helper()
 	if want == nil {
-		assert.NotContains(t, claims, session.UpstreamSubjectClaimKey, msgAndArgs...)
+		assert.NotContains(t, claims, claimnames.UpstreamSubjectKey, msgAndArgs...)
 		return
 	}
-	assert.Equal(t, want, claims[session.UpstreamSubjectClaimKey], msgAndArgs...)
+	assert.Equal(t, want, claims[claimnames.UpstreamSubjectKey], msgAndArgs...)
 }
 
 func TestIntegration_SubjectIdentifierDisclosure(t *testing.T) {
@@ -3222,9 +3221,9 @@ func TestIntegration_SubjectIdentifierDisclosure(t *testing.T) {
 			if tc.wantSubID {
 				assert.Equal(t, map[string]interface{}{
 					"format": "iss_sub", "iss": m.Issuer(), "sub": "mock-user-sub-123",
-				}, initialClaims["sub_id"])
+				}, initialClaims[claimnames.SubjectIdentifierKey])
 			} else {
-				assert.NotContains(t, initialClaims, "sub_id")
+				assert.NotContains(t, initialClaims, claimnames.SubjectIdentifierKey)
 			}
 			var wantStable map[string]any
 			if tc.wantClaim != "" {
@@ -3246,9 +3245,9 @@ func TestIntegration_SubjectIdentifierDisclosure(t *testing.T) {
 			assert.Equal(t, localSubject, refreshedClaims["sub"])
 			assert.Equal(t, testIssuer, refreshedClaims["iss"])
 			if tc.wantSubID {
-				assert.Equal(t, initialClaims["sub_id"], refreshedClaims["sub_id"])
+				assert.Equal(t, initialClaims[claimnames.SubjectIdentifierKey], refreshedClaims[claimnames.SubjectIdentifierKey])
 			} else {
-				assert.NotContains(t, refreshedClaims, "sub_id")
+				assert.NotContains(t, refreshedClaims, claimnames.SubjectIdentifierKey)
 			}
 			assertUpstreamSubject(t, refreshedClaims, wantStable)
 		})
@@ -3271,7 +3270,7 @@ func TestIntegration_SubjectIdentifierOmittedForSyntheticIdentity(t *testing.T) 
 	require.True(t, ok)
 	claims := decodeTestAccessToken(t, ts, access)
 	assert.NotEmpty(t, claims["sub"])
-	assert.NotContains(t, claims, "sub_id")
+	assert.NotContains(t, claims, claimnames.SubjectIdentifierKey)
 	assertUpstreamSubject(t, claims, nil)
 
 	refreshToken, ok := tokens["refresh_token"].(string)
@@ -3285,7 +3284,7 @@ func TestIntegration_SubjectIdentifierOmittedForSyntheticIdentity(t *testing.T) 
 	refreshedAccess, ok := refreshed["access_token"].(string)
 	require.True(t, ok)
 	refreshedClaims := decodeTestAccessToken(t, ts, refreshedAccess)
-	assert.NotContains(t, refreshedClaims, "sub_id")
+	assert.NotContains(t, refreshedClaims, claimnames.SubjectIdentifierKey)
 	assertUpstreamSubject(t, refreshedClaims, nil)
 }
 
@@ -3320,7 +3319,7 @@ func TestIntegration_DeviceFlow_SubjectIdentifier(t *testing.T) {
 	claims := decodeTestAccessToken(t, ts.testServer, access)
 	assert.Equal(t, map[string]interface{}{
 		"format": "iss_sub", "iss": m.Issuer(), "sub": "mock-user-sub-123",
-	}, claims["sub_id"])
+	}, claims[claimnames.SubjectIdentifierKey])
 	wantStable := map[string]interface{}{"iss": m.Issuer(), "claim": "sub", "value": "mock-user-sub-123"}
 	assertUpstreamSubject(t, claims, wantStable)
 
@@ -3335,7 +3334,7 @@ func TestIntegration_DeviceFlow_SubjectIdentifier(t *testing.T) {
 	refreshedAccess, ok := refreshed["access_token"].(string)
 	require.True(t, ok)
 	refreshedClaims := decodeTestAccessToken(t, ts.testServer, refreshedAccess)
-	assert.Equal(t, claims["sub_id"], refreshedClaims["sub_id"])
+	assert.Equal(t, claims[claimnames.SubjectIdentifierKey], refreshedClaims[claimnames.SubjectIdentifierKey])
 	assertUpstreamSubject(t, refreshedClaims, wantStable)
 }
 
@@ -3438,10 +3437,10 @@ func TestIntegration_SubjectIdentifierPolicyChangeAcrossRefresh(t *testing.T) {
 				{"refresh", refreshedClaims, tc.wantRefreshSubID},
 			} {
 				if c.want {
-					assert.Equal(t, wantSubID, c.claims["sub_id"], c.stage)
+					assert.Equal(t, wantSubID, c.claims[claimnames.SubjectIdentifierKey], c.stage)
 					assertUpstreamSubject(t, c.claims, wantStable, c.stage)
 				} else {
-					assert.NotContains(t, c.claims, "sub_id", c.stage)
+					assert.NotContains(t, c.claims, claimnames.SubjectIdentifierKey, c.stage)
 					assertUpstreamSubject(t, c.claims, nil, c.stage)
 				}
 			}
@@ -3460,7 +3459,7 @@ func TestIntegration_SubjectIdentifierPolicyChangeAcrossRefresh(t *testing.T) {
 				access2, ok := tokens2["access_token"].(string)
 				require.True(t, ok)
 				claims2 := decodeTestAccessToken(t, refreshServer.testServer, access2)
-				assert.Equal(t, wantSubID, claims2["sub_id"], "second login")
+				assert.Equal(t, wantSubID, claims2[claimnames.SubjectIdentifierKey], "second login")
 				assertUpstreamSubject(t, claims2, wantStable, "second login")
 			}
 		})
@@ -3612,12 +3611,12 @@ func TestIntegration_SubjectIdentifierMultiUpstreamChain(t *testing.T) {
 			if tc.wantSubID {
 				assert.Equal(t, map[string]interface{}{
 					"format": "iss_sub", "iss": m1.Issuer(), "sub": "user-from-provider-1",
-				}, claims["sub_id"])
+				}, claims[claimnames.SubjectIdentifierKey])
 				assertUpstreamSubject(t, claims, map[string]interface{}{
 					"iss": m1.Issuer(), "claim": "sub", "value": "user-from-provider-1",
 				})
 			} else {
-				assert.NotContains(t, claims, "sub_id")
+				assert.NotContains(t, claims, claimnames.SubjectIdentifierKey)
 				assertUpstreamSubject(t, claims, nil)
 			}
 		})
@@ -3657,7 +3656,7 @@ func TestIntegration_DeviceFlow_SubjectIdentifierOmittedForSyntheticIdentity(t *
 	require.True(t, ok)
 	claims := decodeTestAccessToken(t, ts, access)
 	assert.NotEmpty(t, claims["sub"])
-	assert.NotContains(t, claims, "sub_id")
+	assert.NotContains(t, claims, claimnames.SubjectIdentifierKey)
 	assertUpstreamSubject(t, claims, nil)
 }
 

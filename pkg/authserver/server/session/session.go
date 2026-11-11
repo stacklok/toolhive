@@ -64,13 +64,10 @@ const NameClaimKey = "name"
 // Per OIDC Core Section 5.1.
 const EmailClaimKey = "email"
 
-const subjectIdentifierClaimKey = "sub_id"
-
-// UpstreamSubjectClaimKey is the collision-resistant claim name (RFC 7519 §4.2) of
-// the claim that carries the upstream subject a consumer can key on across upstream
-// client registrations. It is emitted together with the RFC 9493 sub_id claim and
-// under the same disclosure policy.
-const UpstreamSubjectClaimKey = "https://toolhive.dev/upstream_subject"
+// UpstreamSubjectClaimKey is the claim name of the upstream subject claim.
+//
+// Deprecated: use claimnames.UpstreamSubjectKey.
+const UpstreamSubjectClaimKey = claimnames.UpstreamSubjectKey
 
 // UpstreamSubject is the verified identity of the upstream OIDC login that
 // established the local user. Issuer and Subject are the exact iss and sub of the
@@ -213,8 +210,8 @@ func (s *Session) ClearSubjectIdentifier() {
 	if s == nil || s.JWTSession == nil || s.JWTClaims == nil {
 		return
 	}
-	delete(s.JWTClaims.Extra, subjectIdentifierClaimKey)
-	delete(s.JWTClaims.Extra, UpstreamSubjectClaimKey)
+	delete(s.JWTClaims.Extra, claimnames.SubjectIdentifierKey)
+	delete(s.JWTClaims.Extra, claimnames.UpstreamSubjectKey)
 }
 
 // SetSubjectIdentifier sets the RFC 9493 sub_id claim and the upstream subject
@@ -228,12 +225,12 @@ func (s *Session) SetSubjectIdentifier(upstream UpstreamSubject) {
 	if s.JWTClaims.Extra == nil {
 		s.JWTClaims.Extra = make(map[string]any)
 	}
-	s.JWTClaims.Extra[subjectIdentifierClaimKey] = map[string]string{
+	s.JWTClaims.Extra[claimnames.SubjectIdentifierKey] = map[string]string{
 		"format": "iss_sub",
 		"iss":    upstream.Issuer,
 		"sub":    upstream.Subject,
 	}
-	s.JWTClaims.Extra[UpstreamSubjectClaimKey] = map[string]string{
+	s.JWTClaims.Extra[claimnames.UpstreamSubjectKey] = map[string]string{
 		"iss":   upstream.Issuer,
 		"claim": upstream.StableClaim,
 		"value": upstream.StableValue,

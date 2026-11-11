@@ -16,6 +16,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/stacklok/toolhive/pkg/authserver/claimnames"
 	"github.com/stacklok/toolhive/pkg/authserver/server"
 	"github.com/stacklok/toolhive/pkg/authserver/server/session"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
@@ -177,8 +178,8 @@ func TestApplySubjectIdentifier(t *testing.T) {
 			stored := session.New("user-1", "tsid-1", "client-1", session.UserClaims{})
 			stored.VerifiedUpstream = tt.verified
 			if tt.stale {
-				stored.JWTClaims.Extra["sub_id"] = testSubIDStaleName
-				stored.JWTClaims.Extra[session.UpstreamSubjectClaimKey] = testSubIDStaleName
+				stored.JWTClaims.Extra[claimnames.SubjectIdentifierKey] = testSubIDStaleName
+				stored.JWTClaims.Extra[claimnames.UpstreamSubjectKey] = testSubIDStaleName
 			}
 
 			req := fosite.NewAccessRequest(stored)
@@ -199,24 +200,24 @@ func TestApplySubjectIdentifier(t *testing.T) {
 					"format": "iss_sub",
 					"iss":    tt.verified.Issuer,
 					"sub":    tt.verified.Subject,
-				}, got.JWTClaims.Extra["sub_id"])
+				}, got.JWTClaims.Extra[claimnames.SubjectIdentifierKey])
 				assert.Equal(t, map[string]string{
 					"iss":   tt.verified.Issuer,
 					"claim": tt.verified.StableClaim,
 					"value": tt.verified.StableValue,
-				}, got.JWTClaims.Extra[session.UpstreamSubjectClaimKey])
+				}, got.JWTClaims.Extra[claimnames.UpstreamSubjectKey])
 			} else {
-				assert.NotContains(t, got.JWTClaims.Extra, "sub_id")
-				assert.NotContains(t, got.JWTClaims.Extra, session.UpstreamSubjectClaimKey)
+				assert.NotContains(t, got.JWTClaims.Extra, claimnames.SubjectIdentifierKey)
+				assert.NotContains(t, got.JWTClaims.Extra, claimnames.UpstreamSubjectKey)
 			}
 
 			// The originally stored session must never be mutated.
 			if tt.stale {
-				assert.Equal(t, testSubIDStaleName, stored.JWTClaims.Extra["sub_id"])
-				assert.Equal(t, testSubIDStaleName, stored.JWTClaims.Extra[session.UpstreamSubjectClaimKey])
+				assert.Equal(t, testSubIDStaleName, stored.JWTClaims.Extra[claimnames.SubjectIdentifierKey])
+				assert.Equal(t, testSubIDStaleName, stored.JWTClaims.Extra[claimnames.UpstreamSubjectKey])
 			} else {
-				assert.NotContains(t, stored.JWTClaims.Extra, "sub_id")
-				assert.NotContains(t, stored.JWTClaims.Extra, session.UpstreamSubjectClaimKey)
+				assert.NotContains(t, stored.JWTClaims.Extra, claimnames.SubjectIdentifierKey)
+				assert.NotContains(t, stored.JWTClaims.Extra, claimnames.UpstreamSubjectKey)
 			}
 		})
 	}

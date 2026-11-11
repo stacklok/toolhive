@@ -1399,16 +1399,6 @@ func (s *AuthenticationDelegateClientIDJAGTarget) encodeFields(e *jx.Encoder) {
 		}
 	}
 	{
-		if s.RequiredSubjectClaims != nil {
-			e.FieldStart("required_subject_claims")
-			e.ArrStart()
-			for _, elem := range s.RequiredSubjectClaims {
-				e.Str(elem)
-			}
-			e.ArrEnd()
-		}
-	}
-	{
 		if s.Resources != nil {
 			e.FieldStart("resources")
 			e.ArrStart()
@@ -1420,12 +1410,11 @@ func (s *AuthenticationDelegateClientIDJAGTarget) encodeFields(e *jx.Encoder) {
 	}
 }
 
-var jsonFieldsNameOfAuthenticationDelegateClientIDJAGTarget = [5]string{
+var jsonFieldsNameOfAuthenticationDelegateClientIDJAGTarget = [4]string{
 	0: "client_id",
 	1: "issuer",
 	2: "lifetime",
-	3: "required_subject_claims",
-	4: "resources",
+	3: "resources",
 }
 
 // Decode decodes AuthenticationDelegateClientIDJAGTarget from json.
@@ -1465,25 +1454,6 @@ func (s *AuthenticationDelegateClientIDJAGTarget) Decode(d *jx.Decoder) error {
 				return nil
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"lifetime\"")
-			}
-		case "required_subject_claims":
-			if err := func() error {
-				s.RequiredSubjectClaims = make([]string, 0)
-				if err := d.Arr(func(d *jx.Decoder) error {
-					var elem string
-					v, err := d.Str()
-					elem = string(v)
-					if err != nil {
-						return err
-					}
-					s.RequiredSubjectClaims = append(s.RequiredSubjectClaims, elem)
-					return nil
-				}); err != nil {
-					return err
-				}
-				return nil
-			}(); err != nil {
-				return errors.Wrap(err, "decode field \"required_subject_claims\"")
 			}
 		case "resources":
 			if err := func() error {

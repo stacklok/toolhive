@@ -110,9 +110,9 @@ type ConfiguredClientPolicy struct {
 	// when the client has no exchange_refresh_tokens block.
 	ExchangeRefreshTokens map[string]time.Duration
 	// IDJAGTargets are the authorization servers this client may ask for an
-	// ID-JAG for, keyed by the normalized issuer: lower-case scheme and host,
-	// no default port, no trailing slash. Nil when the client has no id_jag
-	// block.
+	// ID-JAG for, keyed by the issuer exactly as configured. Request-time
+	// lookup of the audience parameter is exact. Nil when the client has no
+	// id_jag block.
 	IDJAGTargets map[string]IDJAGTarget
 }
 

@@ -1372,7 +1372,7 @@ func TestIDJAGSubjectClaimsRejectBeforeUpstreamRegistration(t *testing.T) {
 	_, err := NewEmbeddedAuthServerWithStorage(context.Background(), cfg, tracker)
 	require.Error(t, err)
 	assert.ErrorContains(t, err, "required_subject_claims needs every token_exchange.subject_token_audiences entry")
-	assert.ErrorContains(t, err, "not a RunConfig field yet")
+	assert.ErrorContains(t, err, "set through the WithSubjectIdentifierAudiences option")
 	assert.Zero(t, requestCount.Load(), "an unsatisfiable required_subject_claims must be refused before upstream DCR")
 	assert.Zero(t, tracker.closeCount.Load(), "supplied storage is borrowed even on early validation failure")
 }

@@ -755,7 +755,7 @@ func configuredClientPolicies(
 }
 
 // idJAGTargetPolicies builds the runtime targets of an id_jag block, keyed by
-// normalized issuer, with the default lifetime applied. A nil block gives nil.
+// the issuer exactly as configured, with the default lifetime applied. A nil block gives nil.
 func idJAGTargetPolicies(block *DelegateClientIDJAG) (map[string]tokenexchange.IDJAGTarget, error) {
 	if block == nil {
 		return nil, nil
@@ -766,7 +766,7 @@ func idJAGTargetPolicies(block *DelegateClientIDJAG) (map[string]tokenexchange.I
 		if err != nil {
 			return nil, fmt.Errorf("token_exchange.id_jag.targets[%d]: %w", i, err)
 		}
-		targets[oauthserver.NormalizeIssuer(target.Issuer)] = tokenexchange.IDJAGTarget{
+		targets[target.Issuer] = tokenexchange.IDJAGTarget{
 			Issuer:                target.Issuer,
 			ClientID:              target.ClientID,
 			Resources:             slices.Clone(target.Resources),

@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"maps"
 	"math"
+	"net"
 	"net/url"
 	"regexp"
 	"slices"
@@ -479,15 +480,17 @@ type DelegateClientIDJAG struct {
 // ask for an ID-JAG for.
 type DelegateClientIDJAGTarget struct {
 	// Issuer is the issuer of the other authorization server. The client sends
-	// it as the request's audience, and it becomes the ID-JAG's aud as written
-	// here. It must be an absolute https URL, or http on a loopback host, with
-	// no query, fragment or userinfo, and must be in canonical form: no dot
+	// it as the request's audience, and it becomes the ID-JAG's aud exactly as
+	// written here. It must be an absolute https URL, or http on a loopback
+	// host, with no query, fragment or userinfo. It must be well-formed: lower-case
+	// scheme and host, no default port (":443" for https, ":80" for http), no dot
 	// segments, empty path segments, unneeded percent-encoding or leading zeros
-	// in the port. One trailing slash is allowed. It must not be this server's
-	// issuer, token endpoint or one of its allowed_audiences, and must be unique
-	// within the client. The (issuer, client_id) pair must be unique across
-	// delegate clients. These comparisons ignore case, a default port and one
-	// trailing slash.
+	// in the port. One trailing slash is allowed and is kept as written. It must
+	// be unique within the client, and the (issuer, client_id) pair must be
+	// unique across delegate clients; both comparisons ignore one trailing
+	// slash. It must not be this server's issuer, token endpoint or one of its
+	// allowed_audiences; that comparison ignores case in the scheme and host, a
+	// default port and one trailing slash.
 	Issuer string `json:"issuer" yaml:"issuer"`
 
 	// ClientID is this client's client_id at the other authorization server.
@@ -504,14 +507,14 @@ type DelegateClientIDJAGTarget struct {
 	Lifetime string `json:"lifetime,omitempty" yaml:"lifetime,omitempty"`
 
 	// RequiredSubjectClaims are subject claims every ID-JAG for this target
-	// must carry. Allowed values are upstream_subject (the user's identity at
-	// the upstream identity provider) and sub_id (the RFC 9493 subject
-	// identifier). ID-JAGs for this target will carry only the listed subject
-	// claims. Each entry needs every subject_token_audiences entry in the
-	// server's SubjectIdentifierAudiences, which is not a RunConfig field yet,
-	// so a non-empty list fails startup when set from a config file or
-	// CRD-generated RunConfig.
-	RequiredSubjectClaims []string `json:"required_subject_claims,omitempty" yaml:"required_subject_claims,omitempty"`
+	// must carry. It is set only from Go, like SubjectIdentifierAudiences,
+	// which only the runner's WithSubjectIdentifierAudiences option sets, so
+	// config files cannot set it. Allowed values are upstream_subject (the
+	// user's identity at the upstream identity provider) and sub_id (the
+	// RFC 9493 subject identifier). ID-JAGs for this target will carry only the
+	// listed subject claims. Each entry needs every subject_token_audiences
+	// entry in SubjectIdentifierAudiences.
+	RequiredSubjectClaims []string `json:"-" yaml:"-"`
 }
 
 // DelegateClientExchangeRefreshTokens holds the lifetime caps for refresh
@@ -2149,7 +2152,7 @@ func (c *Config) validateDelegationConfig() error {
 	); err != nil {
 		return err
 	}
-	if err := ValidateIDJAGSubjectClaims(c.DelegateClients, c.SubjectIdentifierAudiences); err != nil {
+	if err := ValidateIDJAGSubjectClaimAudiences(c.DelegateClients, c.SubjectIdentifierAudiences); err != nil {
 		return err
 	}
 	spiffeIDs := make([]string, 0, len(c.SPIFFETrust.Associations()))
@@ -2890,11 +2893,11 @@ var (
 	errIDJAGRequiresRestricted    = errors.New(`token_exchange.id_jag requires self_issued_subject_tokens "restricted"`)
 	errIDJAGRequiresSubjectSource = errors.New("token_exchange.id_jag requires a subject source: " +
 		"set token_exchange.exchange_refresh_tokens.id_jag_max_lifetime")
-	errIDJAGNoTargets          = errors.New("token_exchange.id_jag.targets must list at least one target")
-	errIDJAGIssuerForm         = errors.New("issuer must be an absolute URL with no query, fragment or userinfo")
-	errIDJAGIssuerScheme       = errors.New("issuer must use https, or http on a loopback host")
-	errIDJAGIssuerNotCanonical = errors.New("issuer must be in canonical form: no dot segments, " +
-		"empty path segments, unneeded percent-encoding or leading zeros in the port")
+	errIDJAGNoTargets           = errors.New("token_exchange.id_jag.targets must list at least one target")
+	errIDJAGIssuerForm          = errors.New("issuer must be an absolute URL with no query, fragment or userinfo")
+	errIDJAGIssuerScheme        = errors.New("issuer must use https, or http on a loopback host")
+	errIDJAGIssuerNotWellFormed = errors.New("issuer must be well-formed: lower-case scheme and host, " +
+		"no default port, dot segments, empty path segments, unneeded percent-encoding or leading zeros in the port")
 	errIDJAGIssuerDuplicate           = errors.New("issuer is already listed by another target of this client")
 	errIDJAGIssuerIsServerIssuer      = errors.New("issuer must not be this server's own issuer")
 	errIDJAGIssuerIsTokenEndpoint     = errors.New("issuer must not be this server's token endpoint")
@@ -2920,8 +2923,8 @@ var (
 // registration does not know. A target equal to any of them would make an
 // ID-JAG look like one of this server's own tokens. Trusted issuers'
 // jwt_bearer_grant.accepted_audiences are not reserved, because they are only
-// checked on assertions from external issuers. The
-// comparisons use oauthserver.NormalizeIssuer; the configured spelling is kept for
+// checked on assertions from external issuers. The reserved comparison folds
+// both sides with foldIssuerForComparison; the configured spelling is kept for
 // use as the ID-JAG's aud.
 func validateIDJAG(
 	clientID string, te *DelegateClientTokenExchange,
@@ -2945,11 +2948,11 @@ func validateIDJAG(
 	}
 
 	reserved := map[string]error{
-		oauthserver.NormalizeIssuer(issuer):        errIDJAGIssuerIsServerIssuer,
-		oauthserver.NormalizeIssuer(tokenEndpoint): errIDJAGIssuerIsTokenEndpoint,
+		foldIssuerForComparison(issuer):        errIDJAGIssuerIsServerIssuer,
+		foldIssuerForComparison(tokenEndpoint): errIDJAGIssuerIsTokenEndpoint,
 	}
 	for _, audience := range allowedAudiences {
-		normalized := oauthserver.NormalizeIssuer(audience)
+		normalized := foldIssuerForComparison(audience)
 		if _, ok := reserved[normalized]; !ok {
 			reserved[normalized] = errIDJAGIssuerIsAudience
 		}
@@ -2964,23 +2967,23 @@ func validateIDJAG(
 	return nil
 }
 
-// validateIDJAGTarget checks one target. reserved maps normalized URLs the
-// issuer must not equal to the error to return; issuers collects the
-// normalized issuers of the client's earlier targets.
+// validateIDJAGTarget checks one target. reserved maps folded URLs the issuer
+// must not equal to the error to return; issuers collects the issuers of the
+// client's earlier targets with one trailing slash trimmed.
 func validateIDJAGTarget(
 	target DelegateClientIDJAGTarget, reserved map[string]error, issuers map[string]struct{},
 ) error {
 	if err := validateIDJAGTargetIssuer(target.Issuer); err != nil {
 		return err
 	}
-	normalized := oauthserver.NormalizeIssuer(target.Issuer)
-	if err, ok := reserved[normalized]; ok {
+	if err, ok := reserved[foldIssuerForComparison(target.Issuer)]; ok {
 		return fmt.Errorf("%w: %q", err, target.Issuer)
 	}
-	if _, ok := issuers[normalized]; ok {
+	trimmed := strings.TrimSuffix(target.Issuer, "/")
+	if _, ok := issuers[trimmed]; ok {
 		return fmt.Errorf("%w: %q", errIDJAGIssuerDuplicate, target.Issuer)
 	}
-	issuers[normalized] = struct{}{}
+	issuers[trimmed] = struct{}{}
 
 	if target.ClientID == "" {
 		return errIDJAGClientIDRequired
@@ -3038,9 +3041,10 @@ func validateIDJAGTargetResources(resources []string) error {
 
 // validateIDJAGTargetIssuer checks the form and scheme of a target issuer. The
 // scheme rule is this server's own: https, or http on a loopback host. Unlike
-// this server's issuer, one trailing slash is allowed. The issuer must be in
-// canonical form, so that NormalizeIssuer only has to fold case, a default port
-// and one trailing slash.
+// this server's issuer, one trailing slash is allowed. The issuer is emitted
+// verbatim as the ID-JAG's aud and the other authorization server compares it
+// to its own issuer as an exact string, so the spellings it would not produce
+// itself are refused: see idJAGIssuerWellFormed.
 func validateIDJAGTargetIssuer(issuer string) error {
 	parsed, err := url.Parse(issuer)
 	if err != nil || !parsed.IsAbs() || parsed.Hostname() == "" ||
@@ -3050,16 +3054,27 @@ func validateIDJAGTargetIssuer(issuer string) error {
 	if err := validateIssuerScheme(parsed, false); err != nil {
 		return fmt.Errorf("%w: %q", errIDJAGIssuerScheme, issuer)
 	}
-	if !idJAGIssuerCanonical(parsed) {
-		return fmt.Errorf("%w: %q", errIDJAGIssuerNotCanonical, issuer)
+	if !idJAGIssuerWellFormed(issuer, parsed) {
+		return fmt.Errorf("%w: %q", errIDJAGIssuerNotWellFormed, issuer)
 	}
 	return nil
 }
 
-// idJAGIssuerCanonical reports whether a parsed issuer has no dot segments,
+// idJAGIssuerWellFormed reports whether an issuer, given as written and
+// parsed, has a lower-case scheme and host, no default port, no dot segments,
 // no empty path segments, no percent-encoding that differs from Go's default
 // encoding, and no empty or zero-padded port. One trailing slash is allowed.
-func idJAGIssuerCanonical(parsed *url.URL) bool {
+// url.Parse lower-cases the scheme, so the scheme is checked on the raw string.
+func idJAGIssuerWellFormed(raw string, parsed *url.URL) bool {
+	if scheme, _, _ := strings.Cut(raw, ":"); scheme != strings.ToLower(scheme) {
+		return false
+	}
+	if parsed.Host != strings.ToLower(parsed.Host) {
+		return false
+	}
+	if isDefaultPort(parsed.Scheme, parsed.Port()) {
+		return false
+	}
 	if parsed.RawPath != "" {
 		return false
 	}
@@ -3104,7 +3119,8 @@ type idJAGTargetKey struct {
 }
 
 // claimIDJAGTargets records the (issuer, client_id) pairs of a delegate
-// client's targets in owners, keyed by normalized issuer, and refuses a pair
+// client's targets in owners, keyed by the issuer with one trailing slash
+// trimmed, and refuses a pair
 // another delegate client already uses: the other authorization server could
 // not tell their ID-JAGs apart.
 func claimIDJAGTargets(owners map[idJAGTargetKey]string, clientID string, te *DelegateClientTokenExchange) error {
@@ -3112,7 +3128,7 @@ func claimIDJAGTargets(owners map[idJAGTargetKey]string, clientID string, te *De
 		return nil
 	}
 	for i, target := range te.IDJAG.Targets {
-		key := idJAGTargetKey{issuer: oauthserver.NormalizeIssuer(target.Issuer), clientID: target.ClientID}
+		key := idJAGTargetKey{issuer: strings.TrimSuffix(target.Issuer, "/"), clientID: target.ClientID}
 		if owner, ok := owners[key]; ok && owner != clientID {
 			return fmt.Errorf(
 				"delegate_clients: client_id %q: token_exchange.id_jag.targets[%d]: %w: issuer %q, client_id %q, used by %q",
@@ -3123,11 +3139,11 @@ func claimIDJAGTargets(owners map[idJAGTargetKey]string, clientID string, te *De
 	return nil
 }
 
-// ValidateIDJAGSubjectClaims runs validateIDJAGSubjectClaims for every client.
-// The runner calls it before upstream registration, so a bad configuration
-// fails before any side effect; Config.Validate calls it for Go callers that
-// build a Config directly.
-func ValidateIDJAGSubjectClaims(clients []DelegateClient, subjectIdentifierAudiences []string) error {
+// ValidateIDJAGSubjectClaimAudiences runs validateIDJAGSubjectClaims for every
+// client. The runner calls it before upstream registration, so a bad
+// configuration fails before any side effect; Config.Validate calls it for Go
+// callers that build a Config directly.
+func ValidateIDJAGSubjectClaimAudiences(clients []DelegateClient, subjectIdentifierAudiences []string) error {
 	for _, client := range clients {
 		if err := validateIDJAGSubjectClaims(client.ClientID, client.TokenExchange, subjectIdentifierAudiences); err != nil {
 			return err
@@ -3142,8 +3158,9 @@ func ValidateIDJAGSubjectClaims(clients []DelegateClient, subjectIdentifierAudie
 // one of those audiences, and an access token for an audience that is not in
 // subjectIdentifierAudiences never carries the subject claims, so grants built
 // from it could never supply the claim. Every entry must therefore be listed.
-// SubjectIdentifierAudiences is not a RunConfig field, so a RunConfig can
-// satisfy this only through the runner's WithSubjectIdentifierAudiences option.
+// SubjectIdentifierAudiences is not a RunConfig field: the runner takes it from
+// its WithSubjectIdentifierAudiences option, and Go callers that build a Config
+// set it directly.
 func validateIDJAGSubjectClaims(
 	clientID string, te *DelegateClientTokenExchange, subjectIdentifierAudiences []string,
 ) error {
@@ -3162,10 +3179,47 @@ func validateIDJAGSubjectClaims(
 		}
 		return fmt.Errorf(
 			"delegate_clients: client_id %q: token_exchange.id_jag.targets[%d] (issuer %q) requires subject claim %q: "+
-				"%w; add %q to SubjectIdentifierAudiences, which is set only through the WithSubjectIdentifierAudiences "+
-				"Go option and is not a RunConfig field yet",
+				"%w; add %q to SubjectIdentifierAudiences, which is set through the WithSubjectIdentifierAudiences option",
 			clientID, i, target.Issuer, target.RequiredSubjectClaims[0], errIDJAGSubjectClaimsNeedAudience,
 			te.SubjectTokenAudiences[missing])
 	}
 	return nil
+}
+
+// foldIssuerForComparison returns an issuer URL with a lower-case scheme and
+// host, no default port for the scheme (443 for https, 80 for http) and one
+// trailing slash dropped. A value that does not parse is returned unchanged.
+//
+// It is applied to both sides of the reserved check, because this server's own
+// issuer, token endpoint and allowed_audiences are not held to the
+// well-formed rules that target issuers are, and a target must not equal any
+// spelling of them. The result is only compared, never emitted.
+func foldIssuerForComparison(issuer string) string {
+	parsed, err := url.Parse(issuer)
+	if err != nil {
+		return issuer
+	}
+	folded := *parsed
+	folded.Scheme = strings.ToLower(parsed.Scheme)
+	host := strings.ToLower(parsed.Hostname())
+	port := parsed.Port()
+	if isDefaultPort(folded.Scheme, port) {
+		port = ""
+	}
+	switch {
+	case port != "":
+		folded.Host = net.JoinHostPort(host, port)
+	case strings.Contains(host, ":"):
+		folded.Host = "[" + host + "]"
+	default:
+		folded.Host = host
+	}
+	folded.Path = strings.TrimSuffix(parsed.Path, "/")
+	folded.RawPath = strings.TrimSuffix(parsed.RawPath, "/")
+	return folded.String()
+}
+
+// isDefaultPort reports whether port is the default for scheme.
+func isDefaultPort(scheme, port string) bool {
+	return (scheme == "https" && port == "443") || (scheme == "http" && port == "80")
 }

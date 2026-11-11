@@ -138,6 +138,7 @@ func TestValidateIDJAGTargets(t *testing.T) {
 		{name: "two targets", targets: twoIssuers("https://as2.example.com", "https://as3.example.com")},
 		{name: "same host as an allowed audience but another path", targets: withIssuer("https://mcp.example.com/as")},
 		{name: "issuer with trailing slash", targets: withIssuer("https://as2.example.com/")},
+		{name: "http loopback issuer with non-default port", targets: withIssuer("http://localhost:8080")},
 		{name: "http loopback issuer", targets: withIssuer("http://localhost:9000")},
 		{name: "http loopback IP issuer", targets: withIssuer("http://127.0.0.1:9000/as")},
 		{name: "no targets", targets: nil, wantErr: errIDJAGNoTargets},
@@ -150,48 +151,62 @@ func TestValidateIDJAGTargets(t *testing.T) {
 		{name: "issuer with tenant path", targets: withIssuer("https://as2.example.com/tenant/a")},
 		{name: "issuer with tenant path and trailing slash", targets: withIssuer("https://as2.example.com/tenant/")},
 		{name: "issuer with explicit non-default port", targets: withIssuer("https://as2.example.com:8443")},
-		{name: "issuer with dot segment", targets: withIssuer("https://as2.example.com/a/./b"), wantErr: errIDJAGIssuerNotCanonical},
-		{name: "issuer with dot-dot segment", targets: withIssuer("https://as2.example.com/a/../b"), wantErr: errIDJAGIssuerNotCanonical},
-		{name: "issuer that is a dot segment", targets: withIssuer("https://as2.example.com/."), wantErr: errIDJAGIssuerNotCanonical},
-		{name: "issuer with empty path segment", targets: withIssuer("https://as2.example.com/a//b"), wantErr: errIDJAGIssuerNotCanonical},
-		{name: "issuer with leading double slash", targets: withIssuer("https://as2.example.com//"), wantErr: errIDJAGIssuerNotCanonical},
-		{name: "issuer with trailing double slash", targets: withIssuer("https://as2.example.com/a//"), wantErr: errIDJAGIssuerNotCanonical},
+		{name: "issuer with dot segment", targets: withIssuer("https://as2.example.com/a/./b"), wantErr: errIDJAGIssuerNotWellFormed},
+		{name: "issuer with dot-dot segment", targets: withIssuer("https://as2.example.com/a/../b"), wantErr: errIDJAGIssuerNotWellFormed},
+		{name: "issuer that is a dot segment", targets: withIssuer("https://as2.example.com/."), wantErr: errIDJAGIssuerNotWellFormed},
+		{name: "issuer with empty path segment", targets: withIssuer("https://as2.example.com/a//b"), wantErr: errIDJAGIssuerNotWellFormed},
+		{name: "issuer with leading double slash", targets: withIssuer("https://as2.example.com//"), wantErr: errIDJAGIssuerNotWellFormed},
+		{name: "issuer with trailing double slash", targets: withIssuer("https://as2.example.com/a//"), wantErr: errIDJAGIssuerNotWellFormed},
 		{name: "issuer with needless percent-encoding", targets: withIssuer("https://as2.example.com/%7Etenant"),
-			wantErr: errIDJAGIssuerNotCanonical},
+			wantErr: errIDJAGIssuerNotWellFormed},
 		{name: "issuer with leading zero in port", targets: withIssuer("https://as2.example.com:0443"),
-			wantErr: errIDJAGIssuerNotCanonical},
-		{name: "issuer with empty port", targets: withIssuer("https://as2.example.com:"), wantErr: errIDJAGIssuerNotCanonical},
+			wantErr: errIDJAGIssuerNotWellFormed},
+		{name: "issuer with empty port", targets: withIssuer("https://as2.example.com:"), wantErr: errIDJAGIssuerNotWellFormed},
+		{name: "issuer with upper-case host", targets: withIssuer("https://AS2.example.com"),
+			wantErr: errIDJAGIssuerNotWellFormed},
+		{name: "issuer with mixed-case host", targets: withIssuer("https://as2.Example.com/tenant"),
+			wantErr: errIDJAGIssuerNotWellFormed},
+		{name: "issuer with upper-case scheme", targets: withIssuer("HTTPS://as2.example.com"),
+			wantErr: errIDJAGIssuerNotWellFormed},
+		{name: "https issuer with default port", targets: withIssuer("https://as2.example.com:443"),
+			wantErr: errIDJAGIssuerNotWellFormed},
+		{name: "https issuer with default port and trailing slash", targets: withIssuer("https://as2.example.com:443/"),
+			wantErr: errIDJAGIssuerNotWellFormed},
+		{name: "http loopback issuer with default port", targets: withIssuer("http://localhost:80"),
+			wantErr: errIDJAGIssuerNotWellFormed},
 		{name: "http non-loopback issuer", targets: withIssuer("http://as2.example.com"), wantErr: errIDJAGIssuerScheme},
 		{name: "non-http issuer", targets: withIssuer("ftp://as2.example.com"), wantErr: errIDJAGIssuerScheme},
 
 		{name: "duplicate issuer", targets: twoIssuers("https://as2.example.com", "https://as2.example.com"),
 			wantErr: errIDJAGIssuerDuplicate},
 		{name: "duplicate issuer differing in case", targets: twoIssuers("https://as2.example.com", "HTTPS://AS2.Example.com"),
-			wantErr: errIDJAGIssuerDuplicate},
+			wantErr: errIDJAGIssuerNotWellFormed},
 		{name: "duplicate issuer differing in trailing slash", targets: twoIssuers("https://as2.example.com", "https://as2.example.com/"),
 			wantErr: errIDJAGIssuerDuplicate},
+		{name: "duplicate issuer differing in trailing slash, slash first",
+			targets: twoIssuers("https://as2.example.com/", "https://as2.example.com"), wantErr: errIDJAGIssuerDuplicate},
 		{name: "duplicate issuer differing in default port", targets: twoIssuers("https://as2.example.com", "https://as2.example.com:443"),
-			wantErr: errIDJAGIssuerDuplicate},
+			wantErr: errIDJAGIssuerNotWellFormed},
 
 		{name: "server issuer", targets: withIssuer(idJAGTestIssuer), wantErr: errIDJAGIssuerIsServerIssuer},
-		{name: "server issuer differing in case", targets: withIssuer("HTTPS://AS1.EXAMPLE.COM"), wantErr: errIDJAGIssuerIsServerIssuer},
+		{name: "server issuer differing in case", targets: withIssuer("HTTPS://AS1.EXAMPLE.COM"), wantErr: errIDJAGIssuerNotWellFormed},
 		{name: "server issuer with trailing slash", targets: withIssuer(idJAGTestIssuer + "/"), wantErr: errIDJAGIssuerIsServerIssuer},
-		{name: "server issuer with default port", targets: withIssuer("https://as1.example.com:443"), wantErr: errIDJAGIssuerIsServerIssuer},
+		{name: "server issuer with default port", targets: withIssuer("https://as1.example.com:443"), wantErr: errIDJAGIssuerNotWellFormed},
 
 		{name: "token endpoint", targets: withIssuer(idJAGTestIssuer + oauthserver.TokenEndpointPath),
 			wantErr: errIDJAGIssuerIsTokenEndpoint},
 		{name: "token endpoint differing in case", targets: withIssuer("https://AS1.example.com/oauth/token"),
-			wantErr: errIDJAGIssuerIsTokenEndpoint},
+			wantErr: errIDJAGIssuerNotWellFormed},
 		{name: "token endpoint with trailing slash", targets: withIssuer("https://as1.example.com/oauth/token/"),
 			wantErr: errIDJAGIssuerIsTokenEndpoint},
 		{name: "token endpoint with default port", targets: withIssuer("https://as1.example.com:443/oauth/token"),
-			wantErr: errIDJAGIssuerIsTokenEndpoint},
+			wantErr: errIDJAGIssuerNotWellFormed},
 
 		{name: "allowed audience", targets: withIssuer(idJAGTestMCPAudience), wantErr: errIDJAGIssuerIsAudience},
-		{name: "allowed audience differing in case", targets: withIssuer("https://MCP.example.com"), wantErr: errIDJAGIssuerIsAudience},
+		{name: "allowed audience differing in case", targets: withIssuer("https://MCP.example.com"), wantErr: errIDJAGIssuerNotWellFormed},
 		{name: "allowed audience with trailing slash", targets: withIssuer(idJAGTestAPIAudience + "/"), wantErr: errIDJAGIssuerIsAudience},
 		{name: "allowed audience with default port", targets: withIssuer("https://broker.example.com:443/api"),
-			wantErr: errIDJAGIssuerIsAudience},
+			wantErr: errIDJAGIssuerNotWellFormed},
 
 		{name: "missing client_id", targets: withTarget(func(target *DelegateClientIDJAGTarget) { target.ClientID = "" }),
 			wantErr: errIDJAGClientIDRequired},
@@ -248,6 +263,53 @@ func TestValidateIDJAGTargets(t *testing.T) {
 					assert.Contains(t, err.Error(), tt.wantMsg, path)
 				}
 			}
+		})
+	}
+}
+
+// TestValidateIDJAGReservedOwnSpellings pins that the reserved check folds
+// this server's own issuer, token endpoint and allowed_audiences, which are not
+// held to the target issuer rules, so a well-formed target still matches them.
+func TestValidateIDJAGReservedOwnSpellings(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		issuer   string
+		audience string
+		target   string
+		wantErr  error
+	}{
+		{name: "own issuer with upper-case host", issuer: "https://AS1.Example.com", target: "https://as1.example.com",
+			wantErr: errIDJAGIssuerIsServerIssuer},
+		{name: "own issuer with default port", issuer: "https://as1.example.com:443", target: "https://as1.example.com",
+			wantErr: errIDJAGIssuerIsServerIssuer},
+		{name: "own issuer with upper-case scheme, port and slash", issuer: "HTTPS://AS1.example.com:443/",
+			target: "https://as1.example.com/", wantErr: errIDJAGIssuerIsServerIssuer},
+		{name: "own token endpoint with default port", issuer: "https://AS1.example.com:443", target: "https://as1.example.com/oauth/token",
+			wantErr: errIDJAGIssuerIsTokenEndpoint},
+		{name: "allowed audience with upper-case host and default port", issuer: idJAGTestIssuer,
+			audience: "HTTPS://MCP.example.com:443/", target: "https://mcp.example.com", wantErr: errIDJAGIssuerIsAudience},
+		{name: "unrelated target", issuer: "https://AS1.Example.com:443", audience: "HTTPS://MCP.example.com:443/",
+			target: "https://as2.example.com"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			target := idJAGTestTarget()
+			target.Issuer = tt.target
+			audiences := []string{idJAGTestAPIAudience}
+			if tt.audience != "" {
+				audiences = append(audiences, tt.audience)
+			}
+			err := validateIDJAG("broker", idJAGTestTokenExchange(target),
+				tt.issuer, strings.TrimSuffix(tt.issuer, "/")+oauthserver.TokenEndpointPath, audiences, true)
+			if tt.wantErr == nil {
+				require.NoError(t, err)
+				return
+			}
+			require.ErrorIs(t, err, tt.wantErr)
 		})
 	}
 }
@@ -379,7 +441,8 @@ func TestRunConfigDelegateClientsImplyTokenExchange(t *testing.T) {
 }
 
 // TestValidateIDJAGTargetReusedAcrossClients refuses one (issuer, client_id)
-// pair on two delegate clients, comparing issuers in normalized form.
+// pair on two delegate clients, comparing issuers with one trailing slash
+// ignored.
 func TestValidateIDJAGTargetReusedAcrossClients(t *testing.T) {
 	t.Parallel()
 
@@ -391,8 +454,10 @@ func TestValidateIDJAGTargetReusedAcrossClients(t *testing.T) {
 	}{
 		{name: "same pair", secondIssuer: "https://as2.example.com", secondClient: "broker-at-as2",
 			wantErr: errIDJAGTargetReused},
-		{name: "same pair, issuer in another spelling", secondIssuer: "HTTPS://as2.example.com:443/",
+		{name: "same pair, issuer differing in trailing slash", secondIssuer: "https://as2.example.com/",
 			secondClient: "broker-at-as2", wantErr: errIDJAGTargetReused},
+		{name: "same pair, issuer with upper-case host", secondIssuer: "https://AS2.example.com",
+			secondClient: "broker-at-as2", wantErr: errIDJAGIssuerNotWellFormed},
 		{name: "same issuer, another client_id", secondIssuer: "https://as2.example.com", secondClient: "other-at-as2"},
 		{name: "same client_id, another issuer", secondIssuer: "https://as3.example.com", secondClient: "broker-at-as2"},
 	}
@@ -418,7 +483,7 @@ func TestValidateIDJAGTargetReusedAcrossClients(t *testing.T) {
 					continue
 				}
 				assert.ErrorIs(t, err, tt.wantErr, path)
-				if err != nil {
+				if err != nil && tt.wantErr == errIDJAGTargetReused {
 					assert.Contains(t, err.Error(), `used by "broker"`, path)
 				}
 			}
@@ -460,10 +525,10 @@ func TestIDJAGValidationReachedFromBothPaths(t *testing.T) {
 	})
 }
 
-// TestValidateIDJAGSubjectClaims pins the Config-path rule that a target
+// TestValidateIDJAGSubjectClaimAudiences pins the Config-path rule that a target
 // listing required_subject_claims needs every one of the client's
 // subject_token_audiences in the subject identifier audiences.
-func TestValidateIDJAGSubjectClaims(t *testing.T) {
+func TestValidateIDJAGSubjectClaimAudiences(t *testing.T) {
 	t.Parallel()
 
 	const secondInput = "https://broker.example.com/api2"
@@ -554,16 +619,15 @@ func TestDelegateClientIDJAGRoundTrip(t *testing.T) {
 
 	const (
 		jsonDoc = `{"targets":[{"issuer":"https://as2.example.com","client_id":"broker-at-as2",` +
-			`"resources":["https://gw.example.com/mcp"],"lifetime":"60s","required_subject_claims":["upstream_subject"]}]}`
+			`"resources":["https://gw.example.com/mcp"],"lifetime":"60s"}]}`
 		yamlDoc = "targets:\n- issuer: https://as2.example.com\n  client_id: broker-at-as2\n" +
-			"  resources: [https://gw.example.com/mcp]\n  lifetime: 60s\n  required_subject_claims: [upstream_subject]\n"
+			"  resources: [https://gw.example.com/mcp]\n  lifetime: 60s\n"
 	)
 	want := DelegateClientIDJAG{Targets: []DelegateClientIDJAGTarget{{
-		Issuer:                "https://as2.example.com",
-		ClientID:              "broker-at-as2",
-		Resources:             []string{"https://gw.example.com/mcp"},
-		Lifetime:              "60s",
-		RequiredSubjectClaims: []string{"upstream_subject"},
+		Issuer:    "https://as2.example.com",
+		ClientID:  "broker-at-as2",
+		Resources: []string{"https://gw.example.com/mcp"},
+		Lifetime:  "60s",
 	}}}
 
 	var fromJSON DelegateClientIDJAG
@@ -577,6 +641,26 @@ func TestDelegateClientIDJAGRoundTrip(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(`{"self_issued_subject_tokens":"restricted","id_jag":`+jsonDoc+`}`), &te))
 	assert.Equal(t, &want, te.IDJAG)
 
+	// required_subject_claims is Go-only: config files cannot set it and it is
+	// never marshaled.
+	withClaims := `{"targets":[{"issuer":"https://as2.example.com","client_id":"c","resources":["https://gw.example.com/mcp"],` +
+		`"required_subject_claims":["sub_id"]}]}`
+	var ignoredJSON DelegateClientIDJAG
+	require.NoError(t, json.Unmarshal([]byte(withClaims), &ignoredJSON))
+	assert.Empty(t, ignoredJSON.Targets[0].RequiredSubjectClaims)
+	var ignoredYAML DelegateClientIDJAG
+	require.NoError(t, yaml.Unmarshal([]byte(
+		"targets:\n- issuer: https://as2.example.com\n  client_id: c\n  required_subject_claims: [sub_id]\n"), &ignoredYAML))
+	assert.Empty(t, ignoredYAML.Targets[0].RequiredSubjectClaims)
+	goOnly := DelegateClientIDJAG{Targets: []DelegateClientIDJAGTarget{{Issuer: "https://as2.example.com",
+		RequiredSubjectClaims: []string{"sub_id"}}}}
+	marshaledJSON, err := json.Marshal(goOnly)
+	require.NoError(t, err)
+	assert.NotContains(t, string(marshaledJSON), "required_subject_claims")
+	marshaledYAML, err := yaml.Marshal(goOnly)
+	require.NoError(t, err)
+	assert.NotContains(t, string(marshaledYAML), "required_subject_claims")
+
 	encoded, err := json.Marshal(DelegateClientTokenExchange{SelfIssuedSubjectTokens: SelfIssuedSubjectTokensRestricted})
 	require.NoError(t, err)
 	assert.NotContains(t, string(encoded), "id_jag")
@@ -589,7 +673,7 @@ func TestConfiguredClientPoliciesIDJAGTargets(t *testing.T) {
 
 	te := idJAGTestTokenExchange(
 		DelegateClientIDJAGTarget{
-			Issuer:                "HTTPS://AS2.example.com:443/",
+			Issuer:                "https://as2.example.com/",
 			ClientID:              "broker-at-as2",
 			Resources:             []string{"https://gw.example.com/mcp", "https://gw.example.com/other"},
 			RequiredSubjectClaims: []string{"upstream_subject", "sub_id"},
@@ -611,8 +695,8 @@ func TestConfiguredClientPoliciesIDJAGTargets(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, map[string]tokenexchange.IDJAGTarget{
-		"https://as2.example.com": {
-			Issuer:                "HTTPS://AS2.example.com:443/",
+		"https://as2.example.com/": {
+			Issuer:                "https://as2.example.com/",
 			ClientID:              "broker-at-as2",
 			Resources:             []string{"https://gw.example.com/mcp", "https://gw.example.com/other"},
 			Lifetime:              defaultIDJAGLifetime,
@@ -632,7 +716,7 @@ func TestConfiguredClientPoliciesIDJAGTargets(t *testing.T) {
 
 	te.IDJAG.Targets[0].Resources[0] = "https://changed.example.com"
 	te.IDJAG.Targets[0].RequiredSubjectClaims[0] = "changed"
-	got := policies["with-targets"].IDJAGTargets["https://as2.example.com"]
+	got := policies["with-targets"].IDJAGTargets["https://as2.example.com/"]
 	assert.Equal(t, "https://gw.example.com/mcp", got.Resources[0])
 	assert.Equal(t, "upstream_subject", got.RequiredSubjectClaims[0])
 }
@@ -659,6 +743,8 @@ func (b *idJAGLogBuffer) String() string {
 // logged once, by configuredClientPolicies, although validation runs on both
 // paths. The default logger is process-wide, so the test asserts only on
 // client_id values no other test uses.
+//
+//nolint:paralleltest // captures the process-global slog default
 func TestIDJAGGrantsWithoutTargetsLogOnce(t *testing.T) {
 	logs := &idJAGLogBuffer{}
 	prev := slog.Default()
@@ -706,4 +792,32 @@ func TestIDJAGGrantsWithoutTargetsLogOnce(t *testing.T) {
 	}
 	assert.Equal(t, 1, countLines(warnClient))
 	assert.Zero(t, countLines(targetsClient))
+}
+
+func TestFoldIssuerForComparison(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		in   string
+		want string
+	}{
+		{in: "https://as2.example.com", want: "https://as2.example.com"},
+		{in: "HTTPS://AS2.Example.COM", want: "https://as2.example.com"},
+		{in: "https://as2.example.com/", want: "https://as2.example.com"},
+		{in: "https://as2.example.com:443", want: "https://as2.example.com"},
+		{in: "https://as2.example.com:8443", want: "https://as2.example.com:8443"},
+		{in: "http://localhost:80/", want: "http://localhost"},
+		{in: "http://localhost:443", want: "http://localhost:443"},
+		{in: "https://as2.example.com/Tenant/", want: "https://as2.example.com/Tenant"},
+		{in: "https://as2.example.com/tenant//", want: "https://as2.example.com/tenant/"},
+		{in: "https://[::1]:443/", want: "https://[::1]"},
+		{in: "https://[::1]:8443", want: "https://[::1]:8443"},
+		{in: "://not a url", want: "://not a url"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.in, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, foldIssuerForComparison(tt.in))
+		})
+	}
 }

@@ -825,28 +825,21 @@ type AuthenticationDelegateClientIDJAGTarget struct {
 	// ClientID is this client's client_id at the other authorization server.
 	ClientID OptString `json:"client_id"`
 	// Issuer is the issuer of the other authorization server. The client sends
-	// it as the request's audience, and it becomes the ID-JAG's aud as written
-	// here. It must be an absolute https URL, or http on a loopback host, with
-	// no query, fragment or userinfo, and must be in canonical form: no dot
+	// it as the request's audience, and it becomes the ID-JAG's aud exactly as
+	// written here. It must be an absolute https URL, or http on a loopback
+	// host, with no query, fragment or userinfo. It must be well-formed: lower-case
+	// scheme and host, no default port (":443" for https, ":80" for http), no dot
 	// segments, empty path segments, unneeded percent-encoding or leading zeros
-	// in the port. One trailing slash is allowed. It must not be this server's
-	// issuer, token endpoint or one of its allowed_audiences, and must be unique
-	// within the client. The (issuer, client_id) pair must be unique across
-	// delegate clients. These comparisons ignore case, a default port and one
-	// trailing slash.
+	// in the port. One trailing slash is allowed and is kept as written. It must
+	// be unique within the client, and the (issuer, client_id) pair must be
+	// unique across delegate clients; both comparisons ignore one trailing
+	// slash. It must not be this server's issuer, token endpoint or one of its
+	// allowed_audiences; that comparison ignores case in the scheme and host, a
+	// default port and one trailing slash.
 	Issuer OptString `json:"issuer"`
 	// Lifetime is how long each ID-JAG lives, as a Go duration string in whole
 	// seconds (e.g. "60s"). Defaults to 60s; at most 300s.
 	Lifetime OptString `json:"lifetime"`
-	// RequiredSubjectClaims are subject claims every ID-JAG for this target
-	// must carry. Allowed values are upstream_subject (the user's identity at
-	// the upstream identity provider) and sub_id (the RFC 9493 subject
-	// identifier). ID-JAGs for this target will carry only the listed subject
-	// claims. Each entry needs every subject_token_audiences entry in the
-	// server's SubjectIdentifierAudiences, which is not a RunConfig field yet,
-	// so a non-empty list fails startup when set from a config file or
-	// CRD-generated RunConfig.
-	RequiredSubjectClaims []string `json:"required_subject_claims"`
 	// Resources are the resources behind the other authorization server, such
 	// as an MCP endpoint, that the client may name as the request's resource.
 	// At least one is required. Each must be a valid RFC 8707 resource URI,
@@ -869,11 +862,6 @@ func (s *AuthenticationDelegateClientIDJAGTarget) GetLifetime() OptString {
 	return s.Lifetime
 }
 
-// GetRequiredSubjectClaims returns the value of RequiredSubjectClaims.
-func (s *AuthenticationDelegateClientIDJAGTarget) GetRequiredSubjectClaims() []string {
-	return s.RequiredSubjectClaims
-}
-
 // GetResources returns the value of Resources.
 func (s *AuthenticationDelegateClientIDJAGTarget) GetResources() []string {
 	return s.Resources
@@ -892,11 +880,6 @@ func (s *AuthenticationDelegateClientIDJAGTarget) SetIssuer(val OptString) {
 // SetLifetime sets the value of Lifetime.
 func (s *AuthenticationDelegateClientIDJAGTarget) SetLifetime(val OptString) {
 	s.Lifetime = val
-}
-
-// SetRequiredSubjectClaims sets the value of RequiredSubjectClaims.
-func (s *AuthenticationDelegateClientIDJAGTarget) SetRequiredSubjectClaims(val []string) {
-	s.RequiredSubjectClaims = val
 }
 
 // SetResources sets the value of Resources.

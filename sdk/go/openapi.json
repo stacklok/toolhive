@@ -289,20 +289,12 @@
             "type": "string"
           },
           "issuer": {
-            "description": "Issuer is the issuer of the other authorization server. The client sends\nit as the request's audience, and it becomes the ID-JAG's aud as written\nhere. It must be an absolute https URL, or http on a loopback host, with\nno query, fragment or userinfo, and must be in canonical form: no dot\nsegments, empty path segments, unneeded percent-encoding or leading zeros\nin the port. One trailing slash is allowed. It must not be this server's\nissuer, token endpoint or one of its allowed_audiences, and must be unique\nwithin the client. The (issuer, client_id) pair must be unique across\ndelegate clients. These comparisons ignore case, a default port and one\ntrailing slash.",
+            "description": "Issuer is the issuer of the other authorization server. The client sends\nit as the request's audience, and it becomes the ID-JAG's aud exactly as\nwritten here. It must be an absolute https URL, or http on a loopback\nhost, with no query, fragment or userinfo. It must be well-formed: lower-case\nscheme and host, no default port (\":443\" for https, \":80\" for http), no dot\nsegments, empty path segments, unneeded percent-encoding or leading zeros\nin the port. One trailing slash is allowed and is kept as written. It must\nbe unique within the client, and the (issuer, client_id) pair must be\nunique across delegate clients; both comparisons ignore one trailing\nslash. It must not be this server's issuer, token endpoint or one of its\nallowed_audiences; that comparison ignores case in the scheme and host, a\ndefault port and one trailing slash.",
             "type": "string"
           },
           "lifetime": {
             "description": "Lifetime is how long each ID-JAG lives, as a Go duration string in whole\nseconds (e.g. \"60s\"). Defaults to 60s; at most 300s.",
             "type": "string"
-          },
-          "required_subject_claims": {
-            "description": "RequiredSubjectClaims are subject claims every ID-JAG for this target\nmust carry. Allowed values are upstream_subject (the user's identity at\nthe upstream identity provider) and sub_id (the RFC 9493 subject\nidentifier). ID-JAGs for this target will carry only the listed subject\nclaims. Each entry needs every subject_token_audiences entry in the\nserver's SubjectIdentifierAudiences, which is not a RunConfig field yet,\nso a non-empty list fails startup when set from a config file or\nCRD-generated RunConfig.",
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "uniqueItems": false
           },
           "resources": {
             "description": "Resources are the resources behind the other authorization server, such\nas an MCP endpoint, that the client may name as the request's resource.\nAt least one is required. Each must be a valid RFC 8707 resource URI,\nlisted once.",

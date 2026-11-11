@@ -953,19 +953,28 @@ and the mode.
 A delegate client that holds ID-JAG grants can list the authorization servers it
 may later get an ID-JAG for. Set `token_exchange.id_jag.targets` on the client.
 Nothing issues an ID-JAG yet. At startup the block only builds the runtime
-policy. These settings are RunConfig-only: no CRD exposes `id_jag`.
+policy. The policy is keyed by the issuer exactly as configured. At request time
+the client's `audience` parameter must equal it exactly. These settings are RunConfig-only: no CRD exposes `id_jag`.
 
 Each target has these fields:
 
 - `issuer`: the other authorization server's issuer. The client sends it as the
-  request's `audience`, and it becomes the ID-JAG's `aud` exactly as written. It
-  must be an absolute `https` URL, or `http` on a loopback host, with no query,
-  fragment or userinfo. It must be in canonical form: no dot segments, no empty
-  path segments, no unneeded percent-encoding and no leading zeros in the port. A
-  single trailing slash is allowed. It must not equal this server's issuer, its
-  token endpoint (issuer plus `/oauth/token`) or one of its `allowed_audiences`.
-  Comparisons ignore case, a default port and one trailing slash. It must be
-  unique within the client.
+  request's `audience`, and it becomes the ID-JAG's `aud` exactly as written. The
+  target server compares `aud` to its issuer as an exact string (RFC 8414,
+  RFC 7519), so the value must match the target's published issuer byte for byte.
+  Startup refuses an issuer that is not well-formed. It must be an absolute
+  `https` URL, or `http` on a loopback host, with a lower-case scheme and host,
+  no explicit default port (`:443` for `https`, `:80` for `http`), no query,
+  fragment or userinfo, no dot segments, no empty path segments, no unneeded
+  percent-encoding and no leading zeros in the port. One trailing slash is
+  allowed and kept as written. `https://as.example.com` and
+  `https://as.example.com/` are different issuers. The issuer must be unique
+  within the client, and the `(issuer, client_id)` pair must not be used by
+  another delegate client. These two checks ignore one trailing slash. The issuer
+  must not equal this server's issuer, its token endpoint (issuer plus
+  `/oauth/token`) or one of its `allowed_audiences`. This check also ignores case
+  in the scheme and host and a default port, because this server's own values are
+  not held to the well-formed rule.
 - `client_id`: required. This client's `client_id` at the other authorization
   server. The `(issuer, client_id)` pair must not be used by another delegate
   client.
@@ -974,12 +983,13 @@ Each target has these fields:
 - `lifetime`: a Go duration in whole seconds. It must be above zero and at most
   `300s`. The default is `60s`.
 - `required_subject_claims`: optional. Values are `upstream_subject` and
-  `sub_id`, with no duplicates. Each entry needs every
-  `token_exchange.subject_token_audiences` entry to be in the server's
-  `SubjectIdentifierAudiences`. That list is set only through the
-  `WithSubjectIdentifierAudiences` Go option and is not a RunConfig field yet, so
-  a non-empty `required_subject_claims` fails startup when set from a config
-  file. The check runs before upstream registration.
+  `sub_id`, with no duplicates. A config file cannot set it: it is not
+  serialized to or from JSON or YAML. Only Go callers that build the RunConfig or
+  Config in code can set it, together with `SubjectIdentifierAudiences` through
+  the `WithSubjectIdentifierAudiences` runner option. Each entry needs every
+  `token_exchange.subject_token_audiences` entry to be in
+  `SubjectIdentifierAudiences`. The runner checks this before upstream
+  registration.
 
 A client with `exchange_refresh_tokens.id_jag_max_lifetime` and no
 `id_jag.targets` logs one DEBUG line at startup. It says the client can hold
@@ -1989,12 +1999,12 @@ internal and is never sent to the client.
 - `pkg/authserver/server/tokenexchange/exchange_grant.go` — the exchange-grant entry type and its validation
 - `pkg/authserver/server/tokenexchange/multi_issuer_validator.go` — `MultiIssuerTokenValidator`, `TrustedIssuer`, `resolveActorAuthorization`, `ValidateJWKSURL`
 - `pkg/authserver/server/tokenexchange/validator.go` — `assignClaim`, `buildValidatedClaims`, `validateMayActShape`, `scpToScopeString`
-- `pkg/authserver/config.go` — `DelegateClientRunConfig`, delegate-client validation, `validateTrustedIssuerURL`, `validateJWKSEndpointURL`, `validateTrustedIssuers`, `warnTrustedIssuerAudiences`, `validateIDJAG`, `validateIDJAGTarget`, `claimIDJAGTargets`, `validateIDJAGSubjectClaims`
+- `pkg/authserver/config.go` — `DelegateClientRunConfig`, delegate-client validation, `validateTrustedIssuerURL`, `validateJWKSEndpointURL`, `validateTrustedIssuers`, `warnTrustedIssuerAudiences`, `validateIDJAG`, `validateIDJAGTarget`, `claimIDJAGTargets`, `validateIDJAGSubjectClaims`, the exported `ValidateIDJAGSubjectClaimAudiences` (called by the runner before upstream registration), the issuer comparison used by the reserved check
 - `cmd/thv-operator/api/v1beta1/mcpexternalauthconfig_types.go` — `DelegateClientConfig`, `TrustedIssuerConfig`, `EmbeddedAuthServerConfig`
 - `cmd/thv-operator/pkg/controllerutil/authserver.go` — `buildDelegateClientRunConfigs`, `buildTrustedIssuerRunConfigs`, `BuildAuthServerRunConfig`
 - `pkg/authserver/runner/embeddedauthserver.go` — delegate-client secret-reference resolution at startup, and the early `id_jag` check
 - `pkg/authserver/server_impl.go` — static delegate-client registration and precedence over an existing storage registration, `idJAGTargetPolicies`, the DEBUG log in `configuredClientPolicies`
-- `pkg/authserver/server/endpoints.go` — `TokenEndpointPath`, `NormalizeIssuer`
+- `pkg/authserver/server/endpoints.go` — `TokenEndpointPath`
 - `pkg/authserver/server/handlers/discovery.go` — advertised token-exchange and JWT-bearer grants, client-secret authentication methods
 - `cmd/thv-operator/api/v1beta1/mcpexternalauthconfig_types.go` — shared `DelegateClientConfig` CRD contract
 - `cmd/thv-operator/pkg/controllerutil/authserver.go` — Secret-reference to pod-environment conversion

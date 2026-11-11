@@ -1298,6 +1298,207 @@ func (s *AuthenticationDelegateClientExchangeRefreshTokens) UnmarshalJSON(data [
 }
 
 // Encode implements json.Marshaler.
+func (s *AuthenticationDelegateClientIDJAG) Encode(e *jx.Encoder) {
+	e.ObjStart()
+	s.encodeFields(e)
+	e.ObjEnd()
+}
+
+// encodeFields encodes fields.
+func (s *AuthenticationDelegateClientIDJAG) encodeFields(e *jx.Encoder) {
+	{
+		if s.Targets != nil {
+			e.FieldStart("targets")
+			e.ArrStart()
+			for _, elem := range s.Targets {
+				elem.Encode(e)
+			}
+			e.ArrEnd()
+		}
+	}
+}
+
+var jsonFieldsNameOfAuthenticationDelegateClientIDJAG = [1]string{
+	0: "targets",
+}
+
+// Decode decodes AuthenticationDelegateClientIDJAG from json.
+func (s *AuthenticationDelegateClientIDJAG) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode AuthenticationDelegateClientIDJAG to nil")
+	}
+
+	if err := d.ObjBytes(func(d *jx.Decoder, k []byte) error {
+		switch string(k) {
+		case "targets":
+			if err := func() error {
+				s.Targets = make([]AuthenticationDelegateClientIDJAGTarget, 0)
+				if err := d.Arr(func(d *jx.Decoder) error {
+					var elem AuthenticationDelegateClientIDJAGTarget
+					if err := elem.Decode(d); err != nil {
+						return err
+					}
+					s.Targets = append(s.Targets, elem)
+					return nil
+				}); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"targets\"")
+			}
+		default:
+			return d.Skip()
+		}
+		return nil
+	}); err != nil {
+		return errors.Wrap(err, "decode AuthenticationDelegateClientIDJAG")
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *AuthenticationDelegateClientIDJAG) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *AuthenticationDelegateClientIDJAG) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode implements json.Marshaler.
+func (s *AuthenticationDelegateClientIDJAGTarget) Encode(e *jx.Encoder) {
+	e.ObjStart()
+	s.encodeFields(e)
+	e.ObjEnd()
+}
+
+// encodeFields encodes fields.
+func (s *AuthenticationDelegateClientIDJAGTarget) encodeFields(e *jx.Encoder) {
+	{
+		if s.ClientID.Set {
+			e.FieldStart("client_id")
+			s.ClientID.Encode(e)
+		}
+	}
+	{
+		if s.Issuer.Set {
+			e.FieldStart("issuer")
+			s.Issuer.Encode(e)
+		}
+	}
+	{
+		if s.Lifetime.Set {
+			e.FieldStart("lifetime")
+			s.Lifetime.Encode(e)
+		}
+	}
+	{
+		if s.Resources != nil {
+			e.FieldStart("resources")
+			e.ArrStart()
+			for _, elem := range s.Resources {
+				e.Str(elem)
+			}
+			e.ArrEnd()
+		}
+	}
+}
+
+var jsonFieldsNameOfAuthenticationDelegateClientIDJAGTarget = [4]string{
+	0: "client_id",
+	1: "issuer",
+	2: "lifetime",
+	3: "resources",
+}
+
+// Decode decodes AuthenticationDelegateClientIDJAGTarget from json.
+func (s *AuthenticationDelegateClientIDJAGTarget) Decode(d *jx.Decoder) error {
+	if s == nil {
+		return errors.New("invalid: unable to decode AuthenticationDelegateClientIDJAGTarget to nil")
+	}
+
+	if err := d.ObjBytes(func(d *jx.Decoder, k []byte) error {
+		switch string(k) {
+		case "client_id":
+			if err := func() error {
+				s.ClientID.Reset()
+				if err := s.ClientID.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"client_id\"")
+			}
+		case "issuer":
+			if err := func() error {
+				s.Issuer.Reset()
+				if err := s.Issuer.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"issuer\"")
+			}
+		case "lifetime":
+			if err := func() error {
+				s.Lifetime.Reset()
+				if err := s.Lifetime.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"lifetime\"")
+			}
+		case "resources":
+			if err := func() error {
+				s.Resources = make([]string, 0)
+				if err := d.Arr(func(d *jx.Decoder) error {
+					var elem string
+					v, err := d.Str()
+					elem = string(v)
+					if err != nil {
+						return err
+					}
+					s.Resources = append(s.Resources, elem)
+					return nil
+				}); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"resources\"")
+			}
+		default:
+			return d.Skip()
+		}
+		return nil
+	}); err != nil {
+		return errors.Wrap(err, "decode AuthenticationDelegateClientIDJAGTarget")
+	}
+
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s *AuthenticationDelegateClientIDJAGTarget) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *AuthenticationDelegateClientIDJAGTarget) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode implements json.Marshaler.
 func (s *AuthenticationDelegateClientRunConfig) Encode(e *jx.Encoder) {
 	e.ObjStart()
 	s.encodeFields(e)
@@ -1608,6 +1809,12 @@ func (s *AuthenticationDelegateClientTokenExchange) encodeFields(e *jx.Encoder) 
 		}
 	}
 	{
+		if s.IDJag.Set {
+			e.FieldStart("id_jag")
+			s.IDJag.Encode(e)
+		}
+	}
+	{
 		e.FieldStart("self_issued_subject_tokens")
 		e.Str(s.SelfIssuedSubjectTokens)
 	}
@@ -1623,11 +1830,12 @@ func (s *AuthenticationDelegateClientTokenExchange) encodeFields(e *jx.Encoder) 
 	}
 }
 
-var jsonFieldsNameOfAuthenticationDelegateClientTokenExchange = [4]string{
+var jsonFieldsNameOfAuthenticationDelegateClientTokenExchange = [5]string{
 	0: "allowed_source_clients",
 	1: "exchange_refresh_tokens",
-	2: "self_issued_subject_tokens",
-	3: "subject_token_audiences",
+	2: "id_jag",
+	3: "self_issued_subject_tokens",
+	4: "subject_token_audiences",
 }
 
 // Decode decodes AuthenticationDelegateClientTokenExchange from json.
@@ -1668,8 +1876,18 @@ func (s *AuthenticationDelegateClientTokenExchange) Decode(d *jx.Decoder) error 
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"exchange_refresh_tokens\"")
 			}
+		case "id_jag":
+			if err := func() error {
+				s.IDJag.Reset()
+				if err := s.IDJag.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"id_jag\"")
+			}
 		case "self_issued_subject_tokens":
-			requiredBitSet[0] |= 1 << 2
+			requiredBitSet[0] |= 1 << 3
 			if err := func() error {
 				v, err := d.Str()
 				s.SelfIssuedSubjectTokens = string(v)
@@ -1709,7 +1927,7 @@ func (s *AuthenticationDelegateClientTokenExchange) Decode(d *jx.Decoder) error 
 	// Validate required fields.
 	var failures []validate.FieldError
 	for i, mask := range [1]uint8{
-		0b00000100,
+		0b00001000,
 	} {
 		if result := (requiredBitSet[i] & mask) ^ mask; result != 0 {
 			// Mask only required fields and check equality to mask using XOR.
@@ -17484,6 +17702,39 @@ func (s OptAuthenticationDelegateClientExchangeRefreshTokens) MarshalJSON() ([]b
 
 // UnmarshalJSON implements stdjson.Unmarshaler.
 func (s *OptAuthenticationDelegateClientExchangeRefreshTokens) UnmarshalJSON(data []byte) error {
+	d := jx.DecodeBytes(data)
+	return s.Decode(d)
+}
+
+// Encode encodes AuthenticationDelegateClientIDJAG as json.
+func (o OptAuthenticationDelegateClientIDJAG) Encode(e *jx.Encoder) {
+	if !o.Set {
+		return
+	}
+	o.Value.Encode(e)
+}
+
+// Decode decodes AuthenticationDelegateClientIDJAG from json.
+func (o *OptAuthenticationDelegateClientIDJAG) Decode(d *jx.Decoder) error {
+	if o == nil {
+		return errors.New("invalid: unable to decode OptAuthenticationDelegateClientIDJAG to nil")
+	}
+	o.Set = true
+	if err := o.Value.Decode(d); err != nil {
+		return err
+	}
+	return nil
+}
+
+// MarshalJSON implements stdjson.Marshaler.
+func (s OptAuthenticationDelegateClientIDJAG) MarshalJSON() ([]byte, error) {
+	e := jx.Encoder{}
+	s.Encode(&e)
+	return e.Bytes(), nil
+}
+
+// UnmarshalJSON implements stdjson.Unmarshaler.
+func (s *OptAuthenticationDelegateClientIDJAG) UnmarshalJSON(data []byte) error {
 	d := jx.DecodeBytes(data)
 	return s.Decode(d)
 }

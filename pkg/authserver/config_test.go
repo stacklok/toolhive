@@ -1525,7 +1525,7 @@ func TestDelegateClientExchangeRefreshTokensValidate(t *testing.T) {
 				GrantTypes: tt.grantTypes, RedirectURIs: redirectURIsFor(tt.grantTypes),
 				Scopes: []string{"openid"}, Audiences: audiences,
 			}}
-			assertError(t, validateDelegateClients(runConfigClients, supported, allowed),
+			assertError(t, validateDelegateClients(runConfigClients, supported, allowed, "https://auth.example.com", true),
 				tt.wantErr != "", tt.wantErr)
 
 			resolvedClients := []DelegateClient{{
@@ -1533,7 +1533,7 @@ func TestDelegateClientExchangeRefreshTokensValidate(t *testing.T) {
 				GrantTypes: tt.grantTypes, RedirectURIs: redirectURIsFor(tt.grantTypes),
 				Scopes: []string{"openid"}, Audiences: audiences,
 			}}
-			assertError(t, validateResolvedDelegateClients(resolvedClients, supported, allowed),
+			assertError(t, validateResolvedDelegateClients(resolvedClients, supported, allowed, "https://auth.example.com", true),
 				tt.wantErr != "", tt.wantErr)
 		})
 	}

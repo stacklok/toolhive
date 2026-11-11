@@ -109,6 +109,28 @@ type ConfiguredClientPolicy struct {
 	// Every present value is > 0 and <= 720h, as config validation enforces. Nil
 	// when the client has no exchange_refresh_tokens block.
 	ExchangeRefreshTokens map[string]time.Duration
+	// IDJAGTargets are the authorization servers this client may ask for an
+	// ID-JAG for, keyed by the issuer exactly as configured. Request-time
+	// lookup of the audience parameter is exact. Nil when the client has no
+	// id_jag block.
+	IDJAGTargets map[string]IDJAGTarget
+}
+
+// IDJAGTarget is one authorization server a delegate client may ask for an
+// ID-JAG for, and the limits of what it may ask.
+type IDJAGTarget struct {
+	// Issuer is the target authorization server's issuer as configured. It is
+	// the request's audience and the ID-JAG's aud.
+	Issuer string
+	// ClientID is the delegate client's client_id at the target.
+	ClientID string
+	// Resources are the resource values the client may request.
+	Resources []string
+	// Lifetime is how long each ID-JAG lives.
+	Lifetime time.Duration
+	// RequiredSubjectClaims are the subject claims every ID-JAG for this target
+	// must carry, as configuration tokens (upstream_subject, sub_id).
+	RequiredSubjectClaims []string
 }
 
 // formParams holds the validated RFC 8693 form parameters extracted from a

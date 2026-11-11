@@ -268,6 +268,45 @@
         },
         "type": "object"
       },
+      "AuthenticationDelegateClientIDJAG": {
+        "description": "IDJAG lists the authorization servers this client may ask for an\nIdentity Assertion JWT Authorization Grant (ID-JAG) for. Valid only with\nrestricted, with exchange_refresh_tokens.id_jag_max_lifetime set, and with\ntoken exchange enabled.",
+        "properties": {
+          "targets": {
+            "description": "Targets are the authorization servers the client may ask for an ID-JAG\nfor. At least one is required.",
+            "items": {
+              "$ref": "#/components/schemas/AuthenticationDelegateClientIDJAGTarget"
+            },
+            "type": "array",
+            "uniqueItems": false
+          }
+        },
+        "type": "object"
+      },
+      "AuthenticationDelegateClientIDJAGTarget": {
+        "properties": {
+          "client_id": {
+            "description": "ClientID is this client's client_id at the other authorization server.",
+            "type": "string"
+          },
+          "issuer": {
+            "description": "Issuer is the issuer of the other authorization server. The client sends\nit as the request's audience, and it becomes the ID-JAG's aud exactly as\nwritten here. It must be an absolute https URL, or http on a loopback\nhost, with no query, fragment or userinfo. It must be well-formed: lower-case\nscheme and host, no default port (\":443\" for https, \":80\" for http), no dot\nsegments, empty path segments, unneeded percent-encoding or leading zeros\nin the port. One trailing slash is allowed and is kept as written. It must\nbe unique within the client, and the (issuer, client_id) pair must be\nunique across delegate clients; both comparisons ignore one trailing\nslash. It must not be this server's issuer, token endpoint or one of its\nallowed_audiences; that comparison ignores case in the scheme and host, a\ndefault port and one trailing slash.",
+            "type": "string"
+          },
+          "lifetime": {
+            "description": "Lifetime is how long each ID-JAG lives, as a Go duration string in whole\nseconds (e.g. \"60s\"). Defaults to 60s; at most 300s.",
+            "type": "string"
+          },
+          "resources": {
+            "description": "Resources are the resources behind the other authorization server, such\nas an MCP endpoint, that the client may name as the request's resource.\nAt least one is required. Each must be a valid RFC 8707 resource URI,\nlisted once.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "uniqueItems": false
+          }
+        },
+        "type": "object"
+      },
       "AuthenticationDelegateClientRunConfig": {
         "properties": {
           "audiences": {
@@ -345,6 +384,9 @@
           },
           "exchange_refresh_tokens": {
             "$ref": "#/components/schemas/AuthenticationDelegateClientExchangeRefreshTokens"
+          },
+          "id_jag": {
+            "$ref": "#/components/schemas/AuthenticationDelegateClientIDJAG"
           },
           "self_issued_subject_tokens": {
             "description": "SelfIssuedSubjectTokens is any or restricted, and is required. With\nrestricted, a self-issued subject token must carry the client's own\nclient_id or one of AllowedSourceClients, and a may_act claim naming\nthis client does not lift that restriction. With any, the client may\nexchange any self-issued token.",

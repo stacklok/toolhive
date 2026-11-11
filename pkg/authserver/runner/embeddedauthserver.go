@@ -107,7 +107,7 @@ func WithConsentExemptClientIDs(ids []string) EmbeddedAuthServerOption {
 // claims only for sessions whose login happened while the list was non-empty; other
 // users get them from their next login. Adding an audience to a non-empty list
 // applies at the next refresh. The setting never grants an audience. It is
-// deliberately not a RunConfig field yet, so config files and operator CRDs cannot
+// deliberately not a RunConfig field, so config files and operator CRDs cannot
 // set it. The input is copied when the option is created, and repeated options
 // replace the list.
 func WithSubjectIdentifierAudiences(audiences []string) EmbeddedAuthServerOption {
@@ -381,6 +381,11 @@ func newEmbeddedAuthServerWithStorage(
 	}
 	if options.authorizationDetailsRegistry != nil && !normalized.Capabilities.TokenExchange {
 		return nil, fmt.Errorf("authorization details registry requires token exchange to be enabled")
+	}
+	// Refuse a required_subject_claims that cannot be satisfied before upstream
+	// resolution, which may register this server at an upstream via DCR.
+	if err := authserver.ValidateIDJAGSubjectClaimAudiences(delegateClients, options.subjectIdentifierAudiences); err != nil {
+		return nil, err
 	}
 
 	if err := authserver.PreflightSPIFFEStaticClientCollisions(ctx, stor, spiffeTrust); err != nil {

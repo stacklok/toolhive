@@ -122,9 +122,10 @@ func TestLegacyRender_DenialOutranksURLElicitation(t *testing.T) {
 	assert.Equal(t, vmcp.DenyMessageToolCall, text.Text)
 }
 
-// TestLegacyRender_UnknownCapabilitiesFallBack pins that vMCP sends URL mode
-// only when the session reports both facts as known and both allow it. The
-// unknown cases are what a rehydrated session reports.
+// TestLegacyRender_UnknownCapabilitiesFallBack pins #7023 AC2.2: vMCP sends
+// URL mode only when the session reports both its negotiated version and its
+// declared capabilities as known. Each row leaves one of them unknown or
+// unavailable, as a rehydrated session does.
 func TestLegacyRender_UnknownCapabilitiesFallBack(t *testing.T) {
 	t.Parallel()
 
@@ -140,12 +141,38 @@ func TestLegacyRender_UnknownCapabilitiesFallBack(t *testing.T) {
 		{name: "protocol version unknown", session: &legacySession{
 			caps: urlCapabilities(), capsKnown: true,
 		}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			answer := twoURLAnswer(t)
+			res, err := legacyToolCallError(tc.session, answer)
+			assertLegacyFallback(t, answer, res, err)
+		})
+	}
+}
+
+// TestLegacyRender_UndeclaredURLFallsBack pins the gate's known-facts side
+// (#7023 AC2.1): a session that reports both facts as known still falls back
+// unless it negotiated exactly 2025-11-25 and declared elicitation.url.
+func TestLegacyRender_UndeclaredURLFallsBack(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		session *legacySession
+	}{
 		{name: "older protocol version", session: &legacySession{
 			version: "2025-06-18", versionKnown: true, caps: urlCapabilities(), capsKnown: true,
 		}},
 		{name: "elicitation {}", session: &legacySession{
 			version: mcpparser.MCPVersionLegacy, versionKnown: true,
 			caps: mcp.ClientCapabilities{Elicitation: &mcp.ElicitationCapability{}}, capsKnown: true,
+		}},
+		{name: "form only", session: &legacySession{
+			version: mcpparser.MCPVersionLegacy, versionKnown: true,
+			caps:      mcp.ClientCapabilities{Elicitation: &mcp.ElicitationCapability{Form: &struct{}{}}},
+			capsKnown: true,
 		}},
 		{name: "no elicitation", session: &legacySession{
 			version: mcpparser.MCPVersionLegacy, versionKnown: true, capsKnown: true,

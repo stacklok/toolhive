@@ -1166,8 +1166,18 @@ rejected, regardless of which issuer each one refers to.
 `allowed_audiences` identifies resources that issued access tokens may target.
 They must be disjoint: configuring the same value in both is rejected, because
 a resource audience must not also make an assertion acceptable to the token
-endpoint. When `accepted_audiences` is omitted, the token endpoint URL is the
-only accepted assertion audience.
+endpoint. When `accepted_audiences` is omitted, a plain JWT-bearer assertion
+must name the token endpoint URL. An ID-JAG may name the token endpoint URL or
+this server's issuer identifier, which is the `aud` the draft requires. A
+configured list replaces both defaults.
+
+The one exception to the issuer default: when this server's issuer identifier
+is also listed in `allowed_audiences`, the ID-JAG handler does not accept it by
+default, for the same reason as the rule above. ID-JAGs then must name the
+token endpoint URL, as before. The server starts normally and logs one warning
+at startup, naming the issuer, if any trusted issuer enables the grant without
+`accepted_audiences`. To accept the issuer in that case, a deployment must
+stop using it as a resource audience.
 
 A `RunConfig` enables the grant per trusted issuer. This example accepts
 assertions for the authorization-server URL and permits the exact assertion
@@ -1224,8 +1234,10 @@ spec:
     strings the assertion's `aud` must intersect (`audienceIntersects`),
     checked by exact-match membership rather than equality — RFC 7523 §3
     permits a multi-valued `aud`, so an assertion may additionally name other
-    audiences without losing its match. Defaults to `[tokenEndpoint]` when
-    unset, preserving the original exact-endpoint-match behavior. This exists
+    audiences without losing its match. When unset, the plain JWT-bearer
+    grant defaults to `[tokenEndpoint]`, preserving the original
+    exact-endpoint-match behavior, and the ID-JAG grant defaults to
+    `[tokenEndpoint, issuer]`, so the issuer identifier is accepted. This exists
     to let an issuer's assertions target this AS by more than one valid name
     (e.g. across an issuer/token-endpoint URL migration) — it is deliberately
     NOT the same relaxation as accepting an arbitrary RFC 8707 resource
@@ -1375,13 +1387,17 @@ subject, `jti` or claim values. The findings are:
 - `multiple_audiences`: `aud` has more than one value.
 - `audience_not_issuer`: `aud` does not contain this server's issuer
   identifier. The handler accepts any value in the assertion issuer's
-  `jwt_bearer_grant.accepted_audiences`, and accepts the token endpoint URL only
-  when that list is empty. This line also carries a `hint` attribute that says
-  what to change. If `accepted_audiences` is empty, add both the token
-  endpoint URL and the issuer identifier to it, because setting the list
-  removes the token endpoint default, and then have the IdP use the issuer
-  identifier as `aud`. If the list does not hold the issuer identifier, add
-  it. If the list already holds it, have the IdP use it as `aud`.
+  `jwt_bearer_grant.accepted_audiences`. When that list is empty, it accepts
+  both the token endpoint URL and the issuer identifier, so this finding means
+  the IdP still uses the token endpoint (or another configured value) as `aud`.
+  This line also carries a `hint` attribute that says what to change. If
+  `accepted_audiences` is empty, the issuer identifier is already accepted, so
+  have the IdP use it as `aud`. If the list does not hold the issuer
+  identifier, add it. If the list already holds it, have the IdP use it as
+  `aud`. This finding is not logged when the issuer identifier is also in
+  `allowed_audiences`, because then no `aud` can name it (see
+  [JWT-bearer configuration](#jwt-bearer-configuration)); the startup warning
+  reports that case instead.
 - `resource_malformed`: the ID-JAG has a `resource` claim (a JSON `null` counts)
   that is not a non-empty string or a non-empty array of distinct non-empty
   strings.

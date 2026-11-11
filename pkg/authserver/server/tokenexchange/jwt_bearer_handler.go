@@ -497,7 +497,7 @@ func JWTBearerIssuanceFactory(trustedIssuers []TrustedIssuer, shared *MultiIssue
 		func(
 			validator JWTBearerAssertionValidator, tokenEndpoint string, consumer storage.AssertionJWTConsumer,
 			config *fosite.Config, strategy oauth2.AccessTokenStrategy, tokenStorage oauth2.AccessTokenStorage,
-			resolvedIssuers []TrustedIssuer,
+			resolvedIssuers []TrustedIssuer, _ []string,
 		) (any, error) {
 			return newJWTBearerIssuanceHandler(
 				validator, tokenEndpoint, consumer, config, strategy, tokenStorage, resolvedIssuers)
@@ -518,7 +518,7 @@ func jwtBearerGrantFactory(
 	build func(
 		validator JWTBearerAssertionValidator, tokenEndpoint string, consumer storage.AssertionJWTConsumer,
 		config *fosite.Config, strategy oauth2.AccessTokenStrategy, tokenStorage oauth2.AccessTokenStorage,
-		resolvedIssuers []TrustedIssuer,
+		resolvedIssuers []TrustedIssuer, allowedAudiences []string,
 	) (any, error),
 ) (server.Factory, error) {
 	resolvedIssuers, err := ResolveJWTBearerGrantPolicies(trustedIssuers)
@@ -575,7 +575,8 @@ func jwtBearerGrantFactory(
 		// the validator is always the caller-owned, closeable one — this closure
 		// never builds a MultiIssuerTokenValidator whose JWKS workers leak.
 		var validator JWTBearerAssertionValidator = shared
-		return build(validator, config.TokenURL, consumer, config.Config, atStrategy, atStorage, resolvedIssuers)
+		return build(validator, config.TokenURL, consumer, config.Config, atStrategy, atStorage, resolvedIssuers,
+			config.AllowedAudiences)
 	}, nil
 }
 

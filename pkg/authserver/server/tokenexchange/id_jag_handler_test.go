@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-jose/go-jose/v4"
+	"github.com/go-jose/go-jose/v4/jwt"
 	"github.com/ory/fosite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -83,15 +85,26 @@ func newIDJAGTestHandler(
 	t *testing.T, validator *testJWTBearerAssertionValidator, consumer *recordingAssertionConsumer,
 ) *IDJAGHandler {
 	t.Helper()
+	return newIDJAGTestHandlerWithIssuer(t, validator, consumer, "")
+}
+
+func newIDJAGTestHandlerWithIssuer(
+	t *testing.T, validator *testJWTBearerAssertionValidator, consumer *recordingAssertionConsumer, asIssuer string,
+) *IDJAGHandler {
+	t.Helper()
 	handler, err := newIDJAGIssuanceHandler(
 		validator,
 		testTokenEndpoint,
 		consumer,
-		&fosite.Config{AccessTokenLifespan: time.Hour, AudienceMatchingStrategy: fosite.DefaultAudienceMatchingStrategy},
+		&fosite.Config{
+			AccessTokenLifespan:      time.Hour,
+			AudienceMatchingStrategy: fosite.DefaultAudienceMatchingStrategy,
+			AccessTokenIssuer:        asIssuer,
+		},
 		&mockAccessTokenStrategy{},
 		&mockAccessTokenStorage{},
 		idJAGResolvedIssuers(t),
-		nil,
+		nil, nil, nil,
 	)
 	require.NoError(t, err)
 	return handler
@@ -335,6 +348,17 @@ func TestIDJAGHandler_ClientGrantAndAudience(t *testing.T) {
 	}
 }
 
+func TestIDJAGHandler_DefaultAudiencesWithoutIssuer(t *testing.T) {
+	t.Parallel()
+
+	tj := newTestJWKS(t)
+	validator := &testJWTBearerAssertionValidator{claims: validIDJAGClaims()}
+	h := newIDJAGTestHandler(t, validator, &recordingAssertionConsumer{})
+
+	require.NoError(t, h.HandleTokenEndpointRequest(context.Background(), newIDJAGRequest(t, tj, idJAGTestClientID)))
+	assert.Equal(t, []string{testTokenEndpoint}, validator.gotDefaults)
+}
+
 func TestIDJAGHandler_IssuesBoundSession(t *testing.T) {
 	t.Parallel()
 
@@ -342,11 +366,11 @@ func TestIDJAGHandler_IssuesBoundSession(t *testing.T) {
 	claims := validIDJAGClaims()
 	consumer := &recordingAssertionConsumer{}
 	validator := &testJWTBearerAssertionValidator{claims: claims}
-	h := newIDJAGTestHandler(t, validator, consumer)
+	h := newIDJAGTestHandlerWithIssuer(t, validator, consumer, idJAGTestASIssuer)
 	req := newIDJAGRequest(t, tj, idJAGTestClientID)
 
 	require.NoError(t, h.HandleTokenEndpointRequest(context.Background(), req))
-	assert.Equal(t, []string{testTokenEndpoint}, validator.gotDefaults)
+	assert.Equal(t, []string{testTokenEndpoint, idJAGTestASIssuer}, validator.gotDefaults)
 
 	// Replay consumption happened under the ID-JAG purpose with the JAG's jti —
 	// never the plain handler's purpose or an assertion-hash fallback.
@@ -446,10 +470,9 @@ func TestIDJAGHandler_MaxAgeIsCheckedBeforeResource(t *testing.T) {
 }
 
 const (
-	idJAGTestASIssuer = "https://as.example.com"
-	idJAGTestOtherAud = "https://other.example.com"
-	hintNoAcceptedAud = "add both the token endpoint URL and this server's issuer identifier to jwt_bearer_grant.accepted_audiences, " +
-		"then have the IdP use the issuer identifier as aud"
+	idJAGTestASIssuer     = "https://as.example.com"
+	idJAGTestOtherAud     = "https://other.example.com"
+	hintNoAcceptedAud     = "this server's issuer identifier is accepted by default; have the IdP use it as aud"
 	hintAcceptedAudMissed = "add this server's issuer identifier to jwt_bearer_grant.accepted_audiences"
 	hintIdPUsesWrongAud   = "have the IdP use this server's issuer identifier as aud"
 )
@@ -494,7 +517,7 @@ func newIDJAGDepartureHandler(
 		&mockAccessTokenStrategy{},
 		&mockAccessTokenStorage{},
 		resolved,
-		nil,
+		nil, nil, nil,
 	)
 	require.NoError(t, err)
 	var buf strings.Builder
@@ -952,4 +975,114 @@ func TestIDJAGHandler_ResourceDefaultsFromClaim(t *testing.T) {
 			assert.Empty(t, consumer.key, "a refused redemption must not consume the assertion")
 		})
 	}
+}
+
+func TestIDJAGHandler_IssuerAudienceSkippedWhenIssuerIsResource(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name            string
+		allowed         []string
+		wantDefaults    []string
+		wantWarnIssuer  bool
+		acceptedFromIdP []string
+		// wantNotIssuer is whether the redemption, whose aud does not name the
+		// issuer, logs audience_not_issuer. It is never logged when the issuer
+		// is a resource audience, because no aud could name it.
+		wantNotIssuer bool
+	}{
+		{name: "issuer is a resource audience", allowed: []string{idJAGTestASIssuer, idJAGTestResource},
+			wantDefaults: []string{testTokenEndpoint}, wantWarnIssuer: true},
+		{name: "issuer is not a resource audience", allowed: []string{idJAGTestResource},
+			wantDefaults: []string{testTokenEndpoint, idJAGTestASIssuer}, wantNotIssuer: true},
+		{name: "configured accepted_audiences need no warning", allowed: []string{idJAGTestASIssuer},
+			wantDefaults: []string{testTokenEndpoint}, acceptedFromIdP: []string{idJAGTestOtherAud}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			resolved, err := ResolveJWTBearerGrantPolicies([]TrustedIssuer{{
+				IssuerURL:              idJAGTestIssuer,
+				AllowedDelegateClients: []string{anyDelegateClient},
+				JWTBearerGrant: &JWTBearerGrantPolicy{
+					MaxAssertionAge:   time.Hour.String(),
+					AcceptedAudiences: tt.acceptedFromIdP,
+					SubjectBindings: []JWTBearerSubjectBinding{
+						{Subject: idJAGTestSubject, AllowedResources: []string{idJAGTestResource}},
+					},
+				},
+			}})
+			require.NoError(t, err)
+			var buf strings.Builder
+			validator := &testJWTBearerAssertionValidator{claims: validIDJAGClaims()}
+			h, err := newIDJAGIssuanceHandler(validator, testTokenEndpoint, &recordingAssertionConsumer{},
+				&fosite.Config{
+					AccessTokenIssuer:        idJAGTestASIssuer,
+					AccessTokenLifespan:      time.Hour,
+					AudienceMatchingStrategy: fosite.DefaultAudienceMatchingStrategy,
+				},
+				&mockAccessTokenStrategy{}, &mockAccessTokenStorage{}, resolved, nil, tt.allowed,
+				slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+			require.NoError(t, err)
+
+			warns := logLinesAt(&buf, "WARN")
+			if tt.wantWarnIssuer {
+				require.Len(t, warns, 1)
+				assert.Contains(t, warns[0], idJAGTestASIssuer)
+			} else {
+				assert.Empty(t, warns)
+			}
+			buf.Reset()
+
+			req := newIDJAGRequest(t, newTestJWKS(t), idJAGTestClientID)
+			require.NoError(t, h.HandleTokenEndpointRequest(context.Background(), req))
+			assert.Equal(t, tt.wantDefaults, validator.gotDefaults)
+			assert.Equal(t, tt.wantNotIssuer,
+				strings.Contains(buf.String(), "finding="+string(departureAudienceNotIssuer)))
+		})
+	}
+}
+
+func TestIDJAGHandler_RealValidatorRedeemsIssuerAudience(t *testing.T) {
+	t.Parallel()
+
+	externalJWKS := newTestJWKS(t)
+	jwksServer := startJWKSServer(t, externalJWKS)
+	trusted := []TrustedIssuer{{
+		IssuerURL:              testExternalIssuer,
+		ExpectedAudience:       testExternalAudience,
+		JWKSURL:                jwksServer.URL + "/jwks",
+		AllowedDelegateClients: []string{anyDelegateClient},
+		JWTBearerGrant: &JWTBearerGrantPolicy{
+			MaxAssertionAge: time.Hour.String(),
+			SubjectBindings: []JWTBearerSubjectBinding{
+				{Subject: "ext-user-456", AllowedResources: []string{idJAGTestResource}},
+			},
+		},
+	}}
+	validator := newMultiValidator(t, newTestJWKS(t), trusted)
+	resolved, err := ResolveJWTBearerGrantPolicies(trusted)
+	require.NoError(t, err)
+	consumer := &recordingAssertionConsumer{}
+	h, err := newIDJAGIssuanceHandler(validator, testTokenEndpoint, consumer,
+		&fosite.Config{
+			AccessTokenIssuer:        idJAGTestASIssuer,
+			AccessTokenLifespan:      time.Hour,
+			AudienceMatchingStrategy: fosite.DefaultAudienceMatchingStrategy,
+		},
+		&mockAccessTokenStrategy{}, &mockAccessTokenStorage{}, resolved, nil, []string{idJAGTestResource}, nil)
+	require.NoError(t, err)
+
+	signer, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.ES256, Key: externalJWKS.jwk},
+		(&jose.SignerOptions{}).WithHeader(jose.HeaderType, oauthproto.JWTTypeIDJAG))
+	require.NoError(t, err)
+	claims := jwtBearerExternalClaims()
+	claims.Audience = jwt.Audience{idJAGTestASIssuer}
+	raw, err := jwt.Signed(signer).Claims(claims).Claims(map[string]any{"client_id": idJAGTestClientID}).Serialize()
+	require.NoError(t, err)
+
+	req := newIDJAGRequest(t, externalJWKS, idJAGTestClientID)
+	req.Form.Set("assertion", raw)
+	require.NoError(t, h.HandleTokenEndpointRequest(context.Background(), req))
+	assert.Equal(t, "jwt-bearer-jti", consumer.key)
 }

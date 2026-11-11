@@ -129,8 +129,11 @@ type JWTBearerGrantPolicy struct {
 	// authorization server for this grant; it is NOT a resource/API
 	// identifier — a bare resource audience is deliberately not accepted
 	// here, that would let any RFC 8707 resource-scoped token satisfy the
-	// grant instead of only tokens minted for this AS. Defaults to
-	// [tokenEndpoint] when empty, preserving prior exact-match behavior.
+	// grant instead of only tokens minted for this AS. When empty, the plain
+	// JWT-bearer grant accepts the token endpoint, and the ID-JAG grant accepts
+	// the token endpoint and this server's issuer identifier, unless the issuer
+	// is also an allowed resource audience. A configured list replaces both
+	// defaults.
 	AcceptedAudiences []string `json:"accepted_audiences,omitempty" yaml:"accepted_audiences,omitempty"`
 
 	maxAssertionAge time.Duration

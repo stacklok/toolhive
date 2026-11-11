@@ -334,23 +334,31 @@ func TestMultiIssuerTokenValidator_ValidateJWTBearerAssertion_DefaultAudiences(t
 	selfJWKS := newTestJWKS(t)
 	externalJWKS := newTestJWKS(t)
 	jwksServer := startJWKSServer(t, externalJWKS)
-	validator := newMultiValidator(t, selfJWKS, []TrustedIssuer{{
-		IssuerURL:              testExternalIssuer,
-		ExpectedAudience:       testExternalAudience,
-		JWKSURL:                jwksServer.URL + "/jwks",
-		AllowedDelegateClients: []string{anyDelegateClient},
-		JWTBearerGrant: &JWTBearerGrantPolicy{
-			MaxAssertionAge: time.Hour.String(),
-			SubjectBindings: []JWTBearerSubjectBinding{
-				{Subject: "ext-user-456", AllowedResources: []string{"https://mcp.example.com"}},
+	newValidator := func(accepted []string) *MultiIssuerTokenValidator {
+		return newMultiValidator(t, selfJWKS, []TrustedIssuer{{
+			IssuerURL:              testExternalIssuer,
+			ExpectedAudience:       testExternalAudience,
+			JWKSURL:                jwksServer.URL + "/jwks",
+			AllowedDelegateClients: []string{anyDelegateClient},
+			JWTBearerGrant: &JWTBearerGrantPolicy{
+				MaxAssertionAge:   time.Hour.String(),
+				AcceptedAudiences: accepted,
+				SubjectBindings: []JWTBearerSubjectBinding{
+					{Subject: "ext-user-456", AllowedResources: []string{"https://mcp.example.com"}},
+				},
 			},
-		},
-	}})
+		}})
+	}
 
-	const secondDefault = "https://auth.example.com"
+	const (
+		secondDefault = "https://auth.example.com"
+		configured    = "https://configured.example.com"
+	)
+	const wantAudErr = "assertion audience must include one of the accepted authorization server identities"
 	tests := []struct {
 		name     string
 		defaults []string
+		accepted []string
 		aud      jwt.Audience
 		wantErr  string
 	}{
@@ -362,7 +370,22 @@ func TestMultiIssuerTokenValidator_ValidateJWTBearerAssertion_DefaultAudiences(t
 			name:     "an audience outside the defaults is rejected",
 			defaults: []string{testTokenEndpoint, secondDefault},
 			aud:      jwt.Audience{"https://other.example.com"},
-			wantErr:  "assertion audience must include one of the accepted authorization server identities",
+			wantErr:  wantAudErr,
+		},
+		{
+			name:     "a configured list replaces the second default",
+			defaults: []string{testTokenEndpoint, secondDefault}, accepted: []string{configured},
+			aud: jwt.Audience{secondDefault}, wantErr: wantAudErr,
+		},
+		{
+			name:     "a configured list replaces the token endpoint default",
+			defaults: []string{testTokenEndpoint, secondDefault}, accepted: []string{configured},
+			aud: jwt.Audience{testTokenEndpoint}, wantErr: wantAudErr,
+		},
+		{
+			name:     "a configured list accepts its own entry",
+			defaults: []string{testTokenEndpoint, secondDefault}, accepted: []string{configured},
+			aud: jwt.Audience{configured},
 		},
 	}
 
@@ -373,7 +396,7 @@ func TestMultiIssuerTokenValidator_ValidateJWTBearerAssertion_DefaultAudiences(t
 			claims.Audience = tt.aud
 			raw := externalJWKS.signToken(t, claims, nil)
 
-			validated, err := validator.ValidateJWTBearerAssertion(context.Background(), raw, tt.defaults)
+			validated, err := newValidator(tt.accepted).ValidateJWTBearerAssertion(context.Background(), raw, tt.defaults)
 			if tt.wantErr != "" {
 				require.ErrorContains(t, err, tt.wantErr)
 				return

@@ -79,6 +79,15 @@ type IDJAGHandler struct {
 	// AccessTokenIssuer).
 	issuer fosite.AccessTokenIssuerProvider
 
+	// issuerIsResource is set once at construction when the issuer identifier
+	// is also one of the server's resource audiences (allowed_audiences). The
+	// issuer then stays out of the default accepted audiences, because an
+	// access token minted for that resource would otherwise be redeemable as
+	// an assertion, and audience_not_issuer is not logged, because no IdP
+	// could fix it. It is a bool, not a copy of the issuer, so the issuer
+	// provider above remains the only source of the issuer value.
+	issuerIsResource bool
+
 	// logger receives the draft-departure lines; nil means slog.Default().
 	logger *slog.Logger
 
@@ -104,7 +113,7 @@ const (
 func newIDJAGIssuanceHandler(
 	validator JWTBearerAssertionValidator, tokenEndpoint string, consumer storage.AssertionJWTConsumer,
 	config *fosite.Config, strategy oauth2.AccessTokenStrategy, tokenStorage oauth2.AccessTokenStorage,
-	trustedIssuers []TrustedIssuer, explicitGrantClientIDs []string,
+	trustedIssuers []TrustedIssuer, explicitGrantClientIDs, allowedAudiences []string, logger *slog.Logger,
 ) (*IDJAGHandler, error) {
 	core, err := newJWTBearerIssuanceHandler(
 		validator, tokenEndpoint, consumer, config, strategy, tokenStorage, trustedIssuers)
@@ -115,7 +124,21 @@ func newIDJAGIssuanceHandler(
 	for _, id := range explicitGrantClientIDs {
 		explicitGrantClients[id] = struct{}{}
 	}
-	return &IDJAGHandler{core: core, explicitGrantClients: explicitGrantClients, issuer: config}, nil
+	h := &IDJAGHandler{core: core, explicitGrantClients: explicitGrantClients, issuer: config, logger: logger}
+	asIssuer := config.GetAccessTokenIssuer(context.Background())
+	h.issuerIsResource = asIssuer != "" && slices.Contains(allowedAudiences, asIssuer)
+	if h.issuerIsResource && slices.ContainsFunc(trustedIssuers, func(ti TrustedIssuer) bool {
+		return ti.JWTBearerGrant != nil && len(ti.JWTBearerGrant.AcceptedAudiences) == 0
+	}) {
+		if logger == nil {
+			logger = slog.Default()
+		}
+		logger.Warn("The issuer identifier is also a resource audience (allowed_audiences), "+
+			"so ID-JAGs with aud set to the issuer are not accepted by default; "+
+			"have the IdP use the token endpoint as aud, or stop listing the issuer in allowed_audiences",
+			"issuer", asIssuer)
+	}
+	return h, nil
 }
 
 // CanHandleTokenEndpointRequest claims only recognized ID-JAG assertions —
@@ -151,7 +174,7 @@ func (h *IDJAGHandler) HandleTokenEndpointRequest(ctx context.Context, requester
 	if err != nil {
 		return err
 	}
-	claims, err := h.core.validator.ValidateJWTBearerAssertion(ctx, assertion, []string{h.core.tokenEndpoint})
+	claims, err := h.core.validator.ValidateJWTBearerAssertion(ctx, assertion, h.defaultAudiences(ctx))
 	if err != nil {
 		return errorsx.WithStack(fosite.ErrInvalidGrant.WithHint("The ID-JAG assertion is invalid or could not be verified."))
 	}
@@ -286,8 +309,12 @@ func (h *IDJAGHandler) logDraftDepartures(
 	if len(claims.Audience) > 1 {
 		found = append(found, departureMultipleAudiences)
 	}
+	// An issuer that is also a resource audience can never be an accepted aud:
+	// it is left out of the defaults, and accepted_audiences must not overlap
+	// allowed_audiences. No IdP could fix the finding, and the startup warning
+	// in newIDJAGIssuanceHandler already reports the configuration.
 	asIssuer := h.issuer.GetAccessTokenIssuer(ctx)
-	if asIssuer != "" && !slices.Contains(claims.Audience, asIssuer) {
+	if asIssuer != "" && !h.issuerIsResource && !slices.Contains(claims.Audience, asIssuer) {
 		found = append(found, departureAudienceNotIssuer)
 	}
 	if claim, present := claims.Extra["resource"]; present {
@@ -322,15 +349,29 @@ func (h *IDJAGHandler) logDraftDepartures(
 // audienceHint tells the operator how to stop audience_not_issuer.
 func audienceHint(policy *JWTBearerGrantPolicy, asIssuer string) string {
 	switch {
-	// Setting accepted_audiences removes the token endpoint default, so both must be listed.
 	case len(policy.AcceptedAudiences) == 0:
-		return "add both the token endpoint URL and this server's issuer identifier to jwt_bearer_grant.accepted_audiences, " +
-			"then have the IdP use the issuer identifier as aud"
+		return "this server's issuer identifier is accepted by default; have the IdP use it as aud"
 	case !slices.Contains(policy.AcceptedAudiences, asIssuer):
 		return "add this server's issuer identifier to jwt_bearer_grant.accepted_audiences"
 	default:
 		return "have the IdP use this server's issuer identifier as aud"
 	}
+}
+
+// defaultAudiences is what an ID-JAG's aud may name when the issuer's policy
+// configures no accepted_audiences. Draft section 4.4.1 makes the resource
+// AS's issuer identifier the aud, so it is accepted along with the token
+// endpoint. This is safe because an ID-JAG is already refused as an RFC 8693
+// subject token and as an access token (typ checks), a plain JWT with aud =
+// issuer goes to the plain handler, which still accepts only the token
+// endpoint, and the issuer and token endpoint both name this server. The
+// issuer is left out when it is also a resource audience (issuerIsResource).
+func (h *IDJAGHandler) defaultAudiences(ctx context.Context) []string {
+	audiences := []string{h.core.tokenEndpoint}
+	if issuer := h.issuer.GetAccessTokenIssuer(ctx); issuer != "" && !h.issuerIsResource {
+		audiences = append(audiences, issuer)
+	}
+	return audiences
 }
 
 // checkClientGrant refuses an explicit-grant client whose registered grant types
@@ -381,10 +422,10 @@ func IDJAGIssuanceFactory(
 		func(
 			validator JWTBearerAssertionValidator, tokenEndpoint string, consumer storage.AssertionJWTConsumer,
 			config *fosite.Config, strategy oauth2.AccessTokenStrategy, tokenStorage oauth2.AccessTokenStorage,
-			resolvedIssuers []TrustedIssuer,
+			resolvedIssuers []TrustedIssuer, allowedAudiences []string,
 		) (any, error) {
-			return newIDJAGIssuanceHandler(
-				validator, tokenEndpoint, consumer, config, strategy, tokenStorage, resolvedIssuers, explicitGrantClientIDs)
+			return newIDJAGIssuanceHandler(validator, tokenEndpoint, consumer, config, strategy, tokenStorage,
+				resolvedIssuers, explicitGrantClientIDs, allowedAudiences, nil)
 		})
 }
 

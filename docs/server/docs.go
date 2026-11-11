@@ -670,7 +670,7 @@ const docTemplate = `{
                         "$ref": "#/components/schemas/upstreamfilter.GroupBasedFilterConfig"
                     },
                     "upstreams": {
-                        "description": "Upstreams configures connections to upstream Identity Providers for\ninteractive authorization. It may be empty only when DelegateClients or a\nTrustedIssuer with JWTBearerGrant enables token-only operation.\nMultiple upstreams are supported for sequential authorization chains.",
+                        "description": "Upstreams configures connections to upstream Identity Providers for\ninteractive authorization. It may be empty only when token-only operation\nis enabled by DelegateClients (also under InboundGrants.TokenExchange),\nInboundGrants.SPIFFEClientAuth, or a TrustedIssuer with JWTBearerGrant\n(also under InboundGrants.JWTBearer).\nMultiple upstreams are supported for sequential authorization chains.",
                         "items": {
                             "$ref": "#/components/schemas/authserver.UpstreamRunConfig"
                         },
@@ -693,7 +693,7 @@ const docTemplate = `{
                 "type": "object"
             },
             "authserver.SPIFFEBundleSourceRunConfig": {
-                "description": "BundleSource declares exactly one trust-bundle source and is validated for\nshape here. The standalone file loader exists, but source initialization\nis not wired into SPIFFE authentication.",
+                "description": "BundleSource declares exactly one trust-bundle source and is validated for\nshape here. Only the file source is loaded in this build; bundle_endpoint\nand workload_api are rejected by Validate.",
                 "properties": {
                     "endpoint": {
                         "$ref": "#/components/schemas/authserver.SPIFFEBundleEndpointSourceRunConfig"

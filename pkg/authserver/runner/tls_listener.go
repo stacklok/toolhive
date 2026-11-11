@@ -19,7 +19,6 @@ import (
 	"time"
 
 	"github.com/stacklok/toolhive/pkg/authserver"
-	spiffeauth "github.com/stacklok/toolhive/pkg/authserver/spiffe"
 )
 
 const (
@@ -100,7 +99,7 @@ func newTLSListenerWithCache(
 		}
 	}
 	base.server = &http.Server{
-		Handler:           spiffeauth.Middleware(mux),
+		Handler:           mux,
 		ReadHeaderTimeout: listenerReadHeaderTimeout,
 		ReadTimeout:       listenerReadTimeout,
 		WriteTimeout:      listenerWriteTimeout,

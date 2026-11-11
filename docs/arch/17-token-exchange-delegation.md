@@ -139,8 +139,8 @@ policies reference `trusted_issuers`.
 ### Token-only embedded authorization servers
 
 An embedded authorization server may omit upstream identity providers only when
-it has a pre-provisioned delegate client or a trusted issuer with
-`jwtBearerGrant`. This mode serves token exchange without an interactive login:
+it has a pre-provisioned delegate client, a trusted issuer with `jwtBearerGrant`,
+or a SPIFFE client association (`inbound_grants.spiffe_client_auth`). This mode serves token exchange without an interactive login:
 `/oauth/authorize` validates the OAuth client and redirect URI, then returns
 `unsupported_response_type`. Discovery omits authorization-code, refresh-token,
 and PKCE capabilities while retaining token exchange (and JWT bearer when a
@@ -739,9 +739,11 @@ in addition to other grants can log users in.
   an exact member of the server's allowed audiences. Every other client is
   checked, so a client with no audiences, or an empty resource allowlist,
   permits nothing. A client that sets `grant_types` explicitly must also list
-  the JWT-bearer grant, or the redemption fails with `unauthorized_client`. A
-  client that omits `grant_types` is stored with token exchange alone but is
-  not gated, for backward compatibility. The plain JWT-bearer grant is not
+  the JWT-bearer grant, or the redemption fails with `unauthorized_client`.
+  SPIFFE association clients are always gated: `idJAGExplicitGrantClientIDs`
+  includes every association, and their `grant_types` must be exactly the
+  token-exchange grant. A delegate client that omits `grant_types` is stored
+  with token exchange alone but is not gated, for backward compatibility. The plain JWT-bearer grant is not
   gated this way, because it can run without client authentication.
 
 #### Source policy and subject token audiences

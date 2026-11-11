@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"net/url"
 	"os"
 	"slices"
 	"strings"
@@ -721,12 +720,9 @@ func validateTLSListenerIssuer(cfg *authserver.RunConfig, leaf *x509.Certificate
 	if !cfg.HasSPIFFEX509ClientAuth() {
 		return nil
 	}
-	issuer, err := url.Parse(cfg.Issuer)
+	issuer, err := authserver.ValidateSPIFFEX509Issuer(cfg.Issuer)
 	if err != nil {
-		return fmt.Errorf("parse auth server issuer: %w", err)
-	}
-	if issuer.Scheme != "https" {
-		return fmt.Errorf("SPIFFE X.509 authentication requires an https issuer")
+		return err
 	}
 	port := issuer.Port()
 	if port == "" {

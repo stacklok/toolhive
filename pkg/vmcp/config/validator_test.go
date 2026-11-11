@@ -1254,6 +1254,23 @@ func TestValidateAuthServerIntegration(t *testing.T) {
 			errMsg:  "at least one upstream",
 		},
 		{
+			name: "zero upstreams with SPIFFE client association",
+			cfg: &Config{
+				IncomingAuth: &IncomingAuthConfig{Type: IncomingAuthTypeOIDC, OIDC: &OIDCConfig{
+					Issuer: "http://localhost:9090", Audience: "https://my-vmcp",
+				}},
+				OutgoingAuth: &OutgoingAuthConfig{Source: "inline"},
+			},
+			rc: &authserver.RunConfig{
+				Issuer:           "http://localhost:9090",
+				AllowedAudiences: []string{"https://my-vmcp"},
+				InboundGrants: &authserver.InboundGrantsRunConfig{
+					SPIFFEClientAuth: []authserver.SPIFFEClientAuthRunConfig{{ClientID: "spiffe-client"}},
+				},
+			},
+			wantErr: false,
+		},
+		{
 			name: "zero upstreams with canonical token exchange and no delegate clients",
 			cfg: &Config{
 				OutgoingAuth: &OutgoingAuthConfig{Source: "inline"},

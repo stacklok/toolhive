@@ -1920,8 +1920,10 @@ type AuthenticationRunConfig struct {
 	TrustedIssuers []TokenExchangeTrustedIssuer            `json:"trusted_issuers"`
 	UpstreamFilter OptUpstreamfilterGroupBasedFilterConfig `json:"upstream_filter"`
 	// Upstreams configures connections to upstream Identity Providers for
-	// interactive authorization. It may be empty only when DelegateClients or a
-	// TrustedIssuer with JWTBearerGrant enables token-only operation.
+	// interactive authorization. It may be empty only when token-only operation
+	// is enabled by DelegateClients (also under InboundGrants.TokenExchange),
+	// InboundGrants.SPIFFEClientAuth, or a TrustedIssuer with JWTBearerGrant
+	// (also under InboundGrants.JWTBearer).
 	// Multiple upstreams are supported for sequential authorization chains.
 	Upstreams []AuthenticationUpstreamRunConfig `json:"upstreams"`
 }
@@ -2228,8 +2230,8 @@ func (s *AuthenticationSPIFFEBundleEndpointSourceRunConfig) SetURL(val OptString
 }
 
 // BundleSource declares exactly one trust-bundle source and is validated for
-// shape here. The standalone file loader exists, but source initialization
-// is not wired into SPIFFE authentication.
+// shape here. Only the file source is loaded in this build; bundle_endpoint
+// and workload_api are rejected by Validate.
 // Ref: #/components/schemas/AuthenticationSPIFFEBundleSourceRunConfig
 type AuthenticationSPIFFEBundleSourceRunConfig struct {
 	Endpoint    OptAuthenticationSPIFFEBundleEndpointSourceRunConfig  `json:"endpoint"`

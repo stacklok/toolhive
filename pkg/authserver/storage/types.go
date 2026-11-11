@@ -997,9 +997,9 @@ func sameStringSet(a, b []string) bool {
 // clientFingerprint holds the fields ReconcileConfiguredClient compares when a
 // configured client is declared over an existing row at the same ID. How much
 // of it matters depends on the row's kind (see configuredClientConflict):
-// reserved SPIFFE placeholders compare in full, other configured clients only
-// on public; the redirect URI set additionally feeds the replacement WARN
-// (see policyChanged). Client secrets are deliberately excluded -- an
+// only the reserved kind and, for non-reserved clients, the public class decide
+// a conflict; the remaining fields feed the replacement WARN (see
+// policyChanged). Client secrets are deliberately excluded -- an
 // operator rotating a secret must still be able to reconcile. JWKS keys are
 // excluded for the same reason: private_key_jwt key rotation must reconcile
 // silently.
@@ -1011,9 +1011,8 @@ func sameStringSet(a, b []string) bool {
 // into this type; the comparison exists once, so memory- and Redis-backed
 // deployments cannot disagree.
 //
-// Grant and response types and redirect URIs, like resources and identity,
-// only matter for reserved rows; for non-reserved rows only public is
-// compared.
+// Resources and identity are populated for reserved rows only. A conflict is
+// decided from the reserved kind and the public class alone.
 type clientFingerprint struct {
 	scopes        []string
 	audience      []string
@@ -1039,35 +1038,20 @@ type clientFingerprint struct {
 	reserved bool
 }
 
-// equal reports whether f and o represent the same logical client
-// configuration: equal scope, audience, grant-type, response-type, resource
-// and redirect URI sets, token endpoint auth method, identity,
-// public/confidential class, and reserved kind.
-func (f clientFingerprint) equal(o clientFingerprint) bool {
-	return sameStringSet(f.scopes, o.scopes) &&
-		sameStringSet(f.audience, o.audience) &&
-		sameStringSet(f.grantTypes, o.grantTypes) &&
-		sameStringSet(f.responseTypes, o.responseTypes) &&
-		sameStringSet(f.resources, o.resources) &&
-		sameStringSet(f.redirectURIs, o.redirectURIs) &&
-		f.tokenEndpointAuthMethod == o.tokenEndpointAuthMethod &&
-		f.identityFingerprint == o.identityFingerprint &&
-		f.public == o.public &&
-		f.reserved == o.reserved
-}
-
 // policyChanged reports whether the scopes, audience, grant types, redirect
-// URIs or token endpoint auth method differ between f and o, for the
-// operator-visible warning when a configured client is replaced with a
-// different policy. Response types and JWKS keys are deliberately not
-// compared, so a private_key_jwt key rotation replaces the stored row
-// silently.
+// URIs, token endpoint auth method, resources or SPIFFE association identity
+// differ between f and o, for the operator-visible warning when a configured
+// client is replaced with a different policy. Response types and JWKS keys
+// are deliberately not compared, so a private_key_jwt key rotation replaces
+// the stored row silently.
 func (f clientFingerprint) policyChanged(o clientFingerprint) bool {
 	return !sameStringSet(f.scopes, o.scopes) ||
 		!sameStringSet(f.audience, o.audience) ||
 		!sameStringSet(f.grantTypes, o.grantTypes) ||
 		!sameStringSet(f.redirectURIs, o.redirectURIs) ||
-		f.tokenEndpointAuthMethod != o.tokenEndpointAuthMethod
+		f.tokenEndpointAuthMethod != o.tokenEndpointAuthMethod ||
+		!sameStringSet(f.resources, o.resources) ||
+		f.identityFingerprint != o.identityFingerprint
 }
 
 // configuredClientConflict decides whether incoming may replace existing at
@@ -1075,10 +1059,12 @@ func (f clientFingerprint) policyChanged(o clientFingerprint) bool {
 // already refused DCR-issued rows. It returns nil to replace, or an
 // ErrAlreadyExists-wrapped error to refuse:
 //   - a reserved placeholder and a non-reserved client never replace each
-//     other, in either direction;
-//   - two reserved placeholders must match in full, because replicas rolling
-//     a placeholder's policy would otherwise authorize different resource
-//     sets (#6473);
+//     other, in either direction, so a DCR or delegate client cannot take over
+//     a SPIFFE client ID or the reverse;
+//   - two reserved placeholders replace each other whatever differs, so an
+//     edited association takes effect on rollout. The placeholder is inert
+//     (never admitted for a token; each replica serves its own overlay), so
+//     replacing it authorizes nothing differently on this replica;
 //   - two non-reserved clients replace each other freely, so a changed
 //     scope or audience rolls out on restart, except that a
 //     public/confidential flip is refused in either direction. Confidential
@@ -1095,10 +1081,7 @@ func configuredClientConflict(id string, existing, incoming clientFingerprint) e
 		return fmt.Errorf("%w: client %q is already registered as a different configured client "+
 			"(the incoming client is SPIFFE-reserved and the stored one is not)", ErrAlreadyExists, id)
 	case existing.reserved:
-		if !existing.equal(incoming) {
-			return fmt.Errorf("%w: client %q is already registered as a different configured client "+
-				"(SPIFFE-reserved clients must match exactly)", ErrAlreadyExists, id)
-		}
+		return nil
 	case existing.public != incoming.public:
 		return fmt.Errorf("%w: client %q is already registered as a different configured client "+
 			"(public and confidential clients cannot replace each other)", ErrAlreadyExists, id)
@@ -1107,22 +1090,31 @@ func configuredClientConflict(id string, existing, incoming clientFingerprint) e
 }
 
 // warnConfiguredClientReplaced logs, after a successful replace, that a
-// configured client's scopes, audience, grant types, redirect URIs or token
-// endpoint auth method changed. During a rolling update with differing
-// configs the replicas overwrite each other, so this is the operator's signal
-// for that flapping. Secrets are never logged.
+// configured client's scopes, audience, grant types, redirect URIs, token
+// endpoint auth method, resources or SPIFFE association identity changed.
+// It is the operator's signal for replicas overwriting each other during a
+// rolling update and for an edited SPIFFE association taking effect. Secrets and
+// the identity hash are never logged; identity_changed appears only as true.
 func warnConfiguredClientReplaced(id string, existing, incoming clientFingerprint) {
 	if !existing.policyChanged(incoming) {
 		return
 	}
-	slog.Warn("configured client replaced with a different policy",
+	attrs := []any{
 		"client_id", id,
 		"old_scopes", existing.scopes, "new_scopes", incoming.scopes,
 		"old_audiences", existing.audience, "new_audiences", incoming.audience,
 		"old_grant_types", existing.grantTypes, "new_grant_types", incoming.grantTypes,
 		"old_redirect_uris", existing.redirectURIs, "new_redirect_uris", incoming.redirectURIs,
 		"old_token_endpoint_auth_method", existing.tokenEndpointAuthMethod,
-		"new_token_endpoint_auth_method", incoming.tokenEndpointAuthMethod)
+		"new_token_endpoint_auth_method", incoming.tokenEndpointAuthMethod,
+	}
+	if !sameStringSet(existing.resources, incoming.resources) {
+		attrs = append(attrs, "old_resources", existing.resources, "new_resources", incoming.resources)
+	}
+	if existing.identityFingerprint != incoming.identityFingerprint {
+		attrs = append(attrs, "identity_changed", true)
+	}
+	slog.Warn("configured client replaced with a different policy", attrs...)
 }
 
 // fingerprintOfClient reads a live fosite.Client. Safe here because a
@@ -1199,15 +1191,15 @@ type ClientRegistry interface {
 	//   - the existing record is DCR-issued (registration.DCRIssued);
 	//   - one of the two is a reserved SPIFFE placeholder and the other is
 	//     not (they never replace each other);
-	//   - both are reserved placeholders and their full fingerprints differ
-	//     (scopes, audience, grant and response types, resources, identity).
-	//     SPIFFE clients are served from an in-process overlay, so the strict
-	//     check keeps replicas from authorizing different policies (#6473);
 	//   - both are non-reserved and one is public while the other is
 	//     confidential.
 	// Otherwise two non-reserved clients replace each other, so a changed
-	// scope or audience takes effect on restart. A replace that
-	// changes scopes or audience logs a WARN. The passed client
+	// scope or audience takes effect on restart. Two reserved placeholders
+	// also replace each other, whatever differs: a placeholder is inert, so an
+	// edited SPIFFE association takes effect on rollout. A replace that
+	// changes scopes, audience, grant types, redirect URIs, token endpoint
+	// auth method, resources or the SPIFFE identity logs a WARN (resources and
+	// identity_changed appear only when changed). The passed client
 	// must not itself carry the registration.DCRIssued marker;
 	// ReconcileConfiguredClient returns an error if it does. It also returns
 	// an error, before writing anything, for a non-reserved client whose

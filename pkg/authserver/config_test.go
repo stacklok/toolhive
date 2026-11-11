@@ -97,16 +97,30 @@ func TestValidateIssuerURL(t *testing.T) {
 	}
 }
 
+// validFileBundleSource is a bundle source the runtime can load. Validation
+// only checks the path shape, so the file need not exist.
+func validFileBundleSource() SPIFFEBundleSourceRunConfig {
+	return SPIFFEBundleSourceRunConfig{
+		Type: SPIFFEBundleSourceTypeFile,
+		File: &SPIFFEFileBundleSourceRunConfig{Path: "/etc/spiffe/bundle.json"},
+	}
+}
+
 // mustNewSPIFFETrustConfig builds a well-formed, non-empty *SPIFFETrustConfig
-// for tests asserting that Config.Validate() rejects it as not-yet-enforced.
+// for tests that need a populated trust configuration.
 func mustNewSPIFFETrustConfig(t *testing.T) *SPIFFETrustConfig {
+	t.Helper()
+	return mustNewSPIFFETrustConfigWithSource(t, validFileBundleSource())
+}
+
+func mustNewSPIFFETrustConfigWithSource(t *testing.T, source SPIFFEBundleSourceRunConfig) *SPIFFETrustConfig {
 	t.Helper()
 	trust, err := NewSPIFFETrustConfig(
 		[]SPIFFETrustDomainRunConfig{{
 			Name:         "production",
 			TrustDomain:  "example.org",
 			Methods:      []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509},
-			BundleSource: validWorkloadAPIBundleSource(),
+			BundleSource: source,
 		}},
 		&InboundGrantsRunConfig{SPIFFEClientAuth: []SPIFFEClientAuthRunConfig{{
 			TrustDomainRef:   "production",
@@ -160,6 +174,8 @@ func TestConfigValidate(t *testing.T) {
 		{name: "nil HMAC secrets", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, Upstreams: validUpstreams}, wantErr: true, errMsg: "HMAC secrets are required"},
 		{name: "HMAC too short", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: shortHMAC, Upstreams: validUpstreams}, wantErr: true, errMsg: "HMAC secret must be at least 32 bytes"},
 		{name: "no upstreams", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC}, wantErr: true, errMsg: "at least one upstream is required"},
+		{name: "SPIFFE-only config without an upstream passes", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, AllowedAudiences: []string{"https://mcp.example.com"}, SPIFFETrust: mustNewSPIFFETrustConfig(t)}},
+		{name: "SPIFFE client_id equal to a delegate client_id rejected", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, AllowedAudiences: []string{"https://mcp.example.com"}, SPIFFETrust: mustNewSPIFFETrustConfig(t), DelegateClients: []DelegateClient{{ClientID: "agent-client", ClientSecret: "delegate-secret-0123456789-abcdefghij", Scopes: []string{"openid"}, Audiences: []string{"https://mcp.example.com"}}}}, wantErr: true, errMsg: `client_id "agent-client" is configured both as a SPIFFE client association and as a delegate client`},
 		{name: "nil upstream config", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: []UpstreamConfig{{Name: "test", Type: UpstreamProviderTypeOAuth2}}}, wantErr: true, errMsg: "oauth2_config is required"},
 		{name: "multiple upstreams", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: []UpstreamConfig{{Name: "first", Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstream}, {Name: "second", Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstream}}, AllowedAudiences: []string{"https://mcp.example.com"}}},
 		{name: "upstream_filter with single upstream rejected", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, UpstreamFilter: &stubChainFilter{}}, wantErr: true, errMsg: "upstream_filter is configured but has no effect"},
@@ -208,6 +224,8 @@ func TestConfigValidate(t *testing.T) {
 		{name: "private-key JWT registration combined with insecure HTTP passes (no secret to protect)", config: Config{Issuer: "http://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, AllowPrivateKeyJWTRegistration: true, InsecureAllowHTTP: true}},
 		{name: "private-key JWT registration combined with token exchange disabled rejects", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, AllowPrivateKeyJWTRegistration: true, DisableTokenExchange: true}, wantErr: true, errMsg: "token-exchange-only"},
 
+		{name: "SPIFFE association combined with token exchange disabled rejects", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, AllowedAudiences: []string{"https://mcp.example.com"}, SPIFFETrust: mustNewSPIFFETrustConfig(t), DisableTokenExchange: true}, wantErr: true, errMsg: "SPIFFE client associations require token exchange"},
+
 		// RefreshGrantHandlers
 		{name: "nil refresh grant handler rejected", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, RefreshGrantHandlers: []fosite.TokenEndpointHandler{&recordingRefreshHandler{}, nil}}, wantErr: true, errMsg: "refresh grant handler 1 is nil"},
 		{name: "typed-nil refresh grant handler rejected", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, RefreshGrantHandlers: []fosite.TokenEndpointHandler{(*recordingRefreshHandler)(nil)}}, wantErr: true, errMsg: "refresh grant handler 0 is nil"},
@@ -221,20 +239,29 @@ func TestConfigValidate(t *testing.T) {
 		{name: "valid empty upstream name defaults", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: []UpstreamConfig{{Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstream}}, AllowedAudiences: []string{"https://mcp.example.com"}}},
 		{name: "valid OIDC upstream", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validOIDCUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}}},
 
-		// SPIFFETrust is accepted by NewSPIFFETrustConfig as well-formed, but
-		// hard-rejected here too -- mirroring RunConfig.Validate's
-		// validateSPIFFENotYetEnforced -- since a caller that constructs
-		// Config directly (e.g. authserver.New) bypasses RunConfig entirely.
+		// SPIFFETrust is accepted by NewSPIFFETrustConfig as well-formed, and
+		// passes here too since a caller that constructs Config directly
+		// (e.g. authserver.New) bypasses RunConfig entirely.
 		{name: "nil SPIFFETrust passes", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}}},
 		{
-			name: "well-formed Config.SPIFFETrust is rejected as not yet enforced",
+			name: "well-formed Config.SPIFFETrust passes",
 			config: Config{
 				Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC,
 				Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"},
 				SPIFFETrust: mustNewSPIFFETrustConfig(t),
 			},
+		},
+		{
+			name: "SPIFFE workload_api bundle source rejected",
+			config: Config{
+				Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC,
+				Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"},
+				SPIFFETrust: mustNewSPIFFETrustConfigWithSource(t, SPIFFEBundleSourceRunConfig{
+					Type: SPIFFEBundleSourceTypeWorkloadAPI, WorkloadAPI: &SPIFFEWorkloadAPIBundleSourceRunConfig{},
+				}),
+			},
 			wantErr: true,
-			errMsg:  "SPIFFE client authentication is not yet enforced",
+			errMsg:  `type "workload_api" is not supported by this build`,
 		},
 	}
 
@@ -692,6 +719,32 @@ func TestOAuth2UpstreamRunConfigValidate(t *testing.T) {
 func TestRunConfigValidate(t *testing.T) {
 	t.Parallel()
 
+	x509Config := func(mutate func(*RunConfig)) RunConfig {
+		config := RunConfig{
+			Issuer:      "https://auth.example.org",
+			TLSListener: &TLSListenerRunConfig{CertFile: "cert", KeyFile: "key"},
+			SPIFFETrustDomains: []SPIFFETrustDomainRunConfig{{
+				Name:         "production",
+				TrustDomain:  "example.org",
+				Methods:      []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509},
+				BundleSource: validFileBundleSource(),
+			}},
+			InboundGrants: &InboundGrantsRunConfig{SPIFFEClientAuth: []SPIFFEClientAuthRunConfig{{
+				TrustDomainRef:   "production",
+				PrincipalPattern: "spiffe://example.org/ns/default/*",
+				ClientID:         "agent-client",
+				Methods:          []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509},
+				Audiences:        []string{"https://mcp.example.org/resource"},
+				Scopes:           []string{"openid"},
+				GrantTypes:       []string{SPIFFEGrantTypeTokenExchange},
+			}}},
+		}
+		if mutate != nil {
+			mutate(&config)
+		}
+		return config
+	}
+
 	tests := []struct {
 		name    string
 		config  RunConfig
@@ -806,34 +859,42 @@ func TestRunConfigValidate(t *testing.T) {
 				AllowPrivateKeyJWTRegistration: true,
 			},
 		},
-		// SPIFFE trust is accepted by ValidateSPIFFETrust as well-formed, but
-		// hard-rejected here until a real SVID verification consumer lands.
+		// SPIFFE trust is accepted by ValidateSPIFFETrust as well-formed and
+		// passes here too.
 		{
 			name:   "no SPIFFE trust domains passes",
 			config: RunConfig{},
 		},
 		{
-			name: "well-formed SPIFFE trust configuration is rejected as not yet enforced",
-			config: RunConfig{
-				TLSListener: &TLSListenerRunConfig{CertFile: "cert", KeyFile: "key"},
-				SPIFFETrustDomains: []SPIFFETrustDomainRunConfig{{
-					Name:         "production",
-					TrustDomain:  "example.org",
-					Methods:      []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509},
-					BundleSource: validWorkloadAPIBundleSource(),
-				}},
-				InboundGrants: &InboundGrantsRunConfig{SPIFFEClientAuth: []SPIFFEClientAuthRunConfig{{
-					TrustDomainRef:   "production",
-					PrincipalPattern: "spiffe://example.org/ns/default/*",
-					ClientID:         "agent-client",
-					Methods:          []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509},
-					Audiences:        []string{"https://mcp.example.org/resource"},
-					Scopes:           []string{"openid"},
-					GrantTypes:       []string{SPIFFEGrantTypeTokenExchange},
-				}}},
-			},
+			name:   "well-formed SPIFFE trust configuration passes",
+			config: x509Config(nil),
+		},
+		{
+			name:    "X.509 association with an http issuer is rejected",
+			config:  x509Config(func(c *RunConfig) { c.Issuer = "http://auth.example.org" }),
 			wantErr: true,
-			errMsg:  "SPIFFE client authentication is not yet enforced",
+			errMsg:  "SPIFFE X.509 authentication requires an https issuer",
+		},
+		{
+			name: "JWT-only association with an http issuer passes",
+			config: x509Config(func(c *RunConfig) {
+				c.Issuer = "http://auth.example.org"
+				c.TLSListener = nil
+				c.SPIFFETrustDomains[0].Methods = []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodJWT}
+				c.InboundGrants.SPIFFEClientAuth[0].Methods = []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodJWT}
+			}),
+		},
+		{
+			name: "SPIFFE client_id equal to a delegate client_id is rejected",
+			config: x509Config(func(c *RunConfig) {
+				c.AllowedAudiences = []string{"https://mcp.example.org/resource"}
+				c.DelegateClients = []DelegateClientRunConfig{{
+					ClientID: "agent-client", ClientSecretEnvVar: "SECRET",
+					Scopes: []string{"openid"}, Audiences: []string{"https://mcp.example.org/resource"},
+				}}
+			}),
+			wantErr: true,
+			errMsg:  `client_id "agent-client" is configured both as a SPIFFE client association and as a delegate client`,
 		},
 	}
 
@@ -3149,6 +3210,102 @@ func TestDelegateClientTokenExchangeClone(t *testing.T) {
 			}
 			assert.Equal(t, wantSources, tt.policy.AllowedSourceClients)
 			assert.Equal(t, wantAudiences, tt.policy.SubjectTokenAudiences)
+		})
+	}
+}
+
+// spiffeBundleSourceTestTrust returns one trust domain using source and an
+// association that satisfies the grant requirement for it.
+func spiffeBundleSourceTestTrust(source SPIFFEBundleSourceRunConfig) ([]SPIFFETrustDomainRunConfig, *InboundGrantsRunConfig) {
+	domains := []SPIFFETrustDomainRunConfig{{
+		Name:         "production",
+		TrustDomain:  "example.org",
+		Methods:      []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509},
+		BundleSource: source,
+	}}
+	grants := &InboundGrantsRunConfig{SPIFFEClientAuth: []SPIFFEClientAuthRunConfig{{
+		TrustDomainRef:   "production",
+		PrincipalPattern: "spiffe://example.org/ns/default/*",
+		ClientID:         "agent-client",
+		Methods:          []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509},
+		Audiences:        []string{"https://mcp.example.com"},
+		Scopes:           []string{"openid"},
+		GrantTypes:       []string{SPIFFEGrantTypeTokenExchange},
+	}}}
+	return domains, grants
+}
+
+func TestSPIFFEBundleSourceRuntimeSupport(t *testing.T) {
+	t.Parallel()
+
+	const fileBundlePath = "/etc/spiffe/bundle.json"
+	httpsWebEndpoint := &SPIFFEBundleEndpointSourceRunConfig{
+		URL:     "https://spire.example.org/bundle",
+		Profile: SPIFFEBundleEndpointProfileHTTPSWeb,
+	}
+	httpsSPIFFEEndpoint := &SPIFFEBundleEndpointSourceRunConfig{
+		URL:     "https://spire.example.org/bundle",
+		Profile: SPIFFEBundleEndpointProfileHTTPSSPIFFE,
+	}
+
+	tests := []struct {
+		name    string
+		source  SPIFFEBundleSourceRunConfig
+		wantErr string
+	}{
+		{
+			name:   "file source accepted",
+			source: SPIFFEBundleSourceRunConfig{Type: SPIFFEBundleSourceTypeFile, File: &SPIFFEFileBundleSourceRunConfig{Path: fileBundlePath}},
+		},
+		{
+			name:    "bundle_endpoint with https_web rejected",
+			source:  SPIFFEBundleSourceRunConfig{Type: SPIFFEBundleSourceTypeEndpoint, Endpoint: httpsWebEndpoint},
+			wantErr: `type "bundle_endpoint" is not supported by this build; only "file" is supported`,
+		},
+		{
+			name:    "bundle_endpoint with https_spiffe rejected",
+			source:  SPIFFEBundleSourceRunConfig{Type: SPIFFEBundleSourceTypeEndpoint, Endpoint: httpsSPIFFEEndpoint},
+			wantErr: `type "bundle_endpoint" is not supported by this build; only "file" is supported`,
+		},
+		{
+			name:    "workload_api rejected",
+			source:  SPIFFEBundleSourceRunConfig{Type: SPIFFEBundleSourceTypeWorkloadAPI, WorkloadAPI: &SPIFFEWorkloadAPIBundleSourceRunConfig{}},
+			wantErr: `type "workload_api" is not supported by this build; only "file" is supported`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run("RunConfig/"+tt.name, func(t *testing.T) {
+			t.Parallel()
+			domains, grants := spiffeBundleSourceTestTrust(tt.source)
+			cfg := RunConfig{
+				Issuer:             "https://auth.example.org",
+				TLSListener:        &TLSListenerRunConfig{CertFile: "cert", KeyFile: "key"},
+				SPIFFETrustDomains: domains,
+				InboundGrants:      grants,
+			}
+			err := cfg.Validate()
+			if tt.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.ErrorContains(t, err, `spiffe_trust_domains[0] "production" bundle_source: `+tt.wantErr)
+		})
+
+		t.Run("Config/"+tt.name, func(t *testing.T) {
+			t.Parallel()
+			domains, grants := spiffeBundleSourceTestTrust(tt.source)
+			trust, err := NewSPIFFETrustConfig(
+				domains, grants, []string{"openid"}, []string{"https://mcp.example.com"},
+			)
+			require.NoError(t, err)
+			cfg := &Config{SPIFFETrust: trust}
+			err = cfg.validateRuntimeSPIFFEBundleSources()
+			if tt.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.ErrorContains(t, err, `spiffe_trust: trust domain "example.org" bundle_source: `+tt.wantErr)
 		})
 	}
 }

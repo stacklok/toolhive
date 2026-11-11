@@ -144,12 +144,11 @@ Welcome to the ToolHive architecture documentation. This directory contains comp
     - RFC 9396 `authorization_details` on token exchange: Go-only type registry, validation and echo
 
 18. **[SPIFFE Association Declarations](18-spiffe-association-declarations.md)**
-    - SPIFFE configuration remains rejected at startup; the feature is not yet deployable
-    - Auth-server TLS listener runs on the proxy runner and vMCP at fixed port 8443; the operator configures its certificate (`tlsListener`) but does not expose the port yet
-    - File-bundle source and `newServer` X.509/JWT bundle wiring are present but unreachable through normal SPIFFE startup
-    - JWT-SVID validation logic exists; X.509-SVID verification remains unimplemented
+    - SPIFFE client authentication is enforced for trust domains with a `file` bundle source; `bundle_endpoint` and `workload_api` fail validation
+    - Auth-server TLS listener runs on the proxy runner and vMCP at fixed port 8443; the operator configures its certificate (`tlsListener`) and exposes the port
+    - JWT-SVID and X.509-SVID client authentication (fail closed, certificate leaf profile, no fallback)
     - Fail-closed policy validation and durable, restart-safe static-client reservation
-    - Endpoint/Workload API loading and SPIFFE method integration with grants or discovery remain pending
+    - Endpoint/Workload API loading and RFC 8705 discovery metadata remain pending
 
 ### Existing Documentation
 

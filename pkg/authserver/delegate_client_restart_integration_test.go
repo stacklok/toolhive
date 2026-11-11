@@ -139,8 +139,8 @@ func spiffeTrustForScope(t *testing.T, scope string) *authserver.SPIFFETrustConf
 			TrustDomain: "example.org",
 			Methods:     []authserver.SPIFFEAuthenticationMethod{authserver.SPIFFEAuthenticationMethodX509},
 			BundleSource: authserver.SPIFFEBundleSourceRunConfig{
-				Type:        authserver.SPIFFEBundleSourceTypeWorkloadAPI,
-				WorkloadAPI: &authserver.SPIFFEWorkloadAPIBundleSourceRunConfig{},
+				Type: authserver.SPIFFEBundleSourceTypeFile,
+				File: &authserver.SPIFFEFileBundleSourceRunConfig{Path: "/etc/spiffe/bundle.json"},
 			},
 		}},
 		&authserver.InboundGrantsRunConfig{SPIFFEClientAuth: []authserver.SPIFFEClientAuthRunConfig{{
@@ -161,12 +161,11 @@ func spiffeTrustForScope(t *testing.T, scope string) *authserver.SPIFFETrustConf
 
 // TestConfiguredDelegateClientPolicyChangeAcrossRestarts restarts the auth
 // server against one shared Redis. A changed delegate policy must roll out on
-// restart, while a changed SPIFFE placeholder policy must still be refused.
+// restart, and so must a changed SPIFFE placeholder policy, each with one WARN.
 //
 // The final SPIFFE step enters at authserver.PreflightSPIFFEStaticClientCollisions,
 // the exported function NewEmbeddedAuthServerWithStorage runs before building
-// the server. A full server start cannot be used there: RunConfig.Validate
-// rejects any SPIFFE trust configuration in this build.
+// the server, so it needs no listener certificates or bundle files.
 //
 // The test captures the process-global slog default, so it cannot run in parallel.
 //
@@ -213,7 +212,7 @@ func TestConfiguredDelegateClientPolicyChangeAcrossRestarts(t *testing.T) {
 	stop()
 
 	// 5. A SPIFFE placeholder at the same Redis: the first claim succeeds, a
-	// changed association policy at the same client ID is refused.
+	// changed association policy at the same client ID replaces it with a WARN.
 	redisClient := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 	base := storage.NewRedisStorageWithClient(redisClient, restartKeyPrefix)
 	t.Cleanup(func() { _ = base.Close() })
@@ -223,8 +222,10 @@ func TestConfiguredDelegateClientPolicyChangeAcrossRestarts(t *testing.T) {
 	require.NoError(t, authserver.PreflightSPIFFEStaticClientCollisions(ctx, base, spiffeTrustForScope(t, "scope-a")),
 		"an unchanged SPIFFE association is idempotent")
 
-	err := authserver.PreflightSPIFFEStaticClientCollisions(ctx, base, spiffeTrustForScope(t, "scope-b"))
-	require.ErrorIs(t, err, storage.ErrAlreadyExists)
-	assert.Contains(t, err.Error(), "different configured client")
-	assert.Contains(t, err.Error(), "SPIFFE-reserved clients must match exactly")
+	require.NoError(t, authserver.PreflightSPIFFEStaticClientCollisions(ctx, base, spiffeTrustForScope(t, "scope-b")),
+		"a changed SPIFFE association replaces its placeholder")
+	spiffeWarns := logs.policyWarnsFor("spiffe-client")
+	require.Len(t, spiffeWarns, 1, "only the changed association logs the WARN")
+	assert.Equal(t, []string{"scope-a"}, spiffeWarns[0]["old_scopes"])
+	assert.Equal(t, []string{"scope-b"}, spiffeWarns[0]["new_scopes"])
 }

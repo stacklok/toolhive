@@ -109,8 +109,10 @@ func mapClientAssertionError(err error) error {
 		switch rfcErr.ErrorField {
 		// invalid_request: fosite's findPublicKey reports an unknown kid or no
 		// matching key this way. It also covers "server configuration does not
-		// support OpenID Connect specific authentication methods", which our
-		// client types never hit. jti_known: a replayed jti.
+		// support OpenID Connect specific authentication methods", which fosite
+		// returns when the client is not an OpenIDConnectClient, as for a SPIFFE
+		// static client; that case is remapped here to invalid_client too.
+		// jti_known: a replayed jti.
 		case fosite.ErrInvalidRequest.ErrorField, fosite.ErrJTIKnown.ErrorField:
 			return fosite.ErrInvalidClient.WithHint(rfcErr.HintField).WithWrap(err)
 		}

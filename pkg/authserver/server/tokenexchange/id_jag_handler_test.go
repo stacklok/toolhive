@@ -832,3 +832,124 @@ func TestIDJAGHandler_WarnOnceKeyIsIssuerAndFinding(t *testing.T) {
 	require.Len(t, logLinesAt(out, "DEBUG"), 1)
 	assert.Contains(t, logLinesAt(out, "DEBUG")[0], "finding="+string(departureAudienceNotIssuer))
 }
+
+const requestedResourceHint = "Exactly one resource parameter is required for the JWT-bearer grant."
+
+func TestIDJAGHandler_ResourceDefaultsFromClaim(t *testing.T) {
+	t.Parallel()
+
+	const unboundResource = "https://unbound.example.com"
+	tests := []struct {
+		name         string
+		form         func(url.Values)
+		claim        any // nil leaves the claim absent; jsonNull{} sets it to JSON null
+		clientAud    []string
+		wantErrIs    error
+		wantCode     string // OAuth error code, for errors that are not sentinel values
+		wantInvalid  string // input whose ValidateAudienceURI error is expected
+		wantAudience string
+	}{
+		{
+			name:         "absent param and string claim is accepted",
+			claim:        idJAGTestResource,
+			wantAudience: idJAGTestResource,
+		},
+		{
+			name:         "absent param and one-element array claim is accepted",
+			claim:        []any{idJAGTestResource},
+			wantAudience: idJAGTestResource,
+		},
+		{name: "absent param and two-value claim is refused", claim: []any{idJAGTestResource, unboundResource}, wantErrIs: fosite.ErrInvalidRequest},
+		{name: "absent param and no claim is refused", wantErrIs: fosite.ErrInvalidRequest},
+		{name: "absent param and empty array claim is refused", claim: []any{}, wantErrIs: fosite.ErrInvalidRequest},
+		{name: "absent param and non-string element claim is refused", claim: []any{42}, wantErrIs: fosite.ErrInvalidRequest},
+		{name: "absent param and empty string claim is refused", claim: "", wantErrIs: fosite.ErrInvalidRequest},
+		{name: "absent param and null claim is refused", claim: jsonNull{}, wantErrIs: fosite.ErrInvalidRequest},
+		{name: "absent param and array of an empty string is refused", claim: []any{""}, wantErrIs: fosite.ErrInvalidRequest},
+		{
+			name:      "absent param and duplicate-value array claim is refused",
+			claim:     []any{idJAGTestResource, idJAGTestResource},
+			wantErrIs: fosite.ErrInvalidRequest,
+		},
+		{
+			name:      "empty param wins over the claim",
+			form:      func(f url.Values) { f.Set("resource", "") },
+			claim:     idJAGTestResource,
+			wantErrIs: fosite.ErrInvalidRequest,
+		},
+		{
+			name:      "repeated params win over the claim",
+			form:      func(f url.Values) { f["resource"] = []string{idJAGTestResource, idJAGTestResource} },
+			claim:     idJAGTestResource,
+			wantErrIs: fosite.ErrInvalidRequest,
+		},
+		{
+			name:      "claim outside the subject binding is refused as a requested one is",
+			claim:     unboundResource,
+			clientAud: []string{unboundResource},
+			wantCode:  "invalid_target",
+		},
+		{
+			name:      "claim outside the client audiences is refused",
+			claim:     idJAGTestResource,
+			clientAud: []string{idJAGTestOtherAud},
+			wantErrIs: server.ErrInvalidTarget,
+		},
+		{
+			name:        "claim that is not a valid URI is refused as a requested one is",
+			claim:       "not-a-uri",
+			wantInvalid: "not-a-uri",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			claims := validIDJAGClaims()
+			switch tt.claim.(type) {
+			case nil:
+			case jsonNull:
+				claims.Extra["resource"] = nil
+			default:
+				claims.Extra["resource"] = tt.claim
+			}
+			h, consumer, out := newIDJAGDepartureHandler(t, claims, idJAGTestASIssuer, nil)
+			req := newIDJAGRequest(t, newTestJWKS(t), idJAGTestClientID)
+			delete(req.Form, "resource")
+			if tt.form != nil {
+				tt.form(req.Form)
+			}
+			if tt.clientAud != nil {
+				req.Client = &fosite.DefaultClient{ID: idJAGTestClientID, Audience: tt.clientAud}
+			}
+
+			err := h.HandleTokenEndpointRequest(t.Context(), req)
+			if tt.wantErrIs == nil && tt.wantCode == "" && tt.wantInvalid == "" {
+				require.NoError(t, err)
+				assert.Equal(t, fosite.Arguments{tt.wantAudience}, req.GetGrantedAudience())
+				assert.NotEmpty(t, consumer.key, "an accepted redemption consumes the assertion")
+				assert.NotContains(t, out.String(), "resource_not_covered")
+				return
+			}
+			require.Error(t, err)
+			switch {
+			case tt.wantInvalid != "":
+				assert.EqualError(t, err, server.ValidateAudienceURI(tt.wantInvalid).Error())
+				var oauthErr *fosite.RFC6749Error
+				require.True(t, errors.As(err, &oauthErr))
+				assert.Equal(t, "invalid_target", oauthErr.ErrorField)
+			case tt.wantCode != "":
+				var oauthErr *fosite.RFC6749Error
+				require.True(t, errors.As(err, &oauthErr))
+				assert.Equal(t, tt.wantCode, oauthErr.ErrorField)
+			default:
+				assert.ErrorIs(t, err, tt.wantErrIs)
+				if errors.Is(tt.wantErrIs, fosite.ErrInvalidRequest) {
+					var oauthErr *fosite.RFC6749Error
+					require.True(t, errors.As(err, &oauthErr))
+					assert.Equal(t, requestedResourceHint, oauthErr.HintField)
+				}
+			}
+			assert.Empty(t, consumer.key, "a refused redemption must not consume the assertion")
+		})
+	}
+}

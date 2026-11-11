@@ -6,6 +6,7 @@ package tokenexchange
 import (
 	"context"
 	"log/slog"
+	"net/url"
 	"slices"
 	"sync"
 	"time"
@@ -237,7 +238,7 @@ func checkIDJAGPolicy(
 	if err := checkAssertionMaxAge(claims, policy); err != nil {
 		return "", err
 	}
-	resource, err := requestedResource(requester.GetRequestForm())
+	resource, err := idJAGResource(requester.GetRequestForm(), claims)
 	if err != nil {
 		return "", err
 	}
@@ -245,6 +246,32 @@ func checkIDJAGPolicy(
 		return "", err
 	}
 	return resource, nil
+}
+
+// idJAGResource picks the resource an ID-JAG redemption is for. Draft section
+// 4.4 defines no resource parameter for redemption, so a client may leave it
+// out. A resource claim with a single value names the target without
+// ambiguity, so it is used as the default when the request has no resource
+// parameter. Every other case keeps the rule of requestedResource: if the
+// parameter is present in any form (empty or repeated too) it decides, and
+// without a usable single-value claim the request is refused exactly as
+// before. A defaulted value gets the same URI check as a requested one.
+func idJAGResource(form url.Values, claims *ValidatedClaims) (string, error) {
+	if _, present := form["resource"]; present {
+		return requestedResource(form)
+	}
+	claim, present := claims.Extra["resource"]
+	if !present {
+		return requestedResource(form)
+	}
+	values, wellFormed := idjag.ResourceClaim(claim)
+	if !wellFormed || len(values) != 1 {
+		return requestedResource(form)
+	}
+	if err := server.ValidateAudienceURI(values[0]); err != nil {
+		return "", errorsx.WithStack(err)
+	}
+	return values[0], nil
 }
 
 // logDraftDepartures reports an ID-JAG that departs from the draft. It runs

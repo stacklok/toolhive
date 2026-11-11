@@ -872,3 +872,57 @@ func TestJWTBearerHandler_MaxAgeIsCheckedBeforeResource(t *testing.T) {
 	assert.ErrorIs(t, err, fosite.ErrInvalidGrant)
 	assert.NotErrorIs(t, err, fosite.ErrInvalidRequest)
 }
+
+// TestJWTBearerHandler_ResourceClaimIsNotADefault pins plain RFC 7523: only the
+// ID-JAG handler falls back to a resource claim.
+func TestJWTBearerHandler_ResourceClaimIsNotADefault(t *testing.T) {
+	t.Parallel()
+
+	const (
+		issuer   = "https://idp.example.com"
+		subject  = "ext-user"
+		resource = "https://mcp.example.com"
+	)
+	resolvedIssuers, err := ResolveJWTBearerGrantPolicies([]TrustedIssuer{{
+		IssuerURL:              issuer,
+		AllowedDelegateClients: []string{anyDelegateClient},
+		JWTBearerGrant: &JWTBearerGrantPolicy{
+			MaxAssertionAge: time.Hour.String(),
+			SubjectBindings: []JWTBearerSubjectBinding{
+				{Subject: subject, AllowedResources: []string{resource}},
+			},
+		},
+	}})
+	require.NoError(t, err)
+
+	now := time.Now()
+	validator := &testJWTBearerAssertionValidator{claims: &ValidatedClaims{
+		Issuer:   issuer,
+		Subject:  subject,
+		JWTID:    "jti-claim-default",
+		IssuedAt: now,
+		Expiry:   now.Add(time.Minute),
+		Extra:    map[string]any{"resource": resource},
+	}}
+	handler, err := newJWTBearerIssuanceHandler(
+		validator,
+		testTokenEndpoint,
+		testAssertionJWTConsumer{},
+		&fosite.Config{AccessTokenLifespan: time.Hour},
+		&mockAccessTokenStrategy{},
+		&mockAccessTokenStorage{},
+		resolvedIssuers,
+	)
+	require.NoError(t, err)
+
+	req := fosite.NewAccessRequest(&session.Session{})
+	req.GrantTypes = fosite.Arguments{oauthproto.GrantTypeJWTBearer}
+	req.Form = map[string][]string{"assertion": {signAssertionWithType(t, newTestJWKS(t), nil)}}
+
+	err = handler.HandleTokenEndpointRequest(context.Background(), req)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, fosite.ErrInvalidRequest)
+	var oauthErr *fosite.RFC6749Error
+	require.True(t, errors.As(err, &oauthErr))
+	assert.Equal(t, requestedResourceHint, oauthErr.HintField)
+}

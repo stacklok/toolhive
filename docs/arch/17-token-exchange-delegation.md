@@ -1350,9 +1350,18 @@ Where the two differ is the trust model — the ID-JAG handler is **bound**:
   `sub_profile`) are validated as opaque extras and not propagated.
 - Everything else is shared with the plain handler: JWKS verification through
   the shared `MultiIssuerTokenValidator`, `NoUpstreamSessionClaimKey` stamping
-  (an ID-JAG conveys no upstream vendor session at this server), the
-  exactly-one-`resource` requirement, consume-before-issue, and the issued
-  token's lifetime being capped by the assertion's remaining validity.
+  (an ID-JAG conveys no upstream vendor session at this server),
+  consume-before-issue, and the issued token's lifetime being capped by the
+  assertion's remaining validity.
+- **One exception to the shared `resource` rule.** The plain handler needs
+  exactly one `resource` parameter. The ID-JAG handler needs the same, except
+  when the request has no `resource` parameter at all and the ID-JAG's
+  `resource` claim holds a single valid value: draft §4.4 defines no `resource`
+  parameter for redemption, so that value is used. Every other case, including
+  an empty or repeated parameter, still needs exactly one parameter. A single
+  claim value that is not an absolute URI is refused with `invalid_target`, the
+  same error a requested resource gets for that. The chosen
+  resource goes through the same subject-binding and client-audience checks.
 
 **Departures from the draft are logged, not refused.** The handler accepts some
 ID-JAGs that draft §4.4.1 does not allow. It logs these only for a request that
@@ -1377,8 +1386,9 @@ subject, `jti` or claim values. The findings are:
   that is not a non-empty string or a non-empty array of distinct non-empty
   strings.
 - `resource_not_covered`: the `resource` claim is well formed, and the `resource`
-  the client requested is not in it. The handler takes the resource from the
-  request and does not read the claim.
+  the client requested is not in it. When the request has a `resource`
+  parameter, the handler takes the resource from it, so the claim can disagree.
+  A resource defaulted from the claim is always covered.
 
 A malformed claim is never also reported as not covered. An ID-JAG with no
 `resource` claim has no resource finding. The two audience findings can appear

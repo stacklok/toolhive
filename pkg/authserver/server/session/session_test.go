@@ -23,6 +23,8 @@ import (
 	"github.com/ory/fosite/handler/oauth2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/stacklok/toolhive/pkg/authserver/claimnames"
 )
 
 var testVerifiedUpstream = UpstreamSubject{
@@ -190,9 +192,9 @@ func TestNew(t *testing.T) {
 			claimsMap := session.GetJWTClaims().ToMapClaims()
 
 			if tt.expectTsid {
-				assert.Equal(t, tt.idpSessionID, claimsMap[TokenSessionIDClaimKey])
+				assert.Equal(t, tt.idpSessionID, claimsMap[claimnames.TokenSessionIDKey])
 			} else {
-				_, ok := claimsMap[TokenSessionIDClaimKey]
+				_, ok := claimsMap[claimnames.TokenSessionIDKey]
 				assert.False(t, ok, "tsid claim should not be present when idpSessionID is empty")
 			}
 

@@ -17,6 +17,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/stacklok/toolhive/pkg/authserver/authorizationdetails"
+	"github.com/stacklok/toolhive/pkg/authserver/claimnames"
 	"github.com/stacklok/toolhive/pkg/authserver/server"
 	"github.com/stacklok/toolhive/pkg/authserver/server/session"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
@@ -81,7 +82,7 @@ func TestCheckLoginToken(t *testing.T) {
 		{name: "validated external issuer", mutate: func(c *ValidatedClaims) { c.ExternalIssuer = "https://idp" },
 			want: "subject_token_external"},
 		{name: "hash in sub", mutate: func(c *ValidatedClaims) { c.Subject = "https://idp#user" }, want: "subject_token_external"},
-		{name: "no upstream session", mutate: func(c *ValidatedClaims) { c.Extra[session.NoUpstreamSessionClaimKey] = true },
+		{name: "no upstream session", mutate: func(c *ValidatedClaims) { c.Extra[claimnames.NoUpstreamSessionKey] = true },
 			want: "subject_token_no_upstream_session"},
 		{name: "no client_id", mutate: func(c *ValidatedClaims) { c.ClientID = "" }, want: "subject_token_missing_client_id"},
 		{name: "no jti", mutate: func(c *ValidatedClaims) { c.JWTID = "" }, want: "subject_token_missing_jti"},

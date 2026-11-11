@@ -28,6 +28,7 @@ import (
 
 	"github.com/stacklok/toolhive-core/env"
 	"github.com/stacklok/toolhive/pkg/auth/upstreamtoken"
+	"github.com/stacklok/toolhive/pkg/authserver/claimnames"
 	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
 	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
@@ -1280,7 +1281,7 @@ func (v *TokenValidator) writeUpstreamReauthRequired(w http.ResponseWriter) {
 func (v *TokenValidator) loadUpstreamTokens(
 	ctx context.Context, claims jwt.MapClaims,
 ) (map[string]upstreamtoken.UpstreamCredential, map[string]error, error) {
-	tsid, ok := claims[upstreamtoken.TokenSessionIDClaimKey].(string)
+	tsid, ok := claims[claimnames.TokenSessionIDKey].(string)
 	if !ok || tsid == "" {
 		return nil, nil, nil
 	}
@@ -1324,7 +1325,7 @@ func (v *TokenValidator) isSessionlessGrant(identity *Identity, claims jwt.MapCl
 	if chain := identity.DelegationChain; chain != nil && !chain.Malformed && len(chain.Chain) > 0 {
 		return true
 	}
-	marker, ok := claims[upstreamtoken.NoUpstreamSessionClaimKey].(bool)
+	marker, ok := claims[claimnames.NoUpstreamSessionKey].(bool)
 	return ok && marker
 }
 
@@ -1420,7 +1421,7 @@ func (v *TokenValidator) Middleware(next http.Handler) http.Handler {
 				// stays at Debug, as in loadUpstreamTokens) and the providers
 				// whose rows were still stored without an access token.
 				if len(accessTokens) == 0 {
-					tsid, _ := claims[upstreamtoken.TokenSessionIDClaimKey].(string)
+					tsid, _ := claims[claimnames.TokenSessionIDKey].(string)
 					slog.DebugContext(loadCtx, "token session holds no upstream access token; returning 401",
 						"tsid", tsid, "stored_providers", slices.Sorted(maps.Keys(creds)))
 					v.writeUpstreamReauthRequired(w)

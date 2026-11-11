@@ -37,6 +37,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/stacklok/toolhive/pkg/authserver/claimnames"
 	"github.com/stacklok/toolhive/pkg/authserver/internal/fositejose"
 	"github.com/stacklok/toolhive/pkg/authserver/server"
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
@@ -1318,7 +1319,7 @@ func TestMemoryStorage_TokenSessionSnapshots(t *testing.T) {
 					assert.Equal(t, expires, storedSession.ExpiresAt[tc.tokenType])
 					assert.Equal(t, "upstream-1", storedSession.GetIDPSessionID())
 					assert.Equal(t, testVerifiedUpstream, storedSession.VerifiedUpstream)
-					assert.Equal(t, "upstream-1", storedSession.JWTClaims.Extra[authsession.TokenSessionIDClaimKey])
+					assert.Equal(t, "upstream-1", storedSession.JWTClaims.Extra[claimnames.TokenSessionIDKey])
 					assert.Equal(t, map[string]any{"roles": []string{"reader"}}, storedSession.JWTClaims.Extra["profile"])
 					assert.Equal(t, map[string]any{"tags": []string{"original"}}, storedSession.GetJWTHeader().Extra["metadata"])
 				}

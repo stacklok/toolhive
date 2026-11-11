@@ -39,6 +39,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/auth/upstreamtoken"
 	"github.com/stacklok/toolhive/pkg/authserver/authorizationdetails"
+	"github.com/stacklok/toolhive/pkg/authserver/claimnames"
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
 	"github.com/stacklok/toolhive/pkg/authserver/server/handlers"
 	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
@@ -4261,7 +4262,7 @@ func extractTSID(t *testing.T, accessToken string, publicKey any) string {
 	err = parsed.Claims(publicKey, &claims)
 	require.NoError(t, err)
 
-	tsid, ok := claims[session.TokenSessionIDClaimKey].(string)
+	tsid, ok := claims[claimnames.TokenSessionIDKey].(string)
 	require.True(t, ok, "tsid claim should be present in access token")
 	require.NotEmpty(t, tsid)
 
@@ -6922,23 +6923,6 @@ func TestIntegration_PrivateKeyJWTClientAssertionAudience(t *testing.T) {
 		assert.NotEqual(t, "invalid_client", body["error"],
 			"client authentication must pass; any later failure is about the grant: %v", body)
 	})
-}
-
-// TestNoUpstreamSessionClaimKeysMatch pins the two spellings of the
-// no-upstream-session marker together. The issuing side (session) and the
-// consuming side (upstreamtoken) deliberately do not import each other, so
-// nothing but this assertion stops one from being edited without the other.
-// A silent divergence is invisible: the auth server would keep stamping a
-// marker no resource server reads, and every RFC 7523 JWT-bearer request
-// would fail closed under a pinned Cedar primaryUpstreamProvider.
-//
-// This file is the seam — it already imports both packages — which is why the
-// test lives here rather than in either of them.
-func TestNoUpstreamSessionClaimKeysMatch(t *testing.T) {
-	t.Parallel()
-
-	assert.Equal(t, session.NoUpstreamSessionClaimKey, upstreamtoken.NoUpstreamSessionClaimKey,
-		"the issuing and consuming spellings of the no-upstream-session claim must stay identical")
 }
 
 const testDeviceFlowClientID = "device-flow-client"

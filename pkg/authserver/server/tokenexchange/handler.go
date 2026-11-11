@@ -19,6 +19,7 @@ import (
 
 	coreaudit "github.com/stacklok/toolhive-core/audit"
 	"github.com/stacklok/toolhive/pkg/authserver/authorizationdetails"
+	"github.com/stacklok/toolhive/pkg/authserver/claimnames"
 	"github.com/stacklok/toolhive/pkg/authserver/server"
 	"github.com/stacklok/toolhive/pkg/authserver/server/session"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
@@ -270,7 +271,7 @@ func (h *Handler) HandleTokenEndpointRequest(ctx context.Context, requester fosi
 	// (see buildActClaim's doc comment for why this is not nested inside
 	// act, and for how it is carried forward across re-exchanges).
 	if externalIssuer != "" {
-		delegatedSession.JWTClaims.Extra["external_issuer"] = externalIssuer
+		delegatedSession.JWTClaims.Extra[claimnames.ExternalIssuerKey] = externalIssuer
 	}
 
 	// Compute the delegated token lifetime: the shorter of the subject token's
@@ -526,41 +527,14 @@ func (h *Handler) computeLifetime(subjectExpiry time.Time) (time.Duration, error
 	return h.delegationLifespan, nil
 }
 
-// delegatedSubject returns the "sub" to embed in the delegated token.
-//
-// Self-issued tokens pass through unchanged: their subject is already a
-// UUID from UserResolver.ResolveUser's (providerID, providerSubject)
-// mapping (pkg/authserver/server/handlers/user.go), ToolHive's own native
-// subject namespace.
-//
-// A subject token from a trusted external issuer is qualified as
-// "<issuerURL>#<sub>" instead, because the issued token's "sub" is the only
-// signal Cedar's extractClientIDFromClaims (pkg/authz/authorizers/cedar/core.go)
-// keys on — it reads "sub" alone, not "iss" — and the external issuer
-// chooses that value, not ToolHive. Without qualification, an external
-// issuer could pick a "sub" equal to a native user's UUID and mint a
-// delegated token indistinguishable from that user's, entirely without
-// malicious intent on either issuer's part: two trusted issuers merely
-// choosing overlapping subject values collide with no attacker involved.
-//
-// "#" is an unambiguous separator: an issuer URL cannot itself contain a
-// fragment (the OIDC/OAuth "iss" value is a URL without a fragment
-// component, and this validator's own issuer comparison is an exact string
-// match against that value), so strings.Cut(sub, "#") on the qualified
-// subject always recovers (issuerURL, externalSub) uniquely. A native subject
-// (a UUID, or a synthesized "tk-" plus hex value) can never collide with a
-// qualified value, since neither contains a "#".
-//
-// Re-exchanging a previously-issued delegated token does not double-qualify:
-// such a token's "iss" is always this server's own issuer (fosite stamps
-// "iss" from the server's config at issuance — see session.New's doc
-// comment), so Validate routes it to the self-issued path, which never
-// calls this branch.
+// delegatedSubject returns the "sub" to embed in the delegated token: the
+// subject unchanged for self-issued tokens, or qualified with the external
+// issuer otherwise. See claimnames.QualifySubject.
 func delegatedSubject(validatedClaims *ValidatedClaims) string {
 	if validatedClaims.ExternalIssuer == "" {
 		return validatedClaims.Subject
 	}
-	return validatedClaims.ExternalIssuer + "#" + validatedClaims.Subject
+	return claimnames.QualifySubject(validatedClaims.ExternalIssuer, validatedClaims.Subject)
 }
 
 // buildActClaim assembles the RFC 8693 Section 4.1 "act" claim for the
@@ -694,7 +668,7 @@ func externalOrigin(validatedClaims *ValidatedClaims) string {
 	if validatedClaims.ExternalIssuer != "" {
 		return validatedClaims.ExternalIssuer
 	}
-	prior, _ := validatedClaims.Extra["external_issuer"].(string)
+	prior, _ := validatedClaims.Extra[claimnames.ExternalIssuerKey].(string)
 	return prior
 }
 

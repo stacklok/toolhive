@@ -36,7 +36,9 @@ const (
 // JWTBearerAssertionValidator verifies cryptographic and registered claims of a
 // plain RFC 7523 JWT-bearer assertion.
 type JWTBearerAssertionValidator interface {
-	ValidateJWTBearerAssertion(ctx context.Context, rawToken, tokenEndpoint string) (*ValidatedClaims, error)
+	ValidateJWTBearerAssertion(
+		ctx context.Context, rawToken string, defaultAudiences []string,
+	) (*ValidatedClaims, error)
 }
 
 // JWTBearerHandler implements the unbound RFC 7523 JWT-bearer grant.
@@ -164,7 +166,7 @@ func (h *JWTBearerHandler) HandleTokenEndpointRequest(ctx context.Context, reque
 	if err := validateAssertionType(assertion); err != nil {
 		return err
 	}
-	claims, err := h.validator.ValidateJWTBearerAssertion(ctx, assertion, h.tokenEndpoint)
+	claims, err := h.validator.ValidateJWTBearerAssertion(ctx, assertion, []string{h.tokenEndpoint})
 	if err != nil {
 		return errorsx.WithStack(fosite.ErrInvalidGrant.WithHint("The JWT bearer assertion is invalid or could not be verified."))
 	}

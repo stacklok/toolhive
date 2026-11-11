@@ -339,10 +339,12 @@ func TestIDJAGHandler_IssuesBoundSession(t *testing.T) {
 	tj := newTestJWKS(t)
 	claims := validIDJAGClaims()
 	consumer := &recordingAssertionConsumer{}
-	h := newIDJAGTestHandler(t, &testJWTBearerAssertionValidator{claims: claims}, consumer)
+	validator := &testJWTBearerAssertionValidator{claims: claims}
+	h := newIDJAGTestHandler(t, validator, consumer)
 	req := newIDJAGRequest(t, tj, idJAGTestClientID)
 
 	require.NoError(t, h.HandleTokenEndpointRequest(context.Background(), req))
+	assert.Equal(t, []string{testTokenEndpoint}, validator.gotDefaults)
 
 	// Replay consumption happened under the ID-JAG purpose with the JAG's jti —
 	// never the plain handler's purpose or an assertion-hash fallback.

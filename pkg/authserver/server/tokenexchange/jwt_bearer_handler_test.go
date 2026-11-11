@@ -30,15 +30,17 @@ import (
 const testTokenEndpoint = "https://auth.example.com/oauth/token"
 
 type testJWTBearerAssertionValidator struct {
-	calls  int
-	err    error
-	claims *ValidatedClaims
+	calls       int
+	err         error
+	claims      *ValidatedClaims
+	gotDefaults []string
 }
 
 func (v *testJWTBearerAssertionValidator) ValidateJWTBearerAssertion(
-	context.Context, string, string,
+	_ context.Context, _ string, defaultAudiences []string,
 ) (*ValidatedClaims, error) {
 	v.calls++
+	v.gotDefaults = defaultAudiences
 	if v.err != nil {
 		return nil, v.err
 	}
@@ -787,14 +789,15 @@ func TestJWTBearerHandler_StampsNoUpstreamSessionClaim(t *testing.T) {
 
 	tj := newTestJWKS(t)
 	now := time.Now()
+	validator := &testJWTBearerAssertionValidator{claims: &ValidatedClaims{
+		Issuer:   issuer,
+		Subject:  subject,
+		JWTID:    "jti-no-upstream-session",
+		IssuedAt: now,
+		Expiry:   now.Add(30 * time.Minute),
+	}}
 	handler, err := newJWTBearerIssuanceHandler(
-		&testJWTBearerAssertionValidator{claims: &ValidatedClaims{
-			Issuer:   issuer,
-			Subject:  subject,
-			JWTID:    "jti-no-upstream-session",
-			IssuedAt: now,
-			Expiry:   now.Add(30 * time.Minute),
-		}},
+		validator,
 		testTokenEndpoint,
 		testAssertionJWTConsumer{},
 		&fosite.Config{AccessTokenLifespan: time.Hour},
@@ -812,6 +815,8 @@ func TestJWTBearerHandler_StampsNoUpstreamSessionClaim(t *testing.T) {
 	}
 
 	require.NoError(t, handler.HandleTokenEndpointRequest(context.Background(), req))
+
+	assert.Equal(t, []string{testTokenEndpoint}, validator.gotDefaults)
 
 	issued, ok := req.GetSession().(*session.Session)
 	require.True(t, ok, "expected the handler to install a *session.Session")

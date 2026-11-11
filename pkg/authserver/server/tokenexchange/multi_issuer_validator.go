@@ -667,15 +667,16 @@ func (v *MultiIssuerTokenValidator) Validate(ctx context.Context, rawToken strin
 // assertion's authorization policy is separate from delegation policy.
 //
 // The assertion audience must intersect the issuer's configured
-// JWTBearerGrant.AcceptedAudiences, or just tokenEndpoint when that is unset.
+// JWTBearerGrant.AcceptedAudiences, or the caller's defaultAudiences when that
+// is unset.
 // The caller is responsible for the phase-specific subject binding, maximum
 // age, replay, and issuance policy after this cryptographic verification
 // succeeds.
 func (v *MultiIssuerTokenValidator) ValidateJWTBearerAssertion(
-	ctx context.Context, rawToken, tokenEndpoint string,
+	ctx context.Context, rawToken string, defaultAudiences []string,
 ) (*ValidatedClaims, error) {
-	if tokenEndpoint == "" {
-		return nil, errors.New("token endpoint must not be empty")
+	if len(defaultAudiences) == 0 || slices.Contains(defaultAudiences, "") {
+		return nil, errors.New("default audiences must not be empty")
 	}
 
 	issuer, err := peekIssuer(rawToken)
@@ -699,7 +700,7 @@ func (v *MultiIssuerTokenValidator) ValidateJWTBearerAssertion(
 		return nil, err
 	}
 
-	acceptedAudiences := []string{tokenEndpoint}
+	acceptedAudiences := defaultAudiences
 	if issuerConfig.JWTBearerGrant != nil && len(issuerConfig.JWTBearerGrant.AcceptedAudiences) > 0 {
 		acceptedAudiences = issuerConfig.JWTBearerGrant.AcceptedAudiences
 	}

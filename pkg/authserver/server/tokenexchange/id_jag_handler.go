@@ -121,7 +121,7 @@ func (h *IDJAGHandler) HandleTokenEndpointRequest(ctx context.Context, requester
 	if err != nil {
 		return err
 	}
-	claims, err := h.core.validator.ValidateJWTBearerAssertion(ctx, assertion, h.core.tokenEndpoint)
+	claims, err := h.core.validator.ValidateJWTBearerAssertion(ctx, assertion, []string{h.core.tokenEndpoint})
 	if err != nil {
 		return errorsx.WithStack(fosite.ErrInvalidGrant.WithHint("The ID-JAG assertion is invalid or could not be verified."))
 	}

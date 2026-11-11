@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 
 	jwt "github.com/golang-jwt/jwt/v5"
@@ -83,28 +84,15 @@ func FromExchange(tok *oauth2.Token, audience, resource string) (string, error) 
 	// Draft 4.3.3: each granted requested resource MUST appear in the resource
 	// claim exactly as sent, and the IdP MUST answer invalid_target if it
 	// grants none. With one requested resource, this is that rule.
-	if resource != "" && !claimContains(claims["resource"], resource) {
-		return "", newExchangeError(ErrResourceMismatch,
-			"ID-JAG resource claim %v does not contain requested resource %q", claims["resource"], resource)
+	if resource != "" {
+		// A malformed claim is not refused on its own; only the requested value matters.
+		if values, _ := ResourceClaim(claims["resource"]); !slices.Contains(values, resource) {
+			return "", newExchangeError(ErrResourceMismatch,
+				"ID-JAG resource claim %v does not contain requested resource %q", claims["resource"], resource)
+		}
 	}
 
 	return assertion, nil
-}
-
-// claimContains reports whether a string-or-array claim holds want. Array
-// elements that are not strings are skipped.
-func claimContains(claim any, want string) bool {
-	switch v := claim.(type) {
-	case string:
-		return v == want
-	case []any:
-		for _, e := range v {
-			if s, ok := e.(string); ok && s == want {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 // exchangeError carries a message and the sentinel it matches. Error returns

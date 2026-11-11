@@ -24,11 +24,12 @@
 // ID-JAG rules. An ID-JAG is a JWT-bearer assertion profile that is obtained
 // through a token exchange. The redemption is not itself a token exchange.
 //
-// This package holds two functions today:
+// This package holds three functions:
 //
 //   - [IsIDJAG] is the typ test. Every access-token validator that shares a
 //     signing key with an ID-JAG issuer must call it, so an ID-JAG is never
 //     accepted as an access token.
+//
 //   - [FromExchange] is the client's sanity check on the IdP response from
 //     step 1. It checks that the IdP honoured the request: token types, a
 //     parsable JWT, the requested audience and the requested resource. The
@@ -38,7 +39,11 @@
 //     issuer identifier, and this check refuses that: ToolHive supports only
 //     issuer-identifier audiences here.
 //
-// The resource server's rules arrive in a later change. Signature checks,
+//   - [ResourceClaim] reads the resource claim as a list of strings and reports
+//     whether the claim is well formed under draft 3.
+//
+// The server-side jti and client_id binding checks live inline in
+// pkg/authserver/server/tokenexchange/id_jag_handler.go. Signature checks,
 // issuer trust, replay protection and client authentication are product
 // concerns. This package never does them.
 //

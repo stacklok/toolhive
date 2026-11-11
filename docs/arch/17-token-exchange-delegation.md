@@ -1354,6 +1354,52 @@ Where the two differ is the trust model — the ID-JAG handler is **bound**:
   exactly-one-`resource` requirement, consume-before-issue, and the issued
   token's lifetime being capped by the assertion's remaining validity.
 
+**Departures from the draft are logged, not refused.** The handler accepts some
+ID-JAGs that draft §4.4.1 does not allow. It logs these only for a request that
+passes validation: after the replay check and the lifetime check have both
+succeeded. Issuance can still fail later. A refused request, such as a replay,
+logs nothing. The handler logs each finding once per assertion issuer and
+finding at WARN, and later ones at DEBUG. The line carries only `issuer`,
+`client_id`, `finding` and, for one finding, `hint`. It never carries the
+subject, `jti` or claim values. The findings are:
+
+- `multiple_audiences`: `aud` has more than one value.
+- `audience_not_issuer`: `aud` does not contain this server's issuer
+  identifier. The handler accepts any value in the assertion issuer's
+  `jwt_bearer_grant.accepted_audiences`, and accepts the token endpoint URL only
+  when that list is empty. This line also carries a `hint` attribute that says
+  what to change. If `accepted_audiences` is empty, add both the token
+  endpoint URL and the issuer identifier to it, because setting the list
+  removes the token endpoint default, and then have the IdP use the issuer
+  identifier as `aud`. If the list does not hold the issuer identifier, add
+  it. If the list already holds it, have the IdP use it as `aud`.
+- `resource_malformed`: the ID-JAG has a `resource` claim (a JSON `null` counts)
+  that is not a non-empty string or a non-empty array of distinct non-empty
+  strings.
+- `resource_not_covered`: the `resource` claim is well formed, and the `resource`
+  the client requested is not in it. The handler takes the resource from the
+  request and does not read the claim.
+
+A malformed claim is never also reported as not covered. An ID-JAG with no
+`resource` claim has no resource finding. The two audience findings can appear
+together.
+
+This is logging only. It changes nothing about what is accepted.
+
+The handler also accepts two things the draft does not allow, and nothing logs
+them:
+
+- Draft §4.4 says the server MUST reject a request that has neither client
+  authentication nor a sender-constrained ID-JAG (§9.11) with `invalid_client`.
+  The handler accepts a public client that is identified only by `client_id`.
+- Draft §9.11 says an ID-JAG with a `cnf` claim needs proof of possession, and
+  a server that cannot check it MUST refuse the ID-JAG with `invalid_grant`.
+  No code at this server reads `cnf`, so such an ID-JAG is accepted without
+  proof of possession.
+
+A strict mode would have to refuse these two as well as the four logged
+findings.
+
 ## Operational notes
 
 - **Audience.** The requested audience is bounded by the subject token's own

@@ -5,7 +5,9 @@ package tokenexchange
 
 import (
 	"context"
+	"log/slog"
 	"slices"
+	"sync"
 	"time"
 
 	"github.com/ory/fosite"
@@ -16,6 +18,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver/server/session"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
+	"github.com/stacklok/toolhive/pkg/oauthproto/idjag"
 )
 
 // idJAGReplayPurpose namespaces ID-JAG replay keys apart from plain
@@ -39,10 +42,13 @@ const idJAGReplayPurpose = "id-jag"
 // connection — so this handler never skips client authentication
 // (CanSkipClientAuth) and requires the authenticated client to be that
 // client. Confidential clients authenticate fully; a public client is
-// identified by client_id, which is sufficient binding here because the
-// assertion itself is the primary credential: single-use (required jti),
-// short-lived (maxAssertionAge), and audience-pinned to this server
-// (acceptedAudiences). The plain handler's synthetic client is not needed —
+// identified by client_id, which is accepted here because the assertion
+// itself is the primary credential: single-use (required jti), short-lived
+// (maxAssertionAge), and audience-pinned to this server (acceptedAudiences).
+// Draft §4.4 does not allow this: it requires client authentication or a
+// sender-constrained ID-JAG. This is a known departure that is not logged;
+// see the departures paragraph in docs/arch/17-token-exchange-delegation.md.
+// The plain handler's synthetic client is not needed —
 // the redeeming client is a real registered one.
 //
 // The redeeming client's registered grant_types metadata is deliberately not
@@ -66,7 +72,30 @@ type IDJAGHandler struct {
 	// explicitGrantClients holds the IDs of clients that must list the
 	// jwt-bearer grant in their registered grant types.
 	explicitGrantClients map[string]struct{}
+
+	// issuer supplies this authorization server's issuer identifier, the same
+	// value the server's own token validator uses (fosite.Config
+	// AccessTokenIssuer).
+	issuer fosite.AccessTokenIssuerProvider
+
+	// logger receives the draft-departure lines; nil means slog.Default().
+	logger *slog.Logger
+
+	// warned records the (assertion issuer, finding) pairs already logged at
+	// Warn. Its size is bounded by the trusted issuers times the findings.
+	warned sync.Map
 }
+
+// draftDeparture names a way an accepted ID-JAG departs from draft-ietf-oauth-
+// identity-assertion-authz-grant-06 Section 4.4.1.
+type draftDeparture string
+
+const (
+	departureMultipleAudiences  draftDeparture = "multiple_audiences"
+	departureAudienceNotIssuer  draftDeparture = "audience_not_issuer"
+	departureResourceMalformed  draftDeparture = "resource_malformed"
+	departureResourceNotCovered draftDeparture = "resource_not_covered"
+)
 
 // newIDJAGIssuanceHandler constructs the production bound handler over the
 // same issuance core as newJWTBearerIssuanceHandler; see that constructor
@@ -85,7 +114,7 @@ func newIDJAGIssuanceHandler(
 	for _, id := range explicitGrantClientIDs {
 		explicitGrantClients[id] = struct{}{}
 	}
-	return &IDJAGHandler{core: core, explicitGrantClients: explicitGrantClients}, nil
+	return &IDJAGHandler{core: core, explicitGrantClients: explicitGrantClients, issuer: config}, nil
 }
 
 // CanHandleTokenEndpointRequest claims only recognized ID-JAG assertions —
@@ -162,6 +191,7 @@ func (h *IDJAGHandler) HandleTokenEndpointRequest(ctx context.Context, requester
 	if err != nil {
 		return err
 	}
+	h.logDraftDepartures(ctx, claims, policy, requester.GetClient().GetID(), resource)
 	// Subject is namespaced by issuer exactly like the plain handler's, so a
 	// resource server sees one consistent subject form for every
 	// assertion-derived token regardless of which handler minted it. The
@@ -215,6 +245,65 @@ func checkIDJAGPolicy(
 		return "", err
 	}
 	return resource, nil
+}
+
+// logDraftDepartures reports an ID-JAG that departs from the draft. It runs
+// once the request has passed validation (issuance can still fail later in
+// Populate) and changes nothing about what is accepted. The first occurrence
+// of each (assertion issuer, finding) pair is logged at Warn and later ones
+// at Debug. The lines carry no subject, jti or claim values.
+func (h *IDJAGHandler) logDraftDepartures(
+	ctx context.Context, claims *ValidatedClaims, policy *JWTBearerGrantPolicy, clientID, resource string,
+) {
+	var found []draftDeparture
+	if len(claims.Audience) > 1 {
+		found = append(found, departureMultipleAudiences)
+	}
+	asIssuer := h.issuer.GetAccessTokenIssuer(ctx)
+	if asIssuer != "" && !slices.Contains(claims.Audience, asIssuer) {
+		found = append(found, departureAudienceNotIssuer)
+	}
+	if claim, present := claims.Extra["resource"]; present {
+		values, wellFormed := idjag.ResourceClaim(claim)
+		switch {
+		case !wellFormed:
+			found = append(found, departureResourceMalformed)
+		case !slices.Contains(values, resource):
+			found = append(found, departureResourceNotCovered)
+		}
+	}
+	if len(found) == 0 {
+		return
+	}
+	logger := h.logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	for _, finding := range found {
+		level := slog.LevelDebug
+		if _, seen := h.warned.LoadOrStore([2]string{claims.Issuer, string(finding)}, struct{}{}); !seen {
+			level = slog.LevelWarn
+		}
+		attrs := []any{"issuer", claims.Issuer, "client_id", clientID, "finding", string(finding)}
+		if finding == departureAudienceNotIssuer {
+			attrs = append(attrs, "hint", audienceHint(policy, asIssuer))
+		}
+		logger.Log(ctx, level, "ID-JAG departs from the draft; accepted for compatibility", attrs...)
+	}
+}
+
+// audienceHint tells the operator how to stop audience_not_issuer.
+func audienceHint(policy *JWTBearerGrantPolicy, asIssuer string) string {
+	switch {
+	// Setting accepted_audiences removes the token endpoint default, so both must be listed.
+	case len(policy.AcceptedAudiences) == 0:
+		return "add both the token endpoint URL and this server's issuer identifier to jwt_bearer_grant.accepted_audiences, " +
+			"then have the IdP use the issuer identifier as aud"
+	case !slices.Contains(policy.AcceptedAudiences, asIssuer):
+		return "add this server's issuer identifier to jwt_bearer_grant.accepted_audiences"
+	default:
+		return "have the IdP use this server's issuer identifier as aud"
+	}
 }
 
 // checkClientGrant refuses an explicit-grant client whose registered grant types

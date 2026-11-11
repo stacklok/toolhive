@@ -32,6 +32,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/fileutils"
 	"github.com/stacklok/toolhive/pkg/skills"
+	"github.com/stacklok/toolhive/pkg/yamlutil"
 )
 
 // FileName is the name of the project-level lock file, written to the
@@ -230,7 +231,7 @@ func Load(root Root) (*Lockfile, error) {
 	}
 
 	var lf Lockfile
-	if err := yaml.Unmarshal(data, &lf); err != nil {
+	if err := yamlutil.Unmarshal(data, &lf); err != nil {
 		return nil, fmt.Errorf("parsing lock file: %w", err)
 	}
 	if lf.Version == 0 {

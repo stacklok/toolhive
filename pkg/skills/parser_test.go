@@ -11,6 +11,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.yaml.in/yaml/v3"
+
+	"github.com/stacklok/toolhive/pkg/yamlutil"
 )
 
 func TestParseSkillMD(t *testing.T) {
@@ -417,14 +419,19 @@ func TestParseSkillMD_DuplicateKeys(t *testing.T) {
 		{
 			// A frontmatter of nothing but repeated keys used to take tens of
 			// seconds (quadratic duplicate-key reporting in the yaml decoder).
+			name:    "many repeated top-level keys under key cap",
+			fm:      strings.Repeat("a: \n", yamlutil.MaxMappingKeys),
+			wantErr: `mapping key "a" already defined`,
+		},
+		{
 			name:    "many repeated top-level keys at size limit",
 			fm:      strings.Repeat("a: \n", (MaxFrontmatterSize-8)/4),
-			wantErr: `mapping key "a" already defined`,
+			wantErr: fmt.Sprintf("mapping has more than %d keys", yamlutil.MaxMappingKeys),
 		},
 		{
 			name:    "many repeated flow keys at size limit",
 			fm:      "metadata: {" + strings.Repeat("a: ,", (MaxFrontmatterSize-16)/4) + "}\n",
-			wantErr: `mapping key "a" already defined`,
+			wantErr: fmt.Sprintf("mapping has more than %d keys", yamlutil.MaxMappingKeys),
 		},
 	}
 

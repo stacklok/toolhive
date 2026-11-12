@@ -19,6 +19,9 @@ var NewActorLimiterForTest = newActorLimiter
 // ActorLimiterInUseForTest reports how many slots of l are held.
 func ActorLimiterInUseForTest(l *actorLimiter) int { return len(l.slots) }
 
+// AcquireActorLimiterForTest calls l.acquire.
+func AcquireActorLimiterForTest(ctx context.Context, l *actorLimiter) error { return l.acquire(ctx) }
+
 // DefaultActorValidatorCapacityForTest is the production limiter capacity.
 const DefaultActorValidatorCapacityForTest = defaultActorValidatorCapacity
 

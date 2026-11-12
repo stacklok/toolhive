@@ -494,6 +494,24 @@ func TestValidateActorErrorShapes(t *testing.T) {
 	}
 }
 
+// TestActorLimiterPrefersFreeSlot checks that a free slot is taken even when the
+// context is already done, and that a full limiter returns the context's error.
+// The loop matters: a single select over both ready cases picks one at random.
+func TestActorLimiterPrefersFreeSlot(t *testing.T) {
+	t.Parallel()
+
+	done, cancel := context.WithCancel(context.Background())
+	cancel()
+	for i := range 200 {
+		limiter, err := tokenexchange.NewActorLimiterForTest(1)
+		require.NoError(t, err)
+		require.NoError(t, tokenexchange.AcquireActorLimiterForTest(done, limiter), "run %d", i)
+		require.Equal(t, 1, tokenexchange.ActorLimiterInUseForTest(limiter), "run %d", i)
+		require.ErrorIs(t, tokenexchange.AcquireActorLimiterForTest(done, limiter), context.Canceled, "run %d", i)
+		require.Equal(t, 1, tokenexchange.ActorLimiterInUseForTest(limiter), "run %d", i)
+	}
+}
+
 func TestNewActorLimiterRejectsCapacityBelowOne(t *testing.T) {
 	t.Parallel()
 

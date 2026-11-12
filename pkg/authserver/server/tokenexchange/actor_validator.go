@@ -434,8 +434,16 @@ func newActorLimiter(capacity int) (*actorLimiter, error) {
 	return &actorLimiter{slots: make(chan struct{}, capacity)}, nil
 }
 
-// acquire waits for a free slot and returns ctx's error if ctx ends first.
+// acquire takes a free slot, or waits for one and returns ctx's error if ctx ends
+// first. A slot that is already free is always taken, even when ctx is done: a
+// select with both cases ready picks one at random, which would report a call as
+// waiting for a slot when none of them were in use.
 func (l *actorLimiter) acquire(ctx context.Context) error {
+	select {
+	case l.slots <- struct{}{}:
+		return nil
+	default:
+	}
 	select {
 	case l.slots <- struct{}{}:
 		return nil

@@ -56,6 +56,12 @@ type Handler struct {
 	config    *server.AuthorizationServerConfig
 	storage   storage.Storage
 	upstreams []NamedUpstream
+	// continuationFallback is the client store below the CIMD decorator (the
+	// client-admission layer when present, else the innermost store; see
+	// storage.ClientStoreBelowCIMD), selected once at construction.
+	// callbackClient reads it only when the CIMD fetch limiter refuses the
+	// ordinary lookup.
+	continuationFallback fosite.ClientManager
 	// tokenOnly is derived at construction from the absence of upstreams and is
 	// the single source of truth for token-only capability behavior.
 	tokenOnly    bool
@@ -243,15 +249,16 @@ func NewHandler(
 		seen[u.Name] = struct{}{}
 	}
 	h := &Handler{
-		provider:           provider,
-		config:             config,
-		storage:            stor,
-		upstreams:          upstreams,
-		tokenOnly:          len(upstreams) == 0,
-		userResolver:       NewUserResolver(stor),
-		registerLimiter:    rate.NewLimiter(DefaultRegisterRate, DefaultRegisterBurst),
-		meterProvider:      otel.GetMeterProvider(),
-		deviceCodeInterval: deviceCodeInterval(config.DeviceCodeInterval),
+		provider:             provider,
+		config:               config,
+		storage:              stor,
+		upstreams:            upstreams,
+		tokenOnly:            len(upstreams) == 0,
+		userResolver:         NewUserResolver(stor),
+		continuationFallback: storage.ClientStoreBelowCIMD(stor),
+		registerLimiter:      rate.NewLimiter(DefaultRegisterRate, DefaultRegisterBurst),
+		meterProvider:        otel.GetMeterProvider(),
+		deviceCodeInterval:   deviceCodeInterval(config.DeviceCodeInterval),
 	}
 	if config.DeviceFlowEnabled {
 		// Same rate as registerLimiter's default: this gate protects the same kind of

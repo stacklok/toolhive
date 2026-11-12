@@ -221,7 +221,8 @@ func TestAgentIDProblem(t *testing.T) {
 	}
 }
 
-func TestMapActorOutcomeWholeSeconds(t *testing.T) {
+// TestMapActorOutcomeExpiry covers whole-second comparison and the skew bound.
+func TestMapActorOutcomeExpiry(t *testing.T) {
 	t.Parallel()
 
 	whole := time.Unix(1_800_000_000, 0)
@@ -237,6 +238,11 @@ func TestMapActorOutcomeWholeSeconds(t *testing.T) {
 		{"whole second, +1s", whole, whole.Add(time.Second), ""},
 		{"whole second, equal", whole, whole, "actor_token_expired"},
 		{"x.7s, +400ms crosses a second", fractional, fractional.Add(400 * time.Millisecond), ""},
+		{"59s past", whole, whole.Add(-59 * time.Second), "actor_token_expired"},
+		{"x.7s checked, 59.9s past is 60 whole seconds", fractional, fractional.Add(-59900 * time.Millisecond), "actor_result_invalid"},
+		{"60s past", whole, whole.Add(-60 * time.Second), "actor_result_invalid"},
+		{"far past", whole, whole.Add(-24 * time.Hour), "actor_result_invalid"},
+		{"Unix epoch", whole, time.Unix(0, 0), "actor_result_invalid"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -252,6 +258,12 @@ func TestMapActorOutcomeWholeSeconds(t *testing.T) {
 			}
 			var rfc *fosite.RFC6749Error
 			require.ErrorAs(t, err, &rfc)
+			if tt.wantReason == "actor_result_invalid" {
+				assert.Equal(t, "server_error", rfc.ErrorField)
+				assert.Equal(t, http.StatusInternalServerError, rfc.CodeField)
+				assert.Contains(t, errors.Unwrap(rfc).Error(), " seconds in the past")
+				return
+			}
 			assert.Equal(t, "invalid_request", rfc.ErrorField)
 			assert.Equal(t, http.StatusBadRequest, rfc.CodeField)
 			assert.Equal(t, "actor_token_expired", rfc.GetDescription())

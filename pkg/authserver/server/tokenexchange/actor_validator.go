@@ -44,8 +44,11 @@ import (
 //
 //   - Refuse with ActorDeniedReasonActorTokenExpired when the actor credential has expired.
 //     If the validator accepts a credential within its own clock-skew allowance, it
-//     may return that credential's past expiry in ExpiresAt. ToolHive then answers
-//     actor_token_expired, so the client renews the credential and retries.
+//     may return that credential's past expiry in ExpiresAt, as long as it is less
+//     than 60 seconds before the time ToolHive checks the result. ToolHive then
+//     answers actor_token_expired, so the client renews the credential and retries.
+//     An expiry 60 or more seconds in the past is a server error, because it points
+//     to a fault in the validator and a client retry would not help.
 //   - Refuse with ActorDeniedReasonApprovalRequired when the user has not approved
 //     this agent. Use it when asking the user could help. For a validator that
 //     decides per target, the approval is for the target in ActorRequest.Target.
@@ -164,9 +167,10 @@ type ActorResult struct {
 	// must follow the rules in ActorTokenValidator. The zero value is a server error.
 	AgentID string
 	// ExpiresAt is when the actor credential stops being valid. The issuing code caps
-	// the ID-JAG's lifetime at this time. A value at or before the time ToolHive checks the
-	// result, compared in whole seconds, is answered as actor_token_expired. The zero value is
-	// a server error.
+	// the ID-JAG's lifetime at this time. Times are compared in whole seconds. A value
+	// at or before the time ToolHive checks the result, but less than 60 seconds
+	// before it, is answered as actor_token_expired. A value 60 or more seconds before
+	// it is a server error, as is the zero value.
 	ExpiresAt time.Time
 	// CredentialSubject identifies the credential for audit logs. It never enters a
 	// token. The zero value means no subject is recorded.
@@ -222,6 +226,12 @@ const actorValidationTimeout = 5 * time.Second
 // redactedActorToken replaces the actor token in text that reaches a log or an error.
 const redactedActorToken = "[redacted]"
 
+// actorExpirySkew is how far in the past a validator may report an actor
+// credential's expiry and still be answered as an expired credential. An older
+// expiry, such as the Unix epoch, is a fault in the validator, and a client that
+// retried on it would retry forever.
+const actorExpirySkew = 60 * time.Second
+
 // maxActorAgentIDLen is the longest plain-token AgentID, in bytes, that ToolHive
 // accepts. maxActorAgentURILen is the longest AgentID that is an absolute URI.
 const (
@@ -266,7 +276,9 @@ func classifyActorError(err error) (string, error) {
 }
 
 // checkActorResult checks an accepted result: the agent ID, then the expiry.
-// Expiry is compared in whole seconds, the resolution of a JWT exp claim.
+// Expiry is compared in whole seconds, the resolution of a JWT exp claim. An
+// expiry at or before checkedAt is a refusal unless it is actorExpirySkew or more
+// in the past, which is a server error.
 func checkActorResult(res ActorResult, checkedAt time.Time) (string, error) {
 	if problem := agentIDProblem(res.AgentID); problem != nil {
 		return refuseActorResult, actorValidationFailed(problem)
@@ -274,7 +286,9 @@ func checkActorResult(res ActorResult, checkedAt time.Time) (string, error) {
 	if res.ExpiresAt.IsZero() {
 		return refuseActorResult, actorValidationFailed(errors.New("expiry is zero"))
 	}
-	if res.ExpiresAt.Unix() <= checkedAt.Unix() {
+	if past := checkedAt.Unix() - res.ExpiresAt.Unix(); past >= int64(actorExpirySkew/time.Second) {
+		return refuseActorResult, actorValidationFailed(fmt.Errorf("expiry is %d seconds in the past", past))
+	} else if past >= 0 {
 		return string(ActorDeniedReasonActorTokenExpired), actorRefusal(ActorDeniedReasonActorTokenExpired)
 	}
 	return "", nil

@@ -369,3 +369,43 @@ func TestValidateActorCheckedAtReadAfterCall(t *testing.T) {
 	assert.Equal(t, "actor_token_expired", reason)
 	assert.Equal(t, tokenexchange.ActorResult{}, res)
 }
+
+func TestValidateActorExpirySkew(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		expiresAt  time.Time
+		wantReason string
+		wantCause  string // empty for a refusal, which carries no cause about the expiry
+	}{
+		{"exactly at checkedAt", callTestNow, "actor_token_expired", ""},
+		{"59s past", callTestNow.Add(-59 * time.Second), "actor_token_expired", ""},
+		{"60s past", callTestNow.Add(-60 * time.Second), "actor_result_invalid", "expiry is 60 seconds in the past"},
+		{"far past", callTestNow.Add(-24 * time.Hour), "actor_result_invalid", "expiry is 86400 seconds in the past"},
+		{"Unix epoch", time.Unix(0, 0), "actor_result_invalid", "expiry is 1800000000 seconds in the past"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			v := mocks.NewMockActorTokenValidator(gomock.NewController(t))
+			v.EXPECT().ValidateActor(gomock.Any(), gomock.Any()).Return(
+				tokenexchange.ActorResult{AgentID: "agent-1", ExpiresAt: tt.expiresAt}, nil)
+
+			res, _, reason, err := tokenexchange.ValidateActorForTest(
+				context.Background(), v, callTestRequest(), fixedClock, callTestBound)
+			require.Error(t, err)
+			assert.Equal(t, tt.wantReason, reason)
+			assert.Equal(t, tokenexchange.ActorResult{}, res)
+			if tt.wantCause != "" {
+				assert.Equal(t, tt.wantCause, serverCause(t, err))
+				return
+			}
+			var rfc *fosite.RFC6749Error
+			require.ErrorAs(t, err, &rfc)
+			assert.Equal(t, "invalid_request", rfc.ErrorField)
+			assert.Equal(t, http.StatusBadRequest, rfc.CodeField)
+			assert.Equal(t, "actor_token_expired", rfc.GetDescription())
+		})
+	}
+}

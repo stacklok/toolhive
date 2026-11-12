@@ -70,6 +70,12 @@ rules:
   - update
   - watch
 - apiGroups:
+  - apps
+  resources:
+  - statefulsets/finalizers
+  verbs:
+  - update
+- apiGroups:
   - coordination.k8s.io
   resources:
   - leases
@@ -149,10 +155,12 @@ rules:
   - mcpgroups/finalizers
   - mcpoidcconfigs/finalizers
   - mcpregistries/finalizers
+  - mcpremoteproxies/finalizers
   - mcpservers/finalizers
   - mcptelemetryconfigs/finalizers
   - mcptoolconfigs/finalizers
   - mcpwebhookconfigs/finalizers
+  - virtualmcpservers/finalizers
   verbs:
   - update
 - apiGroups:

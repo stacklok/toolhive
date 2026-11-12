@@ -501,7 +501,7 @@ func TestIDJAGValidationReachedFromBothPaths(t *testing.T) {
 	serverIssuerTarget := idJAGTestTarget()
 	serverIssuerTarget.Issuer = idJAGTestIssuer + "/"
 	claimTarget := idJAGTestTarget()
-	claimTarget.RequiredSubjectClaims = []string{idJAGSubjectClaimUpstreamSubject}
+	claimTarget.RequiredSubjectClaims = []string{tokenexchange.IDJAGSubjectClaimUpstreamSubject}
 
 	t.Run("RunConfig refuses the server issuer as a target", func(t *testing.T) {
 		t.Parallel()

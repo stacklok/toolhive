@@ -23,8 +23,9 @@ import (
 // selected is not part of this interface.
 //
 // ValidateActor is called once per issuance, after the grant checks and before the
-// ID-JAG is signed. ToolHive builds the act claim from the answer. A validator never
-// sets claims itself.
+// ID-JAG is signed. ToolHive builds the act claim from the answer: sub is AgentID, and
+// iss is the issuer registered for this validator. A validator never sets claims
+// itself, and it never sets the issuer.
 //
 // # Result
 //
@@ -75,16 +76,16 @@ import (
 //     form.
 //   - Honor ctx. ToolHive stops waiting when the budget is spent, but a validator
 //     that ignores ctx keeps running in its goroutine until it returns.
-//   - Never set claims. The issuing code builds act from AgentID and caps the ID-JAG's
-//     exp at ExpiresAt.
+//   - Never set claims. The issuing code builds act from the registered issuer and
+//     AgentID, and caps the ID-JAG's exp at ExpiresAt.
 //   - Return an AgentID that uses only printable ASCII characters from '!' to '~' (no
 //     spaces or control characters) and is one of two forms. A plain token is 1 to 255
 //     bytes long and contains no ':'. A value that contains ':' must be an absolute
 //     URI per RFC 3986 without userinfo or fragment, of up to 2048 bytes, such as a
 //     SPIFFE ID, because RFC 7519 requires a StringOrURI value with ':' to be a URI.
 //     ToolHive rejects any other value as a server error and never rewrites it. The
-//     AgentID must be unique within the validator's namespace; use a URI when IDs
-//     must be unique across validators.
+//     AgentID must be unique within the issuer registered for this validator. Two
+//     validators registered under the same issuer must not return the same AgentID.
 //   - Parse Grant.SubjectIdentifier as RFC 9493 JSON. Never compare it as text.
 //   - Use ActorResult.CredentialSubject for audit only. It never enters a token.
 //   - Keep credentials out of error text.
@@ -170,8 +171,9 @@ type ActorTarget struct {
 
 // ActorResult is a validator's answer for an actor that was accepted.
 type ActorResult struct {
-	// AgentID names the agent instance. ToolHive places it in the act claim as sub. It
-	// must follow the rules in ActorTokenValidator. The zero value is a server error.
+	// AgentID names the agent instance. ToolHive places it in the act claim as sub, next
+	// to the issuer registered for the validator. It must follow the rules in
+	// ActorTokenValidator. The zero value is a server error.
 	AgentID string
 	// ExpiresAt is when the actor credential stops being valid. The issuing code caps
 	// the ID-JAG's lifetime at this time. Times are compared in whole seconds. A value

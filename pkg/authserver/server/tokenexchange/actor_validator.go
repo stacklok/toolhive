@@ -13,8 +13,6 @@ import (
 
 	"github.com/ory/fosite"
 	"github.com/ory/x/errorsx"
-
-	"github.com/stacklok/toolhive/pkg/authserver/server/session"
 )
 
 //go:generate mockgen -destination=mocks/mock_actor_validator.go -package=mocks -source=actor_validator.go ActorTokenValidator
@@ -55,7 +53,7 @@ import (
 //     with no record and a record that is disabled. A denial is final for the client.
 //   - Use ActorRequest.Target for decisions that depend on the gateway or connector.
 //     It holds the configured target, not text from the request.
-//   - Find the user by ActorRequest.Grant.UpstreamSubject when the validator binds
+//   - Find the user by ActorRequest.Grant.Upstream when the validator binds
 //     users by a per-issuer claim. Check that StableClaim is the claim the validator
 //     expects for that Issuer, then look the user up by StableValue. A mismatch, or an
 //     issuer the validator does not know, is a configuration fault. Return a plain
@@ -91,7 +89,6 @@ import (
 //     assertion on the registered value.
 //   - ActorRequest, GrantOwner, ActorTarget, ActorResult and ActorDeniedError are
 //     passed by value and only gain fields; none is removed, renamed or retyped.
-//     session.UpstreamSubject belongs to the session package and may gain fields.
 //     Build ActorResult and ActorDeniedError with keyed literals so new fields do not
 //     break your code.
 //   - A new input field is safe to ignore. Its zero value means the value is not
@@ -138,14 +135,26 @@ type GrantOwner struct {
 	// SubjectIdentifier is the grant's sub_id as the raw RFC 9493 JSON text. Parse it;
 	// do not compare it as text. The zero value means the grant has none.
 	SubjectIdentifier string
-	// UpstreamSubject is the user's identity at the upstream provider. Issuer is the
-	// upstream's issuer URL. Subject is the upstream's raw sub from its validated ID
-	// token. StableClaim names the upstream claim ToolHive keys users on, for example
-	// "uid" or "oid", or "sub". StableValue is that claim's value for this user. A
-	// validator can bind users by a claim that is specific to one issuer. The zero
-	// value means the grant has none. ToolHive passes either a complete identity, with
-	// all four members set so that IsComplete holds, or the zero value.
-	UpstreamSubject session.UpstreamSubject
+	// Upstream is the user's identity at the upstream provider. It is the zero value
+	// when the server does not record upstream identities (see
+	// authserver.Config.SubjectIdentifierAudiences). A validator that needs it returns a plain error
+	// when it is missing, not a denial. ToolHive passes either a complete identity,
+	// with all four members set, or the zero value.
+	Upstream UpstreamIdentity
+}
+
+// UpstreamIdentity is a user's identity at the upstream provider.
+type UpstreamIdentity struct {
+	// Issuer is the upstream's issuer URL.
+	Issuer string
+	// Subject is the upstream's raw sub from its validated ID token.
+	Subject string
+	// StableClaim names the upstream claim ToolHive keys users on, for example
+	// "uid" or "oid", or "sub".
+	StableClaim string
+	// StableValue is that claim's value for this user. A validator can bind users by
+	// a claim that is specific to one issuer.
+	StableValue string
 }
 
 // ActorTarget describes the gateway that the ID-JAG is issued for.

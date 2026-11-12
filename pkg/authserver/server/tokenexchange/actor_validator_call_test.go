@@ -18,7 +18,6 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
-	"github.com/stacklok/toolhive/pkg/authserver/server/session"
 	"github.com/stacklok/toolhive/pkg/authserver/server/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/authserver/server/tokenexchange/mocks"
 )
@@ -39,7 +38,7 @@ func callTestRequest() tokenexchange.ActorRequest {
 		Grant: tokenexchange.GrantOwner{
 			Subject:           "user-1",
 			SubjectIdentifier: `{"format":"iss_sub"}`,
-			UpstreamSubject: session.UpstreamSubject{
+			Upstream: tokenexchange.UpstreamIdentity{
 				Issuer: "https://idp", Subject: "up-sub-1", StableClaim: "uid", StableValue: "u1",
 			},
 		},

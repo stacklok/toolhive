@@ -33,7 +33,7 @@ type testSession struct {
 // core's API: a session handle as the subject token, no grant and no store.
 type testSessionSource struct {
 	issuer   string
-	signer   IDJAGSigner
+	signer   idJAGSigner
 	sessions map[string]testSession
 }
 

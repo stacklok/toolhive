@@ -46,20 +46,20 @@ const (
 // mintTestNow has a fractional second, so a test sees whether exp is floored.
 var mintTestNow = time.Unix(1_800_000_000, 500_000_000)
 
-// recordingSigner records the typ of each Sign call and then signs with inner,
-// or fails with err when it is set.
+// recordingSigner counts its SignIDJAG calls and then signs with inner, or
+// fails with err when it is set.
 type recordingSigner struct {
-	inner IDJAGSigner
+	inner idJAGSigner
 	err   error
-	typs  []string
+	calls int
 }
 
-func (s *recordingSigner) Sign(ctx context.Context, claims map[string]any, typ string) (string, error) {
-	s.typs = append(s.typs, typ)
+func (s *recordingSigner) SignIDJAG(ctx context.Context, claims map[string]any) (string, error) {
+	s.calls++
 	if s.err != nil {
 		return "", s.err
 	}
-	return s.inner.Sign(ctx, claims, typ)
+	return s.inner.SignIDJAG(ctx, claims)
 }
 
 // newMintTestSigner wraps the server's real Signer, so the tests run the typ
@@ -156,10 +156,10 @@ func TestMintIDJAGGolden(t *testing.T) {
 	iat := json.Number("1800000000")
 	exp := json.Number("1800000060")
 
-	t.Run("the signer is given the ID-JAG typ", func(t *testing.T) {
+	t.Run("the token is signed once with the ID-JAG typ", func(t *testing.T) {
 		t.Parallel()
-		require.Len(t, signer.typs, 1)
-		assert.Equal(t, oauthproto.JWTTypeIDJAG, signer.typs[0])
+		assert.Equal(t, 1, signer.calls)
+		assert.Equal(t, oauthproto.JWTTypeIDJAG, header["typ"])
 	})
 
 	t.Run("header", func(t *testing.T) {
@@ -600,7 +600,7 @@ func TestMintIDJAGGuards(t *testing.T) {
 			requireMintFailure(t, err)
 			assert.ErrorContains(t, errors.Unwrap(unwrapOAuth(t, err)), tt.wantCause)
 			assert.Equal(t, mintedIDJAG{}, minted)
-			assert.Empty(t, signer.typs, "nothing is signed when a guard fails")
+			assert.Zero(t, signer.calls, "nothing is signed when a guard fails")
 		})
 	}
 }
@@ -670,7 +670,7 @@ func TestRespondWithIDJAGPolicy(t *testing.T) {
 			assert.Equal(t, tt.wantReason, reason)
 			if tt.wantCode == "" {
 				require.NoError(t, err)
-				assert.Len(t, signer.typs, 1)
+				assert.Equal(t, 1, signer.calls)
 				assert.Equal(t, minted.Token, responder.GetAccessToken())
 				return
 			}
@@ -686,7 +686,7 @@ func TestRespondWithIDJAGPolicy(t *testing.T) {
 			} else {
 				requireMintFailure(t, err)
 			}
-			assert.Empty(t, signer.typs, "the policy runs before signing")
+			assert.Zero(t, signer.calls, "the policy runs before signing")
 			assert.Equal(t, mintedIDJAG{}, minted)
 			assert.Empty(t, responder.ToMap()["access_token"])
 		})
@@ -823,7 +823,7 @@ func TestRespondWithIDJAGMissingClaim(t *testing.T) {
 				requireMintFailure(t, err)
 			}
 			assert.Equal(t, mintedIDJAG{}, minted)
-			assert.Empty(t, signer.typs, "nothing is signed")
+			assert.Zero(t, signer.calls, "nothing is signed")
 			assert.Empty(t, responder.ToMap()["access_token"])
 		})
 	}

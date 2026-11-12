@@ -232,6 +232,13 @@ func selectSubjectClaims(
 	return selected, "", nil
 }
 
+// idJAGSigner signs ID-JAG claims. *server.Signer implements it; tests fake it to exercise signing failures.
+type idJAGSigner interface {
+	SignIDJAG(ctx context.Context, claims map[string]any) (string, error)
+}
+
+var _ idJAGSigner = (*server.Signer)(nil)
+
 // respondWithIDJAG is the single entry point that mints an ID-JAG. It selects
 // the subject claims the target requires from m.Subject.Claims, runs the
 // policy on the selected claims, mints the token and writes the response. A nil
@@ -242,7 +249,7 @@ func selectSubjectClaims(
 // error wraps the cause for the caller to log once; respondWithIDJAG does not
 // log.
 func respondWithIDJAG(
-	ctx context.Context, signer IDJAGSigner, policy idJAGPolicy,
+	ctx context.Context, signer idJAGSigner, policy idJAGPolicy,
 	m idJAGMint, responder fosite.AccessResponder, now time.Time,
 ) (mintedIDJAG, string, error) {
 	if policy == nil {
@@ -275,7 +282,7 @@ func respondWithIDJAG(
 }
 
 // mintIDJAG builds the claims of an ID-JAG and signs them through the
-// IDJAGSigner with the typ oauth-id-jag+jwt. aud is the target issuer as
+// idJAGSigner, which sets the typ oauth-id-jag+jwt. aud is the target issuer as
 // configured, as a JSON string; resource is a JSON string; iat and exp are
 // integers; exp is the floor of the earliest of now plus the target lifetime
 // and every non-zero NotAfter. There is no nbf, and act is present only when
@@ -286,7 +293,7 @@ func respondWithIDJAG(
 // shape, but not that the claims match the target's RequiredSubjectClaims:
 // respondWithIDJAG selects the claims for the target before it calls mintIDJAG.
 func mintIDJAG(
-	ctx context.Context, signer IDJAGSigner, m idJAGMint, selected map[string]json.RawMessage, now time.Time,
+	ctx context.Context, signer idJAGSigner, m idJAGMint, selected map[string]json.RawMessage, now time.Time,
 ) (mintedIDJAG, error) {
 	if err := checkIDJAGMint(m); err != nil {
 		return mintedIDJAG{}, mintFailed(err)
@@ -319,7 +326,7 @@ func mintIDJAG(
 		claims["act"] = map[string]string{"iss": m.Act.Issuer, "sub": m.Act.Subject}
 	}
 
-	token, err := signer.Sign(ctx, claims, oauthproto.JWTTypeIDJAG)
+	token, err := signer.SignIDJAG(ctx, claims)
 	if err != nil {
 		return mintedIDJAG{}, mintFailed(fmt.Errorf("signing: %w", err))
 	}

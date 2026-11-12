@@ -91,7 +91,7 @@ func TestMapActorOutcome(t *testing.T) {
 		{name: "plain error", err: errors.New("backend down"), wantReason: "actor_validator_error", wantCode: server},
 		{name: "error wins over valid result", res: valid, err: errors.New("backend down"),
 			wantReason: "actor_validator_error", wantCode: server},
-		{name: "invalid agent ID", res: ActorResult{AgentID: "a:b", ExpiresAt: valid.ExpiresAt},
+		{name: "invalid agent ID", res: ActorResult{AgentID: "1:b", ExpiresAt: valid.ExpiresAt},
 			wantReason: "actor_result_invalid", wantCode: server},
 		{name: "zero expiry", res: ActorResult{AgentID: actorTestAgentID},
 			wantReason: "actor_result_invalid", wantCode: server},
@@ -166,16 +166,42 @@ func TestMapActorOutcomeFlattensValidatorErrors(t *testing.T) {
 func TestAgentIDProblem(t *testing.T) {
 	t.Parallel()
 
+	const notURI = "agent ID is invalid: contains ':' but is not an absolute URI"
+	uri := func(n int) string { return "https://e.org/" + strings.Repeat("a", n-len("https://e.org/")) }
 	tests := []struct {
 		name    string
 		id      string
 		wantErr string // empty means valid
 	}{
-		{"255 bytes", strings.Repeat("a", 255), ""},
-		{"256 bytes", strings.Repeat("a", 256), "agent ID is invalid: length 256"},
+		{"token 255 bytes", strings.Repeat("a", 255), ""},
+		{"token 256 bytes", strings.Repeat("a", 256), "agent ID is invalid: length 256"},
 		{"empty", "", "agent ID is invalid: length 0"},
-		{"colon", "ag:1", "agent ID is invalid: byte 0x3a at offset 2"},
+		{"SPIFFE ID", "spiffe://example.org/ns/a/sa/b", ""},
+		{"urn", "urn:x:y", ""},
+		{"https URI", "https://example.org/agents/1", ""},
+		{"scheme-like token", "ag:1", ""},
+		{"URI with percent-escape", "urn:example:agent:%41%7e", ""},
+		{"URI with query", "https://agents.example.com/a/1?x=1", ""},
+		{"URI with port", "https://agents.example.com:8443/a/1", ""},
+		{"URI 2048 bytes", uri(2048), ""},
+		{"URI 2049 bytes", uri(2049), "agent ID is invalid: length 2049"},
+		{"digit first is not a scheme", "1x:y", notURI},
+		{"colon first", ":abc", notURI},
+		{"colon, no scheme", "/a/b:c", notURI},
+		{"angle brackets", "a:<x>", "agent ID is invalid: byte 0x3c at offset 2 is not allowed in a URI"},
+		{"backslash", `a:\b`, "agent ID is invalid: byte 0x5c at offset 2 is not allowed in a URI"},
+		{"double quote", `a:"q"`, "agent ID is invalid: byte 0x22 at offset 2 is not allowed in a URI"},
+		{"braces, pipe, caret, backtick", "a:{}|^`", "agent ID is invalid: byte 0x7b at offset 2 is not allowed in a URI"},
+		{"bad escape digits", "a:%zz", "agent ID is invalid: bad percent-escape at offset 2"},
+		{"truncated escape", "a:b%4", "agent ID is invalid: bad percent-escape at offset 3"},
+		{"escape at end", "a:b%", "agent ID is invalid: bad percent-escape at offset 3"},
+		{"empty after scheme", "mailto:", "agent ID is invalid: URI has nothing after the scheme"},
+		{"empty authority and path", "https://", "agent ID is invalid: URI has nothing after the scheme"},
+		{"userinfo", "https://u:p@h/x", "agent ID is invalid: URI contains userinfo"},
+		{"fragment", "a:b#frag", "agent ID is invalid: URI contains '#' at offset 3"},
+		{"empty fragment", "a:b#", "agent ID is invalid: URI contains '#' at offset 3"},
 		{"space 0x20", "ag 1", "agent ID is invalid: byte 0x20 at offset 2"},
+		{"space in URI", "urn:x y", "agent ID is invalid: byte 0x20 at offset 5"},
 		{"DEL 0x7F", "ag\x7f", "agent ID is invalid: byte 0x7f at offset 2"},
 		{"non-ASCII", "agé", "agent ID is invalid: byte 0xc3 at offset 2"},
 		{"bang 0x21", "!", ""},

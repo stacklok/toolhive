@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
 
@@ -67,10 +68,14 @@ import (
 //     that ignores ctx keeps running in its goroutine until it returns.
 //   - Never set claims. The issuing code builds act from AgentID and caps the ID-JAG's
 //     exp at ExpiresAt.
-//   - Return an AgentID that is 1 to 255 bytes long, uses only printable ASCII
-//     characters from '!' to '~' (no spaces or control characters), and contains no
-//     ':'. ToolHive rejects any other value as a server error and never rewrites it.
-//     The AgentID must be unique across every client the server serves.
+//   - Return an AgentID that uses only printable ASCII characters from '!' to '~' (no
+//     spaces or control characters) and is one of two forms. A plain token is 1 to 255
+//     bytes long and contains no ':'. A value that contains ':' must be an absolute
+//     URI per RFC 3986 without userinfo or fragment, of up to 2048 bytes, such as a
+//     SPIFFE ID, because RFC 7519 requires a StringOrURI value with ':' to be a URI.
+//     ToolHive rejects any other value as a server error and never rewrites it. The
+//     AgentID must be unique within the validator's namespace; use a URI when IDs
+//     must be unique across validators.
 //   - Parse Grant.SubjectIdentifier as RFC 9493 JSON. Never compare it as text.
 //   - Use ActorResult.CredentialSubject for audit only. It never enters a token.
 //   - Keep credentials out of error text.
@@ -217,8 +222,12 @@ const actorValidationTimeout = 5 * time.Second
 // redactedActorToken replaces the actor token in text that reaches a log or an error.
 const redactedActorToken = "[redacted]"
 
-// maxActorAgentIDLen is the longest AgentID, in bytes, that ToolHive accepts.
-const maxActorAgentIDLen = 255
+// maxActorAgentIDLen is the longest plain-token AgentID, in bytes, that ToolHive
+// accepts. maxActorAgentURILen is the longest AgentID that is an absolute URI.
+const (
+	maxActorAgentIDLen  = 255
+	maxActorAgentURILen = 2048
+)
 
 // mapActorOutcome turns a validator's answer into the accepted result, the
 // reason to log and the error for the client. checkedAt is the time just after
@@ -271,20 +280,72 @@ func checkActorResult(res ActorResult, checkedAt time.Time) (string, error) {
 	return "", nil
 }
 
-// agentIDProblem returns nil when id is 1 to 255 bytes of printable ASCII ('!'
-// to '~') with no ':'. Otherwise it describes the problem by length, or by the
-// offset and value of the first bad byte, never by the ID itself. It checks
+// agentIDProblem returns nil when id is printable ASCII ('!' to '~') and either
+// 1 to 255 bytes with no ':', or up to 2048 bytes that form an absolute URI per
+// RFC 3986 (see uriProblem). Otherwise it describes the problem by length, or by
+// the offset and value of the first bad byte, never by the ID itself. It checks
 // bytes, not runes.
 func agentIDProblem(id string) error {
-	if id == "" || len(id) > maxActorAgentIDLen {
+	if id == "" || len(id) > maxActorAgentURILen {
 		return fmt.Errorf("agent ID is invalid: length %d", len(id))
 	}
 	for i := 0; i < len(id); i++ {
-		if c := id[i]; c < 0x21 || c > 0x7E || c == ':' {
+		if c := id[i]; c < 0x21 || c > 0x7E {
 			return fmt.Errorf("agent ID is invalid: byte 0x%02x at offset %d", c, i)
 		}
 	}
+	if !strings.Contains(id, ":") {
+		if len(id) > maxActorAgentIDLen {
+			return fmt.Errorf("agent ID is invalid: length %d", len(id))
+		}
+		return nil
+	}
+	return uriProblem(id)
+}
+
+// uriAllowedPunctuation holds the RFC 3986 characters other than letters, digits
+// and '%' that may appear in a URI, without '#', which ToolHive rejects.
+const uriAllowedPunctuation = "-._~:/?[]@!$&'()*+,;="
+
+// uriProblem returns nil when id is an absolute URI per RFC 3986 that has no
+// userinfo, no fragment and something after the scheme. url.Parse accepts more
+// than the RFC allows, so the characters and the percent-escapes are checked
+// first. The description never contains id, and the parser's own error text is
+// not used because it quotes the input.
+func uriProblem(id string) error {
+	for i := 0; i < len(id); i++ {
+		switch c := id[i]; {
+		case c == '#':
+			return fmt.Errorf("agent ID is invalid: URI contains '#' at offset %d", i)
+		case c == '%':
+			if i+2 >= len(id) || !isHexDigit(id[i+1]) || !isHexDigit(id[i+2]) {
+				return fmt.Errorf("agent ID is invalid: bad percent-escape at offset %d", i)
+			}
+			i += 2
+		case isASCIILetterOrDigit(c) || strings.IndexByte(uriAllowedPunctuation, c) >= 0:
+		default:
+			return fmt.Errorf("agent ID is invalid: byte 0x%02x at offset %d is not allowed in a URI", c, i)
+		}
+	}
+	u, err := url.Parse(id)
+	if err != nil || u.Scheme == "" {
+		return errors.New("agent ID is invalid: contains ':' but is not an absolute URI")
+	}
+	if u.User != nil {
+		return errors.New("agent ID is invalid: URI contains userinfo")
+	}
+	if u.Opaque == "" && u.Host == "" && u.Path == "" {
+		return errors.New("agent ID is invalid: URI has nothing after the scheme")
+	}
 	return nil
+}
+
+func isHexDigit(c byte) bool {
+	return '0' <= c && c <= '9' || 'a' <= c && c <= 'f' || 'A' <= c && c <= 'F'
+}
+
+func isASCIILetterOrDigit(c byte) bool {
+	return '0' <= c && c <= '9' || 'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z'
 }
 
 // actorValidationFailed is the generic server_error for a validator failure the

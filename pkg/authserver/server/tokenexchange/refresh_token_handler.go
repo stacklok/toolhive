@@ -383,10 +383,12 @@ func (h *RefreshTokenHandler) decideTopLevel(
 	}
 	var jsonErr error
 	if grant.SubjectIdentifier, jsonErr = claimJSON(claims.Extra, claimnames.SubjectIdentifierKey); jsonErr != nil {
-		return nil, refuse(ctx, log, refuseInternal, issueFailed())
+		return nil, refuse(ctx, log, refuseInternal, serverFailure(hintIssueFailed,
+			fmt.Errorf("encoding claim %q: %w", claimnames.SubjectIdentifierKey, jsonErr)))
 	}
 	if grant.UpstreamSubject, jsonErr = claimJSON(claims.Extra, claimnames.UpstreamSubjectKey); jsonErr != nil {
-		return nil, refuse(ctx, log, refuseInternal, issueFailed())
+		return nil, refuse(ctx, log, refuseInternal, serverFailure(hintIssueFailed,
+			fmt.Errorf("encoding claim %q: %w", claimnames.UpstreamSubjectKey, jsonErr)))
 	}
 	if grant.SubjectIdentifier != "" {
 		log = log.With("sub_id", grant.SubjectIdentifier)
@@ -474,7 +476,7 @@ func (h *RefreshTokenHandler) presentedGrant(
 	ctx context.Context, clientID, token string, now time.Time, log *slog.Logger,
 ) (*storage.ExchangeGrant, *slog.Logger, error) {
 	if h.store == nil {
-		return nil, log, refuse(ctx, log, refuseInternal, issueFailed())
+		return nil, log, refuse(ctx, log, refuseInternal, serverFailure(hintIssueFailed, errNoGrantStore))
 	}
 	hmacOnly := &fosite.Request{Session: &fosite.DefaultSession{}}
 	if err := h.strategy.ValidateRefreshToken(ctx, hmacOnly, token); err != nil {
@@ -515,8 +517,7 @@ func checkPresentedGrant(ctx context.Context, liveErr error, log *slog.Logger) e
 	case errors.Is(liveErr, storage.ErrParentNotLive):
 		return refuseWithReason(ctx, log, reasonParentRevoked)
 	default:
-		log.WarnContext(ctx, "Exchange grant refused", "reason", refuseStore, "error", liveErr)
-		return issueFailed()
+		return refuse(ctx, log, refuseStore, serverFailure(hintIssueFailed, liveErr))
 	}
 	return nil
 }
@@ -602,7 +603,7 @@ func (h *RefreshTokenHandler) issue(
 ) error {
 	log := d.log
 	if h.store == nil {
-		return refuse(ctx, log, refuseInternal, issueFailed())
+		return refuse(ctx, log, refuseInternal, serverFailure(hintIssueFailed, errNoGrantStore))
 	}
 	// The token uses fosite's refresh-token format and key, so it looks like an
 	// ordinary refresh token. The format prefix is not covered by the signature
@@ -612,8 +613,7 @@ func (h *RefreshTokenHandler) issue(
 	// fosite's store does not hold them.
 	token, signature, err := h.strategy.GenerateRefreshToken(ctx, requester)
 	if err != nil {
-		log.WarnContext(ctx, "Exchange grant refused", "reason", refuseInternal, "error", err)
-		return issueFailed()
+		return refuse(ctx, log, refuseInternal, serverFailure(hintIssueFailed, err))
 	}
 	grant := d.grant
 	grant.Signature = signature
@@ -629,8 +629,7 @@ func (h *RefreshTokenHandler) issue(
 		return refuse(ctx, log, refuseReplay, errorsx.WithStack(exactReason(
 			fosite.ErrInvalidRequest.ErrorField, reasonTokenUsed)))
 	case err != nil:
-		log.WarnContext(ctx, "Exchange grant refused", "reason", refuseStore, "error", err)
-		return issueFailed()
+		return refuse(ctx, log, refuseStore, serverFailure(hintIssueFailed, err))
 	}
 
 	responder.SetAccessToken(token)
@@ -655,10 +654,19 @@ func exactReason(code, reason string) *fosite.RFC6749Error {
 	return &fosite.RFC6749Error{ErrorField: code, DescriptionField: reason, CodeField: http.StatusBadRequest}
 }
 
-// issueFailed is the generic server_error for a failure the client cannot act
-// on; the cause is logged, not returned.
-func issueFailed() error {
-	return errorsx.WithStack(fosite.ErrServerError.WithHint("The refresh token could not be issued."))
+// hintIssueFailed is the client-visible hint when a refresh token could not be
+// issued.
+const hintIssueFailed = "The refresh token could not be issued."
+
+var errNoGrantStore = errors.New("exchange grant store not configured")
+
+// serverFailure is the server_error for a failure the client cannot act on. The
+// client sees only hint. The cause is wrapped and set as the debug field, which
+// the token endpoint logs on its ERROR line for every 5xx (logAccessError) and
+// fosite never sends, because SendDebugMessagesToClients is off. Callers do not
+// log the cause themselves.
+func serverFailure(hint string, cause error) error {
+	return errorsx.WithStack(fosite.ErrServerError.WithHint(hint).WithWrap(cause).WithDebug(cause.Error()))
 }
 
 // checkRefreshTokenRequest checks the request parameters of an access-token

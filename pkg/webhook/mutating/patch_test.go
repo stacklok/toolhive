@@ -146,6 +146,21 @@ func TestIsPatchScopedToMCPRequest(t *testing.T) {
 			patch: []JSONPatchOp{},
 			want:  true,
 		},
+		{
+			name:  "reject tool name rewrite",
+			patch: []JSONPatchOp{{Op: "replace", Path: "/mcp_request/params/name", Value: json.RawMessage(`"other_tool"`)}},
+			want:  false,
+		},
+		{
+			name:  "reject method rewrite",
+			patch: []JSONPatchOp{{Op: "replace", Path: "/mcp_request/method", Value: json.RawMessage(`"tools/call"`)}},
+			want:  false,
+		},
+		{
+			name:  "reject copy into tool name",
+			patch: []JSONPatchOp{{Op: "copy", Path: "/mcp_request/params/name", From: "/mcp_request/params/arguments/query"}},
+			want:  false,
+		},
 	}
 
 	for _, tt := range tests {

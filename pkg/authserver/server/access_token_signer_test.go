@@ -155,7 +155,7 @@ func TestSigner_SignIDJAG(t *testing.T) {
 	require.NoError(t, err)
 	header := decodeJOSEHeader(t, token)
 
-	t.Run("the given typ is kept", func(t *testing.T) {
+	t.Run("typ is oauth-id-jag+jwt", func(t *testing.T) {
 		t.Parallel()
 		assert.Equal(t, oauthproto.JWTTypeIDJAG, header["typ"])
 	})
@@ -172,7 +172,6 @@ func TestSigner_SignIDJAG(t *testing.T) {
 		_, err = parsed.Verify(keys[0].Key)
 		require.NoError(t, err)
 	})
-
 }
 
 func TestSigner_signRefusesTyps(t *testing.T) {

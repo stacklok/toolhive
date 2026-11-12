@@ -687,7 +687,6 @@ func TestRefreshTokenFactoryClosure(t *testing.T) {
 			handler, ok := got.(*RefreshTokenHandler)
 			require.True(t, ok, "got %T", got)
 			assert.Same(t, signer, handler.signer)
-			assert.NotSame(t, newTestSigner(t), handler.signer)
 			assert.Equal(t, "https://issuer.example.com", handler.issuer)
 		})
 	}

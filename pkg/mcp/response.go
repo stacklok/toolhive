@@ -4,6 +4,7 @@
 package mcp
 
 import (
+	"bytes"
 	"encoding/json"
 )
 
@@ -59,4 +60,73 @@ func ParseMCPResponse(body []byte) *ParsedMCPResponse {
 		ErrorCode:    envelope.Error.Code,
 		ErrorMessage: envelope.Error.Message,
 	}
+}
+
+// ParseTruncatedMCPResponse detects a top-level JSON-RPC "error" object in a
+// response body that may have been cut off, such as a fixed-size prefix of a
+// larger response. ParseMCPResponse cannot do this because a truncated JSON
+// document does not unmarshal.
+//
+// It walks the top-level object token by token and stops at the "error" key,
+// so only the bytes before the cut matter. "code" and "message" are filled in
+// when they were read completely; otherwise they keep their zero values and
+// HasError is still true. Values of other top-level keys are skipped, and
+// nested "error" keys are ignored. Like ParseMCPResponse it is lenient and
+// returns HasError=false when the body is not a JSON object or has no
+// top-level "error" object before the cut.
+func ParseTruncatedMCPResponse(body []byte) *ParsedMCPResponse {
+	dec := json.NewDecoder(bytes.NewReader(body))
+	if tok, err := dec.Token(); err != nil || tok != json.Delim('{') {
+		return &ParsedMCPResponse{}
+	}
+	for dec.More() {
+		keyTok, err := dec.Token()
+		if err != nil {
+			return &ParsedMCPResponse{}
+		}
+		key, ok := keyTok.(string)
+		if !ok {
+			return &ParsedMCPResponse{}
+		}
+		if key != "error" {
+			var skip json.RawMessage
+			if err := dec.Decode(&skip); err != nil {
+				return &ParsedMCPResponse{}
+			}
+			continue
+		}
+		if tok, err := dec.Token(); err != nil || tok != json.Delim('{') {
+			// "error": null or a non-object value is not a JSON-RPC error.
+			return &ParsedMCPResponse{}
+		}
+		res := &ParsedMCPResponse{HasError: true}
+		for dec.More() {
+			fieldTok, err := dec.Token()
+			if err != nil {
+				return res
+			}
+			field, _ := fieldTok.(string)
+			switch field {
+			case "code":
+				var code int
+				if err := dec.Decode(&code); err != nil {
+					return res
+				}
+				res.ErrorCode = code
+			case "message":
+				var msg string
+				if err := dec.Decode(&msg); err != nil {
+					return res
+				}
+				res.ErrorMessage = msg
+			default:
+				var skip json.RawMessage
+				if err := dec.Decode(&skip); err != nil {
+					return res
+				}
+			}
+		}
+		return res
+	}
+	return &ParsedMCPResponse{}
 }

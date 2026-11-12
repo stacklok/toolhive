@@ -608,6 +608,26 @@ func TestRefreshTokenFactoryValidatesTargets(t *testing.T) {
 			mutate: func(t *IDJAGTarget) { t.Lifetime = 0 }, wantErr: "lifetime must be positive"},
 		{name: "negative lifetime", key: key,
 			mutate: func(t *IDJAGTarget) { t.Lifetime = -time.Second }, wantErr: "lifetime must be positive"},
+		{name: "known subject claim tokens", key: key,
+			mutate: func(t *IDJAGTarget) {
+				t.RequiredSubjectClaims = []string{IDJAGSubjectClaimUpstreamSubject, IDJAGSubjectClaimSubID}
+			}},
+		{name: "unknown subject claim token", key: key,
+			mutate:  func(t *IDJAGTarget) { t.RequiredSubjectClaims = []string{"email"} },
+			wantErr: `unknown required subject claim "email"`},
+		{name: "unknown token after a known one", key: key,
+			mutate: func(t *IDJAGTarget) {
+				t.RequiredSubjectClaims = []string{IDJAGSubjectClaimSubID, "upstream-subject"}
+			},
+			wantErr: `unknown required subject claim "upstream-subject"`},
+		{name: "empty subject claim token", key: key,
+			mutate:  func(t *IDJAGTarget) { t.RequiredSubjectClaims = []string{""} },
+			wantErr: "unknown required subject claim"},
+		{name: "duplicate subject claim token", key: key,
+			mutate: func(t *IDJAGTarget) {
+				t.RequiredSubjectClaims = []string{IDJAGSubjectClaimSubID, IDJAGSubjectClaimSubID}
+			},
+			wantErr: `lists required subject claim "sub_id" twice`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

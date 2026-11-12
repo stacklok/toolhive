@@ -2882,12 +2882,6 @@ const (
 	maxIDJAGLifetime = 300 * time.Second
 )
 
-// Subject claim tokens a target may list in required_subject_claims.
-const (
-	idJAGSubjectClaimUpstreamSubject = "upstream_subject"
-	idJAGSubjectClaimSubID           = "sub_id"
-)
-
 var (
 	errIDJAGRequiresTokenExchange = errors.New("token_exchange.id_jag requires token exchange to be enabled")
 	errIDJAGRequiresRestricted    = errors.New(`token_exchange.id_jag requires self_issued_subject_tokens "restricted"`)
@@ -2999,7 +2993,7 @@ func validateIDJAGTarget(
 
 	claims := make(map[string]struct{}, len(target.RequiredSubjectClaims))
 	for _, claim := range target.RequiredSubjectClaims {
-		if claim != idJAGSubjectClaimUpstreamSubject && claim != idJAGSubjectClaimSubID {
+		if !tokenexchange.IsIDJAGSubjectClaimToken(claim) {
 			return fmt.Errorf("%w: %q", errIDJAGSubjectClaimUnknown, claim)
 		}
 		if _, ok := claims[claim]; ok {

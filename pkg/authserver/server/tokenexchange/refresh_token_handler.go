@@ -863,5 +863,17 @@ func checkIDJAGTargetUsable(clientID, key string, target IDJAGTarget) error {
 		return fmt.Errorf("tokenexchange: client %q id_jag target %q lifetime must be positive, got %v",
 			clientID, key, target.Lifetime)
 	}
+	seen := make(map[string]struct{}, len(target.RequiredSubjectClaims))
+	for _, token := range target.RequiredSubjectClaims {
+		if !IsIDJAGSubjectClaimToken(token) {
+			return fmt.Errorf("tokenexchange: client %q id_jag target %q has an unknown required subject claim %q",
+				clientID, key, token)
+		}
+		if _, dup := seen[token]; dup {
+			return fmt.Errorf("tokenexchange: client %q id_jag target %q lists required subject claim %q twice",
+				clientID, key, token)
+		}
+		seen[token] = struct{}{}
+	}
 	return nil
 }

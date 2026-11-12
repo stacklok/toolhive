@@ -42,11 +42,25 @@ type idJAGSubjectClaim struct {
 	missingReason string
 }
 
+// The tokens a target may list in RequiredSubjectClaims. They are the only
+// valid ones; IsIDJAGSubjectClaimToken is the check to use.
+const (
+	IDJAGSubjectClaimUpstreamSubject = "upstream_subject"
+	IDJAGSubjectClaimSubID           = "sub_id"
+)
+
+// IsIDJAGSubjectClaimToken reports whether token is a valid entry of
+// IDJAGTarget.RequiredSubjectClaims.
+func IsIDJAGSubjectClaimToken(token string) bool {
+	_, ok := idJAGSubjectClaims[token]
+	return ok
+}
+
 // idJAGSubjectClaims maps the configuration tokens to their claims. Its wire
 // keys are the only subject claims an ID-JAG may carry.
 var idJAGSubjectClaims = map[string]idJAGSubjectClaim{
-	"upstream_subject": {wireKey: session.UpstreamSubjectClaimKey, missingReason: reasonUpstreamSubjectMissing},
-	"sub_id":           {wireKey: "sub_id", missingReason: reasonSubIDMissing},
+	IDJAGSubjectClaimUpstreamSubject: {wireKey: session.UpstreamSubjectClaimKey, missingReason: reasonUpstreamSubjectMissing},
+	IDJAGSubjectClaimSubID:           {wireKey: "sub_id", missingReason: reasonSubIDMissing},
 }
 
 // idJAGReservedClaims are claim names the core sets itself or keeps for later

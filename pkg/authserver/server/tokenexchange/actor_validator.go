@@ -59,9 +59,10 @@ import (
 //     issuer the validator does not know, is a configuration fault. Return a plain
 //     error for it, not a denial, because a denial is final for the client and would
 //     hide the fault from operators.
-//   - The whole validation shares one fixed budget of 5 seconds, including the
-//     validator's own calls to remote services. A validator that calls a remote
-//     service should set shorter deadlines of its own.
+//   - The whole validation shares one budget, including the validator's own calls to
+//     remote services. The validation has a budget, currently 5 seconds. ToolHive may
+//     raise it but will not lower it. A validator that calls a remote service should
+//     set shorter deadlines of its own.
 //   - Honor ctx. ToolHive stops waiting when the budget is spent, but a validator
 //     that ignores ctx keeps running in its goroutine until it returns.
 //   - Never set claims. The issuing code builds act from AgentID and caps the ID-JAG's
@@ -79,27 +80,17 @@ import (
 //   - Keep credentials out of error text.
 //   - Be safe for concurrent use.
 //
-// # Compatibility
+// # Stability
 //
-// ToolHive grows this API under the rules below, so a validator written today keeps
-// working.
+// This API is experimental. It is ready to use, but it may change in a minor
+// release while ToolHive gains its first embedders. ToolHive lists each change in
+// the release notes. Build ActorResult and ActorDeniedError with keyed literals so
+// that added fields do not break your code.
 //
-//   - ToolHive never adds a method to ActorTokenValidator. A new capability is a new
-//     field, or a separate exported interface that ToolHive checks with a type
-//     assertion on the registered value.
-//   - ActorRequest, GrantOwner, ActorTarget, ActorResult and ActorDeniedError are
-//     passed by value and only gain fields; none is removed, renamed or retyped.
-//     Build ActorResult and ActorDeniedError with keyed literals so new fields do not
-//     break your code.
-//   - A new input field is safe to ignore. Its zero value means the value is not
-//     available. Anything a validator must act on to stay safe is opt-in through new
-//     configuration, never a silent new input.
-//   - A new output field is optional. Its zero value keeps today's behavior.
-//   - ToolHive may add refusal reasons. Each new reason is a documented change to the
-//     client-facing API. A reason outside the documented set is a server error, so a
-//     validator cannot break clients by returning a value they do not know.
-//   - Validator names that start with "toolhive." are reserved for built-in
-//     validators; an embedder must not use them.
+// # Other rules
+//
+//   - A reason outside the documented set is a server error, so a validator cannot
+//     break clients by returning a value they do not know.
 //   - Composition belongs to the embedder. A client uses one validator, and
 //     ToolHive offers no chain of validators. An embedder with several checks wraps
 //     them in one validator. A wrapper passes the request through unchanged and returns

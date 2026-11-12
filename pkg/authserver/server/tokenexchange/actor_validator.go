@@ -223,11 +223,21 @@ const (
 	refuseActorCanceled  = "actor_validator_canceled"
 	refuseActorTimeout   = "actor_validator_timeout"
 	refuseActorPanic     = "actor_validator_panic"
+	refuseActorBusy      = "actor_validator_busy"
 )
 
 // actorValidationTimeout is the fixed budget for one validation, including the
 // validator's own calls to remote services.
 const actorValidationTimeout = 5 * time.Second
+
+// defaultActorValidatorCapacity is the default number of validator calls that may
+// run at once. Each one holds a goroutine, the raw actor token and whatever the
+// validator holds open, and a call that outlives its budget keeps all of that until
+// the validator returns. A healthy validator finishes well inside the 5 second
+// budget, so 64 calls in flight allow about 600 validations a second at 100ms each,
+// far above what one server issues, while a validator that hangs cannot hold more
+// than 64 tokens.
+const defaultActorValidatorCapacity = 64
 
 // redactedActorToken replaces the actor token in text that reaches a log or an error.
 const redactedActorToken = "[redacted]"
@@ -393,6 +403,34 @@ type actorOutcome struct {
 	panicMsg string
 }
 
+// actorLimiter bounds the validator goroutines that are running at one time. A
+// goroutine holds its slot until the validator returns, not until validateActor
+// stops waiting for it. Callers share one limiter per server.
+type actorLimiter struct {
+	slots chan struct{}
+}
+
+// newActorLimiter returns a limiter that allows capacity concurrent calls. It
+// rejects a capacity below 1, because zero must not mean unlimited.
+func newActorLimiter(capacity int) (*actorLimiter, error) {
+	if capacity < 1 {
+		return nil, fmt.Errorf("actor validator capacity must be at least 1, got %d", capacity)
+	}
+	return &actorLimiter{slots: make(chan struct{}, capacity)}, nil
+}
+
+// tryAcquire takes a slot without blocking and reports whether it got one.
+func (l *actorLimiter) tryAcquire() bool {
+	select {
+	case l.slots <- struct{}{}:
+		return true
+	default:
+		return false
+	}
+}
+
+func (l *actorLimiter) release() { <-l.slots }
+
 // validateActor calls v once and returns the accepted result, the time the
 // result was checked, the reason to log and the error for the client. It logs
 // nothing and caches nothing.
@@ -409,6 +447,12 @@ type actorOutcome struct {
 // or in the text of a panic value or error it returns, is recovered and reported
 // as actor_validator_panic.
 //
+// limiter caps the validator goroutines that run at once, counting each one until
+// the validator returns, so a hung validator holds its slot after validateActor
+// has stopped waiting. When no slot is free, validateActor starts no goroutine,
+// does not call the validator, and fails with actor_validator_busy as a server
+// error. limiter must not be nil.
+//
 // Every server error carries a cause with each occurrence of req.ActorToken
 // replaced by "[redacted]"; unwrap the *fosite.RFC6749Error to read it. A
 // refusal carries no cause. On any error the result is the zero value. checkedAt
@@ -417,6 +461,7 @@ type actorOutcome struct {
 func validateActor(
 	ctx context.Context,
 	v ActorTokenValidator,
+	limiter *actorLimiter,
 	req ActorRequest,
 	clock func() time.Time,
 	timeout time.Duration,
@@ -424,11 +469,17 @@ func validateActor(
 	if ctx.Err() != nil {
 		return failedActor(refuseActorCanceled, "request canceled while validating the actor", req.ActorToken)
 	}
+	if !limiter.tryAcquire() {
+		return failedActor(refuseActorBusy, "too many actor validator calls in flight", req.ActorToken)
+	}
 	vctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	outCh := make(chan actorOutcome, 1)
-	go runActorValidator(vctx, v, req, outCh)
+	go func() {
+		defer limiter.release()
+		runActorValidator(vctx, v, req, outCh)
+	}()
 
 	var out actorOutcome
 	select {

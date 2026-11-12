@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -464,4 +465,114 @@ func TestValidateActorErrorShapes(t *testing.T) {
 			assert.Equal(t, tt.wantReason, rfc.GetDescription())
 		})
 	}
+}
+
+func TestNewActorLimiterRejectsCapacityBelowOne(t *testing.T) {
+	t.Parallel()
+
+	for _, capacity := range []int{-1, 0} {
+		_, err := tokenexchange.NewActorLimiterForTest(capacity)
+		require.Error(t, err, "capacity %d", capacity)
+	}
+	for _, capacity := range []int{1, tokenexchange.DefaultActorValidatorCapacityForTest} {
+		limiter, err := tokenexchange.NewActorLimiterForTest(capacity)
+		require.NoError(t, err, "capacity %d", capacity)
+		assert.NotNil(t, limiter)
+	}
+}
+
+// TestValidateActorLimiter fills a limiter of one with a validator that ignores
+// its context. The next call must fail fast without reaching the validator, and
+// the slot must come back only after the hung validator returns.
+func TestValidateActorLimiter(t *testing.T) {
+	t.Parallel()
+
+	limiter, err := tokenexchange.NewActorLimiterForTest(1)
+	require.NoError(t, err)
+
+	hung := mocks.NewMockActorTokenValidator(gomock.NewController(t))
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseHung := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(releaseHung)
+	returned := make(chan struct{})
+	hung.EXPECT().ValidateActor(gomock.Any(), gomock.Any()).DoAndReturn(
+		func(context.Context, tokenexchange.ActorRequest) (tokenexchange.ActorResult, error) {
+			defer close(returned)
+			<-release
+			return callTestOK(), nil
+		}).Times(1)
+
+	_, _, reason, err := tokenexchange.ValidateActorWithLimiterForTest(
+		context.Background(), hung, limiter, callTestRequest(), fixedClock, callTestTimeout)
+	require.Error(t, err)
+	require.Equal(t, "actor_validator_timeout", reason)
+
+	// hung allows one call, so a second call reaching it fails the test.
+	_, _, reason, err = tokenexchange.ValidateActorWithLimiterForTest(
+		context.Background(), hung, limiter, callTestRequest(), fixedClock, callTestBound)
+	require.Error(t, err)
+	assert.Equal(t, "actor_validator_busy", reason)
+	assert.Equal(t, "too many actor validator calls in flight", serverCause(t, err))
+
+	next := mocks.NewMockActorTokenValidator(gomock.NewController(t))
+	next.EXPECT().ValidateActor(gomock.Any(), gomock.Any()).Return(callTestOK(), nil).AnyTimes()
+	releaseHung()
+	waitClosed(t, returned)
+
+	// The slot is released after the validator returns, a moment after returned closes.
+	require.Eventually(t, func() bool {
+		res, _, reason, err := tokenexchange.ValidateActorWithLimiterForTest(
+			context.Background(), next, limiter, callTestRequest(), fixedClock, callTestBound)
+		return err == nil && reason == "" && res == callTestOK()
+	}, callTestBound, time.Millisecond)
+}
+
+func TestValidateActorLimiterReleasedAfterPanic(t *testing.T) {
+	t.Parallel()
+
+	limiter, err := tokenexchange.NewActorLimiterForTest(1)
+	require.NoError(t, err)
+	v := mocks.NewMockActorTokenValidator(gomock.NewController(t))
+	v.EXPECT().ValidateActor(gomock.Any(), gomock.Any()).DoAndReturn(
+		func(context.Context, tokenexchange.ActorRequest) (tokenexchange.ActorResult, error) {
+			panic("boom")
+		}).Times(1)
+	v.EXPECT().ValidateActor(gomock.Any(), gomock.Any()).Return(callTestOK(), nil).AnyTimes()
+
+	_, _, reason, err := tokenexchange.ValidateActorWithLimiterForTest(
+		context.Background(), v, limiter, callTestRequest(), fixedClock, callTestBound)
+	require.Error(t, err)
+	require.Equal(t, "actor_validator_panic", reason)
+
+	require.Eventually(t, func() bool {
+		_, _, _, err := tokenexchange.ValidateActorWithLimiterForTest(
+			context.Background(), v, limiter, callTestRequest(), fixedClock, callTestBound)
+		return err == nil
+	}, callTestBound, time.Millisecond)
+}
+
+func TestValidateActorGoexitReportedAsTimeoutAndLimiterReleased(t *testing.T) {
+	t.Parallel()
+
+	limiter, err := tokenexchange.NewActorLimiterForTest(1)
+	require.NoError(t, err)
+	v := mocks.NewMockActorTokenValidator(gomock.NewController(t))
+	v.EXPECT().ValidateActor(gomock.Any(), gomock.Any()).DoAndReturn(
+		func(context.Context, tokenexchange.ActorRequest) (tokenexchange.ActorResult, error) {
+			runtime.Goexit()
+			return tokenexchange.ActorResult{}, nil
+		}).Times(1)
+	v.EXPECT().ValidateActor(gomock.Any(), gomock.Any()).Return(callTestOK(), nil).AnyTimes()
+
+	_, _, reason, err := tokenexchange.ValidateActorWithLimiterForTest(
+		context.Background(), v, limiter, callTestRequest(), fixedClock, callTestTimeout)
+	require.Error(t, err)
+	require.Equal(t, "actor_validator_timeout", reason)
+
+	require.Eventually(t, func() bool {
+		res, _, reason, err := tokenexchange.ValidateActorWithLimiterForTest(
+			context.Background(), v, limiter, callTestRequest(), fixedClock, callTestBound)
+		return err == nil && reason == "" && res == callTestOK()
+	}, callTestBound, time.Millisecond)
 }

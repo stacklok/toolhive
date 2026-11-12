@@ -36,6 +36,17 @@ const NoUpstreamSessionKey = "https://toolhive.dev/no_upstream_session"
 // involved survives re-exchanges of the issued token.
 const ExternalIssuerKey = "external_issuer"
 
+// SubjectIdentifierKey is the JWT claim key of the RFC 9493 subject identifier
+// claim, which carries the verified upstream identity as an {iss, sub} pair.
+// The issuing and consuming sides must agree on this spelling.
+const SubjectIdentifierKey = "sub_id"
+
+// UpstreamSubjectKey is the collision-resistant claim name (RFC 7519 Section
+// 4.2) of the claim that carries the upstream subject a consumer can key on
+// across upstream client registrations. It is emitted together with the RFC 9493
+// sub_id claim (SubjectIdentifierKey) and under the same disclosure policy.
+const UpstreamSubjectKey = "https://toolhive.dev/upstream_subject"
+
 // QualifySubject returns the "sub" value for a subject asserted by an external
 // issuer: "<issuer>#<subject>".
 //

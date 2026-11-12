@@ -297,15 +297,15 @@ func TestSession_CloneCopiesVerifiedIdentityAndIsolatesSubjectIdentifier(t *test
 	cloned, ok := original.Clone().(*Session)
 	require.True(t, ok)
 	assert.Equal(t, testVerifiedUpstream, cloned.VerifiedUpstream)
-	require.Contains(t, cloned.JWTClaims.Extra, subjectIdentifierClaimKey)
-	require.Contains(t, cloned.JWTClaims.Extra, UpstreamSubjectClaimKey)
+	require.Contains(t, cloned.JWTClaims.Extra, claimnames.SubjectIdentifierKey)
+	require.Contains(t, cloned.JWTClaims.Extra, claimnames.UpstreamSubjectKey)
 
 	cloned.ClearSubjectIdentifier()
 
-	assert.NotContains(t, cloned.JWTClaims.Extra, subjectIdentifierClaimKey)
-	assert.NotContains(t, cloned.JWTClaims.Extra, UpstreamSubjectClaimKey)
-	assert.Contains(t, original.JWTClaims.Extra, subjectIdentifierClaimKey)
-	assert.Contains(t, original.JWTClaims.Extra, UpstreamSubjectClaimKey)
+	assert.NotContains(t, cloned.JWTClaims.Extra, claimnames.SubjectIdentifierKey)
+	assert.NotContains(t, cloned.JWTClaims.Extra, claimnames.UpstreamSubjectKey)
+	assert.Contains(t, original.JWTClaims.Extra, claimnames.SubjectIdentifierKey)
+	assert.Contains(t, original.JWTClaims.Extra, claimnames.UpstreamSubjectKey)
 }
 
 func TestSession_UpstreamSessionID(t *testing.T) {
@@ -386,12 +386,12 @@ func TestSession_SetSubjectIdentifier_AllocatesNilExtra(t *testing.T) {
 		"format": "iss_sub",
 		"iss":    "https://idp.example.com",
 		"sub":    "upstream-sub",
-	}, s.JWTClaims.Extra["sub_id"])
+	}, s.JWTClaims.Extra[claimnames.SubjectIdentifierKey])
 	assert.Equal(t, map[string]string{
 		"iss":   "https://idp.example.com",
 		"claim": "oid",
 		"value": "upstream-oid",
-	}, s.JWTClaims.Extra[UpstreamSubjectClaimKey])
+	}, s.JWTClaims.Extra[claimnames.UpstreamSubjectKey])
 }
 
 func TestSession_SetSubjectIdentifier_RequiresCompleteIdentity(t *testing.T) {
@@ -414,12 +414,12 @@ func TestSession_SetSubjectIdentifier_RequiresCompleteIdentity(t *testing.T) {
 			s.SetSubjectIdentifier(tt.upstream)
 
 			if tt.want {
-				assert.Contains(t, s.JWTClaims.Extra, subjectIdentifierClaimKey)
-				assert.Contains(t, s.JWTClaims.Extra, UpstreamSubjectClaimKey)
+				assert.Contains(t, s.JWTClaims.Extra, claimnames.SubjectIdentifierKey)
+				assert.Contains(t, s.JWTClaims.Extra, claimnames.UpstreamSubjectKey)
 				return
 			}
-			assert.NotContains(t, s.JWTClaims.Extra, subjectIdentifierClaimKey)
-			assert.NotContains(t, s.JWTClaims.Extra, UpstreamSubjectClaimKey)
+			assert.NotContains(t, s.JWTClaims.Extra, claimnames.SubjectIdentifierKey)
+			assert.NotContains(t, s.JWTClaims.Extra, claimnames.UpstreamSubjectKey)
 		})
 	}
 }

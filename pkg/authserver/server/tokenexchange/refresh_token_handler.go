@@ -120,8 +120,8 @@ type RefreshTokenHandler struct {
 	registry       *authorizationdetails.Registry
 	clientPolicies map[string]ConfiguredClientPolicy
 	refreshScopes  fosite.RefreshTokenScopesProvider
-	signer         IDJAGSigner // will sign ID-JAGs; nothing reads it yet
-	issuer         string      // the access-token issuer
+	signer         *server.Signer // will sign ID-JAGs; nothing reads it yet
+	issuer         string         // the access-token issuer
 }
 
 // RefreshTokenOption configures RefreshTokenFactory. Factory takes FactoryOption
@@ -140,11 +140,6 @@ func WithExchangeGrantStorage(store storage.ExchangeGrantStorage) RefreshTokenOp
 	return func(o *refreshTokenOptions) { o.exchangeGrantStore = store }
 }
 
-// IDJAGSigner signs the claims of an ID-JAG with the given JOSE typ.
-type IDJAGSigner interface {
-	Sign(ctx context.Context, claims map[string]any, typ string) (string, error)
-}
-
 // RefreshTokenFactory returns a server.Factory that creates the
 // RefreshTokenHandler. It is registered whenever token exchange is enabled, so
 // a request for a refresh token always reaches this handler, which refuses it
@@ -153,17 +148,15 @@ type IDJAGSigner interface {
 // WithExchangeGrantStorage; it may be nil only if no client has
 // exchange_refresh_tokens.
 //
-// signer is required. Construction fails for a nil interface value; a nil
-// *server.Signer inside a non-nil interface passes construction and fails when
-// it signs. Construction also fails for any IDJAGTarget in clientPolicies that
-// is not structurally usable (empty issuer, a map key that is not the target's
-// issuer, empty client_id, no or an empty resource, a lifetime that is not
-// positive).
+// signer is required and must come from server.NewSigner. Construction also
+// fails for any IDJAGTarget in clientPolicies that is not structurally usable
+// (empty issuer, a map key that is not the target's issuer, empty client_id, no
+// or an empty resource, a lifetime that is not positive).
 //
 // The authorization_details registry is built here, once, and startup fails if
 // that fails. It is private to this handler.
 func RefreshTokenFactory(
-	clientPolicies map[string]ConfiguredClientPolicy, signer IDJAGSigner, options ...RefreshTokenOption,
+	clientPolicies map[string]ConfiguredClientPolicy, signer *server.Signer, options ...RefreshTokenOption,
 ) (server.Factory, error) {
 	if signer == nil {
 		return nil, fmt.Errorf("tokenexchange: RefreshTokenFactory requires a signer")

@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"maps"
-	"strings"
 
 	"github.com/go-jose/go-jose/v4"
 	"github.com/ory/fosite"
@@ -17,6 +16,7 @@ import (
 	"github.com/ory/fosite/token/jwt"
 
 	"github.com/stacklok/toolhive/pkg/authserver/internal/fositejose"
+	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
 var _ jwt.Signer = (*atJWTAccessTokenSigner)(nil)
@@ -53,8 +53,8 @@ func (s *atJWTAccessTokenSigner) Generate(ctx context.Context, claims jwt.MapCla
 	return s.Signer.Generate(ctx, claims, &jwt.Headers{Extra: hdr})
 }
 
-// Signer holds the server's signing key. It exposes Sign, for JWTs that set
-// their own typ, and AccessTokenStrategy, for access tokens. It never hands out
+// Signer holds the server's signing key. It exposes SignIDJAG, for ID-JAGs, and
+// AccessTokenStrategy, for access tokens. It never hands out
 // the raw jwt.Signer, whose Generate takes any header and whose Decode and
 // Validate reach fosite's go-jose v3 parser.
 type Signer struct{ raw jwt.Signer }
@@ -71,19 +71,25 @@ func NewSigner(key *jose.JSONWebKey) *Signer {
 	}}
 }
 
-// Sign signs claims with the given JOSE typ. The typ must not be empty, and must
-// not be an access-token type ("at+jwt" or "JWT", compared case-insensitively):
-// Sign shares the access-token key, so a token it signs must never be typed as
-// an access token.
-func (s *Signer) Sign(ctx context.Context, claims map[string]any, typ string) (string, error) {
+// SignIDJAG signs claims as an ID-JAG, with the JOSE header typ oauth-id-jag+jwt.
+func (s *Signer) SignIDJAG(ctx context.Context, claims map[string]any) (string, error) {
+	return s.sign(ctx, claims, oauthproto.JWTTypeIDJAG)
+}
+
+// sign signs claims with the given JOSE typ. It is only called by the typed
+// wrappers in this package, each with a constant typ. As defense in depth, it
+// refuses an empty typ and any access-token typ ("at+jwt" or "JWT", in any case
+// and with or without the "application/" prefix): sign shares the access-token
+// key, so a token it signs must never be typed as an access token.
+func (s *Signer) sign(ctx context.Context, claims map[string]any, typ string) (string, error) {
 	if s == nil || s.raw == nil {
 		return "", errNoSigner
 	}
 	if typ == "" {
-		return "", errors.New("authserver: Sign requires a non-empty typ")
+		return "", errors.New("authserver: sign requires a non-empty typ")
 	}
-	if strings.EqualFold(typ, AccessTokenTypeATJWT) || strings.EqualFold(typ, "JWT") {
-		return "", fmt.Errorf("authserver: Sign refuses the access-token typ %q", typ)
+	if oauthproto.IsJOSEType(typ, AccessTokenTypeATJWT) || oauthproto.IsJOSEType(typ, "JWT") {
+		return "", fmt.Errorf("authserver: sign refuses the access-token typ %q", typ)
 	}
 	token, _, err := s.raw.Generate(ctx, jwt.MapClaims(claims), &jwt.Headers{Extra: map[string]any{"typ": typ}})
 	return token, err

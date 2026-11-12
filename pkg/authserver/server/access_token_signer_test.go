@@ -145,13 +145,13 @@ func newTestSignerConfig(t *testing.T) *AuthorizationServerConfig {
 	}
 }
 
-func TestSigner_Sign(t *testing.T) {
+func TestSigner_SignIDJAG(t *testing.T) {
 	t.Parallel()
 
 	cfg := newTestSignerConfig(t)
 	signer := NewSigner(cfg.SigningKey)
 
-	token, err := signer.Sign(t.Context(), map[string]any{"sub": "user"}, oauthproto.JWTTypeIDJAG)
+	token, err := signer.SignIDJAG(t.Context(), map[string]any{"sub": "user"})
 	require.NoError(t, err)
 	header := decodeJOSEHeader(t, token)
 
@@ -173,13 +173,30 @@ func TestSigner_Sign(t *testing.T) {
 		require.NoError(t, err)
 	})
 
-	for _, typ := range []string{"", AccessTokenTypeATJWT, "JWT", "jwt", "At+JWT"} {
+}
+
+func TestSigner_signRefusesTyps(t *testing.T) {
+	t.Parallel()
+
+	signer := NewSigner(newTestSigningKey(t))
+	typs := []string{
+		"", AccessTokenTypeATJWT, "AT+JWT", "At+JWT", "application/at+jwt", "application/AT+JWT",
+		"JWT", "jwt", "application/JWT", "application/jwt",
+	}
+	for _, typ := range typs {
 		t.Run(fmt.Sprintf("typ %q is an error", typ), func(t *testing.T) {
 			t.Parallel()
-			_, err := signer.Sign(t.Context(), map[string]any{"sub": "user"}, typ)
+			_, err := signer.sign(t.Context(), map[string]any{"sub": "user"}, typ)
 			require.Error(t, err)
 		})
 	}
+
+	t.Run("a non-access-token typ is signed", func(t *testing.T) {
+		t.Parallel()
+		token, err := signer.sign(t.Context(), map[string]any{"sub": "user"}, "example+jwt")
+		require.NoError(t, err)
+		assert.Equal(t, "example+jwt", decodeJOSEHeader(t, token)["typ"])
+	})
 }
 
 func TestSigner_AccessTokenStrategy(t *testing.T) {
@@ -227,8 +244,8 @@ func TestSigner_UnusableSigner(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
-			_, err := signer.Sign(t.Context(), map[string]any{"sub": "user"}, oauthproto.JWTTypeIDJAG)
-			require.Error(t, err)
+			_, err := signer.SignIDJAG(t.Context(), map[string]any{"sub": "user"})
+			require.ErrorIs(t, err, errNoSigner)
 
 			strategy, err := signer.AccessTokenStrategy(&fosite.Config{}, true)
 			require.Error(t, err)

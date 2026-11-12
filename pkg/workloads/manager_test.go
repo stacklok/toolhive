@@ -848,7 +848,6 @@ func TestDefaultManager_restartContainerWorkload(t *testing.T) {
 				sm.EXPECT().GetWorkloadPID(gomock.Any(), "container-workload").Return(0, errors.New("no PID found")).Times(2)
 				// With dead supervisor, restart proceeds with cleanup and restart
 				sm.EXPECT().SetWorkloadStatus(gomock.Any(), "container-workload", runtime.WorkloadStatusStopping, "").Return(nil)
-				sm.EXPECT().GetWorkloadPID(gomock.Any(), "container-workload").Return(0, errors.New("no PID found"))
 				rm.EXPECT().StopWorkload(gomock.Any(), "container-workload").Return(nil)
 				// Allow any subsequent status updates
 				sm.EXPECT().SetWorkloadStatus(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().Return(nil)
@@ -1081,7 +1080,6 @@ func TestDefaultManager_restartLogicConsistency(t *testing.T) {
 
 		// When supervisor is dead, expect stop logic to be called
 		statusMgr.EXPECT().SetWorkloadStatus(gomock.Any(), "test-workload", runtime.WorkloadStatusStopping, "").Return(nil)
-		statusMgr.EXPECT().GetWorkloadPID(gomock.Any(), "test-workload").Return(0, errors.New("no PID found"))
 		runtimeMgr.EXPECT().StopWorkload(gomock.Any(), "test-workload").Return(nil)
 
 		// Allow any subsequent status updates (starting, error, etc.) - we don't care about the exact sequence
@@ -1128,7 +1126,6 @@ func TestDefaultManager_restartLogicConsistency(t *testing.T) {
 
 		// When supervisor is treated as dead, expect stop logic
 		statusMgr.EXPECT().SetWorkloadStatus(gomock.Any(), "test-workload", runtime.WorkloadStatusStopping, "").Return(nil)
-		statusMgr.EXPECT().GetWorkloadPID(gomock.Any(), "test-workload").Return(0, nil)
 		runtimeMgr.EXPECT().StopWorkload(gomock.Any(), "test-workload").Return(nil)
 
 		statusMgr.EXPECT().SetWorkloadStatus(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().Return(nil)
@@ -1255,9 +1252,9 @@ func (f *fakeRunnerFactory) factory() mcpRunnerFactory {
 	}
 }
 
-func expectSupervisorPIDCleanup(t *testing.T, sm *statusMocks.MockStatusManager, name string) *gomock.Call {
+func expectSupervisorPIDCleanup(t *testing.T, sm *statusMocks.MockStatusManager, name string) {
 	t.Helper()
-	return sm.EXPECT().ResetWorkloadPIDIfMatch(gomock.Any(), name, os.Getpid()).
+	sm.EXPECT().ResetWorkloadPIDIfMatch(gomock.Any(), name, os.Getpid()).
 		DoAndReturn(func(ctx context.Context, _ string, _ int) error {
 			assert.NoError(t, ctx.Err(), "PID cleanup must survive supervisor cancellation")
 			_, bounded := ctx.Deadline()
@@ -1268,8 +1265,9 @@ func expectSupervisorPIDCleanup(t *testing.T, sm *statusMocks.MockStatusManager,
 
 func expectSupervisorCancellationCleanup(t *testing.T, sm *statusMocks.MockStatusManager, name string) {
 	t.Helper()
-	resetPID := expectSupervisorPIDCleanup(t, sm, name)
-	sm.EXPECT().SetWorkloadStoppedIfOwned(gomock.Any(), name, os.Getpid()).After(resetPID).
+	// The PID reset happens inside the guarded write; a separate reset first
+	// would let the guard mistake a replacement's PID-less starting status.
+	sm.EXPECT().SetWorkloadStoppedIfOwned(gomock.Any(), name, os.Getpid()).
 		DoAndReturn(func(ctx context.Context, _ string, _ int) error {
 			assert.NoError(t, ctx.Err(), "status cleanup must survive supervisor cancellation")
 			_, bounded := ctx.Deadline()
@@ -3049,9 +3047,9 @@ func TestDefaultManager_maybeSetupContainerWorkload_StartingSupervisor(t *testin
 				Name: rc.ContainerName, State: "exited", Labels: map[string]string{labels.LabelBaseName: name},
 			}, nil)
 			sm.EXPECT().GetWorkload(gomock.Any(), name).Return(core.Workload{Name: name, Status: runtime.WorkloadStatusStarting}, nil)
-			pidCall := sm.EXPECT().GetWorkloadPID(gomock.Any(), name).Return(pid, nil).Times(2)
+			pidCall := sm.EXPECT().GetWorkloadPID(gomock.Any(), name).Return(pid, nil)
 			if !ownPID {
-				pidCall.Times(3)
+				pidCall.Times(2)
 				sm.EXPECT().ResetWorkloadPIDIfMatch(gomock.Any(), name, pid).Return(nil)
 			}
 			sm.EXPECT().SetWorkloadStatus(gomock.Any(), name, runtime.WorkloadStatusStarting, "").
@@ -3416,6 +3414,17 @@ func TestDefaultManager_stopProcess(t *testing.T) {
 			},
 			want: proxyStopped,
 		},
+		{
+			name:     "live PID that cannot be inspected is reported, not ignored",
+			workload: "test-workload",
+			setupMocks: func(t *testing.T, sm *statusMocks.MockStatusManager) {
+				t.Helper()
+				pid := unverifiableSupervisorPID(t, "test-workload")
+				// No reset: the process may still be the supervisor.
+				sm.EXPECT().GetWorkloadPID(gomock.Any(), "test-workload").Return(pid, nil)
+			},
+			want: proxyUnverifiable,
+		},
 	}
 
 	for _, tt := range tests {
@@ -3484,7 +3493,8 @@ func TestDefaultManager_ensureProxyStopped_UnverifiedLivePIDIsPreservedWithoutSi
 			ctrl := gomock.NewController(t)
 			sm := statusMocks.NewMockStatusManager(ctrl)
 			sm.EXPECT().GetWorkloadPID(gomock.Any(), name).Return(pid, nil)
-			// No reset expectation: an unverifiable live process must remain tracked.
+			// No reset expectation: a live process that is not this workload's
+			// supervisor must remain tracked.
 			manager := &DefaultManager{statuses: sm}
 			rc := &runner.RunConfig{BaseName: name, Port: 54321}
 			fallbackCalls := 0
@@ -3493,7 +3503,8 @@ func TestDefaultManager_ensureProxyStopped_UnverifiedLivePIDIsPreservedWithoutSi
 				fallbackCalls++
 			})(manager)
 
-			manager.ensureProxyStopped(context.Background(), name, name, rc)
+			result := manager.ensureProxyStopped(context.Background(), name, name, rc)
+			assert.Equal(t, proxyNotStopped, result, "an inspected foreign process must not block stop or delete")
 			assert.Equal(t, 1, fallbackCalls, "unverified PID must not suppress port cleanup")
 			select {
 			case <-exited:

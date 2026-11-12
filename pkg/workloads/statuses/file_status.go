@@ -519,12 +519,15 @@ func (f *fileStatusManager) ResetWorkloadPIDIfMatch(ctx context.Context, workloa
 	return err
 }
 
-// SetWorkloadStoppedIfOwned marks a workload stopped only if, re-checked under
-// the file lock, its status file still exists, still claims starting or
-// running, and records no PID or ownerPID. A supervisor cancelled by a signal
-// uses it so it neither recreates a deleted workload's status nor overrides a
-// replacement supervisor or a newer stopping/removing status.
+// SetWorkloadStoppedIfOwned clears the PID and marks the workload stopped in
+// one locked write, only if its status file still exists and records ownerPID.
+// The status changes only from starting or running. A supervisor cancelled by
+// a signal uses it so it neither recreates a deleted workload's status nor
+// overrides a replacement supervisor or a newer stopping/removing status.
 func (f *fileStatusManager) SetWorkloadStoppedIfOwned(ctx context.Context, workloadName string, ownerPID int) error {
+	if err := removePIDFile(workloadName); err != nil {
+		slog.Debug("no PID for workload was removed", "workload", workloadName)
+	}
 	return f.withFileLock(ctx, workloadName, func(statusFilePath string) error {
 		if _, err := os.Stat(statusFilePath); os.IsNotExist(err) {
 			return nil
@@ -536,18 +539,17 @@ func (f *fileStatusManager) SetWorkloadStoppedIfOwned(ctx context.Context, workl
 		if err != nil {
 			return fmt.Errorf("failed to read existing status for workload %s: %w", workloadName, err)
 		}
-		if statusFile.Status != rt.WorkloadStatusStarting && statusFile.Status != rt.WorkloadStatusRunning {
-			slog.Debug("skipping stopped mark: status changed", "workload", workloadName, "status", statusFile.Status)
-			return nil
-		}
-		if statusFile.ProcessID != 0 && statusFile.ProcessID != ownerPID {
+		if statusFile.ProcessID != ownerPID {
 			slog.Debug("skipping stopped mark: workload owned by another process",
 				"workload", workloadName, "current_pid", statusFile.ProcessID, "owner_pid", ownerPID)
 			return nil
 		}
 
-		statusFile.Status = rt.WorkloadStatusStopped
-		statusFile.StatusContext = ""
+		statusFile.ProcessID = 0
+		if statusFile.Status == rt.WorkloadStatusStarting || statusFile.Status == rt.WorkloadStatusRunning {
+			statusFile.Status = rt.WorkloadStatusStopped
+			statusFile.StatusContext = ""
+		}
 		statusFile.UpdatedAt = time.Now()
 		return f.writeStatusFile(statusFilePath, *statusFile)
 	})

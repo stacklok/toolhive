@@ -91,10 +91,12 @@ supervisor that is waiting in restart backoff. Auxiliary workloads have no proxy
 to clean up.
 
 Stop writes `Stopping` and then `Stopped`, and removes client configuration,
-only when something was live: the container was running or the recorded
-supervisor PID belongs to a running process. Otherwise stop leaves the current
-status alone, so an `Error` or `PolicyStopped` workload keeps its status and
-reason, even if a stale PID is still recorded.
+only when something was live: the container was running or the recorded PID is
+the workload's running supervisor. Otherwise stop leaves the current status
+alone, so an `Error` or `PolicyStopped` workload keeps its status and reason,
+even if a stale PID is still recorded. If the recorded PID is alive but can't be
+inspected, stop fails instead, because it can neither signal that process nor
+know that it has stopped. See [Proxy termination](#proxy-termination).
 
 `thv stop --all` and `--group` skip `Starting` workloads, including supervisors
 waiting in restart backoff. Stop them by name.
@@ -149,9 +151,10 @@ The Docker runtime only deletes networks that carry the `toolhive=true` and
 workload name labels. It leaves unlabelled networks alone, even when their
 names match ToolHive's naming scheme.
 
-Stopping the supervisor is best-effort. A foreground supervisor runs its own
-cleanup when it gets SIGTERM, and that cleanup can overlap with delete if the
-supervisor takes longer than the exit wait. See
+Delete fails, sets the status to `Error`, and keeps the container and saved
+state if the supervisor can't be confirmed gone: it was signalled but is still
+exiting after the wait, or its recorded PID is alive but can't be inspected.
+Retry once the supervisor has exited. See
 [Proxy termination](#proxy-termination).
 
 **Remote workload**: Stops proxy → deletes state
@@ -200,33 +203,45 @@ checked, because everything after `--` goes to the MCP server.
   accepted without a name, because its name comes from the image or the file.
 
 There is no process start-time check, so if the OS reuses the PID for another
-matching `thv` command, ToolHive can't tell. A PID that is alive but can't be
-verified is left alone.
+matching `thv` command, ToolHive can't tell. A recorded PID is never signalled
+unless it passes this check:
+
+- A process that was inspected and doesn't match, for example after the OS
+  reused the PID, is left alone and its PID stays recorded. Stop and delete
+  carry on as if no supervisor were running.
+- A process that is alive but can't be inspected, for example because it
+  belongs to another user, makes stop, delete, start, and restart fail with an
+  error. It could still be the supervisor, and ToolHive won't report success
+  while it may be restarting the container.
+- A PID whose process has exited is cleared.
 
 On Unix, stop sends SIGTERM and does not escalate. On Windows, it uses
 TerminateProcess, which is a hard stop. Both wait up to five seconds for the
 process to exit. If the process was signalled but is still exiting after the
-wait, stop doesn't signal it again. If there is no PID to signal, or it can't be
-verified, stop falls back to freeing the proxy port when the saved configuration
-allows it. The port holder must match the workload exactly, and the fallback
-also waits up to five seconds. Cleanup is best-effort and can leave a proxy
+wait, it isn't signalled again: stop carries on, while delete, start, and
+restart fail so that the old supervisor's shutdown can't tear down what they do
+next. If there is no PID to signal, or the process doesn't match, stop and
+delete fall back to freeing the proxy port when the saved configuration allows
+it. The port holder must match the workload exactly, and the fallback also
+waits up to five seconds. This fallback is best-effort and can leave a proxy
 running or its port in use.
 
 The supervisor owns its PID entry. It keeps the PID registered across container
 restart attempts, including backoff, and shutdown cancels the backoff. When it
 exits, it clears the PID only if the entry still holds its own PID. If it was
-cancelled by a signal while `Starting` or `Running`, it writes `Stopped` under
-the status file lock, as long as the recorded PID is unset or its own, and exits
-with status 0.
+cancelled, by a signal or by reaching a deadline, it exits with status 0, and
+under one status file lock clears its PID and changes `Starting` or `Running` to
+`Stopped`. It writes nothing unless the recorded PID is its own, so a
+replacement that has written `Starting` but not yet recorded its PID keeps its
+status.
 
-For container workloads, start and restart try to stop any other supervisor
-whose PID is recorded for the workload before they spawn a new one, whatever
-the current status is. This uses the same best-effort stop, so a supervisor that
-can't be verified or doesn't exit in time can still be running. They never
-signal their own PID. A foreground `thv run` is the exception: it deletes its
-workload when it exits, so start and restart leave it in charge and return as if
-the workload were already running. Remote workloads in `Starting` keep their
-existing supervisor.
+Start and restart stop any other supervisor whose PID is recorded for the
+workload before they spawn a new one, whatever the current status is. They
+return an error, without spawning, unless that supervisor is confirmed gone.
+They never signal their own PID. A foreground `thv run` is the exception: it
+deletes its workload when it exits, so start and restart leave it in charge and
+return success without doing anything, including while it waits in restart
+backoff. These rules apply to container and remote workloads.
 
 **Implementation**: `pkg/workloads/manager.go`, `pkg/process/toolhive_proxy.go`
 

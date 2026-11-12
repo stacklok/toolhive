@@ -1920,13 +1920,19 @@ func TestFileStatusManager_SetWorkloadStoppedIfOwned(t *testing.T) {
 		pid         int
 		wantStatus  rt.WorkloadStatus
 		wantContext string
+		wantPID     int
 	}{
-		{name: "starting without PID", status: rt.WorkloadStatusStarting, wantStatus: rt.WorkloadStatusStopped},
 		{name: "running with owner PID", status: rt.WorkloadStatusRunning, pid: ownerPID, wantStatus: rt.WorkloadStatusStopped},
-		{name: "replacement PID", status: rt.WorkloadStatusStarting, pid: 99999,
+		{name: "starting with owner PID", status: rt.WorkloadStatusStarting, pid: ownerPID, wantStatus: rt.WorkloadStatusStopped},
+		// A replacement supervisor writes starting before it records its PID.
+		{name: "replacement without PID yet", status: rt.WorkloadStatusStarting,
 			wantStatus: rt.WorkloadStatusStarting, wantContext: "original"},
-		{name: "removing", status: rt.WorkloadStatusRemoving, wantStatus: rt.WorkloadStatusRemoving, wantContext: "original"},
-		{name: "error", status: rt.WorkloadStatusError, wantStatus: rt.WorkloadStatusError, wantContext: "original"},
+		{name: "replacement PID", status: rt.WorkloadStatusStarting, pid: 99999,
+			wantStatus: rt.WorkloadStatusStarting, wantContext: "original", wantPID: 99999},
+		{name: "removing with owner PID clears only PID", status: rt.WorkloadStatusRemoving, pid: ownerPID,
+			wantStatus: rt.WorkloadStatusRemoving, wantContext: "original"},
+		{name: "error with another PID", status: rt.WorkloadStatusError, pid: 99999,
+			wantStatus: rt.WorkloadStatusError, wantContext: "original", wantPID: 99999},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1946,7 +1952,7 @@ func TestFileStatusManager_SetWorkloadStoppedIfOwned(t *testing.T) {
 			require.NoError(t, json.Unmarshal(data, &statusFileData))
 			assert.Equal(t, tt.wantStatus, statusFileData.Status)
 			assert.Equal(t, tt.wantContext, statusFileData.StatusContext)
-			assert.Equal(t, tt.pid, statusFileData.ProcessID)
+			assert.Equal(t, tt.wantPID, statusFileData.ProcessID)
 		})
 	}
 

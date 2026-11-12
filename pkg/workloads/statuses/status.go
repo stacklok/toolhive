@@ -42,9 +42,10 @@ type StatusManager interface {
 	// dying process from clobbering the PID written by a replacement process
 	// that started in the meantime.
 	ResetWorkloadPIDIfMatch(ctx context.Context, workloadName string, expectedPID int) error
-	// SetWorkloadStoppedIfOwned marks a workload stopped only if its status
-	// still exists, is starting or running, and records either no PID or
-	// ownerPID. It never creates a status entry or overrides a newer status.
+	// SetWorkloadStoppedIfOwned atomically clears the PID and marks a workload
+	// stopped only if its status still exists and records ownerPID. Only a
+	// starting or running status becomes stopped. It never creates a status
+	// entry or overrides a newer status.
 	SetWorkloadStoppedIfOwned(ctx context.Context, workloadName string, ownerPID int) error
 	// GetWorkloadPID retrieves the PID of a workload by its name.
 	// Returns 0 if the workload does not exist or if PID is not available.

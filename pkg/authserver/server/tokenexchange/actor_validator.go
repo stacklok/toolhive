@@ -62,10 +62,16 @@ import (
 //     issuer the validator does not know, is a configuration fault. Return a plain
 //     error for it, not a denial, because a denial is final for the client and would
 //     hide the fault from operators.
-//   - The whole validation shares one budget, including the validator's own calls to
-//     remote services. The validation has a budget, currently 5 seconds. ToolHive may
-//     raise it but will not lower it. A validator that calls a remote service should
-//     set shorter deadlines of its own.
+//   - The whole validation, including the validator's own calls to remote services,
+//     has a budget of currently 5 seconds; ToolHive may raise it but will not lower
+//     it. A validator that calls a remote service should set shorter deadlines of its
+//     own.
+//   - Do not join a refusal with other errors (errors.Join, or several %w verbs):
+//     ToolHive answers a multi-error as a server error. Detection covers errors that
+//     implement Unwrap() []error, such as errors.Join and fmt.Errorf with several %w
+//     verbs. A multi-error type that exposes its errors through a single-Unwrap
+//     chain is not detected, so do not combine a refusal with other errors in any
+//     form.
 //   - Honor ctx. ToolHive stops waiting when the budget is spent, but a validator
 //     that ignores ctx keeps running in its goroutine until it returns.
 //   - Never set claims. The issuing code builds act from AgentID and caps the ID-JAG's
@@ -475,16 +481,27 @@ func panicText(p any) (s string) {
 
 // normalizeActorError replaces a validator's error with a value built by
 // ToolHive: nil stays nil, a non-nil *ActorDeniedError becomes a fresh one, and
-// anything else becomes a flat text copy.
+// anything else becomes a flat text copy. An error that joins several errors,
+// anywhere in its chain, is never a refusal, because errors.As would find a
+// denial inside it and hide the other errors, such as an outage.
 func normalizeActorError(err error) error {
 	if err == nil {
 		return nil
 	}
-	var denied *ActorDeniedError
-	if errors.As(err, &denied) && denied != nil {
-		return &ActorDeniedError{Reason: denied.Reason}
+	if !hasMultiError(err) {
+		var denied *ActorDeniedError
+		if errors.As(err, &denied) && denied != nil {
+			return &ActorDeniedError{Reason: denied.Reason}
+		}
 	}
 	return errors.New(err.Error())
+}
+
+// hasMultiError reports whether err, or any error it wraps, implements
+// Unwrap() []error, as errors.Join and a fmt.Errorf with several %w verbs do.
+func hasMultiError(err error) bool {
+	var multi interface{ Unwrap() []error }
+	return errors.As(err, &multi)
 }
 
 // actorContextFailure reports the reason and cause when the parent context was

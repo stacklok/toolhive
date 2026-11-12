@@ -409,3 +409,59 @@ func TestValidateActorExpirySkew(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateActorErrorShapes(t *testing.T) {
+	t.Parallel()
+
+	denied := func(r tokenexchange.ActorDeniedReason) error { return &tokenexchange.ActorDeniedError{Reason: r} }
+	var nilDenied *tokenexchange.ActorDeniedError
+	outage := errors.New("backend down")
+
+	tests := []struct {
+		name       string
+		err        error
+		wantReason string // a refusal reason, or the log reason of a server error
+		refusal    bool
+	}{
+		{"actor_token_expired", denied(tokenexchange.ActorDeniedReasonActorTokenExpired), "actor_token_expired", true},
+		{"approval_required", denied(tokenexchange.ActorDeniedReasonApprovalRequired), "approval_required", true},
+		{"denied", denied(tokenexchange.ActorDeniedReasonDenied), "denied", true},
+		{"actor_token_expired wrapped", fmt.Errorf("lookup: %w", denied(tokenexchange.ActorDeniedReasonActorTokenExpired)),
+			"actor_token_expired", true},
+		{"approval_required wrapped", fmt.Errorf("lookup: %w", denied(tokenexchange.ActorDeniedReasonApprovalRequired)),
+			"approval_required", true},
+		{"denied wrapped", fmt.Errorf("lookup: %w", denied(tokenexchange.ActorDeniedReasonDenied)), "denied", true},
+		{"unknown reason", denied("nope"), "actor_validator_error", false},
+		{"empty reason", denied(""), "actor_validator_error", false},
+		{"typed nil", nilDenied, "actor_validator_error", false},
+		{"errors.Join with a denial", errors.Join(outage, denied(tokenexchange.ActorDeniedReasonDenied)),
+			"actor_validator_error", false},
+		{"two %w verbs", fmt.Errorf("%w %w", outage, denied(tokenexchange.ActorDeniedReasonDenied)),
+			"actor_validator_error", false},
+		{"join nested under a %w wrapper",
+			fmt.Errorf("outer: %w", errors.Join(outage, denied(tokenexchange.ActorDeniedReasonDenied))),
+			"actor_validator_error", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			v := mocks.NewMockActorTokenValidator(gomock.NewController(t))
+			v.EXPECT().ValidateActor(gomock.Any(), gomock.Any()).Return(tokenexchange.ActorResult{}, tt.err)
+
+			res, _, reason, err := tokenexchange.ValidateActorForTest(
+				context.Background(), v, callTestRequest(), fixedClock, callTestBound)
+			require.Error(t, err)
+			assert.Equal(t, tokenexchange.ActorResult{}, res)
+			assert.Equal(t, tt.wantReason, reason)
+			if !tt.refusal {
+				serverCause(t, err)
+				return
+			}
+			var rfc *fosite.RFC6749Error
+			require.ErrorAs(t, err, &rfc)
+			assert.Equal(t, "invalid_request", rfc.ErrorField)
+			assert.Equal(t, http.StatusBadRequest, rfc.CodeField)
+			assert.Equal(t, tt.wantReason, rfc.GetDescription())
+		})
+	}
+}

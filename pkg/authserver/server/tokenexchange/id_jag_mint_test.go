@@ -23,6 +23,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/stacklok/toolhive/pkg/authserver/claimnames"
 	"github.com/stacklok/toolhive/pkg/authserver/server"
 	"github.com/stacklok/toolhive/pkg/authserver/server/session"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
@@ -94,8 +95,8 @@ func sessionSubjectClaims(t *testing.T) map[string]json.RawMessage {
 		require.NoError(t, err)
 		out[name] = raw
 	}
-	require.Contains(t, out, session.UpstreamSubjectClaimKey)
-	require.Contains(t, out, "sub_id")
+	require.Contains(t, out, claimnames.UpstreamSubjectKey)
+	require.Contains(t, out, claimnames.SubjectIdentifierKey)
 	return out
 }
 
@@ -185,10 +186,10 @@ func TestMintIDJAGGolden(t *testing.T) {
 			"iat":       iat,
 			"exp":       exp,
 			"resource":  mintTestResource,
-			session.UpstreamSubjectClaimKey: map[string]any{
+			claimnames.UpstreamSubjectKey: map[string]any{
 				"iss": mintTestUpstreamIss, "claim": mintTestStableClaim, "value": mintTestStableValue,
 			},
-			"sub_id": map[string]any{"format": "iss_sub", "iss": mintTestUpstreamIss, "sub": mintTestUpstreamSub},
+			claimnames.SubjectIdentifierKey: map[string]any{"format": "iss_sub", "iss": mintTestUpstreamIss, "sub": mintTestUpstreamSub},
 		}, payload, "aud and resource are strings, iat and exp integers; no nbf, no scope, no act")
 	})
 
@@ -480,22 +481,22 @@ func TestSelectSubjectClaims(t *testing.T) {
 		wantCode   string
 	}{
 		{name: "both claims selected", required: []string{"upstream_subject", "sub_id"}, available: available,
-			wantKeys: []string{session.UpstreamSubjectClaimKey, "sub_id"}},
+			wantKeys: []string{claimnames.UpstreamSubjectKey, claimnames.SubjectIdentifierKey}},
 		{name: "unlisted claims are not copied", required: []string{"upstream_subject"}, available: available,
-			wantKeys: []string{session.UpstreamSubjectClaimKey}},
+			wantKeys: []string{claimnames.UpstreamSubjectKey}},
 		{name: "nothing required selects nothing", available: available, wantKeys: []string{}},
 		{name: "upstream_subject missing", required: []string{"upstream_subject"},
-			available: withoutKey(session.UpstreamSubjectClaimKey), wantReason: "upstream_subject_missing", wantCode: "invalid_request"},
+			available: withoutKey(claimnames.UpstreamSubjectKey), wantReason: "upstream_subject_missing", wantCode: "invalid_request"},
 		{name: "sub_id missing", required: []string{"upstream_subject", "sub_id"},
-			available: withoutKey("sub_id"), wantReason: "sub_id_missing", wantCode: "invalid_request"},
+			available: withoutKey(claimnames.SubjectIdentifierKey), wantReason: "sub_id_missing", wantCode: "invalid_request"},
 		{name: "a JSON null counts as missing", required: []string{"sub_id"},
-			available: map[string]json.RawMessage{"sub_id": json.RawMessage("null")}, wantReason: "sub_id_missing",
+			available: map[string]json.RawMessage{claimnames.SubjectIdentifierKey: json.RawMessage("null")}, wantReason: "sub_id_missing",
 			wantCode: "invalid_request"},
 		{name: "an empty value counts as missing", required: []string{"sub_id"},
-			available: map[string]json.RawMessage{"sub_id": {}}, wantReason: "sub_id_missing",
+			available: map[string]json.RawMessage{claimnames.SubjectIdentifierKey: {}}, wantReason: "sub_id_missing",
 			wantCode: "invalid_request"},
 		{name: "a whitespace-only value counts as missing", required: []string{"sub_id"},
-			available: map[string]json.RawMessage{"sub_id": json.RawMessage(" \t\n")}, wantReason: "sub_id_missing",
+			available: map[string]json.RawMessage{claimnames.SubjectIdentifierKey: json.RawMessage(" \t\n")}, wantReason: "sub_id_missing",
 			wantCode: "invalid_request"},
 		{name: "unknown configuration token is an internal failure", required: []string{"email"},
 			available: available, wantCode: "server_error", wantReason: refuseInternal},
@@ -538,8 +539,8 @@ func TestMintIDJAGGuards(t *testing.T) {
 		selected  map[string]json.RawMessage // nil means the claims the test target requires
 		wantCause string                     // empty when the mint succeeds
 	}{
-		{name: "the upstream subject key is allowed", selected: claimOf(session.UpstreamSubjectClaimKey, `{"iss":"x"}`)},
-		{name: "sub_id is allowed", selected: claimOf("sub_id", `{"format":"opaque","id":"x"}`)},
+		{name: "the upstream subject key is allowed", selected: claimOf(claimnames.UpstreamSubjectKey, `{"iss":"x"}`)},
+		{name: "sub_id is allowed", selected: claimOf(claimnames.SubjectIdentifierKey, `{"format":"opaque","id":"x"}`)},
 		{name: "no subject claims", selected: map[string]json.RawMessage{}},
 		{name: "nbf is reserved", selected: claimOf("nbf", `{}`), wantCause: `"nbf" is reserved`},
 		{name: "cnf is reserved", selected: claimOf("cnf", `{}`), wantCause: `"cnf" is reserved`},
@@ -686,7 +687,7 @@ func mustSelectClaims(t *testing.T, m idJAGMint) map[string]json.RawMessage {
 }
 
 func rawClaim(value json.RawMessage) map[string]json.RawMessage {
-	return map[string]json.RawMessage{"sub_id": value}
+	return map[string]json.RawMessage{claimnames.SubjectIdentifierKey: value}
 }
 
 func claimOf(name, value string) map[string]json.RawMessage {
@@ -774,7 +775,7 @@ func TestRespondWithIDJAGPolicyInput(t *testing.T) {
 	policy := func(_ context.Context, in idJAGPolicyInput) error {
 		got = in
 		// A policy that changes its input must not change what is minted.
-		in.Subject.Claims["sub_id"] = json.RawMessage(`{"changed":true}`)
+		in.Subject.Claims[claimnames.SubjectIdentifierKey] = json.RawMessage(`{"changed":true}`)
 		in.Target.Resources[0] = "https://changed.example.com"
 		in.Act.Subject = "changed"
 		return nil
@@ -784,7 +785,7 @@ func TestRespondWithIDJAGPolicyInput(t *testing.T) {
 		context.Background(), newMintTestSigner(newTestJWKS(t)), policy, m, fosite.NewAccessResponse(), mintTestNow)
 	require.NoError(t, err)
 
-	assert.ElementsMatch(t, []string{session.UpstreamSubjectClaimKey, "sub_id"}, slices.Collect(maps.Keys(got.Subject.Claims)),
+	assert.ElementsMatch(t, []string{claimnames.UpstreamSubjectKey, claimnames.SubjectIdentifierKey}, slices.Collect(maps.Keys(got.Subject.Claims)),
 		"the policy sees only the selected claims")
 	assert.Equal(t, mintTestRequesting, got.ClientID, "the policy sees the client authenticated here")
 	assert.Equal(t, mintTestSubject, got.Subject.Subject)
@@ -794,7 +795,7 @@ func TestRespondWithIDJAGPolicyInput(t *testing.T) {
 	payload := decodeJWTPart(t, minted.Token, 1)
 	assert.Equal(t, mintTestTargetClient, payload["client_id"], "the token names the client at the target")
 	assert.Equal(t, map[string]any{"format": "iss_sub", "iss": mintTestUpstreamIss, "sub": mintTestUpstreamSub},
-		payload["sub_id"], "the policy's edit does not reach the token")
+		payload[claimnames.SubjectIdentifierKey], "the policy's edit does not reach the token")
 	assert.Equal(t, map[string]any{"iss": mintTestIssuer, "sub": "agent-1"}, payload["act"])
 	assert.Equal(t, mintTestResource, m.Target.Resources[0], "the caller's target is not changed")
 }
@@ -803,9 +804,9 @@ func TestRespondWithIDJAGPolicyInPlaceEdit(t *testing.T) {
 	t.Parallel()
 
 	m := mintTestMint(t)
-	want := decodeJWTPart(t, mustMintToken(t, m), 1)["sub_id"]
+	want := decodeJWTPart(t, mustMintToken(t, m), 1)[claimnames.SubjectIdentifierKey]
 	policy := func(_ context.Context, in idJAGPolicyInput) error {
-		raw := in.Subject.Claims["sub_id"]
+		raw := in.Subject.Claims[claimnames.SubjectIdentifierKey]
 		copy(raw[bytes.Index(raw, []byte("iss_sub")):], "XXXXXXX")
 		return nil
 	}
@@ -814,7 +815,7 @@ func TestRespondWithIDJAGPolicyInPlaceEdit(t *testing.T) {
 		context.Background(), newMintTestSigner(newTestJWKS(t)), policy, m, fosite.NewAccessResponse(), mintTestNow)
 	require.NoError(t, err)
 
-	assert.Equal(t, want, decodeJWTPart(t, minted.Token, 1)["sub_id"], "an in-place edit by the policy changes nothing minted")
+	assert.Equal(t, want, decodeJWTPart(t, minted.Token, 1)[claimnames.SubjectIdentifierKey], "an in-place edit by the policy changes nothing minted")
 }
 
 func mustMintToken(t *testing.T, m idJAGMint) string {
@@ -866,7 +867,7 @@ func TestRespondWithIDJAGMissingClaim(t *testing.T) {
 		wantReason string
 	}{
 		{name: "upstream_subject missing", required: []string{"upstream_subject", "sub_id"},
-			available: claimOf("sub_id", `{"format":"opaque","id":"x"}`),
+			available: claimOf(claimnames.SubjectIdentifierKey, `{"format":"opaque","id":"x"}`),
 			wantCode:  "invalid_request", wantReason: "upstream_subject_missing"},
 		{name: "sub_id null", required: []string{"sub_id"}, available: rawClaim(json.RawMessage("null")),
 			wantCode: "invalid_request", wantReason: "sub_id_missing"},

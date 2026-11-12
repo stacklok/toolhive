@@ -17,8 +17,8 @@ import (
 	"github.com/ory/fosite"
 	"github.com/ory/x/errorsx"
 
+	"github.com/stacklok/toolhive/pkg/authserver/claimnames"
 	"github.com/stacklok/toolhive/pkg/authserver/server"
-	"github.com/stacklok/toolhive/pkg/authserver/server/session"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
@@ -59,8 +59,8 @@ func IsIDJAGSubjectClaimToken(token string) bool {
 // idJAGSubjectClaims maps the configuration tokens to their claims. Its wire
 // keys are the only subject claims an ID-JAG may carry.
 var idJAGSubjectClaims = map[string]idJAGSubjectClaim{
-	IDJAGSubjectClaimUpstreamSubject: {wireKey: session.UpstreamSubjectClaimKey, missingReason: reasonUpstreamSubjectMissing},
-	IDJAGSubjectClaimSubID:           {wireKey: "sub_id", missingReason: reasonSubIDMissing},
+	IDJAGSubjectClaimUpstreamSubject: {wireKey: claimnames.UpstreamSubjectKey, missingReason: reasonUpstreamSubjectMissing},
+	IDJAGSubjectClaimSubID:           {wireKey: claimnames.SubjectIdentifierKey, missingReason: reasonSubIDMissing},
 }
 
 // idJAGReservedClaims are claim names the core sets itself or keeps for later

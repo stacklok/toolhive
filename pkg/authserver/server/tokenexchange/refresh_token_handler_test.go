@@ -543,13 +543,99 @@ func TestRefreshTokenFactoryRequiresStoreForEnabledClients(t *testing.T) {
 	policies := map[string]ConfiguredClientPolicy{testRefreshClient: {
 		ExchangeRefreshTokens: map[string]time.Duration{oauthproto.TokenTypeIDJAG: time.Hour},
 	}}
-	_, err := RefreshTokenFactory(policies)
+	_, err := RefreshTokenFactory(policies, newTestSigner(t))
 	require.ErrorContains(t, err, "no exchange grant store")
 
-	_, err = RefreshTokenFactory(policies, WithExchangeGrantStorage(&fakeGrantStore{}))
+	_, err = RefreshTokenFactory(policies, newTestSigner(t), WithExchangeGrantStorage(&fakeGrantStore{}))
 	require.NoError(t, err)
-	_, err = RefreshTokenFactory(map[string]ConfiguredClientPolicy{testRefreshClient: {}})
+	_, err = RefreshTokenFactory(map[string]ConfiguredClientPolicy{testRefreshClient: {}}, newTestSigner(t))
 	require.NoError(t, err, "no client enables the feature")
+}
+
+// newTestSigner returns a Signer over a fresh key.
+func newTestSigner(t *testing.T) *server.Signer {
+	t.Helper()
+	jwk := newTestJWKS(t).jwk
+	return server.NewSigner(&jwk)
+}
+
+func validIDJAGTarget() IDJAGTarget {
+	return IDJAGTarget{
+		Issuer:    "https://target.example.com",
+		ClientID:  "client-at-target",
+		Resources: []string{"https://api.target.example.com"},
+		Lifetime:  time.Minute,
+	}
+}
+
+func TestRefreshTokenFactoryReportsLexicallyFirstInvalidClient(t *testing.T) {
+	t.Parallel()
+
+	invalid := map[string]IDJAGTarget{"https://target.example.com": {}}
+	policies := map[string]ConfiguredClientPolicy{
+		"client-b": {IDJAGTargets: invalid},
+		"client-a": {IDJAGTargets: invalid},
+	}
+	for range 20 {
+		_, err := RefreshTokenFactory(policies, newTestSigner(t))
+		require.ErrorContains(t, err, `client "client-a"`)
+	}
+}
+
+func TestRefreshTokenFactoryValidatesTargets(t *testing.T) {
+	t.Parallel()
+
+	const key = "https://target.example.com"
+	tests := []struct {
+		name    string
+		key     string
+		mutate  func(*IDJAGTarget)
+		wantErr string
+	}{
+		{name: "valid target", key: key},
+		{name: "empty issuer", key: key,
+			mutate: func(t *IDJAGTarget) { t.Issuer = "" }, wantErr: "empty issuer"},
+		{name: "key is not the target issuer", key: "https://other.example.com",
+			wantErr: "but its issuer is"},
+		{name: "empty client_id", key: key,
+			mutate: func(t *IDJAGTarget) { t.ClientID = "" }, wantErr: "empty client_id"},
+		{name: "no resources", key: key,
+			mutate: func(t *IDJAGTarget) { t.Resources = nil }, wantErr: "no resources"},
+		{name: "empty resource entry", key: key,
+			mutate:  func(t *IDJAGTarget) { t.Resources = []string{"https://api.target.example.com", ""} },
+			wantErr: "empty resource"},
+		{name: "zero lifetime", key: key,
+			mutate: func(t *IDJAGTarget) { t.Lifetime = 0 }, wantErr: "lifetime must be positive"},
+		{name: "negative lifetime", key: key,
+			mutate: func(t *IDJAGTarget) { t.Lifetime = -time.Second }, wantErr: "lifetime must be positive"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			target := validIDJAGTarget()
+			if tt.mutate != nil {
+				tt.mutate(&target)
+			}
+			policies := map[string]ConfiguredClientPolicy{
+				testRefreshClient: {IDJAGTargets: map[string]IDJAGTarget{tt.key: target}},
+			}
+
+			_, err := RefreshTokenFactory(policies, newTestSigner(t))
+			if tt.wantErr != "" {
+				require.ErrorContains(t, err, tt.wantErr)
+				assert.ErrorContains(t, err, testRefreshClient)
+				return
+			}
+			require.NoError(t, err)
+		})
+	}
+}
+
+func TestRefreshTokenFactoryRequiresSigner(t *testing.T) {
+	t.Parallel()
+
+	_, err := RefreshTokenFactory(map[string]ConfiguredClientPolicy{}, nil)
+	require.ErrorContains(t, err, "RefreshTokenFactory requires a signer")
 }
 
 // failingRefreshStrategy fails to generate a token. Its message must not reach the client.
@@ -581,7 +667,8 @@ func TestRefreshTokenFactoryClosure(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			factory, err := RefreshTokenFactory(map[string]ConfiguredClientPolicy{})
+			signer := newTestSigner(t)
+			factory, err := RefreshTokenFactory(map[string]ConfiguredClientPolicy{}, signer)
 			require.NoError(t, err)
 			cfg := &server.AuthorizationServerConfig{
 				Config:      &fosite.Config{AccessTokenIssuer: "https://issuer.example.com"},
@@ -597,7 +684,10 @@ func TestRefreshTokenFactoryClosure(t *testing.T) {
 				return
 			}
 			require.NoError(t, err)
-			assert.IsType(t, &RefreshTokenHandler{}, got)
+			handler, ok := got.(*RefreshTokenHandler)
+			require.True(t, ok, "got %T", got)
+			assert.Same(t, signer, handler.signer)
+			assert.Equal(t, "https://issuer.example.com", handler.issuer)
 		})
 	}
 }

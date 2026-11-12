@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/url"
 	"slices"
@@ -119,6 +120,24 @@ type RefreshTokenHandler struct {
 	registry       *authorizationdetails.Registry
 	clientPolicies map[string]ConfiguredClientPolicy
 	refreshScopes  fosite.RefreshTokenScopesProvider
+	signer         *server.Signer // will sign ID-JAGs; nothing reads it yet
+	issuer         string         // the access-token issuer
+}
+
+// RefreshTokenOption configures RefreshTokenFactory. Factory takes FactoryOption
+// instead, so an option cannot be passed to the wrong factory.
+type RefreshTokenOption func(*refreshTokenOptions)
+
+type refreshTokenOptions struct {
+	exchangeGrantStore storage.ExchangeGrantStorage
+}
+
+// WithExchangeGrantStorage gives RefreshTokenFactory the store that holds the
+// grants behind issued refresh tokens. It may be nil when no client enables
+// exchange_refresh_tokens; the handler then refuses every request for a refresh
+// token before it needs the store.
+func WithExchangeGrantStorage(store storage.ExchangeGrantStorage) RefreshTokenOption {
+	return func(o *refreshTokenOptions) { o.exchangeGrantStore = store }
 }
 
 // RefreshTokenFactory returns a server.Factory that creates the
@@ -129,19 +148,36 @@ type RefreshTokenHandler struct {
 // WithExchangeGrantStorage; it may be nil only if no client has
 // exchange_refresh_tokens.
 //
+// signer is required and must come from server.NewSigner. Construction also
+// fails for any IDJAGTarget in clientPolicies that is not structurally usable
+// (empty issuer, a map key that is not the target's issuer, empty client_id, no
+// or an empty resource, a lifetime that is not positive).
+//
 // The authorization_details registry is built here, once, and startup fails if
 // that fails. It is private to this handler.
 func RefreshTokenFactory(
-	clientPolicies map[string]ConfiguredClientPolicy, options ...FactoryOption,
+	clientPolicies map[string]ConfiguredClientPolicy, signer *server.Signer, options ...RefreshTokenOption,
 ) (server.Factory, error) {
+	if signer == nil {
+		return nil, fmt.Errorf("tokenexchange: RefreshTokenFactory requires a signer")
+	}
+	clientIDs := slices.Sorted(maps.Keys(clientPolicies))
+	for _, id := range clientIDs {
+		targets := clientPolicies[id].IDJAGTargets
+		for _, key := range slices.Sorted(maps.Keys(targets)) {
+			if err := checkIDJAGTargetUsable(id, key, targets[key]); err != nil {
+				return nil, err
+			}
+		}
+	}
 	registry, err := newExchangeGrantRegistry()
 	if err != nil {
 		return nil, fmt.Errorf("tokenexchange: failed to build the exchange grant registry: %w", err)
 	}
-	resolved := resolveFactoryOptions(options)
+	resolved := resolveRefreshTokenOptions(options)
 	if resolved.exchangeGrantStore == nil {
-		for id, policy := range clientPolicies {
-			if len(policy.ExchangeRefreshTokens) > 0 {
+		for _, id := range clientIDs {
+			if len(clientPolicies[id].ExchangeRefreshTokens) > 0 {
 				return nil, fmt.Errorf(
 					"tokenexchange: client %q enables exchange_refresh_tokens but no exchange grant store was given", id)
 			}
@@ -164,6 +200,8 @@ func RefreshTokenFactory(
 			registry:       registry,
 			clientPolicies: clientPolicies,
 			refreshScopes:  config,
+			signer:         signer,
+			issuer:         config.GetAccessTokenIssuer(),
 		}, nil
 	}, nil
 }
@@ -796,4 +834,35 @@ func exchangeGrantDetailsError(err error) (string, error) {
 		return refuseInternal, errorsx.WithStack(fosite.ErrServerError.WithDescription(
 			"The authorization_details could not be processed."))
 	}
+}
+
+func resolveRefreshTokenOptions(options []RefreshTokenOption) refreshTokenOptions {
+	var resolved refreshTokenOptions
+	for _, option := range options {
+		option(&resolved)
+	}
+	return resolved
+}
+
+// checkIDJAGTargetUsable checks that a target is safe to use as configured: the
+// zero value of any field would make the handler sign an unusable ID-JAG. It
+// does not check limits that config validation owns.
+func checkIDJAGTargetUsable(clientID, key string, target IDJAGTarget) error {
+	switch {
+	case target.Issuer == "":
+		return fmt.Errorf("tokenexchange: client %q id_jag target %q has an empty issuer", clientID, key)
+	case target.Issuer != key:
+		return fmt.Errorf("tokenexchange: client %q id_jag target is stored under %q but its issuer is %q",
+			clientID, key, target.Issuer)
+	case target.ClientID == "":
+		return fmt.Errorf("tokenexchange: client %q id_jag target %q has an empty client_id", clientID, key)
+	case len(target.Resources) == 0:
+		return fmt.Errorf("tokenexchange: client %q id_jag target %q has no resources", clientID, key)
+	case slices.Contains(target.Resources, ""):
+		return fmt.Errorf("tokenexchange: client %q id_jag target %q has an empty resource", clientID, key)
+	case target.Lifetime <= 0:
+		return fmt.Errorf("tokenexchange: client %q id_jag target %q lifetime must be positive, got %v",
+			clientID, key, target.Lifetime)
+	}
+	return nil
 }

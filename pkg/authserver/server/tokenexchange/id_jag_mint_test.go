@@ -556,13 +556,6 @@ func TestMintIDJAGGuards(t *testing.T) {
 			wantCause: "incomplete act"},
 		{name: "act without an issuer", mutate: func(m *idJAGMint) { m.Act = &actClaim{Subject: "agent-1"} },
 			wantCause: "incomplete act"},
-		{name: "exp equal to now", mutate: func(m *idJAGMint) { m.NotAfter = []time.Time{mintTestNow} },
-			wantCause: "exp is not after now"},
-		{name: "exp floored back to now's second",
-			mutate:    func(m *idJAGMint) { m.NotAfter = []time.Time{mintTestNow.Add(400 * time.Millisecond)} },
-			wantCause: "exp is not after now"},
-		{name: "cap in the past", mutate: func(m *idJAGMint) { m.NotAfter = []time.Time{mintTestNow.Add(-time.Hour)} },
-			wantCause: "exp is not after now"},
 		{name: "zero lifetime", mutate: func(m *idJAGMint) { m.Target.Lifetime = 0 }, wantCause: "exp is not after now"},
 		{name: "empty claim value", selected: rawClaim(json.RawMessage{}), wantCause: `"sub_id" is empty or null`},
 		{name: "null claim value", selected: rawClaim(json.RawMessage("null")), wantCause: `"sub_id" is empty or null`},
@@ -603,6 +596,85 @@ func TestMintIDJAGGuards(t *testing.T) {
 			assert.Zero(t, signer.calls, "nothing is signed when a guard fails")
 		})
 	}
+}
+
+// TestRespondWithIDJAGElapsedBound covers the expiry refusals made before
+// signing: a cap that has elapsed is the client's expired grant, an
+// invalid_grant with reasonBoundElapsed, and a lifetime that cannot reach the
+// next second is a server_error.
+func TestRespondWithIDJAGElapsedBound(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		mutate     func(*idJAGMint)
+		wantReason string
+		wantCode   string
+	}{
+		{name: "exp equal to now",
+			mutate:     func(m *idJAGMint) { m.NotAfter = []time.Time{mintTestNow} },
+			wantReason: reasonBoundElapsed, wantCode: "invalid_grant"},
+		{name: "exp floored back to now's second",
+			mutate:     func(m *idJAGMint) { m.NotAfter = []time.Time{mintTestNow.Add(400 * time.Millisecond)} },
+			wantReason: reasonBoundElapsed, wantCode: "invalid_grant"},
+		{name: "cap less than one second away",
+			mutate:     func(m *idJAGMint) { m.NotAfter = []time.Time{mintTestNow.Add(499 * time.Millisecond)} },
+			wantReason: reasonBoundElapsed, wantCode: "invalid_grant"},
+		{name: "cap in the past",
+			mutate:     func(m *idJAGMint) { m.NotAfter = []time.Time{mintTestNow.Add(-time.Hour)} },
+			wantReason: reasonBoundElapsed, wantCode: "invalid_grant"},
+		{name: "one elapsed cap among open ones",
+			mutate: func(m *idJAGMint) {
+				m.NotAfter = []time.Time{mintTestNow.Add(time.Hour), {}, mintTestNow.Add(-time.Second)}
+			},
+			wantReason: reasonBoundElapsed, wantCode: "invalid_grant"},
+		{name: "zero lifetime is an operator fault",
+			mutate:     func(m *idJAGMint) { m.Target.Lifetime = 0 },
+			wantReason: refuseInternal, wantCode: "server_error"},
+		{name: "sub-second lifetime is an operator fault",
+			mutate:     func(m *idJAGMint) { m.Target.Lifetime = 400 * time.Millisecond },
+			wantReason: refuseInternal, wantCode: "server_error"},
+		{name: "zero lifetime with an elapsed cap is an operator fault",
+			mutate: func(m *idJAGMint) {
+				m.Target.Lifetime = 0
+				m.NotAfter = []time.Time{mintTestNow.Add(-time.Hour)}
+			},
+			wantReason: refuseInternal, wantCode: "server_error"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			signer := newMintTestSigner(newTestJWKS(t))
+			responder := fosite.NewAccessResponse()
+			m := mintTestMint(t)
+			tt.mutate(&m)
+
+			minted, reason, err := respondWithIDJAG(context.Background(), signer, allowAllIDJAGPolicy, m, responder, mintTestNow)
+
+			require.Error(t, err)
+			assert.Equal(t, tt.wantReason, reason)
+			if tt.wantCode == "server_error" {
+				requireMintFailure(t, err)
+			} else {
+				rfc := requireMintOAuthError(t, err, tt.wantCode)
+				assert.Equal(t, reasonBoundElapsed, rfc.GetDescription(), "the stable reason is the whole description")
+			}
+			assert.Equal(t, mintedIDJAG{}, minted)
+			assert.Zero(t, signer.calls, "nothing is signed")
+			assert.Empty(t, responder.ToMap()["access_token"])
+		})
+	}
+
+	t.Run("a cap one second away still mints, with exp at the cap", func(t *testing.T) {
+		t.Parallel()
+		signer := newMintTestSigner(newTestJWKS(t))
+		m := mintTestMint(t)
+		m.NotAfter = []time.Time{time.Unix(mintTestNow.Unix()+1, 0)}
+		minted, _, err := respondWithIDJAG(
+			context.Background(), signer, allowAllIDJAGPolicy, m, fosite.NewAccessResponse(), mintTestNow)
+		require.NoError(t, err)
+		assert.Equal(t, mintTestNow.Unix()+1, minted.ExpiresAt.Unix())
+	})
 }
 
 func mustSelectClaims(t *testing.T, m idJAGMint) map[string]json.RawMessage {

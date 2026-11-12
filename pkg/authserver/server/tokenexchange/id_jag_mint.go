@@ -23,13 +23,15 @@ import (
 )
 
 // Reasons the minting core returns to the client as the whole
-// error_description, with invalid_request. They are stable strings. An
+// error_description: invalid_request for the missing-claim and policy reasons,
+// invalid_grant for reasonBoundElapsed. They are stable strings. An
 // internal failure returns refuseInternal instead, which is for the caller's
 // log only: the client sees the generic server_error.
 const (
 	reasonUpstreamSubjectMissing = "upstream_subject_missing"
 	reasonSubIDMissing           = "sub_id_missing"
 	reasonPolicyDenied           = "policy_denied"
+	reasonBoundElapsed           = "bound_elapsed"
 )
 
 // idJAGSubjectClaim is what one configuration token of
@@ -273,12 +275,36 @@ func respondWithIDJAG(
 	case err != nil:
 		return mintedIDJAG{}, refuseInternal, mintFailed(fmt.Errorf("ID-JAG policy failed: %w", err))
 	}
+	if reason, err := checkIDJAGBoundsOpen(m, now); err != nil {
+		return mintedIDJAG{}, reason, err
+	}
 	minted, err := mintIDJAG(ctx, signer, m, selected, now)
 	if err != nil {
 		return mintedIDJAG{}, refuseInternal, err
 	}
 	setIDJAGResponse(responder, minted)
 	return minted, "", nil
+}
+
+// checkIDJAGBoundsOpen refuses a mint whose exp would not be after now. A
+// target lifetime that does not reach the next second is an operator fault, a
+// server_error. When a NotAfter cap pushes exp down to now, the grant behind the
+// request has expired: that is invalid_grant with reasonBoundElapsed. exp is
+// never rounded up, so a cap less than one second away is refused too.
+// invalid_grant is deliberate. RFC 6749 section 5.2 covers an expired grant,
+// and the sibling paths (the expired subject token in handler.go and
+// issueBoundedAccessToken) answer the same way, although RFC 8693 section
+// 2.2.2 could be read as pointing to invalid_request for an invalid
+// subject_token.
+func checkIDJAGBoundsOpen(m idJAGMint, now time.Time) (string, error) {
+	if now.Add(m.Target.Lifetime).Unix() <= now.Unix() {
+		return refuseInternal, mintFailed(fmt.Errorf("target lifetime %s does not reach the next second", m.Target.Lifetime))
+	}
+	if idJAGExpiry(now, m.Target.Lifetime, m.NotAfter) <= now.Unix() {
+		return reasonBoundElapsed, errorsx.WithStack(
+			exactReason(fosite.ErrInvalidGrant.ErrorField, reasonBoundElapsed))
+	}
+	return "", nil
 }
 
 // mintIDJAG builds the claims of an ID-JAG and signs them through the

@@ -32,7 +32,7 @@ func TestFactoryStripConsentCookieChangesLiveProxyBehavior(t *testing.T) {
 					case backendCookies <- r.Header.Get("Cookie"):
 					case <-r.Context().Done():
 					}
-					w.WriteHeader(http.StatusOK)
+					_, _ = w.Write([]byte("{}"))
 				}))
 				t.Cleanup(backend.Close)
 

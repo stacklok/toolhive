@@ -194,7 +194,7 @@ func TestMintIDJAGGolden(t *testing.T) {
 
 	t.Run("the signature verifies with the published key", func(t *testing.T) {
 		t.Parallel()
-		parsed, err := jose.ParseSigned(minted.Token, []jose.SignatureAlgorithm{jose.ES256})
+		parsed, err := jose.ParseSignedCompact(minted.Token, []jose.SignatureAlgorithm{jose.ES256})
 		require.NoError(t, err)
 		_, err = parsed.Verify(tj.publicJWKS().Key(tj.jwk.KeyID)[0].Key)
 		require.NoError(t, err)
@@ -492,7 +492,7 @@ func TestSelectSubjectClaims(t *testing.T) {
 			available: map[string]json.RawMessage{"sub_id": json.RawMessage("null")}, wantReason: "sub_id_missing",
 			wantCode: "invalid_request"},
 		{name: "an empty value counts as missing", required: []string{"sub_id"},
-			available: map[string]json.RawMessage{"sub_id": json.RawMessage{}}, wantReason: "sub_id_missing",
+			available: map[string]json.RawMessage{"sub_id": {}}, wantReason: "sub_id_missing",
 			wantCode: "invalid_request"},
 		{name: "a whitespace-only value counts as missing", required: []string{"sub_id"},
 			available: map[string]json.RawMessage{"sub_id": json.RawMessage(" \t\n")}, wantReason: "sub_id_missing",

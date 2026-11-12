@@ -81,29 +81,46 @@ func TestDefaultManager_UnverifiableSupervisorFailsStopDeleteAndStart(t *testing
 	})
 }
 
-func TestDefaultManager_ExitingSupervisorFailsDeleteAndStart(t *testing.T) {
+// A supervisor's shutdown stops its containers one by one with the runtime's
+// stop timeout, so it can outlast stop's wait. Delete and start must not
+// overlap with it, but `thv stop` followed by `thv start` or `thv rm` must not
+// fail either, so they kill a supervisor that is still exiting.
+func TestDefaultManager_ExitingSupervisorIsKilledBeforeDeleteAndStart(t *testing.T) {
 	t.Parallel()
+
+	t.Run("stop leaves it exiting", func(t *testing.T) {
+		t.Parallel()
+		const name = "exiting-supervisor-stop"
+		proxy := startProxyProcess(t, name, true)
+		ctrl := gomock.NewController(t)
+		sm := statusMocks.NewMockStatusManager(ctrl)
+		sm.EXPECT().GetWorkloadPID(gomock.Any(), name).Return(proxy.pid, nil)
+		manager := &DefaultManager{statuses: sm}
+		withProxyExitTimeout(50 * time.Millisecond)(manager)
+
+		require.Equal(t, proxyExiting, manager.stopProcess(context.Background(), name, false))
+		select {
+		case <-proxy.exited:
+			t.Error("stop must not kill a supervisor that is shutting down")
+		default:
+		}
+	})
 
 	t.Run("start", func(t *testing.T) {
 		t.Parallel()
 		const name = "exiting-supervisor-start"
 		proxy := startProxyProcess(t, name, true)
 		ctrl := gomock.NewController(t)
-		rtMock := runtimeMocks.NewMockRuntime(ctrl)
 		sm := statusMocks.NewMockStatusManager(ctrl)
-		rtMock.EXPECT().GetWorkloadInfo(gomock.Any(), name).Return(runtime.ContainerInfo{
-			Name: name, State: "exited", Labels: map[string]string{labels.LabelBaseName: name},
-		}, nil)
-		sm.EXPECT().GetWorkload(gomock.Any(), name).Return(core.Workload{Name: name, Status: runtime.WorkloadStatusStarting}, nil)
 		sm.EXPECT().GetWorkloadPID(gomock.Any(), name).Return(proxy.pid, nil).Times(2)
-		// No starting status: the replacement must not be spawned while the
-		// old supervisor can still stop the container on its way out.
-		manager := &DefaultManager{runtime: rtMock, statuses: sm}
+		sm.EXPECT().ResetWorkloadPIDIfMatch(gomock.Any(), name, proxy.pid).Return(nil)
+		manager := &DefaultManager{statuses: sm}
 		withProxyExitTimeout(50 * time.Millisecond)(manager)
 
-		_, gotRunner, err := manager.maybeSetupContainerWorkload(context.Background(), name)
-		require.ErrorIs(t, err, errSupervisorExiting)
-		assert.Nil(t, gotRunner)
+		foregroundPID, err := manager.stopOtherSupervisor(context.Background(), name)
+		require.NoError(t, err)
+		assert.Zero(t, foregroundPID)
+		requireExited(t, proxy)
 	})
 
 	t.Run("delete", func(t *testing.T) {
@@ -118,16 +135,34 @@ func TestDefaultManager_ExitingSupervisorFailsDeleteAndStart(t *testing.T) {
 		}, nil)
 		sm.EXPECT().SetWorkloadStatus(gomock.Any(), name, runtime.WorkloadStatusRemoving, "").Return(nil)
 		sm.EXPECT().GetWorkloadPID(gomock.Any(), name).Return(proxy.pid, nil)
-		sm.EXPECT().SetWorkloadStatus(gomock.Any(), name, runtime.WorkloadStatusError, gomock.Any()).Return(nil)
-		manager := &DefaultManager{runtime: rtMock, statuses: sm}
+		sm.EXPECT().ResetWorkloadPIDIfMatch(gomock.Any(), name, proxy.pid).Return(nil)
+		rtMock.EXPECT().RemoveWorkload(gomock.Any(), name).DoAndReturn(func(context.Context, string) error {
+			requireExited(t, proxy)
+			return nil
+		})
+		rtMock.EXPECT().GetWorkloadInfo(gomock.Any(), name).Return(runtime.ContainerInfo{}, runtime.ErrWorkloadNotFound)
+		sm.EXPECT().DeleteWorkloadStatus(gomock.Any(), name).Return(nil)
+		manager := &DefaultManager{
+			runtime: rtMock, statuses: sm,
+			clientManagers: testClientManagerProvider(unavailableClientManager),
+		}
 		withProxyExitTimeout(50 * time.Millisecond)(manager)
 		withPortFreer(func(context.Context, *runner.RunConfig) {
 			t.Error("a signalled supervisor must not be signalled again through port cleanup")
 		})(manager)
 
-		err := manager.deleteContainerWorkload(context.Background(), name, nil)
-		require.ErrorIs(t, err, errSupervisorExiting)
+		require.NoError(t, manager.deleteContainerWorkload(context.Background(), name, nil))
 	})
+}
+
+func requireExited(t *testing.T, proxy *workloadProxyProcess) {
+	t.Helper()
+	// The helper's Wait goroutine closes exited just after reaping the process.
+	select {
+	case <-proxy.exited:
+	case <-time.After(time.Second):
+		t.Fatal("the old supervisor must be gone before the caller proceeds")
+	}
 }
 
 func TestDefaultManager_maybeSetupRemoteWorkload_ForegroundRunKeepsOwnership(t *testing.T) {

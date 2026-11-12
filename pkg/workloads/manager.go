@@ -553,7 +553,7 @@ func (d *DefaultManager) stopRemoteProxy(ctx context.Context, name string, runCo
 	if runConfig.BaseName == "" {
 		return nil
 	}
-	result := d.ensureProxyStopped(ctx, name, runConfig.BaseName, runConfig)
+	result := d.ensureProxyStopped(ctx, name, runConfig.BaseName, runConfig, false)
 	err := supervisorStopError(name, result, false)
 	if err != nil && stoppable {
 		d.recordSupervisorStopError(ctx, name, err)
@@ -612,7 +612,8 @@ func (d *DefaultManager) stopContainerWorkload(ctx context.Context, name string,
 		if runConfig == nil {
 			// Without saved state, attempt cleanup by the requested name without
 			// creating a status entry or changing client configurations.
-			if err := supervisorStopError(name, d.ensureProxyStopped(ctx, name, name, nil), false); err != nil {
+			result := d.ensureProxyStopped(ctx, name, name, nil, false)
+			if err := supervisorStopError(name, result, false); err != nil {
 				return err
 			}
 			if err := d.runtime.StopWorkload(ctx, name); err != nil {
@@ -1077,7 +1078,7 @@ func (d *DefaultManager) deleteRemoteWorkload(ctx context.Context, name string, 
 
 	// Stop proxy if running
 	if runConfig.BaseName != "" {
-		result := d.ensureProxyStopped(ctx, name, runConfig.BaseName, runConfig)
+		result := d.ensureProxyStopped(ctx, name, runConfig.BaseName, runConfig, true)
 		if err := d.failDeleteOnSupervisor(ctx, name, result); err != nil {
 			return err
 		}
@@ -1141,7 +1142,7 @@ func (d *DefaultManager) deleteContainerWorkload(ctx context.Context, name strin
 			configCopy.BaseName = baseName
 			proxyConfig = &configCopy
 		}
-		result := d.ensureProxyStopped(ctx, name, baseName, proxyConfig)
+		result := d.ensureProxyStopped(ctx, name, baseName, proxyConfig, true)
 		if err := d.failDeleteOnSupervisor(ctx, name, result); err != nil {
 			return err
 		}
@@ -1344,8 +1345,9 @@ const (
 
 // stopProcess stops the proxy process associated with the container.
 // Unverified PIDs are cleared only if the process is confirmed gone; otherwise
-// they remain available for a later retry.
-func (d *DefaultManager) stopProcess(ctx context.Context, name string) proxyStopResult {
+// they remain available for a later retry. With requireExit, a verified
+// supervisor that is still exiting after SIGTERM is killed.
+func (d *DefaultManager) stopProcess(ctx context.Context, name string, requireExit bool) proxyStopResult {
 	if name == "" {
 		slog.Warn("could not find base container name in labels")
 		return proxyNotStopped
@@ -1361,7 +1363,15 @@ func (d *DefaultManager) stopProcess(ctx context.Context, name string) proxyStop
 	// supervisors additionally have a verifiable workload name in their command.
 	switch identifySupervisor(pid, name) {
 	case supervisorVerified:
-		return d.stopVerifiedProxy(ctx, name, pid, process.KillProcess)
+		result := d.stopVerifiedProxy(ctx, name, pid, process.KillProcess)
+		if result == proxyExiting && requireExit {
+			// Its shutdown stops containers one by one with the runtime's stop
+			// timeout, which can take a minute. The caller takes over that
+			// cleanup, so it must not overlap with what the caller does next.
+			slog.Warn("supervisor is still exiting, killing it", "workload", name, "pid", pid)
+			result = d.stopVerifiedProxy(ctx, name, pid, process.ForceKillProcess)
+		}
+		return result
 	case supervisorUnverifiable:
 		return proxyUnverifiable
 	case supervisorForeign:
@@ -1400,12 +1410,14 @@ func (d *DefaultManager) stopVerifiedProxy(ctx context.Context, name string, pid
 
 // stopProxyIfNeeded stops the proxy process if the workload has a base name
 // (see stopProcess).
-func (d *DefaultManager) stopProxyIfNeeded(ctx context.Context, name, baseName string) proxyStopResult {
+func (d *DefaultManager) stopProxyIfNeeded(
+	ctx context.Context, name, baseName string, requireExit bool,
+) proxyStopResult {
 	slog.Debug("removing proxy process", "workload", name)
 	if baseName == "" {
 		return proxyNotStopped
 	}
-	return d.stopProcess(ctx, baseName)
+	return d.stopProcess(ctx, baseName, requireExit)
 }
 
 // ensureProxyStopped makes a best-effort attempt to stop the workload's proxy
@@ -1414,15 +1426,16 @@ func (d *DefaultManager) stopProxyIfNeeded(ctx context.Context, name, baseName s
 // signalled — no PID is recorded, identity verification fails, or the signal
 // fails — it falls back to port-based cleanup, which only kills a process
 // verified to be this workload's own proxy. A proxy that was signalled but is
-// still exiting is not signalled again.
+// still exiting is not signalled through the port again; with requireExit it
+// is killed instead.
 // runConfig may be nil (no port fallback then). Used by the stop and delete
 // paths; the restart path instead frees the port itself, just before the child
 // re-binds. Callers fail with supervisorStopError rather than report success
 // while the supervisor may still be managing the workload.
 func (d *DefaultManager) ensureProxyStopped(
-	ctx context.Context, name, baseName string, runConfig *runner.RunConfig,
+	ctx context.Context, name, baseName string, runConfig *runner.RunConfig, requireExit bool,
 ) proxyStopResult {
-	result := d.stopProxyIfNeeded(ctx, name, baseName)
+	result := d.stopProxyIfNeeded(ctx, name, baseName, requireExit)
 	if result == proxyNotStopped {
 		d.portFreerOrDefault()(ctx, runConfig)
 	}
@@ -1923,7 +1936,7 @@ func (d *DefaultManager) maybeSetupContainerWorkload(ctx context.Context, name s
 // A live non-detached `thv run` deletes the workload when it exits, so it is
 // left in charge and its PID returned instead. Any other supervisor must be
 // confirmed gone: one that is still exiting stops its container on the way
-// out and would take down the replacement's.
+// out and would take down the replacement's, so it is killed.
 func (d *DefaultManager) stopOtherSupervisor(ctx context.Context, name string) (foregroundRunPID int, err error) {
 	if name == "" {
 		return 0, nil
@@ -1935,7 +1948,7 @@ func (d *DefaultManager) stopOtherSupervisor(ctx context.Context, name string) (
 	if foreground, err := process.IsForegroundRunSupervisorForWorkload(pid, name); err == nil && foreground {
 		return pid, nil
 	}
-	return 0, supervisorStopError(name, d.stopProcess(ctx, name), true)
+	return 0, supervisorStopError(name, d.stopProcess(ctx, name, true), true)
 }
 
 // startWorkload starts the workload in either foreground or background mode
@@ -2053,11 +2066,14 @@ func (d *DefaultManager) stopSingleContainerWorkload(
 	// Stop the proxy process (skip for auxiliary workloads like inspector)
 	if isAuxiliary {
 		slog.Debug("skipping proxy stop for auxiliary workload", "workload", name)
-	} else if err := supervisorStopError(name, d.ensureProxyStopped(ctx, name, name, runConfig), false); err != nil {
-		if live {
-			d.recordSupervisorStopError(childCtx, name, err)
+	} else {
+		result := d.ensureProxyStopped(ctx, name, name, runConfig, false)
+		if err := supervisorStopError(name, result, false); err != nil {
+			if live {
+				d.recordSupervisorStopError(childCtx, name, err)
+			}
+			return err
 		}
-		return err
 	}
 
 	slog.Debug("stopping containers", "workload", name)

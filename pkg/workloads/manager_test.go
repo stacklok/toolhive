@@ -3439,7 +3439,7 @@ func TestDefaultManager_stopProcess(t *testing.T) {
 
 			manager := &DefaultManager{statuses: sm}
 
-			got := manager.stopProcess(context.Background(), tt.workload)
+			got := manager.stopProcess(context.Background(), tt.workload, false)
 			assert.Equal(t, tt.want, got)
 		})
 	}
@@ -3468,7 +3468,7 @@ func TestDefaultManager_ensureProxyStopped_ExitedPIDCleanupFailureStillFallsBack
 	fallbackCalls := 0
 	withPortFreer(func(context.Context, *runner.RunConfig) { fallbackCalls++ })(manager)
 
-	manager.ensureProxyStopped(ctx, name, name, &runner.RunConfig{BaseName: name})
+	manager.ensureProxyStopped(ctx, name, name, &runner.RunConfig{BaseName: name}, false)
 	assert.Equal(t, 1, fallbackCalls, "clearing a stale PID is not proof that the port is free")
 }
 
@@ -3503,7 +3503,7 @@ func TestDefaultManager_ensureProxyStopped_UnverifiedLivePIDIsPreservedWithoutSi
 				fallbackCalls++
 			})(manager)
 
-			result := manager.ensureProxyStopped(context.Background(), name, name, rc)
+			result := manager.ensureProxyStopped(context.Background(), name, name, rc, false)
 			assert.Equal(t, proxyNotStopped, result, "an inspected foreign process must not block stop or delete")
 			assert.Equal(t, 1, fallbackCalls, "unverified PID must not suppress port cleanup")
 			select {
@@ -3533,7 +3533,7 @@ func TestDefaultManager_ensureProxyStopped_ExitTimeoutPreservesVerifiedPIDWithou
 		fallbackCalls++
 	})(manager)
 
-	manager.ensureProxyStopped(context.Background(), name, name, runConfig)
+	manager.ensureProxyStopped(context.Background(), name, name, runConfig, false)
 	assert.Zero(t, fallbackCalls, "a signalled proxy must not be signalled again through port cleanup")
 	select {
 	case <-proxy.exited:

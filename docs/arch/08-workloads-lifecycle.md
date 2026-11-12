@@ -152,8 +152,8 @@ workload name labels. It leaves unlabelled networks alone, even when their
 names match ToolHive's naming scheme.
 
 Delete fails, sets the status to `Error`, and keeps the container and saved
-state if the supervisor can't be confirmed gone: it was signalled but is still
-exiting after the wait, or its recorded PID is alive but can't be inspected.
+state if the supervisor can't be confirmed gone: it is still running after
+being killed, or its recorded PID is alive but can't be inspected.
 Retry once the supervisor has exited. See
 [Proxy termination](#proxy-termination).
 
@@ -215,13 +215,17 @@ unless it passes this check:
   while it may be restarting the container.
 - A PID whose process has exited is cleared.
 
-On Unix, stop sends SIGTERM and does not escalate. On Windows, it uses
-TerminateProcess, which is a hard stop. Both wait up to five seconds for the
-process to exit. If the process was signalled but is still exiting after the
-wait, it isn't signalled again: stop carries on, while delete, start, and
-restart fail so that the old supervisor's shutdown can't tear down what they do
-next. If there is no PID to signal, or the process doesn't match, stop and
-delete fall back to freeing the proxy port when the saved configuration allows
+On Unix, ToolHive sends SIGTERM. On Windows, it uses TerminateProcess, which is
+a hard stop. Either way it waits up to five seconds for the process to exit.
+A supervisor's shutdown stops its containers one at a time with the runtime's
+stop timeout, so it can take a minute when a container ignores SIGTERM. Stop
+carries on and leaves it to finish. Delete, start, and restart can't overlap
+with that shutdown, so they kill a supervisor that is still exiting (SIGKILL on
+Unix), wait up to five more seconds, and fail if it is still running. Delete
+then removes the containers itself, and start and restart replace them.
+
+If there is no PID to signal, or the process doesn't match, stop and delete
+fall back to freeing the proxy port when the saved configuration allows
 it. The port holder must match the workload exactly, and the fallback also
 waits up to five seconds. This fallback is best-effort and can leave a proxy
 running or its port in use.

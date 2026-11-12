@@ -145,8 +145,8 @@ type idJAGPolicyInput struct {
 //
 // The input is a deep copy: a policy may change it, and nothing it changes
 // reaches the minted token or the caller's values. The policy's own error,
-// for a denial or a failure, is wrapped as the cause of the returned error for
-// the caller to log. It is never sent to the client.
+// for a denial or a failure, is wrapped as the cause of the returned error. It
+// is never sent to the client.
 type idJAGPolicy func(ctx context.Context, in idJAGPolicyInput) error
 
 // allowAllIDJAGPolicy allows every request. A caller must pass it explicitly
@@ -236,7 +236,7 @@ func selectSubjectClaims(
 	for _, token := range target.RequiredSubjectClaims {
 		claim, ok := idJAGSubjectClaims[token]
 		if !ok {
-			return nil, refuseInternal, mintFailed(fmt.Errorf("unknown required subject claim %q", token))
+			return nil, refuseInternal, serverFailure(hintMintFailed, fmt.Errorf("unknown required subject claim %q", token))
 		}
 		value := bytes.TrimSpace(available[claim.wireKey])
 		if len(value) == 0 || bytes.Equal(value, []byte("null")) {
@@ -262,14 +262,14 @@ var _ idJAGSigner = (*server.Signer)(nil)
 // Claim selection and the policy always run before signing. It returns the
 // minted token, and on refusal the reason with the error to send: a stable
 // reason for a client refusal, refuseInternal for an internal failure. The
-// error wraps the cause for the caller to log once; respondWithIDJAG does not
-// log.
+// error of an internal failure carries the cause as its debug field, which the
+// token endpoint logs; respondWithIDJAG does not log.
 func respondWithIDJAG(
 	ctx context.Context, signer idJAGSigner, policy idJAGPolicy,
 	m idJAGMint, responder fosite.AccessResponder, now time.Time,
 ) (mintedIDJAG, string, error) {
 	if policy == nil {
-		return mintedIDJAG{}, refuseInternal, mintFailed(errors.New("ID-JAG policy not configured"))
+		return mintedIDJAG{}, refuseInternal, serverFailure(hintMintFailed, errors.New("ID-JAG policy not configured"))
 	}
 	selected, reason, err := selectSubjectClaims(m.Target, m.Subject.Claims)
 	if err != nil {
@@ -287,7 +287,7 @@ func respondWithIDJAG(
 		return mintedIDJAG{}, reasonPolicyDenied, errorsx.WithStack(
 			exactReason(fosite.ErrInvalidRequest.ErrorField, reasonPolicyDenied).WithWrap(err))
 	case err != nil:
-		return mintedIDJAG{}, refuseInternal, mintFailed(fmt.Errorf("ID-JAG policy failed: %w", err))
+		return mintedIDJAG{}, refuseInternal, serverFailure(hintMintFailed, fmt.Errorf("ID-JAG policy failed: %w", err))
 	}
 	if reason, err := checkIDJAGBoundsOpen(m, now); err != nil {
 		return mintedIDJAG{}, reason, err
@@ -312,7 +312,8 @@ func respondWithIDJAG(
 // subject_token.
 func checkIDJAGBoundsOpen(m idJAGMint, now time.Time) (string, error) {
 	if now.Add(m.Target.Lifetime).Unix() <= now.Unix() {
-		return refuseInternal, mintFailed(fmt.Errorf("target lifetime %s does not reach the next second", m.Target.Lifetime))
+		return refuseInternal, serverFailure(hintMintFailed,
+			fmt.Errorf("target lifetime %s does not reach the next second", m.Target.Lifetime))
 	}
 	if idJAGExpiry(now, m.Target.Lifetime, m.NotAfter) <= now.Unix() {
 		return reasonBoundElapsed, errorsx.WithStack(
@@ -327,7 +328,7 @@ func checkIDJAGBoundsOpen(m idJAGMint, now time.Time) (string, error) {
 // integers; exp is the floor of the earliest of now plus the target lifetime
 // and every non-zero NotAfter. There is no nbf, and act is present only when
 // set. Every error is a server_error with no detail for the client; the cause
-// is wrapped for the caller's log.
+// is its debug field, which the token endpoint logs.
 // It signs only the selected subject claims, never m.Subject.Claims. It checks
 // each claim's name against the allowlist and the reserved names, and its value
 // shape, but not that the claims match the target's RequiredSubjectClaims:
@@ -336,22 +337,22 @@ func mintIDJAG(
 	ctx context.Context, signer idJAGSigner, m idJAGMint, selected map[string]json.RawMessage, now time.Time,
 ) (mintedIDJAG, error) {
 	if err := checkIDJAGMint(m); err != nil {
-		return mintedIDJAG{}, mintFailed(err)
+		return mintedIDJAG{}, serverFailure(hintMintFailed, err)
 	}
 	claims, err := idJAGSubjectClaimSet(selected)
 	if err != nil {
-		return mintedIDJAG{}, mintFailed(err)
+		return mintedIDJAG{}, serverFailure(hintMintFailed, err)
 	}
 
 	issuedAt := now.Unix()
 	exp := idJAGExpiry(now, m.Target.Lifetime, m.NotAfter)
 	if !time.Unix(exp, 0).After(now) {
-		return mintedIDJAG{}, mintFailed(errors.New("exp is not after now"))
+		return mintedIDJAG{}, serverFailure(hintMintFailed, errors.New("exp is not after now"))
 	}
 
 	jti, err := randomJTI()
 	if err != nil {
-		return mintedIDJAG{}, mintFailed(fmt.Errorf("jti: %w", err))
+		return mintedIDJAG{}, serverFailure(hintMintFailed, fmt.Errorf("jti: %w", err))
 	}
 
 	claims["iss"] = m.Issuer
@@ -368,7 +369,7 @@ func mintIDJAG(
 
 	token, err := signer.SignIDJAG(ctx, claims)
 	if err != nil {
-		return mintedIDJAG{}, mintFailed(fmt.Errorf("signing: %w", err))
+		return mintedIDJAG{}, serverFailure(hintMintFailed, fmt.Errorf("signing: %w", err))
 	}
 	return mintedIDJAG{Token: token, JTI: jti, IssuedAt: time.Unix(issuedAt, 0), ExpiresAt: time.Unix(exp, 0)}, nil
 }
@@ -441,11 +442,8 @@ func idJAGExpiry(now time.Time, lifetime time.Duration, notAfter []time.Time) in
 	return expiresAt.Unix()
 }
 
-// mintFailed is the server_error for a failure the client cannot act on. The
-// cause is wrapped for the caller to log and is never sent.
-func mintFailed(cause error) error {
-	return errorsx.WithStack(fosite.ErrServerError.WithHint("The ID-JAG could not be minted.").WithWrap(cause))
-}
+// hintMintFailed is the client-visible hint when an ID-JAG could not be minted.
+const hintMintFailed = "The ID-JAG could not be minted."
 
 func randomJTI() (string, error) {
 	id, err := uuid.NewRandom()

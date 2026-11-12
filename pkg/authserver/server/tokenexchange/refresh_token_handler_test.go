@@ -6,7 +6,9 @@ package tokenexchange
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net/url"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -710,4 +712,68 @@ func TestRefreshTokenFactoryClosure(t *testing.T) {
 			assert.Equal(t, "https://issuer.example.com", handler.issuer)
 		})
 	}
+}
+
+func newBufferLogger() (*slog.Logger, *strings.Builder) {
+	var buf strings.Builder
+	return slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})), &buf
+}
+
+// requireServerFailure checks err is the generic server_error with hint, whose
+// debug field (logged by the token endpoint, never sent) holds the cause.
+func requireServerFailure(t *testing.T, err error, hint string, debugContains ...string) {
+	t.Helper()
+	requireOAuthError(t, err, "server_error", fosite.ErrServerError.WithHint(hint).GetDescription())
+	rfcErr := fosite.ErrorToRFC6749Error(err)
+	for _, want := range debugContains {
+		assert.NotContains(t, rfcErr.GetDescription(), want, "the cause must not reach the client description")
+		assert.Contains(t, rfcErr.DebugField, want)
+	}
+}
+
+func TestServerFailure(t *testing.T) {
+	t.Parallel()
+
+	cause := errors.New("redis exploded")
+	err := serverFailure(hintIssueFailed, cause)
+
+	requireServerFailure(t, err, hintIssueFailed, "redis exploded")
+	assert.ErrorIs(t, err, cause)
+}
+
+func TestRefreshTokenHandlerServerFailureCause(t *testing.T) {
+	t.Parallel()
+
+	t.Run("store error on create", func(t *testing.T) {
+		t.Parallel()
+		store := &fakeGrantStore{err: errors.New("redis exploded")}
+		h := newRefreshHandlerForTest(t, &stubSubjectValidator{claims: validLoginClaims()}, store)
+		log, buf := newBufferLogger()
+		decision, err := h.decideTopLevel(t.Context(), refreshRequestForTest(brokerClientForTest()),
+			h.clientPolicies[testRefreshClient], log, time.Now())
+		require.NoError(t, err)
+		buf.Reset()
+
+		err = h.issue(t.Context(), refreshRequestForTest(brokerClientForTest()), decision, fosite.NewAccessResponse())
+		requireServerFailure(t, err, hintIssueFailed, "redis exploded")
+		warns := logLinesAt(buf, "WARN")
+		require.Len(t, warns, 1)
+		assert.Contains(t, warns[0], "reason="+refuseStore)
+		assert.NotContains(t, warns[0], "redis exploded", "the cause belongs on the token endpoint's ERROR line")
+	})
+
+	t.Run("claim that cannot be encoded", func(t *testing.T) {
+		t.Parallel()
+		claims := validLoginClaims()
+		claims.Extra = map[string]any{claimnames.SubjectIdentifierKey: make(chan int)}
+		h := newRefreshHandlerForTest(t, &stubSubjectValidator{claims: claims}, &fakeGrantStore{})
+		log, buf := newBufferLogger()
+
+		_, err := h.decideTopLevel(t.Context(), refreshRequestForTest(brokerClientForTest()),
+			h.clientPolicies[testRefreshClient], log, time.Now())
+		requireServerFailure(t, err, hintIssueFailed, claimnames.SubjectIdentifierKey, "unsupported type")
+		warns := logLinesAt(buf, "WARN")
+		require.Len(t, warns, 1)
+		assert.Contains(t, warns[0], "reason="+refuseInternal)
+	})
 }

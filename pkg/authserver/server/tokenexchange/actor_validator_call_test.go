@@ -533,6 +533,7 @@ func TestValidateActorLimiter(t *testing.T) {
 		context.Background(), hung, limiter, callTestRequest(), fixedClock, callTestTimeout)
 	require.Error(t, err)
 	require.Equal(t, "actor_validator_timeout", reason)
+	assert.Equal(t, fmt.Sprintf("validator did not return within %s", callTestTimeout), serverCause(t, err))
 	require.Equal(t, 1, tokenexchange.ActorLimiterInUseForTest(limiter))
 
 	// hung allows one call, so a waiting call that reached it would fail the test.
@@ -540,7 +541,8 @@ func TestValidateActorLimiter(t *testing.T) {
 		context.Background(), hung, limiter, callTestRequest(), fixedClock, callTestTimeout)
 	require.Error(t, err)
 	assert.Equal(t, "actor_validator_timeout", reason)
-	assert.Equal(t, fmt.Sprintf("validator did not return within %s", callTestTimeout), serverCause(t, err))
+	// The cause tells a queued call apart from the hung validator above.
+	assert.Equal(t, fmt.Sprintf("no actor validator slot free within %s", callTestTimeout), serverCause(t, err))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	time.AfterFunc(callTestTimeout, cancel)
@@ -548,7 +550,7 @@ func TestValidateActorLimiter(t *testing.T) {
 		ctx, hung, limiter, callTestRequest(), fixedClock, callTestBound)
 	require.Error(t, err)
 	assert.Equal(t, "actor_validator_canceled", reason)
-	assert.Equal(t, canceledCause, serverCause(t, err))
+	assert.Equal(t, "request canceled while waiting for an actor validator slot", serverCause(t, err))
 
 	next := mocks.NewMockActorTokenValidator(gomock.NewController(t))
 	next.EXPECT().ValidateActor(gomock.Any(), gomock.Any()).Return(callTestOK(), nil).Times(1)

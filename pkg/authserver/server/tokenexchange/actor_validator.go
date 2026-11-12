@@ -122,7 +122,9 @@ type ActorProfile struct {
 //     hide the fault from operators.
 //   - The whole validation, including the validator's own calls to remote services,
 //     has a budget of currently 5 seconds; ToolHive may raise it but will not lower
-//     it. A validator that calls a remote service should set shorter deadlines of its
+//     it. The budget also covers any time the call waits for a free slot when many
+//     validations run at once, so the validator may get less than the full budget.
+//     A validator that calls a remote service should set shorter deadlines of its
 //     own.
 //   - Do not join a refusal with other errors (errors.Join, or several %w verbs):
 //     ToolHive answers a multi-error as a server error. Detection covers errors that
@@ -288,8 +290,8 @@ const (
 	refuseActorPanic     = "actor_validator_panic"
 )
 
-// actorValidationTimeout is the fixed budget for one validation, including the
-// validator's own calls to remote services.
+// actorValidationTimeout is the fixed budget for one validation, including any
+// wait for a limiter slot and the validator's own calls to remote services.
 const actorValidationTimeout = 5 * time.Second
 
 // defaultActorValidatorCapacity is the default number of validator calls that may
@@ -526,7 +528,9 @@ func (l *actorLimiter) release() { <-l.slots }
 // has stopped waiting. When no slot is free, validateActor waits for one inside
 // the same timeout. If the wait ends first, it starts no goroutine, does not call
 // the validator, and fails as actor_validator_canceled or actor_validator_timeout
-// by the same context rule as a running call. limiter must not be nil.
+// by the same context rule as a running call. The cause then says that no slot
+// came free, so a log can tell a queued call from a validator that hung. The
+// client sees the same error either way. limiter must not be nil.
 //
 // Every error carries a cause with each occurrence of req.ActorToken replaced by
 // "[redacted]"; unwrap the *fosite.RFC6749Error to read it. For a validator's
@@ -550,8 +554,7 @@ func validateActor(
 	vctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	if err := limiter.acquire(vctx); err != nil {
-		reason, cause := actorContextFailure(ctx, vctx, timeout)
-		return failedActor(reason, cause)
+		return failedActor(actorSlotFailure(ctx, timeout))
 	}
 
 	outCh := make(chan actorOutcome, 1)
@@ -662,6 +665,16 @@ func actorContextFailure(parent, derived context.Context, timeout time.Duration)
 		return refuseActorTimeout, fmt.Sprintf("validator did not return within %s", timeout)
 	}
 	return "", ""
+}
+
+// actorSlotFailure reports the reason and cause when the wait for a limiter slot
+// ended before a slot came free. The reasons match actorContextFailure, so the
+// client sees no difference, but the cause says the validator was never called.
+func actorSlotFailure(parent context.Context, timeout time.Duration) (string, string) {
+	if parent.Err() != nil {
+		return refuseActorCanceled, "request canceled while waiting for an actor validator slot"
+	}
+	return refuseActorTimeout, fmt.Sprintf("no actor validator slot free within %s", timeout)
 }
 
 // failedActor builds the zero-result return for a server error. The cause must

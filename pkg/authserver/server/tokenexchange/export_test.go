@@ -16,6 +16,9 @@ var ValidateActorWithLimiterForTest = validateActor
 // tests only pass the value on.
 var NewActorLimiterForTest = newActorLimiter
 
+// ActorLimiterInUseForTest reports how many slots of l are held.
+func ActorLimiterInUseForTest(l *actorLimiter) int { return len(l.slots) }
+
 // DefaultActorValidatorCapacityForTest is the production limiter capacity.
 const DefaultActorValidatorCapacityForTest = defaultActorValidatorCapacity
 

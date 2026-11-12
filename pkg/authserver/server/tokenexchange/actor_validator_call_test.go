@@ -5,6 +5,7 @@ package tokenexchange_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -321,9 +322,16 @@ func TestValidateActorValidatorFailures(t *testing.T) {
 			assert.Equal(t, tokenexchange.ActorResult{}, res)
 			assert.Equal(t, tt.wantReason, reason)
 			cause := serverCause(t, err)
-			if tt.prefixOnly {
+			if tt.wantReason == "actor_validator_panic" {
+				assert.Contains(t, cause, "runtime/debug.Stack", "the panic cause carries a stack")
+				assert.NotContains(t, cause, callTestToken)
+			}
+			switch {
+			case tt.prefixOnly:
 				assert.True(t, strings.HasPrefix(cause, tt.wantCause), cause)
-			} else {
+			case tt.wantReason == "actor_validator_panic":
+				assert.True(t, strings.HasPrefix(cause, tt.wantCause+"\n"), cause)
+			default:
 				assert.Equal(t, tt.wantCause, cause)
 			}
 			if tt.token != "" {
@@ -382,9 +390,9 @@ func TestValidateActorExpirySkew(t *testing.T) {
 	}{
 		{"exactly at checkedAt", callTestNow, "actor_token_expired", ""},
 		{"59s past", callTestNow.Add(-59 * time.Second), "actor_token_expired", ""},
-		{"60s past", callTestNow.Add(-60 * time.Second), "actor_result_invalid", "expiry is 60 seconds in the past"},
-		{"far past", callTestNow.Add(-24 * time.Hour), "actor_result_invalid", "expiry is 86400 seconds in the past"},
-		{"Unix epoch", time.Unix(0, 0), "actor_result_invalid", "expiry is 1800000000 seconds in the past"},
+		{"60s past", callTestNow.Add(-60 * time.Second), "actor_result_invalid", "expiry is more than 60 seconds in the past"},
+		{"far past", callTestNow.Add(-24 * time.Hour), "actor_result_invalid", "expiry is more than 60 seconds in the past"},
+		{"Unix epoch", time.Unix(0, 0), "actor_result_invalid", "expiry is more than 60 seconds in the past"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -417,31 +425,37 @@ func TestValidateActorErrorShapes(t *testing.T) {
 	denied := func(r tokenexchange.ActorDeniedReason) error { return &tokenexchange.ActorDeniedError{Reason: r} }
 	var nilDenied *tokenexchange.ActorDeniedError
 	outage := errors.New("backend down")
+	expired, approval, deniedReason := tokenexchange.ActorDeniedReasonActorTokenExpired,
+		tokenexchange.ActorDeniedReasonApprovalRequired, tokenexchange.ActorDeniedReasonDenied
 
 	tests := []struct {
 		name       string
 		err        error
 		wantReason string // a refusal reason, or the log reason of a server error
 		refusal    bool
+		wantCause  string // the validator's text with the token redacted
 	}{
-		{"actor_token_expired", denied(tokenexchange.ActorDeniedReasonActorTokenExpired), "actor_token_expired", true},
-		{"approval_required", denied(tokenexchange.ActorDeniedReasonApprovalRequired), "approval_required", true},
-		{"denied", denied(tokenexchange.ActorDeniedReasonDenied), "denied", true},
-		{"actor_token_expired wrapped", fmt.Errorf("lookup: %w", denied(tokenexchange.ActorDeniedReasonActorTokenExpired)),
-			"actor_token_expired", true},
-		{"approval_required wrapped", fmt.Errorf("lookup: %w", denied(tokenexchange.ActorDeniedReasonApprovalRequired)),
-			"approval_required", true},
-		{"denied wrapped", fmt.Errorf("lookup: %w", denied(tokenexchange.ActorDeniedReasonDenied)), "denied", true},
-		{"unknown reason", denied("nope"), "actor_validator_error", false},
-		{"empty reason", denied(""), "actor_validator_error", false},
-		{"typed nil", nilDenied, "actor_validator_error", false},
-		{"errors.Join with a denial", errors.Join(outage, denied(tokenexchange.ActorDeniedReasonDenied)),
-			"actor_validator_error", false},
-		{"two %w verbs", fmt.Errorf("%w %w", outage, denied(tokenexchange.ActorDeniedReasonDenied)),
-			"actor_validator_error", false},
-		{"join nested under a %w wrapper",
-			fmt.Errorf("outer: %w", errors.Join(outage, denied(tokenexchange.ActorDeniedReasonDenied))),
-			"actor_validator_error", false},
+		{"actor_token_expired", denied(expired), "actor_token_expired", true, "actor denied: actor_token_expired"},
+		{"approval_required", denied(approval), "approval_required", true, "actor denied: approval_required"},
+		{"denied", denied(deniedReason), "denied", true, "actor denied: denied"},
+		{"actor_token_expired wrapped", fmt.Errorf("lookup: %w", denied(expired)),
+			"actor_token_expired", true, "lookup: actor denied: actor_token_expired"},
+		{"approval_required wrapped", fmt.Errorf("lookup: %w", denied(approval)),
+			"approval_required", true, "lookup: actor denied: approval_required"},
+		{"denied wrapped", fmt.Errorf("lookup: %w", denied(deniedReason)), "denied", true, "lookup: actor denied: denied"},
+		{"refusal text with the token", fmt.Errorf("agent %s is disabled: %w", callTestToken, denied(deniedReason)),
+			"denied", true, "agent [redacted] is disabled: actor denied: denied"},
+		{"unknown reason", denied("nope"), "actor_validator_error", false, "actor denied: nope"},
+		{"empty reason", denied(""), "actor_validator_error", false, "actor denied"},
+		{"typed nil", nilDenied, "actor_validator_error", false, "actor denied"},
+		{"server error text with the token", errors.New("lookup " + callTestToken + " failed"),
+			"actor_validator_error", false, "lookup [redacted] failed"},
+		{"errors.Join with a denial", errors.Join(outage, denied(deniedReason)),
+			"actor_validator_error", false, "backend down\nactor denied: denied"},
+		{"two %w verbs", fmt.Errorf("%w %w", outage, denied(deniedReason)),
+			"actor_validator_error", false, "backend down actor denied: denied"},
+		{"join nested under a %w wrapper", fmt.Errorf("outer: %w", errors.Join(outage, denied(deniedReason))),
+			"actor_validator_error", false, "outer: backend down\nactor denied: denied"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -455,7 +469,7 @@ func TestValidateActorErrorShapes(t *testing.T) {
 			assert.Equal(t, tokenexchange.ActorResult{}, res)
 			assert.Equal(t, tt.wantReason, reason)
 			if !tt.refusal {
-				serverCause(t, err)
+				assert.Equal(t, tt.wantCause, serverCause(t, err))
 				return
 			}
 			var rfc *fosite.RFC6749Error
@@ -463,6 +477,19 @@ func TestValidateActorErrorShapes(t *testing.T) {
 			assert.Equal(t, "invalid_request", rfc.ErrorField)
 			assert.Equal(t, http.StatusBadRequest, rfc.CodeField)
 			assert.Equal(t, tt.wantReason, rfc.GetDescription())
+			require.NotNil(t, errors.Unwrap(rfc))
+			assert.Equal(t, tt.wantCause, errors.Unwrap(rfc).Error())
+			assert.NotContains(t, err.Error(), callTestToken)
+
+			// The cause is for the caller's log. The response body holds the reason only.
+			body, marshalErr := json.Marshal(rfc)
+			require.NoError(t, marshalErr)
+			var fields map[string]any
+			require.NoError(t, json.Unmarshal(body, &fields))
+			assert.Equal(t, "invalid_request", fields["error"])
+			assert.Equal(t, tt.wantReason, fields["error_description"])
+			assert.NotContains(t, string(body), tt.wantCause)
+			assert.Equal(t, tt.wantReason, rfc.WithExposeDebug(true).GetDescription())
 		})
 	}
 }
@@ -482,8 +509,9 @@ func TestNewActorLimiterRejectsCapacityBelowOne(t *testing.T) {
 }
 
 // TestValidateActorLimiter fills a limiter of one with a validator that ignores
-// its context. The next call must fail fast without reaching the validator, and
-// the slot must come back only after the hung validator returns.
+// its context. A second call waits for the slot, and when its budget or its
+// request ends first it fails without reaching the validator. The slot comes
+// back only after the hung validator returns.
 func TestValidateActorLimiter(t *testing.T) {
 	t.Parallel()
 
@@ -495,10 +523,8 @@ func TestValidateActorLimiter(t *testing.T) {
 	var releaseOnce sync.Once
 	releaseHung := func() { releaseOnce.Do(func() { close(release) }) }
 	t.Cleanup(releaseHung)
-	returned := make(chan struct{})
 	hung.EXPECT().ValidateActor(gomock.Any(), gomock.Any()).DoAndReturn(
 		func(context.Context, tokenexchange.ActorRequest) (tokenexchange.ActorResult, error) {
-			defer close(returned)
 			<-release
 			return callTestOK(), nil
 		}).Times(1)
@@ -507,25 +533,93 @@ func TestValidateActorLimiter(t *testing.T) {
 		context.Background(), hung, limiter, callTestRequest(), fixedClock, callTestTimeout)
 	require.Error(t, err)
 	require.Equal(t, "actor_validator_timeout", reason)
+	require.Equal(t, 1, tokenexchange.ActorLimiterInUseForTest(limiter))
 
-	// hung allows one call, so a second call reaching it fails the test.
+	// hung allows one call, so a waiting call that reached it would fail the test.
 	_, _, reason, err = tokenexchange.ValidateActorWithLimiterForTest(
-		context.Background(), hung, limiter, callTestRequest(), fixedClock, callTestBound)
+		context.Background(), hung, limiter, callTestRequest(), fixedClock, callTestTimeout)
 	require.Error(t, err)
-	assert.Equal(t, "actor_validator_busy", reason)
-	assert.Equal(t, "too many actor validator calls in flight", serverCause(t, err))
+	assert.Equal(t, "actor_validator_timeout", reason)
+	assert.Equal(t, fmt.Sprintf("validator did not return within %s", callTestTimeout), serverCause(t, err))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(callTestTimeout, cancel)
+	_, _, reason, err = tokenexchange.ValidateActorWithLimiterForTest(
+		ctx, hung, limiter, callTestRequest(), fixedClock, callTestBound)
+	require.Error(t, err)
+	assert.Equal(t, "actor_validator_canceled", reason)
+	assert.Equal(t, canceledCause, serverCause(t, err))
 
 	next := mocks.NewMockActorTokenValidator(gomock.NewController(t))
-	next.EXPECT().ValidateActor(gomock.Any(), gomock.Any()).Return(callTestOK(), nil).AnyTimes()
-	releaseHung()
-	waitClosed(t, returned)
+	next.EXPECT().ValidateActor(gomock.Any(), gomock.Any()).Return(callTestOK(), nil).Times(1)
+	time.AfterFunc(callTestTimeout, releaseHung)
 
-	// The slot is released after the validator returns, a moment after returned closes.
-	require.Eventually(t, func() bool {
-		res, _, reason, err := tokenexchange.ValidateActorWithLimiterForTest(
-			context.Background(), next, limiter, callTestRequest(), fixedClock, callTestBound)
-		return err == nil && reason == "" && res == callTestOK()
-	}, callTestBound, time.Millisecond)
+	// The call waits for the hung validator to return and free the slot.
+	res, _, reason, err := tokenexchange.ValidateActorWithLimiterForTest(
+		context.Background(), next, limiter, callTestRequest(), fixedClock, callTestBound)
+	require.NoError(t, err)
+	assert.Empty(t, reason)
+	assert.Equal(t, callTestOK(), res)
+	assert.Zero(t, tokenexchange.ActorLimiterInUseForTest(limiter))
+}
+
+func TestValidateActorLimiterWaitsForSlot(t *testing.T) {
+	t.Parallel()
+
+	limiter, err := tokenexchange.NewActorLimiterForTest(1)
+	require.NoError(t, err)
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseFirst := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(releaseFirst)
+	v := mocks.NewMockActorTokenValidator(gomock.NewController(t))
+	v.EXPECT().ValidateActor(gomock.Any(), gomock.Any()).DoAndReturn(
+		func(context.Context, tokenexchange.ActorRequest) (tokenexchange.ActorResult, error) {
+			close(entered)
+			<-release
+			return callTestOK(), nil
+		}).Times(1)
+	v.EXPECT().ValidateActor(gomock.Any(), gomock.Any()).Return(callTestOK(), nil).Times(1)
+
+	type result struct {
+		res    tokenexchange.ActorResult
+		reason string
+		err    error
+	}
+	call := func() <-chan result {
+		ch := make(chan result, 1)
+		go func() {
+			res, _, reason, err := tokenexchange.ValidateActorWithLimiterForTest(
+				context.Background(), v, limiter, callTestRequest(), fixedClock, callTestBound)
+			ch <- result{res, reason, err}
+		}()
+		return ch
+	}
+
+	first := call()
+	waitClosed(t, entered)
+	second := call()
+
+	select {
+	case r := <-second:
+		t.Fatalf("second call returned while the slot was held: %+v", r)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	releaseFirst()
+	for name, ch := range map[string]<-chan result{"first": first, "second": second} {
+		select {
+		case r := <-ch:
+			require.NoError(t, r.err, name)
+			assert.Empty(t, r.reason, name)
+			assert.Equal(t, callTestOK(), r.res, name)
+		case <-time.After(callTestBound):
+			t.Fatalf("%s call did not finish", name)
+		}
+	}
+	assert.Zero(t, tokenexchange.ActorLimiterInUseForTest(limiter))
 }
 
 func TestValidateActorLimiterReleasedAfterPanic(t *testing.T) {
@@ -544,12 +638,11 @@ func TestValidateActorLimiterReleasedAfterPanic(t *testing.T) {
 		context.Background(), v, limiter, callTestRequest(), fixedClock, callTestBound)
 	require.Error(t, err)
 	require.Equal(t, "actor_validator_panic", reason)
+	assert.Zero(t, tokenexchange.ActorLimiterInUseForTest(limiter))
 
-	require.Eventually(t, func() bool {
-		_, _, _, err := tokenexchange.ValidateActorWithLimiterForTest(
-			context.Background(), v, limiter, callTestRequest(), fixedClock, callTestBound)
-		return err == nil
-	}, callTestBound, time.Millisecond)
+	_, _, _, err = tokenexchange.ValidateActorWithLimiterForTest(
+		context.Background(), v, limiter, callTestRequest(), fixedClock, callTestBound)
+	require.NoError(t, err)
 }
 
 func TestValidateActorGoexitReportedAsTimeoutAndLimiterReleased(t *testing.T) {
@@ -570,9 +663,12 @@ func TestValidateActorGoexitReportedAsTimeoutAndLimiterReleased(t *testing.T) {
 	require.Error(t, err)
 	require.Equal(t, "actor_validator_timeout", reason)
 
-	require.Eventually(t, func() bool {
-		res, _, reason, err := tokenexchange.ValidateActorWithLimiterForTest(
-			context.Background(), v, limiter, callTestRequest(), fixedClock, callTestBound)
-		return err == nil && reason == "" && res == callTestOK()
-	}, callTestBound, time.Millisecond)
+	// Goexit sends no outcome, so the caller can return before the goroutine
+	// frees its slot. The next call waits for it.
+	res, _, reason, err := tokenexchange.ValidateActorWithLimiterForTest(
+		context.Background(), v, limiter, callTestRequest(), fixedClock, callTestBound)
+	require.NoError(t, err)
+	assert.Empty(t, reason)
+	assert.Equal(t, callTestOK(), res)
+	assert.Zero(t, tokenexchange.ActorLimiterInUseForTest(limiter))
 }

@@ -6,6 +6,7 @@ package tokenexchange
 import (
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"strings"
 	"testing"
@@ -104,7 +105,7 @@ func TestMapActorOutcome(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			got, reason, err := mapActorOutcome(tt.res, tt.err, checkedAt)
+			got, reason, err := mapActorOutcome(tt.res, normalizeActorError(tt.err, ""), checkedAt)
 			assert.Equal(t, tt.wantReason, reason)
 
 			if tt.wantCode == "" {
@@ -129,8 +130,8 @@ func TestMapActorOutcome(t *testing.T) {
 	}
 }
 
-// TestMapActorOutcomeFlattensValidatorErrors covers the two call sites in
-// classifyActorError that turn a validator error into a server error. The text
+// TestMapActorOutcomeFlattensValidatorErrors covers the two paths that turn a
+// normalized validator error into a server error. The text
 // must not reach the client, and nothing the validator wrapped may stay reachable,
 // because fosite reacts to a wrapped fosite.ErrUnknownRequest.
 func TestMapActorOutcomeFlattensValidatorErrors(t *testing.T) {
@@ -149,7 +150,7 @@ func TestMapActorOutcomeFlattensValidatorErrors(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			_, _, err := mapActorOutcome(ActorResult{}, tt.err, time.Unix(1_800_000_000, 0))
+			_, _, err := mapActorOutcome(ActorResult{}, normalizeActorError(tt.err, ""), time.Unix(1_800_000_000, 0))
 			var rfc *fosite.RFC6749Error
 			require.ErrorAs(t, err, &rfc)
 			assert.NotContains(t, rfc.GetDescription(), actorSentinel)
@@ -243,6 +244,8 @@ func TestMapActorOutcomeExpiry(t *testing.T) {
 		{"60s past", whole, whole.Add(-60 * time.Second), "actor_result_invalid"},
 		{"far past", whole, whole.Add(-24 * time.Hour), "actor_result_invalid"},
 		{"Unix epoch", whole, time.Unix(0, 0), "actor_result_invalid"},
+		{"minimum Unix time does not wrap", whole, time.Unix(math.MinInt64, 0), "actor_result_invalid"},
+		{"maximum Unix time", whole, time.Unix(math.MaxInt64, 0), ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

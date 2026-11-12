@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"runtime/debug"
 	"strings"
 	"time"
 
@@ -204,6 +205,10 @@ type ActorDeniedError struct {
 	// Reason is the client-facing reason. It must be one of the ActorDeniedReason
 	// constants. Any other value, including the zero value, is a server error.
 	Reason ActorDeniedReason
+
+	// cause is the validator's own error text with the actor token redacted. Only
+	// normalizeActorError sets it, so the caller can log why the validator refused.
+	cause string
 }
 
 // Error returns "actor denied: <reason>", or "actor denied" when Reason is empty.
@@ -223,7 +228,6 @@ const (
 	refuseActorCanceled  = "actor_validator_canceled"
 	refuseActorTimeout   = "actor_validator_timeout"
 	refuseActorPanic     = "actor_validator_panic"
-	refuseActorBusy      = "actor_validator_busy"
 )
 
 // actorValidationTimeout is the fixed budget for one validation, including the
@@ -256,9 +260,10 @@ const (
 )
 
 // mapActorOutcome turns a validator's answer into the accepted result, the
-// reason to log and the error for the client. checkedAt is the time just after
-// the validator returned. On any error the returned result is the zero value,
-// and when err is not nil the result passed in is ignored.
+// reason to log and the error for the client. err must come from
+// normalizeActorError. checkedAt is the time just after the validator returned.
+// On any error the returned result is the zero value, and when err is not nil the
+// result passed in is ignored.
 func mapActorOutcome(res ActorResult, err error, checkedAt time.Time) (ActorResult, string, error) {
 	if err != nil {
 		reason, clientErr := classifyActorError(err)
@@ -270,24 +275,30 @@ func mapActorOutcome(res ActorResult, err error, checkedAt time.Time) (ActorResu
 	return res, "", nil
 }
 
-// actorRefusal builds the client error for a refusal reason.
-func actorRefusal(reason ActorDeniedReason) error {
-	return errorsx.WithStack(exactReason(fosite.ErrInvalidRequest.ErrorField, string(reason)))
+// actorRefusal builds the client error for a refusal reason. The client sees only
+// the reason. A non-empty cause travels with WithWrap, which fosite does not
+// serialize, so the caller can log it.
+func actorRefusal(reason ActorDeniedReason, cause string) error {
+	refusal := exactReason(fosite.ErrInvalidRequest.ErrorField, string(reason))
+	if cause != "" {
+		refusal = refusal.WithWrap(errors.New(cause))
+	}
+	return errorsx.WithStack(refusal)
 }
 
-// classifyActorError maps an error returned by a validator. Only a non-nil
+// classifyActorError maps an error from normalizeActorError. Only a non-nil
 // *ActorDeniedError with a documented reason is a refusal; everything else is a
 // server error.
 func classifyActorError(err error) (string, error) {
 	var denied *ActorDeniedError
 	if !errors.As(err, &denied) || denied == nil {
-		return refuseActorValidator, actorValidationFailed(errors.New(err.Error()))
+		return refuseActorValidator, actorValidationFailed(err)
 	}
 	switch denied.Reason {
 	case ActorDeniedReasonActorTokenExpired, ActorDeniedReasonApprovalRequired, ActorDeniedReasonDenied:
-		return string(denied.Reason), actorRefusal(denied.Reason)
+		return string(denied.Reason), actorRefusal(denied.Reason, denied.cause)
 	default:
-		return refuseActorValidator, actorValidationFailed(errors.New(err.Error()))
+		return refuseActorValidator, actorValidationFailed(errors.New(denied.cause))
 	}
 }
 
@@ -302,10 +313,14 @@ func checkActorResult(res ActorResult, checkedAt time.Time) (string, error) {
 	if res.ExpiresAt.IsZero() {
 		return refuseActorResult, actorValidationFailed(errors.New("expiry is zero"))
 	}
-	if past := checkedAt.Unix() - res.ExpiresAt.Unix(); past >= int64(actorExpirySkew/time.Second) {
-		return refuseActorResult, actorValidationFailed(fmt.Errorf("expiry is %d seconds in the past", past))
-	} else if past >= 0 {
-		return string(ActorDeniedReasonActorTokenExpired), actorRefusal(ActorDeniedReasonActorTokenExpired)
+	// Compare without subtracting from ExpiresAt, which wraps for extreme values.
+	exp, now := res.ExpiresAt.Unix(), checkedAt.Unix()
+	if exp <= now-int64(actorExpirySkew/time.Second) {
+		return refuseActorResult, actorValidationFailed(
+			fmt.Errorf("expiry is more than %d seconds in the past", int64(actorExpirySkew/time.Second)))
+	}
+	if exp <= now {
+		return string(ActorDeniedReasonActorTokenExpired), actorRefusal(ActorDeniedReasonActorTokenExpired, "")
 	}
 	return "", nil
 }
@@ -382,13 +397,11 @@ func isASCIILetterOrDigit(c byte) bool {
 // client cannot act on. The cause travels with WithWrap so the caller can log
 // it. Unlike issueFailed in refresh_token_handler.go, which logs its cause where
 // the failure happens, this helper returns the cause, because the validator runs
-// in its own goroutine and the caller logs it once. For a validator error the
-// cause is a flattened text copy, so nothing the validator wrapped is reachable
-// through errors.Is or errors.As: fosite would otherwise react to a wrapped
-// fosite.ErrUnknownRequest. The copy still holds the validator's text
-// unredacted; the caller must replace it with a copy that has the actor token
-// redacted before logging or returning it. Never use WithDebug here: fosite
-// appends the debug text to error_description.
+// in its own goroutine and the caller logs it once. A validator's error reaches
+// here already flattened and redacted by normalizeActorError, so nothing the
+// validator wrapped is reachable through errors.Is or errors.As: fosite would
+// otherwise react to a wrapped fosite.ErrUnknownRequest. Never use WithDebug
+// here: fosite appends the debug text to error_description.
 func actorValidationFailed(cause error) error {
 	return errorsx.WithStack(
 		fosite.ErrServerError.WithHint("The actor token could not be validated.").WithWrap(cause))
@@ -419,13 +432,13 @@ func newActorLimiter(capacity int) (*actorLimiter, error) {
 	return &actorLimiter{slots: make(chan struct{}, capacity)}, nil
 }
 
-// tryAcquire takes a slot without blocking and reports whether it got one.
-func (l *actorLimiter) tryAcquire() bool {
+// acquire waits for a free slot and returns ctx's error if ctx ends first.
+func (l *actorLimiter) acquire(ctx context.Context) error {
 	select {
 	case l.slots <- struct{}{}:
-		return true
-	default:
-		return false
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }
 
@@ -449,13 +462,17 @@ func (l *actorLimiter) release() { <-l.slots }
 //
 // limiter caps the validator goroutines that run at once, counting each one until
 // the validator returns, so a hung validator holds its slot after validateActor
-// has stopped waiting. When no slot is free, validateActor starts no goroutine,
-// does not call the validator, and fails with actor_validator_busy as a server
-// error. limiter must not be nil.
+// has stopped waiting. When no slot is free, validateActor waits for one inside
+// the same timeout. If the wait ends first, it starts no goroutine, does not call
+// the validator, and fails as actor_validator_canceled or actor_validator_timeout
+// by the same context rule as a running call. limiter must not be nil.
 //
-// Every server error carries a cause with each occurrence of req.ActorToken
-// replaced by "[redacted]"; unwrap the *fosite.RFC6749Error to read it. A
-// refusal carries no cause. On any error the result is the zero value. checkedAt
+// Every error carries a cause with each occurrence of req.ActorToken replaced by
+// "[redacted]"; unwrap the *fosite.RFC6749Error to read it. For a validator's
+// error, including a refusal, the cause is the validator's own text. For a
+// refusal the client still sees only the reason: fosite does not serialize the
+// cause. A refusal that ToolHive derives itself, an expired result, has no cause.
+// On any error the result is the zero value. checkedAt
 // is clock() read after the validator returned; it is the zero time when the
 // call ends in cancellation, timeout or panic.
 func validateActor(
@@ -467,19 +484,17 @@ func validateActor(
 	timeout time.Duration,
 ) (ActorResult, time.Time, string, error) {
 	if ctx.Err() != nil {
-		return failedActor(refuseActorCanceled, "request canceled while validating the actor", req.ActorToken)
-	}
-	if !limiter.tryAcquire() {
-		return failedActor(refuseActorBusy, "too many actor validator calls in flight", req.ActorToken)
+		return failedActor(refuseActorCanceled, "request canceled while validating the actor")
 	}
 	vctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+	if err := limiter.acquire(vctx); err != nil {
+		reason, cause := actorContextFailure(ctx, vctx, timeout)
+		return failedActor(reason, cause)
+	}
 
 	outCh := make(chan actorOutcome, 1)
-	go func() {
-		defer limiter.release()
-		runActorValidator(vctx, v, req, outCh)
-	}()
+	go runActorValidator(vctx, v, req, outCh, limiter.release)
 
 	var out actorOutcome
 	select {
@@ -488,16 +503,16 @@ func validateActor(
 	}
 
 	if reason, cause := actorContextFailure(ctx, vctx, timeout); reason != "" {
-		return failedActor(reason, cause, req.ActorToken)
+		return failedActor(reason, cause)
 	}
 	if out.panicked {
-		return failedActor(refuseActorPanic, out.panicMsg, req.ActorToken)
+		return failedActor(refuseActorPanic, out.panicMsg)
 	}
 
 	checkedAt := clock()
 	res, reason, err := mapActorOutcome(out.res, out.err, checkedAt)
 	if err != nil {
-		return ActorResult{}, checkedAt, reason, redactActorServerError(err, req.ActorToken)
+		return ActorResult{}, checkedAt, reason, err
 	}
 	return res, checkedAt, "", nil
 }
@@ -506,17 +521,36 @@ func validateActor(
 // room for it, so a validator that returns late never blocks. All calls into
 // embedder code happen here, under the recover: the validator, and the Error
 // and As methods of the error it returns. The error is normalized to values
-// built by ToolHive before it leaves the goroutine. A validator that ends its
+// built by ToolHive, with the actor token redacted, before it leaves the
+// goroutine, and a panic report is redacted the same way. A validator that ends its
 // goroutine without returning or panicking (runtime.Goexit) sends nothing, and
 // the caller reports it as a timeout.
-func runActorValidator(ctx context.Context, v ActorTokenValidator, req ActorRequest, out chan<- actorOutcome) {
+//
+// release frees the caller's limiter slot exactly once, before the outcome is
+// sent, so a caller that has the outcome can rely on the slot being free. The
+// first deferred call covers Goexit, which sends nothing.
+func runActorValidator(
+	ctx context.Context, v ActorTokenValidator, req ActorRequest, out chan<- actorOutcome, release func(),
+) {
+	released := false
+	releaseOnce := func() {
+		if !released {
+			released = true
+			release()
+		}
+	}
+	defer releaseOnce()
 	defer func() {
 		if p := recover(); p != nil {
-			out <- actorOutcome{panicked: true, panicMsg: panicText(p)}
+			msg := panicText(p) + "\n" + string(debug.Stack())
+			releaseOnce()
+			out <- actorOutcome{panicked: true, panicMsg: redactActorToken(msg, req.ActorToken)}
 		}
 	}()
 	res, err := v.ValidateActor(ctx, req)
-	out <- actorOutcome{res: res, err: normalizeActorError(err)}
+	outcome := actorOutcome{res: res, err: normalizeActorError(err, req.ActorToken)}
+	releaseOnce()
+	out <- outcome
 }
 
 // panicText describes a recovered panic value by type and value. A value whose
@@ -531,21 +565,23 @@ func panicText(p any) (s string) {
 }
 
 // normalizeActorError replaces a validator's error with a value built by
-// ToolHive: nil stays nil, a non-nil *ActorDeniedError becomes a fresh one, and
-// anything else becomes a flat text copy. An error that joins several errors,
+// ToolHive in which every occurrence of token is redacted: nil stays nil, a
+// non-nil *ActorDeniedError becomes a fresh one that keeps the redacted text of
+// the whole error as its cause, and anything else becomes a flat text copy. An error that joins several errors,
 // anywhere in its chain, is never a refusal, because errors.As would find a
 // denial inside it and hide the other errors, such as an outage.
-func normalizeActorError(err error) error {
+func normalizeActorError(err error, token string) error {
 	if err == nil {
 		return nil
 	}
+	text := redactActorToken(err.Error(), token)
 	if !hasMultiError(err) {
 		var denied *ActorDeniedError
 		if errors.As(err, &denied) && denied != nil {
-			return &ActorDeniedError{Reason: denied.Reason}
+			return &ActorDeniedError{Reason: denied.Reason, cause: text}
 		}
 	}
-	return errors.New(err.Error())
+	return errors.New(text)
 }
 
 // hasMultiError reports whether err, or any error it wraps, implements
@@ -567,23 +603,10 @@ func actorContextFailure(parent, derived context.Context, timeout time.Duration)
 	return "", ""
 }
 
-// failedActor builds the zero-result return for a server error with a redacted cause.
-func failedActor(reason, cause, token string) (ActorResult, time.Time, string, error) {
-	return ActorResult{}, time.Time{}, reason, actorValidationFailed(errors.New(redactActorToken(cause, token)))
-}
-
-// redactActorServerError rebuilds a server error from mapActorOutcome with a
-// redacted cause. Refusals carry no cause and pass through unchanged.
-func redactActorServerError(err error, token string) error {
-	var rfc *fosite.RFC6749Error
-	if !errors.As(err, &rfc) || rfc.ErrorField != fosite.ErrServerError.ErrorField {
-		return err
-	}
-	cause := ""
-	if wrapped := errors.Unwrap(rfc); wrapped != nil {
-		cause = wrapped.Error()
-	}
-	return actorValidationFailed(errors.New(redactActorToken(cause, token)))
+// failedActor builds the zero-result return for a server error. The cause must
+// already be free of the actor token.
+func failedActor(reason, cause string) (ActorResult, time.Time, string, error) {
+	return ActorResult{}, time.Time{}, reason, actorValidationFailed(errors.New(cause))
 }
 
 // redactActorToken replaces every occurrence of the literal token text in s, not

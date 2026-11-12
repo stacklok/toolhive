@@ -367,6 +367,6 @@ func TestValidateActorCheckedAtReadAfterCall(t *testing.T) {
 		context.Background(), v, callTestRequest(), func() time.Time { return now }, callTestBound)
 	require.Error(t, err)
 	assert.Equal(t, advanced, checkedAt)
-	assert.Equal(t, "svid_expired", reason)
+	assert.Equal(t, "actor_token_expired", reason)
 	assert.Equal(t, tokenexchange.ActorResult{}, res)
 }

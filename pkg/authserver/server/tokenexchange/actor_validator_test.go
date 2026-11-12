@@ -26,8 +26,8 @@ func TestActorDeniedErrorError(t *testing.T) {
 	}{
 		{
 			name: "reason set",
-			err:  &ActorDeniedError{Reason: ActorDeniedReasonSVIDExpired},
-			want: "actor denied: svid_expired",
+			err:  &ActorDeniedError{Reason: ActorDeniedReasonActorTokenExpired},
+			want: "actor denied: actor_token_expired",
 		},
 		{
 			name: "empty reason",
@@ -81,7 +81,7 @@ func TestMapActorOutcome(t *testing.T) {
 		wantReason string
 		wantCode   string // empty means success
 	}{
-		{name: "svid_expired", err: denied(ActorDeniedReasonSVIDExpired), wantReason: "svid_expired", wantCode: invalid},
+		{name: "actor_token_expired", err: denied(ActorDeniedReasonActorTokenExpired), wantReason: "actor_token_expired", wantCode: invalid},
 		{name: "approval_required", err: denied(ActorDeniedReasonApprovalRequired), wantReason: "approval_required", wantCode: invalid},
 		{name: "denied", err: denied(ActorDeniedReasonDenied), wantReason: "denied", wantCode: invalid},
 		{name: "denied wrapped", err: fmt.Errorf("wrap: %w", denied(ActorDeniedReasonDenied)),
@@ -96,7 +96,7 @@ func TestMapActorOutcome(t *testing.T) {
 		{name: "zero expiry", res: ActorResult{AgentID: actorTestAgentID},
 			wantReason: "actor_result_invalid", wantCode: server},
 		{name: "expired result", res: ActorResult{AgentID: actorTestAgentID, ExpiresAt: checkedAt.Add(-time.Second)},
-			wantReason: "svid_expired", wantCode: invalid},
+			wantReason: "actor_token_expired", wantCode: invalid},
 		{name: "valid result", res: valid},
 	}
 
@@ -207,9 +207,9 @@ func TestMapActorOutcomeWholeSeconds(t *testing.T) {
 		expiresAt  time.Time
 		wantReason string
 	}{
-		{"whole second, +400ms", whole, whole.Add(400 * time.Millisecond), "svid_expired"},
+		{"whole second, +400ms", whole, whole.Add(400 * time.Millisecond), "actor_token_expired"},
 		{"whole second, +1s", whole, whole.Add(time.Second), ""},
-		{"whole second, equal", whole, whole, "svid_expired"},
+		{"whole second, equal", whole, whole, "actor_token_expired"},
 		{"x.7s, +400ms crosses a second", fractional, fractional.Add(400 * time.Millisecond), ""},
 	}
 	for _, tt := range tests {
@@ -228,7 +228,7 @@ func TestMapActorOutcomeWholeSeconds(t *testing.T) {
 			require.ErrorAs(t, err, &rfc)
 			assert.Equal(t, "invalid_request", rfc.ErrorField)
 			assert.Equal(t, http.StatusBadRequest, rfc.CodeField)
-			assert.Equal(t, "svid_expired", rfc.GetDescription())
+			assert.Equal(t, "actor_token_expired", rfc.GetDescription())
 		})
 	}
 }

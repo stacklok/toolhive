@@ -32,7 +32,7 @@ import (
 // ExpiresAt. ExpiresAt is the time at which the actor credential stops being valid.
 //
 // To refuse, return an *ActorDeniedError, optionally wrapped with %w. Use one of
-// the reasons ActorDeniedReasonSVIDExpired, ActorDeniedReasonApprovalRequired or
+// the reasons ActorDeniedReasonActorTokenExpired, ActorDeniedReasonApprovalRequired or
 // ActorDeniedReasonDenied. Return a pointer: an ActorDeniedError value does not
 // implement error. A nil *ActorDeniedError returned as the error is a server error,
 // not a refusal.
@@ -43,10 +43,10 @@ import (
 //
 // # Requirements
 //
-//   - Refuse with ActorDeniedReasonSVIDExpired when the actor credential has expired.
+//   - Refuse with ActorDeniedReasonActorTokenExpired when the actor credential has expired.
 //     If the validator accepts a credential within its own clock-skew allowance, it
 //     may return that credential's past expiry in ExpiresAt. ToolHive then answers
-//     svid_expired, so the client renews the credential and retries.
+//     actor_token_expired, so the client renews the credential and retries.
 //   - Refuse with ActorDeniedReasonApprovalRequired when the user has not approved
 //     this agent. Use it when asking the user could help. For a validator that
 //     decides per target, the approval is for the target in ActorRequest.Target.
@@ -160,7 +160,7 @@ type ActorResult struct {
 	AgentID string
 	// ExpiresAt is when the actor credential stops being valid. The issuing code caps
 	// the ID-JAG's lifetime at this time. A value at or before the time ToolHive checks the
-	// result, compared in whole seconds, is answered as svid_expired. The zero value is
+	// result, compared in whole seconds, is answered as actor_token_expired. The zero value is
 	// a server error.
 	ExpiresAt time.Time
 	// CredentialSubject identifies the credential for audit logs. It never enters a
@@ -172,9 +172,9 @@ type ActorResult struct {
 type ActorDeniedReason string
 
 const (
-	// ActorDeniedReasonSVIDExpired means the actor credential has expired. The client
+	// ActorDeniedReasonActorTokenExpired means the actor credential has expired. The client
 	// should renew the credential and retry.
-	ActorDeniedReasonSVIDExpired ActorDeniedReason = "svid_expired"
+	ActorDeniedReasonActorTokenExpired ActorDeniedReason = "actor_token_expired" //nolint:gosec // G101: not a credential
 	// ActorDeniedReasonApprovalRequired means the user has not approved this agent.
 	// Asking the user may help. Retrying alone will not.
 	ActorDeniedReasonApprovalRequired ActorDeniedReason = "approval_required"
@@ -249,7 +249,7 @@ func classifyActorError(err error) (string, error) {
 		return refuseActorValidator, actorValidationFailed(errors.New(err.Error()))
 	}
 	switch denied.Reason {
-	case ActorDeniedReasonSVIDExpired, ActorDeniedReasonApprovalRequired, ActorDeniedReasonDenied:
+	case ActorDeniedReasonActorTokenExpired, ActorDeniedReasonApprovalRequired, ActorDeniedReasonDenied:
 		return string(denied.Reason), actorRefusal(denied.Reason)
 	default:
 		return refuseActorValidator, actorValidationFailed(errors.New(err.Error()))
@@ -266,7 +266,7 @@ func checkActorResult(res ActorResult, checkedAt time.Time) (string, error) {
 		return refuseActorResult, actorValidationFailed(errors.New("expiry is zero"))
 	}
 	if res.ExpiresAt.Unix() <= checkedAt.Unix() {
-		return string(ActorDeniedReasonSVIDExpired), actorRefusal(ActorDeniedReasonSVIDExpired)
+		return string(ActorDeniedReasonActorTokenExpired), actorRefusal(ActorDeniedReasonActorTokenExpired)
 	}
 	return "", nil
 }

@@ -1024,6 +1024,40 @@ func TestValidator_ValidateFailureHandling(t *testing.T) {
 			errMsg:  "healthCheckTimeout must be >= 0 (zero means no timeout), got -1s",
 		},
 		{
+			name: "valid dedicated sessionInitTimeout independent of healthCheckTimeout",
+			fh: &FailureHandlingConfig{
+				HealthCheckInterval: Duration(30 * time.Second),
+				HealthCheckTimeout:  Duration(10 * time.Second),
+				SessionInitTimeout:  Duration(20 * time.Second),
+				UnhealthyThreshold:  3,
+				PartialFailureMode:  "fail",
+			},
+			wantErr: false,
+		},
+		{
+			name: "zero sessionInitTimeout inherits healthCheckTimeout",
+			fh: &FailureHandlingConfig{
+				HealthCheckInterval: Duration(30 * time.Second),
+				HealthCheckTimeout:  Duration(10 * time.Second),
+				SessionInitTimeout:  Duration(0),
+				UnhealthyThreshold:  3,
+				PartialFailureMode:  "fail",
+			},
+			wantErr: false,
+		},
+		{
+			name: "negative sessionInitTimeout",
+			fh: &FailureHandlingConfig{
+				HealthCheckInterval: Duration(30 * time.Second),
+				HealthCheckTimeout:  Duration(10 * time.Second),
+				SessionInitTimeout:  Duration(-1 * time.Second),
+				UnhealthyThreshold:  3,
+				PartialFailureMode:  "fail",
+			},
+			wantErr: true,
+			errMsg:  "sessionInitTimeout must be >= 0 (zero inherits healthCheckTimeout), got -1s",
+		},
+		{
 			name: "circuit breaker failureThreshold < 1",
 			fh: &FailureHandlingConfig{
 				HealthCheckInterval: Duration(30 * time.Second),
@@ -1115,6 +1149,46 @@ func TestValidator_ValidateFailureHandling(t *testing.T) {
 				if !strings.Contains(err.Error(), tt.errMsg) {
 					t.Errorf("validateFailureHandling() error message = %v, want to contain %v", err.Error(), tt.errMsg)
 				}
+			}
+		})
+	}
+}
+
+func TestResolvedSessionInitTimeout(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		fh   *FailureHandlingConfig
+		want time.Duration
+	}{
+		{name: "nil config", fh: nil, want: 0},
+		{name: "both unset", fh: &FailureHandlingConfig{}, want: 0},
+		{
+			name: "inherits healthCheckTimeout when unset",
+			fh:   &FailureHandlingConfig{HealthCheckTimeout: Duration(8 * time.Second)},
+			want: 8 * time.Second,
+		},
+		{
+			name: "dedicated field wins",
+			fh: &FailureHandlingConfig{
+				HealthCheckTimeout: Duration(8 * time.Second),
+				SessionInitTimeout: Duration(20 * time.Second),
+			},
+			want: 20 * time.Second,
+		},
+		{
+			name: "dedicated field without healthCheckTimeout",
+			fh:   &FailureHandlingConfig{SessionInitTimeout: Duration(15 * time.Second)},
+			want: 15 * time.Second,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := tt.fh.ResolvedSessionInitTimeout(); got != tt.want {
+				t.Errorf("ResolvedSessionInitTimeout() = %v, want %v", got, tt.want)
 			}
 		})
 	}

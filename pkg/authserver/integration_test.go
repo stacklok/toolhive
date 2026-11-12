@@ -153,6 +153,8 @@ type testServerOptions struct {
 	// setupTestServerWithOIDCProvider tolerates clients that are already
 	// registered (RedisStorage.RegisterClient is no-overwrite).
 	sharedStorage bool
+	// authorizationEndpointBaseURL sets the browser-facing authorization origin.
+	authorizationEndpointBaseURL string
 }
 
 // testServerOption is a functional option for test server setup.
@@ -285,6 +287,13 @@ func withAuthorizationDetailsRegistry(registry *authorizationdetails.Registry) t
 func withStorageDecorator(decorator func(storage.Storage) storage.Storage) testServerOption {
 	return func(opts *testServerOptions) {
 		opts.storageDecorator = decorator
+	}
+}
+
+// withAuthorizationEndpointBaseURL configures the browser-facing authorization origin.
+func withAuthorizationEndpointBaseURL(baseURL string) testServerOption {
+	return func(opts *testServerOptions) {
+		opts.authorizationEndpointBaseURL = baseURL
 	}
 }
 
@@ -472,6 +481,7 @@ func setupTestServer(t *testing.T, opts ...testServerOption) *testServer {
 		DeviceCodeInterval:                  options.deviceCodeInterval,
 		RefreshGrantHandlers:                options.refreshGrantHandlers,
 		DisableUpstreamRefreshGuard:         options.disableUpstreamRefreshGuard,
+		AuthorizationEndpointBaseURL:        options.authorizationEndpointBaseURL,
 		// The test server's issuer is a plain-HTTP loopback URL (genuinely
 		// local: an in-process httptest server), so opt in to the same
 		// combination withAllowConfidentialClientRegistration would otherwise
@@ -2591,6 +2601,20 @@ func completeAuthorizationFlow(
 	params authorizationParams,
 ) (code string, state string) {
 	t.Helper()
+	code, state, _ = completeAuthorizationFlowWithConsent(t, serverURL, params, testIssuer, false)
+	return code, state
+}
+
+// completeAuthorizationFlowWithConsent also returns cookies issued by the callback.
+// It carries binding cookies explicitly; it does not simulate a browser cookie jar.
+func completeAuthorizationFlowWithConsent(
+	t *testing.T,
+	serverURL string,
+	params authorizationParams,
+	browserOrigin string,
+	remember bool,
+) (code string, state string, cookies []*http.Cookie) {
+	t.Helper()
 	client := noRedirectClient()
 
 	// Step 1: Start authorization flow on our server
@@ -2610,7 +2634,7 @@ func completeAuthorizationFlow(
 
 	resp, err := client.Get(authorizeURL)
 	require.NoError(t, err)
-	resp = approveIntegrationConsent(t, client, serverURL, resp)
+	resp = approveIntegrationConsentWithOptions(t, client, serverURL, resp, browserOrigin, remember)
 	require.Equal(t, http.StatusSeeOther, resp.StatusCode, "expected redirect to mockoidc")
 	mockOIDCLocation, err := resp.Location()
 	require.NoError(t, err)
@@ -2638,18 +2662,26 @@ func completeAuthorizationFlow(
 	require.Equal(t, http.StatusSeeOther, resp.StatusCode, "expected redirect to client")
 	clientLocation, err := resp.Location()
 	require.NoError(t, err)
-	resp.Body.Close()
+	cookies = resp.Cookies()
+	require.NoError(t, drainAndClose(resp.Body))
 
 	// Step 5: Extract the authorization code and state
 	code = clientLocation.Query().Get("code")
 	require.NotEmpty(t, code, "authorization code should be present")
 	state = clientLocation.Query().Get("state")
 
-	return code, state
+	return code, state, cookies
 }
 
 // approveIntegrationConsent performs the browser-bound consent step after /authorize.
 func approveIntegrationConsent(t *testing.T, client *http.Client, serverURL string, resp *http.Response) *http.Response {
+	t.Helper()
+	return approveIntegrationConsentWithOptions(t, client, serverURL, resp, testIssuer, false)
+}
+
+func approveIntegrationConsentWithOptions(
+	t *testing.T, client *http.Client, serverURL string, resp *http.Response, browserOrigin string, remember bool,
+) *http.Response {
 	t.Helper()
 	require.Equal(t, http.StatusOK, resp.StatusCode, "expected consent page")
 	page, err := io.ReadAll(resp.Body)
@@ -2659,10 +2691,13 @@ func approveIntegrationConsent(t *testing.T, client *http.Client, serverURL stri
 	match := regexp.MustCompile(`name="handle" value="([^"]+)"`).FindSubmatch(page)
 	require.Len(t, match, 2, "consent handle missing")
 	form := url.Values{"handle": {string(match[1])}, "decision": {"approve"}}
+	if remember {
+		form.Set("remember", "1")
+	}
 	req, err := http.NewRequest(http.MethodPost, serverURL+"/oauth/consent", strings.NewReader(form.Encode()))
 	require.NoError(t, err)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("Origin", testIssuer)
+	req.Header.Set("Origin", browserOrigin)
 	for _, cookie := range consentCookies {
 		req.AddCookie(cookie)
 	}

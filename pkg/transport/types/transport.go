@@ -281,8 +281,9 @@ type Config struct {
 	//	}
 	PrefixHandlers map[string]http.Handler
 
-	// StripConsentCookie prevents the embedded auth server's browser session
-	// cookie from reaching the MCP backend. Only set when the embedded AS is mounted.
+	// StripConsentCookie prevents the embedded auth server's remembered-consent
+	// cookie family (__Host-thv_consent_*), not all auth server browser cookies,
+	// from reaching the MCP backend. Only set when the embedded AS is mounted.
 	StripConsentCookie bool
 
 	// SessionStorage overrides the default in-memory session store when set.

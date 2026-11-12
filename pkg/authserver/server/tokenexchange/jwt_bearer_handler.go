@@ -295,18 +295,8 @@ func (h *JWTBearerHandler) populateAccessTokenResponse(
 	if h.HandleHelper == nil {
 		return errorsx.WithStack(fosite.ErrInvalidRequest.WithHint("JWT-bearer token issuance is not configured."))
 	}
-	lifetime := h.config.GetAccessTokenLifespan(ctx)
-	if expiry := requester.GetSession().GetExpiresAt(fosite.AccessToken); !expiry.IsZero() {
-		remaining := time.Until(expiry)
-		if remaining <= 0 {
-			return errorsx.WithStack(fosite.ErrInvalidGrant.WithHint("The JWT bearer assertion has expired."))
-		}
-		if remaining < lifetime {
-			lifetime = remaining
-		}
-	}
-	_, err := h.IssueAccessToken(ctx, lifetime, requester, responder)
-	return err
+	return issueBoundedAccessToken(ctx, h.HandleHelper, h.config.GetAccessTokenLifespan(ctx), requester, responder,
+		"The JWT bearer assertion has expired.")
 }
 
 // consumeAssertion marks an assertion's replay key used, mapping consumer

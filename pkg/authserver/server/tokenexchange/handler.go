@@ -115,6 +115,10 @@ type ConfiguredClientPolicy struct {
 	// lookup of the audience parameter is exact. Nil when the client has no
 	// id_jag block.
 	IDJAGTargets map[string]IDJAGTarget
+	// ActorProfile is the actor-token check ID-JAG issuance runs for this
+	// client. Nil when the client has no actor profile. It is set only for
+	// clients configured at startup, never for dynamically registered ones.
+	ActorProfile *ActorProfile
 }
 
 // IDJAGTarget is one authorization server a delegate client may ask for an

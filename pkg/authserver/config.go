@@ -467,6 +467,14 @@ type DelegateClientTokenExchange struct {
 	// restricted, with exchange_refresh_tokens.id_jag_max_lifetime set, and with
 	// token exchange enabled.
 	IDJAG *DelegateClientIDJAG `json:"id_jag,omitempty" yaml:"id_jag,omitempty"`
+
+	// ActorProfile makes this client's ID-JAG issuance from an exchange grant
+	// require an actor token, which the named in-process validator checks. The
+	// embedder registers the validator in Config.ActorTokenValidators. Valid
+	// only with id_jag. It does not change plain token exchange. It is set only
+	// from Go (embedders), like RequiredSubjectClaims, so config files cannot
+	// set it, until ID-JAG issuance checks it.
+	ActorProfile *DelegateClientActorProfile `json:"-" yaml:"-"`
 }
 
 // DelegateClientIDJAG configures the ID-JAGs a delegate client may ask for.
@@ -517,6 +525,17 @@ type DelegateClientIDJAGTarget struct {
 	RequiredSubjectClaims []string `json:"-" yaml:"-"`
 }
 
+// DelegateClientActorProfile names the actor-token check that ID-JAG issuance
+// from an exchange grant requires for a delegate client.
+type DelegateClientActorProfile struct {
+	// Validator is the name of a validator in Config.ActorTokenValidators.
+	Validator string `json:"validator" yaml:"validator" binding:"required"`
+
+	// ActorTokenType is the actor_token_type the client must send, an absolute
+	// URI such as urn:ietf:params:oauth:token-type:jwt.
+	ActorTokenType string `json:"actor_token_type" yaml:"actor_token_type" binding:"required"`
+}
+
 // DelegateClientExchangeRefreshTokens holds the lifetime caps for refresh
 // tokens that a delegate client obtains through token exchange. Durations are
 // Go duration strings (e.g. "12h"), as in TokenLifespanRunConfig. Each cap must
@@ -559,6 +578,10 @@ func (t *DelegateClientTokenExchange) Clone() *DelegateClientTokenExchange {
 			targets = nil
 		}
 		cloned.IDJAG = &DelegateClientIDJAG{Targets: targets}
+	}
+	if t.ActorProfile != nil {
+		profile := *t.ActorProfile
+		cloned.ActorProfile = &profile
 	}
 	return &cloned
 }
@@ -674,6 +697,36 @@ func (c *RunConfig) validateRuntimeSPIFFEBundleSources() error {
 		if err := ValidateRuntimeSPIFFEBundleSourceType(
 			fmt.Sprintf("spiffe_trust_domains[%d] %q bundle_source", i, domain.Name), domain.BundleSource.Type,
 		); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ValidateActorProfilesForRunConfig checks validators the way Config.Validate
+// does (no empty name, no nil validator, no reserved "toolhive." name, a valid
+// ActIssuer that is not cfg.Issuer) and refuses a delegate client in cfg whose
+// actor_profile names a validator that is not in validators. It does not check
+// a profile's shape; RunConfig.Validate does, so call that first. An embedder or
+// the runner uses it to fail before storage and upstream work. It does not
+// replace Config.Validate.
+func ValidateActorProfilesForRunConfig(
+	cfg *RunConfig,
+	validators map[string]tokenexchange.ActorValidatorRegistration,
+) error {
+	var serverIssuer string
+	if cfg != nil {
+		serverIssuer = cfg.Issuer
+	}
+	if err := validateActorTokenValidatorMap(validators, serverIssuer); err != nil {
+		return err
+	}
+	normalized, err := NormalizeInboundGrants(cfg)
+	if err != nil {
+		return fmt.Errorf("normalize inbound grants: %w", err)
+	}
+	for _, client := range normalized.DelegateClients {
+		if err := actorProfileNotRegistered(client.ClientID, client.TokenExchange, validators); err != nil {
 			return err
 		}
 	}
@@ -890,6 +943,9 @@ func validateDelegateClientViews(
 		if err := claimIDJAGTargets(idJAGTargetOwners, client.ClientID, client.TokenExchange); err != nil {
 			return err
 		}
+		if err := validateActorProfile(client); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -910,6 +966,38 @@ func validateDelegateClientNarrowing(client delegateClientView, effectiveScopes,
 	}
 	if err := validateExchangeRefreshTokenScopes(client, effectiveScopes); err != nil {
 		return fmt.Errorf("delegate_clients: client_id %q: %w", client.ClientID, err)
+	}
+	return nil
+}
+
+// validateActorProfile checks the actor_profile block: it needs an id_jag block,
+// a validator name and an absolute actor_token_type. A profile only affects
+// ID-JAG issuance, so a client without id_jag can never use it. validateIDJAG
+// runs first and requires token exchange to be enabled, the restricted mode and
+// exchange_refresh_tokens.id_jag_max_lifetime for any client with an id_jag
+// block, so they are not checked again here.
+func validateActorProfile(client delegateClientView) error {
+	if client.TokenExchange == nil || client.TokenExchange.ActorProfile == nil {
+		return nil
+	}
+	if client.TokenExchange.IDJAG == nil {
+		return fmt.Errorf("delegate_clients: client_id %q: actor_profile requires id_jag.targets", client.ClientID)
+	}
+	profile := client.TokenExchange.ActorProfile
+	if profile.Validator == "" {
+		return fmt.Errorf("delegate_clients: client_id %q: actor_profile.validator is required", client.ClientID)
+	}
+	return validateActorTokenType(client.ClientID, profile.ActorTokenType)
+}
+
+// validateActorTokenType requires actor_token_type to be an absolute URI.
+func validateActorTokenType(clientID, actorTokenType string) error {
+	if actorTokenType == "" {
+		return fmt.Errorf("delegate_clients: client_id %q: actor_profile.actor_token_type is required", clientID)
+	}
+	if u, err := url.Parse(actorTokenType); err != nil || !u.IsAbs() {
+		return fmt.Errorf("delegate_clients: client_id %q: actor_profile.actor_token_type %q is not an absolute URI",
+			clientID, actorTokenType)
 	}
 	return nil
 }
@@ -1761,6 +1849,26 @@ type Config struct {
 	// DisableUpstreamRefreshGuard), so they see only grants it accepted.
 	RefreshGrantHandlers []fosite.TokenEndpointHandler
 
+	// ActorTokenValidators are the validators an embedder registers for ID-JAG
+	// issuance, keyed by name. Each entry also carries the issuer ToolHive
+	// writes as act.iss (see tokenexchange.ActorValidatorRegistration). Set them
+	// in process. There is no global registry and no YAML or JSON form. A client
+	// selects one by name in its actor profile.
+	//
+	// Issuance calls a validator from many requests at once, so each validator
+	// must be safe for concurrent use. The server reads the map only at startup,
+	// so changing it afterwards has no effect.
+	//
+	// Validate refuses an empty name, a nil Validator (including a nil pointer of
+	// a concrete type) and a name that starts with "toolhive.", which is reserved
+	// for built-in validators. It also refuses an ActIssuer that is empty, is not
+	// an absolute URI without query, userinfo or fragment, is not in canonical
+	// spelling, is an http(s) URL that is neither https nor on a loopback host,
+	// or is this server's own issuer. Registrations may share an ActIssuer. It
+	// also refuses a delegate client whose actor_profile names a validator that
+	// is not in this map.
+	ActorTokenValidators map[string]tokenexchange.ActorValidatorRegistration
+
 	// DisableUpstreamRefreshGuard turns off the built-in refresh-grant guard.
 	// When on (the default, with at least one upstream configured), a
 	// refresh_token grant is refused with invalid_grant when the token
@@ -2000,9 +2108,13 @@ func (c *Config) Validate() error {
 	}
 
 	for i, h := range c.RefreshGrantHandlers {
-		if isNilHandler(h) {
+		if isNilValue(h) {
 			return fmt.Errorf("refresh grant handler %d is nil", i)
 		}
+	}
+
+	if err := c.validateActorTokenValidators(); err != nil {
+		return err
 	}
 
 	if err := c.validateAudienceConfiguration(); err != nil {
@@ -2032,6 +2144,112 @@ func (c *Config) Validate() error {
 	}
 
 	return c.validateDelegationAndTrustConfig()
+}
+
+// validateActorTokenValidators checks the registered validators with
+// validateActorTokenValidatorMap.
+func (c *Config) validateActorTokenValidators() error {
+	return validateActorTokenValidatorMap(c.ActorTokenValidators, c.Issuer)
+}
+
+// validateActorTokenValidatorMap checks each registration in sorted name order,
+// so the first error is the same on every run. For each name, the checks run in
+// this order: the name is not empty, the name is not in the reserved "toolhive."
+// namespace, the validator is not nil, and the ActIssuer passes
+// validateActIssuer against serverIssuer.
+func validateActorTokenValidatorMap(
+	validators map[string]tokenexchange.ActorValidatorRegistration, serverIssuer string,
+) error {
+	for _, name := range slices.Sorted(maps.Keys(validators)) {
+		if name == "" {
+			return errors.New("actor token validator name must not be empty")
+		}
+		if strings.HasPrefix(name, "toolhive.") {
+			return fmt.Errorf("actor token validator name %q is reserved for built-in validators", name)
+		}
+		entry := validators[name]
+		if isNilValue(entry.Validator) {
+			return fmt.Errorf("actor token validator %q is nil", name)
+		}
+		if err := validateActIssuer(entry.ActIssuer, serverIssuer); err != nil {
+			return fmt.Errorf("actor token validator %q: %w", name, err)
+		}
+	}
+	return nil
+}
+
+// validateActIssuer checks the issuer ToolHive writes as act.iss. It must be an
+// absolute URI (tokenexchange.ActIssuerProblem), spelled in canonical form, name
+// a host and use https or http on a loopback host when it is an http(s) URL, and differ from
+// the server's own issuer. Other schemes, such as spiffe and urn, are allowed.
+// The value is only an identifier, so it is not compared with the token
+// endpoint, the allowed audiences or the target issuers.
+//
+// The canonical-form rule is idJAGIssuerWellFormed, which also fits URIs with no
+// host: it lower-cases the scheme, and it looks at host, port and path only
+// where they exist. The comparison with the server's issuer folds case and a
+// trailing slash, but a non-canonical spelling is refused first.
+func validateActIssuer(actIssuer, serverIssuer string) error {
+	if actIssuer == "" {
+		return errors.New("ActIssuer is required")
+	}
+	if err := tokenexchange.ActIssuerProblem(actIssuer); err != nil {
+		return fmt.Errorf("ActIssuer %q is not an absolute URI: %w", actIssuer, err)
+	}
+	parsed, err := url.Parse(actIssuer)
+	if err != nil {
+		return fmt.Errorf("ActIssuer %q is not an absolute URI", actIssuer)
+	}
+	if !idJAGIssuerWellFormed(actIssuer, parsed) {
+		return fmt.Errorf("ActIssuer %q is not in canonical form: lower-case scheme and host, "+
+			"no default port, dot segments, empty path segments, unneeded percent-encoding, "+
+			"or an empty or zero-padded port", actIssuer)
+	}
+	if parsed.Scheme == "http" || parsed.Scheme == "https" {
+		if parsed.Opaque != "" || parsed.Hostname() == "" {
+			return fmt.Errorf("ActIssuer %q must name a host", actIssuer)
+		}
+		if validateIssuerScheme(parsed, false) != nil {
+			return fmt.Errorf("ActIssuer %q must use https, or http on a loopback host", actIssuer)
+		}
+	}
+	if foldIssuerForComparison(actIssuer) == foldIssuerForComparison(serverIssuer) {
+		return errors.New("ActIssuer must not be this server's issuer")
+	}
+	return nil
+}
+
+// validateActorProfilesRegistered refuses a delegate client whose actor_profile
+// names a validator that is not in ActorTokenValidators, in configured order. It
+// runs after validateResolvedDelegateClients, so each profile's shape is already
+// valid and the empty-name skip is only defensive.
+func (c *Config) validateActorProfilesRegistered() error {
+	for _, client := range c.DelegateClients {
+		if err := actorProfileNotRegistered(client.ClientID, client.TokenExchange, c.ActorTokenValidators); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// actorProfileNotRegistered returns an error when the client's actor_profile
+// names a validator missing from validators. It returns nil when there is no
+// token-exchange policy, no profile or an empty name.
+func actorProfileNotRegistered(
+	clientID string,
+	te *DelegateClientTokenExchange,
+	validators map[string]tokenexchange.ActorValidatorRegistration,
+) error {
+	if te == nil || te.ActorProfile == nil {
+		return nil
+	}
+	name := te.ActorProfile.Validator
+	if _, ok := validators[name]; !ok && name != "" {
+		return fmt.Errorf(
+			"delegate_clients: client_id %q: actor_profile.validator %q is not registered in ActorTokenValidators",
+			clientID, name)
+	}
+	return nil
 }
 
 // validateClientAdmission checks the bounds on how unauthenticated callers
@@ -2164,6 +2382,9 @@ func (c *Config) validateDelegationConfig() error {
 		delegateIDs = append(delegateIDs, delegate.ClientID)
 	}
 	if err := ValidateSPIFFEClientIDsNotDelegates(spiffeIDs, delegateIDs); err != nil {
+		return err
+	}
+	if err := c.validateActorProfilesRegistered(); err != nil {
 		return err
 	}
 	return validateTrustedIssuers(c.TrustedIssuers, c.Issuer, c.AllowedAudiences)

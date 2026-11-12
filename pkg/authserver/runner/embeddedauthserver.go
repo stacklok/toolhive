@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
 	"os"
 	"slices"
@@ -63,12 +64,31 @@ type embeddedAuthServerOptions struct {
 	accessTokenType              string
 	listenerHost                 string
 	authorizationDetailsRegistry *authorizationdetails.Registry
+	actorTokenValidators         map[string]tokenexchange.ActorValidatorRegistration
 }
 
 // WithAuthorizationDetailsRegistry configures the embedded authorization server
 // to pass the registry to its RFC 8693 token-exchange handler.
 func WithAuthorizationDetailsRegistry(registry *authorizationdetails.Registry) EmbeddedAuthServerOption {
 	return func(options *embeddedAuthServerOptions) { options.authorizationDetailsRegistry = registry }
+}
+
+// WithActorTokenValidators registers the actor-token validators an embedder
+// supplies for ID-JAG issuance, keyed by the name a delegate client's
+// actor_profile.validator selects. Each registration pairs a validator with the
+// ActIssuer ToolHive writes as act.iss for the agents it accepts. Each validator
+// must be safe for concurrent use. The map is copied into the server's Config;
+// names that start with "toolhive." are reserved, and an ActIssuer must pass the
+// checks of authserver.Config.ActorTokenValidators. The server reads the map
+// only at startup. The input is copied when the option is created; repeated
+// options replace the map.
+func WithActorTokenValidators(
+	validators map[string]tokenexchange.ActorValidatorRegistration,
+) EmbeddedAuthServerOption {
+	copied := maps.Clone(validators)
+	return func(options *embeddedAuthServerOptions) {
+		options.actorTokenValidators = maps.Clone(copied)
+	}
 }
 
 // WithListenerHost sets the address the TLS listener binds. Callers pass the
@@ -196,6 +216,9 @@ func NewEmbeddedAuthServer(
 	// A pure config check, like the validations above, so a misconfigured
 	// registry never reaches storage creation.
 	if err := validateAuthorizationDetailsRegistryForRunConfig(cfg, options); err != nil {
+		return nil, err
+	}
+	if err := validateActorProfilesForRunConfig(cfg, options); err != nil {
 		return nil, err
 	}
 	// Create the storage backend FIRST so the DCR resolver and the auth
@@ -387,6 +410,9 @@ func newEmbeddedAuthServerWithStorage(
 	if err := authserver.ValidateIDJAGSubjectClaimAudiences(delegateClients, options.subjectIdentifierAudiences); err != nil {
 		return nil, err
 	}
+	if err := validateActorProfilesForRunConfig(cfg, options); err != nil {
+		return nil, err
+	}
 
 	if err := authserver.PreflightSPIFFEStaticClientCollisions(ctx, stor, spiffeTrust); err != nil {
 		return nil, fmt.Errorf("preflight SPIFFE static client collisions: %w", err)
@@ -468,6 +494,7 @@ func newEmbeddedAuthServerWithStorage(
 		DelegationTokenLifespan:                   delegationLifespan,
 		Upstreams:                                 upstreams,
 		ConsentExemptClientIDs:                    slices.Clone(options.consentExemptClientIDs),
+		ActorTokenValidators:                      maps.Clone(options.actorTokenValidators),
 		ScopesSupported:                           slices.Clone(cfg.ScopesSupported),
 		BaselineClientScopes:                      slices.Clone(cfg.BaselineClientScopes),
 		AllowedAudiences:                          slices.Clone(cfg.AllowedAudiences),
@@ -719,6 +746,13 @@ func validateAuthorizationDetailsRegistryForRunConfig(cfg *authserver.RunConfig,
 		return fmt.Errorf("authorization details registry requires token exchange to be enabled")
 	}
 	return nil
+}
+
+// validateActorProfilesForRunConfig runs authserver.ValidateActorProfilesForRunConfig
+// on the registered validators. It fails before upstream work in both constructors,
+// and in NewEmbeddedAuthServer also before storage creation.
+func validateActorProfilesForRunConfig(cfg *authserver.RunConfig, options embeddedAuthServerOptions) error {
+	return authserver.ValidateActorProfilesForRunConfig(cfg, options.actorTokenValidators)
 }
 
 func validateTLSListenerIssuer(cfg *authserver.RunConfig, leaf *x509.Certificate) error {

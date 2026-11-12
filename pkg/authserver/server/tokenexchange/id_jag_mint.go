@@ -166,9 +166,19 @@ func allowAllIDJAGPolicy(context.Context, idJAGPolicyInput) error { return nil }
 // the target does not list all get the same invalid_target error. Unknown
 // parameters are ignored.
 //
+// A client with an actor profile is refused with server_error before any
+// parameter is read, because ID-JAG issuance does not check actor tokens yet
+// and must not mint for a client the operator configured to require that
+// check. Checking first means no request shape, valid or not, gets past it.
+//
 // Every refusal here carries a hint, never a stable reason, so it returns only
 // the error to send.
 func checkIDJAGRequest(form url.Values, policy ConfiguredClientPolicy) (idJAGRequestShape, error) {
+	// Issuance wiring must replace this guard with the validateActor call.
+	if policy.ActorProfile != nil {
+		return idJAGRequestShape{}, errorsx.WithStack(fosite.ErrServerError.WithHint(
+			"Actor-token validation is not available."))
+	}
 	if form.Get("subject_token") == "" {
 		return idJAGRequestShape{}, errorsx.WithStack(fosite.ErrInvalidRequest.WithHint(
 			"The 'subject_token' parameter is required for token exchange."))

@@ -236,6 +236,21 @@ components:
                 ClientSecretFile / ClientSecretEnvVar, and ClientID must be left empty.
                 Mutually exclusive with ClientID.
             properties:
+                client_name:
+                    description: |-
+                        ClientName is the optional RFC 7591 "client_name" registration metadata
+                        sent when ToolHive registers with the upstream. When empty, ToolHive
+                        registers as "ToolHive MCP Client". It is display-only metadata: the
+                        upstream shows it on its authorization screen, and it is never used as
+                        a key. It is capped at 256 characters, matching the client_name bound
+                        the authserver enforces on inbound registrations.
+
+                        Changing it does not rename an already-registered client: the cached
+                        registration is keyed without the client name, so the new value applies
+                        only the next time ToolHive registers a fresh client — for example
+                        after rotating via RotationKey, or when the upstream rejects the cached
+                        registration.
+                    type: string
                 discovery_url:
                     description: |-
                         DiscoveryURL is the exact RFC 8414 / OIDC Discovery document URL to

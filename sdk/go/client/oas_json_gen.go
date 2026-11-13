@@ -1028,6 +1028,12 @@ func (s *AuthenticationDCRUpstreamConfig) Encode(e *jx.Encoder) {
 // encodeFields encodes fields.
 func (s *AuthenticationDCRUpstreamConfig) encodeFields(e *jx.Encoder) {
 	{
+		if s.ClientName.Set {
+			e.FieldStart("client_name")
+			s.ClientName.Encode(e)
+		}
+	}
+	{
 		if s.DiscoveryURL.Set {
 			e.FieldStart("discovery_url")
 			s.DiscoveryURL.Encode(e)
@@ -1083,16 +1089,17 @@ func (s *AuthenticationDCRUpstreamConfig) encodeFields(e *jx.Encoder) {
 	}
 }
 
-var jsonFieldsNameOfAuthenticationDCRUpstreamConfig = [9]string{
-	0: "discovery_url",
-	1: "initial_access_token_env_var",
-	2: "initial_access_token_file",
-	3: "registration_endpoint",
-	4: "registration_probe",
-	5: "registration_probe_interval",
-	6: "rotation_key",
-	7: "software_id",
-	8: "software_statement",
+var jsonFieldsNameOfAuthenticationDCRUpstreamConfig = [10]string{
+	0: "client_name",
+	1: "discovery_url",
+	2: "initial_access_token_env_var",
+	3: "initial_access_token_file",
+	4: "registration_endpoint",
+	5: "registration_probe",
+	6: "registration_probe_interval",
+	7: "rotation_key",
+	8: "software_id",
+	9: "software_statement",
 }
 
 // Decode decodes AuthenticationDCRUpstreamConfig from json.
@@ -1103,6 +1110,16 @@ func (s *AuthenticationDCRUpstreamConfig) Decode(d *jx.Decoder) error {
 
 	if err := d.ObjBytes(func(d *jx.Decoder, k []byte) error {
 		switch string(k) {
+		case "client_name":
+			if err := func() error {
+				s.ClientName.Reset()
+				if err := s.ClientName.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"client_name\"")
+			}
 		case "discovery_url":
 			if err := func() error {
 				s.DiscoveryURL.Reset()

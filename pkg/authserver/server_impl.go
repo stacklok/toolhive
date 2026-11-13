@@ -448,9 +448,9 @@ func idJAGExplicitGrantClientIDs(cfg Config) []string {
 
 // newClientAdmissionStorage wraps stor so a configured client is served only
 // while cfg declares it. Consent-exempt IDs deliberately do not vouch. It must
-// sit below the CIMD decorator: callbackClient's fallback (ClientStoreBelowCIMD)
-// and CIMD's persisted-row fallback read below that decorator and must still
-// pass admission.
+// sit below the CIMD decorator: the continuation fallback NewHandler selects
+// (ClientStoreBelowCIMD) and CIMD's persisted-row fallback read below that
+// decorator and must still pass admission.
 func newClientAdmissionStorage(cfg Config, stor storage.Storage) (storage.Storage, error) {
 	admission, err := storage.NewClientAdmissionStorage(stor, delegateClientIDs(cfg.DelegateClients))
 	if err != nil {

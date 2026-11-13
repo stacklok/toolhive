@@ -4,6 +4,7 @@
 package handlers
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -20,6 +21,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/auth"
 	serveridentity "github.com/stacklok/toolhive/pkg/authserver/identity"
+	"github.com/stacklok/toolhive/pkg/authserver/server"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	storagemocks "github.com/stacklok/toolhive/pkg/authserver/storage/mocks"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
@@ -2375,58 +2377,70 @@ func TestCallbackHandler_TwoUpstreams_EachLegIsBoundToTheBrowser(t *testing.T) {
 	})
 }
 
-// decoratedClientStorage stands in for a CIMD decorator layered over the base
-// storage: GetClient returns err from the (errAfter+1)-th call on, and Unwrap
-// exposes the base like the real decorators, so storage.Unwrap reaches it.
-type decoratedClientStorage struct {
+// scriptedClientLookup serves client lookups from the embedded storage and
+// returns err from the (okCalls+1)-th call on. It stands in for both the
+// ordinary lookup (the CIMD decorator) and the injected continuation fallback.
+// It deliberately has no Unwrap, so a passing test proves the handler uses its
+// injected fallback rather than discovering decorators.
+type scriptedClientLookup struct {
 	storage.Storage
-	errAfter int
-	err      error
-	calls    int
+	okCalls int
+	err     error
+	calls   int
 }
 
-func (d *decoratedClientStorage) GetClient(ctx context.Context, id string) (fosite.Client, error) {
-	d.calls++
-	if d.calls > d.errAfter {
-		return nil, d.err
+func (s *scriptedClientLookup) GetClient(ctx context.Context, id string) (fosite.Client, error) {
+	s.calls++
+	if s.calls > s.okCalls {
+		return nil, s.err
 	}
-	return d.Storage.GetClient(ctx, id)
+	return s.Storage.GetClient(ctx, id)
 }
-
-func (d *decoratedClientStorage) Unwrap() storage.Storage { return d.Storage }
 
 func TestCallbackHandler_CIMDRateLimited_ClientLookup(t *testing.T) {
 	t.Parallel()
 
 	rateLimited := fosite.ErrNotFound.WithWrap(storage.ErrCIMDRateLimited)
+	errUnexpectedFallback := errors.New("unexpected fallback call")
+	const never = 1 << 20
 
 	tests := []struct {
-		name          string
-		decoratedErr  error
-		decoratedOK   int // decorated calls that succeed before decoratedErr
-		baseErr       error
-		baseOK        int // base calls that succeed before baseErr
-		wantCode      bool
-		wantBaseCalls int
+		name              string
+		ordinaryErr       error
+		ordinaryOK        int // ordinary calls that succeed before ordinaryErr
+		fallbackErr       error
+		fallbackOK        int // fallback calls that succeed before fallbackErr
+		wantCode          bool
+		wantOrdinaryCalls int
+		wantFallbackCalls int
 	}{
 		{
-			name:          "rate limited falls back to persisted row",
-			decoratedErr:  rateLimited,
-			wantCode:      true,
-			wantBaseCalls: 2,
+			name:              "successful ordinary lookup does not use the fallback",
+			ordinaryOK:        never,
+			wantCode:          true,
+			wantOrdinaryCalls: 2,
 		},
 		{
-			name:          "rate limited and base storage error is an error redirect",
-			decoratedErr:  rateLimited,
-			baseErr:       errors.New("storage unavailable"),
-			baseOK:        1,
-			wantBaseCalls: 2,
+			name:              "rate limited uses the injected fallback",
+			ordinaryErr:       rateLimited,
+			fallbackOK:        never,
+			wantCode:          true,
+			wantOrdinaryCalls: 2,
+			wantFallbackCalls: 2,
 		},
 		{
-			name:          "ordinary error does not consult base storage",
-			decoratedErr:  errors.New("get client unavailable"),
-			decoratedOK:   1,
-			wantBaseCalls: 1,
+			name:              "rate limited and fallback error is an error redirect",
+			ordinaryErr:       rateLimited,
+			fallbackErr:       errors.New("storage unavailable"),
+			fallbackOK:        1,
+			wantOrdinaryCalls: 2,
+			wantFallbackCalls: 2,
+		},
+		{
+			name:              "ordinary error does not use the fallback",
+			ordinaryErr:       errors.New("get client unavailable"),
+			ordinaryOK:        1,
+			wantOrdinaryCalls: 2,
 		},
 	}
 
@@ -2434,11 +2448,7 @@ func TestCallbackHandler_CIMDRateLimited_ClientLookup(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			var opts []baseTestSetupOption
-			if tc.baseErr != nil {
-				opts = append(opts, withGetClientErrorAfterCalls(tc.baseOK, tc.baseErr))
-			}
-			provider, oauth2Config, stor, storState := baseTestSetup(t, opts...)
+			provider, oauth2Config, stor, storState := baseTestSetup(t)
 			mockUpstream := &mockIDPProvider{
 				providerType:     upstream.ProviderTypeOAuth2,
 				authorizationURL: "https://idp.example.com/authorize",
@@ -2447,10 +2457,16 @@ func TestCallbackHandler_CIMDRateLimited_ClientLookup(t *testing.T) {
 					Subject: "user-123",
 				},
 			}
-			decorated := &decoratedClientStorage{Storage: stor, errAfter: tc.decoratedOK, err: tc.decoratedErr}
-			handler, err := NewHandler(provider, oauth2Config, decorated,
+			ordinary := &scriptedClientLookup{Storage: stor, okCalls: tc.ordinaryOK, err: tc.ordinaryErr}
+			fallback := &scriptedClientLookup{
+				Storage: stor,
+				okCalls: tc.fallbackOK,
+				err:     cmp.Or(tc.fallbackErr, errUnexpectedFallback),
+			}
+			handler, err := NewHandler(provider, oauth2Config, ordinary,
 				[]NamedUpstream{{Name: "test-upstream", Provider: mockUpstream}})
 			require.NoError(t, err)
+			handler.continuationFallback = fallback
 
 			internalState := testInternalState
 			cookie := bindPending(t, storState, internalState, &storage.PendingAuthorization{
@@ -2479,7 +2495,74 @@ func TestCallbackHandler_CIMDRateLimited_ClientLookup(t *testing.T) {
 				assert.Contains(t, location, "error=")
 				assert.NotContains(t, location, "code=")
 			}
-			assert.Equal(t, tc.wantBaseCalls, storState.getClientCalls)
+			assert.Equal(t, tc.wantOrdinaryCalls, ordinary.calls)
+			assert.Equal(t, tc.wantFallbackCalls, fallback.calls)
 		})
 	}
+}
+
+func TestCallbackClient_ErrorIdentity(t *testing.T) {
+	t.Parallel()
+
+	rateLimited := fosite.ErrNotFound.WithWrap(storage.ErrCIMDRateLimited)
+	ordinaryErr := errors.New("ordinary unavailable")
+	fallbackErr := errors.New("fallback unavailable")
+
+	tests := []struct {
+		name         string
+		ordinaryErr  error
+		wantErr      error
+		wantFallback int
+	}{
+		{name: "fallback error keeps identity", ordinaryErr: rateLimited, wantErr: fallbackErr, wantFallback: 1},
+		{name: "ordinary error keeps identity", ordinaryErr: ordinaryErr, wantErr: ordinaryErr},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			provider, cfg, stor, _ := baseTestSetup(t)
+			ordinary := &scriptedClientLookup{Storage: stor, err: tc.ordinaryErr}
+			fallback := &scriptedClientLookup{Storage: stor, err: fallbackErr}
+			h, err := NewHandler(provider, cfg, ordinary, nil)
+			require.NoError(t, err)
+			h.continuationFallback = fallback
+
+			got, err := h.callbackClient(t.Context(), testAuthClientID)
+			assert.Same(t, tc.wantErr, err)
+			assert.Nil(t, got)
+			assert.Equal(t, tc.wantFallback, fallback.calls)
+		})
+	}
+}
+
+// unwrappingRateLimitedStorage mimics a CIMD decorator: ordinary lookups are
+// refused by the fetch limiter and Unwrap exposes the storage below it.
+type unwrappingRateLimitedStorage struct {
+	storage.Storage
+}
+
+func (unwrappingRateLimitedStorage) GetClient(context.Context, string) (fosite.Client, error) {
+	return nil, fosite.ErrNotFound.WithWrap(storage.ErrCIMDRateLimited)
+}
+
+func (s unwrappingRateLimitedStorage) Unwrap() storage.Storage { return s.Storage }
+
+func TestNewHandler_DefaultContinuationFallback(t *testing.T) {
+	t.Parallel()
+
+	base := storage.NewMemoryStorage()
+	t.Cleanup(func() { require.NoError(t, base.Close()) })
+	require.NoError(t, base.RegisterClient(t.Context(), &fosite.DefaultClient{ID: testAuthClientID, Public: true}))
+	admitted, err := storage.NewClientAdmissionStorage(base, nil)
+	require.NoError(t, err)
+
+	h, err := NewHandler(nil, &server.AuthorizationServerConfig{Config: &fosite.Config{}},
+		unwrappingRateLimitedStorage{Storage: admitted}, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, h.Close()) })
+
+	assert.Same(t, admitted, h.continuationFallback)
+	got, err := h.callbackClient(t.Context(), testAuthClientID)
+	require.NoError(t, err)
+	assert.Equal(t, testAuthClientID, got.GetID())
 }

@@ -670,6 +670,7 @@ func TestResolveTransportType(t *testing.T) {
 		name           string
 		runFlags       *RunFlags
 		serverMetadata regtypes.ServerMetadata
+		serverOrImage  string
 		expected       string
 	}{
 		{
@@ -708,12 +709,47 @@ func TestResolveTransportType(t *testing.T) {
 			serverMetadata: nil,
 			expected:       "streamable-http",
 		},
+		{
+			name:           "uvx scheme without flag or metadata defaults to stdio",
+			runFlags:       &RunFlags{},
+			serverMetadata: regtypes.ServerMetadata((*regtypes.ImageMetadata)(nil)),
+			serverOrImage:  "uvx://mcp-server-time",
+			expected:       "stdio",
+		},
+		{
+			name:           "explicit flag overrides uvx stdio default",
+			runFlags:       &RunFlags{Transport: "streamable-http"},
+			serverMetadata: nil,
+			serverOrImage:  "uvx://mcp-server-time",
+			expected:       "streamable-http",
+		},
+		{
+			name:           "metadata transport overrides uvx stdio default",
+			runFlags:       &RunFlags{},
+			serverMetadata: &regtypes.ImageMetadata{BaseServerMetadata: regtypes.BaseServerMetadata{Transport: "sse"}},
+			serverOrImage:  "uvx://mcp-server-time",
+			expected:       "sse",
+		},
+		{
+			name:           "npx scheme keeps the default transport",
+			runFlags:       &RunFlags{},
+			serverMetadata: regtypes.ServerMetadata((*regtypes.ImageMetadata)(nil)),
+			serverOrImage:  "npx://@modelcontextprotocol/server-everything",
+			expected:       defaultTransportType,
+		},
+		{
+			name:           "image name containing uvx keeps the default transport",
+			runFlags:       &RunFlags{},
+			serverMetadata: nil,
+			serverOrImage:  "ghcr.io/example/uvx-server:latest",
+			expected:       defaultTransportType,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			result := resolveTransportType(tt.runFlags, tt.serverMetadata)
+			result := resolveTransportType(tt.runFlags, tt.serverMetadata, tt.serverOrImage)
 			assert.Equal(t, tt.expected, result)
 		})
 	}
@@ -920,7 +956,7 @@ func TestBuildRunnerConfig_NetworkIsolationExplicitWiring(t *testing.T) {
 			isolateExplicit := cmd.Flags().Changed("isolate-network")
 
 			cfg, err := buildRunnerConfig(
-				t.Context(), runFlags, nil, false, "127.0.0.1", nil, "test:latest", nil,
+				t.Context(), runFlags, nil, false, "127.0.0.1", nil, "test:latest", "test:latest", nil,
 				map[string]string{}, &runner.DetachedEnvVarValidator{}, nil, nil, &config.Config{},
 				runner.WithNetworkIsolationExplicit(isolateExplicit),
 			)
@@ -967,7 +1003,7 @@ func TestBuildRunnerConfig_MaxRequestBodySizeWiring(t *testing.T) {
 			require.NoError(t, cmd.Flags().Set("max-request-body-size", tt.flagValue))
 
 			cfg, err := buildRunnerConfig(
-				t.Context(), runFlags, nil, false, "127.0.0.1", nil, "test:latest", nil,
+				t.Context(), runFlags, nil, false, "127.0.0.1", nil, "test:latest", "test:latest", nil,
 				map[string]string{}, &runner.DetachedEnvVarValidator{}, nil, nil, &config.Config{},
 			)
 
@@ -1015,7 +1051,7 @@ func TestSetupOIDCConfiguration_MiddlewareFlagWiring(t *testing.T) {
 	require.NotNil(t, oidcConfig)
 
 	cfg, err := buildRunnerConfig(
-		t.Context(), runFlags, nil, false, "127.0.0.1", nil, "test:latest", nil,
+		t.Context(), runFlags, nil, false, "127.0.0.1", nil, "test:latest", "test:latest", nil,
 		map[string]string{}, &runner.DetachedEnvVarValidator{}, oidcConfig, nil, &config.Config{},
 	)
 	require.NoError(t, err)

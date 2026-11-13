@@ -18,9 +18,16 @@ import (
 // handler writes each chunk in order, so a test can split an event across writes.
 func runSSEStream(t *testing.T, authorizer *mockAuthorizer, contentType string, chunks ...string) *httptest.ResponseRecorder {
 	t.Helper()
+	return runSSEStreamWithStatus(t, authorizer, http.StatusOK, contentType, chunks...)
+}
+
+func runSSEStreamWithStatus(
+	t *testing.T, authorizer *mockAuthorizer, status int, contentType string, chunks ...string,
+) *httptest.ResponseRecorder {
+	t.Helper()
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", contentType)
-		w.WriteHeader(http.StatusOK)
+		w.WriteHeader(status)
 		for _, c := range chunks {
 			_, _ = io.WriteString(w, c)
 		}
@@ -121,15 +128,32 @@ func TestSSEStreamFailsClosedOnAmbiguousResult(t *testing.T) {
 	assert.Contains(t, rr.Body.String(), `"error"`)
 }
 
-func TestSSEStreamPassesNonEventStreamThrough(t *testing.T) {
+func TestSSEStreamNonEventStreamBodies(t *testing.T) {
 	t.Parallel()
 
-	authorizer := &mockAuthorizer{results: map[string]mockResult{}}
 	body := `{"jsonrpc":"2.0","id":5,"result":{"tools":[]}}`
-	rr := runSSEStream(t, authorizer, "application/json", body)
+	testCases := []struct {
+		name     string
+		status   int
+		wantBody string
+	}{
+		// A successful body with another media type is not parsed as SSE and is
+		// not passed through either: nothing reaches the client.
+		{name: "2xx other media type fails closed", status: http.StatusOK, wantBody: ""},
+		// An error body is passed through unchanged.
+		{name: "non-2xx other media type passes through", status: http.StatusNotFound, wantBody: body},
+	}
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 
-	require.Equal(t, http.StatusOK, rr.Code)
-	assert.Equal(t, body, rr.Body.String(), "a non-stream body is not parsed as SSE")
+			authorizer := &mockAuthorizer{results: map[string]mockResult{}}
+			rr := runSSEStreamWithStatus(t, authorizer, tc.status, "application/json", body)
+
+			require.Equal(t, tc.status, rr.Code)
+			assert.Equal(t, tc.wantBody, rr.Body.String())
+		})
+	}
 }
 
 func TestSSEStreamFailsClosedOnCaseAliasMember(t *testing.T) {
@@ -183,4 +207,21 @@ func TestSSEStreamFailsClosedOnOversizedEvent(t *testing.T) {
 	rr := runSSEStream(t, authorizer, "text/event-stream", huge)
 
 	assert.LessOrEqual(t, rr.Body.Len(), maxSSEEventBytes, "an oversized event must not be written through")
+}
+func TestSSEStreamFlushBeforeWriteSetsNoStore(t *testing.T) {
+	t.Parallel()
+
+	authorizer := &mockAuthorizer{results: map[string]mockResult{}}
+	// The handler flushes before writing anything. The flush commits the headers,
+	// so the uncacheable marking must already be in place.
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.(http.Flusher).Flush()
+	})
+	handler := Middleware(authorizer, next, nil)
+	req := httptest.NewRequest(http.MethodGet, "/sse", nil)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	assert.Equal(t, "private, no-store", rr.Header().Get("Cache-Control"))
 }

@@ -639,8 +639,8 @@ cfg.AuditSubjectEnricher = func(ctx context.Context, id *auth.Identity) map[stri
 - It is set from Go only. It has no key in the audit configuration file.
 - It applies to the per-request MCP events and to the composite-tool
   workflow events.
-- It runs only when audit is enabled, once per event. `identity` is nil
-  when the caller is unauthenticated.
+- It runs only when `AuditConfig` is set, once per event that passes the
+  event-type filter. `identity` is nil when the caller is unauthenticated.
 - Returned keys are added to `subjects`. Empty keys and values are dropped.
   The keys the auditor writes itself (`user`, `user_id`, `client_name`,
   `client_version`) are reserved: the enricher can neither overwrite nor

@@ -29,7 +29,7 @@ func TestCallTool_CompositeWorkflowAuditCarriesEnricherSubjects(t *testing.T) {
 	t.Parallel()
 
 	cfg, m := baseConfig(t)
-	auditCfg, auditLogPath := closeErrorPathAuditConfig(t)
+	auditCfg, auditLogPath := fileAuditConfig(t)
 	auditCfg.EventTypes = []string{audit.EventTypeWorkflowStarted}
 	cfg.AuditConfig = auditCfg
 	cfg.AuditSubjectEnricher = func(context.Context, *auth.Identity) map[string]string {

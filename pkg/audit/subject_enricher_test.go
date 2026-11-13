@@ -215,3 +215,30 @@ func TestSubjectEnricher_ReceivesRequestContext(t *testing.T) {
 
 	assert.Equal(t, "acme", eventSubjects(t, &buf)["tenant"])
 }
+
+// TestReservedSubjectKeys_CoverBuiltInSubjects pins reservedSubjectKeys to the
+// keys extractSubjectsFromIdentity writes, so a new built-in subject cannot be
+// added without also protecting it from enricher overwrites.
+func TestReservedSubjectKeys_CoverBuiltInSubjects(t *testing.T) {
+	t.Parallel()
+
+	identity := &auth.Identity{
+		PrincipalInfo: auth.PrincipalInfo{
+			Subject: "user-123",
+			Name:    "Jane Doe",
+			Email:   "jane@example.com",
+			Claims: map[string]any{
+				"preferred_username": "jdoe",
+				"client_name":        "mcp-client",
+				"client_version":     "1.0.0",
+			},
+		},
+	}
+
+	subjects := extractSubjectsFromIdentity(identity)
+	require.Len(t, subjects, len(reservedSubjectKeys),
+		"every reserved key should be written by extractSubjectsFromIdentity and vice versa")
+	for key := range subjects {
+		assert.Contains(t, reservedSubjectKeys, key, "built-in subject %q must be reserved", key)
+	}
+}

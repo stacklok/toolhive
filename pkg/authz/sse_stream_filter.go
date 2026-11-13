@@ -26,6 +26,11 @@ const maxSSEEventBytes = 1 << 20
 // errSSEEventTooLarge closes the stream when one event exceeds maxSSEEventBytes.
 var errSSEEventTooLarge = errors.New("SSE event exceeds the filter's size limit")
 
+// errSSEUnrecognizedMediaType closes a successful response whose Content-Type is
+// not text/event-stream. Such a body is not parsed, and it is not passed through
+// either, because a client may still read it as an event stream.
+var errSSEUnrecognizedMediaType = errors.New("successful response has a Content-Type other than text/event-stream")
+
 // listMembers maps each list member of a result to the method whose filter applies.
 var listMembers = map[string]string{
 	"tools":             string(mcp.MethodToolsList),
@@ -56,6 +61,7 @@ type sseStreamFilterWriter struct {
 	passThrough bool
 	started     bool
 	failed      bool
+	failErr     error
 }
 
 // newSSEStreamFilterWriter wraps w for a GET stream served on behalf of r.
@@ -83,19 +89,19 @@ func (w *sseStreamFilterWriter) Unwrap() http.ResponseWriter {
 // body size.
 func (w *sseStreamFilterWriter) WriteHeader(statusCode int) {
 	w.ResponseWriter.Header().Del("Content-Length")
-	w.decide()
+	w.decide(statusCode)
 	w.ResponseWriter.WriteHeader(statusCode)
 }
 
 // Write buffers the body and forwards every complete event. It returns the length
 // of data as given, even when a leading byte order mark is stripped.
 func (w *sseStreamFilterWriter) Write(data []byte) (int, error) {
-	w.decide()
+	w.decide(http.StatusOK)
 	if w.passThrough {
 		return w.ResponseWriter.Write(data)
 	}
 	if w.failed {
-		return 0, errSSEEventTooLarge
+		return 0, w.failErr
 	}
 	n := len(data)
 	if !w.started {
@@ -107,6 +113,7 @@ func (w *sseStreamFilterWriter) Write(data []byte) (int, error) {
 	if len(w.buffer) > maxSSEEventBytes && completeEventEnd(w.buffer) == 0 {
 		// Stop the stream for good: drop what is buffered so finish() cannot write it out.
 		w.failed = true
+		w.failErr = errSSEEventTooLarge
 		w.buffer = nil
 		return 0, errSSEEventTooLarge
 	}
@@ -119,6 +126,9 @@ func (w *sseStreamFilterWriter) Write(data []byte) (int, error) {
 // Flush forwards every complete event, then flushes the transport. An event
 // still missing its terminating blank line stays buffered for a later call.
 func (w *sseStreamFilterWriter) Flush() {
+	// Decide before flushing: a flush commits the headers, and the mode decides
+	// whether Cache-Control: private, no-store must be among them.
+	w.decide(http.StatusOK)
 	if err := w.drainCompleteEvents(); err != nil {
 		// Usually the client has gone away. That is routine on a long-lived stream.
 		slog.Debug("stopped writing filtered SSE stream", "error", err)
@@ -149,20 +159,29 @@ func (w *sseStreamFilterWriter) finish() {
 	}
 }
 
-// decide picks the mode once, from the Content-Type the handler set. Only an
-// event stream is parsed. Any other body is passed through unchanged. A parsed
-// stream carries caller-specific list answers, so it is marked uncacheable
-// before its headers are committed, the same as the POST path.
-func (w *sseStreamFilterWriter) decide() {
+// decide picks the mode once, from the Content-Type the handler set and the
+// status it is answering with. An event stream is parsed and filtered. A
+// non-2xx body (an error) is passed through unchanged. A successful body with
+// any other media type fails closed, since a client that ignores Content-Type
+// could read it as events. A parsed stream carries caller-specific list
+// answers, so it is marked uncacheable before its headers are committed, the
+// same as the POST path.
+func (w *sseStreamFilterWriter) decide(status int) {
 	if w.decided {
 		return
 	}
 	w.decided = true
 	mediaType, _, _ := mime.ParseMediaType(w.ResponseWriter.Header().Get("Content-Type"))
-	w.passThrough = mediaType != "text/event-stream"
-	if !w.passThrough {
+	if mediaType == "text/event-stream" {
 		w.ResponseWriter.Header().Set("Cache-Control", "private, no-store")
+		return
 	}
+	if status >= 200 && status < 300 {
+		w.failed = true
+		w.failErr = errSSEUnrecognizedMediaType
+		return
+	}
+	w.passThrough = true
 }
 
 // drainCompleteEvents writes every event that is complete in the buffer and
@@ -225,20 +244,10 @@ func (w *sseStreamFilterWriter) filterEvent(event []sseLine) []sseLine {
 	message, _ := jsonrpc2.DecodeMessage(payload)
 	response, isResponse := message.(*jsonrpc2.Response)
 	if !isResponse {
-		if !carriesResult(payload) {
-			// A non-Response frame with no result (e.g. a notification) is routine.
-			// Each data value is still probed, as the POST path does, in case a
-			// result is hidden across values.
-			rfw := w.newFilter("")
-			if replacement, failedClosed := rfw.probeValuesForSmuggledResult(dataValues); replacement != nil {
-				return rebuildEventWithPayload(event, replacement, failedClosed)
-			}
-			return event
-		}
-		// A non-Response frame that still carries a result could smuggle a list
-		// past the filter. Fail closed, as the POST path does. No request id is
-		// available for a frame that is not a clean Response.
-		return w.failClosed(event, jsonrpc2.ID{}, "dropped a frame carrying a result outside a clean Response")
+		// Reuse the shared handling for frames that are not a clean Response: it
+		// fails closed on a result smuggled into the frame, probes each data value,
+		// and passes routine frames (e.g. notifications) through.
+		return w.newFilter("").resolveSSEEvent(event)
 	}
 
 	method, err := listMethodForResult(response.Result)

@@ -180,7 +180,9 @@ type RunFlags struct {
 
 // AddRunFlags adds all the run flags to a command
 func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
-	cmd.Flags().StringVar(&config.Transport, "transport", "", "Transport mode (sse, streamable-http or stdio)")
+	cmd.Flags().StringVar(&config.Transport, "transport", "",
+		"Transport mode (sse, streamable-http or stdio); defaults to the registry's transport, "+
+			"else stdio for uvx:// packages (unless --target-port or --stateless is set), else streamable-http")
 	cmd.Flags().StringVar(&config.ProxyMode,
 		"proxy-mode",
 		"streamable-http",
@@ -596,7 +598,9 @@ func validateAndSetupProxyMode(runFlags *RunFlags) error {
 // When neither the flag nor the metadata sets a transport, uvx:// packages default
 // to stdio: Python MCP servers run through uvx are almost always stdio servers, and
 // the streamable-http default starts their container without stdin, so they exit
-// at once and get restarted in a loop.
+// at once and get restarted in a loop. The stdio default is skipped when an
+// HTTP-only flag (--target-port, --stateless) says the server speaks HTTP, since
+// stdio would silently drop --target-port and fail at startup with --stateless.
 func resolveTransportType(runFlags *RunFlags, serverMetadata regtypes.ServerMetadata, serverOrImage string) string {
 	if runFlags.Transport != "" {
 		return runFlags.Transport
@@ -606,10 +610,16 @@ func resolveTransportType(runFlags *RunFlags, serverMetadata regtypes.ServerMeta
 			return t
 		}
 	}
-	if strings.HasPrefix(serverOrImage, runner.UVXScheme) {
+	if strings.HasPrefix(serverOrImage, runner.UVXScheme) && !hasHTTPOnlyFlags(runFlags) {
 		return types.TransportTypeStdio.String()
 	}
 	return defaultTransportType
+}
+
+// hasHTTPOnlyFlags reports whether the run flags include an option that only
+// applies to the SSE or streamable-http transports.
+func hasHTTPOnlyFlags(runFlags *RunFlags) bool {
+	return runFlags.TargetPort != 0 || runFlags.Stateless
 }
 
 // resolveServerName resolves the server name for telemetry from flags or metadata

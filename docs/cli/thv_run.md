@@ -43,7 +43,8 @@ ToolHive supports five ways to run an MCP server:
    using either uvx (Python with uv package manager), npx (Node.js),
    or go (Golang). For Go, you can also specify local paths starting
    with './' or '../' to build and run local Go projects. Without
-   --transport, uvx:// packages use the stdio transport.
+   --transport or a registry entry, uvx:// packages use the stdio
+   transport, unless --target-port or --stateless is set.
 
 4. From an exported configuration:
 
@@ -200,7 +201,7 @@ thv run [flags] SERVER_OR_IMAGE_OR_PROTOCOL [-- ARGS...]
       --token-exchange-url string                          OAuth 2.0 token exchange endpoint URL (enables token exchange when provided)
       --tools stringArray                                  Filter MCP server tools (comma-separated list of tool names)
       --tools-override string                              Path to a JSON file containing overrides for MCP server tools names and descriptions
-      --transport string                                   Transport mode (sse, streamable-http or stdio)
+      --transport string                                   Transport mode (sse, streamable-http or stdio); defaults to the registry's transport, else stdio for uvx:// packages (unless --target-port or --stateless is set), else streamable-http
       --trust-proxy-headers[=true|false]                   Trust X-Forwarded-* headers from reverse proxies (X-Forwarded-Proto, X-Forwarded-Host, X-Forwarded-Port, X-Forwarded-Prefix) (default false)
   -v, --volume stringArray                                 Mount a volume into the container (format: host-path:container-path[:ro])
       --webhook-config stringArray                         Path to webhook configuration file (can be specified multiple times to merge configs)

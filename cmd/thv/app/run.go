@@ -59,7 +59,8 @@ ToolHive supports five ways to run an MCP server:
    using either uvx (Python with uv package manager), npx (Node.js),
    or go (Golang). For Go, you can also specify local paths starting
    with './' or '../' to build and run local Go projects. Without
-   --transport, uvx:// packages use the stdio transport.
+   --transport or a registry entry, uvx:// packages use the stdio
+   transport, unless --target-port or --stateless is set.
 
 4. From an exported configuration:
 

@@ -262,10 +262,13 @@ var _ = Describe("Protocol Builds E2E", Label("mcp", "mcp-protocol", "protocols"
 				By("Starting the Time MCP server using uvx:// without --transport")
 				// mcp-server-time is a Python stdio server that exits on stdin EOF.
 				// With the streamable-http default its container started without
-				// stdin and was restarted in a loop (#6634).
+				// stdin and was restarted in a loop (#6634). The version is pinned
+				// and --build-with keeps the Python mcp SDK below 2.0, which this
+				// server can't import (see TimeMCPServerImage in images.go).
 				stdout, stderr := e2e.NewTHVCommand(config, "run",
 					"--name", serverName,
-					"uvx://mcp-server-time").ExpectSuccess()
+					"--build-with", "mcp<2",
+					"uvx://mcp-server-time@2026.7.10").ExpectSuccess()
 
 				output := stdout + stderr
 				Expect(output).To(ContainSubstring("Successfully built"), "Should successfully build the image")

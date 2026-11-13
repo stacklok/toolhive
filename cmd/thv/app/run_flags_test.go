@@ -724,6 +724,27 @@ func TestResolveTransportType(t *testing.T) {
 			expected:       "streamable-http",
 		},
 		{
+			name:           "uvx scheme with --target-port keeps the default transport",
+			runFlags:       &RunFlags{TargetPort: 8080},
+			serverMetadata: regtypes.ServerMetadata((*regtypes.ImageMetadata)(nil)),
+			serverOrImage:  "uvx://mcp-server-time",
+			expected:       defaultTransportType,
+		},
+		{
+			name:           "uvx scheme with --stateless keeps the default transport",
+			runFlags:       &RunFlags{Stateless: true},
+			serverMetadata: regtypes.ServerMetadata((*regtypes.ImageMetadata)(nil)),
+			serverOrImage:  "uvx://mcp-server-time",
+			expected:       defaultTransportType,
+		},
+		{
+			name:           "explicit stdio with --target-port stays stdio",
+			runFlags:       &RunFlags{Transport: "stdio", TargetPort: 8080},
+			serverMetadata: nil,
+			serverOrImage:  "uvx://mcp-server-time",
+			expected:       "stdio",
+		},
+		{
 			name:           "metadata transport overrides uvx stdio default",
 			runFlags:       &RunFlags{},
 			serverMetadata: &regtypes.ImageMetadata{BaseServerMetadata: regtypes.BaseServerMetadata{Transport: "sse"}},

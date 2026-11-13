@@ -20,8 +20,9 @@ import (
 //
 // The seam re-platforms the authorization decision that runs as HTTP middleware
 // today (AuthzMiddleware + AnnotationEnrichmentMiddleware) into the core, so that
-// List* (filter) and Call/Read/Get (deny) enforce the SAME decision from one
-// source — closing the "list says yes / call says no" gap. Identity is an explicit
+// List* (filter) asks the read check (tool:read); Call/Read/Get (deny) ask the call
+// check (tool:call). A tool:call grant also shows the tool, and a tool:read allow does
+// not grant a call, so a listed tool can still be refused when called. Identity is an explicit
 // parameter (never read from ctx, vmcp anti-pattern #1); the adapter re-injects it
 // into the ctx the wrapped authorizer reads. A seam can only SUBTRACT reachability
 // (filter list output / refuse a call), never widen it ([VMCP] contract).

@@ -288,8 +288,8 @@ one an existing embedder already runs:
 - `DeleteUpstreamTokens` (delete all rows of a session) deletes nothing
   under the decorator, because rows belong to the user, not the session.
   Signing out of one client, or a refresh-grant refusal for one client,
-  does not remove the user's connections. Removing a user's rows is a
-  separate, explicit operation (banked item B6).
+  does not remove the user's connections. In v1 rows leave only by
+  expiry; an explicit disconnect and offboarding come later (B6).
 - `ResolveUpstreamTokenRowID` returns the user-keyed row's identity, so
   the process-local refresh deduplication and the cross-replica refresh
   lease ("Serialize upstream refresh across replicas", PR #7031) work on
@@ -369,7 +369,7 @@ returns `ErrNoCanonicalUser`.
 decorator ignores the session ID. Only missing or broken providers need a
 redirect. This fixes #6831 without a stable session ID. A newly
 authorized client therefore gets the user's existing connections without
-an upstream prompt (banked item B1).
+an upstream prompt; this is accepted (B1).
 
 ### 2.4 Who may read user U
 
@@ -733,36 +733,67 @@ Rules that keep this true:
   server, the same identity-provider tenant as the gateway's sign-in,
   required scopes, and DPoP whenever the token is bound. Recommended:
   all, plus refusing unbound tokens as a per-issuer option.
-- **D4. Resolution time for minted tokens.** At mint time; a deactivated
-  user keeps access until the gateway token expires. Recommended: mint
-  time, with gateway tokens of a few minutes.
-- **D5. Where the direct route makes its checks.** In the vMCP's incoming
-  authentication (section 2.4), by in-process translation at the
-  authorization server, or in a shared validation library (section 2.5).
-  Not yet recommended.
+- **D4. Resolution time for minted tokens.** Decided: at mint time. ID-JAG
+  redemption and token exchange resolve the subject once; the gateway
+  token's `sub` is the native user, and the approval check (external
+  mode) uses that same user. The vMCP does not resolve marked tokens
+  again. The resolver refuses a deactivated user as it refuses an unknown
+  one. A resolver outage at the token endpoint returns 503 or
+  `server_error`, never `invalid_grant` or `consent_required`. A marked
+  token's lifetime is capped (a few minutes), whatever
+  `delegationLifespan` says; ID-JAG-derived tokens are already capped by
+  the ID-JAG's lifetime. A user deactivated in the directory therefore
+  keeps delegated access for at most that cap, plus directory sync delay.
+  The agent platform mints a new ID-JAG on each cache miss of its gateway
+  token, so in practice resolution happens about once per gateway-token
+  lifetime per (session, agent, gateway, user), not once per call.
+  Offboarding (B6) removes the user's rows, which ends credential use at
+  once. Direct tokens are still resolved on every request.
+- **D5. Where the direct route makes its checks.** Decided: in the vMCP's
+  incoming authentication first (section 2.4), built on the toolhive-core
+  `authn` validator stack (toolhive-core PRs #506 to #511, with the trust
+  set in #514 to #516) as a reusable library. The stack already covers
+  issuer and keys, discovery issuer equality, per-issuer keys, exact
+  audience, the algorithm allowlist, `exp`/`nbf`/future `iat`, lifetime
+  caps, the ID-JAG `typ` deny list, required scopes with
+  `insufficient_scope`, and issuer routing with reserved issuers. Gaps to
+  fill: in toolhive-core, an option for untyped tokens (missing `typ` or
+  `JWT` only) and DPoP proof verification (until it exists, tokens with
+  `cnf` are refused, the stack's default); in ToolHive, `Check`s for
+  `jti`, the client claim and the refused claims, the actor policy, the
+  configuration rules on `aud` and issuers, and error mapping. The stack
+  must merge and be released before stage 6. The in-process translation
+  (section 2.5) stays an alternative. Moving the authorization server's
+  external-token validation onto the same library is optional and
+  separate.
 
 ## 9. Banked items
 
 Found in review, not resolved here, because each needs a decision:
 
-- **B1. Consent for shared connections.** With user keying, a newly
-  authorized client, possibly self-registered, gets every existing
-  connection without an upstream prompt. Options: the consent screen
-  names the shared connections and remembered consent is keyed to that
-  set, or a per-(user, client) approval before the chain walk is skipped.
-- **B2. Marker value.** Presence only (as #6404 says) or the trusted
-  issuer or approval ID, for audit.
+- **B1. Consent for shared connections.** Decided: accepted as is. With
+  user keying, a newly authorized client, possibly self-registered, gets
+  the user's existing connections without an upstream prompt, the same
+  way single sign-on grants a new application the user's session. The
+  user still passes the authorization server's own consent for that
+  client. Documented in the upgrade guide.
+- **B2. Marker value.** Decided: checks use presence only. The value may
+  name the trusted issuer or the approval record for audit, but nothing
+  requires it and no check reads it.
 - **B3. Okta actor default.** Refusing direct tokens without `act` refuses
   tokens from an agent's own authorization-code flow. Confirm that only
   on-behalf-of or cross-app-access tokens should be accepted.
 - **B4. Per-agent approval.** Approvals keyed by `act.iss` cover every
   agent of an issuer. Per-agent approval is not possible with opaque,
   per-instance agent IDs.
-- **B5. Plain `MCPServer`.** Delegated and direct reads through the
-  `upstreamswap` middleware.
-- **B6. Removing a user's rows.** With user keying, nothing deletes a
-  user's connections except expiry. A user-initiated disconnect and an
-  administrator offboarding path are needed.
+- **B5. Plain `MCPServer`.** Decided: tracked, not in v1. Delegated and
+  direct reads through the proxy runner's `upstreamswap` middleware come
+  after the vMCP.
+- **B6. Removing a user's rows.** Decided: in the plan, not in v1, and
+  not blocking. v1 relies on expiry (access-token expiry plus 30 days).
+  Later: a per-provider disconnect the user triggers, and an
+  administrator offboarding operation that deletes all of a user's rows
+  (which an embedder's directory can call).
 - **B7. Discovery.** Whether direct issuers are listed in the
   protected-resource metadata.
 - **B8. Removing `tsid`.** Only after embedders stop using it for refresh

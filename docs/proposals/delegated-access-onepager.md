@@ -122,9 +122,10 @@ themselves.
 | #6508, #4122 / PR #7031 | prerequisites for turning on stage 2 |
 | #4279 Redis HASH refactor | independent; no backend key change needed |
 
-## Open
+## Decided
 
-- Consent when a new client inherits a user's connections without an
-  upstream prompt.
-- How a user disconnects a provider, or is offboarded, now that logout
-  deletes nothing.
+- A new client inherits the user's existing connections without an
+  upstream prompt, like single sign-on. Accepted and documented.
+- Logout deletes nothing. In v1 rows leave only by expiry (access-token
+  expiry + 30 days). A per-provider user disconnect and an administrator
+  offboarding operation are planned, but not in v1 and not blocking.

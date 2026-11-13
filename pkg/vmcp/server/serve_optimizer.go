@@ -6,11 +6,8 @@ package server
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
-
-	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 
 	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
 	"github.com/stacklok/toolhive-core/mcpcompat/server"
@@ -19,6 +16,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/conversion"
 	"github.com/stacklok/toolhive/pkg/vmcp/optimizer"
 	"github.com/stacklok/toolhive/pkg/vmcp/schema"
+	"github.com/stacklok/toolhive/pkg/vmcp/server/internal/wireerr"
 	"github.com/stacklok/toolhive/pkg/vmcp/session/optimizerdec"
 )
 
@@ -202,11 +200,9 @@ func (s *Server) optimizerCallToolHandler(sessionID string, opt optimizer.Optimi
 		result, err := opt.CallTool(ctx, input)
 		if err != nil {
 			// The inner tool's handler (coreToolHandler) renders a URL
-			// elicitation answer as a bare -32042 *jsonrpc.Error for a session
-			// that accepts URL mode. Return it unwrapped, for the reason
-			// legacyToolCallError gives.
-			var wireErr *jsonrpc.Error
-			if errors.As(err, &wireErr) && wireErr.Code == mcp.URL_ELICITATION_REQUIRED {
+			// elicitation answer as -32042 for a session that accepts URL
+			// mode. Return it unwrapped (package wireerr says why).
+			if wireErr := wireerr.FindURLElicitationRequired(err); wireErr != nil {
 				return nil, wireErr
 			}
 			return conversion.ErrorToToolResult(fmt.Errorf("call_tool failed: %w", err)), nil

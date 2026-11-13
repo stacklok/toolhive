@@ -7,33 +7,26 @@ import (
 	"encoding/json"
 	"errors"
 
-	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
-
 	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
 	"github.com/stacklok/toolhive-core/mcpcompat/server"
 	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/conversion"
+	"github.com/stacklok/toolhive/pkg/vmcp/server/internal/wireerr"
 )
-
-// legacyURLElicitationRequiredMessage is the -32042 error message. The
-// elicitation messages travel in data.elicitations, so the top-level message
-// stays fixed.
-const legacyURLElicitationRequiredMessage = "URL elicitation required"
 
 // legacyToolCallError renders a tools/call failure on a Legacy (2025-11-25)
 // session. It returns the (result, error) pair for the tool handler to hand
 // straight back: either a tool result with a nil error, or a nil result with
-// a bare -32042 *jsonrpc.Error.
+// the bare -32042 wireerr.URLElicitationRequired builds.
 //
 // The order matches writeModernToolCallFailure:
 //   - An authorization denial outranks the URL elicitation answer, so an
 //     error that wraps ErrAuthorizationFailed renders as the deny tool result
 //     even when it also carries the answer.
 //   - A URL elicitation answer on a session that accepts URL mode
-//     (legacySessionAcceptsURLElicitation) renders as a bare -32042
-//     *jsonrpc.Error. It must be returned unwrapped: go-sdk keeps a wrapped
-//     *jsonrpc.Error's code but drops its data.
+//     (legacySessionAcceptsURLElicitation) renders as -32042, which the
+//     handler returns unwrapped (package wireerr says why).
 //   - Everything else, including the answer on any other session, renders
 //     through conversion.ErrorToToolResult, whose fallback carries the
 //     elicitation messages and never the URL.
@@ -81,7 +74,7 @@ type legacyURLElicitation struct {
 // legacyURLElicitationRequiredError builds the MCP 2025-11-25
 // URLElicitationRequiredError: code -32042 with data.elicitations listing
 // every elicitation in the answer, in order.
-func legacyURLElicitationRequiredError(answer *vmcp.URLElicitationRequiredError) *jsonrpc.Error {
+func legacyURLElicitationRequiredError(answer *vmcp.URLElicitationRequiredError) error {
 	elicitations := answer.Elicitations()
 	entries := make([]legacyURLElicitation, 0, len(elicitations))
 	for _, e := range elicitations {
@@ -96,9 +89,5 @@ func legacyURLElicitationRequiredError(answer *vmcp.URLElicitationRequiredError)
 	data, _ := json.Marshal(struct {
 		Elicitations []legacyURLElicitation `json:"elicitations"`
 	}{Elicitations: entries})
-	return &jsonrpc.Error{
-		Code:    mcp.URL_ELICITATION_REQUIRED,
-		Message: legacyURLElicitationRequiredMessage,
-		Data:    data,
-	}
+	return wireerr.URLElicitationRequired(data)
 }

@@ -540,7 +540,9 @@ after it reaped the original, reports neither and gets the fallback until
 capabilities are persisted across replicas (unscheduled toolhive-core
 follow-up). The handler returns the `-32042` as a bare `*jsonrpc.Error`, and
 the optimizer's `call_tool` passes it through unwrapped, because go-sdk drops
-the data of a wrapped one.
+the data of a wrapped one. Both build and find it through
+`pkg/vmcp/server/internal/wireerr`, the one vMCP package that imports go-sdk's
+`jsonrpc` package, so that SDK rule lives in one place.
 
 Properties worth knowing:
 
@@ -584,6 +586,11 @@ Properties worth knowing:
   a body over `maxDataSize` is not detected either. To count "needs the user
   to visit a URL" separately, count answers in the decorator that returns
   them.
+- **Optimizer telemetry.** Through the optimizer's `call_tool`, a Legacy
+  `-32042` counts in `toolhive_vmcp_optimizer_call_tool_requests` only: not in
+  `..._call_tool_errors`, and not in `..._call_tool_not_found`, where the
+  `isError` fallback lands. The `optimizer.CallTool` span keeps an unset status
+  and carries `outcome=url_elicitation_required`.
 - **Audit response data.** With `includeResponseData` on, the audit log
   stores the response body when it fits in `maxDataSize` (default 1024
   bytes; a larger body is dropped, not truncated), so an `input_required` answer's URL

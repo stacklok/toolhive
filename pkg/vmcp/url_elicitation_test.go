@@ -173,6 +173,62 @@ func TestURLElicitationRequiredError_ErrorOmitsURL(t *testing.T) {
 	assert.NotContains(t, fmt.Sprintf("step failed: %v", answer), "connect.example.com")
 }
 
+func TestURLElicitationRequiredError_WithLegacyFallback(t *testing.T) {
+	t.Parallel()
+
+	const fallback = "Reconnect GitHub at https://console.example.com/github/connect, then retry."
+	a := mustURLElicitation(t, "a", "https://connect.example.com/a?state=secret-a", "Reconnect GitHub")
+	b := mustURLElicitation(t, "b", "https://connect.example.com/b", "Reconnect Jira")
+	answer, err := vmcp.NewURLElicitationRequiredError(a, b)
+	require.NoError(t, err)
+
+	t.Run("default is the elicitation messages", func(t *testing.T) {
+		t.Parallel()
+		assert.Equal(t, answer.Message(), answer.LegacyFallback())
+		assert.Equal(t, "Reconnect GitHub; Reconnect Jira", answer.LegacyFallback())
+	})
+
+	for name, text := range map[string]string{"empty": "", "whitespace": " \t\n"} {
+		t.Run(name+" text rejected", func(t *testing.T) {
+			t.Parallel()
+			got, err := answer.WithLegacyFallback(text)
+			require.Error(t, err)
+			assert.Nil(t, got)
+		})
+	}
+
+	t.Run("returns a copy carrying the text", func(t *testing.T) {
+		t.Parallel()
+		got, err := answer.WithLegacyFallback(fallback)
+		require.NoError(t, err)
+		assert.NotSame(t, answer, got)
+		assert.Equal(t, fallback, got.LegacyFallback())
+		assert.Equal(t, []vmcp.URLElicitation{a, b}, got.Elicitations())
+		assert.Equal(t, answer.Message(), got.Message(), "Message stays the elicitation messages")
+		assert.Equal(t, "Reconnect GitHub; Reconnect Jira", answer.LegacyFallback(), "the receiver is unchanged")
+
+		extracted, ok := vmcp.URLElicitationFromError(fmt.Errorf("backend: %w", got))
+		require.True(t, ok)
+		assert.Same(t, got, extracted)
+	})
+
+	t.Run("Error and fmt never print the fallback", func(t *testing.T) {
+		t.Parallel()
+		got, err := answer.WithLegacyFallback(fallback)
+		require.NoError(t, err)
+		for _, out := range []string{
+			got.Error(),
+			fmt.Sprintf("%v", got),
+			fmt.Sprintf("%+v", got),
+			fmt.Sprintf("%#v", got),
+			fmt.Sprintf("%#v", *got),
+			fmt.Sprintf("%s", fmt.Errorf("step failed: %w", got)),
+		} {
+			assert.NotContains(t, out, "console.example.com")
+		}
+	})
+}
+
 // TestURLElicitation_FormattingOmitsURL pins that no fmt verb and no slog
 // handler prints the URL of an elicitation, of the Elicitations() slice, or of
 // the answer itself.

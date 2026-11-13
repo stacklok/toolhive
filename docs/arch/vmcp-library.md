@@ -203,7 +203,10 @@ vMCP renders the answer per protocol. A client that declared
 (2025-11-25) client as the `-32042` error, which also carries your
 elicitation ID. Every other client gets a fallback carrying your elicitation
 messages and not the URL, and so does a Legacy session served by a replica
-that did not see its `initialize`. See
+that did not see its `initialize`. If a Legacy client without URL mode still
+needs a way to reach your page, set your own text for that fallback with
+`answer.WithLegacyFallback(text)`; vMCP renders it as given, so whatever you
+write into it, a link included, is shown to the model. See
 [10-virtual-mcp-architecture.md](10-virtual-mcp-architecture.md#answering-a-call-with-a-url-elicitation)
 for the render table. You own the connect page, its identity check, and the
 credential store; vMCP owns only the protocol rendering. Your obligations:

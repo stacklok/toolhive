@@ -638,3 +638,86 @@ func TestIntegration_Legacy_URLElicitation_UndeclaredFallsBack(t *testing.T) {
 		}
 	}
 }
+
+// TestIntegration_Legacy_URLElicitation_EmbedderFallback pins the embedder's
+// Legacy fallback: a Legacy client that cannot receive -32042 gets the text
+// the embedder set with WithLegacyFallback, through a direct tools/call and
+// through the optimizer's call_tool, while a declared Legacy client still gets
+// -32042 carrying the elicitation message and a Modern client without
+// elicitation.url still gets -32021 without the fallback.
+func TestIntegration_Legacy_URLElicitation_EmbedderFallback(t *testing.T) {
+	t.Parallel()
+
+	const fallback = "Reconnect GitHub at https://console.example.com/github/connect, then retry."
+	answer, err := newURLAnswer(t).WithLegacyFallback(fallback)
+	require.NoError(t, err)
+
+	backendURL := startRealMCPBackend(t)
+	newHandler := func(configure ...func(*server.Config)) http.Handler {
+		return newRealTestHandlerWithBackendClient(t, backendURL, nil,
+			func(inner vmcp.BackendClient) vmcp.BackendClient {
+				return &urlElicitingBackendClient{BackendClient: inner, answering: answeringFlag(true), answer: answer}
+			}, configure...)
+	}
+	direct := httptest.NewServer(newHandler())
+	t.Cleanup(direct.Close)
+	viaOptimizer := httptest.NewServer(newHandler(newOptimizerConfig(t)))
+	t.Cleanup(viaOptimizer.Close)
+
+	paths := map[string]struct {
+		baseURL  string
+		toolName string
+		args     map[string]any
+	}{
+		"direct tools/call":   {direct.URL, "echo", map[string]any{"input": "x"}},
+		"optimizer call_tool": {viaOptimizer.URL, "call_tool", optimizerEchoArgs},
+	}
+
+	for pathName, p := range paths {
+		t.Run("undeclared Legacy gets the fallback/"+pathName, func(t *testing.T) {
+			t.Parallel()
+			cs := legacyClient(t, p.baseURL, mcpparser.MCPVersionLegacy, nil)
+			res := callWhenRegistered(t, cs, p.toolName, p.args)
+
+			require.True(t, res.IsError, "%+v", res)
+			require.Len(t, res.Content, 1)
+			text, ok := res.Content[0].(*gosdk.TextContent)
+			require.True(t, ok)
+			assert.Equal(t, fallback, text.Text)
+			raw, err := json.Marshal(res)
+			require.NoError(t, err)
+			assert.NotContains(t, string(raw), urlElicitationHost, "the elicitation URL stays out of the fallback")
+		})
+
+		t.Run("declared Legacy still gets -32042/"+pathName, func(t *testing.T) {
+			t.Parallel()
+			cs := legacyClient(t, p.baseURL, mcpparser.MCPVersionLegacy, legacyURLCaps())
+			err := legacyCallErr(t, cs, p.toolName, p.args)
+
+			var wireErr *jsonrpc.Error
+			require.ErrorAs(t, err, &wireErr)
+			var data struct {
+				Elicitations []*gosdk.ElicitParams `json:"elicitations"`
+			}
+			require.NoError(t, json.Unmarshal(wireErr.Data, &data))
+			require.Len(t, data.Elicitations, 1)
+			assert.Equal(t, urlElicitationURL, data.Elicitations[0].URL)
+			assert.Equal(t, urlElicitationMessage, data.Elicitations[0].Message)
+			assert.NotContains(t, string(wireErr.Data), "console.example.com")
+		})
+	}
+
+	t.Run("undeclared Modern still gets -32021 without the fallback", func(t *testing.T) {
+		t.Parallel()
+		resp, decoded := postModern(t, direct.URL, "tools/call", echoCallParams(map[string]any{}, nil), 9, "echo")
+		raw, err := io.ReadAll(resp.Body)
+		require.NoError(t, err)
+
+		require.Equal(t, http.StatusBadRequest, resp.StatusCode, "decoded: %+v", decoded)
+		errObj, ok := decoded["error"].(map[string]any)
+		require.True(t, ok, "decoded: %+v", decoded)
+		assert.EqualValues(t, mcpparser.CodeMissingClientCapability, errObj["code"])
+		assert.Contains(t, errObj["message"], urlElicitationMessage)
+		assert.NotContains(t, string(raw), "console.example.com")
+	})
+}

@@ -29,7 +29,8 @@ import (
 //     handler returns unwrapped (package wireerr says why).
 //   - Everything else, including the answer on any other session, renders
 //     through conversion.ErrorToToolResult, whose fallback carries the
-//     elicitation messages and never the URL.
+//     answer's LegacyFallback: the elicitation messages and never the URL,
+//     unless the embedder supplied its own text.
 //
 // session is the session ClientSessionFromContext returns, and may be nil.
 func legacyToolCallError(session server.ClientSession, err error) (*mcp.CallToolResult, error) {

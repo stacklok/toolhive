@@ -780,8 +780,15 @@ Found in review, not resolved here, because each needs a decision:
   `act`, refusing tokens without it; an issuer may opt in to taking the
   client as the actor when `act` is absent. The Entra profile uses
   `client`, optionally restricted to Entra Agent ID identities.
-- **B4. Per-agent approval.** Approvals keyed by `act.iss` cover every
-  agent of an issuer. Per-agent approval is not possible with opaque,
+- **B4. Approval record (open question).** The approval is a per-user
+  consent record, one row per (gateway, user, client, actor issuer) with
+  a revoked state, created by the user through the approval link or by an
+  administrator's pre-approval. It is not a directory service account:
+  in the enterprise domain model an agent working for a person acts as
+  that person, and service accounts are for autonomous workloads. Open:
+  whether the record lives in the gateway authorization server's storage
+  or in the directory, and whether approving an actor issuer (covering
+  every agent of that platform) is acceptable. Per-agent approval is not possible with opaque,
   per-instance agent IDs.
 - **B5. Plain `MCPServer`.** Decided: tracked, not in v1. Delegated and
   direct reads through the proxy runner's `upstreamswap` middleware come

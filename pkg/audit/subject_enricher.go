@@ -68,9 +68,12 @@ var reservedSubjectKeys = map[string]struct{}{
 // applySubjectEnricher adds the enricher's subjects to subjects, skipping
 // reserved keys and empty values. It is a no-op when enricher is nil.
 //
-// identity is the caller the auditor resolved, or nil. When set, it is
-// attached to the enricher's context, because the HTTP auditor may have found
-// it through an auth.IdentityHolder that auth.IdentityFromContext does not read.
+// identity is the caller the auditor resolved, or nil. When ctx does not
+// already carry it, it is attached to the enricher's context, because the
+// HTTP auditor may have found it through an auth.IdentityHolder that
+// auth.IdentityFromContext does not read. The attach is skipped when ctx
+// already carries an identity: auth.WithIdentity also writes any holder in
+// ctx, and workflow step events are emitted from parallel goroutines.
 func applySubjectEnricher(
 	ctx context.Context,
 	enricher SubjectEnricher,
@@ -80,7 +83,7 @@ func applySubjectEnricher(
 	if enricher == nil {
 		return
 	}
-	if identity != nil {
+	if _, ok := auth.IdentityFromContext(ctx); !ok && identity != nil {
 		ctx = auth.WithIdentity(ctx, identity)
 	}
 	for key, value := range enricher(ctx) {

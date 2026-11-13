@@ -247,6 +247,30 @@ func TestSubjectEnricher_SeesIdentityAttachedInsideMiddleware(t *testing.T) {
 	assert.Equal(t, "okta-client", eventSubjects(t, &buf)["client_id"])
 }
 
+// TestSubjectEnricher_LeavesIdentityHolderUntouched pins that the workflow
+// auditor does not write the IdentityHolder in its context when the context
+// already carries the identity. Step events are emitted from parallel
+// goroutines that share the request context, so a write would race.
+func TestSubjectEnricher_LeavesIdentityHolderUntouched(t *testing.T) {
+	t.Parallel()
+
+	auditor, err := NewWorkflowAuditor(&Config{}, WithSubjectEnricher(func(context.Context) map[string]string {
+		return map[string]string{"client_id": "abc"}
+	}))
+	require.NoError(t, err)
+	var buf bytes.Buffer
+	auditor.auditLogger = NewAuditLogger(&buf)
+
+	holder := &auth.IdentityHolder{}
+	ctx := auth.WithIdentity(auth.WithIdentityHolder(context.Background(), holder), enricherTestIdentity())
+	holder.Identity = nil // any write by the auditor would show up here
+
+	auditor.LogStepStarted(ctx, "wf-1", "s1", "tool", "be1.echo")
+
+	assert.Equal(t, "abc", eventSubjects(t, &buf)["client_id"])
+	assert.Nil(t, holder.Identity, "auditor must not write the identity holder")
+}
+
 // TestReservedSubjectKeys_CoverBuiltInSubjects pins reservedSubjectKeys to the
 // keys extractSubjectsFromIdentity writes for a fully populated identity. When
 // adding a built-in subject, also populate its source field or claim here, or

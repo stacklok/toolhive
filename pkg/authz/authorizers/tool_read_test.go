@@ -180,3 +180,64 @@ func TestToolCallImpliesRead_ErrorPaths(t *testing.T) {
 		})
 	}
 }
+
+// nativeOpsAuthorizer is an opsAuthorizer that also says whether it answers tool:read
+// itself, the way the HTTP PDP does when forward_tool_read is set.
+type nativeOpsAuthorizer struct {
+	opsAuthorizer
+	answersRead bool
+}
+
+func (a *nativeOpsAuthorizer) AnswersToolRead() bool { return a.answersRead }
+
+func TestToolCallImpliesRead_CallOnlyAuthorizerNeverSeesToolRead(t *testing.T) {
+	t.Parallel()
+
+	inner := &nativeOpsAuthorizer{
+		opsAuthorizer: opsAuthorizer{allowed: map[MCPOperation]bool{MCPOperationCall: true}},
+		answersRead:   false,
+	}
+	marker := &DiscoveryMarker{}
+	ctx := WithDiscoveryMarker(context.Background(), marker)
+
+	ok, err := WithToolCallImpliesRead(inner).AuthorizeWithJWTClaims(ctx, MCPFeatureTool, MCPOperationRead, "weather", nil)
+
+	require.NoError(t, err)
+	assert.True(t, ok, "a tool:call allow must make the tool visible")
+	assert.Equal(t, []MCPOperation{MCPOperationCall}, inner.calls,
+		"a call-only authorizer must be asked only tool:call, never tool:read")
+	assert.Equal(t, 1, marker.FallbackCount, "the call-only grant is counted as discovery")
+}
+
+func TestToolCallImpliesRead_ReadAnsweringAuthorizerIsAskedOnce(t *testing.T) {
+	t.Parallel()
+
+	inner := &nativeOpsAuthorizer{
+		opsAuthorizer: opsAuthorizer{allowed: map[MCPOperation]bool{MCPOperationCall: true}},
+		answersRead:   true,
+	}
+
+	ok, err := WithToolCallImpliesRead(inner).AuthorizeWithJWTClaims(
+		context.Background(), MCPFeatureTool, MCPOperationRead, "weather", nil)
+
+	require.NoError(t, err)
+	assert.False(t, ok, "a read deny must not fall back to call when the authorizer answers tool:read")
+	assert.Equal(t, []MCPOperation{MCPOperationRead}, inner.calls,
+		"a read-answering authorizer is asked tool:read once and never tool:call")
+}
+
+func TestToolCallImpliesRead_ReadAnsweringAuthorizerReadAllow(t *testing.T) {
+	t.Parallel()
+
+	inner := &nativeOpsAuthorizer{
+		opsAuthorizer: opsAuthorizer{allowed: map[MCPOperation]bool{MCPOperationRead: true}},
+		answersRead:   true,
+	}
+
+	ok, err := WithToolCallImpliesRead(inner).AuthorizeWithJWTClaims(
+		context.Background(), MCPFeatureTool, MCPOperationRead, "weather", nil)
+
+	require.NoError(t, err)
+	assert.True(t, ok)
+	assert.Equal(t, []MCPOperation{MCPOperationRead}, inner.calls)
+}

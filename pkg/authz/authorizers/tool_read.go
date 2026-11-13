@@ -59,6 +59,14 @@ func WithToolCallImpliesRead(a Authorizer) Authorizer {
 	return &ToolCallImpliesRead{inner: a}
 }
 
+// ToolReadNative is implemented by an authorizer that decides tool:read itself, such as
+// the HTTP PDP. AnswersToolRead returns true when the authorizer answers tool:read
+// directly; false means it should be asked only tool:call, which is then the visibility
+// decision. An authorizer that does not implement it (Cedar) gets read first, then call.
+type ToolReadNative interface {
+	AnswersToolRead() bool
+}
+
 // AuthorizeWithJWTClaims implements the Authorizer interface. Only tool:read
 // requests go through the fallback; every other request is passed through as is.
 func (d *ToolCallImpliesRead) AuthorizeWithJWTClaims(
@@ -70,6 +78,22 @@ func (d *ToolCallImpliesRead) AuthorizeWithJWTClaims(
 ) (bool, error) {
 	if feature != MCPFeatureTool || operation != MCPOperationRead {
 		return d.inner.AuthorizeWithJWTClaims(ctx, feature, operation, resourceID, arguments)
+	}
+
+	if native, ok := d.inner.(ToolReadNative); ok {
+		if native.AnswersToolRead() {
+			// The authorizer answers tool:read itself, once. No call fallback follows a deny.
+			return d.inner.AuthorizeWithJWTClaims(ctx, feature, MCPOperationRead, resourceID, arguments)
+		}
+		// Call-only: one tool:call check decides visibility, so the PDP sees no tool:read.
+		callAllowed, callErr := d.inner.AuthorizeWithJWTClaims(ctx, feature, MCPOperationCall, resourceID, arguments)
+		if callErr != nil || !callAllowed {
+			return false, callErr
+		}
+		if marker, ok := DiscoveryMarkerFromContext(ctx); ok {
+			marker.FallbackCount++
+		}
+		return true, nil
 	}
 
 	readAllowed, readErr := d.inner.AuthorizeWithJWTClaims(ctx, feature, MCPOperationRead, resourceID, arguments)

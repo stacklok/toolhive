@@ -217,8 +217,9 @@ func TestSubjectEnricher_ReceivesRequestContext(t *testing.T) {
 }
 
 // TestReservedSubjectKeys_CoverBuiltInSubjects pins reservedSubjectKeys to the
-// keys extractSubjectsFromIdentity writes, so a new built-in subject cannot be
-// added without also protecting it from enricher overwrites.
+// keys extractSubjectsFromIdentity writes for a fully populated identity. When
+// adding a built-in subject, also populate its source field or claim here, or
+// this test cannot catch a key that is missing from reservedSubjectKeys.
 func TestReservedSubjectKeys_CoverBuiltInSubjects(t *testing.T) {
 	t.Parallel()
 
@@ -228,16 +229,15 @@ func TestReservedSubjectKeys_CoverBuiltInSubjects(t *testing.T) {
 			Name:    "Jane Doe",
 			Email:   "jane@example.com",
 			Claims: map[string]any{
-				"preferred_username": "jdoe",
-				"client_name":        "mcp-client",
-				"client_version":     "1.0.0",
+				"client_name":    "mcp-client",
+				"client_version": "1.0.0",
 			},
 		},
 	}
 
 	subjects := extractSubjectsFromIdentity(identity)
 	require.Len(t, subjects, len(reservedSubjectKeys),
-		"every reserved key should be written by extractSubjectsFromIdentity and vice versa")
+		"keys written for the populated identity should match reservedSubjectKeys")
 	for key := range subjects {
 		assert.Contains(t, reservedSubjectKeys, key, "built-in subject %q must be reserved", key)
 	}

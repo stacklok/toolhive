@@ -99,7 +99,14 @@ func TestSSEStreamListAnswerIsFilteredThroughProxy(t *testing.T) {
 			p := transparent.NewTransparentProxy("127.0.0.1", port, backendURL, nil, nil, nil, false, false, "sse", nil, nil, "", false, authzMiddleware)
 			require.NoError(t, p.Start(t.Context()))
 			t.Cleanup(func() { _ = p.Stop(context.Background()) })
-			time.Sleep(150 * time.Millisecond)
+			require.Eventually(t, func() bool {
+				c, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), 100*time.Millisecond)
+				if err != nil {
+					return false
+				}
+				_ = c.Close()
+				return true
+			}, 5*time.Second, 10*time.Millisecond, "the proxy must start listening")
 
 			// A dedicated transport keeps this request off http.DefaultTransport,
 			// which other parallel tests in the package share.

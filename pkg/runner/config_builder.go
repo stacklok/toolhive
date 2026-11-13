@@ -348,6 +348,14 @@ func WithNetworkIsolationExplicit(explicit bool) RunConfigBuilderOption {
 	}
 }
 
+// WithReadOnlyRootfs sets whether to mount the container's root filesystem as read-only
+func WithReadOnlyRootfs(readOnly bool) RunConfigBuilderOption {
+	return func(b *runConfigBuilder) error {
+		b.config.ReadOnlyRootfs = readOnly
+		return nil
+	}
+}
+
 // WithAllowDockerGateway sets whether to allow outbound connections to Docker gateway addresses
 func WithAllowDockerGateway(allow bool) RunConfigBuilderOption {
 	return func(b *runConfigBuilder) error {

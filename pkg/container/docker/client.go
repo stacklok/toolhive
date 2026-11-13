@@ -193,6 +193,7 @@ func (c *Client) DeployWorkload(
 	if err != nil {
 		return 0, fmt.Errorf("failed to get permission config: %w", err)
 	}
+	permissionConfig.ReadOnlyRootfs = options != nil && options.ReadOnlyRootfs
 
 	// Determine if we should attach stdio
 	attachStdio := options == nil || options.AttachStdio
@@ -1014,7 +1015,8 @@ func compareLabels(existingLabels, desiredLabels map[string]string) bool {
 	return true
 }
 
-// compareHostConfig compares host configuration (network mode, capabilities, security options)
+// compareHostConfig compares host configuration (network mode, capabilities, security options,
+// privileged mode, read-only rootfs, restart policy)
 func compareHostConfig(existing *container.InspectResponse, desired *container.HostConfig) bool {
 	// Compare network mode
 	if string(existing.HostConfig.NetworkMode) != string(desired.NetworkMode) {
@@ -1036,6 +1038,11 @@ func compareHostConfig(existing *container.InspectResponse, desired *container.H
 
 	// Compare privileged mode
 	if existing.HostConfig.Privileged != desired.Privileged {
+		return false
+	}
+
+	// Compare read-only root filesystem
+	if existing.HostConfig.ReadonlyRootfs != desired.ReadonlyRootfs {
 		return false
 	}
 
@@ -1448,6 +1455,35 @@ func convertEnvVars(envVars map[string]string) []string {
 	return env
 }
 
+// readOnlyScratchPaths are the paths given a writable tmpfs when the root
+// filesystem is read-only.
+var readOnlyScratchPaths = []string{"/tmp", "/var/tmp", "/run"}
+
+// readOnlyScratchTmpfsOptions caps each scratch tmpfs, because MCP containers
+// run without memory limits and an uncapped tmpfs could consume host memory.
+const readOnlyScratchTmpfsOptions = "rw,nosuid,nodev,noexec,size=64m"
+
+// readOnlyRootfsTmpfs returns the tmpfs mounts for a read-only root filesystem.
+//
+// Setting them explicitly keeps Docker and Podman consistent: Podman's compat
+// API adds its own executable, uncapped tmpfs on /tmp, /var/tmp and /run
+// whenever ReadonlyRootfs is set, but only for paths nothing else mounts,
+// while Docker adds none. Paths already targeted by a mount are skipped,
+// since Docker refuses to start a container with a duplicate mount point.
+func readOnlyRootfsTmpfs(mounts []runtime.Mount) map[string]string {
+	taken := make(map[string]bool, len(mounts))
+	for _, m := range mounts {
+		taken[m.Target] = true
+	}
+	tmpfs := make(map[string]string, len(readOnlyScratchPaths))
+	for _, p := range readOnlyScratchPaths {
+		if !taken[p] {
+			tmpfs[p] = readOnlyScratchTmpfsOptions
+		}
+	}
+	return tmpfs
+}
+
 // convertMounts converts internal mount format to Docker mount format
 func convertMounts(mounts []runtime.Mount) []mount.Mount {
 	result := make([]mount.Mount, 0, len(mounts))
@@ -1707,12 +1743,13 @@ func (c *Client) createMcpContainer(
 
 	// Create host configuration
 	hostConfig := &container.HostConfig{
-		Mounts:      convertMounts(permissionConfig.Mounts),
-		NetworkMode: container.NetworkMode(permissionConfig.NetworkMode),
-		CapAdd:      permissionConfig.CapAdd,
-		CapDrop:     permissionConfig.CapDrop,
-		SecurityOpt: permissionConfig.SecurityOpt,
-		Privileged:  permissionConfig.Privileged,
+		Mounts:         convertMounts(permissionConfig.Mounts),
+		NetworkMode:    container.NetworkMode(permissionConfig.NetworkMode),
+		CapAdd:         permissionConfig.CapAdd,
+		CapDrop:        permissionConfig.CapDrop,
+		SecurityOpt:    permissionConfig.SecurityOpt,
+		Privileged:     permissionConfig.Privileged,
+		ReadonlyRootfs: permissionConfig.ReadOnlyRootfs,
 		RestartPolicy: container.RestartPolicy{
 			Name: "unless-stopped",
 		},
@@ -1723,6 +1760,9 @@ func (c *Client) createMcpContainer(
 			return NewContainerError(err, "", fmt.Sprintf("invalid additional DNS address %q: %v", additionalDNS, err))
 		}
 		hostConfig.DNS = []netip.Addr{dnsAddr}
+	}
+	if permissionConfig.ReadOnlyRootfs {
+		hostConfig.Tmpfs = readOnlyRootfsTmpfs(permissionConfig.Mounts)
 	}
 
 	// Configure ports if options are provided

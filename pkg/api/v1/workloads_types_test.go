@@ -106,6 +106,7 @@ func TestRunConfigToCreateRequest(t *testing.T) {
 			IsolateNetwork:     true,
 			ToolsFilter:        []string{"tool1", "tool2"},
 			AllowDockerGateway: true,
+			ReadOnlyRootfs:     true,
 		}
 
 		result := runConfigToCreateRequest(runConfig)
@@ -133,6 +134,7 @@ func TestRunConfigToCreateRequest(t *testing.T) {
 		assert.True(t, *result.NetworkIsolation)
 		assert.Equal(t, []string{"tool1", "tool2"}, result.ToolsFilter)
 		assert.True(t, result.AllowDockerGateway)
+		assert.True(t, result.ReadOnlyRootfs)
 	})
 
 	t.Run("with plaintext header forward", func(t *testing.T) {

@@ -352,51 +352,71 @@ func TestBuildFullRunConfig_AppliesOtelFromConfig(t *testing.T) {
 		"MetricsEnabled must default to true when config does not set it, matching CLI behavior")
 }
 
-// TestBuildFullRunConfig_ThreadsAllowDockerGateway verifies that the
-// allow_docker_gateway request field reaches the resulting RunConfig, since
-// the CLI already exposes --allow-docker-gateway but the API previously
-// dropped the value on the floor.
-func TestBuildFullRunConfig_ThreadsAllowDockerGateway(t *testing.T) {
+// TestBuildFullRunConfig_ThreadsContainerFlags verifies that boolean container
+// settings on the request reach the resulting RunConfig. The CLI exposes each
+// of them as a flag, and the API previously dropped allow_docker_gateway on the
+// floor, so a dropped builder option here must fail a test.
+func TestBuildFullRunConfig_ThreadsContainerFlags(t *testing.T) {
 	t.Parallel()
-
-	ctrl := gomock.NewController(t)
-	defer ctrl.Finish()
-
-	mockGroupManager := groupsmocks.NewMockManager(ctrl)
-	mockGroupManager.EXPECT().Exists(gomock.Any(), "default").Return(true, nil)
 
 	const testImage = "test-image"
 
-	mockRetriever := func(
-		_ context.Context,
-		_ string, _ string, _ string, _ string,
-		_ *templates.RuntimeConfig,
-	) (string, regtypes.ServerMetadata, error) {
-		return testImage, &regtypes.ImageMetadata{Image: testImage}, nil
-	}
-
-	configPath := t.TempDir() + "/config.yaml"
-	provider := config.NewPathProvider(configPath)
-
-	service := &WorkloadService{
-		groupManager:      mockGroupManager,
-		imageRetriever:    mockRetriever,
-		imagePuller:       func(_ context.Context, _ string) error { return nil },
-		configProvider:    provider,
-		imageVerification: retriever.VerifyImageWarn,
-	}
-
-	req := &createRequest{
-		Name: "testserver",
-		updateRequest: updateRequest{
-			Image:              testImage,
-			AllowDockerGateway: true,
+	tests := []struct {
+		name string
+		set  func(*updateRequest)
+		got  func(*runner.RunConfig) bool
+	}{
+		{
+			name: "allow_docker_gateway",
+			set:  func(r *updateRequest) { r.AllowDockerGateway = true },
+			got:  func(c *runner.RunConfig) bool { return c.AllowDockerGateway },
+		},
+		{
+			name: "read_only_rootfs",
+			set:  func(r *updateRequest) { r.ReadOnlyRootfs = true },
+			got:  func(c *runner.RunConfig) bool { return c.ReadOnlyRootfs },
 		},
 	}
 
-	runConfig, err := service.BuildFullRunConfig(context.Background(), req, 0, nil)
-	require.NoError(t, err)
-	assert.True(t, runConfig.AllowDockerGateway)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctrl := gomock.NewController(t)
+
+			mockGroupManager := groupsmocks.NewMockManager(ctrl)
+			mockGroupManager.EXPECT().Exists(gomock.Any(), "default").Return(true, nil)
+
+			mockRetriever := func(
+				_ context.Context,
+				_ string, _ string, _ string, _ string,
+				_ *templates.RuntimeConfig,
+			) (string, regtypes.ServerMetadata, error) {
+				return testImage, &regtypes.ImageMetadata{Image: testImage}, nil
+			}
+
+			configPath := t.TempDir() + "/config.yaml"
+			provider := config.NewPathProvider(configPath)
+
+			service := &WorkloadService{
+				groupManager:      mockGroupManager,
+				imageRetriever:    mockRetriever,
+				imagePuller:       func(_ context.Context, _ string) error { return nil },
+				configProvider:    provider,
+				imageVerification: retriever.VerifyImageWarn,
+			}
+
+			req := &createRequest{
+				Name:          "testserver",
+				updateRequest: updateRequest{Image: testImage},
+			}
+			tt.set(&req.updateRequest)
+
+			runConfig, err := service.BuildFullRunConfig(context.Background(), req, 0, nil)
+			require.NoError(t, err)
+			assert.True(t, tt.got(runConfig))
+		})
+	}
 }
 
 func TestBuildFullRunConfig_MaxRequestBodySize(t *testing.T) {

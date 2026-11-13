@@ -206,6 +206,12 @@ type RunConfig struct {
 	// allowed ports, so once enabled the gateway is reachable on any port.
 	AllowDockerGateway bool `json:"allow_docker_gateway,omitempty" yaml:"allow_docker_gateway,omitempty"`
 
+	// ReadOnlyRootfs mounts the MCP server container's root filesystem as read-only.
+	// /tmp, /var/tmp and /run get a small noexec tmpfs unless a volume targets them.
+	// Opt-in: servers that write anywhere else outside their mounted volumes will fail.
+	// Only applicable to Docker/Podman deployments.
+	ReadOnlyRootfs bool `json:"read_only_rootfs,omitempty" yaml:"read_only_rootfs,omitempty"`
+
 	// TrustProxyHeaders indicates whether to trust X-Forwarded-* headers from reverse proxies
 	TrustProxyHeaders bool `json:"trust_proxy_headers,omitempty" yaml:"trust_proxy_headers,omitempty"`
 

@@ -162,6 +162,7 @@ thv run [flags] SERVER_OR_IMAGE_OR_PROTOCOL [-- ARGS...]
       --proxy-port int                                     Port for the HTTP proxy to listen on (host port)
       --proxy-read-timeout duration                        Maximum time to read a full request on the proxy (e.g., 30s, 1m); zero uses the default (30s)
   -p, --publish stringArray                                Publish a container's port(s) to the host (format: hostPort:containerPort)
+      --read-only-rootfs[=true|false]                      Mount the MCP server container's root filesystem as read-only (Docker/Podman only). /tmp, /var/tmp and /run get a 64 MiB noexec tmpfs unless a volume already targets them; servers that write anywhere else outside their mounted volumes will fail.
       --remote-auth[=true|false]                           Enable OAuth/OIDC authentication to remote MCP server (default false)
       --remote-auth-authorize-url string                   OAuth authorization endpoint URL (alternative to --remote-auth-issuer for non-OIDC OAuth)
       --remote-auth-bearer-token string                    Bearer token for remote server authentication (alternative to OAuth)

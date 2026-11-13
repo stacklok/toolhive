@@ -94,6 +94,9 @@ type updateRequest struct {
 	// Only applicable to Docker deployments with network isolation enabled.
 	// Gateways are snapshotted at deployment; redeploy to include bridges created later.
 	AllowDockerGateway bool `json:"allow_docker_gateway,omitempty"`
+	// Whether to mount the container's root filesystem as read-only.
+	// Only applicable to Docker/Podman deployments.
+	ReadOnlyRootfs bool `json:"read_only_rootfs,omitempty"`
 	// Tools filter
 	ToolsFilter []string `json:"tools"`
 	// Tools override
@@ -389,6 +392,7 @@ func runConfigToCreateRequest(runConfig *runner.RunConfig) *createRequest {
 			NetworkIsolation:   &runConfig.IsolateNetwork,
 			TrustProxyHeaders:  runConfig.TrustProxyHeaders,
 			AllowDockerGateway: runConfig.AllowDockerGateway,
+			ReadOnlyRootfs:     runConfig.ReadOnlyRootfs,
 			ToolsFilter:        runConfig.ToolsFilter,
 			ToolsOverride:      toolsOverride,
 			Group:              runConfig.Group,

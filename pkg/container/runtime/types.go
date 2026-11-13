@@ -242,6 +242,8 @@ type PermissionConfig struct {
 	SecurityOpt []string
 	// Privileged indicates whether the container should run in privileged mode
 	Privileged bool
+	// ReadOnlyRootfs mounts the container's root filesystem as read-only
+	ReadOnlyRootfs bool
 }
 
 // DeployWorkloadOptions represents configuration options for deploying a workload.
@@ -288,6 +290,11 @@ type DeployWorkloadOptions struct {
 	// Gateway access is port-independent: it ignores the permission profile's
 	// allowed ports, so once enabled the gateway is reachable on any port.
 	AllowDockerGateway bool
+
+	// ReadOnlyRootfs mounts the workload's root filesystem as read-only.
+	// Only applicable to Docker/Podman deployments; the Kubernetes runtime
+	// already sets readOnlyRootFilesystem on MCP server containers.
+	ReadOnlyRootfs bool
 
 	// RunConfigMCPServerGeneration is the monotonic version stamp from the source RunConfig
 	// (the MCPServer .metadata.generation). K8s runtime uses it to refuse apply when the

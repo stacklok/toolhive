@@ -23,11 +23,16 @@ type WorkflowAuditor struct {
 	config      *Config
 	component   string
 	logWriter   io.Writer
+	// subjectEnricher adds embedder-supplied subjects to each event; nil
+	// leaves events unchanged.
+	subjectEnricher SubjectEnricher
 }
 
 // NewWorkflowAuditor creates a new workflow auditor.
 // If config is nil, creates a default configuration with stdout logging.
-func NewWorkflowAuditor(config *Config) (*WorkflowAuditor, error) {
+// opts set behavior that is configured from Go rather than the serialized Config,
+// such as WithSubjectEnricher.
+func NewWorkflowAuditor(config *Config, opts ...Option) (*WorkflowAuditor, error) {
 	if config == nil {
 		config = DefaultConfig()
 	}
@@ -43,11 +48,14 @@ func NewWorkflowAuditor(config *Config) (*WorkflowAuditor, error) {
 		component = "vmcp-composer"
 	}
 
+	o := buildOptions(opts)
+
 	return &WorkflowAuditor{
-		auditLogger: NewAuditLogger(logWriter),
-		config:      config,
-		component:   component,
-		logWriter:   logWriter,
+		auditLogger:     NewAuditLogger(logWriter),
+		config:          config,
+		component:       component,
+		logWriter:       logWriter,
+		subjectEnricher: o.subjectEnricher,
 	}, nil
 }
 
@@ -345,14 +353,18 @@ func (*WorkflowAuditor) extractSource(_ context.Context) EventSource {
 	}
 }
 
-// extractSubjects extracts subject information from context.
-func (*WorkflowAuditor) extractSubjects(ctx context.Context) map[string]string {
+// extractSubjects extracts subject information from context, including any
+// subjects the configured SubjectEnricher adds.
+func (w *WorkflowAuditor) extractSubjects(ctx context.Context) map[string]string {
 	subjects := make(map[string]string)
 
 	// Extract user information from Identity
-	if identity, ok := auth.IdentityFromContext(ctx); ok {
+	identity, ok := auth.IdentityFromContext(ctx)
+	if ok {
 		subjects = extractSubjectsFromIdentity(identity)
 	}
+
+	applySubjectEnricher(ctx, w.subjectEnricher, identity, subjects)
 
 	// If no user found, set anonymous
 	if subjects[SubjectKeyUser] == "" {

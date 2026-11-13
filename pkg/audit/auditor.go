@@ -62,10 +62,15 @@ type Auditor struct {
 	auditLogger   *slog.Logger
 	transportType string // e.g., "sse", "streamable-http"
 	logWriter     io.Writer
+	// subjectEnricher adds embedder-supplied subjects to each event; nil
+	// leaves events unchanged.
+	subjectEnricher SubjectEnricher
 }
 
 // NewAuditorWithTransport creates a new Auditor with the given configuration and transport information.
-func NewAuditorWithTransport(config *Config, transportType string) (*Auditor, error) {
+// opts set behavior that is configured from Go rather than the serialized Config,
+// such as WithSubjectEnricher.
+func NewAuditorWithTransport(config *Config, transportType string, opts ...Option) (*Auditor, error) {
 	var logWriter io.Writer = os.Stdout // default to stdout
 
 	if config != nil {
@@ -79,11 +84,14 @@ func NewAuditorWithTransport(config *Config, transportType string) (*Auditor, er
 		logWriter = w
 	}
 
+	o := buildOptions(opts)
+
 	return &Auditor{
-		config:        config,
-		auditLogger:   NewAuditLogger(logWriter),
-		transportType: transportType,
-		logWriter:     logWriter,
+		config:          config,
+		auditLogger:     NewAuditLogger(logWriter),
+		transportType:   transportType,
+		logWriter:       logWriter,
+		subjectEnricher: o.subjectEnricher,
 	}, nil
 }
 
@@ -612,14 +620,18 @@ func identityFromRequest(r *http.Request) (*auth.Identity, bool) {
 	return nil, false
 }
 
-// extractSubjects extracts subject information from the HTTP request.
-func (*Auditor) extractSubjects(r *http.Request) map[string]string {
+// extractSubjects extracts subject information from the HTTP request,
+// including any subjects the configured SubjectEnricher adds.
+func (a *Auditor) extractSubjects(r *http.Request) map[string]string {
 	subjects := make(map[string]string)
 
 	// Extract user information from Identity.
-	if identity, ok := identityFromRequest(r); ok {
+	identity, ok := identityFromRequest(r)
+	if ok {
 		subjects = extractSubjectsFromIdentity(identity)
 	}
+
+	applySubjectEnricher(r.Context(), a.subjectEnricher, identity, subjects)
 
 	// If no user found in claims, set anonymous
 	if subjects[SubjectKeyUser] == "" {

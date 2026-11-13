@@ -421,6 +421,7 @@ func TestBuildServeConfigMapsSharedFields(t *testing.T) {
 		SessionManagerConfig:    testMinimalSessionManagerConfig(),
 		TelemetryProvider:       &telemetry.Provider{},
 		AuditConfig:             &audit.Config{},
+		AuditSubjectEnricher:    stubSubjectEnricher,
 	}
 
 	got := reflect.ValueOf(*buildServeConfig(src))

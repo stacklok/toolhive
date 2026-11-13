@@ -194,6 +194,12 @@ type Config struct {
 	// Component should be set to "vmcp-server" to distinguish vMCP audit logs.
 	AuditConfig *audit.Config
 
+	// AuditSubjectEnricher optionally adds embedder-supplied subjects to every
+	// audit event, both the per-request MCP events and the composite-tool
+	// workflow events. It is set from Go only and has no effect when
+	// AuditConfig is nil. See audit.SubjectEnricher.
+	AuditSubjectEnricher audit.SubjectEnricher
+
 	// HealthMonitorConfig is the optional health monitoring configuration.
 	// If nil, health monitoring is disabled.
 	HealthMonitorConfig *health.MonitorConfig
@@ -787,6 +793,7 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 		auditor, err := audit.NewAuditorWithTransport(
 			s.config.AuditConfig,
 			"streamable-http", // vMCP uses streamable HTTP transport
+			audit.WithSubjectEnricher(s.config.AuditSubjectEnricher),
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create auditor: %w", err)

@@ -68,7 +68,7 @@ func TestSSEToolsListIsFilteredByAuthz(t *testing.T) {
 	t.Cleanup(func() { _ = stream.Body.Close() })
 
 	events := readSSEEvents(stream.Body)
-	endpoint := <-events
+	endpoint := nextEvent(t, events)
 	require.Equal(t, "endpoint", endpoint.name)
 	sessionID := endpoint.data[strings.Index(endpoint.data, "session_id=")+len("session_id="):]
 
@@ -145,7 +145,7 @@ func TestSSEPromptsListIsFilteredByAuthz(t *testing.T) {
 	t.Cleanup(func() { _ = stream.Body.Close() })
 
 	events := readSSEEvents(stream.Body)
-	endpoint := <-events
+	endpoint := nextEvent(t, events)
 	require.Equal(t, "endpoint", endpoint.name)
 	sessionID := endpoint.data[strings.Index(endpoint.data, "session_id=")+len("session_id="):]
 
@@ -182,6 +182,20 @@ func TestSSEPromptsListIsFilteredByAuthz(t *testing.T) {
 type sseEvent struct {
 	name string
 	data string
+}
+
+// nextEvent waits for the next SSE event, failing the test instead of hanging when the
+// stream stays silent.
+func nextEvent(t *testing.T, events <-chan sseEvent) sseEvent {
+	t.Helper()
+	select {
+	case ev, ok := <-events:
+		require.True(t, ok, "the SSE stream ended before the expected event")
+		return ev
+	case <-time.After(5 * time.Second):
+		require.FailNow(t, "timed out waiting for an SSE event")
+		return sseEvent{}
+	}
 }
 
 // readSSEEvents parses an SSE stream into events. It stops when the stream ends.

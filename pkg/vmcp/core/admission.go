@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/authz"
 	"github.com/stacklok/toolhive/pkg/authz/authorizers"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 )
@@ -130,11 +131,6 @@ type cedarAdmission struct {
 	filterBudget time.Duration
 }
 
-// toolFilterBudget bounds the total time one tools/list filter may spend on
-// authorization decisions. It matches the HTTP authorizer's default per-decision
-// timeout, so one list is not allowed to take longer than one decision was.
-const toolFilterBudget = 30 * time.Second
-
 // cedarOption configures a cedarAdmission at construction.
 type cedarOption func(*cedarAdmission)
 
@@ -158,7 +154,7 @@ func newCedarAdmission(a authorizers.Authorizer, opts ...cedarOption) *cedarAdmi
 	adm := &cedarAdmission{
 		authorizer:   authorizers.WithToolCallImpliesRead(a),
 		logger:       slog.Default(),
-		filterBudget: toolFilterBudget,
+		filterBudget: authz.MaxDerivedAuthzBudget,
 	}
 	for _, opt := range opts {
 		opt(adm)

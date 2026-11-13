@@ -18,7 +18,7 @@ import (
 // authorizer decorator makes tool:call imply tool:read. If authorizer is nil,
 // every position is returned.
 func authorizedToolIndexes(ctx context.Context, a authorizers.Authorizer, tools []mcp.Tool) []int {
-	return authorizedToolIndexesWithin(ctx, a, tools, maxDerivedAuthzBudget)
+	return authorizedToolIndexesWithin(ctx, a, tools, MaxDerivedAuthzBudget)
 }
 
 // authorizedToolIndexesWithin is authorizedToolIndexes with an explicit shared

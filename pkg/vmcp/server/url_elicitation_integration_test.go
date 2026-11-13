@@ -7,15 +7,16 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	gosdk "github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -431,18 +432,29 @@ func TestIntegration_Modern_URLElicitation_DeclineEndsTheLoop(t *testing.T) {
 	}
 }
 
-// legacyClient connects a go-sdk client pinned to 2025-11-25.
-func legacyClient(t *testing.T, baseURL string) *gosdk.ClientSession {
+// legacyClient connects a go-sdk client pinned to protocolVersion that
+// declares caps (nil declares nothing).
+func legacyClient(
+	t *testing.T, baseURL, protocolVersion string, caps *gosdk.ClientCapabilities,
+) *gosdk.ClientSession {
 	t.Helper()
-	client := gosdk.NewClient(&gosdk.Implementation{Name: "url-elicitation-legacy", Version: "1.0.0"}, nil)
+	client := gosdk.NewClient(&gosdk.Implementation{Name: "url-elicitation-legacy", Version: "1.0.0"},
+		&gosdk.ClientOptions{Capabilities: caps})
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	t.Cleanup(cancel)
 	cs, err := client.Connect(ctx, &gosdk.StreamableClientTransport{Endpoint: baseURL + "/mcp"},
-		&gosdk.ClientSessionOptions{ProtocolVersion: "2025-11-25"})
+		&gosdk.ClientSessionOptions{ProtocolVersion: protocolVersion})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = cs.Close() })
-	require.Equal(t, "2025-11-25", cs.InitializeResult().ProtocolVersion)
+	require.Equal(t, protocolVersion, cs.InitializeResult().ProtocolVersion)
 	return cs
+}
+
+// legacyURLCaps declares elicitation: {url: {}}.
+func legacyURLCaps() *gosdk.ClientCapabilities {
+	return &gosdk.ClientCapabilities{
+		Elicitation: &gosdk.ElicitationCapabilities{URL: &gosdk.URLElicitationCapabilities{}},
+	}
 }
 
 // callWhenRegistered retries a Legacy call until the session's tools are
@@ -463,53 +475,166 @@ func callWhenRegistered(
 	return res
 }
 
-// TestIntegration_Legacy_URLElicitation_FallsBack pins AC3.2: a Legacy
-// session receives an isError result whose text is the elicitation message,
-// without the URL, through a direct tools/call and through the optimizer's
-// call_tool meta-tool.
-func TestIntegration_Legacy_URLElicitation_FallsBack(t *testing.T) {
+// legacyCallErr retries a Legacy call until the session's tools are
+// registered (registration completes asynchronously after initialize) and
+// returns the call's JSON-RPC error.
+func legacyCallErr(t *testing.T, cs *gosdk.ClientSession, toolName string, args map[string]any) error {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		res, err := callEcho(t, cs, toolName, args)
+		var wireErr *jsonrpc.Error
+		if errors.As(err, &wireErr) && wireErr.Code == gosdk.CodeURLElicitationRequired {
+			return err
+		}
+		if time.Now().After(deadline) {
+			require.FailNow(t, "no -32042", "tool %q never returned -32042; last result: %+v, last error: %v",
+				toolName, res, err)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// twoElicitationAnswer is an answer with two elicitations, so the tests can
+// pin that data.elicitations keeps every one, in order.
+func twoElicitationAnswer(t *testing.T) *vmcp.URLElicitationRequiredError {
+	t.Helper()
+	first, err := vmcp.NewURLElicitation(urlElicitationID, urlElicitationURL, urlElicitationMessage)
+	require.NoError(t, err)
+	second, err := vmcp.NewURLElicitation("jira-connect", "https://connect.example.com/jira", "Reconnect Jira")
+	require.NoError(t, err)
+	answer, err := vmcp.NewURLElicitationRequiredError(first, second)
+	require.NoError(t, err)
+	return answer
+}
+
+func newTwoElicitationHandler(t *testing.T, backendURL string, configure ...func(*server.Config)) http.Handler {
+	t.Helper()
+	answer := twoElicitationAnswer(t)
+	return newRealTestHandlerWithBackendClient(t, backendURL, nil,
+		func(inner vmcp.BackendClient) vmcp.BackendClient {
+			return &urlElicitingBackendClient{BackendClient: inner, answering: answeringFlag(true), answer: answer}
+		}, configure...)
+}
+
+// assertURLElicitationRequired asserts err is the MCP 2025-11-25
+// URLElicitationRequiredError for twoElicitationAnswer.
+func assertURLElicitationRequired(t *testing.T, err error) {
+	t.Helper()
+	var wireErr *jsonrpc.Error
+	require.ErrorAs(t, err, &wireErr)
+	assert.Equal(t, int64(gosdk.CodeURLElicitationRequired), wireErr.Code)
+	assert.Equal(t, "URL elicitation required", wireErr.Message)
+
+	var data struct {
+		Elicitations []*gosdk.ElicitParams `json:"elicitations"`
+	}
+	require.NoError(t, json.Unmarshal(wireErr.Data, &data))
+	require.Len(t, data.Elicitations, 2)
+	for i, want := range []struct{ id, url, message string }{
+		{urlElicitationID, urlElicitationURL, urlElicitationMessage},
+		{"jira-connect", "https://connect.example.com/jira", "Reconnect Jira"},
+	} {
+		got := data.Elicitations[i]
+		assert.Equal(t, "url", got.Mode)
+		assert.Equal(t, want.id, got.ElicitationID)
+		assert.Equal(t, want.url, got.URL)
+		assert.Equal(t, want.message, got.Message)
+	}
+}
+
+func newOptimizerConfig(t *testing.T) func(*server.Config) {
+	t.Helper()
+	optFactory, cleanup, err := optimizer.NewOptimizerFactory(&optimizer.Config{})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = cleanup(context.Background()) })
+	return func(cfg *server.Config) { cfg.OptimizerFactory = optFactory }
+}
+
+var optimizerEchoArgs = map[string]any{"tool_name": "echo", "parameters": map[string]any{"input": "x"}}
+
+// TestIntegration_Legacy_URLElicitation_Required pins #7023 AC1.1: a go-sdk
+// 2025-11-25 client that declared elicitation: {url: {}} receives -32042 with
+// every elicitation in data.elicitations, in order, each with its
+// elicitationId.
+func TestIntegration_Legacy_URLElicitation_Required(t *testing.T) {
 	t.Parallel()
 
 	backendURL := startRealMCPBackend(t)
+	ts := httptest.NewServer(newTwoElicitationHandler(t, backendURL))
+	t.Cleanup(ts.Close)
 
-	assertFallback := func(t *testing.T, res *gosdk.CallToolResult) {
-		t.Helper()
-		require.True(t, res.IsError, "%+v", res)
-		require.Len(t, res.Content, 1)
-		text, ok := res.Content[0].(*gosdk.TextContent)
-		require.True(t, ok)
-		assert.Equal(t, urlElicitationMessage, text.Text)
-		raw, err := json.Marshal(res)
-		require.NoError(t, err)
-		assert.NotContains(t, string(raw), urlElicitationHost)
+	cs := legacyClient(t, ts.URL, mcpparser.MCPVersionLegacy, legacyURLCaps())
+	assertURLElicitationRequired(t, legacyCallErr(t, cs, "echo", map[string]any{"input": "x"}))
+}
+
+// TestIntegration_Legacy_URLElicitation_RequiredViaOptimizer pins #7023
+// AC1.2: through the optimizer's call_tool meta-tool, the same client
+// receives the same -32042 with the same data.
+func TestIntegration_Legacy_URLElicitation_RequiredViaOptimizer(t *testing.T) {
+	t.Parallel()
+
+	backendURL := startRealMCPBackend(t)
+	ts := httptest.NewServer(newTwoElicitationHandler(t, backendURL, newOptimizerConfig(t)))
+	t.Cleanup(ts.Close)
+
+	cs := legacyClient(t, ts.URL, mcpparser.MCPVersionLegacy, legacyURLCaps())
+	assertURLElicitationRequired(t, legacyCallErr(t, cs, "call_tool", optimizerEchoArgs))
+}
+
+// TestIntegration_Legacy_URLElicitation_UndeclaredFallsBack pins #7023 AC2.1:
+// a Legacy client that did not declare elicitation.url, or that negotiated a
+// revision older than 2025-11-25, receives an isError result whose text is the
+// elicitation message, without the URL and without -32042, through a direct
+// tools/call and through the optimizer's call_tool meta-tool.
+func TestIntegration_Legacy_URLElicitation_UndeclaredFallsBack(t *testing.T) {
+	t.Parallel()
+
+	backendURL := startRealMCPBackend(t)
+	direct := httptest.NewServer(newURLElicitingHandler(t, backendURL, answeringFlag(true)))
+	t.Cleanup(direct.Close)
+	viaOptimizer := httptest.NewServer(newURLElicitingHandler(t, backendURL, answeringFlag(true), newOptimizerConfig(t)))
+	t.Cleanup(viaOptimizer.Close)
+
+	clients := map[string]struct {
+		version string
+		caps    *gosdk.ClientCapabilities
+	}{
+		"elicitation {}": {mcpparser.MCPVersionLegacy, &gosdk.ClientCapabilities{
+			Elicitation: &gosdk.ElicitationCapabilities{},
+		}},
+		"form only": {mcpparser.MCPVersionLegacy, &gosdk.ClientCapabilities{
+			Elicitation: &gosdk.ElicitationCapabilities{Form: &gosdk.FormElicitationCapabilities{}},
+		}},
+		"no elicitation":                {mcpparser.MCPVersionLegacy, nil},
+		"elicitation.url on 2025-06-18": {"2025-06-18", legacyURLCaps()},
+	}
+	paths := map[string]struct {
+		baseURL  string
+		toolName string
+		args     map[string]any
+	}{
+		"direct tools/call":   {direct.URL, "echo", map[string]any{"input": "x"}},
+		"optimizer call_tool": {viaOptimizer.URL, "call_tool", optimizerEchoArgs},
 	}
 
-	t.Run("direct tools/call", func(t *testing.T) {
-		t.Parallel()
-		ts := httptest.NewServer(newURLElicitingHandler(t, backendURL, answeringFlag(true)))
-		t.Cleanup(ts.Close)
+	for clientName, c := range clients {
+		for pathName, p := range paths {
+			t.Run(clientName+"/"+pathName, func(t *testing.T) {
+				t.Parallel()
+				cs := legacyClient(t, p.baseURL, c.version, c.caps)
+				res := callWhenRegistered(t, cs, p.toolName, p.args)
 
-		cs := legacyClient(t, ts.URL)
-		assertFallback(t, callWhenRegistered(t, cs, "echo", map[string]any{"input": "x"}))
-	})
-
-	t.Run("optimizer call_tool", func(t *testing.T) {
-		t.Parallel()
-		optFactory, cleanup, err := optimizer.NewOptimizerFactory(&optimizer.Config{})
-		require.NoError(t, err)
-		t.Cleanup(func() { _ = cleanup(context.Background()) })
-
-		ts := httptest.NewServer(newURLElicitingHandler(t, backendURL, answeringFlag(true),
-			func(cfg *server.Config) { cfg.OptimizerFactory = optFactory }))
-		t.Cleanup(ts.Close)
-
-		cs := legacyClient(t, ts.URL)
-		res := callWhenRegistered(t, cs, "call_tool", map[string]any{
-			"tool_name": "echo", "parameters": map[string]any{"input": "x"},
-		})
-		assertFallback(t, res)
-		text := res.Content[0].(*gosdk.TextContent).Text
-		assert.False(t, strings.HasPrefix(text, "call_tool failed"),
-			"the inner tool's fallback must pass through the meta-tool unchanged")
-	})
+				require.True(t, res.IsError, "%+v", res)
+				require.Len(t, res.Content, 1)
+				text, ok := res.Content[0].(*gosdk.TextContent)
+				require.True(t, ok)
+				assert.Equal(t, urlElicitationMessage, text.Text,
+					"the inner tool's fallback must pass through the meta-tool unchanged")
+				raw, err := json.Marshal(res)
+				require.NoError(t, err)
+				assert.NotContains(t, string(raw), urlElicitationHost)
+			})
+		}
+	}
 }

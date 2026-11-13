@@ -198,9 +198,12 @@ A `VMCP` decorator returns the same answer from
 `CallTool(ctx, identity, name, args, meta)`. It has no backend target, so it
 decides from the tool `name` and the caller's `identity`.
 
-vMCP renders the answer per protocol. A Modern client that declared
-`elicitation.url` gets the URL; every other client gets a fallback carrying
-your elicitation messages and not the URL. See
+vMCP renders the answer per protocol. A client that declared
+`elicitation.url` gets the URL: a Modern client as `input_required`, a Legacy
+(2025-11-25) client as the `-32042` error, which also carries your
+elicitation ID. Every other client gets a fallback carrying your elicitation
+messages and not the URL, and so does a Legacy session served by a replica
+that did not see its `initialize`. See
 [10-virtual-mcp-architecture.md](10-virtual-mcp-architecture.md#answering-a-call-with-a-url-elicitation)
 for the render table. You own the connect page, its identity check, and the
 credential store; vMCP owns only the protocol rendering. Your obligations:

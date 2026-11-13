@@ -13,16 +13,20 @@ import (
 
 // ErrorToToolResult converts domain/tool execution errors into MCP tool results.
 //
-// mcp-go tool handlers cannot reliably carry custom JSON-RPC codes by returning
-// Go errors: the SDK maps them to generic internal errors. For domain errors
-// that opt into CodedError, preserve the code/data in StructuredContent instead.
+// A tool handler can carry a custom JSON-RPC code by returning a bare
+// *jsonrpc.Error, but coded domain errors (CodedError) render as an isError
+// result by choice: the code and data go in StructuredContent, so a model
+// reading the result sees them and the call stays a successful JSON-RPC
+// response that clients and audit treat like any other tool failure.
 //
 // This is the Legacy (2025-11-25) render seam for tools/call: the Serve-path
 // tool handler and the optimizer call_tool meta-tool both route errors here.
-// A URL elicitation answer (vmcp.URLElicitationRequiredError) renders as an
-// isError result whose text is the elicitation message, never the URL. The
-// spec's Legacy answer, -32042, needs the session's declared capabilities,
-// which the SDK seam does not expose yet (#7023).
+// The one Legacy answer that is a JSON-RPC error, -32042 for a URL
+// elicitation on a session that negotiated 2025-11-25 and declared
+// elicitation.url, is rendered by the caller before it reaches this function,
+// because only the caller can see the session. A URL elicitation answer
+// (vmcp.URLElicitationRequiredError) that reaches this function renders as an
+// isError result whose text is the elicitation message, never the URL.
 func ErrorToToolResult(err error) *sdkmcp.CallToolResult {
 	// Denial first (matches writeModernDispatchError): an error that is both a
 	// CodedError and wraps ErrAuthorizationFailed must render as the denial,

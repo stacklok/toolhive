@@ -183,3 +183,9 @@ func enrichPORCWithAnnotations(porc PORC, annotationMap map[string]interface{}) 
 
 	mcpCtx["annotations"] = annotationMap
 }
+
+// AnswersToolRead reports whether the PDP answers tool:read for tools/list visibility
+// (forward_tool_read). When false, the decorator asks only tool:call.
+func (a *Authorizer) AnswersToolRead() bool {
+	return a.config.ForwardToolRead
+}

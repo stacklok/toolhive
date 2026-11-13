@@ -17,9 +17,9 @@ import (
 	"github.com/stacklok/toolhive/test/e2e"
 )
 
-// This suite checks tools/list visibility end to end. By default the PDP is asked only
-// mcp:tool:call. The PDP allows that for query_vulnerability and denies every other tool, so
-// only query_vulnerability must be listed, and the PDP must never see mcp:tool:read.
+// This suite checks tools/list visibility end to end with pdp.forward_tool_read on. The PDP
+// is asked mcp:tool:read once per tool and never mcp:tool:call. It allows read only for
+// query_vulnerability, so only that tool must be listed.
 var _ = Describe("Tool visibility with forward_tool_read", Label("middleware", "authz", "http-pdp", "e2e"), Serial, Ordered, func() {
 	var (
 		config         *e2e.TestConfig
@@ -33,11 +33,11 @@ var _ = Describe("Tool visibility with forward_tool_read", Label("middleware", "
 
 	BeforeAll(func() {
 		config = e2e.NewTestConfig()
-		serverName = e2e.GenerateUniqueServerName("tool-read-fallback-test")
+		serverName = e2e.GenerateUniqueServerName("tool-read-forward-test")
 
 		pdpServer = newMockPDPServer()
-		// Allow only tool:call on query_vulnerability. tool:read is not granted
-		// anywhere, so every visibility decision must come from the fallback.
+		// Allow only tool:read on query_vulnerability. tool:call is never granted, so with
+		// forward_tool_read on, visibility must come from the read decision alone.
 		pdpServer.addRule(true, func(porc map[string]interface{}) bool {
 			operation, _ := porc["operation"].(string)
 			resource, _ := porc["resource"].(string)
@@ -62,7 +62,7 @@ var _ = Describe("Tool visibility with forward_tool_read", Label("middleware", "
 }`, pdpServer.url())
 
 		var err error
-		authzConfigDir, err = os.MkdirTemp("", "tool-read-fallback-test")
+		authzConfigDir, err = os.MkdirTemp("", "tool-read-forward-test")
 		Expect(err).ToNot(HaveOccurred())
 		authzConfigPath := filepath.Join(authzConfigDir, "authz-config.json")
 		Expect(os.WriteFile(authzConfigPath, []byte(authzConfig), 0644)).To(Succeed())
@@ -122,7 +122,7 @@ var _ = Describe("Tool visibility with forward_tool_read", Label("middleware", "
 			names = append(names, tool.Name)
 		}
 		Expect(names).To(ConsistOf("query_vulnerability"),
-			"the PDP allows tool:call only for query_vulnerability, so it must be the only tool listed")
+			"the PDP allows tool:read only for query_vulnerability, so it must be the only tool listed")
 
 		pdpServer.mu.RLock()
 		captured := append([]map[string]interface{}{}, pdpServer.requests...)
@@ -133,11 +133,7 @@ var _ = Describe("Tool visibility with forward_tool_read", Label("middleware", "
 		readsForListed := 0
 		for _, porc := range captured {
 			op, _ := porc["operation"].(string)
-			resource, _ := porc["resource"].(string)
-			if !strings.HasSuffix(resource, ":tool:query_vulnerability") {
-				continue
-			}
-			Expect(op).ToNot(Equal("mcp:tool:call"), "forward_tool_read must not fall back to mcp:tool:call")
+			Expect(op).ToNot(Equal("mcp:tool:call"), "forward_tool_read must never send mcp:tool:call, for any tool")
 			if op == "mcp:tool:read" {
 				readsForListed++
 			}

@@ -176,7 +176,8 @@ func TestURLElicitationRequiredError_ErrorOmitsURL(t *testing.T) {
 func TestURLElicitationRequiredError_WithLegacyFallback(t *testing.T) {
 	t.Parallel()
 
-	const fallback = "Reconnect GitHub at https://console.example.com/github/connect, then retry."
+	const fallbackHost = "console.example.com"
+	const fallback = "Reconnect GitHub at https://" + fallbackHost + "/github/connect, then retry."
 	a := mustURLElicitation(t, "a", "https://connect.example.com/a?state=secret-a", "Reconnect GitHub")
 	b := mustURLElicitation(t, "b", "https://connect.example.com/b", "Reconnect Jira")
 	answer, err := vmcp.NewURLElicitationRequiredError(a, b)
@@ -224,7 +225,7 @@ func TestURLElicitationRequiredError_WithLegacyFallback(t *testing.T) {
 			fmt.Sprintf("%#v", *got),
 			fmt.Sprintf("%s", fmt.Errorf("step failed: %w", got)),
 		} {
-			assert.NotContains(t, out, "console.example.com")
+			assert.NotContains(t, out, fallbackHost)
 		}
 	})
 }

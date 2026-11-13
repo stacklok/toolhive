@@ -644,11 +644,13 @@ func TestIntegration_Legacy_URLElicitation_UndeclaredFallsBack(t *testing.T) {
 // the embedder set with WithLegacyFallback, through a direct tools/call and
 // through the optimizer's call_tool, while a declared Legacy client still gets
 // -32042 carrying the elicitation message and a Modern client without
-// elicitation.url still gets -32021 without the fallback.
+// elicitation.url still gets -32021 without the fallback, and a Modern
+// decline result carries the elicitation message, not the fallback.
 func TestIntegration_Legacy_URLElicitation_EmbedderFallback(t *testing.T) {
 	t.Parallel()
 
-	const fallback = "Reconnect GitHub at https://console.example.com/github/connect, then retry."
+	const fallbackHost = "console.example.com"
+	const fallback = "Reconnect GitHub at https://" + fallbackHost + "/github/connect, then retry."
 	answer, err := newURLAnswer(t).WithLegacyFallback(fallback)
 	require.NoError(t, err)
 
@@ -703,7 +705,7 @@ func TestIntegration_Legacy_URLElicitation_EmbedderFallback(t *testing.T) {
 			require.Len(t, data.Elicitations, 1)
 			assert.Equal(t, urlElicitationURL, data.Elicitations[0].URL)
 			assert.Equal(t, urlElicitationMessage, data.Elicitations[0].Message)
-			assert.NotContains(t, string(wireErr.Data), "console.example.com")
+			assert.NotContains(t, string(wireErr.Data), fallbackHost)
 		})
 	}
 
@@ -718,6 +720,25 @@ func TestIntegration_Legacy_URLElicitation_EmbedderFallback(t *testing.T) {
 		require.True(t, ok, "decoded: %+v", decoded)
 		assert.EqualValues(t, mcpparser.CodeMissingClientCapability, errObj["code"])
 		assert.Contains(t, errObj["message"], urlElicitationMessage)
-		assert.NotContains(t, string(raw), "console.example.com")
+		assert.NotContains(t, string(raw), fallbackHost)
+	})
+
+	t.Run("Modern decline result omits the fallback", func(t *testing.T) {
+		t.Parallel()
+		cs := urlModeClient(t, direct.URL, func(*gosdk.ElicitRequest) (*gosdk.ElicitResult, error) {
+			return &gosdk.ElicitResult{Action: "decline"}, nil
+		})
+		res, err := callEcho(t, cs, "echo", map[string]any{"input": "x"})
+		require.NoError(t, err)
+
+		require.True(t, res.IsError, "%+v", res)
+		require.Len(t, res.Content, 1)
+		text, ok := res.Content[0].(*gosdk.TextContent)
+		require.True(t, ok)
+		assert.Equal(t, urlElicitationMessage, text.Text, "the decline result carries the elicitation message")
+		raw, err := json.Marshal(res)
+		require.NoError(t, err)
+		assert.NotContains(t, string(raw), fallbackHost, "the declined link is not handed back")
+		assert.NotContains(t, string(raw), urlElicitationHost)
 	})
 }

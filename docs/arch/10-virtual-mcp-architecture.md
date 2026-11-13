@@ -556,11 +556,12 @@ Properties worth knowing:
   of asking again, as the spec requires servers to handle decline and cancel.
   An accept that the decorator answers again asks again, bounded by the
   client's retry budget (go-sdk stops at 10 rounds).
-- **The URL reaches only a client that declared URL mode.** Every fallback
-  carries the elicitation messages and never the URL, so a model cannot
-  follow a link and skip the user consent step URL mode exists for. All of
-  them use the same text, `URLElicitationRequiredError.Message()` (the
-  messages joined by `"; "`). `Error()` never includes the URL either,
+- **The URL reaches only a client that declared URL mode.** By default every
+  fallback carries the elicitation messages and never the URL, so a model
+  cannot follow a link and skip the user consent step URL mode exists for.
+  By default all of them use the same text, `URLElicitationRequiredError.Message()`
+  (the messages joined by `"; "`); the Legacy `isError` fallback is the one
+  place an embedder can replace that text (next bullet). `Error()` never includes the URL either,
   so composite workflows and code-mode scripts, which flatten step errors
   into `isError` results, and log lines that stringify the error do not leak it.
 - **The embedder may replace the Legacy fallback.** A client without URL

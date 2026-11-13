@@ -168,10 +168,10 @@ func (e *URLElicitationRequiredError) Elicitations() []URLElicitation {
 }
 
 // Message returns the elicitation messages joined by "; ", in order. It is
-// the one rendering of the messages every fallback shows (the Legacy isError
-// text unless WithLegacyFallback replaced it, the Modern -32021 message and
-// decline result) and that Error embeds, so all of them read the same. It
-// never includes a URL.
+// the text every fallback shows by default (the Legacy isError text, the
+// Modern -32021 message and decline result) and the text Error embeds. It
+// never includes a URL. WithLegacyFallback can replace the Legacy isError
+// text; Message itself never changes.
 func (e *URLElicitationRequiredError) Message() string {
 	messages := make([]string, 0, len(e.elicitations))
 	for _, el := range e.elicitations {
@@ -203,7 +203,10 @@ func (e *URLElicitationRequiredError) WithLegacyFallback(text string) (*URLElici
 	if strings.TrimSpace(text) == "" {
 		return nil, errors.New("url elicitation required: legacy fallback text is required")
 	}
-	return &URLElicitationRequiredError{elicitations: slices.Clone(e.elicitations), legacyFallback: text}, nil
+	c := *e
+	c.elicitations = slices.Clone(e.elicitations)
+	c.legacyFallback = text
+	return &c, nil
 }
 
 // LegacyFallback returns the text of the Legacy isError fallback: the text

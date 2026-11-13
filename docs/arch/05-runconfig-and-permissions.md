@@ -634,8 +634,13 @@ filesystem read-only. It is a RunConfig field rather than a permission profile
 field, so it needs no change to `toolhive-core`.
 
 - **Opt-in**: off by default, because servers that write to their root
-  filesystem today would break. Writable paths must come from the profile's
-  `write` mounts.
+  filesystem today would break.
+- **Scratch space**: `/tmp`, `/var/tmp` and `/run` get a tmpfs mounted
+  `rw,nosuid,nodev,noexec,size=64m`. Setting these explicitly keeps Docker and
+  Podman consistent: Podman's compat API otherwise adds its own executable,
+  uncapped tmpfs on those paths while Docker adds none. A path already targeted
+  by a volume or profile mount is skipped, since Docker rejects duplicate mount
+  points. Any other writable path must come from the profile's `write` mounts.
 - **Docker/Podman only**: the Docker runtime sets `HostConfig.ReadonlyRootfs`.
   The Kubernetes runtime ignores the field; the operator already sets
   `readOnlyRootFilesystem: true` on MCP server containers.

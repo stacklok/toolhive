@@ -112,6 +112,11 @@ func TestCreateMcpContainer_Isolated_WiresConfigAndNetworks(t *testing.T) {
 	assert.Equal(t, []string{"seccomp:unconfined"}, gotHost.SecurityOpt)
 	assert.Equal(t, false, gotHost.Privileged)
 	assert.True(t, gotHost.ReadonlyRootfs)
+	assert.Equal(t, map[string]string{
+		"/tmp":     readOnlyScratchTmpfsOptions,
+		"/var/tmp": readOnlyScratchTmpfsOptions,
+		"/run":     readOnlyScratchTmpfsOptions,
+	}, gotHost.Tmpfs, "read-only rootfs gets capped scratch tmpfs mounts")
 	assert.Equal(t, []netip.Addr{netip.MustParseAddr("1.2.3.4")}, gotHost.DNS)
 
 	// Port bindings wired
@@ -423,6 +428,50 @@ func TestCreateMcpContainer_NoAdditionalDNS_DNSNotSet(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, gotHost)
 	assert.True(t, len(gotHost.DNS) == 0, "expected DNS to be empty when additionalDNS is not provided")
+	assert.Empty(t, gotHost.Tmpfs, "no scratch tmpfs without a read-only rootfs")
+}
+
+func TestReadOnlyRootfsTmpfs(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		mounts []runtime.Mount
+		want   []string
+	}{
+		{name: "no mounts", mounts: nil, want: []string{"/tmp", "/var/tmp", "/run"}},
+		{
+			name:   "unrelated mount",
+			mounts: []runtime.Mount{{Source: "/src", Target: "/data"}},
+			want:   []string{"/tmp", "/var/tmp", "/run"},
+		},
+		{
+			name:   "volume on /tmp is left alone",
+			mounts: []runtime.Mount{{Source: "/host-tmp", Target: "/tmp"}},
+			want:   []string{"/var/tmp", "/run"},
+		},
+		{
+			name: "all scratch paths mounted",
+			mounts: []runtime.Mount{
+				{Target: "/tmp"}, {Target: "/var/tmp"}, {Target: "/run"},
+			},
+			want: []string{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := readOnlyRootfsTmpfs(tt.mounts)
+
+			want := make(map[string]string, len(tt.want))
+			for _, p := range tt.want {
+				want[p] = readOnlyScratchTmpfsOptions
+			}
+			assert.Equal(t, want, got)
+		})
+	}
 }
 
 func TestCreateContainer_ListError_Propagates(t *testing.T) {

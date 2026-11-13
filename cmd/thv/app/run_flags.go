@@ -307,7 +307,8 @@ func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
 			"Not enforced with --network host or --network none (isolation requires bridge networking).")
 	cmd.Flags().BoolVar(&config.ReadOnlyRootfs, "read-only-rootfs", false,
 		"Mount the MCP server container's root filesystem as read-only (Docker/Podman only). "+
-			"Servers that write outside their mounted volumes will fail when this is enabled.")
+			"/tmp, /var/tmp and /run get a 64 MiB noexec tmpfs unless a volume already targets them; "+
+			"servers that write anywhere else outside their mounted volumes will fail.")
 	cmd.Flags().BoolVar(&config.AllowDockerGateway, "allow-docker-gateway", false,
 		"Allow outbound connections to Docker/Podman host addresses (all daemon bridge gateways, runtime host-alias IPs, "+
 			"host.docker.internal, gateway.docker.internal, and host.containers.internal). Only applies when --isolate-network is set. "+

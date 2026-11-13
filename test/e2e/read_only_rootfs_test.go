@@ -32,17 +32,16 @@ var _ = Describe("Read-only root filesystem", Label("core", "e2e"), func() {
 		}
 	})
 
-	// readonlyRootfs returns the HostConfig.ReadonlyRootfs value docker reports
-	// for the workload's container.
-	readonlyRootfs := func() string {
-		cmd := e2e.StartDockerCommand("inspect", "-f", "{{.HostConfig.ReadonlyRootfs}}", serverName)
+	// inspect returns a Go-template field docker reports for the workload's container.
+	inspect := func(format string) string {
+		cmd := e2e.StartDockerCommand("inspect", "-f", format, serverName)
 		out, err := cmd.CombinedOutput()
 		ExpectWithOffset(1, err).ToNot(HaveOccurred(), "docker inspect failed: %s", out)
 		return strings.TrimSpace(string(out))
 	}
 
 	DescribeTable("sets the container's root filesystem mode",
-		func(extraArgs []string, want string) {
+		func(extraArgs []string, wantReadOnly string, wantScratchTmpfs bool) {
 			args := append([]string{"run", "--name", serverName}, extraArgs...)
 			args = append(args, "fetch")
 			e2e.NewTHVCommand(config, args...).ExpectSuccess()
@@ -52,9 +51,19 @@ var _ = Describe("Read-only root filesystem", Label("core", "e2e"), func() {
 				"Server should be running within 60 seconds")
 
 			By("Inspecting the container's HostConfig")
-			Expect(readonlyRootfs()).To(Equal(want))
+			Expect(inspect("{{.HostConfig.ReadonlyRootfs}}")).To(Equal(wantReadOnly))
+
+			tmpfs := inspect("{{json .HostConfig.Tmpfs}}")
+			if wantScratchTmpfs {
+				for _, path := range []string{"/tmp", "/var/tmp", "/run"} {
+					Expect(tmpfs).To(ContainSubstring(`"`+path+`":"rw,nosuid,nodev,noexec,size=64m"`),
+						"%s should get a capped scratch tmpfs", path)
+				}
+			} else {
+				Expect(tmpfs).ToNot(ContainSubstring(`"/tmp"`), "no scratch tmpfs without --read-only-rootfs")
+			}
 		},
-		Entry("read-only when --read-only-rootfs is set", []string{"--read-only-rootfs"}, "true"),
-		Entry("writable by default", []string{}, "false"),
+		Entry("read-only with scratch tmpfs when --read-only-rootfs is set", []string{"--read-only-rootfs"}, "true", true),
+		Entry("writable by default", []string{}, "false", false),
 	)
 })

@@ -181,6 +181,12 @@ func (a *cedarAdmission) FilterTools(
 	// Serve layer's concern.
 	filtered := make([]vmcp.Tool, 0, len(tools))
 	for i := range tools {
+		if ctx.Err() != nil {
+			// The context is done, so the remaining checks would fail too. They stay hidden.
+			a.logger.Warn("admission: deadline reached while filtering tools, hiding the rest",
+				"remaining", len(tools)-i)
+			break
+		}
 		tool := &tools[i]
 		// An empty BackendID is deliberate: composites have no Backend parent,
 		// so backend-scoped permits fail closed for them.

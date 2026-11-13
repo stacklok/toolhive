@@ -73,10 +73,13 @@ func (d *ToolCallImpliesRead) AuthorizeWithJWTClaims(
 	}
 
 	readAllowed, readErr := d.inner.AuthorizeWithJWTClaims(ctx, feature, MCPOperationRead, resourceID, arguments)
-	if readErr != nil || readAllowed {
+	if readErr != nil {
 		// A tool:read error is returned as is. It says nothing about tool:call, and a
 		// second PDP call would double the wait on a slow PDP.
-		return readAllowed, readErr
+		return false, readErr
+	}
+	if readAllowed {
+		return true, nil
 	}
 
 	// tool:read was denied, so the tool:call answer decides.

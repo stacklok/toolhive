@@ -41,6 +41,13 @@ func authorizedToolIndexesWithin(
 
 	authorizedIndexes := make([]int, 0, len(tools))
 	for i, tool := range tools {
+		if ctx.Err() != nil {
+			// The shared deadline expired or the request was cancelled. Checking the rest
+			// would only repeat the wait, so they stay hidden.
+			slog.Warn("Authorization deadline reached while filtering tools, hiding the rest",
+				"remaining", len(tools)-i)
+			break
+		}
 		// Inject this tool's annotations into the context so Cedar policies
 		// that use when clauses on resource attributes (e.g. resource.readOnlyHint)
 		// can evaluate correctly. Without this, the authorization check runs

@@ -1,9 +1,7 @@
 # Delegated access: one subject resolver, separate actor checks, one user-keyed credential store
 
-Status: draft proposal, 2026-11-13, revision 2 (after a review by four
-reviewers: architecture, embedder compatibility, security, OAuth
-standards). Written against `main` at 5f36b560c. When it is ready, it
-moves to the RFC repository as an RFC.
+Status: draft proposal, 2026-11-13. Written against `main` at 5f36b560c.
+When it is ready, it moves to the RFC repository as an RFC.
 
 ## 1. Problem
 
@@ -70,7 +68,7 @@ Two constraints on every change:
   the full upstream chain instead of evaluating existing credentials
   (#6831)").
 
-## 2. Decisions
+## 2. Design
 
 ### 2.1 One subject resolver
 
@@ -133,8 +131,28 @@ The resolver runs at two places:
   for issuers configured with `subject_mode: resolve`. The issued token's
   `sub` is the native user (RFC 9068 §2.2). Issuers left on the default
   `subject_mode: namespaced` keep today's `iss#sub`.
-- **On every request,** for direct issuers (section 2.4), unless decision
-  D5 picks the in-process translation (section 2.5).
+- **On every request,** for direct issuers (section 2.4).
+
+**Gateway tokens are resolved once, when the authorization server mints
+them.** ID-JAG redemption and token exchange resolve the subject at that
+point. The gateway token's `sub` is the native user, and the approval check
+(external mode) uses that same user. The vMCP does not resolve marked
+tokens again. Direct tokens are different: nothing mints them in between,
+so the vMCP resolves them on every request.
+
+- The resolver refuses a deactivated user as it refuses an unknown one.
+- A resolver outage at the token endpoint returns 503 or `server_error`,
+  never `invalid_grant` or `consent_required`.
+- A marked token's lifetime is capped (a few minutes), whatever
+  `delegationLifespan` says. ID-JAG-derived tokens are already capped by
+  the ID-JAG's lifetime.
+- A user deactivated in the directory therefore keeps delegated access for
+  at most that cap, plus directory sync delay.
+- The agent platform mints a new ID-JAG on each cache miss of its gateway
+  token. In practice, resolution happens about once per gateway-token
+  lifetime per (session, agent, gateway, user), not once per call.
+- v1 has no offboarding operation. A deactivated user's rows stay until
+  they expire (section 10).
 
 ### 2.2 The actor: proof, client checks, actor policy
 
@@ -149,9 +167,9 @@ Client checks and actor policy are separate inputs. ID-JAG §9.10 says the
 authenticated client does not identify the actor, and a permissive actor
 rule must never switch off the client check.
 
-On the direct path, the client check is client *authorization*, not
-binding: nobody authenticates the presenter, so it says only that the
-token was issued to an allowed client. Proof of who presents the token
+On the direct path, the client check is client *authorization*. It is not
+client binding, because nobody authenticates the presenter. It says only
+that the token was issued to an allowed client. Proof of who presents the token
 comes only from DPoP. The validator library reports the client from the
 claim each identity provider uses (Appendix A); the allowlist is required
 and cannot be a wildcard. Token exchange already has this check (the
@@ -219,7 +237,7 @@ What each path checks:
   3. actor policy on `act.iss`. `act.sub` is AS-1's opaque per-agent ID
      and means nothing to AS-2, so an approval keyed by `act.iss` covers
      every agent AS-1 mints. Per-agent control rests on AS-1's actor
-     proof. This is deliberate;
+     proof. Whether this is acceptable is an open question (section 11);
   4. in external mode, an unrevoked approval for (gateway, user, client,
      `act.iss`) ("Delegated access: subject mapping and user approval
      (#6887)").
@@ -286,7 +304,8 @@ one an existing embedder already runs:
   under the decorator, because rows belong to the user, not the session.
   Signing out of one client, or a refresh-grant refusal for one client,
   does not remove the user's connections. In v1 rows leave only by
-  expiry; an explicit disconnect and offboarding come later (B6).
+  expiry (access-token expiry plus 30 days). An explicit disconnect and
+  offboarding are later work (section 10).
 - `ResolveUpstreamTokenRowID` returns the user-keyed row's identity, so
   the process-local refresh deduplication and the cross-replica refresh
   lease ("Serialize upstream refresh across replicas", PR #7031) work on
@@ -366,7 +385,10 @@ returns `ErrNoCanonicalUser`.
 decorator ignores the session ID. Only missing or broken providers need a
 redirect. This fixes #6831 without a stable session ID. A newly
 authorized client therefore gets the user's existing connections without
-an upstream prompt; this is accepted (B1).
+an upstream prompt. This works the way single sign-on grants a new
+application the user's session, and the design accepts it, even when the
+client registered itself. The user still passes the authorization server's
+own consent for that client. The upgrade guide documents this.
 
 ### 2.4 Who may read user U
 
@@ -404,10 +426,10 @@ const (
   request token's claims whenever the route is not interactive, so `act`
   stays visible to policy on delegated and direct tokens.
 - `tsid` stays in interactive tokens. It stops being a storage key when
-  the user-keying decorator is on, but it remains the proof of an
-  interactive login together with the embedded issuer, and some
-  embedders use it to recognise the login behind a refresh grant. A
-  token issued before an upgrade keeps working.
+  the user-keying decorator is on, but together with the embedded issuer
+  it remains the proof of an interactive login, and some embedders use it
+  to recognise the login behind a refresh grant. A token issued before an
+  upgrade keeps working.
 - A self-issued token exchanged through `may_act` or a wildcard delegate
   client keeps `sub` = the user but has neither `tsid` nor the marker, so
   it reads nothing.
@@ -416,7 +438,9 @@ const (
 gates credential lookup for approved delegated tokens (#6404)"):
 
 - a URI-named claim (`https://toolhive.dev/claims/delegated_access`),
-  honoured only when `iss` is the embedded authorization server;
+  honoured only when `iss` is the embedded authorization server. Checks
+  look at presence only. The value may name the trusted issuer or the
+  approval record for audit, but no check reads it;
 - issued only on ID-JAG redemption or token exchange, after the subject
   resolved, the client checks and the actor policy passed, and, in
   external mode, an unrevoked approval exists for (user, client,
@@ -449,6 +473,17 @@ path. It only owns the credential rows, and its refresher renews an
 expired upstream token when the vMCP reads it. Section 2.5 describes an
 alternative that moves these checks into the authorization server.
 
+**The validator library** is the toolhive-core `authn` validator stack
+(toolhive-core PRs #506 to #511, with the trust set in #514 to #516). It
+already covers issuer and keys, discovery issuer equality, per-issuer
+keys, exact audience, the algorithm allowlist, `exp`/`nbf`/future `iat`,
+lifetime caps, the ID-JAG `typ` deny list, required scopes with
+`insufficient_scope`, and issuer routing with reserved issuers. The gaps
+in toolhive-core are listed in Appendix A. In ToolHive, the work is
+`Check`s for `jti`, the client claim and the refused claims, the actor
+policy, the configuration rules on `aud` and issuers, and error mapping.
+The stack must merge and be released before step 6 of section 4.
+
 **What the vMCP needs from the library:** a verified principal, or a
 refusal it can map to an RFC 6750 error. The principal carries the
 issuer, the user binding (`Ref`: issuer, claim, value), the client, the
@@ -473,20 +508,36 @@ each identity provider expresses these is the library's concern.
 The operator configures a direct issuer with three required values (the
 issuer, the audience, and a non-empty client allowlist), a profile name
 that tells the library how that identity provider shapes its tokens, and
-optional required scopes and actor settings. The issuer alone is never
-enough: it would admit every token the tenant mints, for any audience and
-any application.
+optional required scopes, an option to refuse tokens that are not
+DPoP-bound (`cnf.jkt`), and actor settings. The issuer alone is never enough: it would
+admit every token the tenant mints, for any audience and any application.
+Identity-provider specifics live in the validator library (Appendix A),
+not in the operator's configuration.
 
 The direct validator sets `PlatformUserID` to the resolved user. Session
 binding (#6888) uses that user, never the token's own `sub`.
 
-MCP clients find authorization servers through the protected-resource
-metadata (RFC 9728). A direct issuer that is not listed there works only
-for agents configured in advance (banked item B7).
+**Discovery.** MCP clients find authorization servers through the
+protected-resource metadata (RFC 9728). The vMCP's metadata keeps listing
+only its embedded authorization server, and the `resource_metadata` in its
+401 challenges keeps pointing there. A direct issuer is not listed, so it
+works only for agents configured in advance.
 
-### 2.5 Alternative: in-process translation at the authorization server
+- Direct issuers are configured trust for agents provisioned out of band.
+  They are not authorization servers that MCP clients should discover.
+  RFC 9728 allows a resource not to advertise every server it accepts.
+- Listing them would send generic MCP clients to the customer's identity
+  provider. That causes failed or unexpected client registrations and
+  interactive prompts on a path meant for agents. It has no effect on
+  audience binding.
+- This departs from the MCP rule that clients send only tokens from the
+  server's own authorization server. The departure is a deliberate,
+  out-of-band arrangement.
 
-Instead of checking a direct token itself, the vMCP passes it to the
+### 2.5 Alternatives considered: in-process translation at the authorization server
+
+Section 2.4 checks a direct token in the vMCP. As an alternative, the vMCP
+could pass it to the
 authorization server's exchange logic, in process. The authorization
 server makes its usual checks on the Okta token and mints a marked
 gateway token. The vMCP then continues as for the delegated route. The
@@ -541,8 +592,10 @@ agent ──Okta token──▶ vMCP incoming auth
 
 A third variant keeps the checks in one shared validation library that
 both the vMCP and token exchange call, and mints nothing. On security
-alone there is little to choose between the three. **Choosing** is
-decision D5.
+alone there is little to choose between the three. Section 2.4 uses the
+library for the direct route. Moving the authorization server's
+external-token validation onto the same library is optional and separate
+(section 10).
 
 ## 3. What changes where
 
@@ -571,7 +624,8 @@ decision D5.
 | Documentation | `docs/arch/11-auth-server-storage.md`, `docs/arch/17-token-exchange-delegation.md` | with each change |
 
 Out of scope for the first version: delegated and direct reads for a
-plain `MCPServer` through the `upstreamswap` middleware (banked item B5).
+plain `MCPServer` through the proxy runner's `upstreamswap` middleware.
+They are tracked and come after the vMCP (section 10).
 
 ### An embedder with a user directory
 
@@ -626,7 +680,8 @@ except the conditional delete in step 1, which applies to everyone.
    marked tokens.
 6. **Direct route** (track A). The direct-issuer validator, client
    authorization, actor policy, per-request resolution, session binding
-   (#6779, then #6888). Needs D5.
+   (#6779, then #6888). Needs the validator library of section 2.4,
+   merged and released.
 7. **Delegated route** (track B). Resolution at redemption and at token
    exchange, the `act.iss` check, approval in external mode (or
    administrator pre-approval), marker issuance, and ID-JAG issuance with
@@ -704,7 +759,7 @@ Rules that keep this true:
 | Issue | Effect |
 |---|---|
 | Delegated client access to a user's connections (#6406) | Its rule that a directly presented external token never reaches the read is reversed. Add the direct route. |
-| Add upstreamCredentialScope opt-in and enforce its issuer trust (#6403) | The rule that the incoming issuer must equal the embedded issuer blocks the direct route, unless D5 picks the in-process translation. Replace the `session`/`platformUser` scope with the user-keying setting and per-issuer configuration. |
+| Add upstreamCredentialScope opt-in and enforce its issuer trust (#6403) | The rule that the incoming issuer must equal the embedded issuer blocks the direct route, so it is dropped: the direct route checks its issuers in the vMCP instead. Replace the `session`/`platformUser` scope with the user-keying setting and per-issuer configuration. |
 | Add a delegated-access marker (#6404) | Add: URI name, honoured only for the embedded issuer, terminal at ID-JAG issuance too, no refresh token, approval required in external mode. |
 | Ownership-checked credential read (#6407) | Keep the read design. Drop phase 1 (reading through a stable session ID) and the embedded-issuer-only gate. The read is an injected interface, not a storage capability. |
 | Upstream token read cannot verify ownership (#6176) | The owner check moves into the user-keying decorator. Adding an owner parameter to every `tsid`-keyed read is no longer needed, and would change exported signatures that embedders implement. Assigned to an outside contributor; re-scope with them. |
@@ -717,106 +772,7 @@ Rules that keep this true:
 | Embedded auth runtime DCR does not bind upstream refresh tokens to the DCR client generation (#6508) | Still needed for standalone ToolHive, before shared rows. |
 | Refactor upstream token storage from STRING+SET to HASH with per-field TTL (#4279) | Independent. |
 
-## 8. Open decisions
-
-- **D1. Interactive proof.** Decided: `tsid` with the embedded issuer.
-- **D2. Upgrade path for standalone Redis.** Decided: re-authorize once,
-  with every replica upgraded before the setting changes.
-- **D3. Direct-issuer configuration.** Decided: provider-agnostic. The
-  operator gives the issuer, the audience and a client allowlist, plus a
-  profile name; identity-provider specifics live in the validator library
-  (Appendix A). The issuer must share the tenant of the gateway's sign-in
-  identity provider. Required scopes and refusing unbound tokens are
-  per-issuer options.
-- **D4. Resolution time for minted tokens.** Decided: at mint time. ID-JAG
-  redemption and token exchange resolve the subject once; the gateway
-  token's `sub` is the native user, and the approval check (external
-  mode) uses that same user. The vMCP does not resolve marked tokens
-  again. The resolver refuses a deactivated user as it refuses an unknown
-  one. A resolver outage at the token endpoint returns 503 or
-  `server_error`, never `invalid_grant` or `consent_required`. A marked
-  token's lifetime is capped (a few minutes), whatever
-  `delegationLifespan` says; ID-JAG-derived tokens are already capped by
-  the ID-JAG's lifetime. A user deactivated in the directory therefore
-  keeps delegated access for at most that cap, plus directory sync delay.
-  The agent platform mints a new ID-JAG on each cache miss of its gateway
-  token, so in practice resolution happens about once per gateway-token
-  lifetime per (session, agent, gateway, user), not once per call.
-  Offboarding (B6) removes the user's rows, which ends credential use at
-  once. Direct tokens are still resolved on every request.
-- **D5. Where the direct route makes its checks.** Decided: in the vMCP's
-  incoming authentication first (section 2.4), built on the toolhive-core
-  `authn` validator stack (toolhive-core PRs #506 to #511, with the trust
-  set in #514 to #516) as a reusable library. The stack already covers
-  issuer and keys, discovery issuer equality, per-issuer keys, exact
-  audience, the algorithm allowlist, `exp`/`nbf`/future `iat`, lifetime
-  caps, the ID-JAG `typ` deny list, required scopes with
-  `insufficient_scope`, and issuer routing with reserved issuers. Gaps to
-  fill: in toolhive-core, an option for untyped tokens (missing `typ` or
-  `JWT` only) and DPoP proof verification (until it exists, tokens with
-  `cnf` are refused, the stack's default); in ToolHive, `Check`s for
-  `jti`, the client claim and the refused claims, the actor policy, the
-  configuration rules on `aud` and issuers, and error mapping. The stack
-  must merge and be released before stage 6. The in-process translation
-  (section 2.5) stays an alternative. Moving the authorization server's
-  external-token validation onto the same library is optional and
-  separate.
-
-## 9. Banked items
-
-Found in review, not resolved here, because each needs a decision:
-
-- **B1. Consent for shared connections.** Decided: accepted as is. With
-  user keying, a newly authorized client, possibly self-registered, gets
-  the user's existing connections without an upstream prompt, the same
-  way single sign-on grants a new application the user's session. The
-  user still passes the authorization server's own consent for that
-  client. Documented in the upgrade guide.
-- **B2. Marker value.** Decided: checks use presence only. The value may
-  name the trusted issuer or the approval record for audit, but nothing
-  requires it and no check reads it.
-- **B3. Actor across identity providers.** Decided: one actor source per
-  issuer, `act` or `client`, set by the profile, with no fallback. Default
-  `act`, refusing tokens without it; an issuer may opt in to taking the
-  client as the actor when `act` is absent. The Entra profile uses
-  `client`, optionally restricted to Entra Agent ID identities.
-- **B4. Approval record (open question).** The approval is a per-user
-  consent record, one row per (gateway, user, client, actor issuer) with
-  a revoked state, created by the user through the approval link or by an
-  administrator's pre-approval. It is not a directory service account:
-  in the enterprise domain model an agent working for a person acts as
-  that person, and service accounts are for autonomous workloads. Open:
-  whether the record lives in the gateway authorization server's storage
-  or in the directory, and whether approving an actor issuer (covering
-  every agent of that platform) is acceptable. Per-agent approval is not possible with opaque,
-  per-instance agent IDs.
-- **B5. Plain `MCPServer`.** Decided: tracked, not in v1. Delegated and
-  direct reads through the proxy runner's `upstreamswap` middleware come
-  after the vMCP.
-- **B6. Removing a user's rows.** Decided: in the plan, not in v1, and
-  not blocking. v1 relies on expiry (access-token expiry plus 30 days).
-  Later: a per-provider disconnect the user triggers, and an
-  administrator offboarding operation that deletes all of a user's rows
-  (which an embedder's directory can call).
-- **B7. Discovery.** Decided: not listed. The vMCP's RFC 9728 metadata
-  keeps listing only its embedded authorization server, and the
-  `resource_metadata` in its 401 challenges keeps pointing there. Direct
-  issuers are configured trust for agents provisioned out of band, not
-  authorization servers that MCP clients should discover; RFC 9728
-  allows a resource not to advertise every server it accepts. Listing
-  them would send generic MCP clients to the customer's identity
-  provider (failed or unexpected client registrations, interactive
-  prompts on a path meant for agents) and has no effect on audience
-  binding. This departs from the MCP rule that clients send only tokens
-  from the server's own authorization server, by deliberate,
-  out-of-band arrangement. If agents later need discovery, they get a
-  separate resource identifier with its own path-based metadata and
-  audience.
-- **B8. Removing `tsid`.** Decided: keep it as the proof of an
-  interactive login; revisit only once embedders no longer use it for
-  refresh-grant checks.
-
-## 10. Accepted costs
+## 8. Accepted costs
 
 - A direct token works until it expires. The gateway cannot revoke it and
   nothing makes it single use. DPoP and the lifetime cap reduce this.
@@ -827,7 +783,7 @@ Found in review, not resolved here, because each needs a decision:
 - The refresher's conditional delete is a read followed by a delete, not
   an atomic operation.
 
-## 11. Not verified
+## 9. Not verified
 
 - What Okta puts in a real access token from the customer's tenant:
   `uid`, `cid`, `act`, `typ`, `cnf`, and the lifetime.
@@ -835,6 +791,48 @@ Found in review, not resolved here, because each needs a decision:
 - Whether the refresher renews a stored ID token that an embedder's
   policy gate reads.
 - How PR #7031's lease is keyed, beyond its description.
+
+## 10. Later work
+
+These items are not in v1 and do not block it.
+
+- **Plain `MCPServer`.** Delegated and direct reads through the proxy
+  runner's `upstreamswap` middleware, after the vMCP.
+- **Removing a user's rows.** A per-provider disconnect that the user
+  triggers, and an administrator offboarding operation that deletes all of
+  a user's rows. An embedder's directory can call the offboarding
+  operation. Until then, rows leave by expiry.
+- **Default for new installs.** The CLI and CRD default becomes `user`
+  (step 8 of section 4).
+- **Removing `tsid`.** Revisit it once embedders no longer use it for
+  refresh-grant checks.
+- **A discoverable agent resource.** If agents later need discovery, they
+  get a separate resource identifier with its own path-based metadata and
+  audience (section 2.4).
+- **Shared validation in the authorization server.** Move the
+  authorization server's external-token validation onto the same
+  validator library.
+
+## 11. Open questions
+
+**Where the approval record lives, and what an approval covers.** In
+external mode, the delegated route needs an approval for (gateway, user,
+client, `act.iss`) (section 2.2). The approval is a per-user consent
+record. It has one row per (gateway, user, client, actor issuer) and a
+revoked state. The user creates it through the approval link, or an
+administrator pre-approves it.
+
+The approval is not a directory service account. In the enterprise domain
+model, an agent working for a person acts as that person. Service accounts
+are for autonomous workloads.
+
+Two points are open:
+
+- Does the record live in the gateway authorization server's storage or in
+  the directory?
+- Is it acceptable to approve an actor issuer, which covers every agent of
+  that platform? Per-agent approval is not possible, because agent IDs are
+  opaque and per-instance.
 
 ## Appendix A. What the validator library must provide
 

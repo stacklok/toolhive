@@ -1,6 +1,6 @@
 # Delegated credential access: storage changes
 
-Draft, revision 2 · 2026-11-13 · against `main` 5f36b560c.
+Draft · 2026-11-13 · against `main` 5f36b560c.
 Full proposal: [delegated-access-resolver-actor-policy-user-store.md](delegated-access-resolver-actor-policy-user-store.md)
 
 **Goal.** Delegated tokens (ID-JAG redemption, token exchange, scheduled
@@ -89,6 +89,16 @@ have to pick one account when sessions disagree). One-way.
 
 **Embedders that already key by user skip stage 2.**
 
+**Behaviour users see:**
+
+- A new client inherits the user's existing connections without an
+  upstream prompt, like single sign-on. The user still passes the
+  authorization server's own consent for that client. The upgrade guide
+  documents this.
+- Logout deletes nothing. In v1 rows leave only by expiry (access-token
+  expiry + 30 days). A per-provider user disconnect and an administrator
+  offboarding operation are later work and do not block v1.
+
 ### Stage 3 · read service (inert)
 
 | Change | Where |
@@ -106,10 +116,11 @@ user in context already reaches the right row.
 ### Stage 4 onwards · consumers
 
 `loadUpstreamTokens` runs only for interactive tokens (`iss` = embedded
-issuer **and** `tsid`). Delegated (marker) and direct tokens read one
-routed provider through the stage 3 reader. Injection from
-`Identity.UpstreamTokens` stays ungated, because embedders fill it
-themselves.
+issuer **and** `tsid`); that pair is the proof of an interactive login.
+Delegated (marker) and direct tokens read one routed provider through the
+stage 3 reader. Injection from `Identity.UpstreamTokens` stays ungated,
+because embedders fill it themselves. Reads for a plain `MCPServer` are
+later work.
 
 ## Issues
 
@@ -122,10 +133,11 @@ themselves.
 | #6508, #4122 / PR #7031 | prerequisites for turning on stage 2 |
 | #4279 Redis HASH refactor | independent; no backend key change needed |
 
-## Decided
+## Open question
 
-- A new client inherits the user's existing connections without an
-  upstream prompt, like single sign-on. Accepted and documented.
-- Logout deletes nothing. In v1 rows leave only by expiry (access-token
-  expiry + 30 days). A per-provider user disconnect and an administrator
-  offboarding operation are planned, but not in v1 and not blocking.
+Where does the approval record live? In external mode, the delegated
+route needs a per-user approval for (gateway, user, client, actor issuer).
+It is a consent record with a revoked state. It is not a directory service
+account. The record could live in the gateway authorization server's
+storage or in the directory. The full proposal also asks whether approving
+an actor issuer, which covers every agent of that platform, is acceptable.

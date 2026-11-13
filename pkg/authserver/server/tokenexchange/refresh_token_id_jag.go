@@ -35,9 +35,10 @@ type idJAGDecision struct {
 	// log carries what a refusal may log; nothing above Debug carries sub_id or
 	// the upstream identity.
 	log *slog.Logger
-	// now is the instant that checked the grant. The mint reuses it, so exp and
-	// expires_in agree with that check. Actor validation runs after it and
-	// checks the validator's answer at its own, later instant.
+	// now is the instant that checked the grant. For a client without an actor
+	// profile the mint reuses it, so exp and expires_in agree with that check.
+	// For a client with a profile the mint is at the later instant at which the
+	// validator's answer was checked (see issueIDJAG).
 	now time.Time
 }
 
@@ -127,19 +128,26 @@ func (h *RefreshTokenHandler) decideIDJAG(
 //
 // For a client with an actor profile, the actor validator runs here, once per
 // request and never in HandleTokenEndpointRequest, as the last check before the
-// mint. The grant is not read again after it: a revoke that commits while the
-// validator runs does not stop this ID-JAG, which ends at its own short expiry.
+// mint. The ID-JAG then names the agent in act, is minted at the instant the
+// validator's answer was checked (iat), and ends no later than the credential
+// does. For other clients it is minted at d.now. The grant is not read again
+// after the validator: a revoke that commits while the validator runs does not
+// stop this ID-JAG, which ends at its own short expiry, but a grant that
+// expires meanwhile is refused as invalid_grant by the mint's bounds check.
 func (h *RefreshTokenHandler) issueIDJAG(
 	ctx context.Context, d *idJAGDecision, responder fosite.AccessResponder,
 ) error {
+	mint, now := d.mint, d.now
+	var res ActorResult
 	if d.actor != nil {
-		// The ID-JAG does not carry the accepted actor: it is signed without act
-		// and at d.now, as for a client without a profile.
-		if err := h.validateIDJAGActor(ctx, d); err != nil {
+		answer, checkedAt, err := h.validateIDJAGActor(ctx, d)
+		if err != nil {
 			return err
 		}
+		res = answer
+		mint, now = idJAGMintWithActor(d.mint, d.actor.ActIssuer, res), checkedAt
 	}
-	minted, reason, err := respondWithIDJAG(ctx, h.signer, allowAllIDJAGPolicy, d.mint, responder, d.now)
+	minted, reason, err := respondWithIDJAG(ctx, h.signer, allowAllIDJAGPolicy, mint, responder, now)
 	if err != nil {
 		return refuse(ctx, d.log, reason, err)
 	}
@@ -147,15 +155,41 @@ func (h *RefreshTokenHandler) issueIDJAG(
 	if d.owner.SubjectIdentifier != "" {
 		attrs = append(attrs, "sub_id", d.owner.SubjectIdentifier)
 	}
+	if d.actor != nil {
+		attrs = append(attrs, "act_sub", res.AgentID)
+		if res.CredentialSubject != "" {
+			attrs = append(attrs, "actor_credential_subject", res.CredentialSubject)
+		}
+	}
 	d.log.DebugContext(ctx, "ID-JAG minted", attrs...)
 	return nil
 }
 
-// validateIDJAGActor calls the client's actor validator once for the decision.
-// A failure is logged once at Warn with its reason and the cause that
-// validateActor has already redacted, and the client error is returned as
-// validateActor built it.
-func (h *RefreshTokenHandler) validateIDJAGActor(ctx context.Context, d *idJAGDecision) error {
+// idJAGMintWithActor returns a copy of m that names the agent in act and ends
+// no later than the actor credential. act.iss is the issuer registered for the
+// client's validator, never m.Issuer. The cap goes on a copy of NotAfter, so
+// the helper never writes to the caller's slice.
+//
+// act.sub is the validator's AgentID, which may differ from the actor
+// credential's own sub (ActorResult.CredentialSubject). The individual draft
+// draft-mcguinness-oauth-actor-profile-01 section 6.4 requires the credential's
+// sub instead. Whether to follow it is deferred while the draft is not adopted.
+// The same draft (section 3.4) recommends a sub_profile member in act, such as
+// "ai_agent". act carries only iss and sub until the draft is adopted and a
+// consumer reads sub_profile; adding it later only adds a member.
+func idJAGMintWithActor(m idJAGMint, actIssuer string, res ActorResult) idJAGMint {
+	m.Act = &actClaim{Issuer: actIssuer, Subject: res.AgentID}
+	m.NotAfter = append(slices.Clone(m.NotAfter), res.ExpiresAt)
+	return m
+}
+
+// validateIDJAGActor calls the client's actor validator once for the decision
+// and returns its accepted answer with the instant it was checked. A failure is
+// logged once at Warn with its reason and the cause that validateActor has
+// already redacted, and the client error is returned as validateActor built it.
+func (h *RefreshTokenHandler) validateIDJAGActor(
+	ctx context.Context, d *idJAGDecision,
+) (ActorResult, time.Time, error) {
 	req := ActorRequest{
 		ActorToken:     d.actorToken,
 		ActorTokenType: d.actor.ActorTokenType,
@@ -163,7 +197,7 @@ func (h *RefreshTokenHandler) validateIDJAGActor(ctx context.Context, d *idJAGDe
 		Grant:          d.owner,
 		Target:         ActorTarget{Issuer: d.mint.Target.Issuer, Resource: d.mint.Resource},
 	}
-	_, _, reason, err := validateActor(ctx, d.actor.Validator, h.actorLimiter, req, h.clock, h.actorTimeout)
+	res, checkedAt, reason, err := validateActor(ctx, d.actor.Validator, h.actorLimiter, req, h.clock, h.actorTimeout)
 	if err != nil {
 		attrs := []any{"reason", reason}
 		// Every error validateActor returns is an *fosite.RFC6749Error; its
@@ -173,9 +207,9 @@ func (h *RefreshTokenHandler) validateIDJAGActor(ctx context.Context, d *idJAGDe
 			attrs = append(attrs, "error", oauthErr.Unwrap())
 		}
 		d.log.WarnContext(ctx, "Exchange grant refused", attrs...)
-		return err
+		return ActorResult{}, time.Time{}, err
 	}
-	return nil
+	return res, checkedAt, nil
 }
 
 // idJAGGrantOwner returns the user a grant acts for. Upstream is filled only for

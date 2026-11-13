@@ -2182,6 +2182,9 @@ is the earliest of now plus `lifetime`, the grant's expiry, and the grant's
 creation plus the client's current `id_jag_max_lifetime`. Lowering the cap
 therefore also limits grants already issued; a grant past the new cap is refused
 like an expired one.
+For a client with an actor profile, now is the time the validator's answer was
+checked, and `exp` also stops at the actor credential's expiry (see
+[Actor-token validation at ID-JAG issuance](#actor-token-validation-at-id-jag-issuance)).
 
 **Why `SubjectIdentifierAudiences` matters.** A login records the upstream
 identity on the grant only when the login token's audience is in
@@ -2201,12 +2204,14 @@ broker's `subject_token_audiences` is missing there, a target that requires
 | `resource` | string | The requested resource |
 | `sub_id` | object | Only if the target requires it: `{"format": "iss_sub", "iss", "sub"}` (RFC 9493) |
 | `https://toolhive.dev/upstream_subject` | object | Only if the target requires it: `{"iss", "claim", "value"}`. The config calls it `upstream_subject` |
+| `act` | object | Only for a client with an actor profile: `{"iss", "sub"}`, the issuer registered for the client's validator and the agent ID it returned |
 
-There is no `nbf`, `scope`, `cnf`, `authorization_details` or `act` claim. The
-client in `client_id` acts for the user. A client with an actor profile must
-send an actor token (see [Required actor
-parameters](#required-actor-parameters)); the `act` claim is not set from it
-yet.
+There is no `nbf`, `scope`, `cnf` or `authorization_details` claim. A client without
+an actor profile sends no actor token, so the ID-JAG has no `act` and the client in
+`client_id` acts for the user. A client with an actor profile must send an actor
+token (see [Required actor parameters](#required-actor-parameters)), and its ID-JAG
+has `act` set to `{"iss": <the issuer registered for the client's validator>,
+"sub": <the validator's agent ID>}`. That `act.iss` is not this server's `iss`.
 
 `sub` is the same for every audience. AS-1 draws it as a random UUID at the
 user's first login. With memory storage a restart gives every user a new `sub`,
@@ -2263,29 +2268,37 @@ the ID-JAG. A ToolHive AS-2 finds the user by an exact AS-1 `sub` in
 Minting is not audited. A refusal logs "Exchange grant refused" at Warn with
 the reason and without `sub_id`. When the actor validator refused or failed, the
 line also carries the validator's error text with the actor token redacted, so
-a validator must keep user identifiers out of that text. A successful mint is one Debug line,
-`ID-JAG minted`, with `client_id`, `sub`, `target`, `resource`, `has_parent`,
-`jti` and, when recorded, `sub_id`. The subject token, the ID-JAG, any
+a validator must keep user identifiers out of that text. A successful mint is
+one Debug line, `ID-JAG minted`, with `client_id`, `sub`, `target`, `resource`,
+`has_parent`, `jti` and, when recorded, `sub_id`; for a client with an actor
+profile it also has `act_sub` and `actor_credential_subject`. The subject token, the ID-JAG, any
 assertion, the form, the DPoP proof and `upstream_subject` are never logged.
 
 ### Actor-token validation at ID-JAG issuance
 
-An ID-JAG can name the acting agent in its `act` claim (ID-JAG draft -06,
-`draft-ietf-oauth-identity-assertion-authz-grant-06`, §9.10 "Actor Delegation
-Extensions"). The issuing server cannot see the client's agent registry, so it
-cannot check an actor token or find the agent it names. An embedder that holds
-such a registry registers an in-process **validator**. For a client with an
-actor profile, ID-JAG issuance from an exchange grant requires an
-`actor_token` (RFC 8693 §2.1) and passes it to the validator. Building `act`
-from the answer is still to come.
+An ID-JAG can name the acting agent in its `act` claim. The ID-JAG draft
+(`draft-ietf-oauth-identity-assertion-authz-grant-06`) defines `act` as an
+OPTIONAL claim (§3.1) and leaves how it is derived to profiles (§9.10 "Actor
+Delegation Extensions"); this is ToolHive's profile. The issuing server cannot
+see the client's agent registry, so it cannot check an actor token or find the
+agent it names. An embedder that holds such a registry registers an in-process
+**validator**. For a client with an actor profile, ID-JAG issuance from an
+exchange grant requires an `actor_token` (RFC 8693 §2.1), passes it to the
+validator, and builds `act` from the answer.
 
 **Status.** The configuration, the startup checks, the request check and the
 validator call exist. ID-JAG issuance requires the actor parameters from a client
 that has an actor profile (see [Required actor parameters](#required-actor-parameters))
 and calls the validator once per request, after the grant checks and before the
 ID-JAG is signed. A refusal or a failure of the validator ends the request.
-Using the validator's answer is not built yet: the ID-JAG is issued without
-`act`.
+The ID-JAG then carries `act` built from the answer, its `iat` is the time the
+answer was checked (after the call, not when the request was decided), and its
+`exp` is the earliest of `iat` plus the target's lifetime, the grant's expiry,
+the grant's creation plus the client's `id_jag_max_lifetime`, and the
+credential's `ExpiresAt`. A grant that expires, or whose `id_jag_max_lifetime`
+cap passes, while the validator runs is refused as `invalid_grant` with
+`bound_elapsed`. The Debug line `ID-JAG minted` also carries `act_sub` and,
+when the validator gives one, `actor_credential_subject`.
 
 The validator contract (the request, the result, the refusal reasons and the
 rules ToolHive applies when it calls the validator) is in the Go doc comments of
@@ -2313,7 +2326,7 @@ registry.
    srv, err := runner.NewEmbeddedAuthServer(ctx, cfg, runner.WithActorTokenValidators(validators))
    ```
 
-   `ActIssuer` is the value ToolHive will write as `act.iss` in every ID-JAG built
+   `ActIssuer` is the value ToolHive writes as `act.iss` in every ID-JAG built
    from this validator's answer. The validator never sets it, so one validator cannot
    claim to speak for another issuer's agents. It is the namespace in which an agent's
    ID is unique (RFC 7519 §4.1.2). It is often the actor token's issuer, but it does
@@ -2418,7 +2431,7 @@ any grant is read.
 - `pkg/authserver/server/tokenexchange/refresh_token_handler.go` — `RefreshTokenHandler`, `isRefreshTokenExchange`, `checkLoginToken`, `checkExchangeGrantSubject`
 - `pkg/authserver/server/tokenexchange/exchange_grant.go` — the exchange-grant entry type and its validation
 - `pkg/authserver/server/tokenexchange/id_jag_mint.go` — the ID-JAG minting core: `checkIDJAGRequest` (including the required actor parameters for a client with an actor profile), `selectSubjectClaims`, `respondWithIDJAG`, `mintIDJAG`
-- `pkg/authserver/server/tokenexchange/refresh_token_id_jag.go` — `decideIDJAG`, `issueIDJAG`, `idJAGGrantOwner`, `grantUpstreamIdentity`, `validateIDJAGActor`: the grant checks, the actor validator call and the Debug line for an ID-JAG
+- `pkg/authserver/server/tokenexchange/refresh_token_id_jag.go` — `decideIDJAG`, `issueIDJAG`, `idJAGGrantOwner`, `grantUpstreamIdentity`, `validateIDJAGActor`, `idJAGMintWithActor`: the grant checks, the actor validator call and the Debug line for an ID-JAG
 - `pkg/authserver/server/id_jag_seam.go` — `OwnsResourceParameter`, `ReasonDPoPNotSupported`; the token endpoint calls them from `pkg/authserver/server/handlers/token.go`
 - `pkg/authserver/server/tokenexchange/multi_issuer_validator.go` — `MultiIssuerTokenValidator`, `TrustedIssuer`, `resolveActorAuthorization`, `ValidateJWKSURL`
 - `pkg/authserver/server/tokenexchange/validator.go` — `assignClaim`, `buildValidatedClaims`, `validateMayActShape`, `scpToScopeString`

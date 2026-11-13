@@ -5,6 +5,7 @@ package authserver_test
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/url"
 	"testing"
@@ -115,4 +116,35 @@ func TestIDJAGActorValidationRealLogin(t *testing.T) {
 	}, *got)
 	assertJSONEqual(t, map[string]any{"format": "iss_sub", "iss": oidc.Issuer(), "sub": realLoginUpstreamSubject},
 		got.Grant.SubjectIdentifier)
+}
+
+// TestIDJAGActorActClaim mints an ID-JAG for a client with an actor profile
+// over HTTP on the memory backend: act is the registered issuer and the
+// validator's URI agent ID, a credential that ends in 20 seconds caps exp, and
+// the credential's subject appears in no claim.
+func TestIDJAGActorActClaim(t *testing.T) {
+	t.Parallel()
+	const (
+		token        = "actor-act-claim"
+		agentID      = "spiffe://example.org/ns/agents/sa/broker"
+		credSubject  = "cred-subject-sentinel"
+		credLifetime = 20 * time.Second
+		maxExpiresIn = int64(credLifetime / time.Second)
+	)
+	validator := mocks.NewMockActorTokenValidator(gomock.NewController(t))
+	env := startXRTServerWith(t, "memory", func(cfg *authserver.RunConfig, _ string) {
+		setBrokerActorProfile(cfg)
+	}, withActorTestValidator(validator))
+	validator.EXPECT().ValidateActor(gomock.Any(), gomock.Any()).Return(tokenexchange.ActorResult{
+		AgentID: agentID, ExpiresAt: time.Now().Add(credLifetime), CredentialSubject: credSubject,
+	}, nil).Times(1)
+	grant := env.idJAGGrant(t, env.broker)
+
+	res := env.requestIDJAGWith(t, env.broker, grant, xrtTargetPlain, actorPairWith(token))
+	claims := assertMintedIDJAGWithAct(t, env, res, xrtTargetPlain, map[string]any{"iss": actorTestActIssuer, "sub": agentID}, 0)
+
+	assert.LessOrEqual(t, intClaim(t, claims, "exp")-intClaim(t, claims, "iat"), maxExpiresIn)
+	raw, err := json.Marshal(claims)
+	require.NoError(t, err)
+	assert.NotContains(t, string(raw), credSubject)
 }

@@ -115,8 +115,21 @@ func intClaim(t *testing.T, claims map[string]any, name string) int64 {
 
 // assertMintedIDJAG checks a minted ID-JAG response and returns the token's
 // claims. The token is for target and xrtIDJAGResource, for the user "user-1";
-// extraClaims names the claims the target adds to the base set.
+// extraClaims names the claims the target adds to the base set. It has no act
+// claim and lives xrtIDJAGLifetime seconds.
 func assertMintedIDJAG(t *testing.T, env *xrtEnv, res tokenResult, target string, extraClaims ...string) map[string]any {
+	t.Helper()
+	return assertMintedIDJAGWithAct(t, env, res, target, nil, xrtIDJAGLifetime, extraClaims...)
+}
+
+// assertMintedIDJAGWithAct is assertMintedIDJAG for a client with an actor
+// profile when wantAct is not nil: the token's act must equal wantAct. A
+// wantLifetime above zero is the exact exp - iat; zero asks only for exp after
+// iat, because the actor credential may cap it. In all cases expires_in is
+// exp - iat.
+func assertMintedIDJAGWithAct(
+	t *testing.T, env *xrtEnv, res tokenResult, target string, wantAct map[string]any, wantLifetime int64, extraClaims ...string,
+) map[string]any {
 	t.Helper()
 	require.Equal(t, http.StatusOK, res.status, res.body)
 	assert.ElementsMatch(t, []string{"access_token", "issued_token_type", "token_type", "expires_in"},
@@ -132,8 +145,17 @@ func assertMintedIDJAG(t *testing.T, env *xrtEnv, res tokenResult, target string
 	assert.Equal(t, target, claims["aud"])
 	assert.Equal(t, xrtTargetClientID, claims["client_id"])
 	assert.Equal(t, xrtIDJAGResource, claims["resource"])
-	assert.EqualValues(t, xrtIDJAGLifetime, intClaim(t, claims, "exp")-intClaim(t, claims, "iat"))
+	iat, exp := intClaim(t, claims, "iat"), intClaim(t, claims, "exp")
 	base := []string{"iss", "sub", "aud", "client_id", "jti", "iat", "exp", "resource"}
+	assert.Greater(t, exp, iat)
+	if wantLifetime > 0 {
+		assert.EqualValues(t, wantLifetime, exp-iat)
+	}
+	if wantAct != nil {
+		assert.Equal(t, wantAct, claims["act"])
+		base = append(base, "act")
+	}
+	assert.EqualValues(t, exp-iat, res.body["expires_in"], "expires_in is exp - iat")
 	assert.ElementsMatch(t, append(base, extraClaims...), slices.Collect(maps.Keys(claims)), "the claims are exactly these")
 	return claims
 }

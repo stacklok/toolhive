@@ -176,6 +176,7 @@ func assertNoIssueSecrets(t *testing.T, text string) {
 // checked actor token and type, the client, the grant's user as recorded and
 // the configured target with the requested resource, whatever else the
 // request carries. It is called exactly once, in the second handler phase.
+// A forged act form field is ignored.
 func TestIDJAGActorValidationRequest(t *testing.T) {
 	t.Parallel()
 
@@ -211,11 +212,13 @@ func TestIDJAGActorValidationRequest(t *testing.T) {
 			req.Form.Set("resource", issueOtherResource)
 			req.Form.Set("sub", "attacker")
 			req.Form.Set("sub_id", `{"format":"iss_sub","iss":"https://evil.example","sub":"attacker"}`)
+			req.Form.Set("act", `{"iss":"https://evil.example","sub":"attacker"}`)
 			require.NoError(t, h.HandleTokenEndpointRequest(t.Context(), req))
 			assert.Zero(t, calls, "the first phase never calls the validator")
 			resp := fosite.NewAccessResponse()
 			require.NoError(t, h.PopulateTokenEndpointResponse(t.Context(), req, resp))
-			assert.NotEmpty(t, resp.GetAccessToken())
+			assert.Equal(t, map[string]any{"iss": "https://agents.example.com", "sub": "agent-1"},
+				mintedClaims(t, resp.GetAccessToken())["act"], "act comes from the registration and the answer, not the form")
 
 			assert.Equal(t, tokenexchange.ActorRequest{
 				ActorToken:     issueActorToken,

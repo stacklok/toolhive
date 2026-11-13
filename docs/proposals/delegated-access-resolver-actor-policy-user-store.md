@@ -791,10 +791,23 @@ Found in review, not resolved here, because each needs a decision:
   Later: a per-provider disconnect the user triggers, and an
   administrator offboarding operation that deletes all of a user's rows
   (which an embedder's directory can call).
-- **B7. Discovery.** Whether direct issuers are listed in the
-  protected-resource metadata.
-- **B8. Removing `tsid`.** Only after embedders stop using it for refresh
-  grants.
+- **B7. Discovery.** Decided: not listed. The vMCP's RFC 9728 metadata
+  keeps listing only its embedded authorization server, and the
+  `resource_metadata` in its 401 challenges keeps pointing there. Direct
+  issuers are configured trust for agents provisioned out of band, not
+  authorization servers that MCP clients should discover; RFC 9728
+  allows a resource not to advertise every server it accepts. Listing
+  them would send generic MCP clients to the customer's identity
+  provider (failed or unexpected client registrations, interactive
+  prompts on a path meant for agents) and has no effect on audience
+  binding. This departs from the MCP rule that clients send only tokens
+  from the server's own authorization server, by deliberate,
+  out-of-band arrangement. If agents later need discovery, they get a
+  separate resource identifier with its own path-based metadata and
+  audience.
+- **B8. Removing `tsid`.** Decided: keep it as the proof of an
+  interactive login; revisit only once embedders no longer use it for
+  refresh-grant checks.
 
 ## 10. Accepted costs
 

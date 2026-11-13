@@ -440,7 +440,29 @@ thv config usage-metrics enable
 
 **Purpose**: Exchanges incoming JWT tokens for external service tokens using OAuth 2.0 Token Exchange (RFC 8693).
 
-**Location**: `pkg/oauthproto/tokenexchange/middleware.go`
+**Location**: `pkg/auth/tokenexchange/middleware.go` (runtime and configuration)
+and `pkg/auth/tokenexchange/factory.go` (runner factory and lifecycle).
+
+**Go API migration (OWN-05)**: Host middleware moved from
+`github.com/stacklok/toolhive/pkg/oauthproto/tokenexchange` to
+`github.com/stacklok/toolhive/pkg/auth/tokenexchange`. Update imports for these symbols:
+
+- `Config`, `MiddlewareParams`, `Middleware` (including `Handler` and `Close`)
+- `MiddlewareType`, `HeaderStrategyReplace`, `HeaderStrategyCustom`, `EnvClientSecret`
+- `SubjectTokenProvider`
+- `CreateMiddleware`, `CreateMiddlewareFromHeader`, `CreateMiddlewareFromTokenSource`
+
+`ExchangeConfig` (including `Validate` and `TokenSource`) and `NormalizeTokenType`
+remain in `pkg/oauthproto/tokenexchange`. Code using both layers should import
+that package with an alias such as `exchange`, and the host package as
+`tokenexchange`. There is no compatibility wrapper from the reusable package
+back to the host. This is an import/ownership migration, not a runtime feature
+change: configuration keys, defaults, environment variables, authentication,
+headers, errors, and token-source lifetime remain unchanged.
+
+The runner explicitly maps `tokenexchange.MiddlewareType` to the host
+`CreateMiddleware` in `GetSupportedMiddlewareFactories`; neither package relies
+on `init()` registration. Direct proxy callers use the two host constructors.
 
 **Responsibilities**:
 - Extract claims from authenticated JWT tokens

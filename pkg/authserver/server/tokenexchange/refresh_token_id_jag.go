@@ -50,7 +50,7 @@ func (h *RefreshTokenHandler) decideIDJAG(
 	shape, err := checkIDJAGRequest(form, policy)
 	if err != nil {
 		reason := refuseRequestParam
-		if policy.ActorProfile != nil {
+		if errors.Is(err, errActorValidationUnavailable) {
 			reason = refuseActorUnavailable
 		}
 		return nil, refuse(ctx, log, reason, err)

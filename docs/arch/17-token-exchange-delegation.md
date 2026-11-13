@@ -2080,9 +2080,11 @@ grant_type=urn:ietf:params:oauth:grant-type:token-exchange
 ```
 
 `audience` must be exactly one target `issuer` and `resource` exactly one of
-that target's `resources`, both as written. `scope`, `authorization_details`
-and `actor_token` are refused. Unknown parameters, including `sub`, are
-ignored. The response is `200` with `Cache-Control: no-store`:
+that target's `resources`, both as written. `scope` and `authorization_details`
+are refused. `actor_token` and `actor_token_type` are refused too, unless the
+client has an actor profile, which must send both (see [Required actor
+parameters](#required-actor-parameters)). Unknown parameters, including `sub`,
+are ignored. The response is `200` with `Cache-Control: no-store`:
 
 ```json
 {
@@ -2102,11 +2104,15 @@ are listed in "Claims and subject".
 The server stops at the first check that fails:
 
 1. The client: confidential, with the token-exchange grant, and with both
-   `exchange_refresh_tokens` and `id_jag.targets`. A client with an actor
-   profile then gets `400 unauthorized_client` before anything else is
-   checked (see [Fail-closed guard](#fail-closed-guard)).
-2. The request shape, then a target of this client that lists the `resource`.
-   Nothing is read from the store yet.
+   `exchange_refresh_tokens` and `id_jag.targets`.
+2. The request shape: `subject_token`, `audience`, `resource`, then `scope` and
+   `authorization_details` (refused). Then the actor parameters: a client
+   without an actor profile has `actor_token` and `actor_token_type` refused,
+   and a client with one must send them (see [Required actor
+   parameters](#required-actor-parameters)). Then a target of this client that
+   lists the `resource`. A client with an actor profile is then refused with
+   `400 unauthorized_client`, because the validator call is not built yet. Nothing is read
+   from the store yet.
 3. The grant: an unknown, forged, foreign, login or expired token all get
    `grant_invalid`. Then revoked, parent revoked, and `not_issuable` when the
    grant does not list the ID-JAG output.
@@ -2190,7 +2196,8 @@ broker's `subject_token_audiences` is missing there, a target that requires
 | `https://toolhive.dev/upstream_subject` | object | Only if the target requires it: `{"iss", "claim", "value"}`. The config calls it `upstream_subject` |
 
 There is no `nbf`, `scope`, `cnf`, `authorization_details` or `act` claim. The
-client in `client_id` acts for the user.
+client in `client_id` acts for the user. A client with an actor profile gets no
+ID-JAG yet (see [Required actor parameters](#required-actor-parameters)).
 
 `sub` is the same for every audience. AS-1 draws it as a random UUID at the
 user's first login. With memory storage a restart gives every user a new `sub`,
@@ -2255,14 +2262,15 @@ An ID-JAG can name the acting agent in its `act` claim (ID-JAG draft -06,
 Extensions"). The issuing server cannot see the client's agent registry, so it
 cannot check an actor token or find the agent it names. An embedder that holds
 such a registry registers an in-process **validator**. For a client with an
-actor profile, ID-JAG issuance from an exchange grant will then require an
-`actor_token` (RFC 8693 §2.1), pass it to the validator, and build `act` from
-the answer.
+actor profile, ID-JAG issuance from an exchange grant requires an
+`actor_token` (RFC 8693 §2.1), and will pass it to the validator and build `act`
+from the answer.
 
-**Status.** Only the configuration and the startup checks exist. Nothing calls
-the validator yet. Until the call is added, ID-JAG issuance refuses every
-request from a client that has an actor profile (see
-[Fail-closed guard](#fail-closed-guard)).
+**Status.** The configuration, the startup checks and the request check exist.
+Calling the validator and setting `act` are not built yet, so a client with an
+actor profile gets no ID-JAG: a request that passes every request check is
+refused with `400 unauthorized_client` (see [Required actor
+parameters](#required-actor-parameters)).
 
 The validator contract (the request, the result, the refusal reasons and the
 rules ToolHive applies when it calls the validator) is in the Go doc comments of
@@ -2370,18 +2378,29 @@ server builds its per-client policies, it binds each profile to its registered
 validator. It does not check the registration again, because `Config.Validate` has
 already done so.
 
-#### Fail-closed guard
-
-`checkIDJAGRequest` returns `400 unauthorized_client` ("Actor-token validation
-is not available.") for a client that has an actor profile, before it reads any
-request parameter. A client the operator configured to require an actor check therefore gets no
-ID-JAG until the check is wired in. The change that adds the validator call to issuance
-replaces this guard.
-
 **Open.** ToolHive does not check that a SPIFFE agent ID belongs to the trust domain
 named by a `spiffe://` `ActIssuer`. A validator that accepts JWT-SVIDs must verify each
 SVID against the bundle of the trust domain in its `sub`. That check is the binding,
 and it belongs in the embedder's validator.
+
+#### Required actor parameters
+
+A client with an actor profile must send exactly one non-empty `actor_token` and
+exactly one `actor_token_type` that equals the profile's token type. The type is
+compared exactly, with no case folding. Otherwise the request fails with
+`invalid_request` and one of these hints:
+
+- `The 'actor_token' parameter is required, once, for this client.`
+- `The 'actor_token_type' parameter must name the token type configured for this client, once.`
+
+`checkIDJAGRequest` makes this check before it looks up the target and before
+any grant is read.
+
+The actor token is not validated yet. A request that passes this check and the
+target check is refused with `400 unauthorized_client` and the hint `Actor-token
+validation is not available.`, so a client the operator configured to require an actor
+check gets no ID-JAG until the validator call is built. That call replaces this
+refusal.
 
 ## Implementation
 
@@ -2389,7 +2408,7 @@ and it belongs in the embedder's validator.
 - `pkg/authserver/server/tokenexchange/handler.go` — `checkSourcePolicy`, `ConfiguredClientPolicy`, `checkDelegationConsent`, `grantScopes`, `grantAndBoundAudiences`, `externalOrigin`, `IDJAGTarget`, `ConfiguredClientPolicy.IDJAGTargets`, `ConfiguredClientPolicy.ActorProfile`
 - `pkg/authserver/server/tokenexchange/refresh_token_handler.go` — `RefreshTokenHandler`, `isRefreshTokenExchange`, `checkLoginToken`, `checkExchangeGrantSubject`
 - `pkg/authserver/server/tokenexchange/exchange_grant.go` — the exchange-grant entry type and its validation
-- `pkg/authserver/server/tokenexchange/id_jag_mint.go` — the ID-JAG minting core: `checkIDJAGRequest` (including the fail-closed guard for a client with an actor profile), `selectSubjectClaims`, `respondWithIDJAG`, `mintIDJAG`
+- `pkg/authserver/server/tokenexchange/id_jag_mint.go` — the ID-JAG minting core: `checkIDJAGRequest` (including the required actor parameters for a client with an actor profile), `selectSubjectClaims`, `respondWithIDJAG`, `mintIDJAG`
 - `pkg/authserver/server/tokenexchange/refresh_token_id_jag.go` — `decideIDJAG`, `issueIDJAG`: the grant checks and the Debug line for an ID-JAG
 - `pkg/authserver/server/id_jag_seam.go` — `OwnsResourceParameter`, `ReasonDPoPNotSupported`; the token endpoint calls them from `pkg/authserver/server/handlers/token.go`
 - `pkg/authserver/server/tokenexchange/multi_issuer_validator.go` — `MultiIssuerTokenValidator`, `TrustedIssuer`, `resolveActorAuthorization`, `ValidateJWKSURL`

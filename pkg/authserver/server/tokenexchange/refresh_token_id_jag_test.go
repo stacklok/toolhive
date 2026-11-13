@@ -204,6 +204,52 @@ func TestIDJAGMintsFromTheGrantSnapshot(t *testing.T) {
 	}
 }
 
+// TestIDJAGRequiresActorTokenForActorProfileClients shows the mint path holds a
+// client with an actor profile to the actor parameters, and refuses it with
+// server_error once they pass, because issuance does not call the actor
+// validator yet. Both refusals come before any grant is read.
+func TestIDJAGRequiresActorTokenForActorProfileClients(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		form     url.Values
+		wantCode string
+		wantHint string
+	}{
+		{name: "without actor parameters",
+			wantCode: "invalid_request", wantHint: "The 'actor_token' parameter is required, once, for this client."},
+		{name: "with matching actor parameters fails closed",
+			form:     url.Values{"actor_token": {"agent-token"}, "actor_token_type": {oauthproto.TokenTypeJWT}},
+			wantCode: "unauthorized_client", wantHint: "Actor-token validation is not available."},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			records := idJAGRecords(idJAGRecord("ok", testRefreshClient, "", time.Now().Add(time.Hour), oauthproto.TokenTypeIDJAG))
+			store := &fakeGrantStoreWithRecords{recordStore: recordStore{grants: records}}
+			h := idJAGHandler(t, store)
+			policy := h.clientPolicies[testRefreshClient]
+			policy.ActorProfile = &ActorProfile{Name: "agents", ActorTokenType: oauthproto.TokenTypeJWT}
+			h.clientPolicies[testRefreshClient] = policy
+
+			req := idJAGRequest("x.ok")
+			for k, v := range tt.form {
+				req.Form[k] = v
+			}
+			handleErr := h.HandleTokenEndpointRequest(t.Context(), req)
+			requireOAuthError(t, handleErr, tt.wantCode, "")
+			assert.Equal(t, tt.wantHint, unwrapOAuth(t, handleErr).HintField)
+
+			resp := fosite.NewAccessResponse()
+			require.Error(t, h.PopulateTokenEndpointResponse(t.Context(), req, resp))
+			assert.Empty(t, resp.GetAccessToken())
+			assert.Zero(t, store.reads, "the request check comes before any grant is read")
+			assert.Empty(t, store.created)
+		})
+	}
+}
+
 // TestIDJAGInternalFailuresAreGeneric covers internal failures on the ID-JAG
 // path that the derive tests do not: each is a server_error whose description
 // carries no cause.
@@ -483,6 +529,12 @@ func TestIDJAGLogs(t *testing.T) {
 				h.signer = tt.signer
 			}
 			req := idJAGRequest(token)
+			if tt.profiled {
+				// A well-formed request, so it reaches the refusal that stands in
+				// for the validator call.
+				req.Form.Set("actor_token", "agent-token")
+				req.Form.Set("actor_token_type", oauthproto.TokenTypeJWT)
+			}
 			req.Client = &fosite.DefaultClient{ID: tt.clientID, GrantTypes: fosite.Arguments{oauthproto.GrantTypeTokenExchange}}
 
 			resp := fosite.NewAccessResponse()

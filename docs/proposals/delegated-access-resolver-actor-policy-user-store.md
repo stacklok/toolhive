@@ -152,22 +152,20 @@ rule must never switch off the client check.
 On the direct path, the client check is client *authorization*, not
 binding: nobody authenticates the presenter, so it says only that the
 token was issued to an allowed client. Proof of who presents the token
-comes only from DPoP (section 2.4). The client claim name is configured
-per issuer (`cid` for Okta, `client_id` for RFC 9068, `azp` where a
-vendor uses it), with no fallback chain. A token without the claim is
-refused. The allowlist is required and cannot be a wildcard. Token
-exchange already has this check: the trusted issuer's `ActorClaim` names
-the client claim and `AllowedActors` (or the existing CEL `ActorMatcher`
-over the token's claims) lists the allowed values. The direct path reuses
-those fields and that matcher as its client check.
+comes only from DPoP. The validator library reports the client from the
+claim each identity provider uses (Appendix A); the allowlist is required
+and cannot be a wildcard. Token exchange already has this check (the
+trusted issuer's `ActorClaim` with `AllowedActors` or the CEL
+`ActorMatcher`), and the direct path uses the same configuration.
 
 The actor policy, in the leaf package `pkg/auth/actor`:
 
 ```go
 type Actor struct {
+	Source  string         // "act" or "client": where this identity provider names the actor
 	Issuer  string         // act.iss, or the token's iss when act has no iss
-	Subject string         // act.sub
-	Claims  map[string]any // the outermost act object, verified
+	Subject string         // act.sub, or the client ID when Source is "client"
+	Claims  map[string]any // the outermost act object, or the agent claims the profile names
 }
 
 type Request struct {
@@ -190,10 +188,18 @@ type Policy interface {
 ```
 
 - Only the outermost `act` counts (RFC 8693 §4.1).
-- A token without `act` has no actor. On the direct path an actor is
-  required by default, so a token without `act` is refused unless the
-  issuer's configuration explicitly allows tokens without an actor. The
-  client is never used in place of the actor.
+- Identity providers name the actor differently. Okta and RFC 8693
+  issuers use `act`. Entra never emits `act` and names the agent as the
+  client (`azp`, with an agent marker for Entra Agent ID), and the IETF
+  agent-authentication draft does the same. So each issuer has exactly
+  one actor source, `act` or `client`, set by its profile (Appendix A),
+  with no fallback from one to the other.
+- The default source is `act`, and a token without `act` is refused.
+  An issuer can be configured to take the client as the actor when `act`
+  is absent, for example for an agent's own authorization-code tokens.
+  When the source is `client`, the client allowlist and the actor policy
+  test the same value; audit records the source so this is visible.
+  Outside that configuration, the client is never used as the actor.
 - The default implementation is configuration: allowed actor issuers, an
   allowlist of actor subjects, and its own CEL expression evaluated over
   `Request.Actor` only. It does not reuse the client-check matcher.
@@ -217,17 +223,8 @@ What each path checks:
   4. in external mode, an unrevoked approval for (gateway, user, client,
      `act.iss`) ("Delegated access: subject mapping and user approval
      (#6887)").
-- **Direct:** client authorization, then actor policy on the token's
-  `act`.
-
-**What Okta puts in `act`.** It depends on the flow. In Okta's
-on-behalf-of token exchange, `act.sub` is the requesting service app's
-client ID (`sub_profile: service`), so the client check and the actor
-policy test the same value. In Okta's cross-app access for AI agents,
-`act.sub` is the agent principal (`sub_profile: ai_agent`). A token from
-an agent's own authorization-code flow has no `act`, and the direct path
-refuses it by default. Okta's `act` has no `iss`, so its issuer is the
-token's `iss`.
+- **Direct:** client authorization, then actor policy on the actor the
+  validator library reports.
 
 ### 2.3 One user-keyed credential store, without new storage methods
 
@@ -444,45 +441,41 @@ use the delegated route: the platform's grant leads to a marked gateway
 token, and the read finds the user's rows directly. No stable session ID
 has to be stamped on the grant.
 
-**Where the direct route runs.** The agent sends the Okta token to the
-vMCP. The vMCP's incoming-authentication middleware (the resource-server
-side) makes every check below. The authorization server never sees the
-token on this path. It only owns the credential rows, and its refresher
-renews an expired upstream token when the vMCP reads it. Section 2.5
-describes an alternative that moves these checks into the authorization
-server.
+**Where the direct route runs.** The agent sends its identity provider's
+token to the vMCP. The vMCP's incoming-authentication middleware (the
+resource-server side) validates it with the shared validator library
+(Appendix A). The authorization server never sees the token on this
+path. It only owns the credential rows, and its refresher renews an
+expired upstream token when the vMCP reads it. Section 2.5 describes an
+alternative that moves these checks into the authorization server.
 
-**Direct-issuer checks**, configured per issuer:
+**What the vMCP needs from the library:** a verified principal, or a
+refusal it can map to an RFC 6750 error. The principal carries the
+issuer, the user binding (`Ref`: issuer, claim, value), the client, the
+actor (section 2.2), the scopes, and the DPoP key binding, if any. How
+each identity provider expresses these is the library's concern.
 
-- issuer and keys from configuration; keys selected strictly by the
-  configured issuer, never shared across issuers; the discovery
-  document's issuer must equal the configured issuer;
-- configuration refuses a direct issuer equal to the embedded issuer;
-- a token carrying `tsid`, the delegated-access marker or
-  `no_upstream_session` is refused;
-- `aud` equal to the gateway's resource URI, and never equal to the
-  embedded authorization server's issuer. For Okta this means a
-  dedicated custom authorization server for the gateway. Tokens from
-  Okta's org authorization server are refused;
-- algorithm allowlist; `exp` and `jti` required; `nbf` honoured; `iat` in
-  the future refused; a cap on `exp - iat`;
-- `typ`: `at+jwt`, or, when the issuer is configured to allow untyped
-  tokens, a missing `typ` or `JWT` only. An ID-JAG `typ` is always
-  refused. Okta access tokens carry no `typ`, so Okta needs this
-  exception;
-- required scopes per issuer, refused with `insufficient_scope`;
-- client authorization and actor policy (section 2.2);
-- the binding claim, resolved per request (section 2.1). Unknown or
-  ambiguous: 403 with a ToolHive-defined error body (this is not an
-  RFC 6750 error code). Resolver unavailable: 503 with `Retry-After`;
-- DPoP: whenever the token carries `cnf.jkt`, the `DPoP` scheme and a
-  valid proof are required (thumbprint, `htm`, `htu`, `iat`, `ath`, and a
-  replay window for the proof's `jti`). The issuer's configuration
-  decides only whether tokens without `cnf` are refused;
-- the issuer must belong to the same identity-provider tenant (for Okta,
-  the same org) as the gateway's own sign-in identity provider. Its
-  administrator can already sign in as any user, so trusting its tokens
-  adds no new party that can act for users.
+**What ToolHive then does:**
+
+- refuses a token carrying `tsid`, the delegated-access marker or
+  `no_upstream_session`, and refuses configuration where a direct issuer
+  equals the embedded issuer or a direct audience equals the embedded
+  issuer;
+- checks the client allowlist and runs the actor policy (section 2.2);
+- resolves the user binding (section 2.1). Unknown or ambiguous: 403 with
+  a ToolHive-defined error body (not an RFC 6750 error code). Resolver
+  unavailable: 503 with `Retry-After`;
+- requires the issuer to belong to the same identity-provider tenant as
+  the gateway's own sign-in identity provider. Its administrator can
+  already sign in as any user, so trusting its tokens adds no new party
+  that can act for users.
+
+The operator configures a direct issuer with three required values (the
+issuer, the audience, and a non-empty client allowlist), a profile name
+that tells the library how that identity provider shapes its tokens, and
+optional required scopes and actor settings. The issuer alone is never
+enough: it would admit every token the tenant mints, for any audience and
+any application.
 
 The direct validator sets `PlatformUserID` to the resolved user. Session
 binding (#6888) uses that user, never the token's own `sub`.
@@ -729,10 +722,12 @@ Rules that keep this true:
 - **D1. Interactive proof.** Decided: `tsid` with the embedded issuer.
 - **D2. Upgrade path for standalone Redis.** Decided: re-authorize once,
   with every replica upgraded before the setting changes.
-- **D3. Direct-issuer preconditions.** A dedicated custom authorization
-  server, the same identity-provider tenant as the gateway's sign-in,
-  required scopes, and DPoP whenever the token is bound. Recommended:
-  all, plus refusing unbound tokens as a per-issuer option.
+- **D3. Direct-issuer configuration.** Decided: provider-agnostic. The
+  operator gives the issuer, the audience and a client allowlist, plus a
+  profile name; identity-provider specifics live in the validator library
+  (Appendix A). The issuer must share the tenant of the gateway's sign-in
+  identity provider. Required scopes and refusing unbound tokens are
+  per-issuer options.
 - **D4. Resolution time for minted tokens.** Decided: at mint time. ID-JAG
   redemption and token exchange resolve the subject once; the gateway
   token's `sub` is the native user, and the approval check (external
@@ -780,9 +775,11 @@ Found in review, not resolved here, because each needs a decision:
 - **B2. Marker value.** Decided: checks use presence only. The value may
   name the trusted issuer or the approval record for audit, but nothing
   requires it and no check reads it.
-- **B3. Okta actor default.** Refusing direct tokens without `act` refuses
-  tokens from an agent's own authorization-code flow. Confirm that only
-  on-behalf-of or cross-app-access tokens should be accepted.
+- **B3. Actor across identity providers.** Decided: one actor source per
+  issuer, `act` or `client`, set by the profile, with no fallback. Default
+  `act`, refusing tokens without it; an issuer may opt in to taking the
+  client as the actor when `act` is absent. The Entra profile uses
+  `client`, optionally restricted to Entra Agent ID identities.
 - **B4. Per-agent approval.** Approvals keyed by `act.iss` cover every
   agent of an issuer. Per-agent approval is not possible with opaque,
   per-instance agent IDs.
@@ -818,3 +815,62 @@ Found in review, not resolved here, because each needs a decision:
 - Whether the refresher renews a stored ID token that an embedder's
   policy gate reads.
 - How PR #7031's lease is keyed, beyond its description.
+
+## Appendix A. What the validator library must provide
+
+The direct route uses the toolhive-core `authn` validator stack as a
+library. These are the requirements this proposal places on it, not part
+of the proposal itself. The library owns how each identity provider
+shapes its tokens.
+
+**Output.** A verified principal (issuer, user binding as issuer + claim +
+value, client, actor with its source, scopes, DPoP key binding) or a
+typed refusal that maps to `invalid_token`, `insufficient_scope` or
+`server_error`.
+
+**Checks that configuration can never switch off:**
+
+- signature with that issuer's keys only; `iss` matched exactly; the
+  discovery document's issuer equal to the configured issuer; templated
+  issuers (for example Entra's `{tenantid}`, `/common`, `/organizations`)
+  refused;
+- algorithm allowlist, never `none` or symmetric algorithms;
+- `aud` matched against the configured audience;
+- `exp` required, `iat` not in the future, `nbf` honoured, and a lifetime
+  cap that can be tuned under a hard ceiling but not disabled;
+- the client claim present;
+- the binding claim present, and never `email`, `upn` or
+  `preferred_username`;
+- the subject is a user, not the client itself or an application
+  identity (for example Entra `idtyp=app`);
+- only the outermost `act` considered;
+- DPoP enforced whenever the token carries `cnf`.
+
+**Profiles.** A profile sets the claim names and token shape for one kind
+of identity provider. A starting set, to be confirmed against real tokens:
+
+| | generic RFC 9068 | Okta | Entra | Keycloak |
+|---|---|---|---|---|
+| `typ` | `at+jwt` | absent | `JWT` | `JWT` |
+| client claim | `client_id` | `cid` | `azp` (v2), `appid` (v1) | `azp` |
+| scope claim | `scope` | `scp` | `scp` | `scope` |
+| binding claim | `sub` (operator confirms it is immutable) | `uid` | `oid`, with `tid` equal to the issuer's tenant | `sub` |
+| token ID | `jti` | `jti` | `uti` | `jti` |
+| actor source | `act` | `act` | `client` | `act` (unverified) |
+| issuer form | — | custom authorization server only; org server refused | per-tenant only | — |
+
+**Guards when a profile accepts a `typ` other than `at+jwt`:** refuse a
+token carrying `nonce`, refuse an `aud` equal to the client claim, and
+require the scope claim, so that ID tokens are never accepted as access
+tokens. The ID-JAG `typ` is always refused.
+
+**Entra specifics:** `xms_act_fct` containing 11 marks an Entra Agent ID
+identity and can be required; `xms_sub_fct` containing 13 means the
+subject is an agent's own user account, refused unless allowed.
+
+**Gaps in the stack today** (PRs #506 to #516, none merged; ToolHive pins
+toolhive-core v0.0.59): an option for tokens without `at+jwt`, DPoP proof
+verification including the nonce retry, and claim-level checks for the
+token ID, the client claim and the refused ToolHive claims (these can be
+`Check`s written by ToolHive). Until DPoP verification exists, tokens with
+`cnf` are refused.

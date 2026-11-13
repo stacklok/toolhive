@@ -18295,7 +18295,8 @@ type RunnerRunConfig struct {
 	// RateLimitNamespace is the Kubernetes namespace for Redis key derivation.
 	RateLimitNamespace OptString `json:"rate_limit_namespace"`
 	// ReadOnlyRootfs mounts the MCP server container's root filesystem as read-only.
-	// Opt-in: servers that write outside their mounted volumes will fail when enabled.
+	// /tmp, /var/tmp and /run get a small noexec tmpfs unless a volume targets them.
+	// Opt-in: servers that write anywhere else outside their mounted volumes will fail.
 	// Only applicable to Docker/Podman deployments.
 	ReadOnlyRootfs OptBool `json:"read_only_rootfs"`
 	// RegistryAPIURL is the registry API URL that served this server's metadata.

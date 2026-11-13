@@ -1,0 +1,252 @@
+<title>Delegated Credential Access</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&family=Archivo:wght@600;700&display=swap">
+<style>
+/* Layout: one reading column, a token-flow strip up top, compact tables for routes, stages and issues. */
+:root {
+  --bg: #f6f7f9;
+  --surface: #ffffff;
+  --fg: #1b2230;
+  --muted: #5a6476;
+  --line: #d9dee7;
+  --accent: #0f6b74;
+  --accent-soft: #e2f0f1;
+  --warn: #8a5a00;
+  --warn-soft: #fbf1dc;
+  --font-display: "Archivo", "Helvetica Neue", Arial, sans-serif;
+  --font-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #12161d; --surface: #1a2029; --fg: #e4e8ee; --muted: #9aa4b4;
+    --line: #2c3442; --accent: #5cc2cb; --accent-soft: #163338;
+    --warn: #e6b45a; --warn-soft: #33290f; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #12161d; --surface: #1a2029; --fg: #e4e8ee; --muted: #9aa4b4;
+  --line: #2c3442; --accent: #5cc2cb; --accent-soft: #163338;
+  --warn: #e6b45a; --warn-soft: #33290f; color-scheme: dark;
+}
+body {
+  background: var(--bg); color: var(--fg);
+  font-family: var(--font-body); font-size: 15px; line-height: 1.55;
+}
+.page {
+  max-width: 860px; margin: 0 auto;
+  padding-block: 32px 56px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  display: grid; gap: 28px;
+}
+header { display: grid; gap: 8px; }
+.eyebrow {
+  font-family: var(--font-mono); font-size: 12px; letter-spacing: .08em;
+  text-transform: uppercase; color: var(--muted);
+}
+.status {
+  display: inline-block; padding: 2px 8px; border-radius: 4px;
+  background: var(--warn-soft); color: var(--warn); font-weight: 500;
+}
+h1 {
+  font-family: var(--font-display); font-weight: 700; font-size: clamp(28px, 5vw, 38px);
+  line-height: 1.1; margin: 0; text-wrap: balance;
+}
+h2 {
+  font-family: var(--font-display); font-weight: 600; font-size: 19px;
+  margin: 0 0 10px; text-wrap: balance;
+}
+p { margin: 0; max-width: 68ch; }
+section { display: grid; gap: 10px; min-width: 0; }
+ul { margin: 0; padding-left: 20px; display: grid; gap: 4px; max-width: 68ch; }
+code { font-family: var(--font-mono); font-size: .9em; background: var(--accent-soft); padding: 1px 4px; border-radius: 3px; }
+.lede { font-size: 16.5px; color: var(--fg); }
+
+.flows { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.flow {
+  background: var(--surface); border: 1px solid var(--line); border-radius: 6px;
+  padding: 14px; display: grid; gap: 6px; align-content: start; min-width: 0;
+}
+.flow h3 { margin: 0; font-size: 14px; font-weight: 600; }
+.flow .path { font-family: var(--font-mono); font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+.flow p { font-size: 13.5px; }
+.endstate {
+  border-left: 3px solid var(--accent); padding: 8px 12px; background: var(--accent-soft);
+  border-radius: 0 6px 6px 0; font-size: 14px;
+}
+
+.decisions { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.decision { display: grid; gap: 6px; align-content: start; min-width: 0; }
+.decision .n { font-family: var(--font-mono); font-size: 12px; color: var(--accent); }
+.decision h3 { margin: 0; font-size: 15px; font-weight: 600; }
+.decision p { font-size: 13.5px; color: var(--fg); }
+
+.table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); }
+table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+th, td { text-align: left; vertical-align: top; padding: 8px 10px; border-bottom: 1px solid var(--line); }
+th { font-weight: 600; font-size: 12px; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
+tr:last-child td { border-bottom: 0; }
+td.k { font-family: var(--font-mono); font-size: 12.5px; white-space: nowrap; color: var(--accent); }
+.tag { font-family: var(--font-mono); font-size: 11.5px; padding: 1px 6px; border-radius: 3px; white-space: nowrap; }
+.tag.keep { background: var(--accent-soft); color: var(--accent); }
+.tag.rewrite { background: var(--warn-soft); color: var(--warn); }
+
+.cols { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.cols > div { display: grid; gap: 6px; align-content: start; min-width: 0; }
+.cols h3 { margin: 0; font-size: 14px; font-weight: 600; }
+.cols ul { font-size: 13.5px; }
+footer { color: var(--muted); font-size: 13px; }
+
+@media (max-width: 720px) {
+  .flows, .decisions, .cols { grid-template-columns: 1fr; }
+}
+</style>
+
+<div class="page">
+  <header>
+    <div class="eyebrow"><span class="status">Draft, revision 2</span> &nbsp;ToolHive authorization server and vMCP · 2026-11-13</div>
+    <h1>Delegated Credential Access</h1>
+    <p class="lede">Agents acting for a user need that user's stored provider connections (their GitHub or Slack tokens) at the gateway, without a browser session. Today only interactive sign-ins get them. This proposal adds two more ways in, through the same subject mapping, actor checks and credential store.</p>
+  </header>
+
+  <section>
+    <h2>Three ways a token reaches a user's credentials</h2>
+    <div class="flows">
+      <div class="flow">
+        <h3>Interactive</h3>
+        <div class="path">user → gateway AS → vMCP</div>
+        <p>Works today. Unchanged.</p>
+      </div>
+      <div class="flow">
+        <h3>Delegated</h3>
+        <div class="path">agent platform AS-1 → ID-JAG → gateway AS-2 → short token → vMCP</div>
+        <p>AS-2 redeems an identity assertion and issues a gateway token for the native user. Scheduled runs use this path too.</p>
+      </div>
+      <div class="flow">
+        <h3>Direct</h3>
+        <div class="path">customer IdP (Okta) → token → vMCP</div>
+        <p>The agent presents its Okta token straight to the gateway. Nothing in ToolHive mints a token in between.</p>
+      </div>
+    </div>
+    <div class="endstate">All three end the same way: the subject is the native user, the actor is checked, and the credential is read by (gateway, user, routed provider) with an owner check. None can reach credentials through another's path.</div>
+  </section>
+
+  <section>
+    <h2>Three decisions</h2>
+    <div class="decisions">
+      <div class="decision">
+        <span class="n">Subject</span>
+        <h3>One subject resolver</h3>
+        <p><code>(issuer, binding claim, value)</code> → native user. Never creates a user, fails closed. Binding claim per issuer: Okta <code>uid</code>, Entra <code>oid</code>, AS-1 <code>upstream_subject</code>. Never the email. A directory lookup is one implementation.</p>
+      </div>
+      <div class="decision">
+        <span class="n">Actor</span>
+        <h3>Three separate checks</h3>
+        <p><b>Proof</b> at ID-JAG issuance (the existing validator hook). <b>Client checks</b>: <code>client_id</code> binding at redemption; a required client allowlist (Okta <code>cid</code>) on the direct path, reusing token exchange's existing one. <b>Policy</b> on the outermost <code>act</code>, one interface for redemption, exchange and direct. <code>act.iss</code> must match the assertion's issuer.</p>
+      </div>
+      <div class="decision">
+        <span class="n">Storage</span>
+        <h3>One user-keyed store</h3>
+        <p>Rows keyed by (gateway, user, provider), as a storage decorator behind a setting. No new storage methods, so existing decorators keep working. An injected reader fetches only the routed provider and answers "needs authorization" when it is missing.</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Who may read a user's credentials</h2>
+    <p>Each route needs positive proof. A token is never admitted because a claim is missing.</p>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Route</th><th>Admitted when</th><th>User</th><th>Read</th></tr></thead>
+        <tbody>
+          <tr><td class="k">interactive</td><td>issued by the gateway's AS and carries <code>tsid</code></td><td><code>sub</code></td><td>all providers, as today</td></tr>
+          <tr><td class="k">delegated</td><td>issued by the gateway's AS and carries the delegated-access marker</td><td><code>sub</code>, resolved at mint</td><td>routed provider only</td></tr>
+          <tr><td class="k">direct</td><td>configured issuer, same IdP tenant as sign-in; exact <code>aud</code>; client allowlist; actor required; scopes; lifetime cap; DPoP when bound; no <code>tsid</code> or marker</td><td>resolved per request</td><td>routed provider only</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>The marker is issued only by the gateway's own AS after resolution, client and actor checks pass, and in external mode only with the user's approval. Never at login, and never because <code>may_act</code> or a wildcard matched. A marked token cannot be exchanged again and gets no refresh token.</p>
+  </section>
+
+  <section>
+    <h2>What changes where</h2>
+    <div class="cols">
+      <div>
+        <h3>ToolHive</h3>
+        <ul>
+          <li>New <code>pkg/auth/subject</code> and <code>pkg/auth/actor</code> interfaces</li>
+          <li>Redemption and exchange: per-issuer subject mode and binding claim, marker</li>
+          <li>Read service <code>GetValidTokensForUser</code>, admission route on the identity</li>
+          <li>Direct-issuer route at the vMCP (or an in-process exchange, see D5)</li>
+          <li>Optional user-keying decorator for standalone installs</li>
+        </ul>
+      </div>
+      <div>
+        <h3>Embedders</h3>
+        <ul>
+          <li>Gateway with a directory: nothing required to keep working; implements the resolver and actor policy against its directory to adopt the new routes</li>
+          <li>Agent platform (AS-1): wires its actor validator, one actor ID per agent, agrees the binding-claim name with the gateway</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Compatibility</h2>
+    <ul>
+      <li><b>Embedders that already key rows by user:</b> no change on upgrade. No storage interface changes, the interactive validator path and its bulk load stay, <code>tsid</code> stays in tokens, and every new behaviour is off until configured per issuer.</li>
+      <li><b>Standalone ToolHive:</b> user keying behind a setting, default unchanged. On switching, every replica upgrades first, then each user signs in once. One-way.</li>
+      <li><b>Everyone:</b> one behaviour change, the refresher deletes a row after a failed refresh-token rotation only if the row still holds the token it redeemed.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Stages</h2>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Stage</th><th>Contents</th><th>Needs</th></tr></thead>
+        <tbody>
+          <tr><td class="k">1 · groundwork</td><td>Canonical user set on every storage caller; conditional delete in the refresher; resource-server validator fixes</td><td>—</td></tr>
+          <tr><td class="k">2 · store</td><td>User-keying decorator, owner check, one account per provider with explicit reconnect. Standalone only; embedders that key by user skip it.</td><td>DCR generation binding, refresh lease</td></tr>
+          <tr><td class="k">3 · read</td><td>Injected reader, routed-provider read, "needs authorization". Inert.</td><td>—</td></tr>
+          <tr><td class="k">4 · routes</td><td>Admission route on the identity, Cedar reads request claims for non-interactive routes, subject resolver and actor policy interfaces</td><td>—</td></tr>
+          <tr><td class="k">5 · marker</td><td>Marker defined and refused on re-exchange; issued nowhere yet</td><td>—</td></tr>
+          <tr><td class="k">6 · direct</td><td>Direct-issuer route, client allowlist, actor policy, per-request resolution, session binding</td><td>3–5, D5</td></tr>
+          <tr><td class="k">7 · delegated</td><td>Resolve at redemption, <code>act.iss</code> check, approval or admin pre-approval, marker issuance; ID-JAG issuance with the actor validator</td><td>3–5</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>6 and 7 run in parallel. The read gates always land before redemption mints native subjects.</p>
+  </section>
+
+  <section>
+    <h2>Effect on filed issues</h2>
+    <div class="table-wrap">
+      <table>
+        <tbody>
+          <tr><td><span class="tag keep">keep</span></td><td>Marker (#6404), subject mapping and approval (#6887, plus the direct route), ID-JAG issuance and actor validation (#6898, #6899), session binding (#6888, #6779), storage RFC (#6885), DCR generation binding (#6508), refresh lease (#4122, PR #7031)</td></tr>
+          <tr><td><span class="tag rewrite">rewrite</span></td><td>Delegated access epic (#6406): allow the direct route. Credential scope opt-in (#6403): becomes per-issuer config. Ownership-checked read (#6407): no stable-ID phase. Owner check (#6176) and chain walk (#6831): move into the decorator, no stable session ID; both assigned to an outside contributor, re-scope with them.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <h2>Open decisions</h2>
+    <div class="table-wrap">
+      <table>
+        <tbody>
+          <tr><td class="k">D3</td><td>Direct-issuer preconditions: dedicated Okta authorization server, same tenant as sign-in, required scopes, DPoP when bound (recommended: all)</td></tr>
+          <tr><td class="k">D4</td><td>Resolve at mint time with short gateway tokens (recommended), or per request</td></tr>
+          <tr><td class="k">D5</td><td>Direct-route checks in the vMCP, by in-process translation at the AS, or in a shared validation library (open)</td></tr>
+          <tr><td class="k">also</td><td>Consent when a new client inherits a user's connections; how a user disconnects or is offboarded under user keying</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <footer>Full proposal: <code>docs/proposals/delegated-access-resolver-actor-policy-user-store.md</code>, next to this page. Accepted costs: a direct token works until it expires and cannot be revoked by the gateway; the direct route costs one resolver call per request.</footer>
+</div>

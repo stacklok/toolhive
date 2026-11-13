@@ -132,8 +132,9 @@ type VMCP interface {
 	// LookupTool resolves an advertised tool name to its capability (incl.
 	// BackendID) WITHOUT invoking it. Returns an error for an unknown or
 	// unadvertised name — the validation seam for the call path. Lookups apply
-	// the same admission filter as ListTools, so they never resolve a denied
-	// capability.
+	// the same visibility filter as ListTools, so they never resolve a capability the
+	// caller cannot see. Visibility is the read check, so a visible tool can still be
+	// refused when called.
 	LookupTool(ctx context.Context, identity *auth.Identity, name string) (*vmcp.Tool, error)
 
 	// LookupResource resolves an advertised resource URI to its capability

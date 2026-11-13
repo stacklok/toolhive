@@ -17,9 +17,9 @@ import (
 	"github.com/stacklok/toolhive/test/e2e"
 )
 
-// This suite checks the tool:call implies tool:read rule end to end. The PDP allows
-// only mcp:tool:call for query_vulnerability and never mcp:tool:read, so tools/list must
-// ask the PDP for mcp:tool:read first and then fall back to mcp:tool:call.
+// This suite checks tools/list visibility end to end. By default the PDP is asked only
+// mcp:tool:call. The PDP allows that for query_vulnerability and denies every other tool, so
+// only query_vulnerability must be listed, and the PDP must never see mcp:tool:read.
 var _ = Describe("Tool discovery through tool:call fallback", Label("middleware", "authz", "http-pdp", "e2e"), Serial, Ordered, func() {
 	var (
 		config         *e2e.TestConfig
@@ -109,7 +109,7 @@ var _ = Describe("Tool discovery through tool:call fallback", Label("middleware"
 		}
 	})
 
-	It("lists only the tool the PDP allows, asking for tool:read before the tool:call fallback [Serial]", func() {
+	It("lists only the tool the PDP allows, asking the PDP only for tool:call by default [Serial]", func() {
 		ctx, cancelList := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancelList()
 
@@ -127,25 +127,16 @@ var _ = Describe("Tool discovery through tool:call fallback", Label("middleware"
 		captured := append([]map[string]interface{}{}, pdpServer.requests...)
 		pdpServer.mu.RUnlock()
 
-		// The tool:read check for query_vulnerability must come before its tool:call fallback.
-		readAt, callAt := -1, -1
-		for i, porc := range captured {
+		// By default the PDP is asked only tool:call, never tool:read.
+		callsForListed := 0
+		for _, porc := range captured {
+			op, _ := porc["operation"].(string)
 			resource, _ := porc["resource"].(string)
-			if !strings.HasSuffix(resource, ":tool:query_vulnerability") {
-				continue
-			}
-			switch porc["operation"] {
-			case "mcp:tool:read":
-				if readAt < 0 {
-					readAt = i
-				}
-			case "mcp:tool:call":
-				if callAt < 0 {
-					callAt = i
-				}
+			Expect(op).ToNot(Equal("mcp:tool:read"), "the default must not send mcp:tool:read to the PDP")
+			if op == "mcp:tool:call" && strings.HasSuffix(resource, ":tool:query_vulnerability") {
+				callsForListed++
 			}
 		}
-		Expect(readAt).To(BeNumerically(">=", 0), "the PDP must be asked for mcp:tool:read")
-		Expect(callAt).To(BeNumerically(">", readAt), "tool:read must come before the tool:call fallback")
+		Expect(callsForListed).To(BeNumerically(">", 0), "the listed tool must be checked with tool:call")
 	})
 })

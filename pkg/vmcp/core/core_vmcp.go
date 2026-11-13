@@ -413,8 +413,9 @@ func (c *coreVMCP) Discover(ctx context.Context, identity *auth.Identity) (Disco
 
 // LookupTool resolves an advertised tool name (incl. composite tools) to its
 // capability without invoking it. It delegates to ListTools, so it applies the
-// same health/advertising AND admission view: a name that is unknown, unadvertised,
-// or denied to identity returns vmcp.ErrNotFound (a denied tool is never resolved).
+// same health/advertising AND visibility view: a name that is unknown, unadvertised,
+// or not visible to identity returns vmcp.ErrNotFound. A visible tool can still be
+// refused when called, because CallTool runs its own tool:call check.
 func (c *coreVMCP) LookupTool(ctx context.Context, identity *auth.Identity, name string) (*vmcp.Tool, error) {
 	tools, err := c.ListTools(ctx, identity)
 	if err != nil {

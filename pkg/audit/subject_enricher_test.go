@@ -51,7 +51,7 @@ var subjectEnricherCases = []struct {
 	{
 		name:     "enricher subject is added",
 		identity: enricherTestIdentity(),
-		enricher: func(context.Context, *auth.Identity) map[string]string {
+		enricher: func(context.Context) map[string]string {
 			return map[string]string{"client_id": "abc"}
 		},
 		wantSubjects: map[string]any{
@@ -63,7 +63,8 @@ var subjectEnricherCases = []struct {
 	{
 		name:     "enricher reads the caller identity",
 		identity: enricherTestIdentity(),
-		enricher: func(_ context.Context, identity *auth.Identity) map[string]string {
+		enricher: func(ctx context.Context) map[string]string {
+			identity, _ := auth.IdentityFromContext(ctx)
 			cid, _ := identity.Claims["cid"].(string)
 			return map[string]string{"client_id": cid}
 		},
@@ -76,7 +77,7 @@ var subjectEnricherCases = []struct {
 	{
 		name:     "reserved keys are never taken from the enricher",
 		identity: enricherTestIdentity(),
-		enricher: func(context.Context, *auth.Identity) map[string]string {
+		enricher: func(context.Context) map[string]string {
 			return map[string]string{
 				SubjectKeyUser:          "x",
 				SubjectKeyUserID:        "spoofed-id",
@@ -94,7 +95,7 @@ var subjectEnricherCases = []struct {
 	{
 		name:     "empty keys and values are dropped",
 		identity: enricherTestIdentity(),
-		enricher: func(context.Context, *auth.Identity) map[string]string {
+		enricher: func(context.Context) map[string]string {
 			return map[string]string{"tenant": "", "": "orphan", "client_id": "abc"}
 		},
 		wantSubjects: map[string]any{
@@ -106,7 +107,7 @@ var subjectEnricherCases = []struct {
 	{
 		name:     "nil result adds nothing",
 		identity: enricherTestIdentity(),
-		enricher: func(context.Context, *auth.Identity) map[string]string {
+		enricher: func(context.Context) map[string]string {
 			return nil
 		},
 		wantSubjects: map[string]any{
@@ -117,8 +118,8 @@ var subjectEnricherCases = []struct {
 	{
 		name:     "enricher runs with a nil identity for anonymous callers",
 		identity: nil,
-		enricher: func(_ context.Context, identity *auth.Identity) map[string]string {
-			if identity != nil {
+		enricher: func(ctx context.Context) map[string]string {
+			if _, ok := auth.IdentityFromContext(ctx); ok {
 				return map[string]string{"principal_type": "unexpected"}
 			}
 			return map[string]string{"principal_type": "anonymous"}
@@ -198,7 +199,7 @@ func TestSubjectEnricher_ReceivesRequestContext(t *testing.T) {
 	t.Parallel()
 
 	type ctxKey struct{}
-	enricher := func(ctx context.Context, _ *auth.Identity) map[string]string {
+	enricher := func(ctx context.Context) map[string]string {
 		v, _ := ctx.Value(ctxKey{}).(string)
 		return map[string]string{"tenant": v}
 	}
@@ -214,6 +215,36 @@ func TestSubjectEnricher_ReceivesRequestContext(t *testing.T) {
 		ServeHTTP(httptest.NewRecorder(), req)
 
 	assert.Equal(t, "acme", eventSubjects(t, &buf)["tenant"])
+}
+
+// TestSubjectEnricher_SeesIdentityAttachedInsideMiddleware pins that the HTTP
+// auditor hands the enricher a context carrying the caller identity when the
+// identity is attached downstream of the audit middleware, as vMCP does by
+// running auth inside audit. auth.IdentityFromContext does not read the
+// IdentityHolder the auditor uses on that path.
+func TestSubjectEnricher_SeesIdentityAttachedInsideMiddleware(t *testing.T) {
+	t.Parallel()
+
+	enricher := func(ctx context.Context) map[string]string {
+		identity, ok := auth.IdentityFromContext(ctx)
+		if !ok {
+			return map[string]string{"client_id": "missing"}
+		}
+		cid, _ := identity.Claims["cid"].(string)
+		return map[string]string{"client_id": cid}
+	}
+
+	auditor, err := NewAuditorWithTransport(&Config{}, "streamable-http", WithSubjectEnricher(enricher))
+	require.NoError(t, err)
+	var buf bytes.Buffer
+	auditor.auditLogger = NewAuditLogger(&buf)
+
+	inner := http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		_ = auth.WithIdentity(r.Context(), enricherTestIdentity())
+	})
+	auditor.Middleware(inner).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/mcp", nil))
+
+	assert.Equal(t, "okta-client", eventSubjects(t, &buf)["client_id"])
 }
 
 // TestReservedSubjectKeys_CoverBuiltInSubjects pins reservedSubjectKeys to the

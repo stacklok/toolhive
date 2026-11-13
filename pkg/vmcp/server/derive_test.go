@@ -14,7 +14,6 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/stacklok/toolhive/pkg/audit"
-	"github.com/stacklok/toolhive/pkg/auth"
 	asrunner "github.com/stacklok/toolhive/pkg/authserver/runner"
 	"github.com/stacklok/toolhive/pkg/authz"
 	"github.com/stacklok/toolhive/pkg/telemetry"
@@ -59,7 +58,7 @@ func populatedLegacyConfig() *Config {
 
 // stubSubjectEnricher is a non-nil audit.SubjectEnricher for the field-mapping
 // tests; its output is never inspected here.
-func stubSubjectEnricher(context.Context, *auth.Identity) map[string]string { return nil }
+func stubSubjectEnricher(context.Context) map[string]string { return nil }
 
 func TestDeriveServerConfigProjectsTransportFields(t *testing.T) {
 	t.Parallel()

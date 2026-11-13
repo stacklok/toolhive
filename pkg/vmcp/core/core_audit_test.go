@@ -32,7 +32,7 @@ func TestCallTool_CompositeWorkflowAuditCarriesEnricherSubjects(t *testing.T) {
 	auditCfg, auditLogPath := fileAuditConfig(t)
 	auditCfg.EventTypes = []string{audit.EventTypeWorkflowStarted}
 	cfg.AuditConfig = auditCfg
-	cfg.AuditSubjectEnricher = func(context.Context, *auth.Identity) map[string]string {
+	cfg.AuditSubjectEnricher = func(context.Context) map[string]string {
 		return map[string]string{"client_id": "abc"}
 	}
 	cfg.WorkflowDefs = map[string]*composer.WorkflowDefinition{

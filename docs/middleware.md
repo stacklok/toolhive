@@ -627,8 +627,9 @@ client id the token was issued to (`client_id` per RFC 9068, `cid` on Okta,
 `azp` on Entra), a workload-versus-user marker, or an internal user id.
 
 ```go
-cfg.AuditSubjectEnricher = func(ctx context.Context, id *auth.Identity) map[string]string {
-	if id == nil {
+cfg.AuditSubjectEnricher = func(ctx context.Context) map[string]string {
+	id, ok := auth.IdentityFromContext(ctx)
+	if !ok {
 		return nil
 	}
 	cid, _ := id.Claims["azp"].(string)
@@ -640,7 +641,11 @@ cfg.AuditSubjectEnricher = func(ctx context.Context, id *auth.Identity) map[stri
 - It applies to the per-request MCP events and to the composite-tool
   workflow events.
 - It runs only when `AuditConfig` is set, once per event that passes the
-  event-type filter. `identity` is nil when the caller is unauthenticated.
+  event-type filter.
+- It reads the caller with `auth.IdentityFromContext(ctx)`, which returns
+  false when the caller is unauthenticated. The auditor attaches the identity
+  to `ctx` itself, so this works even though the audit middleware runs outside
+  the auth middleware.
 - Returned keys are added to `subjects`. Empty keys and values are dropped.
   The keys the auditor writes itself (`user`, `user_id`, `client_name`,
   `client_version`) are reserved: the enricher can neither overwrite nor

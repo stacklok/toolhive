@@ -773,8 +773,8 @@ func TestIntegration_AuditLoggingWithAuth(t *testing.T) {
 		Port:           0, // Let OS assign port
 		AuditConfig:    auditConfig,
 		AuthMiddleware: identityMiddleware,
-		AuditSubjectEnricher: func(_ context.Context, identity *auth.Identity) map[string]string {
-			if identity == nil {
+		AuditSubjectEnricher: func(ctx context.Context) map[string]string {
+			if _, ok := auth.IdentityFromContext(ctx); !ok {
 				return nil
 			}
 			return map[string]string{"client_id": "abc"}

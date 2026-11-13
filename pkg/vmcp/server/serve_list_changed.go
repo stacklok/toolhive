@@ -58,6 +58,10 @@ type listChangedResyncWorker struct {
 	// baseCtx bounds every run to the server lifetime (cancelled on Stop) so a
 	// late notification cannot start work that outlives the server.
 	baseCtx context.Context
+	// identity is the principal the session was registered for, captured at
+	// registration like the one run re-derives under. ResyncTools matches on it
+	// to select sessions. It is nil for an anonymous session and read-only.
+	identity *auth.Identity
 
 	mu      sync.Mutex
 	running bool
@@ -159,7 +163,8 @@ func (s *Server) buildListChangedSink(
 ) (vmcpsession.ListChangedSink, *listChangedResyncWorker) {
 	newWorker := func(kind vmcpsession.ChangeKind) *listChangedResyncWorker {
 		return &listChangedResyncWorker{
-			baseCtx: s.resyncBaseCtx,
+			baseCtx:  s.resyncBaseCtx,
+			identity: identity,
 			run: func(ctx context.Context, purge bool) {
 				s.runListChangedResync(ctx, sessionID, session, identity, forwardedHeaders, kind, purge)
 			},

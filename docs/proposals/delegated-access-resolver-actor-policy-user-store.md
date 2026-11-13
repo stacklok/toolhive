@@ -355,6 +355,15 @@ type UserCredentialReader interface {
   configured, because embedders mount the authorization server's routes
   themselves. Not 401, not 403.
 - A storage or transient refresh failure is an infrastructure error.
+- Why one provider only. If an agent's request loaded every connection
+  and one of them was dead (its refresh token rejected), the whole
+  request would fail with 401 and a "sign in again" challenge. An agent
+  cannot sign in, and the dead connection stays dead until the user
+  reconnects it, so every later request from that agent would fail too,
+  including calls to tools whose connections are fine. Reading only the
+  routed provider confines the failure to the calls that need the dead
+  connection, answers them with the connect link the user can act on,
+  and leaves listing tools and every other call working.
 - Startup refuses to enable the delegated or direct routes unless the
   user-keying setting is `user`, or the embedder sets a typed
   configuration field declaring that its storage keys rows by user.
@@ -417,10 +426,18 @@ const (
 - Injection from `Identity.UpstreamTokens` keeps working for any identity
   that has it, whatever its route, because embedders fill it themselves
   on some paths. The route gates only the new read.
-- `SessionlessGrant` stays, with its current consumers. It is true for
-  the delegated and direct routes. Marked tokens keep the existing
-  `no_upstream_session` claim, so embedders that skip sign-in prompts for
-  session-less grants keep doing so.
+- `SessionlessGrant` stays, with its current meaning: the token has no
+  interactive upstream login behind it. Marked tokens keep the existing
+  `no_upstream_session` claim, so it stays true for them.
+- Two behaviours that embedders tie to `SessionlessGrant` today must be
+  told apart for the new routes. A **re-sign-in challenge** (401 asking
+  the client to log in again) is never sent for a delegated or direct
+  token, because the caller cannot sign in interactively. A **connect
+  prompt** (the link where the user connects a missing provider) is
+  wanted for both, because the user can act on it out of band. Embedders
+  decide the connect prompt from the admission route, and keep using
+  `SessionlessGrant` only for the re-sign-in challenge. ToolHive's own
+  "needs authorization" result (section 2.3) is the connect prompt.
 - **Cedar.** With `primaryUpstreamProvider` set, Cedar today accepts a
   nil `UpstreamTokens` only for session-less grants. It now evaluates the
   request token's claims whenever the route is not interactive, so `act`
@@ -517,6 +534,22 @@ not in the operator's configuration.
 The direct validator sets `PlatformUserID` to the resolved user. Session
 binding (#6888) uses that user, never the token's own `sub`.
 
+**The direct token stands in for the sign-in.** On the interactive route,
+the user's sign-in at the gateway's authorization server goes through the
+company identity provider first, and the gateway stores that provider's
+tokens as the user's first connection. Embedders use that stored row in
+two ways: its ID token supplies the user's claims to their policy, and
+its presence and freshness show that the user's company login is still
+valid; a missing or dead row ends in a re-sign-in challenge. A direct
+token comes from that same identity provider, is signed by it and is
+current, so it plays both parts for its own request: the policy reads the
+direct token's claims, and no stored row for the company identity
+provider is required. A user who has never signed in through the gateway
+can still be served, as long as the connections the call needs exist.
+Access tokens and ID tokens can carry different claims, so an identity
+provider whose policy claims (for example groups) appear only in ID
+tokens must be configured to put them in the access token as well.
+
 **Discovery.** MCP clients find authorization servers through the
 protected-resource metadata (RFC 9728). The vMCP's metadata keeps listing
 only its embedded authorization server, and the `resource_metadata` in its
@@ -599,6 +632,40 @@ external-token validation onto the same library is optional and separate
 
 ## 3. What changes where
 
+How a direct token flows through the pieces, and who supplies each:
+
+```text
+ agent ── Bearer <IdP token> ──▶ vMCP incoming authentication (ToolHive)
+                                   │
+                                   │ issuer routing: direct issuer?
+                                   ▼
+          ┌──────────────── validator library (toolhive-core authn) ───────┐
+          │ keys, iss, aud, alg, exp/nbf/iat, lifetime cap, typ, scopes,   │
+          │ DPoP; profile maps claim names                                 │
+          │ → principal {issuer, user Ref, client, actor, scopes, cnf}     │
+          └───────────────────────────────┬────────────────────────────────┘
+                                          ▼
+          ToolHive direct route (pkg/auth)
+            refuse tsid / marker / no_upstream_session
+            client allowlist ─────────────────────── configuration
+            subject.Resolver(Ref) → native user ──── EMBEDDER (directory)
+            actor.Policy(issuer, client, actor, user) EMBEDDER (directory
+                                                      policy) or config
+            Identity{PlatformUserID, route = direct, DelegationChain}
+                                          ▼
+          Cedar (request token claims) and session binding (ToolHive)
+                                          ▼
+          outbound strategy, tool routed to provider P (ToolHive)
+            UserCredentialReader.GetValidTokensForUser(user, P)
+                                          │ ────────── EMBEDDER may wrap
+                                          ▼
+          storage stack: embedder decorators (encryption, user keying)
+            or ToolHive's user-keying decorator ──▶ Redis
+                                          ▼
+          backend call with the user's token for P, or
+          "needs authorization" + connect link
+```
+
 ### ToolHive
 
 | Area | Change | Tracked in |
@@ -632,8 +699,11 @@ They are tracked and come after the vMCP (section 10).
 Nothing is required to keep working (section 6). To adopt the new routes:
 
 - Its directory-backed user resolver implements `subject.Resolver`.
-- It may implement `actor.Policy` with its directory, so that an agent
-  maps to a directory principal.
+- It may implement `actor.Policy` with its directory. One natural form is
+  its existing per-connection access policy evaluated with the actor
+  claims as input (for example a policy that reads the current actor's
+  `act.sub`), so administrators express agent rules where they already
+  write access rules.
 - It supplies a `UserCredentialReader` that applies its own reader rules,
   sets the typed "storage keys by user" field, and configures the connect
   link.
@@ -737,7 +807,7 @@ refresh grant.
 | 1. Groundwork | **The conditional delete changes behaviour for everyone:** after a failed persist of a rotated refresh token, the row is deleted only if it still holds the redeemed token. It goes through the embedder's decorators (read, plaintext compare, delete). The canonical user set by ToolHive callers is the same key the embedder already reads. |
 | 2. Store | none: the decorator is off unless set, and never applied by a zero value |
 | 3. Read service | none until the embedder supplies or wires a reader |
-| 4. Routes, Cedar | none: the route's zero value is today's behaviour; injection from `Identity.UpstreamTokens` is not gated; `SessionlessGrant` keeps its meaning; the interactive route's issuer check matches what the embedder's tokens already carry |
+| 4. Routes, Cedar | none: the route's zero value is today's behaviour; injection from `Identity.UpstreamTokens` is not gated; `SessionlessGrant` keeps its meaning; the interactive route's issuer check matches what the embedder's tokens already carry. To adopt the new routes, the embedder gates its connect prompt on the route rather than on `SessionlessGrant` |
 | 5. Marker | none until an issuer is configured to issue it; marked tokens keep `no_upstream_session` |
 | 6. Direct route | none until a direct issuer is configured; session bindings for other identities stay byte-identical |
 | 7. Delegated route | none: only for issuers set to `subject_mode: resolve` and `grants_credential_access`, which the embedder does not pass through yet |
@@ -753,6 +823,33 @@ Rules that keep this true:
   today.
 - New identity and session fields are added only for the new routes.
 - Every new behaviour is off until configured per issuer.
+
+### Starting inside the embedder, then moving to ToolHive
+
+An embedder can ship a direct route on its own first, before any of this
+lands in ToolHive: an issuer-routed branch in its own bearer dispatch,
+behind an experiment flag, that validates with ToolHive's existing
+`TokenValidator`, resolves the user with its own resolver, evaluates its
+own access policy with the actor claims, and loads credentials itself
+through its user-keyed storage. Nothing in this proposal changes the
+ToolHive APIs such a branch uses (`TokenValidator`,
+`GetAllUpstreamCredentials`, the `Identity` fields and
+`DelegationChain`).
+
+Moving that branch onto the ToolHive direct route later keeps the
+embedder's resolver and policy as the `subject.Resolver` and
+`actor.Policy` implementations, and changes three behaviours, each a
+narrowing that operators of the early branch must plan for:
+
+- the client allowlist becomes mandatory and cannot be a wildcard,
+  including for tokens that carry `act`;
+- the audience must be dedicated to the gateway, not shared with other
+  resource servers;
+- credentials are read for the routed provider only, so a dead
+  connection no longer fails unrelated calls.
+
+If the early branch adopts the first two from the start, the move changes
+no operator configuration.
 
 ## 7. Effect on filed issues
 

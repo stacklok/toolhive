@@ -42,6 +42,11 @@ type StatusManager interface {
 	// dying process from clobbering the PID written by a replacement process
 	// that started in the meantime.
 	ResetWorkloadPIDIfMatch(ctx context.Context, workloadName string, expectedPID int) error
+	// SetWorkloadStoppedIfOwned atomically clears the PID and marks a workload
+	// stopped only if its status still exists and records ownerPID. Only a
+	// starting or running status becomes stopped. It never creates a status
+	// entry or overrides a newer status.
+	SetWorkloadStoppedIfOwned(ctx context.Context, workloadName string, ownerPID int) error
 	// GetWorkloadPID retrieves the PID of a workload by its name.
 	// Returns 0 if the workload does not exist or if PID is not available.
 	GetWorkloadPID(ctx context.Context, workloadName string) (int, error)
@@ -162,6 +167,13 @@ func (*runtimeStatusManager) ResetWorkloadPIDIfMatch(_ context.Context, workload
 	// Noop for runtime status manager
 	slog.Debug("workload PID conditional reset (noop for runtime status manager)",
 		"workload", workloadName, "expected_pid", expectedPID)
+	return nil
+}
+
+func (*runtimeStatusManager) SetWorkloadStoppedIfOwned(_ context.Context, workloadName string, ownerPID int) error {
+	// Noop for runtime status manager
+	slog.Debug("workload conditional stop (noop for runtime status manager)",
+		"workload", workloadName, "owner_pid", ownerPID)
 	return nil
 }
 

@@ -1,138 +1,130 @@
-# Delegated credential access
+# Delegated credential access: storage changes
 
-Draft, revision 2 · ToolHive authorization server and vMCP · 2026-11-13
+Draft, revision 2 · 2026-11-13 · against `main` 5f36b560c.
+Full proposal: [delegated-access-resolver-actor-policy-user-store.md](delegated-access-resolver-actor-policy-user-store.md)
 
-Agents acting for a user need that user's stored provider connections
-(their GitHub or Slack tokens) at the gateway, without a browser session.
-Today only interactive sign-ins get them. This proposal adds two more ways
-in, through the same subject mapping, actor checks and credential store.
+**Goal.** Delegated tokens (ID-JAG redemption, token exchange, scheduled
+runs) and directly presented IdP tokens must read the user's stored
+upstream credentials. Today they can't: rows are keyed by `tsid`, and
+those tokens have none.
 
-Full proposal:
-[delegated-access-resolver-actor-policy-user-store.md](delegated-access-resolver-actor-policy-user-store.md)
-
-## Three ways a token reaches a user's credentials
-
-| Path | Flow | Today |
-|---|---|---|
-| Interactive | user → gateway AS → vMCP | Works. Unchanged. |
-| Delegated | agent platform AS-1 → ID-JAG → gateway AS-2 → short gateway token → vMCP | AS-2 redeems an identity assertion and issues a gateway token for the native user. Scheduled runs use this path too. |
-| Direct | customer IdP (Okta) → token → vMCP | The agent presents its Okta token straight to the gateway. Nothing in ToolHive mints a token in between. |
-
-All three end the same way: the subject is the native user, the actor is
-checked, and the credential is read by (gateway, user, routed provider)
-with an owner check. None can reach credentials through another's path.
-
-## Three decisions
-
-**Subject: one subject resolver.** `(issuer, binding claim, value)` →
-native user. It never creates a user and fails closed. The binding claim
-is set per issuer: Okta `uid`, Entra `oid`, AS-1 `upstream_subject`.
-Never the email. A directory lookup is one implementation.
-
-**Actor: separate checks.**
-
-- *Proof* at ID-JAG issuance, through the existing validator hook.
-- *Client checks*: `client_id` binding at redemption; a required client
-  allowlist (Okta `cid`) on the direct path, reusing token exchange's
-  existing one.
-- *Policy* on the outermost `act`: one interface for redemption, exchange
-  and direct. `act.iss` must match the assertion's issuer.
-
-**Storage: one user-keyed store.** Rows are keyed by (gateway, user,
-provider), as a storage decorator behind a setting. No new storage
-methods, so existing decorators keep working. An injected reader fetches
-only the routed provider and answers "needs authorization" when it is
-missing.
-
-## Who may read a user's credentials
-
-Each route needs positive proof. A token is never admitted because a
-claim is missing.
-
-| Route | Admitted when | User | Read |
-|---|---|---|---|
-| interactive | issued by the gateway's AS and carries `tsid` | `sub` | all providers, as today |
-| delegated | issued by the gateway's AS and carries the delegated-access marker | `sub`, resolved at mint | routed provider only |
-| direct | configured issuer in the same IdP tenant as sign-in; exact `aud`; client allowlist; actor required; scopes; lifetime cap; DPoP when bound; no `tsid` or marker | resolved per request | routed provider only |
-
-The marker is issued only by the gateway's own AS after resolution,
-client and actor checks pass, and in external mode only with the user's
-approval. Never at login, and never because `may_act` or a wildcard
-matched. A marked token cannot be exchanged again and gets no refresh
-token.
-
-## What changes where
-
-**ToolHive**
-
-- New `pkg/auth/subject` and `pkg/auth/actor` interfaces.
-- Redemption and exchange: per-issuer subject mode and binding claim,
-  `act.iss` check, marker.
-- Injected reader `GetValidTokensForUser`, admission route on the
-  identity, Cedar reads request claims for non-interactive routes.
-- Direct-issuer route at the vMCP (or in-process translation, see D5).
-- Optional user-keying decorator for standalone installs.
-
-**Embedders**
-
-- Gateway with a directory: nothing required to keep working. To adopt
-  the new routes, it implements the resolver and actor policy against its
-  directory and supplies its own reader.
-- Agent platform (AS-1): wires its actor validator, produces one actor ID
-  per agent, and agrees the binding-claim name with the gateway.
-
-## Compatibility
-
-- **Embedders that already key rows by user:** no change on upgrade. No
-  storage interface changes, the interactive validator path and its bulk
-  load stay, `tsid` and `no_upstream_session` stay in tokens, and every
-  new behaviour is off until configured per issuer.
-- **Standalone ToolHive:** user keying behind a setting, default
-  unchanged. On switching, every replica upgrades first, then each user
-  signs in once. One-way.
-- **Everyone:** one behaviour change. After a failed refresh-token
-  rotation, the refresher deletes the row only if it still holds the
-  token it redeemed.
-
-## Stages
-
-| Stage | Contents | Needs |
-|---|---|---|
-| 1 · groundwork | Canonical user set on every storage caller; conditional delete in the refresher; resource-server validator fixes | — |
-| 2 · store | User-keying decorator, owner check, one account per provider with explicit reconnect. Standalone only; embedders that key by user skip it. | DCR generation binding, refresh lease |
-| 3 · read | Injected reader, routed-provider read, "needs authorization". Inert. | — |
-| 4 · routes | Admission route on the identity, Cedar change, subject resolver and actor policy interfaces | — |
-| 5 · marker | Marker defined and refused on re-exchange; issued nowhere yet | — |
-| 6 · direct | Direct-issuer route, client allowlist, actor policy, per-request resolution, session binding | 3–5, D5 |
-| 7 · delegated | Resolve at redemption, `act.iss` check, approval or admin pre-approval, marker issuance; ID-JAG issuance with the actor validator | 3–5 |
-
-Stages 6 and 7 run in parallel. The read gates always land before
-redemption mints native subjects.
-
-## Effect on filed issues
-
-- **Keep:** marker (#6404), subject mapping and approval (#6887, plus the
-  direct route), ID-JAG issuance and actor validation (#6898, #6899),
-  session binding (#6888, #6779), storage RFC (#6885), DCR generation
-  binding (#6508), refresh lease (#4122, PR #7031).
-- **Rewrite:**
-  - Delegated access epic (#6406): allow the direct route.
-  - Credential scope opt-in (#6403): becomes per-issuer configuration.
-  - Ownership-checked read (#6407): no stable-ID phase.
-  - Owner check (#6176) and chain walk (#6831): move into the decorator,
-    with no stable session ID. Both are assigned to an outside
-    contributor; re-scope with them.
-
-## Open decisions
+## Today
 
 | | |
 |---|---|
-| D3 | Direct-issuer preconditions: dedicated Okta authorization server, same tenant as sign-in, required scopes, DPoP when bound (recommended: all) |
-| D4 | Resolve at mint time with short gateway tokens (recommended), or per request |
-| D5 | Direct-route checks in the vMCP, by in-process translation at the AS, or in a shared validation library (open) |
-| also | Consent when a new client inherits a user's connections; how a user disconnects or is offboarded under user keying |
+| Row | Redis `{prefix}upstream:{tsid}:{provider}` → JSON `UpstreamTokens{AccessToken, RefreshToken, IDToken, ExpiresAt, SessionExpiresAt, UserID, UpstreamSubject, ClientID}`, TTL `ExpiresAt + 30d` |
+| Indexes | `{prefix}upstream:idx:{tsid}` (session → row keys); `{prefix}user:upstream:{userID}` (user → row keys, only for `GetLatestUpstreamTokensForUser`) |
+| New key per login | `handlers/authorize.go`: `SessionID: rand.Text()` |
+| Request read | `pkg/auth/token.go` `loadUpstreamTokens`: no `tsid` → nothing; else `GetAllUpstreamTokens(tsid)`, every provider, any refresh failure → 401 |
+| Owner check | none; `storage.ErrInvalidBinding` declared, never returned |
+| Refresher | CAS write on the redeemed refresh token; on a failed persist of a rotated token, **unconditional** `DeleteUpstreamTokensForProvider` |
+| Chain walk | `nextMissingUpstream` reads only the new `tsid`, so every re-auth walks every upstream (#6831) |
 
-## Accepted costs
+An embedder already user-keys rows by wrapping `storage.Storage` in
+decorators (encryption, user keying via the `sessionID` slot, refresh-token
+envelope). Nothing below may break it.
 
-A direct token works until it expires and cannot be revoked by the
-gateway. The direct route costs one resolver call per request.
+## Rules that constrain every change
+
+1. No method added to `storage.Storage` or `UpstreamTokenStorage`, no
+   signature change, no optional capability found by type assertion.
+   Embedding decorators would promote a new method from the inner backend
+   (skipping encryption and keying) or fail an assertion.
+2. The canonical user travels on the authorization server's context key,
+   `serveridentity.WithCanonicalUser` (`pkg/authserver/identity`). Storage
+   cannot import `pkg/auth` (import cycle via `pkg/auth/upstreamtoken`).
+3. New storage behaviour is applied by the runner or an explicit setting,
+   never by a Go zero value. `tsid` stays in interactive tokens.
+
+## Changes, by stage
+
+### Stage 1 · groundwork (all deployments)
+
+| Change | Where |
+|---|---|
+| Set the canonical user before touching storage | `device_verification.go` (from `confirmation.ResolvedUserID`); `token.go` `loadUpstreamTokens` load context (from `identity.PlatformUserID`); `refresh_grant_guard.go` (from the stored session's subject). The callback already does it. |
+| New sentinel `ErrNoCanonicalUser` | `pkg/authserver/identity` |
+| Conditional delete: re-read the row, compare the stored refresh token (plaintext, as storage returns it) with the redeemed one, delete only on a match; on a failed re-read, behave as today | `pkg/authserver/refresher.go` |
+
+The conditional delete is the only behaviour change for every deployment.
+It goes through whatever storage the refresher was given, so encrypting
+decorators still work. Read and delete are not atomic; the window is
+accepted.
+
+### Stage 2 · user-keyed store (standalone, behind a setting)
+
+Setting `upstreamCredentialKeying: session | user` in the authorization
+server's run configuration and CRD. Default `session`.
+
+| Change | Where |
+|---|---|
+| New decorator `userKeyedUpstreamStorage`: writes key on `tokens.UserID`; reads and deletes key on the canonical user from context, `ErrNoCanonicalUser` when absent, never a session fallback | `pkg/authserver/storage` |
+| Puts `user:{userID}` into the inner backend's `sessionID` slot | same |
+| Owner check in every read: `row.UserID == user` before the expiry check and before refresh, else `ErrInvalidBinding` (request path: generic 500) | same |
+| `DeleteUpstreamTokens` (all rows of a session) is a no-op: rows belong to the user | same |
+| `ResolveUpstreamTokenRowID` returns the per-user row identity (refresh dedup and the PR #7031 lease work on the shared row) | same |
+| Forwards `DCRCredentialStore`, `DeviceCodeStorage` and `DCRClientCounter` explicitly, like every decorator | same |
+| One upstream account per (user, provider): a sign-in with a different upstream subject fails, keeps the row, offers reconnect; reconnect is an explicit `SingleLeg` flow that replaces the row on success; synthetic upstreams exempt | `handlers/callback.go` |
+| In `user` mode, a failed refresh drops only that provider from `Identity.UpstreamTokens`, except the identity provider | `pkg/auth/token.go` |
+| In `user` mode, the guard deletes only the rejected provider's row (conditionally) and refuses on `ErrNoCanonicalUser` | `refresh_grant_guard.go` |
+| Chain walk: no code change; under the decorator `GetAllUpstreamTokens` returns the user's rows, so only missing or broken providers redirect (fixes #6831) | — |
+
+Resulting Redis keys (backend code unchanged):
+
+| | `session` | `user` |
+|---|---|---|
+| Row | `upstream:{tsid}:{provider}` | `upstream:user:{userID}:{provider}` |
+| Index | `upstream:idx:{tsid}` | `upstream:idx:user:{userID}` |
+| User reverse index | `user:upstream:{userID}` | unchanged |
+
+**Before turning it on:** #6508 (bind upstream refresh tokens to the DCR
+client generation) and the cross-replica refresh lease (#4122, PR #7031),
+so a shared row never carries an obsolete refresh token and two replicas
+never redeem the same rotating one.
+
+**Upgrade:** upgrade every replica, then switch to `user`. Each user signs
+in once; old `upstream:{tsid}:*` rows are not read and expire on their own
+TTL. No in-place migration (it would need new storage methods, and would
+have to pick one account when sessions disagree). One-way.
+
+**Embedders that already key by user skip stage 2.**
+
+### Stage 3 · read service (inert)
+
+| Change | Where |
+|---|---|
+| `type UserCredentialReader interface { GetValidTokensForUser(ctx, userID, provider string) (*UpstreamCredential, error) }` | `pkg/auth/upstreamtoken` |
+| `InProcessService` implements it: refuses empty `userID`, sets the canonical user, calls existing `GetUpstreamTokens(ctx, userID, provider)` (`userID` in the session slot, so per-session service state is per user), refreshes through the existing path | same |
+| Missing row or `invalid_grant` on refresh → "needs authorization" with a configured connect link; storage or transient errors → infrastructure error | same, and `pkg/vmcp/auth/strategies` |
+| Strategies take the reader as an option, injected where the vMCP is assembled; no reader → delegated and direct routes fail closed | `pkg/vmcp/auth/strategies`, `pkg/vmcp/cli/serve.go` |
+| Startup refuses the new routes unless keying is `user` or a typed config field declares the embedder's storage user-keyed | config validation |
+
+An embedder supplies its own `UserCredentialReader` when it wraps reads
+with its own rules. Through its decorators, `GetUpstreamTokens` with the
+user in context already reaches the right row.
+
+### Stage 4 onwards · consumers
+
+`loadUpstreamTokens` runs only for interactive tokens (`iss` = embedded
+issuer **and** `tsid`). Delegated (marker) and direct tokens read one
+routed provider through the stage 3 reader. Injection from
+`Identity.UpstreamTokens` stays ungated, because embedders fill it
+themselves.
+
+## Issues
+
+| Issue | Storage effect |
+|---|---|
+| #6176 owner check | becomes the decorator's owner check; no owner parameter on `tsid` reads (outside contributor; re-scope) |
+| #6831 chain walk | stage 2; no stable session ID (outside contributor; re-scope) |
+| #6407 delegated read | stage 3; no stable-ID phase |
+| #6885 storage RFC | design home for stage 2 |
+| #6508, #4122 / PR #7031 | prerequisites for turning on stage 2 |
+| #4279 Redis HASH refactor | independent; no backend key change needed |
+
+## Open
+
+- Consent when a new client inherits a user's connections without an
+  upstream prompt.
+- How a user disconnects a provider, or is offboarded, now that logout
+  deletes nothing.

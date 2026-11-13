@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"net/url"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -75,15 +76,10 @@ var idJAGReservedClaims = map[string]struct{}{
 // a request. The client gets invalid_request with reasonPolicyDenied.
 var errIDJAGPolicyDenied = errors.New("ID-JAG request denied by policy")
 
-// errActorValidationUnavailable marks the refusal of a client with an actor
-// profile until issuance calls the validator, so the caller can log it with its
-// own reason and not as a malformed request.
-var errActorValidationUnavailable = errors.New("actor-token validation is not available")
-
 // idJAGRequestShape is the target and resource of a request that passed
 // checkIDJAGRequest, and, for a client with an actor profile, the presented
 // actor token. checkIDJAGRequest checks only that the token is present once;
-// it does not validate it. The token type is not carried: checkActorParameters
+// validateActor validates it later. The token type is not carried: checkActorParameters
 // forces it to equal the profile's. The actor token is empty for a client
 // without a profile.
 type idJAGRequestShape struct {
@@ -179,10 +175,7 @@ func allowAllIDJAGPolicy(context.Context, idJAGPolicyInput) error { return nil }
 //
 // A client with an actor profile must send actor_token and actor_token_type
 // instead of having them refused; see checkIDJAGExtraParameters. The target
-// check comes after them. Such a client is then refused with
-// unauthorized_client, because issuance does not call the actor validator yet and must not mint for
-// a client the operator configured to require that check. A malformed request
-// from it still gets invalid_request or invalid_target first.
+// check comes after them.
 //
 // Every refusal here carries a hint, never a stable reason, so it returns only
 // the error to send.
@@ -213,13 +206,6 @@ func checkIDJAGRequest(form url.Values, policy ConfiguredClientPolicy) (idJAGReq
 	if !ok || !slices.Contains(target.Resources, resources[0]) {
 		return idJAGRequestShape{}, errorsx.WithStack(server.ErrInvalidTarget.WithHint(
 			"The 'audience' and 'resource' parameters do not name a target this client may request an ID-JAG for."))
-	}
-	// The change that adds the validateActor call replaces this guard. It
-	// answers unauthorized_client (400), not server_error, so these refusals
-	// are not logged as server faults.
-	if policy.ActorProfile != nil {
-		return idJAGRequestShape{}, errorsx.WithStack(fosite.ErrUnauthorizedClient.WithHint(
-			"Actor-token validation is not available.").WithWrap(errActorValidationUnavailable))
 	}
 	return idJAGRequestShape{Target: target, Resource: resources[0], ActorToken: actorToken}, nil
 }
@@ -258,13 +244,14 @@ func checkIDJAGExtraParameters(form url.Values, profile *ActorProfile) (string, 
 
 // checkActorParameters requires the actor token and its type for a client with
 // a profile. "Exactly one" counts every value, empty ones included: the
-// parameter must appear once, and that value must be non-empty. A repeated
+// parameter must appear once, and that value must contain a character other
+// than white space. The value is passed on unchanged. A repeated
 // parameter is refused even when only one of its values is non-empty, since
 // fosite reads only the first. actor_token_type must also equal the profile's
 // type exactly. Nothing from the request is echoed.
 func checkActorParameters(form url.Values, profile *ActorProfile) (string, error) {
 	tokens := form["actor_token"]
-	if len(tokens) != 1 || tokens[0] == "" {
+	if len(tokens) != 1 || strings.TrimSpace(tokens[0]) == "" {
 		return "", errorsx.WithStack(fosite.ErrInvalidRequest.WithHint(
 			"The 'actor_token' parameter is required, once, for this client."))
 	}

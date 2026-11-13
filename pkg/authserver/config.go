@@ -473,7 +473,7 @@ type DelegateClientTokenExchange struct {
 	// embedder registers the validator in Config.ActorTokenValidators. Valid
 	// only with id_jag. It does not change plain token exchange. It is set only
 	// from Go (embedders), like RequiredSubjectClaims, so config files cannot
-	// set it, until ID-JAG issuance checks it.
+	// set it.
 	ActorProfile *DelegateClientActorProfile `json:"-" yaml:"-"`
 }
 

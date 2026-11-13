@@ -2110,19 +2110,26 @@ The server stops at the first check that fails:
    without an actor profile has `actor_token` and `actor_token_type` refused,
    and a client with one must send them (see [Required actor
    parameters](#required-actor-parameters)). Then a target of this client that
-   lists the `resource`. A client with an actor profile is then refused with
-   `400 unauthorized_client`, because the validator call is not built yet. Nothing is read
-   from the store yet.
+   lists the `resource`. Nothing is read from the store yet.
 3. The grant: an unknown, forged, foreign, login or expired token all get
    `grant_invalid`. Then revoked, parent revoked, and `not_issuable` when the
    grant does not list the ID-JAG output.
 4. The claims the target requires must have been recorded at login.
+5. For a client with an actor profile: the grant's recorded `sub_id` and
+   `upstream_subject` must both be complete, with `sub_id` in the `iss_sub`
+   format and the same issuer in both, or both be absent (otherwise
+   `server_error`). Then the actor validator is called once (see
+   [Actor-token validation at ID-JAG
+   issuance](#actor-token-validation-at-id-jag-issuance)). The client gets
+   `invalid_request` with `actor_token_expired`, `approval_required` or `denied`,
+   or `server_error` with the hint "The actor token could not be validated."
 
 An `error_description` is either a *stable reason*, the whole text, which is
 safe to match on, or a *hint* that can change (match on `error`). Grant problems
 use `invalid_request`, as RFC 8693 section 2.2.2 requires. The stable reasons
 are `grant_invalid`, `revoked`, `parent_revoked`, `not_issuable`,
-`upstream_subject_missing`, `sub_id_missing` and `dpop_not_supported`. Store and
+`upstream_subject_missing`, `sub_id_missing`, `dpop_not_supported` and, from
+the actor validator, `actor_token_expired`, `approval_required` and `denied`. Store and
 signing failures give `server_error` with no detail. An ID token as the subject
 is refused with the unsupported `subject_token_type` hint.
 
@@ -2196,8 +2203,10 @@ broker's `subject_token_audiences` is missing there, a target that requires
 | `https://toolhive.dev/upstream_subject` | object | Only if the target requires it: `{"iss", "claim", "value"}`. The config calls it `upstream_subject` |
 
 There is no `nbf`, `scope`, `cnf`, `authorization_details` or `act` claim. The
-client in `client_id` acts for the user. A client with an actor profile gets no
-ID-JAG yet (see [Required actor parameters](#required-actor-parameters)).
+client in `client_id` acts for the user. A client with an actor profile must
+send an actor token (see [Required actor
+parameters](#required-actor-parameters)); the `act` claim is not set from it
+yet.
 
 `sub` is the same for every audience. AS-1 draws it as a random UUID at the
 user's first login. With memory storage a restart gives every user a new `sub`,
@@ -2213,7 +2222,9 @@ upstream change shows up only in grants from a later login.
 Minting writes nothing to the store. It does not use up the grant, so one grant
 can mint many ID-JAGs, each with a new `jti`. AS-2 records each `jti` and
 refuses a second use. A revocation stops the next mint; an ID-JAG already
-issued stays valid until its `exp`.
+issued stays valid until its `exp`. For a client with an actor profile, the grant is
+not read again after the validator runs, so a revocation that commits during the
+call does not stop that one ID-JAG.
 
 Minting also needs the ID-JAG entry in the client's *current*
 `exchange_refresh_tokens` policy. Removing that entry stops minting from grants
@@ -2250,7 +2261,9 @@ the ID-JAG. A ToolHive AS-2 finds the user by an exact AS-1 `sub` in
 ### Logging
 
 Minting is not audited. A refusal logs "Exchange grant refused" at Warn with
-the reason and without `sub_id`. A successful mint is one Debug line,
+the reason and without `sub_id`. When the actor validator refused or failed, the
+line also carries the validator's error text with the actor token redacted, so
+a validator must keep user identifiers out of that text. A successful mint is one Debug line,
 `ID-JAG minted`, with `client_id`, `sub`, `target`, `resource`, `has_parent`,
 `jti` and, when recorded, `sub_id`. The subject token, the ID-JAG, any
 assertion, the form, the DPoP proof and `upstream_subject` are never logged.
@@ -2263,14 +2276,16 @@ Extensions"). The issuing server cannot see the client's agent registry, so it
 cannot check an actor token or find the agent it names. An embedder that holds
 such a registry registers an in-process **validator**. For a client with an
 actor profile, ID-JAG issuance from an exchange grant requires an
-`actor_token` (RFC 8693 §2.1), and will pass it to the validator and build `act`
-from the answer.
+`actor_token` (RFC 8693 §2.1) and passes it to the validator. Building `act`
+from the answer is still to come.
 
-**Status.** The configuration, the startup checks and the request check exist.
-Calling the validator and setting `act` are not built yet, so a client with an
-actor profile gets no ID-JAG: a request that passes every request check is
-refused with `400 unauthorized_client` (see [Required actor
-parameters](#required-actor-parameters)).
+**Status.** The configuration, the startup checks, the request check and the
+validator call exist. ID-JAG issuance requires the actor parameters from a client
+that has an actor profile (see [Required actor parameters](#required-actor-parameters))
+and calls the validator once per request, after the grant checks and before the
+ID-JAG is signed. A refusal or a failure of the validator ends the request.
+Using the validator's answer is not built yet: the ID-JAG is issued without
+`act`.
 
 The validator contract (the request, the result, the refusal reasons and the
 rules ToolHive applies when it calls the validator) is in the Go doc comments of
@@ -2320,7 +2335,6 @@ registry.
    `inbound_grants.token_exchange.delegate_clients`. `ActorProfile` is set only from
    Go, like `RequiredSubjectClaims`. It has no JSON or YAML form, so config files and
    the exported RunConfig cannot carry it, and the Kubernetes CRD does not expose it.
-   It stays Go-only until ID-JAG issuance checks it.
 
    ```go
    authserver.DelegateClient{
@@ -2385,8 +2399,9 @@ and it belongs in the embedder's validator.
 
 #### Required actor parameters
 
-A client with an actor profile must send exactly one non-empty `actor_token` and
-exactly one `actor_token_type` that equals the profile's token type. The type is
+A client with an actor profile must send exactly one `actor_token`, with at least
+one character that is not white space, and exactly one `actor_token_type` that
+equals the profile's token type. The token is passed to the validator unchanged. The type is
 compared exactly, with no case folding. Otherwise the request fails with
 `invalid_request` and one of these hints:
 
@@ -2396,12 +2411,6 @@ compared exactly, with no case folding. Otherwise the request fails with
 `checkIDJAGRequest` makes this check before it looks up the target and before
 any grant is read.
 
-The actor token is not validated yet. A request that passes this check and the
-target check is refused with `400 unauthorized_client` and the hint `Actor-token
-validation is not available.`, so a client the operator configured to require an actor
-check gets no ID-JAG until the validator call is built. That call replaces this
-refusal.
-
 ## Implementation
 
 - `pkg/authserver/server/tokenexchange/actor_validator.go` — `ActorTokenValidator` and its contract, `ActorValidatorRegistration`, `ActIssuerProblem`, `ActorProfile`
@@ -2409,7 +2418,7 @@ refusal.
 - `pkg/authserver/server/tokenexchange/refresh_token_handler.go` — `RefreshTokenHandler`, `isRefreshTokenExchange`, `checkLoginToken`, `checkExchangeGrantSubject`
 - `pkg/authserver/server/tokenexchange/exchange_grant.go` — the exchange-grant entry type and its validation
 - `pkg/authserver/server/tokenexchange/id_jag_mint.go` — the ID-JAG minting core: `checkIDJAGRequest` (including the required actor parameters for a client with an actor profile), `selectSubjectClaims`, `respondWithIDJAG`, `mintIDJAG`
-- `pkg/authserver/server/tokenexchange/refresh_token_id_jag.go` — `decideIDJAG`, `issueIDJAG`: the grant checks and the Debug line for an ID-JAG
+- `pkg/authserver/server/tokenexchange/refresh_token_id_jag.go` — `decideIDJAG`, `issueIDJAG`, `idJAGGrantOwner`, `grantUpstreamIdentity`, `validateIDJAGActor`: the grant checks, the actor validator call and the Debug line for an ID-JAG
 - `pkg/authserver/server/id_jag_seam.go` — `OwnsResourceParameter`, `ReasonDPoPNotSupported`; the token endpoint calls them from `pkg/authserver/server/handlers/token.go`
 - `pkg/authserver/server/tokenexchange/multi_issuer_validator.go` — `MultiIssuerTokenValidator`, `TrustedIssuer`, `resolveActorAuthorization`, `ValidateJWKSURL`
 - `pkg/authserver/server/tokenexchange/validator.go` — `assignClaim`, `buildValidatedClaims`, `validateMayActShape`, `scpToScopeString`

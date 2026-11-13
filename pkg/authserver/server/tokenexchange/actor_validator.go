@@ -81,7 +81,8 @@ type ActorProfile struct {
 // ValidateActor is called once per issuance, after the grant checks and before the
 // ID-JAG is signed. ToolHive builds the act claim from the answer: sub is AgentID, and
 // iss is the issuer registered for this validator. A validator never sets claims
-// itself, and it never sets the issuer.
+// itself, and it never sets the issuer. Not applied yet: an accepted actor gets an
+// ID-JAG without act, and ExpiresAt does not cap its exp.
 //
 // # Result
 //
@@ -97,6 +98,10 @@ type ActorProfile struct {
 // Return a plain error when the validator cannot answer. That includes a validator
 // that is not ready yet, for example one bound late at startup. A plain error is
 // reported as a server error, never as a denial.
+//
+// ToolHive logs the text of every error the validator returns, refusals included,
+// at Warn, with the actor token replaced by "[redacted]". Keep user identifiers
+// (the user's sub, sub_id or upstream values) and other credentials out of it.
 //
 // # Requirements
 //

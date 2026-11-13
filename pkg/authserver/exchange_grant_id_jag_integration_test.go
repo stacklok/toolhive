@@ -49,6 +49,19 @@ func (e *xrtEnv) requestIDJAGForm(t *testing.T, auth clientAuth, form url.Values
 	return postToken(t, e.srv.URL, auth, form)
 }
 
+// requestIDJAGWith is requestIDJAG with the form changed by mutate, for a
+// request that carries extra or altered parameters.
+func (e *xrtEnv) requestIDJAGWith(
+	t *testing.T, auth clientAuth, grant, target string, mutate func(url.Values),
+) tokenResult {
+	t.Helper()
+	form := idJAGForm(grant, target)
+	if mutate != nil {
+		mutate(form)
+	}
+	return postTokenWithHeader(t, e.srv.URL, auth, form, nil)
+}
+
 // idJAGForm is the form of a valid ID-JAG request for target and xrtIDJAGResource.
 func idJAGForm(grant, target string) url.Values {
 	return url.Values{
@@ -287,8 +300,12 @@ func realLoginAccessToken(t *testing.T, env *xrtEnv) string {
 	return tokens.str(t, "access_token")
 }
 
-// realLoginUpstreamSubject is the subject mockoidc asserts for the queued user.
-const realLoginUpstreamSubject = "idjag-real-login-user"
+// realLoginUpstreamSubject and realLoginUpstreamEmail are the subject and the
+// email mockoidc asserts for the queued user.
+const (
+	realLoginUpstreamSubject = "idjag-real-login-user"
+	realLoginUpstreamEmail   = "idjag-user@example.com"
+)
 
 // startRealLoginUpstream starts mockoidc with one queued user.
 func startRealLoginUpstream(t *testing.T) *mockoidc.MockOIDC {
@@ -296,6 +313,6 @@ func startRealLoginUpstream(t *testing.T) *mockoidc.MockOIDC {
 	m, err := mockoidc.Run()
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, m.Shutdown()) })
-	m.QueueUser(&mockoidc.MockUser{Subject: realLoginUpstreamSubject, Email: "idjag-user@example.com"})
+	m.QueueUser(&mockoidc.MockUser{Subject: realLoginUpstreamSubject, Email: realLoginUpstreamEmail})
 	return m
 }

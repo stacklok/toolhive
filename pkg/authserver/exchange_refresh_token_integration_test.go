@@ -151,17 +151,23 @@ func startXRTServer(t *testing.T, backend string) *xrtEnv {
 // logins to the broker's API audience, which targets that require those
 // claims need: the option is set the way an embedder sets it, because
 // RunConfig has no field for it.
-func startXRTServerWith(t *testing.T, backend string, mutate func(cfg *authserver.RunConfig, issuer string)) *xrtEnv {
+//
+// opts are extra embedder options, applied after the defaults.
+func startXRTServerWith(
+	t *testing.T, backend string, mutate func(cfg *authserver.RunConfig, issuer string),
+	opts ...authserverrunner.EmbeddedAuthServerOption,
+) *xrtEnv {
 	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
-	return startXRTServerOn(t, backend, listener, mutate)
+	return startXRTServerOn(t, backend, listener, mutate, opts...)
 }
 
 // startXRTServerOn is startXRTServerWith on a listener the caller has already
 // bound, for a test that must know this server's issuer before it starts.
 func startXRTServerOn(
 	t *testing.T, backend string, listener net.Listener, mutate func(cfg *authserver.RunConfig, issuer string),
+	opts ...authserverrunner.EmbeddedAuthServerOption,
 ) *xrtEnv {
 	t.Helper()
 	brokerKey := newAssertionKey(t, "broker-key")
@@ -206,7 +212,9 @@ func startXRTServerOn(
 		if mutate != nil {
 			mutate(cfg, issuer)
 		}
-	}, stor, authserverrunner.WithSubjectIdentifierAudiences([]string{cfgAudienceA}))
+	}, stor, append(
+		[]authserverrunner.EmbeddedAuthServerOption{authserverrunner.WithSubjectIdentifierAudiences([]string{cfgAudienceA})},
+		opts...)...)
 	return &xrtEnv{
 		srv: srv, issuer: issuer, embedded: embedded, store: stor, brokerKey: brokerKey, idpKey: idpKey,
 		broker:       clientAuth{clientID: cfgBrokerID, key: &brokerKey},

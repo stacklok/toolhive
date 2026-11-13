@@ -15,8 +15,7 @@ import (
 )
 
 // runSSEStream serves a GET event stream through the authz middleware. The
-// handler writes each chunk in order, calling Flush after each one when
-// flush is set, so tests can split events across writes.
+// handler writes each chunk in order, so a test can split an event across writes.
 func runSSEStream(t *testing.T, authorizer *mockAuthorizer, contentType string, chunks ...string) *httptest.ResponseRecorder {
 	t.Helper()
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -130,5 +129,58 @@ func TestSSEStreamPassesNonEventStreamThrough(t *testing.T) {
 	rr := runSSEStream(t, authorizer, "application/json", body)
 
 	require.Equal(t, http.StatusOK, rr.Code)
-	assert.True(t, strings.EqualFold(rr.Body.String(), body), "a non-stream body is not parsed as SSE")
+	assert.Equal(t, body, rr.Body.String(), "a non-stream body is not parsed as SSE")
+}
+
+func TestSSEStreamFailsClosedOnCaseAliasMember(t *testing.T) {
+	t.Parallel()
+
+	authorizer := &mockAuthorizer{results: map[string]mockResult{
+		"secret": {authorized: false},
+	}}
+	// "Tools" is not the canonical "tools", so the filter cannot tell it apart from a
+	// list a case-insensitive client would read.
+	body := sseStreamEvent(`{"jsonrpc":"2.0","id":11,"result":{"Tools":[{"name":"secret","inputSchema":{"type":"object"}}]}}`)
+	rr := runSSEStream(t, authorizer, "text/event-stream", body)
+
+	assert.NotContains(t, rr.Body.String(), "secret", "a case alias of a list member must not reach the client")
+	assert.Contains(t, rr.Body.String(), `"error"`)
+}
+
+func TestSSEStreamErrorCarriesRequestID(t *testing.T) {
+	t.Parallel()
+
+	authorizer := &mockAuthorizer{results: map[string]mockResult{}}
+	// Two list members: the envelope must echo the request id so the client's
+	// pending call is answered instead of hanging until its timeout.
+	body := sseStreamEvent(`{"jsonrpc":"2.0","id":9,"result":{"tools":[],"prompts":[]}}`)
+	rr := runSSEStream(t, authorizer, "text/event-stream", body)
+
+	assert.Contains(t, rr.Body.String(), `"id":9`, "the fail-closed error must carry the request id")
+}
+
+func TestSSEStreamStripsLeadingBOM(t *testing.T) {
+	t.Parallel()
+
+	authorizer := &mockAuthorizer{results: map[string]mockResult{
+		"secret": {authorized: false},
+	}}
+	// A byte order mark in front of the first event must not hide its data field
+	// from the filter.
+	body := "\uFEFF" + sseStreamEvent(`{"jsonrpc":"2.0","id":12,"result":{"tools":[{"name":"secret","inputSchema":{"type":"object"}}]}}`)
+	rr := runSSEStream(t, authorizer, "text/event-stream", body)
+
+	assert.NotContains(t, rr.Body.String(), "secret", "a list behind a leading BOM must still be filtered")
+}
+
+func TestSSEStreamFailsClosedOnOversizedEvent(t *testing.T) {
+	t.Parallel()
+
+	authorizer := &mockAuthorizer{results: map[string]mockResult{}}
+	// An event that never ends is buffered until the size limit, then the stream
+	// closes. Nothing past the limit may be written.
+	huge := "data: " + strings.Repeat("a", maxSSEEventBytes+1024)
+	rr := runSSEStream(t, authorizer, "text/event-stream", huge)
+
+	assert.LessOrEqual(t, rr.Body.Len(), maxSSEEventBytes, "an oversized event must not be written through")
 }

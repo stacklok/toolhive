@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"mime"
 	"net/http"
+	"strings"
 
 	"golang.org/x/exp/jsonrpc2"
 
@@ -17,6 +18,22 @@ import (
 	"github.com/stacklok/toolhive/pkg/authz/authorizers"
 	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
 )
+
+// maxSSEEventBytes bounds how much of one event the filter buffers while it waits
+// for the blank line that ends it. A larger event fails the stream closed.
+const maxSSEEventBytes = 1 << 20
+
+// errSSEEventTooLarge closes the stream when one event exceeds maxSSEEventBytes.
+var errSSEEventTooLarge = errors.New("SSE event exceeds the filter's size limit")
+
+// listMembers maps each list member of a result to the method whose filter applies.
+var listMembers = map[string]string{
+	"tools":             string(mcp.MethodToolsList),
+	"prompts":           string(mcp.MethodPromptsList),
+	"resources":         string(mcp.MethodResourcesList),
+	"resourceTemplates": string(mcp.MethodResourcesTemplatesList),
+	"skills":            "skills/list",
+}
 
 // sseStreamFilterWriter filters a long-lived GET text/event-stream. Unlike
 // ResponseFilteringWriter, which buffers the whole response until the handler
@@ -37,6 +54,8 @@ type sseStreamFilterWriter struct {
 	buffer      []byte
 	decided     bool
 	passThrough bool
+	started     bool
+	failed      bool
 }
 
 // newSSEStreamFilterWriter wraps w for a GET stream served on behalf of r.
@@ -53,6 +72,12 @@ func newSSEStreamFilterWriter(
 	}
 }
 
+// Unwrap exposes the underlying writer, so http.ResponseController can reach
+// deadlines and hijacking on the real connection.
+func (w *sseStreamFilterWriter) Unwrap() http.ResponseWriter {
+	return w.ResponseWriter
+}
+
 // WriteHeader forwards the status immediately, since the stream may stay open
 // for a long time. Content-Length is stripped because filtering can change the
 // body size.
@@ -62,24 +87,41 @@ func (w *sseStreamFilterWriter) WriteHeader(statusCode int) {
 	w.ResponseWriter.WriteHeader(statusCode)
 }
 
-// Write buffers the body and forwards every complete event.
+// Write buffers the body and forwards every complete event. It returns the length
+// of data as given, even when a leading byte order mark is stripped.
 func (w *sseStreamFilterWriter) Write(data []byte) (int, error) {
 	w.decide()
 	if w.passThrough {
 		return w.ResponseWriter.Write(data)
 	}
+	if w.failed {
+		return 0, errSSEEventTooLarge
+	}
+	n := len(data)
+	if !w.started {
+		// A byte order mark can open the stream. Strip it once, so the first field parses.
+		w.started = true
+		data = bytes.TrimPrefix(data, mcpparser.UTF8BOM)
+	}
 	w.buffer = append(w.buffer, data...)
+	if len(w.buffer) > maxSSEEventBytes && completeEventEnd(w.buffer) == 0 {
+		// Stop the stream for good: drop what is buffered so finish() cannot write it out.
+		w.failed = true
+		w.buffer = nil
+		return 0, errSSEEventTooLarge
+	}
 	if err := w.drainCompleteEvents(); err != nil {
 		return 0, err
 	}
-	return len(data), nil
+	return n, nil
 }
 
 // Flush forwards every complete event, then flushes the transport. An event
 // still missing its terminating blank line stays buffered for a later call.
 func (w *sseStreamFilterWriter) Flush() {
 	if err := w.drainCompleteEvents(); err != nil {
-		slog.Error("error writing filtered SSE stream", "error", err)
+		// Usually the client has gone away. That is routine on a long-lived stream.
+		slog.Debug("stopped writing filtered SSE stream", "error", err)
 		return
 	}
 	if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
@@ -90,11 +132,11 @@ func (w *sseStreamFilterWriter) Flush() {
 // finish runs once the wrapped handler has returned. No more data is coming,
 // so any trailing partial event is filtered and written too.
 func (w *sseStreamFilterWriter) finish() {
-	if w.passThrough || len(w.buffer) == 0 {
+	if w.passThrough || w.failed || len(w.buffer) == 0 {
 		return
 	}
 	if err := w.drainCompleteEvents(); err != nil {
-		slog.Error("error writing filtered SSE stream", "error", err)
+		slog.Debug("stopped writing filtered SSE stream", "error", err)
 		return
 	}
 	trailing := bytes.TrimPrefix(w.buffer, mcpparser.UTF8BOM)
@@ -103,7 +145,7 @@ func (w *sseStreamFilterWriter) finish() {
 		return
 	}
 	if err := w.writeLines(w.processLines(parseSSELines(trailing))); err != nil {
-		slog.Error("error writing filtered SSE stream", "error", err)
+		slog.Debug("stopped writing filtered SSE stream", "error", err)
 	}
 }
 
@@ -185,38 +227,51 @@ func (w *sseStreamFilterWriter) filterEvent(event []sseLine) []sseLine {
 	if !isResponse {
 		if !carriesResult(payload) {
 			// A non-Response frame with no result (e.g. a notification) is routine.
+			// Each data value is still probed, as the POST path does, in case a
+			// result is hidden across values.
+			rfw := w.newFilter("")
+			if replacement, failedClosed := rfw.probeValuesForSmuggledResult(dataValues); replacement != nil {
+				return rebuildEventWithPayload(event, replacement, failedClosed)
+			}
 			return event
 		}
 		// A non-Response frame that still carries a result could smuggle a list
-		// past the filter. Fail closed, as the POST path does.
-		return w.failClosed(event, "dropped a frame carrying a result outside a clean Response")
+		// past the filter. Fail closed, as the POST path does. No request id is
+		// available for a frame that is not a clean Response.
+		return w.failClosed(event, jsonrpc2.ID{}, "dropped a frame carrying a result outside a clean Response")
 	}
 
 	method, err := listMethodForResult(response.Result)
 	if err != nil {
-		return w.failClosed(event, err.Error())
+		return w.failClosed(event, response.ID, err.Error())
 	}
 	if method == "" {
 		// Not a list result (e.g. a tools/call answer): pass through.
 		return event
 	}
-	rfw := NewResponseFilteringWriter(nil, w.authorizer, w.request, method, w.annotationCache, w.passThroughTools)
-	return rfw.resolveSSEEvent(event)
+	return w.newFilter(method).resolveSSEEvent(event)
 }
 
-// failClosed replaces an event with a JSON-RPC error envelope. The reason is
-// logged once here and is not repeated in the returned error.
-func (w *sseStreamFilterWriter) failClosed(event []sseLine, reason string) []sseLine {
-	slog.Warn("SSE stream event failed closed", "reason", reason)
-	rfw := NewResponseFilteringWriter(nil, w.authorizer, w.request, "", w.annotationCache, w.passThroughTools)
-	body := rfw.errorResponseBody(rfw.requestID(), errors.New(reason))
+// newFilter returns a filter for one event, sharing this stream's authorizer and
+// annotation cache. method is "" for an error-only writer.
+func (w *sseStreamFilterWriter) newFilter(method string) *ResponseFilteringWriter {
+	return NewResponseFilteringWriter(nil, w.authorizer, w.request, method, w.annotationCache, w.passThroughTools)
+}
+
+// failClosed replaces an event with a JSON-RPC error envelope. errorResponseBody
+// logs the failure, so it is not logged again here. id is the request id when
+// the frame was a clean Response, and empty otherwise.
+func (w *sseStreamFilterWriter) failClosed(event []sseLine, id jsonrpc2.ID, reason string) []sseLine {
+	body := w.newFilter("").errorResponseBody(id, errors.New(reason))
 	return rebuildEventWithPayload(event, body, true)
 }
 
 // listMethodForResult returns the list method whose filter applies to a result.
 // It returns "" when the result carries no list member. A result with more
 // than one list member is an error: filtering one member would leave the
-// others visible.
+// others visible. A member whose name differs from a list name only in case is
+// also an error, because a client that matches keys case-insensitively would
+// read it as that list.
 func listMethodForResult(result json.RawMessage) (string, error) {
 	var members map[string]json.RawMessage
 	if err := json.Unmarshal(result, &members); err != nil {
@@ -224,14 +279,13 @@ func listMethodForResult(result json.RawMessage) (string, error) {
 	}
 	var method string
 	var matches int
-	for member, m := range map[string]string{
-		"tools":             string(mcp.MethodToolsList),
-		"prompts":           string(mcp.MethodPromptsList),
-		"resources":         string(mcp.MethodResourcesList),
-		"resourceTemplates": string(mcp.MethodResourcesTemplatesList),
-		"skills":            "skills/list",
-	} {
-		if _, ok := members[member]; ok {
+	for member := range members {
+		for name := range listMembers {
+			if member != name && strings.EqualFold(member, name) {
+				return "", errors.New("result carried a list member name that differs only in case")
+			}
+		}
+		if m, ok := listMembers[member]; ok {
 			method = m
 			matches++
 		}

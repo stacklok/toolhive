@@ -22,7 +22,9 @@ import (
 const legacyURLElicitationRequiredMessage = "URL elicitation required"
 
 // legacyToolCallError renders a tools/call failure on a Legacy (2025-11-25)
-// session. A tool handler returns its two results as-is.
+// session. It returns the (result, error) pair for the tool handler to hand
+// straight back: either a tool result with a nil error, or a nil result with
+// a bare -32042 *jsonrpc.Error.
 //
 // The order matches writeModernToolCallFailure:
 //   - An authorization denial outranks the URL elicitation answer, so an

@@ -203,9 +203,8 @@ func (s *Server) optimizerCallToolHandler(sessionID string, opt optimizer.Optimi
 		if err != nil {
 			// The inner tool's handler (coreToolHandler) renders a URL
 			// elicitation answer as a bare -32042 *jsonrpc.Error for a session
-			// that accepts URL mode. Pass it through unwrapped: go-sdk drops
-			// the data of a wrapped *jsonrpc.Error, and the elicitations live
-			// there.
+			// that accepts URL mode. Return it unwrapped, for the reason
+			// legacyToolCallError gives.
 			var wireErr *jsonrpc.Error
 			if errors.As(err, &wireErr) && wireErr.Code == mcp.URL_ELICITATION_REQUIRED {
 				return nil, wireErr

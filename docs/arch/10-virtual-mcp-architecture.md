@@ -575,13 +575,18 @@ Properties worth knowing:
   Legacy fallback and the Modern decline result, which are `isError` tool
   results inside a successful response. The undeclared `-32021` fallback is
   HTTP 400 and records as `failure`. The Legacy `-32042` is a JSON-RPC
-  error inside an HTTP 200 response: it records as `application_error` when
-  the response is a single JSON body and application-error detection is on
-  (the default), and as `success` when it arrives on an SSE stream, which
-  detection does not inspect. To count "needs the user to visit a URL"
-  separately, count answers in the decorator that returns them.
+  error inside an HTTP 200 response: it records as `application_error` only
+  when the response is a single JSON body that fits in the 512 bytes
+  application-error detection parses (detection is on by default). A larger
+  answer (several elicitations, or URLs with long query strings) records as
+  `success`, as does one on an SSE stream, which detection does not inspect.
+  With `includeResponseData` on, detection reads the stored body instead, so
+  a body over `maxDataSize` is not detected either. To count "needs the user
+  to visit a URL" separately, count answers in the decorator that returns
+  them.
 - **Audit response data.** With `includeResponseData` on, the audit log
-  stores the whole response body, so an `input_required` answer's URL
+  stores the response body when it fits in `maxDataSize` (default 1024
+  bytes; a larger body is dropped, not truncated), so an `input_required` answer's URL
   (`inputRequests.*.params.url`) and a Legacy `-32042`'s URL
   (`error.data.elicitations[*].url`) land in vMCP's own audit log. The URL must
   not be sensitive for that reason too.

@@ -480,15 +480,19 @@ func callWhenRegistered(
 // returns the call's JSON-RPC error.
 func legacyCallErr(t *testing.T, cs *gosdk.ClientSession, toolName string, args map[string]any) error {
 	t.Helper()
-	var callErr error
-	ok := assert.Eventually(t, func() bool {
-		_, err := callEcho(t, cs, toolName, args)
-		callErr = err
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		res, err := callEcho(t, cs, toolName, args)
 		var wireErr *jsonrpc.Error
-		return errors.As(err, &wireErr) && wireErr.Code == gosdk.CodeURLElicitationRequired
-	}, 10*time.Second, 50*time.Millisecond)
-	require.True(t, ok, "tool %q never returned -32042; last error: %v", toolName, callErr)
-	return callErr
+		if errors.As(err, &wireErr) && wireErr.Code == gosdk.CodeURLElicitationRequired {
+			return err
+		}
+		if time.Now().After(deadline) {
+			require.FailNow(t, "no -32042", "tool %q never returned -32042; last result: %+v, last error: %v",
+				toolName, res, err)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 }
 
 // twoElicitationAnswer is an answer with two elicitations, so the tests can

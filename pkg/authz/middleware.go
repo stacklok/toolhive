@@ -363,7 +363,7 @@ func authorizeListAndServe(
 	}
 }
 
-// maxDerivedAuthzBudget bounds the total wall-clock time one request may spend
+// MaxDerivedAuthzBudget bounds the total wall-clock time one request may spend
 // making authorization decisions, across all of its derived checks.
 //
 // The count limit alone does not bound this. authorizers/http issues one
@@ -376,7 +376,7 @@ func authorizeListAndServe(
 // one request may spend no longer authorizing than a single decision was
 // already allowed to take. That makes this a ceiling on fan-out rather than a
 // new constraint on how slow an individual decision may be.
-const maxDerivedAuthzBudget = 30 * time.Second
+const MaxDerivedAuthzBudget = 30 * time.Second
 
 // authorizeChecks runs every check in order under one shared deadline, stopping
 // at the first that does not pass. It reports whether all of them passed.
@@ -476,7 +476,7 @@ func authorizeDerivedAndServe(
 		return
 	}
 
-	authorized, err := authorizeChecks(r.Context(), a, checks, maxDerivedAuthzBudget)
+	authorized, err := authorizeChecks(r.Context(), a, checks, MaxDerivedAuthzBudget)
 	if err != nil || !authorized {
 		handleUnauthorized(w, parsedRequest.ID, err)
 		return

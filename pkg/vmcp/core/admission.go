@@ -192,8 +192,8 @@ func (a *cedarAdmission) FilterTools(
 			toolCtx, authorizers.MCPFeatureTool, authorizers.MCPOperationRead, tool.Name, nil)
 		if err != nil {
 			if ctx.Err() != nil {
-				// The request context ended, so every remaining check would fail too.
-				a.logger.Warn("admission: context ended while filtering tools, hiding the rest",
+				// The context is done (cancelled or past its deadline), so every remaining check would fail too.
+				a.logger.Warn("admission: request context ended or deadline reached while filtering tools, hiding the rest",
 					"tool", tool.Name, "error", err)
 				break
 			}

@@ -572,7 +572,7 @@ Embedder obligations for the connect page are in
 
 ## Served MCP Capabilities
 
-Beyond tools, vMCP aggregates and serves the full complement of MCP capabilities. Every served capability flows through the domain **core** (`pkg/vmcp/core`), so the same admission decision that filters `tools/list` also gates reads, gets, and completions.
+Beyond tools, vMCP aggregates and serves the full complement of MCP capabilities. Every served capability flows through the domain **core** (`pkg/vmcp/core`), so the admission decision that filters `tools/list` (read visibility) and gates `tools/call` (call check) also gates reads, gets, and completions.
 
 | Capability | Served? | Notes |
 |------------|---------|-------|

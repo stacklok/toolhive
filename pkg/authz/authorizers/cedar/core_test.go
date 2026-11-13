@@ -4936,6 +4936,8 @@ func TestAuthorizeNonScalarArguments(t *testing.T) {
 		})
 	}
 
+}
+
 func TestAuthorizer_ToolReadIsAPlainDeny(t *testing.T) {
 	t.Parallel()
 
@@ -4952,3 +4954,4 @@ func TestAuthorizer_ToolReadIsAPlainDeny(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, ok, "Cedar has no read_tool action, so tool:read is denied")
 }
+

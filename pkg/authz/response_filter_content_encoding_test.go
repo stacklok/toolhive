@@ -25,6 +25,7 @@ import (
 
 	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
 	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/authz/authorizers"
 	"github.com/stacklok/toolhive/pkg/authz/authorizers/cedar"
 	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
 )
@@ -92,7 +93,7 @@ func TestResponseFilteringWriter_ContentEncodedListFailsClosed(t *testing.T) {
 				ctx = context.WithValue(ctx, mcpparser.MCPRequestContextKey, parsed)
 				r = r.WithContext(ctx)
 
-				filteringWriter := NewResponseFilteringWriter(w, authorizer, r, string(mcp.MethodToolsList), nil, nil)
+				filteringWriter := NewResponseFilteringWriter(w, authorizers.WithToolCallImpliesRead(authorizer), r, string(mcp.MethodToolsList), nil, nil)
 				proxy := httputil.NewSingleHostReverseProxy(backendURL)
 				proxy.FlushInterval = -1 // production transparent proxy
 				proxy.ServeHTTP(filteringWriter, r)
@@ -308,7 +309,7 @@ func TestAuthorizeListAndServe_WithholdsAcceptEncoding(t *testing.T) {
 
 		proxy := httputil.NewSingleHostReverseProxy(backendURL)
 		proxy.FlushInterval = -1 // production transparent proxy
-		authorizeListAndServe(w, r, authorizer, parsed, featureOperation{}, nil, nil, proxy)
+		authorizeListAndServe(w, r, authorizers.WithToolCallImpliesRead(authorizer), parsed, featureOperation{}, nil, nil, proxy)
 		callerEncoding.Store(r.Header.Get("Accept-Encoding"))
 	}))
 	t.Cleanup(frontend.Close)

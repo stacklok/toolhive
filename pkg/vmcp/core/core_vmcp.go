@@ -289,8 +289,8 @@ func (c *coreVMCP) BackendHealth() health.Reporter {
 
 // ListTools health-filters the registry, aggregates backend capabilities on
 // demand, appends the composite tools reachable in the current view, and returns
-// only the subset identity is admitted to call (the admission seam — the same
-// decision CallTool enforces).
+// only the tools identity may see (the read visibility check). CallTool still
+// enforces the call check, so a listed tool can still be refused when called.
 //
 // A nil identity is treated as anonymous, consistent with
 // session/types.ShouldAllowAnonymous — bound-session caller enforcement

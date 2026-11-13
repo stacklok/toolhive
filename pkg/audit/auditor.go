@@ -719,7 +719,9 @@ func (a *Auditor) addMetadata(event *AuditEvent, r *http.Request, duration time.
 	stampTraceContext(r.Context(), event)
 
 	// A tools/list entry granted only by tool:call is discovery, not invocation.
-	// Recording it lets the audit trail tell the two apart.
+	// Recording it lets the audit trail tell the two apart. The count is taken during authz,
+	// before the --tools allowlist runs, so it can be higher than the tools the client receives.
+	// On vMCP the same key can also show up on initialize, server/discover and ListBackends events.
 	if marker, ok := authorizers.DiscoveryMarkerFromContext(r.Context()); ok && marker.FallbackCount > 0 {
 		event.Metadata.Extra[MetadataExtraKeyDiscoveryFallbackCount] = marker.FallbackCount
 	}

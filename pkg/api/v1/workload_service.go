@@ -416,6 +416,7 @@ func (s *WorkloadService) BuildFullRunConfig(
 		runner.WithNetworkIsolation(networkIsolationEnabled(req.NetworkIsolation)),
 		runner.WithTrustProxyHeaders(req.TrustProxyHeaders),
 		runner.WithAllowDockerGateway(req.AllowDockerGateway),
+		runner.WithReadOnlyRootfs(req.ReadOnlyRootfs),
 		runner.WithK8sPodPatch(""),
 		runner.WithProxyMode(types.ProxyMode(req.ProxyMode)),
 		runner.WithTransportAndPorts(req.Transport, req.ProxyPort, req.TargetPort),

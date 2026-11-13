@@ -2026,6 +2026,10 @@ const docTemplate = `{
                         "description": "RateLimitNamespace is the Kubernetes namespace for Redis key derivation.",
                         "type": "string"
                     },
+                    "read_only_rootfs": {
+                        "description": "ReadOnlyRootfs mounts the MCP server container's root filesystem as read-only.\nOpt-in: servers that write outside their mounted volumes will fail when enabled.\nOnly applicable to Docker/Podman deployments.",
+                        "type": "boolean"
+                    },
                     "registry_api_url": {
                         "description": "RegistryAPIURL is the registry API URL that served this server's metadata.\nEmpty when the server was not discovered via registry lookup.",
                         "type": "string"
@@ -3555,6 +3559,10 @@ const docTemplate = `{
                         "example": "30s",
                         "type": "string"
                     },
+                    "read_only_rootfs": {
+                        "description": "Whether to mount the container's root filesystem as read-only.\nOnly applicable to Docker/Podman deployments.",
+                        "type": "boolean"
+                    },
                     "registry": {
                         "description": "Registry is the optional registry name to resolve the server from (e.g. \"default\").",
                         "type": "string"
@@ -4483,6 +4491,10 @@ const docTemplate = `{
                         "description": "Maximum time to read a complete MCP proxy request, expressed as a Go duration string.\nEmpty or zero uses the default timeout of 30 seconds.",
                         "example": "30s",
                         "type": "string"
+                    },
+                    "read_only_rootfs": {
+                        "description": "Whether to mount the container's root filesystem as read-only.\nOnly applicable to Docker/Podman deployments.",
+                        "type": "boolean"
                     },
                     "runtime_config": {
                         "$ref": "#/components/schemas/templates.RuntimeConfig"

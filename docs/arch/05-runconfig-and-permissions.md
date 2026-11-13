@@ -626,6 +626,29 @@ as a safety net for restart paths). See issue #5775.
 
 **Implementation**: `github.com/stacklok/toolhive-core/permissions`
 
+### Read-Only Root Filesystem
+
+`read_only_rootfs` in RunConfig (`thv run --read-only-rootfs`, or
+`read_only_rootfs` in the workload API) mounts the MCP server container's root
+filesystem read-only. It is a RunConfig field rather than a permission profile
+field, so it needs no change to `toolhive-core`.
+
+- **Opt-in**: off by default, because servers that write to their root
+  filesystem today would break. Writable paths must come from the profile's
+  `write` mounts.
+- **Docker/Podman only**: the Docker runtime sets `HostConfig.ReadonlyRootfs`.
+  The Kubernetes runtime ignores the field; the operator already sets
+  `readOnlyRootFilesystem: true` on MCP server containers.
+- **Reconciliation**: `compareHostConfig` includes the setting, so changing it
+  recreates an existing container instead of reusing it.
+
+**Example:**
+```json
+{
+  "read_only_rootfs": true
+}
+```
+
 ### Built-in Profiles
 
 #### `none` Profile

@@ -8560,6 +8560,12 @@ func (s *CreateRequest) encodeFields(e *jx.Encoder) {
 		}
 	}
 	{
+		if s.ReadOnlyRootfs.Set {
+			e.FieldStart("read_only_rootfs")
+			s.ReadOnlyRootfs.Encode(e)
+		}
+	}
+	{
 		if s.Registry.Set {
 			e.FieldStart("registry")
 			s.Registry.Encode(e)
@@ -8639,7 +8645,7 @@ func (s *CreateRequest) encodeFields(e *jx.Encoder) {
 	}
 }
 
-var jsonFieldsNameOfCreateRequest = [29]string{
+var jsonFieldsNameOfCreateRequest = [30]string{
 	0:  "allow_docker_gateway",
 	1:  "authz_config",
 	2:  "cmd_arguments",
@@ -8658,17 +8664,18 @@ var jsonFieldsNameOfCreateRequest = [29]string{
 	15: "proxy_mode",
 	16: "proxy_port",
 	17: "proxy_read_timeout",
-	18: "registry",
-	19: "runtime_config",
-	20: "secrets",
-	21: "server",
-	22: "target_port",
-	23: "tools",
-	24: "tools_override",
-	25: "transport",
-	26: "trust_proxy_headers",
-	27: "url",
-	28: "volumes",
+	18: "read_only_rootfs",
+	19: "registry",
+	20: "runtime_config",
+	21: "secrets",
+	22: "server",
+	23: "target_port",
+	24: "tools",
+	25: "tools_override",
+	26: "transport",
+	27: "trust_proxy_headers",
+	28: "url",
+	29: "volumes",
 }
 
 // Decode decodes CreateRequest from json.
@@ -8874,6 +8881,16 @@ func (s *CreateRequest) Decode(d *jx.Decoder) error {
 				return nil
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"proxy_read_timeout\"")
+			}
+		case "read_only_rootfs":
+			if err := func() error {
+				s.ReadOnlyRootfs.Reset()
+				if err := s.ReadOnlyRootfs.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"read_only_rootfs\"")
 			}
 		case "registry":
 			if err := func() error {
@@ -32291,6 +32308,12 @@ func (s *RunnerRunConfig) encodeFields(e *jx.Encoder) {
 		}
 	}
 	{
+		if s.ReadOnlyRootfs.Set {
+			e.FieldStart("read_only_rootfs")
+			s.ReadOnlyRootfs.Encode(e)
+		}
+	}
+	{
 		if s.RegistryAPIURL.Set {
 			e.FieldStart("registry_api_url")
 			s.RegistryAPIURL.Encode(e)
@@ -32452,7 +32475,7 @@ func (s *RunnerRunConfig) encodeFields(e *jx.Encoder) {
 	}
 }
 
-var jsonFieldsNameOfRunnerRunConfig = [62]string{
+var jsonFieldsNameOfRunnerRunConfig = [63]string{
 	0:  "additional_middleware_configs",
 	1:  "allow_docker_gateway",
 	2:  "allowed_origins",
@@ -32491,30 +32514,31 @@ var jsonFieldsNameOfRunnerRunConfig = [62]string{
 	35: "publish",
 	36: "rate_limit_config",
 	37: "rate_limit_namespace",
-	38: "registry_api_url",
-	39: "registry_server_name",
-	40: "registry_url",
-	41: "remote_auth_config",
-	42: "remote_url",
-	43: "runtime_config",
-	44: "scaling_config",
-	45: "schema_version",
-	46: "secrets",
-	47: "session_ttl",
-	48: "stateless",
-	49: "strict_protocol_validation",
-	50: "target_host",
-	51: "target_port",
-	52: "telemetry_config",
-	53: "thv_ca_bundle",
-	54: "token_exchange_config",
-	55: "tools_filter",
-	56: "tools_override",
-	57: "transport",
-	58: "trust_proxy_headers",
-	59: "upstream_swap_config",
-	60: "validating_webhooks",
-	61: "volumes",
+	38: "read_only_rootfs",
+	39: "registry_api_url",
+	40: "registry_server_name",
+	41: "registry_url",
+	42: "remote_auth_config",
+	43: "remote_url",
+	44: "runtime_config",
+	45: "scaling_config",
+	46: "schema_version",
+	47: "secrets",
+	48: "session_ttl",
+	49: "stateless",
+	50: "strict_protocol_validation",
+	51: "target_host",
+	52: "target_port",
+	53: "telemetry_config",
+	54: "thv_ca_bundle",
+	55: "token_exchange_config",
+	56: "tools_filter",
+	57: "tools_override",
+	58: "transport",
+	59: "trust_proxy_headers",
+	60: "upstream_swap_config",
+	61: "validating_webhooks",
+	62: "volumes",
 }
 
 // Decode decodes RunnerRunConfig from json.
@@ -32952,6 +32976,16 @@ func (s *RunnerRunConfig) Decode(d *jx.Decoder) error {
 				return nil
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"rate_limit_namespace\"")
+			}
+		case "read_only_rootfs":
+			if err := func() error {
+				s.ReadOnlyRootfs.Reset()
+				if err := s.ReadOnlyRootfs.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"read_only_rootfs\"")
 			}
 		case "registry_api_url":
 			if err := func() error {
@@ -40434,6 +40468,12 @@ func (s *UpdateRequest) encodeFields(e *jx.Encoder) {
 		}
 	}
 	{
+		if s.ReadOnlyRootfs.Set {
+			e.FieldStart("read_only_rootfs")
+			s.ReadOnlyRootfs.Encode(e)
+		}
+	}
+	{
 		if s.RuntimeConfig.Set {
 			e.FieldStart("runtime_config")
 			s.RuntimeConfig.Encode(e)
@@ -40501,7 +40541,7 @@ func (s *UpdateRequest) encodeFields(e *jx.Encoder) {
 	}
 }
 
-var jsonFieldsNameOfUpdateRequest = [26]string{
+var jsonFieldsNameOfUpdateRequest = [27]string{
 	0:  "allow_docker_gateway",
 	1:  "authz_config",
 	2:  "cmd_arguments",
@@ -40519,15 +40559,16 @@ var jsonFieldsNameOfUpdateRequest = [26]string{
 	14: "proxy_mode",
 	15: "proxy_port",
 	16: "proxy_read_timeout",
-	17: "runtime_config",
-	18: "secrets",
-	19: "target_port",
-	20: "tools",
-	21: "tools_override",
-	22: "transport",
-	23: "trust_proxy_headers",
-	24: "url",
-	25: "volumes",
+	17: "read_only_rootfs",
+	18: "runtime_config",
+	19: "secrets",
+	20: "target_port",
+	21: "tools",
+	22: "tools_override",
+	23: "transport",
+	24: "trust_proxy_headers",
+	25: "url",
+	26: "volumes",
 }
 
 // Decode decodes UpdateRequest from json.
@@ -40723,6 +40764,16 @@ func (s *UpdateRequest) Decode(d *jx.Decoder) error {
 				return nil
 			}(); err != nil {
 				return errors.Wrap(err, "decode field \"proxy_read_timeout\"")
+			}
+		case "read_only_rootfs":
+			if err := func() error {
+				s.ReadOnlyRootfs.Reset()
+				if err := s.ReadOnlyRootfs.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"read_only_rootfs\"")
 			}
 		case "runtime_config":
 			if err := func() error {

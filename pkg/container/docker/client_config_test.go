@@ -123,30 +123,38 @@ func TestCompareLabels_SubsetMatches(t *testing.T) {
 func TestCompareHostConfig_EqualAndMismatch(t *testing.T) {
 	t.Parallel()
 
-	existing := &container.InspectResponse{
-		HostConfig: &container.HostConfig{
+	base := func() *container.HostConfig {
+		return &container.HostConfig{
 			NetworkMode:   "bridge",
 			CapAdd:        []string{"CAP_A"},
 			CapDrop:       []string{"ALL"},
 			SecurityOpt:   []string{"seccomp:unconfined"},
 			Privileged:    false,
 			RestartPolicy: container.RestartPolicy{Name: "unless-stopped"},
-		},
+		}
 	}
 
-	desired := &container.HostConfig{
-		NetworkMode:   "bridge",
-		CapAdd:        []string{"CAP_A"},
-		CapDrop:       []string{"ALL"},
-		SecurityOpt:   []string{"seccomp:unconfined"},
-		Privileged:    false,
-		RestartPolicy: container.RestartPolicy{Name: "unless-stopped"},
+	tests := []struct {
+		name   string
+		mutate func(*container.HostConfig)
+		want   bool
+	}{
+		{name: "equal", mutate: func(*container.HostConfig) {}, want: true},
+		{name: "privileged differs", mutate: func(h *container.HostConfig) { h.Privileged = true }, want: false},
+		{name: "read-only rootfs differs", mutate: func(h *container.HostConfig) { h.ReadonlyRootfs = true }, want: false},
 	}
 
-	assert.True(t, compareHostConfig(existing, desired))
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 
-	desired.Privileged = true
-	assert.False(t, compareHostConfig(existing, desired))
+			existing := &container.InspectResponse{HostConfig: base()}
+			desired := base()
+			tt.mutate(desired)
+
+			assert.Equal(t, tt.want, compareHostConfig(existing, desired))
+		})
+	}
 }
 
 func TestComparePortConfig_EqualAndMismatch(t *testing.T) {

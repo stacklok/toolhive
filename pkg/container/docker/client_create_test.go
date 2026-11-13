@@ -51,11 +51,12 @@ func TestCreateMcpContainer_Isolated_WiresConfigAndNetworks(t *testing.T) {
 		Mounts: []runtime.Mount{
 			{Source: "/src1", Target: "/dst1", ReadOnly: true},
 		},
-		NetworkMode: "bridge",
-		CapDrop:     []string{"ALL"},
-		CapAdd:      []string{"NET_BIND_SERVICE"},
-		SecurityOpt: []string{"seccomp:unconfined"},
-		Privileged:  false,
+		NetworkMode:    "bridge",
+		CapDrop:        []string{"ALL"},
+		CapAdd:         []string{"NET_BIND_SERVICE"},
+		SecurityOpt:    []string{"seccomp:unconfined"},
+		Privileged:     false,
+		ReadOnlyRootfs: true,
 	}
 	env := map[string]string{"A": "a", "B": "b"}
 	labels := map[string]string{"toolhive": "true", "name": "app"}
@@ -110,6 +111,7 @@ func TestCreateMcpContainer_Isolated_WiresConfigAndNetworks(t *testing.T) {
 	assert.Equal(t, []string{"ALL"}, []string(gotHost.CapDrop))
 	assert.Equal(t, []string{"seccomp:unconfined"}, gotHost.SecurityOpt)
 	assert.Equal(t, false, gotHost.Privileged)
+	assert.True(t, gotHost.ReadonlyRootfs)
 	assert.Equal(t, []netip.Addr{netip.MustParseAddr("1.2.3.4")}, gotHost.DNS)
 
 	// Port bindings wired

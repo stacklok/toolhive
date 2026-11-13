@@ -4092,6 +4092,9 @@ type CreateRequest struct {
 	// Maximum time to read a complete MCP proxy request, expressed as a Go duration string.
 	// Empty or zero uses the default timeout of 30 seconds.
 	ProxyReadTimeout OptString `json:"proxy_read_timeout"`
+	// Whether to mount the container's root filesystem as read-only.
+	// Only applicable to Docker/Podman deployments.
+	ReadOnlyRootfs OptBool `json:"read_only_rootfs"`
 	// Registry is the optional registry name to resolve the server from (e.g. "default").
 	Registry      OptString                 `json:"registry"`
 	RuntimeConfig OptTemplatesRuntimeConfig `json:"runtime_config"`
@@ -4206,6 +4209,11 @@ func (s *CreateRequest) GetProxyPort() OptInt {
 // GetProxyReadTimeout returns the value of ProxyReadTimeout.
 func (s *CreateRequest) GetProxyReadTimeout() OptString {
 	return s.ProxyReadTimeout
+}
+
+// GetReadOnlyRootfs returns the value of ReadOnlyRootfs.
+func (s *CreateRequest) GetReadOnlyRootfs() OptBool {
+	return s.ReadOnlyRootfs
 }
 
 // GetRegistry returns the value of Registry.
@@ -4351,6 +4359,11 @@ func (s *CreateRequest) SetProxyPort(val OptInt) {
 // SetProxyReadTimeout sets the value of ProxyReadTimeout.
 func (s *CreateRequest) SetProxyReadTimeout(val OptString) {
 	s.ProxyReadTimeout = val
+}
+
+// SetReadOnlyRootfs sets the value of ReadOnlyRootfs.
+func (s *CreateRequest) SetReadOnlyRootfs(val OptBool) {
+	s.ReadOnlyRootfs = val
 }
 
 // SetRegistry sets the value of Registry.
@@ -18281,6 +18294,10 @@ type RunnerRunConfig struct {
 	RateLimitConfig OptV1beta1RateLimitConfig `json:"rate_limit_config"`
 	// RateLimitNamespace is the Kubernetes namespace for Redis key derivation.
 	RateLimitNamespace OptString `json:"rate_limit_namespace"`
+	// ReadOnlyRootfs mounts the MCP server container's root filesystem as read-only.
+	// Opt-in: servers that write outside their mounted volumes will fail when enabled.
+	// Only applicable to Docker/Podman deployments.
+	ReadOnlyRootfs OptBool `json:"read_only_rootfs"`
 	// RegistryAPIURL is the registry API URL that served this server's metadata.
 	// Empty when the server was not discovered via registry lookup.
 	RegistryAPIURL OptString `json:"registry_api_url"`
@@ -18532,6 +18549,11 @@ func (s *RunnerRunConfig) GetRateLimitConfig() OptV1beta1RateLimitConfig {
 // GetRateLimitNamespace returns the value of RateLimitNamespace.
 func (s *RunnerRunConfig) GetRateLimitNamespace() OptString {
 	return s.RateLimitNamespace
+}
+
+// GetReadOnlyRootfs returns the value of ReadOnlyRootfs.
+func (s *RunnerRunConfig) GetReadOnlyRootfs() OptBool {
+	return s.ReadOnlyRootfs
 }
 
 // GetRegistryAPIURL returns the value of RegistryAPIURL.
@@ -18842,6 +18864,11 @@ func (s *RunnerRunConfig) SetRateLimitConfig(val OptV1beta1RateLimitConfig) {
 // SetRateLimitNamespace sets the value of RateLimitNamespace.
 func (s *RunnerRunConfig) SetRateLimitNamespace(val OptString) {
 	s.RateLimitNamespace = val
+}
+
+// SetReadOnlyRootfs sets the value of ReadOnlyRootfs.
+func (s *RunnerRunConfig) SetReadOnlyRootfs(val OptBool) {
+	s.ReadOnlyRootfs = val
 }
 
 // SetRegistryAPIURL sets the value of RegistryAPIURL.
@@ -22188,8 +22215,11 @@ type UpdateRequest struct {
 	ProxyPort OptInt `json:"proxy_port"`
 	// Maximum time to read a complete MCP proxy request, expressed as a Go duration string.
 	// Empty or zero uses the default timeout of 30 seconds.
-	ProxyReadTimeout OptString                 `json:"proxy_read_timeout"`
-	RuntimeConfig    OptTemplatesRuntimeConfig `json:"runtime_config"`
+	ProxyReadTimeout OptString `json:"proxy_read_timeout"`
+	// Whether to mount the container's root filesystem as read-only.
+	// Only applicable to Docker/Podman deployments.
+	ReadOnlyRootfs OptBool                   `json:"read_only_rootfs"`
+	RuntimeConfig  OptTemplatesRuntimeConfig `json:"runtime_config"`
 	// Secret parameters to inject.
 	Secrets []SecretsSecretParameter `json:"secrets"`
 	// Port to expose from the container.
@@ -22291,6 +22321,11 @@ func (s *UpdateRequest) GetProxyPort() OptInt {
 // GetProxyReadTimeout returns the value of ProxyReadTimeout.
 func (s *UpdateRequest) GetProxyReadTimeout() OptString {
 	return s.ProxyReadTimeout
+}
+
+// GetReadOnlyRootfs returns the value of ReadOnlyRootfs.
+func (s *UpdateRequest) GetReadOnlyRootfs() OptBool {
+	return s.ReadOnlyRootfs
 }
 
 // GetRuntimeConfig returns the value of RuntimeConfig.
@@ -22421,6 +22456,11 @@ func (s *UpdateRequest) SetProxyPort(val OptInt) {
 // SetProxyReadTimeout sets the value of ProxyReadTimeout.
 func (s *UpdateRequest) SetProxyReadTimeout(val OptString) {
 	s.ProxyReadTimeout = val
+}
+
+// SetReadOnlyRootfs sets the value of ReadOnlyRootfs.
+func (s *UpdateRequest) SetReadOnlyRootfs(val OptBool) {
+	s.ReadOnlyRootfs = val
 }
 
 // SetRuntimeConfig sets the value of RuntimeConfig.

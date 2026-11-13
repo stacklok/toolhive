@@ -56,6 +56,41 @@ func (b *PodTemplateSpecBuilder) WithServiceAccount(serviceAccount *string) *Pod
 	return b
 }
 
+// WithResources sets the resource requirements on the target container.
+// An explicit resource block already present on the container (e.g. from the
+// user-provided podTemplateSpec) takes precedence and is left untouched.
+// A no-op when the given requirements are empty.
+func (b *PodTemplateSpecBuilder) WithResources(resources corev1.ResourceRequirements) *PodTemplateSpecBuilder {
+	if len(resources.Limits) == 0 && len(resources.Requests) == 0 {
+		return b
+	}
+
+	// Find existing container or create a new one
+	containerIndex := -1
+	for i, container := range b.spec.Spec.Containers {
+		if container.Name == b.containerName {
+			containerIndex = i
+			break
+		}
+	}
+
+	if containerIndex >= 0 {
+		// Only fill in resources when the container has none yet, so an
+		// explicit podTemplateSpec wins over derived requirements.
+		existing := b.spec.Spec.Containers[containerIndex].Resources
+		if len(existing.Limits) == 0 && len(existing.Requests) == 0 {
+			b.spec.Spec.Containers[containerIndex].Resources = resources
+		}
+	} else {
+		// Add new container with resources
+		b.spec.Spec.Containers = append(b.spec.Spec.Containers, corev1.Container{
+			Name:      b.containerName,
+			Resources: resources,
+		})
+	}
+	return b
+}
+
 // WithSecrets adds secret environment variables to the target container.
 // The target container is specified by containerName in the constructor.
 func (b *PodTemplateSpecBuilder) WithSecrets(secrets []mcpv1beta1.SecretRef) *PodTemplateSpecBuilder {

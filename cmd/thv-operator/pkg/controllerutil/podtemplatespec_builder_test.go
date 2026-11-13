@@ -8,6 +8,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/runtime"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
@@ -233,6 +235,74 @@ func TestPodTemplateSpecBuilder_isEmpty(t *testing.T) {
 			assert.Equal(t, tt.expected, builder.isEmpty())
 		})
 	}
+}
+
+func TestPodTemplateSpecBuilder_WithResources(t *testing.T) {
+	t.Parallel()
+
+	resources := corev1.ResourceRequirements{
+		Limits: corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse("1"),
+			corev1.ResourceMemory: resource.MustParse("512Mi"),
+		},
+		Requests: corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse("100m"),
+			corev1.ResourceMemory: resource.MustParse("128Mi"),
+		},
+	}
+
+	t.Run("sets resources on a new container", func(t *testing.T) {
+		t.Parallel()
+		builder, err := NewPodTemplateSpecBuilder(nil, testContainerName)
+		require.NoError(t, err)
+
+		result := builder.WithResources(resources).Build()
+		require.NotNil(t, result)
+		require.Len(t, result.Spec.Containers, 1)
+		assert.Equal(t, testContainerName, result.Spec.Containers[0].Name)
+		assert.Equal(t, "1", result.Spec.Containers[0].Resources.Limits.Cpu().String())
+		assert.Equal(t, "512Mi", result.Spec.Containers[0].Resources.Limits.Memory().String())
+		assert.Equal(t, "100m", result.Spec.Containers[0].Resources.Requests.Cpu().String())
+		assert.Equal(t, "128Mi", result.Spec.Containers[0].Resources.Requests.Memory().String())
+	})
+
+	t.Run("empty requirements are a no-op", func(t *testing.T) {
+		t.Parallel()
+		builder, err := NewPodTemplateSpecBuilder(nil, testContainerName)
+		require.NoError(t, err)
+
+		result := builder.WithResources(corev1.ResourceRequirements{}).Build()
+		assert.Nil(t, result, "no container should be created for empty requirements")
+	})
+
+	t.Run("explicit container resources are preserved", func(t *testing.T) {
+		t.Parallel()
+		raw := &runtime.RawExtension{Raw: []byte(`{"spec":{"containers":[` +
+			`{"name":"test-container","resources":{"limits":{"cpu":"2","memory":"1Gi"}}}]}}`)}
+		builder, err := NewPodTemplateSpecBuilder(raw, testContainerName)
+		require.NoError(t, err)
+
+		result := builder.WithResources(resources).Build()
+		require.NotNil(t, result)
+		require.Len(t, result.Spec.Containers, 1)
+		assert.Equal(t, "2", result.Spec.Containers[0].Resources.Limits.Cpu().String(),
+			"explicit podTemplateSpec resources must win over derived requirements")
+		assert.Equal(t, "1Gi", result.Spec.Containers[0].Resources.Limits.Memory().String())
+	})
+
+	t.Run("fills in resources on an existing container without any", func(t *testing.T) {
+		t.Parallel()
+		raw := &runtime.RawExtension{Raw: []byte(`{"spec":{"containers":[` +
+			`{"name":"test-container","env":[{"name":"FOO","value":"bar"}]}]}}`)}
+		builder, err := NewPodTemplateSpecBuilder(raw, testContainerName)
+		require.NoError(t, err)
+
+		result := builder.WithResources(resources).Build()
+		require.NotNil(t, result)
+		require.Len(t, result.Spec.Containers, 1)
+		assert.Equal(t, "1", result.Spec.Containers[0].Resources.Limits.Cpu().String())
+		assert.Equal(t, "bar", result.Spec.Containers[0].Env[0].Value)
+	})
 }
 
 func TestPodTemplateSpecBuilder_Chaining(t *testing.T) {

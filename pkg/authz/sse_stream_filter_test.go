@@ -225,3 +225,71 @@ func TestSSEStreamFlushBeforeWriteSetsNoStore(t *testing.T) {
 
 	assert.Equal(t, "private, no-store", rr.Header().Get("Cache-Control"))
 }
+
+func TestSSEStreamFailsClosedOnMalformedThenResult(t *testing.T) {
+	t.Parallel()
+
+	authorizer := &mockAuthorizer{results: map[string]mockResult{
+		"secret": {authorized: false},
+	}}
+	// The first data line is undecodable, so only a per-value probe finds the result on the second.
+	body := "data: {bad\ndata: " +
+		`{"jsonrpc":"2.0","id":8,"result":{"tools":[{"name":"secret","inputSchema":{"type":"object"}}]}}` +
+		"\n\n"
+	rr := runSSEStream(t, authorizer, "text/event-stream", body)
+
+	assert.NotContains(t, rr.Body.String(), "secret", "a result split across data lines must not reach the client")
+	assert.Contains(t, rr.Body.String(), `"error"`)
+}
+
+func TestSSEStreamFiltersCRLFFraming(t *testing.T) {
+	t.Parallel()
+
+	authorizer := &mockAuthorizer{results: map[string]mockResult{
+		"weather": {authorized: true},
+		"secret":  {authorized: false},
+	}}
+	body := "event: message\r\ndata: " +
+		`{"jsonrpc":"2.0","id":9,"result":{"tools":[{"name":"weather","inputSchema":{"type":"object"}},{"name":"secret","inputSchema":{"type":"object"}}]}}` +
+		"\r\n\r\n"
+	rr := runSSEStream(t, authorizer, "text/event-stream", body)
+
+	assert.NotContains(t, rr.Body.String(), "secret", "CRLF framing must not hide a denied tool")
+	assert.Contains(t, rr.Body.String(), "weather")
+}
+
+func TestSSEStreamPassesKeepAliveAndEndpointEvents(t *testing.T) {
+	t.Parallel()
+
+	authorizer := &mockAuthorizer{results: map[string]mockResult{}}
+	body := ": keep-alive\n\nevent: endpoint\ndata: /messages?session=1\n\n"
+	rr := runSSEStream(t, authorizer, "text/event-stream", body)
+
+	assert.Equal(t, body, rr.Body.String(), "comments and endpoint events are not list answers")
+}
+
+func TestSSEStreamFlushBetweenPartialChunks(t *testing.T) {
+	t.Parallel()
+
+	authorizer := &mockAuthorizer{results: map[string]mockResult{
+		"weather": {authorized: true},
+		"secret":  {authorized: false},
+	}}
+	// The handler flushes while an event is still incomplete. The flush must not
+	// write the partial event, and the completed event must still be filtered.
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, "data: "+`{"jsonrpc":"2.0","id":10,"result":{"tools":[{"name":"weather","inputSchema":{"type":"object"}},`)
+		w.(http.Flusher).Flush()
+		_, _ = io.WriteString(w, `{"name":"secret","inputSchema":{"type":"object"}}]}}`+"\n\n")
+		w.(http.Flusher).Flush()
+	})
+	handler := Middleware(authorizer, next, nil)
+	req := httptest.NewRequest(http.MethodGet, "/sse", nil)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	assert.NotContains(t, rr.Body.String(), "secret", "a list split across a flush must still be filtered")
+	assert.Contains(t, rr.Body.String(), "weather")
+}

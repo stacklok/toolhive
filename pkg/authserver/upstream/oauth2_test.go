@@ -36,9 +36,9 @@ import (
 	"github.com/stretchr/testify/require"
 	"golang.org/x/oauth2"
 
-	"github.com/stacklok/toolhive/pkg/auth/oautherr"
 	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
+	"github.com/stacklok/toolhive/pkg/oauthproto/oautherr"
 )
 
 // testTokenResponse is a test helper to produce token responses.

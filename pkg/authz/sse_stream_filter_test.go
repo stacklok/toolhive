@@ -131,27 +131,45 @@ func TestSSEStreamFailsClosedOnAmbiguousResult(t *testing.T) {
 func TestSSEStreamNonEventStreamBodies(t *testing.T) {
 	t.Parallel()
 
-	body := `{"jsonrpc":"2.0","id":5,"result":{"tools":[]}}`
+	const toolsList = `{"jsonrpc":"2.0","id":5,"result":{"tools":[{"name":"weather","inputSchema":{"type":"object"}},{"name":"secret","inputSchema":{"type":"object"}}]}}`
+	const plainResult = `{"jsonrpc":"2.0","id":6,"result":{"content":[{"type":"text","text":"ok"}]}}`
 	testCases := []struct {
-		name     string
-		status   int
-		wantBody string
+		name         string
+		status       int
+		body         string
+		wantContains string
+		wantAbsent   string
+		wantExact    string
 	}{
-		// A successful body with another media type is not parsed as SSE and is
-		// not passed through either: nothing reaches the client.
-		{name: "2xx other media type fails closed", status: http.StatusOK, wantBody: ""},
+		// A 2xx JSON-RPC list answer is sniffed and filtered, never sent raw.
+		{name: "2xx sniffed list is filtered", status: http.StatusOK, body: toolsList, wantContains: "weather", wantAbsent: "secret"},
+		// A 2xx JSON-RPC answer with no list member is sent unchanged.
+		{name: "2xx non-list result passes through", status: http.StatusOK, body: plainResult, wantExact: plainResult},
+		// A 2xx body that is not JSON-RPC is dropped.
+		{name: "2xx non-JSON-RPC body is dropped", status: http.StatusOK, body: "tools: secret", wantExact: ""},
 		// An error body is passed through unchanged.
-		{name: "non-2xx other media type passes through", status: http.StatusNotFound, wantBody: body},
+		{name: "non-2xx other media type passes through", status: http.StatusNotFound, body: toolsList, wantExact: toolsList},
 	}
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			authorizer := &mockAuthorizer{results: map[string]mockResult{}}
-			rr := runSSEStreamWithStatus(t, authorizer, tc.status, "application/json", body)
+			authorizer := &mockAuthorizer{results: map[string]mockResult{
+				"secret":  {authorized: false},
+				"weather": {authorized: true},
+			}}
+			rr := runSSEStreamWithStatus(t, authorizer, tc.status, "application/json", tc.body)
 
 			require.Equal(t, tc.status, rr.Code)
-			assert.Equal(t, tc.wantBody, rr.Body.String())
+			if tc.wantExact != "" || tc.body == "tools: secret" {
+				assert.Equal(t, tc.wantExact, rr.Body.String())
+			}
+			if tc.wantContains != "" {
+				assert.Contains(t, rr.Body.String(), tc.wantContains)
+			}
+			if tc.wantAbsent != "" {
+				assert.NotContains(t, rr.Body.String(), tc.wantAbsent)
+			}
 		})
 	}
 }

@@ -92,7 +92,7 @@ require (
 	go.yaml.in/yaml/v3 v3.0.6
 	golang.ngrok.com/ngrok/v2 v2.4.0
 	golang.org/x/crypto v0.58.0
-	golang.org/x/exp/jsonrpc2 v0.0.0-20261106192419-47ce03d25ef0
+	golang.org/x/exp/jsonrpc2 v0.0.0-20261113113407-e3970619a1a4
 	golang.org/x/mod v0.43.0
 	golang.org/x/net v0.62.0
 	golang.org/x/oauth2 v0.38.0

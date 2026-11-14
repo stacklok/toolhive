@@ -290,6 +290,9 @@ type Config struct {
 	// composite-tool workflow audit events. Set the same enricher on the
 	// transport's ServerConfig so per-request MCP events carry them too. It has
 	// no effect when AuditConfig is nil. See audit.SubjectEnricher.
+	//
+	// On workflow events the enricher (and the built-in subjects) see the
+	// identity passed to CallTool, not any identity the context carries.
 	AuditSubjectEnricher audit.SubjectEnricher
 
 	// HealthMonitorConfig configures backend health monitoring. The core builds, starts, and

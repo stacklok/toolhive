@@ -35,10 +35,10 @@ import (
 	"github.com/coreos/go-oidc/v3/oidc"
 	"golang.org/x/oauth2"
 
-	"github.com/stacklok/toolhive/pkg/auth/oautherr"
 	"github.com/stacklok/toolhive/pkg/authserver/oauthparams"
 	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
+	"github.com/stacklok/toolhive/pkg/oauthproto/oautherr"
 )
 
 const (
@@ -1157,7 +1157,7 @@ func formatOAuth2Error(err error) error {
 // tokenRequestError is a token endpoint failure whose message is the sanitized
 // text built by formatOAuth2Error, while errors.As can still reach the
 // *oauth2.RetrieveError so callers can classify the failure with the
-// pkg/auth/oautherr predicates.
+// pkg/oauthproto/oautherr predicates.
 //
 // The RetrieveError in the chain is a scrubbed copy, unlike tokenexchange and
 // jwtbearer, which clear Body on the caller's error in place. Body is cleared

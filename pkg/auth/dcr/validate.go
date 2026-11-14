@@ -19,9 +19,9 @@ import (
 
 	"golang.org/x/oauth2"
 
-	"github.com/stacklok/toolhive/pkg/auth/oautherr"
 	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
+	"github.com/stacklok/toolhive/pkg/oauthproto/oautherr"
 )
 
 // registrationProbeTimeout bounds the request that checks a cached

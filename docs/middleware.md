@@ -572,6 +572,8 @@ Audit events are logged as structured JSON objects:
   - `user`: User display name (from `name` claim, `preferred_username`, or `email`)
   - `client_name`: MCP client name (from JWT claims)
   - `client_version`: MCP client version (from JWT claims)
+  - Additional keys from a subject enricher, when a vMCP embedder sets one
+    (see [Embedder-supplied subjects](#embedder-supplied-subjects) below)
 - `delegation`: RFC 8693 delegation chain (toolhive-core's canonical schema),
   present only when the caller authenticated with a delegated token (i.e. the
   JWT carries an `act` claim)
@@ -614,6 +616,47 @@ Audit events are logged as structured JSON objects:
 - `data`: Captured request/response data (only present if enabled)
   - `request`: Request body (parsed as JSON if possible, otherwise string)
   - `response`: Response body (parsed as JSON if possible, otherwise string)
+
+#### Embedder-supplied subjects
+
+A program that embeds vMCP can add its own caller attributes to `subjects`
+by setting `AuditSubjectEnricher` (an `audit.SubjectEnricher`) on
+`server.Config`, or on both `server.ServerConfig` and `core.Config` when it
+calls `core.New` and `server.Serve` directly. Typical keys are the OAuth
+client id the token was issued to (`client_id` per RFC 9068, `cid` on Okta,
+`azp` on Entra), a workload-versus-user marker, or an internal user id.
+
+```go
+cfg.AuditSubjectEnricher = func(ctx context.Context) map[string]string {
+	id, ok := auth.IdentityFromContext(ctx)
+	if !ok {
+		return nil
+	}
+	cid, _ := id.Claims["azp"].(string)
+	return map[string]string{"client_id": cid}
+}
+```
+
+- It is set from Go only. It has no key in the audit configuration file.
+- It applies to the per-request MCP events and to the composite-tool
+  workflow events.
+- It runs only when `AuditConfig` is set, once per event that passes the
+  event-type filter.
+- It reads the caller with `auth.IdentityFromContext(ctx)`, which returns
+  false when the caller is unauthenticated. The auditor attaches the identity
+  to `ctx` itself, so this works even though the audit middleware runs outside
+  the auth middleware. On composite-tool workflow events the caller is the
+  identity passed to `core.VMCP.CallTool`, even when `ctx` carries none or a
+  different one.
+- It must be fast, must not block, and must be safe for concurrent use:
+  composite-tool workflow steps call it from parallel goroutines. A panic is
+  recovered and logged at ERROR, and the event is still written without the
+  enricher's subjects.
+- Returned keys are added to `subjects`. Empty keys and values are dropped.
+  The keys the auditor writes itself (`user`, `user_id`, `client_name`,
+  `client_version`) are reserved: the enricher can neither overwrite nor
+  supply them.
+- With no enricher set, events are unchanged.
 
 #### CLI Usage
 

@@ -138,7 +138,8 @@ func New(cfg *Config) (VMCP, error) {
 			return nil, fmt.Errorf("invalid audit configuration: %w", err)
 		}
 		var err error
-		workflowAuditor, err = audit.NewWorkflowAuditor(cfg.AuditConfig)
+		workflowAuditor, err = audit.NewWorkflowAuditor(
+			cfg.AuditConfig, audit.WithSubjectEnricher(cfg.AuditSubjectEnricher))
 		if err != nil {
 			return nil, fmt.Errorf("failed to create workflow auditor: %w", err)
 		}

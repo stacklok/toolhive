@@ -4,6 +4,7 @@
 package server
 
 import (
+	"context"
 	"net/http"
 	"reflect"
 	"testing"
@@ -47,12 +48,17 @@ func populatedLegacyConfig() *Config {
 		AuthServer:              &asrunner.EmbeddedAuthServer{},
 		TelemetryProvider:       &telemetry.Provider{},
 		AuditConfig:             &audit.Config{},
+		AuditSubjectEnricher:    stubSubjectEnricher,
 		StatusReportingInterval: 11 * time.Second,
 		Watcher:                 stubWatcher{},
 		StatusReporter:          stubServeReporter{},
 		SessionStorage:          &vmcpconfig.SessionStorageConfig{},
 	}
 }
+
+// stubSubjectEnricher is a non-nil audit.SubjectEnricher for the field-mapping
+// tests; its output is never inspected here.
+func stubSubjectEnricher(context.Context) map[string]string { return nil }
 
 func TestDeriveServerConfigProjectsTransportFields(t *testing.T) {
 	t.Parallel()
@@ -86,6 +92,7 @@ func TestDeriveServerConfigProjectsTransportFields(t *testing.T) {
 	// Cross-cutting fields shared with the core (R3).
 	assert.Same(t, cfg.TelemetryProvider, got.TelemetryProvider)
 	assert.Same(t, cfg.AuditConfig, got.AuditConfig)
+	assert.NotNil(t, got.AuditSubjectEnricher)
 
 	// Collaborators passed in (not on server.Config) — threaded through, not from cfg.
 	assert.Same(t, registry, got.BackendRegistry)
@@ -105,6 +112,7 @@ func TestDeriveServerConfigPropagatesNilCrossCutting(t *testing.T) {
 
 	assert.Nil(t, got.TelemetryProvider)
 	assert.Nil(t, got.AuditConfig)
+	assert.Nil(t, got.AuditSubjectEnricher)
 	assert.Nil(t, got.BackendRegistry)
 	assert.Nil(t, got.SessionManagerConfig)
 }
@@ -133,10 +141,11 @@ func TestDeriveCoreConfigAssemblesCollaborators(t *testing.T) {
 
 	ctrl := gomock.NewController(t)
 	cfg := &Config{
-		Name:                "core-name",
-		TelemetryProvider:   &telemetry.Provider{},
-		AuditConfig:         &audit.Config{},
-		HealthMonitorConfig: &health.MonitorConfig{},
+		Name:                 "core-name",
+		TelemetryProvider:    &telemetry.Provider{},
+		AuditConfig:          &audit.Config{},
+		AuditSubjectEnricher: stubSubjectEnricher,
+		HealthMonitorConfig:  &health.MonitorConfig{},
 	}
 	agg := aggmocks.NewMockAggregator(ctrl)
 	rt := routermocks.NewMockRouter(ctrl)
@@ -164,6 +173,7 @@ func TestDeriveCoreConfigAssemblesCollaborators(t *testing.T) {
 	// Cross-cutting fields shared with the transport (R3).
 	assert.Same(t, cfg.TelemetryProvider, got.TelemetryProvider)
 	assert.Same(t, cfg.AuditConfig, got.AuditConfig)
+	assert.NotNil(t, got.AuditSubjectEnricher)
 }
 
 func TestDeriveCoreConfigUsesRawServerNameAndNilDefaults(t *testing.T) {
@@ -200,10 +210,11 @@ func TestDeriveCoreConfigMapsAllFields(t *testing.T) {
 
 	ctrl := gomock.NewController(t)
 	cfg := &Config{
-		Name:                "core-name",
-		TelemetryProvider:   &telemetry.Provider{},
-		AuditConfig:         &audit.Config{},
-		HealthMonitorConfig: &health.MonitorConfig{},
+		Name:                 "core-name",
+		TelemetryProvider:    &telemetry.Provider{},
+		AuditConfig:          &audit.Config{},
+		AuditSubjectEnricher: stubSubjectEnricher,
+		HealthMonitorConfig:  &health.MonitorConfig{},
 	}
 
 	got := deriveCoreConfig(

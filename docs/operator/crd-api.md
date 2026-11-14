@@ -58,6 +58,10 @@ _Appears in:_
 
 
 
+
+
+
+
 ## toolhive.stacklok.dev/authtypes
 
 

@@ -246,7 +246,7 @@ type VMCP interface {
 // declared here as the contract; New's body (which wires them into a concrete
 // *coreVMCP) lands in a later change.
 //
-// Cross-cutting TelemetryProvider/AuditConfig are consumed by both New and Serve
+// Cross-cutting TelemetryProvider/AuditConfig/AuditSubjectEnricher are consumed by both New and Serve
 // (not a clean partition). HealthMonitorConfig is the backend health monitoring
 // configuration; the core builds, starts, and stops the monitor from it (a nil config
 // disables monitoring, including all backends — matching today's no-monitor behavior).
@@ -285,6 +285,15 @@ type Config struct {
 
 	// AuditConfig is the cross-cutting audit configuration (also consumed by Serve).
 	AuditConfig *audit.Config
+
+	// AuditSubjectEnricher optionally adds embedder-supplied subjects to the
+	// composite-tool workflow audit events. Set the same enricher on the
+	// transport's ServerConfig so per-request MCP events carry them too. It has
+	// no effect when AuditConfig is nil. See audit.SubjectEnricher.
+	//
+	// On workflow events the enricher (and the built-in subjects) see the
+	// identity passed to CallTool, not any identity the context carries.
+	AuditSubjectEnricher audit.SubjectEnricher
 
 	// HealthMonitorConfig configures backend health monitoring. The core builds, starts, and
 	// (via Close) stops the monitor from it, filters capabilities with it, and exposes it via

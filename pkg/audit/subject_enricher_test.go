@@ -1,0 +1,362 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
+package audit
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/stacklok/toolhive/pkg/auth"
+)
+
+// enricherTestIdentity carries a subject and a name but no client_name or
+// client_version claims, so a reserved key the enricher returns has no
+// built-in value to hide behind.
+func enricherTestIdentity() *auth.Identity {
+	return &auth.Identity{
+		PrincipalInfo: auth.PrincipalInfo{
+			Subject: "user-123",
+			Name:    "Jane Doe",
+			Claims:  map[string]any{"cid": "okta-client"},
+		},
+	}
+}
+
+// subjectEnricherCases is shared by the HTTP and workflow auditor tests so
+// both paths are held to the same merge rules.
+var subjectEnricherCases = []struct {
+	name         string
+	identity     *auth.Identity
+	enricher     SubjectEnricher
+	wantSubjects map[string]any
+}{
+	{
+		name:     "no enricher leaves subjects unchanged",
+		identity: enricherTestIdentity(),
+		enricher: nil,
+		wantSubjects: map[string]any{
+			SubjectKeyUserID: "user-123",
+			SubjectKeyUser:   "Jane Doe",
+		},
+	},
+	{
+		name:     "enricher subject is added",
+		identity: enricherTestIdentity(),
+		enricher: func(context.Context) map[string]string {
+			return map[string]string{"client_id": "abc"}
+		},
+		wantSubjects: map[string]any{
+			SubjectKeyUserID: "user-123",
+			SubjectKeyUser:   "Jane Doe",
+			"client_id":      "abc",
+		},
+	},
+	{
+		name:     "enricher reads the caller identity",
+		identity: enricherTestIdentity(),
+		enricher: func(ctx context.Context) map[string]string {
+			identity, _ := auth.IdentityFromContext(ctx)
+			cid, _ := identity.Claims["cid"].(string)
+			return map[string]string{"client_id": cid}
+		},
+		wantSubjects: map[string]any{
+			SubjectKeyUserID: "user-123",
+			SubjectKeyUser:   "Jane Doe",
+			"client_id":      "okta-client",
+		},
+	},
+	{
+		name:     "reserved keys are never taken from the enricher",
+		identity: enricherTestIdentity(),
+		enricher: func(context.Context) map[string]string {
+			return map[string]string{
+				SubjectKeyUser:          "x",
+				SubjectKeyUserID:        "spoofed-id",
+				SubjectKeyClientName:    "spoofed-client",
+				SubjectKeyClientVersion: "9.9.9",
+				"principal_type":        "user",
+			}
+		},
+		wantSubjects: map[string]any{
+			SubjectKeyUserID: "user-123",
+			SubjectKeyUser:   "Jane Doe",
+			"principal_type": "user",
+		},
+	},
+	{
+		name:     "empty keys and values are dropped",
+		identity: enricherTestIdentity(),
+		enricher: func(context.Context) map[string]string {
+			return map[string]string{"tenant": "", "": "orphan", "client_id": "abc"}
+		},
+		wantSubjects: map[string]any{
+			SubjectKeyUserID: "user-123",
+			SubjectKeyUser:   "Jane Doe",
+			"client_id":      "abc",
+		},
+	},
+	{
+		name:     "panicking enricher is recovered and adds nothing",
+		identity: enricherTestIdentity(),
+		enricher: func(ctx context.Context) map[string]string {
+			identity, _ := auth.IdentityFromContext(ctx)
+			_ = identity.Claims["azp"].(string) // panics: the claim is absent
+			return map[string]string{"client_id": "unreachable"}
+		},
+		wantSubjects: map[string]any{
+			SubjectKeyUserID: "user-123",
+			SubjectKeyUser:   "Jane Doe",
+		},
+	},
+	{
+		name:     "nil result adds nothing",
+		identity: enricherTestIdentity(),
+		enricher: func(context.Context) map[string]string {
+			return nil
+		},
+		wantSubjects: map[string]any{
+			SubjectKeyUserID: "user-123",
+			SubjectKeyUser:   "Jane Doe",
+		},
+	},
+	{
+		name:     "enricher runs with a nil identity for anonymous callers",
+		identity: nil,
+		enricher: func(ctx context.Context) map[string]string {
+			if _, ok := auth.IdentityFromContext(ctx); ok {
+				return map[string]string{"principal_type": "unexpected"}
+			}
+			return map[string]string{"principal_type": "anonymous"}
+		},
+		wantSubjects: map[string]any{
+			SubjectKeyUser:   "anonymous",
+			"principal_type": "anonymous",
+		},
+	},
+}
+
+// eventSubjects decodes the single audit event in buf and returns its
+// subjects object.
+func eventSubjects(t *testing.T, buf *bytes.Buffer) map[string]any {
+	t.Helper()
+
+	var entry map[string]any
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &entry), "audit output: %s", buf.String())
+	subjects, ok := entry["subjects"].(map[string]any)
+	require.True(t, ok, "event has no subjects object: %s", buf.String())
+	return subjects
+}
+
+func TestAuditorMiddleware_SubjectEnricher(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range subjectEnricherCases {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			auditor, err := NewAuditorWithTransport(&Config{}, "streamable-http", WithSubjectEnricher(tt.enricher))
+			require.NoError(t, err)
+			var buf bytes.Buffer
+			auditor.auditLogger = NewAuditLogger(&buf)
+
+			req := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+			if tt.identity != nil {
+				req = req.WithContext(auth.WithIdentity(req.Context(), tt.identity))
+			}
+			handler := auditor.Middleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusOK)
+			}))
+			handler.ServeHTTP(httptest.NewRecorder(), req)
+
+			assert.Equal(t, tt.wantSubjects, eventSubjects(t, &buf))
+		})
+	}
+}
+
+func TestWorkflowAuditor_SubjectEnricher(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range subjectEnricherCases {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			auditor, err := NewWorkflowAuditor(&Config{}, WithSubjectEnricher(tt.enricher))
+			require.NoError(t, err)
+			var buf bytes.Buffer
+			auditor.auditLogger = NewAuditLogger(&buf)
+
+			ctx := context.Background()
+			if tt.identity != nil {
+				ctx = auth.WithIdentity(ctx, tt.identity)
+			}
+			auditor.LogWorkflowStarted(ctx, "wf-1", "wf", nil, time.Second)
+
+			assert.Equal(t, tt.wantSubjects, eventSubjects(t, &buf))
+		})
+	}
+}
+
+// TestSubjectEnricher_ReceivesRequestContext pins that the HTTP auditor hands
+// the enricher the request's context, so an embedder can read request-scoped
+// values it attached upstream.
+func TestSubjectEnricher_ReceivesRequestContext(t *testing.T) {
+	t.Parallel()
+
+	type ctxKey struct{}
+	enricher := func(ctx context.Context) map[string]string {
+		v, _ := ctx.Value(ctxKey{}).(string)
+		return map[string]string{"tenant": v}
+	}
+
+	auditor, err := NewAuditorWithTransport(&Config{}, "streamable-http", WithSubjectEnricher(enricher))
+	require.NoError(t, err)
+	var buf bytes.Buffer
+	auditor.auditLogger = NewAuditLogger(&buf)
+
+	req := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+	req = req.WithContext(context.WithValue(req.Context(), ctxKey{}, "acme"))
+	auditor.Middleware(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})).
+		ServeHTTP(httptest.NewRecorder(), req)
+
+	assert.Equal(t, "acme", eventSubjects(t, &buf)["tenant"])
+}
+
+// TestSubjectEnricher_SeesIdentityAttachedInsideMiddleware pins that the HTTP
+// auditor hands the enricher a context carrying the caller identity when the
+// identity is attached downstream of the audit middleware, as vMCP does by
+// running auth inside audit. auth.IdentityFromContext does not read the
+// IdentityHolder the auditor uses on that path.
+func TestSubjectEnricher_SeesIdentityAttachedInsideMiddleware(t *testing.T) {
+	t.Parallel()
+
+	enricher := func(ctx context.Context) map[string]string {
+		identity, ok := auth.IdentityFromContext(ctx)
+		if !ok {
+			return map[string]string{"client_id": "missing"}
+		}
+		cid, _ := identity.Claims["cid"].(string)
+		return map[string]string{"client_id": cid}
+	}
+
+	auditor, err := NewAuditorWithTransport(&Config{}, "streamable-http", WithSubjectEnricher(enricher))
+	require.NoError(t, err)
+	var buf bytes.Buffer
+	auditor.auditLogger = NewAuditLogger(&buf)
+
+	inner := http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		_ = auth.WithIdentity(r.Context(), enricherTestIdentity())
+	})
+	auditor.Middleware(inner).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/mcp", nil))
+
+	assert.Equal(t, "okta-client", eventSubjects(t, &buf)["client_id"])
+}
+
+// TestSubjectEnricher_LeavesIdentityHolderUntouched pins that the workflow
+// auditor never writes the IdentityHolder in its context. Step events are
+// emitted from parallel goroutines that share the request context, so a write
+// would race.
+func TestSubjectEnricher_LeavesIdentityHolderUntouched(t *testing.T) {
+	t.Parallel()
+
+	auditor, err := NewWorkflowAuditor(&Config{}, WithSubjectEnricher(func(context.Context) map[string]string {
+		return map[string]string{"client_id": "abc"}
+	}))
+	require.NoError(t, err)
+	var buf bytes.Buffer
+	auditor.auditLogger = NewAuditLogger(&buf)
+
+	holder := &auth.IdentityHolder{}
+	ctx := auth.WithIdentity(auth.WithIdentityHolder(context.Background(), holder), enricherTestIdentity())
+	holder.Identity = nil // any write by the auditor would show up here
+
+	auditor.LogStepStarted(ctx, "wf-1", "s1", "tool", "be1.echo")
+
+	assert.Equal(t, "abc", eventSubjects(t, &buf)["client_id"])
+	assert.Nil(t, holder.Identity, "auditor must not write the identity holder")
+}
+
+// TestSubjectEnricher_RunsOnlyForAuditedEvents pins the documented promise
+// that the enricher runs once per event that passes the event-type filter and
+// never for a filtered-out event, on both auditors. It holds because the
+// filter check precedes subject extraction; a reorder would fail this test.
+func TestSubjectEnricher_RunsOnlyForAuditedEvents(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		auditor   string
+		eventType string
+		wantCalls int32
+	}{
+		{name: "http audited event", auditor: "http", eventType: EventTypeHTTPRequest, wantCalls: 1},
+		{name: "http filtered event", auditor: "http", eventType: EventTypeMCPToolCall, wantCalls: 0},
+		{name: "workflow audited event", auditor: "workflow", eventType: EventTypeWorkflowStarted, wantCalls: 1},
+		{name: "workflow filtered event", auditor: "workflow", eventType: EventTypeWorkflowCompleted, wantCalls: 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var calls atomic.Int32
+			enricher := WithSubjectEnricher(func(context.Context) map[string]string {
+				calls.Add(1)
+				return nil
+			})
+			cfg := &Config{EventTypes: []string{tt.eventType}}
+
+			switch tt.auditor {
+			case "http":
+				// A POST with no parsed MCP method is an http_request event.
+				auditor, err := NewAuditorWithTransport(cfg, "streamable-http", enricher)
+				require.NoError(t, err)
+				auditor.auditLogger = NewAuditLogger(&bytes.Buffer{})
+				auditor.Middleware(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})).
+					ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/mcp", nil))
+			case "workflow":
+				auditor, err := NewWorkflowAuditor(cfg, enricher)
+				require.NoError(t, err)
+				auditor.auditLogger = NewAuditLogger(&bytes.Buffer{})
+				auditor.LogWorkflowStarted(context.Background(), "wf-1", "wf", nil, time.Second)
+			}
+
+			assert.Equal(t, tt.wantCalls, calls.Load())
+		})
+	}
+}
+
+// TestReservedSubjectKeys_CoverBuiltInSubjects pins reservedSubjectKeys to the
+// keys extractSubjectsFromIdentity writes for a fully populated identity. When
+// adding a built-in subject, also populate its source field or claim here, or
+// this test cannot catch a key that is missing from reservedSubjectKeys.
+func TestReservedSubjectKeys_CoverBuiltInSubjects(t *testing.T) {
+	t.Parallel()
+
+	identity := &auth.Identity{
+		PrincipalInfo: auth.PrincipalInfo{
+			Subject: "user-123",
+			Name:    "Jane Doe",
+			Email:   "jane@example.com",
+			Claims: map[string]any{
+				"client_name":    "mcp-client",
+				"client_version": "1.0.0",
+			},
+		},
+	}
+
+	subjects := extractSubjectsFromIdentity(identity)
+	require.Len(t, subjects, len(reservedSubjectKeys),
+		"keys written for the populated identity should match reservedSubjectKeys")
+	for key := range subjects {
+		assert.Contains(t, reservedSubjectKeys, key, "built-in subject %q must be reserved", key)
+	}
+}

@@ -297,3 +297,80 @@ func TestConvertConfigToWorkflowDefinitions_WithOutputConfig(t *testing.T) {
 		})
 	}
 }
+
+// TestConvertConfigToWorkflowDefinitions_WithAnnotations tests that the
+// Annotations field is correctly copied from CompositeToolConfig to
+// WorkflowDefinition.
+func TestConvertConfigToWorkflowDefinitions_WithAnnotations(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		input  []config.CompositeToolConfig
+		verify func(t *testing.T, defs map[string]*composer.WorkflowDefinition)
+	}{
+		{
+			name: "composite tool with annotations",
+			input: []config.CompositeToolConfig{
+				{
+					Name:        "report_tool",
+					Description: "Read-only report",
+					Steps: []config.WorkflowStepConfig{
+						{ID: "fetch", Type: "tool", Tool: "data.fetch"},
+					},
+					Annotations: &config.ToolAnnotationsOverride{
+						Title:        ptrTo("Report Tool"),
+						ReadOnlyHint: ptrTo(true),
+					},
+				},
+			},
+			verify: func(t *testing.T, defs map[string]*composer.WorkflowDefinition) {
+				t.Helper()
+				require.Len(t, defs, 1)
+
+				def, exists := defs["report_tool"]
+				require.True(t, exists)
+				require.NotNil(t, def.Annotations, "Annotations should be set on WorkflowDefinition")
+				require.NotNil(t, def.Annotations.Title)
+				assert.Equal(t, "Report Tool", *def.Annotations.Title)
+				require.NotNil(t, def.Annotations.ReadOnlyHint)
+				assert.True(t, *def.Annotations.ReadOnlyHint)
+				assert.Nil(t, def.Annotations.DestructiveHint)
+			},
+		},
+		{
+			name: "composite tool without annotations",
+			input: []config.CompositeToolConfig{
+				{
+					Name:  "plain_tool",
+					Steps: []config.WorkflowStepConfig{{ID: "s1", Type: "tool", Tool: "data.fetch"}},
+				},
+			},
+			verify: func(t *testing.T, defs map[string]*composer.WorkflowDefinition) {
+				t.Helper()
+				require.Len(t, defs, 1)
+
+				def, exists := defs["plain_tool"]
+				require.True(t, exists)
+				assert.Nil(t, def.Annotations, "Annotations should be nil when unset (derive at advertise time)")
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			result, err := ConvertConfigToWorkflowDefinitions(tt.input)
+			require.NoError(t, err)
+			require.NotNil(t, result)
+
+			if tt.verify != nil {
+				tt.verify(t, result)
+			}
+		})
+	}
+}
+
+// ptrTo returns a pointer to v. Used in tests for optional pointer fields.
+func ptrTo[T any](v T) *T { return &v }

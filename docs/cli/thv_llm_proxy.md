@@ -16,13 +16,13 @@ Manage the LLM gateway localhost proxy
 ### Options
 
 ```
-  -h, --help   help for proxy
+  -h, --help[=true|false]   help for proxy
 ```
 
 ### Options inherited from parent commands
 
 ```
-      --debug   Enable debug mode
+      --debug[=true|false]   Enable debug mode
 ```
 
 ### SEE ALSO

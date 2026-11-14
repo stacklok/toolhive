@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -32,21 +33,41 @@ import (
 
 // stubAuthorizer is a minimal Authorizer for unit tests, avoiding Cedar setup overhead.
 type stubAuthorizer struct {
-	allowed    bool
-	err        error
-	lastToolID string
-	lastCtx    context.Context
+	allowed       bool
+	err           error
+	lastID        string
+	lastFeature   authorizers.MCPFeature
+	lastOperation authorizers.MCPOperation
+	lastCtx       context.Context
+	calls         int
+	authorize     func(authorizers.MCPFeature, authorizers.MCPOperation, string) (bool, error)
+	// recordArguments, when set, receives the arguments map passed to the
+	// authorizer, so tests can assert on what policy would actually see.
+	recordArguments func(map[string]interface{})
 }
 
 func (s *stubAuthorizer) AuthorizeWithJWTClaims(
 	ctx context.Context,
-	_ authorizers.MCPFeature,
-	_ authorizers.MCPOperation,
+	feature authorizers.MCPFeature,
+	operation authorizers.MCPOperation,
 	resourceID string,
-	_ map[string]interface{},
+	arguments map[string]interface{},
 ) (bool, error) {
-	s.lastToolID = resourceID
+	s.lastID = resourceID
+	s.lastFeature = feature
+	s.lastOperation = operation
 	s.lastCtx = ctx
+	s.calls++
+	if s.authorize != nil {
+		allowed, err := s.authorize(feature, operation, resourceID)
+		if s.recordArguments != nil {
+			s.recordArguments(arguments)
+		}
+		return allowed, err
+	}
+	if s.recordArguments != nil {
+		s.recordArguments(arguments)
+	}
 	return s.allowed, s.err
 }
 
@@ -58,7 +79,7 @@ func TestMiddleware(t *testing.T) {
 		Policies: []string{
 			`permit(principal, action == Action::"call_tool", resource == Tool::"weather");`,
 			`permit(principal, action == Action::"get_prompt", resource == Prompt::"greeting");`,
-			`permit(principal, action == Action::"read_resource", resource == Resource::"data");`,
+			`permit(principal, action == Action::"read_resource", resource == Resource::"harness://static/data");`,
 		},
 		EntitiesJSON: `[]`,
 	}, "")
@@ -137,7 +158,7 @@ func TestMiddleware(t *testing.T) {
 			name:   "Authorized resource read",
 			method: "resources/read",
 			params: map[string]interface{}{
-				"uri": "data",
+				"uri": "harness://static/data",
 			},
 			claims: jwt.MapClaims{
 				"sub":  "user123",
@@ -150,7 +171,7 @@ func TestMiddleware(t *testing.T) {
 			name:   "Unauthorized resource read",
 			method: "resources/read",
 			params: map[string]interface{}{
-				"uri": "secret",
+				"uri": "harness://static/secret",
 			},
 			claims: jwt.MapClaims{
 				"sub":  "user123",
@@ -230,7 +251,7 @@ func TestMiddleware(t *testing.T) {
 			name:   "Resources subscribe requires authorization",
 			method: "resources/subscribe",
 			params: map[string]interface{}{
-				"uri": "data",
+				"uri": "harness://static/data",
 			},
 			claims: jwt.MapClaims{
 				"sub":  "user123",
@@ -243,7 +264,7 @@ func TestMiddleware(t *testing.T) {
 			name:   "Resources unsubscribe requires authorization",
 			method: "resources/unsubscribe",
 			params: map[string]interface{}{
-				"uri": "secret",
+				"uri": "harness://static/secret",
 			},
 			claims: jwt.MapClaims{
 				"sub":  "user123",
@@ -253,7 +274,7 @@ func TestMiddleware(t *testing.T) {
 			expectAuthorized: false,
 		},
 		{
-			name:   "Resources templates list is authorized and filtered",
+			name:   "Resources templates list proceeds to response filtering",
 			method: "resources/templates/list",
 			params: map[string]interface{}{},
 			claims: jwt.MapClaims{
@@ -287,11 +308,17 @@ func TestMiddleware(t *testing.T) {
 			expectStatus:     http.StatusOK,
 			expectAuthorized: true,
 		},
+		// completion/complete and subscriptions/listen are classified by
+		// derivedAuthorizers, not the static map. These cases run them against the
+		// real Cedar authorizer above to pin that the derived checks land on the
+		// same get_prompt/read_resource actions the direct methods use; the
+		// exhaustive shape coverage lives in derived_authz_test.go.
 		{
-			name:   "Completion complete is always allowed",
+			name:   "Completion for a permitted prompt is authorized",
 			method: "completion/complete",
 			params: map[string]interface{}{
 				"ref": map[string]interface{}{
+					"type": "ref/prompt",
 					"name": "greeting",
 				},
 				"argument": map[string]interface{}{
@@ -305,6 +332,56 @@ func TestMiddleware(t *testing.T) {
 			},
 			expectStatus:     http.StatusOK,
 			expectAuthorized: true,
+		},
+		{
+			name:   "Completion for a permitted resource ref is authorized",
+			method: "completion/complete",
+			params: map[string]interface{}{
+				"ref": map[string]interface{}{
+					"type": "ref/resource",
+					"uri":  "harness://static/data",
+				},
+				"argument": map[string]interface{}{
+					"name":  "name",
+					"value": "a",
+				},
+			},
+			claims: jwt.MapClaims{
+				"sub":  "user123",
+				"name": "John Doe",
+			},
+			expectStatus:     http.StatusOK,
+			expectAuthorized: true,
+		},
+		{
+			name:   "Subscriptions listen to a permitted resource is authorized",
+			method: "subscriptions/listen",
+			params: map[string]interface{}{
+				"notifications": map[string]interface{}{
+					"resourceSubscriptions": []interface{}{"harness://static/data"},
+				},
+			},
+			claims: jwt.MapClaims{
+				"sub":  "user123",
+				"name": "John Doe",
+			},
+			expectStatus:     http.StatusOK,
+			expectAuthorized: true,
+		},
+		{
+			name:   "Subscriptions listen to a denied resource is rejected",
+			method: "subscriptions/listen",
+			params: map[string]interface{}{
+				"notifications": map[string]interface{}{
+					"resourceSubscriptions": []interface{}{"harness://static/data", "harness://static/secret"},
+				},
+			},
+			claims: jwt.MapClaims{
+				"sub":  "user123",
+				"name": "John Doe",
+			},
+			expectStatus:     http.StatusForbidden,
+			expectAuthorized: false,
 		},
 		{
 			name:   "Notifications are always allowed",
@@ -342,7 +419,9 @@ func TestMiddleware(t *testing.T) {
 			expectAuthorized: true,
 		},
 		{
-			name:   "Subscriptions listen is always allowed",
+			// Not "always allowed": empty params means no notifications member, so
+			// the request names no resource and there is nothing to authorize.
+			name:   "Subscriptions listen naming no resource has nothing to authorize",
 			method: "subscriptions/listen",
 			params: map[string]interface{}{},
 			claims: jwt.MapClaims{
@@ -456,24 +535,18 @@ func TestMiddleware(t *testing.T) {
 	}
 }
 
-// TestSubscriptionsListenIsAllowlistedPendingDelivery guards a deliberate, temporary
-// exception: subscriptions/listen is always-allowed only because notification delivery
-// for it is not yet implemented, so it exposes no data. When delivery lands, this entry
-// must become a real Feature/Operation with per-resource authorization of
-// resourceSubscriptions URIs (see TODO(#5755) in MCPMethodToFeatureOperation) — this test
-// should fail at that point as a reminder to update it deliberately.
-func TestSubscriptionsListenIsAllowlistedPendingDelivery(t *testing.T) {
-	t.Parallel()
-	require.Equal(t, featureOperation{}, MCPMethodToFeatureOperation["subscriptions/listen"])
-}
-
 // TestServerDiscoverIsAllowlisted guards the now-safe allow-listing of server/discover:
 // its Modern envelope is post-admission capability flags (booleans), never per-resource
 // descriptors, so unlike tools/list or prompts/list there is nothing here for
 // ResponseFilteringWriter to filter -- always-allowed is correct, not a bypass.
 func TestServerDiscoverIsAllowlisted(t *testing.T) {
 	t.Parallel()
-	require.Equal(t, featureOperation{}, MCPMethodToFeatureOperation["server/discover"])
+	// Assert presence separately: a bare map index returns the zero value for an
+	// absent key, so comparing to featureOperation{} alone would also pass if the
+	// entry were deleted.
+	featureOp, ok := MCPMethodToFeatureOperation["server/discover"]
+	require.True(t, ok, "server/discover must be classified in the method map")
+	require.Equal(t, featureOperation{}, featureOp)
 }
 
 // TestMiddlewareWithGETRequest tests that the middleware doesn't panic with GET requests.
@@ -511,6 +584,141 @@ func TestMiddlewareWithGETRequest(t *testing.T) {
 	// Check that the handler was called and the response is OK
 	assert.True(t, handlerCalled, "Handler should be called for GET requests")
 	assert.Equal(t, http.StatusOK, rr.Code, "Response status code should be OK")
+}
+
+func TestMiddlewareNonJSONPostStillRequiresIdentity(t *testing.T) {
+	t.Parallel()
+	// Non-JSON POSTs are parsed and reach normal authorization. Even a
+	// permissive policy cannot authorize a request without an identity.
+	authorizer, err := cedar.NewCedarAuthorizer(cedar.ConfigOptions{
+		Policies: []string{
+			`permit(principal, action, resource);`,
+		},
+		EntitiesJSON: `[]`,
+	}, "")
+	require.NoError(t, err, "Failed to create Cedar authorizer")
+
+	var handlerCalled bool
+	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		handlerCalled = true
+		w.WriteHeader(http.StatusOK)
+	})
+
+	middleware := mcpparser.ParsingMiddleware(Middleware(authorizer, handler, nil))
+
+	body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"weather","arguments":{}}}`
+	req, err := http.NewRequest(http.MethodPost, "/mcp", strings.NewReader(body))
+	require.NoError(t, err, "Failed to create HTTP request")
+	req.Header.Set("Content-Type", "text/plain")
+
+	rr := httptest.NewRecorder()
+	middleware.ServeHTTP(rr, req)
+
+	assert.False(t, handlerCalled, "handler must not be reached without an identity")
+	assert.Equal(t, http.StatusForbidden, rr.Code)
+}
+
+// TestMiddlewareNonJSONPostVariants verifies that authorization is independent
+// of the declared media type.
+func TestMiddlewareNonJSONPostVariants(t *testing.T) {
+	t.Parallel()
+
+	body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"weather","arguments":{}}}`
+
+	cases := []struct {
+		name        string
+		path        string
+		contentType string // empty means the header is not set at all
+		wantStatus  int
+		wantHandled bool
+	}{
+		{"charset variant still authorizes", "/mcp", "application/json; charset=utf-8", http.StatusOK, true},
+		{"uppercase media type still authorizes", "/mcp", "Application/JSON", http.StatusOK, true},
+		{"missing Content-Type still authorizes", "/mcp", "", http.StatusOK, true},
+		{"non-JSON POST to SSE path still authorizes", "/sse", "text/plain", http.StatusOK, true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			authorizer, err := cedar.NewCedarAuthorizer(cedar.ConfigOptions{
+				Policies: []string{
+					`permit(principal, action, resource);`,
+				},
+				EntitiesJSON: `[]`,
+			}, "")
+			require.NoError(t, err, "Failed to create Cedar authorizer")
+
+			var handlerCalled bool
+			handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				handlerCalled = true
+				w.WriteHeader(http.StatusOK)
+			})
+			middleware := mcpparser.ParsingMiddleware(Middleware(authorizer, handler, nil))
+
+			req, err := http.NewRequest(http.MethodPost, tc.path, strings.NewReader(body))
+			require.NoError(t, err, "Failed to create HTTP request")
+			if tc.contentType != "" {
+				req.Header.Set("Content-Type", tc.contentType)
+			}
+
+			// Attach an identity so the permissive policy has a principal to
+			// authorize, matching the other authorized-call tests.
+			identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{
+				Subject: "test-user",
+				Claims:  jwt.MapClaims{"sub": "test-user"},
+			}}
+			req = req.WithContext(auth.WithIdentity(req.Context(), identity))
+
+			rr := httptest.NewRecorder()
+			middleware.ServeHTTP(rr, req)
+
+			assert.Equal(t, tc.wantHandled, handlerCalled, "handler reached")
+			assert.Equal(t, tc.wantStatus, rr.Code, "response status")
+		})
+	}
+}
+
+func TestMiddlewareNonJSONPostCedarDecisions(t *testing.T) {
+	t.Parallel()
+	for _, contentType := range []string{"text/plain", ""} {
+		for _, tc := range []struct {
+			name, payload string
+			status        int
+		}{
+			{"allowed", `"method":"tools/call","params":{"name":"weather","arguments":{"location":"London"}}`, http.StatusOK},
+			{"denied_tool", `"method":"tools/call","params":{"name":"secrets","arguments":{"location":"London"}}`, http.StatusForbidden},
+			{"denied_arguments", `"method":"tools/call","params":{"name":"weather","arguments":{"location":"Paris"}}`, http.StatusForbidden},
+			{"client_response", `"result":{}`, http.StatusBadRequest},
+			{"client_error", `"error":{"code":-32603,"message":"client error"}`, http.StatusBadRequest},
+		} {
+			t.Run(contentType+"/"+tc.name, func(t *testing.T) {
+				t.Parallel()
+				authorizer, err := cedar.NewCedarAuthorizer(cedar.ConfigOptions{
+					Policies:     []string{`permit(principal, action == Action::"call_tool", resource == Tool::"weather") when { context.arg_location == "London" };`},
+					EntitiesJSON: `[]`,
+				}, "")
+				require.NoError(t, err)
+				called := false
+				next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					called = true
+					w.WriteHeader(http.StatusOK)
+				})
+				req := httptest.NewRequest(http.MethodPost, "/custom-rpc", strings.NewReader(`{"jsonrpc":"2.0","id":1,`+tc.payload+`}`))
+				if contentType != "" {
+					req.Header.Set("Content-Type", contentType)
+				}
+				req = req.WithContext(auth.WithIdentity(req.Context(), &auth.Identity{PrincipalInfo: auth.PrincipalInfo{
+					Subject: "test-user", Claims: jwt.MapClaims{"iss": "issuer", "sub": "test-user"},
+				}}))
+				rec := httptest.NewRecorder()
+				mcpparser.ParsingMiddleware(Middleware(authorizer, next, nil)).ServeHTTP(rec, req)
+				assert.Equal(t, tc.status, rec.Code, rec.Body.String())
+				assert.Equal(t, tc.status == http.StatusOK, called)
+			})
+		}
+	}
 }
 
 func TestFactoryCreateMiddleware(t *testing.T) {
@@ -1080,15 +1288,21 @@ func TestMiddlewareToolsCallTestkit(t *testing.T) {
 
 // TestMiddlewareOptimizerMetaTools tests the optimizer meta-tool interception logic.
 // When a tool is in the passThroughTools set, the middleware handles it specially:
-//   - call_tool (has "tool_name" in arguments): authorize the inner backend tool
-//   - find_tool (no "tool_name" in arguments): allow through as a discovery operation
+//   - call_tool (arguments decode to a tool_name): authorize the inner backend tool
+//   - find_tool (arguments name no tool): allow through as a discovery operation
+//
+// The arguments are decoded exactly as dispatch decodes them, so the name authorized
+// here and the name that runs are always the same one.
 func TestMiddlewareOptimizerMetaTools(t *testing.T) {
 	t.Parallel()
 
-	// Cedar policy that only permits "allowed_backend" — not "call_tool" or "find_tool".
+	// Cedar policies permitting "allowed_backend" unconditionally and "args_backend"
+	// only when the inner arguments reach the authorizer. Neither permits "call_tool"
+	// or "find_tool" themselves.
 	authorizer, err := cedar.NewCedarAuthorizer(cedar.ConfigOptions{
 		Policies: []string{
 			`permit(principal, action == Action::"call_tool", resource == Tool::"allowed_backend");`,
+			`permit(principal, action == Action::"call_tool", resource == Tool::"args_backend") when { context.arg_query == "x" };`,
 		},
 		EntitiesJSON: `[]`,
 	}, "")
@@ -1145,6 +1359,71 @@ func TestMiddlewareOptimizerMetaTools(t *testing.T) {
 			arguments: map[string]interface{}{
 				"tool_name":  "forbidden_backend",
 				"parameters": map[string]interface{}{},
+			},
+			expectStatus:     http.StatusForbidden,
+			expectHandlerHit: false,
+		},
+		{
+			// Dispatch hoists a nested name and runs the tool, so authorization must
+			// see the same target rather than treating the request as naming no tool.
+			name:     "call_tool with nested unauthorized inner tool is blocked",
+			toolName: "call_tool",
+			arguments: map[string]interface{}{
+				"parameters": map[string]interface{}{
+					"tool_name": "forbidden_backend",
+					"query":     "x",
+				},
+			},
+			expectStatus:     http.StatusForbidden,
+			expectHandlerHit: false,
+		},
+		{
+			name:     "call_tool with nested authorized inner tool passes through",
+			toolName: "call_tool",
+			arguments: map[string]interface{}{
+				"parameters": map[string]interface{}{
+					"tool_name": "allowed_backend",
+					"query":     "x",
+				},
+			},
+			expectStatus:     http.StatusOK,
+			expectHandlerHit: true,
+		},
+		{
+			// encoding/json matches struct fields case-insensitively, so dispatch
+			// resolves and runs this tool. A map index on "tool_name" does not see it
+			// and would wave the request through with no policy check at all.
+			name:     "call_tool with a case-variant tool_name key is blocked",
+			toolName: "call_tool",
+			arguments: map[string]interface{}{
+				"Tool_Name":  "forbidden_backend",
+				"parameters": map[string]interface{}{},
+			},
+			expectStatus:     http.StatusForbidden,
+			expectHandlerHit: false,
+		},
+		{
+			// The policy for args_backend only permits the call when the inner
+			// arguments reach the authorizer. A map index on "parameters" drops them
+			// here, so the tool would be denied a call the policy allows.
+			name:     "call_tool with a case-variant parameters key still carries the inner arguments",
+			toolName: "call_tool",
+			arguments: map[string]interface{}{
+				"tool_name":  "args_backend",
+				"PARAMETERS": map[string]interface{}{"query": "x"},
+			},
+			expectStatus:     http.StatusOK,
+			expectHandlerHit: true,
+		},
+		{
+			// The target cannot be established, so the middleware refuses rather than
+			// passing through. Dispatch decodes the same arguments with the same call
+			// and rejects them too, so no legitimate invocation is lost.
+			name:     "call_tool with undecodable arguments is denied",
+			toolName: "call_tool",
+			arguments: map[string]interface{}{
+				"tool_name":  "allowed_backend",
+				"parameters": "not an object",
 			},
 			expectStatus:     http.StatusForbidden,
 			expectHandlerHit: false,
@@ -1245,6 +1524,127 @@ func TestMiddlewareOptimizerCallToolJSONRoundTrip(t *testing.T) {
 	assert.True(t, handlerCalled, "handler should be called for authorized call_tool")
 }
 
+// TestHandleUnauthorizedIsConformantJSONRPC drives the real middleware chain (parsing +
+// authorization) for a denied request and asserts the 403 body is a spec-conformant
+// JSON-RPC error response: lowercase "jsonrpc"/"id"/"error" keys and, for notifications,
+// no "id" key at all. assert.JSONEq is case-sensitive, so it alone would catch "ID"/"Error"
+// substituted for "id"/"error" and would fail on an unexpected "id" key — the id-presence
+// check is asserted separately anyway, as a belt-and-braces, self-documenting assertion.
+func TestHandleUnauthorizedIsConformantJSONRPC(t *testing.T) {
+	t.Parallel()
+
+	// The policy content is irrelevant: tasks/list is unknown to
+	// MCPMethodToFeatureOperation and denied before any policy is consulted. If a
+	// future PR adds authorization for tasks/* and this test starts failing, swap
+	// in any other method still absent from that map rather than reading it as an
+	// envelope regression.
+	authorizer, err := cedar.NewCedarAuthorizer(cedar.ConfigOptions{
+		Policies:     []string{`permit(principal, action == Action::"call_tool", resource == Tool::"weather");`},
+		EntitiesJSON: `[]`,
+	}, "")
+	require.NoError(t, err)
+
+	handler := http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("next handler must not be called for a denied request")
+	})
+	middleware := mcpparser.ParsingMiddleware(Middleware(authorizer, handler, nil))
+
+	const wantErr = `"error":{"code":403,"message":"Unauthorized"}`
+
+	testCases := []struct {
+		name      string
+		reqIDJSON string // raw "id" field in the request; "" omits it (notification)
+		wantBody  string
+	}{
+		{
+			name:      "int64 id",
+			reqIDJSON: `"id":42,`,
+			wantBody:  `{"jsonrpc":"2.0","id":42,` + wantErr + `}`,
+		},
+		{
+			name:      "string id",
+			reqIDJSON: `"id":"abc",`,
+			wantBody:  `{"jsonrpc":"2.0","id":"abc",` + wantErr + `}`,
+		},
+		{
+			name:      "nil id (notification) omits id entirely",
+			reqIDJSON: "",
+			wantBody:  `{"jsonrpc":"2.0",` + wantErr + `}`,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			reqBody := `{"jsonrpc":"2.0",` + tc.reqIDJSON + `"method":"tasks/list"}`
+			req, err := http.NewRequest(http.MethodPost, "/messages", bytes.NewBufferString(reqBody))
+			require.NoError(t, err)
+			req.Header.Set("Content-Type", "application/json")
+
+			identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{
+				Subject: "test-user",
+				Claims:  jwt.MapClaims{"sub": "test-user"},
+			}}
+			req = req.WithContext(auth.WithIdentity(req.Context(), identity))
+
+			rr := httptest.NewRecorder()
+			middleware.ServeHTTP(rr, req)
+
+			require.Equal(t, http.StatusForbidden, rr.Code)
+			assert.Equal(t, "application/json", rr.Header().Get("Content-Type"))
+			assert.JSONEq(t, tc.wantBody, rr.Body.String())
+
+			var decoded map[string]any
+			require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &decoded))
+			_, hasID := decoded["id"]
+			assert.Equal(t, tc.reqIDJSON != "", hasID, "id key presence mismatch")
+			_, hasResult := decoded["result"]
+			assert.False(t, hasResult, "denied response must not contain a result key")
+		})
+	}
+}
+
+// TestHandleUnauthorizedScrubsAuthorizerError drives the real middleware chain
+// (parsing + authorization) for a denial caused solely by the authorizer erroring
+// while reporting allowed=true (as opposed to a clean policy deny), and asserts the
+// 403 body carries the fixed "Unauthorized" message rather than the authorizer's
+// error text. allowed is deliberately true here: authorizeAndServe's condition is
+// `err != nil || !authorized`, so with allowed=false the test would still pass via
+// the !authorized disjunct even if err were dropped somewhere -- this fixture pins
+// the err-only branch specifically.
+func TestHandleUnauthorizedScrubsAuthorizerError(t *testing.T) {
+	t.Parallel()
+
+	sensitiveErr := errors.New("cedar entity store lookup failed: secret-backend-url unreachable")
+	stub := &stubAuthorizer{allowed: true, err: sensitiveErr}
+
+	handler := http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("next handler must not be called for a denied request")
+	})
+	middleware := mcpparser.ParsingMiddleware(Middleware(stub, handler, nil))
+
+	reqBody := `{"jsonrpc":"2.0","id":1,"method":"resources/read","params":{"uri":"harness://static/data"}}`
+	req, err := http.NewRequest(http.MethodPost, "/messages", bytes.NewBufferString(reqBody))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+
+	identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{
+		Subject: "test-user",
+		Claims:  jwt.MapClaims{"sub": "test-user"},
+	}}
+	req = req.WithContext(auth.WithIdentity(req.Context(), identity))
+
+	rr := httptest.NewRecorder()
+	middleware.ServeHTTP(rr, req)
+
+	require.Equal(t, http.StatusForbidden, rr.Code)
+	require.Equal(t, 1, stub.calls, "the request must reach the authorizer, not be refused earlier")
+	assert.JSONEq(t, `{"jsonrpc":"2.0","id":1,"error":{"code":403,"message":"Unauthorized"}}`, rr.Body.String())
+	assert.NotContains(t, rr.Body.String(), "secret-backend-url",
+		"authorizer error text must not leak to the client")
+}
+
 // TestConvertToJSONRPC2ID tests the convertToJSONRPC2ID function with various ID types
 func TestConvertToJSONRPC2ID(t *testing.T) {
 	t.Parallel()
@@ -1319,6 +1719,75 @@ func TestConvertToJSONRPC2ID(t *testing.T) {
 	}
 }
 
+func TestAuthorizeListAndServe_UnregisteredMethodGuard(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name             string
+		featureOp        featureOperation
+		expectHandlerHit bool
+		expectStatus     int
+		expectBody       string
+	}{
+		{
+			name: "protected list without a registered filter is denied",
+			featureOp: featureOperation{
+				Feature:   authorizers.MCPFeatureResource,
+				Operation: authorizers.MCPOperationList,
+			},
+			expectStatus: http.StatusForbidden,
+			expectBody:   `{"jsonrpc":"2.0","id":7,"error":{"code":403,"message":"Unauthorized"}}`,
+		},
+		{
+			name: "protocol-only list without a filter passes through",
+			featureOp: featureOperation{
+				Feature:   "",
+				Operation: authorizers.MCPOperationList,
+			},
+			expectHandlerHit: true,
+			expectStatus:     http.StatusOK,
+			expectBody:       `{"passthrough":true}`,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			req, err := http.NewRequest(http.MethodPost, "/messages", nil)
+			require.NoError(t, err)
+			parsedRequest := &mcpparser.ParsedMCPRequest{
+				Method: "synthetic/unregistered-list",
+				ID:     float64(7),
+			}
+
+			var handlerCalled bool
+			next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				handlerCalled = true
+				w.Header().Set("Content-Type", "application/json")
+				_, writeErr := w.Write([]byte(`{"passthrough":true}`))
+				require.NoError(t, writeErr)
+			})
+
+			rr := httptest.NewRecorder()
+			authorizeListAndServe(
+				rr,
+				req,
+				nil,
+				parsedRequest,
+				tc.featureOp,
+				NewAnnotationCache(),
+				nil,
+				next,
+			)
+
+			assert.Equal(t, tc.expectHandlerHit, handlerCalled)
+			assert.Equal(t, tc.expectStatus, rr.Code)
+			assert.JSONEq(t, tc.expectBody, rr.Body.String())
+		})
+	}
+}
+
 func TestAuthorizeAndServe(t *testing.T) {
 	t.Parallel()
 
@@ -1356,6 +1825,18 @@ func TestAuthorizeAndServe(t *testing.T) {
 		{
 			name:             "authorizer error — 403, next not called",
 			allowed:          false,
+			authErr:          errors.New("policy evaluation failed"),
+			expectHandlerHit: false,
+			expectStatus:     http.StatusForbidden,
+		},
+		{
+			// allowed=true here discriminates fail-closed-on-error from
+			// fail-closed-on-deny: with allowed=false above, the 403 could come
+			// from either disjunct of `err != nil || !authorized`, so it alone
+			// doesn't pin that an authorizer error fails closed even when it
+			// also happens to report allowed.
+			name:             "authorizer error with allowed=true — still 403, next not called",
+			allowed:          true,
 			authErr:          errors.New("policy evaluation failed"),
 			expectHandlerHit: false,
 			expectStatus:     http.StatusForbidden,

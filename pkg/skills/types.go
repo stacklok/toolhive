@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"gopkg.in/yaml.v3"
+	"go.yaml.in/yaml/v3"
 )
 
 // Scope represents the scope at which a skill is installed.
@@ -171,6 +171,12 @@ type InstalledSkill struct {
 	// toolhive.lock.yaml. Only ever true for project-scoped installs. No
 	// omitempty: false is an observable state (unmanaged), not an absence.
 	Managed bool `json:"managed"`
+	// SigstoreBundle is the signature material captured at install time,
+	// used for offline re-verification during sync. It is core's durable
+	// form (see verifier.Result.Bundle), not necessarily bare Sigstore
+	// bundle JSON, and is re-verified against the ARTIFACT digest. Nil for
+	// unsigned installs. Never serialized to API responses.
+	SigstoreBundle []byte `json:"-"`
 }
 
 // SkillIndexEntry represents a single skill entry in a remote skill index.

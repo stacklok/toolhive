@@ -11,8 +11,32 @@ import (
 
 // AddSkillToGroup adds skillName to the Skills slice of the named group.
 // Groups that do not exist return an error. Duplicate skill names are skipped.
-// Empty groupName is a no-op.
-func AddSkillToGroup(ctx context.Context, mgr Manager, groupName string, skillName string) error {
+// Empty groupName is a no-op. The bool reports whether this call inserted the
+// name (false when it was already a member or groupName is empty), so a later
+// rollback can remove it only when this operation added it.
+func AddSkillToGroup(ctx context.Context, mgr Manager, groupName string, skillName string) (added bool, err error) {
+	if groupName == "" {
+		return false, nil
+	}
+	group, err := mgr.Get(ctx, groupName)
+	if err != nil {
+		return false, fmt.Errorf("getting group %q: %w", groupName, err)
+	}
+
+	if slices.Contains(group.Skills, skillName) {
+		return false, nil
+	}
+
+	group.Skills = append(group.Skills, skillName)
+	if err := mgr.Update(ctx, group); err != nil {
+		return false, fmt.Errorf("updating group %q: %w", groupName, err)
+	}
+	return true, nil
+}
+
+// RemoveSkillFromGroup removes skillName from the named group's Skills slice.
+// Missing membership is a no-op. Empty groupName is a no-op.
+func RemoveSkillFromGroup(ctx context.Context, mgr Manager, groupName string, skillName string) error {
 	if groupName == "" {
 		return nil
 	}
@@ -21,13 +45,13 @@ func AddSkillToGroup(ctx context.Context, mgr Manager, groupName string, skillNa
 		return fmt.Errorf("getting group %q: %w", groupName, err)
 	}
 
-	if slices.Contains(group.Skills, skillName) {
+	idx := slices.Index(group.Skills, skillName)
+	if idx < 0 {
 		return nil
 	}
-
-	group.Skills = append(group.Skills, skillName)
+	group.Skills = slices.Delete(group.Skills, idx, idx+1)
 	if err := mgr.Update(ctx, group); err != nil {
-		return fmt.Errorf("updating group %q: %w", groupName, err)
+		return fmt.Errorf("updating group %q: %w", group.Name, err)
 	}
 	return nil
 }

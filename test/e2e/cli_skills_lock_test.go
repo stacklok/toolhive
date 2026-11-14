@@ -18,10 +18,6 @@ import (
 	"github.com/stacklok/toolhive/test/e2e"
 )
 
-// This RFC THV-0080 feature is gated behind TOOLHIVE_SKILLS_LOCK_ENABLED
-// while it lands across a stack of PRs (see skills.LockFileFeatureEnabled),
-// so this Describe block runs its own server with the gate turned on rather
-// than sharing the default-off server other CLI skills tests use.
 var _ = Describe("Skills CLI lock file exit codes (RFC THV-0080)", Label("api", "cli", "skills", "skills-lock", "e2e"), func() {
 	var (
 		config    *e2e.ServerConfig
@@ -31,7 +27,6 @@ var _ = Describe("Skills CLI lock file exit codes (RFC THV-0080)", Label("api", 
 
 	BeforeEach(func() {
 		config = e2e.NewServerConfig()
-		config.ExtraEnv = []string{"TOOLHIVE_SKILLS_LOCK_ENABLED=true"}
 		apiServer = e2e.StartServer(config)
 		thvConfig = e2e.NewTestConfig()
 	})

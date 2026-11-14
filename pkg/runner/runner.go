@@ -7,9 +7,12 @@ package runner
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"os"
 	"strings"
@@ -17,7 +20,7 @@ import (
 
 	"golang.org/x/oauth2"
 
-	tcredis "github.com/stacklok/toolhive-core/redis"
+	"github.com/stacklok/toolhive-core/redisconn"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/auth/remote"
 	authsecrets "github.com/stacklok/toolhive/pkg/auth/secrets"
@@ -28,12 +31,15 @@ import (
 	"github.com/stacklok/toolhive/pkg/config"
 	ct "github.com/stacklok/toolhive/pkg/container"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
+	"github.com/stacklok/toolhive/pkg/diagnostics"
 	"github.com/stacklok/toolhive/pkg/labels"
 	"github.com/stacklok/toolhive/pkg/process"
 	"github.com/stacklok/toolhive/pkg/runtime"
 	"github.com/stacklok/toolhive/pkg/secrets"
+	"github.com/stacklok/toolhive/pkg/state"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/transport"
+	headerfwd "github.com/stacklok/toolhive/pkg/transport/middleware"
 	"github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 	"github.com/stacklok/toolhive/pkg/workloads/statuses"
@@ -45,25 +51,24 @@ var ErrContainerExitedRestartNeeded = errors.New("container exited, restart need
 // probeProtocolVersion is the MCP protocol revision the readiness probe advertises
 // in the JSON-RPC params.protocolVersion of its initialize handshake.
 //
-// It is deliberately pinned to 2025-11-25 — the current stable revision and the
-// newest one that still defines the `initialize` method — rather than tracking
-// mcp.LATEST_PROTOCOL_VERSION. The upcoming 2026-07-28 revision (draft; subject to
-// change until it ships) removes `initialize` entirely (replaced by server/discover
-// + per-request _meta, SEP-2575), so a probe that sent method:"initialize" with a
-// 2026-07-28 version string would be internally inconsistent. When ToolHive adopts
-// 2026-07-28 (issue #5754) the probe must switch to server/discover — which, like
-// all 2026-07-28 Streamable HTTP POSTs, carries the required Mcp-Method/Mcp-Name
-// headers — and fall back to this initialize path for older backends. Pinning here
-// keeps the probe's method and version consistent regardless of what the SDK later
-// declares "latest".
+// It is deliberately pinned to 2025-11-25 rather than tracking
+// mcp.LATEST_PROTOCOL_VERSION, because this probe uses initialize. The final
+// 2026-07-28 revision removes initialize (replaced by server/discover and
+// per-request _meta, SEP-2575), so sending initialize with a 2026-07-28 version
+// would be internally inconsistent. This readiness probe does not yet support
+// Modern requests; that would require a server/discover probe with the required
+// Mcp-Method/Mcp-Name headers and a fallback to initialize for older backends.
+// Pinning here keeps the probe's method and version consistent regardless of
+// what the SDK later declares "latest".
 //
 // The value is sent only in the request body, NOT as an MCP-Protocol-Version
-// header: the spec scopes that header to requests made AFTER initialization
-// (carrying the negotiated version), and requires a server to reject an unsupported
-// header value with HTTP 400. Sending it on the initialize request itself would let
-// a backend that only supports an older revision 400 the probe — a false
-// "not-ready" — whereas body-based version negotiation degrades gracefully (the
-// server answers HTTP 200 with its own supported version).
+// header: for this 2025-11-25 initialize handshake, the spec scopes that header
+// to requests made AFTER initialization (carrying the negotiated version), and
+// requires a server to reject an unsupported header value with HTTP 400. Sending
+// it on the initialize request itself would let a backend that only supports an
+// older revision 400 the probe — a false "not-ready" — whereas body-based version
+// negotiation degrades gracefully (the server answers HTTP 200 with its own
+// supported version).
 const probeProtocolVersion = "2025-11-25"
 
 // Runner is responsible for running an MCP server with the provided configuration
@@ -88,6 +93,11 @@ type Runner struct {
 
 	// prometheusHandler is the Prometheus metrics handler set by telemetry middleware
 	prometheusHandler http.Handler
+
+	// diagnosticsServer serves the Prometheus /metrics endpoint on its own
+	// listener, keeping it off the application listener where it would bypass
+	// the middleware chain. Nil unless the metrics path is enabled.
+	diagnosticsServer *diagnostics.Server
 
 	statusManager statuses.StatusManager
 
@@ -187,10 +197,33 @@ func (c *RunConfig) GetPort() int {
 	return c.Port
 }
 
+// parseProxyTimeout parses an optional Go duration string from RunConfig. An
+// empty string yields 0, which the proxy treats as "use the package default".
+// Negative durations and unparsable values are rejected.
+func parseProxyTimeout(name, value string) (time.Duration, error) {
+	if value == "" {
+		return 0, nil
+	}
+	d, err := time.ParseDuration(value)
+	if err != nil {
+		return 0, fmt.Errorf("invalid %s %q: %w", name, value, err)
+	}
+	if d < 0 {
+		return 0, fmt.Errorf("%s must be non-negative, got %s", name, d)
+	}
+	return d, nil
+}
+
 // Run runs the MCP server with the provided configuration
 //
 //nolint:gocyclo // This function is complex but manageable
 func (r *Runner) Run(ctx context.Context) error {
+	// Validate serialized RunConfig input before any provider or runtime work.
+	// The builder and middleware helper repeat this check at their own boundaries.
+	if r.Config.MaxRequestBodySize < 0 {
+		return fmt.Errorf("max_request_body_size must be non-negative, got %d", r.Config.MaxRequestBodySize)
+	}
+
 	// Resolve session TTL once so both the transport proxy and Redis storage use
 	// the same effective value, rather than each applying their own zero-fallback
 	// independently. SessionTTL is stored as a Go duration string so the
@@ -209,6 +242,13 @@ func (r *Runner) Run(ctx context.Context) error {
 		}
 	}
 
+	// Resolve the proxy HTTP server read timeout. Empty/zero means "use the proxy
+	// default"; the proxy option ignores non-positive values.
+	proxyReadTimeout, parseErr := parseProxyTimeout("proxy_read_timeout", r.Config.ProxyReadTimeout)
+	if parseErr != nil {
+		return parseErr
+	}
+
 	// Create transport with runtime
 	transportConfig := types.Config{
 		Type:                     r.Config.Transport,
@@ -222,6 +262,8 @@ func (r *Runner) Run(ctx context.Context) error {
 		StrictProtocolValidation: r.Config.StrictProtocolValidation,
 		EndpointPrefix:           r.Config.EndpointPrefix,
 		SessionTTL:               effectiveSessionTTL,
+		ReadTimeout:              proxyReadTimeout,
+		StripConsentCookie:       r.Config.EmbeddedAuthServerConfig != nil,
 	}
 
 	// Set proxy mode for stdio transport
@@ -290,6 +332,14 @@ func (r *Runner) Run(ctx context.Context) error {
 		}
 	}
 
+	if err := canonicalizeOIDCMiddlewareConfig(r.Config); err != nil {
+		return fmt.Errorf("invalid OIDC middleware configuration: %w", err)
+	}
+
+	if err := validateCredentialStrippingMiddleware(r.Config.MiddlewareConfigs, r.Config); err != nil {
+		return fmt.Errorf("invalid credential stripping middleware configuration: %w", err)
+	}
+
 	// Origin-header validation (DNS-rebinding protection per MCP 2025-11-25
 	// §"Security Warning") is wired here, after both middleware-population
 	// paths, because it is the single place where Host/Port/AllowedOrigins are
@@ -304,9 +354,12 @@ func (r *Runner) Run(ctx context.Context) error {
 
 	// Body-size limit is always the outermost middleware, regardless of how the
 	// chain was assembled (PopulateMiddlewareConfigs above, or WithMiddlewareFromFlags
-	// which pre-populates the slice and takes the else branch). Idempotent, so the
-	// operator/Populate path is a no-op here.
-	r.Config.MiddlewareConfigs, err = addBodyLimitMiddleware(r.Config.MiddlewareConfigs)
+	// which pre-populates the slice and takes the else branch). Existing body-limit
+	// entries are replaced so the typed RunConfig value is authoritative.
+	r.Config.MiddlewareConfigs, err = addBodyLimitMiddleware(
+		r.Config.MiddlewareConfigs,
+		r.Config.MaxRequestBodySize,
+	)
 	if err != nil {
 		return fmt.Errorf("failed to add body limit middleware: %w", err)
 	}
@@ -326,10 +379,17 @@ func (r *Runner) Run(ctx context.Context) error {
 		}
 
 		var err error
-		r.embeddedAuthServer, err = authserverrunner.NewEmbeddedAuthServer(ctx, r.Config.EmbeddedAuthServerConfig)
+		r.embeddedAuthServer, err = authserverrunner.NewEmbeddedAuthServer(
+			ctx, r.Config.EmbeddedAuthServerConfig, authserverrunner.WithListenerHost(r.bindHost()),
+		)
 		if err != nil {
 			return fmt.Errorf("failed to create embedded auth server: %w", err)
 		}
+		defer func() {
+			if err := r.embeddedAuthServer.Close(); err != nil {
+				slog.Warn("failed to close embedded auth server", "error", err)
+			}
+		}()
 		slog.Debug("embedded authorization server initialized")
 
 		// Create the upstream token service eagerly now that the auth server exists.
@@ -366,7 +426,48 @@ func (r *Runner) Run(ctx context.Context) error {
 	// Set all named middleware and handlers on transport config
 	transportConfig.Middlewares = r.namedMiddlewares
 	transportConfig.AuthInfoHandler = r.authInfoHandler
-	transportConfig.PrometheusHandler = r.prometheusHandler
+
+	if err := r.startEmbeddedAuthServerListener(); err != nil {
+		return err
+	}
+
+	// Metrics are served on a dedicated diagnostics listener so access can be
+	// restricted by port; see pkg/diagnostics.
+	if err := r.startDiagnosticsServer(); err != nil {
+		return err
+	}
+
+	// During the deprecation window /metrics is ALSO served on the transport port,
+	// so an existing scrape configuration keeps working while it is moved. Handing
+	// the handler to the transport is what mounts it there; leaving it nil is what
+	// keeps the proxies from mounting it at all. See
+	// telemetry.DefaultMetricsOnTransportPort for the cutover.
+	if mountPrometheusHandlerOnTransportPort(r.prometheusHandler, r.Config.TelemetryConfig) {
+		transportConfig.PrometheusHandler = r.prometheusHandler
+		slog.Warn("serving prometheus metrics on the transport port as well as the diagnostics port; "+
+			"this is deprecated and the transport-port copy will be removed; see #6384 for the timeline. "+
+			"Move scrapers to the "+
+			"diagnostics address logged above, then set metricsOnTransportPort: false to verify",
+			"transport_port", r.Config.Port)
+	}
+
+	// Release the listener on every exit from Run, not just the happy path.
+	// Cleanup runs only via stopMCPServer, which several paths skip: the early
+	// error returns below, and the graceful container-exit branch that returns
+	// nil after the transport already stopped. Leaking here would strand a
+	// goroutine and a bound port, and under workloads.Manager's restart loop each
+	// attempt would strand another and push the next onto a different port —
+	// silently breaking the scrape target this change exists to stabilise.
+	//
+	// A duplicate stop is harmless: stopDiagnosticsServer is nil-safe and
+	// idempotent, so the paths that do reach Cleanup are unaffected.
+	defer func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), diagnosticsStopTimeout)
+		defer cancel()
+		if err := r.stopDiagnosticsServer(stopCtx); err != nil {
+			slog.Warn("failed to stop diagnostics server", "error", err)
+		}
+	}()
 
 	// Set up the transport
 	slog.Debug("setting up transport", "transport", r.Config.Transport)
@@ -401,6 +502,7 @@ func (r *Runner) Run(ctx context.Context) error {
 			r.Config.K8sPodTemplatePatch,
 			r.Config.IsolateNetwork,
 			r.Config.AllowDockerGateway,
+			r.Config.ReadOnlyRootfs,
 			r.Config.IgnoreConfig,
 			r.Config.Host,
 			r.Config.TargetPort,
@@ -429,15 +531,21 @@ func (r *Runner) Run(ctx context.Context) error {
 		if keyPrefix == "" {
 			keyPrefix = "thv:proxy:session:"
 		}
-		storage, err := session.NewRedisStorage(ctx, tcredis.Config{
+		tlsCfg, err := redisCfg.TLS.Load()
+		if err != nil {
+			return fmt.Errorf("redis session storage TLS configuration: %w", err)
+		}
+		storage, err := session.NewRedisStorage(ctx, redisconn.Config{
 			Addr:     redisCfg.Address,
 			Password: os.Getenv(session.RedisPasswordEnvVar),
 			DB:       int(redisCfg.DB),
+			TLS:      tlsCfg,
 		}, keyPrefix, effectiveSessionTTL)
 		if err != nil {
 			return fmt.Errorf("failed to create Redis session storage: %w", err)
 		}
 		slog.Info("using Redis session storage",
+			"store", redisCfg.Address,
 			"address", redisCfg.Address,
 			"db", redisCfg.DB,
 			"key_prefix", keyPrefix,
@@ -826,12 +934,81 @@ func (r *Runner) handleRemoteAuthentication(ctx context.Context) (oauth2.TokenSo
 	return tokenSource, nil
 }
 
+// decodeStoredRunConfig decodes stored state without ReadJSON: its migrations
+// save state themselves and its normalizations are meant to stay in memory.
+func decodeStoredRunConfig(reader io.Reader) (*RunConfig, error) {
+	var stored *RunConfig
+	if err := json.NewDecoder(reader).Decode(&stored); err != nil {
+		// Custom unmarshalers (remote.Config, time.Time) can echo input.
+		return nil, fmt.Errorf("invalid stored run configuration: %T", err)
+	}
+	if stored == nil {
+		return nil, errors.New("stored run configuration is empty")
+	}
+	return stored, nil
+}
+
+// loadAndScrubRunConfig returns the stored state with legacy resolved secret
+// values removed. It changes neither the live config nor the state on disk.
+func (r *Runner) loadAndScrubRunConfig(ctx context.Context) (*RunConfig, error) {
+	stored, err := state.LoadRunConfig(ctx, r.Config.BaseName, decodeStoredRunConfig)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load stored run configuration for %q: %w", r.Config.BaseName, err)
+	}
+	for i, reference := range stored.Secrets {
+		parameter, err := secrets.ParseSecretParameter(reference)
+		if err != nil {
+			return nil, fmt.Errorf("invalid stored secret reference at index %d", i)
+		}
+		delete(stored.EnvVars, parameter.Target)
+	}
+	if stored.HeaderForward != nil {
+		if err := scrubStoredHeaderParameters(stored.MiddlewareConfigs, stored.HeaderForward.AddHeadersFromSecret); err != nil {
+			return nil, err
+		}
+	}
+	return stored, nil
+}
+
+// scrubStoredHeaderParameters removes secret headers from header-forward
+// entries, modifying the middlewares slice in place; pass a freshly decoded copy.
+// Params are decoded into the struct the middleware factory uses, so duplicate
+// or case-variant add_headers members resolve as they do at runtime.
+func scrubStoredHeaderParameters(middlewares []types.MiddlewareConfig, secretHeaders map[string]string) error {
+	secret := make(map[string]bool, len(secretHeaders))
+	for name := range secretHeaders {
+		secret[http.CanonicalHeaderKey(name)] = true
+	}
+	for i := range middlewares {
+		if middlewares[i].Type != headerfwd.HeaderForwardMiddlewareName || len(middlewares[i].Parameters) == 0 {
+			continue
+		}
+		var params headerfwd.HeaderForwardMiddlewareParams
+		if err := json.Unmarshal(middlewares[i].Parameters, &params); err != nil {
+			return fmt.Errorf("invalid stored header forwarding parameters: %T", err)
+		}
+		maps.DeleteFunc(params.AddHeaders, func(name, _ string) bool {
+			return secret[http.CanonicalHeaderKey(name)]
+		})
+		encoded, err := json.Marshal(params)
+		if err != nil {
+			return fmt.Errorf("failed to encode stored header forwarding parameters: %T", err)
+		}
+		middlewares[i].Parameters = encoded
+	}
+	return nil
+}
+
 func (r *Runner) persistRefreshToken(
 	ctx context.Context,
 	secretManager secrets.Provider,
 	refreshToken string,
 	expiry time.Time,
 ) error {
+	updatedConfig, err := r.loadAndScrubRunConfig(ctx)
+	if err != nil {
+		return err
+	}
 	secretName, err := authsecrets.GenerateUniqueSecretNameWithPrefix(
 		r.Config.Name,
 		"OAUTH_REFRESH_TOKEN_",
@@ -845,12 +1022,18 @@ func (r *Runner) persistRefreshToken(
 		return fmt.Errorf("failed to store refresh token: %w", err)
 	}
 
-	r.Config.RemoteAuthConfig.CachedRefreshTokenRef = secretName
-	r.Config.RemoteAuthConfig.CachedTokenExpiry = expiry
+	updatedRemoteAuthConfig := *r.Config.RemoteAuthConfig
+	updatedConfig.RemoteAuthConfig = &updatedRemoteAuthConfig
+	updatedRemoteAuthConfig.CachedRefreshTokenRef = secretName
+	updatedRemoteAuthConfig.CachedTokenExpiry = expiry
 
-	if err := r.Config.SaveState(ctx); err != nil {
+	if err := updatedConfig.SaveState(ctx); err != nil {
 		return fmt.Errorf("failed to save config with token reference: %w", err)
 	}
+
+	// Preserve pointer identity so the auth handler and runner observe the same
+	// complete config only after the durable write succeeds.
+	*r.Config.RemoteAuthConfig = updatedRemoteAuthConfig
 
 	slog.Debug("Stored OAuth refresh token in secret manager", "secret_name", secretName)
 	return nil
@@ -865,7 +1048,10 @@ func (r *Runner) persistClientCredentials(
 	tokenEndpointAuthMethod string,
 	registeredCallbackPort int,
 ) error {
-	updatedConfig := *r.Config
+	updatedConfig, err := r.loadAndScrubRunConfig(ctx)
+	if err != nil {
+		return err
+	}
 	updatedRemoteAuthConfig := remote.Config{}
 	if r.Config.RemoteAuthConfig != nil {
 		updatedRemoteAuthConfig = *r.Config.RemoteAuthConfig
@@ -876,7 +1062,6 @@ func (r *Runner) persistClientCredentials(
 	if clientSecret != "" {
 		clientSecretSecretName := updatedRemoteAuthConfig.CachedClientSecretRef
 		if clientSecretSecretName == "" {
-			var err error
 			clientSecretSecretName, err = authsecrets.GenerateUniqueSecretNameWithPrefix(
 				r.Config.Name,
 				"OAUTH_CLIENT_SECRET_",
@@ -898,7 +1083,6 @@ func (r *Runner) persistClientCredentials(
 	if regAccessToken != "" {
 		regTokenSecretName := updatedRemoteAuthConfig.CachedRegTokenRef
 		if regTokenSecretName == "" {
-			var err error
 			regTokenSecretName, err = authsecrets.GenerateUniqueSecretNameWithPrefix(r.Config.Name, "OAUTH_REG_TOKEN_", secretManager)
 			if err != nil {
 				return fmt.Errorf("failed to generate registration token secret name: %w", err)
@@ -955,6 +1139,15 @@ func (r *Runner) Cleanup(ctx context.Context) error {
 			if lastErr == nil {
 				lastErr = err
 			}
+		}
+	}
+
+	// Stop the diagnostics listener before the telemetry provider it scrapes
+	// from is shut down.
+	if err := r.stopDiagnosticsServer(ctx); err != nil {
+		slog.Warn("Failed to stop diagnostics server", "error", err)
+		if lastErr == nil {
+			lastErr = err
 		}
 	}
 
@@ -1052,6 +1245,15 @@ func waitForInitializeSuccess(
 	delay := 100 * time.Millisecond
 	maxDelay := 2 * time.Second // Cap at 2 seconds between retries
 
+	// Per-attempt outcomes below log at DEBUG, which is invisible in a default
+	// deployment — a workload stuck in `starting` for minutes then shows no
+	// trace of WHY the probe kept failing. Surface a periodic INFO progress
+	// line (long-running operation) carrying the last observed outcome.
+	// Every loop iteration assigns lastObserved before it is read.
+	var lastObserved string
+	const progressInterval = 30 * time.Second
+	nextProgressLog := progressInterval
+
 	slog.Info("Waiting for MCP server to be ready", "endpoint", endpoint, "timeout", maxWaitTime)
 
 	// Create HTTP client with a reasonable timeout for requests
@@ -1073,6 +1275,7 @@ func waitForInitializeSuccess(
 
 		if err != nil {
 			slog.Debug("Failed to create request", "attempt", attempt, "error", err)
+			lastObserved = fmt.Sprintf("failed to create request: %v", err)
 		} else {
 			if method == "POST" {
 				req.Header.Set("Content-Type", "application/json")
@@ -1097,15 +1300,24 @@ func waitForInitializeSuccess(
 
 				slog.Debug("Server returned status", //nolint:gosec // G706: status code and attempt are integers
 					"status_code", resp.StatusCode, "attempt", attempt)
+				lastObserved = fmt.Sprintf("HTTP %d", resp.StatusCode)
 			} else {
 				slog.Debug("Failed to reach endpoint", "attempt", attempt, "error", err)
+				lastObserved = fmt.Sprintf("unreachable: %v", err)
 			}
 		}
 
 		// Check if we've exceeded the maximum wait time
 		elapsed := time.Since(startTime)
 		if elapsed >= maxWaitTime {
-			return fmt.Errorf("initialize not successful after %v (%d attempts)", elapsed, attempt)
+			return fmt.Errorf("initialize not successful after %v (%d attempts, last observed: %s)",
+				elapsed, attempt, lastObserved)
+		}
+
+		if elapsed >= nextProgressLog {
+			slog.Info("Still waiting for MCP server to be ready", //nolint:gosec // G706: attempt is an integer
+				"endpoint", endpoint, "elapsed", elapsed.Round(time.Second), "attempt", attempt, "last_observed", lastObserved)
+			nextProgressLog += progressInterval
 		}
 
 		// Wait before retrying
@@ -1122,4 +1334,25 @@ func waitForInitializeSuccess(
 			delay = maxDelay
 		}
 	}
+}
+
+// startEmbeddedAuthServerListener starts the embedded auth server's TLS
+// listener when one is configured, and is a no-op otherwise. The listener port
+// is fixed and part of the issuer URL, so a clash with the proxy or diagnostics
+// port is reported instead of being resolved by picking another port.
+func (r *Runner) startEmbeddedAuthServerListener() error {
+	if r.embeddedAuthServer == nil || r.Config.EmbeddedAuthServerConfig == nil ||
+		r.Config.EmbeddedAuthServerConfig.TLSListener == nil {
+		return nil
+	}
+	if r.Config.Port == authserverrunner.TLSListenerPort {
+		return fmt.Errorf("proxy port %d conflicts with the auth server TLS listener port", r.Config.Port)
+	}
+	if r.prometheusHandler != nil && diagnosticsPort(r.Config.TelemetryConfig) == authserverrunner.TLSListenerPort {
+		return fmt.Errorf("diagnostics port %d conflicts with the auth server TLS listener port", authserverrunner.TLSListenerPort)
+	}
+	if err := r.embeddedAuthServer.Start(); err != nil {
+		return fmt.Errorf("failed to start auth server TLS listener: %w", err)
+	}
+	return nil
 }

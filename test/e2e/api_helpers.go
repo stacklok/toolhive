@@ -57,6 +57,31 @@ type Server struct {
 	stdout     *strings.Builder
 }
 
+// RetryOnPortConflict runs attempt with port and returns its result. The
+// port is only probed free at selection time (networking.FindOrUsePort);
+// the real bind happens later, in a subprocess this test doesn't control, so
+// another process can steal the port before that bind occurs. If attempt
+// fails with an address-already-in-use signal, RetryOnPortConflict
+// allocates a fresh port and retries attempt exactly once -- mirroring
+// startEraBackendOnPort's handling of the same TOCTOU window for
+// Docker-bound ports in test/e2e/vmcp_dual_era_helpers_test.go. It returns
+// the port actually used (the original, or the fresh one on retry) along
+// with attempt's result.
+func RetryOnPortConflict(port int, attempt func(port int) error) (int, error) {
+	err := attempt(port)
+	if err == nil || !strings.Contains(err.Error(), "address already in use") {
+		return port, err
+	}
+
+	newPort, ferr := networking.FindOrUsePort(0)
+	if ferr != nil {
+		GinkgoWriter.Printf("failed to find a fresh port after port %d lost a bind race: %v\n", port, ferr)
+		return port, err
+	}
+	GinkgoWriter.Printf("port %d lost a bind race, retrying once with fresh port %d: %v\n", port, newPort, err)
+	return newPort, attempt(newPort)
+}
+
 // NewServer creates and starts a new API server instance by running `thv serve` as a subprocess.
 func NewServer(config *ServerConfig) (*Server, error) {
 	testConfig := NewTestConfig()
@@ -87,54 +112,63 @@ func NewServer(config *ServerConfig) (*Server, error) {
 	// would fail because no client config paths exist in the temp home dir.
 	_ = os.WriteFile(filepath.Join(tempHome, ".claude.json"), []byte("{}"), 0600)
 
-	ctx, cancel := context.WithCancel(context.Background())
+	var server *Server
+	// The returned port is discarded here: the closure below assigns the
+	// real port onto server.port via the Server struct literal.
+	_, err = RetryOnPortConflict(port, func(p int) error {
+		ctx, cancel := context.WithCancel(context.Background())
 
-	// Create string builders to capture output
-	var stdout, stderr strings.Builder
+		// Create string builders to capture output
+		var stdout, stderr strings.Builder
 
-	// Create the command: thv serve --host 127.0.0.1 --port <port>
-	//nolint:gosec // Intentional for e2e testing
-	cmd := exec.CommandContext(
-		ctx,
-		testConfig.THVBinary,
-		"serve",
-		"--host",
-		"127.0.0.1",
-		"--port",
-		strconv.Itoa(port),
-	)
-	// Set environment variables including temporary config paths
-	cmd.Env = append([]string{
-		"TOOLHIVE_DEV=true",
-		fmt.Sprintf("XDG_CONFIG_HOME=%s", tempXdgConfigHome),
-		fmt.Sprintf("HOME=%s", tempHome),
-	}, config.ExtraEnv...)
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+		// Create the command: thv serve --host 127.0.0.1 --port <port>
+		//nolint:gosec // Intentional for e2e testing
+		cmd := exec.CommandContext(
+			ctx,
+			testConfig.THVBinary,
+			"serve",
+			"--host",
+			"127.0.0.1",
+			"--port",
+			strconv.Itoa(p),
+		)
+		// Set environment variables including temporary config paths
+		cmd.Env = append([]string{
+			"TOOLHIVE_DEV=true",
+			fmt.Sprintf("XDG_CONFIG_HOME=%s", tempXdgConfigHome),
+			fmt.Sprintf("HOME=%s", tempHome),
+		}, config.ExtraEnv...)
+		cmd.Stdout = &stdout
+		cmd.Stderr = &stderr
 
-	// Start the server process
-	if err := cmd.Start(); err != nil {
-		cancel()
-		return nil, fmt.Errorf("failed to start thv serve: %w", err)
-	}
+		// Start the server process
+		if err := cmd.Start(); err != nil {
+			cancel()
+			return fmt.Errorf("failed to start thv serve: %w", err)
+		}
 
-	server := &Server{
-		config:  config,
-		baseURL: fmt.Sprintf("http://127.0.0.1:%d", port),
-		cmd:     cmd,
-		ctx:     ctx,
-		cancel:  cancel,
-		httpClient: &http.Client{
-			Timeout: config.RequestTimeout,
-		},
-		port:   port,
-		stdout: &stdout,
-		stderr: &stderr,
-	}
+		server = &Server{
+			config:  config,
+			baseURL: fmt.Sprintf("http://127.0.0.1:%d", p),
+			cmd:     cmd,
+			ctx:     ctx,
+			cancel:  cancel,
+			httpClient: &http.Client{
+				Timeout: config.RequestTimeout,
+			},
+			port:   p,
+			stdout: &stdout,
+			stderr: &stderr,
+		}
 
-	// Wait for server to be ready
-	if err := server.WaitForReady(); err != nil {
-		_ = server.Stop()
+		// Wait for server to be ready
+		if err := server.WaitForReady(); err != nil {
+			_ = server.Stop()
+			return err
+		}
+		return nil
+	})
+	if err != nil {
 		return nil, err
 	}
 

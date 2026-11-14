@@ -122,6 +122,41 @@ func TestNewIncomingAuthMiddleware(t *testing.T) {
 			},
 		},
 		{
+			// A pinned primaryUpstreamProvider demands that claims come from an
+			// upstream IdP. Local auth synthesizes an identity from the OS user
+			// and can never produce an upstream session, so serving this
+			// combination would judge every request on claims no upstream
+			// asserted.
+			name: "local_auth_with_primary_upstream_provider_returns_error",
+			cfg: &config.IncomingAuthConfig{
+				Type: "local",
+				Authz: &config.AuthzConfig{
+					Type:                    "cedar",
+					PrimaryUpstreamProvider: "github",
+					Policies: []string{
+						`permit(principal, action == Action::"list_tools", resource);`,
+					},
+				},
+			},
+			wantErr:     true,
+			errContains: "requires an upstream session",
+		},
+		{
+			name: "anonymous_auth_with_primary_upstream_provider_returns_error",
+			cfg: &config.IncomingAuthConfig{
+				Type: "anonymous",
+				Authz: &config.AuthzConfig{
+					Type:                    "cedar",
+					PrimaryUpstreamProvider: "github",
+					Policies: []string{
+						`permit(principal, action == Action::"list_tools", resource);`,
+					},
+				},
+			},
+			wantErr:     true,
+			errContains: "requires an upstream session",
+		},
+		{
 			name: "unsupported_auth_type_returns_error",
 			cfg: &config.IncomingAuthConfig{
 				Type: "unsupported-type",
@@ -135,7 +170,7 @@ func TestNewIncomingAuthMiddleware(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			authMw, authzMw, authInfo, err := NewIncomingAuthMiddleware(t.Context(), tt.cfg, "test-server", nil, nil, nil)
+			authMw, authzMw, authInfo, err := NewIncomingAuthMiddleware(t.Context(), tt.cfg, "test-server", nil, nil, nil, "")
 
 			if tt.wantErr {
 				require.Error(t, err)

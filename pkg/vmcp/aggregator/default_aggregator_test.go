@@ -175,19 +175,22 @@ func TestDefaultAggregator_ResolveConflicts(t *testing.T) {
 		}
 
 		agg := NewDefaultAggregator(nil, nil, nil, nil)
-		resolved, err := agg.ResolveConflicts(context.Background(), capabilities)
 
-		require.NoError(t, err)
-		assert.NotNil(t, resolved)
-		// In Phase 1, we just collect tools - conflict is detected but first one wins
-		assert.Contains(t, resolved.Tools, "tool1")
-		assert.Contains(t, resolved.Tools, "tool2")
-		assert.Contains(t, resolved.Tools, "shared_tool")
-		// Shared tool should have one backend (whichever was encountered first in map iteration)
-		// Map iteration order is non-deterministic, so accept either backend
-		sharedToolBackend := resolved.Tools["shared_tool"].BackendID
-		assert.True(t, sharedToolBackend == "backend1" || sharedToolBackend == "backend2",
-			"shared_tool should belong to either backend1 or backend2, got: %s", sharedToolBackend)
+		// Repeat: map iteration order is re-randomized per call, and the
+		// fallback winner must not depend on it.
+		for range 5 {
+			resolved, err := agg.ResolveConflicts(context.Background(), capabilities)
+
+			require.NoError(t, err)
+			assert.NotNil(t, resolved)
+			// The no-resolver fallback keeps the first tool per name in sorted
+			// backend order, so the conflict winner is deterministic.
+			assert.Contains(t, resolved.Tools, "tool1")
+			assert.Contains(t, resolved.Tools, "tool2")
+			assert.Contains(t, resolved.Tools, "shared_tool")
+			assert.Equal(t, "backend1", resolved.Tools["shared_tool"].BackendID,
+				"fallback must keep the first backend in sorted-ID order")
+		}
 	})
 
 	t.Run("no conflicts", func(t *testing.T) {
@@ -240,8 +243,8 @@ func TestDefaultAggregator_MergeCapabilities(t *testing.T) {
 			Resources: []vmcp.Resource{
 				{URI: "test://resource1", BackendID: "backend1"},
 			},
-			Prompts: []vmcp.Prompt{
-				{Name: "prompt1", BackendID: "backend1"},
+			Prompts: []ResolvedPrompt{
+				{Prompt: vmcp.Prompt{Name: "prompt1", BackendID: "backend1"}, OriginalName: "prompt1"},
 			},
 			SupportsLogging:  true,
 			SupportsSampling: false,
@@ -351,6 +354,31 @@ func TestDefaultAggregator_MergeCapabilities(t *testing.T) {
 		assert.Equal(t, "file:///logs/2025-01-01.txt",
 			target.GetBackendCapabilityName("file:///logs/2025-01-01.txt"),
 			"a concrete expanded URI must pass through to the backend unchanged")
+	})
+
+	t.Run("registry miss still translates a renamed prompt", func(t *testing.T) {
+		t.Parallel()
+		// The minimal-target fallback (backend absent from the registry) must
+		// carry the backend's OWN prompt name, not the advertised one —
+		// otherwise prompts/get on the renamed prompt forwards a name the
+		// backend does not know.
+		resolved := &ResolvedCapabilities{
+			Tools: map[string]*ResolvedTool{},
+			Prompts: []ResolvedPrompt{
+				{Prompt: vmcp.Prompt{Name: "b1_review", BackendID: "b1"}, OriginalName: "review"},
+			},
+		}
+		registry := vmcp.NewImmutableRegistry(nil)
+
+		agg := NewDefaultAggregator(nil, nil, nil, nil)
+		aggregated, err := agg.MergeCapabilities(context.Background(), resolved, registry)
+		require.NoError(t, err)
+
+		target := aggregated.RoutingTable.Prompts["b1_review"]
+		require.NotNil(t, target)
+		assert.Equal(t, "b1", target.WorkloadID)
+		assert.Equal(t, "review", target.GetBackendCapabilityName("b1_review"),
+			"prompts/get on the advertised name must forward the backend's own name")
 	})
 }
 
@@ -854,5 +882,90 @@ func TestDefaultAggregator_FilterPreservesRoutingTableForCompositeTools(t *testi
 
 		// ALL tools should still be in routing table
 		assert.Len(t, result.RoutingTable.Tools, 2)
+	})
+}
+
+// TestDefaultAggregator_DefaultToolVisibilityDenyMixedBackends covers the motivating
+// scenario for defaultToolVisibility (issue #6073): a group holding both a listed and
+// an unlisted backend. Under "deny" the listed backend's tools are advertised and
+// the unlisted backend contributes nothing — so adding a workload to the group no
+// longer exposes it by default. Both backends' tools stay routable, keeping
+// composite tools working over hidden ones.
+func TestDefaultAggregator_DefaultToolVisibilityDenyMixedBackends(t *testing.T) {
+	t.Parallel()
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	backends, capsByID := twoBackendCaps()
+	mockClient := mocks.NewMockBackendClient(ctrl)
+	expectListCapabilities(mockClient, capsByID)
+
+	// backend1 is listed (opted in); backend2 is not mentioned at all.
+	aggCfg := &config.AggregationConfig{
+		DefaultToolVisibility: config.DefaultToolVisibilityDeny,
+		Tools:                 []*config.WorkloadToolConfig{{Workload: "backend1"}},
+	}
+
+	agg := NewDefaultAggregator(mockClient, NewPrefixConflictResolver("{workload}_"), aggCfg, nil)
+	result, err := agg.AggregateCapabilities(context.Background(), backends)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	advertised := make([]string, 0, len(result.Tools))
+	for _, tool := range result.Tools {
+		advertised = append(advertised, tool.Name)
+	}
+	assert.ElementsMatch(t, []string{"backend1_fetch", "backend1_tool_a"}, advertised,
+		"only the listed backend's tools may be advertised under deny")
+	for _, tool := range result.Tools {
+		assert.Equalf(t, "backend1", tool.BackendID,
+			"no unlisted backend's tool may be advertised, but %q was", tool.Name)
+	}
+
+	// Advertising-only: the unlisted backend stays fully routable so composite
+	// tools can still reach it.
+	require.NotNil(t, result.RoutingTable)
+	assert.Len(t, result.RoutingTable.Tools, 4,
+		"deny must not remove tools from the routing table")
+	assert.Contains(t, result.RoutingTable.Tools, "backend2_tool_b",
+		"an unlisted backend's tools remain routable for composite tools")
+}
+
+// TestDefaultAggregator_WarnsOnUnmatchedToolConfig pins the diagnostic for a typo
+// in tools[].workload. Under deny a typo means the real backend has no entry and
+// so contributes nothing, and the only other symptom is a short tools/list — the
+// detection is what makes that debuggable.
+func TestDefaultAggregator_WarnsOnUnmatchedToolConfig(t *testing.T) {
+	t.Parallel()
+
+	backends, _ := twoBackendCaps()
+
+	t.Run("reports an entry matching no backend", func(t *testing.T) {
+		t.Parallel()
+		aggCfg := &config.AggregationConfig{
+			DefaultToolVisibility: config.DefaultToolVisibilityDeny,
+			Tools: []*config.WorkloadToolConfig{
+				{Workload: "backend1"},
+				{Workload: "backend1typo"},
+			},
+		}
+		agg := NewDefaultAggregator(nil, NewPrefixConflictResolver("{workload}_"), aggCfg, nil)
+
+		da, ok := agg.(*defaultAggregator)
+		require.True(t, ok)
+		assert.Equal(t, []string{"backend1typo"}, da.unmatchedToolConfigWorkloads(backends),
+			"only the entry naming no backend in the group is reported")
+	})
+
+	t.Run("reports nothing when every entry matches", func(t *testing.T) {
+		t.Parallel()
+		aggCfg := &config.AggregationConfig{
+			Tools: []*config.WorkloadToolConfig{{Workload: "backend1"}, {Workload: "backend2"}},
+		}
+		agg := NewDefaultAggregator(nil, NewPrefixConflictResolver("{workload}_"), aggCfg, nil)
+
+		da, ok := agg.(*defaultAggregator)
+		require.True(t, ok)
+		assert.Empty(t, da.unmatchedToolConfigWorkloads(backends))
 	})
 }

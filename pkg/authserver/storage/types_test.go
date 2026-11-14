@@ -15,9 +15,217 @@
 package storage
 
 import (
+	"context"
+	"encoding/json"
+	"errors"
+	"reflect"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/ory/fosite"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
+
+func TestExchangeGrantLive(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 10, 24, 12, 0, 0, 0, time.UTC)
+	future := now.Add(time.Hour)
+	past := now.Add(-time.Hour)
+
+	tests := []struct {
+		name    string
+		grant   ExchangeGrant
+		wantErr error
+	}{
+		{
+			name:  "live",
+			grant: ExchangeGrant{ExpiresAt: future},
+		},
+		{
+			name:    "expired",
+			grant:   ExchangeGrant{ExpiresAt: past},
+			wantErr: ErrExpired,
+		},
+		{
+			name:    "revoked",
+			grant:   ExchangeGrant{ExpiresAt: future, RevokedAt: past},
+			wantErr: ErrRevoked,
+		},
+		{
+			name:    "revoked and expired reports revoked",
+			grant:   ExchangeGrant{ExpiresAt: past, RevokedAt: past},
+			wantErr: ErrRevoked,
+		},
+		{
+			name:    "zero expiry counts as expired",
+			grant:   ExchangeGrant{},
+			wantErr: ErrExpired,
+		},
+		{
+			name:  "now equal to expiry is still live",
+			grant: ExchangeGrant{ExpiresAt: now},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := tt.grant.Live(now)
+			if tt.wantErr == nil {
+				assert.NoError(t, err)
+				return
+			}
+			assert.ErrorIs(t, err, tt.wantErr)
+		})
+	}
+}
+
+// grantMapStore is an ExchangeGrantStorage that serves grants from a map. A
+// signature in errs fails with that error; one in neither map is not found.
+// Only GetExchangeGrant is implemented.
+type grantMapStore struct {
+	ExchangeGrantStorage
+	grants map[string]*ExchangeGrant
+	errs   map[string]error
+}
+
+func (s grantMapStore) GetExchangeGrant(_ context.Context, signature string) (*ExchangeGrant, error) {
+	if err := s.errs[signature]; err != nil {
+		return nil, err
+	}
+	g, ok := s.grants[signature]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	return g, nil
+}
+
+func TestLiveExchangeGrant(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 10, 24, 12, 0, 0, 0, time.UTC)
+	future := now.Add(time.Hour)
+	past := now.Add(-time.Hour)
+	errStore := errors.New("store down")
+
+	child := func(expiresAt, revokedAt time.Time) *ExchangeGrant {
+		return &ExchangeGrant{Signature: "child", ParentSignature: "parent", ExpiresAt: expiresAt, RevokedAt: revokedAt}
+	}
+	parent := func(expiresAt, revokedAt time.Time) *ExchangeGrant {
+		return &ExchangeGrant{Signature: "parent", ExpiresAt: expiresAt, RevokedAt: revokedAt}
+	}
+
+	tests := []struct {
+		name      string
+		grants    map[string]*ExchangeGrant
+		errs      map[string]error
+		wantErr   error
+		wantGrant bool
+	}{
+		{
+			name:      "child and parent live",
+			grants:    map[string]*ExchangeGrant{"child": child(future, time.Time{}), "parent": parent(future, time.Time{})},
+			wantGrant: true,
+		},
+		{
+			name:      "no parent",
+			grants:    map[string]*ExchangeGrant{"child": {Signature: "child", ExpiresAt: future}},
+			wantGrant: true,
+		},
+		{
+			name:      "child expired",
+			grants:    map[string]*ExchangeGrant{"child": child(past, time.Time{}), "parent": parent(future, time.Time{})},
+			wantErr:   ErrExpired,
+			wantGrant: true,
+		},
+		{
+			name:      "child revoked",
+			grants:    map[string]*ExchangeGrant{"child": child(future, past), "parent": parent(future, time.Time{})},
+			wantErr:   ErrRevoked,
+			wantGrant: true,
+		},
+		{
+			name:      "child revoked and expired reports expired",
+			grants:    map[string]*ExchangeGrant{"child": child(past, past), "parent": parent(future, time.Time{})},
+			wantErr:   ErrExpired,
+			wantGrant: true,
+		},
+		{
+			name:      "parent missing",
+			grants:    map[string]*ExchangeGrant{"child": child(future, time.Time{})},
+			wantErr:   ErrParentNotLive,
+			wantGrant: true,
+		},
+		{
+			name:      "parent revoked",
+			grants:    map[string]*ExchangeGrant{"child": child(future, time.Time{}), "parent": parent(future, past)},
+			wantErr:   ErrParentNotLive,
+			wantGrant: true,
+		},
+		{
+			name:      "parent expired",
+			grants:    map[string]*ExchangeGrant{"child": child(future, time.Time{}), "parent": parent(past, time.Time{})},
+			wantErr:   ErrParentNotLive,
+			wantGrant: true,
+		},
+		{
+			name:    "child missing",
+			grants:  map[string]*ExchangeGrant{},
+			wantErr: ErrNotFound,
+		},
+		{
+			name:    "child store error passes through",
+			errs:    map[string]error{"child": errStore},
+			wantErr: errStore,
+		},
+		{
+			name:      "parent store error passes through",
+			grants:    map[string]*ExchangeGrant{"child": child(future, time.Time{})},
+			errs:      map[string]error{"parent": errStore},
+			wantErr:   errStore,
+			wantGrant: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := LiveExchangeGrant(t.Context(), grantMapStore{grants: tt.grants, errs: tt.errs}, "child", now)
+			if tt.wantErr == nil {
+				require.NoError(t, err)
+			} else {
+				require.ErrorIs(t, err, tt.wantErr)
+				if !errors.Is(tt.wantErr, ErrParentNotLive) {
+					assert.NotErrorIs(t, err, ErrParentNotLive)
+				}
+			}
+			if tt.wantGrant {
+				require.NotNil(t, got)
+				assert.Equal(t, "child", got.Signature)
+			} else {
+				assert.Nil(t, got)
+			}
+		})
+	}
+}
+
+func TestNotFoundRFC6749Error(t *testing.T) {
+	t.Parallel()
+
+	err := notFoundRFC6749Error("item not found")
+	assert.ErrorIs(t, err, ErrNotFound)
+	assert.ErrorIs(t, err, fosite.ErrNotFound)
+
+	var fositeErr *fosite.RFC6749Error
+	if assert.True(t, errors.As(err, &fositeErr)) {
+		assert.NotNil(t, fositeErr)
+	}
+}
 
 func TestUpstreamTokens_IsExpired(t *testing.T) {
 	t.Parallel()
@@ -91,6 +299,72 @@ func TestUpstreamTokens_IsExpired(t *testing.T) {
 	}
 }
 
+func TestUpstreamTokenRowIDResolution(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name                  string
+		resolver              UpstreamTokenStorage
+		delimiterRowsDistinct bool
+	}{
+		{name: "memory", resolver: NewMemoryStorage(), delimiterRowsDistinct: true},
+		{name: "redis", resolver: &RedisStorage{}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if memory, ok := tt.resolver.(*MemoryStorage); ok {
+				t.Cleanup(func() { _ = memory.Close() })
+			}
+
+			first, err := tt.resolver.ResolveUpstreamTokenRowID(context.Background(), "session:one", "provider:one")
+			if err != nil {
+				t.Fatalf("resolve first row: %v", err)
+			}
+			again, err := tt.resolver.ResolveUpstreamTokenRowID(context.Background(), "session:one", "provider:one")
+			if err != nil {
+				t.Fatalf("resolve same row: %v", err)
+			}
+			otherSession, err := tt.resolver.ResolveUpstreamTokenRowID(context.Background(), "session", "one:provider:one")
+			if err != nil {
+				t.Fatalf("resolve delimiter row: %v", err)
+			}
+			otherProvider, err := tt.resolver.ResolveUpstreamTokenRowID(context.Background(), "session:one", "provider:two")
+			if err != nil {
+				t.Fatalf("resolve different provider: %v", err)
+			}
+
+			if first == "" {
+				t.Error("row ID must not be empty")
+			}
+			if first != again {
+				t.Errorf("same row IDs differ: %q and %q", first, again)
+			}
+			if tt.delimiterRowsDistinct {
+				if first == otherSession {
+					t.Errorf("distinct delimiter rows must have distinct IDs: %q and %q", first, otherSession)
+				}
+			} else if first != otherSession {
+				t.Errorf("equivalent Redis row keys must have equal IDs: %q and %q", first, otherSession)
+			}
+			if first == otherProvider || otherSession == otherProvider {
+				t.Errorf("distinct rows must have distinct IDs: %q, %q, %q", first, otherSession, otherProvider)
+			}
+			if strings.Contains(string(first), "session") || strings.Contains(string(first), "provider") {
+				t.Errorf("row ID must be opaque, got %q", first)
+			}
+
+			for _, input := range [][2]string{{"", "provider"}, {"session", ""}} {
+				_, err := tt.resolver.ResolveUpstreamTokenRowID(context.Background(), input[0], input[1])
+				if !errors.Is(err, fosite.ErrInvalidRequest) {
+					t.Errorf("resolve(%q, %q) error = %v, want invalid request", input[0], input[1], err)
+				}
+			}
+		})
+	}
+}
+
 func TestDefaultConfig(t *testing.T) {
 	t.Parallel()
 
@@ -104,4 +378,357 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.Type != TypeMemory {
 		t.Errorf("DefaultConfig().Type = %q, want %q", cfg.Type, TypeMemory)
 	}
+}
+
+// equal is the Redis round-trip oracle: whether f and o represent the same
+// logical client configuration: equal scope, audience, grant-type, response-type, resource
+// and redirect URI sets, token endpoint auth method, identity,
+// public/confidential class, and reserved kind.
+func (f clientFingerprint) equal(o clientFingerprint) bool {
+	return sameStringSet(f.scopes, o.scopes) &&
+		sameStringSet(f.audience, o.audience) &&
+		sameStringSet(f.grantTypes, o.grantTypes) &&
+		sameStringSet(f.responseTypes, o.responseTypes) &&
+		sameStringSet(f.resources, o.resources) &&
+		sameStringSet(f.redirectURIs, o.redirectURIs) &&
+		f.tokenEndpointAuthMethod == o.tokenEndpointAuthMethod &&
+		f.identityFingerprint == o.identityFingerprint &&
+		f.public == o.public &&
+		f.reserved == o.reserved
+}
+
+// TestClientFingerprintFieldsAreJustified is a drift guard: every
+// clientFingerprint field needs a justification here, and a fingerprint
+// differing only in that field must trip policyChanged (the replacement WARN)
+// or, for public and reserved, configuredClientConflict.
+func TestClientFingerprintFieldsAreJustified(t *testing.T) {
+	t.Parallel()
+
+	justifications := map[string]string{
+		"scopes":                  "a changed scope set is a changed client policy, reported in the replacement WARN",
+		"audience":                "a changed audience allowlist is a changed client policy, reported in the replacement WARN",
+		"grantTypes":              "a changed grant-type set is a changed client policy, reported in the replacement WARN",
+		"responseTypes":           "deliberately ignored: no conflict or WARN acts on a response-type change",
+		"redirectURIs":            "placeholders carry no redirect URIs; one appearing is a different client",
+		"tokenEndpointAuthMethod": "placeholders never carry an auth method; one appearing is a different client",
+		"resources":               "a changed RFC 8707 resource allowlist is reported in the replacement WARN",
+		"identityFingerprint": "a different SPIFFE association identity (trust domain, principal, methods) " +
+			"behind the same placeholder ID is reported in the replacement WARN",
+		"public": "public vs. confidential is a different client class, refused for non-reserved clients",
+		"reserved": "a SPIFFE-reserved placeholder and an ordinary configured client at the same ID " +
+			"are different kinds of client, whatever their other fields say",
+	}
+
+	var gotFields []string
+	for _, f := range reflect.VisibleFields(reflect.TypeOf(clientFingerprint{})) {
+		gotFields = append(gotFields, f.Name)
+	}
+
+	var wantFields []string
+	for name, justification := range justifications {
+		assert.NotEmptyf(t, justification, "field %q must carry a non-empty justification", name)
+		wantFields = append(wantFields, name)
+	}
+
+	assert.ElementsMatchf(t, wantFields, gotFields,
+		"clientFingerprint's field set changed (got %v); add or remove a justification entry in this test "+
+			"and confirm the new field is actually wired into fingerprintOfClient and storedClient.fingerprint",
+		gotFields)
+
+	base := clientFingerprint{
+		scopes:              []string{"scope-a"},
+		audience:            []string{"audience-a"},
+		grantTypes:          []string{"grant-a"},
+		responseTypes:       []string{"response-a"},
+		redirectURIs:        []string{"https://a.example/cb"},
+		resources:           []string{"resource-a"},
+		identityFingerprint: "identity-a",
+		public:              false,
+		reserved:            false,
+	}
+
+	for name := range justifications {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			other := base
+			conflict := false
+			switch name {
+			case "scopes":
+				other.scopes = []string{"scope-b"}
+			case "audience":
+				other.audience = []string{"audience-b"}
+			case "grantTypes":
+				other.grantTypes = []string{"grant-b"}
+			case "responseTypes":
+				other.responseTypes = []string{"response-b"}
+			case "redirectURIs":
+				other.redirectURIs = []string{"https://b.example/cb"}
+			case "tokenEndpointAuthMethod":
+				other.tokenEndpointAuthMethod = "private_key_jwt"
+			case "resources":
+				other.resources = []string{"resource-b"}
+			case "identityFingerprint":
+				other.identityFingerprint = "identity-b"
+			case "public":
+				other.public = !base.public
+				conflict = true
+			case "reserved":
+				other.reserved = !base.reserved
+				conflict = true
+			default:
+				t.Fatalf("field %q has a justification but no wiring check in this test -- add one", name)
+			}
+
+			if conflict {
+				require.ErrorIs(t, configuredClientConflict("client-1", base, other), ErrAlreadyExists)
+				return
+			}
+			assert.Equal(t, name != "responseTypes", base.policyChanged(other),
+				"policyChanged() must report a change when only %q differs", name)
+		})
+	}
+}
+
+func TestConfiguredClientConflict(t *testing.T) {
+	t.Parallel()
+
+	delegate := clientFingerprint{
+		scopes:        []string{"a"},
+		audience:      []string{"aud-a"},
+		grantTypes:    []string{"urn:ietf:params:oauth:grant-type:token-exchange"},
+		responseTypes: []string{},
+	}
+	placeholder := clientFingerprint{
+		scopes:              []string{"a"},
+		audience:            []string{"aud-a"},
+		resources:           []string{"res-a"},
+		identityFingerprint: "id-a",
+		reserved:            true,
+	}
+	with := func(f clientFingerprint, mutate func(*clientFingerprint)) clientFingerprint {
+		mutate(&f)
+		return f
+	}
+
+	tests := []struct {
+		name     string
+		existing clientFingerprint
+		incoming clientFingerprint
+		wantErr  string
+	}{
+		{
+			name:     "placeholder with empty identity existing, delegate incoming, is refused",
+			existing: with(placeholder, func(f *clientFingerprint) { f.identityFingerprint = "" }),
+			incoming: delegate,
+			wantErr:  "stored row is a SPIFFE-reserved placeholder",
+		},
+		{
+			name:     "delegate existing, placeholder with empty identity incoming, is refused",
+			existing: delegate,
+			incoming: with(placeholder, func(f *clientFingerprint) { f.identityFingerprint = "" }),
+			wantErr:  "incoming client is SPIFFE-reserved",
+		},
+		{
+			name:     "identical placeholders are idempotent",
+			existing: placeholder,
+			incoming: placeholder,
+		},
+		{
+			name:     "reserved placeholders replace each other whatever differs",
+			existing: placeholder,
+			incoming: with(placeholder, func(f *clientFingerprint) {
+				f.scopes = []string{"a", "b"}
+				f.resources = []string{"res-b"}
+				f.identityFingerprint = "id-b"
+			}),
+		},
+		{
+			name:     "identical delegates are idempotent",
+			existing: delegate,
+			incoming: delegate,
+		},
+		{
+			name:     "delegate scope change replaces",
+			existing: delegate,
+			incoming: with(delegate, func(f *clientFingerprint) { f.scopes = []string{"a", "b"} }),
+		},
+		{
+			name:     "delegates differing only in resources and identity still replace",
+			existing: delegate,
+			incoming: with(delegate, func(f *clientFingerprint) {
+				f.resources = []string{"res-x"}
+				f.identityFingerprint = "id-x"
+			}),
+		},
+		{
+			name:     "confidential to public flip is refused",
+			existing: delegate,
+			incoming: with(delegate, func(f *clientFingerprint) { f.public = true }),
+			wantErr:  "public and confidential clients cannot replace each other",
+		},
+		{
+			name:     "public to confidential flip is refused",
+			existing: with(delegate, func(f *clientFingerprint) { f.public = true }),
+			incoming: delegate,
+			wantErr:  "public and confidential clients cannot replace each other",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := configuredClientConflict("client-1", tt.existing, tt.incoming)
+			if tt.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.ErrorIs(t, err, ErrAlreadyExists)
+			assert.Contains(t, err.Error(), "different configured client")
+			assert.Contains(t, err.Error(), tt.wantErr)
+			assert.Contains(t, err.Error(), "client-1")
+		})
+	}
+}
+
+func TestClientFingerprintPolicyChanged(t *testing.T) {
+	t.Parallel()
+
+	base := clientFingerprint{scopes: []string{"a", "b"}, audience: []string{"x"}}
+
+	tests := []struct {
+		name  string
+		other clientFingerprint
+		want  bool
+	}{
+		{name: "identical is unchanged", other: base, want: false},
+		{
+			name:  "reordered sets are unchanged",
+			other: clientFingerprint{scopes: []string{"b", "a"}, audience: []string{"x"}},
+			want:  false,
+		},
+		{name: "scope change is a policy change", other: clientFingerprint{scopes: []string{"a"}, audience: []string{"x"}}, want: true},
+		{
+			name:  "audience change is a policy change",
+			other: clientFingerprint{scopes: []string{"a", "b"}, audience: []string{"y"}},
+			want:  true,
+		},
+		{
+			name: "grant type change is a policy change",
+			other: clientFingerprint{
+				scopes: []string{"a", "b"}, audience: []string{"x"}, grantTypes: []string{"g"},
+			},
+			want: true,
+		},
+		{
+			name: "auth method change is a policy change",
+			other: clientFingerprint{
+				scopes: []string{"a", "b"}, audience: []string{"x"}, tokenEndpointAuthMethod: "private_key_jwt",
+			},
+			want: true,
+		},
+		{
+			name: "redirect URI change is a policy change",
+			other: clientFingerprint{
+				scopes: []string{"a", "b"}, audience: []string{"x"}, redirectURIs: []string{"https://a.example/cb"},
+			},
+			want: true,
+		},
+		{
+			name: "resources change is a policy change",
+			other: clientFingerprint{
+				scopes: []string{"a", "b"}, audience: []string{"x"}, resources: []string{"https://r.example"},
+			},
+			want: true,
+		},
+		{
+			name: "SPIFFE identity change is a policy change",
+			other: clientFingerprint{
+				scopes: []string{"a", "b"}, audience: []string{"x"}, identityFingerprint: "id-b",
+			},
+			want: true,
+		},
+		{
+			name: "response type change alone is not a policy change",
+			other: clientFingerprint{
+				scopes: []string{"a", "b"}, audience: []string{"x"}, responseTypes: []string{"code"},
+			},
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, base.policyChanged(tt.other))
+		})
+	}
+}
+
+func TestClientFingerprintPolicyChanged_RedirectURIs(t *testing.T) {
+	t.Parallel()
+
+	base := clientFingerprint{redirectURIs: []string{"https://a.example/cb", "https://b.example/cb"}}
+
+	assert.False(t, base.policyChanged(clientFingerprint{
+		redirectURIs: []string{"https://b.example/cb", "https://a.example/cb", "https://a.example/cb"},
+	}), "reordering or duplicating redirect URIs is not a change")
+	assert.True(t, base.policyChanged(clientFingerprint{redirectURIs: []string{"https://a.example/cb"}}))
+	assert.True(t, base.policyChanged(clientFingerprint{}))
+}
+
+// resourceIdentityClient is a non-placeholder client that implements both
+// resourceScopedClient and spiffeIdentityClient, so only the reserved gate in
+// fingerprintOfClient keeps its values out of the fingerprint.
+type resourceIdentityClient struct {
+	*fosite.DefaultClient
+	resources []string
+	identity  string
+}
+
+func (c resourceIdentityClient) Resources() []string         { return c.resources }
+func (c resourceIdentityClient) IdentityFingerprint() string { return c.identity }
+
+func TestClientFingerprintReservedWiring(t *testing.T) {
+	t.Parallel()
+
+	placeholder := inertPlaceholderClient{
+		DefaultClient:       &fosite.DefaultClient{ID: "p", Scopes: []string{"a"}},
+		resources:           []string{"res-a"},
+		identityFingerprint: "id-a",
+	}
+	nonPlaceholder := resourceIdentityClient{
+		DefaultClient: &fosite.DefaultClient{ID: "d", Scopes: []string{"a"}},
+		resources:     []string{"res-a"},
+		identity:      "id-a",
+	}
+
+	t.Run("placeholder reads resources and identity", func(t *testing.T) {
+		t.Parallel()
+		got := fingerprintOfClient(placeholder)
+		assert.True(t, got.reserved)
+		assert.Equal(t, []string{"res-a"}, got.resources)
+		assert.Equal(t, "id-a", got.identityFingerprint)
+	})
+
+	t.Run("non-placeholder ignores resources and identity", func(t *testing.T) {
+		t.Parallel()
+		got := fingerprintOfClient(nonPlaceholder)
+		assert.False(t, got.reserved)
+		assert.Empty(t, got.resources)
+		assert.Empty(t, got.identityFingerprint)
+	})
+
+	t.Run("stored reserved row sets reserved", func(t *testing.T) {
+		t.Parallel()
+		assert.True(t, storedClient{Reserved: true}.fingerprint().reserved)
+	})
+
+	t.Run("legacy stored row without reserved key is not reserved", func(t *testing.T) {
+		t.Parallel()
+		var legacy storedClient
+		require.NoError(t, json.Unmarshal([]byte(`{"id":"legacy","scopes":["a"]}`), &legacy))
+		assert.False(t, legacy.fingerprint().reserved)
+	})
 }

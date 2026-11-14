@@ -22,12 +22,15 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
+	"encoding/base64"
+	"encoding/json"
 	"encoding/pem"
+	"math/big"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
+	"github.com/go-jose/go-jose/v4"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -196,6 +199,9 @@ func TestValidateAlgorithmForKey(t *testing.T) {
 		{"RS256 with RSA", "RS256", rsaKey, ""},
 		{"RS384 with RSA", "RS384", rsaKey, ""},
 		{"RS512 with RSA", "RS512", rsaKey, ""},
+		{"PS256 with RSA", "PS256", rsaKey, "not compatible with RSA"},
+		{"PS384 with RSA", "PS384", rsaKey, "not compatible with RSA"},
+		{"PS512 with RSA", "PS512", rsaKey, "not compatible with RSA"},
 		{"ES256 with P-256", "ES256", ecP256, ""},
 		{"ES384 with P-384", "ES384", ecP384, ""},
 		{"EdDSA with Ed25519", "EdDSA", ed25519Key, ""},
@@ -221,6 +227,119 @@ func TestValidateAlgorithmForKey(t *testing.T) {
 	}
 }
 
+func TestValidateAlgorithmForPublicKey(t *testing.T) {
+	t.Parallel()
+
+	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+	ecP256, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+	ecP384, err := ecdsa.GenerateKey(elliptic.P384(), rand.Reader)
+	require.NoError(t, err)
+
+	assert.NoError(t, ValidateAlgorithmForPublicKey("PS256", &rsaKey.PublicKey))
+	assert.NoError(t, ValidateAlgorithmForPublicKey("ES256", &ecP256.PublicKey))
+	assert.Error(t, ValidateAlgorithmForPublicKey("ES384", &ecP256.PublicKey))
+	assert.NoError(t, ValidateAlgorithmForPublicKey("ES384", &ecP384.PublicKey))
+}
+
+func TestValidateRSAPublicKeyBounds(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		bits     int
+		exponent int
+		alg      string
+		wantErr  string
+	}{
+		{"minimum modulus", MinRSAKeyBits, 65537, "RS256", ""},
+		{"below minimum modulus", MinRSAKeyBits - 1, 65537, "RS256", "below minimum"},
+		{"maximum modulus", MaxRSAKeyBits, 3, "PS512", ""},
+		{"above maximum modulus", MaxRSAKeyBits + 1, 65537, "PS256", "exceeds maximum"},
+		{"minimum exponent", MinRSAKeyBits, 3, "PS256", ""},
+		{"maximum exponent", MinRSAKeyBits, 65537, "RS512", ""},
+		{"exponent one", MinRSAKeyBits, 1, "RS256", "exponent"},
+		{"even exponent", MinRSAKeyBits, 4, "RS256", "exponent"},
+		{"above maximum exponent", MinRSAKeyBits, 65539, "PS256", "exponent"},
+		{"unsupported algorithm", MinRSAKeyBits, 65537, "ES256", "not compatible with RSA"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			key := &rsa.PublicKey{N: new(big.Int).Lsh(big.NewInt(1), uint(tt.bits-1)), E: tt.exponent}
+			err := ValidateAlgorithmForPublicKey(tt.alg, key)
+			if tt.wantErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.wantErr)
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+	assert.ErrorContains(t, ValidateAlgorithmForPublicKey("RS256", (*rsa.PublicKey)(nil)), "missing a modulus")
+	assert.ErrorContains(t, ValidateAlgorithmForPublicKey("RS256", &rsa.PublicKey{E: 65537}), "missing a modulus")
+}
+
+func TestValidateAlgorithmForKeyDoesNotBoundRSA(t *testing.T) {
+	t.Parallel()
+
+	// Operator-provisioned signing keys are not subject to the client-key
+	// upper bounds, so a synthetic oversized modulus and large exponent pass.
+	n := new(big.Int).Lsh(big.NewInt(1), uint(MaxRSAKeyBits))
+	for _, pub := range []rsa.PublicKey{
+		{N: new(big.Int).Lsh(big.NewInt(1), uint(MinRSAKeyBits-1)), E: 65539},
+		{N: n, E: 65537},
+	} {
+		key := &rsa.PrivateKey{PublicKey: pub}
+		assert.NoError(t, ValidateAlgorithmForKey("RS256", key))
+		assert.Error(t, ValidateAlgorithmForPublicKey("RS256", &key.PublicKey))
+	}
+}
+
+// TestJWKDecodeAcceptsMaxRSAKeyBits pins that go-jose's parse limit matches
+// MaxRSAKeyBits, so client keys above go-jose's 4096-bit default still decode.
+func TestJWKDecodeAcceptsMaxRSAKeyBits(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		bits    int
+		wantErr bool
+	}{
+		{name: "above go-jose default", bits: 4097},
+		{name: "maximum modulus", bits: MaxRSAKeyBits},
+		{name: "above maximum modulus", bits: MaxRSAKeyBits + 1, wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			// A synthetic modulus of exactly tt.bits bits avoids generating a key.
+			n := new(big.Int).Lsh(big.NewInt(1), uint(tt.bits-1))
+			n.SetBit(n, 0, 1)
+			data := `{"kty":"RSA","n":"` + base64.RawURLEncoding.EncodeToString(n.Bytes()) + `","e":"AQAB"}`
+
+			var key jose.JSONWebKey
+			err := json.Unmarshal([]byte(data), &key)
+			if tt.wantErr {
+				assert.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.bits, key.Key.(*rsa.PublicKey).N.BitLen())
+		})
+	}
+}
+
+func TestSupportedClientKeyAlgorithmsExcludesEdDSA(t *testing.T) {
+	t.Parallel()
+
+	// fosite v0.49.0's client-assertion verification (client_authentication.go)
+	// only handles the RS*/ES*/PS*/HS* families. Advertising/accepting EdDSA
+	// here would let a client register successfully and then never be able
+	// to authenticate. Revisit once fosite supports it.
+	assert.NotContains(t, SupportedClientKeyAlgorithms(), "EdDSA")
+}
 func TestDeriveSigningKeyParams(t *testing.T) {
 	t.Parallel()
 
@@ -286,137 +405,6 @@ func TestDeriveKeyID(t *testing.T) {
 	assert.NotEqual(t, id1, id3, "different keys should produce different IDs")
 }
 
-func TestLoadHMACSecrets(t *testing.T) {
-	t.Parallel()
-
-	validSecret := strings.Repeat("a", 32)
-	validSecret2 := strings.Repeat("b", 32)
-	tooShortSecret := strings.Repeat("a", 31)
-
-	tests := []struct {
-		name        string
-		setup       func(t *testing.T, dir string) []string
-		wantCurrent []byte
-		wantRotated [][]byte
-		wantErr     string
-	}{
-		{
-			name:        "empty paths",
-			setup:       func(_ *testing.T, _ string) []string { return []string{} },
-			wantCurrent: nil,
-			wantRotated: nil,
-		},
-		{
-			name: "single secret",
-			setup: func(_ *testing.T, dir string) []string {
-				return []string{writeFileNamed(t, dir, "current", validSecret)}
-			},
-			wantCurrent: []byte(validSecret),
-			wantRotated: nil,
-		},
-		{
-			name: "with rotated secrets",
-			setup: func(_ *testing.T, dir string) []string {
-				return []string{
-					writeFileNamed(t, dir, "current", validSecret),
-					writeFileNamed(t, dir, "rotated1", validSecret2),
-				}
-			},
-			wantCurrent: []byte(validSecret),
-			wantRotated: [][]byte{[]byte(validSecret2)},
-		},
-		{
-			name: "empty current path",
-			setup: func(_ *testing.T, _ string) []string {
-				return []string{""}
-			},
-			wantErr: "current HMAC secret path cannot be empty",
-		},
-		{
-			name: "invalid current secret file",
-			setup: func(_ *testing.T, _ string) []string {
-				return []string{"/nonexistent/secret"}
-			},
-			wantErr: "failed to load current",
-		},
-		{
-			name: "invalid rotated secret",
-			setup: func(_ *testing.T, dir string) []string {
-				return []string{
-					writeFileNamed(t, dir, "current", validSecret),
-					"/nonexistent/rotated",
-				}
-			},
-			wantErr: "failed to load rotated HMAC secret [1]",
-		},
-		{
-			name: "skip empty rotated paths",
-			setup: func(_ *testing.T, dir string) []string {
-				return []string{
-					writeFileNamed(t, dir, "current", validSecret),
-					"",
-					writeFileNamed(t, dir, "rotated2", validSecret2),
-				}
-			},
-			wantCurrent: []byte(validSecret),
-			wantRotated: [][]byte{[]byte(validSecret2)},
-		},
-		{
-			name: "whitespace trimmed",
-			setup: func(_ *testing.T, dir string) []string {
-				return []string{
-					writeFileNamed(t, dir, "current", "  "+validSecret+"  \n\n"),
-					writeFileNamed(t, dir, "rotated", "\t"+validSecret2+"\n"),
-				}
-			},
-			wantCurrent: []byte(validSecret),
-			wantRotated: [][]byte{[]byte(validSecret2)},
-		},
-		{
-			name: "current too short",
-			setup: func(_ *testing.T, dir string) []string {
-				return []string{writeFileNamed(t, dir, "current", tooShortSecret)}
-			},
-			wantErr: "HMAC secret must be at least",
-		},
-		{
-			name: "rotated too short",
-			setup: func(_ *testing.T, dir string) []string {
-				return []string{
-					writeFileNamed(t, dir, "current", validSecret),
-					writeFileNamed(t, dir, "rotated", tooShortSecret),
-				}
-			},
-			wantErr: "failed to load rotated HMAC secret [1]",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			dir := t.TempDir()
-			paths := tt.setup(t, dir)
-
-			secrets, err := LoadHMACSecrets(paths)
-
-			if tt.wantErr != "" {
-				require.Error(t, err)
-				assert.Contains(t, err.Error(), tt.wantErr)
-				assert.Nil(t, secrets)
-			} else {
-				require.NoError(t, err)
-				if tt.wantCurrent == nil {
-					assert.Nil(t, secrets)
-				} else {
-					require.NotNil(t, secrets)
-					assert.Equal(t, tt.wantCurrent, secrets.Current)
-					assert.Equal(t, tt.wantRotated, secrets.Rotated)
-				}
-			}
-		})
-	}
-}
-
 // Helpers
 
 func writePEM(t *testing.T, dir, pemType string, der []byte) string {
@@ -424,12 +412,5 @@ func writePEM(t *testing.T, dir, pemType string, der []byte) string {
 	path := filepath.Join(dir, "key.pem")
 	data := pem.EncodeToMemory(&pem.Block{Type: pemType, Bytes: der})
 	require.NoError(t, os.WriteFile(path, data, 0600))
-	return path
-}
-
-func writeFileNamed(t *testing.T, dir, name, content string) string {
-	t.Helper()
-	path := filepath.Join(dir, name)
-	require.NoError(t, os.WriteFile(path, []byte(content), 0600))
 	return path
 }

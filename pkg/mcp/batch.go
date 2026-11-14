@@ -49,9 +49,11 @@ func IsBatchRequest(body []byte) bool {
 }
 
 // WriteBatchUnsupportedError writes an HTTP 400 response carrying a JSON-RPC
-// "Invalid Request" error for a rejected batch. The JSON-RPC id is null: a
-// batch has no single request id to echo. Use this where an http.ResponseWriter
-// is available (the streamable proxy, ParsingMiddleware).
+// "Invalid Request" error for a rejected batch. A batch has no single request
+// id to echo, so the "id" key is omitted entirely (schema/2025-11-25 types the
+// error response's id as optional, not nullable; see session.HasJSONRPCID).
+// Use this where an http.ResponseWriter is available (the streamable proxy,
+// ParsingMiddleware).
 func WriteBatchUnsupportedError(w http.ResponseWriter) {
 	body := classificationErrorBody(nil, batchUnsupported)
 	w.Header().Set("Content-Type", "application/json")
@@ -63,7 +65,7 @@ func WriteBatchUnsupportedError(w http.ResponseWriter) {
 // BatchUnsupportedResponse builds an *http.Response carrying the batch-rejection
 // JSON-RPC error, for proxies that intercept at the RoundTripper layer (the
 // transparent proxy) where no http.ResponseWriter is available. Mirrors
-// ClassificationErrorResponse; the JSON-RPC id is null.
+// ClassificationErrorResponse; the JSON-RPC id is omitted, not null.
 func BatchUnsupportedResponse(req *http.Request) *http.Response {
 	return jsonRPCErrorResponse(req, nil, batchUnsupported)
 }

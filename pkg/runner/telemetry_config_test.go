@@ -155,6 +155,57 @@ func TestBuildTelemetryConfigFromAppConfig_OTLPHeadersFromEnvVars(t *testing.T) 
 	})
 }
 
+// TestBuildTelemetryConfigFromAppConfig_DropsAssignmentEnvVars verifies that
+// "NAME=value" entries (such as the OTLP headers credential) and the rest of
+// their comma-split entry are not carried into EnvironmentVariables, which is
+// exposed as span attribute names.
+func TestBuildTelemetryConfigFromAppConfig_DropsAssignmentEnvVars(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		envVars    []string
+		expected   []string
+		authHeader string
+	}{
+		{
+			name:       "headers entry and its fragments dropped",
+			envVars:    []string{"OTEL_EXPORTER_OTLP_HEADERS=Authorization=Basic dG9rZW46cHc=,HOME", "USER"},
+			expected:   []string{"USER"},
+			authHeader: "Basic dG9rZW46cHc=",
+		},
+		{
+			name:       "value fragment without equals sign dropped",
+			envVars:    []string{"OTEL_EXPORTER_OTLP_HEADERS=Authorization=Bearer abc,SECRETTAIL"},
+			authHeader: "Bearer abc",
+		},
+		{
+			name:     "names before an assignment are kept",
+			envVars:  []string{"NODE_ENV,FOO=bar"},
+			expected: []string{"NODE_ENV"},
+		},
+		{
+			name:     "non-portable names are kept",
+			envVars:  []string{"my-var,ProgramFiles(x86)"},
+			expected: []string{"my-var", "ProgramFiles(x86)"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			otel := appconfig.OpenTelemetryConfig{Endpoint: "https://otel.example.com", EnvVars: tt.envVars}
+			cfg := BuildTelemetryConfigFromAppConfig(otel, "thv-osv", nil, "")
+			require.NotNil(t, cfg)
+			assert.Equal(t, tt.expected, cfg.EnvironmentVariables)
+			if tt.authHeader != "" {
+				assert.Equal(t, tt.authHeader, cfg.Headers["Authorization"], "headers must still be parsed")
+			}
+		})
+	}
+}
+
 // TestBuildTelemetryConfigFromAppConfig_DefaultsForNilBools verifies the CLI-style
 // defaults: when bool fields are not set in the config, tracing/metrics/legacy
 // attributes default to true. This is what makes "just configure an endpoint"

@@ -32,12 +32,37 @@ func (s *service) Info(ctx context.Context, opts plugins.InfoOptions) (*plugins.
 	}
 
 	degraded := s.computeProjectScopeDegraded(stored)
-	return &plugins.PluginInfo{
+	info := &plugins.PluginInfo{
 		Metadata:                    stored.Metadata,
 		InstalledPlugin:             &stored,
 		UnmaterializedComponents:    s.computeUnmaterialized(stored),
 		ProjectScopeDegradedClients: degraded,
-	}, nil
+	}
+	// Project-scoped, lock-managed plugins carry the lock file's recorded
+	// trust state so callers can display what installs are checked against.
+	// A read failure is propagated rather than reported as absent trust
+	// state: "no provenance and not unsigned" is how an untracked install
+	// renders, so swallowing the error would make a malformed or unreadable
+	// toolhive.lock.yaml indistinguishable from a plugin nothing is pinning.
+	// A missing lock file is not an error — lockfile.Load returns an empty
+	// lockfile — so this only fires on one that exists and cannot be trusted.
+	if scope == plugins.ScopeProject && projectRoot != "" {
+		expected, expectUnsigned, found, trustErr := lockTrustState(projectRoot, opts.Name)
+		if trustErr != nil {
+			return nil, trustErr
+		}
+		info.Provenance = provenanceInfoFromLock(expected)
+		info.Unsigned = expectUnsigned
+		// An entry that exists and records neither is the pre-verification
+		// shape verifyStoredSignature reports as drift. Surfaced explicitly so
+		// this command — the promised trust-state display — does not render it
+		// identically to an install nothing is pinning. Keyed on the entry
+		// existing rather than on stored.Managed: what is unrecorded is the
+		// entry's trust decision, and an unmanaged-but-locked plugin still
+		// needs the same answer.
+		info.TrustUnrecorded = found && expected == nil && !expectUnsigned
+	}
+	return info, nil
 }
 
 // computeProjectScopeDegraded returns the client types for which a

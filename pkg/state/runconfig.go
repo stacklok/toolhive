@@ -89,9 +89,12 @@ func SaveRunConfig[T RunConfigPersister](ctx context.Context, config T) error {
 	if err != nil {
 		return fmt.Errorf("failed to get writer for state: %w", err)
 	}
+	closed := false
 	defer func() {
-		if err := writer.Close(); err != nil {
-			slog.Warn("Failed to close writer", "error", err)
+		if !closed {
+			if err := AbortWriter(writer); err != nil {
+				slog.Warn("failed to abort run configuration writer", "name", config.GetBaseName(), "error", err)
+			}
 		}
 	}()
 
@@ -99,6 +102,11 @@ func SaveRunConfig[T RunConfigPersister](ctx context.Context, config T) error {
 	if err := config.WriteJSON(writer); err != nil {
 		return fmt.Errorf("failed to write run configuration: %w", err)
 	}
+	if err := writer.Close(); err != nil {
+		closed = true
+		return fmt.Errorf("failed to close run configuration writer: %w", err)
+	}
+	closed = true
 
 	slog.Debug("Saved run configuration", "name", config.GetBaseName())
 	return nil

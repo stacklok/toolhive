@@ -191,7 +191,7 @@ func (p *HTTPProxy) rejectServerRequestToBackend(m *jsonrpc2.Request) {
 }
 
 // routeResponseToWaiter delivers resp to the waiter channel correlated by its
-// composite request ID (compositeKey(sessID, idKey)), if one is registered.
+// composite request ID (the composite key), if one is registered.
 func (p *HTTPProxy) routeResponseToWaiter(resp *jsonrpc2.Response) {
 	if !resp.ID.IsValid() {
 		slog.Warn("received invalid message that is not a valid response",
@@ -200,7 +200,7 @@ func (p *HTTPProxy) routeResponseToWaiter(resp *jsonrpc2.Response) {
 	}
 
 	rawID := resp.ID.Raw()
-	// Composite-only routing: responses must carry composite ID (sessID|idKey)
+	// Composite-only routing: responses must carry the composite key minted by createWaiter
 	sID, ok := rawID.(string)
 	if !ok {
 		slog.Warn("non-string response id (expected composite string); dropping",

@@ -32,6 +32,12 @@ const modernClientName = "toolhive-vmcp"
 // this shim does not drive — see errModernInputRequired.
 const modernResultTypeComplete = "complete"
 
+// modernResultTypeInputRequired is the SEP-2322 envelope resultType announcing
+// a Multi Round-Trip Request round. The only non-"complete" resultType whose
+// payload survives decode (newInputRequiredError); everything else is sentinel-
+// only.
+const modernResultTypeInputRequired = "input_required"
+
 // jsonRPCCodeMethodNotFound is the JSON-RPC "method not found" code. Declared
 // locally rather than imported (mcpcompat's METHOD_NOT_FOUND is the SDK's wire
 // vocabulary; the Modern layer sources its codes independently — see
@@ -57,10 +63,14 @@ var errWrongEra = errors.New("backend response is not a Modern (2026-07-28) MCP 
 // of a side-effecting tool). The cache may still be reclassified.
 var errLegacyResponseBody = errors.New("backend returned a Legacy-shaped body (no resultType); it may have executed")
 
-// errModernInputRequired is returned when a Modern envelope decodes with a
-// resultType other than "complete" (e.g. "input_required"). Multi-round tool
-// retrieval is deferred; this shim detects and errors rather than returning a
-// blank success.
+// errModernInputRequired is the classification sentinel for a Modern envelope
+// whose resultType is not "complete" (e.g. "input_required"). The message
+// string is frozen for compatibility — it predates the MRTR seam, and both
+// probeRevision's errors.Is classification and client-visible error text pin
+// it — even though "unsupported" no longer tells the whole story: an
+// input_required round's SEP-2322 payload now rides the typed
+// vmcp.InputRequiredError wrapping this sentinel, and MRTR consumers branch on
+// vmcp.InputRequiredFromError (docs/arch/16-vmcp-mrtr.md, slice 1).
 var errModernInputRequired = errors.New("modern response requires additional input (multi-round retrieval unsupported)")
 
 // errModernProtocolError wraps a well-formed JSON-RPC error whose code is one of
@@ -99,11 +109,10 @@ var errModernTransient = errors.New("modern backend returned a transient error")
 // CANONICAL RATIONALE for the negotiate-down rule. Per SEP-2575, the advertised
 // version list — not a clean discover response or a bare -32022 alone — is the
 // authoritative signal of whether a peer actually speaks the Modern (2026-07-28)
-// revision: a go-sdk v1.7 shim answers both server/discover and protocol errors
+// revision: a go-sdk shim answers both server/discover and protocol errors
 // even for a backend negotiating down to Legacy, so neither on its own is proof
-// of Modern. go-sdk's own reference client applies the same rule at both
-// sources above — mcp/client.go:428-444 for (1), the discover/supportedVersions
-// path, and mcp/client.go:360-369 for (2), the -32022/data.supported path.
+// of Modern. go-sdk's own reference client applies the same rule to discover
+// results and to the `data.supported` list in -32022 errors.
 //
 // modernDiscover and probeRevision (client.go) both depend on this rule and
 // back-reference it here rather than restating it. Keep the explanation in one
@@ -133,12 +142,15 @@ var modernRequestID atomic.Int64
 // modernCall issues a single MCP 2026-07-28 ("Modern") stateless JSON-RPC request
 // over HTTP POST and decodes the Modern response envelope into out.
 //
-// It hand-rolls the Modern wire shape that mcpcompat's public Client API still
-// cannot express, even now that the underlying go-sdk is v1.7.0-pre.3 (its only
-// no-initialize primitive is the private, Legacy-shaped resumeCall), mirroring
-// the server envelope in pkg/vmcp/server/modern_envelope.go: no initialize
-// handshake, no Mcp-Session-Id, protocol metadata carried per-request in
-// _meta, and a Mcp-Method header on every call.
+// It uses a one-request HTTP path rather than mcpcompat's session-oriented
+// Client API: each call retains the identity-scoped HTTP client and header chain
+// supplied by its caller, and no backend ClientSession is held between calls.
+// The current mcpcompat client can negotiate Modern through server/discover,
+// but replacing this request-scoped path with it requires a separate design for
+// the per-identity projection, error mapping, and per-request build cost.
+// The wire shape mirrors the server envelope in pkg/vmcp/server/modern_envelope.go:
+// no legacy initialize handshake, no Mcp-Session-Id, protocol metadata carried
+// per-request in _meta, and an Mcp-Method header on every call.
 //
 // params may carry a caller "_meta"; its three reserved io.modelcontextprotocol/*
 // keys are stripped and vMCP's authoritative values overlaid last (vMCP, not the
@@ -165,6 +177,18 @@ var modernRequestID atomic.Int64
 //   - errModernInputRequired: a non-"complete" envelope.
 //   - errModernProtocolError: a Modern-specific -3202x error body.
 //   - a wrapped call error: any other JSON-RPC error.
+//
+// logLevel, when non-empty, is overlaid onto the request _meta as
+// io.modelcontextprotocol/logLevel (the Modern replacement for the removed
+// logging/setLevel RPC): it opts the request in to the backend's
+// notifications/message at that minimum level. Empty leaves the key unset so the
+// backend MUST NOT emit log notifications for the request.
+//
+// onNotification, when non-nil, is invoked with each server->client notification
+// the SSE stream interleaves ahead of the response (a nil-Method envelope is the
+// response, not a notification). It is how a caller relays the log/progress
+// notifications logLevel elicited; nil preserves the historical drop. It only
+// ever fires on the SSE path — a single JSON 200 body carries no notifications.
 func modernCall(
 	ctx context.Context,
 	hc *http.Client,
@@ -173,6 +197,8 @@ func modernCall(
 	name string,
 	paramHeaders map[string]string,
 	out any,
+	logLevel string,
+	onNotification func(method string, params json.RawMessage),
 ) error {
 	id := modernRequestID.Add(1)
 
@@ -180,7 +206,7 @@ func modernCall(
 	if reqParams == nil {
 		reqParams = map[string]any{}
 	}
-	reqParams["_meta"] = mergeModernMeta(params["_meta"])
+	reqParams["_meta"] = mergeModernMeta(params["_meta"], logLevel)
 
 	body, err := json.Marshal(map[string]any{
 		"jsonrpc": "2.0",
@@ -227,7 +253,7 @@ func modernCall(
 		_ = resp.Body.Close()
 	}()
 
-	result, rpcErr, err := readModernEnvelope(resp, id)
+	result, rpcErr, err := readModernEnvelope(resp, id, onNotification)
 	if err != nil {
 		return err
 	}
@@ -267,7 +293,12 @@ func interpretModernResult(result json.RawMessage, rpcErr *modernRPCError, metho
 		// request. Distinct from errWrongEra so the caller does not auto-retry.
 		return errLegacyResponseBody
 	default:
-		return fmt.Errorf("%w: resultType=%q", errModernInputRequired, envelope.ResultType)
+		// Typed so an "input_required" round's SEP-2322 payload (inputRequests,
+		// requestState) survives for MRTR consumers (vmcp.InputRequiredFromError)
+		// — gated on the three methods that may carry a round and on payload
+		// validity; unwraps to errModernInputRequired with an identical message,
+		// so classification and behavior are unchanged for everyone else.
+		return newInputRequiredError(method, envelope.ResultType, result)
 	}
 
 	if out != nil {
@@ -281,7 +312,12 @@ func interpretModernResult(result json.RawMessage, rpcErr *modernRPCError, metho
 // mergeModernMeta strips the reserved io.modelcontextprotocol/* keys from a
 // caller-supplied _meta (if any) and overlays vMCP's authoritative values last.
 // The caller's _meta is never mutated (StripReservedMeta clones it).
-func mergeModernMeta(callerMeta any) map[string]any {
+//
+// logLevel, when non-empty, is overlaid as io.modelcontextprotocol/logLevel —
+// vMCP, not the caller, decides whether the backend is asked to emit log
+// notifications for this request (the caller's own key was already stripped as
+// reserved). Empty leaves the key unset.
+func mergeModernMeta(callerMeta any, logLevel string) map[string]any {
 	m, _ := callerMeta.(map[string]any)
 	meta := mcpparser.StripReservedMeta(m)
 	if meta == nil {
@@ -291,6 +327,9 @@ func mergeModernMeta(callerMeta any) map[string]any {
 	}
 	for k, v := range mcpparser.ModernRequestMeta(modernClientName, versions.Version) {
 		meta[k] = v
+	}
+	if logLevel != "" {
+		meta[mcpparser.MetaKeyLogLevel] = logLevel
 	}
 	return meta
 }
@@ -305,14 +344,16 @@ type modernRPCError struct {
 	Data    json.RawMessage `json:"data,omitempty"`
 }
 
-// modernRPCEnvelope is the outer JSON-RPC response envelope. Method is set only
-// on server->client requests/notifications interleaved on an SSE stream, which a
-// single-shot client ignores.
+// modernRPCEnvelope is the outer JSON-RPC response envelope. Method and Params
+// are set only on server->client requests/notifications interleaved on an SSE
+// stream; a single-shot client matches the response (Method == "") and, when an
+// onNotification listener is bound, relays Method/Params for the notifications.
 type modernRPCEnvelope struct {
 	ID     json.RawMessage `json:"id"`
 	Result json.RawMessage `json:"result"`
 	Error  *modernRPCError `json:"error"`
 	Method string          `json:"method"`
+	Params json.RawMessage `json:"params"`
 }
 
 // readModernEnvelope reads the JSON-RPC response matching wantID, handling both
@@ -328,7 +369,9 @@ type modernRPCEnvelope struct {
 // the revision cache). A genuine Modern -32601/-32602 rides HTTP 404/400 WITH a
 // JSON-RPC body and is handled by the body logic below, so those statuses are
 // deliberately NOT short-circuited here.
-func readModernEnvelope(resp *http.Response, wantID int64) (json.RawMessage, *modernRPCError, error) {
+func readModernEnvelope(
+	resp *http.Response, wantID int64, onNotification func(method string, params json.RawMessage),
+) (json.RawMessage, *modernRPCError, error) {
 	switch {
 	case resp.StatusCode == http.StatusUnauthorized, resp.StatusCode == http.StatusForbidden,
 		resp.StatusCode == http.StatusProxyAuthRequired:
@@ -341,7 +384,7 @@ func readModernEnvelope(resp *http.Response, wantID int64) (json.RawMessage, *mo
 	body := io.LimitReader(resp.Body, maxResponseSize)
 
 	if strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream") {
-		return readModernSSE(body, wantID)
+		return readModernSSE(body, wantID, onNotification)
 	}
 
 	data, err := io.ReadAll(body)
@@ -361,39 +404,81 @@ func readModernEnvelope(resp *http.Response, wantID int64) (json.RawMessage, *mo
 	return env.Result, env.Error, nil
 }
 
-// readModernSSE scans an SSE body for the response whose id matches wantID,
-// consuming (ignoring) any server->client requests/notifications interleaved on
-// the stream. A stream that ends without a matching response yields errWrongEra.
-func readModernSSE(body io.Reader, wantID int64) (json.RawMessage, *modernRPCError, error) {
+// readModernSSE scans an SSE body for the response whose id matches wantID.
+// Server->client requests/notifications interleaved on the stream (envelopes
+// with a Method) are not the response: when onNotification is non-nil their
+// method and params are handed to it (so a caller can relay the
+// notifications/message and notifications/progress the request's logLevel /
+// progressToken elicited); when nil they are dropped as before. Consecutive
+// data: lines in one SSE event are joined with "\n" per the SSE spec before JSON
+// decoding. A stream that ends without a matching response yields errWrongEra.
+func readModernSSE(
+	body io.Reader, wantID int64, onNotification func(method string, params json.RawMessage),
+) (json.RawMessage, *modernRPCError, error) {
 	sc := bufio.NewScanner(body)
 	// Cap the token at maxResponseSize (the doc-promised bound) so a valid single
 	// data: event up to that size decodes; the outer io.LimitReader already bounds
 	// the total, so this cannot over-allocate.
 	sc.Buffer(make([]byte, 0, 64*1024), maxResponseSize)
+
+	var data [][]byte
+	flush := func() (json.RawMessage, *modernRPCError, bool, error) {
+		result, rpcErr, matched, err := readModernSSEEvent(data, wantID, onNotification)
+		data = nil
+		return result, rpcErr, matched, err
+	}
+
 	for sc.Scan() {
-		data, ok := strings.CutPrefix(sc.Text(), "data:")
+		line := sc.Text()
+		if line == "" {
+			result, rpcErr, matched, err := flush()
+			if matched || err != nil {
+				return result, rpcErr, err
+			}
+			continue
+		}
+		value, ok := strings.CutPrefix(line, "data:")
 		if !ok {
 			continue
 		}
-		var env modernRPCEnvelope
-		if json.Unmarshal([]byte(strings.TrimSpace(data)), &env) != nil {
-			continue
-		}
-		if env.Method != "" {
-			continue // server->client request/notification; not our response
-		}
-		if !modernIDMatches(env.ID, wantID) {
-			continue
-		}
-		if env.Error == nil && len(env.Result) == 0 {
-			return nil, nil, errWrongEra
-		}
-		return env.Result, env.Error, nil
+		data = append(data, []byte(strings.TrimPrefix(value, " ")))
 	}
 	if err := sc.Err(); err != nil {
 		return nil, nil, fmt.Errorf("%w: reading SSE stream: %w", errModernTransient, err)
 	}
+	result, rpcErr, matched, err := flush()
+	if matched || err != nil {
+		return result, rpcErr, err
+	}
 	return nil, nil, errWrongEra
+}
+
+func readModernSSEEvent(
+	data [][]byte, wantID int64, onNotification func(method string, params json.RawMessage),
+) (json.RawMessage, *modernRPCError, bool, error) {
+	if len(data) == 0 {
+		return nil, nil, false, nil
+	}
+
+	var env modernRPCEnvelope
+	if json.Unmarshal(bytes.Join(data, []byte("\n")), &env) != nil {
+		return nil, nil, false, nil
+	}
+	if env.Method != "" {
+		// Server->client request/notification; not our response. Relay it when a
+		// listener is bound, otherwise drop it (historical behavior).
+		if onNotification != nil {
+			onNotification(env.Method, env.Params)
+		}
+		return nil, nil, false, nil
+	}
+	if !modernIDMatches(env.ID, wantID) {
+		return nil, nil, false, nil
+	}
+	if env.Error == nil && len(env.Result) == 0 {
+		return nil, nil, true, errWrongEra
+	}
+	return env.Result, env.Error, true, nil
 }
 
 // modernIDMatches reports whether the raw JSON id equals wantID.
@@ -426,10 +511,10 @@ func isModernProtocolCode(code int) bool {
 
 // classifyUnsupportedProtocolVersion resolves a -32022
 // (CodeUnsupportedProtocolVersion) error into a Modern-positive or
-// negotiated-down signal. go-sdk v1.7's reference client (mcp/client.go:360-369)
-// decodes the error's `data.supported` list and retries Modern when it finds a
-// mutually-supported version >= 2026-07-28 (a range check), falling back to
-// Legacy initialize otherwise. This diverges from that: it exact-matches
+// negotiated-down signal. go-sdk's reference client reads the -32022
+// `data.supported` list and retries Modern when it finds a mutually supported
+// version >= 2026-07-28 (a range check), falling back to Legacy initialize
+// otherwise. This diverges from that: it exact-matches
 // MCPVersionModern instead of a range, same as discoverModernCapabilities'
 // exact-match (client.go) and safe for the same reason — vMCP's shim only
 // speaks that one Modern wire shape, and a dual-era peer offering a future

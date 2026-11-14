@@ -40,13 +40,21 @@ func completeSkillNames(cmd *cobra.Command, args []string, _ string) ([]string, 
 	return names, cobra.ShellCompDirectiveNoFileComp
 }
 
-// formatSkillError wraps an error with contextual information. If the
-// underlying cause is ErrServerUnreachable it appends a helpful hint.
+// formatSkillError wraps an error with contextual information, appending a
+// hint that matches the actual failure — a timed-out request and an absent
+// server need different advice.
 func formatSkillError(action string, err error) error {
-	if errors.Is(err, skillclient.ErrServerUnreachable) {
+	switch {
+	case errors.Is(err, skillclient.ErrRequestTimeout):
+		return fmt.Errorf(
+			"failed to %s: %w\nHint: the server is running and was still working; "+
+				"raise the limit with TOOLHIVE_API_TIMEOUT (e.g. TOOLHIVE_API_TIMEOUT=30m)",
+			action, err)
+	case errors.Is(err, skillclient.ErrServerUnreachable):
 		return fmt.Errorf("failed to %s: %w\nHint: ensure 'thv serve' is running", action, err)
+	default:
+		return fmt.Errorf("failed to %s: %w", action, err)
 	}
-	return fmt.Errorf("failed to %s: %w", action, err)
 }
 
 // validateSkillScope returns a PreRunE that validates the --scope flag.
@@ -73,7 +81,7 @@ func validateProjectRootForScope(scopeVar, projectRootVar *string) func(*cobra.C
 // rather than requiring --project-root on every invocation.
 func resolveProjectRoot(explicit string) (string, error) {
 	if explicit != "" {
-		return explicit, nil
+		return absProjectRoot(explicit)
 	}
 	root, err := tclient.DetectProjectRoot("")
 	if err != nil {

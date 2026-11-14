@@ -16,9 +16,11 @@ import (
 // LocalRegistryProvider provides registry data from embedded JSON files or local files
 type LocalRegistryProvider struct {
 	*BaseProvider
-	filePath string
-	skillsMu sync.RWMutex
-	skills   []types.Skill
+	filePath  string
+	skillsMu  sync.RWMutex
+	skills    []types.Skill
+	pluginsMu sync.RWMutex
+	plugins   []types.Plugin
 }
 
 // NewLocalRegistryProvider creates a new local registry provider
@@ -52,11 +54,12 @@ func (p *LocalRegistryProvider) GetRegistry() (*types.Registry, error) {
 		data = catalog.Upstream()
 	}
 
-	registry, skills, err := parseRegistryData(data)
+	registry, skills, plugins, err := parseRegistryData(data)
 	if err != nil {
 		return nil, err
 	}
 	p.setSkills(skills)
+	p.setPlugins(plugins)
 
 	// Set name field on each server based on map key
 	for name, server := range registry.Servers {
@@ -86,6 +89,12 @@ func (p *LocalRegistryProvider) setSkills(skills []types.Skill) {
 	p.skillsMu.Lock()
 	defer p.skillsMu.Unlock()
 	p.skills = skills
+}
+
+func (p *LocalRegistryProvider) setPlugins(plugins []types.Plugin) {
+	p.pluginsMu.Lock()
+	defer p.pluginsMu.Unlock()
+	p.plugins = plugins
 }
 
 // ListAvailableSkills returns skills discovered from the upstream registry data.
@@ -135,6 +144,58 @@ func (p *LocalRegistryProvider) SearchSkills(query string) ([]types.Skill, error
 			strings.Contains(strings.ToLower(s.Description), query) ||
 			strings.Contains(strings.ToLower(s.Namespace), query) {
 			results = append(results, s)
+		}
+	}
+	return results, nil
+}
+
+// ListAvailablePlugins returns plugins discovered from the upstream registry data.
+// Triggers a registry load if plugins haven't been populated yet.
+func (p *LocalRegistryProvider) ListAvailablePlugins() ([]types.Plugin, error) {
+	p.pluginsMu.RLock()
+	plugins := p.plugins
+	p.pluginsMu.RUnlock()
+
+	if plugins == nil {
+		// Plugins are populated as a side effect of GetRegistry
+		if _, err := p.GetRegistry(); err != nil {
+			return nil, err
+		}
+		p.pluginsMu.RLock()
+		plugins = p.plugins
+		p.pluginsMu.RUnlock()
+	}
+
+	return plugins, nil
+}
+
+// GetPlugin returns a specific plugin by namespace and name.
+func (p *LocalRegistryProvider) GetPlugin(namespace, name string) (*types.Plugin, error) {
+	plugins, err := p.ListAvailablePlugins()
+	if err != nil {
+		return nil, err
+	}
+	for i := range plugins {
+		if plugins[i].Namespace == namespace && plugins[i].Name == name {
+			return &plugins[i], nil
+		}
+	}
+	return nil, nil
+}
+
+// SearchPlugins searches for plugins matching the query in name, namespace, or description.
+func (p *LocalRegistryProvider) SearchPlugins(query string) ([]types.Plugin, error) {
+	plugins, err := p.ListAvailablePlugins()
+	if err != nil {
+		return nil, err
+	}
+	query = strings.ToLower(query)
+	var results []types.Plugin
+	for _, pl := range plugins {
+		if strings.Contains(strings.ToLower(pl.Name), query) ||
+			strings.Contains(strings.ToLower(pl.Description), query) ||
+			strings.Contains(strings.ToLower(pl.Namespace), query) {
+			results = append(results, pl)
 		}
 	}
 	return results, nil

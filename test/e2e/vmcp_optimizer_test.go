@@ -8,7 +8,8 @@
 // This file adds deeper coverage for RFC THV-0059 Phase 4:
 //
 //   - Tier-1 find→call round-trip: verifies that find_tool locates the yardstick
-//     echo tool by description and call_tool invokes it end-to-end.
+//     echo tool by description and call_tool invokes it end-to-end, both with
+//     tool_name alongside parameters and with it nested inside them.
 //   - Tier-1 two-backend with conflict resolution: verifies that optimizer
 //     discovers tools from both backends when prefix conflict resolution is active.
 //   - Tier-1 composite + optimizer: verifies that composite tools are indexed by
@@ -93,7 +94,7 @@ var _ = Describe("vMCP optimizer", Label("vmcp", "e2e", "optimizer"), func() {
 		BeforeEach(func() { fx.setup("vmcp-opt-roundtrip", "") })
 		AfterEach(func() { fx.teardown() })
 
-		It("find_tool locates the echo tool and call_tool invokes it end-to-end", func() {
+		It("find_tool locates the echo tool and call_tool invokes it, flat and nested", func() {
 			By("starting thv vmcp serve with --optimizer")
 			fx.vMCPCmd = e2e.StartLongRunningTHVCommand(fx.cfg,
 				"vmcp", "serve",
@@ -133,6 +134,20 @@ var _ = Describe("vMCP optimizer", Label("vmcp", "e2e", "optimizer"), func() {
 			Expect(callResult.Content).ToNot(BeEmpty(), "call_tool must return content")
 			Expect(mcp.GetTextFromContent(callResult.Content[0])).To(ContainSubstring("hellooptimizer"),
 				"echo tool must return the input message")
+
+			By("invoking the same tool with tool_name nested inside parameters")
+			nestedResult, err := mcpClient.CallTool(ctx, "call_tool", map[string]any{
+				"parameters": map[string]any{
+					"tool_name": echoToolName,
+					"input":     "hellonested",
+				},
+			})
+			Expect(err).ToNot(HaveOccurred())
+			Expect(nestedResult.IsError).To(BeFalse(),
+				"call_tool must accept a tool_name nested inside parameters")
+			Expect(nestedResult.Content).ToNot(BeEmpty(), "call_tool must return content")
+			Expect(mcp.GetTextFromContent(nestedResult.Content[0])).To(ContainSubstring("hellonested"),
+				"the nested tool_name must be hoisted and the remaining parameters passed through")
 		})
 	})
 

@@ -7,6 +7,8 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"maps"
+	"slices"
 	"sort"
 	"sync"
 
@@ -27,12 +29,21 @@ type defaultAggregator struct {
 	conflictResolver ConflictResolver
 	toolConfigMap    map[string]*config.WorkloadToolConfig // Maps backend ID to tool config
 	excludeAllTools  bool                                  // Global flag to exclude all tools
-	tracer           trace.Tracer
+	// denyUnlisted advertises no tools from a backend absent from toolConfigMap
+	// (config.DefaultToolVisibilityDeny). False — the default — preserves the
+	// advertise-everything behavior predating the setting.
+	denyUnlisted bool
+	// promptNaming controls how advertised prompt names are formed (see
+	// resolvePromptConflicts). Derived from the aggregation config at
+	// construction.
+	promptNaming promptNaming
+	tracer       trace.Tracer
 }
 
 // NewDefaultAggregator creates a new default aggregator implementation.
 // conflictResolver handles tool name conflicts across backends.
-// aggregationConfig specifies aggregation settings including tool filtering/overrides and excludeAllTools.
+// aggregationConfig specifies aggregation settings including tool filtering/overrides,
+// excludeAllTools, and defaultToolVisibility.
 // tracerProvider is used to create a tracer for distributed tracing (pass nil for no tracing).
 func NewDefaultAggregator(
 	backendClient vmcp.BackendClient,
@@ -43,9 +54,13 @@ func NewDefaultAggregator(
 	// Build tool config map for quick lookup by backend ID
 	toolConfigMap := make(map[string]*config.WorkloadToolConfig)
 	var excludeAllTools bool
+	var denyUnlisted bool
 
 	if aggregationConfig != nil {
 		excludeAllTools = aggregationConfig.ExcludeAllTools
+		// Only the explicit "deny" opts in; "" (unset) and "allow" both advertise,
+		// so a config written before this setting existed is unaffected.
+		denyUnlisted = aggregationConfig.DefaultToolVisibility == config.DefaultToolVisibilityDeny
 		for _, wlConfig := range aggregationConfig.Tools {
 			if wlConfig != nil {
 				toolConfigMap[wlConfig.Workload] = wlConfig
@@ -66,6 +81,8 @@ func NewDefaultAggregator(
 		conflictResolver: conflictResolver,
 		toolConfigMap:    toolConfigMap,
 		excludeAllTools:  excludeAllTools,
+		denyUnlisted:     denyUnlisted,
+		promptNaming:     promptNamingFromConfig(aggregationConfig),
 		tracer:           tracer,
 	}
 }
@@ -190,8 +207,54 @@ func (a *defaultAggregator) QueryAllCapabilities(
 		attribute.Int("successful.backends", len(capabilities)),
 	)
 
+	a.warnUnmatchedToolConfigs(backends)
+
 	slog.Info("successfully queried backends", "successful", len(capabilities), "total", len(backends))
 	return capabilities, nil
+}
+
+// warnUnmatchedToolConfigs logs a Tools entry naming a workload that no backend
+// in the group provides — almost always a typo in tools[].workload.
+//
+// Under DefaultToolVisibilityAllow a typo is nearly harmless: the entry matches
+// nothing, so no filter is applied and the real backend keeps advertising. Under
+// DefaultToolVisibilityDeny it inverts — the real backend has no matching entry, so
+// it contributes NOTHING, and the only symptom is a short tools/list. The warning
+// is what makes that debuggable, so it is loudest for deny.
+func (a *defaultAggregator) warnUnmatchedToolConfigs(backends []vmcp.Backend) {
+	for _, workload := range a.unmatchedToolConfigWorkloads(backends) {
+		if a.denyUnlisted {
+			slog.Warn("aggregation.tools entry matches no backend in the group; "+
+				"under defaultToolVisibility=deny any backend it was meant to name contributes no tools",
+				"workload", workload)
+			continue
+		}
+		slog.Warn("aggregation.tools entry matches no backend in the group; its filter/overrides are not applied",
+			"workload", workload)
+	}
+}
+
+// unmatchedToolConfigWorkloads returns, sorted, the Tools entries naming a
+// workload that no backend in the group provides. Split from the logging so the
+// selection is testable without swapping the global logger.
+func (a *defaultAggregator) unmatchedToolConfigWorkloads(backends []vmcp.Backend) []string {
+	if len(a.toolConfigMap) == 0 {
+		return nil
+	}
+
+	present := make(map[string]struct{}, len(backends))
+	for _, b := range backends {
+		present[b.ID] = struct{}{}
+	}
+
+	var unmatched []string
+	for workload := range a.toolConfigMap {
+		if _, ok := present[workload]; !ok {
+			unmatched = append(unmatched, workload)
+		}
+	}
+	sort.Strings(unmatched)
+	return unmatched
 }
 
 // ResolveConflicts applies conflict resolution strategy to handle
@@ -231,11 +294,12 @@ func (a *defaultAggregator) ResolveConflicts(
 			return nil, fmt.Errorf("conflict resolution failed: %w", err)
 		}
 	} else {
-		// Fallback: no conflict resolution (first wins, log warnings)
+		// Fallback: no conflict resolution (first wins in sorted backend
+		// order, so the winner is deterministic; log warnings)
 		slog.Warn("no conflict resolver configured, using fallback (first wins)")
 		resolvedTools = make(map[string]*ResolvedTool)
-		for backendID, tools := range toolsByBackend {
-			for _, tool := range tools {
+		for _, backendID := range slices.Sorted(maps.Keys(toolsByBackend)) {
+			for _, tool := range toolsByBackend[backendID] {
 				if existing, exists := resolvedTools[tool.Name]; exists {
 					slog.Warn("tool name conflict, keeping first",
 						"tool", tool.Name, "existing_backend", existing.BackendID, "conflicting_backend", backendID)
@@ -256,18 +320,19 @@ func (a *defaultAggregator) ResolveConflicts(
 
 	// Build resolved capabilities
 	resolved := &ResolvedCapabilities{
-		Tools:             resolvedTools,
-		Resources:         []vmcp.Resource{},
-		ResourceTemplates: []vmcp.ResourceTemplate{},
-		Prompts:           []vmcp.Prompt{},
+		Tools: resolvedTools,
 	}
 
-	// Collect resources, resource templates, and prompts (no conflict resolution for these yet)
-	for _, caps := range capabilities {
-		resolved.Resources = append(resolved.Resources, caps.Resources...)
-		resolved.ResourceTemplates = append(resolved.ResourceTemplates, caps.ResourceTemplates...)
-		resolved.Prompts = append(resolved.Prompts, caps.Prompts...)
+	// Resolve conflicts for resources, resource templates, and prompts.
+	// Backends are iterated in sorted-ID order so that collision outcomes are
+	// deterministic across runs (map iteration order is not). See
+	// capability_conflicts.go for the per-type policies.
+	backendIDs := slices.Sorted(maps.Keys(capabilities))
+	resolved.Resources = resolveResourceConflicts(backendIDs, capabilities)
+	resolved.ResourceTemplates = resolveResourceTemplateConflicts(backendIDs, capabilities)
+	resolved.Prompts = resolvePromptConflicts(a.promptNaming, backendIDs, capabilities)
 
+	for _, caps := range capabilities {
 		// Aggregate logging/sampling support (OR logic - enabled if any backend supports)
 		resolved.SupportsLogging = resolved.SupportsLogging || caps.SupportsLogging
 		resolved.SupportsSampling = resolved.SupportsSampling || caps.SupportsSampling
@@ -362,65 +427,16 @@ func (a *defaultAggregator) MergeCapabilities(
 		return tools[i].Name < tools[j].Name
 	})
 
-	// Add resources to routing table
-	for _, resource := range resolved.Resources {
-		backend := registry.Get(ctx, resource.BackendID)
-		if backend == nil {
-			slog.Warn("backend not found in registry for resource, creating minimal target",
-				"backend", resource.BackendID, "resource", resource.URI)
-			routingTable.Resources[resource.URI] = &vmcp.BackendTarget{
-				WorkloadID:             resource.BackendID,
-				OriginalCapabilityName: resource.URI,
-			}
-		} else {
-			target := vmcp.BackendToTarget(backend)
-			// Store the original resource URI for forwarding to backend
-			target.OriginalCapabilityName = resource.URI
-			routingTable.Resources[resource.URI] = target
-		}
-	}
-
-	// Add resource templates to routing table, keyed by URI-template string.
-	// Pass-through, mirroring resources: no URI-template rewriting.
-	//
-	// OriginalCapabilityName is intentionally left empty. A resources/read routed
-	// via a template carries the client's CONCRETE, already-expanded URI (e.g.
-	// file:///logs/2025-01-01.txt); the backend performs its own template
-	// expansion, so that concrete URI must reach it verbatim. Setting
-	// OriginalCapabilityName to the template string would make
-	// GetBackendCapabilityName replace the concrete URI with the unexpanded
-	// template, and the backend would return unsubstituted content. vMCP does not
-	// rename templates, so no name translation is needed here.
-	for _, template := range resolved.ResourceTemplates {
-		backend := registry.Get(ctx, template.BackendID)
-		if backend == nil {
-			slog.Warn("backend not found in registry for resource template, creating minimal target",
-				"backend", template.BackendID, "resource_template", template.URITemplate)
-			routingTable.ResourceTemplates[template.URITemplate] = &vmcp.BackendTarget{
-				WorkloadID: template.BackendID,
-			}
-		} else {
-			routingTable.ResourceTemplates[template.URITemplate] = vmcp.BackendToTarget(backend)
-		}
-	}
-
-	// Add prompts to routing table
-	for _, prompt := range resolved.Prompts {
-		backend := registry.Get(ctx, prompt.BackendID)
-		if backend == nil {
-			slog.Warn("backend not found in registry for prompt, creating minimal target",
-				"backend", prompt.BackendID, "prompt", prompt.Name)
-			routingTable.Prompts[prompt.Name] = &vmcp.BackendTarget{
-				WorkloadID:             prompt.BackendID,
-				OriginalCapabilityName: prompt.Name,
-			}
-		} else {
-			target := vmcp.BackendToTarget(backend)
-			// Store the original prompt name for forwarding to backend
-			target.OriginalCapabilityName = prompt.Name
-			routingTable.Prompts[prompt.Name] = target
-		}
-	}
+	// Add resources, resource templates, and prompts to the routing table.
+	// ResolveConflicts is the enforcement point that makes their identities
+	// unique (see the capability_conflicts.go header), but Merge is
+	// independently callable, so as defence in depth each merge helper keeps
+	// a duplicate out of both the routing table and the advertised list
+	// (first wins, loudly) rather than silently overwriting the earlier
+	// routing entry.
+	resources := mergeResources(ctx, resolved.Resources, registry, routingTable)
+	templates := mergeResourceTemplates(ctx, resolved.ResourceTemplates, registry, routingTable)
+	prompts := mergePrompts(ctx, resolved.Prompts, registry, routingTable)
 
 	// Determine conflict strategy used
 	conflictStrategy := vmcp.ConflictStrategyPrefix // Default
@@ -432,21 +448,23 @@ func (a *defaultAggregator) MergeCapabilities(
 		}
 	}
 
-	// Create final aggregated view
+	// Create final aggregated view. The advertised lists are the ones built
+	// alongside the routing tables above, so advertising and routing always
+	// agree on which entry owns a duplicated identity.
 	aggregated := &AggregatedCapabilities{
 		Tools:             tools,
-		Resources:         resolved.Resources,
-		ResourceTemplates: resolved.ResourceTemplates,
-		Prompts:           resolved.Prompts,
+		Resources:         resources,
+		ResourceTemplates: templates,
+		Prompts:           prompts,
 		SupportsLogging:   resolved.SupportsLogging,
 		SupportsSampling:  resolved.SupportsSampling,
 		RoutingTable:      routingTable,
 		Metadata: &AggregationMetadata{
 			BackendCount:          0, // Will be set by caller
 			ToolCount:             len(tools),
-			ResourceCount:         len(resolved.Resources),
-			ResourceTemplateCount: len(resolved.ResourceTemplates),
-			PromptCount:           len(resolved.Prompts),
+			ResourceCount:         len(resources),
+			ResourceTemplateCount: len(templates),
+			PromptCount:           len(prompts),
 			ConflictStrategy:      conflictStrategy,
 		},
 	}
@@ -530,6 +548,120 @@ func (a *defaultAggregator) AggregateCapabilities(
 	return aggregated, nil
 }
 
+// mergeResources adds resources to the routing table (keyed by URI) and
+// returns the advertised resource list. A URI already present in the routing
+// table is dropped from both, with a warning (first wins), so advertising and
+// routing always agree on which backend owns a URI.
+func mergeResources(
+	ctx context.Context,
+	resolved []vmcp.Resource,
+	registry vmcp.BackendRegistry,
+	routingTable *vmcp.RoutingTable,
+) []vmcp.Resource {
+	resources := make([]vmcp.Resource, 0, len(resolved))
+	for _, resource := range resolved {
+		if existing, duplicate := routingTable.Resources[resource.URI]; duplicate {
+			slog.Warn("duplicate resource URI in resolved capabilities, keeping first",
+				"uri", resource.URI, "kept_backend", existing.WorkloadID, "dropped_backend", resource.BackendID)
+			continue
+		}
+		resources = append(resources, resource)
+		backend := registry.Get(ctx, resource.BackendID)
+		if backend == nil {
+			slog.Warn("backend not found in registry for resource, creating minimal target",
+				"backend", resource.BackendID, "resource", resource.URI)
+			routingTable.Resources[resource.URI] = &vmcp.BackendTarget{
+				WorkloadID:             resource.BackendID,
+				OriginalCapabilityName: resource.URI,
+			}
+		} else {
+			target := vmcp.BackendToTarget(backend)
+			// Store the original resource URI for forwarding to backend
+			target.OriginalCapabilityName = resource.URI
+			routingTable.Resources[resource.URI] = target
+		}
+	}
+	return resources
+}
+
+// mergeResourceTemplates adds resource templates to the routing table (keyed
+// by URI-template string) and returns the advertised template list.
+// Pass-through, mirroring resources: no URI-template rewriting, and the same
+// first-wins guard against duplicate template strings.
+//
+// OriginalCapabilityName is intentionally left empty. A resources/read routed
+// via a template carries the client's CONCRETE, already-expanded URI (e.g.
+// file:///logs/2025-01-01.txt); the backend performs its own template
+// expansion, so that concrete URI must reach it verbatim. Setting
+// OriginalCapabilityName to the template string would make
+// GetBackendCapabilityName replace the concrete URI with the unexpanded
+// template, and the backend would return unsubstituted content. vMCP does not
+// rename templates, so no name translation is needed here.
+func mergeResourceTemplates(
+	ctx context.Context,
+	resolved []vmcp.ResourceTemplate,
+	registry vmcp.BackendRegistry,
+	routingTable *vmcp.RoutingTable,
+) []vmcp.ResourceTemplate {
+	templates := make([]vmcp.ResourceTemplate, 0, len(resolved))
+	for _, template := range resolved {
+		if existing, duplicate := routingTable.ResourceTemplates[template.URITemplate]; duplicate {
+			slog.Warn("duplicate resource template in resolved capabilities, keeping first",
+				"resource_template", template.URITemplate,
+				"kept_backend", existing.WorkloadID, "dropped_backend", template.BackendID)
+			continue
+		}
+		templates = append(templates, template)
+		backend := registry.Get(ctx, template.BackendID)
+		if backend == nil {
+			slog.Warn("backend not found in registry for resource template, creating minimal target",
+				"backend", template.BackendID, "resource_template", template.URITemplate)
+			routingTable.ResourceTemplates[template.URITemplate] = &vmcp.BackendTarget{
+				WorkloadID: template.BackendID,
+			}
+		} else {
+			routingTable.ResourceTemplates[template.URITemplate] = vmcp.BackendToTarget(backend)
+		}
+	}
+	return templates
+}
+
+// mergePrompts adds prompts to the routing table, keyed by resolved
+// (advertised) name, and returns the advertised prompt list, with the same
+// first-wins guard against duplicate resolved names.
+func mergePrompts(
+	ctx context.Context,
+	resolved []ResolvedPrompt,
+	registry vmcp.BackendRegistry,
+	routingTable *vmcp.RoutingTable,
+) []vmcp.Prompt {
+	prompts := make([]vmcp.Prompt, 0, len(resolved))
+	for _, prompt := range resolved {
+		if existing, duplicate := routingTable.Prompts[prompt.Name]; duplicate {
+			slog.Warn("duplicate prompt name in resolved capabilities, keeping first",
+				"prompt", prompt.Name, "kept_backend", existing.WorkloadID, "dropped_backend", prompt.BackendID)
+			continue
+		}
+		prompts = append(prompts, prompt.Prompt)
+		backend := registry.Get(ctx, prompt.BackendID)
+		if backend == nil {
+			slog.Warn("backend not found in registry for prompt, creating minimal target",
+				"backend", prompt.BackendID, "prompt", prompt.Name)
+			routingTable.Prompts[prompt.Name] = &vmcp.BackendTarget{
+				WorkloadID:             prompt.BackendID,
+				OriginalCapabilityName: prompt.OriginalName,
+			}
+		} else {
+			target := vmcp.BackendToTarget(backend)
+			// Store the backend's own prompt name so prompts/get on a renamed
+			// prompt forwards the name the backend actually knows.
+			target.OriginalCapabilityName = prompt.OriginalName
+			routingTable.Prompts[prompt.Name] = target
+		}
+	}
+	return prompts
+}
+
 // actualBackendCapabilityName returns the real capability name the backend uses,
 // reversing any per-backend override rename that processBackendTools may have applied.
 //
@@ -556,10 +688,13 @@ func actualBackendCapabilityName(toolConfigMap map[string]*config.WorkloadToolCo
 // shouldAdvertiseTool returns true if a tool from the given backend should be
 // advertised to MCP clients (included in tools/list response).
 //
-// ExcludeAll, Filter, and per-workload settings control advertising, not routing:
-// - Tools excluded via ExcludeAll are NOT advertised to MCP clients
-// - Tools not matching Filter are NOT advertised to MCP clients
-// - BUT they ARE available in the routing table for composite tools to use
+// ExcludeAll, Filter, DefaultToolVisibility, and per-workload settings control
+// advertising, not routing:
+//   - Tools excluded via ExcludeAll are NOT advertised to MCP clients
+//   - Tools not matching Filter are NOT advertised to MCP clients
+//   - Under DefaultToolVisibility "deny", tools from a backend with no per-workload
+//     config are NOT advertised to MCP clients
+//   - BUT they ARE available in the routing table for composite tools to use
 //
 // This enables the use case where you want to hide raw backend tools from
 // direct client access while still allowing curated composite workflows to use them.
@@ -576,8 +711,11 @@ func (a *defaultAggregator) shouldAdvertiseTool(backendID, originalToolName stri
 	// Check per-workload settings
 	wlConfig, exists := a.toolConfigMap[backendID]
 	if !exists {
-		// No config for this backend, advertise the tool
-		return true
+		// No config for this backend. Under the default ("allow"), advertise the
+		// tool; under "deny", withhold it so only backends named in the config
+		// contribute tools. A backend WITH a config is opted in either way — its
+		// own ExcludeAll/Filter decide below.
+		return !a.denyUnlisted
 	}
 
 	// Check per-workload ExcludeAll setting

@@ -28,6 +28,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
@@ -301,7 +302,7 @@ func TestServiceForMCPRemoteProxy(t *testing.T) {
 				Scheme: scheme,
 			}
 
-			svc := reconciler.serviceForMCPRemoteProxy(context.TODO(), tt.proxy)
+			svc := reconciler.serviceForMCPRemoteProxy(context.TODO(), tt.proxy, false)
 			require.NotNil(t, svc)
 
 			if tt.validate != nil {
@@ -1290,7 +1291,10 @@ func TestMCPRemoteProxyServiceNeedsUpdate(t *testing.T) {
 		Spec: corev1.ServiceSpec{
 			SessionAffinity: corev1.ServiceAffinityClientIP,
 			Ports: []corev1.ServicePort{{
-				Port: 8080,
+				Name:       "http",
+				Port:       8080,
+				TargetPort: intstr.FromInt(8080),
+				Protocol:   corev1.ProtocolTCP,
 			}},
 		},
 	}
@@ -1360,10 +1364,45 @@ func TestMCPRemoteProxyServiceNeedsUpdate(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			r := &MCPRemoteProxyReconciler{}
-			result := r.serviceNeedsUpdate(tt.service, tt.proxy)
+			result := r.serviceNeedsUpdate(tt.service, tt.proxy, false)
 			assert.Equal(t, tt.needsUpdate, result)
 		})
 	}
+}
+
+func TestBuildRedisPasswordEnvVarForRemoteProxy_GlobalDefault(t *testing.T) {
+	t.Parallel()
+	defaults := &ctrlutil.DefaultRedisConfig{Addr: "global-redis:6379", SecretName: "global-redis-secret", SecretKey: "redis-password"}
+
+	proxy := v1beta1test.NewMCPRemoteProxy("test-proxy", "default")
+	got := buildRedisPasswordEnvVarForRemoteProxy(proxy, defaults)
+
+	require.Len(t, got, 1)
+	assert.Equal(t, session.RedisPasswordEnvVar, got[0].Name)
+	assert.Empty(t, got[0].Value, "must not use plaintext Value")
+	require.NotNil(t, got[0].ValueFrom)
+	require.NotNil(t, got[0].ValueFrom.SecretKeyRef)
+	assert.Equal(t, "global-redis-secret", got[0].ValueFrom.SecretKeyRef.Name)
+	assert.Equal(t, "redis-password", got[0].ValueFrom.SecretKeyRef.Key)
+}
+
+func TestBuildRedisPasswordEnvVarForRemoteProxy_NonRedisProviderNotOverriddenByGlobal(t *testing.T) {
+	t.Parallel()
+	defaults := &ctrlutil.DefaultRedisConfig{Addr: "global-redis:6379", SecretName: "global-secret", SecretKey: "redis-password"}
+
+	proxy := v1beta1test.NewMCPRemoteProxy("test-proxy", "default",
+		v1beta1test.WithRemoteProxySessionStorage(&mcpv1beta1.SessionStorageConfig{Provider: "memory"}))
+	got := buildRedisPasswordEnvVarForRemoteProxy(proxy, defaults)
+	assert.Empty(t, got, "non-Redis provider should not receive global Redis password env var")
+}
+
+func TestBuildRedisPasswordEnvVarForRemoteProxy_PasswordlessGlobalDefault(t *testing.T) {
+	t.Parallel()
+	defaults := &ctrlutil.DefaultRedisConfig{Addr: "global-redis:6379"}
+
+	proxy := v1beta1test.NewMCPRemoteProxy("test-proxy", "default")
+	got := buildRedisPasswordEnvVarForRemoteProxy(proxy, defaults)
+	assert.Empty(t, got, "global default without a secret name must not inject a password env var")
 }
 
 // TestBuildRedisPasswordEnvVarForRemoteProxy mirrors VirtualMCPServer's
@@ -1412,7 +1451,7 @@ func TestBuildRedisPasswordEnvVarForRemoteProxy(t *testing.T) {
 			proxy := v1beta1test.NewMCPRemoteProxy("test-proxy", "default",
 				v1beta1test.WithRemoteProxySessionStorage(tc.storage),
 			)
-			env := buildRedisPasswordEnvVarForRemoteProxy(proxy)
+			env := buildRedisPasswordEnvVarForRemoteProxy(proxy, nil)
 			if tc.expectEnVar {
 				require.Len(t, env, 1)
 				assert.Equal(t, session.RedisPasswordEnvVar, env[0].Name)

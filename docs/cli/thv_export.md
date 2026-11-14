@@ -42,14 +42,14 @@ thv export <workload name> <path> [flags]
 ### Options
 
 ```
-      --format string   Export format: json or k8s (default "json")
-  -h, --help            help for export
+      --format string       Export format: json or k8s (default "json")
+  -h, --help[=true|false]   help for export
 ```
 
 ### Options inherited from parent commands
 
 ```
-      --debug   Enable debug mode
+      --debug[=true|false]   Enable debug mode
 ```
 
 ### SEE ALSO

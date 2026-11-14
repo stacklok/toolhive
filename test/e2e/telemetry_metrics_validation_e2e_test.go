@@ -17,6 +17,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	"github.com/stacklok/toolhive/pkg/diagnostics"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 	"github.com/stacklok/toolhive/test/e2e"
 	"github.com/stacklok/toolhive/test/e2e/images"
@@ -378,30 +379,32 @@ func validateMetricValues(metricsContent, expectedServerName, expectedTransport 
 	}
 }
 
-// getMetricsURL constructs the metrics URL for a given workload
+// getMetricsURL constructs the metrics URL for a given workload.
+//
+// Metrics are served on the diagnostics listener, not on the transport port the
+// workload URL points at, so only the host is reused here. See pkg/diagnostics.
+//
+// This assumes the listener bound diagnostics.DefaultPort. That holds on a CI
+// runner, where nothing else is on 9464, but the listener does fall back to
+// another port when it is taken — so on a busy machine this points at the wrong
+// endpoint and the assertions read empty metrics. There is no way to discover
+// the resolved port today; exposing it in workload status is the follow-up that
+// makes this deterministic.
 func getMetricsURL(config *e2e.TestConfig, workloadName string) (string, error) {
 	serverURL, err := e2e.GetMCPServerURL(config, workloadName)
 	if err != nil {
 		return "", fmt.Errorf("failed to get server URL: %w", err)
 	}
 
-	// Parse the URL to extract host and port
+	// Parse the URL to extract the host
 	parts := strings.Split(serverURL, ":")
 	if len(parts) < 3 {
 		return "", fmt.Errorf("invalid server URL format: %s", serverURL)
 	}
 
 	host := parts[1][2:] // Remove "//" prefix
-	portAndPath := parts[2]
 
-	// Extract just the port (remove /sse#servername or /mcp part)
-	portParts := strings.Split(portAndPath, "/")
-	if len(portParts) < 1 {
-		return "", fmt.Errorf("invalid server URL format: %s", serverURL)
-	}
-	port := portParts[0]
-
-	metricsURL := fmt.Sprintf("http://%s:%s/metrics", host, port)
+	metricsURL := fmt.Sprintf("http://%s:%d%s", host, diagnostics.DefaultPort, diagnostics.MetricsPath)
 	return metricsURL, nil
 }
 

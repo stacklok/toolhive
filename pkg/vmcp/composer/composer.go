@@ -69,6 +69,10 @@ type WorkflowDefinition struct {
 	// If nil, the workflow returns the last step's output (backward compatible).
 	Output *config.OutputConfig
 
+	// Annotations declares MCP tool annotations for the composite tool.
+	// If nil, annotations are derived from the step tools at advertise time.
+	Annotations *config.ToolAnnotationsOverride
+
 	// Metadata stores additional workflow information.
 	Metadata map[string]string
 }
@@ -340,7 +344,8 @@ const (
 	// StepStatusFailed indicates the step failed.
 	StepStatusFailed StepStatusType = "failed"
 
-	// StepStatusSkipped indicates the step was skipped (condition was false).
+	// StepStatusSkipped indicates the step was skipped: its condition was false, or an
+	// earlier skip_remaining elicitation action stopped the workflow.
 	StepStatusSkipped StepStatusType = "skipped"
 )
 

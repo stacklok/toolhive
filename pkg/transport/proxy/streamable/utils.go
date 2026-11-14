@@ -43,11 +43,16 @@ func writeHTTPError(w http.ResponseWriter, status int, msg string) {
 	http.Error(w, msg, status)
 }
 
-// writeSSEData writes data as a single SSE "data:" event to w and flushes it.
-// It returns the underlying write error (if any) so the caller can decide
-// whether to end the stream; it does not itself log or close anything.
+// writeSSEData writes a single JSON-RPC SSE frame with an explicit
+// "event: message" name plus a "data:" line, then flushes it. The event name
+// matches MCP reference transports and ToolHive's own ssecommon serializer;
+// clients that only dispatch named "message" events (for example @ai-sdk/mcp)
+// drop data-only frames. It returns the underlying write error (if any) so
+// the caller can decide whether to end the stream; it does not itself log or
+// close anything.
 func writeSSEData(w io.Writer, flusher http.Flusher, data []byte) error {
-	if _, err := fmt.Fprintf(w, "data: %s\n\n", data); err != nil { //nolint:gosec // G705: SSE data from MCP protocol
+	//nolint:gosec // G705: SSE data from MCP protocol
+	if _, err := fmt.Fprintf(w, "event: message\ndata: %s\n\n", data); err != nil {
 		return err
 	}
 	flusher.Flush()
@@ -130,28 +135,11 @@ func writeJSONRPC(w http.ResponseWriter, msg jsonrpc2.Message) error {
 	return err
 }
 
-// idKeyFromID returns a stable string key for a jsonrpc2.ID using its raw value.
-// We prefix with type to avoid collisions between numeric and string IDs.
-func idKeyFromID(id jsonrpc2.ID) string {
-	raw := id.Raw()
-	switch v := raw.(type) {
-	case string:
-		return "s:" + v
-	case float64:
-		// JSON numbers decode to float64
-		return fmt.Sprintf("n:%v", v)
-	case json.Number:
-		return "n:" + v.String()
-	case nil:
-		return "nil"
-	default:
-		return fmt.Sprintf("%T:%v", v, v)
-	}
-}
-
-// compositeKey builds a stable composite key from session ID and request ID key.
-func compositeKey(sessID, idKey string) string {
-	return sessID + "|" + idKey
+// compositeKey builds the upstream correlation key from the session ID and a
+// per-request token. The token must be unique per in-flight request (see
+// createWaiter); it must never be derived from the client-chosen JSON-RPC id.
+func compositeKey(sessID, requestToken string) string {
+	return sessID + "|" + requestToken
 }
 
 // extractStringParam returns params[key] as a string, and whether it was
@@ -193,10 +181,9 @@ func rewriteRequestParam(req *jsonrpc2.Request, key string, value any) (*jsonrpc
 
 // supportedMCPVersions is the set of MCP protocol revision dates this proxy
 // recognizes when strict validation is enabled (WithStrictProtocolValidation).
-// The upcoming stateless revision is sourced from mcp.MCPVersionModern rather
+// The 2026-07-28 stateless revision is sourced from mcp.MCPVersionModern rather
 // than duplicated as a literal, so the strict gate and the ClassifyRevision
-// routing path (which keys off the same constant) cannot drift if that draft
-// date changes before it is finalized.
+// routing path (which keys off the same constant) cannot drift apart.
 var supportedMCPVersions = map[string]struct{}{
 	"2024-11-05":         {},
 	"2025-03-26":         {},

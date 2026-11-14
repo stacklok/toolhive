@@ -11,9 +11,17 @@ import (
 )
 
 const (
-	// CodeRateLimited is the JSON-RPC error code for rate-limited requests.
-	// Per RFC THV-0057: implementation-defined code in the -32000 to -32099 range.
-	CodeRateLimited int64 = -32029
+	// CodeRateLimited is the JSON-RPC error code for rate-limited requests,
+	// mirroring HTTP 429 (Too Many Requests) the same way mcp.JSONRPCCodeDenied
+	// mirrors 403. It sits outside the JSON-RPC reserved range
+	// (-32768..-32000) so a single value is conformant on every MCP revision:
+	// 2026-07-28 reserves -32020..-32099 exclusively for spec-defined codes
+	// and directs application codes outside the reserved range, while
+	// 2025-11-25 and earlier inherit plain JSON-RPC 2.0, which leaves the
+	// space outside that range application-defined. Replaces -32029, chosen
+	// by RFC THV-0057 when -32000..-32099 was uniformly implementation-defined
+	// — a premise the 2026-07-28 partition invalidated (#6101).
+	CodeRateLimited int64 = 429
 
 	// MessageRateLimited is the error message for rate-limited requests.
 	MessageRateLimited = "Rate limit exceeded"

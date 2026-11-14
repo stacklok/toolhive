@@ -4,8 +4,12 @@
 package storage
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -17,8 +21,10 @@ import (
 	"github.com/ory/fosite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/time/rate"
 
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
+	"github.com/stacklok/toolhive/pkg/oauthproto"
 	"github.com/stacklok/toolhive/pkg/oauthproto/cimd"
 )
 
@@ -116,6 +122,32 @@ func TestCIMDStorageDecorator_UnwrapReturnsBase(t *testing.T) {
 	assert.Same(t, base, dec.Unwrap())
 }
 
+func TestCIMDStorageDecorator_ConsumeAssertionJWTDelegatesToBase(t *testing.T) {
+	t.Parallel()
+	base := newTestBase(t)
+	dec := newEnabledDecorator(t, base, 10, time.Minute)
+	var consumer AssertionJWTConsumer = dec
+
+	exp := time.Now().Add(time.Hour)
+	require.NoError(t, consumer.ConsumeAssertionJWT(context.Background(), "jwt-bearer", "https://issuer.example", "jti", exp))
+	require.ErrorIs(t, consumer.ConsumeAssertionJWT(context.Background(), "jwt-bearer", "https://issuer.example", "jti", exp), fosite.ErrJTIKnown)
+}
+
+type storageWithoutAssertionJWTConsumer struct{ Storage }
+
+func TestCIMDStorageDecorator_ConsumeAssertionJWTFailsClosedWithoutBackendCapability(t *testing.T) {
+	t.Parallel()
+
+	decorated, err := NewCIMDStorageDecorator(storageWithoutAssertionJWTConsumer{}, CIMDDecoratorConfig{
+		Enabled: true, CacheMaxSize: 1, FallbackTTL: time.Minute,
+	})
+	require.NoError(t, err)
+	consumer := decorated.(AssertionJWTConsumer)
+	err = consumer.ConsumeAssertionJWT(context.Background(), "jwt-bearer", "https://issuer.example", "jti", time.Now().Add(time.Hour))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "does not support assertion JWT replay consumption")
+}
+
 // --- GetClient delegation for non-CIMD IDs ---
 
 func TestCIMDStorageDecorator_GetClient_OpaqueIDDelegatesToBase(t *testing.T) {
@@ -139,6 +171,107 @@ func TestCIMDStorageDecorator_GetClient_UnknownOpaqueIDReturnsError(t *testing.T
 	dec := newEnabledDecorator(t, base, 10, time.Minute)
 	_, err := dec.GetClient(context.Background(), "unknown-opaque-id")
 	require.Error(t, err)
+}
+
+// --- cimdShapeGuardStorage (P2: URL-shaped ids refused while CIMD is disabled) ---
+
+// TestCIMDShapeGuardStorage_URLShapedIDNotFoundEvenWhenRowExists is the core
+// regression this guard exists for: a row a prior CIMD-enabled period
+// write-through persisted (CIMDStorageDecorator.fetch) must not resolve once
+// CIMD is disabled, even though the row is still physically present in the
+// underlying storage and would resolve via a bare (unwrapped) GetClient.
+func TestCIMDShapeGuardStorage_URLShapedIDNotFoundEvenWhenRowExists(t *testing.T) {
+	t.Parallel()
+	base := newTestBase(t)
+	ctx := context.Background()
+
+	const cimdID = "https://example.com/meta.json"
+	stale := &fosite.DefaultClient{ID: cimdID, Public: true}
+	require.NoError(t, base.RegisterClient(ctx, stale))
+
+	// Sanity: the row really is resolvable through the bare (unwrapped) base,
+	// proving the guard — not an absent row — is what blocks resolution below.
+	got, err := base.GetClient(ctx, cimdID)
+	require.NoError(t, err, "the stale row must exist in the underlying storage")
+	assert.Equal(t, cimdID, got.GetID())
+
+	guarded := NewCIMDShapeGuardStorage(base)
+	_, err = guarded.GetClient(ctx, cimdID)
+	require.Error(t, err, "a URL-shaped id must never resolve while CIMD is disabled")
+	assert.ErrorIs(t, err, fosite.ErrNotFound)
+}
+
+// TestCIMDShapeGuardStorage_OpaqueIDDelegatesToBase verifies the guard only
+// touches URL-shaped ids: an ordinary DCR-issued or pre-provisioned client_id
+// must resolve exactly as it would through the unwrapped base.
+func TestCIMDShapeGuardStorage_OpaqueIDDelegatesToBase(t *testing.T) {
+	t.Parallel()
+	base := newTestBase(t)
+	ctx := context.Background()
+
+	dc := &fosite.DefaultClient{ID: "opaque-client-id"}
+	require.NoError(t, base.RegisterClient(ctx, dc))
+
+	guarded := NewCIMDShapeGuardStorage(base)
+	got, err := guarded.GetClient(ctx, "opaque-client-id")
+	require.NoError(t, err)
+	assert.Equal(t, "opaque-client-id", got.GetID())
+}
+
+// TestCIMDShapeGuardStorage_UnwrapReturnsBase verifies the same Unwrap()
+// contract CIMDStorageDecorator provides, so callers walking the decorator
+// chain (e.g. the DCRCredentialStore assertion in server_impl.go) reach the
+// concrete backend through this wrapper too.
+func TestCIMDShapeGuardStorage_UnwrapReturnsBase(t *testing.T) {
+	t.Parallel()
+	base := newTestBase(t)
+	guarded := NewCIMDShapeGuardStorage(base)
+	unwrapper, ok := guarded.(interface{ Unwrap() Storage })
+	require.True(t, ok)
+	assert.Same(t, base, unwrapper.Unwrap())
+}
+
+// TestCIMDShapeGuardStorage_ConsumeAssertionJWTDelegatesToBase verifies the
+// guard forwards this narrow capability exactly like CIMDStorageDecorator
+// does, so wrapping storage when CIMD is disabled does not silently break the
+// RFC 7523 JWT-bearer grant (see storage.AssertionJWTConsumer).
+func TestCIMDShapeGuardStorage_ConsumeAssertionJWTDelegatesToBase(t *testing.T) {
+	t.Parallel()
+	base := newTestBase(t)
+	guarded := NewCIMDShapeGuardStorage(base)
+	consumer, ok := guarded.(AssertionJWTConsumer)
+	require.True(t, ok, "the guard must implement AssertionJWTConsumer when its base does")
+
+	exp := time.Now().Add(time.Hour)
+	ctx := context.Background()
+	require.NoError(t, consumer.ConsumeAssertionJWT(ctx, "jwt-bearer", "https://issuer.example", "jti", exp))
+	require.ErrorIs(t, consumer.ConsumeAssertionJWT(ctx, "jwt-bearer", "https://issuer.example", "jti", exp),
+		fosite.ErrJTIKnown)
+}
+
+// TestCIMDShapeGuardStorage_DecoratorActiveStillWorks is the "decorator
+// active" counterpart to TestCIMDShapeGuardStorage_URLShapedIDNotFoundEvenWhenRowExists:
+// while the real CIMDStorageDecorator is wrapping storage (CIMD enabled),
+// resolving a URL-shaped client_id must still work normally via a live fetch,
+// confirming the shape guard is only ever applied on the disabled path (see
+// decorateStorageForCIMD in server_impl.go).
+func TestCIMDShapeGuardStorage_DecoratorActiveStillWorks(t *testing.T) {
+	t.Parallel()
+
+	var fetchCount atomic.Int32
+	srv := serveCIMDDoc(t, "/metadata.json", func() { fetchCount.Add(1) })
+	id := cimdURL(srv, "/metadata.json")
+
+	base := newTestBase(t)
+	dec := newEnabledDecorator(t, base, 10, time.Minute)
+
+	// Resolve once through the active decorator: this both proves resolution
+	// works while CIMD is enabled and leaves a write-through-persisted row in
+	// base for the disabled-guard assertions below.
+	got, err := dec.GetClient(context.Background(), id)
+	require.NoError(t, err, "GetClient must succeed while the decorator is active")
+	assert.Equal(t, id, got.GetID())
+	assert.Equal(t, int32(1), fetchCount.Load())
 }
 
 // --- fetchOrCached / fetch (loopback HTTP accepted by FetchClientMetadataDocument) ---
@@ -229,6 +362,8 @@ func TestCIMDStorageDecorator_FetchOrCached_SingleflightDeduplicatesConcurrentFe
 
 	id := cimdURL(srv, "/metadata.json")
 	dec := newEnabledDecorator(t, newTestBase(t), 10, time.Minute)
+	// Callers sharing one flight must share one token.
+	dec.fetchLimiter = rate.NewLimiter(rate.Every(time.Hour), 1)
 
 	const goroutines = 5
 	errs := make([]error, goroutines)
@@ -266,6 +401,1024 @@ func TestCIMDStorageDecorator_FetchOrCached_SingleflightDeduplicatesConcurrentFe
 		require.NoError(t, e, "goroutine %d returned an error", i)
 	}
 	assert.Equal(t, int32(1), fetchCount.Load(), "singleflight must collapse concurrent fetches into one")
+}
+
+func TestCIMDStorageDecorator_FetchLimiter(t *testing.T) {
+	t.Parallel()
+
+	type step struct {
+		path        string
+		wantLimited bool
+	}
+	tests := []struct {
+		name        string
+		steps       []step
+		wantFetches int32
+	}{
+		{
+			name:        "distinct URLs past the burst are refused without fetching",
+			steps:       []step{{"/a.json", false}, {"/b.json", false}, {"/c.json", true}},
+			wantFetches: 2,
+		},
+		{
+			name: "cache hits are free",
+			steps: []step{
+				{"/a.json", false}, {"/a.json", false}, {"/a.json", false}, {"/b.json", false}, {"/b.json", false},
+			},
+			wantFetches: 2,
+		},
+		{
+			name:        "a failed fetch costs a token",
+			steps:       []step{{"/missing-1", false}, {"/missing-2", false}, {"/a.json", true}},
+			wantFetches: 2,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var fetches atomic.Int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				fetches.Add(1)
+				if strings.HasPrefix(r.URL.Path, "/missing") {
+					http.NotFound(w, r)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(cimd.ClientMetadataDocument{
+					ClientID:     "http://" + r.Host + r.URL.Path,
+					RedirectURIs: []string{"https://example.com/callback"},
+				})
+			}))
+			t.Cleanup(srv.Close)
+
+			base := newTestBase(t)
+			dec := newEnabledDecorator(t, base, 10, time.Minute)
+			dec.fetchLimiter = rate.NewLimiter(rate.Every(time.Hour), 2)
+
+			for _, st := range tt.steps {
+				id := cimdURL(srv, st.path)
+				_, err := dec.GetClient(context.Background(), id)
+				switch {
+				case st.wantLimited:
+					require.ErrorIs(t, err, ErrCIMDRateLimited)
+					require.ErrorIs(t, err, fosite.ErrNotFound)
+					_, baseErr := base.GetClient(context.Background(), id)
+					assert.Error(t, baseErr, "a denied id must not be persisted")
+				case strings.HasPrefix(st.path, "/missing"):
+					require.ErrorIs(t, err, fosite.ErrNotFound)
+					require.NotErrorIs(t, err, ErrCIMDRateLimited)
+				default:
+					require.NoError(t, err)
+				}
+			}
+			assert.Equal(t, tt.wantFetches, fetches.Load())
+		})
+	}
+}
+
+func TestNewCIMDStorageDecorator_NegativeMaxStaleReturnsError(t *testing.T) {
+	t.Parallel()
+	_, err := NewCIMDStorageDecorator(newTestBase(t), CIMDDecoratorConfig{
+		Enabled: true, CacheMaxSize: 10, FallbackTTL: time.Minute, MaxStale: -time.Second,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "maxStale")
+}
+
+// staleFixture is a decorator holding a cache entry for the document served at
+// id, expired expiredFor ago.
+type staleFixture struct {
+	dec     *CIMDStorageDecorator
+	srv     *httptest.Server
+	id      string
+	fetches *atomic.Int32 // outbound document fetches, including the seeding one
+	// answer, when set, replaces the document server's handler for every
+	// later request; the default handler serves the document.
+	answer  *atomic.Pointer[http.HandlerFunc]
+	stale   fosite.Client
+	expires time.Time // the seeded (expired) expiry
+}
+
+// respond makes the document server answer every later request with h; nil
+// restores the document.
+func (f *staleFixture) respond(h http.HandlerFunc) {
+	if h == nil {
+		f.answer.Store(nil)
+		return
+	}
+	f.answer.Store(&h)
+}
+
+// closeHost shuts the document server down so the re-fetch cannot connect.
+func (f *staleFixture) closeHost() { f.srv.Close() }
+
+// respondStatus answers every request with the given status and no body.
+func respondStatus(status int) http.HandlerFunc {
+	return func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(status)
+	}
+}
+
+// respondDoc answers every request with a CIMD document for the requested URL
+// after mutate has adjusted it.
+func respondDoc(mutate func(*cimd.ClientMetadataDocument)) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		doc := cimd.ClientMetadataDocument{
+			ClientID:     "http://" + r.Host + r.URL.Path,
+			RedirectURIs: []string{"https://example.com/callback"},
+		}
+		mutate(&doc)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(doc)
+	}
+}
+
+// refuseAll is a limiter that never allows a fetch.
+func refuseAll() *rate.Limiter { return rate.NewLimiter(rate.Every(time.Hour), 0) }
+
+func newStaleFixture(t *testing.T, maxStale, expiredFor time.Duration) *staleFixture {
+	t.Helper()
+	return newStaleFixtureOn(t, newTestBase(t), maxStale, expiredFor)
+}
+
+// newStaleFixtureOn is newStaleFixture over the given base storage.
+func newStaleFixtureOn(t *testing.T, base Storage, maxStale, expiredFor time.Duration) *staleFixture {
+	t.Helper()
+	f := &staleFixture{fetches: &atomic.Int32{}, answer: &atomic.Pointer[http.HandlerFunc]{}}
+	f.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		f.fetches.Add(1)
+		if h := f.answer.Load(); h != nil {
+			(*h)(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(cimd.ClientMetadataDocument{
+			ClientID:     "http://" + r.Host + r.URL.Path,
+			RedirectURIs: []string{"https://example.com/callback"},
+		})
+	}))
+	t.Cleanup(f.srv.Close)
+	f.id = cimdURL(f.srv, "/a.json")
+
+	got, err := NewCIMDStorageDecorator(base, CIMDDecoratorConfig{
+		Enabled: true, CacheMaxSize: 10, FallbackTTL: time.Minute, MaxStale: maxStale,
+	})
+	require.NoError(t, err)
+	f.dec = got.(*CIMDStorageDecorator)
+
+	f.stale, err = f.dec.GetClient(context.Background(), f.id)
+	require.NoError(t, err)
+	// Expire the entry directly: ttl is fixed per decorator, so this is the
+	// only way to place it at an exact age without sleeping.
+	f.expires = time.Now().Add(-expiredFor)
+	f.dec.cache.Add(f.id, &cimdCacheEntry{client: f.stale, expires: f.expires})
+	return f
+}
+
+func TestCIMDStorageDecorator_StaleServing(t *testing.T) {
+	t.Parallel()
+
+	t.Run("expired within maxStale and limiter empty serves stale without fetching", func(t *testing.T) {
+		t.Parallel()
+		f := newStaleFixture(t, time.Hour, time.Minute)
+		f.dec.fetchLimiter = refuseAll()
+
+		got, err := f.dec.GetClient(context.Background(), f.id)
+		require.NoError(t, err)
+		assert.Same(t, f.stale, got)
+		assert.Equal(t, int32(1), f.fetches.Load(), "stale serve must not fetch")
+
+		entry, ok := f.dec.cache.Peek(f.id)
+		require.True(t, ok)
+		assert.True(t, entry.expires.Equal(f.expires), "stale serving must not extend the entry's expiry")
+	})
+
+	t.Run("expired past maxStale and limiter empty is rate limited", func(t *testing.T) {
+		t.Parallel()
+		f := newStaleFixture(t, time.Hour, 2*time.Hour)
+		f.dec.fetchLimiter = refuseAll()
+
+		_, err := f.dec.GetClient(context.Background(), f.id)
+		require.ErrorIs(t, err, ErrCIMDRateLimited)
+		require.ErrorIs(t, err, fosite.ErrNotFound)
+		assert.Equal(t, int32(1), f.fetches.Load())
+	})
+
+	t.Run("expired entry with budget is re-fetched and replaced", func(t *testing.T) {
+		t.Parallel()
+		f := newStaleFixture(t, time.Hour, time.Minute)
+		f.dec.fetchLimiter = rate.NewLimiter(rate.Every(time.Hour), 1)
+
+		got, err := f.dec.GetClient(context.Background(), f.id)
+		require.NoError(t, err)
+		assert.NotSame(t, f.stale, got, "stale must not be served while budget exists")
+		assert.Equal(t, int32(2), f.fetches.Load())
+		entry, ok := f.dec.cache.Peek(f.id)
+		require.True(t, ok)
+		assert.Same(t, got, entry.client)
+		assert.True(t, time.Now().Before(entry.expires))
+	})
+
+	// A re-fetch that fails definitively evicts the expired entry, so a later
+	// refused lookup has nothing to serve and is rate limited instead of
+	// answering with the pre-failure client.
+	t.Run("failed re-fetch evicts the entry so a later refused lookup is rate limited", func(t *testing.T) {
+		t.Parallel()
+		f := newStaleFixture(t, time.Hour, time.Minute)
+		f.dec.fetchLimiter = rate.NewLimiter(rate.Every(time.Hour), 1)
+		f.respond(respondStatus(http.StatusNotFound))
+
+		_, err := f.dec.GetClient(context.Background(), f.id)
+		require.ErrorIs(t, err, fosite.ErrNotFound)
+		require.NotErrorIs(t, err, ErrCIMDRateLimited)
+		require.Equal(t, int32(2), f.fetches.Load())
+		_, ok := f.dec.cache.Peek(f.id)
+		assert.False(t, ok, "a definitive failure must evict the expired entry")
+
+		// The failed fetch spent the only token, so this lookup is refused and
+		// finds no entry to serve.
+		_, err = f.dec.GetClient(context.Background(), f.id)
+		require.ErrorIs(t, err, ErrCIMDRateLimited)
+		assert.Equal(t, int32(2), f.fetches.Load(), "refused lookup must not fetch")
+	})
+
+	t.Run("zero maxStale disables stale serving", func(t *testing.T) {
+		t.Parallel()
+		f := newStaleFixture(t, 0, time.Minute)
+		f.dec.fetchLimiter = refuseAll()
+
+		_, err := f.dec.GetClient(context.Background(), f.id)
+		require.ErrorIs(t, err, ErrCIMDRateLimited)
+	})
+
+	t.Run("concurrent callers on a limited expired entry all get the stale client", func(t *testing.T) {
+		t.Parallel()
+		f := newStaleFixture(t, time.Hour, time.Minute)
+		f.dec.fetchLimiter = refuseAll()
+
+		const goroutines = 8
+		results := make([]fosite.Client, goroutines)
+		errs := make([]error, goroutines)
+		var wg sync.WaitGroup
+		wg.Add(goroutines)
+		for i := range goroutines {
+			go func() {
+				defer wg.Done()
+				results[i], errs[i] = f.dec.GetClient(context.Background(), f.id)
+			}()
+		}
+		done := make(chan struct{})
+		go func() { wg.Wait(); close(done) }()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatal("timeout waiting for concurrent GetClient goroutines")
+		}
+
+		for i := range goroutines {
+			require.NoError(t, errs[i])
+			assert.Same(t, f.stale, results[i])
+		}
+		assert.Equal(t, int32(1), f.fetches.Load())
+	})
+}
+
+// TestCIMDStorageDecorator_TransientFetchFailure covers GetClient for a client
+// the decorator already resolved when the re-fetch of its expired entry is
+// attempted (the limiter allows it) and fails. A transient failure (the host
+// is unreachable or answers 5xx, 408, or 429) is answered from the expired
+// entry within maxStale, the window the limiter's refusal path uses; every
+// other outcome fails closed and leaves no entry behind.
+func TestCIMDStorageDecorator_TransientFetchFailure(t *testing.T) {
+	t.Parallel()
+
+	serve := func(h http.HandlerFunc) func(*staleFixture) {
+		return func(f *staleFixture) { f.respond(h) }
+	}
+	tests := []struct {
+		name       string
+		maxStale   time.Duration
+		expiredFor time.Duration
+		refetch    func(f *staleFixture) // how the host answers the re-fetch
+		wantErr    error                 // nil: the expired entry is served
+		// wantFetches counts the seeding fetch plus the re-fetch the host saw;
+		// a closed host sees none.
+		wantFetches int32
+	}{
+		{name: "host closed within window serves the expired entry", maxStale: time.Hour, expiredFor: time.Minute,
+			refetch: (*staleFixture).closeHost, wantFetches: 1},
+		{name: "500 within window serves the expired entry", maxStale: time.Hour, expiredFor: time.Minute,
+			refetch: serve(respondStatus(http.StatusInternalServerError)), wantFetches: 2},
+		{name: "503 within window serves the expired entry", maxStale: time.Hour, expiredFor: time.Minute,
+			refetch: serve(respondStatus(http.StatusServiceUnavailable)), wantFetches: 2},
+		{name: "429 within window serves the expired entry", maxStale: time.Hour, expiredFor: time.Minute,
+			refetch: serve(respondStatus(http.StatusTooManyRequests)), wantFetches: 2},
+		{name: "408 within window serves the expired entry", maxStale: time.Hour, expiredFor: time.Minute,
+			refetch: serve(respondStatus(http.StatusRequestTimeout)), wantFetches: 2},
+		{name: "host closed past window fails closed", maxStale: time.Hour, expiredFor: 2 * time.Hour,
+			refetch: (*staleFixture).closeHost, wantErr: fosite.ErrNotFound, wantFetches: 1},
+		{name: "zero maxStale fails closed", maxStale: 0, expiredFor: time.Minute,
+			refetch: serve(respondStatus(http.StatusServiceUnavailable)), wantErr: fosite.ErrNotFound, wantFetches: 2},
+		{name: "404 fails closed", maxStale: time.Hour, expiredFor: time.Minute,
+			refetch: serve(respondStatus(http.StatusNotFound)), wantErr: fosite.ErrNotFound, wantFetches: 2},
+		{name: "mismatched client_id fails closed", maxStale: time.Hour, expiredFor: time.Minute,
+			refetch: serve(respondDoc(func(doc *cimd.ClientMetadataDocument) {
+				doc.ClientID = "https://other.example.com/metadata.json"
+			})), wantErr: fosite.ErrNotFound, wantFetches: 2},
+		{name: "private_key_jwt is rejected", maxStale: time.Hour, expiredFor: time.Minute,
+			refetch: serve(respondDoc(func(doc *cimd.ClientMetadataDocument) {
+				doc.TokenEndpointAuthMethod = "private_key_jwt"
+			})), wantErr: fosite.ErrInvalidClient, wantFetches: 2},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			f := newStaleFixture(t, tt.maxStale, tt.expiredFor)
+			f.dec.fetchLimiter = rate.NewLimiter(rate.Inf, 0)
+			tt.refetch(f)
+
+			got, err := f.dec.GetClient(context.Background(), f.id)
+			assert.Equal(t, tt.wantFetches, f.fetches.Load())
+			if tt.wantErr != nil {
+				require.ErrorIs(t, err, tt.wantErr)
+				require.NotErrorIs(t, err, ErrCIMDRateLimited)
+				_, ok := f.dec.cache.Peek(f.id)
+				assert.False(t, ok, "a failure the entry does not answer must evict it")
+				return
+			}
+			require.NoError(t, err, "a transient re-fetch failure must not unresolve a client the decorator resolved before")
+			assert.Same(t, f.stale, got)
+			entry, ok := f.dec.cache.Peek(f.id)
+			require.True(t, ok)
+			assert.True(t, entry.expires.Equal(f.expires), "a stale answer must not move the entry's expiry")
+		})
+	}
+}
+
+// TestCIMDStorageDecorator_DefinitiveFailureEndsStaleEligibility runs the
+// whole sequence: a client resolves, its entry expires, the re-fetch fails
+// definitively (the host withdrew the document or served one this server
+// rejects), and the host then fails transiently or the limiter refuses. The
+// definitive failure must evict the entry, so the later lookup fails closed
+// instead of serving the pre-failure client, and a successful fetch resolves
+// the client again.
+func TestCIMDStorageDecorator_DefinitiveFailureEndsStaleEligibility(t *testing.T) {
+	t.Parallel()
+
+	definitive := []struct {
+		name string
+		// configure, when set, adjusts the decorator before the host answers.
+		configure func(f *staleFixture)
+		answer    http.HandlerFunc
+		wantErr   error
+	}{
+		{name: "404", answer: respondStatus(http.StatusNotFound), wantErr: fosite.ErrNotFound},
+		{name: "410", answer: respondStatus(http.StatusGone), wantErr: fosite.ErrNotFound},
+		{name: "302 redirect", answer: func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, "https://other.example.com/metadata.json", http.StatusFound)
+		}, wantErr: fosite.ErrNotFound},
+		{name: "text/html body", answer: func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/html")
+			_, _ = w.Write([]byte("<html></html>"))
+		}, wantErr: fosite.ErrNotFound},
+		{name: "malformed body", answer: func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte("not json"))
+		}, wantErr: fosite.ErrNotFound},
+		{name: "mismatched client_id", answer: respondDoc(func(doc *cimd.ClientMetadataDocument) {
+			doc.ClientID = "https://other.example.com/metadata.json"
+		}), wantErr: fosite.ErrNotFound},
+		{name: "private_key_jwt", answer: respondDoc(func(doc *cimd.ClientMetadataDocument) {
+			doc.TokenEndpointAuthMethod = "private_key_jwt"
+		}), wantErr: fosite.ErrInvalidClient},
+		{name: "scope outside scopes_supported", configure: func(f *staleFixture) { f.dec.scopesSupported = []string{"openid"} },
+			answer: respondDoc(func(doc *cimd.ClientMetadataDocument) { doc.Scope = "openid admin" }), wantErr: fosite.ErrInvalidClient},
+		{name: "grant_types without authorization_code", answer: respondDoc(func(doc *cimd.ClientMetadataDocument) {
+			doc.GrantTypes = []string{oauthproto.GrantTypeRefreshToken}
+		}), wantErr: fosite.ErrInvalidClient},
+	}
+	then := []struct {
+		name        string
+		apply       func(f *staleFixture)
+		rateLimited bool  // the error wraps ErrCIMDRateLimited
+		wantFetches int32 // fetches the host saw after the definitive answer
+		// recovers restores the host for the final lookup; a closed host
+		// cannot be reopened at its address.
+		recovers bool
+	}{
+		{name: "503", apply: func(f *staleFixture) { f.respond(respondStatus(http.StatusServiceUnavailable)) },
+			wantFetches: 3, recovers: true},
+		{name: "host closed", apply: (*staleFixture).closeHost, wantFetches: 2},
+		{name: "limiter refuses", apply: func(f *staleFixture) { f.dec.fetchLimiter = refuseAll() },
+			rateLimited: true, wantFetches: 2, recovers: true},
+	}
+	for _, d := range definitive {
+		for _, n := range then {
+			t.Run(d.name+" then "+n.name, func(t *testing.T) {
+				t.Parallel()
+				f := newStaleFixture(t, time.Hour, time.Minute)
+				f.dec.fetchLimiter = rate.NewLimiter(rate.Inf, 0)
+
+				if d.configure != nil {
+					d.configure(f)
+				}
+				f.respond(d.answer)
+				_, err := f.dec.GetClient(context.Background(), f.id)
+				require.ErrorIs(t, err, d.wantErr)
+				require.Equal(t, int32(2), f.fetches.Load())
+				_, ok := f.dec.cache.Peek(f.id)
+				require.False(t, ok, "a definitive failure must evict the expired entry")
+
+				n.apply(f)
+				_, err = f.dec.GetClient(context.Background(), f.id)
+				require.ErrorIs(t, err, fosite.ErrNotFound, "the pre-failure client must not be served")
+				if n.rateLimited {
+					require.ErrorIs(t, err, ErrCIMDRateLimited)
+				} else {
+					require.NotErrorIs(t, err, ErrCIMDRateLimited)
+				}
+				assert.Equal(t, n.wantFetches, f.fetches.Load())
+				_, ok = f.dec.cache.Peek(f.id)
+				assert.False(t, ok)
+
+				if !n.recovers {
+					return
+				}
+				f.respond(nil)
+				f.dec.fetchLimiter = rate.NewLimiter(rate.Inf, 0)
+				got, err := f.dec.GetClient(context.Background(), f.id)
+				require.NoError(t, err, "a successful fetch must resolve the client again")
+				assert.NotSame(t, f.stale, got)
+				assert.Equal(t, n.wantFetches+1, f.fetches.Load())
+			})
+		}
+	}
+}
+
+// TestCIMDStorageDecorator_StaleServeNeitherRenewsEntryNorRepersists pins
+// that answering from the expired entry leaves the entry expired and the
+// persisted row untouched: the next lookup re-fetches again, and once the host
+// answers, the client and its row are renewed from the fresh document.
+func TestCIMDStorageDecorator_StaleServeNeitherRenewsEntryNorRepersists(t *testing.T) {
+	t.Parallel()
+
+	rec := &recordingStorage{MemoryStorage: newTestBase(t)}
+	f := newStaleFixtureOn(t, rec, time.Hour, time.Minute)
+	f.dec.fetchLimiter = rate.NewLimiter(rate.Inf, 0)
+	require.Equal(t, int32(1), rec.upserts.Load(), "the seeding fetch persists the row once")
+
+	f.respond(respondStatus(http.StatusInternalServerError))
+	got, err := f.dec.GetClient(context.Background(), f.id)
+	require.NoError(t, err, "the expired entry must answer while the host fails")
+	assert.Same(t, f.stale, got)
+	assert.Equal(t, int32(2), f.fetches.Load())
+	entry, ok := f.dec.cache.Peek(f.id)
+	require.True(t, ok)
+	assert.True(t, entry.expires.Equal(f.expires), "a stale answer must not renew the entry")
+	assert.Equal(t, int32(1), rec.upserts.Load(), "a stale answer must not re-persist the row")
+	assert.Equal(t, int32(0), rec.renews.Load(), "a stale answer must not renew the row")
+
+	f.respond(nil)
+	got, err = f.dec.GetClient(context.Background(), f.id)
+	require.NoError(t, err)
+	assert.NotSame(t, f.stale, got, "the entry stays expired, so the next lookup re-fetches once the host answers")
+	assert.Equal(t, int32(3), f.fetches.Load())
+	assert.Equal(t, int32(2), rec.upserts.Load(), "a successful re-fetch re-persists the row")
+	entry, ok = f.dec.cache.Peek(f.id)
+	require.True(t, ok)
+	assert.True(t, time.Now().Before(entry.expires), "a successful re-fetch replaces the expired entry")
+}
+
+// captureWarnLines swaps in a JSON slog handler at warn level for the duration
+// of the test and returns a function decoding every line logged so far.
+// Process-global, not safe for t.Parallel().
+func captureWarnLines(t *testing.T) func() []map[string]any {
+	t.Helper()
+	var buf bytes.Buffer
+	orig := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	t.Cleanup(func() { slog.SetDefault(orig) })
+	return func() []map[string]any {
+		var lines []map[string]any
+		scanner := bufio.NewScanner(bytes.NewReader(buf.Bytes()))
+		for scanner.Scan() {
+			var line map[string]any
+			require.NoError(t, json.Unmarshal(scanner.Bytes(), &line))
+			lines = append(lines, line)
+		}
+		return lines
+	}
+}
+
+// linesWithMsg returns the captured lines whose msg field equals msg.
+func linesWithMsg(lines []map[string]any, msg string) []map[string]any {
+	var out []map[string]any
+	for _, line := range lines {
+		if line["msg"] == msg {
+			out = append(out, line)
+		}
+	}
+	return out
+}
+
+// TestCIMDStorageDecorator_FetchFailureWarnsOnceWithCause pins what operators
+// see of a failed re-fetch: one "CIMD document fetch failed" warning per
+// failed fetch, naming the fetch error (the status or the transport error, not
+// the bare code fosite renders its wrapper as) and the outcome
+// (fallback=expired_cache with age_past_expiry, or fallback=none), and no such
+// line for a document fetch rejected, which fetch warns about itself.
+// Callers sharing one singleflight call share fetchFailed's decision: one
+// re-fetch, one line, and one outcome for every caller.
+//
+//nolint:paralleltest // captures the process-global slog default
+func TestCIMDStorageDecorator_FetchFailureWarnsOnceWithCause(t *testing.T) {
+	tests := []struct {
+		name         string
+		refetch      func(f *staleFixture)
+		wantCause    string // substring of the error field
+		wantFallback string
+		wantAge      bool // age_past_expiry is present
+	}{
+		{name: "503 within window is served and the line names the status",
+			refetch:   func(f *staleFixture) { f.respond(respondStatus(http.StatusServiceUnavailable)) },
+			wantCause: "HTTP 503", wantFallback: "expired_cache", wantAge: true},
+		{name: "closed host within window is served and the line names the dial error",
+			refetch:   (*staleFixture).closeHost,
+			wantCause: "dial tcp", wantFallback: "expired_cache", wantAge: true},
+		{name: "404 fails closed and the line names the status",
+			refetch:   func(f *staleFixture) { f.respond(respondStatus(http.StatusNotFound)) },
+			wantCause: "HTTP 404", wantFallback: "none"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			lines := captureWarnLines(t)
+			f := newStaleFixture(t, time.Hour, time.Minute)
+			f.dec.fetchLimiter = rate.NewLimiter(rate.Inf, 0)
+			tt.refetch(f)
+
+			_, _ = f.dec.GetClient(context.Background(), f.id)
+
+			got := linesWithMsg(lines(), "CIMD document fetch failed")
+			require.Len(t, got, 1, "one warning per failed fetch")
+			line := got[0]
+			assert.Equal(t, f.id, line["client_id"])
+			cause, _ := line["error"].(string)
+			assert.Contains(t, cause, tt.wantCause, "the line must name the fetch error, got %v", line["error"])
+			assert.Equal(t, tt.wantFallback, line["fallback"])
+			_, hasAge := line["age_past_expiry"]
+			assert.Equal(t, tt.wantAge, hasAge)
+		})
+	}
+
+	t.Run("a rejected document is warned about by fetch alone", func(t *testing.T) {
+		lines := captureWarnLines(t)
+		f := newStaleFixture(t, time.Hour, time.Minute)
+		f.dec.fetchLimiter = rate.NewLimiter(rate.Inf, 0)
+		f.respond(respondDoc(func(doc *cimd.ClientMetadataDocument) { doc.TokenEndpointAuthMethod = "private_key_jwt" }))
+
+		_, err := f.dec.GetClient(context.Background(), f.id)
+		require.ErrorIs(t, err, fosite.ErrInvalidClient)
+
+		assert.Empty(t, linesWithMsg(lines(), "CIMD document fetch failed"), "a rejection is logged once, by fetch")
+		assert.Len(t, linesWithMsg(lines(), "CIMD client rejected: unsupported token_endpoint_auth_method"), 1)
+	})
+
+	// The limiter holds one token, so a caller that misses the flight is
+	// refused and answered from the entry or its absence, never by a second
+	// fetch; the fetch count, the line count, and the cache state then hold
+	// whatever the scheduler does.
+	concurrent := []struct {
+		name         string
+		answer       http.HandlerFunc
+		served       bool // every caller gets the stale client and the entry stays
+		wantFallback string
+	}{
+		{name: "503 within window", answer: respondStatus(http.StatusServiceUnavailable), served: true, wantFallback: "expired_cache"},
+		{name: "404", answer: respondStatus(http.StatusNotFound), wantFallback: "none"},
+	}
+	for _, tt := range concurrent {
+		t.Run("concurrent callers on a "+tt.name+" share one decision and one line", func(t *testing.T) {
+			lines := captureWarnLines(t)
+			f := newStaleFixture(t, time.Hour, time.Minute)
+			f.dec.fetchLimiter = rate.NewLimiter(rate.Every(time.Hour), 1)
+			// The host answers only once every caller is about to enter GetClient.
+			ready := make(chan struct{})
+			f.respond(func(w http.ResponseWriter, r *http.Request) {
+				<-ready
+				tt.answer(w, r)
+			})
+
+			const goroutines = 8
+			results := make([]fosite.Client, goroutines)
+			errs := make([]error, goroutines)
+			startBarrier := make(chan struct{}, goroutines)
+			var wg sync.WaitGroup
+			wg.Add(goroutines)
+			for i := range goroutines {
+				go func() {
+					defer wg.Done()
+					startBarrier <- struct{}{}
+					results[i], errs[i] = f.dec.GetClient(context.Background(), f.id)
+				}()
+			}
+			for range goroutines {
+				<-startBarrier
+			}
+			close(ready)
+			done := make(chan struct{})
+			go func() { wg.Wait(); close(done) }()
+			select {
+			case <-done:
+			case <-time.After(5 * time.Second):
+				t.Fatal("timeout waiting for concurrent GetClient goroutines")
+			}
+
+			for i := range goroutines {
+				if tt.served {
+					require.NoError(t, errs[i], "caller %d", i)
+					assert.Same(t, f.stale, results[i], "caller %d", i)
+					continue
+				}
+				require.ErrorIs(t, errs[i], fosite.ErrNotFound, "caller %d", i)
+			}
+			assert.Equal(t, int32(2), f.fetches.Load(), "callers sharing the flight share one re-fetch")
+			got := linesWithMsg(lines(), "CIMD document fetch failed")
+			require.Len(t, got, 1, "callers sharing the flight share one line")
+			assert.Equal(t, tt.wantFallback, got[0]["fallback"])
+			_, ok := f.dec.cache.Peek(f.id)
+			assert.Equal(t, tt.served, ok, "the entry stays on a stale serve and is gone after a definitive failure")
+		})
+	}
+}
+
+// recordingStorage counts the calls the persisted-row fallback must not make.
+type recordingStorage struct {
+	*MemoryStorage
+	upserts atomic.Int32
+	renews  atomic.Int32
+	gets    atomic.Int32
+	getErr  error // when set, GetClient returns it
+}
+
+func (r *recordingStorage) GetClient(ctx context.Context, id string) (fosite.Client, error) {
+	r.gets.Add(1)
+	if r.getErr != nil {
+		return nil, r.getErr
+	}
+	return r.MemoryStorage.GetClient(ctx, id)
+}
+
+func (r *recordingStorage) UpsertDCRIssuedClient(ctx context.Context, c fosite.Client) error {
+	r.upserts.Add(1)
+	return r.MemoryStorage.UpsertDCRIssuedClient(ctx, c)
+}
+
+func (r *recordingStorage) RenewClientTTL(ctx context.Context, c fosite.Client) error {
+	r.renews.Add(1)
+	return r.MemoryStorage.RenewClientTTL(ctx, c)
+}
+
+const rowTestID = "https://client.example.com/metadata"
+
+// newRowDecorator returns a decorator over a recording base whose limiter
+// refuses every fetch, so GetClient on rowTestID never reaches the network.
+func newRowDecorator(t *testing.T, cfg CIMDDecoratorConfig) (*CIMDStorageDecorator, *recordingStorage) {
+	t.Helper()
+	rec := &recordingStorage{MemoryStorage: newTestBase(t)}
+	cfg.Enabled, cfg.CacheMaxSize, cfg.FallbackTTL = true, 10, time.Minute
+	got, err := NewCIMDStorageDecorator(rec, cfg)
+	require.NoError(t, err)
+	dec := got.(*CIMDStorageDecorator)
+	dec.fetchLimiter = refuseAll()
+	return dec, rec
+}
+
+// putRow persists a DCR-issued row for rowTestID directly in the base, bypassing
+// the recording counters.
+func putRow(t *testing.T, rec *recordingStorage, audience, scopes []string) fosite.Client {
+	t.Helper()
+	return putRowFor(t, rec, rowTestID, audience, scopes)
+}
+
+func putRowFor(t *testing.T, rec *recordingStorage, id string, audience, scopes []string) fosite.Client {
+	t.Helper()
+	c := rowClient(id, audience, scopes, defaultRowGrants(), true, true)
+	require.NoError(t, rec.MemoryStorage.UpsertDCRIssuedClient(context.Background(), c))
+	return c
+}
+
+func defaultRowGrants() []string {
+	return []string{oauthproto.GrantTypeAuthorizationCode, oauthproto.GrantTypeRefreshToken}
+}
+
+// rowClient builds a client the way a persisted CIMD row looks, with knobs for
+// the properties the persisted-row guard checks.
+func rowClient(id string, audience, scopes, grants []string, public, marked bool) fosite.Client {
+	var c fosite.Client = &fosite.DefaultClient{
+		ID: id, RedirectURIs: []string{"https://example.com/callback"},
+		Scopes: scopes, Audience: audience, GrantTypes: grants, Public: public,
+	}
+	if marked {
+		c = registration.MarkDCRIssued(c)
+	}
+	return c
+}
+
+func TestCIMDStorageDecorator_PersistedRowFallback(t *testing.T) {
+	t.Parallel()
+	markedCtx := WithPersistedClientFallback(context.Background())
+
+	t.Run("marked context serves the row without upserting or caching", func(t *testing.T) {
+		t.Parallel()
+		dec, rec := newRowDecorator(t, CIMDDecoratorConfig{})
+		row := putRow(t, rec, nil, []string{"openid"})
+
+		got, err := dec.GetClient(markedCtx, rowTestID)
+		require.NoError(t, err)
+		assert.Same(t, row, got)
+		assert.Equal(t, int32(0), rec.upserts.Load())
+		assert.False(t, dec.cache.Contains(rowTestID), "the row must not be cached")
+
+		_, err = dec.GetClient(context.Background(), rowTestID)
+		require.ErrorIs(t, err, ErrCIMDRateLimited)
+	})
+
+	t.Run("marked context without a row is rate limited", func(t *testing.T) {
+		t.Parallel()
+		dec, _ := newRowDecorator(t, CIMDDecoratorConfig{})
+
+		_, err := dec.GetClient(markedCtx, rowTestID)
+		require.ErrorIs(t, err, ErrCIMDRateLimited)
+		require.ErrorIs(t, err, fosite.ErrNotFound)
+	})
+
+	t.Run("unmarked context with a row is rate limited", func(t *testing.T) {
+		t.Parallel()
+		dec, rec := newRowDecorator(t, CIMDDecoratorConfig{})
+		putRow(t, rec, nil, []string{"openid"})
+
+		_, err := dec.GetClient(context.Background(), rowTestID)
+		require.ErrorIs(t, err, ErrCIMDRateLimited)
+		require.ErrorIs(t, err, fosite.ErrNotFound)
+		assert.Equal(t, int32(0), rec.gets.Load(), "an unmarked lookup must not read the row")
+		assert.False(t, dec.cache.Contains(rowTestID), "a refused lookup must not populate the cache")
+	})
+
+	t.Run("a base storage error returns the original rate limit error", func(t *testing.T) {
+		t.Parallel()
+		dec, rec := newRowDecorator(t, CIMDDecoratorConfig{})
+		baseErr := errors.New("storage unavailable")
+		rec.getErr = baseErr
+
+		_, err := dec.GetClient(markedCtx, rowTestID)
+		require.ErrorIs(t, err, ErrCIMDRateLimited)
+		assert.NotErrorIs(t, err, baseErr)
+	})
+
+	t.Run("config drift guard", func(t *testing.T) {
+		t.Parallel()
+		strict := CIMDDecoratorConfig{
+			AllowedAudiences:     []string{"https://aud"},
+			ScopesSupported:      []string{"openid", "profile"},
+			BaselineClientScopes: []string{"extra"},
+		}
+		tests := []struct {
+			name     string
+			cfg      CIMDDecoratorConfig
+			audience []string
+			scopes   []string
+			wantRow  bool
+		}{
+			{"matching row passes", strict, []string{"https://aud"}, []string{"openid", "extra"}, true},
+			{"audience differs", strict, []string{"https://old-aud"}, []string{"openid"}, false},
+			{"audience missing", strict, nil, []string{"openid"}, false},
+			{"scope outside supported and baseline", strict, []string{"https://aud"}, []string{"openid", "admin"}, false},
+			{
+				"audience match ignores order",
+				CIMDDecoratorConfig{AllowedAudiences: []string{"https://a", "https://b"}},
+				[]string{"https://b", "https://a"}, []string{"openid"}, true,
+			},
+			{
+				"empty scopes supported skips the scope check",
+				CIMDDecoratorConfig{AllowedAudiences: []string{"https://aud"}},
+				[]string{"https://aud"}, []string{"any-scope"}, true,
+			},
+		}
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				t.Parallel()
+				dec, rec := newRowDecorator(t, tt.cfg)
+				putRow(t, rec, tt.audience, tt.scopes)
+
+				_, err := dec.GetClient(markedCtx, rowTestID)
+				if tt.wantRow {
+					require.NoError(t, err)
+					return
+				}
+				require.ErrorIs(t, err, ErrCIMDRateLimited)
+			})
+		}
+	})
+
+	t.Run("row identity and type guard", func(t *testing.T) {
+		t.Parallel()
+		// An empty GrantTypes list reads as authorization_code in fosite, so
+		// only an explicit list can fail the grant check.
+		tests := []struct {
+			name    string
+			grants  []string
+			public  bool
+			marked  bool
+			wantRow bool
+		}{
+			{"allowed grants pass", defaultRowGrants(), true, true, true},
+			{"a strict subset of allowed grants passes", []string{oauthproto.GrantTypeAuthorizationCode}, true, true, true},
+			{
+				"the full allowed set including device code passes",
+				[]string{
+					oauthproto.GrantTypeAuthorizationCode, oauthproto.GrantTypeRefreshToken, oauthproto.GrantTypeDeviceCode,
+				},
+				true, true, true,
+			},
+			{
+				"a grant type outside the allowed set is refused",
+				[]string{oauthproto.GrantTypeAuthorizationCode, "client_credentials"}, true, true, false,
+			},
+			{"no authorization_code grant is refused", []string{oauthproto.GrantTypeRefreshToken}, true, true, false},
+			{"a non-public client is refused", defaultRowGrants(), false, true, false},
+			{"a row without the DCR-issued marker is refused", defaultRowGrants(), true, false, false},
+		}
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				t.Parallel()
+				dec, rec := newRowDecorator(t, CIMDDecoratorConfig{})
+				require.NoError(t, rec.RegisterClient(
+					context.Background(), rowClient(rowTestID, nil, []string{"openid"}, tt.grants, tt.public, tt.marked)))
+
+				_, err := dec.GetClient(markedCtx, rowTestID)
+				if tt.wantRow {
+					require.NoError(t, err)
+					return
+				}
+				require.ErrorIs(t, err, ErrCIMDRateLimited)
+			})
+		}
+	})
+
+	// The base storage returns rows keyed by id, so a row with a different
+	// GetID cannot come back through GetClient; test the guard directly.
+	t.Run("a row whose id differs from the requested id is refused", func(t *testing.T) {
+		t.Parallel()
+		dec, _ := newRowDecorator(t, CIMDDecoratorConfig{})
+		row := rowClient("https://other.example.com/metadata", nil, []string{"openid"}, defaultRowGrants(), true, true)
+
+		assert.False(t, dec.persistedRowMatchesConfig(rowTestID, row))
+		assert.True(t, dec.persistedRowMatchesConfig("https://other.example.com/metadata", row))
+	})
+
+	// The fallback only answers a limiter refusal. A fetch that is attempted
+	// and fails must surface its own error even when a valid row exists.
+	t.Run("a failed or rejected fetch with budget does not serve the row", func(t *testing.T) {
+		t.Parallel()
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/gone.json" {
+				http.NotFound(w, r)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(cimd.ClientMetadataDocument{
+				ClientID:                "http://" + r.Host + r.URL.Path,
+				RedirectURIs:            []string{"https://example.com/callback"},
+				TokenEndpointAuthMethod: "private_key_jwt",
+			})
+		}))
+		t.Cleanup(srv.Close)
+
+		tests := []struct {
+			name    string
+			path    string
+			wantErr error
+		}{
+			{"document not found", "/gone.json", fosite.ErrNotFound},
+			{"document rejected by policy", "/policy.json", fosite.ErrInvalidClient},
+		}
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				t.Parallel()
+				id := cimdURL(srv, tt.path)
+				dec, rec := newRowDecorator(t, CIMDDecoratorConfig{})
+				dec.fetchLimiter = rate.NewLimiter(rate.Every(time.Hour), 1)
+				putRowFor(t, rec, id, nil, []string{"openid"})
+
+				got, err := dec.GetClient(markedCtx, id)
+				require.ErrorIs(t, err, tt.wantErr)
+				require.NotErrorIs(t, err, ErrCIMDRateLimited)
+				assert.Nil(t, got)
+			})
+		}
+	})
+
+	t.Run("a servable stale entry wins and the row is not consulted", func(t *testing.T) {
+		t.Parallel()
+		dec, rec := newRowDecorator(t, CIMDDecoratorConfig{MaxStale: time.Hour})
+		putRow(t, rec, nil, []string{"openid"})
+		rec.gets.Store(0)
+		stale := &fosite.DefaultClient{ID: rowTestID}
+		dec.cache.Add(rowTestID, &cimdCacheEntry{client: stale, expires: time.Now().Add(-time.Minute)})
+
+		got, err := dec.GetClient(markedCtx, rowTestID)
+		require.NoError(t, err)
+		assert.Same(t, stale, got)
+		assert.Equal(t, int32(0), rec.gets.Load())
+	})
+
+	t.Run("concurrent marked and unmarked callers each get their own outcome", func(t *testing.T) {
+		t.Parallel()
+		dec, rec := newRowDecorator(t, CIMDDecoratorConfig{})
+		row := putRow(t, rec, nil, []string{"openid"})
+
+		var wg sync.WaitGroup
+		var markedGot, plainGot fosite.Client
+		var markedErr, plainErr error
+		start := make(chan struct{})
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			<-start
+			markedGot, markedErr = dec.GetClient(markedCtx, rowTestID)
+		}()
+		go func() {
+			defer wg.Done()
+			<-start
+			plainGot, plainErr = dec.GetClient(context.Background(), rowTestID)
+		}()
+		close(start)
+		done := make(chan struct{})
+		go func() { wg.Wait(); close(done) }()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatal("timeout waiting for GetClient goroutines")
+		}
+
+		require.NoError(t, markedErr)
+		assert.Same(t, row, markedGot)
+		require.ErrorIs(t, plainErr, ErrCIMDRateLimited)
+		assert.Nil(t, plainGot)
+	})
+}
+
+func TestCIMDStorageDecorator_RenewClientTTL(t *testing.T) {
+	t.Parallel()
+	dec, rec := newRowDecorator(t, CIMDDecoratorConfig{})
+	ctx := context.Background()
+
+	require.NoError(t, dec.RenewClientTTL(ctx, &fosite.DefaultClient{ID: rowTestID}))
+	assert.Equal(t, int32(0), rec.renews.Load(), "CIMD ids must not be renewed")
+
+	require.NoError(t, dec.RenewClientTTL(ctx, &fosite.DefaultClient{ID: "opaque-dcr-id"}))
+	assert.Equal(t, int32(1), rec.renews.Load(), "opaque ids must be delegated")
+}
+
+// TestCIMDStorageDecorator_RenewClientTTL_RedisRowTTL pins the age bound of the
+// token-endpoint persisted-row fallback on Redis: a CIMD row's TTL is not reset
+// by RenewClientTTL, while an opaque DCR-issued row's TTL still is.
+func TestCIMDStorageDecorator_RenewClientTTL_RedisRowTTL(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	redisStore, mr := newTestRedisStorage(t)
+	t.Cleanup(func() { _ = redisStore.Close(); mr.Close() })
+
+	srv := serveCIMDDoc(t, "/a.json", nil)
+	cimdID := cimdURL(srv, "/a.json")
+	got, err := NewCIMDStorageDecorator(redisStore, CIMDDecoratorConfig{
+		Enabled: true, CacheMaxSize: 10, FallbackTTL: time.Minute,
+	})
+	require.NoError(t, err)
+	dec := got.(*CIMDStorageDecorator)
+
+	// The CIMD row is persisted through the decorator's own fetch path.
+	cimdClient, err := dec.GetClient(ctx, cimdID)
+	require.NoError(t, err)
+	opaque := registration.MarkDCRIssued(&fosite.DefaultClient{ID: "opaque-dcr-id", Public: true})
+	require.NoError(t, redisStore.RegisterClient(ctx, opaque))
+
+	cimdKey := redisKey(redisStore.keyPrefix, KeyTypeClient, cimdID)
+	opaqueKey := redisKey(redisStore.keyPrefix, KeyTypeClient, "opaque-dcr-id")
+	// Stay inside the opaque row's DefaultUnusedDCRClientTTL so it is still
+	// live when renewed.
+	mr.FastForward(DefaultUnusedDCRClientTTL - time.Hour)
+	cimdBefore, opaqueBefore := mr.TTL(cimdKey), mr.TTL(opaqueKey)
+	require.Positive(t, cimdBefore)
+	require.Positive(t, opaqueBefore)
+
+	require.NoError(t, dec.RenewClientTTL(ctx, cimdClient))
+	require.NoError(t, dec.RenewClientTTL(ctx, opaque))
+
+	assert.Equal(t, cimdBefore, mr.TTL(cimdKey), "a CIMD row must not be renewed")
+	assert.Greater(t, mr.TTL(opaqueKey), opaqueBefore, "an opaque DCR row must still be renewed")
 }
 
 func TestCIMDStorageDecorator_FetchOrCached_FetchFailureReturnsNotFound(t *testing.T) {
@@ -329,32 +1482,42 @@ func TestCIMDStorageDecorator_GetClient_CIMDURLHitsCacheDirectly(t *testing.T) {
 
 // --- buildFositeClient ---
 
-func TestBuildFositeClient_Defaults(t *testing.T) {
-	t.Parallel()
-
-	doc := &cimd.ClientMetadataDocument{
-		ClientID:     "https://example.com/meta.json",
-		RedirectURIs: []string{"https://example.com/callback"},
-	}
-
-	got := buildFositeClient(doc, nil)
-	assert.Equal(t, "https://example.com/meta.json", got.GetID())
-	assert.True(t, got.IsPublic())
-	assert.ElementsMatch(t, []string{"authorization_code", "refresh_token"}, []string(got.GetGrantTypes()))
-	assert.ElementsMatch(t, []string{"code"}, []string(got.GetResponseTypes()))
+// buildFositeClientWithDefaults calls buildFositeClient with the standard
+// filtered grant/response types (what FilterPublicGrantTypes /
+// FilterPublicResponseTypes return for an omitted declaration) and the
+// default negotiated auth method, for tests that don't exercise those fields.
+func buildFositeClientWithDefaults(doc *cimd.ClientMetadataDocument, scopes []string) fosite.Client {
+	return buildFositeClient(fositeClientParams{
+		doc:                     doc,
+		resolvedScopes:          scopes,
+		grantTypes:              []string{"authorization_code", "refresh_token"},
+		responseTypes:           []string{"code"},
+		tokenEndpointAuthMethod: defaultCIMDTokenEndpointAuthMethod,
+	})
 }
 
-func TestBuildFositeClient_ExplicitGrantTypes(t *testing.T) {
+func TestBuildFositeClient_PassesThroughGrantAndResponseTypes(t *testing.T) {
 	t.Parallel()
 
 	doc := &cimd.ClientMetadataDocument{
 		ClientID:     "https://example.com/meta.json",
 		RedirectURIs: []string{"https://example.com/callback"},
-		GrantTypes:   []string{"authorization_code"},
+		// The document's own declaration is ignored: fetch() passes the
+		// filtered lists explicitly, and only those must reach the client.
+		GrantTypes: []string{"authorization_code", "urn:ietf:params:oauth:grant-type:device_code"},
 	}
 
-	got := buildFositeClient(doc, nil)
-	assert.ElementsMatch(t, []string{"authorization_code"}, []string(got.GetGrantTypes()))
+	got := buildFositeClient(fositeClientParams{
+		doc:                     doc,
+		grantTypes:              []string{"authorization_code"},
+		responseTypes:           []string{"code"},
+		tokenEndpointAuthMethod: defaultCIMDTokenEndpointAuthMethod,
+	})
+	assert.Equal(t, "https://example.com/meta.json", got.GetID())
+	assert.True(t, got.IsPublic())
+	assert.ElementsMatch(t, []string{"authorization_code"}, []string(got.GetGrantTypes()),
+		"the filtered grant types must be stored, not the document's declaration")
+	assert.ElementsMatch(t, []string{"code"}, []string(got.GetResponseTypes()))
 }
 
 func TestBuildFositeClient_ScopeParsing(t *testing.T) {
@@ -367,11 +1530,11 @@ func TestBuildFositeClient_ScopeParsing(t *testing.T) {
 	}
 
 	// Scope parsing is done by fetch() before buildFositeClient.
-	got := buildFositeClient(doc, strings.Fields(doc.Scope))
+	got := buildFositeClientWithDefaults(doc, strings.Fields(doc.Scope))
 	assert.ElementsMatch(t, []string{"openid", "profile", "email"}, []string(got.GetScopes()))
 }
 
-func TestBuildFositeClient_LoopbackRedirectWrapsInLoopbackClient(t *testing.T) {
+func TestBuildFositeClient_LoopbackRedirectGetsDynamicPortMatching(t *testing.T) {
 	t.Parallel()
 
 	doc := &cimd.ClientMetadataDocument{
@@ -379,19 +1542,15 @@ func TestBuildFositeClient_LoopbackRedirectWrapsInLoopbackClient(t *testing.T) {
 		RedirectURIs: []string{"http://localhost/callback"},
 	}
 
-	got := buildFositeClient(doc, nil)
-	// LoopbackClient adds MatchRedirectURI — check the distinctive method is present.
-	type loopbackMatcher interface {
-		MatchRedirectURI(string) bool
-	}
-	_, ok := got.(loopbackMatcher)
-	assert.True(t, ok, "loopback redirect URI must produce a LoopbackClient")
+	got := buildFositeClientWithDefaults(doc, nil)
 
-	// TokenEndpointAuthMethod must be preserved through the LoopbackClient wrapper.
+	uri, ok := registration.RegisteredLoopbackRedirectURI(got, "http://localhost:54321/callback")
+	require.True(t, ok, "loopback redirect URI must get dynamic-port matching")
+	assert.Equal(t, "http://localhost/callback", uri)
+
 	oidc, ok := got.(fosite.OpenIDConnectClient)
-	require.True(t, ok, "LoopbackClient must implement fosite.OpenIDConnectClient")
-	assert.Equal(t, "none", oidc.GetTokenEndpointAuthMethod(),
-		"loopback client must preserve TokenEndpointAuthMethod from the OIDC client")
+	require.True(t, ok, "got must implement fosite.OpenIDConnectClient")
+	assert.Equal(t, "none", oidc.GetTokenEndpointAuthMethod())
 }
 
 func TestBuildFositeClient_NonLoopbackRedirectReturnsOpenIDConnectClient(t *testing.T) {
@@ -402,23 +1561,38 @@ func TestBuildFositeClient_NonLoopbackRedirectReturnsOpenIDConnectClient(t *test
 		RedirectURIs: []string{"https://example.com/callback"},
 	}
 
-	got := buildFositeClient(doc, nil)
+	got := buildFositeClientWithDefaults(doc, nil)
 	_, ok := got.(*fosite.DefaultOpenIDConnectClient)
 	assert.True(t, ok, "non-loopback redirect URI must produce a DefaultOpenIDConnectClient")
 }
 
-func TestBuildFositeClient_TokenEndpointAuthMethodDefault(t *testing.T) {
+// TestNegotiateTokenEndpointAuthMethod_DeclaredNoneWithPluralList covers the
+// branch where the document already declares the singular
+// token_endpoint_auth_method as "none": negotiateTokenEndpointAuthMethod's
+// first check (declared == "" || declared == defaultCIMDTokenEndpointAuthMethod)
+// short-circuits on that alone and never consults the plural
+// TokenEndpointAuthMethodsSupported list, even when that list is present and
+// names something else entirely. This was previously exercised indirectly by
+// TestBuildFositeClient_TokenEndpointAuthMethodDefault against a fallback
+// buildFositeClient no longer applies internally (the negotiation moved to
+// fetch(), and buildFositeClient now takes the already-negotiated method as a
+// parameter) — this test targets negotiateTokenEndpointAuthMethod directly
+// instead, alongside the equivalent-but-distinct branches already covered by
+// TestFetch_TokenEndpointAuthMethodNegotiation.
+func TestNegotiateTokenEndpointAuthMethod_DeclaredNoneWithPluralList(t *testing.T) {
 	t.Parallel()
 
 	doc := &cimd.ClientMetadataDocument{
-		ClientID:     "https://example.com/meta.json",
-		RedirectURIs: []string{"https://example.com/callback"},
+		ClientID:                          "https://example.com/meta.json",
+		RedirectURIs:                      []string{"https://example.com/callback"},
+		TokenEndpointAuthMethod:           "none",
+		TokenEndpointAuthMethodsSupported: []string{"private_key_jwt", "tls_client_auth"},
 	}
 
-	got := buildFositeClient(doc, nil)
-	if oidc, ok := got.(fosite.OpenIDConnectClient); ok {
-		assert.Equal(t, "none", oidc.GetTokenEndpointAuthMethod())
-	}
+	got, ok := negotiateTokenEndpointAuthMethod(doc)
+	require.True(t, ok, "a declared \"none\" must negotiate successfully regardless of the plural list")
+	assert.Equal(t, "none", got,
+		"the declared \"none\" must win outright, without consulting TokenEndpointAuthMethodsSupported")
 }
 
 func TestFetch_RejectsUnsupportedTokenEndpointAuthMethod(t *testing.T) {
@@ -443,6 +1617,68 @@ func TestFetch_RejectsUnsupportedTokenEndpointAuthMethod(t *testing.T) {
 	assert.ErrorIs(t, err, fosite.ErrInvalidClient,
 		"CIMD policy rejections must use ErrInvalidClient, not ErrNotFound")
 	assert.NotErrorIs(t, err, fosite.ErrNotFound)
+}
+
+// TestFetch_TokenEndpointAuthMethodNegotiation exercises the negotiation
+// introduced for #6278: a declared-but-unsupported singular
+// token_endpoint_auth_method is rescued when the plural
+// token_endpoint_auth_methods_supported list names a method this server does
+// support, instead of the document being rejected outright.
+func TestFetch_TokenEndpointAuthMethodNegotiation(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		declared       string
+		supportedList  []string
+		wantErr        bool
+		wantAuthMethod string
+	}{
+		{
+			name:           "unsupported singular rescued by none in the supported list",
+			declared:       "private_key_jwt",
+			supportedList:  []string{"none", "private_key_jwt"},
+			wantErr:        false,
+			wantAuthMethod: "none",
+		},
+		{
+			name:          "unsupported singular with no none in the supported list stays rejected",
+			declared:      "private_key_jwt",
+			supportedList: []string{"private_key_jwt", "tls_client_auth"},
+			wantErr:       true,
+		},
+		{
+			name:           "omitted singular with a supported list is unaffected — accepted as none",
+			declared:       "",
+			supportedList:  []string{"private_key_jwt"},
+			wantErr:        false,
+			wantAuthMethod: "none",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			srv := serveCIMDDocWithFields(t, func(doc *cimd.ClientMetadataDocument) {
+				doc.TokenEndpointAuthMethod = tt.declared
+				doc.TokenEndpointAuthMethodsSupported = tt.supportedList
+			})
+			dec := newEnabledDecorator(t, newTestBase(t), 10, time.Minute)
+			client, err := dec.fetchOrCached(context.Background(), srv.URL+"/meta.json")
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.ErrorIs(t, err, fosite.ErrInvalidClient,
+					"CIMD policy rejections must use ErrInvalidClient, not ErrNotFound")
+				assert.NotErrorIs(t, err, fosite.ErrNotFound)
+				return
+			}
+			require.NoError(t, err)
+			assert.True(t, client.IsPublic())
+			oidc, ok := client.(fosite.OpenIDConnectClient)
+			require.True(t, ok, "client must implement fosite.OpenIDConnectClient")
+			assert.Equal(t, tt.wantAuthMethod, oidc.GetTokenEndpointAuthMethod())
+		})
+	}
 }
 
 // serveCIMDDocWithFields starts an httptest.Server that serves a CIMD document
@@ -473,18 +1709,34 @@ func serveCIMDDocWithFields(t *testing.T, mutate func(*cimd.ClientMetadataDocume
 func TestFetch_GrantTypeValidation(t *testing.T) {
 	t.Parallel()
 
+	// A CIMD document declares the client's capabilities across every AS it
+	// talks to, so grant types this server does not support are filtered out
+	// rather than failing the document (#6290). Rejection only happens when
+	// nothing this server supports survives — specifically, when
+	// authorization_code is absent from the intersection.
 	tests := []struct {
-		name       string
-		grantTypes []string
-		wantErr    bool
+		name           string
+		grantTypes     []string
+		wantErr        bool
+		wantGrantTypes []string // asserted on the resolved client when no error
 	}{
-		{"omitted grant_types accepted", nil, false},
-		{"explicit [authorization_code, refresh_token] accepted", []string{"authorization_code", "refresh_token"}, false},
-		{"explicit [authorization_code] accepted", []string{"authorization_code"}, false},
-		{"refresh_token only missing authorization_code rejected", []string{"refresh_token"}, true},
-		{"client_credentials rejected", []string{"client_credentials"}, true},
-		{"implicit rejected", []string{"implicit"}, true},
-		{"device_code rejected", []string{"urn:ietf:params:oauth:grant-type:device_code"}, true},
+		{"omitted grant_types accepted", nil, false,
+			[]string{"authorization_code", "refresh_token"}},
+		{"explicit [authorization_code, refresh_token] accepted", []string{"authorization_code", "refresh_token"}, false,
+			[]string{"authorization_code", "refresh_token"}},
+		{"explicit [authorization_code] accepted", []string{"authorization_code"}, false,
+			[]string{"authorization_code"}},
+		{"client_credentials alongside authorization_code is ignored, not fatal",
+			[]string{"authorization_code", "refresh_token", "client_credentials"}, false,
+			[]string{"authorization_code", "refresh_token"}},
+		{"refresh_token only missing authorization_code rejected", []string{"refresh_token"}, true, nil},
+		{"client_credentials only rejected (no supported grant type)", []string{"client_credentials"}, true, nil},
+		{"implicit only rejected (no supported grant type)", []string{"implicit"}, true, nil},
+		{"device_code only rejected (missing authorization_code)",
+			[]string{"urn:ietf:params:oauth:grant-type:device_code"}, true, nil},
+		{"device_code alongside authorization_code is accepted (now a supported grant type)",
+			[]string{"authorization_code", "urn:ietf:params:oauth:grant-type:device_code"}, false,
+			[]string{"authorization_code", "urn:ietf:params:oauth:grant-type:device_code"}},
 	}
 
 	for _, tt := range tests {
@@ -494,7 +1746,7 @@ func TestFetch_GrantTypeValidation(t *testing.T) {
 				doc.GrantTypes = tt.grantTypes
 			})
 			dec := newEnabledDecorator(t, newTestBase(t), 10, time.Minute)
-			_, err := dec.fetchOrCached(context.Background(), srv.URL+"/meta.json")
+			client, err := dec.fetchOrCached(context.Background(), srv.URL+"/meta.json")
 			if tt.wantErr {
 				require.Error(t, err)
 				assert.ErrorIs(t, err, fosite.ErrInvalidClient,
@@ -502,9 +1754,39 @@ func TestFetch_GrantTypeValidation(t *testing.T) {
 				assert.NotErrorIs(t, err, fosite.ErrNotFound)
 			} else {
 				require.NoError(t, err)
+				assert.ElementsMatch(t, tt.wantGrantTypes, []string(client.GetGrantTypes()),
+					"the resolved client must carry only grant types this server supports")
 			}
 		})
 	}
+}
+
+// TestFetch_VSCodeDocumentResolves is the regression test for #6290: VS
+// Code's real-world client-metadata document declares the device_code grant
+// alongside authorization_code and refresh_token, and its resolution must
+// succeed. device_code is now itself a supported grant type (RFC 8628), so
+// resolution keeps it rather than filtering it out.
+func TestFetch_VSCodeDocumentResolves(t *testing.T) {
+	t.Parallel()
+
+	srv := serveCIMDDocWithFields(t, func(doc *cimd.ClientMetadataDocument) {
+		// Mirror https://vscode.dev/oauth/client-metadata.json (VS Code 1.133.0),
+		// with client_id/redirect kept test-local.
+		doc.ClientName = "Visual Studio Code"
+		doc.GrantTypes = []string{"authorization_code", "refresh_token", "urn:ietf:params:oauth:grant-type:device_code"}
+		doc.ResponseTypes = []string{"code"}
+		doc.TokenEndpointAuthMethod = "none"
+		doc.RedirectURIs = []string{"http://127.0.0.1:33418/", "https://vscode.dev/redirect"}
+	})
+	dec := newEnabledDecorator(t, newTestBase(t), 10, time.Minute)
+
+	client, err := dec.fetchOrCached(context.Background(), srv.URL+"/meta.json")
+	require.NoError(t, err, "VS Code's document must resolve (#6290)")
+	assert.True(t, client.IsPublic())
+	assert.ElementsMatch(t,
+		[]string{"authorization_code", "refresh_token", "urn:ietf:params:oauth:grant-type:device_code"},
+		[]string(client.GetGrantTypes()))
+	assert.ElementsMatch(t, []string{"code"}, []string(client.GetResponseTypes()))
 }
 
 // --- response_types validation ---
@@ -512,15 +1794,20 @@ func TestFetch_GrantTypeValidation(t *testing.T) {
 func TestFetch_ResponseTypeValidation(t *testing.T) {
 	t.Parallel()
 
+	// Same filtering semantics as grant types: unsupported response types are
+	// ignored, and rejection only happens when "code" — the one response type
+	// this server serves — does not survive the intersection.
 	tests := []struct {
-		name          string
-		responseTypes []string
-		wantErr       bool
+		name              string
+		responseTypes     []string
+		wantErr           bool
+		wantResponseTypes []string // asserted on the resolved client when no error
 	}{
-		{"omitted response_types accepted", nil, false},
-		{"code accepted", []string{"code"}, false},
-		{"token rejected", []string{"token"}, true},
-		{"code id_token rejected (hybrid)", []string{"code id_token"}, true},
+		{"omitted response_types accepted", nil, false, []string{"code"}},
+		{"code accepted", []string{"code"}, false, []string{"code"}},
+		{"token alongside code is ignored, not fatal", []string{"code", "token"}, false, []string{"code"}},
+		{"token only rejected (no supported response type)", []string{"token"}, true, nil},
+		{"code id_token rejected (hybrid)", []string{"code id_token"}, true, nil},
 	}
 
 	for _, tt := range tests {
@@ -530,7 +1817,7 @@ func TestFetch_ResponseTypeValidation(t *testing.T) {
 				doc.ResponseTypes = tt.responseTypes
 			})
 			dec := newEnabledDecorator(t, newTestBase(t), 10, time.Minute)
-			_, err := dec.fetchOrCached(context.Background(), srv.URL+"/meta.json")
+			client, err := dec.fetchOrCached(context.Background(), srv.URL+"/meta.json")
 			if tt.wantErr {
 				require.Error(t, err)
 				assert.ErrorIs(t, err, fosite.ErrInvalidClient,
@@ -538,6 +1825,8 @@ func TestFetch_ResponseTypeValidation(t *testing.T) {
 				assert.NotErrorIs(t, err, fosite.ErrNotFound)
 			} else {
 				require.NoError(t, err)
+				assert.ElementsMatch(t, tt.wantResponseTypes, []string(client.GetResponseTypes()),
+					"the resolved client must carry only response types this server supports")
 			}
 		})
 	}
@@ -580,9 +1869,23 @@ func TestFetch_ScopeResolution(t *testing.T) {
 			wantScopes:      registration.DefaultScopes,
 		},
 		{
-			name:            "omitted scope with restrictive ScopesSupported requires explicit scope",
+			// The #6186 shape: the server's scopes_supported lacks one default
+			// (profile); the client must still register with the intersection.
+			name:            "omitted scope with reduced ScopesSupported grants the intersection",
+			docScope:        "",
+			scopesSupported: []string{"openid", "email", "offline_access"},
+			wantScopes:      []string{"openid", "email", "offline_access"},
+		},
+		{
+			name:            "omitted scope with restrictive ScopesSupported grants the single-scope intersection",
 			docScope:        "",
 			scopesSupported: []string{"openid"},
+			wantScopes:      []string{"openid"},
+		},
+		{
+			name:            "omitted scope with ScopesSupported disjoint from defaults rejected",
+			docScope:        "",
+			scopesSupported: []string{"custom_scope"},
 			wantErr:         true,
 		},
 		{
@@ -632,6 +1935,277 @@ func TestBuildFositeClient_ScopeDefaultsToDefaultScopesWhenNoScopesSupported(t *
 		ClientID:     "https://example.com/meta.json",
 		RedirectURIs: []string{"https://example.com/callback"},
 	}
-	got := buildFositeClient(doc, nil)
+	got := buildFositeClientWithDefaults(doc, nil)
 	assert.ElementsMatch(t, registration.DefaultScopes, []string(got.GetScopes()))
+}
+
+// --- write-through persistence (issue #6187) ---
+
+func TestCIMDStorageDecorator_PersistsResolvedClient(t *testing.T) {
+	t.Parallel()
+
+	base := newTestBase(t)
+	dec := newEnabledDecorator(t, base, 10, time.Minute)
+	srv := serveCIMDDocWithFields(t, nil)
+	id := srv.URL + "/meta.json"
+
+	resolved, err := dec.fetchOrCached(context.Background(), id)
+	require.NoError(t, err)
+
+	persisted, err := base.GetClient(context.Background(), id)
+	require.NoError(t, err,
+		"the resolved client must be persisted so session rehydration that resolves clients through the bare storage still finds it")
+	assert.Equal(t, resolved.GetID(), persisted.GetID())
+	assert.True(t, persisted.IsPublic())
+	assert.True(t, registration.DCRIssued(resolved),
+		"the resolved client must carry the DCR-issued marker so the persisted row gets the anti-bloat TTL")
+}
+
+// TestCIMDStorageDecorator_PersistsLoopbackResolvedClient covers a document
+// with loopback redirect URIs: buildFositeClient gives it the same
+// *fosite.DefaultOpenIDConnectClient shape as any other CIMD client (RFC 8252
+// dynamic-port matching is applied separately, by
+// registration.RegisteredLoopbackRedirectURI, not by a distinct wrapper
+// type), and the DCR-issued marker (and with it the TTL on the persisted
+// row) must survive that shape too.
+func TestCIMDStorageDecorator_PersistsLoopbackResolvedClient(t *testing.T) {
+	t.Parallel()
+
+	base := newTestBase(t)
+	dec := newEnabledDecorator(t, base, 10, time.Minute)
+	srv := serveCIMDDocWithFields(t, func(doc *cimd.ClientMetadataDocument) {
+		doc.RedirectURIs = []string{"http://localhost/callback"}
+	})
+	id := srv.URL + "/meta.json"
+
+	resolved, err := dec.fetchOrCached(context.Background(), id)
+	require.NoError(t, err)
+	assert.True(t, registration.DCRIssued(resolved),
+		"a loopback-wrapped CIMD client must also carry the DCR-issued marker")
+
+	_, err = base.GetClient(context.Background(), id)
+	require.NoError(t, err)
+}
+
+// registerFailingStorage wraps a Storage and fails every UpsertDCRIssuedClient
+// call -- the write-through persistence path fetch() actually calls -- for
+// testing that a write-through persistence failure does not fail the
+// resolution itself.
+type registerFailingStorage struct {
+	Storage
+}
+
+func (*registerFailingStorage) UpsertDCRIssuedClient(context.Context, fosite.Client) error {
+	return errors.New("register failed")
+}
+
+func TestCIMDStorageDecorator_PersistFailureDoesNotFailResolution(t *testing.T) {
+	t.Parallel()
+
+	srv := serveCIMDDocWithFields(t, nil)
+	got, err := NewCIMDStorageDecorator(&registerFailingStorage{Storage: newTestBase(t)}, CIMDDecoratorConfig{
+		Enabled:      true,
+		CacheMaxSize: 10,
+		FallbackTTL:  time.Minute,
+	})
+	require.NoError(t, err)
+	dec := got.(*CIMDStorageDecorator)
+
+	client, err := dec.fetchOrCached(context.Background(), srv.URL+"/meta.json")
+	require.NoError(t, err, "a write-through persistence failure must not fail the resolution")
+	assert.NotNil(t, client)
+}
+
+// --- Audience (#6489) ---
+
+// TestBuildFositeClient_GrantsConfiguredAudience verifies that buildFositeClient
+// carries the decorator's configured allowedAudiences onto the built client,
+// mirroring how registration.New() grants DCR clients the server's
+// AllowedAudiences (#3796). Without this, fosite's refresh handler rejects
+// every refresh_token grant for a CIMD client because its audience whitelist
+// is empty.
+func TestBuildFositeClient_GrantsConfiguredAudience(t *testing.T) {
+	t.Parallel()
+	doc := &cimd.ClientMetadataDocument{
+		ClientID:     "https://example.com/meta.json",
+		RedirectURIs: []string{"https://example.com/callback"},
+	}
+	allowed := []string{"https://mcp.example.com"}
+
+	got := buildFositeClient(fositeClientParams{
+		doc:                     doc,
+		grantTypes:              []string{"authorization_code"},
+		responseTypes:           []string{"code"},
+		tokenEndpointAuthMethod: defaultCIMDTokenEndpointAuthMethod,
+		allowedAudiences:        allowed,
+	})
+
+	assert.Equal(t, fosite.Arguments(allowed), got.GetAudience(),
+		"CIMD client must inherit the server's AllowedAudiences so refresh token requests succeed")
+}
+
+// TestBuildFositeClient_EmptyAudienceConfigKeepsPriorNilBehaviour verifies that
+// an empty/unset AllowedAudiences config keeps the client's audience list
+// empty, exactly as before this field was introduced (no regression for
+// deployments that don't configure AllowedAudiences).
+func TestBuildFositeClient_EmptyAudienceConfigKeepsPriorNilBehaviour(t *testing.T) {
+	t.Parallel()
+	doc := &cimd.ClientMetadataDocument{
+		ClientID:     "https://example.com/meta.json",
+		RedirectURIs: []string{"https://example.com/callback"},
+	}
+
+	got := buildFositeClient(fositeClientParams{
+		doc:                     doc,
+		grantTypes:              []string{"authorization_code"},
+		responseTypes:           []string{"code"},
+		tokenEndpointAuthMethod: defaultCIMDTokenEndpointAuthMethod,
+	})
+
+	assert.Empty(t, got.GetAudience(), "unset AllowedAudiences must leave the client's audience list empty")
+}
+
+// TestCIMDStorageDecorator_FetchOrCached_ClientCarriesConfiguredAudience is the
+// red-green regression test for #6489 at the decorator level: it drives the
+// real fetch() path (CIMD document fetch, caching) through a decorator
+// constructed with AllowedAudiences configured, and asserts the resulting
+// fosite.Client carries those audiences. Before the fix, this client's
+// GetAudience() was always empty regardless of configuration.
+//
+// The same audiences must reach the snapshot fetch() persists in the
+// underlying storage (#6187): Redis session rehydration resolves the client
+// through that row rather than through the decorator, so a refresh_token
+// grant on a rehydrated session is checked against the persisted audience
+// list, not the in-memory one.
+func TestCIMDStorageDecorator_FetchOrCached_ClientCarriesConfiguredAudience(t *testing.T) {
+	t.Parallel()
+	srv := serveCIMDDoc(t, "/meta.json", nil)
+	allowed := []string{"https://mcp.example.com"}
+	base := newTestBase(t)
+
+	got, err := NewCIMDStorageDecorator(base, CIMDDecoratorConfig{
+		Enabled:          true,
+		CacheMaxSize:     10,
+		FallbackTTL:      time.Minute,
+		AllowedAudiences: allowed,
+	})
+	require.NoError(t, err)
+	dec := got.(*CIMDStorageDecorator)
+
+	client, err := dec.fetchOrCached(context.Background(), cimdURL(srv, "/meta.json"))
+	require.NoError(t, err)
+	assert.Equal(t, fosite.Arguments(allowed), client.GetAudience(),
+		"a CIMD client resolved through the decorator must carry the configured AllowedAudiences")
+
+	persisted, err := base.GetClient(context.Background(), cimdURL(srv, "/meta.json"))
+	require.NoError(t, err)
+	assert.Equal(t, fosite.Arguments(allowed), persisted.GetAudience(),
+		"the persisted snapshot that session rehydration resolves must carry the same audiences")
+}
+
+// TestCIMDStorageDecorator_FetchOrCached_UnsetAudienceConfigKeepsClientAudienceEmpty
+// proves the negative: a decorator constructed without AllowedAudiences resolves
+// a client whose audience list is empty, preserving pre-fix behaviour for
+// deployments that don't configure it.
+func TestCIMDStorageDecorator_FetchOrCached_UnsetAudienceConfigKeepsClientAudienceEmpty(t *testing.T) {
+	t.Parallel()
+	srv := serveCIMDDoc(t, "/meta.json", nil)
+
+	dec := newEnabledDecorator(t, newTestBase(t), 10, time.Minute)
+
+	client, err := dec.fetchOrCached(context.Background(), cimdURL(srv, "/meta.json"))
+	require.NoError(t, err)
+	assert.Empty(t, client.GetAudience())
+}
+
+// TestCIMDStorageDecorator_RefreshGrantAudienceMatch is the #6489 regression
+// test at the boundary that actually decides a refresh_token grant's outcome:
+// fosite's RefreshTokenGrantHandler calls
+//
+//	Config.GetAudienceStrategy(ctx)(request.GetClient().GetAudience(), originalRequest.GetGrantedAudience())
+//
+// (github.com/ory/fosite/handler/oauth2/flow_refresh.go, HandleTokenEndpointRequest)
+// with fosite.DefaultAudienceMatchingStrategy as the default strategy
+// (fosite/config_default.go). This test drives that exact call with a
+// client built by the real decorator fetch() path and a granted audience
+// matching what the token handler grants for an authorization_code exchange
+// (see pkg/authserver/server/handlers/token.go, GrantAudience(AllowedAudiences[0])).
+//
+// Before the fix, dec.allowedAudiences was never threaded into the built
+// client, so client.GetAudience() was always empty and this call failed with
+// "has not been whitelisted by the OAuth 2.0 Client" for every CIMD client —
+// this test fails at pre-fix HEAD and passes with the fix.
+func TestCIMDStorageDecorator_RefreshGrantAudienceMatch(t *testing.T) {
+	t.Parallel()
+	srv := serveCIMDDoc(t, "/meta.json", nil)
+	allowedAudiences := []string{"https://mcp.example.com"}
+
+	got, err := NewCIMDStorageDecorator(newTestBase(t), CIMDDecoratorConfig{
+		Enabled:          true,
+		CacheMaxSize:     10,
+		FallbackTTL:      time.Minute,
+		AllowedAudiences: allowedAudiences,
+	})
+	require.NoError(t, err)
+	dec := got.(*CIMDStorageDecorator)
+
+	client, err := dec.fetchOrCached(context.Background(), cimdURL(srv, "/meta.json"))
+	require.NoError(t, err)
+
+	// grantedAudience mirrors what the original authorization_code exchange
+	// granted onto the session (token.go's single-AllowedAudiences default
+	// path), which the refresh handler re-validates against the client's own
+	// audience list on every refresh_token grant.
+	grantedAudience := []string{allowedAudiences[0]}
+
+	err = fosite.DefaultAudienceMatchingStrategy(client.GetAudience(), grantedAudience)
+	require.NoError(t, err,
+		"a CIMD client must pass fosite's refresh-grant audience check against its own previously granted audience")
+}
+
+// TestCIMDStorageDecorator_RepeatFetchRenewsPersistedClient closes the gap
+// that let the RegisterClient/UpsertDCRIssuedClient bug go undetected:
+// nothing previously asserted the persisted row's state after a repeat
+// fetch of the same client_id. Two fetches of the same CIMD document, whose
+// served content changes between them, must both succeed, and the second
+// fetch's write-through must actually replace the stored row's data rather
+// than silently failing with ErrAlreadyExists (as it would have with the old
+// RegisterClient-only call, whose failure fetch() only logs).
+func TestCIMDStorageDecorator_RepeatFetchRenewsPersistedClient(t *testing.T) {
+	t.Parallel()
+
+	var callCount atomic.Int32
+	srv := serveCIMDDocWithFields(t, func(doc *cimd.ClientMetadataDocument) {
+		// Change the served document between the first and second fetch so a
+		// real re-persist is distinguishable from a no-op.
+		if callCount.Add(1) == 1 {
+			doc.RedirectURIs = []string{"https://example.com/callback-v1"}
+		} else {
+			doc.RedirectURIs = []string{"https://example.com/callback-v2"}
+		}
+	})
+	base := newTestBase(t)
+	dec := newEnabledDecorator(t, base, 10, time.Minute)
+	id := srv.URL + "/meta.json"
+	ctx := context.Background()
+
+	// Call fetch() directly (bypassing the in-process LRU cache) to force two
+	// real write-through persistence attempts, exactly as two independent
+	// process replicas resolving the same client_id would.
+	first, err := dec.fetch(ctx, id)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"https://example.com/callback-v1"}, first.GetRedirectURIs())
+
+	stored, err := base.GetClient(ctx, id)
+	require.NoError(t, err, "first fetch must persist the row")
+	assert.Equal(t, []string{"https://example.com/callback-v1"}, stored.GetRedirectURIs())
+
+	second, err := dec.fetch(ctx, id)
+	require.NoError(t, err, "second fetch for the same client_id must not fail")
+	assert.Equal(t, []string{"https://example.com/callback-v2"}, second.GetRedirectURIs())
+
+	stored, err = base.GetClient(ctx, id)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"https://example.com/callback-v2"}, stored.GetRedirectURIs(),
+		"the persisted row must be renewed with the newly-fetched document, not left stale")
 }

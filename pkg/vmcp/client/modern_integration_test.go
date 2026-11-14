@@ -95,10 +95,6 @@ func newModernVMCPServer(t *testing.T, backendURL string) *httptest.Server {
 			SessionTTL:     5 * time.Minute,
 			SessionFactory: vmcpsession.NewSessionFactory(authReg),
 			Aggregator:     agg,
-			// main re-added this kill-switch (default off, #5959); the harness
-			// must opt in so a well-formed Modern request reaches dispatchModern
-			// rather than falling through to the Legacy SDK path.
-			ModernDispatchEnabled: true,
 		},
 		router.NewSessionRouter(&vmcp.RoutingTable{}),
 		backendClient,
@@ -144,7 +140,7 @@ func TestIntegration_ModernCall_Discover(t *testing.T) {
 		} `json:"capabilities"`
 		SupportedVersions []string `json:"supportedVersions"`
 	}
-	err := modernCall(context.Background(), hc, vmcpSrv.URL+"/mcp", "server/discover", nil, "", nil, &out)
+	err := modernCall(context.Background(), hc, vmcpSrv.URL+"/mcp", "server/discover", nil, "", nil, &out, "", nil)
 	require.NoError(t, err)
 
 	// Request shaping reached the real server intact.

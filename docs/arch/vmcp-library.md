@@ -34,6 +34,70 @@ The `pkg/vmcp/` root package (`github.com/stacklok/toolhive/pkg/vmcp`) contains 
 
 This is the same path used by `pkg/vmcp/cli/serve.go` in the `thv vmcp serve` command; the library has no CLI-specific coupling.
 
+### Shutdown ownership and incomplete drains
+
+When serving the handler returned by `Server.Handler` in another HTTP server or
+framework, embedders **must stop accepting requests and fully drain that hosting
+server before calling `Server.Stop`**. `Stop` cannot drain an externally hosted
+handler. If the hosting server's drain is incomplete, leave vMCP cleanup pending
+and retry that drain with a fresh context before calling `Stop`.
+
+For the HTTP server owned by `Server.Start`, `Stop` allows up to 10 seconds (or the
+caller's earlier context deadline) for HTTP draining. This is **not a bound on total
+cleanup time**. If HTTP shutdown fails, `Stop` returns the error without
+force-closing active connections or closing request-used resources, including the
+core, workflow audit writer, and session storage. The listener is closed, but
+cleanup remains pending. The caller may retry `Stop` serially with a fresh context
+to finish draining and then release resources. This retry contract applies only to
+incomplete HTTP drains: `Stop` does not support arbitrary repeated or concurrent
+calls; the session manager's `Stop` is not idempotent.
+
+Direct core callers must prevent new calls and wait for in-flight calls to finish
+before `core.VMCP.Close`; `Close` does not drain calls itself.
+
+The CLI retains its existing error-and-exit policy rather than retrying an
+incomplete drain. Pending cleanup does not guarantee terminal workflow audit
+records will be written if the process terminates before requests finish.
+
+### Host Header Check
+
+When vMCP is reached over a loopback connection, MCP requests whose `Host`
+header is not `localhost` or a loopback IP get `403 Forbidden: invalid Host
+header`. This protects against DNS rebinding. It applies to both MCP protocol
+revisions (go-sdk already rejected such 2025-11-25 and earlier requests in most
+cases; vMCP now applies the check itself, ahead of both revisions).
+
+A tunnel or reverse proxy that forwards to 127.0.0.1 and keeps the client's
+`Host` (for example cloudflared, Caddy, Traefik or oauth2-proxy) must rewrite
+`Host` to a loopback name such as `localhost:4483`. In cloudflared, set
+`originRequest.httpHostHeader` to `localhost:4483`. In Caddy, use
+`header_up Host {upstream_hostport}`. In oauth2-proxy, use
+`--pass-host-header=false`. nginx's default `proxy_pass` to 127.0.0.1 sends a
+loopback `Host` and works; `proxy_set_header Host $host` (or `$http_host`)
+passes the client's `Host` and gets 403.
+
+Clients configured with `http://host.docker.internal:PORT` (for example from a
+Docker Desktop container) or `http://0.0.0.0:PORT`, or with an `/etc/hosts`
+alias, also get 403. Use `localhost` or `127.0.0.1`.
+
+`/health`, `/ping`, `/readyz`, `/status`, `/api/backends/health`, `/metrics`,
+`/.well-known/` and the embedded auth server routes are not affected. Every
+other path is served by the MCP handler and is checked.
+
+When incoming auth is configured, an unauthenticated request with a non-loopback
+`Host` is answered 401 by auth before the Host check runs.
+
+The check only applies to connections that arrive over loopback. A vMCP bound to
+0.0.0.0 with anonymous auth and reached through a LAN IP is not protected by it
+(go-sdk behaves the same), so do not combine a non-loopback bind with anonymous
+auth.
+
+The guard reads the connection's local address from the request context
+(`http.LocalAddrContextKey`, set by net/http's server). When an embedder invokes
+the handler without it (not through net/http), the guard lets the request
+through, as go-sdk does. Embedders serving the handler some other way must
+provide their own Host check.
+
 ## `pkg/vmcp/` Stability Table
 
 The table below maps every sub-package to its stability level per RFC THV-0059. Verify against the merged RFC if there is a discrepancy.
@@ -55,7 +119,6 @@ The table below maps every sub-package to its stability level per RFC THV-0059. 
 | `pkg/vmcp/composer` | Experimental | Composite tool DAG executor; workflow API not yet stable |
 | `pkg/vmcp/cache` | Internal | Token cache; not intended for external use |
 | `pkg/vmcp/conversion` | Internal | CRD-to-config conversion; K8s-specific, not for local embedding |
-| `pkg/vmcp/discovery` | Internal | Discovery middleware; use via aggregator, not directly |
 | `pkg/vmcp/headerforward` | Internal | Per-backend HTTP header-forwarding round-tripper; the root `headerforward` package only; `pkg/vmcp/headerforward/wirefmt` is a separate wire-format helper used by aggregator/workloads/cli/operator |
 | `pkg/vmcp/k8s` | Internal | Kubernetes-specific discovery; not for local embedding |
 | `pkg/vmcp/workloads` | Internal | Backend workload helpers for K8s mode; not for local embedding |
@@ -102,6 +165,84 @@ Watch the [ToolHive changelog](https://github.com/stacklok/toolhive/releases) fo
 1. Check the release notes for any changes to packages you import.
 2. Run `go mod tidy` after updating the version.
 3. Ensure your tests cover the vMCP integration paths so breaking changes are caught early.
+
+### Answering a call with a URL elicitation
+
+To send the user to a page of yours (for example, to reconnect one backend's
+credential) and then have the client retry, return the URL elicitation answer
+from a `BackendClient` or `VMCP` decorator's `CallTool` (the two differ in
+telemetry, below). The example is a `BackendClient` decorator, which keys
+off the backend target:
+
+```go
+func (d *connectDecorator) CallTool(ctx context.Context, target *vmcp.BackendTarget,
+	name string, args, meta map[string]any, headers map[string]string,
+) (*vmcp.ToolCallResult, error) {
+	if !d.store.HasCredential(ctx, target.WorkloadID) {
+		e, err := vmcp.NewURLElicitation(target.WorkloadID,
+			"https://connect.example.com/"+target.WorkloadID, "Reconnect "+target.WorkloadName)
+		if err != nil {
+			return nil, err
+		}
+		answer, err := vmcp.NewURLElicitationRequiredError(e)
+		if err != nil {
+			return nil, err
+		}
+		return nil, answer
+	}
+	return d.BackendClient.CallTool(ctx, target, name, args, meta, headers)
+}
+```
+
+A `VMCP` decorator returns the same answer from
+`CallTool(ctx, identity, name, args, meta)`. It has no backend target, so it
+decides from the tool `name` and the caller's `identity`.
+
+vMCP renders the answer per protocol. A client that declared
+`elicitation.url` gets the URL: a Modern client as `input_required`, a Legacy
+(2025-11-25) client as the `-32042` error, which also carries your
+elicitation ID. Every other client gets a fallback carrying your elicitation
+messages and not the URL, and so does a Legacy session served by a replica
+that did not see its `initialize`. See
+[10-virtual-mcp-architecture.md](10-virtual-mcp-architecture.md#answering-a-call-with-a-url-elicitation)
+for the render table. You own the connect page, its identity check, and the
+credential store; vMCP owns only the protocol rendering. Your obligations:
+
+- **Put nothing sensitive in the URL.** No credentials, tokens, PII, or
+  pre-authenticated links. A client that declared URL mode shows the URL to
+  the user and may log it, and with audit `includeResponseData` on, vMCP's
+  own audit log stores it too.
+- **Expect your decorator to be called on the retry.** vMCP does not pass the
+  client's `inputResponses` to your decorator, so it answers the retry from
+  its own state. If it answers again after the user declined or cancelled,
+  vMCP ends the loop with an `isError` result carrying your message instead
+  of asking again. If it answers again after an accept, the user is asked
+  again, until the client's retry cap.
+- **Verify who opens the page.** The page must check that the user who opens
+  it is the same vMCP-authenticated subject the answer was issued to (for
+  example, by requiring the same sign-in and comparing the issuer and
+  subject), so a forwarded or leaked link cannot bind a credential to the
+  wrong user.
+- **Know how telemetry sees it.** With telemetry enabled
+  (`core.Config.TelemetryProvider` set), vMCP's backend telemetry wraps the
+  `BackendClient` you pass as `core.Config.BackendClient`, so an answer
+  returned from that decorator is recorded as a failed backend call: it
+  increments the error counter and marks the span as an error. The
+  `mcp.client.operation.duration` histogram carries `error.type`, the Go
+  type of the returned error (`*vmcp.URLElicitationRequiredError` when
+  returned unwrapped), and the span's `exception` event carries the same
+  type as `exception.type`, so both tell an answer apart from a real backend
+  failure. `exception.message` is `Error()`, which has no URL. Only the
+  legacy error counter has no type label. A `VMCP` decorator sits above
+  the core, so its answers never reach backend telemetry, and without
+  telemetry nothing is recorded. Count answers in your decorator if you need
+  a dedicated metric.
+
+vMCP meets the spec's requirement to bind the elicitation to the requesting
+user by rendering it in-band, on the same authenticated request, and holding
+no state: there is no elicitation ID to look up later and nothing a different
+caller can resume. The retry is an ordinary `tools/call`, which your decorator
+answers again from its own state.
 
 ### What ToolHive Does Not Provide for Embedders
 

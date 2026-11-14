@@ -8,7 +8,17 @@ on:
       - 'cmd/thv-operator/**'
       - 'pkg/**'
       - 'test/e2e/thv-operator/**'
+      # This job is the only one that runs the Ginkgo suite under
+      # test/e2e/thv-operator, and that suite sources every backend container
+      # image from test/e2e/images. A change there alters what these tests
+      # actually deploy, so it has to trigger them.
+      - 'test/e2e/images/**'
       - '.github/workflows/test-e2e-lifecycle.yml'
+
+# Cancel superseded PR runs; keep other events independent.
+concurrency:
+  group: test-e2e-lifecycle-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -34,7 +44,9 @@ jobs:
 
     steps:
     - name: Checkout code
-      uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      with:
+        persist-credentials: false
 
     - name: Disable containerd image store
       # Workaround for https://github.com/kubernetes-sigs/kind/issues/3795
@@ -51,27 +63,29 @@ jobs:
 
     - name: Set up Helm
       uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+      with:
+        version: v4.3.1
 
     - name: Setup Ko
       uses: ko-build/setup-ko@61b4d1d396f5b2e7d6bb6fefdce3dc38d1a13445 # v0.10
 
     - name: Set up Go
-      uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+      uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
       with:
         go-version: 'stable'
         cache: true
 
     - name: Install Task
-      uses: arduino/setup-task@v2
+      uses: arduino/setup-task@c0bc642852239c2689f73f4ea6459c29405f3c52 # v3.0.0
       with:
         version: 3.44.1
         repo-token: ${{ secrets.GITHUB_TOKEN }}
 
     - name: Create KIND Cluster with port mappings
-      uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc # pin@v1.12.0
+      uses: helm/kind-action@ea822c7bf1874f08e5a491df991c228edffc3376 # v1.15.2
       with:
         cluster_name: toolhive
-        version: v0.31.0 # kind
+        version: v0.33.0 # kind
         config: test/e2e/thv-operator/kind-config.yaml
         node_image: ${{ matrix.version }}
 
@@ -95,7 +109,7 @@ jobs:
 
         # Pull and load all test server images in parallel to speed up CI
         echo "Pulling and loading test server images..."
-        docker pull ${{ env.YARDSTICK_IMAGE }} &
+        docker pull "$YARDSTICK_IMAGE" &
         docker pull ghcr.io/stackloklabs/gofetch/server:1.0.1 &
         docker pull ghcr.io/stackloklabs/osv-mcp/server:0.0.7 &
         docker pull python:3.9-slim &
@@ -105,7 +119,7 @@ jobs:
         wait
 
         # Load all images into kind
-        kind load docker-image --name toolhive ${{ env.YARDSTICK_IMAGE }}
+        kind load docker-image --name toolhive "$YARDSTICK_IMAGE"
         kind load docker-image --name toolhive ghcr.io/stackloklabs/gofetch/server:1.0.1
         kind load docker-image --name toolhive ghcr.io/stackloklabs/osv-mcp/server:0.0.7
         kind load docker-image --name toolhive python:3.9-slim
@@ -116,7 +130,7 @@ jobs:
     - name: Deploy operator with VMCP_IMAGE
       run: |
         export KUBECONFIG=kconfig.yaml
-        echo "Deploying operator with vmcp image: ${{ env.VMCP_IMAGE }}"
+        echo "Deploying operator with vmcp image: ${VMCP_IMAGE}"
 
         # Build operator and proxyrunner images
         OPERATOR_IMAGE=$(KO_DOCKER_REPO=kind.local ko build --local -B ./cmd/thv-operator | tail -n 1)
@@ -130,7 +144,7 @@ jobs:
         helm upgrade --install toolhive-operator deploy/charts/operator \
           --set operator.image=${OPERATOR_IMAGE} \
           --set operator.toolhiveRunnerImage=${TOOLHIVE_IMAGE} \
-          --set operator.vmcpImage=${{ env.VMCP_IMAGE }} \
+          --set operator.vmcpImage=${VMCP_IMAGE} \
           --namespace toolhive-system \
           --create-namespace \
           --kubeconfig kconfig.yaml

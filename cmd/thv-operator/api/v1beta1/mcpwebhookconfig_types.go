@@ -103,11 +103,4 @@ type MCPWebhookConfigStatus struct {
 	// ConfigHash is a hash of the spec, used for detecting changes
 	// +optional
 	ConfigHash string `json:"configHash,omitempty"`
-
-	// ReferencingWorkloads is a list of workload resources that reference this MCPWebhookConfig.
-	// Each entry identifies the workload by kind and name.
-	// +listType=map
-	// +listMapKey=name
-	// +optional
-	ReferencingWorkloads []WorkloadReference `json:"referencingWorkloads,omitempty"`
 }

@@ -5,11 +5,14 @@ package e2e_test
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -85,6 +88,87 @@ var _ = Describe("vMCP CLI", Label("vmcp", "e2e"), func() {
 			tools, err := mcpClient.ListTools(ctx)
 			Expect(err).ToNot(HaveOccurred())
 			Expect(tools.Tools).ToNot(BeEmpty(), "vMCP should expose at least one tool from the backend")
+		})
+
+		It("rejects a DNS-rebinding Host header on both MCP revisions", func() {
+			By("starting thv vmcp serve in quick mode")
+			vMCPCmd = e2e.StartLongRunningTHVCommand(config,
+				"vmcp", "serve",
+				"--group", groupName,
+				"--port", fmt.Sprintf("%d", vMCPPort),
+			)
+			vMCPURL := vmcpEndpointURL(vMCPPort)
+			err := e2e.WaitForMCPServerReady(config, vMCPURL, "streamable-http", 60*time.Second)
+			Expect(err).ToNot(HaveOccurred(), "vMCP server should become ready")
+
+			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			defer cancel()
+			rawClient, err := e2e.NewRawMCPClient(20 * time.Second)
+			Expect(err).ToNot(HaveOccurred())
+			// The Host a rebinding page sends: its own name, now resolving to 127.0.0.1.
+			foreignHost := fmt.Sprintf("attacker.example:%d", vMCPPort)
+			// Every rejection below must be the loopback Host guard's 403, not a
+			// 403 from some other layer.
+			const hostRejection = "invalid Host header"
+
+			modernCall := func(host, toolName, input string) *e2e.RawResponse {
+				GinkgoHelper()
+				req, err := e2e.NewModernRequest("tools/call", map[string]any{
+					"name":      toolName,
+					"arguments": map[string]any{"input": input},
+				})
+				Expect(err).ToNot(HaveOccurred())
+				req.WithStreamableAccept()
+				if host != "" {
+					req.SetHeader("Host", host)
+				}
+				resp, err := rawClient.Send(ctx, vMCPURL, req)
+				Expect(err).ToNot(HaveOccurred())
+				return resp
+			}
+
+			By("resolving the backend echo tool over a loopback Host (positive control)")
+			listReq, err := e2e.NewModernRequest("tools/list", nil)
+			Expect(err).ToNot(HaveOccurred())
+			listResp, err := rawClient.Send(ctx, vMCPURL, listReq.WithStreamableAccept())
+			Expect(err).ToNot(HaveOccurred())
+			Expect(listResp.StatusCode).To(Equal(http.StatusOK), "body: %s", listResp.Body)
+			var listed struct {
+				Tools []struct {
+					Name string `json:"name"`
+				} `json:"tools"`
+			}
+			Expect(json.Unmarshal(listResp.Result, &listed)).To(Succeed())
+			echoTool := ""
+			for _, tool := range listed.Tools {
+				if strings.HasSuffix(tool.Name, "echo") {
+					echoTool = tool.Name
+					break
+				}
+			}
+			Expect(echoTool).ToNot(BeEmpty(), "the yardstick backend must expose an echo tool: %s", listResp.Result)
+
+			resp := modernCall("", echoTool, "loopbackhost")
+			Expect(resp.StatusCode).To(Equal(http.StatusOK), "body: %s", resp.Body)
+			Expect(string(resp.Result)).To(ContainSubstring("loopbackhost"))
+
+			By("rejecting a Modern tools/call whose Host is the rebound hostname")
+			resp = modernCall(foreignHost, echoTool, "reboundhost")
+			Expect(resp.StatusCode).To(Equal(http.StatusForbidden), "body: %s", resp.Body)
+			Expect(string(resp.Body)).To(ContainSubstring(hostRejection))
+
+			By("rejecting a Modern tools/list whose Host is the rebound hostname")
+			listResp, err = rawClient.Send(ctx, vMCPURL, listReq.SetHeader("Host", foreignHost))
+			Expect(err).ToNot(HaveOccurred())
+			Expect(listResp.StatusCode).To(Equal(http.StatusForbidden), "body: %s", listResp.Body)
+			Expect(string(listResp.Body)).To(ContainSubstring(hostRejection))
+
+			By("rejecting a Legacy initialize whose Host is the rebound hostname, as before")
+			initReq := e2e.NewLegacyInitializeRequest("dns-rebinding-e2e", "1.0").WithStreamableAccept()
+			initResp, err := rawClient.Send(ctx, vMCPURL, initReq.SetHeader("Host", foreignHost))
+			Expect(err).ToNot(HaveOccurred())
+			Expect(initResp.StatusCode).To(Equal(http.StatusForbidden), "body: %s", initResp.Body)
+			Expect(string(initResp.Body)).To(ContainSubstring(hostRejection))
 		})
 
 		It("binds only to 127.0.0.1", func() {

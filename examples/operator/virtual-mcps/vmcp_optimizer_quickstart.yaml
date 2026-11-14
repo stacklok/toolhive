@@ -288,6 +288,9 @@ spec:
 
 ---
 # Step 2j: MCPServer backend - ida-pro-mcp (IDA Pro reverse engineering)
+# The 1.4.0 tag is mutable and its latest rebuild resolves mcp Python SDK 2.0.0,
+# which dropped mcp.server.fastmcp and makes the container crashloop. Pinned to
+# the last build that resolved mcp 1.x. See test/e2e/images/images.go.
 apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPServer
 metadata:
@@ -296,7 +299,7 @@ metadata:
 spec:
   groupRef:
     name: optimizer-services
-  image: ghcr.io/stacklok/dockyard/uvx/ida-pro-mcp:1.4.0
+  image: ghcr.io/stacklok/dockyard/uvx/ida-pro-mcp:1.4.0@sha256:5a596d965fe05052d615a41152213f93ebc72bf46b07304718de948833d73c70
   transport: stdio
   proxyPort: 8080
   resources:

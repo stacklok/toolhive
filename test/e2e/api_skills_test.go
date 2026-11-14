@@ -49,13 +49,15 @@ type skillMetadataResponse struct {
 }
 
 type installSkillRequest struct {
-	Name        string `json:"name"`
-	Version     string `json:"version,omitempty"`
-	Scope       string `json:"scope,omitempty"`
-	ProjectRoot string `json:"project_root,omitempty"`
-	Client      string `json:"client,omitempty"`
-	Force       bool   `json:"force,omitempty"`
-	Group       string `json:"group,omitempty"`
+	Name          string `json:"name"`
+	Version       string `json:"version,omitempty"`
+	Scope         string `json:"scope,omitempty"`
+	ProjectRoot   string `json:"project_root,omitempty"`
+	Client        string `json:"client,omitempty"`
+	Force         bool   `json:"force,omitempty"`
+	Group         string `json:"group,omitempty"`
+	AllowUnsigned bool   `json:"allow_unsigned,omitempty"`
+	PublicKey     string `json:"public_key,omitempty"`
 }
 
 type installSkillResponse struct {
@@ -203,7 +205,9 @@ func buildAndInstallSkill(server *e2e.Server, skillName, description string) {
 }
 
 func pushSkill(server *e2e.Server, reference string) *http.Response {
-	reqBody := pushSkillRequest{Reference: reference}
+	// E2E artifacts are pushed unsigned (no signing infrastructure in the
+	// suite); project-scoped installs of them pass allow_unsigned.
+	reqBody := pushSkillRequest{Reference: reference, NoSign: true}
 	jsonData, err := json.Marshal(reqBody)
 	ExpectWithOffset(1, err).ToNot(HaveOccurred())
 
@@ -218,6 +222,8 @@ func pushSkill(server *e2e.Server, reference string) *http.Response {
 
 type pushSkillRequest struct {
 	Reference string `json:"reference"`
+	Key       string `json:"key,omitempty"`
+	NoSign    bool   `json:"no_sign,omitempty"`
 }
 
 // createUpstreamRegistryWithSkill creates a JSON file in the upstream registry
@@ -1088,10 +1094,6 @@ func buildAndPushSkill(server *e2e.Server, ociRegistry *httptest.Server, skillNa
 	return ociRef
 }
 
-// This RFC THV-0080 feature is gated behind TOOLHIVE_SKILLS_LOCK_ENABLED
-// while it lands across a stack of PRs (see skills.LockFileFeatureEnabled),
-// so this Describe block runs its own server with the gate turned on rather
-// than sharing the "Skills API" block's default-off server above.
 var _ = Describe("Project-scope skills lock file (RFC THV-0080)", Label("api", "api-registry", "skills", "skills-lock", "e2e"), func() {
 	var (
 		config    *e2e.ServerConfig
@@ -1100,7 +1102,6 @@ var _ = Describe("Project-scope skills lock file (RFC THV-0080)", Label("api", "
 
 	BeforeEach(func() {
 		config = e2e.NewServerConfig()
-		config.ExtraEnv = []string{"TOOLHIVE_SKILLS_LOCK_ENABLED=true"}
 		apiServer = e2e.StartServer(config)
 	})
 
@@ -1115,7 +1116,7 @@ var _ = Describe("Project-scope skills lock file (RFC THV-0080)", Label("api", "
 
 		By("Installing the skill into the project")
 		installResp := installSkill(apiServer, installSkillRequest{
-			Name: ociRef, Scope: "project", ProjectRoot: projectRoot,
+			Name: ociRef, Scope: "project", ProjectRoot: projectRoot, AllowUnsigned: true,
 		})
 		defer installResp.Body.Close()
 		Expect(installResp.StatusCode).To(Equal(http.StatusCreated))
@@ -1133,10 +1134,36 @@ var _ = Describe("Project-scope skills lock file (RFC THV-0080)", Label("api", "
 		Expect(entry.Digest).ToNot(BeEmpty())
 		Expect(entry.ContentDigest).ToNot(BeEmpty())
 		Expect(entry.Explicit).To(BeTrue())
+		Expect(entry.Unsigned).To(BeTrue(), "the unsigned exception must be recorded in the lock entry")
 
 		By("Cleaning up")
 		cleanupResp := uninstallScopedSkill(apiServer, skillName, projectRoot)
 		defer cleanupResp.Body.Close()
+	})
+
+	It("rejects an unsigned project-scoped install without allow_unsigned", func() {
+		projectRoot := makeE2EProjectRoot()
+		skillName := "lock-e2e-unsigned-rejected"
+
+		By("Starting an in-process OCI registry and pushing an unsigned test skill")
+		ociRegistry := httptest.NewServer(registry.New())
+		DeferCleanup(ociRegistry.Close)
+		ociRef := buildAndPushSkill(apiServer, ociRegistry, skillName, "An unsigned skill that must be rejected")
+
+		By("Installing without allow_unsigned and expecting a 403")
+		installResp := installSkill(apiServer, installSkillRequest{
+			Name: ociRef, Scope: "project", ProjectRoot: projectRoot,
+		})
+		defer installResp.Body.Close()
+		Expect(installResp.StatusCode).To(Equal(http.StatusForbidden))
+
+		By("Verifying no lock entry was written")
+		root, err := lockfile.OpenRoot(projectRoot)
+		Expect(err).ToNot(HaveOccurred())
+		lf, err := lockfile.Load(root)
+		Expect(err).ToNot(HaveOccurred())
+		_, ok := lf.Get(skillName)
+		Expect(ok).To(BeFalse(), "a rejected install must not write a lock entry")
 	})
 
 	It("removes the lock entry when the skill is uninstalled", func() {
@@ -1150,7 +1177,7 @@ var _ = Describe("Project-scope skills lock file (RFC THV-0080)", Label("api", "
 
 		By("Installing the skill into the project")
 		installResp := installSkill(apiServer, installSkillRequest{
-			Name: ociRef, Scope: "project", ProjectRoot: projectRoot,
+			Name: ociRef, Scope: "project", ProjectRoot: projectRoot, AllowUnsigned: true,
 		})
 		defer installResp.Body.Close()
 		Expect(installResp.StatusCode).To(Equal(http.StatusCreated))
@@ -1185,7 +1212,7 @@ var _ = Describe("Project-scope skills lock file (RFC THV-0080)", Label("api", "
 
 		By("Installing the skill into the project")
 		installResp := installSkill(apiServer, installSkillRequest{
-			Name: ociRef, Scope: "project", ProjectRoot: projectRoot,
+			Name: ociRef, Scope: "project", ProjectRoot: projectRoot, AllowUnsigned: true,
 		})
 		defer installResp.Body.Close()
 		Expect(installResp.StatusCode).To(Equal(http.StatusCreated))
@@ -1234,7 +1261,7 @@ var _ = Describe("Project-scope skills lock file (RFC THV-0080)", Label("api", "
 
 		By("Installing the skill into the project")
 		installResp := installSkill(apiServer, installSkillRequest{
-			Name: ociRef, Scope: "project", ProjectRoot: projectRoot,
+			Name: ociRef, Scope: "project", ProjectRoot: projectRoot, AllowUnsigned: true,
 		})
 		defer installResp.Body.Close()
 		Expect(installResp.StatusCode).To(Equal(http.StatusCreated))
@@ -1293,12 +1320,14 @@ var _ = Describe("Project-scope skills lock file (RFC THV-0080)", Label("api", "
 })
 
 type upgradeSkillsRequest struct {
-	ProjectRoot    string   `json:"project_root"`
-	Names          []string `json:"names,omitempty"`
-	Preview        bool     `json:"preview,omitempty"`
-	FailOnChanges  bool     `json:"fail_on_changes,omitempty"`
-	AllowRefChange bool     `json:"allow_ref_change,omitempty"`
-	Clients        []string `json:"clients,omitempty"`
+	ProjectRoot       string   `json:"project_root"`
+	Names             []string `json:"names,omitempty"`
+	Preview           bool     `json:"preview,omitempty"`
+	FailOnChanges     bool     `json:"fail_on_changes,omitempty"`
+	AllowRefChange    bool     `json:"allow_ref_change,omitempty"`
+	AllowSignerChange bool     `json:"allow_signer_change,omitempty"`
+	PublicKey         string   `json:"public_key,omitempty"`
+	Clients           []string `json:"clients,omitempty"`
 }
 
 type upgradeOutcomeResponse struct {
@@ -1307,6 +1336,7 @@ type upgradeOutcomeResponse struct {
 	OldDigest            string `json:"old_digest,omitempty"`
 	NewDigest            string `json:"new_digest,omitempty"`
 	NewResolvedReference string `json:"new_resolved_reference,omitempty"`
+	TrustAnchorChanged   bool   `json:"trust_anchor_changed,omitempty"`
 	Reason               string `json:"reason,omitempty"`
 	Error                string `json:"error,omitempty"`
 }

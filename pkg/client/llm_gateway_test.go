@@ -72,7 +72,7 @@ func TestRealClientConfigs_ConfigureAndRevert(t *testing.T) {
 	applyCfg := llmgateway.ApplyConfig{
 		GatewayURL:         "https://gw.example.com",
 		ProxyBaseURL:       "http://localhost:14000/v1",
-		TokenHelperCommand: `"thv" llm token`,
+		TokenHelperCommand: `thv llm token`,
 	}
 
 	// wantPointers maps RFC 6901 JSON pointer → expected string value after
@@ -85,9 +85,10 @@ func TestRealClientConfigs_ConfigureAndRevert(t *testing.T) {
 			// ~/.claude/settings.json
 			clientType: ClaudeCode,
 			wantPointers: map[string]string{
-				"/apiKeyHelper":                          `"thv" llm token`,
-				"/env/ANTHROPIC_BASE_URL":                "https://gw.example.com",
-				"/env/CLAUDE_CODE_API_KEY_HELPER_TTL_MS": "300000",
+				"/apiKeyHelper":                                   `thv llm token`,
+				"/env/ANTHROPIC_BASE_URL":                         "https://gw.example.com",
+				"/env/CLAUDE_CODE_API_KEY_HELPER_TTL_MS":          "300000",
+				"/env/CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY": "1",
 			},
 		},
 		{
@@ -104,22 +105,6 @@ func TestRealClientConfigs_ConfigureAndRevert(t *testing.T) {
 			wantPointers: map[string]string{
 				"/cursor.general.openAIBaseURL": "http://localhost:14000/v1",
 				"/cursor.general.openAIAPIKey":  "thv-proxy",
-			},
-		},
-		{
-			// ~/.<platform>/Code/User/settings.json
-			clientType: VSCode,
-			wantPointers: map[string]string{
-				"/github.copilot.advanced.serverUrl": "http://localhost:14000/v1",
-				"/github.copilot.advanced.apiKey":    "thv-proxy",
-			},
-		},
-		{
-			// ~/.<platform>/Code - Insiders/User/settings.json
-			clientType: VSCodeInsider,
-			wantPointers: map[string]string{
-				"/github.copilot.advanced.serverUrl": "http://localhost:14000/v1",
-				"/github.copilot.advanced.apiKey":    "thv-proxy",
 			},
 		},
 		{
@@ -157,7 +142,7 @@ func TestRealClientConfigs_ConfigureAndRevert(t *testing.T) {
 			}
 
 			// Revert and verify every pointer is gone.
-			require.NoError(t, cm.RevertLLMGateway(tc.clientType, path))
+			require.NoError(t, cm.RevertLLMGateway(tc.clientType, path, true))
 
 			data, err = os.ReadFile(path)
 			require.NoError(t, err)
@@ -167,6 +152,186 @@ func TestRealClientConfigs_ConfigureAndRevert(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestConfigureLLMGateway_VSCodeCustomEndpoint(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		clientType ClientApp
+		pathPart   string
+	}{
+		{name: "stable", clientType: VSCode, pathPart: "Code"},
+		{name: "insiders", clientType: VSCodeInsider, pathPart: "Code - Insiders"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			home := t.TempDir()
+			cm := NewTestClientManager(home, nil, supportedClientIntegrations, nil)
+			appCfg := cm.lookupClientAppConfig(tt.clientType)
+			require.NotNil(t, appCfg)
+			assert.Equal(t, llmgateway.ModeVSCode, appCfg.LLMGatewayMode)
+			assert.Equal(t, "chatLanguageModels.json", appCfg.LLMSettingsFile)
+			assert.Contains(t, appCfg.LLMSettingsRelPath, tt.pathPart)
+
+			path, err := cm.ConfigureLLMGateway(tt.clientType, llmgateway.ApplyConfig{
+				ProxyBaseURL:     "http://localhost:14000/v1",
+				DiscoveredModels: []string{"model-a", "model-b"},
+			})
+			require.NoError(t, err)
+			assert.Equal(t, "chatLanguageModels.json", filepath.Base(path))
+
+			var groups []vsCodeProviderGroup
+			data, err := os.ReadFile(path)
+			require.NoError(t, err)
+			require.NoError(t, json.Unmarshal(data, &groups))
+			require.Len(t, groups, 1)
+			assert.Equal(t, "ToolHive", groups[0].Name)
+			assert.Equal(t, "customendpoint", groups[0].Vendor)
+			require.Len(t, groups[0].Models, 2)
+			for i, modelID := range []string{"model-a", "model-b"} {
+				model := groups[0].Models[i]
+				assert.Equal(t, modelID, model.ID)
+				assert.Equal(t, modelID, model.Name)
+				assert.Equal(t, "http://localhost:14000/v1", model.URL)
+				assert.True(t, model.ToolCalling)
+				assert.False(t, model.Vision)
+				assert.Positive(t, model.MaxInputTokens)
+				assert.Positive(t, model.MaxOutputTokens)
+				assert.Equal(t, "Bearer thv-proxy", model.RequestHeaders["Authorization"])
+			}
+		})
+	}
+}
+
+func TestConfigureLLMGateway_VSCodePreservesContentAndIsIdempotent(t *testing.T) {
+	t.Parallel()
+
+	home := t.TempDir()
+	cm := NewTestClientManager(home, nil, supportedClientIntegrations, nil)
+	appCfg := cm.lookupClientAppConfig(VSCode)
+	chatPath := cm.buildLLMSettingsPath(appCfg)
+	require.NoError(t, os.MkdirAll(filepath.Dir(chatPath), 0o700))
+	require.NoError(t, os.WriteFile(chatPath, []byte(`[
+		// Keep this provider and its comment.
+		{"name":"Other","vendor":"other","models":[],"unrelated":true},
+		{"name":"ToolHive","vendor":"customendpoint","models":[{"id":"stale"}]}
+	]`), 0o600))
+	settingsPath := filepath.Join(filepath.Dir(chatPath), "settings.json")
+	require.NoError(t, os.WriteFile(settingsPath, []byte(`{
+		"editor.fontSize": 15,
+		"github.copilot.enable": {"*": true},
+		"github.copilot.advanced.serverUrl": "http://obsolete",
+		"github.copilot.advanced.apiKey": "obsolete"
+	}`), 0o600))
+
+	applyCfg := llmgateway.ApplyConfig{
+		ProxyBaseURL:     "http://localhost:14000/v1",
+		DiscoveredModels: []string{"model-a"},
+	}
+	for range 2 {
+		_, err := cm.ConfigureLLMGateway(VSCode, applyCfg)
+		require.NoError(t, err)
+	}
+
+	data, err := os.ReadFile(chatPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "// Keep this provider and its comment.")
+	var groups []map[string]any
+	standardized, err := hujson.Standardize(data)
+	require.NoError(t, err)
+	require.NoError(t, json.Unmarshal(standardized, &groups))
+	require.Len(t, groups, 2, "repeat setup must replace, not duplicate, the ToolHive group")
+	assert.Equal(t, "Other", groups[0]["name"])
+	assert.Equal(t, true, groups[0]["unrelated"])
+	assert.Equal(t, "ToolHive", groups[1]["name"])
+
+	settings, err := os.ReadFile(settingsPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(settings), `"editor.fontSize"`)
+	assert.Contains(t, string(settings), `"github.copilot.enable"`)
+	assert.NotContains(t, string(settings), "github.copilot.advanced.serverUrl")
+	assert.NotContains(t, string(settings), "github.copilot.advanced.apiKey")
+}
+
+func TestRevertLLMGateway_VSCodeMigratesLegacyConfigPath(t *testing.T) {
+	t.Parallel()
+
+	home := t.TempDir()
+	cm := NewTestClientManager(home, nil, supportedClientIntegrations, nil)
+	legacyPath := filepath.Join(filepath.Dir(cm.buildLLMSettingsPath(cm.lookupClientAppConfig(VSCode))), "settings.json")
+	require.NoError(t, os.MkdirAll(filepath.Dir(legacyPath), 0o700))
+	require.NoError(t, os.WriteFile(legacyPath, []byte(`{
+		"editor.fontSize": 15,
+		"github.copilot.advanced.serverUrl": "http://localhost:14000/v1",
+		"github.copilot.advanced.apiKey": "thv-proxy"
+	}`), 0o600))
+
+	require.NoError(t, cm.RevertLLMGateway(VSCode, legacyPath, true))
+	data, err := os.ReadFile(legacyPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), `"editor.fontSize"`)
+	assert.NotContains(t, string(data), "github.copilot.advanced")
+}
+
+func TestConfigureLLMGateway_VSCodeErrors(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		content string
+		models  []string
+		wantErr string
+	}{
+		{name: "no discovered models", models: nil, wantErr: "returned no models"},
+		{name: "malformed JSON", content: `[`, models: []string{"model-a"}, wantErr: "parsing"},
+		{name: "wrong root type", content: `{}`, models: []string{"model-a"}, wantErr: "expected an array"},
+		{name: "malformed provider", content: `[42]`, models: []string{"model-a"}, wantErr: "provider group"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			home := t.TempDir()
+			cm := NewTestClientManager(home, nil, supportedClientIntegrations, nil)
+			path := cm.buildLLMSettingsPath(cm.lookupClientAppConfig(VSCode))
+			if tt.content != "" {
+				require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o700))
+				require.NoError(t, os.WriteFile(path, []byte(tt.content), 0o600))
+			}
+			_, err := cm.ConfigureLLMGateway(VSCode, llmgateway.ApplyConfig{
+				ProxyBaseURL: "http://localhost:14000/v1", DiscoveredModels: tt.models,
+			})
+			require.ErrorContains(t, err, tt.wantErr)
+		})
+	}
+}
+
+func TestRevertLLMGateway_VSCodePreservesUnrelatedGroups(t *testing.T) {
+	t.Parallel()
+
+	home := t.TempDir()
+	cm := NewTestClientManager(home, nil, supportedClientIntegrations, nil)
+	path, err := cm.ConfigureLLMGateway(VSCodeInsider, llmgateway.ApplyConfig{
+		ProxyBaseURL: "http://localhost:14000/v1", DiscoveredModels: []string{"model-a"},
+	})
+	require.NoError(t, err)
+	data := []byte(`[
+		{"name":"Other","vendor":"other","models":[]},
+		{"name":"ToolHive","vendor":"customendpoint","models":[]}
+	]`)
+	require.NoError(t, os.WriteFile(path, data, 0o600))
+
+	require.NoError(t, cm.RevertLLMGateway(VSCodeInsider, path, true))
+	result, err := os.ReadFile(path)
+	require.NoError(t, err)
+	var groups []vsCodeProviderGroup
+	require.NoError(t, json.Unmarshal(result, &groups))
+	require.Len(t, groups, 1)
+	assert.Equal(t, "Other", groups[0].Name)
+	assert.Equal(t, "other", groups[0].Vendor)
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -183,6 +348,7 @@ func TestConfigureLLMGateway_ClaudeCodeBedrock(t *testing.T) {
 		"/env/ANTHROPIC_DEFAULT_HAIKU_MODEL":          "us.anthropic.claude-haiku-x",
 		"/env/ANTHROPIC_DEFAULT_OPUS_MODEL":           "us.anthropic.claude-opus-x[1m]",
 		"/env/ANTHROPIC_DEFAULT_SONNET_MODEL":         "us.anthropic.claude-sonnet-x[1m]",
+		"/env/ANTHROPIC_DEFAULT_FABLE_MODEL":          "us.anthropic.claude-fable-x",
 	}
 
 	t.Run("BedrockCompat writes keys", func(t *testing.T) {
@@ -193,11 +359,12 @@ func TestConfigureLLMGateway_ClaudeCodeBedrock(t *testing.T) {
 
 		path, err := cm.ConfigureLLMGateway(ClaudeCode, llmgateway.ApplyConfig{
 			GatewayURL:         "https://gw.example.com",
-			TokenHelperCommand: `"thv" llm token`,
+			TokenHelperCommand: `thv llm token`,
 			BedrockCompat:      true,
 			BedrockHaikuModel:  "us.anthropic.claude-haiku-x",
 			BedrockOpusModel:   "us.anthropic.claude-opus-x[1m]",
 			BedrockSonnetModel: "us.anthropic.claude-sonnet-x[1m]",
+			BedrockFableModel:  "us.anthropic.claude-fable-x",
 		})
 		require.NoError(t, err)
 
@@ -218,7 +385,7 @@ func TestConfigureLLMGateway_ClaudeCodeBedrock(t *testing.T) {
 
 		path, err := cm.ConfigureLLMGateway(ClaudeCode, llmgateway.ApplyConfig{
 			GatewayURL:         "https://gw.example.com",
-			TokenHelperCommand: `"thv" llm token`,
+			TokenHelperCommand: `thv llm token`,
 		})
 		require.NoError(t, err)
 
@@ -229,6 +396,264 @@ func TestConfigureLLMGateway_ClaudeCodeBedrock(t *testing.T) {
 			assert.False(t, ok, "pointer %q should be absent without BedrockCompat", ptr)
 		}
 	})
+}
+
+// TestClaudeCodeBedrockKeys_SetupAndRevert covers the ownership rule for
+// Claude Code's Bedrock env keys: a setup without Bedrock and revert remove
+// them only when the previous setup wrote them, and otherwise leave the user's
+// own values alone. Non-Bedrock keys are reverted either way.
+func TestClaudeCodeBedrockKeys_SetupAndRevert(t *testing.T) {
+	t.Parallel()
+
+	userEnv := map[string]string{
+		"/env/CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS": "1",
+		"/env/ANTHROPIC_DEFAULT_OPUS_MODEL":           "claude-opus-own",
+	}
+
+	tests := []struct {
+		name string
+		// clear is both the setup's ClearBedrockKeys and revert's clearBedrockKeys.
+		clear       bool
+		wantPresent bool
+	}{
+		{name: "without a previous Bedrock setup the keys are left alone", wantPresent: true},
+		{name: "after a Bedrock setup the keys are removed", clear: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			home := t.TempDir()
+			cm := NewTestClientManager(home, nil, supportedClientIntegrations, nil)
+			settingsPath := filepath.Join(home, ".claude", "settings.json")
+			require.NoError(t, os.MkdirAll(filepath.Dir(settingsPath), 0o700))
+			require.NoError(t, os.WriteFile(settingsPath, []byte(`{"env": {
+				"CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS": "1",
+				"ANTHROPIC_DEFAULT_OPUS_MODEL": "claude-opus-own"
+			}}`), 0o600))
+
+			assertBedrockKeys := func(stage string) {
+				t.Helper()
+				data, err := os.ReadFile(settingsPath)
+				require.NoError(t, err)
+				for ptr, want := range userEnv {
+					got, ok := jsonPointerGet(data, ptr)
+					assert.Equal(t, tt.wantPresent, ok, "%s: presence of %q", stage, ptr)
+					if tt.wantPresent {
+						assert.Equal(t, want, got, "%s: value of %q", stage, ptr)
+					}
+				}
+			}
+
+			path, err := cm.ConfigureLLMGateway(ClaudeCode, llmgateway.ApplyConfig{
+				GatewayURL:         "https://gw.example.com",
+				TokenHelperCommand: `thv llm token`,
+				ClearBedrockKeys:   tt.clear,
+			})
+			require.NoError(t, err)
+			assertBedrockKeys("after setup")
+
+			// Put back what the user had, so revert is tested on its own.
+			if !tt.wantPresent {
+				require.NoError(t, os.WriteFile(settingsPath, []byte(`{"apiKeyHelper": "thv llm token", "env": {
+					"CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS": "1",
+					"ANTHROPIC_DEFAULT_OPUS_MODEL": "claude-opus-own"
+				}}`), 0o600))
+			}
+			require.NoError(t, cm.RevertLLMGateway(ClaudeCode, path, tt.clear))
+			assertBedrockKeys("after revert")
+
+			data, err := os.ReadFile(settingsPath)
+			require.NoError(t, err)
+			_, ok := jsonPointerGet(data, "/apiKeyHelper")
+			assert.False(t, ok, "revert removes the non-Bedrock keys either way")
+		})
+	}
+}
+
+func TestConfigureLLMGateway_ClaudeCodePromptCache(t *testing.T) {
+	t.Parallel()
+
+	cachePointers := map[string]string{
+		"/promptCacheTtl":               "1h",
+		"/subagentPromptCacheTtl":       "1h",
+		"/env/ENABLE_PROMPT_CACHING_1H": "1",
+	}
+	baseCfg := llmgateway.ApplyConfig{
+		GatewayURL:         "https://gw.example.com",
+		TokenHelperCommand: `thv llm token`,
+	}
+
+	t.Run("default writes both request buckets and legacy fallback", func(t *testing.T) {
+		t.Parallel()
+		home := t.TempDir()
+		cm := NewTestClientManager(home, nil, supportedClientIntegrations, nil)
+		require.NoError(t, os.MkdirAll(filepath.Join(home, ".claude"), 0o700))
+
+		path, err := cm.ConfigureLLMGateway(ClaudeCode, baseCfg)
+		require.NoError(t, err)
+
+		data, err := os.ReadFile(path)
+		require.NoError(t, err)
+		for ptr, want := range cachePointers {
+			got, ok := jsonPointerGet(data, ptr)
+			assert.True(t, ok, "pointer %q missing", ptr)
+			assert.Equal(t, want, got, "wrong value at %q", ptr)
+		}
+	})
+
+	t.Run("short opt-out removes keys and explicit false restores them", func(t *testing.T) {
+		t.Parallel()
+		home := t.TempDir()
+		cm := NewTestClientManager(home, nil, supportedClientIntegrations, nil)
+		require.NoError(t, os.MkdirAll(filepath.Join(home, ".claude"), 0o700))
+
+		path, err := cm.ConfigureLLMGateway(ClaudeCode, baseCfg)
+		require.NoError(t, err)
+		shortCfg := baseCfg
+		shortCfg.ShortPromptCache = true
+		_, err = cm.ConfigureLLMGateway(ClaudeCode, shortCfg)
+		require.NoError(t, err)
+
+		data, err := os.ReadFile(path)
+		require.NoError(t, err)
+		for ptr := range cachePointers {
+			_, ok := jsonPointerGet(data, ptr)
+			assert.False(t, ok, "pointer %q should be absent with the short-cache opt-out", ptr)
+		}
+
+		_, err = cm.ConfigureLLMGateway(ClaudeCode, baseCfg)
+		require.NoError(t, err)
+		data, err = os.ReadFile(path)
+		require.NoError(t, err)
+		for ptr, want := range cachePointers {
+			got, ok := jsonPointerGet(data, ptr)
+			assert.True(t, ok, "pointer %q missing after restoring the default", ptr)
+			assert.Equal(t, want, got, "wrong value at %q", ptr)
+		}
+	})
+
+	t.Run("teardown removes all prompt cache keys", func(t *testing.T) {
+		t.Parallel()
+		home := t.TempDir()
+		cm := NewTestClientManager(home, nil, supportedClientIntegrations, nil)
+		require.NoError(t, os.MkdirAll(filepath.Join(home, ".claude"), 0o700))
+
+		path, err := cm.ConfigureLLMGateway(ClaudeCode, baseCfg)
+		require.NoError(t, err)
+		require.NoError(t, cm.RevertLLMGateway(ClaudeCode, path, true))
+
+		data, err := os.ReadFile(path)
+		require.NoError(t, err)
+		for ptr := range cachePointers {
+			_, ok := jsonPointerGet(data, ptr)
+			assert.False(t, ok, "pointer %q should be absent after teardown", ptr)
+		}
+	})
+}
+
+func TestPromptCacheConflict(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		files   map[string]string
+		env     map[string]string
+		want    string
+		wantErr string
+	}{
+		{name: "no override"},
+		{
+			name: "process global five-minute override",
+			env:  map[string]string{"FORCE_PROMPT_CACHING_5M": "1"},
+			want: "FORCE_PROMPT_CACHING_5M=1 in the process environment",
+		},
+		{
+			name: "process bucket five-minute override",
+			env:  map[string]string{"CLAUDE_CODE_PROMPT_CACHE_TTL": "5m"},
+			want: "CLAUDE_CODE_PROMPT_CACHE_TTL=5m in the process environment",
+		},
+		{
+			name:  "managed top-level override",
+			files: map[string]string{"managed-settings.json": `{"promptCacheTtl":"5m"}`},
+			want:  "promptCacheTtl=5m",
+		},
+		{
+			name: "managed drop-in environment override",
+			files: map[string]string{
+				"managed-settings.d/10-cache.json": `{"env":{"CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL":"5m"}}`,
+			},
+			want: "CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL=5m",
+		},
+		{
+			name: "later managed drop-in restores one hour",
+			files: map[string]string{
+				"managed-settings.json":                   `{"promptCacheTtl":"5m"}`,
+				"managed-settings.d/10-five-minutes.json": `{"promptCacheTtl":"5m"}`,
+				"managed-settings.d/20-one-hour.json":     `{"promptCacheTtl":"1h"}`,
+			},
+		},
+		{
+			name:  "process one-hour bucket overrides managed five minutes",
+			files: map[string]string{"managed-settings.json": `{"promptCacheTtl":"5m"}`},
+			env:   map[string]string{"CLAUDE_CODE_PROMPT_CACHE_TTL": "1h"},
+		},
+		{
+			name:    "malformed managed settings",
+			files:   map[string]string{"managed-settings.json": `{`},
+			wantErr: "parsing",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			managedDir := t.TempDir()
+			for relativePath, contents := range tt.files {
+				writePromptCacheSettings(t, filepath.Join(managedDir, filepath.FromSlash(relativePath)), contents)
+			}
+			lookupEnv := func(name string) (string, bool) {
+				value, ok := tt.env[name]
+				return value, ok
+			}
+
+			got, err := promptCacheConflict(managedDir, lookupEnv)
+			if tt.wantErr != "" {
+				require.ErrorContains(t, err, tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			if tt.want == "" {
+				assert.Empty(t, got)
+			} else {
+				assert.Contains(t, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestManagedPromptCacheSettingsPaths(t *testing.T) {
+	t.Parallel()
+
+	managedDir := t.TempDir()
+	writePromptCacheSettings(t, filepath.Join(managedDir, "managed-settings.d", "20-later.json"), `{}`)
+	writePromptCacheSettings(t, filepath.Join(managedDir, "managed-settings.d", "10-earlier.json"), `{}`)
+	writePromptCacheSettings(t, filepath.Join(managedDir, "managed-settings.d", ".hidden.json"), `{}`)
+	writePromptCacheSettings(t, filepath.Join(managedDir, "managed-settings.d", "README.txt"), `{}`)
+
+	paths, err := managedPromptCacheSettingsPaths(managedDir)
+	require.NoError(t, err)
+	assert.Equal(t, []string{
+		filepath.Join(managedDir, "managed-settings.json"),
+		filepath.Join(managedDir, "managed-settings.d", "10-earlier.json"),
+		filepath.Join(managedDir, "managed-settings.d", "20-later.json"),
+	}, paths)
+}
+
+func writePromptCacheSettings(t *testing.T, path, settings string) {
+	t.Helper()
+	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o700))
+	require.NoError(t, os.WriteFile(path, []byte(settings), 0o600))
 }
 
 // newLLMManager builds a ClientManager with a single direct-mode LLM entry
@@ -321,7 +746,7 @@ func TestConfigureLLMGateway_CreatesFile(t *testing.T) {
 	require.NoError(t, os.MkdirAll(claudeDir, 0o700))
 
 	path, err := cm.ConfigureLLMGateway(ClaudeCode, llmgateway.ApplyConfig{
-		TokenHelperCommand: `"thv" llm token`,
+		TokenHelperCommand: `thv llm token`,
 	})
 	require.NoError(t, err)
 	assert.Equal(t, filepath.Join(claudeDir, "settings.json"), path)
@@ -330,7 +755,7 @@ func TestConfigureLLMGateway_CreatesFile(t *testing.T) {
 	require.NoError(t, err)
 	got, ok := jsonPointerGet(data, "/apiKeyHelper")
 	assert.True(t, ok, "/apiKeyHelper pointer must be present")
-	assert.Equal(t, `"thv" llm token`, got, "/apiKeyHelper must contain the token helper command")
+	assert.Equal(t, `thv llm token`, got, "/apiKeyHelper must contain the token helper command")
 }
 
 func TestConfigureLLMGateway_PreservesExistingKeys(t *testing.T) {
@@ -345,7 +770,7 @@ func TestConfigureLLMGateway_PreservesExistingKeys(t *testing.T) {
 	require.NoError(t, os.WriteFile(settingsPath, []byte(`{"permissions":{"allow":["read"]}}`), 0o600))
 
 	_, err := cm.ConfigureLLMGateway(ClaudeCode, llmgateway.ApplyConfig{
-		TokenHelperCommand: `"thv" llm token`,
+		TokenHelperCommand: `thv llm token`,
 	})
 	require.NoError(t, err)
 
@@ -354,7 +779,7 @@ func TestConfigureLLMGateway_PreservesExistingKeys(t *testing.T) {
 	assert.Contains(t, string(data), "permissions") // non-string object — checked as raw substring
 	got, ok := jsonPointerGet(data, "/apiKeyHelper")
 	assert.True(t, ok, "/apiKeyHelper pointer must be present after configure")
-	assert.Equal(t, `"thv" llm token`, got)
+	assert.Equal(t, `thv llm token`, got)
 }
 
 func TestConfigureLLMGateway_JSONCPreservesExistingParent(t *testing.T) {
@@ -408,7 +833,7 @@ func TestConfigureLLMGateway_Idempotent(t *testing.T) {
 	claudeDir := filepath.Join(home, ".claude")
 	require.NoError(t, os.MkdirAll(claudeDir, 0o700))
 
-	cfg := llmgateway.ApplyConfig{TokenHelperCommand: `"thv" llm token`}
+	cfg := llmgateway.ApplyConfig{TokenHelperCommand: `thv llm token`}
 	_, err := cm.ConfigureLLMGateway(ClaudeCode, cfg)
 	require.NoError(t, err)
 	_, err = cm.ConfigureLLMGateway(ClaudeCode, cfg)
@@ -432,7 +857,7 @@ func TestRevertLLMGateway_RemovesKey(t *testing.T) {
 	require.NoError(t, os.WriteFile(settingsPath,
 		[]byte(`{"apiKeyHelper":"thv llm token","permissions":{"allow":["read"]}}`), 0o600))
 
-	require.NoError(t, cm.RevertLLMGateway(ClaudeCode, settingsPath))
+	require.NoError(t, cm.RevertLLMGateway(ClaudeCode, settingsPath, true))
 
 	data, err := os.ReadFile(settingsPath)
 	require.NoError(t, err)
@@ -447,7 +872,7 @@ func TestRevertLLMGateway_MissingFile(t *testing.T) {
 
 	// File does not exist → no-op, no error
 	missing := filepath.Join(home, ".claude", "settings.json")
-	assert.NoError(t, cm.RevertLLMGateway(ClaudeCode, missing))
+	assert.NoError(t, cm.RevertLLMGateway(ClaudeCode, missing, true))
 }
 
 func TestRevertLLMGateway_MissingDir(t *testing.T) {
@@ -456,7 +881,7 @@ func TestRevertLLMGateway_MissingDir(t *testing.T) {
 
 	// Neither the dir nor the file exist → no-op, no error
 	missing := filepath.Join(home, ".no-such-dir", "settings.json")
-	assert.NoError(t, cm.RevertLLMGateway(ClaudeCode, missing))
+	assert.NoError(t, cm.RevertLLMGateway(ClaudeCode, missing, true))
 }
 
 func TestRevertLLMGateway_EmptyFile(t *testing.T) {
@@ -468,7 +893,7 @@ func TestRevertLLMGateway_EmptyFile(t *testing.T) {
 	settingsPath := filepath.Join(claudeDir, "settings.json")
 	require.NoError(t, os.WriteFile(settingsPath, []byte{}, 0o600))
 
-	assert.NoError(t, cm.RevertLLMGateway(ClaudeCode, settingsPath))
+	assert.NoError(t, cm.RevertLLMGateway(ClaudeCode, settingsPath, true))
 }
 
 func TestRevertLLMGateway_UnsupportedClient(t *testing.T) {
@@ -476,7 +901,7 @@ func TestRevertLLMGateway_UnsupportedClient(t *testing.T) {
 	home := t.TempDir()
 	cm := NewTestClientManager(home, nil, nil, nil)
 
-	err := cm.RevertLLMGateway(ClaudeCode, "/some/path")
+	err := cm.RevertLLMGateway(ClaudeCode, "/some/path", true)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "does not support LLM gateway")
 }
@@ -665,33 +1090,83 @@ func TestDetectedLLMGatewayClients_NeitherDirNorBinary(t *testing.T) {
 	assert.Empty(t, cm.DetectedLLMGatewayClients())
 }
 
+func TestDetectedLLMGatewayClients_GUIEditorsIgnoreMissingBinary(t *testing.T) {
+	t.Parallel()
+	home := t.TempDir()
+	cm := NewTestClientManager(home, nil, supportedClientIntegrations, nil)
+	cm.lookPath = func(_ string) (string, error) { return "", os.ErrNotExist }
+
+	for _, clientType := range []ClientApp{VSCode, VSCodeInsider, Cursor} {
+		cfg := cm.lookupClientAppConfig(clientType)
+		require.NotNil(t, cfg)
+		require.Empty(t, cfg.LLMBinaryName)
+		require.NoError(t, os.MkdirAll(filepath.Dir(cm.buildLLMSettingsPath(cfg)), 0o700))
+	}
+
+	detected := cm.DetectedLLMGatewayClients()
+	assert.Contains(t, detected, VSCode)
+	assert.Contains(t, detected, VSCodeInsider)
+	assert.Contains(t, detected, Cursor)
+}
+
+func TestDetectedLLMGatewayClients_CLILeftoverDirStillRequiresBinary(t *testing.T) {
+	t.Parallel()
+	home := t.TempDir()
+	cm := NewTestClientManager(home, nil, supportedClientIntegrations, nil)
+	cm.lookPath = func(_ string) (string, error) { return "", os.ErrNotExist }
+
+	cfg := cm.lookupClientAppConfig(ClaudeCode)
+	require.NotNil(t, cfg)
+	require.NoError(t, os.MkdirAll(filepath.Dir(cm.buildLLMSettingsPath(cfg)), 0o700))
+
+	assert.NotContains(t, cm.DetectedLLMGatewayClients(), ClaudeCode)
+	assert.Contains(t, cm.LLMClientDetectionHint(ClaudeCode), `was not found on PATH`)
+}
+
+func TestLLMClientDetectionHint_MissingDirIsSilent(t *testing.T) {
+	t.Parallel()
+	home := t.TempDir()
+	cm := NewTestClientManager(home, nil, supportedClientIntegrations, nil)
+	cm.lookPath = func(_ string) (string, error) { return "", os.ErrNotExist }
+
+	assert.Empty(t, cm.LLMClientDetectionHint(ClaudeCode))
+	assert.Empty(t, cm.LLMClientDetectionHint(Cursor))
+}
+
 // TestRealClientConfigs_LLMBinaryNames asserts the expected binary name for
-// every LLM-gateway-capable entry in supportedClientIntegrations. This is a
-// regression guard: a silent typo (e.g. "code" instead of "code-insiders")
-// causes detection to fail on machines that only have the Insiders build.
+// every LLM-gateway-capable entry in supportedClientIntegrations. GUI editors
+// must stay empty: a PATH binary check is a false negative when the app is
+// installed as a desktop editor. CLI tools keep the binary check so leftover
+// config directories do not count as installed.
 func TestRealClientConfigs_LLMBinaryNames(t *testing.T) {
 	t.Parallel()
 
-	want := map[ClientApp]string{
-		VSCodeInsider: "code-insiders",
-		VSCode:        "code",
-		Cursor:        "cursor",
-		ClaudeCode:    "claude",
-		GeminiCli:     "gemini",
-		Codex:         "codex",
-		// Tools without a binary check (dir-only detection) are omitted.
+	wantBinary := map[ClientApp]string{
+		ClaudeCode: "claude",
+		GeminiCli:  "gemini",
+		Codex:      "codex",
 	}
+	wantEmpty := []ClientApp{VSCode, VSCodeInsider, Cursor, ClientApp(Xcode)}
 
 	home := t.TempDir()
 	cm := NewTestClientManager(home, nil, supportedClientIntegrations, nil)
 
-	for clientType, wantBinary := range want {
+	for clientType, want := range wantBinary {
 		t.Run(string(clientType), func(t *testing.T) {
 			t.Parallel()
 			cfg := cm.lookupClientAppConfig(clientType)
 			require.NotNil(t, cfg, "missing entry in supportedClientIntegrations for %s", clientType)
-			assert.Equal(t, wantBinary, cfg.LLMBinaryName,
+			assert.Equal(t, want, cfg.LLMBinaryName,
 				"wrong LLMBinaryName for %s: detection will fail on machines that only have the expected binary", clientType)
+		})
+	}
+	for _, clientType := range wantEmpty {
+		t.Run(string(clientType)+"/dir-only", func(t *testing.T) {
+			t.Parallel()
+			cfg := cm.lookupClientAppConfig(clientType)
+			require.NotNil(t, cfg, "missing entry in supportedClientIntegrations for %s", clientType)
+			assert.Empty(t, cfg.LLMBinaryName,
+				"%s is a GUI editor and must not require a PATH binary", clientType)
 		})
 	}
 }
@@ -721,7 +1196,7 @@ func TestConfigureLLMGateway_TLSSkipVerify_WritesNodeEnv(t *testing.T) {
 	require.NoError(t, os.MkdirAll(claudeDir, 0o700))
 
 	_, err := cm.ConfigureLLMGateway(ClaudeCode, llmgateway.ApplyConfig{
-		TokenHelperCommand: `"thv" llm token`,
+		TokenHelperCommand: `thv llm token`,
 		TLSSkipVerify:      true,
 	})
 	require.NoError(t, err)
@@ -741,7 +1216,7 @@ func TestConfigureLLMGateway_TLSSkipVerify_NotSet_DoesNotWriteNodeEnv(t *testing
 	require.NoError(t, os.MkdirAll(claudeDir, 0o700))
 
 	_, err := cm.ConfigureLLMGateway(ClaudeCode, llmgateway.ApplyConfig{
-		TokenHelperCommand: `"thv" llm token`,
+		TokenHelperCommand: `thv llm token`,
 		TLSSkipVerify:      false,
 	})
 	require.NoError(t, err)
@@ -761,7 +1236,7 @@ func TestConfigureLLMGateway_TLSSkipVerify_ClearRemovesKey(t *testing.T) {
 
 	// First run: set tls-skip-verify
 	_, err := cm.ConfigureLLMGateway(ClaudeCode, llmgateway.ApplyConfig{
-		TokenHelperCommand: `"thv" llm token`,
+		TokenHelperCommand: `thv llm token`,
 		TLSSkipVerify:      true,
 	})
 	require.NoError(t, err)
@@ -774,7 +1249,7 @@ func TestConfigureLLMGateway_TLSSkipVerify_ClearRemovesKey(t *testing.T) {
 
 	// Second run: clear tls-skip-verify
 	_, err = cm.ConfigureLLMGateway(ClaudeCode, llmgateway.ApplyConfig{
-		TokenHelperCommand: `"thv" llm token`,
+		TokenHelperCommand: `thv llm token`,
 		TLSSkipVerify:      false,
 	})
 	require.NoError(t, err)
@@ -819,7 +1294,7 @@ func TestLLMValueForSpec(t *testing.T) {
 	cfg := llmgateway.ApplyConfig{
 		GatewayURL:         "https://gw.example.com",
 		ProxyBaseURL:       "http://localhost:14000/v1",
-		TokenHelperCommand: `"thv" llm token`,
+		TokenHelperCommand: `thv llm token`,
 		TLSSkipVerify:      false,
 	}
 
@@ -833,7 +1308,7 @@ func TestLLMValueForSpec(t *testing.T) {
 		// Known ValueField names resolve correctly
 		{name: "GatewayURL", valueField: "GatewayURL", cfg: cfg, want: "https://gw.example.com"},
 		{name: "ProxyBaseURL", valueField: "ProxyBaseURL", cfg: cfg, want: "http://localhost:14000/v1"},
-		{name: "TokenHelperCommand", valueField: "TokenHelperCommand", cfg: cfg, want: `"thv" llm token`},
+		{name: "TokenHelperCommand", valueField: "TokenHelperCommand", cfg: cfg, want: `thv llm token`},
 		{name: "PlaceholderAPIKey", valueField: "PlaceholderAPIKey", cfg: cfg, want: "thv-proxy"},
 		// NodeTLSRejectUnauthorized: "0" when set, "" when clear
 		{name: "NodeTLSRejectUnauthorized/skip=false", valueField: "NodeTLSRejectUnauthorized", cfg: cfg, want: ""},

@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -50,10 +51,21 @@ func makeMCPRequest(tb testing.TB, body []byte) *http.Request {
 	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(body))
 	parsedMCP := &mcp.ParsedMCPRequest{
 		Method: "tools/call",
-		ID:     float64(1),
+		ID:     int64(1),
 	}
 	ctx := context.WithValue(req.Context(), mcp.MCPRequestContextKey, parsedMCP)
 	req = req.WithContext(ctx)
+	req.RemoteAddr = "192.168.1.1:1234"
+	return req
+}
+
+// newUnparsedMCPRequest builds a POST request with a JSON body and no parsed
+// request in its context, so mcp.ParsingMiddleware will actually parse it
+// (see shouldParseMCPRequest) rather than short-circuiting on an existing parse.
+func newUnparsedMCPRequest(tb testing.TB, body []byte) *http.Request {
+	tb.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
 	req.RemoteAddr = "192.168.1.1:1234"
 	return req
 }
@@ -244,6 +256,14 @@ func TestMutatingMiddleware_HTTP422AlwaysDenies(t *testing.T) {
 			assert.False(t, nextCalled)
 			assert.Equal(t, http.StatusUnprocessableEntity, rr.Code)
 			assert.Contains(t, rr.Body.String(), "Request denied by webhook policy")
+
+			// An HTTP 422 always-deny must carry the same JSON-RPC denial code as
+			// every other denial (mcp.JSONRPCCodeDenied), not the raw 422 status.
+			var errResp map[string]interface{}
+			require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &errResp))
+			errObj, ok := errResp["error"].(map[string]interface{})
+			require.True(t, ok)
+			assert.Equal(t, float64(mcp.JSONRPCCodeDenied), errObj["code"])
 		})
 	}
 }
@@ -277,6 +297,12 @@ func TestMutatingMiddleware_ScopeViolation_FailPolicy(t *testing.T) {
 
 	assert.False(t, nextCalled)
 	assert.Equal(t, http.StatusInternalServerError, rr.Code)
+
+	var errResp map[string]interface{}
+	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &errResp))
+	errObj, ok := errResp["error"].(map[string]interface{})
+	require.True(t, ok)
+	assert.Equal(t, float64(mcp.CodeInternalError), errObj["code"])
 }
 
 func TestMutatingMiddleware_ScopeViolation_IgnorePolicy(t *testing.T) {
@@ -389,6 +415,237 @@ func TestMutatingMiddleware_ChainedMutations(t *testing.T) {
 	assert.Equal(t, "SELECT *", args["query"], "original query should be preserved")
 }
 
+// renameToolReqBody and renameToolPatch model a mutating webhook that renames
+// the called tool. Shared by the tests that pin the tool-rename invariant from
+// both the authz (context) and audit (holder) observation points.
+const renameToolReqBody = `{"jsonrpc":"2.0","method":"tools/call","id":1,"params":{"name":"read_file","arguments":{"path":"/etc/passwd"}}}`
+
+var renameToolPatch = []JSONPatchOp{
+	{Op: "replace", Path: "/mcp_request/params/name", Value: json.RawMessage(`"delete_file"`)},
+}
+
+// newMutatingWebhookServer starts a fake mutating webhook that always allows
+// the request and returns the given JSON Patch. Callers must not mutate patch
+// afterwards: it's read by the handler on every request, including from
+// parallel tests that share a patch value.
+func newMutatingWebhookServer(t *testing.T, patch []JSONPatchOp) *httptest.Server {
+	t.Helper()
+	patchJSON, err := json.Marshal(patch)
+	require.NoError(t, err)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req webhook.Request
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&req))
+
+		resp := webhook.MutatingResponse{
+			Response:  webhook.Response{Version: webhook.APIVersion, UID: req.UID, Allowed: true},
+			PatchType: patchTypeJSONPatch,
+			Patch:     patchJSON,
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	t.Cleanup(server.Close)
+	return server
+}
+
+// TestMutatingMiddleware_ParsedRequestReflectsRenamedTool pins the invariant
+// that authorization (which reads mcp.GetParsedMCPRequest) depends on: the
+// cached parse in the request context must always describe the SAME tool
+// name that ends up in the body the backend receives, even after a mutating
+// webhook renames the tool. The chain here uses the real mcp.ParsingMiddleware
+// (not a hand-built ParsedMCPRequest) so the cached parse is produced exactly
+// as it is in production.
+func TestMutatingMiddleware_ParsedRequestReflectsRenamedTool(t *testing.T) {
+	t.Parallel()
+
+	server := newMutatingWebhookServer(t, renameToolPatch)
+	mw := createMutatingHandler(makeExecutors(t, []webhook.Config{makeConfig(server.URL, webhook.FailurePolicyFail)}), "srv", "stdio")
+
+	var nextCalled bool
+	handler := mcp.ParsingMiddleware(mw(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		nextCalled = true
+		parsed := mcp.GetParsedMCPRequest(r.Context())
+		require.NotNil(t, parsed)
+
+		bodyBytes, err := io.ReadAll(r.Body)
+		require.NoError(t, err)
+		assert.EqualValues(t, len(bodyBytes), r.ContentLength, "ContentLength must match the mutated body actually readable from r.Body")
+
+		var body map[string]interface{}
+		require.NoError(t, json.Unmarshal(bodyBytes, &body))
+		params := body["params"].(map[string]interface{})
+
+		assert.Equal(t, "delete_file", parsed.ResourceID, "cached parse must reflect the renamed tool")
+		assert.Equal(t, params["name"], parsed.ResourceID, "cached parse and mutated body must agree on the tool name")
+	})))
+
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, newUnparsedMCPRequest(t, []byte(renameToolReqBody)))
+
+	require.True(t, nextCalled, "next must be called for the request to be observed")
+	require.Equal(t, http.StatusOK, rr.Code)
+}
+
+// TestMutatingMiddleware_ParsedRequestReflectsPatchedArgument pins the same
+// invariant as the tool-rename case but for an argument value: a webhook that
+// replaces an existing argument (not one that merely adds a new field) must be
+// reflected in the cached parse's Arguments, since authorization/audit read
+// Arguments from the parse rather than re-reading the body.
+func TestMutatingMiddleware_ParsedRequestReflectsPatchedArgument(t *testing.T) {
+	t.Parallel()
+
+	const reqBody = `{"jsonrpc":"2.0","method":"tools/call","id":1,"params":{"name":"db","arguments":{"query":"SELECT *"}}}`
+	patch := []JSONPatchOp{
+		{Op: "replace", Path: "/mcp_request/params/arguments/query", Value: json.RawMessage(`"DROP TABLE users"`)},
+	}
+
+	server := newMutatingWebhookServer(t, patch)
+	mw := createMutatingHandler(makeExecutors(t, []webhook.Config{makeConfig(server.URL, webhook.FailurePolicyFail)}), "srv", "stdio")
+
+	var nextCalled bool
+	handler := mcp.ParsingMiddleware(mw(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		nextCalled = true
+		parsed := mcp.GetParsedMCPRequest(r.Context())
+		require.NotNil(t, parsed)
+		assert.Equal(t, "DROP TABLE users", parsed.Arguments["query"], "cached parse must reflect the patched argument")
+	})))
+
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, newUnparsedMCPRequest(t, []byte(reqBody)))
+
+	require.True(t, nextCalled, "next must be called for the request to be observed")
+	require.Equal(t, http.StatusOK, rr.Code)
+}
+
+// TestMutatingMiddleware_HolderReflectsMutatedResourceID pins the invariant
+// that audit (pkg/audit/auditor.go) depends on: it wraps the chain, injects an
+// mcp.ParsedRequestHolder before calling in, and reads the holder after
+// ServeHTTP returns. That holder must reflect the SAME mutated tool name that
+// ends up in the body the backend receives, not the pre-mutation name the
+// parser first observed.
+func TestMutatingMiddleware_HolderReflectsMutatedResourceID(t *testing.T) {
+	t.Parallel()
+
+	server := newMutatingWebhookServer(t, renameToolPatch)
+	mw := createMutatingHandler(makeExecutors(t, []webhook.Config{makeConfig(server.URL, webhook.FailurePolicyFail)}), "srv", "stdio")
+	handler := mcp.ParsingMiddleware(mw(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {})))
+
+	holder := &mcp.ParsedRequestHolder{}
+	req := newUnparsedMCPRequest(t, []byte(renameToolReqBody))
+	req = req.WithContext(mcp.WithParsedRequestHolder(req.Context(), holder))
+
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	require.Equal(t, http.StatusOK, rr.Code)
+	require.NotNil(t, holder.Parsed, "audit holder must be filled by the parser")
+	assert.Equal(t, "delete_file", holder.Parsed.ResourceID, "audit holder must reflect the mutated tool name")
+}
+
+// TestMutatingMiddleware_PatchRemovesMethod_ReturnsConformantError pins the
+// republish failure path: a webhook patch can produce a body that is valid
+// JSON but no longer a JSON-RPC request (e.g. the "method" field is removed).
+// RepublishParsedMCPRequest fails to parse it, so the middleware must fail
+// closed with a 500 and a conformant JSON-RPC error, never reaching next.
+func TestMutatingMiddleware_PatchRemovesMethod_ReturnsConformantError(t *testing.T) {
+	t.Parallel()
+
+	patch := []JSONPatchOp{
+		{Op: "remove", Path: "/mcp_request/method"},
+	}
+	server := newMutatingWebhookServer(t, patch)
+	mw := createMutatingHandler(makeExecutors(t, []webhook.Config{makeConfig(server.URL, webhook.FailurePolicyFail)}), "srv", "stdio")
+
+	var nextCalled bool
+	handler := mcp.ParsingMiddleware(mw(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		nextCalled = true
+	})))
+
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, newUnparsedMCPRequest(t, []byte(renameToolReqBody)))
+
+	assert.False(t, nextCalled, "next must not be called when the mutated body fails to re-parse")
+	assert.Equal(t, http.StatusInternalServerError, rr.Code)
+	assert.Equal(t, "application/json", rr.Header().Get("Content-Type"))
+
+	var decoded map[string]any
+	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &decoded))
+	assert.Equal(t, "2.0", decoded["jsonrpc"])
+	assert.Equal(t, float64(1), decoded["id"])
+	errObj, ok := decoded["error"].(map[string]interface{})
+	require.True(t, ok, "response must contain a JSON-RPC error object")
+	assert.NotEmpty(t, errObj["message"])
+	_, hasResult := decoded["result"]
+	assert.False(t, hasResult, "error response must not contain a result key")
+}
+
+// TestMutatingMiddleware_PatchAddsAmbiguousMember_ReturnsServerError pins the
+// chosen contract for invalid webhook output: the client sent a valid request,
+// but a server-configured webhook made it ambiguous, so the request fails closed
+// as an internal server error rather than blaming the client with HTTP 400.
+func TestMutatingMiddleware_PatchAddsAmbiguousMember_ReturnsServerError(t *testing.T) {
+	t.Parallel()
+
+	patch := []JSONPatchOp{
+		{Op: "add", Path: "/mcp_request/params/Name", Value: json.RawMessage(`"delete_file"`)},
+	}
+	server := newMutatingWebhookServer(t, patch)
+	mw := createMutatingHandler(makeExecutors(t, []webhook.Config{makeConfig(server.URL, webhook.FailurePolicyFail)}), "srv", "stdio")
+
+	var nextCalled bool
+	handler := mcp.ParsingMiddleware(mw(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		nextCalled = true
+	})))
+
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, newUnparsedMCPRequest(t, []byte(renameToolReqBody)))
+
+	assert.False(t, nextCalled)
+	assert.Equal(t, http.StatusInternalServerError, recorder.Code)
+	assert.NotContains(t, recorder.Body.String(), "Name")
+	assert.NotContains(t, recorder.Body.String(), "delete_file")
+}
+
+// TestMutatingMiddleware_NoMutation_ParseUnchangedAndNextCalled pins the
+// bytes.Equal guard: when a webhook allows the request without a patch, the
+// body handed to RepublishParsedMCPRequest would be byte-identical to what
+// ParsingMiddleware already parsed, so no republish should happen, and next
+// must still be called with the original, correct parse intact.
+func TestMutatingMiddleware_NoMutation_ParseUnchangedAndNextCalled(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		resp := webhook.MutatingResponse{
+			Response: webhook.Response{Version: webhook.APIVersion, UID: "uid", Allowed: true},
+			// No patch: the body is unchanged.
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	t.Cleanup(server.Close)
+
+	mw := createMutatingHandler(makeExecutors(t, []webhook.Config{makeConfig(server.URL, webhook.FailurePolicyFail)}), "srv", "stdio")
+
+	var nextCalled bool
+	handler := mcp.ParsingMiddleware(mw(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		nextCalled = true
+		parsed := mcp.GetParsedMCPRequest(r.Context())
+		require.NotNil(t, parsed)
+		assert.Equal(t, "read_file", parsed.ResourceID, "parse must reflect the original, unmutated tool name")
+
+		bodyBytes, err := io.ReadAll(r.Body)
+		require.NoError(t, err)
+		assert.EqualValues(t, len(bodyBytes), r.ContentLength, "ContentLength must match the unchanged body on the no-mutation path")
+	})))
+
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, newUnparsedMCPRequest(t, []byte(renameToolReqBody)))
+
+	assert.True(t, nextCalled, "next must be called on the no-mutation path")
+	assert.Equal(t, http.StatusOK, rr.Code)
+}
+
 func TestMutatingMiddleware_SkipNonMCPRequests(t *testing.T) {
 	t.Parallel()
 	mw := createMutatingHandler(nil, "srv", "stdio")
@@ -403,6 +660,65 @@ func TestMutatingMiddleware_SkipNonMCPRequests(t *testing.T) {
 
 	assert.True(t, nextCalled, "non-MCP requests should pass through")
 	assert.Equal(t, http.StatusOK, rr.Code)
+}
+
+// TestMutatingMiddlewareDenialIsConformantJSONRPC pins the sendErrorResponse envelope on
+// the wire: lowercase "jsonrpc"/"id"/"error" keys, no "id" key for a notification, and no
+// "result" key. assert.JSONEq is case-sensitive, so a single assertion catches "Error"/"ID"
+// substituted for "error"/"id" (the historical bug) alongside a missing "jsonrpc" tag.
+func TestMutatingMiddlewareDenialIsConformantJSONRPC(t *testing.T) {
+	t.Parallel()
+
+	// Deterministic denial: the webhook always disallows, driving sendErrorResponse
+	// through the real middleware chain rather than constructing the response by hand.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(webhook.MutatingResponse{
+			Response: webhook.Response{Version: webhook.APIVersion, UID: "resp-uid", Allowed: false},
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	cfg := makeConfig(server.URL, webhook.FailurePolicyFail)
+	mw := createMutatingHandler(makeExecutors(t, []webhook.Config{cfg}), "srv", "stdio")
+
+	const wantErr = `"error":{"code":403,"message":"Request denied by webhook policy"}`
+
+	testCases := []struct {
+		name     string
+		id       interface{} // ParsedMCPRequest.ID; nil for a notification
+		wantBody string
+	}{
+		{name: "int64 id", id: int64(42), wantBody: `{"jsonrpc":"2.0","id":42,` + wantErr + `}`},
+		{name: "string id", id: "abc", wantBody: `{"jsonrpc":"2.0","id":"abc",` + wantErr + `}`},
+		{name: "nil id (notification) omits id entirely", id: nil, wantBody: `{"jsonrpc":"2.0",` + wantErr + `}`},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader([]byte(`{"jsonrpc":"2.0","method":"tools/call"}`)))
+			ctx := context.WithValue(req.Context(), mcp.MCPRequestContextKey, &mcp.ParsedMCPRequest{Method: "tools/call", ID: tc.id})
+			req = req.WithContext(ctx)
+
+			rr := httptest.NewRecorder()
+			mw(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				t.Fatal("next handler must not be called for a denied request")
+			})).ServeHTTP(rr, req)
+
+			require.Equal(t, http.StatusForbidden, rr.Code)
+			assert.Equal(t, "application/json", rr.Header().Get("Content-Type"))
+			assert.JSONEq(t, tc.wantBody, rr.Body.String())
+
+			var decoded map[string]any
+			require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &decoded))
+			_, hasID := decoded["id"]
+			assert.Equal(t, tc.id != nil, hasID, "id key presence mismatch")
+			_, hasResult := decoded["result"]
+			assert.False(t, hasResult, "denied response must not contain a result key")
+		})
+	}
 }
 
 // makeJSONBodyOfSize builds a syntactically-valid JSON body of exactly `size`
@@ -435,7 +751,7 @@ func TestMutatingMiddleware_RequestBodySizeLimit(t *testing.T) {
 
 		body := makeJSONBodyOfSize(t, webhook.MaxRequestSize+1)
 		req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(body))
-		ctx := context.WithValue(req.Context(), mcp.MCPRequestContextKey, &mcp.ParsedMCPRequest{Method: "tools/call", ID: 1})
+		ctx := context.WithValue(req.Context(), mcp.MCPRequestContextKey, &mcp.ParsedMCPRequest{Method: "tools/call", ID: int64(1)})
 		req = req.WithContext(ctx)
 
 		var nextCalled bool
@@ -449,9 +765,9 @@ func TestMutatingMiddleware_RequestBodySizeLimit(t *testing.T) {
 
 		var errResp map[string]interface{}
 		require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &errResp))
-		errObj, ok := errResp["Error"].(map[string]interface{})
+		errObj, ok := errResp["error"].(map[string]interface{})
 		require.True(t, ok)
-		assert.Equal(t, float64(http.StatusRequestEntityTooLarge), errObj["code"])
+		assert.Equal(t, float64(mcp.CodeInvalidRequest), errObj["code"])
 		assert.Equal(t, "Request body exceeds maximum size", errObj["message"])
 	})
 
@@ -466,7 +782,7 @@ func TestMutatingMiddleware_RequestBodySizeLimit(t *testing.T) {
 
 		body := makeJSONBodyOfSize(t, webhook.MaxRequestSize)
 		req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(body))
-		ctx := context.WithValue(req.Context(), mcp.MCPRequestContextKey, &mcp.ParsedMCPRequest{Method: "tools/call", ID: 1})
+		ctx := context.WithValue(req.Context(), mcp.MCPRequestContextKey, &mcp.ParsedMCPRequest{Method: "tools/call", ID: int64(1)})
 		req = req.WithContext(ctx)
 
 		var nextCalled bool
@@ -721,40 +1037,6 @@ func TestMutatingMiddleware_MalformedPatchJSON(t *testing.T) {
 }
 
 //nolint:paralleltest
-func TestMutatingMiddleware_StringRequestID(t *testing.T) {
-	// Tests that the middleware correctly handles a string JSON-RPC ID.
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		resp := webhook.MutatingResponse{
-			Response: webhook.Response{Version: webhook.APIVersion, UID: "uid", Allowed: false},
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(resp)
-	}))
-	defer server.Close()
-
-	cfg := makeConfig(server.URL, webhook.FailurePolicyFail)
-	mw := createMutatingHandler(makeExecutors(t, []webhook.Config{cfg}), "srv", "stdio")
-
-	reqBody := []byte(`{"jsonrpc":"2.0","method":"tools/call","id":"string-id"}`)
-	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(reqBody))
-	// Use string ID in parsedMCP.
-	parsedMCP := &mcp.ParsedMCPRequest{Method: "tools/call", ID: "string-id"}
-	ctx := context.WithValue(req.Context(), mcp.MCPRequestContextKey, parsedMCP)
-	req = req.WithContext(ctx)
-
-	rr := httptest.NewRecorder()
-	mw(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {})).ServeHTTP(rr, req)
-
-	assert.Equal(t, http.StatusForbidden, rr.Code)
-	assert.Contains(t, rr.Body.String(), "Request denied by webhook policy")
-
-	// Confirm JSON-RPC error has the string ID.
-	var errResp map[string]interface{}
-	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &errResp))
-	require.NotNil(t, errResp["ID"])
-}
-
-//nolint:paralleltest
 func TestMutatingMiddleware_InvalidPatchOp_FailPolicy(t *testing.T) {
 	// Returns a well-formed JSON array but with an invalid op type, so
 	// ValidatePatch returns an error inside the middleware handler.
@@ -972,6 +1254,44 @@ func TestMutatingMiddleware_ExtractFailure_IgnorePolicy(t *testing.T) {
 	assert.JSONEq(t, reqBody, string(capturedBody))
 }
 
+func TestMutatingMiddlewareRejectsInvalidEnvelopeEvenIgnore(t *testing.T) {
+	t.Parallel()
+	for _, contentType := range []string{"text/plain", ""} {
+		t.Run(contentType, func(t *testing.T) {
+			t.Parallel()
+			var mutations atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var request webhook.Request
+				if !assert.NoError(t, json.NewDecoder(r.Body).Decode(&request)) {
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
+				mutations.Add(1)
+				_ = json.NewEncoder(w).Encode(webhook.MutatingResponse{
+					Response:  webhook.Response{Version: webhook.APIVersion, UID: request.UID, Allowed: true},
+					PatchType: patchTypeJSONPatch,
+					Patch:     json.RawMessage(`[{"op":"add","path":"/mcp_request/result","value":{}}]`),
+				})
+			}))
+			t.Cleanup(server.Close)
+			cfg := makeConfig(server.URL, webhook.FailurePolicyIgnore)
+			mw := createMutatingHandler(makeExecutors(t, []webhook.Config{cfg}), "srv", "stdio")
+			called := false
+			next := http.HandlerFunc(func(http.ResponseWriter, *http.Request) { called = true })
+			req := newUnparsedMCPRequest(t, []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo"}}`))
+			req.Header.Del("Content-Type")
+			if contentType != "" {
+				req.Header.Set("Content-Type", contentType)
+			}
+			rec := httptest.NewRecorder()
+			mcp.ParsingMiddleware(mw(next)).ServeHTTP(rec, req)
+			assert.EqualValues(t, 1, mutations.Load())
+			assert.Equal(t, http.StatusInternalServerError, rec.Code)
+			assert.False(t, called, "invalid mutation must not reach the backend even with Ignore")
+		})
+	}
+}
+
 func TestValidatePatchErrors(t *testing.T) {
 	t.Parallel()
 	invalidOps := []JSONPatchOp{
@@ -982,4 +1302,87 @@ func TestValidatePatchErrors(t *testing.T) {
 	}
 	err := ValidatePatch(invalidOps)
 	require.Error(t, err)
+}
+
+// never consulted, so failure_policy: ignore must not let the request through.
+// The request goes through ParsingMiddleware, as in the configured chain.
+func TestMutatingMiddleware_LocalErrorDeniesUnderIgnorePolicy(t *testing.T) {
+	t.Parallel()
+
+	var calls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		w.Header().Set("Content-Type", "application/json")
+		assert.NoError(t, json.NewEncoder(w).Encode(webhook.MutatingResponse{Response: webhook.Response{Version: webhook.APIVersion, Allowed: true}}))
+	}))
+	defer server.Close()
+
+	cfg := webhook.Config{
+		Name:          "local-error",
+		URL:           server.URL,
+		Timeout:       webhook.DefaultTimeout,
+		FailurePolicy: webhook.FailurePolicyIgnore,
+		TLSConfig:     &webhook.TLSConfig{InsecureSkipVerify: true},
+		HMACSecretRef: t.TempDir() + "/missing",
+	}
+	client, err := webhook.NewClient(cfg, webhook.TypeMutating, []byte("startup-secret"))
+	require.NoError(t, err)
+
+	var reachedBackend bool
+	next := http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) { reachedBackend = true })
+	handler := mcp.ParsingMiddleware(
+		createMutatingHandler([]clientExecutor{{client: client, config: cfg}}, "srv", "streamable-http")(next))
+
+	req := httptest.NewRequest(http.MethodPost, "/mcp",
+		bytes.NewReader([]byte(`{"jsonrpc":"2.0","method":"tools/call","id":1,"params":{"name":"x"}}`)))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	assert.Equal(t, http.StatusInternalServerError, rr.Code)
+	assert.False(t, reachedBackend)
+	assert.Zero(t, calls)
+}
+
+// GHSA-wj8g-gmv2-mpmv regression: a BOM-prefixed request must still reach the
+// webhook. ParsingMiddleware strips the BOM before the webhook builds its
+// payload, so the test goes through it rather than injecting a parsed request.
+func TestMutatingMiddleware_LeadingBOMReachesWebhookThroughParser(t *testing.T) {
+	t.Parallel()
+
+	var calls int
+	var received webhook.Request
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		assert.NoError(t, json.NewDecoder(r.Body).Decode(&received))
+		w.Header().Set("Content-Type", "application/json")
+		assert.NoError(t, json.NewEncoder(w).Encode(webhook.MutatingResponse{Response: webhook.Response{Version: webhook.APIVersion, Allowed: false}}))
+	}))
+	defer server.Close()
+
+	cfg := webhook.Config{
+		Name:          "bom",
+		URL:           server.URL,
+		Timeout:       webhook.DefaultTimeout,
+		FailurePolicy: webhook.FailurePolicyIgnore,
+		TLSConfig:     &webhook.TLSConfig{InsecureSkipVerify: true},
+	}
+	client, err := webhook.NewClient(cfg, webhook.TypeMutating, nil)
+	require.NoError(t, err)
+
+	var reachedBackend bool
+	next := http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) { reachedBackend = true })
+	handler := mcp.ParsingMiddleware(
+		createMutatingHandler([]clientExecutor{{client: client, config: cfg}}, "srv", "streamable-http")(next))
+
+	const jsonBody = `{"jsonrpc":"2.0","method":"tools/call","id":1,"params":{"name":"x"}}`
+	req := httptest.NewRequest(http.MethodPost, "/mcp", bytes.NewReader(append(bytes.Clone(mcp.UTF8BOM), jsonBody...)))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	assert.Equal(t, 1, calls, "the webhook must be consulted")
+	assert.JSONEq(t, jsonBody, string(received.MCPRequest))
+	assert.Equal(t, http.StatusForbidden, rr.Code)
+	assert.False(t, reachedBackend)
 }

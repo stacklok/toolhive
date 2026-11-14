@@ -10,6 +10,9 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/stacklok/toolhive-core/audit"
+	serveridentity "github.com/stacklok/toolhive/pkg/authserver/identity"
 )
 
 // TestIdentityContext_StoreAndRetrieve verifies basic context storage and retrieval functionality.
@@ -126,6 +129,59 @@ func TestClaimsToIdentity_PopulatesPlatformUserID(t *testing.T) {
 	assert.Equal(t, "user123", id.PlatformUserID)
 }
 
+// TestClaimsToIdentity_ParsesActClaim verifies that an RFC 8693 "act" claim is
+// parsed into the identity's delegation chain (outermost actor first), and
+// that tokens without an act claim carry an empty chain.
+func TestClaimsToIdentity_ParsesActClaim(t *testing.T) {
+	t.Parallel()
+
+	t.Run("nested act claim", func(t *testing.T) {
+		t.Parallel()
+		claims := jwt.MapClaims{
+			"sub": "user123",
+			"act": map[string]any{
+				"sub": "agent-1",
+				"iss": "https://issuer.example",
+				"act": map[string]any{"sub": "agent-2"},
+			},
+		}
+
+		id, err := claimsToIdentity(claims, "tok")
+		require.NoError(t, err)
+
+		require.NotNil(t, id.DelegationChain)
+		require.Len(t, id.DelegationChain.Chain, 2)
+		assert.False(t, id.DelegationChain.Truncated)
+		assert.Equal(t, "agent-1", id.DelegationChain.Chain[0].Subject)
+		assert.Equal(t, "https://issuer.example", id.DelegationChain.Chain[0].Issuer)
+		assert.Equal(t, "agent-2", id.DelegationChain.Chain[1].Subject)
+	})
+
+	t.Run("no act claim", func(t *testing.T) {
+		t.Parallel()
+		id, err := claimsToIdentity(jwt.MapClaims{"sub": "user123"}, "tok")
+		require.NoError(t, err)
+		assert.Nil(t, id.DelegationChain)
+	})
+
+	t.Run("nil act claim", func(t *testing.T) {
+		t.Parallel()
+		id, err := claimsToIdentity(jwt.MapClaims{"sub": "user123", "act": nil}, "tok")
+		require.NoError(t, err)
+		assert.Nil(t, id.DelegationChain)
+	})
+
+	t.Run("non-map act claim is surfaced as malformed, not silently dropped", func(t *testing.T) {
+		t.Parallel()
+		id, err := claimsToIdentity(jwt.MapClaims{"sub": "user123", "act": "agent-1"}, "tok")
+		require.NoError(t, err)
+		require.NotNil(t, id.DelegationChain, "a malformed act must still produce a chain so the issue is visible")
+		assert.True(t, id.DelegationChain.Malformed)
+		assert.Equal(t, audit.MalformedReasonActNotObject, id.DelegationChain.MalformedReason)
+		assert.Empty(t, id.DelegationChain.Chain)
+	})
+}
+
 // TestPlatformUserContext_StoreAndRetrieve verifies the dedicated platform-user key
 // round-trips and that an empty userID leaves the context (and the identity key)
 // untouched.
@@ -150,8 +206,28 @@ func TestPlatformUserContext_StoreAndRetrieve(t *testing.T) {
 	assert.False(t, hasIdentity, "platform-user key must not read as an authenticated Identity")
 }
 
+func TestCanonicalUserContextInteroperability(t *testing.T) {
+	t.Parallel()
+
+	t.Run("server helper is readable through host helper", func(t *testing.T) {
+		t.Parallel()
+		ctx := serveridentity.WithCanonicalUser(context.Background(), "server-user")
+		got, ok := PlatformUserFromContext(ctx)
+		require.True(t, ok)
+		assert.Equal(t, "server-user", got)
+	})
+
+	t.Run("host helper is readable through server helper", func(t *testing.T) {
+		t.Parallel()
+		ctx := WithPlatformUser(context.Background(), "host-user")
+		got, ok := serveridentity.CanonicalUserFromContext(ctx)
+		require.True(t, ok)
+		assert.Equal(t, "host-user", got)
+	})
+}
+
 // TestCanonicalUserFromContext verifies the precedence storage relies on: the
-// dedicated platform-user key wins, the authenticated Identity's PlatformUserID is
+// dedicated canonical-user key wins, the authenticated Identity's PlatformUserID is
 // the fallback, and an empty PlatformUserID does not count as present.
 func TestCanonicalUserFromContext(t *testing.T) {
 	t.Parallel()
@@ -184,6 +260,18 @@ func TestCanonicalUserFromContext(t *testing.T) {
 			name:   "dedicated key wins over identity",
 			ctx:    WithPlatformUser(withIdentity("sub-1", "identity-user"), "key-user"),
 			wantID: "key-user",
+			wantOK: true,
+		},
+		{
+			name:   "direct empty key remains present and overrides identity",
+			ctx:    context.WithValue(withIdentity("sub-1", "identity-user"), serveridentity.CanonicalUserContextKey{}, ""),
+			wantID: "",
+			wantOK: true,
+		},
+		{
+			name:   "wrong type key is ignored in favor of identity",
+			ctx:    context.WithValue(withIdentity("sub-1", "identity-user"), serveridentity.CanonicalUserContextKey{}, 42),
+			wantID: "identity-user",
 			wantOK: true,
 		},
 		{

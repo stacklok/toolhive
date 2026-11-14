@@ -37,13 +37,13 @@ Use "thv llm config show" to view the current configuration.
 ### Options
 
 ```
-  -h, --help   help for llm
+  -h, --help[=true|false]   help for llm
 ```
 
 ### Options inherited from parent commands
 
 ```
-      --debug   Enable debug mode
+      --debug[=true|false]   Enable debug mode
 ```
 
 ### SEE ALSO

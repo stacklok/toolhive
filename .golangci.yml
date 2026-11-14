@@ -28,6 +28,7 @@ linters:
     - unparam
     - unused
     - errcheck
+    - forbidigo
   settings:
     depguard:
       rules:
@@ -39,6 +40,42 @@ linters:
           deny:
             - pkg: io/ioutil
               desc: this is deprecated
+        # go-jose v3 decodes JSON with no nesting limit (GHSA-vvm8-gf78-28g4),
+        # and fosite's token/jwt package parses tokens with it. Only the files
+        # below may import either, and none of them parses a JWT. A new
+        # importer must refuse fositejose.IsUnsafeJWS tokens before it parses
+        # one, then join this list.
+        restrict_go_jose_v3:
+          list-mode: lax
+          files:
+            - $all
+            - '!$test'
+            - '!**/pkg/authserver/internal/fositejose/fositejose.go'
+            - '!**/pkg/authserver/server/provider.go'
+            - '!**/pkg/authserver/server/access_token_signer.go'
+            - '!**/pkg/authserver/server/session/session.go'
+            - '!**/test/e2e/oidc_mock.go'
+          deny:
+            - pkg: github.com/go-jose/go-jose/v3
+              desc: go-jose v3 has no JSON nesting limit (GHSA-vvm8-gf78-28g4); use go-jose v4, or guard with fositejose.IsUnsafeJWS
+            - pkg: github.com/ory/fosite/token/jwt
+              desc: fosite's JWT parser uses go-jose v3 (GHSA-vvm8-gf78-28g4); guard with fositejose.IsUnsafeJWS before parsing
+    forbidigo:
+      # yaml.Unmarshal into a Go value checks mapping keys for duplicates
+      # pairwise and formats an error for every duplicate pair, so a small
+      # document of repeated keys takes minutes to decode. Registries and
+      # OCI/git skills hand ToolHive YAML it does not control, so code under
+      # pkg/registry and pkg/skills decodes it through pkg/yamlutil, which
+      # rejects duplicate keys in linear time first. The scope is set by the
+      # forbidigo exclusion rules below.
+      analyze-types: true
+      forbid:
+        - pattern: ^yaml\.Unmarshal$
+          pkg: ^go\.yaml\.in/yaml/v3$
+          msg: yaml.Unmarshal checks duplicate keys in quadratic time; use yamlutil.Unmarshal, or yamlutil.Parse and read the node tree
+        - pattern: ^yaml\.Node\.Decode$
+          pkg: ^go\.yaml\.in/yaml/v3$
+          msg: decode untrusted YAML with yamlutil.Unmarshal, or read the node from yamlutil.Parse without decoding it
     ginkgolinter:
       # Suppress the wrong length assertion warning
       suppress-len-assertion: false
@@ -130,6 +167,19 @@ linters:
       - linters:
           - lll
         path: .golangci.yml
+      # The forbidigo YAML rule covers non-test code that decodes registry
+      # and skill content.
+      - linters:
+          - forbidigo
+        path-except: ^pkg/(registry|skills)/
+      - linters:
+          - forbidigo
+        path: (.+)_test\.go
+      # StringOrSlice.UnmarshalYAML decodes a sequence node during a decode
+      # that pkg/yamlutil has already checked for duplicate keys.
+      - linters:
+          - forbidigo
+        path: ^pkg/skills/types\.go$
       # These are auto-generated, so it makes no sense including them.
       - linters:
           - dupl

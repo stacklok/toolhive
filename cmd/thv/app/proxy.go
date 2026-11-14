@@ -108,14 +108,18 @@ Dynamic client registration (automatic OAuth client setup):
 	thv proxy my-server --target-uri https://protected-api.com \
 	  --remote-auth --remote-auth-issuer https://auth.example.com`,
 	Args: cobra.ExactArgs(1),
+	PreRunE: func(_ *cobra.Command, _ []string) error {
+		return validateProxyMaxRequestBodySize(proxyMaxRequestBodySize)
+	},
 	RunE: proxyCmdFunc,
 }
 
 var (
-	proxyHost           string
-	proxyPort           int
-	proxyTargetURI      string
-	proxyAllowedOrigins []string
+	proxyHost               string
+	proxyPort               int
+	proxyTargetURI          string
+	proxyAllowedOrigins     []string
+	proxyMaxRequestBodySize int64
 
 	resourceURL string // Explicit resource URL for OAuth discovery endpoint (RFC 9728)
 
@@ -140,6 +144,8 @@ func init() {
 		"Exact-match allowlist for the HTTP Origin header (repeatable). Recommended when binding publicly; "+
 			"loopback binds derive a default allowlist automatically, non-loopback binds log a warning when "+
 			"no value is supplied. Example: https://my-mcp.example.com")
+	proxyCmd.Flags().Int64Var(&proxyMaxRequestBodySize, "max-request-body-size", 0,
+		"Maximum inbound request body size in bytes; zero uses the default (8 MiB)")
 	proxyCmd.Flags().StringVar(
 		&proxyTargetURI,
 		"target-uri",
@@ -238,7 +244,7 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 	// runner's addBodyLimitMiddleware. See pkg/bodylimit.
 	middlewares = append(middlewares, types.NamedMiddleware{
 		Name:     bodylimit.MiddlewareType,
-		Function: bodylimit.Middleware(bodylimit.DefaultMaxRequestBodySize),
+		Function: bodylimit.Middleware(proxyMaxRequestBodySize),
 	})
 
 	// Origin-header validation (DNS-rebinding protection per MCP 2025-11-25
@@ -323,6 +329,13 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 	return proxy.Stop(shutdownCtx)
 }
 
+func validateProxyMaxRequestBodySize(maxBytes int64) error {
+	if maxBytes < 0 {
+		return fmt.Errorf("max-request-body-size must be non-negative, got %d", maxBytes)
+	}
+	return nil
+}
+
 // getProxyOIDCConfig returns the OIDC token validator config from CLI flags, or nil if OIDC is not enabled.
 func getProxyOIDCConfig(cmd *cobra.Command) *auth.TokenValidatorConfig {
 	if !IsOIDCEnabled(cmd) {
@@ -390,18 +403,9 @@ func handleOutgoingAuthentication(ctx context.Context) (*discovery.OAuthFlowResu
 			return nil, fmt.Errorf("cannot specify both OIDC issuer and manual OAuth endpoints - choose one approach")
 		}
 
-		flowConfig := &discovery.OAuthFlowConfig{
-			ClientID:        remoteAuthFlags.RemoteAuthClientID,
-			ClientSecret:    clientSecret,
-			AuthorizeURL:    remoteAuthFlags.RemoteAuthAuthorizeURL,
-			TokenURL:        remoteAuthFlags.RemoteAuthTokenURL,
-			Scopes:          remoteAuthFlags.RemoteAuthScopes,
-			CallbackPort:    remoteAuthFlags.RemoteAuthCallbackPort,
-			Timeout:         remoteAuthFlags.RemoteAuthTimeout,
-			SkipBrowser:     remoteAuthFlags.RemoteAuthSkipBrowser,
-			ScopeParamName:  remoteAuthFlags.RemoteAuthScopeParamName,
-			AllowPrivateIPs: networking.TargetIsPrivate(ctx, proxyTargetURI),
-		}
+		flowConfig := buildRemoteAuthFlowConfig(
+			ctx, &remoteAuthFlags, clientSecret, proxyTargetURI, remoteAuthFlags.RemoteAuthIssuer,
+		)
 
 		result, err := discovery.PerformOAuthFlow(ctx, remoteAuthFlags.RemoteAuthIssuer, flowConfig)
 		if err != nil {
@@ -422,18 +426,8 @@ func handleOutgoingAuthentication(ctx context.Context) (*discovery.OAuthFlowResu
 		slog.Debug(fmt.Sprintf("Detected authentication requirement from server: %s", authInfo.Realm))
 
 		// Perform OAuth flow with discovered configuration
-		flowConfig := &discovery.OAuthFlowConfig{
-			ClientID:        remoteAuthFlags.RemoteAuthClientID,
-			ClientSecret:    clientSecret,
-			AuthorizeURL:    remoteAuthFlags.RemoteAuthAuthorizeURL,
-			TokenURL:        remoteAuthFlags.RemoteAuthTokenURL,
-			Scopes:          remoteAuthFlags.RemoteAuthScopes,
-			CallbackPort:    remoteAuthFlags.RemoteAuthCallbackPort,
-			Timeout:         remoteAuthFlags.RemoteAuthTimeout,
-			SkipBrowser:     remoteAuthFlags.RemoteAuthSkipBrowser,
-			ScopeParamName:  remoteAuthFlags.RemoteAuthScopeParamName,
-			AllowPrivateIPs: networking.TargetIsPrivate(ctx, proxyTargetURI),
-		}
+		// The issuer here is the server-supplied realm, so no operator issuer is passed.
+		flowConfig := buildRemoteAuthFlowConfig(ctx, &remoteAuthFlags, clientSecret, proxyTargetURI, "")
 
 		result, err := discovery.PerformOAuthFlow(ctx, authInfo.Realm, flowConfig)
 		if err != nil {
@@ -444,6 +438,40 @@ func handleOutgoingAuthentication(ctx context.Context) (*discovery.OAuthFlowResu
 	}
 
 	return nil, nil // No authentication required
+}
+
+// buildRemoteAuthFlowConfig assembles the OAuth flow config for the proxy's
+// outgoing authentication, from the remote-auth flags and the proxy target.
+//
+// operatorIssuer is the issuer the flow will run against when the operator named
+// it with --remote-auth-issuer, and empty when the issuer instead comes from the
+// remote server's WWW-Authenticate realm.
+//
+// The two trust flags are derived here because only this layer knows what the
+// operator typed. Both the token URL and the issuer flag are operator input, so
+// either one seeds the token endpoint's trust; when the endpoint is discovered
+// from the issuer instead, discovery narrows that trust back down by comparing
+// the discovered authority against the issuer's (CWE-918). A token endpoint the
+// remote server named reaches neither, so it stays guarded.
+func buildRemoteAuthFlowConfig(
+	ctx context.Context,
+	flags *RemoteAuthFlags,
+	clientSecret, targetURI, operatorIssuer string,
+) *discovery.OAuthFlowConfig {
+	return &discovery.OAuthFlowConfig{
+		ClientID:             flags.RemoteAuthClientID,
+		ClientSecret:         clientSecret,
+		AuthorizeURL:         flags.RemoteAuthAuthorizeURL,
+		TokenURL:             flags.RemoteAuthTokenURL,
+		Scopes:               flags.RemoteAuthScopes,
+		CallbackPort:         flags.RemoteAuthCallbackPort,
+		Timeout:              flags.RemoteAuthTimeout,
+		SkipBrowser:          flags.RemoteAuthSkipBrowser,
+		ScopeParamName:       flags.RemoteAuthScopeParamName,
+		AllowPrivateIPs:      networking.TargetIsPrivate(ctx, targetURI),
+		IssuerTrusted:        operatorIssuer != "",
+		TokenEndpointTrusted: flags.RemoteAuthTokenURL != "" || operatorIssuer != "",
+	}
 }
 
 // resolveClientSecret resolves the OAuth client secret from multiple sources

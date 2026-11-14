@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/stacklok/toolhive/pkg/authserver"
+	"github.com/stacklok/toolhive/pkg/authserver/server/tokenexchange"
 	thvjson "github.com/stacklok/toolhive/pkg/json"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
@@ -592,6 +593,89 @@ func TestValidator_ValidateAggregation(t *testing.T) {
 			wantErr: true,
 			errMsg:  "tool overrides are required",
 		},
+		{
+			// Omitted defaultToolVisibility keeps pre-existing configs valid.
+			name: "unset defaultToolVisibility is valid",
+			agg: &AggregationConfig{
+				ConflictResolution:       vmcp.ConflictStrategyPrefix,
+				ConflictResolutionConfig: &ConflictResolutionConfig{PrefixFormat: "{workload}_"},
+			},
+			wantErr: false,
+		},
+		{
+			name: "defaultToolVisibility deny is valid",
+			agg: &AggregationConfig{
+				ConflictResolution:       vmcp.ConflictStrategyPrefix,
+				ConflictResolutionConfig: &ConflictResolutionConfig{PrefixFormat: "{workload}_"},
+				DefaultToolVisibility:    DefaultToolVisibilityDeny,
+			},
+			wantErr: false,
+		},
+		{
+			name: "defaultToolVisibility allow is valid",
+			agg: &AggregationConfig{
+				ConflictResolution:       vmcp.ConflictStrategyPrefix,
+				ConflictResolutionConfig: &ConflictResolutionConfig{PrefixFormat: "{workload}_"},
+				DefaultToolVisibility:    DefaultToolVisibilityAllow,
+			},
+			wantErr: false,
+		},
+		{
+			// The CLI path has no admission webhook, so a typo must be rejected here
+			// rather than silently falling back to advertise-everything.
+			name: "defaultToolVisibility rejects an unknown value",
+			agg: &AggregationConfig{
+				ConflictResolution:       vmcp.ConflictStrategyPrefix,
+				ConflictResolutionConfig: &ConflictResolutionConfig{PrefixFormat: "{workload}_"},
+				DefaultToolVisibility:    "denied",
+			},
+			wantErr: true,
+			errMsg:  "defaultToolVisibility must be one of",
+		},
+		{
+			// An unlisted priority backend can win a conflict and then be withheld,
+			// hiding the tool from every backend that offered it.
+			name: "deny with priority rejects an unlisted priorityOrder entry",
+			agg: &AggregationConfig{
+				ConflictResolution: vmcp.ConflictStrategyPriority,
+				ConflictResolutionConfig: &ConflictResolutionConfig{
+					PriorityOrder: []string{"github", "jira"},
+				},
+				Tools:                 []*WorkloadToolConfig{{Workload: "github"}},
+				DefaultToolVisibility: DefaultToolVisibilityDeny,
+			},
+			wantErr: true,
+			errMsg:  `priorityOrder entry "jira" has no tools entry`,
+		},
+		{
+			name: "deny with priority accepts a fully listed priorityOrder",
+			agg: &AggregationConfig{
+				ConflictResolution: vmcp.ConflictStrategyPriority,
+				ConflictResolutionConfig: &ConflictResolutionConfig{
+					PriorityOrder: []string{"github", "jira"},
+				},
+				Tools: []*WorkloadToolConfig{
+					{Workload: "github"},
+					{Workload: "jira"},
+				},
+				DefaultToolVisibility: DefaultToolVisibilityDeny,
+			},
+			wantErr: false,
+		},
+		{
+			// Under allow the unlisted winner is still advertised, so the
+			// combination is harmless and must stay valid.
+			name: "allow with priority permits an unlisted priorityOrder entry",
+			agg: &AggregationConfig{
+				ConflictResolution: vmcp.ConflictStrategyPriority,
+				ConflictResolutionConfig: &ConflictResolutionConfig{
+					PriorityOrder: []string{"github", "jira"},
+				},
+				Tools:                 []*WorkloadToolConfig{{Workload: "github"}},
+				DefaultToolVisibility: DefaultToolVisibilityAllow,
+			},
+			wantErr: false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -640,6 +724,28 @@ func TestValidator_ValidateCompositeTools(t *testing.T) {
 							Type: "tool",
 							Tool: "github.merge_pr",
 						},
+					},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "valid composite tool with annotations",
+			tools: []CompositeToolConfig{
+				{
+					Name:        "report_workflow",
+					Description: "Read-only report workflow",
+					Timeout:     Duration(30 * time.Minute),
+					Steps: []WorkflowStepConfig{
+						{
+							ID:   "fetch",
+							Type: "tool",
+							Tool: "github.get_pr",
+						},
+					},
+					Annotations: &ToolAnnotationsOverride{
+						Title:        ptrTo("Report Workflow"),
+						ReadOnlyHint: ptrTo(true),
 					},
 				},
 			},
@@ -1148,6 +1254,131 @@ func TestValidateAuthServerIntegration(t *testing.T) {
 			errMsg:  "at least one upstream",
 		},
 		{
+			name: "zero upstreams with SPIFFE client association",
+			cfg: &Config{
+				IncomingAuth: &IncomingAuthConfig{Type: IncomingAuthTypeOIDC, OIDC: &OIDCConfig{
+					Issuer: "http://localhost:9090", Audience: "https://my-vmcp",
+				}},
+				OutgoingAuth: &OutgoingAuthConfig{Source: "inline"},
+			},
+			rc: &authserver.RunConfig{
+				Issuer:           "http://localhost:9090",
+				AllowedAudiences: []string{"https://my-vmcp"},
+				InboundGrants: &authserver.InboundGrantsRunConfig{
+					SPIFFEClientAuth: []authserver.SPIFFEClientAuthRunConfig{{ClientID: "spiffe-client"}},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "zero upstreams with canonical token exchange and no delegate clients",
+			cfg: &Config{
+				OutgoingAuth: &OutgoingAuthConfig{Source: "inline"},
+			},
+			rc: &authserver.RunConfig{
+				Issuer: "http://localhost:9090",
+				InboundGrants: &authserver.InboundGrantsRunConfig{
+					TokenExchange: &authserver.TokenExchangeInboundGrantRunConfig{},
+				},
+			},
+			wantErr: true,
+			errMsg:  "at least one upstream",
+		},
+		{
+			name: "zero upstreams with legacy and canonical delegate clients",
+			cfg: &Config{
+				OutgoingAuth: &OutgoingAuthConfig{Source: "inline"},
+			},
+			rc: &authserver.RunConfig{
+				Issuer:          "http://localhost:9090",
+				DelegateClients: []authserver.DelegateClientRunConfig{{ClientID: "legacy-client"}},
+				InboundGrants: &authserver.InboundGrantsRunConfig{
+					TokenExchange: &authserver.TokenExchangeInboundGrantRunConfig{
+						DelegateClients: []authserver.DelegateClientRunConfig{{ClientID: "canonical-client"}},
+					},
+				},
+			},
+			wantErr: true,
+			errMsg:  "inbound grants are invalid",
+		},
+		{
+			name: "zero upstreams with delegate client",
+			cfg: &Config{
+				IncomingAuth: &IncomingAuthConfig{Type: IncomingAuthTypeOIDC, OIDC: &OIDCConfig{
+					Issuer: "http://localhost:9090", Audience: "https://my-vmcp",
+				}},
+				OutgoingAuth: &OutgoingAuthConfig{Source: "inline"},
+			},
+			rc: &authserver.RunConfig{
+				Issuer:           "http://localhost:9090",
+				AllowedAudiences: []string{"https://my-vmcp"},
+				DelegateClients:  []authserver.DelegateClientRunConfig{{ClientID: "delegate-client"}},
+			},
+			wantErr: false,
+		},
+		{
+			name: "zero upstreams with canonical delegate client",
+			cfg: &Config{
+				IncomingAuth: &IncomingAuthConfig{Type: IncomingAuthTypeOIDC, OIDC: &OIDCConfig{
+					Issuer: "http://localhost:9090", Audience: "https://my-vmcp",
+				}},
+				OutgoingAuth: &OutgoingAuthConfig{Source: "inline"},
+			},
+			rc: &authserver.RunConfig{
+				Issuer:           "http://localhost:9090",
+				AllowedAudiences: []string{"https://my-vmcp"},
+				InboundGrants: &authserver.InboundGrantsRunConfig{
+					TokenExchange: &authserver.TokenExchangeInboundGrantRunConfig{
+						DelegateClients: []authserver.DelegateClientRunConfig{{ClientID: "delegate-client"}},
+					},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "zero upstreams with canonical JWT bearer policy",
+			cfg: &Config{
+				IncomingAuth: &IncomingAuthConfig{Type: IncomingAuthTypeOIDC, OIDC: &OIDCConfig{
+					Issuer: "http://localhost:9090", Audience: "https://my-vmcp",
+				}},
+				OutgoingAuth: &OutgoingAuthConfig{Source: "inline"},
+			},
+			rc: &authserver.RunConfig{
+				Issuer:           "http://localhost:9090",
+				AllowedAudiences: []string{"https://my-vmcp"},
+				TrustedIssuers: []tokenexchange.TrustedIssuer{{
+					Name:      "idp",
+					IssuerURL: "https://issuer.example.com",
+				}},
+				InboundGrants: &authserver.InboundGrantsRunConfig{
+					JWTBearer: &authserver.JWTBearerInboundGrantRunConfig{
+						IssuerPolicies: []authserver.JWTBearerIssuerPolicyRunConfig{{
+							IssuerRef: "idp", MaxAssertionAge: "5m",
+						}},
+					},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "zero upstreams with JWT bearer trusted issuer",
+			cfg: &Config{
+				IncomingAuth: &IncomingAuthConfig{Type: IncomingAuthTypeOIDC, OIDC: &OIDCConfig{
+					Issuer: "http://localhost:9090", Audience: "https://my-vmcp",
+				}},
+				OutgoingAuth: &OutgoingAuthConfig{Source: "inline"},
+			},
+			rc: &authserver.RunConfig{
+				Issuer:           "http://localhost:9090",
+				AllowedAudiences: []string{"https://my-vmcp"},
+				TrustedIssuers: []tokenexchange.TrustedIssuer{{
+					IssuerURL:      "https://issuer.example.com",
+					JWTBearerGrant: &tokenexchange.JWTBearerGrantPolicy{},
+				}},
+			},
+			wantErr: false,
+		},
+		{
 			name: "v07_audience_not_in_allowed",
 			cfg: &Config{
 				IncomingAuth: &IncomingAuthConfig{
@@ -1389,6 +1620,21 @@ func TestValidator_ValidatePassthroughHeaders(t *testing.T) {
 			headers: []string{"X-Forwarded-For"},
 			wantErr: true,
 			errMsg:  "X-Forwarded-For",
+		},
+		{
+			// Documented contract (virtualmcpserver-api.md): Authorization is
+			// rejected at startup. Forwarding caller-supplied credentials
+			// verbatim to every backend is a credential-leak footgun.
+			name:    "Authorization is restricted",
+			headers: []string{"authorization"},
+			wantErr: true,
+			errMsg:  "Authorization",
+		},
+		{
+			name:    "Cookie is restricted",
+			headers: []string{"Cookie"},
+			wantErr: true,
+			errMsg:  "Cookie",
 		},
 		{
 			name:    "empty string header name is rejected",

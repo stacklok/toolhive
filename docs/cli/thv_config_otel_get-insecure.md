@@ -24,13 +24,13 @@ thv config otel get-insecure [flags]
 ### Options
 
 ```
-  -h, --help   help for get-insecure
+  -h, --help[=true|false]   help for get-insecure
 ```
 
 ### Options inherited from parent commands
 
 ```
-      --debug   Enable debug mode
+      --debug[=true|false]   Enable debug mode
 ```
 
 ### SEE ALSO

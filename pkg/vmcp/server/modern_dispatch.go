@@ -7,12 +7,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 
 	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
 	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
+	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 )
 
@@ -96,14 +98,35 @@ func (s *Server) dispatchModern(w http.ResponseWriter, r *http.Request, parsed *
 		s.dispatchModernPromptGet(ctx, w, parsed, identity)
 	case "completion/complete":
 		s.dispatchModernComplete(ctx, w, parsed, identity)
+	case methodSubscriptionsListen:
+		// Ungated, same bucket as the list verbs and discover -- see
+		// dispatchModernSubscriptionsListen for why, and for the one future
+		// change that would require gating it.
+		s.dispatchModernSubscriptionsListen(ctx, w, parsed, identity)
 	case "ping":
-		// ping is deliberately ungated (unauthenticated liveness, same bucket
-		// as initialize -- no Check*) and carries NEITHER resultType NOR
-		// _meta.serverInfo on the wire: the SDK's ping handler returns
-		// emptyResult, and both annotateServerInfo and setCompleteResultType
-		// early-return/no-op for it (go-sdk server.go:1929-1945,1992). Do not
-		// route this through the envelope builders above -- a bare {} is the
-		// correct, spec-matching result.
+		// ping does NOT exist in 2026-07-28: it appears nowhere in the final
+		// schema, and go-sdk removes it for this revision, answering
+		// -32601. So answering it at all is deliberate LENIENCY toward a client
+		// that pings anyway, not spec conformance -- an earlier version of this
+		// comment claimed the latter, which was wrong twice over: the method is
+		// gone, and the bare {} below omits `resultType`, which the 2026-07-28
+		// schema's Result MUSTs on every result ("Servers implementing this
+		// protocol version MUST include this field").
+		//
+		// Kept as-is rather than switched to -32601 because that is a behavior
+		// change to a pre-existing path, out of scope for the change that
+		// introduced this comment fix. It is inert in practice: a go-sdk Modern
+		// client never pings (startKeepalive sits past an early return), so
+		// nothing observable depends on either answer today. If you are here to
+		// tighten it, -32601 is the conformant answer.
+		//
+		// It is ungated (unauthenticated liveness, same bucket as initialize --
+		// no Check*). Do not route it through the envelope builders above: they
+		// would stamp resultType and _meta.serverInfo, which the Legacy SDK path
+		// does not do for ping either (annotateServerInfo and
+		// setCompleteResultType both early-return for it, go-sdk
+		// server.go:1929-1945,1992), so the bare {} at least keeps the two paths
+		// answering alike.
 		writeModernResult(w, parsed.ID, struct{}{})
 	default:
 		writeModernError(w, parsed.ID, jsonRPCCodeMethodNotFound, "method not found")
@@ -111,19 +134,21 @@ func (s *Server) dispatchModern(w http.ResponseWriter, r *http.Request, parsed *
 }
 
 // The four list-dispatch helpers below (tools/list, resources/list,
-// resources/templates/list, prompts/list) always return the full
-// admission-filtered set from the matching core.List* and do not emit a
-// nextCursor: the Modern list-result envelopes carry no cursor field at all
-// (PaginatedResult.nextCursor is optional, so omitting it is spec-valid),
-// client-facing cursor pagination is unimplemented, and any cursor a Modern
-// client sends is ignored. This is unrelated to the aggregator's UPSTREAM
+// resources/templates/list, prompts/list) each page the full
+// admission-filtered set from the matching core.List* through paginateModern,
+// emitting a nextCursor while items remain. The cursor is stateless keyset
+// pagination over the aggregated ordering -- see modern_pagination.go for the
+// wire contract and why a self-describing cursor is what a sessionless
+// revision requires. This is unrelated to the aggregator's UPSTREAM
 // cursor-following for internal discovery (#5851); that's a different layer.
 //
 // A List*/Discover failure logs the full error server-side and returns a
 // generic -32603 message to the client (writeModernListError below): unlike
 // the call/read/get verbs, these errors come from aggregation and routing
 // plumbing (backend IDs, upstream addressing), and security.md forbids
-// leaking that detail to callers.
+// leaking that detail to callers. An invalid CURSOR is the exception: it is
+// caller input rather than a server-side fault, so writeModernPageError maps
+// it to -32602 instead.
 func (s *Server) dispatchModernToolsList(
 	ctx context.Context, w http.ResponseWriter, parsed *mcpparser.ParsedMCPRequest, identity *auth.Identity,
 ) {
@@ -132,7 +157,18 @@ func (s *Server) dispatchModernToolsList(
 		writeModernListError(ctx, w, parsed.ID, parsed.Method, err)
 		return
 	}
-	result, err := newModernToolsList(tools, s.config.Name, s.config.Version)
+	cursor, err := modernRequestCursor(parsed.Params)
+	if err != nil {
+		writeModernPageError(ctx, w, parsed.ID, parsed.Method, err)
+		return
+	}
+	page, next, err := paginateModern(tools, func(t vmcp.Tool) string { return t.Name },
+		cursorKindTools, cursor)
+	if err != nil {
+		writeModernPageError(ctx, w, parsed.ID, parsed.Method, err)
+		return
+	}
+	result, err := newModernToolsList(page, s.config.Name, s.config.Version, next)
 	if err != nil {
 		writeModernListError(ctx, w, parsed.ID, parsed.Method, err)
 		return
@@ -148,7 +184,18 @@ func (s *Server) dispatchModernResourcesList(
 		writeModernListError(ctx, w, parsed.ID, parsed.Method, err)
 		return
 	}
-	writeModernResult(w, parsed.ID, newModernResourcesList(resources, s.config.Name, s.config.Version))
+	cursor, err := modernRequestCursor(parsed.Params)
+	if err != nil {
+		writeModernPageError(ctx, w, parsed.ID, parsed.Method, err)
+		return
+	}
+	page, next, err := paginateModern(resources, func(r vmcp.Resource) string { return r.URI },
+		cursorKindResources, cursor)
+	if err != nil {
+		writeModernPageError(ctx, w, parsed.ID, parsed.Method, err)
+		return
+	}
+	writeModernResult(w, parsed.ID, newModernResourcesList(page, s.config.Name, s.config.Version, next))
 }
 
 func (s *Server) dispatchModernResourceTemplatesList(
@@ -159,7 +206,18 @@ func (s *Server) dispatchModernResourceTemplatesList(
 		writeModernListError(ctx, w, parsed.ID, parsed.Method, err)
 		return
 	}
-	writeModernResult(w, parsed.ID, newModernResourceTemplatesList(templates, s.config.Name, s.config.Version))
+	cursor, err := modernRequestCursor(parsed.Params)
+	if err != nil {
+		writeModernPageError(ctx, w, parsed.ID, parsed.Method, err)
+		return
+	}
+	page, next, err := paginateModern(templates, func(t vmcp.ResourceTemplate) string { return t.URITemplate },
+		cursorKindResourceTemplates, cursor)
+	if err != nil {
+		writeModernPageError(ctx, w, parsed.ID, parsed.Method, err)
+		return
+	}
+	writeModernResult(w, parsed.ID, newModernResourceTemplatesList(page, s.config.Name, s.config.Version, next))
 }
 
 func (s *Server) dispatchModernPromptsList(
@@ -170,7 +228,18 @@ func (s *Server) dispatchModernPromptsList(
 		writeModernListError(ctx, w, parsed.ID, parsed.Method, err)
 		return
 	}
-	writeModernResult(w, parsed.ID, newModernPromptsList(prompts, s.config.Name, s.config.Version))
+	cursor, err := modernRequestCursor(parsed.Params)
+	if err != nil {
+		writeModernPageError(ctx, w, parsed.ID, parsed.Method, err)
+		return
+	}
+	page, next, err := paginateModern(prompts, func(p vmcp.Prompt) string { return p.Name },
+		cursorKindPrompts, cursor)
+	if err != nil {
+		writeModernPageError(ctx, w, parsed.ID, parsed.Method, err)
+		return
+	}
+	writeModernResult(w, parsed.ID, newModernPromptsList(page, s.config.Name, s.config.Version, next))
 }
 
 // dispatchModernDiscover serves server/discover, Modern's replacement for
@@ -220,9 +289,42 @@ func (s *Server) dispatchModernToolCall(
 		writeModernDenied(w, parsed.ID, vmcp.DenyMessageToolCall)
 		return
 	}
+	// The refusal recorder classifies a backend tool that demanded mid-call
+	// elicitation/sampling with no downstream session to forward it to — see
+	// modern_capability_refusal.go and writeModernCallFailure.
+	ctx, refusal := withCapabilityRefusalRecorder(ctx)
 	result, err := s.core.CallTool(ctx, identity, parsed.ResourceID, parsed.Arguments, parsed.Meta)
 	if err != nil {
-		writeModernDispatchError(w, parsed.ID, vmcp.DenyMessageToolCall, err)
+		// An unadvertised tool name is caller input, not a server fault, so it must
+		// not launder into writeModernCallFailure's generic -32603. core.CallTool
+		// holds tools/call to the advertised view (core_calls.go), so this is the
+		// answer for a name hidden from tools/list by excludeAllTools/excludeAll/
+		// filter -- matching what the Legacy path already returns for a tool it
+		// never registered on the session (-32602, via toolhive-core mcpcompat's
+		// translateUnknownToolError, which rewrites go-sdk's "unknown tool" message
+		// to `tool "X" not found`), which writeModernError maps to HTTP 400. Same
+		// code either way; the two eras differ only in message text.
+		//
+		// Deliberately NOT folded into writeModernDispatchError: that helper is
+		// shared with resources/read, prompts/get and completion/complete, whose
+		// not-found classification is a separate decision. The message names no
+		// tool: an authorization denial is classified ahead of this (in
+		// core.CallTool, which authorizes before checking the advertised view).
+		// Omitting the name is a conservative choice rather than a mitigation --
+		// a denial already answers 403 + JSONRPCCodeDenied against this 400 +
+		// -32602, so the two are distinguishable either way.
+		//
+		// ErrAuthorizationFailed is excluded explicitly so this cannot depend on
+		// branch order: authorizeToolCall wraps with a double %w (core_checks.go:84),
+		// so errors.Is matches through both, and an Admission implementation whose
+		// error happened to carry ErrNotFound would otherwise answer 400 instead of
+		// 403. Not reachable today (pkg/authz does not import pkg/vmcp), but
+		// ErrNotFound is exported and Admission is a public interface.
+		if errors.Is(err, vmcp.ErrNotFound) && !errors.Is(err, vmcp.ErrAuthorizationFailed) {
+			writeModernError(w, parsed.ID, jsonRPCCodeInvalidParams, "unknown tool")
+			return
+		}
+		writeModernToolCallFailure(w, parsed, refusal, s.config.Name, s.config.Version, err)
 		return
 	}
 	// Label the audit backend on the success path only. The stateless dispatcher
@@ -249,9 +351,10 @@ func (s *Server) dispatchModernResourceRead(
 		writeModernDenied(w, parsed.ID, vmcp.DenyMessageResourceRead)
 		return
 	}
+	ctx, refusal := withCapabilityRefusalRecorder(ctx)
 	result, err := s.core.ReadResource(ctx, identity, parsed.ResourceID)
 	if err != nil {
-		writeModernDispatchError(w, parsed.ID, vmcp.DenyMessageResourceRead, err)
+		writeModernCallFailure(w, parsed, refusal, vmcp.DenyMessageResourceRead, err)
 		return
 	}
 	if result.BackendID != "" {
@@ -281,9 +384,10 @@ func (s *Server) dispatchModernPromptGet(
 		writeModernDenied(w, parsed.ID, vmcp.DenyMessagePromptGet)
 		return
 	}
+	ctx, refusal := withCapabilityRefusalRecorder(ctx)
 	result, err := s.core.GetPrompt(ctx, identity, parsed.ResourceID, parsed.Arguments)
 	if err != nil {
-		writeModernDispatchError(w, parsed.ID, vmcp.DenyMessagePromptGet, err)
+		writeModernCallFailure(w, parsed, refusal, vmcp.DenyMessagePromptGet, err)
 		return
 	}
 	if result.BackendID != "" {
@@ -295,15 +399,13 @@ func (s *Server) dispatchModernPromptGet(
 }
 
 // modernCompleteWireParams is the completion/complete request params, decoded
-// directly from parsed.Params. It mirrors go-sdk's CompleteParams/
-// CompleteReference/CompleteParamsArgument/CompleteContext field-for-field
-// (protocol.go:577-648 in go-sdk@v1.7.0-pre.3) rather than reusing an SDK
-// type: mcpcompat/mcp (ToolHive's import, now built on go-sdk v1.7.0-pre.3)
-// carries an equivalent CompleteParams, but its Ref field is untyped (any), so
-// there is no strongly-typed Modern reference shape to decode into directly.
-// It stays local rather than adding JSON tags to vmcp.CompletionRef -- the
-// domain type intentionally carries no wire coupling (anti-pattern #5, no
-// mcp-go types crossing the core boundary).
+// directly from parsed.Params. It mirrors go-sdk's CompleteParams,
+// CompleteReference, CompleteParamsArgument, and CompleteContext field-for-field
+// rather than reusing an SDK type. toolhive-core mcpcompat/mcp
+// CompleteParams has an untyped Ref field (any), so there is no strongly-typed
+// Modern reference shape to decode into directly. It stays local rather than
+// adding JSON tags to vmcp.CompletionRef -- the domain type intentionally carries
+// no wire coupling (anti-pattern #5, no mcp-go types crossing the core boundary).
 type modernCompleteWireParams struct {
 	Ref *struct {
 		Type string `json:"type"`
@@ -426,6 +528,199 @@ func writeModernListError(ctx context.Context, w http.ResponseWriter, id any, me
 	writeModernError(w, id, jsonRPCCodeInternalError, "internal error")
 }
 
+// writeModernPageError classifies a paginateModern failure. An invalid cursor is
+// bad caller input, so it gets -32602 -- matching the spec's "handle invalid
+// cursors gracefully" and go-sdk, which returns ErrInvalidParams for a cursor it
+// cannot decode. The message deliberately does not say WHY the cursor was
+// rejected: clients must treat cursors as opaque, so describing the internal
+// encoding would invite them to construct one. Anything else here is an encode
+// failure, i.e. a server-side fault, and falls through to -32603.
+func writeModernPageError(ctx context.Context, w http.ResponseWriter, id any, method string, err error) {
+	if errors.Is(err, errInvalidModernCursor) {
+		writeModernError(w, id, jsonRPCCodeInvalidParams, "invalid cursor")
+		return
+	}
+	writeModernListError(ctx, w, id, method, err)
+}
+
+// writeModernCallFailure classifies a POST-dispatch error from the three call
+// verbs (tools/call, resources/read, prompts/get), layering the mid-call
+// capability-refusal case on top of writeModernDispatchError's authz/generic
+// classification. tools/call reaches it through writeModernToolCallFailure,
+// which handles the URL elicitation answer first. On resources/read and
+// prompts/get that answer falls through to writeModernDispatchError's generic
+// -32603, whose message (the answer's Error()) never contains the URL.
+//
+//   - Authorization denials keep absolute priority (403 + denyMsg, so the
+//     audit middleware still logs "denied") — a refusal can never mask one.
+//   - A recorded refusal with the capability NOT declared in the request's
+//     _meta clientCapabilities is the 2026-07-28 schema's
+//     MissingRequiredClientCapabilityError: code -32021 with
+//     data.requiredCapabilities naming what the server needed (an actionable
+//     code a client can surface, where -32603 is opaque), served at the
+//     spec-required HTTP 400; see writeModernMissingCapability.
+//   - A recorded refusal with the capability DECLARED is deliberately NOT
+//     -32021: the client did declare it, so blaming the client would be
+//     wrong, and declaring the capability on a retry cannot help. The spec's
+//     answer for a declared capability is resultType "input_required"
+//     (multi-round retrieval, SEP-2322), which this dispatcher cannot produce
+//     for a backend's mid-call request: the request arrives over a Legacy
+//     backend session and has nothing to relay it through (vMCP renders
+//     input_required only for the in-process URL elicitation answer, in
+//     writeModernToolCallFailure) — and the 2026-07-28 error vocabulary has
+//     no "operation not supported" code, so there is no conformant code for
+//     this case at all (see the "unavailable to Modern clients" limitation in
+//     docs/arch/10-virtual-mcp-architecture.md). It stays -32603, with a
+//     vMCP-owned message that names the real cause instead of the backend's
+//     laundered error string.
+//
+// Do not fold this into writeModernDispatchError: completion/complete also
+// uses that helper but never installs a refusal recorder (SEP-2322 does not
+// extend to completion/complete, so an input_required-shaped failure there
+// has no spec-defined classification).
+func writeModernCallFailure(
+	w http.ResponseWriter, parsed *mcpparser.ParsedMCPRequest, refusal *capabilityRefusalRecorder,
+	denyMsg string, err error,
+) {
+	if capName := refusal.refused(); capName != "" && !errors.Is(err, vmcp.ErrAuthorizationFailed) {
+		if !modernClientDeclaredCapability(parsed.Meta, capName) {
+			writeModernMissingCapability(w, parsed.ID, capName)
+			return
+		}
+		writeModernError(w, parsed.ID, jsonRPCCodeInternalError, fmt.Sprintf(
+			"backend requires the %q client capability mid-call; serving it on protocol %s requires "+
+				"multi-round retrieval (SEP-2322), which this server does not implement",
+			capName, mcpparser.MCPVersionModern))
+		return
+	}
+	writeModernDispatchError(w, parsed.ID, denyMsg, err)
+}
+
+// writeModernToolCallFailure classifies a tools/call failure. It renders the
+// URL elicitation answer (vmcp.URLElicitationRequiredError) and passes every
+// other error to writeModernCallFailure:
+//
+//   - An authorization denial keeps absolute priority: an error that wraps
+//     ErrAuthorizationFailed goes to writeModernCallFailure as the 403 even
+//     when it also carries the answer.
+//   - When the client did not declare clientCapabilities.elicitation.url, it
+//     renders as -32021 naming elicitation.url, with the elicitation messages
+//     and without the URL (writeModernURLElicitationUnsupported): the spec
+//     forbids sending a mode the client did not declare, and the URL must not
+//     reach a client that would hand it to a model instead of a user.
+//   - When the request is a retry whose inputResponses decline or cancel one
+//     of the elicitations the answer asks for again, it renders as an isError
+//     tool result carrying the messages, without the URL. The spec requires
+//     servers to handle decline and cancel; asking again would loop the user
+//     through the same prompt until the client's retry cap. vMCP does not pass
+//     inputResponses to the decorator, so the decorator answers the retry the
+//     same way, and this is where the user's refusal is honored.
+//   - Otherwise it renders as resultType "input_required" carrying one
+//     elicitation/create request with mode "url" per elicitation
+//     (writeModernInputRequired). An accept response with the same answer
+//     re-issued asks again: the user finished the page but the decorator
+//     still needs the credential, and the client's retry cap bounds that.
+func writeModernToolCallFailure(
+	w http.ResponseWriter, parsed *mcpparser.ParsedMCPRequest, refusal *capabilityRefusalRecorder,
+	serverName, serverVersion string, err error,
+) {
+	answer, ok := vmcp.URLElicitationFromError(err)
+	if !ok || errors.Is(err, vmcp.ErrAuthorizationFailed) {
+		writeModernCallFailure(w, parsed, refusal, vmcp.DenyMessageToolCall, err)
+		return
+	}
+	if !modernClientDeclaredURLElicitation(parsed.Meta) {
+		writeModernURLElicitationUnsupported(w, parsed.ID, answer)
+		return
+	}
+	if modernURLElicitationRefused(parsed.Params, answer) {
+		writeModernResult(w, parsed.ID, newModernCallToolResult(&vmcp.ToolCallResult{
+			Content: []vmcp.Content{{Type: vmcp.ContentTypeText, Text: answer.Message()}},
+			IsError: true,
+		}, serverName, serverVersion))
+		return
+	}
+	writeModernInputRequired(w, parsed.ID, inputRequiredFromURLElicitation(answer), serverName, serverVersion)
+}
+
+// writeModernMissingCapability writes the MissingRequiredClientCapabilityError
+// (-32021, data.requiredCapabilities typed as a ClientCapabilities object) for
+// a backend's mid-call refusal, through writeModernMissingCapabilityError.
+//
+// It serves only a backend's mid-call refusal. The message names both the
+// capability AND the gateway limitation, so a caller that reacts to -32021 by
+// declaring the capability on a retry learns immediately that doing so will
+// not help here: a backend's mid-call request cannot be relayed as
+// input_required (the declared case is served by writeModernCallFailure's
+// -32603 branch). The URL elicitation answer, where declaring the capability
+// does help, has its own writer, writeModernURLElicitationUnsupported.
+//
+// id follows writeModernError (modern_envelope.go): absent (via
+// transportsession.HasJSONRPCID) is encoded by omitting the "id" key, never
+// as null.
+func writeModernMissingCapability(w http.ResponseWriter, id any, capName string) {
+	writeModernMissingCapabilityError(w, id, fmt.Sprintf(
+		"this tool requires the %q client capability mid-call, which the request did not declare; "+
+			"note that declaring it will not help on protocol %s — serving mid-call capability "+
+			"requests needs multi-round retrieval (SEP-2322), which this server does not implement",
+		capName, mcpparser.MCPVersionModern),
+		map[string]any{capName: map[string]any{}})
+}
+
+// writeModernURLElicitationUnsupported writes the fallback for a URL
+// elicitation answer when the Modern client did not declare
+// clientCapabilities.elicitation.url: -32021 with data.requiredCapabilities
+// {elicitation: {url: {}}}, through writeModernMissingCapabilityError.
+//
+// Unlike writeModernMissingCapability, the message tells the client that
+// declaring elicitation.url and retrying will work, because here it does. It
+// leads with the embedder's elicitation messages (answer.Message), which every
+// other fallback shows too. Neither the message nor the data carries the URL:
+// a client that did not declare URL mode may hand the error to a model, which
+// could follow the link and skip the user consent step URL mode exists for.
+func writeModernURLElicitationUnsupported(w http.ResponseWriter, id any, answer *vmcp.URLElicitationRequiredError) {
+	writeModernMissingCapabilityError(w, id,
+		answer.Message()+" (this tool call needs the user to visit a URL, which requires URL-mode elicitation; "+
+			`declare the "elicitation.url" client capability and retry the call)`,
+		map[string]any{capabilityElicitation: map[string]any{elicitationModeURL: map[string]any{}}})
+}
+
+// writeModernMissingCapabilityError writes a MissingRequiredClientCapabilityError
+// (-32021) at HTTP 400, as SEP-2575 requires, with message and
+// data.requiredCapabilities (a ClientCapabilities object). Both -32021 writers
+// go through it, so the status is chosen in one place.
+//
+// The 400 is safe for a current go-sdk client: it decodes the JSON-RPC
+// body of a non-2xx response and wraps it in jsonrpc2.ErrRejected, so the call
+// fails and the session survives (go-sdk#1117, fixed upstream). Earlier
+// go-sdk clients treat a non-transient 4xx as a connection failure and close
+// the session. vMCP's own Modern backend client reads the body of a 400
+// (readModernEnvelope in pkg/vmcp/client).
+//
+// It is written directly rather than through mcpparser.WriteClassificationError
+// because that helper takes its message from a CodedError's Error(), and
+// these messages are built per call.
+//
+// id follows writeModernError (modern_envelope.go): absent (via
+// transportsession.HasJSONRPCID) is encoded by omitting the "id" key, never
+// as null.
+func writeModernMissingCapabilityError(
+	w http.ResponseWriter, id any, message string, requiredCapabilities map[string]any,
+) {
+	envelope := map[string]any{
+		"jsonrpc": "2.0",
+		"error": map[string]any{
+			"code":    mcpparser.CodeMissingClientCapability,
+			"message": message,
+			"data":    map[string]any{"requiredCapabilities": requiredCapabilities},
+		},
+	}
+	if transportsession.HasJSONRPCID(id) {
+		envelope["id"] = id
+	}
+	writeModernEnvelope(w, http.StatusBadRequest, envelope)
+}
+
 // writeModernDispatchError classifies a POST-dispatch error from
 // CallTool/ReadResource/GetPrompt. Check* and the real call each re-aggregate
 // independently (documented "aggregates twice" on CheckToolCall), so a
@@ -436,6 +731,18 @@ func writeModernListError(ctx context.Context, w http.ResponseWriter, id any, me
 // therefore tested FIRST, before falling through to the generic internal
 // error.
 //
+// A domain error that carries its own stable JSON-RPC code and data
+// (mcpparser.CodedError — e.g. the rate limiter's 429 with
+// data.retryAfterSeconds) is written with that code rather than laundered
+// into -32603. This is the Modern counterpart of the SDK path's
+// conversion.ErrorToToolResult, whose CodedError branch preserves the same
+// code/data in an IsError tool result's structuredContent because the SDK
+// tool-handler seam cannot emit a custom JSON-RPC error object. This
+// dispatcher owns the envelope, so it emits the real thing (mirroring how
+// #6061 classified mid-call capability refusals as -32021 instead of
+// -32603). Authorization denials are still tested first: a coded error can
+// never mask a denial's 403.
+//
 // The -32603 message reuses err.Error() verbatim. This matches the SDK path's
 // existing posture rather than inventing a new one: conversion.ErrorToToolResult's
 // generic branch, and the resources/read/prompts/get Serve handlers
@@ -443,8 +750,17 @@ func writeModernListError(ctx context.Context, w http.ResponseWriter, id any, me
 // non-authz error. Re-sanitizing here would just diverge from what the SDK
 // path already exposes for the identical failure.
 func writeModernDispatchError(w http.ResponseWriter, id any, denyMsg string, err error) {
+	// Denial first (matches conversion.ErrorToToolResult): an error that is
+	// both a CodedError and wraps ErrAuthorizationFailed must render as the
+	// denial, never as retry-shaped coded data (the sets are disjoint today;
+	// this ordering is the invariant).
 	if errors.Is(err, vmcp.ErrAuthorizationFailed) {
 		writeModernDenied(w, id, denyMsg)
+		return
+	}
+	var coded mcpparser.CodedError
+	if errors.As(err, &coded) {
+		writeModernCodedError(w, id, err, coded)
 		return
 	}
 	writeModernError(w, id, jsonRPCCodeInternalError, err.Error())

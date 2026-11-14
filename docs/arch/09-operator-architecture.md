@@ -167,7 +167,7 @@ Defines an MCP server deployment, including container images, transports, middle
 
 **Implementation**: `cmd/thv-operator/api/v1beta1/mcpserver_types.go`
 
-MCPServer resources support various transport types (stdio, SSE, streamable-http), permission profiles, OIDC authentication, and Cedar-based authorization policies. The operator reconciles these resources into Kubernetes Deployments, Services, and StatefulSets.
+MCPServer resources support various transport types (stdio, SSE, streamable-http), OIDC authentication, and Cedar-based authorization policies. The operator reconciles these resources into Kubernetes Deployments, Services, and StatefulSets. The legacy `permissionProfile` field is retained for API compatibility but is deprecated and ignored; Kubernetes-native workload and network controls provide enforcement in operator deployments.
 
 MCPServer supports referencing shared configuration CRDs:
 - `oidcConfigRef` — references an MCPOIDCConfig for shared OIDC settings
@@ -222,7 +222,13 @@ Manages external authentication configurations that can be shared across multipl
 
 **Implementation**: `cmd/thv-operator/api/v1beta1/mcpexternalauthconfig_types.go`
 
-MCPExternalAuthConfig allows you to define reusable authentication configurations that can be referenced by multiple MCPServer and MCPRemoteProxy resources. When using the embedded auth server type, the `storage` field supports configuring Redis Sentinel as a shared storage backend for horizontal scaling. See [Auth Server Storage](11-auth-server-storage.md) for details.
+MCPExternalAuthConfig allows you to define reusable authentication configurations that can be referenced by multiple MCPServer and MCPRemoteProxy resources. For an `embeddedAuthServer`, each entry in `embeddedAuthServer.upstreamProviders` can set `oidcConfig.caBundleRef` or `oauth2Config.caBundleRef`, and each entry in `embeddedAuthServer.trustedIssuers` can set `caBundleRef`, to reference a namespace-local ConfigMap containing PEM-encoded CA certificates. The ConfigMap key is required and is projected read-only for that provider or issuer, then added to the system trust pool; it does not replace public system roots. This allows different providers and issuers to use different private CAs without widening trust for other clients. When using the embedded auth server type, the `storage` field supports configuring Redis Sentinel as a shared storage backend for horizontal scaling. See [Auth Server Storage](11-auth-server-storage.md) for details.
+
+When the referenced CA data changes, the operator watches the ConfigMap, computes a checksum from the selected bundle bytes, and places that checksum on the proxyrunner pod template. A changed checksum causes a Deployment rollout so new pods use the updated trust material. The operator mounts the bundle for MCPServer and MCPRemoteProxy embedded auth servers; VirtualMCPServer uses the same configuration when constructing its auth-server deployment.
+
+For a complete example, see [`examples/operator/external-auth/mcpexternalauthconfig_private_ca.yaml`](../../examples/operator/external-auth/mcpexternalauthconfig_private_ca.yaml).
+
+Because appending a certificate to a referenced ConfigMap makes that CA a trust anchor — for an upstream provider's login, or for a trusted issuer's subject-token validation — restrict write access to a `caBundleRef` ConfigMap with the same RBAC care as the auth server's signing-key Secret.
 
 MCPExternalAuthConfig resources can be referenced via two paths:
 - `externalAuthConfigRef` — for outgoing auth types (token exchange, AWS STS, bearer token injection). This is the original reference path.
@@ -231,6 +237,8 @@ MCPExternalAuthConfig resources can be referenced via two paths:
 **Referenced by MCPServer and MCPRemoteProxy** using `externalAuthConfigRef` or `authServerRef`.
 
 **Controller**: `cmd/thv-operator/controllers/mcpexternalauthconfig_controller.go`
+
+`EmbeddedAuthServerConfig` can carry top-level SPIFFE trust-domain declarations in `spiffeTrustDomains` and canonical client associations in `inboundGrants.spiffeClientAuth` (`cmd/thv-operator/api/v1beta1/mcpexternalauthconfig_types.go`). The operator converts these CRD fields into runtime config via `buildSPIFFETrustDomainRunConfigs`/`buildSPIFFEClientAuthRunConfigs` in `cmd/thv-operator/pkg/controllerutil/authserver.go`, and projects file-source ConfigMap data read-only. `newServer` constructs the configured bundle source and passes its X.509 and JWT views to the authorization server. `RunConfig.Validate()` accepts only the `file` bundle source, so a `bundle_endpoint` or `workload_api` source passes the CRD schema but is rejected by the MCPExternalAuthConfig validation and by the VirtualMCPServer inline `authServerConfig` validation (both through `EmbeddedAuthServerConfig.ValidateSPIFFEBundleSourceTypes`, which calls `authserver.ValidateRuntimeSPIFFEBundleSourceType`), and again by `BuildAuthServerRunConfig` when a referencing workload reconciles. With a `file` source, JWT-SVID and X.509-SVID client authentication are enforced. The proxy runner and vMCP can start the auth-server TLS listener on fixed port 8443. The operator's `embeddedAuthServer.tlsListener` field, its validation and the pod rollout rules are described in the [Operator configuration](18-spiffe-association-declarations.md#operator-configuration) section of that document. When the listener is enabled, the operator adds an `https-auth` container port and Service port 8443 (with `appProtocol: https`) alongside the existing `http` port. X.509 client authentication needs TLS passed through to the listener, because a proxy or Ingress that terminates TLS drops the client certificate. See [SPIFFE Association Declarations](18-spiffe-association-declarations.md) for current scope.
 
 ### MCPOIDCConfig
 
@@ -249,7 +257,7 @@ MCPOIDCConfig eliminates OIDC configuration duplication — define an identity p
 - `scopes` (optional) — Defaults to `["openid"]`
 - `resourceUrl` (optional) — Public URL for OAuth protected resource metadata (RFC 9728); defaults to internal service URL
 
-**Status fields** include a `Ready` condition, `configHash` for change detection, and `referencingWorkloads` tracking which resources reference this config. Deletion is blocked while references exist (finalizer pattern).
+**Status fields** include a `Ready` condition and `configHash` for change detection. Deletion is blocked while references exist (finalizer pattern): the controller recomputes the referencing workloads on demand at deletion time (a field-indexed lookup), rather than maintaining a stored list in status.
 
 **Referenced by**: MCPServer and MCPRemoteProxy (via `spec.oidcConfigRef`); VirtualMCPServer (via `spec.incomingAuth.oidcConfigRef`)
 
@@ -270,7 +278,7 @@ MCPTelemetryConfig centralises telemetry infrastructure settings (collector endp
 - CEL validation prevents header name overlap between `headers` and `sensitiveHeaders`
 - Per-server `serviceName` override in the workload's `telemetryConfigRef` (since `service.name` must be unique per server)
 
-**Status fields** include a `Ready` condition, `configHash` for change detection, and `referencingWorkloads` tracking.
+**Status fields** include a `Ready` condition and `configHash` for change detection. Referencing workloads are recomputed on demand at deletion time (finalizer + field-indexed lookup), not stored in status.
 
 **Referenced by**: MCPServer, VirtualMCPServer, MCPRemoteProxy (via `telemetryConfigRef`)
 
@@ -287,11 +295,11 @@ Defines reusable validating and mutating webhook middleware configurations that 
 MCPWebhookConfig declares one or more `validating` and/or `mutating` webhooks (URL, timeout, failure policy, optional TLS, optional HMAC signing). At least one webhook must be defined (CEL-enforced). The MCPServer references it via `spec.webhookConfigRef`, and the proxy-runner injects the corresponding middleware into the request chain.
 
 **Key features:**
-- Per-webhook `failurePolicy` (`fail` or `ignore`) for handling webhook errors
+- Per-webhook `failurePolicy` (`fail` or `ignore`) for handling webhook errors. `ignore` applies to timeouts, network errors and invalid webhook responses; a failure inside ToolHive before the call (encoding the payload, building the request, reading the HMAC secret) always denies the request
 - Optional `tlsConfig` with CA bundle, mTLS client cert, or `insecureSkipVerify`
 - Optional `hmacSecretRef` adds the `X-Toolhive-Signature` header to outgoing payloads
 
-**Status fields** include a `Ready` condition, `configHash` for change detection, and `referencingWorkloads`.
+**Status fields** include a `Ready` condition and `configHash` for change detection. Referencing workloads are recomputed on demand at deletion time (finalizer + field-indexed lookup), not stored in status.
 
 **Referenced by**: MCPServer (via `webhookConfigRef`)
 
@@ -425,9 +433,32 @@ VirtualMCPServer creates a virtual MCP server that aggregates tools, resources, 
 - Backend count
 - Detailed conditions for validation, discovery, and readiness
 
+For incoming OIDC authentication, `CABundleRefValidated` reports whether the CA
+ConfigMap and selected key referenced through `spec.incomingAuth.oidcConfigRef`
+exist. It is `True` with reason `CABundleRefValid`, or `False` with reason
+`CABundleRefNotFound` for a missing ConfigMap and `CABundleRefInvalid` for an
+invalid reference or missing key. The key defaults to `ca.crt`. Missing or invalid
+CA references produce advisory conditions that allow reconciliation to continue;
+the condition does not alter TLS configuration or add CRD spec fields. Removing
+the CA reference removes the condition. Indexed ConfigMap watches follow the
+shared OIDC configuration back to its vMCP consumers and refresh the condition
+when the ConfigMap is created, updated, or deleted.
+Transient ConfigMap read errors preserve the previous condition and return an
+error for retry before resource reconciliation and the status flush. Existing
+deployed resources remain in place, while pending resource and status updates
+are deferred until a successful retry.
+
 **References**: MCPGroup (via `spec.groupRef.name`)
 
 **Controller**: `cmd/thv-operator/controllers/virtualmcpserver_controller.go`
+
+In static mode (`outgoingAuth.source: inline`), the operator embeds backend configuration
+in a ConfigMap and uses its checksum on the Deployment pod template to trigger rollouts.
+Generated static backends omit transient `workload_status` metadata, so a backend's
+`Ready → Pending → Ready` transition leaves the checksum unchanged when membership,
+endpoints, and other configuration remain unchanged. Runtime probes and status reporting
+continue tracking backend health. Actual configuration or membership changes still update
+the checksum and trigger the required rollout.
 
 **Key features:**
 
@@ -550,6 +581,44 @@ The operator sets `Container.Args` (not `Command`) on the proxy-runner Deploymen
 - In-cluster Kubernetes client
 
 **Implementation**: `cmd/thv-proxyrunner/app/commands.go` (cobra wiring), `cmd/thv-proxyrunner/app/run.go` (`run` command logic)
+
+## Operator-wide Redis session storage
+
+`operator.defaultRedis` in the Helm chart supplies an address and optional password
+Secret reference for workloads using the operator's Redis session storage fallback.
+Enable `operator.defaultRedis.tls.enabled` for verified TLS; an optional
+`operator.defaultRedis.tls.caCertSecretRef` selects a private CA. The password and
+CA Secrets must exist in each workload's namespace.
+If the CA Secret or key is missing, affected pods remain in `ContainerCreating`
+with a Kubernetes `FailedMount` event visible through `kubectl describe pod`.
+
+The chart injects connection settings and Secret references into the operator's
+environment. At startup, the operator reads and validates these defaults once,
+then passes the same configuration to its controllers and vMCP converter. Runtime
+configuration and CA projection use this startup snapshot without reading the
+environment during reconciliation. Changing the defaults requires restarting the
+operator; the new settings apply as workloads reconcile.
+
+Direct Go callers of `vmcpconfig.NewConverter` must pass global defaults through
+`WithDefaultRedisConfig`. Previously, conversion read those defaults from the
+environment; a two-argument constructor call now uses only explicit session
+storage. Load and validate the defaults once at application startup with
+`controllerutil.LoadDefaultRedisConfigFromEnv`, handle its error, and pass the
+result to the converter option. The operator already forwards this snapshot
+through `VirtualMCPServerReconciler`, preserving its Kubernetes Redis fallback.
+
+The operator renders the existing session TLS configuration and projects the CA
+into the proxy runner or vMCP container. It does not load the CA into its own
+process or transfer it between namespaces. The existing configuration checksum
+and CA-volume comparisons trigger Deployment updates when the selected TLS
+configuration or CA reference changes.
+Changing CA contents under the same reference requires restarting workload pods.
+
+Per-workload Redis configuration takes precedence over global address, password,
+and TLS settings. Disabled global TLS preserves plaintext behavior. Provider
+selection retains the existing differences between resource kinds; see
+[Redis transport security](13-vmcp-scalability.md#transport-security) for the
+configuration example, environment variables, and compatibility details.
 
 ## Design Principles
 

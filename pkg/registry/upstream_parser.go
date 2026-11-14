@@ -26,18 +26,19 @@ import (
 var errLegacyFormat = &LegacyFormatError{}
 
 // parseRegistryData parses raw JSON in the upstream MCP registry format and
-// converts it into the internal types.Registry plus any embedded skills.
+// converts it into the internal types.Registry plus any embedded skills and
+// plugins.
 //
 // Returns errLegacyFormat if the input looks like the legacy ToolHive registry
 // format.
-func parseRegistryData(data []byte) (*types.Registry, []types.Skill, error) {
+func parseRegistryData(data []byte) (*types.Registry, []types.Skill, []types.Plugin, error) {
 	if !legacyhint.IsUpstream(data) && legacyhint.Looks(data) {
-		return nil, nil, errLegacyFormat
+		return nil, nil, nil, errLegacyFormat
 	}
 
 	var upstream types.UpstreamRegistry
 	if err := json.Unmarshal(data, &upstream); err != nil {
-		return nil, nil, fmt.Errorf("failed to parse registry data: %w", err)
+		return nil, nil, nil, fmt.Errorf("failed to parse registry data: %w", err)
 	}
 
 	// ConvertServersToMetadata expects []*v0.ServerJSON, but UpstreamData.Servers
@@ -49,7 +50,7 @@ func parseRegistryData(data []byte) (*types.Registry, []types.Skill, error) {
 
 	serverMetadata, err := ConvertServersToMetadata(serverPtrs)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to convert servers to metadata: %w", err)
+		return nil, nil, nil, fmt.Errorf("failed to convert servers to metadata: %w", err)
 	}
 
 	registry := &types.Registry{
@@ -72,5 +73,5 @@ func parseRegistryData(data []byte) (*types.Registry, []types.Skill, error) {
 		}
 	}
 
-	return registry, upstream.Data.Skills, nil
+	return registry, upstream.Data.Skills, upstream.Data.Plugins, nil
 }

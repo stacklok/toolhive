@@ -433,6 +433,28 @@ func TestWorkflowEngine_ParallelExecution(t *testing.T) {
 		executionMu.Unlock()
 	}
 
+	// rendezvousFetches deterministically forces the two independent fetch
+	// steps to overlap: each blocks on entry until BOTH have arrived, so
+	// neither can complete until the other has also started. This proves
+	// concurrency without relying on two sleeps overlapping in wall-clock
+	// time, which starves and flakes on loaded CI runners (the counter reads
+	// 1 whenever goroutine 2 is scheduled only after goroutine 1 already
+	// finished its sleep). If the engine ever executes the level sequentially,
+	// the first step blocks here until the timeout fires, surfacing the
+	// regression as a clear failure instead of passing by luck.
+	const parallelFetches = 2
+	var fetchesArrived atomic.Int32
+	bothFetchesStarted := make(chan struct{})
+	rendezvousFetches := func() {
+		if fetchesArrived.Add(1) == parallelFetches {
+			close(bothFetchesStarted)
+		}
+		select {
+		case <-bothFetchesStarted:
+		case <-time.After(10 * time.Second):
+		}
+	}
+
 	// Create a simple workflow that demonstrates parallel execution:
 	// Level 1 (parallel): fetch_logs, fetch_metrics
 	// Level 2 (sequential): create_report
@@ -472,7 +494,7 @@ func TestWorkflowEngine_ParallelExecution(t *testing.T) {
 	mockBackend.EXPECT().CallTool(gomock.Any(), target, "test.fetch", map[string]any{"type": "logs"}, gomock.Any(), gomock.Any()).
 		DoAndReturn(func(_ context.Context, _ *vmcp.BackendTarget, _ string, _ map[string]any, _ map[string]any, _ map[string]string) (*vmcp.ToolCallResult, error) {
 			trackStart("fetch_logs")
-			time.Sleep(50 * time.Millisecond)
+			rendezvousFetches()
 			trackEnd("fetch_logs")
 			return &vmcp.ToolCallResult{
 				StructuredContent: map[string]any{"data": "log_data"},
@@ -485,7 +507,7 @@ func TestWorkflowEngine_ParallelExecution(t *testing.T) {
 	mockBackend.EXPECT().CallTool(gomock.Any(), target, "test.fetch", map[string]any{"type": "metrics"}, gomock.Any(), gomock.Any()).
 		DoAndReturn(func(_ context.Context, _ *vmcp.BackendTarget, _ string, _ map[string]any, _ map[string]any, _ map[string]string) (*vmcp.ToolCallResult, error) {
 			trackStart("fetch_metrics")
-			time.Sleep(50 * time.Millisecond)
+			rendezvousFetches()
 			trackEnd("fetch_metrics")
 			return &vmcp.ToolCallResult{
 				StructuredContent: map[string]any{"data": "metrics_data"},
@@ -527,7 +549,10 @@ func TestWorkflowEngine_ParallelExecution(t *testing.T) {
 
 	// Verify parallel execution via concurrency tracking rather than wall-clock
 	// thresholds, which are inherently flaky on CI runners with variable load.
-	// The maxConcurrent counter directly proves that steps ran in parallel.
+	// The rendezvous barrier in the two fetch steps guarantees both were in
+	// flight simultaneously, so this counter is deterministically >= 2
+	// regardless of scheduler load; a value of 1 means the level executed
+	// sequentially (see rendezvousFetches).
 	assert.GreaterOrEqual(t, int(maxConcurrent), 2,
 		"at least 2 steps should run concurrently")
 

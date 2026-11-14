@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/adrg/xdg"
 )
@@ -37,6 +38,10 @@ type Config struct {
 
 const ignoreFileName = ".thvignore"
 
+// processorSeq distinguishes processors within one process so each owns a
+// separate artifact directory and Cleanup never removes another's storage.
+var processorSeq atomic.Uint64
+
 // NewProcessor creates a new Processor instance with the given configuration
 func NewProcessor(config *Config) *Processor {
 	if config == nil {
@@ -47,7 +52,7 @@ func NewProcessor(config *Config) *Processor {
 	}
 
 	// Generate a unique workload ID for this processor instance
-	workloadID := fmt.Sprintf("thvignore-%d", os.Getpid())
+	workloadID := fmt.Sprintf("thvignore-%d-%d", os.Getpid(), processorSeq.Add(1))
 
 	// Create artifact directory for this workload
 	artifactDir := getArtifactDir(workloadID)

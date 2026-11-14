@@ -29,4 +29,13 @@ type Provider interface {
 
 	// SearchSkills searches for skills matching the query
 	SearchSkills(query string) ([]types.Skill, error)
+
+	// ListAvailablePlugins returns plugins discovered from the registry data
+	ListAvailablePlugins() ([]types.Plugin, error)
+
+	// GetPlugin returns a specific plugin by namespace and name
+	GetPlugin(namespace, name string) (*types.Plugin, error)
+
+	// SearchPlugins searches for plugins matching the query
+	SearchPlugins(query string) ([]types.Plugin, error)
 }

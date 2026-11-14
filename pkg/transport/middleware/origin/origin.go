@@ -36,7 +36,7 @@ const (
 
 	// forbiddenBodyFallback is returned if JSON marshalling of the error body
 	// fails (should never happen with simple map types).
-	forbiddenBodyFallback = `{"jsonrpc":"2.0","error":{"code":-32600,"message":"Origin not allowed"},"id":null}`
+	forbiddenBodyFallback = `{"jsonrpc":"2.0","error":{"code":-32600,"message":"Origin not allowed"}}`
 )
 
 // MiddlewareParams holds the parameters for the origin middleware factory.
@@ -256,7 +256,12 @@ func isLoopbackHost(host string) bool {
 	return false
 }
 
-// writeForbidden emits a 403 response with a JSON-RPC error body (id: null).
+// writeForbidden emits a 403 response with a JSON-RPC error body. The "id"
+// key is omitted: this rejection happens on the Origin header alone, before
+// any JSON-RPC body is parsed, so there is no incoming id to echo. MCP
+// narrows base JSON-RPC 2.0 here -- schema/2025-11-25 types the error
+// response id as optional, string|number (no null), so an absent id must be
+// encoded by omitting the key, never as "id":null.
 func writeForbidden(w http.ResponseWriter) {
 	body, err := json.Marshal(map[string]any{
 		"jsonrpc": "2.0",
@@ -264,7 +269,6 @@ func writeForbidden(w http.ResponseWriter) {
 			"code":    jsonRPCCodeInvalidRequest,
 			"message": "Origin not allowed",
 		},
-		"id": nil,
 	})
 	if err != nil {
 		// Marshal of a static map should never fail; fall back to a literal.

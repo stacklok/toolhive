@@ -157,9 +157,19 @@ type serverOptions struct {
 	// session factory), so tests provide it here; buildTestServerWithOptions builds a stub
 	// aggregator from it (and a routing table so composite-tool reachability and call
 	// routing work).
-	tools            []vmcp.Tool
+	tools []vmcp.Tool
+	// hiddenTools are put in the routing table but NOT the advertised list,
+	// reproducing what excludeAllTools / per-workload excludeAll / filter produce
+	// (aggregator/default_aggregator.go:349): routable so composite workflow steps
+	// can reach them, absent from tools/list. Used by the hidden-tool regression
+	// test; leave nil otherwise.
+	hiddenTools      []vmcp.Tool
 	workflowDefs     map[string]*composer.WorkflowDefinition
 	optimizerFactory func(context.Context, []mcpsdk.ServerTool) (optimizer.Optimizer, error)
+	// onBackendCall, when set, is invoked with the tool name of every call that
+	// reaches BackendClient.CallTool. Lets a test assert a name was never
+	// forwarded, which a response-level assertion alone cannot prove.
+	onBackendCall func(toolName string)
 }
 
 // capsFromTools builds the AggregatedCapabilities the stub aggregator returns: the tools
@@ -167,10 +177,16 @@ type serverOptions struct {
 // This mirrors the routing table the legacy mock session built (newMockFactory), so the
 // core advertises the tools, resolves composite-tool reachability, and routes tools/call
 // through BackendClient.CallTool.
-func capsFromTools(tools []vmcp.Tool) *aggregator.AggregatedCapabilities {
-	rt := &vmcp.RoutingTable{Tools: make(map[string]*vmcp.BackendTarget, len(tools))}
+//
+// hidden names land in the routing table only, never in the advertised list — see
+// serverOptions.hiddenTools.
+func capsFromTools(tools, hidden []vmcp.Tool) *aggregator.AggregatedCapabilities {
+	rt := &vmcp.RoutingTable{Tools: make(map[string]*vmcp.BackendTarget, len(tools)+len(hidden))}
 	for i := range tools {
 		rt.Tools[tools[i].Name] = &vmcp.BackendTarget{WorkloadID: tools[i].Name}
+	}
+	for i := range hidden {
+		rt.Tools[hidden[i].Name] = &vmcp.BackendTarget{WorkloadID: hidden[i].Name}
 	}
 	return &aggregator.AggregatedCapabilities{Tools: tools, RoutingTable: rt}
 }
@@ -210,10 +226,19 @@ func buildTestServerWithOptions(
 	// Stop is called when the server is stopped (not via httptest but via session manager cleanup).
 	// tools/call routes through core.CallTool → BackendClient.CallTool (the session factory's
 	// own CallTool is bypassed on the Serve path). Return a deterministic result so call
-	// tests can assert on it.
+	// tests can assert on it. opts.onBackendCall (when set) records the tool name each
+	// forwarded call carries, letting a test assert a name never reached the backend at all.
 	mockBackendClient.EXPECT().
 		CallTool(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
-		Return(&vmcp.ToolCallResult{Content: []vmcp.Content{{Type: "text", Text: "fake result"}}}, nil).
+		DoAndReturn(func(
+			_ context.Context, _ *vmcp.BackendTarget, toolName string,
+			_ map[string]any, _ map[string]any, _ map[string]string,
+		) (*vmcp.ToolCallResult, error) {
+			if opts.onBackendCall != nil {
+				opts.onBackendCall(toolName)
+			}
+			return &vmcp.ToolCallResult{Content: []vmcp.Content{{Type: "text", Text: "fake result"}}}, nil
+		}).
 		AnyTimes()
 
 	rt := router.NewSessionRouter(&vmcp.RoutingTable{})
@@ -226,7 +251,7 @@ func buildTestServerWithOptions(
 			SessionTTL:       5 * time.Minute,
 			SessionFactory:   factory,
 			OptimizerFactory: opts.optimizerFactory,
-			Aggregator:       newStubAggregator(capsFromTools(opts.tools)),
+			Aggregator:       newStubAggregator(capsFromTools(opts.tools, opts.hiddenTools)),
 		},
 		rt,
 		mockBackendClient,

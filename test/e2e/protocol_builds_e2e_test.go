@@ -207,9 +207,15 @@ var _ = Describe("Protocol Builds E2E", Label("mcp", "mcp-protocol", "protocols"
 
 			It("should build and start successfully and provide arxiv tools [Serial]", func() {
 				By("Starting the ArXiv MCP server using uvx:// protocol")
+				// --build-with pins the transitive Python mcp SDK below 2.0:
+				// arxiv-mcp-server declares an unbounded mcp>=1.27.0 and
+				// import-crashes under the mcp 2.0.0 major (see #6108). The
+				// constraint also exercises the uvx builder's --build-with
+				// plumbing end-to-end.
 				stdout, stderr := e2e.NewTHVCommand(config, "run",
 					"--name", serverName,
 					"--transport", "stdio",
+					"--build-with", "mcp<2",
 					"uvx://arxiv-mcp-server").ExpectSuccess()
 
 				// The command should indicate success and show build process

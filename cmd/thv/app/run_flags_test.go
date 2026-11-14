@@ -4,6 +4,7 @@
 package app
 
 import (
+	"encoding/json"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -11,14 +12,17 @@ import (
 	"testing"
 	"time"
 
+	"github.com/adrg/xdg"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/stacklok/toolhive-core/logging"
 	regtypes "github.com/stacklok/toolhive-core/registry/types"
+	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/runner"
+	"github.com/stacklok/toolhive/pkg/secrets"
 	"github.com/stacklok/toolhive/pkg/webhook"
 )
 
@@ -50,6 +54,68 @@ func createTestConfigProvider(t *testing.T, cfg *config.Config) (config.Provider
 
 	return provider, func() {
 		// Cleanup is handled by t.TempDir()
+	}
+}
+
+//nolint:tparallel // The parent mutates process-wide environment and XDG state.
+func TestGetRemoteAuthFromRemoteServerMetadataBearerTokenWithoutSecretSetup(t *testing.T) {
+	t.Cleanup(xdg.Reload)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv(secrets.ProviderEnvVar, string(secrets.EnvironmentType))
+	t.Setenv("TOOLHIVE_SECRET_TOKEN", "environment-bearer-token")
+	xdg.Reload()
+
+	metadata := &regtypes.RemoteServerMetadata{
+		OAuthConfig: &regtypes.OAuthConfig{},
+	}
+	tests := []struct {
+		name            string
+		bearerToken     string
+		want            string
+		wantErr         error
+		wantErrContains []string
+	}{
+		{
+			name:        "existing reference does not require setup",
+			bearerToken: "TOKEN,target=bearer_token",
+			want:        "TOKEN,target=bearer_token",
+		},
+		{
+			name:        "plaintext still requires setup",
+			bearerToken: "plaintext-bearer-token",
+			wantErr:     secrets.ErrSecretsNotSetup,
+			wantErrContains: []string{
+				"thv secret setup",
+				"TOOLHIVE_SECRETS_PROVIDER=environment",
+				"TOOLHIVE_SECRET_<NAME>",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			runFlags := &RunFlags{
+				Name: "registry-remote",
+				RemoteAuthFlags: RemoteAuthFlags{
+					RemoteAuthBearerToken: tt.bearerToken,
+				},
+			}
+
+			remoteConfig, err := getRemoteAuthFromRemoteServerMetadata(metadata, runFlags)
+			if tt.wantErr != nil {
+				require.ErrorIs(t, err, tt.wantErr)
+				for _, expected := range tt.wantErrContains {
+					assert.ErrorContains(t, err, expected)
+				}
+				assert.Nil(t, remoteConfig)
+				return
+			}
+			require.NoError(t, err)
+			require.NotNil(t, remoteConfig)
+			assert.Equal(t, tt.want, remoteConfig.BearerToken)
+		})
 	}
 }
 
@@ -869,4 +935,104 @@ func TestBuildRunnerConfig_NetworkIsolationExplicitWiring(t *testing.T) {
 			assert.Equal(t, tt.expectIsolation, cfg.IsolateNetwork)
 		})
 	}
+}
+
+// TestBuildRunnerConfig_MaxRequestBodySizeWiring guards the CLI-to-RunConfig
+// handoff for --max-request-body-size. The builder tests cover validation in
+// isolation; this test ensures the command layer does not drop the flag value.
+func TestBuildRunnerConfig_MaxRequestBodySizeWiring(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		flagValue string
+		want      int64
+		wantErr   bool
+	}{
+		{name: "zero preserves default semantics", flagValue: "0", want: 0},
+		{name: "positive value is wired", flagValue: "16777216", want: 16 << 20},
+		{name: "negative value is rejected", flagValue: "-1", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			runFlags := &RunFlags{}
+			cmd := &cobra.Command{}
+			AddRunFlags(cmd, runFlags)
+
+			require.NoError(t, cmd.Flags().Set("permission-profile", "none"))
+			require.NoError(t, cmd.Flags().Set("transport", "stdio"))
+			require.NoError(t, cmd.Flags().Set("max-request-body-size", tt.flagValue))
+
+			cfg, err := buildRunnerConfig(
+				t.Context(), runFlags, nil, false, "127.0.0.1", nil, "test:latest", nil,
+				map[string]string{}, &runner.DetachedEnvVarValidator{}, nil, nil, &config.Config{},
+			)
+
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "max-request-body-size must be non-negative")
+				return
+			}
+			require.NoError(t, err)
+			require.NotNil(t, cfg)
+			assert.Equal(t, tt.want, cfg.MaxRequestBodySize)
+		})
+	}
+}
+
+// TestSetupOIDCConfiguration_MiddlewareFlagWiring guards the JWKS/OIDC
+// transport flags (--thv-ca-bundle, --jwks-auth-token-file,
+// --jwks-allow-private-ip, --oidc-insecure-allow-http) from being dropped on
+// the way into the auth middleware config. The runtime validator is built
+// from the middleware config, not the deprecated top-level OIDCConfig, so a
+// value that only reaches the latter is silently ignored. See #6522.
+func TestSetupOIDCConfiguration_MiddlewareFlagWiring(t *testing.T) {
+	t.Parallel()
+
+	runFlags := &RunFlags{}
+	cmd := &cobra.Command{}
+	AddRunFlags(cmd, runFlags)
+	AddOIDCFlags(cmd)
+
+	for flag, value := range map[string]string{
+		"permission-profile":       "none",
+		"transport":                "stdio",
+		"oidc-issuer":              "http://localhost:8099",
+		"oidc-audience":            "test",
+		"thv-ca-bundle":            "/path/to/ca.pem",
+		"jwks-auth-token-file":     "/path/to/token",
+		"jwks-allow-private-ip":    "true",
+		"oidc-insecure-allow-http": "true",
+	} {
+		require.NoError(t, cmd.Flags().Set(flag, value))
+	}
+
+	oidcConfig, err := setupOIDCConfiguration(cmd, runFlags)
+	require.NoError(t, err)
+	require.NotNil(t, oidcConfig)
+
+	cfg, err := buildRunnerConfig(
+		t.Context(), runFlags, nil, false, "127.0.0.1", nil, "test:latest", nil,
+		map[string]string{}, &runner.DetachedEnvVarValidator{}, oidcConfig, nil, &config.Config{},
+	)
+	require.NoError(t, err)
+
+	var authParams auth.MiddlewareParams
+	for _, mw := range cfg.MiddlewareConfigs {
+		if mw.Type == auth.MiddlewareType {
+			require.NoError(t, json.Unmarshal(mw.Parameters, &authParams))
+			break
+		}
+	}
+	got := authParams.OIDCConfig
+	require.NotNil(t, got, "auth middleware must be present")
+
+	assert.Equal(t, "http://localhost:8099", got.Issuer)
+	assert.Equal(t, "/path/to/ca.pem", got.CACertPath)
+	assert.Equal(t, "/path/to/token", got.AuthTokenFile)
+	assert.True(t, got.AllowPrivateIP)
+	assert.True(t, got.InsecureAllowHTTP)
 }

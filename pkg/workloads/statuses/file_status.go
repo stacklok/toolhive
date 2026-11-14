@@ -279,16 +279,26 @@ func (f *fileStatusManager) ListWorkloads(ctx context.Context, listAll bool, lab
 		return nil, fmt.Errorf("failed to parse label filters: %w", err)
 	}
 
+	// Get workloads from files BEFORE snapshotting the runtime. The order is
+	// load-bearing: a workload's status file only flips to `running` after its
+	// container has been created and started, so a file that says `running` in
+	// a snapshot taken at time T implies the container existed before T. If a
+	// later runtime snapshot lacks it, the container is genuinely gone and
+	// handleRuntimeMissing's unhealthy verdict is correct. With the snapshots
+	// the other way round, a workload that starts between the runtime snapshot
+	// and the file read looks like "file running, runtime missing" and gets its
+	// status file permanently overwritten as unhealthy — a healthy, freshly
+	// started workload poisoned by a concurrent `thv list` (see #4432 for the
+	// broader write-on-read hazard in this path).
+	fileWorkloadsWithPID, err := f.getWorkloadsFromFiles()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get workloads from files: %w", err)
+	}
+
 	// Get workloads from runtime
 	runtimeContainers, err := f.runtime.ListWorkloads(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list workloads from runtime: %w", err)
-	}
-
-	// Get workloads from files
-	fileWorkloadsWithPID, err := f.getWorkloadsFromFiles()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get workloads from files: %w", err)
 	}
 
 	// TODO: Fetch the runconfig if present to populate additional fields like package, tool type, group etc.
@@ -973,14 +983,52 @@ func (f *fileStatusManager) handleRuntimeMissing(
 	if fileWorkload.Status == rt.WorkloadStatusRunning || fileWorkload.Status == rt.WorkloadStatusStopped {
 		// The workload cannot be running or stopped if the runtime container is not found
 		contextMsg := fmt.Sprintf("workload %s not found in runtime, marking as unhealthy", workloadName)
-		if err := f.SetWorkloadStatus(ctx, workloadName, rt.WorkloadStatusUnhealthy, contextMsg); err != nil {
+		if err := f.setUnhealthyIfStillPresent(ctx, workloadName, contextMsg); err != nil {
 			return core.Workload{}, err
 		}
+		// The returned view reflects what this list observed regardless of
+		// whether the guarded write persisted anything (the file may have been
+		// removed or repurposed by a concurrent operation in the meantime).
 		fileWorkload.Status = rt.WorkloadStatusUnhealthy
 	}
 
 	// If the workload has another status, like starting or stopping, we can keep it as is
 	return fileWorkload, nil
+}
+
+// setUnhealthyIfStillPresent marks a workload unhealthy only if, re-checked
+// under the file lock, its status file still exists and still claims running
+// or stopped. handleRuntimeMissing decides to mark unhealthy from a snapshot
+// that is stale by the time the write happens; an unconditional
+// SetWorkloadStatus would recreate the file of a workload that `thv rm`
+// deleted in the meantime (SetWorkloadStatus creates missing files), leaving
+// a ghost "unhealthy" entry behind, or clobber a fresher status such as
+// `removing`. Skipping in those cases is not an error: the persisted state is
+// already newer than the observation that triggered the write.
+func (f *fileStatusManager) setUnhealthyIfStillPresent(ctx context.Context, workloadName, contextMsg string) error {
+	return f.withFileLock(ctx, workloadName, func(statusFilePath string) error {
+		if _, err := os.Stat(statusFilePath); os.IsNotExist(err) {
+			slog.Debug("skipping unhealthy mark: status file no longer exists", "workload", workloadName)
+			return nil
+		} else if err != nil {
+			return fmt.Errorf("failed to check status file for workload %s: %w", workloadName, err)
+		}
+
+		statusFile, err := f.readStatusFile(statusFilePath)
+		if err != nil {
+			return fmt.Errorf("failed to read existing status for workload %s: %w", workloadName, err)
+		}
+		if statusFile.Status != rt.WorkloadStatusRunning && statusFile.Status != rt.WorkloadStatusStopped {
+			slog.Debug("skipping unhealthy mark: status changed since observation",
+				"workload", workloadName, "status", statusFile.Status)
+			return nil
+		}
+
+		statusFile.Status = rt.WorkloadStatusUnhealthy
+		statusFile.StatusContext = contextMsg
+		statusFile.UpdatedAt = time.Now()
+		return f.writeStatusFile(statusFilePath, *statusFile)
+	})
 }
 
 // isProxyUnhealthy checks if the proxy process is running for the workload.

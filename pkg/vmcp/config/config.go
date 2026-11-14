@@ -11,11 +11,13 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/stacklok/toolhive/pkg/audit"
 	thvjson "github.com/stacklok/toolhive/pkg/json"
 	ratelimittypes "github.com/stacklok/toolhive/pkg/ratelimit/types"
+	"github.com/stacklok/toolhive/pkg/redisconfig"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
@@ -166,6 +168,10 @@ type Config struct {
 	// When enabled, vMCP exposes only find_tool and call_tool operations to clients
 	// instead of all backend tools directly. This reduces token usage by allowing
 	// LLMs to discover relevant tools on demand rather than receiving all tool definitions.
+	// Enabling the optimizer currently pins this instance to MCP 2025-11-25: the
+	// find_tool/call_tool meta-tools are session-scoped, so Modern-capable (2026-07-28)
+	// clients are negotiated down to the Legacy revision (see
+	// pkg/vmcp/server/modern_gate.go; Modern parity is tracked in stacklok/toolhive#6089).
 	// +optional
 	Optimizer *OptimizerConfig `json:"optimizer,omitempty" yaml:"optimizer,omitempty"`
 
@@ -190,10 +196,14 @@ type Config struct {
 	RateLimiting *ratelimittypes.RateLimitConfig `json:"rateLimiting,omitempty" yaml:"rateLimiting,omitempty"`
 
 	// PassthroughHeaders is an allowlist of incoming client request header names
-	// forwarded verbatim to all backends. Captured at the vMCP incoming edge by
-	// headerforward.CaptureMiddleware and consumed once at session creation
-	// when the per-session backend client's HeaderForwardConfig is built. Names
-	// must not be in the restricted set (Host, hop-by-hop, X-Forwarded-*, etc.).
+	// forwarded verbatim to all backends. Captured per request at the vMCP
+	// incoming edge by headerforward.CaptureMiddleware: tool calls, resource
+	// reads and prompt gets carry the values from the request that triggered
+	// them, and a header absent on that request is not forwarded. Session-scoped
+	// work (the session's backend connections, its advertised capability list,
+	// and background capability resyncs) uses the values from the request that
+	// created the session. Names must not be in the restricted set (Host,
+	// hop-by-hop, X-Forwarded-*, etc.).
 	// +optional
 	// +listType=atomic
 	PassthroughHeaders []string `json:"passthroughHeaders,omitempty" yaml:"passthroughHeaders,omitempty"`
@@ -423,11 +433,59 @@ func (c *OutgoingAuthConfig) ResolveForBackend(backendID string) *authtypes.Back
 	return nil
 }
 
+// ApplyToBackend applies this outgoing auth configuration to a backend, choosing
+// between the backend's own discovered auth and config-based auth. It is the single
+// implementation shared by startup discovery (pkg/vmcp/aggregator) and the Kubernetes
+// backend watcher's reconciler (pkg/vmcp/k8s), so both paths resolve auth identically.
+//
+// Auth resolution logic:
+//   - "discovered" mode: keep discovered auth if the backend has any, otherwise fall
+//     back to config-based auth via ResolveForBackend (backend-specific entry, then
+//     Default, then no auth)
+//   - "inline" mode (or ""): always use config-based auth, ignore discovered auth
+//   - unknown mode: default to config-based auth for safety
+//
+// A nil receiver is a no-op: the backend keeps whatever auth it already carries.
+func (c *OutgoingAuthConfig) ApplyToBackend(backend *vmcp.Backend, backendName string) {
+	if c == nil {
+		return
+	}
+
+	// Determine if we should use discovered auth or config-based auth
+	var useDiscoveredAuth bool
+	switch c.Source {
+	case "discovered":
+		// In discovered mode, use auth discovered from MCPServer (if any exists)
+		// If no auth is discovered, fall back to config-based auth via ResolveForBackend
+		// which will use backend-specific config, then Default, then no auth
+		useDiscoveredAuth = backend.AuthConfig != nil
+	case "inline", "":
+		// For inline mode or empty source, always use config-based auth
+		// Ignore any discovered auth from backends
+		useDiscoveredAuth = false
+	default:
+		// Unknown source mode - default to config-based auth for safety
+		slog.Warn("unknown auth source mode, defaulting to config-based auth", "source", c.Source)
+		useDiscoveredAuth = false
+	}
+
+	if useDiscoveredAuth {
+		// Keep the auth discovered from MCPServer (already populated in backend)
+		slog.Debug("backend using discovered auth strategy", "backend", backendName, "strategy", backend.AuthConfig.Type)
+	} else {
+		// Use auth from config (inline mode)
+		if authConfig := c.ResolveForBackend(backendName); authConfig != nil {
+			backend.AuthConfig = authConfig
+			slog.Debug("backend configured with auth strategy from config", "backend", backendName, "strategy", authConfig.Type)
+		}
+	}
+}
+
 // AggregationConfig defines tool aggregation, filtering, and conflict resolution strategies.
 //
 // Tool Visibility vs Routing:
-//   - ExcludeAllTools, per-workload ExcludeAll, and Filter control which tools are
-//     advertised to MCP clients (visible in tools/list responses).
+//   - ExcludeAllTools, DefaultToolVisibility, per-workload ExcludeAll, and Filter control
+//     which tools are advertised to MCP clients (visible in tools/list responses).
 //   - ALL backend tools remain available in the internal routing table, allowing
 //     composite tools to call hidden backend tools.
 //   - This enables curated experiences where raw backend tools are hidden from
@@ -438,7 +496,8 @@ func (c *OutgoingAuthConfig) ResolveForBackend(backendID string) *authtypes.Back
 type AggregationConfig struct {
 	// ConflictResolution defines the strategy for resolving tool name conflicts.
 	// - prefix: Automatically prefix tool names with workload identifier
-	// - priority: First workload in priority order wins
+	// - priority: Highest-priority workload wins only if all conflicting workloads
+	//   are listed; otherwise all candidates are dropped (see PriorityOrder)
 	// - manual: Explicitly define overrides for all conflicts
 	// +kubebuilder:validation:Enum=prefix;priority;manual
 	// +kubebuilder:default=prefix
@@ -460,19 +519,73 @@ type AggregationConfig struct {
 	// direct client access while exposing curated composite tool workflows.
 	// +optional
 	ExcludeAllTools bool `json:"excludeAllTools,omitempty" yaml:"excludeAllTools,omitempty"`
+
+	// NOTE (maintainers, not rendered into the CRD reference): there is
+	// deliberately no kubebuilder default on DefaultToolVisibility. "" already
+	// behaves as allow everywhere that reads this field, so defaulting would change
+	// only the serialized bytes — and apiextensions applies structural defaults on
+	// decode, so every existing VirtualMCPServer would come back with the field set,
+	// changing config.yaml, its ConfigMap checksum, and the pod template that stamps
+	// it. That restarts every vMCP deployment once for a no-op field.
+
+	// DefaultToolVisibility controls whether a backend with NO entry in Tools has its
+	// tools advertised to MCP clients.
+	//   - allow (default): every tool from an unlisted backend is advertised, so
+	//     adding a workload to the group exposes it without further configuration.
+	//   - deny: an unlisted backend contributes no tools, so only backends named in
+	//     Tools are advertised. Use this when the set of exposed tools must be
+	//     enumerated deliberately rather than inherited from group membership.
+	//
+	// A backend that DOES have a Tools entry is unaffected by this setting: the
+	// entry opts it in, and ExcludeAll/Filter on that entry decide the rest. Like
+	// every other visibility setting here, this controls advertising only — hidden
+	// tools remain in the routing table for composite tools (see the type doc).
+	//
+	// This gates TOOLS only. An unlisted backend's resources, resource templates,
+	// and prompts are still advertised under deny; mergeResources/mergePrompts have
+	// no equivalent check.
+	// +kubebuilder:validation:Enum=allow;deny
+	// +optional
+	DefaultToolVisibility DefaultToolVisibility `json:"defaultToolVisibility,omitempty" yaml:"defaultToolVisibility,omitempty"`
 }
+
+// DefaultToolVisibility names the advertising default applied to backends with no
+// per-workload Tools entry. The zero value is "" (unset), which behaves as
+// DefaultToolVisibilityAllow so existing configs keep today's behavior.
+// +gendoc
+type DefaultToolVisibility string
+
+const (
+	// DefaultToolVisibilityAllow advertises every tool from a backend with no Tools
+	// entry. This is the default and matches pre-DefaultToolVisibility behavior.
+	DefaultToolVisibilityAllow DefaultToolVisibility = "allow"
+
+	// DefaultToolVisibilityDeny advertises no tools from a backend with no Tools entry.
+	DefaultToolVisibilityDeny DefaultToolVisibility = "deny"
+)
 
 // ConflictResolutionConfig provides configuration for conflict resolution strategies.
 // +kubebuilder:object:generate=true
 // +gendoc
 type ConflictResolutionConfig struct {
-	// PrefixFormat defines the prefix format for the "prefix" strategy.
+	// PrefixFormat defines the prefix format for the "prefix" tool strategy
+	// and for backend-prefixed prompt names (the default for every prompt;
+	// under the "priority" strategy, backends listed in priorityOrder keep
+	// their own prompt names).
 	// Supports placeholders: {workload}, {workload}_, {workload}.
 	// +kubebuilder:default="{workload}_"
 	// +optional
 	PrefixFormat string `json:"prefixFormat,omitempty" yaml:"prefixFormat,omitempty"`
 
-	// PriorityOrder defines the workload priority order for the "priority" strategy.
+	// PriorityOrder defines the workload priority order for the "priority" strategy
+	// (first has highest priority). It is not an allowlist: unique tools remain
+	// unchanged, including those from unlisted workloads. If all workloads in a
+	// tool-name collision are listed, the highest-priority one wins and losers
+	// are dropped. If any conflicting workload is unlisted, all candidates in that
+	// collision are dropped from advertising and routing, with no prefix fallback,
+	// and the collision is logged at ERROR.
+	// Separately, listed workloads keep their own prompt names (unlisted workloads'
+	// prompts stay backend-prefixed).
 	// +optional
 	PriorityOrder []string `json:"priorityOrder,omitempty" yaml:"priorityOrder,omitempty"`
 }
@@ -532,23 +645,33 @@ type ToolConfigRef struct {
 // +kubebuilder:object:generate=true
 // +gendoc
 type ToolAnnotationsOverride struct {
-	// Title overrides the human-readable title annotation.
+	// Title sets the human-readable title annotation.
+	// For tool overrides this replaces the backend value; for composite tools
+	// it is an explicit declaration merged over the derived safety floor.
 	// +optional
 	Title *string `json:"title,omitempty" yaml:"title,omitempty"`
 
-	// ReadOnlyHint overrides the read-only hint annotation.
+	// ReadOnlyHint sets the read-only hint annotation.
+	// For tool overrides this replaces the backend value; for composite tools
+	// it is an explicit declaration merged over the derived safety floor.
 	// +optional
 	ReadOnlyHint *bool `json:"readOnlyHint,omitempty" yaml:"readOnlyHint,omitempty"`
 
-	// DestructiveHint overrides the destructive hint annotation.
+	// DestructiveHint sets the destructive hint annotation.
+	// For tool overrides this replaces the backend value; for composite tools
+	// it is an explicit declaration merged over the derived safety floor.
 	// +optional
 	DestructiveHint *bool `json:"destructiveHint,omitempty" yaml:"destructiveHint,omitempty"`
 
-	// IdempotentHint overrides the idempotent hint annotation.
+	// IdempotentHint sets the idempotent hint annotation.
+	// For tool overrides this replaces the backend value; for composite tools
+	// it is an explicit declaration merged over the derived safety floor.
 	// +optional
 	IdempotentHint *bool `json:"idempotentHint,omitempty" yaml:"idempotentHint,omitempty"`
 
-	// OpenWorldHint overrides the open-world hint annotation.
+	// OpenWorldHint sets the open-world hint annotation.
+	// For tool overrides this replaces the backend value; for composite tools
+	// it is an explicit declaration merged over the derived safety floor.
 	// +optional
 	OpenWorldHint *bool `json:"openWorldHint,omitempty" yaml:"openWorldHint,omitempty"`
 }
@@ -590,6 +713,33 @@ type OperationalConfig struct {
 	// FailureHandling configures failure handling behavior.
 	// +optional
 	FailureHandling *FailureHandlingConfig `json:"failureHandling,omitempty" yaml:"failureHandling,omitempty"`
+
+	// ListChanged configures live list_changed propagation from backends.
+	// +optional
+	ListChanged *ListChangedConfig `json:"listChanged,omitempty" yaml:"listChanged,omitempty"`
+}
+
+// ListChangedConfig configures which backends vMCP subscribes to for
+// list_changed notifications.
+//
+// Subscribing opens a standalone notification stream to the backend during
+// session initialization. A backend that accepts that subscribe and then never
+// services it stalls the handshake until the init deadline, and clients with
+// their own connect timeout give up first. Excluding such a backend costs it
+// live propagation only: its tools are still aggregated and callable, and they
+// refresh on the next session.
+// +kubebuilder:object:generate=true
+// +gendoc
+type ListChangedConfig struct {
+	// Enabled turns propagation on or off for every backend. Defaults to true.
+	// +optional
+	Enabled *bool `json:"enabled,omitempty" yaml:"enabled,omitempty"`
+
+	// DisabledWorkloads names backends to exclude while leaving the rest
+	// subscribed. Prefer this over Enabled when a single backend misbehaves.
+	// +optional
+	// +listType=set
+	DisabledWorkloads []string `json:"disabledWorkloads,omitempty" yaml:"disabledWorkloads,omitempty"`
 }
 
 // TimeoutConfig configures timeout settings.
@@ -604,6 +754,23 @@ type TimeoutConfig struct {
 	// PerWorkload defines per-workload timeout overrides.
 	// +optional
 	PerWorkload map[string]Duration `json:"perWorkload,omitempty" yaml:"perWorkload,omitempty"`
+
+	// BackendInit caps how long session initialization waits for a single
+	// backend to connect and hand back its capabilities. Unlike Default, which
+	// only ever extends that deadline, an explicit BackendInit is authoritative:
+	// it bounds session init even when a workload's request timeout is longer.
+	//
+	// Leave it unset unless a backend can stall the handshake. It exists for
+	// backends that neither answer nor fail promptly: a stateless MCP server
+	// that requires per-user auth cannot be classified by the unauthenticated
+	// health probe, so vMCP opens the persistent connection its Modern skip
+	// path would otherwise avoid, and that connection can hang until the
+	// deadline. Clients with their own connect timeout give up first, and
+	// because they never complete a call, the revision cache never warms and
+	// the next session repeats it. A few seconds here lets session init fail
+	// fast, which partialFailureMode: best_effort turns into a usable session.
+	// +optional
+	BackendInit Duration `json:"backendInit,omitempty" yaml:"backendInit,omitempty"`
 }
 
 // FailureHandlingConfig configures failure handling behavior.
@@ -711,6 +878,26 @@ type CompositeToolConfig struct {
 	// If not specified, the workflow returns the last step's output (backward compatible).
 	// +optional
 	Output *OutputConfig `json:"output,omitempty" yaml:"output,omitempty"`
+
+	// Annotations declares MCP tool annotations for the composite tool.
+	//
+	// Annotation derivation runs at ADVERTISE TIME (when tools/list is served
+	// and the backend tools are aggregated), not at CRD admission — thv vmcp
+	// validate does NOT check annotation contradictions. The derived floor is
+	// fail-closed: when the workflow has one or more tool steps the floor is
+	// always non-nil, and any step whose annotations are nil/unknown taints the
+	// floor conservatively (readOnly=false, destructive=true, openWorld=true).
+	// A workflow with no tool steps (e.g. only elicitation) has no floor.
+	//
+	// When nil, annotations are derived from the annotations of the backend tools
+	// referenced by the workflow's steps (e.g. readOnlyHint is true only when every
+	// step tool is read-only). When set, the values are an explicit author
+	// declaration merged over the derived floor — subject to a safety-floor
+	// guardrail that drops the composite tool (with a warning naming the offending
+	// step tools) if an explicit hint would make the tool look safer than its
+	// steps allow.
+	// +optional
+	Annotations *ToolAnnotationsOverride `json:"annotations,omitempty" yaml:"annotations,omitempty"`
 }
 
 // CompositeToolRef defines a reference to a VirtualMCPCompositeToolDefinition resource.
@@ -1074,6 +1261,13 @@ type SessionStorageConfig struct {
 	// KeyPrefix is an optional prefix for all Redis keys used by ToolHive.
 	// +optional
 	KeyPrefix string `json:"keyPrefix,omitempty" yaml:"keyPrefix,omitempty"`
+
+	// TLS enables TLS for session storage and rate limiting. An empty
+	// configuration verifies the Redis server using system roots.
+	// On Kubernetes, set spec.sessionStorage.tls instead: the operator derives this
+	// field from it and rejects a value set under spec.config.sessionStorage.
+	// +optional
+	TLS *redisconfig.TLSConfig `json:"tls,omitempty" yaml:"tls,omitempty"`
 }
 
 // Validator validates configuration.

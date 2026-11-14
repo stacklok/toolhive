@@ -8,7 +8,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/lipgloss/v2"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 )
@@ -184,7 +184,7 @@ func RenderHelp(cmd *cobra.Command) {
 
 	fmt.Fprintf(&sb, "  %s\n\n", footerHint)
 
-	fmt.Print(sb.String())
+	_, _ = lipgloss.Print(sb.String())
 }
 
 // RenderCommandUsage prints a styled usage hint for a command when the user
@@ -223,7 +223,7 @@ func RenderCommandUsage(cmd *cobra.Command) {
 		lipgloss.NewStyle().Foreground(ColorDim).Render(
 			"Run  thv "+cmd.Name()+" --help  for more information."))
 
-	fmt.Print(sb.String())
+	_, _ = lipgloss.Print(sb.String())
 }
 
 // renderParentHelp prints a styled subcommand list for a parent command.
@@ -259,5 +259,5 @@ func renderParentHelp(cmd *cobra.Command) {
 		lipgloss.NewStyle().Foreground(ColorDim).Render(
 			"Run  thv "+cmd.Name()+" <command> --help  for details."))
 
-	fmt.Print(sb.String())
+	_, _ = lipgloss.Print(sb.String())
 }

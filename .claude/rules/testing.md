@@ -30,10 +30,12 @@ Applies to test files and test directories.
 
 1. **Structure**: Prefer table-driven (declarative) tests over imperative tests
 2. **Redundancy**: Avoid overlapping test cases exercising the same code path
-3. **Value**: Every test must add meaningful coverage — remove tests that don't
+3. **Value**: Every test must add meaningful coverage — remove tests that don't. When a change removes or replaces a behavior, delete or repurpose the tests that pinned the old behavior in the same PR; a test of a fallback the code no longer applies passes for the wrong reason (#6400)
 4. **Consolidation**: Consolidate small test functions into a single table-driven test when they test the same function
 5. **Naming**: Test names must match what they actually assert — if the assertion changes, update the name too.
 6. **Boilerplate**: Minimize setup code; extract shared setup into helpers with `t.Helper()`
+7. **Patch coverage**: Reviewers read the Codecov patch report; add a test for each line it shows uncovered (#6709)
+8. **Pin derived lists**: A list computed by reflection from an SDK type gets a test that pins the expected members, so a change in that type fails a test instead of quietly weakening the check (#6709)
 
 ## Running Operator E2E Tests
 

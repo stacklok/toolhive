@@ -11,9 +11,11 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/exp/jsonrpc2"
@@ -21,7 +23,7 @@ import (
 
 // startProxyWithBackend starts an HTTP proxy on the given port and a simple backend goroutine
 // that responds to JSON-RPC requests by echoing a minimal success result.
-func startProxyWithBackend(t *testing.T, port int) (*HTTPProxy, context.Context, context.CancelFunc) {
+func startProxyWithBackend(t *testing.T, port int, observers ...func(jsonrpc2.Message)) (*HTTPProxy, context.Context, context.CancelFunc) {
 	t.Helper()
 
 	proxy := NewHTTPProxy("127.0.0.1", port, nil, nil)
@@ -38,6 +40,9 @@ func startProxyWithBackend(t *testing.T, port int) (*HTTPProxy, context.Context,
 		for {
 			select {
 			case msg := <-proxy.GetMessageChannel():
+				for _, observe := range observers {
+					observe(msg)
+				}
 				// Only respond to requests with IDs
 				if req, ok := msg.(*jsonrpc2.Request); ok && req.ID.IsValid() {
 					result := map[string]any{"ok": true}
@@ -147,11 +152,12 @@ func TestInitializeSetsSessionHeader(t *testing.T) {
 	require.NotEmpty(t, sessID, "server should set Mcp-Session-Id header")
 }
 
-// TestPOSTNotificationOnlyAccepted checks single notification POST returns 202 with no body.
-func TestPOSTNotificationOnlyAccepted(t *testing.T) {
+// TestPOSTNotificationAndClientResponseAccepted checks that one-way client
+// messages return 202 with no body and are forwarded to the destination.
+func TestPOSTNotificationAndClientResponseAccepted(t *testing.T) {
 	t.Parallel()
 
-	const port = 8104
+	port := pickFreePort(t)
 	// No backend needed for notification-only submission, but starting is fine.
 	proxy := NewHTTPProxy("127.0.0.1", port, nil, nil)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -161,19 +167,38 @@ func TestPOSTNotificationOnlyAccepted(t *testing.T) {
 
 	time.Sleep(50 * time.Millisecond)
 
-	url := "http://127.0.0.1:8104" + StreamableHTTPEndpoint
-	// Notification (no id)
-	notif := `{"jsonrpc":"2.0","method":"progress","params":{"pct":50}}`
+	url := fmt.Sprintf("http://127.0.0.1:%d%s", port, StreamableHTTPEndpoint)
+	sid := uuid.NewString()
+	seedReq := httptest.NewRequest(http.MethodPost, StreamableHTTPEndpoint, nil)
+	require.NoError(t, proxy.ensureSession(seedReq, sid))
 
-	req, _ := http.NewRequest(http.MethodPost, url, bytes.NewReader([]byte(notif)))
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(req)
-	require.NoError(t, err)
-	defer resp.Body.Close()
+	assertAccepted := func(name, message string) {
+		t.Helper()
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, url, bytes.NewReader([]byte(message)))
+		require.NoError(t, err)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Mcp-Session-Id", sid)
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		defer resp.Body.Close()
 
-	assert.Equal(t, http.StatusAccepted, resp.StatusCode)
-	body, _ := io.ReadAll(resp.Body)
-	assert.Equal(t, 0, len(body), "202 should have no body")
+		assert.Equal(t, http.StatusAccepted, resp.StatusCode, name)
+		body, err := io.ReadAll(resp.Body)
+		require.NoError(t, err)
+		assert.Empty(t, body, "%s: 202 should have no body", name)
+
+		select {
+		case msg := <-proxy.GetMessageChannel():
+			encoded, err := jsonrpc2.EncodeMessage(msg)
+			require.NoError(t, err)
+			assert.JSONEq(t, message, string(encoded), name)
+		case <-time.After(time.Second):
+			t.Fatalf("%s was not forwarded to the destination", name)
+		}
+	}
+
+	assertAccepted("notification", `{"jsonrpc":"2.0","method":"progress","params":{"pct":50}}`)
+	assertAccepted("client response", `{"jsonrpc":"2.0","id":"server-1","result":{}}`)
 }
 
 // TestBatchRequestsRejected verifies that the streamable proxy rejects every
@@ -201,35 +226,40 @@ func TestBatchRequestsRejected(t *testing.T) {
 		body        string
 		contentType string
 		sessionID   string
+		errorCode   int
 	}{
 		{
 			name:        "only notifications",
+			errorCode:   -32600,
 			body:        `[{"jsonrpc":"2.0","method":"progress","params":{"pct":10}},{"jsonrpc":"2.0","method":"progress","params":{"pct":20}}]`,
 			contentType: "application/json",
 		},
 		{
 			name:        "mixed notification and request",
+			errorCode:   -32600,
 			body:        `[{"jsonrpc":"2.0","method":"progress"},{"jsonrpc":"2.0","id":"r1","method":"tools/list","params":{}}]`,
 			contentType: "application/json",
 		},
 		{
 			name:        "with stale session id",
+			errorCode:   -32600,
 			body:        `[{"jsonrpc":"2.0","id":"b1","method":"tools/list"},{"jsonrpc":"2.0","id":"b2","method":"tools/list"}]`,
 			contentType: "application/json",
 			sessionID:   "expired-session-id",
 		},
 		{
-			// Regression for #5745: a batch smuggled under a non-JSON content
-			// type skips ParsingMiddleware/authz but must still be rejected at
-			// the executor.
+			// The standalone boundary must reject batches without relying on
+			// parsing middleware or Content-Type.
 			name:        "non-json content type",
+			errorCode:   -32600,
 			body:        `[{"jsonrpc":"2.0","id":"c1","method":"tools/call","params":{"name":"danger"}}]`,
 			contentType: "text/plain",
 		},
 		{
-			// Regression for #5745: leading Unicode whitespace must not let a
-			// batch evade detection (detector and json decoder must agree).
+			// Vertical tab is not JSON whitespace: reject as a parse error,
+			// before batch admission or backend forwarding.
 			name:        "leading vertical tab",
+			errorCode:   -32700,
 			body:        "\v[{\"jsonrpc\":\"2.0\",\"id\":\"d1\",\"method\":\"tools/call\"}]",
 			contentType: "application/json",
 		},
@@ -253,8 +283,17 @@ func TestBatchRequestsRejected(t *testing.T) {
 			assert.Equal(t, "application/json", resp.Header.Get("Content-Type"))
 			body, err := io.ReadAll(resp.Body)
 			require.NoError(t, err)
-			assert.Contains(t, string(body), `"code":-32600`)
-			assert.Contains(t, string(body), `"id":null`)
+			assert.Contains(t, string(body), fmt.Sprintf(`"code":%d`, tt.errorCode))
+
+			// A batch has no single request id to echo. MCP encodes that by
+			// omitting the "id" key entirely (schema/2025-11-25 types the
+			// error response id as optional, not nullable), never as null --
+			// a substring check for "id":null would miss the key being
+			// present-but-null, so the key's absence is checked directly.
+			var parsed map[string]any
+			require.NoError(t, json.Unmarshal(body, &parsed))
+			_, hasID := parsed["id"]
+			assert.False(t, hasID, `"id" key must be omitted, not present as null`)
 		})
 	}
 }
@@ -282,7 +321,13 @@ func TestDeleteUnknownSessionReturnsJSONRPCError(t *testing.T) {
 	body, err := io.ReadAll(resp.Body)
 	require.NoError(t, err)
 	assert.Contains(t, string(body), `"code":-32001`)
-	assert.Contains(t, string(body), `"id":null`)
+
+	// A DELETE carries no JSON-RPC id, and MCP encodes an absent id by
+	// omitting the "id" key entirely (schema/2025-11-25), never as null.
+	var parsed map[string]any
+	require.NoError(t, json.Unmarshal(body, &parsed))
+	_, ok := parsed["id"]
+	assert.False(t, ok, `"id" key should be absent`)
 }
 
 // TestSingleRequestWithStaleSessionIncludesRequestID verifies that a single
@@ -314,6 +359,67 @@ func TestSingleRequestWithStaleSessionIncludesRequestID(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, string(body), `"code":-32001`)
 	assert.Contains(t, string(body), `"id":"test-42"`)
+}
+
+// TestSSEResponseIncludesEventMessage verifies that a POST with
+// Accept: text/event-stream returns an SSE frame that starts with
+// "event: message" before the JSON-RPC data line. Regression for #5655:
+// data-only frames hang clients that require an explicit event name.
+func TestSSEResponseIncludesEventMessage(t *testing.T) {
+	t.Parallel()
+
+	port := pickFreePort(t)
+	proxy, ctx, cancel := startProxyWithBackend(t, port)
+	t.Cleanup(cancel)
+	t.Cleanup(func() { _ = proxy.Stop(ctx) })
+
+	url := fmt.Sprintf("http://127.0.0.1:%d%s", port, StreamableHTTPEndpoint)
+	body := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"sse-event-test","version":"1.0"}}}`
+
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader([]byte(body)))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, "text/event-stream", resp.Header.Get("Content-Type"))
+
+	raw, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	got := string(raw)
+
+	assert.True(t, bytes.HasPrefix(raw, []byte("event: message\n")),
+		"SSE body must start with event: message; got %q", got)
+	assert.Contains(t, got, "\ndata: ")
+	assert.Contains(t, got, `"jsonrpc":"2.0"`)
+	assert.Contains(t, got, `"id":1`)
+	// Defend against a regression that writes data: first then event: later.
+	eventIdx := bytes.Index(raw, []byte("event: message\n"))
+	dataIdx := bytes.Index(raw, []byte("\ndata: "))
+	require.GreaterOrEqual(t, eventIdx, 0)
+	require.Greater(t, dataIdx, eventIdx, "event: message must appear before data:")
+}
+
+// TestSSEErrorEventIncludesEventMessage verifies the error SSE writer uses the
+// same event: message framing as the success path (writeSSEData).
+func TestSSEErrorEventIncludesEventMessage(t *testing.T) {
+	t.Parallel()
+
+	rec := httptest.NewRecorder()
+	writeSSEErrorEvent(rec, rec, jsonrpc2.StringID("7"), context.DeadlineExceeded)
+
+	raw := rec.Body.Bytes()
+	got := string(raw)
+	assert.True(t, bytes.HasPrefix(raw, []byte("event: message\n")),
+		"error SSE frame must start with event: message; got %q", got)
+	assert.Contains(t, got, `"id":"7"`)
+	assert.Contains(t, got, `"code":-32000`)
+	assert.Contains(t, got, `"Timeout"`)
 }
 
 // pickFreePort returns a TCP port the OS reports as available. There is a small

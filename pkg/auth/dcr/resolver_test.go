@@ -21,9 +21,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
+	"github.com/stacklok/toolhive/pkg/oauthproto/dcrkey"
 )
 
 // dcrTestHandlerConfig controls the behaviour of newDCRTestServer.
@@ -64,6 +64,11 @@ type dcrTestHandlerConfig struct {
 	// endpoint. Defaults to "test-client-id". Distinct values let a test
 	// prove two upstreams received distinct dynamically-registered clients.
 	clientID string
+
+	// registeredAuthMethod, when set, is the token_endpoint_auth_method the
+	// registration response names in place of echoing the requested one
+	// (RFC 7591 §3.2.1 lets the server replace requested metadata).
+	registeredAuthMethod string
 }
 
 // newDCRTestServer mounts RFC 8414 metadata and a DCR endpoint on a single
@@ -117,6 +122,9 @@ func newDCRTestServer(t *testing.T, cfg dcrTestHandlerConfig) *httptest.Server {
 		if clientID == "" {
 			clientID = "test-client-id"
 		}
+		if cfg.registeredAuthMethod != "" {
+			req.TokenEndpointAuthMethod = cfg.registeredAuthMethod
+		}
 		resp := oauthproto.DynamicClientRegistrationResponse{
 			ClientID:                clientID,
 			ClientSecret:            "test-client-secret",
@@ -124,7 +132,7 @@ func newDCRTestServer(t *testing.T, cfg dcrTestHandlerConfig) *httptest.Server {
 			RegistrationClientURI:   server.URL + "/register/" + clientID,
 			TokenEndpointAuthMethod: req.TokenEndpointAuthMethod,
 			ClientIDIssuedAt:        cfg.clientIDIssuedAt,
-			ClientSecretExpiresAt:   cfg.clientSecretExpiresAt,
+			ClientSecretExpiresAt:   &cfg.clientSecretExpiresAt,
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
@@ -140,8 +148,10 @@ func TestResolveDCRCredentials_CacheHitShortCircuits(t *testing.T) {
 	t.Parallel()
 
 	// Count every request to every path — discovery, registration,
-	// anything. The acceptance criterion is that a cache hit issues zero
-	// network I/O, so the cache-hit path must never reach this server.
+	// anything. A cache hit never re-runs discovery or registration, and the
+	// preloaded row below records no token endpoint auth method, so the
+	// cache-hit verification (TestResolveCredentials_CacheHitVerifiesRegistration)
+	// is skipped too and the cache-hit path must never reach this server.
 	var totalRequests int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		atomic.AddInt32(&totalRequests, 1)
@@ -162,7 +172,7 @@ func TestResolveDCRCredentials_CacheHitShortCircuits(t *testing.T) {
 		Issuer:      issuer,
 		UpstreamID:  issuer,
 		RedirectURI: redirectURI,
-		ScopesHash:  storage.ScopesHash([]string{"openid", "profile"}),
+		ScopesHash:  dcrkey.ScopesHash([]string{"openid", "profile"}),
 	}
 	preloaded := &Resolution{
 		ClientID:              "preloaded-id",
@@ -170,7 +180,8 @@ func TestResolveDCRCredentials_CacheHitShortCircuits(t *testing.T) {
 		AuthorizationEndpoint: "https://preloaded/authorize",
 		TokenEndpoint:         "https://preloaded/token",
 	}
-	require.NoError(t, cache.Put(context.Background(), key, preloaded))
+	_, err := cache.PutIfAbsent(context.Background(), key, preloaded)
+	require.NoError(t, err)
 
 	req := &Request{
 		Issuer:       issuer,
@@ -184,6 +195,85 @@ func TestResolveDCRCredentials_CacheHitShortCircuits(t *testing.T) {
 	assert.Equal(t, "preloaded-secret", got.ClientSecret)
 	assert.Equal(t, int32(0), atomic.LoadInt32(&totalRequests),
 		"cache hit must not issue any network I/O (discovery or registration)")
+}
+
+// TestResolveDCRCredentials_RotationKeyForcesFreshRegistration pins the
+// operator-driven rotation path: a Request whose RotationKey differs from the
+// cached row's registers a new client, while the previous row stays
+// reachable under its own key and neither row is re-registered on later
+// resolves.
+func TestResolveDCRCredentials_RotationKeyForcesFreshRegistration(t *testing.T) {
+	t.Parallel()
+
+	var registrationCalls int32
+	server := newDCRTestServer(t, dcrTestHandlerConfig{
+		tokenEndpointAuthMethodsSupported: []string{"client_secret_basic"},
+		observeRegistration: func(_ *http.Request, _ []byte) {
+			atomic.AddInt32(&registrationCalls, 1)
+		},
+	})
+
+	cache := newMemoryDCRStore(t)
+	issuer := server.URL
+	request := func(rotationKey string) *Request {
+		return &Request{
+			Issuer:       issuer,
+			Scopes:       []string{"openid"},
+			DiscoveryURL: issuer + "/.well-known/oauth-authorization-server",
+			RotationKey:  rotationKey,
+		}
+	}
+
+	for i, step := range []struct {
+		rotationKey       string
+		wantRegistrations int32
+	}{
+		{"", 1},   // first resolve registers
+		{"", 1},   // cache hit
+		{"r1", 2}, // rotation addresses a new row: fresh registration
+		{"r1", 2}, // cache hit under the rotation key
+		{"", 2},   // the pre-rotation row is still there
+	} {
+		_, err := ResolveCredentials(context.Background(), request(step.rotationKey), cache)
+		require.NoError(t, err, "step %d", i)
+		assert.Equal(t, step.wantRegistrations, atomic.LoadInt32(&registrationCalls),
+			"step %d (rotation_key=%q)", i, step.rotationKey)
+	}
+
+	baseKey := Key{
+		Issuer:      issuer,
+		UpstreamID:  issuer,
+		RedirectURI: issuer + "/oauth/callback",
+		ScopesHash:  dcrkey.ScopesHash([]string{"openid"}),
+	}
+	rotatedKey := baseKey
+	rotatedKey.RotationKey = "r1"
+	for _, key := range []Key{baseKey, rotatedKey} {
+		_, ok, err := cache.Get(context.Background(), key)
+		require.NoError(t, err)
+		assert.True(t, ok, "row for rotation_key=%q must be cached", key.RotationKey)
+	}
+}
+
+// TestFlightKeyOf_RotationKey pins that the singleflight key tracks the
+// persisted DCRKey: an empty RotationKey leaves the pre-rotation encoding
+// untouched and a non-empty one appends a length-prefixed segment, so two
+// rotations of the same upstream never coalesce into one in-flight
+// registration.
+func TestFlightKeyOf_RotationKey(t *testing.T) {
+	t.Parallel()
+
+	key := Key{
+		Issuer:      "https://thv.example.com",
+		UpstreamID:  "https://idp.example.com",
+		RedirectURI: "https://thv.example.com/oauth/callback",
+		ScopesHash:  dcrkey.ScopesHash([]string{"openid"}),
+	}
+	legacy := flightKeyOf(key)
+	assert.Equal(t, "23:https://thv.example.com:23:https://idp.example.com:38:https://thv.example.com/oauth/callback:"+key.ScopesHash, legacy)
+
+	key.RotationKey = "r1"
+	assert.Equal(t, legacy+":2:r1", flightKeyOf(key))
 }
 
 func TestResolveDCRCredentials_RegistersOnCacheMiss(t *testing.T) {
@@ -230,7 +320,7 @@ func TestResolveDCRCredentials_RegistersOnCacheMiss(t *testing.T) {
 	// Cache was populated. UpstreamID is the issuer origin the resolver
 	// derives from the oauth-authorization-server discovery URL.
 	cached, ok, err := cache.Get(context.Background(),
-		Key{Issuer: issuer, UpstreamID: issuer, RedirectURI: issuer + "/oauth/callback", ScopesHash: storage.ScopesHash([]string{"openid", "profile"})})
+		Key{Issuer: issuer, UpstreamID: issuer, RedirectURI: issuer + "/oauth/callback", ScopesHash: dcrkey.ScopesHash([]string{"openid", "profile"})})
 	require.NoError(t, err)
 	require.True(t, ok)
 	assert.Equal(t, "test-client-id", cached.ClientID)
@@ -295,7 +385,7 @@ func TestResolveDCRCredentials_DistinctUpstreamsSameScopesDoNotCollide(t *testin
 	// Both resolutions coexist in the cache under keys that differ only by
 	// UpstreamID (shared Issuer, RedirectURI, and scopes hash).
 	redirectURI := localIssuer + "/oauth/callback"
-	scopesHash := storage.ScopesHash([]string{"openid", "profile"})
+	scopesHash := dcrkey.ScopesHash([]string{"openid", "profile"})
 	cachedA, okA, err := cache.Get(ctx,
 		Key{Issuer: localIssuer, UpstreamID: serverA.URL, RedirectURI: redirectURI, ScopesHash: scopesHash})
 	require.NoError(t, err)
@@ -439,7 +529,7 @@ func TestResolveDCRCredentials_DistinctRegistrationEndpointsDoNotCollide(t *test
 	// The two entries coexist under keys whose only differing component is
 	// UpstreamID (the registration endpoint URL).
 	redirectURI := localIssuer + "/oauth/callback"
-	scopesHash := storage.ScopesHash([]string{"openid", "profile"})
+	scopesHash := dcrkey.ScopesHash([]string{"openid", "profile"})
 	_, okA, err := cache.Get(ctx,
 		Key{Issuer: localIssuer, UpstreamID: serverA.URL + "/register", RedirectURI: redirectURI, ScopesHash: scopesHash})
 	require.NoError(t, err)
@@ -819,9 +909,9 @@ func TestResolveDCRCredentials_AuthMethodPreference(t *testing.T) {
 			expected:  "client_secret_basic",
 		},
 		{
-			name:      "prefers private_key_jwt over others",
+			name:      "selects client_secret_basic when private_key_jwt is also advertised",
 			supported: []string{"client_secret_basic", "private_key_jwt", "none"},
-			expected:  "private_key_jwt",
+			expected:  "client_secret_basic",
 		},
 		{
 			name:          "falls back to none when only none supported and S256 advertised",
@@ -859,6 +949,111 @@ func TestResolveDCRCredentials_AuthMethodPreference(t *testing.T) {
 			res, err := ResolveCredentials(context.Background(), req, cache)
 			require.NoError(t, err)
 			assert.Equal(t, tc.expected, res.TokenEndpointAuthMethod)
+		})
+	}
+}
+
+// TestResolveDCRCredentials_ConfiguredAuthMethod pins
+// Request.TokenEndpointAuthMethod: the client registers with the configured
+// method in place of the preferred one, and a configured method the upstream
+// cannot honour fails the registration instead of falling back.
+func TestResolveDCRCredentials_ConfiguredAuthMethod(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		supported     []string
+		codeChallenge []string
+		registeredAs  string
+		publicClient  bool
+		configured    string
+		want          string
+		wantErrSub    string
+	}{
+		{
+			name:       "configured client_secret_post wins over the preferred client_secret_basic",
+			supported:  []string{"client_secret_basic", "client_secret_post"},
+			configured: "client_secret_post",
+			want:       "client_secret_post",
+		},
+		{
+			name:       "configured method is used when the upstream advertises no methods",
+			configured: "client_secret_post",
+			want:       "client_secret_post",
+		},
+		{
+			name:          "configured none is used when S256 is advertised",
+			supported:     []string{"client_secret_basic", "none"},
+			codeChallenge: []string{"S256"},
+			configured:    "none",
+			want:          "none",
+		},
+		{
+			name:       "configured method the upstream does not advertise is refused",
+			supported:  []string{"client_secret_basic"},
+			configured: "client_secret_post",
+			wantErrSub: "is not among the upstream's",
+		},
+		{
+			name:       "configured none without S256 is refused",
+			supported:  []string{"none"},
+			configured: "none",
+			wantErrSub: "S256",
+		},
+		{
+			name:       "unsupported configured method is refused",
+			configured: "private_key_jwt",
+			wantErrSub: "unsupported token_endpoint_auth_method",
+		},
+		{
+			name:          "public client cannot configure a confidential method",
+			supported:     []string{"none"},
+			codeChallenge: []string{"S256"},
+			publicClient:  true,
+			configured:    "client_secret_post",
+			wantErrSub:    "public client",
+		},
+		{
+			name:         "registration the upstream switched to another method is refused",
+			supported:    []string{"client_secret_basic", "client_secret_post"},
+			registeredAs: "client_secret_basic",
+			configured:   "client_secret_post",
+			wantErrSub:   "not the configured",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			var requested atomic.Value
+			server := newDCRTestServer(t, dcrTestHandlerConfig{
+				tokenEndpointAuthMethodsSupported: tc.supported,
+				codeChallengeMethodsSupported:     tc.codeChallenge,
+				registeredAuthMethod:              tc.registeredAs,
+				observeRegistration: func(_ *http.Request, body []byte) {
+					var reg oauthproto.DynamicClientRegistrationRequest
+					if json.Unmarshal(body, &reg) == nil {
+						requested.Store(reg.TokenEndpointAuthMethod)
+					}
+				},
+			})
+			issuer := server.URL
+			req := &Request{
+				Issuer:                  issuer,
+				Scopes:                  []string{"openid"},
+				DiscoveryURL:            issuer + "/.well-known/oauth-authorization-server",
+				PublicClient:            tc.publicClient,
+				TokenEndpointAuthMethod: tc.configured,
+			}
+
+			res, err := ResolveCredentials(context.Background(), req, newMemoryDCRStore(t))
+			if tc.wantErrSub != "" {
+				require.ErrorContains(t, err, tc.wantErrSub)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, res.TokenEndpointAuthMethod)
+			assert.Equal(t, tc.want, requested.Load(), "the registration must request the configured method")
 		})
 	}
 }
@@ -1128,6 +1323,16 @@ func TestResolveDCRCredentials_RejectsInvalidInputs(t *testing.T) {
 			},
 			cache:      nil,
 			wantErrSub: "credential store is required",
+		},
+		{
+			name: "unknown registration probe",
+			req: &Request{
+				Issuer:               "https://example.com",
+				RegistrationEndpoint: "https://example.com/register",
+				RegistrationProbe:    "userinfo",
+			},
+			cache:      newMemoryDCRStore(t),
+			wantErrSub: "registration_probe must be one of",
 		},
 	}
 	for _, tc := range tests {
@@ -1510,8 +1715,8 @@ func (c *countingStore) Get(ctx context.Context, key Key) (*Resolution, bool, er
 	return res, ok, err
 }
 
-func (c *countingStore) Put(ctx context.Context, key Key, res *Resolution) error {
-	return c.inner.Put(ctx, key, res)
+func (c *countingStore) PutIfAbsent(ctx context.Context, key Key, res *Resolution) (*Resolution, error) {
+	return c.inner.PutIfAbsent(ctx, key, res)
 }
 
 // TestResolveDCRCredentials_SingleflightCoalescesConcurrentCallers pins the
@@ -1790,8 +1995,11 @@ func (f failingDCRStore) Get(_ context.Context, _ Key) (*Resolution, bool, error
 	return nil, false, nil
 }
 
-func (f failingDCRStore) Put(_ context.Context, _ Key, _ *Resolution) error {
-	return f.putErr
+func (f failingDCRStore) PutIfAbsent(_ context.Context, _ Key, res *Resolution) (*Resolution, error) {
+	if f.putErr != nil {
+		return nil, f.putErr
+	}
+	return res, nil
 }
 
 // TestResolveDCRCredentials_CacheGetFailureWrapped covers PR #5042 review
@@ -1847,6 +2055,93 @@ func TestResolveDCRCredentials_CachePutFailureWrapped(t *testing.T) {
 		"the wrap message is part of the operator-debugging contract")
 }
 
+// winnerDCRStore simulates a concurrent claimant that already won the
+// durable claim. PutIfAbsent returns winner regardless of the resolution the
+// caller tried to store, exactly as a real "someone else already claimed
+// this key" response would. With an expired winner it mirrors
+// dcrClaimOrReturnWinner (pkg/authserver/storage/redis.go) when both the
+// existing stored row and the incoming registration are already expired: it
+// deliberately returns the existing row without error rather than retrying
+// forever.
+type winnerDCRStore struct {
+	winner *Resolution
+}
+
+func (winnerDCRStore) Get(_ context.Context, _ Key) (*Resolution, bool, error) {
+	return nil, false, nil
+}
+
+func (s winnerDCRStore) PutIfAbsent(_ context.Context, _ Key, _ *Resolution) (*Resolution, error) {
+	return s.winner, nil
+}
+
+// TestResolveDCRCredentials_ExpiredAuthoritativeCredentialErrors covers the
+// case a human reviewer flagged on PR #6474: cache.PutIfAbsent can return an
+// authoritative credential that is already expired (the storage layer
+// deliberately returns the stable expired row rather than erroring when both
+// claimants are expired). Treating that as a successful resolution would
+// hand the caller a client_secret the upstream will already reject.
+// registerAndCache must instead surface it as a failure.
+func TestResolveDCRCredentials_ExpiredAuthoritativeCredentialErrors(t *testing.T) {
+	t.Parallel()
+
+	server := newDCRTestServer(t, dcrTestHandlerConfig{})
+
+	store := winnerDCRStore{
+		winner: &Resolution{
+			ClientID:              "winner-client-id",
+			ClientSecret:          "winner-client-secret",
+			ClientSecretExpiresAt: time.Now().Add(-time.Hour),
+		},
+	}
+
+	req := &Request{
+		Issuer:       server.URL,
+		Scopes:       []string{"openid"},
+		DiscoveryURL: server.URL + "/.well-known/oauth-authorization-server",
+	}
+
+	res, err := ResolveCredentials(context.Background(), req, store)
+	require.Error(t, err, "an already-expired authoritative credential must not be returned as a success")
+	assert.Nil(t, res)
+	assert.Contains(t, err.Error(), dcrStepExpiredCredential,
+		"step identifier is part of the operator-debugging contract")
+}
+
+// TestResolveDCRCredentials_AuthoritativeWinnerWithOtherAuthMethodErrors
+// covers a rollout: a replica still on a configuration without
+// TokenEndpointAuthMethod wins the durable claim with a client_secret_basic
+// registration, and a replica configured for client_secret_post gets that row
+// back from PutIfAbsent. Using it would fail at the token endpoint the way the
+// configured method exists to avoid, so the resolution is refused.
+func TestResolveDCRCredentials_AuthoritativeWinnerWithOtherAuthMethodErrors(t *testing.T) {
+	t.Parallel()
+
+	server := newDCRTestServer(t, dcrTestHandlerConfig{
+		tokenEndpointAuthMethodsSupported: []string{"client_secret_basic", "client_secret_post"},
+	})
+	store := winnerDCRStore{
+		winner: &Resolution{
+			ClientID:                "winner-client-id",
+			ClientSecret:            "winner-client-secret",
+			TokenEndpointAuthMethod: "client_secret_basic",
+		},
+	}
+	req := &Request{
+		Issuer:                  server.URL,
+		Scopes:                  []string{"openid"},
+		DiscoveryURL:            server.URL + "/.well-known/oauth-authorization-server",
+		TokenEndpointAuthMethod: "client_secret_post",
+	}
+
+	res, err := ResolveCredentials(context.Background(), req, store)
+	require.Error(t, err, "a stored row with another method must not be returned as a success")
+	assert.Nil(t, res)
+	assert.Contains(t, err.Error(), dcrStepAuthMethod,
+		"step identifier is part of the operator-debugging contract")
+	assert.Contains(t, err.Error(), "winner-client-id")
+}
+
 // TestBuildResolution_PopulatesRFC7591ExpiryFields covers the conversion of
 // the int64 epoch fields client_id_issued_at and client_secret_expires_at
 // into time.Time on Resolution. The wire convention "0 means absent /
@@ -1896,7 +2191,7 @@ func TestBuildResolution_PopulatesRFC7591ExpiryFields(t *testing.T) {
 					ClientID:              "id",
 					ClientSecret:          "secret",
 					ClientIDIssuedAt:      tc.issuedAt,
-					ClientSecretExpiresAt: tc.expiresAt,
+					ClientSecretExpiresAt: &tc.expiresAt,
 				},
 				&dcrEndpoints{
 					authorizationEndpoint: "https://idp.example.com/authorize",
@@ -1914,10 +2209,12 @@ func TestBuildResolution_PopulatesRFC7591ExpiryFields(t *testing.T) {
 // TestResolveDCRCredentials_RefetchesOnExpiredCachedSecret pins the fix for
 // the cache-serves-expired-secrets bug: when an entry's
 // ClientSecretExpiresAt has passed, lookupCachedResolution treats it as a
-// miss so registerAndCache re-runs and overwrites the stale entry. Without
-// this, the cached secret would be served indefinitely past the upstream-
-// asserted expiry and every token-endpoint call would 401 with no signal
-// back to the resolver.
+// miss so registerAndCache re-runs rather than serving the stale entry
+// indefinitely. Since the upstream in this test always issues an
+// already-expired secret, every call re-registers AND — per the
+// expired-authoritative-credential check in registerAndCache — every call
+// also fails, rather than handing the caller a client_secret the upstream
+// has already invalidated.
 func TestResolveDCRCredentials_RefetchesOnExpiredCachedSecret(t *testing.T) {
 	t.Parallel()
 
@@ -1925,7 +2222,8 @@ func TestResolveDCRCredentials_RefetchesOnExpiredCachedSecret(t *testing.T) {
 	server := newDCRTestServer(t, dcrTestHandlerConfig{
 		// Issue a secret that expired one minute ago. Every fresh
 		// registration call will produce an already-expired entry; the
-		// resolver will refetch on every Resolve as a result.
+		// resolver will refetch (and, per the expired-credential check,
+		// fail) on every Resolve as a result.
 		clientSecretExpiresAt: time.Now().Add(-time.Minute).Unix(),
 		observeRegistration: func(_ *http.Request, _ []byte) {
 			atomic.AddInt32(&registrationCalls, 1)
@@ -1940,20 +2238,20 @@ func TestResolveDCRCredentials_RefetchesOnExpiredCachedSecret(t *testing.T) {
 		DiscoveryURL: issuer + "/.well-known/oauth-authorization-server",
 	}
 
-	// First call: registers, populates cache with already-expired entry.
+	// First call: registers, but the issued secret is already expired, so
+	// the resolver must not report success.
 	res1, err := ResolveCredentials(context.Background(), req, cache)
-	require.NoError(t, err)
-	require.NotNil(t, res1)
-	require.False(t, res1.ClientSecretExpiresAt.IsZero(),
-		"upstream advertised an expiry — the resolution must echo it")
-	require.True(t, time.Now().After(res1.ClientSecretExpiresAt),
-		"test setup should have produced an already-expired secret")
+	require.Error(t, err)
+	assert.Nil(t, res1)
+	assert.Contains(t, err.Error(), dcrStepExpiredCredential)
 	require.EqualValues(t, 1, atomic.LoadInt32(&registrationCalls))
 
-	// Second call: the cached entry is expired, so the resolver must refetch.
+	// Second call: the cached entry is expired, so the resolver must
+	// refetch — and fail again, since the upstream keeps issuing
+	// already-expired secrets.
 	res2, err := ResolveCredentials(context.Background(), req, cache)
-	require.NoError(t, err)
-	require.NotNil(t, res2)
+	require.Error(t, err)
+	assert.Nil(t, res2)
 	assert.EqualValues(t, 2, atomic.LoadInt32(&registrationCalls),
 		"expired cache entry must trigger a re-registration; got %d total calls",
 		atomic.LoadInt32(&registrationCalls))
@@ -2017,7 +2315,7 @@ func (panickingPutDCRStore) Get(_ context.Context, _ Key) (*Resolution, bool, er
 	return nil, false, nil
 }
 
-func (s panickingPutDCRStore) Put(_ context.Context, _ Key, _ *Resolution) error {
+func (s panickingPutDCRStore) PutIfAbsent(_ context.Context, _ Key, _ *Resolution) (*Resolution, error) {
 	panic(s.panicValue)
 }
 
@@ -2277,4 +2575,111 @@ func TestSanitizeErrorForLog(t *testing.T) {
 			assert.Equal(t, tc.expected, SanitizeErrorForLog(tc.in))
 		})
 	}
+}
+
+// TestResolveDCRCredentials_MetadataNamedForeignRegistrationEndpointGuarded is
+// the regression test for GHSA-3768-rwj3-38p2 on the embedded-authserver path.
+// The DiscoveryURL is operator-configured, but the document it returns is
+// upstream-controlled, so a registration_endpoint naming a *different* authority
+// is server-supplied input and must be dialed under the strict policy — where
+// being loopback is not itself a permission. The registration POST carries the
+// operator's initial access token as a bearer header, so the foreign listener
+// must never receive a request at all (CWE-918).
+//
+// AllowPrivateIPs is deliberately left false: this is the guarded-by-default
+// posture an embedded authserver runs with unless the operator opts in.
+func TestResolveDCRCredentials_MetadataNamedForeignRegistrationEndpointGuarded(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	// The authority the operator never named. Any hit here is the vulnerability.
+	var foreignHits atomic.Int32
+	foreign := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		foreignHits.Add(1)
+		t.Errorf("registration POST reached the foreign authority %s (auth header present: %t)",
+			r.Host, r.Header.Get("Authorization") != "")
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(foreign.Close)
+
+	mux := http.NewServeMux()
+	var server *httptest.Server
+	mux.HandleFunc("/.well-known/oauth-authorization-server",
+		func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(oauthproto.AuthorizationServerMetadata{
+				Issuer:                server.URL,
+				AuthorizationEndpoint: server.URL + "/authorize",
+				TokenEndpoint:         server.URL + "/token",
+				JWKSURI:               server.URL + "/jwks",
+				// Same loopback host, different port: a different authority, and
+				// one the operator's DiscoveryURL never named.
+				RegistrationEndpoint: foreign.URL + "/register",
+			})
+		})
+	server = httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+
+	req := &Request{
+		Issuer:             server.URL,
+		Scopes:             []string{"openid"},
+		DiscoveryURL:       server.URL + "/.well-known/oauth-authorization-server",
+		InitialAccessToken: "operator-initial-access-token",
+	}
+
+	_, err := ResolveCredentials(ctx, req, newMemoryDCRStore(t))
+	require.Error(t, err, "a registration endpoint on an unnamed authority must be refused")
+	assert.Contains(t, err.Error(), networking.ErrPrivateIpAddress,
+		"the refusal must come from the private-IP guard, not an unrelated failure")
+	assert.Zero(t, foreignHits.Load(), "the initial access token must never leave for an unnamed authority")
+}
+
+// TestResolveDCRCredentials_MetadataSelfNamedRegistrationEndpointAllowed is the
+// non-regression counterpart: an upstream naming its *own* authority stays
+// within the operator's decision to configure that DiscoveryURL, so a loopback
+// or in-cluster IdP that worked before the GHSA-3768 fix still works. Without
+// this, guarding every metadata-derived endpoint would break dex and
+// Keycloak-in-Docker.
+func TestResolveDCRCredentials_MetadataSelfNamedRegistrationEndpointAllowed(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	server := newDCRTestServer(t, dcrTestHandlerConfig{})
+
+	req := &Request{
+		Issuer:       server.URL,
+		Scopes:       []string{"openid"},
+		DiscoveryURL: server.URL + "/.well-known/oauth-authorization-server",
+	}
+
+	res, err := ResolveCredentials(ctx, req, newMemoryDCRStore(t))
+	require.NoError(t, err, "an upstream naming its own loopback authority must still register")
+	require.NotNil(t, res)
+	assert.NotEmpty(t, res.ClientID)
+}
+
+// closeIdleSpy records CloseIdleConnections calls; RoundTrip exists only to
+// satisfy http.RoundTripper.
+type closeIdleSpy struct{ closed int }
+
+func (*closeIdleSpy) RoundTrip(*http.Request) (*http.Response, error) {
+	return nil, errors.New("unused")
+}
+func (s *closeIdleSpy) CloseIdleConnections() { s.closed++ }
+
+// TestBearerTokenTransport_CloseIdleConnections verifies the wrapper forwards
+// CloseIdleConnections to its next RoundTripper rather than silently swallowing
+// it, which would make http.Client.CloseIdleConnections a no-op and leave the
+// pool pinned.
+func TestBearerTokenTransport_CloseIdleConnections(t *testing.T) {
+	t.Parallel()
+
+	spy := &closeIdleSpy{}
+	tr := &bearerTokenTransport{token: "t", next: spy}
+	tr.CloseIdleConnections()
+	assert.Equal(t, 1, spy.closed)
 }

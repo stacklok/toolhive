@@ -22,8 +22,8 @@
 //
 // The server package is organized into focused sub-packages:
 //
-//   - server/registration: OAuth client types including RFC 8252 compliant LoopbackClient
-//     for native applications with dynamic port matching
+//   - server/registration: OAuth client construction plus RFC 8252 loopback
+//     redirect_uri matching for native applications with dynamic ports
 //   - server/crypto: Cryptographic utilities for key loading, PKCE, and signing
 //   - server/session: Session management linking issued tokens to upstream IdP tokens
 //
@@ -55,21 +55,37 @@
 //	}
 //	authServerConfig, err := server.NewAuthorizationServerConfig(params)
 //
-// For creating OAuth clients:
+// For creating OAuth clients, build a fosite client and store it with
+// Storage.RegisterClient. Clients written this way carry no marker, so client
+// admission serves them. The exception is a confidential *fosite.DefaultClient
+// whose grant types are exactly token-exchange (on Redis, also such an OIDC
+// client with no token endpoint auth method, which reads back as a
+// DefaultClient): it matches the legacy delegate shape and is hidden unless its
+// ID is a configured delegate client.
 //
-//	client, err := registration.New(registration.Config{
-//	    ID:           "my-client",
-//	    RedirectURIs: []string{"http://127.0.0.1:8080/callback"},
-//	    Public:       true,
-//	})
+//	client := &fosite.DefaultClient{
+//	    ID:            "my-client",
+//	    RedirectURIs:  []string{"http://127.0.0.1:8080/callback"},
+//	    ResponseTypes: []string{"code"},
+//	    GrantTypes:    []string{"authorization_code"},
+//	    Scopes:        []string{"openid", "offline_access"},
+//	    Public:        true,
+//	}
+//	err := stor.RegisterClient(ctx, client)
+//
+// registration.New is for dynamic client registration only. The clients it
+// returns carry the DCR marker, get the DCR TTL on Redis, count toward the DCR
+// client cap, and are always served by client admission.
 //
 // # Token Flow
 //
 // The authorization server implements the authorization code flow with PKCE:
 //
 //  1. Client initiates auth at /oauth/authorize with PKCE challenge
-//  2. Server redirects to upstream IdP for authentication
-//  3. IdP calls back to /oauth/callback with auth code
+//  2. Server redirects the browser to the upstream IdP for authentication,
+//     setting a browser-binding cookie for this pending authorization
+//  3. IdP calls back to /oauth/callback with auth code; the callback completes
+//     only for the browser that presents the cookie from step 2
 //  4. Server exchanges code with IdP and stores IdP tokens
 //  5. Server issues its own auth code and redirects to client
 //  6. Client exchanges code at /oauth/token for JWT access token

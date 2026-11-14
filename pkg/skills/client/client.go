@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -21,13 +22,22 @@ import (
 	"github.com/stacklok/toolhive-core/httperr"
 	"github.com/stacklok/toolhive/pkg/server/discovery"
 	"github.com/stacklok/toolhive/pkg/skills"
+	"github.com/stacklok/toolhive/pkg/skills/identitytoken"
 )
 
 const (
-	skillsBasePath   = "/api/v1beta/skills"
-	defaultBaseURL   = "http://127.0.0.1:8080"
-	defaultTimeout   = 30 * time.Second
+	skillsBasePath = "/api/v1beta/skills"
+	defaultBaseURL = "http://127.0.0.1:8080"
+	// defaultTimeout is a backstop against a wedged server, not a budget for
+	// the operation. Install, sync, and upgrade pull OCI artifacts of
+	// unbounded size over the user's connection, so a timeout tight enough to
+	// feel responsive would abort legitimate work — and because giving up
+	// cancels the request context, it aborts it server-side too, leaving
+	// nothing for a retry to reuse. Callers who want to fail fast can set
+	// TOOLHIVE_API_TIMEOUT or pass WithTimeout.
+	defaultTimeout   = 10 * time.Minute
 	envAPIURL        = "TOOLHIVE_API_URL"
+	envAPITimeout    = "TOOLHIVE_API_TIMEOUT"
 	maxResponseSize  = 1 << 20 // 1 MiB — matches server-side maxRequestBodySize
 	maxErrorBodySize = 1 << 16 // 64 KiB — matches auth/token and DCR limits
 )
@@ -37,14 +47,22 @@ const (
 // running.
 var ErrServerUnreachable = errors.New("could not reach ToolHive API server — is 'thv serve' running?")
 
+// ErrRequestTimeout is returned when the server was reached but did not
+// respond within the client timeout. This is a distinct condition from
+// ErrServerUnreachable: the server is healthy and was working on the request.
+// Note that abandoning the request cancels its context server-side, so the
+// operation does not continue in the background and retrying restarts it.
+var ErrRequestTimeout = errors.New("the ToolHive API server did not respond within the client timeout")
+
 // Compile-time interface check.
 var _ skills.SkillService = (*Client)(nil)
 var _ skills.SkillLockService = (*Client)(nil)
 
 // Client is an HTTP client for the ToolHive Skills API.
 type Client struct {
-	baseURL    string
-	httpClient *http.Client
+	baseURL              string
+	httpClient           *http.Client
+	keySigningCapability string
 }
 
 // Option configures a Client.
@@ -62,6 +80,14 @@ func WithTimeout(d time.Duration) Option {
 func WithHTTPClient(hc *http.Client) Option {
 	return func(c *Client) {
 		c.httpClient = hc
+	}
+}
+
+// WithKeySigningCapability sets the bearer capability required for pushes
+// that name a private key on the API server's filesystem.
+func WithKeySigningCapability(capability string) Option {
+	return func(c *Client) {
+		c.keySigningCapability = capability
 	}
 }
 
@@ -97,23 +123,47 @@ type discoverFunc func(ctx context.Context) (string, []Option)
 // envReader and discover dependencies are injected so each resolution step
 // can be exercised in isolation.
 func newDefaultClientWithEnv(ctx context.Context, envReader env.Reader, discover discoverFunc, opts ...Option) *Client {
+	// An env-supplied timeout applies to every resolution path, but ranks
+	// below caller-supplied options so a WithTimeout argument still wins.
+	withEnvTimeout := func(base []Option) []Option {
+		merged := make([]Option, 0, len(base)+len(opts)+1)
+		merged = append(merged, base...)
+		if d, ok := timeoutFromEnv(envReader); ok {
+			merged = append(merged, WithTimeout(d))
+		}
+		return append(merged, opts...)
+	}
+
 	// 1. Explicit env var override always wins.
 	if base := envReader.Getenv(envAPIURL); base != "" {
-		return NewClient(base, opts...)
+		return NewClient(base, withEnvTimeout(nil)...)
 	}
 
 	// 2. Try server discovery.
 	if base, httpOpts := discover(ctx); base != "" {
 		// Discovery opts go first so caller-supplied opts can override them
 		// (e.g. a caller-provided WithTimeout replaces the discovery default).
-		merged := make([]Option, 0, len(httpOpts)+len(opts))
-		merged = append(merged, httpOpts...)
-		merged = append(merged, opts...)
-		return NewClient(base, merged...)
+		return NewClient(base, withEnvTimeout(httpOpts)...)
 	}
 
 	// 3. Fall back to the default URL.
-	return NewClient(defaultBaseURL, opts...)
+	return NewClient(defaultBaseURL, withEnvTimeout(nil)...)
+}
+
+// timeoutFromEnv reads TOOLHIVE_API_TIMEOUT as a Go duration (e.g. "45s",
+// "5m"). An unset, unparsable, or non-positive value is ignored so a typo
+// degrades to the default rather than disabling the timeout entirely.
+func timeoutFromEnv(envReader env.Reader) (time.Duration, bool) {
+	raw := strings.TrimSpace(envReader.Getenv(envAPITimeout))
+	if raw == "" {
+		return 0, false
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil || d <= 0 {
+		slog.Warn("ignoring invalid "+envAPITimeout, "value", raw, "error", err)
+		return 0, false
+	}
+	return d, true
 }
 
 // resolveViaDiscovery attempts to find a running server via the discovery file.
@@ -136,7 +186,10 @@ func resolveViaDiscovery(ctx context.Context) (string, []Option) {
 	}
 	client.Timeout = defaultTimeout
 
-	return baseURL, []Option{WithHTTPClient(client)}
+	return baseURL, []Option{
+		WithHTTPClient(client),
+		WithKeySigningCapability(result.Info.KeySigningCapability),
+	}
 }
 
 // --- SkillService implementation ---
@@ -164,20 +217,26 @@ func (c *Client) List(ctx context.Context, opts skills.ListOptions) ([]skills.In
 // Install installs a skill from a remote source.
 func (c *Client) Install(ctx context.Context, opts skills.InstallOptions) (*skills.InstallResult, error) {
 	body := installRequest{
-		Name:        opts.Name,
-		Version:     opts.Version,
-		Scope:       opts.Scope,
-		ProjectRoot: opts.ProjectRoot,
-		Clients:     opts.Clients,
-		Force:       opts.Force,
-		Group:       opts.Group,
+		Name:          opts.Name,
+		Version:       opts.Version,
+		Scope:         opts.Scope,
+		ProjectRoot:   opts.ProjectRoot,
+		Clients:       opts.Clients,
+		Force:         opts.Force,
+		Group:         opts.Group,
+		AllowUnsigned: opts.AllowUnsigned,
+		PublicKey:     opts.PublicKey,
 	}
 
 	var resp installResponse
 	if err := c.doJSONRequest(ctx, http.MethodPost, "", nil, body, &resp); err != nil {
 		return nil, err
 	}
-	return &skills.InstallResult{Skill: resp.Skill}, nil
+	return &skills.InstallResult{
+		Skill:      resp.Skill,
+		Provenance: resp.Provenance,
+		Unsigned:   resp.Unsigned,
+	}, nil
 }
 
 // Uninstall removes an installed skill.
@@ -239,8 +298,28 @@ func (c *Client) Build(ctx context.Context, opts skills.BuildOptions) (*skills.B
 
 // Push pushes a built skill artifact to a remote registry.
 func (c *Client) Push(ctx context.Context, opts skills.PushOptions) error {
-	body := pushRequest{Reference: opts.Reference}
-	return c.doJSONRequest(ctx, http.MethodPost, "/push", nil, body, nil)
+	// Identity tokens and key-signing capabilities are bearer credentials, so
+	// neither may cross a plaintext link to a remote API server or a redirect.
+	client := c
+	headers := make(http.Header)
+	if opts.Key != "" && c.keySigningCapability != "" {
+		headers.Set(discovery.KeySigningCapabilityHeader, c.keySigningCapability)
+	}
+	if opts.IdentityToken != "" || len(headers) != 0 {
+		if err := identitytoken.CheckTransport(c.baseURL); err != nil {
+			return err
+		}
+		guarded := *c
+		guarded.httpClient = identitytoken.NoRedirectClient(c.httpClient)
+		client = &guarded
+	}
+	body := pushRequest{
+		Reference:     opts.Reference,
+		Key:           opts.Key,
+		IdentityToken: opts.IdentityToken,
+		NoSign:        opts.NoSign,
+	}
+	return client.doJSONRequestWithHeaders(ctx, http.MethodPost, "/push", nil, body, nil, headers)
 }
 
 // ListBuilds returns all locally-built OCI skill artifacts in the local store.
@@ -271,11 +350,13 @@ func (c *Client) GetContent(ctx context.Context, opts skills.ContentOptions) (*s
 // Sync restores a project's installed skills to match its lock file.
 func (c *Client) Sync(ctx context.Context, opts skills.SyncOptions) (*skills.SyncResult, error) {
 	body := syncRequest{
-		ProjectRoot: opts.ProjectRoot,
-		Clients:     opts.Clients,
-		Prune:       opts.Prune,
-		Check:       opts.Check,
-		Adopt:       opts.Adopt,
+		ProjectRoot:   opts.ProjectRoot,
+		Clients:       opts.Clients,
+		Prune:         opts.Prune,
+		Check:         opts.Check,
+		Adopt:         opts.Adopt,
+		AllowUnsigned: opts.AllowUnsigned,
+		PublicKey:     opts.PublicKey,
 	}
 
 	var result skills.SyncResult
@@ -289,12 +370,14 @@ func (c *Client) Sync(ctx context.Context, opts skills.SyncOptions) (*skills.Syn
 // where available.
 func (c *Client) Upgrade(ctx context.Context, opts skills.UpgradeOptions) (*skills.UpgradeResult, error) {
 	body := upgradeRequest{
-		ProjectRoot:    opts.ProjectRoot,
-		Names:          opts.Names,
-		Preview:        opts.Preview,
-		FailOnChanges:  opts.FailOnChanges,
-		AllowRefChange: opts.AllowRefChange,
-		Clients:        opts.Clients,
+		ProjectRoot:       opts.ProjectRoot,
+		Names:             opts.Names,
+		Preview:           opts.Preview,
+		FailOnChanges:     opts.FailOnChanges,
+		AllowRefChange:    opts.AllowRefChange,
+		AllowSignerChange: opts.AllowSignerChange,
+		PublicKey:         opts.PublicKey,
+		Clients:           opts.Clients,
 	}
 
 	var result skills.UpgradeResult
@@ -324,6 +407,17 @@ func (c *Client) doJSONRequest(
 	reqBody any,
 	result any,
 ) error {
+	return c.doJSONRequestWithHeaders(ctx, method, path, query, reqBody, result, nil)
+}
+
+func (c *Client) doJSONRequestWithHeaders(
+	ctx context.Context,
+	method, path string,
+	query url.Values,
+	reqBody any,
+	result any,
+	headers http.Header,
+) error {
 	var bodyReader io.Reader
 	if reqBody != nil {
 		data, err := json.Marshal(reqBody)
@@ -344,10 +438,15 @@ func (c *Client) doJSONRequest(
 		req.Header.Set("Content-Type", "application/json")
 	}
 	req.Header.Set("Accept", "application/json")
+	for name, values := range headers {
+		for _, value := range values {
+			req.Header.Add(name, value)
+		}
+	}
 
 	resp, err := c.httpClient.Do(req) // #nosec G704 -- baseURL is a trusted local API server URL
 	if err != nil {
-		return fmt.Errorf("%w: %w", ErrServerUnreachable, err)
+		return fmt.Errorf("%w: %w", classifyTransportError(ctx, err), err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -363,6 +462,25 @@ func (c *Client) doJSONRequest(
 	}
 
 	return nil
+}
+
+// classifyTransportError decides which sentinel a failed round-trip belongs
+// to. Reporting a timeout as an unreachable server sends users to check
+// whether "thv serve" is running when it is running and was mid-operation.
+func classifyTransportError(ctx context.Context, err error) error {
+	// The caller's own context ending takes precedence — neither the server's
+	// availability nor the client timeout is why the request stopped.
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return ErrRequestTimeout
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return ErrRequestTimeout
+	}
+	return ErrServerUnreachable
 }
 
 // handleErrorResponse reads the response body and returns an *httperr.CodedError.

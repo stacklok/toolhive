@@ -5,16 +5,32 @@ package authserver
 
 import (
 	"bytes"
+	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"encoding/json"
+	"log/slog"
+	"math"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/go-jose/go-jose/v4"
+	"github.com/ory/fosite"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.yaml.in/yaml/v3"
 
+	"github.com/stacklok/toolhive/pkg/authserver/authorizationdetails"
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
 	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
+	"github.com/stacklok/toolhive/pkg/authserver/server/tokenexchange"
+	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
+	"github.com/stacklok/toolhive/pkg/authserver/upstreamfilter"
+	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
 func TestValidateIssuerURL(t *testing.T) {
@@ -47,6 +63,15 @@ func TestValidateIssuerURL(t *testing.T) {
 		{name: "missing host", issuer: "https://", wantErr: true, errMsg: "host is required"},
 		{name: "query component", issuer: "https://example.com?foo=bar", wantErr: true, errMsg: "must not contain query"},
 		{name: "fragment component", issuer: "https://example.com#section", wantErr: true, errMsg: "must not contain fragment"},
+		{
+			name: "userinfo with password", issuer: "https://user:hunter2@example.com",
+			wantErr: true, errMsg: "must not contain userinfo",
+		},
+		{
+			// url.Parse populates User for a bare username too.
+			name: "userinfo without password", issuer: "https://user@example.com",
+			wantErr: true, errMsg: "must not contain userinfo",
+		},
 		{name: "http non-localhost", issuer: "http://example.com", wantErr: true, errMsg: "http scheme is only allowed for localhost"},
 		{name: "ftp scheme", issuer: "ftp://example.com", wantErr: true, errMsg: "scheme must be https"},
 		{name: "trailing slash", issuer: "https://example.com/", wantErr: true, errMsg: "must not have trailing slash"},
@@ -72,6 +97,46 @@ func TestValidateIssuerURL(t *testing.T) {
 	}
 }
 
+// validFileBundleSource is a bundle source the runtime can load. Validation
+// only checks the path shape, so the file need not exist.
+func validFileBundleSource() SPIFFEBundleSourceRunConfig {
+	return SPIFFEBundleSourceRunConfig{
+		Type: SPIFFEBundleSourceTypeFile,
+		File: &SPIFFEFileBundleSourceRunConfig{Path: "/etc/spiffe/bundle.json"},
+	}
+}
+
+// mustNewSPIFFETrustConfig builds a well-formed, non-empty *SPIFFETrustConfig
+// for tests that need a populated trust configuration.
+func mustNewSPIFFETrustConfig(t *testing.T) *SPIFFETrustConfig {
+	t.Helper()
+	return mustNewSPIFFETrustConfigWithSource(t, validFileBundleSource())
+}
+
+func mustNewSPIFFETrustConfigWithSource(t *testing.T, source SPIFFEBundleSourceRunConfig) *SPIFFETrustConfig {
+	t.Helper()
+	trust, err := NewSPIFFETrustConfig(
+		[]SPIFFETrustDomainRunConfig{{
+			Name:         "production",
+			TrustDomain:  "example.org",
+			Methods:      []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509},
+			BundleSource: source,
+		}},
+		&InboundGrantsRunConfig{SPIFFEClientAuth: []SPIFFEClientAuthRunConfig{{
+			TrustDomainRef:   "production",
+			PrincipalPattern: "spiffe://example.org/ns/default/*",
+			ClientID:         "agent-client",
+			Methods:          []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509},
+			Audiences:        []string{"https://mcp.example.com"},
+			Scopes:           []string{"openid"},
+			GrantTypes:       []string{SPIFFEGrantTypeTokenExchange},
+		}}},
+		[]string{"openid"}, []string{"https://mcp.example.com"},
+	)
+	require.NoError(t, err)
+	return trust
+}
+
 func TestConfigValidate(t *testing.T) {
 	t.Parallel()
 
@@ -84,6 +149,15 @@ func TestConfigValidate(t *testing.T) {
 		TokenEndpoint:         "https://idp.example.com/token",
 	}
 	validUpstreams := []UpstreamConfig{{Name: "default", Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstream}}
+	detailsRegistry, err := authorizationdetails.New(map[string]authorizationdetails.Type{
+		"example": {
+			GrantTypes: []string{oauthproto.GrantTypeTokenExchange},
+			Grant: func(_ context.Context, req authorizationdetails.Request) (authorizationdetails.Result, error) {
+				return authorizationdetails.Result{Entries: req.Entries}, nil
+			},
+		},
+	})
+	require.NoError(t, err)
 	validOIDCUpstream := &upstream.OIDCConfig{
 		CommonOAuthConfig: upstream.CommonOAuthConfig{ClientID: "c", RedirectURI: "https://example.com/cb"},
 		Issuer:            "https://accounts.google.com",
@@ -100,6 +174,8 @@ func TestConfigValidate(t *testing.T) {
 		{name: "nil HMAC secrets", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, Upstreams: validUpstreams}, wantErr: true, errMsg: "HMAC secrets are required"},
 		{name: "HMAC too short", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: shortHMAC, Upstreams: validUpstreams}, wantErr: true, errMsg: "HMAC secret must be at least 32 bytes"},
 		{name: "no upstreams", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC}, wantErr: true, errMsg: "at least one upstream is required"},
+		{name: "SPIFFE-only config without an upstream passes", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, AllowedAudiences: []string{"https://mcp.example.com"}, SPIFFETrust: mustNewSPIFFETrustConfig(t)}},
+		{name: "SPIFFE client_id equal to a delegate client_id rejected", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, AllowedAudiences: []string{"https://mcp.example.com"}, SPIFFETrust: mustNewSPIFFETrustConfig(t), DelegateClients: []DelegateClient{{ClientID: "agent-client", ClientSecret: "delegate-secret-0123456789-abcdefghij", Scopes: []string{"openid"}, Audiences: []string{"https://mcp.example.com"}}}}, wantErr: true, errMsg: `client_id "agent-client" is configured both as a SPIFFE client association and as a delegate client`},
 		{name: "nil upstream config", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: []UpstreamConfig{{Name: "test", Type: UpstreamProviderTypeOAuth2}}}, wantErr: true, errMsg: "oauth2_config is required"},
 		{name: "multiple upstreams", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: []UpstreamConfig{{Name: "first", Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstream}, {Name: "second", Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstream}}, AllowedAudiences: []string{"https://mcp.example.com"}}},
 		{name: "upstream_filter with single upstream rejected", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, UpstreamFilter: &stubChainFilter{}}, wantErr: true, errMsg: "upstream_filter is configured but has no effect"},
@@ -128,6 +204,9 @@ func TestConfigValidate(t *testing.T) {
 		{name: "OIDC with oauth2_config set rejects", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: []UpstreamConfig{{Name: "test", Type: UpstreamProviderTypeOIDC, OIDCConfig: validOIDCUpstream, OAuth2Config: validUpstream}}, AllowedAudiences: []string{"https://mcp.example.com"}}, wantErr: true, errMsg: "oauth2_config must not be set"},
 		{name: "OAuth2 with oidc_config set rejects", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: []UpstreamConfig{{Name: "test", Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstream, OIDCConfig: validOIDCUpstream}}, AllowedAudiences: []string{"https://mcp.example.com"}}, wantErr: true, errMsg: "oidc_config must not be set"},
 
+		{name: "OAuth2 HTTP endpoints require an upstream or global insecure allow flag", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: []UpstreamConfig{{Name: "default", Type: UpstreamProviderTypeOAuth2, OAuth2Config: &upstream.OAuth2Config{CommonOAuthConfig: upstream.CommonOAuthConfig{ClientID: "c", RedirectURI: "https://example.com/cb"}, AuthorizationEndpoint: "http://idp.default.svc.cluster.local/authorize", TokenEndpoint: "http://idp.default.svc.cluster.local/token", InsecureAllowHTTP: true}}}, AllowedAudiences: []string{"https://mcp.example.com"}}},
+		{name: "OIDC HTTP issuer requires an upstream or global insecure allow flag", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: []UpstreamConfig{{Name: "default", Type: UpstreamProviderTypeOIDC, OIDCConfig: &upstream.OIDCConfig{CommonOAuthConfig: upstream.CommonOAuthConfig{ClientID: "c", RedirectURI: "https://example.com/cb"}, Issuer: "http://idp.default.svc.cluster.local", InsecureAllowHTTP: true}}}, AllowedAudiences: []string{"https://mcp.example.com"}}},
+
 		// BaselineClientScopes subset gate (mirrors RunConfig.Validate but on the
 		// runtime Config — catches direct constructors that bypass YAML loading).
 		{name: "baseline scope not in scopes_supported", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, ScopesSupported: []string{"openid"}, BaselineClientScopes: []string{"offline_access"}}, wantErr: true, errMsg: `baseline_client_scopes contains "offline_access"`},
@@ -140,11 +219,50 @@ func TestConfigValidate(t *testing.T) {
 		{name: "CIMD disabled ignores invalid cache fields", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, CIMDEnabled: false, CIMDCacheMaxSize: -1, CIMDCacheFallbackTTL: -time.Second}},
 		{name: "CIMD enabled with valid bounds passes", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, CIMDEnabled: true, CIMDCacheMaxSize: 256, CIMDCacheFallbackTTL: 5 * time.Minute}},
 
+		// Confidential-client transport gate (same predicate RunConfig.Validate uses)
+		{name: "confidential clients combined with insecure HTTP rejects", config: Config{Issuer: "http://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, AllowConfidentialClientRegistration: true, InsecureAllowHTTP: true}, wantErr: true, errMsg: "confidential clients (allow_confidential_client_registration or delegate clients) cannot be combined with insecure_allow_http"},
+		{name: "private-key JWT registration combined with insecure HTTP passes (no secret to protect)", config: Config{Issuer: "http://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, AllowPrivateKeyJWTRegistration: true, InsecureAllowHTTP: true}},
+		{name: "private-key JWT registration combined with token exchange disabled rejects", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, AllowPrivateKeyJWTRegistration: true, DisableTokenExchange: true}, wantErr: true, errMsg: "token-exchange-only"},
+
+		{name: "SPIFFE association combined with token exchange disabled rejects", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, AllowedAudiences: []string{"https://mcp.example.com"}, SPIFFETrust: mustNewSPIFFETrustConfig(t), DisableTokenExchange: true}, wantErr: true, errMsg: "SPIFFE client associations require token exchange"},
+
+		// RefreshGrantHandlers
+		{name: "nil refresh grant handler rejected", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, RefreshGrantHandlers: []fosite.TokenEndpointHandler{&recordingRefreshHandler{}, nil}}, wantErr: true, errMsg: "refresh grant handler 1 is nil"},
+		{name: "typed-nil refresh grant handler rejected", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, RefreshGrantHandlers: []fosite.TokenEndpointHandler{(*recordingRefreshHandler)(nil)}}, wantErr: true, errMsg: "refresh grant handler 0 is nil"},
+		{name: "refresh grant handler accepted", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, RefreshGrantHandlers: []fosite.TokenEndpointHandler{&recordingRefreshHandler{}}}},
+
+		{name: "authorization details registry combined with token exchange disabled rejects", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, AuthorizationDetailsRegistry: detailsRegistry, DisableTokenExchange: true}, wantErr: true, errMsg: "authorization details registry requires token exchange"},
+		{name: "authorization details registry with token exchange enabled passes", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, AuthorizationDetailsRegistry: detailsRegistry}},
 		// Valid configs
 		{name: "valid minimal", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}}},
 		{name: "valid nil key provider", config: Config{Issuer: "https://example.com", HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}}},
 		{name: "valid empty upstream name defaults", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: []UpstreamConfig{{Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstream}}, AllowedAudiences: []string{"https://mcp.example.com"}}},
 		{name: "valid OIDC upstream", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validOIDCUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}}},
+
+		// SPIFFETrust is accepted by NewSPIFFETrustConfig as well-formed, and
+		// passes here too since a caller that constructs Config directly
+		// (e.g. authserver.New) bypasses RunConfig entirely.
+		{name: "nil SPIFFETrust passes", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}}},
+		{
+			name: "well-formed Config.SPIFFETrust passes",
+			config: Config{
+				Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC,
+				Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"},
+				SPIFFETrust: mustNewSPIFFETrustConfig(t),
+			},
+		},
+		{
+			name: "SPIFFE workload_api bundle source rejected",
+			config: Config{
+				Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC,
+				Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"},
+				SPIFFETrust: mustNewSPIFFETrustConfigWithSource(t, SPIFFEBundleSourceRunConfig{
+					Type: SPIFFEBundleSourceTypeWorkloadAPI, WorkloadAPI: &SPIFFEWorkloadAPIBundleSourceRunConfig{},
+				}),
+			},
+			wantErr: true,
+			errMsg:  `type "workload_api" is not supported by this build`,
+		},
 	}
 
 	for _, tt := range tests {
@@ -152,6 +270,133 @@ func TestConfigValidate(t *testing.T) {
 			t.Parallel()
 			err := tt.config.Validate()
 			assertError(t, err, tt.wantErr, tt.errMsg)
+		})
+	}
+}
+
+// minimalValidConfig returns a Config that passes Validate, for tests that vary one field.
+func minimalValidConfig(t *testing.T) Config {
+	t.Helper()
+
+	return Config{
+		Issuer:      "https://issuer.example.com",
+		HMACSecrets: &servercrypto.HMACSecrets{Current: make([]byte, 32)},
+		Upstreams: []UpstreamConfig{{
+			Name: "default", Type: UpstreamProviderTypeOAuth2,
+			OAuth2Config: &upstream.OAuth2Config{
+				CommonOAuthConfig:     upstream.CommonOAuthConfig{ClientID: "client", RedirectURI: "https://issuer.example.com/callback"},
+				AuthorizationEndpoint: "https://idp.example.com/authorize",
+				TokenEndpoint:         "https://idp.example.com/token",
+			},
+		}},
+		AllowedAudiences: []string{"https://resource.example.com"},
+	}
+}
+
+func TestConfigValidateSubjectIdentifierAudiences(t *testing.T) {
+	t.Parallel()
+
+	base := minimalValidConfig(t)
+
+	tests := []struct {
+		name      string
+		audiences []string
+		wantErr   bool
+	}{
+		{name: "exact allowed URI", audiences: []string{"https://resource.example.com"}},
+		{name: "all is not special", audiences: []string{"all"}, wantErr: true},
+		{name: "URI outside allowed audiences", audiences: []string{"https://other.example.com"}, wantErr: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := base
+			cfg.SubjectIdentifierAudiences = tc.audiences
+			err := cfg.Validate()
+			if tc.wantErr {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
+func TestConfigValidateAccessTokenType(t *testing.T) {
+	t.Parallel()
+
+	base := minimalValidConfig(t)
+
+	tests := []struct {
+		name    string
+		typ     string
+		wantErr bool
+	}{
+		{name: "at+jwt is accepted", typ: "at+jwt"},
+		{name: "media type prefix is rejected", typ: "application/at+jwt", wantErr: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := base
+			cfg.AccessTokenType = tc.typ
+			err := cfg.Validate()
+			if tc.wantErr {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
+func TestConfigValidate_ZeroUpstreamAlternatives(t *testing.T) {
+	t.Parallel()
+
+	secret := []byte("0123456789abcdef0123456789abcdef")
+	configs := []struct {
+		name string
+		cfg  Config
+	}{
+		{
+			name: "delegate client",
+			cfg: Config{
+				Issuer:           "https://example.com",
+				HMACSecrets:      servercrypto.NewHMACSecrets(secret),
+				AllowedAudiences: []string{"https://mcp.example.com"},
+				DelegateClients: []DelegateClient{{
+					ClientID:     "delegate",
+					ClientSecret: strings.Repeat("a", minDelegateClientSecretLength),
+					Scopes:       []string{"openid"},
+					Audiences:    []string{"https://mcp.example.com"},
+				}},
+			},
+		},
+		{
+			name: "JWT bearer trusted issuer",
+			cfg: Config{
+				Issuer:           "https://example.com",
+				HMACSecrets:      servercrypto.NewHMACSecrets(secret),
+				AllowedAudiences: []string{"https://mcp.example.com"},
+				TrustedIssuers: []tokenexchange.TrustedIssuer{{
+					IssuerURL: "https://idp.example.com",
+					JWTBearerGrant: &tokenexchange.JWTBearerGrantPolicy{
+						MaxAssertionAge: "1m",
+						SubjectBindings: []tokenexchange.JWTBearerSubjectBinding{{
+							Subject:          "workload",
+							AllowedResources: []string{"https://mcp.example.com"},
+						}},
+						AcceptedAudiences: []string{"https://example.com/oauth/token"},
+					},
+				}},
+			},
+		},
+	}
+
+	for _, tt := range configs {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			require.NoError(t, tt.cfg.Validate())
 		})
 	}
 }
@@ -264,6 +509,9 @@ func TestConfigApplyDefaults(t *testing.T) {
 func assertError(t *testing.T, err error, wantErr bool, errMsg string) {
 	t.Helper()
 	if wantErr {
+		if errMsg == "" {
+			t.Fatal("wantErr is true but errMsg is empty: strings.Contains(x, \"\") is always true, so this case would pass unconditionally")
+		}
 		if err == nil {
 			t.Errorf("expected error containing %q, got nil", errMsg)
 		} else if !strings.Contains(err.Error(), errMsg) {
@@ -399,6 +647,64 @@ func TestOAuth2UpstreamRunConfigValidate(t *testing.T) {
 				ClientID: "c",
 			},
 		},
+
+		// TokenEndpointAuthMethod / client secret source consistency.
+		{
+			name: "unrecognized TokenEndpointAuthMethod rejects",
+			config: OAuth2UpstreamRunConfig{
+				ClientID:                "c",
+				TokenEndpointAuthMethod: "not_a_real_method",
+			},
+			wantErr: true,
+			errMsg:  "unsupported token_endpoint_auth_method",
+		},
+		{
+			name: "none with a configured client secret file rejects",
+			config: OAuth2UpstreamRunConfig{
+				ClientID:                "c",
+				ClientSecretFile:        "/tmp/secret",
+				TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodNone,
+			},
+			wantErr: true,
+			errMsg:  "token_endpoint_auth_method none cannot be used with a client secret",
+		},
+		{
+			name: "client_secret_basic without a secret source rejects",
+			config: OAuth2UpstreamRunConfig{
+				ClientID:                "c",
+				TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodClientSecretBasic,
+			},
+			wantErr: true,
+			errMsg:  `token_endpoint_auth_method "client_secret_basic" requires client_secret_file or client_secret_env_var`,
+		},
+		{
+			name: "client_secret_post without a secret source rejects",
+			config: OAuth2UpstreamRunConfig{
+				ClientID:                "c",
+				TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodClientSecretPost,
+			},
+			wantErr: true,
+			errMsg:  `token_endpoint_auth_method "client_secret_post" requires client_secret_file or client_secret_env_var`,
+		},
+		{
+			name: "client_secret_basic with a client secret env var configured is valid",
+			config: OAuth2UpstreamRunConfig{
+				ClientID:                "c",
+				ClientSecretEnvVar:      "MY_CLIENT_SECRET",
+				TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodClientSecretBasic,
+			},
+		},
+		{
+			// The secret comes from the registration, so the method only
+			// selects how the client registers.
+			name: "client_secret_post with dcr_config and no secret source is valid",
+			config: OAuth2UpstreamRunConfig{
+				DCRConfig: &DCRUpstreamConfig{
+					DiscoveryURL: "https://idp.example.com/.well-known/oauth-authorization-server",
+				},
+				TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodClientSecretPost,
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -412,6 +718,32 @@ func TestOAuth2UpstreamRunConfigValidate(t *testing.T) {
 
 func TestRunConfigValidate(t *testing.T) {
 	t.Parallel()
+
+	x509Config := func(mutate func(*RunConfig)) RunConfig {
+		config := RunConfig{
+			Issuer:      "https://auth.example.org",
+			TLSListener: &TLSListenerRunConfig{CertFile: "cert", KeyFile: "key"},
+			SPIFFETrustDomains: []SPIFFETrustDomainRunConfig{{
+				Name:         "production",
+				TrustDomain:  "example.org",
+				Methods:      []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509},
+				BundleSource: validFileBundleSource(),
+			}},
+			InboundGrants: &InboundGrantsRunConfig{SPIFFEClientAuth: []SPIFFEClientAuthRunConfig{{
+				TrustDomainRef:   "production",
+				PrincipalPattern: "spiffe://example.org/ns/default/*",
+				ClientID:         "agent-client",
+				Methods:          []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509},
+				Audiences:        []string{"https://mcp.example.org/resource"},
+				Scopes:           []string{"openid"},
+				GrantTypes:       []string{SPIFFEGrantTypeTokenExchange},
+			}}},
+		}
+		if mutate != nil {
+			mutate(&config)
+		}
+		return config
+	}
 
 	tests := []struct {
 		name    string
@@ -465,12 +797,1199 @@ func TestRunConfigValidate(t *testing.T) {
 		{name: "CIMD enabled negative TTL rejected", config: RunConfig{CIMD: &CIMDRunConfig{Enabled: true, CacheFallbackTTL: "-5m"}}, wantErr: true, errMsg: "cache_fallback_ttl"},
 		{name: "CIMD enabled valid passes", config: RunConfig{CIMD: &CIMDRunConfig{Enabled: true, CacheMaxSize: 64, CacheFallbackTTL: "5m"}}},
 		{name: "CIMD enabled omitted optional fields pass", config: RunConfig{CIMD: &CIMDRunConfig{Enabled: true}}},
+		// Confidential-client transport gate
+		{name: "confidential clients without insecure HTTP passes", config: RunConfig{AllowConfidentialClientRegistration: true}},
+		{name: "private-key JWT registration defaults to false", config: RunConfig{}},
+		{name: "private-key JWT registration without insecure HTTP passes", config: RunConfig{AllowPrivateKeyJWTRegistration: true}},
+		{name: "insecure HTTP without confidential clients passes", config: RunConfig{InsecureAllowHTTP: true}},
+		{
+			name:    "confidential clients with malformed issuer reject before startup",
+			config:  RunConfig{Issuer: "http://[::1", AllowConfidentialClientRegistration: true},
+			wantErr: true,
+			errMsg:  "confidential clients require a valid issuer URL",
+		},
+		{
+			name: "loopback confidential opt-in rejects structurally invalid issuer before startup",
+			config: RunConfig{
+				Issuer:                              "http://user@localhost",
+				AllowConfidentialClientRegistration: true,
+				InsecureAllowConfidentialOverLoopbackHTTP: true,
+			},
+			wantErr: true,
+			errMsg:  "confidential clients require a valid issuer URL",
+		},
+		{
+			name:   "private-key JWT registration combined with insecure HTTP passes (no secret to protect)",
+			config: RunConfig{AllowPrivateKeyJWTRegistration: true, InsecureAllowHTTP: true},
+		},
+		{
+			name: "confidential clients with plain-HTTP loopback issuer rejects without the opt-in",
+			config: RunConfig{
+				Issuer:                              "http://localhost:8080",
+				AllowConfidentialClientRegistration: true,
+			},
+			wantErr: true,
+			errMsg:  "insecure_allow_confidential_over_loopback_http",
+		},
+		{
+			name: "confidential clients with plain-HTTP loopback issuer passes with the opt-in",
+			config: RunConfig{
+				Issuer:                              "http://localhost:8080",
+				AllowConfidentialClientRegistration: true,
+				InsecureAllowConfidentialOverLoopbackHTTP: true,
+			},
+		},
+		{
+			name: "confidential clients with https loopback issuer is unaffected",
+			config: RunConfig{
+				Issuer:                              "https://localhost:8080",
+				AllowConfidentialClientRegistration: true,
+			},
+		},
+		{
+			name: "confidential clients disabled with plain-HTTP loopback issuer is unaffected",
+			config: RunConfig{
+				Issuer: "http://localhost:8080",
+			},
+		},
+		{
+			name: "private-key JWT registration with plain-HTTP loopback issuer is unaffected (no secret to protect)",
+			config: RunConfig{
+				Issuer:                         "http://localhost:8080",
+				AllowPrivateKeyJWTRegistration: true,
+			},
+		},
+		// SPIFFE trust is accepted by ValidateSPIFFETrust as well-formed and
+		// passes here too.
+		{
+			name:   "no SPIFFE trust domains passes",
+			config: RunConfig{},
+		},
+		{
+			name:   "well-formed SPIFFE trust configuration passes",
+			config: x509Config(nil),
+		},
+		{
+			name:    "X.509 association with an http issuer is rejected",
+			config:  x509Config(func(c *RunConfig) { c.Issuer = "http://auth.example.org" }),
+			wantErr: true,
+			errMsg:  "SPIFFE X.509 authentication requires an https issuer",
+		},
+		{
+			name: "JWT-only association with an http issuer passes",
+			config: x509Config(func(c *RunConfig) {
+				c.Issuer = "http://auth.example.org"
+				c.TLSListener = nil
+				c.SPIFFETrustDomains[0].Methods = []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodJWT}
+				c.InboundGrants.SPIFFEClientAuth[0].Methods = []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodJWT}
+			}),
+		},
+		{
+			name: "SPIFFE client_id equal to a delegate client_id is rejected",
+			config: x509Config(func(c *RunConfig) {
+				c.AllowedAudiences = []string{"https://mcp.example.org/resource"}
+				c.DelegateClients = []DelegateClientRunConfig{{
+					ClientID: "agent-client", ClientSecretEnvVar: "SECRET",
+					Scopes: []string{"openid"}, Audiences: []string{"https://mcp.example.org/resource"},
+				}}
+			}),
+			wantErr: true,
+			errMsg:  `client_id "agent-client" is configured both as a SPIFFE client association and as a delegate client`,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			err := tt.config.Validate()
+			assertError(t, err, tt.wantErr, tt.errMsg)
+		})
+	}
+}
+
+func TestUpstreamConfig_DisplayNameNeverFailsValidation(t *testing.T) {
+	t.Parallel()
+
+	newConfig := func(name, displayName string) Config {
+		return Config{
+			Issuer: "https://example.com", KeyProvider: keys.NewGeneratingProvider(keys.DefaultAlgorithm),
+			HMACSecrets:      &servercrypto.HMACSecrets{Current: make([]byte, 32)},
+			AllowedAudiences: []string{"https://mcp.example.com"},
+			Upstreams: []UpstreamConfig{{
+				Name: name, DisplayName: displayName, Type: UpstreamProviderTypeOAuth2,
+				OAuth2Config: &upstream.OAuth2Config{
+					CommonOAuthConfig:     upstream.CommonOAuthConfig{ClientID: "c", RedirectURI: "https://example.com/cb"},
+					AuthorizationEndpoint: "https://idp.example.com/authorize",
+					TokenEndpoint:         "https://idp.example.com/token",
+				},
+			}},
+		}
+	}
+	for name, displayName := range map[string]string{
+		"empty":           "",
+		"plain":           "Acme Okta",
+		"control runes":   "Acme\u202e\u200b\nOkta",
+		"whitespace only": " \t ",
+		"html":            "<script>alert(1)</script>",
+		"very long":       strings.Repeat("é", 1000),
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			cfg := newConfig("ffffffff-ffff-ffff-ffff-ffffffffffff", displayName)
+			require.NoError(t, cfg.Validate())
+		})
+	}
+	t.Run("name is still validated", func(t *testing.T) {
+		t.Parallel()
+		cfg := newConfig("Not_A_Label", "Acme Okta")
+		require.Error(t, cfg.Validate())
+	})
+}
+
+// TestRunConfig_DisplayNameRoundTrip pins the display_name key in YAML and JSON,
+// the form operators write in config files and ConfigMaps, and checks that an
+// unset display name is omitted on encode.
+func TestRunConfig_DisplayNameRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	const yamlDoc = `
+upstreams:
+  - name: okta
+    display_name: Acme Okta
+`
+	const jsonDoc = `{"upstreams":[{"name":"okta","display_name":"Acme Okta"}]}`
+	for _, tc := range []struct {
+		name      string
+		unmarshal func([]byte, any) error
+		marshal   func(any) ([]byte, error)
+		doc       string
+	}{
+		{name: "yaml", unmarshal: yaml.Unmarshal, marshal: yaml.Marshal, doc: yamlDoc},
+		{name: "json", unmarshal: json.Unmarshal, marshal: json.Marshal, doc: jsonDoc},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var decoded RunConfig
+			require.NoError(t, tc.unmarshal([]byte(tc.doc), &decoded))
+			require.Len(t, decoded.Upstreams, 1)
+			assert.Equal(t, "okta", decoded.Upstreams[0].Name)
+			assert.Equal(t, "Acme Okta", decoded.Upstreams[0].DisplayName)
+
+			encoded, err := tc.marshal(&decoded)
+			require.NoError(t, err)
+			assert.Contains(t, string(encoded), "display_name")
+			var reDecoded RunConfig
+			require.NoError(t, tc.unmarshal(encoded, &reDecoded))
+			assert.Equal(t, decoded.Upstreams, reDecoded.Upstreams)
+
+			decoded.Upstreams[0].DisplayName = ""
+			encoded, err = tc.marshal(&decoded)
+			require.NoError(t, err)
+			assert.NotContains(t, string(encoded), "display_name")
+		})
+	}
+}
+
+// TestRunConfigValidate_UpstreamFilter covers RunConfig.Validate()'s
+// enforcement of UpstreamFilter static invariants against the configured
+// upstream list. Thorough matching/union/claim behavior is covered in
+// pkg/authserver/upstreamfilter — these cases only verify that invalid filter
+// configurations are rejected at startup rather than deferred to a runtime
+// surprise.
+func TestRunConfigValidate_UpstreamFilter(t *testing.T) {
+	t.Parallel()
+
+	okta := UpstreamRunConfig{Name: "okta"}
+	jira := UpstreamRunConfig{Name: "jira"}
+	slack := UpstreamRunConfig{Name: "slack"}
+
+	validRule := upstreamfilter.GroupRule{
+		Groups:            []string{"engineering"},
+		UpstreamProviders: []string{"jira"},
+	}
+
+	tests := []struct {
+		name    string
+		cfg     RunConfig
+		wantErr bool
+		errMsg  string
+	}{
+		{
+			name: "nil UpstreamFilter passes",
+			cfg: RunConfig{
+				Upstreams: []UpstreamRunConfig{okta, jira, slack},
+			},
+		},
+		{
+			name: "valid UpstreamFilter passes",
+			cfg: RunConfig{
+				Upstreams: []UpstreamRunConfig{okta, jira, slack},
+				UpstreamFilter: &upstreamfilter.GroupBasedFilterConfig{
+					Rules:            []upstreamfilter.GroupRule{validRule},
+					DefaultUpstreams: []string{"slack"},
+				},
+			},
+		},
+		{
+			name: "fewer than two upstreams is rejected",
+			cfg: RunConfig{
+				Upstreams: []UpstreamRunConfig{okta},
+				UpstreamFilter: &upstreamfilter.GroupBasedFilterConfig{
+					Rules: []upstreamfilter.GroupRule{validRule},
+				},
+			},
+			wantErr: true,
+			errMsg:  "at least two configured upstreams",
+		},
+		{
+			name: "unknown upstream reference is rejected",
+			cfg: RunConfig{
+				Upstreams: []UpstreamRunConfig{okta, jira, slack},
+				UpstreamFilter: &upstreamfilter.GroupBasedFilterConfig{
+					Rules: []upstreamfilter.GroupRule{{
+						Groups:            []string{"engineering"},
+						UpstreamProviders: []string{"salesforce"},
+					}},
+				},
+			},
+			wantErr: true,
+			errMsg:  `"salesforce" is not a configured upstream`,
+		},
+		{
+			name: "reference to mandatory first upstream is rejected",
+			cfg: RunConfig{
+				Upstreams: []UpstreamRunConfig{okta, jira, slack},
+				UpstreamFilter: &upstreamfilter.GroupBasedFilterConfig{
+					Rules: []upstreamfilter.GroupRule{{
+						Groups:            []string{"engineering"},
+						UpstreamProviders: []string{"okta"},
+					}},
+				},
+			},
+			wantErr: true,
+			errMsg:  `must not reference the mandatory first upstream "okta"`,
+		},
+		{
+			name: "no rules is rejected",
+			cfg: RunConfig{
+				Upstreams: []UpstreamRunConfig{okta, jira, slack},
+				UpstreamFilter: &upstreamfilter.GroupBasedFilterConfig{
+					Rules: nil,
+				},
+			},
+			wantErr: true,
+			errMsg:  "at least one rule",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := tt.cfg.Validate()
+			assertError(t, err, tt.wantErr, tt.errMsg)
+		})
+	}
+}
+
+// TestRunConfig_UpstreamFilterRoundTrip verifies that UpstreamFilter survives
+// JSON encode/decode without data loss — this is the path by which the
+// operator ConfigMap delivers the field to the vMCP pod.
+func TestRunConfig_UpstreamFilterRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	original := RunConfig{
+		SchemaVersion: CurrentSchemaVersion,
+		Issuer:        "https://example.com",
+		Upstreams: []UpstreamRunConfig{
+			{Name: "okta"},
+			{Name: "jira"},
+			{Name: "slack"},
+		},
+		UpstreamFilter: &upstreamfilter.GroupBasedFilterConfig{
+			Claim: "groups",
+			Rules: []upstreamfilter.GroupRule{
+				{Groups: []string{"engineering"}, UpstreamProviders: []string{"jira", "slack"}},
+				{Groups: []string{"sales"}, UpstreamProviders: []string{"slack"}},
+			},
+			DefaultUpstreams: []string{"jira"},
+		},
+	}
+
+	encoded, err := json.Marshal(&original)
+	require.NoError(t, err)
+
+	var decoded RunConfig
+	require.NoError(t, json.Unmarshal(encoded, &decoded))
+
+	assert.Equal(t, original.UpstreamFilter, decoded.UpstreamFilter)
+	// Also confirm omitempty behavior: a nil filter must not appear in the
+	// encoded payload at all.
+	noFilter := RunConfig{SchemaVersion: CurrentSchemaVersion, Issuer: "https://example.com"}
+	noFilterJSON, err := json.Marshal(&noFilter)
+	require.NoError(t, err)
+	assert.NotContains(t, string(noFilterJSON), "upstream_filter")
+}
+
+// TestRunConfig_UpstreamFilterYAMLRoundTrip verifies YAML decoding and
+// re-encoding of upstream filter configuration using the vMCP loader's
+// YAML package. A literal document pins the expected configuration keys.
+func TestRunConfig_UpstreamFilterYAMLRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	t.Run("configured_filter", func(t *testing.T) {
+		t.Parallel()
+
+		const doc = `
+schema_version: v0.1.0
+issuer: https://example.com
+upstreams:
+  - name: okta
+  - name: jira
+  - name: slack
+upstream_filter:
+  claim: custom_groups
+  rules:
+    - groups:
+        - engineering
+      upstreamProviders:
+        - jira
+        - slack
+    - groups:
+        - sales
+      upstreamProviders:
+        - slack
+  defaultUpstreams:
+    - jira
+`
+
+		want := &upstreamfilter.GroupBasedFilterConfig{
+			Claim: "custom_groups",
+			Rules: []upstreamfilter.GroupRule{
+				{Groups: []string{"engineering"}, UpstreamProviders: []string{"jira", "slack"}},
+				{Groups: []string{"sales"}, UpstreamProviders: []string{"slack"}},
+			},
+			DefaultUpstreams: []string{"jira"},
+		}
+
+		var decoded RunConfig
+		require.NoError(t, yaml.Unmarshal([]byte(doc), &decoded))
+		require.NotNil(t, decoded.UpstreamFilter)
+		assert.Equal(t, want, decoded.UpstreamFilter)
+
+		// Re-encoding must produce a document the same decoder reads back
+		// unchanged: the operator rewrites the ConfigMap on every reconcile.
+		encoded, err := yaml.Marshal(&decoded)
+		require.NoError(t, err)
+		var reDecoded RunConfig
+		require.NoError(t, yaml.Unmarshal(encoded, &reDecoded))
+		assert.Equal(t, decoded.UpstreamFilter, reDecoded.UpstreamFilter)
+	})
+
+	t.Run("nil_filter", func(t *testing.T) {
+		t.Parallel()
+
+		// An unset filter must be omitted from YAML and decode back to nil.
+		noFilter := RunConfig{SchemaVersion: CurrentSchemaVersion, Issuer: "https://example.com"}
+		encoded, err := yaml.Marshal(&noFilter)
+		require.NoError(t, err)
+		assert.NotContains(t, string(encoded), "upstream_filter")
+
+		var decoded RunConfig
+		require.NoError(t, yaml.Unmarshal(encoded, &decoded))
+		assert.Nil(t, decoded.UpstreamFilter)
+	})
+}
+
+func TestDelegateClientRunConfigValidate(t *testing.T) {
+	t.Parallel()
+
+	validClient := DelegateClientRunConfig{
+		ClientID:           "delegate",
+		ClientSecretEnvVar: "DELEGATE_CLIENT_SECRET",
+		Scopes:             []string{"openid"},
+		Audiences:          []string{"https://mcp.example.com"},
+	}
+	tests := []struct {
+		name    string
+		clients []DelegateClientRunConfig
+		wantErr string
+	}{
+		{name: "secret client without grant types or block keeps legacy trust", clients: []DelegateClientRunConfig{validClient}},
+		{name: "empty ID", clients: []DelegateClientRunConfig{{ClientSecretEnvVar: "SECRET", Scopes: validClient.Scopes, Audiences: validClient.Audiences}}, wantErr: "client_id is required"},
+		{name: "duplicate ID", clients: []DelegateClientRunConfig{validClient, validClient}, wantErr: "duplicate client_id"},
+		{name: "missing secret reference", clients: []DelegateClientRunConfig{{ClientID: "delegate", Scopes: validClient.Scopes, Audiences: validClient.Audiences}}, wantErr: "secret is required"},
+		{name: "missing scopes", clients: []DelegateClientRunConfig{{ClientID: "delegate", ClientSecretEnvVar: "SECRET", Audiences: validClient.Audiences}}, wantErr: "scopes is required"},
+		{name: "scope outside supported", clients: []DelegateClientRunConfig{{ClientID: "delegate", ClientSecretEnvVar: "SECRET", Scopes: []string{"admin"}, Audiences: validClient.Audiences}}, wantErr: `"admin" which is not in scopes_supported`},
+		{name: "missing audiences", clients: []DelegateClientRunConfig{{ClientID: "delegate", ClientSecretEnvVar: "SECRET", Scopes: validClient.Scopes}}, wantErr: "audiences is required"},
+		{name: "audience outside allowed", clients: []DelegateClientRunConfig{{ClientID: "delegate", ClientSecretEnvVar: "SECRET", Scopes: validClient.Scopes, Audiences: []string{"https://other.example.com"}}}, wantErr: "is not in allowed_audiences"},
+		{name: "private_key_jwt without token exchange block", clients: []DelegateClientRunConfig{{
+			ClientID: "delegate", TokenEndpointAuthMethod: "private_key_jwt", JWKSFile: "/keys/jwks.json",
+			Scopes: validClient.Scopes, Audiences: validClient.Audiences,
+		}}, wantErr: "private_key_jwt clients must declare a token_exchange block"},
+		{name: "private_key_jwt with jwks file", clients: []DelegateClientRunConfig{{
+			ClientID: "delegate", TokenEndpointAuthMethod: "private_key_jwt", JWKSFile: "/keys/jwks.json",
+			TokenExchange: &DelegateClientTokenExchange{SelfIssuedSubjectTokens: SelfIssuedSubjectTokensAny},
+			Scopes:        validClient.Scopes, Audiences: validClient.Audiences,
+		}}},
+		{name: "private_key_jwt without jwks file", clients: []DelegateClientRunConfig{{
+			ClientID: "delegate", TokenEndpointAuthMethod: "private_key_jwt",
+			Scopes: validClient.Scopes, Audiences: validClient.Audiences,
+		}}, wantErr: "jwks_file"},
+		{name: "private_key_jwt with a secret", clients: []DelegateClientRunConfig{{
+			ClientID: "delegate", TokenEndpointAuthMethod: "private_key_jwt", JWKSFile: "/keys/jwks.json",
+			ClientSecretEnvVar: "SECRET", Scopes: validClient.Scopes, Audiences: validClient.Audiences,
+		}}, wantErr: "not allowed with private_key_jwt"},
+		{name: "jwks file with a secret method", clients: []DelegateClientRunConfig{{
+			ClientID: "delegate", ClientSecretEnvVar: "SECRET", JWKSFile: "/keys/jwks.json",
+			Scopes: validClient.Scopes, Audiences: validClient.Audiences,
+		}}, wantErr: "only allowed with"},
+		{name: "pinned secret method", clients: []DelegateClientRunConfig{{
+			ClientID: "delegate", TokenEndpointAuthMethod: "client_secret_post", ClientSecretEnvVar: "SECRET",
+			Scopes: validClient.Scopes, Audiences: validClient.Audiences,
+		}}},
+		{name: "grant types without token exchange", clients: []DelegateClientRunConfig{{
+			ClientID: "delegate", ClientSecretEnvVar: "SECRET", GrantTypes: []string{"refresh_token"},
+			Scopes: validClient.Scopes, Audiences: validClient.Audiences,
+		}}, wantErr: "must include"},
+		{name: "authorization_code with redirect", clients: []DelegateClientRunConfig{{
+			ClientID: "delegate", ClientSecretEnvVar: "SECRET",
+			GrantTypes:    []string{"urn:ietf:params:oauth:grant-type:token-exchange", "authorization_code"},
+			RedirectURIs:  []string{"https://broker.example.com/callback"},
+			TokenExchange: &DelegateClientTokenExchange{SelfIssuedSubjectTokens: SelfIssuedSubjectTokensAny},
+			Scopes:        validClient.Scopes, Audiences: validClient.Audiences,
+		}}},
+		{name: "authorization_code without redirect", clients: []DelegateClientRunConfig{{
+			ClientID: "delegate", ClientSecretEnvVar: "SECRET",
+			GrantTypes: []string{"urn:ietf:params:oauth:grant-type:token-exchange", "authorization_code"},
+			Scopes:     validClient.Scopes, Audiences: validClient.Audiences,
+		}}, wantErr: "redirect_uris is required"},
+		{name: "redirect without authorization_code", clients: []DelegateClientRunConfig{{
+			ClientID: "delegate", ClientSecretEnvVar: "SECRET", RedirectURIs: []string{"https://broker.example.com/callback"},
+			Scopes: validClient.Scopes, Audiences: validClient.Audiences,
+		}}, wantErr: "only allowed with the authorization_code grant"},
+		{name: "token_exchange with source client and subject token audiences", clients: []DelegateClientRunConfig{{
+			ClientID: "delegate", ClientSecretEnvVar: "SECRET",
+			TokenExchange: &DelegateClientTokenExchange{
+				SelfIssuedSubjectTokens: SelfIssuedSubjectTokensRestricted,
+				AllowedSourceClients:    []string{"tui"}, SubjectTokenAudiences: []string{"https://mcp.example.com"},
+			},
+			Scopes: validClient.Scopes, Audiences: validClient.Audiences,
+		}}},
+		{name: "token_exchange source client is another delegate client", clients: []DelegateClientRunConfig{
+			validClient,
+			{
+				ClientID: "broker", ClientSecretEnvVar: "SECRET",
+				TokenExchange: &DelegateClientTokenExchange{
+					SelfIssuedSubjectTokens: SelfIssuedSubjectTokensRestricted,
+					AllowedSourceClients:    []string{"delegate"},
+				},
+				Scopes: validClient.Scopes, Audiences: validClient.Audiences,
+			},
+		}, wantErr: "configured delegate client"},
+		{name: "empty token_exchange block", clients: []DelegateClientRunConfig{{
+			ClientID: "delegate", ClientSecretEnvVar: "SECRET", TokenExchange: &DelegateClientTokenExchange{},
+			Scopes: validClient.Scopes, Audiences: validClient.Audiences,
+		}}, wantErr: "self_issued_subject_tokens is required"},
+		{name: "unsupported self_issued_subject_tokens", clients: []DelegateClientRunConfig{{
+			ClientID: "delegate", ClientSecretEnvVar: "SECRET",
+			TokenExchange: &DelegateClientTokenExchange{SelfIssuedSubjectTokens: "blanket"},
+			Scopes:        validClient.Scopes, Audiences: validClient.Audiences,
+		}}, wantErr: `self_issued_subject_tokens "blanket" is not supported`},
+		{name: "grant_types without token_exchange block", clients: []DelegateClientRunConfig{{
+			ClientID: "delegate", ClientSecretEnvVar: "SECRET",
+			GrantTypes: []string{"urn:ietf:params:oauth:grant-type:token-exchange"},
+			Scopes:     validClient.Scopes, Audiences: validClient.Audiences,
+		}}, wantErr: "grant_types is set, so a token_exchange block"},
+		{name: "grant_types with explicit any", clients: []DelegateClientRunConfig{{
+			ClientID: "delegate", ClientSecretEnvVar: "SECRET",
+			GrantTypes:    []string{"urn:ietf:params:oauth:grant-type:token-exchange"},
+			TokenExchange: &DelegateClientTokenExchange{SelfIssuedSubjectTokens: SelfIssuedSubjectTokensAny},
+			Scopes:        validClient.Scopes, Audiences: validClient.Audiences,
+		}}},
+		{name: "empty grant_types without token_exchange block", clients: []DelegateClientRunConfig{{
+			ClientID: "delegate", ClientSecretEnvVar: "SECRET", GrantTypes: []string{},
+			Scopes: validClient.Scopes, Audiences: validClient.Audiences,
+		}}},
+		{name: "restricted with no source clients", clients: []DelegateClientRunConfig{{
+			ClientID: "delegate", ClientSecretEnvVar: "SECRET",
+			GrantTypes: []string{"urn:ietf:params:oauth:grant-type:token-exchange"},
+			TokenExchange: &DelegateClientTokenExchange{
+				SelfIssuedSubjectTokens: SelfIssuedSubjectTokensRestricted, AllowedSourceClients: []string{},
+			},
+			Scopes: validClient.Scopes, Audiences: validClient.Audiences,
+		}}},
+		{name: "any with source clients", clients: []DelegateClientRunConfig{{
+			ClientID: "delegate", ClientSecretEnvVar: "SECRET",
+			TokenExchange: &DelegateClientTokenExchange{
+				SelfIssuedSubjectTokens: SelfIssuedSubjectTokensAny, AllowedSourceClients: []string{"tui"},
+			},
+			Scopes: validClient.Scopes, Audiences: validClient.Audiences,
+		}}, wantErr: "allowed_source_clients is valid only with"},
+		{name: "any with subject token audiences", clients: []DelegateClientRunConfig{{
+			ClientID: "delegate", ClientSecretEnvVar: "SECRET",
+			TokenExchange: &DelegateClientTokenExchange{
+				SelfIssuedSubjectTokens: SelfIssuedSubjectTokensAny, SubjectTokenAudiences: []string{"https://mcp.example.com"},
+			},
+			Scopes: validClient.Scopes, Audiences: validClient.Audiences,
+		}}, wantErr: "subject_token_audiences is valid only with"},
+		{name: "empty subject token audiences list is unset", clients: []DelegateClientRunConfig{{
+			ClientID: "delegate", ClientSecretEnvVar: "SECRET",
+			TokenExchange: &DelegateClientTokenExchange{
+				SelfIssuedSubjectTokens: SelfIssuedSubjectTokensRestricted, SubjectTokenAudiences: []string{},
+			},
+			Scopes: validClient.Scopes, Audiences: validClient.Audiences,
+		}}},
+		{name: "subject token audience not in allowed_audiences", clients: []DelegateClientRunConfig{{
+			ClientID: "delegate", ClientSecretEnvVar: "SECRET",
+			TokenExchange: &DelegateClientTokenExchange{
+				SelfIssuedSubjectTokens: SelfIssuedSubjectTokensRestricted,
+				SubjectTokenAudiences:   []string{"https://other.example.com"},
+			},
+			Scopes: validClient.Scopes, Audiences: validClient.Audiences,
+		}}, wantErr: `token_exchange.subject_token_audiences "https://other.example.com" is not in allowed_audiences`},
+		// P4 (PR #6284 review): a URL-shaped client_id collides with CIMD
+		// client resolution (oauthproto.IsClientIDMetadataDocumentURL) — the
+		// CIMD decorator would shadow this pre-provisioned client on reads,
+		// and with write-through persistence (CIMDStorageDecorator.fetch) an
+		// unauthenticated request resolving that same URL would overwrite
+		// this confidential delegate client in place.
+		{
+			name: "https client_id collides with CIMD and is rejected",
+			clients: []DelegateClientRunConfig{{
+				ClientID: "https://example.com/client-metadata.json", ClientSecretEnvVar: "SECRET",
+				Scopes: validClient.Scopes, Audiences: validClient.Audiences,
+			}},
+			wantErr: "looks like a CIMD client metadata URL",
+		},
+		{
+			name: "loopback http client_id also collides with CIMD and is rejected",
+			clients: []DelegateClientRunConfig{{
+				ClientID: "http://localhost:8080/client-metadata.json", ClientSecretEnvVar: "SECRET",
+				Scopes: validClient.Scopes, Audiences: validClient.Audiences,
+			}},
+			wantErr: "looks like a CIMD client metadata URL",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := RunConfig{
+				Issuer:           "https://auth.example.com",
+				ScopesSupported:  []string{"openid"},
+				AllowedAudiences: []string{"https://mcp.example.com"},
+				DelegateClients:  tt.clients,
+			}
+			assertError(t, cfg.Validate(), tt.wantErr != "", tt.wantErr)
+		})
+	}
+}
+
+// TestDelegateClientExchangeRefreshTokensValidate runs each exchange_refresh_tokens
+// rule through both the RunConfig path and the resolved Config path.
+func TestDelegateClientExchangeRefreshTokensValidate(t *testing.T) {
+	t.Parallel()
+
+	const (
+		audience = "https://mcp.example.com"
+		input    = "https://input.example.com"
+		secret   = "0123456789abcdef0123456789abcdef"
+	)
+	inputs := []string{input}
+	block := func(idJAG, refresh string) *DelegateClientExchangeRefreshTokens {
+		return &DelegateClientExchangeRefreshTokens{IDJAGMaxLifetime: idJAG, RefreshTokenMaxLifetime: refresh}
+	}
+
+	tests := []struct {
+		name             string
+		block            *DelegateClientExchangeRefreshTokens
+		subjectAudiences []string
+		noSources        bool
+		mode             SelfIssuedSubjectTokens
+		noAudiences      bool
+		clientAudiences  []string
+		grantTypes       []string
+		scopesSupported  []string
+		wantErr          string
+	}{
+		{name: "id-jag cap only", block: block("12h", ""), subjectAudiences: inputs},
+		{name: "scopes_supported with offline", block: block("12h", ""), subjectAudiences: inputs,
+			scopesSupported: []string{"openid", "offline"}},
+		{name: "scopes_supported without a refresh-token scope", block: block("12h", ""), subjectAudiences: inputs,
+			scopesSupported: []string{"openid", "profile"},
+			wantErr: "token_exchange.exchange_refresh_tokens requires one of the refresh-token scopes " +
+				"(offline, offline_access) in scopes_supported"},
+		{name: "scopes_supported empty uses the default scopes", block: block("12h", ""), subjectAudiences: inputs,
+			scopesSupported: []string{}},
+		{name: "scopes_supported without a refresh-token scope and no block", block: nil, subjectAudiences: inputs,
+			scopesSupported: []string{"openid"}},
+		{name: "refresh cap only", block: block("", "720h"), subjectAudiences: inputs,
+			wantErr: "refresh_token_max_lifetime requires id_jag_max_lifetime"},
+		{name: "both caps", block: block("1h", "24h"), subjectAudiences: inputs},
+		{name: "absent block", block: nil, subjectAudiences: inputs},
+		{name: "no caps", block: block("", ""), subjectAudiences: inputs,
+			wantErr: "needs id_jag_max_lifetime or refresh_token_max_lifetime"},
+		{name: "zero id-jag cap", block: block("0s", ""), subjectAudiences: inputs,
+			wantErr: "id_jag_max_lifetime must be positive"},
+		{name: "zero refresh cap without unit", block: block("", "0"), subjectAudiences: inputs,
+			wantErr: "refresh_token_max_lifetime must be positive"},
+		{name: "negative id-jag cap", block: block("-1h", ""), subjectAudiences: inputs,
+			wantErr: "id_jag_max_lifetime must be positive"},
+		{name: "negative refresh cap", block: block("", "-1s"), subjectAudiences: inputs,
+			wantErr: "refresh_token_max_lifetime must be positive"},
+		{name: "id-jag cap above 720h", block: block("721h", ""), subjectAudiences: inputs,
+			wantErr: "id_jag_max_lifetime must not exceed 720h"},
+		{name: "refresh cap above 720h", block: block("", "1000h"), subjectAudiences: inputs,
+			wantErr: "refresh_token_max_lifetime must not exceed 720h"},
+		{name: "both caps exactly 720h", block: block("720h", "720h"), subjectAudiences: inputs},
+		{name: "id-jag cap one nanosecond over 720h", block: block("720h0m0.000000001s", ""), subjectAudiences: inputs,
+			wantErr: "id_jag_max_lifetime must not exceed 720h"},
+		{name: "refresh cap one nanosecond over 720h", block: block("", "720h0m0.000000001s"), subjectAudiences: inputs,
+			wantErr: "refresh_token_max_lifetime must not exceed 720h"},
+		{name: "id-jag cap with leading space", block: block(" 12h", ""), subjectAudiences: inputs,
+			wantErr: "invalid duration"},
+		{name: "refresh cap with trailing space", block: block("", "12h "), subjectAudiences: inputs,
+			wantErr: "unknown unit"},
+		{name: "id-jag cap without unit", block: block("12", ""), subjectAudiences: inputs,
+			wantErr: "missing unit"},
+		{name: "unparsable cap", block: block("soon", ""), subjectAudiences: inputs,
+			wantErr: "token_exchange.exchange_refresh_tokens.id_jag_max_lifetime"},
+		{name: "subject token audiences missing", block: block("12h", ""),
+			wantErr: "subject_token_audiences is required with token_exchange.exchange_refresh_tokens"},
+		{name: "allowed source clients missing", block: block("12h", ""), subjectAudiences: inputs, noSources: true,
+			wantErr: "allowed_source_clients is required with token_exchange.exchange_refresh_tokens"},
+		{name: "any mode", block: block("12h", ""), mode: SelfIssuedSubjectTokensAny,
+			wantErr: `token_exchange.exchange_refresh_tokens requires self_issued_subject_tokens "restricted"`},
+		{name: "any mode with subject token audiences", block: block("12h", ""), subjectAudiences: inputs,
+			mode: SelfIssuedSubjectTokensAny, wantErr: "token_exchange.subject_token_audiences is valid only with"},
+		{name: "any mode without block", block: nil, mode: SelfIssuedSubjectTokensAny},
+		{name: "empty audiences with grant_types omitted", block: block("12h", ""), subjectAudiences: inputs,
+			noAudiences: true},
+		{name: "empty audiences with only the token-exchange grant", block: block("12h", ""),
+			subjectAudiences: inputs, noAudiences: true,
+			grantTypes: []string{oauthproto.GrantTypeTokenExchange}},
+		{name: "empty audiences with jwt-bearer", block: block("12h", ""), subjectAudiences: inputs,
+			noAudiences: true, grantTypes: []string{oauthproto.GrantTypeTokenExchange, oauthproto.GrantTypeJWTBearer},
+			wantErr: "audiences must not be empty when grant_types includes grants other than " +
+				oauthproto.GrantTypeTokenExchange},
+		{name: "empty audiences with authorization_code", block: block("12h", ""), subjectAudiences: inputs,
+			noAudiences: true, grantTypes: []string{oauthproto.GrantTypeTokenExchange, oauthproto.GrantTypeAuthorizationCode},
+			wantErr: "audiences must not be empty when grant_types includes grants other than"},
+		{name: "empty audiences without a block", block: nil, noAudiences: true,
+			wantErr: "audiences is required unless token_exchange.exchange_refresh_tokens is set"},
+		{name: "input audience equal to a client audience", block: block("12h", ""),
+			subjectAudiences: []string{audience},
+			wantErr: `subject_token_audiences "https://mcp.example.com" is covered by the client's audience ` +
+				`"https://mcp.example.com": while exchange_refresh_tokens is set, an input audience must not be one the client can obtain`},
+		{name: "input audience under a client audience path", block: block("12h", ""),
+			subjectAudiences: []string{audience + "/v1"}, wantErr: "is covered by the client's audience"},
+		{name: "input audience outside allowed_audiences", block: block("12h", ""),
+			subjectAudiences: []string{"https://elsewhere.example.com"}, wantErr: "is not in allowed_audiences"},
+		{name: "equal non-URL audiences", block: block("12h", ""), clientAudiences: []string{"not-a-url"},
+			subjectAudiences: []string{"not-a-url"}, wantErr: "is covered by the client's audience"},
+		{name: "different non-URL audiences", block: block("12h", ""), clientAudiences: []string{"not-a-url"},
+			subjectAudiences: []string{"other-not-a-url"}},
+		{name: "overlap is allowed without the block", block: nil, subjectAudiences: []string{audience}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			mode := tt.mode
+			if mode == "" {
+				mode = SelfIssuedSubjectTokensRestricted
+			}
+			tokenExchange := &DelegateClientTokenExchange{
+				SelfIssuedSubjectTokens: mode,
+				SubjectTokenAudiences:   tt.subjectAudiences,
+				ExchangeRefreshTokens:   tt.block,
+			}
+			if tt.block != nil && !tt.noSources && mode == SelfIssuedSubjectTokensRestricted {
+				tokenExchange.AllowedSourceClients = []string{"tui"}
+			}
+			audiences := []string{audience}
+			switch {
+			case tt.noAudiences:
+				audiences = nil
+			case tt.clientAudiences != nil:
+				audiences = tt.clientAudiences
+			}
+			allowed := []string{audience, audience + "/v1", input, "not-a-url", "other-not-a-url"}
+			supported := tt.scopesSupported
+			if supported == nil {
+				supported = []string{"openid", "offline_access"}
+			}
+			runConfigClients := []DelegateClientRunConfig{{
+				ClientID: "delegate", ClientSecretEnvVar: "SECRET", TokenExchange: tokenExchange,
+				GrantTypes: tt.grantTypes, RedirectURIs: redirectURIsFor(tt.grantTypes),
+				Scopes: []string{"openid"}, Audiences: audiences,
+			}}
+			assertError(t, validateDelegateClients(runConfigClients, supported, allowed, "https://auth.example.com", true),
+				tt.wantErr != "", tt.wantErr)
+
+			resolvedClients := []DelegateClient{{
+				ClientID: "delegate", ClientSecret: secret, TokenExchange: tokenExchange,
+				GrantTypes: tt.grantTypes, RedirectURIs: redirectURIsFor(tt.grantTypes),
+				Scopes: []string{"openid"}, Audiences: audiences,
+			}}
+			assertError(t, validateResolvedDelegateClients(resolvedClients, supported, allowed, "https://auth.example.com", true),
+				tt.wantErr != "", tt.wantErr)
+		})
+	}
+}
+
+// redirectURIsFor returns a redirect URI for a grant set that includes
+// authorization_code, which requires one.
+func redirectURIsFor(grantTypes []string) []string {
+	if slices.Contains(grantTypes, oauthproto.GrantTypeAuthorizationCode) {
+		return []string{"https://broker.example.com/callback"}
+	}
+	return nil
+}
+
+func TestDelegateClientExchangeRefreshTokensRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		json     string
+		yaml     string
+		wantNil  bool
+		wantIDJA string
+		wantRefr string
+	}{
+		{
+			name:    "absent",
+			json:    `{"client_id":"c","token_exchange":{"self_issued_subject_tokens":"restricted","subject_token_audiences":["a"]}}`,
+			yaml:    "client_id: c\ntoken_exchange:\n  self_issued_subject_tokens: restricted\n  subject_token_audiences: [a]\n",
+			wantNil: true,
+		},
+		{
+			name:     "populated",
+			json:     `{"client_id":"c","token_exchange":{"self_issued_subject_tokens":"restricted","subject_token_audiences":["a"],"exchange_refresh_tokens":{"id_jag_max_lifetime":"12h","refresh_token_max_lifetime":"720h"}}}`,
+			yaml:     "client_id: c\ntoken_exchange:\n  self_issued_subject_tokens: restricted\n  subject_token_audiences: [a]\n  exchange_refresh_tokens:\n    id_jag_max_lifetime: 12h\n    refresh_token_max_lifetime: 720h\n",
+			wantIDJA: "12h",
+			wantRefr: "720h",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			check := func(t *testing.T, got DelegateClientRunConfig) {
+				t.Helper()
+				require.NotNil(t, got.TokenExchange)
+				if tt.wantNil {
+					assert.Nil(t, got.TokenExchange.ExchangeRefreshTokens)
+					return
+				}
+				require.NotNil(t, got.TokenExchange.ExchangeRefreshTokens)
+				assert.Equal(t, tt.wantIDJA, got.TokenExchange.ExchangeRefreshTokens.IDJAGMaxLifetime)
+				assert.Equal(t, tt.wantRefr, got.TokenExchange.ExchangeRefreshTokens.RefreshTokenMaxLifetime)
+			}
+
+			var fromJSON DelegateClientRunConfig
+			require.NoError(t, json.Unmarshal([]byte(tt.json), &fromJSON))
+			check(t, fromJSON)
+			encoded, err := json.Marshal(fromJSON)
+			require.NoError(t, err)
+			if tt.wantNil {
+				assert.NotContains(t, string(encoded), "exchange_refresh_tokens")
+			}
+			var reJSON DelegateClientRunConfig
+			require.NoError(t, json.Unmarshal(encoded, &reJSON))
+			check(t, reJSON)
+
+			var fromYAML DelegateClientRunConfig
+			require.NoError(t, yaml.Unmarshal([]byte(tt.yaml), &fromYAML))
+			check(t, fromYAML)
+			encoded, err = yaml.Marshal(fromYAML)
+			require.NoError(t, err)
+			if tt.wantNil {
+				assert.NotContains(t, string(encoded), "exchange_refresh_tokens")
+			}
+			var reYAML DelegateClientRunConfig
+			require.NoError(t, yaml.Unmarshal(encoded, &reYAML))
+			check(t, reYAML)
+		})
+	}
+}
+
+func TestRunConfigValidateAllowedAudiences(t *testing.T) {
+	t.Parallel()
+
+	cfg := RunConfig{
+		Issuer:           "https://auth.example.com",
+		AllowedAudiences: []string{"ftp://mcp.example.com"},
+	}
+
+	require.ErrorContains(t, cfg.Validate(), "allowed_audiences contains invalid audience")
+}
+
+func TestRunConfigValidate_DelegateClientTransport(t *testing.T) {
+	t.Parallel()
+
+	secretClient := DelegateClientRunConfig{
+		ClientID: "secret-client", ClientSecretEnvVar: "SECRET",
+		Scopes: []string{"openid"}, Audiences: []string{"https://mcp.example.com"},
+	}
+	keyClient := DelegateClientRunConfig{
+		ClientID: "key-client", TokenEndpointAuthMethod: "private_key_jwt", JWKSFile: "/keys/jwks.json",
+		TokenExchange: &DelegateClientTokenExchange{SelfIssuedSubjectTokens: SelfIssuedSubjectTokensAny},
+		Scopes:        []string{"openid"}, Audiences: []string{"https://mcp.example.com"},
+	}
+	tests := []struct {
+		name              string
+		clients           []DelegateClientRunConfig
+		issuer            string
+		insecureAllowHTTP bool
+		loopbackOptIn     bool
+		wantErr           string
+	}{
+		{name: "private_key_jwt only rejects non-loopback http issuer", clients: []DelegateClientRunConfig{keyClient},
+			issuer: "http://auth.example.com", insecureAllowHTTP: true, wantErr: "combined with insecure_allow_http:"},
+		{name: "private_key_jwt only rejects loopback http issuer without opt-in", clients: []DelegateClientRunConfig{keyClient},
+			issuer: "http://localhost:8080", wantErr: "insecure_allow_confidential_over_loopback_http"},
+		{name: "private_key_jwt only passes with loopback http issuer and opt-in", clients: []DelegateClientRunConfig{keyClient},
+			issuer: "http://localhost:8080", loopbackOptIn: true},
+		{name: "mixed secret and private_key_jwt rejects non-loopback http issuer",
+			clients: []DelegateClientRunConfig{keyClient, secretClient},
+			issuer:  "http://auth.example.com", insecureAllowHTTP: true, wantErr: "combined with insecure_allow_http:"},
+		{name: "mixed secret and private_key_jwt rejects loopback http issuer without opt-in",
+			clients: []DelegateClientRunConfig{keyClient, secretClient},
+			issuer:  "http://localhost:8080", wantErr: "insecure_allow_confidential_over_loopback_http"},
+		{name: "secret only rejects non-loopback http issuer", clients: []DelegateClientRunConfig{secretClient},
+			issuer: "http://auth.example.com", insecureAllowHTTP: true, wantErr: "combined with insecure_allow_http:"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := RunConfig{
+				Issuer:            tt.issuer,
+				InsecureAllowHTTP: tt.insecureAllowHTTP,
+				ScopesSupported:   []string{"openid"},
+				AllowedAudiences:  []string{"https://mcp.example.com"},
+				DelegateClients:   tt.clients,
+
+				InsecureAllowConfidentialOverLoopbackHTTP: tt.loopbackOptIn,
+			}
+			assertError(t, cfg.Validate(), tt.wantErr != "", tt.wantErr)
+		})
+	}
+}
+
+func TestConfigValidateDelegateClients(t *testing.T) {
+	t.Parallel()
+
+	base := func() Config {
+		return Config{
+			Issuer:      "https://auth.example.com",
+			KeyProvider: keys.NewGeneratingProvider(keys.DefaultAlgorithm),
+			HMACSecrets: &servercrypto.HMACSecrets{Current: make([]byte, 32)},
+			Upstreams: []UpstreamConfig{{
+				Type: UpstreamProviderTypeOAuth2,
+				OAuth2Config: &upstream.OAuth2Config{
+					CommonOAuthConfig:     upstream.CommonOAuthConfig{ClientID: "upstream", RedirectURI: "https://auth.example.com/callback"},
+					AuthorizationEndpoint: "https://idp.example.com/authorize",
+					TokenEndpoint:         "https://idp.example.com/token",
+				},
+			}},
+			ScopesSupported:  []string{"openid"},
+			AllowedAudiences: []string{"https://mcp.example.com"},
+		}
+	}
+	validClient := DelegateClient{
+		ClientID:     "delegate",
+		ClientSecret: strings.Repeat("a", minDelegateClientSecretLength),
+		Scopes:       []string{"openid"},
+		Audiences:    []string{"https://mcp.example.com"},
+	}
+	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	require.NoError(t, err)
+	publicKeySet := &jose.JSONWebKeySet{Keys: []jose.JSONWebKey{{
+		Key: &rsaKey.PublicKey, KeyID: "k", Use: "sig", Algorithm: "RS256",
+	}}}
+	tests := []struct {
+		name          string
+		clients       []DelegateClient
+		issuer        string
+		loopbackOptIn bool
+		wantErr       string
+	}{
+		{name: "valid resolved client", clients: []DelegateClient{validClient}},
+		{name: "resolved private_key_jwt client without token exchange block", clients: []DelegateClient{{
+			ClientID: "delegate", TokenEndpointAuthMethod: "private_key_jwt", JSONWebKeys: publicKeySet,
+			Scopes: validClient.Scopes, Audiences: validClient.Audiences,
+		}}, wantErr: "private_key_jwt clients must declare a token_exchange block"},
+		{name: "resolved private_key_jwt client", clients: []DelegateClient{{
+			ClientID: "delegate", TokenEndpointAuthMethod: "private_key_jwt", JSONWebKeys: publicKeySet,
+			TokenExchange: &DelegateClientTokenExchange{SelfIssuedSubjectTokens: SelfIssuedSubjectTokensAny},
+			Scopes:        validClient.Scopes, Audiences: validClient.Audiences,
+		}}},
+		{name: "private_key_jwt with nil keys", clients: []DelegateClient{{
+			ClientID: "delegate", TokenEndpointAuthMethod: "private_key_jwt",
+			Scopes: validClient.Scopes, Audiences: validClient.Audiences,
+		}}, wantErr: "requires jwks_file with at least one key"},
+		{name: "private_key_jwt with empty keys", clients: []DelegateClient{{
+			ClientID: "delegate", TokenEndpointAuthMethod: "private_key_jwt", JSONWebKeys: &jose.JSONWebKeySet{},
+			Scopes: validClient.Scopes, Audiences: validClient.Audiences,
+		}}, wantErr: "requires jwks_file with at least one key"},
+		{name: "private_key_jwt with a secret", clients: []DelegateClient{{
+			ClientID: "delegate", TokenEndpointAuthMethod: "private_key_jwt", JSONWebKeys: publicKeySet,
+			ClientSecret: validClient.ClientSecret, Scopes: validClient.Scopes, Audiences: validClient.Audiences,
+		}}, wantErr: "not allowed with private_key_jwt"},
+		{name: "grant types without token exchange", clients: []DelegateClient{{
+			ClientID: "delegate", ClientSecret: validClient.ClientSecret, GrantTypes: []string{"refresh_token"},
+			Scopes: validClient.Scopes, Audiences: validClient.Audiences,
+		}}, wantErr: "must include"},
+		{name: "authorization_code without redirect URIs", clients: []DelegateClient{{
+			ClientID: "delegate", ClientSecret: validClient.ClientSecret,
+			GrantTypes: []string{"urn:ietf:params:oauth:grant-type:token-exchange", "authorization_code"},
+			Scopes:     validClient.Scopes, Audiences: validClient.Audiences,
+		}}, wantErr: "redirect_uris is required"},
+		{name: "redirect URIs without authorization_code", clients: []DelegateClient{{
+			ClientID: "delegate", ClientSecret: validClient.ClientSecret, RedirectURIs: []string{"https://broker.example.com/callback"},
+			Scopes: validClient.Scopes, Audiences: validClient.Audiences,
+		}}, wantErr: "only allowed with the authorization_code grant"},
+		{name: "resolved grant_types without token_exchange block", clients: []DelegateClient{{
+			ClientID: "delegate", ClientSecret: validClient.ClientSecret,
+			GrantTypes: []string{"urn:ietf:params:oauth:grant-type:token-exchange"},
+			Scopes:     validClient.Scopes, Audiences: validClient.Audiences,
+		}}, wantErr: "grant_types is set, so a token_exchange block"},
+		{name: "resolved empty token_exchange block", clients: []DelegateClient{{
+			ClientID: "delegate", ClientSecret: validClient.ClientSecret, TokenExchange: &DelegateClientTokenExchange{},
+			Scopes: validClient.Scopes, Audiences: validClient.Audiences,
+		}}, wantErr: "self_issued_subject_tokens is required"},
+		{name: "resolved any with source clients", clients: []DelegateClient{{
+			ClientID: "delegate", ClientSecret: validClient.ClientSecret,
+			TokenExchange: &DelegateClientTokenExchange{
+				SelfIssuedSubjectTokens: SelfIssuedSubjectTokensAny, AllowedSourceClients: []string{"tui"},
+			},
+			Scopes: validClient.Scopes, Audiences: validClient.Audiences,
+		}}, wantErr: "allowed_source_clients is valid only with"},
+		{name: "unsupported auth method", clients: []DelegateClient{{
+			ClientID: "delegate", ClientSecret: validClient.ClientSecret, TokenEndpointAuthMethod: "none",
+			Scopes: validClient.Scopes, Audiences: validClient.Audiences,
+		}}, wantErr: "unsupported token_endpoint_auth_method"},
+		{name: "missing resolved secret", clients: []DelegateClient{{ClientID: "delegate", Scopes: validClient.Scopes, Audiences: validClient.Audiences}}, wantErr: "resolved client secret is required"},
+		{name: "resolved secret too short", clients: []DelegateClient{{ClientID: "delegate", ClientSecret: "short-secret", Scopes: validClient.Scopes, Audiences: validClient.Audiences}}, wantErr: "resolved client secret must be at least"},
+		{name: "static client rejects insecure HTTP", clients: []DelegateClient{validClient}, issuer: "http://auth.example.com", wantErr: "combined with insecure_allow_http:"},
+		{name: "static client rejects loopback HTTP without opt-in", clients: []DelegateClient{validClient}, issuer: "http://localhost:8080", wantErr: "insecure_allow_confidential_over_loopback_http"},
+		{name: "private_key_jwt only rejects insecure HTTP", clients: []DelegateClient{{
+			ClientID: "delegate", TokenEndpointAuthMethod: "private_key_jwt", JSONWebKeys: publicKeySet,
+			TokenExchange: &DelegateClientTokenExchange{SelfIssuedSubjectTokens: SelfIssuedSubjectTokensAny},
+			Scopes:        validClient.Scopes, Audiences: validClient.Audiences,
+		}}, issuer: "http://auth.example.com", wantErr: "combined with insecure_allow_http:"},
+		{name: "private_key_jwt only rejects loopback HTTP without opt-in", clients: []DelegateClient{{
+			ClientID: "delegate", TokenEndpointAuthMethod: "private_key_jwt", JSONWebKeys: publicKeySet,
+			TokenExchange: &DelegateClientTokenExchange{SelfIssuedSubjectTokens: SelfIssuedSubjectTokensAny},
+			Scopes:        validClient.Scopes, Audiences: validClient.Audiences,
+		}}, issuer: "http://localhost:8080", wantErr: "insecure_allow_confidential_over_loopback_http"},
+		{name: "private_key_jwt only passes with loopback HTTP and opt-in", clients: []DelegateClient{{
+			ClientID: "delegate", TokenEndpointAuthMethod: "private_key_jwt", JSONWebKeys: publicKeySet,
+			TokenExchange: &DelegateClientTokenExchange{SelfIssuedSubjectTokens: SelfIssuedSubjectTokensAny},
+			Scopes:        validClient.Scopes, Audiences: validClient.Audiences,
+		}}, issuer: "http://localhost:8080", loopbackOptIn: true},
+		{name: "mixed secret and private_key_jwt rejects insecure HTTP", clients: []DelegateClient{validClient, {
+			ClientID: "key-delegate", TokenEndpointAuthMethod: "private_key_jwt", JSONWebKeys: publicKeySet,
+			TokenExchange: &DelegateClientTokenExchange{SelfIssuedSubjectTokens: SelfIssuedSubjectTokensAny},
+			Scopes:        validClient.Scopes, Audiences: validClient.Audiences,
+		}}, issuer: "http://auth.example.com", wantErr: "combined with insecure_allow_http:"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := base()
+			cfg.DelegateClients = tt.clients
+			if tt.issuer != "" {
+				cfg.Issuer = tt.issuer
+				cfg.InsecureAllowHTTP = tt.issuer == "http://auth.example.com"
+			}
+			cfg.InsecureAllowConfidentialOverLoopbackHTTP = tt.loopbackOptIn
+			err := cfg.Validate()
+			assertError(t, err, tt.wantErr != "", tt.wantErr)
+			if err != nil && tt.name == "resolved secret too short" {
+				assert.NotContains(t, err.Error(), "short-secret")
+			}
+		})
+	}
+}
+
+// TestValidateConfidentialClientTransport pins the shared predicate that both
+// RunConfig.Validate and Config.Validate call, and that the operator's
+// validateEmbeddedAuthServer reuses: confidential clients are rejected when
+// combined with insecureAllowHTTP (unconditionally), or with a plain-HTTP
+// loopback issuer unless insecureAllowConfidentialOverLoopbackHTTP opts in.
+// private_key_jwt registration has no equivalent transport gate: it never
+// returns a secret in the DCR response, so it is unaffected by any of this
+// (see TestConfigValidate's "private-key JWT registration ... passes" cases).
+func TestValidateConfidentialClientTransport(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name                  string
+		allowConfidential     bool
+		insecureAllowHTTP     bool
+		issuer                string
+		allowLoopbackOverride bool
+		wantErr               bool
+		errContains           string
+		redacted              []string
+	}{
+		{name: "both false passes"},
+		{name: "confidential only, https issuer passes", allowConfidential: true, issuer: "https://auth.example.com"},
+		{name: "insecure HTTP only passes", insecureAllowHTTP: true},
+		{
+			name: "insecure HTTP combined with confidential rejects", allowConfidential: true, insecureAllowHTTP: true,
+			wantErr: true, errContains: "insecure_allow_http",
+		},
+		{
+			name:              "confidential with malformed issuer rejects without exposing credentials",
+			allowConfidential: true, issuer: "http://user:supersecret@[::1",
+			wantErr: true, errContains: "confidential clients require a valid issuer URL",
+			redacted: []string{"user", "supersecret", "http://user:supersecret@[::1"},
+		},
+		{
+			name:              "loopback confidential opt-in rejects structurally invalid issuer",
+			allowConfidential: true, issuer: "http://user@localhost", allowLoopbackOverride: true,
+			wantErr: true, errContains: "confidential clients require a valid issuer URL",
+		},
+		{
+			name:              "confidential with plain-HTTP loopback issuer rejects without the opt-in",
+			allowConfidential: true, issuer: "http://localhost:8080",
+			wantErr: true, errContains: "insecure_allow_confidential_over_loopback_http",
+		},
+		{
+			name:              "confidential with plain-HTTP loopback issuer passes with the opt-in",
+			allowConfidential: true, issuer: "http://localhost:8080", allowLoopbackOverride: true,
+		},
+		{
+			name:              "confidential with https loopback issuer passes without the opt-in",
+			allowConfidential: true, issuer: "https://localhost:8080",
+		},
+		{
+			name:   "confidential disabled with plain-HTTP loopback issuer passes",
+			issuer: "http://localhost:8080",
+		},
+		{
+			name:              "confidential with plain-HTTP non-loopback issuer rejects without opt-in",
+			allowConfidential: true, issuer: "http://auth.example.com",
+			wantErr: true, errContains: "plain-HTTP non-loopback",
+		},
+		{
+			name:                  "confidential credential-bearing non-loopback HTTP issuer rejects with loopback opt-in without leaking credentials",
+			allowConfidential:     true,
+			issuer:                "http://sentinel-user:sentinel-password@auth.example.com",
+			allowLoopbackOverride: true,
+			wantErr:               true,
+			errContains:           "require a valid issuer URL",
+			redacted:              []string{"sentinel-user", "sentinel-password", "http://sentinel-user:sentinel-password@auth.example.com"},
+		},
+		{
+			name:              "confidential with plain-HTTP non-loopback issuer rejects with loopback opt-in",
+			allowConfidential: true, issuer: "http://auth.example.com", allowLoopbackOverride: true,
+			wantErr: true, errContains: "loopback HTTP opt-in",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := ValidateConfidentialClientTransport(tt.allowConfidential, tt.insecureAllowHTTP, tt.issuer, tt.allowLoopbackOverride)
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "confidential clients")
+				assert.Contains(t, err.Error(), tt.errContains)
+				for _, value := range tt.redacted {
+					assert.NotContains(t, err.Error(), value)
+				}
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
+// TestValidateForceConfidentialRedirectURIs pins the validation rules for the
+// force-confidential-redirect-uris override: it requires
+// allow_confidential_client_registration, and every entry must be an https
+// non-loopback redirect URI.
+func TestValidateForceConfidentialRedirectURIs(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name              string
+		uris              []string
+		allowConfidential bool
+		wantErr           bool
+		errMsg            string
+	}{
+		{name: "empty list passes regardless of allowConfidential"},
+		{
+			name:    "empty list passes even with allowConfidential false",
+			uris:    nil,
+			wantErr: false,
+		},
+		{
+			name:              "valid https non-loopback entry passes",
+			uris:              []string{"https://client.example.com/callback"},
+			allowConfidential: true,
+		},
+		{
+			name:              "multiple valid entries pass",
+			uris:              []string{"https://a.example.com/cb", "https://b.example.com/cb"},
+			allowConfidential: true,
+		},
+		{
+			name:    "non-empty list without allowConfidential rejects",
+			uris:    []string{"https://client.example.com/callback"},
+			wantErr: true,
+			errMsg:  "requires allow_confidential_client_registration",
+		},
+		{
+			name:              "loopback IP entry rejects",
+			uris:              []string{"https://127.0.0.1/callback"},
+			allowConfidential: true,
+			wantErr:           true,
+			errMsg:            "must not be a loopback redirect URI",
+		},
+		{
+			name:              "loopback localhost entry rejects",
+			uris:              []string{"https://localhost/callback"},
+			allowConfidential: true,
+			wantErr:           true,
+			errMsg:            "must not be a loopback redirect URI",
+		},
+		{
+			name:              "http loopback entry rejects (must be https)",
+			uris:              []string{"http://localhost/callback"},
+			allowConfidential: true,
+			wantErr:           true,
+			errMsg:            "must not be a loopback redirect URI",
+		},
+		{
+			name:              "http non-loopback entry rejects",
+			uris:              []string{"http://client.example.com/callback"},
+			allowConfidential: true,
+			wantErr:           true,
+			errMsg:            "must use http (for loopback) or https scheme",
+		},
+		{
+			name:              "one bad entry among good ones rejects",
+			uris:              []string{"https://good.example.com/cb", "https://localhost/callback"},
+			allowConfidential: true,
+			wantErr:           true,
+			errMsg:            "must not be a loopback redirect URI",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := ValidateForceConfidentialRedirectURIs(tt.uris, tt.allowConfidential)
 			assertError(t, err, tt.wantErr, tt.errMsg)
 		})
 	}
@@ -520,6 +2039,79 @@ func TestDCRUpstreamConfigValidate(t *testing.T) {
 				SoftwareID:             "toolhive",
 				SoftwareStatement:      "eyJhbGciOi...",
 			},
+		},
+		{
+			name: "rotation_key within the allowed alphabet passes validation",
+			config: DCRUpstreamConfig{
+				RegistrationEndpoint: "https://idp.example.com/register",
+				RotationKey:          "2026-10.ion_v2-A",
+			},
+		},
+		{
+			name: "rotation_key with characters outside the allowed alphabet rejects",
+			config: DCRUpstreamConfig{
+				RegistrationEndpoint: "https://idp.example.com/register",
+				RotationKey:          "rotate me",
+			},
+			wantErr: true,
+			errMsg:  "rotation_key must be 1-64 characters",
+		},
+		{
+			name: "rotation_key longer than 64 characters rejects",
+			config: DCRUpstreamConfig{
+				RegistrationEndpoint: "https://idp.example.com/register",
+				RotationKey:          strings.Repeat("a", 65),
+			},
+			wantErr: true,
+			errMsg:  "rotation_key must be 1-64 characters",
+		},
+		{
+			name: "registration_probe authorizationEndpoint accepts",
+			config: DCRUpstreamConfig{
+				RegistrationEndpoint: "https://idp.example.com/register",
+				RegistrationProbe:    "authorizationEndpoint",
+			},
+		},
+		{
+			name: "registration_probe none accepts",
+			config: DCRUpstreamConfig{
+				RegistrationEndpoint: "https://idp.example.com/register",
+				RegistrationProbe:    "none",
+			},
+		},
+		{
+			name: "unknown registration_probe rejects",
+			config: DCRUpstreamConfig{
+				RegistrationEndpoint: "https://idp.example.com/register",
+				RegistrationProbe:    "userinfo",
+			},
+			wantErr: true,
+			errMsg:  "registration_probe must be one of",
+		},
+		{
+			name: "registration_probe_interval of 5m accepts",
+			config: DCRUpstreamConfig{
+				RegistrationEndpoint:      "https://idp.example.com/register",
+				RegistrationProbeInterval: "5m",
+			},
+		},
+		{
+			name: "registration_probe_interval under 1m rejects",
+			config: DCRUpstreamConfig{
+				RegistrationEndpoint:      "https://idp.example.com/register",
+				RegistrationProbeInterval: "59s",
+			},
+			wantErr: true,
+			errMsg:  "registration_probe_interval must be at least 1m0s",
+		},
+		{
+			name: "unparsable registration_probe_interval rejects",
+			config: DCRUpstreamConfig{
+				RegistrationEndpoint:      "https://idp.example.com/register",
+				RegistrationProbeInterval: "five minutes",
+			},
+			wantErr: true,
+			errMsg:  "invalid registration_probe_interval",
 		},
 		{
 			name: "both initial_access_token_file and initial_access_token_env_var rejects",
@@ -742,6 +2334,978 @@ func TestConfigApplyDefaults_DelegationTokenLifespan(t *testing.T) {
 			cfg := Config{Issuer: "https://example.com", DelegationTokenLifespan: tt.input}
 			require.NoError(t, cfg.applyDefaults())
 			require.Equal(t, tt.want, cfg.DelegationTokenLifespan)
+		})
+	}
+}
+
+// TestConfigValidate_TrustedIssuers covers validateTrustedIssuers as reached
+// from Config.Validate: the URL-shape checks (tokenexchange.ValidateTrustedIssuerURL
+// on issuer_url, tokenexchange.ValidateJWKSURL on jwks_url) and the structural
+// checks, all delegated to tokenexchange.ValidateTrustedIssuers.
+func TestConfigValidate_TrustedIssuers(t *testing.T) {
+	t.Parallel()
+
+	// base returns a minimally-valid Config (Issuer "https://example.com",
+	// AllowedAudiences ["https://mcp.example.com"]) so each case isolates the
+	// TrustedIssuers check from unrelated validation failures.
+	base := func() Config {
+		return Config{
+			Issuer:      "https://example.com",
+			KeyProvider: keys.NewGeneratingProvider(keys.DefaultAlgorithm),
+			HMACSecrets: &servercrypto.HMACSecrets{Current: make([]byte, 32)},
+			Upstreams: []UpstreamConfig{{
+				Name: "default",
+				Type: UpstreamProviderTypeOAuth2,
+				OAuth2Config: &upstream.OAuth2Config{
+					CommonOAuthConfig:     upstream.CommonOAuthConfig{ClientID: "c", RedirectURI: "https://example.com/cb"},
+					AuthorizationEndpoint: "https://idp.example.com/authorize",
+					TokenEndpoint:         "https://idp.example.com/token",
+				},
+			}},
+			AllowedAudiences: []string{"https://mcp.example.com"},
+		}
+	}
+
+	tests := []struct {
+		name    string
+		issuers []tokenexchange.TrustedIssuer
+		wantErr bool
+		errMsg  string
+	}{
+		{
+			name:    "no trusted issuers is byte-identical to before",
+			issuers: nil,
+		},
+		{
+			name: "issuer_url bad scheme rejected",
+			issuers: []tokenexchange.TrustedIssuer{
+				{IssuerURL: "htps://idp.example.com", ExpectedAudience: "https://mcp.example.com", AllowedDelegateClients: []string{"*"}},
+			},
+			wantErr: true,
+			errMsg:  "scheme must be https",
+		},
+		{
+			name: "issuer_url empty rejected",
+			issuers: []tokenexchange.TrustedIssuer{
+				{IssuerURL: "", ExpectedAudience: "https://mcp.example.com", AllowedDelegateClients: []string{"*"}},
+			},
+			wantErr: true,
+			errMsg:  "issuer_url is required",
+		},
+		{
+			name: "issuer_url empty hostname with port rejected",
+			issuers: []tokenexchange.TrustedIssuer{
+				{IssuerURL: "https://:443", ExpectedAudience: "https://mcp.example.com", AllowedDelegateClients: []string{"*"}},
+			},
+			wantErr: true,
+			errMsg:  "host is required",
+		},
+		{
+			name: "issuer_url http without per-issuer insecure_allow_http rejected",
+			issuers: []tokenexchange.TrustedIssuer{
+				{IssuerURL: "http://idp.example.com", ExpectedAudience: "https://mcp.example.com", AllowedDelegateClients: []string{"*"}},
+			},
+			wantErr: true,
+			errMsg:  "scheme must be https",
+		},
+		{
+			name: "issuer_url http with per-issuer insecure_allow_http accepted",
+			issuers: []tokenexchange.TrustedIssuer{
+				{IssuerURL: "http://idp.example.com", ExpectedAudience: "https://mcp.example.com", InsecureAllowHTTP: true, AllowedDelegateClients: []string{"*"}},
+			},
+		},
+		{
+			// Unlike Config.Issuer, a trusted issuer gets no localhost
+			// exemption: it isn't this server's own issuer, so the same
+			// same-host development convenience doesn't apply — see
+			// tokenexchange.ValidateTrustedIssuerURL's doc comment. Without
+			// insecure_allow_http, http://localhost must be rejected here
+			// the same as any other http issuer_url.
+			name: "issuer_url http localhost rejected without per-issuer insecure_allow_http",
+			issuers: []tokenexchange.TrustedIssuer{
+				{IssuerURL: "http://localhost:8080", ExpectedAudience: "https://mcp.example.com", AllowedDelegateClients: []string{"*"}},
+			},
+			wantErr: true,
+			errMsg:  "scheme must be https",
+		},
+		{
+			name: "issuer_url http localhost accepted with per-issuer insecure_allow_http",
+			issuers: []tokenexchange.TrustedIssuer{
+				{IssuerURL: "http://localhost:8080", ExpectedAudience: "https://mcp.example.com", InsecureAllowHTTP: true, AllowedDelegateClients: []string{"*"}},
+			},
+		},
+		{
+			// Azure AD B2C's real jwks_uri carries a query string
+			// (?p=B2C_1_...); jwks_url must be validated as an ordinary
+			// endpoint URL, not an OIDC issuer identifier, or a legitimate
+			// production IdP would be rejected.
+			name: "jwks_url with query string accepted",
+			issuers: []tokenexchange.TrustedIssuer{
+				{
+					IssuerURL:              "https://idp.example.com",
+					ExpectedAudience:       "https://mcp.example.com",
+					JWKSURL:                "https://idp.example.com/keys?p=B2C_1_signin",
+					AllowedDelegateClients: []string{"*"},
+				},
+			},
+		},
+		{
+			name: "jwks_url with trailing slash accepted",
+			issuers: []tokenexchange.TrustedIssuer{
+				{
+					IssuerURL:              "https://idp.example.com",
+					ExpectedAudience:       "https://mcp.example.com",
+					JWKSURL:                "https://idp.example.com/keys/",
+					AllowedDelegateClients: []string{"*"},
+				},
+			},
+		},
+		{
+			name: "jwks_url bad scheme rejected",
+			issuers: []tokenexchange.TrustedIssuer{
+				{
+					IssuerURL:              "https://idp.example.com",
+					ExpectedAudience:       "https://mcp.example.com",
+					JWKSURL:                "ftp://idp.example.com/keys",
+					AllowedDelegateClients: []string{"*"},
+				},
+			},
+			wantErr: true,
+			errMsg:  "jwks_url",
+		},
+		{
+			name: "jwks_url http rejected without per-issuer insecure_allow_http",
+			issuers: []tokenexchange.TrustedIssuer{
+				{
+					IssuerURL:              "https://idp.example.com",
+					ExpectedAudience:       "https://mcp.example.com",
+					JWKSURL:                "http://idp.example.com/keys",
+					AllowedDelegateClients: []string{"*"},
+				},
+			},
+			wantErr: true,
+			errMsg:  "jwks_url",
+		},
+		{
+			name: "jwks_url http accepted with per-issuer insecure_allow_http",
+			issuers: []tokenexchange.TrustedIssuer{
+				{
+					IssuerURL:              "https://idp.example.com",
+					ExpectedAudience:       "https://mcp.example.com",
+					JWKSURL:                "http://idp.example.com/keys",
+					InsecureAllowHTTP:      true,
+					AllowedDelegateClients: []string{"*"},
+				},
+			},
+		},
+		{
+			name: "jwks_url private IP literal rejected without allow_private_ips",
+			issuers: []tokenexchange.TrustedIssuer{
+				{
+					IssuerURL:              "https://idp.example.com",
+					ExpectedAudience:       "https://mcp.example.com",
+					JWKSURL:                "https://10.0.0.5/keys",
+					AllowedDelegateClients: []string{"*"},
+				},
+			},
+			wantErr: true,
+			errMsg:  "private or loopback",
+		},
+		{
+			name: "jwks_url private IP literal accepted with allow_private_ips",
+			issuers: []tokenexchange.TrustedIssuer{
+				{
+					IssuerURL:              "https://idp.example.com",
+					ExpectedAudience:       "https://mcp.example.com",
+					JWKSURL:                "https://10.0.0.5/keys",
+					AllowPrivateIPs:        true,
+					AllowedDelegateClients: []string{"*"},
+				},
+			},
+		},
+		{
+			// Mirrors the CRD's Kubebuilder CEL rule requiring jwksUrl
+			// whenever allowPrivateIPs is set (mcpexternalauthconfig_types.go):
+			// without a hand-configured jwks_url, OIDC discovery — a document
+			// fetched from, and thus influenceable by, the external issuer
+			// itself — would choose the private JWKS dial target. A
+			// hand-written RunConfig must not be able to bypass what the CRD
+			// path already guarantees.
+			name: "allow_private_ips without jwks_url rejected",
+			issuers: []tokenexchange.TrustedIssuer{
+				{
+					IssuerURL:              "https://idp.example.com",
+					ExpectedAudience:       "https://mcp.example.com",
+					AllowPrivateIPs:        true,
+					AllowedDelegateClients: []string{"*"},
+				},
+			},
+			wantErr: true,
+			errMsg:  "allow_private_ips requires jwks_url",
+		},
+		{
+			name: "missing expected_audience rejected",
+			issuers: []tokenexchange.TrustedIssuer{
+				{IssuerURL: "https://idp.example.com", AllowedDelegateClients: []string{"*"}},
+			},
+			wantErr: true,
+			errMsg:  "expected_audience is required",
+		},
+		{
+			name: "issuer_url equal to Config.Issuer rejected",
+			issuers: []tokenexchange.TrustedIssuer{
+				{IssuerURL: "https://example.com", ExpectedAudience: "https://mcp.example.com", AllowedDelegateClients: []string{"*"}},
+			},
+			wantErr: true,
+			errMsg:  "must not equal the authorization server's own issuer",
+		},
+		{
+			name: "duplicate issuer_url rejected",
+			issuers: []tokenexchange.TrustedIssuer{
+				{IssuerURL: "https://idp.example.com", ExpectedAudience: "https://mcp.example.com", AllowedDelegateClients: []string{"*"}},
+				{IssuerURL: "https://idp.example.com", ExpectedAudience: "https://mcp.example.com", AllowedDelegateClients: []string{"*"}},
+			},
+			wantErr: true,
+			errMsg:  "configured more than once",
+		},
+		{
+			name: "actor_claim sub rejected",
+			issuers: []tokenexchange.TrustedIssuer{
+				{IssuerURL: "https://idp.example.com", ExpectedAudience: "https://mcp.example.com", ActorClaim: "sub", AllowedDelegateClients: []string{"*"}},
+			},
+			wantErr: true,
+			errMsg:  "actor_claim",
+		},
+		{
+			name: "actor_matcher malformed rejected",
+			issuers: []tokenexchange.TrustedIssuer{
+				{IssuerURL: "https://idp.example.com", ExpectedAudience: "https://mcp.example.com", ActorMatcher: "claims.", AllowedDelegateClients: []string{"*"}},
+			},
+			wantErr: true,
+			errMsg:  "actor_matcher",
+		},
+		{
+			// Unlike Config.Issuer, a trusted issuer_url permits a trailing
+			// slash: Microsoft Entra ID v1 (the default for a newly
+			// registered API) issues "iss": "https://sts.windows.net/{tenant}/"
+			// with one, and OIDC Discovery has no rule against it — see
+			// validateTrustedIssuerURL's doc comment.
+			name: "issuer_url with trailing slash accepted",
+			issuers: []tokenexchange.TrustedIssuer{
+				{
+					IssuerURL:              "https://sts.windows.net/11111111-2222-3333-4444-555555555555/",
+					ExpectedAudience:       "https://mcp.example.com",
+					AllowedDelegateClients: []string{"*"},
+				},
+			},
+		},
+		{
+			// A may_act-only issuer is legitimate: an empty AllowedActors
+			// means every non-may_act token from it is rejected at
+			// validation time, not that the config itself is invalid.
+			name: "empty allowed_actors accepted",
+			issuers: []tokenexchange.TrustedIssuer{
+				{IssuerURL: "https://idp.example.com", ExpectedAudience: "https://mcp.example.com", AllowedActors: nil, AllowedDelegateClients: []string{"*"}},
+			},
+		},
+		{
+			// #5989 hardening reaches Config.Validate through the same
+			// shared validateTrustedIssuers -> tokenexchange.ValidateTrustedIssuers
+			// path as the constructor-level check.
+			name: "absent allowed_delegate_clients rejected",
+			issuers: []tokenexchange.TrustedIssuer{
+				{IssuerURL: "https://idp.example.com", ExpectedAudience: "https://mcp.example.com"},
+			},
+			wantErr: true,
+			errMsg:  "allowed_delegate_clients is required",
+		},
+		{
+			name: "allow_may_act with wildcard allowed_delegate_clients rejected",
+			issuers: []tokenexchange.TrustedIssuer{
+				{IssuerURL: "https://idp.example.com", ExpectedAudience: "https://mcp.example.com", AllowedDelegateClients: []string{"*"}, AllowMayAct: true},
+			},
+			wantErr: true,
+			errMsg:  "allow_may_act",
+		},
+		{
+			// This is a server runtime configuration invariant, not CRD
+			// admission: the configured allowed audience is supplied by the
+			// individual MCP server using the shared auth configuration.
+			name: "JWT-bearer accepted audience overlapping allowed resource rejected",
+			issuers: []tokenexchange.TrustedIssuer{{
+				IssuerURL: "https://idp.example.com",
+				JWTBearerGrant: &tokenexchange.JWTBearerGrantPolicy{
+					MaxAssertionAge: "1m",
+					SubjectBindings: []tokenexchange.JWTBearerSubjectBinding{{
+						Subject:          "workload",
+						AllowedResources: []string{"https://mcp.example.com"},
+					}},
+					AcceptedAudiences: []string{"https://mcp.example.com"},
+				},
+			}},
+			wantErr: true,
+			errMsg:  "must not also be a configured resource audience",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := base()
+			cfg.TrustedIssuers = tt.issuers
+			assertError(t, cfg.Validate(), tt.wantErr, tt.errMsg)
+		})
+	}
+}
+
+// TestRunConfigValidate_TrustedIssuers asserts that RunConfig.Validate
+// itself catches every TrustedIssuers failure mode reachable through
+// validateTrustedIssuers — the four structural checks, the issuer_url shape
+// check, and (mirroring TestConfigValidate_TrustedIssuers) the jwks_url
+// private-IP guard — not only Config.Validate, because it's the same
+// shared function both call. This matters because buildUpstreamConfigs
+// performs live RFC 7591 registration against upstream IdPs before
+// Config.Validate is ever reached (see the comment on RunConfig.Validate).
+// A bad trusted issuer caught only at the Config layer would orphan an
+// upstream client registration on every restart of the resulting crash loop.
+func TestRunConfigValidate_TrustedIssuers(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		issuers []tokenexchange.TrustedIssuer
+		wantErr bool
+		errMsg  string
+	}{
+		{
+			name:    "no trusted issuers passes",
+			issuers: nil,
+		},
+		{
+			name: "malformed issuer_url rejected",
+			issuers: []tokenexchange.TrustedIssuer{
+				{IssuerURL: "htps://idp.example.com", ExpectedAudience: "https://mcp.example.com", AllowedDelegateClients: []string{"*"}},
+			},
+			wantErr: true,
+			errMsg:  "scheme must be https",
+		},
+		{
+			name: "issuer_url empty hostname with port rejected",
+			issuers: []tokenexchange.TrustedIssuer{
+				{IssuerURL: "https://:443", ExpectedAudience: "https://mcp.example.com", AllowedDelegateClients: []string{"*"}},
+			},
+			wantErr: true,
+			errMsg:  "host is required",
+		},
+		{
+			name: "missing expected_audience rejected",
+			issuers: []tokenexchange.TrustedIssuer{
+				{IssuerURL: "https://idp.example.com", AllowedDelegateClients: []string{"*"}},
+			},
+			wantErr: true,
+			errMsg:  "expected_audience is required",
+		},
+		{
+			name: "issuer_url equal to RunConfig.Issuer rejected",
+			issuers: []tokenexchange.TrustedIssuer{
+				{IssuerURL: "https://example.com", ExpectedAudience: "https://mcp.example.com", AllowedDelegateClients: []string{"*"}},
+			},
+			wantErr: true,
+			errMsg:  "must not equal the authorization server's own issuer",
+		},
+		{
+			name: "duplicate issuer_url rejected",
+			issuers: []tokenexchange.TrustedIssuer{
+				{IssuerURL: "https://idp.example.com", ExpectedAudience: "https://mcp.example.com", AllowedDelegateClients: []string{"*"}},
+				{IssuerURL: "https://idp.example.com", ExpectedAudience: "https://mcp.example.com", AllowedDelegateClients: []string{"*"}},
+			},
+			wantErr: true,
+			errMsg:  "configured more than once",
+		},
+		{
+			name: "actor_claim sub rejected",
+			issuers: []tokenexchange.TrustedIssuer{
+				{IssuerURL: "https://idp.example.com", ExpectedAudience: "https://mcp.example.com", ActorClaim: "sub", AllowedDelegateClients: []string{"*"}},
+			},
+			wantErr: true,
+			errMsg:  "actor_claim",
+		},
+		{
+			name: "actor_matcher malformed rejected",
+			issuers: []tokenexchange.TrustedIssuer{
+				{IssuerURL: "https://idp.example.com", ExpectedAudience: "https://mcp.example.com", ActorMatcher: "claims.", AllowedDelegateClients: []string{"*"}},
+			},
+			wantErr: true,
+			errMsg:  "actor_matcher",
+		},
+		{
+			name: "jwks_url private IP literal rejected without allow_private_ips",
+			issuers: []tokenexchange.TrustedIssuer{
+				{
+					IssuerURL:              "https://idp.example.com",
+					ExpectedAudience:       "https://mcp.example.com",
+					JWKSURL:                "https://10.0.0.5/keys",
+					AllowedDelegateClients: []string{"*"},
+				},
+			},
+			wantErr: true,
+			errMsg:  "private or loopback",
+		},
+		{
+			name: "allow_may_act with wildcard allowed_delegate_clients rejected",
+			issuers: []tokenexchange.TrustedIssuer{
+				{IssuerURL: "https://idp.example.com", ExpectedAudience: "https://mcp.example.com", AllowedDelegateClients: []string{"*"}, AllowMayAct: true},
+			},
+			wantErr: true,
+			errMsg:  "allow_may_act",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := RunConfig{Issuer: "https://example.com", TrustedIssuers: tt.issuers}
+			assertError(t, cfg.Validate(), tt.wantErr, tt.errMsg)
+		})
+	}
+}
+
+// TestConfig_WarnTrustedIssuerAudiences pins the invalid_target footgun
+// warning: it must fire at startup for an ExpectedAudience absent from
+// AllowedAudiences, and stay silent when the audience is present.
+//
+// See TestNewEmbeddedAuthServer_TrustedIssuers in
+// runner/embeddedauthserver_test.go for the same pattern with the rationale
+// spelled out.
+//
+//nolint:paralleltest // captures the package-global slog.Default()
+func TestConfig_WarnTrustedIssuerAudiences(t *testing.T) {
+	tests := []struct {
+		name      string
+		audiences []string
+		wantWarn  bool
+	}{
+		{
+			name:      "expected_audience absent from allowed_audiences warns",
+			audiences: []string{"https://other.example.com"},
+			wantWarn:  true,
+		},
+		{
+			name:      "expected_audience present in allowed_audiences is silent",
+			audiences: []string{"https://mcp.example.com"},
+			wantWarn:  false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			prev := slog.Default()
+			slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+			t.Cleanup(func() { slog.SetDefault(prev) })
+
+			cfg := Config{
+				AllowedAudiences: tt.audiences,
+				TrustedIssuers: []tokenexchange.TrustedIssuer{
+					{IssuerURL: "https://idp.example.com", ExpectedAudience: "https://mcp.example.com", AllowedDelegateClients: []string{"*"}},
+				},
+			}
+			cfg.warnTrustedIssuerAudiences()
+
+			if tt.wantWarn {
+				require.Contains(t, buf.String(), "trusted issuer's expected_audience is not in allowed_audiences")
+			} else {
+				require.Empty(t, buf.String())
+			}
+
+		})
+	}
+}
+
+func TestRunConfigValidateTLSListener(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		config     *TLSListenerRunConfig
+		wantErrMsg string
+	}{
+		{name: "nil listener"},
+		{
+			name:   "complete listener config",
+			config: &TLSListenerRunConfig{CertFile: "cert", KeyFile: "key"},
+		},
+		{
+			name:       "missing certificate",
+			config:     &TLSListenerRunConfig{KeyFile: "key"},
+			wantErrMsg: "tls_listener.cert_file",
+		},
+		{
+			name:       "missing key",
+			config:     &TLSListenerRunConfig{CertFile: "cert"},
+			wantErrMsg: "tls_listener.key_file",
+		},
+		{
+			name:       "missing both",
+			config:     &TLSListenerRunConfig{},
+			wantErrMsg: "tls_listener.cert_file and tls_listener.key_file",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := RunConfig{TLSListener: tt.config}
+			err := cfg.Validate()
+			if tt.wantErrMsg == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.ErrorContains(t, err, tt.wantErrMsg)
+		})
+	}
+}
+
+func TestRunConfigValidateX509RequiresTLSListener(t *testing.T) {
+	t.Parallel()
+
+	association := func(method SPIFFEAuthenticationMethod) *InboundGrantsRunConfig {
+		return &InboundGrantsRunConfig{SPIFFEClientAuth: []SPIFFEClientAuthRunConfig{{
+			Methods: []SPIFFEAuthenticationMethod{method},
+		}}}
+	}
+	const listenerRule = "tls_listener is required"
+
+	tests := []struct {
+		name string
+		cfg  RunConfig
+		// wantListenerRule is whether Validate must fail on the listener rule.
+		// When false, Validate may still fail on an unrelated check.
+		wantListenerRule bool
+	}{
+		{
+			name:             "x509 association without listener",
+			cfg:              RunConfig{InboundGrants: association(SPIFFEAuthenticationMethodX509)},
+			wantListenerRule: true,
+		},
+		{
+			name: "x509 association with listener",
+			cfg: RunConfig{
+				InboundGrants: association(SPIFFEAuthenticationMethodX509),
+				TLSListener:   &TLSListenerRunConfig{CertFile: "cert", KeyFile: "key"},
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := tt.cfg.Validate()
+			if tt.wantListenerRule {
+				require.EqualError(t, err, "tls_listener is required when a SPIFFE client association enables spiffe_x509")
+				return
+			}
+			if err != nil {
+				assert.NotContains(t, err.Error(), listenerRule)
+			}
+		})
+	}
+}
+
+func TestHasSPIFFEX509ClientAuth(t *testing.T) {
+	t.Parallel()
+
+	x509Association := SPIFFEClientAuthRunConfig{Methods: []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509}}
+	jwtAssociation := SPIFFEClientAuthRunConfig{Methods: []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodJWT}}
+	tests := []struct {
+		name string
+		cfg  *RunConfig
+		want bool
+	}{
+		{name: "nil receiver", cfg: nil},
+		{name: "nil grants", cfg: &RunConfig{}},
+		{name: "JWT only", cfg: &RunConfig{InboundGrants: &InboundGrantsRunConfig{SPIFFEClientAuth: []SPIFFEClientAuthRunConfig{jwtAssociation}}}},
+		{name: "X.509 present", cfg: &RunConfig{InboundGrants: &InboundGrantsRunConfig{SPIFFEClientAuth: []SPIFFEClientAuthRunConfig{x509Association}}}, want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, tt.cfg.HasSPIFFEX509ClientAuth())
+		})
+	}
+}
+
+// TestConfig_WarnAuthorizeCallbackHostMismatch pins the startup signal for a
+// deployment whose upstream redirect_uri lives on a different host than the
+// browser-facing authorize URL: /oauth/callback binds each login to the
+// starting browser with a host-only cookie, so such a deployment rejects every
+// browser login. Validation must warn, not fail, and must stay silent when only
+// the port differs (cookies ignore ports).
+//
+//nolint:paralleltest // captures the package-global slog.Default()
+func TestConfig_WarnAuthorizeCallbackHostMismatch(t *testing.T) {
+	const (
+		hostWarn   = "redirect_uri host differs from the browser-facing authorize host"
+		schemeWarn = "redirect_uri is plain http while the browser-facing authorize URL is https"
+	)
+	tests := []struct {
+		name          string
+		issuer        string
+		authorizeBase string
+		redirectURI   string
+		wantWarn      string // substring of the expected WARN; empty means silent
+	}{
+		{name: "callback on the issuer host is silent", issuer: "https://auth.example.com", redirectURI: "https://auth.example.com/oauth/callback"},
+		{name: "port-only difference is silent", issuer: "http://localhost:18080", redirectURI: "http://localhost:8080/oauth/callback"},
+		{name: "hostname case difference is silent", issuer: "https://Auth.Example.com", redirectURI: "https://auth.example.com/oauth/callback"},
+		{name: "callback on another host warns", issuer: "https://auth.example.com", redirectURI: "https://mcp.example.com/oauth/callback", wantWarn: hostWarn},
+		{name: "authorize base override on the callback host is silent", issuer: "http://vmcp.ns.svc.cluster.local:4483", authorizeBase: "https://mcp.example.com", redirectURI: "https://mcp.example.com/oauth/callback"},
+		{name: "authorize base override on another host warns", issuer: "https://auth.example.com", authorizeBase: "https://login.example.com", redirectURI: "https://auth.example.com/oauth/callback", wantWarn: hostWarn},
+		{name: "https authorize with plain-http callback on the same non-loopback host warns", issuer: "https://gateway.corp.example", redirectURI: "http://gateway.corp.example:4483/oauth/callback", wantWarn: schemeWarn},
+		{name: "https authorize with plain-http loopback callback is silent", issuer: "https://localhost:8443", redirectURI: "http://localhost:8080/oauth/callback"},
+		{name: "http authorize with https callback is silent", issuer: "http://localhost:8080", redirectURI: "https://localhost:8443/oauth/callback"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			prev := slog.Default()
+			slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+			t.Cleanup(func() { slog.SetDefault(prev) })
+
+			cfg := Config{
+				Issuer:                       tt.issuer,
+				AuthorizationEndpointBaseURL: tt.authorizeBase,
+				Upstreams: []UpstreamConfig{{Name: "default", Type: UpstreamProviderTypeOIDC, OIDCConfig: &upstream.OIDCConfig{
+					CommonOAuthConfig: upstream.CommonOAuthConfig{ClientID: "c", RedirectURI: tt.redirectURI},
+					Issuer:            "https://accounts.google.com",
+				}}},
+			}
+			cfg.warnOnAuthorizeCallbackHostMismatch()
+
+			if tt.wantWarn != "" {
+				require.Contains(t, buf.String(), tt.wantWarn)
+				require.Contains(t, buf.String(), "upstream=default")
+			} else {
+				require.Empty(t, buf.String())
+			}
+		})
+	}
+}
+
+func TestRunConfigValidateDCRRegistrationLimits(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		config     RunConfig
+		wantErrMsg string
+	}{
+		{name: "unset keeps the defaults"},
+		{
+			name:   "positive rate and burst",
+			config: RunConfig{RegistrationRateLimit: &RegistrationRateLimitRunConfig{RequestsPerSecond: 0.5, Burst: 2}},
+		},
+		{
+			name:       "zero rate rejected",
+			config:     RunConfig{RegistrationRateLimit: &RegistrationRateLimitRunConfig{Burst: 2}},
+			wantErrMsg: "requests_per_second must be a positive number",
+		},
+		{
+			name:       "infinite rate rejected",
+			config:     RunConfig{RegistrationRateLimit: &RegistrationRateLimitRunConfig{RequestsPerSecond: math.Inf(1), Burst: 2}},
+			wantErrMsg: "requests_per_second must be a positive number",
+		},
+		{
+			name:       "NaN rate rejected",
+			config:     RunConfig{RegistrationRateLimit: &RegistrationRateLimitRunConfig{RequestsPerSecond: math.NaN(), Burst: 2}},
+			wantErrMsg: "requests_per_second must be a positive number",
+		},
+		{
+			name:       "zero burst rejected",
+			config:     RunConfig{RegistrationRateLimit: &RegistrationRateLimitRunConfig{RequestsPerSecond: 1}},
+			wantErrMsg: "burst must be positive",
+		},
+		{
+			name:   "zero max DCR clients means unlimited",
+			config: RunConfig{Storage: &storage.RunConfig{MaxDCRClients: new(0)}},
+		},
+		{
+			name:       "negative max DCR clients rejected",
+			config:     RunConfig{Storage: &storage.RunConfig{MaxDCRClients: new(-1)}},
+			wantErrMsg: "max_dcr_clients must not be negative",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := tt.config.Validate()
+			if tt.wantErrMsg == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.ErrorContains(t, err, tt.wantErrMsg)
+		})
+	}
+}
+
+func TestDelegateClientRunConfigTokenExchangeRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		json       string
+		yaml       string
+		wantNil    bool
+		wantMode   SelfIssuedSubjectTokens
+		wantSource []string
+		wantAud    []string
+	}{
+		{name: "absent", json: `{"client_id":"c"}`, yaml: "client_id: c\n", wantNil: true},
+		{name: "null", json: `{"client_id":"c","token_exchange":null}`, yaml: "client_id: c\ntoken_exchange:\n", wantNil: true},
+		{name: "empty block", json: `{"client_id":"c","token_exchange":{}}`, yaml: "client_id: c\ntoken_exchange: {}\n"},
+		{
+			name: "populated",
+			json: `{"client_id":"c","token_exchange":{"self_issued_subject_tokens":"restricted",` +
+				`"allowed_source_clients":["tui"],"subject_token_audiences":["a"]}}`,
+			yaml: "client_id: c\ntoken_exchange:\n  self_issued_subject_tokens: restricted\n" +
+				"  allowed_source_clients: [tui]\n  subject_token_audiences: [a]\n",
+			wantMode:   SelfIssuedSubjectTokensRestricted,
+			wantSource: []string{"tui"},
+			wantAud:    []string{"a"},
+		},
+		{
+			name:     "subject token audiences omitted",
+			json:     `{"client_id":"c","token_exchange":{"self_issued_subject_tokens":"restricted"}}`,
+			yaml:     "client_id: c\ntoken_exchange:\n  self_issued_subject_tokens: restricted\n",
+			wantMode: SelfIssuedSubjectTokensRestricted,
+		},
+		{
+			name: "multiple subject token audiences",
+			json: `{"client_id":"c","token_exchange":{"self_issued_subject_tokens":"restricted",` +
+				`"subject_token_audiences":["a","b"]}}`,
+			yaml: "client_id: c\ntoken_exchange:\n  self_issued_subject_tokens: restricted\n" +
+				"  subject_token_audiences: [a, b]\n",
+			wantMode: SelfIssuedSubjectTokensRestricted,
+			wantAud:  []string{"a", "b"},
+		},
+		{
+			name: "explicit empty subject token audiences",
+			json: `{"client_id":"c","token_exchange":{"self_issued_subject_tokens":"restricted",` +
+				`"subject_token_audiences":[]}}`,
+			yaml: "client_id: c\ntoken_exchange:\n  self_issued_subject_tokens: restricted\n" +
+				"  subject_token_audiences: []\n",
+			wantMode: SelfIssuedSubjectTokensRestricted,
+		},
+		{
+			name:     "explicit any",
+			json:     `{"client_id":"c","token_exchange":{"self_issued_subject_tokens":"any"}}`,
+			yaml:     "client_id: c\ntoken_exchange:\n  self_issued_subject_tokens: any\n",
+			wantMode: SelfIssuedSubjectTokensAny,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			check := func(t *testing.T, got DelegateClientRunConfig) {
+				t.Helper()
+				if tt.wantNil {
+					assert.Nil(t, got.TokenExchange)
+					return
+				}
+				require.NotNil(t, got.TokenExchange)
+				assert.Equal(t, tt.wantMode, got.TokenExchange.SelfIssuedSubjectTokens)
+				assert.Equal(t, tt.wantSource, got.TokenExchange.AllowedSourceClients)
+				if len(tt.wantAud) == 0 {
+					assert.Empty(t, got.TokenExchange.SubjectTokenAudiences)
+				} else {
+					assert.Equal(t, tt.wantAud, got.TokenExchange.SubjectTokenAudiences)
+				}
+			}
+
+			var fromJSON DelegateClientRunConfig
+			require.NoError(t, json.Unmarshal([]byte(tt.json), &fromJSON))
+			check(t, fromJSON)
+			encoded, err := json.Marshal(fromJSON)
+			require.NoError(t, err)
+			var reJSON DelegateClientRunConfig
+			require.NoError(t, json.Unmarshal(encoded, &reJSON))
+			check(t, reJSON)
+
+			var fromYAML DelegateClientRunConfig
+			require.NoError(t, yaml.Unmarshal([]byte(tt.yaml), &fromYAML))
+			check(t, fromYAML)
+			encoded, err = yaml.Marshal(fromYAML)
+			require.NoError(t, err)
+			var reYAML DelegateClientRunConfig
+			require.NoError(t, yaml.Unmarshal(encoded, &reYAML))
+			check(t, reYAML)
+		})
+	}
+}
+
+func TestDelegateClientTokenExchangeClone(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		policy *DelegateClientTokenExchange
+	}{
+		{name: "nil policy clones to nil"},
+		{
+			name: "nil refresh block stays nil",
+			policy: &DelegateClientTokenExchange{
+				SelfIssuedSubjectTokens: SelfIssuedSubjectTokensRestricted,
+				AllowedSourceClients:    []string{"source-a"},
+			},
+		},
+		{
+			name: "refresh block, source clients and subject token audiences are not shared",
+			policy: &DelegateClientTokenExchange{
+				SelfIssuedSubjectTokens: SelfIssuedSubjectTokensRestricted,
+				AllowedSourceClients:    []string{"source-a", "source-b"},
+				SubjectTokenAudiences:   []string{"api-a", "api-b"},
+				ExchangeRefreshTokens: &DelegateClientExchangeRefreshTokens{
+					IDJAGMaxLifetime:        "1h",
+					RefreshTokenMaxLifetime: "12h",
+				},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if tt.policy == nil {
+				assert.Nil(t, tt.policy.Clone())
+				return
+			}
+
+			clone := tt.policy.Clone()
+			require.NotNil(t, clone)
+			assert.Equal(t, tt.policy, clone)
+
+			wantSources := slices.Clone(tt.policy.AllowedSourceClients)
+			wantAudiences := slices.Clone(tt.policy.SubjectTokenAudiences)
+			var wantRefresh DelegateClientExchangeRefreshTokens
+			if tt.policy.ExchangeRefreshTokens == nil {
+				assert.Nil(t, clone.ExchangeRefreshTokens)
+			} else {
+				require.NotNil(t, clone.ExchangeRefreshTokens)
+				assert.NotSame(t, tt.policy.ExchangeRefreshTokens, clone.ExchangeRefreshTokens)
+				wantRefresh = *tt.policy.ExchangeRefreshTokens
+				clone.ExchangeRefreshTokens.IDJAGMaxLifetime = "2h"
+				clone.ExchangeRefreshTokens.RefreshTokenMaxLifetime = ""
+			}
+			if len(clone.AllowedSourceClients) > 0 {
+				clone.AllowedSourceClients[0] = "changed"
+				clone.AllowedSourceClients = append(clone.AllowedSourceClients, "added")
+			}
+			if len(clone.SubjectTokenAudiences) > 0 {
+				clone.SubjectTokenAudiences[0] = "changed"
+			}
+
+			if tt.policy.ExchangeRefreshTokens != nil {
+				assert.Equal(t, wantRefresh, *tt.policy.ExchangeRefreshTokens)
+			}
+			assert.Equal(t, wantSources, tt.policy.AllowedSourceClients)
+			assert.Equal(t, wantAudiences, tt.policy.SubjectTokenAudiences)
+		})
+	}
+}
+
+// spiffeBundleSourceTestTrust returns one trust domain using source and an
+// association that satisfies the grant requirement for it.
+func spiffeBundleSourceTestTrust(source SPIFFEBundleSourceRunConfig) ([]SPIFFETrustDomainRunConfig, *InboundGrantsRunConfig) {
+	domains := []SPIFFETrustDomainRunConfig{{
+		Name:         "production",
+		TrustDomain:  "example.org",
+		Methods:      []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509},
+		BundleSource: source,
+	}}
+	grants := &InboundGrantsRunConfig{SPIFFEClientAuth: []SPIFFEClientAuthRunConfig{{
+		TrustDomainRef:   "production",
+		PrincipalPattern: "spiffe://example.org/ns/default/*",
+		ClientID:         "agent-client",
+		Methods:          []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509},
+		Audiences:        []string{"https://mcp.example.com"},
+		Scopes:           []string{"openid"},
+		GrantTypes:       []string{SPIFFEGrantTypeTokenExchange},
+	}}}
+	return domains, grants
+}
+
+func TestSPIFFEBundleSourceRuntimeSupport(t *testing.T) {
+	t.Parallel()
+
+	const fileBundlePath = "/etc/spiffe/bundle.json"
+	httpsWebEndpoint := &SPIFFEBundleEndpointSourceRunConfig{
+		URL:     "https://spire.example.org/bundle",
+		Profile: SPIFFEBundleEndpointProfileHTTPSWeb,
+	}
+	httpsSPIFFEEndpoint := &SPIFFEBundleEndpointSourceRunConfig{
+		URL:     "https://spire.example.org/bundle",
+		Profile: SPIFFEBundleEndpointProfileHTTPSSPIFFE,
+	}
+
+	tests := []struct {
+		name    string
+		source  SPIFFEBundleSourceRunConfig
+		wantErr string
+	}{
+		{
+			name:   "file source accepted",
+			source: SPIFFEBundleSourceRunConfig{Type: SPIFFEBundleSourceTypeFile, File: &SPIFFEFileBundleSourceRunConfig{Path: fileBundlePath}},
+		},
+		{
+			name:    "bundle_endpoint with https_web rejected",
+			source:  SPIFFEBundleSourceRunConfig{Type: SPIFFEBundleSourceTypeEndpoint, Endpoint: httpsWebEndpoint},
+			wantErr: `type "bundle_endpoint" is not supported by this build; only "file" is supported`,
+		},
+		{
+			name:    "bundle_endpoint with https_spiffe rejected",
+			source:  SPIFFEBundleSourceRunConfig{Type: SPIFFEBundleSourceTypeEndpoint, Endpoint: httpsSPIFFEEndpoint},
+			wantErr: `type "bundle_endpoint" is not supported by this build; only "file" is supported`,
+		},
+		{
+			name:    "workload_api rejected",
+			source:  SPIFFEBundleSourceRunConfig{Type: SPIFFEBundleSourceTypeWorkloadAPI, WorkloadAPI: &SPIFFEWorkloadAPIBundleSourceRunConfig{}},
+			wantErr: `type "workload_api" is not supported by this build; only "file" is supported`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run("RunConfig/"+tt.name, func(t *testing.T) {
+			t.Parallel()
+			domains, grants := spiffeBundleSourceTestTrust(tt.source)
+			cfg := RunConfig{
+				Issuer:             "https://auth.example.org",
+				TLSListener:        &TLSListenerRunConfig{CertFile: "cert", KeyFile: "key"},
+				SPIFFETrustDomains: domains,
+				InboundGrants:      grants,
+			}
+			err := cfg.Validate()
+			if tt.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.ErrorContains(t, err, `spiffe_trust_domains[0] "production" bundle_source: `+tt.wantErr)
+		})
+
+		t.Run("Config/"+tt.name, func(t *testing.T) {
+			t.Parallel()
+			domains, grants := spiffeBundleSourceTestTrust(tt.source)
+			trust, err := NewSPIFFETrustConfig(
+				domains, grants, []string{"openid"}, []string{"https://mcp.example.com"},
+			)
+			require.NoError(t, err)
+			cfg := &Config{SPIFFETrust: trust}
+			err = cfg.validateRuntimeSPIFFEBundleSources()
+			if tt.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.ErrorContains(t, err, `spiffe_trust: trust domain "example.org" bundle_source: `+tt.wantErr)
 		})
 	}
 }

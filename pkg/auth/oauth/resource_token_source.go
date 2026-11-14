@@ -4,6 +4,8 @@
 package oauth
 
 import (
+	"net/http"
+
 	"golang.org/x/oauth2"
 )
 
@@ -19,9 +21,19 @@ type resourceTokenSource struct {
 // NewResourceTokenSource creates a token source that includes the resource parameter
 // in all token requests, including refresh requests.
 // The resource parameter must be non-empty (caller should check before calling).
-func NewResourceTokenSource(config *oauth2.Config, token *oauth2.Token, resource string) oauth2.TokenSource {
+// httpClient carries the token endpoint's SSRF policy and must be built by
+// NewTokenHTTPClient.
+func NewResourceTokenSource(
+	config *oauth2.Config,
+	token *oauth2.Token,
+	resource string,
+	httpClient *http.Client,
+) oauth2.TokenSource {
+	if token == nil {
+		panic("oauth.NewResourceTokenSource: token must not be nil")
+	}
 	return &resourceTokenSource{
-		ncr:   NewNonCachingRefresher(config, token.RefreshToken, resource),
+		ncr:   NewNonCachingRefresher(config, token.RefreshToken, resource, httpClient),
 		token: token,
 	}
 }

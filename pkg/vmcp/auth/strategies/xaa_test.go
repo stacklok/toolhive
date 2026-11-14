@@ -604,7 +604,7 @@ func TestXAAStrategy_Authenticate(t *testing.T) {
 			},
 			setupServers: func(t *testing.T) (*httptest.Server, *httptest.Server) {
 				t.Helper()
-				idJAG := buildIDJAGJWT(t, "oauth-id-jag+jwt", testTargetAudience, testTargetResource)
+				idJAG := buildIDJAGJWT(t, oauthproto.JWTTypeIDJAG, testTargetAudience, testTargetResource)
 				idpServer := createXAAIdPServer(t, "user-id-token-jwt", idJAG)
 				targetServer := createXAATargetServer(t, idJAG)
 				return idpServer, targetServer
@@ -665,7 +665,7 @@ func TestXAAStrategy_Authenticate(t *testing.T) {
 			},
 			setupServers: func(t *testing.T) (*httptest.Server, *httptest.Server) {
 				t.Helper()
-				idJAG := buildIDJAGJWT(t, "oauth-id-jag+jwt", testTargetAudience, testTargetResource)
+				idJAG := buildIDJAGJWT(t, oauthproto.JWTTypeIDJAG, testTargetAudience, testTargetResource)
 				idpServer := createXAAIdPServer(t, "valid-id-token", idJAG)
 				targetServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 					w.WriteHeader(http.StatusUnauthorized)
@@ -757,7 +757,7 @@ func TestXAAStrategy_Authenticate(t *testing.T) {
 				})
 			},
 			expectError:   true,
-			errorContains: []string{"N_A"},
+			errorContains: []string{"want N_A (draft §4.3.4)"},
 		},
 		{
 			name: "IdP exchange rejects empty access_token",
@@ -839,7 +839,7 @@ func TestXAAStrategy_Authenticate(t *testing.T) {
 			},
 			setupServers: func(t *testing.T) (*httptest.Server, *httptest.Server) {
 				t.Helper()
-				correctTypJWT := buildIDJAGJWT(t, "oauth-id-jag+jwt", testTargetAudience, testTargetResource)
+				correctTypJWT := buildIDJAGJWT(t, oauthproto.JWTTypeIDJAG, testTargetAudience, testTargetResource)
 				idpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 					w.Header().Set("Content-Type", "application/json")
 					err := json.NewEncoder(w).Encode(map[string]any{
@@ -877,7 +877,7 @@ func TestXAAStrategy_Authenticate(t *testing.T) {
 			},
 			setupServers: func(t *testing.T) (*httptest.Server, *httptest.Server) {
 				t.Helper()
-				idJAG := buildIDJAGJWT(t, "oauth-id-jag+jwt", nil, testTargetResource)
+				idJAG := buildIDJAGJWT(t, oauthproto.JWTTypeIDJAG, nil, testTargetResource)
 				idpServer := createXAAIdPServer(t, "user-id-token-jwt", idJAG)
 				targetServer := mustNotBeCalledTargetServer(t)
 				return idpServer, targetServer
@@ -894,7 +894,7 @@ func TestXAAStrategy_Authenticate(t *testing.T) {
 			},
 			setupServers: func(t *testing.T) (*httptest.Server, *httptest.Server) {
 				t.Helper()
-				idJAG := buildIDJAGJWT(t, "oauth-id-jag+jwt", "https://wrong.example.com", testTargetResource)
+				idJAG := buildIDJAGJWT(t, oauthproto.JWTTypeIDJAG, "https://wrong.example.com", testTargetResource)
 				idpServer := createXAAIdPServer(t, "user-id-token-jwt", idJAG)
 				targetServer := mustNotBeCalledTargetServer(t)
 				return idpServer, targetServer
@@ -911,7 +911,7 @@ func TestXAAStrategy_Authenticate(t *testing.T) {
 			},
 			setupServers: func(t *testing.T) (*httptest.Server, *httptest.Server) {
 				t.Helper()
-				idJAG := buildIDJAGJWT(t, "oauth-id-jag+jwt",
+				idJAG := buildIDJAGJWT(t, oauthproto.JWTTypeIDJAG,
 					[]string{"https://wrong.example.com", "https://other.example.com"}, testTargetResource)
 				idpServer := createXAAIdPServer(t, "user-id-token-jwt", idJAG)
 				targetServer := mustNotBeCalledTargetServer(t)
@@ -929,7 +929,7 @@ func TestXAAStrategy_Authenticate(t *testing.T) {
 			},
 			setupServers: func(t *testing.T) (*httptest.Server, *httptest.Server) {
 				t.Helper()
-				idJAG := buildIDJAGJWT(t, "oauth-id-jag+jwt",
+				idJAG := buildIDJAGJWT(t, oauthproto.JWTTypeIDJAG,
 					[]string{testTargetAudience, "https://extra.example.com"}, testTargetResource)
 				idpServer := createXAAIdPServer(t, "user-id-token-jwt", idJAG)
 				targetServer := mustNotBeCalledTargetServer(t)
@@ -947,7 +947,7 @@ func TestXAAStrategy_Authenticate(t *testing.T) {
 			},
 			setupServers: func(t *testing.T) (*httptest.Server, *httptest.Server) {
 				t.Helper()
-				idJAG := buildIDJAGJWT(t, "oauth-id-jag+jwt",
+				idJAG := buildIDJAGJWT(t, oauthproto.JWTTypeIDJAG,
 					[]string{testTargetAudience}, testTargetResource)
 				idpServer := createXAAIdPServer(t, "user-id-token-jwt", idJAG)
 				targetServer := createXAATargetServer(t, idJAG)
@@ -970,7 +970,7 @@ func TestXAAStrategy_Authenticate(t *testing.T) {
 			},
 			setupServers: func(t *testing.T) (*httptest.Server, *httptest.Server) {
 				t.Helper()
-				idJAG := buildIDJAGJWT(t, "oauth-id-jag+jwt", testTargetAudience, "https://wrong.example.com")
+				idJAG := buildIDJAGJWT(t, oauthproto.JWTTypeIDJAG, testTargetAudience, "https://wrong.example.com")
 				idpServer := createXAAIdPServer(t, "user-id-token-jwt", idJAG)
 				targetServer := mustNotBeCalledTargetServer(t)
 				return idpServer, targetServer
@@ -988,7 +988,7 @@ func TestXAAStrategy_Authenticate(t *testing.T) {
 			setupServers: func(t *testing.T) (*httptest.Server, *httptest.Server) {
 				t.Helper()
 				// resource omitted (empty string) while config requests one.
-				idJAG := buildIDJAGJWT(t, "oauth-id-jag+jwt", testTargetAudience, "")
+				idJAG := buildIDJAGJWT(t, oauthproto.JWTTypeIDJAG, testTargetAudience, "")
 				idpServer := createXAAIdPServer(t, "user-id-token-jwt", idJAG)
 				targetServer := mustNotBeCalledTargetServer(t)
 				return idpServer, targetServer
@@ -1005,7 +1005,7 @@ func TestXAAStrategy_Authenticate(t *testing.T) {
 			},
 			setupServers: func(t *testing.T) (*httptest.Server, *httptest.Server) {
 				t.Helper()
-				idJAG := buildIDJAGJWT(t, "oauth-id-jag+jwt",
+				idJAG := buildIDJAGJWT(t, oauthproto.JWTTypeIDJAG,
 					testTargetAudience, []string{testTargetResource})
 				idpServer := createXAAIdPServer(t, "user-id-token-jwt", idJAG)
 				targetServer := createXAATargetServer(t, idJAG)
@@ -1026,7 +1026,7 @@ func TestXAAStrategy_Authenticate(t *testing.T) {
 			},
 			setupServers: func(t *testing.T) (*httptest.Server, *httptest.Server) {
 				t.Helper()
-				idJAG := buildIDJAGJWT(t, "oauth-id-jag+jwt",
+				idJAG := buildIDJAGJWT(t, oauthproto.JWTTypeIDJAG,
 					testTargetAudience, []interface{}{float64(123), testTargetResource})
 				idpServer := createXAAIdPServer(t, "user-id-token-jwt", idJAG)
 				targetServer := createXAATargetServer(t, idJAG)
@@ -1047,7 +1047,7 @@ func TestXAAStrategy_Authenticate(t *testing.T) {
 			},
 			setupServers: func(t *testing.T) (*httptest.Server, *httptest.Server) {
 				t.Helper()
-				idJAG := buildIDJAGJWT(t, "oauth-id-jag+jwt",
+				idJAG := buildIDJAGJWT(t, oauthproto.JWTTypeIDJAG,
 					testTargetAudience, []interface{}{float64(123)})
 				idpServer := createXAAIdPServer(t, "user-id-token-jwt", idJAG)
 				targetServer := mustNotBeCalledTargetServer(t)
@@ -1058,7 +1058,7 @@ func TestXAAStrategy_Authenticate(t *testing.T) {
 			errorContains: []string{"IdP exchange", "resource"},
 		},
 		// resource check skipped when TargetResource is not configured
-		// (wantResource == "" early-return branch in validateIDJAGClaims).
+		// (the empty-resource case in idjag.FromExchange).
 		{
 			name: "IdP exchange accepts ID-JAG when TargetResource is not configured",
 			setupCtx: func() context.Context {
@@ -1067,7 +1067,7 @@ func TestXAAStrategy_Authenticate(t *testing.T) {
 			},
 			setupServers: func(t *testing.T) (*httptest.Server, *httptest.Server) {
 				t.Helper()
-				idJAG := buildIDJAGJWT(t, "oauth-id-jag+jwt", testTargetAudience, nil)
+				idJAG := buildIDJAGJWT(t, oauthproto.JWTTypeIDJAG, testTargetAudience, nil)
 				// TargetResource is unset, so the exchange request carries no
 				// resource parameter; use an IdP mock that does not assert it.
 				idpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1200,10 +1200,10 @@ func buildIDJAGJWT(t *testing.T, typ string, aud, resource any) string {
 
 // setClaim sets a string-or-array claim on a MapClaims, omitting it when v is
 // nil or an empty string. []string is marshalled as a JSON array (decoded back
-// by golang-jwt as []interface{}, exercising the array branch of
-// claimContainsString). []interface{} is set directly, allowing heterogeneous
-// arrays (e.g. mixing strings with non-string elements) to exercise the
-// type-guard in claimContainsString's array branch.
+// by golang-jwt as []interface{}, exercising the array branch of the resource
+// check in idjag.FromExchange). []interface{} is set directly, allowing
+// heterogeneous arrays (e.g. mixing strings with non-string elements) to
+// exercise the skipping of non-string elements in that same check.
 func setClaim(t *testing.T, claims jwt.MapClaims, key string, v any) {
 	t.Helper()
 	switch c := v.(type) {

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -66,6 +67,89 @@ func Test_newTEIClient(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, client)
 		require.Equal(t, defaultMaxBatchSize, client.maxBatchSize)
+	})
+}
+
+func TestTEIClient_ModelID(t *testing.T) {
+	t.Parallel()
+
+	t.Run("returns the model id from /info", func(t *testing.T) {
+		t.Parallel()
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			require.Equal(t, infoPath, r.URL.Path)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"model_id": "BAAI/bge-small-en-v1.5", "max_client_batch_size": 16}`))
+		}))
+		defer srv.Close()
+
+		client, err := newTEIClient(srv.URL, 0)
+		require.NoError(t, err)
+
+		id, err := client.ModelID(context.Background())
+		require.NoError(t, err)
+		require.Equal(t, "BAAI/bge-small-en-v1.5", id)
+	})
+
+	t.Run("reads per call so a swap is observable", func(t *testing.T) {
+		t.Parallel()
+		var calls atomic.Int64
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			if calls.Add(1) > 2 { // the constructor's own /info read is call 1
+				_, _ = w.Write([]byte(`{"model_id": "model-b", "max_client_batch_size": 16}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"model_id": "model-a", "max_client_batch_size": 16}`))
+		}))
+		defer srv.Close()
+
+		client, err := newTEIClient(srv.URL, 0)
+		require.NoError(t, err)
+
+		first, err := client.ModelID(context.Background())
+		require.NoError(t, err)
+		second, err := client.ModelID(context.Background())
+		require.NoError(t, err)
+
+		require.Equal(t, "model-a", first)
+		require.Equal(t, "model-b", second,
+			"the id must be read live per call, not cached at construction")
+	})
+
+	t.Run("missing model_id is an error", func(t *testing.T) {
+		t.Parallel()
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"max_client_batch_size": 16}`))
+		}))
+		defer srv.Close()
+
+		client, err := newTEIClient(srv.URL, 0)
+		require.NoError(t, err)
+
+		_, err = client.ModelID(context.Background())
+		require.ErrorContains(t, err, "no model_id")
+	})
+
+	t.Run("non-200 is an error", func(t *testing.T) {
+		t.Parallel()
+		var constructed atomic.Bool
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			if !constructed.Load() {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"model_id": "model-a", "max_client_batch_size": 16}`))
+				return
+			}
+			w.WriteHeader(http.StatusServiceUnavailable)
+		}))
+		defer srv.Close()
+
+		client, err := newTEIClient(srv.URL, 0)
+		require.NoError(t, err)
+		constructed.Store(true)
+
+		_, err = client.ModelID(context.Background())
+		require.ErrorContains(t, err, "status 503")
 	})
 }
 

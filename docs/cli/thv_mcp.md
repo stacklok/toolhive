@@ -20,13 +20,13 @@ The mcp command provides subcommands to interact with MCP (Model Context Protoco
 ### Options
 
 ```
-  -h, --help   help for mcp
+  -h, --help[=true|false]   help for mcp
 ```
 
 ### Options inherited from parent commands
 
 ```
-      --debug   Enable debug mode
+      --debug[=true|false]   Enable debug mode
 ```
 
 ### SEE ALSO

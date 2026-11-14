@@ -23,7 +23,7 @@ func BenchmarkCosineDistance_384(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 	for b.Loop() {
-		CosineDistance(a, v)
+		_, _ = CosineDistance(a, v)
 	}
 }
 
@@ -33,6 +33,6 @@ func BenchmarkCosineDistance_768(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 	for b.Loop() {
-		CosineDistance(a, v)
+		_, _ = CosineDistance(a, v)
 	}
 }

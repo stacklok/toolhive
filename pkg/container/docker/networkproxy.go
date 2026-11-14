@@ -6,6 +6,7 @@ package docker
 import (
 	"context"
 	"fmt"
+	"net/netip"
 	"os"
 
 	"github.com/moby/moby/api/types/network"
@@ -57,14 +58,21 @@ type networkProxy interface {
 type proxySpec struct {
 	// WorkloadName is the base name of the MCP container (e.g. "myserver").
 	WorkloadName string
+	// UpstreamHost is the address the ingress reverse proxy connects to for the
+	// MCP container. It is the container's resolved IP on the internal network
+	// (not its name) so the ingress proxy has no DNS dependency: under
+	// concurrent startup the container's DNS record can lag, and a hostname-based
+	// Squid cache_peer caches the failed lookup and never recovers within the
+	// readiness window (see #6063). Empty falls back to WorkloadName.
+	UpstreamHost string
 	// Permissions holds the network permission profile from the workload's
 	// permission profile, governing what outbound traffic is allowed.
 	Permissions *permissions.NetworkPermissions
-	// AllowDockerGateway, when true, skips the docker-gateway deny rules in the
-	// egress proxy configuration.
+	// AllowDockerGateway explicitly allows Docker/Podman host IPs and aliases
+	// on any port, replacing the default deny rules.
 	AllowDockerGateway bool
-	// GatewayIP is the Docker bridge gateway IP resolved at runtime.
-	GatewayIP string
+	// GatewayIPs is the canonical set of bridge gateways and runtime host-alias addresses.
+	GatewayIPs []netip.Addr
 	// TransportType is the MCP transport in use (e.g. "stdio", "sse",
 	// "streamable-http"). A value of "stdio" suppresses ingress proxy creation.
 	TransportType string

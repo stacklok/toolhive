@@ -38,9 +38,9 @@ type MaterializeRequest struct {
 	// ProjectRoot is the project root path for project-scoped installs.
 	// Empty for user-scoped.
 	ProjectRoot string
-	// Components is the plugin's component inventory, used to warn on
-	// component types the adapter does not materialize (e.g. Codex drops
-	// commands/agents).
+	// Components is the plugin's component inventory, used to report
+	// component types the target client does not load. Adapters still extract
+	// the complete plugin tree.
 	Components ComponentInventory
 }
 
@@ -58,12 +58,14 @@ type DematerializeRequest struct {
 	ProjectRoot string
 }
 
-// MaterializeResult reports what was written and what was deliberately dropped.
+// MaterializeResult reports what was written and which declared components
+// are outside the target client's loading capabilities. The latter are not
+// omitted from the extracted plugin tree.
 type MaterializeResult struct {
-	// InstalledComponents lists the component types the adapter materialized.
+	// InstalledComponents lists the component types the target client loads.
 	InstalledComponents []ComponentType
 	// DroppedComponents lists component types the plugin declares that this
-	// adapter does NOT materialize.
+	// client does not load. The complete plugin tree is still extracted.
 	DroppedComponents []ComponentType
 	// InstallPath is the root directory the adapter wrote (informational).
 	InstallPath string
@@ -91,8 +93,8 @@ type ScopeSupport struct {
 // and reverts its own mutations. It generalizes skills.PathResolver: instead
 // of resolving a single skill path, it owns extraction + (optional) config
 // mutation for a multi-component plugin tree, because the materialization
-// strategy differs per client (Claude Code = pure filesystem; Codex = FS
-// cache + TOML mutation).
+// strategy differs per client (Claude Code = filesystem + settings and
+// marketplace JSON; Codex = filesystem + marketplace JSON).
 type MaterializationAdapter interface {
 	// Materialize extracts the plugin into the client's directory layout and,
 	// for config-based clients, mutates the client config. Must be idempotent
@@ -103,6 +105,17 @@ type MaterializationAdapter interface {
 	// config mutations the adapter itself made. Must be idempotent: a missing
 	// install is not an error.
 	Dematerialize(ctx context.Context, req DematerializeRequest) error
+	// EnsureRegistered restores this plugin's marketplace/settings entries
+	// without re-extracting files. Used after restoring a plugin-tree snapshot
+	// so a failed upgrade does not leave the client unable to discover the
+	// plugin. Must be idempotent.
+	EnsureRegistered(ctx context.Context, req DematerializeRequest) error
+	// Health reports whether this plugin is fully materialized for the client:
+	// the plugin tree exists and any required marketplace or settings
+	// registration is present. A missing directory or registration is an
+	// error. Health must not hash shared files into a content digest — it is
+	// a presence check, not a pin.
+	Health(ctx context.Context, req DematerializeRequest) error
 	// SupportedComponents returns the component types this adapter loads.
 	SupportedComponents() []ComponentType
 	// ScopeSupport reports whether a project-scoped install degrades for this

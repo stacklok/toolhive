@@ -13,6 +13,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/go-jose/go-jose/v4"
 )
 
 // ToolHiveMCPClientName is the name advertised in dynamic client registration requests.
@@ -29,11 +31,40 @@ type DynamicClientRegistrationRequest struct {
 	GrantTypes              []string  `json:"grant_types,omitempty"`
 	ResponseTypes           []string  `json:"response_types,omitempty"`
 	Scopes                  ScopeList `json:"scope,omitempty"`
+	// JWKS is the inline public key set used by private_key_jwt clients.
+	JWKS                        *jose.JSONWebKeySet `json:"jwks,omitempty"`
+	JWKSURI                     string              `json:"jwks_uri,omitempty"`
+	TokenEndpointAuthSigningAlg string              `json:"token_endpoint_auth_signing_alg,omitempty"`
 
 	// SoftwareID is the RFC 7591 Section 2 "software_id": a unique identifier
 	// for the client software. Optional; servers may capture it for audit
 	// or telemetry but it is not required to register.
 	SoftwareID string `json:"software_id,omitempty"`
+}
+
+// UnmarshalJSON decodes the request, accepting trailing "=" padding in the
+// base64url members of an inline "jwks" as go-jose v3 did. It is the inbound
+// registration path's only use; the field type is unchanged so the outbound
+// client is unaffected.
+func (r *DynamicClientRegistrationRequest) UnmarshalJSON(data []byte) error {
+	type plain DynamicClientRegistrationRequest
+	aux := struct {
+		*plain
+		JWKS json.RawMessage `json:"jwks,omitempty"`
+	}{plain: (*plain)(r)}
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	r.JWKS = nil
+	if len(aux.JWKS) == 0 || string(aux.JWKS) == "null" {
+		return nil
+	}
+	jwks, err := UnmarshalJWKS(aux.JWKS)
+	if err != nil {
+		return err
+	}
+	r.JWKS = jwks
+	return nil
 }
 
 // ScopeList represents the "scope" field in both dynamic client registration requests and responses.
@@ -122,24 +153,30 @@ type DynamicClientRegistrationResponse struct {
 	ClientSecret string `json:"client_secret,omitempty"` //nolint:gosec // G117: field legitimately holds sensitive data
 
 	// Optional fields that may be returned
-	ClientIDIssuedAt        int64  `json:"client_id_issued_at,omitempty"`
-	ClientSecretExpiresAt   int64  `json:"client_secret_expires_at,omitempty"`
+	ClientIDIssuedAt int64 `json:"client_id_issued_at,omitempty"`
+	// ClientSecretExpiresAt is a pointer so the key is present (with value 0,
+	// "does not expire") exactly when client_secret is issued and absent
+	// otherwise: RFC 7591 §3.2.1 requires the key on any response carrying a
+	// secret, and 0 is the value this server legitimately returns for a
+	// confidential client — an int64 with omitempty would silently drop
+	// exactly that case, while a plain int64 would emit the key on public
+	// registrations that carry no secret.
+	ClientSecretExpiresAt   *int64 `json:"client_secret_expires_at,omitempty"`
 	RegistrationAccessToken string `json:"registration_access_token,omitempty"`
 	RegistrationClientURI   string `json:"registration_client_uri,omitempty"`
 
-	// Echo back the essential request fields. RFC 7591 §3.2.1 requires the
-	// AS to return redirect_uris, token_endpoint_auth_method, grant_types,
-	// and response_types in every successful registration response, so
-	// those four are emitted unconditionally (no omitempty) — a partial
-	// response built by a future code path that skips ValidateDCRRequest
-	// would still produce a spec-conformant key set, even if the values
-	// are empty.
-	ClientName              string    `json:"client_name,omitempty"`
-	RedirectURIs            []string  `json:"redirect_uris"`
-	TokenEndpointAuthMethod string    `json:"token_endpoint_auth_method"`
-	GrantTypes              []string  `json:"grant_types"`
-	ResponseTypes           []string  `json:"response_types"`
-	Scopes                  ScopeList `json:"scope,omitempty"`
+	// Echo back the essential request fields. response_types is omitted for
+	// private_key_jwt registrations because they support no response types;
+	// RFC 7591 has no wire encoding for that zero-element set.
+	ClientName                  string              `json:"client_name,omitempty"`
+	RedirectURIs                []string            `json:"redirect_uris"`
+	TokenEndpointAuthMethod     string              `json:"token_endpoint_auth_method"`
+	GrantTypes                  []string            `json:"grant_types"`
+	ResponseTypes               []string            `json:"response_types,omitempty"`
+	Scopes                      ScopeList           `json:"scope,omitempty"`
+	JWKS                        *jose.JSONWebKeySet `json:"jwks,omitempty"`
+	JWKSURI                     string              `json:"jwks_uri,omitempty"`
+	TokenEndpointAuthSigningAlg string              `json:"token_endpoint_auth_signing_alg,omitempty"`
 }
 
 // RegisterClientDynamically performs RFC 7591 Dynamic Client Registration against
@@ -292,6 +329,9 @@ func NewDefaultDCRClient() *http.Client {
 		Transport: &http.Transport{
 			TLSHandshakeTimeout:   10 * time.Second,
 			ResponseHeaderTimeout: 10 * time.Second,
+			IdleConnTimeout:       idleConnTimeout,
+			MaxIdleConns:          maxIdleConns,
+			MaxIdleConnsPerHost:   maxIdleConnsPerHost,
 		},
 	}
 }

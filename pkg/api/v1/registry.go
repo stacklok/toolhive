@@ -448,12 +448,12 @@ func (rr *RegistryRoutes) listRegistries(w http.ResponseWriter, _ *http.Request)
 
 //	 addRegistry
 //
-//		@Summary		Add a registry
-//		@Description	Add a new registry
+//		@Summary		Add a registry (unavailable)
+//		@Description	This endpoint is retained for API compatibility, accepts no request body, and always returns 501 Not Implemented.
+//		@Description	Custom registries are not currently supported.
 //		@Tags			registry
-//		@Accept			json
-//		@Produce		json
-//		@Success		501		{string}	string	"Not Implemented"
+//		@Produce		plain
+//		@Failure		501	{string}	string	"Not Implemented"
 //		@Router			/api/v1beta/registry [post]
 func (*RegistryRoutes) addRegistry(w http.ResponseWriter, _ *http.Request) {
 	// Currently, only the default registry is supported

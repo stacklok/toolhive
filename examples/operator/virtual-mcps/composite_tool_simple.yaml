@@ -100,6 +100,20 @@ spec:
     required:
       - url
 
+  # Explicit MCP tool annotations advertised to clients. When omitted,
+  # annotations are derived from the step tools at advertise time. The floor
+  # is fail-closed: any step whose annotations are nil/unknown (gofetch
+  # fetch and yardstick echo declare none) taints it conservatively to
+  # readOnly=false, destructive=true, openWorld=true. Declaring
+  # readOnlyHint: true here would CONTRADICT that floor and cause the tool
+  # to be DROPPED from tools/list at runtime with a warning — so we declare
+  # openWorldHint: true (honest: fetch makes HTTP calls) and let derivation
+  # fill the rest. This guardrail runs at advertise time, not at CRD
+  # admission; thv vmcp validate does not catch it.
+  annotations:
+    title: Fetch and Validate Data
+    openWorldHint: true
+
   # Sequential workflow steps
   steps:
     # Step 1: Fetch data from URL

@@ -7,11 +7,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
+	"strings"
 
 	"github.com/stacklok/toolhive-core/httperr"
 	"github.com/stacklok/toolhive/pkg/skills"
 	"github.com/stacklok/toolhive/pkg/skills/lockfile"
+	"github.com/stacklok/toolhive/pkg/skills/verifier"
 	"github.com/stacklok/toolhive/pkg/storage"
 )
 
@@ -22,8 +25,8 @@ import (
 // the lock file are reported (or removed with Prune). Check performs the
 // same reconciliation read-only: nothing is installed, written, or removed.
 func (s *service) Sync(ctx context.Context, opts skills.SyncOptions) (*skills.SyncResult, error) {
-	if !skills.LockFileFeatureEnabled() {
-		return nil, errExperimentalLockFeature
+	if err := validateSyncPublicKey(opts); err != nil {
+		return nil, err
 	}
 
 	_, projectRoot, err := normalizeProjectRoot(skills.ScopeProject, opts.ProjectRoot)
@@ -32,45 +35,109 @@ func (s *service) Sync(ctx context.Context, opts skills.SyncOptions) (*skills.Sy
 	}
 	opts.ProjectRoot = projectRoot
 
-	root, err := lockfile.OpenRoot(projectRoot)
+	var result *skills.SyncResult
+	err = s.projectTx.run(ctx, projectRoot, func() error {
+		root, openErr := lockfile.OpenRoot(projectRoot)
+		if openErr != nil {
+			return openErr
+		}
+		lf, loadErr := lockfile.Load(root)
+		if loadErr != nil {
+			return loadErr
+		}
+
+		installed, listErr := s.store.List(ctx, storage.ListFilter{
+			Scope: skills.ScopeProject, ProjectRoot: projectRoot,
+		})
+		if listErr != nil {
+			return fmt.Errorf("listing installed skills: %w", listErr)
+		}
+
+		names := make([]string, 0, len(lf.Skills)+len(installed))
+		seen := make(map[string]struct{}, len(lf.Skills)+len(installed))
+		for _, entry := range lf.Skills {
+			names = append(names, entry.Name)
+			seen[entry.Name] = struct{}{}
+		}
+		for _, sk := range installed {
+			if _, ok := seen[sk.Metadata.Name]; ok {
+				continue
+			}
+			names = append(names, sk.Metadata.Name)
+		}
+
+		result = &skills.SyncResult{}
+		for _, name := range names {
+			s.syncOne(ctx, opts, name, result)
+		}
+		return nil
+	})
+	return result, err
+}
+
+func validateSyncPublicKey(opts skills.SyncOptions) error {
+	if opts.PublicKey == "" {
+		return nil
+	}
+	if !opts.Adopt {
+		return httperr.WithCode(
+			errors.New("public_key (--public-key) is accepted only with adopt (--adopt)"),
+			http.StatusBadRequest,
+		)
+	}
+	if opts.Check {
+		return httperr.WithCode(
+			errors.New("public_key (--public-key) cannot be used when adopt runs in check mode"),
+			http.StatusBadRequest,
+		)
+	}
+	if _, err := verifier.DecodePublicKey(opts.PublicKey); err != nil {
+		return httperr.WithCode(fmt.Errorf("public_key: %w", err), http.StatusBadRequest)
+	}
+	return nil
+}
+
+// syncOne re-reads the lock entry and DB row under the held project
+// transaction, then reconciles that fresh state. The initial Sync snapshot
+// is only used to discover names; mutation from a stale view would
+// resurrect an uninstall or prune a concurrent install.
+func (s *service) syncOne(
+	ctx context.Context, opts skills.SyncOptions, name string, result *skills.SyncResult,
+) {
+	root, err := lockfile.OpenRoot(opts.ProjectRoot)
 	if err != nil {
-		return nil, err
+		result.Failed = append(result.Failed, skills.SyncFailure{
+			Name: name, Reason: classifySyncFailure(err), Error: err.Error(),
+		})
+		return
 	}
 	lf, err := lockfile.Load(root)
 	if err != nil {
-		return nil, err
+		result.Failed = append(result.Failed, skills.SyncFailure{
+			Name: name, Reason: classifySyncFailure(err), Error: err.Error(),
+		})
+		return
+	}
+	entry, hasEntry := lf.Get(name)
+
+	sk, err := s.store.Get(ctx, name, skills.ScopeProject, opts.ProjectRoot)
+	dbOK := err == nil
+	if err != nil && !errors.Is(err, storage.ErrNotFound) {
+		result.Failed = append(result.Failed, skills.SyncFailure{
+			Name: name, Reason: classifySyncFailure(err), Error: err.Error(),
+		})
+		return
 	}
 
-	installed, err := s.store.List(ctx, storage.ListFilter{Scope: skills.ScopeProject, ProjectRoot: projectRoot})
-	if err != nil {
-		return nil, fmt.Errorf("listing installed skills: %w", err)
-	}
-	installedByName := make(map[string]skills.InstalledSkill, len(installed))
-	for _, sk := range installed {
-		installedByName[sk.Metadata.Name] = sk
-	}
-
-	result := &skills.SyncResult{}
-	for _, entry := range lf.Skills {
-		sk, dbOK := installedByName[entry.Name]
+	if hasEntry {
 		s.syncLockedEntry(ctx, opts, entry, sk, dbOK, result)
+		return
 	}
-	for _, sk := range installed {
-		if _, ok := lf.Get(sk.Metadata.Name); ok {
-			continue // handled by the loop above
-		}
-		s.syncUnlockedInstall(ctx, opts, sk, result)
+	if !dbOK {
+		return
 	}
-
-	return result, nil
+	s.syncUnlockedInstall(ctx, opts, sk, result)
 }
-
-// errExperimentalLockFeature is returned by Sync/Upgrade while the lock file
-// feature is behind its rollout gate (skills.LockFileFeatureEnabled).
-var errExperimentalLockFeature = httperr.WithCode(
-	fmt.Errorf("skills lock file support is experimental; set %s=true to use it", skills.LockFileEnvVar),
-	http.StatusForbidden,
-)
 
 // syncLockedEntry reconciles one lock file entry against installed state,
 // appending its outcome to result. Missing (dbOK false) and drifted (digest
@@ -88,7 +155,19 @@ func (s *service) syncLockedEntry(
 	dbOK bool,
 	result *skills.SyncResult,
 ) {
-	if dbOK && entryMatchesInstalled(s.pathResolver, entry, sk) {
+	sigOK := true
+	if dbOK {
+		if sigErr := s.verifyStoredSignature(entry, sk); sigErr != nil {
+			// A failed offline re-verification is treated as drift: check
+			// mode reports it, apply mode reinstalls from the pinned
+			// reference — where install-time verification enforces the
+			// locked identity and, on success, heals the stored bundle.
+			sigOK = false
+			slog.Warn("stored signature failed offline re-verification",
+				"skill", entry.Name, "error", sigErr)
+		}
+	}
+	if dbOK && sigOK && entryMatchesInstalled(s.pathResolver, entry, sk, opts.Clients) {
 		result.AlreadyCurrent = append(result.AlreadyCurrent, entry.Name)
 		return
 	}
@@ -100,7 +179,7 @@ func (s *service) syncLockedEntry(
 	if opts.Check {
 		return
 	}
-	if err := s.reinstallPinned(ctx, opts, entry, sk, dbOK); err != nil {
+	if err := s.reinstallPinned(ctx, opts, entry); err != nil {
 		result.Failed = append(result.Failed, skills.SyncFailure{
 			Name: entry.Name, Reason: classifySyncFailure(err), Error: err.Error(),
 		})
@@ -110,18 +189,27 @@ func (s *service) syncLockedEntry(
 }
 
 // entryMatchesInstalled reports whether the installed skill's pinned digest
-// still matches the lock entry and EVERY client directory's on-disk
-// contentDigest does too. Checking only one client's copy would leave
-// tampering with any other client's materialized files invisible to
-// --check — and which directory got checked would depend on install order.
-func entryMatchesInstalled(pathResolver skills.PathResolver, entry lockfile.Entry, sk skills.InstalledSkill) bool {
+// still matches the lock entry, every expected client is present, and every
+// checked client directory's on-disk contentDigest matches. With no
+// --clients override, expected clients are every skill-supporting client
+// detected on the host so a newly installed client is not treated as current.
+func entryMatchesInstalled(
+	pathResolver skills.PathResolver, entry lockfile.Entry, sk skills.InstalledSkill, requestedClients []string,
+) bool {
 	if sk.Digest != entry.Digest {
 		return false
 	}
 	if len(sk.Clients) == 0 {
 		return false
 	}
-	for _, client := range sk.Clients {
+	expected := requestedClients
+	if len(expected) == 0 && pathResolver != nil {
+		expected = pathResolver.ListSkillSupportingClients()
+	}
+	if len(expected) == 0 || !clientsContainAll(sk.Clients, expected) {
+		return false
+	}
+	for _, client := range mergeClientLists(sk.Clients, expected) {
 		dir, err := pathResolver.GetSkillPath(client, sk.Metadata.Name, sk.Scope, sk.ProjectRoot)
 		if err != nil {
 			return false
@@ -135,29 +223,27 @@ func entryMatchesInstalled(pathResolver skills.PathResolver, entry lockfile.Entr
 }
 
 // reinstallPinned reinstalls entry at its pinned reference, preserving its
-// recorded Source (never re-resolving) and the clients it was previously
-// installed for unless the caller overrides them.
+// recorded Source (never re-resolving). Empty opts.Clients keeps Install's
+// all-detected default so a newly detected client is materialized.
+// Assumes the project transaction is already held.
 func (s *service) reinstallPinned(
-	ctx context.Context, opts skills.SyncOptions, entry lockfile.Entry, existing skills.InstalledSkill, dbOK bool,
+	ctx context.Context, opts skills.SyncOptions, entry lockfile.Entry,
 ) error {
 	pinnedRef, err := buildPinnedReference(entry)
 	if err != nil {
 		return fmt.Errorf("pinning %q: %w", entry.Name, err)
 	}
-	clients := opts.Clients
-	if len(clients) == 0 && dbOK {
-		clients = existing.Clients
-	}
-	_, err = s.Install(ctx, skills.InstallOptions{
+	_, err = s.installLocked(ctx, skills.InstallOptions{
 		Name:                  pinnedRef,
 		Scope:                 skills.ScopeProject,
 		ProjectRoot:           opts.ProjectRoot,
-		Clients:               clients,
+		Clients:               opts.Clients,
 		Force:                 true, // sync restores exactly the pinned content over any drifted files
 		LockSource:            entry.Source,
 		LockResolvedReference: entry.ResolvedReference, // preserve — pinnedRef is a restore form
 		SyncRestore:           true,                    // reinstall despite unchanged Digest — drift is on disk, not the pin
-	})
+		ExpectedCanonicalName: entry.Name,
+	}, pinnedRef, skills.ScopeProject, newDepState(), nil)
 	return err
 }
 
@@ -170,7 +256,7 @@ func (s *service) syncUnlockedInstall(
 	if !sk.Managed {
 		result.NeverManaged = append(result.NeverManaged, sk.Metadata.Name)
 		if opts.Adopt && !opts.Check {
-			if err := s.adoptSkill(ctx, sk); err != nil {
+			if err := s.adoptSkill(ctx, opts, sk); err != nil {
 				result.Failed = append(result.Failed, skills.SyncFailure{
 					Name: sk.Metadata.Name, Reason: classifySyncFailure(err), Error: err.Error(),
 				})
@@ -181,9 +267,9 @@ func (s *service) syncUnlockedInstall(
 
 	result.RemovedFromLock = append(result.RemovedFromLock, sk.Metadata.Name)
 	if opts.Prune && !opts.Check {
-		if err := s.Uninstall(ctx, skills.UninstallOptions{
+		if err := s.uninstallLocked(ctx, skills.UninstallOptions{
 			Name: sk.Metadata.Name, Scope: skills.ScopeProject, ProjectRoot: opts.ProjectRoot,
-		}); err != nil {
+		}, skills.ScopeProject); err != nil {
 			result.Failed = append(result.Failed, skills.SyncFailure{
 				Name: sk.Metadata.Name, Reason: classifySyncFailure(err), Error: err.Error(),
 			})
@@ -193,16 +279,94 @@ func (s *service) syncUnlockedInstall(
 	}
 }
 
+// verifyStoredSignature re-verifies the Sigstore bundle stored with an
+// installed skill against the identity its lock entry records — entirely
+// offline, via the embedded trust root. Entries recorded unsigned or with
+// no provenance have nothing to verify. A recorded identity with no stored
+// bundle fails closed for OCI installs (the bundle should exist); git
+// installs never store a bundle — their signature lives on the commit and
+// is re-verified when content is re-resolved.
+func (s *service) verifyStoredSignature(entry lockfile.Entry, sk skills.InstalledSkill) error {
+	if entry.Unsigned || entry.Provenance == nil {
+		return nil
+	}
+	if len(sk.SigstoreBundle) == 0 {
+		if !strings.Contains(entry.Digest, ":") {
+			return nil // git install: no stored bundle by design
+		}
+		return fmt.Errorf("%w: lock entry is pinned to %s but no bundle is stored",
+			verifier.ErrSignatureInvalid, describeLockAnchor(entry.Provenance))
+	}
+	if entry.Provenance.PublicKey != "" {
+		return s.verifyStoredKeySignature(entry, sk)
+	}
+	return s.artifactVerifier().VerifyBundleOffline(sk.SigstoreBundle, entry.Digest, entry.Provenance)
+}
+
+// describeLockAnchor names the trust anchor an entry pins, for errors that
+// report what could not be satisfied. A key entry records no signer identity,
+// so the keyless phrasing would have named an empty string.
+func describeLockAnchor(provenance *lockfile.Provenance) string {
+	if provenance.PublicKey != "" {
+		return "a cosign public key"
+	}
+	return fmt.Sprintf("signer %q", provenance.SignerIdentity)
+}
+
+// verifyStoredKeySignature re-verifies a key-signed stored bundle against the
+// public key its lock entry pins. Without this the keyless path rejects the
+// entry outright, and sync reads that as drift it can heal by reinstalling —
+// so a key-pinned skill reported as modified on every run and never settled,
+// while --check failed permanently on a project that was in fact intact.
+//
+// What the signature is checked against is the lock entry's digest — the
+// artifact the project is pinned to. A cosign signature covers a
+// simple-signing payload rather than the artifact, but that payload is stored
+// with the bundle, so it is recovered from there and checked to name this
+// digest. Nothing is rebuilt from a reference: a payload reconstructed from a
+// reference verifies against whatever that reference claims, which is exactly
+// the check a signature lifted from another artifact passes.
+func (s *service) verifyStoredKeySignature(entry lockfile.Entry, sk skills.InstalledSkill) error {
+	pubKeyPEM, err := verifier.DecodePublicKey(entry.Provenance.PublicKey)
+	if err != nil {
+		return fmt.Errorf("%w: lock entry's pinned %s", verifier.ErrSignatureInvalid, err.Error())
+	}
+	return s.artifactVerifier().VerifyBundleOfflineWithKey(sk.SigstoreBundle, entry.Digest, pubKeyPEM)
+}
+
 // adoptSkill writes a lock entry for an existing, unmanaged project-scope
 // install, pinning its current on-disk state. The install's own Reference is
 // used as Source: an adopted install predates (or never went through) lock
 // tracking, so the original user-typed request is not recoverable — the
 // concrete resolved reference is the closest available fact to pin against.
-func (s *service) adoptSkill(ctx context.Context, sk skills.InstalledSkill) error {
+//
+// Trust state is back-filled from the stored Sigstore bundle when one
+// exists; otherwise adoption is the same trust decision as an unsigned
+// install and requires the explicit AllowUnsigned exception.
+//
+// Assumes the project transaction is already held. If marking the skill
+// managed fails after the lock entry is written, the pre-adopt lock entry
+// is restored (or the newly created entry is removed).
+func (s *service) adoptSkill(ctx context.Context, opts skills.SyncOptions, sk skills.InstalledSkill) error {
 	contentDigest, err := computeContentDigest(s.pathResolver, sk)
 	if err != nil {
 		return fmt.Errorf("computing content digest: %w", err)
 	}
+	provenance, unsigned, err := s.resolveAdoptionTrust(opts, sk)
+	if err != nil {
+		return err
+	}
+
+	var prevEntry *lockfile.Entry
+	if root, rootErr := lockfile.OpenRoot(sk.ProjectRoot); rootErr == nil {
+		if lf, loadErr := lockfile.Load(root); loadErr == nil {
+			if e, ok := lf.Get(sk.Metadata.Name); ok {
+				prev := e
+				prevEntry = &prev
+			}
+		}
+	}
+
 	if err := recordLockEntry(sk.ProjectRoot, lockEntryInput{
 		Name:              sk.Metadata.Name,
 		Version:           sk.Metadata.Version,
@@ -210,14 +374,91 @@ func (s *service) adoptSkill(ctx context.Context, sk skills.InstalledSkill) erro
 		ResolvedReference: sk.Reference,
 		Digest:            sk.Digest,
 		ContentDigest:     contentDigest,
+		Provenance:        provenance,
+		Unsigned:          unsigned,
 	}); err != nil {
 		return fmt.Errorf("writing lock entry: %w", errors.Join(errLockWrite, err))
 	}
 	sk.Managed = true
 	if err := s.store.Update(ctx, sk); err != nil {
+		if restoreErr := restoreAdoptedLockEntry(sk.ProjectRoot, sk.Metadata.Name, prevEntry); restoreErr != nil {
+			return errors.Join(
+				fmt.Errorf("marking skill as lock-managed: %w", err),
+				fmt.Errorf("restoring lock entry after failed adopt: %w", restoreErr),
+			)
+		}
 		return fmt.Errorf("marking skill as lock-managed: %w", err)
 	}
 	return nil
+}
+
+func (s *service) resolveAdoptionTrust(
+	opts skills.SyncOptions, sk skills.InstalledSkill,
+) (*lockfile.Provenance, bool, error) {
+	if len(sk.SigstoreBundle) == 0 {
+		if !opts.AllowUnsigned {
+			return nil, false, httperr.WithCode(
+				fmt.Errorf("%w: adopting %q records it as unsigned; pass --allow-unsigned to accept that",
+					verifier.ErrUnsigned, sk.Metadata.Name),
+				http.StatusForbidden,
+			)
+		}
+		return nil, true, nil
+	}
+
+	result, err := s.artifactVerifier().ResultFromBundle(sk.SigstoreBundle, sk.Digest)
+	if errors.Is(err, verifier.ErrKeySigned) {
+		provenance, keyErr := s.resolveKeySignedAdoption(opts, sk, err)
+		return provenance, false, keyErr
+	}
+	if err != nil {
+		return nil, false, fmt.Errorf("verifying stored bundle for adoption: %w", err)
+	}
+	return provenanceInfoToLock(provenanceInfoFromResult(result)), false, nil
+}
+
+func (s *service) resolveKeySignedAdoption(
+	opts skills.SyncOptions, sk skills.InstalledSkill, keySignedErr error,
+) (*lockfile.Provenance, error) {
+	if opts.PublicKey == "" {
+		return nil, httperr.WithCode(
+			fmt.Errorf("%w: %q is signed with a cosign key pair, so adoption requires"+
+				" --public-key to verify and record its trust anchor"+
+				" (--allow-unsigned is not a substitute: the artifact is signed)",
+				keySignedErr, sk.Metadata.Name),
+			http.StatusForbidden,
+		)
+	}
+	pubKeyPEM, err := verifier.DecodePublicKey(opts.PublicKey)
+	if err != nil {
+		return nil, httperr.WithCode(fmt.Errorf("public_key: %w", err), http.StatusBadRequest)
+	}
+	if err := s.artifactVerifier().VerifyBundleOfflineWithKey(
+		sk.SigstoreBundle, sk.Digest, pubKeyPEM,
+	); err != nil {
+		return nil, httperr.WithCode(
+			fmt.Errorf("%q does not verify against the supplied cosign public key: %w",
+				sk.Metadata.Name, err),
+			http.StatusForbidden,
+		)
+	}
+	return &lockfile.Provenance{PublicKey: opts.PublicKey}, nil
+}
+
+// restoreAdoptedLockEntry undoes adoptSkill's lock write: reinstates the
+// entry observed before adoption, or removes the name if none existed.
+func restoreAdoptedLockEntry(projectRoot, name string, prevEntry *lockfile.Entry) error {
+	if prevEntry != nil {
+		root, err := lockfile.OpenRoot(projectRoot)
+		if err != nil {
+			return err
+		}
+		return lockfile.UpsertEntry(root, *prevEntry)
+	}
+	_, err := removeLockEntry(skills.UninstallOptions{
+		Name: name, Scope: skills.ScopeProject, ProjectRoot: projectRoot,
+	})
+	return err
 }
 
 // classifySyncFailure maps an error from the install/uninstall path to an
@@ -230,6 +471,9 @@ func (s *service) adoptSkill(ctx context.Context, sk skills.InstalledSkill) erro
 func classifySyncFailure(err error) skills.FailureReason {
 	if errors.Is(err, errLockWrite) {
 		return skills.FailureReasonLockWriteFailed
+	}
+	if reason := classifySignatureError(err); reason != "" {
+		return reason
 	}
 	switch httperr.Code(err) {
 	case http.StatusNotFound:

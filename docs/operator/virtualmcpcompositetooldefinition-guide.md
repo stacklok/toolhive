@@ -141,6 +141,39 @@ Request user input during workflow execution.
   defaultResponse: false
 ```
 
+**Handling decline, cancel and timeout**: Use `onDecline` and `onCancel` to choose what happens when the user does not accept. Each takes an `action` of `abort`, `skip_remaining` or `continue`. The default is `abort`. When the step's own `timeout` expires, `onCancel` applies. If the workflow timeout or the client's request deadline ends while the step waits, the workflow is reported as a timeout or failure instead.
+
+| Action | Effect |
+|--------|--------|
+| `abort` | The workflow fails. |
+| `skip_remaining` | The workflow stops. Steps that have not run are marked `skipped`. The workflow completes successfully. |
+| `continue` | The workflow goes on. Later steps should use a `condition` to check the answer. |
+
+```yaml
+- id: confirm
+  type: elicitation
+  message: "Deploy to production?"
+  schema:
+    type: object
+    properties:
+      proceed:
+        type: boolean
+  onDecline:
+    action: skip_remaining
+  onCancel:
+    action: abort
+
+- id: deploy
+  type: tool
+  tool: kubectl.apply
+  dependsOn: [confirm]
+```
+
+- When `skip_remaining` stops the workflow, only steps that depend on the elicitation step, directly or through a chain of `dependsOn`, are guaranteed not to run. A step that does not depend on it may already have run, or may be running at the same time. If it is still running when the workflow stops, it is cancelled and reported as `failed`.
+- With `continue`, the elicitation step output has an `action` field: `decline`, `cancel` or `timeout`. When the user accepts, `action` is `accept` and the answers are in `content`. Guard every later step, not only the next one, with a condition such as `{{eq .steps.confirm.output.action "accept"}}`. A step skipped by its condition does not stop the steps that depend on it.
+- With `skip_remaining` and no `output:` section, the client normally gets `{"action": "decline"|"cancel"|"timeout", "skipped": true}`. This is the output of the last step that completed.
+- If `output:` reads a field of a step that comes after the gate, give that step `defaultResults`. Skipped steps use these values.
+
 #### forEach
 Iterate over a collection produced by a previous step, executing an inner tool step for each item with configurable parallelism.
 
@@ -346,6 +379,77 @@ spec:
 **Failure Modes**:
 - `abort`: Stop on first failure (default)
 - `continue`: Execute all steps regardless of failures
+
+### Annotations
+
+Declare MCP tool annotations for the composite tool. Annotations are behavioral
+hints advertised to MCP clients in `tools/list` responses.
+
+```yaml
+spec:
+  name: user_report
+  description: Generate a read-only user report
+
+  annotations:
+    title: User Report
+    readOnlyHint: true
+
+  steps:
+    - id: get_user
+      tool: users.get
+```
+
+**Fields** (all optional; all hints are booleans):
+
+| Field             | Type   | Default           | Semantics |
+|-------------------|--------|-------------------|-----------|
+| `title`           | string | derived (none)    | Human-readable title. Explicit value wins when set. |
+| `readOnlyHint`    | bool   | derived from steps | The composite tool does not modify its environment. |
+| `destructiveHint` | bool   | derived from steps | The composite tool may perform destructive updates. |
+| `idempotentHint`  | bool   | none              | Repeated calls with the same arguments have no additional effect. Never derived — only advertised when explicitly declared. |
+| `openWorldHint`   | bool   | derived from steps | The composite tool interacts with external entities. |
+
+**When `annotations` is omitted**, annotations are derived at advertise time
+from the annotations of the backend tools referenced by the workflow's steps
+(including `forEach` inner steps):
+
+- `readOnlyHint`: **AND** across steps — `true` only when every step tool
+  declares `readOnlyHint: true`; any step that is nil or `false` makes it `false`.
+- `destructiveHint`: **OR** across steps — `true` when any step declares it
+  `true`, or when any step's annotations are unknown.
+- `openWorldHint`: **OR** across steps — same rule as `destructiveHint`.
+- `idempotentHint`: never derived (left unset).
+
+> **Client compatibility note:** existing composite tools that previously
+> advertised no annotations now advertise the fail-closed floor
+> (`destructiveHint: true`, `openWorldHint: true`, `readOnlyHint: false`) when
+> they have tool steps. That matches the MCP spec defaults for omitted hints, so
+> conformant clients are unaffected — but clients that branch on
+> `annotations != nil` may start treating composites as destructive.
+
+**When `annotations` is set**, the explicit values are merged over the derived
+floor: each explicitly set field wins; unset fields keep the derived value.
+
+**Safety floor and contradiction guardrail**: an explicit hint may be *more
+conservative* than the derived floor (e.g. `readOnlyHint: false` when the floor
+is `true`), but it may never make the tool look *safer* than its steps allow
+(e.g. `readOnlyHint: true` when a step is not read-only, or
+`destructiveHint: false` when a step is destructive). The floor is
+**fail-closed**: when a workflow has one or more tool steps the floor is always
+non-nil, and any step whose annotations are nil or unknown taints it
+conservatively (`readOnly=false`, `destructive=true`, `openWorld=true`). In the
+common case where backends declare no annotations (e.g. yardstick echo), the
+floor is that conservative set, so an explicit `readOnlyHint: true` will
+contradict it and be dropped. This guardrail runs at **runtime (advertise
+time)**, not at admission: a contradicting composite tool is omitted from
+`tools/list` and is also uncallable via `tools/call` (with a warning naming the
+offending step tools in the vMCP logs), while the VirtualMCPServer stays Ready.
+
+> **`thv vmcp validate` does NOT check annotation contradictions.** A composite
+> tool definition that passes validation can still be dropped at runtime if its
+> explicit annotations contradict the derived safety floor — contradictions only
+> surface in the vMCP logs at advertise time. It cannot run at admission because
+> step-tool annotations are only known once backends are aggregated.
 
 ### Template Syntax
 

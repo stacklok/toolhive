@@ -347,7 +347,7 @@ func TestPush(t *testing.T) {
 	}{
 		{
 			name: "nil registry returns 500",
-			opts: skills.PushOptions{Reference: "ghcr.io/test/skill:v1"},
+			opts: skills.PushOptions{Reference: "ghcr.io/test/skill:v1", NoSign: true},
 			setup: func(_ *gomock.Controller) (ociskills.RegistryClient, *ociskills.Store) {
 				return nil, nil
 			},
@@ -365,7 +365,7 @@ func TestPush(t *testing.T) {
 		},
 		{
 			name: "resolve not found returns 404",
-			opts: skills.PushOptions{Reference: "nonexistent"},
+			opts: skills.PushOptions{Reference: "nonexistent", NoSign: true},
 			setup: func(ctrl *gomock.Controller) (ociskills.RegistryClient, *ociskills.Store) {
 				ociStore, err := ociskills.NewStore(t.TempDir())
 				require.NoError(t, err)
@@ -375,7 +375,7 @@ func TestPush(t *testing.T) {
 		},
 		{
 			name: "registry push error propagates",
-			opts: skills.PushOptions{Reference: "my-tag"},
+			opts: skills.PushOptions{Reference: "my-tag", NoSign: true},
 			setup: func(ctrl *gomock.Controller) (ociskills.RegistryClient, *ociskills.Store) {
 				ociStore, err := ociskills.NewStore(t.TempDir())
 				require.NoError(t, err)
@@ -393,7 +393,7 @@ func TestPush(t *testing.T) {
 		},
 		{
 			name: "successful push",
-			opts: skills.PushOptions{Reference: "my-tag"},
+			opts: skills.PushOptions{Reference: "my-tag", NoSign: true},
 			setup: func(ctrl *gomock.Controller) (ociskills.RegistryClient, *ociskills.Store) {
 				ociStore, err := ociskills.NewStore(t.TempDir())
 				require.NoError(t, err)

@@ -75,7 +75,7 @@ func TestNewOIDCAuthMiddleware_CABundlePath(t *testing.T) {
 				CABundlePath:       tt.caBundlePath,
 			}
 
-			authMw, _, err := newOIDCAuthMiddleware(t.Context(), oidcCfg, nil, nil)
+			authMw, _, err := newOIDCAuthMiddleware(t.Context(), oidcCfg, nil, nil, "")
 
 			if tt.wantErr {
 				require.Error(t, err)

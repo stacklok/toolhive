@@ -805,6 +805,77 @@ func TestNewSessionFactory_BackendInitTimeout(t *testing.T) {
 	require.NoError(t, sess.Close())
 }
 
+// slowBackendConnector returns a connector that only succeeds once d has
+// elapsed, so a session-init deadline shorter than d yields a partial failure.
+func slowBackendConnector(d time.Duration) backendConnector {
+	return func(ctx context.Context, _ *vmcp.BackendTarget, _ *auth.Identity, _ string, _ internalbk.ListChangedSink) (internalbk.Session, *vmcp.CapabilityList, error) {
+		timer := time.NewTimer(d)
+		defer timer.Stop()
+		select {
+		case <-ctx.Done():
+			return nil, nil, ctx.Err()
+		case <-timer.C:
+			return &mockConnectedBackend{}, &vmcp.CapabilityList{
+				Tools: []vmcp.Tool{{Name: "ready"}},
+			}, nil
+		}
+	}
+}
+
+// A longer workload timeout extends the DEFAULT init allowance, so a slow
+// backend still gets to finish. backendInitTimeout is assigned directly to keep
+// the wait short: going through WithBackendInitTimeout would mark it explicit,
+// which is the case the next test covers.
+func TestNewSessionFactory_DefaultBackendInitTimeoutIsExtended(t *testing.T) {
+	t.Parallel()
+
+	backend := &vmcp.Backend{ID: "slow", Name: "slow", BaseURL: "http://x:9", TransportType: "streamable-http"}
+	factory := newSessionFactoryWithConnector(
+		slowBackendConnector(150*time.Millisecond),
+		WithRequestTimeoutResolver(func(workloadID string) time.Duration {
+			if workloadID == "slow" {
+				return time.Second
+			}
+			return 50 * time.Millisecond
+		}),
+	)
+	factory.backendInitTimeout = 50 * time.Millisecond
+
+	sess, err := factory.MakeSessionWithID(
+		context.Background(), uuid.New().String(), nil, []*vmcp.Backend{backend}, nil,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, sess)
+	assert.Len(t, sess.Tools(), 1, "workload timeout should extend the default init allowance")
+	require.NoError(t, sess.Close())
+}
+
+// An explicit cap is deliberate and a longer workload timeout must not raise
+// it: the operator set it because this backend can stall the handshake past the
+// client's own connect timeout.
+func TestNewSessionFactory_ExplicitBackendInitTimeoutIsNotExtended(t *testing.T) {
+	t.Parallel()
+
+	backend := &vmcp.Backend{ID: "slow", Name: "slow", BaseURL: "http://x:9", TransportType: "streamable-http"}
+	factory := newSessionFactoryWithConnector(
+		slowBackendConnector(150*time.Millisecond),
+		WithBackendInitTimeout(50*time.Millisecond),
+		WithRequestTimeoutResolver(func(workloadID string) time.Duration {
+			if workloadID == "slow" {
+				return time.Second
+			}
+			return 50 * time.Millisecond
+		}),
+	)
+	sess, err := factory.MakeSessionWithID(
+		context.Background(), uuid.New().String(), nil, []*vmcp.Backend{backend}, nil,
+	)
+	require.NoError(t, err, "the cap is a partial failure, not a hard error")
+	require.NotNil(t, sess)
+	assert.Empty(t, sess.Tools(), "explicit cap should bound init despite the longer workload timeout")
+	require.NoError(t, sess.Close())
+}
+
 func TestNewSessionFactory_ParallelInit(t *testing.T) {
 	t.Parallel()
 

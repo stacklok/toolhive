@@ -9,7 +9,7 @@ Design proposals for ToolHive have been moved to a dedicated repository:
 - Better visibility and discoverability of design proposals
 - Cleaner separation between code and design discussions
 - Easier to track and reference RFCs independently
-- Serves the entire ToolHive ecosystem (CLI, Studio, Registry, Cloud UI)
+- Serves the entire ToolHive ecosystem (CLI, Studio, Registry)
 - Community members can participate in design discussions without cloning the main codebase
 
 ## How to contribute a design proposal

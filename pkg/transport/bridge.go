@@ -218,33 +218,27 @@ func (b *StdioBridge) forwardAll(ctx context.Context) {
 		}
 	}
 
-	// Resources -> return []mcp.ResourceContents
+	// Resources -> full result passthrough so upstream _meta reaches the client
 	slog.Debug("forwarding resources from upstream to local stdio server")
 	if lr, err := b.up.ListResources(ctx, mcp.ListResourcesRequest{}); err == nil {
 		for _, res := range lr.Resources {
 			resCopy := res
-			b.srv.AddResource(resCopy, func(ctx context.Context, req mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
-				out, err := b.up.ReadResource(ctx, req)
-				if err != nil {
-					return nil, err
-				}
-				return out.Contents, nil
-			})
+			b.srv.AddResourceWithResult(resCopy,
+				func(ctx context.Context, req mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
+					return b.up.ReadResource(ctx, req)
+				})
 		}
 	}
 
-	// Resource templates -> same return type as resources
+	// Resource templates -> same result-returning shape as resources
 	slog.Debug("forwarding resource templates from upstream to local stdio server")
 	if lt, err := b.up.ListResourceTemplates(ctx, mcp.ListResourceTemplatesRequest{}); err == nil {
 		for _, tpl := range lt.ResourceTemplates {
 			tplCopy := tpl
-			b.srv.AddResourceTemplate(tplCopy, func(ctx context.Context, req mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
-				out, err := b.up.ReadResource(ctx, req)
-				if err != nil {
-					return nil, err
-				}
-				return out.Contents, nil
-			})
+			b.srv.AddResourceTemplateWithResult(tplCopy,
+				func(ctx context.Context, req mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
+					return b.up.ReadResource(ctx, req)
+				})
 		}
 	}
 

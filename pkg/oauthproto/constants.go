@@ -5,6 +5,19 @@ package oauthproto
 
 import "time"
 
+// Idle-connection-pool bounds for the hand-built HTTP transports in this
+// package (NewDefaultDCRClient, buildDiscoveryHTTPClient). They mirror the
+// bounds pkg/networking.Build applies via networking.SetIdleConnBounds; a zero
+// IdleConnTimeout never expires a pooled connection, pinning a socket and its
+// goroutine pair for the process lifetime. pkg/networking imports this package,
+// so it cannot reference networking's constants without an import cycle — keep
+// these values in sync with networking's Build bounds by hand.
+const (
+	idleConnTimeout     = 90 * time.Second
+	maxIdleConns        = 100
+	maxIdleConnsPerHost = 4
+)
+
 // Well-known endpoint paths as defined by RFC 8414, OpenID Connect Discovery 1.0, and RFC 9728.
 const (
 	// WellKnownOIDCPath is the standard OIDC discovery endpoint path
@@ -49,6 +62,10 @@ const (
 	// TokenEndpointAuthMethodClientSecretPost sends the client credentials in the
 	// request body at the token endpoint (RFC 6749 Section 2.3.1).
 	TokenEndpointAuthMethodClientSecretPost = "client_secret_post"
+
+	// TokenEndpointAuthMethodPrivateKeyJWT authenticates with a signed client
+	// assertion at the token endpoint (RFC 7523).
+	TokenEndpointAuthMethodPrivateKeyJWT = "private_key_jwt" //nolint:gosec // G101: RFC 7591 auth-method identifier
 )
 
 // PKCE (Proof Key for Code Exchange) methods as defined by RFC 7636.
@@ -75,7 +92,24 @@ const (
 	// as the `requested_token_type` in an RFC 8693 token exchange when the IdP is
 	// asked to mint an ID-JAG for a target application.
 	TokenTypeIDJAG = "urn:ietf:params:oauth:token-type:id-jag"
+
+	// JWTTypeIDJAG is the JOSE `typ` header value of an ID-JAG, as defined by
+	// draft-ietf-oauth-identity-assertion-authz-grant.
+	JWTTypeIDJAG = "oauth-id-jag+jwt"
+
+	// TokenTypeRefreshToken indicates an OAuth 2.0 refresh token (RFC 8693 Section 3).
+	TokenTypeRefreshToken = "urn:ietf:params:oauth:token-type:refresh_token"
 )
+
+// TokenTypeNotApplicable is the RFC 6749 token_type for a response whose
+// access_token member is not an access token (RFC 8693 Section 2.2.1), that is,
+// a token that cannot be used as a bearer access token. The ID-JAG draft
+// requires it on the response that carries an ID-JAG (Section 4.3.4).
+const TokenTypeNotApplicable = "N_A"
+
+// ParamIssuedTokenType is the name of the token exchange response parameter that
+// carries the type of the issued token (RFC 8693 Section 2.2.1).
+const ParamIssuedTokenType = "issued_token_type" //nolint:gosec // G101: RFC 8693 response parameter name, not a credential
 
 // Grant type URNs for token exchange protocols.
 //
@@ -86,6 +120,10 @@ const (
 
 	// GrantTypeJWTBearer is the JWT Bearer grant type (RFC 7523).
 	GrantTypeJWTBearer = "urn:ietf:params:oauth:grant-type:jwt-bearer"
+
+	// GrantTypeDeviceCode is the OAuth 2.0 Device Authorization Grant's token
+	// grant type (RFC 8628 Section 3.4).
+	GrantTypeDeviceCode = "urn:ietf:params:oauth:grant-type:device_code"
 )
 
 // HTTP client constants.

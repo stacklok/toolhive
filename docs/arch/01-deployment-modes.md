@@ -168,8 +168,9 @@ graph TB
 
 1. **User starts UI**: ToolHive Studio application launches
 
-2. **Studio spawns API server**: `thv serve`
-   - Starts HTTP API server on configurable port (default: 8080)
+2. **Studio spawns API server**: `thv serve --openapi --socket=<path>`
+   - Binds a UNIX socket (a named pipe on Windows), not a TCP port, so the API
+     is reachable only by local processes — no web page can reach it
    - Exposes RESTful endpoints for workload management
 
 3. **API Server (`pkg/api/server.go`)**:

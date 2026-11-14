@@ -28,7 +28,37 @@ func TestCosineSimilarity(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			require.InDelta(t, tc.want, CosineSimilarity(tc.a, tc.b), 1e-7)
+			got, err := CosineSimilarity(tc.a, tc.b)
+			require.NoError(t, err)
+			require.InDelta(t, tc.want, got, 1e-7)
+		})
+	}
+}
+
+// TestCosineSimilarity_DimensionMismatch asserts mismatched widths are refused
+// rather than computed. Without the guard, a shorter b panics on indexing and
+// a longer b silently ignores its tail — a wrong answer, not an error.
+func TestCosineSimilarity_DimensionMismatch(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		a, b []float32
+	}{
+		{name: "b shorter would panic", a: []float32{1, 2, 3}, b: []float32{1, 2}},
+		{name: "b longer would be silently truncated", a: []float32{1, 2}, b: []float32{1, 2, 3}},
+		{name: "empty against non-empty", a: nil, b: []float32{1}},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := CosineSimilarity(tc.a, tc.b)
+			require.Error(t, err)
+
+			_, err = CosineDistance(tc.a, tc.b)
+			require.Error(t, err)
 		})
 	}
 }
@@ -49,7 +79,9 @@ func TestCosineDistance(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			require.InDelta(t, tc.want, CosineDistance(tc.a, tc.b), 1e-7)
+			got, err := CosineDistance(tc.a, tc.b)
+			require.NoError(t, err)
+			require.InDelta(t, tc.want, got, 1e-7)
 		})
 	}
 }

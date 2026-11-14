@@ -5,10 +5,13 @@ package docker
 
 import (
 	"context"
+	"net/netip"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/mount"
@@ -47,7 +50,7 @@ func TestCreateSquidContainer_Basics(t *testing.T) {
 
 	c := &Client{
 		api:          api,
-		imageManager: &fakeImageManager{},
+		imageManager: &fakeImageManager{pulledImages: map[string]struct{}{defaultSquidImage: {}}},
 	}
 
 	_, err := createSquidContainer(
@@ -89,7 +92,7 @@ func TestCreateSquidContainer_Basics(t *testing.T) {
 func TestCreateTempEgressSquidConf_AllowAllWhenNil(t *testing.T) {
 	t.Parallel()
 
-	fp, err := createTempEgressSquidConf(nil, "server", false, dockerDefaultBridgeGatewayIP)
+	fp, err := createTempEgressSquidConf(nil, "server", false, testGatewayIPs)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = os.Remove(fp) })
 
@@ -124,7 +127,7 @@ func TestCreateTempEgressSquidConf_AllowAllWhenInsecure(t *testing.T) {
 			InsecureAllowAll: true,
 		},
 	}
-	fp, err := createTempEgressSquidConf(cfg, "server", false, dockerDefaultBridgeGatewayIP)
+	fp, err := createTempEgressSquidConf(cfg, "server", false, testGatewayIPs)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = os.Remove(fp) })
 
@@ -161,7 +164,7 @@ func TestCreateTempEgressSquidConf_WithACLs(t *testing.T) {
 			AllowHost:        []string{"example.com", "api.github.com"},
 		},
 	}
-	fp, err := createTempEgressSquidConf(cfg, "edge", false, dockerDefaultBridgeGatewayIP)
+	fp, err := createTempEgressSquidConf(cfg, "edge", false, testGatewayIPs)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = os.Remove(fp) })
 
@@ -193,7 +196,7 @@ func TestCreateTempEgressSquidConf_WithACLs(t *testing.T) {
 func TestCreateTempIngressSquidConf_Basics(t *testing.T) {
 	t.Parallel()
 
-	fp, err := createTempIngressSquidConf("svc-example", 8080, 18080, nil)
+	fp, err := createTempIngressSquidConf("svc-example", "10.89.0.7", 8080, 18080, nil)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = os.Remove(fp) })
 
@@ -203,8 +206,10 @@ func TestCreateTempIngressSquidConf_Basics(t *testing.T) {
 
 	assert.Contains(t, s, "visible_hostname svc-example-ingress")
 	assert.Contains(t, s, "\n# Reverse proxy setup for port 8080\n")
+	// defaultsite keeps the name; cache_peer targets the resolved upstream IP so
+	// the peer has no DNS lookup to latch on (see #6063).
 	assert.Contains(t, s, "http_port 0.0.0.0:18080 accel defaultsite=svc-example")
-	assert.Contains(t, s, "cache_peer svc-example parent 8080 0 no-query originserver name=origin_8080")
+	assert.Contains(t, s, "cache_peer 10.89.0.7 parent 8080 0 no-query originserver name=origin_8080")
 	// standby=2 pre-warms upstream connections so a cold first GET SSE stream is
 	// not reordered behind a later POST (fixes the sampling conformance flake).
 	assert.Contains(t, s, "connect-timeout=5 connect-fail-limit=5 standby=2")
@@ -226,7 +231,7 @@ func TestCreateTempIngressSquidConf_WithOverrideHosts(t *testing.T) {
 		},
 	}
 
-	fp, err := createTempIngressSquidConf("svc-example", 8080, 18080, networkPermissions)
+	fp, err := createTempIngressSquidConf("svc-example", "10.89.0.7", 8080, 18080, networkPermissions)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = os.Remove(fp) })
 
@@ -237,7 +242,7 @@ func TestCreateTempIngressSquidConf_WithOverrideHosts(t *testing.T) {
 	assert.Contains(t, s, "visible_hostname svc-example-ingress")
 	assert.Contains(t, s, "\n# Reverse proxy setup for port 8080\n")
 	assert.Contains(t, s, "http_port 0.0.0.0:18080 accel defaultsite=svc-example")
-	assert.Contains(t, s, "cache_peer svc-example parent 8080 0 no-query originserver name=origin_8080")
+	assert.Contains(t, s, "cache_peer 10.89.0.7 parent 8080 0 no-query originserver name=origin_8080")
 
 	// Test that override mode is used - no default ACLs
 	assert.NotContains(t, s, "acl site_8080 dstdomain svc-example")
@@ -269,7 +274,7 @@ func TestCreateTempIngressSquidConf_EmptyInboundHosts(t *testing.T) {
 		},
 	}
 
-	fp, err := createTempIngressSquidConf("svc-example", 8080, 18080, networkPermissions)
+	fp, err := createTempIngressSquidConf("svc-example", "10.89.0.7", 8080, 18080, networkPermissions)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = os.Remove(fp) })
 
@@ -410,7 +415,7 @@ func TestCreateTempEgressSquidConf_DockerGatewayBlocking(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			fp, err := createTempEgressSquidConf(tt.permissions, "server", tt.allowDockerGateway, dockerDefaultBridgeGatewayIP)
+			fp, err := createTempEgressSquidConf(tt.permissions, "server", tt.allowDockerGateway, testGatewayIPs)
 			require.NoError(t, err)
 			t.Cleanup(func() { _ = os.Remove(fp) })
 
@@ -495,15 +500,58 @@ func TestGetSquidImage(t *testing.T) {
 func TestTempFilesWrittenToSystemTempDir(t *testing.T) {
 	t.Parallel()
 
-	fp1, err := createTempEgressSquidConf(nil, "s1", false, dockerDefaultBridgeGatewayIP)
+	fp1, err := createTempEgressSquidConf(nil, "s1", false, testGatewayIPs)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = os.Remove(fp1) })
 
-	fp2, err := createTempIngressSquidConf("s2", 8081, 18081, nil)
+	fp2, err := createTempIngressSquidConf("s2", "10.89.0.8", 8081, 18081, nil)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = os.Remove(fp2) })
 
 	tempDir := os.TempDir()
 	assert.True(t, strings.HasPrefix(filepath.Clean(fp1), filepath.Clean(tempDir)))
 	assert.True(t, strings.HasPrefix(filepath.Clean(fp2), filepath.Clean(tempDir)))
+}
+
+func TestEgressSquidConfigRendersEveryGatewayBeforeProfileAllows(t *testing.T) {
+	t.Parallel()
+
+	gateways := []netip.Addr{
+		netip.MustParseAddr("10.0.0.1"),
+		netip.MustParseAddr("2001:db8::1"),
+	}
+	path, err := createTempEgressSquidConf(nil, "server", false, gateways)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.Remove(path) })
+
+	contents, err := os.ReadFile(path)
+	require.NoError(t, err)
+	config := string(contents)
+	assert.Contains(t, config, "acl docker_gateway_ip dst 10.0.0.1 2001:db8::1")
+	assert.Less(t,
+		strings.Index(config, "http_access deny docker_gateway_ip"),
+		strings.Index(config, "http_access allow all"),
+	)
+}
+
+func TestEgressSquidIPv6ConfigValidatesAgainstRealSquid(t *testing.T) {
+	t.Parallel()
+
+	if _, err := exec.LookPath("docker"); err != nil {
+		t.Skip("docker not available; skipping real-Squid validation")
+	}
+	path, err := createTempEgressSquidConf(nil, "server", false, []netip.Addr{
+		netip.MustParseAddr("10.0.0.1"),
+		netip.MustParseAddr("2001:db8::1"),
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.Remove(path) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	//nolint:gosec // fixed command; path is test-created
+	output, err := exec.CommandContext(ctx, "docker", "run", "--rm", "--entrypoint", "squid",
+		"-v", path+":/etc/squid/squid.conf:ro", defaultSquidImage,
+		"-k", "parse", "-f", "/etc/squid/squid.conf").CombinedOutput()
+	require.NoError(t, err, "squid rejected the generated IPv6 config:\n%s", output)
 }

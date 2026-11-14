@@ -13,9 +13,19 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"github.com/stacklok/toolhive/pkg/versions"
 )
+
+// fingerprintKeys are the JSON keys a build fingerprint would serialize under.
+// The unauthenticated /health response must not expose any of them.
+var fingerprintKeys = []string{"version", "commit", "build_date", "go_version", "platform"}
+
+func assertNoFingerprint(t *testing.T, body []byte) {
+	t.Helper()
+	for _, key := range fingerprintKeys {
+		assert.NotContains(t, string(body), key,
+			"unauthenticated /health body must not expose %q", key)
+	}
+}
 
 // mockMCPPinger implements MCPPinger for testing
 type mockMCPPinger struct {
@@ -74,7 +84,6 @@ func TestHealthChecker_CheckHealth(t *testing.T) {
 
 			assert.Equal(t, tt.expectedStatus, health.Status)
 			assert.Equal(t, tt.transport, health.Transport)
-			assert.NotEmpty(t, health.Version.Version)
 			assert.WithinDuration(t, time.Now(), health.Timestamp, 1*time.Second)
 
 			if tt.pinger != nil {
@@ -118,9 +127,9 @@ func TestHealthChecker_ServeHTTP(t *testing.T) {
 				require.NoError(t, err)
 				assert.Equal(t, StatusHealthy, response.Status)
 				assert.Equal(t, "stdio", response.Transport)
-				assert.NotEmpty(t, response.Version.Version)
 				assert.NotNil(t, response.MCP)
 				assert.True(t, response.MCP.Available)
+				assertNoFingerprint(t, body)
 			},
 		},
 		{
@@ -134,9 +143,9 @@ func TestHealthChecker_ServeHTTP(t *testing.T) {
 				err := json.Unmarshal(body, &response)
 				require.NoError(t, err)
 				assert.Equal(t, StatusDegraded, response.Status)
-				assert.NotEmpty(t, response.Version.Version)
 				assert.NotNil(t, response.MCP)
 				assert.False(t, response.MCP.Available)
+				assertNoFingerprint(t, body)
 			},
 		},
 		{
@@ -181,7 +190,6 @@ func TestHealthResponse_JSON(t *testing.T) {
 	response := &HealthResponse{
 		Status:    StatusHealthy,
 		Timestamp: time.Date(2023, 1, 1, 12, 0, 0, 0, time.UTC),
-		Version:   versions.GetVersionInfo(),
 		Transport: "stdio",
 		MCP: &MCPStatus{
 			Available:    true,
@@ -199,8 +207,8 @@ func TestHealthResponse_JSON(t *testing.T) {
 
 	assert.Equal(t, response.Status, unmarshaled.Status)
 	assert.Equal(t, response.Transport, unmarshaled.Transport)
-	assert.Equal(t, response.Version.Version, unmarshaled.Version.Version)
 	assert.True(t, response.Timestamp.Equal(unmarshaled.Timestamp))
+	assertNoFingerprint(t, data)
 
 	require.NotNil(t, unmarshaled.MCP)
 	assert.Equal(t, response.MCP.Available, unmarshaled.MCP.Available)

@@ -12,6 +12,7 @@ import (
 	"io"
 	"maps"
 	"net/http"
+	"strings"
 	"sync/atomic"
 	"time"
 )
@@ -40,7 +41,7 @@ const (
 	// HeaderMCPSessionID is the HTTP header carrying the Legacy session id.
 	HeaderMCPSessionID = "Mcp-Session-Id"
 	// HeaderMCPMethod is the HTTP header carrying the JSON-RPC method on Modern
-	// requests. A real go-sdk v1.7 streamable-HTTP server requires it on every
+	// requests. A real go-sdk streamable-HTTP server requires it on every
 	// Modern request (see pkg/mcp/revision.go ValidateHeaderConsistency); the
 	// ToolHive single-server proxy does not read it, but a Modern backend does.
 	HeaderMCPMethod = "Mcp-Method"
@@ -95,12 +96,12 @@ func NewLegacyInitializeRequest(clientName, clientVersion string) *RawRequest {
 	return r
 }
 
-// NewModernRequest builds a Modern (2026-07-28) JSON-RPC request emitting the
-// full conformant wire shape a real go-sdk v1.7 client produces: the
+// NewModernRequest builds a well-formed Modern (2026-07-28) JSON-RPC request
+// using the current streamable-HTTP wire shape: the
 // MCP-Protocol-Version header, the reserved _meta keys protocolVersion and
-// clientCapabilities (clientInfo is optional per the draft schema and is
-// omitted by default), the Mcp-Method header (always), and the Mcp-Name header
-// for name-bearing methods (tools/call, resources/read, prompts/get). A Modern
+// clientCapabilities (clientInfo is optional in the 2026-07-28 schema and this
+// helper omits it), the Mcp-Method header (always), and the Mcp-Name header for
+// name-bearing methods (tools/call, resources/read, prompts/get). A Modern
 // backend rejects a request missing these headers (-32020); the ToolHive
 // single-server proxy ignores them. Each field can be independently overridden
 // or removed via SetHeader/DeleteHeader and SetMeta/DeleteMeta.
@@ -122,7 +123,7 @@ func NewModernRequest(method string, params map[string]any) (*RawRequest, error)
 }
 
 // modernNameHeader returns the plain Mcp-Name header value for a name-bearing
-// Modern method, mirroring go-sdk v1.7's streamable-HTTP encoding and
+// Modern method, mirroring go-sdk's streamable-HTTP encoding and
 // pkg/mcp's ValidateHeaderConsistency: tools/call and prompts/get name the
 // "name" param, resources/read names the "uri" param. Any other method (e.g.
 // tools/list, server/discover) carries no Mcp-Name, and sending one there
@@ -173,11 +174,9 @@ func (r *RawRequest) WithClientInfo(name, version string) *RawRequest {
 }
 
 // WithStreamableAccept sets "Accept: application/json, text/event-stream".
-// A real go-sdk streamable-HTTP server rejects a POST without this header
-// (HTTP 400), so requests bound for a real backend (e.g. the k8s tier) must
-// set it. Do NOT set it for requests to the ToolHive proxy: the proxy does not
-// require it and switches to an SSE response body when it is present, which
-// this client's plain-JSON parser cannot read.
+// A real streamable-HTTP MCP peer requires this header on POSTs. ToolHive's
+// proxy does not require it, but conformant proxy-bound specs should set it;
+// RawMCPClient parses both plain JSON and SSE-framed POST responses.
 func (r *RawRequest) WithStreamableAccept() *RawRequest {
 	return r.SetHeader("Accept", "application/json, text/event-stream")
 }
@@ -274,11 +273,12 @@ type RawRPCError struct {
 
 // RawResponse is the parsed result of sending a single (non-batch) JSON-RPC
 // request over MCP-over-HTTP. For batch responses (a JSON array), inspect
-// Body directly instead of ID/Result/Error.
+// Body directly instead of JSONRPC/ID/Result/Error.
 type RawResponse struct {
 	StatusCode int
 	Headers    http.Header
 	Body       []byte // raw response body, always populated
+	JSONRPC    string // echoed "jsonrpc" version tag; "" if absent or unparsable
 	ID         any    // echoed "id"; nil if absent, JSON null, or unparsable
 	Result     json.RawMessage
 	Error      *RawRPCError
@@ -314,12 +314,16 @@ func NewRawMCPClient(timeout time.Duration) (*RawMCPClient, error) {
 	}, nil
 }
 
-// Send marshals req and POSTs it to url. No Accept header is set by default:
-// the ToolHive proxy returns a plain JSON body without it (which this client's
-// populateEnvelope parses) and switches to an unparsable SSE response body
-// whenever Accept lists text/event-stream. A request bound for a REAL
-// streamable-HTTP MCP backend -- which rejects a POST lacking that Accept with
-// HTTP 400 -- should opt in via req.WithStreamableAccept().
+// Send marshals req and POSTs it to url. No Accept header is set by default.
+// Streamable-HTTP requests that need the conformant POST Accept header should
+// opt in via req.WithStreamableAccept(). ToolHive's proxy returns plain JSON
+// without it and may switch to SSE framing when Accept lists text/event-stream.
+//
+// Either way the JSON-RPC envelope is parsed into the RawResponse: a
+// Content-Type: text/event-stream body has its response event extracted first
+// (see sseResponsePayload). Some server paths answer a POST as SSE regardless of
+// the request's Accept header, including mcpcompat's cross-replica rehydration
+// path, so this parsing cannot be opt-in.
 func (c *RawMCPClient) Send(ctx context.Context, url string, req *RawRequest) (*RawResponse, error) {
 	body, err := req.marshal()
 	if err != nil {
@@ -330,7 +334,8 @@ func (c *RawMCPClient) Send(ctx context.Context, url string, req *RawRequest) (*
 
 // SendRaw POSTs body verbatim to url with the given headers — for batches
 // built with NewBatchBody, or any payload (truncated, oversized, garbage)
-// not expressible via RawRequest.
+// not expressible via RawRequest. A "Host" entry in headers overrides the
+// request's Host header.
 func (c *RawMCPClient) SendRaw(ctx context.Context, url string, headers map[string]string, body []byte) (*RawResponse, error) {
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
@@ -338,6 +343,13 @@ func (c *RawMCPClient) SendRaw(ctx context.Context, url string, headers map[stri
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	for k, v := range headers {
+		// net/http ignores a Host entry in Header and sends Request.Host, so
+		// route it there; this lets a test forge the Host header (e.g. the
+		// rebound hostname a DNS-rebinding page sends).
+		if http.CanonicalHeaderKey(k) == "Host" {
+			httpReq.Host = v
+			continue
+		}
 		httpReq.Header.Set(k, v)
 	}
 
@@ -360,7 +372,11 @@ func (c *RawMCPClient) SendRaw(ctx context.Context, url string, headers map[stri
 		Headers:    resp.Header.Clone(),
 		Body:       respBody,
 	}
-	populateEnvelope(respBody, result)
+	envelope := respBody
+	if strings.HasPrefix(strings.ToLower(resp.Header.Get("Content-Type")), "text/event-stream") {
+		envelope = sseResponsePayload(respBody)
+	}
+	populateEnvelope(envelope, result)
 	return result, nil
 }
 
@@ -381,18 +397,71 @@ type wireResponse struct {
 
 // populateEnvelope best-effort parses body as a single JSON-RPC response
 // object into out. A malformed or non-object body (e.g. a batch array, or
-// deliberately garbled test input) leaves ID/Result/Error at their zero
-// values; out.Body still carries the raw bytes for the caller to inspect.
+// deliberately garbled test input) leaves JSONRPC/ID/Result/Error at their
+// zero values; out.Body still carries the raw bytes for the caller to inspect.
 func populateEnvelope(body []byte, out *RawResponse) {
 	var w wireResponse
 	if err := json.Unmarshal(body, &w); err != nil {
 		return
+	}
+	// encoding/json struct tags match case-insensitively as a fallback, which
+	// would let a miscased "JSONRPC" or "JsonRpc" key satisfy `json:"jsonrpc"`
+	// -- exactly the kind of malformed envelope this field exists to catch
+	// (see #5950). Read it from a raw map instead, which is case-sensitive.
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(body, &raw); err == nil {
+		_ = json.Unmarshal(raw["jsonrpc"], &out.JSONRPC)
 	}
 	out.ID = decodeID(w.ID)
 	out.Result = w.Result
 	if w.Error != nil {
 		out.Error = &RawRPCError{Code: w.Error.Code, Message: w.Error.Message, Data: w.Error.Data}
 	}
+}
+
+// sseResponsePayload extracts the JSON-RPC response object from an SSE-framed
+// (text/event-stream) POST response body. A streamable-HTTP server may
+// interleave notifications on the same stream before the response, so the
+// payload returned is the LAST event whose data is a JSON object carrying a
+// top-level "result" or "error" key -- the one JSON-RPC response terminating
+// the stream -- not simply the last event. Multi-line data fields are joined
+// with newlines per the SSE spec. Returns nil when no event carries a
+// response, leaving the envelope unpopulated (Body still holds the raw
+// stream for the caller to inspect).
+func sseResponsePayload(body []byte) []byte {
+	var response []byte
+	var data [][]byte
+	flush := func() {
+		if len(data) == 0 {
+			return
+		}
+		payload := bytes.Join(data, []byte("\n"))
+		data = nil
+		var obj map[string]json.RawMessage
+		if err := json.Unmarshal(payload, &obj); err != nil {
+			return
+		}
+		if _, ok := obj["result"]; ok {
+			response = payload
+			return
+		}
+		if _, ok := obj["error"]; ok {
+			response = payload
+		}
+	}
+	for _, line := range bytes.Split(body, []byte("\n")) {
+		line = bytes.TrimSuffix(line, []byte("\r"))
+		if len(line) == 0 { // blank line: event boundary
+			flush()
+			continue
+		}
+		if value, ok := bytes.CutPrefix(line, []byte("data:")); ok {
+			data = append(data, bytes.TrimPrefix(value, []byte(" ")))
+		}
+		// Other fields (event:, id:, retry:, comments) don't carry payload.
+	}
+	flush() // stream may end without a trailing blank line
+	return response
 }
 
 // decodeID decodes a raw JSON-RPC id, returning a json.Number for numeric

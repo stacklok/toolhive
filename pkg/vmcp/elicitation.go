@@ -27,10 +27,13 @@ type ElicitationRequester interface {
 
 // ElicitationRequest is the domain-typed elicitation request.
 //
-// It mirrors, one-to-one, the mcp-go fields the composer constructs today
-// (form-mode only). URL-mode fields (ElicitationID/URL/Mode) are deliberately
-// omitted because the composer never constructs them. The adapter in
-// pkg/vmcp/server is responsible for translating this to the SDK request type.
+// It mirrors, one-to-one, the mcp-go fields the composer constructs today, and
+// is form mode only: it is the push seam for server-initiated requests, which
+// only a Legacy (2025-11-25) session can carry. URL-mode elicitation does not
+// use this seam. A tools/call implementation asks for a URL by returning
+// URLElicitationRequiredError (url_elicitation.go), which vMCP renders per
+// negotiated protocol. The adapter in pkg/vmcp/server is responsible for
+// translating this type to the SDK request type.
 type ElicitationRequest struct {
 	// Message is the human-readable prompt shown to the user.
 	Message string

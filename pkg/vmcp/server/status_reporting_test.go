@@ -168,15 +168,13 @@ func (r *testDynamicRegistry) Remove(_ string) error {
 func TestPeriodicStatusReporting_ReactsToVersionChange(t *testing.T) {
 	t.Parallel()
 
-	// Speed up the version-polling ticker so the test completes in milliseconds.
-	orig := versionPollInterval
-	versionPollInterval = 10 * time.Millisecond
-	t.Cleanup(func() { versionPollInterval = orig })
-
 	reporter := &mockReporter{}
 	reg := &testDynamicRegistry{}
 	server := &Server{
 		backendRegistry: reg,
+		// Speed up the version-polling ticker so the test completes in
+		// milliseconds. Per-Server, so this stays safe under t.Parallel.
+		versionPollInterval: 10 * time.Millisecond,
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)

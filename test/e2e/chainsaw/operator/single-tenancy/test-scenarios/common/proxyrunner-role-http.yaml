@@ -1,0 +1,57 @@
+# Proxy-runner Role for the HTTP transports (sse, streamable-http).
+# The proxy reaches such an MCP server over the network, so it is not granted
+# pods/attach. Keep in step with defaultRBACRules in
+# cmd/thv-operator/controllers/mcpserver_controller.go; chainsaw matches the
+# rules positionally, so order matters.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: (join('-', [$testPrefix, 'proxy-runner']))
+  namespace: toolhive-system
+rules:
+- apiGroups:
+  - apps
+  resources:
+  - statefulsets
+  verbs:
+  - get
+  - list
+  - watch
+  - create
+  - update
+  - patch
+  - delete
+- apiGroups:
+  - ""
+  resources:
+  - services
+  verbs:
+  - get
+  - list
+  - watch
+  - create
+  - update
+  - patch
+  - delete
+- apiGroups:
+  - ""
+  resources:
+  - pods
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - pods/log
+  verbs:
+  - get
+- apiGroups:
+  - ""
+  resources:
+  - configmaps
+  verbs:
+  - get
+  - list
+  - watch

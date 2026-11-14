@@ -49,7 +49,8 @@ func (cm *ClientManager) ListSkillSupportingClients() []ClientApp {
 
 // GetSkillPath resolves the filesystem path for a skill installation.
 //
-// For [skills.ScopeUser], it returns ~/<SkillsGlobalPath>/<skillName>.
+// For [skills.ScopeUser], it returns ~/<SkillsGlobalPath>/<skillName>, or
+// <dir>/skills/<skillName> when the client's ConfigDirEnvVar is set.
 // For [skills.ScopeProject], it returns <projectRoot>/<SkillsProjectPath>/<skillName>.
 //
 // Returns an error if the client doesn't support skills, the scope has no
@@ -123,6 +124,10 @@ func (cm *ClientManager) lookupClientAppConfig(clientType ClientApp) *clientAppC
 func (cm *ClientManager) buildSkillsGlobalPath(cfg *clientAppConfig, skillName string) (string, error) {
 	if len(cfg.SkillsGlobalPath) == 0 {
 		return "", fmt.Errorf("%w: %s has no global skill path", ErrNoSkillPath, cfg.ClientType)
+	}
+
+	if dir := cm.configDirOverride(cfg); dir != "" {
+		return filepath.Join(dir, skillsDirName, skillName), nil
 	}
 
 	parts := []string{cm.homeDir}

@@ -11,7 +11,6 @@ import (
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
@@ -601,73 +600,6 @@ func TestMCPTelemetryConfigReconciler_ConditionOnlyUpdate(t *testing.T) {
 	assert.True(t, foundValid, "Should have Valid=True condition after condition-only update")
 }
 
-func TestMCPTelemetryConfigReconciler_ReferenceTracking(t *testing.T) {
-	t.Parallel()
-
-	ctx := t.Context()
-
-	scheme := testutil.NewScheme(t)
-
-	telemetryConfig := &mcpv1beta1.MCPTelemetryConfig{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:       "shared-config",
-			Namespace:  "default",
-			Generation: 1,
-		},
-		Spec: newTelemetrySpec("https://otel-collector:4317", true, false),
-	}
-
-	// Two MCPServers reference this config, one does not
-	server1 := v1beta1test.NewMCPServer("server-a", "default",
-		v1beta1test.WithImage("test-image"),
-		v1beta1test.WithTelemetryConfigRef("shared-config"),
-	)
-	server2 := v1beta1test.NewMCPServer("server-b", "default",
-		v1beta1test.WithImage("test-image"),
-		v1beta1test.WithTelemetryConfigRef("shared-config"),
-	)
-	server3 := v1beta1test.NewMCPServer("server-c", "default",
-		v1beta1test.WithImage("test-image"),
-		// No TelemetryConfigRef
-	)
-
-	fakeClient := withTelemetryConfigRefIndexes(fake.NewClientBuilder().WithScheme(scheme)).
-		WithObjects(telemetryConfig, server1, server2, server3).
-		WithStatusSubresource(&mcpv1beta1.MCPTelemetryConfig{}).
-		Build()
-
-	r := &MCPTelemetryConfigReconciler{
-		Client: fakeClient,
-		Scheme: scheme,
-	}
-
-	req := reconcile.Request{
-		NamespacedName: types.NamespacedName{
-			Name:      telemetryConfig.Name,
-			Namespace: telemetryConfig.Namespace,
-		},
-	}
-
-	// First reconcile: add finalizer
-	result, err := r.Reconcile(ctx, req)
-	require.NoError(t, err)
-	assert.Greater(t, result.RequeueAfter, time.Duration(0), "Should requeue after adding finalizer")
-
-	// Second reconcile: set hash, condition, and referencing servers
-	_, err = r.Reconcile(ctx, req)
-	require.NoError(t, err)
-
-	var updated mcpv1beta1.MCPTelemetryConfig
-	err = fakeClient.Get(ctx, req.NamespacedName, &updated)
-	require.NoError(t, err)
-
-	// ReferencingWorkloads should list server-a and server-b (sorted), but not server-c
-	assert.Equal(t, []mcpv1beta1.WorkloadReference{
-		{Kind: "MCPServer", Name: "server-a"},
-		{Kind: "MCPServer", Name: "server-b"},
-	}, updated.Status.ReferencingWorkloads)
-}
-
 func TestMCPTelemetryConfigReconciler_handleDeletion_BlocksWhenReferenced(t *testing.T) {
 	t.Parallel()
 
@@ -799,86 +731,5 @@ func newTelemetrySpec(endpoint string, tracing, metrics bool) mcpv1beta1.MCPTele
 			Tracing:  &mcpv1beta1.OpenTelemetryTracingConfig{Enabled: tracing},
 			Metrics:  &mcpv1beta1.OpenTelemetryMetricsConfig{Enabled: metrics},
 		},
-	}
-}
-
-// TestMCPTelemetryConfigReconciler_watchHandlers verifies that the workload watch map
-// functions enqueue exactly the config the workload currently references (or nothing
-// when the workload has no ref). The previously-referenced config is enqueued by
-// EnqueueRequestsFromMapFunc, which runs the map function on both the old and new
-// object on update — no manual stale-reference scan in the handler.
-func TestMCPTelemetryConfigReconciler_watchHandlers(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name     string
-		obj      client.Object
-		expected map[string]struct{}
-	}{
-		{
-			name: "MCPServer with ref enqueues the current config",
-			obj: v1beta1test.NewMCPServer("srv", "default",
-				v1beta1test.WithImage("example/mcp:latest"),
-				v1beta1test.WithTelemetryConfigRef("current-config"),
-			),
-			expected: map[string]struct{}{"current-config": {}},
-		},
-		{
-			name: "MCPRemoteProxy with ref enqueues the current config",
-			obj: v1beta1test.NewMCPRemoteProxy("proxy", "default",
-				v1beta1test.WithRemoteProxyURL("https://example.com"),
-				v1beta1test.WithRemoteProxyTelemetryConfigRef("current-config"),
-			),
-			expected: map[string]struct{}{"current-config": {}},
-		},
-		{
-			name: "VirtualMCPServer with ref enqueues the current config",
-			obj: v1beta1test.NewVirtualMCPServer("vmcp", "default",
-				v1beta1test.WithVMCPTelemetryConfigRef("current-config"),
-			),
-			expected: map[string]struct{}{"current-config": {}},
-		},
-		{
-			name: "MCPServer without ref enqueues nothing",
-			obj: v1beta1test.NewMCPServer("srv", "default",
-				v1beta1test.WithImage("example/mcp:latest"),
-			),
-			expected: map[string]struct{}{},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			ctx := t.Context()
-			scheme := testutil.NewScheme(t)
-			fakeClient := withTelemetryConfigRefIndexes(fake.NewClientBuilder().WithScheme(scheme)).
-				WithObjects(tt.obj).
-				WithStatusSubresource(&mcpv1beta1.MCPTelemetryConfig{}).
-				Build()
-			r := &MCPTelemetryConfigReconciler{Client: fakeClient, Scheme: scheme}
-
-			requests := func() []reconcile.Request {
-				switch tt.obj.(type) {
-				case *mcpv1beta1.MCPServer:
-					return r.mapMCPServerToTelemetryConfig(ctx, tt.obj)
-				case *mcpv1beta1.MCPRemoteProxy:
-					return r.mapMCPRemoteProxyToTelemetryConfig(ctx, tt.obj)
-				case *mcpv1beta1.VirtualMCPServer:
-					return r.mapVirtualMCPServerToTelemetryConfig(ctx, tt.obj)
-				default:
-					t.Fatalf("unexpected object type %T", tt.obj)
-					return nil
-				}
-			}()
-
-			got := make(map[string]struct{}, len(requests))
-			for _, req := range requests {
-				assert.Equal(t, "default", req.Namespace)
-				got[req.Name] = struct{}{}
-			}
-			assert.Equal(t, tt.expected, got)
-		})
 	}
 }

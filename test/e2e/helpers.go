@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -175,7 +176,12 @@ func ServerReadyTimeout() time.Duration {
 // name appears somewhere and some workload is running", which can return while
 // the named workload is still starting. A timeout reports the last status
 // observed and dumps the server state, so a CI log shows whether the workload
-// was still starting, had errored, or never appeared at all.
+// was still starting or never appeared at all.
+//
+// A workload that reports error fails the wait at once, with its status
+// context and a dump of the server state. The runner sets that status only
+// after it has given up (restarts exhausted, or a setup failure it does not
+// retry), so waiting out the timeout cannot change the outcome.
 func WaitForMCPServer(config *TestConfig, serverName string, timeout time.Duration) error {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
@@ -196,6 +202,10 @@ func WaitForMCPServer(config *TestConfig, serverName string, timeout time.Durati
 			lastObserved = "not listed"
 		case workload.Status == rt.WorkloadStatusRunning:
 			return nil
+		case workload.Status == rt.WorkloadStatusError:
+			DebugServerState(config, serverName)
+			return fmt.Errorf("MCP server %s entered terminal status %q: %s",
+				serverName, workload.Status, workload.StatusContext)
 		default:
 			lastObserved = fmt.Sprintf("status %q", workload.Status)
 			if workload.StatusContext != "" {
@@ -210,6 +220,73 @@ func WaitForMCPServer(config *TestConfig, serverName string, timeout time.Durati
 				serverName, timeout, lastObserved)
 		case <-ticker.C:
 		}
+	}
+}
+
+// WaitForWorkloadContainer waits until the named workload's container exists,
+// for a workload that is not expected to reach running (for example one that
+// restart-loops). It returns an error if the timeout expires first, with the
+// last `thv logs` failure and its stderr.
+//
+// Removing a workload before its detached start has created the container
+// returns at once, and the start then creates the workload's network after the
+// removal, leaking it (#7043). The network is created before the container,
+// and `thv logs` succeeds only once the container exists, so a caller that
+// waits on this before removing the workload cannot race the start.
+//
+// As in WaitForMCPServer, a workload that reports error fails the wait at once,
+// since that status is terminal.
+func WaitForWorkloadContainer(config *TestConfig, serverName string, timeout time.Duration) error {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+
+	var lastErr error
+	for {
+		workload, err := findWorkload(config, serverName)
+		if err == nil && workload != nil && workload.Status == rt.WorkloadStatusError {
+			DebugServerState(config, serverName)
+			return fmt.Errorf("workload %s entered terminal status %q: %s",
+				serverName, workload.Status, workload.StatusContext)
+		}
+
+		_, stderr, logsErr := NewTHVCommand(config, "logs", serverName).RunWithTimeout(listTimeout)
+		if logsErr == nil {
+			return nil
+		}
+		lastErr = fmt.Errorf("thv logs %s: %w (stderr: %s)", serverName, logsErr, strings.TrimSpace(stderr))
+
+		select {
+		case <-ctx.Done():
+			DebugServerState(config, serverName)
+			return fmt.Errorf("timeout waiting for workload %s's container to exist after %v; last error: %w",
+				serverName, timeout, lastErr)
+		case <-ticker.C:
+		}
+	}
+}
+
+// ExpectMCPServersRunning waits for each named workload to reach the running
+// state within ServerReadyTimeout, and fails naming the workload that did not.
+//
+// All workloads are polled concurrently so that the total wait is bounded by
+// the slowest workload rather than the sum of all waits.
+func ExpectMCPServersRunning(config *TestConfig, serverNames ...string) {
+	errs := make([]error, len(serverNames))
+	var wg sync.WaitGroup
+	for i, name := range serverNames {
+		wg.Add(1)
+		go func(i int, name string) {
+			defer wg.Done()
+			errs[i] = WaitForMCPServer(config, name, ServerReadyTimeout())
+		}(i, name)
+	}
+	wg.Wait()
+	for i, serverName := range serverNames {
+		ExpectWithOffset(1, errs[i]).ToNot(HaveOccurred(),
+			"workload %s (of %v) should reach the running state", serverName, serverNames)
 	}
 }
 
@@ -324,6 +401,18 @@ func DebugServerState(config *TestConfig, serverName string) {
 		GinkgoWriter.Printf("Failed to get logs: %v\n", err)
 	} else {
 		GinkgoWriter.Printf("Server logs:\n%s\n", logs)
+	}
+
+	// The container log alone has repeatedly been useless for readiness
+	// timeouts: a workload stuck in `starting` or flipped to `error` fails
+	// inside the detached supervisor (transport start, readiness probe,
+	// restart loop), whose output goes to the proxy log file — not to the
+	// container. Dump it too so a CI failure names the actual blocker.
+	proxyLogs, stderr, err := NewTHVCommand(config, "logs", serverName, "--proxy").Run()
+	if err != nil {
+		GinkgoWriter.Printf("Failed to get proxy logs: %v\nStderr: %s\n", err, stderr)
+	} else {
+		GinkgoWriter.Printf("Proxy logs:\n%s\n", proxyLogs)
 	}
 
 	GinkgoWriter.Printf("=== End debugging for %s ===\n", serverName)

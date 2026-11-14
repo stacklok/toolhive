@@ -5,19 +5,31 @@ package sessionmanager
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	tracenoop "go.opentelemetry.io/otel/trace/noop"
 
 	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
 	mcpserver "github.com/stacklok/toolhive-core/mcpcompat/server"
 	"github.com/stacklok/toolhive/pkg/vmcp/optimizer"
+	"github.com/stacklok/toolhive/pkg/vmcp/server/internal/wireerr"
 )
+
+// urlElicitationRequired is the -32042 an inner Legacy tool handler returns,
+// wrapped as the optimizer's dispatch may wrap it.
+func urlElicitationRequired() error {
+	return fmt.Errorf("dispatch: %w", wireerr.URLElicitationRequired(json.RawMessage(`{"elicitations":[]}`)))
+}
 
 // fakeOptimizer implements optimizer.Optimizer for testing.
 type fakeOptimizer struct {
@@ -265,6 +277,37 @@ func TestTelemetryOptimizer(t *testing.T) {
 				assert.Equal(t, int64(0), counterValue(findMetric(rm, "toolhive_vmcp_optimizer_call_tool_not_found")))
 			},
 		},
+		{
+			name: "CallTool -32042 URL elicitation answer counts as neither an error nor not found",
+			setup: func() *fakeOptimizer {
+				return &fakeOptimizer{
+					callToolFn: func(_ context.Context, _ optimizer.CallToolInput) (*mcp.CallToolResult, error) {
+						return nil, urlElicitationRequired()
+					},
+				}
+			},
+			action: func(t *testing.T, opt optimizer.Optimizer) {
+				t.Helper()
+				_, err := opt.CallTool(context.Background(), optimizer.CallToolInput{
+					ToolName: "github_tool",
+				})
+				require.Error(t, err)
+				assert.NotNil(t, wireerr.FindURLElicitationRequired(err), "the -32042 must pass through")
+			},
+			assertFunc: func(t *testing.T, rm metricdata.ResourceMetrics) {
+				t.Helper()
+				m := findMetric(rm, "toolhive_vmcp_optimizer_call_tool_requests")
+				require.NotNil(t, m)
+				assert.Equal(t, int64(1), counterValue(m))
+
+				assert.Equal(t, int64(0), counterValue(findMetric(rm, "toolhive_vmcp_optimizer_call_tool_errors")))
+				assert.Equal(t, int64(0), counterValue(findMetric(rm, "toolhive_vmcp_optimizer_call_tool_not_found")))
+
+				m = findMetric(rm, "toolhive_vmcp_optimizer_call_tool_duration")
+				require.NotNil(t, m)
+				assert.Equal(t, uint64(1), histogramCount(m))
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -294,6 +337,54 @@ func TestTelemetryOptimizer(t *testing.T) {
 			require.NoError(t, err)
 
 			tt.assertFunc(t, rm)
+		})
+	}
+}
+
+// TestTelemetryOptimizer_CallToolSpan pins the optimizer.CallTool span: a
+// -32042 URL elicitation answer leaves the status unset and records its
+// outcome, while any other Go error fails the span.
+func TestTelemetryOptimizer_CallToolSpan(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		err         error
+		wantStatus  codes.Code
+		wantOutcome bool
+	}{
+		{name: "-32042 URL elicitation answer", err: urlElicitationRequired(), wantStatus: codes.Unset, wantOutcome: true},
+		{name: "other Go error", err: fmt.Errorf("handler panic"), wantStatus: codes.Error},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			recorder := tracetest.NewSpanRecorder()
+			tracerProvider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recorder))
+			fake := &fakeOptimizer{
+				callToolFn: func(_ context.Context, _ optimizer.CallToolInput) (*mcp.CallToolResult, error) {
+					return nil, tc.err
+				},
+			}
+			wrappedFactory, err := monitorOptimizer(sdkmetric.NewMeterProvider(), tracerProvider,
+				func(_ context.Context, _ []mcpserver.ServerTool) (optimizer.Optimizer, error) { return fake, nil })
+			require.NoError(t, err)
+			opt, err := wrappedFactory(context.Background(), nil)
+			require.NoError(t, err)
+
+			_, err = opt.CallTool(context.Background(), optimizer.CallToolInput{ToolName: "github_tool"})
+			require.Error(t, err)
+
+			spans := recorder.Ended()
+			require.Len(t, spans, 1)
+			assert.Equal(t, tc.wantStatus, spans[0].Status().Code)
+			outcome := attribute.String("outcome", callToolOutcomeURLElicitationRequired)
+			if tc.wantOutcome {
+				assert.Contains(t, spans[0].Attributes(), outcome)
+			} else {
+				assert.NotContains(t, spans[0].Attributes(), outcome)
+			}
 		})
 	}
 }

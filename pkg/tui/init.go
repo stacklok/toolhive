@@ -7,7 +7,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/charmbracelet/bubbles/viewport"
+	"charm.land/bubbles/v2/viewport"
 
 	"github.com/stacklok/toolhive/pkg/core"
 	"github.com/stacklok/toolhive/pkg/workloads"
@@ -23,19 +23,19 @@ func New(ctx context.Context, manager workloads.Manager, logCh <-chan string) (M
 	}
 	core.SortWorkloadsByName(list)
 
-	vp := viewport.New(80, 20)
+	vp := viewport.New(viewport.WithWidth(80), viewport.WithHeight(20))
 	vp.SetContent("")
 
-	pvp := viewport.New(80, 20)
+	pvp := viewport.New(viewport.WithWidth(80), viewport.WithHeight(20))
 	pvp.SetContent("")
 
-	tvp := viewport.New(80, 20)
+	tvp := viewport.New(viewport.WithWidth(80), viewport.WithHeight(20))
 	tvp.SetContent("")
 
-	ivp := viewport.New(60, 20)
+	ivp := viewport.New(viewport.WithWidth(60), viewport.WithHeight(20))
 	ivp.SetContent("")
 
-	lvp := viewport.New(60, 6)
+	lvp := viewport.New(viewport.WithWidth(60), viewport.WithHeight(6))
 	lvp.SetContent("")
 
 	m := Model{

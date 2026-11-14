@@ -20,7 +20,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cenkalti/backoff/v5"
+	"github.com/cenkalti/backoff/v7"
 	"go.uber.org/mock/gomock"
 	"golang.org/x/oauth2"
 

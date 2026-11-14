@@ -16,8 +16,10 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/events"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
@@ -237,13 +239,6 @@ func TestMCPExternalAuthConfigReconciler_Reconcile(t *testing.T) {
 			if tt.expectHash {
 				assert.NotEmpty(t, updatedConfig.Status.ConfigHash,
 					"MCPExternalAuthConfig status should have config hash")
-			}
-
-			// Check referencing workloads in status
-			if tt.existingMCPServer != nil {
-				assert.Contains(t, updatedConfig.Status.ReferencingWorkloads,
-					mcpv1beta1.WorkloadReference{Kind: "MCPServer", Name: tt.existingMCPServer.Name},
-					"Status should contain referencing MCPServer as WorkloadReference")
 			}
 		})
 	}
@@ -592,144 +587,6 @@ func TestMCPExternalAuthConfigReconciler_ConfigChangeTriggersReconciliation(t *t
 	require.NoError(t, err)
 	_, found := updatedServer.Annotations["toolhive.stacklok.dev/externalauthconfig-hash"]
 	assert.False(t, found, "MCPExternalAuthConfig controller should not annotate MCPServers")
-}
-
-func TestMCPExternalAuthConfigReconciler_ReferencingWorkloadsUpdatedWithoutHashChange(t *testing.T) {
-	t.Parallel()
-
-	ctx := t.Context()
-
-	externalAuthConfig := &mcpv1beta1.MCPExternalAuthConfig{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:       "test-config",
-			Namespace:  "default",
-			Generation: 1,
-		},
-		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
-			Type: mcpv1beta1.ExternalAuthTypeTokenExchange,
-			TokenExchange: &mcpv1beta1.TokenExchangeConfig{
-				TokenURL: "https://oauth.example.com/token",
-				ClientID: "test-client",
-				ClientSecretRef: &mcpv1beta1.SecretKeyRef{
-					Name: "test-secret",
-					Key:  "client-secret",
-				},
-				Audience: "backend-service",
-			},
-		},
-	}
-
-	r, fakeClient := newTestMCPExternalAuthConfigReconciler(t, externalAuthConfig)
-
-	req := reconcile.Request{
-		NamespacedName: types.NamespacedName{
-			Name:      externalAuthConfig.Name,
-			Namespace: externalAuthConfig.Namespace,
-		},
-	}
-
-	// First reconciliation - add finalizer
-	result, err := r.Reconcile(ctx, req)
-	require.NoError(t, err)
-	assert.Greater(t, result.RequeueAfter, time.Duration(0))
-
-	// Second reconciliation - sets hash, no servers yet
-	_, err = r.Reconcile(ctx, req)
-	require.NoError(t, err)
-
-	var updatedConfig mcpv1beta1.MCPExternalAuthConfig
-	err = fakeClient.Get(ctx, req.NamespacedName, &updatedConfig)
-	require.NoError(t, err)
-	assert.NotEmpty(t, updatedConfig.Status.ConfigHash)
-	assert.Empty(t, updatedConfig.Status.ReferencingWorkloads, "No workloads should be referencing yet")
-	assert.EqualValues(t, 0, updatedConfig.Status.ReferenceCount)
-
-	// Now add an MCPServer that references this config (without changing the config spec)
-	mcpServer := v1beta1test.NewMCPServer("new-server", "default",
-		v1beta1test.WithImage("test-image"),
-		v1beta1test.WithExternalAuthConfigRef("test-config"),
-	)
-	require.NoError(t, fakeClient.Create(ctx, mcpServer))
-
-	// Reconcile again - hash hasn't changed, but referencing servers should be updated
-	_, err = r.Reconcile(ctx, req)
-	require.NoError(t, err)
-
-	err = fakeClient.Get(ctx, req.NamespacedName, &updatedConfig)
-	require.NoError(t, err)
-	assert.Contains(t, updatedConfig.Status.ReferencingWorkloads,
-		mcpv1beta1.WorkloadReference{Kind: "MCPServer", Name: "new-server"},
-		"ReferencingWorkloads should be updated even without hash change")
-	assert.EqualValues(t, 1, updatedConfig.Status.ReferenceCount)
-}
-
-func TestMCPExternalAuthConfigReconciler_ReferencingWorkloadsRemovedOnServerDeletion(t *testing.T) {
-	t.Parallel()
-
-	ctx := t.Context()
-
-	externalAuthConfig := &mcpv1beta1.MCPExternalAuthConfig{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:       "test-config",
-			Namespace:  "default",
-			Generation: 1,
-		},
-		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
-			Type: mcpv1beta1.ExternalAuthTypeTokenExchange,
-			TokenExchange: &mcpv1beta1.TokenExchangeConfig{
-				TokenURL: "https://oauth.example.com/token",
-				ClientID: "test-client",
-				ClientSecretRef: &mcpv1beta1.SecretKeyRef{
-					Name: "test-secret",
-					Key:  "client-secret",
-				},
-				Audience: "backend-service",
-			},
-		},
-	}
-
-	mcpServer := v1beta1test.NewMCPServer("server-to-delete", "default",
-		v1beta1test.WithImage("test-image"),
-		v1beta1test.WithExternalAuthConfigRef("test-config"),
-	)
-
-	r, fakeClient := newTestMCPExternalAuthConfigReconciler(t, externalAuthConfig, mcpServer)
-
-	req := reconcile.Request{
-		NamespacedName: types.NamespacedName{
-			Name:      externalAuthConfig.Name,
-			Namespace: externalAuthConfig.Namespace,
-		},
-	}
-
-	// Add finalizer
-	result, err := r.Reconcile(ctx, req)
-	require.NoError(t, err)
-	assert.Greater(t, result.RequeueAfter, time.Duration(0))
-
-	// Set hash and referencing servers
-	_, err = r.Reconcile(ctx, req)
-	require.NoError(t, err)
-
-	var updatedConfig mcpv1beta1.MCPExternalAuthConfig
-	err = fakeClient.Get(ctx, req.NamespacedName, &updatedConfig)
-	require.NoError(t, err)
-	assert.Contains(t, updatedConfig.Status.ReferencingWorkloads,
-		mcpv1beta1.WorkloadReference{Kind: "MCPServer", Name: "server-to-delete"})
-	assert.EqualValues(t, 1, updatedConfig.Status.ReferenceCount)
-
-	// Delete the MCPServer
-	require.NoError(t, fakeClient.Delete(ctx, mcpServer))
-
-	// Reconcile again - referencing servers should be empty now
-	_, err = r.Reconcile(ctx, req)
-	require.NoError(t, err)
-
-	err = fakeClient.Get(ctx, req.NamespacedName, &updatedConfig)
-	require.NoError(t, err)
-	assert.Empty(t, updatedConfig.Status.ReferencingWorkloads,
-		"ReferencingWorkloads should be empty after server deletion")
-	assert.EqualValues(t, 0, updatedConfig.Status.ReferenceCount)
 }
 
 func TestMCPExternalAuthConfigReconciler_findReferencingWorkloads_authServerRef(t *testing.T) {
@@ -1501,10 +1358,233 @@ func TestMCPExternalAuthConfigReconciler_OBO_ErrorTriageInReconcile(t *testing.T
 //
 // The concurrent-writer guarantee — that a condition written by a disjoint
 // owner between the reconciler's Get and its patch survives because
+func TestMCPExternalAuthConfigReconciler_InvalidConfigReturnsStatusPatchError(t *testing.T) {
+	t.Parallel()
+
+	patchErr := stderrors.New("injected status patch failure")
+	cfg := &mcpv1beta1.MCPExternalAuthConfig{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "invalid-config", Namespace: "default",
+			Finalizers: []string{ExternalAuthConfigFinalizerName},
+		},
+		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{Type: mcpv1beta1.ExternalAuthTypeEmbeddedAuthServer},
+	}
+	scheme := testutil.NewScheme(t)
+	fakeClient := withExternalAuthConfigRefIndexes(fake.NewClientBuilder().WithScheme(scheme)).
+		WithObjects(cfg).
+		WithStatusSubresource(&mcpv1beta1.MCPExternalAuthConfig{}).
+		WithInterceptorFuncs(interceptor.Funcs{
+			SubResourcePatch: func(
+				_ context.Context, _ client.Client, subResource string, _ client.Object,
+				_ client.Patch, _ ...client.SubResourcePatchOption,
+			) error {
+				assert.Equal(t, "status", subResource)
+				return patchErr
+			},
+		}).
+		Build()
+	recorder := events.NewFakeRecorder(10)
+	r := &MCPExternalAuthConfigReconciler{Client: fakeClient, Scheme: scheme, Recorder: recorder}
+
+	result, err := r.Reconcile(t.Context(), reconcile.Request{NamespacedName: client.ObjectKeyFromObject(cfg)})
+	require.ErrorIs(t, err, patchErr)
+	assert.Zero(t, result)
+	assert.Empty(t, drainEvents(recorder), "events must wait until the invalid status transition persists")
+}
+
 // MutateAndPatchStatus sends a partial merge-patch rather than a full PUT — is
 // proven against the shared ctrlutil.MutateAndPatchStatus helper (used by all
 // three config controllers) in
 // TestMCPOIDCConfigReconciler_ConcurrentForeignConditionSurvivesMergePatch.
+func TestMCPExternalAuthConfigReconciler_CanonicalTrustedIssuerEndpointValidationOnCreateAndUpdate(t *testing.T) {
+	t.Parallel()
+
+	const unsafeJWKSURL = "https://sentinel-user:sentinel-password@issuer.example.com/keys"
+
+	cfg := &mcpv1beta1.MCPExternalAuthConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "canonical-validation", Namespace: "default"},
+		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+			Type: mcpv1beta1.ExternalAuthTypeEmbeddedAuthServer,
+			EmbeddedAuthServer: &mcpv1beta1.EmbeddedAuthServerConfig{
+				Issuer:               "https://auth.example.com",
+				SigningKeySecretRefs: []mcpv1beta1.SecretKeyRef{{Name: "signing-key", Key: "private.pem"}},
+				TrustedIssuers: []mcpv1beta1.TrustedIssuerConfig{{
+					Name: "external", IssuerURL: "https://issuer.example.com", JWKSURL: unsafeJWKSURL,
+				}},
+				InboundGrants: &mcpv1beta1.InboundGrantsConfig{
+					TokenExchange: &mcpv1beta1.TokenExchangeInboundGrantConfig{
+						IssuerPolicies: []mcpv1beta1.TokenExchangeIssuerPolicyConfig{{
+							IssuerRef: "external", ExpectedAudience: "audience",
+							AllowedDelegateClients: []string{"delegate"},
+						}},
+					},
+				},
+			},
+		},
+	}
+	r, fakeClient := newTestMCPExternalAuthConfigReconciler(t, cfg)
+	req := reconcile.Request{NamespacedName: client.ObjectKeyFromObject(cfg)}
+
+	result, err := r.Reconcile(t.Context(), req)
+	require.NoError(t, err)
+	if result.RequeueAfter > 0 {
+		_, err = r.Reconcile(t.Context(), req)
+		require.NoError(t, err)
+	}
+	var got mcpv1beta1.MCPExternalAuthConfig
+	require.NoError(t, fakeClient.Get(t.Context(), req.NamespacedName, &got))
+	valid := findCondition(got.Status.Conditions, mcpv1beta1.ConditionTypeValid)
+	require.NotNil(t, valid)
+	assert.Equal(t, metav1.ConditionFalse, valid.Status)
+	assert.Contains(t, valid.Message, "jwks_url: must not contain userinfo")
+	assert.NotContains(t, valid.Message, unsafeJWKSURL)
+	assert.NotContains(t, valid.Message, "sentinel-user")
+	assert.NotContains(t, valid.Message, "sentinel-password")
+
+	got.Spec.EmbeddedAuthServer.TrustedIssuers[0].JWKSURL = "https://issuer.example.com/keys"
+	require.NoError(t, fakeClient.Update(t.Context(), &got))
+	_, err = r.Reconcile(t.Context(), req)
+	require.NoError(t, err)
+	require.NoError(t, fakeClient.Get(t.Context(), req.NamespacedName, &got))
+	valid = findCondition(got.Status.Conditions, mcpv1beta1.ConditionTypeValid)
+	require.NotNil(t, valid)
+	assert.Equal(t, metav1.ConditionTrue, valid.Status)
+}
+
+func TestMCPExternalAuthConfigReconciler_DuplicateCredentialIssuerStatusIsRedacted(t *testing.T) {
+	t.Parallel()
+
+	const credentialIssuerURL = "https://sentinel-user:sentinel-password@issuer.example.com"
+	cfg := &mcpv1beta1.MCPExternalAuthConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "duplicate-credential-issuer", Namespace: "default"},
+		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+			Type: mcpv1beta1.ExternalAuthTypeEmbeddedAuthServer,
+			EmbeddedAuthServer: &mcpv1beta1.EmbeddedAuthServerConfig{
+				Issuer:               "https://auth.example.com",
+				SigningKeySecretRefs: []mcpv1beta1.SecretKeyRef{{Name: "signing-key", Key: "private.pem"}},
+				TrustedIssuers: []mcpv1beta1.TrustedIssuerConfig{
+					{Name: "external", IssuerURL: credentialIssuerURL},
+					{Name: "duplicate", IssuerURL: credentialIssuerURL},
+				},
+				InboundGrants: &mcpv1beta1.InboundGrantsConfig{TokenExchange: &mcpv1beta1.TokenExchangeInboundGrantConfig{
+					IssuerPolicies: []mcpv1beta1.TokenExchangeIssuerPolicyConfig{{
+						IssuerRef: "external", ExpectedAudience: "audience", AllowedDelegateClients: []string{"delegate"},
+					}},
+				}},
+			},
+		},
+	}
+	r, fakeClient := newTestMCPExternalAuthConfigReconciler(t, cfg)
+	req := reconcile.Request{NamespacedName: client.ObjectKeyFromObject(cfg)}
+
+	result, err := r.Reconcile(t.Context(), req)
+	require.NoError(t, err)
+	if result.RequeueAfter > 0 {
+		_, err = r.Reconcile(t.Context(), req)
+		require.NoError(t, err)
+	}
+	var got mcpv1beta1.MCPExternalAuthConfig
+	require.NoError(t, fakeClient.Get(t.Context(), req.NamespacedName, &got))
+	valid := findCondition(got.Status.Conditions, mcpv1beta1.ConditionTypeValid)
+	require.NotNil(t, valid)
+	assert.Equal(t, metav1.ConditionFalse, valid.Status)
+	assert.Contains(t, valid.Message, "duplicates")
+	assert.NotContains(t, valid.Message, credentialIssuerURL)
+	assert.NotContains(t, valid.Message, "sentinel-user")
+	assert.NotContains(t, valid.Message, "sentinel-password")
+}
+
+func TestMCPExternalAuthConfigReconciler_DeprecatedInboundGrantTransitions(t *testing.T) {
+	t.Parallel()
+
+	delegate := mcpv1beta1.DelegateClientConfig{
+		ClientID:        "sensitive-client-id",
+		ClientSecretRef: &mcpv1beta1.SecretKeyRef{Name: "sensitive-secret", Key: "sensitive-token-key"},
+		Scopes:          []string{"openid"}, Audiences: []string{"https://api.example.com"},
+	}
+	cfg := &mcpv1beta1.MCPExternalAuthConfig{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "deprecated-grants", Namespace: "default", Generation: 7,
+			Finalizers: []string{ExternalAuthConfigFinalizerName},
+		},
+		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+			Type: mcpv1beta1.ExternalAuthTypeEmbeddedAuthServer,
+			EmbeddedAuthServer: &mcpv1beta1.EmbeddedAuthServerConfig{
+				Issuer: "https://auth.example.com", DelegateClients: []mcpv1beta1.DelegateClientConfig{delegate},
+			},
+		},
+	}
+	r, fakeClient := newTestMCPExternalAuthConfigReconciler(t, cfg)
+	recorder := events.NewFakeRecorder(10)
+	r.Recorder = recorder
+	req := reconcile.Request{NamespacedName: types.NamespacedName{Name: cfg.Name, Namespace: cfg.Namespace}}
+
+	reconcileAndGet := func() mcpv1beta1.MCPExternalAuthConfig {
+		t.Helper()
+		result, err := r.Reconcile(t.Context(), req)
+		require.NoError(t, err)
+		assert.Zero(t, result.RequeueAfter)
+		var got mcpv1beta1.MCPExternalAuthConfig
+		require.NoError(t, fakeClient.Get(t.Context(), req.NamespacedName, &got))
+		return got
+	}
+	assertCondition := func(got mcpv1beta1.MCPExternalAuthConfig, status metav1.ConditionStatus, reason string, generation int64) {
+		t.Helper()
+		condition := meta.FindStatusCondition(got.Status.Conditions,
+			mcpv1beta1.ConditionTypeDeprecatedInboundGrantConfiguration)
+		require.NotNil(t, condition)
+		assert.Equal(t, status, condition.Status)
+		assert.Equal(t, reason, condition.Reason)
+		assert.Equal(t, generation, condition.ObservedGeneration)
+		assert.NotContains(t, condition.Message, "sensitive-client-id")
+		assert.NotContains(t, condition.Message, "sensitive-secret")
+		assert.NotContains(t, condition.Message, "sensitive-token-key")
+	}
+
+	got := reconcileAndGet()
+	assertCondition(got, metav1.ConditionTrue, mcpv1beta1.ConditionReasonLegacyInboundGrantFields, 7)
+	assert.Contains(t, meta.FindStatusCondition(got.Status.Conditions,
+		mcpv1beta1.ConditionTypeDeprecatedInboundGrantConfiguration).Message,
+		"spec.embeddedAuthServer.delegateClients -> spec.embeddedAuthServer.inboundGrants.tokenExchange.delegateClients")
+	assert.Equal(t, 1, countContaining(drainEvents(recorder), inboundGrantDeprecationEventReason))
+
+	steadyResourceVersion := got.ResourceVersion
+	got = reconcileAndGet()
+	assert.Equal(t, steadyResourceVersion, got.ResourceVersion, "steady state must not write status")
+	assert.Zero(t, countContaining(drainEvents(recorder), inboundGrantDeprecationEventReason))
+
+	got.Spec.EmbeddedAuthServer.DelegateClients = nil
+	got.Spec.EmbeddedAuthServer.InboundGrants = &mcpv1beta1.InboundGrantsConfig{
+		TokenExchange: &mcpv1beta1.TokenExchangeInboundGrantConfig{
+			DelegateClients: []mcpv1beta1.DelegateClientConfig{delegate},
+		},
+	}
+	got.Generation = 8
+	require.NoError(t, fakeClient.Update(t.Context(), &got))
+	got = reconcileAndGet()
+	assertCondition(got, metav1.ConditionFalse,
+		mcpv1beta1.ConditionReasonCanonicalInboundGrantConfiguration, 8)
+	assert.Zero(t, countContaining(drainEvents(recorder), inboundGrantDeprecationEventReason))
+
+	got.Spec.EmbeddedAuthServer.InboundGrants = nil
+	got.Spec.EmbeddedAuthServer.DelegateClients = []mcpv1beta1.DelegateClientConfig{delegate}
+	got.Generation = 9
+	require.NoError(t, fakeClient.Update(t.Context(), &got))
+	got = reconcileAndGet()
+	assertCondition(got, metav1.ConditionTrue, mcpv1beta1.ConditionReasonLegacyInboundGrantFields, 9)
+	assert.Equal(t, 1, countContaining(drainEvents(recorder), inboundGrantDeprecationEventReason))
+
+	got.Spec.Type = mcpv1beta1.ExternalAuthTypeTokenExchange
+	got.Spec.EmbeddedAuthServer = nil
+	got.Spec.TokenExchange = &mcpv1beta1.TokenExchangeConfig{TokenURL: "https://issuer.example.com/token"}
+	got.Generation = 10
+	require.NoError(t, fakeClient.Update(t.Context(), &got))
+	got = reconcileAndGet()
+	assert.Nil(t, meta.FindStatusCondition(got.Status.Conditions,
+		mcpv1beta1.ConditionTypeDeprecatedInboundGrantConfiguration))
+	assert.Zero(t, countContaining(drainEvents(recorder), inboundGrantDeprecationEventReason))
+}
+
 func TestMCPExternalAuthConfigReconciler_ReconcileKeepsExistingForeignCondition(t *testing.T) {
 	t.Parallel()
 
@@ -1560,117 +1640,4 @@ func TestMCPExternalAuthConfigReconciler_ReconcileKeepsExistingForeignCondition(
 	own := meta.FindStatusCondition(after.Status.Conditions, mcpv1beta1.ConditionTypeValid)
 	require.NotNil(t, own, "controller-owned Valid condition must land")
 	assert.Equal(t, metav1.ConditionTrue, own.Status)
-}
-
-// TestMCPExternalAuthConfigReconciler_watchHandlers verifies that the workload
-// watch map functions enqueue exactly the config(s) the workload currently
-// references via either externalAuthConfigRef or a MCPExternalAuthConfig-kind
-// authServerRef, deduplicating when both name the same config. The
-// previously-referenced config is enqueued by EnqueueRequestsFromMapFunc, which
-// runs the map function on both the old and new object on update — no manual
-// stale-reference scan in the handler.
-func TestMCPExternalAuthConfigReconciler_watchHandlers(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name     string
-		obj      client.Object
-		expected map[string]struct{}
-	}{
-		{
-			name: "MCPServer externalAuthConfigRef enqueues the current config",
-			obj: v1beta1test.NewMCPServer("srv", "default",
-				v1beta1test.WithImage("example/mcp:latest"),
-				v1beta1test.WithExternalAuthConfigRef("cfg-a"),
-			),
-			expected: map[string]struct{}{"cfg-a": {}},
-		},
-		{
-			name: "MCPServer authServerRef of MCPExternalAuthConfig kind enqueues it",
-			obj: v1beta1test.NewMCPServer("srv", "default",
-				v1beta1test.WithImage("example/mcp:latest"),
-				v1beta1test.WithAuthServerRef(authServerRefKindMCPExternalAuthConfig, "cfg-b"),
-			),
-			expected: map[string]struct{}{"cfg-b": {}},
-		},
-		{
-			name: "MCPServer with both refs to different configs enqueues both",
-			obj: v1beta1test.NewMCPServer("srv", "default",
-				v1beta1test.WithImage("example/mcp:latest"),
-				v1beta1test.WithExternalAuthConfigRef("cfg-a"),
-				v1beta1test.WithAuthServerRef(authServerRefKindMCPExternalAuthConfig, "cfg-b"),
-			),
-			expected: map[string]struct{}{"cfg-a": {}, "cfg-b": {}},
-		},
-		{
-			name: "MCPServer with both refs to the same config enqueues it once",
-			obj: v1beta1test.NewMCPServer("srv", "default",
-				v1beta1test.WithImage("example/mcp:latest"),
-				v1beta1test.WithExternalAuthConfigRef("cfg-a"),
-				v1beta1test.WithAuthServerRef(authServerRefKindMCPExternalAuthConfig, "cfg-a"),
-			),
-			expected: map[string]struct{}{"cfg-a": {}},
-		},
-		{
-			name: "MCPServer authServerRef of another kind is ignored",
-			obj: v1beta1test.NewMCPServer("srv", "default",
-				v1beta1test.WithImage("example/mcp:latest"),
-				v1beta1test.WithAuthServerRef("MCPOIDCConfig", "cfg-x"),
-			),
-			expected: map[string]struct{}{},
-		},
-		{
-			name: "MCPServer without refs enqueues nothing",
-			obj: v1beta1test.NewMCPServer("srv", "default",
-				v1beta1test.WithImage("example/mcp:latest"),
-			),
-			expected: map[string]struct{}{},
-		},
-		{
-			name: "MCPRemoteProxy with both refs to different configs enqueues both",
-			obj: v1beta1test.NewMCPRemoteProxy("proxy", "default",
-				v1beta1test.WithRemoteProxyURL("https://example.com"),
-				v1beta1test.WithRemoteProxyExternalAuthConfigRef("cfg-a"),
-				v1beta1test.WithRemoteProxyAuthServerRef(authServerRefKindMCPExternalAuthConfig, "cfg-b"),
-			),
-			expected: map[string]struct{}{"cfg-a": {}, "cfg-b": {}},
-		},
-		{
-			name: "MCPRemoteProxy with both refs to the same config enqueues it once",
-			obj: v1beta1test.NewMCPRemoteProxy("proxy", "default",
-				v1beta1test.WithRemoteProxyURL("https://example.com"),
-				v1beta1test.WithRemoteProxyExternalAuthConfigRef("cfg-a"),
-				v1beta1test.WithRemoteProxyAuthServerRef(authServerRefKindMCPExternalAuthConfig, "cfg-a"),
-			),
-			expected: map[string]struct{}{"cfg-a": {}},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			ctx := t.Context()
-			r, _ := newTestMCPExternalAuthConfigReconciler(t)
-
-			requests := func() []reconcile.Request {
-				switch tt.obj.(type) {
-				case *mcpv1beta1.MCPServer:
-					return r.mapMCPServerToExternalAuthConfig(ctx, tt.obj)
-				case *mcpv1beta1.MCPRemoteProxy:
-					return r.mapMCPRemoteProxyToExternalAuthConfig(ctx, tt.obj)
-				default:
-					t.Fatalf("unexpected object type %T", tt.obj)
-					return nil
-				}
-			}()
-
-			got := make(map[string]struct{}, len(requests))
-			for _, req := range requests {
-				assert.Equal(t, "default", req.Namespace)
-				got[req.Name] = struct{}{}
-			}
-			assert.Equal(t, tt.expected, got)
-		})
-	}
 }

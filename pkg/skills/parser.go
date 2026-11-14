@@ -8,7 +8,7 @@ import (
 	"errors"
 	"fmt"
 
-	"gopkg.in/yaml.v3"
+	"github.com/stacklok/toolhive/pkg/yamlutil"
 )
 
 // frontmatterDelimiter is the YAML frontmatter delimiter.
@@ -85,15 +85,16 @@ func extractFrontmatter(content []byte) (*SkillFrontmatter, []byte, error) {
 	body := rest[endIdx+len(frontmatterDelimiter):]
 	body = bytes.TrimPrefix(body, []byte("\n"))
 
+	// yamlutil.Unmarshal rejects duplicate keys in linear time before
+	// decoding; yaml.Unmarshal's own check is quadratic on repeated keys.
 	var fm SkillFrontmatter
-	if err := yaml.Unmarshal(frontmatterBytes, &fm); err != nil {
+	if err := yamlutil.Unmarshal(frontmatterBytes, &fm); err != nil {
 		return nil, nil, fmt.Errorf("%w: %v", ErrInvalidFrontmatter, err)
 	}
 
 	return &fm, body, nil
 }
 
-// toDependencies converts a list of OCI reference strings to Dependencies.
 func toDependencies(refs []string) ([]Dependency, error) {
 	if len(refs) == 0 {
 		return nil, nil

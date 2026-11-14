@@ -11,23 +11,28 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/cenkalti/backoff/v5"
+	"github.com/cenkalti/backoff/v7"
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/jwx-go/jwkfetch/v4"
 	"github.com/lestrrat-go/httprc/v3"
-	"github.com/lestrrat-go/jwx/v3/jwk"
+	"github.com/lestrrat-go/jwx/v4/jwk"
 
 	"github.com/stacklok/toolhive-core/env"
 	"github.com/stacklok/toolhive/pkg/auth/upstreamtoken"
+	"github.com/stacklok/toolhive/pkg/authserver/claimnames"
 	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
 	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
+	"github.com/stacklok/toolhive/pkg/oauthproto/idjag"
 )
 
 // TokenIntrospector defines the interface for token introspection providers
@@ -360,7 +365,7 @@ type TokenValidator struct {
 	jwksURL           string
 	clientID          string
 	clientSecret      string // Optional client secret for introspection
-	jwksClient        *jwk.Cache
+	jwksClient        *jwkfetch.Cache
 	introspectURL     string       // Optional introspection endpoint
 	client            *http.Client // HTTP client for making requests
 	resourceURL       string       // (RFC 9728)
@@ -377,6 +382,10 @@ type TokenValidator struct {
 	// before falling back to HTTP. Eliminates self-referential HTTP calls.
 	// nil when no embedded auth server is configured.
 	keyProvider keys.PublicKeyProvider
+
+	// embeddedAuthServerIssuer binds session-less-grant provenance to tokens
+	// validated for this embedded authorization server only.
+	embeddedAuthServerIssuer string
 
 	// Lazy JWKS registration
 	jwksRegistered      bool
@@ -535,9 +544,10 @@ func registerIntrospectionProviders(config TokenValidatorConfig, clientSecret st
 
 // tokenValidatorOptions holds optional dependencies for NewTokenValidator.
 type tokenValidatorOptions struct {
-	envReader           env.Reader
-	upstreamTokenReader upstreamtoken.TokenReader
-	keyProvider         keys.PublicKeyProvider
+	envReader                env.Reader
+	upstreamTokenReader      upstreamtoken.TokenReader
+	keyProvider              keys.PublicKeyProvider
+	embeddedAuthServerIssuer string
 }
 
 // TokenValidatorOption is a functional option for NewTokenValidator.
@@ -555,10 +565,22 @@ func WithEnvReader(reader env.Reader) TokenValidatorOption {
 // with upstream provider tokens. When set, the Middleware extracts the token
 // session ID (tsid) from JWT claims and loads all upstream tokens into
 // Identity.UpstreamTokens (access tokens) and Identity.UpstreamIDTokens
-// (ID tokens) before placing the Identity in the request context.
+// (ID tokens) before placing the Identity in the request context. A token
+// session whose upstream access token cannot be refreshed, or that holds no
+// usable upstream access token at all, is answered with 401 and a
+// WWW-Authenticate challenge instead, so the client signs in again.
 func WithUpstreamTokenReader(reader upstreamtoken.TokenReader) TokenValidatorOption {
 	return func(o *tokenValidatorOptions) {
 		o.upstreamTokenReader = reader
+	}
+}
+
+// WithEmbeddedAuthServerIssuer binds session-less-grant provenance to tokens
+// validated for this embedded authorization server. This runtime-only value is
+// deliberately separate from TokenValidatorConfig, which is user configuration.
+func WithEmbeddedAuthServerIssuer(issuer string) TokenValidatorOption {
+	return func(o *tokenValidatorOptions) {
+		o.embeddedAuthServerIssuer = issuer
 	}
 }
 
@@ -587,35 +609,18 @@ func resolveClientSecret(configSecret string, envReader env.Reader) string {
 	return ""
 }
 
-// NewTokenValidator creates a new token validator.
-func NewTokenValidator(ctx context.Context, config TokenValidatorConfig, opts ...TokenValidatorOption) (*TokenValidator, error) {
-	// Apply functional options
-	o := &tokenValidatorOptions{envReader: &env.OSReader{}}
-	for _, opt := range opts {
-		opt(o)
-	}
-
-	// Log warning if insecure HTTP is enabled
-	if config.InsecureAllowHTTP {
-		slog.Warn(
-			"insecure HTTP is enabled - "+
-				"HTTP OIDC URLs are allowed - this is INSECURE and should NEVER be used in production",
-			"issuer", config.Issuer,
-		)
-	}
-
+// resolveJWKSDiscovery determines the JWKS URL to use, and whether lazy OIDC
+// discovery is needed. Discovery is deferred when JWKS URL is not provided
+// but issuer is, allowing the validator to start before the OIDC provider is
+// ready; ensureOIDCDiscovered populates jwksURL on first use in that case.
+func resolveJWKSDiscovery(config TokenValidatorConfig, o *tokenValidatorOptions) (string, error) {
 	jwksURL := config.JWKSURL
-
-	// Determine if we need lazy OIDC discovery.
-	// Discovery is deferred when JWKS URL is not provided but issuer is,
-	// allowing the validator to start before the OIDC provider is ready.
-	// When set, ensureOIDCDiscovered will populate jwksURL on first use.
 
 	// Skip discovery if TOOLHIVE_SKIP_OIDC_DISCOVERY is set (for testing only)
 	skipDiscovery := o.envReader.Getenv("TOOLHIVE_SKIP_OIDC_DISCOVERY") == "true"
 	if skipDiscovery && config.Issuer != "" {
 		if jwksURL == "" {
-			return nil, fmt.Errorf(
+			return "", fmt.Errorf(
 				"TOOLHIVE_SKIP_OIDC_DISCOVERY=true requires explicit JWKSURL in config. " +
 					"This env var is for testing only and cannot guess provider-specific JWKS URLs",
 			)
@@ -637,7 +642,36 @@ func NewTokenValidator(ctx context.Context, config TokenValidatorConfig, opts ..
 	// Ensure we have either an explicit JWKS URL, an issuer to discover from,
 	// or a local key provider (embedded auth server).
 	if jwksURL == "" && config.Issuer == "" && o.keyProvider == nil {
-		return nil, ErrMissingIssuerAndJWKSURL
+		return "", ErrMissingIssuerAndJWKSURL
+	}
+
+	return jwksURL, nil
+}
+
+// NewTokenValidator creates a new token validator.
+func NewTokenValidator(ctx context.Context, config TokenValidatorConfig, opts ...TokenValidatorOption) (*TokenValidator, error) {
+	// Apply functional options
+	o := &tokenValidatorOptions{envReader: &env.OSReader{}}
+	for _, opt := range opts {
+		opt(o)
+	}
+
+	// Log warning if insecure HTTP is enabled
+	if config.InsecureAllowHTTP {
+		slog.Warn(
+			"insecure HTTP is enabled - "+
+				"HTTP OIDC URLs are allowed - this is INSECURE and should NEVER be used in production",
+			"issuer", config.Issuer,
+		)
+	}
+
+	jwksURL, err := resolveJWKSDiscovery(config, o)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := validateGoogleTokeninfoAudience(config); err != nil {
+		return nil, err
 	}
 
 	// Create HTTP client with CA bundle and auth token support for JWKS
@@ -652,10 +686,9 @@ func NewTokenValidator(ctx context.Context, config TokenValidatorConfig, opts ..
 	}
 	config.httpClient = httpClient
 
-	// Create a new JWKS client with auto-refresh
-	// In jwx v3, NewCache requires an httprc.Client
-	httprcClient := httprc.NewClient(httprc.WithHTTPClient(httpClient))
-	cache, err := jwk.NewCache(ctx, httprcClient)
+	// Create a new JWKS client with auto-refresh.
+	httprcClient := httprc.NewClient()
+	cache, err := jwkfetch.NewCache(ctx, httprcClient, jwkfetch.WithHTTPClient(httpClient))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create JWKS cache: %w", err)
 	}
@@ -672,23 +705,41 @@ func NewTokenValidator(ctx context.Context, config TokenValidatorConfig, opts ..
 	}
 
 	validator := &TokenValidator{
-		issuer:              config.Issuer,
-		audience:            config.Audience,
-		jwksURL:             jwksURL,
-		introspectURL:       config.IntrospectionURL,
-		clientID:            config.ClientID,
-		clientSecret:        clientSecret,
-		jwksClient:          cache,
-		client:              config.httpClient,
-		resourceURL:         config.ResourceURL,
-		scopes:              config.Scopes,
-		registry:            registry,
-		insecureAllowHTTP:   config.InsecureAllowHTTP,
-		upstreamTokenReader: o.upstreamTokenReader,
-		keyProvider:         o.keyProvider,
+		issuer:                   config.Issuer,
+		audience:                 config.Audience,
+		jwksURL:                  jwksURL,
+		introspectURL:            config.IntrospectionURL,
+		clientID:                 config.ClientID,
+		clientSecret:             clientSecret,
+		jwksClient:               cache,
+		client:                   config.httpClient,
+		resourceURL:              config.ResourceURL,
+		scopes:                   config.Scopes,
+		registry:                 registry,
+		insecureAllowHTTP:        config.InsecureAllowHTTP,
+		upstreamTokenReader:      o.upstreamTokenReader,
+		keyProvider:              o.keyProvider,
+		embeddedAuthServerIssuer: o.embeddedAuthServerIssuer,
 	}
 
 	return validator, nil
+}
+
+// validateGoogleTokeninfoAudience rejects a Google tokeninfo introspection
+// config with no audience. Google's tokeninfo endpoint returns no iss claim -
+// parseGoogleResponse synthesises iss locally, so a configured-issuer check
+// against it is self-satisfying and proves nothing about which OAuth client
+// the token was minted for. The only real binding to this deployment is the
+// audience check, which is skipped when audience is empty. Without it, ANY
+// valid Google access token (e.g. one minted for an attacker's own unrelated
+// OAuth client) passes validation. Refuse the combination at startup instead
+// of silently accepting cross-client tokens at runtime.
+func validateGoogleTokeninfoAudience(config TokenValidatorConfig) error {
+	if config.IntrospectionURL == GoogleTokeninfoURL && strings.TrimSpace(config.Audience) == "" {
+		return fmt.Errorf("audience is required when using Google's tokeninfo endpoint for introspection: " +
+			"without it any valid Google access token is accepted regardless of the OAuth client it was minted for")
+	}
+	return nil
 }
 
 // ensureJWKSRegistered ensures that the JWKS URL is registered with the cache.
@@ -708,8 +759,28 @@ func (v *TokenValidator) ensureJWKSRegistered(ctx context.Context) error {
 	registrationCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
-	// Attempt registration
-	if err := v.jwksClient.Register(registrationCtx, v.jwksURL); err != nil {
+	// The CA-aware client is configured on the cache so every fetch,
+	// including background refreshes, uses the same transport policy.
+	err := v.jwksClient.Register(registrationCtx, v.jwksURL)
+	switch {
+	case err == nil:
+		// Registered and the first fetch succeeded.
+	case errors.Is(err, httprc.ErrNotReady()):
+		// The resource is registered and httprc will keep fetching it in the
+		// background; only the first fetch has not completed within the
+		// registration budget. Treat it as registered: Lookup returns a
+		// not-ready error until a background fetch succeeds. Retrying Register
+		// instead would fail with ErrResourceAlreadyExists forever.
+		//nolint:gosec // G706: JWKS URL is from server configuration or OIDC discovery
+		slog.Debug(
+			"JWKS URL registered but first fetch not ready; fetching continues in background",
+			"jwks_url", v.jwksURL, "error", err,
+		)
+	case errors.Is(err, httprc.ErrResourceAlreadyExists()):
+		// The URL is already in httprc's resource map, e.g. a previous attempt
+		// returned ErrNotReady before this state was tracked, or OIDC
+		// re-discovery produced the same URL after resetting the flag.
+	default:
 		v.jwksRegistrationErr = fmt.Errorf("failed to register JWKS URL: %w", err)
 		// Do NOT set jwksRegistered = true -- allow retry on next call
 		return v.jwksRegistrationErr
@@ -821,18 +892,26 @@ func (v *TokenValidator) ensureOIDCDiscovered(ctx context.Context) error {
 	return nil
 }
 
-// getKeyFromLocalProvider attempts to find a verification key from the local
-// key provider (embedded auth server). Returns (key, nil) on success,
-// (nil, nil) to signal fallback to HTTP, or (nil, error) for hard failures.
-// validateTokenHeader checks the signing method is supported (RSA or ECDSA) and
-// extracts the key ID from the token header. Returns an error for unsupported
-// methods or a missing kid claim.
+// validateTokenHeader checks the signing method is supported (RSA or ECDSA),
+// refuses an ID-JAG typ, and extracts the key ID from the token header. Returns
+// an error for unsupported methods, an ID-JAG typ or a missing kid claim.
 func validateTokenHeader(token *jwt.Token) (string, error) {
 	switch token.Method.(type) {
 	case *jwt.SigningMethodRSA, *jwt.SigningMethodECDSA:
 		// Supported signing methods
 	default:
 		return "", fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+	}
+
+	// RFC 8725 Section 3.12: validation rules for different token types must
+	// be mutually exclusive. An ID-JAG is not an access token. An issuer that
+	// signs ID-JAGs with the same key as its access tokens (an external IdP
+	// today, the embedded auth server once it issues ID-JAGs) would otherwise
+	// get one accepted here when no audience is configured. This runs in the
+	// key function, before the signature is verified; that is safe because the
+	// check can only refuse a token.
+	if typ, _ := token.Header["typ"].(string); idjag.IsIDJAG(typ) {
+		return "", errors.New("an ID-JAG is not accepted as an access token")
 	}
 
 	kid, ok := token.Header["kid"].(string)
@@ -842,6 +921,9 @@ func validateTokenHeader(token *jwt.Token) (string, error) {
 	return kid, nil
 }
 
+// getKeyFromLocalProvider attempts to find a verification key from the local
+// key provider (embedded auth server). Returns (key, nil) on success,
+// (nil, nil) to signal fallback to HTTP, or (nil, error) for hard failures.
 func (v *TokenValidator) getKeyFromLocalProvider(ctx context.Context, token *jwt.Token) (interface{}, error) {
 	if v.keyProvider == nil {
 		return nil, nil
@@ -904,8 +986,7 @@ func (v *TokenValidator) getKeyFromJWKS(ctx context.Context, token *jwt.Token) (
 		return nil, err
 	}
 
-	// Get the key set from the JWKS
-	// In jwx v3, Get is replaced with Lookup
+	// Get the key set from the JWKS.
 	keySet, err := v.jwksClient.Lookup(ctx, v.jwksURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to lookup JWKS: %w", err)
@@ -917,10 +998,9 @@ func (v *TokenValidator) getKeyFromJWKS(ctx context.Context, token *jwt.Token) (
 		return nil, fmt.Errorf("key ID %s not found in JWKS", kid)
 	}
 
-	// Get the raw key
-	// In jwx v3, Raw method is replaced with Export function
-	var rawKey interface{}
-	if err := jwk.Export(key, &rawKey); err != nil {
+	// Export the raw key.
+	rawKey, err := jwk.Export[any](key)
+	if err != nil {
 		return nil, fmt.Errorf("failed to export raw key: %w", err)
 	}
 
@@ -970,16 +1050,19 @@ func (v *TokenValidator) validateClaims(claims jwt.MapClaims) error {
 
 func parseIntrospectionClaims(r io.Reader) (jwt.MapClaims, error) {
 	var j struct {
-		Active bool                   `json:"active"`
-		Exp    *float64               `json:"exp,omitempty"`
-		Sub    string                 `json:"sub,omitempty"`
-		Aud    interface{}            `json:"aud,omitempty"`
-		Scope  string                 `json:"scope,omitempty"`
-		Iss    string                 `json:"iss,omitempty"`
-		Extra  map[string]interface{} `json:"-"`
+		Active bool        `json:"active"`
+		Exp    *float64    `json:"exp,omitempty"`
+		Sub    string      `json:"sub,omitempty"`
+		Aud    interface{} `json:"aud,omitempty"`
+		Scope  string      `json:"scope,omitempty"`
+		Iss    string      `json:"iss,omitempty"`
 	}
+	var body json.RawMessage
 
-	if err := json.NewDecoder(r).Decode(&j); err != nil {
+	if err := json.NewDecoder(r).Decode(&body); err != nil {
+		return nil, fmt.Errorf("failed to decode introspection JSON: %w", err)
+	}
+	if err := json.Unmarshal(body, &j); err != nil {
 		return nil, fmt.Errorf("failed to decode introspection JSON: %w", err)
 	}
 	if !j.Active {
@@ -987,6 +1070,18 @@ func parseIntrospectionClaims(r io.Reader) (jwt.MapClaims, error) {
 	}
 
 	claims := jwt.MapClaims{}
+	var extra map[string]interface{}
+	if err := json.Unmarshal(body, &extra); err != nil {
+		return nil, fmt.Errorf("failed to decode introspection JSON: %w", err)
+	}
+	for k, v := range extra {
+		switch k {
+		case "active", "exp", "sub", "aud", "scope", "iss":
+			continue
+		default:
+			claims[k] = v
+		}
+	}
 	if j.Exp != nil {
 		claims["exp"] = *j.Exp
 	}
@@ -1001,9 +1096,6 @@ func parseIntrospectionClaims(r io.Reader) (jwt.MapClaims, error) {
 	}
 	if j.Iss != "" {
 		claims["iss"] = strings.TrimSpace(j.Iss)
-	}
-	for k, v := range j.Extra {
-		claims[k] = v
 	}
 
 	return claims, nil
@@ -1145,6 +1237,11 @@ const (
 	OAuthErrInsufficientScope = "insufficient_scope"
 )
 
+// upstreamReauthRequired is the error_description of the 401 the validator
+// answers when a token session's upstream credential is unusable: the client's
+// only cure is a new upstream login.
+const upstreamReauthRequired = "upstream token is no longer valid; re-authentication required"
+
 // RFC6750Error represents an RFC 6750 compliant OAuth error response body.
 type RFC6750Error struct {
 	Error            string `json:"error"`
@@ -1166,17 +1263,25 @@ func writeOAuthError(w http.ResponseWriter, errorCode, description string) {
 	_, _ = w.Write(body)
 }
 
+// writeUpstreamReauthRequired answers 401 with the RFC 6750 invalid_token
+// challenge for a token session whose upstream credential is unusable, so the
+// client re-authenticates and the login writes fresh upstream rows.
+func (v *TokenValidator) writeUpstreamReauthRequired(w http.ResponseWriter) {
+	w.Header().Set("WWW-Authenticate", v.buildWWWAuthenticate(OAuthErrInvalidToken, upstreamReauthRequired))
+	writeOAuthError(w, OAuthErrInvalidToken, upstreamReauthRequired)
+}
+
 // loadUpstreamTokens extracts the token session ID from claims and loads
 // all upstream provider credentials (access + ID tokens) for that session.
 // Returns (nil, nil, nil) if no tsid claim exists. Returns a non-nil error
 // when a tsid claim is present but token loading fails due to an infrastructure
-// error (storage unavailable). A non-empty failed slice means one or more
+// error (storage unavailable). A non-empty failed map means one or more
 // providers' tokens could not be refreshed; the caller should return HTTP 401
 // to trigger re-authentication.
 func (v *TokenValidator) loadUpstreamTokens(
 	ctx context.Context, claims jwt.MapClaims,
-) (map[string]upstreamtoken.UpstreamCredential, []string, error) {
-	tsid, ok := claims[upstreamtoken.TokenSessionIDClaimKey].(string)
+) (map[string]upstreamtoken.UpstreamCredential, map[string]error, error) {
+	tsid, ok := claims[claimnames.TokenSessionIDKey].(string)
 	if !ok || tsid == "" {
 		return nil, nil, nil
 	}
@@ -1189,6 +1294,39 @@ func (v *TokenValidator) loadUpstreamTokens(
 		return nil, nil, fmt.Errorf("load upstream credentials: %w", err)
 	}
 	return creds, failed, nil
+}
+
+// isSessionlessGrant reports whether a validated token from the configured
+// embedded authorization server affirmatively proves it was minted without an
+// upstream session. A nil upstream-token map alone is never sufficient.
+//
+// The gate requires the validator's own issuer to be the embedded authorization
+// server's, rather than trusting the token's "iss" claim on its own. validateClaims
+// only verifies "iss" when v.issuer is set, so on a JWKS-only configuration the
+// claim is unverified beyond the signature and would be a self-assertion. Binding
+// to v.issuer makes "validated for the configured embedded authorization-server
+// issuer" true by construction instead of by deployment convention, and leaves the
+// claim comparison below as a redundant restatement of what validateClaims proved.
+func (v *TokenValidator) isSessionlessGrant(identity *Identity, claims jwt.MapClaims) bool {
+	// Trim on both sides, as validateClaims does: an issuer configured with stray
+	// whitespace must not silently turn this gate off and deny every session-less
+	// grant with no diagnostic.
+	embeddedIssuer := strings.TrimSpace(v.embeddedAuthServerIssuer)
+	if embeddedIssuer == "" || strings.TrimSpace(v.issuer) != embeddedIssuer {
+		return false
+	}
+	if identity.UpstreamTokens != nil {
+		return false
+	}
+	issuer, ok := claims["iss"].(string)
+	if !ok || strings.TrimSpace(issuer) != embeddedIssuer {
+		return false
+	}
+	if chain := identity.DelegationChain; chain != nil && !chain.Malformed && len(chain.Chain) > 0 {
+		return true
+	}
+	marker, ok := claims[claimnames.NoUpstreamSessionKey].(bool)
+	return ok && marker
 }
 
 // Middleware creates an HTTP middleware that validates JWT tokens and creates Identity.
@@ -1245,19 +1383,13 @@ func (v *TokenValidator) Middleware(next http.Handler) http.Handler {
 			// at this layer; this is the correct tradeoff for now.
 			if len(failed) > 0 {
 				slog.WarnContext(loadCtx, "upstream token refresh failed; returning 401",
-					"providers", failed)
-				w.Header().Set("WWW-Authenticate",
-					v.buildWWWAuthenticate(OAuthErrInvalidToken, "upstream token is no longer valid; re-authentication required"))
-				writeOAuthError(w, OAuthErrInvalidToken,
-					"upstream token is no longer valid; re-authentication required")
+					"providers", slices.Sorted(maps.Keys(failed)))
+				v.writeUpstreamReauthRequired(w)
 				return
 			}
 			// Project the per-provider credential bundle onto the two
-			// consumer-facing Identity fields.
-			//
-			// Non-nil empty maps are preserved when a tsid claim was present
-			// so consumers can distinguish "enrichment attempted, nothing
-			// stored" from "enrichment never ran" (nil).
+			// consumer-facing Identity fields. creds is non-nil exactly when
+			// the token carried a tsid claim; without one both fields stay nil.
 			if creds != nil {
 				accessTokens := make(map[string]string, len(creds))
 				idTokens := make(map[string]string, len(creds))
@@ -1274,10 +1406,33 @@ func (v *TokenValidator) Middleware(next http.Handler) http.Handler {
 						idTokens[provider] = cred.IDToken
 					}
 				}
+				// A token session that holds no usable access token for any
+				// provider (every stored row has expired or been deleted, or
+				// none carried an access token) is in the same state as one
+				// whose refresh was refused: consumers of UpstreamTokens can
+				// only deny it, and a denial does not make the client sign in
+				// again. Answer the same 401 challenge here, before any
+				// consumer runs.
+				//
+				// Debug, unlike the refresh-failure WARN above: an expired row
+				// is ordinary lifecycle rather than an upstream fault, a client
+				// retrying on a stale token sets the rate, and the audit
+				// middleware records the 401. The line names the session (tsid
+				// stays at Debug, as in loadUpstreamTokens) and the providers
+				// whose rows were still stored without an access token.
+				if len(accessTokens) == 0 {
+					tsid, _ := claims[claimnames.TokenSessionIDKey].(string)
+					slog.DebugContext(loadCtx, "token session holds no upstream access token; returning 401",
+						"tsid", tsid, "stored_providers", slices.Sorted(maps.Keys(creds)))
+					v.writeUpstreamReauthRequired(w)
+					return
+				}
 				identity.UpstreamTokens = accessTokens
 				identity.UpstreamIDTokens = idTokens
 			}
 		}
+
+		identity.SessionlessGrant = v.isSessionlessGrant(identity, claims)
 
 		// Add the fully-populated Identity to the request context and serve.
 		ctx := WithIdentity(r.Context(), identity)

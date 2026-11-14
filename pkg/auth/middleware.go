@@ -20,6 +20,10 @@ const (
 // MiddlewareParams represents the parameters for authentication middleware
 type MiddlewareParams struct {
 	OIDCConfig *TokenValidatorConfig `json:"oidc_config,omitempty"`
+	// EmbeddedAuthServerIssuer binds session-less-grant provenance to the local
+	// embedded authorization server. It is derived from runner configuration,
+	// not supplied by an incoming token.
+	EmbeddedAuthServerIssuer string `json:"embedded_auth_server_issuer,omitempty"`
 }
 
 // Middleware wraps authentication middleware functionality
@@ -58,6 +62,9 @@ func CreateMiddleware(config *types.MiddlewareConfig, runner types.MiddlewareRun
 	}
 	if provider := runner.GetKeyProvider(); provider != nil {
 		opts = append(opts, WithKeyProvider(provider))
+	}
+	if params.EmbeddedAuthServerIssuer != "" {
+		opts = append(opts, WithEmbeddedAuthServerIssuer(params.EmbeddedAuthServerIssuer))
 	}
 
 	middleware, authInfoHandler, err := GetAuthenticationMiddleware(context.Background(), params.OIDCConfig, opts...)

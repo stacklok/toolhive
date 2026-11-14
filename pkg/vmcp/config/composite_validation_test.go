@@ -12,6 +12,9 @@ import (
 	thvjson "github.com/stacklok/toolhive/pkg/json"
 )
 
+// ptrTo returns a pointer to v. Used in tests for optional pointer fields.
+func ptrTo[T any](v T) *T { return &v }
+
 func TestValidateDefaultResultsForSteps(t *testing.T) {
 	t.Parallel()
 
@@ -372,6 +375,24 @@ func TestValidateCompositeToolConfig(t *testing.T) {
 			},
 			expectError: true,
 			errorMsg:    "name is required",
+		},
+		{
+			name: "annotations accepted without structural error",
+			tool: &CompositeToolConfig{
+				Name:        "test-tool",
+				Description: "A test tool",
+				Steps: []WorkflowStepConfig{
+					{ID: "step1", Type: "tool", Tool: "backend.echo"},
+				},
+				Annotations: &ToolAnnotationsOverride{
+					Title:           ptrTo("Test Tool"),
+					ReadOnlyHint:    ptrTo(true),
+					DestructiveHint: ptrTo(false),
+					IdempotentHint:  ptrTo(true),
+					OpenWorldHint:   ptrTo(false),
+				},
+			},
+			expectError: false,
 		},
 		{
 			name: "missing description",

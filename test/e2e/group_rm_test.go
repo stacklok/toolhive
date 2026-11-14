@@ -4,10 +4,8 @@
 package e2e_test
 
 import (
-	"fmt"
 	"os/exec"
 	"strings"
-	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -25,9 +23,8 @@ var _ = Describe("Group RM E2E Tests", Label("core", "groups", "e2e"), func() {
 
 	BeforeEach(func() {
 		config = e2e.NewTestConfig()
-		// Use a shared timestamp for all workload names in this test
-		groupName = fmt.Sprintf("group-rm-cancel-group-%d", time.Now().UnixNano())
-		secondGroupName = fmt.Sprintf("group-rm-cancel-group-2-%d", time.Now().UnixNano())
+		groupName = e2e.GenerateUniqueServerName("group-rm-cancel-group")
+		secondGroupName = e2e.GenerateUniqueServerName("group-rm-cancel-group-2")
 		createdWorkloads = []string{}
 
 		// Check if thv binary is available
@@ -61,7 +58,7 @@ var _ = Describe("Group RM E2E Tests", Label("core", "groups", "e2e"), func() {
 
 	Describe("thv group rm command", func() {
 		It("should return error when group does not exist", func() {
-			groupName := fmt.Sprintf("group-rm-non-existent-group-%d", time.Now().UnixNano())
+			groupName := e2e.GenerateUniqueServerName("group-rm-non-existent-group")
 			_, stderr, err := e2e.NewTHVCommand(config, "group", "rm", groupName).ExpectFailure()
 			Expect(err).To(HaveOccurred())
 			Expect(stderr).To(ContainSubstring("does not exist"))
@@ -69,12 +66,11 @@ var _ = Describe("Group RM E2E Tests", Label("core", "groups", "e2e"), func() {
 
 		It("should cancel deletion when user does not confirm", func() {
 			// Add a workload to the group
-			workloadName := fmt.Sprintf("group-rm-test-workload-%d", time.Now().UnixNano())
+			workloadName := e2e.GenerateUniqueServerName("group-rm-test-workload")
 			createWorkloadInGroup(workloadName, groupName)
 
 			// Verify the workload is running
-			err := e2e.WaitForMCPServer(config, workloadName, e2e.ServerReadyTimeout())
-			Expect(err).ToNot(HaveOccurred())
+			e2e.ExpectMCPServersRunning(config, workloadName)
 
 			// Try to delete the group but provide 'n' for no
 			cmd := exec.Command(config.THVBinary, "group", "rm", groupName)
@@ -105,13 +101,18 @@ var _ = Describe("Group RM E2E Tests", Label("core", "groups", "e2e"), func() {
 		})
 
 		It("should delete group with workloads", func() {
-			// Create workloads in the group
-			groupWorkload1 := fmt.Sprintf("group-rm-group-workload-1-%d", GinkgoRandomSeed())
-			groupWorkload2 := fmt.Sprintf("group-rm-group-workload-2-%d", GinkgoRandomSeed())
+			// Two members and two non-members are what make "rm keeps every
+			// member and leaves every non-member running" an assertion rather
+			// than an anecdote, so the setup stays at four. The workload count
+			// is not what makes this spec flaky: the same readiness wait has
+			// timed out in the two-workload specs here and in
+			// list_group_e2e_test.go (#6040).
+			groupWorkload1 := e2e.GenerateUniqueServerName("group-rm-group-workload-1")
+			groupWorkload2 := e2e.GenerateUniqueServerName("group-rm-group-workload-2")
 
 			// Create workloads not in the group
-			nonGroupWorkload1 := fmt.Sprintf("group-rm-non-group-workload-1-%d", GinkgoRandomSeed())
-			nonGroupWorkload2 := fmt.Sprintf("group-rm-non-group-workload-2-%d", GinkgoRandomSeed())
+			nonGroupWorkload1 := e2e.GenerateUniqueServerName("group-rm-non-group-workload-1")
+			nonGroupWorkload2 := e2e.GenerateUniqueServerName("group-rm-non-group-workload-2")
 
 			createWorkloadInGroup(groupWorkload1, groupName)
 			createWorkloadInGroup(groupWorkload2, groupName)
@@ -119,10 +120,7 @@ var _ = Describe("Group RM E2E Tests", Label("core", "groups", "e2e"), func() {
 			createWorkloadInGroup(nonGroupWorkload2, secondGroupName)
 
 			// Verify all workloads are running
-			for _, workloadName := range []string{groupWorkload1, groupWorkload2, nonGroupWorkload1, nonGroupWorkload2} {
-				err := e2e.WaitForMCPServer(config, workloadName, e2e.ServerReadyTimeout())
-				Expect(err).ToNot(HaveOccurred())
-			}
+			e2e.ExpectMCPServersRunning(config, groupWorkload1, groupWorkload2, nonGroupWorkload1, nonGroupWorkload2)
 
 			// Delete the group (provide confirmation)
 			cmd := exec.Command(config.THVBinary, "group", "rm", groupName)
@@ -147,17 +145,14 @@ var _ = Describe("Group RM E2E Tests", Label("core", "groups", "e2e"), func() {
 
 		It("should delete group and workloads with --with-workloads flag", func() {
 			// Create multiple workloads in the group
-			workload1 := fmt.Sprintf("group-rm-with-workloads-1-%d", GinkgoRandomSeed())
-			workload2 := fmt.Sprintf("group-rm-with-workloads-2-%d", GinkgoRandomSeed())
+			workload1 := e2e.GenerateUniqueServerName("group-rm-with-workloads-1")
+			workload2 := e2e.GenerateUniqueServerName("group-rm-with-workloads-2")
 
 			createWorkloadInGroup(workload1, groupName)
 			createWorkloadInGroup(workload2, groupName)
 
 			// Verify all workloads are running
-			for _, workloadName := range []string{workload1, workload2} {
-				err := e2e.WaitForMCPServer(config, workloadName, e2e.ServerReadyTimeout())
-				Expect(err).ToNot(HaveOccurred())
-			}
+			e2e.ExpectMCPServersRunning(config, workload1, workload2)
 
 			// Delete the group with --with-workloads flag (provide confirmation)
 			cmd := exec.Command(config.THVBinary, "group", "rm", groupName, "--with-workloads")

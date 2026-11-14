@@ -6,15 +6,22 @@ package llm
 import (
 	"context"
 	"crypto/tls"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"os"
+	"regexp"
+	"slices"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/stacklok/toolhive/pkg/llmgateway"
+	"github.com/stacklok/toolhive/pkg/networking"
 	pkgsecrets "github.com/stacklok/toolhive/pkg/secrets"
 )
 
@@ -31,17 +38,25 @@ type GatewayManager interface {
 	ConfigureLLMGateway(clientType string, cfg llmgateway.ApplyConfig) (string, error)
 	// LLMGatewayModeFor returns "direct", "proxy", or "" for the given client.
 	LLMGatewayModeFor(clientType string) string
-	// IsManaged reports whether a managed-preferences profile overrides the
+	// PromptCacheConflict names a setting that may override ToolHive's
+	// one-hour Claude Code prompt-cache configuration.
+	PromptCacheConflict(clientType string) (string, error)
+	// IsManaged reports whether a managed configuration overrides the
 	// client's local config (so the config setup writes would be ignored).
 	IsManaged(clientType string) bool
+	// LLMClientDetectionHint explains why clientType was not detected, or "".
+	// Used when --client names a CLI tool whose settings dir is leftover after uninstall.
+	LLMClientDetectionHint(clientType string) string
 	// ConfigureEnvFile writes .env file entries for the client and returns the
 	// env file path. Returns ("", nil) when the client has no env-file entries.
 	ConfigureEnvFile(clientType string, cfg llmgateway.ApplyConfig) (string, error)
 	// RevertEnvFile removes the .env file entries that setup wrote. envFilePath
 	// is the value returned by ConfigureEnvFile; a no-op when empty.
 	RevertEnvFile(clientType, envFilePath string) error
-	// RevertLLMGateway removes the LLM gateway settings from the tool's config file.
-	RevertLLMGateway(clientType, configPath string) error
+	// RevertLLMGateway removes the LLM gateway settings from the tool's config
+	// file, and the Bedrock settings too when clearBedrockKeys is set (the setup
+	// being reverted wrote them).
+	RevertLLMGateway(clientType, configPath string, clearBedrockKeys bool) error
 }
 
 // ConfigUpdater is the subset of config.Provider used by Setup and Teardown.
@@ -52,6 +67,11 @@ type ConfigUpdater interface {
 	// UpdateLLMConfig atomically reads, applies fn, and persists the LLM config.
 	UpdateLLMConfig(fn func(*Config) error) error
 }
+
+// SecretsProviderFunc returns the secrets provider used to delete cached LLM
+// credentials. Teardown calls it only when the requested operation must purge
+// tokens.
+type SecretsProviderFunc func() (pkgsecrets.Provider, error)
 
 // Setup configures detected AI tools to use the LLM gateway.
 //
@@ -68,23 +88,19 @@ type ConfigUpdater interface {
 // message is printed telling the user that login will occur on first gateway
 // access. lazy is intended for unattended provisioning (e.g. an MDM profile);
 // it is opt-in and does not change behaviour for interactive users.
+//
+// When inlineOpts changes the requested scopes, the cached tokens are deleted
+// just before login (see invalidateTokensOnScopeChange). getSecrets is called
+// only in that case.
 func Setup(
 	ctx context.Context, out, errOut io.Writer,
 	gm GatewayManager, provider ConfigUpdater, login LoginFunc,
 	inlineOpts SetOptions, anthropicPathPrefix string, anthropicPathPrefixSet bool, targetClient string,
-	lazy bool,
+	lazy bool, getSecrets SecretsProviderFunc,
 ) error {
-	llmCfg := provider.GetLLMConfig()
-
-	// Apply inline flags in-memory so login and tool detection use the merged
-	// config without touching disk. Persistence happens below, only after login
-	// and tool patching succeed, so a failed login leaves no persisted state.
-	if err := llmCfg.SetFields(inlineOpts); err != nil {
-		return fmt.Errorf("invalid inline flag values: %w", err)
-	}
-
-	if !llmCfg.IsConfigured() {
-		return fmt.Errorf("LLM gateway is not configured — run \"thv llm config set\" first")
+	llmCfg, err := prepareSetupConfig(provider, inlineOpts)
+	if err != nil {
+		return err
 	}
 
 	proxyBaseURL := fmt.Sprintf("http://localhost:%d/v1", llmCfg.EffectiveProxyPort())
@@ -93,27 +109,26 @@ func Setup(
 	// there is nothing to configure. In non-lazy mode login still runs before any
 	// files are patched, preserving the guarantee that a failed login leaves no
 	// state.
-	detected, err := filterDetectedClients(gm.DetectedLLMGatewayClients(), targetClient)
+	detected, done, err := setupClients(
+		gm, targetClient, lazy, llmCfg.Bedrock.Compat, llmCfg.Models, out, errOut)
 	if err != nil {
 		return err
 	}
-	if len(detected) == 0 {
-		_, _ = fmt.Fprintln(out, "No supported AI tools detected.")
+	if done {
 		return nil
 	}
 
-	// Only build the shell-string token helper if a detected tool actually
-	// consumes it — its shell-safety check on the thv executable path would
-	// otherwise fail setup for e.g. a Codex-only run, which never uses it.
-	var tokenHelperCommand string
-	if tokenHelperCommandNeeded(gm, detected) {
-		tokenHelperCommand, err = buildTokenHelperCommand()
-		if err != nil {
-			return err
-		}
-	}
 	tokenHelperPath, tokenHelperArgs, err := buildTokenHelperArgv()
 	if err != nil {
+		return err
+	}
+
+	// Changed scopes must not meet the old refresh token, so the cache is dropped
+	// right before login. This runs only once the flags validated and there are
+	// tools to configure, so an early return above never costs the user a session.
+	if err := invalidateTokensOnScopeChange(
+		ctx, errOut, provider, provider.GetLLMConfig(), llmCfg, getSecrets,
+	); err != nil {
 		return err
 	}
 
@@ -128,23 +143,35 @@ func Setup(
 	} else {
 		_, _ = fmt.Fprintln(out, "Ensuring you are logged in to the LLM gateway…")
 		if err := login(ctx, &llmCfg); err != nil {
+			if portErr := setupCallbackPortError(err); portErr != nil {
+				return fmt.Errorf("OIDC login failed: %w", portErr)
+			}
 			return fmt.Errorf("OIDC login failed: %s", SanitizeTokenError(err))
 		}
 		_, _ = fmt.Fprintln(out, "Login successful.")
 	}
 
-	// Resolve the effective path prefix for ANTHROPIC_BASE_URL.
-	// If the caller supplied --anthropic-path-prefix, use it directly.
-	// Otherwise auto-probe: a HEAD request to <gateway>/anthropic/v1/messages
-	// that returns 401 (rather than 404) indicates the gateway uses the
-	// /anthropic prefix, so we apply it automatically.
-	// Only probe if at least one detected tool uses direct mode; proxy-mode
-	// tools ignore the Anthropic prefix entirely.
+	// Resolve the effective path prefix for the Anthropic API before discovery
+	// so Pi uses the same endpoint to list models and serve requests.
 	anthropicPrefix := resolveAnthropicPrefix(ctx, gm, detected, llmCfg, anthropicPathPrefix, anthropicPathPrefixSet)
 
-	configured, err := configureDetectedTools(
-		out, errOut, gm, detected, llmCfg.GatewayURL, proxyBaseURL, tokenHelperCommand,
-		tokenHelperPath, tokenHelperArgs, llmCfg.TLSSkipVerify, anthropicPrefix, llmCfg.Models, llmCfg.Bedrock,
+	detected, discoveredModels, err := discoverSetupModels(
+		ctx, errOut, detected, targetClient, llmCfg, anthropicPrefix,
+	)
+	if err != nil {
+		return err
+	}
+	if len(detected) == 0 {
+		return nil
+	}
+
+	// The persisted config still holds the previous setup's tool records here,
+	// since it is only updated below.
+	previousBedrock := previousBedrockKeys(provider.GetLLMConfig())
+	configured, err := configureDetectedToolsWithDiscovery(
+		out, errOut, gm, detected, targetClient, llmCfg.GatewayURL, proxyBaseURL,
+		tokenHelperPath, tokenHelperArgs, llmCfg.TLSSkipVerify, anthropicPrefix,
+		llmCfg.Models, discoveredModels, llmCfg.ShortPromptCache, llmCfg.Bedrock, previousBedrock,
 	)
 	if err != nil {
 		return err
@@ -157,6 +184,9 @@ func Setup(
 	// later setup that omits claude-code. llmCfg.Bedrock.Compat is the effective
 	// (persisted + inline) compat state used for the --enable-1m check.
 	warnBedrockNoEffect(errOut, inlineOpts, llmCfg.Bedrock.Compat, configured)
+	warnBedrockTurnedOff(errOut, previousBedrock, configured)
+	warnShortPromptCacheNoEffect(errOut, inlineOpts, configured)
+	warnPromptCacheBedrockCompatibility(errOut, inlineOpts, llmCfg.ShortPromptCache, configured)
 
 	warnTLSSkipVerify(errOut, llmCfg.TLSSkipVerify, configured)
 	warnCredentialHelperTools(out, errOut, gm, configured)
@@ -178,11 +208,42 @@ func Setup(
 		return fmt.Errorf("persisting tool configuration: %w", err)
 	}
 
+	printPiLongCacheHint(out, configured, llmCfg.ShortPromptCache)
 	if hasProxyMode(configured) {
 		_, _ = fmt.Fprintln(out, "One or more tools use proxy mode. Start the proxy with: thv llm proxy start")
 	}
 
 	return nil
+}
+
+func prepareSetupConfig(provider ConfigUpdater, inlineOpts SetOptions) (Config, error) {
+	llmCfg := provider.GetLLMConfig()
+	// Apply inline flags in-memory so login and tool detection use the merged
+	// config without touching disk. Persistence happens only after login and
+	// tool patching succeed, so a failed login leaves no persisted state.
+	if err := llmCfg.SetFields(inlineOpts); err != nil {
+		if portErr := setupCallbackPortError(err); portErr != nil {
+			return Config{}, fmt.Errorf("invalid inline flag values: %w", portErr)
+		}
+		return Config{}, fmt.Errorf("invalid inline flag values: %w", err)
+	}
+	if !llmCfg.IsConfigured() {
+		return Config{}, fmt.Errorf("LLM gateway is not configured — run \"thv llm config set\" first")
+	}
+	return llmCfg, nil
+}
+
+func setupCallbackPortError(err error) error {
+	var portErr *networking.CallbackPortInUseError
+	if !errors.As(err, &portErr) {
+		return nil
+	}
+	return fmt.Errorf(
+		"requested callback port %d is already in use; "+
+			"stop the process using it or choose another provider-registered port with "+
+			`"thv llm setup --callback-port <port>"`,
+		portErr.Port,
+	)
 }
 
 // Teardown removes LLM gateway configuration from all (or one) configured tools.
@@ -191,86 +252,205 @@ func Setup(
 // configured tools. An error is returned when targetTool is non-empty but not
 // found in the configured tool list.
 //
-// If secretsProvider is non-nil and purgeTokens is true, cached OIDC tokens
-// are deleted after the config update succeeds.
+// Reverting the last configured tool also resets the persisted LLM config to its
+// zero value, so settings that are deliberately sticky across "thv llm setup"
+// re-runs (e.g. Bedrock compat) are not silently re-applied by a later setup.
+// A targeted teardown that leaves other tools configured keeps the config, which
+// those tools still need to reach the gateway.
+//
+// Cached OIDC tokens are deleted by default when no configured tool remains.
+// keepTokens opts out of that full-teardown default. A partial targeted
+// teardown retains the shared session unless purgeTokens is true.
 func Teardown(
 	ctx context.Context,
 	out, errOut io.Writer,
 	gm GatewayManager,
 	targetTool string,
+	keepTokens bool,
 	purgeTokens bool,
 	provider ConfigUpdater,
-	secretsProvider pkgsecrets.Provider,
+	getSecretsProvider SecretsProviderFunc,
 ) error {
-	llmCfg := provider.GetLLMConfig()
+	if keepTokens && purgeTokens {
+		return fmt.Errorf("keepTokens and purgeTokens cannot both be set")
+	}
 
-	var targets []ToolConfig
-	if targetTool != "" {
-		for _, tc := range llmCfg.ConfiguredTools {
-			if tc.Tool == targetTool {
-				targets = append(targets, tc)
-				break
-			}
+	llmCfg := provider.GetLLMConfig()
+	targets, err := selectTeardownTargets(llmCfg.ConfiguredTools, targetTool)
+	if err != nil {
+		return err
+	}
+
+	// Separate tools into those to revert and those to keep without touching
+	// any files yet.
+	toRevert, remaining := partitionTeardownTools(llmCfg.ConfiguredTools, targets)
+	fullTeardown := len(remaining) == 0
+	shouldPurge := purgeTokens || (fullTeardown && !keepTokens)
+
+	// Delete credentials before changing the configured-tool record. If cleanup
+	// fails, the same targeted teardown remains fully retryable.
+	if err := purgeTokensBeforeTeardown(ctx, shouldPurge, getSecretsProvider); err != nil {
+		return err
+	}
+
+	// Persist the updated tool list (and clear token metadata if purging) in a
+	// single write before mutating any tool config files. Token cleanup may have
+	// completed already, but a config-write failure leaves every tool record and
+	// settings file intact so the caller can retry teardown safely.
+	if err := provider.UpdateLLMConfig(func(c *Config) error {
+		applyTeardownToConfig(c, remaining, shouldPurge)
+		return nil
+	}); err != nil {
+		if shouldPurge {
+			return fmt.Errorf("cached LLM tokens were deleted, but persisting tool configuration: %w", err)
 		}
-		if len(targets) == 0 {
-			return fmt.Errorf("tool %q is not configured", targetTool)
-		}
-	} else {
-		targets = llmCfg.ConfiguredTools
+		return fmt.Errorf("persisting tool configuration: %w", err)
 	}
 
 	if len(targets) == 0 {
 		_, _ = fmt.Fprintln(out, "No tools are currently configured.")
-		return nil
-	}
-
-	// Separate tools into those to revert and those to keep, without touching
-	// any files yet. We persist the new config first so that if UpdateLLMConfig
-	// fails, the tool files are left intact and the state stays consistent.
-	var toRevert, remaining []ToolConfig
-	for _, tc := range llmCfg.ConfiguredTools {
-		if isTarget(targets, tc.Tool) {
-			toRevert = append(toRevert, tc)
-		} else {
-			remaining = append(remaining, tc)
-		}
-	}
-
-	// Persist the updated tool list (and clear token metadata if purging) in a
-	// single write before mutating any tool config files. If this fails,
-	// nothing on disk has changed and the caller can retry.
-	if err := provider.UpdateLLMConfig(func(c *Config) error {
-		c.ConfiguredTools = remaining
-		if purgeTokens {
-			c.OIDC.CachedRefreshTokenRef = ""
-			c.OIDC.CachedTokenExpiry = time.Time{}
-		}
-		return nil
-	}); err != nil {
-		return fmt.Errorf("persisting tool configuration: %w", err)
+	} else if fullTeardown {
+		_, _ = fmt.Fprintln(out,
+			"Cleared the LLM gateway configuration: no tools are configured anymore.")
 	}
 
 	// Revert tool config files best-effort; warn on failure but do not undo
-	// the config update above (the user can re-run setup+teardown to reconcile).
-	for _, tc := range toRevert {
-		revertToolConfig(out, errOut, gm, tc)
-	}
+	// the config update above (the user can re-run setup, with the same
+	// --bedrock-compat, and teardown to reconcile).
+	revertTeardownTools(out, errOut, gm, toRevert, llmCfg.Bedrock.Compat)
 
-	if purgeTokens && secretsProvider != nil {
-		// Delete secrets after config refs are cleared so there is no window
-		// where secrets are gone but the config still points at them.
-		PurgeTokens(ctx, errOut, secretsProvider)
+	if shouldPurge {
+		printTokenPurgeNotice(out, purgeTokens, fullTeardown)
 	}
 
 	return nil
 }
 
-// PurgeTokens deletes all cached OIDC tokens from the provided secrets
-// provider. Errors are logged as warnings rather than returned.
-func PurgeTokens(ctx context.Context, errOut io.Writer, provider pkgsecrets.Provider) {
-	if err := DeleteCachedTokens(ctx, provider); err != nil {
-		_, _ = fmt.Fprintf(errOut, "Warning: could not remove cached LLM tokens: %v\n", err)
+// revertTeardownTools reverts each tool's config files best-effort, warning on
+// failure. A tool whose setup wrote Bedrock keys (bedrockCompat is the
+// persisted setting, the fallback for records that predate the per-tool one)
+// has them removed too, and each successful revert names the ones it removed.
+// Otherwise those keys are the user's own and are left alone.
+func revertTeardownTools(out, errOut io.Writer, gm GatewayManager, toRevert []ToolConfig, bedrockCompat bool) {
+	for _, tc := range toRevert {
+		clearBedrock := tc.bedrockKeysWritten(bedrockCompat)
+		if revertToolConfig(out, errOut, gm, tc, clearBedrock) && clearBedrock {
+			warnBedrockSettingsRemoved(errOut, tc)
+		}
 	}
+}
+
+// previousBedrockKeys reports, for each tool cfg records as configured, whether
+// its config file holds Bedrock keys the setup that configured it wrote, so the
+// next setup removes them only then.
+func previousBedrockKeys(cfg Config) map[string]bool {
+	written := make(map[string]bool, len(cfg.ConfiguredTools))
+	for _, tc := range cfg.ConfiguredTools {
+		written[tc.Tool] = tc.bedrockKeysWritten(cfg.Bedrock.Compat)
+	}
+	return written
+}
+
+// printTokenPurgeNotice tells the user what deleting the cached LLM tokens does
+// and does not cover. An explicit purge that leaves tools configured also warns
+// that those tools share the purged session and must authenticate again.
+func printTokenPurgeNotice(out io.Writer, purgeTokens, fullTeardown bool) {
+	_, _ = fmt.Fprintln(out,
+		"Deleted locally cached LLM tokens. This does not revoke tokens at the identity provider or sign out the browser session.")
+	_, _ = fmt.Fprintln(out,
+		"Stop any running LLM proxy or token helper before relying on cleanup; an active process may recreate cached credentials.")
+	if purgeTokens && !fullTeardown {
+		_, _ = fmt.Fprintln(out,
+			"Remaining configured tools share this session and will need to authenticate again.")
+	}
+}
+
+// applyTeardownToConfig updates the persisted LLM config for a teardown that
+// leaves remaining configured. purgeTokens reports whether the teardown drops
+// cached OIDC token state.
+//
+// When no tool remains, the config is reset wholesale rather than pruned field by
+// field. Settings such as Bedrock compat are deliberately sticky across "thv llm
+// setup" re-runs, so keeping them past the last teardown would let the next setup
+// silently re-apply settings the user just removed — possibly against a gateway
+// they have since repointed elsewhere. While any tool remains the config is left
+// intact, since those tools still need it to reach the gateway.
+//
+// Cached token state survives a reset only when token retention was explicitly
+// requested. The secret lives in the encrypted secrets store, and dropping the
+// only reference without deleting it would strand it once the user points at a
+// different gateway (the fallback key is derived from the gateway URL and
+// issuer).
+func applyTeardownToConfig(c *Config, remaining []ToolConfig, purgeTokens bool) {
+	if len(remaining) > 0 {
+		c.ConfiguredTools = remaining
+		if purgeTokens {
+			c.OIDC.CachedRefreshTokenRef = ""
+			c.OIDC.CachedTokenExpiry = time.Time{}
+		}
+		return
+	}
+
+	tokenState := c.OIDC
+	*c = Config{}
+	if !purgeTokens {
+		c.OIDC.CachedRefreshTokenRef = tokenState.CachedRefreshTokenRef
+		c.OIDC.CachedTokenExpiry = tokenState.CachedTokenExpiry
+	}
+}
+
+// PurgeTokens deletes all cached OIDC tokens from the provided secrets provider.
+func PurgeTokens(ctx context.Context, provider pkgsecrets.Provider) error {
+	if err := DeleteCachedTokens(ctx, provider); err != nil {
+		return fmt.Errorf("removing cached LLM tokens: %w", err)
+	}
+	return nil
+}
+
+func selectTeardownTargets(configured []ToolConfig, targetTool string) ([]ToolConfig, error) {
+	if targetTool == "" {
+		return configured, nil
+	}
+	for _, tool := range configured {
+		if tool.Tool == targetTool {
+			return []ToolConfig{tool}, nil
+		}
+	}
+	return nil, fmt.Errorf("tool %q is not configured", targetTool)
+}
+
+func partitionTeardownTools(configured, targets []ToolConfig) ([]ToolConfig, []ToolConfig) {
+	var toRevert, remaining []ToolConfig
+	for _, tool := range configured {
+		if isTarget(targets, tool.Tool) {
+			toRevert = append(toRevert, tool)
+		} else {
+			remaining = append(remaining, tool)
+		}
+	}
+	return toRevert, remaining
+}
+
+func purgeTokensBeforeTeardown(
+	ctx context.Context, shouldPurge bool, getSecretsProvider SecretsProviderFunc,
+) error {
+	if !shouldPurge {
+		return nil
+	}
+	if getSecretsProvider == nil {
+		return fmt.Errorf("cannot remove cached LLM tokens: secrets provider is unavailable")
+	}
+	provider, err := getSecretsProvider()
+	if err != nil {
+		return fmt.Errorf("getting secrets provider to remove cached LLM tokens: %w", err)
+	}
+	if provider == nil {
+		return fmt.Errorf("cannot remove cached LLM tokens: secrets provider is unavailable")
+	}
+	if err := PurgeTokens(ctx, provider); err != nil {
+		return fmt.Errorf("cached token cleanup failed; no configuration changes were made: %w", err)
+	}
+	return nil
 }
 
 // isTarget reports whether toolName appears in the targets slice.
@@ -308,7 +488,7 @@ func mergeToolConfigs(existing, incoming []ToolConfig) []ToolConfig {
 //   - direct (Node.js tools like Claude Code, Gemini CLI): NODE_TLS_REJECT_UNAUTHORIZED=0
 //     is written to the tool's settings, disabling TLS for ALL of that tool's outbound
 //     connections — not just the LLM gateway.
-//   - proxy: only the proxy's upstream connection to the gateway has TLS verification
+//   - proxy-backed: only the proxy's upstream connection to the gateway has TLS verification
 //     disabled; the tool itself is unaffected.
 func warnTLSSkipVerify(errOut io.Writer, skip bool, configured []ToolConfig) {
 	if !skip {
@@ -322,7 +502,7 @@ func warnTLSSkipVerify(errOut io.Writer, skip bool, configured []ToolConfig) {
 					"settings, disabling TLS certificate verification for ALL of %s's outbound connections "+
 					"(LLM provider APIs, MCP registry, etc.), not just the LLM gateway. "+
 					"Use only in isolated local environments.\n", tc.Tool, tc.Tool)
-		case llmgateway.ModeProxy:
+		case llmgateway.ModeProxy, llmgateway.ModeVSCode:
 			if tc.Tool == "gemini-cli" {
 				_, _ = fmt.Fprintf(errOut,
 					"Note: --tls-skip-verify is not supported for Gemini CLI "+
@@ -333,6 +513,9 @@ func warnTLSSkipVerify(errOut io.Writer, skip bool, configured []ToolConfig) {
 					"Warning: %s uses proxy mode — TLS certificate verification is disabled for the "+
 						"proxy's upstream gateway connection only. Use only in isolated local environments.\n", tc.Tool)
 			}
+		case llmgateway.ModePi:
+			_, _ = fmt.Fprintf(errOut,
+				"Warning: --tls-skip-verify was NOT applied to %s — trust the gateway certificate in the system store.\n", tc.Tool)
 		case llmgateway.ModeCodexAuth:
 			_, _ = fmt.Fprintf(errOut,
 				"Warning: --tls-skip-verify was NOT applied to %s — its config.toml has no "+
@@ -345,7 +528,8 @@ func warnTLSSkipVerify(errOut io.Writer, skip bool, configured []ToolConfig) {
 // filterDetectedClients narrows the detected client list to a single entry when
 // targetClient is non-empty. It returns an error if the named client is not in
 // the detected list. When targetClient is empty the list is returned unchanged.
-func filterDetectedClients(detected []string, targetClient string) ([]string, error) {
+func filterDetectedClients(gm GatewayManager, targetClient string) ([]string, error) {
+	detected := gm.DetectedLLMGatewayClients()
 	if targetClient == "" {
 		return detected, nil
 	}
@@ -354,76 +538,738 @@ func filterDetectedClients(detected []string, targetClient string) ([]string, er
 			return []string{targetClient}, nil
 		}
 	}
+	if hint := gm.LLMClientDetectionHint(targetClient); hint != "" {
+		return nil, fmt.Errorf("client %q is not installed or not detected: %s", targetClient, hint)
+	}
 	return nil, fmt.Errorf("client %q is not installed or not detected", targetClient)
 }
 
-// claudeCodeClient is the canonical client identifier for Claude Code. Declared
-// here as a string literal because pkg/llm does not import pkg/client (which
-// owns the ClientApp constant) to avoid an import cycle.
-const claudeCodeClient = "claude-code"
+func setupClients(
+	gm GatewayManager, targetClient string, lazy, bedrockCompat bool, models []string, out, errOut io.Writer,
+) ([]string, bool, error) {
+	detected, err := filterDetectedClients(gm, targetClient)
+	if err != nil {
+		return nil, false, err
+	}
+	if len(detected) == 0 {
+		_, _ = fmt.Fprintln(out, "No supported AI tools detected.")
+		return nil, true, nil
+	}
+	// A --models pin Codex cannot use is refused here, before login, since no
+	// discovery result could make it usable.
+	detected, err = filterCodexBedrockPin(detected, targetClient, bedrockCompat, models, errOut)
+	if err != nil {
+		return nil, false, err
+	}
+	if !lazy {
+		return detected, len(detected) == 0, nil
+	}
+	detected, err = filterLazyModelDiscoveryClients(detected, targetClient, bedrockCompat, models, errOut)
+	if err != nil {
+		return nil, false, err
+	}
+	return detected, len(detected) == 0, nil
+}
 
-// Default Bedrock inference-profile model IDs written for Claude Code in
-// bedrock-compat mode when --models does not override a tier. These track the
-// current generation and are expected to be bumped periodically; users override
-// per tier via --models.
 const (
-	defaultBedrockHaikuModel  = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
-	defaultBedrockOpusModel   = "us.anthropic.claude-opus-4-8"
-	defaultBedrockSonnetModel = "us.anthropic.claude-sonnet-5"
+	vsCodeClient        = "vscode"
+	vsCodeInsiderClient = "vscode-insider"
+	// claudeCodeClient is the canonical client identifier for Claude Code.
+	// Declared here as a string literal because pkg/llm does not import
+	// pkg/client (which owns the ClientApp constant) to avoid an import cycle.
+	claudeCodeClient = "claude-code"
+	// promptCacheVerificationCommand reports which TTL Claude Code used under
+	// usage.cache_creation in the command's JSON output.
+	promptCacheVerificationCommand = `claude -p "hello" --output-format json`
 )
+
+func isVSCodeClient(clientType string) bool {
+	return clientType == vsCodeClient || clientType == vsCodeInsiderClient
+}
+
+func hasVSCodeClient(clients []string) bool {
+	for _, clientType := range clients {
+		if isVSCodeClient(clientType) {
+			return true
+		}
+	}
+	return false
+}
+
+func filterLazyModelDiscoveryClients(
+	clients []string, targetClient string, bedrockCompat bool, models []string, errOut io.Writer,
+) ([]string, error) {
+	if targetClient == "pi" {
+		return nil, fmt.Errorf("client %q does not support --lazy: Pi needs authenticated model discovery "+
+			"to select each model's API; rerun without --lazy", targetClient)
+	}
+	if targetClient != "" && isVSCodeClient(targetClient) {
+		return nil, fmt.Errorf(
+			"client %q does not support --lazy: VS Code requires non-lazy setup for authenticated model discovery; "+
+				"rerun without --lazy", targetClient)
+	}
+	if refusal, _ := lazyBedrockGap(targetClient, bedrockCompat, models); refusal != "" {
+		return nil, errors.New(refusal)
+	}
+	filtered := make([]string, 0, len(clients))
+	for _, clientType := range clients {
+		if clientType == "pi" {
+			_, _ = fmt.Fprintln(errOut, "Warning: skipping pi in lazy mode; Pi needs authenticated model discovery.")
+			continue
+		}
+		if isVSCodeClient(clientType) {
+			_, _ = fmt.Fprintf(
+				errOut,
+				"Warning: skipping %s in lazy mode; VS Code requires non-lazy setup for authenticated model discovery.\n",
+				clientType,
+			)
+			continue
+		}
+		if _, warning := lazyBedrockGap(clientType, bedrockCompat, models); warning != "" {
+			_, _ = fmt.Fprintln(errOut, warning)
+			continue
+		}
+		filtered = append(filtered, clientType)
+	}
+	return filtered, nil
+}
+
+// lazyBedrockGap reports whether a Bedrock-mode client needs model discovery
+// that lazy mode cannot run (it never logs in), returning the error for a
+// --client target and the warning for an auto-detected client, or two empty
+// strings when lazy setup can proceed. Claude Code and Codex pin each tier from
+// the gateway listing; without --models pins, Claude Code would fall back to
+// Anthropic-form IDs and Codex to OpenAI model names, both of which a
+// Bedrock-only gateway rejects. The gate only asks whether --models is set for
+// Claude Code, not whether an entry pins a tier: a list that pins none leaves
+// Claude Code on its built-in IDs, which fails visibly on the first request
+// (setup also warns about every unpinned tier). Codex has no built-in model to
+// fall back to, so it needs an actual Codex pin.
+func lazyBedrockGap(clientType string, bedrockCompat bool, models []string) (string, string) {
+	switch {
+	case !bedrockCompat:
+		return "", ""
+	case clientType == claudeCodeClient && len(models) == 0:
+		return fmt.Sprintf("client %q does not support --lazy with --bedrock-compat: Bedrock tiers need "+
+				"authenticated model discovery; pass --models to pin them, or rerun without --lazy", clientType),
+			"Warning: skipping claude-code in lazy mode; --bedrock-compat needs authenticated model discovery " +
+				"to pin tiers. Pass --models to pin them, or rerun without --lazy."
+	case clientType == codexClient && !hasCodexPin(models):
+		return fmt.Sprintf("client %q does not support --lazy with --bedrock-compat: picking a Bedrock "+
+				"model needs authenticated model discovery; pass --models to pin one, or rerun without --lazy", clientType),
+			"Warning: skipping codex in lazy mode; --bedrock-compat needs authenticated model discovery " +
+				"to pick a model. Pass --models to pin one, or rerun without --lazy."
+	default:
+		return "", ""
+	}
+}
+
+type discoveredGatewayModels struct {
+	openAI                  []string
+	openAIContextWindows    map[string]int
+	anthropic               []string
+	anthropicContextWindows map[string]int
+	anthropicReasoning      map[string]bool
+	anthropicAdaptive       map[string]bool
+}
+
+// bedrockClients are the clients Bedrock compat configures: the name setup uses
+// for each in messages, and the settings ToolHive owns in its config once a
+// Bedrock setup has written them, which a later setup without Bedrock and
+// teardown then remove whatever they hold.
+var bedrockClients = map[string]struct{ name, keys string }{
+	claudeCodeClient: {
+		name: "Claude Code",
+		keys: "env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS and env.ANTHROPIC_DEFAULT_{HAIKU,OPUS,SONNET,FABLE}_MODEL",
+	},
+	codexClient: {
+		name: "Codex",
+		keys: "model, web_search, model_context_window, memories.consolidation_model and memories.extract_model",
+	},
+}
+
+func discoverSetupModels(
+	ctx context.Context, errOut io.Writer, clients []string, targetClient string, cfg Config, anthropicPrefix string,
+) ([]string, discoveredGatewayModels, error) {
+	hasPi := slices.Contains(clients, "pi")
+	hasVSCode := hasVSCodeClient(clients)
+	// Bedrock-compat clients pick their models from the gateway listing: Claude
+	// Code each tier from the Anthropic catalogue, Codex each tier (and the main
+	// model's context window) from the OpenAI listing. Lazy
+	// mode has no token to list with; filterLazyModelDiscoveryClients already
+	// gates it on --models.
+	listsBedrock := cfg.Bedrock.Compat && cfg.discoveryAccessToken != ""
+	needsBedrockTiers := listsBedrock && slices.Contains(clients, claudeCodeClient)
+	needsCodexModel := listsBedrock && slices.Contains(clients, codexClient)
+	catalog, openErr, anthropicErr := fetchSetupModelCatalog(
+		ctx, cfg, hasPi || needsBedrockTiers, hasVSCode || hasPi || needsCodexModel, anthropicPrefix)
+	piMissing := hasPi && len(catalog.openAI) == 0 && len(catalog.anthropic) == 0
+	// A Bedrock-compat client cannot pick its models when the listing it needs
+	// failed, or holds no usable Bedrock model. Treat that like the Pi/VS Code
+	// discovery failures: abort when the client was named explicitly, skip it
+	// with a warning when it was auto-detected, so the user is not left with a
+	// client that requests models a Bedrock-only gateway rejects. A --models pin
+	// covering the client needs no discovery.
+	bedrockErrs := make(map[string]error, len(bedrockClients))
+	if err := bedrockDiscoveryError(needsBedrockTiers, cfg.Models, catalog.anthropic, anthropicErr); err != nil {
+		bedrockErrs[claudeCodeClient] = err
+	}
+	if err := codexDiscoveryError(needsCodexModel, cfg.Models, catalog.openAI, openErr); err != nil {
+		bedrockErrs[codexClient] = err
+	}
+	if err := explicitDiscoveryFailure(targetClient, piMissing, openErr, anthropicErr, bedrockErrs); err != nil {
+		return nil, catalog, err
+	}
+	warnModelDiscovery(errOut, hasVSCode, hasPi, piMissing, catalog, openErr, anthropicErr)
+	warnBedrockDiscovery(errOut, clients, bedrockErrs, needsCodexModel, openErr)
+	return keepDiscoverableClients(clients, openErr, piMissing, bedrockErrs), catalog, nil
+}
+
+// warnBedrockDiscovery warns about each auto-detected client skipped because
+// its Bedrock model discovery failed, and about a pinned Codex that is
+// configured without the metadata the OpenAI listing would have supplied.
+func warnBedrockDiscovery(
+	errOut io.Writer, clients []string, bedrockErrs map[string]error, needsCodexModel bool, openErr error,
+) {
+	for _, clientType := range clients {
+		if err := bedrockErrs[clientType]; err != nil {
+			_, _ = fmt.Fprintf(errOut, "Warning: skipping auto-detected %s because Bedrock model discovery "+
+				"failed: %v\n", clientType, err)
+		}
+	}
+	if needsCodexModel && bedrockErrs[codexClient] == nil && openErr != nil {
+		// Pinned with --models, so Codex is configured anyway, just without the
+		// context window the listing would have supplied.
+		_, _ = fmt.Fprintf(errOut, "Warning: could not read Codex model metadata from the gateway, so Codex "+
+			"uses its fallback metadata: %v\n", openErr)
+	}
+}
+
+// bedrockDiscoveryError reports why bedrock-compat Claude Code cannot pin its
+// tiers from the gateway catalogue, or nil when it can (or need not, because
+// --models pins every tier). A catalogue with no Bedrock-form ID for any tier
+// is as unusable as a failed fetch; a partial one is only warned about later.
+func bedrockDiscoveryError(needsBedrockTiers bool, models, discovered []string, anthropicErr error) error {
+	if !needsBedrockTiers {
+		return nil
+	}
+	if pinned, _ := resolveBedrockModels(models, nil, false); len(pinned.emptyFamilies()) == 0 {
+		return nil
+	}
+	if anthropicErr != nil {
+		return anthropicErr
+	}
+	if newestBedrockTiers(discovered) == (bedrockTiers{}) {
+		return errNoBedrockModels
+	}
+	return nil
+}
+
+// explicitDiscoveryFailure returns an error when the explicitly named client
+// cannot be configured because its model discovery failed, so setup aborts
+// rather than writing a half-configured client. bedrockErrs holds the
+// Bedrock-compat discovery failure of each affected client.
+func explicitDiscoveryFailure(
+	targetClient string, piMissing bool, openErr, anthropicErr error, bedrockErrs map[string]error,
+) error {
+	switch {
+	case isVSCodeClient(targetClient) && openErr != nil:
+		return fmt.Errorf("discovering gateway models: %w", openErr)
+	case targetClient == "pi" && piMissing:
+		return fmt.Errorf("discovering Pi models: %w", errors.Join(openErr, anthropicErr))
+	case bedrockErrs[targetClient] != nil:
+		return fmt.Errorf("discovering Bedrock models for %s: %w",
+			bedrockClients[targetClient].name, bedrockErrs[targetClient])
+	default:
+		return nil
+	}
+}
+
+// keepDiscoverableClients drops the auto-detected clients whose required model
+// discovery failed, leaving the rest to be configured.
+func keepDiscoverableClients(
+	clients []string, openErr error, piMissing bool, bedrockErrs map[string]error,
+) []string {
+	filtered := make([]string, 0, len(clients))
+	for _, clientType := range clients {
+		if (isVSCodeClient(clientType) && openErr != nil) || (clientType == "pi" && piMissing) ||
+			bedrockErrs[clientType] != nil {
+			continue
+		}
+		filtered = append(filtered, clientType)
+	}
+	return filtered
+}
+
+func fetchSetupModelCatalog(
+	ctx context.Context, cfg Config, wantAnthropic, wantOpenAI bool, anthropicPrefix string,
+) (discoveredGatewayModels, error, error) {
+	var catalog discoveredGatewayModels
+	var openErr, anthropicErr error
+	if wantOpenAI {
+		catalog.openAI, catalog.openAIContextWindows, openErr = discoverGatewayModels(ctx, cfg)
+	}
+	if wantAnthropic && cfg.discoveryAccessToken != "" {
+		catalog.anthropic, catalog.anthropicContextWindows, catalog.anthropicReasoning, catalog.anthropicAdaptive, anthropicErr =
+			discoverAnthropicGatewayModels(ctx, cfg, anthropicPrefix)
+	}
+	return catalog, openErr, anthropicErr
+}
+
+func warnModelDiscovery(
+	errOut io.Writer, hasVSCode, hasPi, piMissing bool, catalog discoveredGatewayModels, openErr, anthropicErr error,
+) {
+	if hasVSCode && openErr != nil {
+		_, _ = fmt.Fprintf(errOut,
+			"Warning: skipping auto-detected VS Code clients because gateway model discovery failed: %v\n", openErr)
+	}
+	if piMissing {
+		_, _ = fmt.Fprintf(errOut,
+			"Warning: skipping auto-detected Pi because gateway model discovery failed: %v\n",
+			errors.Join(openErr, anthropicErr))
+	}
+	if hasPi && len(catalog.openAI) > 0 && anthropicErr != nil {
+		_, _ = fmt.Fprintf(errOut, "Warning: skipping Pi Anthropic models: %v\n", anthropicErr)
+	}
+	if hasPi && len(catalog.anthropic) > 0 && openErr != nil {
+		_, _ = fmt.Fprintf(errOut, "Warning: skipping Pi OpenAI models: %v\n", openErr)
+	}
+}
+
+type gatewayModelsResponse struct {
+	Object  string `json:"object"`
+	HasMore *bool  `json:"has_more"`
+	LastID  string `json:"last_id"`
+	Data    []struct {
+		ID             string `json:"id"`
+		ContextWindow  int    `json:"context_window"`
+		MaxInputTokens int    `json:"max_input_tokens"`
+		Capabilities   *struct {
+			Thinking struct {
+				Supported bool `json:"supported"`
+				Types     struct {
+					Adaptive struct {
+						Supported bool `json:"supported"`
+					} `json:"adaptive"`
+					Enabled struct {
+						Supported bool `json:"supported"`
+					} `json:"enabled"`
+				} `json:"types"`
+			} `json:"thinking"`
+		} `json:"capabilities"`
+	} `json:"data"`
+}
+
+// errEmptyModelCatalog reports a model list the gateway served successfully but
+// with no models in it, which usually means the account has no model access.
+var errEmptyModelCatalog = errors.New("gateway returned an empty model list")
+
+// errNoBedrockModels reports an Anthropic catalogue with no Bedrock-form model
+// ID for any Claude Code tier, so bedrock-compat setup has nothing to pin.
+var errNoBedrockModels = errors.New("the gateway's model list has no Bedrock model IDs " +
+	"(expected us.anthropic.claude-…); check that the gateway forwards to Bedrock")
+
+// gatewayStatusError reports a non-200 response to a model-list request, so
+// callers can tell a wrong path (404) from missing access (401/403) or a
+// gateway fault (5xx).
+type gatewayStatusError struct {
+	URL        string
+	StatusCode int
+	Status     string
+}
+
+func (e *gatewayStatusError) Error() string {
+	return fmt.Sprintf("gateway returned %s for %s", e.Status, e.URL)
+}
+
+// describeDiscoveryError rewrites a model-discovery failure into a message that
+// names its likely cause and what to check, keeping err wrapped. anthropic
+// selects the hints for the Anthropic model list (path prefix, Anthropic access)
+// over the OpenAI one.
+func describeDiscoveryError(err error, anthropic bool) error {
+	list, models := "a model list", "models"
+	if anthropic {
+		list, models = "an Anthropic model list", "Anthropic models"
+	}
+	var statusErr *gatewayStatusError
+	var urlErr *url.Error
+	switch {
+	case errors.As(err, &statusErr):
+		switch code := statusErr.StatusCode; {
+		case code == http.StatusNotFound && anthropic:
+			return fmt.Errorf("the gateway doesn't serve %s at %s; check --anthropic-path-prefix: %w",
+				list, statusErr.URL, err)
+		case code == http.StatusNotFound:
+			return fmt.Errorf("the gateway doesn't serve %s at %s; check the gateway URL: %w", list, statusErr.URL, err)
+		case code == http.StatusUnauthorized || code == http.StatusForbidden:
+			return fmt.Errorf("the gateway rejected model discovery (%s); check that your account has access to %s: %w",
+				statusErr.Status, models, err)
+		case code >= http.StatusInternalServerError:
+			return fmt.Errorf("the gateway returned %s listing models; retry, or contact the gateway operator: %w",
+				statusErr.Status, err)
+		}
+	case errors.Is(err, errEmptyModelCatalog):
+		return fmt.Errorf("the gateway returned no %s for your account; ask the gateway operator for model access: %w",
+			models, err)
+	case errors.As(err, &urlErr):
+		return fmt.Errorf("could not reach the gateway at %s; check the URL and your network: %w", urlErr.URL, err)
+	}
+	return err
+}
+
+func requestGatewayModels(ctx context.Context, cfg Config, path, afterID string) (gatewayModelsResponse, error) {
+	if cfg.discoveryAccessToken == "" {
+		return gatewayModelsResponse{}, fmt.Errorf("discovering gateway models: authenticated setup did not provide an access token")
+	}
+	modelsURL, err := url.JoinPath(cfg.GatewayURL, path)
+	if err != nil {
+		return gatewayModelsResponse{}, fmt.Errorf("building gateway models URL: %w", err)
+	}
+	requestCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(requestCtx, http.MethodGet, modelsURL, nil)
+	if err != nil {
+		return gatewayModelsResponse{}, fmt.Errorf("creating gateway model-discovery request: %w", err)
+	}
+	if afterID != "" {
+		query := req.URL.Query()
+		query.Set("after_id", afterID)
+		req.URL.RawQuery = query.Encode()
+	}
+	req.Header.Set("Authorization", "Bearer "+cfg.discoveryAccessToken)
+	resp, err := gatewayHTTPClient(cfg.TLSSkipVerify).Do(req)
+	if err != nil {
+		return gatewayModelsResponse{}, fmt.Errorf("discovering gateway models: %w", err)
+	}
+	defer func() {
+		_ = resp.Body.Close()
+	}()
+	if resp.StatusCode != http.StatusOK {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		// Redacted, because the gateway URL may carry a password in its userinfo.
+		return gatewayModelsResponse{}, &gatewayStatusError{
+			URL: req.URL.Redacted(), StatusCode: resp.StatusCode, Status: resp.Status,
+		}
+	}
+	var payload gatewayModelsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		return gatewayModelsResponse{}, fmt.Errorf("decoding gateway model response: %w", err)
+	}
+	return payload, nil
+}
+
+func discoverGatewayModels(ctx context.Context, cfg Config) ([]string, map[string]int, error) {
+	payload, err := requestGatewayModels(ctx, cfg, "v1/models", "")
+	if err != nil {
+		return nil, nil, describeDiscoveryError(err, false)
+	}
+	if payload.Object != "list" {
+		return nil, nil, fmt.Errorf("decoding gateway model response: expected a non-empty OpenAI model list")
+	}
+	if len(payload.Data) == 0 {
+		return nil, nil, describeDiscoveryError(errEmptyModelCatalog, false)
+	}
+	seen := make(map[string]struct{}, len(payload.Data))
+	models := make([]string, 0, len(payload.Data))
+	contextWindows := make(map[string]int, len(payload.Data))
+	for _, model := range payload.Data {
+		modelID := strings.TrimSpace(model.ID)
+		if modelID == "" {
+			return nil, nil, fmt.Errorf("decoding gateway model response: model ID must not be empty")
+		}
+		if _, exists := seen[modelID]; exists {
+			continue
+		}
+		seen[modelID] = struct{}{}
+		models = append(models, modelID)
+		if model.ContextWindow > 0 {
+			contextWindows[modelID] = model.ContextWindow
+		}
+	}
+	sort.Strings(models)
+	return models, contextWindows, nil
+}
+
+func discoverAnthropicGatewayModels(
+	ctx context.Context, cfg Config, anthropicPrefix string,
+) ([]string, map[string]int, map[string]bool, map[string]bool, error) {
+	path := strings.Trim(anthropicPrefix, "/")
+	if path != "" {
+		path += "/"
+	}
+	path += "v1/models"
+	seen := make(map[string]struct{})
+	models := make([]string, 0)
+	contextWindows := make(map[string]int)
+	reasoning := make(map[string]bool)
+	adaptive := make(map[string]bool)
+	afterID := ""
+	for range 100 {
+		payload, err := requestGatewayModels(ctx, cfg, path, afterID)
+		if err != nil {
+			return nil, nil, nil, nil, describeDiscoveryError(err, true)
+		}
+		if payload.HasMore == nil {
+			return nil, nil, nil, nil, fmt.Errorf("decoding gateway model response: expected a non-empty Anthropic model page")
+		}
+		if len(payload.Data) == 0 {
+			return nil, nil, nil, nil, describeDiscoveryError(errEmptyModelCatalog, true)
+		}
+		for _, model := range payload.Data {
+			id := strings.TrimSpace(model.ID)
+			if id == "" {
+				return nil, nil, nil, nil, fmt.Errorf("decoding gateway model response: model ID must not be empty")
+			}
+			if _, exists := seen[id]; exists {
+				continue
+			}
+			seen[id] = struct{}{}
+			models = append(models, id)
+			if model.MaxInputTokens > 0 {
+				contextWindows[id] = model.MaxInputTokens
+			}
+			if model.Capabilities != nil {
+				thinking := model.Capabilities.Thinking
+				reasoning[id], adaptive[id] = piThinkingModes(
+					thinking.Supported, thinking.Types.Adaptive.Supported, thinking.Types.Enabled.Supported)
+			}
+		}
+		if !*payload.HasMore {
+			sort.Strings(models)
+			return models, contextWindows, reasoning, adaptive, nil
+		}
+		if payload.LastID == "" || payload.LastID == afterID {
+			return nil, nil, nil, nil, fmt.Errorf("decoding gateway model response: invalid Anthropic pagination cursor")
+		}
+		afterID = payload.LastID
+	}
+	return nil, nil, nil, nil, fmt.Errorf("decoding gateway model response: too many Anthropic model pages")
+}
+
+func piThinkingModes(supported, adaptive, enabled bool) (bool, bool) {
+	return supported && (adaptive || enabled), supported && adaptive
+}
 
 // oneMSuffix is the model-ID suffix that opts Bedrock opus/sonnet into the
 // 1M-token context window.
 const oneMSuffix = "[1m]"
 
-// resolveBedrockModels maps optional override model IDs onto Claude Code's three
-// tiers, starting from the built-in defaults. Each override is assigned to a tier
-// by matching "haiku", "opus", or "sonnet" (case-insensitive) as a substring of
-// the ID. When enable1M is true, the "[1m]" suffix is appended to the opus and
-// sonnet IDs (never haiku, which has a 200K context window) to opt into the 1M
-// context window on Bedrock; an override that already carries the suffix is left
-// as-is so it is not doubled.
+// bedrockTiers holds the model ID pinned for each Claude Code model family in
+// bedrock-compat mode. An empty tier is left unpinned.
+type bedrockTiers struct {
+	haiku, opus, sonnet, fable string
+}
+
+// emptyFamilies lists the tiers left without a pinned model ID, in a stable
+// order, so the caller can tell the user which families it could not pin.
+func (t *bedrockTiers) emptyFamilies() []string {
+	var empty []string
+	for _, family := range bedrockFamilies {
+		if *t.slot(family) == "" {
+			empty = append(empty, family)
+		}
+	}
+	return empty
+}
+
+// slot returns the field for a family name, or nil for an unknown family.
+func (t *bedrockTiers) slot(family string) *string {
+	switch family {
+	case "haiku":
+		return &t.haiku
+	case "opus":
+		return &t.opus
+	case "sonnet":
+		return &t.sonnet
+	case "fable":
+		return &t.fable
+	default:
+		return nil
+	}
+}
+
+// bedrockFamilies are the Claude Code model tiers a Bedrock model ID can pin.
+var bedrockFamilies = []string{"haiku", "opus", "sonnet", "fable"}
+
+// bedrockModelCorePattern matches a Bedrock-form Anthropic Claude model ID: an
+// optional cross-region prefix ("us.", "eu.", "global.", ...) and the required
+// "anthropic.claude-" vendor segment, capturing the hyphenated core and dropping
+// an optional "-v<rev>[:<n>]" Bedrock revision suffix. Anthropic-form IDs
+// ("claude-opus-4-8", which lack the "anthropic." segment) do not match, so a
+// gateway that also routes Anthropic directly never has those picked as Bedrock
+// pins.
+var bedrockModelCorePattern = regexp.MustCompile(
+	`^(?:[a-z]+\.)?anthropic\.claude-(.+?)(?:-v\d+(?::\d+)?)?$`)
+
+// parseBedrockModel reports whether id is a Bedrock-form Anthropic Claude model
+// ID and, if so, its family and a [major, minor, releaseDate] key for ranking.
+// It tokenizes the core on "-" rather than pinning one layout, so it accepts
+// both the family-first form ("claude-haiku-4-5-20251001-v1:0") and the
+// version-first form used by Claude 3.x on Bedrock
+// ("claude-3-5-haiku-20241022-v1:0", "claude-3-haiku-20240307-v1:0"), plus a
+// major-only form with a release date ("claude-sonnet-4-20250514-v1:0"). The
+// 8-digit release date orders releases within a (major, minor). Any unexpected
+// token (a free-form route name, a second family word) rejects the ID so only
+// genuine Bedrock model IDs are pinned.
+func parseBedrockModel(id string) (family string, version []int, ok bool) {
+	m := bedrockModelCorePattern.FindStringSubmatch(id)
+	if m == nil {
+		return "", nil, false
+	}
+	var nums []int
+	date := 0
+	for _, tok := range strings.Split(m[1], "-") {
+		switch {
+		case slices.Contains(bedrockFamilies, tok):
+			if family != "" {
+				return "", nil, false // two family tokens: not a real model ID
+			}
+			family = tok
+		case len(tok) == 8 && isAllDigits(tok):
+			date, _ = strconv.Atoi(tok)
+		case isAllDigits(tok):
+			n, _ := strconv.Atoi(tok)
+			nums = append(nums, n)
+		default:
+			return "", nil, false // unknown token: free-form route name, not Bedrock
+		}
+	}
+	if family == "" {
+		return "", nil, false
+	}
+	version = []int{0, 0, date} // [major, minor, releaseDate]
+	if len(nums) > 0 {
+		version[0] = nums[0]
+	}
+	if len(nums) > 1 {
+		version[1] = nums[1]
+	}
+	return family, version, true
+}
+
+func isAllDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// newestBedrockTiers picks, for each family, the Bedrock-form ID in discovered
+// with the highest [major, minor, releaseDate] version. Ties are broken by the
+// lexicographically smallest ID so the result is deterministic. The gateway's
+// created_at is not used: it reflects when a route was configured, not the
+// model's release.
+func newestBedrockTiers(discovered []string) bedrockTiers {
+	var tiers bedrockTiers
+	best := make(map[string][]int, len(bedrockFamilies))
+	for _, id := range discovered {
+		family, version, ok := parseBedrockModel(id)
+		if !ok {
+			continue
+		}
+		dst := tiers.slot(family)
+		prev, seen := best[family]
+		cmp := slices.Compare(version, prev)
+		if !seen || cmp > 0 || (cmp == 0 && id < *dst) {
+			best[family] = version
+			*dst = id
+		}
+	}
+	return tiers
+}
+
+// applyClaudeCodeBedrock resolves the per-tier Bedrock model IDs for Claude
+// Code and writes them onto applyCfg, with the experimental anthropic-beta
+// headers Bedrock rejects disabled, surfacing override diagnostics and naming
+// any tier that could not be pinned. Called only for bedrock-compat Claude Code.
+func applyClaudeCodeBedrock(
+	errOut io.Writer, applyCfg *llmgateway.ApplyConfig, models, discoveredAnthropic []string, enable1M bool,
+) {
+	tiers, warnings := resolveBedrockModels(models, discoveredAnthropic, enable1M)
+	applyCfg.BedrockCompat = true
+	applyCfg.BedrockHaikuModel = tiers.haiku
+	applyCfg.BedrockOpusModel = tiers.opus
+	applyCfg.BedrockSonnetModel = tiers.sonnet
+	applyCfg.BedrockFableModel = tiers.fable
+	for _, w := range warnings {
+		_, _ = fmt.Fprintf(errOut, "Warning: %s\n", w)
+	}
+	// Discovery found at least one Bedrock-form model (a failed fetch, or a
+	// catalogue with none, skips claude-code upstream), but a family may still
+	// have none — e.g. a gateway serving only some tiers. Name those tiers so the
+	// fallback to built-in IDs is visible.
+	if empty := tiers.emptyFamilies(); len(empty) > 0 {
+		_, _ = fmt.Fprintf(errOut, "Warning: no Bedrock model found in the gateway catalogue for the %s "+
+			"tier(s); they fall back to Claude Code's built-in model IDs.\n",
+			strings.Join(empty, ", "))
+	}
+}
+
+// resolveBedrockModels picks the model ID pinned for each Claude Code family.
+// Each family starts from the newest Bedrock model in discovered (see
+// newestBedrockTiers); override model IDs then replace a family by matching
+// "haiku", "opus", "sonnet", or "fable" (case-insensitive) as a substring of
+// the ID. A family with neither resolves to "" so no pin is written and Claude
+// Code falls back to its built-in model ID. When enable1M is true, the "[1m]"
+// suffix is appended to pinned opus and sonnet IDs (never haiku, which has a
+// 200K context window) to opt into the 1M context window on Bedrock; an ID
+// that already carries the suffix is left as-is so it is not doubled.
 //
 // warnings collects the human-readable diagnostics for overrides that had no
 // (or a surprising) effect — an ID matching no tier, and a second ID clobbering
 // a tier an earlier ID already set — so the caller can surface them.
-func resolveBedrockModels(models []string, enable1M bool) (haiku, opus, sonnet string, warnings []string) {
-	haiku, opus, sonnet = defaultBedrockHaikuModel, defaultBedrockOpusModel, defaultBedrockSonnetModel
+func resolveBedrockModels(models, discovered []string, enable1M bool) (bedrockTiers, []string) {
+	tiers := newestBedrockTiers(discovered)
+	var warnings []string
 	// Track which tiers an override has already claimed so a second override for
 	// the same tier is reported rather than silently winning last-write.
-	assigned := make(map[string]string, 3)
-	assign := func(tier string, dst *string, id string) {
-		if prev, ok := assigned[tier]; ok {
-			warnings = append(warnings, fmt.Sprintf(
-				"--models entry %q overrides %q for the %s tier; only the last is used", id, prev, tier))
-		}
-		assigned[tier] = id
-		*dst = id
-	}
+	assigned := make(map[string]string, 4)
 	for _, m := range models {
-		switch lower := strings.ToLower(m); {
-		case strings.Contains(lower, "haiku"):
-			assign("haiku", &haiku, m)
-		case strings.Contains(lower, "opus"):
-			assign("opus", &opus, m)
-		case strings.Contains(lower, "sonnet"):
-			assign("sonnet", &sonnet, m)
-		default:
-			warnings = append(warnings, fmt.Sprintf(
-				"--models entry %q did not match a tier (expected haiku/opus/sonnet in the ID); ignored", m))
+		// An OpenAI GPT ID is Codex's to pin, not a Claude tier; skip it without
+		// the no-tier warning so pinning both tools in one --models list is quiet.
+		// gpt-oss and other vendors' IDs get the warning, as entries meant for
+		// another tool (Pi).
+		if isCodexModelID(m) {
+			continue
 		}
+		lower := strings.ToLower(m)
+		family := ""
+		for _, f := range bedrockFamilies {
+			if strings.Contains(lower, f) {
+				family = f
+				break
+			}
+		}
+		if family == "" {
+			warnings = append(warnings, fmt.Sprintf(
+				"--models entry %q did not match a tier (expected haiku/opus/sonnet/fable in the ID); ignored", m))
+			continue
+		}
+		if prev, ok := assigned[family]; ok {
+			warnings = append(warnings, fmt.Sprintf(
+				"--models entry %q overrides %q for the %s tier; only the last is used", m, prev, family))
+		}
+		assigned[family] = m
+		*tiers.slot(family) = m
 	}
 	if enable1M {
-		opus = withOneMSuffix(opus)
-		sonnet = withOneMSuffix(sonnet)
+		tiers.opus = withOneMSuffix(tiers.opus)
+		tiers.sonnet = withOneMSuffix(tiers.sonnet)
 	}
-	return haiku, opus, sonnet, warnings
+	return tiers, warnings
 }
 
-// withOneMSuffix appends the "[1m]" suffix unless id already ends with it, so a
-// user-supplied ID that already carries the suffix is not doubled into "[1m][1m]".
+// withOneMSuffix appends the "[1m]" suffix unless id is empty (an unpinned tier)
+// or already ends with it, so a user-supplied ID that already carries the suffix
+// is not doubled into "[1m][1m]".
 func withOneMSuffix(id string) string {
-	if strings.HasSuffix(id, oneMSuffix) {
+	if id == "" || strings.HasSuffix(id, oneMSuffix) {
 		return id
 	}
 	return id + oneMSuffix
@@ -437,15 +1283,16 @@ func withOneMSuffix(id string) string {
 // to decide whether an inline --enable-1m is inert.
 //
 // Two cases:
-//   - --bedrock-compat passed this run but Claude Code was not among the configured
-//     tools (the keys only attach to Claude Code), and
+//   - --bedrock-compat passed this run but neither Claude Code nor Codex was among
+//     the configured tools (the settings only attach to those two), and
 //   - --enable-1m passed this run while compat is off (the 1M suffix rides the
 //     Bedrock model-ID path, so it is inert without compat) — otherwise a silent
 //     no-op.
 func warnBedrockNoEffect(errOut io.Writer, opts SetOptions, effectiveCompat bool, configured []ToolConfig) {
-	if opts.BedrockCompat != nil && *opts.BedrockCompat && !isTarget(configured, claudeCodeClient) {
+	if opts.BedrockCompat != nil && *opts.BedrockCompat &&
+		!isTarget(configured, claudeCodeClient) && !isTarget(configured, codexClient) {
 		_, _ = fmt.Fprintln(errOut,
-			"Warning: --bedrock-compat was set but Claude Code was not configured; the flag had no effect.")
+			"Warning: --bedrock-compat was set but neither Claude Code nor Codex was configured; the flag had no effect.")
 	}
 	if opts.Enable1M != nil && *opts.Enable1M && !effectiveCompat {
 		_, _ = fmt.Fprintln(errOut,
@@ -453,60 +1300,81 @@ func warnBedrockNoEffect(errOut io.Writer, opts SetOptions, effectiveCompat bool
 	}
 }
 
-// configureDetectedTools patches each detected tool's config file and returns
-// the list of successfully configured tools. An error is returned only when no
-// tool was configured successfully.
-func configureDetectedTools(
-	out, errOut io.Writer,
-	gm GatewayManager,
-	detected []string,
-	gatewayURL, proxyBaseURL, tokenHelperCommand string,
-	tokenHelperPath string, tokenHelperArgs []string,
-	tlsSkipVerify bool,
-	anthropicPathPrefix string,
-	models []string,
-	bedrock BedrockConfig,
+func printPiLongCacheHint(out io.Writer, configured []ToolConfig, shortPromptCache bool) {
+	if isTarget(configured, "pi") && !shortPromptCache {
+		_, _ = fmt.Fprintln(out, "Pi uses short prompt caching by default. To enable long retention, "+
+			"start Pi with PI_CACHE_RETENTION=long in its environment (Anthropic: 1h; OpenAI: 24h).")
+	}
+}
+
+func warnShortPromptCacheNoEffect(errOut io.Writer, opts SetOptions, configured []ToolConfig) {
+	if opts.ShortPromptCache != nil && *opts.ShortPromptCache && !isTarget(configured, claudeCodeClient) {
+		_, _ = fmt.Fprintln(errOut,
+			"Warning: --short-prompt-cache was set but Claude Code was not configured; the flag had no effect on client settings.")
+	}
+}
+
+func warnPromptCacheBedrockCompatibility(
+	errOut io.Writer, opts SetOptions, shortPromptCache bool, configured []ToolConfig,
+) {
+	if shortPromptCache || opts.BedrockCompat == nil || !*opts.BedrockCompat ||
+		!isTarget(configured, claudeCodeClient) {
+		return
+	}
+	_, _ = fmt.Fprintf(errOut,
+		"Warning: Claude Code's one-hour prompt-cache lifetime may not take effect with Bedrock compatibility: "+
+			"the gateway may reject or strip the required beta header, and Bedrock support varies by model. "+
+			"Verify the effective lifetime with: %s\n", promptCacheVerificationCommand)
+}
+
+// configureDetectedToolsWithDiscovery patches each detected tool's config file
+// and returns the list of successfully configured tools. A tool that fails is
+// skipped with a warning, except that a Bedrock-settings failure for the
+// client named with --client (targetClient) is returned as an error, as the
+// discovery failures before it are. Otherwise an error is returned only when
+// no tool was configured successfully. previousBedrock reports, per tool,
+// whether its previous setup wrote Bedrock keys, which a setup without Bedrock
+// then removes.
+func configureDetectedToolsWithDiscovery(
+	out, errOut io.Writer, gm GatewayManager, detected []string, targetClient string,
+	gatewayURL, proxyBaseURL, tokenHelperPath string, tokenHelperArgs []string,
+	tlsSkipVerify bool, anthropicPathPrefix string,
+	models []string, discovered discoveredGatewayModels, shortPromptCache bool, bedrock BedrockConfig,
+	previousBedrock map[string]bool,
 ) ([]ToolConfig, error) {
 	var configured []ToolConfig
 	for _, clientType := range detected {
 		mode := gm.LLMGatewayModeFor(clientType)
 
-		// Apply the Anthropic path prefix for tools that talk the Anthropic API
-		// directly — direct-mode (ANTHROPIC_BASE_URL) and credential-helper mode
-		// (Claude Desktop's inferenceGatewayBaseUrl). Proxy-mode tools (Cursor,
-		// VS Code, Xcode) do not use it.
-		anthropicBaseURL := ""
-		if usesAnthropicBaseURL(mode) && anthropicPathPrefix != "" {
-			// Trim any leading slash: url.JoinPath docs say elements should not
-			// start with "/", and path.Join already handles the join correctly.
-			if joined, err := url.JoinPath(gatewayURL, strings.TrimLeft(anthropicPathPrefix, "/")); err == nil {
-				anthropicBaseURL = joined
-			}
-		}
-
 		applyCfg := llmgateway.ApplyConfig{
-			GatewayURL:         gatewayURL,
-			AnthropicBaseURL:   anthropicBaseURL,
-			ProxyBaseURL:       proxyBaseURL,
-			TokenHelperCommand: tokenHelperCommand,
-			TokenHelperPath:    tokenHelperPath,
-			TokenHelperArgs:    tokenHelperArgs,
-			TLSSkipVerify:      tlsSkipVerify,
-			Models:             models,
+			GatewayURL:                    gatewayURL,
+			AnthropicBaseURL:              anthropicBaseURLFor(mode, gatewayURL, anthropicPathPrefix),
+			ProxyBaseURL:                  proxyBaseURL,
+			TokenHelperCommand:            tokenHelperShellCommand,
+			TokenHelperPath:               tokenHelperPath,
+			TokenHelperArgs:               tokenHelperArgs,
+			TLSSkipVerify:                 tlsSkipVerify,
+			Models:                        models,
+			DiscoveredModels:              discovered.openAI,
+			DiscoveredModelContextWindows: discovered.openAIContextWindows,
+			AnthropicModels:               discovered.anthropic,
+			AnthropicModelContextWindows:  discovered.anthropicContextWindows,
+			AnthropicModelReasoning:       discovered.anthropicReasoning,
+			AnthropicModelAdaptive:        discovered.anthropicAdaptive,
+			ClearBedrockKeys:              previousBedrock[clientType],
 		}
 
-		// Bedrock-compat applies only to Claude Code: it disables the experimental
-		// anthropic-beta headers Bedrock rejects and pins per-tier Bedrock model
-		// IDs. Resolve defaults, tier mapping, and the optional [1m] suffix here so
-		// pkg/client only writes the resolved values.
-		if bedrock.Compat && clientType == claudeCodeClient {
-			haiku, opus, sonnet, warnings := resolveBedrockModels(models, bedrock.Enable1M)
-			applyCfg.BedrockCompat = true
-			applyCfg.BedrockHaikuModel = haiku
-			applyCfg.BedrockOpusModel = opus
-			applyCfg.BedrockSonnetModel = sonnet
-			for _, w := range warnings {
-				_, _ = fmt.Fprintf(errOut, "Warning: %s\n", w)
+		if clientType == claudeCodeClient {
+			applyCfg.ShortPromptCache = shortPromptCache
+		}
+
+		if bedrock.Compat {
+			if err := applyBedrockSettings(errOut, clientType, &applyCfg, models, discovered, bedrock.Enable1M); err != nil {
+				if clientType == targetClient {
+					return nil, fmt.Errorf("configuring %s for Bedrock: %w", clientType, err)
+				}
+				_, _ = fmt.Fprintf(errOut, "Warning: failed to configure %s: %v\n", clientType, err)
+				continue
 			}
 		}
 
@@ -518,19 +1386,27 @@ func configureDetectedTools(
 		envFilePath, err := gm.ConfigureEnvFile(clientType, applyCfg)
 		if err != nil {
 			_, _ = fmt.Fprintf(errOut, "Warning: failed to write .env for %s: %v\n", clientType, err)
-			// Roll back the settings-file patch we just made.
-			if revertErr := gm.RevertLLMGateway(clientType, configPath); revertErr != nil {
+			// Roll back the settings-file patch we just made, including any
+			// Bedrock keys it wrote.
+			if revertErr := gm.RevertLLMGateway(clientType, configPath, applyCfg.BedrockCompat); revertErr != nil {
 				_, _ = fmt.Fprintf(errOut, "Warning: rollback of %s failed: %v\n", clientType, revertErr)
 			}
 			continue
 		}
-		configured = append(configured, ToolConfig{
+		tc := ToolConfig{
 			Tool:        clientType,
 			Mode:        mode,
 			ConfigPath:  configPath,
 			EnvFilePath: envFilePath,
-		})
+		}
+		if _, ok := bedrockClients[clientType]; ok {
+			tc.BedrockCompat = new(applyCfg.BedrockCompat)
+		}
+		configured = append(configured, tc)
 		_, _ = fmt.Fprintf(out, "Configured %s (%s mode)  →  %s\n", clientType, mode, configPath)
+		if clientType == claudeCodeClient && !shortPromptCache {
+			warnPromptCacheConflict(errOut, gm, clientType)
+		}
 	}
 	if len(configured) == 0 {
 		return nil, fmt.Errorf("failed to configure any detected tools")
@@ -538,15 +1414,66 @@ func configureDetectedTools(
 	return configured, nil
 }
 
+// anthropicBaseURLFor returns the gateway URL joined with the Anthropic path
+// prefix for tools that talk the Anthropic API directly: direct mode
+// (ANTHROPIC_BASE_URL) and credential-helper mode (Claude Desktop's
+// inferenceGatewayBaseUrl). Proxy-mode tools (Cursor, VS Code, Xcode) do not
+// use it, so they, and a setup without a prefix, get "".
+func anthropicBaseURLFor(mode, gatewayURL, anthropicPathPrefix string) string {
+	if !usesAnthropicBaseURL(mode) || anthropicPathPrefix == "" {
+		return ""
+	}
+	// Trim any leading slash: url.JoinPath docs say elements should not
+	// start with "/", and path.Join already handles the join correctly.
+	joined, err := url.JoinPath(gatewayURL, strings.TrimLeft(anthropicPathPrefix, "/"))
+	if err != nil {
+		return ""
+	}
+	return joined
+}
+
+// applyBedrockSettings resolves the Bedrock-compat settings for clientType onto
+// applyCfg, so pkg/client only writes resolved values. Bedrock compat affects
+// only Claude Code (applyClaudeCodeBedrock) and Codex (applyCodexBedrock);
+// other clients are left unchanged.
+func applyBedrockSettings(
+	errOut io.Writer, clientType string, applyCfg *llmgateway.ApplyConfig,
+	models []string, discovered discoveredGatewayModels, enable1M bool,
+) error {
+	switch clientType {
+	case claudeCodeClient:
+		applyClaudeCodeBedrock(errOut, applyCfg, models, discovered.anthropic, enable1M)
+	case codexClient:
+		return applyCodexBedrock(errOut, applyCfg, models, discovered)
+	}
+	return nil
+}
+
+func warnPromptCacheConflict(errOut io.Writer, gm GatewayManager, clientType string) {
+	conflict, err := gm.PromptCacheConflict(clientType)
+	if err != nil {
+		_, _ = fmt.Fprintf(errOut,
+			"Warning: could not inspect %s for prompt-cache TTL conflicts: %v; "+
+				"ToolHive wrote the one-hour settings anyway.\n", clientType, err)
+		return
+	}
+	if conflict != "" {
+		_, _ = fmt.Fprintf(errOut,
+			"Warning: ToolHive wrote the one-hour prompt-cache settings for %s, but %s may override them. "+
+				"Remove that setting to use the one-hour lifetime. Verify the effective lifetime with: %s\n",
+			clientType, conflict, promptCacheVerificationCommand)
+	}
+}
+
 // resolveAnthropicPrefix returns the effective Anthropic path prefix. When the
 // caller explicitly set the flag (anthropicPathPrefixSet), the provided value is
 // returned as-is (including empty string, which disables the prefix). Otherwise
-// the gateway is auto-probed when at least one direct-mode client is present.
+// the gateway is auto-probed when at least one client uses its Anthropic API.
 func resolveAnthropicPrefix(
 	ctx context.Context, gm GatewayManager, detected []string,
 	llmCfg Config, anthropicPathPrefix string, anthropicPathPrefixSet bool,
 ) string {
-	if anthropicPathPrefixSet || !hasDirectModeClient(gm, detected) {
+	if anthropicPathPrefixSet || !hasAnthropicBaseURLClient(gm, detected) {
 		return anthropicPathPrefix
 	}
 	return probeAnthropicPrefix(ctx, llmCfg.GatewayURL, llmCfg.TLSSkipVerify)
@@ -554,8 +1481,8 @@ func resolveAnthropicPrefix(
 
 // probeAnthropicPrefix performs a HEAD request to <gatewayURL>/anthropic/v1/messages.
 // If the server responds with HTTP 401 (Unauthorized) — meaning the path exists but
-// requires authentication — it returns "/anthropic" as the path prefix so that
-// ANTHROPIC_BASE_URL is constructed as <gateway>/anthropic rather than <gateway>.
+// requires authentication — it returns "/anthropic" as the path prefix for
+// clients using the Anthropic API.
 // Any other status code (including 404 Not Found) or any network error is treated
 // as "no prefix needed" and the function returns "".
 func probeAnthropicPrefix(ctx context.Context, gatewayURL string, tlsSkipVerify bool) string {
@@ -567,20 +1494,7 @@ func probeAnthropicPrefix(ctx context.Context, gatewayURL string, tlsSkipVerify 
 		return ""
 	}
 
-	// Build an http.Client that honours --tls-skip-verify so the probe works
-	// against gateways with self-signed certificates (local dev). Clone
-	// http.DefaultTransport to preserve all production defaults (timeouts,
-	// ProxyFromEnvironment, HTTP/2, connection pooling) and only toggle
-	// InsecureSkipVerify.
-	//nolint:forcetypeassert // DefaultTransport is always *http.Transport
-	transport := http.DefaultTransport.(*http.Transport).Clone()
-	if tlsSkipVerify {
-		if transport.TLSClientConfig == nil {
-			transport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12}
-		}
-		transport.TLSClientConfig.InsecureSkipVerify = true //nolint:gosec // G402: intentional for local dev with self-signed certs
-	}
-	httpClient := &http.Client{Transport: transport}
+	httpClient := gatewayHTTPClient(tlsSkipVerify)
 
 	// Use a short timeout so setup is not significantly slowed by an unreachable gateway.
 	probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
@@ -602,46 +1516,38 @@ func probeAnthropicPrefix(ctx context.Context, gatewayURL string, tlsSkipVerify 
 	return ""
 }
 
-// tokenHelperCommandNeeded reports whether any detected client's mode consumes
-// the shell-string token helper (TokenHelperCommand) — direct-mode's
-// apiKeyHelper-style JSON-Pointer clients and Claude Desktop's credential
-// helper. Proxy-mode tools and Codex (argv-based auth) never use it.
-func tokenHelperCommandNeeded(gm GatewayManager, detected []string) bool {
-	for _, clientType := range detected {
-		switch gm.LLMGatewayModeFor(clientType) {
-		case llmgateway.ModeDirect, llmgateway.ModeCredentialHelper:
-			return true
+// gatewayHTTPClient clones the default transport so gateway requests retain
+// its proxy, timeout, HTTP/2, and connection-pooling behavior.
+func gatewayHTTPClient(tlsSkipVerify bool) *http.Client {
+	//nolint:forcetypeassert // DefaultTransport is always *http.Transport
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	if tlsSkipVerify {
+		if transport.TLSClientConfig == nil {
+			transport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12}
 		}
+		transport.TLSClientConfig.InsecureSkipVerify = true //nolint:gosec // G402: intentional for local dev with self-signed certs
 	}
-	return false
+	return &http.Client{Transport: transport}
 }
 
-// buildTokenHelperCommand returns the shell command string used as the
-// token-helper for direct-mode tools. It rejects executable paths that contain
-// shell metacharacters, since the command is written verbatim into long-lived
-// tool config files and re-executed by the shell inside Claude Code / Gemini CLI.
-// A path with '"', '\', ';', '$', '`', newline, or carriage-return would
-// silently produce a broken or exploitable command. '$' and '`' are included
-// because they trigger variable/command substitution inside double-quoted strings.
+// tokenHelperShellCommand is the shell command written into direct-mode tools'
+// config as their token helper — e.g. Claude Code's apiKeyHelper, which is run
+// through a shell (execa with shell:true; see anthropics/claude-code#42593).
 //
-// Note: backslashes are Windows path separators, so this effectively makes
-// "thv llm setup" unsupported on Windows — consistent with the rest of the LLM
-// gateway feature (token-helper tools use POSIX-style shells).
-func buildTokenHelperCommand() (string, error) {
-	self, err := os.Executable()
-	if err != nil {
-		return "", fmt.Errorf("resolving thv executable path: %w", err)
-	}
-	const shellUnsafe = `"\;$` + "`\n\r"
-	if strings.ContainsAny(self, shellUnsafe) {
-		return "", fmt.Errorf(
-			"executable path %q contains shell-unsafe characters; "+
-				"move thv to a path without quotes, backslashes, semicolons, "+
-				"dollar signs, or backticks "+
-				"(Windows paths are not supported by thv llm setup)", self)
-	}
-	return fmt.Sprintf(`"%s" llm token`, self), nil
-}
+// It deliberately names "thv" bare rather than interpolating os.Executable().
+// A bare command has nothing to escape, so it is correct in both /bin/sh and
+// cmd.exe without a platform branch, and it re-resolves on every invocation —
+// so upgrading, reinstalling, or relocating thv keeps working without re-running
+// "thv llm setup".
+//
+// The trade-off is that it resolves via PATH at invocation time. A tool launched
+// without the user's shell PATH (e.g. from the macOS Dock, which inherits
+// launchd's environment) will not find thv, and a binary earlier on PATH can
+// shadow it. Both are accepted here: direct-mode tools are terminal-oriented.
+// Claude Desktop cannot accept them — it is only ever GUI-launched — so its
+// credential-helper shim uses the absolute TokenHelperPath instead (see
+// writeCredentialHelperShim in pkg/client).
+const tokenHelperShellCommand = llmgateway.TokenHelperShellCommand
 
 // buildTokenHelperArgv returns the argv-form of the token helper, for config
 // formats that invoke an executable directly (no shell) — e.g. Codex's
@@ -658,16 +1564,16 @@ func buildTokenHelperArgv() (string, []string, error) {
 }
 
 // usesAnthropicBaseURL reports whether a client mode consumes the Anthropic base
-// URL (gateway + /anthropic prefix): direct mode via ANTHROPIC_BASE_URL, and
-// credential-helper mode (Claude Desktop) via inferenceGatewayBaseUrl.
+// URL (gateway plus its probed or configured prefix): direct mode via
+// ANTHROPIC_BASE_URL, credential-helper mode via inferenceGatewayBaseUrl,
+// and Pi via its Anthropic provider.
 func usesAnthropicBaseURL(mode string) bool {
-	return mode == llmgateway.ModeDirect || mode == llmgateway.ModeCredentialHelper
+	return mode == llmgateway.ModeDirect || mode == llmgateway.ModeCredentialHelper || mode == llmgateway.ModePi
 }
 
-// hasDirectModeClient reports whether any client in the detected list uses a
-// mode that needs the Anthropic base URL. Used to skip the Anthropic-prefix
-// probe when no such tools are present (proxy-mode tools ignore it entirely).
-func hasDirectModeClient(gm GatewayManager, detected []string) bool {
+// hasAnthropicBaseURLClient reports whether any detected client needs the
+// Anthropic base URL. Proxy-mode tools ignore it entirely.
+func hasAnthropicBaseURLClient(gm GatewayManager, detected []string) bool {
 	for _, clientType := range detected {
 		if usesAnthropicBaseURL(gm.LLMGatewayModeFor(clientType)) {
 			return true
@@ -678,7 +1584,7 @@ func hasDirectModeClient(gm GatewayManager, detected []string) bool {
 
 // warnCredentialHelperTools prints the follow-up notes credential-helper clients
 // (Claude Desktop) need: they read config only at launch, so the user must fully
-// quit and relaunch; and a managed-preferences profile, if present, overrides
+// quit and relaunch; and a managed configuration, if present, overrides
 // the local config setup just wrote.
 func warnCredentialHelperTools(out, errOut io.Writer, gm GatewayManager, configured []ToolConfig) {
 	for _, tc := range configured {
@@ -690,18 +1596,18 @@ func warnCredentialHelperTools(out, errOut io.Writer, gm GatewayManager, configu
 				"for the gateway change to take effect.\n", tc.Tool)
 		if gm.IsManaged(tc.Tool) {
 			_, _ = fmt.Fprintf(errOut,
-				"Warning: a managed-preferences profile for %s is present; it overrides the local "+
-					"configuration just written, which will be ignored. Remove the managed profile or "+
-					"configure the gateway there instead.\n", tc.Tool)
+				"Warning: a managed configuration for %s is present; it overrides the local "+
+					"configuration just written, which will be ignored. Remove the managed configuration, "+
+					"configure the gateway there instead, or fix it if %s rejected it.\n", tc.Tool, tc.Tool)
 		}
 	}
 }
 
 // revertToolConfig reverts the settings-file and .env patches for a single
 // tool. Errors are logged as warnings so the caller can continue with others.
-func revertToolConfig(out, errOut io.Writer, gm GatewayManager, tc ToolConfig) {
+func revertToolConfig(out, errOut io.Writer, gm GatewayManager, tc ToolConfig, clearBedrockKeys bool) bool {
 	ok := true
-	if err := gm.RevertLLMGateway(tc.Tool, tc.ConfigPath); err != nil {
+	if err := gm.RevertLLMGateway(tc.Tool, tc.ConfigPath, clearBedrockKeys); err != nil {
 		_, _ = fmt.Fprintf(errOut, "Warning: failed to revert %s settings: %v\n", tc.Tool, err)
 		ok = false
 	}
@@ -714,6 +1620,35 @@ func revertToolConfig(out, errOut io.Writer, gm GatewayManager, tc ToolConfig) {
 	if ok {
 		_, _ = fmt.Fprintf(out, "Reverted %s  (%s)\n", tc.Tool, tc.ConfigPath)
 	}
+	return ok
+}
+
+// warnBedrockTurnedOff warns, for each configured client whose previous setup
+// wrote Bedrock settings and this one did not, that this setup removed them. A
+// setup without Bedrock removes them the same way teardown does, whatever they
+// hold, so it warns the same way. It only fires when this run turns Bedrock
+// off for a client, not on every setup without it.
+func warnBedrockTurnedOff(errOut io.Writer, previousBedrock map[string]bool, configured []ToolConfig) {
+	for _, tc := range configured {
+		if previousBedrock[tc.Tool] && !tc.bedrockKeysWritten(false) {
+			warnBedrockSettingsRemoved(errOut, tc)
+		}
+	}
+}
+
+// warnBedrockSettingsRemoved tells the user which Bedrock settings teardown, or
+// a setup that turned Bedrock off, removed from a Bedrock-compat client.
+// ToolHive owns these keys once it has written them: revert removes them
+// whatever they hold and restores no earlier value, so a value the user had set
+// before the Bedrock setup is gone too.
+func warnBedrockSettingsRemoved(errOut io.Writer, tc ToolConfig) {
+	client, ok := bedrockClients[tc.Tool]
+	if !ok {
+		return
+	}
+	_, _ = fmt.Fprintf(errOut, "Warning: removed the Bedrock settings ToolHive manages for %s (%s) from %s, "+
+		"whatever they held. If you had set any of them yourself, set them again.\n",
+		client.name, client.keys, tc.ConfigPath)
 }
 
 // rollbackConfiguredTools reverts the settings-file and .env patches for every
@@ -721,14 +1656,16 @@ func revertToolConfig(out, errOut io.Writer, gm GatewayManager, tc ToolConfig) {
 func rollbackConfiguredTools(errOut io.Writer, gm GatewayManager, configured []ToolConfig) {
 	// Use a discard writer for the "Reverted" line — rollback is silent on success.
 	for _, tc := range configured {
-		revertToolConfig(io.Discard, errOut, gm, tc)
+		// This run's record: a setup without Bedrock has already removed the
+		// keys a previous one wrote.
+		_ = revertToolConfig(io.Discard, errOut, gm, tc, tc.bedrockKeysWritten(false))
 	}
 }
 
-// hasProxyMode reports whether any of the given tool configs uses proxy mode.
+// hasProxyMode reports whether any tool requires the localhost proxy.
 func hasProxyMode(cfgs []ToolConfig) bool {
 	for _, t := range cfgs {
-		if t.Mode == llmgateway.ModeProxy {
+		if t.Mode == llmgateway.ModeProxy || t.Mode == llmgateway.ModeVSCode {
 			return true
 		}
 	}

@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	coreaudit "github.com/stacklok/toolhive-core/audit"
 )
 
 // The following code is adapted from github.com/metal-toolbox/auditevent
@@ -64,6 +66,12 @@ type AuditEvent struct {
 	// e.g. who triggered the event? Additional information
 	// may be added, such as group membership and/or role
 	Subjects map[string]string `json:"subjects"`
+	// DelegationChain: when the caller authenticated with an RFC 8693
+	// delegated token, this records the full chain of acting parties
+	// (outermost/most recent first) extracted from the token's "act" claim.
+	// The type and the "delegation" wire key are toolhive-core's canonical
+	// delegation-chain schema.
+	DelegationChain *coreaudit.DelegationChain `json:"delegation,omitempty"`
 	// Component: allows to determine in which component the event occurred
 	// (Answering the "Where" question of section c in the NIST SP 800-53
 	// Revision 5.1 Control AU-3).
@@ -144,6 +152,20 @@ func NewAuditEventWithID(
 	}
 }
 
+// WithDelegationChain sets the RFC 8693 delegation chain of the event.
+// A nil or zero chain (no hops, no truncation, no malformation — see
+// [coreaudit.DelegationChain.IsZero]) clears any previously set chain. A
+// hopless but malformed chain is kept: "the caller asserted delegation we
+// could not read" is audit-relevant and distinct from "no delegation".
+func (e *AuditEvent) WithDelegationChain(chain *coreaudit.DelegationChain) *AuditEvent {
+	if chain.IsZero() {
+		e.DelegationChain = nil
+		return e
+	}
+	e.DelegationChain = chain
+	return e
+}
+
 // WithTarget sets the target of the event.
 func (e *AuditEvent) WithTarget(target map[string]string) *AuditEvent {
 	e.Target = target
@@ -179,6 +201,14 @@ func (e *AuditEvent) LogTo(ctx context.Context, logger *slog.Logger, level slog.
 			slog.Any("extra", e.Source.Extra),
 		),
 		slog.Any("subjects", e.Subjects),
+	}
+
+	// Add delegation chain if present and non-zero. The chain resolves through
+	// coreaudit's [log/slog.LogValuer] implementation, which mirrors its JSON
+	// shape (so the slog and JSON wire forms are structurally identical) and
+	// never exposes the per-hop in-memory extra claims (PII guard).
+	if !e.DelegationChain.IsZero() {
+		attrs = append(attrs, slog.Any("delegation", e.DelegationChain))
 	}
 
 	// Add target if present

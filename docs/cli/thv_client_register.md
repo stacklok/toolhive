@@ -34,6 +34,8 @@ Valid clients:
   - lm-studio: LM Studio application
   - mistral-vibe: Mistral Vibe IDE
   - opencode: OpenCode editor
+  - pi: Pi coding agent
+  - qoder: Qoder IDE
   - roo-code: VS Code Roo Code extension (deprecated)
   - trae: Trae IDE
   - vscode: Visual Studio Code
@@ -50,14 +52,14 @@ thv client register [client] [flags]
 ### Options
 
 ```
-      --group strings   Only register workloads from specified groups (default [default])
-  -h, --help            help for register
+      --group strings       Only register workloads from specified groups (default [default])
+  -h, --help[=true|false]   help for register
 ```
 
 ### Options inherited from parent commands
 
 ```
-      --debug   Enable debug mode
+      --debug[=true|false]   Enable debug mode
 ```
 
 ### SEE ALSO

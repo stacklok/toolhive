@@ -43,7 +43,7 @@ func TestModernEnvelopeCommonFields(t *testing.T) {
 					Name:        "greet",
 					Description: "say hi",
 					InputSchema: map[string]any{"type": "object"},
-				}}, testServerName, testServerVersion)
+				}}, testServerName, testServerVersion, "")
 				require.NoError(t, err)
 				return result
 			},
@@ -54,7 +54,7 @@ func TestModernEnvelopeCommonFields(t *testing.T) {
 			build: func(*testing.T) any {
 				return newModernResourcesList([]vmcp.Resource{
 					{Name: "info", URI: "embedded:info", MimeType: "text/plain"},
-				}, testServerName, testServerVersion)
+				}, testServerName, testServerVersion, "")
 			},
 			wantCacheable: true,
 		},
@@ -63,7 +63,7 @@ func TestModernEnvelopeCommonFields(t *testing.T) {
 			build: func(*testing.T) any {
 				return newModernResourceTemplatesList([]vmcp.ResourceTemplate{
 					{Name: "logs", URITemplate: "file:///logs/{date}.txt"},
-				}, testServerName, testServerVersion)
+				}, testServerName, testServerVersion, "")
 			},
 			wantCacheable: true,
 		},
@@ -72,7 +72,7 @@ func TestModernEnvelopeCommonFields(t *testing.T) {
 			build: func(*testing.T) any {
 				return newModernPromptsList([]vmcp.Prompt{
 					{Name: "code_review", Arguments: []vmcp.PromptArgument{{Name: "Code", Required: true}}},
-				}, testServerName, testServerVersion)
+				}, testServerName, testServerVersion, "")
 			},
 			wantCacheable: true,
 		},
@@ -328,7 +328,7 @@ func TestModernEnvelopeEmptyCollections(t *testing.T) {
 			field: "tools",
 			build: func(t *testing.T) any {
 				t.Helper()
-				result, err := newModernToolsList(nil, testServerName, testServerVersion)
+				result, err := newModernToolsList(nil, testServerName, testServerVersion, "")
 				require.NoError(t, err)
 				return result
 			},
@@ -336,19 +336,19 @@ func TestModernEnvelopeEmptyCollections(t *testing.T) {
 		{
 			name:  "resources/list",
 			field: "resources",
-			build: func(*testing.T) any { return newModernResourcesList(nil, testServerName, testServerVersion) },
+			build: func(*testing.T) any { return newModernResourcesList(nil, testServerName, testServerVersion, "") },
 		},
 		{
 			name:  "resources/templates/list",
 			field: "resourceTemplates",
 			build: func(*testing.T) any {
-				return newModernResourceTemplatesList(nil, testServerName, testServerVersion)
+				return newModernResourceTemplatesList(nil, testServerName, testServerVersion, "")
 			},
 		},
 		{
 			name:  "prompts/list",
 			field: "prompts",
-			build: func(*testing.T) any { return newModernPromptsList(nil, testServerName, testServerVersion) },
+			build: func(*testing.T) any { return newModernPromptsList(nil, testServerName, testServerVersion, "") },
 		},
 		{
 			name:  "tools/call content",
@@ -453,8 +453,8 @@ func TestModernCompleteTolerateNil(t *testing.T) {
 }
 
 // TestModernComplete pins the completion/complete wire shape from
-// newModernComplete against the SDK's CompleteResult/CompletionResultDetails
-// (protocol.go:653,660 in go-sdk@v1.7.0-pre.3): a "completion" object with
+// newModernComplete against go-sdk's CompleteResult and
+// CompletionResultDetails: a "completion" object with values/total/hasMore,
 // values/total/hasMore, resultType, and _meta.serverInfo -- no Cacheable,
 // matching the SDK (CompleteResult never embeds it). JSONEq's exact-match
 // means an errant Cacheable field would fail these cases on its own, without
@@ -507,13 +507,11 @@ func TestModernComplete(t *testing.T) {
 	}
 }
 
-// TestModernWriters covers the three HTTP write helpers. writeModernError's
-// status derives from the JSON-RPC code (404 for method-not-found, 400 for
-// invalid-params, 200 for everything else -- mirroring go-sdk's
-// extractErrorStatus); writeModernDenied always changes the HTTP status to
-// 403 for a POLICY reason -- that's the signal the audit middleware's
-// determineOutcome keys off to log outcome:"denied", unrelated to the
-// protocol-level mapping above.
+// TestModernWriters covers the HTTP write helpers. writeModernError maps
+// method-not-found to 404 and invalid-params to 400; writeModernCodedError also
+// maps the Modern protocol rejection codes to 400; writeModernDenied always
+// uses 403 for a POLICY reason, the signal the audit middleware's
+// determineOutcome keys off to log outcome:"denied".
 func TestModernWriters(t *testing.T) {
 	t.Parallel()
 
@@ -536,6 +534,62 @@ func TestModernWriters(t *testing.T) {
 		require.Equal(t, "2.0", decoded.JSONRPC)
 		require.Equal(t, "req-1", decoded.ID)
 		require.Equal(t, true, decoded.Result["ok"])
+	})
+
+	// writeModernResult must ALWAYS emit "id", unlike writeModernError/
+	// writeModernDenied below -- a result response's id is required by the
+	// MCP schema, not optional. This pins that a future refactor doesn't
+	// "helpfully" make it conditional to match its error-writing siblings.
+	t.Run("writeModernResult always emits id, even absent", func(t *testing.T) {
+		t.Parallel()
+
+		rec := httptest.NewRecorder()
+		writeModernResult(rec, nil, map[string]any{"ok": true})
+
+		var asMap map[string]any
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &asMap))
+		_, hasID := asMap["id"]
+		require.True(t, hasID, `"id" key must be present on a result response even when id is nil`)
+	})
+
+	// writeModernError's "id" key follows transportsession.HasJSONRPCID: MCP
+	// narrows base JSON-RPC 2.0 so an absent id is encoded by omitting the
+	// key, never as "id":null (schema/2025-11-25 types the error response id
+	// as optional string|number). A map decode (not a tagged struct) is the
+	// only way to tell an absent key apart from a present null.
+	t.Run("writeModernError id presence", func(t *testing.T) {
+		t.Parallel()
+
+		tests := []struct {
+			name       string
+			id         any
+			wantIDKey  bool
+			wantIDEcho string // substring the body must contain, verbatim, when wantIDKey
+		}{
+			{name: "nil id is omitted", id: nil, wantIDKey: false},
+			{name: "zero id is still present", id: int64(0), wantIDKey: true, wantIDEcho: `"id":0`},
+			{name: "present id is present", id: "req-2", wantIDKey: true, wantIDEcho: `"id":"req-2"`},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				t.Parallel()
+
+				rec := httptest.NewRecorder()
+				writeModernError(rec, tt.id, jsonRPCCodeInternalError, "some message")
+
+				var asMap map[string]any
+				require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &asMap))
+				_, hasID := asMap["id"]
+				require.Equal(t, tt.wantIDKey, hasID, `"id" key presence`)
+				if tt.wantIDKey {
+					// A map decode would coerce a numeric id to float64,
+					// losing the verbatim-echo guarantee -- check the raw
+					// wire bytes instead.
+					require.Contains(t, rec.Body.String(), tt.wantIDEcho)
+				}
+			})
+		}
 	})
 
 	t.Run("writeModernError", func(t *testing.T) {
@@ -591,6 +645,142 @@ func TestModernWriters(t *testing.T) {
 		require.Equal(t, int(mcpparser.JSONRPCCodeDenied), decoded.Error.Code)
 		require.Equal(t, "denied by policy", decoded.Error.Message)
 	})
+
+	// writeModernDenied's "id" key follows the same HasJSONRPCID rule as
+	// writeModernError above.
+	t.Run("writeModernDenied id presence", func(t *testing.T) {
+		t.Parallel()
+
+		tests := []struct {
+			name       string
+			id         any
+			wantIDKey  bool
+			wantIDEcho string
+		}{
+			{name: "nil id is omitted", id: nil, wantIDKey: false},
+			{name: "zero id is still present", id: int64(0), wantIDKey: true, wantIDEcho: `"id":0`},
+			{name: "present id is present", id: "req-3", wantIDKey: true, wantIDEcho: `"id":"req-3"`},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				t.Parallel()
+
+				rec := httptest.NewRecorder()
+				writeModernDenied(rec, tt.id, "denied by policy")
+
+				var asMap map[string]any
+				require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &asMap))
+				_, hasID := asMap["id"]
+				require.Equal(t, tt.wantIDKey, hasID, `"id" key presence`)
+				if tt.wantIDKey {
+					require.Contains(t, rec.Body.String(), tt.wantIDEcho)
+				}
+			})
+		}
+	})
+}
+
+// modernCodedErrorFixture supplies the -32601 and unrelated-code cases, for
+// which pkg/mcp has no dedicated domain error type.
+type modernCodedErrorFixture struct {
+	code    int64
+	message string
+	data    map[string]any
+}
+
+func (e modernCodedErrorFixture) Error() string        { return e.message }
+func (e modernCodedErrorFixture) Code() int64          { return e.code }
+func (e modernCodedErrorFixture) Data() map[string]any { return e.data }
+
+func TestWriteModernCodedErrorStatusMapping(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		coded      mcpparser.CodedError
+		wantStatus int
+	}{
+		{
+			name:       "method not found",
+			coded:      modernCodedErrorFixture{code: int64(jsonRPCCodeMethodNotFound), message: "method missing", data: map[string]any{"method": "unknown"}},
+			wantStatus: http.StatusNotFound,
+		},
+		{
+			name:       "invalid params",
+			coded:      &mcpparser.MissingModernMetadataError{},
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "header mismatch",
+			coded:      &mcpparser.HeaderMismatchError{Header: "2026-07-28", Body: "2025-11-25"},
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "missing client capability",
+			coded:      &mcpparser.MissingClientCapabilityError{RequiredCapabilities: map[string]any{"elicitation": map[string]any{}}},
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "unsupported protocol version",
+			coded:      &mcpparser.UnsupportedVersionError{Requested: "future", Supported: []string{mcpparser.MCPVersionModern}},
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "unrelated coded error",
+			coded:      modernCodedErrorFixture{code: 429, message: "rate limited", data: map[string]any{"retryAfterSeconds": 30}},
+			wantStatus: http.StatusOK,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			rec := httptest.NewRecorder()
+			writeModernCodedError(rec, "req-coded", tt.coded, tt.coded)
+
+			require.Equal(t, tt.wantStatus, rec.Code)
+			require.Equal(t, "application/json", rec.Header().Get("Content-Type"))
+			require.Equal(t, "private, no-store", rec.Header().Get("Cache-Control"))
+
+			var decoded struct {
+				JSONRPC string `json:"jsonrpc"`
+				ID      string `json:"id"`
+				Error   struct {
+					Code    int64           `json:"code"`
+					Message string          `json:"message"`
+					Data    json.RawMessage `json:"data"`
+				} `json:"error"`
+			}
+			require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &decoded))
+			require.Equal(t, "2.0", decoded.JSONRPC)
+			require.Equal(t, "req-coded", decoded.ID)
+			require.Equal(t, tt.coded.Code(), decoded.Error.Code)
+			require.Equal(t, tt.coded.Error(), decoded.Error.Message)
+			if wantData := tt.coded.Data(); len(wantData) > 0 {
+				wantDataJSON, err := json.Marshal(wantData)
+				require.NoError(t, err)
+				require.JSONEq(t, string(wantDataJSON), string(decoded.Error.Data))
+			} else {
+				require.Empty(t, decoded.Error.Data)
+			}
+		})
+	}
+}
+
+// TestWriteModernEnvelopeMarshalFallback verifies the defensive fallback
+// drops the "id" key (never "id":null) when the envelope fails to marshal.
+// A channel is not JSON-marshalable, forcing json.Marshal to fail.
+func TestWriteModernEnvelopeMarshalFallback(t *testing.T) {
+	t.Parallel()
+
+	rec := httptest.NewRecorder()
+	writeModernEnvelope(rec, http.StatusOK, map[string]any{"bad": make(chan int)})
+
+	const want = `{"jsonrpc":"2.0","error":{"code":-32603,"message":"Internal error"}}`
+	require.Equal(t, want, rec.Body.String())
+	require.NotContains(t, rec.Body.String(), `"id"`)
 }
 
 // TestModernDiscover asserts server/discover's capability-flags shape: a

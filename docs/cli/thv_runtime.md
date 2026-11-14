@@ -16,13 +16,13 @@ Commands related to the container runtime
 ### Options
 
 ```
-  -h, --help   help for runtime
+  -h, --help[=true|false]   help for runtime
 ```
 
 ### Options inherited from parent commands
 
 ```
-      --debug   Enable debug mode
+      --debug[=true|false]   Enable debug mode
 ```
 
 ### SEE ALSO

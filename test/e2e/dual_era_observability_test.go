@@ -42,7 +42,7 @@ type otlpSpan struct {
 // otlpTraceCollector is an in-process OTLP/HTTP trace receiver: it decodes
 // real ExportTraceServiceRequest protobuf (the wire format
 // otlptracehttp actually sends -- no compression by default, see
-// pkg/telemetry/providers/otlp/tracing.go) and records every span's name and
+// pkg/telemetry/providers/otlp/tracing.go, now toolhive-core/telemetry/providers/otlp) and records every span's name and
 // string attributes for assertions.
 type otlpTraceCollector struct {
 	server *httptest.Server

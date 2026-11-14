@@ -40,6 +40,8 @@ func TestSocketURL_Windows(t *testing.T) {
 		// (unix://C:\path\thv.sock) was rejected by url.Parse with
 		// "invalid port :\\path\\thv.sock".
 		{"af_unix windows path", `C:\path\thv.sock`, `unix:///C:%5Cpath%5Cthv.sock`},
+		// POSIX-shaped paths must not pick up a second slash (unix:////tmp/...).
+		{"posix path three slashes", `/tmp/test.sock`, `unix:///tmp/test.sock`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -67,6 +69,14 @@ func TestSocketURL_RoundTrip_NamedPipe(t *testing.T) {
 func TestSocketURL_RoundTrip_AFUnix(t *testing.T) {
 	t.Parallel()
 	addr := `C:\path\thv.sock`
+	got, err := discovery.ParseUnixSocketPath(socketURL(addr))
+	require.NoError(t, err)
+	assert.Equal(t, addr, got)
+}
+
+func TestSocketURL_RoundTrip_POSIXPath(t *testing.T) {
+	t.Parallel()
+	addr := `/tmp/test.sock`
 	got, err := discovery.ParseUnixSocketPath(socketURL(addr))
 	require.NoError(t, err)
 	assert.Equal(t, addr, got)

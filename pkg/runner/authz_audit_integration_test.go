@@ -5,13 +5,17 @@ package runner
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -20,6 +24,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/authz/authorizers"
 	"github.com/stacklok/toolhive/pkg/authz/authorizers/cedar"
+	"github.com/stacklok/toolhive/pkg/transport/proxy/transparent"
 	"github.com/stacklok/toolhive/pkg/webhook"
 	statusesmocks "github.com/stacklok/toolhive/pkg/workloads/statuses/mocks"
 )
@@ -169,6 +174,161 @@ func TestAuthzDecisionIsAudited(t *testing.T) {
 			assert.Equal(t, tt.wantOutcome, event["outcome"])
 		})
 	}
+}
+
+// TestTransparentProxyAuthorizesJSONPostsOnSSESuffixes verifies the middleware
+// chain installed by the runner before a transparent proxy forwards traffic.
+func TestTransparentProxyAuthorizesJSONPostsOnSSESuffixes(t *testing.T) {
+	t.Parallel()
+
+	auditLogPath := filepath.Join(t.TempDir(), "audit.log")
+	authzConfig, err := authorizers.NewConfig(cedar.Config{
+		Version: "1.0",
+		Type:    cedar.ConfigType,
+		Options: &cedar.ConfigOptions{
+			Policies:     []string{`permit(principal, action == Action::"call_tool", resource == Tool::"weather");`},
+			EntitiesJSON: "[]",
+		},
+	})
+	require.NoError(t, err)
+
+	runConfig := NewRunConfig()
+	runConfig.Name = "test-server"
+	runConfig.AuthzConfig = authzConfig
+	runConfig.AuditConfig = &audit.Config{Component: "test-component", LogFile: auditLogPath}
+	require.NoError(t, PopulateMiddlewareConfigs(runConfig))
+
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+	runner := NewRunner(runConfig, statusesmocks.NewMockStatusManager(ctrl))
+	for _, mwConfig := range runConfig.MiddlewareConfigs {
+		factory, ok := runner.supportedMiddleware[mwConfig.Type]
+		require.True(t, ok, "no factory for middleware type %q", mwConfig.Type)
+		require.NoError(t, factory(&mwConfig, runner))
+	}
+	t.Cleanup(func() {
+		for _, mw := range runner.middlewares {
+			_ = mw.Close()
+		}
+	})
+
+	var mu sync.Mutex
+	var backendBodies []string
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, readErr := io.ReadAll(r.Body)
+		require.NoError(t, readErr)
+		mu.Lock()
+		backendBodies = append(backendBodies, string(body))
+		mu.Unlock()
+
+		w.Header().Set("Content-Type", "application/json")
+		if strings.Contains(string(body), `"tools/list"`) {
+			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":4,"result":{"tools":[{"name":"weather"},{"name":"admin_tool"}]}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":5,"result":{"ok":true}}`))
+	}))
+	t.Cleanup(backend.Close)
+
+	proxy := transparent.NewTransparentProxy(
+		"127.0.0.1", 0, backend.URL, nil, nil, nil, false, false, "sse", nil, nil, "", false, runner.namedMiddlewares...,
+	)
+	proxyCtx, cancelProxy := context.WithCancel(t.Context())
+	t.Cleanup(cancelProxy)
+	require.NoError(t, proxy.Start(proxyCtx))
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		assert.NoError(t, proxy.Stop(ctx))
+	})
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	post := func(path, body string) *http.Response {
+		t.Helper()
+		req, reqErr := http.NewRequestWithContext(t.Context(), http.MethodPost, "http://"+proxy.ListenerAddr()+path, strings.NewReader(body))
+		require.NoError(t, reqErr)
+		req.Header.Set("Content-Type", "application/json")
+		resp, doErr := client.Do(req)
+		require.NoError(t, doErr)
+		return resp
+	}
+	readBody := func(resp *http.Response) []byte {
+		t.Helper()
+		body, readErr := io.ReadAll(resp.Body)
+		require.NoError(t, readErr)
+		require.NoError(t, resp.Body.Close())
+		return body
+	}
+
+	deniedCall := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"admin_tool","arguments":{}}}`
+	for _, path := range []string{"/mcp", "/sse", "/x/sse"} {
+		resp := post(path, deniedCall)
+		body := readBody(resp)
+		require.Equal(t, http.StatusForbidden, resp.StatusCode, "path %s: %s", path, body)
+		var denied struct {
+			JSONRPC string `json:"jsonrpc"`
+			ID      int64  `json:"id"`
+			Error   struct {
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		require.NoError(t, json.Unmarshal(body, &denied))
+		assert.Equal(t, "2.0", denied.JSONRPC)
+		assert.Equal(t, int64(1), denied.ID)
+		assert.Equal(t, "Unauthorized", denied.Error.Message)
+	}
+
+	for _, path := range []string{"/mcp", "/sse", "/x/sse"} {
+		listResponse := post(path, `{"jsonrpc":"2.0","id":4,"method":"tools/list","params":{}}`)
+		listBody := readBody(listResponse)
+		require.Equal(t, http.StatusOK, listResponse.StatusCode, "path %s: %s", path, listBody)
+
+		var listed struct {
+			ID     int64 `json:"id"`
+			Result struct {
+				Tools []struct {
+					Name string `json:"name"`
+				} `json:"tools"`
+			} `json:"result"`
+		}
+		require.NoError(t, json.Unmarshal(listBody, &listed), "path %s returned invalid JSON: %s", path, listBody)
+		assert.Equal(t, int64(4), listed.ID, "path %s must preserve the JSON-RPC response ID", path)
+		require.Len(t, listed.Result.Tools, 1, "path %s must expose only authorized tools", path)
+		assert.Equal(t, "weather", listed.Result.Tools[0].Name, "path %s must expose only weather", path)
+	}
+
+	allowedCall := `{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"weather","arguments":{"city":"Paris"}}}`
+	allowedResponse := post("/x/sse", allowedCall)
+	allowedBody := readBody(allowedResponse)
+	require.Equal(t, http.StatusOK, allowedResponse.StatusCode, string(allowedBody))
+
+	mu.Lock()
+	assert.Equal(t, []string{
+		`{"jsonrpc":"2.0","id":4,"method":"tools/list","params":{}}`,
+		`{"jsonrpc":"2.0","id":4,"method":"tools/list","params":{}}`,
+		`{"jsonrpc":"2.0","id":4,"method":"tools/list","params":{}}`,
+		allowedCall,
+	}, backendBodies, "only authorized requests must reach the backend")
+	mu.Unlock()
+
+	events := readAuditEvents(t, auditLogPath)
+	var deniedSuffixAudit map[string]any
+	for _, event := range events {
+		target, ok := event["target"].(map[string]any)
+		if ok && target["endpoint"] == "/x/sse" && event["outcome"] == "denied" {
+			deniedSuffixAudit = event
+			break
+		}
+	}
+	require.NotNil(t, deniedSuffixAudit, "the denied /x/sse request must produce an audit event")
+	assert.Equal(t, "mcp_tool_call", deniedSuffixAudit["type"], "a denied suffix tools/call must be classified as an MCP tool call")
+	assert.Equal(t, "denied", deniedSuffixAudit["outcome"], "the denied suffix call must be recorded as denied")
+	assert.Equal(t, map[string]any{
+		"endpoint": "/x/sse",
+		"method":   "tools/call",
+		"name":     "admin_tool",
+		"type":     "tool",
+	}, deniedSuffixAudit["target"], "the denied suffix event must identify the requested admin tool")
 }
 
 // TestWebhookDenialIsAudited proves, through the full middleware chain built

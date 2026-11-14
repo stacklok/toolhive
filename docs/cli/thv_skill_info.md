@@ -25,7 +25,7 @@ thv skill info [skill-name] [flags]
 
 ```
       --format string         Output format (json, text) (default "text")
-  -h, --help                  help for info
+  -h, --help[=true|false]     help for info
       --project-root string   Project root path for project-scoped skills
       --scope string          Filter by scope (user, project)
 ```
@@ -33,7 +33,7 @@ thv skill info [skill-name] [flags]
 ### Options inherited from parent commands
 
 ```
-      --debug   Enable debug mode
+      --debug[=true|false]   Enable debug mode
 ```
 
 ### SEE ALSO

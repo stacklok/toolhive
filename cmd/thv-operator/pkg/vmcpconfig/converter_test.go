@@ -27,6 +27,7 @@ import (
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/oidc"
 	oidcmocks "github.com/stacklok/toolhive/cmd/thv-operator/pkg/oidc/mocks"
 	thvjson "github.com/stacklok/toolhive/pkg/json"
+	"github.com/stacklok/toolhive/pkg/redisconfig"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 )
@@ -1424,6 +1425,56 @@ func TestConvert_MCPToolConfigFailClosed(t *testing.T) {
 	}
 }
 
+// TestConvert_DefaultToolVisibilityPreserved guards against silently dropping the
+// aggregation visibility setting. convertAggregation hand-copies fields rather
+// than deep-copying, so omitting DefaultToolVisibility there would let the CRD accept
+// `defaultToolVisibility: deny` while the rendered vMCP config falls back to
+// advertise-everything — a security-relevant setting that looks applied and is
+// not. An empty value must survive as empty (the aggregator treats it as allow),
+// so pre-existing CRs keep today's behavior.
+func TestConvert_DefaultToolVisibilityPreserved(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		set  vmcpconfig.DefaultToolVisibility
+		want vmcpconfig.DefaultToolVisibility
+	}{
+		{name: "deny is carried through to the rendered config", set: vmcpconfig.DefaultToolVisibilityDeny, want: vmcpconfig.DefaultToolVisibilityDeny},
+		{name: "allow is carried through to the rendered config", set: vmcpconfig.DefaultToolVisibilityAllow, want: vmcpconfig.DefaultToolVisibilityAllow},
+		{name: "unset stays unset (treated as allow downstream)", set: "", want: ""},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			vmcpServer := v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+				v1beta1test.WithVMCPGroupRef("test-group"),
+				v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{Type: "anonymous"}),
+				v1beta1test.WithVMCPConfig(vmcpconfig.Config{
+					Aggregation: &vmcpconfig.AggregationConfig{
+						DefaultToolVisibility: tt.set,
+						Tools:                 []*vmcpconfig.WorkloadToolConfig{{Workload: "backend1"}},
+					},
+				}),
+			)
+
+			ctx := log.IntoContext(context.Background(), logr.Discard())
+			converter := newTestConverter(t, newNoOpMockResolver(t))
+			converter.k8sClient = newTestK8sClient(t)
+
+			got, _, err := converter.Convert(ctx, vmcpServer, nil)
+			require.NoError(t, err)
+			require.NotNil(t, got)
+			require.NotNil(t, got.Aggregation)
+			assert.Equal(t, tt.want, got.Aggregation.DefaultToolVisibility,
+				"defaultToolVisibility must survive CRD-to-config conversion")
+		})
+	}
+}
+
 // TestConverter_InlineTelemetryIgnored verifies that the operator-side converter
 // ignores Config.Telemetry (the standalone CLI field) and only uses TelemetryConfigRef.
 func TestConverter_InlineTelemetryIgnored(t *testing.T) {
@@ -1496,6 +1547,41 @@ func TestConverter_SessionStorage(t *testing.T) {
 				Address:   "redis:6379",
 				DB:        2,
 				KeyPrefix: "thv:",
+			},
+		},
+		{
+			name: "redis provider with TLS CA secret points at the mounted CA file",
+			sessionStorage: &mcpv1beta1.SessionStorageConfig{
+				Provider: mcpv1beta1.SessionStorageProviderRedis,
+				Address:  "redis:6380",
+				TLS: &mcpv1beta1.RedisTLSConfig{
+					CACertSecretRef: &mcpv1beta1.SecretKeyRef{Name: "redis-ca", Key: "ca.crt"},
+				},
+			},
+			expectedStorage: &vmcpconfig.SessionStorageConfig{
+				Provider: "redis",
+				Address:  "redis:6380",
+				TLS: &redisconfig.TLSConfig{
+					CACertFile: "/etc/toolhive/session-redis-tls/ca.crt",
+				},
+			},
+		},
+		{
+			name: "spec.config.sessionStorage.tls never reaches the vMCP config",
+			sessionStorage: &mcpv1beta1.SessionStorageConfig{
+				Provider: mcpv1beta1.SessionStorageProviderRedis,
+				Address:  "redis:6380",
+				TLS:      &mcpv1beta1.RedisTLSConfig{},
+			},
+			inlineConfig: &vmcpconfig.SessionStorageConfig{
+				Provider: "redis",
+				Address:  "redis:6380",
+				TLS:      &redisconfig.TLSConfig{CACertFile: "/user/supplied/ca.crt", InsecureSkipVerify: true},
+			},
+			expectedStorage: &vmcpconfig.SessionStorageConfig{
+				Provider: "redis",
+				Address:  "redis:6380",
+				TLS:      &redisconfig.TLSConfig{},
 			},
 		},
 		{
@@ -1771,6 +1857,7 @@ func TestConvert_AuthServerConfigIntegration(t *testing.T) {
 	converter, err := NewConverter(mockResolver, k8sClient)
 	require.NoError(t, err)
 
+	maxDCRClients := int32(500)
 	vmcp := v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
 		v1beta1test.WithVMCPGroupRef("test-group"),
 		v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{
@@ -1782,6 +1869,20 @@ func TestConvert_AuthServerConfigIntegration(t *testing.T) {
 			SigningKeySecretRefs: []mcpv1beta1.SecretKeyRef{
 				{Name: "signing-key", Key: "private.pem"},
 			},
+			Storage: &mcpv1beta1.AuthServerStorageConfig{
+				Type:          mcpv1beta1.AuthServerStorageTypeMemory,
+				MaxDCRClients: &maxDCRClients,
+			},
+			RegistrationRateLimit: &mcpv1beta1.RateLimitBucket{
+				MaxTokens:    3,
+				RefillPeriod: metav1.Duration{Duration: 18 * time.Second},
+			},
+			DelegateClients: []mcpv1beta1.DelegateClientConfig{{
+				ClientID:        "delegate client / does not affect env name",
+				ClientSecretRef: &mcpv1beta1.SecretKeyRef{Name: "delegate-secret", Key: "credential"},
+				Scopes:          []string{"openid"},
+				Audiences:       []string{"https://resource.example.com"},
+			}},
 			UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{
 				{
 					Name: "corp-idp",
@@ -1809,8 +1910,22 @@ func TestConvert_AuthServerConfigIntegration(t *testing.T) {
 	// Verify Issuer comes from AuthServerConfig, not IncomingAuth
 	assert.Equal(t, "https://authserver.example.com", runConfig.Issuer)
 
+	// Verify the DCR client cap and /oauth/register rate reach the RunConfig.
+	require.NotNil(t, runConfig.Storage)
+	require.NotNil(t, runConfig.Storage.MaxDCRClients)
+	assert.Equal(t, 500, *runConfig.Storage.MaxDCRClients)
+	require.NotNil(t, runConfig.RegistrationRateLimit)
+	assert.InDelta(t, 3.0/18.0, runConfig.RegistrationRateLimit.RequestsPerSecond, 1e-9)
+	assert.Equal(t, 3, runConfig.RegistrationRateLimit.Burst)
+
 	// Verify AllowedAudiences derived from IncomingAuth OIDC Resource (takes precedence over Audience)
 	assert.Equal(t, []string{"https://resource.example.com"}, runConfig.AllowedAudiences)
+
+	// Verify delegate clients carry only a reserved env-var name into the ConfigMap runtime config.
+	require.Len(t, runConfig.DelegateClients, 1)
+	assert.Equal(t, "TOOLHIVE_DELEGATE_CLIENT_SECRET_0", runConfig.DelegateClients[0].ClientSecretEnvVar)
+	assert.Equal(t, []string{"openid"}, runConfig.DelegateClients[0].Scopes)
+	assert.Equal(t, []string{"https://resource.example.com"}, runConfig.DelegateClients[0].Audiences)
 
 	// Verify upstream is present and uses env var, not file path
 	require.Len(t, runConfig.Upstreams, 1)
@@ -1820,6 +1935,41 @@ func TestConvert_AuthServerConfigIntegration(t *testing.T) {
 		"No file path for secret should be present; env var is used")
 	assert.Equal(t, controllerutil.UpstreamClientSecretEnvVar+"_CORP_IDP",
 		runConfig.Upstreams[0].OIDCConfig.ClientSecretEnvVar)
+}
+
+func TestConvert_DelegateClientInvalidEffectiveAudience(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	resolver := oidcmocks.NewMockResolver(ctrl)
+	resolver.EXPECT().ResolveFromConfigRef(
+		gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(),
+	).Return(&oidc.OIDCConfig{ResourceURL: "https://allowed.example.com"}, nil)
+
+	converter, err := NewConverter(resolver, newTestK8sClient(t,
+		newTestMCPOIDCConfigInline(&mcpv1beta1.InlineOIDCSharedConfig{})))
+	require.NoError(t, err)
+	vmcp := newTestVMCPServer(&mcpv1beta1.MCPOIDCConfigReference{Name: "test-oidc"})
+	vmcp.Spec.AuthServerConfig = &mcpv1beta1.EmbeddedAuthServerConfig{
+		Issuer: "https://auth.example.com",
+		DelegateClients: []mcpv1beta1.DelegateClientConfig{{
+			ClientID:        "delegate-client",
+			ClientSecretRef: &mcpv1beta1.SecretKeyRef{Name: "delegate-secret", Key: "credential"},
+			Scopes:          []string{"openid"},
+			Audiences:       []string{"https://not-allowed.example.com"},
+		}},
+		UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{{
+			Name:       "upstream",
+			Type:       mcpv1beta1.UpstreamProviderTypeOIDC,
+			OIDCConfig: &mcpv1beta1.OIDCUpstreamConfig{IssuerURL: "https://idp.example.com", ClientID: "client-id"},
+		}},
+	}
+
+	_, _, err = converter.Convert(context.Background(), vmcp, nil)
+	require.Error(t, err)
+	var validationErr *DelegateClientConfigValidationError
+	require.ErrorAs(t, err, &validationErr)
+	assert.Contains(t, validationErr.Error(), "not-allowed.example.com")
 }
 
 // TestConverter_TelemetryConfigRef tests that Convert uses MCPTelemetryConfig when TelemetryConfigRef is set.
@@ -2030,7 +2180,8 @@ func TestConvertIncomingAuth_PrimaryUpstreamProvider(t *testing.T) {
 			authzConfig: &mcpv1beta1.AuthzConfigRef{
 				Type: "inline",
 				Inline: &mcpv1beta1.InlineAuthzConfig{
-					Policies:                []string{`permit(principal, action, resource);`},
+					Policies: []string{`permit(principal, action, resource);`},
+					//nolint:staticcheck // Exercises conversion of the deprecated field.
 					PrimaryUpstreamProvider: "okta",
 				},
 			},
@@ -2065,7 +2216,8 @@ func TestConvertIncomingAuth_PrimaryUpstreamProvider(t *testing.T) {
 			authzConfig: &mcpv1beta1.AuthzConfigRef{
 				Type: "inline",
 				Inline: &mcpv1beta1.InlineAuthzConfig{
-					Policies:                []string{`permit(principal, action, resource);`},
+					Policies: []string{`permit(principal, action, resource);`},
+					//nolint:staticcheck // Exercises conversion of the deprecated field.
 					PrimaryUpstreamProvider: "github",
 				},
 			},
@@ -2085,7 +2237,8 @@ func TestConvertIncomingAuth_PrimaryUpstreamProvider(t *testing.T) {
 			authzConfig: &mcpv1beta1.AuthzConfigRef{
 				Type: "inline",
 				Inline: &mcpv1beta1.InlineAuthzConfig{
-					Policies:                []string{`permit(principal, action, resource);`},
+					Policies: []string{`permit(principal, action, resource);`},
+					//nolint:staticcheck // Exercises conversion of the deprecated field.
 					PrimaryUpstreamProvider: "okta",
 				},
 			},
@@ -2128,25 +2281,35 @@ func TestConvertIncomingAuth_PrimaryUpstreamProvider(t *testing.T) {
 	}
 }
 
-// TestConverter_PassthroughHeaders verifies that spec.passthroughHeaders is promoted
-// correctly, takes precedence over spec.config.passthroughHeaders, and that the
-// auto-passthrough path (only spec.config.passthroughHeaders set) is preserved.
-func TestConvertSessionStorage_GlobalDefault(t *testing.T) {
-	t.Setenv("TOOLHIVE_DEFAULT_REDIS_ADDR", "global-redis:6379")
+func TestConvertSessionStorage_DefaultSelection(t *testing.T) {
+	t.Parallel()
 
-	vmcp := &mcpv1beta1.VirtualMCPServer{
-		Spec: mcpv1beta1.VirtualMCPServerSpec{
-			// sessionStorage is nil
-		},
+	tests := []struct {
+		name     string
+		defaults *controllerutil.DefaultRedisConfig
+	}{
+		{name: "no injected defaults leaves storage unset"},
+		{name: "injected defaults select global Redis", defaults: &controllerutil.DefaultRedisConfig{Addr: "global-redis:6379"}},
 	}
-	got := convertSessionStorage(vmcp)
-	require.NotNil(t, got)
-	assert.Equal(t, mcpv1beta1.SessionStorageProviderRedis, got.Provider)
-	assert.Equal(t, "global-redis:6379", got.Address)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			vmcp := &mcpv1beta1.VirtualMCPServer{Spec: mcpv1beta1.VirtualMCPServerSpec{}}
+			got := convertSessionStorage(vmcp, tt.defaults)
+			if tt.defaults == nil {
+				assert.Nil(t, got)
+				return
+			}
+			require.NotNil(t, got)
+			assert.Equal(t, mcpv1beta1.SessionStorageProviderRedis, got.Provider)
+			assert.Equal(t, "global-redis:6379", got.Address)
+		})
+	}
 }
 
 func TestConvertSessionStorage_SpecTakesPrecedence(t *testing.T) {
-	t.Setenv("TOOLHIVE_DEFAULT_REDIS_ADDR", "global-redis:6379")
+	t.Parallel()
+	defaults := &controllerutil.DefaultRedisConfig{Addr: "global-redis:6379"}
 
 	vmcp := &mcpv1beta1.VirtualMCPServer{
 		Spec: mcpv1beta1.VirtualMCPServerSpec{
@@ -2156,11 +2319,14 @@ func TestConvertSessionStorage_SpecTakesPrecedence(t *testing.T) {
 			},
 		},
 	}
-	got := convertSessionStorage(vmcp)
+	got := convertSessionStorage(vmcp, defaults)
 	require.NotNil(t, got)
 	assert.Equal(t, "local-redis:6379", got.Address)
 }
 
+// TestConverter_PassthroughHeaders verifies that spec.passthroughHeaders is promoted
+// correctly, takes precedence over spec.config.passthroughHeaders, and that the
+// auto-passthrough path (only spec.config.passthroughHeaders set) is preserved.
 func TestConverter_PassthroughHeaders(t *testing.T) {
 	t.Parallel()
 
@@ -2197,6 +2363,50 @@ func TestConverter_PassthroughHeaders(t *testing.T) {
 			require.NoError(t, err)
 			require.NotNil(t, config)
 			assert.Equal(t, tt.want, config.PassthroughHeaders)
+		})
+	}
+}
+
+func TestConvertSessionStorage_GlobalTLS(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		storage  *mcpv1beta1.SessionStorageConfig
+		globalCA string
+		wantAddr string
+		wantTLS  *redisconfig.TLSConfig
+	}{
+		{name: "global system roots", wantAddr: "global-redis:6380", wantTLS: &redisconfig.TLSConfig{}},
+		{name: "global private CA", globalCA: "global-ca", wantAddr: "global-redis:6380",
+			wantTLS: &redisconfig.TLSConfig{CACertFile: "/etc/toolhive/session-redis-tls/ca.crt"}},
+		{name: "explicit plaintext does not inherit TLS", globalCA: "global-ca",
+			storage: &mcpv1beta1.SessionStorageConfig{Provider: "redis", Address: "local-redis:6379"}, wantAddr: "local-redis:6379"},
+		{name: "explicit system roots do not inherit CA", globalCA: "global-ca",
+			storage:  &mcpv1beta1.SessionStorageConfig{Provider: "redis", Address: "local-redis:6380", TLS: &mcpv1beta1.RedisTLSConfig{}},
+			wantAddr: "local-redis:6380", wantTLS: &redisconfig.TLSConfig{}},
+		{name: "explicit CA overrides global CA", globalCA: "global-ca",
+			storage: &mcpv1beta1.SessionStorageConfig{Provider: "redis", Address: "local-redis:6380", TLS: &mcpv1beta1.RedisTLSConfig{
+				CACertSecretRef: &mcpv1beta1.SecretKeyRef{Name: "local-ca", Key: "local.pem"}}},
+			wantAddr: "local-redis:6380", wantTLS: &redisconfig.TLSConfig{CACertFile: "/etc/toolhive/session-redis-tls/ca.crt"}},
+		{name: "memory retains existing global fallback", globalCA: "global-ca",
+			storage: &mcpv1beta1.SessionStorageConfig{Provider: "memory"}, wantAddr: "global-redis:6380",
+			wantTLS: &redisconfig.TLSConfig{CACertFile: "/etc/toolhive/session-redis-tls/ca.crt"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			defaults := &controllerutil.DefaultRedisConfig{Addr: "global-redis:6380", TLS: &mcpv1beta1.RedisTLSConfig{}}
+			if tt.globalCA != "" {
+				defaults.TLS.CACertSecretRef = &mcpv1beta1.SecretKeyRef{Name: tt.globalCA, Key: "ca.crt"}
+			}
+			before := tt.storage.DeepCopy()
+			server := v1beta1test.NewVirtualMCPServer("vmcp", "default", v1beta1test.WithVMCPSessionStorage(tt.storage))
+			got := convertSessionStorage(server, defaults)
+			require.NotNil(t, got)
+			assert.Equal(t, "redis", got.Provider)
+			assert.Equal(t, tt.wantAddr, got.Address)
+			assert.Equal(t, tt.wantTLS, got.TLS)
+			assert.Equal(t, before, server.Spec.SessionStorage)
 		})
 	}
 }

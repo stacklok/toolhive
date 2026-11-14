@@ -393,6 +393,39 @@ var _ = Describe("VirtualMCPServer CompositeToolDefinition Watch Integration Tes
 		})
 
 		It("Should NOT trigger VirtualMCPServer reconciliation when unrelated composite tool definition is created", func() {
+			// BeforeAll only gates on ObservedGeneration > 0, so the controller
+			// may still be settling (the Ready condition flipping as discovery
+			// and config generation complete) when this spec starts. A baseline
+			// captured mid-settle fails the timestamp assertion below even
+			// though the unrelated create never triggered anything. Wait until
+			// the Ready condition has held the same transition time across
+			// several consecutive polls before taking the baseline.
+			var lastSeenReadyTime metav1.Time
+			stablePolls := 0
+			Eventually(func() bool {
+				vmcpNow := &mcpv1beta1.VirtualMCPServer{}
+				if err := k8sClient.Get(ctx, types.NamespacedName{
+					Name:      vmcpName,
+					Namespace: namespace,
+				}, vmcpNow); err != nil {
+					return false
+				}
+				for _, cond := range vmcpNow.Status.Conditions {
+					if cond.Type == conditionReady {
+						if cond.LastTransitionTime.Equal(&lastSeenReadyTime) {
+							stablePolls++
+						} else {
+							lastSeenReadyTime = cond.LastTransitionTime
+							stablePolls = 0
+						}
+						// ~2s of stability at the 250ms poll interval: the
+						// observed flake transitioned ~2s after the baseline.
+						return stablePolls >= 8
+					}
+				}
+				return false
+			}, timeout, interval).Should(BeTrue(), "Ready condition should settle before capturing the baseline")
+
 			// Get initial generation and observed generation
 			initialVMCP := &mcpv1beta1.VirtualMCPServer{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{

@@ -47,18 +47,18 @@ thv upgrade apply <workload-name> [flags]
 
 ```
       --ca-cert string              Path to a custom CA certificate file to use when resolving the candidate image
-      --dry-run                     Print what the upgrade would change without applying it
+      --dry-run[=true|false]        Print what the upgrade would change without applying it
   -e, --env stringArray             Environment variables to set on the upgraded workload (format: KEY=VALUE, repeatable)
-  -h, --help                        help for apply
+  -h, --help[=true|false]           help for apply
       --image-verification string   Set image verification mode (warn, enabled, disabled) (default "warn")
       --secret stringArray          Secrets to set on the upgraded workload (format: NAME,target=TARGET, repeatable)
-  -y, --yes                         Skip the confirmation prompt and run non-interactively (fail if required values are missing)
+  -y, --yes[=true|false]            Skip the confirmation prompt and run non-interactively (fail if required values are missing)
 ```
 
 ### Options inherited from parent commands
 
 ```
-      --debug   Enable debug mode
+      --debug[=true|false]   Enable debug mode
 ```
 
 ### SEE ALSO

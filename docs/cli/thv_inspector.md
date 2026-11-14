@@ -24,7 +24,7 @@ thv inspector [workload-name] [flags]
 ### Options
 
 ```
-  -h, --help                 help for inspector
+  -h, --help[=true|false]    help for inspector
   -p, --mcp-proxy-port int   Port to run the MCP Proxy on (default 6277)
   -u, --ui-port int          Port to run the MCP Inspector UI on (default 6274)
 ```
@@ -32,7 +32,7 @@ thv inspector [workload-name] [flags]
 ### Options inherited from parent commands
 
 ```
-      --debug   Enable debug mode
+      --debug[=true|false]   Enable debug mode
 ```
 
 ### SEE ALSO

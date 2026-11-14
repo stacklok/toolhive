@@ -15,11 +15,10 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"strconv"
 	"time"
 
 	"go.opentelemetry.io/otel/trace"
-	"gopkg.in/yaml.v3"
+	"go.yaml.in/yaml/v3"
 	"k8s.io/client-go/rest"
 
 	"github.com/stacklok/toolhive-core/env"
@@ -30,6 +29,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
 	"github.com/stacklok/toolhive/pkg/container"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
+	"github.com/stacklok/toolhive/pkg/diagnostics"
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/migration"
 	"github.com/stacklok/toolhive/pkg/telemetry"
@@ -51,12 +51,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/session/optimizerdec"
 	vmcpstatus "github.com/stacklok/toolhive/pkg/vmcp/status"
 )
-
-// modernDispatchEnvVar is the kill-switch env var for direct-to-core dispatch
-// of well-formed MCP 2026-07-28 ("Modern") stateless requests (default off;
-// see server.Config.ModernDispatchEnabled). Env-only ahead of any CLI-flag or
-// CRD wiring.
-const modernDispatchEnvVar = "TOOLHIVE_VMCP_MODERN_STATELESS"
 
 // ServeConfig holds all parameters needed to start the vMCP server.
 // Populated by the caller from Cobra flag values or equivalent.
@@ -167,10 +161,16 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 		return fmt.Errorf("failed to default outgoing auth subject provider names: %w", err)
 	}
 
-	// Construct embedded authorization server if configured.
+	// Construct the embedded authorization server if configured, and start its
+	// TLS listener when the auth server config enables one.
 	var embeddedAuthServer *authserverrunner.EmbeddedAuthServer
 	if authServerRC != nil {
-		embeddedAuthServer, err = authserverrunner.NewEmbeddedAuthServer(ctx, authServerRC)
+		if err := validateAuthServerListenerPorts(cfg.Port, vmcpCfg.Telemetry, authServerRC); err != nil {
+			return err
+		}
+		embeddedAuthServer, err = authserverrunner.NewEmbeddedAuthServer(
+			ctx, authServerRC, authserverrunner.WithListenerHost(authServerListenerHost(cfg.Host)),
+		)
 		if err != nil {
 			return fmt.Errorf("failed to create embedded auth server: %w", err)
 		}
@@ -179,6 +179,9 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 				slog.Error(fmt.Sprintf("failed to close embedded auth server: %v", closeErr))
 			}
 		}()
+		if err := embeddedAuthServer.Start(); err != nil {
+			return fmt.Errorf("failed to start auth server TLS listener: %w", err)
+		}
 		slog.Info("embedded authorization server initialized")
 	}
 
@@ -237,7 +240,7 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 			return fmt.Errorf("VMCP_NAMESPACE environment variable not set")
 		}
 
-		backendWatcher, err = k8s.NewBackendWatcher(restConfig, namespace, vmcpCfg.Group, dynamicRegistry)
+		backendWatcher, err = k8s.NewBackendWatcher(restConfig, namespace, vmcpCfg.Group, dynamicRegistry, vmcpCfg.OutgoingAuth)
 		if err != nil {
 			return fmt.Errorf("failed to create backend watcher: %w", err)
 		}
@@ -357,11 +360,10 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	}
 	// The factory never aggregates — the core is the single source of capability
 	// aggregation (agg feeds it via Config.Aggregator below).
-	var sessionFactoryOpts []vmcpsession.MultiSessionFactoryOption
-	if revisions, ok := backendClient.(vmcp.RevisionReporter); ok {
-		sessionFactoryOpts = append(sessionFactoryOpts, vmcpsession.WithRevisionLookup(revisions.CachedRevision))
-	}
-	sessionFactory := vmcpsession.NewSessionFactory(outgoingRegistry, sessionFactoryOpts...)
+	sessionFactory := vmcpsession.NewSessionFactory(
+		outgoingRegistry,
+		sessionFactoryOptions(vmcpCfg, backendClient)...,
+	)
 
 	// When the optimizer is enabled, its meta-tools are pass-through tools.
 	// Authz uses this for optimizer-aware authorization/filtering.
@@ -376,15 +378,18 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	// Extract dependencies from the embedded auth server.
 	var upstreamReader upstreamtoken.TokenReader
 	var keyProvider keys.PublicKeyProvider
+	var embeddedAuthServerIssuer string
 	if embeddedAuthServer != nil {
 		stor := embeddedAuthServer.IDPTokenStorage()
 		refresher := embeddedAuthServer.UpstreamTokenRefresher()
 		upstreamReader = upstreamtoken.NewInProcessService(stor, refresher)
 		keyProvider = embeddedAuthServer.KeyProvider()
+		embeddedAuthServerIssuer = authServerRC.Issuer
 	}
 
 	authMiddleware, authzMiddleware, authInfoHandler, err :=
-		authfactory.NewIncomingAuthMiddleware(ctx, vmcpCfg.IncomingAuth, vmcpCfg.Name, passThroughTools, upstreamReader, keyProvider)
+		authfactory.NewIncomingAuthMiddleware(ctx, vmcpCfg.IncomingAuth, vmcpCfg.Name, passThroughTools,
+			upstreamReader, keyProvider, embeddedAuthServerIssuer)
 	if err != nil {
 		return fmt.Errorf("failed to create authentication middleware: %w", err)
 	}
@@ -419,21 +424,6 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 		}()
 	}
 
-	// Read the Modern-stateless-dispatch kill-switch once, here at the
-	// composition root. Unset is the deliberate "off" default. A non-empty
-	// value that fails to parse as a bool is an operator typo (a misspelled
-	// "true"), not a request to enable the feature — warn and stay disabled
-	// rather than silently treating it as false.
-	modernDispatchEnabled := false
-	if raw := os.Getenv(modernDispatchEnvVar); raw != "" {
-		var err error
-		if modernDispatchEnabled, err = strconv.ParseBool(raw); err != nil {
-			slog.Warn(fmt.Sprintf("%s has an unrecognized value %q; Modern stateless dispatch stays disabled",
-				modernDispatchEnvVar, raw))
-			modernDispatchEnabled = false
-		}
-	}
-
 	// Resolve transport defaults once here at the composition root: the
 	// vMCP config edge is the single place flags/CRD/YAML become a fully-resolved
 	// Config, so server.New, Serve, and the derive* helpers downstream are pure
@@ -446,7 +436,6 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 		Host:                    cfg.Host,
 		Port:                    cfg.Port,
 		SessionTTL:              cfg.SessionTTL,
-		ModernDispatchEnabled:   modernDispatchEnabled,
 		AuthMiddleware:          authMiddleware,
 		AuthzMiddleware:         authzMiddleware,
 		AuthInfoHandler:         authInfoHandler,
@@ -543,6 +532,80 @@ func getStatusReportingInterval(cfg *config.Config) time.Duration {
 	return 0
 }
 
+// backendRequestTimeoutResolver resolves the documented operational timeout
+// for a backend workload. Configuration loaded from YAML has defaults applied
+// and is immutable after startup; the defensive fallback also supports quick
+// mode and direct embedders that omit Operational.
+func backendRequestTimeoutResolver(cfg *config.Config) func(workloadID string) time.Duration {
+	timeouts := config.DefaultOperationalConfig().Timeouts
+	if cfg != nil && cfg.Operational != nil && cfg.Operational.Timeouts != nil {
+		timeouts = cfg.Operational.Timeouts
+	}
+
+	return func(workloadID string) time.Duration {
+		if timeout, ok := timeouts.PerWorkload[workloadID]; ok && timeout > 0 {
+			return time.Duration(timeout)
+		}
+		return time.Duration(timeouts.Default)
+	}
+}
+
+// sessionFactoryOptions builds the session factory options implied by cfg and
+// the backend client. Split out of Serve so the config-driven choices are
+// unit-testable without standing up a whole server.
+func sessionFactoryOptions(
+	cfg *config.Config,
+	backendClient vmcp.BackendClient,
+) []vmcpsession.MultiSessionFactoryOption {
+	var opts []vmcpsession.MultiSessionFactoryOption
+	if revisions, ok := backendClient.(vmcp.RevisionReporter); ok {
+		opts = append(opts, vmcpsession.WithRevisionLookup(revisions.CachedRevision))
+	}
+	opts = append(opts, vmcpsession.WithRequestTimeoutResolver(backendRequestTimeoutResolver(cfg)))
+	if backendInit := backendInitTimeout(cfg); backendInit > 0 {
+		opts = append(opts, vmcpsession.WithBackendInitTimeout(backendInit))
+	}
+	if filter := listChangedFilter(cfg); filter != nil {
+		opts = append(opts, vmcpsession.WithListChangedFilter(filter))
+	}
+	return opts
+}
+
+// backendInitTimeout returns the configured session-init cap, or 0 when unset
+// so the factory keeps its own default. Mirrors backendRequestTimeoutResolver's
+// nil-safety; there is no per-workload form because the cap exists to bound the
+// whole session handshake, which is only as fast as its slowest backend.
+func backendInitTimeout(cfg *config.Config) time.Duration {
+	if cfg == nil || cfg.Operational == nil || cfg.Operational.Timeouts == nil {
+		return 0
+	}
+	return time.Duration(cfg.Operational.Timeouts.BackendInit)
+}
+
+// listChangedFilter builds the per-backend list_changed predicate from cfg, or
+// returns nil when the config asks for the default (subscribe to everything) so
+// the factory keeps its own behaviour.
+func listChangedFilter(cfg *config.Config) func(workloadID string) bool {
+	if cfg == nil || cfg.Operational == nil || cfg.Operational.ListChanged == nil {
+		return nil
+	}
+	lc := cfg.Operational.ListChanged
+	if lc.Enabled != nil && !*lc.Enabled {
+		return func(string) bool { return false }
+	}
+	if len(lc.DisabledWorkloads) == 0 {
+		return nil
+	}
+	disabled := make(map[string]struct{}, len(lc.DisabledWorkloads))
+	for _, id := range lc.DisabledWorkloads {
+		disabled[id] = struct{}{}
+	}
+	return func(workloadID string) bool {
+		_, off := disabled[workloadID]
+		return !off
+	}
+}
+
 // loadAndValidateConfig loads and validates the vMCP configuration file.
 func loadAndValidateConfig(configPath string) (*config.Config, error) {
 	slog.Info(fmt.Sprintf("Loading configuration from: %s", configPath))
@@ -611,6 +674,34 @@ func vmcpNamespace() string {
 	return namespace
 }
 
+// authServerListenerHost returns the host the embedded auth server's TLS
+// listener binds: the same host as the MCP listener, resolved through
+// vmcpserver.WithDefaults so the two cannot drift apart.
+func authServerListenerHost(host string) string {
+	return vmcpserver.WithDefaults(&vmcpserver.Config{Host: host}).Host
+}
+
+// validateAuthServerListenerPorts rejects a vMCP or diagnostics port that
+// collides with the embedded auth server's fixed TLS listener port. The port
+// is part of the issuer URL, so a clash is an error rather than a reason to
+// pick another port.
+// Keep in sync with Runner.startEmbeddedAuthServerListener in pkg/runner.
+func validateAuthServerListenerPorts(
+	port int, telemetryCfg *telemetry.Config, authServerRC *authserverconfig.RunConfig,
+) error {
+	if authServerRC == nil || authServerRC.TLSListener == nil {
+		return nil
+	}
+	if port == authserverrunner.TLSListenerPort {
+		return fmt.Errorf("vMCP port %d conflicts with the auth server TLS listener port", port)
+	}
+	if telemetryCfg != nil && telemetryCfg.EnablePrometheusMetricsPath &&
+		diagnostics.ResolvePort(telemetryCfg.PrometheusPort) == authserverrunner.TLSListenerPort {
+		return fmt.Errorf("diagnostics port %d conflicts with the auth server TLS listener port", authserverrunner.TLSListenerPort)
+	}
+	return nil
+}
+
 // loadAuthServerConfig loads the auth server RunConfig from a sibling file
 // alongside the main config. The operator serializes authserver.RunConfig as a
 // separate ConfigMap key (authserver-config.yaml).
@@ -647,7 +738,10 @@ func discoverBackends(
 		return nil, nil, nil, fmt.Errorf("failed to create outgoing authentication registry: %w", err)
 	}
 
-	backendClient, err := vmcpclient.NewHTTPBackendClient(outgoingRegistry)
+	backendClient, err := vmcpclient.NewHTTPBackendClient(
+		outgoingRegistry,
+		vmcpclient.WithRequestTimeoutResolver(backendRequestTimeoutResolver(cfg)),
+	)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("failed to create backend client: %w", err)
 	}

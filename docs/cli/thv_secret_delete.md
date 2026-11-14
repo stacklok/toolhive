@@ -30,14 +30,14 @@ thv secret delete <name> [flags]
 ### Options
 
 ```
-  -h, --help     help for delete
-      --system   Allow deleting a system-managed secret (emergency use only)
+  -h, --help[=true|false]     help for delete
+      --system[=true|false]   Allow deleting a system-managed secret (emergency use only)
 ```
 
 ### Options inherited from parent commands
 
 ```
-      --debug   Enable debug mode
+      --debug[=true|false]   Enable debug mode
 ```
 
 ### SEE ALSO

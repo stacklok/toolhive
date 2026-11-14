@@ -61,3 +61,8 @@ func (*noopWriteCloser) Write(p []byte) (n int, err error) {
 func (*noopWriteCloser) Close() error {
 	return nil
 }
+
+// Abort is a no-op.
+func (*noopWriteCloser) Abort() error {
+	return nil
+}

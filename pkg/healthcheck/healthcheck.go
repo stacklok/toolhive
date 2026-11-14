@@ -10,9 +10,8 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"sync/atomic"
 	"time"
-
-	"github.com/stacklok/toolhive/pkg/versions"
 )
 
 // HealthStatus represents the overall health status
@@ -39,14 +38,19 @@ type MCPStatus struct {
 	LastChecked time.Time `json:"last_checked"`
 }
 
-// HealthResponse represents the standardized health check response
+// HealthResponse represents the standardized health check response.
+//
+// This endpoint is unauthenticated (it must stay reachable for Kubernetes
+// liveness and readiness probes), so it deliberately exposes no build
+// fingerprint — version, commit, build date, Go version, or platform. This
+// matches the minimal shape already used by the vMCP server and the v1 API,
+// which redact the same information to avoid disclosure on an unauthenticated
+// path.
 type HealthResponse struct {
 	// Status is the overall health status
 	Status HealthStatus `json:"status"`
 	// Timestamp is when the health check was performed
 	Timestamp time.Time `json:"timestamp"`
-	// Version contains ToolHive version information
-	Version versions.VersionInfo `json:"version"`
 	// Transport indicates the type of transport used by the MCP server (stdio, sse)
 	Transport string `json:"transport"`
 	// MCP contains MCP server status information
@@ -67,22 +71,46 @@ type MCPPinger interface {
 type HealthChecker struct {
 	transport string
 	mcpPinger MCPPinger
+
+	// serveLastResult makes ServeHTTP answer from lastResult instead of
+	// checking the MCP server while the request waits.
+	serveLastResult bool
+	lastResult      atomic.Pointer[HealthResponse]
 }
 
-// NewHealthChecker creates a new health checker instance
-func NewHealthChecker(transport string, mcpPinger MCPPinger) *HealthChecker {
-	return &HealthChecker{
-		transport: transport,
-		mcpPinger: mcpPinger,
+// Option configures a HealthChecker.
+type Option func(*HealthChecker)
+
+// WithLastResult makes ServeHTTP answer from the result of the most recent
+// CheckHealth call instead of pinging the MCP server for every request, so a
+// slow MCP server cannot hold the answer past a caller's timeout, such as a
+// Kubernetes probe's. The answer is only as fresh as the caller keeps it: the
+// caller must run CheckHealth on its own schedule. Until the first CheckHealth
+// call returns, ServeHTTP reports the proxy's own status without MCP details.
+func WithLastResult() Option {
+	return func(hc *HealthChecker) {
+		hc.serveLastResult = true
 	}
 }
 
-// CheckHealth performs a comprehensive health check including MCP server status
+// NewHealthChecker creates a new health checker instance
+func NewHealthChecker(transport string, mcpPinger MCPPinger, opts ...Option) *HealthChecker {
+	hc := &HealthChecker{
+		transport: transport,
+		mcpPinger: mcpPinger,
+	}
+	for _, opt := range opts {
+		opt(hc)
+	}
+	return hc
+}
+
+// CheckHealth performs a comprehensive health check including MCP server status.
+// With WithLastResult, it also records a copy of the response for ServeHTTP.
 func (hc *HealthChecker) CheckHealth(ctx context.Context) *HealthResponse {
 	response := &HealthResponse{
 		Status:    StatusHealthy,
 		Timestamp: time.Now(),
-		Version:   versions.GetVersionInfo(),
 		Transport: hc.transport,
 	}
 
@@ -95,6 +123,10 @@ func (hc *HealthChecker) CheckHealth(ctx context.Context) *HealthResponse {
 		if !mcpStatus.Available {
 			response.Status = StatusDegraded
 		}
+	}
+
+	if hc.serveLastResult {
+		hc.lastResult.Store(response.clone())
 	}
 
 	return response
@@ -129,7 +161,7 @@ func (hc *HealthChecker) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	health := hc.CheckHealth(r.Context())
+	health := hc.currentHealth(r.Context())
 
 	w.Header().Set("Content-Type", "application/json")
 
@@ -147,4 +179,35 @@ func (hc *HealthChecker) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		slog.Warn("Failed to encode health response", "error", err)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 	}
+}
+
+// currentHealth returns the response ServeHTTP writes: the last recorded result
+// with WithLastResult, otherwise the result of a check made now.
+func (hc *HealthChecker) currentHealth(ctx context.Context) *HealthResponse {
+	if !hc.serveLastResult {
+		return hc.CheckHealth(ctx)
+	}
+	if last := hc.lastResult.Load(); last != nil {
+		return last
+	}
+	return &HealthResponse{
+		Status:    StatusHealthy,
+		Timestamp: time.Now(),
+		Transport: hc.transport,
+	}
+}
+
+// clone returns a copy of the response that shares no memory with it, so the
+// recorded result cannot change after CheckHealth returns.
+func (r *HealthResponse) clone() *HealthResponse {
+	c := *r
+	if r.MCP != nil {
+		mcp := *r.MCP
+		if r.MCP.ResponseTime != nil {
+			responseTime := *r.MCP.ResponseTime
+			mcp.ResponseTime = &responseTime
+		}
+		c.MCP = &mcp
+	}
+	return &c
 }

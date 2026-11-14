@@ -24,13 +24,13 @@ thv config otel unset-tracing-enabled [flags]
 ### Options
 
 ```
-  -h, --help   help for unset-tracing-enabled
+  -h, --help[=true|false]   help for unset-tracing-enabled
 ```
 
 ### Options inherited from parent commands
 
 ```
-      --debug   Enable debug mode
+      --debug[=true|false]   Enable debug mode
 ```
 
 ### SEE ALSO

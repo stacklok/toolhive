@@ -137,6 +137,12 @@ func (r *MCPRemoteProxyReconciler) createRunConfigFromMCPRemoteProxy(
 		return nil, err
 	}
 
+	if err := ctrlutil.ValidateEmbeddedAuthServerTLSListenerPort(
+		apiCtx, r.Client, proxy.Namespace, proxy.Spec.ExternalAuthConfigRef, proxy.Spec.AuthServerRef, proxy.GetProxyPort(),
+	); err != nil {
+		return nil, err
+	}
+
 	// Add external auth configuration if specified (updated call)
 	// Will fail if embedded auth server is used without OIDC config or resourceUrl
 	if err := ctrlutil.AddExternalAuthConfigOptions(
@@ -180,7 +186,7 @@ func (r *MCPRemoteProxyReconciler) createRunConfigFromMCPRemoteProxy(
 	// excluded here — it is injected as the THV_SESSION_REDIS_PASSWORD env
 	// var by buildRedisPasswordEnvVar in mcpremoteproxy_deployment.go.
 	// Must run before PopulateMiddlewareConfigs because rate limiting reads SessionRedis.
-	populateScalingConfigForRemoteProxy(runConfig, proxy)
+	populateScalingConfigForRemoteProxy(runConfig, proxy, r.DefaultRedisConfig)
 
 	// Populate middleware configs from the configuration fields
 	// This ensures that middleware_configs is properly set for serialization
@@ -196,8 +202,10 @@ func (r *MCPRemoteProxyReconciler) createRunConfigFromMCPRemoteProxy(
 // BackendReplicas concept). When MCPRemoteProxy.spec.sessionStorage uses
 // the redis provider, this populates runner.ScalingConfig.SessionRedis with
 // the non-sensitive connection parameters. Falls back to
-// TOOLHIVE_DEFAULT_REDIS_ADDR when spec.sessionStorage is unset.
-func populateScalingConfigForRemoteProxy(runConfig *runner.RunConfig, proxy *mcpv1beta1.MCPRemoteProxy) {
+// the injected global Redis default when spec.sessionStorage is unset.
+func populateScalingConfigForRemoteProxy(
+	runConfig *runner.RunConfig, proxy *mcpv1beta1.MCPRemoteProxy, defaults *ctrlutil.DefaultRedisConfig,
+) {
 	if proxy.Spec.SessionStorage != nil {
 		if proxy.Spec.SessionStorage.Provider == mcpv1beta1.SessionStorageProviderRedis {
 			if runConfig.ScalingConfig == nil {
@@ -207,6 +215,7 @@ func populateScalingConfigForRemoteProxy(runConfig *runner.RunConfig, proxy *mcp
 				Address:   proxy.Spec.SessionStorage.Address,
 				DB:        proxy.Spec.SessionStorage.DB,
 				KeyPrefix: proxy.Spec.SessionStorage.KeyPrefix,
+				TLS:       ctrlutil.SessionRedisTLSConfig(proxy.Spec.SessionStorage),
 			}
 		}
 		// spec.sessionStorage was set explicitly — never fall through to the
@@ -214,12 +223,13 @@ func populateScalingConfigForRemoteProxy(runConfig *runner.RunConfig, proxy *mcp
 		return
 	}
 
-	if def := ctrlutil.ReadDefaultRedisConfig(); def != nil {
+	if def := defaults; def != nil {
 		if runConfig.ScalingConfig == nil {
 			runConfig.ScalingConfig = &runner.ScalingConfig{}
 		}
 		runConfig.ScalingConfig.SessionRedis = &runner.SessionRedisConfig{
 			Address: def.Addr,
+			TLS:     ctrlutil.SessionRedisTLSConfig(def.SessionStorage()),
 		}
 	}
 }

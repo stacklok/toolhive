@@ -4,9 +4,6 @@
 package e2e_test
 
 import (
-	"fmt"
-	"time"
-
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
@@ -23,8 +20,8 @@ var _ = Describe("Group Remove E2E Tests", Label("core", "groups", "e2e"), func(
 
 	BeforeEach(func() {
 		config = e2e.NewTestConfig()
-		testGroupName = fmt.Sprintf("rm-test-group-%d-%d", GinkgoRandomSeed(), time.Now().UnixNano())
-		secondGroupName = fmt.Sprintf("rm-test-group-2-%d-%d", GinkgoRandomSeed(), time.Now().UnixNano())
+		testGroupName = e2e.GenerateUniqueServerName("rm-test-group")
+		secondGroupName = e2e.GenerateUniqueServerName("rm-test-group-2")
 		createdWorkloads = []string{}
 
 		// Check if thv binary is available
@@ -59,7 +56,7 @@ var _ = Describe("Group Remove E2E Tests", Label("core", "groups", "e2e"), func(
 
 	Describe("thv rm --group command", func() {
 		It("should return error when group does not exist", func() {
-			groupName := fmt.Sprintf("rm-non-existent-group-%d", GinkgoRandomSeed())
+			groupName := e2e.GenerateUniqueServerName("rm-non-existent-group")
 			_, stderr, err := e2e.NewTHVCommand(config, "rm", "--group", groupName).ExpectFailure()
 			Expect(err).To(HaveOccurred())
 			Expect(stderr).To(ContainSubstring("does not exist"))
@@ -72,20 +69,17 @@ var _ = Describe("Group Remove E2E Tests", Label("core", "groups", "e2e"), func(
 		})
 
 		It("should remove workloads from group", func() {
-			groupWorkload1 := fmt.Sprintf("rm-group-workload-1-%d", GinkgoRandomSeed())
-			groupWorkload2 := fmt.Sprintf("rm-group-workload-2-%d", GinkgoRandomSeed())
-			nonGroupWorkload1 := fmt.Sprintf("rm-non-group-workload-1-%d", GinkgoRandomSeed())
-			nonGroupWorkload2 := fmt.Sprintf("rm-non-group-workload-2-%d", GinkgoRandomSeed())
+			groupWorkload1 := e2e.GenerateUniqueServerName("rm-group-workload-1")
+			groupWorkload2 := e2e.GenerateUniqueServerName("rm-group-workload-2")
+			nonGroupWorkload1 := e2e.GenerateUniqueServerName("rm-non-group-workload-1")
+			nonGroupWorkload2 := e2e.GenerateUniqueServerName("rm-non-group-workload-2")
 			createWorkloadInGroup(groupWorkload1, testGroupName)
 			createWorkloadInGroup(groupWorkload2, testGroupName)
 			createWorkloadInGroup(nonGroupWorkload1, secondGroupName)
 			createWorkloadInGroup(nonGroupWorkload2, secondGroupName)
 
 			// Wait for the workloads to appear in thv list
-			for _, workloadName := range []string{groupWorkload1, groupWorkload2, nonGroupWorkload1, nonGroupWorkload2} {
-				err := e2e.WaitForMCPServer(config, workloadName, e2e.ServerReadyTimeout())
-				Expect(err).NotTo(HaveOccurred())
-			}
+			e2e.ExpectMCPServersRunning(config, groupWorkload1, groupWorkload2, nonGroupWorkload1, nonGroupWorkload2)
 
 			// Remove all workloads in the group
 			e2e.NewTHVCommand(config, "rm", "--group", testGroupName).ExpectSuccess()

@@ -7,8 +7,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"maps"
+	"strings"
 	"sync"
 	"testing"
 
@@ -17,7 +19,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/stacklok/toolhive-core/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/authserver/claimnames"
 	"github.com/stacklok/toolhive/pkg/authz/authorizers"
 )
 
@@ -1395,13 +1399,40 @@ func TestAuthorizeWithJWTClaims_UpstreamProvider(t *testing.T) {
 			wantAuthorize: false,
 		},
 		{
-			name: "upstream_token_missing_from_identity",
+			name: "upstream_tokens_empty_map_missing_primary_provider_errors",
 			identity: &auth.Identity{
 				PrincipalInfo: auth.PrincipalInfo{
 					Subject: "thv-user",
 					Claims:  map[string]any{"sub": "thv-user"},
 				},
+				// A non-nil empty map means a session exists but has no stored tokens.
 				UpstreamTokens: map[string]string{},
+			},
+			wantErr:     true,
+			errContains: "upstream token for provider",
+		},
+		{
+			name: "upstream_tokens_populated_other_provider_missing_primary_errors",
+			identity: &auth.Identity{
+				PrincipalInfo: auth.PrincipalInfo{
+					Subject: "thv-user",
+					Claims:  map[string]any{"sub": "thv-user"},
+				},
+				// The session has another provider's token, not the configured primary.
+				UpstreamTokens: map[string]string{"other-provider": upstreamToken},
+			},
+			wantErr:     true,
+			errContains: "upstream token for provider",
+		},
+		{
+			name: "upstream_tokens_primary_provider_empty_token_errors",
+			identity: &auth.Identity{
+				PrincipalInfo: auth.PrincipalInfo{
+					Subject: "thv-user",
+					Claims:  map[string]any{"sub": "thv-user"},
+				},
+				// The configured provider is present but its stored token is empty.
+				UpstreamTokens: map[string]string{providerName: ""},
 			},
 			wantErr:     true,
 			errContains: "upstream token for provider",
@@ -1460,16 +1491,136 @@ func TestAuthorizeWithJWTClaims_UpstreamProvider(t *testing.T) {
 			errContains: "failed to parse upstream token",
 		},
 		{
-			name: "upstream_tokens_nil_map",
+			name: "session_less_grant_falls_back_to_request_claims_permitted",
 			identity: &auth.Identity{
 				PrincipalInfo: auth.PrincipalInfo{
-					Subject: "thv-user",
-					Claims:  map[string]any{"sub": "thv-user"},
+					Subject: "upstream-user",
+					Claims:  map[string]any{"sub": "upstream-user"},
+				},
+				SessionlessGrant: true,
+				UpstreamTokens:   nil,
+			},
+			wantAuthorize: true,
+		},
+		{
+			name: "raw_delegation_chain_does_not_fall_back",
+			identity: &auth.Identity{
+				PrincipalInfo: auth.PrincipalInfo{
+					Subject: "upstream-user",
+					Claims:  map[string]any{"sub": "upstream-user"},
+					DelegationChain: &audit.DelegationChain{
+						Chain: []audit.DelegatedActor{
+							{Subject: "delegated-agent", Issuer: "https://thv.example.com"},
+						},
+					},
 				},
 				UpstreamTokens: nil,
 			},
 			wantErr:     true,
-			errContains: "upstream token for provider",
+			errContains: "no session-less grant provenance",
+		},
+		{
+			name: "raw_no_session_marker_does_not_fall_back",
+			identity: &auth.Identity{
+				PrincipalInfo: auth.PrincipalInfo{
+					Subject: "upstream-user",
+					Claims: map[string]any{
+						"sub": "upstream-user",
+						// An RFC 7523 JWT-bearer token: the auth server stamped
+						// this marker because the grant links to no upstream login.
+						claimnames.NoUpstreamSessionKey: true,
+					},
+				},
+				UpstreamTokens: nil,
+			},
+			wantErr:     true,
+			errContains: "no session-less grant provenance",
+		},
+		{
+			name: "upstream_tokens_nil_without_sessionless_grant_errors",
+			identity: &auth.Identity{
+				PrincipalInfo: auth.PrincipalInfo{
+					Subject: "upstream-user",
+					// Nil map and neither marker: nothing states why credentials
+					// are absent, so request claims must not drive policy even
+					// though they would satisfy the policy.
+					Claims: map[string]any{"sub": "upstream-user"},
+				},
+				UpstreamTokens: nil,
+			},
+			wantErr:     true,
+			errContains: "no session-less grant provenance",
+		},
+		{
+			name: "anonymous_identity_errors_under_pinned_provider",
+			identity: &auth.Identity{
+				PrincipalInfo: auth.PrincipalInfo{
+					Subject: "anonymous",
+					// The shape pkg/auth/anonymous.go produces. It must never
+					// reach policy evaluation while a provider is pinned.
+					Claims: map[string]any{
+						"sub":   "anonymous",
+						"iss":   "toolhive-local",
+						"email": "anonymous@localhost",
+					},
+				},
+				UpstreamTokens: nil,
+			},
+			wantErr:     true,
+			errContains: "no session-less grant provenance",
+		},
+		{
+			name: "malformed_act_claim_is_not_a_delegation_statement",
+			identity: &auth.Identity{
+				PrincipalInfo: auth.PrincipalInfo{
+					Subject: "upstream-user",
+					Claims:  map[string]any{"sub": "upstream-user"},
+					// ParseDelegationChain never fails: a non-object "act" yields
+					// a chain that is Malformed with no hops, leaving
+					// DelegationChain non-nil. Garbage in act is not a statement
+					// that the token has no upstream session.
+					DelegationChain: &audit.DelegationChain{
+						Chain:           []audit.DelegatedActor{},
+						Malformed:       true,
+						MalformedReason: audit.MalformedReasonActNotObject,
+					},
+				},
+				UpstreamTokens: nil,
+			},
+			wantErr:     true,
+			errContains: "no session-less grant provenance",
+		},
+		{
+			name: "empty_act_object_is_not_a_delegation_statement",
+			identity: &auth.Identity{
+				PrincipalInfo: auth.PrincipalInfo{
+					Subject: "upstream-user",
+					Claims:  map[string]any{"sub": "upstream-user"},
+					// A bare "act": {} parses to one hop with no iss and no sub.
+					// It names no actor, so it asserts no delegation.
+					DelegationChain: &audit.DelegationChain{
+						Chain: []audit.DelegatedActor{},
+					},
+				},
+				UpstreamTokens: nil,
+			},
+			wantErr:     true,
+			errContains: "no session-less grant provenance",
+		},
+		{
+			name: "no_session_marker_false_errors",
+			identity: &auth.Identity{
+				PrincipalInfo: auth.PrincipalInfo{
+					Subject: "upstream-user",
+					Claims: map[string]any{
+						"sub":                           "upstream-user",
+						claimnames.NoUpstreamSessionKey: false,
+					},
+				},
+				UpstreamTokens: nil,
+			},
+			wantErr:     true,
+			errContains: "no session-less grant provenance",
 		},
 		{
 			name: "upstream_token_has_no_sub_claim",
@@ -1810,7 +1961,7 @@ func TestResolveClaimsUpstreamSupplement(t *testing.T) {
 			}
 			claimsBefore := maps.Clone(tt.requestClaims)
 
-			resolved, err := authorizer.(*Authorizer).resolveClaims(identity)
+			resolved, _, err := authorizer.(*Authorizer).resolveClaims(identity)
 			require.NoError(t, err)
 
 			assert.Equal(t, tt.wantClaims, resolved)
@@ -2153,6 +2304,52 @@ func TestAuthorizeWithJWTClaims_TransitiveHierarchyPreserved(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, authorized,
 		"transitive hierarchy THVGroup→THVRole from entities_json must survive entity merge")
+}
+
+func TestAuthorizeWithJWTClaims_BackendHierarchyPreserved(t *testing.T) {
+	t.Parallel()
+
+	policy := `permit(
+		principal,
+		action == Action::"call_tool",
+		resource in BackendGroup::"production-approved"
+	);`
+	entitiesJSON := `[
+		{
+			"uid": {"type": "Backend", "id": "github-mcp"},
+			"attrs": {"environment": "production"},
+			"parents": [{"type": "BackendGroup", "id": "production-approved"}]
+		},
+		{
+			"uid": {"type": "BackendGroup", "id": "production-approved"},
+			"attrs": {},
+			"parents": []
+		}
+	]`
+
+	authorizer, err := NewCedarAuthorizer(ConfigOptions{
+		Policies:     []string{policy},
+		EntitiesJSON: entitiesJSON,
+	}, "main-vmcp")
+	require.NoError(t, err)
+
+	identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{
+		Subject: "user1",
+		Claims:  map[string]any{"sub": "user1"},
+	}}
+	ctx := auth.WithIdentity(context.Background(), identity)
+	ctx = authorizers.WithResourceMetadata(ctx, authorizers.ResourceMetadata{BackendID: "github-mcp"})
+
+	authorized, err := authorizer.AuthorizeWithJWTClaims(
+		ctx,
+		authorizers.MCPFeatureTool,
+		authorizers.MCPOperationCall,
+		"renamed-search",
+		nil,
+	)
+	require.NoError(t, err)
+	assert.True(t, authorized,
+		"the Tool parent UID must traverse the configured Backend hierarchy")
 }
 
 // TestAuthorizeWithJWTClaims_DoesNotMutateIdentity verifies that
@@ -2727,6 +2924,39 @@ func TestExtractGroups(t *testing.T) {
 			claimName:  "https://example.com/groups",
 			wantGroups: []string{"platform"},
 		},
+		{
+			// A typed nil []string is indistinguishable from an absent claim
+			// for fallback purposes: nil means "keep looking at well-known
+			// claim names". Pinned because the strict decoder used by the
+			// upstream filter rejects this shape instead.
+			name:       "typed_nil_string_slice_returns_nil",
+			claims:     jwt.MapClaims{"groups": []string(nil)},
+			claimName:  "groups",
+			wantGroups: nil,
+		},
+		{
+			// A typed nil []any, by contrast, has always decoded to a non-nil
+			// empty slice here and therefore suppresses fallback. The two nil
+			// slice shapes are not interchangeable.
+			name:       "typed_nil_interface_slice_returns_empty",
+			claims:     jwt.MapClaims{"groups": []interface{}(nil)},
+			claimName:  "groups",
+			wantGroups: []string{},
+		},
+		{
+			name:       "empty_typed_string_slice_returns_empty",
+			claims:     jwt.MapClaims{"groups": []string{}},
+			claimName:  "groups",
+			wantGroups: []string{},
+		},
+		{
+			// All elements dropped still means "the IdP asserted this claim",
+			// so the result is empty rather than nil and fallback stays off.
+			name:       "all_non_string_elements_returns_empty",
+			claims:     jwt.MapClaims{"groups": []interface{}{42, true, nil}},
+			claimName:  "groups",
+			wantGroups: []string{},
+		},
 	}
 
 	for _, tt := range tests {
@@ -2736,6 +2966,31 @@ func TestExtractGroups(t *testing.T) {
 			assert.Equal(t, tt.wantGroups, got)
 		})
 	}
+}
+
+// TestExtractGroups_DoesNotAliasClaimValue pins that the returned slice is a
+// copy of the claim value. authorizeWithClaims appends the role claim onto the
+// slice returned for the group claim; if that slice aliased a []string claim
+// with spare capacity, the append would write a role name into the token's own
+// backing array.
+func TestExtractGroups_DoesNotAliasClaimValue(t *testing.T) {
+	t.Parallel()
+
+	backing := make([]string, 2, 4)
+	backing[0], backing[1] = "g1", "g2"
+	claims := jwt.MapClaims{"groups": backing}
+
+	got := extractGroups(claims, "groups")
+	require.Equal(t, []string{"g1", "g2"}, got)
+
+	// Mirrors authorizeWithClaims merging the role claim into the group slice.
+	merged := append(got, "role-from-another-claim")
+	require.Len(t, merged, 3)
+
+	got[0] = "mutated"
+
+	assert.Equal(t, []string{"g1", "g2"}, backing, "claim value must not be modified")
+	assert.Equal(t, "", backing[:cap(backing)][2], "append must not write into the claim's backing array")
 }
 
 // TestDedup tests the dedup function.
@@ -3347,38 +3602,61 @@ func TestParseCedarEntityID(t *testing.T) {
 	}
 }
 
-// TestSanitizeURIForCedar tests the sanitizeURIForCedar helper function.
-func TestSanitizeURIForCedar(t *testing.T) {
+// TestAuthorizeResourceReadEntityIDsCollisionFree verifies that resource URIs
+// become Cedar entity IDs verbatim. Distinct URIs that a lossy sanitization
+// would map onto the same entity ID must stay distinct, so a policy grant on
+// one URI never authorizes a colliding URI.
+func TestAuthorizeResourceReadEntityIDsCollisionFree(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name  string
-		input string
-		want  string
+		name         string
+		grantedURI   string
+		collidingURI string
 	}{
-		{name: "empty_string", input: "", want: ""},
-		{name: "already_clean", input: "simple_resource", want: "simple_resource"},
-		{name: "colon", input: "a:b", want: "a_b"},
-		{name: "forward_slash", input: "a/b", want: "a_b"},
-		{name: "backslash", input: `a\b`, want: "a_b"},
-		{name: "question_mark", input: "a?b", want: "a_b"},
-		{name: "ampersand", input: "a&b", want: "a_b"},
-		{name: "equals", input: "a=b", want: "a_b"},
-		{name: "hash", input: "a#b", want: "a_b"},
-		{name: "space", input: "a b", want: "a_b"},
-		{name: "dot", input: "a.b", want: "a_b"},
 		{
-			name:  "complex_uri",
-			input: "https://api.example.com/v1/data?key=val&other=123#fragment",
-			want:  "https___api_example_com_v1_data_key_val_other_123_fragment",
+			name:         "file_uri_colon_and_slash_run",
+			grantedURI:   "file:///etc/passwd",
+			collidingURI: "file://_etc/passwd",
+		},
+		{
+			name:         "mcp_uri_colon_vs_slash",
+			grantedURI:   "mcp://srv/config:admin",
+			collidingURI: "mcp://srv/config/admin",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			got := sanitizeURIForCedar(tt.input)
-			assert.Equal(t, tt.want, got)
+
+			authorizer, err := NewCedarAuthorizer(ConfigOptions{
+				Policies: []string{
+					fmt.Sprintf(`permit(principal, action == Action::"read_resource", resource == Resource::"%s");`, tt.grantedURI),
+				},
+				EntitiesJSON: `[]`,
+			}, "")
+			require.NoError(t, err, "Failed to create Cedar authorizer")
+
+			identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{
+				Subject: "test-user",
+				Claims:  jwt.MapClaims{"sub": "user123"},
+			}}
+			claimsCtx := auth.WithIdentity(context.Background(), identity)
+
+			// The exact URI named in the policy is authorized.
+			authorized, err := authorizer.AuthorizeWithJWTClaims(
+				claimsCtx, authorizers.MCPFeatureResource, authorizers.MCPOperationRead, tt.grantedURI, nil)
+			require.NoError(t, err)
+			assert.True(t, authorized, "exact URI named in the policy should be authorized")
+
+			// The colliding URI, which mapped to the same entity ID under the
+			// previous lossy sanitization, must not be authorized.
+			authorized, err = authorizer.AuthorizeWithJWTClaims(
+				claimsCtx, authorizers.MCPFeatureResource, authorizers.MCPOperationRead, tt.collidingURI, nil)
+			require.NoError(t, err)
+			assert.False(t, authorized,
+				"colliding URI %q must not be authorized by a grant on %q", tt.collidingURI, tt.grantedURI)
 		})
 	}
 }
@@ -3675,8 +3953,18 @@ func TestPreprocessArguments(t *testing.T) {
 			want: map[string]interface{}{"arg_name": "test", "arg_count": 5, "arg_flag": true},
 		},
 		{
-			name: "complex_type_gets_present_marker",
+			name: "object_only_sets_present_flag",
 			args: map[string]interface{}{"data": map[string]interface{}{"nested": true}},
+			want: map[string]interface{}{"arg_data_present": true},
+		},
+		{
+			name: "array_only_sets_present_flag",
+			args: map[string]interface{}{"data": []interface{}{1.0}},
+			want: map[string]interface{}{"arg_data_present": true},
+		},
+		{
+			name: "null_only_sets_present_flag",
+			args: map[string]interface{}{"data": nil},
 			want: map[string]interface{}{"arg_data_present": true},
 		},
 		{
@@ -4267,4 +4555,384 @@ func TestFactory_ConfigKeyMatchesStructTag(t *testing.T) {
 		"envelope built around Factory.ConfigKey() must parse into Config")
 	require.NotNil(t, cfg.Options,
 		"Config.Options must be set after Unmarshal — if nil, Factory.ConfigKey() and the Options struct tag have drifted apart")
+}
+
+// TestAuthorizeWithJWTClaims_ClaimSourceAttribute pins the value of the
+// thv_claim_source attribute on every path that reaches policy evaluation.
+// Cedar cannot return an attribute, so each case carries a policy keyed on the
+// exact value it expects: a permit proves the label, and the mismatch cases
+// prove the labels are distinct rather than collapsed.
+func TestAuthorizeWithJWTClaims_ClaimSourceAttribute(t *testing.T) {
+	t.Parallel()
+
+	const providerName = "github"
+
+	policyFor := func(source string) string {
+		return fmt.Sprintf(`
+			permit(
+				principal,
+				action == Action::"call_tool",
+				resource == Tool::"deploy"
+			)
+			when { principal.thv_claim_source == %q };
+		`, source)
+	}
+
+	upstreamJWT := makeUnsignedJWT(jwt.MapClaims{
+		"sub": "upstream-user",
+		"iss": "https://idp.example.com",
+	})
+
+	tests := []struct {
+		name          string
+		policySource  string
+		provider      string
+		identity      *auth.Identity
+		wantAuthorize bool
+	}{
+		{
+			name:         "no_provider_pinned_is_request",
+			policySource: claimSourceRequest,
+			provider:     "",
+			identity: &auth.Identity{
+				PrincipalInfo: auth.PrincipalInfo{
+					Subject: "thv-user",
+					Claims:  map[string]any{"sub": "thv-user"},
+				},
+			},
+			wantAuthorize: true,
+		},
+		{
+			name:         "upstream_jwt_names_the_provider",
+			policySource: claimSourceUpstreamPrefix + providerName,
+			provider:     providerName,
+			identity: &auth.Identity{
+				PrincipalInfo: auth.PrincipalInfo{
+					Subject: "thv-user",
+					Claims:  map[string]any{"sub": "thv-user"},
+				},
+				UpstreamTokens: map[string]string{providerName: upstreamJWT},
+			},
+			wantAuthorize: true,
+		},
+		{
+			name:         "jwt_bearer_marker_is_no_upstream_session",
+			policySource: claimSourceNoUpstreamSession,
+			provider:     providerName,
+			identity: &auth.Identity{
+				PrincipalInfo: auth.PrincipalInfo{
+					Subject: "machine-user",
+					Claims: map[string]any{
+						"sub":                           "machine-user",
+						claimnames.NoUpstreamSessionKey: true,
+					},
+				},
+				SessionlessGrant: true,
+			},
+			wantAuthorize: true,
+		},
+		{
+			name:         "opaque_upstream_token_is_upstream_opaque",
+			policySource: claimSourceUpstreamOpaque,
+			provider:     providerName,
+			identity: &auth.Identity{
+				PrincipalInfo: auth.PrincipalInfo{
+					Subject: "thv-user",
+					Claims:  map[string]any{"sub": "thv-user"},
+				},
+				// GitHub-style opaque token: a credential exists but its claims
+				// cannot be read, so evaluation silently degrades to request
+				// claims. This label is the only way a policy can see that.
+				UpstreamTokens: map[string]string{providerName: "gho_opaque_access_token"},
+			},
+			wantAuthorize: true,
+		},
+		{
+			name: "opaque_fallback_does_not_pass_as_upstream",
+			// The degraded path must not satisfy a policy demanding the real
+			// upstream label, or the whole attribute is decorative.
+			policySource: claimSourceUpstreamPrefix + providerName,
+			provider:     providerName,
+			identity: &auth.Identity{
+				PrincipalInfo: auth.PrincipalInfo{
+					Subject: "thv-user",
+					Claims:  map[string]any{"sub": "thv-user"},
+				},
+				UpstreamTokens: map[string]string{providerName: "gho_opaque_access_token"},
+			},
+			wantAuthorize: false,
+		},
+		{
+			name: "token_cannot_spoof_its_own_provenance",
+			// A claim literally named thv_claim_source is emitted as
+			// claim_thv_claim_source by preprocessClaims, so it cannot reach
+			// the attribute the policy reads.
+			policySource: claimSourceUpstreamPrefix + providerName,
+			provider:     providerName,
+			identity: &auth.Identity{
+				PrincipalInfo: auth.PrincipalInfo{
+					Subject: "machine-user",
+					Claims: map[string]any{
+						"sub":                           "machine-user",
+						claimSourceAttr:                 claimSourceUpstreamPrefix + providerName,
+						claimnames.NoUpstreamSessionKey: true,
+					},
+				},
+				SessionlessGrant: true,
+			},
+			wantAuthorize: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			authorizer, err := NewCedarAuthorizer(ConfigOptions{
+				Policies:                []string{policyFor(tt.policySource)},
+				EntitiesJSON:            `[]`,
+				PrimaryUpstreamProvider: tt.provider,
+			}, "")
+			require.NoError(t, err)
+
+			ctx := auth.WithIdentity(context.Background(), tt.identity)
+			authorized, err := authorizer.AuthorizeWithJWTClaims(
+				ctx,
+				authorizers.MCPFeatureTool,
+				authorizers.MCPOperationCall,
+				"deploy",
+				nil,
+			)
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantAuthorize, authorized)
+		})
+	}
+}
+
+// authorizeWithClaims runs one request through AuthorizeWithJWTClaims with the
+// given policies and claims.
+func authorizeWithClaims(
+	t *testing.T,
+	policies []string,
+	claims jwt.MapClaims,
+	feature authorizers.MCPFeature,
+	operation authorizers.MCPOperation,
+	resourceID string,
+	args map[string]interface{},
+) (bool, error) {
+	t.Helper()
+
+	authorizer, err := NewCedarAuthorizer(ConfigOptions{Policies: policies, EntitiesJSON: `[]`}, "")
+	require.NoError(t, err)
+
+	if claims == nil {
+		claims = jwt.MapClaims{"sub": "test-user"}
+	}
+	identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{Subject: "test-user", Claims: claims}}
+	ctx := auth.WithIdentity(context.Background(), identity)
+	return authorizer.AuthorizeWithJWTClaims(ctx, feature, operation, resourceID, args)
+}
+
+// TestAuthorizeNumericValuesNeverDropped checks that numbers a Cedar decimal
+// cannot hold exactly, and over-deep claim values, reach the policy as a marker
+// instead of being dropped, so rules that read them deny. Numeric inputs are
+// float64 literals on purpose: a Go int would become a Cedar Long.
+func TestAuthorizeNumericValuesNeverDropped(t *testing.T) {
+	t.Parallel()
+
+	const (
+		permitAll  = `permit(principal, action, resource);`
+		guardedCap = `forbid(principal, action, resource) when {
+			context has arg_a && context.arg_a.greaterThan(decimal("1000.0")) };`
+		unguardCap = `forbid(principal, action, resource) when {
+			context.arg_a.greaterThan(decimal("1000.0")) };`
+		resourceCap = `forbid(principal, action, resource) when {
+			resource has arg_a && resource.arg_a.greaterThan(decimal("1000.0")) };`
+		promptCap = `forbid(principal, action == Action::"get_prompt", resource) when {
+			context has arg_a && context.arg_a.greaterThan(decimal("1000.0")) };`
+		allowList = `permit(principal, action, resource) when {
+			context.arg_a.lessThanOrEqual(decimal("1000.0")) };`
+		lowerForbid = `forbid(principal, action, resource) when {
+			context.arg_a.lessThan(decimal("-1000.0")) };`
+		claimGuard = `forbid(principal, action, resource) when {
+			context has claim_lvl && context.claim_lvl.greaterThan(decimal("10.0")) };`
+		principalLv = `forbid(principal, action, resource) when {
+			principal has claim_lvl && principal.claim_lvl.greaterThan(decimal("1000.0")) };`
+		geoPermit   = `permit(principal, action == Action::"call_tool", resource == Tool::"geo");`
+		eqStringArg = `permit(principal, action, resource) when { context.arg_id == "100000000000000000000" };`
+		likeArg     = `permit(principal, action, resource) when { context.arg_id like "1*" };`
+		hasOnly     = `permit(principal, action, resource) when { context has arg_a };`
+		hasProbe    = `permit(principal, action, resource) when { !(context.arg_a has thv_unrepresentable) };`
+		neDecimal   = `permit(principal, action, resource) when { context.arg_a != decimal("0.0") };`
+		eqClaim     = `permit(principal, action, resource) when {
+			context.arg_account == principal.claim_account_id };`
+		claimsNe = `forbid(principal, action, resource) when {
+			principal has claim_a && principal has claim_b && principal.claim_a != principal.claim_b };`
+		rolesPermit = `permit(principal, action, resource) when {
+			principal.claim_roles.containsAny(["admin"]) };`
+	)
+	// Reads through the nested "nested" keys down to the too-deep marker.
+	deepForbid := fmt.Sprintf(`forbid(principal, action, resource) when {
+		principal has claim_deep &&
+		principal.claim_deep%s.greaterThan(decimal("1.0")) };`,
+		strings.Repeat(".nested", maxClaimNestingDepth+1))
+
+	const typeErr = "type error"
+	a := func(v interface{}) map[string]interface{} { return map[string]interface{}{"a": v} }
+
+	testCases := []struct {
+		name     string
+		policies []string
+		feature  authorizers.MCPFeature
+		op       authorizers.MCPOperation
+		resource string
+		args     map[string]interface{}
+		claims   jwt.MapClaims
+		allowed  bool
+		wantErr  string // substring of the error; empty means no error
+	}{
+		{name: "guarded forbid: small allowed", policies: []string{permitAll, guardedCap}, args: a(5.0), allowed: true},
+		{name: "guarded forbid: large denied", policies: []string{permitAll, guardedCap}, args: a(5000.0)},
+		{name: "guarded forbid: above range", policies: []string{permitAll, guardedCap}, args: a(922337203685478.0), wantErr: typeErr},
+		{name: "guarded forbid: 1e15", policies: []string{permitAll, guardedCap}, args: a(1e15), wantErr: typeErr},
+		{name: "guarded forbid: -1e15", policies: []string{permitAll, guardedCap}, args: a(-1e15), wantErr: typeErr},
+		{name: "guarded forbid: long fraction", policies: []string{permitAll, guardedCap}, args: a(1000.00001), wantErr: typeErr},
+		{name: "unguarded forbid: wrap boundary", policies: []string{permitAll, unguardCap}, args: a(922337203685477.6), wantErr: typeErr},
+		{name: "unguarded forbid: long fraction", policies: []string{permitAll, unguardCap}, args: a(1000.00001), wantErr: typeErr},
+		{name: "allow-list: small allowed", policies: []string{allowList}, args: a(5.0), allowed: true},
+		{name: "allow-list: wrap boundary", policies: []string{allowList}, args: a(922337203685477.6), wantErr: typeErr},
+		{name: "allow-list: negative wrap boundary", policies: []string{allowList}, args: a(-922337203685477.6), wantErr: typeErr},
+		{name: "allow-list: 1e15", policies: []string{allowList}, args: a(1e15), wantErr: typeErr},
+		{name: "allow-list: long fraction", policies: []string{allowList}, args: a(1000.00001), wantErr: typeErr},
+		{name: "matching permit plus erroring policy denies", policies: []string{permitAll, allowList}, args: a(1e15), wantErr: typeErr},
+		{name: "negative long fraction under lessThan forbid", policies: []string{permitAll, lowerForbid}, args: a(-1000.00001), wantErr: typeErr},
+		{name: "number cannot equal a string", policies: []string{eqStringArg}, args: map[string]interface{}{"id": 1e20}},
+		{name: "number cannot match like", policies: []string{likeArg}, args: map[string]interface{}{"id": 1e20}, wantErr: typeErr},
+		{name: "out-of-range number satisfies has arg_a", policies: []string{hasOnly}, args: a(1e15), allowed: true},
+		{name: "out-of-range number differs from a decimal", policies: []string{neDecimal}, args: a(1e15), allowed: true},
+		{name: "has on a plain decimal is an error, so markers cannot be probed", policies: []string{hasProbe}, args: a(5.0), wantErr: typeErr},
+		{
+			name:     "numbers that round to the same float64 never match ==",
+			policies: []string{eqClaim},
+			args:     map[string]interface{}{"account": 1234567890123456790.0},
+			claims:   jwt.MapClaims{"sub": "u", "account_id": 1234567890123456789.0},
+		},
+		{
+			name:     "an identical large number in argument and claim never matches ==",
+			policies: []string{eqClaim},
+			args:     map[string]interface{}{"account": 1234567890123456789.0},
+			claims:   jwt.MapClaims{"sub": "u", "account_id": 1234567890123456789.0},
+		},
+		{name: "resource attribute above range", policies: []string{permitAll, resourceCap}, args: a(1e15), wantErr: typeErr},
+		{
+			name:     "prompt argument above range",
+			policies: []string{permitAll, promptCap},
+			feature:  authorizers.MCPFeaturePrompt,
+			op:       authorizers.MCPOperationGet,
+			resource: "greet",
+			args:     a(1e15),
+			wantErr:  typeErr,
+		},
+		{
+			name:     "policy that ignores the arguments is unaffected",
+			policies: []string{geoPermit},
+			resource: "geo",
+			args:     map[string]interface{}{"lat": 52.520008, "id": 1e15},
+			allowed:  true,
+		},
+		{name: "claim above range", policies: []string{permitAll, claimGuard}, claims: jwt.MapClaims{"sub": "u", "lvl": 1e15}, wantErr: typeErr},
+		{name: "principal-side claim above range", policies: []string{permitAll, principalLv}, claims: jwt.MapClaims{"sub": "u", "lvl": 1e15}, wantErr: typeErr},
+		{name: "claim in range", policies: []string{permitAll, claimGuard}, claims: jwt.MapClaims{"sub": "u", "lvl": 5.0}, allowed: true},
+		{
+			name:     "claim set holding a marker still matches a permit",
+			policies: []string{rolesPermit},
+			claims:   jwt.MapClaims{"sub": "u", "roles": []interface{}{nil, 1e15, "admin"}},
+			allowed:  true,
+		},
+		{
+			name:     "too-deep claim denies when a rule reads through it",
+			policies: []string{permitAll, deepForbid},
+			claims:   jwt.MapClaims{"sub": "u", "deep": buildNestedMap(maxClaimNestingDepth+2, 5.0)},
+			wantErr:  typeErr,
+		},
+		{
+			name:     "different too-deep claims are not equal",
+			policies: []string{permitAll, claimsNe},
+			claims: jwt.MapClaims{
+				"sub": "u",
+				"a":   buildNestedMap(maxClaimNestingDepth+2, "x"),
+				"b":   buildNestedMap(maxClaimNestingDepth+2, "y"),
+			},
+		},
+		{
+			name:     "identical too-deep claims are equal",
+			policies: []string{permitAll, claimsNe},
+			claims: jwt.MapClaims{
+				"sub": "u",
+				"a":   buildNestedMap(maxClaimNestingDepth+2, "x"),
+				"b":   buildNestedMap(maxClaimNestingDepth+2, "x"),
+			},
+			allowed: true,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			feature, op, resource := tc.feature, tc.op, tc.resource
+			if feature == "" {
+				feature, op = authorizers.MCPFeatureTool, authorizers.MCPOperationCall
+			}
+			if resource == "" {
+				resource = "calc"
+			}
+			authorized, err := authorizeWithClaims(t, tc.policies, tc.claims, feature, op, resource, tc.args)
+			assert.Equal(t, tc.allowed, authorized)
+			if tc.wantErr != "" {
+				assert.ErrorContains(t, err, tc.wantErr)
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+}
+
+// TestAuthorizeNonScalarArguments pins how array, object and null arguments
+// reach policies: only arg_<k>_present is set, and arg_<k> stays absent.
+func TestAuthorizeNonScalarArguments(t *testing.T) {
+	t.Parallel()
+
+	const (
+		permitAll  = `permit(principal, action, resource);`
+		guardedCap = `forbid(principal, action, resource) when {
+			context has arg_a && context.arg_a.greaterThan(decimal("1000.0")) };`
+		hasOnly     = `permit(principal, action, resource) when { context has arg_a };`
+		presentRule = `forbid(principal, action, resource) when { context has arg_a_present };`
+	)
+
+	testCases := []struct {
+		name     string
+		policies []string
+		args     map[string]interface{}
+		allowed  bool
+	}{
+		{name: "array under guarded forbid is skipped", policies: []string{permitAll, guardedCap}, args: map[string]interface{}{"a": []interface{}{5000.0}}, allowed: true},
+		{name: "object under guarded forbid is skipped", policies: []string{permitAll, guardedCap}, args: map[string]interface{}{"a": map[string]interface{}{"v": 5000.0}}, allowed: true},
+		{name: "null under guarded forbid is skipped", policies: []string{permitAll, guardedCap}, args: map[string]interface{}{"a": nil}, allowed: true},
+		{name: "array does not satisfy has arg_a", policies: []string{hasOnly}, args: map[string]interface{}{"a": []interface{}{5000.0}}},
+		{name: "array is caught by a has arg_a_present forbid", policies: []string{permitAll, presentRule}, args: map[string]interface{}{"a": []interface{}{5000.0}}},
+		{name: "scalar does not set arg_a_present", policies: []string{permitAll, presentRule}, args: map[string]interface{}{"a": 5.0}, allowed: true},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			authorized, err := authorizeWithClaims(t, tc.policies, nil,
+				authorizers.MCPFeatureTool, authorizers.MCPOperationCall, "calc", tc.args)
+			require.NoError(t, err)
+			assert.Equal(t, tc.allowed, authorized)
+		})
+	}
 }

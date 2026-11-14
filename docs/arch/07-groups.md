@@ -1,10 +1,10 @@
 # Groups
 
-Groups are a logical abstraction for organizing related MCP servers. They provide organizational structure and serve as a foundation for future features.
+Groups are a logical abstraction for organizing related MCP servers, Agent Skills, and AI-tool plugins. They provide a shared organizational model without merging the distinct workload, skill, and plugin lifecycles.
 
 ## Concept
 
-A **group** is a named collection of MCP servers that share a common purpose or use case.
+A **group** is a named collection of MCP servers and may also record Agent Skill and AI-tool plugin membership for the same purpose or use case.
 
 **Examples:**
 - `data-pipeline` - Data ingestion, transformation, storage tools
@@ -58,6 +58,20 @@ Groups support standard lifecycle operations: create, list, and remove. Workload
 - CLI commands: `cmd/thv/app/group.go`
 - Group manager: `pkg/groups/`
 - Workload integration: `pkg/workloads/manager.go`
+
+### Skill and Plugin Membership
+
+The shared group record has `Skills []string` and `Plugins []string` fields in
+addition to workload membership. A skill or plugin install can add its name to
+a group; list operations can filter on that membership; uninstall removes the
+name from all groups. These updates participate in each service's rollback so a
+failed install or uninstall does not leave stale membership.
+
+Groups organize these resources only. A grouped plugin is still materialized by
+the plugin service, and plugin-declared MCP or LSP servers do not become
+ToolHive workloads. See [Skills System](12-skills-system.md#group-integration)
+and [Plugins System](14-plugins-system.md#group-integration) for lifecycle
+details.
 
 ## Registry Groups
 
@@ -141,4 +155,5 @@ Groups may serve as the foundation for additional features:
 - [Workloads Lifecycle](08-workloads-lifecycle.md) - Group operations
 - [Virtual MCP Server Architecture](10-virtual-mcp-architecture.md) - Group-based aggregation
 - [Skills System](12-skills-system.md) - Skills organized in groups
+- [Plugins System](14-plugins-system.md) - AI-tool plugins organized in groups
 - [Deployment Modes](01-deployment-modes.md) - How groups apply per deployment mode

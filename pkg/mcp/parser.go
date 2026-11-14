@@ -8,14 +8,15 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
+	"log/slog"
+	"mime"
 	"net/http"
 	"strconv"
 	"strings"
 
 	"golang.org/x/exp/jsonrpc2"
-
-	"github.com/stacklok/toolhive/pkg/transport/ssecommon"
 )
 
 // contextKey is a type for context keys to avoid collisions.
@@ -42,7 +43,8 @@ type ParsedMCPRequest struct {
 	// such as progress tokens, trace IDs, or custom namespaced metadata
 	Meta map[string]interface{}
 	// MCPMethodHeader is the value of the Modern (stateless MCP) "Mcp-Method"
-	// request header, if present. Mandatory on every Modern POST per the draft spec.
+	// request header, if present. Mandatory on every Modern POST per the final
+	// 2026-07-28 MCP specification.
 	MCPMethodHeader string
 	// MCPNameHeader is the raw, as-received value of the Modern (stateless MCP)
 	// "Mcp-Name" request header, if present. Required for tools/call,
@@ -70,7 +72,7 @@ type ParsedMCPRequest struct {
 // middleware (authorization, audit, etc.).
 //
 // The middleware:
-// 1. Checks if the request should be parsed (POST with JSON content to MCP endpoints)
+// 1. Checks if the request should be parsed (every POST in an MCP chain, on any path)
 // 2. Reads and parses the JSON-RPC message
 // 3. Extracts method, parameters, and resource information
 // 4. Stores the parsed data in request context
@@ -95,6 +97,20 @@ func ParsingMiddleware(next http.Handler) http.Handler {
 
 		// Check if we should parse this request
 		if !shouldParseMCPRequest(r) {
+			// Only a POST body is parsed as an MCP message. Rather than forward a
+			// body the chain has not inspected, reject any non-POST request that
+			// carries one. A bodyless GET (SSE stream), DELETE (session
+			// termination) or OPTIONS (CORS preflight) passes through unchanged;
+			// the method itself may be legitimate, so this is a 400 for the
+			// unexpected body, not a 405. Method-specific 405/Allow responses are
+			// left to the transport handlers, which know the methods their
+			// endpoint serves. Method names are case-sensitive (RFC 9110 §9.1).
+			if requestCarriesBody(r) {
+				slog.WarnContext(r.Context(), "rejected request body on a non-POST method",
+					"method", r.Method)
+				http.Error(w, "request body is only accepted on POST", http.StatusBadRequest)
+				return
+			}
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -102,27 +118,33 @@ func ParsingMiddleware(next http.Handler) http.Handler {
 		// Read the request body
 		bodyBytes, err := io.ReadAll(r.Body)
 		if err != nil {
-			// If we can't read the body, let the next handler deal with it
-			next.ServeHTTP(w, r)
+			writeBodyReadError(w, err)
 			return
 		}
 
-		// Restore the request body for downstream handlers
-		r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
-
-		// Reject JSON-RPC batches before any downstream middleware or the
-		// transport proxy's batch executor can act on them. Batching was
-		// removed in MCP revision 2025-06-18; ToolHive serves only 2025-11-25
-		// and 2026-07-28. Authz, audit, and tool filtering each inspect a
-		// single parsed request per call, so a batch reaching the backend would
-		// smuggle every nested call past those controls (see #5745).
-		if IsBatchRequest(bodyBytes) {
-			WriteBatchUnsupportedError(w)
+		msg, err := DecodeMessage(bodyBytes)
+		if err != nil {
+			WriteClassificationError(w, nil, err)
 			return
 		}
 
-		// Parse the MCP request and store in context
-		parsedRequest := parseMCPRequest(bodyBytes)
+		// Consumers must see the same JSON accepted by DecodeMessage. In
+		// particular, a BOM cannot be embedded in a webhook's json.RawMessage.
+		bodyBytes = bytes.TrimPrefix(bodyBytes, UTF8BOM)
+		r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+		r.ContentLength = int64(len(bodyBytes))
+		if r.GetBody != nil {
+			r.GetBody = func() (io.ReadCloser, error) {
+				return io.NopCloser(bytes.NewReader(bodyBytes)), nil
+			}
+		}
+
+		// Responses remain transport-owned and do not populate request context.
+		parsedRequest, err := parsedMCPMessage(msg)
+		if err != nil {
+			WriteClassificationError(w, nil, err)
+			return
+		}
 		if parsedRequest != nil {
 			parsedRequest.MCPMethodHeader = r.Header.Get("Mcp-Method")
 			parsedRequest.MCPNameHeader = r.Header.Get("Mcp-Name")
@@ -139,6 +161,47 @@ func ParsingMiddleware(next http.Handler) http.Handler {
 		// Call the next handler
 		next.ServeHTTP(w, r)
 	})
+}
+
+// RepublishParsedMCPRequest refreshes the cached parse after middleware has
+// rewritten the request body, returning the request to pass downstream.
+// ParsingMiddleware deliberately parses only once, so any middleware that
+// replaces r.Body MUST call this or downstream consumers (authorization,
+// audit, telemetry) will decide on the bytes that arrived rather than the
+// bytes the backend executes. Replacement bodies must satisfy the same message
+// admission checks enforced by ParsingMiddleware and must be requests.
+//
+// On error, the returned request is nil and must not be passed downstream:
+// the caller is responsible for terminating the request (e.g. writing an
+// error response) instead of proceeding with a stale or absent parse.
+//
+// This refreshes downstream context consumers and outer wrappers that inspect
+// ParsedRequestHolder after the inner chain returns. It cannot change decisions
+// already made before the rewrite: tool-call filtering and rate limiting still
+// evaluate the request as received.
+//
+// The caller must also refresh r.ContentLength when it replaces r.Body, or the
+// reverse proxy will reject the forwarded request.
+func RepublishParsedMCPRequest(r *http.Request, body []byte) (*http.Request, error) {
+	msg, err := DecodeMessage(body)
+	if err != nil {
+		return nil, err
+	}
+	parsed, err := parsedMCPMessage(msg)
+	if err != nil {
+		return nil, err
+	}
+	if parsed == nil {
+		return nil, errors.New("republished body is not a valid JSON-RPC request")
+	}
+	parsed.MCPMethodHeader = r.Header.Get("Mcp-Method")
+	parsed.MCPNameHeader = r.Header.Get("Mcp-Name")
+
+	if holder, ok := ParsedRequestHolderFromContext(r.Context()); ok {
+		holder.Parsed = parsed
+	}
+
+	return r.WithContext(context.WithValue(r.Context(), MCPRequestContextKey, parsed)), nil
 }
 
 // parsedRequestHolderContextKey is the context key for ParsedRequestHolder.
@@ -171,6 +234,54 @@ func ParsedRequestHolderFromContext(ctx context.Context) (*ParsedRequestHolder, 
 	return holder, ok && holder != nil
 }
 
+// authzDenialMarkerContextKey is the context key for AuthzDenialMarker.
+type authzDenialMarkerContextKey struct{}
+
+// AuthzDenialMarker is a mutable carrier that lets the authorization
+// middleware (pkg/authz), which runs INSIDE the audit middleware, flag a
+// request it refused before message-level authorization could run, such as a
+// client response or a POST reaching authz without parsing middleware. It follows the same
+// propagation pattern as ParsedRequestHolder: the audit wrapper injects an
+// empty marker via WithAuthzDenialMarker, the inner middleware fills it, and
+// the wrapper reads it back after the inner chain returns so the refusal is
+// audited as a denial rather than a generic 400 failure. The type lives in
+// this package because pkg/authz already depends on pkg/audit transitively,
+// so the carrier cannot live in either of those two packages.
+//
+// Like ParsedRequestHolder, the marker is written and read by the single
+// request goroutine, so no synchronization is needed.
+type AuthzDenialMarker struct {
+	Denied bool
+}
+
+// WithAuthzDenialMarker returns a new context carrying the given marker.
+func WithAuthzDenialMarker(ctx context.Context, marker *AuthzDenialMarker) context.Context {
+	return context.WithValue(ctx, authzDenialMarkerContextKey{}, marker)
+}
+
+// AuthzDenialMarkerFromContext retrieves the AuthzDenialMarker from the
+// context. Returns (nil, false) if no marker is present.
+func AuthzDenialMarkerFromContext(ctx context.Context) (*AuthzDenialMarker, bool) {
+	marker, ok := ctx.Value(authzDenialMarkerContextKey{}).(*AuthzDenialMarker)
+	return marker, ok && marker != nil
+}
+
+// RequestHasJSONContentType reports whether r declares an application/json
+// Content-Type. Media types are case-insensitive per RFC 9110 8.3.1, so the
+// header is parsed with mime.ParseMediaType and compared with EqualFold; the
+// case-sensitive prefix match this replaces also wrongly accepted longer
+// types such as "application/jsonx".
+//
+// Deprecated: Content-Type must not gate MCP admission. Use DecodeMessage or
+// ParsingMiddleware to validate every POST in an MCP chain instead.
+func RequestHasJSONContentType(r *http.Request) bool {
+	mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if err != nil {
+		return false
+	}
+	return strings.EqualFold(mediaType, "application/json")
+}
+
 // GetParsedMCPRequest retrieves the parsed MCP request from the request context.
 // Returns nil if no parsed request is available.
 func GetParsedMCPRequest(ctx context.Context) *ParsedMCPRequest {
@@ -181,50 +292,59 @@ func GetParsedMCPRequest(ctx context.Context) *ParsedMCPRequest {
 }
 
 // shouldParseMCPRequest determines if the request should be parsed as an MCP request.
+//
+// Deliberately path-agnostic. There is no fixed MCP endpoint path: the
+// streamable transport's path is server-chosen, and in 2024-11-05 HTTP+SSE the
+// server names its own message endpoint in the `endpoint` event, which
+// ToolHive's proxies forward as given. Any POST may carry an MCP message,
+// regardless of Content-Type (not mandated by all supported MCP revisions).
+// Path or media-type gates would bypass downstream request-level controls.
+// ParsingMiddleware rejects a body sent with any other method instead of
+// forwarding it unparsed (see requestCarriesBody).
 func shouldParseMCPRequest(r *http.Request) bool {
-	// Only parse POST requests with JSON content type
-	if r.Method != http.MethodPost {
-		return false
-	}
-
-	contentType := r.Header.Get("Content-Type")
-	if !strings.HasPrefix(contentType, "application/json") {
-		return false
-	}
-
-	// Skip SSE endpoint establishment requests
-	if strings.HasSuffix(r.URL.Path, ssecommon.HTTPSSEEndpoint) {
-		return false
-	}
-
-	// Parse all other JSON POST requests
-	// The MCP spec allows for various endpoints:
-	// - Streamable HTTP transport: single endpoint
-	// - SSE transport: two distinct endpoints (one for SSE stream, one for messages)
-	return true
+	return r.Method == http.MethodPost
 }
 
-// parseMCPRequest parses the JSON-RPC message and extracts MCP-specific information.
-func parseMCPRequest(bodyBytes []byte) *ParsedMCPRequest {
-	if len(bodyBytes) == 0 {
-		return nil
+// requestCarriesBody reports whether r has a non-empty body. When the length
+// is unknown (chunked) it reads one byte and puts it back, so the body
+// forwarded downstream is unchanged. A read error other than EOF counts as a
+// body: the request is rejected rather than forwarded unexamined.
+func requestCarriesBody(r *http.Request) bool {
+	if r.Body == nil || r.Body == http.NoBody || r.ContentLength == 0 {
+		return false
 	}
-
-	// Try to parse as JSON-RPC message
-	msg, err := jsonrpc2.DecodeMessage(bodyBytes)
-	if err != nil {
-		return nil
+	if r.ContentLength > 0 {
+		return true
 	}
+	var first [1]byte
+	n, err := io.ReadFull(r.Body, first[:])
+	if n > 0 {
+		r.Body = struct {
+			io.Reader
+			io.Closer
+		}{io.MultiReader(bytes.NewReader(first[:n]), r.Body), r.Body}
+		return true
+	}
+	return !errors.Is(err, io.EOF)
+}
 
+// parsedMCPMessage returns nil, nil for responses. Request params that do not
+// decode fail closed with a CodedError rather than yielding an empty resource ID.
+func parsedMCPMessage(msg jsonrpc2.Message) (*ParsedMCPRequest, error) {
 	// Handle only request messages (both calls with ID and notifications without ID)
 	req, ok := msg.(*jsonrpc2.Request)
 	if !ok {
 		// Response or error messages are not parsed here
-		return nil
+		return nil, nil
 	}
 
 	// Extract resource ID, arguments, and meta based on the method
-	resourceID, arguments, meta := extractResourceAndArguments(req.Method, req.Params)
+	resourceID, arguments, meta, err := extractResourceAndArguments(req.Method, req.Params)
+	if err != nil {
+		// The decode error text can quote the offending literal, so log a fixed reason only.
+		slog.Warn("rejected invalid MCP JSON-RPC message", "reason", "undecodable_params")
+		return nil, newUndecodableParams(req.ID)
+	}
 	clientInfo, protocolVersion := extractModernMeta(meta)
 
 	// Determine the ID - will be nil for notifications
@@ -246,11 +366,9 @@ func parseMCPRequest(bodyBytes []byte) *ParsedMCPRequest {
 		// Batches are rejected in ParsingMiddleware before reaching here, so a
 		// parsed request is always a single, non-batch message.
 		IsBatch: false,
-	}
+	}, nil
 }
 
-// extractResourceAndArguments extracts the resource ID, arguments, and _meta field from the JSON-RPC params
-// based on the MCP method type.
 // methodHandler defines a function type for handling specific MCP methods
 type methodHandler func(map[string]interface{}) (string, map[string]interface{})
 
@@ -260,7 +378,9 @@ var methodHandlers = map[string]methodHandler{
 	"tools/call":                         handleNamedResourceMethod,
 	"prompts/get":                        handleNamedResourceMethod,
 	"resources/read":                     handleResourceReadMethod,
+	"skills/get":                         handleResourceReadMethod,
 	"resources/list":                     handleListMethod,
+	"skills/list":                        handleListMethod,
 	"tools/list":                         handleListMethod,
 	"prompts/list":                       handleListMethod,
 	"notifications/message":              handleNotificationMethod,
@@ -294,20 +414,24 @@ var staticResourceIDs = map[string]string{
 	"server/discover":                      "discover",
 }
 
-func extractResourceAndArguments(method string, params json.RawMessage) (string, map[string]interface{}, map[string]interface{}) {
+// extractResourceAndArguments extracts the resource ID, arguments, and _meta field from the JSON-RPC params
+// based on the MCP method type. It returns an error if params do not decode as an object.
+func extractResourceAndArguments(
+	method string, params json.RawMessage,
+) (string, map[string]interface{}, map[string]interface{}, error) {
 	if params == nil {
-		return getStaticResourceID(method), nil, nil
+		return getStaticResourceID(method), nil, nil, nil
 	}
 
-	var paramsMap map[string]interface{}
-	if err := json.Unmarshal(params, &paramsMap); err != nil {
-		return getStaticResourceID(method), nil, nil
+	paramsMap, err := decodeParams(params)
+	if err != nil {
+		return "", nil, nil, err
 	}
 
 	meta := metaFromParamsMap(paramsMap)
 
 	resourceID, arguments := processMethodWithHandler(method, paramsMap)
-	return resourceID, arguments, meta
+	return resourceID, arguments, meta, nil
 }
 
 // extractModernMeta surfaces the Modern (stateless MCP) clientInfo and

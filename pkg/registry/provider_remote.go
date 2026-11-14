@@ -25,6 +25,8 @@ type RemoteRegistryProvider struct {
 	allowPrivateIp bool
 	skillsMu       sync.RWMutex
 	skills         []types.Skill
+	pluginsMu      sync.RWMutex
+	plugins        []types.Plugin
 }
 
 // NewRemoteRegistryProvider creates a new remote registry provider.
@@ -89,8 +91,8 @@ func (p *RemoteRegistryProvider) validateConnectivity() error {
 	if err := json.Unmarshal(data, &upstream); err != nil {
 		return fmt.Errorf("registry returned invalid upstream JSON from %s: %w", p.registryURL, err)
 	}
-	if len(upstream.Data.Servers) == 0 && len(upstream.Data.Skills) == 0 {
-		return fmt.Errorf("registry at %s returned upstream format with no servers or skills", p.registryURL)
+	if len(upstream.Data.Servers) == 0 && len(upstream.Data.Skills) == 0 && len(upstream.Data.Plugins) == 0 {
+		return fmt.Errorf("registry at %s returned upstream format with no servers, skills, or plugins", p.registryURL)
 	}
 	return nil
 }
@@ -129,11 +131,12 @@ func (p *RemoteRegistryProvider) GetRegistry() (*types.Registry, error) {
 		return nil, fmt.Errorf("failed to read registry data from response body: %w", err)
 	}
 
-	registry, skills, err := parseRegistryData(data)
+	registry, skills, plugins, err := parseRegistryData(data)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse registry data from %s: %w", p.registryURL, err)
 	}
 	p.setSkills(skills)
+	p.setPlugins(plugins)
 
 	// Set name field on each server based on map key
 	for name, server := range registry.Servers {
@@ -211,8 +214,66 @@ func (p *RemoteRegistryProvider) SearchSkills(query string) ([]types.Skill, erro
 	return results, nil
 }
 
+// ListAvailablePlugins returns plugins discovered from the remote registry data.
+// Triggers a registry load if plugins haven't been populated yet.
+func (p *RemoteRegistryProvider) ListAvailablePlugins() ([]types.Plugin, error) {
+	p.pluginsMu.RLock()
+	plugins := p.plugins
+	p.pluginsMu.RUnlock()
+
+	if plugins == nil {
+		// Plugins are populated as a side effect of GetRegistry
+		if _, err := p.GetRegistry(); err != nil {
+			return nil, err
+		}
+		p.pluginsMu.RLock()
+		plugins = p.plugins
+		p.pluginsMu.RUnlock()
+	}
+
+	return plugins, nil
+}
+
+// GetPlugin returns a specific plugin by namespace and name.
+func (p *RemoteRegistryProvider) GetPlugin(namespace, name string) (*types.Plugin, error) {
+	plugins, err := p.ListAvailablePlugins()
+	if err != nil {
+		return nil, err
+	}
+	for i := range plugins {
+		if plugins[i].Namespace == namespace && plugins[i].Name == name {
+			return &plugins[i], nil
+		}
+	}
+	return nil, nil
+}
+
+// SearchPlugins searches for plugins matching the query in name, namespace, or description.
+func (p *RemoteRegistryProvider) SearchPlugins(query string) ([]types.Plugin, error) {
+	plugins, err := p.ListAvailablePlugins()
+	if err != nil {
+		return nil, err
+	}
+	query = strings.ToLower(query)
+	var results []types.Plugin
+	for _, pl := range plugins {
+		if strings.Contains(strings.ToLower(pl.Name), query) ||
+			strings.Contains(strings.ToLower(pl.Description), query) ||
+			strings.Contains(strings.ToLower(pl.Namespace), query) {
+			results = append(results, pl)
+		}
+	}
+	return results, nil
+}
+
 func (p *RemoteRegistryProvider) setSkills(skills []types.Skill) {
 	p.skillsMu.Lock()
 	defer p.skillsMu.Unlock()
 	p.skills = skills
+}
+
+func (p *RemoteRegistryProvider) setPlugins(plugins []types.Plugin) {
+	p.pluginsMu.Lock()
+	defer p.pluginsMu.Unlock()
+	p.plugins = plugins
 }

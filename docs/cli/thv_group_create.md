@@ -25,13 +25,13 @@ thv group create [group-name] [flags]
 ### Options
 
 ```
-  -h, --help   help for create
+  -h, --help[=true|false]   help for create
 ```
 
 ### Options inherited from parent commands
 
 ```
-      --debug   Enable debug mode
+      --debug[=true|false]   Enable debug mode
 ```
 
 ### SEE ALSO

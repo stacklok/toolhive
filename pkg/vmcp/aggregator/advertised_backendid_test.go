@@ -265,6 +265,53 @@ func TestDefaultAggregator_AdvertisingFilterPreservesBackendID(t *testing.T) {
 			},
 			wantAdvertised: []string{"be_tool_a"},
 		},
+		{
+			// Backward compatibility: a config predating DefaultToolVisibility leaves it
+			// "" and must keep advertising everything.
+			name:           "unset DefaultToolVisibility advertises an unlisted backend",
+			aggCfg:         &config.AggregationConfig{},
+			wantAdvertised: []string{"be_tool_a", "be_tool_b"},
+		},
+		{
+			name:           "explicit DefaultToolVisibility allow advertises an unlisted backend",
+			aggCfg:         &config.AggregationConfig{DefaultToolVisibility: config.DefaultToolVisibilityAllow},
+			wantAdvertised: []string{"be_tool_a", "be_tool_b"},
+		},
+		{
+			// The #6073 case: a backend nobody listed contributes nothing.
+			name:           "DefaultToolVisibility deny hides an unlisted backend's tools",
+			aggCfg:         &config.AggregationConfig{DefaultToolVisibility: config.DefaultToolVisibilityDeny},
+			wantAdvertised: nil,
+		},
+		{
+			// A listed backend is opted in by its entry: deny governs only backends
+			// absent from Tools, so Filter still decides which of its tools show.
+			name: "DefaultToolVisibility deny leaves a listed backend's Filter in charge",
+			aggCfg: &config.AggregationConfig{
+				DefaultToolVisibility: config.DefaultToolVisibilityDeny,
+				Tools:                 []*config.WorkloadToolConfig{{Workload: backendID, Filter: []string{"tool_a"}}},
+			},
+			wantAdvertised: []string{"be_tool_a"},
+		},
+		{
+			// An entry with neither ExcludeAll nor Filter opts the backend in fully
+			// under deny — "listed means allowed", so an overrides-only entry does
+			// not silently blank the backend out.
+			name: "DefaultToolVisibility deny advertises a listed backend with no filter",
+			aggCfg: &config.AggregationConfig{
+				DefaultToolVisibility: config.DefaultToolVisibilityDeny,
+				Tools:                 []*config.WorkloadToolConfig{{Workload: backendID}},
+			},
+			wantAdvertised: []string{"be_tool_a", "be_tool_b"},
+		},
+		{
+			name: "DefaultToolVisibility deny with a listed backend's ExcludeAll still hides",
+			aggCfg: &config.AggregationConfig{
+				DefaultToolVisibility: config.DefaultToolVisibilityDeny,
+				Tools:                 []*config.WorkloadToolConfig{{Workload: backendID, ExcludeAll: true}},
+			},
+			wantAdvertised: nil,
+		},
 	}
 
 	for _, tt := range tests {

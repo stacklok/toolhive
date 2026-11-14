@@ -22,7 +22,9 @@ import (
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/conversion"
+	"github.com/stacklok/toolhive/pkg/vmcp/health"
 	"github.com/stacklok/toolhive/pkg/vmcp/optimizer"
+	"github.com/stacklok/toolhive/pkg/vmcp/server/internal/wireerr"
 	vmcpsession "github.com/stacklok/toolhive/pkg/vmcp/session"
 	"github.com/stacklok/toolhive/pkg/vmcp/session/optimizerdec"
 	sessiontypes "github.com/stacklok/toolhive/pkg/vmcp/session/types"
@@ -68,19 +70,36 @@ type FactoryConfig struct {
 	// AdvertiseFromCore signals that the advertised capability set is sourced from
 	// the core (the Serve path), not from this factory's per-session aggregation.
 	//
-	// It is the single switch that selects WHICH layer indexes the shared FTS5 store,
-	// so the two can never both do it (the AC6 double-index):
-	//   - true:  New does NOT install the optimizer decorator on the session factory,
-	//            and exposes the resolved factory via Manager.OptimizerFactory so the
-	//            Serve layer builds a per-session optimizer over the core's tools.
-	//   - false: New installs the optimizer decorator (legacy behavior) and
-	//            Manager.OptimizerFactory returns nil, so a Serve composition root that
-	//            enables the optimizer but forgets this flag gets no Serve-layer
-	//            optimizer rather than a second, divergent upsert into the store.
-	// Either way New resolves the optimizer factory and owns its store/cleanup. Has no
-	// effect when the optimizer is disabled. The legacy server.New path leaves this
-	// false, so its optimizer decorator is unchanged.
+	// It is required whenever an optimizer is configured:
+	//   - true:  New exposes the resolved factory via Manager.OptimizerFactory so
+	//            the Serve layer builds a per-session optimizer over the core's
+	//            tools — the single writer of the shared FTS5 store (the AC6
+	//            no-double-index guarantee).
+	//   - false: fine without an optimizer; with one, New rejects the config at
+	//            construction, because the Serve layer discards the decorator's
+	//            per-session tools (the optimizer would index the store yet serve
+	//            nobody) and the Modern capability gate would fail open.
+	// New resolves the optimizer factory and owns its store/cleanup. server.New
+	// sets this unconditionally (server.go), so every in-tree composition
+	// advertises from the core; the flag exists for direct-Serve embedders. The
+	// decorator branch the false case used to select is now unreachable — its
+	// deletion is tracked in #6103.
 	AdvertiseFromCore bool
+
+	// BackendHealth gates which backends a NEW session attempts to connect to.
+	// Restored sessions are never filtered (see Manager.listAllBackends).
+	//
+	// Optional: nil disables health gating and every backend is attempted, which
+	// is both the pre-#5861 behaviour and the correct fallback when health
+	// monitoring is switched off. See health.ShouldOpenSession for which statuses
+	// are skipped.
+	//
+	// Because nil is indistinguishable from "monitoring disabled", an embedder that
+	// calls Serve with a hand-built FactoryConfig and omits this field gets no
+	// health gating and no warning. server.New always populates it from the core's
+	// monitor, so in-tree compositions are covered; direct-Serve callers that want
+	// the #5861 fix must pass it explicitly.
+	BackendHealth health.StatusProvider
 }
 
 // resolveOptimizer wires the optimizer factory from cfg, applying telemetry
@@ -148,6 +167,9 @@ func buildDecoratingFactory(
 	// over the core's advertised set, so the factory's optimizer decorator is skipped
 	// to avoid double-indexing the shared store (see FactoryConfig.AdvertiseFromCore).
 	// Composite tools and their telemetry are owned by the core, not the factory.
+	// This branch is unreachable: New rejects an optimizer without AdvertiseFromCore,
+	// so optimizerFactory is nil whenever the flag is false. Deleting the decorator
+	// path is tracked in #6103.
 	if optimizerFactory != nil && !cfg.AdvertiseFromCore {
 		decorators = append(decorators, optimizerDecoratorFn(optimizerFactory, terminateSession))
 	}
@@ -319,7 +341,7 @@ func monitorOptimizer(
 
 	callToolErrors, err := meter.Int64Counter(
 		"toolhive_vmcp_optimizer_call_tool_errors",
-		metric.WithDescription("Total number of CallTool Go errors"),
+		metric.WithDescription("Total number of CallTool Go errors, excluding -32042 URL elicitation answers"),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create call_tool errors counter: %w", err)
@@ -386,6 +408,10 @@ type telemetryOptimizer struct {
 
 var _ optimizer.Optimizer = (*telemetryOptimizer)(nil)
 
+// callToolOutcomeURLElicitationRequired is the optimizer.CallTool span's
+// "outcome" attribute when the inner tool answered with -32042.
+const callToolOutcomeURLElicitationRequired = "url_elicitation_required"
+
 func (t *telemetryOptimizer) FindTool(ctx context.Context, input optimizer.FindToolInput) (*optimizer.FindToolOutput, error) {
 	ctx, span := t.tracer.Start(ctx, "optimizer.FindTool",
 		trace.WithAttributes(attribute.String("tool_description", input.ToolDescription)),
@@ -431,6 +457,12 @@ func (t *telemetryOptimizer) CallTool(ctx context.Context, input optimizer.CallT
 	t.callToolDuration.Record(ctx, duration.Seconds(), metricAttrs)
 
 	if err != nil {
+		// A -32042 answers the call by asking the user to visit a URL; it is
+		// not a failure, so it neither counts as an error nor fails the span.
+		if wireerr.FindURLElicitationRequired(err) != nil {
+			span.SetAttributes(attribute.String("outcome", callToolOutcomeURLElicitationRequired))
+			return nil, err
+		}
 		t.callToolErrors.Add(ctx, 1, metricAttrs)
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())

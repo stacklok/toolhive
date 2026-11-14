@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/stacklok/toolhive/pkg/container/images"
+	"github.com/stacklok/toolhive/pkg/container/templates"
 	"github.com/stacklok/toolhive/pkg/runner"
 )
 
@@ -59,9 +60,10 @@ var buildFlags BuildFlags
 
 // BuildFlags holds the configuration for building MCP server containers
 type BuildFlags struct {
-	Tag    string
-	Output string
-	DryRun bool
+	Tag       string
+	Output    string
+	DryRun    bool
+	BuildWith []string
 }
 
 func init() {
@@ -77,6 +79,10 @@ func AddBuildFlags(cmd *cobra.Command, config *BuildFlags) {
 		"(default builds an image instead of generating a Dockerfile)")
 	cmd.Flags().BoolVar(&config.DryRun, "dry-run", false, "Generate Dockerfile without building (stdout output unless -o is set) "+
 		"(default false)")
+	cmd.Flags().StringArrayVar(&config.BuildWith, "build-with", []string{},
+		"Build-time dependency constraint for protocol scheme builds, interpreted per package ecosystem "+
+			"(uvx://: PEP 508 specifier passed to 'uv tool install --with', e.g. --build-with 'mcp<2'); "+
+			"errors on ecosystems without constraint support (can be specified multiple times)")
 }
 
 func buildCmdFunc(cmd *cobra.Command, args []string) error {
@@ -92,13 +98,22 @@ func buildCmdFunc(cmd *cobra.Command, args []string) error {
 	buildArgs := parseCommandArguments(os.Args)
 	slog.Debug(fmt.Sprintf("Build args: %v", buildArgs)) // #nosec G706 -- buildArgs are CLI arguments we control
 
+	// Build runtime config override from flags (if any) and validate it early.
+	var runtimeOverride *templates.RuntimeConfig
+	if len(buildFlags.BuildWith) > 0 {
+		runtimeOverride = &templates.RuntimeConfig{BuildWith: buildFlags.BuildWith}
+		if err := runtimeOverride.Validate(); err != nil {
+			return fmt.Errorf("invalid runtime configuration: %w", err)
+		}
+	}
+
 	// Create image manager (even for dry-run, we pass it but it won't be used)
 	imageManager := images.NewImageManager(ctx)
 
 	// If dry-run or output is specified, just generate the Dockerfile
 	if buildFlags.DryRun || buildFlags.Output != "" {
 		dockerfileContent, err := runner.BuildFromProtocolSchemeWithName(
-			ctx, imageManager, protocolScheme, "", buildFlags.Tag, buildArgs, nil, true)
+			ctx, imageManager, protocolScheme, "", buildFlags.Tag, buildArgs, runtimeOverride, true)
 		if err != nil {
 			return fmt.Errorf("failed to generate Dockerfile for %s: %w", protocolScheme, err)
 		}
@@ -121,7 +136,7 @@ func buildCmdFunc(cmd *cobra.Command, args []string) error {
 
 	// Build the image using the new protocol handler with custom name
 	imageName, err := runner.BuildFromProtocolSchemeWithName(
-		ctx, imageManager, protocolScheme, "", buildFlags.Tag, buildArgs, nil, false)
+		ctx, imageManager, protocolScheme, "", buildFlags.Tag, buildArgs, runtimeOverride, false)
 	if err != nil {
 		return fmt.Errorf("failed to build container for %s: %w", protocolScheme, err)
 	}

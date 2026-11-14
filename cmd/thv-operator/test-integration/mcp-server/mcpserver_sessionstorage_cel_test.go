@@ -4,11 +4,17 @@
 package controllers
 
 import (
+	"fmt"
+	"time"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/test-integration/testutil"
 )
 
 func newMCPServerWithSessionStorage(name string, ss *mcpv1beta1.SessionStorageConfig) *mcpv1beta1.MCPServer {
@@ -117,4 +123,53 @@ var _ = Describe("CEL Validation for SessionStorageConfig on MCPServer",
 				Expect(err).To(HaveOccurred())
 			})
 		})
+
+		Context("proxyReadTimeout field", func() {
+			DescribeTable("should accept non-negative values",
+				func(name string, timeout *metav1.Duration) {
+					server := newMinimalMCPServer(name, nil)
+					server.Spec.ProxyReadTimeout = timeout
+					err := k8sClient.Create(ctx, server)
+					Expect(err).NotTo(HaveOccurred())
+				},
+				Entry("when omitted", "mcp-proxy-read-timeout-omitted", nil),
+				Entry("when zero", "mcp-proxy-read-timeout-zero", &metav1.Duration{}),
+				Entry("when positive", "mcp-proxy-read-timeout-positive", &metav1.Duration{Duration: 45 * time.Second}),
+			)
+
+			It("should reject a negative value", func() {
+				server := newMinimalMCPServer("mcp-proxy-read-timeout-negative", nil)
+				server.Spec.ProxyReadTimeout = &metav1.Duration{Duration: -time.Second}
+				err := k8sClient.Create(ctx, server)
+				Expect(err).To(MatchError(ContainSubstring("proxyReadTimeout must be non-negative")))
+			})
+		})
+	})
+
+// mcpServerAtVersion returns server as an object of the given served API
+// version. v1alpha1 reuses the v1beta1 spec type, so only the wrapper differs.
+func mcpServerAtVersion(server *mcpv1beta1.MCPServer, version string) client.Object {
+	if version == mcpv1beta1.GroupVersion.Version {
+		return server
+	}
+	return &mcpv1alpha1.MCPServer{ObjectMeta: server.ObjectMeta, Spec: server.Spec}
+}
+
+var _ = Describe("CEL Validation for sessionStorage.tls on MCPServer",
+	Label("k8s", "cel", "validation"), func() {
+		for _, version := range testutil.ServedAPIVersions {
+			for _, tc := range testutil.SessionStorageTLSCases() {
+				It(fmt.Sprintf("%s %s", version, tc.Name), func() {
+					server := newMCPServerWithSessionStorage(
+						fmt.Sprintf("mcp-tls-%s-%s", version, tc.Name), tc.SessionStorage)
+					err := k8sClient.Create(ctx, mcpServerAtVersion(server, version))
+					if tc.WantErr == "" {
+						Expect(err).NotTo(HaveOccurred())
+						return
+					}
+					Expect(err).To(HaveOccurred())
+					Expect(err.Error()).To(ContainSubstring(tc.WantErr))
+				})
+			}
+		}
 	})

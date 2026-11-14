@@ -96,17 +96,6 @@ type MCPToolConfigStatus struct {
 	// ConfigHash is a hash of the current configuration for change detection
 	// +optional
 	ConfigHash string `json:"configHash,omitempty"`
-
-	// ReferenceCount is the number of workloads referencing this config.
-	// +optional
-	ReferenceCount int32 `json:"referenceCount,omitempty"`
-
-	// ReferencingWorkloads is a list of workload resources that reference this MCPToolConfig.
-	// Each entry identifies the workload by kind and name.
-	// +listType=map
-	// +listMapKey=name
-	// +optional
-	ReferencingWorkloads []WorkloadReference `json:"referencingWorkloads,omitempty"`
 }
 
 // +kubebuilder:object:root=true
@@ -115,7 +104,6 @@ type MCPToolConfigStatus struct {
 // +kubebuilder:metadata:labels=toolhive.stacklok.dev/auto-migrate-storage-version=true
 // +kubebuilder:resource:shortName=tc;toolconfig,categories=toolhive
 // +kubebuilder:printcolumn:name="Valid",type=string,JSONPath=`.status.conditions[?(@.type=='Valid')].status`
-// +kubebuilder:printcolumn:name="References",type=integer,JSONPath=`.status.referenceCount`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // MCPToolConfig is the Schema for the mcptoolconfigs API.

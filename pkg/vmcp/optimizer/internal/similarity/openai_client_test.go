@@ -59,6 +59,18 @@ func Test_newOpenAIClient(t *testing.T) {
 	})
 }
 
+func TestOpenAIClient_ModelID(t *testing.T) {
+	t.Parallel()
+
+	client, err := newOpenAIClient("http://embeddings:8080/v1", "text-embedding-3-small", "key", nil, 0)
+	require.NoError(t, err)
+
+	id, err := client.ModelID(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, "text-embedding-3-small", id,
+		"the OpenAI client's model is fixed by configuration and sent per request")
+}
+
 func TestOpenAIClient_Embed(t *testing.T) {
 	t.Parallel()
 

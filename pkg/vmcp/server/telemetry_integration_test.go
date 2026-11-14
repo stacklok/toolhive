@@ -18,6 +18,8 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/diagnostics"
+	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
@@ -112,11 +114,12 @@ func (f *backendAwareTestFactory) newSession(id string) *backendAwareTestSession
 // metrics when the telemetry middleware is enabled via TelemetryProvider.
 //
 // This validates:
-// 1. Incoming MCP requests are counted by toolhive_mcp_requests
-// 2. Request latency is tracked by toolhive_mcp_request_duration
-// 3. Backend calls are counted by toolhive_vmcp_backend_requests
-// 4. Backend discovery count is reported by toolhive_vmcp_backends_discovered
-// 5. All metrics are accessible via the /metrics Prometheus endpoint
+//  1. Incoming MCP requests are counted by toolhive_mcp_requests
+//  2. Request latency is tracked by toolhive_mcp_request_duration
+//  3. Backend calls are counted by toolhive_vmcp_backend_requests
+//  4. Backend discovery count is reported by toolhive_vmcp_backends_discovered
+//  5. All metrics are accessible via the /metrics Prometheus endpoint on the
+//     dedicated diagnostics listener (see pkg/diagnostics)
 //
 // Note: This test does not use t.Parallel() because subtests share the same
 // server instance and TelemetryProvider sets global OTel providers.
@@ -130,7 +133,7 @@ func TestIntegration_TelemetryMiddleware(t *testing.T) {
 
 	// Create telemetry provider with Prometheus metrics enabled.
 	// This wires up a real meter provider with a Prometheus reader so we can
-	// scrape /metrics to verify recorded metrics.
+	// scrape /metrics on the diagnostics listener to verify recorded metrics.
 	telemetryProvider, err := telemetry.NewProvider(ctx, telemetry.Config{
 		ServiceName:                 "vmcp-telemetry-test",
 		ServiceVersion:              "1.0.0",
@@ -325,7 +328,7 @@ func TestIntegration_TelemetryMiddleware(t *testing.T) {
 
 	// Test 3: Verify Prometheus metrics
 	t.Run("prometheus metrics contain expected request metrics", func(t *testing.T) {
-		resp, err := http.Get(baseURL + "/metrics")
+		resp, err := http.Get(metricsURL(t, srv))
 		require.NoError(t, err)
 		defer resp.Body.Close()
 
@@ -467,9 +470,11 @@ func TestIntegration_TelemetryRunsBeforeClassificationRejection(t *testing.T) {
 
 	// Same malformed-Modern rejection payload as
 	// TestIntegration_RealBackend_ModernRequestRejectedByClassification: a
-	// reserved _meta key signals Modern, but no valid protocolVersion is
-	// present and the header names a different (Legacy) version, so
-	// classifyingHandler rejects with -32020 before dispatch.
+	// A reserved _meta key with no valid protocolVersion cannot be validated
+	// against the Modern header, so classifyingHandler rejects with -32020
+	// before dispatch. The header must be the MODERN version: an explicit
+	// non-Modern header now outranks a stray reserved key and classifies the
+	// request Legacy instead (#6188).
 	body := map[string]any{
 		"jsonrpc": "2.0",
 		"id":      1,
@@ -486,7 +491,7 @@ func TestIntegration_TelemetryRunsBeforeClassificationRejection(t *testing.T) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/mcp", bytes.NewReader(payload))
 	require.NoError(t, err)
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("MCP-Protocol-Version", "2025-11-25")
+	req.Header.Set("MCP-Protocol-Version", mcpparser.MCPVersionModern)
 
 	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
@@ -504,7 +509,7 @@ func TestIntegration_TelemetryRunsBeforeClassificationRejection(t *testing.T) {
 	require.NoError(t, json.Unmarshal(respBody, &rpc), "body: %s", string(respBody))
 	require.Equal(t, int64(-32020), rpc.Error.Code, "expected CodeHeaderMismatch")
 
-	metricsResp, err := http.Get(baseURL + "/metrics")
+	metricsResp, err := http.Get(metricsURL(t, srv))
 	require.NoError(t, err)
 	defer metricsResp.Body.Close()
 	require.Equal(t, http.StatusOK, metricsResp.StatusCode)
@@ -519,4 +524,16 @@ func TestIntegration_TelemetryRunsBeforeClassificationRejection(t *testing.T) {
 		"request metrics should identify this vMCP server")
 
 	cancelServer()
+}
+
+// metricsURL returns the Prometheus scrape URL for a running server. Metrics are
+// served on the diagnostics listener, not on the port serving MCP traffic, and
+// the resolved port can differ from the configured one, so the address must come
+// from the server rather than be constructed.
+func metricsURL(t *testing.T, srv *Server) string {
+	t.Helper()
+
+	addr := srv.DiagnosticsAddress()
+	require.NotEmpty(t, addr, "diagnostics listener must be running for metrics to be scrapeable")
+	return "http://" + addr + diagnostics.MetricsPath
 }

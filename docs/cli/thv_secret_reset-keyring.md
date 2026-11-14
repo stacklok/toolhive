@@ -38,13 +38,13 @@ thv secret reset-keyring [flags]
 ### Options
 
 ```
-  -h, --help   help for reset-keyring
+  -h, --help[=true|false]   help for reset-keyring
 ```
 
 ### Options inherited from parent commands
 
 ```
-      --debug   Enable debug mode
+      --debug[=true|false]   Enable debug mode
 ```
 
 ### SEE ALSO

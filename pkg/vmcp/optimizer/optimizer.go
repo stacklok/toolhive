@@ -14,9 +14,12 @@ package optimizer
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
+	"maps"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -201,7 +204,7 @@ type FindToolInput struct {
 
 	// ToolKeywords is an optional list of keywords to narrow the search.
 	//nolint:lll // Long description tag provides essential context for LLM tool usage.
-	ToolKeywords []string `json:"tool_keywords,omitempty" description:"Optional keywords for BM25 text search to narrow results (e.g. ['list', 'issues', 'github'] or ['SQL', 'query', 'postgres']). Combined with tool_description for hybrid search."`
+	ToolKeywords []string `json:"tool_keywords,omitempty" description:"Optional keywords driving the BM25 keyword-search arm (e.g. ['list', 'issues', 'github'] or ['SQL', 'query', 'postgres']). Semantic matching always uses tool_description, so provide a complete description even when supplying keywords."`
 }
 
 // FindToolOutput contains the results of a tool search.
@@ -227,6 +230,50 @@ type CallToolInput struct {
 	// Parameters are the arguments to pass to the tool.
 	//nolint:lll // Long description tag provides essential context for LLM tool usage.
 	Parameters map[string]any `json:"parameters" description:"Dictionary of arguments required by the tool. The structure must match the tool's input schema as returned by find_tool."`
+}
+
+// callToolArgToolName is the parameters key resolveCallToolTarget hoists a nested
+// name out of. It must match the json tag on CallToolInput.ToolName, since the
+// nested lookup is a map index while the top-level one goes through encoding/json;
+// TestCallToolArgToolNameMatchesStructTag guards the pair against drift.
+const callToolArgToolName = "tool_name"
+
+// resolveCallToolTarget resolves the tool a call_tool invocation targets,
+// accepting the common LLM malformation where tool_name is nested inside
+// parameters instead of sitting alongside it. A top-level name always wins, so a
+// backend tool with its own tool_name argument still works.
+//
+// It is deliberately unexported: decoding a payload into a CallToolInput is the
+// only supported way to learn which tool a call_tool request names. Reading the
+// name out of a raw arguments map instead misses the case-variant keys
+// encoding/json accepts, and a target that authorization and dispatch disagree on
+// is a tool executing under a policy decision made for a different name.
+//
+// params is never modified; a copy is returned when a nested name is hoisted.
+func resolveCallToolTarget(name string, params map[string]any) (string, map[string]any) {
+	if name != "" {
+		return name, params
+	}
+	nested, ok := params[callToolArgToolName].(string)
+	if !ok || nested == "" {
+		return name, params
+	}
+	hoisted := maps.Clone(params)
+	delete(hoisted, callToolArgToolName)
+	return nested, hoisted
+}
+
+// UnmarshalJSON hoists a nested tool_name so dispatch targets the same tool
+// authorization approved. See resolveCallToolTarget.
+func (in *CallToolInput) UnmarshalJSON(data []byte) error {
+	type rawCallToolInput CallToolInput // drops the method set to avoid recursion
+	var raw rawCallToolInput
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	raw.ToolName, raw.Parameters = resolveCallToolTarget(raw.ToolName, raw.Parameters)
+	*in = CallToolInput(raw)
+	return nil
 }
 
 // NewOptimizerFactory creates the embedding client and SQLite tool store from
@@ -336,7 +383,10 @@ func (d *toolOptimizer) FindTool(ctx context.Context, input FindToolInput) (*Fin
 		return nil, fmt.Errorf("tool_description is required")
 	}
 
-	matches, err := d.store.Search(ctx, input.ToolDescription, d.toolNames)
+	matches, err := d.store.Search(ctx, types.SearchQuery{
+		Description: input.ToolDescription,
+		Keywords:    input.ToolKeywords,
+	}, d.toolNames)
 	if err != nil {
 		return nil, fmt.Errorf("tool search failed: %w", err)
 	}
@@ -377,7 +427,10 @@ func (d *toolOptimizer) FindTool(ctx context.Context, input FindToolInput) (*Fin
 // is invoked directly with the given parameters.
 func (d *toolOptimizer) CallTool(ctx context.Context, input CallToolInput) (*mcp.CallToolResult, error) {
 	if input.ToolName == "" {
-		return nil, fmt.Errorf("tool_name is required")
+		return nil, fmt.Errorf(
+			`tool_name is required: call_tool expects {"tool_name": "<name from find_tool>", `+
+				`"parameters": {<tool arguments>}}, got parameters keys %v`,
+			slices.Sorted(maps.Keys(input.Parameters)))
 	}
 
 	// Verify the tool exists

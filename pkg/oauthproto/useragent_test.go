@@ -97,3 +97,49 @@ func TestUserAgentTransport_NilBase(t *testing.T) {
 
 	assert.Equal(t, UserAgent, got)
 }
+
+// closeIdleSpy records CloseIdleConnections calls; RoundTrip exists only to
+// satisfy http.RoundTripper.
+type closeIdleSpy struct{ closed int }
+
+func (*closeIdleSpy) RoundTrip(*http.Request) (*http.Response, error) {
+	return nil, http.ErrUseLastResponse
+}
+func (s *closeIdleSpy) CloseIdleConnections() { s.closed++ }
+
+// plainRoundTripper implements http.RoundTripper but not CloseIdleConnections.
+type plainRoundTripper struct{}
+
+func (plainRoundTripper) RoundTrip(*http.Request) (*http.Response, error) {
+	return nil, http.ErrUseLastResponse
+}
+
+// TestUserAgentTransport_CloseIdleConnections verifies the wrapper forwards
+// CloseIdleConnections to a capable base and is a safe no-op otherwise, so the
+// call is never silently swallowed by this wrapper.
+func TestUserAgentTransport_CloseIdleConnections(t *testing.T) {
+	t.Parallel()
+
+	t.Run("forwards to a base that implements the capability", func(t *testing.T) {
+		t.Parallel()
+		spy := &closeIdleSpy{}
+		(&UserAgentTransport{Base: spy}).CloseIdleConnections()
+		assert.Equal(t, 1, spy.closed)
+	})
+
+	t.Run("safe no-op when a non-nil base lacks the capability", func(t *testing.T) {
+		t.Parallel()
+		assert.NotPanics(t, func() {
+			(&UserAgentTransport{Base: plainRoundTripper{}}).CloseIdleConnections()
+		})
+	})
+
+	t.Run("nil base does not panic", func(t *testing.T) {
+		t.Parallel()
+		// This asserts only that the nil-Base path is safe. A type assertion on
+		// a nil interface returns ok==false without panicking, so this cannot
+		// prove the http.DefaultTransport fallback actually forwards the drain —
+		// only that CloseIdleConnections never panics when Base is unset.
+		assert.NotPanics(t, func() { (&UserAgentTransport{}).CloseIdleConnections() })
+	})
+}

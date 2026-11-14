@@ -141,7 +141,7 @@ func TestRedirectLoopStopsAtMax(t *testing.T) {
 	proxy := createBasicProxy(p, targetURL)
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, looper.URL+"/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1}`))
+	req := httptest.NewRequest(http.MethodPost, looper.URL+"/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"ping"}`))
 	req.Header.Set("Content-Type", "application/json")
 	proxy.ServeHTTP(rec, req)
 
@@ -206,7 +206,7 @@ func TestRedirectMissingLocationHeader(t *testing.T) {
 	proxy := createBasicProxy(p, targetURL)
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, noLocation.URL+"/mcp", strings.NewReader(`{}`))
+	req := httptest.NewRequest(http.MethodPost, noLocation.URL+"/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"ping"}`))
 	req.Header.Set("Content-Type", "application/json")
 	proxy.ServeHTTP(rec, req)
 
@@ -243,7 +243,7 @@ func TestRedirectRelativeLocation(t *testing.T) {
 	proxy := createBasicProxy(p, targetURL)
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, server.URL+"/old", strings.NewReader(`{}`))
+	req := httptest.NewRequest(http.MethodPost, server.URL+"/old", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"ping"}`))
 	req.Header.Set("Content-Type", "application/json")
 	proxy.ServeHTTP(rec, req)
 
@@ -276,7 +276,7 @@ func TestRedirectCrossHostBlocked(t *testing.T) {
 	proxy := createBasicProxy(p, targetURL)
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, origin.URL+"/mcp", strings.NewReader(`{}`))
+	req := httptest.NewRequest(http.MethodPost, origin.URL+"/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"ping"}`))
 	req.Header.Set("Content-Type", "application/json")
 	proxy.ServeHTTP(rec, req)
 

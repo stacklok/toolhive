@@ -5,6 +5,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -28,6 +29,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/process"
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/runner/retriever"
+	"github.com/stacklok/toolhive/pkg/secrets"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/transport"
 	"github.com/stacklok/toolhive/pkg/transport/types"
@@ -91,13 +93,25 @@ type RunFlags struct {
 	OtelHeaders                     []string
 	OtelInsecure                    bool
 	OtelEnablePrometheusMetricsPath bool
-	OtelEnvironmentVariables        []string // renamed binding to otel-env-vars
-	OtelCustomAttributes            string   // Custom attributes in key=value format
-	OtelUseLegacyAttributes         bool     // Emit legacy attribute names alongside new ones
+	// OtelMetricsOnTransportPort is bound by cobra as a plain bool. Use
+	// resolveMetricsOnTransportPort to read it: an unset flag must stay unset rather
+	// than resolving to false, so the eventual default change reaches workloads that
+	// never expressed a preference.
+	OtelMetricsOnTransportPort bool
+	// metricsOnTransportPort is the tri-state resolved from the flag above. Not a
+	// cobra binding: it is set by resolveMetricsOnTransportPort, which needs the
+	// command to tell "unset" from "explicitly false".
+	metricsOnTransportPort   *bool
+	OtelEnvironmentVariables []string // renamed binding to otel-env-vars
+	OtelCustomAttributes     string   // Custom attributes in key=value format
+	OtelUseLegacyAttributes  bool     // Emit legacy attribute names alongside new ones
 
 	// Network isolation
 	IsolateNetwork     bool
 	AllowDockerGateway bool
+
+	// Container hardening
+	ReadOnlyRootfs bool
 
 	// Proxy headers
 	TrustProxyHeaders bool
@@ -111,6 +125,12 @@ type RunFlags struct {
 
 	// SessionTTL is the session inactivity timeout. Zero uses the transport default.
 	SessionTTL time.Duration
+
+	// MaxRequestBodySize is the maximum inbound request body size in bytes. Zero uses the default.
+	MaxRequestBodySize int64
+
+	// ProxyReadTimeout bounds reading a full request on the proxy. Zero uses the default.
+	ProxyReadTimeout time.Duration
 
 	// Network mode
 	Network string
@@ -154,6 +174,7 @@ type RunFlags struct {
 	// Runtime configuration
 	RuntimeImage       string
 	RuntimeAddPackages []string
+	BuildWith          []string
 
 	// WebhookConfigs is a list of paths to webhook configuration files.
 	// Each file may define validating and/or mutating webhooks.
@@ -222,6 +243,10 @@ func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
 		"Override the default base image for protocol schemes (e.g., golang:1.24-alpine, node:20-alpine, python:3.11-slim)")
 	cmd.Flags().StringArrayVar(&config.RuntimeAddPackages, "runtime-add-package", []string{},
 		"Add additional packages to install in the builder and runtime stages (can be repeated)")
+	cmd.Flags().StringArrayVar(&config.BuildWith, "build-with", []string{},
+		"Build-time dependency constraint for protocol scheme builds, interpreted per package ecosystem "+
+			"(uvx://: PEP 508 specifier passed to 'uv tool install --with', e.g. --build-with 'mcp<2'); "+
+			"errors on ecosystems without constraint support (can be specified multiple times)")
 	cmd.Flags().StringVar(&config.VerifyImage, "image-verification", retriever.VerifyImageWarn,
 		fmt.Sprintf("Set image verification mode (%s, %s, %s)",
 			retriever.VerifyImageWarn, retriever.VerifyImageEnabled, retriever.VerifyImageDisabled))
@@ -262,8 +287,14 @@ func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
 		"OpenTelemetry OTLP headers in key=value format (e.g., x-honeycomb-team=your-api-key)")
 	cmd.Flags().BoolVar(&config.OtelInsecure, "otel-insecure", false,
 		"Connect to the OpenTelemetry endpoint using HTTP instead of HTTPS (default false)")
+	cmd.Flags().BoolVar(&config.OtelMetricsOnTransportPort, "otel-metrics-on-transport-port",
+		telemetry.DefaultMetricsOnTransportPort,
+		"Also serve Prometheus /metrics on the transport port, alongside the diagnostics port. "+
+			"Deprecated: this is a migration aid and the default will become false; "+
+			"see https://github.com/stacklok/toolhive/issues/6384 for the timeline. "+
+			"Move scrapers to the diagnostics port and set this to false to verify.")
 	cmd.Flags().BoolVar(&config.OtelEnablePrometheusMetricsPath, "otel-enable-prometheus-metrics-path", false,
-		"Enable Prometheus-style /metrics endpoint on the main transport port (default false)")
+		"Enable Prometheus-style /metrics endpoint on a dedicated diagnostics port (default false)")
 	cmd.Flags().StringArrayVar(&config.OtelEnvironmentVariables, "otel-env-vars", nil,
 		"Environment variable names to include in OpenTelemetry spans (comma-separated: ENV1,ENV2)")
 	cmd.Flags().StringVar(&config.OtelCustomAttributes, "otel-custom-attributes", "",
@@ -274,9 +305,15 @@ func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
 	cmd.Flags().BoolVar(&config.IsolateNetwork, "isolate-network", true,
 		"Isolate the container network from the host. Use --isolate-network=false to opt out. "+
 			"Not enforced with --network host or --network none (isolation requires bridge networking).")
+	cmd.Flags().BoolVar(&config.ReadOnlyRootfs, "read-only-rootfs", false,
+		"Mount the MCP server container's root filesystem as read-only (Docker/Podman only). "+
+			"/tmp, /var/tmp and /run get a 64 MiB noexec tmpfs unless a volume already targets them; "+
+			"servers that write anywhere else outside their mounted volumes will fail.")
 	cmd.Flags().BoolVar(&config.AllowDockerGateway, "allow-docker-gateway", false,
-		"Allow outbound connections to Docker gateway addresses (host.docker.internal, gateway.docker.internal, 172.17.0.1). "+
-			"Only applies when --isolate-network is set. These are blocked by default even when insecure_allow_all is enabled. "+
+		"Allow outbound connections to Docker/Podman host addresses (all daemon bridge gateways, runtime host-alias IPs, "+
+			"host.docker.internal, gateway.docker.internal, and host.containers.internal). Only applies when --isolate-network is set. "+
+			"Addresses are snapshotted at deployment; redeploy after runtime network changes. "+
+			"These are blocked by default even when insecure_allow_all is enabled. "+
 			"Gateway access is port-independent: it ignores the permission profile's allowed ports, so once enabled the "+
 			"gateway is reachable on any port.")
 	cmd.Flags().BoolVar(&config.TrustProxyHeaders, "trust-proxy-headers", false,
@@ -290,6 +327,10 @@ func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
 			"Use for MCP servers implementing streamable-HTTP stateless mode.")
 	cmd.Flags().DurationVar(&config.SessionTTL, "session-ttl", 0,
 		"Session inactivity timeout (e.g., 30m, 2h); zero uses the default (2h)")
+	cmd.Flags().Int64Var(&config.MaxRequestBodySize, "max-request-body-size", 0,
+		"Maximum inbound request body size in bytes; zero uses the default (8 MiB)")
+	cmd.Flags().DurationVar(&config.ProxyReadTimeout, "proxy-read-timeout", 0,
+		"Maximum time to read a full request on the proxy (e.g., 30s, 1m); zero uses the default (30s)")
 	cmd.Flags().StringVar(&config.EndpointPrefix, "endpoint-prefix", "",
 		"Path prefix to prepend to SSE endpoint URLs (e.g., /playwright)")
 	cmd.Flags().StringVar(&config.Network, "network", "",
@@ -363,6 +404,7 @@ func BuildRunnerConfig(
 
 	// Setup telemetry configuration
 	telemetryConfig := setupTelemetryConfiguration(cmd, runFlags, appConfig)
+	runFlags.metricsOnTransportPort = resolveMetricsOnTransportPort(cmd, runFlags)
 
 	// Setup runtime and validation
 	rt, envVarValidator, err := setupRuntimeAndValidation(ctx, configProvider)
@@ -440,7 +482,20 @@ func setupOIDCConfiguration(cmd *cobra.Command, runFlags *RunFlags) (*auth.Token
 	}
 
 	return createOIDCConfig(oidcIssuer, oidcAudience, oidcJwksURL, oidcIntrospectionURL,
-		oidcClientID, oidcClientSecret, runFlags.ResourceURL, runFlags.JWKSAllowPrivateIP, oidcScopes), nil
+		oidcClientID, oidcClientSecret, runFlags.ResourceURL, runFlags.ThvCABundle, runFlags.JWKSAuthTokenFile,
+		runFlags.JWKSAllowPrivateIP, runFlags.InsecureAllowHTTP, oidcScopes), nil
+}
+
+// resolveMetricsOnTransportPort turns the bound bool into a tri-state. Only an
+// explicitly-passed flag becomes a value; otherwise nil, so the workload follows
+// whatever telemetry.DefaultMetricsOnTransportPort is at startup — including after
+// that default changes.
+func resolveMetricsOnTransportPort(cmd *cobra.Command, runFlags *RunFlags) *bool {
+	if !cmd.Flags().Changed("otel-metrics-on-transport-port") {
+		return nil
+	}
+	v := runFlags.OtelMetricsOnTransportPort
+	return &v
 }
 
 // setupTelemetryConfiguration sets up telemetry configuration with config fallbacks
@@ -495,10 +550,11 @@ func handleImageResolution(
 	// Validation here is intentionally duplicated with configureRuntimeOptions
 	// so that invalid input is caught early before registry lookups.
 	var runtimeOverride *templates.RuntimeConfig
-	if runFlags.RuntimeImage != "" || len(runFlags.RuntimeAddPackages) > 0 {
+	if runFlags.RuntimeImage != "" || len(runFlags.RuntimeAddPackages) > 0 || len(runFlags.BuildWith) > 0 {
 		runtimeOverride = &templates.RuntimeConfig{
 			BuilderImage:       runFlags.RuntimeImage,
 			AdditionalPackages: runFlags.RuntimeAddPackages,
+			BuildWith:          runFlags.BuildWith,
 		}
 		if err := runtimeOverride.Validate(); err != nil {
 			return "", nil, fmt.Errorf("invalid runtime configuration: %w", err)
@@ -630,13 +686,14 @@ func configureRemoteHeaderOptions(runFlags *RunFlags) ([]runner.RunConfigBuilder
 // It validates the configuration to prevent shell injection when values
 // are interpolated into Dockerfile templates.
 func configureRuntimeOptions(runFlags *RunFlags) ([]runner.RunConfigBuilderOption, error) {
-	if runFlags.RuntimeImage == "" && len(runFlags.RuntimeAddPackages) == 0 {
+	if runFlags.RuntimeImage == "" && len(runFlags.RuntimeAddPackages) == 0 && len(runFlags.BuildWith) == 0 {
 		return nil, nil
 	}
 
 	runtimeConfig := &templates.RuntimeConfig{
 		BuilderImage:       runFlags.RuntimeImage,
 		AdditionalPackages: runFlags.RuntimeAddPackages,
+		BuildWith:          runFlags.BuildWith,
 	}
 	if err := runtimeConfig.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid runtime configuration: %w", err)
@@ -696,10 +753,13 @@ func buildRunnerConfig(
 		runner.WithPermissionProfileNameOrPath(runFlags.PermissionProfile),
 		runner.WithNetworkIsolation(runFlags.IsolateNetwork),
 		runner.WithAllowDockerGateway(runFlags.AllowDockerGateway),
+		runner.WithReadOnlyRootfs(runFlags.ReadOnlyRootfs),
 		runner.WithTrustProxyHeaders(runFlags.TrustProxyHeaders),
 		runner.WithStrictProtocolValidation(runFlags.StrictProtocolValidation),
 		runner.WithStateless(runFlags.Stateless),
 		runner.WithSessionTTL(runFlags.SessionTTL),
+		runner.WithMaxRequestBodySize(runFlags.MaxRequestBodySize),
+		runner.WithProxyReadTimeout(runFlags.ProxyReadTimeout),
 		runner.WithEndpointPrefix(runFlags.EndpointPrefix),
 		runner.WithNetworkMode(runFlags.Network),
 		runner.WithK8sPodPatch(runFlags.K8sPodPatch),
@@ -850,6 +910,8 @@ func configureMiddlewareAndOptions(
 			finalOtelSamplingRate, runFlags.OtelHeaders, runFlags.OtelInsecure, finalOtelEnvironmentVariables,
 			runFlags.OtelUseLegacyAttributes,
 		),
+		// Applied after the telemetry config it records onto.
+		runner.WithMetricsOnTransportPort(runFlags.metricsOnTransportPort),
 		runner.WithToolsFilter(runFlags.ToolsFilter))
 
 	// Process environment files
@@ -1009,7 +1071,19 @@ func getRemoteAuthFromRemoteServerMetadata(
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve bearer token: %w", err)
 	}
-	authCfg.BearerToken = resolvedBearerToken
+
+	bearerToken, err := authsecrets.ProcessSecret(runFlags.Name, resolvedBearerToken, authsecrets.TokenTypeBearerToken)
+	if err != nil {
+		if errors.Is(err, secrets.ErrSecretsNotSetup) {
+			return nil, fmt.Errorf(
+				"failed to process bearer token: run 'thv secret setup', or pass a NAME,target=bearer_token reference "+
+					"with TOOLHIVE_SECRETS_PROVIDER=environment and TOOLHIVE_SECRET_<NAME> set: %w",
+				err,
+			)
+		}
+		return nil, fmt.Errorf("failed to process bearer token: %w", err)
+	}
+	authCfg.BearerToken = bearerToken
 	authCfg.BearerTokenFile = f.RemoteAuthBearerTokenFile
 
 	return authCfg, nil
@@ -1164,19 +1238,23 @@ func getTelemetryFromFlags(cmd *cobra.Command, config *cfg.Config, otelEndpoint 
 
 // createOIDCConfig creates an OIDC configuration if any OIDC parameters are provided
 func createOIDCConfig(oidcIssuer, oidcAudience, oidcJwksURL, oidcIntrospectionURL,
-	oidcClientID, oidcClientSecret, resourceURL string, allowPrivateIP bool, scopes []string) *auth.TokenValidatorConfig {
+	oidcClientID, oidcClientSecret, resourceURL, caCertPath, authTokenFile string,
+	allowPrivateIP, insecureAllowHTTP bool, scopes []string) *auth.TokenValidatorConfig {
 	if oidcIssuer != "" || oidcAudience != "" || oidcJwksURL != "" || oidcIntrospectionURL != "" ||
 		oidcClientID != "" || oidcClientSecret != "" || resourceURL != "" {
 		return &auth.TokenValidatorConfig{
-			Issuer:           oidcIssuer,
-			Audience:         oidcAudience,
-			JWKSURL:          oidcJwksURL,
-			IntrospectionURL: oidcIntrospectionURL,
-			ClientID:         oidcClientID,
-			ClientSecret:     oidcClientSecret,
-			ResourceURL:      resourceURL,
-			AllowPrivateIP:   allowPrivateIP,
-			Scopes:           scopes,
+			Issuer:            oidcIssuer,
+			Audience:          oidcAudience,
+			JWKSURL:           oidcJwksURL,
+			IntrospectionURL:  oidcIntrospectionURL,
+			ClientID:          oidcClientID,
+			ClientSecret:      oidcClientSecret,
+			ResourceURL:       resourceURL,
+			CACertPath:        caCertPath,
+			AuthTokenFile:     authTokenFile,
+			AllowPrivateIP:    allowPrivateIP,
+			InsecureAllowHTTP: insecureAllowHTTP,
+			Scopes:            scopes,
 		}
 	}
 	return nil

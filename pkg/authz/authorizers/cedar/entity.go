@@ -5,9 +5,17 @@
 package cedar
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
 	"log/slog"
+	"strconv"
+	"strings"
+	"sync/atomic"
 
 	cedar "github.com/cedar-policy/cedar-go"
+	"github.com/cedar-policy/cedar-go/types"
 )
 
 // maxClaimNestingDepth caps how deeply nested maps/arrays in JWT claims are
@@ -17,11 +25,16 @@ import (
 // maxSchemaDepth in pkg/vmcp/composer/elicitation_handler.go for consistency.
 const maxClaimNestingDepth = 10
 
-// EntityTypeTHVGroup is the default Cedar entity type representing group membership.
-// It is used when ConfigOptions.GroupEntityType is empty. Principals are added as
-// children of group entities so that Cedar's `in` operator can evaluate
-// group-based policies (e.g. `principal in THVGroup::"engineering"`).
-const EntityTypeTHVGroup cedar.EntityType = "THVGroup"
+const (
+	// EntityTypeTHVGroup is the default Cedar entity type representing group membership.
+	// It is used when ConfigOptions.GroupEntityType is empty. Principals are added as
+	// children of group entities so that Cedar's `in` operator can evaluate
+	// group-based policies (e.g. `principal in THVGroup::"engineering"`).
+	EntityTypeTHVGroup cedar.EntityType = "THVGroup"
+	// EntityTypeBackend represents a logical vMCP backend. Tools are added as
+	// children of their originating backend for backend-scoped policies.
+	EntityTypeBackend cedar.EntityType = "Backend"
+)
 
 // EntityFactory creates Cedar entities for authorization.
 type EntityFactory struct {
@@ -130,13 +143,17 @@ func (*EntityFactory) CreateResourceEntity(
 // When serverName is non-empty, resource entities include an MCP parent UID so
 // that server-scoped Cedar policies (e.g. `resource in MCP::"github"`) evaluate
 // correctly via Cedar's `in` operator. When serverName is empty, resource
-// entities have no parents, preserving backward compatibility.
+// entities have no MCP parent, preserving backward compatibility. Additional
+// resource parent UIDs may be supplied for narrower scopes such as vMCP
+// backends; their corresponding entities, if needed for hierarchy traversal,
+// must come from entities_json.
 func (f *EntityFactory) CreateEntitiesForRequest(
 	principal, action, resource string,
 	claimsMap map[string]interface{},
 	attributes map[string]interface{},
 	groups []string,
 	serverName string,
+	extraResourceParents ...cedar.EntityUID,
 ) (cedar.EntityMap, error) {
 	// Parse principal, action, and resource
 	principalType, principalID, err := parseCedarEntityID(principal)
@@ -178,10 +195,11 @@ func (f *EntityFactory) CreateEntitiesForRequest(
 
 	// Build MCP parent for resource entity when serverName is set so that
 	// server-scoped policies (e.g. resource in MCP::"github") can match.
-	var resourceParents []cedar.EntityUID
+	resourceParents := make([]cedar.EntityUID, 0, 1+len(extraResourceParents))
 	if serverName != "" {
 		resourceParents = append(resourceParents, cedar.NewEntityUID("MCP", cedar.String(serverName)))
 	}
+	resourceParents = append(resourceParents, extraResourceParents...)
 
 	// Create resource entity
 	resourceUID, resourceEntity := f.CreateResourceEntity(resourceType, resourceID, attributes, resourceParents...)
@@ -191,7 +209,8 @@ func (f *EntityFactory) CreateEntitiesForRequest(
 }
 
 // convertMapToCedarRecord converts a Go map to a Cedar record. Nesting beyond
-// maxClaimNestingDepth is dropped (see convertToCedarValueAtDepth).
+// maxClaimNestingDepth becomes an unrepresentableValue (see
+// convertToCedarValueAtDepth). Only nil values are left out.
 func convertMapToCedarRecord(data map[string]interface{}) cedar.Record {
 	return convertMapToCedarRecordAtDepth(data, 0)
 }
@@ -206,7 +225,8 @@ func convertMapToCedarRecordAtDepth(data map[string]interface{}, depth int) ceda
 	recordMap := make(cedar.RecordMap)
 
 	for k, v := range data {
-		// Convert Go values to Cedar values
+		// Only a nil input yields a nil Cedar value; every other value is
+		// either converted or replaced by an unrepresentableValue.
 		cedarValue := convertToCedarValueAtDepth(v, depth)
 		if cedarValue != nil {
 			recordMap[cedar.String(k)] = cedarValue
@@ -217,16 +237,16 @@ func convertMapToCedarRecordAtDepth(data map[string]interface{}, depth int) ceda
 }
 
 // convertToCedarValueAtDepth converts a Go value to a Cedar value. Maps and
-// arrays nested deeper than maxClaimNestingDepth are dropped rather than
-// causing unbounded recursion, since claim values can originate from an
-// unverified upstream JWT (see parseUpstreamJWTClaims in core.go). depth
-// counts how many maps/arrays have already been unwrapped to reach v; once
-// it exceeds maxClaimNestingDepth, v is dropped (returns nil) and a warning
-// is logged instead of recursing further.
+// arrays nested deeper than maxClaimNestingDepth become an
+// unrepresentableValue rather than causing unbounded recursion, since claim
+// values can originate from an unverified upstream JWT (see
+// parseUpstreamJWTClaims in core.go). Conversion recursion stops at the limit;
+// the marker's digest json.Marshals the remaining subtree, which is bounded by
+// encoding/json's decode nesting limit and linear in its size. depth counts how
+// many maps/arrays have already been unwrapped to reach v. It returns nil only
+// when v is nil; values of an unsupported type become an unrepresentableValue.
 func convertToCedarValueAtDepth(v interface{}, depth int) cedar.Value {
-	if depth > maxClaimNestingDepth {
-		slog.Warn("claim attribute nested too deeply, dropping",
-			"max_depth", maxClaimNestingDepth)
+	if v == nil {
 		return nil
 	}
 
@@ -242,15 +262,29 @@ func convertToCedarValueAtDepth(v interface{}, depth int) cedar.Value {
 	case float64:
 		return convertFloatToCedar(val)
 	case []interface{}:
+		if depth > maxClaimNestingDepth {
+			return tooDeepValue(v)
+		}
 		return convertInterfaceArrayToCedar(val, depth)
 	case []string:
 		return convertStringArrayToCedar(val)
 	case map[string]interface{}:
+		if depth > maxClaimNestingDepth {
+			return tooDeepValue(v)
+		}
 		return convertMapToCedarRecordAtDepth(val, depth+1)
 	default:
-		// Skip unsupported types
-		return nil
+		return unrepresentableOf(unrepresentableUnsupported, v)
 	}
+}
+
+// tooDeepValue returns the marker for a map or array nested past
+// maxClaimNestingDepth and logs a warning. The converter also handles resource
+// and context attributes, so the log says "attribute".
+func tooDeepValue(v interface{}) cedar.Value {
+	slog.Warn("attribute nested too deeply, replacing with marker",
+		"max_depth", maxClaimNestingDepth)
+	return unrepresentableOf(unrepresentableTooDeep, v)
 }
 
 // convertBoolToCedar converts a bool to a Cedar value.
@@ -261,21 +295,31 @@ func convertBoolToCedar(val bool) cedar.Value {
 	return cedar.False
 }
 
-// convertFloatToCedar converts a float64 to a Cedar decimal value.
+// convertFloatToCedar converts a JSON number to a Cedar decimal when a decimal
+// holds it exactly, working from the shortest text that round-trips the float
+// so the result does not depend on float multiplication or on the
+// architecture. Any other number becomes a number marker carrying its text.
 func convertFloatToCedar(val float64) cedar.Value {
-	decimalVal, err := cedar.NewDecimalFromFloat(val)
-	if err != nil {
-		return nil
+	text := strconv.FormatFloat(val, 'f', -1, 64)
+	parseText := func() string {
+		if strings.Contains(text, ".") {
+			return text
+		}
+		// types.ParseDecimal requires a decimal point.
+		return text + ".0"
+	}()
+	if d, err := types.ParseDecimal(parseText); err == nil {
+		return d
 	}
-	return decimalVal
+	return numberMarker(text)
 }
 
 // convertInterfaceArrayToCedar converts an array of interfaces to a Cedar set.
+// Null elements are dropped.
 func convertInterfaceArrayToCedar(val []interface{}, depth int) cedar.Value {
 	values := make([]cedar.Value, 0, len(val))
 	for _, item := range val {
-		cedarItem := convertToCedarValueAtDepth(item, depth+1)
-		if cedarItem != nil {
+		if cedarItem := convertToCedarValueAtDepth(item, depth+1); cedarItem != nil {
 			values = append(values, cedarItem)
 		}
 	}
@@ -289,4 +333,58 @@ func convertStringArrayToCedar(val []string) cedar.Value {
 		values = append(values, cedar.String(item))
 	}
 	return cedar.NewSet(values...)
+}
+
+// Kinds recorded in an unrepresentableValue.
+const (
+	unrepresentableNumber      = "number"
+	unrepresentableUnsupported = "unsupported"
+	unrepresentableTooDeep     = "too_deep"
+)
+
+// numberNonce makes every number marker unique.
+var numberNonce atomic.Int64
+
+// unrepresentableValue marks a value that has no faithful Cedar form. It is a
+// Record so that every typed operation a policy applies to it (decimal
+// methods, < <= > >=, like, contains, ., in, is) is a type error, which
+// IsAuthorized turns into deny. Reading the marker's own attributes
+// (thv_unrepresentable, text, digest, nonce) works; any other attribute is an
+// error. A number marker carries a unique nonce, so it never equals anything,
+// not even another number marker: two different integers that round to the same
+// float64 must not compare equal. Every other marker carries a digest of the
+// value instead, so two of them are equal only when the values are, and a
+// marker never equals a decimal, string or long. Without the digest,
+// `context.arg_a != context.arg_b` on two different values would be false and
+// let a forbid be skipped. Never drop the value instead: a missing attribute
+// lets a `has`-guarded forbid be skipped.
+func unrepresentableValue(kind, digest string) cedar.Value {
+	return cedar.NewRecord(cedar.RecordMap{
+		"thv_unrepresentable": cedar.String(kind),
+		"digest":              cedar.String(digest),
+	})
+}
+
+// numberMarker builds the marker for a number with no exact Cedar decimal. text
+// is kept for debugging.
+func numberMarker(text string) cedar.Value {
+	return cedar.NewRecord(cedar.RecordMap{
+		"thv_unrepresentable": cedar.String(unrepresentableNumber),
+		"text":                cedar.String(text),
+		"nonce":               cedar.Long(numberNonce.Add(1)),
+	})
+}
+
+// unrepresentableOf builds the marker for a non-number value v, with a digest
+// of its JSON form. Go sorts map keys, so the digest is deterministic. A value
+// JSON cannot encode is hashed by its Go type and representation instead.
+func unrepresentableOf(kind string, v interface{}) cedar.Value {
+	raw, err := json.Marshal(v)
+	if err != nil {
+		// Pointer-bearing values would hash differently between runs, but
+		// request input never contains pointers.
+		raw = []byte(fmt.Sprintf("%T:%#v", v, v))
+	}
+	sum := sha256.Sum256(raw)
+	return unrepresentableValue(kind, hex.EncodeToString(sum[:]))
 }

@@ -10,6 +10,7 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
 
 	"github.com/stacklok/toolhive-core/httperr"
 	apierrors "github.com/stacklok/toolhive/pkg/api/errors"
@@ -18,35 +19,45 @@ import (
 
 // SkillsRoutes defines the routes for skill management.
 type SkillsRoutes struct {
-	skillService skills.SkillService
-	lockService  skills.SkillLockService
+	skillService         skills.SkillService
+	lockService          skills.SkillLockService
+	keySigningCapability string
 }
 
 // SkillsRouter creates a new router for skill management endpoints. If
 // skillService's concrete implementation also satisfies skills.SkillLockService
 // (as skillsvc.New's does), /sync and /upgrade are served; otherwise both
 // return 501.
-func SkillsRouter(skillService skills.SkillService) http.Handler {
+func SkillsRouter(skillService skills.SkillService, opts ...RouterOption) http.Handler {
+	cfg := newRouterConfig(opts)
 	routes := SkillsRoutes{
-		skillService: skillService,
+		skillService:         skillService,
+		keySigningCapability: cfg.keySigningCapability,
 	}
 	if lockSvc, ok := skillService.(skills.SkillLockService); ok {
 		routes.lockService = lockSvc
 	}
 
+	// Mirrors WorkloadRouter: routes that move OCI artifacts get a timeout
+	// sized for the transfer, everything else keeps the short one. Without
+	// the split these routes inherit the flat 60s applied to standard
+	// routers, which severs a cold artifact pull mid-flight.
+	stdTimeout := middleware.Timeout(standardRouteTimeout)
+	longTimeout := middleware.Timeout(longRunningRouteTimeout)
+
 	r := chi.NewRouter()
-	r.Get("/", apierrors.ErrorHandler(routes.listSkills))
-	r.Post("/", apierrors.ErrorHandler(routes.installSkill))
-	r.Delete("/{name}", apierrors.ErrorHandler(routes.uninstallSkill))
-	r.Get("/{name}", apierrors.ErrorHandler(routes.getSkillInfo))
-	r.Post("/validate", apierrors.ErrorHandler(routes.validateSkill))
-	r.Post("/build", apierrors.ErrorHandler(routes.buildSkill))
-	r.Post("/push", apierrors.ErrorHandler(routes.pushSkill))
-	r.Get("/builds", apierrors.ErrorHandler(routes.listBuilds))
-	r.Delete("/builds/{tag}", apierrors.ErrorHandler(routes.deleteBuild))
-	r.Get("/content", apierrors.ErrorHandler(routes.getSkillContent))
-	r.Post("/sync", apierrors.ErrorHandler(routes.syncSkills))
-	r.Post("/upgrade", apierrors.ErrorHandler(routes.upgradeSkills))
+	r.With(stdTimeout).Get("/", apierrors.ErrorHandler(routes.listSkills))
+	r.With(longTimeout).Post("/", apierrors.ErrorHandler(routes.installSkill))
+	r.With(stdTimeout).Delete("/{name}", apierrors.ErrorHandler(routes.uninstallSkill))
+	r.With(stdTimeout).Get("/{name}", apierrors.ErrorHandler(routes.getSkillInfo))
+	r.With(stdTimeout).Post("/validate", apierrors.ErrorHandler(routes.validateSkill))
+	r.With(longTimeout).Post("/build", apierrors.ErrorHandler(routes.buildSkill))
+	r.With(longTimeout).Post("/push", apierrors.ErrorHandler(routes.pushSkill))
+	r.With(stdTimeout).Get("/builds", apierrors.ErrorHandler(routes.listBuilds))
+	r.With(stdTimeout).Delete("/builds/{tag}", apierrors.ErrorHandler(routes.deleteBuild))
+	r.With(stdTimeout).Get("/content", apierrors.ErrorHandler(routes.getSkillContent))
+	r.With(longTimeout).Post("/sync", apierrors.ErrorHandler(routes.syncSkills))
+	r.With(longTimeout).Post("/upgrade", apierrors.ErrorHandler(routes.upgradeSkills))
 
 	return r
 }
@@ -113,13 +124,15 @@ func (s *SkillsRoutes) installSkill(w http.ResponseWriter, r *http.Request) erro
 	}
 
 	result, err := s.skillService.Install(r.Context(), skills.InstallOptions{
-		Name:        req.Name,
-		Version:     req.Version,
-		Scope:       req.Scope,
-		ProjectRoot: req.ProjectRoot,
-		Clients:     req.Clients,
-		Force:       req.Force,
-		Group:       req.Group,
+		Name:          req.Name,
+		Version:       req.Version,
+		Scope:         req.Scope,
+		ProjectRoot:   req.ProjectRoot,
+		Clients:       req.Clients,
+		Force:         req.Force,
+		Group:         req.Group,
+		AllowUnsigned: req.AllowUnsigned,
+		PublicKey:     req.PublicKey,
 	})
 	if err != nil {
 		return err
@@ -128,7 +141,11 @@ func (s *SkillsRoutes) installSkill(w http.ResponseWriter, r *http.Request) erro
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Location", fmt.Sprintf("/api/v1beta/skills/%s", result.Skill.Metadata.Name))
 	w.WriteHeader(http.StatusCreated)
-	return json.NewEncoder(w).Encode(installSkillResponse{Skill: result.Skill})
+	return json.NewEncoder(w).Encode(installSkillResponse{
+		Skill:      result.Skill,
+		Provenance: result.Provenance,
+		Unsigned:   result.Unsigned,
+	})
 }
 
 // uninstallSkill removes an installed skill.
@@ -273,8 +290,10 @@ func (s *SkillsRoutes) buildSkill(w http.ResponseWriter, r *http.Request) error 
 //	@Tags			skills
 //	@Accept			json
 //	@Param			request	body	pushSkillRequest	true	"Push request"
+//	@Param			X-Toolhive-Key-Signing-Capability	header	string	false	"Local discovery capability (required with request.key)"
 //	@Success		204		{string}	string	"No Content"
 //	@Failure		400		{string}	string	"Bad Request"
+//	@Failure		403		{string}	string	"Forbidden (key signing requires the local discovery capability)"
 //	@Failure		404		{string}	string	"Not Found"
 //	@Failure		500		{string}	string	"Internal Server Error"
 //	@Router			/api/v1beta/skills/push [post]
@@ -287,8 +306,16 @@ func (s *SkillsRoutes) pushSkill(w http.ResponseWriter, r *http.Request) error {
 		)
 	}
 
+	// Checked before dispatch: the service would otherwise open the key.
+	if err := requireKeySigningCapability(r, s.keySigningCapability, req.Key); err != nil {
+		return err
+	}
+
 	if err := s.skillService.Push(r.Context(), skills.PushOptions{
-		Reference: req.Reference,
+		Reference:     req.Reference,
+		Key:           req.Key,
+		IdentityToken: req.IdentityToken,
+		NoSign:        req.NoSign,
 	}); err != nil {
 		return err
 	}
@@ -404,11 +431,13 @@ func (s *SkillsRoutes) syncSkills(w http.ResponseWriter, r *http.Request) error 
 	}
 
 	result, err := s.lockService.Sync(r.Context(), skills.SyncOptions{
-		ProjectRoot: req.ProjectRoot,
-		Clients:     req.Clients,
-		Prune:       req.Prune,
-		Check:       req.Check,
-		Adopt:       req.Adopt,
+		ProjectRoot:   req.ProjectRoot,
+		Clients:       req.Clients,
+		Prune:         req.Prune,
+		Check:         req.Check,
+		Adopt:         req.Adopt,
+		AllowUnsigned: req.AllowUnsigned,
+		PublicKey:     req.PublicKey,
 	})
 	if err != nil {
 		return err
@@ -450,12 +479,14 @@ func (s *SkillsRoutes) upgradeSkills(w http.ResponseWriter, r *http.Request) err
 	}
 
 	result, err := s.lockService.Upgrade(r.Context(), skills.UpgradeOptions{
-		ProjectRoot:    req.ProjectRoot,
-		Names:          req.Names,
-		Preview:        req.Preview,
-		FailOnChanges:  req.FailOnChanges,
-		AllowRefChange: req.AllowRefChange,
-		Clients:        req.Clients,
+		ProjectRoot:       req.ProjectRoot,
+		Names:             req.Names,
+		Preview:           req.Preview,
+		FailOnChanges:     req.FailOnChanges,
+		AllowRefChange:    req.AllowRefChange,
+		AllowSignerChange: req.AllowSignerChange,
+		PublicKey:         req.PublicKey,
+		Clients:           req.Clients,
 	})
 	if err != nil {
 		return err

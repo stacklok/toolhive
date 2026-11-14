@@ -369,3 +369,19 @@ func TestConfigString_HeaderRedaction(t *testing.T) {
 		})
 	}
 }
+
+// TestConfigString_EnvironmentVariablesRedaction verifies that String() does not
+// print EnvironmentVariables entries, which may carry credentials.
+func TestConfigString_EnvironmentVariablesRedaction(t *testing.T) {
+	t.Parallel()
+
+	config := Config{
+		Endpoint:             "localhost:4318",
+		EnvironmentVariables: []string{"OTEL_EXPORTER_OTLP_HEADERS=Authorization=Basic dG9rZW46cHc=", "HOME"},
+	}
+
+	output := config.String()
+	assert.NotContains(t, output, "dG9rZW46cHc=")
+	assert.NotContains(t, output, "OTEL_EXPORTER_OTLP_HEADERS")
+	assert.NotContains(t, output, "HOME")
+}

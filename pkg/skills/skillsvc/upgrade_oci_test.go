@@ -18,6 +18,7 @@ import (
 	regmocks "github.com/stacklok/toolhive/pkg/registry/mocks"
 	"github.com/stacklok/toolhive/pkg/skills"
 	"github.com/stacklok/toolhive/pkg/skills/lockfile"
+	"github.com/stacklok/toolhive/pkg/storage"
 	storemocks "github.com/stacklok/toolhive/pkg/storage/mocks"
 )
 
@@ -37,7 +38,10 @@ func newOCIUpgradeService(
 	if lookup != nil {
 		opts = append(opts, WithSkillLookup(lookup))
 	}
-	svc := New(storemocks.NewMockSkillStore(ctrl), opts...)
+	store := storemocks.NewMockSkillStore(ctrl)
+	store.EXPECT().Get(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+		AnyTimes().Return(skills.InstalledSkill{}, storage.ErrNotFound)
+	svc := New(store, opts...)
 	return svc.(*service) //nolint:forcetypeassert // white-box test in the same package
 }
 
@@ -69,6 +73,7 @@ func TestPlanUpgrade_OCITagLessSourceUpgrades(t *testing.T) {
 		Source:            "ghcr.io/org/skill", // tag-less: the most common upgrade case
 		ResolvedReference: "ghcr.io/org/skill:latest",
 		Digest:            ociTestDigest(1),
+		Unsigned:          true,
 	}
 	plan := svc.planUpgrade(t.Context(), skills.UpgradeOptions{}, entry)
 
@@ -92,6 +97,7 @@ func TestPlanUpgrade_OCITaggedSourceUpToDate(t *testing.T) {
 		Source:            "ghcr.io/org/skill:v1",
 		ResolvedReference: "ghcr.io/org/skill:v1",
 		Digest:            ociTestDigest(1),
+		Unsigned:          true,
 	}
 	plan := svc.planUpgrade(t.Context(), skills.UpgradeOptions{}, entry)
 	assert.Equal(t, skills.UpgradeStatusUpToDate, plan.outcome.Status)
@@ -109,6 +115,7 @@ func TestPlanUpgrade_OCIRefChangeGuard(t *testing.T) {
 		Source:            "ghcr.io/org/skill",
 		ResolvedReference: "ghcr.io/org/old-location:latest", // recorded before the repoint
 		Digest:            ociTestDigest(1),
+		Unsigned:          true,
 	}
 
 	t.Run("blocked without allow-ref-change", func(t *testing.T) {
@@ -173,10 +180,64 @@ func TestPlanUpgrade_RegistryFallbackSourceUpgrades(t *testing.T) {
 		Source:            "io.github.test/my-skill", // registry catalogue name, ambiguous OCI shape
 		ResolvedReference: "ghcr.io/test/my-skill:v2",
 		Digest:            ociTestDigest(1),
+		Unsigned:          true,
 	}
 	plan := svc.planUpgrade(t.Context(), skills.UpgradeOptions{}, entry)
 
 	assert.Equal(t, skills.UpgradeStatusUpgraded, plan.outcome.Status,
 		"a registry-fallback-installed skill must be upgradable through the same fallback")
 	assert.Equal(t, ociTestDigest(3), plan.outcome.NewDigest)
+}
+
+// TestPlanUpgrade_TagMoveWithinRepositoryIsNotBlocked covers the routine
+// case a catalog-sourced skill hits on every release: the version moves, so
+// the resolved tag moves with it, but the artifact still comes from the same
+// repository. Blocking that would make --allow-ref-change mandatory for
+// ordinary upgrades and so disable the repository check it exists for (#6213).
+func TestPlanUpgrade_TagMoveWithinRepositoryIsNotBlocked(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	reg := ocimocks.NewMockRegistryClient(ctrl)
+	reg.EXPECT().Pull(gomock.Any(), gomock.Any(), "ghcr.io/org/skill:v2").
+		Return(godigest.Digest(ociTestDigest(2)), nil)
+	svc := newOCIUpgradeService(t, reg, nil)
+
+	entry := lockfile.Entry{
+		Name:              "my-skill",
+		Source:            "ghcr.io/org/skill:v2",
+		ResolvedReference: "ghcr.io/org/skill:v1",
+		Digest:            ociTestDigest(1),
+		Unsigned:          true,
+	}
+
+	plan := svc.planUpgrade(t.Context(), skills.UpgradeOptions{}, entry)
+	assert.Equal(t, skills.UpgradeStatusUpgraded, plan.outcome.Status)
+	assert.Equal(t, "ghcr.io/org/skill:v2", plan.outcome.NewResolvedReference,
+		"the move is still reported even though it is permitted")
+	assert.NotEmpty(t, plan.pinnedRef, "a permitted plan must carry the pinned candidate")
+}
+
+// TestPlanUpgrade_RegistryChangeStaysBlocked keeps the guard meaningful: the
+// repository path is identical, only the registry host differs.
+func TestPlanUpgrade_RegistryChangeStaysBlocked(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	reg := ocimocks.NewMockRegistryClient(ctrl)
+	reg.EXPECT().Pull(gomock.Any(), gomock.Any(), "elsewhere.io/org/skill:v1").
+		Return(godigest.Digest(ociTestDigest(2)), nil)
+	svc := newOCIUpgradeService(t, reg, nil)
+
+	entry := lockfile.Entry{
+		Name:              "my-skill",
+		Source:            "elsewhere.io/org/skill:v1",
+		ResolvedReference: "ghcr.io/org/skill:v1",
+		Digest:            ociTestDigest(1),
+		Unsigned:          true,
+	}
+
+	plan := svc.planUpgrade(t.Context(), skills.UpgradeOptions{}, entry)
+	assert.Equal(t, skills.UpgradeStatusRefChangeBlocked, plan.outcome.Status)
+	assert.Empty(t, plan.pinnedRef)
 }

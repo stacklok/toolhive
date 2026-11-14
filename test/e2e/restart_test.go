@@ -4,7 +4,6 @@
 package e2e_test
 
 import (
-	"fmt"
 	"strings"
 	"time"
 
@@ -203,5 +202,5 @@ var _ = Describe("Server Restart", Label("core", "restart", "e2e"), func() {
 
 // generateTestServerName creates a unique server name for restart tests
 func generateTestServerName(prefix string) string {
-	return fmt.Sprintf("%s-%d", prefix, GinkgoRandomSeed())
+	return e2e.GenerateUniqueServerName(prefix)
 }

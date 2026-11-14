@@ -9,6 +9,8 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -52,6 +54,12 @@ func (cm *ClientManager) ConfigureLLMGateway(clientType ClientApp, cfg llmgatewa
 	if appCfg.LLMGatewayMode == llmgateway.ModeCodexAuth {
 		return cm.configureCodexAuth(appCfg, cfg)
 	}
+	if appCfg.LLMGatewayMode == llmgateway.ModePi {
+		return cm.configurePi(appCfg, cfg)
+	}
+	if appCfg.LLMGatewayMode == llmgateway.ModeVSCode {
+		return cm.configureVSCode(appCfg, cfg)
+	}
 
 	path := cm.buildLLMSettingsPath(appCfg)
 
@@ -67,9 +75,9 @@ func (cm *ClientManager) ConfigureLLMGateway(clientType ClientApp, cfg llmgatewa
 
 		// Parse with hujson first so that JSONC (comments, trailing commas) is
 		// handled correctly for all subsequent operations.
-		v, err := hujson.Parse(content)
+		v, err := parseJSONC(content, path)
 		if err != nil {
-			return fmt.Errorf("parsing %s: %w", path, err)
+			return err
 		}
 
 		if err := applyLLMGatewayKeys(&v, appCfg.LLMGatewayKeys, cfg, path); err != nil {
@@ -91,21 +99,20 @@ func (cm *ClientManager) ConfigureLLMGateway(clientType ClientApp, cfg llmgatewa
 // applyLLMGatewayKeys writes or removes each key spec into v according to cfg.
 // Specs with ClearWhenEmpty=true are removed when their resolved value is empty,
 // allowing conditional keys (e.g. NODE_TLS_REJECT_UNAUTHORIZED) to be cleaned
-// up when the associated flag is cleared.
+// up when the associated flag is cleared. The Bedrock keys of a setup without
+// Bedrock compat are the exception: they are removed only when
+// cfg.ClearBedrockKeys says the previous setup wrote them, and are otherwise
+// left as the user set them.
 func applyLLMGatewayKeys(v *hujson.Value, specs []LLMGatewayKeySpec, cfg llmgateway.ApplyConfig, filePath string) error {
+	if !cfg.BedrockCompat && !cfg.ClearBedrockKeys {
+		specs = withoutBedrockKeys(specs)
+	}
+
 	// Resolve all values up front so an unknown ValueField fails fast before
 	// any file is modified.
-	values := make([]string, len(specs))
-	for i, spec := range specs {
-		if spec.Literal != "" {
-			values[i] = spec.Literal
-		} else {
-			v, err := llmValueForSpec(spec.ValueField, cfg)
-			if err != nil {
-				return err
-			}
-			values[i] = v
-		}
+	values, err := resolveLLMKeyValues(specs, cfg)
+	if err != nil {
+		return err
 	}
 
 	// Ensure ancestors only for specs that will be written (not removed).
@@ -119,9 +126,9 @@ func applyLLMGatewayKeys(v *hujson.Value, specs []LLMGatewayKeySpec, cfg llmgate
 	}
 
 	// Standardize once for existence checks in the remove path.
-	standardized, err := hujson.Standardize(v.Pack())
+	standardized, err := standardizeJSONC(v, filePath)
 	if err != nil {
-		return fmt.Errorf("standardizing %s: %w", filePath, err)
+		return err
 	}
 
 	for i, spec := range specs {
@@ -137,6 +144,24 @@ func applyLLMGatewayKeys(v *hujson.Value, specs []LLMGatewayKeySpec, cfg llmgate
 		}
 	}
 	return nil
+}
+
+// resolveLLMKeyValues returns the value each spec writes, in spec order: its
+// Literal when set, otherwise the cfg field named by its ValueField.
+func resolveLLMKeyValues(specs []LLMGatewayKeySpec, cfg llmgateway.ApplyConfig) ([]string, error) {
+	values := make([]string, len(specs))
+	for i, spec := range specs {
+		if spec.Literal != "" {
+			values[i] = spec.Literal
+			continue
+		}
+		v, err := llmValueForSpec(spec.ValueField, cfg)
+		if err != nil {
+			return nil, err
+		}
+		values[i] = v
+	}
+	return values, nil
 }
 
 // removeLLMKey removes the key at ptr from v if it exists. standardized is
@@ -172,9 +197,12 @@ func addLLMKey(v *hujson.Value, ptr, value, filePath string) error {
 }
 
 // RevertLLMGateway removes the LLM gateway keys from the tool's settings file.
-// If the file does not exist the call is a no-op. Comments and trailing commas
-// in JSONC settings files are preserved.
-func (cm *ClientManager) RevertLLMGateway(clientType ClientApp, configPath string) error {
+// The Bedrock keys of Claude Code and Codex are removed only when
+// clearBedrockKeys is set, i.e. when the setup being reverted wrote them;
+// otherwise they are the user's own and are left alone. Other clients have no
+// Bedrock keys and ignore it. If the file does not exist the call is a no-op.
+// Comments and trailing commas in JSONC settings files are preserved.
+func (cm *ClientManager) RevertLLMGateway(clientType ClientApp, configPath string, clearBedrockKeys bool) error {
 	appCfg := cm.lookupClientAppConfig(clientType)
 	if appCfg == nil || appCfg.LLMGatewayMode == "" {
 		return fmt.Errorf("client %q does not support LLM gateway configuration", clientType)
@@ -186,16 +214,34 @@ func (cm *ClientManager) RevertLLMGateway(clientType ClientApp, configPath strin
 	}
 	// Codex reverts via its dedicated TOML writer.
 	if appCfg.LLMGatewayMode == llmgateway.ModeCodexAuth {
-		return cm.revertCodexAuth(appCfg, configPath)
+		return cm.revertCodexAuth(appCfg, configPath, clearBedrockKeys)
+	}
+	if appCfg.LLMGatewayMode == llmgateway.ModePi {
+		return cm.revertPi(appCfg, configPath)
+	}
+	if appCfg.LLMGatewayMode == llmgateway.ModeVSCode {
+		return cm.revertVSCode(appCfg, configPath)
 	}
 
-	return revertJSONPointerGateway(appCfg, configPath)
+	specs := appCfg.LLMGatewayKeys
+	if !clearBedrockKeys {
+		specs = withoutBedrockKeys(specs)
+	}
+	return revertJSONPointerGateway(specs, configPath)
 }
 
-// revertJSONPointerGateway removes appCfg.LLMGatewayKeys from configPath, the
+// withoutBedrockKeys returns specs minus the Bedrock-compat keys, for a setup
+// or revert that must leave them as the user set them.
+func withoutBedrockKeys(specs []LLMGatewayKeySpec) []LLMGatewayKeySpec {
+	return slices.DeleteFunc(slices.Clone(specs), func(spec LLMGatewayKeySpec) bool {
+		return isBedrockValueField(spec.ValueField)
+	})
+}
+
+// revertJSONPointerGateway removes the keys in specs from configPath, the
 // JSON-Pointer-based revert path shared by every LLM-gateway mode except
 // ModeCredentialHelper and ModeCodexAuth (which use dedicated writers).
-func revertJSONPointerGateway(appCfg *clientAppConfig, configPath string) error {
+func revertJSONPointerGateway(specs []LLMGatewayKeySpec, configPath string) error {
 	// Guard against a missing file (or deleted parent directory) before trying
 	// to acquire the lock — WithFileLock creates configPath+".lock", which
 	// fails when the directory no longer exists.
@@ -215,18 +261,18 @@ func revertJSONPointerGateway(appCfg *clientAppConfig, configPath string) error 
 			return nil
 		}
 
-		v, err := hujson.Parse(content)
+		v, err := parseJSONC(content, configPath)
 		if err != nil {
-			return fmt.Errorf("parsing %s: %w", configPath, err)
+			return err
 		}
 
 		// Standardize once for all existence checks below.
-		standardized, err := hujson.Standardize(v.Pack())
+		standardized, err := standardizeJSONC(&v, configPath)
 		if err != nil {
-			return fmt.Errorf("standardizing %s: %w", configPath, err)
+			return err
 		}
 
-		for _, spec := range appCfg.LLMGatewayKeys {
+		for _, spec := range specs {
 			// Skip keys that are already absent — avoids brittle error-string matching.
 			if !jsonPointerExists(standardized, spec.JSONPointer) {
 				continue
@@ -254,12 +300,181 @@ func (cm *ClientManager) IsLLMGatewaySupported(clientType ClientApp) bool {
 	return cfg != nil && cfg.LLMGatewayMode != ""
 }
 
-// IsManaged reports whether an MDM/managed-preferences profile is present for
-// the given client. When true, the client reads config from the managed profile
-// and ignores the local config "thv llm setup" writes, so setup warns the user.
+var promptCacheEnvironmentControls = [...]string{
+	"FORCE_PROMPT_CACHING_5M",
+	"CLAUDE_CODE_PROMPT_CACHE_TTL",
+	"CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL",
+}
+
+// PromptCacheConflict reports a locally discoverable setting that may override
+// ToolHive's one-hour Claude Code prompt-cache configuration.
+func (*ClientManager) PromptCacheConflict(clientType ClientApp) (string, error) {
+	if clientType != ClaudeCode {
+		return "", nil
+	}
+	return promptCacheConflict(claudeCodeManagedSettingsDir(runtime.GOOS), os.LookupEnv)
+}
+
+type promptCacheControl struct {
+	value  string
+	source string
+}
+
+func promptCacheConflict(
+	managedDir string, lookupEnv func(string) (string, bool),
+) (string, error) {
+	controls := make(map[string]promptCacheControl, 5)
+	settingsPaths, err := managedPromptCacheSettingsPaths(managedDir)
+	if err != nil {
+		return "", err
+	}
+	for _, path := range settingsPaths {
+		if err := mergePromptCacheControls(path, controls); err != nil {
+			return "", err
+		}
+	}
+	for _, name := range promptCacheEnvironmentControls {
+		if value, ok := lookupEnv(name); ok {
+			controls[name] = promptCacheControl{strings.TrimSpace(value), "the process environment"}
+		}
+	}
+	return promptCacheConflictDescription(controls), nil
+}
+
+func managedPromptCacheSettingsPaths(managedDir string) ([]string, error) {
+	if managedDir == "" {
+		return nil, nil
+	}
+	paths := []string{filepath.Join(managedDir, "managed-settings.json")}
+	dropInDir := filepath.Join(managedDir, "managed-settings.d")
+	dropIns, err := os.ReadDir(dropInDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return paths, nil
+		}
+		return nil, fmt.Errorf("reading Claude Code managed settings drop-in directory: %w", err)
+	}
+	for _, entry := range dropIns {
+		if entry.IsDir() || strings.HasPrefix(entry.Name(), ".") || filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+		paths = append(paths, filepath.Join(dropInDir, entry.Name()))
+	}
+	return paths, nil
+}
+
+func mergePromptCacheControls(path string, controls map[string]promptCacheControl) error {
+	content, err := os.ReadFile(path) // #nosec G304 -- paths are registered client settings locations
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("reading %s: %w", path, err)
+	}
+	if len(content) == 0 {
+		return nil
+	}
+
+	v, err := parseJSONC(content, path)
+	if err != nil {
+		return err
+	}
+	standardized, err := standardizeJSONC(&v, path)
+	if err != nil {
+		return err
+	}
+	var settings map[string]any
+	if err := json.Unmarshal(standardized, &settings); err != nil {
+		return fmt.Errorf("decoding %s: %w", path, err)
+	}
+	env, _ := settings["env"].(map[string]any)
+	for _, name := range promptCacheEnvironmentControls {
+		value, ok := env[name].(string)
+		if !ok {
+			continue
+		}
+		controls[name] = promptCacheControl{strings.TrimSpace(value), path}
+	}
+	for _, name := range []string{"promptCacheTtl", "subagentPromptCacheTtl"} {
+		if value, ok := settings[name].(string); ok {
+			controls[name] = promptCacheControl{strings.TrimSpace(value), path}
+		}
+	}
+	return nil
+}
+
+func promptCacheConflictDescription(controls map[string]promptCacheControl) string {
+	if force, ok := controls["FORCE_PROMPT_CACHING_5M"]; ok && force.value == "1" {
+		return formatPromptCacheConflict("FORCE_PROMPT_CACHING_5M", force)
+	}
+
+	buckets := []struct {
+		environmentVariable string
+		setting             string
+	}{
+		{environmentVariable: "CLAUDE_CODE_PROMPT_CACHE_TTL", setting: "promptCacheTtl"},
+		{environmentVariable: "CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL", setting: "subagentPromptCacheTtl"},
+	}
+	for _, bucket := range buckets {
+		if envValue, ok := controls[bucket.environmentVariable]; ok {
+			switch strings.ToLower(envValue.value) {
+			case "5m":
+				return formatPromptCacheConflict(bucket.environmentVariable, envValue)
+			case "1h":
+				continue
+			}
+		}
+		if setting, ok := controls[bucket.setting]; ok && strings.EqualFold(setting.value, "5m") {
+			return formatPromptCacheConflict(bucket.setting, setting)
+		}
+	}
+	return ""
+}
+
+func formatPromptCacheConflict(name string, control promptCacheControl) string {
+	return fmt.Sprintf("%s=%s in %s", name, control.value, control.source)
+}
+
+func parseJSONC(content []byte, path string) (hujson.Value, error) {
+	v, err := hujson.Parse(content)
+	if err != nil {
+		return hujson.Value{}, fmt.Errorf("parsing %s: %w", path, err)
+	}
+	return v, nil
+}
+
+func standardizeJSONC(v *hujson.Value, path string) ([]byte, error) {
+	standardized, err := hujson.Standardize(v.Pack())
+	if err != nil {
+		return nil, fmt.Errorf("standardizing %s: %w", path, err)
+	}
+	return standardized, nil
+}
+
+func claudeCodeManagedSettingsDir(goos string) string {
+	switch goos {
+	case "darwin":
+		return filepath.Join(string(filepath.Separator), "Library", "Application Support", "ClaudeCode")
+	case "linux":
+		return filepath.Join(string(filepath.Separator), "etc", "claude-code")
+	case "windows":
+		programFiles := os.Getenv("ProgramFiles")
+		if programFiles == "" {
+			programFiles = `C:\Program Files`
+		}
+		return filepath.Join(programFiles, "ClaudeCode")
+	default:
+		return ""
+	}
+}
+
+// IsManaged reports whether a managed configuration source (an MDM profile on
+// macOS, a managed settings file on Linux) is present for the given client.
+// When true, the client reads config from the managed source and ignores the
+// local config "thv llm setup" writes, so setup warns the user.
 func (cm *ClientManager) IsManaged(clientType ClientApp) bool {
 	cfg := cm.lookupClientAppConfig(clientType)
-	return cfg != nil && managedProfilePresent(cfg.LLMManagedProfileDomain)
+	return cfg != nil && managedProfilePresent(cfg)
 }
 
 // LLMGatewayModeFor returns the client's configured gateway integration mode,
@@ -281,6 +496,8 @@ func (cm *ClientManager) LLMGatewayModeFor(clientType ClientApp) string {
 //
 // Requiring both CLI signals prevents false positives from leftover config
 // directories (e.g. ~/.claude or ~/.gemini) after a tool is uninstalled.
+// GUI editors leave LLMBinaryName empty so detection matches the settings-dir
+// check used by IsClientInstalled; those apps are often absent from $PATH.
 func (cm *ClientManager) DetectedLLMGatewayClients() []ClientApp {
 	var result []ClientApp
 	for i := range cm.clientIntegrations {
@@ -317,6 +534,13 @@ func (cm *ClientManager) isClientInstalled(cfg *clientAppConfig) bool {
 	return installed
 }
 
+func (cm *ClientManager) llmDetectDir(cfg *clientAppConfig) string {
+	if cfg.LLMDetectRelPath != nil {
+		return buildConfigFilePath("", cfg.LLMDetectRelPath, cfg.LLMDetectPlatformPrefix, []string{cm.homeDir})
+	}
+	return filepath.Dir(cm.buildLLMSettingsPath(cfg))
+}
+
 // sharedCLIDetection implements the generic CLI detection shared by all
 // LLM-gateway-capable clients: the detection directory (or settings directory)
 // must exist, and when LLMBinaryName is set the binary must be found on $PATH.
@@ -325,13 +549,7 @@ func (cm *ClientManager) sharedCLIDetection(cfg *clientAppConfig) bool {
 	// exist until first configured (e.g. Claude Desktop's configLibrary),
 	// LLMDetectRelPath points at a directory that exists once the app is
 	// installed. Otherwise fall back to the settings directory.
-	detectDir := func() string {
-		if cfg.LLMDetectRelPath != nil {
-			return buildConfigFilePath("", cfg.LLMDetectRelPath, cfg.LLMDetectPlatformPrefix, []string{cm.homeDir})
-		}
-		return filepath.Dir(cm.buildLLMSettingsPath(cfg))
-	}()
-	if _, err := os.Stat(detectDir); err != nil {
+	if _, err := os.Stat(cm.llmDetectDir(cfg)); err != nil {
 		return false
 	}
 	if cfg.LLMBinaryName != "" {
@@ -345,9 +563,30 @@ func (cm *ClientManager) sharedCLIDetection(cfg *clientAppConfig) bool {
 	return true
 }
 
+// LLMClientDetectionHint explains why clientType was not detected. Empty when
+// there is nothing extra to say (unknown client, already installed, or the
+// settings directory itself is missing).
+func (cm *ClientManager) LLMClientDetectionHint(clientType ClientApp) string {
+	cfg := cm.lookupClientAppConfig(clientType)
+	if cfg == nil || cfg.LLMGatewayMode == "" || cfg.LLMBinaryName == "" {
+		return ""
+	}
+	if cm.isClientInstalled(cfg) {
+		return ""
+	}
+	if _, err := os.Stat(cm.llmDetectDir(cfg)); err != nil {
+		return ""
+	}
+	return fmt.Sprintf("settings directory exists but %q was not found on PATH", cfg.LLMBinaryName)
+}
+
 // buildLLMSettingsPath resolves the absolute path to the LLM settings file
-// for the given client using the same PlatformPrefix logic as MCP config paths.
+// for the given client using the same PlatformPrefix logic as MCP config paths,
+// honoring cfg.ConfigDirEnvVar when it is set.
 func (cm *ClientManager) buildLLMSettingsPath(cfg *clientAppConfig) string {
+	if dir := cm.configDirOverride(cfg); dir != "" {
+		return filepath.Join(dir, cfg.LLMSettingsFile)
+	}
 	return buildConfigFilePath(
 		cfg.LLMSettingsFile,
 		cfg.LLMSettingsRelPath,
@@ -389,6 +628,16 @@ func resolveApplyConfigField(valueField string, cfg llmgateway.ApplyConfig) (str
 			return "0", true
 		}
 		return "", true
+	case "PromptCacheTTL":
+		if !cfg.ShortPromptCache {
+			return "1h", true
+		}
+		return "", true
+	case "PromptCache1HLegacy":
+		if !cfg.ShortPromptCache {
+			return "1", true
+		}
+		return "", true
 	default:
 		return resolveBedrockField(valueField, cfg)
 	}
@@ -409,6 +658,8 @@ func resolveBedrockField(valueField string, cfg llmgateway.ApplyConfig) (string,
 		v = cfg.BedrockOpusModel
 	case "BedrockSonnetModel":
 		v = cfg.BedrockSonnetModel
+	case "BedrockFableModel":
+		v = cfg.BedrockFableModel
 	default:
 		return "", false
 	}
@@ -416,6 +667,13 @@ func resolveBedrockField(valueField string, cfg llmgateway.ApplyConfig) (string,
 		return "", true
 	}
 	return v, true
+}
+
+// isBedrockValueField reports whether valueField names a Bedrock-compat value,
+// the keys ToolHive owns only while a Bedrock setup has written them.
+func isBedrockValueField(valueField string) bool {
+	_, ok := resolveBedrockField(valueField, llmgateway.ApplyConfig{})
+	return ok
 }
 
 // llmValueForSpec returns the config value for a settings-file key spec.
@@ -444,9 +702,9 @@ func ensureLLMAncestors(v *hujson.Value, ptr, filePath string) error {
 		return nil // top-level key — no ancestors to create
 	}
 	// Standardize once for all existence checks in this call.
-	standardized, err := hujson.Standardize(v.Pack())
+	standardized, err := standardizeJSONC(v, filePath)
 	if err != nil {
-		return fmt.Errorf("standardizing JSON in %s: %w", filePath, err)
+		return err
 	}
 
 	ancestor := ""

@@ -6,10 +6,13 @@ package docker
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"net/netip"
 	"os"
 	"os/exec"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -22,6 +25,10 @@ import (
 
 	"github.com/stacklok/toolhive-core/permissions"
 )
+
+const testGatewayIP = "172.17.0.1"
+
+var testGatewayIPs = []netip.Addr{netip.MustParseAddr(testGatewayIP)}
 
 // Compile-time assertion: envoyProxy must satisfy networkProxy.
 var _ networkProxy = (*envoyProxy)(nil)
@@ -140,7 +147,7 @@ func TestBuildEgressListener_AllowlistAndDefaultDeny(t *testing.T) {
 		wantRBACAction        string // "ALLOW" or "DENY"
 		wantPolicies          []string
 		wantGatewayDenyAbsent bool
-		wantGatewayDenyL3     bool // CIDR deny on GatewayIP
+		wantGatewayDenyL3     bool // authority deny on a gateway address
 		wantGatewayDenyL7     bool // authority deny on host.docker.internal
 	}{
 		{
@@ -149,7 +156,7 @@ func TestBuildEgressListener_AllowlistAndDefaultDeny(t *testing.T) {
 				WorkloadName:       "myserver",
 				Permissions:        nil,
 				AllowDockerGateway: false,
-				GatewayIP:          dockerDefaultBridgeGatewayIP,
+				GatewayIPs:         testGatewayIPs,
 			},
 			wantRBACPresent:   true,
 			wantRBACAction:    "ALLOW",
@@ -167,7 +174,7 @@ func TestBuildEgressListener_AllowlistAndDefaultDeny(t *testing.T) {
 					},
 				},
 				AllowDockerGateway: false,
-				GatewayIP:          dockerDefaultBridgeGatewayIP,
+				GatewayIPs:         testGatewayIPs,
 			},
 			wantRBACPresent:   true,
 			wantRBACAction:    "ALLOW",
@@ -185,7 +192,7 @@ func TestBuildEgressListener_AllowlistAndDefaultDeny(t *testing.T) {
 					},
 				},
 				AllowDockerGateway: false,
-				GatewayIP:          dockerDefaultBridgeGatewayIP,
+				GatewayIPs:         testGatewayIPs,
 			},
 			wantRBACPresent:   true,
 			wantRBACAction:    "ALLOW",
@@ -203,7 +210,7 @@ func TestBuildEgressListener_AllowlistAndDefaultDeny(t *testing.T) {
 					},
 				},
 				AllowDockerGateway: true,
-				GatewayIP:          dockerDefaultBridgeGatewayIP,
+				GatewayIPs:         testGatewayIPs,
 			},
 			wantRBACPresent:       true,
 			wantRBACAction:        "ALLOW",
@@ -220,7 +227,7 @@ func TestBuildEgressListener_AllowlistAndDefaultDeny(t *testing.T) {
 					},
 				},
 				AllowDockerGateway: false,
-				GatewayIP:          dockerDefaultBridgeGatewayIP,
+				GatewayIPs:         testGatewayIPs,
 			},
 			wantRBACPresent:   true,
 			wantRBACAction:    "ALLOW",
@@ -265,7 +272,7 @@ func TestBuildEgressListener_AllowlistAndDefaultDeny(t *testing.T) {
 				allow := findRBACFilter(listener)
 				require.NotNil(t, allow)
 				pats := collectAuthorityRegexes(allow)
-				assert.True(t, authorityMatched(pats, dockerDefaultBridgeGatewayIP),
+				assert.True(t, authorityMatched(pats, testGatewayIP),
 					"ALLOW filter must permit the gateway IP when AllowDockerGateway=true")
 				assert.True(t, authorityMatched(pats, dockerGatewayHostname),
 					"ALLOW filter must permit host.docker.internal when AllowDockerGateway=true")
@@ -280,9 +287,9 @@ func TestBuildEgressListener_AllowlistAndDefaultDeny(t *testing.T) {
 				require.NotNil(t, deny, "expected a DENY RBAC filter for the gateway")
 				pats := collectAuthorityRegexes(deny)
 
-				assert.True(t, authorityMatched(pats, dockerDefaultBridgeGatewayIP),
+				assert.True(t, authorityMatched(pats, testGatewayIP),
 					"deny must match the gateway IP")
-				assert.True(t, authorityMatched(pats, dockerDefaultBridgeGatewayIP+":8080"),
+				assert.True(t, authorityMatched(pats, testGatewayIP+":8080"),
 					"deny must match the gateway IP with a port (raw-IP bypass)")
 				assert.True(t, authorityMatched(pats, dockerGatewayHostname),
 					"deny must match host.docker.internal")
@@ -292,7 +299,7 @@ func TestBuildEgressListener_AllowlistAndDefaultDeny(t *testing.T) {
 					"deny must be case-insensitive (uppercase must not bypass)")
 				assert.True(t, authorityMatched(pats, dockerGatewayHostname+"."),
 					"deny must match a trailing-dot FQDN (host.docker.internal.)")
-				assert.True(t, authorityMatched(pats, dockerDefaultBridgeGatewayIP+"."),
+				assert.True(t, authorityMatched(pats, testGatewayIP+"."),
 					"deny must match a trailing-dot gateway IP (172.17.0.1.)")
 				assert.False(t, authorityMatched(pats, dockerGatewayHostname+".attacker.com"),
 					"deny must be anchored (lookalike suffix must not match)")
@@ -383,7 +390,7 @@ func TestBuildEgressListener_EmptyAllowHostDenyAll(t *testing.T) {
 			},
 		},
 		AllowDockerGateway: false,
-		GatewayIP:          dockerDefaultBridgeGatewayIP,
+		GatewayIPs:         testGatewayIPs,
 	}
 
 	listener := buildEgressListener(spec)
@@ -530,7 +537,11 @@ func TestBuildIngressCluster_UpstreamAddress(t *testing.T) {
 func TestBuildEgressCluster_DFPConfig(t *testing.T) {
 	t.Parallel()
 
-	cluster := buildEgressCluster()
+	spec := proxySpec{GatewayIPs: []netip.Addr{
+		netip.MustParseAddr("172.17.0.1"),
+		netip.MustParseAddr("2001:db8::1"),
+	}}
+	cluster := buildEgressCluster(spec)
 
 	assert.Equal(t, dfpClusterName, cluster.Name)
 	assert.Equal(t, "CLUSTER_PROVIDED", cluster.LbPolicy)
@@ -542,10 +553,28 @@ func TestBuildEgressCluster_DFPConfig(t *testing.T) {
 	assert.Equal(t, typeDFPCluster, dfp.Type)
 	assert.Equal(t, dfpCacheName, dfp.DNSCacheConfig.Name)
 	assert.Equal(t, "V4_ONLY", dfp.DNSCacheConfig.DNSLookupFamily)
+	require.NotNil(t, dfp.DNSCacheConfig.ResolvedAddressFilter)
+	assert.Equal(t, []envoyCIDRRange{
+		{AddressPrefix: "172.17.0.1", PrefixLen: 32},
+		{AddressPrefix: "2001:db8::1", PrefixLen: 128},
+	}, dfp.DNSCacheConfig.ResolvedAddressFilter.Ranges)
+
+	filters := buildEgressHTTPFilters(spec)
+	dfpFilter, ok := filters[len(filters)-2].TypedConfig.(*envoyDFPFilter)
+	require.True(t, ok)
+	assert.Equal(t, dfp.DNSCacheConfig, dfpFilter.DNSCacheConfig,
+		"DFP filter and cluster must share an identical named DNS cache config")
+
+	allowSpec := spec
+	allowSpec.AllowDockerGateway = true
+	allowCluster := buildEgressCluster(allowSpec)
+	allowDFP, ok := allowCluster.ClusterType.TypedConfig.(*envoyDFPClusterConfig)
+	require.True(t, ok)
+	assert.Nil(t, allowDFP.DNSCacheConfig.ResolvedAddressFilter)
 }
 
 // TestWriteEnvoyBootstrap_FileMode verifies that writeEnvoyBootstrap writes a
-// valid JSON bootstrap file at mode 0600.
+// valid JSON bootstrap file at mode 0644.
 func TestWriteEnvoyBootstrap_FileMode(t *testing.T) {
 	t.Parallel()
 
@@ -610,6 +639,9 @@ func TestEnvoyAdmin_Absent(t *testing.T) {
 // NOTE: t.Setenv is used so t.Parallel() is intentionally omitted here — env
 // mutations are global state and are incompatible with parallel execution.
 func TestGetEnvoyImage(t *testing.T) {
+	const pinnedEnvoyImage = "envoyproxy/envoy:distroless-v1.39.1@sha256:eb2c01c13125d1629637cb4e4cce7207009fb7cc2c8027f9742758549d15b6f4"
+	assert.Equal(t, pinnedEnvoyImage, defaultEnvoyImage)
+
 	tests := []struct {
 		name      string
 		envValue  string
@@ -617,8 +649,9 @@ func TestGetEnvoyImage(t *testing.T) {
 		wantEnvoy bool // true: assert the result contains "envoy"
 	}{
 		{
-			name:      "empty env returns non-empty default containing envoy",
+			name:      "empty env returns pinned default",
 			envValue:  "",
+			wantImage: defaultEnvoyImage,
 			wantEnvoy: true,
 		},
 		{
@@ -660,7 +693,7 @@ func TestEgressListenerHCMTypeURLs(t *testing.T) {
 			},
 		},
 		AllowDockerGateway: false,
-		GatewayIP:          dockerDefaultBridgeGatewayIP,
+		GatewayIPs:         testGatewayIPs,
 	}
 
 	listener := buildEgressListener(spec)
@@ -679,7 +712,7 @@ func TestEgressListenerHCMTypeURLs(t *testing.T) {
 func TestEgressClusterTypeURL(t *testing.T) {
 	t.Parallel()
 
-	cluster := buildEgressCluster()
+	cluster := buildEgressCluster(proxySpec{GatewayIPs: testGatewayIPs})
 	raw, err := json.Marshal(cluster)
 	require.NoError(t, err)
 	s := string(raw)
@@ -700,6 +733,10 @@ func TestEnvoyBootstrap_ValidatesAgainstRealEnvoy(t *testing.T) {
 		t.Skip("docker not available; skipping real-Envoy validation")
 	}
 
+	gateways := []netip.Addr{
+		netip.MustParseAddr(testGatewayIP),
+		netip.MustParseAddr("2001:db8::1"),
+	}
 	cases := []struct {
 		name string
 		spec proxySpec
@@ -708,7 +745,7 @@ func TestEnvoyBootstrap_ValidatesAgainstRealEnvoy(t *testing.T) {
 			name: "allowlist + gateway deny + ingress",
 			spec: proxySpec{
 				WorkloadName: "demo", TransportType: "streamable-http", UpstreamPort: 8080,
-				GatewayIP: dockerDefaultBridgeGatewayIP,
+				GatewayIPs: gateways,
 				Permissions: &permissions.NetworkPermissions{
 					Outbound: &permissions.OutboundNetworkPermissions{AllowHost: []string{"example.com", ".github.com"}},
 					Inbound:  &permissions.InboundNetworkPermissions{AllowHost: []string{"app.internal"}},
@@ -719,7 +756,7 @@ func TestEnvoyBootstrap_ValidatesAgainstRealEnvoy(t *testing.T) {
 			name: "allow-docker-gateway + insecure-allow-all + stdio (egress only)",
 			spec: proxySpec{
 				WorkloadName: "demo", TransportType: "stdio", AllowDockerGateway: true,
-				GatewayIP:   dockerDefaultBridgeGatewayIP,
+				GatewayIPs:  gateways,
 				Permissions: &permissions.NetworkPermissions{Outbound: &permissions.OutboundNetworkPermissions{InsecureAllowAll: true}},
 			},
 		},
@@ -730,7 +767,7 @@ func TestEnvoyBootstrap_ValidatesAgainstRealEnvoy(t *testing.T) {
 			t.Parallel()
 
 			listeners := []envoyListener{buildEgressListener(tc.spec)}
-			clusters := []envoyCluster{buildEgressCluster()}
+			clusters := []envoyCluster{buildEgressCluster(tc.spec)}
 			if tc.spec.TransportType != "stdio" {
 				listeners = append(listeners, buildIngressListener(tc.spec, 18080))
 				clusters = append(clusters, buildIngressCluster(tc.spec))
@@ -741,10 +778,8 @@ func TestEnvoyBootstrap_ValidatesAgainstRealEnvoy(t *testing.T) {
 			cfg, err := json.Marshal(b)
 			require.NoError(t, err)
 
-			// Pass the config inline via --config-yaml (JSON is valid YAML) rather
-			// than bind-mounting a file: the bootstrap is written 0600 and envoy
-			// runs as nonroot, so a bind-mounted file is unreadable to the
-			// container on native-Linux CI. Inline config sidesteps that entirely.
+			// Pass the config inline via --config-yaml (JSON is valid YAML) so this
+			// validation does not depend on bind-mount ownership or permissions.
 			ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 			defer cancel()
 			//nolint:gosec // G204: fixed args; cfg is test-generated JSON
@@ -796,7 +831,7 @@ func TestEnvoyProxy_SetupOrchestration(t *testing.T) {
 				WorkloadName:  "app",
 				TransportType: tt.transport,
 				UpstreamPort:  tt.upstreamPort,
-				GatewayIP:     dockerDefaultBridgeGatewayIP,
+				GatewayIPs:    testGatewayIPs,
 				Endpoints:     map[string]*network.EndpointSettings{},
 			}
 
@@ -821,6 +856,70 @@ func TestEnvoyProxy_SetupOrchestration(t *testing.T) {
 	}
 }
 
+// TestEnvoyProxy_SetupIngress_ConcurrentSameUpstreamPort guards against a
+// deterministic ingress port collision: two workloads built from the same
+// image share the same fixed UpstreamPort, so deriving the ingress port from
+// UpstreamPort+1 made every concurrently-starting instance request the
+// identical host port. The fix picks a random port instead, so concurrent
+// SetupIngress calls sharing UpstreamPort must land on different ports.
+func TestEnvoyProxy_SetupIngress_ConcurrentSameUpstreamPort(t *testing.T) {
+	t.Parallel()
+
+	const upstreamPort = 8080
+	const workloadCount = 4
+
+	ports := make([]int, workloadCount)
+	errs := make([]error, workloadCount)
+
+	var wg sync.WaitGroup
+	for i := range workloadCount {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			api := &fakeDockerAPI{
+				createFunc: func(_ context.Context, _ *container.Config, _ *container.HostConfig,
+					_ *network.NetworkingConfig, _ *v1.Platform, _ string) (container.CreateResponse, error) {
+					return container.CreateResponse{ID: "cid-envoy"}, nil
+				},
+				startFunc: func(_ context.Context, _ string, _ mobyclient.ContainerStartOptions) error { return nil },
+			}
+			e := &envoyProxy{client: &Client{
+				api:          api,
+				imageManager: &fakeImageManager{availableImages: map[string]struct{}{defaultEnvoyImage: {}}},
+			}}
+			spec := proxySpec{
+				WorkloadName:  fmt.Sprintf("app-%d", idx),
+				TransportType: "streamable-http",
+				UpstreamPort:  upstreamPort,
+				GatewayIPs:    testGatewayIPs,
+				Endpoints:     map[string]*network.EndpointSettings{},
+			}
+			port, err := e.SetupIngress(t.Context(), spec, egressResult{})
+			ports[idx] = port
+			errs[idx] = err
+		}(i)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("timeout waiting for concurrent SetupIngress calls")
+	}
+
+	seen := make(map[int]bool, workloadCount)
+	for i, port := range ports {
+		require.NoError(t, errs[i])
+		assert.NotEqual(t, upstreamPort+1, port, "ingress port must not be derived from UpstreamPort+1")
+		assert.False(t, seen[port], "port %d was reserved by more than one concurrent workload", port)
+		seen[port] = true
+	}
+}
+
 // TestListenerTimeoutsDisabledForStreaming guards against Envoy's 15s default
 // RouteAction.timeout (a hard total-response cap) and 5m stream_idle_timeout
 // truncating long-lived MCP streams (SSE / streamable-http). Both the ingress
@@ -833,7 +932,7 @@ func TestListenerTimeoutsDisabledForStreaming(t *testing.T) {
 		WorkloadName:  "app",
 		TransportType: "streamable-http",
 		UpstreamPort:  8080,
-		GatewayIP:     dockerDefaultBridgeGatewayIP,
+		GatewayIPs:    testGatewayIPs,
 	}
 
 	hcmOf := func(l envoyListener) *envoyHCM {
@@ -935,7 +1034,7 @@ func TestBuildAllowlistPolicies_AllowPort(t *testing.T) {
 			t.Parallel()
 			spec := proxySpec{
 				WorkloadName: "app",
-				GatewayIP:    dockerDefaultBridgeGatewayIP,
+				GatewayIPs:   testGatewayIPs,
 				Permissions:  &permissions.NetworkPermissions{Outbound: tt.out},
 			}
 			listener := buildEgressListener(spec)
@@ -989,7 +1088,7 @@ func TestBuildAllowlistPolicies_AllowPort_Structure(t *testing.T) {
 	t.Parallel()
 	spec := proxySpec{
 		WorkloadName: "app",
-		GatewayIP:    dockerDefaultBridgeGatewayIP,
+		GatewayIPs:   testGatewayIPs,
 		Permissions: &permissions.NetworkPermissions{
 			Outbound: &permissions.OutboundNetworkPermissions{
 				AllowHost: []string{"example.com"},
@@ -1034,7 +1133,7 @@ func TestBuildAllowlistPolicies_AdditionalCases(t *testing.T) {
 		t.Parallel()
 		spec := proxySpec{
 			WorkloadName: "app",
-			GatewayIP:    dockerDefaultBridgeGatewayIP,
+			GatewayIPs:   testGatewayIPs,
 			Permissions: &permissions.NetworkPermissions{
 				Outbound: &permissions.OutboundNetworkPermissions{
 					AllowHost: []string{"example.com"},
@@ -1057,7 +1156,7 @@ func TestBuildAllowlistPolicies_AdditionalCases(t *testing.T) {
 		t.Parallel()
 		spec := proxySpec{
 			WorkloadName: "app",
-			GatewayIP:    dockerDefaultBridgeGatewayIP,
+			GatewayIPs:   testGatewayIPs,
 			Permissions: &permissions.NetworkPermissions{
 				Outbound: &permissions.OutboundNetworkPermissions{
 					AllowHost: []string{"example.com"},
@@ -1076,7 +1175,7 @@ func TestBuildAllowlistPolicies_AdditionalCases(t *testing.T) {
 		// Bare hostname must be denied when port 80 is NOT in the list.
 		spec443 := proxySpec{
 			WorkloadName: "app",
-			GatewayIP:    dockerDefaultBridgeGatewayIP,
+			GatewayIPs:   testGatewayIPs,
 			Permissions: &permissions.NetworkPermissions{
 				Outbound: &permissions.OutboundNetworkPermissions{
 					AllowHost: []string{"example.com"},
@@ -1097,7 +1196,7 @@ func TestBuildAllowlistPolicies_AdditionalCases(t *testing.T) {
 		t.Parallel()
 		spec := proxySpec{
 			WorkloadName: "app",
-			GatewayIP:    dockerDefaultBridgeGatewayIP,
+			GatewayIPs:   testGatewayIPs,
 			Permissions: &permissions.NetworkPermissions{
 				Outbound: &permissions.OutboundNetworkPermissions{
 					AllowPort: []int{443},
@@ -1122,7 +1221,7 @@ func TestBuildAllowlistPolicies_AdditionalCases(t *testing.T) {
 		assert.Less(t, denyIdx, allowIdx, "DENY filter must appear before ALLOW filter")
 		// Gateway IP must be denied even though port 443 is in AllowPort.
 		gatewayPats := collectAuthorityRegexes(deny)
-		assert.True(t, authorityMatched(gatewayPats, dockerDefaultBridgeGatewayIP+":443"),
+		assert.True(t, authorityMatched(gatewayPats, testGatewayIP+":443"),
 			"gateway IP on port 443 must be caught by the DENY filter")
 	})
 
@@ -1132,7 +1231,7 @@ func TestBuildAllowlistPolicies_AdditionalCases(t *testing.T) {
 		t.Parallel()
 		spec := proxySpec{
 			WorkloadName: "app",
-			GatewayIP:    dockerDefaultBridgeGatewayIP,
+			GatewayIPs:   testGatewayIPs,
 			Permissions: &permissions.NetworkPermissions{
 				Outbound: &permissions.OutboundNetworkPermissions{
 					AllowPort: []int{443},
@@ -1150,7 +1249,7 @@ func TestBuildAllowlistPolicies_AdditionalCases(t *testing.T) {
 		t.Parallel()
 		spec := proxySpec{
 			WorkloadName: "app",
-			GatewayIP:    dockerDefaultBridgeGatewayIP,
+			GatewayIPs:   testGatewayIPs,
 			Permissions: &permissions.NetworkPermissions{
 				Outbound: &permissions.OutboundNetworkPermissions{
 					AllowHost: []string{"*.example.com"},
@@ -1165,4 +1264,46 @@ func TestBuildAllowlistPolicies_AdditionalCases(t *testing.T) {
 		assert.False(t, listenerAllowsAuthority(l, "api.example.com"), "bare subdomain must not match (port 80 not listed)")
 		assert.False(t, listenerAllowsAuthority(l, "other.com:443"), "non-matching host must not match")
 	})
+}
+
+func TestGatewayAuthorityPermissionsMatchAllGatewayAddresses(t *testing.T) {
+	t.Parallel()
+
+	gateways := []netip.Addr{
+		netip.MustParseAddr("10.0.0.1"),
+		netip.MustParseAddr("2001:db8::1"),
+		netip.MustParseAddr("2001:db8::c000:201"),
+	}
+	gatewayPermissions := gatewayAuthorityPermissions(gateways)
+	patterns := collectAuthorityRegexes(&envoyHTTPRBAC{Rules: envoyRBACRules{
+		Policies: map[string]envoyRBACPolicy{"gateway": {Permissions: gatewayPermissions}},
+	}})
+
+	for _, authority := range []string{
+		"10.0.0.1", "10.0.0.1:8443",
+		"[::ffff:10.0.0.1]", "[::ffff:10.0.0.1]:443", "[0::0:0:0:ffff:a00:1]", "[0:0:0:0:0:ffff:a00:1]:8443",
+		"[2001:db8::1]", "[2001:0DB8:0:0:0:0:0:0001]:443",
+		"[2001:db8::c000:201]", "[2001:db8::192.0.2.1]:8080",
+	} {
+		assert.Truef(t, authorityMatched(patterns, authority), "gateway authority %q must match", authority)
+	}
+	for _, authority := range []string{"2001:db8::1", "[2001:db8::2]", "10.0.0.10", "[::ffff:10.0.0.2]"} {
+		assert.Falsef(t, authorityMatched(patterns, authority), "non-gateway authority %q must not match", authority)
+	}
+}
+
+func TestEnvoyGatewayAllowUsesSameAddressSetAsDeny(t *testing.T) {
+	t.Parallel()
+
+	gateways := []netip.Addr{netip.MustParseAddr("10.0.0.1"), netip.MustParseAddr("2001:db8::1")}
+	deny := collectAuthorityRegexes(buildGatewayDenyRBAC(gateways))
+	allowPolicy := buildAllowlistPolicies(proxySpec{AllowDockerGateway: true, GatewayIPs: gateways})["gateway"]
+	allow := collectAuthorityRegexes(&envoyHTTPRBAC{Rules: envoyRBACRules{
+		Policies: map[string]envoyRBACPolicy{"gateway": allowPolicy},
+	}})
+	require.Equal(t, deny, allow)
+	for _, authority := range []string{"[::ffff:10.0.0.1]", "[::ffff:10.0.0.1]:443", "[0:0:0:0:0:ffff:a00:1]:8443"} {
+		assert.Truef(t, authorityMatched(deny, authority), "deny must match %q", authority)
+		assert.Truef(t, authorityMatched(allow, authority), "opt-in allow must match %q", authority)
+	}
 }

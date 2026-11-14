@@ -6,12 +6,8 @@ package app
 import (
 	"fmt"
 	"log/slog"
-	"os"
-	"os/exec"
-	"os/signal"
-	"syscall"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/spf13/cobra"
 
 	"github.com/stacklok/toolhive/cmd/thv/app/ui"
@@ -59,27 +55,6 @@ func tuiCmdFunc(cmd *cobra.Command, _ []string) error {
 	slog.SetDefault(slog.New(ui.NewTUILogHandler(tuiLogCh, slog.LevelWarn)))
 	defer slog.SetDefault(origLogger)
 
-	// Ensure the terminal background colour set by the TUI's OSC 11 sequence is
-	// always reset, even if the program exits via a panic or signal rather than
-	// a clean quit. On a normal quit, View() emits the reset; this defer covers
-	// panic paths. The signal handler covers SIGTERM/SIGINT when the defer
-	// cannot run (e.g. terminal multiplexers sending signals directly).
-	// "\x1b]111;\x07" is the OSC 111 sequence that restores the terminal's
-	// default background colour.
-	const oscReset = "\x1b]111;\x07"
-	defer func() { _, _ = fmt.Fprint(os.Stdout, oscReset) }()
-
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
-	go func() {
-		<-sigCh
-		_, _ = fmt.Fprint(os.Stdout, oscReset)
-		signal.Stop(sigCh)
-		// Re-raise so the default handler terminates the process.
-		self, _ := os.FindProcess(os.Getpid())
-		_ = self.Signal(syscall.SIGTERM)
-	}()
-
 	manager, err := workloads.NewManager(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to create workload manager: %w", err)
@@ -90,17 +65,8 @@ func tuiCmdFunc(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("failed to initialize TUI: %w", err)
 	}
 
-	p := tea.NewProgram(model, tea.WithAltScreen())
+	p := tea.NewProgram(model)
 	_, runErr := p.Run()
-
-	// BubbleTea puts the terminal in raw mode (OPOST/ONLCR disabled) and
-	// may not fully restore it before the shell regains control.
-	// Running "stty sane" is the most reliable way to reset all terminal
-	// flags (OPOST, ONLCR, ECHO, ICANON, …) back to safe defaults.
-	if stty := exec.Command("stty", "sane"); stty != nil {
-		stty.Stdin = os.Stdin
-		_ = stty.Run()
-	}
 
 	if runErr != nil {
 		return fmt.Errorf("TUI error: %w", runErr)

@@ -754,6 +754,153 @@ func TestNewHTTPBackendClient_NilRegistry(t *testing.T) {
 	})
 }
 
+func TestHTTPBackendClient_RequestTimeout(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		resolver func(string) time.Duration
+		want     time.Duration
+	}{
+		{name: "nil resolver uses default", want: defaultBackendRequestTimeout},
+		{
+			name: "positive workload timeout is used",
+			resolver: func(string) time.Duration {
+				return 240 * time.Second
+			},
+			want: 240 * time.Second,
+		},
+		{
+			name:     "zero timeout uses default",
+			resolver: func(string) time.Duration { return 0 },
+			want:     defaultBackendRequestTimeout,
+		},
+		{
+			name:     "negative timeout uses default",
+			resolver: func(string) time.Duration { return -time.Second },
+			want:     defaultBackendRequestTimeout,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			backendClient := &httpBackendClient{requestTimeoutResolver: tt.resolver}
+			assert.Equal(t, tt.want, backendClient.requestTimeout("elastic"))
+		})
+	}
+}
+
+func TestHTTPBackendClient_ModernHTTPClientUsesWorkloadTimeout(t *testing.T) {
+	t.Parallel()
+
+	registry := auth.NewDefaultOutgoingAuthRegistry()
+	require.NoError(t, registry.RegisterStrategy(
+		authtypes.StrategyTypeUnauthenticated, &strategies.UnauthenticatedStrategy{},
+	))
+	backendClient, err := NewHTTPBackendClient(
+		registry,
+		WithRequestTimeoutResolver(func(workloadID string) time.Duration {
+			if workloadID == "elastic" {
+				return 240 * time.Second
+			}
+			return defaultBackendRequestTimeout
+		}),
+	)
+	require.NoError(t, err)
+
+	clientImpl := backendClient.(*httpBackendClient)
+	httpClient, err := clientImpl.buildModernHTTPClient(t.Context(), &vmcp.BackendTarget{
+		WorkloadID: "elastic",
+		BaseURL:    "http://127.0.0.1:1",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 240*time.Second, httpClient.Timeout)
+}
+
+// TestHTTPBackendClient_RequestTimeoutIntegration proves that the resolved
+// workload timeout reaches the real streamable-HTTP tools/call path used by the
+// vMCP core. The paired timeout/success cases prevent the historical fixed
+// 30-second timeout from satisfying the test accidentally.
+func TestHTTPBackendClient_RequestTimeoutIntegration(t *testing.T) {
+	t.Parallel()
+
+	const toolDelay = 300 * time.Millisecond
+
+	tests := []struct {
+		name           string
+		resolver       func(string) time.Duration
+		wantTimeoutErr bool
+	}{
+		{
+			name:           "default timeout is enforced",
+			resolver:       func(string) time.Duration { return 100 * time.Millisecond },
+			wantTimeoutErr: true,
+		},
+		{
+			name: "workload override permits slow response",
+			resolver: func(workloadID string) time.Duration {
+				if workloadID == "elastic" {
+					return 2 * time.Second
+				}
+				return 100 * time.Millisecond
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			mcpSrv := mcpserver.NewMCPServer("timeout-test", "1.0.0")
+			mcpSrv.AddTool(
+				mcp.NewTool("slow_echo", mcp.WithString("input", mcp.Required())),
+				func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+					time.Sleep(toolDelay)
+					args, _ := req.Params.Arguments.(map[string]any)
+					input, _ := args["input"].(string)
+					return &mcp.CallToolResult{Content: []mcp.Content{mcp.NewTextContent(input)}}, nil
+				},
+			)
+			ts := httptest.NewServer(mcpserver.NewStreamableHTTPServer(mcpSrv))
+			t.Cleanup(ts.Close)
+
+			registry := auth.NewDefaultOutgoingAuthRegistry()
+			require.NoError(t, registry.RegisterStrategy(
+				authtypes.StrategyTypeUnauthenticated, &strategies.UnauthenticatedStrategy{},
+			))
+			backendClient, err := NewHTTPBackendClient(
+				registry, WithRequestTimeoutResolver(tt.resolver),
+			)
+			require.NoError(t, err)
+
+			clientImpl := backendClient.(*httpBackendClient)
+			clientImpl.revisions.Store("elastic", mcpparser.RevisionLegacy)
+			target := &vmcp.BackendTarget{
+				WorkloadID:    "elastic",
+				WorkloadName:  "elastic",
+				BaseURL:       ts.URL,
+				TransportType: "streamable-http",
+			}
+
+			result, err := backendClient.CallTool(
+				t.Context(), target, "slow_echo", map[string]any{"input": "slow response"}, nil, nil,
+			)
+			if tt.wantTimeoutErr {
+				require.Error(t, err)
+				assert.Nil(t, result)
+				return
+			}
+
+			require.NoError(t, err)
+			require.NotNil(t, result)
+			require.Len(t, result.Content, 1)
+			assert.Equal(t, "slow response", result.Content[0].Text)
+		})
+	}
+}
+
 // TestTracePropagatingRoundTripper tests the trace context propagation RoundTripper.
 func TestTracePropagatingRoundTripper(t *testing.T) {
 	t.Parallel()
@@ -1595,6 +1742,261 @@ func TestListCapabilities_MethodNotFoundResourceTemplates(t *testing.T) {
 	assert.Empty(t, caps.ResourceTemplates, "templates must degrade to an empty list")
 	require.Len(t, caps.Resources, 1, "the backend's concrete resources must still aggregate")
 	assert.Equal(t, "file:///readme.txt", caps.Resources[0].URI)
+}
+
+// TestListCapabilities_MethodNotFoundResources verifies that a backend which
+// advertises the resources capability but answers resources/list with JSON-RPC
+// -32601 (method not found) degrades to an empty resource list instead of
+// dropping its entire capability set — its tools still aggregate.
+// This mirrors the existing tolerance in the session-init path
+// (queryBackendResources in mcp_session.go) and fixes the health-check path
+// that was missing this tolerance (#6339).
+func TestListCapabilities_MethodNotFoundResources(t *testing.T) {
+	t.Parallel()
+
+	mcpServer := mcpserver.NewMCPServer("tools-and-resources-backend", "1.0.0",
+		mcpserver.WithResourceCapabilities(true, false),
+	)
+	mcpServer.AddTool(
+		mcp.Tool{Name: "my-tool", Description: "a test tool"},
+		func(_ context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			return &mcp.CallToolResult{Content: []mcp.Content{mcp.NewTextContent("ok")}}, nil
+		},
+	)
+
+	// resources/list is not implemented: answer it with a JSON-RPC
+	// -32601 (method not found) while delegating everything else to the server.
+	httpHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		rawMessage, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, "Failed to read request", http.StatusBadRequest)
+			return
+		}
+		defer r.Body.Close()
+
+		w.Header().Set("Content-Type", "application/json")
+		var probe struct {
+			ID     any    `json:"id"`
+			Method string `json:"method"`
+		}
+		if err := json.Unmarshal(rawMessage, &probe); err == nil && probe.Method == "resources/list" {
+			resp := map[string]any{
+				"jsonrpc": "2.0",
+				"id":      probe.ID,
+				"error":   map[string]any{"code": -32601, "message": "method not found"},
+			}
+			respBytes, _ := json.Marshal(resp)
+			_, _ = w.Write(respBytes)
+			return
+		}
+
+		response := mcpServer.HandleMessage(r.Context(), rawMessage)
+		responseBytes, err := json.Marshal(response)
+		if err != nil {
+			http.Error(w, "Failed to marshal response", http.StatusInternalServerError)
+			return
+		}
+		_, _ = w.Write(responseBytes)
+	})
+
+	server := httptest.NewServer(httpHandler)
+	defer server.Close()
+
+	registry := auth.NewDefaultOutgoingAuthRegistry()
+	require.NoError(t, registry.RegisterStrategy("unauthenticated", &strategies.UnauthenticatedStrategy{}))
+
+	backendClient, err := NewHTTPBackendClient(registry)
+	require.NoError(t, err)
+
+	target := &vmcp.BackendTarget{
+		WorkloadID:    "tools-and-resources-backend",
+		WorkloadName:  "Tools And Resources Backend",
+		BaseURL:       server.URL,
+		TransportType: "streamable-http",
+	}
+
+	caps, err := backendClient.ListCapabilities(t.Context(), target)
+	require.NoError(t, err, "a -32601 on resources/list must not drop the backend")
+	require.NotNil(t, caps)
+
+	assert.Empty(t, caps.Resources, "resources must degrade to an empty list")
+	require.Len(t, caps.Tools, 1, "the backend's tools must still aggregate")
+	assert.Equal(t, "my-tool", caps.Tools[0].Name)
+}
+
+// TestListCapabilities_MethodNotFoundPrompts verifies that a backend which
+// advertises the prompts capability but answers prompts/list with JSON-RPC
+// -32601 (method not found) degrades to an empty prompt list instead of
+// dropping its entire capability set — its tools still aggregate.
+func TestListCapabilities_MethodNotFoundPrompts(t *testing.T) {
+	t.Parallel()
+
+	mcpServer := mcpserver.NewMCPServer("tools-and-prompts-backend", "1.0.0",
+		mcpserver.WithPromptCapabilities(true),
+	)
+	mcpServer.AddTool(
+		mcp.Tool{Name: "my-tool", Description: "a test tool"},
+		func(_ context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			return &mcp.CallToolResult{Content: []mcp.Content{mcp.NewTextContent("ok")}}, nil
+		},
+	)
+
+	// prompts/list is not implemented: answer it with a JSON-RPC
+	// -32601 (method not found) while delegating everything else to the server.
+	httpHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		rawMessage, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, "Failed to read request", http.StatusBadRequest)
+			return
+		}
+		defer r.Body.Close()
+
+		w.Header().Set("Content-Type", "application/json")
+		var probe struct {
+			ID     any    `json:"id"`
+			Method string `json:"method"`
+		}
+		if err := json.Unmarshal(rawMessage, &probe); err == nil && probe.Method == "prompts/list" {
+			resp := map[string]any{
+				"jsonrpc": "2.0",
+				"id":      probe.ID,
+				"error":   map[string]any{"code": -32601, "message": "method not found"},
+			}
+			respBytes, _ := json.Marshal(resp)
+			_, _ = w.Write(respBytes)
+			return
+		}
+
+		response := mcpServer.HandleMessage(r.Context(), rawMessage)
+		responseBytes, err := json.Marshal(response)
+		if err != nil {
+			http.Error(w, "Failed to marshal response", http.StatusInternalServerError)
+			return
+		}
+		_, _ = w.Write(responseBytes)
+	})
+
+	server := httptest.NewServer(httpHandler)
+	defer server.Close()
+
+	registry := auth.NewDefaultOutgoingAuthRegistry()
+	require.NoError(t, registry.RegisterStrategy("unauthenticated", &strategies.UnauthenticatedStrategy{}))
+
+	backendClient, err := NewHTTPBackendClient(registry)
+	require.NoError(t, err)
+
+	target := &vmcp.BackendTarget{
+		WorkloadID:    "tools-and-prompts-backend",
+		WorkloadName:  "Tools And Prompts Backend",
+		BaseURL:       server.URL,
+		TransportType: "streamable-http",
+	}
+
+	caps, err := backendClient.ListCapabilities(t.Context(), target)
+	require.NoError(t, err, "a -32601 on prompts/list must not drop the backend")
+	require.NotNil(t, caps)
+
+	assert.Empty(t, caps.Prompts, "prompts must degrade to an empty list")
+	require.Len(t, caps.Tools, 1, "the backend's tools must still aggregate")
+	assert.Equal(t, "my-tool", caps.Tools[0].Name)
+}
+
+// TestListCapabilities_ToolsOnlyBackendSkipsUnadvertisedSurfaces is a regression
+// test for #6339. A tools-only backend (no resources or prompts capability
+// advertised in its initialize response) must not have resources/list or
+// prompts/list called at all. This verifies that the ListCapabilities path
+// consults the serverCapabilities before probing optional surfaces.
+func TestListCapabilities_ToolsOnlyBackendSkipsUnadvertisedSurfaces(t *testing.T) {
+	t.Parallel()
+
+	var resourcesListCalls atomic.Int32
+	var promptsListCalls atomic.Int32
+
+	// A tools-only server: no resources or prompts capability advertised.
+	mcpServer := mcpserver.NewMCPServer("tools-only-backend", "1.0.0")
+	mcpServer.AddTool(
+		mcp.Tool{Name: "my-tool", Description: "a test tool"},
+		func(_ context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			return &mcp.CallToolResult{Content: []mcp.Content{mcp.NewTextContent("ok")}}, nil
+		},
+	)
+
+	httpHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		rawMessage, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, "Failed to read request", http.StatusBadRequest)
+			return
+		}
+		defer r.Body.Close()
+
+		w.Header().Set("Content-Type", "application/json")
+		var probe struct {
+			ID     any    `json:"id"`
+			Method string `json:"method"`
+		}
+		if err := json.Unmarshal(rawMessage, &probe); err == nil {
+			switch probe.Method {
+			case "resources/list", "resources/templates/list":
+				resourcesListCalls.Add(1)
+			case "prompts/list":
+				promptsListCalls.Add(1)
+			}
+		}
+
+		response := mcpServer.HandleMessage(r.Context(), rawMessage)
+		responseBytes, err := json.Marshal(response)
+		if err != nil {
+			http.Error(w, "Failed to marshal response", http.StatusInternalServerError)
+			return
+		}
+		_, _ = w.Write(responseBytes)
+	})
+
+	server := httptest.NewServer(httpHandler)
+	defer server.Close()
+
+	registry := auth.NewDefaultOutgoingAuthRegistry()
+	require.NoError(t, registry.RegisterStrategy("unauthenticated", &strategies.UnauthenticatedStrategy{}))
+
+	backendClient, err := NewHTTPBackendClient(registry)
+	require.NoError(t, err)
+
+	target := &vmcp.BackendTarget{
+		WorkloadID:    "tools-only-backend",
+		WorkloadName:  "Tools Only Backend",
+		BaseURL:       server.URL,
+		TransportType: "streamable-http",
+	}
+
+	caps, err := backendClient.ListCapabilities(t.Context(), target)
+	require.NoError(t, err, "tools-only backend must not fail ListCapabilities")
+	require.NotNil(t, caps)
+
+	// The backend's tools must aggregate normally.
+	require.Len(t, caps.Tools, 1, "the backend's tools must aggregate")
+	assert.Equal(t, "my-tool", caps.Tools[0].Name)
+
+	// Unadvertised surfaces must not have been probed.
+	assert.Zero(t, resourcesListCalls.Load(),
+		"resources/list must not be called when backend does not advertise resources capability")
+	assert.Zero(t, promptsListCalls.Load(),
+		"prompts/list must not be called when backend does not advertise prompts capability")
+
+	// Resources and prompts must be empty.
+	assert.Empty(t, caps.Resources)
+	assert.Empty(t, caps.Prompts)
 }
 
 // TestDefaultClientFactory_SSEForwarding verifies the SSE transport gets the

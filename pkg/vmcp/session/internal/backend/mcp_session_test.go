@@ -112,7 +112,10 @@ func TestCreateMCPClient_UnsupportedTransport(t *testing.T) {
 				TransportType: transport,
 			}
 
-			_, err := createMCPClient(context.Background(), target, nil, newTestRegistry(t), "", secrets.NewEnvironmentProvider(), nil)
+			_, err := createMCPClient(
+				context.Background(), target, nil, newTestRegistry(t), "", secrets.NewEnvironmentProvider(),
+				mcpClientParams{requestTimeout: defaultBackendRequestTimeout},
+			)
 			require.Error(t, err)
 			assert.ErrorIs(t, err, vmcp.ErrUnsupportedTransport,
 				"transport %q should return ErrUnsupportedTransport", transport)
@@ -140,6 +143,10 @@ type listChangedTestBackend struct {
 	// ready closes once OnRegisterSession has captured session, decoupling
 	// addTool/addResource/addPrompt from the client-side race noted below.
 	ready chan struct{}
+	// readyOnce guards the close: OnRegisterSession fires once per registered
+	// session, and a backend can legitimately serve more than one client, so an
+	// unguarded close panics with "close of closed channel" (#6362).
+	readyOnce sync.Once
 
 	mu        sync.Mutex
 	session   mcpserver.ClientSession
@@ -233,7 +240,7 @@ func newListChangedTestBackend(t *testing.T) *listChangedTestBackend {
 		}
 		sessionWithPrompts.SetSessionPrompts(prompts)
 
-		close(b.ready)
+		b.readyOnce.Do(func() { close(b.ready) })
 	})
 
 	srv := mcpserver.NewMCPServer("list-changed-backend", "1.0.0",
@@ -367,7 +374,8 @@ func TestCreateMCPClient_ContinuousListeningGatedOnSink(t *testing.T) {
 			t.Parallel()
 
 			c, err := createMCPClient(
-				context.Background(), target, nil, newTestRegistry(t), "", secrets.NewEnvironmentProvider(), tc.sink,
+				context.Background(), target, nil, newTestRegistry(t), "", secrets.NewEnvironmentProvider(),
+				mcpClientParams{sink: tc.sink, requestTimeout: defaultBackendRequestTimeout},
 			)
 			require.NoError(t, err)
 			t.Cleanup(func() { _ = c.Close() })
@@ -434,7 +442,8 @@ func TestCreateMCPClient_ListChangedSink_FiresOnBackendNotification(t *testing.T
 			}
 
 			c, err := createMCPClient(
-				context.Background(), target, nil, newTestRegistry(t), "", secrets.NewEnvironmentProvider(), sink,
+				context.Background(), target, nil, newTestRegistry(t), "", secrets.NewEnvironmentProvider(),
+				mcpClientParams{sink: sink, requestTimeout: defaultBackendRequestTimeout},
 			)
 			require.NoError(t, err)
 			t.Cleanup(func() { _ = c.Close() })
@@ -505,7 +514,8 @@ func TestCreateMCPClient_ListChangedSink_DoesNotStallInFlightCall(t *testing.T) 
 	}
 
 	c, err := createMCPClient(
-		context.Background(), target, nil, newTestRegistry(t), "", secrets.NewEnvironmentProvider(), sink,
+		context.Background(), target, nil, newTestRegistry(t), "", secrets.NewEnvironmentProvider(),
+		mcpClientParams{sink: sink, requestTimeout: defaultBackendRequestTimeout},
 	)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = c.Close() })

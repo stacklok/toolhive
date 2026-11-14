@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
-	"github.com/lestrrat-go/jwx/v3/jwk"
+	"github.com/lestrrat-go/jwx/v4/jwk"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
@@ -21,6 +21,7 @@ import (
 	pkgauth "github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/auth/upstreamtoken"
 	upstreamtokenmocks "github.com/stacklok/toolhive/pkg/auth/upstreamtoken/mocks"
+	"github.com/stacklok/toolhive/pkg/authserver/claimnames"
 	"github.com/stacklok/toolhive/pkg/vmcp/config"
 )
 
@@ -35,7 +36,7 @@ func newTestOIDCServer(t *testing.T) (*httptest.Server, *rsa.PrivateKey) {
 	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	require.NoError(t, err)
 
-	key, err := jwk.Import(&privateKey.PublicKey)
+	key, err := jwk.Import[jwk.Key](&privateKey.PublicKey)
 	require.NoError(t, err)
 	require.NoError(t, key.Set(jwk.KeyIDKey, testKeyID))
 	require.NoError(t, key.Set(jwk.AlgorithmKey, "RS256"))
@@ -114,9 +115,9 @@ func TestNewOIDCAuthMiddleware_UpstreamTokenReaderWiring(t *testing.T) {
 			GetAllUpstreamCredentials(gomock.Any(), "session-abc").
 			Return(map[string]upstreamtoken.UpstreamCredential{
 				"google": {AccessToken: "gcp-access-token", IDToken: "gcp-id-token"},
-			}, []string(nil), nil)
+			}, map[string]error(nil), nil)
 
-		authMw, _, err := newOIDCAuthMiddleware(t.Context(), oidcCfg, reader, nil)
+		authMw, _, err := newOIDCAuthMiddleware(t.Context(), oidcCfg, reader, nil, "")
 		require.NoError(t, err, "middleware creation should succeed with non-nil reader")
 		require.NotNil(t, authMw)
 
@@ -126,11 +127,11 @@ func TestNewOIDCAuthMiddleware_UpstreamTokenReaderWiring(t *testing.T) {
 		}))
 
 		token := signJWT(t, privateKey, jwt.MapClaims{
-			"iss":                                issuer,
-			"aud":                                "test-audience",
-			"sub":                                "test-user",
-			"exp":                                time.Now().Add(time.Hour).Unix(),
-			upstreamtoken.TokenSessionIDClaimKey: "session-abc",
+			"iss":                        issuer,
+			"aud":                        "test-audience",
+			"sub":                        "test-user",
+			"exp":                        time.Now().Add(time.Hour).Unix(),
+			claimnames.TokenSessionIDKey: "session-abc",
 		})
 
 		req := httptest.NewRequest(http.MethodGet, "/test", nil)
@@ -150,7 +151,7 @@ func TestNewOIDCAuthMiddleware_UpstreamTokenReaderWiring(t *testing.T) {
 	t.Run("upstream tokens nil when reader is nil", func(t *testing.T) {
 		t.Parallel()
 
-		authMw, _, err := newOIDCAuthMiddleware(t.Context(), oidcCfg, nil, nil)
+		authMw, _, err := newOIDCAuthMiddleware(t.Context(), oidcCfg, nil, nil, "")
 		require.NoError(t, err)
 		require.NotNil(t, authMw)
 
@@ -160,11 +161,11 @@ func TestNewOIDCAuthMiddleware_UpstreamTokenReaderWiring(t *testing.T) {
 		}))
 
 		token := signJWT(t, privateKey, jwt.MapClaims{
-			"iss":                                issuer,
-			"aud":                                "test-audience",
-			"sub":                                "test-user",
-			"exp":                                time.Now().Add(time.Hour).Unix(),
-			upstreamtoken.TokenSessionIDClaimKey: "session-abc",
+			"iss":                        issuer,
+			"aud":                        "test-audience",
+			"sub":                        "test-user",
+			"exp":                        time.Now().Add(time.Hour).Unix(),
+			claimnames.TokenSessionIDKey: "session-abc",
 		})
 
 		req := httptest.NewRequest(http.MethodGet, "/test", nil)
@@ -188,7 +189,7 @@ func TestNewOIDCAuthMiddleware_UpstreamTokenReaderWiring(t *testing.T) {
 		reader := upstreamtokenmocks.NewMockTokenReader(ctrl)
 		// No EXPECT -- reader should not be called when tsid is absent.
 
-		authMw, _, err := newOIDCAuthMiddleware(t.Context(), oidcCfg, reader, nil)
+		authMw, _, err := newOIDCAuthMiddleware(t.Context(), oidcCfg, reader, nil, "")
 		require.NoError(t, err)
 		require.NotNil(t, authMw)
 

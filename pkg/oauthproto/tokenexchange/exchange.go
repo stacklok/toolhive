@@ -243,7 +243,7 @@ func (ts *tokenSource) Token() (*oauth2.Token, error) {
 	// Surface the RFC 8693 issued_token_type so callers can verify the server
 	// returned the type they asked for (e.g., XAA's IdP exchange requires an ID-JAG).
 	token := resp.Token.WithExtra(map[string]any{
-		"issued_token_type": resp.IssuedTokenType,
+		oauthproto.ParamIssuedTokenType: resp.IssuedTokenType,
 	})
 
 	return token, nil

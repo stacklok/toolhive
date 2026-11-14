@@ -170,7 +170,7 @@ func tryLoadConfigFromFile() (*runner.RunConfig, error) {
 // time. Without this override the value would come from /etc/runconfig
 // (a live-updating ConfigMap volume), letting two coexisting proxyrunner
 // pods converge on the same generation during a rolling update and defeat
-// the apply-gate at shouldSkipStatefulSetApply. See issue #5360.
+// the apply-gate at skipStatefulSetApply. See issue #5360.
 func applyMCPServerGenerationOverride(runConfig *runner.RunConfig) {
 	raw := os.Getenv(kubernetes.EnvVarMCPServerGeneration)
 	if raw == "" {

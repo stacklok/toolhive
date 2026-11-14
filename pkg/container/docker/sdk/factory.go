@@ -79,7 +79,7 @@ func NewDockerClient(ctx context.Context) (*mobyclient.Client, string, runtime.T
 		}
 
 		for _, socketPath := range socketPaths {
-			c, err := newClientWithSocketPath(ctx, socketPath)
+			c, err := newClientWithSocketPath(ctx, socketPath, runtimeType)
 			if err != nil {
 				lastErr = err
 				//nolint:gosec // G706: runtime type from internal config
@@ -120,9 +120,12 @@ func dockerPermissionHint(err error) string {
 }
 
 // NewClientWithSocketPath creates a new container client with a specific socket path
-func newClientWithSocketPath(ctx context.Context, socketPath string) (*mobyclient.Client, error) {
+func newClientWithSocketPath(ctx context.Context, socketPath string, runtimeType runtime.Type) (*mobyclient.Client, error) {
 	// Create platform-specific client
-	_, opts := newPlatformClient(socketPath)
+	httpClient, opts := newPlatformClient(socketPath)
+	if runtimeType == runtime.TypePodman {
+		httpClient.Transport = newPodmanNetworkCompatRoundTripper(httpClient.Transport)
+	}
 
 	// Create Docker client with the custom HTTP client
 	dockerClient, err := mobyclient.New(opts...)

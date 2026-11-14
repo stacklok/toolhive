@@ -328,6 +328,38 @@ func TestResolver_Resolve_CommitRef(t *testing.T) {
 	require.NotNil(t, result)
 	assert.Equal(t, "my-skill", result.SkillConfig.Name)
 	assert.Equal(t, commitHash, result.CommitHash)
+	assert.Empty(t, result.CommitSignature, "an unsigned commit must resolve with no signature")
+}
+
+func TestResolver_Resolve_SignedCommitSignaturePropagates(t *testing.T) {
+	t.Parallel()
+
+	const armoredSig = "-----BEGIN SIGNED MESSAGE-----\nMIIC(test-signature)\n-----END SIGNED MESSAGE-----\n"
+	repoDir := createTestRepo(t, "", validSkillMD)
+
+	// Rewrite HEAD with the signature attached, mimicking gitsign output.
+	repo, err := gogit.PlainOpen(repoDir)
+	require.NoError(t, err)
+	head, err := repo.Head()
+	require.NoError(t, err)
+	commit, err := repo.CommitObject(head.Hash())
+	require.NoError(t, err)
+	commit.PGPSignature = armoredSig
+	obj := repo.Storer.NewEncodedObject()
+	require.NoError(t, commit.Encode(obj))
+	signedHash, err := repo.Storer.SetEncodedObject(obj)
+	require.NoError(t, err)
+	require.NoError(t, repo.Storer.SetReference(plumbing.NewHashReference(head.Name(), signedHash)))
+
+	resolver := NewResolver(WithGitClient(git.NewDefaultGitClient()))
+	result, err := resolver.Resolve(t.Context(), &GitReference{URL: repoDir})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.Equal(t, signedHash.String(), result.CommitHash)
+	assert.Equal(t, armoredSig, result.CommitSignature)
+	assert.Contains(t, string(result.CommitPayload), "tree ",
+		"the signed payload must accompany the signature")
+	assert.NotContains(t, string(result.CommitPayload), "gpgsig")
 }
 
 func TestResolver_Resolve_MissingSkillMD(t *testing.T) {
@@ -393,8 +425,8 @@ func (*blockingCloneClient) GetFileContent(_ *git.RepositoryInfo, _ string) ([]b
 	return nil, fmt.Errorf("not implemented")
 }
 
-func (*blockingCloneClient) HeadCommitHash(_ *git.RepositoryInfo) (string, error) {
-	return "", fmt.Errorf("not implemented")
+func (*blockingCloneClient) HeadCommit(_ *git.RepositoryInfo) (git.HeadCommit, error) {
+	return git.HeadCommit{}, fmt.Errorf("not implemented")
 }
 
 func (*blockingCloneClient) Cleanup(_ context.Context, _ *git.RepositoryInfo) error {

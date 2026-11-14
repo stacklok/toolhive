@@ -136,6 +136,22 @@ func (*BaseProvider) SearchSkills(_ string) ([]types.Skill, error) {
 	return nil, nil
 }
 
+// ListAvailablePlugins returns an empty slice by default.
+// Providers that support plugins (local, remote) override this.
+func (*BaseProvider) ListAvailablePlugins() ([]types.Plugin, error) {
+	return nil, nil
+}
+
+// GetPlugin returns nil for providers that don't support plugins.
+func (*BaseProvider) GetPlugin(_, _ string) (*types.Plugin, error) {
+	return nil, nil
+}
+
+// SearchPlugins returns nil for providers that don't support plugins.
+func (*BaseProvider) SearchPlugins(_ string) ([]types.Plugin, error) {
+	return nil, nil
+}
+
 // matchesQuery checks if a server matches the search query
 func matchesQuery(name, description string, tags []string, query string) bool {
 	// Search in name

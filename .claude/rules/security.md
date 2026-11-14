@@ -7,6 +7,10 @@ paths:
 
 Applies to all Go files in the project.
 
+## Session Ownership
+
+Reuse the common issuer+subject session binding and ownership middleware across proxy families. Bind at creation before atomic publication; validate every session-bearing request after authentication and before routing, restoration, or other side effects. Reject foreign or unowned sessions without disclosing metadata or destroying the owner's session; malformed identities must never downgrade to unauthenticated access.
+
 ## Don't Store Internal Addressing in Shared State
 
 Never persist internal infrastructure addresses (hostnames, IPs, service URLs, pod names) into shared or external state stores (databases, caches, config passed to clients).
@@ -37,6 +41,48 @@ Storing routing decisions:
 
 If the same input always maps to the same destination (consistent hashing, modular arithmetic, content addressing), there is no need to store the mapping. Remove the stored state and eliminate the recovery problem entirely.
 
+## Own the Fix for a Reported Security Advisory
+
+Verify the reported bug yourself, then derive the fix from this codebase's existing
+answer for the same shape. Read the advisory's "Recommended remediation" section
+only afterwards, as a cross-check — never as the design input.
+
+Reporters do not know our invariants, and two ToolHive advisories have shipped
+unsafe remediation advice:
+
+- **GHSA-8rgq-f53x-rcp6** advised preserving the full `completion/complete` params
+  as authorization context. Doing so introduced a *new* bypass: Cedar namespaces
+  arguments as `arg_*`, and the parser hands that method its entire params map, so
+  a caller could forge `arg_env` and satisfy a policy condition the real
+  `prompts/get` could never satisfy.
+- **GHSA-5jfr-jf2r-pcfj** advised installing a private-IP deny on vmcp backends,
+  which resolve to RFC 1918 pod IPs — it would have broken every in-cluster
+  deployment on the first request.
+
+When fixing one:
+
+1. Reproduce the bug independently; do not rely on the reporter's PoC.
+2. Find the codebase's precedent for the same shape and let that drive the design.
+3. Check `git log` for a deliberate PR behind the claimed defect — intended,
+   documented behavior is not a vulnerability.
+4. Name the behavior the fix changes for existing deployments (requests that
+   previously succeeded, forward-compatibility breaks, new amplification) and treat
+   each as an explicit decision. Prefer fail-closed *with* an operator-visible
+   signal — log request-shape rejections at WARN — over silent breakage.
+
+## Preserve Access Across Security Migrations
+
+Security migrations may be automatic, but must preserve access for supported
+consumers, including already-running older processes and independently installed
+binaries sharing persisted state. Replacing an executable does not upgrade a
+running process. A confirmation prompt does not establish compatibility.
+
+Reading the old format is not enough: verify that existing consumers can still
+read and write the state produced by the new version, including after migration
+and on failure paths. If they cannot, classify the change as breaking rather than
+claiming backward compatibility. Preserve access without silently downgrading
+existing protection, and document recovery that retains users' data and credentials.
+
 ## All Requests Must Pass Through the Proxy Runner
 
 Every request to a managed container (MCP server or tool) must flow through the proxy runner (`pkg/runner/proxy`). Bypassing it is a vulnerability, not an optimization.
@@ -50,3 +96,7 @@ The proxy runner is the single enforcement point for:
 Any code that constructs a direct connection to a container — by using a raw host:port, reaching past the proxy interface, or type-asserting to an underlying transport — skips these controls entirely.
 
 **If you find a code path that contacts a container without going through the proxy runner, treat it as a security bug and fix it.**
+
+## Guard JWTs Before go-jose v3 Parses Them
+
+Never hand an untrusted JWT to go-jose v3 or fosite's `token/jwt` package, directly or through a new fosite route or handler, without first refusing it with `fositejose.IsUnsafeJWS`: go-jose v3 decodes JSON with no nesting limit (GHSA-vvm8-gf78-28g4), and the `restrict_go_jose_v3` depguard list in `.golangci.yml` only catches new imports, not new parsing in files already on it.

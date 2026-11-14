@@ -20,7 +20,6 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
@@ -45,6 +44,12 @@ const (
 	// spec.podTemplateSpec.spec.imagePullSecrets), this is sufficient to
 	// detect every input that influences the deployed PodSpec.ImagePullSecrets.
 	imagePullRefsHashAnnotation = "toolhive.stacklok.io/imagepullsecrets-hash"
+
+	// podVolumesHashAnnotation tracks the SHA256 hash of the desired vMCP
+	// container volume mounts and PodSpec volumes. The hash is stored on the
+	// Deployment so changes to referenced Secrets or ConfigMaps trigger a
+	// rollout without comparing API-server-defaulted live PodSpec fields.
+	podVolumesHashAnnotation = "toolhive.stacklok.io/podvolumes-hash"
 
 	// Log level configuration
 	logLevelDebug = "debug" // Debug log level value
@@ -136,6 +141,7 @@ func (r *VirtualMCPServerReconciler) deploymentForVirtualMCPServer(
 	ctx context.Context,
 	vmcp *mcpv1beta1.VirtualMCPServer,
 	vmcpConfigChecksum string,
+	caBundleChecksum string,
 	telemetryCfg *mcpv1beta1.MCPTelemetryConfig,
 	typedWorkloads []workloads.TypedWorkload,
 ) *appsv1.Deployment {
@@ -143,7 +149,7 @@ func (r *VirtualMCPServerReconciler) deploymentForVirtualMCPServer(
 
 	// Build deployment components using helper functions
 	args := r.buildContainerArgsForVmcp(vmcp)
-	volumeMounts, volumes, err := r.buildVolumesForVmcp(ctx, vmcp)
+	volumeMounts, volumes, volumesHash, err := r.buildPodVolumesForVmcp(ctx, vmcp, telemetryCfg, typedWorkloads)
 	if err != nil {
 		log.FromContext(ctx).Error(err, "Failed to build volumes for VirtualMCPServer")
 		return nil
@@ -154,32 +160,9 @@ func (r *VirtualMCPServerReconciler) deploymentForVirtualMCPServer(
 		return nil
 	}
 
-	// Add CA bundle volumes for MCPServerEntry backends with caBundleRef
-	caVolumes, caMounts, err := r.buildCABundleVolumesForEntries(ctx, vmcp.Namespace, typedWorkloads)
-	if err != nil {
-		log.FromContext(ctx).Error(err, "Failed to build CA bundle volumes for MCPServerEntries")
-		return nil
-	}
-	volumes = append(volumes, caVolumes...)
-	volumeMounts = append(volumeMounts, caMounts...)
-
-	// Add telemetry CA bundle volumes from the pre-fetched MCPTelemetryConfig
-	if telemetryCfg != nil {
-		telVolumes, telMounts := ctrlutil.AddTelemetryCABundleVolumes(telemetryCfg)
-		volumes = append(volumes, telVolumes...)
-		volumeMounts = append(volumeMounts, telMounts...)
-	}
-
-	// Add embedded auth server volumes if configured (inline config). The matching
-	// env vars are injected by buildEnvVarsForVmcp above so the drift check stays
-	// symmetric with what is built here (see #5616).
-	if vmcp.Spec.AuthServerConfig != nil {
-		authServerVolumes, authServerMounts := ctrlutil.GenerateAuthServerVolumes(vmcp.Spec.AuthServerConfig)
-		volumes = append(volumes, authServerVolumes...)
-		volumeMounts = append(volumeMounts, authServerMounts...)
-	}
-	deploymentLabels, deploymentAnnotations := r.buildDeploymentMetadataForVmcp(ls, vmcp)
-	deploymentTemplateLabels, deploymentTemplateAnnotations := r.buildPodTemplateMetadata(ls, vmcp, vmcpConfigChecksum)
+	deploymentLabels, deploymentAnnotations := r.buildDeploymentMetadataForVmcp(ls, vmcp, volumesHash)
+	deploymentTemplateLabels, deploymentTemplateAnnotations := r.buildPodTemplateMetadata(
+		ls, vmcp, vmcpConfigChecksum, caBundleChecksum)
 	podSecurityContext, containerSecurityContext := r.buildSecurityContextsForVmcp(ctx, vmcp)
 	serviceAccountName := r.serviceAccountNameForVmcp(vmcp)
 
@@ -211,7 +194,7 @@ func (r *VirtualMCPServerReconciler) deploymentForVirtualMCPServer(
 						Args:            args,
 						Env:             env,
 						VolumeMounts:    volumeMounts,
-						Ports:           r.buildContainerPortsForVmcp(vmcp),
+						Ports:           ctrlutil.ProxyContainerPorts(vmcpDefaultPort, ctrlutil.TLSListenerEnabled(vmcp.Spec.AuthServerConfig)),
 						LivenessProbe: ctrlutil.BuildHealthProbe(
 							"/health", "http",
 							vmcpLivenessInitialDelay, vmcpLivenessPeriod, vmcpLivenessTimeout, vmcpLivenessFailures,
@@ -255,6 +238,88 @@ func (r *VirtualMCPServerReconciler) deploymentForVirtualMCPServer(
 		return nil
 	}
 	return dep
+}
+
+// buildPodVolumesForVmcp builds the complete desired volume state for the vmcp
+// container and computes its stable hash in the same pass. Keeping all volume
+// sources here ensures the PodSpec and Deployment annotation use one consistent
+// snapshot of referenced Kubernetes objects.
+func (r *VirtualMCPServerReconciler) buildPodVolumesForVmcp(
+	ctx context.Context,
+	vmcp *mcpv1beta1.VirtualMCPServer,
+	telemetryCfg *mcpv1beta1.MCPTelemetryConfig,
+	typedWorkloads []workloads.TypedWorkload,
+) ([]corev1.VolumeMount, []corev1.Volume, string, error) {
+	volumeMounts, volumes, err := r.buildVolumesForVmcp(ctx, vmcp)
+	if err != nil {
+		return nil, nil, "", err
+	}
+
+	caVolumes, caMounts, err := r.buildCABundleVolumesForEntries(ctx, vmcp.Namespace, typedWorkloads)
+	if err != nil {
+		return nil, nil, "", fmt.Errorf("failed to build CA bundle volumes for MCPServerEntries: %w", err)
+	}
+	volumes = append(volumes, caVolumes...)
+	volumeMounts = append(volumeMounts, caMounts...)
+
+	if telemetryCfg != nil {
+		telVolumes, telMounts := ctrlutil.AddTelemetryCABundleVolumes(telemetryCfg)
+		volumes = append(volumes, telVolumes...)
+		volumeMounts = append(volumeMounts, telMounts...)
+	}
+
+	if vmcp.Spec.AuthServerConfig != nil {
+		authServerVolumes, authServerMounts, err := ctrlutil.GenerateAuthServerVolumes(vmcp.Spec.AuthServerConfig)
+		if err != nil {
+			return nil, nil, "", fmt.Errorf("failed to build embedded auth server CA volumes: %w", err)
+		}
+		volumes = append(volumes, authServerVolumes...)
+		volumeMounts = append(volumeMounts, authServerMounts...)
+	}
+
+	sessionTLSVolumes, sessionTLSMounts := ctrlutil.SessionRedisTLSVolumesWithDefault(vmcp.Spec.SessionStorage, r.DefaultRedisConfig)
+	volumes = append(volumes, sessionTLSVolumes...)
+	volumeMounts = append(volumeMounts, sessionTLSMounts...)
+
+	hash, err := podVolumesHash(volumes, volumeMounts)
+	if err != nil {
+		return nil, nil, "", err
+	}
+	return volumeMounts, volumes, hash, nil
+}
+
+// podVolumesHash returns a deterministic hash of the complete desired volume
+// and volume-mount objects. Sorting by identity makes ordering-only changes a
+// no-op while hashing the full Kubernetes structs preserves all drift-relevant
+// source fields, including future VolumeSource additions.
+func podVolumesHash(volumes []corev1.Volume, volumeMounts []corev1.VolumeMount) (string, error) {
+	normalizedVolumes := append([]corev1.Volume(nil), volumes...)
+	sort.SliceStable(normalizedVolumes, func(i, j int) bool {
+		return normalizedVolumes[i].Name < normalizedVolumes[j].Name
+	})
+	normalizedMounts := append([]corev1.VolumeMount(nil), volumeMounts...)
+	sort.SliceStable(normalizedMounts, func(i, j int) bool {
+		if normalizedMounts[i].Name != normalizedMounts[j].Name {
+			return normalizedMounts[i].Name < normalizedMounts[j].Name
+		}
+		if normalizedMounts[i].MountPath != normalizedMounts[j].MountPath {
+			return normalizedMounts[i].MountPath < normalizedMounts[j].MountPath
+		}
+		return normalizedMounts[i].SubPath < normalizedMounts[j].SubPath
+	})
+
+	canonical, err := json.Marshal(struct {
+		Volumes      []corev1.Volume
+		VolumeMounts []corev1.VolumeMount
+	}{
+		Volumes:      normalizedVolumes,
+		VolumeMounts: normalizedMounts,
+	})
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal pod volumes for hashing: %w", err)
+	}
+	hash := sha256.Sum256(canonical)
+	return hex.EncodeToString(hash[:]), nil
 }
 
 // buildContainerArgsForVmcp builds the container arguments for vmcp
@@ -381,8 +446,9 @@ func (r *VirtualMCPServerReconciler) buildEnvVarsForVmcp(
 	}
 
 	// Mount embedded auth server upstream client secrets (and Redis ACL creds).
-	// This must live here, not only in deploymentForVirtualMCPServer, so that the
-	// env-var drift check in containerNeedsUpdate compares against the same set.
+	// This must live here, not only in deploymentForVirtualMCPServer, so that
+	// desiredMainContainerEnv (used by containerNeedsUpdate) starts from the
+	// same controller-owned set before PodTemplateSpec env is merged.
 	// Otherwise the live container carries these env vars but the expected set
 	// does not, reflect.DeepEqual never matches, and the operator updates the
 	// Deployment on every reconcile (see #5616).
@@ -453,8 +519,9 @@ func (*VirtualMCPServerReconciler) buildHMACSecretEnvVar(vmcp *mcpv1beta1.Virtua
 
 // buildRedisPasswordEnvVar returns the THV_SESSION_REDIS_PASSWORD env var when
 // sessionStorage.provider == "redis" and passwordRef is set, or when
-// TOOLHIVE_DEFAULT_REDIS_SECRET_NAME is set via the global default.
-func (*VirtualMCPServerReconciler) buildRedisPasswordEnvVar(vmcp *mcpv1beta1.VirtualMCPServer) []corev1.EnvVar {
+// session storage is absent and the injected global default references a password
+// Secret. Explicit storage never inherits a global password.
+func (r *VirtualMCPServerReconciler) buildRedisPasswordEnvVar(vmcp *mcpv1beta1.VirtualMCPServer) []corev1.EnvVar {
 	if vmcp.Spec.SessionStorage != nil {
 		if vmcp.Spec.SessionStorage.Provider == mcpv1beta1.SessionStorageProviderRedis &&
 			vmcp.Spec.SessionStorage.PasswordRef != nil {
@@ -475,7 +542,7 @@ func (*VirtualMCPServerReconciler) buildRedisPasswordEnvVar(vmcp *mcpv1beta1.Vir
 		return nil
 	}
 
-	def := ctrlutil.ReadDefaultRedisConfig()
+	def := r.DefaultRedisConfig
 	if def == nil || def.SecretName == "" {
 		return nil
 	}
@@ -504,11 +571,13 @@ func (r *VirtualMCPServerReconciler) buildOutgoingAuthEnvVars(
 		return env
 	}
 
-	// Mount secrets from discovered ExternalAuthConfigs (discovered mode)
-	if vmcp.Spec.OutgoingAuth.Source == OutgoingAuthSourceDiscovered {
-		discoveredSecrets := r.discoverExternalAuthConfigSecrets(ctx, vmcp, typedWorkloads)
-		env = append(env, discoveredSecrets...)
-	}
+	// Mount secrets for ExternalAuthConfigs referenced by workloads in the group.
+	// Runs in BOTH source modes, mirroring buildOutgoingAuthConfig, which embeds
+	// workload-referenced auth into the config in both. In inline mode that strategy
+	// still reaches the ConfigMap and names the secret env var the vMCP reads at
+	// startup, so gating this on discovered mode left the env var unmounted and
+	// crash-looped the pod (#6837).
+	env = append(env, r.discoverExternalAuthConfigSecrets(ctx, vmcp, typedWorkloads)...)
 
 	// Mount secrets from inline ExternalAuthConfigRefs
 	if vmcp.Spec.OutgoingAuth.Backends != nil {
@@ -621,7 +690,7 @@ func (r *VirtualMCPServerReconciler) buildHeaderForwardEnvVarsForEntries(
 	// Sort the resulting env vars by Name. The Kubernetes informer cache
 	// returns items in non-deterministic order (Go map iteration), so
 	// without sorting the env vars appear in a different sequence on each
-	// reconcile. reflect.DeepEqual in containerNeedsUpdate is order-
+	// reconcile. The env comparison in containerNeedsUpdate is order-
 	// sensitive, so non-deterministic ordering causes a continuous
 	// deployment update loop. Mirrors the pattern in
 	// discoverExternalAuthConfigSecrets / discoverInlineExternalAuthConfigSecrets.
@@ -678,8 +747,15 @@ func buildHeaderForwardManifestForEntry(entry *mcpv1beta1.MCPServerEntry) (strin
 	return string(out), nil
 }
 
-// discoverExternalAuthConfigSecrets discovers ExternalAuthConfigs from workloads in the group
-// and returns environment variables for their client secrets. This is used for discovered mode.
+// discoverExternalAuthConfigSecrets discovers ExternalAuthConfigs referenced by
+// workloads in the group (via spec.externalAuthConfigRef) and returns environment
+// variables for their secrets.
+//
+// This mirrors discoverExternalAuthConfigs, which embeds those workload-referenced
+// strategies into the vMCP config in BOTH source modes — including the skip for
+// backends that carry an inline override, whose strategy (and therefore whose
+// secret env var) wins instead. A backend is skipped per workload rather than per
+// config, so a config shared with a non-overridden workload is still mounted.
 func (r *VirtualMCPServerReconciler) discoverExternalAuthConfigSecrets(
 	ctx context.Context,
 	vmcp *mcpv1beta1.VirtualMCPServer,
@@ -716,6 +792,16 @@ func (r *VirtualMCPServerReconciler) discoverExternalAuthConfigSecrets(
 			continue
 		}
 
+		// Skip backends overridden inline — discoverExternalAuthConfigs leaves the
+		// workload-referenced strategy out of the config for those, so its secret
+		// would be mounted for a strategy that never runs. Checked before seenConfigs
+		// so a config another, non-overridden workload references is still mounted.
+		if vmcp.Spec.OutgoingAuth != nil && vmcp.Spec.OutgoingAuth.Backends != nil {
+			if _, overridden := vmcp.Spec.OutgoingAuth.Backends[workloadInfo.Name]; overridden {
+				continue
+			}
+		}
+
 		// Skip if we've already processed this ExternalAuthConfig
 		if seenConfigs[configName] {
 			continue
@@ -735,9 +821,9 @@ func (r *VirtualMCPServerReconciler) discoverExternalAuthConfigSecrets(
 
 	// Sort by name for deterministic ordering. The Kubernetes informer cache returns
 	// items in non-deterministic order (Go map iteration), so without sorting the env
-	// vars appear in a different sequence on each reconcile. reflect.DeepEqual in
-	// containerNeedsUpdate is order-sensitive, so non-deterministic ordering causes a
-	// continuous deployment update loop with 4+ configs.
+	// vars appear in a different sequence on each reconcile. The env comparison
+	// in containerNeedsUpdate is order-sensitive, so non-deterministic ordering
+	// causes a continuous deployment update loop with 4+ configs.
 	sort.Slice(envVars, func(i, j int) bool {
 		return envVars[i].Name < envVars[j].Name
 	})
@@ -781,7 +867,7 @@ func (r *VirtualMCPServerReconciler) discoverInlineExternalAuthConfigSecrets(
 
 	// Sort by name for the same reason as discoverExternalAuthConfigSecrets: Go map
 	// iteration over Spec.OutgoingAuth.Backends is non-deterministic, which would
-	// cause a continuous deployment update loop via reflect.DeepEqual in containerNeedsUpdate.
+	// cause a continuous deployment update loop via the env comparison in containerNeedsUpdate.
 	sort.Slice(envVars, func(i, j int) bool {
 		return envVars[i].Name < envVars[j].Name
 	})
@@ -924,6 +1010,7 @@ func xaaSecretEnvVars(externalAuthConfig *mcpv1beta1.MCPExternalAuthConfig, conf
 func (r *VirtualMCPServerReconciler) buildDeploymentMetadataForVmcp(
 	baseLabels map[string]string,
 	vmcp *mcpv1beta1.VirtualMCPServer,
+	podVolumesHash string,
 ) (map[string]string, map[string]string) {
 	deploymentLabels := baseLabels
 	deploymentAnnotations := make(map[string]string)
@@ -948,6 +1035,8 @@ func (r *VirtualMCPServerReconciler) buildDeploymentMetadataForVmcp(
 	if hash, err := imagePullSecretsHash(r.imagePullSecretsForVMCP(vmcp)); err == nil && hash != "" {
 		deploymentAnnotations[imagePullRefsHashAnnotation] = hash
 	}
+
+	deploymentAnnotations[podVolumesHashAnnotation] = podVolumesHash
 
 	// TODO: Add support for ResourceOverrides if needed in the future
 
@@ -980,12 +1069,16 @@ func (*VirtualMCPServerReconciler) buildPodTemplateMetadata(
 	baseLabels map[string]string,
 	_ *mcpv1beta1.VirtualMCPServer,
 	vmcpConfigChecksum string,
+	caBundleChecksum string,
 ) (map[string]string, map[string]string) {
 	templateLabels := baseLabels
 
 	// Add vmcp Config checksum annotation to trigger pod rollout when config changes
 	// Use the standard checksum package helper for consistency
 	templateAnnotations := checksum.AddRunConfigChecksumToPodTemplate(nil, vmcpConfigChecksum)
+	if caBundleChecksum != "" {
+		templateAnnotations[ctrlutil.AuthServerConfigMapChecksumAnnotation] = caBundleChecksum
+	}
 
 	return templateLabels, templateAnnotations
 }
@@ -1007,17 +1100,6 @@ func (r *VirtualMCPServerReconciler) buildSecurityContextsForVmcp(
 
 	securityBuilder := kubernetes.NewSecurityContextBuilder(detectedPlatform)
 	return securityBuilder.BuildPodSecurityContext(), securityBuilder.BuildContainerSecurityContext()
-}
-
-// buildContainerPortsForVmcp builds container port configuration
-func (*VirtualMCPServerReconciler) buildContainerPortsForVmcp(
-	_ *mcpv1beta1.VirtualMCPServer,
-) []corev1.ContainerPort {
-	return []corev1.ContainerPort{{
-		ContainerPort: vmcpDefaultPort,
-		Name:          "http",
-		Protocol:      corev1.ProtocolTCP,
-	}}
 }
 
 // serviceForVirtualMCPServer returns a VirtualMCPServer Service object
@@ -1055,12 +1137,7 @@ func (r *VirtualMCPServerReconciler) serviceForVirtualMCPServer(
 			Type:            serviceType,
 			Selector:        ls,
 			SessionAffinity: sessionAffinity,
-			Ports: []corev1.ServicePort{{
-				Port:       vmcpDefaultPort,
-				TargetPort: intstr.FromInt(int(vmcpDefaultPort)),
-				Protocol:   corev1.ProtocolTCP,
-				Name:       "http",
-			}},
+			Ports:           ctrlutil.ProxyServicePorts(vmcpDefaultPort, ctrlutil.TLSListenerEnabled(vmcp.Spec.AuthServerConfig)),
 		},
 	}
 
@@ -1126,6 +1203,18 @@ func (r *VirtualMCPServerReconciler) validateSecretReferences(
 			if err := r.validateSecretKeyRef(ctx, vmcp.Namespace,
 				oidcCfg.Spec.Inline.ClientSecretRef,
 				"MCPOIDCConfig OIDC client secret"); err != nil {
+				return err
+			}
+		}
+	}
+
+	// Validate static delegate-client secrets before creating the pod. The
+	// controller checks only the Secret metadata and key presence; it never reads
+	// or copies credential values.
+	if vmcp.Spec.AuthServerConfig != nil {
+		for _, delegateClient := range vmcp.Spec.AuthServerConfig.DelegateClients {
+			if err := r.validateSecretKeyRef(ctx, vmcp.Namespace, delegateClient.ClientSecretRef,
+				fmt.Sprintf("delegate client %q", delegateClient.ClientID)); err != nil {
 				return err
 			}
 		}

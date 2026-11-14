@@ -34,13 +34,13 @@ thv secret provider <name> [flags]
 ### Options
 
 ```
-  -h, --help   help for provider
+  -h, --help[=true|false]   help for provider
 ```
 
 ### Options inherited from parent commands
 
 ```
-      --debug   Enable debug mode
+      --debug[=true|false]   Enable debug mode
 ```
 
 ### SEE ALSO

@@ -1,0 +1,10 @@
+# SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+# SPDX-License-Identifier: Apache-2.0
+#
+# SDK generator provenance. The ogen CLI currently takes its generation options
+# as flags; Taskfile.yml is the canonical invocation.
+generator: github.com/ogen-go/ogen/cmd/ogen
+version: v1.15.0
+package: client
+input: openapi.json
+output: client

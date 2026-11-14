@@ -7,8 +7,10 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/authz"
 	"github.com/stacklok/toolhive/pkg/authz/authorizers"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 )
@@ -19,8 +21,9 @@ import (
 //
 // The seam re-platforms the authorization decision that runs as HTTP middleware
 // today (AuthzMiddleware + AnnotationEnrichmentMiddleware) into the core, so that
-// List* (filter) and Call/Read/Get (deny) enforce the SAME decision from one
-// source — closing the "list says yes / call says no" gap. Identity is an explicit
+// List* (filter) asks the read check (tool:read); Call/Read/Get (deny) ask the call
+// check (tool:call). A tool:call grant also shows the tool, and a tool:read allow does
+// not grant a call, so a listed tool can still be refused when called. Identity is an explicit
 // parameter (never read from ctx, vmcp anti-pattern #1); the adapter re-injects it
 // into the ctx the wrapped authorizer reads. A seam can only SUBTRACT reachability
 // (filter list output / refuse a call), never widen it ([VMCP] contract).
@@ -36,12 +39,12 @@ import (
 // seam. That fail-fast lands with the core-enforcement switch in #5442 (#5441 keeps the
 // legacy server.New path, which retains the HTTP authz middleware).
 type Admission interface {
-	// FilterTools returns the subset of tools the identity may call. Mirrors
-	// pkg/authz authorizedToolIndexes: a per-tool AuthorizeWithJWTClaims(call) using
+	// FilterTools returns the subset of tools the identity may see. Mirrors
+	// pkg/authz authorizedToolIndexes: a per-tool AuthorizeWithJWTClaims(read) using
 	// the tool's annotations; a per-tool authorizer error skips that tool
 	// (log-and-continue), it is not a hard failure.
 	FilterTools(ctx context.Context, identity *auth.Identity, tools []vmcp.Tool) ([]vmcp.Tool, error)
-	// AllowToolCall mirrors pkg/authz authorizeToolCall (MCPFeatureTool/Call),
+	// AllowToolCall mirrors the pkg/authz tool:call check (MCPFeatureTool/Call),
 	// sourcing the tool's annotations for when-clause evaluation.
 	AllowToolCall(ctx context.Context, identity *auth.Identity, tool *vmcp.Tool, args map[string]any) (bool, error)
 	// FilterResources / AllowResourceRead / AllowResourceTemplateRead use
@@ -124,6 +127,8 @@ type cedarAdmission struct {
 	// process-global slog default — that global swap races (-race) against
 	// parallel sibling tests that also log.
 	logger *slog.Logger
+	// filterBudget bounds the time FilterTools may spend on authorization decisions.
+	filterBudget time.Duration
 }
 
 // cedarOption configures a cedarAdmission at construction.
@@ -135,11 +140,22 @@ func withLogger(logger *slog.Logger) cedarOption {
 	return func(c *cedarAdmission) { c.logger = logger }
 }
 
+// withFilterBudget overrides the FilterTools deadline. Used by tests.
+func withFilterBudget(budget time.Duration) cedarOption {
+	return func(c *cedarAdmission) { c.filterBudget = budget }
+}
+
 // newCedarAdmission wraps an already-built authorizer. Separated from newAdmission
 // so tests can inject a stub authorizer (or a real cedar.NewCedarAuthorizer)
 // without round-tripping through the config/factory.
 func newCedarAdmission(a authorizers.Authorizer, opts ...cedarOption) *cedarAdmission {
-	adm := &cedarAdmission{authorizer: a, logger: slog.Default()}
+	// Wrap here so every caller gets the tool:call implication: FilterTools asks
+	// tool:read, and AllowToolCall asks tool:call, which the decorator passes through.
+	adm := &cedarAdmission{
+		authorizer:   authorizers.WithToolCallImpliesRead(a),
+		logger:       slog.Default(),
+		filterBudget: authz.MaxDerivedAuthzBudget,
+	}
 	for _, opt := range opts {
 		opt(adm)
 	}
@@ -147,17 +163,27 @@ func newCedarAdmission(a authorizers.Authorizer, opts ...cedarOption) *cedarAdmi
 }
 
 // FilterTools mirrors pkg/authz authorizedToolIndexes: each tool is authorized for
-// call with its annotations injected, and a per-tool authorizer error skips that
-// tool (log-and-continue).
+// read with its annotations injected, and a per-tool authorizer error skips that
+// tool (log-and-continue). A tool:call grant also satisfies the read check.
 func (a *cedarAdmission) FilterTools(
 	ctx context.Context, identity *auth.Identity, tools []vmcp.Tool,
 ) ([]vmcp.Tool, error) {
 	ctx = auth.WithIdentity(ctx, identity)
+	// One deadline covers the whole list, so a slow PDP cannot stretch it by the tool
+	// count. Tools checked after it expires are hidden.
+	ctx, cancel := context.WithTimeout(ctx, a.filterBudget)
+	defer cancel()
 	// A filter returns a subset, so build a fresh non-nil slice. The allow-all
 	// seam returns the input as-is instead. nil-vs-[] wire normalization is the
 	// Serve layer's concern.
 	filtered := make([]vmcp.Tool, 0, len(tools))
 	for i := range tools {
+		if ctx.Err() != nil {
+			// The context is done, so the remaining checks would fail too. They stay hidden.
+			a.logger.Warn("admission: deadline reached while filtering tools, hiding the rest",
+				"remaining", len(tools)-i)
+			break
+		}
 		tool := &tools[i]
 		// An empty BackendID is deliberate: composites have no Backend parent,
 		// so backend-scoped permits fail closed for them.
@@ -166,8 +192,14 @@ func (a *cedarAdmission) FilterTools(
 			Annotations: convertAnnotations(tool.Annotations),
 		})
 		allowed, err := a.authorizer.AuthorizeWithJWTClaims(
-			toolCtx, authorizers.MCPFeatureTool, authorizers.MCPOperationCall, tool.Name, nil)
+			toolCtx, authorizers.MCPFeatureTool, authorizers.MCPOperationRead, tool.Name, nil)
 		if err != nil {
+			if ctx.Err() != nil {
+				// The context is done (cancelled or past its deadline), so every remaining check would fail too.
+				a.logger.Warn("admission: request context ended or deadline reached while filtering tools, hiding the rest",
+					"tool", tool.Name, "error", err)
+				break
+			}
 			a.logger.Warn("admission: tool authorization check failed, skipping", "tool", tool.Name, "error", err)
 			continue
 		}
@@ -178,7 +210,7 @@ func (a *cedarAdmission) FilterTools(
 	return filtered, nil
 }
 
-// AllowToolCall mirrors pkg/authz authorizeToolCall (MCPFeatureTool/Call), sourcing
+// AllowToolCall mirrors the pkg/authz tool:call check (MCPFeatureTool/Call), sourcing
 // the tool's annotations for when-clause evaluation. It authorizes the tool named in
 // `tool.Name` — there is no optimizer meta-tool special-casing here (see the
 // [Admission] doc): the optimizer's call_tool inner-target authorization is deferred

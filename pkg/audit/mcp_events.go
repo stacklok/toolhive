@@ -146,4 +146,7 @@ const (
 	MetadataExtraKeyTraceID = "trace_id"
 	// MetadataExtraKeySpanID is the key for the ID of the span active when the event was recorded
 	MetadataExtraKeySpanID = "span_id"
+	// MetadataExtraKeyDiscoveryFallbackCount is set on a tools/list or find_tool event to the number of
+	// tools listed only because the caller holds tool:call (tool:read was not granted).
+	MetadataExtraKeyDiscoveryFallbackCount = "discovery_fallback_count"
 )

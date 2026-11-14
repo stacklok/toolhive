@@ -289,8 +289,8 @@ func (c *coreVMCP) BackendHealth() health.Reporter {
 
 // ListTools health-filters the registry, aggregates backend capabilities on
 // demand, appends the composite tools reachable in the current view, and returns
-// only the subset identity is admitted to call (the admission seam — the same
-// decision CallTool enforces).
+// only the tools identity may see (the read visibility check). CallTool still
+// enforces the call check, so a listed tool can still be refused when called.
 //
 // A nil identity is treated as anonymous, consistent with
 // session/types.ShouldAllowAnonymous — bound-session caller enforcement
@@ -413,8 +413,9 @@ func (c *coreVMCP) Discover(ctx context.Context, identity *auth.Identity) (Disco
 
 // LookupTool resolves an advertised tool name (incl. composite tools) to its
 // capability without invoking it. It delegates to ListTools, so it applies the
-// same health/advertising AND admission view: a name that is unknown, unadvertised,
-// or denied to identity returns vmcp.ErrNotFound (a denied tool is never resolved).
+// same health/advertising AND visibility view: a name that is unknown, unadvertised,
+// or not visible to identity returns vmcp.ErrNotFound. A visible tool can still be
+// refused when called, because CallTool runs its own tool:call check.
 func (c *coreVMCP) LookupTool(ctx context.Context, identity *auth.Identity, name string) (*vmcp.Tool, error) {
 	tools, err := c.ListTools(ctx, identity)
 	if err != nil {

@@ -91,7 +91,7 @@ To run the Operator end-to-end (E2E) tests locally, ensure you have the followin
 - [Kind](https://kind.sigs.k8s.io/)
 - [Kind Load Balancer](https://kind.sigs.k8s.io/docs/user/loadbalancer/)
 - [Task](https://taskfile.dev/#/installation)
-- [Chainsaw](https://github.com/kubernetes-sigs/chainsaw) (automatically installed by the Taskfile for local runs)
+- [Chainsaw](https://github.com/kyverno/chainsaw) (automatically installed by the Taskfile for local runs)
 
 ### Steps
 

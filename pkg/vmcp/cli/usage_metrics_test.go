@@ -8,6 +8,8 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -335,6 +337,54 @@ func TestDisabledInConfig(t *testing.T) {
 		})
 	}
 }
+
+// TestReadConfigFile_ReadOnly checks the opt-out read against real files and
+// that the file is never created or rewritten: a legacy config that thv would
+// migrate on load stays byte-for-byte the same.
+func TestReadConfigFile_ReadOnly(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		content      *string
+		wantDisabled bool
+	}{
+		{name: "missing file means no opt-out", content: nil, wantDisabled: false},
+		{name: "opted out", content: ptr("disable_usage_metrics: true\n"), wantDisabled: true},
+		{name: "not opted out", content: ptr("disable_usage_metrics: false\n"), wantDisabled: false},
+		{name: "unparseable file counts as opted out", content: ptr("this: is: not: yaml: [\n"), wantDisabled: true},
+		{
+			name:         "legacy config thv would migrate is left unchanged",
+			content:      ptr("secrets:\n  provider_type: basic\n  setup_completed: false\n"),
+			wantDisabled: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			path := filepath.Join(t.TempDir(), "toolhive", "config.yaml")
+			if tt.content != nil {
+				require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o700))
+				require.NoError(t, os.WriteFile(path, []byte(*tt.content), 0o600))
+			}
+
+			got := disabledInConfig(func() (*appconfig.Config, error) { return readConfigFile(path) })
+			assert.Equal(t, tt.wantDisabled, got)
+
+			if tt.content == nil {
+				_, err := os.Stat(filepath.Dir(path))
+				assert.ErrorIs(t, err, os.ErrNotExist, "no config directory may be created")
+				return
+			}
+			after, err := os.ReadFile(path)
+			require.NoError(t, err)
+			assert.Equal(t, *tt.content, string(after), "the config file must not be rewritten")
+		})
+	}
+}
+
+func ptr(s string) *string { return &s }
 
 func TestVersionCheckInstanceID(t *testing.T) {
 	t.Parallel()

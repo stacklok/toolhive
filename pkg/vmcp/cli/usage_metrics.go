@@ -5,14 +5,19 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"os"
+	"path/filepath"
 	"sync/atomic"
 	"time"
 
+	"github.com/adrg/xdg"
 	"github.com/google/uuid"
+	"go.yaml.in/yaml/v3"
 
 	appconfig "github.com/stacklok/toolhive/pkg/config"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
@@ -49,7 +54,7 @@ type usageFacts struct {
 
 // startUsageMetrics starts anonymous usage reporting unless it is disabled
 // (CI, TOOLHIVE_USAGE_METRICS_ENABLED=false, TOOLHIVE_SKIP_UPDATE_CHECK, or
-// `thv config usage-metrics disable`, or a config that cannot be loaded). It
+// `thv config usage-metrics disable`, or a config that cannot be read). It
 // returns nil when disabled. It also
 // runs the vMCP update check in the background, after the collector has read
 // the anonymous ID, so that ID never depends on which of the two runs first.
@@ -213,12 +218,38 @@ func vmcpAuthMode(incoming *config.IncomingAuthConfig, embeddedAuth bool) string
 }
 
 // usageMetricsDisabledInConfig reports whether the user turned usage metrics
-// off with `thv config usage-metrics disable`. In Kubernetes the provider
-// returns defaults without touching the filesystem. It deliberately avoids
-// DefaultProvider.GetConfig, which exits the process when the config cannot be
-// loaded: usage reporting is optional and must never stop vMCP from starting.
+// off with `thv config usage-metrics disable`. In Kubernetes there is no config
+// file, and the Kubernetes config provider leaves usage metrics on.
+//
+// Elsewhere it only reads the thv config file. It deliberately avoids the
+// config provider: DefaultProvider.GetConfig exits the process when the config
+// cannot be loaded, and LoadOrCreateConfig creates a missing file and writes
+// migrations back. A vMCP binary can be newer than the thv sharing the file, so
+// it must not rewrite that thv's config to read one setting.
 func usageMetricsDisabledInConfig() bool {
-	return disabledInConfig(appconfig.NewProvider().LoadOrCreateConfig)
+	if rt.IsKubernetesRuntime() {
+		return false
+	}
+	path := filepath.Join(xdg.ConfigHome, "toolhive", "config.yaml")
+	return disabledInConfig(func() (*appconfig.Config, error) { return readConfigFile(path) })
+}
+
+// readConfigFile parses the thv config file at path without creating or
+// changing it. A missing file returns an empty config: no opt-out was set.
+func readConfigFile(path string) (*appconfig.Config, error) {
+	// #nosec G304: path is the fixed thv config location.
+	data, err := os.ReadFile(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return &appconfig.Config{}, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to read config file: %w", err)
+	}
+	var cfg appconfig.Config
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return nil, fmt.Errorf("failed to parse config file: %w", err)
+	}
+	return &cfg, nil
 }
 
 // disabledInConfig reports whether the loaded config disables usage metrics. A

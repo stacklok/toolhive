@@ -354,10 +354,62 @@ components:
                 refresh_token_max_lifetime:
                     description: |-
                         RefreshTokenMaxLifetime caps the lifetime of grants that can be exchanged
-                        for child refresh tokens. Empty refuses those grants. Deriving a child also
-                        needs id_jag_max_lifetime, because a child allows ID-JAGs and is capped by
-                        that value; without it every derive is refused with token_type_not_permitted.
+                        for child refresh tokens. Empty refuses those grants. Setting it also needs
+                        id_jag_max_lifetime, because a child allows ID-JAGs and is capped by that
+                        value; validation rejects refresh_token_max_lifetime without it.
                     type: string
+            type: object
+        AuthenticationDelegateClientIDJAG:
+            description: |-
+                IDJAG lists the authorization servers this client may ask for an
+                Identity Assertion JWT Authorization Grant (ID-JAG) for. Valid only with
+                restricted, with exchange_refresh_tokens.id_jag_max_lifetime set, and with
+                token exchange enabled.
+            properties:
+                targets:
+                    description: |-
+                        Targets are the authorization servers the client may ask for an ID-JAG
+                        for. At least one is required.
+                    items:
+                        $ref: '#/components/schemas/AuthenticationDelegateClientIDJAGTarget'
+                    type: array
+                    uniqueItems: false
+            type: object
+        AuthenticationDelegateClientIDJAGTarget:
+            properties:
+                client_id:
+                    description: ClientID is this client's client_id at the other authorization server.
+                    type: string
+                issuer:
+                    description: |-
+                        Issuer is the issuer of the other authorization server. The client sends
+                        it as the request's audience, and it becomes the ID-JAG's aud exactly as
+                        written here. It must be an absolute https URL, or http on a loopback
+                        host, with no query, fragment or userinfo. It must be well-formed: lower-case
+                        scheme and host, no default port (":443" for https, ":80" for http), no dot
+                        segments, empty path segments, unneeded percent-encoding or leading zeros
+                        in the port. One trailing slash is allowed and is kept as written. It must
+                        be unique within the client, and the (issuer, client_id) pair must be
+                        unique across delegate clients; both comparisons ignore one trailing
+                        slash. It must not be this server's issuer, token endpoint or one of its
+                        allowed_audiences; that comparison ignores case in the scheme and host, a
+                        default port and one trailing slash.
+                    type: string
+                lifetime:
+                    description: |-
+                        Lifetime is how long each ID-JAG lives, as a Go duration string in whole
+                        seconds (e.g. "60s"). Defaults to 60s; at most 300s.
+                    type: string
+                resources:
+                    description: |-
+                        Resources are the resources behind the other authorization server, such
+                        as an MCP endpoint, that the client may name as the request's resource.
+                        At least one is required. Each must be a valid RFC 8707 resource URI,
+                        listed once.
+                    items:
+                        type: string
+                    type: array
+                    uniqueItems: false
             type: object
         AuthenticationDelegateClientRunConfig:
             properties:
@@ -471,6 +523,8 @@ components:
                     uniqueItems: false
                 exchange_refresh_tokens:
                     $ref: '#/components/schemas/AuthenticationDelegateClientExchangeRefreshTokens'
+                id_jag:
+                    $ref: '#/components/schemas/AuthenticationDelegateClientIDJAG'
                 self_issued_subject_tokens:
                     description: |-
                         SelfIssuedSubjectTokens is any or restricted, and is required. With
@@ -1035,8 +1089,10 @@ components:
                 upstreams:
                     description: |-
                         Upstreams configures connections to upstream Identity Providers for
-                        interactive authorization. It may be empty only when DelegateClients or a
-                        TrustedIssuer with JWTBearerGrant enables token-only operation.
+                        interactive authorization. It may be empty only when token-only operation
+                        is enabled by DelegateClients (also under InboundGrants.TokenExchange),
+                        InboundGrants.SPIFFEClientAuth, or a TrustedIssuer with JWTBearerGrant
+                        (also under InboundGrants.JWTBearer).
                         Multiple upstreams are supported for sequential authorization chains.
                     items:
                         $ref: '#/components/schemas/AuthenticationUpstreamRunConfig'
@@ -1059,8 +1115,8 @@ components:
         AuthenticationSPIFFEBundleSourceRunConfig:
             description: |-
                 BundleSource declares exactly one trust-bundle source and is validated for
-                shape here. The standalone file loader exists, but source initialization
-                is not wired into SPIFFE authentication.
+                shape here. Only the file source is loaded in this build; bundle_endpoint
+                and workload_api are rejected by Validate.
             properties:
                 endpoint:
                     $ref: '#/components/schemas/AuthenticationSPIFFEBundleEndpointSourceRunConfig'
@@ -1721,6 +1777,11 @@ components:
                         Empty or zero uses the default timeout of 30 seconds.
                     example: 30s
                     type: string
+                read_only_rootfs:
+                    description: |-
+                        Whether to mount the container's root filesystem as read-only.
+                        Only applicable to Docker/Podman deployments.
+                    type: boolean
                 registry:
                     description: Registry is the optional registry name to resolve the server from (e.g. "default").
                     type: string
@@ -3949,6 +4010,13 @@ components:
                 rate_limit_namespace:
                     description: RateLimitNamespace is the Kubernetes namespace for Redis key derivation.
                     type: string
+                read_only_rootfs:
+                    description: |-
+                        ReadOnlyRootfs mounts the MCP server container's root filesystem as read-only.
+                        /tmp, /var/tmp and /run get a small noexec tmpfs unless a volume targets them.
+                        Opt-in: servers that write anywhere else outside their mounted volumes will fail.
+                        Only applicable to Docker/Podman deployments.
+                    type: boolean
                 registry_api_url:
                     description: |-
                         RegistryAPIURL is the registry API URL that served this server's metadata.
@@ -4989,8 +5057,11 @@ components:
                         authorization server for this grant; it is NOT a resource/API
                         identifier — a bare resource audience is deliberately not accepted
                         here, that would let any RFC 8707 resource-scoped token satisfy the
-                        grant instead of only tokens minted for this AS. Defaults to
-                        [tokenEndpoint] when empty, preserving prior exact-match behavior.
+                        grant instead of only tokens minted for this AS. When empty, the plain
+                        JWT-bearer grant accepts the token endpoint, and the ID-JAG grant accepts
+                        the token endpoint and this server's issuer identifier, unless the issuer
+                        is also an allowed resource audience. A configured list replaces both
+                        defaults.
                     items:
                         type: string
                     type: array
@@ -5260,6 +5331,11 @@ components:
                         Empty or zero uses the default timeout of 30 seconds.
                     example: 30s
                     type: string
+                read_only_rootfs:
+                    description: |-
+                        Whether to mount the container's root filesystem as read-only.
+                        Only applicable to Docker/Podman deployments.
+                    type: boolean
                 runtime_config:
                     $ref: '#/components/schemas/TemplatesRuntimeConfig'
                 secrets:

@@ -179,7 +179,7 @@ func TestReconcileConfiguredClient_SharedBehaviour(t *testing.T) {
 			wantScopes: []string{"a"},
 		},
 		{
-			name: "placeholder with changed scopes is refused and the stored row is unchanged",
+			name: "placeholder with changed scopes is replaced",
 			clients: func(t *testing.T) []fosite.Client {
 				t.Helper()
 				return []fosite.Client{
@@ -187,14 +187,12 @@ func TestReconcileConfiguredClient_SharedBehaviour(t *testing.T) {
 					placeholder(t, "id-a", []string{"openid", "profile"}, nil),
 				}
 			},
-			wantRefused:  true,
-			wantErr:      "SPIFFE-reserved clients must match exactly",
-			wantScopes:   []string{"openid"},
+			wantScopes:   []string{"openid", "profile"},
 			wantReserved: true,
 			wantIdentity: "id-a",
 		},
 		{
-			name: "placeholder with changed resources is refused and the stored row is unchanged",
+			name: "placeholder with changed resources is replaced",
 			clients: func(t *testing.T) []fosite.Client {
 				t.Helper()
 				return []fosite.Client{
@@ -202,15 +200,13 @@ func TestReconcileConfiguredClient_SharedBehaviour(t *testing.T) {
 					placeholder(t, "id-a", []string{"openid"}, []string{"https://res-b.example"}),
 				}
 			},
-			wantRefused:   true,
-			wantErr:       "SPIFFE-reserved clients must match exactly",
 			wantScopes:    []string{"openid"},
 			wantReserved:  true,
 			wantIdentity:  "id-a",
-			wantResources: []string{"https://res-a.example"},
+			wantResources: []string{"https://res-b.example"},
 		},
 		{
-			name: "placeholder with a different identity is refused",
+			name: "placeholder with a different identity is replaced",
 			clients: func(t *testing.T) []fosite.Client {
 				t.Helper()
 				return []fosite.Client{
@@ -218,11 +214,9 @@ func TestReconcileConfiguredClient_SharedBehaviour(t *testing.T) {
 					placeholder(t, "id-b", []string{"openid"}, nil),
 				}
 			},
-			wantRefused:  true,
-			wantErr:      "SPIFFE-reserved clients must match exactly",
 			wantScopes:   []string{"openid"},
 			wantReserved: true,
-			wantIdentity: "id-a",
+			wantIdentity: "id-b",
 		},
 		{
 			name: "unchanged placeholder is idempotent",
@@ -559,6 +553,77 @@ func TestReconcileConfiguredClient_ClientMetadataChangeWarning(t *testing.T) {
 				stored, err := s.GetClient(t.Context(), id)
 				require.NoError(t, err)
 				assert.Equal(t, fingerprintOfClient(newClient), fingerprintOfClient(stored))
+			})
+		}
+	}
+}
+
+// TestReconcileConfiguredClient_PlaceholderReplacementWarning deliberately does
+// not run in parallel: it swaps the global slog default.
+//
+//nolint:paralleltest // captures the process-global slog default
+func TestReconcileConfiguredClient_PlaceholderReplacementWarning(t *testing.T) {
+	id := reconcileTestClientID
+
+	tests := []struct {
+		name            string
+		oldIdentity     string
+		newIdentity     string
+		oldScopes       []string
+		newScopes       []string
+		oldResources    []string
+		newResources    []string
+		wantIdentityChg bool
+	}{
+		{
+			name:        "scope narrowing logs once",
+			oldIdentity: "id-a", newIdentity: "id-a",
+			oldScopes: []string{"openid", "profile"}, newScopes: []string{"openid"},
+		},
+		{
+			name:        "resources change logs once",
+			oldIdentity: "id-a", newIdentity: "id-a",
+			oldScopes: []string{"openid"}, newScopes: []string{"openid"},
+			oldResources: []string{"https://res-a.example"}, newResources: []string{"https://res-b.example"},
+		},
+		{
+			name:        "identity change logs once without the identity value",
+			oldIdentity: "id-a", newIdentity: "id-b",
+			oldScopes: []string{"openid"}, newScopes: []string{"openid"},
+			wantIdentityChg: true,
+		},
+	}
+
+	for _, backend := range configuredClientBackends() {
+		for _, tt := range tests {
+			t.Run(backend.name+"/"+tt.name, func(t *testing.T) {
+				s := backend.new(t)
+				require.NoError(t, s.ReconcileConfiguredClient(t.Context(),
+					testPlaceholder(t, id, tt.oldIdentity, tt.oldScopes, tt.oldResources)))
+
+				logs := captureSlog(t)
+				require.NoError(t, s.ReconcileConfiguredClient(t.Context(),
+					testPlaceholder(t, id, tt.newIdentity, tt.newScopes, tt.newResources)))
+
+				warns := logs.warnsFor(id)
+				require.Len(t, warns, 1)
+				assert.Equal(t, tt.oldScopes, warns[0]["old_scopes"])
+				assert.Equal(t, tt.newScopes, warns[0]["new_scopes"])
+				if tt.oldResources != nil || tt.newResources != nil {
+					assert.Equal(t, tt.oldResources, warns[0]["old_resources"])
+					assert.Equal(t, tt.newResources, warns[0]["new_resources"])
+				} else {
+					assert.NotContains(t, warns[0], "old_resources")
+				}
+				if tt.wantIdentityChg {
+					assert.Equal(t, true, warns[0]["identity_changed"])
+				} else {
+					assert.NotContains(t, warns[0], "identity_changed")
+				}
+				for _, v := range warns[0] {
+					assert.NotEqual(t, tt.oldIdentity, v, "the identity hash must not be logged")
+					assert.NotEqual(t, tt.newIdentity, v, "the identity hash must not be logged")
+				}
 			})
 		}
 	}

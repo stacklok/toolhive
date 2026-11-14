@@ -238,7 +238,7 @@ MCPExternalAuthConfig resources can be referenced via two paths:
 
 **Controller**: `cmd/thv-operator/controllers/mcpexternalauthconfig_controller.go`
 
-`EmbeddedAuthServerConfig` can carry top-level SPIFFE trust-domain declarations in `spiffeTrustDomains` and canonical client associations in `inboundGrants.spiffeClientAuth` (`cmd/thv-operator/api/v1beta1/mcpexternalauthconfig_types.go`). The operator converts these CRD fields into runtime config via `buildSPIFFETrustDomainRunConfigs`/`buildSPIFFEClientAuthRunConfigs` in `cmd/thv-operator/pkg/controllerutil/authserver.go`, and projects file-source ConfigMap data read-only. `newServer` constructs the configured bundle source and passes its X.509 and JWT views to the authorization server. However, `RunConfig.Validate()` still rejects any non-empty SPIFFE trust configuration before the runner starts, so this wiring is not reachable for SPIFFE authentication in normal deployment. The proxy runner and vMCP can start the auth-server TLS listener on fixed port 8443, but X.509-SVID verification is not implemented. The operator's `embeddedAuthServer.tlsListener` field, its validation and the pod rollout rules are described in the [Operator configuration](18-spiffe-association-declarations.md#operator-configuration) section of that document. See [SPIFFE Association Declarations](18-spiffe-association-declarations.md) for current scope.
+`EmbeddedAuthServerConfig` can carry top-level SPIFFE trust-domain declarations in `spiffeTrustDomains` and canonical client associations in `inboundGrants.spiffeClientAuth` (`cmd/thv-operator/api/v1beta1/mcpexternalauthconfig_types.go`). The operator converts these CRD fields into runtime config via `buildSPIFFETrustDomainRunConfigs`/`buildSPIFFEClientAuthRunConfigs` in `cmd/thv-operator/pkg/controllerutil/authserver.go`, and projects file-source ConfigMap data read-only. `newServer` constructs the configured bundle source and passes its X.509 and JWT views to the authorization server. `RunConfig.Validate()` accepts only the `file` bundle source, so a `bundle_endpoint` or `workload_api` source passes the CRD schema but is rejected by the MCPExternalAuthConfig validation and by the VirtualMCPServer inline `authServerConfig` validation (both through `EmbeddedAuthServerConfig.ValidateSPIFFEBundleSourceTypes`, which calls `authserver.ValidateRuntimeSPIFFEBundleSourceType`), and again by `BuildAuthServerRunConfig` when a referencing workload reconciles. With a `file` source, JWT-SVID and X.509-SVID client authentication are enforced. The proxy runner and vMCP can start the auth-server TLS listener on fixed port 8443. The operator's `embeddedAuthServer.tlsListener` field, its validation and the pod rollout rules are described in the [Operator configuration](18-spiffe-association-declarations.md#operator-configuration) section of that document. When the listener is enabled, the operator adds an `https-auth` container port and Service port 8443 (with `appProtocol: https`) alongside the existing `http` port. X.509 client authentication needs TLS passed through to the listener, because a proxy or Ingress that terminates TLS drops the client certificate. See [SPIFFE Association Declarations](18-spiffe-association-declarations.md) for current scope.
 
 ### MCPOIDCConfig
 
@@ -295,7 +295,7 @@ Defines reusable validating and mutating webhook middleware configurations that 
 MCPWebhookConfig declares one or more `validating` and/or `mutating` webhooks (URL, timeout, failure policy, optional TLS, optional HMAC signing). At least one webhook must be defined (CEL-enforced). The MCPServer references it via `spec.webhookConfigRef`, and the proxy-runner injects the corresponding middleware into the request chain.
 
 **Key features:**
-- Per-webhook `failurePolicy` (`fail` or `ignore`) for handling webhook errors
+- Per-webhook `failurePolicy` (`fail` or `ignore`) for handling webhook errors. `ignore` applies to timeouts, network errors and invalid webhook responses; a failure inside ToolHive before the call (encoding the payload, building the request, reading the HMAC secret) always denies the request
 - Optional `tlsConfig` with CA bundle, mTLS client cert, or `insecureSkipVerify`
 - Optional `hmacSecretRef` adds the `X-Toolhive-Signature` header to outgoing payloads
 
@@ -432,6 +432,21 @@ VirtualMCPServer creates a virtual MCP server that aggregates tools, resources, 
 - Discovered backends with individual health status
 - Backend count
 - Detailed conditions for validation, discovery, and readiness
+
+For incoming OIDC authentication, `CABundleRefValidated` reports whether the CA
+ConfigMap and selected key referenced through `spec.incomingAuth.oidcConfigRef`
+exist. It is `True` with reason `CABundleRefValid`, or `False` with reason
+`CABundleRefNotFound` for a missing ConfigMap and `CABundleRefInvalid` for an
+invalid reference or missing key. The key defaults to `ca.crt`. Missing or invalid
+CA references produce advisory conditions that allow reconciliation to continue;
+the condition does not alter TLS configuration or add CRD spec fields. Removing
+the CA reference removes the condition. Indexed ConfigMap watches follow the
+shared OIDC configuration back to its vMCP consumers and refresh the condition
+when the ConfigMap is created, updated, or deleted.
+Transient ConfigMap read errors preserve the previous condition and return an
+error for retry before resource reconciliation and the status flush. Existing
+deployed resources remain in place, while pending resource and status updates
+are deferred until a successful retry.
 
 **References**: MCPGroup (via `spec.groupRef.name`)
 

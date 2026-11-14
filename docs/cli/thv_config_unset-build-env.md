@@ -28,14 +28,14 @@ thv config unset-build-env [KEY] [flags]
 ### Options
 
 ```
-      --all    Remove all build environment variables
-  -h, --help   help for unset-build-env
+      --all[=true|false]    Remove all build environment variables
+  -h, --help[=true|false]   help for unset-build-env
 ```
 
 ### Options inherited from parent commands
 
 ```
-      --debug   Enable debug mode
+      --debug[=true|false]   Enable debug mode
 ```
 
 ### SEE ALSO

@@ -37,9 +37,9 @@ func TestExchangeRefreshTokenCaps(t *testing.T) {
 
 	t.Run("empty cap is left out", func(t *testing.T) {
 		t.Parallel()
-		caps, err := exchangeRefreshTokenCaps(&DelegateClientExchangeRefreshTokens{RefreshTokenMaxLifetime: "1h"})
+		caps, err := exchangeRefreshTokenCaps(&DelegateClientExchangeRefreshTokens{IDJAGMaxLifetime: "1h"})
 		require.NoError(t, err)
-		assert.Equal(t, map[string]time.Duration{oauthproto.TokenTypeRefreshToken: time.Hour}, caps)
+		assert.Equal(t, map[string]time.Duration{oauthproto.TokenTypeIDJAG: time.Hour}, caps)
 	})
 
 	t.Run("unparsable cap is an error", func(t *testing.T) {
@@ -72,7 +72,7 @@ func TestConfiguredClientPolicies(t *testing.T) {
 		},
 	}
 
-	policies, err := configuredClientPolicies(clients)
+	policies, err := configuredClientPolicies(clients, nil)
 	require.NoError(t, err)
 
 	// Only restricted clients get an entry, keyed by their own ID.
@@ -104,7 +104,7 @@ func TestConfiguredClientPolicies(t *testing.T) {
 func TestConfiguredClientPoliciesNoTokenExchange(t *testing.T) {
 	t.Parallel()
 
-	policies, err := configuredClientPolicies([]DelegateClient{{ClientID: "plain"}})
+	policies, err := configuredClientPolicies([]DelegateClient{{ClientID: "plain"}}, nil)
 	require.NoError(t, err)
 	assert.Nil(t, policies)
 }

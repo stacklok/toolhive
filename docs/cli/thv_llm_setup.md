@@ -69,10 +69,31 @@ also enables Claude Code's gateway model discovery, which adds any further model
 the gateway serves as separate picker rows without re-running setup. If the
 gateway's model list cannot be fetched, or has no Bedrock model IDs, setup does
 not configure Claude Code (unless --models pins every tier). The setting is
-persisted and only affects Claude Code.
+persisted and affects Claude Code and Codex.
 To add it to an already-configured Claude Code, re-run:
 
   thv llm setup --client claude-code --bedrock-compat
+
+With --bedrock-compat, Codex is pinned per tier to the newest Bedrock GPT model
+of each family the gateway lists: sol as the main model (top-level model in
+config.toml, with its context window as model_context_window when the gateway
+reports one), and terra and luna as the background memory models
+(memories.consolidation_model and memories.extract_model). Without a sol model
+the main model is terra, then luna, and a memory tier the gateway has no model
+for uses the main model. web_search is set to
+"disabled", because Bedrock rejects Codex's hosted web search tool. Only the
+closed GPT models served through us. or global. inference profiles (e.g.
+us.openai.gpt-6.1-sol) speak the Responses API Codex uses; the open-weight
+models (nvidia.*, qwen.*, deepseek.*, openai.gpt-oss-*) serve only Chat
+Completions, so setup never picks them for Codex, and a --models entry naming
+one is left to the other tools that can use it. Override a tier with --models:
+
+  thv llm setup --client codex --bedrock-compat --models us.openai.gpt-6.1-sol
+
+Like Claude Code's Bedrock keys, these Codex keys belong to ToolHive once a
+setup with --bedrock-compat has written them: a later setup without it and
+"thv llm teardown" remove them, whatever they hold, and warn which keys they
+removed. If no Bedrock setup wrote them, they are left as you set them.
 
 Re-running is idempotent and uses the cached token (no browser prompt).
 
@@ -85,29 +106,29 @@ thv llm setup [flags]
 ### Options
 
 ```
-      --anthropic-path-prefix string   Path prefix appended to the gateway URL for Anthropic API tools (e.g. /anthropic). Also used for Pi model discovery. When omitted, the gateway is probed automatically.
-      --audience string                OIDC audience (optional)
-      --bedrock-compat                 Configure Claude Code for a gateway that forwards to AWS Bedrock: write CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1 (Bedrock rejects the experimental anthropic-beta headers) and pin each tier to the newest Bedrock model the gateway advertises (override with --models). Persisted, so a later plain "thv llm setup" keeps it; clear with --bedrock-compat=false. Only affects Claude Code.
-      --callback-port int              OIDC callback port (omit to keep current; default: ephemeral)
-      --client string                  Configure only this AI tool by name (e.g. claude-code, cursor, codex). Omit to configure all detected tools.
-      --client-id string               OIDC client ID
-      --enable-1m                      With --bedrock-compat, append the [1m] suffix to the opus and sonnet model IDs to opt into the 1M-token context window on Bedrock (never haiku, which is 200K). Off by default.
-      --gateway-url string             LLM gateway base URL (must use HTTPS)
-  -h, --help                           help for setup
-      --issuer string                  OIDC issuer URL
-      --lazy                           Skip the interactive OIDC login and defer it until the first time a configured tool accesses the gateway. Tool config and persisted settings are written normally. Useful for unattended provisioning (e.g. an MDM profile).
-      --models strings                 Model IDs to configure, comma-separated or by repeating the flag, e.g. --models=us.anthropic.claude-opus-4-8,us.anthropic.claude-sonnet-5. For Pi these filter its discovered models (Pi does not support --lazy). For credential-helper clients (Claude Desktop) these become inferenceModels. With --bedrock-compat, each ID overrides a Claude Code tier by matching 'haiku', 'opus', 'sonnet', or 'fable' in the ID (IDs matching no tier are ignored with a warning). Omit to pin each tier to the newest Bedrock model discovered from the gateway.
-      --proxy-port int                 Localhost proxy listen port (omit to keep current; default: 14000)
-      --scopes strings                 OIDC scopes to request, comma-separated or by repeating the flag. offline_access is always requested; pass openid explicitly if the provider needs it (the default scopes are openid and offline_access). Omit to keep the current scopes; an empty value restores the defaults. Changing the list clears cached tokens so the next sign-in requests the new scopes
-      --short-prompt-cache             Use Claude Code's five-minute prompt cache instead of ToolHive's one-hour default. Persisted, so a later plain "thv llm setup" keeps it; use --short-prompt-cache=false to restore one-hour caching.
-      --skip-browser                   Print the OIDC authorization URL instead of opening a browser, then wait for the callback. Use in headless/SSH/CI environments where no system browser is available.
-      --tls-skip-verify                Skip TLS certificate verification for the upstream gateway (local dev only). For direct-mode tools (Claude Code, Gemini CLI) this sets NODE_TLS_REJECT_UNAUTHORIZED=0, disabling TLS for ALL of that tool's outbound connections. For proxy-mode tools only the proxy-to-gateway connection is affected.
+      --anthropic-path-prefix string      Path prefix appended to the gateway URL for Anthropic API tools (e.g. /anthropic). Also used for Pi model discovery. When omitted, the gateway is probed automatically.
+      --audience string                   OIDC audience (optional)
+      --bedrock-compat[=true|false]       Configure Claude Code for a gateway that forwards to AWS Bedrock: write CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1 (Bedrock rejects the experimental anthropic-beta headers) and pin each tier to the newest Bedrock model the gateway advertises (override with --models). For Codex, pin the newest Bedrock GPT model per tier (sol main, terra and luna for memories) and set web_search = "disabled". Persisted, so a later plain "thv llm setup" keeps it; clear with --bedrock-compat=false. Only affects Claude Code and Codex.
+      --callback-port int                 OIDC callback port (omit to keep current; default: ephemeral)
+      --client string                     Configure only this AI tool by name (e.g. claude-code, cursor, codex). Omit to configure all detected tools.
+      --client-id string                  OIDC client ID
+      --enable-1m[=true|false]            With --bedrock-compat, append the [1m] suffix to the opus and sonnet model IDs to opt into the 1M-token context window on Bedrock (never haiku, which is 200K). Off by default.
+      --gateway-url string                LLM gateway base URL (must use HTTPS)
+  -h, --help[=true|false]                 help for setup
+      --issuer string                     OIDC issuer URL
+      --lazy[=true|false]                 Skip the interactive OIDC login and defer it until the first time a configured tool accesses the gateway. Tool config and persisted settings are written normally. Useful for unattended provisioning (e.g. an MDM profile).
+      --models strings                    Model IDs to configure, comma-separated or by repeating the flag, e.g. --models=us.anthropic.claude-opus-4-8,us.anthropic.claude-sonnet-5. For Pi these filter its discovered models (Pi does not support --lazy). For credential-helper clients (Claude Desktop) these become inferenceModels. With --bedrock-compat, each ID overrides a Claude Code tier by matching 'haiku', 'opus', 'sonnet', or 'fable' in the ID (IDs matching no tier are ignored with a warning), and a us./global.openai.gpt-* ID overrides a Codex tier by matching 'sol', 'terra', or 'luna' (an ID naming none pins the main model; openai.gpt-oss-* and other vendors' IDs are left to other tools). Omit to pin each tier, and Codex, to the newest Bedrock model discovered from the gateway.
+      --proxy-port int                    Localhost proxy listen port (omit to keep current; default: 14000)
+      --scopes strings                    OIDC scopes to request, comma-separated or by repeating the flag. offline_access is always requested; pass openid explicitly if the provider needs it (the default scopes are openid and offline_access). Omit to keep the current scopes; an empty value restores the defaults. Changing the list clears cached tokens so the next sign-in requests the new scopes
+      --short-prompt-cache[=true|false]   Use Claude Code's five-minute prompt cache instead of ToolHive's one-hour default. Persisted, so a later plain "thv llm setup" keeps it; use --short-prompt-cache=false to restore one-hour caching.
+      --skip-browser[=true|false]         Print the OIDC authorization URL instead of opening a browser, then wait for the callback. Use in headless/SSH/CI environments where no system browser is available.
+      --tls-skip-verify[=true|false]      Skip TLS certificate verification for the upstream gateway (local dev only). For direct-mode tools (Claude Code, Gemini CLI) this sets NODE_TLS_REJECT_UNAUTHORIZED=0, disabling TLS for ALL of that tool's outbound connections. For proxy-mode tools only the proxy-to-gateway connection is affected.
 ```
 
 ### Options inherited from parent commands
 
 ```
-      --debug   Enable debug mode
+      --debug[=true|false]   Enable debug mode
 ```
 
 ### SEE ALSO

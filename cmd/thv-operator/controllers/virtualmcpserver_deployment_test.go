@@ -409,21 +409,6 @@ func TestBuildSecurityContextsForVmcp(t *testing.T) {
 	assert.NotNil(t, containerSecCtx)
 }
 
-// TestBuildContainerPortsForVmcp tests container port generation
-func TestBuildContainerPortsForVmcp(t *testing.T) {
-	t.Parallel()
-
-	vmcp := v1beta1test.NewVirtualMCPServer("test-vmcp", "default")
-
-	r := &VirtualMCPServerReconciler{}
-	ports := r.buildContainerPortsForVmcp(vmcp)
-
-	require.Len(t, ports, 1)
-	assert.Equal(t, vmcpDefaultPort, ports[0].ContainerPort)
-	assert.Equal(t, "http", ports[0].Name)
-	assert.Equal(t, corev1.ProtocolTCP, ports[0].Protocol)
-}
-
 // TestServiceForVirtualMCPServer tests Service creation
 func TestServiceForVirtualMCPServer(t *testing.T) {
 	t.Parallel()

@@ -489,6 +489,16 @@ Standard Kubernetes conditions representing the latest observations of the Virtu
 - `AuthConfigured`: Indicates whether authentication is configured
 - `BackendsDiscovered`: Indicates whether backends have been discovered
 - `GroupRefValidated`: Indicates whether the GroupRef is valid
+- `CABundleRefValidated`: Checks the incoming OIDC CA ConfigMap and selected key
+  referenced through `spec.incomingAuth.oidcConfigRef`. The key defaults to
+  `ca.crt`. Reasons are `CABundleRefValid` (`True`), `CABundleRefNotFound`
+  (`False`, missing ConfigMap), and `CABundleRefInvalid` (`False`, invalid
+  reference or missing key). Missing or invalid references are advisory and allow
+  reconciliation to continue. Removing the CA reference removes the condition;
+  ConfigMap create, update, and delete events refresh it. Transient ConfigMap read
+  errors preserve the previous condition and retry before resource reconciliation
+  and the status flush, deferring pending updates while deployed resources remain
+  in place.
 
 ### `.status.discoveredBackends`
 
@@ -713,4 +723,4 @@ The VirtualMCPServer CRD includes comprehensive validation:
 - [MCPExternalAuthConfig](./crd-api.md#apiv1beta1mcpexternalauthconfig): External authentication configuration
 - [MCPToolConfig](./crd-api.md#apiv1beta1mcptoolconfig): Tool filtering and renaming configuration
 - [Virtual MCP Server Observability](./virtualmcpserver-observability.md): Telemetry and metrics documentation
-- [Virtual MCP Proposal](https://github.com/stacklok/toolhive-rfcs/blob/main/rfcs/THV-0008-virtual-mcp-server.md): Complete design proposal
+- [Virtual MCP Proposal](https://github.com/stacklok/toolhive-rfcs/blob/main/toolhive/THV-0008-virtual-mcp-server.md): Complete design proposal

@@ -16,6 +16,8 @@ import (
 	"strings"
 	"time"
 
+	"go.opentelemetry.io/otel/trace"
+
 	coreaudit "github.com/stacklok/toolhive-core/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/mcp"
@@ -708,6 +710,24 @@ func (a *Auditor) addMetadata(event *AuditEvent, r *http.Request, duration time.
 	if backendInfo, ok := BackendInfoFromContext(r.Context()); ok && backendInfo != nil && backendInfo.BackendName != "" {
 		event.Metadata.Extra["backend_name"] = backendInfo.BackendName
 	}
+
+	stampTraceContext(r.Context(), event)
+}
+
+// stampTraceContext records the trace and span IDs carried by ctx on the event,
+// so an audit record can be joined to the distributed trace of the request that
+// produced it. It adds nothing when ctx carries no valid span context, which is
+// the case when the request arrived without a traceparent and tracing is off.
+func stampTraceContext(ctx context.Context, event *AuditEvent) {
+	sc := trace.SpanContextFromContext(ctx)
+	if !sc.IsValid() {
+		return
+	}
+	if event.Metadata.Extra == nil {
+		event.Metadata.Extra = make(map[string]any)
+	}
+	event.Metadata.Extra[MetadataExtraKeyTraceID] = sc.TraceID().String()
+	event.Metadata.Extra[MetadataExtraKeySpanID] = sc.SpanID().String()
 }
 
 // addEventData adds request/response data to the audit event if configured.
@@ -837,6 +857,7 @@ func (a *Auditor) logSSEConnectionEvent(r *http.Request, statusCode int) {
 		"transport":  a.transportType,
 		"user_agent": r.Header.Get("User-Agent"),
 	}
+	stampTraceContext(r.Context(), event)
 
 	// Log the event
 	event.LogTo(r.Context(), a.auditLogger, LevelAudit)

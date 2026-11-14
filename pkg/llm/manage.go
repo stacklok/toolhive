@@ -48,6 +48,9 @@ func (c *Config) SetFields(opts SetOptions) error {
 		c.ShortPromptCache = *opts.ShortPromptCache
 	}
 	if opts.BedrockCompat != nil {
+		if *opts.BedrockCompat != c.Bedrock.Compat {
+			c.pinLegacyBedrockRecords()
+		}
 		c.Bedrock.Compat = *opts.BedrockCompat
 	}
 	if opts.Enable1M != nil {
@@ -61,6 +64,19 @@ func (c *Config) SetFields(opts SetOptions) error {
 		return c.ValidatePartial()
 	}
 	return c.Validate()
+}
+
+// pinLegacyBedrockRecords gives each Bedrock client record that predates
+// ToolConfig.BedrockCompat the persisted compat setting it falls back to, so
+// changing that setting does not change what the record says its setup wrote.
+// Records are copied first: c may share its slice with the caller's config.
+func (c *Config) pinLegacyBedrockRecords() {
+	c.ConfiguredTools = slices.Clone(c.ConfiguredTools)
+	for i, tc := range c.ConfiguredTools {
+		if _, ok := bedrockClients[tc.Tool]; ok && tc.BedrockCompat == nil {
+			c.ConfiguredTools[i].BedrockCompat = new(c.Bedrock.Compat)
+		}
+	}
 }
 
 // SetOptions carries the flag values for the "config set" command.

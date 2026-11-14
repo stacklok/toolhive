@@ -357,8 +357,10 @@ spec:
                                 acceptedAudiences:
                                   description: |-
                                     AcceptedAudiences identifies this authorization server's accepted
-                                    assertion audiences. When omitted, runtime validation defaults to the
-                                    token endpoint.
+                                    assertion audiences. When omitted, plain JWT-bearer assertions must name
+                                    the token endpoint, and ID-JAG assertions may name the token endpoint or
+                                    this server's issuer identifier, unless the issuer is also an allowed
+                                    resource audience. A configured list replaces these defaults.
                                   items:
                                     maxLength: 2048
                                     minLength: 1
@@ -439,9 +441,10 @@ spec:
                           description: |-
                             SPIFFEClientConfig associates one SPIFFE principal pattern from a declared
                             trust domain with an explicit OAuth client identity and permissions.
-                            Configuration is not authentication: configured SPIFFE clients remain
-                            non-public OAuth clients without a secret until live SPIFFE credential
-                            validation is implemented (see SPIFFETrustDomainConfig's doc comment).
+                            Declaring a client does not grant access by itself. SPIFFE clients
+                            authenticate with a JWT-SVID or an X.509-SVID and have no client secret.
+                            Trust material comes from the declared bundle source (see
+                            SPIFFETrustDomainConfig's doc comment).
 
                             GrantTypes is deliberately not exposed here: the runtime only accepts
                             exactly the RFC 8693 token-exchange grant for a SPIFFE client
@@ -812,24 +815,20 @@ spec:
                   spiffeTrustDomains:
                     description: |-
                       SPIFFETrustDomains declares SPIFFE trust domains for
-                      inboundGrants.spiffeClientAuth associations. See SPIFFETrustDomainConfig's
-                      doc comment for why declaring a domain does not by itself enable
-                      authentication in this build.
+                      inboundGrants.spiffeClientAuth associations. Each declaration must be
+                      referenced by an inboundGrants.spiffeClientAuth entry.
                     items:
                       description: |-
                         SPIFFETrustDomainConfig declares one SPIFFE trust domain accepted by the
-                        embedded authorization server. Configuration is not authentication: no
-                        live X.509-SVID or JWT-SVID validation exists yet, so a declared trust
-                        domain does not by itself let any workload authenticate — RunConfig.Validate
-                        (pkg/authserver/config.go) currently hard-rejects any non-empty
-                        spiffeTrustDomains at authserver startup via validateSPIFFENotYetEnforced,
-                        a deliberate placeholder until real SVID verification lands.
+                        embedded authorization server. A declared domain becomes usable only after
+                        the configured source supplies trust material during auth-server startup.
                       properties:
                         bundleSource:
                           description: |-
                             BundleSource declares exactly one trust-bundle source and is validated for
-                            shape here. The standalone file loader exists, but is not wired into SPIFFE
-                            authentication.
+                            shape here. Only the file source is loaded in this build; bundle_endpoint
+                            and workload_api are rejected when the auth-server configuration is
+                            validated.
                           properties:
                             endpoint:
                               description: |-
@@ -1191,11 +1190,10 @@ spec:
                       probes and metrics stay on plain HTTP. Both certificateSecretRef and
                       privateKeySecretRef are required. It is required when
                       inboundGrants.spiffeClientAuth enables spiffe_x509. That requirement is
-                      checked when the resource is reconciled and reported in status
-                      conditions; the API server does not reject it. The listener is
-                      reachable on the pod only: the operator does not yet add port 8443 to
-                      the Service or container ports. Updates to the referenced Secret
-                      contents are picked up without a pod restart.
+                      checked when the resource is reconciled and reported in status conditions;
+                      the API server does not reject it. The operator exposes the listener as an
+                      https-auth container port and Service port 8443. Updates to the referenced
+                      Secret contents are picked up without a pod restart.
                     properties:
                       certificateSecretRef:
                         description: CertificateSecretRef references the PEM-encoded
@@ -1431,8 +1429,10 @@ spec:
                             acceptedAudiences:
                               description: |-
                                 AcceptedAudiences identifies this authorization server's accepted
-                                assertion audiences. When omitted, runtime validation defaults to the
-                                token endpoint.
+                                assertion audiences. When omitted, plain JWT-bearer assertions must name
+                                the token endpoint, and ID-JAG assertions may name the token endpoint or
+                                this server's issuer identifier, unless the issuer is also an allowed
+                                resource audience. A configured list replaces these defaults.
                               items:
                                 maxLength: 2048
                                 minLength: 1
@@ -1542,8 +1542,10 @@ spec:
                     description: |-
                       UpstreamProviders configures connections to upstream Identity Providers.
                       When configured, the embedded auth server delegates interactive authentication
-                      to these providers. It may be omitted only when delegateClients or a trusted
-                      issuer with jwtBearerGrant enables token-only operation.
+                      to these providers. It may be omitted only when token-only operation is
+                      enabled by delegateClients (also under inboundGrants.tokenExchange),
+                      inboundGrants.spiffeClientAuth, or a trusted issuer with jwtBearerGrant
+                      (also under inboundGrants.jwtBearer).
                       MCPServer and MCPRemoteProxy support a single upstream; VirtualMCPServer supports multiple.
                     items:
                       description: |-
@@ -5887,8 +5889,10 @@ spec:
                                 acceptedAudiences:
                                   description: |-
                                     AcceptedAudiences identifies this authorization server's accepted
-                                    assertion audiences. When omitted, runtime validation defaults to the
-                                    token endpoint.
+                                    assertion audiences. When omitted, plain JWT-bearer assertions must name
+                                    the token endpoint, and ID-JAG assertions may name the token endpoint or
+                                    this server's issuer identifier, unless the issuer is also an allowed
+                                    resource audience. A configured list replaces these defaults.
                                   items:
                                     maxLength: 2048
                                     minLength: 1
@@ -5969,9 +5973,10 @@ spec:
                           description: |-
                             SPIFFEClientConfig associates one SPIFFE principal pattern from a declared
                             trust domain with an explicit OAuth client identity and permissions.
-                            Configuration is not authentication: configured SPIFFE clients remain
-                            non-public OAuth clients without a secret until live SPIFFE credential
-                            validation is implemented (see SPIFFETrustDomainConfig's doc comment).
+                            Declaring a client does not grant access by itself. SPIFFE clients
+                            authenticate with a JWT-SVID or an X.509-SVID and have no client secret.
+                            Trust material comes from the declared bundle source (see
+                            SPIFFETrustDomainConfig's doc comment).
 
                             GrantTypes is deliberately not exposed here: the runtime only accepts
                             exactly the RFC 8693 token-exchange grant for a SPIFFE client
@@ -6342,24 +6347,20 @@ spec:
                   spiffeTrustDomains:
                     description: |-
                       SPIFFETrustDomains declares SPIFFE trust domains for
-                      inboundGrants.spiffeClientAuth associations. See SPIFFETrustDomainConfig's
-                      doc comment for why declaring a domain does not by itself enable
-                      authentication in this build.
+                      inboundGrants.spiffeClientAuth associations. Each declaration must be
+                      referenced by an inboundGrants.spiffeClientAuth entry.
                     items:
                       description: |-
                         SPIFFETrustDomainConfig declares one SPIFFE trust domain accepted by the
-                        embedded authorization server. Configuration is not authentication: no
-                        live X.509-SVID or JWT-SVID validation exists yet, so a declared trust
-                        domain does not by itself let any workload authenticate — RunConfig.Validate
-                        (pkg/authserver/config.go) currently hard-rejects any non-empty
-                        spiffeTrustDomains at authserver startup via validateSPIFFENotYetEnforced,
-                        a deliberate placeholder until real SVID verification lands.
+                        embedded authorization server. A declared domain becomes usable only after
+                        the configured source supplies trust material during auth-server startup.
                       properties:
                         bundleSource:
                           description: |-
                             BundleSource declares exactly one trust-bundle source and is validated for
-                            shape here. The standalone file loader exists, but is not wired into SPIFFE
-                            authentication.
+                            shape here. Only the file source is loaded in this build; bundle_endpoint
+                            and workload_api are rejected when the auth-server configuration is
+                            validated.
                           properties:
                             endpoint:
                               description: |-
@@ -6721,11 +6722,10 @@ spec:
                       probes and metrics stay on plain HTTP. Both certificateSecretRef and
                       privateKeySecretRef are required. It is required when
                       inboundGrants.spiffeClientAuth enables spiffe_x509. That requirement is
-                      checked when the resource is reconciled and reported in status
-                      conditions; the API server does not reject it. The listener is
-                      reachable on the pod only: the operator does not yet add port 8443 to
-                      the Service or container ports. Updates to the referenced Secret
-                      contents are picked up without a pod restart.
+                      checked when the resource is reconciled and reported in status conditions;
+                      the API server does not reject it. The operator exposes the listener as an
+                      https-auth container port and Service port 8443. Updates to the referenced
+                      Secret contents are picked up without a pod restart.
                     properties:
                       certificateSecretRef:
                         description: CertificateSecretRef references the PEM-encoded
@@ -6961,8 +6961,10 @@ spec:
                             acceptedAudiences:
                               description: |-
                                 AcceptedAudiences identifies this authorization server's accepted
-                                assertion audiences. When omitted, runtime validation defaults to the
-                                token endpoint.
+                                assertion audiences. When omitted, plain JWT-bearer assertions must name
+                                the token endpoint, and ID-JAG assertions may name the token endpoint or
+                                this server's issuer identifier, unless the issuer is also an allowed
+                                resource audience. A configured list replaces these defaults.
                               items:
                                 maxLength: 2048
                                 minLength: 1
@@ -7072,8 +7074,10 @@ spec:
                     description: |-
                       UpstreamProviders configures connections to upstream Identity Providers.
                       When configured, the embedded auth server delegates interactive authentication
-                      to these providers. It may be omitted only when delegateClients or a trusted
-                      issuer with jwtBearerGrant enables token-only operation.
+                      to these providers. It may be omitted only when token-only operation is
+                      enabled by delegateClients (also under inboundGrants.tokenExchange),
+                      inboundGrants.spiffeClientAuth, or a trusted issuer with jwtBearerGrant
+                      (also under inboundGrants.jwtBearer).
                       MCPServer and MCPRemoteProxy support a single upstream; VirtualMCPServer supports multiple.
                     items:
                       description: |-

@@ -26,9 +26,9 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/stacklok/toolhive/pkg/authserver"
+	"github.com/stacklok/toolhive/pkg/authserver/claimnames"
 	authserverrunner "github.com/stacklok/toolhive/pkg/authserver/runner"
 	"github.com/stacklok/toolhive/pkg/authserver/server"
-	"github.com/stacklok/toolhive/pkg/authserver/server/session"
 	"github.com/stacklok/toolhive/pkg/authserver/server/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
@@ -276,7 +276,7 @@ func runExchangeRefreshTokenGrantFlows(t *testing.T, env *xrtEnv) {
 
 	t.Run("a client that may open grants cannot exchange the token for its input audience", func(t *testing.T) {
 		const idJAGOnlyEntry = `[{"type":"` + xrtGrantType + `","issuable_token_types":["` + oauthproto.TokenTypeIDJAG + `"]}]`
-		for param, wantCode := range map[string]string{"audience": "invalid_request", "resource": "invalid_target"} {
+		for param, wantCode := range map[string]string{"audience": "invalid_target", "resource": "invalid_target"} {
 			t.Run(param, func(t *testing.T) {
 				subject := env.mint(t, nil)
 				refused := postToken(t, env.srv.URL, env.secretIn, url.Values{
@@ -335,8 +335,8 @@ func runExchangeRefreshTokenGrantFlows(t *testing.T, env *xrtEnv) {
 		subID := map[string]any{"format": "iss_sub", "iss": env.issuer, "sub": "user-1"}
 		upstream := map[string]any{"iss": "https://idp.example", "claim": "oid", "value": "obj-1"}
 		subject := env.mint(t, func(_ *jwt.Claims, x map[string]any) {
-			x["sub_id"] = subID
-			x[session.UpstreamSubjectClaimKey] = upstream
+			x[claimnames.SubjectIdentifierKey] = subID
+			x[claimnames.UpstreamSubjectKey] = upstream
 		})
 		res := env.requestRefreshToken(t, env.broker, subject, nil)
 		require.Equal(t, http.StatusOK, res.status, res.body)
@@ -519,7 +519,7 @@ func runExchangeRefreshTokenRefusals(t *testing.T, env *xrtEnv) {
 			requireError(t, env.requestRefreshToken(t, env.broker, "garbage", nil), "invalid_request", "subject_token_invalid")
 		})
 
-		for name, typ := range map[string]string{"JWT-bearer-issued token": "JWT", "ID-JAG-issued token": "oauth-id-jag+jwt"} {
+		for name, typ := range map[string]string{"JWT-bearer-issued token": "JWT", "ID-JAG-issued token": oauthproto.JWTTypeIDJAG} {
 			t.Run(name, func(t *testing.T) {
 				assertion := signAssertionOfType(t, env.idpKey, typ, env.issuer, cfgNoCodeID, "jti-"+strings.ReplaceAll(typ, "+", "-")+"-"+t.Name())
 				issued := postToken(t, env.srv.URL, env.noCode, url.Values{
@@ -681,10 +681,10 @@ func TestExchangeRefreshTokensRequireTheStorageCapability(t *testing.T) {
 	t.Parallel()
 
 	// newHidden wraps a fresh memory store so the exchange-grant capability is
-	// not visible through storage.Unwrap. Each start owns its store: the
-	// constructor closes it on failure and EmbeddedAuthServer.Close on success.
+	// not visible through storage.Unwrap. The test owns and closes each store.
 	newHidden := func() storage.Storage {
 		memory := storage.NewMemoryStorage()
+		t.Cleanup(func() { _ = memory.Close() })
 		return struct {
 			storage.Storage
 			storage.DCRCredentialStore

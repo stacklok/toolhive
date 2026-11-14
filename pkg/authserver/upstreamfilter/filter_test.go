@@ -9,8 +9,6 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"github.com/stacklok/toolhive/pkg/authserver/server/handlers"
 )
 
 // filterTestPrincipal supplies claims to exercise the public filter contract.
@@ -24,7 +22,7 @@ func (filterTestPrincipal) GetName() string             { return "" }
 func (filterTestPrincipal) GetEmail() string            { return "" }
 func (p filterTestPrincipal) GetClaims() map[string]any { return p.claims }
 
-var _ handlers.FilterPrincipal = filterTestPrincipal{}
+var _ FilterPrincipal = filterTestPrincipal{}
 
 // configuredUpstreams used across tests. Index 0 is the mandatory first
 // upstream (okta), indices 1+ are the non-first upstreams filters may select.

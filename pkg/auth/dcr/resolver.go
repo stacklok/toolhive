@@ -61,9 +61,9 @@ import (
 
 	"golang.org/x/sync/singleflight"
 
-	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
+	"github.com/stacklok/toolhive/pkg/oauthproto/dcrkey"
 )
 
 // dcrFlight coalesces concurrent ResolveCredentials calls that share the
@@ -183,14 +183,14 @@ var authMethodPreference = []string{
 // writes in pkg/auth/discovery).
 //
 // MUST update both converters (resolutionToCredentials and
-// credentialsToResolution in store.go) when adding, renaming, or
+// credentialsToResolution in pkg/auth/dcr/storage_store.go) when adding, renaming, or
 // removing a field here. The two converters are the seam between this
-// dcr-package type and the persisted *storage.DCRCredentials shape; a
+// dcr-package type and the persisted *dcrstore.Credentials shape; a
 // field added here without a paired converter update will silently fail
 // to round-trip across an authserver restart, the exact "parallel types
 // drift" failure mode .claude/rules/go-style.md warns about. The
 // round-trip behaviour is pinned by TestResolutionCredentialsRoundTrip
-// in store_test.go.
+// in pkg/auth/dcr/storage_store_test.go.
 type Resolution struct {
 	// ClientID is the RFC 7591 "client_id" returned by the authorization
 	// server.
@@ -395,16 +395,14 @@ func ResolveCredentials(
 		Issuer:      req.Issuer,
 		UpstreamID:  upstreamID,
 		RedirectURI: redirectURI,
-		ScopesHash:  storage.ScopesHash(scopes),
+		ScopesHash:  dcrkey.ScopesHash(scopes),
 		RotationKey: req.RotationKey,
 	}
 
 	// Coalesce concurrent cache lookups, cache-hit verifications and
 	// registrations for the same Key — see dcrFlight doc comment. The leader
 	// runs the closure; followers receive the leader's *Resolution result.
-	// The flight key embeds the Key fields with a separator that cannot
-	// appear in any of them (newline is not valid in OAuth scope tokens,
-	// URLs, or hex digests).
+	// The flight key uses length-prefixed components to avoid collisions.
 	//
 	// The cache is read inside the flight, so a flight always verifies or
 	// registers against the row as it stands when the flight starts, never

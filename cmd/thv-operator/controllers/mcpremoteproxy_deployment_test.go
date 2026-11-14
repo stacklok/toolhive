@@ -27,6 +27,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
@@ -270,7 +271,7 @@ func TestServiceForMCPRemoteProxy(t *testing.T) {
 				Scheme: scheme,
 			}
 
-			svc := reconciler.serviceForMCPRemoteProxy(context.TODO(), tt.proxy)
+			svc := reconciler.serviceForMCPRemoteProxy(context.TODO(), tt.proxy, false)
 			require.NotNil(t, svc)
 
 			if tt.validate != nil {
@@ -1181,7 +1182,10 @@ func TestMCPRemoteProxyServiceNeedsUpdate(t *testing.T) {
 		Spec: corev1.ServiceSpec{
 			SessionAffinity: corev1.ServiceAffinityClientIP,
 			Ports: []corev1.ServicePort{{
-				Port: 8080,
+				Name:       "http",
+				Port:       8080,
+				TargetPort: intstr.FromInt(8080),
+				Protocol:   corev1.ProtocolTCP,
 			}},
 		},
 	}
@@ -1251,7 +1255,7 @@ func TestMCPRemoteProxyServiceNeedsUpdate(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			r := &MCPRemoteProxyReconciler{}
-			result := r.serviceNeedsUpdate(tt.service, tt.proxy)
+			result := r.serviceNeedsUpdate(tt.service, tt.proxy, false)
 			assert.Equal(t, tt.needsUpdate, result)
 		})
 	}

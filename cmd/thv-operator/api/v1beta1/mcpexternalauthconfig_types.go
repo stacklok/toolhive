@@ -553,8 +553,10 @@ type JWTBearerGrantConfig struct {
 	SubjectBindings []JWTBearerSubjectBinding `json:"subjectBindings"`
 
 	// AcceptedAudiences identifies this authorization server's accepted
-	// assertion audiences. When omitted, runtime validation defaults to the
-	// token endpoint.
+	// assertion audiences. When omitted, plain JWT-bearer assertions must name
+	// the token endpoint, and ID-JAG assertions may name the token endpoint or
+	// this server's issuer identifier, unless the issuer is also an allowed
+	// resource audience. A configured list replaces these defaults.
 	// +kubebuilder:validation:MaxItems=50
 	// +kubebuilder:validation:items:MinLength=1
 	// +kubebuilder:validation:items:MaxLength=2048
@@ -621,9 +623,9 @@ const (
 )
 
 // SPIFFEBundleSourceConfig is a discriminated bundle-source declaration. Type
-// determines which, and only which, source payload may be set. The file-bundle
-// loader is implemented in isolation, but SPIFFE authentication is not wired
-// to any bundle source; endpoint and Workload API loading are not implemented.
+// determines which, and only which, source payload may be set. Only the file
+// source has a loader in this build; bundle_endpoint and workload_api pass CRD
+// validation but are rejected when the auth-server configuration is validated.
 //
 // +kubebuilder:validation:XValidation:rule="self.type == 'bundle_endpoint' ? has(self.endpoint) : !has(self.endpoint)",message="endpoint configuration must be set if and only if type is 'bundle_endpoint'"
 // +kubebuilder:validation:XValidation:rule="self.type == 'file' ? has(self.file) : !has(self.file)",message="file configuration must be set if and only if type is 'file'"
@@ -696,12 +698,8 @@ type SPIFFEBundleEndpointSourceConfig struct {
 type SPIFFEWorkloadAPIBundleSourceConfig struct{}
 
 // SPIFFETrustDomainConfig declares one SPIFFE trust domain accepted by the
-// embedded authorization server. Configuration is not authentication: no
-// live X.509-SVID or JWT-SVID validation exists yet, so a declared trust
-// domain does not by itself let any workload authenticate — RunConfig.Validate
-// (pkg/authserver/config.go) currently hard-rejects any non-empty
-// spiffeTrustDomains at authserver startup via validateSPIFFENotYetEnforced,
-// a deliberate placeholder until real SVID verification lands.
+// embedded authorization server. A declared domain becomes usable only after
+// the configured source supplies trust material during auth-server startup.
 type SPIFFETrustDomainConfig struct {
 	// Name uniquely identifies this declaration and is referenced by
 	// inboundGrants.spiffeClientAuth[].trustDomainRef.
@@ -730,17 +728,19 @@ type SPIFFETrustDomainConfig struct {
 	Methods []SPIFFEAuthenticationMethod `json:"methods"`
 
 	// BundleSource declares exactly one trust-bundle source and is validated for
-	// shape here. The standalone file loader exists, but is not wired into SPIFFE
-	// authentication.
+	// shape here. Only the file source is loaded in this build; bundle_endpoint
+	// and workload_api are rejected when the auth-server configuration is
+	// validated.
 	// +kubebuilder:validation:Required
 	BundleSource SPIFFEBundleSourceConfig `json:"bundleSource"`
 }
 
 // SPIFFEClientConfig associates one SPIFFE principal pattern from a declared
 // trust domain with an explicit OAuth client identity and permissions.
-// Configuration is not authentication: configured SPIFFE clients remain
-// non-public OAuth clients without a secret until live SPIFFE credential
-// validation is implemented (see SPIFFETrustDomainConfig's doc comment).
+// Declaring a client does not grant access by itself. SPIFFE clients
+// authenticate with a JWT-SVID or an X.509-SVID and have no client secret.
+// Trust material comes from the declared bundle source (see
+// SPIFFETrustDomainConfig's doc comment).
 //
 // GrantTypes is deliberately not exposed here: the runtime only accepts
 // exactly the RFC 8693 token-exchange grant for a SPIFFE client
@@ -1008,9 +1008,8 @@ type EmbeddedAuthServerConfig struct {
 	TokenLifespans *TokenLifespanConfig `json:"tokenLifespans,omitempty"`
 
 	// SPIFFETrustDomains declares SPIFFE trust domains for
-	// inboundGrants.spiffeClientAuth associations. See SPIFFETrustDomainConfig's
-	// doc comment for why declaring a domain does not by itself enable
-	// authentication in this build.
+	// inboundGrants.spiffeClientAuth associations. Each declaration must be
+	// referenced by an inboundGrants.spiffeClientAuth entry.
 	// +kubebuilder:validation:MinItems=1
 	// +kubebuilder:validation:MaxItems=50
 	// +listType=atomic
@@ -1026,18 +1025,19 @@ type EmbeddedAuthServerConfig struct {
 	// probes and metrics stay on plain HTTP. Both certificateSecretRef and
 	// privateKeySecretRef are required. It is required when
 	// inboundGrants.spiffeClientAuth enables spiffe_x509. That requirement is
-	// checked when the resource is reconciled and reported in status
-	// conditions; the API server does not reject it. The listener is
-	// reachable on the pod only: the operator does not yet add port 8443 to
-	// the Service or container ports. Updates to the referenced Secret
-	// contents are picked up without a pod restart.
+	// checked when the resource is reconciled and reported in status conditions;
+	// the API server does not reject it. The operator exposes the listener as an
+	// https-auth container port and Service port 8443. Updates to the referenced
+	// Secret contents are picked up without a pod restart.
 	// +optional
 	TLSListener *TLSListenerConfig `json:"tlsListener,omitempty"`
 
 	// UpstreamProviders configures connections to upstream Identity Providers.
 	// When configured, the embedded auth server delegates interactive authentication
-	// to these providers. It may be omitted only when delegateClients or a trusted
-	// issuer with jwtBearerGrant enables token-only operation.
+	// to these providers. It may be omitted only when token-only operation is
+	// enabled by delegateClients (also under inboundGrants.tokenExchange),
+	// inboundGrants.spiffeClientAuth, or a trusted issuer with jwtBearerGrant
+	// (also under inboundGrants.jwtBearer).
 	// MCPServer and MCPRemoteProxy support a single upstream; VirtualMCPServer supports multiple.
 	// +listType=map
 	// +listMapKey=name
@@ -1418,7 +1418,21 @@ func (c *EmbeddedAuthServerConfig) ValidateInboundGrants() error {
 	if err := tokenexchange.ValidateTrustedIssuers(grants.trustedIssuers, c.Issuer, nil); err != nil {
 		return fmt.Errorf("trustedIssuers: %w", err)
 	}
-	return nil
+	if c.hasSPIFFEX509ClientAuth() {
+		if _, err := authserver.ValidateSPIFFEX509Issuer(c.Issuer); err != nil {
+			return err
+		}
+	}
+	var spiffeIDs, delegateIDs []string
+	if c.InboundGrants != nil {
+		for _, association := range c.InboundGrants.SPIFFEClientAuth {
+			spiffeIDs = append(spiffeIDs, association.ClientID)
+		}
+	}
+	for _, delegate := range grants.delegateClients {
+		delegateIDs = append(delegateIDs, delegate.ClientID)
+	}
+	return authserver.ValidateSPIFFEClientIDsNotDelegates(spiffeIDs, delegateIDs)
 }
 
 // ValidateTLSListener rejects a tlsListener whose certificate or private key
@@ -1449,17 +1463,22 @@ func (c *EmbeddedAuthServerConfig) ValidateTLSListener() error {
 		}
 		return nil
 	}
-	if c.InboundGrants == nil {
-		return nil
-	}
-	for _, association := range c.InboundGrants.SPIFFEClientAuth {
-		for _, method := range association.Methods {
-			if method == SPIFFEAuthenticationMethodX509 {
-				return fmt.Errorf("tlsListener is required when SPIFFE X.509 client authentication is configured")
-			}
-		}
+	if c.hasSPIFFEX509ClientAuth() {
+		return fmt.Errorf("tlsListener is required when SPIFFE X.509 client authentication is configured")
 	}
 	return nil
+}
+
+func (c *EmbeddedAuthServerConfig) hasSPIFFEX509ClientAuth() bool {
+	if c.InboundGrants == nil {
+		return false
+	}
+	for _, association := range c.InboundGrants.SPIFFEClientAuth {
+		if slices.Contains(association.Methods, SPIFFEAuthenticationMethodX509) {
+			return true
+		}
+	}
+	return false
 }
 
 func hasLegacyTokenExchangePolicy(issuer TrustedIssuerConfig) bool {
@@ -2848,8 +2867,12 @@ func (r *MCPExternalAuthConfig) validateEmbeddedAuthServer() error {
 	// validateDelegateClientsAndTrustedIssuers revalidates the full SPIFFE
 	// trust config (via RunConfig.Validate) once those derived values exist.
 	//
-	// The two checks below are admission-time-safe: they depend only on this
+	// The checks below are admission-time-safe: they depend only on this
 	// object's own spec, so they run here instead of waiting for reconcile.
+	if err := cfg.ValidateSPIFFEBundleSourceTypes(); err != nil {
+		return err
+	}
+	// Only matters once a bundle_endpoint loader exists: every non-file source is rejected above.
 	if err := validateSPIFFEBundleEndpoints(cfg.SPIFFETrustDomains); err != nil {
 		return err
 	}
@@ -2907,6 +2930,22 @@ func validateSPIFFEBundleEndpoints(domains []SPIFFETrustDomainConfig) error {
 			Profile: authserver.SPIFFEBundleEndpointProfile(endpoint.Profile),
 		}); err != nil {
 			return fmt.Errorf("spiffeTrustDomains[%d].bundleSource: %w", i, err)
+		}
+	}
+	return nil
+}
+
+// ValidateSPIFFEBundleSourceTypes rejects trust domains whose bundle source
+// type this build cannot load, using the same rule as RunConfig.Validate so a
+// config is not reported valid while every workload that uses it fails. It
+// runs at reconcile time, not in the API server.
+func (c *EmbeddedAuthServerConfig) ValidateSPIFFEBundleSourceTypes() error {
+	for i, domain := range c.SPIFFETrustDomains {
+		if err := authserver.ValidateRuntimeSPIFFEBundleSourceType(
+			fmt.Sprintf("spiffeTrustDomains[%d].bundleSource", i),
+			authserver.SPIFFEBundleSourceType(domain.BundleSource.Type),
+		); err != nil {
+			return err
 		}
 	}
 	return nil

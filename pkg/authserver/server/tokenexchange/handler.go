@@ -19,6 +19,7 @@ import (
 
 	coreaudit "github.com/stacklok/toolhive-core/audit"
 	"github.com/stacklok/toolhive/pkg/authserver/authorizationdetails"
+	"github.com/stacklok/toolhive/pkg/authserver/claimnames"
 	"github.com/stacklok/toolhive/pkg/authserver/server"
 	"github.com/stacklok/toolhive/pkg/authserver/server/session"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
@@ -109,6 +110,32 @@ type ConfiguredClientPolicy struct {
 	// Every present value is > 0 and <= 720h, as config validation enforces. Nil
 	// when the client has no exchange_refresh_tokens block.
 	ExchangeRefreshTokens map[string]time.Duration
+	// IDJAGTargets are the authorization servers this client may ask for an
+	// ID-JAG for, keyed by the issuer exactly as configured. Request-time
+	// lookup of the audience parameter is exact. Nil when the client has no
+	// id_jag block.
+	IDJAGTargets map[string]IDJAGTarget
+	// ActorProfile is the actor-token check ID-JAG issuance runs for this
+	// client. Nil when the client has no actor profile. It is set only for
+	// clients configured at startup, never for dynamically registered ones.
+	ActorProfile *ActorProfile
+}
+
+// IDJAGTarget is one authorization server a delegate client may ask for an
+// ID-JAG for, and the limits of what it may ask.
+type IDJAGTarget struct {
+	// Issuer is the target authorization server's issuer as configured. It is
+	// the request's audience and the ID-JAG's aud.
+	Issuer string
+	// ClientID is the delegate client's client_id at the target.
+	ClientID string
+	// Resources are the resource values the client may request.
+	Resources []string
+	// Lifetime is how long each ID-JAG lives.
+	Lifetime time.Duration
+	// RequiredSubjectClaims are the subject claims every ID-JAG for this target
+	// must carry, as configuration tokens (upstream_subject, sub_id).
+	RequiredSubjectClaims []string
 }
 
 // formParams holds the validated RFC 8693 form parameters extracted from a
@@ -248,7 +275,7 @@ func (h *Handler) HandleTokenEndpointRequest(ctx context.Context, requester fosi
 	// (see buildActClaim's doc comment for why this is not nested inside
 	// act, and for how it is carried forward across re-exchanges).
 	if externalIssuer != "" {
-		delegatedSession.JWTClaims.Extra["external_issuer"] = externalIssuer
+		delegatedSession.JWTClaims.Extra[claimnames.ExternalIssuerKey] = externalIssuer
 	}
 
 	// Compute the delegated token lifetime: the shorter of the subject token's
@@ -299,38 +326,51 @@ func (h *Handler) PopulateTokenEndpointResponse(
 			"The OAuth 2.0 Client is not allowed to use authorization grant 'token-exchange'."))
 	}
 
-	// Use the session's ExpiresAt (set during HandleTokenEndpointRequest) as the
-	// authoritative lifetime. This respects the min(subject_remaining, delegation)
-	// bound computed earlier. Fall back to the configured access token lifespan
-	// only if no expiry was set on the session.
-	atLifespan := h.config.GetAccessTokenLifespan(ctx)
-	if sessionExpiry := requester.GetSession().GetExpiresAt(fosite.AccessToken); !sessionExpiry.IsZero() {
-		remaining := time.Until(sessionExpiry)
-		if remaining <= 0 {
-			// The session's bound has already elapsed since HandleTokenEndpointRequest
-			// computed it. Fail closed instead of signing a token whose exp is already
-			// in the past while reporting a negative expires_in — fosite's JWT strategy
-			// sets exp directly from this session's expiry (GetExpiresAt), independent
-			// of atLifespan, so letting this fall through would not simply hand out a
-			// longer-lived token, it would issue an already-expired one.
-			return errorsx.WithStack(fosite.ErrInvalidGrant.WithHint(
-				"The delegated token's bound lifetime has already elapsed."))
-		}
-		if remaining < atLifespan {
-			atLifespan = remaining
-		}
-	}
-
-	if _, err := h.IssueAccessToken(ctx, atLifespan, requester, responder); err != nil {
+	if err := issueBoundedAccessToken(ctx, h.HandleHelper, h.config.GetAccessTokenLifespan(ctx), requester, responder,
+		"The delegated token's bound lifetime has already elapsed."); err != nil {
 		return err
 	}
 
 	// Per RFC 8693 Section 2.2.1, the response MUST include issued_token_type.
-	responder.SetExtra("issued_token_type", oauthproto.TokenTypeAccessToken)
+	responder.SetExtra(oauthproto.ParamIssuedTokenType, oauthproto.TokenTypeAccessToken)
 
 	h.echoAuthorizationDetails(requester, responder)
 
 	return nil
+}
+
+// issueBoundedAccessToken issues an access token whose lifetime is the
+// session's access-token expiry (set during HandleTokenEndpointRequest) when
+// that is sooner than lifespan, and lifespan otherwise. The session expiry is
+// the authoritative bound, so it respects limits computed earlier such as
+// min(subject_remaining, delegation).
+//
+// If the session's bound has already elapsed since HandleTokenEndpointRequest
+// computed it, the call fails closed with invalid_grant and elapsedHint instead
+// of signing a token whose exp is already in the past while reporting a
+// negative expires_in. fosite's JWT strategy sets exp directly from the
+// session's expiry (GetExpiresAt), independent of lifespan, so letting this
+// fall through would not simply hand out a longer-lived token, it would issue
+// an already-expired one.
+func issueBoundedAccessToken(
+	ctx context.Context,
+	helper *oauth2.HandleHelper,
+	lifespan time.Duration,
+	requester fosite.AccessRequester,
+	responder fosite.AccessResponder,
+	elapsedHint string,
+) error {
+	if sessionExpiry := requester.GetSession().GetExpiresAt(fosite.AccessToken); !sessionExpiry.IsZero() {
+		remaining := time.Until(sessionExpiry)
+		if remaining <= 0 {
+			return errorsx.WithStack(fosite.ErrInvalidGrant.WithHint(elapsedHint))
+		}
+		if remaining < lifespan {
+			lifespan = remaining
+		}
+	}
+	_, err := helper.IssueAccessToken(ctx, lifespan, requester, responder)
+	return err
 }
 
 // authorizeDelegation runs the source policy (for clients that have one), then
@@ -504,41 +544,14 @@ func (h *Handler) computeLifetime(subjectExpiry time.Time) (time.Duration, error
 	return h.delegationLifespan, nil
 }
 
-// delegatedSubject returns the "sub" to embed in the delegated token.
-//
-// Self-issued tokens pass through unchanged: their subject is already a
-// UUID from UserResolver.ResolveUser's (providerID, providerSubject)
-// mapping (pkg/authserver/server/handlers/user.go), ToolHive's own native
-// subject namespace.
-//
-// A subject token from a trusted external issuer is qualified as
-// "<issuerURL>#<sub>" instead, because the issued token's "sub" is the only
-// signal Cedar's extractClientIDFromClaims (pkg/authz/authorizers/cedar/core.go)
-// keys on — it reads "sub" alone, not "iss" — and the external issuer
-// chooses that value, not ToolHive. Without qualification, an external
-// issuer could pick a "sub" equal to a native user's UUID and mint a
-// delegated token indistinguishable from that user's, entirely without
-// malicious intent on either issuer's part: two trusted issuers merely
-// choosing overlapping subject values collide with no attacker involved.
-//
-// "#" is an unambiguous separator: an issuer URL cannot itself contain a
-// fragment (the OIDC/OAuth "iss" value is a URL without a fragment
-// component, and this validator's own issuer comparison is an exact string
-// match against that value), so strings.Cut(sub, "#") on the qualified
-// subject always recovers (issuerURL, externalSub) uniquely. A native subject
-// (a UUID, or a synthesized "tk-" plus hex value) can never collide with a
-// qualified value, since neither contains a "#".
-//
-// Re-exchanging a previously-issued delegated token does not double-qualify:
-// such a token's "iss" is always this server's own issuer (fosite stamps
-// "iss" from the server's config at issuance — see session.New's doc
-// comment), so Validate routes it to the self-issued path, which never
-// calls this branch.
+// delegatedSubject returns the "sub" to embed in the delegated token: the
+// subject unchanged for self-issued tokens, or qualified with the external
+// issuer otherwise. See claimnames.QualifySubject.
 func delegatedSubject(validatedClaims *ValidatedClaims) string {
 	if validatedClaims.ExternalIssuer == "" {
 		return validatedClaims.Subject
 	}
-	return validatedClaims.ExternalIssuer + "#" + validatedClaims.Subject
+	return claimnames.QualifySubject(validatedClaims.ExternalIssuer, validatedClaims.Subject)
 }
 
 // buildActClaim assembles the RFC 8693 Section 4.1 "act" claim for the
@@ -672,7 +685,7 @@ func externalOrigin(validatedClaims *ValidatedClaims) string {
 	if validatedClaims.ExternalIssuer != "" {
 		return validatedClaims.ExternalIssuer
 	}
-	prior, _ := validatedClaims.Extra["external_issuer"].(string)
+	prior, _ := validatedClaims.Extra[claimnames.ExternalIssuerKey].(string)
 	return prior
 }
 
@@ -950,10 +963,26 @@ func (h *Handler) grantAndBoundAudiences(
 }
 
 // grantAudiences validates that the requested audience is allowed for this
-// client and grants it.
+// client and grants it. A refused audience is reported as invalid_target, as a
+// refused "resource" is (RFC 8693 §2.2.2); an audience that is not a parseable
+// URI is a malformed request and keeps the strategy's invalid_request.
 func (h *Handler) grantAudiences(ctx context.Context, requester fosite.AccessRequester, client fosite.Client) error {
-	if err := h.config.GetAudienceStrategy(ctx)(client.GetAudience(), requester.GetRequestedAudience()); err != nil {
-		return errorsx.WithStack(err)
+	match := h.config.GetAudienceStrategy(ctx)
+	requested := requester.GetRequestedAudience()
+	if err := match(client.GetAudience(), requested); err != nil {
+		for _, aud := range requested {
+			if _, parseErr := url.Parse(aud); parseErr != nil {
+				return errorsx.WithStack(err)
+			}
+		}
+		refused := strings.Join(requested, " ")
+		for _, aud := range requested {
+			if match(client.GetAudience(), []string{aud}) != nil {
+				refused = aud
+				break
+			}
+		}
+		return errorsx.WithStack(server.ErrAudienceNotPermitted(refused))
 	}
 	for _, aud := range requester.GetRequestedAudience() {
 		requester.GrantAudience(aud)

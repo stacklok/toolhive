@@ -174,3 +174,11 @@ func ValidateIDJAGClientAudience(resource string, client fosite.Client, match fo
 func errResourceNotPermitted(resource string) error {
 	return ErrInvalidTarget.WithHintf("The client is not permitted to request resource %q", resource)
 }
+
+// ErrAudienceNotPermitted is the refusal for an "audience" request parameter that
+// is outside the client's audiences. RFC 8693 §2.2.2 uses invalid_target for a
+// refused resource or audience alike. Like errResourceNotPermitted, the hint does
+// not say which list refused the audience.
+func ErrAudienceNotPermitted(audience string) error {
+	return ErrInvalidTarget.WithHintf("The client is not permitted to request audience %q", audience)
+}

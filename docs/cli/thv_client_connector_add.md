@@ -37,14 +37,14 @@ thv client connector add NAME URL [flags]
 ### Options
 
 ```
-  -h, --help   help for add
+  -h, --help[=true|false]   help for add
 ```
 
 ### Options inherited from parent commands
 
 ```
-      --client string   Client to configure (supported: claude-desktop)
-      --debug           Enable debug mode
+      --client string        Client to configure (supported: claude-desktop)
+      --debug[=true|false]   Enable debug mode
 ```
 
 ### SEE ALSO

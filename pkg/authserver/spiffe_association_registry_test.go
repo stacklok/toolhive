@@ -122,6 +122,28 @@ func TestSPIFFEAssociationRegistryResolve(t *testing.T) {
 	}
 }
 
+func TestSPIFFEAssociationRegistryUsesX509(t *testing.T) {
+	t.Parallel()
+
+	x509Only := testSPIFFEAssociation("x509-client", "openid")
+	jwtOnly := testSPIFFEAssociation("jwt-client", "openid")
+	jwtOnly.PrincipalPattern = "spiffe://example.org/ns/jwt/agent"
+	jwtOnly.Methods = []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodJWT}
+	both := testSPIFFEAssociation("both-client", "openid")
+	both.PrincipalPattern = "spiffe://example.org/ns/both/agent"
+	both.Methods = []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodJWT, SPIFFEAuthenticationMethodX509}
+	registry := newTestSPIFFEAssociationRegistry(t, []SPIFFEClientAuthRunConfig{x509Only, jwtOnly, both})
+
+	matcher := newSPIFFEX509ClientMatcher(registry)
+	require.NotNil(t, matcher)
+	assert.True(t, matcher("x509-client"))
+	assert.True(t, matcher("both-client"))
+	assert.False(t, matcher("jwt-client"))
+	assert.False(t, matcher("unknown-client"))
+	assert.False(t, (*SPIFFEAssociationRegistry)(nil).usesX509("x509-client"))
+	assert.Nil(t, newSPIFFEX509ClientMatcher(nil), "no SPIFFE trust must yield a nil matcher")
+}
+
 func TestSPIFFEAssociationRegistryRebuildsChangedAndRemovedAuthority(t *testing.T) {
 	t.Parallel()
 
@@ -226,8 +248,8 @@ func TestSPIFFEAssociationRegistryStaticClientPreservesConcreteCapabilities(t *t
 // are identical except for the order their configured methods are listed in
 // produce the SAME identity fingerprint. fingerprintSPIFFEAssociation sorts
 // methods before hashing specifically so config-file reordering (which
-// carries no semantic meaning) can never manifest as a false collision on
-// reconciliation.
+// carries no semantic meaning) can never produce a spurious identity_changed
+// in the replacement WARN.
 func TestSPIFFEAssociationFingerprintOrderStable(t *testing.T) {
 	t.Parallel()
 
@@ -282,7 +304,7 @@ func TestSPIFFEAssociationFingerprintDiffersOnMethodsOnly(t *testing.T) {
 // asserts but nothing otherwise enforces: without it, two different
 // (trustDomainRef, principal) pairs whose concatenation is byte-identical
 // -- e.g. ("12", "3") and ("1", "23") -- would hash to the same value,
-// silently reconciling two different associations as one. Calls
+// silently hiding an identity change from the replacement WARN. Calls
 // fingerprintSPIFFEAssociation directly (unexported, same-package test) since
 // the collision is a property of that function's own encoding, not of
 // anything reachable through the public registry API.

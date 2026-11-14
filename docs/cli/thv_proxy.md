@@ -98,7 +98,7 @@ thv proxy [flags] SERVER_NAME
 
 ```
       --allowed-origins stringArray                 Exact-match allowlist for the HTTP Origin header (repeatable). Recommended when binding publicly; loopback binds derive a default allowlist automatically, non-loopback binds log a warning when no value is supplied. Example: https://my-mcp.example.com
-  -h, --help                                        help for proxy
+  -h, --help[=true|false]                           help for proxy
       --host string                                 Host for the HTTP proxy to listen on (IP or hostname) (default "127.0.0.1")
       --max-request-body-size int                   Maximum inbound request body size in bytes; zero uses the default (8 MiB)
       --oidc-audience string                        Expected audience for the token
@@ -109,7 +109,7 @@ thv proxy [flags] SERVER_NAME
       --oidc-jwks-url string                        URL to fetch the JWKS from
       --oidc-scopes strings                         OAuth scopes to advertise in the well-known endpoint (RFC 9728, defaults to 'openid' if not specified)
       --port int                                    Port for the HTTP proxy to listen on (host port)
-      --remote-auth                                 Enable OAuth/OIDC authentication to remote MCP server (default false)
+      --remote-auth[=true|false]                    Enable OAuth/OIDC authentication to remote MCP server (default false)
       --remote-auth-authorize-url string            OAuth authorization endpoint URL (alternative to --remote-auth-issuer for non-OIDC OAuth)
       --remote-auth-bearer-token string             Bearer token for remote server authentication (alternative to OAuth)
       --remote-auth-bearer-token-file string        Path to file containing bearer token (alternative to --remote-auth-bearer-token)
@@ -121,7 +121,7 @@ thv proxy [flags] SERVER_NAME
       --remote-auth-resource string                 OAuth 2.0 resource indicator (RFC 8707)
       --remote-auth-scope-param-name string         Override the query parameter name for scopes in the authorization URL (e.g., 'user_scope' for Slack OAuth)
       --remote-auth-scopes strings                  OAuth scopes to request for remote server authentication (defaults: OIDC uses 'openid,profile,email')
-      --remote-auth-skip-browser                    Skip opening browser for remote server OAuth flow (default false)
+      --remote-auth-skip-browser[=true|false]       Skip opening browser for remote server OAuth flow (default false)
       --remote-auth-timeout duration                Timeout for OAuth authentication flow (e.g., 30s, 1m, 2m30s) (default 30s)
       --remote-auth-token-url string                OAuth token endpoint URL (alternative to --remote-auth-issuer for non-OIDC OAuth)
       --remote-forward-headers stringArray          Headers to inject into requests to remote server (format: Name=Value, can be repeated)
@@ -141,7 +141,7 @@ thv proxy [flags] SERVER_NAME
 ### Options inherited from parent commands
 
 ```
-      --debug   Enable debug mode
+      --debug[=true|false]   Enable debug mode
 ```
 
 ### SEE ALSO

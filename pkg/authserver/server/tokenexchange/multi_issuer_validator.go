@@ -129,8 +129,11 @@ type JWTBearerGrantPolicy struct {
 	// authorization server for this grant; it is NOT a resource/API
 	// identifier — a bare resource audience is deliberately not accepted
 	// here, that would let any RFC 8707 resource-scoped token satisfy the
-	// grant instead of only tokens minted for this AS. Defaults to
-	// [tokenEndpoint] when empty, preserving prior exact-match behavior.
+	// grant instead of only tokens minted for this AS. When empty, the plain
+	// JWT-bearer grant accepts the token endpoint, and the ID-JAG grant accepts
+	// the token endpoint and this server's issuer identifier, unless the issuer
+	// is also an allowed resource audience. A configured list replaces both
+	// defaults.
 	AcceptedAudiences []string `json:"accepted_audiences,omitempty" yaml:"accepted_audiences,omitempty"`
 
 	maxAssertionAge time.Duration
@@ -667,15 +670,16 @@ func (v *MultiIssuerTokenValidator) Validate(ctx context.Context, rawToken strin
 // assertion's authorization policy is separate from delegation policy.
 //
 // The assertion audience must intersect the issuer's configured
-// JWTBearerGrant.AcceptedAudiences, or just tokenEndpoint when that is unset.
+// JWTBearerGrant.AcceptedAudiences, or the caller's defaultAudiences when that
+// is unset.
 // The caller is responsible for the phase-specific subject binding, maximum
 // age, replay, and issuance policy after this cryptographic verification
 // succeeds.
 func (v *MultiIssuerTokenValidator) ValidateJWTBearerAssertion(
-	ctx context.Context, rawToken, tokenEndpoint string,
+	ctx context.Context, rawToken string, defaultAudiences []string,
 ) (*ValidatedClaims, error) {
-	if tokenEndpoint == "" {
-		return nil, errors.New("token endpoint must not be empty")
+	if len(defaultAudiences) == 0 || slices.Contains(defaultAudiences, "") {
+		return nil, errors.New("default audiences must not be empty")
 	}
 
 	issuer, err := peekIssuer(rawToken)
@@ -690,7 +694,7 @@ func (v *MultiIssuerTokenValidator) ValidateJWTBearerAssertion(
 		return nil, fmt.Errorf("assertion issuer is not enabled for the JWT-bearer grant: %q", issuer)
 	}
 
-	standardClaims, extraClaims, err := v.verifyExternalSignature(ctx, rawToken, issuerConfig)
+	_, standardClaims, extraClaims, err := v.verifyExternalSignature(ctx, rawToken, issuerConfig)
 	if err != nil {
 		return nil, err
 	}
@@ -699,7 +703,7 @@ func (v *MultiIssuerTokenValidator) ValidateJWTBearerAssertion(
 		return nil, err
 	}
 
-	acceptedAudiences := []string{tokenEndpoint}
+	acceptedAudiences := defaultAudiences
 	if issuerConfig.JWTBearerGrant != nil && len(issuerConfig.JWTBearerGrant.AcceptedAudiences) > 0 {
 		acceptedAudiences = issuerConfig.JWTBearerGrant.AcceptedAudiences
 	}
@@ -712,18 +716,19 @@ func (v *MultiIssuerTokenValidator) ValidateJWTBearerAssertion(
 // verifyExternalSignature parses and verifies a JWT using the configured
 // issuer's cached JWKS. Both RFC 8693 subject tokens and RFC 7523 assertions
 // use this path so unknown-kid refreshes and key-use/algorithm restrictions
-// cannot diverge between grant types.
+// cannot diverge between grant types. It also returns the parsed token so
+// callers can inspect the protected header without parsing it again.
 func (v *MultiIssuerTokenValidator) verifyExternalSignature(
 	ctx context.Context, rawToken string, issuerConfig *externalIssuerConfig,
-) (jwt.Claims, map[string]any, error) {
+) (*jwt.JSONWebToken, jwt.Claims, map[string]any, error) {
 	parsedToken, err := jwt.ParseSigned(rawToken, allowedSignatureAlgorithms)
 	if err != nil {
-		return jwt.Claims{}, nil, fmt.Errorf("subject token is not a valid JWT: %w", err)
+		return nil, jwt.Claims{}, nil, fmt.Errorf("subject token is not a valid JWT: %w", err)
 	}
 
 	jwks, err := v.lookupJWKS(ctx, issuerConfig)
 	if err != nil {
-		return jwt.Claims{}, nil, fmt.Errorf("failed to fetch JWKS for issuer %s: %w", issuerConfig.IssuerURL, err)
+		return nil, jwt.Claims{}, nil, fmt.Errorf("failed to fetch JWKS for issuer %s: %w", issuerConfig.IssuerURL, err)
 	}
 
 	standardClaims, extraClaims, kidMatched, err := verifySignature(parsedToken, jwks)
@@ -741,9 +746,9 @@ func (v *MultiIssuerTokenValidator) verifyExternalSignature(
 		}
 	}
 	if err != nil {
-		return jwt.Claims{}, nil, err
+		return nil, jwt.Claims{}, nil, err
 	}
-	return standardClaims, extraClaims, nil
+	return parsedToken, standardClaims, extraClaims, nil
 }
 
 // validateExternalToken verifies a JWT from a trusted external issuer by
@@ -753,8 +758,18 @@ func (v *MultiIssuerTokenValidator) validateExternalToken(
 	rawToken string,
 	issuerConfig *externalIssuerConfig,
 ) (*ValidatedClaims, error) {
-	standardClaims, extraClaims, err := v.verifyExternalSignature(ctx, rawToken, issuerConfig)
+	parsedToken, standardClaims, extraClaims, err := v.verifyExternalSignature(ctx, rawToken, issuerConfig)
 	if err != nil {
+		return nil, err
+	}
+
+	// The signature has verified, so the protected header is trustworthy.
+	// RFC 8725 Section 3.12: an ID-JAG must not be accepted as an RFC 8693
+	// subject token. A trusted issuer that signs ID-JAGs with its access token
+	// key would otherwise let one through here, past the client binding that
+	// ID-JAG redemption applies. The deny is here and not in
+	// verifyExternalSignature, which redemption shares.
+	if err := rejectIDJAGType(parsedToken); err != nil {
 		return nil, err
 	}
 

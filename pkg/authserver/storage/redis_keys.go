@@ -6,6 +6,8 @@ package storage
 import (
 	"crypto/sha256"
 	"fmt"
+
+	"github.com/stacklok/toolhive/pkg/oauthproto/dcrkey"
 )
 
 // Key type constants for Redis storage.
@@ -142,11 +144,11 @@ func redisProviderKey(prefix, providerID, providerSubject string) string {
 }
 
 // redisDCRKey generates a Redis key for a DCR credential entry, identifying the
-// (Issuer, UpstreamID, RedirectURI, ScopesHash) tuple that DCRKey canonicalises.
+// (Issuer, UpstreamID, RedirectURI, ScopesHash) tuple that dcrkey.Key canonicalises.
 //
 // Format: "{prefix}dcr:<len(issuer)>:<issuer>:<len(upstream_id)>:<upstream_id>:<len(redirect_uri)>:<redirect_uri>:<scopes_hash>"
 //
-// When DCRKey.RotationKey is non-empty a length-prefixed
+// When dcrkey.Key.RotationKey is non-empty a length-prefixed
 // ":<len(rotation_key)>:<rotation_key>" segment follows the scopes hash. An
 // empty RotationKey yields exactly the format above, so rows written before
 // the field existed keep resolving; the hex scopes hash contains no colon, so
@@ -155,11 +157,11 @@ func redisProviderKey(prefix, providerID, providerSubject string) string {
 // The first three segments are length-prefixed to handle colons in UpstreamID
 // and RedirectURI (and, for symmetry, Issuer) without ambiguity, mirroring
 // redisProviderKey. ScopesHash is expected to be a SHA-256 hex digest produced
-// by storage.ScopesHash — only [0-9a-f] and never colon-bearing — so it is
+// by dcrkey.ScopesHash — only [0-9a-f] and never colon-bearing — so it is
 // appended without a length prefix. The format is robust for that domain;
 // validateDCRCredentialsForStore (called by every Store path) already
 // rejects an empty ScopesHash, and callers are required to compute the hash
-// via storage.ScopesHash. Length-prefix collision-safety is preserved on
+// via dcrkey.ScopesHash. Length-prefix collision-safety is preserved on
 // the leading segments either way.
 //
 // The UpstreamID segment (issue #5823) means two upstreams that share the
@@ -174,13 +176,13 @@ func redisProviderKey(prefix, providerID, providerSubject string) string {
 // There is no automated one-shot migration for this key-format change today.
 //
 // The public-vs-confidential client distinction is intentionally NOT
-// encoded here — see DCRKey's doc for the rationale. Today's two consumers
+// encoded here — see dcrkey.Key's doc for the rationale. Today's two consumers
 // register on disjoint RedirectURI address spaces (AS-origin vs RFC 8252
 // loopback) so the persisted key cannot collide across profiles. A future
 // consumer that defaults its RedirectURI into either space would need to
 // add the distinguishing component back to the key format alongside an
 // explicit migration story for existing Redis-cached entries.
-func redisDCRKey(prefix string, key DCRKey) string {
+func redisDCRKey(prefix string, key dcrkey.Key) string {
 	base := fmt.Sprintf("%s%s:%d:%s:%d:%s:%d:%s:%s",
 		prefix, KeyTypeDCR,
 		len(key.Issuer), key.Issuer,

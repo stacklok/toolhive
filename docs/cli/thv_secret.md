@@ -24,13 +24,13 @@ Run "thv secret setup" first to configure a secrets provider before using any se
 ### Options
 
 ```
-  -h, --help   help for secret
+  -h, --help[=true|false]   help for secret
 ```
 
 ### Options inherited from parent commands
 
 ```
-      --debug   Enable debug mode
+      --debug[=true|false]   Enable debug mode
 ```
 
 ### SEE ALSO

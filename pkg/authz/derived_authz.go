@@ -148,6 +148,11 @@ func completionChecks(params json.RawMessage) ([]resourceCheck, error) {
 		if p.Ref.URI == nil || *p.Ref.URI == "" {
 			return nil, errors.New("completion/complete: resource ref without a uri")
 		}
+		// The ref is a template string, not a URI, and SDKs match it by exact
+		// string, so only spaces and control characters are refused.
+		if err := authorizers.CheckResourceTemplateURI(*p.Ref.URI); err != nil {
+			return nil, fmt.Errorf("completion/complete: resource ref: %w", err)
+		}
 		return []resourceCheck{resourceRead(*p.Ref.URI)}, nil
 
 	default:
@@ -282,6 +287,9 @@ func subscriptionsListenChecks(params json.RawMessage) ([]resourceCheck, error) 
 	for _, uri := range uris {
 		if uri == "" {
 			return nil, errors.New("subscriptions/listen: empty resource uri")
+		}
+		if err := authorizers.CheckResourceURI(uri); err != nil {
+			return nil, fmt.Errorf("subscriptions/listen: %w", err)
 		}
 		if _, duplicate := seen[uri]; duplicate {
 			continue

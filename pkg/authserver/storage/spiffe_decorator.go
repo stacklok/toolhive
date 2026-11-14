@@ -62,10 +62,9 @@ func PreflightSPIFFEStaticClientCollisions(ctx context.Context, base Storage, cl
 // client ID in base's durable backend using an inert placeholder (see
 // staticClientPlaceholder) — never the real SPIFFE client. Reconciliation is
 // idempotent: a restart with unchanged association config reconstructs the
-// identical placeholder and succeeds silently; a collision with a DCR-issued
-// client, a non-placeholder configured client, or a durably-claimed placeholder
-// for a *different* association at the same ID, fails loudly. Unlike delegate
-// clients, which are replaced on restart, placeholders must match exactly.
+// identical placeholder and succeeds silently; a changed association replaces
+// the stored placeholder with an operator-visible WARN; a collision with a
+// DCR-issued client or a non-placeholder configured client fails loudly.
 //
 // This closes a cross-replica race that a read-only GetClient check cannot:
 // with Redis and multiple replicas, an older/still-rolling replica without
@@ -163,10 +162,9 @@ func isReservedPlaceholder(client fosite.Client) bool {
 // backend, including a bare read-back from Redis by a replica with no SPIFFE
 // overlay — see inertPlaceholderClient and storedClient.Reserved. It keeps
 // the real client's Scopes, Audience, (RFC 8707) Resources, and SPIFFE
-// association identity fingerprint so the fingerprint comparison in
-// ReconcileConfiguredClient can distinguish "same association, restarted"
-// (idempotent) from "different, colliding association at this ID" (a loud
-// failure).
+// association identity fingerprint so ReconcileConfiguredClient can tell
+// "same association, restarted" (silent) from "changed association"
+// (replaced, with a WARN).
 // Scopes and Audience are taken directly from actual.GetScopes() /
 // GetAudience() without an extra defensive clone here: the only production
 // caller (registration.SPIFFEClient) already returns a fresh slice.Clone

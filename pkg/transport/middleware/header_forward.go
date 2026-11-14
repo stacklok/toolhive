@@ -30,6 +30,9 @@ var RestrictedHeaders = map[string]bool{
 	"Trailer":        true,
 	"Upgrade":        true,
 	"Http2-Settings": true, // RFC 7540 Section 3.2.1
+	// "close" is a valid Connection token, so a header named Close would be
+	// removed by the reverse proxy whenever the client sends "Connection: close".
+	"Close": true,
 	// Hop-by-hop proxy headers
 	"Proxy-Authorization": true,
 	"Proxy-Authenticate":  true,

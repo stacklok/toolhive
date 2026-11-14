@@ -356,6 +356,7 @@ func TestRemovedClientProbeCoverage(t *testing.T) {
 		}
 	}
 	cfg, stor := removedClientConfig(t)
+	t.Cleanup(func() { _ = stor.Close() })
 	srv, err := authserver.New(t.Context(), cfg, stor)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = srv.Close() })
@@ -436,7 +437,7 @@ func TestRemovedClientHandlerTypes(t *testing.T) {
 
 // removedClientConfig is an in-memory config with device flow, a trusted issuer
 // and a delegate client, so every grant handler is registered. The caller owns
-// the storage (authserver.New takes ownership of it).
+// the storage; authserver.New only borrows it.
 func removedClientConfig(t *testing.T) (authserver.Config, storage.Storage) {
 	t.Helper()
 	secret := make([]byte, 32)

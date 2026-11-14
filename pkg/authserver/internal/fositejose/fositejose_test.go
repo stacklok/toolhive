@@ -15,6 +15,7 @@ import (
 	"math/big"
 	"net/url"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -27,8 +28,22 @@ import (
 // compactJWS builds a compact JWS whose protected header is the given JSON.
 // The payload and signature are placeholders: the guard never verifies them.
 func compactJWS(header string) string {
+	return compactJWSWithPayload(header, `{}`)
+}
+
+// compactJWSWithPayload builds a compact JWS with the given header and payload
+// JSON and a placeholder signature.
+func compactJWSWithPayload(header, payload string) string {
 	enc := base64.RawURLEncoding
-	return enc.EncodeToString([]byte(header)) + "." + enc.EncodeToString([]byte(`{}`)) + ".c2ln"
+	return enc.EncodeToString([]byte(header)) + "." + enc.EncodeToString([]byte(payload)) + ".c2ln"
+}
+
+// nestedJSON returns a JSON object whose total nesting depth is depth: the
+// object itself plus depth-1 arrays inside it. encoding/json accepts at most
+// 10000 levels. It stays far below the depth that overflows go-jose v3's
+// decoder, so a test never crashes if the guard lets it through.
+func nestedJSON(depth int) string {
+	return `{"sub":"c1","x":` + strings.Repeat("[", depth-1) + strings.Repeat("]", depth-1) + `}`
 }
 
 // fullKey returns a go-jose v4 key with every field the conversions copy set.
@@ -93,14 +108,30 @@ func TestKeyConversions(t *testing.T) {
 func TestIsUnsafeJWS(t *testing.T) {
 	t.Parallel()
 
+	enc := base64.RawURLEncoding
 	paddedHeader := base64.URLEncoding.EncodeToString([]byte(`{"alg":"RS256","jwk":{"kty":"RSA"}}`))
+	paddedPayload := base64.URLEncoding.EncodeToString([]byte(`{"sub":"c1"}`))
+	safeHeader := `{"alg":"RS256","kid":"k1"}`
 
 	tests := []struct {
 		name  string
 		token string
 		want  bool
 	}{
-		{name: "plain compact JWS", token: compactJWS(`{"alg":"RS256","kid":"k1"}`), want: false},
+		{name: "plain compact JWS", token: compactJWS(safeHeader), want: false},
+		{
+			name:  "client assertion claims",
+			token: compactJWSWithPayload(safeHeader, `{"iss":"c1","sub":"c1","aud":["https://as"],"exp":1,"jti":"j"}`),
+			want:  false,
+		},
+		{name: "payload behind base64 padding", token: enc.EncodeToString([]byte(safeHeader)) + "." + paddedPayload + ".c2ln", want: false},
+		{name: "payload nested to the encoding/json limit", token: compactJWSWithPayload(safeHeader, nestedJSON(10000)), want: false},
+		{name: "payload nested past the encoding/json limit", token: compactJWSWithPayload(safeHeader, nestedJSON(10001)), want: true},
+		{name: "payload nested far past the encoding/json limit", token: compactJWSWithPayload(safeHeader, nestedJSON(100000)), want: true},
+		{name: "header nested past the encoding/json limit", token: compactJWS(nestedJSON(10001)), want: true},
+		{name: "payload not base64", token: enc.EncodeToString([]byte(safeHeader)) + ".!!!.c2ln", want: true},
+		{name: "payload not JSON", token: compactJWSWithPayload(safeHeader, `{"sub":`), want: true},
+		{name: "empty payload", token: enc.EncodeToString([]byte(safeHeader)) + "..c2ln", want: true},
 		{name: "embedded jwk", token: compactJWS(`{"alg":"RS256","jwk":{"kty":"RSA","n":"AQ","e":"AQAB"}}`), want: true},
 		{name: "embedded jwk with differently cased key", token: compactJWS(`{"alg":"RS256","JWK":{"kty":"RSA"}}`), want: true},
 		{name: "embedded jwk hidden by whitespace", token: " " + compactJWS(`{"alg":"RS256","jwk":{}}`)[:4] + "\n" + compactJWS(`{"alg":"RS256","jwk":{}}`)[4:], want: true},

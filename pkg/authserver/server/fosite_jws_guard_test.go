@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 
 	"github.com/ory/fosite"
@@ -19,11 +20,24 @@ import (
 // compactJWS builds a compact JWS whose protected header is the given JSON.
 // The payload and signature are placeholders: the guard never verifies them.
 func compactJWS(header string) string {
-	enc := base64.RawURLEncoding
-	return enc.EncodeToString([]byte(header)) + "." + enc.EncodeToString([]byte(`{}`)) + ".c2ln"
+	return compactJWSWithPayload(header, `{}`)
 }
 
-func TestEmbeddedJWKGuardClientAuthenticationStrategy(t *testing.T) {
+// compactJWSWithPayload builds a compact JWS with the given header and payload
+// JSON and a placeholder signature.
+func compactJWSWithPayload(header, payload string) string {
+	enc := base64.RawURLEncoding
+	return enc.EncodeToString([]byte(header)) + "." + enc.EncodeToString([]byte(payload)) + ".c2ln"
+}
+
+// deeplyNestedClaims nests one level past encoding/json's limit of 10000, and
+// far below the depth that overflows go-jose v3, so a regression fails the
+// test instead of crashing the test binary.
+func deeplyNestedClaims() string {
+	return `{"sub":"c1","x":` + strings.Repeat("[", 10000) + strings.Repeat("]", 10000) + `}`
+}
+
+func TestUnsafeJWSGuardClientAuthenticationStrategy(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -52,6 +66,13 @@ func TestEmbeddedJWKGuardClientAuthenticationStrategy(t *testing.T) {
 			},
 		},
 		{
+			name: "client assertion with deeply nested claims",
+			form: url.Values{
+				"client_assertion_type": {"urn:ietf:params:oauth:client-assertion-type:jwt-bearer"},
+				"client_assertion":      {compactJWSWithPayload(`{"alg":"RS256","kid":"k1"}`, deeplyNestedClaims())},
+			},
+		},
+		{
 			name: "embedded jwk in a repeated client assertion",
 			form: url.Values{
 				"client_assertion_type": {"urn:ietf:params:oauth:client-assertion-type:jwt-bearer"},
@@ -66,7 +87,7 @@ func TestEmbeddedJWKGuardClientAuthenticationStrategy(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			delegated := false
-			strategy := newEmbeddedJWKGuardClientAuthenticationStrategy(
+			strategy := newUnsafeJWSGuardClientAuthenticationStrategy(
 				func(context.Context, *http.Request, url.Values) (fosite.Client, error) {
 					delegated = true
 					return &fosite.DefaultClient{ID: "c1"}, nil

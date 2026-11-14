@@ -10,7 +10,6 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
@@ -29,6 +28,13 @@ func (r *MCPRemoteProxyReconciler) deploymentForMCPRemoteProxy(
 	ctx context.Context, proxy *mcpv1beta1.MCPRemoteProxy, runConfigChecksum string,
 ) *appsv1.Deployment {
 	ls := labelsForMCPRemoteProxy(proxy.Name)
+	tlsListener, err := ctrlutil.ResolveTLSListenerEnabled(
+		ctx, r.Client, proxy.Namespace, proxy.Spec.ExternalAuthConfigRef, proxy.Spec.AuthServerRef,
+	)
+	if err != nil {
+		log.FromContext(ctx).Error(err, "Failed to resolve auth server TLS listener")
+		return nil
+	}
 
 	// Build deployment components using helper functions
 	args := r.buildContainerArgs()
@@ -116,7 +122,7 @@ func (r *MCPRemoteProxyReconciler) deploymentForMCPRemoteProxy(
 						Env:             env,
 						VolumeMounts:    volumeMounts,
 						Resources:       resources,
-						Ports:           r.buildContainerPorts(proxy),
+						Ports:           ctrlutil.ProxyContainerPorts(int32(proxy.GetProxyPort()), tlsListener),
 						StartupProbe:    ctrlutil.BuildHealthProbe("/health", "http", 0, 5, 3, 18),
 						LivenessProbe:   ctrlutil.BuildHealthProbe("/health", "http", 30, 10, 5, 3),
 						ReadinessProbe:  ctrlutil.BuildHealthProbe("/health", "http", 15, 5, 3, 3),
@@ -549,18 +555,9 @@ func (r *MCPRemoteProxyReconciler) buildSecurityContexts(
 	return securityBuilder.BuildPodSecurityContext(), securityBuilder.BuildContainerSecurityContext()
 }
 
-// buildContainerPorts builds container port configuration
-func (*MCPRemoteProxyReconciler) buildContainerPorts(proxy *mcpv1beta1.MCPRemoteProxy) []corev1.ContainerPort {
-	return []corev1.ContainerPort{{
-		ContainerPort: int32(proxy.GetProxyPort()),
-		Name:          "http",
-		Protocol:      corev1.ProtocolTCP,
-	}}
-}
-
 // serviceForMCPRemoteProxy returns a MCPRemoteProxy Service object
 func (r *MCPRemoteProxyReconciler) serviceForMCPRemoteProxy(
-	ctx context.Context, proxy *mcpv1beta1.MCPRemoteProxy,
+	ctx context.Context, proxy *mcpv1beta1.MCPRemoteProxy, tlsListener bool,
 ) *corev1.Service {
 	ls := labelsForMCPRemoteProxy(proxy.Name)
 	svcName := createProxyServiceName(proxy.Name)
@@ -585,12 +582,7 @@ func (r *MCPRemoteProxyReconciler) serviceForMCPRemoteProxy(
 		Spec: corev1.ServiceSpec{
 			Selector:        ls,
 			SessionAffinity: sessionAffinity,
-			Ports: []corev1.ServicePort{{
-				Port:       int32(proxy.GetProxyPort()),
-				TargetPort: intstr.FromInt(int(proxy.GetProxyPort())),
-				Protocol:   corev1.ProtocolTCP,
-				Name:       "http",
-			}},
+			Ports:           ctrlutil.ProxyServicePorts(int32(proxy.GetProxyPort()), tlsListener),
 		},
 	}
 

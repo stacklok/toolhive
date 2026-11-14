@@ -242,7 +242,7 @@ func (c *coreVMCP) Complete(
 		return c.backendClient.Complete(ctx, target, ref, argName, argValue, contextArgs)
 
 	case vmcp.CompletionRefTypeResource:
-		if err := c.authorizeResourceRead(ctx, identity, ref.URI); err != nil {
+		if err := c.authorizeResourceTemplateRead(ctx, identity, ref.URI); err != nil {
 			return nil, err
 		}
 		// RouteResource matches the URI against concrete resources first, then the

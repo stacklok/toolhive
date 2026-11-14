@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
+	appconfig "github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/updates"
 	"github.com/stacklok/toolhive/pkg/usagemetrics"
@@ -300,6 +301,38 @@ func TestStartUsageMetrics_DisabledReturnsNil(t *testing.T) {
 	registry := vmcpmocks.NewMockBackendRegistry(ctrl)
 
 	assert.Nil(t, startUsageMetrics(registry, usageFacts{}))
+}
+
+func TestDisabledInConfig(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		load func() (*appconfig.Config, error)
+		want bool
+	}{
+		{
+			name: "enabled in config",
+			load: func() (*appconfig.Config, error) { return &appconfig.Config{}, nil },
+			want: false,
+		},
+		{
+			name: "disabled in config",
+			load: func() (*appconfig.Config, error) { return &appconfig.Config{DisableUsageMetrics: true}, nil },
+			want: true,
+		},
+		{
+			name: "unloadable config counts as disabled",
+			load: func() (*appconfig.Config, error) { return nil, errors.New("failed to parse config file yaml") },
+			want: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, disabledInConfig(tt.load))
+		})
+	}
 }
 
 func TestCheckForUpdates_SkippedSendsNothing(t *testing.T) {

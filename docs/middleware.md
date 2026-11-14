@@ -381,7 +381,7 @@ The client is taken from `clientInfo.name`: from the `initialize` request for se
 
 Server names, image references, URLs, hostnames, namespaces, tool, prompt and resource names, raw client names and error messages are never sent. A server from a custom registry, including a local registry file, is reported as `catalog_server: custom` even if its entry has a name.
 
-**vMCP and the operator**: vMCP reports with the `vmcp` component and the same opt-outs. The operator passes its instance ID to the workloads it deploys (`TOOLHIVE_ANONYMOUS_ID`), so reports from one installation share an anonymous ID; the ID is fixed at operator startup and does not change workload pod templates on later restarts. Setting `TOOLHIVE_SKIP_UPDATE_CHECK=true` on the operator stops it from creating or passing the ID.
+**vMCP and the operator**: vMCP reports with the `vmcp` component and the same opt-outs; if its ToolHive config file cannot be loaded, it sends nothing. The operator passes its instance ID to the workloads it deploys (`TOOLHIVE_ANONYMOUS_ID`), so reports from one installation share an anonymous ID. The ID is read from the operator's telemetry ConfigMap at startup, retrying for about 15 seconds, and does not change workload pod templates on later restarts. If it still cannot be read, the operator starts without it, which rolls out every workload that carries it; the next successful start rolls them out again. Setting `TOOLHIVE_SKIP_UPDATE_CHECK=true` on the operator stops it from creating or passing the ID, which also rolls out those workloads once.
 
 **Configuration**:
 - Enabled by default

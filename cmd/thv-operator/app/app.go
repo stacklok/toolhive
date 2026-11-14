@@ -155,8 +155,12 @@ func Run() {
 
 	// Resolve the installation's instance ID before any controller reconciles,
 	// so every workload gets the same anonymous ID from its first pod template.
-	if instanceID, err := telemetryService.EnsureInstanceID(context.Background(), mgr.GetAPIReader()); err != nil {
-		setupLog.Info("unable to resolve telemetry instance ID; workloads report usage without it", "error", err.Error())
+	// Startup continues without it: usage metrics must not block the operator.
+	instanceID, err := telemetryService.EnsureInstanceID(
+		context.Background(), mgr.GetAPIReader(), telemetry.InstanceIDBackoff,
+	)
+	if err != nil {
+		setupLog.Error(err, "unable to resolve telemetry instance ID; workloads that carry it will be rolled out without it")
 	} else {
 		ctrlutil.SetUsageMetricsAnonymousID(instanceID)
 	}

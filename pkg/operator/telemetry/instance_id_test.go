@@ -18,6 +18,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/wait"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
@@ -50,9 +51,12 @@ func telemetryConfigMap(t *testing.T, instanceID string) *corev1.ConfigMap {
 	}
 }
 
+// noDelay retries three times without sleeping.
+var noDelay = wait.Backoff{Steps: 3}
+
 func storedInstanceID(t *testing.T, c client.Reader) string {
 	t.Helper()
-	id, err := readInstanceID(context.Background(), c, types.NamespacedName{Name: configMapName, Namespace: testNamespace})
+	_, id, err := readInstanceID(context.Background(), c, types.NamespacedName{Name: configMapName, Namespace: testNamespace})
 	require.NoError(t, err)
 	return id
 }
@@ -73,7 +77,7 @@ func TestService_EnsureInstanceID(t *testing.T) {
 	t.Run("creates the ConfigMap when missing", func(t *testing.T) {
 		c := fake.NewClientBuilder().WithScheme(newScheme(t)).Build()
 
-		id, err := NewService(c, testNamespace).EnsureInstanceID(ctx, c)
+		id, err := NewService(c, testNamespace).EnsureInstanceID(ctx, c, noDelay)
 		require.NoError(t, err)
 
 		_, err = uuid.Parse(id)
@@ -85,7 +89,7 @@ func TestService_EnsureInstanceID(t *testing.T) {
 		c := fake.NewClientBuilder().WithScheme(newScheme(t)).
 			WithObjects(telemetryConfigMap(t, "existing-id")).Build()
 
-		id, err := NewService(c, testNamespace).EnsureInstanceID(ctx, c)
+		id, err := NewService(c, testNamespace).EnsureInstanceID(ctx, c, noDelay)
 		require.NoError(t, err)
 		assert.Equal(t, "existing-id", id)
 	})
@@ -100,7 +104,7 @@ func TestService_EnsureInstanceID(t *testing.T) {
 			},
 		}).Build()
 
-		id, err := NewService(c, testNamespace).EnsureInstanceID(ctx, c)
+		id, err := NewService(c, testNamespace).EnsureInstanceID(ctx, c, noDelay)
 		require.NoError(t, err)
 		assert.Equal(t, "winner-id", id)
 	})
@@ -112,7 +116,7 @@ func TestService_EnsureInstanceID(t *testing.T) {
 			},
 		}).Build()
 
-		id, err := NewService(c, testNamespace).EnsureInstanceID(ctx, c)
+		id, err := NewService(c, testNamespace).EnsureInstanceID(ctx, c, noDelay)
 		require.ErrorContains(t, err, "failed to create telemetry ConfigMap")
 		assert.Empty(t, id)
 	})
@@ -124,16 +128,71 @@ func TestService_EnsureInstanceID(t *testing.T) {
 			},
 		}).Build()
 
-		id, err := NewService(c, testNamespace).EnsureInstanceID(ctx, c)
+		id, err := NewService(c, testNamespace).EnsureInstanceID(ctx, c, noDelay)
 		require.ErrorContains(t, err, "failed to get telemetry ConfigMap")
 		assert.Empty(t, id)
+	})
+
+	t.Run("retries a transient read error", func(t *testing.T) {
+		gets := 0
+		c := fake.NewClientBuilder().WithScheme(newScheme(t)).
+			WithObjects(telemetryConfigMap(t, "existing-id")).
+			WithInterceptorFuncs(interceptor.Funcs{
+				Get: func(
+					ctx context.Context, inner client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption,
+				) error {
+					gets++
+					if gets == 1 {
+						return apierrors.NewServiceUnavailable("apiserver restarting")
+					}
+					return inner.Get(ctx, key, obj, opts...)
+				},
+			}).Build()
+
+		id, err := NewService(c, testNamespace).EnsureInstanceID(ctx, c, noDelay)
+		require.NoError(t, err)
+		assert.Equal(t, "existing-id", id)
+		assert.Equal(t, 2, gets)
+	})
+
+	t.Run("stores an ID in a ConfigMap that holds none", func(t *testing.T) {
+		corrupt := telemetryConfigMap(t, "")
+		corrupt.Data[instanceIDKey] = "not json"
+		c := fake.NewClientBuilder().WithScheme(newScheme(t)).WithObjects(corrupt).Build()
+
+		id, err := NewService(c, testNamespace).EnsureInstanceID(ctx, c, noDelay)
+		require.NoError(t, err)
+
+		_, err = uuid.Parse(id)
+		require.NoError(t, err, "instance ID must be a UUID")
+		assert.Equal(t, id, storedInstanceID(t, c))
+	})
+
+	t.Run("reads the winner's ID when another replica repairs it first", func(t *testing.T) {
+		corrupt := telemetryConfigMap(t, "")
+		corrupt.Data[instanceIDKey] = "not json"
+		c := fake.NewClientBuilder().WithScheme(newScheme(t)).WithObjects(corrupt).WithInterceptorFuncs(interceptor.Funcs{
+			Update: func(ctx context.Context, inner client.WithWatch, _ client.Object, _ ...client.UpdateOption) error {
+				// Another replica stores its ID between our read and update.
+				winner := telemetryConfigMap(t, "winner-id")
+				current := &corev1.ConfigMap{}
+				require.NoError(t, inner.Get(ctx, client.ObjectKeyFromObject(winner), current))
+				winner.ResourceVersion = current.ResourceVersion
+				require.NoError(t, inner.Update(ctx, winner))
+				return apierrors.NewConflict(cmResource, configMapName, errors.New("modified"))
+			},
+		}).Build()
+
+		id, err := NewService(c, testNamespace).EnsureInstanceID(ctx, c, noDelay)
+		require.NoError(t, err)
+		assert.Equal(t, "winner-id", id)
 	})
 
 	t.Run("skip update check returns no ID and creates nothing", func(t *testing.T) {
 		t.Setenv(updates.EnvVarSkipUpdateCheck, "true")
 		c := fake.NewClientBuilder().WithScheme(newScheme(t)).Build()
 
-		id, err := NewService(c, testNamespace).EnsureInstanceID(ctx, c)
+		id, err := NewService(c, testNamespace).EnsureInstanceID(ctx, c, noDelay)
 		require.NoError(t, err)
 		assert.Empty(t, id)
 

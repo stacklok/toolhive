@@ -48,7 +48,8 @@ type usageFacts struct {
 
 // startUsageMetrics starts anonymous usage reporting unless it is disabled
 // (CI, TOOLHIVE_USAGE_METRICS_ENABLED=false, TOOLHIVE_SKIP_UPDATE_CHECK, or
-// `thv config usage-metrics disable`). It returns nil when disabled. It also
+// `thv config usage-metrics disable`, or a config that cannot be loaded). It
+// returns nil when disabled. It also
 // runs the vMCP update check in the background, after the collector has read
 // the anonymous ID, so that ID never depends on which of the two runs first.
 func startUsageMetrics(registry vmcp.BackendRegistry, facts usageFacts) *usageMetrics {
@@ -209,10 +210,24 @@ func vmcpAuthMode(incoming *config.IncomingAuthConfig, embeddedAuth bool) string
 }
 
 // usageMetricsDisabledInConfig reports whether the user turned usage metrics
-// off with `thv config usage-metrics disable`, read the same way the proxy
-// runner reads it.
+// off with `thv config usage-metrics disable`. In Kubernetes the provider
+// returns defaults without touching the filesystem. It deliberately avoids
+// DefaultProvider.GetConfig, which exits the process when the config cannot be
+// loaded: usage reporting is optional and must never stop vMCP from starting.
 func usageMetricsDisabledInConfig() bool {
-	return appconfig.NewDefaultProvider().GetConfig().DisableUsageMetrics
+	return disabledInConfig(appconfig.NewProvider().LoadOrCreateConfig)
+}
+
+// disabledInConfig reports whether the loaded config disables usage metrics. A
+// config that cannot be loaded counts as disabled, because the user's opt-out
+// cannot be ruled out.
+func disabledInConfig(load func() (*appconfig.Config, error)) bool {
+	cfg, err := load()
+	if err != nil {
+		slog.Debug("unable to load config, not sending usage metrics", "error", err)
+		return true
+	}
+	return cfg.DisableUsageMetrics
 }
 
 // checkForUpdates reports this vMCP instance to the update service, the same

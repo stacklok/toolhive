@@ -4,6 +4,8 @@
 package skillsvc
 
 import (
+	"context"
+	"errors"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -17,19 +19,10 @@ import (
 	"github.com/stacklok/toolhive/pkg/skills"
 	"github.com/stacklok/toolhive/pkg/skills/lockfile"
 	skillsmocks "github.com/stacklok/toolhive/pkg/skills/mocks"
+	verifiermocks "github.com/stacklok/toolhive/pkg/skills/verifier/mocks"
+	"github.com/stacklok/toolhive/pkg/storage"
 	"github.com/stacklok/toolhive/pkg/storage/sqlite"
 )
-
-//nolint:paralleltest // uses t.Setenv via newLockTestService, incompatible with t.Parallel
-func TestSync_FeatureDisabledReturnsForbidden(t *testing.T) {
-	gr, _ := newGitResolverMock(t)
-	svc, projectRoot := newLockTestService(t, gr)
-	t.Setenv(skills.LockFileEnvVar, "false")
-
-	_, err := svc.(*service).Sync(t.Context(), skills.SyncOptions{ProjectRoot: projectRoot}) //nolint:forcetypeassert
-	require.Error(t, err)
-	assert.Equal(t, http.StatusForbidden, httperr.Code(err))
-}
 
 //nolint:paralleltest // uses t.Setenv via newLockTestService, incompatible with t.Parallel
 func TestSync_ReportsUpToDateWhenNothingChanged(t *testing.T) {
@@ -39,7 +32,7 @@ func TestSync_ReportsUpToDateWhenNothingChanged(t *testing.T) {
 
 	ref, _ := gitRef("my-skill")
 	_, err := svc.Install(t.Context(), skills.InstallOptions{
-		Name: ref, Scope: skills.ScopeProject, ProjectRoot: projectRoot, Clients: []string{"claude-code"},
+		Name: ref, Scope: skills.ScopeProject, ProjectRoot: projectRoot,
 	})
 	require.NoError(t, err)
 
@@ -288,35 +281,182 @@ func TestSync_AdoptsUnmanagedInstall(t *testing.T) {
 	fx.register("unmanaged-skill", gitSkill("unmanaged-skill"))
 	svc, projectRoot := newLockTestService(t, gr)
 
-	// Disable the feature for the initial install so it lands unmanaged
-	// (no lock entry, Managed=false) — simulating a pre-existing install
-	// from before the lock feature was ever enabled.
-	t.Setenv(skills.LockFileEnvVar, "false")
+	// Simulate a pre-existing install from before lock tracking: install
+	// normally, then strip the lock entry and managed flag — the state a
+	// legacy install would be in.
 	ref, _ := gitRef("unmanaged-skill")
 	_, err := svc.Install(t.Context(), skills.InstallOptions{
-		Name: ref, Scope: skills.ScopeProject, ProjectRoot: projectRoot, Clients: []string{"claude-code"},
+		Name: ref, Scope: skills.ScopeProject, ProjectRoot: projectRoot,
+		Clients: []string{"claude-code"}, AllowUnsigned: true,
 	})
 	require.NoError(t, err)
-	t.Setenv(skills.LockFileEnvVar, "true")
+	root := mustOpenRoot(t, projectRoot)
+	require.NoError(t, lockfile.Update(root, func(lf *lockfile.Lockfile) error {
+		lf.Remove("unmanaged-skill")
+		return nil
+	}))
+	syncSvc := svc.(*service) //nolint:forcetypeassert
+	legacySk, err := syncSvc.store.Get(t.Context(), "unmanaged-skill", skills.ScopeProject, projectRoot)
+	require.NoError(t, err)
+	legacySk.Managed = false
+	legacySk.SigstoreBundle = nil
+	require.NoError(t, syncSvc.store.Update(t.Context(), legacySk))
 
 	syncer := svc.(*service) //nolint:forcetypeassert
 	result, err := syncer.Sync(t.Context(), skills.SyncOptions{ProjectRoot: projectRoot})
 	require.NoError(t, err)
 	assert.Equal(t, []string{"unmanaged-skill"}, result.NeverManaged)
 
-	result, err = syncer.Sync(t.Context(), skills.SyncOptions{ProjectRoot: projectRoot, Adopt: true})
+	// Adoption of an install with no stored bundle is an unsigned trust
+	// decision: without the explicit exception it fails...
+	result, err = syncer.Sync(t.Context(), skills.SyncOptions{
+		ProjectRoot: projectRoot, Adopt: true, PublicKey: testPublicKeyB64,
+	})
+	require.NoError(t, err)
+	require.Len(t, result.Failed, 1)
+	assert.Equal(t, skills.FailureReasonUnsignedRejected, result.Failed[0].Reason)
+	lf := readLockfile(t, projectRoot)
+	_, ok := lf.Get("unmanaged-skill")
+	assert.False(t, ok, "adoption without the unsigned exception must not write a lock entry")
+
+	// ...and with it, the entry records the unsigned state.
+	result, err = syncer.Sync(t.Context(), skills.SyncOptions{
+		ProjectRoot: projectRoot, Adopt: true, AllowUnsigned: true, PublicKey: testPublicKeyB64,
+	})
 	require.NoError(t, err)
 	assert.Equal(t, []string{"unmanaged-skill"}, result.NeverManaged)
 
-	lf := readLockfile(t, projectRoot)
+	lf = readLockfile(t, projectRoot)
 	entry, ok := lf.Get("unmanaged-skill")
 	require.True(t, ok, "adopt must write a lock entry for the unmanaged install")
 	assert.NotEmpty(t, entry.ContentDigest)
+	assert.True(t, entry.Unsigned, "an adoption without verifiable trust must record unsigned")
 
 	sk, err := svc.Info(t.Context(), skills.InfoOptions{Name: "unmanaged-skill", Scope: skills.ScopeProject, ProjectRoot: projectRoot})
 	require.NoError(t, err)
 	require.NotNil(t, sk.InstalledSkill)
 	assert.True(t, sk.InstalledSkill.Managed, "adopt must mark the DB record as managed")
+}
+
+// A failed adopt (marking the DB record managed fails after the lock write)
+// must remove the entry this adoption created — the lock must not claim a
+// skill is managed while the DB says otherwise.
+//
+//nolint:paralleltest // uses t.Setenv via newLockTestService, incompatible with t.Parallel
+func TestSync_AdoptCompensatesFailedManagedUpdate(t *testing.T) {
+	gr, fx := newGitResolverMock(t)
+	fx.register("unmanaged-skill", gitSkill("unmanaged-skill"))
+	svc, projectRoot := newLockTestService(t, gr)
+
+	// Simulate a legacy unmanaged install.
+	ref, _ := gitRef("unmanaged-skill")
+	_, err := svc.Install(t.Context(), skills.InstallOptions{
+		Name: ref, Scope: skills.ScopeProject, ProjectRoot: projectRoot,
+		Clients: []string{"claude-code"}, AllowUnsigned: true,
+	})
+	require.NoError(t, err)
+	root := mustOpenRoot(t, projectRoot)
+	require.NoError(t, lockfile.Update(root, func(lf *lockfile.Lockfile) error {
+		lf.Remove("unmanaged-skill")
+		return nil
+	}))
+	inner := svc.(*service) //nolint:forcetypeassert
+	legacySk, err := inner.store.Get(t.Context(), "unmanaged-skill", skills.ScopeProject, projectRoot)
+	require.NoError(t, err)
+	legacySk.Managed = false
+	require.NoError(t, inner.store.Update(t.Context(), legacySk))
+
+	// Marking the record managed during adopt now fails.
+	inner.store = &hookSkillStore{
+		SkillStore: inner.store,
+		updateErr:  errors.New("db update unavailable"),
+	}
+
+	result, err := inner.Sync(t.Context(), skills.SyncOptions{
+		ProjectRoot: projectRoot, Adopt: true, AllowUnsigned: true,
+	})
+	require.NoError(t, err)
+	require.Len(t, result.Failed, 1)
+	assert.Contains(t, result.Failed[0].Error, "db update unavailable")
+
+	_, ok := readLockfile(t, projectRoot).Get("unmanaged-skill")
+	assert.False(t, ok, "a failed adopt must remove the lock entry it created")
+}
+
+// Sync must fail up front on an invalid project root or an unreadable lock
+// file rather than reporting per-name results from broken state.
+//
+//nolint:paralleltest // uses t.Setenv via newLockTestService, incompatible with t.Parallel
+func TestSync_InvalidInputsFail(t *testing.T) {
+	gr, _ := newGitResolverMock(t)
+	svc, projectRoot := newLockTestService(t, gr)
+	syncer := svc.(*service) //nolint:forcetypeassert
+
+	_, err := syncer.Sync(t.Context(), skills.SyncOptions{ProjectRoot: filepath.Join(projectRoot, "does-not-exist")})
+	require.Error(t, err, "a nonexistent project root must fail")
+
+	lockPath := filepath.Join(projectRoot, lockfile.FileName)
+	require.NoError(t, os.MkdirAll(lockPath, 0o755))
+	_, err = syncer.Sync(t.Context(), skills.SyncOptions{ProjectRoot: projectRoot})
+	require.Error(t, err, "an unreadable lock file must fail")
+}
+
+func TestValidateSyncPublicKey(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		opts    skills.SyncOptions
+		wantErr bool
+	}{
+		{name: "no key"},
+		{name: "valid adoption key", opts: skills.SyncOptions{Adopt: true, PublicKey: testPublicKeyB64}},
+		{name: "key without adopt", opts: skills.SyncOptions{PublicKey: testPublicKeyB64}, wantErr: true},
+		{
+			name:    "adopt check with key",
+			opts:    skills.SyncOptions{Adopt: true, Check: true, PublicKey: testPublicKeyB64},
+			wantErr: true,
+		},
+		{name: "malformed key", opts: skills.SyncOptions{Adopt: true, PublicKey: "not-a-key"}, wantErr: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			err := validateSyncPublicKey(tc.opts)
+			if !tc.wantErr {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Equal(t, http.StatusBadRequest, httperr.Code(err))
+		})
+	}
+}
+
+// syncOne must report a per-name failure when the lock file becomes
+// unreadable under the held transaction, not panic or mutate state.
+//
+//nolint:paralleltest // uses t.Setenv via newLockTestService, incompatible with t.Parallel
+func TestSyncOne_UnreadableLockReportsFailure(t *testing.T) {
+	gr, fx := newGitResolverMock(t)
+	fx.register("my-skill", gitSkill("my-skill"))
+	svc, projectRoot := newLockTestService(t, gr)
+
+	ref, _ := gitRef("my-skill")
+	_, err := svc.Install(t.Context(), skills.InstallOptions{
+		Name: ref, Scope: skills.ScopeProject, ProjectRoot: projectRoot, Clients: []string{"claude-code"},
+	})
+	require.NoError(t, err)
+
+	lockPath := filepath.Join(projectRoot, lockfile.FileName)
+	require.NoError(t, os.Remove(lockPath))
+	require.NoError(t, os.MkdirAll(lockPath, 0o755))
+
+	inner := svc.(*service) //nolint:forcetypeassert
+	result := &skills.SyncResult{}
+	inner.syncOne(t.Context(), skills.SyncOptions{ProjectRoot: projectRoot}, "my-skill", result)
+	require.Len(t, result.Failed, 1)
+	assert.Equal(t, "my-skill", result.Failed[0].Name)
 }
 
 //nolint:paralleltest // uses t.Setenv via newLockTestService, incompatible with t.Parallel
@@ -353,13 +493,11 @@ func TestSync_PrunesRemovedFromLock(t *testing.T) {
 // client's copy would leave tampering with any other client's materialized
 // files invisible to --check — and which directory got checked would depend
 // on install order.
-//
-//nolint:paralleltest // uses t.Setenv, incompatible with t.Parallel
 func TestSync_CheckDetectsTamperInAnyClientDir(t *testing.T) {
+	t.Parallel()
 	gr, fx := newGitResolverMock(t)
 	fx.register("multi-skill", gitSkill("multi-skill"))
 
-	t.Setenv(skills.LockFileEnvVar, "true")
 	dbPath := filepath.Join(t.TempDir(), "test.db")
 	db, err := sqlite.Open(t.Context(), dbPath)
 	require.NoError(t, err)
@@ -377,7 +515,12 @@ func TestSync_CheckDetectsTamperInAnyClientDir(t *testing.T) {
 			return filepath.Join(projectRoot, "."+client, "skills", skillName), nil
 		})
 	pr.EXPECT().ListSkillSupportingClients().AnyTimes().Return([]string{"claude-code", "cursor"})
-	svc := New(store, WithPathResolver(pr), WithGitResolver(gr))
+	mv := verifiermocks.NewMockVerifier(ctrl)
+	mv.EXPECT().VerifyGit(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+		AnyTimes().Return(signedResult(), nil)
+	mv.EXPECT().VerifyBundleOffline(gomock.Any(), gomock.Any(), gomock.Any()).
+		AnyTimes().Return(nil)
+	svc := New(store, WithPathResolver(pr), WithGitResolver(gr), WithVerifier(mv))
 
 	ref, _ := gitRef("multi-skill")
 	_, err = svc.Install(t.Context(), skills.InstallOptions{
@@ -399,4 +542,78 @@ func TestSync_CheckDetectsTamperInAnyClientDir(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, []string{"multi-skill"}, result.Drifted,
 		"tampering with a non-first client's copy must be reported as drift")
+}
+
+//nolint:paralleltest // uses t.Setenv via newLockTestService, incompatible with t.Parallel
+func TestSync_DefaultExpandsToNewlyDetectedClients(t *testing.T) {
+	gr, fx := newGitResolverMock(t)
+	fx.register("my-skill", gitSkill("my-skill"))
+	svc, projectRoot := newLockTestService(t, gr)
+
+	ref, _ := gitRef("my-skill")
+	_, err := svc.Install(t.Context(), skills.InstallOptions{
+		Name: ref, Scope: skills.ScopeProject, ProjectRoot: projectRoot, Clients: []string{"claude-code"},
+	})
+	require.NoError(t, err)
+
+	syncer := svc.(*service) //nolint:forcetypeassert
+	result, err := syncer.Sync(t.Context(), skills.SyncOptions{ProjectRoot: projectRoot, Check: true})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"my-skill"}, result.Drifted)
+	assert.Empty(t, result.AlreadyCurrent, "default sync must not treat a missing detected client as current")
+
+	result, err = syncer.Sync(t.Context(), skills.SyncOptions{ProjectRoot: projectRoot})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"my-skill"}, result.Installed)
+
+	info, err := svc.Info(t.Context(), skills.InfoOptions{Name: "my-skill", Scope: skills.ScopeProject, ProjectRoot: projectRoot})
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{"claude-code", "cursor"}, info.InstalledSkill.Clients)
+}
+
+type staleListStore struct {
+	storage.SkillStore
+	listed []skills.InstalledSkill
+}
+
+func (s *staleListStore) List(context.Context, storage.ListFilter) ([]skills.InstalledSkill, error) {
+	out := make([]skills.InstalledSkill, len(s.listed))
+	copy(out, s.listed)
+	return out, nil
+}
+
+//nolint:paralleltest // uses t.Setenv via newLockTestService, incompatible with t.Parallel
+func TestSync_StaleListDoesNotResurrectUninstalledSkill(t *testing.T) {
+	gr, fx := newGitResolverMock(t)
+	fx.register("my-skill", gitSkill("my-skill"))
+	svc, projectRoot := newLockTestService(t, gr)
+
+	ref, _ := gitRef("my-skill")
+	_, err := svc.Install(t.Context(), skills.InstallOptions{
+		Name: ref, Scope: skills.ScopeProject, ProjectRoot: projectRoot, Clients: []string{"claude-code"},
+	})
+	require.NoError(t, err)
+
+	inner := svc.(*service) //nolint:forcetypeassert
+	stale, err := inner.store.List(t.Context(), storage.ListFilter{
+		Scope: skills.ScopeProject, ProjectRoot: projectRoot,
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, stale)
+
+	require.NoError(t, svc.Uninstall(t.Context(), skills.UninstallOptions{
+		Name: "my-skill", Scope: skills.ScopeProject, ProjectRoot: projectRoot,
+	}))
+
+	inner.store = &staleListStore{SkillStore: inner.store, listed: stale}
+
+	result, err := inner.Sync(t.Context(), skills.SyncOptions{ProjectRoot: projectRoot})
+	require.NoError(t, err)
+	assert.Empty(t, result.Installed)
+	assert.Empty(t, result.NeverManaged)
+
+	_, err = svc.Info(t.Context(), skills.InfoOptions{
+		Name: "my-skill", Scope: skills.ScopeProject, ProjectRoot: projectRoot,
+	})
+	require.Error(t, err, "a stale List snapshot must not resurrect an uninstalled skill")
 }

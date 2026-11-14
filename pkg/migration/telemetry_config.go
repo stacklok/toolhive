@@ -274,15 +274,23 @@ func migrateTelemetryConfigForWorkload(ctx context.Context, store state.Store, n
 	if err != nil {
 		return false, fmt.Errorf("failed to get writer for %s: %w", name, err)
 	}
+	closed := false
 	defer func() {
-		if closeErr := writer.Close(); closeErr != nil {
-			slog.Warn("failed to close writer", "name", name, "error", closeErr)
+		if !closed {
+			if err := state.AbortWriter(writer); err != nil {
+				slog.Warn("failed to abort writer", "name", name, "error", err)
+			}
 		}
 	}()
 
 	if _, err := writer.Write(migratedData); err != nil {
 		return false, fmt.Errorf("failed to write migrated config for %s: %w", name, err)
 	}
+	if err := writer.Close(); err != nil {
+		closed = true
+		return false, fmt.Errorf("failed to close writer for %s: %w", name, err)
+	}
+	closed = true
 
 	slog.Debug("migrated telemetry config samplingRate from float to string", "workload", name)
 	return true, nil

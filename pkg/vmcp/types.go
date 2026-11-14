@@ -592,9 +592,8 @@ type ResourceReadResult struct {
 	Contents []ResourceContent
 
 	// Meta contains protocol-level metadata from the backend (_meta field).
-	// NOTE: Due to MCP SDK limitations, resources/read handlers cannot forward _meta
-	// because they return []ResourceContents directly, not a result wrapper.
-	// This field is preserved for future SDK improvements but may be nil.
+	// Populated on both the Legacy and Modern client paths; forwarded to the
+	// client by the vMCP Serve handlers (non-reserved keys only).
 	Meta map[string]any
 
 	// BackendID is the logical backend that served the read, set by the core
@@ -668,6 +667,19 @@ type CompletionResult struct {
 	// HasMore indicates additional options exist beyond those in Values.
 	HasMore bool
 }
+
+// MaxResourceURILength caps the length, in bytes, of a client-supplied resource
+// URI that is matched against RFC 6570 resource templates.
+//
+// Template matching is not linear: its cost is quadratic in the number of
+// separators a URI places inside a template variable, and it takes no context,
+// so a closed connection or request deadline cannot stop it. The request body
+// cap is 8MB and only CallTool is rate-limited, so without this cap a handful
+// of resources/read, resources/subscribe or completion/complete requests could
+// pin a CPU for minutes. Exact concrete-resource and template-string lookups are
+// map lookups and are not subject to the cap. 2048 bytes is the conventional
+// practical URL limit and far beyond any resource URI a backend advertises.
+const MaxResourceURILength = 2048
 
 // RoutingTable contains the mappings from capability names to backend targets.
 // This is the output of the aggregation phase and input to the router.

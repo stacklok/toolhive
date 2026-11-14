@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/textinput"
-	tea "github.com/charmbracelet/bubbletea"
+	"charm.land/bubbles/v2/textinput"
+	tea "charm.land/bubbletea/v2"
 
 	mcpclient "github.com/stacklok/toolhive-core/mcpcompat/client"
 	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
@@ -65,7 +65,7 @@ func buildInspFields(tool mcp.Tool) []formField {
 
 		ti := textinput.New()
 		ti.Placeholder = fieldType
-		ti.Width = 40
+		ti.SetWidth(40)
 
 		fields = append(fields, formField{
 			input:    ti,

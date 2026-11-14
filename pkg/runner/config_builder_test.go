@@ -360,6 +360,94 @@ func TestRunConfigBuilder_Build_WithVolumeMounts(t *testing.T) {
 	}
 }
 
+func TestRunConfigBuilder_Build_IsolatesImageMetadataPermissionProfile(t *testing.T) {
+	t.Parallel()
+
+	baseRead := permissions.MountDeclaration(t.TempDir() + ":/base-read")
+	baseWrite := permissions.MountDeclaration(t.TempDir() + ":/base-write")
+	profile := &permissions.Profile{
+		Name:  "shared-profile",
+		Read:  append(make([]permissions.MountDeclaration, 0, 2), baseRead),
+		Write: append(make([]permissions.MountDeclaration, 0, 2), baseWrite),
+		Network: &permissions.NetworkPermissions{
+			Mode: "none",
+			Outbound: &permissions.OutboundNetworkPermissions{
+				AllowHost: []string{"registry.example.com"},
+				AllowPort: []int{443},
+			},
+			Inbound: &permissions.InboundNetworkPermissions{
+				AllowHost: []string{"127.0.0.1"},
+			},
+		},
+	}
+	imageMetadata := &regtypes.ImageMetadata{
+		BaseServerMetadata: regtypes.BaseServerMetadata{Name: "shared-image"},
+		Permissions:        profile,
+	}
+	expectedCallerProfile := &permissions.Profile{
+		Name:  "shared-profile",
+		Read:  []permissions.MountDeclaration{baseRead},
+		Write: []permissions.MountDeclaration{baseWrite},
+		Network: &permissions.NetworkPermissions{
+			Mode: "none",
+			Outbound: &permissions.OutboundNetworkPermissions{
+				AllowHost: []string{"registry.example.com"},
+				AllowPort: []int{443},
+			},
+			Inbound: &permissions.InboundNetworkPermissions{
+				AllowHost: []string{"127.0.0.1"},
+			},
+		},
+	}
+
+	firstRead := permissions.MountDeclaration(t.TempDir() + ":/first-read")
+	firstWrite := permissions.MountDeclaration(t.TempDir() + ":/first-write")
+	secondRead := permissions.MountDeclaration(t.TempDir() + ":/second-read")
+	secondWrite := permissions.MountDeclaration(t.TempDir() + ":/second-write")
+
+	build := func(t *testing.T, mode string, read, write permissions.MountDeclaration) *RunConfig {
+		t.Helper()
+
+		config, err := NewRunConfigBuilder(
+			context.Background(),
+			imageMetadata,
+			nil,
+			&mockEnvVarValidator{},
+			WithNetworkMode(mode),
+			WithVolumes([]string{string(read) + ":ro", string(write)}),
+		)
+		require.NoError(t, err)
+		require.NotNil(t, config.PermissionProfile)
+		return config
+	}
+
+	first := build(t, "host", firstRead, firstWrite)
+	second := build(t, "bridge", secondRead, secondWrite)
+
+	assert.Equal(t, expectedCallerProfile, profile, "building configs must not mutate the metadata-owned profile")
+	assert.Equal(t, []permissions.MountDeclaration{baseRead, firstRead}, first.PermissionProfile.Read)
+	assert.Equal(t, []permissions.MountDeclaration{baseWrite, firstWrite}, first.PermissionProfile.Write)
+	assert.Equal(t, "host", first.PermissionProfile.Network.Mode)
+	assert.Equal(t, []permissions.MountDeclaration{baseRead, secondRead}, second.PermissionProfile.Read)
+	assert.Equal(t, []permissions.MountDeclaration{baseWrite, secondWrite}, second.PermissionProfile.Write)
+	assert.Equal(t, "bridge", second.PermissionProfile.Network.Mode)
+
+	first.PermissionProfile.Read[0] = permissions.MountDeclaration("/mutated:/read")
+	first.PermissionProfile.Write[0] = permissions.MountDeclaration("/mutated:/write")
+	first.PermissionProfile.Network.Mode = "mutated"
+	first.PermissionProfile.Network.Outbound.AllowHost[0] = "mutated.example.com"
+	first.PermissionProfile.Network.Outbound.AllowPort[0] = 8443
+	first.PermissionProfile.Network.Inbound.AllowHost[0] = "0.0.0.0"
+
+	assert.Equal(t, expectedCallerProfile, profile, "returned profiles must not share storage with the metadata-owned profile")
+	assert.Equal(t, baseRead, second.PermissionProfile.Read[0], "returned read slices must not share backing storage")
+	assert.Equal(t, baseWrite, second.PermissionProfile.Write[0], "returned write slices must not share backing storage")
+	assert.Equal(t, "bridge", second.PermissionProfile.Network.Mode, "returned network profiles must not alias")
+	assert.Equal(t, []string{"registry.example.com"}, second.PermissionProfile.Network.Outbound.AllowHost)
+	assert.Equal(t, []int{443}, second.PermissionProfile.Network.Outbound.AllowPort)
+	assert.Equal(t, []string{"127.0.0.1"}, second.PermissionProfile.Network.Inbound.AllowHost)
+}
+
 // createTempProfileFile creates a temporary JSON profile file with the provided content
 // and returns its path. The caller is responsible for removing the file using the
 // returned cleanup function.
@@ -389,7 +477,7 @@ func TestAddCoreMiddlewares_TokenExchangeIntegration(t *testing.T) {
 
 		var mws []types.MiddlewareConfig
 		// OIDC config can be empty for this unit test since we're only testing token-exchange behavior.
-		mws = addCoreMiddlewares(mws, &auth.TokenValidatorConfig{}, nil, false)
+		mws = addCoreMiddlewares(mws, &auth.TokenValidatorConfig{}, nil, "", false)
 
 		// Expect only auth + mcp parser when token-exchange config == nil
 		assert.Equal(t, auth.MiddlewareType, mws[0].Type, "first middleware should be auth")
@@ -417,7 +505,7 @@ func TestAddCoreMiddlewares_TokenExchangeIntegration(t *testing.T) {
 			// ExternalTokenHeaderName not required for replace strategy
 		}
 
-		mws = addCoreMiddlewares(mws, &auth.TokenValidatorConfig{}, teCfg, false)
+		mws = addCoreMiddlewares(mws, &auth.TokenValidatorConfig{}, teCfg, "", false)
 
 		// Expect auth, token-exchange, then mcp parser — verify correct order and count.
 		assert.Equal(t, auth.MiddlewareType, mws[0].Type, "first middleware should be auth")
@@ -441,6 +529,41 @@ func TestAddCoreMiddlewares_TokenExchangeIntegration(t *testing.T) {
 		assert.Equal(t, teCfg.Scopes, mwParams.TokenExchangeConfig.Scopes, "Scopes should propagate into middleware params")
 		assert.Equal(t, teCfg.HeaderStrategy, mwParams.TokenExchangeConfig.HeaderStrategy, "HeaderStrategy should propagate into middleware params")
 	})
+}
+
+func TestWithMiddlewareFromFlags_BindsEmbeddedAuthServerIssuer(t *testing.T) {
+	t.Parallel()
+
+	builder := &runConfigBuilder{config: NewRunConfig()}
+	require.NoError(t, WithEmbeddedAuthServerConfig(&authserver.RunConfig{
+		Issuer: "https://auth.toolhive.example.com",
+	})(builder))
+	require.NoError(t, WithMiddlewareFromFlags(
+		nil,   // oidcConfig
+		nil,   // tokenExchangeConfig
+		nil,   // toolsFilter
+		nil,   // toolsOverride
+		nil,   // telemetryConfig
+		"",    // authzConfigPath
+		false, // enableAudit
+		"",    // auditConfigPath
+		"",    // serverName
+		"",    // transportType
+		true,  // disableUsageMetrics
+	)(builder))
+
+	var authConfig types.MiddlewareConfig
+	for _, config := range builder.config.MiddlewareConfigs {
+		if config.Type == auth.MiddlewareType {
+			authConfig = config
+			break
+		}
+	}
+	require.NotEmpty(t, authConfig.Parameters, "auth middleware must be present")
+
+	var authParams auth.MiddlewareParams
+	require.NoError(t, json.Unmarshal(authConfig.Parameters, &authParams))
+	assert.Equal(t, "https://auth.toolhive.example.com", authParams.EmbeddedAuthServerIssuer)
 }
 
 func TestRunConfigBuilder_WithToolOverride(t *testing.T) {
@@ -1112,6 +1235,73 @@ func TestRunConfigBuilder_WithRegistryProxyPort(t *testing.T) {
 	}
 }
 
+func TestRunConfigBuilder_CanonicalizesOIDCMiddlewareConfig(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		operator  bool
+		options   []RunConfigBuilderOption
+		assertion func(t *testing.T, config *RunConfig)
+	}{
+		{
+			name: "canonicalizes production CLI option ordering after embedded scope derivation",
+			options: []RunConfigBuilderOption{
+				WithMiddlewareFromFlags(nil, nil, nil, nil, nil, "", false, "", "", "", true),
+				WithOIDCConfig(
+					"https://issuer.example.com", "api://toolhive", "https://issuer.example.com/keys", "",
+					"client", "", "/certs/ca.pem", "/secrets/jwks-token", "https://resource.example.com", true, true, nil,
+				),
+				WithEmbeddedAuthServerConfig(&authserver.RunConfig{ScopesSupported: []string{"openid", "offline_access"}}),
+			},
+			assertion: func(t *testing.T, config *RunConfig) {
+				t.Helper()
+				want := &auth.TokenValidatorConfig{
+					Issuer: "https://issuer.example.com", Audience: "api://toolhive", JWKSURL: "https://issuer.example.com/keys",
+					ClientID: "client", CACertPath: "/certs/ca.pem", AuthTokenFile: "/secrets/jwks-token",
+					ResourceURL: "https://resource.example.com", AllowPrivateIP: true, InsecureAllowHTTP: true,
+					Scopes: []string{"openid", "offline_access"},
+				}
+				assert.Equal(t, want, config.OIDCConfig)
+				for _, middlewareConfig := range config.MiddlewareConfigs {
+					if middlewareConfig.Type != auth.MiddlewareType {
+						continue
+					}
+					var params auth.MiddlewareParams
+					require.NoError(t, json.Unmarshal(middlewareConfig.Parameters, &params))
+					assert.Equal(t, want, params.OIDCConfig)
+					return
+				}
+				t.Fatal("authentication middleware configuration not found")
+			},
+		},
+		{
+			name:     "allows deferred operator middleware assembly",
+			operator: true,
+			options: []RunConfigBuilderOption{
+				WithTokenValidatorConfig(&auth.TokenValidatorConfig{Issuer: "https://issuer.example.com"}),
+			},
+			assertion: func(t *testing.T, config *RunConfig) {
+				t.Helper()
+				assert.Empty(t, config.MiddlewareConfigs)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			build := NewRunConfigBuilder
+			if tt.operator {
+				build = NewOperatorRunConfigBuilder
+			}
+			config, err := build(context.Background(), nil, nil, &mockEnvVarValidator{}, tt.options...)
+			require.NoError(t, err)
+			tt.assertion(t, config)
+		})
+	}
+}
+
 // TestEmbeddedAuthServerScopePropagation verifies that the builder propagates
 // EmbeddedAuthServerConfig.ScopesSupported to OIDCConfig.Scopes when no
 // explicit PRM scopes are configured, and that explicit scopes are preserved.
@@ -1538,6 +1728,93 @@ func TestWithSessionTTL(t *testing.T) {
 			}
 			require.NoError(t, err)
 			assert.Equal(t, tt.expectedTTL, builder.config.SessionTTL)
+		})
+	}
+}
+
+func TestWithMaxRequestBodySize(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name             string
+		maxBytes         int64
+		expectErr        bool
+		expectedMaxBytes int64
+	}{
+		{
+			name:             "zero is accepted and uses the middleware default",
+			maxBytes:         0,
+			expectedMaxBytes: 0,
+		},
+		{
+			name:             "positive size is stored",
+			maxBytes:         16 << 20,
+			expectedMaxBytes: 16 << 20,
+		},
+		{
+			name:      "negative size returns an error",
+			maxBytes:  -1,
+			expectErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			builder := &runConfigBuilder{config: NewRunConfig()}
+			err := WithMaxRequestBodySize(tt.maxBytes)(builder)
+
+			if tt.expectErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "max-request-body-size must be non-negative")
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.expectedMaxBytes, builder.config.MaxRequestBodySize)
+		})
+	}
+}
+
+func TestWithProxyReadTimeout(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		value       time.Duration
+		expectErr   bool
+		expectedStr string
+	}{
+		{
+			name:        "zero is serialized as empty to use the proxy default",
+			value:       0,
+			expectedStr: "",
+		},
+		{
+			name:        "positive duration is stored as a Go duration string",
+			value:       45 * time.Second,
+			expectedStr: "45s",
+		},
+		{
+			name:      "negative duration returns an error",
+			value:     -1 * time.Second,
+			expectErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			builder := &runConfigBuilder{config: NewRunConfig()}
+			err := WithProxyReadTimeout(tt.value)(builder)
+
+			if tt.expectErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.expectedStr, builder.config.ProxyReadTimeout)
 		})
 	}
 }

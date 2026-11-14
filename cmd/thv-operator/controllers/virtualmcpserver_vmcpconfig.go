@@ -5,9 +5,10 @@ package controllers
 
 import (
 	"context"
+	stderrors "errors"
 	"fmt"
 
-	"gopkg.in/yaml.v3"
+	"go.yaml.in/yaml/v3"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -41,12 +42,27 @@ func (r *VirtualMCPServerReconciler) ensureVmcpConfigConfigMap(
 ) error {
 	// Create OIDC resolver and converter for CRD-to-config transformation
 	oidcResolver := oidc.NewResolver(r.Client)
-	converter, err := operatorvmcpconfig.NewConverter(oidcResolver, r.Client)
+	converter, err := operatorvmcpconfig.NewConverter(oidcResolver, r.Client,
+		operatorvmcpconfig.WithDefaultRedisConfig(r.DefaultRedisConfig))
 	if err != nil {
 		return fmt.Errorf("failed to create vmcp converter: %w", err)
 	}
 	config, authServerRC, err := converter.Convert(ctx, vmcp, telemetryCfg)
+	r.emitInlineTelemetryIgnoredEvent(vmcp)
 	if err != nil {
+		var delegateErr *operatorvmcpconfig.DelegateClientConfigValidationError
+		if stderrors.As(err, &delegateErr) {
+			message := fmt.Sprintf("invalid delegate clients in spec.authServerConfig: %v", delegateErr)
+			statusManager.SetPhase(mcpv1beta1.VirtualMCPServerPhaseFailed)
+			statusManager.SetMessage(message)
+			statusManager.SetAuthServerConfigValidatedCondition(
+				mcpv1beta1.ConditionReasonAuthServerConfigInvalid,
+				message,
+				metav1.ConditionFalse,
+			)
+			statusManager.SetObservedGeneration(vmcp.Generation)
+			return &SpecValidationError{Message: message}
+		}
 		return fmt.Errorf("failed to create vmcp Config from VirtualMCPServer: %w", err)
 	}
 
@@ -83,7 +99,7 @@ func (r *VirtualMCPServerReconciler) ensureVmcpConfigConfigMap(
 	}
 
 	// Marshal the serializable Config to YAML for storage in ConfigMap.
-	// Note: gopkg.in/yaml.v3 produces deterministic output by sorting map keys alphabetically.
+	// Note: go.yaml.in/yaml/v3 produces deterministic output by sorting map keys alphabetically.
 	// This ensures stable checksums for triggering pod rollouts only when content actually changes.
 	vmcpConfigYAML, err := yaml.Marshal(config)
 	if err != nil {
@@ -158,7 +174,13 @@ func (r *VirtualMCPServerReconciler) populateOptimizerEmbeddingService(
 	}
 
 	// No ref — warn if the user manually set the embedding service.
+	// Only warn when the spec changed since the last observed generation,
+	// matching emitInlineTelemetryIgnoredEvent: the ConfigMap is rebuilt on
+	// every reconcile, so an ungated warning would repeat forever.
 	if config.Optimizer != nil && config.Optimizer.EmbeddingService != "" {
+		if vmcp.Generation == vmcp.Status.ObservedGeneration {
+			return nil
+		}
 		ctxLogger.Info("config.optimizer.embeddingService is set without embeddingServerRef; "+
 			"consider using embeddingServerRef for managed lifecycle",
 			"embeddingService", config.Optimizer.EmbeddingService)
@@ -185,14 +207,18 @@ func (r *VirtualMCPServerReconciler) populateOptimizerFromRef(
 		return fmt.Errorf("failed to resolve embedding service URL: %w", err)
 	}
 	if config.Optimizer.EmbeddingService != "" && esURL != "" {
-		ctxLogger.Info("EmbeddingServerRef overrides config.optimizer.embeddingService",
-			"ref", vmcp.Spec.EmbeddingServerRef.Name,
-			"overridden", config.Optimizer.EmbeddingService,
-			"new", esURL)
-		if r.Recorder != nil {
-			r.Recorder.Eventf(vmcp, nil, corev1.EventTypeWarning, "EmbeddingServiceOverridden", "ResolveEmbeddingService",
-				"config.optimizer.embeddingService will be replaced by EmbeddingServerRef %q URL",
-				vmcp.Spec.EmbeddingServerRef.Name)
+		// Same one-shot rule as the manual warning: the override is only news
+		// when the spec changed, not every time the ConfigMap is rebuilt.
+		if vmcp.Generation != vmcp.Status.ObservedGeneration {
+			ctxLogger.Info("EmbeddingServerRef overrides config.optimizer.embeddingService",
+				"ref", vmcp.Spec.EmbeddingServerRef.Name,
+				"overridden", config.Optimizer.EmbeddingService,
+				"new", esURL)
+			if r.Recorder != nil {
+				r.Recorder.Eventf(vmcp, nil, corev1.EventTypeWarning, "EmbeddingServiceOverridden", "ResolveEmbeddingService",
+					"config.optimizer.embeddingService will be replaced by EmbeddingServerRef %q URL",
+					vmcp.Spec.EmbeddingServerRef.Name)
+			}
 		}
 	}
 	if esURL != "" {

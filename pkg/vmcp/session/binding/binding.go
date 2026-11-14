@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-// Package binding is the single owner of the identity-binding format used by
-// vMCP session storage. An identity binding encodes the OIDC principal that
+// Package binding preserves the vMCP binding API, delegating the canonical
+// format to pkg/auth/sessionbinding. An identity binding encodes the principal that
 // created a session as a single opaque string suitable for storage in a
 // key/value store such as Redis or Valkey.
 //
@@ -27,31 +27,22 @@
 // from the current request's token.
 package binding
 
-import (
-	"errors"
-	"strings"
-)
+import "github.com/stacklok/toolhive/pkg/auth/sessionbinding"
 
 // UnauthenticatedSentinel is the binding value stored for sessions that were
 // created without an authenticated identity (auth middleware not present or
 // identity nil).
-const UnauthenticatedSentinel = "unauthenticated"
+const UnauthenticatedSentinel = sessionbinding.UnauthenticatedSentinel
 
 // ErrInvalidBinding is returned by Format when either input is empty or
 // contains a NUL byte.
-var ErrInvalidBinding = errors.New("invalid identity binding")
+var ErrInvalidBinding = sessionbinding.ErrInvalidBinding
 
 // Format returns the canonical on-the-wire form of an identity binding:
 // iss + "\x00" + sub. Returns ErrInvalidBinding when either input is empty
 // or contains a NUL byte.
 func Format(iss, sub string) (string, error) {
-	if iss == "" || sub == "" {
-		return "", ErrInvalidBinding
-	}
-	if strings.ContainsRune(iss, '\x00') || strings.ContainsRune(sub, '\x00') {
-		return "", ErrInvalidBinding
-	}
-	return iss + "\x00" + sub, nil
+	return sessionbinding.Format(iss, sub)
 }
 
 // Parse splits an on-the-wire binding into its (iss, sub) components.
@@ -60,16 +51,7 @@ func Format(iss, sub string) (string, error) {
 // input, and for empty strings. Callers must check ok; the empty-string
 // return values are not meaningful when ok=false.
 func Parse(s string) (iss, sub string, ok bool) {
-	iss, sub, found := strings.Cut(s, "\x00")
-	if !found || iss == "" || sub == "" {
-		return "", "", false
-	}
-	// strings.Cut splits on the first NUL, so iss cannot contain one. Sub may
-	// still carry trailing NULs from a malformed input; reject those.
-	if strings.ContainsRune(sub, '\x00') {
-		return "", "", false
-	}
-	return iss, sub, true
+	return sessionbinding.Parse(s)
 }
 
 // IsUnauthenticated reports whether s is the literal unauthenticated sentinel.

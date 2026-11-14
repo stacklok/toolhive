@@ -250,7 +250,7 @@ func Serve(ctx context.Context, v core.VMCP, cfg *ServerConfig) (*Server, error)
 	// initialize, violating MCP 2025-11-25's "Servers that support prompts MUST
 	// declare the prompts capability during initialization".
 	//
-	// R1 (verified against toolhive-core v0.0.34 / go-sdk v1.7.0-pre.3): go-sdk's own
+	// R1 (verified against toolhive-core / go-sdk): go-sdk's own
 	// AddTool/RemoveTools (and the resource/prompt equivalents) call a shared
 	// changeAndNotify that debounces (10ms) and then broadcasts the
 	// notification to EVERY session currently connected to this *gosdk.Server
@@ -370,6 +370,18 @@ func Serve(ctx context.Context, v core.VMCP, cfg *ServerConfig) (*Server, error)
 	hooks.AddBeforeCallTool(func(hookCtx context.Context, _ any, _ *mcp.CallToolRequest) {
 		srv.lazyInjectSessionTools(hookCtx)
 	})
+
+	// Backend-health-driven tools resync (#5786, serve_health_resync.go):
+	// subscribe to the core-owned health monitor so passthrough sessions pick
+	// up catalog changes (a backend recovering/failing, backends added/removed)
+	// without reconnecting. The monitor debounces delivery and the listener
+	// runs off the health-check path; the core stops the monitor — and with it
+	// this callback — inside v.Close() during Stop. Nil when health monitoring
+	// is disabled, in which case sessions keep today's snapshot-at-registration
+	// behavior.
+	if reporter := srv.backendHealth(); reporter != nil {
+		reporter.OnChange(srv.resyncSessionsOnBackendHealthChange)
+	}
 
 	// Surface the capability gate's verdict once at startup: the blocker list is
 	// derived from construction-time configuration and cannot change afterwards,

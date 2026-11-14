@@ -84,6 +84,13 @@ var _ = Describe("VirtualMCPServer Composite Referenced Workflow", Ordered, func
 						},
 					},
 					Timeout: vmcpconfig.Duration(30 * time.Second),
+					// Explicit annotations on the referenced definition. More
+					// conservative than any read-only floor, so they pass the
+					// safety-floor guardrail and reach ListTools.
+					Annotations: &vmcpconfig.ToolAnnotationsOverride{
+						Title:           stringPtr("Referenced Echo Twice"),
+						DestructiveHint: boolPtr(true),
+					},
 				},
 			},
 		}
@@ -229,6 +236,36 @@ var _ = Describe("VirtualMCPServer Composite Referenced Workflow", Ordered, func
 			// First echo: echoes testMessage
 			// Second echo: echoes the result of first echo
 			GinkgoWriter.Printf("Referenced composite tool result: %+v\n", result.Content)
+		})
+
+		It("should advertise the referenced definition's annotations in tool listing", func() {
+			By("Creating and initializing MCP client for VirtualMCPServer")
+			mcpClient, err := CreateInitializedMCPClient(vmcpNodePort, "toolhive-composite-ref-test", 30*time.Second)
+			Expect(err).ToNot(HaveOccurred())
+			defer mcpClient.Close()
+
+			By("Listing tools from VirtualMCPServer")
+			listRequest := mcp.ListToolsRequest{}
+			tools, err := mcpClient.Client.ListTools(mcpClient.Ctx, listRequest)
+			Expect(err).ToNot(HaveOccurred())
+
+			By("Verifying the referenced composite tool carries its explicit annotations")
+			var foundComposite bool
+			for _, tool := range tools.Tools {
+				if tool.Name == compositeToolName {
+					foundComposite = true
+					GinkgoWriter.Printf("  Tool: %s annotations=%+v\n", tool.Name, tool.Annotations)
+					Expect(tool.Annotations.Title).To(Equal("Referenced Echo Twice"))
+					Expect(tool.Annotations.DestructiveHint).ToNot(BeNil())
+					Expect(*tool.Annotations.DestructiveHint).To(BeTrue())
+					// The yardstick echo backend does not declare readOnlyHint,
+					// so the derived floor is not read-only.
+					Expect(tool.Annotations.ReadOnlyHint).ToNot(BeNil())
+					Expect(*tool.Annotations.ReadOnlyHint).To(BeFalse())
+					break
+				}
+			}
+			Expect(foundComposite).To(BeTrue(), "Should find referenced composite tool: %s", compositeToolName)
 		})
 	})
 

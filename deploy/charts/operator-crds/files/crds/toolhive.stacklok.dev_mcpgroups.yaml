@@ -17,13 +17,15 @@ spec:
     plural: mcpgroups
     shortNames:
     - mcpg
-    - mcpgroup
     singular: mcpgroup
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
     - jsonPath: .status.serverCount
       name: Servers
+      type: integer
+    - jsonPath: .status.remoteProxyCount
+      name: Proxies
       type: integer
     - jsonPath: .status.phase
       name: Phase
@@ -180,6 +182,9 @@ spec:
   - additionalPrinterColumns:
     - jsonPath: .status.serverCount
       name: Servers
+      type: integer
+    - jsonPath: .status.remoteProxyCount
+      name: Proxies
       type: integer
     - jsonPath: .status.phase
       name: Phase

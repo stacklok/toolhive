@@ -12,7 +12,7 @@ import (
 
 	"github.com/google/uuid"
 
-	tcredis "github.com/stacklok/toolhive-core/redis"
+	"github.com/stacklok/toolhive-core/redisconn"
 )
 
 const (
@@ -130,7 +130,7 @@ func NewManagerWithRedis(
 	ctx context.Context,
 	ttl time.Duration,
 	factory Factory,
-	cfg tcredis.Config,
+	cfg redisconn.Config,
 	keyPrefix string,
 ) (*Manager, error) {
 	storage, err := NewRedisStorage(ctx, cfg, keyPrefix, ttl)
@@ -176,17 +176,7 @@ func (m *Manager) AddWithID(id string) error {
 	if err := validateSessionID(id); err != nil {
 		return err
 	}
-	// Check if session already exists
-	ctx, cancel := context.WithTimeout(context.Background(), defaultOperationTimeout)
-	defer cancel()
-
-	if _, err := m.storage.Load(ctx, id); err == nil {
-		return fmt.Errorf("session ID %q already exists", id)
-	}
-
-	// Create and store new session
-	session := m.factory(id)
-	return m.storage.Store(ctx, session)
+	return m.AddSession(m.factory(id))
 }
 
 // AddSession adds an existing session to the manager.
@@ -199,15 +189,9 @@ func (m *Manager) AddSession(session Session) error {
 		return err
 	}
 
-	// Check if session already exists
 	ctx, cancel := context.WithTimeout(context.Background(), defaultOperationTimeout)
 	defer cancel()
-
-	if _, err := m.storage.Load(ctx, session.ID()); err == nil {
-		return fmt.Errorf("session ID %q already exists", session.ID())
-	}
-
-	return m.storage.Store(ctx, session)
+	return m.storage.Create(ctx, session)
 }
 
 // Get retrieves a session by ID. Returns (session, true) if found.
@@ -221,6 +205,16 @@ func (m *Manager) Get(id string) (Session, bool) {
 		return nil, false
 	}
 	return sess, true
+}
+
+// LoadIfOwner returns the session only if its current ownership binding matches expectedOwner.
+func (m *Manager) LoadIfOwner(id, expectedOwner string) (Session, error) {
+	if err := validateSessionID(id); err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), defaultOperationTimeout)
+	defer cancel()
+	return m.storage.LoadIfOwner(ctx, id, expectedOwner)
 }
 
 // GetWithError retrieves a session by ID and returns the underlying storage
@@ -249,6 +243,26 @@ func (m *Manager) UpsertSession(session Session) error {
 	return m.storage.Store(ctx, session)
 }
 
+// UpsertSessionIfOwner replaces a session only if the current record still has expectedOwner.
+func (m *Manager) UpsertSessionIfOwner(session Session, expectedOwner string) error {
+	if session == nil {
+		return fmt.Errorf("session cannot be nil")
+	}
+	if err := validateSessionID(session.ID()); err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), defaultOperationTimeout)
+	defer cancel()
+	updated, err := m.storage.StoreIfOwner(ctx, session, expectedOwner)
+	if err != nil {
+		return err
+	}
+	if !updated {
+		return ErrSessionNotFound
+	}
+	return nil
+}
+
 // Delete removes a session by ID.
 // Returns an error if the ID is invalid or the deletion fails.
 func (m *Manager) Delete(id string) error {
@@ -258,6 +272,23 @@ func (m *Manager) Delete(id string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), defaultOperationTimeout)
 	defer cancel()
 	return m.storage.Delete(ctx, id)
+}
+
+// DeleteIfOwner removes a session only if the current record still has expectedOwner.
+func (m *Manager) DeleteIfOwner(id, expectedOwner string) error {
+	if err := validateSessionID(id); err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), defaultOperationTimeout)
+	defer cancel()
+	deleted, err := m.storage.DeleteIfOwner(ctx, id, expectedOwner)
+	if err != nil {
+		return err
+	}
+	if !deleted {
+		return ErrSessionNotFound
+	}
+	return nil
 }
 
 // Stop stops the cleanup worker and closes the storage backend.

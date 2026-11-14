@@ -31,7 +31,9 @@ var _ = Describe("VirtualMCPServer Composite Sequential Workflow", Ordered, func
 		vmcpNodePort    int32
 
 		// Composite tool names
-		compositeToolName = "echo_twice"
+		compositeToolName     = "echo_twice"
+		annotatedToolName     = "echo_annotated"
+		contradictingToolName = "echo_contradicting"
 	)
 
 	BeforeAll(func() {
@@ -83,6 +85,72 @@ var _ = Describe("VirtualMCPServer Composite Sequential Workflow", Ordered, func
 								DependsOn: []string{"first_echo"},
 								Arguments: thvjson.NewMap(map[string]any{
 									"input": "{{ .steps.first_echo.result }}",
+								}),
+							},
+						},
+					},
+					// Composite tool with explicit annotations. An explicit hint may be
+					// MORE conservative than the derived floor, so this passes through.
+					{
+						Name:        annotatedToolName,
+						Description: "Echoes the input with explicit conservative annotations",
+						Parameters: thvjson.NewMap(map[string]any{
+							"type": "object",
+							"properties": map[string]any{
+								"message": map[string]any{
+									"type":        "string",
+									"description": "The message to echo",
+								},
+							},
+							"required": []any{"message"},
+						}),
+						Annotations: &vmcpconfig.ToolAnnotationsOverride{
+							Title:           stringPtr("Annotated Echo"),
+							ReadOnlyHint:    boolPtr(false),
+							DestructiveHint: boolPtr(true),
+							IdempotentHint:  boolPtr(true),
+						},
+						Timeout: vmcpconfig.Duration(30 * time.Second),
+						Steps: []vmcpconfig.WorkflowStepConfig{
+							{
+								ID:   "echo",
+								Type: "tool",
+								Tool: fmt.Sprintf("%s.echo", backendName),
+								Arguments: thvjson.NewMap(map[string]any{
+									"input": "{{ .params.message }}",
+								}),
+							},
+						},
+					},
+					// Composite tool whose explicit annotations CONTRADICT the derived
+					// safety floor: readOnlyHint=true claims the tool does not modify
+					// its environment, but the yardstick echo tool does not declare
+					// readOnlyHint, so the floor is not read-only. The guardrail drops
+					// this tool from tools/list at runtime while the server stays Ready.
+					{
+						Name:        contradictingToolName,
+						Description: "Contradicting annotations: dropped by the safety-floor guardrail",
+						Parameters: thvjson.NewMap(map[string]any{
+							"type": "object",
+							"properties": map[string]any{
+								"message": map[string]any{
+									"type":        "string",
+									"description": "The message to echo",
+								},
+							},
+							"required": []any{"message"},
+						}),
+						Annotations: &vmcpconfig.ToolAnnotationsOverride{
+							ReadOnlyHint: boolPtr(true),
+						},
+						Timeout: vmcpconfig.Duration(30 * time.Second),
+						Steps: []vmcpconfig.WorkflowStepConfig{
+							{
+								ID:   "echo",
+								Type: "tool",
+								Tool: fmt.Sprintf("%s.echo", backendName),
+								Arguments: thvjson.NewMap(map[string]any{
+									"input": "{{ .params.message }}",
 								}),
 							},
 						},
@@ -195,6 +263,77 @@ var _ = Describe("VirtualMCPServer Composite Sequential Workflow", Ordered, func
 			// Second echo: echoes the result of first echo
 			GinkgoWriter.Printf("Composite tool result: %+v\n", result.Content)
 		})
+
+		It("should advertise annotations on composite tools", func() {
+			By("Creating and initializing MCP client for VirtualMCPServer")
+			mcpClient, err := CreateInitializedMCPClient(vmcpNodePort, "toolhive-composite-test", 30*time.Second)
+			Expect(err).ToNot(HaveOccurred())
+			defer mcpClient.Close()
+
+			By("Listing tools from VirtualMCPServer")
+			listRequest := mcp.ListToolsRequest{}
+			tools, err := mcpClient.Client.ListTools(mcpClient.Ctx, listRequest)
+			Expect(err).ToNot(HaveOccurred())
+
+			toolAnnotations := make(map[string]mcp.ToolAnnotation, len(tools.Tools))
+			for _, tool := range tools.Tools {
+				toolAnnotations[tool.Name] = tool.Annotations
+				GinkgoWriter.Printf("  Tool: %s annotations=%+v\n", tool.Name, tool.Annotations)
+			}
+
+			By("Verifying derived annotations on the composite tool")
+			// The yardstick echo backend declares NO annotations, so derivation is
+			// fail-closed: echo_twice (no explicit annotations) advertises the
+			// conservative floor — readOnlyHint=false, destructiveHint=true,
+			// openWorldHint=true.
+			compositeAnn, found := toolAnnotations[compositeToolName]
+			Expect(found).To(BeTrue(), "Should find composite tool: %s", compositeToolName)
+			Expect(compositeAnn.ReadOnlyHint).ToNot(BeNil(), "Composite tool should advertise a derived readOnlyHint")
+			Expect(*compositeAnn.ReadOnlyHint).To(BeFalse(),
+				"Derived readOnlyHint should be false: the yardstick echo tool does not declare itself read-only")
+			Expect(compositeAnn.DestructiveHint).ToNot(BeNil(), "Composite tool should advertise a derived destructiveHint")
+			Expect(*compositeAnn.DestructiveHint).To(BeTrue(),
+				"Derived destructiveHint should be true: a step whose annotations are unknown taints the floor")
+			Expect(compositeAnn.OpenWorldHint).ToNot(BeNil(), "Composite tool should advertise a derived openWorldHint")
+			Expect(*compositeAnn.OpenWorldHint).To(BeTrue(),
+				"Derived openWorldHint should be true: a step whose annotations are unknown taints the floor")
+
+			By("Verifying explicit annotations pass through when more conservative than the floor")
+			annotatedAnn, found := toolAnnotations[annotatedToolName]
+			Expect(found).To(BeTrue(), "Should find explicitly annotated composite tool: %s", annotatedToolName)
+			Expect(annotatedAnn.Title).To(Equal("Annotated Echo"))
+			Expect(annotatedAnn.ReadOnlyHint).ToNot(BeNil())
+			Expect(*annotatedAnn.ReadOnlyHint).To(BeFalse())
+			Expect(annotatedAnn.DestructiveHint).ToNot(BeNil())
+			Expect(*annotatedAnn.DestructiveHint).To(BeTrue())
+			Expect(annotatedAnn.IdempotentHint).ToNot(BeNil())
+			Expect(*annotatedAnn.IdempotentHint).To(BeTrue())
+
+			By("Verifying the contradicting composite tool is dropped")
+			_, found = toolAnnotations[contradictingToolName]
+			Expect(found).To(BeFalse(),
+				"Composite tool with annotations contradicting the safety floor should be dropped: %s", contradictingToolName)
+
+			By("Verifying the contradicting composite tool is also uncallable")
+			callRequest := mcp.CallToolRequest{}
+			callRequest.Params.Name = contradictingToolName
+			callRequest.Params.Arguments = map[string]any{"message": "should-not-run"}
+			_, err = mcpClient.Client.CallTool(mcpClient.Ctx, callRequest)
+			Expect(err).To(HaveOccurred(),
+				"CallTool on a dropped contradicting composite must fail; advertised equals executed")
+		})
+
+		It("should stay Ready while dropping the contradicting composite tool", func() {
+			vmcpServer := &mcpv1beta1.VirtualMCPServer{}
+			err := k8sClient.Get(ctx, types.NamespacedName{
+				Name:      vmcpServerName,
+				Namespace: testNamespace,
+			}, vmcpServer)
+			Expect(err).ToNot(HaveOccurred())
+
+			Expect(vmcpServer.Status.Phase).To(Equal(mcpv1beta1.VirtualMCPServerPhaseReady),
+				"VirtualMCPServer should stay Ready when the annotation guardrail drops a composite tool")
+		})
 	})
 
 	Context("when verifying composite tool configuration", func() {
@@ -206,7 +345,7 @@ var _ = Describe("VirtualMCPServer Composite Sequential Workflow", Ordered, func
 			}, vmcpServer)
 			Expect(err).ToNot(HaveOccurred())
 
-			Expect(vmcpServer.Spec.Config.CompositeTools).To(HaveLen(1))
+			Expect(vmcpServer.Spec.Config.CompositeTools).ToNot(BeEmpty())
 
 			compositeTool := vmcpServer.Spec.Config.CompositeTools[0]
 			Expect(compositeTool.Name).To(Equal(compositeToolName))
@@ -230,3 +369,9 @@ var _ = Describe("VirtualMCPServer Composite Sequential Workflow", Ordered, func
 		})
 	})
 })
+
+// boolPtr returns a pointer to b. Used for optional *bool annotation fields.
+func boolPtr(b bool) *bool { return &b }
+
+// stringPtr returns a pointer to s. Used for optional *string annotation fields.
+func stringPtr(s string) *string { return &s }

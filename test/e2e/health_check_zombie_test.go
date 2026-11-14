@@ -95,7 +95,7 @@ var _ = Describe("Health Check Zombie Process Prevention", Label("stability", "h
 				GinkgoWriter.Printf("Proxy listening on port: %d\n", proxyPort)
 
 				By("Sending a request through the proxy to initialize it")
-				// This triggers serverInitialized() so health checks will run
+				// This triggers serverInitialized() so health check failures count toward shutdown
 				proxyURL := fmt.Sprintf("http://127.0.0.1:%d/mcp", proxyPort)
 				resp, err := http.Get(proxyURL)
 				Expect(err).ToNot(HaveOccurred(), "Should be able to connect to proxy")

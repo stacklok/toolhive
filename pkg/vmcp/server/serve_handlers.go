@@ -28,8 +28,9 @@ import (
 // handlers that route invocations through core.CallTool / core.ReadResource with
 // an explicit *auth.Identity. The session factory does NOT aggregate on this path,
 // so there is no second aggregation and no drift between the advertised set and
-// the call path. Identity binding is still enforced by the session layer via
-// enforceSessionBinding before each call reaches the core.
+// the call path. Identity binding is enforced on every session-bearing request by
+// sessionOwnershipMiddleware, and again by enforceSessionBinding before each call
+// reaches the core.
 //
 // The legacy server.New path (s.core == nil) is untouched: it sources capabilities
 // from the session factory's aggregation via Manager.GetAdaptedTools/Resources and
@@ -178,15 +179,15 @@ func (s *Server) coreSessionResources(
 
 	sdkResources := make([]server.ServerResource, 0, len(domainResources))
 	for _, domainResource := range domainResources {
-		sdkResources = append(sdkResources, server.ServerResource{
-			Resource: mcp.Resource{
+		sdkResources = append(sdkResources, server.NewServerResourceWithResult(
+			mcp.Resource{
 				Name:        domainResource.Name,
 				URI:         domainResource.URI,
 				Description: domainResource.Description,
 				MIMEType:    domainResource.MimeType,
 			},
-			Handler: s.coreResourceHandler(sessionID, domainResource.URI, s.backendDisplayName(ctx, domainResource.BackendID)),
-		})
+			s.coreResourceHandler(sessionID, domainResource.URI, s.backendDisplayName(ctx, domainResource.BackendID)),
+		))
 	}
 	return sdkResources, nil
 }
@@ -211,16 +212,16 @@ func (s *Server) coreSessionResourceTemplates(
 
 	sdkTemplates := make([]server.ServerResourceTemplate, 0, len(domainTemplates))
 	for _, domainTemplate := range domainTemplates {
-		sdkTemplates = append(sdkTemplates, server.ServerResourceTemplate{
-			Template: mcp.ResourceTemplate{
+		sdkTemplates = append(sdkTemplates, server.NewServerResourceTemplateWithResult(
+			mcp.ResourceTemplate{
 				Name:        domainTemplate.Name,
 				URITemplate: domainTemplate.URITemplate,
 				Description: domainTemplate.Description,
 				MIMEType:    domainTemplate.MimeType,
 			},
-			Handler: s.coreResourceTemplateHandler(
+			s.coreResourceTemplateHandler(
 				sessionID, s.backendDisplayName(ctx, domainTemplate.BackendID)),
-		})
+		))
 	}
 	return sdkTemplates, nil
 }
@@ -303,7 +304,7 @@ func (s *Server) coreToolHandler(sessionID, toolName, backendName string) server
 
 		result, err := s.core.CallTool(ctx, caller, toolName, args, conversion.FromMCPMeta(req.Params.Meta))
 		if err != nil {
-			return conversion.ErrorToToolResult(err), nil
+			return legacyToolCallError(server.ClientSessionFromContext(ctx), err)
 		}
 
 		return &mcp.CallToolResult{
@@ -335,10 +336,13 @@ func gateParsedArgs(ctx context.Context, toolName string) map[string]any {
 
 // coreResourceHandler builds the SDK handler for a Serve-path resource. It mirrors
 // coreToolHandler: audit label, binding check, then core.ReadResource with explicit identity.
+// The result-returning shape forwards the backend's non-reserved _meta (trace ids,
+// custom fields) onto the wire result — reserved io.modelcontextprotocol/* keys are
+// stripped by conversion.ToMCPMeta, matching every other Legacy egress (#5986).
 func (s *Server) coreResourceHandler(
 	sessionID, uri, backendName string,
-) func(ctx context.Context, req mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
-	return func(ctx context.Context, _ mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
+) server.ResourceResultHandlerFunc {
+	return func(ctx context.Context, _ mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
 		if bi, ok := audit.BackendInfoFromContext(ctx); ok && bi != nil {
 			bi.BackendName = backendName
 		}
@@ -356,39 +360,24 @@ func (s *Server) coreResourceHandler(
 			}
 			return nil, err
 		}
-		return conversion.ToMCPResourceContents(result.Contents), nil
+		return &mcp.ReadResourceResult{
+			Result:   mcp.Result{Meta: conversion.ToMCPMeta(result.Meta)},
+			Contents: conversion.ToMCPResourceContents(result.Contents),
+		}, nil
 	}
 }
 
 // coreResourceTemplateHandler builds the SDK handler for a Serve-path resource
-// template. It mirrors coreResourceHandler but reads the concrete URI from the
-// request (req.Params.URI) rather than a fixed URI captured at registration,
-// because one template serves a whole family of URIs. It routes that URI through
-// core.ReadResource, which resolves it via the router's template-match fallback.
+// template. It delegates to coreResourceHandler with the concrete URI read from
+// the request (req.Params.URI) rather than a fixed URI captured at registration,
+// because one template serves a whole family of URIs. coreResourceHandler routes
+// that URI through core.ReadResource, which resolves it via the router's
+// template-match fallback.
 func (s *Server) coreResourceTemplateHandler(
 	sessionID, backendName string,
-) func(ctx context.Context, req mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
-	return func(ctx context.Context, req mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
-		if bi, ok := audit.BackendInfoFromContext(ctx); ok && bi != nil {
-			bi.BackendName = backendName
-		}
-
-		uri := req.Params.URI
-
-		caller, _ := auth.IdentityFromContext(ctx)
-		if err := s.enforceSessionBinding(ctx, sessionID, caller); err != nil {
-			s.terminateOnBindingFailure(sessionID, uri, err)
-			return nil, fmt.Errorf("unauthorized: %w", err)
-		}
-
-		result, err := s.core.ReadResource(ctx, caller, uri)
-		if err != nil {
-			if errors.Is(err, vmcp.ErrAuthorizationFailed) {
-				return nil, errors.New(vmcp.DenyMessageResourceRead)
-			}
-			return nil, err
-		}
-		return conversion.ToMCPResourceContents(result.Contents), nil
+) server.ResourceResultHandlerFunc {
+	return func(ctx context.Context, req mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
+		return s.coreResourceHandler(sessionID, req.Params.URI, backendName)(ctx, req)
 	}
 }
 
@@ -553,11 +542,13 @@ func completionDenyMessage(refType string) string {
 }
 
 // enforceSessionBinding validates caller against the session's stored identity
-// binding. It is the SOLE identity-binding enforcement point on the Serve call
+// binding. It is the call-path layer of identity-binding enforcement on the Serve
 // path: requests reach the core directly, bypassing the BindSession decorator that
-// performs this check on MultiSession.CallTool on the legacy path. The SDK's
-// SessionIdManager.Validate only gates session existence/termination, not caller
-// identity, so without this check a different principal could reuse the session ID.
+// performs this check on MultiSession.CallTool on the legacy path. Handler rejects a
+// foreign caller earlier, on every session-bearing request (sessionOwnershipMiddleware);
+// this check remains for embedders that mount the MCP server without that middleware.
+// The SDK's SessionIdManager.Validate only gates session existence/termination, not
+// caller identity.
 //
 // It fails closed in two ways: a missing session record (already terminated/expired)
 // rejects the caller, and ValidateCaller rejects an empty/unparsable binding with
@@ -579,6 +570,7 @@ func (s *Server) enforceSessionBinding(ctx context.Context, sessionID string, ca
 func (s *Server) terminateOnBindingFailure(sessionID, capability string, err error) {
 	slog.Warn("caller authorization failed, terminating session",
 		"session_id", sessionID, "capability", capability, "error", err)
+	s.healthResync.remove(sessionID)
 	if _, termErr := s.vmcpSessionMgr.Terminate(sessionID); termErr != nil {
 		slog.Error("failed to terminate session after auth failure",
 			"session_id", sessionID, "error", termErr)

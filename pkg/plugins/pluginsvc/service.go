@@ -14,11 +14,14 @@ import (
 	"context"
 	"sync"
 
+	"github.com/stacklok/toolhive-core/container/signer"
 	ociplugins "github.com/stacklok/toolhive-core/oci/plugins"
+	regtypes "github.com/stacklok/toolhive-core/registry/types"
 	"github.com/stacklok/toolhive/pkg/client"
 	"github.com/stacklok/toolhive/pkg/git"
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/plugins"
+	"github.com/stacklok/toolhive/pkg/skills/verifier"
 	"github.com/stacklok/toolhive/pkg/storage"
 )
 
@@ -103,6 +106,9 @@ type PluginSearchHit struct {
 	Description string `json:"description,omitempty"`
 	// Packages lists the OCI packages that publish this plugin.
 	Packages []PluginPackage `json:"packages,omitempty"`
+	// Provenance is the independently optional signer identity declared by
+	// the registry entry and enforced on a project-scoped true first use.
+	Provenance *regtypes.Provenance `json:"provenance,omitempty"`
 }
 
 // PluginPackage describes a single OCI package backing a plugin search hit.
@@ -128,6 +134,25 @@ type PluginLookup interface {
 func WithPluginLookup(pl PluginLookup) Option {
 	return func(s *service) {
 		s.pluginLookup = pl
+	}
+}
+
+// WithSigner sets the artifact signer used by Push. Defaults to the Sigstore
+// signer with the composite registry keychain.
+func WithSigner(sg signer.Signer) Option {
+	return func(s *service) {
+		s.sigSigner = sg
+	}
+}
+
+// WithVerifier sets the signature verifier used by install, sync, and
+// upgrade. Defaults to the Sigstore verifier with the composite registry
+// keychain. Explicit public-key re-anchoring during upgrade additionally
+// requires the verifier to implement verifier.OCISnapshotRetriever; ordinary
+// verification remains compatible with verifier.Verifier implementations.
+func WithVerifier(v verifier.Verifier) Option {
+	return func(s *service) {
+		s.sigVerifier = v
 	}
 }
 
@@ -161,6 +186,18 @@ func (pl *pluginLock) lock(name string, scope plugins.Scope, projectRoot string)
 	return m.Unlock
 }
 
+// lockPlugin acquires the per-plugin mutex. Callers that already hold the lock
+// (Sync/Upgrade) must use the *AlreadyLocked / *Locked helpers instead of
+// re-entering through public Install/Uninstall/adoptPlugin.
+func (s *service) lockPlugin(
+	ctx context.Context,
+	name string,
+	scope plugins.Scope,
+	projectRoot string,
+) (context.Context, func()) {
+	return ctx, s.locks.lock(name, scope, projectRoot)
+}
+
 // service is the default implementation of plugins.PluginService. It implements
 // the build/validate/push/content surface (Phase 2) and the install/uninstall/
 // list/info surface (Phase 3), the latter driving per-client materialization
@@ -176,6 +213,8 @@ type service struct {
 	pluginLookup  PluginLookup
 	gitClient     git.Client
 	clientManager *client.ClientManager
+	sigVerifier   verifier.Verifier
+	sigSigner     signer.Signer
 }
 
 // New creates a new plugin service and returns it as a plugins.PluginService.

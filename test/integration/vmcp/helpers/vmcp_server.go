@@ -129,7 +129,7 @@ func WithSessionTTL(ttl time.Duration) VMCPServerOption {
 // listener for its lifetime, so callers MUST read the address back from the
 // returned server's Address() rather than assuming a port. Address() reports the
 // bound port only once the server is ready, which this function waits for before
-// returning. Do not pre-select a port here by binding and closing a probe
+// returning. Do not preselect a port here by binding and closing a probe
 // listener: that releases the port, and any of the parallel tests in this suite
 // can claim it before the server rebinds (#6034).
 //

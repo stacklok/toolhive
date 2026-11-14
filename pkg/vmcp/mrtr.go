@@ -9,35 +9,38 @@ import (
 	"fmt"
 )
 
-// InputRequiredResult carries a Modern (2026-07-28) backend's
-// resultType:"input_required" envelope — a Multi Round-Trip Request round
-// (SEP-2322): the backend cannot complete the call until the caller fulfills
-// InputRequests and retries the original request echoing RequestState.
+// InputRequiredResult carries a Modern (2026-07-28) resultType:"input_required"
+// envelope — a Multi Round-Trip Request round (SEP-2322): the call cannot
+// complete until the caller fulfills InputRequests and retries the original
+// request echoing RequestState.
 //
-// This is the domain-typed egress surface of MRTR (the seam the client-edge
-// limitation in docs/arch/10-virtual-mcp-architecture.md names): the backend
-// client decodes the envelope into this type and surfaces it through
-// InputRequiredError, so upper layers can relay a round to a Modern
-// downstream client or fulfill it in-request for a Legacy one. Full flow
-// design in docs/arch/16-vmcp-mrtr.md.
+// It has two producers. The backend client decodes a Modern backend's
+// envelope into this type and surfaces it through InputRequiredError (the
+// egress seam the client-edge limitation in
+// docs/arch/10-virtual-mcp-architecture.md names). vMCP also builds one from
+// a URLElicitationRequiredError, keyed by elicitation ID with a nil
+// RequestState, and renders it to a Modern client as the input_required
+// result. docs/arch/16-vmcp-mrtr.md tracks which producers are relayed to
+// which clients.
 type InputRequiredResult struct {
-	// InputRequests maps the backend's server-assigned keys to raw request
+	// InputRequests maps the producer's server-assigned keys to raw request
 	// objects (ElicitRequest, CreateMessageRequest, or ListRootsRequest —
-	// schema/draft's InputRequest union). Values are deliberately opaque
+	// schema/2026-07-28's InputRequest union). Values are deliberately opaque
 	// json.RawMessage: on the pass-through path vMCP relays them verbatim and
-	// must not reinterpret them. Use Methods to inspect only the wire method
+	// does not reinterpret them. Use Methods to inspect only the wire method
 	// names (e.g. for capability gating). Nil on a load-shedding round
 	// (RequestState only).
 	InputRequests map[string]json.RawMessage
 
-	// RequestState is the backend's opaque round-trip state. Per SEP-2322 the
+	// RequestState is the producer's opaque round-trip state. Per SEP-2322 the
 	// client "MUST echo back the exact value" on retry — vMCP relays it
-	// verbatim and never interprets it. Nil when the backend's envelope had no
-	// requestState field, which the retry must preserve: client requirement 2
-	// says that if the result does not contain the field, the client "MUST NOT
-	// include one in the retry". The schema puts no minimum length on the
-	// field, so present-and-empty ("") is legal, distinct from absent, and
-	// must be echoed as the empty string.
+	// verbatim and never interprets it. Nil when the producer set no
+	// requestState field (always, for a result vMCP builds itself), which the
+	// retry must preserve: client requirement 2 says that if the result does
+	// not contain the field, the client "MUST NOT include one in the retry".
+	// The schema puts no minimum length on the field, so present-and-empty
+	// ("") is legal, distinct from absent, and must be echoed as the empty
+	// string.
 	RequestState *string
 }
 
@@ -111,8 +114,8 @@ func (e *InputRequiredError) Unwrap() error { return e.Sentinel }
 //
 //	if round, ok := vmcp.InputRequiredFromError(err); ok { ... relay round ... }
 //
-// This is the seam the ingress half (dispatchModern's input_required envelope
-// and the Legacy-client bridge; docs/arch/16-vmcp-mrtr.md slices 2-4) consumes.
+// This is the branch point for relaying a backend's round to a downstream
+// client (docs/arch/16-vmcp-mrtr.md).
 func InputRequiredFromError(err error) (*InputRequiredResult, bool) {
 	var ire *InputRequiredError
 	if errors.As(err, &ire) && ire.Result != nil {
@@ -122,7 +125,7 @@ func InputRequiredFromError(err error) (*InputRequiredResult, bool) {
 }
 
 // Methods returns the JSON-RPC method name of each input request, keyed by
-// the backend's request key. An entry whose value does not decode as an
+// the producer's request key. An entry whose value does not decode as an
 // object with a "method" field maps to the empty string, so callers gating on
 // method (capability checks) fail closed on malformed entries instead of
 // skipping them.

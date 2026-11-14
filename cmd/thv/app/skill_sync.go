@@ -13,22 +13,21 @@ import (
 )
 
 var (
-	skillSyncProjectRoot string
-	skillSyncClientsRaw  string
-	skillSyncCheck       bool
-	skillSyncAdopt       bool
-	skillSyncPrune       bool
-	skillSyncYes         bool
-	skillSyncFormat      string
+	skillSyncProjectRoot   string
+	skillSyncClientsRaw    string
+	skillSyncCheck         bool
+	skillSyncAdopt         bool
+	skillSyncPrune         bool
+	skillSyncYes           bool
+	skillSyncAllowUnsigned bool
+	skillSyncPublicKey     string
+	skillSyncFormat        string
 )
 
 var skillSyncCmd = &cobra.Command{
 	Use:   "sync",
-	Short: "Restore project skills to match the lock file (experimental)",
+	Short: "Restore project skills to match the lock file",
 	Long: `Restore a project's installed skills to match toolhive.lock.yaml.
-
-Experimental: requires TOOLHIVE_SKILLS_LOCK_ENABLED=true on the ToolHive
-server while the lock file feature rolls out.
 
 Missing or drifted skills are reinstalled at their pinned digest. Use
 --check to report drift without installing anything (suitable for CI).
@@ -59,11 +58,19 @@ func init() {
 		"Remove installs no longer present in the lock file")
 	skillSyncCmd.Flags().BoolVar(&skillSyncYes, "yes", false,
 		"Skip the confirmation prompt (required when not running interactively)")
+	skillSyncCmd.Flags().BoolVar(&skillSyncAllowUnsigned, "allow-unsigned", false,
+		"Allow adopting skills whose signature state cannot be established (recorded as unsigned)")
+	skillSyncCmd.Flags().StringVar(&skillSyncPublicKey, "public-key", "",
+		"Path to the cosign public key used to verify key-pair-signed skills during --adopt")
 	AddFormatFlag(skillSyncCmd, &skillSyncFormat)
 }
 
 func skillSyncCmdFunc(cmd *cobra.Command, _ []string) error {
 	projectRoot, err := resolveProjectRoot(skillSyncProjectRoot)
+	if err != nil {
+		return err
+	}
+	publicKey, err := readInstallPublicKey(skillSyncPublicKey)
 	if err != nil {
 		return err
 	}
@@ -84,11 +91,13 @@ func skillSyncCmdFunc(cmd *cobra.Command, _ []string) error {
 
 	c := newSkillClient(cmd.Context())
 	result, err := c.Sync(cmd.Context(), skills.SyncOptions{
-		ProjectRoot: projectRoot,
-		Clients:     parseSkillInstallClients(skillSyncClientsRaw),
-		Check:       skillSyncCheck,
-		Adopt:       skillSyncAdopt,
-		Prune:       skillSyncPrune,
+		ProjectRoot:   projectRoot,
+		Clients:       parseSkillInstallClients(skillSyncClientsRaw),
+		Check:         skillSyncCheck,
+		Adopt:         skillSyncAdopt,
+		Prune:         skillSyncPrune,
+		AllowUnsigned: skillSyncAllowUnsigned,
+		PublicKey:     publicKey,
 	})
 	if err != nil {
 		return formatSkillError("sync skills", err)

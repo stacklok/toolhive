@@ -16,6 +16,8 @@ import (
 	"strings"
 	"time"
 
+	"go.opentelemetry.io/otel/trace"
+
 	coreaudit "github.com/stacklok/toolhive-core/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/mcp"
@@ -88,7 +90,15 @@ func NewAuditorWithTransport(config *Config, transportType string) (*Auditor, er
 // Close closes the underlying log writer if it implements io.Closer.
 // This should be called when the auditor is no longer needed to properly release resources.
 func (a *Auditor) Close() error {
-	if closer, ok := a.logWriter.(io.Closer); ok {
+	return closeLogWriter(a.logWriter)
+}
+
+func closeLogWriter(logWriter io.Writer) error {
+	if logWriter == os.Stdout || logWriter == os.Stderr {
+		return nil
+	}
+
+	if closer, ok := logWriter.(io.Closer); ok {
 		return closer.Close()
 	}
 	return nil
@@ -176,9 +186,11 @@ func (*Auditor) isMCPStreamOpenRequest(r *http.Request) bool {
 
 // ensureAuditContext injects the mutable carriers the auditor reads after the
 // inner chain returns: BackendInfo (backend routing), an auth.IdentityHolder
-// (identity attached by an auth middleware running INSIDE audit), and an
+// (identity attached by an auth middleware running INSIDE audit), an
 // mcp.ParsedRequestHolder (parsed MCP data from a parser running INSIDE
-// audit). Each is only injected when absent so nested auditors share carriers.
+// audit), and an mcp.AuthzDenialMarker (pre-parse refusals flagged by the
+// authz middleware running INSIDE audit). Each is only injected when absent
+// so nested auditors share carriers.
 func ensureAuditContext(r *http.Request) *http.Request {
 	ctx := r.Context()
 	changed := false
@@ -192,6 +204,10 @@ func ensureAuditContext(r *http.Request) *http.Request {
 	}
 	if _, ok := mcp.ParsedRequestHolderFromContext(ctx); !ok {
 		ctx = mcp.WithParsedRequestHolder(ctx, &mcp.ParsedRequestHolder{})
+		changed = true
+	}
+	if _, ok := mcp.AuthzDenialMarkerFromContext(ctx); !ok {
+		ctx = mcp.WithAuthzDenialMarker(ctx, &mcp.AuthzDenialMarker{})
 		changed = true
 	}
 	if !changed {
@@ -274,6 +290,14 @@ func (a *Auditor) logAuditEvent(r *http.Request, rw *responseWriter, requestData
 
 	// Determine outcome based on status code
 	outcome := a.determineOutcome(rw.statusCode)
+
+	// A refusal by the authz middleware before message-level authorization
+	// could run (e.g. a client response or missing parsing middleware)
+	// writes a 400, which determineOutcome maps to a generic failure. The
+	// marker reclassifies it as a denial so blocked sweeps are alertable.
+	if marker, ok := mcp.AuthzDenialMarkerFromContext(r.Context()); ok && marker.Denied {
+		outcome = OutcomeDenied
+	}
 
 	// When HTTP status indicates success, check for JSON-RPC errors
 	// hidden inside HTTP 200 responses.
@@ -686,6 +710,24 @@ func (a *Auditor) addMetadata(event *AuditEvent, r *http.Request, duration time.
 	if backendInfo, ok := BackendInfoFromContext(r.Context()); ok && backendInfo != nil && backendInfo.BackendName != "" {
 		event.Metadata.Extra["backend_name"] = backendInfo.BackendName
 	}
+
+	stampTraceContext(r.Context(), event)
+}
+
+// stampTraceContext records the trace and span IDs carried by ctx on the event,
+// so an audit record can be joined to the distributed trace of the request that
+// produced it. It adds nothing when ctx carries no valid span context, which is
+// the case when the request arrived without a traceparent and tracing is off.
+func stampTraceContext(ctx context.Context, event *AuditEvent) {
+	sc := trace.SpanContextFromContext(ctx)
+	if !sc.IsValid() {
+		return
+	}
+	if event.Metadata.Extra == nil {
+		event.Metadata.Extra = make(map[string]any)
+	}
+	event.Metadata.Extra[MetadataExtraKeyTraceID] = sc.TraceID().String()
+	event.Metadata.Extra[MetadataExtraKeySpanID] = sc.SpanID().String()
 }
 
 // addEventData adds request/response data to the audit event if configured.
@@ -815,6 +857,7 @@ func (a *Auditor) logSSEConnectionEvent(r *http.Request, statusCode int) {
 		"transport":  a.transportType,
 		"user_agent": r.Header.Get("User-Agent"),
 	}
+	stampTraceContext(r.Context(), event)
 
 	// Log the event
 	event.LogTo(r.Context(), a.auditLogger, LevelAudit)

@@ -7,7 +7,7 @@ import (
 	"context"
 	"errors"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	mcpclient "github.com/stacklok/toolhive-core/mcpcompat/client"
 	"github.com/stacklok/toolhive-core/mcpcompat/mcp"

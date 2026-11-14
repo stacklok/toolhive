@@ -16,30 +16,50 @@
 // OAuth authorization server.
 package storage
 
-//go:generate mockgen -destination=mocks/mock_storage.go -package=mocks -source=types.go Storage,PendingAuthorizationStorage,ClientRegistry,UpstreamTokenStorage,UpstreamTokenRefresher,UserStorage,DCRCredentialStore
+//go:generate mockgen -destination=mocks/mock_storage.go -package=mocks -source=types.go Storage,PendingAuthorizationStorage,DeviceCodeStorage,PendingDeviceLoginStorage,PendingDeviceConfirmationStorage,RememberedConsentStorage,AssertionJWTConsumer,ClientRegistry,UpstreamTokenStorage,UpstreamTokenRefresher,UserStorage,ExchangeGrantStorage
+
+//go:generate mockgen -destination=mocks/mock_dcr_store.go -package=mocks github.com/stacklok/toolhive/pkg/authserver/storage DCRCredentialStore
 
 import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
+	"log/slog"
 	"slices"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/ory/fosite"
 	"github.com/ory/fosite/handler/oauth2"
 	"github.com/ory/fosite/handler/pkce"
+
+	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
+	authsession "github.com/stacklok/toolhive/pkg/authserver/server/session"
+	"github.com/stacklok/toolhive/pkg/oauthproto/dcrkey"
+	"github.com/stacklok/toolhive/pkg/oauthproto/dcrstore"
+	"github.com/stacklok/toolhive/pkg/storageerr"
 )
 
 // Sentinel errors for storage operations.
 // Use errors.Is() to check for these error types.
 var (
 	// ErrNotFound is returned when an item is not found in storage.
-	ErrNotFound = errors.New("storage: item not found")
+	ErrNotFound = storageerr.ErrNotFound
 
 	// ErrExpired is returned when an item exists but has expired.
 	ErrExpired = errors.New("storage: item expired")
+
+	// ErrRevoked is returned when an item exists but has been revoked, such as
+	// an exchange grant revoked through RFC 7009. Live reports it ahead of
+	// ErrExpired when both apply.
+	ErrRevoked = errors.New("storage: item revoked")
+
+	// ErrParentNotLive is returned by LiveExchangeGrant when a child grant's
+	// parent is missing, revoked or expired.
+	ErrParentNotLive = errors.New("storage: parent grant not live")
 
 	// ErrAlreadyExists is returned when attempting to create an item that already exists.
 	ErrAlreadyExists = errors.New("storage: item already exists")
@@ -47,10 +67,62 @@ var (
 	// ErrInvalidBinding is returned when token binding validation fails
 	// (e.g., subject or client ID mismatch).
 	ErrInvalidBinding = errors.New("storage: token binding validation failed")
+
+	// ErrClientCapacity is returned by RegisterClient when the number of live
+	// clients counted against the DCR cap has reached it. Nothing is written.
+	// The returned error is a *ClientCapacityError, which matches this
+	// sentinel under errors.Is and carries the Retry-After hint.
+	ErrClientCapacity = errors.New("storage: client capacity reached")
+
+	// ErrReservedClientID is returned when a caller attempts to register a
+	// real client whose ID collides with SyntheticClientIDPrefix.
+	ErrReservedClientID = errors.New("storage: client id uses reserved synthetic prefix")
+
+	// ErrUserNotProvisioned is returned by a UserStorage.CreateUser implementation
+	// that deliberately refuses to auto-provision an upstream identity (e.g. a
+	// deployment where user accounts are only created out-of-band, such as via
+	// SCIM). It signals the authorization callback to deny the login with
+	// fosite.ErrAccessDenied instead of treating the refusal as an internal
+	// server error.
+	ErrUserNotProvisioned = errors.New("storage: user not provisioned")
+
+	// ErrConcurrentRefresh is returned by
+	// UpstreamTokenStorage.CompareAndSwapUpstreamTokens when the currently
+	// stored refresh token no longer equals the caller's expected value.
+	// This covers two distinct situations: another writer (a concurrent
+	// refresh in this process or another replica sharing the same storage)
+	// already moved the row past it, or the row no longer exists at all
+	// (deleted by logout, evicted by TTL, or never created). The caller's own
+	// redemption is stale either way and must not be written; callers that
+	// need to tell the two situations apart must re-read the row afterward
+	// (ErrNotFound means there was no race to lose — see
+	// CompareAndSwapUpstreamTokens for the full coordination contract).
+	ErrConcurrentRefresh = errors.New("storage: upstream token row changed concurrently")
+
+	// ErrDCRCredentialsChanged is returned by
+	// DCRCredentialStore.UpdateDCRCredentialsIfUnchanged when the stored row
+	// no longer equals the caller's expected value: another writer replaced it
+	// after the caller read it. Nothing is written. A row that is absent
+	// altogether is reported as ErrNotFound instead.
+	ErrDCRCredentialsChanged = dcrstore.ErrDCRCredentialsChanged
+
+	// ErrInvalidState is returned when an operation requires an item to be in a
+	// particular lifecycle state (e.g. a pending device request) but it is not.
+	ErrInvalidState = errors.New("storage: item is not in the required state")
 )
+
+// notFoundRFC6749Error preserves the storage and Fosite not-found identities.
+func notFoundRFC6749Error(hint string) *fosite.RFC6749Error {
+	return fosite.ErrNotFound.WithHint(hint).WithWrap(ErrNotFound)
+}
 
 // DefaultPendingAuthorizationTTL is the default TTL for pending authorization requests.
 const DefaultPendingAuthorizationTTL = 10 * time.Minute
+
+// DefaultDeviceRequestTTL bounds how long a device authorization request
+// stays valid before the client must restart the flow, matching RFC 8628's
+// recommended default expiry.
+const DefaultDeviceRequestTTL = 10 * time.Minute
 
 // UpstreamTokens represents tokens obtained from an upstream Identity Provider.
 // These tokens are stored with binding fields for security validation and
@@ -113,280 +185,55 @@ func (t *UpstreamTokens) IsExpired(now time.Time) bool {
 	return !t.ExpiresAt.IsZero() && now.After(t.ExpiresAt)
 }
 
-// DCRKey is the canonical lookup key for a DCR registration. The tuple is
-// designed so that any backend (in-memory or Redis) serialises it identically
-// without redefining the canonical form. ScopesHash is used rather than a raw
-// scope slice so the key is comparable, fixed-size, and order-insensitive.
+// DCRKey is retained as a compatibility alias for the canonical DCR key.
 //
-// The key lives in the storage package because both MemoryStorage and the
-// future Redis backend must hash keys identically; keeping the canonical form
-// next to the persistence implementations prevents drift.
-type DCRKey struct {
-	// Issuer is the registration consumer's issuer identifier. The dual
-	// semantic depends on the consumer profile:
-	//   - Embedded authorization server: its OWN local issuer (the embedded
-	//     authserver that performed the registration).
-	//   - CLI / direct OAuth flow: the UPSTREAM authorization server's
-	//     issuer, because the CLI has no separate local issuer of its own.
-	// The cache is keyed by this value because two different consumers
-	// registering against the same upstream are distinct OAuth clients and
-	// must not share credentials. The (Issuer, UpstreamID, RedirectURI,
-	// ScopesHash) tuple keeps the two consumer profiles' entries apart via
-	// the RedirectURI component (the embedded authserver registers an
-	// AS-origin callback while the CLI registers a loopback callback per
-	// RFC 8252 §7.3 — the two address spaces are disjoint), so a collision
-	// between profiles is impossible by construction even when the
-	// upstream is the same. Public-client vs confidential-client
-	// separation rides on that same disjoint-RedirectURI property at both
-	// the persistent-cache and in-process singleflight layers; encoding it on
-	// the key would invalidate every existing Redis-cached entry across a
-	// deployment without buying additional protection. If a future
-	// consumer brings the two address spaces into collision the key
-	// format must gain a consumer-identifier component alongside an
-	// explicit migration story.
-	Issuer string
+// Deprecated: Use dcrkey.Key directly.
+type DCRKey = dcrkey.Key
 
-	// UpstreamID identifies the upstream authorization server this
-	// registration is bound to, disambiguating upstreams that share the
-	// consumer's Issuer, RedirectURI, and scope set. Within a single
-	// embedded authserver every OAuth2 upstream shares the authserver's own
-	// Issuer and the one defaulted {issuer}/oauth/callback RedirectURI, so
-	// before this component existed two upstreams configured with equal
-	// scopes collided on one cache entry — the second read back the first's
-	// dynamically-registered client_id / client_secret and never registered
-	// with its own authorization server (issue #5823).
-	//
-	// The value is the upstream's registration identity: the upstream issuer
-	// recovered from the consumer's discovery URL, or the registration
-	// endpoint URL when the consumer configured one directly. It is derived
-	// by the dcr resolver from the Request; do not hand-build it at call
-	// sites.
-	//
-	// On the discovery-URL path this is the derived issuer, so it identifies
-	// the authorization server rather than the exact discovery URL: two
-	// configs that resolve to the same issuer intentionally share one
-	// registration. It does not fully disambiguate the nonstandard case of a
-	// single issuer exposing distinct registration endpoints under custom
-	// (non-well-known) discovery paths — see resolveUpstreamKeyIdentity in
-	// pkg/auth/dcr for the full rationale.
-	UpstreamID string
-
-	// RedirectURI is the redirect URI registered with the upstream
-	// authorization server. Embedded-authserver callers register an
-	// AS-origin callback; CLI callers register an RFC 8252 loopback
-	// callback. The two address spaces are disjoint, which is what makes
-	// the per-consumer cache namespace structurally safe today.
-	RedirectURI string
-
-	// ScopesHash is the SHA-256 hex digest of the sorted, deduplicated scope
-	// list. Use ScopesHash() to compute this value — do NOT hash scopes by
-	// hand at call sites; the canonical form must be a single source of truth
-	// so the key matches across processes and backends.
-	ScopesHash string
-}
-
-// ScopesHash returns the SHA-256 hex digest of the canonical OAuth scope set,
-// suitable for use as DCRKey.ScopesHash.
+// ScopesHash forwards to the canonical OAuth-side implementation for
+// compatibility with existing storage callers.
 //
-// Canonicalisation:
-//  1. Sort ascending so the digest is order-insensitive — e.g.
-//     []string{"openid", "profile"} and []string{"profile", "openid"} hash to
-//     the same value.
-//  2. Deduplicate so that []string{"openid"} and []string{"openid", "openid"}
-//     hash to the same value. An OAuth scope set is a set, not a multiset
-//     (RFC 6749 §3.3), and without deduplication a caller that accidentally
-//     duplicated a scope would miss cache entries and trigger redundant
-//     RFC 7591 registrations.
-//  3. Join with newlines (a character not valid in OAuth scope tokens per
-//     RFC 6749 §3.3) to avoid collision between e.g. ["ab", "c"] and
-//     ["a", "bc"].
-//
-// nil and empty slice both canonicalise to the same hash.
+// Deprecated: Use dcrkey.ScopesHash directly.
 func ScopesHash(scopes []string) string {
-	sorted := slices.Clone(scopes)
-	sort.Strings(sorted)
-	sorted = slices.Compact(sorted)
-
-	h := sha256.New()
-	for i, s := range sorted {
-		if i > 0 {
-			_, _ = h.Write([]byte("\n"))
-		}
-		_, _ = h.Write([]byte(s))
-	}
-	return hex.EncodeToString(h.Sum(nil))
+	return dcrkey.ScopesHash(scopes)
 }
 
-// validateDCRCredentialsForStore enforces the rejection contract that every
-// DCRCredentialStore implementation must apply before persisting. Extracting
-// it as a free function called by every backend prevents the validation set
-// from drifting across implementations: a record that fails loud against one
-// backend cannot silently persist against another.
-//
-// Rejected inputs: nil creds, an unpopulated Key (empty Issuer, UpstreamID,
-// RedirectURI, or ScopesHash), and missing RFC 7591 mandatory response fields
-// (ClientID, AuthorizationEndpoint, TokenEndpoint). An empty ScopesHash is
-// rejected because the canonical digest of any scope set — including the
-// empty-scope set via ScopesHash(nil) — is non-empty, so an empty string can
-// only be a caller bug. An empty UpstreamID is rejected because the resolver
-// always derives it from the Request (issue #5823); an empty value here would
-// re-open the cross-upstream collision it was added to close. ClientSecret is
-// left permissive because RFC 7591 §2 public clients (auth method "none")
-// legitimately register without a secret.
+// validateDCRCredentialsForStore applies the shared dcrstore.Validate gate and
+// reports a rejection as a fosite invalid_request error carrying the same hint
+// text as before the rules moved. Every DCRCredentialStore backend calls it, so
+// the validation set cannot drift across implementations.
 func validateDCRCredentialsForStore(creds *DCRCredentials) error {
-	if creds == nil {
-		return fosite.ErrInvalidRequest.WithHint("dcr credentials cannot be nil")
+	err := dcrstore.Validate(creds)
+	var ve *dcrstore.ValidationError
+	if errors.As(err, &ve) {
+		return fosite.ErrInvalidRequest.WithHint(ve.Hint)
 	}
-	if creds.Key.Issuer == "" {
-		return fosite.ErrInvalidRequest.WithHint("dcr credentials key issuer cannot be empty")
+	return err
+}
+
+// validateDCRCompareAndSet enforces the input contract of
+// DCRCredentialStore.UpdateDCRCredentialsIfUnchanged on top of
+// validateDCRCredentialsForStore: expected must be present and must address
+// the same row as creds, so a caller cannot gate a write to one key on the
+// contents of another.
+func validateDCRCompareAndSet(creds, expected *DCRCredentials) error {
+	if err := validateDCRCredentialsForStore(creds); err != nil {
+		return err
 	}
-	if creds.Key.UpstreamID == "" {
-		return fosite.ErrInvalidRequest.WithHint("dcr credentials key upstream_id cannot be empty")
+	if expected == nil {
+		return fosite.ErrInvalidRequest.WithHint("expected dcr credentials cannot be nil")
 	}
-	if creds.Key.RedirectURI == "" {
-		return fosite.ErrInvalidRequest.WithHint("dcr credentials key redirect_uri cannot be empty")
-	}
-	if creds.Key.ScopesHash == "" {
-		return fosite.ErrInvalidRequest.WithHint("dcr credentials key scopes_hash cannot be empty")
-	}
-	if creds.ClientID == "" {
-		return fosite.ErrInvalidRequest.WithHint("dcr credentials client_id cannot be empty")
-	}
-	if creds.AuthorizationEndpoint == "" {
-		return fosite.ErrInvalidRequest.WithHint("dcr credentials authorization_endpoint cannot be empty")
-	}
-	if creds.TokenEndpoint == "" {
-		return fosite.ErrInvalidRequest.WithHint("dcr credentials token_endpoint cannot be empty")
+	if expected.Key != creds.Key {
+		return fosite.ErrInvalidRequest.WithHint("expected dcr credentials key must match creds key")
 	}
 	return nil
 }
 
-// DCRCredentials is the persisted form of an RFC 7591 Dynamic Client
-// Registration result. All fields are populated from the upstream's DCR
-// response. The RFC 7592 management fields (RegistrationAccessToken,
-// RegistrationClientURI) are preserved verbatim so future rotation /
-// management flows can use them.
-//
-// # Defensive copy
-//
-// Callers receive a defensive copy from the store. Mutations on the returned
-// value do not affect persisted state, and mutations on a value passed to
-// StoreDCRCredentials are not observed by subsequent reads. This matches the
-// UpstreamTokens contract.
-//
-// # Lifetime
-//
-// Entries are long-lived — RFC 7591 client registrations do not expire unless
-// the upstream asserts client_secret_expires_at. The in-memory backend
-// retains entries for the process lifetime and is intentionally excluded from
-// the periodic cleanup loop. The Redis backend applies TTL via SET with a
-// duration when ClientSecretExpiresAt is non-zero.
-//
-// # Converter contract
-//
-// MUST update both converters in
-// pkg/auth/dcr/store.go (resolutionToCredentials and
-// credentialsToResolution) when adding, renaming, or removing a field
-// here. The two converters are the only translation seam between this
-// persisted type and the dcr-package *dcr.Resolution; a field added here
-// without a paired converter update will silently fail to round-trip
-// across an authserver restart. The round-trip behaviour is pinned by
-// TestResolutionCredentialsRoundTrip in
-// pkg/auth/dcr/store_test.go.
-type DCRCredentials struct {
-	// Key is the canonical cache key: (Issuer, UpstreamID, RedirectURI, ScopesHash).
-	Key DCRKey
+// DCRCredentials is the compatibility name for the neutral persisted record.
+type DCRCredentials = dcrstore.Credentials
 
-	// ProviderName is the upstream's UpstreamRunConfig.Name. Debug / audit
-	// only — never used as a primary key. Two upstreams with different
-	// ProviderName but identical Key share one credential record.
-	ProviderName string
-
-	ClientID                string
-	ClientSecret            string //nolint:gosec // G117: field legitimately holds sensitive data
-	TokenEndpointAuthMethod string
-
-	// RegistrationAccessToken and RegistrationClientURI are RFC 7592 fields
-	// captured for future management operations (rotation, deletion).
-	RegistrationAccessToken string //nolint:gosec // G117: field legitimately holds sensitive data
-	RegistrationClientURI   string
-
-	AuthorizationEndpoint string
-	TokenEndpoint         string
-
-	// CreatedAt is the wall-clock time at which the registration completed.
-	// Used to compute staleness for observability — the cache itself does
-	// not expire entries based on age (see ClientSecretExpiresAt for the
-	// authoritative expiry signal).
-	CreatedAt time.Time
-
-	// ClientSecretExpiresAt is the RFC 7591 §3.2.1 client_secret_expires_at
-	// value converted from int64 epoch seconds to time.Time. The wire
-	// convention is that 0 means "the secret does not expire"; this struct
-	// represents that as the zero time.Time so callers can use IsZero()
-	// rather than special-casing 0.
-	//
-	// When non-zero, this is the authoritative signal a backend uses to TTL
-	// the persisted entry: the Redis backend plumbs it through SET with a
-	// duration so the row evicts before the upstream rejects the secret at the
-	// token endpoint. The in-memory backend ignores this field — entries
-	// persist for the process lifetime and the resolver re-checks the
-	// expiry on read.
-	ClientSecretExpiresAt time.Time
-}
-
-// DCRCredentialStore is a narrow, segregated interface for persisting
-// dynamic-client-registration credentials. Both MemoryStorage and
-// RedisStorage implement it; an authserver backed by Redis shares DCR
-// credentials across replicas and restarts.
-//
-// # Cross-replica limitation
-//
-// Sharing DCR credentials does NOT imply cross-replica session / token
-// delivery. Callers that need that must still route through the proxy runner
-// and (if applicable) pin sessions to a replica.
-//
-// # Defensive copy
-//
-// Implementations MUST defensively copy on both Store and Get so caller
-// mutations cannot reach persisted state and vice versa, mirroring the
-// UpstreamTokens contract.
-//
-// # TTL handling
-//
-// Implementations SHOULD honor a non-zero DCRCredentials.ClientSecretExpiresAt
-// as a backend-level TTL when the underlying store supports one (e.g. Redis
-// SET with a duration) so an entry evicts before the upstream rejects the
-// secret at the token endpoint. Backends without a native TTL (e.g. the
-// in-memory backend) retain the field verbatim and rely on the caller —
-// typically the runner's resolver — to re-check expiry on read; see
-// MemoryStorage.GetDCRCredentials.
-// A zero ClientSecretExpiresAt means the upstream did not assert an expiry
-// and no TTL is applied.
-//
-// # Why the key is embedded in DCRCredentials
-//
-// StoreDCRCredentials takes a single (ctx, creds) argument rather than the
-// (ctx, key, value) shape used by sibling Store* methods on Storage. The
-// DCRKey is embedded as DCRCredentials.Key so the persisted blob is
-// self-describing: a Redis SCAN, an admin-tool dump, or a cross-replica
-// reconciliation path can identify a record's logical cache slot
-// (Issuer, UpstreamID, RedirectURI, ScopesHash) from the value alone, without
-// reconstructing it from a separately-passed key. This is a deliberate
-// asymmetry with the rest of the package — callers must populate creds.Key
-// before Store, and implementations validate it (see MemoryStorage docs
-// for the rejected-input list).
-type DCRCredentialStore interface {
-	// GetDCRCredentials returns the credentials for the given key.
-	// Returns ErrNotFound (wrapped) if no entry exists for the key.
-	// The returned value is a defensive copy.
-	GetDCRCredentials(ctx context.Context, key DCRKey) (*DCRCredentials, error)
-
-	// StoreDCRCredentials persists the credentials, overwriting any existing
-	// entry for the same Key. See the interface-level "TTL handling" section
-	// for the contract on ClientSecretExpiresAt.
-	StoreDCRCredentials(ctx context.Context, creds *DCRCredentials) error
-}
+// DCRCredentialStore is the compatibility name for the neutral persistence contract.
+type DCRCredentialStore = dcrstore.Store
 
 // User represents a user account in the authorization server.
 // A user can have multiple linked provider identities.
@@ -425,6 +272,49 @@ type ProviderIdentity struct {
 	LastUsedAt time.Time
 }
 
+// Consent stages for a pending client authorization. Empty is a legacy record
+// and must never grant consent.
+const (
+	ConsentStageAwaiting = "awaiting"
+	ConsentStageApproved = "approved"
+)
+
+// ConsentSession binds a browser to a previously verified first-upstream identity.
+// JSON names match existing Redis rows written without tags.
+type ConsentSession struct {
+	UserID          string    `json:"UserID"`
+	ProviderID      string    `json:"ProviderID"`
+	ProviderSubject string    `json:"ProviderSubject"`
+	ExpiresAt       time.Time `json:"ExpiresAt"`
+}
+
+// ClientApproval is the exact request envelope approved by a user for a client.
+// JSON names match existing Redis rows written without tags.
+type ClientApproval struct {
+	RedirectURI string    `json:"RedirectURI"`
+	Scopes      []string  `json:"Scopes"`
+	Resource    string    `json:"Resource"`
+	ExpiresAt   time.Time `json:"ExpiresAt"`
+}
+
+const (
+	// ConsentSessionTTL is the fixed lifetime of a remembered browser session.
+	ConsentSessionTTL = 7 * 24 * time.Hour
+	// ClientApprovalTTL is the fixed lifetime of a remembered client approval.
+	ClientApprovalTTL = 30 * 24 * time.Hour
+)
+
+// RememberedConsentStorage is an optional browser-session and client-approval capability.
+// Callers supply a digest of the session secret; raw cookie values must never be stored.
+// Reads return ErrNotFound for absent rows and ErrExpired for expired rows.
+type RememberedConsentStorage interface {
+	StoreConsentSession(ctx context.Context, digest string, session *ConsentSession) error
+	GetConsentSession(ctx context.Context, digest string) (*ConsentSession, error)
+	DeleteConsentSession(ctx context.Context, digest string) error
+	StoreClientApproval(ctx context.Context, userID, clientID string, approval *ClientApproval) error
+	GetClientApproval(ctx context.Context, userID, clientID string) (*ClientApproval, error)
+}
+
 // PendingAuthorization tracks a client's authorization request while they
 // authenticate with the upstream IDP.
 type PendingAuthorization struct {
@@ -446,6 +336,24 @@ type PendingAuthorization struct {
 	// Scopes are the OAuth scopes requested by the client.
 	Scopes []string
 
+	// Resource is the single audience selected at authorization, either explicitly
+	// by the client or from the sole configured allowed audience.
+	Resource string
+
+	// ConsentStage is empty on legacy records, awaiting before approval, and
+	// approved only after a browser-bound consent POST.
+	ConsentStage string
+
+	// RememberConsent is set only by a browser-bound approval on an HTTPS endpoint.
+	RememberConsent bool
+	// FirstProviderSubject is the non-synthetic first upstream's verified subject.
+	FirstProviderSubject string
+
+	// Expected identity and originating session for a remembered, page-skipping flow.
+	ExpectedUserID          string
+	ExpectedProviderSubject string
+	ConsentSessionDigest    string
+
 	// InternalState is our randomly generated state for correlating upstream callback.
 	InternalState string
 
@@ -459,6 +367,16 @@ type PendingAuthorization struct {
 	// ID Token. See OIDC Core Section 3.1.2.1.
 	UpstreamNonce string
 
+	// BrowserBindingHash is the base64url SHA-256 of the browser-binding cookie
+	// value that /oauth/authorize set on the user agent when it created this
+	// record (or that the previous chain leg set when it created the next one).
+	// /oauth/callback only completes the leg when the calling browser presents a
+	// cookie whose hash matches, which binds the upstream callback to the browser
+	// that started the flow (RFC 6749 Section 10.12). Only the hash is stored so
+	// that storage never holds the raw secret. The callback rejects a loaded
+	// record with an empty hash (a row written before this field existed).
+	BrowserBindingHash string
+
 	// UpstreamProviderName identifies the upstream provider being authenticated in this
 	// authorization chain leg. Used in multi-upstream scenarios to route the callback
 	// to the correct provider.
@@ -469,17 +387,32 @@ type PendingAuthorization struct {
 	// providers across successive authorization legs.
 	SessionID string
 
-	// ResolvedUserID is the internal user ID resolved from the primary (first) upstream.
+	// ResolvedUserID is the internal user ID resolved from the FIRST upstream in
+	// the chain (upstreams[0]), which establishes the session identity.
 	// Empty on the first leg; populated after the first callback for subsequent legs.
+	//
+	// "First" here is deliberately not called "primary": Cedar's
+	// ConfigOptions.PrimaryUpstreamProvider names the upstream whose claims drive
+	// authorization, which defaults to this one but can be pinned to a later leg.
+	// The two only coincide by default. ResolvedUserName and ResolvedUserEmail
+	// below are mirrored into the issued access token, so a pinned deployment that
+	// falls back to request-token claims evaluates THIS upstream's profile claims,
+	// not the pinned provider's. See docs/authz.md, "What the fallback claims
+	// actually are".
 	ResolvedUserID string
 
-	// ResolvedUserName is the user display name from the primary upstream.
+	// ResolvedUserName is the user display name from the first upstream in the chain.
 	// Empty on the first leg; populated after the first callback for subsequent legs.
 	ResolvedUserName string
 
-	// ResolvedUserEmail is the user email from the primary upstream.
+	// ResolvedUserEmail is the user email from the first upstream in the chain.
 	// Empty on the first leg; populated after the first callback for subsequent legs.
 	ResolvedUserEmail string
+
+	// VerifiedUpstream is the verified identity of the first upstream OIDC login. It
+	// is set only from that login, never replaced by later legs, and zero for
+	// OAuth2-only or synthetic identities, and not recorded at new logins when SubjectIdentifierAudiences is empty.
+	VerifiedUpstream authsession.UpstreamSubject
 
 	// SingleLeg scopes this authorization to exactly one upstream. When true, the
 	// callback issues the authorization code as soon as this leg completes instead
@@ -499,7 +432,9 @@ type PendingAuthorization struct {
 	// than recomputed, so the filter is never re-run against a later leg's context.
 	ChainUpstreams []string
 
-	// CreatedAt is when the pending authorization was created.
+	// CreatedAt is when the pending authorization was created. It must be set on
+	// the first leg and preserved across subsequent legs; storage expires the
+	// request at CreatedAt + DefaultPendingAuthorizationTTL.
 	CreatedAt time.Time
 }
 
@@ -521,26 +456,796 @@ type PendingAuthorizationStorage interface {
 	DeletePendingAuthorization(ctx context.Context, state string) error
 }
 
+// DeviceRequestStatus is the lifecycle state of an RFC 8628 device authorization request.
+type DeviceRequestStatus string
+
+const (
+	// DeviceRequestStatusPending is the initial state: the user has not yet
+	// completed (or denied) verification at the verification URI.
+	DeviceRequestStatusPending DeviceRequestStatus = "pending"
+
+	// DeviceRequestStatusAuthorized means the user approved the request at
+	// the verification page; the resolved identity fields are populated.
+	DeviceRequestStatusAuthorized DeviceRequestStatus = "authorized"
+
+	// DeviceRequestStatusDenied means the user explicitly denied the request
+	// at the verification page.
+	DeviceRequestStatusDenied DeviceRequestStatus = "denied"
+)
+
+// DeviceRequest represents one in-flight RFC 8628 device authorization grant.
+type DeviceRequest struct {
+	// DeviceCode is the opaque, high-entropy value the polling client holds.
+	// Never logged (secret-shaped, like an authorization code).
+	DeviceCode string
+
+	// UserCode is the short, human-typeable code the user enters at the
+	// verification URI. Also secret-shaped: it is the only thing binding a
+	// human's browser session to this device_code, so treat it like a code.
+	UserCode string
+
+	ClientID string
+	Scopes   []string
+	Audience []string
+	Status   DeviceRequestStatus
+
+	// Interval is the minimum seconds between polls the client must honor
+	// (RFC 8628 §3.2/§3.5). Storage does not enforce it directly; callers
+	// use LastPolledAt + Interval to decide slow_down.
+	Interval time.Duration
+
+	// LastPolledAt is zero until the first poll.
+	LastPolledAt time.Time
+
+	// Populated only once Status == DeviceRequestStatusAuthorized, mirroring
+	// the Resolved* fields on PendingAuthorization:
+	ResolvedUserID    string
+	ResolvedUserName  string
+	ResolvedUserEmail string
+	VerifiedUpstream  authsession.UpstreamSubject // zero when SubjectIdentifierAudiences is empty
+	SessionID         string
+
+	CreatedAt time.Time
+}
+
+// DeviceAuthorization is the identity MarkDeviceRequestAuthorized attaches to a
+// pending device request. Field-for-field it mirrors the Resolved*, SessionID
+// and VerifiedUpstream fields it populates on DeviceRequest.
+type DeviceAuthorization struct {
+	UserID           string
+	UserName         string
+	UserEmail        string
+	SessionID        string
+	VerifiedUpstream authsession.UpstreamSubject
+}
+
+// DeviceCodeStorage provides storage operations for RFC 8628 device
+// authorization requests. A request is created pending at the device
+// authorization endpoint, looked up by user_code at the verification page
+// and transitioned to authorized/denied there, and polled/consumed by
+// device_code at the token endpoint.
+type DeviceCodeStorage interface {
+	// StoreDeviceRequest stores a new pending device request, indexed by both
+	// DeviceCode and UserCode. Returns fosite.ErrInvalidRequest if DeviceCode
+	// or UserCode is empty, or Status is not DeviceRequestStatusPending.
+	// Returns ErrAlreadyExists if a request already exists under the same
+	// UserCode (the caller must regenerate the user_code and retry) or the
+	// same DeviceCode.
+	StoreDeviceRequest(ctx context.Context, device *DeviceRequest) error
+
+	// LoadDeviceRequestByDeviceCode retrieves a device request by its
+	// device_code. Returns ErrNotFound if it does not exist, ErrExpired if
+	// its TTL has elapsed.
+	LoadDeviceRequestByDeviceCode(ctx context.Context, deviceCode string) (*DeviceRequest, error)
+
+	// LoadDeviceRequestByUserCode retrieves a device request by its
+	// user_code, for the verification page. Same not-found/expired semantics.
+	LoadDeviceRequestByUserCode(ctx context.Context, userCode string) (*DeviceRequest, error)
+
+	// MarkDeviceRequestAuthorized transitions a pending device request to
+	// authorized, attaching the resolved identity. Returns ErrNotFound if
+	// deviceCode does not exist, ErrExpired if its TTL has elapsed, and
+	// ErrInvalidState if the request's Status is not currently
+	// DeviceRequestStatusPending (already authorized or denied) — this call
+	// is not idempotent, so a stale verification-page resubmission can never
+	// clobber a request the token endpoint already consumed.
+	MarkDeviceRequestAuthorized(ctx context.Context, deviceCode string, auth DeviceAuthorization) error
+
+	// MarkDeviceRequestDenied transitions a pending device request to
+	// denied. Same ErrNotFound/ErrExpired/ErrInvalidState semantics as
+	// MarkDeviceRequestAuthorized.
+	MarkDeviceRequestDenied(ctx context.Context, deviceCode string) error
+
+	// UpdateDeviceRequestLastPolledAt records the time of the most recent
+	// poll, so the (future) token-endpoint grant handler can enforce the
+	// minimum polling Interval (RFC 8628 §3.5 slow_down). Same
+	// ErrNotFound/ErrExpired semantics; does not require Status ==
+	// pending (a client may poll after authorization races the response).
+	UpdateDeviceRequestLastPolledAt(ctx context.Context, deviceCode string, polledAt time.Time) error
+
+	// DeleteDeviceRequest removes a device request, e.g. once its token has
+	// been issued so the device_code cannot be redeemed twice. Returns
+	// ErrNotFound if it does not already exist.
+	DeleteDeviceRequest(ctx context.Context, deviceCode string) error
+}
+
+// DefaultDeviceLoginTTL bounds how long a device-flow verification-page login
+// attempt (PendingDeviceLogin) or post-login confirmation (
+// PendingDeviceConfirmation) may remain unresolved before it is treated as
+// expired. A human completing an upstream login and then confirming/denying
+// a device should take at most a few minutes; this mirrors
+// DefaultDeviceRequestTTL's window.
+const DefaultDeviceLoginTTL = 10 * time.Minute
+
+// PendingDeviceLogin correlates a device-flow verification-page login
+// attempt with its upstream IDP callback, the same role PendingAuthorization
+// plays for the OAuth client authorization_code flow -- but scoped to the
+// verification page, which has no client_id/redirect_uri of its own.
+type PendingDeviceLogin struct {
+	// DeviceCode identifies the DeviceRequest this login attempt is for.
+	DeviceCode string
+
+	// UserCode is carried alongside DeviceCode so the callback handler can
+	// re-look-up (and re-validate the pending/unexpired state of) the
+	// DeviceRequest without a second index lookup by DeviceCode.
+	UserCode string
+
+	// UpstreamPKCEVerifier is the PKCE code_verifier for the upstream IDP
+	// authorization. See RFC 7636.
+	UpstreamPKCEVerifier string
+
+	// UpstreamNonce is the OIDC nonce for ID token replay protection.
+	UpstreamNonce string
+
+	// BrowserBindingHash binds this login to the browser that submitted the
+	// user_code, exactly as PendingAuthorization.BrowserBindingHash binds an
+	// OAuth-client authorization: the verification page's redirect to the
+	// upstream sets a cookie whose hash is stored here, and the callback
+	// completes the login only for a browser presenting a matching cookie.
+	BrowserBindingHash string
+
+	// UpstreamProviderName is the configured upstream this login was sent
+	// to; the callback re-validates against it (IDP mix-up defense), mirroring
+	// PendingAuthorization.UpstreamProviderName.
+	UpstreamProviderName string
+
+	// CreatedAt is when the pending login was created.
+	CreatedAt time.Time
+}
+
+// PendingDeviceLoginStorage provides storage operations for in-flight
+// device-flow verification-page logins: created when a user submits a
+// user_code and is redirected to the upstream IDP, and consumed exactly once
+// when that IDP redirects back to the device callback endpoint.
+type PendingDeviceLoginStorage interface {
+	// StorePendingDeviceLogin stores a pending device login. state is used to
+	// correlate the upstream IDP callback, exactly as
+	// PendingAuthorizationStorage.StorePendingAuthorization uses it for the
+	// client authorization_code flow.
+	StorePendingDeviceLogin(ctx context.Context, state string, pending *PendingDeviceLogin) error
+
+	// LoadPendingDeviceLogin retrieves a pending device login by state.
+	// Returns ErrNotFound if the state does not exist, ErrExpired if
+	// DefaultDeviceLoginTTL has elapsed.
+	LoadPendingDeviceLogin(ctx context.Context, state string) (*PendingDeviceLogin, error)
+
+	// DeletePendingDeviceLogin removes a pending device login. Returns
+	// ErrNotFound if the state does not exist.
+	DeletePendingDeviceLogin(ctx context.Context, state string) error
+}
+
+// PendingDeviceConfirmation holds a resolved upstream identity awaiting the
+// user's explicit Approve/Deny decision at the device verification page.
+//
+// The resolved identity is deliberately kept server-side, addressed only by
+// an opaque, unguessable token handed to the browser as a hidden form field --
+// never as editable request data. A confirm-page design that instead echoed
+// ResolvedUserID/Name/Email back as editable hidden fields would let a user
+// tamper with them client-side and have a device authorized under a spoofed
+// identity; keying the server-side record by an opaque token closes that.
+type PendingDeviceConfirmation struct {
+	// DeviceCode and UserCode identify the DeviceRequest awaiting decision.
+	DeviceCode string
+	UserCode   string
+
+	// Resolved* mirror the fields MarkDeviceRequestAuthorized ultimately
+	// persists onto the DeviceRequest -- see DeviceCodeStorage's doc comment.
+	ResolvedUserID    string
+	ResolvedUserName  string
+	ResolvedUserEmail string
+	VerifiedUpstream  authsession.UpstreamSubject
+
+	// UpstreamTokens carries the tokens already exchanged with the upstream
+	// IDP, ready to persist under the final session id once one exists.
+	// Device-flow sessions have no session id until
+	// MarkDeviceRequestAuthorized mints one at confirm time -- unlike the
+	// OAuth-client authorization_code flow, where the session id is minted
+	// up front and CallbackHandler can call StoreUpstreamTokens directly --
+	// so the tokens must be carried here and written by
+	// DeviceVerificationConfirmHandler once that id exists. ProviderID,
+	// AccessToken, RefreshToken, IDToken, ExpiresAt, UpstreamSubject, and
+	// ClientID are populated at exchange time; UserID and SessionExpiresAt
+	// are left zero and filled in at confirm time.
+	UpstreamTokens *UpstreamTokens
+
+	// Synthetic mirrors the upstream identity's Synthetic flag: true when
+	// the upstream has no userinfo/identity config and its subject was
+	// synthesized rather than resolved from a real claim. Confirm-time
+	// refresh-token carry-forward uses this to skip its account-linking
+	// guard, which can never match a rotating synthetic subject.
+	Synthetic bool
+
+	// CreatedAt is when the pending confirmation was created.
+	CreatedAt time.Time
+}
+
+// PendingDeviceConfirmationStorage provides storage operations for resolved
+// device-flow logins awaiting an explicit Approve/Deny decision at the
+// verification page. See PendingDeviceConfirmation's doc comment for why the
+// resolved identity is addressed by an opaque token rather than round-tripped
+// through the browser as editable form data.
+type PendingDeviceConfirmationStorage interface {
+	// StorePendingDeviceConfirmation stores a pending confirmation, keyed by
+	// a fresh, unguessable token minted by the caller (e.g. rand.Text()).
+	StorePendingDeviceConfirmation(ctx context.Context, token string, pending *PendingDeviceConfirmation) error
+
+	// LoadPendingDeviceConfirmation retrieves a pending confirmation by
+	// token. Returns ErrNotFound if the token does not exist, ErrExpired if
+	// DefaultDeviceLoginTTL has elapsed.
+	LoadPendingDeviceConfirmation(ctx context.Context, token string) (*PendingDeviceConfirmation, error)
+
+	// DeletePendingDeviceConfirmation removes a pending confirmation.
+	// Returns ErrNotFound if the token does not exist.
+	DeletePendingDeviceConfirmation(ctx context.Context, token string) error
+}
+
+// AssertionJWTConsumer atomically records a validated assertion JWT as consumed.
+//
+// Implementations must treat (purpose, issuer, jti) as the replay key, retain it
+// until exp, and return fosite.ErrJTIKnown when that key is already unexpired.
+// Purpose keeps distinct assertion profiles separate, while issuer binds a JTI to
+// its JWT issuer. This intentionally stays separate from Storage so only
+// assertion-grant composition needs replay-consumption access.
+type AssertionJWTConsumer interface {
+	ConsumeAssertionJWT(ctx context.Context, purpose, issuer, jti string, exp time.Time) error
+}
+
+// ExchangeGrantMarkerMargin is how long past the subject token's exp the replay
+// marker of an exchange grant stays live. The self-issued validator accepts a
+// token at now == exp, and CreateExchangeGrant runs after the handler's own
+// latency, so a marker that ended exactly at exp could let a token pass
+// validation just before exp and be replayed just after. The marker is live
+// while !now.After(SourceExpiresAt + margin). Every backend uses this value.
+const ExchangeGrantMarkerMargin = time.Minute
+
+// ExchangeGrant is the server-side record behind a refresh token issued through
+// RFC 8693 token exchange. The client holds only the opaque token; the record is
+// found by the token's HMAC signature. A grant either allows exchange for
+// ID-JAGs (id-jag) or for child refresh tokens (refresh_token), fixed at issuance.
+type ExchangeGrant struct {
+	// Signature is the refresh token's HMAC signature. It is also the internal
+	// grant ID. It is never exposed to clients.
+	Signature string
+
+	// ParentSignature is the Signature of the grant this one was derived from.
+	// It is empty for a top-level grant. Depth is 1: a grant with a
+	// ParentSignature cannot be a parent.
+	ParentSignature string
+
+	// ClientID is the ID of the OAuth client the grant was issued to.
+	ClientID string
+
+	// Subject is the subject (sub) of the user the grant acts for.
+	Subject string
+
+	// SubjectIdentifier is the sub_id JSON of the subject, recorded when present.
+	SubjectIdentifier string
+
+	// UpstreamSubject is the JSON of the subject token's
+	// https://toolhive.dev/upstream_subject claim (iss, claim, value), recorded
+	// when present.
+	UpstreamSubject string
+
+	// SourceIssuer is the iss of the subject access token. With SourceJTI it forms
+	// the replay key. Empty for child grants.
+	SourceIssuer string
+
+	// SourceJTI is the jti of the subject access token that authorized issuance.
+	// It is empty for child grants, which have no subject access token.
+	SourceJTI string
+
+	// SourceExpiresAt is the exp of the subject access token. The SourceJTI replay
+	// marker is kept at least until this time.
+	SourceExpiresAt time.Time
+
+	// IssuableTokenTypes holds exactly one token type URN: the ID-JAG URN or the
+	// refresh-token URN. The store does not check this shape; the handler does.
+	IssuableTokenTypes []string
+
+	ExpiresAt time.Time
+	CreatedAt time.Time
+
+	// RevokedAt is zero while the grant is not revoked.
+	RevokedAt time.Time
+}
+
+// Live reports whether the grant can still be used at now. It returns ErrRevoked
+// if the grant has been revoked, and ErrExpired if now is after ExpiresAt. The
+// revocation check comes first, so a grant that is both revoked and expired
+// reports ErrRevoked. A zero ExpiresAt counts as expired, which is the opposite
+// of UpstreamTokens.IsExpired, where zero means no expiry. A grant with
+// now == ExpiresAt is still live. Live checks only this record. A caller deciding
+// whether a child grant can be used must call LiveExchangeGrant instead, which
+// also checks the parent.
+func (g *ExchangeGrant) Live(now time.Time) error {
+	if !g.RevokedAt.IsZero() {
+		return ErrRevoked
+	}
+	if now.After(g.ExpiresAt) {
+		return ErrExpired
+	}
+	return nil
+}
+
+// LiveExchangeGrant returns the grant with the given signature if it and, for a
+// child, its parent are both live at now. It is the one check a caller must use
+// to decide whether a grant can be used; GetExchangeGrant and
+// ExchangeGrant.Live look at a single record.
+//
+// The child is checked first. A child past its ExpiresAt reports ErrExpired even
+// if it is also revoked; otherwise a revoked child reports ErrRevoked. A child
+// whose parent is missing (ErrNotFound), revoked or expired reports
+// ErrParentNotLive. Store errors other than ErrNotFound for the parent are
+// returned unchanged, and so is any error from fetching the child.
+//
+// When the child record exists but is not live, the grant is returned together
+// with the error so the caller can check the grant's owner before it says why
+// the grant is dead. The grant is nil when the fetch itself fails.
+func LiveExchangeGrant(
+	ctx context.Context, s ExchangeGrantStorage, signature string, now time.Time,
+) (*ExchangeGrant, error) {
+	grant, err := s.GetExchangeGrant(ctx, signature)
+	if err != nil {
+		return nil, err
+	}
+	// Live reports a revoked grant first; expiry is checked before it so that an
+	// expired grant is expired whatever its revocation.
+	if now.After(grant.ExpiresAt) {
+		return grant, ErrExpired
+	}
+	if err := grant.Live(now); err != nil {
+		return grant, err
+	}
+	if grant.ParentSignature == "" {
+		return grant, nil
+	}
+	parent, err := s.GetExchangeGrant(ctx, grant.ParentSignature)
+	switch {
+	case errors.Is(err, ErrNotFound):
+		return grant, ErrParentNotLive
+	case err != nil:
+		return grant, err
+	case parent.Live(now) != nil:
+		return grant, ErrParentNotLive
+	}
+	return grant, nil
+}
+
+// validateExchangeGrantShape checks the parts of a grant that every backend
+// must refuse before writing: it must be non-nil, have a Signature and an
+// ExpiresAt, and be either a top-level grant (no ParentSignature, SourceIssuer
+// and SourceJTI both set, and a SourceExpiresAt) or a child (a ParentSignature
+// other than its own Signature, and no SourceIssuer or SourceJTI).
+func validateExchangeGrantShape(g *ExchangeGrant) error {
+	if g == nil {
+		return errors.New("exchange grant is nil")
+	}
+	if g.Signature == "" {
+		return errors.New("exchange grant signature is empty")
+	}
+	if g.ExpiresAt.IsZero() {
+		return errors.New("exchange grant needs ExpiresAt")
+	}
+	if (g.SourceJTI == "") != (g.SourceIssuer == "") {
+		return errors.New("exchange grant must set both SourceIssuer and SourceJTI or neither")
+	}
+	if (g.ParentSignature != "") == (g.SourceJTI != "") {
+		return errors.New("exchange grant must set exactly one of ParentSignature or SourceIssuer and SourceJTI")
+	}
+	if g.ParentSignature == g.Signature {
+		return errors.New("exchange grant cannot be its own parent")
+	}
+	if g.SourceJTI != "" && g.SourceExpiresAt.IsZero() {
+		return errors.New("exchange grant with a SourceJTI needs SourceExpiresAt")
+	}
+	return nil
+}
+
+// validateExchangeGrantRevokeTime refuses a zero revocation time.
+func validateExchangeGrantRevokeTime(now time.Time) error {
+	if now.IsZero() {
+		return errors.New("revoke time must not be zero")
+	}
+	return nil
+}
+
+// ExchangeGrantStorage stores the grant records behind refresh tokens issued
+// through token exchange. It is an optional capability, like DeviceCodeStorage.
+// Callers discover it with storage.Unwrap(stor).(ExchangeGrantStorage) at
+// construction time. ToolHive's own decorators implement Unwrap and do not
+// forward this interface, so the lookup must go through Unwrap. A decorator
+// that does not implement Unwrap (for example an embedder's encrypting
+// decorator, which must not expose its backend) hides the capability unless
+// it forwards the three methods itself; it should forward them, since grant
+// records carry no token value for it to transform.
+//
+// Records are kept until ExpiresAt. Time decisions belong to the caller. To
+// decide whether a grant can be used, call LiveExchangeGrant, which also checks
+// the parent; applying ExchangeGrant.Live(now) to one record is not enough.
+// Backend expiry is only garbage collection.
+type ExchangeGrantStorage interface {
+	// CreateExchangeGrant stores g. The write is atomic: the record and, when
+	// g.SourceJTI is set, its replay marker are both written, or neither is.
+	// The replay marker is keyed by (g.SourceIssuer, g.SourceJTI) and is live
+	// while now is not after g.SourceExpiresAt + ExchangeGrantMarkerMargin.
+	// A top-level grant has no ParentSignature and sets SourceIssuer, SourceJTI
+	// and SourceExpiresAt. A child sets ParentSignature and leaves SourceIssuer
+	// and SourceJTI empty. ExpiresAt must be set and not already past by the
+	// store clock. Any other shape is an error and writes nothing.
+	//
+	// It returns fosite.ErrJTIKnown if (g.SourceIssuer, g.SourceJTI) was already
+	// recorded, and ErrAlreadyExists if a grant with g.Signature already exists.
+	// A call refused for its shape, ErrJTIKnown or ErrAlreadyExists writes
+	// nothing. After any other error a networked backend may or may not have
+	// written, so callers must not treat an error as proof of absence. The replay
+	// marker is what makes a retry safe: a second create for the same jti is
+	// refused. Other failures are returned as-is.
+	//
+	// A create after the ExpiresAt of an existing grant with the same signature
+	// may succeed or return ErrAlreadyExists, depending on when the backend
+	// evicts the old record. Signatures are HMACs of random tokens, so callers
+	// never rely on either outcome.
+	CreateExchangeGrant(ctx context.Context, g *ExchangeGrant) error
+
+	// GetExchangeGrant returns the grant with the given signature. Revoked grants
+	// are returned with RevokedAt set. It returns ErrNotFound if no record exists
+	// or the record is past ExpiresAt. Callers still apply Live to what is
+	// returned, since eviction can lag, and Live decides. This checks only the one
+	// record. A caller deciding whether a child grant can be used must call
+	// LiveExchangeGrant, which also checks the parent.
+	GetExchangeGrant(ctx context.Context, signature string) (*ExchangeGrant, error)
+
+	// RevokeExchangeGrant sets RevokedAt to now on the grant with the given
+	// signature. It is idempotent: revoking a grant that is already revoked
+	// succeeds and keeps the original RevokedAt. now must not be zero. It
+	// returns ErrNotFound if no record exists or the record is past ExpiresAt.
+	// It does not touch child grants. A child is dead once its
+	// parent is missing or not live, and callers check that on every use.
+	RevokeExchangeGrant(ctx context.Context, signature string, now time.Time) error
+}
+
+// SyntheticClientIDPrefix marks a client ID minted by NewSyntheticClient. A
+// grant that skips client authentication (fosite's CanSkipClientAuth) has no
+// real registered fosite.Client to attach to its request, but every storage
+// backend's marshal/unmarshal path calls request.GetClient() unconditionally
+// — so the request still needs a non-nil one. A synthetic client ID encodes
+// everything needed to reconstruct that client, so unmarshaling never has to
+// look it up in the client registry (it was never registered there).
+const SyntheticClientIDPrefix = "synthetic:"
+
+// NewSyntheticClient returns a public fosite.Client identified only by id,
+// for a clientless grant to attach to its fosite.AccessRequester so no
+// storage backend ever has to marshal a nil client. id should carry the
+// SyntheticClientIDPrefix so IsSyntheticClientID recognizes it again on
+// unmarshal.
+func NewSyntheticClient(id string) fosite.Client {
+	return &fosite.DefaultClient{ID: id, Public: true}
+}
+
+// IsSyntheticClientID reports whether id was minted by NewSyntheticClient,
+// letting a storage backend reconstruct the client locally on unmarshal
+// instead of looking it up in the client registry.
+func IsSyntheticClientID(id string) bool {
+	return strings.HasPrefix(id, SyntheticClientIDPrefix)
+}
+
+// ValidateRegisterableClientID rejects a real client registration whose ID
+// collides with the SyntheticClientIDPrefix namespace. Synthetic clients are
+// minted directly by NewSyntheticClient and never go through RegisterClient,
+// so any caller reaching this check — DCR, static delegate-client config, or
+// a future registration path — is registering a real, externally-visible
+// client. Every ClientRegistry.RegisterClient implementation must call this
+// before persisting: without it, a colliding ID would round-trip through
+// Redis as a bare unregistered synthetic client (see IsSyntheticClientID),
+// silently discarding its real secret, scopes, and grants.
+func ValidateRegisterableClientID(id string) error {
+	if IsSyntheticClientID(id) {
+		return fmt.Errorf("%w: %q", ErrReservedClientID, id)
+	}
+	return nil
+}
+
+// checkConfiguredClientType refuses a non-reserved client that
+// registration.MarkConfigured cannot wrap, so a stamped row is always readable
+// as stamped. The reserved SPIFFE placeholder is exempt: it is never wrapped.
+func checkConfiguredClientType(client fosite.Client) error {
+	if isReservedPlaceholder(client) {
+		return nil
+	}
+	if registration.IsConfigured(client) {
+		return fmt.Errorf("configured client %q is already stamped; pass the unwrapped client", client.GetID())
+	}
+	if _, ok := registration.MarkConfigured(client); !ok {
+		return fmt.Errorf("configured client %q has unsupported type %T", client.GetID(), client)
+	}
+	return nil
+}
+
+// sameStringSet reports whether a and b contain the same elements as sets:
+// order and duplicate count don't matter, only membership. Canonicalisation
+// (sort, then dedup) mirrors ScopesHash's approach so the two stay consistent.
+func sameStringSet(a, b []string) bool {
+	as := slices.Clone(a)
+	bs := slices.Clone(b)
+	sort.Strings(as)
+	sort.Strings(bs)
+	as = slices.Compact(as)
+	bs = slices.Compact(bs)
+	return slices.Equal(as, bs)
+}
+
+// clientFingerprint holds the fields ReconcileConfiguredClient compares when a
+// configured client is declared over an existing row at the same ID. How much
+// of it matters depends on the row's kind (see configuredClientConflict):
+// only the reserved kind and, for non-reserved clients, the public class decide
+// a conflict; the remaining fields feed the replacement WARN (see
+// policyChanged). Client secrets are deliberately excluded -- an
+// operator rotating a secret must still be able to reconcile. JWKS keys are
+// excluded for the same reason: private_key_jwt key rotation must reconcile
+// silently.
+//
+// Deliberately NOT fosite.Client: fosite.DefaultClient's GetGrantTypes/
+// GetResponseTypes substitute an interactive default when the underlying list
+// is empty, so a deliberately-empty SPIFFE placeholder compared through that
+// interface can mismatch itself. Each backend converts its own representation
+// into this type; the comparison exists once, so memory- and Redis-backed
+// deployments cannot disagree.
+//
+// Resources and identity are populated for reserved rows only. A conflict is
+// decided from the reserved kind and the public class alone.
+type clientFingerprint struct {
+	scopes        []string
+	audience      []string
+	grantTypes    []string
+	responseTypes []string
+	// redirectURIs is empty for reserved placeholders, which never carry
+	// redirect URIs.
+	redirectURIs []string
+	// tokenEndpointAuthMethod is empty for clients that are not a
+	// fosite.OpenIDConnectClient, including unpinned secret clients and
+	// reserved placeholders.
+	tokenEndpointAuthMethod string
+	// resources is the RFC 8707 resource allowlist, distinct from audience
+	// (see resourceScopedClient in spiffe_decorator.go). Only reserved rows
+	// carry it: buildStoredClient persists it for them alone.
+	resources []string
+	// identityFingerprint is the SPIFFE association hash. Like resources, it
+	// is only populated for reserved rows.
+	identityFingerprint string
+	public              bool
+	// reserved marks a SPIFFE static-client placeholder, as opposed to an
+	// ordinary configured client such as a delegate.
+	reserved bool
+}
+
+// policyChanged reports whether the scopes, audience, grant types, redirect
+// URIs, token endpoint auth method, resources or SPIFFE association identity
+// differ between f and o, for the operator-visible warning when a configured
+// client is replaced with a different policy. Response types and JWKS keys
+// are deliberately not compared, so a private_key_jwt key rotation replaces
+// the stored row silently.
+func (f clientFingerprint) policyChanged(o clientFingerprint) bool {
+	return !sameStringSet(f.scopes, o.scopes) ||
+		!sameStringSet(f.audience, o.audience) ||
+		!sameStringSet(f.grantTypes, o.grantTypes) ||
+		!sameStringSet(f.redirectURIs, o.redirectURIs) ||
+		f.tokenEndpointAuthMethod != o.tokenEndpointAuthMethod ||
+		!sameStringSet(f.resources, o.resources) ||
+		f.identityFingerprint != o.identityFingerprint
+}
+
+// configuredClientConflict decides whether incoming may replace existing at
+// the same client ID in ReconcileConfiguredClient, after the backend has
+// already refused DCR-issued rows. It returns nil to replace, or an
+// ErrAlreadyExists-wrapped error to refuse:
+//   - a reserved placeholder and a non-reserved client never replace each
+//     other, in either direction, so a DCR or delegate client cannot take over
+//     a SPIFFE client ID or the reverse;
+//   - two reserved placeholders replace each other whatever differs, so an
+//     edited association takes effect on rollout. The placeholder is inert
+//     (never admitted for a token; each replica serves its own overlay), so
+//     replacing it authorizes nothing differently on this replica;
+//   - two non-reserved clients replace each other freely, so a changed
+//     scope or audience rolls out on restart, except that a
+//     public/confidential flip is refused in either direction. Confidential
+//     to public would let refresh tokens issued to a confidential client be
+//     used without a secret; the reverse is refused to stay symmetric, since
+//     a class change is a different client.
+func configuredClientConflict(id string, existing, incoming clientFingerprint) error {
+	switch {
+	case existing.reserved != incoming.reserved:
+		if existing.reserved {
+			return fmt.Errorf("%w: client %q is already registered as a different configured client "+
+				"(the stored row is a SPIFFE-reserved placeholder)", ErrAlreadyExists, id)
+		}
+		return fmt.Errorf("%w: client %q is already registered as a different configured client "+
+			"(the incoming client is SPIFFE-reserved and the stored one is not)", ErrAlreadyExists, id)
+	case existing.reserved:
+		return nil
+	case existing.public != incoming.public:
+		return fmt.Errorf("%w: client %q is already registered as a different configured client "+
+			"(public and confidential clients cannot replace each other)", ErrAlreadyExists, id)
+	}
+	return nil
+}
+
+// warnConfiguredClientReplaced logs, after a successful replace, that a
+// configured client's scopes, audience, grant types, redirect URIs, token
+// endpoint auth method, resources or SPIFFE association identity changed.
+// It is the operator's signal for replicas overwriting each other during a
+// rolling update and for an edited SPIFFE association taking effect. Secrets and
+// the identity hash are never logged; identity_changed appears only as true.
+func warnConfiguredClientReplaced(id string, existing, incoming clientFingerprint) {
+	if !existing.policyChanged(incoming) {
+		return
+	}
+	attrs := []any{
+		"client_id", id,
+		"old_scopes", existing.scopes, "new_scopes", incoming.scopes,
+		"old_audiences", existing.audience, "new_audiences", incoming.audience,
+		"old_grant_types", existing.grantTypes, "new_grant_types", incoming.grantTypes,
+		"old_redirect_uris", existing.redirectURIs, "new_redirect_uris", incoming.redirectURIs,
+		"old_token_endpoint_auth_method", existing.tokenEndpointAuthMethod,
+		"new_token_endpoint_auth_method", incoming.tokenEndpointAuthMethod,
+	}
+	if !sameStringSet(existing.resources, incoming.resources) {
+		attrs = append(attrs, "old_resources", existing.resources, "new_resources", incoming.resources)
+	}
+	if existing.identityFingerprint != incoming.identityFingerprint {
+		attrs = append(attrs, "identity_changed", true)
+	}
+	slog.Warn("configured client replaced with a different policy", attrs...)
+}
+
+// fingerprintOfClient reads a live fosite.Client. Safe here because a
+// deliberately-empty client is the live inertPlaceholderClient, whose
+// overridden getters correctly return nil on both sides of the comparison.
+// resources and identity are read only for a reserved placeholder, mirroring
+// buildStoredClient, so both backends compare the same inputs.
+func fingerprintOfClient(c fosite.Client) clientFingerprint {
+	reserved := isReservedPlaceholder(c)
+	var resources []string
+	var identityFingerprint string
+	if reserved {
+		if rc, ok := c.(resourceScopedClient); ok {
+			resources = rc.Resources()
+		}
+		if identity, ok := c.(spiffeIdentityClient); ok {
+			identityFingerprint = identity.IdentityFingerprint()
+		}
+	}
+	var tokenEndpointAuthMethod string
+	if oidcClient, ok := c.(fosite.OpenIDConnectClient); ok {
+		tokenEndpointAuthMethod = oidcClient.GetTokenEndpointAuthMethod()
+	}
+	return clientFingerprint{
+		scopes:                  c.GetScopes(),
+		audience:                c.GetAudience(),
+		grantTypes:              c.GetGrantTypes(),
+		responseTypes:           c.GetResponseTypes(),
+		redirectURIs:            c.GetRedirectURIs(),
+		tokenEndpointAuthMethod: tokenEndpointAuthMethod,
+		resources:               resources,
+		identityFingerprint:     identityFingerprint,
+		public:                  c.IsPublic(),
+		reserved:                reserved,
+	}
+}
+
 // ClientRegistry provides client registration and lookup operations.
 // It embeds fosite.ClientManager for client lookup (GetClient) and adds
-// RegisterClient for dynamic client registration (RFC 7591).
+// RegisterClient for dynamic client registration (RFC 7591) and
+// ReconcileConfiguredClient for operator-declared clients.
 type ClientRegistry interface {
 	// ClientManager provides client lookup (GetClient)
 	fosite.ClientManager
 
-	// RegisterClient registers a new OAuth client.
-	// This supports both static configuration and dynamic client registration (RFC 7591).
-	// Returns ErrAlreadyExists if a client with the same ID already exists.
+	// RegisterClient registers a new OAuth client. Always create-only: it
+	// returns ErrAlreadyExists if a client with the same ID already exists,
+	// regardless of the new client's origin. Used by unauthenticated DCR
+	// (RFC 7591) and any other caller that must never silently overwrite an
+	// existing registration. A client counted against the DCR cap (see
+	// ErrClientCapacity) is refused with a *ClientCapacityError when the cap
+	// is reached; decorators must propagate it. An existing ID is reported as
+	// ErrAlreadyExists before the cap is checked, on both backends.
 	RegisterClient(ctx context.Context, client fosite.Client) error
 
-	// RenewClientTTL extends the registration TTL of a public (DCR) client so an
-	// actively-used client is not evicted mid-lifecycle and forced to re-register.
-	// Call it on a proven-use signal (e.g. a successful token exchange), NOT on an
-	// unauthenticated client read such as the /oauth/authorize lookup. Implementations
-	// renew only public clients; confidential clients have no TTL. Backends without a
-	// native TTL (the in-memory backend) treat this as a no-op. A renewal failure is
-	// non-fatal to the caller's primary operation.
+	// UpsertDCRIssuedClient creates or replaces a DCR-issued client at
+	// client.GetID(). Unlike RegisterClient (create-only, for the unauthenticated
+	// /oauth/register endpoint), this is for callers that independently
+	// re-validate the client's authoritative source on every call -- today only
+	// CIMDStorageDecorator, which re-fetches and re-validates the document at
+	// client.GetID() before calling this. Creates the row if absent. If a row
+	// exists, replaces its data and refreshes its TTL only when the existing row
+	// is itself DCR-issued; refuses with ErrAlreadyExists if the existing row is
+	// NOT DCR-issued (protects a configured/SPIFFE-reconciled client from being
+	// clobbered). client MUST carry registration.DCRIssued -- refuses otherwise
+	// (mirrors ReconcileConfiguredClient's inverse check). A client that would
+	// count against the DCR cap (DCR-issued with an ID that is not a CIMD URL)
+	// is refused too: it must go through RegisterClient, which enforces the cap.
+	UpsertDCRIssuedClient(ctx context.Context, client fosite.Client) error
+
+	// ReconcileConfiguredClient applies an operator-declared (configured)
+	// client: creates it if no client with that ID exists, or replaces the
+	// existing record. It refuses with ErrAlreadyExists when:
+	//   - the existing record is DCR-issued (registration.DCRIssued);
+	//   - one of the two is a reserved SPIFFE placeholder and the other is
+	//     not (they never replace each other);
+	//   - both are non-reserved and one is public while the other is
+	//     confidential.
+	// Otherwise two non-reserved clients replace each other, so a changed
+	// scope or audience takes effect on restart. Two reserved placeholders
+	// also replace each other, whatever differs: a placeholder is inert, so an
+	// edited SPIFFE association takes effect on rollout. A replace that
+	// changes scopes, audience, grant types, redirect URIs, token endpoint
+	// auth method, resources or the SPIFFE identity logs a WARN (resources and
+	// identity_changed appear only when changed). The passed client
+	// must not itself carry the registration.DCRIssued marker;
+	// ReconcileConfiguredClient returns an error if it does. It also returns
+	// an error, before writing anything, for a non-reserved client whose
+	// concrete type registration.MarkConfigured cannot wrap
+	// (*fosite.DefaultClient and *fosite.DefaultOpenIDConnectClient are
+	// supported), because the stamp could not be read back.
+	//
+	// Rows written here belong to ToolHive configuration. GetClient returns
+	// them stamped (registration.IsConfigured), so a caller can hide a row
+	// the running server's configuration no longer declares. Embedders that
+	// register their own clients use RegisterClient, which never stamps. The
+	// stamp is not part of the fingerprint comparison above, and a stamped
+	// row is never treated as DCR-issued, whatever its TTL.
+	ReconcileConfiguredClient(ctx context.Context, client fosite.Client) error
+
+	// RenewClientTTL extends the registration TTL of a DCR-issued client (public or
+	// confidential, gated on the registration.DCRIssued marker) so an actively-used
+	// client does not expire mid-lifecycle and is not forced to re-register. Call it on a
+	// proven-use signal (e.g. a successful token exchange), NOT on an unauthenticated
+	// client read such as the /oauth/authorize lookup. Pre-provisioned/static clients
+	// carry no marker and this is a no-op for them on both backends. Both backends
+	// set the client's expiry to DefaultDCRClientTTL from now, which also raises a
+	// newly registered client off its shorter DefaultUnusedDCRClientTTL. A client
+	// that no longer exists is left absent. A renewal failure is non-fatal to the
+	// caller's primary operation.
+	// CIMDStorageDecorator skips URL-shaped (CIMD) client ids: each successful
+	// fetch already resets the row's TTL, and not renewing keeps that TTL as the
+	// age bound for its token-endpoint persisted-row fallback.
 	RenewClientTTL(ctx context.Context, client fosite.Client) error
+}
+
+// UpstreamTokenRowID is an opaque, process-local coordination key for one
+// logical upstream token row. Callers must not persist, log, or expose it.
+type UpstreamTokenRowID string
+
+// upstreamTokenRowID returns a SHA-256 digest of the supplied row-key components.
+// Each component is length-prefixed so the encoding is self-delimiting: distinct
+// inputs cannot share a canonical representation when a component contains the
+// delimiter. Hashing keeps the session ID out of a value that is easy to log.
+func upstreamTokenRowID(components ...string) UpstreamTokenRowID {
+	h := sha256.New()
+	for _, component := range components {
+		// hash.Hash.Write never returns an error.
+		_, _ = fmt.Fprintf(h, "%d:%s", len(component), component)
+	}
+	return UpstreamTokenRowID(hex.EncodeToString(h.Sum(nil)))
 }
 
 // UpstreamTokenStorage provides storage for tokens obtained from upstream identity providers.
@@ -553,9 +1258,82 @@ type ClientRegistry interface {
 // A secondary lookup by (userID, providerID) is exposed via GetLatestUpstreamTokensForUser;
 // see that method for usage and security contract.
 type UpstreamTokenStorage interface {
+	// ResolveUpstreamTokenRowID returns an opaque non-empty identity for the
+	// (sessionID, providerName) row. Equal physical rows must resolve to equal
+	// IDs; implementations must NOT alias rows that are not physically the
+	// same row (e.g. two distinct sessionIDs), because the singleflight leader
+	// reads and writes under its own sessionID, and aliasing distinct rows
+	// would cross credentials between sessions. A backend whose storage key is
+	// derived from (sessionID, providerName) may legitimately map two
+	// different (sessionID, providerName) pairs to the same ID when they are
+	// the same physical row under that key scheme.
+	//
+	// Resolution must be local and side-effect-free (no I/O): it is called
+	// before the singleflight joins, so any I/O here gives every concurrent
+	// caller its own round-trip and partially defeats the deduplication. This
+	// ID is solely for process-local refresh coordination: callers must not
+	// persist, log, or expose it.
+	ResolveUpstreamTokenRowID(ctx context.Context, sessionID, providerName string) (UpstreamTokenRowID, error)
+
 	// StoreUpstreamTokens stores the upstream IDP tokens for a session and provider.
 	// The providerName identifies which upstream provider these tokens belong to.
+	//
+	// This is an unconditional overwrite: it does not check what is currently
+	// stored. A refresher redeeming a single-use, rotating refresh token MUST
+	// use CompareAndSwapUpstreamTokens instead, so that a redemption raced by
+	// another process cannot silently clobber a winning write with a stale
+	// one. StoreUpstreamTokens remains correct for every other writer (initial
+	// login, the OAuth callback), which has no prior row to race against.
 	StoreUpstreamTokens(ctx context.Context, sessionID, providerName string, tokens *UpstreamTokens) error
+
+	// CompareAndSwapUpstreamTokens stores tokens for (sessionID, providerName)
+	// only if the refresh token currently stored there equals
+	// expectedRefreshToken. Pass "" to match a row with no refresh token: no
+	// row exists yet, an existing row's RefreshToken field is itself empty, or
+	// an existing row was stored as an explicit no-token placeholder (a nil
+	// UpstreamTokens, persisted as the backend's null marker). Returns
+	// ErrConcurrentRefresh, and leaves the stored row untouched, when the
+	// comparison fails — whether because another writer moved the row past
+	// expectedRefreshToken, or because the row no longer exists at all (e.g.
+	// deleted by logout or evicted by TTL between the caller's read and this
+	// write). Callers that need to distinguish those two cases must re-read
+	// the row afterward: an unexpired row means a genuine race was lost to
+	// another writer; ErrNotFound on that re-read means there was no race to
+	// lose — the row was simply gone.
+	//
+	// # Purpose
+	//
+	// This is the coordination primitive that makes the STORED row
+	// deterministic under concurrent writers across MULTIPLE PROCESSES
+	// sharing the same storage backend (e.g. several horizontally-scaled
+	// replicas of an application embedding this auth server, behind the same
+	// Redis): whichever writer's expected value still matches when its write
+	// lands wins, and every losing writer fails instead of silently
+	// clobbering the winner. ResolveUpstreamTokenRowID's singleflight dedup is
+	// process-local only; it prevents redundant redemptions within one
+	// process but cannot stop two different processes from redeeming the same
+	// refresh token at the same time. Read the row, redeem it with the
+	// upstream provider, then write with expectedRefreshToken set to the
+	// RefreshToken value that was actually redeemed.
+	//
+	// This orders writes to storage; it is NOT by itself a guarantee that
+	// concurrent redemption is safe at the upstream provider. Both processes
+	// still call the provider before either one's write lands here, so for a
+	// provider enforcing strict single-use rotation the provider may see two
+	// redemptions of the same refresh token regardless of which process wins
+	// the write below, and may revoke the grant. This primitive is fully
+	// sufficient only where the provider tolerates a grace/leeway window in
+	// which more than one redeemed child stays valid; otherwise closing the
+	// gap requires serializing the redemption itself (a lock around the whole
+	// read-redeem-write sequence), which is a separate mechanism this method
+	// does not provide.
+	//
+	// Implementations must perform the comparison and the write atomically
+	// with respect to any other writer of the same row (e.g. a Lua script on
+	// Redis, or a mutex-guarded read-modify-write in memory).
+	CompareAndSwapUpstreamTokens(
+		ctx context.Context, sessionID, providerName, expectedRefreshToken string, tokens *UpstreamTokens,
+	) error
 
 	// GetUpstreamTokens retrieves the upstream IDP tokens for a session and provider.
 	// Returns ErrNotFound if the session/provider combination does not exist.
@@ -649,6 +1427,10 @@ type UpstreamTokenRefresher interface {
 type UserStorage interface {
 	// CreateUser creates a new user account.
 	// Returns ErrAlreadyExists if a user with the same ID already exists.
+	// A deployment that provisions users out-of-band (e.g. via SCIM) and never
+	// auto-creates them here may return ErrUserNotProvisioned to deny the login
+	// instead; the caller (the authorization callback) maps that specifically to
+	// an OAuth access_denied response rather than a server error.
 	CreateUser(ctx context.Context, user *User) error
 
 	// GetUser retrieves a user by their internal ID.
@@ -713,7 +1495,7 @@ type Storage interface {
 	// and user management for multi-IDP support.
 	//
 	// DCRCredentialStore is intentionally NOT embedded here: doing so would
-	// promote GetDCRCredentials / StoreDCRCredentials onto every consumer of
+	// promote GetDCRCredentials / StoreDCRCredentialsIfAbsent onto every consumer of
 	// storage.Storage (handlers, server, registration, etc.), broadening the
 	// surface that can read raw client_secret / registration_access_token even
 	// when those consumers have no DCR responsibility. Code that legitimately
@@ -724,8 +1506,20 @@ type Storage interface {
 	// memory.go / redis.go provide the compile-time guarantee that production
 	// backends satisfy the interface, so the runtime assertion is provably
 	// safe at the boundary while keeping the wider Storage surface narrow.
+	//
+	// DeviceCodeStorage follows the same segregated pattern for the same
+	// reason: it is an optional capability (RFC 8628 device flow is off by
+	// default), not every Storage implementation needs to support it, and
+	// embedding it here would force every future implementation to add all 6
+	// methods even when it never enables device flow. Callers that need it
+	// (handlers.NewHandler, the deviceflow factory in server_impl.go) obtain
+	// it via `stor.(DeviceCodeStorage)` at construction time; the same
+	// per-backend `var _ DeviceCodeStorage = (*MemoryStorage)(nil)` /
+	// `(*RedisStorage)(nil)` checks provide the compile-time guarantee.
 	UpstreamTokenStorage
 	PendingAuthorizationStorage
+	PendingDeviceLoginStorage
+	PendingDeviceConfirmationStorage
 	ClientRegistry
 	UserStorage
 

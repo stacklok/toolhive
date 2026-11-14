@@ -37,8 +37,9 @@ func newPlatformClient(socketPath string) (*http.Client, []mobyclient.Opt) {
 	// default in the new client, so it no longer needs to be requested
 	// explicitly.
 	opts := []mobyclient.Opt{
-		mobyclient.WithHTTPClient(httpClient),
+		// Configure the host before installing a potentially wrapped Podman transport.
 		mobyclient.WithHost("unix://" + socketPath),
+		mobyclient.WithHTTPClient(httpClient),
 	}
 
 	return httpClient, opts

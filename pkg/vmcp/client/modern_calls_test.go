@@ -80,6 +80,51 @@ func TestModernCallTool(t *testing.T) {
 	assert.Equal(t, "x", res.Meta["trace"], "result _meta must be forwarded to core")
 }
 
+// TestModernCallTool_LogLevelGating pins when the Modern tools/call opts into
+// backend log notifications: the io.modelcontextprotocol/logLevel _meta key is
+// injected at debug level ONLY when server->client forwarding is bound (the
+// Modern analogue of enableBackendLogging on the Legacy path). Unbound, the key
+// must be absent so a conformant backend does not emit notifications/message.
+func TestModernCallTool_LogLevelGating(t *testing.T) {
+	t.Parallel()
+
+	logLevelOf := func(body *map[string]any) (any, bool) {
+		meta, _ := (*body)["_meta"].(map[string]any)
+		v, ok := meta["io.modelcontextprotocol/logLevel"]
+		return v, ok
+	}
+
+	t.Run("bound forwarders inject debug logLevel", func(t *testing.T) {
+		t.Parallel()
+		srv, _, body := bodyRecordingServer(t, map[string]any{
+			"content": []any{map[string]any{"type": "text", "text": "ok"}},
+		})
+		h, target := modernClient(t, srv.URL)
+		h.BindForwarders(&stubElicitationRequester{}, &stubSamplingRequester{}, stubClientNotifier{})
+
+		_, err := h.CallTool(context.Background(), target, "echo", map[string]any{"input": "hi"}, nil, nil)
+		require.NoError(t, err)
+
+		v, ok := logLevelOf(body)
+		require.True(t, ok, "bound forwarders must opt the call into log notifications")
+		assert.Equal(t, "debug", v)
+	})
+
+	t.Run("unbound forwarders send no logLevel", func(t *testing.T) {
+		t.Parallel()
+		srv, _, body := bodyRecordingServer(t, map[string]any{
+			"content": []any{map[string]any{"type": "text", "text": "ok"}},
+		})
+		h, target := modernClient(t, srv.URL)
+
+		_, err := h.CallTool(context.Background(), target, "echo", map[string]any{"input": "hi"}, nil, nil)
+		require.NoError(t, err)
+
+		_, ok := logLevelOf(body)
+		assert.False(t, ok, "without forwarding the backend must not be asked to emit logs")
+	})
+}
+
 // TestModernReadResource verifies resources/read shaping (Mcp-Name mirrors the
 // translated uri) and text/blob content decode.
 func TestModernReadResource(t *testing.T) {

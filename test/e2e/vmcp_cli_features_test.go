@@ -18,7 +18,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"gopkg.in/yaml.v3"
+	"go.yaml.in/yaml/v3"
 
 	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
 	thvjson "github.com/stacklok/toolhive/pkg/json"

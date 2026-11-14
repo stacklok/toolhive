@@ -12,6 +12,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/plugins"
 	pluginclient "github.com/stacklok/toolhive/pkg/plugins/client"
+	"github.com/stacklok/toolhive/pkg/skills/lockfile"
 )
 
 // newAIPluginClient creates a new Plugins API HTTP client using default settings.
@@ -39,13 +40,51 @@ func completeAIPluginNames(cmd *cobra.Command, args []string, _ string) ([]strin
 	return names, cobra.ShellCompDirectiveNoFileComp
 }
 
-// formatAIPluginError wraps an error with contextual information. If the
-// underlying cause is ErrServerUnreachable it appends a helpful hint.
-func formatAIPluginError(action string, err error) error {
-	if errors.Is(err, pluginclient.ErrServerUnreachable) {
-		return fmt.Errorf("failed to %s: %w\nHint: ensure 'thv serve' is running", action, err)
+// completePluginLockNames provides shell completion for plugin names present
+// in the project's lock file, which is what `thv ai-plugin upgrade` acts on.
+func completePluginLockNames(_ *cobra.Command, args []string, _ string) ([]string, cobra.ShellCompDirective) {
+	projectRoot, err := resolveProjectRoot(aiPluginUpgradeProjectRoot)
+	if err != nil {
+		return nil, cobra.ShellCompDirectiveNoFileComp
 	}
-	return fmt.Errorf("failed to %s: %w", action, err)
+	root, err := lockfile.OpenRoot(projectRoot)
+	if err != nil {
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+	lf, err := lockfile.Load(root)
+	if err != nil {
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+
+	requested := make(map[string]struct{}, len(args))
+	for _, a := range args {
+		requested[a] = struct{}{}
+	}
+	names := make([]string, 0, len(lf.Plugins))
+	for _, e := range lf.Plugins {
+		if _, dup := requested[e.Name]; dup {
+			continue
+		}
+		names = append(names, e.Name)
+	}
+	return names, cobra.ShellCompDirectiveNoFileComp
+}
+
+// formatAIPluginError wraps an error with contextual information, appending a
+// hint that matches the actual failure — a timed-out request and an absent
+// server need different advice.
+func formatAIPluginError(action string, err error) error {
+	switch {
+	case errors.Is(err, pluginclient.ErrRequestTimeout):
+		return fmt.Errorf(
+			"failed to %s: %w\nHint: the server is running and was still working; "+
+				"raise the limit with TOOLHIVE_API_TIMEOUT (e.g. TOOLHIVE_API_TIMEOUT=30m)",
+			action, err)
+	case errors.Is(err, pluginclient.ErrServerUnreachable):
+		return fmt.Errorf("failed to %s: %w\nHint: ensure 'thv serve' is running", action, err)
+	default:
+		return fmt.Errorf("failed to %s: %w", action, err)
+	}
 }
 
 // validateAIPluginScope returns a PreRunE that validates the --scope flag.

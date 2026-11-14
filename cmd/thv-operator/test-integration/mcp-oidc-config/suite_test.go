@@ -6,13 +6,16 @@ package controllers
 
 import (
 	"context"
+	"sync"
 	"testing"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/controllers"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/cmd/thv-operator/test-integration/testutil"
@@ -45,9 +48,11 @@ var _ = BeforeSuite(func() {
 	k8sClient = suiteEnv.Client
 	ctx = suiteEnv.Ctx
 
-	// Register the MCPOIDCConfig controller
+	// Register the MCPOIDCConfig controller. Its client records reads of
+	// deletion-blocked configs so specs can wait for the reconcile queued by the
+	// DeletionBlocked status patch to drain.
 	err := (&controllers.MCPOIDCConfigReconciler{
-		Client: suiteEnv.Manager.GetClient(),
+		Client: &blockedReadRecordingClient{Client: suiteEnv.Manager.GetClient()},
 		Scheme: suiteEnv.Manager.GetScheme(),
 	}).SetupWithManager(suiteEnv.Manager)
 	Expect(err).ToNot(HaveOccurred())
@@ -91,3 +96,28 @@ var _ = BeforeSuite(func() {
 var _ = AfterSuite(func() {
 	suiteEnv.Stop()
 })
+
+// blockedReadKeys holds the MCPOIDCConfigs that a reconcile has read while they
+// were already Terminating with DeletionBlocked=True.
+var blockedReadKeys sync.Map
+
+// blockedReadRecordingClient wraps the MCPOIDCConfig reconciler's client and
+// records every Get that returns a config already in the blocked state. Such a
+// read comes from a reconcile that started after the DeletionBlocked status
+// patch reached the cache, not from the reconcile that wrote it.
+type blockedReadRecordingClient struct {
+	client.Client
+}
+
+func (c *blockedReadRecordingClient) Get(
+	ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption,
+) error {
+	if err := c.Client.Get(ctx, key, obj, opts...); err != nil {
+		return err
+	}
+	if cfg, ok := obj.(*mcpv1beta1.MCPOIDCConfig); ok && !cfg.DeletionTimestamp.IsZero() &&
+		meta.IsStatusConditionTrue(cfg.Status.Conditions, mcpv1beta1.ConditionTypeDeletionBlocked) {
+		blockedReadKeys.Store(key, struct{}{})
+	}
+	return nil
+}

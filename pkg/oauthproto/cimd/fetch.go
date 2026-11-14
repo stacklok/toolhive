@@ -11,7 +11,9 @@ package cimd
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -21,6 +23,18 @@ import (
 	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
+
+// ErrDocumentUnavailable marks a fetch failure in which the document host
+// delivered no usable response or answered with a 5xx, 408, or 429 status: a
+// resolver, dial, TLS, or SSRF-guard failure, a timeout, a 200 whose body was
+// cut short or stalled, a server error, a request timeout, or a rate limit.
+// Nothing is known about the document itself in these cases, so a caller that
+// holds an earlier copy may keep serving it for a bounded time of its own
+// choosing. Every other failure is definitive and never carries this error: an
+// invalid client_id URL, a 3xx or any other 4xx status (whatever happened to
+// its body), an unexpected content type, a body that is not JSON, or a
+// document that ValidateClientMetadataDocument rejects. Check with errors.Is.
+var ErrDocumentUnavailable = errors.New("client metadata document unavailable")
 
 // ClientMetadataDocument represents an OAuth 2.0 Client ID Metadata Document
 // per draft-ietf-oauth-client-id-metadata-document.
@@ -41,8 +55,17 @@ type ClientMetadataDocument struct {
 	ResponseTypes           []string `json:"response_types,omitempty"`
 	Scope                   string   `json:"scope,omitempty"`
 	TokenEndpointAuthMethod string   `json:"token_endpoint_auth_method,omitempty"`
-	ApplicationType         string   `json:"application_type,omitempty"`
-	PostLogoutRedirectURIs  []string `json:"post_logout_redirect_uris,omitempty"`
+	// TokenEndpointAuthMethodsSupported is not part of the CIMD draft itself;
+	// it is defined by OpenID Connect RP Metadata Choices 1.0 as the plural
+	// counterpart of TokenEndpointAuthMethod, listing every method the client
+	// supports while TokenEndpointAuthMethod names its preferred one. Live
+	// clients (e.g. ChatGPT) publish it alongside a stricter singular
+	// preference the client_id-issuing party does not control per-AS; the
+	// decorator in pkg/authserver/storage uses it to negotiate a mutually
+	// supported method instead of rejecting the document outright (#6278).
+	TokenEndpointAuthMethodsSupported []string `json:"token_endpoint_auth_methods_supported,omitempty"`
+	ApplicationType                   string   `json:"application_type,omitempty"`
+	PostLogoutRedirectURIs            []string `json:"post_logout_redirect_uris,omitempty"`
 }
 
 // forbiddenAuthMethods lists token_endpoint_auth_method values that MUST NOT
@@ -56,23 +79,27 @@ var forbiddenAuthMethods = []string{
 
 // FetchClientMetadataDocument fetches and validates a Client ID Metadata Document
 // from the given URL. The URL must use the HTTPS scheme (http://localhost is
-// accepted in development). The document is fetched with a 5-second timeout, a
-// 1-hop redirect limit, a 10 KB body cap, and SSRF protection via a per-dial IP
+// accepted in development). The document is fetched with a 5-second timeout,
+// redirects disabled, a 10 KB body cap, and SSRF protection via a per-dial IP
 // check. After fetching, ValidateClientMetadataDocument is called and any
-// validation error is returned.
+// validation error is returned. A failure in which the host delivered no
+// usable response or answered 5xx, 408, or 429 wraps ErrDocumentUnavailable;
+// see that error for the exact split between transient and definitive
+// failures.
 func FetchClientMetadataDocument(ctx context.Context, rawURL string) (*ClientMetadataDocument, error) {
-	if err := validateCIMDClientURL(rawURL); err != nil {
+	allowHTTPLoopback, err := validateCIMDClientURL(rawURL)
+	if err != nil {
 		return nil, err
 	}
 
 	result, err := networking.FetchJSON[ClientMetadataDocument](
 		ctx,
-		newCIMDHTTPClient(),
+		newCIMDHTTPClient(allowHTTPLoopback),
 		rawURL,
 		networking.WithMaxResponseSize(10*1024),
 	)
 	if err != nil {
-		return nil, fmt.Errorf("failed to fetch client metadata document: %w", err)
+		return nil, classifyFetchError(err)
 	}
 
 	doc := &result.Data
@@ -83,17 +110,45 @@ func FetchClientMetadataDocument(ctx context.Context, rawURL string) (*ClientMet
 	return doc, nil
 }
 
+// classifyFetchError wraps a networking.FetchJSON failure, marking it with
+// ErrDocumentUnavailable when the host delivered no usable response: a 5xx,
+// 408, or 429 status, or an error before the status arrived or while reading
+// a 200 body (every transport error is a net.Error; a body cut short is
+// io.ErrUnexpectedEOF). A 408 or 429 describes the request's timing or the
+// requester's rate, not the document, so it is transient here as it is in
+// readModernEnvelope (pkg/vmcp/client/modern.go). FetchJSON reports a 3xx or
+// 4xx whether or not its body arrived in full, so a 3xx and every other 4xx
+// stay definitive, as does every error raised after a 200 body was read in
+// full.
+func classifyFetchError(err error) error {
+	var httpErr *networking.HTTPError
+	if errors.As(err, &httpErr) {
+		code := httpErr.StatusCode
+		if code >= http.StatusInternalServerError || code == http.StatusRequestTimeout ||
+			code == http.StatusTooManyRequests {
+			return fmt.Errorf("%w: %w", ErrDocumentUnavailable, err)
+		}
+		return fmt.Errorf("failed to fetch client metadata document: %w", err)
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return fmt.Errorf("%w: %w", ErrDocumentUnavailable, err)
+	}
+	return fmt.Errorf("failed to fetch client metadata document: %w", err)
+}
+
 // newCIMDHTTPClient builds an *http.Client for fetching CIMD documents.
 // Keep-alive connections are disabled so the per-dial SSRF check fires on
-// every request. A custom DialContext allows loopback connections (for
-// development) while rejecting all other private/special-use ranges via
-// networking.IsPrivateIP, and dials by IP literal to prevent DNS-rebinding.
-// A CheckRedirect hook validates redirect targets and enforces the 1-hop limit.
+// every request. A custom DialContext permits loopback connections only when
+// allowHTTPLoopback was granted by validated HTTP-loopback URL input; it rejects
+// all other private/special-use ranges via networking.IsPrivateIP and dials by
+// IP literal to prevent DNS-rebinding. A CheckRedirect hook prevents automatic
+// redirect following.
 //
 // HttpClientBuilder.WithPrivateIPs(false) is not used here because it also
-// blocks loopback addresses (127.0.0.0/8), which breaks the intentional
-// http://localhost development exception in validateCIMDClientURL.
-func newCIMDHTTPClient() *http.Client {
+// blocks loopback addresses (127.0.0.0/8), which would block the intentional,
+// per-request validated HTTP-loopback exception.
+func newCIMDHTTPClient(allowHTTPLoopback bool) *http.Client {
 	transport := &http.Transport{
 		TLSHandshakeTimeout:   5 * time.Second,
 		ResponseHeaderTimeout: 5 * time.Second,
@@ -112,10 +167,10 @@ func newCIMDHTTPClient() *http.Client {
 				if ip == nil {
 					continue
 				}
-				// Loopback is gated by the URL scheme check (only http://localhost
-				// is permitted for HTTP). All other private/special-use ranges are
-				// rejected. Dial by IP literal to prevent DNS-rebinding TOCTOU.
-				if !ip.IsLoopback() && networking.IsPrivateIP(ip) {
+				// Private/special-use addresses are rejected unless this request
+				// received the validated HTTP-loopback permission. Dial by IP literal
+				// to prevent DNS-rebinding TOCTOU.
+				if networking.IsPrivateIP(ip) && (!allowHTTPLoopback || !ip.IsLoopback()) {
 					return nil, fmt.Errorf("cimd: refusing connection to private address %s", ipStr)
 				}
 				dialer := &net.Dialer{Timeout: 5 * time.Second}
@@ -147,33 +202,37 @@ func newCIMDHTTPClient() *http.Client {
 //   - MUST NOT contain a fragment component
 //   - MUST NOT contain userinfo (username or password)
 //   - MUST NOT contain single-dot or double-dot path segments
-func validateCIMDClientURL(rawURL string) error {
+//
+// It returns true only when the fully validated URL is the intentional HTTP
+// recognized-loopback-host exception; valid HTTPS URLs and validation failures
+// return false.
+func validateCIMDClientURL(rawURL string) (bool, error) {
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
-		return fmt.Errorf("client_id URL is not a valid URL: %w", err)
+		return false, fmt.Errorf("client_id URL is not a valid URL: %w", err)
 	}
-	isLoopback := parsed.Scheme == "http" && oauthproto.IsLoopbackHost(parsed.Hostname())
-	if parsed.Scheme != "https" && !isLoopback {
-		return fmt.Errorf("client_id URL must use the https scheme: %s", rawURL)
+	allowHTTPLoopback := parsed.Scheme == "http" && oauthproto.IsLoopbackHost(parsed.Hostname())
+	if parsed.Scheme != "https" && !allowHTTPLoopback {
+		return false, fmt.Errorf("client_id URL must use the https scheme: %s", rawURL)
 	}
 	if parsed.Host == "" {
-		return fmt.Errorf("client_id URL must contain a host")
+		return false, fmt.Errorf("client_id URL must contain a host")
 	}
 	if parsed.Fragment != "" {
-		return fmt.Errorf("client_id URL must not contain a fragment component")
+		return false, fmt.Errorf("client_id URL must not contain a fragment component")
 	}
 	if parsed.User != nil {
-		return fmt.Errorf("client_id URL must not contain userinfo (username or password)")
+		return false, fmt.Errorf("client_id URL must not contain userinfo (username or password)")
 	}
 	if parsed.Path == "" || parsed.Path == "/" {
-		return fmt.Errorf("client_id URL must contain a non-empty path component")
+		return false, fmt.Errorf("client_id URL must contain a non-empty path component")
 	}
 	for _, segment := range strings.Split(parsed.Path, "/") {
 		if segment == "." || segment == ".." {
-			return fmt.Errorf("client_id URL must not contain dot-segment path components")
+			return false, fmt.Errorf("client_id URL must not contain dot-segment path components")
 		}
 	}
-	return nil
+	return allowHTTPLoopback, nil
 }
 
 // ValidateClientMetadataDocument validates a parsed ClientMetadataDocument

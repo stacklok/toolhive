@@ -80,7 +80,7 @@ func TestGetDockerfileTemplate(t *testing.T) {
 			},
 			wantContains: []string{
 				"FROM node:",
-				"npm install --save example-package",
+				"npm install --save 'example-package'",
 				"COPY --from=builder --chown=appuser:appgroup /build/node_modules /app/node_modules",
 				`ENTRYPOINT ["npx", "example-package"]`,
 			},
@@ -103,7 +103,7 @@ func TestGetDockerfileTemplate(t *testing.T) {
 			},
 			wantContains: []string{
 				"FROM node:",
-				"npm install --save example-package",
+				"npm install --save 'example-package'",
 				`ENTRYPOINT ["npx", "example-package"]`,
 				"Add custom CA certificate BEFORE any network operations",
 				"COPY ca-cert.crt /tmp/custom-ca.crt",
@@ -176,7 +176,7 @@ func TestGetDockerfileTemplate(t *testing.T) {
 			wantContains: []string{
 				"FROM golang:",
 				"COPY . /build/",
-				"go build -o /app/mcp-server ./cmd/server",
+				"go build -o /app/mcp-server './cmd/server'",
 				"COPY --from=builder --chown=appuser:appgroup /app/mcp-server /app/mcp-server",
 				"COPY --from=builder --chown=appuser:appgroup /build/ /app/",
 				"ENTRYPOINT [\"/app/mcp-server\"]",
@@ -200,7 +200,7 @@ func TestGetDockerfileTemplate(t *testing.T) {
 			wantContains: []string{
 				"FROM golang:",
 				"COPY . /build/",
-				"go build -o /app/mcp-server .",
+				"go build -o /app/mcp-server '.'",
 				"COPY --from=builder --chown=appuser:appgroup /app/mcp-server /app/mcp-server",
 				"ENTRYPOINT [\"/app/mcp-server\"]",
 			},
@@ -222,7 +222,7 @@ func TestGetDockerfileTemplate(t *testing.T) {
 			},
 			wantContains: []string{
 				"FROM node:",
-				"npm install --save @launchdarkly/mcp-server",
+				"npm install --save '@launchdarkly/mcp-server'",
 				"COPY --from=builder --chown=appuser:appgroup /build/node_modules /app/node_modules",
 				`ENTRYPOINT ["npx", "@launchdarkly/mcp-server", "start"]`,
 			},
@@ -294,7 +294,7 @@ func TestGetDockerfileTemplate(t *testing.T) {
 				"FROM node:",
 				"# Custom build environment variables",
 				`ENV NPM_CONFIG_REGISTRY="https://npm.corp.example.com"`,
-				"npm install --save example-package",
+				"npm install --save 'example-package'",
 			},
 			wantMatches: []string{
 				`FROM node:\d+-alpine AS builder`,
@@ -391,7 +391,7 @@ func TestGetDockerfileTemplate(t *testing.T) {
 				"FROM node:",
 				"# Custom runtime environment variables",
 				`ENV NODE_ENV="production"`,
-				"npm install --save example-package",
+				"npm install --save 'example-package'",
 			},
 			wantMatches: []string{
 				`FROM node:\d+-alpine AS builder`,
@@ -794,6 +794,38 @@ func TestStripVersionSuffix(t *testing.T) {
 			got := stripVersionSuffix(tt.input)
 			if got != tt.want {
 				t.Errorf("stripVersionSuffix(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestPackageNameIsQuotedInRunInstructions guards the templates themselves.
+// Callers validate the package name before it gets here (see
+// runner.validatePackageName), but the templates should not depend on that
+// alone: every RUN instruction that interpolates MCPPackage must quote it, so
+// dropping the quoting in a future edit is caught here rather than in a
+// generated Dockerfile.
+func TestPackageNameIsQuotedInRunInstructions(t *testing.T) {
+	t.Parallel()
+	// A name that would become a second shell statement if interpolated bare.
+	const payload = "foo; echo INJECTED"
+
+	for _, transportType := range []TransportType{TransportTypeUVX, TransportTypeNPX, TransportTypeGO} {
+		t.Run(string(transportType), func(t *testing.T) {
+			t.Parallel()
+			dockerfile, err := GetDockerfileTemplate(transportType, TemplateData{MCPPackage: payload})
+			if err != nil {
+				t.Fatalf("GetDockerfileTemplate() error = %v", err)
+			}
+
+			for _, line := range strings.Split(dockerfile, "\n") {
+				if !strings.HasPrefix(line, "RUN ") || !strings.Contains(line, payload) {
+					continue
+				}
+				quoted := strings.Contains(line, "'"+payload+"'") || strings.Contains(line, `"`+payload+`"`)
+				if !quoted {
+					t.Errorf("package name interpolated unquoted into RUN instruction:\n%s", line)
+				}
 			}
 		})
 	}

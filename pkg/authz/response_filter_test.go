@@ -5,6 +5,7 @@ package authz
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -13,6 +14,7 @@ import (
 	"net/http/httptest"
 	"net/http/httputil"
 	"net/url"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -31,204 +33,368 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/session/optimizerdec"
 )
 
-// buildFindToolJSONRPCResponse creates a JSON-RPC tools/call response whose content
-// text is a serialised find_tool output containing the given tools.
-func buildFindToolJSONRPCResponse(t *testing.T, tools []mcp.Tool) []byte {
+// findToolJSONRPCResponse wraps a raw CallToolResult in a JSON-RPC response.
+// Keeping the result raw lets malformed/ambiguous JSON reach the filter exactly
+// as an upstream server emitted it instead of being normalized by a Go map.
+func findToolJSONRPCResponse(t *testing.T, result string) []byte {
 	t.Helper()
-	output := optimizer.FindToolOutput{Tools: tools}
-	outputJSON, err := json.Marshal(output)
-	require.NoError(t, err)
-
-	callResult := map[string]interface{}{
-		"content": []map[string]interface{}{
-			{"type": "text", "text": string(outputJSON)},
-		},
-		"isError": false,
-	}
-	resultJSON, err := json.Marshal(callResult)
-	require.NoError(t, err)
-
-	resp := &jsonrpc2.Response{
-		ID:     jsonrpc2.Int64ID(1),
-		Result: json.RawMessage(resultJSON),
-	}
-	encoded, err := jsonrpc2.EncodeMessage(resp)
-	require.NoError(t, err)
-	return encoded
+	body := []byte(`{"jsonrpc":"2.0","id":1,"result":` + result + `}`)
+	require.True(t, json.Valid(body), "test fixture must be valid JSON: %s", body)
+	return body
 }
 
-// decodeFindToolOutput decodes a JSON-RPC response produced by buildFindToolJSONRPCResponse
-// and returns the optimizer.FindToolOutput embedded in the first text content item.
-func decodeFindToolOutput(t *testing.T, body []byte) optimizer.FindToolOutput {
+func runFindToolResponseFilter(
+	t *testing.T, body []byte, authorizer authorizers.Authorizer, cache *AnnotationCache,
+) *httptest.ResponseRecorder {
 	t.Helper()
-	msg, err := jsonrpc2.DecodeMessage(body)
+	rr := httptest.NewRecorder()
+	rfw := NewResponseFilteringWriter(
+		rr,
+		authorizer,
+		newParsedUser1Request(t, `{"jsonrpc":"2.0","id":1,"method":"tools/call"}`),
+		optimizerdec.FindToolName,
+		cache,
+		nil,
+	)
+	rfw.ResponseWriter.Header().Set("Content-Type", "application/json")
+	_, err := rfw.Write(body)
 	require.NoError(t, err)
-	rpcResp, ok := msg.(*jsonrpc2.Response)
+	require.NoError(t, rfw.FlushAndFilter())
+	return rr
+}
+
+func decodeFindToolResultMap(t *testing.T, body []byte) map[string]any {
+	t.Helper()
+	message, err := jsonrpc2.DecodeMessage(body)
+	require.NoError(t, err)
+	response, ok := message.(*jsonrpc2.Response)
 	require.True(t, ok)
-	require.Nil(t, rpcResp.Error)
-
-	var callResult struct {
-		Content []struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
-		} `json:"content"`
-	}
-	require.NoError(t, json.Unmarshal(rpcResp.Result, &callResult))
-	require.NotEmpty(t, callResult.Content)
-
-	var output optimizer.FindToolOutput
-	require.NoError(t, json.Unmarshal([]byte(callResult.Content[0].Text), &output))
-	return output
+	require.Nil(t, response.Error)
+	var result map[string]any
+	require.NoError(t, json.Unmarshal(response.Result, &result))
+	return result
 }
 
-// TestFindToolResponseFilter verifies that find_tool results are filtered by Cedar
-// policy before being returned to the caller.
-func TestFindToolResponseFilter(t *testing.T) {
+func assertFindToolFilterFailedClosed(
+	t *testing.T, rr *httptest.ResponseRecorder, authorizer *mockAuthorizer,
+	cache *AnnotationCache, cachedAnnotations *authorizers.ToolAnnotations,
+) {
+	t.Helper()
+	assert.Equal(t, http.StatusInternalServerError, rr.Code)
+	assert.Empty(t, authorizer.calls, "invalid output must be rejected before authorization")
+	assert.Same(t, cachedAnnotations, cache.Get("previously-cached-tool"),
+		"invalid output must not replace the annotation cache")
+
+	message, err := jsonrpc2.DecodeMessage(rr.Body.Bytes())
+	require.NoError(t, err)
+	response, ok := message.(*jsonrpc2.Response)
+	require.True(t, ok)
+	require.NotNil(t, response.Error)
+	assert.Nil(t, response.Result)
+
+	var envelope struct {
+		Error struct {
+			Code    int64  `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &envelope))
+	assert.Equal(t, mcpparser.CodeInternalError, envelope.Error.Code)
+	assert.Equal(t, "internal error", envelope.Error.Message)
+}
+
+func TestFindToolResponseFilter_FiltersEveryOutputRepresentation(t *testing.T) {
 	t.Parallel()
 
-	authorizer, err := cedar.NewCedarAuthorizer(cedar.ConfigOptions{
-		Policies: []string{
-			`permit(principal, action == Action::"call_tool", resource == Tool::"weather");`,
-		},
-		EntitiesJSON: `[]`,
-	}, "")
+	const protectedDescriptor = "protected-find-tool-sentinel"
+	const output = `{"tools":[` +
+		`{"name":"weather","description":"Get weather","annotations":{"readOnlyHint":true}},` +
+		`{"name":"` + protectedDescriptor + `","description":"restricted",` +
+		`"annotations":{"readOnlyHint":true}}],` +
+		`"token_metrics":{"baseline_tokens":20,"returned_tokens":10,"savings_percent":50}}`
+	escapedOutput, err := json.Marshal(output)
 	require.NoError(t, err)
 
-	identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{
-		Subject: "user1",
-		Claims:  map[string]interface{}{"sub": "user1"},
-	}}
-	newReq := func(t *testing.T) *http.Request {
-		t.Helper()
-		req, err := http.NewRequest(http.MethodPost, "/messages", nil)
-		require.NoError(t, err)
-		return req.WithContext(auth.WithIdentity(req.Context(), identity))
-	}
-	newWriter := func(t *testing.T, cache *AnnotationCache) (*httptest.ResponseRecorder, *ResponseFilteringWriter) {
-		t.Helper()
-		rr := httptest.NewRecorder()
-		rr.Header().Set("Content-Type", "application/json")
-		fw := NewResponseFilteringWriter(rr, authorizer, newReq(t), optimizerdec.FindToolName, cache, nil)
-		fw.ResponseWriter.Header().Set("Content-Type", "application/json")
-		return rr, fw
+	testCases := []struct {
+		name   string
+		result string
+		dual   bool
+	}{
+		{
+			name: "text and structured content",
+			result: `{"content":[{"type":"text","text":` + string(escapedOutput) + `}],` +
+				`"structuredContent":` + output + `}`,
+			dual: true,
+		},
+		{
+			name:   "legacy text only",
+			result: `{"content":[{"type":"text","text":` + string(escapedOutput) + `}]}`,
+		},
 	}
 
-	t.Run("Cedar policy filters unauthorized tools", func(t *testing.T) {
-		t.Parallel()
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			authorizer := &mockAuthorizer{results: map[string]mockResult{
+				"weather":           {authorized: true},
+				protectedDescriptor: {authorized: false},
+			}}
+			cache := NewAnnotationCache()
+			rr := runFindToolResponseFilter(t, findToolJSONRPCResponse(t, tc.result), authorizer, cache)
 
-		// The optimizer returns two tools but the caller is only permitted "weather".
-		responseBytes := buildFindToolJSONRPCResponse(t, []mcp.Tool{
-			{Name: "weather", Description: "Get weather"},
-			{Name: "admin_tool", Description: "Admin operations"},
+			assert.Equal(t, http.StatusOK, rr.Code)
+			assert.NotContains(t, rr.Body.String(), protectedDescriptor,
+				"an unauthorized tool must be removed from the whole wire response")
+			result := decodeFindToolResultMap(t, rr.Body.Bytes())
+			content, ok := result["content"].([]any)
+			require.True(t, ok)
+			require.Len(t, content, 1)
+			textContent, ok := content[0].(map[string]any)
+			require.True(t, ok)
+			text, ok := textContent["text"].(string)
+			require.True(t, ok)
+			var textOutput optimizer.FindToolOutput
+			require.NoError(t, json.Unmarshal([]byte(text), &textOutput))
+			require.Len(t, textOutput.Tools, 1)
+			assert.Equal(t, "weather", textOutput.Tools[0].Name)
+
+			if tc.dual {
+				structured, ok := result["structuredContent"].(map[string]any)
+				require.True(t, ok)
+				tools, ok := structured["tools"].([]any)
+				require.True(t, ok)
+				require.Len(t, tools, 1)
+				tool, ok := tools[0].(map[string]any)
+				require.True(t, ok)
+				assert.Equal(t, "weather", tool["name"])
+			}
+
+			assert.NotNil(t, cache.Get("weather"))
+			assert.NotNil(t, cache.Get(protectedDescriptor),
+				"authorization needs annotations from the unfiltered output")
 		})
+	}
+}
 
-		rr, fw := newWriter(t, nil)
-		_, err := fw.Write(responseBytes)
-		require.NoError(t, err)
-		require.NoError(t, fw.FlushAndFilter())
+func TestFindToolResponseFilter_RejectsMalformedOrAmbiguousSuccessfulOutput(t *testing.T) {
+	t.Parallel()
 
-		output := decodeFindToolOutput(t, rr.Body.Bytes())
-		require.Len(t, output.Tools, 1, "only the permitted tool should remain")
-		assert.Equal(t, "weather", output.Tools[0].Name)
-	})
+	const protectedDescriptor = "protected-find-tool-sentinel"
+	testCases := []struct {
+		name   string
+		result string
+	}{
+		{name: "outer result is not an object", result: `[]`},
+		{name: "outer result is empty", result: `{}`},
+		{name: "content is not an array", result: `{"content":{}}`},
+		{name: "duplicate content member", result: `{"content":[],"content":[]}`},
+		{name: "case-folded content alias", result: `{"content":[],"CONTENT":[]}`},
+		{name: "duplicate isError member", result: `{"content":[],"isError":false,"isError":true}`},
+		{name: "case-folded isError alias", result: `{"content":[],"isError":false,"ISERROR":true}`},
+		{name: "duplicate structuredContent member", result: `{"content":[],` +
+			`"structuredContent":{"tools":[]},"structuredContent":{"tools":[` +
+			`{"name":"` + protectedDescriptor + `"}]}}`},
+		{name: "case-folded structuredContent alias", result: `{"content":[],` +
+			`"structuredContent":{"tools":[]},"STRUCTUREDCONTENT":{"tools":[` +
+			`{"name":"` + protectedDescriptor + `"}]}}`},
+		{name: "permissive empty embedded object", result: `{"content":[{"type":"text","text":"{}"}]}`},
+		{name: "duplicate content type member", result: `{"content":[{"type":"text","type":"image",` +
+			`"text":"{\"tools\":[{\"name\":\"` + protectedDescriptor + `\"}]}"}]}`},
+		{name: "case-folded content type alias", result: `{"content":[{"type":"text","TYPE":"image",` +
+			`"text":"{\"tools\":[{\"name\":\"` + protectedDescriptor + `\"}]}"}]}`},
+		{name: "duplicate content text member", result: `{"content":[{"type":"text",` +
+			`"text":"{\"tools\":[]}","text":"{\"tools\":[{\"name\":\"` +
+			protectedDescriptor + `\"}]}"}]}`},
+		{name: "case-folded content text alias", result: `{"content":[{"type":"text",` +
+			`"text":"{\"tools\":[]}","TEXT":"{\"tools\":[{\"name\":\"` +
+			protectedDescriptor + `\"}]}"}]}`},
+		{name: "embedded tools is not an array", result: `{"content":[{"type":"text",` +
+			`"text":"{\"tools\":{}}"}]}`},
+		{name: "embedded tool name is not a string", result: `{"content":[{"type":"text",` +
+			`"text":"{\"tools\":[{\"name\":17}]}"}]}`},
+		{name: "duplicate embedded tools member", result: `{"content":[{"type":"text",` +
+			`"text":"{\"tools\":[],\"tools\":[{\"name\":\"` + protectedDescriptor + `\"}]}"}]}`},
+		{name: "case-folded embedded tools alias", result: `{"content":[{"type":"text",` +
+			`"text":"{\"tools\":[],\"TOOLS\":[{\"name\":\"` + protectedDescriptor + `\"}]}"}]}`},
+		{name: "duplicate embedded name member", result: `{"content":[{"type":"text",` +
+			`"text":"{\"tools\":[{\"name\":\"weather\",\"name\":\"` + protectedDescriptor + `\"}]}"}]}`},
+		{name: "case-folded embedded name alias", result: `{"content":[{"type":"text",` +
+			`"text":"{\"tools\":[{\"name\":\"weather\",\"NAME\":\"` + protectedDescriptor + `\"}]}"}]}`},
+		{name: "case-folded embedded annotation hint alias", result: `{"content":[{"type":"text",` +
+			`"text":"{\"tools\":[{\"name\":\"weather\",` +
+			`\"annotations\":{\"readOnlyHint\":false,\"READONLYHINT\":true}}]}"}]}`},
+		{name: "duplicate embedded annotations member", result: `{"content":[{"type":"text",` +
+			`"text":"{\"tools\":[{\"name\":\"weather\",` +
+			`\"annotations\":{\"readOnlyHint\":true},\"annotations\":{\"destructiveHint\":true}}]}"}]}`},
+		{name: "no find tool output", result: `{"content":[{"type":"text","text":"no matching tools"}]}`},
+		{name: "multiple tools-bearing text carriers", result: `{"content":[` +
+			`{"type":"text","text":"{\"tools\":[{\"name\":\"weather\"}]}"},` +
+			`{"type":"text","text":"{\"tools\":[{\"name\":\"` + protectedDescriptor + `\"}]}"}]}`},
+		{name: "valid output plus ancillary text", result: `{"content":[` +
+			`{"type":"text","text":"{\"tools\":[{\"name\":\"weather\"}]}"},` +
+			`{"type":"text","text":"additional explanation"}]}`},
+		{name: "valid output plus ancillary non-text content", result: `{"content":[` +
+			`{"type":"text","text":"{\"tools\":[{\"name\":\"weather\"}]}"},` +
+			`{"type":"image","data":"aGVsbG8=","mimeType":"image/png"}]}`},
+	}
 
-	t.Run("isError response passes through unfiltered", func(t *testing.T) {
-		t.Parallel()
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			authorizer := &mockAuthorizer{results: map[string]mockResult{
+				"weather":           {authorized: true},
+				protectedDescriptor: {authorized: false},
+			}}
+			cache := NewAnnotationCache()
+			cachedAnnotations := &authorizers.ToolAnnotations{}
+			cache.Set("previously-cached-tool", cachedAnnotations)
+			rr := runFindToolResponseFilter(t, findToolJSONRPCResponse(t, tc.result), authorizer, cache)
 
-		// Build a CallToolResult with IsError set — the filter must not touch it.
-		errorResult := map[string]interface{}{
-			"content": []map[string]interface{}{
-				{"type": "text", "text": "tool execution failed"},
-			},
-			"isError": true,
-		}
-		resultJSON, err := json.Marshal(errorResult)
-		require.NoError(t, err)
-		resp := &jsonrpc2.Response{ID: jsonrpc2.Int64ID(1), Result: json.RawMessage(resultJSON)}
-		responseBytes, err := jsonrpc2.EncodeMessage(resp)
-		require.NoError(t, err)
-
-		rr, fw := newWriter(t, nil)
-		_, err = fw.Write(responseBytes)
-		require.NoError(t, err)
-		require.NoError(t, fw.FlushAndFilter())
-
-		assert.Equal(t, responseBytes, rr.Body.Bytes(), "error response must pass through unchanged")
-	})
-
-	t.Run("response with no text content passes through unfiltered", func(t *testing.T) {
-		t.Parallel()
-
-		// A CallToolResult with no content items at all.
-		emptyResult := map[string]interface{}{"content": []interface{}{}, "isError": false}
-		resultJSON, err := json.Marshal(emptyResult)
-		require.NoError(t, err)
-		resp := &jsonrpc2.Response{ID: jsonrpc2.Int64ID(1), Result: json.RawMessage(resultJSON)}
-		responseBytes, err := jsonrpc2.EncodeMessage(resp)
-		require.NoError(t, err)
-
-		rr, fw := newWriter(t, nil)
-		_, err = fw.Write(responseBytes)
-		require.NoError(t, err)
-		require.NoError(t, fw.FlushAndFilter())
-
-		assert.Equal(t, responseBytes, rr.Body.Bytes(), "response with no content must pass through unchanged")
-	})
-
-	t.Run("text content that is not a FindToolOutput passes through unfiltered", func(t *testing.T) {
-		t.Parallel()
-
-		// A plain text content item that is not a valid FindToolOutput JSON.
-		plainText := map[string]interface{}{
-			"content": []map[string]interface{}{
-				{"type": "text", "text": "this is a plain string, not a find_tool result"},
-			},
-			"isError": false,
-		}
-		resultJSON, err := json.Marshal(plainText)
-		require.NoError(t, err)
-		resp := &jsonrpc2.Response{ID: jsonrpc2.Int64ID(1), Result: json.RawMessage(resultJSON)}
-		responseBytes, err := jsonrpc2.EncodeMessage(resp)
-		require.NoError(t, err)
-
-		rr, fw := newWriter(t, nil)
-		_, err = fw.Write(responseBytes)
-		require.NoError(t, err)
-		require.NoError(t, fw.FlushAndFilter())
-
-		assert.Equal(t, responseBytes, rr.Body.Bytes(), "non-FindToolOutput text content must pass through unchanged")
-	})
-
-	t.Run("annotation cache is populated from unfiltered tool list", func(t *testing.T) {
-		t.Parallel()
-
-		readOnly := true
-		responseBytes := buildFindToolJSONRPCResponse(t, []mcp.Tool{
-			{
-				Name:        "weather",
-				Description: "Get weather",
-				Annotations: mcp.ToolAnnotation{ReadOnlyHint: &readOnly},
-			},
-			// admin_tool is not permitted by Cedar, but its annotations must still
-			// be cached so that a subsequent call_tool request can evaluate Cedar
-			// when-clauses against them.
-			{
-				Name:        "admin_tool",
-				Description: "Admin operations",
-				Annotations: mcp.ToolAnnotation{ReadOnlyHint: &readOnly},
-			},
+			assert.NotContains(t, rr.Body.String(), protectedDescriptor)
+			assertFindToolFilterFailedClosed(t, rr, authorizer, cache, cachedAnnotations)
 		})
+	}
+}
 
+func TestFindToolResponseFilter_RejectsMalformedOrDivergentStructuredContent(t *testing.T) {
+	t.Parallel()
+
+	const protectedDescriptor = "protected-find-tool-sentinel"
+	const defaultTextOutput = `"{\"tools\":[{\"name\":\"weather\"}],` +
+		`\"token_metrics\":{\"baseline_tokens\":10,\"returned_tokens\":5,\"savings_percent\":50}}"`
+	testCases := []struct {
+		name              string
+		textOutput        string
+		structuredContent string
+	}{
+		{name: "empty object", structuredContent: `{}`},
+		{name: "tools is not an array", structuredContent: `{"tools":{}}`},
+		{name: "tool name is not a string", structuredContent: `{"tools":[{"name":17}]}`},
+		{name: "duplicate tools member", structuredContent: `{"tools":[],"tools":[` +
+			`{"name":"` + protectedDescriptor + `"}]}`},
+		{name: "case-folded tools alias", structuredContent: `{"tools":[],"TOOLS":[` +
+			`{"name":"` + protectedDescriptor + `"}]}`},
+		{name: "diverges from text output", structuredContent: `{"tools":[` +
+			`{"name":"` + protectedDescriptor + `"}],` +
+			`"token_metrics":{"baseline_tokens":10,"returned_tokens":5,"savings_percent":50}}`},
+		{
+			name:       "duplicate annotation hint that decodes like the text output",
+			textOutput: `"{\"tools\":[{\"name\":\"weather\",\"annotations\":{\"readOnlyHint\":true}}]}"`,
+			structuredContent: `{"tools":[{"name":"weather",` +
+				`"annotations":{"readOnlyHint":false,"readOnlyHint":true}}]}`,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			result := `{"content":[{"type":"text","text":` + cmp.Or(tc.textOutput, defaultTextOutput) + `}],` +
+				`"structuredContent":` + tc.structuredContent + `}`
+			authorizer := &mockAuthorizer{results: map[string]mockResult{
+				"weather":           {authorized: true},
+				protectedDescriptor: {authorized: false},
+			}}
+			cache := NewAnnotationCache()
+			cachedAnnotations := &authorizers.ToolAnnotations{}
+			cache.Set("previously-cached-tool", cachedAnnotations)
+			rr := runFindToolResponseFilter(t, findToolJSONRPCResponse(t, result), authorizer, cache)
+
+			assert.NotContains(t, rr.Body.String(), protectedDescriptor)
+			assertFindToolFilterFailedClosed(t, rr, authorizer, cache, cachedAnnotations)
+		})
+	}
+}
+
+func TestFindToolResponseFilter_ErrorResultsDoNotBypassOutputValidation(t *testing.T) {
+	t.Parallel()
+
+	const protectedDescriptor = "protected-find-tool-sentinel"
+	t.Run("plain tool error passes through", func(t *testing.T) {
+		t.Parallel()
+		body := findToolJSONRPCResponse(t,
+			`{"content":[{"type":"text","text":"tool execution failed"}],"isError":true}`)
+		authorizer := &mockAuthorizer{results: map[string]mockResult{}}
 		cache := NewAnnotationCache()
-		_, fw := newWriter(t, cache)
-		_, err := fw.Write(responseBytes)
-		require.NoError(t, err)
-		require.NoError(t, fw.FlushAndFilter())
+		cachedAnnotations := &authorizers.ToolAnnotations{}
+		cache.Set("previously-cached-tool", cachedAnnotations)
+		rr := runFindToolResponseFilter(t, body, authorizer, cache)
 
-		// Both tools must be in the cache even though admin_tool is filtered from the response.
-		assert.NotNil(t, cache.Get("weather"), "permitted tool annotation must be cached")
-		assert.NotNil(t, cache.Get("admin_tool"), "denied tool annotation must still be cached for future call_tool Cedar evaluation")
+		assert.Equal(t, http.StatusOK, rr.Code)
+		assert.JSONEq(t, string(body), rr.Body.String())
+		assert.Empty(t, authorizer.calls)
+		assert.Same(t, cachedAnnotations, cache.Get("previously-cached-tool"))
 	})
+
+	t.Run("tool error containing a tools payload fails closed", func(t *testing.T) {
+		t.Parallel()
+		result := `{"content":[{"type":"text","text":"{\"tools\":[{\"name\":\"` +
+			protectedDescriptor + `\"}]}"}],"isError":true}`
+		authorizer := &mockAuthorizer{results: map[string]mockResult{
+			protectedDescriptor: {authorized: false},
+		}}
+		cache := NewAnnotationCache()
+		cachedAnnotations := &authorizers.ToolAnnotations{}
+		cache.Set("previously-cached-tool", cachedAnnotations)
+		rr := runFindToolResponseFilter(t, findToolJSONRPCResponse(t, result), authorizer, cache)
+
+		assert.NotContains(t, rr.Body.String(), protectedDescriptor)
+		assertFindToolFilterFailedClosed(t, rr, authorizer, cache, cachedAnnotations)
+	})
+}
+
+func TestFindToolResponseFilter_PreservesUnrelatedResultAndContentFields(t *testing.T) {
+	t.Parallel()
+
+	const protectedDescriptor = "protected-find-tool-sentinel"
+	const output = `{"tools":[{"name":"weather","toolExtension":{"keep":"tool"}},` +
+		`{"name":"` + protectedDescriptor + `"}],` +
+		`"token_metrics":{"baseline_tokens":10,"returned_tokens":5,"savings_percent":50},` +
+		`"outputExtension":{"keep":"output"}}`
+	escapedOutput, err := json.Marshal(output)
+	require.NoError(t, err)
+	result := `{"_meta":{"trace":"result-meta"},"resultExtension":{"keep":true},"content":[` +
+		`{"type":"text","text":` + string(escapedOutput) + `,"annotations":{"audience":["assistant"]},` +
+		`"_meta":{"trace":"content-meta"},"contentExtension":"keep"}],` +
+		`"structuredContent":` + output + `}`
+	authorizer := &mockAuthorizer{results: map[string]mockResult{
+		"weather":           {authorized: true},
+		protectedDescriptor: {authorized: false},
+	}}
+	rr := runFindToolResponseFilter(t, findToolJSONRPCResponse(t, result), authorizer, nil)
+
+	assert.Equal(t, http.StatusOK, rr.Code)
+	assert.NotContains(t, rr.Body.String(), protectedDescriptor)
+	filtered := decodeFindToolResultMap(t, rr.Body.Bytes())
+	assert.Equal(t, map[string]any{"trace": "result-meta"}, filtered["_meta"])
+	assert.Equal(t, map[string]any{"keep": true}, filtered["resultExtension"])
+	content, ok := filtered["content"].([]any)
+	require.True(t, ok)
+	require.Len(t, content, 1)
+	carrier, ok := content[0].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, map[string]any{"audience": []any{"assistant"}}, carrier["annotations"])
+	assert.Equal(t, map[string]any{"trace": "content-meta"}, carrier["_meta"])
+	assert.Equal(t, "keep", carrier["contentExtension"])
+
+	text, ok := carrier["text"].(string)
+	require.True(t, ok)
+	var textOutput map[string]any
+	require.NoError(t, json.Unmarshal([]byte(text), &textOutput))
+	structuredOutput, ok := filtered["structuredContent"].(map[string]any)
+	require.True(t, ok)
+	for representation, filteredOutput := range map[string]map[string]any{
+		"text":       textOutput,
+		"structured": structuredOutput,
+	} {
+		assert.Equal(t, map[string]any{"keep": "output"}, filteredOutput["outputExtension"], representation)
+		tools, ok := filteredOutput["tools"].([]any)
+		require.True(t, ok, representation)
+		require.Len(t, tools, 1, representation)
+		tool, ok := tools[0].(map[string]any)
+		require.True(t, ok, representation)
+		assert.Equal(t, "weather", tool["name"], representation)
+		assert.Equal(t, map[string]any{"keep": "tool"}, tool["toolExtension"], representation)
+	}
 }
 
 func TestResponseFilteringWriter(t *testing.T) {
@@ -424,6 +590,884 @@ func TestResponseFilteringWriter(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestResponseFilteringWriter_ListsPreserveResultMembers verifies that the
+// tools, prompts, and resources list filters rewrite only the list member and
+// the caching hints the backend sent: every other result member and every
+// permitted descriptor reach the client as the backend sent them, a caching
+// hint the backend sent is marked private and immediately stale, a caching
+// hint the backend omitted stays absent, and the committed Cache-Control
+// header marks the caller-specific result private in every case.
+func TestResponseFilteringWriter_ListsPreserveResultMembers(t *testing.T) {
+	t.Parallel()
+
+	type listMethod struct {
+		name      string
+		method    string
+		listField string
+		allowed   string
+		denied    string
+		allowedID string
+		deniedID  string
+	}
+	methods := []listMethod{
+		{
+			name: "tools", method: string(mcp.MethodToolsList), listField: "tools",
+			allowed: `{"name":"weather","title":"Weather","description":"Get weather",` +
+				`"inputSchema":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]},` +
+				`"annotations":{"readOnlyHint":true},"_meta":{"source":"backend"},"toolExtension":{"preserve":true}}`,
+			denied:    `{"name":"calculator","inputSchema":{"type":"object"}}`,
+			allowedID: "weather", deniedID: "calculator",
+		},
+		{
+			name: "prompts", method: string(mcp.MethodPromptsList), listField: "prompts",
+			allowed: `{"name":"greeting","description":"Greet someone",` +
+				`"arguments":[{"name":"who","required":true}],"promptExtension":{"preserve":true}}`,
+			denied:    `{"name":"farewell"}`,
+			allowedID: "greeting", deniedID: "farewell",
+		},
+		{
+			name: "resources", method: string(mcp.MethodResourcesList), listField: "resources",
+			allowed: `{"uri":"file:///public/data","name":"data","mimeType":"text/plain",` +
+				`"resourceExtension":{"preserve":true}}`,
+			denied:    `{"uri":"file:///private/data","name":"secret"}`,
+			allowedID: "file:///public/data", deniedID: "file:///private/data",
+		},
+	}
+
+	results := []struct {
+		name     string
+		result   func(listMethod) string
+		expected func(listMethod) string
+	}{
+		{
+			name: "result with caching hints",
+			result: func(m listMethod) string {
+				return `{"_meta":{"page":"one"},"nextCursor":"cursor-2","resultType":"complete",` +
+					`"cacheScope":"public","ttlMs":60000,"resultExtension":{"preserve":true},` +
+					`"` + m.listField + `":[` + m.allowed + `,` + m.denied + `]}`
+			},
+			expected: func(m listMethod) string {
+				return `{"_meta":{"page":"one"},"nextCursor":"cursor-2","resultType":"complete",` +
+					`"cacheScope":"private","ttlMs":0,"resultExtension":{"preserve":true},` +
+					`"` + m.listField + `":[` + m.allowed + `]}`
+			},
+		},
+		{
+			name: "result with only cacheScope",
+			result: func(m listMethod) string {
+				return `{"cacheScope":"public","` + m.listField + `":[` + m.allowed + `,` + m.denied + `]}`
+			},
+			expected: func(m listMethod) string {
+				return `{"cacheScope":"private","` + m.listField + `":[` + m.allowed + `]}`
+			},
+		},
+		{
+			name: "result without caching hints",
+			result: func(m listMethod) string {
+				return `{"` + m.listField + `":[` + m.allowed + `,` + m.denied + `]}`
+			},
+			expected: func(m listMethod) string {
+				return `{"` + m.listField + `":[` + m.allowed + `]}`
+			},
+		},
+	}
+
+	for _, m := range methods {
+		for _, r := range results {
+			for _, contentType := range []string{"application/json", "text/event-stream"} {
+				t.Run(m.name+"/"+r.name+"/"+contentType, func(t *testing.T) {
+					t.Parallel()
+
+					body := []byte(`{"jsonrpc":"2.0","id":7,"result":` + r.result(m) + `}`)
+					require.True(t, json.Valid(body), "test fixture must be valid JSON: %s", body)
+					if contentType == "text/event-stream" {
+						body = []byte("data: " + string(body) + "\n\n")
+					}
+
+					authorizer := &mockAuthorizer{results: map[string]mockResult{
+						m.allowedID: {authorized: true},
+						m.deniedID:  {authorized: false},
+					}}
+					annotationCache := NewAnnotationCache()
+					rr := httptest.NewRecorder()
+					rfw := NewResponseFilteringWriter(rr, authorizer, newUser1Request(t), m.method, annotationCache, nil)
+					rfw.ResponseWriter.Header().Set("Content-Type", contentType)
+					rfw.ResponseWriter.Header().Set("Cache-Control", "public, max-age=60")
+					if contentType == "text/event-stream" {
+						// The reverse proxy flushes an SSE response before the body arrives.
+						rfw.Flush()
+					}
+					_, err := rfw.Write(body)
+					require.NoError(t, err)
+					require.NoError(t, rfw.FlushAndFilter())
+
+					committed := rr.Result()
+					t.Cleanup(func() { _ = committed.Body.Close() })
+					assert.Equal(t, "private, no-store", committed.Header.Get("Cache-Control"),
+						"caller-specific list results must not be stored by shared HTTP caches")
+
+					filtered := rr.Body.Bytes()
+					if contentType == "text/event-stream" {
+						events := parseSSEStream(t, filtered)
+						require.Len(t, events, 1)
+						filtered = []byte(events[0].data)
+					}
+					message, err := jsonrpc2.DecodeMessage(filtered)
+					require.NoError(t, err)
+					response, ok := message.(*jsonrpc2.Response)
+					require.True(t, ok)
+					require.Nil(t, response.Error)
+					assert.Equal(t, jsonrpc2.Int64ID(7), response.ID)
+					assert.JSONEq(t, r.expected(m), string(response.Result))
+
+					if m.listField == "tools" {
+						cached := annotationCache.Get(m.allowedID)
+						require.NotNil(t, cached, "tools/list must still populate the annotation cache")
+						require.NotNil(t, cached.ReadOnlyHint)
+						assert.True(t, *cached.ReadOnlyHint)
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestResponseFilteringWriter_LegacyListsRejectMalformedOrAmbiguousResults(t *testing.T) {
+	t.Parallel()
+
+	const protectedDescriptor = "protected-descriptor-sentinel"
+	type listMethod struct {
+		name               string
+		method             string
+		listField          string
+		identifier         string
+		typedInvalidMember string
+	}
+	methods := []listMethod{
+		{
+			name: "tools", method: string(mcp.MethodToolsList), listField: "tools", identifier: "name",
+			typedInvalidMember: `"inputSchema":17,"annotations":{"readOnlyHint":true}`,
+		},
+		{
+			name: "prompts", method: string(mcp.MethodPromptsList), listField: "prompts", identifier: "name",
+			typedInvalidMember: `"arguments":17`,
+		},
+		{
+			name: "resources", method: string(mcp.MethodResourcesList), listField: "resources", identifier: "uri",
+			typedInvalidMember: `"size":"bad"`,
+		},
+	}
+
+	testCases := []struct {
+		name   string
+		result func(listMethod) json.RawMessage
+	}{
+		{
+			name: "result is not an object",
+			result: func(_ listMethod) json.RawMessage {
+				return json.RawMessage(`["` + protectedDescriptor + `"]`)
+			},
+		},
+		{
+			name: "list is not an array",
+			result: func(method listMethod) json.RawMessage {
+				return json.RawMessage(`{"` + method.listField + `":{"` +
+					method.identifier + `":"` + protectedDescriptor + `"}}`)
+			},
+		},
+		{
+			name: "case-folded list alias",
+			result: func(method listMethod) json.RawMessage {
+				return json.RawMessage(`{"` + method.listField + `":[],"` +
+					strings.ToUpper(method.listField) + `":[{"` + method.identifier + `":"` +
+					protectedDescriptor + `"}]}`)
+			},
+		},
+		{
+			name: "duplicate list member",
+			result: func(method listMethod) json.RawMessage {
+				return json.RawMessage(`{"` + method.listField + `":[],"` + method.listField +
+					`":[{"` + method.identifier + `":"` + protectedDescriptor + `"}]}`)
+			},
+		},
+		{
+			name: "list item is not an object",
+			result: func(method listMethod) json.RawMessage {
+				return json.RawMessage(`{"` + method.listField + `":["` + protectedDescriptor + `"]}`)
+			},
+		},
+		{
+			name: "case-folded identifier alias",
+			result: func(method listMethod) json.RawMessage {
+				return json.RawMessage(`{"` + method.listField + `":[{"` + method.identifier + `":"` +
+					protectedDescriptor + `","` + strings.ToUpper(method.identifier) + `":"allowed"}]}`)
+			},
+		},
+		{
+			name: "duplicate identifier member",
+			result: func(method listMethod) json.RawMessage {
+				return json.RawMessage(`{"` + method.listField + `":[{"` + method.identifier + `":"` +
+					protectedDescriptor + `","` + method.identifier + `":"allowed"}]}`)
+			},
+		},
+		{
+			name: "identifier is not a string",
+			result: func(method listMethod) json.RawMessage {
+				return json.RawMessage(`{"` + method.listField + `":[{"` + method.identifier +
+					`":17,"description":"` + protectedDescriptor + `"}]}`)
+			},
+		},
+		{
+			name: "descriptor fails typed MCP decoding",
+			result: func(method listMethod) json.RawMessage {
+				return json.RawMessage(`{"` + method.listField + `":[{"` + method.identifier + `":"` +
+					protectedDescriptor + `",` + method.typedInvalidMember + `}]}`)
+			},
+		},
+		{
+			name: "case-folded cacheScope alias",
+			result: func(method listMethod) json.RawMessage {
+				return json.RawMessage(`{"` + method.listField + `":[{"` + method.identifier + `":"` +
+					protectedDescriptor + `"}],"cacheScope":"private","CACHESCOPE":"public"}`)
+			},
+		},
+		{
+			name: "duplicate canonical cacheScope member",
+			result: func(method listMethod) json.RawMessage {
+				return json.RawMessage(`{"` + method.listField + `":[{"` + method.identifier + `":"` +
+					protectedDescriptor + `"}],"cacheScope":"private","cacheScope":"public"}`)
+			},
+		},
+		{
+			name: "case-folded ttlMs alias",
+			result: func(method listMethod) json.RawMessage {
+				return json.RawMessage(`{"` + method.listField + `":[{"` + method.identifier + `":"` +
+					protectedDescriptor + `"}],"ttlMs":0,"TTLMS":60000}`)
+			},
+		},
+		{
+			name: "duplicate canonical ttlMs member",
+			result: func(method listMethod) json.RawMessage {
+				return json.RawMessage(`{"` + method.listField + `":[{"` + method.identifier + `":"` +
+					protectedDescriptor + `"}],"ttlMs":0,"ttlMs":60000}`)
+			},
+		},
+	}
+
+	for _, method := range methods {
+		for _, tc := range testCases {
+			t.Run(method.name+"/"+tc.name, func(t *testing.T) {
+				t.Parallel()
+
+				responseBytes, err := jsonrpc2.EncodeMessage(&jsonrpc2.Response{
+					ID:     jsonrpc2.Int64ID(103),
+					Result: tc.result(method),
+				})
+				require.NoError(t, err)
+
+				authorizer := &mockAuthorizer{results: map[string]mockResult{
+					"allowed":           {authorized: true},
+					protectedDescriptor: {authorized: false},
+				}}
+				annotationCache := NewAnnotationCache()
+				cachedAnnotations := &authorizers.ToolAnnotations{}
+				annotationCache.Set("previously-cached-tool", cachedAnnotations)
+				rr := httptest.NewRecorder()
+				rfw := NewResponseFilteringWriter(
+					rr, authorizer, newUser1Request(t), method.method, annotationCache, nil,
+				)
+				rfw.ResponseWriter.Header().Set("Content-Type", "application/json")
+				_, err = rfw.Write(responseBytes)
+				require.NoError(t, err)
+				require.NoError(t, rfw.FlushAndFilter())
+
+				assert.Equal(t, http.StatusInternalServerError, rr.Code)
+				assert.NotContains(t, rr.Body.String(), protectedDescriptor,
+					"an invalid list result must not expose an unfiltered descriptor")
+				assert.Empty(t, authorizer.calls,
+					"the whole list must be validated before any authorization decision")
+				assert.Same(t, cachedAnnotations, annotationCache.Get("previously-cached-tool"),
+					"a malformed response must not replace the existing annotation cache")
+				assert.Nil(t, annotationCache.Get(protectedDescriptor),
+					"a malformed descriptor must not be partially added to the annotation cache")
+
+				message, err := jsonrpc2.DecodeMessage(rr.Body.Bytes())
+				require.NoError(t, err)
+				response, ok := message.(*jsonrpc2.Response)
+				require.True(t, ok)
+				require.NotNil(t, response.Error)
+				assert.Nil(t, response.Result)
+
+				var envelope struct {
+					Error struct {
+						Code    int64  `json:"code"`
+						Message string `json:"message"`
+					} `json:"error"`
+				}
+				require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &envelope))
+				assert.Equal(t, mcpparser.CodeInternalError, envelope.Error.Code)
+				assert.Equal(t, "internal error", envelope.Error.Message)
+			})
+		}
+	}
+}
+
+// TestResponseFilteringWriter_ToolsListRejectsAmbiguousAnnotations verifies
+// that a tools/list response fails closed when a descriptor spells its
+// annotations, or any member of them, in a way encoding/json would resolve to
+// a value other than the one a client reads from the forwarded descriptor.
+func TestResponseFilteringWriter_ToolsListRejectsAmbiguousAnnotations(t *testing.T) {
+	t.Parallel()
+
+	const protectedDescriptor = "protected-annotations-sentinel"
+	testCases := []struct {
+		name        string
+		annotations string
+	}{
+		{
+			name:        "duplicate hint",
+			annotations: `"annotations":{"readOnlyHint":false,"readOnlyHint":true}`,
+		},
+		{
+			name:        "case-folded hint alias",
+			annotations: `"annotations":{"readOnlyHint":false,"READONLYHINT":true}`,
+		},
+		{
+			name:        "case-folded hint alias without the canonical hint",
+			annotations: `"annotations":{"READONLYHINT":true}`,
+		},
+		{
+			name:        "non-ASCII case-folded hint alias",
+			annotations: "\"annotations\":{\"destructiveHint\":true,\"de\u017ftructiveHint\":false}",
+		},
+		{
+			name:        "escaped duplicate hint",
+			annotations: `"annotations":{"openWorldHint":true,"open\u0057orldHint":false}`,
+		},
+		{
+			name:        "case-folded title alias",
+			annotations: `"annotations":{"title":"Weather","TITLE":"Delete files"}`,
+		},
+		{
+			name:        "duplicate annotations member",
+			annotations: `"annotations":{"readOnlyHint":true},"annotations":{"destructiveHint":true}`,
+		},
+		{
+			name:        "case-folded annotations alias",
+			annotations: `"annotations":{"readOnlyHint":false},"ANNOTATIONS":{"readOnlyHint":true}`,
+		},
+		{
+			name:        "non-ASCII case-folded annotations alias",
+			annotations: "\"annotations\":{\"readOnlyHint\":false},\"annotation\u017f\":{\"readOnlyHint\":true}",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			responseBytes, err := jsonrpc2.EncodeMessage(&jsonrpc2.Response{
+				ID: jsonrpc2.Int64ID(104),
+				Result: json.RawMessage(`{"tools":[{"name":"` + protectedDescriptor +
+					`","inputSchema":{"type":"object"},` + tc.annotations + `}]}`),
+			})
+			require.NoError(t, err)
+
+			authorizer := &mockAuthorizer{results: map[string]mockResult{
+				protectedDescriptor: {authorized: true},
+			}}
+			annotationCache := NewAnnotationCache()
+			cachedAnnotations := &authorizers.ToolAnnotations{}
+			annotationCache.Set("previously-cached-tool", cachedAnnotations)
+			rr := httptest.NewRecorder()
+			rfw := NewResponseFilteringWriter(
+				rr, authorizer, newUser1Request(t), string(mcp.MethodToolsList), annotationCache, nil,
+			)
+			rfw.ResponseWriter.Header().Set("Content-Type", "application/json")
+			_, err = rfw.Write(responseBytes)
+			require.NoError(t, err)
+			require.NoError(t, rfw.FlushAndFilter())
+
+			assert.Equal(t, http.StatusInternalServerError, rr.Code)
+			assert.NotContains(t, rr.Body.String(), protectedDescriptor,
+				"a descriptor with ambiguous annotations must not be forwarded")
+			assert.Empty(t, authorizer.calls,
+				"ambiguous annotations must be rejected before any authorization decision")
+			assert.Same(t, cachedAnnotations, annotationCache.Get("previously-cached-tool"),
+				"ambiguous annotations must not replace the existing annotation cache")
+			assert.Nil(t, annotationCache.Get(protectedDescriptor),
+				"ambiguous annotations must not be added to the annotation cache")
+
+			var envelope struct {
+				Error struct {
+					Code    int64  `json:"code"`
+					Message string `json:"message"`
+				} `json:"error"`
+			}
+			require.NoError(t, json.Unmarshal(rr.Body.Bytes(), &envelope))
+			assert.Equal(t, mcpparser.CodeInternalError, envelope.Error.Code)
+			assert.Equal(t, "internal error", envelope.Error.Message)
+		})
+	}
+}
+
+// TestResponseFilteringWriter_ToolsListAuthorizesAnnotationsAndForwardsRawDescriptors
+// verifies that well-formed annotations still drive policy decisions and the
+// annotation cache, and that permitted descriptors reach the client exactly
+// as the backend sent them.
+func TestResponseFilteringWriter_ToolsListAuthorizesAnnotationsAndForwardsRawDescriptors(t *testing.T) {
+	t.Parallel()
+
+	authorizer, err := cedar.NewCedarAuthorizer(cedar.ConfigOptions{
+		Policies: []string{
+			`permit(principal, action == Action::"call_tool", resource == Tool::"reader") when { resource.readOnlyHint == true };`,
+			`permit(principal, action == Action::"call_tool", resource == Tool::"deleter");`,
+			`forbid(principal, action == Action::"call_tool", resource == Tool::"deleter") when { resource.destructiveHint == true };`,
+			`permit(principal, action == Action::"call_tool", resource == Tool::"plain");`,
+		},
+		EntitiesJSON: `[]`,
+	}, "")
+	require.NoError(t, err)
+
+	const (
+		reader = `{"name":"reader","annotations":{"title":"Reader","readOnlyHint":true,"openWorldHint":false,` +
+			`"vendorHint":"kept"},"inputSchema":{"type":"object"}}`
+		deleter = `{"name":"deleter","annotations":{"destructiveHint":true},"inputSchema":{"type":"object"}}`
+		plain   = `{"name":"plain","annotations":null,"inputSchema":{"type":"object"}}`
+	)
+	responseBytes := []byte(`{"jsonrpc":"2.0","id":105,"result":{"tools":[` + reader + `,` + deleter + `,` + plain + `]}}`)
+
+	annotationCache := NewAnnotationCache()
+	rr := httptest.NewRecorder()
+	rfw := NewResponseFilteringWriter(
+		rr, authorizer, newUser1Request(t), string(mcp.MethodToolsList), annotationCache, nil,
+	)
+	rfw.ResponseWriter.Header().Set("Content-Type", "application/json")
+	_, err = rfw.Write(responseBytes)
+	require.NoError(t, err)
+	require.NoError(t, rfw.FlushAndFilter())
+
+	require.Equal(t, http.StatusOK, rr.Code)
+	message, err := jsonrpc2.DecodeMessage(rr.Body.Bytes())
+	require.NoError(t, err)
+	response, ok := message.(*jsonrpc2.Response)
+	require.True(t, ok)
+	require.Nil(t, response.Error)
+	var result struct {
+		Tools []json.RawMessage `json:"tools"`
+	}
+	require.NoError(t, json.Unmarshal(response.Result, &result))
+	require.Len(t, result.Tools, 2)
+	assert.Equal(t, reader, string(result.Tools[0]))
+	assert.Equal(t, plain, string(result.Tools[1]))
+
+	cachedReader := annotationCache.Get("reader")
+	require.NotNil(t, cachedReader)
+	require.NotNil(t, cachedReader.ReadOnlyHint)
+	assert.True(t, *cachedReader.ReadOnlyHint)
+	cachedDeleter := annotationCache.Get("deleter")
+	require.NotNil(t, cachedDeleter)
+	require.NotNil(t, cachedDeleter.DestructiveHint)
+	assert.True(t, *cachedDeleter.DestructiveHint)
+	assert.Nil(t, annotationCache.Get("plain"))
+}
+
+// TestJSONMemberNames verifies that the member names validated for a typed
+// struct are the names encoding/json binds to its fields.
+func TestJSONMemberNames(t *testing.T) {
+	t.Parallel()
+
+	type embedded struct {
+		Promoted string `json:"promoted"`
+	}
+	type Pointed struct {
+		Untagged string
+	}
+	type tagged struct {
+		Hidden string `json:"hidden"`
+	}
+	type sample struct {
+		embedded
+		*Pointed
+		Tagged   tagged `json:"tagged"`
+		Renamed  string `json:"renamed,omitempty"`
+		Default  string
+		Skipped  string `json:"-"`
+		internal string
+	}
+
+	assert.Equal(t,
+		[]string{"promoted", "Untagged", "tagged", "renamed", "Default"},
+		jsonMemberNames(reflect.TypeOf(sample{internal: "not a member"})))
+	assert.ElementsMatch(t,
+		[]string{"title", "readOnlyHint", "destructiveHint", "idempotentHint", "openWorldHint"},
+		toolAnnotationMembers,
+		"every member the typed tool annotations decode must be validated")
+}
+
+// TestResponseFilteringWriter_ResourceTemplatesList verifies that resource-
+// template enumeration filters every descriptor against the same read_resource
+// authorization used when resources are read.
+func TestResponseFilteringWriter_ResourceTemplatesList(t *testing.T) {
+	t.Parallel()
+
+	const (
+		allowedTemplate = "file:///public/{name}"
+		deniedTemplate  = "file:///private/{name}"
+		errorTemplate   = "file:///error/{name}"
+	)
+
+	authorizer := &mockAuthorizer{results: map[string]mockResult{
+		allowedTemplate: {authorized: true},
+		deniedTemplate:  {authorized: false},
+		// An authorizer error must fail closed even if its boolean result is true.
+		errorTemplate: {authorized: true, err: errors.New("policy backend unavailable")},
+	}}
+
+	// Use raw JSON so the test also guards descriptor and pagination metadata
+	// that are not represented by dedicated fields in the compatibility types.
+	result := json.RawMessage(`{
+		"_meta":{"page":"one"},
+		"nextCursor":"cursor-2",
+		"cacheScope":"public",
+		"ttlMs":60000,
+		"resultExtension":{"preserve":true},
+		"resourceTemplates":[
+			{
+				"uriTemplate":"file:///public/{name}",
+				"name":"public-file",
+				"title":"Public file",
+				"description":"Read a public file",
+				"mimeType":"text/plain",
+				"icons":[{"src":"https://example.com/public.svg","mimeType":"image/svg+xml","sizes":["any"],"theme":"light"}],
+				"annotations":{"audience":["user"],"priority":0.8,"lastModified":"2026-09-08T12:00:00Z"},
+				"_meta":{"source":"backend"},
+				"templateExtension":{"preserve":true}
+			},
+			{"uriTemplate":"file:///private/{name}","name":"private-file"},
+			{"uriTemplate":"file:///error/{name}","name":"error-file"}
+		]
+	}`)
+	responseBytes, err := jsonrpc2.EncodeMessage(&jsonrpc2.Response{
+		ID:     jsonrpc2.Int64ID(1),
+		Result: result,
+	})
+	require.NoError(t, err)
+
+	rr := httptest.NewRecorder()
+	rfw := NewResponseFilteringWriter(
+		rr,
+		authorizer,
+		newUser1Request(t),
+		string(mcp.MethodResourcesTemplatesList),
+		nil,
+		nil,
+	)
+	rfw.ResponseWriter.Header().Set("Content-Type", "application/json")
+	_, err = rfw.Write(responseBytes)
+	require.NoError(t, err)
+	require.NoError(t, rfw.FlushAndFilter())
+
+	message, err := jsonrpc2.DecodeMessage(rr.Body.Bytes())
+	require.NoError(t, err)
+	response, ok := message.(*jsonrpc2.Response)
+	require.True(t, ok)
+	require.Nil(t, response.Error)
+
+	const expectedResult = `{
+		"_meta":{"page":"one"},
+		"nextCursor":"cursor-2",
+		"cacheScope":"private",
+		"ttlMs":0,
+		"resultExtension":{"preserve":true},
+		"resourceTemplates":[{
+			"uriTemplate":"file:///public/{name}",
+			"name":"public-file",
+			"title":"Public file",
+			"description":"Read a public file",
+			"mimeType":"text/plain",
+			"icons":[{"src":"https://example.com/public.svg","mimeType":"image/svg+xml","sizes":["any"],"theme":"light"}],
+			"annotations":{"audience":["user"],"priority":0.8,"lastModified":"2026-09-08T12:00:00Z"},
+			"_meta":{"source":"backend"},
+			"templateExtension":{"preserve":true}
+		}]
+	}`
+	assert.JSONEq(t, expectedResult, string(response.Result))
+	assert.Equal(t, "private, no-store", rr.Header().Get("Cache-Control"),
+		"identity-filtered template results must not be stored by shared HTTP caches")
+	assert.Equal(t, []mockCall{
+		{feature: authorizers.MCPFeatureResource, operation: authorizers.MCPOperationRead, resourceID: allowedTemplate},
+		{feature: authorizers.MCPFeatureResource, operation: authorizers.MCPOperationRead, resourceID: deniedTemplate},
+		{feature: authorizers.MCPFeatureResource, operation: authorizers.MCPOperationRead, resourceID: errorTemplate},
+	}, authorizer.calls)
+}
+
+func TestResponseFilteringWriter_ResourceTemplatesList_SSEForcesPrivateCaching(t *testing.T) {
+	t.Parallel()
+
+	const allowedTemplate = "file:///public/{name}"
+	result := json.RawMessage(`{
+		"_meta":{"source":"backend"},
+		"cacheScope":"public",
+		"ttlMs":60000,
+		"resourceTemplates":[{"uriTemplate":"file:///public/{name}","name":"public-file"}]
+	}`)
+	responseBytes, err := jsonrpc2.EncodeMessage(&jsonrpc2.Response{
+		ID:     jsonrpc2.Int64ID(100),
+		Result: result,
+	})
+	require.NoError(t, err)
+
+	authorizer := &mockAuthorizer{results: map[string]mockResult{
+		allowedTemplate: {authorized: true},
+	}}
+	rr := httptest.NewRecorder()
+	rfw := NewResponseFilteringWriter(
+		rr,
+		authorizer,
+		newUser1Request(t),
+		string(mcp.MethodResourcesTemplatesList),
+		nil,
+		nil,
+	)
+	rfw.ResponseWriter.Header().Set("Content-Type", "text/event-stream")
+	rfw.ResponseWriter.Header().Set("Cache-Control", "public, max-age=60")
+	rfw.WriteHeader(http.StatusOK)
+	rfw.Flush()
+	assert.Equal(t, "private, no-store", rr.Header().Get("Cache-Control"),
+		"the private cache policy must be committed before an SSE stream flushes")
+
+	_, err = rfw.Write([]byte("data: " + string(responseBytes) + "\n\n"))
+	require.NoError(t, err)
+	require.NoError(t, rfw.FlushAndFilter())
+
+	events := parseSSEStream(t, rr.Body.Bytes())
+	require.Len(t, events, 1)
+	message, err := jsonrpc2.DecodeMessage([]byte(events[0].data))
+	require.NoError(t, err)
+	response, ok := message.(*jsonrpc2.Response)
+	require.True(t, ok)
+
+	var filteredResult map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(response.Result, &filteredResult))
+	assert.JSONEq(t, `"private"`, string(filteredResult["cacheScope"]))
+	assert.JSONEq(t, `0`, string(filteredResult["ttlMs"]))
+	assert.JSONEq(t, `{"source":"backend"}`, string(filteredResult["_meta"]))
+}
+
+func TestResponseFilteringWriter_ResourceTemplatesList_RejectsAmbiguousResultMembers(t *testing.T) {
+	t.Parallel()
+
+	const (
+		allowedTemplate = "file:///public/{name}"
+		deniedTemplate  = "file:///private/{name}"
+	)
+
+	canonicalTemplates := `"resourceTemplates":[` +
+		`{"uriTemplate":"file:///public/{name}","name":"public-file"}]`
+	testCases := []struct {
+		name   string
+		result json.RawMessage
+	}{
+		{
+			name: "case-folded resourceTemplates alias",
+			result: json.RawMessage(`{` + canonicalTemplates + `,` +
+				`"resourcetemplates":[{"uriTemplate":"file:///private/{name}","name":"private-file"}]}`),
+		},
+		{
+			name:   "duplicate canonical resourceTemplates member",
+			result: json.RawMessage(`{` + canonicalTemplates + `,` + canonicalTemplates + `}`),
+		},
+		{
+			name:   "case-folded cacheScope alias",
+			result: json.RawMessage(`{` + canonicalTemplates + `,"cacheScope":"private","CACHESCOPE":"public"}`),
+		},
+		{
+			name:   "duplicate canonical cacheScope member",
+			result: json.RawMessage(`{` + canonicalTemplates + `,"cacheScope":"private","cacheScope":"public"}`),
+		},
+		{
+			name:   "case-folded ttlMs alias",
+			result: json.RawMessage(`{` + canonicalTemplates + `,"ttlMs":0,"TTLMS":60000}`),
+		},
+		{
+			name:   "duplicate canonical ttlMs member",
+			result: json.RawMessage(`{` + canonicalTemplates + `,"ttlMs":0,"ttlMs":60000}`),
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			if tc.name == "case-folded resourceTemplates alias" {
+				// Pin the client behavior that makes this security-sensitive:
+				// Go matches struct fields case-insensitively, and the later
+				// alias overwrites the canonical member.
+				var unfiltered mcp.ListResourceTemplatesResult
+				require.NoError(t, json.Unmarshal(tc.result, &unfiltered))
+				require.Len(t, unfiltered.ResourceTemplates, 1)
+				require.Equal(t, deniedTemplate, unfiltered.ResourceTemplates[0].URITemplate)
+			}
+
+			responseBytes, err := jsonrpc2.EncodeMessage(&jsonrpc2.Response{
+				ID:     jsonrpc2.Int64ID(101),
+				Result: tc.result,
+			})
+			require.NoError(t, err)
+
+			authorizer := &mockAuthorizer{results: map[string]mockResult{
+				allowedTemplate: {authorized: true},
+				deniedTemplate:  {authorized: false},
+			}}
+			rr := httptest.NewRecorder()
+			rfw := NewResponseFilteringWriter(
+				rr,
+				authorizer,
+				newParsedUser1Request(t, `{"jsonrpc":"2.0","id":101,"method":"resources/templates/list"}`),
+				string(mcp.MethodResourcesTemplatesList),
+				nil,
+				nil,
+			)
+			rfw.ResponseWriter.Header().Set("Content-Type", "application/json")
+			_, err = rfw.Write(responseBytes)
+			require.NoError(t, err)
+			require.NoError(t, rfw.FlushAndFilter())
+
+			message, err := jsonrpc2.DecodeMessage(rr.Body.Bytes())
+			require.NoError(t, err)
+			response, ok := message.(*jsonrpc2.Response)
+			require.True(t, ok)
+			require.NotNil(t, response.Error, "ambiguous result members must fail closed")
+			assert.Nil(t, response.Result, "no client-decodable template list may survive ambiguous members")
+			assert.Empty(t, authorizer.calls,
+				"ambiguous result members must be rejected before an authorization decision")
+		})
+	}
+}
+
+func TestResponseFilteringWriter_ResourceTemplatesList_RejectsDescriptorAliasesAndDuplicates(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name       string
+		descriptor string
+	}{
+		{
+			name: "case-folded alias selects an allowed URI over the denied canonical URI",
+			descriptor: `{"uriTemplate":"file:///private/{name}",` +
+				`"URITEMPLATE":"file:///public/{name}","name":"ambiguous"}`,
+		},
+		{
+			name: "duplicate canonical member selects an allowed URI over the denied URI",
+			descriptor: `{"uriTemplate":"file:///private/{name}",` +
+				`"uriTemplate":"file:///public/{name}","name":"ambiguous"}`,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			result := json.RawMessage(`{"resourceTemplates":[` + tc.descriptor + `]}`)
+			responseBytes, err := jsonrpc2.EncodeMessage(&jsonrpc2.Response{
+				ID:     jsonrpc2.Int64ID(102),
+				Result: result,
+			})
+			require.NoError(t, err)
+
+			authorizer := &mockAuthorizer{results: map[string]mockResult{
+				"file:///public/{name}":  {authorized: true},
+				"file:///private/{name}": {authorized: false},
+			}}
+			rr := httptest.NewRecorder()
+			rfw := NewResponseFilteringWriter(
+				rr,
+				authorizer,
+				newParsedUser1Request(t, `{"jsonrpc":"2.0","id":102,"method":"resources/templates/list"}`),
+				string(mcp.MethodResourcesTemplatesList),
+				nil,
+				nil,
+			)
+			rfw.ResponseWriter.Header().Set("Content-Type", "application/json")
+			_, err = rfw.Write(responseBytes)
+			require.NoError(t, err)
+			require.NoError(t, rfw.FlushAndFilter())
+
+			message, err := jsonrpc2.DecodeMessage(rr.Body.Bytes())
+			require.NoError(t, err)
+			response, ok := message.(*jsonrpc2.Response)
+			require.True(t, ok)
+			require.NotNil(t, response.Error, "ambiguous uriTemplate members must fail closed")
+			assert.Nil(t, response.Result)
+			assert.NotContains(t, rr.Body.String(), "file:///private/{name}")
+			assert.Empty(t, authorizer.calls,
+				"ambiguous descriptors must be rejected before an authorization decision")
+		})
+	}
+}
+
+func TestResponseFilteringWriter_ResourceTemplatesList_MalformedDescriptorFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	authorizer := &mockAuthorizer{results: map[string]mockResult{
+		"file:///private/{name}": {authorized: true},
+	}}
+	result := json.RawMessage(`{
+		"resourceTemplates":[
+			{"uriTemplate":17,"name":"malformed"},
+			{"uriTemplate":"file:///private/{name}","name":"private-file"}
+		]
+	}`)
+	responseBytes, err := jsonrpc2.EncodeMessage(&jsonrpc2.Response{
+		ID:     jsonrpc2.Int64ID(99),
+		Result: result,
+	})
+	require.NoError(t, err)
+
+	rr := httptest.NewRecorder()
+	rfw := NewResponseFilteringWriter(
+		rr,
+		authorizer,
+		newParsedUser1Request(t, `{"jsonrpc":"2.0","id":99,"method":"resources/templates/list"}`),
+		string(mcp.MethodResourcesTemplatesList),
+		nil,
+		nil,
+	)
+	rfw.ResponseWriter.Header().Set("Content-Type", "application/json")
+	_, err = rfw.Write(responseBytes)
+	require.NoError(t, err)
+	require.NoError(t, rfw.FlushAndFilter())
+
+	assert.Equal(t, http.StatusInternalServerError, rr.Code)
+	assert.NotContains(t, rr.Body.String(), "private-file",
+		"a malformed descriptor must not cause the unfiltered result to pass through")
+	message, err := jsonrpc2.DecodeMessage(rr.Body.Bytes())
+	require.NoError(t, err)
+	response, ok := message.(*jsonrpc2.Response)
+	require.True(t, ok)
+	require.NotNil(t, response.Error)
+	assert.Equal(t, jsonrpc2.Int64ID(99), response.ID)
+	assert.Empty(t, authorizer.calls,
+		"filtering must stop before making decisions from a structurally invalid descriptor list")
+}
+
+// TestProtectedListMethodsRequireResponseFiltering prevents the middleware's
+// list-operation classification from drifting away from the response filter's
+// dispatch table. A protected list skips request-time authorization, so missing
+// response filtering would expose every descriptor returned by the backend.
+func TestProtectedListMethodsRequireResponseFiltering(t *testing.T) {
+	t.Parallel()
+
+	for method, featureOp := range MCPMethodToFeatureOperation {
+		if featureOp.Feature == "" || featureOp.Operation != authorizers.MCPOperationList {
+			continue
+		}
+		assert.Truef(t, requiresResponseFiltering(method),
+			"protected list method %q must be handled by response filtering", method)
 	}
 }
 
@@ -1024,14 +2068,14 @@ func newParsedUser1Request(t *testing.T, reqBody string) *http.Request {
 // offending event through and continue filtering the rest of the stream.
 //
 // The same code path runs for every method covered by
-// requiresResponseFiltering, so each of tools/list, prompts/list, and
-// resources/list is exercised below.
+// requiresResponseFiltering, so each protected list method is exercised below.
 func TestResponseFilteringWriter_SSE_PerEventFallthrough(t *testing.T) {
 	t.Parallel()
 
 	authorizer := newWeatherOnlyAuthorizer(t,
 		`permit(principal, action == Action::"get_prompt", resource == Prompt::"greeting");`,
 		`permit(principal, action == Action::"read_resource", resource == Resource::"data");`,
+		`permit(principal, action == Action::"read_resource", resource == Resource::"file:///public/{name}");`,
 	)
 
 	// encodeListResponse marshals a list result type into a JSON-RPC Response
@@ -1122,6 +2166,28 @@ func TestResponseFilteringWriter_SSE_PerEventFallthrough(t *testing.T) {
 				names := make([]string, len(r.Resources))
 				for i, res := range r.Resources {
 					names[i] = res.URI
+				}
+				return names
+			},
+		},
+		{
+			name:   "resources/templates/list",
+			method: string(mcp.MethodResourcesTemplatesList),
+			respLine: encodeListResponse(t, mcp.ListResourceTemplatesResult{
+				ResourceTemplates: []mcp.ResourceTemplate{
+					{URITemplate: "file:///public/{name}", Name: "Public File"},
+					{URITemplate: "file:///private/{name}", Name: "Private File"},
+				},
+			}),
+			authorizedName:   "file:///public/{name}",
+			unauthorizedName: "file:///private/{name}",
+			extractNames: func(t *testing.T, result json.RawMessage) []string {
+				t.Helper()
+				var r mcp.ListResourceTemplatesResult
+				require.NoError(t, json.Unmarshal(result, &r))
+				names := make([]string, len(r.ResourceTemplates))
+				for i, resourceTemplate := range r.ResourceTemplates {
+					names[i] = resourceTemplate.URITemplate
 				}
 				return names
 			},
@@ -1488,6 +2554,109 @@ func TestResponseFilteringWriter_SSE_LeadingBOMBypass(t *testing.T) {
 	assert.Contains(t, out, "weather", "the authorized tool must survive filtering")
 	assert.False(t, strings.HasPrefix(out, "\xEF\xBB\xBF"),
 		"the leading BOM must be dropped from the output, not stripped-for-matching then re-emitted")
+}
+
+// TestResponseFilteringWriter_JSON_LeadingBOMBypass is a regression test for a
+// #5257-class leak: a client strips a leading UTF-8 BOM per the WHATWG decode
+// algorithm before parsing JSON, but the filter decoded the raw body. The BOM
+// made jsonrpc2.DecodeMessage fail and carriesResult return false, so the
+// unauthorized tool passed through unfiltered on the application/json path.
+func TestResponseFilteringWriter_JSON_LeadingBOMBypass(t *testing.T) {
+	t.Parallel()
+
+	authorizer := newWeatherOnlyAuthorizer(t)
+	req := newUser1Request(t)
+
+	resultJSON, err := json.Marshal(mcp.ListToolsResult{
+		Tools: []mcp.Tool{
+			{Name: "weather", Description: "Get weather information"},
+			{Name: "admin_tool", Description: "Sensitive admin operations"},
+		},
+	})
+	require.NoError(t, err)
+	body := "\xEF\xBB\xBF" + `{"jsonrpc":"2.0","id":1,"result":` + string(resultJSON) + "}"
+
+	run := func(contentType string) string {
+		rr := httptest.NewRecorder()
+		rfw := NewResponseFilteringWriter(rr, authorizer, req, string(mcp.MethodToolsList), nil, nil)
+		rfw.ResponseWriter.Header().Set("Content-Type", contentType)
+		_, err := rfw.Write([]byte(body))
+		require.NoError(t, err)
+		require.NoError(t, rfw.FlushAndFilter())
+		return rr.Body.String()
+	}
+
+	// A BOM-prefixed JSON-RPC result must be filtered on the application/json
+	// path.
+	out := run("application/json")
+	assert.NotContains(t, out, "admin_tool",
+		"a leading UTF-8 BOM must not bypass the filter on the JSON path")
+	assert.Contains(t, out, "weather", "the authorized tool must survive filtering")
+	assert.False(t, strings.HasPrefix(out, "\xEF\xBB\xBF"),
+		"the leading BOM must be dropped from the output, not stripped-for-matching then re-emitted")
+
+	// The same body under an unrecognized media type must be caught by the
+	// JSON sniff in the default branch (carriesResult), which used to return
+	// false on the BOM prefix and pass the body through.
+	out = run("application/x-unknown")
+	assert.NotContains(t, out, "admin_tool",
+		"a leading UTF-8 BOM must not bypass the JSON sniff for unrecognized media types")
+	assert.Contains(t, out, "weather", "the authorized tool must survive filtering")
+}
+
+// TestResponseFilteringWriter_BOMFallbackPassthroughClearsContentLength
+// verifies that stripping a BOM from a response that does not need filtering
+// cannot leave the upstream Content-Length header three bytes too large.
+func TestResponseFilteringWriter_BOMFallbackPassthroughClearsContentLength(t *testing.T) {
+	t.Parallel()
+
+	authorizer := newWeatherOnlyAuthorizer(t)
+	req := newUser1Request(t)
+	rr := httptest.NewRecorder()
+	rfw := NewResponseFilteringWriter(rr, authorizer, req, string(mcp.MethodToolsList), nil, nil)
+	body := append(append([]byte{}, mcpparser.UTF8BOM...), []byte("not a JSON-RPC response")...)
+	rfw.ResponseWriter.Header().Set("Content-Type", "text/plain")
+	rfw.ResponseWriter.Header().Set("Content-Length", strconv.Itoa(len(body)))
+
+	_, err := rfw.Write(body)
+	require.NoError(t, err)
+	require.NoError(t, rfw.FlushAndFilter())
+
+	assert.Empty(t, rr.Header().Get("Content-Length"))
+	assert.Equal(t, body[len(mcpparser.UTF8BOM):], rr.Body.Bytes())
+}
+
+// TestResponseFilteringWriter_Sniff_SSE_LeadingBOMBypass is a regression test
+// for the SSE half of the same #5257-class leak: the unrecognized-media-type
+// branch sniffs the body with sseCarriesResult, which used to fail to match a
+// BOM-prefixed "data:" line and pass the unfiltered list through.
+func TestResponseFilteringWriter_Sniff_SSE_LeadingBOMBypass(t *testing.T) {
+	t.Parallel()
+
+	authorizer := newWeatherOnlyAuthorizer(t)
+	req := newUser1Request(t)
+
+	resultJSON, err := json.Marshal(mcp.ListToolsResult{
+		Tools: []mcp.Tool{
+			{Name: "weather", Description: "Get weather information"},
+			{Name: "admin_tool", Description: "Sensitive admin operations"},
+		},
+	})
+	require.NoError(t, err)
+	body := "\xEF\xBB\xBF" + `data: {"jsonrpc":"2.0","id":1,"result":` + string(resultJSON) + "}\n\n"
+
+	rr := httptest.NewRecorder()
+	rfw := NewResponseFilteringWriter(rr, authorizer, req, string(mcp.MethodToolsList), nil, nil)
+	rfw.ResponseWriter.Header().Set("Content-Type", "application/x-unknown")
+
+	_, err = rfw.Write([]byte(body))
+	require.NoError(t, err)
+	require.NoError(t, rfw.FlushAndFilter())
+
+	out := rr.Body.String()
+	assert.NotContains(t, out, "admin_tool",
+		"a leading UTF-8 BOM must not bypass the SSE sniff for unrecognized media types")
+	assert.Contains(t, out, "weather", "the authorized tool must survive filtering")
 }
 
 // TestResponseFilteringWriter_SSE_ErrorAndResultBypass is a regression test
@@ -1986,6 +3155,11 @@ func TestResponseFilteringWriter_FilterBypassAttempts(t *testing.T) {
 	})
 	require.NoError(t, err)
 	sseListBody := []byte("event: message\ndata: " + string(listBody) + "\n\n")
+	errorBody, err := jsonrpc2.EncodeMessage(&jsonrpc2.Response{
+		ID:    jsonrpc2.Int64ID(1),
+		Error: jsonrpc2.NewError(mcpparser.CodeInternalError, "backend failed"),
+	})
+	require.NoError(t, err)
 
 	testCases := []struct {
 		name        string
@@ -2039,10 +3213,24 @@ func TestResponseFilteringWriter_FilterBypassAttempts(t *testing.T) {
 			wantFiltered: false,
 		},
 		{
-			name:         "non-2xx error response passes through unfiltered",
+			name:         "non-2xx JSON result is filtered",
 			contentType:  "application/json",
 			statusCode:   http.StatusInternalServerError,
 			body:         listBody,
+			wantFiltered: true,
+		},
+		{
+			name:         "non-2xx SSE result is filtered",
+			contentType:  "text/event-stream",
+			statusCode:   http.StatusInternalServerError,
+			body:         sseListBody,
+			wantFiltered: true,
+		},
+		{
+			name:         "non-2xx JSON-RPC error passes through",
+			contentType:  "application/json",
+			statusCode:   http.StatusInternalServerError,
+			body:         errorBody,
 			wantFiltered: false,
 		},
 	}

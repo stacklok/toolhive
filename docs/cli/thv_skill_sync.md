@@ -11,14 +11,11 @@ mdx:
 
 ## thv skill sync
 
-Restore project skills to match the lock file (experimental)
+Restore project skills to match the lock file
 
 ### Synopsis
 
 Restore a project's installed skills to match toolhive.lock.yaml.
-
-Experimental: requires TOOLHIVE_SKILLS_LOCK_ENABLED=true on the ToolHive
-server while the lock file feature rolls out.
 
 Missing or drifted skills are reinstalled at their pinned digest. Use
 --check to report drift without installing anything (suitable for CI).
@@ -36,20 +33,22 @@ thv skill sync [flags]
 ### Options
 
 ```
-      --adopt                 Write lock entries for existing unmanaged project-scope installs
-      --check                 Report drift without installing, writing, or removing anything
-      --clients string        Comma-separated target client apps (e.g. claude-code,opencode), or "all" for every available client
-      --format string         Output format (json, text) (default "text")
-  -h, --help                  help for sync
-      --project-root string   Project root path (default: auto-detected from the current directory)
-      --prune                 Remove installs no longer present in the lock file
-      --yes                   Skip the confirmation prompt (required when not running interactively)
+      --adopt[=true|false]            Write lock entries for existing unmanaged project-scope installs
+      --allow-unsigned[=true|false]   Allow adopting skills whose signature state cannot be established (recorded as unsigned)
+      --check[=true|false]            Report drift without installing, writing, or removing anything
+      --clients string                Comma-separated target client apps (e.g. claude-code,opencode), or "all" for every available client
+      --format string                 Output format (json, text) (default "text")
+  -h, --help[=true|false]             help for sync
+      --project-root string           Project root path (default: auto-detected from the current directory)
+      --prune[=true|false]            Remove installs no longer present in the lock file
+      --public-key string             Path to the cosign public key used to verify key-pair-signed skills during --adopt
+      --yes[=true|false]              Skip the confirmation prompt (required when not running interactively)
 ```
 
 ### Options inherited from parent commands
 
 ```
-      --debug   Enable debug mode
+      --debug[=true|false]   Enable debug mode
 ```
 
 ### SEE ALSO

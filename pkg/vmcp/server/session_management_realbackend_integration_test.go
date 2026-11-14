@@ -17,12 +17,14 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
+	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
 	vmcpauth "github.com/stacklok/toolhive/pkg/vmcp/auth"
 	"github.com/stacklok/toolhive/pkg/vmcp/auth/strategies"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 	vmcpclient "github.com/stacklok/toolhive/pkg/vmcp/client"
+	"github.com/stacklok/toolhive/pkg/vmcp/composer"
 	"github.com/stacklok/toolhive/pkg/vmcp/mocks"
 	"github.com/stacklok/toolhive/pkg/vmcp/router"
 	"github.com/stacklok/toolhive/pkg/vmcp/server"
@@ -40,7 +42,36 @@ import (
 // classifyingHandler -> dispatchModern; a Legacy request falls through to the
 // SDK path. It is the low-level helper used by newRealTestServer and any test
 // that needs control over the httptest.Server configuration (e.g. WriteTimeout).
-func newRealTestHandler(t *testing.T, backendURL string) http.Handler {
+func newRealTestHandler(t *testing.T, backendURL string, configure ...func(*server.Config)) http.Handler {
+	t.Helper()
+	return newRealTestHandlerWithWorkflows(t, backendURL, nil, configure...)
+}
+
+// newRealTestHandlerWithWorkflows is newRealTestHandler with composite-tool
+// workflow definitions registered on the server, so a test can drive a real
+// composite tool whose steps route to the real backend at backendURL.
+func newRealTestHandlerWithWorkflows(
+	t *testing.T,
+	backendURL string,
+	workflowDefs map[string]*composer.WorkflowDefinition,
+	configure ...func(*server.Config),
+) http.Handler {
+	t.Helper()
+	return newRealTestHandlerWithBackendClient(t, backendURL, workflowDefs, nil, configure...)
+}
+
+// newRealTestHandlerWithBackendClient is newRealTestHandlerWithWorkflows with
+// an optional decorator around the BackendClient the server routes calls
+// through, the way an embedder wraps it. A nil decorate leaves the real client
+// undecorated. Discovery keeps using the undecorated client, so a decorator
+// that refuses calls does not hide the backend's tools.
+func newRealTestHandlerWithBackendClient(
+	t *testing.T,
+	backendURL string,
+	workflowDefs map[string]*composer.WorkflowDefinition,
+	decorate func(vmcp.BackendClient) vmcp.BackendClient,
+	configure ...func(*server.Config),
+) http.Handler {
 	t.Helper()
 
 	ctrl := gomock.NewController(t)
@@ -80,19 +111,24 @@ func newRealTestHandler(t *testing.T, backendURL string) http.Handler {
 	agg := aggregator.NewDefaultAggregator(backendClient, resolver, nil, nil)
 
 	rt := router.NewSessionRouter(&vmcp.RoutingTable{})
+	cfg := &server.Config{
+		Host: "127.0.0.1", Port: 0,
+		SessionTTL: 5 * time.Minute, SessionFactory: factory, Aggregator: agg,
+	}
+	for _, configure := range configure {
+		configure(cfg)
+	}
+	callClient := vmcp.BackendClient(backendClient)
+	if decorate != nil {
+		callClient = decorate(callClient)
+	}
 	srv, err := server.New(
 		context.Background(),
-		&server.Config{
-			Host:           "127.0.0.1",
-			Port:           0,
-			SessionTTL:     5 * time.Minute,
-			SessionFactory: factory,
-			Aggregator:     agg,
-		},
+		cfg,
 		rt,
-		backendClient,
+		callClient,
 		mockBackendRegistry,
-		nil,
+		workflowDefs,
 	)
 	require.NoError(t, err)
 
@@ -259,11 +295,15 @@ func TestIntegration_RealBackend_ModernRequestRejectedByClassification(t *testin
 		"id":      1,
 		"method":  "tools/call",
 		"params": map[string]any{
-			// Presence of a reserved io.modelcontextprotocol/* _meta key is
-			// itself a Modern signal, regardless of its value (see
-			// pkg/mcp/revision.go). No protocolVersion is present, so the
-			// non-empty header below cannot be validated against the body
-			// and the request is a hard rejection.
+			// A reserved io.modelcontextprotocol/* _meta key with no
+			// protocolVersion cannot be validated against the Modern header
+			// below, so the request is a hard rejection (see
+			// pkg/mcp/revision.go).
+			//
+			// The header must be the MODERN version: an explicit non-Modern
+			// header is the client's negotiated declaration and now outranks a
+			// stray reserved key, classifying the request Legacy instead
+			// (#6188). This case is about the still-rejected Modern shape.
 			"_meta":     map[string]any{"io.modelcontextprotocol/clientInfo": map[string]any{"name": "test"}},
 			"name":      "echo",
 			"arguments": map[string]any{},
@@ -276,7 +316,7 @@ func TestIntegration_RealBackend_ModernRequestRejectedByClassification(t *testin
 		context.Background(), http.MethodPost, ts.URL+"/mcp", bytes.NewReader(payload))
 	require.NoError(t, err)
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("MCP-Protocol-Version", "2025-11-25")
+	req.Header.Set("MCP-Protocol-Version", mcpparser.MCPVersionModern)
 
 	resp, err := ts.Client().Do(req)
 	require.NoError(t, err)

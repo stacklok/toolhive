@@ -19,6 +19,7 @@ import (
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/oidc"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/spectoconfig"
 	"github.com/stacklok/toolhive/pkg/authserver"
+	"github.com/stacklok/toolhive/pkg/authserver/upstreamfilter"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/vmcp/auth/converters"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
@@ -45,6 +46,34 @@ const (
 type Converter struct {
 	oidcResolver oidc.Resolver
 	k8sClient    client.Client
+	defaultRedis *controllerutil.DefaultRedisConfig
+}
+
+// ConverterOption configures a Converter's injected dependencies.
+type ConverterOption func(*Converter)
+
+// WithDefaultRedisConfig supplies the read-only global Redis snapshot loaded at
+// operator startup. Nil disables the global fallback. It does not read Secrets or
+// connect to Redis; the controller projects referenced Secrets into workloads.
+func WithDefaultRedisConfig(defaults *controllerutil.DefaultRedisConfig) ConverterOption {
+	return func(c *Converter) {
+		c.defaultRedis = defaults
+	}
+}
+
+// DelegateClientConfigValidationError marks an invalid delegate-client
+// configuration after its effective scopes and audiences have been derived.
+// Controllers can surface it as a terminal spec error rather than retrying.
+type DelegateClientConfigValidationError struct {
+	Err error
+}
+
+func (e *DelegateClientConfigValidationError) Error() string {
+	return e.Err.Error()
+}
+
+func (e *DelegateClientConfigValidationError) Unwrap() error {
+	return e.Err
 }
 
 // NewConverter creates a new Converter instance.
@@ -52,18 +81,24 @@ type Converter struct {
 // (kubernetes, configMap, inline). Use a mock resolver in tests.
 // k8sClient is required for resolving MCPToolConfig references and fetching referenced
 // VirtualMCPCompositeToolDefinition resources.
+// Without WithDefaultRedisConfig, only explicit session storage is configured;
+// conversion does not read the operator's environment.
 // Returns an error if oidcResolver or k8sClient is nil.
-func NewConverter(oidcResolver oidc.Resolver, k8sClient client.Client) (*Converter, error) {
+func NewConverter(oidcResolver oidc.Resolver, k8sClient client.Client, options ...ConverterOption) (*Converter, error) {
 	if oidcResolver == nil {
 		return nil, fmt.Errorf("oidcResolver is required")
 	}
 	if k8sClient == nil {
 		return nil, fmt.Errorf("k8sClient is required")
 	}
-	return &Converter{
+	c := &Converter{
 		oidcResolver: oidcResolver,
 		k8sClient:    k8sClient,
-	}, nil
+	}
+	for _, option := range options {
+		option(c)
+	}
+	return c, nil
 }
 
 // Convert converts VirtualMCPServer CRD spec to a vmcp Config and an optional
@@ -149,7 +184,7 @@ func (c *Converter) Convert(
 		config.Audit.Component = vmcp.Name
 	}
 
-	config.SessionStorage = convertSessionStorage(vmcp)
+	config.SessionStorage = convertSessionStorage(vmcp, c.defaultRedis)
 
 	// Apply operational defaults (fills missing values)
 	config.EnsureOperationalDefaults()
@@ -159,6 +194,9 @@ func (c *Converter) Convert(
 	if vmcp.Spec.AuthServerConfig != nil {
 		rc, err := c.convertAuthServerConfig(vmcp, config)
 		if err != nil {
+			if len(vmcp.Spec.AuthServerConfig.DelegateClients) > 0 {
+				return nil, nil, &DelegateClientConfigValidationError{Err: err}
+			}
 			return nil, nil, fmt.Errorf("failed to convert auth server config: %w", err)
 		}
 		authServerRC = rc
@@ -499,10 +537,13 @@ func (*Converter) normalizeTelemetry(
 }
 
 // convertSessionStorage populates SessionStorage from the VirtualMCPServer spec.
-// Falls back to TOOLHIVE_DEFAULT_REDIS_ADDR when spec.sessionStorage is nil.
+// Uses the injected global Redis default for absent or non-Redis storage,
+// preserving the existing VirtualMCPServer fallback policy.
 // PasswordRef is K8s-specific and is resolved separately; the password is injected
 // as the THV_SESSION_REDIS_PASSWORD environment variable by the deployment builder.
-func convertSessionStorage(vmcp *mcpv1beta1.VirtualMCPServer) *vmcpconfig.SessionStorageConfig {
+func convertSessionStorage(
+	vmcp *mcpv1beta1.VirtualMCPServer, defaults *controllerutil.DefaultRedisConfig,
+) *vmcpconfig.SessionStorageConfig {
 	if vmcp.Spec.SessionStorage != nil &&
 		vmcp.Spec.SessionStorage.Provider == mcpv1beta1.SessionStorageProviderRedis {
 		return &vmcpconfig.SessionStorageConfig{
@@ -510,13 +551,18 @@ func convertSessionStorage(vmcp *mcpv1beta1.VirtualMCPServer) *vmcpconfig.Sessio
 			Address:   vmcp.Spec.SessionStorage.Address,
 			DB:        vmcp.Spec.SessionStorage.DB,
 			KeyPrefix: vmcp.Spec.SessionStorage.KeyPrefix,
+			// Explicit spec.sessionStorage.tls overrides global defaults (CEL rejects
+			// spec.config.sessionStorage.tls); CACertFile points at the CA bundle
+			// the deployment builder mounts from caCertSecretRef.
+			TLS: controllerutil.SessionRedisTLSConfig(vmcp.Spec.SessionStorage),
 		}
 	}
 
-	if def := controllerutil.ReadDefaultRedisConfig(); def != nil {
+	if def := defaults; def != nil {
 		return &vmcpconfig.SessionStorageConfig{
 			Provider: mcpv1beta1.SessionStorageProviderRedis,
 			Address:  def.Addr,
+			TLS:      controllerutil.SessionRedisTLSConfig(def.SessionStorage()),
 		}
 	}
 	return nil
@@ -524,7 +570,13 @@ func convertSessionStorage(vmcp *mcpv1beta1.VirtualMCPServer) *vmcpconfig.Sessio
 
 // convertAuthServerConfig converts the inline EmbeddedAuthServerConfig from the
 // VirtualMCPServer spec into an authserver.RunConfig using the shared builder in
-// controllerutil. AllowedAudiences is derived from the resolved incoming OIDC config.
+// controllerutil, then layers vMCP-only auth-server concerns (currently just the
+// upstream filter) on top. AllowedAudiences is derived from the resolved
+// incoming OIDC config.
+//
+// Keeping the vMCP-only extensions here — rather than in BuildAuthServerRunConfig
+// — preserves the shared builder's property that it only knows about fields
+// present on EmbeddedAuthServerConfig, which is also used by MCPExternalAuthConfig.
 func (*Converter) convertAuthServerConfig(
 	vmcp *mcpv1beta1.VirtualMCPServer,
 	config *vmcpconfig.Config,
@@ -532,13 +584,45 @@ func (*Converter) convertAuthServerConfig(
 	if vmcp.Spec.AuthServerConfig == nil {
 		return nil, nil
 	}
-	return controllerutil.BuildAuthServerRunConfig(
+	rc, err := controllerutil.BuildAuthServerRunConfig(
 		vmcp.Namespace, vmcp.Name,
 		vmcp.Spec.AuthServerConfig,
 		deriveAllowedAudiences(config),
 		deriveScopesSupported(config),
 		deriveResourceURL(config),
 	)
+	if err != nil {
+		return nil, err
+	}
+	rc.UpstreamFilter = ConvertUpstreamFilter(vmcp.Spec.AuthServerUpstreamFilter)
+	return rc, nil
+}
+
+// ConvertUpstreamFilter converts the vMCP-only AuthServerUpstreamFilterConfig
+// CRD field into the serializable upstreamfilter.GroupBasedFilterConfig that
+// the auth-server runtime consumes. Returns nil when the CRD field is unset so
+// the auth server preserves full-chain behavior.
+//
+// Slice elements are cloned defensively so the resulting RunConfig does not
+// alias the caller's CRD object; this prevents a later mutation of the live
+// CR (e.g. a status-only patch that reuses pointers) from racing with the
+// serialized ConfigMap payload.
+func ConvertUpstreamFilter(cfg *mcpv1beta1.AuthServerUpstreamFilterConfig) *upstreamfilter.GroupBasedFilterConfig {
+	if cfg == nil {
+		return nil
+	}
+	rules := make([]upstreamfilter.GroupRule, len(cfg.Rules))
+	for i, r := range cfg.Rules {
+		rules[i] = upstreamfilter.GroupRule{
+			Groups:            append([]string(nil), r.Groups...),
+			UpstreamProviders: append([]string(nil), r.UpstreamProviders...),
+		}
+	}
+	return &upstreamfilter.GroupBasedFilterConfig{
+		Claim:            cfg.Claim,
+		Rules:            rules,
+		DefaultUpstreams: append([]string(nil), cfg.DefaultUpstreams...),
+	}
 }
 
 // deriveAllowedAudiences derives the AllowedAudiences list from the already-resolved
@@ -727,11 +811,20 @@ func (c *Converter) convertAggregation(
 	ctx context.Context,
 	vmcp *mcpv1beta1.VirtualMCPServer,
 ) (*vmcpconfig.AggregationConfig, error) {
-	// Start with a deep copy of the source config
+	// Field-by-field copy, NOT a deep copy: scalars are copied by value, slices
+	// (ConflictResolutionConfig.PriorityOrder, WorkloadToolConfig.Filter) are shared
+	// with the source, and only Overrides is deep-copied. Two consequences:
+	//   - Treat the source's slices as read-only; mutating them here would mutate the
+	//     CR's in-memory spec.
+	//   - Every new AggregationConfig field must be added HERE explicitly. A field
+	//     omitted from this literal is accepted by the CRD and then silently dropped
+	//     before the vMCP process ever sees it — which for a visibility setting means
+	//     failing OPEN on config users rely on to withhold tools.
 	srcAgg := vmcp.Spec.Config.Aggregation
 	agg := &vmcpconfig.AggregationConfig{
-		ConflictResolution: srcAgg.ConflictResolution,
-		ExcludeAllTools:    srcAgg.ExcludeAllTools,
+		ConflictResolution:    srcAgg.ConflictResolution,
+		ExcludeAllTools:       srcAgg.ExcludeAllTools,
+		DefaultToolVisibility: srcAgg.DefaultToolVisibility,
 	}
 
 	// Apply defaults for conflict resolution

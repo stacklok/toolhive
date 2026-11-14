@@ -24,6 +24,12 @@ on:
       - 'deploy/charts/operator-crds/files/crds/**'
       - '.github/workflows/api-compat*.yml'
 
+# Cancel superseded PR runs; keep other events independent.
+# Use a file-specific key because the companion shares this workflow name.
+concurrency:
+  group: api-compat-noop-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: read
 

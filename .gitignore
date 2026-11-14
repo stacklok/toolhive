@@ -51,3 +51,6 @@ cmd/vmcp/__debug_bin*
 # Superpowers planning artifacts
 docs/superpowers/
 .pr-review/
+
+# Ginkgo JUnit report written by test/e2e/run_tests.sh
+test/e2e/junit-report.xml

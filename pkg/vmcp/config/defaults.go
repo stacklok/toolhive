@@ -98,8 +98,9 @@ func (c *Config) EnsureOperationalDefaults() {
 // strategy with no SubjectProviderName would silently fall back to
 // identity.Token (the ToolHive-issued JWT), which the exchange endpoint rejects.
 //
-// When cfg or rc is nil the call is a no-op. The provider name is derived via
-// authserver.ResolveFirstUpstreamName over rc.Upstreams. For xaa, if more than
+// When cfg or rc is nil, or rc has no upstreams, the call is a no-op. The
+// provider name is derived via authserver.ResolveFirstUpstreamName over
+// rc.Upstreams. For xaa, if more than
 // one upstream is configured and SubjectProviderName is empty, defaulting is
 // ambiguous and this returns an error wrapping
 // authtypes.ErrAmbiguousSubjectProvider instead of silently defaulting;
@@ -114,6 +115,9 @@ func InjectSubjectProviderNames(cfg *Config, rc *authserver.RunConfig) error {
 	names := make([]string, len(rc.Upstreams))
 	for i, u := range rc.Upstreams {
 		names[i] = u.Name
+	}
+	if len(names) == 0 {
+		return nil
 	}
 	providerName := authserver.ResolveFirstUpstreamName(names)
 	hasMultipleUpstreams := len(names) > 1

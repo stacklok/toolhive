@@ -82,7 +82,9 @@ func CreateMiddleware(config *types.MiddlewareConfig, runner types.MiddlewareRun
 func createMutatingHandler(executors []clientExecutor, serverName, transport string) types.MiddlewareFunction {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Skip if it's not a parsed MCP request (middleware runs after mcp parser).
+			// The configured chain MUST place MCP parsing before this middleware.
+			// A nil POST context may be an admitted response or a missing-parser
+			// misconfiguration. These controls do not apply to non-POST traffic.
 			parsedMCP := mcp.GetParsedMCPRequest(r.Context())
 			if parsedMCP == nil {
 				next.ServeHTTP(w, r)
@@ -130,8 +132,9 @@ func createMutatingHandler(executors []clientExecutor, serverName, transport str
 			}
 
 			// A mutating webhook rewrote the body, so the parse cached by ParsingMiddleware
-			// now describes a request the backend will not execute. Refresh it before any
-			// downstream consumer (authorization, audit, telemetry) reads it.
+			// now describes a request the backend will not execute. Refresh it for downstream
+			// consumers and publish it through the holder so outer audit and telemetry
+			// wrappers observe the final request after the inner chain returns.
 			if !bytes.Equal(bodyBytes, mutatedBody) {
 				republished, err := mcp.RepublishParsedMCPRequest(r, mutatedBody)
 				if err != nil {
@@ -212,7 +215,8 @@ func executeSingleMutation(
 			return nil, err
 		}
 
-		if exec.config.FailurePolicy == webhook.FailurePolicyIgnore {
+		// A local error means the webhook was never consulted, so it is never ignored.
+		if exec.config.FailurePolicy == webhook.FailurePolicyIgnore && !webhook.IsLocalError(err) {
 			slog.Warn("Mutating webhook error ignored due to fail-open policy", "webhook", whName, "error", err)
 			return currentBody, nil
 		}

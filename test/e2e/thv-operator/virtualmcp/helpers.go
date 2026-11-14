@@ -12,6 +12,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"html"
 	"io"
 	"log/slog"
 	"net"
@@ -85,6 +86,20 @@ func WaitForVirtualMCPServerReady(
 		}
 		return fmt.Errorf("ready condition not found")
 	}, timeout, pollingInterval).Should(gomega.Succeed())
+}
+
+// WaitForObjectDeletion waits until Kubernetes reports that obj no longer exists.
+func WaitForObjectDeletion(
+	ctx context.Context,
+	c client.Client,
+	obj client.Object,
+	timeout time.Duration,
+	pollingInterval time.Duration,
+) {
+	key := client.ObjectKeyFromObject(obj)
+	gomega.Eventually(func() bool {
+		return apierrors.IsNotFound(c.Get(ctx, key, obj))
+	}, timeout, pollingInterval).Should(gomega.BeTrue())
 }
 
 // checkPodsReady waits for at least one pod matching the given labels to be ready.
@@ -1539,17 +1554,24 @@ type DexInfo struct {
 func deployDex(
 	ctx context.Context,
 	c client.Client,
-	name, namespace string,
+	name string,
 	vmcpCallbackURL string,
-	timeout, pollingInterval time.Duration,
 ) (*DexInfo, func()) {
-	inClusterBaseURL := fmt.Sprintf("http://%s.%s.svc.cluster.local:5556", name, namespace)
+	// Every call site passes defaultNamespace, the same 5-minute timeout, and
+	// the same 2-second poll interval; all three were flagged as unparam once
+	// a fourth identical call site landed, so they're fixed here rather than
+	// threaded through as parameters.
+	const (
+		timeout         = 5 * time.Minute
+		pollingInterval = 2 * time.Second
+	)
+	inClusterBaseURL := fmt.Sprintf("http://%s.%s.svc.cluster.local:5556", name, defaultNamespace)
 	configMapName := name + "-config"
 
 	ginkgo.By("Creating Dex ConfigMap with mockCallback connector")
 	configData := dexConfig(inClusterBaseURL, vmcpCallbackURL)
 	gomega.Expect(c.Create(ctx, &corev1.ConfigMap{
-		ObjectMeta: metav1.ObjectMeta{Name: configMapName, Namespace: namespace},
+		ObjectMeta: metav1.ObjectMeta{Name: configMapName, Namespace: defaultNamespace},
 		Data:       map[string]string{"config.yaml": configData},
 	})).To(gomega.Succeed())
 
@@ -1557,7 +1579,7 @@ func deployDex(
 
 	ginkgo.By("Creating Dex Deployment")
 	gomega.Expect(c.Create(ctx, &appsv1.Deployment{
-		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace, Labels: labels},
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: defaultNamespace, Labels: labels},
 		Spec: appsv1.DeploymentSpec{
 			Replicas: int32Ptr(1),
 			Selector: &metav1.LabelSelector{MatchLabels: labels},
@@ -1600,7 +1622,7 @@ func deployDex(
 
 	ginkgo.By("Creating Dex NodePort Service")
 	dexSvc := &corev1.Service{
-		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: defaultNamespace},
 		Spec: corev1.ServiceSpec{
 			Type:     corev1.ServiceTypeNodePort,
 			Selector: labels,
@@ -1617,7 +1639,7 @@ func deployDex(
 	// Wait for the NodePort to be assigned (assigned asynchronously by the endpoint controller).
 	var nodePort int32
 	gomega.Eventually(func() (int32, error) {
-		if err := c.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, dexSvc); err != nil {
+		if err := c.Get(ctx, types.NamespacedName{Name: name, Namespace: defaultNamespace}, dexSvc); err != nil {
 			return 0, err
 		}
 		if len(dexSvc.Spec.Ports) == 0 || dexSvc.Spec.Ports[0].NodePort == 0 {
@@ -1631,7 +1653,7 @@ func deployDex(
 	ginkgo.By("Waiting for Dex to be ready")
 	gomega.Eventually(func() bool {
 		dep := &appsv1.Deployment{}
-		if err := c.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, dep); err != nil {
+		if err := c.Get(ctx, types.NamespacedName{Name: name, Namespace: defaultNamespace}, dep); err != nil {
 			return false
 		}
 		return dep.Status.ReadyReplicas > 0
@@ -1645,9 +1667,9 @@ func deployDex(
 	}
 
 	cleanup := func() {
-		_ = c.Delete(ctx, &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace}})
-		_ = c.Delete(ctx, &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace}})
-		_ = c.Delete(ctx, &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: configMapName, Namespace: namespace}})
+		_ = c.Delete(ctx, &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: defaultNamespace}})
+		_ = c.Delete(ctx, &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: defaultNamespace}})
+		_ = c.Delete(ctx, &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: configMapName, Namespace: defaultNamespace}})
 	}
 
 	return info, cleanup
@@ -1664,10 +1686,11 @@ type embeddedASTokenResult struct {
 //
 // It works from outside the cluster by:
 //  1. Calling the embedded AS /oauth/authorize via port-forward
-//  2. Rewriting the Dex redirect URL from in-cluster to the Dex NodePort
-//  3. Following Dex's mockCallback auto-approval redirect
-//  4. Rewriting the callback URL from in-cluster to the port-forward address
-//  5. Exchanging the resulting auth code for an access token
+//  2. Approving embedded AS consent with its configured origin and binding cookie
+//  3. Rewriting the Dex redirect URL from in-cluster to the Dex NodePort
+//  4. Following Dex's mockCallback auto-approval redirect
+//  5. Rewriting the callback URL from in-cluster to the port-forward address
+//  6. Exchanging the resulting auth code for an access token
 //
 // Parameters:
 //   - vmcpLocalURL: base URL for the embedded AS via port-forward (e.g., "http://localhost:9090")
@@ -1698,7 +1721,7 @@ func getEmbeddedASToken(vmcpLocalURL, dexLocalURL, dexInClusterHost, vmcpInClust
 	clientState := "e2e-test-state"
 	clientRedirectURI := "http://localhost:19999/callback"
 
-	// Step 3: Start authorization at embedded AS
+	// Step 3: Start authorization at embedded AS and approve consent
 	authParams := url.Values{
 		"response_type":         {"code"},
 		"client_id":             {clientID},
@@ -1715,14 +1738,22 @@ func getEmbeddedASToken(vmcpLocalURL, dexLocalURL, dexInClusterHost, vmcpInClust
 	if err != nil {
 		return "", fmt.Errorf("authorize request failed: %w", err)
 	}
-	_, _ = io.Copy(io.Discard, resp.Body)
-	_ = resp.Body.Close()
-	if resp.StatusCode != http.StatusFound {
-		return "", fmt.Errorf("expected 302 from /oauth/authorize, got %d", resp.StatusCode)
+	resp, err = approveEmbeddedASConsent(noRedirectClient, resp, vmcpLocalURL, vmcpInClusterHost)
+	if err != nil {
+		return "", err
+	}
+	if resp.StatusCode != http.StatusFound && resp.StatusCode != http.StatusSeeOther {
+		return "", fmt.Errorf("expected 302/303 from /oauth/consent, got %d", resp.StatusCode)
 	}
 	dexRedirectURL := resp.Header.Get("Location")
+	// Approval rotates the browser binding. Carry the fresh response cookies
+	// to the callback, not the cookies from the awaiting-consent page.
+	// Cookies are carried by hand rather than through a cookie jar because
+	// the issuer is https while the port-forward is plain http, and a jar
+	// would drop the Secure cookie.
+	asBindingCookies := resp.Cookies()
 	if dexRedirectURL == "" {
-		return "", fmt.Errorf("no Location header from /oauth/authorize")
+		return "", fmt.Errorf("no Location header from /oauth/consent")
 	}
 
 	// Step 4: Rewrite the Dex in-cluster URL to the local NodePort URL
@@ -1810,8 +1841,16 @@ func getEmbeddedASToken(vmcpLocalURL, dexLocalURL, dexInClusterHost, vmcpInClust
 		return "", fmt.Errorf("rewriting callback URL: %w", err)
 	}
 
-	// Step 7: Call the embedded AS callback to complete the Dex code exchange
-	resp, err = noRedirectClient.Get(localCallbackURL)
+	// Step 7: Call the embedded AS callback to complete the Dex code exchange,
+	// as the browser that started the flow in step 3.
+	callbackReq, err := http.NewRequest(http.MethodGet, localCallbackURL, nil)
+	if err != nil {
+		return "", fmt.Errorf("building AS callback request: %w", err)
+	}
+	for _, c := range asBindingCookies {
+		callbackReq.AddCookie(c)
+	}
+	resp, err = noRedirectClient.Do(callbackReq)
 	if err != nil {
 		return "", fmt.Errorf("AS callback request failed: %w", err)
 	}
@@ -1864,6 +1903,73 @@ func getEmbeddedASToken(vmcpLocalURL, dexLocalURL, dexInClusterHost, vmcpInClust
 		return "", fmt.Errorf("empty access_token in token response")
 	}
 	return result.AccessToken, nil
+}
+
+// approveEmbeddedASConsent consumes the consent page and returns the approval response.
+// Both response bodies are closed here; callers only need the headers and status.
+func approveEmbeddedASConsent(
+	httpClient *http.Client, resp *http.Response, vmcpLocalURL, vmcpInClusterHost string,
+) (*http.Response, error) {
+	page, err := io.ReadAll(io.LimitReader(resp.Body, (64<<10)+1))
+	// Cleanup is best-effort; preserve the read error. The client timeout bounds draining.
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
+	if err != nil {
+		return nil, fmt.Errorf("reading embedded AS consent page: %w", err)
+	}
+	if len(page) > 64<<10 {
+		return nil, fmt.Errorf("embedded AS consent page exceeds 64 KiB")
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("expected 200 from /oauth/authorize, got %d", resp.StatusCode)
+	}
+	action, handle, err := parseEmbeddedASConsent(page)
+	if err != nil {
+		return nil, err
+	}
+	localAction, err := rewriteURLBase(action.String(), vmcpInClusterHost, vmcpLocalURL)
+	if err != nil {
+		return nil, fmt.Errorf("cannot rewrite embedded AS consent action to local endpoint")
+	}
+	formData := url.Values{"handle": {handle}, "decision": {"approve"}}
+	req, err := http.NewRequest(http.MethodPost, localAction, strings.NewReader(formData.Encode()))
+	if err != nil {
+		return nil, fmt.Errorf("building embedded AS consent request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	// Origin is the configured browser-facing origin, not the port-forward address.
+	req.Header.Set("Origin", action.Scheme+"://"+action.Host)
+	for _, cookie := range resp.Cookies() {
+		req.AddCookie(cookie)
+	}
+	approved, err := httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("posting embedded AS consent: %w", err)
+	}
+	// Cleanup errors are immaterial: only the approval headers and status are used.
+	_, _ = io.Copy(io.Discard, approved.Body)
+	_ = approved.Body.Close()
+	return approved, nil
+}
+
+func parseEmbeddedASConsent(page []byte) (*url.URL, string, error) {
+	// Match the fixed server template before unescaping attribute values.
+	_, form, foundForm := strings.Cut(string(page), `<form method="POST" action="`)
+	actionURL, input, foundInput := strings.Cut(form, `"><input type="hidden" name="handle" value="`)
+	handle, _, foundEnd := strings.Cut(input, `"`)
+	if !foundForm || !foundInput || !foundEnd || handle == "" {
+		return nil, "", fmt.Errorf("missing embedded AS consent form or handle")
+	}
+	action, err := url.Parse(html.UnescapeString(actionURL))
+	if err != nil {
+		return nil, "", fmt.Errorf("invalid embedded AS consent action URL")
+	}
+	if (action.Scheme != "http" && action.Scheme != "https") || action.User != nil ||
+		action.RawQuery != "" || action.ForceQuery || action.Fragment != "" ||
+		!strings.HasSuffix(action.Path, "/oauth/consent") {
+		return nil, "", fmt.Errorf("unexpected embedded AS consent action URL")
+	}
+	return action, html.UnescapeString(handle), nil
 }
 
 // registerOAuthClient performs Dynamic Client Registration against the embedded AS.

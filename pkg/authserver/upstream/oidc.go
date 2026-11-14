@@ -8,10 +8,12 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"regexp"
 	"slices"
+	"strings"
 
 	"github.com/coreos/go-oidc/v3/oidc"
 	"golang.org/x/oauth2"
@@ -23,6 +25,12 @@ import (
 const (
 	// ProviderTypeOIDC is for OIDC providers that support discovery.
 	ProviderTypeOIDC ProviderType = "oidc"
+
+	// idTokenValidationAttempts is how many times RefreshTokens will try to
+	// verify a newly issued ID token after a successful token-endpoint
+	// exchange. The exchange itself is not retried: rotating refresh tokens
+	// are single-use, so a second token request would send a consumed grant.
+	idTokenValidationAttempts = 3
 )
 
 // OIDCConfig contains configuration for OIDC providers that support discovery.
@@ -47,6 +55,9 @@ type OIDCConfig struct {
 	// The claim must also be present on refreshed ID tokens — RefreshTokens
 	// resolves through the same path and fails closed if the IdP drops it.
 	SubjectClaim string `json:"subject_claim,omitempty" yaml:"subject_claim,omitempty"`
+
+	// CAFilePath is the path to a PEM CA bundle added to the system roots.
+	CAFilePath string `json:"ca_file_path,omitempty" yaml:"ca_file_path,omitempty"`
 
 	// AllowPrivateIPs permits the OIDC discovery and token HTTP clients to
 	// connect to private IP ranges (RFC-1918, link-local). Use only when the
@@ -118,16 +129,29 @@ type OIDCProviderImpl struct {
 	oidcConfig          *OIDCConfig                       // Store original OIDC config (Issuer + common OAuth fields)
 	endpoints           *oauthproto.OIDCDiscoveryDocument // Discovered endpoints for security validation
 	forceConsentScreen  bool                              // Force consent screen on auth requests
-	verifier            *oidc.IDTokenVerifier             // ID token verifier from go-oidc
+	// idp builds the ID token verifier for a replacement client_id; the
+	// verifier itself lives in the embedded client state, paired with the
+	// client whose aud it checks.
+	idp *oidc.Provider
 }
+
+// Compile-time check that the embedded *BaseOAuth2Provider keeps promoting
+// CloseIdleConnections, which (*server).CloseIdleConnections reaches by type
+// assertion. It does not pin the behavior — a method declared here would shadow
+// the promoted one and still satisfy this — so
+// TestServer_Close_DrainsRealOIDCUpstream is the actual guard.
+var _ IdleConnectionCloser = (*OIDCProviderImpl)(nil)
 
 // OIDCProviderOption configures an OIDCProvider.
 type OIDCProviderOption func(*OIDCProviderImpl)
 
-// WithHTTPClient sets a custom HTTP client for the provider.
+// WithHTTPClient sets a custom HTTP client for the provider. See
+// WithOAuth2HTTPClient, which carries the same ownership and config-supersession
+// rules.
 func WithHTTPClient(client *http.Client) OIDCProviderOption {
 	return func(p *OIDCProviderImpl) {
 		p.httpClient = client
+		p.ownsHTTPClient = false
 	}
 }
 
@@ -161,7 +185,7 @@ func NewOIDCProvider(
 	ctx context.Context,
 	config *OIDCConfig,
 	opts ...OIDCProviderOption,
-) (*OIDCProviderImpl, error) {
+) (_ *OIDCProviderImpl, retErr error) {
 	if config == nil {
 		return nil, errors.New("config is required")
 	}
@@ -176,24 +200,40 @@ func NewOIDCProvider(
 		"client_id", config.ClientID,
 	)
 
-	// Create HTTP client for the issuer host
-	issuerURL, _ := url.Parse(config.Issuer) // Error already checked in ValidateWithInsecure()
-	httpClient, err := newHTTPClientForHost(issuerURL.Host, config.AllowPrivateIPs, config.InsecureAllowHTTP)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create HTTP client: %w", err)
-	}
-
 	p := &OIDCProviderImpl{
 		oidcConfig: config,
-		BaseOAuth2Provider: &BaseOAuth2Provider{
-			httpClient: httpClient,
-			// config will be set after discovery
-		},
+		// config will be set after discovery
+		BaseOAuth2Provider: &BaseOAuth2Provider{},
 	}
 
-	// Apply OIDC-specific options
+	// Apply OIDC-specific options before building the default HTTP client, so a
+	// caller that injects one does not pay for a discarded transport (nor for
+	// reading the CA bundle) on every construction.
 	for _, opt := range opts {
 		opt(p)
+	}
+
+	if p.httpClient == nil {
+		// Create HTTP client for the issuer host
+		issuerURL, _ := url.Parse(config.Issuer) // Error already checked in ValidateWithInsecure()
+		httpClient, err := newHTTPClientForHost(
+			issuerURL.Host, config.AllowPrivateIPs, config.InsecureAllowHTTP, config.CAFilePath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create HTTP client: %w", err)
+		}
+		p.httpClient = httpClient
+		p.ownsHTTPClient = true
+		// Discovery below runs before any later failure (bad claims, an invalid
+		// discovery document, a missing openid scope), so a failed construction
+		// otherwise abandons a client with a pooled connection that no caller
+		// can reach — nothing is returned to call CloseIdleConnections on.
+		defer func() {
+			if retErr != nil {
+				p.CloseIdleConnections()
+			}
+		}()
+	} else if err := checkInjectedClientCABundle(config.CAFilePath); err != nil {
+		return nil, err
 	}
 
 	// Use go-oidc for discovery - inject custom HTTP client via context
@@ -253,7 +293,7 @@ func NewOIDCProvider(
 	// to ensure client credentials are sent in the request body (not Basic auth header)
 	// for consistent behavior across different IDP implementations.
 	providerEndpoint := oidcProvider.Endpoint()
-	p.oauth2Config = &oauth2.Config{
+	clientCfg := &oauth2.Config{
 		ClientID:     config.ClientID,
 		ClientSecret: config.ClientSecret,
 		RedirectURL:  config.RedirectURI,
@@ -266,17 +306,34 @@ func NewOIDCProvider(
 	}
 
 	// Use go-oidc's built-in verifier for ID token validation
-	p.verifier = oidcProvider.Verifier(&oidc.Config{
-		ClientID: config.ClientID,
+	p.idp = oidcProvider
+	p.client.Store(&clientState{
+		oauth2:   clientCfg,
+		verifier: oidcProvider.Verifier(&oidc.Config{ClientID: config.ClientID}),
 	})
 
 	slog.Debug("oidc provider created successfully",
 		"issuer", p.endpoints.Issuer,
 		"pkce_supported", p.supportsPKCE(),
-		"id_token_validation_enabled", p.verifier != nil,
+		"id_token_validation_enabled", p.client.Load().verifier != nil,
 	)
 
 	return p, nil
+}
+
+// UpdateClientCredentials replaces the client and the ID token verifier,
+// whose audience check is bound to the client_id, as one state, so a request
+// that loaded the previous client checks its ID token with the previous
+// verifier. Credentials stay in the request body whatever the negotiated
+// method, as in NewOIDCProvider, and the endpoints stay the discovered ones.
+func (p *OIDCProviderImpl) UpdateClientCredentials(creds ClientCredentials) error {
+	var newVerifier func(string) *oidc.IDTokenVerifier
+	if p.idp != nil {
+		newVerifier = func(clientID string) *oidc.IDTokenVerifier {
+			return p.idp.Verifier(&oidc.Config{ClientID: clientID})
+		}
+	}
+	return p.swapClient(creds, oauth2.AuthStyleInParams, false, newVerifier)
 }
 
 // Type returns the provider type.
@@ -304,7 +361,8 @@ func (p *OIDCProviderImpl) ExchangeCodeForIdentity(
 	if p.config.IdentityFromToken != nil {
 		slog.Debug("OIDC provider ignoring IdentityFromToken; identity is resolved from the validated ID token")
 	}
-	exchanged, err := p.exchangeCodeForTokens(ctx, code, codeVerifier)
+	client := p.client.Load()
+	exchanged, err := p.exchangeCodeForTokensWith(ctx, client, code, codeVerifier)
 	if err != nil {
 		return nil, err
 	}
@@ -315,7 +373,7 @@ func (p *OIDCProviderImpl) ExchangeCodeForIdentity(
 	}
 
 	// Validate ID token with nonce in a single pass — no double-validation.
-	validatedToken, err := p.validateIDToken(ctx, exchanged.tokens.IDToken, nonce)
+	validatedToken, err := p.validateIDToken(ctx, client, exchanged.tokens.IDToken, nonce)
 	if err != nil {
 		slog.Debug("id token validation failed", "error", err)
 		return nil, fmt.Errorf("%w: %w", ErrIdentityResolutionFailed, err)
@@ -355,12 +413,24 @@ func (p *OIDCProviderImpl) ExchangeCodeForIdentity(
 	}
 
 	return &Identity{
-		Tokens:  exchanged.tokens,
-		Subject: subject,
-		Name:    idClaims.Name,
-		Email:   idClaims.Email,
-		Claims:  allClaims,
+		Tokens:              exchanged.tokens,
+		Subject:             subject,
+		Name:                idClaims.Name,
+		Email:               idClaims.Email,
+		Claims:              allClaims,
+		VerifiedIssuer:      validatedToken.Issuer,
+		VerifiedSubject:     validatedToken.Subject,
+		VerifiedStableClaim: p.subjectClaimName(),
+		VerifiedStableValue: subject,
 	}, nil
+}
+
+// subjectClaimName returns the ID-token claim this upstream keys users on.
+func (p *OIDCProviderImpl) subjectClaimName() string {
+	if p.oidcConfig.SubjectClaim == "" {
+		return "sub"
+	}
+	return p.oidcConfig.SubjectClaim
 }
 
 // resolveSubject returns the upstream subject for the validated ID token.
@@ -369,8 +439,8 @@ func (p *OIDCProviderImpl) ExchangeCodeForIdentity(
 // if the claim is missing, empty, or not a string rather than falling back to
 // "sub" — a silent fallback would key the user under the wrong identifier.
 func (p *OIDCProviderImpl) resolveSubject(token *oidc.IDToken) (string, error) {
-	claim := p.oidcConfig.SubjectClaim
-	if claim == "" || claim == "sub" {
+	claim := p.subjectClaimName()
+	if claim == "sub" {
 		return token.Subject, nil
 	}
 
@@ -393,13 +463,78 @@ func (p *OIDCProviderImpl) resolveSubject(token *oidc.IDToken) (string, error) {
 	return value, nil
 }
 
-// validateIDToken validates an ID token and returns the parsed token.
-func (p *OIDCProviderImpl) validateIDToken(ctx context.Context, idToken, nonce string) (*oidc.IDToken, error) {
-	if p.verifier == nil {
+// validateRefreshedIDToken verifies the ID token returned by a successful
+// refresh exchange. Transient JWKS/network failures are retried in place so
+// the already-consumed refresh token is not replayed. If every attempt is
+// still a transient fetch failure, the unvalidated ID token is dropped and
+// (nil, nil) is returned so the caller can keep the new access/refresh tokens
+// (the storage layer already carries forward the previous ID token when the
+// new one is empty). Permanent verification failures still fail closed.
+func (p *OIDCProviderImpl) validateRefreshedIDToken(
+	ctx context.Context, client *clientState, tokens *Tokens,
+) (*oidc.IDToken, error) {
+	var lastErr error
+	for attempt := 1; attempt <= idTokenValidationAttempts; attempt++ {
+		token, err := p.validateIDToken(ctx, client, tokens.IDToken, "")
+		if err == nil {
+			return token, nil
+		}
+		lastErr = err
+		if !isTransientIDTokenValidationError(err) {
+			return nil, fmt.Errorf("ID token validation failed: %w", err)
+		}
+		slog.Warn("transient ID token validation failure after token refresh; retrying without re-exchanging",
+			"attempt", attempt,
+			"error", err,
+		)
+	}
+
+	// The token endpoint already succeeded and, for rotating refresh tokens,
+	// consumed the grant. Returning an error here would make the caller retry
+	// the exchange with the old token and get invalid_grant (#6194). Drop the
+	// unvalidated ID token rather than using it; access and refresh tokens
+	// still came from the trusted token endpoint.
+	slog.Warn("ID token validation failed after token refresh; dropping unvalidated ID token to preserve rotated refresh token",
+		"error", lastErr,
+	)
+	tokens.IDToken = ""
+	return nil, nil
+}
+
+// isTransientIDTokenValidationError reports whether ID-token verification
+// failed because keys could not be fetched, not because the token itself was
+// rejected. Permanent failures (bad signature, missing/mismatched nonce) must
+// not be retried or bypassed.
+func isTransientIDTokenValidationError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, ErrNonceMismatch) || errors.Is(err, ErrNonceMissing) || errors.Is(err, ErrSubjectMismatch) {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return true
+	}
+	// go-oidc wraps a JWKS HTTP failure as "fetching keys oidc: get keys failed".
+	msg := err.Error()
+	return strings.Contains(msg, "fetching keys") || strings.Contains(msg, "get keys failed")
+}
+
+// validateIDToken validates an ID token with the verifier of the client that
+// obtained it and returns the parsed token.
+func (*OIDCProviderImpl) validateIDToken(
+	ctx context.Context, client *clientState, idToken, nonce string,
+) (*oidc.IDToken, error) {
+	verifier := client.verifier
+	if verifier == nil {
 		return nil, errors.New("ID token verifier not initialized")
 	}
 
-	token, err := p.verifier.Verify(ctx, idToken)
+	token, err := verifier.Verify(ctx, idToken)
 	if err != nil {
 		return nil, fmt.Errorf("failed to verify ID token: %w", err)
 	}
@@ -481,6 +616,11 @@ func (p *OIDCProviderImpl) buildOIDCParams() map[string]string {
 
 // RefreshTokens refreshes the upstream IDP tokens.
 // This overrides the base implementation to add OIDC-specific ID token validation.
+// After a successful token-endpoint exchange, ID-token verification is retried
+// on transient JWKS/network failures so a rotating refresh token is not
+// replayed. If verification still cannot fetch keys, the unvalidated ID token
+// is dropped and the new access/refresh tokens are returned; the storage layer
+// carries forward the previous ID token when the new one is empty.
 func (p *OIDCProviderImpl) RefreshTokens(ctx context.Context, refreshToken, expectedSubject string) (*Tokens, error) {
 	if p.endpoints == nil {
 		return nil, errors.New("OIDC endpoints not discovered")
@@ -490,8 +630,10 @@ func (p *OIDCProviderImpl) RefreshTokens(ctx context.Context, refreshToken, expe
 		"token_endpoint", p.endpoints.TokenEndpoint,
 	)
 
-	// Use base provider's implementation for token refresh
-	tokens, err := p.BaseOAuth2Provider.RefreshTokens(ctx, refreshToken, expectedSubject)
+	// Use base provider's implementation for token refresh, with the client
+	// whose verifier checks the refreshed ID token.
+	client := p.client.Load()
+	tokens, err := p.refreshTokensWith(ctx, client, refreshToken)
 	if err != nil {
 		return nil, err
 	}
@@ -503,23 +645,25 @@ func (p *OIDCProviderImpl) RefreshTokens(ctx context.Context, refreshToken, expe
 	// refreshed ID tokens SHOULD NOT contain a nonce claim, and no new
 	// authorization request exists to provide an expected nonce value.
 	// Full nonce validation occurs in ExchangeCodeForIdentity during the initial auth flow.
-	if tokens.IDToken != "" && p.verifier != nil {
-		token, err := p.validateIDToken(ctx, tokens.IDToken, "")
+	if tokens.IDToken != "" && client.verifier != nil {
+		token, err := p.validateRefreshedIDToken(ctx, client, tokens)
 		if err != nil {
-			return nil, fmt.Errorf("ID token validation failed: %w", err)
+			return nil, err
 		}
-		// The stored expectedSubject is the resolved subject (SubjectClaim, or
-		// "sub" by default). Resolve the refreshed token through the same path
-		// before comparing — comparing the raw "sub" would wrongly reject a
-		// refresh whenever a non-"sub" SubjectClaim is configured. OIDC Core
-		// Section 12.2 still holds: for the default "sub" this is identical to
-		// the original, and a custom claim must likewise be identical.
-		refreshedSubject, err := p.resolveSubject(token)
-		if err != nil {
-			return nil, fmt.Errorf("%w: %w", ErrIdentityResolutionFailed, err)
-		}
-		if expectedSubject != "" && refreshedSubject != expectedSubject {
-			return nil, ErrSubjectMismatch
+		if token != nil {
+			// The stored expectedSubject is the resolved subject (SubjectClaim, or
+			// "sub" by default). Resolve the refreshed token through the same path
+			// before comparing — comparing the raw "sub" would wrongly reject a
+			// refresh whenever a non-"sub" SubjectClaim is configured. OIDC Core
+			// Section 12.2 still holds: for the default "sub" this is identical to
+			// the original, and a custom claim must likewise be identical.
+			refreshedSubject, err := p.resolveSubject(token)
+			if err != nil {
+				return nil, fmt.Errorf("%w: %w", ErrIdentityResolutionFailed, err)
+			}
+			if expectedSubject != "" && refreshedSubject != expectedSubject {
+				return nil, ErrSubjectMismatch
+			}
 		}
 	}
 

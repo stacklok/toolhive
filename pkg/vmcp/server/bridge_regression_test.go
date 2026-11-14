@@ -566,7 +566,9 @@ func (b *bridgeModernBackend) handle(w http.ResponseWriter, r *http.Request) {
 	switch method {
 	case "server/discover":
 		b.writeResult(w, body.ID, map[string]any{
-			"capabilities":      map[string]any{"tools": map[string]any{}},
+			"capabilities": map[string]any{
+				"tools": map[string]any{"listChanged": true},
+			},
 			"supportedVersions": []string{mcpparser.MCPVersionModern},
 		})
 	case "tools/list":
@@ -659,11 +661,13 @@ func newBridgeCellBServer(
 // ModernBackendSetSkipsHandshakeAndStillWorks relies on below: it builds the
 // SAME Modern backend and session factory but WITHOUT WithRevisionLookup, so
 // the connector is never skipped and always runs go-sdk's Client.Connect().
-// Self-validates that subscriptions/listen really is observed against the
-// currently-pinned go-sdk version -- if a future go-sdk bump changes that
-// (e.g. gating the subscribe on registered handlers, or failing Connect
-// before discover completes), this test starts failing and flags the other
-// test's fingerprint as stale, instead of both silently passing forever.
+// The fake backend advertises tools.listChanged so go-sdk v1.8's
+// capability-gated subscriptions/listen request is expected. Self-validates
+// that the request really is observed against the currently-pinned go-sdk
+// version -- if a future go-sdk bump changes that behavior (for example, by
+// changing its subscription trigger or failing Connect before discover
+// completes), this test starts failing and flags the other test's fingerprint
+// as stale, instead of both silently passing forever.
 func TestRegression_BridgeCellB_SubscriptionsListenFingerprintIsValid(t *testing.T) {
 	t.Parallel()
 
@@ -706,12 +710,13 @@ func TestRegression_BridgeCellB_SubscriptionsListenFingerprintIsValid(t *testing
 //     no request ever carries an empty Mcp-Method header (safe even though
 //     it never fires -- probeRevision is Modern-first and never sends a raw
 //     Legacy initialize, see reclassify_test.go); (2) no subscriptions/listen
-//     request is ever observed -- go-sdk's Client.Connect() issues that
-//     UNCONDITIONALLY once server/discover negotiates Modern, and nothing
-//     else in this path (this test's own priming probe, or the core's
-//     per-call Modern client) ever uses a go-sdk Client, so its presence is
-//     the fingerprint that the connector ran a full Connect() at all --
-//     validated against the currently-pinned SDK by the sibling
+//     request is ever observed -- go-sdk v1.8's Client.Connect() issues that
+//     when server/discover negotiates Modern and the backend advertises
+//     tools.listChanged. Nothing else in this path (this test's own priming
+//     probe, or the core's per-call Modern client) ever uses a go-sdk Client,
+//     so its presence is the fingerprint that the connector ran a full
+//     Connect() at all -- validated against the currently-pinned SDK by the
+//     sibling
 //     TestRegression_BridgeCellB_SubscriptionsListenFingerprintIsValid.
 //   - B2: despite the connector being skipped (so this session holds no
 //     connection for the backend at all), a Legacy client session must still
@@ -789,19 +794,19 @@ func TestRegression_BridgeCellB_ModernBackendSetSkipsHandshakeAndStillWorks(t *t
 	// two ways:
 	//  1. No request ever carries an empty Mcp-Method header (the wire
 	//     signature of a raw Legacy request) -- safe even though it should
-	//     never fire either way: go-sdk v1.7's client is itself Modern-first
+	//     never fire either way: go-sdk v1.8's client is itself Modern-first
 	//     (SEP-2575), so even a "Legacy handshake attempt" against a Modern
 	//     backend negotiates via server/discover, not a raw Legacy initialize
 	//     (see pkg/vmcp/client/reclassify_test.go's identical observation for
 	//     the call-path client).
-	//  2. No subscriptions/listen request is ever observed. go-sdk's
-	//     Client.Connect() issues that call UNCONDITIONALLY once
-	//     server/discover negotiates Modern, and nothing else in this path
-	//     (this test's own priming probe, or the core's per-call Modern
-	//     client -- both raw modernCall, no go-sdk Client) ever makes it, so
-	//     its presence is the fingerprint that the connector ran a full
-	//     Connect() at all, skip or no skip. Validated against the
-	//     currently-pinned SDK by the sibling
+	//  2. No subscriptions/listen request is ever observed. With the fake
+	//     backend advertising tools.listChanged, go-sdk v1.8's Client.Connect()
+	//     issues that capability-gated call once server/discover negotiates
+	//     Modern. Nothing else in this path (this test's own priming probe, or
+	//     the core's per-call Modern client -- both raw modernCall, no go-sdk
+	//     Client) ever makes it, so its presence is the fingerprint that the
+	//     connector ran a full Connect() at all, skip or no skip. Validated
+	//     against the currently-pinned SDK by the sibling
 	//     TestRegression_BridgeCellB_SubscriptionsListenFingerprintIsValid.
 	for _, m := range modernBackend.requestMethods() {
 		assert.NotEmpty(t, m, "backend must never receive a request with no Mcp-Method header")

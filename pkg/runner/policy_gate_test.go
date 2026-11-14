@@ -28,9 +28,11 @@ func TestNoopPolicyGate_CheckCreateServer(t *testing.T) {
 	assert.NoError(t, err)
 }
 
+// TestRegisterPolicyGate must not run in parallel: it swaps the global gate,
+// and parallel tests would observe the deny gate while it is registered.
+//
+//nolint:paralleltest // Mutates the global policy gate.
 func TestRegisterPolicyGate(t *testing.T) {
-	t.Parallel()
-
 	// Save and restore the original gate after the test.
 	policyGateMu.Lock()
 	original := policyGate
@@ -53,10 +55,12 @@ func TestRegisterPolicyGate(t *testing.T) {
 	require.ErrorIs(t, err, sentinel)
 }
 
+// TestActivePolicyGate_DefaultIsAllowAll must not run in parallel for the same
+// reason as TestRegisterPolicyGate.
+//
+//nolint:paralleltest // Mutates the global policy gate.
 func TestActivePolicyGate_DefaultIsAllowAll(t *testing.T) {
-	t.Parallel()
-
-	// Save and restore gate so parallel tests are not affected.
+	// Save and restore gate so other tests are not affected.
 	policyGateMu.Lock()
 	original := policyGate
 	policyGateMu.Unlock()

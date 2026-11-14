@@ -12,20 +12,19 @@ import (
 )
 
 // PriorityConflictResolver implements priority-based conflict resolution.
-// The first backend in the priority order wins; conflicting tools from
-// lower-priority backends are dropped.
+// When every conflicting backend is listed in the priority order, the first
+// backend in that order wins and lower-priority tools are dropped.
 //
-// For backends not in the priority list, conflicts are resolved using
-// prefix strategy as a fallback (prevents data loss).
+// When any conflicting backend is absent from the priority list, all candidates
+// in that conflict are dropped because the conflict cannot be safely ranked.
+// Dropping preserves the fail-closed policy invariant: a renamed loser would be
+// advertised under a name that existing name-scoped forbid policies do not cover.
 type PriorityConflictResolver struct {
 	// PriorityOrder defines the priority of backends (first has highest priority).
 	PriorityOrder []string
 
 	// priorityMap is a map from backend ID to its priority index.
 	priorityMap map[string]int
-
-	// prefixResolver is used as fallback for backends not in priority list.
-	prefixResolver *PrefixConflictResolver
 }
 
 // NewPriorityConflictResolver creates a new priority-based conflict resolver.
@@ -44,9 +43,8 @@ func NewPriorityConflictResolver(priorityOrder []string) (*PriorityConflictResol
 	}
 
 	return &PriorityConflictResolver{
-		PriorityOrder:  priorityOrder,
-		priorityMap:    priorityMap,
-		prefixResolver: NewPrefixConflictResolver(defaultPrefixFormat), // Fallback for unmapped backends
+		PriorityOrder: priorityOrder,
+		priorityMap:   priorityMap,
 	}, nil
 }
 
@@ -82,35 +80,24 @@ func (r *PriorityConflictResolver) ResolveToolConflicts(
 			continue
 		}
 
-		// Conflict detected - choose the highest priority backend
-		winner := r.selectWinner(candidates)
-		if winner == nil {
-			// All candidates are from backends not in priority list
-			// Use prefix strategy as fallback to avoid data loss
+		if r.hasUnlistedCandidate(candidates) {
+			// A collision involving a backend outside priorityOrder cannot be safely
+			// rank-compared. Drop every candidate instead of awarding the bare name
+			// to a listed backend or re-advertising losers under names outside
+			// existing name-scoped policies.
 			backendIDs := make([]string, len(candidates))
 			for i, c := range candidates {
 				backendIDs[i] = c.BackendID
 			}
-			slog.Debug("tool exists in backends not in priority order, using prefix fallback",
+			slog.Error("dropped tool conflict involving backend not in priority order",
 				"tool", toolName, "backends", backendIDs)
 
-			// Apply prefix strategy to these unmapped backends
-			for _, candidate := range candidates {
-				prefixedName := r.prefixResolver.applyPrefix(candidate.BackendID, toolName)
-				resolved[prefixedName] = &ResolvedTool{
-					ResolvedName:              prefixedName,
-					OriginalName:              toolName,
-					Description:               candidate.Tool.Description,
-					InputSchema:               candidate.Tool.InputSchema,
-					OutputSchema:              candidate.Tool.OutputSchema,
-					Annotations:               candidate.Tool.Annotations,
-					BackendID:                 candidate.BackendID,
-					ConflictResolutionApplied: vmcp.ConflictStrategyPrefix, // Fallback used prefix
-				}
-			}
+			droppedTools += len(candidates)
 			continue
 		}
 
+		// Conflict detected among only listed backends; choose the highest priority backend.
+		winner := r.selectWinner(candidates)
 		resolved[toolName] = &ResolvedTool{
 			ResolvedName:              toolName,
 			OriginalName:              toolName,
@@ -142,8 +129,17 @@ func (r *PriorityConflictResolver) ResolveToolConflicts(
 	return resolved, nil
 }
 
+func (r *PriorityConflictResolver) hasUnlistedCandidate(candidates []toolWithBackend) bool {
+	for _, candidate := range candidates {
+		if _, exists := r.priorityMap[candidate.BackendID]; !exists {
+			return true
+		}
+	}
+	return false
+}
+
 // selectWinner chooses the tool from the highest-priority backend.
-// Returns nil if none of the candidates are in the priority list.
+// Callers should only pass candidates from backends that are in the priority list.
 func (r *PriorityConflictResolver) selectWinner(candidates []toolWithBackend) *toolWithBackend {
 	var winner *toolWithBackend
 	winnerPriority := -1

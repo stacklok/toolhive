@@ -25,18 +25,20 @@ thv skill install [skill-name] [flags]
 ### Options
 
 ```
-      --clients string        Comma-separated target client apps (e.g. claude-code,opencode), or "all" for every available client
-      --force                 Overwrite existing skill directory
-      --group string          Group to add the skill to after installation
-  -h, --help                  help for install
-      --project-root string   Project root path for project-scoped installs
-      --scope string          Installation scope (user, project) (default "user")
+      --allow-unsigned[=true|false]   Allow installing a project-scoped skill without a verified signature (recorded in the lock file)
+      --clients string                Comma-separated target client apps (e.g. claude-code,opencode), or "all" for every available client
+      --force[=true|false]            Overwrite existing skill directory
+      --group string                  Group to add the skill to after installation
+  -h, --help[=true|false]             help for install
+      --project-root string           Project root path for project-scoped installs
+      --public-key string             Path to the cosign public key (cosign.pub) a key-pair-signed skill must verify against. Required the first time such a skill is installed project-scoped; the key is then pinned in the lock file and reused automatically
+      --scope string                  Installation scope (user, project) (default "user")
 ```
 
 ### Options inherited from parent commands
 
 ```
-      --debug   Enable debug mode
+      --debug[=true|false]   Enable debug mode
 ```
 
 ### SEE ALSO

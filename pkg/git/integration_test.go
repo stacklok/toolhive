@@ -91,6 +91,10 @@ func TestDefaultGitClient_HeadCommit_SignedCommit(t *testing.T) {
 	assert.Equal(t, armoredSig, head.Signature)
 	assert.Equal(t, repoInfoHeadHash(t, repoInfo), head.Hash,
 		"hash and signature must describe the same commit")
+	assert.NotContains(t, string(head.Payload), "gpgsig",
+		"the payload must be the commit without its signature header")
+	assert.Contains(t, string(head.Payload), "tree ",
+		"the payload must be the encoded commit object")
 }
 
 // TestDefaultGitClient_FullWorkflow exercises the complete clone → read → cleanup lifecycle

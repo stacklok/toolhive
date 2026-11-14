@@ -141,7 +141,7 @@ type InlineOIDCSharedConfig struct {
 	// +optional
 	ProtectedResourceAllowPrivateIP bool `json:"protectedResourceAllowPrivateIP"`
 
-	// InsecureAllowHTTP allows HTTP (non-HTTPS) OIDC issuers for development/testing.
+	// InsecureAllowHTTP allows HTTP (non-HTTPS) OIDC issuer and JWKS URLs for development/testing.
 	// WARNING: This is insecure and should NEVER be used in production.
 	// +kubebuilder:default=false
 	// +optional

@@ -220,49 +220,11 @@ func (d *backendDiscoverer) Discover(ctx context.Context, groupRef string) (back
 // applyAuthConfigToBackend applies authentication configuration to a backend based on the source mode.
 // It determines whether to use discovered auth from the MCPServer or auth from the vMCP config.
 //
-// Auth resolution logic:
-// - "discovered" mode: Use discovered auth if available, otherwise fall back to Default or backend-specific config
-// - "inline" mode (or ""): Always use config-based auth, ignore discovered auth
-// - unknown mode: Default to config-based auth for safety
-//
-// When useDiscoveredAuth is false, ResolveForBackend is called which handles:
-// 1. Backend-specific config (d.authConfig.Backends[backendName])
-// 2. Default config fallback (d.authConfig.Default)
-// 3. No auth if neither is configured
+// The resolution logic lives in config.OutgoingAuthConfig.ApplyToBackend so the
+// Kubernetes backend watcher's reconciler applies the exact same semantics when it
+// rebuilds a backend (see pkg/vmcp/k8s).
 func (d *backendDiscoverer) applyAuthConfigToBackend(backend *vmcp.Backend, backendName string) {
-	if d.authConfig == nil {
-		return
-	}
-
-	// Determine if we should use discovered auth or config-based auth
-	var useDiscoveredAuth bool
-	switch d.authConfig.Source {
-	case "discovered":
-		// In discovered mode, use auth discovered from MCPServer (if any exists)
-		// If no auth is discovered, fall back to config-based auth via ResolveForBackend
-		// which will use backend-specific config, then Default, then no auth
-		useDiscoveredAuth = backend.AuthConfig != nil
-	case "inline", "":
-		// For inline mode or empty source, always use config-based auth
-		// Ignore any discovered auth from backends
-		useDiscoveredAuth = false
-	default:
-		// Unknown source mode - default to config-based auth for safety
-		slog.Warn("unknown auth source mode, defaulting to config-based auth", "source", d.authConfig.Source)
-		useDiscoveredAuth = false
-	}
-
-	if useDiscoveredAuth {
-		// Keep the auth discovered from MCPServer (already populated in backend)
-		slog.Debug("backend using discovered auth strategy", "backend", backendName, "strategy", backend.AuthConfig.Type)
-	} else {
-		// Use auth from config (inline mode)
-		authConfig := d.authConfig.ResolveForBackend(backendName)
-		if authConfig != nil {
-			backend.AuthConfig = authConfig
-			slog.Debug("backend configured with auth strategy from config", "backend", backendName, "strategy", authConfig.Type)
-		}
-	}
+	d.authConfig.ApplyToBackend(backend, backendName)
 }
 
 // discoverFromStaticConfig converts pre-configured static backends into vmcp.Backend objects

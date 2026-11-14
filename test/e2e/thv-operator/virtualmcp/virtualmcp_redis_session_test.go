@@ -818,8 +818,8 @@ var _ = ginkgo.Describe("VirtualMCPServer Redis-Backed Session Sharing", func() 
 
 			ginkgo.By("Deploying Dex with mockCallback connector")
 			var dexCleanup func()
-			dexInfo, dexCleanup = deployDex(ctx, k8sClient, dexName, defaultNamespace,
-				vmcpCallbackURL, timeout, pollInterval)
+			dexInfo, dexCleanup = deployDex(ctx, k8sClient, dexName,
+				vmcpCallbackURL)
 			cleanupDexFn = dexCleanup
 
 			ginkgo.By("Creating instrumented MCP backend MCPServer")

@@ -9,15 +9,64 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	mobyclient "github.com/moby/moby/client"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 )
+
+// TestNewClientWithSocketPathPodman guards against applying WithHost to the
+// Podman compatibility round-tripper, which the moby client rejects because it
+// is not an *http.Transport (#6844).
+func TestNewClientWithSocketPathPodman(t *testing.T) {
+	t.Parallel()
+
+	// t.TempDir paths can exceed the Unix socket path limit on macOS.
+	dir, err := os.MkdirTemp("", "thv-sdk")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	socket := filepath.Join(dir, "api.sock")
+
+	listener, err := net.Listen("unix", socket)
+	require.NoError(t, err)
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("API-Version", "1.44")
+		if strings.HasSuffix(r.URL.Path, "/_ping") {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, "/networks") {
+			w.Header().Set("Content-Type", "application/json")
+			_, err := w.Write([]byte(`[{"Id":"bridge","Driver":"bridge","IPAM":{"Config":[{"Gateway":"<nil>"}]}}]`))
+			assert.NoError(t, err)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	require.NoError(t, server.Listener.Close())
+	server.Listener = listener
+	server.Start()
+	t.Cleanup(server.Close)
+
+	client, err := newClientWithSocketPath(t.Context(), socket, runtime.TypePodman)
+	require.NoError(t, err)
+	t.Cleanup(func() { assert.NoError(t, client.Close()) })
+
+	// A "<nil>" gateway only decodes when the compatibility transport is installed.
+	networks, err := client.NetworkList(t.Context(), mobyclient.NetworkListOptions{})
+	require.NoError(t, err)
+	require.Len(t, networks.Items, 1)
+	assert.False(t, networks.Items[0].IPAM.Config[0].Gateway.IsValid())
+}
 
 // clearSocketEnv removes any inherited TOOLHIVE_*_SOCKET overrides so the
 // helpers fall through to filesystem discovery during the test.

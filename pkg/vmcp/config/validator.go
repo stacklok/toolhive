@@ -72,6 +72,10 @@ func (v *DefaultValidator) Validate(cfg *Config) error {
 		errors = append(errors, err.Error())
 	}
 
+	if cfg.SessionStorage != nil && cfg.SessionStorage.TLS != nil && cfg.SessionStorage.Provider != "redis" {
+		errors = append(errors, "session storage TLS requires provider redis")
+	}
+
 	// Validate static backends
 	if err := v.validateStaticBackends(cfg.Backends); err != nil {
 		errors = append(errors, err.Error())
@@ -350,7 +354,61 @@ func (v *DefaultValidator) validateAggregation(agg *AggregationConfig) error {
 		return err
 	}
 
+	// Mirrors the CRD's enum for the CLI path, which has no API-server admission
+	// to reject a bad value. "" is accepted and means allow, so configs written
+	// before this setting existed stay valid.
+	switch agg.DefaultToolVisibility {
+	case "", DefaultToolVisibilityAllow, DefaultToolVisibilityDeny:
+	default:
+		return fmt.Errorf("defaultToolVisibility must be one of: allow, deny")
+	}
+
+	if err := validateDenyVisibilityPriorityOrder(agg); err != nil {
+		return err
+	}
+
 	return v.validateToolConfigurations(agg.Tools)
+}
+
+// validateDenyVisibilityPriorityOrder rejects a priorityOrder entry that has no
+// corresponding Tools entry when DefaultToolVisibility is deny.
+//
+// Conflict resolution runs BEFORE the advertising filter, and priorityOrder is
+// independent of Tools. So an unlisted backend can win a name conflict — dropping
+// the listed backend's version of that tool at resolution — and then be withheld
+// by deny, leaving the tool advertised by nobody. That is strictly worse than
+// allow, where the winner at least stays visible.
+//
+// Rejecting the combination up front is cheaper than reordering the pipeline,
+// which would mean resolving conflicts twice: once over the visible candidates
+// and once over the complete set that composite tools route against.
+//
+// validateAggregation guarantees ConflictResolutionConfig is non-nil before
+// calling this, so it is safe to dereference below.
+func validateDenyVisibilityPriorityOrder(agg *AggregationConfig) error {
+	if agg.DefaultToolVisibility != DefaultToolVisibilityDeny ||
+		agg.ConflictResolution != vmcp.ConflictStrategyPriority {
+		return nil
+	}
+
+	listed := make(map[string]struct{}, len(agg.Tools))
+	for _, wl := range agg.Tools {
+		if wl != nil {
+			listed[wl.Workload] = struct{}{}
+		}
+	}
+
+	for _, workload := range agg.ConflictResolutionConfig.PriorityOrder {
+		if _, ok := listed[workload]; !ok {
+			return fmt.Errorf(
+				"defaultToolVisibility deny with priority strategy: priorityOrder entry %q has no tools entry; "+
+					"it could win a name conflict and then be withheld, hiding the tool entirely. "+
+					"Add a tools entry for %q or remove it from priorityOrder",
+				workload, workload)
+		}
+	}
+
+	return nil
 }
 
 // validateConflictStrategy validates strategy-specific configuration
@@ -537,6 +595,16 @@ func (*DefaultValidator) validateCompositeToolRefs(refs []CompositeToolRef) erro
 	return nil
 }
 
+// The standalone header-forward middleware deliberately allows Authorization
+// (an operator may legitimately forward it), but for vMCP passthrough the
+// documented contract is stricter: Authorization and Cookie are rejected at
+// startup because forwarding caller-supplied credentials verbatim to every
+// backend is a credential-leak footgun, not a pass-through use case.
+var vmcpRestrictedHeaders = map[string]bool{
+	"Authorization": true,
+	"Cookie":        true,
+}
+
 func (*DefaultValidator) validatePassthroughHeaders(cfg *Config) error {
 	for i, name := range cfg.PassthroughHeaders {
 		if name == "" {
@@ -545,7 +613,7 @@ func (*DefaultValidator) validatePassthroughHeaders(cfg *Config) error {
 
 		canonical := http.CanonicalHeaderKey(name)
 
-		if middleware.RestrictedHeaders[canonical] {
+		if middleware.RestrictedHeaders[canonical] || vmcpRestrictedHeaders[canonical] {
 			return fmt.Errorf("passthroughHeaders[%d]: %q is a restricted header and cannot be forwarded", i, canonical)
 		}
 
@@ -597,7 +665,11 @@ func ValidateAuthServerIntegration(cfg *Config, rc *authserver.RunConfig) error 
 }
 
 // validateAuthServerRunConfig performs lightweight structural validation of the
-// auth server RunConfig (issuer, upstreams, allowed audiences).
+// auth server RunConfig (issuer, upstreams, allowed audiences). A config with no
+// upstreams must have delegate clients, SPIFFE client associations or a JWT
+// bearer issuer policy, judged on the normalized inbound grants, so errors from
+// NormalizeInboundGrants, such as conflicting legacy and canonical grants, are
+// returned here too.
 func validateAuthServerRunConfig(rc *authserver.RunConfig) error {
 	if rc == nil {
 		return nil
@@ -606,7 +678,20 @@ func validateAuthServerRunConfig(rc *authserver.RunConfig) error {
 		return fmt.Errorf("auth server issuer is required")
 	}
 	if len(rc.Upstreams) == 0 {
-		return fmt.Errorf("auth server requires at least one upstream")
+		// Delegate clients and JWT bearer policies can each be declared in the
+		// deprecated top-level shape or the canonical inbound_grants shape, and
+		// the canonical JWT bearer policy only reaches TrustedIssuers after
+		// normalization. Judge the same effective view the runtime uses.
+		normalized, err := authserver.NormalizeInboundGrants(rc)
+		if err != nil {
+			return fmt.Errorf("auth server inbound grants are invalid: %w", err)
+		}
+		hasSPIFFEClients := rc.InboundGrants != nil && len(rc.InboundGrants.SPIFFEClientAuth) > 0
+		if len(normalized.DelegateClients) == 0 && !hasSPIFFEClients &&
+			!authserver.JWTBearerGrantEnabled(normalized.TrustedIssuers) {
+			return fmt.Errorf("auth server requires at least one upstream unless delegate clients, SPIFFE client " +
+				"associations or a trusted issuer with JWT bearer grant is configured")
+		}
 	}
 	// AllowedAudiences is required for MCP compliance (RFC 8707).
 	if len(rc.AllowedAudiences) == 0 {

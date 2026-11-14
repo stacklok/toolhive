@@ -6,22 +6,25 @@ package ratelimit
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/otel/codes"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.uber.org/mock/gomock"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	v1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/mcp"
+	"github.com/stacklok/toolhive/pkg/telemetry"
 	transporttypes "github.com/stacklok/toolhive/pkg/transport/types"
 	transportmocks "github.com/stacklok/toolhive/pkg/transport/types/mocks"
 )
@@ -207,24 +210,107 @@ func TestRateLimitedBodyMarshalFallback(t *testing.T) {
 	assert.NotContains(t, string(got), `"id"`)
 }
 
+func TestRateLimitHandler_AnnotatesTelemetryRequestSpan(t *testing.T) {
+	t.Parallel()
+	client, _ := newTestClient(t)
+	limiter, err := newLimiter(
+		client,
+		"test-ns",
+		"test-server",
+		newSpanTestRateLimitConfig(t, rateLimitScopeShared, rateLimitOperationTool),
+		nil,
+	)
+	require.NoError(t, err)
+
+	decision, err := limiter.Allow(t.Context(), "search", "")
+	require.NoError(t, err)
+	require.True(t, decision.Allowed)
+
+	tracerProvider, recorder := newRateLimitTracerProvider(t)
+	meterProvider := sdkmetric.NewMeterProvider()
+	t.Cleanup(func() {
+		require.NoError(t, meterProvider.Shutdown(context.Background()))
+	})
+	telemetryMiddleware := telemetry.NewHTTPMiddleware(
+		telemetry.Config{},
+		tracerProvider,
+		meterProvider,
+		"test-server",
+		"streamable-http",
+	)
+
+	handler := mcp.ParsingMiddleware(telemetryMiddleware(rateLimitHandler(limiter)(http.HandlerFunc(
+		func(http.ResponseWriter, *http.Request) {
+			t.Fatal("next handler should not be called when rate limited")
+		},
+	))))
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/mcp",
+		strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"search"}}`),
+	)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusTooManyRequests, w.Code)
+	spans := recorder.Ended()
+	require.Len(t, spans, 1)
+	requireRateLimitSpanAttributes(t, spans[0], "rejected", "shared_tool")
+}
+
 func TestRateLimitHandler_RedisErrorFailOpen(t *testing.T) {
 	t.Parallel()
+	client, redisServer := newTestClient(t)
+	limiter, err := newLimiter(
+		client,
+		"test-ns",
+		"test-server",
+		newSpanTestRateLimitConfig(t, rateLimitScopeShared, rateLimitOperationTool),
+		nil,
+	)
+	require.NoError(t, err)
+	redisServer.Close()
 
-	limiter := &dummyLimiter{err: errors.New("redis connection refused")}
+	tracerProvider, recorder := newRateLimitTracerProvider(t)
+	meterProvider := sdkmetric.NewMeterProvider()
+	t.Cleanup(func() {
+		require.NoError(t, meterProvider.Shutdown(context.Background()))
+	})
+	telemetryMiddleware := telemetry.NewHTTPMiddleware(
+		telemetry.Config{},
+		tracerProvider,
+		meterProvider,
+		"test-server",
+		"streamable-http",
+	)
 	nextCalled := false
-	handler := rateLimitHandler(limiter)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		nextCalled = true
-		w.WriteHeader(http.StatusOK)
-	}))
-
-	req := httptest.NewRequest(http.MethodPost, "/mcp", nil)
-	req = withParsedMCPRequest(req, "tools/call", "echo", 1)
+	handler := mcp.ParsingMiddleware(telemetryMiddleware(rateLimitHandler(limiter)(http.HandlerFunc(
+		func(w http.ResponseWriter, _ *http.Request) {
+			nextCalled = true
+			w.WriteHeader(http.StatusOK)
+		},
+	))))
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/mcp",
+		strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"search"}}`),
+	)
+	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 
 	handler.ServeHTTP(w, req)
 
 	assert.True(t, nextCalled, "should fail open and call next handler")
 	assert.Equal(t, http.StatusOK, w.Code)
+	spans := recorder.Ended()
+	require.Len(t, spans, 1, "fail-open must preserve the telemetry request span without creating another span")
+	attributes := spanAttributeMap(spans[0])
+	assert.Equal(t, "allowed", attributes["rate_limit.decision"])
+	assert.Equal(t, "none", attributes["rate_limit.rejected_by"])
+	assert.Equal(t, true, attributes["rate_limit.fail_open"])
+	assert.Equal(t, codes.Ok, spans[0].Status().Code)
 }
 
 func TestRateLimitHandler_NoParsedMCPRequest_PassesThrough(t *testing.T) {

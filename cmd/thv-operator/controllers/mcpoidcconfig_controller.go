@@ -15,12 +15,16 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/validation"
 )
 
 const (
@@ -87,7 +91,7 @@ func (r *MCPOIDCConfigReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	}
 
 	// Validate spec configuration early
-	if err := oidcConfig.Validate(); err != nil {
+	if err := validateOIDCConfigSpec(oidcConfig); err != nil {
 		logger.Error(err, "MCPOIDCConfig spec validation failed")
 		return r.handleValidationFailure(ctx, oidcConfig, err)
 	}
@@ -133,6 +137,26 @@ func (r *MCPOIDCConfigReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 
 	emitConfigRecoveryEvent(r.Recorder, oidcConfig, wasInvalid)
 	return ctrl.Result{}, nil
+}
+
+// validateOIDCConfigSpec validates the MCPOIDCConfig spec: type/config
+// consistency via Validate(), then issuer and JWKS URL checks for inline
+// configs. The URL checks run here rather than inside Validate() because the
+// validation package imports the v1beta1 API package (for example
+// validation.ValidateCABundleSource), so calling it from the types package
+// would create an import cycle. This mirrors the MCPRemoteProxy controller,
+// which applies validation.ValidateRemoteURL in its validateSpec step.
+func validateOIDCConfigSpec(oidcConfig *mcpv1beta1.MCPOIDCConfig) error {
+	if err := oidcConfig.Validate(); err != nil {
+		return err
+	}
+	if oidcConfig.Spec.Type != mcpv1beta1.MCPOIDCConfigTypeInline || oidcConfig.Spec.Inline == nil {
+		return nil
+	}
+	if err := validation.ValidateOIDCIssuerURL(oidcConfig.Spec.Inline.Issuer, oidcConfig.Spec.Inline.InsecureAllowHTTP); err != nil {
+		return err
+	}
+	return validation.ValidateJWKSURL(oidcConfig.Spec.Inline.JWKSURL, oidcConfig.Spec.Inline.InsecureAllowHTTP)
 }
 
 // handleValidationFailure records the Valid=False condition for a spec that
@@ -336,6 +360,31 @@ func (r *MCPOIDCConfigReconciler) findReferencingWorkloads(
 	return refs, nil
 }
 
+// oidcConfigRefChangedPredicate builds the watch predicate for a workload type
+// that references an MCPOIDCConfig. Create and Delete events pass through so a
+// new or removed referrer wakes the config; Update events are admitted only when
+// the referenced config name changes, so unrelated spec churn (image, routing,
+// authentication, status) does not enqueue no-op config reconciles. extractRef
+// is the same field-index extractor used to build the reverse-reference index,
+// which keeps the predicate and the index in agreement on what counts as a
+// reference.
+func oidcConfigRefChangedPredicate(extractRef func(client.Object) []string) predicate.Predicate {
+	refName := func(obj client.Object) string {
+		if names := extractRef(obj); len(names) > 0 {
+			return names[0]
+		}
+		return ""
+	}
+	return predicate.Funcs{
+		UpdateFunc: func(e event.UpdateEvent) bool {
+			return refName(e.ObjectOld) != refName(e.ObjectNew)
+		},
+		CreateFunc:  func(_ event.CreateEvent) bool { return true },
+		DeleteFunc:  func(_ event.DeleteEvent) bool { return true },
+		GenericFunc: func(_ event.GenericEvent) bool { return false },
+	}
+}
+
 // SetupWithManager sets up the controller with the Manager.
 func (r *MCPOIDCConfigReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// Field indexes backing findReferencingWorkloads: each lets the controller
@@ -359,5 +408,11 @@ func (r *MCPOIDCConfigReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&mcpv1beta1.MCPOIDCConfig{}).
+		Watches(&mcpv1beta1.MCPServer{}, enqueueReferencedConfig(indexMCPServerByOIDCConfigRef),
+			builder.WithPredicates(oidcConfigRefChangedPredicate(indexMCPServerByOIDCConfigRef))).
+		Watches(&mcpv1beta1.VirtualMCPServer{}, enqueueReferencedConfig(indexVirtualMCPServerByOIDCConfigRef),
+			builder.WithPredicates(oidcConfigRefChangedPredicate(indexVirtualMCPServerByOIDCConfigRef))).
+		Watches(&mcpv1beta1.MCPRemoteProxy{}, enqueueReferencedConfig(indexMCPRemoteProxyByOIDCConfigRef),
+			builder.WithPredicates(oidcConfigRefChangedPredicate(indexMCPRemoteProxyByOIDCConfigRef))).
 		Complete(r)
 }

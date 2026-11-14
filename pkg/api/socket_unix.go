@@ -11,9 +11,10 @@ import (
 	"io/fs"
 	"log/slog"
 	"net"
-	"net/url"
 	"os"
 	"path/filepath"
+
+	"github.com/stacklok/toolhive/pkg/server/discovery"
 )
 
 // supportsNamedPipe reports whether the current build target can host a
@@ -59,10 +60,8 @@ func cleanupUnixSocket(address string) {
 }
 
 // socketURL returns the URL form of a Unix-socket address for the discovery
-// file. Non-Windows platforms only ever produce unix:// URLs. Built via
-// (&url.URL{}).String() so the discovery dialer can round-trip the value back
-// through net/url without surprises (matters mostly on Windows but kept here
-// for symmetry).
+// file. Non-Windows platforms only ever produce unix:// URLs. Delegates to
+// discovery.UnixSocketURL so emit and parse stay on the same helper as Windows.
 func socketURL(address string) string {
-	return (&url.URL{Scheme: "unix", Path: address}).String()
+	return discovery.UnixSocketURL(address)
 }

@@ -20,7 +20,13 @@ package registration
 import (
 	"fmt"
 	"slices"
+	"strings"
 
+	"github.com/go-jose/go-jose/v4"
+	"github.com/ory/fosite"
+
+	"github.com/stacklok/toolhive/pkg/authserver/internal/fositejose"
+	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
@@ -67,6 +73,9 @@ const (
 	// MaxRedirectURICount is the maximum number of redirect URIs allowed per client.
 	MaxRedirectURICount = 10
 
+	// maxInlineJWKSKeys limits the number of keys validated for private_key_jwt registration.
+	maxInlineJWKSKeys = 10
+
 	// MaxClientNameLength is the maximum allowed length for a client name.
 	MaxClientNameLength = 256
 
@@ -88,12 +97,13 @@ type DCRError struct {
 }
 
 // defaultGrantTypes are the default grant types for registered clients.
-var defaultGrantTypes = []string{"authorization_code", "refresh_token"}
+var defaultGrantTypes = []string{oauthproto.GrantTypeAuthorizationCode, oauthproto.GrantTypeRefreshToken}
 
 // allowedGrantTypes defines the grant types permitted for public clients.
 var allowedGrantTypes = map[string]bool{
-	"authorization_code": true,
-	"refresh_token":      true,
+	oauthproto.GrantTypeAuthorizationCode: true,
+	oauthproto.GrantTypeRefreshToken:      true,
+	oauthproto.GrantTypeDeviceCode:        true,
 }
 
 // defaultResponseTypes are the default response types for registered clients.
@@ -105,24 +115,41 @@ var allowedResponseTypes = map[string]bool{
 }
 
 // ValidateDCRRequest validates a DCR request according to RFC 7591
-// and the server's security policy (loopback-only public clients).
+// and the server's security policy. When allowConfidential is false the
+// policy is unchanged from the historical default: public clients only.
+// When true, token_endpoint_auth_method may also be client_secret_basic or
+// client_secret_post; such confidential registrations are additionally
+// restricted to https non-loopback redirect URIs, because a client on a
+// loopback or private-scheme URI is by construction a public client
+// (OAuth 2.1 §2.1) and minting it a secret ships that secret inside a
+// distributed binary.
 // Returns the validated request with defaults applied, or an error.
 //
-// The validated request does NOT carry the requested scopes — scope
-// validation against the server's supported set is a separate step,
-// handled by ValidateScopes using the caller's policy inputs.
+// The returned request preserves validated client metadata, including scopes and
+// private_key_jwt key metadata. Scope authorization against the server's supported
+// set is a separate step handled by ValidateScopes using the caller's policy inputs.
 func ValidateDCRRequest(
 	req *oauthproto.DynamicClientRegistrationRequest,
+	allowConfidential bool,
+	allowPrivateKeyJWT bool,
 ) (*oauthproto.DynamicClientRegistrationRequest, *DCRError) {
-	// 1. Validate redirect_uris - required
-	if len(req.RedirectURIs) == 0 {
+	// Validate the authentication method before applying method-specific metadata
+	// rules. Existing registration methods may carry jwks_uri metadata even though
+	// only private_key_jwt requires inline keys.
+	authMethod, dcrErr := validateAuthMethod(req.TokenEndpointAuthMethod, req.RedirectURIs, allowConfidential, allowPrivateKeyJWT)
+	if dcrErr != nil {
+		return nil, dcrErr
+	}
+
+	if len(req.RedirectURIs) == 0 && authMethod != oauthproto.TokenEndpointAuthMethodPrivateKeyJWT &&
+		!isDeviceCodeOnlyRequest(req.GrantTypes) {
 		return nil, &DCRError{
 			Error:            DCRErrorInvalidRedirectURI,
 			ErrorDescription: "redirect_uris is required",
 		}
 	}
 
-	// 2. Validate redirect_uris count limit
+	// Validate redirect_uris count limit
 	if len(req.RedirectURIs) > MaxRedirectURICount {
 		return nil, &DCRError{
 			Error:            DCRErrorInvalidRedirectURI,
@@ -154,38 +181,45 @@ func ValidateDCRRequest(
 		return nil, dcrErr
 	}
 
-	// 5. Validate/default token_endpoint_auth_method
-	authMethod := req.TokenEndpointAuthMethod
-	if authMethod == "" {
-		authMethod = "none"
-	}
-	if authMethod != "none" {
-		return nil, &DCRError{
-			Error:            DCRErrorInvalidClientMetadata,
-			ErrorDescription: "token_endpoint_auth_method must be 'none' for public clients",
-		}
+	if dcrErr := validatePrivateKeyJWTMetadata(req, authMethod); dcrErr != nil {
+		return nil, dcrErr
 	}
 
 	// 6. Validate/default grant_types
-	grantTypes, err := validateGrantTypes(req.GrantTypes)
+	grantTypes, err := validateGrantTypes(req.GrantTypes, authMethod)
 	if err != nil {
 		return nil, err
 	}
 
 	// 7. Validate/default response_types
-	responseTypes, err := validateResponseTypes(req.ResponseTypes)
+	responseTypes, err := validateResponseTypes(req.ResponseTypes, authMethod, grantTypes)
 	if err != nil {
 		return nil, err
 	}
 
+	// Only private_key_jwt uses client key metadata. Keep unrelated DCR
+	// registrations from echoing or retaining attacker-supplied key material.
+	clientJWKS := cloneJSONWebKeySet(req.JWKS)
+	clientJWKSURI := req.JWKSURI
+	clientSigningAlgorithm := req.TokenEndpointAuthSigningAlg
+	if authMethod != oauthproto.TokenEndpointAuthMethodPrivateKeyJWT {
+		clientJWKS = nil
+		clientJWKSURI = ""
+		clientSigningAlgorithm = ""
+	}
+
 	// Return validated request with defaults applied
 	return &oauthproto.DynamicClientRegistrationRequest{
-		RedirectURIs:            req.RedirectURIs,
-		ClientName:              req.ClientName,
-		TokenEndpointAuthMethod: authMethod,
-		GrantTypes:              grantTypes,
-		ResponseTypes:           responseTypes,
-		SoftwareID:              req.SoftwareID,
+		RedirectURIs:                req.RedirectURIs,
+		ClientName:                  req.ClientName,
+		TokenEndpointAuthMethod:     authMethod,
+		GrantTypes:                  grantTypes,
+		ResponseTypes:               responseTypes,
+		Scopes:                      req.Scopes,
+		JWKS:                        clientJWKS,
+		JWKSURI:                     clientJWKSURI,
+		TokenEndpointAuthSigningAlg: clientSigningAlgorithm,
+		SoftwareID:                  req.SoftwareID,
 	}, nil
 }
 
@@ -217,13 +251,258 @@ func validateSoftwareID(softwareID string) *DCRError {
 	return nil
 }
 
-func validateGrantTypes(grantTypes []string) ([]string, *DCRError) {
+// validateAuthMethod validates token_endpoint_auth_method and returns the
+// effective method with the empty default applied. When allowConfidential is
+// false the policy is unchanged from the historical default: public clients
+// only. When true, the client_secret_* methods are accepted but restricted to
+// https non-loopback redirect URIs, because a client on a loopback or
+// private-scheme URI is by construction a public client (OAuth 2.1 §2.1) and
+// minting it a secret ships that secret inside a distributed binary.
+func validateAuthMethod(
+	authMethod string,
+	redirectURIs []string,
+	allowConfidential bool,
+	allowPrivateKeyJWT bool,
+) (string, *DCRError) {
+	if authMethod == "" {
+		// RFC 7591 §2 says an omitted token_endpoint_auth_method defaults to
+		// "client_secret_basic". We deliberately default to "none" instead.
+		// That RFC default predates PKCE-based public clients becoming the
+		// norm for native and CLI apps, which are most MCP clients today.
+		// Following it here would silently turn any public client that
+		// omits the field into a confidential one — and fosite pins the
+		// auth method at registration, so that client's first token request
+		// would fail with invalid_client because it has no secret and never
+		// asked for one. It also wouldn't help the clients confidential
+		// support was added for: the known cases send "none" explicitly
+		// rather than omitting the field, and an explicit value always
+		// overrides the default.
+		authMethod = oauthproto.TokenEndpointAuthMethodNone
+	}
+	switch authMethod {
+	case oauthproto.TokenEndpointAuthMethodNone:
+		// Always accepted; the public-client default.
+		return authMethod, nil
+	case oauthproto.TokenEndpointAuthMethodPrivateKeyJWT:
+		if !allowPrivateKeyJWT {
+			return "", &DCRError{Error: DCRErrorInvalidClientMetadata, ErrorDescription: "private_key_jwt registration is disabled"}
+		}
+		return authMethod, nil
+	case oauthproto.TokenEndpointAuthMethodClientSecretBasic,
+		oauthproto.TokenEndpointAuthMethodClientSecretPost:
+		if !allowConfidential {
+			return "", &DCRError{
+				Error:            DCRErrorInvalidClientMetadata,
+				ErrorDescription: "this authorization server only supports token_endpoint_auth_method 'none'",
+			}
+		}
+		// Server policy (not a spec mandate): confidential registrations must
+		// use https non-loopback redirect URIs. A client reachable on loopback
+		// or a private scheme is typically a distributed native app that cannot
+		// keep a secret, so this server declines to mint it one.
+		if dcrErr := ValidateConfidentialRedirectURIs(redirectURIs, authMethod); dcrErr != nil {
+			return "", dcrErr
+		}
+		return authMethod, nil
+	default:
+		return "", &DCRError{
+			Error:            DCRErrorInvalidClientMetadata,
+			ErrorDescription: "unsupported token_endpoint_auth_method: " + authMethod,
+		}
+	}
+}
+
+// ValidateConfidentialRedirectURIs checks that every entry in redirectURIs
+// meets the confidential-client policy: https non-loopback, RFC 8252 strict
+// scheme rules. authMethod is embedded in the loopback-rejection message and
+// should be the auth method the client is being registered with.
+//
+// Shared by the ordinary confidential registration path (validateAuthMethod)
+// and the force-confidential override (resolveForceConfidentialOverride in
+// pkg/authserver/server/handlers/dcr.go), so a registration cannot become
+// confidential by either path while carrying a loopback redirect_uri.
+func ValidateConfidentialRedirectURIs(redirectURIs []string, authMethod string) *DCRError {
+	for _, uri := range redirectURIs {
+		if err := oauthproto.ValidateRedirectURI(uri, oauthproto.RedirectURIPolicyStrict); err != nil {
+			return &DCRError{
+				Error:            DCRErrorInvalidRedirectURI,
+				ErrorDescription: err.Error(),
+			}
+		}
+		// isLoopbackURI is a literal-string check (127.0.0.0/8, ::1,
+		// ::ffff:127.0.0.1, localhost); it does not resolve the hostname,
+		// so a registrant-controlled name that merely resolves to a
+		// loopback address slips through. This is acceptable: the
+		// registrant controls both its own redirect URI and its own DNS,
+		// so at worst this lets an actor mint a secret for its own
+		// loopback app, not attack another tenant. Resolving DNS at
+		// registration time would add an unreliable (TTL/rebinding) and
+		// unnecessary network dependency to a request that should stay
+		// purely local.
+		if isLoopbackURI(uri) {
+			return &DCRError{
+				Error: DCRErrorInvalidRedirectURI,
+				ErrorDescription: "token_endpoint_auth_method '" + authMethod +
+					"' requires https non-loopback redirect_uris; native and loopback clients must use 'none'" +
+					" (offending redirect_uri: " + uri + ")",
+			}
+		}
+	}
+	return nil
+}
+
+// ValidatePrivateKeyJWTClientKeys checks persisted private_key_jwt metadata before
+// fosite can use it for signature verification. This also rejects registrations
+// made before the key-size and JWKS limits were introduced. It returns nil for
+// clients that do not use private_key_jwt.
+func ValidatePrivateKeyJWTClientKeys(client fosite.Client) *DCRError {
+	c, ok := client.(fosite.OpenIDConnectClient)
+	if !ok || c.GetTokenEndpointAuthMethod() != oauthproto.TokenEndpointAuthMethodPrivateKeyJWT {
+		return nil
+	}
+	return validatePrivateKeyJWTMetadata(&oauthproto.DynamicClientRegistrationRequest{
+		JWKS:                        fositejose.FromFositeKeySet(c.GetJSONWebKeys()),
+		TokenEndpointAuthSigningAlg: c.GetTokenEndpointAuthSigningAlgorithm(),
+	}, oauthproto.TokenEndpointAuthMethodPrivateKeyJWT)
+}
+
+// validatePrivateKeyJWTMetadata is also run against stored clients on every
+// load (ValidatePrivateKeyJWTClientKeys), so tightening it revokes existing
+// private_key_jwt registrations that no longer pass.
+func validatePrivateKeyJWTMetadata(req *oauthproto.DynamicClientRegistrationRequest, authMethod string) *DCRError {
+	if authMethod != oauthproto.TokenEndpointAuthMethodPrivateKeyJWT {
+		return nil
+	}
+	if req.JWKSURI != "" {
+		return &DCRError{Error: DCRErrorInvalidClientMetadata, ErrorDescription: "jwks_uri is not supported; provide inline jwks"}
+	}
+	return validatePrivateKeyJWTKeySet(req.JWKS, req.TokenEndpointAuthSigningAlg)
+}
+
+// validatePrivateKeyJWTKeySet is the key check shared by DCR registrations and
+// operator-configured private_key_jwt clients.
+func validatePrivateKeyJWTKeySet(jwks *jose.JSONWebKeySet, algorithm string) *DCRError {
+	if jwks == nil || len(jwks.Keys) == 0 {
+		return &DCRError{Error: DCRErrorInvalidClientMetadata, ErrorDescription: "private_key_jwt requires a non-empty inline jwks"}
+	}
+	if len(jwks.Keys) > maxInlineJWKSKeys {
+		return &DCRError{
+			Error:            DCRErrorInvalidClientMetadata,
+			ErrorDescription: fmt.Sprintf("too many inline jwks keys (maximum %d)", maxInlineJWKSKeys),
+		}
+	}
+	if !supportedSigningAlgorithm(algorithm) {
+		return &DCRError{
+			Error:            DCRErrorInvalidClientMetadata,
+			ErrorDescription: "token_endpoint_auth_signing_alg is missing or unsupported",
+		}
+	}
+	matching := false
+	for i := range jwks.Keys {
+		keyMatches, dcrErr := validatePrivateKeyJWTKey(&jwks.Keys[i], algorithm)
+		if dcrErr != nil {
+			return dcrErr
+		}
+		matching = matching || keyMatches
+	}
+	if !matching {
+		return &DCRError{Error: DCRErrorInvalidClientMetadata, ErrorDescription: "signing algorithm does not match a registered key"}
+	}
+	return nil
+}
+
+func validatePrivateKeyJWTKey(key *jose.JSONWebKey, algorithm string) (bool, *DCRError) {
+	if !key.Valid() || !key.IsPublic() || key.Use != "sig" {
+		return false, &DCRError{Error: DCRErrorInvalidClientMetadata, ErrorDescription: "jwks must contain valid public signing keys"}
+	}
+	if key.Algorithm != "" && !supportedSigningAlgorithm(key.Algorithm) {
+		return false, &DCRError{
+			Error:            DCRErrorInvalidClientMetadata,
+			ErrorDescription: "jwks contains an unsupported signing algorithm",
+		}
+	}
+	if key.Algorithm != "" && key.Algorithm != algorithm {
+		return false, &DCRError{
+			Error:            DCRErrorInvalidClientMetadata,
+			ErrorDescription: "jwks contains a signing algorithm that does not match the request",
+		}
+	}
+	// Always validate structural compatibility between the declared algorithm
+	// and the actual key type/curve, even when the JWK's own alg label
+	// already matched above: a client could mislabel an EC key as "RS256"
+	// and have both label-only checks pass despite the key never being able
+	// to actually sign or verify with that algorithm.
+	if err := servercrypto.ValidateAlgorithmForPublicKey(algorithm, key.Key); err != nil {
+		return false, &DCRError{
+			Error:            DCRErrorInvalidClientMetadata,
+			ErrorDescription: "jwks key is not compatible with the requested signing algorithm",
+		}
+	}
+	return true, nil
+}
+
+// SupportedSigningAlgorithms returns the allowlist accepted for private_key_jwt
+// client assertions and their registered signing keys. Delegates to
+// servercrypto.SupportedClientKeyAlgorithms, the single source of truth also
+// consulted by key-compatibility validation, so the two cannot drift apart.
+func SupportedSigningAlgorithms() []string {
+	return servercrypto.SupportedClientKeyAlgorithms()
+}
+
+func supportedSigningAlgorithm(alg string) bool {
+	return slices.Contains(SupportedSigningAlgorithms(), alg)
+}
+
+// isDeviceCodeOnlyRequest reports whether the requested grant_types are
+// exactly {device_code} or {device_code, refresh_token}. RFC 8628 device
+// flow clients never receive a redirect and have no authorize-endpoint
+// response_type, so a request matching this carves out of the
+// authorization_code-shaped requirements the same way private_key_jwt
+// registrations do. Mixing device_code into an authorization_code
+// registration is intentionally NOT covered here -- such a request must
+// still satisfy the ordinary authorization_code requirements below.
+func isDeviceCodeOnlyRequest(grantTypes []string) bool {
+	if !slices.Contains(grantTypes, oauthproto.GrantTypeDeviceCode) {
+		return false
+	}
+	for _, gt := range grantTypes {
+		if gt != oauthproto.GrantTypeDeviceCode && gt != oauthproto.GrantTypeRefreshToken {
+			return false
+		}
+	}
+	return true
+}
+
+func validateGrantTypes(grantTypes []string, authMethod string) ([]string, *DCRError) {
+	if authMethod == oauthproto.TokenEndpointAuthMethodPrivateKeyJWT {
+		if len(grantTypes) == 0 {
+			return []string{oauthproto.GrantTypeTokenExchange}, nil
+		}
+		if len(grantTypes) != 1 || grantTypes[0] != oauthproto.GrantTypeTokenExchange {
+			return nil, &DCRError{
+				Error:            DCRErrorInvalidClientMetadata,
+				ErrorDescription: "private_key_jwt registrations require exactly the token exchange grant",
+			}
+		}
+		return append([]string(nil), grantTypes...), nil
+	}
+	if isDeviceCodeOnlyRequest(grantTypes) {
+		for _, gt := range grantTypes {
+			if !allowedGrantTypes[gt] {
+				return nil, &DCRError{
+					Error:            DCRErrorInvalidClientMetadata,
+					ErrorDescription: "unsupported grant_type: " + gt,
+				}
+			}
+		}
+		return append([]string(nil), grantTypes...), nil
+	}
 	if len(grantTypes) == 0 {
 		grantTypes = defaultGrantTypes
 	}
 	// Require authorization_code explicitly - provides a clearer error for the
 	// "refresh_token only" case that would otherwise pass the allowlist.
-	if !slices.Contains(grantTypes, "authorization_code") {
+	if !slices.Contains(grantTypes, oauthproto.GrantTypeAuthorizationCode) {
 		return nil, &DCRError{
 			Error:            DCRErrorInvalidClientMetadata,
 			ErrorDescription: "grant_types must include 'authorization_code'",
@@ -240,7 +519,25 @@ func validateGrantTypes(grantTypes []string) ([]string, *DCRError) {
 	return grantTypes, nil
 }
 
-func validateResponseTypes(responseTypes []string) ([]string, *DCRError) {
+func validateResponseTypes(responseTypes []string, authMethod string, grantTypes []string) ([]string, *DCRError) {
+	if authMethod == oauthproto.TokenEndpointAuthMethodPrivateKeyJWT {
+		if len(responseTypes) != 0 {
+			return nil, &DCRError{
+				Error:            DCRErrorInvalidClientMetadata,
+				ErrorDescription: "private_key_jwt registrations cannot use response_types",
+			}
+		}
+		return nil, nil
+	}
+	if isDeviceCodeOnlyRequest(grantTypes) {
+		if len(responseTypes) != 0 {
+			return nil, &DCRError{
+				Error:            DCRErrorInvalidClientMetadata,
+				ErrorDescription: "device_code registrations cannot use response_types",
+			}
+		}
+		return nil, nil
+	}
 	if len(responseTypes) == 0 {
 		responseTypes = defaultResponseTypes
 	}
@@ -280,13 +577,20 @@ func ValidateRedirectURI(uri string) *DCRError {
 // ValidateScopes validates a slice of already-parsed scope tokens against
 // the server's allowed set per RFC 7591 §2.
 //
-//   - Empty/nil input falls back to DefaultScopes (which must itself be a
-//     subset of allowedScopes; otherwise the call returns an error).
+//   - Empty/nil input falls back to the intersection of DefaultScopes with
+//     allowedScopes (RFC 7591 §2 permits the server to register a client
+//     with a default set of scopes). Defaults the server does not support
+//     are returned in droppedDefaults so callers can surface them; only an
+//     empty intersection is rejected, because no sensible default exists
+//     and the client must declare scope explicitly.
 //   - Each requested scope must appear in allowedScopes; otherwise returns
 //     invalid_client_metadata.
 //   - Duplicates in the input are tolerated and deduplicated per RFC 6749
 //     §3.3 (scope is a set of case-sensitive strings).
-func ValidateScopes(requestedScopes, allowedScopes []string) ([]string, *DCRError) {
+//
+// droppedDefaults is non-nil only on the default-fallback path; requested
+// scopes are validated strictly and never dropped.
+func ValidateScopes(requestedScopes, allowedScopes []string) (scopes, droppedDefaults []string, dcrErr *DCRError) {
 	// Build allowed scope set for O(1) lookup
 	allowed := make(map[string]bool, len(allowedScopes))
 	for _, s := range allowedScopes {
@@ -295,12 +599,11 @@ func ValidateScopes(requestedScopes, allowedScopes []string) ([]string, *DCRErro
 
 	// Deduplicate while validating each requested scope against the
 	// allowed set.
-	var scopes []string
 	if len(requestedScopes) > 0 {
 		seen := make(map[string]bool)
 		for _, s := range requestedScopes {
 			if !allowed[s] {
-				return nil, &DCRError{
+				return nil, nil, &DCRError{
 					Error:            DCRErrorInvalidClientMetadata,
 					ErrorDescription: "unsupported scope: " + s,
 				}
@@ -310,22 +613,41 @@ func ValidateScopes(requestedScopes, allowedScopes []string) ([]string, *DCRErro
 				scopes = append(scopes, s)
 			}
 		}
+		return scopes, nil, nil
 	}
 
-	// If no scopes requested, use defaults validated against allowed scopes
-	if len(scopes) == 0 {
-		for _, s := range DefaultScopes {
-			if !allowed[s] {
-				return nil, &DCRError{
-					Error:            DCRErrorInvalidClientMetadata,
-					ErrorDescription: "default scope not supported by server: " + s,
-				}
-			}
+	// No scopes requested: fall back to the intersection of DefaultScopes
+	// with the allowed set. Requiring every default to be supported would
+	// reject any client that omits scope against a server whose
+	// scopes_supported does not carry the full default set, even though a
+	// perfectly usable subset exists (see issue #6186).
+	//
+	// Known residual gap (#6186): this fallback draws from DefaultScopes
+	// only, never from the rest of allowedScopes. A scope-omitting client
+	// against a server whose scopes_supported carries entries outside the
+	// default set (e.g. mcp:tools) registers without them — and because
+	// protected-resource metadata advertises scopes_supported and MCP
+	// guidance tells clients to request all of it absent a narrower hint,
+	// such a client can then fail at /oauth/authorize with invalid_scope.
+	// Defaulting to allowedScopes itself would close that, but granting
+	// every anonymous registration the full advertised set is a policy
+	// decision; the explicit opt-in for it is
+	// baseline_client_scopes = scopes_supported.
+	for _, s := range DefaultScopes {
+		if allowed[s] {
+			scopes = append(scopes, s)
+		} else {
+			droppedDefaults = append(droppedDefaults, s)
 		}
-		return DefaultScopes, nil
 	}
-
-	return scopes, nil
+	if len(scopes) == 0 {
+		return nil, nil, &DCRError{
+			Error: DCRErrorInvalidClientMetadata,
+			ErrorDescription: "none of the default scopes (" + strings.Join(DefaultScopes, " ") +
+				") are supported by this server; the client must declare scope explicitly",
+		}
+	}
+	return scopes, droppedDefaults, nil
 }
 
 // UnionScopes returns the union of requested and baseline scopes, preserving
@@ -361,13 +683,80 @@ func UnionScopes(requested, baseline []string) []string {
 // declared values must be in the allowed set. Returns the validated slice (with
 // defaults applied when nil/empty) or a *DCRError on violation.
 func ValidatePublicGrantTypes(grantTypes []string) ([]string, *DCRError) {
-	return validateGrantTypes(grantTypes)
+	return validateGrantTypes(grantTypes, oauthproto.TokenEndpointAuthMethodNone)
 }
 
 // ValidatePublicResponseTypes validates the response_types for a public OAuth
 // client, applying the same rules as DCR: code must be present and all declared
-// values must be in the allowed set. Returns the validated slice (with defaults
+// values must be in the allowed set (unless grantTypes is device_code-only, which
+// requires no response_types). Returns the validated slice (with defaults
 // applied when nil/empty) or a *DCRError on violation.
-func ValidatePublicResponseTypes(responseTypes []string) ([]string, *DCRError) {
-	return validateResponseTypes(responseTypes)
+func ValidatePublicResponseTypes(responseTypes, grantTypes []string) ([]string, *DCRError) {
+	return validateResponseTypes(responseTypes, oauthproto.TokenEndpointAuthMethodNone, grantTypes)
+}
+
+// FilterPublicGrantTypes returns the subset of grantTypes this server supports
+// for public clients, dropping unsupported entries instead of rejecting the
+// whole set the way ValidatePublicGrantTypes does.
+//
+// This is the right semantics for CIMD: a Client ID Metadata Document
+// describes the client's capabilities across every authorization server it
+// talks to, and the client cannot tailor it per server — VS Code, for
+// example, declares the device_code grant alongside authorization_code, and
+// rejecting the document over a grant type this flow never uses breaks the
+// client entirely. A DCR request, by contrast, is addressed to this server
+// specifically, so ValidatePublicGrantTypes' rejection remains the correct
+// feedback on that path.
+//
+// The surviving set must still include "authorization_code": a client whose
+// supported grant types do not intersect with the only redemption flow this
+// server offers cannot function against it, and a clear error beats a client
+// that registers and then fails every token request. nil/empty input gets the
+// same defaults as DCR.
+func FilterPublicGrantTypes(grantTypes []string) ([]string, *DCRError) {
+	// Clone so callers that store the result (e.g. in a cached fosite client)
+	// never alias the package-level default.
+	if len(grantTypes) == 0 {
+		return slices.Clone(defaultGrantTypes), nil
+	}
+	filtered := make([]string, 0, len(grantTypes))
+	for _, gt := range grantTypes {
+		if allowedGrantTypes[gt] {
+			filtered = append(filtered, gt)
+		}
+	}
+	if !slices.Contains(filtered, oauthproto.GrantTypeAuthorizationCode) {
+		return nil, &DCRError{
+			Error:            DCRErrorInvalidClientMetadata,
+			ErrorDescription: "grant_types must include 'authorization_code'",
+		}
+	}
+	return filtered, nil
+}
+
+// FilterPublicResponseTypes returns the subset of responseTypes this server
+// supports for public clients, dropping unsupported entries instead of
+// rejecting the whole set. Same reasoning as FilterPublicGrantTypes: a CIMD
+// document declares capabilities across all servers, so an entry this server
+// does not support must not be fatal — but "code" must survive the filter,
+// since it is the only response type this server can serve. nil/empty input
+// gets the same defaults as DCR.
+func FilterPublicResponseTypes(responseTypes []string) ([]string, *DCRError) {
+	// Clone for the same non-aliasing reason as FilterPublicGrantTypes.
+	if len(responseTypes) == 0 {
+		return slices.Clone(defaultResponseTypes), nil
+	}
+	filtered := make([]string, 0, len(responseTypes))
+	for _, rt := range responseTypes {
+		if allowedResponseTypes[rt] {
+			filtered = append(filtered, rt)
+		}
+	}
+	if !slices.Contains(filtered, "code") {
+		return nil, &DCRError{
+			Error:            DCRErrorInvalidClientMetadata,
+			ErrorDescription: "response_types must include 'code'",
+		}
+	}
+	return filtered, nil
 }

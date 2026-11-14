@@ -7,8 +7,8 @@ import (
 	"context"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/textinput"
-	tea "github.com/charmbracelet/bubbletea"
+	"charm.land/bubbles/v2/textinput"
+	tea "charm.land/bubbletea/v2"
 
 	regtypes "github.com/stacklok/toolhive-core/registry/types"
 	"github.com/stacklok/toolhive/pkg/registry"

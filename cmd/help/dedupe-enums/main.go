@@ -4,10 +4,11 @@
 // Command dedupe-enums works around a swag v2.0.0-rc5 nondeterminism bug:
 // loadExternalPackage (in swag's packages.go) reparses an external module's
 // package without memoizing by import path, which can non-deterministically
-// double the "enum"/"x-enum-varnames" arrays it emits for types defined
+// repeat the "enum"/"x-enum-varnames" arrays it emits for types defined
 // outside this module (model.ArgumentType, model.Format, model.Icon from
-// github.com/modelcontextprotocol/registry). When an array is exactly two
-// identical halves back to back, this collapses it to one.
+// github.com/modelcontextprotocol/registry). The repeat count varies by
+// machine — 2x and 3x have both been seen. When an array is the same block
+// repeated back to back, this collapses it to one copy.
 //
 // Run after `swag init`, on each generated docs/server file:
 //
@@ -62,11 +63,11 @@ func dedupeJSONBlock(match string) string {
 		trimmed[i] = strings.TrimSuffix(l, ",")
 	}
 
-	half, ok := firstHalfIfDoubled(trimmed)
+	period, ok := firstPeriodIfRepeated(trimmed)
 	if !ok {
 		return match
 	}
-	return header + strings.Join(half, ",\n") + "\n" + footer
+	return header + strings.Join(period, ",\n") + "\n" + footer
 }
 
 func dedupeYAMLBlock(match string) string {
@@ -74,29 +75,40 @@ func dedupeYAMLBlock(match string) string {
 	header, body := g[1], g[2]
 
 	lines := strings.Split(strings.TrimRight(body, "\n"), "\n")
-	half, ok := firstHalfIfDoubled(lines)
+	period, ok := firstPeriodIfRepeated(lines)
 	if !ok {
 		return match
 	}
-	return header + strings.Join(half, "\n") + "\n"
+	return header + strings.Join(period, "\n") + "\n"
 }
 
-// firstHalfIfDoubled reports whether lines is exactly two identical halves
-// back to back, returning the first half if so. It only catches this
-// specific shape (contiguous, order-preserved duplication), not any 2x
-// multiset — if swag's bug ever reordered values within the second copy,
-// this wouldn't fire. That matches the upstream bug: it re-appends the same
-// const list a second time, never reorders it.
-func firstHalfIfDoubled(lines []string) ([]string, bool) {
+// firstPeriodIfRepeated reports whether lines is the same block repeated
+// back to back some whole number of times, returning one copy of that block
+// if so. It only catches this shape (contiguous, order-preserved
+// duplication), not any repeated multiset — if swag's bug ever reordered
+// values within a later copy, this wouldn't fire. That matches the upstream
+// bug: it re-appends the same const list, never reorders it. The repeat
+// count varies between machines (2x and 3x have both been observed), so
+// this collapses any count rather than only a doubling.
+func firstPeriodIfRepeated(lines []string) ([]string, bool) {
 	n := len(lines)
-	if n == 0 || n%2 != 0 {
+	if n < 2 {
 		return nil, false
 	}
-	half := n / 2
-	for i := 0; i < half; i++ {
-		if lines[i] != lines[half+i] {
-			return nil, false
+	for period := 1; period <= n/2; period++ {
+		if n%period != 0 {
+			continue
+		}
+		repeated := true
+		for i := period; i < n; i++ {
+			if lines[i] != lines[i-period] {
+				repeated = false
+				break
+			}
+		}
+		if repeated {
+			return lines[:period], true
 		}
 	}
-	return lines[:half], true
+	return nil, false
 }

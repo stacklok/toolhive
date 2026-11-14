@@ -15,13 +15,21 @@
 package session
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 
 	"github.com/ory/fosite"
+	"github.com/ory/fosite/handler/oauth2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/stacklok/toolhive/pkg/authserver/claimnames"
 )
+
+var testVerifiedUpstream = UpstreamSubject{
+	Issuer: "https://idp.example.com", Subject: "upstream-sub", StableClaim: "oid", StableValue: "upstream-oid",
+}
 
 func TestFactory(t *testing.T) {
 	t.Parallel()
@@ -184,9 +192,9 @@ func TestNew(t *testing.T) {
 			claimsMap := session.GetJWTClaims().ToMapClaims()
 
 			if tt.expectTsid {
-				assert.Equal(t, tt.idpSessionID, claimsMap[TokenSessionIDClaimKey])
+				assert.Equal(t, tt.idpSessionID, claimsMap[claimnames.TokenSessionIDKey])
 			} else {
-				_, ok := claimsMap[TokenSessionIDClaimKey]
+				_, ok := claimsMap[claimnames.TokenSessionIDKey]
 				assert.False(t, ok, "tsid claim should not be present when idpSessionID is empty")
 			}
 
@@ -279,6 +287,27 @@ func TestSession_Clone(t *testing.T) {
 	}
 }
 
+func TestSession_CloneCopiesVerifiedIdentityAndIsolatesSubjectIdentifier(t *testing.T) {
+	t.Parallel()
+
+	original := New("user-1", "upstream-session", "client-1", UserClaims{})
+	original.VerifiedUpstream = testVerifiedUpstream
+	original.SetSubjectIdentifier(original.VerifiedUpstream)
+
+	cloned, ok := original.Clone().(*Session)
+	require.True(t, ok)
+	assert.Equal(t, testVerifiedUpstream, cloned.VerifiedUpstream)
+	require.Contains(t, cloned.JWTClaims.Extra, claimnames.SubjectIdentifierKey)
+	require.Contains(t, cloned.JWTClaims.Extra, claimnames.UpstreamSubjectKey)
+
+	cloned.ClearSubjectIdentifier()
+
+	assert.NotContains(t, cloned.JWTClaims.Extra, claimnames.SubjectIdentifierKey)
+	assert.NotContains(t, cloned.JWTClaims.Extra, claimnames.UpstreamSubjectKey)
+	assert.Contains(t, original.JWTClaims.Extra, claimnames.SubjectIdentifierKey)
+	assert.Contains(t, original.JWTClaims.Extra, claimnames.UpstreamSubjectKey)
+}
+
 func TestSession_UpstreamSessionID(t *testing.T) {
 	t.Parallel()
 
@@ -322,4 +351,137 @@ func TestSession_UpstreamSessionID(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestSession_SubjectIdentifier_NilSafety(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		sess *Session
+	}{
+		{name: "nil session", sess: nil},
+		{name: "nil JWTSession", sess: &Session{}},
+		{name: "nil JWTClaims", sess: &Session{JWTSession: &oauth2.JWTSession{}}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			require.NotPanics(t, tt.sess.ClearSubjectIdentifier)
+			require.NotPanics(t, func() { tt.sess.SetSubjectIdentifier(testVerifiedUpstream) })
+		})
+	}
+}
+
+func TestSession_SetSubjectIdentifier_AllocatesNilExtra(t *testing.T) {
+	t.Parallel()
+
+	s := New("user-1", "", "", UserClaims{})
+	s.JWTClaims.Extra = nil
+	s.SetSubjectIdentifier(testVerifiedUpstream)
+
+	assert.Equal(t, map[string]string{
+		"format": "iss_sub",
+		"iss":    "https://idp.example.com",
+		"sub":    "upstream-sub",
+	}, s.JWTClaims.Extra[claimnames.SubjectIdentifierKey])
+	assert.Equal(t, map[string]string{
+		"iss":   "https://idp.example.com",
+		"claim": "oid",
+		"value": "upstream-oid",
+	}, s.JWTClaims.Extra[claimnames.UpstreamSubjectKey])
+}
+
+func TestSession_SetSubjectIdentifier_RequiresCompleteIdentity(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		upstream UpstreamSubject
+		want     bool
+	}{
+		{name: "complete sets both claims", upstream: testVerifiedUpstream, want: true},
+		{name: "incomplete sets neither", upstream: UpstreamSubject{Issuer: "https://idp.example.com", Subject: "s"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			s := New("user-1", "", "", UserClaims{})
+			s.SetSubjectIdentifier(tt.upstream)
+
+			if tt.want {
+				assert.Contains(t, s.JWTClaims.Extra, claimnames.SubjectIdentifierKey)
+				assert.Contains(t, s.JWTClaims.Extra, claimnames.UpstreamSubjectKey)
+				return
+			}
+			assert.NotContains(t, s.JWTClaims.Extra, claimnames.SubjectIdentifierKey)
+			assert.NotContains(t, s.JWTClaims.Extra, claimnames.UpstreamSubjectKey)
+		})
+	}
+}
+
+func TestUpstreamSubject_IsComplete(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		mutate func(*UpstreamSubject)
+		want   bool
+	}{
+		{name: "complete", mutate: func(*UpstreamSubject) {}, want: true},
+		{name: "empty issuer", mutate: func(u *UpstreamSubject) { u.Issuer = "" }},
+		{name: "empty subject", mutate: func(u *UpstreamSubject) { u.Subject = "" }},
+		{name: "empty stable claim", mutate: func(u *UpstreamSubject) { u.StableClaim = "" }},
+		{name: "empty stable value", mutate: func(u *UpstreamSubject) { u.StableValue = "" }},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			u := testVerifiedUpstream
+			tt.mutate(&u)
+			assert.Equal(t, tt.want, u.IsComplete())
+		})
+	}
+}
+
+func TestSession_VerifiedUpstreamJSON(t *testing.T) {
+	t.Parallel()
+
+	t.Run("set value marshals under verified_upstream", func(t *testing.T) {
+		t.Parallel()
+
+		s := &Session{VerifiedUpstream: testVerifiedUpstream}
+		data, err := json.Marshal(s)
+		require.NoError(t, err)
+
+		var raw map[string]any
+		require.NoError(t, json.Unmarshal(data, &raw))
+		assert.Equal(t, map[string]any{
+			"iss":          "https://idp.example.com",
+			"sub":          "upstream-sub",
+			"stable_claim": "oid",
+			"stable_value": "upstream-oid",
+		}, raw["verified_upstream"])
+
+		var back Session
+		require.NoError(t, json.Unmarshal(data, &back))
+		assert.Equal(t, testVerifiedUpstream, back.VerifiedUpstream)
+	})
+
+	t.Run("zero value is omitted", func(t *testing.T) {
+		t.Parallel()
+
+		data, err := json.Marshal(&Session{})
+		require.NoError(t, err)
+
+		var raw map[string]any
+		require.NoError(t, json.Unmarshal(data, &raw))
+		assert.NotContains(t, raw, "verified_upstream")
+	})
 }

@@ -65,6 +65,25 @@ type Identity struct {
 	// These are informational enrichment only: they are NOT used for user
 	// resolution or token storage. May be nil.
 	Claims map[string]any
+
+	// VerifiedIssuer and VerifiedSubject are the exact iss and sub from an
+	// upstream ID token after signature, issuer, audience, and nonce validation.
+	// Only OIDCProviderImpl populates them. They are distinct from Subject, which
+	// may be configured to use a mapped claim for ToolHive user resolution.
+	// They stay the raw ID-token values even when SubjectClaim maps Subject to
+	// another claim, which is why they are used for the RFC 9493 sub_id claim.
+	VerifiedIssuer  string
+	VerifiedSubject string
+
+	// VerifiedStableClaim and VerifiedStableValue are the claim name the upstream is
+	// configured to key users on (SubjectClaim, or "sub" when unset) and that claim's
+	// value from the same validated ID token. Only OIDCProviderImpl populates them.
+	//
+	// The four Verified* fields mirror session.UpstreamSubject, which this package
+	// cannot import. Keep them in step with it and with verifiedUpstreamIdentity in
+	// server/handlers/callback.go.
+	VerifiedStableClaim string
+	VerifiedStableValue string
 }
 
 // ErrIdentityResolutionFailed indicates identity could not be determined.

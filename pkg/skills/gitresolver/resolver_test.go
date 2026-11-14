@@ -357,6 +357,9 @@ func TestResolver_Resolve_SignedCommitSignaturePropagates(t *testing.T) {
 	require.NotNil(t, result)
 	assert.Equal(t, signedHash.String(), result.CommitHash)
 	assert.Equal(t, armoredSig, result.CommitSignature)
+	assert.Contains(t, string(result.CommitPayload), "tree ",
+		"the signed payload must accompany the signature")
+	assert.NotContains(t, string(result.CommitPayload), "gpgsig")
 }
 
 func TestResolver_Resolve_MissingSkillMD(t *testing.T) {

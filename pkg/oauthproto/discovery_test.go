@@ -44,6 +44,14 @@ func TestOIDCDiscoveryDocument_Validate(t *testing.T) {
 		{"valid OIDC document", nil, true, nil},
 		{"missing issuer", func(d *OIDCDiscoveryDocument) { d.Issuer = "" }, false, ErrMissingIssuer},
 		{"missing authorization_endpoint", func(d *OIDCDiscoveryDocument) { d.AuthorizationEndpoint = "" }, false, ErrMissingAuthorizationEndpoint},
+		{"token-only OAuth metadata omits authorization_endpoint", func(d *OIDCDiscoveryDocument) {
+			d.AuthorizationEndpoint = ""
+			d.GrantTypesSupported = []string{GrantTypeTokenExchange}
+		}, false, nil},
+		{"token-only OIDC metadata is rejected", func(d *OIDCDiscoveryDocument) {
+			d.AuthorizationEndpoint = ""
+			d.GrantTypesSupported = []string{GrantTypeTokenExchange}
+		}, true, ErrMissingAuthorizationEndpoint},
 		{"missing token_endpoint", func(d *OIDCDiscoveryDocument) { d.TokenEndpoint = "" }, false, ErrMissingTokenEndpoint},
 		{"missing jwks_uri for OIDC", func(d *OIDCDiscoveryDocument) { d.JWKSURI = "" }, true, ErrMissingJWKSURI},
 		{"missing jwks_uri for OAuth is OK", func(d *OIDCDiscoveryDocument) { d.JWKSURI = "" }, false, nil},
@@ -702,4 +710,24 @@ func TestFetchAuthorizationServerMetadata_DedupesPathInsertionAndBare(t *testing
 		gotPaths,
 		"expected exactly two distinct discovery requests in priority order: path-insertion before OIDC",
 	)
+}
+
+// TestBuildDiscoveryHTTPClient_BoundsIdleConnectionPool pins that the default
+// discovery client bounds its idle-connection pool. A zero IdleConnTimeout
+// never expires a pooled connection, pinning a socket and its goroutine pair
+// for the process lifetime.
+func TestBuildDiscoveryHTTPClient_BoundsIdleConnectionPool(t *testing.T) {
+	t.Parallel()
+
+	client := buildDiscoveryHTTPClient(nil)
+	transport, ok := client.Transport.(*http.Transport)
+	require.True(t, ok, "default discovery client must use an *http.Transport")
+
+	assert.Equal(t, 90*time.Second, transport.IdleConnTimeout)
+	assert.Equal(t, 100, transport.MaxIdleConns)
+	assert.Equal(t, 4, transport.MaxIdleConnsPerHost)
+
+	// A caller-supplied client must be returned unchanged.
+	custom := &http.Client{}
+	assert.Same(t, custom, buildDiscoveryHTTPClient(custom))
 }

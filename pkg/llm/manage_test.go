@@ -6,13 +6,16 @@ package llm
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
+	"go.yaml.in/yaml/v3"
 
 	"github.com/stacklok/toolhive/pkg/secrets"
 	secretsmocks "github.com/stacklok/toolhive/pkg/secrets/mocks"
@@ -121,6 +124,23 @@ func TestConfig_SetFields(t *testing.T) {
 			opts: SetOptions{},
 			want: Config{GatewayURL: "https://gw.example.com", TLSSkipVerify: true},
 		},
+		{
+			name: "ShortPromptCache pointer true sets field",
+			opts: SetOptions{ShortPromptCache: boolPtr(true)},
+			want: Config{ShortPromptCache: true},
+		},
+		{
+			name: "ShortPromptCache pointer false clears field",
+			base: Config{ShortPromptCache: true},
+			opts: SetOptions{ShortPromptCache: boolPtr(false)},
+			want: Config{},
+		},
+		{
+			name: "nil ShortPromptCache pointer leaves existing value unchanged",
+			base: Config{ShortPromptCache: true},
+			opts: SetOptions{},
+			want: Config{ShortPromptCache: true},
+		},
 	}
 
 	for _, tt := range tests {
@@ -155,6 +175,9 @@ func TestConfig_SetFields(t *testing.T) {
 			}
 			if cfg.TLSSkipVerify != tt.want.TLSSkipVerify {
 				t.Errorf("TLSSkipVerify = %v, want %v", cfg.TLSSkipVerify, tt.want.TLSSkipVerify)
+			}
+			if cfg.ShortPromptCache != tt.want.ShortPromptCache {
+				t.Errorf("ShortPromptCache = %v, want %v", cfg.ShortPromptCache, tt.want.ShortPromptCache)
 			}
 		})
 	}
@@ -365,6 +388,23 @@ func TestConfig_Show(t *testing.T) {
 			},
 			absent: []string{"TLS Skip Verify"},
 		},
+		{
+			name: "short prompt cache is shown as five minutes",
+			cfg: Config{
+				GatewayURL:       "https://gw.example.com",
+				OIDC:             OIDCConfig{Issuer: "https://auth.example.com", ClientID: "client1"},
+				ShortPromptCache: true,
+			},
+			contains: []string{"Prompt Cache:    5m"},
+		},
+		{
+			name: "default prompt cache is shown as one hour",
+			cfg: Config{
+				GatewayURL: "https://gw.example.com",
+				OIDC:       OIDCConfig{Issuer: "https://auth.example.com", ClientID: "client1"},
+			},
+			contains: []string{"Prompt Cache:    1h"},
+		},
 	}
 
 	for _, tt := range tests {
@@ -385,6 +425,100 @@ func TestConfig_Show(t *testing.T) {
 					t.Errorf("Show() output should not contain %q\ngot: %s", absent, out)
 				}
 			}
+		})
+	}
+}
+
+func TestConfig_JSONOmitsDefaultShortPromptCache(t *testing.T) {
+	t.Parallel()
+
+	for _, enabled := range []bool{false, true} {
+		t.Run(fmt.Sprintf("enabled=%t", enabled), func(t *testing.T) {
+			t.Parallel()
+			data, err := json.Marshal(Config{ShortPromptCache: enabled})
+			require.NoError(t, err)
+
+			var got map[string]any
+			require.NoError(t, json.Unmarshal(data, &got))
+			if enabled {
+				assert.Equal(t, true, got["short_prompt_cache"])
+			} else {
+				assert.NotContains(t, got, "short_prompt_cache")
+			}
+		})
+	}
+}
+
+func TestConfig_ShortPromptCacheYAMLRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	data, err := yaml.Marshal(Config{ShortPromptCache: true})
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "short_prompt_cache: true")
+
+	var got Config
+	require.NoError(t, yaml.Unmarshal(data, &got))
+	assert.True(t, got.ShortPromptCache)
+}
+
+// TestConfig_SetFields_PinsLegacyBedrockRecords checks that changing the
+// persisted Bedrock-compat setting first pins each Bedrock client record that
+// predates ToolConfig.BedrockCompat to the old setting, so the record keeps
+// saying what its setup wrote. The caller's records are not modified.
+func TestConfig_SetFields_PinsLegacyBedrockRecords(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		compat   bool
+		set      *bool
+		wantRecs map[string]*bool
+	}{
+		{
+			name: "turning compat on pins legacy records to off",
+			set:  new(true),
+			wantRecs: map[string]*bool{
+				claudeCodeClient: new(false), codexClient: new(true), "cursor": nil,
+			},
+		},
+		{
+			name:   "turning compat off pins legacy records to on",
+			compat: true,
+			set:    new(false),
+			wantRecs: map[string]*bool{
+				claudeCodeClient: new(true), codexClient: new(true), "cursor": nil,
+			},
+		},
+		{
+			name:     "setting the same value leaves legacy records alone",
+			compat:   true,
+			set:      new(true),
+			wantRecs: map[string]*bool{claudeCodeClient: nil, codexClient: new(true), "cursor": nil},
+		},
+		{
+			name:     "leaving compat unset leaves legacy records alone",
+			wantRecs: map[string]*bool{claudeCodeClient: nil, codexClient: new(true), "cursor": nil},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			records := []ToolConfig{
+				{Tool: claudeCodeClient},
+				{Tool: codexClient, BedrockCompat: new(true)},
+				{Tool: "cursor"},
+			}
+			cfg := Config{Bedrock: BedrockConfig{Compat: tt.compat}, ConfiguredTools: records}
+
+			require.NoError(t, cfg.SetFields(SetOptions{BedrockCompat: tt.set}))
+
+			got := make(map[string]*bool, len(cfg.ConfiguredTools))
+			for _, tc := range cfg.ConfiguredTools {
+				got[tc.Tool] = tc.BedrockCompat
+			}
+			assert.Equal(t, tt.wantRecs, got)
+			assert.Nil(t, records[0].BedrockCompat, "the caller's records must not be modified")
 		})
 	}
 }

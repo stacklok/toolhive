@@ -153,3 +153,18 @@ func (mr *MockEmbeddingClientMockRecorder) EmbedBatch(ctx, texts any) *gomock.Ca
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "EmbedBatch", reflect.TypeOf((*MockEmbeddingClient)(nil).EmbedBatch), ctx, texts)
 }
+
+// ModelID mocks base method.
+func (m *MockEmbeddingClient) ModelID(ctx context.Context) (string, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ModelID", ctx)
+	ret0, _ := ret[0].(string)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// ModelID indicates an expected call of ModelID.
+func (mr *MockEmbeddingClientMockRecorder) ModelID(ctx any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ModelID", reflect.TypeOf((*MockEmbeddingClient)(nil).ModelID), ctx)
+}

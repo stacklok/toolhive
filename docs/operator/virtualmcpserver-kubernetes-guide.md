@@ -670,12 +670,52 @@ presented to anyone as a credential. Since a session can outlive an `id_token` b
 days, expiring it out of policy evaluation would let the same user be permitted
 early in a session and denied later, with no configuration change.
 
-The token the client presented — the one ToolHive's auth server issued — is
-never a claim source here, even though it mirrors a `name` and `email`. In a
+The token the client presented — the one ToolHive's auth server issued — is not
+a claim source here, even though it mirrors a `name` and `email`. In a
 multi-upstream chain those mirrored values come from the **first** configured
 upstream (the identity provider), which need not be the provider
 `primaryUpstreamProvider` names, so using them could attribute one IdP's email to
 another.
+
+There are two exceptions, where Cedar evaluates the ToolHive-issued token's own
+claims instead:
+
+- **Tokens that can have no upstream session at all** — those minted by the RFC
+  8693 delegation grant or the RFC 7523 JWT-bearer grant. No upstream ever logged
+  the subject in, so no upstream credential exists to read.
+- **Upstreams whose access token is opaque** rather than a JWT. Google
+  (`ya29.*`) and GitHub (`gho_*`) access tokens are opaque, so this is the normal
+  state for those providers, not a misconfiguration — their claims cannot be
+  read, and evaluation degrades to the request token's claims.
+
+Every request carries a `thv_claim_source` attribute naming which trust root
+asserted the claims Cedar saw — `upstream:<provider>` on the normal path above,
+`request:no-upstream-session` and `request:upstream-opaque` for the two cases
+here — so a policy that must only act on what an upstream actually asserted can
+require it:
+
+```plain
+permit(principal, action == Action::"call_tool", resource == Tool::"deploy") when {
+  principal.thv_claim_source == "upstream:okta" &&
+  principal has claim_email
+};
+```
+
+On both fallback paths the token carries no upstream attributes, so policies
+keyed on `groups`, `roles` or similar will not match. What `email` and `name`
+hold depends on the path: on the opaque path they are mirrored from the
+**first** upstream in the chain, which is not necessarily the one you pinned, so
+a multi-upstream chain pinned to a later leg can see another provider's email.
+Session-less tokens differ by grant, and JWT-bearer tokens carry neither. See
+[What the fallback claims actually
+are](../authz.md#what-the-fallback-claims-actually-are) and [tokens with no
+upstream login](../authz.md#tokens-with-no-upstream-login) for the full contract,
+including how this affects `forbid` rules.
+
+Everything else still fails closed: an identity that simply arrives without
+upstream credentials and says nothing about why — anonymous, local, or a bearer
+token from an IdP other than the pinned one — is denied, as is a session that
+exists but holds no credential for the pinned provider.
 
 An OAuth 2.0 upstream that was never asked for the `openid` scope has no stored
 `id_token`, so nothing is available to fall back to and the claim stays absent.

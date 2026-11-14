@@ -12,7 +12,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
-	tcredis "github.com/stacklok/toolhive-core/redis"
+	"github.com/stacklok/toolhive-core/redisconn"
 )
 
 // RedisSessionDataStorage implements DataStorage backed by Redis/Valkey.
@@ -38,16 +38,18 @@ type RedisSessionDataStorage struct {
 // Connection-mode validation, timeout defaults, client construction (standalone,
 // cluster, or sentinel), TLS plumbing, and connectivity verification are
 // delegated to the shared toolhive-core redis package.
+// A connection without verified TLS is allowed but logged at WARN.
 func NewRedisSessionDataStorage(
 	ctx context.Context,
-	cfg tcredis.Config,
+	cfg redisconn.Config,
 	keyPrefix string,
 	ttl time.Duration,
 ) (*RedisSessionDataStorage, error) {
 	if err := validateSessionInvariants(keyPrefix, ttl); err != nil {
 		return nil, err
 	}
-	client, err := tcredis.NewClient(ctx, &cfg)
+	warnInsecureRedisTransport(&cfg)
+	client, err := redisconn.NewClient(ctx, &cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -69,6 +71,21 @@ func (s *RedisSessionDataStorage) Load(ctx context.Context, id string) (map[stri
 		return nil, fmt.Errorf("cannot load session data with empty ID")
 	}
 	data, err := s.client.GetEx(ctx, s.key(id), s.ttl).Bytes()
+	return decodeRedisSessionData(data, err)
+}
+
+// LoadMetadata retrieves metadata from Redis with a plain GET, leaving the
+// key's TTL unchanged. Returns ErrSessionNotFound if the key does not exist.
+func (s *RedisSessionDataStorage) LoadMetadata(ctx context.Context, id string) (map[string]string, error) {
+	if id == "" {
+		return nil, fmt.Errorf("cannot load session data with empty ID")
+	}
+	data, err := s.client.Get(ctx, s.key(id)).Bytes()
+	return decodeRedisSessionData(data, err)
+}
+
+// decodeRedisSessionData maps a Redis read result to session metadata.
+func decodeRedisSessionData(data []byte, err error) (map[string]string, error) {
 	if err != nil {
 		if errors.Is(err, redis.Nil) {
 			return nil, ErrSessionNotFound

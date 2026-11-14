@@ -178,6 +178,13 @@ func (c *openAIClient) embedChunk(ctx context.Context, texts []string) ([][]floa
 	return embeddings, nil
 }
 
+// ModelID returns the configured model name. The OpenAI /embeddings API
+// selects the model per request from this same field, so unlike TEI there is
+// no server-side state that could drift from it.
+func (c *openAIClient) ModelID(context.Context) (string, error) {
+	return c.model, nil
+}
+
 // Close is a no-op for the OpenAI client.
 func (*openAIClient) Close() error {
 	return nil

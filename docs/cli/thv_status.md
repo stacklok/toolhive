@@ -24,14 +24,14 @@ thv status [workload-name] [flags]
 ### Options
 
 ```
-      --format string   Output format (json or text) (default "text")
-  -h, --help            help for status
+      --format string       Output format (json or text) (default "text")
+  -h, --help[=true|false]   help for status
 ```
 
 ### Options inherited from parent commands
 
 ```
-      --debug   Enable debug mode
+      --debug[=true|false]   Enable debug mode
 ```
 
 ### SEE ALSO

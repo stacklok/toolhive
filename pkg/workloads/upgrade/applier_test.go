@@ -506,11 +506,14 @@ func fullyConfiguredOld(t *testing.T) *runner.RunConfig {
 		CmdArgs:                     []string{"--flag", "value"},
 		PermissionProfileNameOrPath: "none",
 		IsolateNetwork:              true,
+		ReadOnlyRootfs:              true,
 		TrustProxyHeaders:           true,
 		StrictProtocolValidation:    true,
 		Stateless:                   true,
 		EndpointPrefix:              "/mcp",
 		SessionTTL:                  "30m",
+		MaxRequestBodySize:          16 << 20,
+		ProxyReadTimeout:            "45s",
 		Debug:                       true,
 		ContainerLabels:             map[string]string{"team": "platform"},
 		OIDCConfig:                  &auth.TokenValidatorConfig{Issuer: "https://issuer.example", Audience: "aud"},
@@ -569,11 +572,14 @@ func TestApplier_Apply_PreservesFullUserConfig(t *testing.T) {
 	assert.Equal(t, old.CmdArgs, got.CmdArgs)
 	assert.Equal(t, old.PermissionProfileNameOrPath, got.PermissionProfileNameOrPath, "named profile preserved")
 	assert.Equal(t, old.IsolateNetwork, got.IsolateNetwork)
+	assert.True(t, got.ReadOnlyRootfs, "read-only rootfs preserved (security)")
 	assert.Equal(t, old.TrustProxyHeaders, got.TrustProxyHeaders)
 	assert.Equal(t, old.StrictProtocolValidation, got.StrictProtocolValidation)
 	assert.Equal(t, old.Stateless, got.Stateless)
 	assert.Equal(t, old.EndpointPrefix, got.EndpointPrefix)
 	assert.Equal(t, old.SessionTTL, got.SessionTTL)
+	assert.Equal(t, old.MaxRequestBodySize, got.MaxRequestBodySize)
+	assert.Equal(t, old.ProxyReadTimeout, got.ProxyReadTimeout, "proxy read timeout preserved")
 	assert.Equal(t, old.Debug, got.Debug)
 	assert.Equal(t, "platform", got.ContainerLabels["team"], "user label preserved")
 	assert.Equal(t, old.OIDCConfig, got.OIDCConfig, "OIDC config preserved")

@@ -159,12 +159,12 @@ func TestIntegration_TokenExchange_AuditDelegationChain(t *testing.T) {
 	)
 
 	agentClient, err := registration.New(registration.Config{
-		ID:         agentClientID,
-		Secret:     agentClientSecret,
-		Public:     false,
-		GrantTypes: []string{oauthproto.GrantTypeTokenExchange},
-		Scopes:     registration.DefaultScopes,
-		Audience:   []string{testAudience},
+		ID:                      agentClientID,
+		Secret:                  agentClientSecret,
+		TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodClientSecretPost,
+		GrantTypes:              []string{oauthproto.GrantTypeTokenExchange},
+		Scopes:                  registration.DefaultScopes,
+		Audience:                []string{testAudience},
 	})
 	require.NoError(t, err)
 
@@ -259,12 +259,12 @@ func mintTwoHopDelegatedToken(t *testing.T) (ts *testServerWithUpstream, delegat
 	)
 
 	secondAgentClient, err := registration.New(registration.Config{
-		ID:         secondAgent,
-		Secret:     secondAgentSecret,
-		Public:     false,
-		GrantTypes: []string{oauthproto.GrantTypeTokenExchange},
-		Scopes:     registration.DefaultScopes,
-		Audience:   []string{testAudience},
+		ID:                      secondAgent,
+		Secret:                  secondAgentSecret,
+		TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodClientSecretPost,
+		GrantTypes:              []string{oauthproto.GrantTypeTokenExchange},
+		Scopes:                  registration.DefaultScopes,
+		Audience:                []string{testAudience},
 	})
 	require.NoError(t, err)
 

@@ -247,7 +247,7 @@ metrics use OTEL MCP semantic convention attribute names exclusively (e.g.,
 
 ## vMCP Backend Client Attributes
 
-The vMCP backend client (`pkg/vmcp/server/telemetry.go`) emits both
+The vMCP backend client (`pkg/vmcp/internal/backendtelemetry/backendtelemetry.go`) emits both
 ToolHive-specific and OTEL spec attributes on spans. These are always emitted
 regardless of `useLegacyAttributes` since they serve different purposes:
 

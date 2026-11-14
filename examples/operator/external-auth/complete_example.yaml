@@ -28,11 +28,11 @@ spec:
   type: tokenExchange
   tokenExchange:
     # Keycloak token endpoint
-    token_url: https://keycloak.example.com/realms/myrealm/protocol/openid-connect/token
+    tokenUrl: https://keycloak.example.com/realms/myrealm/protocol/openid-connect/token
 
     # OAuth2 client credentials
-    client_id: toolhive-client
-    client_secret_ref:
+    clientId: toolhive-client
+    clientSecretRef:
       name: oauth-client-secret
       key: client-secret
 
@@ -40,10 +40,12 @@ spec:
     audience: mcp-backend
 
     # OAuth2 scopes
-    scope: "openid profile"
+    scopes:
+      - openid
+      - profile
 
     # Extract external token from custom header
-    external_token_header_name: "X-Upstream-Authorization"
+    externalTokenHeaderName: "X-Upstream-Authorization"
 
 ---
 # MCP Server with external authentication

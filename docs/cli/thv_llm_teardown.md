@@ -19,7 +19,15 @@ Revert the configuration changes made by "thv llm setup" for all configured
 tools, or for a single tool when tool-name is provided as a positional argument
 or via --client.
 
-Use --purge-tokens to also remove cached OIDC tokens from the secrets provider.
+When no configured tools remain after teardown, ToolHive deletes locally cached
+OIDC tokens by default, including tokens left from an earlier or incomplete
+setup. Use --keep-tokens to retain them for a later setup. A targeted teardown
+that leaves other tools configured retains their shared tokens by default. Use
+--purge-tokens to delete the tokens and require those tools to authenticate
+again. Deleting local tokens does not revoke them at the identity provider or
+sign out the browser session. Stop any running LLM proxy and wait for active
+token-helper commands to finish before teardown because they can recreate
+cached credentials.
 
 ```
 thv llm teardown [tool-name] [flags]
@@ -28,15 +36,16 @@ thv llm teardown [tool-name] [flags]
 ### Options
 
 ```
-      --client string   Remove configuration for only this AI tool by name (e.g. claude-code, cursor). Omit to revert all configured tools.
-  -h, --help            help for teardown
-      --purge-tokens    Also delete cached OIDC tokens from the secrets provider
+      --client string               Remove configuration for only this AI tool by name (e.g. claude-code, cursor). Omit to revert all configured tools.
+  -h, --help[=true|false]           help for teardown
+      --keep-tokens[=true|false]    Retain cached OIDC tokens when no configured tools remain
+      --purge-tokens[=true|false]   Delete cached OIDC tokens even when other tools remain configured
 ```
 
 ### Options inherited from parent commands
 
 ```
-      --debug   Enable debug mode
+      --debug[=true|false]   Enable debug mode
 ```
 
 ### SEE ALSO

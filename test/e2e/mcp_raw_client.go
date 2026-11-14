@@ -41,7 +41,7 @@ const (
 	// HeaderMCPSessionID is the HTTP header carrying the Legacy session id.
 	HeaderMCPSessionID = "Mcp-Session-Id"
 	// HeaderMCPMethod is the HTTP header carrying the JSON-RPC method on Modern
-	// requests. A real go-sdk v1.7 streamable-HTTP server requires it on every
+	// requests. A real go-sdk streamable-HTTP server requires it on every
 	// Modern request (see pkg/mcp/revision.go ValidateHeaderConsistency); the
 	// ToolHive single-server proxy does not read it, but a Modern backend does.
 	HeaderMCPMethod = "Mcp-Method"
@@ -96,12 +96,12 @@ func NewLegacyInitializeRequest(clientName, clientVersion string) *RawRequest {
 	return r
 }
 
-// NewModernRequest builds a Modern (2026-07-28) JSON-RPC request emitting the
-// full conformant wire shape a real go-sdk v1.7 client produces: the
+// NewModernRequest builds a well-formed Modern (2026-07-28) JSON-RPC request
+// using the current streamable-HTTP wire shape: the
 // MCP-Protocol-Version header, the reserved _meta keys protocolVersion and
-// clientCapabilities (clientInfo is optional per the draft schema and is
-// omitted by default), the Mcp-Method header (always), and the Mcp-Name header
-// for name-bearing methods (tools/call, resources/read, prompts/get). A Modern
+// clientCapabilities (clientInfo is optional in the 2026-07-28 schema and this
+// helper omits it), the Mcp-Method header (always), and the Mcp-Name header for
+// name-bearing methods (tools/call, resources/read, prompts/get). A Modern
 // backend rejects a request missing these headers (-32020); the ToolHive
 // single-server proxy ignores them. Each field can be independently overridden
 // or removed via SetHeader/DeleteHeader and SetMeta/DeleteMeta.
@@ -123,7 +123,7 @@ func NewModernRequest(method string, params map[string]any) (*RawRequest, error)
 }
 
 // modernNameHeader returns the plain Mcp-Name header value for a name-bearing
-// Modern method, mirroring go-sdk v1.7's streamable-HTTP encoding and
+// Modern method, mirroring go-sdk's streamable-HTTP encoding and
 // pkg/mcp's ValidateHeaderConsistency: tools/call and prompts/get name the
 // "name" param, resources/read names the "uri" param. Any other method (e.g.
 // tools/list, server/discover) carries no Mcp-Name, and sending one there
@@ -174,12 +174,9 @@ func (r *RawRequest) WithClientInfo(name, version string) *RawRequest {
 }
 
 // WithStreamableAccept sets "Accept: application/json, text/event-stream".
-// A real go-sdk streamable-HTTP server rejects a POST without this header
-// (HTTP 400), so requests bound for a real backend (e.g. the k8s tier) must
-// set it. Requests to the ToolHive proxy still omit it by convention: the
-// proxy does not require it, and omitting it keeps responses plain JSON (the
-// client parses SSE responses too -- see sseResponsePayload -- and flipping
-// proxy-bound requests to the conformant Accept is tracked in #6104).
+// A real streamable-HTTP MCP peer requires this header on POSTs. ToolHive's
+// proxy does not require it, but conformant proxy-bound specs should set it;
+// RawMCPClient parses both plain JSON and SSE-framed POST responses.
 func (r *RawRequest) WithStreamableAccept() *RawRequest {
 	return r.SetHeader("Accept", "application/json, text/event-stream")
 }
@@ -317,19 +314,16 @@ func NewRawMCPClient(timeout time.Duration) (*RawMCPClient, error) {
 	}, nil
 }
 
-// Send marshals req and POSTs it to url. No Accept header is set by default:
-// the ToolHive proxy returns a plain JSON body without it, and switches to an
-// SSE response body whenever Accept lists text/event-stream. A request bound
-// for a REAL streamable-HTTP MCP backend -- which rejects a POST lacking that
-// Accept with HTTP 400 -- should opt in via req.WithStreamableAccept().
+// Send marshals req and POSTs it to url. No Accept header is set by default.
+// Streamable-HTTP requests that need the conformant POST Accept header should
+// opt in via req.WithStreamableAccept(). ToolHive's proxy returns plain JSON
+// without it and may switch to SSE framing when Accept lists text/event-stream.
 //
 // Either way the JSON-RPC envelope is parsed into the RawResponse: a
 // Content-Type: text/event-stream body has its response event extracted first
-// (see sseResponsePayload). Some servers answer a POST as SSE regardless of
-// the request's Accept header -- mcpcompat's cross-replica rehydration path
-// does, because go-sdk v1.7.0-pre.3 does not export the transport-level
-// JSONResponse knob (StreamableServerTransport.jsonResponse) that its
-// top-level handler options set -- so this parsing cannot be opt-in.
+// (see sseResponsePayload). Some server paths answer a POST as SSE regardless of
+// the request's Accept header, including mcpcompat's cross-replica rehydration
+// path, so this parsing cannot be opt-in.
 func (c *RawMCPClient) Send(ctx context.Context, url string, req *RawRequest) (*RawResponse, error) {
 	body, err := req.marshal()
 	if err != nil {
@@ -340,7 +334,8 @@ func (c *RawMCPClient) Send(ctx context.Context, url string, req *RawRequest) (*
 
 // SendRaw POSTs body verbatim to url with the given headers — for batches
 // built with NewBatchBody, or any payload (truncated, oversized, garbage)
-// not expressible via RawRequest.
+// not expressible via RawRequest. A "Host" entry in headers overrides the
+// request's Host header.
 func (c *RawMCPClient) SendRaw(ctx context.Context, url string, headers map[string]string, body []byte) (*RawResponse, error) {
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
@@ -348,6 +343,13 @@ func (c *RawMCPClient) SendRaw(ctx context.Context, url string, headers map[stri
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	for k, v := range headers {
+		// net/http ignores a Host entry in Header and sends Request.Host, so
+		// route it there; this lets a test forge the Host header (e.g. the
+		// rebound hostname a DNS-rebinding page sends).
+		if http.CanonicalHeaderKey(k) == "Host" {
+			httpReq.Host = v
+			continue
+		}
 		httpReq.Header.Set(k, v)
 	}
 

@@ -6,6 +6,7 @@ package ignore
 import (
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 )
 
@@ -485,4 +486,38 @@ func TestShouldIgnore(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestGetOverlayMountsConcurrentCleanup guards against one processor's Cleanup
+// removing artifact storage that another live processor is about to use.
+func TestGetOverlayMountsConcurrentCleanup(t *testing.T) {
+	t.Parallel()
+	tmpDir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(tmpDir, ".ssh"), 0755); err != nil {
+		t.Fatalf("Failed to create .ssh directory: %v", err)
+	}
+
+	const workers = 16
+	const iterations = 50
+
+	var wg sync.WaitGroup
+	for range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range iterations {
+				processor := NewProcessor(&Config{LoadGlobal: false})
+				processor.LocalPatterns = []string{".ssh/"}
+
+				mounts := processor.GetOverlayMounts(tmpDir, "/app")
+				if len(mounts) != 1 {
+					t.Errorf("Expected 1 overlay mount, but got %d", len(mounts))
+				}
+				if err := processor.Cleanup(); err != nil {
+					t.Errorf("Failed to cleanup processor: %v", err)
+				}
+			}
+		}()
+	}
+	wg.Wait()
 }

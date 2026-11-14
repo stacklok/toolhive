@@ -95,6 +95,17 @@ type InstalledPlugin struct {
 	Signature string `json:"signature,omitempty"`
 	// Dependencies is the list of external plugin dependencies.
 	Dependencies []Dependency `json:"dependencies,omitempty"`
+	// Managed indicates this install is tracked in the project's
+	// toolhive.lock.yaml plugins: key. Only ever true for project-scoped
+	// installs. No omitempty: false is an observable state (unmanaged),
+	// not an absence.
+	Managed bool `json:"managed"`
+	// SigstoreBundle is the signature material captured at install time,
+	// used for offline re-verification during sync. It is core's durable
+	// form (see verifier.Result.Bundle), not necessarily bare Sigstore
+	// bundle JSON, and is re-verified against the ARTIFACT digest. Nil for
+	// unsigned installs. Never serialized to API responses.
+	SigstoreBundle []byte `json:"-"`
 }
 
 // ComponentInventory summarizes the component types declared by a plugin

@@ -24,15 +24,15 @@ thv registry list [flags]
 ### Options
 
 ```
-      --format string   Output format (json, text) (default "text")
-  -h, --help            help for list
-      --refresh         Force refresh registry cache
+      --format string          Output format (json, text) (default "text")
+  -h, --help[=true|false]      help for list
+      --refresh[=true|false]   Force refresh registry cache
 ```
 
 ### Options inherited from parent commands
 
 ```
-      --debug   Enable debug mode
+      --debug[=true|false]   Enable debug mode
 ```
 
 ### SEE ALSO

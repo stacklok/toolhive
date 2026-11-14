@@ -153,7 +153,7 @@
 //
 // # Related Documentation
 //
-// - Proposal: https://github.com/stacklok/toolhive-rfcs/blob/main/rfcs/THV-0008-virtual-mcp-server.md
+// - Proposal: https://github.com/stacklok/toolhive-rfcs/blob/main/toolhive/THV-0008-virtual-mcp-server.md
 // - GitHub Issues: #146-159 in stacklok/stacklok-epics
 // - MCP Specification: https://modelcontextprotocol.io/specification
 //

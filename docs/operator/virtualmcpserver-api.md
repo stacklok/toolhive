@@ -723,4 +723,4 @@ The VirtualMCPServer CRD includes comprehensive validation:
 - [MCPExternalAuthConfig](./crd-api.md#apiv1beta1mcpexternalauthconfig): External authentication configuration
 - [MCPToolConfig](./crd-api.md#apiv1beta1mcptoolconfig): Tool filtering and renaming configuration
 - [Virtual MCP Server Observability](./virtualmcpserver-observability.md): Telemetry and metrics documentation
-- [Virtual MCP Proposal](https://github.com/stacklok/toolhive-rfcs/blob/main/rfcs/THV-0008-virtual-mcp-server.md): Complete design proposal
+- [Virtual MCP Proposal](https://github.com/stacklok/toolhive-rfcs/blob/main/toolhive/THV-0008-virtual-mcp-server.md): Complete design proposal

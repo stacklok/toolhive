@@ -34,7 +34,7 @@ operations through:
 4. **Protocol-aware instrumentation**: MCP-specific insights beyond generic HTTP
    metrics
 
-See [the original design document](https://github.com/stacklok/toolhive-rfcs/blob/main/rfcs/THV-0001-otel-integration-proposal.md) for
+See [the original design document](https://github.com/stacklok/toolhive-rfcs/blob/main/toolhive/THV-0001-otel-integration-proposal.md) for
 more details on the design and goals of this observability architecture.
 
 ## Architecture

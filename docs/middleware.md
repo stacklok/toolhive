@@ -374,7 +374,8 @@ Each proxy (and each vMCP server) sends one report every 15 minutes, including w
 | `runtime` | `docker`, `podman`, `colima`, `kubernetes`, `none`, `other` |
 | `auth_mode` | `none`, `oidc`, `local`, `embedded`, `other` |
 | `authz` | `on`, `off` |
-| `backend_count`, `tool_count` | vMCP only: number of backends and of aggregated tools |
+| `backend_count` | vMCP only: number of backends |
+| `tool_count` | vMCP only: number of backend tools in the most recent aggregation, after conflict resolution and per-backend filters. Excludes composite and optimizer tools and is not filtered per user; it can differ between callers when backends return different tools per user |
 | `features` | vMCP only: any of `optimizer`, `code_mode`, `composite_tools`, `outgoing_auth` |
 
 The client is taken from `clientInfo.name`: from the `initialize` request for session-based connections (tracked per session ID, in memory only), or from `_meta` on each request for stateless (2026-07-28) requests. Only the normalized value is reported. Calls that vMCP forwards to a backend proxy are reported by that proxy under the client `toolhive`.

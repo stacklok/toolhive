@@ -772,6 +772,12 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 		slog.Info("telemetry middleware enabled for MCP endpoints")
 	}
 
+	// Count tool calls for anonymous usage metrics. It reads the parsed request,
+	// so it sits inside the parsing middleware applied below.
+	if s.config.UsageMetricsMiddleware != nil {
+		mcpHandler = s.config.UsageMetricsMiddleware(mcpHandler)
+	}
+
 	// Apply MCP parsing middleware to extract JSON-RPC method from request body.
 	// This runs before telemetry so that recordMetrics can label metrics with the
 	// actual mcp_method (e.g. "tools/call", "initialize") instead of "unknown".
@@ -779,9 +785,6 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 	// The second application here is a no-op because the context already holds a
 	// ParsedMCPRequest; it exists only so the telemetry layer works correctly even
 	// when auth middleware is nil.
-	if s.config.UsageMetricsMiddleware != nil {
-		mcpHandler = s.config.UsageMetricsMiddleware(mcpHandler)
-	}
 	mcpHandler = mcpparser.ParsingMiddleware(mcpHandler)
 
 	// Apply authentication middleware if configured

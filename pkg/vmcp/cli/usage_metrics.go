@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
 	"sync/atomic"
 	"time"
 
@@ -118,7 +119,9 @@ func (u *usageMetrics) profileFunc(registry vmcp.BackendRegistry, facts usageFac
 }
 
 // toolCountObserver records the tool count of each aggregation and otherwise
-// delegates to the wrapped aggregator.
+// delegates to the wrapped aggregator. The caching aggregator wraps it, so it
+// only sees cache misses: the recorded count is from the most recent caller
+// whose aggregation was not served from the cache.
 type toolCountObserver struct {
 	aggregator.Aggregator
 	toolCount *atomic.Int64
@@ -231,22 +234,24 @@ func disabledInConfig(load func() (*appconfig.Config, error)) bool {
 }
 
 // checkForUpdates reports this vMCP instance to the update service, the same
-// way the thv CLI and the operator do. Failures are non-fatal. In Kubernetes the
-// pod usually has a read-only root filesystem and no persistent home, so the
-// file-backed update checker cannot work there; the ping is sent directly with a
-// per-process instance ID instead, like each proxy's usage metrics instance ID.
+// way the thv CLI and the operator do. Failures are non-fatal, and a newer
+// version is not announced, since vMCP is a server. In Kubernetes the pod
+// usually has a read-only root filesystem and no persistent home, so the
+// file-backed update checker cannot work there; the ping is sent directly
+// instead, with the ID versionCheckInstanceID picks.
 func checkForUpdates() {
 	if updates.ShouldSkipUpdateChecks() {
 		return
 	}
 	client := updates.NewVersionClientForComponent(usageMetricsComponent, "", false)
 	if rt.IsKubernetesRuntime() {
-		if _, err := client.GetLatestVersion(uuid.NewString(), versions.GetVersionInfo().Version); err != nil {
+		instanceID := versionCheckInstanceID(os.Getenv)
+		if _, err := client.GetLatestVersion(instanceID, versions.GetVersionInfo().Version); err != nil {
 			slog.Debug(fmt.Sprintf("could not check for updates: %s", err))
 		}
 		return
 	}
-	checker, err := updates.NewUpdateChecker(client)
+	checker, err := updates.NewUpdateChecker(client, updates.WithoutNotice())
 	if err != nil {
 		slog.Debug(fmt.Sprintf("unable to create update client: %s", err))
 		return
@@ -254,4 +259,16 @@ func checkForUpdates() {
 	if err := checker.CheckLatestVersion(); err != nil {
 		slog.Debug(fmt.Sprintf("could not check for updates: %s", err))
 	}
+}
+
+// versionCheckInstanceID returns the instance ID for a Kubernetes version
+// check: the operator's installation ID when the operator set one, so restarts
+// and replicas count as one installation, or else a per-process ID. Sharing the
+// operator's ID does not merge vMCP with the operator, because the update
+// service records each check with its component.
+func versionCheckInstanceID(getenv func(string) string) string {
+	if id := getenv(usagemetrics.EnvVarAnonymousID); id != "" {
+		return id
+	}
+	return uuid.NewString()
 }

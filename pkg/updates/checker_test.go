@@ -337,6 +337,39 @@ func TestNotifyIfUpdateAvailable(t *testing.T) {
 
 // TestNotifyIfUpdateAvailableDesktopManaged tests that update messages are suppressed
 // for desktop-managed CLI installations
+//
+//nolint:paralleltest // Replaces the process-wide os.Stderr.
+func TestCheckLatestVersion_WithoutNotice(t *testing.T) {
+	mockClient := setupMockVersionClient(t)
+	mockClient.On("GetLatestVersion", testInstanceID, testCurrentVersion).Return(testLatestVersion, nil)
+
+	checker := &defaultUpdateChecker{
+		instanceID:     testInstanceID,
+		currentVersion: testCurrentVersion,
+		updateFilePath: filepath.Join(t.TempDir(), "updates.json"),
+		versionClient:  mockClient,
+		component:      testComponentCLI,
+	}
+	WithoutNotice()(checker)
+
+	oldStderr := os.Stderr
+	r, w, err := os.Pipe()
+	require.NoError(t, err)
+	os.Stderr = w
+	t.Cleanup(func() { os.Stderr = oldStderr })
+
+	err = checker.CheckLatestVersion()
+	w.Close()
+	os.Stderr = oldStderr
+	require.NoError(t, err)
+
+	var buf bytes.Buffer
+	_, err = buf.ReadFrom(r)
+	require.NoError(t, err)
+	assert.Empty(t, buf.String(), "a newer version must not be announced")
+	mockClient.AssertExpectations(t)
+}
+
 func TestNotifyIfUpdateAvailableDesktopManaged(t *testing.T) {
 	// Not parallel: modifies HOME environment variable
 

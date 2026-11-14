@@ -48,7 +48,11 @@ type Profile struct {
 
 	// BackendCount is the number of backends behind a vMCP server.
 	BackendCount *int `json:"backend_count,omitempty"`
-	// ToolCount is the number of tools a vMCP server advertises.
+	// ToolCount is the number of backend tools a vMCP server aggregates, after
+	// conflict resolution and per-backend filters. It excludes composite and
+	// optimizer tools and is not filtered per user, so it measures the size of
+	// the deployment rather than what one client sees. Aggregation results are
+	// cached per caller, so it is the count from the most recent aggregation.
 	ToolCount *int `json:"tool_count,omitempty"`
 	// Features lists the vMCP features in use, drawn from optimizer, code_mode,
 	// composite_tools and outgoing_auth.

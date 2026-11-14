@@ -24,12 +24,26 @@ import (
 // UpdateChecker is an interface for checking if a new version of ToolHive is available.
 type UpdateChecker interface {
 	// CheckLatestVersion checks if a new version of ToolHive is available
-	// and prints the result to the console.
+	// and, unless the checker was created WithoutNotice, prints a message to
+	// stderr when one is.
 	CheckLatestVersion() error
 }
 
+// CheckerOption configures the UpdateChecker NewUpdateChecker returns.
+type CheckerOption func(*defaultUpdateChecker)
+
+// WithoutNotice keeps the checker from printing a message when a newer version
+// is available. Servers such as vMCP use it, because the message is meant for a
+// user at a terminal, not for server logs. The check is still reported and
+// throttled as usual.
+func WithoutNotice() CheckerOption {
+	return func(d *defaultUpdateChecker) {
+		d.withoutNotice = true
+	}
+}
+
 // NewUpdateChecker creates a new instance of UpdateChecker.
-func NewUpdateChecker(versionClient VersionClient) (UpdateChecker, error) {
+func NewUpdateChecker(versionClient VersionClient, opts ...CheckerOption) (UpdateChecker, error) {
 	path, err := xdg.DataFile(updateFilePathSuffix)
 	if err != nil {
 		return nil, fmt.Errorf("unable to access update file path %w", err)
@@ -65,14 +79,18 @@ func NewUpdateChecker(versionClient VersionClient) (UpdateChecker, error) {
 		previousVersion = contents.LatestVersion
 	}
 
-	return &defaultUpdateChecker{
+	checker := &defaultUpdateChecker{
 		currentVersion:      versions.GetVersionInfo().Version,
 		instanceID:          instanceID,
 		updateFilePath:      path,
 		versionClient:       versionClient,
 		previousAPIResponse: previousVersion,
 		component:           component,
-	}, nil
+	}
+	for _, opt := range opts {
+		opt(checker)
+	}
+	return checker, nil
 }
 
 const (
@@ -133,6 +151,7 @@ type defaultUpdateChecker struct {
 	updateFilePath      string
 	versionClient       VersionClient
 	component           string
+	withoutNotice       bool
 }
 
 func (d *defaultUpdateChecker) CheckLatestVersion() error {
@@ -189,7 +208,7 @@ func (d *defaultUpdateChecker) CheckLatestVersion() error {
 		return fmt.Errorf("failed to check for updates: %w", err)
 	}
 
-	notifyIfUpdateAvailable(d.currentVersion, latestVersion)
+	d.notify(latestVersion)
 
 	// Update shared latest version and component-specific timing
 	currentFile.LatestVersion = latestVersion
@@ -217,6 +236,14 @@ func (d *defaultUpdateChecker) CheckLatestVersion() error {
 	}
 
 	return nil
+}
+
+// notify announces a newer version unless the checker was created WithoutNotice.
+func (d *defaultUpdateChecker) notify(latestVersion string) {
+	if d.withoutNotice {
+		return
+	}
+	notifyIfUpdateAvailable(d.currentVersion, latestVersion)
 }
 
 // getComponentFromVersionClient extracts the component name from a VersionClient.

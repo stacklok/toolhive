@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
@@ -333,6 +334,30 @@ func TestDisabledInConfig(t *testing.T) {
 			assert.Equal(t, tt.want, disabledInConfig(tt.load))
 		})
 	}
+}
+
+func TestVersionCheckInstanceID(t *testing.T) {
+	t.Parallel()
+
+	t.Run("uses the operator's ID when set", func(t *testing.T) {
+		t.Parallel()
+		getenv := func(name string) string {
+			if name == usagemetrics.EnvVarAnonymousID {
+				return "operator-id"
+			}
+			return ""
+		}
+		assert.Equal(t, "operator-id", versionCheckInstanceID(getenv))
+	})
+
+	t.Run("falls back to a new ID per call", func(t *testing.T) {
+		t.Parallel()
+		getenv := func(string) string { return "" }
+		first, second := versionCheckInstanceID(getenv), versionCheckInstanceID(getenv)
+		_, err := uuid.Parse(first)
+		require.NoError(t, err, "fallback ID must be a UUID")
+		assert.NotEqual(t, first, second)
+	})
 }
 
 func TestCheckForUpdates_SkippedSendsNothing(t *testing.T) {

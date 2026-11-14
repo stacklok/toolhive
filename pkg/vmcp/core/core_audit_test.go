@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"sync/atomic"
 	"testing"
@@ -155,6 +156,124 @@ func TestCallTool_CompositeWorkflowAuditCarriesEnricherSubjects(t *testing.T) {
 			require.NoError(t, json.Unmarshal(scanner.Bytes(), &entry))
 			assert.Equal(t, audit.EventTypeWorkflowStarted, entry.Type)
 			assert.Equal(t, tt.wantSubjects, entry.Subjects)
+		})
+	}
+}
+
+// TestCallTool_CompositeWorkflowAuditEnrichesEveryEvent verifies enrichment
+// across a workflow's whole event stream, including step events emitted from
+// the parallel step goroutines and the terminal completed or failed event:
+// every event carries the explicit CallTool identity and the enricher's
+// subjects. The context carries an IdentityHolder but no identity, as on the
+// server path, so -race also covers the holder never being written.
+func TestCallTool_CompositeWorkflowAuditEnrichesEveryEvent(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		steps      []composer.WorkflowStep
+		backendErr error
+		wantError  bool
+		wantEvents []string // "<event type>/<step id>"; step id empty for workflow events
+	}{
+		{
+			name: "parallel steps succeed",
+			steps: []composer.WorkflowStep{
+				{ID: "s1", Type: composer.StepTypeTool, Tool: "be1.echo"},
+				{ID: "s2", Type: composer.StepTypeTool, Tool: "be1.echo"},
+			},
+			wantEvents: []string{
+				audit.EventTypeWorkflowStarted + "/",
+				audit.EventTypeWorkflowStepStarted + "/s1",
+				audit.EventTypeWorkflowStepStarted + "/s2",
+				audit.EventTypeWorkflowStepCompleted + "/s1",
+				audit.EventTypeWorkflowStepCompleted + "/s2",
+				audit.EventTypeWorkflowCompleted + "/",
+			},
+		},
+		{
+			name:       "failing step fails the workflow",
+			steps:      []composer.WorkflowStep{{ID: "s1", Type: composer.StepTypeTool, Tool: "be1.echo"}},
+			backendErr: errors.New("backend down"),
+			wantError:  true,
+			wantEvents: []string{
+				audit.EventTypeWorkflowStarted + "/",
+				audit.EventTypeWorkflowStepStarted + "/s1",
+				audit.EventTypeWorkflowStepFailed + "/s1",
+				audit.EventTypeWorkflowFailed + "/",
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg, m := baseConfig(t)
+			auditCfg, auditLogPath := fileAuditConfig(t)
+			auditCfg.EventTypes = []string{
+				audit.EventTypeWorkflowStarted, audit.EventTypeWorkflowCompleted, audit.EventTypeWorkflowFailed,
+				audit.EventTypeWorkflowStepStarted, audit.EventTypeWorkflowStepCompleted, audit.EventTypeWorkflowStepFailed,
+			}
+			cfg.AuditConfig = auditCfg
+			cfg.AuditSubjectEnricher = func(ctx context.Context) map[string]string {
+				id, ok := auth.IdentityFromContext(ctx)
+				if !ok {
+					return map[string]string{"client_id": "none"}
+				}
+				cid, _ := id.Claims["cid"].(string)
+				return map[string]string{"client_id": cid}
+			}
+			cfg.WorkflowDefs = map[string]*composer.WorkflowDefinition{"wf": {Name: "wf", Steps: tt.steps}}
+
+			target := backendTarget()
+			expectAggregation(m, &aggregator.AggregatedCapabilities{
+				Tools:        []vmcp.Tool{backendTool("be1.echo")},
+				RoutingTable: &vmcp.RoutingTable{Tools: map[string]*vmcp.BackendTarget{"be1.echo": target}},
+			})
+			call := m.client.EXPECT().
+				CallTool(gomock.Any(), gomock.Any(), "be1.echo", gomock.Any(), gomock.Any(), gomock.Any()).
+				Times(len(tt.steps))
+			if tt.backendErr != nil {
+				call.Return(nil, tt.backendErr)
+			} else {
+				call.Return(&vmcp.ToolCallResult{StructuredContent: map[string]any{"ok": true}}, nil)
+			}
+
+			c, err := New(cfg)
+			require.NoError(t, err)
+
+			holder := &auth.IdentityHolder{}
+			ctx := auth.WithIdentityHolder(context.Background(), holder)
+			identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{
+				Subject: "user-123", Name: "Jane Doe", Claims: map[string]any{"cid": "jane-client"},
+			}}
+			result, err := c.CallTool(ctx, identity, "wf", nil, nil)
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantError, result.IsError)
+			// Close flushes and releases the audit log before it is read.
+			require.NoError(t, c.Close())
+
+			content, err := os.ReadFile(auditLogPath)
+			require.NoError(t, err)
+			var gotEvents []string
+			scanner := bufio.NewScanner(bytes.NewReader(content))
+			for scanner.Scan() {
+				var entry struct {
+					Type     string            `json:"type"`
+					Target   map[string]string `json:"target"`
+					Subjects map[string]string `json:"subjects"`
+				}
+				require.NoError(t, json.Unmarshal(scanner.Bytes(), &entry))
+				key := entry.Type + "/" + entry.Target[audit.TargetKeyStepID]
+				gotEvents = append(gotEvents, key)
+				assert.Equal(t, map[string]string{
+					audit.SubjectKeyUserID: "user-123",
+					audit.SubjectKeyUser:   "Jane Doe",
+					"client_id":            "jane-client",
+				}, entry.Subjects, "subjects on %s", key)
+			}
+			assert.ElementsMatch(t, tt.wantEvents, gotEvents)
+			assert.Nil(t, holder.Identity, "workflow audit must not write the identity holder")
 		})
 	}
 }

@@ -67,6 +67,17 @@ type DiscoverCapabilities struct {
 //
 // ctx is used only for cancellation, deadlines, and trace propagation — never to
 // carry identity or other domain data.
+//
+// Identity handed to components below the core: the composer, workflow auditor,
+// backend auth strategies, and backend telemetry read the caller from ctx
+// (auth.IdentityFromContext), not from a parameter. For a composite tool,
+// CallTool therefore runs the workflow on a context whose identity is the
+// explicit identity (nil stays anonymous), replacing any identity ctx carried.
+// Direct backend calls (a non-composite CallTool, ReadResource, GetPrompt,
+// Complete) and capability aggregation still pass ctx through unchanged, so
+// those components see whatever identity ctx carries; until #7143 aligns them,
+// callers must keep ctx's identity consistent with the parameter. The vmcp
+// server always passes the same identity in both.
 type VMCP interface {
 	// ListTools returns the tools advertised to identity. The returned
 	// [vmcp.Tool] values carry their logical BackendID.

@@ -274,12 +274,9 @@ func emptyCompletion() *vmcp.CompletionResult {
 // transport error), mirroring the legacy compositeToolsDecorator
 // (internal/compositetools/decorator.go:76-114).
 //
-// identity is the caller passed to CallTool. The composer and what it calls
-// (the workflow auditor, backend auth strategies, backend telemetry) read the
-// caller from ctx, so the workflow runs on a context whose identity is set to
-// this explicit one, replacing any identity ctx already carried; a nil
-// identity stays anonymous. The core still never reads identity from ctx
-// (see the VMCP contract): it only hands its explicit identity to
+// identity is the caller passed to CallTool; the workflow runs on a context
+// carrying it, per the identity rule on the VMCP interface. The core still
+// never reads identity from ctx: it only hands its explicit identity to
 // components that do. context.WithValue is used rather than auth.WithIdentity,
 // which would also write any auth.IdentityHolder in ctx and skips a nil
 // identity.

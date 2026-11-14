@@ -436,3 +436,41 @@ func TestRunner_PersistClientCredentialsWithNilAuth(t *testing.T) {
 	assert.Equal(t, live.RemoteAuthConfig, persisted.RemoteAuthConfig)
 	assert.Equal(t, "public-client", persisted.RemoteAuthConfig.CachedClientID)
 }
+
+// TestRunner_PersistRefreshTokenDeletesPreviousSecret is a regression test for
+// #3886: each restart/refresh used to create a new uniquely named
+// OAUTH_REFRESH_TOKEN_* secret and leave the previous one behind. After the new
+// reference is saved, the old generation must be removed.
+//
+//nolint:paralleltest // Uses process-wide runtime and XDG settings.
+func TestRunner_PersistRefreshTokenDeletesPreviousSecret(t *testing.T) {
+	setupPersistenceState(t)
+	ctx := context.Background()
+	ctrl := gomock.NewController(t)
+	secretManager := secretsmocks.NewMockProvider(ctrl)
+
+	const (
+		workloadName   = "refresh-token-cleanup"
+		previousSecret = "OAUTH_REFRESH_TOKEN_previous-generation"
+	)
+
+	gomock.InOrder(
+		secretManager.EXPECT().GetSecret(gomock.Any(), "OAUTH_REFRESH_TOKEN_"+workloadName).Return("existing-token", nil),
+		secretManager.EXPECT().Capabilities().Return(secrets.ProviderCapabilities{CanWrite: true}),
+		secretManager.EXPECT().SetSecret(ctx, gomock.Any(), "refresh-token-envelope").Return(nil),
+		secretManager.EXPECT().DeleteSecret(ctx, previousSecret).Return(nil),
+	)
+
+	remoteAuthConfig := &remote.Config{CachedRefreshTokenRef: previousSecret}
+	runConfig := NewRunConfig()
+	runConfig.Name, runConfig.BaseName = workloadName, workloadName
+	runConfig.RemoteAuthConfig = remoteAuthConfig
+	require.NoError(t, runConfig.SaveState(ctx))
+
+	runner := &Runner{Config: runConfig}
+	require.NoError(t, runner.persistRefreshToken(ctx, secretManager, "refresh-token-envelope", time.Now().Add(time.Hour)))
+
+	assert.NotEqual(t, previousSecret, runConfig.RemoteAuthConfig.CachedRefreshTokenRef)
+	persisted, _ := loadPersistedRunConfig(t, runConfig.BaseName)
+	assert.Equal(t, runConfig.RemoteAuthConfig.CachedRefreshTokenRef, persisted.RemoteAuthConfig.CachedRefreshTokenRef)
+}

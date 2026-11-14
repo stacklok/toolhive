@@ -62,6 +62,9 @@ type sseStreamFilterWriter struct {
 	started     bool
 	failed      bool
 	failErr     error
+	// sniff marks a successful body with another media type. The whole body is
+	// buffered and treated as one JSON-RPC message (see writeSniffed).
+	sniff bool
 }
 
 // newSSEStreamFilterWriter wraps w for a GET stream served on behalf of r.
@@ -109,6 +112,16 @@ func (w *sseStreamFilterWriter) Write(data []byte) (int, error) {
 		w.started = true
 		data = bytes.TrimPrefix(data, mcpparser.UTF8BOM)
 	}
+	if w.sniff {
+		w.buffer = append(w.buffer, data...)
+		if len(w.buffer) > maxSSEEventBytes {
+			w.failed = true
+			w.failErr = errSSEEventTooLarge
+			w.buffer = nil
+			return 0, errSSEEventTooLarge
+		}
+		return n, nil
+	}
 	w.buffer = append(w.buffer, data...)
 	if len(w.buffer) > maxSSEEventBytes && completeEventEnd(w.buffer) == 0 {
 		// Stop the stream for good: drop what is buffered so finish() cannot write it out.
@@ -129,6 +142,13 @@ func (w *sseStreamFilterWriter) Flush() {
 	// Decide before flushing: a flush commits the headers, and the mode decides
 	// whether Cache-Control: private, no-store must be among them.
 	w.decide(http.StatusOK)
+	if w.sniff {
+		// A sniffed body is decided only once it is complete, so flush the transport only.
+		if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		return
+	}
 	if err := w.drainCompleteEvents(); err != nil {
 		// Usually the client has gone away. That is routine on a long-lived stream.
 		slog.Debug("stopped writing filtered SSE stream", "error", err)
@@ -143,6 +163,12 @@ func (w *sseStreamFilterWriter) Flush() {
 // so any trailing partial event is filtered and written too.
 func (w *sseStreamFilterWriter) finish() {
 	if w.passThrough || w.failed || len(w.buffer) == 0 {
+		return
+	}
+	if w.sniff {
+		body := w.buffer
+		w.buffer = nil
+		w.writeSniffed(body)
 		return
 	}
 	if err := w.drainCompleteEvents(); err != nil {
@@ -177,11 +203,43 @@ func (w *sseStreamFilterWriter) decide(status int) {
 		return
 	}
 	if status >= 200 && status < 300 {
-		w.failed = true
-		w.failErr = errSSEUnrecognizedMediaType
+		// Sniff it: a client may read it as events, so it is filtered like one or dropped.
+		w.sniff = true
+		w.ResponseWriter.Header().Set("Cache-Control", "private, no-store")
 		return
 	}
 	w.passThrough = true
+}
+
+// writeSniffed handles a complete 2xx body whose media type is not an event
+// stream. A clean JSON-RPC response with a list member is filtered and sent.
+// Any other clean response is sent unchanged. Anything else (not JSON-RPC, or
+// a result outside a clean response) is dropped, so nothing unfiltered reaches
+// the client.
+func (w *sseStreamFilterWriter) writeSniffed(body []byte) {
+	message, _ := jsonrpc2.DecodeMessage(body)
+	response, isResponse := message.(*jsonrpc2.Response)
+	if !isResponse {
+		slog.Warn("dropped a 2xx body that is not a JSON-RPC response", "error", errSSEUnrecognizedMediaType)
+		return
+	}
+	method, err := listMethodForResult(response.Result)
+	if err != nil {
+		slog.Warn("dropped a 2xx JSON-RPC response with an ambiguous list", "error", err)
+		return
+	}
+	out := body
+	if method != "" {
+		filtered, ferr := w.newFilter(method).filterAndEncode(response)
+		if ferr != nil {
+			slog.Warn("dropped a 2xx JSON-RPC response that failed to filter", "error", ferr)
+			return
+		}
+		out = filtered
+	}
+	if _, err := w.ResponseWriter.Write(out); err != nil {
+		slog.Debug("stopped writing filtered SSE stream", "error", err)
+	}
 }
 
 // drainCompleteEvents writes every event that is complete in the buffer and

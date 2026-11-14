@@ -128,7 +128,10 @@ type MCPRemoteProxySpec struct {
 	// +optional
 	TelemetryConfigRef *MCPTelemetryConfigReference `json:"telemetryConfigRef,omitempty"`
 
-	// Resources defines the resource requirements for the proxy container
+	// Resources defines the resource requirements for the proxy container.
+	// Unset fields fall back to defaults: requests of 50m CPU and 64Mi memory,
+	// limits of 200m CPU and 256Mi memory. When only one side of a request/limit
+	// pair is set, the defaulted side is adjusted so the request never exceeds the limit.
 	// +optional
 	Resources ResourceRequirements `json:"resources,omitempty"`
 

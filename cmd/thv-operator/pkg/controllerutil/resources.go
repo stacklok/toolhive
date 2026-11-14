@@ -17,6 +17,15 @@ import (
 	"github.com/stacklok/toolhive/pkg/secrets"
 )
 
+// Default proxy-runner resource values used when a CR omits resource requests/limits.
+// These keep remote proxy containers bounded while remaining overridable per CR.
+const (
+	defaultProxyRunnerCPURequest    = "50m"
+	defaultProxyRunnerCPULimit      = "200m"
+	defaultProxyRunnerMemoryRequest = "64Mi"
+	defaultProxyRunnerMemoryLimit   = "256Mi"
+)
+
 // BuildResourceRequirements builds Kubernetes resource requirements from CRD spec
 // Shared between MCPServer and MCPRemoteProxy
 func BuildResourceRequirements(resourceSpec mcpv1beta1.ResourceRequirements) corev1.ResourceRequirements {
@@ -43,6 +52,72 @@ func BuildResourceRequirements(resourceSpec mcpv1beta1.ResourceRequirements) cor
 	}
 
 	return resources
+}
+
+// BuildDefaultProxyRunnerResourceRequirements returns the default resource
+// requirements for proxy-runner containers (MCPRemoteProxy).
+func BuildDefaultProxyRunnerResourceRequirements() corev1.ResourceRequirements {
+	return corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse(defaultProxyRunnerCPURequest),
+			corev1.ResourceMemory: resource.MustParse(defaultProxyRunnerMemoryRequest),
+		},
+		Limits: corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse(defaultProxyRunnerCPULimit),
+			corev1.ResourceMemory: resource.MustParse(defaultProxyRunnerMemoryLimit),
+		},
+	}
+}
+
+// MergeResourceRequirements merges user-provided resource requirements on top of
+// defaults. User values take precedence for any field that is explicitly set.
+//
+// A defaulted value never contradicts a user value: when the user sets only one
+// side of a request/limit pair, the defaulted side is clamped so the request does
+// not exceed the limit, which the API server would otherwise reject. A user who
+// sets both sides inconsistently gets their values unchanged.
+func MergeResourceRequirements(defaults, user corev1.ResourceRequirements) corev1.ResourceRequirements {
+	merged := corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{},
+		Limits:   corev1.ResourceList{},
+	}
+
+	for resourceName, quantity := range defaults.Requests {
+		merged.Requests[resourceName] = quantity.DeepCopy()
+	}
+	for resourceName, quantity := range defaults.Limits {
+		merged.Limits[resourceName] = quantity.DeepCopy()
+	}
+	for resourceName, quantity := range user.Requests {
+		merged.Requests[resourceName] = quantity.DeepCopy()
+	}
+	for resourceName, quantity := range user.Limits {
+		merged.Limits[resourceName] = quantity.DeepCopy()
+	}
+
+	for resourceName, request := range merged.Requests {
+		limit, hasLimit := merged.Limits[resourceName]
+		if !hasLimit || request.Cmp(limit) <= 0 {
+			continue
+		}
+		_, userSetRequest := user.Requests[resourceName]
+		_, userSetLimit := user.Limits[resourceName]
+		switch {
+		case userSetRequest && !userSetLimit:
+			merged.Limits[resourceName] = request.DeepCopy()
+		case userSetLimit && !userSetRequest:
+			merged.Requests[resourceName] = limit.DeepCopy()
+		}
+	}
+
+	if len(merged.Requests) == 0 {
+		merged.Requests = nil
+	}
+	if len(merged.Limits) == 0 {
+		merged.Limits = nil
+	}
+
+	return merged
 }
 
 // BuildHealthProbe builds a Kubernetes health probe configuration

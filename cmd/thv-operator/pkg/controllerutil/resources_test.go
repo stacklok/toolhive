@@ -9,6 +9,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 
 	"github.com/stacklok/toolhive/pkg/secrets"
 )
@@ -351,5 +352,132 @@ func TestMergeStringMaps(t *testing.T) {
 			assert.Equal(t, tt.want, MergeAnnotations(tt.defaultMap, tt.overrideMap))
 			assert.Equal(t, tt.want, MergeLabels(tt.defaultMap, tt.overrideMap))
 		})
+	}
+}
+
+func TestBuildDefaultProxyRunnerResourceRequirements(t *testing.T) {
+	t.Parallel()
+
+	res := BuildDefaultProxyRunnerResourceRequirements()
+	assert.Equal(t, resource.MustParse("50m"), res.Requests[corev1.ResourceCPU])
+	assert.Equal(t, resource.MustParse("64Mi"), res.Requests[corev1.ResourceMemory])
+	assert.Equal(t, resource.MustParse("200m"), res.Limits[corev1.ResourceCPU])
+	assert.Equal(t, resource.MustParse("256Mi"), res.Limits[corev1.ResourceMemory])
+}
+
+func TestMergeResourceRequirements(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		user         corev1.ResourceRequirements
+		wantRequests map[corev1.ResourceName]string
+		wantLimits   map[corev1.ResourceName]string
+	}{
+		{
+			name: "empty user keeps defaults",
+			user: corev1.ResourceRequirements{},
+			wantRequests: map[corev1.ResourceName]string{
+				corev1.ResourceCPU: "50m", corev1.ResourceMemory: "64Mi",
+			},
+			wantLimits: map[corev1.ResourceName]string{
+				corev1.ResourceCPU: "200m", corev1.ResourceMemory: "256Mi",
+			},
+		},
+		{
+			name: "partial user values override matching fields only",
+			user: corev1.ResourceRequirements{
+				Requests: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("128Mi")},
+				Limits:   corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("1")},
+			},
+			wantRequests: map[corev1.ResourceName]string{
+				corev1.ResourceCPU: "50m", corev1.ResourceMemory: "128Mi",
+			},
+			wantLimits: map[corev1.ResourceName]string{
+				corev1.ResourceCPU: "1", corev1.ResourceMemory: "256Mi",
+			},
+		},
+		{
+			name: "user request above default limit raises the defaulted limit",
+			user: corev1.ResourceRequirements{
+				Requests: corev1.ResourceList{
+					corev1.ResourceCPU:    resource.MustParse("500m"),
+					corev1.ResourceMemory: resource.MustParse("512Mi"),
+				},
+			},
+			wantRequests: map[corev1.ResourceName]string{
+				corev1.ResourceCPU: "500m", corev1.ResourceMemory: "512Mi",
+			},
+			wantLimits: map[corev1.ResourceName]string{
+				corev1.ResourceCPU: "500m", corev1.ResourceMemory: "512Mi",
+			},
+		},
+		{
+			name: "user limit below default request lowers the defaulted request",
+			user: corev1.ResourceRequirements{
+				Limits: corev1.ResourceList{
+					corev1.ResourceCPU:    resource.MustParse("20m"),
+					corev1.ResourceMemory: resource.MustParse("32Mi"),
+				},
+			},
+			wantRequests: map[corev1.ResourceName]string{
+				corev1.ResourceCPU: "20m", corev1.ResourceMemory: "32Mi",
+			},
+			wantLimits: map[corev1.ResourceName]string{
+				corev1.ResourceCPU: "20m", corev1.ResourceMemory: "32Mi",
+			},
+		},
+		{
+			name: "inconsistent user values are passed through unchanged",
+			user: corev1.ResourceRequirements{
+				Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("1")},
+				Limits:   corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("500m")},
+			},
+			wantRequests: map[corev1.ResourceName]string{
+				corev1.ResourceCPU: "1", corev1.ResourceMemory: "64Mi",
+			},
+			wantLimits: map[corev1.ResourceName]string{
+				corev1.ResourceCPU: "500m", corev1.ResourceMemory: "256Mi",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			merged := MergeResourceRequirements(BuildDefaultProxyRunnerResourceRequirements(), tt.user)
+			assertResourceList(t, tt.wantRequests, merged.Requests)
+			assertResourceList(t, tt.wantLimits, merged.Limits)
+		})
+	}
+}
+
+func TestMergeResourceRequirements_DoesNotAliasInputs(t *testing.T) {
+	t.Parallel()
+
+	defaults := BuildDefaultProxyRunnerResourceRequirements()
+	user := corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("100m")},
+	}
+
+	merged := MergeResourceRequirements(defaults, user)
+	merged.Requests[corev1.ResourceCPU] = resource.MustParse("2")
+	merged.Limits[corev1.ResourceMemory] = resource.MustParse("2Gi")
+
+	assert.Equal(t, "100m", user.Requests.Cpu().String())
+	assert.Equal(t, "256Mi", defaults.Limits.Memory().String())
+}
+
+func assertResourceList(t *testing.T, want map[corev1.ResourceName]string, got corev1.ResourceList) {
+	t.Helper()
+
+	assert.Len(t, got, len(want))
+	for name, wantQuantity := range want {
+		gotQuantity, ok := got[name]
+		if assert.True(t, ok, "missing %s", name) {
+			assert.Zero(t, gotQuantity.Cmp(resource.MustParse(wantQuantity)),
+				"%s: want %s, got %s", name, wantQuantity, gotQuantity.String())
+		}
 	}
 }

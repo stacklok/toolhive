@@ -43,6 +43,8 @@ func (c *coreVMCP) CallTool(
 	args map[string]any,
 	meta map[string]any,
 ) (*vmcp.ToolCallResult, error) {
+	ctx = withExplicitIdentity(ctx, identity)
+
 	argsCopy := maps.Clone(args)
 	metaCopy := maps.Clone(meta)
 
@@ -137,6 +139,8 @@ func (c *coreVMCP) ReadResource(
 	identity *auth.Identity,
 	uri string,
 ) (*vmcp.ResourceReadResult, error) {
+	ctx = withExplicitIdentity(ctx, identity)
+
 	agg, err := c.aggregatedView(ctx)
 	if err != nil {
 		return nil, err
@@ -176,6 +180,8 @@ func (c *coreVMCP) GetPrompt(
 	name string,
 	args map[string]any,
 ) (*vmcp.PromptGetResult, error) {
+	ctx = withExplicitIdentity(ctx, identity)
+
 	agg, err := c.aggregatedView(ctx)
 	if err != nil {
 		return nil, err
@@ -220,6 +226,8 @@ func (c *coreVMCP) Complete(
 	argName, argValue string,
 	contextArgs map[string]string,
 ) (*vmcp.CompletionResult, error) {
+	ctx = withExplicitIdentity(ctx, identity)
+
 	agg, err := c.aggregatedView(ctx)
 	if err != nil {
 		return nil, err
@@ -275,11 +283,9 @@ func emptyCompletion() *vmcp.CompletionResult {
 // (internal/compositetools/decorator.go:76-114).
 //
 // identity is the caller passed to CallTool; the workflow runs on a context
-// carrying it, per the identity rule on the VMCP interface. The core still
-// never reads identity from ctx: it only hands its explicit identity to
-// components that do. context.WithValue is used rather than auth.WithIdentity,
-// which would also write any auth.IdentityHolder in ctx and skips a nil
-// identity.
+// carrying it, per the identity rule on the VMCP interface. CallTool already
+// derives that context at entry; withExplicitIdentity here is idempotent and
+// keeps executeComposite correct when called directly.
 func executeComposite(
 	ctx context.Context,
 	identity *auth.Identity,
@@ -287,7 +293,7 @@ func executeComposite(
 	def *composer.WorkflowDefinition,
 	params map[string]any,
 ) (*vmcp.ToolCallResult, error) {
-	ctx = context.WithValue(ctx, auth.IdentityContextKey{}, identity)
+	ctx = withExplicitIdentity(ctx, identity)
 	result, err := engine.ExecuteWorkflow(ctx, def, params)
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {

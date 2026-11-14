@@ -6,12 +6,17 @@ package cli
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
+	"github.com/stacklok/toolhive/pkg/mcp"
+	"github.com/stacklok/toolhive/pkg/updates"
 	"github.com/stacklok/toolhive/pkg/usagemetrics"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
@@ -283,4 +288,48 @@ func TestUsageMetricsProfileFunc(t *testing.T) {
 	tools := 4
 	want.ToolCount = &tools
 	assert.Equal(t, want, profile())
+}
+
+func TestStartUsageMetrics_DisabledReturnsNil(t *testing.T) {
+	// Not parallel: t.Setenv. The skip switch also keeps the test from ever
+	// contacting the real update service.
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv(updates.EnvVarSkipUpdateCheck, "true")
+
+	ctrl := gomock.NewController(t)
+	registry := vmcpmocks.NewMockBackendRegistry(ctrl)
+
+	assert.Nil(t, startUsageMetrics(registry, usageFacts{}))
+}
+
+func TestCheckForUpdates_SkippedSendsNothing(t *testing.T) {
+	// Not parallel: t.Setenv. With the skip switch set, checkForUpdates must
+	// return before building a client.
+	t.Setenv(updates.EnvVarSkipUpdateCheck, "true")
+
+	checkForUpdates()
+}
+
+func TestUsageMetricsMiddleware_CountsToolCalls(t *testing.T) {
+	t.Parallel()
+
+	// The collector is never started or shut down, so nothing is sent.
+	collector, err := usagemetrics.NewCollector()
+	require.NoError(t, err)
+	u := &usageMetrics{collector: collector}
+
+	handler := mcp.ParsingMiddleware(u.middleware()(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})))
+
+	for _, body := range []string{
+		`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`,
+		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"echo","arguments":{}}}`,
+	} {
+		req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		handler.ServeHTTP(httptest.NewRecorder(), req)
+	}
+
+	assert.Equal(t, int64(1), collector.GetCurrentCount(), "only tools/call is counted")
 }

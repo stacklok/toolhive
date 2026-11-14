@@ -327,8 +327,11 @@ Defines a proxy for remote MCP servers with authentication, authorization, audit
 - `authzConfig` - Authorization policies
 - `telemetryConfigRef` - Reference to shared MCPTelemetryConfig (replaces deprecated inline `telemetry`)
 - `toolConfigRef` - Tool filtering and renaming
+- `resources` - CPU/memory requests and limits for the proxy container
 
 OIDC is optional — omit `oidcConfigRef` for unauthenticated proxies.
+
+**Default resources**: the proxy container is always bounded. Any field left unset in `resources` takes its default (requests: 50m CPU / 64Mi memory; limits: 200m CPU / 256Mi memory), and user values override per field. When only one side of a request/limit pair is set, the defaulted side is adjusted so the request never exceeds the limit (for example, `requests.memory: 512Mi` alone yields a 512Mi memory limit rather than the 256Mi default). Proxies that predate these defaults roll once on operator upgrade to pick them up.
 
 **Combined auth pattern**: `authServerRef` and `externalAuthConfigRef` can be used together on the same MCPRemoteProxy to enable both incoming client authentication (embedded auth server) and outgoing remote service authentication (e.g., AWS STS) simultaneously. This is the primary use case for `authServerRef` on MCPRemoteProxy. If both fields point to an `embeddedAuthServer` resource, the controller produces a validation error.
 

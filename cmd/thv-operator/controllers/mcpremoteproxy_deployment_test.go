@@ -365,7 +365,6 @@ func TestBuildResourceRequirements(t *testing.T) {
 	}
 }
 
-
 // TestResourceRequirementsForRemoteProxy tests default injection and merge behavior
 func TestResourceRequirementsForRemoteProxy(t *testing.T) {
 	t.Parallel()
@@ -427,20 +426,66 @@ func TestResourceRequirementsForRemoteProxy(t *testing.T) {
 func TestMCPRemoteProxyDeploymentNeedsUpdate_Resources(t *testing.T) {
 	t.Parallel()
 
-	scheme := testutil.NewScheme(t)
-	proxy := v1beta1test.NewMCPRemoteProxy("resources-drift-proxy", "default")
-	reconciler := &MCPRemoteProxyReconciler{
-		Scheme:           scheme,
-		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
+	newReconciler := func(t *testing.T) *MCPRemoteProxyReconciler {
+		t.Helper()
+		return &MCPRemoteProxyReconciler{
+			Scheme:           testutil.NewScheme(t),
+			PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
+		}
 	}
 
-	deployment := reconciler.deploymentForMCPRemoteProxy(t.Context(), proxy, "test-checksum")
-	require.NotNil(t, deployment)
-	assert.False(t, reconciler.deploymentNeedsUpdate(t.Context(), deployment, proxy, "test-checksum"))
+	t.Run("freshly built deployment does not need update", func(t *testing.T) {
+		t.Parallel()
+		reconciler := newReconciler(t)
+		proxy := v1beta1test.NewMCPRemoteProxy("resources-drift-proxy", "default")
 
-	// Simulate a deployment created before defaults existed.
-	deployment.Spec.Template.Spec.Containers[0].Resources = corev1.ResourceRequirements{}
-	assert.True(t, reconciler.deploymentNeedsUpdate(t.Context(), deployment, proxy, "test-checksum"))
+		deployment := reconciler.deploymentForMCPRemoteProxy(t.Context(), proxy, "test-checksum")
+		require.NotNil(t, deployment)
+		assert.False(t, reconciler.deploymentNeedsUpdate(t.Context(), deployment, proxy, "test-checksum"))
+	})
+
+	t.Run("deployment created before defaults existed needs update", func(t *testing.T) {
+		t.Parallel()
+		reconciler := newReconciler(t)
+		proxy := v1beta1test.NewMCPRemoteProxy("resources-drift-proxy", "default")
+
+		deployment := reconciler.deploymentForMCPRemoteProxy(t.Context(), proxy, "test-checksum")
+		require.NotNil(t, deployment)
+		deployment.Spec.Template.Spec.Containers[0].Resources = corev1.ResourceRequirements{}
+		assert.True(t, reconciler.deploymentNeedsUpdate(t.Context(), deployment, proxy, "test-checksum"))
+	})
+
+	t.Run("non-canonical overrides do not drift after apiserver round-trip", func(t *testing.T) {
+		t.Parallel()
+		reconciler := newReconciler(t)
+		proxy := v1beta1test.NewMCPRemoteProxy("resources-canonical-proxy", "default",
+			v1beta1test.MutateRemoteProxy(func(p *mcpv1beta1.MCPRemoteProxy) {
+				p.Spec.Resources = mcpv1beta1.ResourceRequirements{
+					Limits:   mcpv1beta1.ResourceList{CPU: "0.2", Memory: "1024Mi"},
+					Requests: mcpv1beta1.ResourceList{CPU: "1000m"},
+				}
+			}),
+		)
+
+		deployment := reconciler.deploymentForMCPRemoteProxy(t.Context(), proxy, "test-checksum")
+		require.NotNil(t, deployment)
+
+		// The apiserver stores quantities in canonical form, so the object read
+		// back on the next reconcile is not reflect.DeepEqual to the one we built.
+		container := &deployment.Spec.Template.Spec.Containers[0]
+		container.Resources.Limits = canonicalizeResourceList(container.Resources.Limits)
+		container.Resources.Requests = canonicalizeResourceList(container.Resources.Requests)
+
+		assert.False(t, reconciler.deploymentNeedsUpdate(t.Context(), deployment, proxy, "test-checksum"))
+	})
+}
+
+func canonicalizeResourceList(in corev1.ResourceList) corev1.ResourceList {
+	out := make(corev1.ResourceList, len(in))
+	for name, quantity := range in {
+		out[name] = resource.MustParse(quantity.String())
+	}
+	return out
 }
 
 // TestBuildHeaderForwardSecretEnvVars tests the buildHeaderForwardSecretEnvVars function

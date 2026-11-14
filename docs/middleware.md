@@ -646,6 +646,10 @@ cfg.AuditSubjectEnricher = func(ctx context.Context) map[string]string {
   false when the caller is unauthenticated. The auditor attaches the identity
   to `ctx` itself, so this works even though the audit middleware runs outside
   the auth middleware.
+- It must be fast, must not block, and must be safe for concurrent use:
+  composite-tool workflow steps call it from parallel goroutines. A panic is
+  recovered and logged at ERROR, and the event is still written without the
+  enricher's subjects.
 - Returned keys are added to `subjects`. Empty keys and values are dropped.
   The keys the auditor writes itself (`user`, `user_id`, `client_name`,
   `client_version`) are reserved: the enricher can neither overwrite nor

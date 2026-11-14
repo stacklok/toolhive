@@ -5,6 +5,7 @@ package audit
 
 import (
 	"context"
+	"log/slog"
 
 	"github.com/stacklok/toolhive/pkg/auth"
 )
@@ -28,7 +29,10 @@ import (
 // empty map adds nothing.
 //
 // The enricher runs once per audited event, on the request path, so it must be
-// fast, must not block, and must be safe for concurrent use.
+// fast, must not block, and must be safe for concurrent use. Workflow step
+// events call it from parallel goroutines. A panic in the enricher is
+// recovered and logged; the event is still written, without the enricher's
+// subjects.
 type SubjectEnricher func(ctx context.Context) map[string]string
 
 // Option configures an Auditor or a WorkflowAuditor.
@@ -68,12 +72,18 @@ var reservedSubjectKeys = map[string]struct{}{
 // applySubjectEnricher adds the enricher's subjects to subjects, skipping
 // reserved keys and empty values. It is a no-op when enricher is nil.
 //
-// identity is the caller the auditor resolved, or nil. When ctx does not
-// already carry it, it is attached to the enricher's context, because the
-// HTTP auditor may have found it through an auth.IdentityHolder that
-// auth.IdentityFromContext does not read. The attach is skipped when ctx
-// already carries an identity: auth.WithIdentity also writes any holder in
-// ctx, and workflow step events are emitted from parallel goroutines.
+// identity is the caller the auditor resolved, or nil. When set, it is
+// attached to the enricher's context, because the HTTP auditor may have found
+// it through an auth.IdentityHolder that auth.IdentityFromContext does not
+// read. The attach derives the context directly rather than calling
+// auth.WithIdentity, which would also write any IdentityHolder in ctx; workflow
+// step events run here from parallel goroutines that share the request
+// context, so that write would race.
+//
+// A panic in the enricher is recovered and logged, and no enricher subjects
+// are added: an embedder bug must not crash a workflow step goroutine (which
+// has no net/http recovery) or drop the audit event. The panic happens in the
+// enricher call, before any key is merged, so subjects is never half-updated.
 func applySubjectEnricher(
 	ctx context.Context,
 	enricher SubjectEnricher,
@@ -83,8 +93,13 @@ func applySubjectEnricher(
 	if enricher == nil {
 		return
 	}
-	if _, ok := auth.IdentityFromContext(ctx); !ok && identity != nil {
-		ctx = auth.WithIdentity(ctx, identity)
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("audit subject enricher panicked; extra subjects dropped", "panic", r)
+		}
+	}()
+	if identity != nil {
+		ctx = context.WithValue(ctx, auth.IdentityContextKey{}, identity)
 	}
 	for key, value := range enricher(ctx) {
 		if key == "" || value == "" {

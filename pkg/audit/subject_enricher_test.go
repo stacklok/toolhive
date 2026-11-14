@@ -105,6 +105,19 @@ var subjectEnricherCases = []struct {
 		},
 	},
 	{
+		name:     "panicking enricher is recovered and adds nothing",
+		identity: enricherTestIdentity(),
+		enricher: func(ctx context.Context) map[string]string {
+			identity, _ := auth.IdentityFromContext(ctx)
+			_ = identity.Claims["azp"].(string) // panics: the claim is absent
+			return map[string]string{"client_id": "unreachable"}
+		},
+		wantSubjects: map[string]any{
+			SubjectKeyUserID: "user-123",
+			SubjectKeyUser:   "Jane Doe",
+		},
+	},
+	{
 		name:     "nil result adds nothing",
 		identity: enricherTestIdentity(),
 		enricher: func(context.Context) map[string]string {
@@ -248,9 +261,9 @@ func TestSubjectEnricher_SeesIdentityAttachedInsideMiddleware(t *testing.T) {
 }
 
 // TestSubjectEnricher_LeavesIdentityHolderUntouched pins that the workflow
-// auditor does not write the IdentityHolder in its context when the context
-// already carries the identity. Step events are emitted from parallel
-// goroutines that share the request context, so a write would race.
+// auditor never writes the IdentityHolder in its context. Step events are
+// emitted from parallel goroutines that share the request context, so a write
+// would race.
 func TestSubjectEnricher_LeavesIdentityHolderUntouched(t *testing.T) {
 	t.Parallel()
 

@@ -196,7 +196,7 @@ func (d *defaultUpdateChecker) CheckLatestVersion() error {
 		if time.Since(componentData.LastCheck) < updateInterval {
 			// If it is too soon - notify the user if we already know there is
 			// an update, then exit.
-			notifyIfUpdateAvailable(d.currentVersion, currentFile.LatestVersion)
+			d.notify(currentFile.LatestVersion)
 			return nil
 		}
 	}

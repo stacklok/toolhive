@@ -202,8 +202,8 @@ vMCP renders the answer per protocol. A client that declared
 `elicitation.url` gets the URL: a Modern client as `input_required`, a Legacy
 (2025-11-25) client as the `-32042` error, which also carries your
 elicitation ID. By default every other client gets a fallback carrying your
-elicitation messages and not the URL, and so does a Legacy session served by a replica
-that did not see its `initialize`. If a Legacy client without URL mode still
+elicitation messages and not the URL, and so does a Legacy session served by
+a replica that did not see its `initialize`. If a Legacy client without URL mode still
 needs a way to reach your page, set your own text for that fallback with
 `answer.WithLegacyFallback(text)`; vMCP renders it as given, so whatever you
 write into it, a link included, is shown to the model. See

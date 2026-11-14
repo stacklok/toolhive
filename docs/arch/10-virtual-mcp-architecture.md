@@ -556,23 +556,28 @@ Properties worth knowing:
   of asking again, as the spec requires servers to handle decline and cancel.
   An accept that the decorator answers again asks again, bounded by the
   client's retry budget (go-sdk stops at 10 rounds).
-- **The URL reaches only a client that declared URL mode.** By default every
-  fallback carries the elicitation messages and never the URL, so a model
-  cannot follow a link and skip the user consent step URL mode exists for.
-  By default all of them use the same text, `URLElicitationRequiredError.Message()`
-  (the messages joined by `"; "`); the Legacy `isError` fallback is the one
-  place an embedder can replace that text (next bullet). `Error()` never includes the URL either,
-  so composite workflows and code-mode scripts, which flatten step errors
-  into `isError` results, and log lines that stringify the error do not leak it.
+- **The URL reaches only a client that declared URL mode, unless the
+  embedder writes one into the Legacy fallback.** By default every fallback
+  carries the elicitation messages and never the URL, so a model cannot
+  follow a link and skip the user consent step URL mode exists for, and all
+  use the same text, `URLElicitationRequiredError.Message()` (the messages
+  joined by `"; "`). Only the Legacy `isError` fallback can be replaced by
+  the embedder (next bullet). `Error()` never includes the URL either, so
+  composite workflows and code-mode scripts, which flatten step errors into
+  `isError` results, and log lines that stringify the error do not leak it.
 - **The embedder may replace the Legacy fallback.** A client without URL
   mode has no way to reach the page, so an embedder can set its own text for
   the Legacy `isError` fallback with `WithLegacyFallback`, for example a
   reconnect link written into the text. vMCP renders it as given; an embedder
-  that writes a link into it chose to show that link to the model. It changes
-  nothing else: `-32042` carries the elicitation messages, the Modern
-  `-32021` still tells the client to declare `elicitation.url`, the Modern
-  decline result does not hand back the link the user declined, and
-  `Error()` and fmt output never include the fallback.
+  that writes a link into it chose to show that link to the model. A
+  rehydrated session also gets this fallback, because vMCP does not know its
+  capabilities, so in a multi-replica deployment a link written into it can
+  reach the model of a client that did declare `elicitation.url` and skip
+  the consent step that client has. It changes nothing else: `-32042`
+  carries the elicitation messages, the Modern `-32021` still tells the
+  client to declare `elicitation.url`, the Modern decline result does not
+  hand back the link the user declined, and `Error()` and fmt output never
+  include the fallback.
 - **Only in-process code produces the answer.** Backend errors never decode
   into it. A Legacy backend's `-32042` stays a generic backend tool error,
   and a Modern backend's `input_required` round stays a

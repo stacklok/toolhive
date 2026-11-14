@@ -644,8 +644,8 @@ func TestIntegration_Legacy_URLElicitation_UndeclaredFallsBack(t *testing.T) {
 // the embedder set with WithLegacyFallback, through a direct tools/call and
 // through the optimizer's call_tool, while a declared Legacy client still gets
 // -32042 carrying the elicitation message and a Modern client without
-// elicitation.url still gets -32021 without the fallback, and a Modern
-// decline result carries the elicitation message, not the fallback.
+// elicitation.url still gets -32021 without the fallback. A Modern decline
+// result carries the elicitation message, not the fallback.
 func TestIntegration_Legacy_URLElicitation_EmbedderFallback(t *testing.T) {
 	t.Parallel()
 

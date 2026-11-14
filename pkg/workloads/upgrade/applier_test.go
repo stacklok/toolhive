@@ -506,6 +506,7 @@ func fullyConfiguredOld(t *testing.T) *runner.RunConfig {
 		CmdArgs:                     []string{"--flag", "value"},
 		PermissionProfileNameOrPath: "none",
 		IsolateNetwork:              true,
+		ReadOnlyRootfs:              true,
 		TrustProxyHeaders:           true,
 		StrictProtocolValidation:    true,
 		Stateless:                   true,
@@ -571,6 +572,7 @@ func TestApplier_Apply_PreservesFullUserConfig(t *testing.T) {
 	assert.Equal(t, old.CmdArgs, got.CmdArgs)
 	assert.Equal(t, old.PermissionProfileNameOrPath, got.PermissionProfileNameOrPath, "named profile preserved")
 	assert.Equal(t, old.IsolateNetwork, got.IsolateNetwork)
+	assert.True(t, got.ReadOnlyRootfs, "read-only rootfs preserved (security)")
 	assert.Equal(t, old.TrustProxyHeaders, got.TrustProxyHeaders)
 	assert.Equal(t, old.StrictProtocolValidation, got.StrictProtocolValidation)
 	assert.Equal(t, old.Stateless, got.Stateless)

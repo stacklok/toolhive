@@ -304,7 +304,7 @@ func (s *Server) coreToolHandler(sessionID, toolName, backendName string) server
 
 		result, err := s.core.CallTool(ctx, caller, toolName, args, conversion.FromMCPMeta(req.Params.Meta))
 		if err != nil {
-			return conversion.ErrorToToolResult(err), nil
+			return legacyToolCallError(server.ClientSessionFromContext(ctx), err)
 		}
 
 		return &mcp.CallToolResult{

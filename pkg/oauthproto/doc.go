@@ -19,6 +19,8 @@
 //     shared helpers.
 //   - oauthproto/tokenexchange: the RFC 8693 client. It does not depend on the
 //     token types it exchanges.
+//   - oauthproto/oautherr: token-endpoint error classification, independent of
+//     pkg/auth and pkg/authserver. The old pkg/auth/oautherr forwards here.
 //   - oauthproto/jwtbearer: the RFC 7523 JWT-bearer client.
 //   - oauthproto/idjag: Cross App Access (ID-JAG). Start at its doc.go.
 //     FromExchange is the client's check of an IdP response. IsIDJAG is the

@@ -2260,6 +2260,13 @@ components:
           description: RateLimitNamespace is the Kubernetes namespace for Redis key
             derivation.
           type: string
+        read_only_rootfs:
+          description: |-
+            ReadOnlyRootfs mounts the MCP server container's root filesystem as read-only.
+            /tmp, /var/tmp and /run get a small noexec tmpfs unless a volume targets them.
+            Opt-in: servers that write anywhere else outside their mounted volumes will fail.
+            Only applicable to Docker/Podman deployments.
+          type: boolean
         registry_api_url:
           description: |-
             RegistryAPIURL is the registry API URL that served this server's metadata.
@@ -3529,6 +3536,11 @@ components:
             Empty or zero uses the default timeout of 30 seconds.
           example: 30s
           type: string
+        read_only_rootfs:
+          description: |-
+            Whether to mount the container's root filesystem as read-only.
+            Only applicable to Docker/Podman deployments.
+          type: boolean
         registry:
           description: Registry is the optional registry name to resolve the server
             from (e.g. "default").
@@ -4303,6 +4315,11 @@ components:
             Empty or zero uses the default timeout of 30 seconds.
           example: 30s
           type: string
+        read_only_rootfs:
+          description: |-
+            Whether to mount the container's root filesystem as read-only.
+            Only applicable to Docker/Podman deployments.
+          type: boolean
         runtime_config:
           $ref: '#/components/schemas/templates.RuntimeConfig'
         secrets:

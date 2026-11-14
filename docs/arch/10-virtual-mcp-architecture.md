@@ -520,13 +520,29 @@ capabilities. Callers get no capability query (vmcp-anti-patterns #1 and #8).
 | Modern (2026-07-28) | `elicitation.url` | `resultType: "input_required"` at HTTP 200, `inputRequests` keyed by elicitation ID, each `{method: "elicitation/create", params: {mode: "url", message, url}}`. No `requestState`, no `elicitationId` in params |
 | Modern | `elicitation.url`, on a retry whose `inputResponses` decline or cancel one of the answer's elicitations | Complete `isError` tool result at HTTP 200 whose text is the elicitation message. No URL |
 | Modern | `elicitation: {}`, only `form`, or no elicitation | `-32021` at HTTP 400, `data.requiredCapabilities: {elicitation: {url: {}}}`, a message carrying the elicitation message and telling the client to declare `elicitation.url` and retry. No URL |
-| Legacy (2025-11-25) | any | `isError` tool result whose text is the elicitation message, through a direct `tools/call` and through the optimizer's `call_tool`. No URL |
+| Legacy (2025-11-25) | `elicitation.url`, on a session whose `initialize` this replica saw | JSON-RPC error `-32042` (`URLElicitationRequiredError`), message `URL elicitation required`, `data.elicitations` listing every elicitation in order as `{mode: "url", elicitationId, url, message}`. Same through a direct `tools/call` and through the optimizer's `call_tool` |
+| Legacy | `elicitation: {}`, only `form`, or no elicitation; or a revision older than 2025-11-25; or capabilities unknown (a rehydrated session) | `isError` tool result whose text is `LegacyFallback()`: the elicitation message, or the embedder's text when it set one with `WithLegacyFallback`. Same through a direct `tools/call` and through the optimizer's `call_tool`. No elicitation URL |
 
 The renderers are `writeModernToolCallFailure` (`pkg/vmcp/server`; its writers
 `writeModernInputRequired` and `writeModernURLElicitationUnsupported`) and
-`conversion.ErrorToToolResult` for Legacy. Each has the same precedence: an
-authorization denial outranks the answer, so an error carrying both renders
-as the denial: the 403 on Modern, the denial `isError` result on Legacy.
+`legacyToolCallError` for Legacy, which renders the `-32042` and passes
+everything else to `conversion.ErrorToToolResult`. Each has the same
+precedence: an authorization denial outranks the answer, so an error carrying
+both renders as the denial: the 403 on Modern, the denial `isError` result on
+Legacy.
+
+A Legacy session gets `-32042` only when the mcpcompat session accessors
+(`SessionWithProtocolVersion`, `SessionWithClientCapabilities`) report the
+negotiated version as `2025-11-25` and `elicitation.url` as declared, both as
+*known*. They are known only on the replica that served the session's
+`initialize`. A session rehydrated on another replica, or on the same replica
+after it reaped the original, reports neither and gets the fallback until
+capabilities are persisted across replicas (unscheduled toolhive-core
+follow-up). The handler returns the `-32042` as a bare `*jsonrpc.Error`, and
+the optimizer's `call_tool` passes it through unwrapped, because go-sdk drops
+the data of a wrapped one. Both build and find it through
+`pkg/vmcp/server/internal/wireerr`, the one vMCP package that imports go-sdk's
+`jsonrpc` package, so that SDK rule lives in one place.
 
 Properties worth knowing:
 
@@ -540,31 +556,61 @@ Properties worth knowing:
   of asking again, as the spec requires servers to handle decline and cancel.
   An accept that the decorator answers again asks again, bounded by the
   client's retry budget (go-sdk stops at 10 rounds).
-- **The URL reaches only a client that declared URL mode.** Every fallback
+- **The URL reaches only a client that declared URL mode, unless the
+  embedder writes one into the Legacy fallback.** By default every fallback
   carries the elicitation messages and never the URL, so a model cannot
-  follow a link and skip the user consent step URL mode exists for. All of
-  them use the same text, `URLElicitationRequiredError.Message()` (the
-  messages joined by `"; "`). `Error()` never includes the URL either,
-  so composite workflows and code-mode scripts, which flatten step errors
-  into `isError` results, and log lines that stringify the error do not leak it.
+  follow a link and skip the user consent step URL mode exists for, and all
+  use the same text, `URLElicitationRequiredError.Message()` (the messages
+  joined by `"; "`). Only the Legacy `isError` fallback can be replaced by
+  the embedder (next bullet). `Error()` never includes the URL either, so
+  composite workflows and code-mode scripts, which flatten step errors into
+  `isError` results, and log lines that stringify the error do not leak it.
+- **The embedder may replace the Legacy fallback.** A client without URL
+  mode has no way to reach the page, so an embedder can set its own text for
+  the Legacy `isError` fallback with `WithLegacyFallback`, for example a
+  reconnect link written into the text. vMCP renders it as given; an embedder
+  that writes a link into it chose to show that link to the model. A
+  rehydrated session also gets this fallback, because vMCP does not know its
+  capabilities, so in a multi-replica deployment a link written into it can
+  reach the model of a client that did declare `elicitation.url` and skip
+  the consent step that client has. It changes nothing else: `-32042`
+  carries the elicitation messages, the Modern `-32021` still tells the
+  client to declare `elicitation.url`, the Modern decline result does not
+  hand back the link the user declined, and `Error()` and fmt output never
+  include the fallback.
 - **Only in-process code produces the answer.** Backend errors never decode
   into it. A Legacy backend's `-32042` stays a generic backend tool error,
   and a Modern backend's `input_required` round stays a
   `vmcp.InputRequiredError` that renders as `-32603`. Whether the future
   backend relay passes URL mode through is #6059's call.
 - **Scope.** `tools/call` only; on `resources/read` and `prompts/get` the
-  answer renders as the generic `-32603`. Legacy sessions never get
-  `-32042`, which needs the session's declared capabilities (#7023).
-  `notifications/elicitation/complete` is not sent.
+  answer renders as the generic `-32603`.
+  `notifications/elicitation/complete` is not sent, so a Legacy client learns
+  the user finished only by retrying.
 - **Audit outcome.** An `input_required` answer is an HTTP 200 JSON-RPC
   result, so the audit log records it with outcome `success`. So do the
   Legacy fallback and the Modern decline result, which are `isError` tool
   results inside a successful response. The undeclared `-32021` fallback is
-  HTTP 400 and records as `failure`. To count "needs the user to visit a URL"
-  separately, count answers in the decorator that returns them.
+  HTTP 400 and records as `failure`. The Legacy `-32042` is a JSON-RPC
+  error inside an HTTP 200 response: it records as `application_error` only
+  when the response is a single JSON body that fits in the 512 bytes
+  application-error detection parses (detection is on by default). A larger
+  answer (several elicitations, or URLs with long query strings) records as
+  `success`, as does one on an SSE stream, which detection does not inspect.
+  With `includeResponseData` on, detection reads the stored body instead, so
+  a body over `maxDataSize` is not detected either. To count "needs the user
+  to visit a URL" separately, count answers in the decorator that returns
+  them.
+- **Optimizer telemetry.** Through the optimizer's `call_tool`, a Legacy
+  `-32042` counts in `toolhive_vmcp_optimizer_call_tool_requests` only: not in
+  `..._call_tool_errors`, and not in `..._call_tool_not_found`, where the
+  `isError` fallback lands. The `optimizer.CallTool` span keeps an unset status
+  and carries `outcome=url_elicitation_required`.
 - **Audit response data.** With `includeResponseData` on, the audit log
-  stores the whole response body, so an `input_required` answer's URL
-  (`inputRequests.*.params.url`) lands in vMCP's own audit log. The URL must
+  stores the response body when it fits in `maxDataSize` (default 1024
+  bytes; a larger body is dropped, not truncated), so an `input_required` answer's URL
+  (`inputRequests.*.params.url`) and a Legacy `-32042`'s URL
+  (`error.data.elicitations[*].url`) land in vMCP's own audit log. The URL must
   not be sensitive for that reason too.
 
 Embedder obligations for the connect page are in

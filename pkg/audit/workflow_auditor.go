@@ -336,7 +336,7 @@ func (w *WorkflowAuditor) newEvent(ctx context.Context, eventType, outcome strin
 		eventType,
 		w.extractSource(ctx),
 		outcome,
-		w.extractSubjects(ctx),
+		w.extractSubjects(ctx, eventType),
 		w.component,
 	)
 	w.attachDelegation(ctx, event)
@@ -355,7 +355,9 @@ func (*WorkflowAuditor) extractSource(_ context.Context) EventSource {
 
 // extractSubjects extracts subject information from context, including any
 // subjects the configured SubjectEnricher adds.
-func (w *WorkflowAuditor) extractSubjects(ctx context.Context) map[string]string {
+//
+// eventType is the event being built, used only to label an enricher panic.
+func (w *WorkflowAuditor) extractSubjects(ctx context.Context, eventType string) map[string]string {
 	subjects := make(map[string]string)
 
 	// Extract user information from Identity
@@ -364,7 +366,7 @@ func (w *WorkflowAuditor) extractSubjects(ctx context.Context) map[string]string
 		subjects = extractSubjectsFromIdentity(identity)
 	}
 
-	applySubjectEnricher(ctx, w.subjectEnricher, identity, subjects)
+	applySubjectEnricher(ctx, w.subjectEnricher, identity, eventType, subjects)
 
 	// If no user found, set anonymous
 	if subjects[SubjectKeyUser] == "" {

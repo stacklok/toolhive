@@ -326,7 +326,7 @@ func (a *Auditor) logAuditEvent(r *http.Request, rw *responseWriter, requestData
 	source := a.extractSource(r)
 
 	// Extract subject information
-	subjects := a.extractSubjects(r)
+	subjects := a.extractSubjects(r, eventType)
 
 	// Determine component name
 	component := a.determineComponent(r)
@@ -621,8 +621,9 @@ func identityFromRequest(r *http.Request) (*auth.Identity, bool) {
 }
 
 // extractSubjects extracts subject information from the HTTP request,
-// including any subjects the configured SubjectEnricher adds.
-func (a *Auditor) extractSubjects(r *http.Request) map[string]string {
+// including any subjects the configured SubjectEnricher adds. eventType is
+// the event being built, used only to label an enricher panic.
+func (a *Auditor) extractSubjects(r *http.Request, eventType string) map[string]string {
 	subjects := make(map[string]string)
 
 	// Extract user information from Identity.
@@ -631,7 +632,7 @@ func (a *Auditor) extractSubjects(r *http.Request) map[string]string {
 		subjects = extractSubjectsFromIdentity(identity)
 	}
 
-	applySubjectEnricher(r.Context(), a.subjectEnricher, identity, subjects)
+	applySubjectEnricher(r.Context(), a.subjectEnricher, identity, eventType, subjects)
 
 	// If no user found in claims, set anonymous
 	if subjects[SubjectKeyUser] == "" {
@@ -845,7 +846,7 @@ func (a *Auditor) logSSEConnectionEvent(r *http.Request, statusCode int) {
 	source := a.extractSource(r)
 
 	// Extract subject information
-	subjects := a.extractSubjects(r)
+	subjects := a.extractSubjects(r, EventTypeSSEConnection)
 
 	// Determine component name
 	component := a.determineComponent(r)

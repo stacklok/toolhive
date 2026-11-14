@@ -650,8 +650,8 @@ cfg.AuditSubjectEnricher = func(ctx context.Context) map[string]string {
   different one.
 - It must be fast, must not block, and must be safe for concurrent use:
   composite-tool workflow steps call it from parallel goroutines. A panic is
-  recovered and logged at ERROR, and the event is still written without the
-  enricher's subjects.
+  recovered and logged at ERROR with the event type and a stack trace, and
+  the event is still written without the enricher's subjects.
 - Returned keys are added to `subjects`. Empty keys and values are dropped.
   The keys the auditor writes itself (`user`, `user_id`, `client_name`,
   `client_version`) are reserved: the enricher can neither overwrite nor

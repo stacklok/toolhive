@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -332,6 +333,37 @@ func TestSubjectEnricher_RunsOnlyForAuditedEvents(t *testing.T) {
 			assert.Equal(t, tt.wantCalls, calls.Load())
 		})
 	}
+}
+
+// TestSubjectEnricher_PanicLogCarriesEventTypeAndStack pins that a recovered
+// enricher panic is logged with the event type and a stack trace that reaches
+// the embedder's enricher, so an operator can find the failing line.
+//
+//nolint:paralleltest // installs a global slog default; must not run in parallel
+func TestSubjectEnricher_PanicLogCarriesEventTypeAndStack(t *testing.T) {
+	var logs bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	auditor, err := NewWorkflowAuditor(&Config{}, WithSubjectEnricher(panickingTestEnricher))
+	require.NoError(t, err)
+	auditor.auditLogger = NewAuditLogger(&bytes.Buffer{})
+
+	auditor.LogStepStarted(context.Background(), "wf-1", "s1", "tool", "be1.echo")
+
+	var entry map[string]any
+	require.NoError(t, json.Unmarshal(logs.Bytes(), &entry), "log output: %s", logs.String())
+	assert.Equal(t, "audit subject enricher panicked; extra subjects dropped", entry["msg"])
+	assert.Equal(t, EventTypeWorkflowStepStarted, entry["event_type"])
+	assert.Equal(t, "boom", entry["panic"])
+	assert.Contains(t, entry["stack"], "panickingTestEnricher")
+}
+
+// panickingTestEnricher is a named enricher so the panic log test can find it
+// in the logged stack trace.
+func panickingTestEnricher(context.Context) map[string]string {
+	panic("boom")
 }
 
 // TestReservedSubjectKeys_CoverBuiltInSubjects pins reservedSubjectKeys to the

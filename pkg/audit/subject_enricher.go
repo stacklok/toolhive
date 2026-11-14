@@ -6,6 +6,7 @@ package audit
 import (
 	"context"
 	"log/slog"
+	"runtime/debug"
 
 	"github.com/stacklok/toolhive/pkg/auth"
 )
@@ -80,14 +81,18 @@ var reservedSubjectKeys = map[string]struct{}{
 // step events run here from parallel goroutines that share the request
 // context, so that write would race.
 //
-// A panic in the enricher is recovered and logged, and no enricher subjects
-// are added: an embedder bug must not crash a workflow step goroutine (which
+// eventType names the event being built, for the panic log.
+//
+// A panic in the enricher is recovered and logged with eventType and a stack
+// trace (the enricher is embedder code, so the stack is how an operator finds
+// the failing line), and no enricher subjects are added: an embedder bug must not crash a workflow step goroutine (which
 // has no net/http recovery) or drop the audit event. The panic happens in the
 // enricher call, before any key is merged, so subjects is never half-updated.
 func applySubjectEnricher(
 	ctx context.Context,
 	enricher SubjectEnricher,
 	identity *auth.Identity,
+	eventType string,
 	subjects map[string]string,
 ) {
 	if enricher == nil {
@@ -95,7 +100,8 @@ func applySubjectEnricher(
 	}
 	defer func() {
 		if r := recover(); r != nil {
-			slog.Error("audit subject enricher panicked; extra subjects dropped", "panic", r)
+			slog.ErrorContext(ctx, "audit subject enricher panicked; extra subjects dropped",
+				"event_type", eventType, "panic", r, "stack", string(debug.Stack()))
 		}
 	}()
 	if identity != nil {

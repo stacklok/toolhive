@@ -5,6 +5,8 @@
 package usagemetrics
 
 import (
+	"slices"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -13,6 +15,128 @@ import (
 type MetricRecord struct {
 	Count     int64  `json:"count"`
 	Timestamp string `json:"timestamp"` // ISO 8601 format in UTC (e.g., "2025-01-01T23:50:00Z")
+
+	// CallsByClient splits Count by the MCP client that made the calls. Keys are
+	// always one of the normalized client values (see NormalizeClientName), so the
+	// map holds at most a fixed, small number of entries.
+	CallsByClient map[string]int64 `json:"calls_by_client,omitempty"`
+
+	Profile
+}
+
+// Profile describes the server a collector reports for. Every string field holds
+// one of a fixed set of values (enforced by normalize), so no field can carry
+// user-defined names, URLs or other free-form data. The one exception,
+// CatalogServer, is restricted to entry names of the registry embedded in the
+// ToolHive binary.
+type Profile struct {
+	// Transport is the MCP transport: stdio, sse, streamable-http or other.
+	Transport string `json:"transport,omitempty"`
+	// ServerKind is container or remote.
+	ServerKind string `json:"server_kind,omitempty"`
+	// RegistrySource is where the server definition came from: builtin,
+	// custom_remote, custom_api, custom_local or none.
+	RegistrySource string `json:"registry_source,omitempty"`
+	// CatalogServer is the built-in registry entry name, or "custom".
+	CatalogServer string `json:"catalog_server,omitempty"`
+	// Runtime is docker, podman, colima, kubernetes, none or other.
+	Runtime string `json:"runtime,omitempty"`
+	// AuthMode is the incoming authentication: none, oidc, local, embedded or other.
+	AuthMode string `json:"auth_mode,omitempty"`
+	// Authz is on or off.
+	Authz string `json:"authz,omitempty"`
+
+	// BackendCount is the number of backends behind a vMCP server.
+	BackendCount *int `json:"backend_count,omitempty"`
+	// ToolCount is the number of tools a vMCP server advertises.
+	ToolCount *int `json:"tool_count,omitempty"`
+	// Features lists the vMCP features in use, drawn from optimizer, code_mode,
+	// composite_tools and outgoing_auth.
+	Features []string `json:"features,omitempty"`
+}
+
+// Allowed profile values.
+const (
+	ValueOther   = "other"
+	ValueNone    = "none"
+	ValueCustom  = "custom"
+	ValueOn      = "on"
+	ValueOff     = "off"
+	ValueBuiltin = "builtin"
+
+	ServerKindContainer = "container"
+	ServerKindRemote    = "remote"
+
+	RegistrySourceCustomRemote = "custom_remote"
+	RegistrySourceCustomAPI    = "custom_api"
+	RegistrySourceCustomLocal  = "custom_local"
+
+	RuntimeKubernetes = "kubernetes"
+
+	AuthModeOIDC     = "oidc"
+	AuthModeLocal    = "local"
+	AuthModeEmbedded = "embedded"
+
+	FeatureOptimizer      = "optimizer"
+	FeatureCodeMode       = "code_mode"
+	FeatureCompositeTools = "composite_tools"
+	FeatureOutgoingAuth   = "outgoing_auth"
+)
+
+var (
+	allowedTransports      = []string{"stdio", "sse", "streamable-http"}
+	allowedServerKinds     = []string{ServerKindContainer, ServerKindRemote}
+	allowedRegistrySources = []string{
+		ValueBuiltin, RegistrySourceCustomRemote, RegistrySourceCustomAPI, RegistrySourceCustomLocal, ValueNone,
+	}
+	allowedRuntimes  = []string{"docker", "podman", "colima", RuntimeKubernetes, ValueNone}
+	allowedAuthModes = []string{ValueNone, AuthModeOIDC, AuthModeLocal, AuthModeEmbedded}
+	allowedAuthz     = []string{ValueOn, ValueOff}
+	allowedFeatures  = []string{FeatureOptimizer, FeatureCodeMode, FeatureCompositeTools, FeatureOutgoingAuth}
+)
+
+// normalize returns a copy of p in which every field holds an allowed value.
+// Empty fields stay empty (and are omitted from the payload); any other value
+// outside the allowed set becomes "other". CatalogServer is only kept for the
+// builtin registry source; providers are responsible for checking the name
+// against the embedded catalog.
+func (p Profile) normalize() Profile {
+	out := Profile{
+		Transport:      oneOf(p.Transport, allowedTransports),
+		ServerKind:     oneOf(p.ServerKind, allowedServerKinds),
+		RegistrySource: oneOf(p.RegistrySource, allowedRegistrySources),
+		Runtime:        oneOf(p.Runtime, allowedRuntimes),
+		AuthMode:       oneOf(p.AuthMode, allowedAuthModes),
+		Authz:          oneOf(p.Authz, allowedAuthz),
+		BackendCount:   p.BackendCount,
+		ToolCount:      p.ToolCount,
+	}
+	if out.RegistrySource != "" {
+		out.CatalogServer = ValueCustom
+		if out.RegistrySource == ValueBuiltin && p.CatalogServer != "" {
+			out.CatalogServer = p.CatalogServer
+		}
+	}
+	for _, f := range p.Features {
+		if slices.Contains(allowedFeatures, f) && !slices.Contains(out.Features, f) {
+			out.Features = append(out.Features, f)
+		}
+	}
+	slices.Sort(out.Features)
+	return out
+}
+
+func oneOf(v string, allowed []string) string {
+	if v == "" || slices.Contains(allowed, v) {
+		return v
+	}
+	return ValueOther
+}
+
+// ProfileProvider is implemented by runner configurations that can describe the
+// server they run. The usage metrics middleware checks for it at creation time.
+type ProfileProvider interface {
+	UsageMetricsProfile() Profile
 }
 
 // Collector manages tool call counting and reporting
@@ -21,6 +145,12 @@ type Collector struct {
 	instanceID string
 	// Atomic counter for thread-safe increments
 	counter atomic.Int64
+	// Tool calls per normalized client name, guarded by clientsMu
+	clientsMu     sync.Mutex
+	callsByClient map[string]int64
+	// profile returns the server profile; called on every flush so values that
+	// change over time (such as vMCP backend counts) stay current. May be nil.
+	profile func() Profile
 	// Current date in YYYY-MM-DD format (UTC)
 	currentDate string
 	// HTTP client
@@ -33,7 +163,6 @@ type Collector struct {
 	shutdown atomic.Bool
 }
 
-// getCurrentDateUTC returns the current date in YYYY-MM-DD format (UTC)
 func getCurrentDateUTC() string {
 	return time.Now().UTC().Format("2006-01-02")
 }

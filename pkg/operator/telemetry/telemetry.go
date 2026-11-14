@@ -92,6 +92,41 @@ func NewService(k8sClient client.Client, namespace string) *Service {
 	}
 }
 
+// EnsureInstanceID returns this operator installation's instance ID, creating
+// and storing it in the telemetry ConfigMap if it does not exist yet. It is
+// meant to run once at startup, before the manager's cache starts, so it reads
+// through the given uncached reader. Concurrent replicas may race to create the
+// ConfigMap; the loser reads the winner's ID. Returns an empty ID when update
+// checks are disabled, without touching the ConfigMap.
+func (s *Service) EnsureInstanceID(ctx context.Context, reader client.Reader) (string, error) {
+	if updates.ShouldSkipUpdateChecks() {
+		return "", nil
+	}
+	key := types.NamespacedName{Name: configMapName, Namespace: s.namespace}
+	if id, err := readInstanceID(ctx, reader, key); err != nil || id != "" {
+		return id, err
+	}
+
+	data := &telemetryData{InstanceID: uuid.NewString()}
+	dataBytes, err := json.Marshal(data)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal telemetry data: %w", err)
+	}
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: configMapName, Namespace: s.namespace},
+		Data:       map[string]string{instanceIDKey: string(dataBytes)},
+	}
+	err = s.client.Create(ctx, cm)
+	switch {
+	case err == nil:
+		return data.InstanceID, nil
+	case errors.IsAlreadyExists(err):
+		return readInstanceID(ctx, reader, key)
+	default:
+		return "", fmt.Errorf("failed to create telemetry ConfigMap: %w", err)
+	}
+}
+
 // CheckForUpdates checks for updates and sends telemetry data
 func (s *Service) CheckForUpdates(ctx context.Context) error {
 	if updates.ShouldSkipUpdateChecks() {
@@ -245,4 +280,21 @@ func (s *Service) StartTelemetryWorker(ctx context.Context) {
 			}
 		}
 	}
+}
+
+// readInstanceID returns the instance ID stored in the telemetry ConfigMap, or
+// an empty ID if the ConfigMap or a usable ID in it does not exist.
+func readInstanceID(ctx context.Context, reader client.Reader, key types.NamespacedName) (string, error) {
+	cm := &corev1.ConfigMap{}
+	if err := reader.Get(ctx, key, cm); err != nil {
+		if errors.IsNotFound(err) {
+			return "", nil
+		}
+		return "", fmt.Errorf("failed to get telemetry ConfigMap: %w", err)
+	}
+	data := &telemetryData{}
+	if err := json.Unmarshal([]byte(cm.Data[instanceIDKey]), data); err != nil {
+		return "", nil
+	}
+	return data.InstanceID, nil
 }

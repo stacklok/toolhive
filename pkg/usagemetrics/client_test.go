@@ -13,7 +13,9 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
+	"github.com/stacklok/toolhive-core/env"
 	envmocks "github.com/stacklok/toolhive-core/env/mocks"
+	"github.com/stacklok/toolhive/pkg/updates"
 )
 
 // newTestClient creates a client for testing with a pre-set anonymous ID
@@ -72,7 +74,7 @@ func TestGenerateUserAgent(t *testing.T) {
 				Return(tt.k8sEnvValue).
 				AnyTimes()
 
-			userAgent := generateUserAgentWithEnv(mockEnv)
+			userAgent := generateUserAgentWithEnv(mockEnv, "")
 
 			// Verify it starts with expected prefix
 			assert.True(t, strings.HasPrefix(userAgent, tt.expectedPrefix),
@@ -124,11 +126,38 @@ func TestSendMetrics_Non2xxStatusCode(t *testing.T) {
 func TestGenerateUserAgent_BuildType(t *testing.T) {
 	t.Parallel()
 
-	userAgent := generateUserAgent()
+	userAgent := generateUserAgentWithEnv(&env.OSReader{}, "")
 
 	// Verify user agent has expected format: toolhive/[type] [version] [build] (platform)
 	assert.NotEmpty(t, userAgent)
 	assert.True(t, strings.HasPrefix(userAgent, "toolhive/"), "User agent should start with 'toolhive/'")
 	assert.Contains(t, userAgent, "(", "User agent should contain platform info in parentheses")
 	assert.Contains(t, userAgent, ")", "User agent should contain platform info in parentheses")
+}
+
+func TestResolveAnonymousID(t *testing.T) {
+	t.Parallel()
+
+	fromFile, _ := updates.TryGetAnonymousID()
+
+	tests := []struct {
+		name     string
+		envValue string
+		want     string
+	}{
+		{name: "environment override wins", envValue: "operator-instance-id", want: "operator-instance-id"},
+		{name: "falls back to the updates file", envValue: "", want: fromFile},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctrl := gomock.NewController(t)
+			mockEnv := envmocks.NewMockReader(ctrl)
+			mockEnv.EXPECT().Getenv(EnvVarAnonymousID).Return(tt.envValue)
+
+			assert.Equal(t, tt.want, resolveAnonymousID(mockEnv))
+		})
+	}
 }

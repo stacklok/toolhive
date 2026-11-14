@@ -11,6 +11,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 
 	"github.com/stacklok/toolhive/pkg/secrets"
+	"github.com/stacklok/toolhive/pkg/usagemetrics"
 )
 
 func TestEnsureRequiredEnvVars(t *testing.T) {
@@ -301,6 +302,49 @@ func TestEnsureRequiredEnvVars(t *testing.T) {
 		assert.Equal(t, "secret-token", envMap["TOOLHIVE_SECRET_token"])
 		assert.Equal(t, "regular", envMap["REGULAR_VAR"])
 	})
+}
+
+//nolint:paralleltest // Mutates the package-level usage metrics anonymous ID.
+func TestEnsureRequiredEnvVars_UsageMetricsAnonymousID(t *testing.T) {
+	t.Cleanup(func() { SetUsageMetricsAnonymousID("") })
+	ctx := context.Background()
+
+	tests := []struct {
+		name        string
+		anonymousID string
+		env         []corev1.EnvVar
+		// want is the TOOLHIVE_ANONYMOUS_ID entries expected in the result.
+		want []corev1.EnvVar
+	}{
+		{
+			name: "no ID configured adds nothing",
+		},
+		{
+			name:        "configured ID is added",
+			anonymousID: "operator-instance",
+			want:        []corev1.EnvVar{{Name: usagemetrics.EnvVarAnonymousID, Value: "operator-instance"}},
+		},
+		{
+			name:        "existing value is kept",
+			anonymousID: "operator-instance",
+			env:         []corev1.EnvVar{{Name: usagemetrics.EnvVarAnonymousID, Value: "user-set"}},
+			want:        []corev1.EnvVar{{Name: usagemetrics.EnvVarAnonymousID, Value: "user-set"}},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			SetUsageMetricsAnonymousID(tt.anonymousID)
+
+			var got []corev1.EnvVar
+			for _, e := range EnsureRequiredEnvVars(ctx, tt.env) {
+				if e.Name == usagemetrics.EnvVarAnonymousID {
+					got = append(got, e)
+				}
+			}
+			assert.Equal(t, tt.want, got)
+		})
+	}
 }
 
 // TestMergeStringMaps documents the precedence the Service reconcilers rely on when

@@ -15,6 +15,7 @@ import (
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/pkg/secrets"
+	"github.com/stacklok/toolhive/pkg/usagemetrics"
 )
 
 // BuildResourceRequirements builds Kubernetes resource requirements from CRD spec
@@ -64,8 +65,21 @@ func BuildHealthProbe(
 	}
 }
 
+// usageMetricsAnonymousID is the operator's instance ID, passed to the
+// workloads it deploys so their anonymous usage metrics share one ID per
+// installation. Set once at startup, before any controller runs.
+var usageMetricsAnonymousID string
+
+// SetUsageMetricsAnonymousID sets the anonymous ID EnsureRequiredEnvVars adds to
+// workloads. It must be called before the manager starts, and the value must
+// stay the same for the life of the process: changing it would change every
+// workload's pod template and roll its pods.
+func SetUsageMetricsAnonymousID(id string) {
+	usageMetricsAnonymousID = id
+}
+
 // EnsureRequiredEnvVars ensures required environment variables are set with defaults
-// Shared between MCPServer and MCPRemoteProxy
+// Shared between MCPServer, MCPRemoteProxy and VirtualMCPServer
 func EnsureRequiredEnvVars(ctx context.Context, env []corev1.EnvVar) []corev1.EnvVar {
 	ctxLogger := log.FromContext(ctx)
 	xdgConfigHomeFound := false
@@ -124,6 +138,8 @@ func EnsureRequiredEnvVars(ctx context.Context, env []corev1.EnvVar) []corev1.En
 		})
 	}
 
+	env = appendUsageMetricsAnonymousID(env)
+
 	// Set secrets provider to environment if secrets are being used via TOOLHIVE_SECRET_* env vars
 	// This is needed to resolve CLI format secrets (e.g., "secret-name,target=bearer_token")
 	// The environment provider reads from TOOLHIVE_SECRET_* env vars to resolve CLI format secrets
@@ -178,4 +194,21 @@ func CreateProxyServiceName(resourceName string) string {
 // Shared between MCPServer and MCPRemoteProxy
 func ProxyRunnerServiceAccountName(resourceName string) string {
 	return fmt.Sprintf("%s-proxy-runner", resourceName)
+}
+
+// appendUsageMetricsAnonymousID adds the operator's anonymous ID for usage
+// metrics, unless none is configured or the env already sets one.
+func appendUsageMetricsAnonymousID(env []corev1.EnvVar) []corev1.EnvVar {
+	if usageMetricsAnonymousID == "" {
+		return env
+	}
+	for _, envVar := range env {
+		if envVar.Name == usagemetrics.EnvVarAnonymousID {
+			return env
+		}
+	}
+	return append(env, corev1.EnvVar{
+		Name:  usagemetrics.EnvVarAnonymousID,
+		Value: usageMetricsAnonymousID,
+	})
 }

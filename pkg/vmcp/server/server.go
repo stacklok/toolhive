@@ -189,6 +189,10 @@ type Config struct {
 	// If nil, no telemetry is recorded.
 	TelemetryProvider *telemetry.Provider
 
+	// UsageMetricsMiddleware is the optional anonymous usage metrics middleware.
+	// It is applied inside the MCP parsing middleware, which it depends on.
+	UsageMetricsMiddleware func(http.Handler) http.Handler
+
 	// AuditConfig is the optional audit configuration.
 	// If nil, no audit logging is performed.
 	// Component should be set to "vmcp-server" to distinguish vMCP audit logs.
@@ -775,6 +779,9 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 	// The second application here is a no-op because the context already holds a
 	// ParsedMCPRequest; it exists only so the telemetry layer works correctly even
 	// when auth middleware is nil.
+	if s.config.UsageMetricsMiddleware != nil {
+		mcpHandler = s.config.UsageMetricsMiddleware(mcpHandler)
+	}
 	mcpHandler = mcpparser.ParsingMiddleware(mcpHandler)
 
 	// Apply authentication middleware if configured

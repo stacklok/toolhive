@@ -152,6 +152,14 @@ func Run() {
 	}
 	// Set up telemetry service - only runs when elected as leader
 	telemetryService := telemetry.NewService(mgr.GetClient(), podNamespace)
+
+	// Resolve the installation's instance ID before any controller reconciles,
+	// so every workload gets the same anonymous ID from its first pod template.
+	if instanceID, err := telemetryService.EnsureInstanceID(context.Background(), mgr.GetAPIReader()); err != nil {
+		setupLog.Info("unable to resolve telemetry instance ID; workloads report usage without it", "error", err.Error())
+	} else {
+		ctrlutil.SetUsageMetricsAnonymousID(instanceID)
+	}
 	if err := mgr.Add(&telemetry.LeaderTelemetryRunnable{
 		TelemetryService: telemetryService,
 	}); err != nil {

@@ -353,10 +353,35 @@ Filtering a list removes the tools the filter hides and applies the overrides, a
 
 **Responsibilities**:
 - Count `tools/call` requests by examining parsed MCP data
-- Aggregate counts in-memory with atomic operations
+- Attribute each call to the MCP client that made it
+- Aggregate counts in-memory
 - Flush metrics to API endpoint periodically (every 15 minutes)
 - Reset counts daily at midnight UTC
 - Manage background flush goroutine lifecycle
+
+**What each report contains**:
+
+Each proxy (and each vMCP server) sends one report every 15 minutes, including when no tools were called. Every string field is limited to a fixed set of values defined in `pkg/usagemetrics/types.go`; anything else is reported as `other`.
+
+| Field | Values |
+|-------|--------|
+| `count` | Tool calls so far today (UTC) |
+| `calls_by_client` | `count` split by MCP client: `claude-code`, `claude-desktop`, `cursor`, `windsurf`, `vscode`, `cline`, `roo-code`, `continue`, `zed`, `goose`, `codex`, `gemini-cli`, `jetbrains`, `mcp-inspector`, `toolhive`, `other`, `unknown` |
+| `transport` | `stdio`, `sse`, `streamable-http`, `other` |
+| `server_kind` | `container`, `remote` |
+| `registry_source` | `builtin`, `custom_remote`, `custom_api`, `custom_local`, `none` |
+| `catalog_server` | The entry name, only for servers from the registry built into ToolHive; `custom` otherwise |
+| `runtime` | `docker`, `podman`, `colima`, `kubernetes`, `none`, `other` |
+| `auth_mode` | `none`, `oidc`, `local`, `embedded`, `other` |
+| `authz` | `on`, `off` |
+| `backend_count`, `tool_count` | vMCP only: number of backends and of aggregated tools |
+| `features` | vMCP only: any of `optimizer`, `code_mode`, `composite_tools`, `outgoing_auth` |
+
+The client is taken from `clientInfo.name`: from the `initialize` request for session-based connections (tracked per session ID, in memory only), or from `_meta` on each request for stateless (2026-07-28) requests. Only the normalized value is reported. Calls that vMCP forwards to a backend proxy are reported by that proxy under the client `toolhive`.
+
+Server names, image references, URLs, hostnames, namespaces, tool, prompt and resource names, raw client names and error messages are never sent. A server from a custom registry, including a local registry file, is reported as `catalog_server: custom` even if its entry has a name.
+
+**vMCP and the operator**: vMCP reports with the `vmcp` component and the same opt-outs. The operator passes its instance ID to the workloads it deploys (`TOOLHIVE_ANONYMOUS_ID`), so reports from one installation share an anonymous ID; the ID is fixed at operator startup and does not change workload pod templates on later restarts. Setting `TOOLHIVE_SKIP_UPDATE_CHECK=true` on the operator stops it from creating or passing the ID.
 
 **Configuration**:
 - Enabled by default

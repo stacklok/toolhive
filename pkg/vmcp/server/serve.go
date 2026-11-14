@@ -139,6 +139,8 @@ type ServerConfig struct {
 
 	// UsageMetricsMiddleware is the optional anonymous usage metrics middleware,
 	// applied inside the MCP parsing middleware. If nil, no usage is reported.
+	// ToolHive's own entry points set it (pkg/vmcp/cli); embedders should leave
+	// it nil (see docs/arch/vmcp-library.md).
 	UsageMetricsMiddleware func(http.Handler) http.Handler
 
 	// AuditConfig is the cross-cutting audit configuration (also consumed by

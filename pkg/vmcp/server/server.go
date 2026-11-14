@@ -190,7 +190,9 @@ type Config struct {
 	TelemetryProvider *telemetry.Provider
 
 	// UsageMetricsMiddleware is the optional anonymous usage metrics middleware.
-	// It is applied inside the MCP parsing middleware, which it depends on.
+	// It is applied inside the MCP parsing middleware, which it depends on. If
+	// nil, no usage is reported. ToolHive's own entry points set it
+	// (pkg/vmcp/cli); embedders should leave it nil (see docs/arch/vmcp-library.md).
 	UsageMetricsMiddleware func(http.Handler) http.Handler
 
 	// AuditConfig is the optional audit configuration.

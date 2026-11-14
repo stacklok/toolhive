@@ -630,6 +630,8 @@ func TestRefreshTokenFactoryValidatesTargets(t *testing.T) {
 				t.RequiredSubjectClaims = []string{IDJAGSubjectClaimSubID, IDJAGSubjectClaimSubID}
 			},
 			wantErr: `lists required subject claim "sub_id" twice`},
+		{name: "sub-second lifetime", key: key,
+			mutate: func(t *IDJAGTarget) { t.Lifetime = 500 * time.Millisecond }, wantErr: "lifetime must be a whole number of seconds"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

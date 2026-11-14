@@ -718,10 +718,9 @@ func exchangeRefreshTokenCaps(block *DelegateClientExchangeRefreshTokens) (map[s
 // each restricted client's actor_profile to its registered validator. It relies
 // on Config.Validate having refused an unregistered or nil validator.
 //
-// It also logs once, at DEBUG until ID-JAG issuance exists, for every client
-// that can hold ID-JAG grants but has no id_jag.targets. It runs once per
-// start, unlike config validation, which can run on both the RunConfig and the
-// Config path.
+// It also logs once, at DEBUG, for every client that can hold ID-JAG grants
+// but has no id_jag.targets. It runs once per start, unlike config validation,
+// which can run on both the RunConfig and the Config path.
 func configuredClientPolicies(
 	clients []DelegateClient, validators map[string]tokenexchange.ActorValidatorRegistration,
 ) (map[string]tokenexchange.ConfiguredClientPolicy, error) {

@@ -33,15 +33,16 @@ var _ fosite.TokenEndpointHandler = (*RefreshTokenHandler)(nil)
 // Reasons logged with a refusal. They are fixed strings; the
 // authorization_details reasons are the ones returned to the client.
 const (
-	refuseUnsupportedType = "unsupported_token_type"
-	refuseSubjectToken    = reasonSubjectInvalid
-	refuseRequestParam    = "request_parameter_refused"
-	refuseDetailsInvalid  = "authorization_details_invalid"
-	refuseReplay          = "token_used"
-	refuseBadToken        = "token_invalid"
-	refuseUnknownGrant    = "not_found_or_other_client"
-	refuseInternal        = "internal_error"
-	refuseStore           = "store_failure"
+	refuseUnsupportedType  = "unsupported_token_type"
+	refuseSubjectToken     = reasonSubjectInvalid
+	refuseRequestParam     = "request_parameter_refused"
+	refuseActorUnavailable = "actor_validation_unavailable"
+	refuseDetailsInvalid   = "authorization_details_invalid"
+	refuseReplay           = "token_used"
+	refuseBadToken         = "token_invalid"
+	refuseUnknownGrant     = "not_found_or_other_client"
+	refuseInternal         = "internal_error"
+	refuseStore            = "store_failure"
 )
 
 // Reasons returned to the client as the whole error_description when a request
@@ -99,16 +100,21 @@ func isRefreshTokenExchange(form url.Values) bool {
 // token_used. The check and the write are one atomic store call, made in
 // PopulateTokenEndpointResponse, so two concurrent exchanges produce one grant.
 //
-// A refresh-token subject is exchanged for a child grant (decideChild). Two
-// derives from one grant give two independent children, since a child has no
-// replay marker. If the response of a derive is lost, the child stays until its
-// parent ends; this is accepted.
+// A refresh-token subject is exchanged for a child grant (decideChild), or for
+// an ID-JAG (decideIDJAG) when the request asks for one. Two derives from one
+// grant give two independent children, since a child has no replay marker. If
+// the response of a derive is lost, the child stays until its parent ends; this
+// is accepted. Minting an ID-JAG writes nothing, so one grant mints any number
+// of them.
 //
 // A client without exchange_refresh_tokens is refused with the unsupported
 // requested_token_type text (unsupportedTokenType), or with the unsupported
 // subject_token_type text that validateFormParams returns when its subject is a
-// refresh token. A refresh-token subject asking for any type but a refresh
-// token is refused with the same subject text. All are invalid_request.
+// refresh token. A refresh-token subject asking for a type whose cap
+// the client lacks (a refresh token without the refresh_token cap, an ID-JAG
+// without the ID-JAG cap) or for any other type is refused with the same
+// subject text, and one asking for an ID-JAG from a client with the cap but no
+// ID-JAG targets gets the unsupported requested_token_type text. All are invalid_request.
 //
 // The exchange grant is the only profile this handler issues today; a later
 // profile would be chosen where decide checks the client's exchange_refresh_tokens.
@@ -119,8 +125,8 @@ type RefreshTokenHandler struct {
 	registry       *authorizationdetails.Registry
 	clientPolicies map[string]ConfiguredClientPolicy
 	refreshScopes  fosite.RefreshTokenScopesProvider
-	signer         *server.Signer // will sign ID-JAGs; nothing reads it yet
-	issuer         string         // the access-token issuer
+	signer         idJAGSigner // signs ID-JAGs with typ oauth-id-jag+jwt; *server.Signer in production
+	issuer         string      // the access-token issuer
 }
 
 // RefreshTokenOption configures RefreshTokenFactory. Factory takes FactoryOption
@@ -230,8 +236,9 @@ func (h *RefreshTokenHandler) HandleTokenEndpointRequest(ctx context.Context, re
 }
 
 // PopulateTokenEndpointResponse decides the request again and issues the refresh
-// token. The second decision verifies the subject token right before it is
-// consumed. The grant carries the subject token's (iss, jti), so a reused
+// token or mints the ID-JAG. The second decision verifies the subject token
+// right before it is consumed, and re-reads a presented grant right before an
+// ID-JAG is signed. The grant carries the subject token's (iss, jti), so a reused
 // subject token fails in issue with token_used. A child grant has no (iss, jti)
 // marker, so token_used applies only to top-level grants. The response is the RFC 8693
 // shape with token_type N_A and no refresh_token member; fosite writes
@@ -242,11 +249,20 @@ func (h *RefreshTokenHandler) PopulateTokenEndpointResponse(
 	if !h.CanHandleTokenEndpointRequest(ctx, requester) {
 		return errorsx.WithStack(fosite.ErrUnknownRequest)
 	}
-	decision, err := h.decide(ctx, requester, time.Now())
+	decided, err := h.decide(ctx, requester, time.Now())
 	if err != nil {
 		return err
 	}
-	return h.issue(ctx, requester, decision, responder)
+	switch {
+	case decided.grant != nil:
+		return h.issue(ctx, requester, decided.grant, responder)
+	case decided.idJAG != nil:
+		return h.issueIDJAG(ctx, decided.idJAG, responder)
+	default:
+		// Unreachable: decide sets exactly one field or returns an error. Kept so a
+		// future decision kind fails closed instead of issuing nothing.
+		return errorsx.WithStack(fosite.ErrServerError.WithHint("The token could not be issued."))
+	}
 }
 
 // refuse logs a refusal at warn level with a stable reason and returns the error
@@ -271,6 +287,13 @@ type exchangeGrantDecision struct {
 	log   *slog.Logger
 }
 
+// decision is the outcome of decide. Exactly one field is set: grant for a
+// request that issues a grant, idJAG for one that mints an ID-JAG.
+type decision struct {
+	grant *exchangeGrantDecision
+	idJAG *idJAGDecision
+}
+
 // decide validates the request, the subject token and the authorization_details
 // entry, and returns what to issue. It writes nothing to the store and consumes
 // nothing; its only effect is the refusal log line. It runs twice per request
@@ -281,36 +304,41 @@ type exchangeGrantDecision struct {
 // branch (decideTopLevel for a login access token, decideChild for a refresh
 // token) that builds the same exchangeGrantDecision, which issue then writes.
 // That is a different axis from a new profile, which changes what the grant
-// allows, not what it is derived from.
+// allows, not what it is derived from. A refresh-token subject asking for an
+// ID-JAG goes to decideIDJAG instead, whose decision issueIDJAG mints.
 func (h *RefreshTokenHandler) decide(
 	ctx context.Context, requester fosite.AccessRequester, now time.Time,
-) (*exchangeGrantDecision, error) {
+) (decision, error) {
 	client := requester.GetClient()
 	form := requester.GetRequestForm()
 	log := slog.With("client_id", client.GetID())
 
 	if client.IsPublic() {
-		return nil, errorsx.WithStack(fosite.ErrInvalidGrant.WithHint(
+		return decision{}, errorsx.WithStack(fosite.ErrInvalidGrant.WithHint(
 			"The OAuth 2.0 Client is marked as public and is thus not allowed to use authorization grant 'token-exchange'."))
 	}
 	if !client.GetGrantTypes().Has(oauthproto.GrantTypeTokenExchange) {
-		return nil, errorsx.WithStack(fosite.ErrUnauthorizedClient.WithHint(
+		return decision{}, errorsx.WithStack(fosite.ErrUnauthorizedClient.WithHint(
 			"The OAuth 2.0 Client is not allowed to use authorization grant 'token-exchange'."))
 	}
 
 	// The policy gate comes first: a client that has not enabled the feature gets
 	// the unsupported-type text. A refresh-token subject is refused too when it
-	// does not ask for a refresh token, or when the client's policy no longer
-	// allows refresh tokens, so removing the cap stops derives from source grants the
-	// client already holds. The text is the one validateFormParams returns for an
-	// unsupported subject type.
+	// asks for neither a refresh token nor an ID-JAG, or when it asks for a
+	// type whose cap the client's policy no longer has, so removing a cap stops
+	// derives and ID-JAG mints from source grants the client already holds.
+	// The text is the one validateFormParams returns for an unsupported subject
+	// type.
 	policy := h.clientPolicies[client.GetID()]
 	subjectType := form.Get("subject_token_type")
+	requestedType := form.Get("requested_token_type")
 	derive := subjectType == oauthproto.TokenTypeRefreshToken
 	_, refreshAllowed := policy.ExchangeRefreshTokens[oauthproto.TokenTypeRefreshToken]
-	if derive && (!refreshAllowed ||
-		form.Get("requested_token_type") != oauthproto.TokenTypeRefreshToken) {
-		return nil, refuse(ctx, log, refuseUnsupportedType, errorsx.WithStack(fosite.ErrInvalidRequest.WithHintf(
+	deriveAllowed := requestedType == oauthproto.TokenTypeRefreshToken && refreshAllowed
+	_, idJAGCap := policy.ExchangeRefreshTokens[oauthproto.TokenTypeIDJAG]
+	idJAGAllowed := requestedType == oauthproto.TokenTypeIDJAG && idJAGCap
+	if derive && !deriveAllowed && !idJAGAllowed {
+		return decision{}, refuse(ctx, log, refuseUnsupportedType, errorsx.WithStack(fosite.ErrInvalidRequest.WithHintf(
 			"The 'subject_token_type' value %q is not supported. Use %q or %q.",
 			subjectType, oauthproto.TokenTypeAccessToken, oauthproto.TokenTypeJWT)))
 	}
@@ -320,13 +348,34 @@ func (h *RefreshTokenHandler) decide(
 	// and checked at startup, not by the shape of the request. A client with no
 	// policy must keep meaning "nothing allowed".
 	if len(policy.ExchangeRefreshTokens) == 0 {
-		return nil, refuse(ctx, log, refuseUnsupportedType,
-			errorsx.WithStack(unsupportedTokenType("requested_token_type", form.Get("requested_token_type"))))
+		return decision{}, refuse(ctx, log, refuseUnsupportedType,
+			errorsx.WithStack(unsupportedTokenType("requested_token_type", requestedType)))
 	}
+	if derive && requestedType == oauthproto.TokenTypeIDJAG {
+		// A client with no ID-JAG targets cannot mint at all, so it gets the
+		// unsupported-type text before any request parameter is checked or any
+		// grant is read.
+		if len(policy.IDJAGTargets) == 0 {
+			return decision{}, refuse(ctx, log, refuseUnsupportedType,
+				errorsx.WithStack(unsupportedTokenType("requested_token_type", requestedType)))
+		}
+		minting, err := h.decideIDJAG(ctx, requester, policy, log, now)
+		if err != nil {
+			return decision{}, err
+		}
+		return decision{idJAG: minting}, nil
+	}
+	var grant *exchangeGrantDecision
+	var err error
 	if derive {
-		return h.decideChild(ctx, requester, policy, log.With("has_parent", true), now)
+		grant, err = h.decideChild(ctx, requester, policy, log.With("has_parent", true), now)
+	} else {
+		grant, err = h.decideTopLevel(ctx, requester, policy, log, now)
 	}
-	return h.decideTopLevel(ctx, requester, policy, log, now)
+	if err != nil {
+		return decision{}, err
+	}
+	return decision{grant: grant}, nil
 }
 
 // decideTopLevel decides a request that exchanges a login access token for a
@@ -470,7 +519,7 @@ func (h *RefreshTokenHandler) decideChild(
 // whole-second check comes right after it: expires_at is whole seconds, so a
 // grant with no whole second left is refused like an expired one
 // (reasonGrantInvalid), whatever else is wrong with it. Which output the grant
-// may produce is not checked here; the caller (decideChild) checks that after
+// may produce is not checked here; each caller checks that after
 // this returns.
 func (h *RefreshTokenHandler) presentedGrant(
 	ctx context.Context, clientID, token string, now time.Time, log *slog.Logger,
@@ -488,9 +537,6 @@ func (h *RefreshTokenHandler) presentedGrant(
 	}
 	if grant != nil {
 		log = log.With("sub", grant.Subject)
-		if grant.SubjectIdentifier != "" {
-			log = log.With("sub_id", grant.SubjectIdentifier)
-		}
 	}
 	if grant != nil && grant.ExpiresAt.Unix() <= now.Unix() {
 		return nil, log, refuse(ctx, log, refuseUnknownGrant, errorsx.WithStack(errUnknownGrant))
@@ -869,6 +915,9 @@ func checkIDJAGTargetUsable(clientID, key string, target IDJAGTarget) error {
 		return fmt.Errorf("tokenexchange: client %q id_jag target %q has an empty resource", clientID, key)
 	case target.Lifetime <= 0:
 		return fmt.Errorf("tokenexchange: client %q id_jag target %q lifetime must be positive, got %v",
+			clientID, key, target.Lifetime)
+	case target.Lifetime%time.Second != 0:
+		return fmt.Errorf("tokenexchange: client %q id_jag target %q lifetime must be a whole number of seconds, got %v",
 			clientID, key, target.Lifetime)
 	}
 	seen := make(map[string]struct{}, len(target.RequiredSubjectClaims))

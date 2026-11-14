@@ -160,23 +160,26 @@ func allowAllIDJAGPolicy(context.Context, idJAGPolicyInput) error { return nil }
 // checked: an empty value counts as absent, and a refused parameter is refused
 // if any of its values is non-empty, since fosite reads only the first.
 // audience and resource are read from the raw form, so a value with spaces is
-// one value. The audience must equal a configured target issuer exactly; it is
-// not normalized. A target the client has not
-// configured, whether unknown or configured for another client, and a resource
-// the target does not list all get the same invalid_target error. Unknown
-// parameters are ignored.
+// one value. More than one audience is invalid_request, as section 4.3.3 of
+// draft-ietf-oauth-identity-assertion-authz-grant requires. The audience must
+// equal a configured target issuer exactly; it is not normalized. A target the
+// client has not configured, whether unknown or configured for another client,
+// and a resource the target does not list all get the same invalid_target
+// error. Unknown parameters are ignored.
 //
-// A client with an actor profile is refused with server_error before any
-// parameter is read, because ID-JAG issuance does not check actor tokens yet
-// and must not mint for a client the operator configured to require that
+// A client with an actor profile is refused with unauthorized_client before
+// any parameter is read, because ID-JAG issuance does not check actor tokens
+// yet and must not mint for a client the operator configured to require that
 // check. Checking first means no request shape, valid or not, gets past it.
 //
 // Every refusal here carries a hint, never a stable reason, so it returns only
 // the error to send.
 func checkIDJAGRequest(form url.Values, policy ConfiguredClientPolicy) (idJAGRequestShape, error) {
-	// Issuance wiring must replace this guard with the validateActor call.
+	// The change that adds the validateActor call replaces this guard. It
+	// answers unauthorized_client (400), not server_error, so these refusals
+	// are not logged as server faults.
 	if policy.ActorProfile != nil {
-		return idJAGRequestShape{}, errorsx.WithStack(fosite.ErrServerError.WithHint(
+		return idJAGRequestShape{}, errorsx.WithStack(fosite.ErrUnauthorizedClient.WithHint(
 			"Actor-token validation is not available."))
 	}
 	if form.Get("subject_token") == "" {
@@ -189,7 +192,7 @@ func checkIDJAGRequest(form url.Values, policy ConfiguredClientPolicy) (idJAGReq
 			"The 'audience' parameter is required when requesting an ID-JAG."))
 	}
 	if len(audiences) > 1 {
-		return idJAGRequestShape{}, errorsx.WithStack(server.ErrInvalidTarget.WithHint(
+		return idJAGRequestShape{}, errorsx.WithStack(fosite.ErrInvalidRequest.WithHint(
 			"The 'audience' parameter must have exactly one value when requesting an ID-JAG."))
 	}
 	resources := nonEmptyValues(form["resource"])

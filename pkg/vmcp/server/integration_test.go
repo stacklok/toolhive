@@ -773,6 +773,12 @@ func TestIntegration_AuditLoggingWithAuth(t *testing.T) {
 		Port:           0, // Let OS assign port
 		AuditConfig:    auditConfig,
 		AuthMiddleware: identityMiddleware,
+		AuditSubjectEnricher: func(ctx context.Context) map[string]string {
+			if _, ok := auth.IdentityFromContext(ctx); !ok {
+				return nil
+			}
+			return map[string]string{"client_id": "abc"}
+		},
 		SessionFactory: newNoopMockFactory(t),
 		Aggregator:     newStubAggregator(nil),
 	}, rt, mockBackendClient, vmcp.NewImmutableRegistry(backends), nil)
@@ -850,4 +856,5 @@ func TestIntegration_AuditLoggingWithAuth(t *testing.T) {
 	assert.Equal(t, "John Doe", subjects["user"], "Should have correct user name")
 	assert.Equal(t, "mcp-client", subjects["client_name"], "Should have correct client_name")
 	assert.Equal(t, "2.0.0", subjects["client_version"], "Should have correct client_version")
+	assert.Equal(t, "abc", subjects["client_id"], "Should carry the subject enricher's client_id")
 }

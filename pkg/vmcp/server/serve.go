@@ -26,7 +26,7 @@ import (
 // ServerConfig holds the transport-only runtime configuration for Serve.
 //
 // It carries the subset of the legacy server.Config that configures the HTTP/SDK
-// runtime, plus the cross-cutting TelemetryProvider/AuditConfig that are consumed
+// runtime, plus the cross-cutting TelemetryProvider/AuditConfig/AuditSubjectEnricher that are consumed
 // by both the core (core.New) and the transport (Serve) — not a clean partition.
 // The fields the core exclusively owns (Aggregator, Router, BackendClient, Authz,
 // composite-tool WorkflowDefs) live on core.Config instead and are absent here.
@@ -140,6 +140,12 @@ type ServerConfig struct {
 	// AuditConfig is the cross-cutting audit configuration (also consumed by
 	// core.New). If nil, no audit logging is performed.
 	AuditConfig *audit.Config
+
+	// AuditSubjectEnricher optionally adds embedder-supplied subjects to the
+	// per-request MCP audit events. Set the same enricher on
+	// core.Config.AuditSubjectEnricher so composite-tool workflow events carry
+	// them too. It has no effect when AuditConfig is nil.
+	AuditSubjectEnricher audit.SubjectEnricher
 }
 
 // Serve is the transport-side entry point of the New/Serve split: it wraps an
@@ -435,6 +441,7 @@ func buildServeConfig(cfg *ServerConfig) *Config {
 		AuthServer:              cfg.AuthServer,
 		TelemetryProvider:       cfg.TelemetryProvider,
 		AuditConfig:             cfg.AuditConfig,
+		AuditSubjectEnricher:    cfg.AuditSubjectEnricher,
 		StatusReportingInterval: cfg.StatusReportingInterval,
 		Watcher:                 cfg.Watcher,
 		SessionStorage:          cfg.SessionStorage,

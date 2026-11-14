@@ -521,7 +521,7 @@ capabilities. Callers get no capability query (vmcp-anti-patterns #1 and #8).
 | Modern | `elicitation.url`, on a retry whose `inputResponses` decline or cancel one of the answer's elicitations | Complete `isError` tool result at HTTP 200 whose text is the elicitation message. No URL |
 | Modern | `elicitation: {}`, only `form`, or no elicitation | `-32021` at HTTP 400, `data.requiredCapabilities: {elicitation: {url: {}}}`, a message carrying the elicitation message and telling the client to declare `elicitation.url` and retry. No URL |
 | Legacy (2025-11-25) | `elicitation.url`, on a session whose `initialize` this replica saw | JSON-RPC error `-32042` (`URLElicitationRequiredError`), message `URL elicitation required`, `data.elicitations` listing every elicitation in order as `{mode: "url", elicitationId, url, message}`. Same through a direct `tools/call` and through the optimizer's `call_tool` |
-| Legacy | `elicitation: {}`, only `form`, or no elicitation; or a revision older than 2025-11-25; or capabilities unknown (a rehydrated session) | `isError` tool result whose text is the elicitation message, through a direct `tools/call` and through the optimizer's `call_tool`. No URL |
+| Legacy | `elicitation: {}`, only `form`, or no elicitation; or a revision older than 2025-11-25; or capabilities unknown (a rehydrated session) | `isError` tool result whose text is `LegacyFallback()`: the elicitation message, or the embedder's text when it set one with `WithLegacyFallback`. Same through a direct `tools/call` and through the optimizer's `call_tool`. No elicitation URL |
 
 The renderers are `writeModernToolCallFailure` (`pkg/vmcp/server`; its writers
 `writeModernInputRequired` and `writeModernURLElicitationUnsupported`) and
@@ -556,13 +556,28 @@ Properties worth knowing:
   of asking again, as the spec requires servers to handle decline and cancel.
   An accept that the decorator answers again asks again, bounded by the
   client's retry budget (go-sdk stops at 10 rounds).
-- **The URL reaches only a client that declared URL mode.** Every fallback
+- **The URL reaches only a client that declared URL mode, unless the
+  embedder writes one into the Legacy fallback.** By default every fallback
   carries the elicitation messages and never the URL, so a model cannot
-  follow a link and skip the user consent step URL mode exists for. All of
-  them use the same text, `URLElicitationRequiredError.Message()` (the
-  messages joined by `"; "`). `Error()` never includes the URL either,
-  so composite workflows and code-mode scripts, which flatten step errors
-  into `isError` results, and log lines that stringify the error do not leak it.
+  follow a link and skip the user consent step URL mode exists for, and all
+  use the same text, `URLElicitationRequiredError.Message()` (the messages
+  joined by `"; "`). Only the Legacy `isError` fallback can be replaced by
+  the embedder (next bullet). `Error()` never includes the URL either, so
+  composite workflows and code-mode scripts, which flatten step errors into
+  `isError` results, and log lines that stringify the error do not leak it.
+- **The embedder may replace the Legacy fallback.** A client without URL
+  mode has no way to reach the page, so an embedder can set its own text for
+  the Legacy `isError` fallback with `WithLegacyFallback`, for example a
+  reconnect link written into the text. vMCP renders it as given; an embedder
+  that writes a link into it chose to show that link to the model. A
+  rehydrated session also gets this fallback, because vMCP does not know its
+  capabilities, so in a multi-replica deployment a link written into it can
+  reach the model of a client that did declare `elicitation.url` and skip
+  the consent step that client has. It changes nothing else: `-32042`
+  carries the elicitation messages, the Modern `-32021` still tells the
+  client to declare `elicitation.url`, the Modern decline result does not
+  hand back the link the user declined, and `Error()` and fmt output never
+  include the fallback.
 - **Only in-process code produces the answer.** Backend errors never decode
   into it. A Legacy backend's `-32042` stays a generic backend tool error,
   and a Modern backend's `input_required` round stays a

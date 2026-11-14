@@ -26,7 +26,8 @@ import (
 // elicitation.url, is rendered by the caller before it reaches this function,
 // because only the caller can see the session. A URL elicitation answer
 // (vmcp.URLElicitationRequiredError) that reaches this function renders as an
-// isError result whose text is the elicitation message, never the URL.
+// isError result whose text is its LegacyFallback: the elicitation message,
+// never the URL, unless the embedder supplied its own text.
 func ErrorToToolResult(err error) *sdkmcp.CallToolResult {
 	// Denial first (matches writeModernDispatchError): an error that is both a
 	// CodedError and wraps ErrAuthorizationFailed must render as the denial,
@@ -62,10 +63,12 @@ func CodedErrorResult(err error, coded thvmcp.CodedError) *sdkmcp.CallToolResult
 }
 
 // urlElicitationFallbackResult renders the URL elicitation answer for a
-// client that cannot receive a URL elicitation: the elicitation messages
-// (answer.Message, the same text Error embeds), without the URL. A model
-// reading the result cannot follow a link it never sees, so it cannot skip
-// the user consent step URL mode exists for.
+// client that cannot receive a URL elicitation: answer.LegacyFallback. By
+// default that is the elicitation messages (answer.Message, the same text
+// Error embeds), without the URL, so a model reading the result cannot follow
+// a link it never sees and skip the user consent step URL mode exists for.
+// An embedder that supplied its own text with WithLegacyFallback chose what
+// the result carries.
 func urlElicitationFallbackResult(answer *vmcp.URLElicitationRequiredError) *sdkmcp.CallToolResult {
-	return sdkmcp.NewToolResultError(answer.Message())
+	return sdkmcp.NewToolResultError(answer.LegacyFallback())
 }

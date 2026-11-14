@@ -33,6 +33,8 @@ func TestErrorToToolResult(t *testing.T) {
 	require.NoError(t, err)
 	two, err := vmcp.NewURLElicitationRequiredError(github, jira)
 	require.NoError(t, err)
+	withFallback, err := one.WithLegacyFallback("Reconnect GitHub from the Connectors page")
+	require.NoError(t, err)
 
 	tests := []struct {
 		name           string
@@ -54,6 +56,11 @@ func TestErrorToToolResult(t *testing.T) {
 			name:     "several elicitations render every message",
 			err:      two,
 			wantText: "Reconnect GitHub; Reconnect Jira",
+		},
+		{
+			name:     "embedder fallback replaces the message",
+			err:      fmt.Errorf("backend github: %w", withFallback),
+			wantText: "Reconnect GitHub from the Connectors page",
 		},
 		{
 			name:     "denial outranks the URL elicitation answer",

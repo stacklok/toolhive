@@ -38,6 +38,7 @@ import (
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/externalauthsupport"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/imagepullsecrets"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/kubernetes/rbac"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
@@ -2661,6 +2662,13 @@ func createVmcpServiceURL(vmcpName, namespace string, port int32) string {
 func (*VirtualMCPServerReconciler) convertExternalAuthConfigToStrategy(
 	externalAuthConfig *mcpv1beta1.MCPExternalAuthConfig,
 ) (*authtypes.BackendAuthStrategy, error) {
+	if err := externalauthsupport.Validate(
+		externalauthsupport.ConsumerVirtualMCPServer,
+		externalAuthConfig.Spec.Type,
+	); err != nil {
+		return nil, err
+	}
+
 	// Use the converter registry to convert to typed strategy
 	registry := converters.DefaultRegistry()
 	converter, err := registry.GetConverter(externalAuthConfig.Spec.Type)
@@ -2865,6 +2873,7 @@ func (r *VirtualMCPServerReconciler) discoverExternalAuthConfigs(
 				Context:     fmt.Sprintf("%s%s", authContextDiscoveredPrefix, workloadInfo.Name),
 				BackendName: workloadInfo.Name,
 				Error:       fmt.Errorf("failed to convert MCPExternalAuthConfig: %w", err),
+				Reason:      externalAuthReasonFromError(err),
 			})
 			continue
 		}
@@ -2963,7 +2972,7 @@ func (r *VirtualMCPServerReconciler) buildOutgoingAuthConfig(
 				Context:     authContextDefault,
 				BackendName: "",
 				Error:       fmt.Errorf("failed to convert default auth config: %w", err),
-				Reason:      mirroredReasonFromError(err),
+				Reason:      externalAuthReasonFromError(err),
 			})
 		} else if injected, injectErr := injectSubjectProviderIfNeeded(defaultStrategy, vmcp.Spec.AuthServerConfig); injectErr != nil {
 			allAuthErrors = append(allAuthErrors, AuthConfigError{
@@ -2996,7 +3005,7 @@ func (r *VirtualMCPServerReconciler) buildOutgoingAuthConfig(
 					Context:     fmt.Sprintf("%s%s", authContextBackendPrefix, backendName),
 					BackendName: backendName,
 					Error:       fmt.Errorf("failed to convert backend auth config: %w", err),
-					Reason:      mirroredReasonFromError(err),
+					Reason:      externalAuthReasonFromError(err),
 				})
 			} else if injected, injectErr := injectSubjectProviderIfNeeded(strategy, vmcp.Spec.AuthServerConfig); injectErr != nil {
 				allAuthErrors = append(allAuthErrors, AuthConfigError{

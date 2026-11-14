@@ -362,6 +362,59 @@ func TestBuildOutgoingAuthConfig(t *testing.T) {
 			},
 		},
 		{
+			// The discovered-mode case from #5930: bearerToken works on the
+			// MCPRemoteProxy itself but has no vMCP converter, so fronting that
+			// proxy with a discovered-mode vMCP used to drop the backend with
+			// only a log line. The failure must now be a per-backend condition
+			// with the UnsupportedAuthType reason instead of a silent gap.
+			name: "discovered mode reports unsupported auth type per backend",
+			vmcp: v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+				v1beta1test.WithVMCPGroupRef("test-group"),
+				v1beta1test.WithVMCPOutgoingAuth(&mcpv1beta1.OutgoingAuthConfig{
+					Source: "discovered",
+				}),
+			),
+			mcpServers: []mcpv1beta1.MCPServer{
+				*v1beta1test.NewMCPServer("backend-1", "default",
+					v1beta1test.WithExternalAuthConfigRef("bearer-auth"),
+				),
+			},
+			authConfigs: []mcpv1beta1.MCPExternalAuthConfig{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "bearer-auth",
+						Namespace: "default",
+					},
+					Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+						Type: mcpv1beta1.ExternalAuthTypeBearerToken,
+						BearerToken: &mcpv1beta1.BearerTokenConfig{
+							TokenSecretRef: &mcpv1beta1.SecretKeyRef{Name: "token-secret", Key: "token"},
+						},
+					},
+				},
+			},
+			workloadNames: []workloads.TypedWorkload{
+				{
+					Name: "backend-1",
+					Type: workloads.WorkloadTypeMCPServer,
+				},
+			},
+			expectAuthErrors: true,
+			validate: func(t *testing.T, config *vmcpconfig.OutgoingAuthConfig) {
+				t.Helper()
+				assert.NotContains(t, config.Backends, "backend-1",
+					"an unsupported auth type must not produce a strategy")
+			},
+			validateErrors: func(t *testing.T, authErrors []AuthConfigError) {
+				t.Helper()
+				require.Len(t, authErrors, 1)
+				assert.Equal(t, "backend-1", authErrors[0].BackendName)
+				assert.Equal(t, mcpv1beta1.ConditionReasonUnsupportedAuthType, authErrors[0].Reason)
+				assert.Contains(t, authErrors[0].Error.Error(), "bearerToken")
+				assert.Contains(t, authErrors[0].Error.Error(), "VirtualMCPServer")
+			},
+		},
+		{
 			name: "discovered mode with inline overrides",
 			vmcp: v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
 				v1beta1test.WithVMCPGroupRef("test-group"),

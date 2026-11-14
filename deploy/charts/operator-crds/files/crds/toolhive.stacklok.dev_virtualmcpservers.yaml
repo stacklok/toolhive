@@ -3394,6 +3394,15 @@ spec:
                               empty. Must match the entity type used in EntitiesJSON for transitive
                               `in` checks to resolve. Namespaced names (`Foo::Bar`) are not yet supported.
                             type: string
+                          multiValuedClaims:
+                            description: |-
+                              MultiValuedClaims lists JWT claim names (bare, e.g. "scp" or "scope")
+                              whose value is exposed to Cedar in two normalized forms: "claim_<name>"
+                              as a space-delimited string and "claimset_<name>" as a Cedar Set of the
+                              claim's elements. See cedar.ConfigOptions.MultiValuedClaims.
+                            items:
+                              type: string
+                            type: array
                           policies:
                             description: Policies contains Cedar policy definitions
                               (when Type = "cedar").
@@ -4856,6 +4865,17 @@ spec:
                         required:
                         - policies
                         type: object
+                      multiValuedClaims:
+                        description: |-
+                          MultiValuedClaims lists JWT claim names (bare, e.g. "scp" or "scope")
+                          whose value is exposed to Cedar in two normalized forms: "claim_<name>"
+                          as a space-delimited string and "claimset_<name>" as a Cedar Set of the
+                          claim's elements. When Type is "configMap", a multi_valued_claims entry
+                          in the referenced ConfigMap is overridden by this field if both are set.
+                        items:
+                          type: string
+                        type: array
+                        x-kubernetes-list-type: atomic
                       roleClaimName:
                         description: |-
                           RoleClaimName is the JWT claim key that contains role membership for the
@@ -8926,6 +8946,15 @@ spec:
                               empty. Must match the entity type used in EntitiesJSON for transitive
                               `in` checks to resolve. Namespaced names (`Foo::Bar`) are not yet supported.
                             type: string
+                          multiValuedClaims:
+                            description: |-
+                              MultiValuedClaims lists JWT claim names (bare, e.g. "scp" or "scope")
+                              whose value is exposed to Cedar in two normalized forms: "claim_<name>"
+                              as a space-delimited string and "claimset_<name>" as a Cedar Set of the
+                              claim's elements. See cedar.ConfigOptions.MultiValuedClaims.
+                            items:
+                              type: string
+                            type: array
                           policies:
                             description: Policies contains Cedar policy definitions
                               (when Type = "cedar").
@@ -10388,6 +10417,17 @@ spec:
                         required:
                         - policies
                         type: object
+                      multiValuedClaims:
+                        description: |-
+                          MultiValuedClaims lists JWT claim names (bare, e.g. "scp" or "scope")
+                          whose value is exposed to Cedar in two normalized forms: "claim_<name>"
+                          as a space-delimited string and "claimset_<name>" as a Cedar Set of the
+                          claim's elements. When Type is "configMap", a multi_valued_claims entry
+                          in the referenced ConfigMap is overridden by this field if both are set.
+                        items:
+                          type: string
+                        type: array
+                        x-kubernetes-list-type: atomic
                       roleClaimName:
                         description: |-
                           RoleClaimName is the JWT claim key that contains role membership for the

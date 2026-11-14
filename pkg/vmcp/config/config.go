@@ -342,6 +342,13 @@ type AuthzConfig struct {
 	// `in` checks to resolve. Namespaced names (`Foo::Bar`) are not yet supported.
 	// +optional
 	GroupEntityType string `json:"groupEntityType,omitempty" yaml:"groupEntityType,omitempty"`
+
+	// MultiValuedClaims lists JWT claim names (bare, e.g. "scp" or "scope")
+	// whose value is exposed to Cedar in two normalized forms: "claim_<name>"
+	// as a space-delimited string and "claimset_<name>" as a Cedar Set of the
+	// claim's elements. See cedar.ConfigOptions.MultiValuedClaims.
+	// +optional
+	MultiValuedClaims []string `json:"multiValuedClaims,omitempty" yaml:"multiValuedClaims,omitempty"`
 }
 
 // StaticBackendConfig defines a pre-configured backend server for static mode.

@@ -5,7 +5,6 @@ package transparent_test
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -21,17 +20,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/transport/proxy/transparent"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
-
-// freeTCPPort asks the OS for an unused port. The proxy needs a concrete port,
-// and it does not expose its listener to this external test package.
-func freeTCPPort(t *testing.T) int {
-	t.Helper()
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err)
-	port := l.Addr().(*net.TCPAddr).Port
-	require.NoError(t, l.Close())
-	return port
-}
 
 // startBackend serves handler on a plain http.Server. httptest.Server.Close
 // calls CloseIdleConnections on http.DefaultTransport, which breaks requests
@@ -95,24 +83,16 @@ func TestSSEStreamListAnswerIsFilteredThroughProxy(t *testing.T) {
 					return authz.Middleware(denyNamedTool{deniedTool: "secret"}, next, nil)
 				},
 			}
-			port := freeTCPPort(t)
-			p := transparent.NewTransparentProxy("127.0.0.1", port, backendURL, nil, nil, nil, false, false, "sse", nil, nil, "", false, authzMiddleware)
+			// Port 0 lets the OS pick the port at bind time, so no other process can take it first.
+			p := transparent.NewTransparentProxy("127.0.0.1", 0, backendURL, nil, nil, nil, false, false, "sse", nil, nil, "", false, authzMiddleware)
 			require.NoError(t, p.Start(t.Context()))
 			t.Cleanup(func() { _ = p.Stop(context.Background()) })
-			require.Eventually(t, func() bool {
-				c, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), 100*time.Millisecond)
-				if err != nil {
-					return false
-				}
-				_ = c.Close()
-				return true
-			}, 5*time.Second, 10*time.Millisecond, "the proxy must start listening")
 
 			// A dedicated transport keeps this request off http.DefaultTransport,
 			// which other parallel tests in the package share.
 			client := &http.Client{Transport: &http.Transport{}}
 			t.Cleanup(client.CloseIdleConnections)
-			resp, err := client.Get(fmt.Sprintf("http://127.0.0.1:%d/sse", port))
+			resp, err := client.Get("http://" + p.ListenerAddr() + "/sse")
 			require.NoError(t, err)
 			t.Cleanup(func() { _ = resp.Body.Close() })
 			body, err := io.ReadAll(resp.Body)

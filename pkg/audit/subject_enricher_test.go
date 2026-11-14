@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -282,6 +283,55 @@ func TestSubjectEnricher_LeavesIdentityHolderUntouched(t *testing.T) {
 
 	assert.Equal(t, "abc", eventSubjects(t, &buf)["client_id"])
 	assert.Nil(t, holder.Identity, "auditor must not write the identity holder")
+}
+
+// TestSubjectEnricher_RunsOnlyForAuditedEvents pins the documented promise
+// that the enricher runs once per event that passes the event-type filter and
+// never for a filtered-out event, on both auditors. It holds because the
+// filter check precedes subject extraction; a reorder would fail this test.
+func TestSubjectEnricher_RunsOnlyForAuditedEvents(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		auditor   string
+		eventType string
+		wantCalls int32
+	}{
+		{name: "http audited event", auditor: "http", eventType: EventTypeHTTPRequest, wantCalls: 1},
+		{name: "http filtered event", auditor: "http", eventType: EventTypeMCPToolCall, wantCalls: 0},
+		{name: "workflow audited event", auditor: "workflow", eventType: EventTypeWorkflowStarted, wantCalls: 1},
+		{name: "workflow filtered event", auditor: "workflow", eventType: EventTypeWorkflowCompleted, wantCalls: 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var calls atomic.Int32
+			enricher := WithSubjectEnricher(func(context.Context) map[string]string {
+				calls.Add(1)
+				return nil
+			})
+			cfg := &Config{EventTypes: []string{tt.eventType}}
+
+			switch tt.auditor {
+			case "http":
+				// A POST with no parsed MCP method is an http_request event.
+				auditor, err := NewAuditorWithTransport(cfg, "streamable-http", enricher)
+				require.NoError(t, err)
+				auditor.auditLogger = NewAuditLogger(&bytes.Buffer{})
+				auditor.Middleware(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})).
+					ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/mcp", nil))
+			case "workflow":
+				auditor, err := NewWorkflowAuditor(cfg, enricher)
+				require.NoError(t, err)
+				auditor.auditLogger = NewAuditLogger(&bytes.Buffer{})
+				auditor.LogWorkflowStarted(context.Background(), "wf-1", "wf", nil, time.Second)
+			}
+
+			assert.Equal(t, tt.wantCalls, calls.Load())
+		})
+	}
 }
 
 // TestReservedSubjectKeys_CoverBuiltInSubjects pins reservedSubjectKeys to the

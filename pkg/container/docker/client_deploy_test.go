@@ -62,6 +62,9 @@ type fakeDeployOps struct {
 	// callOrder tracks the sequence of operation calls for ordering assertions.
 	callOrder *[]string
 
+	// cleanupCalls records cleanupFailedIsolation invocations as "workload/network".
+	cleanupCalls []string
+
 	// error injection
 	errExternalNetworks error
 	errCreateNetwork    error
@@ -108,6 +111,13 @@ func (f *fakeDeployOps) createDnsContainer(_ context.Context, _ string, _ bool, 
 	}
 	f.dnsCalled = true
 	return f.dnsID, f.dnsIP, f.errDNS
+}
+
+func (f *fakeDeployOps) cleanupFailedIsolation(_ context.Context, name, networkName string) {
+	if f.callOrder != nil {
+		*f.callOrder = append(*f.callOrder, "cleanupFailedIsolation")
+	}
+	f.cleanupCalls = append(f.cleanupCalls, name+"/"+networkName)
 }
 
 func (f *fakeDeployOps) getContainerNetworkIP(_ context.Context, _, _ string) (string, error) {
@@ -638,6 +648,76 @@ func TestDeployWorkload_GatewayDiscoveryFailsClosed(t *testing.T) {
 	assert.True(t, fops.dnsCalled)
 	assert.False(t, fproxy.setupCalled)
 	assert.False(t, fops.mcpCalled)
+}
+
+func TestDeployWorkload_IsolatedSetupFailure_CleansUpNetworkAndDNS(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		fops        *fakeDeployOps
+		fproxy      *fakeNetworkProxy
+		wantCleanup bool
+	}{
+		{name: "dns container creation fails", fops: &fakeDeployOps{errDNS: errors.New("boom")}, fproxy: &fakeNetworkProxy{}, wantCleanup: true},
+		{name: "gateway discovery fails", fops: &fakeDeployOps{errGateways: errors.New("boom")}, fproxy: &fakeNetworkProxy{}, wantCleanup: true},
+		{name: "egress setup fails", fops: &fakeDeployOps{}, fproxy: &fakeNetworkProxy{err: errors.New("boom")}, wantCleanup: true},
+		{name: "mcp container creation fails", fops: &fakeDeployOps{errMcp: errors.New("boom")}, fproxy: &fakeNetworkProxy{}, wantCleanup: true},
+		{name: "internal network creation fails", fops: &fakeDeployOps{errCreateNetwork: errors.New("boom")}, fproxy: &fakeNetworkProxy{}, wantCleanup: false},
+		{name: "success keeps resources", fops: &fakeDeployOps{}, fproxy: &fakeNetworkProxy{}, wantCleanup: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			client := newClientWithOpsAndProxy(tt.fops, tt.fproxy)
+			_, err := client.DeployWorkload(
+				t.Context(), "image", "app", nil, nil, map[string]string{},
+				&permissions.Profile{}, "stdio", runtime.NewDeployWorkloadOptions(), true,
+			)
+			if tt.wantCleanup {
+				require.Error(t, err)
+				assert.Equal(t, []string{"app/toolhive-app-internal"}, tt.fops.cleanupCalls)
+			} else {
+				assert.Empty(t, tt.fops.cleanupCalls)
+			}
+		})
+	}
+}
+
+func TestDeployWorkload_IngressFailureAfterMcpCreated_DoesNotCleanUp(t *testing.T) {
+	t.Parallel()
+
+	for name, fops := range map[string]*fakeDeployOps{
+		"mcp ip lookup fails": {errMcpIP: errors.New("boom")},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			client := newClientWithOps(fops)
+			opts := runtime.NewDeployWorkloadOptions()
+			opts.ExposedPorts = map[string]struct{}{"8080/tcp": {}}
+			opts.PortBindings = map[string][]runtime.PortBinding{"8080/tcp": {{HostIP: "127.0.0.1", HostPort: ""}}}
+			_, err := client.DeployWorkload(
+				t.Context(), "image", "app", nil, nil, map[string]string{},
+				&permissions.Profile{}, "sse", opts, true,
+			)
+			require.Error(t, err)
+			assert.True(t, fops.mcpCalled)
+			assert.Empty(t, fops.cleanupCalls, "MCP container exists, so thv rm can clean up")
+		})
+	}
+}
+
+func TestDeployWorkload_NoIsolationFailure_DoesNotCleanUp(t *testing.T) {
+	t.Parallel()
+
+	fops := &fakeDeployOps{errMcp: errors.New("boom")}
+	client := newClientWithOps(fops)
+	_, err := client.DeployWorkload(
+		t.Context(), "image", "app", nil, nil, map[string]string{},
+		&permissions.Profile{}, "stdio", runtime.NewDeployWorkloadOptions(), false,
+	)
+	require.Error(t, err)
+	assert.Empty(t, fops.cleanupCalls)
 }
 
 func TestDeployWorkload_PodmanHostDiscovery(t *testing.T) {

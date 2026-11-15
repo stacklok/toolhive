@@ -8,8 +8,9 @@ import (
 	"net/http"
 	"slices"
 	"strings"
-	"sync"
 	"unicode"
+
+	lru "github.com/hashicorp/golang-lru/v2"
 
 	"github.com/stacklok/toolhive/pkg/mcp"
 )
@@ -18,8 +19,9 @@ const (
 	// ClientUnknown is reported when a tool call cannot be tied to a client.
 	ClientUnknown = "unknown"
 
-	// maxTrackedSessions caps the session-to-client map. When it is full the map
-	// is cleared; calls on sessions forgotten this way are reported as unknown.
+	// maxTrackedSessions caps the session-to-client map. When it is full the
+	// least recently used session is forgotten; later calls on it are reported
+	// as unknown.
 	maxTrackedSessions = 4096
 
 	sessionIDHeader = "Mcp-Session-Id"
@@ -80,34 +82,31 @@ func NormalizeClientName(name string) string {
 // sessionClients remembers which client opened each session, so tool calls on
 // Legacy (session-based) MCP connections can be attributed. Only normalized
 // client values are stored; session IDs never leave the process.
+// The cache is safe for concurrent use and evicts the least recently used
+// session when full, so a burst of new sessions does not forget long-lived ones
+// that keep making calls.
 type sessionClients struct {
-	mu       sync.Mutex
-	sessions map[string]string
+	sessions *lru.Cache[string, string]
 }
 
 func newSessionClients() *sessionClients {
-	return &sessionClients{sessions: make(map[string]string)}
+	// lru.New only fails for a non-positive size.
+	sessions, _ := lru.New[string, string](maxTrackedSessions)
+	return &sessionClients{sessions: sessions}
 }
 
 func (s *sessionClients) remember(sessionID, client string) {
 	if sessionID == "" {
 		return
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if len(s.sessions) >= maxTrackedSessions {
-		clear(s.sessions)
-	}
-	s.sessions[sessionID] = client
+	s.sessions.Add(sessionID, client)
 }
 
 func (s *sessionClients) lookup(sessionID string) string {
 	if sessionID == "" {
 		return ClientUnknown
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if client, ok := s.sessions[sessionID]; ok {
+	if client, ok := s.sessions.Get(sessionID); ok {
 		return client
 	}
 	return ClientUnknown

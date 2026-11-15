@@ -64,23 +64,26 @@ func TestSessionClients(t *testing.T) {
 		s := newSessionClients()
 		s.remember("", "cursor")
 
-		assert.Empty(t, s.sessions)
+		assert.Zero(t, s.sessions.Len())
 		assert.Equal(t, ClientUnknown, s.lookup(""))
 	})
 
-	t.Run("clears the map when full", func(t *testing.T) {
+	t.Run("forgets only the least recently used session when full", func(t *testing.T) {
 		t.Parallel()
 		s := newSessionClients()
 		for i := range maxTrackedSessions {
 			s.remember(fmt.Sprintf("s%d", i), "cursor")
 		}
-		require.Len(t, s.sessions, maxTrackedSessions)
+		require.Equal(t, maxTrackedSessions, s.sessions.Len())
+		// A long-lived session that keeps making calls must survive new ones.
+		require.Equal(t, "cursor", s.lookup("s0"))
 
 		s.remember("new", "zed")
 
-		assert.Len(t, s.sessions, 1)
+		assert.Equal(t, maxTrackedSessions, s.sessions.Len())
 		assert.Equal(t, "zed", s.lookup("new"))
-		assert.Equal(t, ClientUnknown, s.lookup("s0"))
+		assert.Equal(t, "cursor", s.lookup("s0"), "a recently used session is kept")
+		assert.Equal(t, ClientUnknown, s.lookup("s1"), "the least recently used session is forgotten")
 	})
 }
 

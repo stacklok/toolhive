@@ -242,7 +242,7 @@ type AuthorizationServerConfig struct {
 	// SPIFFEClientResolver resolves a verified SPIFFE identity to its
 	// configured OAuth client for the SPIFFE client-authentication strategy.
 	// Nil when no SPIFFE trust is configured; package server cannot import
-	// the concrete association registry and storage that back this resolver
+	// the concrete association registry that backs this resolver
 	// (authserver imports server), so the caller supplies it as a closure.
 	SPIFFEClientResolver SPIFFEClientResolver
 	// SPIFFEX509BundleSource provides X.509 bundles for verifying SPIFFE

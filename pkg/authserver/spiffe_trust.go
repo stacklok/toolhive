@@ -728,11 +728,18 @@ func parseTrustDomain(trustDomain string) (spiffeid.TrustDomain, error) {
 }
 
 func normalizeSPIFFEPrincipal(principal string, allowPattern bool) (string, error) {
+	if !allowPattern {
+		id, err := parseConcreteSPIFFEID(principal)
+		if err != nil {
+			return "", err
+		}
+		return id.String(), nil
+	}
 	if principal == "" {
 		return "", fmt.Errorf("is required")
 	}
 	wildcard := strings.HasSuffix(principal, "/*")
-	if strings.Contains(principal, "*") && (!allowPattern || !wildcard || strings.Count(principal, "*") != 1) {
+	if strings.Contains(principal, "*") && (!wildcard || strings.Count(principal, "*") != 1) {
 		return "", fmt.Errorf("must use only a terminal /* wildcard")
 	}
 	base := strings.TrimSuffix(principal, "/*")
@@ -747,6 +754,24 @@ func normalizeSPIFFEPrincipal(principal string, allowPattern bool) (string, erro
 		return id.String() + "/*", nil
 	}
 	return id.String(), nil
+}
+
+// parseConcreteSPIFFEID parses a non-pattern SPIFFE ID that must include a path.
+func parseConcreteSPIFFEID(principal string) (spiffeid.ID, error) {
+	if principal == "" {
+		return spiffeid.ID{}, fmt.Errorf("is required")
+	}
+	if strings.Contains(principal, "*") {
+		return spiffeid.ID{}, fmt.Errorf("must use only a terminal /* wildcard")
+	}
+	id, err := parseSPIFFEID(principal)
+	if err != nil {
+		return spiffeid.ID{}, err
+	}
+	if id.Path() == "" {
+		return spiffeid.ID{}, fmt.Errorf("must include a path or terminal /* wildcard")
+	}
+	return id, nil
 }
 
 func parseSPIFFEID(principal string) (spiffeid.ID, error) {

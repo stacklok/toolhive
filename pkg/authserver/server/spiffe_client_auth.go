@@ -48,7 +48,7 @@ var (
 
 // SPIFFEClientResolver resolves a verified SPIFFE identity to its configured
 // OAuth client. It is the seam that lets the client-authentication strategy
-// here reach the association registry and storage constructed in package
+// here reach the association registry constructed in package
 // authserver, which this package cannot import (authserver imports server).
 // clientID is an exact selector. The X.509 arm always passes the request's
 // client_id, which it requires. Only the JWT arm may pass an empty clientID,

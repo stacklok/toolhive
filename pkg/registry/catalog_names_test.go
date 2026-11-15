@@ -53,3 +53,22 @@ func TestIsEmbeddedCatalogServer(t *testing.T) {
 		})
 	}
 }
+
+// TestEmbeddedCatalogNamesMatchFullParse pins the names-only decode to the set
+// of names the full registry parser produces, so the two cannot drift.
+func TestEmbeddedCatalogNamesMatchFullParse(t *testing.T) {
+	t.Parallel()
+
+	reg, _, _, err := parseRegistryData(catalog.Upstream())
+	require.NoError(t, err)
+
+	want := make(map[string]struct{}, len(reg.Servers)+len(reg.RemoteServers))
+	for name := range reg.Servers {
+		want[name] = struct{}{}
+	}
+	for name := range reg.RemoteServers {
+		want[name] = struct{}{}
+	}
+	require.NotEmpty(t, want)
+	assert.Equal(t, want, embeddedCatalogNames())
+}

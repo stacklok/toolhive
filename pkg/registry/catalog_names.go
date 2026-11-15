@@ -4,26 +4,34 @@
 package registry
 
 import (
+	"encoding/json"
 	"log/slog"
 	"sync"
 
 	catalog "github.com/stacklok/toolhive-catalog/pkg/catalog/toolhive"
 )
 
-// embeddedCatalogNames parses the registry embedded in the binary once and
-// returns the set of its server names (container and remote).
+// embeddedCatalogNames returns the set of server names (container and remote)
+// in the registry embedded in the binary, read once. Every local proxy is its
+// own thv process, so it decodes only the names: parseRegistryData would build
+// full metadata for every server, about 20 MB of allocations per process.
 var embeddedCatalogNames = sync.OnceValue(func() map[string]struct{} {
-	reg, _, _, err := parseRegistryData(catalog.Upstream())
-	if err != nil {
+	var upstream struct {
+		Data struct {
+			Servers []struct {
+				Name string `json:"name"`
+			} `json:"servers"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(catalog.Upstream(), &upstream); err != nil {
 		slog.Debug("failed to parse embedded registry", "error", err)
 		return nil
 	}
-	names := make(map[string]struct{}, len(reg.Servers)+len(reg.RemoteServers))
-	for name := range reg.Servers {
-		names[name] = struct{}{}
-	}
-	for name := range reg.RemoteServers {
-		names[name] = struct{}{}
+	names := make(map[string]struct{}, len(upstream.Data.Servers))
+	for _, server := range upstream.Data.Servers {
+		if server.Name != "" {
+			names[server.Name] = struct{}{}
+		}
 	}
 	return names
 })

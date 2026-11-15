@@ -12,6 +12,7 @@ import (
 	"go.yaml.in/yaml/v3"
 
 	"github.com/stacklok/toolhive/pkg/authserver/server/tokenexchange"
+	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
 func TestNormalizeInboundGrants(t *testing.T) {
@@ -64,7 +65,7 @@ func TestNormalizeInboundGrants(t *testing.T) {
 						Methods:          []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509},
 						Scopes:           []string{"openid"},
 						Audiences:        []string{"https://mcp.example.com"},
-						GrantTypes:       []string{SPIFFEGrantTypeTokenExchange},
+						GrantTypes:       []string{oauthproto.GrantTypeTokenExchange},
 					}},
 				},
 			},

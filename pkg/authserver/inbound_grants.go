@@ -121,7 +121,7 @@ func NormalizeInboundGrants(cfg *RunConfig) (*NormalizedInboundGrants, error) {
 		result.Capabilities.TokenExchange = legacyTokenExchange
 	}
 	// SPIFFE client-auth associations always require the token-exchange grant
-	// (SPIFFEGrantTypeTokenExchange is the only grant type they may declare —
+	// (oauthproto.GrantTypeTokenExchange is the only grant type they may declare —
 	// see validateSPIFFEGrants), independent of the legacy/canonical
 	// token-exchange projection above. A SPIFFE-only configuration must not
 	// leave Capabilities.TokenExchange false: that would disable the RFC 8693

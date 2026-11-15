@@ -28,6 +28,7 @@ import (
 	authrunner "github.com/stacklok/toolhive/pkg/authserver/runner"
 	"github.com/stacklok/toolhive/pkg/authserver/server/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
+	"github.com/stacklok/toolhive/pkg/oauthproto"
 	"github.com/stacklok/toolhive/pkg/runner"
 )
 
@@ -3718,7 +3719,7 @@ func TestBuildSPIFFEClientAuthRunConfigs(t *testing.T) {
 	assert.Equal(t, []string{"openid"}, configs[0].Scopes)
 	// GrantTypes is not a CRD field; the converter always supplies exactly
 	// the RFC 8693 token-exchange grant.
-	assert.Equal(t, []string{authserver.SPIFFEGrantTypeTokenExchange}, configs[0].GrantTypes)
+	assert.Equal(t, []string{oauthproto.GrantTypeTokenExchange}, configs[0].GrantTypes)
 
 	// The runtime type must not retain the CRD object's backing slices.
 	audiences[0] = "https://mutated.example.com"

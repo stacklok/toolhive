@@ -405,7 +405,7 @@ func testNormalizedSPIFFEAssociation(clientID, principal string) SPIFFEClientAut
 		clientID:       clientID,
 		methods:        []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509},
 		authorization: SPIFFEAuthorizationPolicy{
-			grantTypes: []string{SPIFFEGrantTypeTokenExchange}, scopes: []string{"openid"},
+			grantTypes: []string{oauthproto.GrantTypeTokenExchange}, scopes: []string{"openid"},
 		},
 	}
 }
@@ -439,6 +439,6 @@ func testSPIFFEAssociation(clientID, scope string) SPIFFEClientAuthRunConfig {
 		Methods:          []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509},
 		Scopes:           []string{scope},
 		Resources:        []string{"https://audience.example.com"},
-		GrantTypes:       []string{SPIFFEGrantTypeTokenExchange},
+		GrantTypes:       []string{oauthproto.GrantTypeTokenExchange},
 	}
 }

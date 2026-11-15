@@ -27,10 +27,6 @@ const (
 	// SPIFFEAuthenticationMethodJWT authenticates a workload with a JWT-SVID.
 	SPIFFEAuthenticationMethodJWT = spiffeauth.SPIFFEAuthenticationMethodJWT
 
-	// SPIFFEGrantTypeTokenExchange is the only SPIFFE client grant supported by
-	// this configuration surface.
-	SPIFFEGrantTypeTokenExchange = oauthproto.GrantTypeTokenExchange
-
 	// SPIFFEBundleSourceTypeEndpoint selects a HTTPS SPIFFE Bundle Endpoint.
 	SPIFFEBundleSourceTypeEndpoint SPIFFEBundleSourceType = "bundle_endpoint"
 	// SPIFFEBundleSourceTypeFile selects a locally mounted SPIFFE trust bundle.
@@ -876,10 +872,10 @@ func validateDistinctNonEmpty(values []string, field string) error {
 }
 
 func validateSPIFFEGrants(grants []string, index int) error {
-	if len(grants) != 1 || grants[0] != SPIFFEGrantTypeTokenExchange {
+	if len(grants) != 1 || grants[0] != oauthproto.GrantTypeTokenExchange {
 		return fmt.Errorf(
 			"inbound_grants.spiffe_client_auth[%d].grant_types must be exactly [%q]",
-			index, SPIFFEGrantTypeTokenExchange,
+			index, oauthproto.GrantTypeTokenExchange,
 		)
 	}
 	return nil

@@ -2902,7 +2902,7 @@ func TestEmbeddedAuthServer_SPIFFEClientIDAloneDoesNotAuthenticate(t *testing.T)
 				t.Parallel()
 
 				form := url.Values{
-					"grant_type":         {authserver.SPIFFEGrantTypeTokenExchange},
+					"grant_type":         {oauthproto.GrantTypeTokenExchange},
 					"subject_token":      {"unvalidated-subject-token"},
 					"subject_token_type": {"urn:ietf:params:oauth:token-type:access_token"},
 					"client_id":          {"spiffe-client"},

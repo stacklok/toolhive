@@ -23,6 +23,7 @@ import (
 	authrunner "github.com/stacklok/toolhive/pkg/authserver/runner"
 	"github.com/stacklok/toolhive/pkg/authserver/server/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
+	"github.com/stacklok/toolhive/pkg/oauthproto"
 	"github.com/stacklok/toolhive/pkg/runner"
 )
 
@@ -410,7 +411,7 @@ func buildSPIFFEClientAuthRunConfigs(
 			Resources:        append([]string(nil), spiffeClient.Resources...),
 			Audiences:        deprecatedAudiences,
 			Scopes:           append([]string(nil), spiffeClient.Scopes...),
-			GrantTypes:       []string{authserver.SPIFFEGrantTypeTokenExchange},
+			GrantTypes:       []string{oauthproto.GrantTypeTokenExchange},
 		}
 	}
 	return configs

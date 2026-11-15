@@ -144,9 +144,9 @@ type SPIFFEClientAuthRunConfig struct {
 	Methods []SPIFFEAuthenticationMethod `json:"methods" yaml:"methods"`
 
 	// Resources are RFC 8707 resource indicators this association may
-	// request. At least one is required for every association: token
-	// exchange takes exactly one resource per request and grants it as the
-	// token audience. Must be a subset of the
+	// request. At least one is required for every association: both
+	// client_credentials and token exchange take exactly one resource per
+	// request and grant it as the token audience. Must be a subset of the
 	// server's allowed_audiences allowlist (RunConfig.AllowedAudiences) — the
 	// same RFC 8707 resource-URI list DelegateClientRunConfig.Audiences is
 	// validated against.
@@ -697,7 +697,7 @@ func validateSPIFFEClientAssociation(
 			return "", fmt.Errorf("%s.methods: method %q is not enabled by trust domain %q", fieldPrefix, method, entry.TrustDomainRef)
 		}
 	}
-	if err := validateSPIFFEClientAssociationPermissions(entry, index, fieldPrefix, effectiveScopes, allowedResources); err != nil {
+	if err := validateSPIFFEClientAssociationPermissions(entry, fieldPrefix, effectiveScopes, allowedResources); err != nil {
 		return "", err
 	}
 	return principal, nil
@@ -709,7 +709,6 @@ func validateSPIFFEClientAssociation(
 // allowed_audiences allowlist. The deprecated audiences field is not checked.
 func validateSPIFFEClientAssociationPermissions(
 	entry SPIFFEClientAuthRunConfig,
-	index int,
 	fieldPrefix string,
 	effectiveScopes []string,
 	allowedResources []string,
@@ -723,7 +722,7 @@ func validateSPIFFEClientAssociationPermissions(
 	if err := registration.ValidateScopeSubset(entry.Scopes, effectiveScopes, fieldPrefix+".scopes"); err != nil {
 		return err
 	}
-	return validateSPIFFEGrants(entry.GrantTypes, index)
+	return validateSPIFFEGrantTypes(entry.GrantTypes, fieldPrefix+".grant_types")
 }
 
 func parseTrustDomain(trustDomain string) (spiffeid.TrustDomain, error) {
@@ -810,9 +809,9 @@ func validateMethods(methods []SPIFFEAuthenticationMethod, field string) (map[SP
 }
 
 // validateSPIFFEResources validates the RFC 8707 resource indicators an
-// association may request. At least one is required: token exchange takes
-// exactly one resource per request. Each must be a syntactically valid
-// absolute HTTP(S) URI
+// association may request. At least one is required: client_credentials and
+// token exchange each take exactly one resource per request. Each must be a
+// syntactically valid absolute HTTP(S) URI
 // and a member of the server's allowed_audiences allowlist, the same RFC 8707
 // resource-URI list DelegateClientRunConfig.Audiences is validated against
 // (see validateDelegateClients in config.go).
@@ -871,12 +870,16 @@ func validateDistinctNonEmpty(values []string, field string) error {
 	return nil
 }
 
-func validateSPIFFEGrants(grants []string, index int) error {
-	if len(grants) != 1 || grants[0] != oauthproto.GrantTypeTokenExchange {
-		return fmt.Errorf(
-			"inbound_grants.spiffe_client_auth[%d].grant_types must be exactly [%q]",
-			index, oauthproto.GrantTypeTokenExchange,
-		)
+// validateSPIFFEGrantTypes requires a distinct, non-empty list naming only
+// client_credentials and the RFC 8693 token-exchange grant.
+func validateSPIFFEGrantTypes(grants []string, field string) error {
+	if err := validateDistinctNonEmpty(grants, field); err != nil {
+		return err
+	}
+	for _, grant := range grants {
+		if grant != oauthproto.GrantTypeClientCredentials && grant != oauthproto.GrantTypeTokenExchange {
+			return fmt.Errorf("%s: unknown grant %q", field, grant)
+		}
 	}
 	return nil
 }

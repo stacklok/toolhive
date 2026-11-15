@@ -320,18 +320,7 @@ func prepareInboundGrantConfiguration(
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("build SPIFFE trust config: %w", err)
 	}
-	// SPIFFE client authentication exclusively uses the token-exchange grant
-	// (validateSPIFFEGrants enforces this), so configuring any SPIFFE
-	// association implies token-exchange capability independent of
-	// legacy/canonical token-exchange enablement.
-	normalized.Capabilities.TokenExchange = normalized.Capabilities.TokenExchange || hasSPIFFEClientAuth(cfg)
 	return normalized, delegateClients, spiffeTrust, nil
-}
-
-// hasSPIFFEClientAuth reports whether cfg declares any SPIFFE client-auth
-// association.
-func hasSPIFFEClientAuth(cfg *authserver.RunConfig) bool {
-	return cfg.InboundGrants != nil && len(cfg.InboundGrants.SPIFFEClientAuth) > 0
 }
 
 // buildUpstreamFilter constructs an upstreamfilter.UpstreamFilter from the RunConfig,
@@ -515,9 +504,8 @@ func newEmbeddedAuthServerWithStorage(
 		// authorization-critical data is protected without a deep copy here.
 		TrustedIssuers:  trustedIssuers,
 		DelegateClients: delegateClients,
-		// SPIFFE client authentication factors into Capabilities.TokenExchange
-		// already (see prepareInboundGrantConfiguration): it exclusively uses
-		// the token-exchange grant, independent of legacy/canonical enablement.
+		// Capabilities.TokenExchange already accounts for SPIFFE associations
+		// that list the token-exchange grant (see NormalizeInboundGrants).
 		DisableTokenExchange:         !normalized.Capabilities.TokenExchange,
 		AuthorizationDetailsRegistry: options.authorizationDetailsRegistry,
 		SPIFFETrust:                  spiffeTrust,

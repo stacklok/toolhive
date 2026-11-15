@@ -338,6 +338,60 @@ func TestSPIFFEAssociationFingerprintFieldsDoNotConcatenateAmbiguously(t *testin
 	assert.NotEqual(t, a, b, "length prefixing must keep field boundaries unambiguous")
 }
 
+func TestSPIFFEAssociationFingerprintCoversGrantTypes(t *testing.T) {
+	t.Parallel()
+
+	withGrants := func(grantTypes ...string) SPIFFEClientAuthConfig {
+		return SPIFFEClientAuthConfig{
+			trustDomainRef: "production",
+			principal:      "spiffe://example.org/ns/default/agent",
+			authorization:  SPIFFEAuthorizationPolicy{grantTypes: grantTypes},
+		}
+	}
+	methodOnly := withGrants()
+	methodOnly.methods = []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509}
+
+	tests := []struct {
+		name      string
+		a, b      SPIFFEClientAuthConfig
+		wantEqual bool
+	}{
+		{
+			name: "grant-types-only change differs",
+			a:    withGrants(oauthproto.GrantTypeTokenExchange),
+			b:    withGrants(oauthproto.GrantTypeClientCredentials),
+		},
+		{
+			name:      "grant type order is ignored",
+			a:         withGrants(oauthproto.GrantTypeTokenExchange, oauthproto.GrantTypeClientCredentials),
+			b:         withGrants(oauthproto.GrantTypeClientCredentials, oauthproto.GrantTypeTokenExchange),
+			wantEqual: true,
+		},
+		{
+			// Built directly because config validation admits only known grant types.
+			name: "length prefix keeps grant type boundaries unambiguous",
+			a:    withGrants("a", "bc"),
+			b:    withGrants("ab", "c"),
+		},
+		{
+			name: "grant type cannot alias a method at the list boundary",
+			a:    withGrants(string(SPIFFEAuthenticationMethodX509)),
+			b:    methodOnly,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			fa, fb := fingerprintSPIFFEAssociation(tt.a), fingerprintSPIFFEAssociation(tt.b)
+			if tt.wantEqual {
+				assert.Equal(t, fa, fb)
+			} else {
+				assert.NotEqual(t, fa, fb)
+			}
+		})
+	}
+}
+
 // TestNewSPIFFEAssociationRegistryRejectsOverlappingPatterns proves
 // NewSPIFFEAssociationRegistry itself fails closed when two associations'
 // patterns could both match the same concrete SPIFFE ID, since resolution at

@@ -123,6 +123,22 @@ func testSPIFFEWildcardAssociation(audience string) SPIFFEClientAuthRunConfig {
 	return association
 }
 
+func mustNewSPIFFETrustConfigWithSource(t *testing.T, source SPIFFEBundleSourceRunConfig) *SPIFFETrustConfig {
+	t.Helper()
+	trust, err := NewSPIFFETrustConfig(
+		[]SPIFFETrustDomainRunConfig{{
+			Name:         "production",
+			TrustDomain:  "example.org",
+			Methods:      []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509},
+			BundleSource: source,
+		}},
+		&InboundGrantsRunConfig{SPIFFEClientAuth: []SPIFFEClientAuthRunConfig{testSPIFFEWildcardAssociation("https://mcp.example.com")}},
+		[]string{"openid"}, []string{"https://mcp.example.com"},
+	)
+	require.NoError(t, err)
+	return trust
+}
+
 func mustNewSPIFFEJWTTrustConfig(t *testing.T) *SPIFFETrustConfig {
 	t.Helper()
 	association := testSPIFFEWildcardAssociation("https://mcp.example.com")
@@ -141,16 +157,24 @@ func mustNewSPIFFEJWTTrustConfig(t *testing.T) *SPIFFETrustConfig {
 	return trust
 }
 
-func mustNewSPIFFETrustConfigWithSource(t *testing.T, source SPIFFEBundleSourceRunConfig) *SPIFFETrustConfig {
+func mustNewSPIFFETrustConfigWithGrants(t *testing.T, grants []string) *SPIFFETrustConfig {
 	t.Helper()
 	trust, err := NewSPIFFETrustConfig(
 		[]SPIFFETrustDomainRunConfig{{
 			Name:         "production",
 			TrustDomain:  "example.org",
 			Methods:      []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509},
-			BundleSource: source,
+			BundleSource: validFileBundleSource(),
 		}},
-		&InboundGrantsRunConfig{SPIFFEClientAuth: []SPIFFEClientAuthRunConfig{testSPIFFEWildcardAssociation("https://mcp.example.com")}},
+		&InboundGrantsRunConfig{SPIFFEClientAuth: []SPIFFEClientAuthRunConfig{{
+			TrustDomainRef:   "production",
+			PrincipalPattern: "spiffe://example.org/ns/default/*",
+			ClientID:         "agent-client",
+			Methods:          []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509},
+			Resources:        []string{"https://mcp.example.com"},
+			Scopes:           []string{"openid"},
+			GrantTypes:       grants,
+		}}},
 		[]string{"openid"}, []string{"https://mcp.example.com"},
 	)
 	require.NoError(t, err)
@@ -246,7 +270,8 @@ func TestConfigValidate(t *testing.T) {
 
 		{name: "JWT-SVID association with a plain-HTTP loopback issuer rejects without the opt-in", config: Config{Issuer: "http://localhost:8080", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, AllowedAudiences: []string{"https://mcp.example.com"}, SPIFFETrust: mustNewSPIFFEJWTTrustConfig(t)}, wantErr: true, errMsg: "insecure_allow_confidential_over_loopback_http"},
 		{name: "JWT-SVID association with a plain-HTTP loopback issuer passes with the opt-in", config: Config{Issuer: "http://localhost:8080", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, AllowedAudiences: []string{"https://mcp.example.com"}, SPIFFETrust: mustNewSPIFFEJWTTrustConfig(t), InsecureAllowConfidentialOverLoopbackHTTP: true}},
-		{name: "SPIFFE association combined with token exchange disabled rejects", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, AllowedAudiences: []string{"https://mcp.example.com"}, SPIFFETrust: mustNewSPIFFETrustConfig(t), DisableTokenExchange: true}, wantErr: true, errMsg: "SPIFFE client associations require token exchange"},
+		{name: "SPIFFE association combined with token exchange disabled rejects", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, AllowedAudiences: []string{"https://mcp.example.com"}, SPIFFETrust: mustNewSPIFFETrustConfig(t), DisableTokenExchange: true}, wantErr: true, errMsg: "grants token exchange, but token exchange is disabled"},
+		{name: "SPIFFE client-credentials-only association combined with token exchange disabled passes", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, AllowedAudiences: []string{"https://mcp.example.com"}, SPIFFETrust: mustNewSPIFFETrustConfigWithGrants(t, []string{oauthproto.GrantTypeClientCredentials}), DisableTokenExchange: true}},
 
 		// RefreshGrantHandlers
 		{name: "nil refresh grant handler rejected", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, RefreshGrantHandlers: []fosite.TokenEndpointHandler{&recordingRefreshHandler{}, nil}}, wantErr: true, errMsg: "refresh grant handler 1 is nil"},

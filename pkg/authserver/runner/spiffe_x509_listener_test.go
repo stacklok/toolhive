@@ -331,15 +331,22 @@ func TestEmbeddedAuthServer_SPIFFEOnlyTokenExchangeOverTLS(t *testing.T) {
 }
 
 // TestEmbeddedAuthServer_SPIFFEAssociationWithoutResourcesIsRejected pins that
-// an association with no resources fails at startup.
+// an association with no resources fails at startup, whatever its grant types.
 func TestEmbeddedAuthServer_SPIFFEAssociationWithoutResourcesIsRejected(t *testing.T) {
 	t.Parallel()
 
-	cfg, _ := spiffeX509TestConfig(t, newSPIFFETestAuthority(t, "ca-1"), func(cfg *authserver.RunConfig) {
-		cfg.InboundGrants.SPIFFEClientAuth[0].Resources = nil
-	})
-	_, err := NewEmbeddedAuthServer(context.Background(), cfg, WithListenerHost("127.0.0.1"))
-	require.ErrorContains(t, err, "resources is required")
+	for _, grant := range []string{oauthproto.GrantTypeTokenExchange, oauthproto.GrantTypeClientCredentials} {
+		t.Run(grant, func(t *testing.T) {
+			t.Parallel()
+
+			cfg, _ := spiffeX509TestConfig(t, newSPIFFETestAuthority(t, "ca-1"), func(cfg *authserver.RunConfig) {
+				cfg.InboundGrants.SPIFFEClientAuth[0].GrantTypes = []string{grant}
+				cfg.InboundGrants.SPIFFEClientAuth[0].Resources = nil
+			})
+			_, err := NewEmbeddedAuthServer(context.Background(), cfg, WithListenerHost("127.0.0.1"))
+			require.ErrorContains(t, err, "resources is required")
+		})
+	}
 }
 
 // TestEmbeddedAuthServer_SPIFFETokenExchangeOverTLS completes RFC 8693

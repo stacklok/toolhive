@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/ory/fosite"
@@ -167,13 +168,15 @@ func (r *SPIFFEAssociationRegistry) staticClients() map[string]fosite.Client {
 }
 
 // fingerprintSPIFFEAssociation hashes the SPIFFE association identity (trust
-// domain reference, principal pattern, and accepted methods). Storage compares
-// it only to set identity_changed in the replacement WARN when an edited
-// association replaces its placeholder. Each value is
+// domain reference, principal pattern, grant types, and accepted methods).
+// Storage compares it only to set identity_changed in the replacement WARN
+// when an edited association replaces its placeholder. Each value is
 // length-prefixed with an unambiguous decimal-and-colon marker so
-// concatenation can't alias two different value sequences to the same hash,
-// and methods are sorted first so their original order never affects the
-// result.
+// concatenation can't alias two different value sequences to the same hash.
+// Grant types and methods are each sorted before hashing so their original
+// order never affects the result. The grant-type count is written before the
+// grant types, since methods follow them with no count and the boundary would
+// otherwise be ambiguous.
 //
 // Note: TrustDomainRef() hashes the trust-domain *reference name* (e.g.
 // "production"), not the trust domain value itself. In practice this doesn't
@@ -190,6 +193,12 @@ func fingerprintSPIFFEAssociation(association SPIFFEClientAuthConfig) string {
 	}
 	write(association.TrustDomainRef())
 	write(association.Principal())
+	grantTypes := association.AuthorizationPolicy().GrantTypes()
+	slices.Sort(grantTypes)
+	write(strconv.Itoa(len(grantTypes)))
+	for _, grantType := range grantTypes {
+		write(grantType)
+	}
 	methods := association.Methods()
 	slices.Sort(methods)
 	for _, method := range methods {

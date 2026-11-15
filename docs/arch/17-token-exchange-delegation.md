@@ -140,11 +140,15 @@ policies reference `trusted_issuers`.
 
 An embedded authorization server may omit upstream identity providers only when
 it has a pre-provisioned delegate client, a trusted issuer with `jwtBearerGrant`,
-or a SPIFFE client association (`inbound_grants.spiffe_client_auth`). This mode serves token exchange without an interactive login:
+or a SPIFFE client association (`inbound_grants.spiffe_client_auth`). This mode serves token exchange, when it is enabled, and the SPIFFE `client_credentials` grant, when a SPIFFE association lists it, without an interactive login:
 `/oauth/authorize` validates the OAuth client and redirect URI, then returns
 `unsupported_response_type`. Discovery omits authorization-code, refresh-token,
-and PKCE capabilities while retaining token exchange (and JWT bearer when a
-trusted issuer enables it). Generic MCP and OIDC authorization-code clients
+and PKCE capabilities. It advertises token exchange only when it is enabled, and
+JWT bearer when a trusted issuer enables it. Token exchange is enabled by a
+delegate client, a legacy trusted-issuer token-exchange policy, an
+`inbound_grants.token_exchange` block, or a SPIFFE association that lists the
+token-exchange grant. A SPIFFE association that lists only `client_credentials`
+does not enable it. Generic MCP and OIDC authorization-code clients
 cannot use token-only servers: the metadata deliberately lacks the
 authorization-code and PKCE fields those clients require to start an interactive
 flow. The OpenID well-known route returns the same RFC 8414 token-only metadata
@@ -713,7 +717,7 @@ in addition to other grants can log users in.
   with `invalid_target`, before the upstream login. The server-level and the
   client-level refusal return the same error text, so an unauthenticated caller
   cannot tell which of the two refused a resource. (SPIFFE clients, which keep
-  a resource list, are token-exchange only and never reach `/authorize`.) The
+  a resource list, have no response types and never reach `/authorize`.) The
   default strategy compares scheme and host exactly and accepts a path that
   equals the client's audience path or extends it at a segment boundary
   (`https://api.example.com/v1` matches an audience of
@@ -751,8 +755,10 @@ in addition to other grants can log users in.
   permits nothing. A client that sets `grant_types` explicitly must also list
   the JWT-bearer grant, or the redemption fails with `unauthorized_client`.
   SPIFFE association clients are always gated: `idJAGExplicitGrantClientIDs`
-  includes every association, and their `grant_types` must be exactly the
-  token-exchange grant. A delegate client that omits `grant_types` is stored
+  includes every association, and their `grant_types` hold only the grants the
+  association declares (`client_credentials`, token exchange, or both). They
+  never include the JWT-bearer grant, so an ID-JAG for such a client always
+  fails with `unauthorized_client`. A delegate client that omits `grant_types` is stored
   with token exchange alone but is not gated, for backward compatibility. The plain JWT-bearer grant is not
   gated this way, because it can run without client authentication.
 
@@ -859,7 +865,7 @@ the client type:
 
 - **Configured delegate clients.** A per-client allowlist. `audience` matches by
   path prefix. `resource` must also be an exact member of `allowed_audiences`.
-- **SPIFFE clients.** `audiences` is ignored. The
+- **SPIFFE clients.** Both grants ignore `audiences` and use one rule: the
   request must send exactly one `resource` that exactly matches an entry in the
   association's resource list, and `audience` is rejected (see
   [SPIFFE Association Declarations](18-spiffe-association-declarations.md)
@@ -1727,7 +1733,8 @@ an ID token. Its `aud` must contain one of the client's
 to other exchanges: for a refresh-token request the client's own tokens are not
 accepted, and the list must not be empty. Startup validation rejects
 `exchange_refresh_tokens` without a non-empty `allowed_source_clients`. Tokens
-made by token exchange, the JWT-bearer grant or an ID-JAG are refused.
+made by token exchange, the JWT-bearer grant, an ID-JAG or the
+`client_credentials` grant are refused.
 
 Last, its scope must contain `offline_access` or `offline`, the server's
 refresh-token scopes. A grant outlives the sign-in session, so opening one needs

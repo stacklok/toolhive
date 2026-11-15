@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
+	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
 func TestNormalizeSPIFFEPrincipal(t *testing.T) {
@@ -126,7 +127,12 @@ func TestValidateSPIFFETrust(t *testing.T) {
 		{name: "wrong trust domain", mutate: func(_ []SPIFFETrustDomainRunConfig, grants *InboundGrantsRunConfig) {
 			grants.SPIFFEClientAuth[0].PrincipalPattern = "spiffe://other.org/ns/default/agent"
 		}, wantErr: "does not match"},
-		{name: "empty resources rejected", mutate: func(_ []SPIFFETrustDomainRunConfig, grants *InboundGrantsRunConfig) {
+		{name: "empty resources rejected for token exchange only", mutate: func(_ []SPIFFETrustDomainRunConfig, grants *InboundGrantsRunConfig) {
+			grants.SPIFFEClientAuth[0].GrantTypes = []string{oauthproto.GrantTypeTokenExchange}
+			grants.SPIFFEClientAuth[0].Resources = nil
+		}, wantErr: "spiffe_client_auth[0].resources is required"},
+		{name: "empty resources rejected for client_credentials", mutate: func(_ []SPIFFETrustDomainRunConfig, grants *InboundGrantsRunConfig) {
+			grants.SPIFFEClientAuth[0].GrantTypes = []string{oauthproto.GrantTypeClientCredentials}
 			grants.SPIFFEClientAuth[0].Resources = nil
 		}, wantErr: "spiffe_client_auth[0].resources is required"},
 		{name: "duplicate client", mutate: func(_ []SPIFFETrustDomainRunConfig, grants *InboundGrantsRunConfig) {
@@ -175,12 +181,6 @@ func TestValidateSPIFFETrust(t *testing.T) {
 		{name: "method not enabled by trust domain", mutate: func(domains []SPIFFETrustDomainRunConfig, _ *InboundGrantsRunConfig) {
 			domains[0].Methods = []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodJWT}
 		}, wantErr: "not enabled by trust domain"},
-		{name: "grant_types must be exactly token exchange", mutate: func(_ []SPIFFETrustDomainRunConfig, grants *InboundGrantsRunConfig) {
-			grants.SPIFFEClientAuth[0].GrantTypes = []string{"authorization_code"}
-		}, wantErr: "grant_types must be exactly"},
-		{name: "grant_types is required", mutate: func(_ []SPIFFETrustDomainRunConfig, grants *InboundGrantsRunConfig) {
-			grants.SPIFFEClientAuth[0].GrantTypes = nil
-		}, wantErr: "grant_types must be exactly"},
 		{name: "bundle_source type is required", mutate: func(domains []SPIFFETrustDomainRunConfig, _ *InboundGrantsRunConfig) {
 			domains[0].BundleSource = SPIFFEBundleSourceRunConfig{}
 		}, wantErr: "unknown source type"},
@@ -222,6 +222,34 @@ func TestValidateSPIFFETrust(t *testing.T) {
 			if tt.wantErr != "" {
 				require.Error(t, err)
 				assert.Contains(t, err.Error(), tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+		})
+	}
+}
+
+func TestValidateSPIFFEGrantsMatrix(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		grants  []string
+		wantErr string
+	}{
+		{name: "client credentials only", grants: []string{oauthproto.GrantTypeClientCredentials}},
+		{name: "token exchange only", grants: []string{oauthproto.GrantTypeTokenExchange}},
+		{name: "both grants", grants: []string{oauthproto.GrantTypeClientCredentials, oauthproto.GrantTypeTokenExchange}},
+		{name: "empty", wantErr: "is required"},
+		{name: "duplicate", grants: []string{oauthproto.GrantTypeClientCredentials, oauthproto.GrantTypeClientCredentials}, wantErr: "duplicate"},
+		{name: "unknown", grants: []string{"authorization_code"}, wantErr: "unknown grant"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := validateSPIFFEGrantTypes(tt.grants, "grant_types")
+			if tt.wantErr != "" {
+				require.ErrorContains(t, err, tt.wantErr)
 				return
 			}
 			require.NoError(t, err)

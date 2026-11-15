@@ -2447,12 +2447,19 @@ func (c *Config) validateAuthorizationDetailsRequiresTokenExchange() error {
 	return nil
 }
 
-// validateSPIFFEAssociationsRequireTokenExchange rejects SPIFFE client
-// associations combined with a disabled token-exchange grant. Every SPIFFE
-// client receives only the RFC 8693 grant, so an association could never be used.
+// validateSPIFFEAssociationsRequireTokenExchange rejects a SPIFFE client
+// association that grants token exchange while the token-exchange grant is
+// disabled, because that association could never be used. Associations that
+// grant only client_credentials do not depend on the token-exchange grant.
 func (c *Config) validateSPIFFEAssociationsRequireTokenExchange() error {
-	if len(c.SPIFFETrust.Associations()) > 0 && c.DisableTokenExchange {
-		return fmt.Errorf("SPIFFE client associations require token exchange to be enabled")
+	if !c.DisableTokenExchange {
+		return nil
+	}
+	for _, association := range c.SPIFFETrust.Associations() {
+		if slices.Contains(association.AuthorizationPolicy().GrantTypes(), oauthproto.GrantTypeTokenExchange) {
+			return fmt.Errorf("SPIFFE client association %q grants token exchange, "+
+				"but token exchange is disabled", association.ClientID())
+		}
 	}
 	return nil
 }

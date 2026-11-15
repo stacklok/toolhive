@@ -96,8 +96,8 @@ type resourceScopedClient interface {
 
 // spiffeIdentityClient is implemented by fosite.Client types (e.g.
 // spiffeStaticClient) that carry a durable SPIFFE association identity
-// fingerprint independent of OAuth policy. Mirrors resourceScopedClient's
-// structural-matching pattern above.
+// fingerprint covering trust domain ref, principal, grant types and methods.
+// Mirrors resourceScopedClient's structural-matching pattern above.
 type spiffeIdentityClient interface {
 	IdentityFingerprint() string
 }
@@ -162,7 +162,8 @@ func isReservedPlaceholder(client fosite.Client) bool {
 // backend, including a bare read-back from Redis by a replica with no SPIFFE
 // overlay — see inertPlaceholderClient and storedClient.Reserved. It keeps
 // the real client's Scopes, Audience (nil for SPIFFE clients), (RFC 8707) Resources,
-// and SPIFFE association identity fingerprint so ReconcileConfiguredClient can tell
+// and SPIFFE association identity fingerprint (covering trust domain ref, principal,
+// grant types and methods) so ReconcileConfiguredClient can tell
 // "same association, restarted" (silent) from "changed association"
 // (replaced, with a WARN).
 // Scopes and Audience are taken directly from actual.GetScopes() /

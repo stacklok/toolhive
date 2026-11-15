@@ -436,9 +436,10 @@ func explicitGrantClientIDs(clients []DelegateClient) []string {
 // idJAGExplicitGrantClientIDs lists the clients whose registered grant_types
 // the ID-JAG handler enforces: delegate clients that set grant_types
 // explicitly, and every configured SPIFFE association client. SPIFFE
-// associations are gated too because their static clients are restricted to
-// token-exchange; without this, a jwt-bearer ID-JAG bound to such a client_id
-// would redeem despite the association's grant policy. DCR and CIMD clients
+// associations are gated too because their static clients carry only the
+// grants the association declares, never jwt-bearer; without this, a
+// jwt-bearer ID-JAG bound to such a client_id would redeem despite the
+// association's grant policy. DCR and CIMD clients
 // are deliberately not in the set and are not held to their grant types.
 func idJAGExplicitGrantClientIDs(cfg Config) []string {
 	ids := explicitGrantClientIDs(cfg.DelegateClients)

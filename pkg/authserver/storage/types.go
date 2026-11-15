@@ -1029,8 +1029,9 @@ type clientFingerprint struct {
 	// SPIFFE client has (see resourceScopedClient in spiffe_decorator.go). Only reserved rows
 	// carry it: buildStoredClient persists it for them alone.
 	resources []string
-	// identityFingerprint is the SPIFFE association hash. Like resources, it
-	// is only populated for reserved rows.
+	// identityFingerprint is the SPIFFE association hash, covering trust
+	// domain ref, principal, grant types and methods. Like resources, it is
+	// only populated for reserved rows.
 	identityFingerprint string
 	public              bool
 	// reserved marks a SPIFFE static-client placeholder, as opposed to an

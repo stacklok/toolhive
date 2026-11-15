@@ -14,9 +14,10 @@ const TokenSessionIDKey = "tsid"
 
 // NoUpstreamSessionKey marks a token this authorization server minted
 // without any link to an upstream IdP login, so no upstream credential exists
-// for it. Today only the RFC 7523 JWT-bearer grant and the ID-JAG grant set
-// it: the subject is a synthetic machine identity (issuer#subject) asserted by
-// a separate trust root, with no end user and no upstream session.
+// for it. The RFC 7523 JWT-bearer, ID-JAG and client_credentials grants set it:
+// their subject is a machine identity (issuer#subject, or the SPIFFE ID for
+// client_credentials) asserted by a separate trust root, with no end user and
+// no upstream session.
 //
 // It exists so a resource server can distinguish "this token was deliberately
 // minted without an upstream session" from "this identity was never enriched

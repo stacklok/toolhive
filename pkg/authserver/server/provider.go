@@ -209,6 +209,10 @@ type AuthorizationServerConfig struct {
 	// delegate client authenticates with private_key_jwt. Discovery advertises
 	// that method and its signing algorithms when this is true.
 	HasStaticPrivateKeyJWTClients bool
+	// SupportsSPIFFEClientCredentialsGrant reports whether some SPIFFE
+	// association grants client_credentials. It decides whether the grant
+	// handler is registered.
+	SupportsSPIFFEClientCredentialsGrant bool
 	// InsecureAllowHTTP permits a non-loopback HTTP issuer. It is incompatible
 	// with confidential clients.
 	InsecureAllowHTTP bool
@@ -335,6 +339,10 @@ type AuthorizationServerParams struct {
 	// delegate client authenticates with private_key_jwt. Discovery advertises
 	// that method and its signing algorithms when this is true.
 	HasStaticPrivateKeyJWTClients bool
+	// SupportsSPIFFEClientCredentialsGrant reports whether some SPIFFE
+	// association grants client_credentials. It decides whether the grant
+	// handler is registered.
+	SupportsSPIFFEClientCredentialsGrant bool
 	// InsecureAllowHTTP permits a non-loopback HTTP issuer. It is incompatible
 	// with confidential clients.
 	InsecureAllowHTTP bool
@@ -639,6 +647,7 @@ func NewAuthorizationServerConfig(cfg *AuthorizationServerParams) (*Authorizatio
 		HasStaticConfidentialClients:              cfg.HasStaticConfidentialClients,
 		HasStaticSecretClients:                    cfg.HasStaticSecretClients,
 		HasStaticPrivateKeyJWTClients:             cfg.HasStaticPrivateKeyJWTClients,
+		SupportsSPIFFEClientCredentialsGrant:      cfg.SupportsSPIFFEClientCredentialsGrant,
 		InsecureAllowHTTP:                         cfg.InsecureAllowHTTP,
 		InsecureAllowConfidentialOverLoopbackHTTP: cfg.InsecureAllowConfidentialOverLoopbackHTTP,
 		ForceConfidentialRedirectURIs:             cfg.ForceConfidentialRedirectURIs,

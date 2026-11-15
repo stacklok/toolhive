@@ -64,8 +64,8 @@ func (*SPIFFEClient) GetResponseTypes() fosite.Arguments { return nil }
 func (c *SPIFFEClient) GetScopes() fosite.Arguments { return slices.Clone(c.scopes) }
 
 // Resources returns a copy of the allowed RFC 8707 resource request values.
-// Token exchange checks the "resource" request parameter against this, never
-// against GetAudience.
+// Token exchange and client_credentials check the "resource" request parameter
+// against this, never against GetAudience.
 func (c *SPIFFEClient) Resources() []string { return slices.Clone(c.resources) }
 
 // GetAudience returns nil: SPIFFE clients carry no audience allowlist.

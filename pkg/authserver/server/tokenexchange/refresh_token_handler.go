@@ -833,8 +833,9 @@ func loginSubjectError(reason string) error {
 // checkLoginToken reports why a validated subject token is not a user login
 // access token, or "" if it is. A refresh token of any kind needs this, because
 // the token is tied to a real login. A token minted by token exchange (act), by
-// the JWT-bearer or ID-JAG grant (external subject or no upstream session) is
-// refused, since its subject did not log in here.
+// the JWT-bearer or ID-JAG grant (external subject or no upstream session), or
+// by client_credentials (no upstream session), is refused, since its subject
+// did not log in here.
 //
 // The jti is checked here because a later profile must share the single-use
 // (iss, jti) marker, so one login access token cannot open one grant of each

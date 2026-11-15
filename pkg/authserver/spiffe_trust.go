@@ -255,6 +255,14 @@ func NewSPIFFETrustConfig(
 	return config, nil
 }
 
+// permitsGrant reports whether any association lists grant. It is safe on a
+// nil receiver.
+func (c *SPIFFETrustConfig) permitsGrant(grant string) bool {
+	return slices.ContainsFunc(c.Associations(), func(a SPIFFEClientAuthConfig) bool {
+		return slices.Contains(a.AuthorizationPolicy().GrantTypes(), grant)
+	})
+}
+
 // ValidateSPIFFETrust validates SPIFFE trust declarations without fetching
 // bundles or validating credentials.
 func ValidateSPIFFETrust(

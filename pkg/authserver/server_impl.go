@@ -23,6 +23,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/authserver/internal/consentpolicy"
 	oauthserver "github.com/stacklok/toolhive/pkg/authserver/server"
+	"github.com/stacklok/toolhive/pkg/authserver/server/clientcredentials"
 	"github.com/stacklok/toolhive/pkg/authserver/server/deviceflow"
 	"github.com/stacklok/toolhive/pkg/authserver/server/handlers"
 	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
@@ -228,6 +229,7 @@ func authorizationServerParams(
 		InsecureAllowConfidentialOverLoopbackHTTP: cfg.InsecureAllowConfidentialOverLoopbackHTTP,
 		ForceConfidentialRedirectURIs:             cfg.ForceConfidentialRedirectURIs,
 		HasStaticPrivateKeyJWTClients:             hasPrivateKeyJWTDelegateClient(cfg.DelegateClients),
+		SupportsSPIFFEClientCredentialsGrant:      cfg.SPIFFETrust.permitsGrant(oauthproto.GrantTypeClientCredentials),
 		DisableTokenExchange:                      cfg.DisableTokenExchange,
 		JWTBearerGrantEnabled:                     JWTBearerGrantEnabled(cfg.TrustedIssuers),
 		DeviceFlowEnabled:                         cfg.DeviceFlowEnabled,
@@ -811,10 +813,12 @@ func discoverExchangeGrantStorage(
 }
 
 // buildProvider assembles the fosite OAuth2 provider, registering the RFC 8693
-// token-exchange handler and/or the RFC 7523 JWT-bearer handler as extension
-// grants alongside the standard grants -- whichever of the two are enabled
-// for cfg (token exchange can be disabled via canonical inbound grants
-// configuration; JWT-bearer is enabled per JWTBearerGrantEnabled).
+// token-exchange handler, the RFC 7523 JWT-bearer handler, and the SPIFFE
+// client-credentials handler as extension grants alongside the standard
+// grants -- each registered only when cfg enables it (token exchange can be
+// disabled via canonical inbound grants configuration; JWT-bearer is enabled
+// per JWTBearerGrantEnabled; client credentials when a SPIFFE association
+// permits it, see SPIFFETrustConfig.permitsGrant).
 //
 // refresher is the server's shared upstream token refresher (nil without
 // upstreams) and upstreams are the resolved upstreams it refreshes, both used
@@ -895,6 +899,7 @@ func buildProvider(
 		}
 		factories = append(factories, deviceFlowFactory)
 	}
+	factories = append(factories, buildSPIFFEGrantFactories(authServerConfig.SupportsSPIFFEClientCredentialsGrant)...)
 	// Refresh-grant validators go last so each runs after the built-in refresh
 	// handler has validated the grant.
 	validators, err := refreshGrantValidatorChain(cfg, stor, refresher, upstreams)
@@ -907,6 +912,16 @@ func buildProvider(
 		return nil, nil, err
 	}
 	return provider, shared, nil
+}
+
+// buildSPIFFEGrantFactories returns the grant factories SPIFFE associations
+// need beyond token exchange: the client_credentials handler, only when an
+// association grants it.
+func buildSPIFFEGrantFactories(clientCredentials bool) []oauthserver.Factory {
+	if !clientCredentials {
+		return nil
+	}
+	return []oauthserver.Factory{clientcredentials.Factory()}
 }
 
 // buildTokenExchangeFactories builds the RFC 8693 token-exchange factory

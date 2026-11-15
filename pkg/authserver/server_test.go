@@ -27,6 +27,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
+	"github.com/stacklok/toolhive/pkg/authserver/internal/spiffetest"
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
 	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
@@ -781,10 +782,7 @@ func TestNewSPIFFEClientResolver(t *testing.T) {
 	registry := newTestSPIFFEAssociationRegistry(t, []SPIFFEClientAuthRunConfig{
 		testSPIFFEAssociation("client", "openid"),
 	})
-	client, err := registration.NewSPIFFEClient(
-		"client", []string{"openid"}, []string{"https://audience.example.com"}, nil,
-	)
-	require.NoError(t, err)
+	client := spiffetest.Client(t, spiffetest.WithID("client"), spiffetest.WithAudiences("https://audience.example.com"))
 
 	tests := []struct {
 		name       string

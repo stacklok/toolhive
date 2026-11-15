@@ -161,3 +161,42 @@ func TestResolveAnonymousID(t *testing.T) {
 		})
 	}
 }
+
+// TestSendMetrics_LateAnonymousID covers a client created before the anonymous
+// ID existed. The ID comes from the TOOLHIVE_ANONYMOUS_ID override so the test
+// never reads the developer's real updates file.
+//
+//nolint:paralleltest // t.Setenv
+func TestSendMetrics_LateAnonymousID(t *testing.T) {
+	tests := []struct {
+		name       string
+		kubernetes bool
+		wantID     string
+	}{
+		{name: "read again once it exists", kubernetes: false, wantID: "late-id"},
+		{name: "Kubernetes keeps the placeholder", kubernetes: true, wantID: "operator-proxy"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var gotID string
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotID = r.Header.Get(anonymousIDHeader)
+				w.WriteHeader(http.StatusOK)
+			}))
+			t.Cleanup(server.Close)
+
+			client := newTestClient(server.URL, "")
+			runtimeEnv := ""
+			if tt.kubernetes {
+				runtimeEnv = "kubernetes"
+			}
+			t.Setenv("TOOLHIVE_RUNTIME", runtimeEnv)
+			t.Setenv("KUBERNETES_SERVICE_HOST", "")
+			t.Setenv(EnvVarAnonymousID, "late-id")
+
+			require.NoError(t, client.SendMetrics("instance", MetricRecord{Count: 1, Timestamp: "2026-11-15T00:00:00Z"}))
+			assert.Equal(t, tt.wantID, gotID)
+		})
+	}
+}

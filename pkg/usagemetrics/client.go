@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"runtime"
+	"sync"
 	"time"
 
 	"github.com/stacklok/toolhive-core/env"
@@ -33,8 +34,10 @@ const (
 
 // Client sends usage metrics to the API
 type Client struct {
-	endpoint    string
-	client      *http.Client
+	endpoint string
+	client   *http.Client
+	// idMu guards anonymousID, which SendMetrics can fill in later.
+	idMu        sync.Mutex
 	anonymousID string
 	// component overrides the User-Agent component; empty means local/operator
 	component string
@@ -60,10 +63,9 @@ func NewClient(endpoint string) *Client {
 
 // SendMetrics sends the metrics record to the API
 func (c *Client) SendMetrics(instanceID string, record MetricRecord) error {
-	// Use cached anonymous ID (set at client creation)
 	// For operator-deployed proxies without filesystem access, anonymous_id will be empty,
 	// but we still send metrics with a default value.
-	anonymousID := c.anonymousID
+	anonymousID := c.currentAnonymousID()
 	if anonymousID == "" {
 		// Only use default for operator-deployed proxies (detected via K8s env vars)
 		if rt.IsKubernetesRuntimeWithEnv(&env.OSReader{}) {
@@ -104,6 +106,19 @@ func (c *Client) SendMetrics(instanceID string, record MetricRecord) error {
 	}
 
 	return nil
+}
+
+// currentAnonymousID returns the anonymous ID resolved at client creation. While
+// it is empty outside Kubernetes, it is read again: on a fresh machine, or in a
+// container without persistent data, the update check creates the ID after the
+// client was built, and the process would otherwise never report.
+func (c *Client) currentAnonymousID() string {
+	c.idMu.Lock()
+	defer c.idMu.Unlock()
+	if c.anonymousID == "" && !rt.IsKubernetesRuntimeWithEnv(&env.OSReader{}) {
+		c.anonymousID = resolveAnonymousID(&env.OSReader{})
+	}
+	return c.anonymousID
 }
 
 // resolveAnonymousID returns the anonymous ID to report: the operator-provided

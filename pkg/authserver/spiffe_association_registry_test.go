@@ -500,3 +500,19 @@ func testSPIFFEAssociation(clientID, scope string) SPIFFEClientAuthRunConfig {
 		GrantTypes:       []string{oauthproto.GrantTypeTokenExchange},
 	}
 }
+
+func TestNewSPIFFEAssociationRegistryReturnsNilWithoutAssociations(t *testing.T) {
+	t.Parallel()
+
+	empty, err := NewSPIFFETrustConfig(nil, nil, []string{"openid"}, nil)
+	require.NoError(t, err)
+	require.Empty(t, empty.Associations())
+
+	for _, trust := range []*SPIFFETrustConfig{nil, empty} {
+		registry, err := NewSPIFFEAssociationRegistry(trust)
+		require.NoError(t, err)
+		assert.Nil(t, registry)
+		assert.Nil(t, newSPIFFEClientResolver(registry))
+		assert.Nil(t, newSPIFFEX509ClientMatcher(registry))
+	}
+}

@@ -27,8 +27,11 @@ type SPIFFEAssociationRegistry struct {
 }
 
 // NewSPIFFEAssociationRegistry creates an immutable lookup registry from a
-// trust configuration. A nil trust configuration represents an absent SPIFFE
-// configuration and returns nil without enabling SPIFFE clients.
+// trust configuration. A nil trust configuration, or one with no associations,
+// represents an absent SPIFFE configuration and returns nil without enabling
+// SPIFFE clients: callers rely on a nil registry to leave the resolver and the
+// X.509 matcher unset, so a server without associations keeps the default
+// client authentication path.
 //
 // It rejects any two associations whose patterns could both match the same
 // concrete SPIFFE ID (including an exact duplicate, which is the identical
@@ -36,11 +39,11 @@ type SPIFFEAssociationRegistry struct {
 // patterns by an unordered map scan, so an unrejected overlap would make
 // resolution depend on random iteration order.
 func NewSPIFFEAssociationRegistry(trust *SPIFFETrustConfig) (*SPIFFEAssociationRegistry, error) {
-	if trust == nil {
+	associations := trust.Associations()
+	if len(associations) == 0 {
 		return nil, nil
 	}
 
-	associations := trust.Associations()
 	registry := &SPIFFEAssociationRegistry{
 		byPattern:  make(map[string]SPIFFEClientAuthConfig, len(associations)),
 		byClientID: make(map[string]SPIFFEClientAuthConfig, len(associations)),

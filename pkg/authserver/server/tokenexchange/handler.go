@@ -21,6 +21,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver/authorizationdetails"
 	"github.com/stacklok/toolhive/pkg/authserver/claimnames"
 	"github.com/stacklok/toolhive/pkg/authserver/server"
+	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/authserver/server/session"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
@@ -395,7 +396,11 @@ func (h *Handler) authorizeDelegation(
 			return err
 		}
 	}
-	if err := checkDelegationConsent(validatedClaims, client.GetID(), actorSub, configuredDelegate); err != nil {
+	spiffeID := ""
+	if spiffeClient, ok := client.(*registration.AuthenticatedSPIFFEClient); ok {
+		spiffeID = spiffeClient.SPIFFEID().String()
+	}
+	if err := checkDelegationConsent(validatedClaims, client.GetID(), actorSub, spiffeID, configuredDelegate); err != nil {
 		return err
 	}
 
@@ -850,7 +855,17 @@ func sourceClientAllowed(validatedClaims *ValidatedClaims, clientID string, poli
 // If none of the three consent sources apply, the subject token carries no
 // verifiable binding to any client at all — this fails closed (CWE-863)
 // rather than allowing an unbound token through.
-func checkDelegationConsent(validatedClaims *ValidatedClaims, clientID, actorSub string, configuredDelegate bool) error {
+//
+// spiffeID is the verified SPIFFE ID of an authenticated SPIFFE client, empty
+// for every other client. A wildcard association gives many workloads the same
+// client ID, so for a SPIFFE client the client_id binding in case 3 alone would
+// let workload B exchange workload A's token and obtain sub = A. For that case
+// the subject token must also name this workload: its sub must be spiffeID, or
+// its outermost act.sub must be. The may_act and external actor cases name
+// their party explicitly and are unaffected.
+func checkDelegationConsent(
+	validatedClaims *ValidatedClaims, clientID, actorSub, spiffeID string, configuredDelegate bool,
+) error {
 	// selfIssuedDelegate is true only when a configured delegate client is
 	// presenting a self-issued token (ExternalIssuer == "" rules out the
 	// external-issuer path explicitly, rather than relying on ExternalActor
@@ -903,8 +918,27 @@ func checkDelegationConsent(validatedClaims *ValidatedClaims, clientID, actorSub
 	case validatedClaims.ClientID == "":
 		return errorsx.WithStack(fosite.ErrInvalidGrant.WithHint(
 			"The subject token carries no verifiable client binding: it has neither a 'may_act' claim nor a 'client_id' claim."))
+	case isAnotherWorkloadsToken(validatedClaims, clientID, spiffeID):
+		return errorsx.WithStack(fosite.ErrInvalidGrant.WithHint(
+			"The subject token was issued to a different workload of this client."))
 	}
 	return nil
+}
+
+// isAnotherWorkloadsToken reports whether a ToolHive-issued subject token that
+// is bound to clientID names a SPIFFE workload other than spiffeID: neither its
+// sub nor the sub of its outermost act entry is spiffeID. It is false for a
+// caller that is not a SPIFFE client (empty spiffeID).
+func isAnotherWorkloadsToken(validatedClaims *ValidatedClaims, clientID, spiffeID string) bool {
+	if spiffeID == "" || validatedClaims.ExternalIssuer != "" || validatedClaims.ClientID != clientID {
+		return false
+	}
+	if validatedClaims.Subject == spiffeID {
+		return false
+	}
+	act, _ := validatedClaims.Extra["act"].(map[string]any)
+	actSub, _ := act["sub"].(string)
+	return actSub != spiffeID
 }
 
 // grantScopes validates that each requested scope is allowed for both the

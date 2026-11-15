@@ -281,6 +281,8 @@ func TestEmbeddedAuthServer_SPIFFEClientCannotRedeemIDJAG(t *testing.T) {
 	})
 }
 
+// signSPIFFESubjectToken signs a subject token shaped like a client_credentials
+// token issued to the SPIFFE workload: its sub is the workload's SPIFFE ID.
 func signSPIFFESubjectToken(
 	t *testing.T, srv *EmbeddedAuthServer, clientID, scope string, mayAct map[string]any, audiences ...string,
 ) string {
@@ -298,7 +300,7 @@ func signSPIFFESubjectToken(
 		extra["may_act"] = mayAct
 	}
 	token, err := jwt.Signed(signer).Claims(jwt.Claims{
-		Issuer: spiffeX509TestIssuer, Subject: "test-user", Audience: jwt.Audience(audiences),
+		Issuer: spiffeX509TestIssuer, Subject: spiffeX509TestPrincipal, Audience: jwt.Audience(audiences),
 		Expiry: jwt.NewNumericDate(now.Add(30 * time.Minute)), IssuedAt: jwt.NewNumericDate(now),
 	}).Claims(extra).Serialize()
 	require.NoError(t, err)

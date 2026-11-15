@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
@@ -107,4 +108,29 @@ func TestConfiguredClientPoliciesNoTokenExchange(t *testing.T) {
 	policies, err := configuredClientPolicies([]DelegateClient{{ClientID: "plain"}}, nil)
 	require.NoError(t, err)
 	assert.Nil(t, policies)
+}
+
+func TestAuthorizationServerParams_HasStaticConfidentialClients(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		cfg  Config
+		want bool
+	}{
+		{
+			name: "delegate clients count without confidential registration",
+			cfg:  Config{DelegateClients: []DelegateClient{{ClientID: "delegate"}}},
+			want: true,
+		},
+		{name: "no delegate clients", cfg: Config{}, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			require.False(t, tt.cfg.AllowConfidentialClientRegistration)
+			params := authorizationServerParams(tt.cfg, &keys.SigningKeyData{}, nil, nil, nil)
+			assert.Equal(t, tt.want, params.HasStaticConfidentialClients)
+		})
+	}
 }

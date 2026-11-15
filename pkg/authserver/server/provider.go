@@ -191,17 +191,18 @@ type AuthorizationServerConfig struct {
 	// private_key_jwt authentication. This is independent of confidential-client
 	// registration and is used by DCR validation and discovery advertisement.
 	AllowPrivateKeyJWTRegistration bool
-	// HasStaticDelegateClients indicates whether any pre-provisioned delegate
-	// client is registered at startup. Every such client counts as confidential
-	// for the cleartext-transport check, whatever its auth method. It does not
+	// HasStaticConfidentialClients indicates whether any pre-provisioned
+	// confidential client exists at startup. Today only delegate clients count,
+	// whatever their auth method; SPIFFE association clients are deliberately
+	// not counted. It counts for the cleartext-transport check. It does not
 	// drive discovery; see HasStaticSecretClients and
 	// HasStaticPrivateKeyJWTClients.
-	HasStaticDelegateClients bool
+	HasStaticConfidentialClients bool
 	// HasStaticSecretClients indicates whether any pre-provisioned delegate
 	// client authenticates with a client secret (an empty, client_secret_basic
 	// or client_secret_post token endpoint auth method). Discovery advertises
 	// the client_secret_* methods when this is true. It is deliberately separate
-	// from HasStaticDelegateClients, which counts private_key_jwt delegates too
+	// from HasStaticConfidentialClients, which counts private_key_jwt delegates too
 	// because the cleartext-transport check does.
 	HasStaticSecretClients bool
 	// HasStaticPrivateKeyJWTClients indicates whether any pre-provisioned
@@ -316,17 +317,18 @@ type AuthorizationServerParams struct {
 	// private_key_jwt authentication. This is independent of confidential-client
 	// registration and is used by DCR validation and discovery advertisement.
 	AllowPrivateKeyJWTRegistration bool
-	// HasStaticDelegateClients indicates whether any pre-provisioned delegate
-	// client is registered at startup. Every such client counts as confidential
-	// for the cleartext-transport check, whatever its auth method. It does not
+	// HasStaticConfidentialClients indicates whether any pre-provisioned
+	// confidential client exists at startup. Today only delegate clients count,
+	// whatever their auth method; SPIFFE association clients are deliberately
+	// not counted. It counts for the cleartext-transport check. It does not
 	// drive discovery; see HasStaticSecretClients and
 	// HasStaticPrivateKeyJWTClients.
-	HasStaticDelegateClients bool
+	HasStaticConfidentialClients bool
 	// HasStaticSecretClients indicates whether any pre-provisioned delegate
 	// client authenticates with a client secret (an empty, client_secret_basic
 	// or client_secret_post token endpoint auth method). Discovery advertises
 	// the client_secret_* methods when this is true. It is deliberately separate
-	// from HasStaticDelegateClients, which counts private_key_jwt delegates too
+	// from HasStaticConfidentialClients, which counts private_key_jwt delegates too
 	// because the cleartext-transport check does.
 	HasStaticSecretClients bool
 	// HasStaticPrivateKeyJWTClients indicates whether any pre-provisioned
@@ -529,7 +531,7 @@ func validateParams(cfg *AuthorizationServerParams) error {
 		return err
 	}
 	if err := ValidateConfidentialClientTransport(
-		cfg.AllowConfidentialClientRegistration || cfg.HasStaticDelegateClients,
+		cfg.AllowConfidentialClientRegistration || cfg.HasStaticConfidentialClients,
 		cfg.InsecureAllowHTTP, cfg.Issuer, cfg.InsecureAllowConfidentialOverLoopbackHTTP,
 	); err != nil {
 		return err
@@ -634,7 +636,7 @@ func NewAuthorizationServerConfig(cfg *AuthorizationServerParams) (*Authorizatio
 		CIMDEnabled:                               cfg.CIMDEnabled,
 		AllowConfidentialClientRegistration:       cfg.AllowConfidentialClientRegistration,
 		AllowPrivateKeyJWTRegistration:            cfg.AllowPrivateKeyJWTRegistration,
-		HasStaticDelegateClients:                  cfg.HasStaticDelegateClients,
+		HasStaticConfidentialClients:              cfg.HasStaticConfidentialClients,
 		HasStaticSecretClients:                    cfg.HasStaticSecretClients,
 		HasStaticPrivateKeyJWTClients:             cfg.HasStaticPrivateKeyJWTClients,
 		InsecureAllowHTTP:                         cfg.InsecureAllowHTTP,
@@ -684,7 +686,7 @@ func NewAuthorizationServer(
 	factories ...Factory,
 ) (fosite.OAuth2Provider, error) {
 	if err := ValidateConfidentialClientTransport(
-		config.AllowConfidentialClientRegistration || config.HasStaticDelegateClients,
+		config.AllowConfidentialClientRegistration || config.HasStaticConfidentialClients,
 		config.InsecureAllowHTTP,
 		config.AccessTokenIssuer,
 		config.InsecureAllowConfidentialOverLoopbackHTTP,

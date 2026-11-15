@@ -222,7 +222,7 @@ func authorizationServerParams(
 		CIMDEnabled:                               cfg.CIMDEnabled,
 		AllowConfidentialClientRegistration:       cfg.AllowConfidentialClientRegistration,
 		AllowPrivateKeyJWTRegistration:            cfg.AllowPrivateKeyJWTRegistration,
-		HasStaticDelegateClients:                  len(cfg.DelegateClients) > 0,
+		HasStaticConfidentialClients:              cfg.hasStaticConfidentialClients(),
 		HasStaticSecretClients:                    hasSecretDelegateClient(cfg.DelegateClients),
 		InsecureAllowHTTP:                         cfg.InsecureAllowHTTP,
 		InsecureAllowConfidentialOverLoopbackHTTP: cfg.InsecureAllowConfidentialOverLoopbackHTTP,

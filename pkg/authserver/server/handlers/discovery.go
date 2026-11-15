@@ -142,8 +142,9 @@ func (h *Handler) buildOAuthMetadata() sharedobauth.AuthorizationServerMetadata 
 // list for discovery, derived from config. "none" is always first — the public-client
 // default. When confidential DCR is enabled or a configured delegate client authenticates
 // with a secret, the two client_secret_* methods are appended. Static secret clients need
-// these methods even though DCR itself remains public-only. RFC 8414 defines no ordering semantics, so
-// "none"-first is a readability convention, not a security control.
+// these methods even though DCR itself remains public-only. private_key_jwt and then the
+// SPIFFE methods follow when a client can use them. RFC 8414 defines no ordering semantics,
+// so this ordering is a readability convention, not a security control.
 func (h *Handler) tokenEndpointAuthMethodsSupported() []string {
 	methods := []string{sharedobauth.TokenEndpointAuthMethodNone}
 	if h.advertisesClientSecret() {
@@ -154,6 +155,12 @@ func (h *Handler) tokenEndpointAuthMethodsSupported() []string {
 	}
 	if h.advertisesPrivateKeyJWT() {
 		methods = append(methods, sharedobauth.TokenEndpointAuthMethodPrivateKeyJWT)
+	}
+	if h.config.SupportsSPIFFEX509ClientAuthentication {
+		methods = append(methods, sharedobauth.TokenEndpointAuthMethodSPIFFEX509)
+	}
+	if h.config.SupportsSPIFFEJWTClientAuthentication {
+		methods = append(methods, sharedobauth.TokenEndpointAuthMethodSPIFFEJWT)
 	}
 	return methods
 }
@@ -180,9 +187,12 @@ func (h *Handler) tokenEndpointAuthSigningAlgorithms() []string {
 	return registration.SupportedSigningAlgorithms()
 }
 
-// grantTypesSupported returns only grant families registered with fosite.
+// grantTypesSupported returns the grant families the server advertises. It is
+// driven by configuration flags, not by the fosite handler set; the
+// client_credentials flag also decides whether its handler is registered, so the
+// two cannot differ.
 func (h *Handler) grantTypesSupported() []string {
-	grantTypes := make([]string, 0, 4)
+	grantTypes := make([]string, 0, 5)
 	if h.config.TokenExchangeEnabled {
 		grantTypes = append(grantTypes, sharedobauth.GrantTypeTokenExchange)
 	}
@@ -197,6 +207,9 @@ func (h *Handler) grantTypesSupported() []string {
 	}
 	if h.config.DeviceFlowEnabled {
 		grantTypes = append(grantTypes, sharedobauth.GrantTypeDeviceCode)
+	}
+	if h.config.SupportsSPIFFEClientCredentialsGrant {
+		grantTypes = append(grantTypes, sharedobauth.GrantTypeClientCredentials)
 	}
 	return grantTypes
 }

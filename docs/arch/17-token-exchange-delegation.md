@@ -143,8 +143,9 @@ it has a pre-provisioned delegate client, a trusted issuer with `jwtBearerGrant`
 or a SPIFFE client association (`inbound_grants.spiffe_client_auth`). This mode serves token exchange, when it is enabled, and the SPIFFE `client_credentials` grant, when a SPIFFE association lists it, without an interactive login:
 `/oauth/authorize` validates the OAuth client and redirect URI, then returns
 `unsupported_response_type`. Discovery omits authorization-code, refresh-token,
-and PKCE capabilities. It advertises token exchange only when it is enabled, and
-JWT bearer when a trusted issuer enables it. Token exchange is enabled by a
+and PKCE capabilities. It advertises token exchange only when it is enabled,
+JWT bearer when a trusted issuer enables it, and `client_credentials` when a SPIFFE
+association lists that grant. Token exchange is enabled by a
 delegate client, a legacy trusted-issuer token-exchange policy, an
 `inbound_grants.token_exchange` block, or a SPIFFE association that lists the
 token-exchange grant. A SPIFFE association that lists only `client_credentials`

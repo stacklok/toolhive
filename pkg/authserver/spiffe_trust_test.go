@@ -360,7 +360,7 @@ func TestHasSPIFFEJWTAssociation(t *testing.T) {
 	assert.True(t, hasSPIFFEJWTRunConfigAssociation(&InboundGrantsRunConfig{
 		SPIFFEClientAuth: []SPIFFEClientAuthRunConfig{x509Only, jwtOnly},
 	}))
-	assert.False(t, (*SPIFFETrustConfig)(nil).permitsJWT())
+	assert.False(t, (*SPIFFETrustConfig)(nil).permitsMethod(SPIFFEAuthenticationMethodJWT))
 
 	trust := func(associations ...SPIFFEClientAuthRunConfig) *SPIFFETrustConfig {
 		cfg, err := NewSPIFFETrustConfig([]SPIFFETrustDomainRunConfig{{
@@ -375,8 +375,8 @@ func TestHasSPIFFEJWTAssociation(t *testing.T) {
 	}
 	x509Other := withPrincipal(x509Only, "spiffe://example.org/ns/default/other")
 	jwtOther := withPrincipal(jwtOnly, "spiffe://example.org/ns/default/jwt")
-	assert.False(t, trust(x509Only).permitsJWT())
-	assert.True(t, trust(x509Other, jwtOther).permitsJWT())
+	assert.False(t, trust(x509Only).permitsMethod(SPIFFEAuthenticationMethodJWT))
+	assert.True(t, trust(x509Other, jwtOther).permitsMethod(SPIFFEAuthenticationMethodJWT))
 }
 
 //nolint:paralleltest // Swaps the process-wide default logger.

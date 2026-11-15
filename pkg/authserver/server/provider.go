@@ -209,9 +209,15 @@ type AuthorizationServerConfig struct {
 	// delegate client authenticates with private_key_jwt. Discovery advertises
 	// that method and its signing algorithms when this is true.
 	HasStaticPrivateKeyJWTClients bool
+	// SupportsSPIFFEX509ClientAuthentication reports whether some SPIFFE
+	// association enables the spiffe_x509 client authentication method.
+	SupportsSPIFFEX509ClientAuthentication bool
+	// SupportsSPIFFEJWTClientAuthentication reports whether some SPIFFE
+	// association enables the spiffe_jwt client authentication method.
+	SupportsSPIFFEJWTClientAuthentication bool
 	// SupportsSPIFFEClientCredentialsGrant reports whether some SPIFFE
-	// association grants client_credentials. It decides whether the grant
-	// handler is registered.
+	// association grants client_credentials. It decides both whether the grant
+	// handler is registered and whether discovery advertises the grant.
 	SupportsSPIFFEClientCredentialsGrant bool
 	// InsecureAllowHTTP permits a non-loopback HTTP issuer. It is incompatible
 	// with confidential clients.
@@ -339,9 +345,15 @@ type AuthorizationServerParams struct {
 	// delegate client authenticates with private_key_jwt. Discovery advertises
 	// that method and its signing algorithms when this is true.
 	HasStaticPrivateKeyJWTClients bool
+	// SupportsSPIFFEX509ClientAuthentication reports whether some SPIFFE
+	// association enables the spiffe_x509 client authentication method.
+	SupportsSPIFFEX509ClientAuthentication bool
+	// SupportsSPIFFEJWTClientAuthentication reports whether some SPIFFE
+	// association enables the spiffe_jwt client authentication method.
+	SupportsSPIFFEJWTClientAuthentication bool
 	// SupportsSPIFFEClientCredentialsGrant reports whether some SPIFFE
-	// association grants client_credentials. It decides whether the grant
-	// handler is registered.
+	// association grants client_credentials. It decides both whether the grant
+	// handler is registered and whether discovery advertises the grant.
 	SupportsSPIFFEClientCredentialsGrant bool
 	// InsecureAllowHTTP permits a non-loopback HTTP issuer. It is incompatible
 	// with confidential clients.
@@ -648,6 +660,8 @@ func NewAuthorizationServerConfig(cfg *AuthorizationServerParams) (*Authorizatio
 		HasStaticConfidentialClients:              cfg.HasStaticConfidentialClients,
 		HasStaticSecretClients:                    cfg.HasStaticSecretClients,
 		HasStaticPrivateKeyJWTClients:             cfg.HasStaticPrivateKeyJWTClients,
+		SupportsSPIFFEX509ClientAuthentication:    cfg.SupportsSPIFFEX509ClientAuthentication,
+		SupportsSPIFFEJWTClientAuthentication:     cfg.SupportsSPIFFEJWTClientAuthentication,
 		SupportsSPIFFEClientCredentialsGrant:      cfg.SupportsSPIFFEClientCredentialsGrant,
 		InsecureAllowHTTP:                         cfg.InsecureAllowHTTP,
 		InsecureAllowConfidentialOverLoopbackHTTP: cfg.InsecureAllowConfidentialOverLoopbackHTTP,

@@ -259,11 +259,11 @@ func (c *SPIFFETrustConfig) permitsGrant(grant string) bool {
 	})
 }
 
-// permitsJWT reports whether any association allows the JWT-SVID method. It is
-// safe on a nil receiver.
-func (c *SPIFFETrustConfig) permitsJWT() bool {
+// permitsMethod reports whether any association allows method. It is safe on a
+// nil receiver.
+func (c *SPIFFETrustConfig) permitsMethod(method SPIFFEAuthenticationMethod) bool {
 	return slices.ContainsFunc(c.Associations(), func(a SPIFFEClientAuthConfig) bool {
-		return containsSPIFFEAuthenticationMethod(a.methods, SPIFFEAuthenticationMethodJWT)
+		return containsSPIFFEAuthenticationMethod(a.methods, method)
 	})
 }
 

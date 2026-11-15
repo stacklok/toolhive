@@ -229,6 +229,8 @@ func authorizationServerParams(
 		InsecureAllowConfidentialOverLoopbackHTTP: cfg.InsecureAllowConfidentialOverLoopbackHTTP,
 		ForceConfidentialRedirectURIs:             cfg.ForceConfidentialRedirectURIs,
 		HasStaticPrivateKeyJWTClients:             hasPrivateKeyJWTDelegateClient(cfg.DelegateClients),
+		SupportsSPIFFEX509ClientAuthentication:    cfg.SPIFFETrust.permitsMethod(SPIFFEAuthenticationMethodX509),
+		SupportsSPIFFEJWTClientAuthentication:     cfg.SPIFFETrust.permitsMethod(SPIFFEAuthenticationMethodJWT),
 		SupportsSPIFFEClientCredentialsGrant:      cfg.SPIFFETrust.permitsGrant(oauthproto.GrantTypeClientCredentials),
 		DisableTokenExchange:                      cfg.DisableTokenExchange,
 		JWTBearerGrantEnabled:                     JWTBearerGrantEnabled(cfg.TrustedIssuers),

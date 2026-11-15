@@ -2403,7 +2403,7 @@ func (c *Config) validateDelegationConfig() error {
 // hasStaticConfidentialClients reports whether any delegate client is
 // configured or a SPIFFE association allows the JWT-SVID method.
 func (c *Config) hasStaticConfidentialClients() bool {
-	return len(c.DelegateClients) > 0 || c.SPIFFETrust.permitsJWT()
+	return len(c.DelegateClients) > 0 || c.SPIFFETrust.permitsMethod(SPIFFEAuthenticationMethodJWT)
 }
 
 // validateConfidentialClientConfig groups cleartext-transport validation for

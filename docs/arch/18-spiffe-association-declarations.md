@@ -76,6 +76,8 @@ curl -X POST https://auth.example.com/oauth/token \
   --data-urlencode "client_assertion=$JWT_SVID"
 ```
 
+Discovery (`grantTypesSupported` and `tokenEndpointAuthMethodsSupported` in `pkg/authserver/server/handlers/discovery.go`) lists `client_credentials` in `grant_types_supported` exactly when the handler is registered, which is when some association lists that grant. It lists `spiffe_x509` and `spiffe_jwt` in `token_endpoint_auth_methods_supported` when some association enables that method. Both are set once from the trust configuration when the server starts.
+
 ### Upgrading
 
 Compared with v0.65.0, every association needs `resources`, and SPIFFE token exchange now uses the resource-only rule above. An association without `resources` (previously allowed for token exchange only) fails validation. The CEL rules reject a CR at admission when it is created, or when its `spiffeClientAuth` list is changed, without `resources`. The list is at `spec.embeddedAuthServer.inboundGrants.spiffeClientAuth` on MCPExternalAuthConfig and `spec.authServerConfig.inboundGrants.spiffeClientAuth` on VirtualMCPServer. On clusters with CRD validation ratcheting (the `CRDValidationRatcheting` feature, on by default since Kubernetes 1.30), an update that leaves that list unchanged is still admitted, including other edits to the auth server config and finalizer removal on delete. The MCPExternalAuthConfig's own `Valid` condition then reports the missing `resources`, and servers that consume it fail to reconcile until it is added. An inline VirtualMCPServer configuration reports it on its `AuthServerConfigValidated` condition. The auth server refuses to start with such a RunConfig. A SPIFFE client that sends `audience=` or no target now gets `invalid_target` instead of a token; it must send one `resource` listed in its association. On a backend that keeps placeholders between runs (Redis), the first start of the new version logs one `configured client replaced with a different policy` WARN for each association. This happens because every placeholder stored by v0.65.0 carries `audiences` (they were required then), and the new placeholder does not. It happens even if you already removed `audiences` from the configuration, since the WARN comes from the stored row, not the current config. Each replica that reads the old row before it is rewritten logs it, and it can repeat if a v0.65.0 replica restarts during the rollout and writes the old row back. Later restarts do not log it, because a nil and an empty `audiences` list compare equal. Nothing is authorized differently by the replacement. Setting `audiences` still validates and is only reported as deprecated.
@@ -160,7 +162,7 @@ The server's own registration, never trial and error, picks the verifier, so exa
 
 The implemented JWT-SVID assertion validator accepts a serialized client assertion, limited to 16 KiB, and validates it with go-spiffe `jwtsvid.ParseAndValidate` against the configured JWT bundle source (`AuthorizationServerParams.SPIFFEJWTBundleSource`). The validator requires the assertion's sole audience to be the configured authorization-server issuer. It does not require an `iss` claim: RFC 7519 makes `iss` OPTIONAL, and the SPIFFE JWT-SVID specification does not mandate it either, so a conformant SVID signed by a bundle-trusted key is accepted whether or not it carries one. This path reaches go-jose/v4's default one-minute claim leeway through go-spiffe v2.7.0; the leeway is inherited and not configurable in this code path. The validator rejects an assertion whose remaining validity exceeds six minutes, representing the recommended five-minute JWT-SVID issuer lifetime plus that one-minute clock-skew allowance. The JWT bundle view is the live, polled bundle, so a rotated bundle applies without a restart.
 
-`client_id` is optional for this authentication method. When it is omitted, the registry derives the configured OAuth client from the verified SPIFFE ID association. When it is supplied, it is treated as an exact selector and must match that association's configured client ID; the server does not normalize the value. For example:
+`client_id` is optional for this authentication method. When it is omitted, the registry derives the configured OAuth client from the verified SPIFFE ID association. The draft would use the SPIFFE ID itself as the client ID in that case; ToolHive uses the association's configured client ID instead, because client IDs are never derived from the SPIFFE ID. When it is supplied, it is treated as an exact selector and must match that association's configured client ID; the server does not normalize the value. For example:
 
 ```console
 curl -X POST https://auth.example.com/oauth/token \
@@ -174,6 +176,13 @@ curl -X POST https://auth.example.com/oauth/token \
 After validation, the authentication strategy calls the shared `SPIFFEAssociationRegistry.Resolve` path synchronously through its JWT resolver. The registry verifies the enabled JWT method and either derives the association's configured client ID or checks the supplied selector's ownership, then returns the configured static OAuth client wrapped in `registration.AuthenticatedSPIFFEClient`. Token exchange selects the single-resource rule for any client that carries a resource list, and the wrapper carries one through the client it embeds. The wrapper also carries the verified SPIFFE ID and authentication method and is what the `client_credentials` handler requires: any other client is refused with `unauthorized_client`. In production only this resolver builds it. It exists only on the client produced by client authentication: a client loaded from storage, for example when a stored request is read back, is the plain static client and does not carry it.
 
 After the SPIFFE JWT arm is selected, malformed request fields use generic OAuth `invalid_request` errors; validation, association, and mixed-credential failures use generic `invalid_client` errors. In that arm, an HTTP Basic authorization header or any `client_secret` form field causes client authentication to fail. Credential material is not logged or included in errors.
+
+### Relationship to the IETF draft
+
+The `spiffe_x509` and `spiffe_jwt` client authentication methods, and the `urn:ietf:params:oauth:client-assertion-type:jwt-spiffe` assertion type, come from [draft-ietf-oauth-spiffe-client-auth-03](https://datatracker.ietf.org/doc/html/draft-ietf-oauth-spiffe-client-auth-03) (2 November 2026). It is a working draft and may change. ToolHive differs from it in two deliberate ways:
+
+- **X.509 requires `client_id`.** The draft makes `client_id` optional for `spiffe_x509`. ToolHive requires it (see "Request rules" under X.509 client authentication).
+- **An absent `client_id` maps to the association's client ID.** When a JWT-SVID request omits `client_id`, the draft uses the SPIFFE ID as the client ID. ToolHive resolves the SPIFFE ID to an association and uses that association's configured client ID, because a client ID is never derived from a SPIFFE ID or pattern.
 
 ### Known limitation: JWT-SVID replay
 
@@ -194,7 +203,7 @@ X.509-SVID client authentication is implemented in `authenticateSPIFFEX509Client
 
 **Request rules.**
 
-- `client_id` is required (RFC 8705 section 2).
+- `client_id` is required. The draft makes it optional for `spiffe_x509`; ToolHive requires it (as RFC 8705 section 2 does for `tls_client_auth`) so that the client the workload claims is always named in the request.
 - No other client credential may be present: no HTTP Basic header, `client_secret`, `client_assertion` or `client_assertion_type`.
 
 A duplicated or ambiguous `client_id` gives `invalid_request` (HTTP 400); mixed credentials, a missing or invalid certificate, a failed leaf profile or chain check, or a resolver rejection give `invalid_client` (HTTP 401).

@@ -2099,11 +2099,58 @@ func TestEmbeddedAuthServerConfig_ValidateInboundGrants_ConfidentialClientTransp
 		Scopes:          []string{"openid"},
 		Audiences:       []string{"https://api.example.com"},
 	}}
+	spiffeConfig := func(method SPIFFEAuthenticationMethod, mutate func(*EmbeddedAuthServerConfig)) EmbeddedAuthServerConfig {
+		config := EmbeddedAuthServerConfig{
+			Issuer: "http://localhost:8080",
+			SPIFFETrustDomains: []SPIFFETrustDomainConfig{{
+				Name: "example", TrustDomain: "example.org",
+				Methods: []SPIFFEAuthenticationMethod{method},
+				BundleSource: SPIFFEBundleSourceConfig{
+					Type: SPIFFEBundleSourceTypeFile,
+					File: &SPIFFEFileBundleSourceConfig{ConfigMapName: "spire-bundle", ConfigMapKey: "bundle.json"},
+				},
+			}},
+			InboundGrants: &InboundGrantsConfig{
+				SPIFFEClientAuth: []SPIFFEClientConfig{{
+					TrustDomainRef: "example", PrincipalPattern: "spiffe://example.org/ns/default/agent",
+					ClientID: "spiffe-client", Methods: []SPIFFEAuthenticationMethod{method},
+					Resources: []string{"https://mcp.example.com"}, Scopes: []string{"openid"},
+				}},
+			},
+		}
+		mutate(&config)
+		return config
+	}
 	tests := []struct {
 		name      string
 		config    EmbeddedAuthServerConfig
 		expectErr bool
 	}{
+		{
+			name: "SPIFFE JWT association rejects insecure HTTP",
+			config: spiffeConfig(SPIFFEAuthenticationMethodJWT, func(c *EmbeddedAuthServerConfig) {
+				c.InsecureAllowHTTP = true
+			}),
+			expectErr: true,
+		},
+		{
+			name:      "SPIFFE JWT association rejects HTTP loopback without explicit opt in",
+			config:    spiffeConfig(SPIFFEAuthenticationMethodJWT, func(*EmbeddedAuthServerConfig) {}),
+			expectErr: true,
+		},
+		{
+			name: "SPIFFE JWT association allows HTTP loopback with explicit opt in",
+			config: spiffeConfig(SPIFFEAuthenticationMethodJWT, func(c *EmbeddedAuthServerConfig) {
+				c.InsecureAllowConfidentialOverLoopbackHTTP = true
+			}),
+		},
+		{
+			name: "SPIFFE X.509-only association is unaffected by insecure HTTP",
+			config: spiffeConfig(SPIFFEAuthenticationMethodX509, func(c *EmbeddedAuthServerConfig) {
+				c.InsecureAllowHTTP = true
+				c.Issuer = "https://auth.example.com"
+			}),
+		},
 		{
 			name: "delegate clients remain independent of confidential DCR",
 			config: EmbeddedAuthServerConfig{

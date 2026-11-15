@@ -101,7 +101,7 @@ var _ = Describe("EmbeddedAuthServerConfig confidential-client-transport CEL val
 			allowConfidential: true,
 			insecureHTTP:      true,
 			shouldAdmit:       false,
-			expectedMessage:   "insecureAllowHTTP cannot be combined with confidential client registration or delegateClients",
+			expectedMessage:   "insecureAllowHTTP cannot be combined with confidential client registration, delegateClients or JWT-SVID SPIFFE associations",
 		},
 		{
 			name:               "allowPrivateKeyJWTRegistration with insecureAllowHTTP is admitted (no secret to protect)",
@@ -120,7 +120,7 @@ var _ = Describe("EmbeddedAuthServerConfig confidential-client-transport CEL val
 			delegateClient:  true,
 			insecureHTTP:    true,
 			shouldAdmit:     false,
-			expectedMessage: "insecureAllowHTTP cannot be combined with confidential client registration or delegateClients",
+			expectedMessage: "insecureAllowHTTP cannot be combined with confidential client registration, delegateClients or JWT-SVID SPIFFE associations",
 		},
 		{
 			name:                    "canonical delegate clients with insecureAllowHTTP set",
@@ -128,7 +128,7 @@ var _ = Describe("EmbeddedAuthServerConfig confidential-client-transport CEL val
 			canonicalDelegateClient: true,
 			insecureHTTP:            true,
 			shouldAdmit:             false,
-			expectedMessage:         "insecureAllowHTTP cannot be combined with confidential client registration or delegateClients",
+			expectedMessage:         "insecureAllowHTTP cannot be combined with confidential client registration, delegateClients or JWT-SVID SPIFFE associations",
 		},
 		{
 			name:            "legacy delegate clients with insecureAllowHTTP and HTTPS issuer",
@@ -136,7 +136,7 @@ var _ = Describe("EmbeddedAuthServerConfig confidential-client-transport CEL val
 			insecureHTTP:    true,
 			httpsIssuer:     true,
 			shouldAdmit:     false,
-			expectedMessage: "insecureAllowHTTP cannot be combined with confidential client registration or delegateClients",
+			expectedMessage: "insecureAllowHTTP cannot be combined with confidential client registration, delegateClients or JWT-SVID SPIFFE associations",
 		},
 		{
 			name:                    "canonical delegate clients with insecureAllowHTTP and HTTPS issuer",
@@ -145,14 +145,14 @@ var _ = Describe("EmbeddedAuthServerConfig confidential-client-transport CEL val
 			insecureHTTP:            true,
 			httpsIssuer:             true,
 			shouldAdmit:             false,
-			expectedMessage:         "insecureAllowHTTP cannot be combined with confidential client registration or delegateClients",
+			expectedMessage:         "insecureAllowHTTP cannot be combined with confidential client registration, delegateClients or JWT-SVID SPIFFE associations",
 		},
 		{
 			name:            "delegate clients with loopback HTTP issuer without opt-in",
 			delegateClient:  true,
 			loopbackHTTP:    true,
 			shouldAdmit:     false,
-			expectedMessage: "confidential client registration or delegateClients with an HTTP issuer require insecureAllowConfidentialOverLoopbackHTTP",
+			expectedMessage: "confidential client registration, delegateClients or JWT-SVID SPIFFE associations with an HTTP issuer require insecureAllowConfidentialOverLoopbackHTTP",
 		},
 		{
 			name:                    "canonical delegate clients with loopback HTTP issuer without opt-in",
@@ -160,14 +160,14 @@ var _ = Describe("EmbeddedAuthServerConfig confidential-client-transport CEL val
 			canonicalDelegateClient: true,
 			loopbackHTTP:            true,
 			shouldAdmit:             false,
-			expectedMessage:         "confidential client registration or delegateClients with an HTTP issuer require insecureAllowConfidentialOverLoopbackHTTP",
+			expectedMessage:         "confidential client registration, delegateClients or JWT-SVID SPIFFE associations with an HTTP issuer require insecureAllowConfidentialOverLoopbackHTTP",
 		},
 		{
 			name:              "confidential registration with loopback HTTP issuer without opt-in",
 			allowConfidential: true,
 			loopbackHTTP:      true,
 			shouldAdmit:       false,
-			expectedMessage:   "confidential client registration or delegateClients with an HTTP issuer require insecureAllowConfidentialOverLoopbackHTTP",
+			expectedMessage:   "confidential client registration, delegateClients or JWT-SVID SPIFFE associations with an HTTP issuer require insecureAllowConfidentialOverLoopbackHTTP",
 		},
 		{
 			name:              "confidential registration with opted-in loopback HTTP issuer",
@@ -260,6 +260,6 @@ var _ = Describe("EmbeddedAuthServerConfig confidential-client-transport CEL val
 		err := k8sClient.Create(ctx, vmcp)
 		Expect(err).To(HaveOccurred())
 		Expect(err.Error()).To(ContainSubstring(
-			"confidential client registration or delegateClients with an HTTP issuer require insecureAllowConfidentialOverLoopbackHTTP"))
+			"confidential client registration, delegateClients or JWT-SVID SPIFFE associations with an HTTP issuer require insecureAllowConfidentialOverLoopbackHTTP"))
 	})
 })

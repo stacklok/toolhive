@@ -123,6 +123,24 @@ func testSPIFFEWildcardAssociation(audience string) SPIFFEClientAuthRunConfig {
 	return association
 }
 
+func mustNewSPIFFEJWTTrustConfig(t *testing.T) *SPIFFETrustConfig {
+	t.Helper()
+	association := testSPIFFEWildcardAssociation("https://mcp.example.com")
+	association.Methods = []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodJWT}
+	trust, err := NewSPIFFETrustConfig(
+		[]SPIFFETrustDomainRunConfig{{
+			Name:         "production",
+			TrustDomain:  "example.org",
+			Methods:      []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodJWT},
+			BundleSource: validFileBundleSource(),
+		}},
+		&InboundGrantsRunConfig{SPIFFEClientAuth: []SPIFFEClientAuthRunConfig{association}},
+		[]string{"openid"}, []string{"https://mcp.example.com"},
+	)
+	require.NoError(t, err)
+	return trust
+}
+
 func mustNewSPIFFETrustConfigWithSource(t *testing.T, source SPIFFEBundleSourceRunConfig) *SPIFFETrustConfig {
 	t.Helper()
 	trust, err := NewSPIFFETrustConfig(
@@ -226,6 +244,8 @@ func TestConfigValidate(t *testing.T) {
 		{name: "private-key JWT registration combined with insecure HTTP passes (no secret to protect)", config: Config{Issuer: "http://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, AllowPrivateKeyJWTRegistration: true, InsecureAllowHTTP: true}},
 		{name: "private-key JWT registration combined with token exchange disabled rejects", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, AllowPrivateKeyJWTRegistration: true, DisableTokenExchange: true}, wantErr: true, errMsg: "token-exchange-only"},
 
+		{name: "JWT-SVID association with a plain-HTTP loopback issuer rejects without the opt-in", config: Config{Issuer: "http://localhost:8080", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, AllowedAudiences: []string{"https://mcp.example.com"}, SPIFFETrust: mustNewSPIFFEJWTTrustConfig(t)}, wantErr: true, errMsg: "insecure_allow_confidential_over_loopback_http"},
+		{name: "JWT-SVID association with a plain-HTTP loopback issuer passes with the opt-in", config: Config{Issuer: "http://localhost:8080", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, AllowedAudiences: []string{"https://mcp.example.com"}, SPIFFETrust: mustNewSPIFFEJWTTrustConfig(t), InsecureAllowConfidentialOverLoopbackHTTP: true}},
 		{name: "SPIFFE association combined with token exchange disabled rejects", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, AllowedAudiences: []string{"https://mcp.example.com"}, SPIFFETrust: mustNewSPIFFETrustConfig(t), DisableTokenExchange: true}, wantErr: true, errMsg: "SPIFFE client associations require token exchange"},
 
 		// RefreshGrantHandlers
@@ -871,10 +891,33 @@ func TestRunConfigValidate(t *testing.T) {
 			errMsg:  "SPIFFE X.509 authentication requires an https issuer",
 		},
 		{
-			name: "JWT-only association with an http issuer passes",
+			name: "JWT-only association with a non-loopback http issuer is rejected",
 			config: x509Config(func(c *RunConfig) {
 				c.Issuer = "http://auth.example.org"
 				c.TLSListener = nil
+				c.SPIFFETrustDomains[0].Methods = []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodJWT}
+				c.InboundGrants.SPIFFEClientAuth[0].Methods = []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodJWT}
+			}),
+			wantErr: true,
+			errMsg:  "plain-HTTP non-loopback issuer",
+		},
+		{
+			name: "JWT-only association with insecure_allow_http is rejected",
+			config: x509Config(func(c *RunConfig) {
+				c.TLSListener = nil
+				c.InsecureAllowHTTP = true
+				c.SPIFFETrustDomains[0].Methods = []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodJWT}
+				c.InboundGrants.SPIFFEClientAuth[0].Methods = []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodJWT}
+			}),
+			wantErr: true,
+			errMsg:  "insecure_allow_http",
+		},
+		{
+			name: "JWT-only association with a loopback http issuer passes with the opt-in",
+			config: x509Config(func(c *RunConfig) {
+				c.Issuer = "http://localhost:8080"
+				c.TLSListener = nil
+				c.InsecureAllowConfidentialOverLoopbackHTTP = true
 				c.SPIFFETrustDomains[0].Methods = []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodJWT}
 				c.InboundGrants.SPIFFEClientAuth[0].Methods = []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodJWT}
 			}),

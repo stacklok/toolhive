@@ -318,6 +318,39 @@ func TestSPIFFETrustConfigTrustDomainLookup(t *testing.T) {
 	assert.False(t, ok)
 }
 
+func TestHasSPIFFEJWTAssociation(t *testing.T) {
+	t.Parallel()
+
+	x509Only := testSPIFFEAssociation("x509-client", "openid")
+	jwtOnly := testSPIFFEAssociation("jwt-client", "openid")
+	jwtOnly.Methods = []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodJWT}
+
+	assert.False(t, hasSPIFFEJWTRunConfigAssociation(nil))
+	assert.False(t, hasSPIFFEJWTRunConfigAssociation(&InboundGrantsRunConfig{
+		SPIFFEClientAuth: []SPIFFEClientAuthRunConfig{x509Only},
+	}))
+	assert.True(t, hasSPIFFEJWTRunConfigAssociation(&InboundGrantsRunConfig{
+		SPIFFEClientAuth: []SPIFFEClientAuthRunConfig{x509Only, jwtOnly},
+	}))
+	assert.False(t, (*SPIFFETrustConfig)(nil).permitsJWT())
+
+	trust := func(associations ...SPIFFEClientAuthRunConfig) *SPIFFETrustConfig {
+		cfg, err := NewSPIFFETrustConfig([]SPIFFETrustDomainRunConfig{{
+			Name:         "production",
+			TrustDomain:  "example.org",
+			Methods:      []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509, SPIFFEAuthenticationMethodJWT},
+			BundleSource: validFileBundleSource(),
+		}}, &InboundGrantsRunConfig{SPIFFEClientAuth: associations},
+			[]string{"openid"}, []string{"https://audience.example.com"})
+		require.NoError(t, err)
+		return cfg
+	}
+	x509Other := withPrincipal(x509Only, "spiffe://example.org/ns/default/other")
+	jwtOther := withPrincipal(jwtOnly, "spiffe://example.org/ns/default/jwt")
+	assert.False(t, trust(x509Only).permitsJWT())
+	assert.True(t, trust(x509Other, jwtOther).permitsJWT())
+}
+
 //nolint:paralleltest // Swaps the process-wide default logger.
 func TestNewSPIFFETrustConfigWarnsOnDeprecatedAudiences(t *testing.T) {
 	var logs bytes.Buffer

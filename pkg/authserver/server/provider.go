@@ -192,9 +192,9 @@ type AuthorizationServerConfig struct {
 	// registration and is used by DCR validation and discovery advertisement.
 	AllowPrivateKeyJWTRegistration bool
 	// HasStaticConfidentialClients indicates whether any pre-provisioned
-	// confidential client exists at startup. Today only delegate clients count,
-	// whatever their auth method; SPIFFE association clients are deliberately
-	// not counted. It counts for the cleartext-transport check. It does not
+	// confidential client exists at startup: a delegate client of any auth
+	// method, or a SPIFFE association that allows the JWT-SVID method (a bearer
+	// credential). It counts for the cleartext-transport check. It does not
 	// drive discovery; see HasStaticSecretClients and
 	// HasStaticPrivateKeyJWTClients.
 	HasStaticConfidentialClients bool
@@ -322,9 +322,9 @@ type AuthorizationServerParams struct {
 	// registration and is used by DCR validation and discovery advertisement.
 	AllowPrivateKeyJWTRegistration bool
 	// HasStaticConfidentialClients indicates whether any pre-provisioned
-	// confidential client exists at startup. Today only delegate clients count,
-	// whatever their auth method; SPIFFE association clients are deliberately
-	// not counted. It counts for the cleartext-transport check. It does not
+	// confidential client exists at startup: a delegate client of any auth
+	// method, or a SPIFFE association that allows the JWT-SVID method (a bearer
+	// credential). It counts for the cleartext-transport check. It does not
 	// drive discovery; see HasStaticSecretClients and
 	// HasStaticPrivateKeyJWTClients.
 	HasStaticConfidentialClients bool
@@ -454,7 +454,8 @@ func validateTokenLifespans(cfg *AuthorizationServerParams) error {
 // ValidateConfidentialClientTransport rejects cleartext HTTP configurations
 // when any confidential client is enabled, whether it is admitted through DCR
 // or statically declared. Statically declared delegate clients always count,
-// regardless of their authentication method.
+// regardless of their authentication method, as do SPIFFE associations that
+// allow the JWT-SVID method.
 func ValidateConfidentialClientTransport(
 	allowConfidential, insecureAllowHTTP bool,
 	issuer string, insecureAllowConfidentialOverLoopbackHTTP bool,

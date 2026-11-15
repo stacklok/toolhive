@@ -240,6 +240,41 @@ var _ = Describe("MCPExternalAuthConfig SPIFFE CEL validation", func() {
 			},
 		},
 		{
+			name: "JWT-SVID association with insecureAllowHTTP is rejected", trustDomains: true, clients: true,
+			principal: "spiffe://example.org/ns/default/agent", errMatch: "JWT-SVID SPIFFE associations",
+			mutate: func(config *mcpv1beta1.EmbeddedAuthServerConfig) {
+				config.InsecureAllowHTTP = true
+				config.SPIFFETrustDomains[0].Methods = []mcpv1beta1.SPIFFEAuthenticationMethod{mcpv1beta1.SPIFFEAuthenticationMethodJWT}
+				config.InboundGrants.SPIFFEClientAuth[0].Methods = []mcpv1beta1.SPIFFEAuthenticationMethod{mcpv1beta1.SPIFFEAuthenticationMethodJWT}
+			},
+		},
+		{
+			name: "JWT-SVID association with an http loopback issuer needs the loopback opt-in", trustDomains: true, clients: true,
+			principal: "spiffe://example.org/ns/default/agent", errMatch: "insecureAllowConfidentialOverLoopbackHTTP",
+			mutate: func(config *mcpv1beta1.EmbeddedAuthServerConfig) {
+				config.Issuer = "http://localhost:8080"
+				config.SPIFFETrustDomains[0].Methods = []mcpv1beta1.SPIFFEAuthenticationMethod{mcpv1beta1.SPIFFEAuthenticationMethodJWT}
+				config.InboundGrants.SPIFFEClientAuth[0].Methods = []mcpv1beta1.SPIFFEAuthenticationMethod{mcpv1beta1.SPIFFEAuthenticationMethodJWT}
+			},
+		},
+		{
+			name: "JWT-SVID association with an http loopback issuer is admitted with the loopback opt-in", trustDomains: true, clients: true,
+			principal: "spiffe://example.org/ns/default/agent", shouldAdmit: true,
+			mutate: func(config *mcpv1beta1.EmbeddedAuthServerConfig) {
+				config.Issuer = "http://localhost:8080"
+				config.InsecureAllowConfidentialOverLoopbackHTTP = true
+				config.SPIFFETrustDomains[0].Methods = []mcpv1beta1.SPIFFEAuthenticationMethod{mcpv1beta1.SPIFFEAuthenticationMethodJWT}
+				config.InboundGrants.SPIFFEClientAuth[0].Methods = []mcpv1beta1.SPIFFEAuthenticationMethod{mcpv1beta1.SPIFFEAuthenticationMethodJWT}
+			},
+		},
+		{
+			name: "X.509-only association with insecureAllowHTTP is unaffected", trustDomains: true, clients: true,
+			principal: "spiffe://example.org/ns/default/agent", shouldAdmit: true,
+			mutate: func(config *mcpv1beta1.EmbeddedAuthServerConfig) {
+				config.InsecureAllowHTTP = true
+			},
+		},
+		{
 			name: "empty-string deprecated audience is still rejected", trustDomains: true, clients: true,
 			principal: "spiffe://example.org/ns/default/agent", errMatch: "audiences",
 			mutate: func(config *mcpv1beta1.EmbeddedAuthServerConfig) {

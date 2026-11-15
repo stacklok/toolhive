@@ -263,6 +263,25 @@ func (c *SPIFFETrustConfig) permitsGrant(grant string) bool {
 	})
 }
 
+// permitsJWT reports whether any association allows the JWT-SVID method. It is
+// safe on a nil receiver.
+func (c *SPIFFETrustConfig) permitsJWT() bool {
+	return slices.ContainsFunc(c.Associations(), func(a SPIFFEClientAuthConfig) bool {
+		return containsSPIFFEAuthenticationMethod(a.methods, SPIFFEAuthenticationMethodJWT)
+	})
+}
+
+// hasSPIFFEJWTRunConfigAssociation reports whether any association of the
+// unvalidated run-config form allows the JWT-SVID method.
+func hasSPIFFEJWTRunConfigAssociation(grants *InboundGrantsRunConfig) bool {
+	if grants == nil {
+		return false
+	}
+	return slices.ContainsFunc(grants.SPIFFEClientAuth, func(a SPIFFEClientAuthRunConfig) bool {
+		return containsSPIFFEAuthenticationMethod(a.Methods, SPIFFEAuthenticationMethodJWT)
+	})
+}
+
 // ValidateSPIFFETrust validates SPIFFE trust declarations without fetching
 // bundles or validating credentials.
 func ValidateSPIFFETrust(

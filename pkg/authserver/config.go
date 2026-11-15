@@ -637,9 +637,11 @@ func (c *RunConfig) Validate() error {
 	// grants, so codes and long-lived tokens would cross plain HTTP. jti replay
 	// checks and the 5-minute assertion cap already limit a captured assertion;
 	// this is a conservative choice, matches the CRD CEL rules, and can be
-	// relaxed later (for example for an in-cluster HTTP issuer).
+	// relaxed later (for example for an in-cluster HTTP issuer). SPIFFE
+	// associations that allow the JWT-SVID method count too: the JWT-SVID is a
+	// bearer credential sent in the clear over plain HTTP.
 	if err := ValidateConfidentialClientTransport(
-		c.AllowConfidentialClientRegistration || len(normalized.DelegateClients) > 0, c.InsecureAllowHTTP,
+		c.hasConfidentialClients(normalized), c.InsecureAllowHTTP,
 		c.Issuer, c.InsecureAllowConfidentialOverLoopbackHTTP); err != nil {
 		return err
 	}
@@ -659,6 +661,14 @@ func (c *RunConfig) Validate() error {
 		return err
 	}
 	return c.validateBaselineClientScopes()
+}
+
+// hasConfidentialClients reports whether any confidential client can exist:
+// DCR of confidential clients, at least one delegate client in the normalized
+// grants, or a SPIFFE association that allows the JWT-SVID method.
+func (c *RunConfig) hasConfidentialClients(normalized *NormalizedInboundGrants) bool {
+	return c.AllowConfidentialClientRegistration || len(normalized.DelegateClients) > 0 ||
+		hasSPIFFEJWTRunConfigAssociation(c.InboundGrants)
 }
 
 // validateSPIFFEX509Listener requires the TLS listener and an https issuer when
@@ -2390,12 +2400,10 @@ func (c *Config) validateDelegationConfig() error {
 	return validateTrustedIssuers(c.TrustedIssuers, c.Issuer, c.AllowedAudiences)
 }
 
-// hasStaticConfidentialClients reports whether any pre-provisioned
-// confidential client is configured. Today only delegate clients count. SPIFFE
-// association clients are deliberately not counted: they are not part of the
-// cleartext-transport check.
+// hasStaticConfidentialClients reports whether any delegate client is
+// configured or a SPIFFE association allows the JWT-SVID method.
 func (c *Config) hasStaticConfidentialClients() bool {
-	return len(c.DelegateClients) > 0
+	return len(c.DelegateClients) > 0 || c.SPIFFETrust.permitsJWT()
 }
 
 // validateConfidentialClientConfig groups cleartext-transport validation for

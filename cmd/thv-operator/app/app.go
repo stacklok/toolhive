@@ -42,6 +42,7 @@ import (
 	_ "github.com/stacklok/toolhive/pkg/authz/authorizers/cedar"
 	_ "github.com/stacklok/toolhive/pkg/authz/authorizers/http"
 	"github.com/stacklok/toolhive/pkg/operator/telemetry"
+	"github.com/stacklok/toolhive/pkg/updates"
 )
 
 var (
@@ -156,6 +157,8 @@ func Run() {
 	// Resolve the installation's instance ID before any controller reconciles,
 	// so every workload gets the same anonymous ID from its first pod template.
 	// Startup continues without it: usage metrics must not block the operator.
+	// An operator opted out of update checks opts its workloads out as well.
+	ctrlutil.SetUsageMetricsOptOut(updates.ShouldSkipUpdateChecks())
 	instanceID, err := telemetryService.EnsureInstanceID(
 		context.Background(), mgr.GetAPIReader(), telemetry.InstanceIDBackoff,
 	)

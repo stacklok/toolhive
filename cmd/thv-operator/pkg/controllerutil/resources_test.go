@@ -11,6 +11,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 
 	"github.com/stacklok/toolhive/pkg/secrets"
+	"github.com/stacklok/toolhive/pkg/updates"
 	"github.com/stacklok/toolhive/pkg/usagemetrics"
 )
 
@@ -304,20 +305,25 @@ func TestEnsureRequiredEnvVars(t *testing.T) {
 	})
 }
 
-//nolint:paralleltest // Mutates the package-level usage metrics anonymous ID.
-func TestEnsureRequiredEnvVars_UsageMetricsAnonymousID(t *testing.T) {
-	t.Cleanup(func() { SetUsageMetricsAnonymousID("") })
+//nolint:paralleltest // Mutates the package-level usage metrics settings.
+func TestEnsureRequiredEnvVars_UsageMetrics(t *testing.T) {
+	t.Cleanup(func() {
+		SetUsageMetricsAnonymousID("")
+		SetUsageMetricsOptOut(false)
+	})
 	ctx := context.Background()
 
 	tests := []struct {
 		name        string
 		anonymousID string
+		optOut      bool
 		env         []corev1.EnvVar
-		// want is the TOOLHIVE_ANONYMOUS_ID entries expected in the result.
+		// want is the TOOLHIVE_ANONYMOUS_ID and TOOLHIVE_SKIP_UPDATE_CHECK
+		// entries expected in the result.
 		want []corev1.EnvVar
 	}{
 		{
-			name: "no ID configured adds nothing",
+			name: "nothing configured adds nothing",
 		},
 		{
 			name:        "configured ID is added",
@@ -325,20 +331,32 @@ func TestEnsureRequiredEnvVars_UsageMetricsAnonymousID(t *testing.T) {
 			want:        []corev1.EnvVar{{Name: usagemetrics.EnvVarAnonymousID, Value: "operator-instance"}},
 		},
 		{
-			name:        "existing value is kept",
+			name:        "existing ID is kept",
 			anonymousID: "operator-instance",
 			env:         []corev1.EnvVar{{Name: usagemetrics.EnvVarAnonymousID, Value: "user-set"}},
 			want:        []corev1.EnvVar{{Name: usagemetrics.EnvVarAnonymousID, Value: "user-set"}},
+		},
+		{
+			name:   "opted-out operator opts the workload out",
+			optOut: true,
+			want:   []corev1.EnvVar{{Name: updates.EnvVarSkipUpdateCheck, Value: "true"}},
+		},
+		{
+			name:   "existing skip value is kept",
+			optOut: true,
+			env:    []corev1.EnvVar{{Name: updates.EnvVarSkipUpdateCheck, Value: "false"}},
+			want:   []corev1.EnvVar{{Name: updates.EnvVarSkipUpdateCheck, Value: "false"}},
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			SetUsageMetricsAnonymousID(tt.anonymousID)
+			SetUsageMetricsOptOut(tt.optOut)
 
 			var got []corev1.EnvVar
 			for _, e := range EnsureRequiredEnvVars(ctx, tt.env) {
-				if e.Name == usagemetrics.EnvVarAnonymousID {
+				if e.Name == usagemetrics.EnvVarAnonymousID || e.Name == updates.EnvVarSkipUpdateCheck {
 					got = append(got, e)
 				}
 			}

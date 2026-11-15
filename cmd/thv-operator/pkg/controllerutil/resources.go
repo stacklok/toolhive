@@ -15,6 +15,7 @@ import (
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/pkg/secrets"
+	"github.com/stacklok/toolhive/pkg/updates"
 	"github.com/stacklok/toolhive/pkg/usagemetrics"
 )
 
@@ -78,6 +79,17 @@ func SetUsageMetricsAnonymousID(id string) {
 	usageMetricsAnonymousID = id
 }
 
+// usageMetricsOptOut records that the operator itself is opted out of update
+// checks and usage metrics, so the workloads it deploys are opted out too.
+var usageMetricsOptOut bool
+
+// SetUsageMetricsOptOut makes EnsureRequiredEnvVars opt workloads out of update
+// checks and usage metrics with TOOLHIVE_SKIP_UPDATE_CHECK. Like the anonymous
+// ID, it must be set before the manager starts and stay the same afterwards.
+func SetUsageMetricsOptOut(optOut bool) {
+	usageMetricsOptOut = optOut
+}
+
 // EnsureRequiredEnvVars ensures required environment variables are set with defaults
 // Shared between MCPServer, MCPRemoteProxy and VirtualMCPServer
 func EnsureRequiredEnvVars(ctx context.Context, env []corev1.EnvVar) []corev1.EnvVar {
@@ -138,7 +150,7 @@ func EnsureRequiredEnvVars(ctx context.Context, env []corev1.EnvVar) []corev1.En
 		})
 	}
 
-	env = appendUsageMetricsAnonymousID(env)
+	env = appendUsageMetricsEnv(env)
 
 	// Set secrets provider to environment if secrets are being used via TOOLHIVE_SECRET_* env vars
 	// This is needed to resolve CLI format secrets (e.g., "secret-name,target=bearer_token")
@@ -196,19 +208,26 @@ func ProxyRunnerServiceAccountName(resourceName string) string {
 	return fmt.Sprintf("%s-proxy-runner", resourceName)
 }
 
-// appendUsageMetricsAnonymousID adds the operator's anonymous ID for usage
-// metrics, unless none is configured or the env already sets one.
-func appendUsageMetricsAnonymousID(env []corev1.EnvVar) []corev1.EnvVar {
-	if usageMetricsAnonymousID == "" {
+// appendUsageMetricsEnv passes the operator's usage metrics settings to a
+// workload. An opted-out operator opts the workload out; otherwise the
+// workload gets the operator's anonymous ID. A value the env already sets wins.
+func appendUsageMetricsEnv(env []corev1.EnvVar) []corev1.EnvVar {
+	switch {
+	case usageMetricsOptOut:
+		return appendEnvIfMissing(env, updates.EnvVarSkipUpdateCheck, "true")
+	case usageMetricsAnonymousID != "":
+		return appendEnvIfMissing(env, usagemetrics.EnvVarAnonymousID, usageMetricsAnonymousID)
+	default:
 		return env
 	}
+}
+
+// appendEnvIfMissing adds name=value unless env already sets name.
+func appendEnvIfMissing(env []corev1.EnvVar, name, value string) []corev1.EnvVar {
 	for _, envVar := range env {
-		if envVar.Name == usagemetrics.EnvVarAnonymousID {
+		if envVar.Name == name {
 			return env
 		}
 	}
-	return append(env, corev1.EnvVar{
-		Name:  usagemetrics.EnvVarAnonymousID,
-		Value: usageMetricsAnonymousID,
-	})
+	return append(env, corev1.EnvVar{Name: name, Value: value})
 }

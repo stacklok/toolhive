@@ -251,7 +251,7 @@ func TestAuthorizeRoutes_MultipartBackChannelOnlyAndUnknownClientsMatch(t *testi
 	t.Parallel()
 
 	handler, state, _ := handlerTestSetup(t)
-	client := spiffetest.Client(t, spiffetest.WithAudiences("https://mcp.example.com"))
+	client := spiffetest.Client(t)
 	state.clients[client.GetID()] = client
 
 	configured := httptest.NewRecorder()
@@ -303,7 +303,7 @@ func TestAuthorizeHandler_BackChannelOnlyClientsMatchMissingClient(t *testing.T)
 			name: "SPIFFE client",
 			client: func(t *testing.T) fosite.Client {
 				t.Helper()
-				return spiffetest.Client(t, spiffetest.WithAudiences("https://mcp.example.com"))
+				return spiffetest.Client(t)
 			},
 			explicitMarker: true,
 		},

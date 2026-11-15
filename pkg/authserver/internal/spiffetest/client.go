@@ -20,7 +20,6 @@ type config struct {
 	id        string
 	grants    []string
 	scopes    []string
-	audiences []string
 	resources []string
 	spiffeID  string
 	method    spiffeauth.SPIFFEAuthenticationMethod
@@ -39,9 +38,6 @@ func WithGrantTypes(grants ...string) Option { return func(c *config) { c.grants
 // WithScopes sets the allowed scopes.
 func WithScopes(scopes ...string) Option { return func(c *config) { c.scopes = scopes } }
 
-// WithAudiences sets the allowed audiences.
-func WithAudiences(audiences ...string) Option { return func(c *config) { c.audiences = audiences } }
-
 // WithResources sets the allowed RFC 8707 resources.
 func WithResources(resources ...string) Option { return func(c *config) { c.resources = resources } }
 
@@ -55,12 +51,11 @@ func WithAuthMethod(method spiffeauth.SPIFFEAuthenticationMethod) Option {
 }
 
 // Client returns a valid SPIFFE client with id "spiffe-client", the
-// token-exchange grant, scope "openid", audience "https://api.example.com" and
-// no resources, adjusted by opts.
+// token-exchange grant, scope "openid" and no resources, adjusted by opts.
 func Client(t *testing.T, opts ...Option) *registration.SPIFFEClient {
 	t.Helper()
 	c := newConfig(opts)
-	client, err := registration.NewSPIFFEClient(c.id, c.grants, c.scopes, c.audiences, c.resources)
+	client, err := registration.NewSPIFFEClient(c.id, c.grants, c.scopes, c.resources)
 	require.NoError(t, err)
 	return client
 }
@@ -81,12 +76,11 @@ func AuthenticatedClient(t *testing.T, opts ...Option) *registration.Authenticat
 
 func newConfig(opts []Option) config {
 	c := config{
-		id:        "spiffe-client",
-		grants:    []string{oauthproto.GrantTypeTokenExchange},
-		scopes:    []string{"openid"},
-		audiences: []string{"https://api.example.com"},
-		spiffeID:  "spiffe://example.org/workload/test",
-		method:    spiffeauth.SPIFFEAuthenticationMethodJWT,
+		id:       "spiffe-client",
+		grants:   []string{oauthproto.GrantTypeTokenExchange},
+		scopes:   []string{"openid"},
+		spiffeID: "spiffe://example.org/workload/test",
+		method:   spiffeauth.SPIFFEAuthenticationMethodJWT,
 	}
 	for _, opt := range opts {
 		opt(&c)

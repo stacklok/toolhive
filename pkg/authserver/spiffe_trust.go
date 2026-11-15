@@ -5,6 +5,7 @@ package authserver
 
 import (
 	"fmt"
+	"log/slog"
 	"net"
 	"net/url"
 	"path/filepath"
@@ -147,18 +148,18 @@ type SPIFFEClientAuthRunConfig struct {
 	Methods []SPIFFEAuthenticationMethod `json:"methods" yaml:"methods"`
 
 	// Resources are RFC 8707 resource indicators this association may
-	// request. Must be a subset of the server's allowed_audiences allowlist
-	// (RunConfig.AllowedAudiences) — the same RFC 8707 resource-URI list
-	// DelegateClientRunConfig.Audiences is validated against. Distinct from
-	// Audiences: a resource permission does not imply the same value is also
-	// a permitted token audience, or vice versa.
+	// request. At least one is required for every association: token
+	// exchange takes exactly one resource per request and grants it as the
+	// token audience. Must be a subset of the
+	// server's allowed_audiences allowlist (RunConfig.AllowedAudiences) — the
+	// same RFC 8707 resource-URI list DelegateClientRunConfig.Audiences is
+	// validated against.
 	Resources []string `json:"resources,omitempty" yaml:"resources,omitempty"`
 
-	// Audiences are RFC 8693 token audiences this association may request.
-	// This is an independent request dimension from Resources: it is not
-	// bounded by allowed_audiences (which is an RFC 8707 resource-URI list)
-	// and may contain non-URI logical audience identifiers.
-	Audiences []string `json:"audiences" yaml:"audiences"`
+	// Audiences is deprecated and ignored; use Resources. It stays in the
+	// schema because v0.65.0 required it, and a warning is logged at startup
+	// when it is set.
+	Audiences []string `json:"audiences,omitempty" yaml:"audiences,omitempty"`
 
 	// Scopes are OAuth scopes granted to this association. They must be a
 	// subset of the server's effective supported scopes.
@@ -175,7 +176,6 @@ type SPIFFEAuthorizationPolicy struct {
 	grantTypes []string
 	scopes     []string
 	resources  []string
-	audiences  []string
 }
 
 // GrantTypes returns a copy of the permitted OAuth grant types.
@@ -186,9 +186,6 @@ func (p SPIFFEAuthorizationPolicy) Scopes() []string { return slices.Clone(p.sco
 
 // Resources returns a copy of the permitted RFC 8707 resource indicators.
 func (p SPIFFEAuthorizationPolicy) Resources() []string { return slices.Clone(p.resources) }
-
-// Audiences returns a copy of the permitted RFC 8693 token audiences.
-func (p SPIFFEAuthorizationPolicy) Audiences() []string { return slices.Clone(p.audiences) }
 
 // matchSPIFFEPrincipalPattern reports whether principal matches pattern. A
 // terminal /* matches descendants only at a path-segment boundary: /agent/*
@@ -225,6 +222,7 @@ func NewSPIFFETrustConfig(
 		return nil, err
 	}
 	associations := inboundAssociations(inboundGrants)
+	warnDeprecatedSPIFFEAudiences(associations)
 	config := &SPIFFETrustConfig{
 		associations: make([]SPIFFEClientAuthConfig, 0, len(associations)),
 		trustDomains: make(map[string]SPIFFETrustDomain, len(trustDomainByName)),
@@ -251,7 +249,6 @@ func NewSPIFFETrustConfig(
 				grantTypes: slices.Clone(association.GrantTypes),
 				scopes:     slices.Clone(association.Scopes),
 				resources:  slices.Clone(association.Resources),
-				audiences:  slices.Clone(association.Audiences),
 			},
 		})
 	}
@@ -409,19 +406,13 @@ func (c SPIFFEClientAuthConfig) Methods() []SPIFFEAuthenticationMethod {
 	return slices.Clone(c.methods)
 }
 
-// AuthorizationPolicy returns a defensive copy of the association policy.
+// AuthorizationPolicy returns the association policy. Its getters return copies.
 func (c SPIFFEClientAuthConfig) AuthorizationPolicy() SPIFFEAuthorizationPolicy {
-	return SPIFFEAuthorizationPolicy{
-		grantTypes: slices.Clone(c.authorization.grantTypes),
-		scopes:     slices.Clone(c.authorization.scopes),
-		resources:  slices.Clone(c.authorization.resources),
-		audiences:  slices.Clone(c.authorization.audiences),
-	}
+	return c.authorization
 }
 
 func (c SPIFFEClientAuthConfig) clone() SPIFFEClientAuthConfig {
 	c.methods = slices.Clone(c.methods)
-	c.authorization = c.AuthorizationPolicy()
 	return c
 }
 
@@ -690,10 +681,9 @@ func validateSPIFFEClientAssociation(
 }
 
 // validateSPIFFEClientAssociationPermissions validates the resources,
-// audiences, scopes, and grant types an association is permitted to request.
-// Resources (RFC 8707) and audiences (RFC 8693) are independent request
-// dimensions: permission in one must never imply permission in the other, so
-// only resources are bounded by the server's allowed_audiences allowlist.
+// scopes, and grant types an association is permitted to request. Resources
+// (RFC 8707) are the only target list and are bounded by the server's
+// allowed_audiences allowlist. The deprecated audiences field is not checked.
 func validateSPIFFEClientAssociationPermissions(
 	entry SPIFFEClientAuthRunConfig,
 	index int,
@@ -702,9 +692,6 @@ func validateSPIFFEClientAssociationPermissions(
 	allowedResources []string,
 ) error {
 	if err := validateSPIFFEResources(entry.Resources, fieldPrefix+".resources", allowedResources); err != nil {
-		return err
-	}
-	if err := validateDistinctNonEmpty(entry.Audiences, fieldPrefix+".audiences"); err != nil {
 		return err
 	}
 	if err := validateDistinctNonEmpty(entry.Scopes, fieldPrefix+".scopes"); err != nil {
@@ -800,13 +787,15 @@ func validateMethods(methods []SPIFFEAuthenticationMethod, field string) (map[SP
 }
 
 // validateSPIFFEResources validates the RFC 8707 resource indicators an
-// association may request: each must be a syntactically valid absolute
-// HTTP(S) URI and a member of the server's allowed_audiences allowlist, the
-// same RFC 8707 resource-URI list DelegateClientRunConfig.Audiences is
-// validated against (see validateDelegateClients in config.go).
+// association may request. At least one is required: token exchange takes
+// exactly one resource per request. Each must be a syntactically valid
+// absolute HTTP(S) URI
+// and a member of the server's allowed_audiences allowlist, the same RFC 8707
+// resource-URI list DelegateClientRunConfig.Audiences is validated against
+// (see validateDelegateClients in config.go).
 func validateSPIFFEResources(values []string, field string, allowedResources []string) error {
 	if len(values) == 0 {
-		return nil
+		return fmt.Errorf("%s is required", field)
 	}
 	if err := ValidateResourceIndicators(values, field); err != nil {
 		return err
@@ -867,6 +856,18 @@ func validateSPIFFEGrants(grants []string, index int) error {
 		)
 	}
 	return nil
+}
+
+// warnDeprecatedSPIFFEAudiences logs one warning per association that still
+// sets the ignored audiences field.
+func warnDeprecatedSPIFFEAudiences(associations []SPIFFEClientAuthRunConfig) {
+	for _, association := range associations {
+		if len(association.Audiences) == 0 {
+			continue
+		}
+		slog.Warn("SPIFFE association sets audiences, which is deprecated and ignored; use resources instead",
+			"client_id", association.ClientID, "trust_domain_ref", association.TrustDomainRef)
+	}
 }
 
 func overlapsSPIFFEPatterns(patterns []string, principal string) bool {

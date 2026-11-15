@@ -168,7 +168,7 @@ func TestStaticSPIFFEClientCannotAuthenticateByDefaultStrategy(t *testing.T) {
 
 	signingKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	require.NoError(t, err)
-	spiffeClient := spiffetest.Client(t, spiffetest.WithAudiences("https://mcp.example.com"))
+	spiffeClient := spiffetest.Client(t)
 	hashed, err := registration.SHA256Hasher.Hash(context.Background(), []byte("control-secret"))
 	require.NoError(t, err)
 	control := &fosite.DefaultClient{ID: "control-client", Secret: hashed}

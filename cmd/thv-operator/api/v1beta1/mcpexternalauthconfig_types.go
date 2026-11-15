@@ -748,6 +748,7 @@ type SPIFFETrustDomainConfig struct {
 // always supplies it instead of letting it be configured.
 //
 // +kubebuilder:validation:XValidation:rule="self.principalPattern.split('/').all(segment, segment != '.' && segment != '..')",message="principalPattern path must not contain . or .. segments"
+// +kubebuilder:validation:XValidation:rule="has(self.resources) && size(self.resources) > 0",message="resources is required"
 //
 //nolint:lll // CEL validation rule exceeds line length limit
 type SPIFFEClientConfig struct {
@@ -787,25 +788,29 @@ type SPIFFEClientConfig struct {
 	// which is derived at reconcile time and not available on this CRD, so
 	// allowlist membership is validated at reconcile time, not admission.
 	// Shape (a well-formed absolute HTTP(S) URI) is independent of that
-	// derived allowlist and is validated here. Distinct from Audiences: a
-	// resource permission does not imply the same value is also a permitted
-	// token audience, or vice versa.
+	// derived allowlist and is validated here. Required, with at least one
+	// entry, for every association: token exchange takes exactly one resource
+	// per request and grants it as the token audience.
+	// +optional
 	// +kubebuilder:validation:MaxItems=50
 	// +kubebuilder:validation:items:MinLength=1
 	// +kubebuilder:validation:items:MaxLength=2048
 	// +kubebuilder:validation:items:Pattern=`^https?://[^@#[:space:]]+$`
 	// +listType=set
-	// +optional
 	Resources []string `json:"resources,omitempty"`
 
-	// Audiences are RFC 8693 token audiences this association may request.
-	// +kubebuilder:validation:Required
-	// +kubebuilder:validation:MinItems=1
+	// Deprecated: ignored; use resources.
+	//
+	// The field was required in earlier releases and is still accepted so
+	// existing objects keep validating. A non-empty value is reported by the
+	// DeprecatedInboundGrantConfiguration condition and has no effect on token
+	// targeting.
+	// +optional
 	// +kubebuilder:validation:MaxItems=50
 	// +kubebuilder:validation:items:MinLength=1
 	// +kubebuilder:validation:items:MaxLength=2048
 	// +listType=set
-	Audiences []string `json:"audiences"`
+	Audiences []string `json:"audiences,omitempty"`
 
 	// Scopes are OAuth scopes granted to this association. Must be a subset
 	// of the server's effective supported scopes.
@@ -1432,7 +1437,10 @@ func (c *EmbeddedAuthServerConfig) ValidateInboundGrants() error {
 	for _, delegate := range grants.delegateClients {
 		delegateIDs = append(delegateIDs, delegate.ClientID)
 	}
-	return authserver.ValidateSPIFFEClientIDsNotDelegates(spiffeIDs, delegateIDs)
+	if err := authserver.ValidateSPIFFEClientIDsNotDelegates(spiffeIDs, delegateIDs); err != nil {
+		return err
+	}
+	return validateSPIFFEResourcesPresent(c.InboundGrants)
 }
 
 // ValidateTLSListener rejects a tlsListener whose certificate or private key
@@ -2860,12 +2868,13 @@ func (r *MCPExternalAuthConfig) validateEmbeddedAuthServer() error {
 	// needs the loopback-hostname helper, so it lives only in Go.
 	//
 	// The permission-shaped half of SPIFFE trust/client-auth config (grant
-	// types, scopes, resources, audiences) has no equivalent Go-level
-	// pre-check here, matching the DelegateClients precedent below — a
-	// meaningful check needs AllowedAudiences/ScopesSupported, which are only
-	// known once derived at reconcile time. controllerutil.
-	// validateDelegateClientsAndTrustedIssuers revalidates the full SPIFFE
-	// trust config (via RunConfig.Validate) once those derived values exist.
+	// types, scopes, resources) has no equivalent Go-level pre-check here,
+	// matching the DelegateClients precedent below — a meaningful check needs
+	// AllowedAudiences/ScopesSupported, which are only known once derived at
+	// reconcile time. controllerutil.validateDelegateClientsAndTrustedIssuers
+	// revalidates the full SPIFFE trust config (via RunConfig.Validate) once
+	// those derived values exist. Only the resources-present check runs
+	// earlier, inside ValidateInboundGrants.
 	//
 	// The checks below are admission-time-safe: they depend only on this
 	// object's own spec, so they run here instead of waiting for reconcile.
@@ -2994,6 +3003,25 @@ func validateSPIFFEPrincipalPatternOverlap(inboundGrants *InboundGrantsConfig) e
 					i, entries[i].PrincipalPattern, j, entries[j].PrincipalPattern,
 				)
 			}
+		}
+	}
+	return nil
+}
+
+// validateSPIFFEResourcesPresent requires resources on every SPIFFE
+// association. The CRD rule already does at admission; this reports an object
+// stored by an earlier release, which may have no resources, as invalid. It
+// runs from ValidateInboundGrants, so MCPExternalAuthConfig and inline
+// VirtualMCPServer configuration both report it on their own validation
+// condition instead of failing later in the converter. Shape and allowlist
+// checks are left to the schema and to RunConfig.Validate.
+func validateSPIFFEResourcesPresent(inboundGrants *InboundGrantsConfig) error {
+	if inboundGrants == nil {
+		return nil
+	}
+	for i, association := range inboundGrants.SPIFFEClientAuth {
+		if len(association.Resources) == 0 {
+			return fmt.Errorf("inboundGrants.spiffeClientAuth[%d].resources is required", i)
 		}
 	}
 	return nil

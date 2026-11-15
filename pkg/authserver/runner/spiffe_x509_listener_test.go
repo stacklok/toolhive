@@ -137,15 +137,7 @@ func TestEmbeddedAuthServer_SPIFFEX509ClientAuthOverTLS(t *testing.T) {
 	trusted := newSPIFFETestAuthority(t, "ca-1")
 	untrusted := newSPIFFETestAuthority(t, "ca-2")
 	tokenURL, roots, _ := startSPIFFEX509TLSServer(t, trusted, func(cfg *authserver.RunConfig) {
-		cfg.InboundGrants.SPIFFEClientAuth = append(cfg.InboundGrants.SPIFFEClientAuth, authserver.SPIFFEClientAuthRunConfig{
-			TrustDomainRef:   "production",
-			PrincipalPattern: spiffeX509TestOtherPrincipal,
-			ClientID:         spiffeX509TestOtherClientID,
-			Methods:          []authserver.SPIFFEAuthenticationMethod{authserver.SPIFFEAuthenticationMethodX509},
-			Scopes:           []string{"openid"},
-			Audiences:        []string{"https://mcp.example.com"},
-			GrantTypes:       []string{authserver.SPIFFEGrantTypeTokenExchange},
-		})
+		cfg.InboundGrants.SPIFFEClientAuth = append(cfg.InboundGrants.SPIFFEClientAuth, testSPIFFEAssociation(spiffeX509TestOtherClientID, spiffeX509TestOtherPrincipal))
 	})
 
 	postToken := func(t *testing.T, svid tls.Certificate, clientID string) (int, string) {
@@ -338,6 +330,18 @@ func TestEmbeddedAuthServer_SPIFFEOnlyTokenExchangeOverTLS(t *testing.T) {
 	assert.NotEmpty(t, body["access_token"])
 }
 
+// TestEmbeddedAuthServer_SPIFFEAssociationWithoutResourcesIsRejected pins that
+// an association with no resources fails at startup.
+func TestEmbeddedAuthServer_SPIFFEAssociationWithoutResourcesIsRejected(t *testing.T) {
+	t.Parallel()
+
+	cfg, _ := spiffeX509TestConfig(t, newSPIFFETestAuthority(t, "ca-1"), func(cfg *authserver.RunConfig) {
+		cfg.InboundGrants.SPIFFEClientAuth[0].Resources = nil
+	})
+	_, err := NewEmbeddedAuthServer(context.Background(), cfg, WithListenerHost("127.0.0.1"))
+	require.ErrorContains(t, err, "resources is required")
+}
+
 // TestEmbeddedAuthServer_SPIFFETokenExchangeOverTLS completes RFC 8693
 // exchanges over the TLS listener with X.509-SVID and JWT-SVID client
 // authentication, checking the issued token and the policy and consent limits.
@@ -473,11 +477,11 @@ func TestEmbeddedAuthServer_SPIFFETokenExchangeOverTLS(t *testing.T) {
 			wantError:  "invalid_scope",
 		},
 		{
-			name: "audience outside the association audiences is invalid_target",
+			name: "audience parameter is invalid_target",
 			build: func(t *testing.T) request {
 				t.Helper()
 				svid := trusted.issueSVID(t)
-				// The subject token covers otherAudience: only the association refuses it.
+				// The subject token covers otherAudience: only the targeting rule refuses it.
 				form := exchangeForm(subjectToken(t, spiffeX509TestClientID, "openid", nil, otherAudience), spiffeX509TestClientID,
 					url.Values{"audience": {otherAudience}})
 				form.Del("resource")
@@ -485,7 +489,7 @@ func TestEmbeddedAuthServer_SPIFFETokenExchangeOverTLS(t *testing.T) {
 			},
 			wantStatus: http.StatusBadRequest,
 			wantError:  "invalid_target",
-			wantDesc:   "not permitted to request audience",
+			wantDesc:   "audience parameter is not accepted",
 		},
 		{
 			name: "subject token issued to another client without may_act is invalid_grant",
@@ -576,6 +580,27 @@ func startSPIFFEX509TLSServer(
 ) (string, *x509.CertPool, *EmbeddedAuthServer) {
 	t.Helper()
 
+	cfg, listenerPair := spiffeX509TestConfig(t, trusted, configure)
+	srv, err := NewEmbeddedAuthServer(context.Background(), cfg, WithListenerHost("127.0.0.1"))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, srv.Close()) })
+	require.NotNil(t, srv.tlsListener)
+	srv.tlsListener.port = 0
+	require.NoError(t, srv.Start())
+	addr := srv.tlsListener.listener.Addr().(*net.TCPAddr)
+
+	roots := x509.NewCertPool()
+	roots.AddCert(listenerPair.cert)
+	return fmt.Sprintf("https://127.0.0.1:%d/oauth/token", addr.Port), roots, srv
+}
+
+// spiffeX509TestConfig builds the RunConfig startSPIFFEX509TLSServer starts,
+// together with the listener certificate pair.
+func spiffeX509TestConfig(
+	t *testing.T, trusted spiffeTestAuthority, configure func(*authserver.RunConfig),
+) (*authserver.RunConfig, testCertificate) {
+	t.Helper()
+
 	bundlePath := filepath.Join(t.TempDir(), "bundle.json")
 	writeSPIFFEBundleFile(t, bundlePath, trusted)
 
@@ -607,32 +632,13 @@ func startSPIFFEX509TLSServer(
 			},
 		}},
 		InboundGrants: &authserver.InboundGrantsRunConfig{
-			SPIFFEClientAuth: []authserver.SPIFFEClientAuthRunConfig{{
-				TrustDomainRef:   "production",
-				PrincipalPattern: spiffeX509TestPrincipal,
-				ClientID:         spiffeX509TestClientID,
-				Methods:          []authserver.SPIFFEAuthenticationMethod{authserver.SPIFFEAuthenticationMethodX509},
-				Scopes:           []string{"openid"},
-				Audiences:        []string{"https://mcp.example.com"},
-				GrantTypes:       []string{authserver.SPIFFEGrantTypeTokenExchange},
-			}},
+			SPIFFEClientAuth: []authserver.SPIFFEClientAuthRunConfig{testSPIFFEAssociation(spiffeX509TestClientID, spiffeX509TestPrincipal)},
 		},
 	}
 	if configure != nil {
 		configure(cfg)
 	}
-
-	srv, err := NewEmbeddedAuthServer(context.Background(), cfg, WithListenerHost("127.0.0.1"))
-	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, srv.Close()) })
-	require.NotNil(t, srv.tlsListener)
-	srv.tlsListener.port = 0
-	require.NoError(t, srv.Start())
-	addr := srv.tlsListener.listener.Addr().(*net.TCPAddr)
-
-	roots := x509.NewCertPool()
-	roots.AddCert(listenerPair.cert)
-	return fmt.Sprintf("https://127.0.0.1:%d/oauth/token", addr.Port), roots, srv
+	return cfg, listenerPair
 }
 
 // postTokenOverTLS posts form to tokenURL over a fresh TLS handshake. svid, when

@@ -150,6 +150,7 @@ func spiffeTrustForScope(t *testing.T, scope string) *authserver.SPIFFETrustConf
 			Methods:          []authserver.SPIFFEAuthenticationMethod{authserver.SPIFFEAuthenticationMethodX509},
 			Scopes:           []string{scope},
 			Audiences:        []string{delegateAudience},
+			Resources:        []string{delegateAudience},
 			GrantTypes:       []string{authserver.SPIFFEGrantTypeTokenExchange},
 		}}},
 		[]string{"scope-a", "scope-b", "scope-c"},

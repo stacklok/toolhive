@@ -829,7 +829,7 @@
       "AuthenticationSPIFFEClientAuthRunConfig": {
         "properties": {
           "audiences": {
-            "description": "Audiences are RFC 8693 token audiences this association may request.\nThis is an independent request dimension from Resources: it is not\nbounded by allowed_audiences (which is an RFC 8707 resource-URI list)\nand may contain non-URI logical audience identifiers.",
+            "description": "Audiences is deprecated and ignored; use Resources. It stays in the\nschema because v0.65.0 required it, and a warning is logged at startup\nwhen it is set.",
             "items": {
               "type": "string"
             },
@@ -860,7 +860,7 @@
             "type": "string"
           },
           "resources": {
-            "description": "Resources are RFC 8707 resource indicators this association may\nrequest. Must be a subset of the server's allowed_audiences allowlist\n(RunConfig.AllowedAudiences) — the same RFC 8707 resource-URI list\nDelegateClientRunConfig.Audiences is validated against. Distinct from\nAudiences: a resource permission does not imply the same value is also\na permitted token audience, or vice versa.",
+            "description": "Resources are RFC 8707 resource indicators this association may\nrequest. At least one is required for every association: token\nexchange takes exactly one resource per request and grants it as the\ntoken audience. Must be a subset of the\nserver's allowed_audiences allowlist (RunConfig.AllowedAudiences) — the\nsame RFC 8707 resource-URI list DelegateClientRunConfig.Audiences is\nvalidated against.",
             "items": {
               "type": "string"
             },

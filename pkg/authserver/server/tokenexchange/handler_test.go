@@ -3174,41 +3174,106 @@ func TestTokenExchangeHandler_PopulateTokenEndpointResponse(t *testing.T) {
 	})
 }
 
-// TestGrantResourceAudience_SPIFFEClientEnforcesResourcesIndependentlyOfAudiences
-// is a regression test for a bug where the RFC 8707 "resource" parameter was
-// checked against a SPIFFE client's audience allowlist instead of its
-// independently configured resource allowlist: a resource the client was
-// registered for was rejected, and a resource the client was NOT registered
-// for -- but which happened to be one of its audiences -- was granted.
-func TestGrantResourceAudience_SPIFFEClientEnforcesResourcesIndependentlyOfAudiences(t *testing.T) {
+// TestGrantAndBoundAudiences_SPIFFEClient checks that the handler hands SPIFFE
+// clients to server.GrantSingleResource (one refusal row, the full rule is
+// covered by server.TestGrantSingleResource) and then bounds the result by the
+// subject token's audience.
+func TestGrantAndBoundAudiences_SPIFFEClient(t *testing.T) {
 	t.Parallel()
 
+	const (
+		permitted    = testIssuer
+		notPermitted = "https://other.example.com"
+	)
+	tests := []struct {
+		name        string
+		form        url.Values
+		subjectAud  []string
+		wantGranted []string
+		wantErr     error
+	}{
+		{
+			name: "one resource in the association is granted", form: url.Values{"resource": {permitted}},
+			subjectAud: []string{permitted}, wantGranted: []string{permitted},
+		},
+		{
+			name: "audience parameter is rejected", form: url.Values{"audience": {permitted}},
+			subjectAud: []string{permitted}, wantErr: server.ErrInvalidTarget,
+		},
+		{
+			name: "resource outside the subject token audience is rejected", form: url.Values{"resource": {permitted}},
+			subjectAud: []string{notPermitted}, wantErr: server.ErrInvalidTarget,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			tj := newTestJWKS(t)
+			h := newTestHandler(t, tj, time.Hour)
+			h.allowedAudiences = []string{permitted, notPermitted}
+			client := spiffetest.AuthenticatedClient(t, spiffetest.WithResources(permitted))
+			req := newAccessRequest(t, client, tt.form)
+
+			err := h.grantAndBoundAudiences(
+				context.Background(), req, client, &ValidatedClaims{Audience: tt.subjectAud})
+			if tt.wantErr != nil {
+				require.Error(t, err)
+				assert.True(t, errors.Is(err, tt.wantErr), "got %v", err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantGranted, []string(req.GetGrantedAudience()))
+		})
+	}
+}
+
+// TestGrantAndBoundAudiences_DelegateClientKeepsGenericPath proves a
+// non-SPIFFE client may still send audience= and still gets the default
+// audience when it sends no target.
+func TestGrantAndBoundAudiences_DelegateClientKeepsGenericPath(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		requested fosite.Arguments
+	}{
+		{name: "audience parameter is granted", requested: fosite.Arguments{testIssuer}},
+		{name: "no target gets the default audience"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			tj := newTestJWKS(t)
+			h := newTestHandler(t, tj, time.Hour)
+			h.allowedAudiences = []string{testIssuer}
+			client := &fosite.DefaultClient{ID: "delegate", Audience: []string{testIssuer}}
+			req := newAccessRequest(t, client, url.Values{})
+			req.SetRequestedAudience(tt.requested)
+
+			require.NoError(t, h.grantAndBoundAudiences(
+				context.Background(), req, client, &ValidatedClaims{Audience: []string{testIssuer}}))
+			assert.Equal(t, []string{testIssuer}, []string(req.GetGrantedAudience()))
+		})
+	}
+}
+
+// TestGrantAndBoundAudiences_DelegateClientGrantsSubPathResource proves the
+// generic path grants a sub-path of a registered audience as a resource, which
+// the SPIFFE path rejects (see server.TestGrantSingleResource in
+// pkg/authserver/server/audience_test.go).
+func TestGrantAndBoundAudiences_DelegateClientGrantsSubPathResource(t *testing.T) {
+	t.Parallel()
+
+	const subPath = testIssuer + "/v1"
 	tj := newTestJWKS(t)
 	h := newTestHandler(t, tj, time.Hour)
-	// Both values must be server-wide allowed so the test isolates the
-	// per-client check (grantResourceAudience) from the server-wide one.
-	h.allowedAudiences = []string{testIssuer, "https://other.example.com"}
+	h.allowedAudiences = []string{testIssuer, subPath}
+	client := &fosite.DefaultClient{ID: "delegate", Audience: []string{testIssuer}}
+	req := newAccessRequest(t, client, url.Values{"resource": {subPath}})
 
-	const registeredResource = testIssuer
-	const registeredAudience = "https://other.example.com"
-	client := spiffetest.Client(t,
-		spiffetest.WithAudiences(registeredAudience), spiffetest.WithResources(registeredResource))
-
-	t.Run("resource in the client's resources is granted", func(t *testing.T) {
-		t.Parallel()
-
-		req := newAccessRequest(t, client, url.Values{"resource": {registeredResource}})
-		require.NoError(t, h.grantResourceAudience(context.Background(), req, client))
-		assert.Contains(t, req.GetGrantedAudience(), registeredResource)
-	})
-
-	t.Run("resource that is only an audience, not a resource, is rejected", func(t *testing.T) {
-		t.Parallel()
-
-		req := newAccessRequest(t, client, url.Values{"resource": {registeredAudience}})
-		err := h.grantResourceAudience(context.Background(), req, client)
-		require.Error(t, err)
-		assert.True(t, errors.Is(err, server.ErrInvalidTarget))
-		assert.Empty(t, req.GetGrantedAudience())
-	})
+	require.NoError(t, h.grantAndBoundAudiences(
+		context.Background(), req, client, &ValidatedClaims{Audience: []string{subPath}}))
+	assert.Equal(t, []string{subPath}, []string(req.GetGrantedAudience()))
 }

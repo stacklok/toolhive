@@ -25,7 +25,6 @@ func TestSPIFFEAssociationRegistryResolve(t *testing.T) {
 	jwtOnly := testSPIFFEAssociation("jwt-client", "profile")
 	jwtOnly.PrincipalPattern = "spiffe://example.org/ns/jwt/agent"
 	jwtOnly.Methods = []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodJWT}
-	jwtOnly.Audiences = []string{"https://audience.example.com"}
 	jwtOnly.Resources = []string{"https://resource.example.com"}
 
 	tests := []struct {
@@ -134,15 +133,18 @@ func TestSPIFFEAssociationRegistryResolve(t *testing.T) {
 			assert.Equal(t, tt.method, client.AuthenticationMethod())
 			assert.Equal(t, []string{tt.wantScope}, []string(client.GetScopes()))
 			assert.Equal(t, []string{oauthproto.GrantTypeTokenExchange}, []string(client.GetGrantTypes()))
-			assert.Equal(t, []string{"https://audience.example.com"}, []string(client.GetAudience()))
-			assert.Equal(t, tt.wantResource, client.Resources())
+			wantResource := tt.wantResource
+			if wantResource == nil {
+				wantResource = []string{"https://audience.example.com"}
+			}
+			assert.Nil(t, client.GetAudience())
+			assert.Equal(t, wantResource, client.Resources())
 
 			want := spiffetest.AuthenticatedClient(t,
 				spiffetest.WithID(wantClientID),
 				spiffetest.WithGrantTypes(oauthproto.GrantTypeTokenExchange),
 				spiffetest.WithScopes(tt.wantScope),
-				spiffetest.WithAudiences("https://audience.example.com"),
-				spiffetest.WithResources(tt.wantResource...),
+				spiffetest.WithResources(wantResource...),
 				spiffetest.WithSPIFFEID(tt.spiffeID),
 				spiffetest.WithAuthMethod(tt.method),
 			)
@@ -160,8 +162,7 @@ func TestNewSPIFFEAssociationRegistry_RejectsAssociationWithoutValidPolicy(t *te
 		clientID:       "no-grants",
 		methods:        []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodJWT},
 		authorization: SPIFFEAuthorizationPolicy{
-			scopes:    []string{"openid"},
-			audiences: []string{"https://audience.example.com"},
+			scopes: []string{"openid"},
 		},
 	}}}
 
@@ -217,28 +218,11 @@ func TestSPIFFEAssociationRegistryRebuildsChangedAndRemovedAuthority(t *testing.
 	assert.Empty(t, removedClients)
 }
 
-func TestSPIFFEAssociationRegistryKeepsClientAudiencesIsolated(t *testing.T) {
-	t.Parallel()
-
-	first := testSPIFFEAssociation("first-client", "openid")
-	first.Audiences = []string{"https://first-audience.example.com"}
-	second := testSPIFFEAssociation("second-client", "profile")
-	second.PrincipalPattern = "spiffe://example.org/ns/default/other-agent"
-	second.Audiences = []string{"https://second-audience.example.com"}
-
-	registry := newTestSPIFFEAssociationRegistry(t, []SPIFFEClientAuthRunConfig{first, second})
-	clients := registry.staticClients()
-
-	assert.Equal(t, []string{"https://first-audience.example.com"}, []string(clients["first-client"].GetAudience()))
-	assert.Equal(t, []string{"https://second-audience.example.com"}, []string(clients["second-client"].GetAudience()))
-}
-
-// TestSPIFFEAssociationRegistryKeepsResourcesIndependentOfAudiences proves the
+// TestSPIFFEAssociationRegistryIgnoresDeprecatedAudiences proves the
 // association registry wires an association's RFC 8707 resources through to
-// the runtime client as a dimension independent of RFC 8693 audiences: a
-// client configured with disjoint audiences and resources must expose each
-// list separately, not have one silently discarded or aliased to the other.
-func TestSPIFFEAssociationRegistryKeepsResourcesIndependentOfAudiences(t *testing.T) {
+// the runtime client and drops the deprecated audiences field: the client has
+// no audiences even when the association sets some.
+func TestSPIFFEAssociationRegistryIgnoresDeprecatedAudiences(t *testing.T) {
 	t.Parallel()
 
 	association := testSPIFFEAssociation("client", "openid")
@@ -254,7 +238,7 @@ func TestSPIFFEAssociationRegistryKeepsResourcesIndependentOfAudiences(t *testin
 	resourceScoped, ok := client.(interface{ Resources() []string })
 	require.True(t, ok, "SPIFFE client must expose a Resources() accessor")
 
-	assert.Equal(t, []string{"https://audience.example.com"}, []string(client.GetAudience()))
+	assert.Empty(t, client.GetAudience())
 	assert.Equal(t, []string{"https://resource.example.com"}, resourceScoped.Resources())
 }
 
@@ -421,9 +405,7 @@ func testNormalizedSPIFFEAssociation(clientID, principal string) SPIFFEClientAut
 		clientID:       clientID,
 		methods:        []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509},
 		authorization: SPIFFEAuthorizationPolicy{
-			grantTypes: []string{SPIFFEGrantTypeTokenExchange},
-			scopes:     []string{"openid"},
-			audiences:  []string{"https://audience.example.com"},
+			grantTypes: []string{SPIFFEGrantTypeTokenExchange}, scopes: []string{"openid"},
 		},
 	}
 }
@@ -447,6 +429,8 @@ func newTestSPIFFEAssociationRegistry(t *testing.T, associations []SPIFFEClientA
 	return registry
 }
 
+// testSPIFFEAssociation returns a valid token-exchange association; callers
+// override only the fields their case cares about.
 func testSPIFFEAssociation(clientID, scope string) SPIFFEClientAuthRunConfig {
 	return SPIFFEClientAuthRunConfig{
 		TrustDomainRef:   "production",
@@ -454,7 +438,7 @@ func testSPIFFEAssociation(clientID, scope string) SPIFFEClientAuthRunConfig {
 		ClientID:         clientID,
 		Methods:          []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509},
 		Scopes:           []string{scope},
-		Audiences:        []string{"https://audience.example.com"},
+		Resources:        []string{"https://audience.example.com"},
 		GrantTypes:       []string{SPIFFEGrantTypeTokenExchange},
 	}
 }

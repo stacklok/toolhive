@@ -61,7 +61,7 @@ func NewSPIFFEAssociationRegistry(trust *SPIFFETrustConfig) (*SPIFFEAssociationR
 
 		policy := association.AuthorizationPolicy()
 		client, err := registration.NewSPIFFEClient(
-			association.ClientID(), policy.GrantTypes(), policy.Scopes(), policy.Audiences(), policy.Resources(),
+			association.ClientID(), policy.GrantTypes(), policy.Scopes(), policy.Resources(),
 		)
 		if err != nil {
 			return nil, fmt.Errorf("SPIFFE client %q: %w", association.ClientID(), err)

@@ -1025,8 +1025,8 @@ type clientFingerprint struct {
 	// fosite.OpenIDConnectClient, including unpinned secret clients and
 	// reserved placeholders.
 	tokenEndpointAuthMethod string
-	// resources is the RFC 8707 resource allowlist, distinct from audience
-	// (see resourceScopedClient in spiffe_decorator.go). Only reserved rows
+	// resources is the RFC 8707 resource allowlist, the only target list a
+	// SPIFFE client has (see resourceScopedClient in spiffe_decorator.go). Only reserved rows
 	// carry it: buildStoredClient persists it for them alone.
 	resources []string
 	// identityFingerprint is the SPIFFE association hash. Like resources, it

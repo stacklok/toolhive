@@ -2348,6 +2348,7 @@ func TestRunConfig_WriteJSON_ReadJSON_EmbeddedAuthServer(t *testing.T) {
 							Methods:          []authserver.SPIFFEAuthenticationMethod{authserver.SPIFFEAuthenticationMethodX509},
 							Scopes:           []string{"openid"},
 							Audiences:        []string{"https://mcp.example.com"},
+							Resources:        []string{"https://mcp.example.com"},
 							GrantTypes:       []string{authserver.SPIFFEGrantTypeTokenExchange},
 						},
 						{
@@ -2357,6 +2358,7 @@ func TestRunConfig_WriteJSON_ReadJSON_EmbeddedAuthServer(t *testing.T) {
 							Methods:          []authserver.SPIFFEAuthenticationMethod{authserver.SPIFFEAuthenticationMethodJWT},
 							Scopes:           []string{"profile"},
 							Audiences:        []string{"https://api.example.com"},
+							Resources:        []string{"https://api.example.com"},
 							GrantTypes:       []string{authserver.SPIFFEGrantTypeTokenExchange},
 						},
 					},

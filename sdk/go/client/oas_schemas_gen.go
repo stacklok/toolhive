@@ -2381,10 +2381,9 @@ func (s *AuthenticationSPIFFEBundleSourceRunConfig) SetWorkloadAPI(val *Authenti
 
 // Ref: #/components/schemas/AuthenticationSPIFFEClientAuthRunConfig
 type AuthenticationSPIFFEClientAuthRunConfig struct {
-	// Audiences are RFC 8693 token audiences this association may request.
-	// This is an independent request dimension from Resources: it is not
-	// bounded by allowed_audiences (which is an RFC 8707 resource-URI list)
-	// and may contain non-URI logical audience identifiers.
+	// Audiences is deprecated and ignored; use Resources. It stays in the
+	// schema because v0.65.0 required it, and a warning is logged at startup
+	// when it is set.
 	Audiences []string `json:"audiences"`
 	// ClientID is the explicit OAuth client_id. It is never derived from a
 	// SPIFFE ID.
@@ -2397,11 +2396,12 @@ type AuthenticationSPIFFEClientAuthRunConfig struct {
 	// the declared trust domain.
 	PrincipalPattern OptString `json:"principal_pattern"`
 	// Resources are RFC 8707 resource indicators this association may
-	// request. Must be a subset of the server's allowed_audiences allowlist
-	// (RunConfig.AllowedAudiences) — the same RFC 8707 resource-URI list
-	// DelegateClientRunConfig.Audiences is validated against. Distinct from
-	// Audiences: a resource permission does not imply the same value is also
-	// a permitted token audience, or vice versa.
+	// request. At least one is required for every association: token
+	// exchange takes exactly one resource per request and grants it as the
+	// token audience. Must be a subset of the
+	// server's allowed_audiences allowlist (RunConfig.AllowedAudiences) — the
+	// same RFC 8707 resource-URI list DelegateClientRunConfig.Audiences is
+	// validated against.
 	Resources []string `json:"resources"`
 	// Scopes are OAuth scopes granted to this association. They must be a
 	// subset of the server's effective supported scopes.

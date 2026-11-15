@@ -3704,7 +3704,7 @@ func TestBuildSPIFFEClientAuthRunConfigs(t *testing.T) {
 		ClientID:         "spiffe-client",
 		Methods:          []mcpv1beta1.SPIFFEAuthenticationMethod{mcpv1beta1.SPIFFEAuthenticationMethodX509},
 		Resources:        resources,
-		Audiences:        audiences,
+		Audiences:        audiences, //nolint:staticcheck // Exercises the deprecated pass-through.
 		Scopes:           scopes,
 	}})
 
@@ -3767,6 +3767,7 @@ func TestBuildAuthServerRunConfigRejectsUnsupportedSPIFFEBundleSource(t *testing
 						ClientID:         "spiffe-client",
 						Methods:          []mcpv1beta1.SPIFFEAuthenticationMethod{mcpv1beta1.SPIFFEAuthenticationMethodX509},
 						Audiences:        []string{"https://mcp.example.com"},
+						Resources:        []string{"https://mcp.example.com"},
 						Scopes:           []string{"openid"},
 					}},
 				},

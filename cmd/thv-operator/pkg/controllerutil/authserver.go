@@ -400,13 +400,15 @@ func buildSPIFFEClientAuthRunConfigs(
 		for j, method := range spiffeClient.Methods {
 			methods[j] = authserver.SPIFFEAuthenticationMethod(method)
 		}
+		// Passed through so the runtime can warn that it is ignored.
+		deprecatedAudiences := append([]string(nil), spiffeClient.Audiences...) //nolint:staticcheck // See above.
 		configs[i] = authserver.SPIFFEClientAuthRunConfig{
 			TrustDomainRef:   spiffeClient.TrustDomainRef,
 			PrincipalPattern: spiffeClient.PrincipalPattern,
 			ClientID:         spiffeClient.ClientID,
 			Methods:          methods,
 			Resources:        append([]string(nil), spiffeClient.Resources...),
-			Audiences:        append([]string(nil), spiffeClient.Audiences...),
+			Audiences:        deprecatedAudiences,
 			Scopes:           append([]string(nil), spiffeClient.Scopes...),
 			GrantTypes:       []string{authserver.SPIFFEGrantTypeTokenExchange},
 		}

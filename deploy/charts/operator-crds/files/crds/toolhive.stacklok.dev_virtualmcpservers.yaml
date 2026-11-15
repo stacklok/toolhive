@@ -449,14 +449,18 @@ spec:
                             always supplies it instead of letting it be configured.
                           properties:
                             audiences:
-                              description: Audiences are RFC 8693 token audiences
-                                this association may request.
+                              description: |-
+                                Deprecated: ignored; use resources.
+
+                                The field was required in earlier releases and is still accepted so
+                                existing objects keep validating. A non-empty value is reported by the
+                                DeprecatedInboundGrantConfiguration condition and has no effect on token
+                                targeting.
                               items:
                                 maxLength: 2048
                                 minLength: 1
                                 type: string
                               maxItems: 50
-                              minItems: 1
                               type: array
                               x-kubernetes-list-type: set
                             clientId:
@@ -499,9 +503,9 @@ spec:
                                 which is derived at reconcile time and not available on this CRD, so
                                 allowlist membership is validated at reconcile time, not admission.
                                 Shape (a well-formed absolute HTTP(S) URI) is independent of that
-                                derived allowlist and is validated here. Distinct from Audiences: a
-                                resource permission does not imply the same value is also a permitted
-                                token audience, or vice versa.
+                                derived allowlist and is validated here. Required, with at least one
+                                entry, for every association: token exchange takes exactly one resource
+                                per request and grants it as the token audience.
                               items:
                                 maxLength: 2048
                                 minLength: 1
@@ -528,7 +532,6 @@ spec:
                               minLength: 1
                               type: string
                           required:
-                          - audiences
                           - clientId
                           - methods
                           - principalPattern
@@ -540,6 +543,8 @@ spec:
                               segments
                             rule: self.principalPattern.split('/').all(segment, segment
                               != '.' && segment != '..')
+                          - message: resources is required
+                            rule: has(self.resources) && size(self.resources) > 0
                         maxItems: 100
                         type: array
                         x-kubernetes-list-type: atomic
@@ -5981,14 +5986,18 @@ spec:
                             always supplies it instead of letting it be configured.
                           properties:
                             audiences:
-                              description: Audiences are RFC 8693 token audiences
-                                this association may request.
+                              description: |-
+                                Deprecated: ignored; use resources.
+
+                                The field was required in earlier releases and is still accepted so
+                                existing objects keep validating. A non-empty value is reported by the
+                                DeprecatedInboundGrantConfiguration condition and has no effect on token
+                                targeting.
                               items:
                                 maxLength: 2048
                                 minLength: 1
                                 type: string
                               maxItems: 50
-                              minItems: 1
                               type: array
                               x-kubernetes-list-type: set
                             clientId:
@@ -6031,9 +6040,9 @@ spec:
                                 which is derived at reconcile time and not available on this CRD, so
                                 allowlist membership is validated at reconcile time, not admission.
                                 Shape (a well-formed absolute HTTP(S) URI) is independent of that
-                                derived allowlist and is validated here. Distinct from Audiences: a
-                                resource permission does not imply the same value is also a permitted
-                                token audience, or vice versa.
+                                derived allowlist and is validated here. Required, with at least one
+                                entry, for every association: token exchange takes exactly one resource
+                                per request and grants it as the token audience.
                               items:
                                 maxLength: 2048
                                 minLength: 1
@@ -6060,7 +6069,6 @@ spec:
                               minLength: 1
                               type: string
                           required:
-                          - audiences
                           - clientId
                           - methods
                           - principalPattern
@@ -6072,6 +6080,8 @@ spec:
                               segments
                             rule: self.principalPattern.split('/').all(segment, segment
                               != '.' && segment != '..')
+                          - message: resources is required
+                            rule: has(self.resources) && size(self.resources) > 0
                         maxItems: 100
                         type: array
                         x-kubernetes-list-type: atomic

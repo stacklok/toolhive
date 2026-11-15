@@ -352,7 +352,7 @@ func TestReadConfigFile_ReadOnly(t *testing.T) {
 		{name: "missing file means no opt-out", content: nil, wantDisabled: false},
 		{name: "opted out", content: ptr("disable_usage_metrics: true\n"), wantDisabled: true},
 		{name: "not opted out", content: ptr("disable_usage_metrics: false\n"), wantDisabled: false},
-		{name: "unparseable file counts as opted out", content: ptr("this: is: not: yaml: [\n"), wantDisabled: true},
+		{name: "unparsable file counts as opted out", content: ptr("this: is: not: yaml: [\n"), wantDisabled: true},
 		{
 			name:         "legacy config thv would migrate is left unchanged",
 			content:      ptr("secrets:\n  provider_type: basic\n  setup_completed: false\n"),

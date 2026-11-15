@@ -128,13 +128,15 @@ var _ = Describe("Tool visibility with forward_tool_read", Label("middleware", "
 		captured := append([]map[string]interface{}{}, pdpServer.requests...)
 		pdpServer.mu.RUnlock()
 
-		// With forward_tool_read the PDP answers tool:read itself, once, and is never asked
-		// tool:call for the listed tool, because there is no call fallback.
+		// With forward_tool_read the PDP answers tool:read itself, and is never asked
+		// tool:call for any tool, because there is no call fallback. The filter asks
+		// tool:read once per tool, so count only the listed tool's reads.
 		readsForListed := 0
 		for _, porc := range captured {
 			op, _ := porc["operation"].(string)
+			resource, _ := porc["resource"].(string)
 			Expect(op).ToNot(Equal("mcp:tool:call"), "forward_tool_read must never send mcp:tool:call, for any tool")
-			if op == "mcp:tool:read" {
+			if op == "mcp:tool:read" && strings.HasSuffix(resource, ":tool:query_vulnerability") {
 				readsForListed++
 			}
 		}

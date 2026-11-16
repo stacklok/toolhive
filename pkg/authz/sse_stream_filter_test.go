@@ -4,7 +4,9 @@
 package authz
 
 import (
+	"bufio"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -226,7 +228,7 @@ func TestSSEStreamFailsClosedOnOversizedEvent(t *testing.T) {
 	huge := "data: " + strings.Repeat("a", maxSSEEventBytes+1024)
 	rr := runSSEStream(t, authorizer, "text/event-stream", huge)
 
-	assert.LessOrEqual(t, rr.Body.Len(), maxSSEEventBytes, "an oversized event must not be written through")
+	assert.Zero(t, rr.Body.Len(), "an oversized event must not be written through")
 }
 func TestSSEStreamFlushBeforeWriteSetsNoStore(t *testing.T) {
 	t.Parallel()
@@ -455,7 +457,7 @@ func TestSSEStreamFailsClosedOnAmbiguousResultKey(t *testing.T) {
 	rr := runSSEStream(t, authorizer, "text/event-stream", body)
 
 	assert.NotContains(t, rr.Body.String(), "secret", "a case-variant result key must not leak the list")
-	assert.Contains(t, rr.Body.String(), `"error"`)
+	assert.Contains(t, rr.Body.String(), `"id":17`, "the fail-closed error must answer the request")
 }
 
 func TestSSEStreamFailsClosedOnDuplicateResultKey(t *testing.T) {
@@ -468,6 +470,7 @@ func TestSSEStreamFailsClosedOnDuplicateResultKey(t *testing.T) {
 	rr := runSSEStream(t, authorizer, "text/event-stream", body)
 
 	assert.NotContains(t, rr.Body.String(), "secret", "a duplicated result key must not leak the list")
+	assert.Contains(t, rr.Body.String(), `"id":18`, "the fail-closed error must answer the request")
 }
 
 func TestSSEStreamRefusesContentEncodedBody(t *testing.T) {
@@ -544,18 +547,80 @@ func TestSSEStreamDropsResultSplitAcrossDataLines(t *testing.T) {
 	assert.NotContains(t, rr.Body.String(), "secret")
 }
 
+// hijackRecorder is a recorder whose underlying writer does support Hijack. If the
+// filter let http.ResponseController unwrap to it, the hijack would succeed.
+type hijackRecorder struct {
+	*httptest.ResponseRecorder
+	hijacked bool
+}
+
+func (h *hijackRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	h.hijacked = true
+	return nil, nil, nil
+}
+
 func TestSSEStreamRefusesHijack(t *testing.T) {
 	t.Parallel()
 
 	authorizer := &mockAuthorizer{results: map[string]mockResult{}}
-	// A handler that asks for the connection must be refused, so no backend bytes
-	// can skip the filter. The controller must not reach the underlying writer.
+	// A handler that asks for the connection must be refused before the underlying
+	// writer is reached, so no backend bytes can skip the filter.
 	var hijackErr error
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _, hijackErr = http.NewResponseController(w).Hijack()
 	})
+	hr := &hijackRecorder{ResponseRecorder: httptest.NewRecorder()}
+	Middleware(authorizer, next, nil).ServeHTTP(hr, httptest.NewRequest(http.MethodGet, "/sse", nil))
+
+	require.ErrorIs(t, hijackErr, http.ErrNotSupported)
+	assert.False(t, hr.hijacked, "the underlying writer must not be hijacked")
+}
+
+func TestSSEStreamFailsClosedOnLoneCRSplitAcrossDataLines(t *testing.T) {
+	t.Parallel()
+
+	authorizer := &mockAuthorizer{results: map[string]mockResult{
+		"secret": {authorized: false},
+	}}
+	// Read with CR line breaks, the two data lines join into one result. The LF-only
+	// split sees a comment and no data, so the event must fail closed.
+	body := ": c\rdata: {\"jsonrpc\":\"2.0\",\"id\":30,\rdata: \"result\":{\"tools\":[{\"name\":\"secret\",\"inputSchema\":{\"type\":\"object\"}}]}}\n\n"
+	rr := runSSEStream(t, authorizer, "text/event-stream", body)
+
+	assert.NotContains(t, rr.Body.String(), "secret", "a result split across CR-separated data lines must not leak")
+}
+
+func TestSSEStreamSniffedResultAfterUndecodableEvent(t *testing.T) {
+	t.Parallel()
+
+	authorizer := &mockAuthorizer{results: map[string]mockResult{
+		"secret": {authorized: false},
+	}}
+	// The first event is not JSON. The split result in the second event must still be filtered.
+	body := "data: x\n\n" +
+		"data: {\"jsonrpc\":\"2.0\",\"id\":31,\n" +
+		"data: \"result\":{\"tools\":[{\"name\":\"secret\",\"inputSchema\":{\"type\":\"object\"}}]}}\n\n"
+	rr := runSSEStream(t, authorizer, "application/octet-stream", body)
+
+	assert.NotContains(t, rr.Body.String(), "secret", "a result after an undecodable event must still be filtered")
+}
+
+func TestSSEStreamRefusesRepeatedContentEncodingHeader(t *testing.T) {
+	t.Parallel()
+
+	authorizer := &mockAuthorizer{results: map[string]mockResult{
+		"secret": {authorized: false},
+	}}
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Add("Content-Encoding", "identity")
+		w.Header().Add("Content-Encoding", "gzip")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, sseStreamEvent(`{"jsonrpc":"2.0","id":32,"result":{"tools":[{"name":"secret","inputSchema":{"type":"object"}}]}}`))
+	})
 	rr := httptest.NewRecorder()
 	Middleware(authorizer, next, nil).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/sse", nil))
 
-	require.ErrorIs(t, hijackErr, http.ErrNotSupported)
+	assert.Equal(t, http.StatusBadGateway, rr.Code, "a gzip coding in a second header line must be refused")
+	assert.NotContains(t, rr.Body.String(), "secret")
 }

@@ -164,6 +164,12 @@ func (rfw *ResponseFilteringWriter) FlushAndFilter() error {
 			rfw.ResponseWriter.Header().Del("Content-Length")
 			return rfw.processSSEResponse(rawResponse)
 		case bodyShapeNone:
+			// A body with data lines is filtered per event, so a result split across
+			// data lines of one event is still seen. Other bodies pass through unchanged.
+			if hasDataLine(rawResponse) {
+				rfw.ResponseWriter.Header().Del("Content-Length")
+				return rfw.processSSEResponse(rawResponse)
+			}
 		}
 		// The leading BOM was removed above, so the backend's Content-Length
 		// is now three bytes too large even though this fallback doesn't filter
@@ -324,21 +330,11 @@ type sseLine struct {
 // single payload, and a blank line is structural — it dispatches the event
 // rather than being emittable content in its own right.
 //
-// Lines are split on LF only, matching the client that actually consumes
-// these streams (github.com/modelcontextprotocol/go-sdk's mcp/event.go,
-// which ReadBytes('\n')s and never treats a lone CR as a line terminator) --
-// not the WHATWG EventSource grammar, which additionally splits on a bare CR.
-// The two disagree on a body containing an interior "\r" (e.g. inside a
-// data: payload): WHATWG would cut the line there, but the client reads it as
-// one line and parses through. Following the WHATWG grammar here decoded a
-// SUPERSET of what the client would treat as one line, letting the shorter,
-// wrongly-split pieces slip past filtering undetected -- a real regression,
-// not a hypothetical one. Splitting on LF only means we parse a superset of
-// what a stricter reader would call one line, so we decode and filter *more*
-// than before, never less: worst case for a client that does honor a lone CR
-// (e.g. a browser EventSource) is a payload it mis-frames identically to how
-// it would mis-frame the backend's raw bytes directly, since output stays
-// byte-preserving -- denial, never disclosure.
+// Lines are split on LF only, matching the go-sdk client (mcp/event.go), which
+// never treats a lone CR as a line terminator. A client that honours a lone CR
+// (WHATWG) can read data this split cannot see, so an event with a lone CR whose
+// data carries a result, read that way, fails closed (eventHasLoneCR). Splitting
+// on CR too caused an earlier regression with the go-sdk client.
 //
 // Every line is re-emitted with the same terminator it was scanned with, so
 // the output is structurally identical to the input (minus a leading UTF-8
@@ -448,23 +444,34 @@ func errorEventLines(body []byte) []sseLine {
 	return []sseLine{{text: append([]byte("data: "), body...), term: []byte("\n")}}
 }
 
-// eventHasLoneCR reports whether an event carries a bare CR, a line break that a
-// spec client honours but the LF-only split does not. Its data would be invisible
-// to the filter, so such an event that carries a result must fail closed. A CR
-// at the end of a line is the first half of a CRLF terminator and is not lone.
-// The LF split stays as it is: splitting on CR too caused an earlier regression
-// with the go-sdk client.
+// eventHasLoneCR reports whether an event has a bare CR that a spec client reads
+// as a line break, and whose data, read that way, carries a result. The LF-only
+// split cannot see such data, so the caller fails the event closed. A CR at the
+// end of a line is the first half of a CRLF terminator and is not lone. The LF
+// split stays as it is: splitting on CR too caused an earlier regression with the
+// go-sdk client.
 func eventHasLoneCR(event []sseLine) bool {
-	var joined []byte
+	var raw []byte
 	lone := false
 	for _, l := range event {
-		if i := bytes.IndexByte(l.text, ''); i != -1 && i != len(l.text)-1 {
+		if i := bytes.IndexByte(l.text, '\r'); i != -1 && i != len(l.text)-1 {
 			lone = true
 		}
-		joined = append(joined, l.text...)
-		joined = append(joined, l.term...)
+		raw = append(raw, l.text...)
+		raw = append(raw, l.term...)
 	}
-	return lone && sseCarriesResult(joined)
+	if !lone {
+		return false
+	}
+	// Read the event as a CR-honouring client does: CRLF, CR and LF all end a line.
+	view := bytes.ReplaceAll(bytes.ReplaceAll(raw, []byte("\r\n"), []byte("\n")), []byte("\r"), []byte("\n"))
+	joined := bytes.Join(eventDataValues(parseSSELines(view)), []byte("\n"))
+	return carriesResult(joined) || sseCarriesResult(view)
+}
+
+// hasDataLine reports whether body has at least one SSE data field.
+func hasDataLine(body []byte) bool {
+	return len(eventDataValues(parseSSELines(body))) > 0
 }
 
 // eventDataValues extracts one event's `data:` field values, in order, each
@@ -616,7 +623,7 @@ func (rfw *ResponseFilteringWriter) filterSSEEventData(data []byte) (replacement
 			errors.New("dropped a frame carrying a result outside a clean Response")), true
 	case decodeErr != nil:
 		// Genuinely undecodable and no smuggled result. Pass through unfiltered.
-		slog.Warn("SSE event data could not be decoded as JSON-RPC; passing through unfiltered",
+		slog.Debug("SSE event data could not be decoded as JSON-RPC; passing through unfiltered",
 			"method", rfw.method, "error", decodeErr)
 		return nil, false
 	default:

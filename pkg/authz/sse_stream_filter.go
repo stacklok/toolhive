@@ -33,8 +33,9 @@ var errSSEEventTooLarge = errors.New("SSE event exceeds the filter's size limit"
 
 // errSSEUnrecognizedMediaType is logged when a successful response with a
 // Content-Type other than text/event-stream carries neither a JSON-RPC response
-// nor an SSE result. Such a body is dropped, since a client may read it as events.
-var errSSEUnrecognizedMediaType = errors.New("successful response has a Content-Type other than text/event-stream and no JSON-RPC result")
+// nor an SSE result. Such a body is dropped where its result cannot be read safely.
+var errSSEUnrecognizedMediaType = errors.New(
+	"successful response has a Content-Type other than text/event-stream and no readable JSON-RPC result")
 
 // listMembers maps each list member of a result to the method whose filter applies.
 var listMembers = map[string]string{
@@ -71,7 +72,7 @@ type sseStreamFilterWriter struct {
 	// buffered and read as JSON-RPC or SSE once complete (see writeSniffed).
 	sniff bool
 	// encoded marks a filtered stream whose body is content-coded, which cannot be parsed.
-	encoded   bool
+	encoded bool
 	// committed records that the status line has been written.
 	committed bool
 }
@@ -107,7 +108,7 @@ func (w *sseStreamFilterWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 // for a long time. Filtered modes strip Content-Length in markFiltered, because
 // filtering can change the body size; a passed-through body keeps it.
 func (w *sseStreamFilterWriter) WriteHeader(statusCode int) {
-	if statusCode >= 100 && statusCode < 200 {
+	if statusCode >= 100 && statusCode < 200 && statusCode != http.StatusSwitchingProtocols {
 		// An informational response (e.g. 103 Early Hints) precedes the final status.
 		// Forward it without deciding the mode, so the final response still decides.
 		w.ResponseWriter.WriteHeader(statusCode)
@@ -125,10 +126,15 @@ func (w *sseStreamFilterWriter) WriteHeader(statusCode int) {
 // refuseEncoded answers a content-coded filtered stream with 502, once. The body
 // cannot be filtered, and forwarding it unfiltered would leak list answers.
 func (w *sseStreamFilterWriter) refuseEncoded() {
-	if w.committed {
+	if !w.encoded || w.committed {
 		return
 	}
 	w.committed = true
+	// The backend's coding and body headers describe a body that is not sent.
+	h := w.ResponseWriter.Header()
+	h.Del("Content-Encoding")
+	h.Del("Content-Type")
+	h.Del("Content-Length")
 	w.ResponseWriter.WriteHeader(http.StatusBadGateway)
 }
 
@@ -254,10 +260,14 @@ func (w *sseStreamFilterWriter) decide(status int) {
 func (w *sseStreamFilterWriter) markFiltered() {
 	w.ResponseWriter.Header().Del("Content-Length")
 	w.ResponseWriter.Header().Set("Cache-Control", "private, no-store")
-	if ce := w.ResponseWriter.Header().Get("Content-Encoding"); ce != "" && !strings.EqualFold(ce, "identity") {
-		w.encoded = true
-		w.failed = true
-		w.failErr = errSSEEncodedBody
+	for _, value := range w.ResponseWriter.Header().Values("Content-Encoding") {
+		for _, coding := range strings.Split(value, ",") {
+			if c := strings.TrimSpace(coding); c != "" && !strings.EqualFold(c, "identity") {
+				w.encoded = true
+				w.failed = true
+				w.failErr = errSSEEncodedBody
+			}
+		}
 	}
 }
 
@@ -282,16 +292,15 @@ func (w *sseStreamFilterWriter) writeSniffed(body []byte) {
 				"error", errSSEUnrecognizedMediaType)
 			return
 		default:
-			// No result in either shape: pass it through, as the buffered path does.
-			// A result split across data lines would still reach the client, so drop it.
-			if bodyCarriesResultAnywhere(body) {
-				slog.Warn("dropped a 2xx body whose result is split across data lines", "error", errSSEUnrecognizedMediaType)
+			// No result in either shape. A body with data lines is filtered per event,
+			// so a result split across data lines of one event is still seen. Any
+			// other body passes through unchanged, as the buffered path does.
+			if !hasDataLine(body) {
+				if _, err := w.ResponseWriter.Write(body); err != nil {
+					slog.Debug("stopped writing filtered SSE stream", "error", err)
+				}
 				return
 			}
-			if _, err := w.ResponseWriter.Write(body); err != nil {
-				slog.Debug("stopped writing filtered SSE stream", "error", err)
-			}
-			return
 		}
 		if err := w.writeLines(w.processLines(parseSSELines(body))); err != nil {
 			slog.Debug("stopped writing filtered SSE stream", "error", err)
@@ -389,7 +398,7 @@ func (w *sseStreamFilterWriter) filterEvent(event []sseLine) []sseLine {
 		return nil
 	}
 	if eventHasLoneCR(event) {
-		body := w.newFilter("").errorResponseBody(jsonrpc2.ID{}, errors.New("event carries a bare CR line break that the filter cannot split"))
+		body := w.newFilter("").errorResponseBody(frameID(event), errors.New("event carries a bare CR line break that the filter cannot split"))
 		return errorEventLines(body)
 	}
 	dataValues := eventDataValues(event)
@@ -401,7 +410,7 @@ func (w *sseStreamFilterWriter) filterEvent(event []sseLine) []sseLine {
 		return event
 	}
 	if hasAmbiguousResultKey(payload) {
-		return w.failClosed(event, jsonrpc2.ID{}, "result key is duplicated or differs in case")
+		return w.failClosed(event, frameID(event), "result key is duplicated or differs in case")
 	}
 
 	message, _ := jsonrpc2.DecodeMessage(payload)
@@ -512,13 +521,14 @@ func hasAmbiguousResultKey(payload []byte) bool {
 	}
 	resultKeys := 0
 	for dec.More() {
+		// Malformed JSON is not a result a client can read, so it is not ambiguous here.
 		tok, err := dec.Token()
 		if err != nil {
-			return true
+			return false
 		}
 		key, ok := tok.(string)
 		if !ok {
-			return true
+			return false
 		}
 		if strings.EqualFold(key, "result") {
 			if key != "result" {
@@ -531,19 +541,31 @@ func hasAmbiguousResultKey(payload []byte) bool {
 		}
 		var skip json.RawMessage
 		if err := dec.Decode(&skip); err != nil {
-			return true
+			return false
 		}
 	}
 	return false
 }
 
-// bodyCarriesResultAnywhere reports whether a body could carry a result under any
-// framing a client might read: the whole body, one data line, or the data lines
-// joined together, which is how a client assembles one event's data.
-func bodyCarriesResultAnywhere(body []byte) bool {
-	if carriesResult(body) || sseCarriesResult(body) {
-		return true
+// frameID returns the JSON-RPC id of an event's payload, read the way a client
+// reads it (CR as a line break too), or an empty id when none can be read.
+func frameID(event []sseLine) jsonrpc2.ID {
+	var raw []byte
+	for _, l := range event {
+		raw = append(raw, l.text...)
+		raw = append(raw, l.term...)
 	}
-	joined := bytes.Join(eventDataValues(parseSSELines(body)), []byte("\n"))
-	return carriesResult(joined)
+	view := bytes.ReplaceAll(bytes.ReplaceAll(raw, []byte("\r\n"), []byte("\n")), []byte("\r"), []byte("\n"))
+	payload := bytes.Join(eventDataValues(parseSSELines(view)), []byte("\n"))
+	message, err := jsonrpc2.DecodeMessage(payload)
+	if err != nil {
+		return jsonrpc2.ID{}
+	}
+	switch m := message.(type) {
+	case *jsonrpc2.Response:
+		return m.ID
+	case *jsonrpc2.Request:
+		return m.ID
+	}
+	return jsonrpc2.ID{}
 }

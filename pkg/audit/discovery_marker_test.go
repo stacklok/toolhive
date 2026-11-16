@@ -12,8 +12,10 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
 
 	"github.com/stacklok/toolhive/pkg/authz/authorizers"
+	"github.com/stacklok/toolhive/pkg/authz/authorizers/mocks"
 )
 
 func TestAddMetadata_DiscoveryFallback(t *testing.T) {
@@ -61,17 +63,18 @@ func TestAddMetadata_DiscoveryFallback(t *testing.T) {
 	}
 }
 
-// callOnlyAuthorizer grants tool:call and nothing else.
-type callOnlyAuthorizer struct{}
-
-func (callOnlyAuthorizer) AuthorizeWithJWTClaims(
-	_ context.Context,
-	_ authorizers.MCPFeature,
-	operation authorizers.MCPOperation,
-	_ string,
-	_ map[string]interface{},
-) (bool, error) {
-	return operation == authorizers.MCPOperationCall, nil
+// newCallOnlyAuthorizer returns the shared generated mock set up to grant tool:call
+// and nothing else.
+func newCallOnlyAuthorizer(t *testing.T) authorizers.Authorizer {
+	t.Helper()
+	m := mocks.NewMockAuthorizer(gomock.NewController(t))
+	m.EXPECT().AuthorizeWithJWTClaims(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, _ authorizers.MCPFeature, operation authorizers.MCPOperation,
+			_ string, _ map[string]interface{},
+		) (bool, error) {
+			return operation == authorizers.MCPOperationCall, nil
+		}).AnyTimes()
+	return m
 }
 
 // TestDiscoveryFallback_FlowsFromDecoratorToEvent checks the whole path: the audit
@@ -85,7 +88,7 @@ func TestDiscoveryFallback_FlowsFromDecoratorToEvent(t *testing.T) {
 
 	req := ensureAuditContext(httptest.NewRequest("POST", "/mcp", nil))
 
-	listed, err := authorizers.WithToolCallImpliesRead(callOnlyAuthorizer{}).AuthorizeWithJWTClaims(
+	listed, err := authorizers.WithToolCallImpliesRead(newCallOnlyAuthorizer(t)).AuthorizeWithJWTClaims(
 		req.Context(), authorizers.MCPFeatureTool, authorizers.MCPOperationRead, "weather", nil)
 	require.NoError(t, err)
 	require.True(t, listed)

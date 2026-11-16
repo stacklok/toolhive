@@ -86,9 +86,6 @@ func NewCollector(opts ...CollectorOption) (*Collector, error) {
 		opt(collector)
 	}
 
-	// Counter starts at 0
-	collector.counter.Store(0)
-
 	return collector, nil
 }
 
@@ -110,9 +107,9 @@ func (c *Collector) IncrementToolCall() {
 // name is normalized, so callers may pass the raw clientInfo name.
 func (c *Collector) IncrementToolCallFrom(client string) {
 	client = NormalizeClientName(client)
-	c.clientsMu.Lock()
-	defer c.clientsMu.Unlock()
-	c.counter.Add(1)
+	c.countsMu.Lock()
+	defer c.countsMu.Unlock()
+	c.counter++
 	c.callsByClient[client]++
 }
 
@@ -120,11 +117,10 @@ func (c *Collector) IncrementToolCallFrom(client string) {
 // Checks for midnight boundary crossing and handles daily reset
 func (c *Collector) Flush() error {
 	currentDate := getCurrentDateUTC()
-	count := c.counter.Load()
 
 	//nolint:gosec // G706: instance ID and date from internal state
 	slog.Debug("usage metrics flush triggered",
-		"count", count, "date", currentDate, "instance_id", c.instanceID)
+		"date", currentDate, "instance_id", c.instanceID)
 
 	// Check if we crossed midnight UTC
 	if c.currentDate != currentDate {
@@ -220,23 +216,25 @@ func (c *Collector) Shutdown(ctx context.Context) {
 
 // GetCurrentCount returns the current count (for testing/debugging)
 func (c *Collector) GetCurrentCount() int64 {
-	return c.counter.Load()
+	c.countsMu.Lock()
+	defer c.countsMu.Unlock()
+	return c.counter
 }
 
 // snapshotCounts returns the current count and a copy of the per-client split.
 func (c *Collector) snapshotCounts() (int64, map[string]int64) {
-	c.clientsMu.Lock()
-	defer c.clientsMu.Unlock()
-	return c.counter.Load(), maps.Clone(c.callsByClient)
+	c.countsMu.Lock()
+	defer c.countsMu.Unlock()
+	return c.counter, maps.Clone(c.callsByClient)
 }
 
 // resetCounts returns the current count and per-client split, and resets both.
 func (c *Collector) resetCounts() (int64, map[string]int64) {
-	c.clientsMu.Lock()
-	defer c.clientsMu.Unlock()
-	byClient := c.callsByClient
-	c.callsByClient = make(map[string]int64)
-	return c.counter.Swap(0), byClient
+	c.countsMu.Lock()
+	defer c.countsMu.Unlock()
+	count, byClient := c.counter, c.callsByClient
+	c.counter, c.callsByClient = 0, make(map[string]int64)
+	return count, byClient
 }
 
 // newRecord builds the payload for one report, adding the server profile.

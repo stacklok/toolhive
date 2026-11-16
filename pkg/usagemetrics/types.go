@@ -148,10 +148,10 @@ type ProfileProvider interface {
 type Collector struct {
 	// Unique identifier for this proxy instance (UUID)
 	instanceID string
-	// Atomic counter for thread-safe increments
-	counter atomic.Int64
-	// Tool calls per normalized client name, guarded by clientsMu
-	clientsMu     sync.Mutex
+	// countsMu guards counter and callsByClient, which change together so the
+	// per-client split always adds up to the count.
+	countsMu      sync.Mutex
+	counter       int64
 	callsByClient map[string]int64
 	// profile returns the server profile; called on every flush so values that
 	// change over time (such as vMCP backend counts) stay current. May be nil.

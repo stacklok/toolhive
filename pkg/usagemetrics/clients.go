@@ -53,6 +53,8 @@ var knownClients = []struct {
 	{[]string{"gemini"}, "gemini-cli"},
 	{[]string{"jetbrains"}, "jetbrains"},
 	{[]string{"inspector"}, "mcp-inspector"},
+	// vMCP forwarding a call to a backend proxy; it must come before "toolhive".
+	{[]string{"toolhive", "vmcp"}, "vmcp"},
 	{[]string{"toolhive"}, "toolhive"},
 }
 

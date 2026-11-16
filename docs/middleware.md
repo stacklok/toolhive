@@ -366,7 +366,7 @@ Each proxy (and each vMCP server) sends one report every 15 minutes, including w
 | Field | Values |
 |-------|--------|
 | `count` | Tool calls so far today (UTC) |
-| `calls_by_client` | `count` split by MCP client: `claude-code`, `claude-desktop`, `cursor`, `windsurf`, `vscode`, `cline`, `roo-code`, `continue`, `zed`, `goose`, `codex`, `gemini-cli`, `jetbrains`, `mcp-inspector`, `toolhive`, `other`, `unknown` |
+| `calls_by_client` | `count` split by MCP client: `claude-code`, `claude-desktop`, `cursor`, `windsurf`, `vscode`, `cline`, `roo-code`, `continue`, `zed`, `goose`, `codex`, `gemini-cli`, `jetbrains`, `mcp-inspector`, `toolhive`, `vmcp`, `other`, `unknown` |
 | `transport` | `stdio`, `sse`, `streamable-http`, `other` |
 | `server_kind` | `container`, `remote` |
 | `registry_source` | `builtin`, `custom_remote`, `custom_api`, `custom_local`, `none` |
@@ -378,7 +378,7 @@ Each proxy (and each vMCP server) sends one report every 15 minutes, including w
 | `tool_count` | vMCP only: number of backend tools in the most recent aggregation, after conflict resolution and per-backend filters. Excludes composite and optimizer tools and is not filtered per user; it can differ between callers when backends return different tools per user |
 | `features` | vMCP only: any of `optimizer`, `code_mode`, `composite_tools`, `outgoing_auth` |
 
-The client is taken from `clientInfo.name`: from the `initialize` request for session-based connections (tracked per session ID, in memory only), or from `_meta` on each request for stateless (2026-07-28) requests. Only the normalized value is reported. Calls that vMCP forwards to a backend proxy are reported by that proxy under the client `toolhive`.
+The client is taken from `clientInfo.name`: from the `initialize` request for session-based connections (tracked per session ID, in memory only), or from `_meta` on each request for stateless (2026-07-28) requests. Only the normalized value is reported. vMCP reports each call under the client that made it, and the backend proxy it forwards the call to reports it again under the client `vmcp`. To rank clients across proxies and vMCP, exclude `vmcp`.
 
 Server names, image references, URLs, hostnames, namespaces, tool, prompt and resource names, raw client names and error messages are never sent. A server from a custom registry, including a local registry file, is reported as `catalog_server: custom` even if its entry has a name.
 

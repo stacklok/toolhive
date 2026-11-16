@@ -55,26 +55,37 @@ type usageFacts struct {
 // startUsageMetrics starts anonymous usage reporting unless it is disabled
 // (CI, TOOLHIVE_USAGE_METRICS_ENABLED=false, TOOLHIVE_SKIP_UPDATE_CHECK, or
 // `thv config usage-metrics disable`, or a config that cannot be read). It
-// returns nil when disabled. It also
-// runs the vMCP update check in the background, after the collector has read
-// the anonymous ID, so that ID never depends on which of the two runs first.
+// returns nil when disabled. It also runs the vMCP update check in the
+// background, which has its own opt-out (CI and TOOLHIVE_SKIP_UPDATE_CHECK),
+// as in thv. When usage metrics are on, the check starts after the collector
+// has read the anonymous ID, so that ID never depends on which runs first.
 func startUsageMetrics(registry vmcp.BackendRegistry, facts usageFacts) *usageMetrics {
 	if !usagemetrics.ShouldEnableMetrics(usageMetricsDisabledInConfig()) {
+		go checkForUpdates()
 		return nil
 	}
+	u := newUsageMetrics(registry, facts)
+	go checkForUpdates()
+	return u
+}
+
+// newUsageMetrics builds and starts the collector. It returns nil if the
+// collector cannot be created.
+func newUsageMetrics(
+	registry vmcp.BackendRegistry, facts usageFacts, opts ...usagemetrics.CollectorOption,
+) *usageMetrics {
 	u := &usageMetrics{}
 	u.toolCount.Store(-1)
-	collector, err := usagemetrics.NewCollector(
+	collector, err := usagemetrics.NewCollector(append([]usagemetrics.CollectorOption{
 		usagemetrics.WithComponent(usageMetricsComponent),
 		usagemetrics.WithProfile(u.profileFunc(registry, facts)),
-	)
+	}, opts...)...)
 	if err != nil {
 		slog.Debug("failed to initialize usage metrics", "error", err)
 		return nil
 	}
 	u.collector = collector
 	collector.Start()
-	go checkForUpdates()
 	return u
 }
 

@@ -5,6 +5,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -295,15 +296,47 @@ func TestUsageMetricsProfileFunc(t *testing.T) {
 }
 
 func TestStartUsageMetrics_DisabledReturnsNil(t *testing.T) {
-	// Not parallel: t.Setenv. The skip switch also keeps the test from ever
-	// contacting the real update service.
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	// Not parallel: t.Setenv. The skip switch decides the result whatever the
+	// thv config says, and keeps the test from contacting the update service.
 	t.Setenv(updates.EnvVarSkipUpdateCheck, "true")
 
 	ctrl := gomock.NewController(t)
 	registry := vmcpmocks.NewMockBackendRegistry(ctrl)
 
 	assert.Nil(t, startUsageMetrics(registry, usageFacts{}))
+}
+
+func TestNewUsageMetrics_ReportsOnShutdown(t *testing.T) {
+	// Not parallel: t.Setenv supplies the anonymous ID, without which a local
+	// client sends nothing.
+	t.Setenv(usagemetrics.EnvVarAnonymousID, "test-anonymous-id")
+
+	reports := make(chan map[string]any, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var report map[string]any
+		assert.NoError(t, json.NewDecoder(r.Body).Decode(&report))
+		assert.Contains(t, r.Header.Get("User-Agent"), "toolhive/vmcp ")
+		reports <- report
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(server.Close)
+
+	ctrl := gomock.NewController(t)
+	registry := vmcpmocks.NewMockBackendRegistry(ctrl)
+	registry.EXPECT().List(gomock.Any()).Return([]vmcp.Backend{{ID: "a"}}).AnyTimes()
+
+	u := newUsageMetrics(registry, usageFacts{authMode: usagemetrics.ValueNone},
+		usagemetrics.WithEndpoint(server.URL))
+	require.NotNil(t, u)
+	u.shutdown()
+
+	select {
+	case report := <-reports:
+		assert.Equal(t, "streamable-http", report["transport"])
+		assert.EqualValues(t, 1, report["backend_count"])
+	default:
+		t.Fatal("shutdown sent no report")
+	}
 }
 
 func TestDisabledInConfig(t *testing.T) {

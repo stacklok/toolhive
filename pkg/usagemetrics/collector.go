@@ -70,6 +70,14 @@ func WithComponent(component string) CollectorOption {
 	}
 }
 
+// WithEndpoint sets the URL reports are sent to, instead of the Stacklok
+// update service. Tests use it to point the collector at a local server.
+func WithEndpoint(endpoint string) CollectorOption {
+	return func(c *Collector) {
+		c.client.endpoint = endpoint
+	}
+}
+
 // NewCollector creates a new metrics collector
 func NewCollector(opts ...CollectorOption) (*Collector, error) {
 	client := NewClient("")

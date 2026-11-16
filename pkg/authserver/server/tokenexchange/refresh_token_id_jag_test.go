@@ -205,49 +205,30 @@ func TestIDJAGMintsFromTheGrantSnapshot(t *testing.T) {
 }
 
 // TestIDJAGRequiresActorTokenForActorProfileClients shows the mint path holds a
-// client with an actor profile to the actor parameters, and refuses it with
-// server_error once they pass, because issuance does not call the actor
-// validator yet. Both refusals come before any grant is read.
+// client with an actor profile to the actor parameters: without them it gets
+// invalid_request before any grant is read. The minting case, which calls the
+// validator, is in refresh_token_actor_test.go, where the generated mock is
+// available.
 func TestIDJAGRequiresActorTokenForActorProfileClients(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		name     string
-		form     url.Values
-		wantCode string
-		wantHint string
-	}{
-		{name: "without actor parameters",
-			wantCode: "invalid_request", wantHint: "The 'actor_token' parameter is required, once, for this client."},
-		{name: "with matching actor parameters fails closed",
-			form:     url.Values{"actor_token": {"agent-token"}, "actor_token_type": {oauthproto.TokenTypeJWT}},
-			wantCode: "unauthorized_client", wantHint: "Actor-token validation is not available."},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			records := idJAGRecords(idJAGRecord("ok", testRefreshClient, "", time.Now().Add(time.Hour), oauthproto.TokenTypeIDJAG))
-			store := &fakeGrantStoreWithRecords{recordStore: recordStore{grants: records}}
-			h := idJAGHandler(t, store)
-			policy := h.clientPolicies[testRefreshClient]
-			policy.ActorProfile = &ActorProfile{Name: "agents", ActorTokenType: oauthproto.TokenTypeJWT}
-			h.clientPolicies[testRefreshClient] = policy
+	records := idJAGRecords(idJAGRecord("ok", testRefreshClient, "", time.Now().Add(time.Hour), oauthproto.TokenTypeIDJAG))
+	store := &fakeGrantStoreWithRecords{recordStore: recordStore{grants: records}}
+	h := idJAGHandler(t, store)
+	policy := h.clientPolicies[testRefreshClient]
+	policy.ActorProfile = &ActorProfile{Name: "agents", ActorTokenType: oauthproto.TokenTypeJWT}
+	h.clientPolicies[testRefreshClient] = policy
 
-			req := idJAGRequest("x.ok")
-			for k, v := range tt.form {
-				req.Form[k] = v
-			}
-			handleErr := h.HandleTokenEndpointRequest(t.Context(), req)
-			requireOAuthError(t, handleErr, tt.wantCode, "")
-			assert.Equal(t, tt.wantHint, unwrapOAuth(t, handleErr).HintField)
-
-			resp := fosite.NewAccessResponse()
-			require.Error(t, h.PopulateTokenEndpointResponse(t.Context(), req, resp))
-			assert.Empty(t, resp.GetAccessToken())
-			assert.Zero(t, store.reads, "the request check comes before any grant is read")
-			assert.Empty(t, store.created)
-		})
-	}
+	req := idJAGRequest("x.ok")
+	resp := fosite.NewAccessResponse()
+	handleErr := h.HandleTokenEndpointRequest(t.Context(), req)
+	requireOAuthError(t, handleErr, "invalid_request", "")
+	assert.Equal(t, "The 'actor_token' parameter is required, once, for this client.",
+		unwrapOAuth(t, handleErr).HintField)
+	require.Error(t, h.PopulateTokenEndpointResponse(t.Context(), req, resp))
+	assert.Empty(t, resp.GetAccessToken())
+	assert.Zero(t, store.reads, "the parameter check comes before any grant is read")
+	assert.Empty(t, store.created)
 }
 
 // TestIDJAGInternalFailuresAreGeneric covers internal failures on the ID-JAG
@@ -467,15 +448,11 @@ func linesFor(logs, clientID string) []string {
 	return out
 }
 
-// TestIDJAGLogs pins what the ID-JAG path logs on failure: one WARN line with
-// the reason and without sub_id, the presented token or upstream_subject. A
-// signing failure keeps its cause off the line, in the error's debug field,
-// which the token endpoint logs at ERROR (serverFailure). A successful mint is
-// one Debug line with the jti and sub_id. Each case uses a client_id no other
-// test uses, because the default logger is process-wide.
-//
-//nolint:paralleltest // captures the process-global slog default
-func TestIDJAGLogs(t *testing.T) {
+// captureLogs swaps the process-wide default logger for one that writes Debug
+// and above to the returned buffer, until the test ends. Callers must not run
+// in parallel.
+func captureLogs(t *testing.T) *syncBuffer {
+	t.Helper()
 	logs := &syncBuffer{}
 	prev := slog.Default()
 	prevWriter, prevFlags := log.Writer(), log.Flags()
@@ -487,6 +464,19 @@ func TestIDJAGLogs(t *testing.T) {
 		log.SetOutput(prevWriter)
 		log.SetFlags(prevFlags)
 	})
+	return logs
+}
+
+// TestIDJAGLogs pins what the ID-JAG path logs on failure: one WARN line with
+// the reason and without sub_id, the presented token or upstream_subject. A
+// signing failure keeps its cause off the line, in the error's debug field,
+// which the token endpoint logs at ERROR (serverFailure). A successful mint is
+// one Debug line with the jti and sub_id. Each case uses a client_id no other
+// test uses, because the default logger is process-wide.
+//
+//nolint:paralleltest // captures the process-global slog default
+func TestIDJAGLogs(t *testing.T) {
+	logs := captureLogs(t)
 
 	const token = "presented-token-value.ok"
 	tests := []struct {
@@ -494,7 +484,6 @@ func TestIDJAGLogs(t *testing.T) {
 		clientID string
 		required []string
 		mutate   func(*storage.ExchangeGrant)
-		profiled bool // the client has an actor profile
 		signer   *recordingSigner
 		code     string // "" is a successful mint
 		reason   string
@@ -507,8 +496,6 @@ func TestIDJAGLogs(t *testing.T) {
 		{name: "a missing claim", clientID: "idjag-log-unit-missing", required: []string{"upstream_subject"},
 			mutate: func(g *storage.ExchangeGrant) { g.UpstreamSubject = "" },
 			code:   "invalid_request", reason: reasonUpstreamSubjectMissing},
-		{name: "a client with an actor profile", clientID: "idjag-log-unit-profiled", profiled: true,
-			code: "unauthorized_client", reason: refuseActorUnavailable},
 		{name: "a signing failure", clientID: "idjag-log-unit-sign",
 			signer: &recordingSigner{err: errors.New("signing key kid-42 is missing")},
 			code:   "server_error", reason: refuseInternal, debug: "kid-42"},
@@ -521,20 +508,11 @@ func TestIDJAGLogs(t *testing.T) {
 			}
 			h := idJAGHandler(t, idJAGStore(grant), tt.required...)
 			policy := h.clientPolicies[testRefreshClient]
-			if tt.profiled {
-				policy.ActorProfile = &ActorProfile{Name: "broker", ActorTokenType: oauthproto.TokenTypeJWT}
-			}
 			h.clientPolicies[tt.clientID] = policy
 			if tt.signer != nil {
 				h.signer = tt.signer
 			}
 			req := idJAGRequest(token)
-			if tt.profiled {
-				// A well-formed request, so it reaches the refusal that stands in
-				// for the validator call.
-				req.Form.Set("actor_token", "agent-token")
-				req.Form.Set("actor_token_type", oauthproto.TokenTypeJWT)
-			}
 			req.Client = &fosite.DefaultClient{ID: tt.clientID, GrantTypes: fosite.Arguments{oauthproto.GrantTypeTokenExchange}}
 
 			resp := fosite.NewAccessResponse()
@@ -570,6 +548,56 @@ func TestIDJAGLogs(t *testing.T) {
 			for _, secret := range []string{token, "unit-upstream-value", "unit-sub-id", "kid-42"} {
 				assert.NotContains(t, lines[0], secret)
 			}
+		})
+	}
+}
+
+func TestGrantUpstreamIdentity(t *testing.T) {
+	t.Parallel()
+
+	const (
+		subID     = `{"format":"iss_sub","iss":"https://idp.example","sub":"s-1"}`
+		upstream  = `{"iss":"https://idp.example","claim":"oid","value":"v-1"}`
+		bothFault = "the grant's stored sub_id or upstream_subject has a missing or empty member"
+	)
+	tests := []struct {
+		name     string
+		subID    string
+		upstream string
+		want     UpstreamIdentity
+		wantErr  string
+	}{
+		{name: "neither recorded is the zero value"},
+		{name: "both recorded", subID: subID, upstream: upstream, want: UpstreamIdentity{
+			Issuer: "https://idp.example", Subject: "s-1", StableClaim: "oid", StableValue: "v-1"}},
+		{name: "only sub_id", subID: subID,
+			wantErr: "the grant recorded only one of sub_id and upstream_subject"},
+		{name: "only upstream_subject", upstream: upstream,
+			wantErr: "the grant recorded only one of sub_id and upstream_subject"},
+		{name: "sub_id is not an object", subID: `"s-1"`, upstream: upstream,
+			wantErr: "the grant's stored sub_id is not a JSON object of strings"},
+		{name: "upstream_subject is not an object", subID: subID, upstream: `["v-1"]`,
+			wantErr: "the grant's stored upstream_subject is not a JSON object of strings"},
+		{name: "sub_id has another format", subID: `{"format":"opaque","iss":"https://idp.example","sub":"s-1"}`,
+			upstream: upstream, wantErr: "the grant's stored sub_id has a format other than iss_sub"},
+		{name: "an empty member", subID: subID, upstream: `{"iss":"https://idp.example","claim":"oid","value":""}`,
+			wantErr: bothFault},
+		{name: "the issuers differ", subID: subID, upstream: `{"iss":"https://other.example","claim":"oid","value":"v-1"}`,
+			wantErr: "the grant's stored sub_id and upstream_subject name different issuers"},
+		{name: "a later null duplicate resets a member", subID: subID,
+			upstream: `{"iss":"https://idp.example","claim":"oid","value":"v-1","value":null}`, wantErr: bothFault},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := grantUpstreamIdentity(&storage.ExchangeGrant{SubjectIdentifier: tc.subID, UpstreamSubject: tc.upstream})
+			if tc.wantErr != "" {
+				require.EqualError(t, err, tc.wantErr)
+				assert.Zero(t, got)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, got)
 		})
 	}
 }

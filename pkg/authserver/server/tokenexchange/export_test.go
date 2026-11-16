@@ -5,7 +5,10 @@ package tokenexchange
 
 import (
 	"context"
+	"testing"
 	"time"
+
+	"github.com/stacklok/toolhive/pkg/authserver/storage"
 )
 
 // ValidateActorWithLimiterForTest exposes validateActor to the external test package, which
@@ -44,3 +47,45 @@ func ValidateActorForTest(
 // ActorValidationTimeoutForTest is the production validation budget, so tests
 // that are not about the timeout run with the same budget the server uses.
 const ActorValidationTimeoutForTest = actorValidationTimeout
+
+// WithActorValidationTimeoutForTest and WithClockForTest expose the
+// RefreshTokenFactory options that control actor validation timing.
+var (
+	WithActorValidationTimeoutForTest = withActorValidationTimeout
+	WithClockForTest                  = withClock
+)
+
+// LogBufferForTest is the concurrency-safe log sink CaptureLogsForTest returns.
+type LogBufferForTest = syncBuffer
+
+// CaptureLogsForTest routes the process-wide default logger to the returned
+// buffer until the test ends. Callers must not run in parallel.
+var CaptureLogsForTest = captureLogs
+
+// NewRefreshTokenHandlerForTest builds a RefreshTokenHandler through
+// RefreshTokenFactory with a test signer, the access-token issuer
+// "https://auth.example.com" and a store that serves grants keyed by
+// signature. A presented refresh token's signature is the text after its last
+// dot, and a token that starts with "bad" fails its HMAC check.
+func NewRefreshTokenHandlerForTest(
+	t *testing.T, policies map[string]ConfiguredClientPolicy, grants map[string]storage.ExchangeGrant,
+	options ...RefreshTokenOption,
+) *RefreshTokenHandler {
+	t.Helper()
+	return buildRefreshTokenHandler(t, policies, &grantsBySignature{grants: grants}, options...)
+}
+
+// grantsBySignature serves fixed grants by signature and reports
+// storage.ErrNotFound for any other.
+type grantsBySignature struct {
+	storage.ExchangeGrantStorage
+	grants map[string]storage.ExchangeGrant
+}
+
+func (s *grantsBySignature) GetExchangeGrant(_ context.Context, signature string) (*storage.ExchangeGrant, error) {
+	g, ok := s.grants[signature]
+	if !ok {
+		return nil, storage.ErrNotFound
+	}
+	return &g, nil
+}

@@ -438,9 +438,7 @@ func TestCheckIDJAGRequest(t *testing.T) {
 
 // TestCheckIDJAGRequestActorProfile pins the actor-token checks for a client
 // with an actor profile. "Exactly one" counts every value, empty ones
-// included: the parameter appears once and that value is non-empty. A request
-// that passes every check is refused with unauthorized_client, because issuance does
-// not call the actor validator yet.
+// included: the parameter appears once and that value is non-empty.
 func TestCheckIDJAGRequestActorProfile(t *testing.T) {
 	t.Parallel()
 
@@ -462,20 +460,20 @@ func TestCheckIDJAGRequestActorProfile(t *testing.T) {
 		tokenHint  = "The 'actor_token' parameter is required, once, for this client."
 		typeHint   = "The 'actor_token_type' parameter must name the token type configured for this client, once."
 		targetHint = "The 'audience' and 'resource' parameters do not name a target this client may request an ID-JAG for."
-		guardHint  = "Actor-token validation is not available."
 	)
 
 	tests := []struct {
 		name     string
 		mutate   func(url.Values)
-		wantCode string
+		wantCode string // empty for success
 		wantHint string
 	}{
-		{name: "a valid request fails closed", mutate: func(url.Values) {},
-			wantCode: "unauthorized_client", wantHint: guardHint},
+		{name: "valid", mutate: func(url.Values) {}},
 		{name: "actor_token missing", mutate: func(f url.Values) { f.Del("actor_token") },
 			wantCode: "invalid_request", wantHint: tokenHint},
 		{name: "actor_token empty", mutate: func(f url.Values) { f.Set("actor_token", "") },
+			wantCode: "invalid_request", wantHint: tokenHint},
+		{name: "actor_token only spaces", mutate: func(f url.Values) { f.Set("actor_token", "  ") },
 			wantCode: "invalid_request", wantHint: tokenHint},
 		{name: "two actor_tokens", mutate: func(f url.Values) { f["actor_token"] = []string{"a", "b"} },
 			wantCode: "invalid_request", wantHint: tokenHint},
@@ -516,7 +514,7 @@ func TestCheckIDJAGRequestActorProfile(t *testing.T) {
 			mutate:   func(f url.Values) { f.Set("authorization_details", "[]"); f.Del("actor_token") },
 			wantCode: "invalid_authorization_details",
 			wantHint: "The 'authorization_details' parameter is not supported when requesting an ID-JAG."},
-		{name: "unknown target is reported before the guard",
+		{name: "unknown target still reports the target",
 			mutate:   func(f url.Values) { f.Set(mintTestAudienceParam, "https://unknown.example.com") },
 			wantCode: "invalid_target", wantHint: targetHint},
 		{name: "a bad actor token is reported before a bad target",
@@ -533,6 +531,13 @@ func TestCheckIDJAGRequestActorProfile(t *testing.T) {
 			tt.mutate(form)
 
 			shape, err := checkIDJAGRequest(form, policy)
+			if tt.wantCode == "" {
+				require.NoError(t, err)
+				assert.Equal(t, idJAGRequestShape{
+					Target: target, Resource: mintTestResource, ActorToken: "actor",
+				}, shape)
+				return
+			}
 			rfc := requireMintOAuthError(t, err, tt.wantCode)
 			assert.Equal(t, tt.wantHint, rfc.HintField)
 			assert.Equal(t, idJAGRequestShape{}, shape)

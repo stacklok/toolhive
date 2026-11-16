@@ -33,16 +33,15 @@ var _ fosite.TokenEndpointHandler = (*RefreshTokenHandler)(nil)
 // Reasons logged with a refusal. They are fixed strings; the
 // authorization_details reasons are the ones returned to the client.
 const (
-	refuseUnsupportedType  = "unsupported_token_type"
-	refuseSubjectToken     = reasonSubjectInvalid
-	refuseRequestParam     = "request_parameter_refused"
-	refuseActorUnavailable = "actor_validation_unavailable"
-	refuseDetailsInvalid   = "authorization_details_invalid"
-	refuseReplay           = "token_used"
-	refuseBadToken         = "token_invalid"
-	refuseUnknownGrant     = "not_found_or_other_client"
-	refuseInternal         = "internal_error"
-	refuseStore            = "store_failure"
+	refuseUnsupportedType = "unsupported_token_type"
+	refuseSubjectToken    = reasonSubjectInvalid
+	refuseRequestParam    = "request_parameter_refused"
+	refuseDetailsInvalid  = "authorization_details_invalid"
+	refuseReplay          = "token_used"
+	refuseBadToken        = "token_invalid"
+	refuseUnknownGrant    = "not_found_or_other_client"
+	refuseInternal        = "internal_error"
+	refuseStore           = "store_failure"
 )
 
 // Reasons returned to the client as the whole error_description when a request
@@ -125,8 +124,11 @@ type RefreshTokenHandler struct {
 	registry       *authorizationdetails.Registry
 	clientPolicies map[string]ConfiguredClientPolicy
 	refreshScopes  fosite.RefreshTokenScopesProvider
-	signer         idJAGSigner // signs ID-JAGs with typ oauth-id-jag+jwt; *server.Signer in production
-	issuer         string      // the access-token issuer
+	signer         idJAGSigner   // signs ID-JAGs with typ oauth-id-jag+jwt; *server.Signer in production
+	issuer         string        // the access-token issuer
+	actorLimiter   *actorLimiter // one per server, shared by every actor validation
+	actorTimeout   time.Duration // the budget of one actor validation
+	clock          func() time.Time
 }
 
 // RefreshTokenOption configures RefreshTokenFactory. Factory takes FactoryOption
@@ -135,6 +137,9 @@ type RefreshTokenOption func(*refreshTokenOptions)
 
 type refreshTokenOptions struct {
 	exchangeGrantStore storage.ExchangeGrantStorage
+	actorCapacity      int
+	actorTimeout       time.Duration
+	clock              func() time.Time
 }
 
 // WithExchangeGrantStorage gives RefreshTokenFactory the store that holds the
@@ -143,6 +148,25 @@ type refreshTokenOptions struct {
 // token before it needs the store.
 func WithExchangeGrantStorage(store storage.ExchangeGrantStorage) RefreshTokenOption {
 	return func(o *refreshTokenOptions) { o.exchangeGrantStore = store }
+}
+
+// withActorValidationTimeout replaces the budget of one actor validation, which
+// is actorValidationTimeout by default.
+func withActorValidationTimeout(timeout time.Duration) RefreshTokenOption {
+	return func(o *refreshTokenOptions) { o.actorTimeout = timeout }
+}
+
+// withClock replaces time.Now as the handler's clock: the instant that decides
+// a request and the instant an actor validator's answer is checked.
+func withClock(clock func() time.Time) RefreshTokenOption {
+	return func(o *refreshTokenOptions) { o.clock = clock }
+}
+
+// withActorValidatorCapacity replaces the number of actor validator calls that
+// may run at once, which is defaultActorValidatorCapacity by default. A value
+// below 1 fails RefreshTokenFactory.
+func withActorValidatorCapacity(capacity int) RefreshTokenOption {
+	return func(o *refreshTokenOptions) { o.actorCapacity = capacity }
 }
 
 // RefreshTokenFactory returns a server.Factory that creates the
@@ -158,8 +182,9 @@ func WithExchangeGrantStorage(store storage.ExchangeGrantStorage) RefreshTokenOp
 // (empty issuer, a map key that is not the target's issuer, empty client_id, no
 // or an empty resource, a lifetime that is not positive).
 //
-// The authorization_details registry is built here, once, and startup fails if
-// that fails. It is private to this handler.
+// The authorization_details registry and the actor validator limiter are built
+// here, once, and startup fails if either fails. Both are private to this
+// handler, so every actor validation on the server shares one limiter.
 func RefreshTokenFactory(
 	clientPolicies map[string]ConfiguredClientPolicy, signer *server.Signer, options ...RefreshTokenOption,
 ) (server.Factory, error) {
@@ -180,6 +205,16 @@ func RefreshTokenFactory(
 		return nil, fmt.Errorf("tokenexchange: failed to build the exchange grant registry: %w", err)
 	}
 	resolved := resolveRefreshTokenOptions(options)
+	if resolved.actorTimeout <= 0 {
+		return nil, fmt.Errorf("tokenexchange: the actor validation timeout must be positive, got %s", resolved.actorTimeout)
+	}
+	if resolved.clock == nil {
+		return nil, errors.New("tokenexchange: the clock must not be nil")
+	}
+	limiter, err := newActorLimiter(resolved.actorCapacity)
+	if err != nil {
+		return nil, fmt.Errorf("tokenexchange: %w", err)
+	}
 	if resolved.exchangeGrantStore == nil {
 		for _, id := range clientIDs {
 			if len(clientPolicies[id].ExchangeRefreshTokens) > 0 {
@@ -207,6 +242,9 @@ func RefreshTokenFactory(
 			refreshScopes:  config,
 			signer:         signer,
 			issuer:         config.GetAccessTokenIssuer(),
+			actorLimiter:   limiter,
+			actorTimeout:   resolved.actorTimeout,
+			clock:          resolved.clock,
 		}, nil
 	}, nil
 }
@@ -231,14 +269,15 @@ func (h *RefreshTokenHandler) HandleTokenEndpointRequest(ctx context.Context, re
 	if !h.CanHandleTokenEndpointRequest(ctx, requester) {
 		return errorsx.WithStack(fosite.ErrUnknownRequest)
 	}
-	_, err := h.decide(ctx, requester, time.Now())
+	_, err := h.decide(ctx, requester, h.clock())
 	return err
 }
 
 // PopulateTokenEndpointResponse decides the request again and issues the refresh
 // token or mints the ID-JAG. The second decision verifies the subject token
-// right before it is consumed, and re-reads a presented grant right before an
-// ID-JAG is signed. The grant carries the subject token's (iss, jti), so a reused
+// right before it is consumed, and re-reads a presented grant before an ID-JAG
+// is signed; for a client with an actor profile the validator call comes in
+// between, and the grant is not read again after it. The grant carries the subject token's (iss, jti), so a reused
 // subject token fails in issue with token_used. A child grant has no (iss, jti)
 // marker, so token_used applies only to top-level grants. The response is the RFC 8693
 // shape with token_type N_A and no refresh_token member; fosite writes
@@ -249,7 +288,7 @@ func (h *RefreshTokenHandler) PopulateTokenEndpointResponse(
 	if !h.CanHandleTokenEndpointRequest(ctx, requester) {
 		return errorsx.WithStack(fosite.ErrUnknownRequest)
 	}
-	decided, err := h.decide(ctx, requester, time.Now())
+	decided, err := h.decide(ctx, requester, h.clock())
 	if err != nil {
 		return err
 	}
@@ -890,7 +929,11 @@ func exchangeGrantDetailsError(err error) (string, error) {
 }
 
 func resolveRefreshTokenOptions(options []RefreshTokenOption) refreshTokenOptions {
-	var resolved refreshTokenOptions
+	resolved := refreshTokenOptions{
+		actorCapacity: defaultActorValidatorCapacity,
+		actorTimeout:  actorValidationTimeout,
+		clock:         time.Now,
+	}
 	for _, option := range options {
 		option(&resolved)
 	}

@@ -10,13 +10,16 @@ import (
 	"net/url"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
 
 	"github.com/stacklok/toolhive/pkg/authserver"
 	authserverrunner "github.com/stacklok/toolhive/pkg/authserver/runner"
 	"github.com/stacklok/toolhive/pkg/authserver/server/tokenexchange"
+	"github.com/stacklok/toolhive/pkg/authserver/server/tokenexchange/mocks"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
@@ -101,6 +104,15 @@ func startAS2(t *testing.T, listener net.Listener, as1Issuer string) *as2Env {
 // broker has one ID-JAG target: as2, with one resource.
 func startTwoServerIDJAG(t *testing.T) *twoServerIDJAG {
 	t.Helper()
+	return startTwoServerIDJAGWith(t, nil)
+}
+
+// startTwoServerIDJAGWith is startTwoServerIDJAG with mutate applied to AS-1's
+// config and opts passed to AS-1's embedded server.
+func startTwoServerIDJAGWith(
+	t *testing.T, mutate func(cfg *authserver.RunConfig), opts ...authserverrunner.EmbeddedAuthServerOption,
+) *twoServerIDJAG {
+	t.Helper()
 	listen := func() net.Listener {
 		listener, err := net.Listen("tcp", "127.0.0.1:0")
 		require.NoError(t, err)
@@ -121,15 +133,24 @@ func startTwoServerIDJAG(t *testing.T) *twoServerIDJAG {
 			}
 			delegate.TokenExchange.IDJAG.Targets = []authserver.DelegateClientIDJAGTarget{xrtIDJAGTarget(as2.issuer)}
 		}
-	})
+		if mutate != nil {
+			mutate(cfg)
+		}
+	}, opts...)
 	return &twoServerIDJAG{as1: as1, as2: as2}
 }
 
 // mintIDJAG mints an ID-JAG for AS-2 from a fresh grant for user-1.
 func (h *twoServerIDJAG) mintIDJAG(t *testing.T) string {
 	t.Helper()
+	return h.mintIDJAGWith(t, nil)
+}
+
+// mintIDJAGWith is mintIDJAG with the request form changed by mutate.
+func (h *twoServerIDJAG) mintIDJAGWith(t *testing.T, mutate func(url.Values)) string {
+	t.Helper()
 	grant := h.as1.idJAGGrant(t, h.as1.broker)
-	res := h.as1.requestIDJAG(t, h.as1.broker, grant, h.as2.issuer)
+	res := h.as1.requestIDJAGWith(t, h.as1.broker, grant, h.as2.issuer, mutate)
 	require.Equal(t, http.StatusOK, res.status, res.body)
 	return res.str(t, "access_token")
 }
@@ -148,4 +169,23 @@ func TestIDJAGRedemptionAcrossTwoServers(t *testing.T) {
 	assert.Equal(t, []any{xrtIDJAGResource}, access["aud"])
 	assert.Equal(t, xrtTargetClientID, access["client_id"])
 	assert.NotContains(t, access, "act")
+}
+
+// TestIDJAGRedemptionCarriesActorAcrossTwoServers proves the act claim AS-1
+// puts in an ID-JAG for a client with an actor profile survives redemption at
+// AS-2 into AS-2's signed access token.
+func TestIDJAGRedemptionCarriesActorAcrossTwoServers(t *testing.T) {
+	t.Parallel()
+	const agentID = "spiffe://example.org/ns/agents/sa/broker"
+	validator := mocks.NewMockActorTokenValidator(gomock.NewController(t))
+	validator.EXPECT().ValidateActor(gomock.Any(), gomock.Any()).Return(tokenexchange.ActorResult{
+		AgentID: agentID, ExpiresAt: time.Now().Add(time.Hour),
+	}, nil).Times(1)
+	h := startTwoServerIDJAGWith(t, setBrokerActorProfile, withActorTestValidator(validator))
+
+	res := h.as2.redeem(t, h.as2.client, h.mintIDJAGWith(t, actorPairWith("actor-token")), xrtIDJAGResource)
+	require.Equal(t, http.StatusOK, res.status, res.body)
+	access := accessTokenClaims(t, h.as2.embedded, res.str(t, "access_token"))
+	assert.Equal(t, h.as1.issuer+"#user-1", access["sub"], "sub is <AS-1 iss>#<sub>")
+	assert.Equal(t, map[string]any{"iss": actorTestActIssuer, "sub": agentID}, access["act"])
 }

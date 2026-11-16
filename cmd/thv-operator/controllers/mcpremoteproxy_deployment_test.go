@@ -131,8 +131,10 @@ func TestDeploymentForMCPRemoteProxy(t *testing.T) {
 			validate: func(t *testing.T, dep *appsv1.Deployment) {
 				t.Helper()
 				container := dep.Spec.Template.Spec.Containers[0]
-				// User-provided fields take precedence; missing fields keep defaults.
-				assert.Equal(t, resource.MustParse("50m"), container.Resources.Requests[corev1.ResourceCPU])
+				// User-provided fields take precedence; missing fields keep defaults,
+				// except the CPU request, which Kubernetes copies from the user's CPU
+				// limit at Pod creation.
+				assert.NotContains(t, container.Resources.Requests, corev1.ResourceCPU)
 				assert.Equal(t, resource.MustParse("128Mi"), container.Resources.Requests[corev1.ResourceMemory])
 				assert.Equal(t, resource.MustParse("1"), container.Resources.Limits[corev1.ResourceCPU])
 				assert.Equal(t, resource.MustParse("256Mi"), container.Resources.Limits[corev1.ResourceMemory])

@@ -267,16 +267,15 @@ func TestMCPRemoteProxyPodTemplateSpecResources(t *testing.T) {
 			},
 		},
 		{
-			name: "limits below the default requests lower the defaulted requests",
+			// Kubernetes copies the limits into the missing requests at Pod
+			// creation, as it does without defaults.
+			name: "limits without requests drop the default requests",
 			podTemplateSpec: `{"spec":{"containers":[{"name":"toolhive",` +
-				`"resources":{"limits":{"cpu":"20m","memory":"32Mi"}}}]}}`,
-			wantRequests: corev1.ResourceList{
-				corev1.ResourceCPU:    resource.MustParse("20m"),
-				corev1.ResourceMemory: resource.MustParse("32Mi"),
-			},
+				`"resources":{"limits":{"cpu":"20m","memory":"2Gi"}}}]}}`,
+			wantRequests: nil,
 			wantLimits: corev1.ResourceList{
 				corev1.ResourceCPU:    resource.MustParse("20m"),
-				corev1.ResourceMemory: resource.MustParse("32Mi"),
+				corev1.ResourceMemory: resource.MustParse("2Gi"),
 			},
 		},
 		{
@@ -287,8 +286,7 @@ func TestMCPRemoteProxyPodTemplateSpecResources(t *testing.T) {
 			podTemplateSpec: `{"spec":{"containers":[{"name":"toolhive",` +
 				`"resources":{"limits":{"memory":"768Mi"}}}]}}`,
 			wantRequests: corev1.ResourceList{
-				corev1.ResourceCPU:    resource.MustParse("50m"),
-				corev1.ResourceMemory: resource.MustParse("64Mi"),
+				corev1.ResourceCPU: resource.MustParse("50m"),
 			},
 			wantLimits: corev1.ResourceList{
 				corev1.ResourceCPU:    resource.MustParse("200m"),

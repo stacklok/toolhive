@@ -393,8 +393,9 @@ func TestMergeResourceRequirements(t *testing.T) {
 				Requests: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("128Mi")},
 				Limits:   corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("1")},
 			},
+			// No CPU request: Kubernetes copies the user's CPU limit at Pod creation.
 			wantRequests: map[corev1.ResourceName]string{
-				corev1.ResourceCPU: "50m", corev1.ResourceMemory: "128Mi",
+				corev1.ResourceMemory: "128Mi",
 			},
 			wantLimits: map[corev1.ResourceName]string{
 				corev1.ResourceCPU: "1", corev1.ResourceMemory: "256Mi",
@@ -416,18 +417,18 @@ func TestMergeResourceRequirements(t *testing.T) {
 			},
 		},
 		{
-			name: "user limit below default request lowers the defaulted request",
+			// Kubernetes copies a limit into a missing request at Pod creation, so
+			// a limits-only container keeps its QoS class and reservation.
+			name: "user limit without a request drops the default request",
 			user: corev1.ResourceRequirements{
 				Limits: corev1.ResourceList{
 					corev1.ResourceCPU:    resource.MustParse("20m"),
-					corev1.ResourceMemory: resource.MustParse("32Mi"),
+					corev1.ResourceMemory: resource.MustParse("2Gi"),
 				},
 			},
-			wantRequests: map[corev1.ResourceName]string{
-				corev1.ResourceCPU: "20m", corev1.ResourceMemory: "32Mi",
-			},
+			wantRequests: map[corev1.ResourceName]string{},
 			wantLimits: map[corev1.ResourceName]string{
-				corev1.ResourceCPU: "20m", corev1.ResourceMemory: "32Mi",
+				corev1.ResourceCPU: "20m", corev1.ResourceMemory: "2Gi",
 			},
 		},
 		{

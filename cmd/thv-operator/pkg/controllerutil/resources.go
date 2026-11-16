@@ -74,10 +74,16 @@ func BuildDefaultProxyRunnerResourceRequirements() corev1.ResourceRequirements {
 // MergeResourceRequirements merges user-provided resource requirements on top of
 // defaults. User values take precedence for any field that is explicitly set.
 //
-// A defaulted value never contradicts a user value: when the user sets only one
-// side of a request/limit pair, the defaulted side is clamped so the request does
-// not exceed the limit, which the API server would otherwise reject. A user who
-// sets both sides inconsistently gets their values unchanged.
+// A defaulted value never contradicts a user value:
+//   - When the user sets a limit without a request, the default request is
+//     dropped so Kubernetes copies the limit into the request at Pod creation,
+//     as it would with no defaults. This keeps a limits-only container's QoS
+//     class and its reservation unchanged.
+//   - When the user sets a request without a limit and the request is above
+//     the default limit, the limit is raised to match the request, which the
+//     API server would otherwise reject.
+//
+// A user who sets both sides inconsistently gets their values unchanged.
 func MergeResourceRequirements(defaults, user corev1.ResourceRequirements) corev1.ResourceRequirements {
 	merged := corev1.ResourceRequirements{
 		Requests: corev1.ResourceList{},
@@ -95,6 +101,9 @@ func MergeResourceRequirements(defaults, user corev1.ResourceRequirements) corev
 	}
 	for resourceName, quantity := range user.Limits {
 		merged.Limits[resourceName] = quantity.DeepCopy()
+		if _, userSetRequest := user.Requests[resourceName]; !userSetRequest {
+			delete(merged.Requests, resourceName)
+		}
 	}
 
 	for resourceName, request := range merged.Requests {
@@ -102,13 +111,8 @@ func MergeResourceRequirements(defaults, user corev1.ResourceRequirements) corev
 		if !hasLimit || request.Cmp(limit) <= 0 {
 			continue
 		}
-		_, userSetRequest := user.Requests[resourceName]
-		_, userSetLimit := user.Limits[resourceName]
-		switch {
-		case userSetRequest && !userSetLimit:
+		if _, userSetLimit := user.Limits[resourceName]; !userSetLimit {
 			merged.Limits[resourceName] = request.DeepCopy()
-		case userSetLimit && !userSetRequest:
-			merged.Requests[resourceName] = limit.DeepCopy()
 		}
 	}
 
@@ -128,8 +132,8 @@ func MergeResourceRequirements(defaults, user corev1.ResourceRequirements) corev
 // Values are layered in increasing precedence: defaults, then the CRD's
 // resources field, then any resources the podTemplateSpec sets on the container
 // named containerName. The result goes through MergeResourceRequirements, so a
-// defaulted value never pushes a request above a limit the user chose, or a
-// limit below a request the user chose, whichever field the user set it in.
+// defaulted value never contradicts a request or limit the user chose,
+// whichever field the user set it in.
 //
 // The podTemplateSpec is still applied afterwards as a strategic merge patch.
 // That re-sets the same values, except that a null entry deletes a key. A key

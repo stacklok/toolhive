@@ -249,6 +249,15 @@ func TestMiddleware_AttributesToolCallsToClients(t *testing.T) {
 			want: map[string]int64{"vscode": 2},
 		},
 		{
+			name: "rejected re-initialize on a session keeps its client",
+			calls: []mcpCall{
+				{method: "initialize", params: initializeParams("claude-code"), responseSession: "s1"},
+				{method: "initialize", params: initializeParams("cursor"), sessionHeader: "s1"},
+				{method: "tools/call", params: toolCall, sessionHeader: "s1"},
+			},
+			want: map[string]int64{"claude-code": 1},
+		},
+		{
 			name: "unknown session",
 			calls: []mcpCall{
 				{method: "initialize", params: initializeParams("claude-code"), responseSession: "s1"},
@@ -311,6 +320,30 @@ func TestMiddleware_AttributesToolCallsToClients(t *testing.T) {
 			assert.Equal(t, sum, total, "counter total must equal the per-client sum")
 		})
 	}
+}
+
+// TestMiddleware_RecordsSessionBeforeResponse checks that the session is known
+// by the time the initialize response reaches the client, so a tool call sent
+// right after it is attributed.
+func TestMiddleware_RecordsSessionBeforeResponse(t *testing.T) {
+	t.Parallel()
+
+	collector, err := NewCollector()
+	require.NoError(t, err) // never started or flushed
+	mw := NewMiddleware(collector)
+
+	var seen string
+	inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set(sessionIDHeader, "s1")
+		w.WriteHeader(http.StatusOK)
+		seen = mw.sessions.lookup("s1")
+	})
+	body := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":` + initializeParams("claude-code") + `}`
+	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	mcp.ParsingMiddleware(mw.Handler()(inner)).ServeHTTP(httptest.NewRecorder(), req)
+
+	assert.Equal(t, "claude-code", seen)
 }
 
 func TestMiddleware_NilCollectorPassesThrough(t *testing.T) {

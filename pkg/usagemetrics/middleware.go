@@ -51,16 +51,15 @@ func (m *Middleware) Handler() types.MiddlewareFunction {
 
 			switch parsed.Method {
 			case "initialize":
-				// Legacy clients name themselves once, at initialize. The session
-				// ID is in the request for SSE and in the response for
-				// streamable HTTP, so look again after the handler has run.
+				// Legacy clients name themselves once, at initialize. The
+				// session is recorded when the response starts, before the
+				// client can see it and send its first tool call.
 				client := NormalizeClientName(initializeClientName(parsed.Params))
-				sessionID := requestSessionID(r)
-				next.ServeHTTP(w, r)
-				if sessionID == "" {
-					sessionID = w.Header().Get(sessionIDHeader)
-				}
-				m.sessions.remember(sessionID, client)
+				ow := &onFirstWrite{ResponseWriter: w, fn: func() {
+					m.sessions.remember(initializeSessionID(r, w), client)
+				}}
+				next.ServeHTTP(ow, r)
+				ow.before() // a handler that wrote nothing still gets an implicit 200
 				return
 			case "tools/call":
 				// Modern requests carry clientInfo on every request; Legacy
@@ -75,6 +74,61 @@ func (m *Middleware) Handler() types.MiddlewareFunction {
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+// initializeSessionID returns the session an initialize request opens, read
+// once the response headers are set. For streamable HTTP the server assigns it
+// in the response; a client must not send one on initialize, so a request that
+// carries the header but gets no new ID is a rejected or repeated initialize,
+// and the existing session keeps its client. SSE carries the session in the
+// request's query string.
+func initializeSessionID(r *http.Request, w http.ResponseWriter) string {
+	if id := w.Header().Get(sessionIDHeader); id != "" {
+		return id
+	}
+	if r.Header.Get(sessionIDHeader) != "" {
+		return ""
+	}
+	return requestSessionID(r)
+}
+
+// onFirstWrite calls fn once, just before the first byte or status of the
+// response is written. The caller calls before itself once the handler returns,
+// in case the handler wrote nothing.
+type onFirstWrite struct {
+	http.ResponseWriter
+	fn   func()
+	done bool
+}
+
+func (o *onFirstWrite) before() {
+	if !o.done {
+		o.done = true
+		o.fn()
+	}
+}
+
+func (o *onFirstWrite) WriteHeader(status int) {
+	o.before()
+	o.ResponseWriter.WriteHeader(status)
+}
+
+func (o *onFirstWrite) Write(b []byte) (int, error) {
+	o.before()
+	return o.ResponseWriter.Write(b)
+}
+
+// Flush supports streamed (SSE) initialize responses.
+func (o *onFirstWrite) Flush() {
+	o.before()
+	if f, ok := o.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+// Unwrap lets http.ResponseController reach the underlying writer.
+func (o *onFirstWrite) Unwrap() http.ResponseWriter {
+	return o.ResponseWriter
 }
 
 // Close cleans up any resources

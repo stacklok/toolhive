@@ -81,8 +81,7 @@ type ActorProfile struct {
 // ValidateActor is called once per issuance, after the grant checks and before the
 // ID-JAG is signed. ToolHive builds the act claim from the answer: sub is AgentID, and
 // iss is the issuer registered for this validator. A validator never sets claims
-// itself, and it never sets the issuer. Not applied yet: an accepted actor gets an
-// ID-JAG without act, and ExpiresAt does not cap its exp.
+// itself, and it never sets the issuer.
 //
 // # Result
 //
@@ -105,6 +104,12 @@ type ActorProfile struct {
 //
 // # Requirements
 //
+//   - Refuse unless the actor may act for the user in ActorRequest.Grant through the
+//     client in ActorRequest.ClientID. ToolHive does not check how the actor, the
+//     client and the user relate: a validator that only checks the credential's
+//     signature lets a client pair any user's grant with any agent's credential.
+//     Use ActorDeniedReasonApprovalRequired when the user could still approve the
+//     agent, and ActorDeniedReasonDenied otherwise.
 //   - Refuse with ActorDeniedReasonActorTokenExpired when the actor credential has expired.
 //     If the validator accepts a credential within its own clock-skew allowance, it
 //     may return that credential's past expiry in ExpiresAt, as long as it is less
@@ -343,6 +348,12 @@ func mapActorOutcome(res ActorResult, err error, checkedAt time.Time) (ActorResu
 // actorRefusal builds the client error for a refusal reason. The client sees only
 // the reason. A non-empty cause travels with WithWrap, which fosite does not
 // serialize, so the caller can log it.
+//
+// Every refusal is invalid_request, as RFC 8693 section 2.2.2 requires for an
+// actor_token that is unacceptable based on policy. The individual draft
+// draft-mcguinness-oauth-actor-profile-01 section 9 proposes an
+// actor_unauthorized code for policy refusals instead. Whether to follow it is
+// deferred while the draft is not adopted.
 func actorRefusal(reason ActorDeniedReason, cause string) error {
 	refusal := exactReason(fosite.ErrInvalidRequest.ErrorField, string(reason))
 	if cause != "" {

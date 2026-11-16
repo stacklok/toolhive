@@ -370,7 +370,7 @@ Each proxy (and each vMCP server) sends one report every 15 minutes, including w
 | `transport` | `stdio`, `sse`, `streamable-http`, `other` |
 | `server_kind` | `container`, `remote` |
 | `registry_source` | `builtin`, `custom_remote`, `custom_api`, `custom_local`, `none` |
-| `catalog_server` | The entry name, only for servers from the registry built into ToolHive; `custom` otherwise |
+| `catalog_server` | The entry name, only for servers from the registry built into ToolHive; `custom` for servers from any other registry; omitted for servers that came from no registry (`registry_source: none`) |
 | `runtime` | `docker`, `podman`, `colima`, `kubernetes`, `none`, `other` |
 | `auth_mode` | `none`, `oidc`, `local`, `embedded`, `other` |
 | `authz` | `on`, `off` |

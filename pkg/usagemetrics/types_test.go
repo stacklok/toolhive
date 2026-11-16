@@ -85,6 +85,11 @@ func TestProfileNormalize(t *testing.T) {
 			want: Profile{},
 		},
 		{
+			name: "no catalog server for a server from no registry",
+			in:   Profile{RegistrySource: ValueNone, CatalogServer: "my-private-server"},
+			want: Profile{RegistrySource: ValueNone},
+		},
+		{
 			name: "features filtered, de-duplicated and sorted",
 			in: Profile{Features: []string{
 				FeatureOutgoingAuth, "secret-feature", FeatureCodeMode, FeatureOutgoingAuth, FeatureOptimizer,

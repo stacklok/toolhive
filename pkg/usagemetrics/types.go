@@ -115,7 +115,8 @@ func (p Profile) normalize() Profile {
 		BackendCount:   p.BackendCount,
 		ToolCount:      p.ToolCount,
 	}
-	if out.RegistrySource != "" {
+	// A server that came from no registry has no catalog entry to report.
+	if out.RegistrySource != "" && out.RegistrySource != ValueNone {
 		out.CatalogServer = ValueCustom
 		if out.RegistrySource == ValueBuiltin && p.CatalogServer != "" {
 			out.CatalogServer = p.CatalogServer

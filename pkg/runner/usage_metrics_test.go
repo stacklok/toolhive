@@ -14,6 +14,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/authz"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	runtimemocks "github.com/stacklok/toolhive/pkg/container/runtime/mocks"
+	"github.com/stacklok/toolhive/pkg/container/templates"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 	"github.com/stacklok/toolhive/pkg/usagemetrics"
 )
@@ -105,6 +106,31 @@ func TestRunConfig_UsageMetricsProfile(t *testing.T) {
 				p.RegistrySource = usagemetrics.ValueBuiltin
 				p.CatalogServer = "fetch"
 			},
+		},
+		{
+			name:   "image built from a uvx package",
+			modify: func(c *RunConfig) { c.Image = generateImageName(templates.TransportTypeUVX, "mcp-server-fetch") },
+			expect: func(p *usagemetrics.Profile) { p.RegistrySource = usagemetrics.RegistrySourcePackageUVX },
+		},
+		{
+			name:   "image built from an npx package",
+			modify: func(c *RunConfig) { c.Image = generateImageName(templates.TransportTypeNPX, "@scope/server") },
+			expect: func(p *usagemetrics.Profile) { p.RegistrySource = usagemetrics.RegistrySourcePackageNPX },
+		},
+		{
+			name:   "image built from a go package",
+			modify: func(c *RunConfig) { c.Image = generateImageName(templates.TransportTypeGO, "github.com/x/server") },
+			expect: func(p *usagemetrics.Profile) { p.RegistrySource = usagemetrics.RegistrySourcePackageGo },
+		},
+		{
+			name:   "plain image",
+			modify: func(c *RunConfig) { c.Image = "ghcr.io/example/server:1.0" },
+			expect: func(*usagemetrics.Profile) {},
+		},
+		{
+			name:   "local image with an unknown kind",
+			modify: func(c *RunConfig) { c.Image = "toolhivelocal/custom:latest" },
+			expect: func(*usagemetrics.Profile) {},
 		},
 		{
 			name:   "local registry entry not in the catalog",

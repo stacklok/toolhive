@@ -369,8 +369,8 @@ Each proxy (and each vMCP server) sends one report every 15 minutes, including w
 | `calls_by_client` | `count` split by MCP client: `claude-code`, `claude-desktop`, `cursor`, `windsurf`, `vscode`, `cline`, `roo-code`, `continue`, `zed`, `goose`, `codex`, `gemini-cli`, `jetbrains`, `mcp-inspector`, `toolhive`, `vmcp`, `other`, `unknown` |
 | `transport` | `stdio`, `sse`, `streamable-http`, `other` |
 | `server_kind` | `container`, `remote` |
-| `registry_source` | `builtin`, `custom_remote`, `custom_api`, `custom_local`, `none` |
-| `catalog_server` | The entry name, only for servers from the registry built into ToolHive; `custom` for servers from any other registry; omitted for servers that came from no registry (`registry_source: none`) |
+| `registry_source` | Where the server definition came from: a registry (`builtin`, `custom_remote`, `custom_api`, `custom_local`), a package `thv` built into an image (`package_uvx`, `package_npx`, `package_go`; the package name is not sent), or `none` (a plain image or URL, and every Kubernetes workload). An image built with `thv build --tag` and run by that name counts as `none` |
+| `catalog_server` | The entry name, only for servers from the registry built into ToolHive; `custom` for servers from any other registry; omitted for package builds and `none` |
 | `runtime` | `docker`, `podman`, `colima`, `kubernetes`, `none`, `other` |
 | `auth_mode` | `none`, `oidc`, `local`, `embedded`, `other` |
 | `authz` | `on`, `off` |

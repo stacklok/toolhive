@@ -85,6 +85,11 @@ func TestProfileNormalize(t *testing.T) {
 			want: Profile{},
 		},
 		{
+			name: "no catalog server for a package build",
+			in:   Profile{RegistrySource: RegistrySourcePackageUVX, CatalogServer: "my-package"},
+			want: Profile{RegistrySource: RegistrySourcePackageUVX},
+		},
+		{
 			name: "no catalog server for a server from no registry",
 			in:   Profile{RegistrySource: ValueNone, CatalogServer: "my-private-server"},
 			want: Profile{RegistrySource: ValueNone},

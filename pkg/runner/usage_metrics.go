@@ -4,7 +4,10 @@
 package runner
 
 import (
+	"strings"
+
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
+	"github.com/stacklok/toolhive/pkg/container/templates"
 	"github.com/stacklok/toolhive/pkg/usagemetrics"
 )
 
@@ -55,6 +58,8 @@ func (c *RunConfig) UsageMetricsProfile() usagemetrics.Profile {
 // the name sent is one the built-in catalog already publishes.
 func (c *RunConfig) registrySource() string {
 	switch {
+	case c.RegistryServerName == "" && c.RemoteURL == "":
+		return packageBuildSource(c.Image)
 	case c.RegistryServerName == "":
 		return usagemetrics.ValueNone
 	case c.RegistryAPIURL != "":
@@ -87,6 +92,28 @@ func (c *RunConfig) authMode() string {
 		return usagemetrics.AuthModeEmbedded
 	case c.OIDCConfig != nil:
 		return usagemetrics.AuthModeOIDC
+	default:
+		return usagemetrics.ValueNone
+	}
+}
+
+// packageBuildSource classifies a container that came from no registry: an
+// image thv built from a uvx://, npx:// or go:// package (named by
+// generateImageName), or else a plain image. Only the package kind is
+// reported, never the package or image name. An image built with an explicit
+// name (thv build --tag) and run by that name counts as a plain image.
+func packageBuildSource(image string) string {
+	kind, _, ok := strings.Cut(strings.TrimPrefix(image, localImagePrefix), "-")
+	if !ok || !strings.HasPrefix(image, localImagePrefix) {
+		return usagemetrics.ValueNone
+	}
+	switch templates.TransportType(kind) {
+	case templates.TransportTypeUVX:
+		return usagemetrics.RegistrySourcePackageUVX
+	case templates.TransportTypeNPX:
+		return usagemetrics.RegistrySourcePackageNPX
+	case templates.TransportTypeGO:
+		return usagemetrics.RegistrySourcePackageGo
 	default:
 		return usagemetrics.ValueNone
 	}

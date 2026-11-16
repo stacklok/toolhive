@@ -34,8 +34,10 @@ type Profile struct {
 	Transport string `json:"transport,omitempty"`
 	// ServerKind is container or remote.
 	ServerKind string `json:"server_kind,omitempty"`
-	// RegistrySource is where the server definition came from: builtin,
-	// custom_remote, custom_api, custom_local or none.
+	// RegistrySource is where the server definition came from: a registry
+	// (builtin, custom_remote, custom_api, custom_local), a package that thv
+	// built into an image (package_uvx, package_npx, package_go), or none of
+	// these (a plain image or URL).
 	RegistrySource string `json:"registry_source,omitempty"`
 	// CatalogServer is the built-in registry entry name, or "custom".
 	CatalogServer string `json:"catalog_server,omitempty"`
@@ -74,6 +76,9 @@ const (
 	RegistrySourceCustomRemote = "custom_remote"
 	RegistrySourceCustomAPI    = "custom_api"
 	RegistrySourceCustomLocal  = "custom_local"
+	RegistrySourcePackageUVX   = "package_uvx"
+	RegistrySourcePackageNPX   = "package_npx"
+	RegistrySourcePackageGo    = "package_go"
 
 	RuntimeKubernetes = "kubernetes"
 
@@ -91,7 +96,8 @@ var (
 	allowedTransports      = []string{"stdio", "sse", "streamable-http"}
 	allowedServerKinds     = []string{ServerKindContainer, ServerKindRemote}
 	allowedRegistrySources = []string{
-		ValueBuiltin, RegistrySourceCustomRemote, RegistrySourceCustomAPI, RegistrySourceCustomLocal, ValueNone,
+		ValueBuiltin, RegistrySourceCustomRemote, RegistrySourceCustomAPI, RegistrySourceCustomLocal,
+		RegistrySourcePackageUVX, RegistrySourcePackageNPX, RegistrySourcePackageGo, ValueNone,
 	}
 	allowedRuntimes  = []string{"docker", "podman", "colima", RuntimeKubernetes, ValueNone}
 	allowedAuthModes = []string{ValueNone, AuthModeOIDC, AuthModeLocal, AuthModeEmbedded}
@@ -115,8 +121,8 @@ func (p Profile) normalize() Profile {
 		BackendCount:   p.BackendCount,
 		ToolCount:      p.ToolCount,
 	}
-	// A server that came from no registry has no catalog entry to report.
-	if out.RegistrySource != "" && out.RegistrySource != ValueNone {
+	// Only a server from a registry has a catalog entry to report.
+	if isRegistry(out.RegistrySource) {
 		out.CatalogServer = ValueCustom
 		if out.RegistrySource == ValueBuiltin && p.CatalogServer != "" {
 			out.CatalogServer = p.CatalogServer
@@ -129,6 +135,17 @@ func (p Profile) normalize() Profile {
 	}
 	slices.Sort(out.Features)
 	return out
+}
+
+// isRegistry reports whether a registry source names a registry, as opposed
+// to a package build, none or empty.
+func isRegistry(source string) bool {
+	switch source {
+	case "", ValueNone, RegistrySourcePackageUVX, RegistrySourcePackageNPX, RegistrySourcePackageGo:
+		return false
+	default:
+		return true
+	}
 }
 
 func oneOf(v string, allowed []string) string {

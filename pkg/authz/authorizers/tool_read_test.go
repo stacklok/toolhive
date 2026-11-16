@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-package authorizers
+package authorizers_test
 
 import (
 	"context"
@@ -10,28 +10,37 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
+
+	"github.com/stacklok/toolhive/pkg/authz/authorizers"
+	"github.com/stacklok/toolhive/pkg/authz/authorizers/mocks"
 )
 
-// opsAuthorizer allows exactly the operations in allowed, returns errs[operation]
-// when set, and records every call it receives.
-type opsAuthorizer struct {
-	allowed map[MCPOperation]bool
-	errs    map[MCPOperation]error
-	calls   []MCPOperation
+// fakeOps is the shared generated mock with a behavior: it allows exactly the
+// operations in allowed, returns errs[operation] when set, and records every call.
+type fakeOps struct {
+	*mocks.MockAuthorizer
+	calls []authorizers.MCPOperation
 }
 
-func (a *opsAuthorizer) AuthorizeWithJWTClaims(
-	_ context.Context,
-	_ MCPFeature,
-	operation MCPOperation,
-	_ string,
-	_ map[string]interface{},
-) (bool, error) {
-	a.calls = append(a.calls, operation)
-	if err := a.errs[operation]; err != nil {
-		return false, err
+func newFakeOps(t *testing.T, allowed []authorizers.MCPOperation, errs map[authorizers.MCPOperation]error) *fakeOps {
+	t.Helper()
+	allow := map[authorizers.MCPOperation]bool{}
+	for _, op := range allowed {
+		allow[op] = true
 	}
-	return a.allowed[operation], nil
+	f := &fakeOps{MockAuthorizer: mocks.NewMockAuthorizer(gomock.NewController(t))}
+	f.EXPECT().AuthorizeWithJWTClaims(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, _ authorizers.MCPFeature, op authorizers.MCPOperation,
+			_ string, _ map[string]interface{},
+		) (bool, error) {
+			f.calls = append(f.calls, op)
+			if err := errs[op]; err != nil {
+				return false, err
+			}
+			return allow[op], nil
+		}).AnyTimes()
+	return f
 }
 
 func TestToolCallImpliesRead(t *testing.T) {
@@ -39,65 +48,65 @@ func TestToolCallImpliesRead(t *testing.T) {
 
 	tests := []struct {
 		name       string
-		allowed    []MCPOperation
-		feature    MCPFeature
-		operation  MCPOperation
+		allowed    []authorizers.MCPOperation
+		feature    authorizers.MCPFeature
+		operation  authorizers.MCPOperation
 		want       bool
-		wantCalls  []MCPOperation
+		wantCalls  []authorizers.MCPOperation
 		wantMarked bool
 	}{
 		{
 			name:       "tool:read allowed directly is granted without a call check",
-			allowed:    []MCPOperation{MCPOperationRead},
-			feature:    MCPFeatureTool,
-			operation:  MCPOperationRead,
+			allowed:    []authorizers.MCPOperation{authorizers.MCPOperationRead},
+			feature:    authorizers.MCPFeatureTool,
+			operation:  authorizers.MCPOperationRead,
 			want:       true,
-			wantCalls:  []MCPOperation{MCPOperationRead},
+			wantCalls:  []authorizers.MCPOperation{authorizers.MCPOperationRead},
 			wantMarked: false,
 		},
 		{
 			name:       "tool:call alone implies tool:read",
-			allowed:    []MCPOperation{MCPOperationCall},
-			feature:    MCPFeatureTool,
-			operation:  MCPOperationRead,
+			allowed:    []authorizers.MCPOperation{authorizers.MCPOperationCall},
+			feature:    authorizers.MCPFeatureTool,
+			operation:  authorizers.MCPOperationRead,
 			want:       true,
-			wantCalls:  []MCPOperation{MCPOperationRead, MCPOperationCall},
+			wantCalls:  []authorizers.MCPOperation{authorizers.MCPOperationRead, authorizers.MCPOperationCall},
 			wantMarked: true,
 		},
 		{
 			name:       "neither tool:read nor tool:call denies",
 			allowed:    nil,
-			feature:    MCPFeatureTool,
-			operation:  MCPOperationRead,
+			feature:    authorizers.MCPFeatureTool,
+			operation:  authorizers.MCPOperationRead,
 			want:       false,
-			wantCalls:  []MCPOperation{MCPOperationRead, MCPOperationCall},
+			wantCalls:  []authorizers.MCPOperation{authorizers.MCPOperationRead, authorizers.MCPOperationCall},
 			wantMarked: false,
 		},
 		{
 			name:       "tool:read alone never implies tool:call",
-			allowed:    []MCPOperation{MCPOperationRead},
-			feature:    MCPFeatureTool,
-			operation:  MCPOperationCall,
+			allowed:    []authorizers.MCPOperation{authorizers.MCPOperationRead},
+			feature:    authorizers.MCPFeatureTool,
+			operation:  authorizers.MCPOperationCall,
 			want:       false,
-			wantCalls:  []MCPOperation{MCPOperationCall},
+			wantCalls:  []authorizers.MCPOperation{authorizers.MCPOperationCall},
 			wantMarked: false,
 		},
 		{
 			name:       "tool:call passes through unchanged",
-			allowed:    []MCPOperation{MCPOperationCall},
-			feature:    MCPFeatureTool,
-			operation:  MCPOperationCall,
+			allowed:    []authorizers.MCPOperation{authorizers.MCPOperationCall},
+			feature:    authorizers.MCPFeatureTool,
+			operation:  authorizers.MCPOperationCall,
 			want:       true,
-			wantCalls:  []MCPOperation{MCPOperationCall},
+			wantCalls:  []authorizers.MCPOperation{authorizers.MCPOperationCall},
 			wantMarked: false,
 		},
 		{
 			name:       "non-tool read is not rewritten to a tool:call check",
-			allowed:    []MCPOperation{MCPOperationCall},
-			feature:    MCPFeatureResource,
-			operation:  MCPOperationRead,
+			allowed:    []authorizers.MCPOperation{authorizers.MCPOperationCall},
+			feature:    authorizers.MCPFeatureResource,
+			operation:  authorizers.MCPOperationRead,
 			want:       false,
-			wantCalls:  []MCPOperation{MCPOperationRead},
+			wantCalls:  []authorizers.MCPOperation{authorizers.MCPOperationRead},
 			wantMarked: false,
 		},
 	}
@@ -106,14 +115,11 @@ func TestToolCallImpliesRead(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			inner := &opsAuthorizer{allowed: map[MCPOperation]bool{}}
-			for _, op := range tc.allowed {
-				inner.allowed[op] = true
-			}
+			inner := newFakeOps(t, tc.allowed, nil)
 
-			a := WithToolCallImpliesRead(inner)
-			marker := &DiscoveryMarker{}
-			ctx := WithDiscoveryMarker(context.Background(), marker)
+			a := authorizers.WithToolCallImpliesRead(inner)
+			marker := &authorizers.DiscoveryMarker{}
+			ctx := authorizers.WithDiscoveryMarker(context.Background(), marker)
 			got, err := a.AuthorizeWithJWTClaims(ctx, tc.feature, tc.operation, "weather", nil)
 
 			require.NoError(t, err)
@@ -132,30 +138,30 @@ func TestToolCallImpliesRead_ErrorPaths(t *testing.T) {
 
 	tests := []struct {
 		name      string
-		allowed   []MCPOperation
-		errs      map[MCPOperation]error
+		allowed   []authorizers.MCPOperation
+		errs      map[authorizers.MCPOperation]error
 		wantErr   error
-		wantCalls []MCPOperation
+		wantCalls []authorizers.MCPOperation
 	}{
 		{
 			name:      "read error is returned without a call check",
-			allowed:   []MCPOperation{MCPOperationCall},
-			errs:      map[MCPOperation]error{MCPOperationRead: errRead},
+			allowed:   []authorizers.MCPOperation{authorizers.MCPOperationCall},
+			errs:      map[authorizers.MCPOperation]error{authorizers.MCPOperationRead: errRead},
 			wantErr:   errRead,
-			wantCalls: []MCPOperation{MCPOperationRead},
+			wantCalls: []authorizers.MCPOperation{authorizers.MCPOperationRead},
 		},
 		{
 			name:      "read timeout is returned without a call check",
-			allowed:   []MCPOperation{MCPOperationCall},
-			errs:      map[MCPOperation]error{MCPOperationRead: context.DeadlineExceeded},
+			allowed:   []authorizers.MCPOperation{authorizers.MCPOperationCall},
+			errs:      map[authorizers.MCPOperation]error{authorizers.MCPOperationRead: context.DeadlineExceeded},
 			wantErr:   context.DeadlineExceeded,
-			wantCalls: []MCPOperation{MCPOperationRead},
+			wantCalls: []authorizers.MCPOperation{authorizers.MCPOperationRead},
 		},
 		{
 			name:      "call error after a read denial is returned",
-			errs:      map[MCPOperation]error{MCPOperationCall: errCall},
+			errs:      map[authorizers.MCPOperation]error{authorizers.MCPOperationCall: errCall},
 			wantErr:   errCall,
-			wantCalls: []MCPOperation{MCPOperationRead, MCPOperationCall},
+			wantCalls: []authorizers.MCPOperation{authorizers.MCPOperationRead, authorizers.MCPOperationCall},
 		},
 	}
 
@@ -163,15 +169,12 @@ func TestToolCallImpliesRead_ErrorPaths(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			inner := &opsAuthorizer{allowed: map[MCPOperation]bool{}, errs: tc.errs}
-			for _, op := range tc.allowed {
-				inner.allowed[op] = true
-			}
-			marker := &DiscoveryMarker{}
-			ctx := WithDiscoveryMarker(context.Background(), marker)
+			inner := newFakeOps(t, tc.allowed, tc.errs)
+			marker := &authorizers.DiscoveryMarker{}
+			ctx := authorizers.WithDiscoveryMarker(context.Background(), marker)
 
-			ok, err := WithToolCallImpliesRead(inner).AuthorizeWithJWTClaims(
-				ctx, MCPFeatureTool, MCPOperationRead, "weather", nil)
+			ok, err := authorizers.WithToolCallImpliesRead(inner).AuthorizeWithJWTClaims(
+				ctx, authorizers.MCPFeatureTool, authorizers.MCPOperationRead, "weather", nil)
 
 			require.ErrorIs(t, err, tc.wantErr)
 			assert.False(t, ok)
@@ -181,30 +184,31 @@ func TestToolCallImpliesRead_ErrorPaths(t *testing.T) {
 	}
 }
 
-// nativeOpsAuthorizer is an opsAuthorizer that also says whether it answers tool:read
+// nativeOps is a fakeOps that also says whether it answers tool:read
 // itself, the way the HTTP PDP does when forward_tool_read is set.
-type nativeOpsAuthorizer struct {
-	opsAuthorizer
+type nativeOps struct {
+	*fakeOps
 	answersRead bool
 }
 
-func (a *nativeOpsAuthorizer) AnswersToolRead() bool { return a.answersRead }
+func (a *nativeOps) AnswersToolRead() bool { return a.answersRead }
 
 func TestToolCallImpliesRead_CallOnlyAuthorizerNeverSeesToolRead(t *testing.T) {
 	t.Parallel()
 
-	inner := &nativeOpsAuthorizer{
-		opsAuthorizer: opsAuthorizer{allowed: map[MCPOperation]bool{MCPOperationCall: true}},
-		answersRead:   false,
+	inner := &nativeOps{
+		fakeOps:     newFakeOps(t, []authorizers.MCPOperation{authorizers.MCPOperationCall}, nil),
+		answersRead: false,
 	}
-	marker := &DiscoveryMarker{}
-	ctx := WithDiscoveryMarker(context.Background(), marker)
+	marker := &authorizers.DiscoveryMarker{}
+	ctx := authorizers.WithDiscoveryMarker(context.Background(), marker)
 
-	ok, err := WithToolCallImpliesRead(inner).AuthorizeWithJWTClaims(ctx, MCPFeatureTool, MCPOperationRead, "weather", nil)
+	ok, err := authorizers.WithToolCallImpliesRead(inner).AuthorizeWithJWTClaims(
+		ctx, authorizers.MCPFeatureTool, authorizers.MCPOperationRead, "weather", nil)
 
 	require.NoError(t, err)
 	assert.True(t, ok, "a tool:call allow must make the tool visible")
-	assert.Equal(t, []MCPOperation{MCPOperationCall}, inner.calls,
+	assert.Equal(t, []authorizers.MCPOperation{authorizers.MCPOperationCall}, inner.calls,
 		"a call-only authorizer must be asked only tool:call, never tool:read")
 	assert.Equal(t, 1, marker.FallbackCount, "the call-only grant is counted as discovery")
 }
@@ -212,32 +216,32 @@ func TestToolCallImpliesRead_CallOnlyAuthorizerNeverSeesToolRead(t *testing.T) {
 func TestToolCallImpliesRead_ReadAnsweringAuthorizerIsAskedOnce(t *testing.T) {
 	t.Parallel()
 
-	inner := &nativeOpsAuthorizer{
-		opsAuthorizer: opsAuthorizer{allowed: map[MCPOperation]bool{MCPOperationCall: true}},
-		answersRead:   true,
+	inner := &nativeOps{
+		fakeOps:     newFakeOps(t, []authorizers.MCPOperation{authorizers.MCPOperationCall}, nil),
+		answersRead: true,
 	}
 
-	ok, err := WithToolCallImpliesRead(inner).AuthorizeWithJWTClaims(
-		context.Background(), MCPFeatureTool, MCPOperationRead, "weather", nil)
+	ok, err := authorizers.WithToolCallImpliesRead(inner).AuthorizeWithJWTClaims(
+		context.Background(), authorizers.MCPFeatureTool, authorizers.MCPOperationRead, "weather", nil)
 
 	require.NoError(t, err)
 	assert.False(t, ok, "a read deny must not fall back to call when the authorizer answers tool:read")
-	assert.Equal(t, []MCPOperation{MCPOperationRead}, inner.calls,
+	assert.Equal(t, []authorizers.MCPOperation{authorizers.MCPOperationRead}, inner.calls,
 		"a read-answering authorizer is asked tool:read once and never tool:call")
 }
 
 func TestToolCallImpliesRead_ReadAnsweringAuthorizerReadAllow(t *testing.T) {
 	t.Parallel()
 
-	inner := &nativeOpsAuthorizer{
-		opsAuthorizer: opsAuthorizer{allowed: map[MCPOperation]bool{MCPOperationRead: true}},
-		answersRead:   true,
+	inner := &nativeOps{
+		fakeOps:     newFakeOps(t, []authorizers.MCPOperation{authorizers.MCPOperationRead}, nil),
+		answersRead: true,
 	}
 
-	ok, err := WithToolCallImpliesRead(inner).AuthorizeWithJWTClaims(
-		context.Background(), MCPFeatureTool, MCPOperationRead, "weather", nil)
+	ok, err := authorizers.WithToolCallImpliesRead(inner).AuthorizeWithJWTClaims(
+		context.Background(), authorizers.MCPFeatureTool, authorizers.MCPOperationRead, "weather", nil)
 
 	require.NoError(t, err)
 	assert.True(t, ok)
-	assert.Equal(t, []MCPOperation{MCPOperationRead}, inner.calls)
+	assert.Equal(t, []authorizers.MCPOperation{authorizers.MCPOperationRead}, inner.calls)
 }

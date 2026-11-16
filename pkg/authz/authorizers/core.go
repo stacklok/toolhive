@@ -45,6 +45,8 @@ const (
 	MCPOperationRead MCPOperation = "read"
 )
 
+//go:generate go run go.uber.org/mock/mockgen -destination=mocks/mock_authorizer.go -package=mocks github.com/stacklok/toolhive/pkg/authz/authorizers Authorizer
+
 // Authorizer defines the interface for making authorization decisions.
 // Implementations of this interface evaluate whether a given operation on an MCP feature
 // should be permitted, based on JWT claims and the specific resource being accessed.

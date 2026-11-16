@@ -8,8 +8,12 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
+	"k8s.io/apimachinery/pkg/runtime"
 
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/pkg/secrets"
 	"github.com/stacklok/toolhive/pkg/updates"
 	"github.com/stacklok/toolhive/pkg/usagemetrics"
@@ -438,5 +442,214 @@ func TestMergeStringMaps(t *testing.T) {
 			assert.Equal(t, tt.want, MergeAnnotations(tt.defaultMap, tt.overrideMap))
 			assert.Equal(t, tt.want, MergeLabels(tt.defaultMap, tt.overrideMap))
 		})
+	}
+}
+
+func TestBuildDefaultProxyRunnerResourceRequirements(t *testing.T) {
+	t.Parallel()
+
+	res := BuildDefaultProxyRunnerResourceRequirements()
+	assert.Equal(t, resource.MustParse("50m"), res.Requests[corev1.ResourceCPU])
+	assert.Equal(t, resource.MustParse("64Mi"), res.Requests[corev1.ResourceMemory])
+	assert.Equal(t, resource.MustParse("200m"), res.Limits[corev1.ResourceCPU])
+	assert.Equal(t, resource.MustParse("256Mi"), res.Limits[corev1.ResourceMemory])
+}
+
+func TestMergeResourceRequirements(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		user         corev1.ResourceRequirements
+		wantRequests map[corev1.ResourceName]string
+		wantLimits   map[corev1.ResourceName]string
+	}{
+		{
+			name: "empty user keeps defaults",
+			user: corev1.ResourceRequirements{},
+			wantRequests: map[corev1.ResourceName]string{
+				corev1.ResourceCPU: "50m", corev1.ResourceMemory: "64Mi",
+			},
+			wantLimits: map[corev1.ResourceName]string{
+				corev1.ResourceCPU: "200m", corev1.ResourceMemory: "256Mi",
+			},
+		},
+		{
+			name: "partial user values override matching fields only",
+			user: corev1.ResourceRequirements{
+				Requests: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("128Mi")},
+				Limits:   corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("1")},
+			},
+			// No CPU request: Kubernetes copies the user's CPU limit at Pod creation.
+			wantRequests: map[corev1.ResourceName]string{
+				corev1.ResourceMemory: "128Mi",
+			},
+			wantLimits: map[corev1.ResourceName]string{
+				corev1.ResourceCPU: "1", corev1.ResourceMemory: "256Mi",
+			},
+		},
+		{
+			name: "user request above default limit raises the defaulted limit",
+			user: corev1.ResourceRequirements{
+				Requests: corev1.ResourceList{
+					corev1.ResourceCPU:    resource.MustParse("500m"),
+					corev1.ResourceMemory: resource.MustParse("512Mi"),
+				},
+			},
+			wantRequests: map[corev1.ResourceName]string{
+				corev1.ResourceCPU: "500m", corev1.ResourceMemory: "512Mi",
+			},
+			wantLimits: map[corev1.ResourceName]string{
+				corev1.ResourceCPU: "500m", corev1.ResourceMemory: "512Mi",
+			},
+		},
+		{
+			// Kubernetes copies a limit into a missing request at Pod creation, so
+			// a limits-only container keeps its QoS class and reservation.
+			name: "user limit without a request drops the default request",
+			user: corev1.ResourceRequirements{
+				Limits: corev1.ResourceList{
+					corev1.ResourceCPU:    resource.MustParse("20m"),
+					corev1.ResourceMemory: resource.MustParse("2Gi"),
+				},
+			},
+			wantRequests: map[corev1.ResourceName]string{},
+			wantLimits: map[corev1.ResourceName]string{
+				corev1.ResourceCPU: "20m", corev1.ResourceMemory: "2Gi",
+			},
+		},
+		{
+			name: "inconsistent user values are passed through unchanged",
+			user: corev1.ResourceRequirements{
+				Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("1")},
+				Limits:   corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("500m")},
+			},
+			wantRequests: map[corev1.ResourceName]string{
+				corev1.ResourceCPU: "1", corev1.ResourceMemory: "64Mi",
+			},
+			wantLimits: map[corev1.ResourceName]string{
+				corev1.ResourceCPU: "500m", corev1.ResourceMemory: "256Mi",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			merged := MergeResourceRequirements(BuildDefaultProxyRunnerResourceRequirements(), tt.user)
+			assertResourceList(t, tt.wantRequests, merged.Requests)
+			assertResourceList(t, tt.wantLimits, merged.Limits)
+		})
+	}
+}
+
+func TestMergeResourceRequirements_DoesNotAliasInputs(t *testing.T) {
+	t.Parallel()
+
+	defaults := BuildDefaultProxyRunnerResourceRequirements()
+	user := corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("100m")},
+	}
+
+	merged := MergeResourceRequirements(defaults, user)
+	merged.Requests[corev1.ResourceCPU] = resource.MustParse("2")
+	merged.Limits[corev1.ResourceMemory] = resource.MustParse("2Gi")
+
+	assert.Equal(t, "100m", user.Requests.Cpu().String())
+	assert.Equal(t, "256Mi", defaults.Limits.Memory().String())
+}
+
+func TestBuildContainerResourceRequirements(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name            string
+		specResources   mcpv1beta1.ResourceRequirements
+		podTemplateSpec *runtime.RawExtension
+		wantRequests    map[corev1.ResourceName]string
+		wantLimits      map[corev1.ResourceName]string
+		wantErr         bool
+	}{
+		{
+			name: "no spec resources and no podTemplateSpec yields defaults",
+			wantRequests: map[corev1.ResourceName]string{
+				corev1.ResourceCPU: "50m", corev1.ResourceMemory: "64Mi",
+			},
+			wantLimits: map[corev1.ResourceName]string{
+				corev1.ResourceCPU: "200m", corev1.ResourceMemory: "256Mi",
+			},
+		},
+		{
+			name: "podTemplateSpec overrides spec resources and drives clamping",
+			specResources: mcpv1beta1.ResourceRequirements{
+				Requests: mcpv1beta1.ResourceList{CPU: "100m", Memory: "128Mi"},
+			},
+			podTemplateSpec: &runtime.RawExtension{Raw: []byte(`{"spec":{"containers":[{"name":"main",` +
+				`"resources":{"requests":{"memory":"1Gi"}}}]}}`)},
+			wantRequests: map[corev1.ResourceName]string{
+				corev1.ResourceCPU: "100m", corev1.ResourceMemory: "1Gi",
+			},
+			wantLimits: map[corev1.ResourceName]string{
+				corev1.ResourceCPU: "200m", corev1.ResourceMemory: "1Gi",
+			},
+		},
+		{
+			name: "null in podTemplateSpec drops the default and the spec value",
+			specResources: mcpv1beta1.ResourceRequirements{
+				Requests: mcpv1beta1.ResourceList{Memory: "512Mi"},
+			},
+			podTemplateSpec: &runtime.RawExtension{Raw: []byte(`{"spec":{"containers":[{"name":"main",` +
+				`"resources":{"requests":{"memory":null},"limits":{"memory":null}}}]}}`)},
+			wantRequests: map[corev1.ResourceName]string{corev1.ResourceCPU: "50m"},
+			wantLimits:   map[corev1.ResourceName]string{corev1.ResourceCPU: "200m"},
+		},
+		{
+			name:            "podTemplateSpec without the target container is ignored",
+			podTemplateSpec: &runtime.RawExtension{Raw: []byte(`{"spec":{"nodeSelector":{"disk":"ssd"}}}`)},
+			wantRequests: map[corev1.ResourceName]string{
+				corev1.ResourceCPU: "50m", corev1.ResourceMemory: "64Mi",
+			},
+			wantLimits: map[corev1.ResourceName]string{
+				corev1.ResourceCPU: "200m", corev1.ResourceMemory: "256Mi",
+			},
+		},
+		{
+			name:            "invalid podTemplateSpec returns an error",
+			podTemplateSpec: &runtime.RawExtension{Raw: []byte(`{"spec":`)},
+			wantErr:         true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			defaults := BuildDefaultProxyRunnerResourceRequirements()
+			got, err := BuildContainerResourceRequirements(defaults, tt.specResources, tt.podTemplateSpec, "main")
+			if tt.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assertResourceList(t, tt.wantRequests, got.Requests)
+			assertResourceList(t, tt.wantLimits, got.Limits)
+
+			// The caller's defaults must not be modified.
+			assert.Equal(t, BuildDefaultProxyRunnerResourceRequirements(), defaults)
+		})
+	}
+}
+
+func assertResourceList(t *testing.T, want map[corev1.ResourceName]string, got corev1.ResourceList) {
+	t.Helper()
+
+	assert.Len(t, got, len(want))
+	for name, wantQuantity := range want {
+		gotQuantity, ok := got[name]
+		if assert.True(t, ok, "missing %s", name) {
+			assert.Zero(t, gotQuantity.Cmp(resource.MustParse(wantQuantity)),
+				"%s: want %s, got %s", name, wantQuantity, gotQuantity.String())
+		}
 	}
 }

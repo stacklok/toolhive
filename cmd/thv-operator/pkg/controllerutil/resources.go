@@ -90,6 +90,18 @@ func SetUsageMetricsOptOut(optOut bool) {
 	usageMetricsOptOut = optOut
 }
 
+// usageMetricsDisabled records that the operator itself has usage metrics
+// turned off, so the workloads it deploys have them turned off too.
+var usageMetricsDisabled bool
+
+// SetUsageMetricsDisabled makes EnsureRequiredEnvVars turn usage metrics off in
+// workloads with TOOLHIVE_USAGE_METRICS_ENABLED=false, leaving their update
+// checks alone. Like the anonymous ID, it must be set before the manager starts
+// and stay the same afterwards.
+func SetUsageMetricsDisabled(disabled bool) {
+	usageMetricsDisabled = disabled
+}
+
 // EnsureRequiredEnvVars ensures required environment variables are set with defaults
 // Shared between MCPServer, MCPRemoteProxy and VirtualMCPServer
 func EnsureRequiredEnvVars(ctx context.Context, env []corev1.EnvVar) []corev1.EnvVar {
@@ -209,17 +221,20 @@ func ProxyRunnerServiceAccountName(resourceName string) string {
 }
 
 // appendUsageMetricsEnv passes the operator's usage metrics settings to a
-// workload. An opted-out operator opts the workload out; otherwise the
-// workload gets the operator's anonymous ID. A value the env already sets wins.
+// workload. Each opt-out set on the operator is set on the workload, which then
+// gets no anonymous ID; otherwise the workload gets the operator's anonymous
+// ID. A value the env already sets wins.
 func appendUsageMetricsEnv(env []corev1.EnvVar) []corev1.EnvVar {
-	switch {
-	case usageMetricsOptOut:
-		return appendEnvIfMissing(env, updates.EnvVarSkipUpdateCheck, "true")
-	case usageMetricsAnonymousID != "":
-		return appendEnvIfMissing(env, usagemetrics.EnvVarAnonymousID, usageMetricsAnonymousID)
-	default:
+	if usageMetricsOptOut {
+		env = appendEnvIfMissing(env, updates.EnvVarSkipUpdateCheck, "true")
+	}
+	if usageMetricsDisabled {
+		env = appendEnvIfMissing(env, usagemetrics.EnvVarUsageMetricsEnabled, "false")
+	}
+	if usageMetricsOptOut || usageMetricsDisabled || usageMetricsAnonymousID == "" {
 		return env
 	}
+	return appendEnvIfMissing(env, usagemetrics.EnvVarAnonymousID, usageMetricsAnonymousID)
 }
 
 // appendEnvIfMissing adds name=value unless env already sets name.

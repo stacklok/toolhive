@@ -310,6 +310,7 @@ func TestEnsureRequiredEnvVars_UsageMetrics(t *testing.T) {
 	t.Cleanup(func() {
 		SetUsageMetricsAnonymousID("")
 		SetUsageMetricsOptOut(false)
+		SetUsageMetricsDisabled(false)
 	})
 	ctx := context.Background()
 
@@ -317,9 +318,10 @@ func TestEnsureRequiredEnvVars_UsageMetrics(t *testing.T) {
 		name        string
 		anonymousID string
 		optOut      bool
+		disabled    bool
 		env         []corev1.EnvVar
-		// want is the TOOLHIVE_ANONYMOUS_ID and TOOLHIVE_SKIP_UPDATE_CHECK
-		// entries expected in the result.
+		// want is the TOOLHIVE_ANONYMOUS_ID, TOOLHIVE_SKIP_UPDATE_CHECK and
+		// TOOLHIVE_USAGE_METRICS_ENABLED entries expected in the result.
 		want []corev1.EnvVar
 	}{
 		{
@@ -347,16 +349,39 @@ func TestEnsureRequiredEnvVars_UsageMetrics(t *testing.T) {
 			env:    []corev1.EnvVar{{Name: updates.EnvVarSkipUpdateCheck, Value: "false"}},
 			want:   []corev1.EnvVar{{Name: updates.EnvVarSkipUpdateCheck, Value: "false"}},
 		},
+		{
+			name:        "operator with usage metrics off turns them off in the workload",
+			anonymousID: "operator-instance",
+			disabled:    true,
+			want:        []corev1.EnvVar{{Name: usagemetrics.EnvVarUsageMetricsEnabled, Value: "false"}},
+		},
+		{
+			name:     "both opt-outs are passed on",
+			optOut:   true,
+			disabled: true,
+			want: []corev1.EnvVar{
+				{Name: updates.EnvVarSkipUpdateCheck, Value: "true"},
+				{Name: usagemetrics.EnvVarUsageMetricsEnabled, Value: "false"},
+			},
+		},
+		{
+			name:     "existing usage metrics value is kept",
+			disabled: true,
+			env:      []corev1.EnvVar{{Name: usagemetrics.EnvVarUsageMetricsEnabled, Value: "true"}},
+			want:     []corev1.EnvVar{{Name: usagemetrics.EnvVarUsageMetricsEnabled, Value: "true"}},
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			SetUsageMetricsAnonymousID(tt.anonymousID)
 			SetUsageMetricsOptOut(tt.optOut)
+			SetUsageMetricsDisabled(tt.disabled)
 
 			var got []corev1.EnvVar
 			for _, e := range EnsureRequiredEnvVars(ctx, tt.env) {
-				if e.Name == usagemetrics.EnvVarAnonymousID || e.Name == updates.EnvVarSkipUpdateCheck {
+				switch e.Name {
+				case usagemetrics.EnvVarAnonymousID, updates.EnvVarSkipUpdateCheck, usagemetrics.EnvVarUsageMetricsEnabled:
 					got = append(got, e)
 				}
 			}

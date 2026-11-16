@@ -6,12 +6,14 @@ package usagemetrics
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
 	"github.com/stacklok/toolhive/pkg/mcp"
@@ -43,19 +45,10 @@ func TestMiddleware_Handler(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			// Initialize a collector for this test
-			collector, err := NewCollector()
-			assert.NoError(t, err)
-			defer func() {
-				ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-				defer cancel()
-				collector.Shutdown(ctx)
-			}()
+			collector, _ := newTestCollector(t)
 
 			// Create middleware with collector instance
-			mw := &Middleware{
-				collector: collector,
-			}
+			mw := NewMiddleware(collector)
 			handler := mw.Handler()
 
 			// Create a test request with MCP context
@@ -99,46 +92,45 @@ func TestMiddleware_Handler(t *testing.T) {
 func TestMiddleware_Close(t *testing.T) {
 	t.Parallel()
 
-	// Initialize collector
-	collector, err := NewCollector()
-	assert.NoError(t, err)
-
-	middleware := &Middleware{
-		collector: collector,
-	}
+	collector, _ := newTestCollector(t)
+	middleware := NewMiddleware(collector)
 
 	// Test that Close returns nil and shuts down collector
-	err = middleware.Close()
-	assert.NoError(t, err)
+	assert.NoError(t, middleware.Close())
+	assert.True(t, collector.shutdown.Load())
 }
+
+// profiledRunnerConfig is a runner configuration that describes its server.
+type profiledRunnerConfig struct {
+	*mocks.MockRunnerConfig
+	profile Profile
+}
+
+func (c profiledRunnerConfig) UsageMetricsProfile() Profile { return c.profile }
 
 func TestCreateMiddleware(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name      string
-		config    *types.MiddlewareConfig
-		setupMock func(*mocks.MockMiddlewareRunner) *Middleware
+		name        string
+		config      func(*gomock.Controller) types.RunnerConfig
+		wantProfile *Profile
 	}{
 		{
-			name: "success",
-			config: func() *types.MiddlewareConfig {
-				params := MiddlewareParams{}
-				paramsJSON, _ := json.Marshal(params)
-				return &types.MiddlewareConfig{
-					Type:       MiddlewareType,
-					Parameters: paramsJSON,
-				}
-			}(),
-			setupMock: func(mockRunner *mocks.MockMiddlewareRunner) *Middleware {
-				var capturedMw *Middleware
-				mockRunner.EXPECT().AddMiddleware(gomock.Any(), gomock.Any()).Do(func(_ string, mw types.Middleware) {
-					typedMw, ok := mw.(*Middleware)
-					assert.True(t, ok, "Expected middleware to be of type *Middleware")
-					capturedMw = typedMw
-				})
-				return capturedMw
+			name: "runner config without a profile",
+			config: func(ctrl *gomock.Controller) types.RunnerConfig {
+				return mocks.NewMockRunnerConfig(ctrl)
 			},
+		},
+		{
+			name: "runner config that provides a profile",
+			config: func(ctrl *gomock.Controller) types.RunnerConfig {
+				return profiledRunnerConfig{
+					MockRunnerConfig: mocks.NewMockRunnerConfig(ctrl),
+					profile:          Profile{Transport: "stdio"},
+				}
+			},
+			wantProfile: &Profile{Transport: "stdio"},
 		},
 	}
 
@@ -146,23 +138,230 @@ func TestCreateMiddleware(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			// Create mock controller and runner
 			ctrl := gomock.NewController(t)
-			defer ctrl.Finish()
-
 			mockRunner := mocks.NewMockMiddlewareRunner(ctrl)
-			capturedMw := tt.setupMock(mockRunner)
+			mockRunner.EXPECT().GetConfig().Return(tt.config(ctrl))
 
-			// Execute
-			err := CreateMiddleware(tt.config, mockRunner)
-			assert.NoError(t, err)
+			var captured *Middleware
+			mockRunner.EXPECT().AddMiddleware(MiddlewareType, gomock.Any()).Do(func(_ string, mw types.Middleware) {
+				typed, ok := mw.(*Middleware)
+				require.True(t, ok, "expected *Middleware, got %T", mw)
+				captured = typed
+			})
 
-			// Cleanup the middleware if it was created
-			if capturedMw != nil && capturedMw.collector != nil {
-				ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-				defer cancel()
-				capturedMw.collector.Shutdown(ctx)
+			paramsJSON, err := json.Marshal(MiddlewareParams{})
+			require.NoError(t, err)
+			err = CreateMiddleware(&types.MiddlewareConfig{Type: MiddlewareType, Parameters: paramsJSON}, mockRunner)
+			require.NoError(t, err)
+
+			require.NotNil(t, captured)
+			require.NotNil(t, captured.collector)
+			// Stop the started collector against a local server.
+			newReportServer(t).attach(captured.collector)
+			t.Cleanup(func() { assert.NoError(t, captured.Close()) })
+
+			if tt.wantProfile == nil {
+				assert.Nil(t, captured.collector.profile)
+				return
 			}
+			require.NotNil(t, captured.collector.profile)
+			assert.Equal(t, *tt.wantProfile, captured.collector.profile())
 		})
 	}
+}
+
+// mcpCall describes one request sent through the parsing and usage metrics
+// middleware chain.
+type mcpCall struct {
+	method string
+	params string
+	// target is the request path and query.
+	target string
+	// sessionHeader is sent as the Mcp-Session-Id request header.
+	sessionHeader string
+	// responseSession is set as the Mcp-Session-Id response header by the
+	// inner handler, the way streamable HTTP servers assign sessions.
+	responseSession string
+}
+
+func initializeParams(clientName string) string {
+	return fmt.Sprintf(`{"protocolVersion":"2025-06-18","capabilities":{},`+
+		`"clientInfo":{"name":%q,"version":"1.0.0"}}`, clientName)
+}
+
+// serveMCP sends calls in order through mcp.ParsingMiddleware and the usage
+// metrics middleware, sharing one Middleware so session state carries over.
+func serveMCP(t *testing.T, mw *Middleware, calls []mcpCall) {
+	t.Helper()
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if id := r.Header.Get("X-Test-Response-Session"); id != "" {
+			w.Header().Set(sessionIDHeader, id)
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+	handler := mcp.ParsingMiddleware(mw.Handler()(inner))
+
+	for i, call := range calls {
+		target := call.target
+		if target == "" {
+			target = "/mcp"
+		}
+		body := fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":%q,"params":%s}`, i+1, call.method, call.params)
+		req := httptest.NewRequest(http.MethodPost, target, strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		if call.sessionHeader != "" {
+			req.Header.Set(sessionIDHeader, call.sessionHeader)
+		}
+		if call.responseSession != "" {
+			req.Header.Set("X-Test-Response-Session", call.responseSession)
+		}
+		rr := httptest.NewRecorder()
+		handler.ServeHTTP(rr, req)
+		require.Equal(t, http.StatusOK, rr.Code, "call %d (%s): %s", i, call.method, rr.Body.String())
+	}
+}
+
+func TestMiddleware_AttributesToolCallsToClients(t *testing.T) {
+	t.Parallel()
+
+	const toolCall = `{"name":"echo","arguments":{}}`
+
+	tests := []struct {
+		name  string
+		calls []mcpCall
+		want  map[string]int64
+	}{
+		{
+			name: "streamable HTTP session from initialize response",
+			calls: []mcpCall{
+				{method: "initialize", params: initializeParams("claude-code"), responseSession: "s1"},
+				{method: "tools/call", params: toolCall, sessionHeader: "s1"},
+			},
+			want: map[string]int64{"claude-code": 1},
+		},
+		{
+			name: "SSE session from query parameter",
+			calls: []mcpCall{
+				{method: "initialize", params: initializeParams("Visual Studio Code"), target: "/messages?session_id=x"},
+				{method: "tools/call", params: toolCall, target: "/messages?session_id=x"},
+				{method: "tools/call", params: toolCall, target: "/messages?session_id=x"},
+			},
+			want: map[string]int64{"vscode": 2},
+		},
+		{
+			name: "rejected re-initialize on a session keeps its client",
+			calls: []mcpCall{
+				{method: "initialize", params: initializeParams("claude-code"), responseSession: "s1"},
+				{method: "initialize", params: initializeParams("cursor"), sessionHeader: "s1"},
+				{method: "tools/call", params: toolCall, sessionHeader: "s1"},
+			},
+			want: map[string]int64{"claude-code": 1},
+		},
+		{
+			name: "unknown session",
+			calls: []mcpCall{
+				{method: "initialize", params: initializeParams("claude-code"), responseSession: "s1"},
+				{method: "tools/call", params: toolCall, sessionHeader: "other-session"},
+				{method: "tools/call", params: toolCall},
+			},
+			want: map[string]int64{ClientUnknown: 2},
+		},
+		{
+			name: "Modern request carries clientInfo in _meta",
+			calls: []mcpCall{
+				{
+					method: "tools/call",
+					params: `{"name":"echo","arguments":{},"_meta":{` +
+						`"io.modelcontextprotocol/clientInfo":{"name":"cursor-vscode","version":"1.0.0"}}}`,
+				},
+			},
+			want: map[string]int64{"cursor": 1},
+		},
+		{
+			name: "Modern clientInfo wins over session",
+			calls: []mcpCall{
+				{method: "initialize", params: initializeParams("claude-code"), responseSession: "s1"},
+				{
+					method: "tools/call",
+					params: `{"name":"echo","_meta":{` +
+						`"io.modelcontextprotocol/clientInfo":{"name":"zed"}}}`,
+					sessionHeader: "s1",
+				},
+			},
+			want: map[string]int64{"zed": 1},
+		},
+		{
+			name: "other methods are not counted",
+			calls: []mcpCall{
+				{method: "initialize", params: initializeParams("claude-code"), responseSession: "s1"},
+				{method: "tools/list", params: `{}`, sessionHeader: "s1"},
+				{method: "prompts/get", params: `{"name":"p"}`, sessionHeader: "s1"},
+				{method: "resources/read", params: `{"uri":"file:///x"}`, sessionHeader: "s1"},
+			},
+			want: map[string]int64{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			collector, err := NewCollector()
+			require.NoError(t, err) // never started or flushed
+
+			serveMCP(t, NewMiddleware(collector), tt.calls)
+
+			total, byClient := collector.snapshotCounts()
+			assert.Equal(t, tt.want, byClient)
+			var sum int64
+			for _, n := range byClient {
+				sum += n
+			}
+			assert.Equal(t, sum, total, "counter total must equal the per-client sum")
+		})
+	}
+}
+
+// TestMiddleware_RecordsSessionBeforeResponse checks that the session is known
+// by the time the initialize response reaches the client, so a tool call sent
+// right after it is attributed.
+func TestMiddleware_RecordsSessionBeforeResponse(t *testing.T) {
+	t.Parallel()
+
+	collector, err := NewCollector()
+	require.NoError(t, err) // never started or flushed
+	mw := NewMiddleware(collector)
+
+	var seen string
+	inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set(sessionIDHeader, "s1")
+		w.WriteHeader(http.StatusOK)
+		seen = mw.sessions.lookup("s1")
+	})
+	body := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":` + initializeParams("claude-code") + `}`
+	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	mcp.ParsingMiddleware(mw.Handler()(inner)).ServeHTTP(httptest.NewRecorder(), req)
+
+	assert.Equal(t, "claude-code", seen)
+}
+
+func TestMiddleware_NilCollectorPassesThrough(t *testing.T) {
+	t.Parallel()
+
+	called := false
+	inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusTeapot)
+	})
+	handler := mcp.ParsingMiddleware(NewMiddleware(nil).Handler()(inner))
+
+	req := httptest.NewRequest(http.MethodPost, "/mcp",
+		strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo"}}`))
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	assert.True(t, called)
+	assert.Equal(t, http.StatusTeapot, rr.Code)
+	assert.NoError(t, NewMiddleware(nil).Close())
 }

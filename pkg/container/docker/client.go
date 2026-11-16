@@ -167,6 +167,12 @@ func NewClient(ctx context.Context) (*Client, error) {
 	return c, nil
 }
 
+// RuntimeType returns the container runtime this client is connected to
+// (docker, podman or colima).
+func (c *Client) RuntimeType() runtime.Type {
+	return c.runtimeType
+}
+
 // DeployWorkload creates and starts a workload.
 // It configures the workload based on the provided permission profile and transport type.
 // If options is nil, default options will be used.

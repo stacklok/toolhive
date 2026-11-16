@@ -137,6 +137,12 @@ type ServerConfig struct {
 	// core.New). If nil, no telemetry is recorded.
 	TelemetryProvider *telemetry.Provider
 
+	// UsageMetricsMiddleware is the optional anonymous usage metrics middleware,
+	// applied inside the MCP parsing middleware. If nil, no usage is reported.
+	// ToolHive's own entry points set it (pkg/vmcp/cli); embedders should leave
+	// it nil (see docs/arch/vmcp-library.md).
+	UsageMetricsMiddleware func(http.Handler) http.Handler
+
 	// AuditConfig is the cross-cutting audit configuration (also consumed by
 	// core.New). If nil, no audit logging is performed.
 	AuditConfig *audit.Config
@@ -440,6 +446,7 @@ func buildServeConfig(cfg *ServerConfig) *Config {
 		PassthroughHeaders:      cfg.PassthroughHeaders,
 		AuthServer:              cfg.AuthServer,
 		TelemetryProvider:       cfg.TelemetryProvider,
+		UsageMetricsMiddleware:  cfg.UsageMetricsMiddleware,
 		AuditConfig:             cfg.AuditConfig,
 		AuditSubjectEnricher:    cfg.AuditSubjectEnricher,
 		StatusReportingInterval: cfg.StatusReportingInterval,

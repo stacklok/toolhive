@@ -11,6 +11,8 @@ import (
 	corev1 "k8s.io/api/core/v1"
 
 	"github.com/stacklok/toolhive/pkg/secrets"
+	"github.com/stacklok/toolhive/pkg/updates"
+	"github.com/stacklok/toolhive/pkg/usagemetrics"
 )
 
 func TestEnsureRequiredEnvVars(t *testing.T) {
@@ -301,6 +303,91 @@ func TestEnsureRequiredEnvVars(t *testing.T) {
 		assert.Equal(t, "secret-token", envMap["TOOLHIVE_SECRET_token"])
 		assert.Equal(t, "regular", envMap["REGULAR_VAR"])
 	})
+}
+
+//nolint:paralleltest // Mutates the package-level usage metrics settings.
+func TestEnsureRequiredEnvVars_UsageMetrics(t *testing.T) {
+	t.Cleanup(func() {
+		SetUsageMetricsAnonymousID("")
+		SetUsageMetricsOptOut(false)
+		SetUsageMetricsDisabled(false)
+	})
+	ctx := context.Background()
+
+	tests := []struct {
+		name        string
+		anonymousID string
+		optOut      bool
+		disabled    bool
+		env         []corev1.EnvVar
+		// want is the TOOLHIVE_ANONYMOUS_ID, TOOLHIVE_SKIP_UPDATE_CHECK and
+		// TOOLHIVE_USAGE_METRICS_ENABLED entries expected in the result.
+		want []corev1.EnvVar
+	}{
+		{
+			name: "nothing configured adds nothing",
+		},
+		{
+			name:        "configured ID is added",
+			anonymousID: "operator-instance",
+			want:        []corev1.EnvVar{{Name: usagemetrics.EnvVarAnonymousID, Value: "operator-instance"}},
+		},
+		{
+			name:        "existing ID is kept",
+			anonymousID: "operator-instance",
+			env:         []corev1.EnvVar{{Name: usagemetrics.EnvVarAnonymousID, Value: "user-set"}},
+			want:        []corev1.EnvVar{{Name: usagemetrics.EnvVarAnonymousID, Value: "user-set"}},
+		},
+		{
+			name:   "opted-out operator opts the workload out",
+			optOut: true,
+			want:   []corev1.EnvVar{{Name: updates.EnvVarSkipUpdateCheck, Value: "true"}},
+		},
+		{
+			name:   "existing skip value is kept",
+			optOut: true,
+			env:    []corev1.EnvVar{{Name: updates.EnvVarSkipUpdateCheck, Value: "false"}},
+			want:   []corev1.EnvVar{{Name: updates.EnvVarSkipUpdateCheck, Value: "false"}},
+		},
+		{
+			name:        "operator with usage metrics off turns them off in the workload",
+			anonymousID: "operator-instance",
+			disabled:    true,
+			want:        []corev1.EnvVar{{Name: usagemetrics.EnvVarUsageMetricsEnabled, Value: "false"}},
+		},
+		{
+			name:     "both opt-outs are passed on",
+			optOut:   true,
+			disabled: true,
+			want: []corev1.EnvVar{
+				{Name: updates.EnvVarSkipUpdateCheck, Value: "true"},
+				{Name: usagemetrics.EnvVarUsageMetricsEnabled, Value: "false"},
+			},
+		},
+		{
+			name:     "existing usage metrics value is kept",
+			disabled: true,
+			env:      []corev1.EnvVar{{Name: usagemetrics.EnvVarUsageMetricsEnabled, Value: "true"}},
+			want:     []corev1.EnvVar{{Name: usagemetrics.EnvVarUsageMetricsEnabled, Value: "true"}},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			SetUsageMetricsAnonymousID(tt.anonymousID)
+			SetUsageMetricsOptOut(tt.optOut)
+			SetUsageMetricsDisabled(tt.disabled)
+
+			var got []corev1.EnvVar
+			for _, e := range EnsureRequiredEnvVars(ctx, tt.env) {
+				switch e.Name {
+				case usagemetrics.EnvVarAnonymousID, updates.EnvVarSkipUpdateCheck, usagemetrics.EnvVarUsageMetricsEnabled:
+					got = append(got, e)
+				}
+			}
+			assert.Equal(t, tt.want, got)
+		})
+	}
 }
 
 // TestMergeStringMaps documents the precedence the Service reconcilers rely on when

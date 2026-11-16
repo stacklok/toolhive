@@ -98,6 +98,17 @@ the handler without it (not through net/http), the guard lets the request
 through, as go-sdk does. Embedders serving the handler some other way must
 provide their own Host check.
 
+### Anonymous Usage Metrics
+
+An embedded vMCP sends no anonymous usage metrics and no update checks. Only
+ToolHive's own entry points, `thv vmcp serve` and the `vmcp` binary (which the
+operator deploys), report them, through `pkg/vmcp/cli.Serve`; see the
+[usage metrics middleware](../middleware.md#6-usage-metrics-middleware) for
+what they send. `server.New` and `server.Serve` start no collector, and
+`ServerConfig.UsageMetricsMiddleware` is nil unless the embedder sets it.
+Embedders should leave it unset: reports from an embedding product would reach
+ToolHive under opt-outs that product's users have not been told about.
+
 ## `pkg/vmcp/` Stability Table
 
 The table below maps every sub-package to its stability level per RFC THV-0059. Verify against the merged RFC if there is a discrepancy.

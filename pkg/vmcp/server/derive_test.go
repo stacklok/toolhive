@@ -47,6 +47,7 @@ func populatedLegacyConfig() *Config {
 		PassthroughHeaders:      []string{"X-Tenant-Id"},
 		AuthServer:              &asrunner.EmbeddedAuthServer{},
 		TelemetryProvider:       &telemetry.Provider{},
+		UsageMetricsMiddleware:  passthrough,
 		AuditConfig:             &audit.Config{},
 		AuditSubjectEnricher:    stubSubjectEnricher,
 		StatusReportingInterval: 11 * time.Second,

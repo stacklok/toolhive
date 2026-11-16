@@ -2117,21 +2117,24 @@ The server stops at the first check that fails:
 4. The claims the target requires must have been recorded at login.
 5. For a client with an actor profile: the grant's recorded `sub_id` and
    `upstream_subject` must both be complete, with `sub_id` in the `iss_sub`
-   format and the same issuer in both, or both be absent (otherwise
-   `server_error`). Then the actor validator is called once (see
-   [Actor-token validation at ID-JAG
-   issuance](#actor-token-validation-at-id-jag-issuance)). The client gets
-   `invalid_request` with `actor_token_expired`, `approval_required` or `denied`,
-   or `server_error` with the hint "The actor token could not be validated."
+   format and the same issuer in both, or both be absent. A broken pair is a
+   `server_error`, and the validator is not called.
+6. For a client with an actor profile: the actor validator, called once, after
+   every check above (see [Why the validator is last](#why-the-validator-is-last)).
+   Its answer sets `act` and `iat` and caps `exp`. The bounds check and signing
+   follow.
 
 An `error_description` is either a *stable reason*, the whole text, which is
 safe to match on, or a *hint* that can change (match on `error`). Grant problems
 use `invalid_request`, as RFC 8693 section 2.2.2 requires. The stable reasons
 are `grant_invalid`, `revoked`, `parent_revoked`, `not_issuable`,
-`upstream_subject_missing`, `sub_id_missing`, `dpop_not_supported` and, from
-the actor validator, `actor_token_expired`, `approval_required` and `denied`. Store and
-signing failures give `server_error` with no detail. An ID token as the subject
-is refused with the unsupported `subject_token_type` hint.
+`upstream_subject_missing`, `sub_id_missing` and `dpop_not_supported`. A client
+with an actor profile can also get `actor_token_expired`, `approval_required` or
+`denied` from the actor check (see [Outcomes](#outcomes)). `bound_elapsed` is
+the one grant problem sent as `invalid_grant` (see [Grant reuse and
+revocation](#grant-reuse-and-revocation)). Store and signing failures give
+`server_error` with no detail. An ID token as the subject is refused with the
+unsupported `subject_token_type` hint.
 
 A missing `resource` gives `invalid_target`, as draft section 4.3.3 requires
 when the IdP requires `resource`. More than one `audience` gives
@@ -2210,8 +2213,7 @@ There is no `nbf`, `scope`, `cnf` or `authorization_details` claim. A client wit
 an actor profile sends no actor token, so the ID-JAG has no `act` and the client in
 `client_id` acts for the user. A client with an actor profile must send an actor
 token (see [Required actor parameters](#required-actor-parameters)), and its ID-JAG
-has `act` set to `{"iss": <the issuer registered for the client's validator>,
-"sub": <the validator's agent ID>}`. That `act.iss` is not this server's `iss`.
+has `act` built from the validator's answer (see [The act claim](#the-act-claim)).
 
 `sub` is the same for every audience. AS-1 draws it as a random UUID at the
 user's first login. With memory storage a restart gives every user a new `sub`,
@@ -2227,9 +2229,20 @@ upstream change shows up only in grants from a later login.
 Minting writes nothing to the store. It does not use up the grant, so one grant
 can mint many ID-JAGs, each with a new `jti`. AS-2 records each `jti` and
 refuses a second use. A revocation stops the next mint; an ID-JAG already
-issued stays valid until its `exp`. For a client with an actor profile, the grant is
-not read again after the validator runs, so a revocation that commits during the
-call does not stop that one ID-JAG.
+issued stays valid until its `exp`.
+
+For a client with an actor profile, the validator runs after the grant is read,
+and the grant is not read again after the validator returns. A revocation that
+commits while the validator runs does not stop that ID-JAG, which is valid until
+its own `exp`. A grant that expires, or whose `id_jag_max_lifetime` cap passes,
+while the validator runs is refused with `invalid_grant` and
+`bound_elapsed` (see [Outcomes](#outcomes)). That is
+deliberate. It matches how the access-token exchange answers an expired subject
+token and an elapsed bound (`handler.go`, `issueBoundedAccessToken`; RFC 6749
+section 5.2), rather than the `invalid_request` that RFC 8693 section 2.2.2 could
+be read to require. A grant that is already expired at the grant check still
+gets `grant_invalid`. A client without a profile cannot reach it, because its mint
+reuses the instant of the grant check.
 
 Minting also needs the ID-JAG entry in the client's *current*
 `exchange_refresh_tokens` policy. Removing that entry stops minting from grants
@@ -2265,14 +2278,25 @@ the ID-JAG. A ToolHive AS-2 finds the user by an exact AS-1 `sub` in
 
 ### Logging
 
-Minting is not audited. A refusal logs "Exchange grant refused" at Warn with
-the reason and without `sub_id`. When the actor validator refused or failed, the
-line also carries the validator's error text with the actor token redacted, so
-a validator must keep user identifiers out of that text. A successful mint is
+There is no audit record yet, so the Debug line below is the only record of a
+mint. A refusal logs "Exchange grant refused" at Warn with the reason and
+without `sub_id`. The Warn line's `error` field, when present, is the validator's
+own text with the literal actor token replaced by `[redacted]`, or ToolHive's own
+description of a timeout, a cancellation, a slot wait, a bad result or a panic
+(a panic includes a stack). For a server error from the grant's own checks, the token endpoint logs
+the cause once, at Error in `debug`, and the Warn line does not repeat it. A
+validator server error has no `debug` text. A 400 refusal
+has no Error line, because the endpoint logs 4xx at Debug. A successful mint is
 one Debug line, `ID-JAG minted`, with `client_id`, `sub`, `target`, `resource`,
-`has_parent`, `jti` and, when recorded, `sub_id`; for a client with an actor
-profile it also has `act_sub` and `actor_credential_subject`. The subject token, the ID-JAG, any
-assertion, the form, the DPoP proof and `upstream_subject` are never logged.
+`has_parent`, `jti` and, when recorded, `sub_id`. For a client with an actor
+profile it also has `act_sub` (the AgentID) and, when the validator gives one,
+`actor_credential_subject`. ToolHive does not log the subject token,
+the actor token, the ID-JAG, any assertion, the form, the DPoP proof or
+`upstream_subject`. ToolHive redacts only the literal actor token, so a validator
+must keep credentials and user identifiers out of its error text (see the
+`ActorTokenValidator` contract in
+`pkg/authserver/server/tokenexchange/actor_validator.go`). The Warn line carries
+whatever the validator's error says.
 
 ### Actor-token validation at ID-JAG issuance
 
@@ -2286,19 +2310,21 @@ agent it names. An embedder that holds such a registry registers an in-process
 exchange grant requires an `actor_token` (RFC 8693 §2.1), passes it to the
 validator, and builds `act` from the answer.
 
-**Status.** The configuration, the startup checks, the request check and the
-validator call exist. ID-JAG issuance requires the actor parameters from a client
-that has an actor profile (see [Required actor parameters](#required-actor-parameters))
-and calls the validator once per request, after the grant checks and before the
-ID-JAG is signed. A refusal or a failure of the validator ends the request.
-The ID-JAG then carries `act` built from the answer, its `iat` is the time the
-answer was checked (after the call, not when the request was decided), and its
-`exp` is the earliest of `iat` plus the target's lifetime, the grant's expiry,
-the grant's creation plus the client's `id_jag_max_lifetime`, and the
-credential's `ExpiresAt`. A grant that expires, or whose `id_jag_max_lifetime`
-cap passes, while the validator runs is refused as `invalid_grant` with
-`bound_elapsed`. The Debug line `ID-JAG minted` also carries `act_sub` and,
-when the validator gives one, `actor_credential_subject`.
+**Status.** Built: the actor parameters (see [Required actor
+parameters](#required-actor-parameters)), the grant's upstream identity check,
+the validator call, and the `act`, `iat` and `exp` rules below. The upstream
+re-check in the issue "Re-check the user's upstream refresh token when issuing
+an ID-JAG" (#6978) is not built; when it is, it will run before the validator.
+
+#### Why the validator is last
+
+Every grant and target refusal comes before the validator, so an agent refusal
+never hides one. The one exception is a grant that expires during the call (see
+[Grant reuse and revocation](#grant-reuse-and-revocation)). The full order is in
+[Checks and errors](#checks-and-errors). The validator's answer sets `iat`, so
+the call finishes before `iat` is set. It runs once per request, when the
+response is built, not in the first of the two times the request is decided
+(`HandleTokenEndpointRequest`).
 
 The validator contract (the request, the result, the refusal reasons and the
 rules ToolHive applies when it calls the validator) is in the Go doc comments of
@@ -2332,8 +2358,8 @@ registry.
    ID is unique (RFC 7519 §4.1.2). It is often the actor token's issuer, but it does
    not have to be: ToolHive never compares it to the token. A consumer may key agent
    policy on `(act.iss, act.sub)`, so changing `ActIssuer` renames every agent.
-   ToolHive emits it exactly as configured. Several registrations may share one
-   `ActIssuer`. Their validators must then not return the same agent ID.
+   ToolHive emits it exactly as configured. Registrations may share an
+   `ActIssuer` (see [The act claim](#the-act-claim)).
 
    `ActIssuer` is required. It must be an absolute URI of at most 2048 bytes, with no
    query, userinfo or fragment, in canonical spelling (lower-case scheme and host, no
@@ -2405,24 +2431,128 @@ server builds its per-client policies, it binds each profile to its registered
 validator. It does not check the registration again, because `Config.Validate` has
 already done so.
 
-**Open.** ToolHive does not check that a SPIFFE agent ID belongs to the trust domain
-named by a `spiffe://` `ActIssuer`. A validator that accepts JWT-SVIDs must verify each
-SVID against the bundle of the trust domain in its `sub`. That check is the binding,
-and it belongs in the embedder's validator.
-
 #### Required actor parameters
 
 A client with an actor profile must send exactly one `actor_token`, with at least
 one character that is not white space, and exactly one `actor_token_type` that
-equals the profile's token type. The token is passed to the validator unchanged. The type is
-compared exactly, with no case folding. Otherwise the request fails with
-`invalid_request` and one of these hints:
+equals the profile's token type. The token is passed to the validator unchanged.
+The type is compared exactly, with no case folding. Otherwise the request fails
+with `invalid_request` and one of these hints:
 
 - `The 'actor_token' parameter is required, once, for this client.`
 - `The 'actor_token_type' parameter must name the token type configured for this client, once.`
 
 `checkIDJAGRequest` makes this check before it looks up the target and before
 any grant is read.
+
+A client without an actor profile is refused both parameters with
+`invalid_request`. The hint is `The 'actor_token' parameter is not supported when
+requesting an ID-JAG.`, or, for `actor_token_type` sent without `actor_token`,
+`The 'actor_token_type' parameter must not be given without 'actor_token'.`
+
+#### The act claim
+
+For a client with an actor profile, the ID-JAG carries an `act` claim built from
+the validator's answer:
+
+```json
+"act": {"iss": "spiffe://example.org", "sub": "spiffe://example.org/agent/build-7"}
+```
+
+- `act.iss` is the `ActIssuer` registered for the client's validator. It is never
+  this server's `iss`, which startup enforces (see [Configuration](#configuration)). Two validators can return the same plain agent ID, and
+  their different `act.iss` values keep their agents apart for whoever reads the
+  token.
+- `act.sub` is the AgentID, in one of two forms. A plain token is 1 to 255 bytes
+  and has no `:`. An absolute URI is up to 2048 bytes and has no userinfo or
+  fragment, such as a SPIFFE ID. Both forms use printable ASCII only, from `!` to
+  `~`. ToolHive never rewrites an AgentID. A value in neither form is a
+  `server_error`.
+- `act.sub` is unique only within its `act.iss`. Registrations may share an
+  `ActIssuer`, and their validators must then not return the same AgentID.
+  ToolHive cannot check that.
+- `act` goes to every target of a client with an actor profile. It is not
+  filtered per target the way `sub_id` and `upstream_subject` are, so every
+  authorization server the client reaches sees the same AgentID, which may be a
+  SPIFFE ID. This is deliberate: the profile belongs to the client, and every
+  ID-JAG it gets names the agent. ID-JAG -06 §9.10 asks profiles to limit
+  actor disclosure across trust domains; an embedder that must hide the agent
+  from one target needs a client without an actor profile for it.
+
+**Open.** ToolHive does not check that a SPIFFE agent ID belongs to the trust domain
+named by a `spiffe://` `ActIssuer`. A validator that accepts JWT-SVIDs must verify each
+SVID against the bundle of the trust domain in its `sub`. That check is the binding,
+and it belongs in the embedder's validator.
+
+#### Lifetime
+
+`iat` is the whole second in which the validator's answer was checked. `exp` is
+the earliest, in whole seconds, of `iat` plus the target's `lifetime`, the
+grant's expiry, the grant's creation plus the client's `id_jag_max_lifetime`,
+and the credential's `ExpiresAt`. There is no minimum remaining lifetime, so an
+ID-JAG for a credential that ends in two seconds lasts at most two seconds.
+
+Times are compared in whole seconds. A credential whose `ExpiresAt` is at or
+before the check, and less than 60 seconds earlier, is refused as
+`actor_token_expired`, so the client can renew it and retry. One 60 seconds or
+more earlier is a `server_error`, because a retry would not help. A zero
+`ExpiresAt` is also a `server_error`.
+
+#### Outcomes
+
+A validator refusal reaches the client as `invalid_request`, with the reason as
+the whole `error_description`. A server error's `error_description` is fosite's generic
+`server_error` text, followed by the hint shown. Clients should match on `error`.
+The last column is the reason on the Warn line of the log.
+
+| Outcome | Client sees | Reason on the Warn line |
+| --- | --- | --- |
+| Refusal `actor_token_expired`, `approval_required` or `denied` | 400 `invalid_request`, with the reason | The same reason |
+| `ExpiresAt` at or before the check, less than 60 seconds earlier | 400 `invalid_request`, `actor_token_expired` | `actor_token_expired` |
+| Missing or wrong actor parameters (see [Required actor parameters](#required-actor-parameters)) | 400 `invalid_request`, with the hint | `request_parameter_refused` |
+| Plain error, or a refusal ToolHive cannot read | 500 `server_error`, hint "The actor token could not be validated." | `actor_validator_error` |
+| AgentID in neither form, or `ExpiresAt` zero or 60 seconds or more earlier | 500 `server_error`, the same hint | `actor_result_invalid` |
+| Validator panics | 500 `server_error`, the same hint | `actor_validator_panic` |
+| No answer within the budget (see [Validator calls](#validator-calls)) | 500 `server_error`, the same hint | `actor_validator_timeout`, or `actor_validator_canceled` when the request ended first |
+| Grant's stored upstream identity is broken (see [Checks and errors](#checks-and-errors)) | 500 `server_error`, hint "The ID-JAG could not be minted." | `internal_error` |
+| Grant expires, or its `id_jag_max_lifetime` cap passes, during the validator call (see [Grant reuse and revocation](#grant-reuse-and-revocation)) | 400 `invalid_grant`, `bound_elapsed` | `bound_elapsed` |
+
+Which refusals count as plain errors is in the contract in `actor_validator.go`.
+For what each Warn line carries besides the reason, see [Logging](#logging).
+
+#### Validator calls
+
+**Budget and slots.** A validation has 5 seconds, counted from when it starts,
+and the wait for a free slot uses the same 5 seconds. The server allows 64
+validator calls at once, one limit for the whole server. A call that finds no
+free slot in time does not call the validator, and the client gets the server
+error from the table. The Warn line's `error` reads `no actor validator slot free within 5s`.
+When the budget ends, ToolHive stops waiting. A validator that ignores its
+context keeps running, and keeps its slot, until it returns. The contract in
+`actor_validator.go` states the rest of what a validator must do.
+
+**What the validator receives.** The actor token and its type, the `client_id`,
+and:
+
+- `Grant.Subject`: the user's `sub`.
+- `Grant.SubjectIdentifier`: the grant's `sub_id`, as raw JSON, when recorded.
+- `Grant.Upstream`: the user's identity at the upstream, from `sub_id` and
+  `upstream_subject`. It has all four members, or it is the zero value when the
+  grant recorded neither (see item 5 in [Checks and errors](#checks-and-errors)).
+- `Target`: the configured target's `issuer` and the requested `resource`, which
+  is one of the target's configured resources.
+
+For a child grant, the user fields (`sub`, `sub_id` and the upstream identity)
+are the ones the child copied from its parent. Nothing else from the request
+reaches the validator.
+
+**What the validator must decide.** ToolHive does not check how the actor, the
+client and the user relate. The validator must refuse an actor that may not act
+for `Grant`'s user through `client_id` (with `approval_required` when the user
+could still approve it, `denied` otherwise). A validator that only checks the
+credential's signature would let a client pair any user's grant with any
+agent's credential. ID-JAG -06 §9.10 asks profiles to say who authorizes this
+relationship; in ToolHive it is the validator.
 
 ## Implementation
 

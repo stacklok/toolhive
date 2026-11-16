@@ -420,7 +420,9 @@ func TestBuildServeConfigMapsSharedFields(t *testing.T) {
 		SessionStorage:          &vmcpconfig.SessionStorageConfig{},
 		SessionManagerConfig:    testMinimalSessionManagerConfig(),
 		TelemetryProvider:       &telemetry.Provider{},
+		UsageMetricsMiddleware:  func(h http.Handler) http.Handler { return h },
 		AuditConfig:             &audit.Config{},
+		AuditSubjectEnricher:    stubSubjectEnricher,
 	}
 
 	got := reflect.ValueOf(*buildServeConfig(src))

@@ -201,3 +201,17 @@ func TestDockerPermissionHint(t *testing.T) {
 		assert.NotEmpty(t, hint)
 	})
 }
+
+// TestFindPlatformContainerSocket_ColimaEnvReportsColima checks that an explicit
+// Colima socket is classified like an auto-discovered one.
+func TestFindPlatformContainerSocket_ColimaEnvReportsColima(t *testing.T) {
+	clearSocketEnv(t)
+	socket := filepath.Join(t.TempDir(), "docker.sock")
+	require.NoError(t, os.WriteFile(socket, nil, 0o600))
+	t.Setenv(ColimaSocketEnv, socket)
+
+	paths, rt, err := findPlatformContainerSocket(runtime.TypeColima)
+	require.NoError(t, err)
+	assert.Equal(t, []string{socket}, paths)
+	assert.Equal(t, runtime.TypeColima, rt)
+}

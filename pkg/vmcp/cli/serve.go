@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"time"
@@ -424,6 +425,20 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 		}()
 	}
 
+	// Anonymous usage metrics; nil when disabled. The aggregator is wrapped so the
+	// reported tool count follows each aggregation.
+	usage := startUsageMetrics(backendRegistry, usageFacts{
+		authMode: vmcpAuthMode(vmcpCfg.IncomingAuth, embeddedAuthServer != nil),
+		authz:    authzConfig != nil,
+		features: vmcpFeatures(optCfg != nil, vmcpCfg.CodeMode, len(vmcpCfg.CompositeTools), vmcpCfg.OutgoingAuth),
+	})
+	var usageMiddleware func(http.Handler) http.Handler
+	if usage != nil {
+		defer usage.shutdown()
+		agg = usage.observe(agg)
+		usageMiddleware = usage.middleware()
+	}
+
 	// Resolve transport defaults once here at the composition root: the
 	// vMCP config edge is the single place flags/CRD/YAML become a fully-resolved
 	// Config, so server.New, Serve, and the derive* helpers downstream are pure
@@ -443,6 +458,7 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 		RateLimiter:             rateLimiter,
 		AuthServer:              embeddedAuthServer,
 		TelemetryProvider:       telemetryProvider,
+		UsageMetricsMiddleware:  usageMiddleware,
 		AuditConfig:             vmcpCfg.Audit,
 		HealthMonitorConfig:     healthMonitorConfig,
 		StatusReportingInterval: getStatusReportingInterval(vmcpCfg),

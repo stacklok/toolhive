@@ -337,7 +337,13 @@ func newRefreshHandlerForTest(t *testing.T, v *stubSubjectValidator, store *fake
 	t.Helper()
 	registry, err := newExchangeGrantRegistry()
 	require.NoError(t, err)
+	defaults := resolveRefreshTokenOptions(nil)
+	limiter, err := newActorLimiter(defaults.actorCapacity)
+	require.NoError(t, err)
 	return &RefreshTokenHandler{
+		actorLimiter:  limiter,
+		actorTimeout:  defaults.actorTimeout,
+		clock:         defaults.clock,
 		strategy:      fakeRefreshStrategy{},
 		store:         store,
 		selfValidator: v,
@@ -630,6 +636,8 @@ func TestRefreshTokenFactoryValidatesTargets(t *testing.T) {
 				t.RequiredSubjectClaims = []string{IDJAGSubjectClaimSubID, IDJAGSubjectClaimSubID}
 			},
 			wantErr: `lists required subject claim "sub_id" twice`},
+		{name: "sub-second lifetime", key: key,
+			mutate: func(t *IDJAGTarget) { t.Lifetime = 500 * time.Millisecond }, wantErr: "lifetime must be a whole number of seconds"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -712,6 +720,76 @@ func TestRefreshTokenFactoryClosure(t *testing.T) {
 			assert.Equal(t, "https://issuer.example.com", handler.issuer)
 		})
 	}
+}
+
+// buildRefreshTokenHandler builds a handler through RefreshTokenFactory and its
+// closure, with a test signer, hmacStrategy and the given store.
+func buildRefreshTokenHandler(
+	t *testing.T, policies map[string]ConfiguredClientPolicy, store storage.ExchangeGrantStorage,
+	options ...RefreshTokenOption,
+) *RefreshTokenHandler {
+	t.Helper()
+	factory, err := RefreshTokenFactory(policies, newTestSigner(t), append(
+		[]RefreshTokenOption{WithExchangeGrantStorage(store)}, options...)...)
+	require.NoError(t, err)
+	return invokeRefreshTokenFactory(t, factory)
+}
+
+// invokeRefreshTokenFactory builds a handler from factory with the test
+// config and hmacStrategy.
+func invokeRefreshTokenFactory(t *testing.T, factory server.Factory) *RefreshTokenHandler {
+	t.Helper()
+	got, err := factory(&server.AuthorizationServerConfig{
+		Config:      &fosite.Config{AccessTokenIssuer: testIssuer},
+		SigningJWKS: newTestJWKS(t).jwks,
+	}, nil, hmacStrategy{})
+	require.NoError(t, err)
+	handler, ok := got.(*RefreshTokenHandler)
+	require.True(t, ok, "got %T", got)
+	return handler
+}
+
+func TestRefreshTokenFactoryActorLimiter(t *testing.T) {
+	t.Parallel()
+
+	invalid := []struct {
+		name    string
+		option  RefreshTokenOption
+		wantErr string
+	}{
+		{name: "a capacity below 1", option: withActorValidatorCapacity(0),
+			wantErr: "tokenexchange: actor validator capacity must be at least 1, got 0"},
+		{name: "a zero timeout", option: withActorValidationTimeout(0),
+			wantErr: "tokenexchange: the actor validation timeout must be positive, got 0s"},
+		{name: "a negative timeout", option: withActorValidationTimeout(-time.Second),
+			wantErr: "tokenexchange: the actor validation timeout must be positive, got -1s"},
+		{name: "a nil clock", option: withClock(nil),
+			wantErr: "tokenexchange: the clock must not be nil"},
+	}
+	for _, tc := range invalid {
+		t.Run(tc.name+" fails the factory", func(t *testing.T) {
+			t.Parallel()
+			_, err := RefreshTokenFactory(map[string]ConfiguredClientPolicy{}, newTestSigner(t), tc.option)
+			require.EqualError(t, err, tc.wantErr)
+		})
+	}
+
+	t.Run("the limiter has the default or the given capacity", func(t *testing.T) {
+		t.Parallel()
+		def := buildRefreshTokenHandler(t, map[string]ConfiguredClientPolicy{}, nil)
+		assert.Equal(t, defaultActorValidatorCapacity, cap(def.actorLimiter.slots))
+		three := buildRefreshTokenHandler(t, map[string]ConfiguredClientPolicy{}, nil, withActorValidatorCapacity(3))
+		assert.Equal(t, 3, cap(three.actorLimiter.slots))
+	})
+
+	t.Run("handlers from one factory share one limiter", func(t *testing.T) {
+		t.Parallel()
+		factory, err := RefreshTokenFactory(map[string]ConfiguredClientPolicy{}, newTestSigner(t))
+		require.NoError(t, err)
+		first := invokeRefreshTokenFactory(t, factory)
+		second := invokeRefreshTokenFactory(t, factory)
+		assert.Same(t, first.actorLimiter, second.actorLimiter)
+	})
 }
 
 func newBufferLogger() (*slog.Logger, *strings.Builder) {

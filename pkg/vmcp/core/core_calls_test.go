@@ -826,7 +826,7 @@ func TestExecuteComposite(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			got, err := executeComposite(context.Background(), tt.composer, def, nil)
+			got, err := executeComposite(context.Background(), nil, tt.composer, def, nil)
 			require.NoError(t, err) // workflow failures are returned as IsError results, not errors
 			require.NotNil(t, got)
 			assert.Equal(t, tt.wantIsError, got.IsError)
@@ -862,7 +862,7 @@ func TestExecuteComposite_URLElicitationFromStepFlattens(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			got, err := executeComposite(context.Background(), c, def, nil)
+			got, err := executeComposite(context.Background(), nil, c, def, nil)
 			require.NoError(t, err, "the answer must not escape as an error the render seam would see")
 			require.NotNil(t, got)
 			assert.True(t, got.IsError)

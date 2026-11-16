@@ -98,8 +98,18 @@ type ActorProfile struct {
 // that is not ready yet, for example one bound late at startup. A plain error is
 // reported as a server error, never as a denial.
 //
+// ToolHive logs the text of every error the validator returns, refusals included,
+// at Warn, with the actor token replaced by "[redacted]". Keep user identifiers
+// (the user's sub, sub_id or upstream values) and other credentials out of it.
+//
 // # Requirements
 //
+//   - Refuse unless the actor may act for the user in ActorRequest.Grant through the
+//     client in ActorRequest.ClientID. ToolHive does not check how the actor, the
+//     client and the user relate: a validator that only checks the credential's
+//     signature lets a client pair any user's grant with any agent's credential.
+//     Use ActorDeniedReasonApprovalRequired when the user could still approve the
+//     agent, and ActorDeniedReasonDenied otherwise.
 //   - Refuse with ActorDeniedReasonActorTokenExpired when the actor credential has expired.
 //     If the validator accepts a credential within its own clock-skew allowance, it
 //     may return that credential's past expiry in ExpiresAt, as long as it is less
@@ -338,6 +348,12 @@ func mapActorOutcome(res ActorResult, err error, checkedAt time.Time) (ActorResu
 // actorRefusal builds the client error for a refusal reason. The client sees only
 // the reason. A non-empty cause travels with WithWrap, which fosite does not
 // serialize, so the caller can log it.
+//
+// Every refusal is invalid_request, as RFC 8693 section 2.2.2 requires for an
+// actor_token that is unacceptable based on policy. The individual draft
+// draft-mcguinness-oauth-actor-profile-01 section 9 proposes an
+// actor_unauthorized code for policy refusals instead. Whether to follow it is
+// deferred while the draft is not adopted.
 func actorRefusal(reason ActorDeniedReason, cause string) error {
 	refusal := exactReason(fosite.ErrInvalidRequest.ErrorField, string(reason))
 	if cause != "" {

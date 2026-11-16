@@ -17,6 +17,8 @@ import (
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/pkg/secrets"
+	"github.com/stacklok/toolhive/pkg/updates"
+	"github.com/stacklok/toolhive/pkg/usagemetrics"
 )
 
 // Default proxy-runner resource values used when a CR omits resource requests/limits.
@@ -245,8 +247,44 @@ func BuildHealthProbe(
 	}
 }
 
+// usageMetricsAnonymousID is the operator's instance ID, passed to the
+// workloads it deploys so their anonymous usage metrics share one ID per
+// installation. Set once at startup, before any controller runs.
+var usageMetricsAnonymousID string
+
+// SetUsageMetricsAnonymousID sets the anonymous ID EnsureRequiredEnvVars adds to
+// workloads. It must be called before the manager starts, and the value must
+// stay the same for the life of the process: changing it would change every
+// workload's pod template and roll its pods.
+func SetUsageMetricsAnonymousID(id string) {
+	usageMetricsAnonymousID = id
+}
+
+// usageMetricsOptOut records that the operator itself is opted out of update
+// checks and usage metrics, so the workloads it deploys are opted out too.
+var usageMetricsOptOut bool
+
+// SetUsageMetricsOptOut makes EnsureRequiredEnvVars opt workloads out of update
+// checks and usage metrics with TOOLHIVE_SKIP_UPDATE_CHECK. Like the anonymous
+// ID, it must be set before the manager starts and stay the same afterwards.
+func SetUsageMetricsOptOut(optOut bool) {
+	usageMetricsOptOut = optOut
+}
+
+// usageMetricsDisabled records that the operator itself has usage metrics
+// turned off, so the workloads it deploys have them turned off too.
+var usageMetricsDisabled bool
+
+// SetUsageMetricsDisabled makes EnsureRequiredEnvVars turn usage metrics off in
+// workloads with TOOLHIVE_USAGE_METRICS_ENABLED=false, leaving their update
+// checks alone. Like the anonymous ID, it must be set before the manager starts
+// and stay the same afterwards.
+func SetUsageMetricsDisabled(disabled bool) {
+	usageMetricsDisabled = disabled
+}
+
 // EnsureRequiredEnvVars ensures required environment variables are set with defaults
-// Shared between MCPServer and MCPRemoteProxy
+// Shared between MCPServer, MCPRemoteProxy and VirtualMCPServer
 func EnsureRequiredEnvVars(ctx context.Context, env []corev1.EnvVar) []corev1.EnvVar {
 	ctxLogger := log.FromContext(ctx)
 	xdgConfigHomeFound := false
@@ -305,6 +343,8 @@ func EnsureRequiredEnvVars(ctx context.Context, env []corev1.EnvVar) []corev1.En
 		})
 	}
 
+	env = appendUsageMetricsEnv(env)
+
 	// Set secrets provider to environment if secrets are being used via TOOLHIVE_SECRET_* env vars
 	// This is needed to resolve CLI format secrets (e.g., "secret-name,target=bearer_token")
 	// The environment provider reads from TOOLHIVE_SECRET_* env vars to resolve CLI format secrets
@@ -359,4 +399,31 @@ func CreateProxyServiceName(resourceName string) string {
 // Shared between MCPServer and MCPRemoteProxy
 func ProxyRunnerServiceAccountName(resourceName string) string {
 	return fmt.Sprintf("%s-proxy-runner", resourceName)
+}
+
+// appendUsageMetricsEnv passes the operator's usage metrics settings to a
+// workload. Each opt-out set on the operator is set on the workload, which then
+// gets no anonymous ID; otherwise the workload gets the operator's anonymous
+// ID. A value the env already sets wins.
+func appendUsageMetricsEnv(env []corev1.EnvVar) []corev1.EnvVar {
+	if usageMetricsOptOut {
+		env = appendEnvIfMissing(env, updates.EnvVarSkipUpdateCheck, "true")
+	}
+	if usageMetricsDisabled {
+		env = appendEnvIfMissing(env, usagemetrics.EnvVarUsageMetricsEnabled, "false")
+	}
+	if usageMetricsOptOut || usageMetricsDisabled || usageMetricsAnonymousID == "" {
+		return env
+	}
+	return appendEnvIfMissing(env, usagemetrics.EnvVarAnonymousID, usageMetricsAnonymousID)
+}
+
+// appendEnvIfMissing adds name=value unless env already sets name.
+func appendEnvIfMissing(env []corev1.EnvVar, name, value string) []corev1.EnvVar {
+	for _, envVar := range env {
+		if envVar.Name == name {
+			return env
+		}
+	}
+	return append(env, corev1.EnvVar{Name: name, Value: value})
 }

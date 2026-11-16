@@ -24,6 +24,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/stacklok/toolhive/pkg/authserver/internal/spiffetest"
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	spiffeauth "github.com/stacklok/toolhive/pkg/authserver/spiffe"
@@ -167,10 +168,7 @@ func TestStaticSPIFFEClientCannotAuthenticateByDefaultStrategy(t *testing.T) {
 
 	signingKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	require.NoError(t, err)
-	spiffeClient, err := registration.NewSPIFFEClient(
-		"spiffe-client", []string{"openid"}, []string{"https://mcp.example.com"}, nil,
-	)
-	require.NoError(t, err)
+	spiffeClient := spiffetest.Client(t, spiffetest.WithAudiences("https://mcp.example.com"))
 	hashed, err := registration.SHA256Hasher.Hash(context.Background(), []byte("control-secret"))
 	require.NoError(t, err)
 	control := &fosite.DefaultClient{ID: "control-client", Secret: hashed}

@@ -19,9 +19,5 @@ func PreflightSPIFFEStaticClientCollisions(ctx context.Context, base storage.Sto
 	if err != nil {
 		return fmt.Errorf("create SPIFFE association registry: %w", err)
 	}
-	clients, err := registry.staticClients()
-	if err != nil {
-		return err
-	}
-	return storage.PreflightSPIFFEStaticClientCollisions(ctx, base, clients)
+	return storage.PreflightSPIFFEStaticClientCollisions(ctx, base, registry.staticClients())
 }

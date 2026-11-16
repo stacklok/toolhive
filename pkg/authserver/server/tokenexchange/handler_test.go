@@ -24,8 +24,8 @@ import (
 
 	coreaudit "github.com/stacklok/toolhive-core/audit"
 	"github.com/stacklok/toolhive/pkg/authserver/authorizationdetails"
+	"github.com/stacklok/toolhive/pkg/authserver/internal/spiffetest"
 	"github.com/stacklok/toolhive/pkg/authserver/server"
-	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/authserver/server/session"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
@@ -3191,13 +3191,8 @@ func TestGrantResourceAudience_SPIFFEClientEnforcesResourcesIndependentlyOfAudie
 
 	const registeredResource = testIssuer
 	const registeredAudience = "https://other.example.com"
-	client, err := registration.NewSPIFFEClient(
-		"spiffe-client",
-		[]string{"openid"},
-		[]string{registeredAudience},
-		[]string{registeredResource},
-	)
-	require.NoError(t, err)
+	client := spiffetest.Client(t,
+		spiffetest.WithAudiences(registeredAudience), spiffetest.WithResources(registeredResource))
 
 	t.Run("resource in the client's resources is granted", func(t *testing.T) {
 		t.Parallel()

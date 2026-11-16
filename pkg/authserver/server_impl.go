@@ -201,7 +201,7 @@ func loadKeyMaterial(ctx context.Context, provider keys.KeyProvider) (*keys.Sign
 // bundleSource may be nil.
 func authorizationServerParams(
 	cfg Config, signingKey *keys.SigningKeyData, additionalPublicKeys []*keys.PublicKeyData,
-	spiffeRegistry *SPIFFEAssociationRegistry, bundleSource *spiffeMultiDomainBundleSource, stor storage.Storage,
+	spiffeRegistry *SPIFFEAssociationRegistry, bundleSource *spiffeMultiDomainBundleSource,
 ) *oauthserver.AuthorizationServerParams {
 	return &oauthserver.AuthorizationServerParams{
 		Issuer:                                    cfg.Issuer,
@@ -222,7 +222,7 @@ func authorizationServerParams(
 		CIMDEnabled:                               cfg.CIMDEnabled,
 		AllowConfidentialClientRegistration:       cfg.AllowConfidentialClientRegistration,
 		AllowPrivateKeyJWTRegistration:            cfg.AllowPrivateKeyJWTRegistration,
-		HasStaticDelegateClients:                  len(cfg.DelegateClients) > 0,
+		HasStaticConfidentialClients:              cfg.hasStaticConfidentialClients(),
 		HasStaticSecretClients:                    hasSecretDelegateClient(cfg.DelegateClients),
 		InsecureAllowHTTP:                         cfg.InsecureAllowHTTP,
 		InsecureAllowConfidentialOverLoopbackHTTP: cfg.InsecureAllowConfidentialOverLoopbackHTTP,
@@ -232,7 +232,7 @@ func authorizationServerParams(
 		JWTBearerGrantEnabled:                     JWTBearerGrantEnabled(cfg.TrustedIssuers),
 		DeviceFlowEnabled:                         cfg.DeviceFlowEnabled,
 		DeviceCodeInterval:                        cfg.DeviceCodeInterval,
-		SPIFFEClientResolver:                      newSPIFFEClientResolver(spiffeRegistry, stor),
+		SPIFFEClientResolver:                      newSPIFFEClientResolver(spiffeRegistry),
 		SPIFFEX509BundleSource:                    spiffeX509BundleSource(bundleSource),
 		SPIFFEX509ClientMatcher:                   newSPIFFEX509ClientMatcher(spiffeRegistry),
 		SPIFFEJWTBundleSource:                     spiffeJWTBundleSource(bundleSource),
@@ -269,7 +269,7 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage) (_ *server
 		return nil, err
 	}
 
-	oauthParams := authorizationServerParams(cfg, signingKey, additionalPublicKeys, spiffeRegistry, bundleSource, stor)
+	oauthParams := authorizationServerParams(cfg, signingKey, additionalPublicKeys, spiffeRegistry, bundleSource)
 	authServerConfig, err := oauthserver.NewAuthorizationServerConfig(oauthParams)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create OAuth2 config: %w", err)
@@ -448,9 +448,9 @@ func idJAGExplicitGrantClientIDs(cfg Config) []string {
 
 // newClientAdmissionStorage wraps stor so a configured client is served only
 // while cfg declares it. Consent-exempt IDs deliberately do not vouch. It must
-// sit below the CIMD decorator: callbackClient's fallback (ClientStoreBelowCIMD)
-// and CIMD's persisted-row fallback read below that decorator and must still
-// pass admission.
+// sit below the CIMD decorator: the continuation fallback NewHandler selects
+// (ClientStoreBelowCIMD) and CIMD's persisted-row fallback read below that
+// decorator and must still pass admission.
 func newClientAdmissionStorage(cfg Config, stor storage.Storage) (storage.Storage, error) {
 	admission, err := storage.NewClientAdmissionStorage(stor, delegateClientIDs(cfg.DelegateClients))
 	if err != nil {
@@ -585,11 +585,7 @@ func decorateStorageForSPIFFE(
 	if err != nil {
 		return nil, nil, err
 	}
-	clients, err := registry.staticClients()
-	if err != nil {
-		return nil, nil, fmt.Errorf("build SPIFFE static clients: %w", err)
-	}
-	stor, err = storage.NewSPIFFEStorageDecorator(ctx, stor, clients)
+	stor, err = storage.NewSPIFFEStorageDecorator(ctx, stor, registry.staticClients())
 	if err != nil {
 		return nil, nil, fmt.Errorf("initialize SPIFFE client overlay: %w", err)
 	}
@@ -609,20 +605,18 @@ func decorateStorageForSPIFFE(
 // Method uses the shared leaf-package type because package server cannot
 // import authserver (authserver imports server). Package authserver aliases
 // that type, so both sides share one set of method values.
-func newSPIFFEClientResolver(
-	registry *SPIFFEAssociationRegistry, stor storage.Storage,
-) oauthserver.SPIFFEClientResolver {
+func newSPIFFEClientResolver(registry *SPIFFEAssociationRegistry) oauthserver.SPIFFEClientResolver {
 	if registry == nil {
 		return nil
 	}
 	return func(
-		ctx context.Context, spiffeID, clientID string, method spiffeauth.SPIFFEAuthenticationMethod,
+		_ context.Context, spiffeID, clientID string, method spiffeauth.SPIFFEAuthenticationMethod,
 	) (fosite.Client, error) {
-		principal, err := registry.Resolve(spiffeID, clientID, method)
+		client, err := registry.Resolve(spiffeID, clientID, method)
 		if err != nil {
 			return nil, err
 		}
-		return stor.GetClient(ctx, principal.ClientID())
+		return client, nil
 	}
 }
 
@@ -718,10 +712,9 @@ func exchangeRefreshTokenCaps(block *DelegateClientExchangeRefreshTokens) (map[s
 // each restricted client's actor_profile to its registered validator. It relies
 // on Config.Validate having refused an unregistered or nil validator.
 //
-// It also logs once, at DEBUG until ID-JAG issuance exists, for every client
-// that can hold ID-JAG grants but has no id_jag.targets. It runs once per
-// start, unlike config validation, which can run on both the RunConfig and the
-// Config path.
+// It also logs once, at DEBUG, for every client that can hold ID-JAG grants
+// but has no id_jag.targets. It runs once per start, unlike config validation,
+// which can run on both the RunConfig and the Config path.
 func configuredClientPolicies(
 	clients []DelegateClient, validators map[string]tokenexchange.ActorValidatorRegistration,
 ) (map[string]tokenexchange.ConfiguredClientPolicy, error) {

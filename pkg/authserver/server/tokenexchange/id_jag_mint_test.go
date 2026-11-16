@@ -288,23 +288,13 @@ func TestCheckIDJAGRequest(t *testing.T) {
 	}
 	wantShape := idJAGRequestShape{Target: target, Resource: mintTestResource}
 
-	profiled := policy
-	profiled.ActorProfile = &ActorProfile{Name: "broker", ActorTokenType: oauthproto.TokenTypeJWT}
-
 	tests := []struct {
 		name      string
 		mutate    func(url.Values)
-		profiled  bool   // the client has an actor profile
 		wantCode  string // empty for success
 		wantParam string // a substring of the hint naming the parameter
 	}{
 		{name: "valid request", mutate: func(url.Values) {}},
-		{name: "valid request from a client with an actor profile fails closed",
-			mutate: func(url.Values) {}, profiled: true,
-			wantCode: "server_error", wantParam: "Actor-token validation is not available"},
-		{name: "actor profile is refused before the request is read",
-			mutate: func(f url.Values) { f.Del("subject_token") }, profiled: true,
-			wantCode: "server_error", wantParam: "Actor-token validation is not available"},
 		{name: "empty first audience is a single audience",
 			mutate: func(f url.Values) { f[mintTestAudienceParam] = []string{"", mintTestTargetIssuer} }},
 		{name: "empty first resource is a single resource",
@@ -324,7 +314,7 @@ func TestCheckIDJAGRequest(t *testing.T) {
 			wantCode: "invalid_request", wantParam: "'audience'"},
 		{name: "repeated audience",
 			mutate:   func(f url.Values) { f[mintTestAudienceParam] = []string{mintTestTargetIssuer, mintTestTargetIssuer} },
-			wantCode: "invalid_target", wantParam: "'audience'"},
+			wantCode: "invalid_request", wantParam: "'audience'"},
 		{name: "missing resource", mutate: func(f url.Values) { f.Del("resource") },
 			wantCode: "invalid_target", wantParam: "'resource'"},
 		{name: "only empty resource values", mutate: func(f url.Values) { f["resource"] = []string{"", ""} },
@@ -372,7 +362,7 @@ func TestCheckIDJAGRequest(t *testing.T) {
 				f[mintTestAudienceParam] = []string{mintTestTargetIssuer, mintTestTargetIssuer}
 				f["resource"] = []string{mintTestResource, "https://gw.example.com/other"}
 			},
-			wantCode: "invalid_target", wantParam: "'audience'"},
+			wantCode: "invalid_request", wantParam: "'audience'"},
 		{name: "order: repeated resource wins over scope",
 			mutate: func(f url.Values) {
 				f["resource"] = []string{mintTestResource, "https://gw.example.com/other"}
@@ -433,11 +423,7 @@ func TestCheckIDJAGRequest(t *testing.T) {
 			form := validForm()
 			tt.mutate(form)
 
-			p := policy
-			if tt.profiled {
-				p = profiled
-			}
-			shape, err := checkIDJAGRequest(form, p)
+			shape, err := checkIDJAGRequest(form, policy)
 			if tt.wantCode == "" {
 				require.NoError(t, err)
 				assert.Equal(t, wantShape, shape)
@@ -445,6 +431,115 @@ func TestCheckIDJAGRequest(t *testing.T) {
 			}
 			rfc := requireMintOAuthError(t, err, tt.wantCode)
 			assert.Contains(t, rfc.GetDescription(), tt.wantParam)
+			assert.Equal(t, idJAGRequestShape{}, shape)
+		})
+	}
+}
+
+// TestCheckIDJAGRequestActorProfile pins the actor-token checks for a client
+// with an actor profile. "Exactly one" counts every value, empty ones
+// included: the parameter appears once and that value is non-empty.
+func TestCheckIDJAGRequestActorProfile(t *testing.T) {
+	t.Parallel()
+
+	target := mintTestTarget()
+	policy := ConfiguredClientPolicy{
+		IDJAGTargets: map[string]IDJAGTarget{target.Issuer: target},
+		ActorProfile: &ActorProfile{Name: "broker", ActorTokenType: oauthproto.TokenTypeJWT},
+	}
+	validForm := func() url.Values {
+		return url.Values{
+			"subject_token":       {"subject"},
+			mintTestAudienceParam: {mintTestTargetIssuer},
+			"resource":            {mintTestResource},
+			"actor_token":         {"actor"},
+			"actor_token_type":    {oauthproto.TokenTypeJWT},
+		}
+	}
+	const (
+		tokenHint  = "The 'actor_token' parameter is required, once, for this client."
+		typeHint   = "The 'actor_token_type' parameter must name the token type configured for this client, once."
+		targetHint = "The 'audience' and 'resource' parameters do not name a target this client may request an ID-JAG for."
+	)
+
+	tests := []struct {
+		name     string
+		mutate   func(url.Values)
+		wantCode string // empty for success
+		wantHint string
+	}{
+		{name: "valid", mutate: func(url.Values) {}},
+		{name: "actor_token missing", mutate: func(f url.Values) { f.Del("actor_token") },
+			wantCode: "invalid_request", wantHint: tokenHint},
+		{name: "actor_token empty", mutate: func(f url.Values) { f.Set("actor_token", "") },
+			wantCode: "invalid_request", wantHint: tokenHint},
+		{name: "actor_token only spaces", mutate: func(f url.Values) { f.Set("actor_token", "  ") },
+			wantCode: "invalid_request", wantHint: tokenHint},
+		{name: "two actor_tokens", mutate: func(f url.Values) { f["actor_token"] = []string{"a", "b"} },
+			wantCode: "invalid_request", wantHint: tokenHint},
+		{name: "two identical actor_tokens", mutate: func(f url.Values) { f["actor_token"] = []string{"a", "a"} },
+			wantCode: "invalid_request", wantHint: tokenHint},
+		{name: "empty first and then a token", mutate: func(f url.Values) { f["actor_token"] = []string{"", "a"} },
+			wantCode: "invalid_request", wantHint: tokenHint},
+		{name: "a token and then empty", mutate: func(f url.Values) { f["actor_token"] = []string{"a", ""} },
+			wantCode: "invalid_request", wantHint: tokenHint},
+		{name: "actor_token_type missing", mutate: func(f url.Values) { f.Del("actor_token_type") },
+			wantCode: "invalid_request", wantHint: typeHint},
+		{name: "actor_token_type empty", mutate: func(f url.Values) { f.Set("actor_token_type", "") },
+			wantCode: "invalid_request", wantHint: typeHint},
+		{name: "actor_token_type wrong",
+			mutate:   func(f url.Values) { f.Set("actor_token_type", oauthproto.TokenTypeAccessToken) },
+			wantCode: "invalid_request", wantHint: typeHint},
+		{name: "actor_token_type differs only in case",
+			mutate:   func(f url.Values) { f.Set("actor_token_type", strings.ToUpper(oauthproto.TokenTypeJWT)) },
+			wantCode: "invalid_request", wantHint: typeHint},
+		{name: "two actor_token_types, both valid",
+			mutate: func(f url.Values) {
+				f["actor_token_type"] = []string{oauthproto.TokenTypeJWT, oauthproto.TokenTypeJWT}
+			},
+			wantCode: "invalid_request", wantHint: typeHint},
+		{name: "empty first actor_token_type",
+			mutate:   func(f url.Values) { f["actor_token_type"] = []string{"", oauthproto.TokenTypeJWT} },
+			wantCode: "invalid_request", wantHint: typeHint},
+		{name: "both missing reports the token first",
+			mutate:   func(f url.Values) { f.Del("actor_token"); f.Del("actor_token_type") },
+			wantCode: "invalid_request", wantHint: tokenHint},
+		{name: "missing subject_token is reported before the actor token",
+			mutate:   func(f url.Values) { f.Del("subject_token"); f.Del("actor_token") },
+			wantCode: "invalid_request", wantHint: "The 'subject_token' parameter is required for token exchange."},
+		{name: "scope is reported before the actor token",
+			mutate:   func(f url.Values) { f.Set("scope", "read"); f.Del("actor_token") },
+			wantCode: "invalid_scope", wantHint: "The 'scope' parameter is not supported when requesting an ID-JAG."},
+		{name: "authorization_details is reported before the actor token",
+			mutate:   func(f url.Values) { f.Set("authorization_details", "[]"); f.Del("actor_token") },
+			wantCode: "invalid_authorization_details",
+			wantHint: "The 'authorization_details' parameter is not supported when requesting an ID-JAG."},
+		{name: "unknown target still reports the target",
+			mutate:   func(f url.Values) { f.Set(mintTestAudienceParam, "https://unknown.example.com") },
+			wantCode: "invalid_target", wantHint: targetHint},
+		{name: "a bad actor token is reported before a bad target",
+			mutate: func(f url.Values) {
+				f.Set(mintTestAudienceParam, "https://unknown.example.com")
+				f.Del("actor_token")
+			},
+			wantCode: "invalid_request", wantHint: tokenHint},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			form := validForm()
+			tt.mutate(form)
+
+			shape, err := checkIDJAGRequest(form, policy)
+			if tt.wantCode == "" {
+				require.NoError(t, err)
+				assert.Equal(t, idJAGRequestShape{
+					Target: target, Resource: mintTestResource, ActorToken: "actor",
+				}, shape)
+				return
+			}
+			rfc := requireMintOAuthError(t, err, tt.wantCode)
+			assert.Equal(t, tt.wantHint, rfc.HintField)
 			assert.Equal(t, idJAGRequestShape{}, shape)
 		})
 	}

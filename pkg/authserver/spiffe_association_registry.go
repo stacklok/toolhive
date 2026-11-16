@@ -21,6 +21,7 @@ import (
 type SPIFFEAssociationRegistry struct {
 	byPattern  map[string]SPIFFEClientAuthConfig
 	byClientID map[string]SPIFFEClientAuthConfig
+	clients    map[string]spiffeStaticClient
 }
 
 // NewSPIFFEAssociationRegistry creates an immutable lookup registry from a
@@ -41,6 +42,7 @@ func NewSPIFFEAssociationRegistry(trust *SPIFFETrustConfig) (*SPIFFEAssociationR
 	registry := &SPIFFEAssociationRegistry{
 		byPattern:  make(map[string]SPIFFEClientAuthConfig, len(associations)),
 		byClientID: make(map[string]SPIFFEClientAuthConfig, len(associations)),
+		clients:    make(map[string]spiffeStaticClient, len(associations)),
 	}
 	for _, association := range associations {
 		if _, exists := registry.byClientID[association.ClientID()]; exists {
@@ -56,43 +58,20 @@ func NewSPIFFEAssociationRegistry(trust *SPIFFETrustConfig) (*SPIFFEAssociationR
 		}
 		registry.byPattern[association.Principal()] = association.clone()
 		registry.byClientID[association.ClientID()] = association.clone()
+
+		policy := association.AuthorizationPolicy()
+		client, err := registration.NewSPIFFEClient(
+			association.ClientID(), policy.GrantTypes(), policy.Scopes(), policy.Audiences(), policy.Resources(),
+		)
+		if err != nil {
+			return nil, fmt.Errorf("SPIFFE client %q: %w", association.ClientID(), err)
+		}
+		registry.clients[association.ClientID()] = spiffeStaticClient{
+			SPIFFEClient:        client,
+			identityFingerprint: fingerprintSPIFFEAssociation(association),
+		}
 	}
 	return registry, nil
-}
-
-// NormalizedSPIFFEPrincipal is an immutable, validated identity selected from a
-// SPIFFE association. It represents policy only; it does not authenticate a
-// credential or enable an authentication method.
-type NormalizedSPIFFEPrincipal struct {
-	clientID      string
-	spiffeID      string
-	trustDomain   string
-	authMethod    SPIFFEAuthenticationMethod
-	authorization SPIFFEAuthorizationPolicy
-}
-
-// ClientID returns the configured OAuth client ID.
-func (p NormalizedSPIFFEPrincipal) ClientID() string { return p.clientID }
-
-// SPIFFEID returns the canonical concrete SPIFFE ID.
-func (p NormalizedSPIFFEPrincipal) SPIFFEID() string { return p.spiffeID }
-
-// TrustDomain returns the canonical SPIFFE trust domain.
-func (p NormalizedSPIFFEPrincipal) TrustDomain() string { return p.trustDomain }
-
-// AuthenticationMethod returns the selected credential-method discriminator.
-func (p NormalizedSPIFFEPrincipal) AuthenticationMethod() SPIFFEAuthenticationMethod {
-	return p.authMethod
-}
-
-// AuthorizationPolicy returns a defensive copy of the selected policy.
-func (p NormalizedSPIFFEPrincipal) AuthorizationPolicy() SPIFFEAuthorizationPolicy {
-	return SPIFFEAuthorizationPolicy{
-		grantTypes: slices.Clone(p.authorization.grantTypes),
-		scopes:     slices.Clone(p.authorization.scopes),
-		resources:  slices.Clone(p.authorization.resources),
-		audiences:  slices.Clone(p.authorization.audiences),
-	}
 }
 
 // Resolve selects a configured association for a canonical concrete SPIFFE ID,
@@ -101,41 +80,33 @@ func (p NormalizedSPIFFEPrincipal) AuthorizationPolicy() SPIFFEAuthorizationPoli
 // resolved SPIFFE association (the "optional client ID" case); otherwise
 // clientID must match the association's client ID. It fails closed for
 // unknown IDs, mismatched client ownership, and disabled methods. This
-// method does not validate a credential.
+// method does not validate a credential: the caller must have verified the
+// SVID, because the returned client asserts that it was.
 func (r *SPIFFEAssociationRegistry) Resolve(
 	spiffeID, clientID string, method SPIFFEAuthenticationMethod,
-) (NormalizedSPIFFEPrincipal, error) {
+) (*registration.AuthenticatedSPIFFEClient, error) {
 	if r == nil {
-		return NormalizedSPIFFEPrincipal{}, fmt.Errorf("no SPIFFE associations are configured")
+		return nil, fmt.Errorf("no SPIFFE associations are configured")
 	}
-	canonicalID, err := normalizeSPIFFEPrincipal(spiffeID, false)
+	parsedID, err := parseConcreteSPIFFEID(spiffeID)
 	if err != nil {
-		return NormalizedSPIFFEPrincipal{}, fmt.Errorf("invalid SPIFFE ID: %w", err)
+		return nil, fmt.Errorf("invalid SPIFFE ID: %w", err)
 	}
-	parsedID, err := parseSPIFFEID(canonicalID)
-	if err != nil {
-		return NormalizedSPIFFEPrincipal{}, fmt.Errorf("invalid SPIFFE ID: %w", err)
-	}
+	canonicalID := parsedID.String()
 	association, ok := r.associationForSPIFFEID(canonicalID)
 	if !ok {
-		return NormalizedSPIFFEPrincipal{}, fmt.Errorf("no SPIFFE association for ID %q", canonicalID)
+		return nil, fmt.Errorf("no SPIFFE association for ID %q", canonicalID)
 	}
 	if clientID != "" && association.ClientID() != clientID {
-		return NormalizedSPIFFEPrincipal{}, fmt.Errorf("SPIFFE ID is not associated with client ID %q", clientID)
+		return nil, fmt.Errorf("SPIFFE ID is not associated with client ID %q", clientID)
 	}
 	if !containsSPIFFEAuthenticationMethod(association.Methods(), method) {
-		return NormalizedSPIFFEPrincipal{}, fmt.Errorf(
+		return nil, fmt.Errorf(
 			"SPIFFE authentication method %q is not enabled for client ID %q", method, association.ClientID(),
 		)
 	}
 
-	return NormalizedSPIFFEPrincipal{
-		clientID:      association.ClientID(),
-		spiffeID:      canonicalID,
-		trustDomain:   parsedID.TrustDomain().String(),
-		authMethod:    method,
-		authorization: association.AuthorizationPolicy(),
-	}, nil
+	return registration.NewAuthenticatedSPIFFEClient(r.clients[association.ClientID()].SPIFFEClient, parsedID, method)
 }
 
 // usesX509 reports whether clientID names an association whose methods include
@@ -181,27 +152,18 @@ type spiffeStaticClient struct {
 
 func (c spiffeStaticClient) IdentityFingerprint() string { return c.identityFingerprint }
 
-// staticClients builds immutable OAuth clients and their association identity for
-// durable placeholder reconciliation.
-func (r *SPIFFEAssociationRegistry) staticClients() (map[string]fosite.Client, error) {
+// staticClients returns the registry's clients as the storage overlay needs
+// them, each carrying its association identity for durable placeholder
+// reconciliation.
+func (r *SPIFFEAssociationRegistry) staticClients() map[string]fosite.Client {
 	if r == nil {
-		return nil, nil
+		return nil
 	}
-	clients := make(map[string]fosite.Client, len(r.byClientID))
-	for clientID, association := range r.byClientID {
-		policy := association.AuthorizationPolicy()
-		client, err := registration.NewSPIFFEClient(
-			association.ClientID(), policy.Scopes(), policy.Audiences(), policy.Resources(),
-		)
-		if err != nil {
-			return nil, fmt.Errorf("SPIFFE client %q: %w", clientID, err)
-		}
-		clients[clientID] = spiffeStaticClient{
-			SPIFFEClient:        client,
-			identityFingerprint: fingerprintSPIFFEAssociation(association),
-		}
+	clients := make(map[string]fosite.Client, len(r.clients))
+	for clientID, client := range r.clients {
+		clients[clientID] = client
 	}
-	return clients, nil
+	return clients
 }
 
 // fingerprintSPIFFEAssociation hashes the SPIFFE association identity (trust

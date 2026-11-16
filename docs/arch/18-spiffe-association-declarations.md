@@ -44,7 +44,7 @@ Each association can configure two independent request dimensions:
 
 Permission in one dimension never implies permission in the other: a value allowed as a `resource` is not automatically a permitted `audience`, and vice versa. `resources` is optional; `audiences` is required.
 
-`resources` is validated for shape and allowlist membership at startup, and the runtime OAuth client built for a SPIFFE association (`registration.NewSPIFFEClient`) is constructed from `scopes`, `audiences`, and `resources` — `Resources()` and `GetAudience()` are checked independently during a token-exchange request, matching the `audiences`/`resources` dimension split above.
+`resources` is validated for shape and allowlist membership at startup, and the runtime OAuth client built for a SPIFFE association (`registration.NewSPIFFEClient`) is constructed from `grant_types`, `scopes`, `audiences`, and `resources` — `Resources()` and `GetAudience()` are checked independently during a token-exchange request, matching the `audiences`/`resources` dimension split above.
 
 ### Trust-bundle source
 
@@ -136,7 +136,7 @@ curl -X POST https://auth.example.com/oauth/token \
   --data-urlencode "client_assertion=$JWT_SVID"
 ```
 
-After validation, the authentication strategy calls the shared `SPIFFEAssociationRegistry.Resolve` path synchronously through its JWT resolver. The registry verifies the enabled JWT method and either derives the association's configured client ID or checks the supplied selector's ownership, then returns the configured immutable static OAuth client. The derived identity context is not propagated to downstream request handling.
+After validation, the authentication strategy calls the shared `SPIFFEAssociationRegistry.Resolve` path synchronously through its JWT resolver. The registry verifies the enabled JWT method and either derives the association's configured client ID or checks the supplied selector's ownership, then returns the configured static OAuth client wrapped in `registration.AuthenticatedSPIFFEClient`. The wrapper carries the verified SPIFFE ID and authentication method and is available to grant handlers, though none consume it yet. In production only this resolver builds it. It exists only on the client produced by client authentication: a client loaded from storage, for example when a stored request is read back, is the plain static client and does not carry it.
 
 After the SPIFFE JWT arm is selected, malformed request fields use generic OAuth `invalid_request` errors; validation, association, and mixed-credential failures use generic `invalid_client` errors. In that arm, an HTTP Basic authorization header or any `client_secret` form field causes client authentication to fail. Credential material is not logged or included in errors.
 
@@ -165,7 +165,7 @@ A duplicated or ambiguous `client_id` gives `invalid_request` (HTTP 400); mixed 
 
 A client that presents more than four certificates (the leaf plus three intermediates) is rejected with `invalid_client` before any verification, which bounds the chain-building work a client can cause.
 
-After verification, the SPIFFE ID and `client_id` are resolved through `SPIFFEAssociationRegistry.Resolve` to a configured association whose methods include `spiffe_x509`. The ID always comes from the verified leaf.
+After verification, the SPIFFE ID and `client_id` are resolved through `SPIFFEAssociationRegistry.Resolve` to a configured association whose methods include `spiffe_x509`. The ID always comes from the verified leaf. The X.509 arm goes through the same resolver and also yields `registration.AuthenticatedSPIFFEClient`.
 
 **Where it works.** In the proxy runner and vMCP, X.509 is reachable only on the auth-server TLS listener on port 8443, which requests a client certificate (`tls.RequestClientCert`) and leaves chain verification to the strategy. `RunConfig.Validate()` and the operator reject `spiffe_x509` associations when `tls_listener` is not set, and when the issuer is not an `https` URL. The issuer rule is checked at validation (`ValidateSPIFFEX509Issuer`), not only at startup, so an invalid `MCPExternalAuthConfig` or `VirtualMCPServer` is reported as invalid instead of crash-looping. At startup the runner logs a WARN when the issuer port is not 8443 (`auth server issuer port differs from TLS listener port`), and a WARN when the listener certificate does not match the issuer hostname (`auth server TLS listener certificate does not match issuer hostname`). A program that calls `authserver.New` directly must terminate TLS itself and request client certificates (see the godoc on `New` in `pkg/authserver/server.go`). Behind a TLS-terminating proxy, X.509-SVID authentication is unavailable; use JWT-SVIDs. Identity is never read from forwarded headers such as `X-Forwarded-Client-Cert`.
 

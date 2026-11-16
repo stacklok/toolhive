@@ -507,7 +507,7 @@ func TestExtractSubjects(t *testing.T) {
 		ctx := auth.WithIdentity(req.Context(), identity)
 		req = req.WithContext(ctx)
 
-		subjects := auditor.extractSubjects(req)
+		subjects := auditor.extractSubjects(req, EventTypeHTTPRequest)
 
 		assert.Equal(t, "user123", subjects[SubjectKeyUserID])
 		assert.Equal(t, "John Doe", subjects[SubjectKeyUser])
@@ -532,7 +532,7 @@ func TestExtractSubjects(t *testing.T) {
 		ctx := auth.WithIdentity(req.Context(), identity)
 		req = req.WithContext(ctx)
 
-		subjects := auditor.extractSubjects(req)
+		subjects := auditor.extractSubjects(req, EventTypeHTTPRequest)
 
 		assert.Equal(t, "user456", subjects[SubjectKeyUserID])
 		assert.Equal(t, "johndoe", subjects[SubjectKeyUser])
@@ -556,7 +556,7 @@ func TestExtractSubjects(t *testing.T) {
 		ctx := auth.WithIdentity(req.Context(), identity)
 		req = req.WithContext(ctx)
 
-		subjects := auditor.extractSubjects(req)
+		subjects := auditor.extractSubjects(req, EventTypeHTTPRequest)
 
 		assert.Equal(t, "user789", subjects[SubjectKeyUserID])
 		assert.Equal(t, "jane@example.com", subjects[SubjectKeyUser])
@@ -566,7 +566,7 @@ func TestExtractSubjects(t *testing.T) {
 		t.Parallel()
 		req := httptest.NewRequest("GET", "/test", nil)
 
-		subjects := auditor.extractSubjects(req)
+		subjects := auditor.extractSubjects(req, EventTypeHTTPRequest)
 
 		assert.Equal(t, "anonymous", subjects[SubjectKeyUser])
 	})
@@ -595,7 +595,7 @@ func TestExtractSubjects(t *testing.T) {
 		ctx := auth.WithIdentity(req.Context(), identity)
 		req = req.WithContext(ctx)
 
-		subjects := auditor.extractSubjects(req)
+		subjects := auditor.extractSubjects(req, EventTypeHTTPRequest)
 		assert.Equal(t, "user123", subjects[SubjectKeyUserID])
 		assert.Equal(t, "John Doe", subjects[SubjectKeyUser])
 

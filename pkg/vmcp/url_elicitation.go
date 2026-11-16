@@ -118,8 +118,9 @@ func (e URLElicitation) LogValue() slog.Value {
 //   - A Legacy (2025-11-25) session whose client declared elicitation.url
 //     receives -32042 listing the elicitations, when this instance saw the
 //     session's initialize. Any other Legacy session, including a rehydrated
-//     one, receives an isError tool result whose text is Message(), without
-//     the URL.
+//     one, receives an isError tool result whose text is LegacyFallback():
+//     Message(), without the URL, unless the embedder set its own text with
+//     WithLegacyFallback.
 //
 // On resources/read and prompts/get the answer renders as a generic error.
 //
@@ -132,6 +133,9 @@ func (e URLElicitation) LogValue() slog.Value {
 // within the limits the URLElicitation comment states.
 type URLElicitationRequiredError struct {
 	elicitations []URLElicitation
+	// legacyFallback is the embedder's text for the Legacy isError fallback,
+	// set by WithLegacyFallback. Empty means Message().
+	legacyFallback string
 }
 
 // NewURLElicitationRequiredError builds the URL elicitation answer from one or
@@ -164,15 +168,54 @@ func (e *URLElicitationRequiredError) Elicitations() []URLElicitation {
 }
 
 // Message returns the elicitation messages joined by "; ", in order. It is
-// the one rendering of the messages every fallback shows (the Legacy isError
-// text, the Modern -32021 message and decline result) and that Error embeds,
-// so all of them read the same. It never includes a URL.
+// the text every fallback shows by default (the Legacy isError text, the
+// Modern -32021 message and decline result) and the text Error embeds. It
+// never includes a URL. WithLegacyFallback can replace the Legacy isError
+// text; Message itself never changes.
 func (e *URLElicitationRequiredError) Message() string {
 	messages := make([]string, 0, len(e.elicitations))
 	for _, el := range e.elicitations {
 		messages = append(messages, el.message)
 	}
 	return strings.Join(messages, "; ")
+}
+
+// WithLegacyFallback returns a copy of the answer whose Legacy isError
+// fallback renders text in place of Message(). The fallback is what a Legacy
+// session gets when it cannot receive -32042: its client did not declare
+// elicitation.url, it negotiated an older revision, or its capabilities are
+// unknown, as on a rehydrated session. The receiver is unchanged. text must
+// contain a non-whitespace character.
+//
+// An embedder sets it when a client without URL-mode elicitation still needs
+// a way to reach the page, for example a reconnect link written into the
+// text. vMCP renders text as given, so an embedder that puts a URL in it
+// accepts that a model reading the result sees the URL and can act on it
+// without the user's consent step that URL mode provides.
+//
+// The fallback does not change any other rendering. Error(), Format and
+// GoString never include it, so code that stringifies the error does not
+// print a URL written into it, and Modern clients keep the renderings the
+// type comment lists: a Modern client without elicitation.url gets -32021,
+// which tells it to declare the capability, and a Modern decline result
+// must not hand back the link the user just declined.
+func (e *URLElicitationRequiredError) WithLegacyFallback(text string) (*URLElicitationRequiredError, error) {
+	if strings.TrimSpace(text) == "" {
+		return nil, errors.New("url elicitation required: legacy fallback text is required")
+	}
+	c := *e
+	c.elicitations = slices.Clone(e.elicitations)
+	c.legacyFallback = text
+	return &c, nil
+}
+
+// LegacyFallback returns the text of the Legacy isError fallback: the text
+// set by WithLegacyFallback, or Message() when none was set.
+func (e *URLElicitationRequiredError) LegacyFallback() string {
+	if e.legacyFallback != "" {
+		return e.legacyFallback
+	}
+	return e.Message()
 }
 
 // Error names the condition and the elicitation messages. It never includes a

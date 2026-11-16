@@ -21,8 +21,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/stacklok/toolhive/pkg/authserver/claimnames"
+	"github.com/stacklok/toolhive/pkg/authserver/internal/spiffetest"
 	"github.com/stacklok/toolhive/pkg/authserver/server"
-	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/authserver/server/session"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
@@ -527,9 +527,7 @@ func TestAssertionJWTConsumer_ForwardsThroughFullSPIFFEDecoratorChain(t *testing
 	})
 	require.NoError(t, err)
 
-	spiffeClient, err := registration.NewSPIFFEClient(
-		"spiffe-client", []string{"openid"}, []string{"https://mcp.example.com"}, nil)
-	require.NoError(t, err)
+	spiffeClient := spiffetest.Client(t, spiffetest.WithAudiences("https://mcp.example.com"))
 	chain, err := storage.NewSPIFFEStorageDecorator(
 		ctx, cimdDecorated, map[string]fosite.Client{spiffeClient.GetID(): spiffeClient})
 	require.NoError(t, err)

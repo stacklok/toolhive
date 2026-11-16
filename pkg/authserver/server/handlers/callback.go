@@ -462,9 +462,11 @@ func (h *Handler) maybeCarryForwardRefreshToken(
 // upstream-error branch (handleUpstreamError) and device verification. If the
 // CIMD fetch limiter refuses the lookup (ErrCIMDRateLimited means no cached
 // entry within the decorator's MaxStale could be served, e.g. a cold cache
-// after a restart or an LRU eviction), it reads the persisted row from the
-// storage below the CIMD decorator (still behind client admission) instead:
-// the pending authorization was already consumed, so a 429 here
+// after a restart or an LRU eviction), it reads the persisted row through
+// h.continuationFallback instead. That fallback is the storage below the CIMD
+// decorator (behind client admission when the chain has it), selected once by
+// NewHandler and kept on the handler, so request handling does not walk the
+// decorators. The pending authorization was already consumed, so a 429 here
 // would make the login unrecoverable.
 //
 // This is safe because the base row was written by the same fetch that
@@ -492,7 +494,7 @@ func (h *Handler) maybeCarryForwardRefreshToken(
 func (h *Handler) callbackClient(ctx context.Context, id string) (fosite.Client, error) {
 	client, err := h.storage.GetClient(ctx, id)
 	if errors.Is(err, storage.ErrCIMDRateLimited) {
-		return storage.ClientStoreBelowCIMD(h.storage).GetClient(ctx, id)
+		return h.continuationFallback.GetClient(ctx, id)
 	}
 	return client, err
 }

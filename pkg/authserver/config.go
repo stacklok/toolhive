@@ -473,7 +473,7 @@ type DelegateClientTokenExchange struct {
 	// embedder registers the validator in Config.ActorTokenValidators. Valid
 	// only with id_jag. It does not change plain token exchange. It is set only
 	// from Go (embedders), like RequiredSubjectClaims, so config files cannot
-	// set it, until ID-JAG issuance checks it.
+	// set it.
 	ActorProfile *DelegateClientActorProfile `json:"-" yaml:"-"`
 }
 
@@ -2390,13 +2390,21 @@ func (c *Config) validateDelegationConfig() error {
 	return validateTrustedIssuers(c.TrustedIssuers, c.Issuer, c.AllowedAudiences)
 }
 
+// hasStaticConfidentialClients reports whether any pre-provisioned
+// confidential client is configured. Today only delegate clients count. SPIFFE
+// association clients are deliberately not counted: they are not part of the
+// cleartext-transport check.
+func (c *Config) hasStaticConfidentialClients() bool {
+	return len(c.DelegateClients) > 0
+}
+
 // validateConfidentialClientConfig groups cleartext-transport validation for
 // all confidential clients and the force-confidential-redirect-uris override
 // behind a single call site, keeping Config.Validate's own cyclomatic
 // complexity down.
 func (c *Config) validateConfidentialClientConfig() error {
 	if err := ValidateConfidentialClientTransport(
-		c.AllowConfidentialClientRegistration || len(c.DelegateClients) > 0, c.InsecureAllowHTTP,
+		c.AllowConfidentialClientRegistration || c.hasStaticConfidentialClients(), c.InsecureAllowHTTP,
 		c.Issuer, c.InsecureAllowConfidentialOverLoopbackHTTP); err != nil {
 		return err
 	}

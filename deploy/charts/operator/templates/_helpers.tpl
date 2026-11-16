@@ -69,3 +69,199 @@ Common labels for the toolhive resources
 app: toolhive
 app.kubernetes.io/name: toolhive
 {{- end }}
+
+{{- define "toolhive.operator.managerRules" -}}
+- apiGroups:
+  - ""
+  resources:
+  - configmaps
+  - persistentvolumeclaims
+  - secrets
+  - serviceaccounts
+  - services
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - pods
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - pods/attach
+  verbs:
+  - create
+  - get
+- apiGroups:
+  - ""
+  resources:
+  - pods/log
+  verbs:
+  - get
+- apiGroups:
+  - apps
+  resources:
+  - deployments
+  - statefulsets
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - coordination.k8s.io
+  resources:
+  - leases
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - events.k8s.io
+  resources:
+  - events
+  verbs:
+  - create
+  - patch
+- apiGroups:
+  - gateway.networking.k8s.io
+  resources:
+  - gateways
+  - httproutes
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - rbac.authorization.k8s.io
+  resources:
+  - rolebindings
+  - roles
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - toolhive.stacklok.dev
+  resources:
+  - '*'
+  verbs:
+  - get
+  - list
+  - update
+- apiGroups:
+  - toolhive.stacklok.dev
+  resources:
+  - embeddingservers
+  - mcpauthzconfigs
+  - mcpexternalauthconfigs
+  - mcpgroups
+  - mcpoidcconfigs
+  - mcpregistries
+  - mcpremoteproxies
+  - mcpservers
+  - mcptoolconfigs
+  - mcpwebhookconfigs
+  - virtualmcpservers
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - toolhive.stacklok.dev
+  resources:
+  - embeddingservers/finalizers
+  - mcpauthzconfigs/finalizers
+  - mcpexternalauthconfigs/finalizers
+  - mcpgroups/finalizers
+  - mcpoidcconfigs/finalizers
+  - mcpregistries/finalizers
+  - mcpservers/finalizers
+  - mcptelemetryconfigs/finalizers
+  - mcptoolconfigs/finalizers
+  - mcpwebhookconfigs/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - toolhive.stacklok.dev
+  resources:
+  - embeddingservers/status
+  - mcpauthzconfigs/status
+  - mcpexternalauthconfigs/status
+  - mcpgroups/status
+  - mcpoidcconfigs/status
+  - mcpregistries/status
+  - mcpremoteproxies/status
+  - mcpserverentries/status
+  - mcpservers/status
+  - mcptelemetryconfigs/status
+  - mcptoolconfigs/status
+  - mcpwebhookconfigs/status
+  - virtualmcpservers/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
+  - toolhive.stacklok.dev
+  resources:
+  - mcpserverentries
+  - virtualmcpcompositetooldefinitions
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - toolhive.stacklok.dev
+  resources:
+  - mcptelemetryconfigs
+  verbs:
+  - get
+  - list
+  - patch
+  - update
+  - watch
+{{- end -}}
+
+{{- define "toolhive.operator.crdRules" -}}
+- apiGroups:
+  - apiextensions.k8s.io
+  resources:
+  - customresourcedefinitions
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - apiextensions.k8s.io
+  resources:
+  - customresourcedefinitions/status
+  verbs:
+  - patch
+  - update
+{{- end -}}

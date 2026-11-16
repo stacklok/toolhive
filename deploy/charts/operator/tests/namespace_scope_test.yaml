@@ -11,6 +11,7 @@ set:
   operator.features.storageVersionMigrator: false
 templates:
   - deployment.yaml
+  - clusterrole/role.yaml
   - clusterrole/rolebinding.yaml
 tests:
   - it: sets WATCH_NAMESPACE to the comma-joined allowlist
@@ -19,6 +20,21 @@ tests:
       - contains:
           path: 'spec.template.spec.containers[0].env'
           content: { name: WATCH_NAMESPACE, value: "team-a,team-b" }
+
+  - it: emits one namespaced Role per allowed namespace and no ClusterRole
+    template: clusterrole/role.yaml
+    asserts:
+      - hasDocuments: { count: 2 }
+      - isKind: { of: Role }
+
+  - it: scopes the team-a Role correctly
+    template: clusterrole/role.yaml
+    documentSelector: { path: metadata.namespace, value: team-a }
+    asserts:
+      - isKind: { of: Role }
+      - equal: { path: metadata.name, value: toolhive-operator-manager-role }
+      - notExists:
+          path: 'rules[?(@.apiGroups[0] == "apiextensions.k8s.io")]'
 
   - it: emits one RoleBinding per namespace and no ClusterRoleBinding
     template: clusterrole/rolebinding.yaml
@@ -31,6 +47,7 @@ tests:
     documentSelector: { path: metadata.namespace, value: team-a }
     asserts:
       - isKind: { of: RoleBinding }
+      - equal: { path: roleRef.kind, value: Role }
       - equal: { path: roleRef.name, value: toolhive-operator-manager-role }
 
   - it: scopes the team-b RoleBinding correctly

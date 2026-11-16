@@ -32,7 +32,7 @@ subjects:
   namespace: {{ $.Release.Namespace }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
+  kind: Role
   name: toolhive-operator-manager-role
 {{- end }}
 {{- end }}

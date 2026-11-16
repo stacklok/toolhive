@@ -49,6 +49,8 @@ spec:
     - assert:
         file: assert-operator-ready.yaml
     - assert:
+        file: assert-rbac-role.yaml
+    - error:
         file: assert-rbac-clusterrole.yaml
     - assert:
         file: assert-rbac-rolebinding-ns-1.yaml

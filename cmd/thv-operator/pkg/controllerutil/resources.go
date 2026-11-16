@@ -5,11 +5,13 @@ package controllerutil
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
@@ -118,6 +120,106 @@ func MergeResourceRequirements(defaults, user corev1.ResourceRequirements) corev
 	}
 
 	return merged
+}
+
+// BuildContainerResourceRequirements returns the resources to set on a
+// controller-generated container before the user's podTemplateSpec is applied.
+//
+// Values are layered in increasing precedence: defaults, then the CRD's
+// resources field, then any resources the podTemplateSpec sets on the container
+// named containerName. The result goes through MergeResourceRequirements, so a
+// defaulted value never pushes a request above a limit the user chose, or a
+// limit below a request the user chose, whichever field the user set it in.
+//
+// The podTemplateSpec is still applied afterwards as a strategic merge patch.
+// That re-sets the same values, except that a null entry deletes a key. A key
+// the podTemplateSpec deletes is dropped here too, so no default stands in for
+// it and it takes no part in clamping.
+//
+// It returns an error if podTemplateSpec is not valid JSON.
+func BuildContainerResourceRequirements(
+	defaults corev1.ResourceRequirements,
+	specResources mcpv1beta1.ResourceRequirements,
+	podTemplateSpec *runtime.RawExtension,
+	containerName string,
+) (corev1.ResourceRequirements, error) {
+	user := BuildResourceRequirements(specResources)
+
+	templateResources, err := podTemplateContainerResources(podTemplateSpec, containerName)
+	if err != nil {
+		return corev1.ResourceRequirements{}, err
+	}
+
+	defaults = *defaults.DeepCopy()
+	user.Requests = overlayResourceList(user.Requests, defaults.Requests, templateResources.Requests)
+	user.Limits = overlayResourceList(user.Limits, defaults.Limits, templateResources.Limits)
+
+	return MergeResourceRequirements(defaults, user), nil
+}
+
+// podTemplateResourceLists holds a container's resources as written in a
+// podTemplateSpec patch. Pointer values keep a null entry (a strategic merge
+// patch deletion) distinct from an explicit quantity.
+type podTemplateResourceLists struct {
+	Requests map[corev1.ResourceName]*resource.Quantity `json:"requests,omitempty"`
+	Limits   map[corev1.ResourceName]*resource.Quantity `json:"limits,omitempty"`
+}
+
+// podTemplateContainerResources extracts the resources the podTemplateSpec
+// patch sets on the named container. It returns empty lists if there is no
+// patch or the patch does not mention that container.
+func podTemplateContainerResources(
+	podTemplateSpec *runtime.RawExtension,
+	containerName string,
+) (podTemplateResourceLists, error) {
+	if podTemplateSpec == nil || len(podTemplateSpec.Raw) == 0 {
+		return podTemplateResourceLists{}, nil
+	}
+
+	var patch struct {
+		Spec struct {
+			Containers []struct {
+				Name      string                   `json:"name"`
+				Resources podTemplateResourceLists `json:"resources"`
+			} `json:"containers"`
+		} `json:"spec"`
+	}
+	if err := json.Unmarshal(podTemplateSpec.Raw, &patch); err != nil {
+		return podTemplateResourceLists{}, fmt.Errorf("failed to read container resources from PodTemplateSpec: %w", err)
+	}
+
+	for _, container := range patch.Spec.Containers {
+		if container.Name == containerName {
+			return container.Resources, nil
+		}
+	}
+	return podTemplateResourceLists{}, nil
+}
+
+// overlayResourceList applies podTemplateSpec entries on top of base. A
+// quantity overrides the base value; a null entry removes the key from both
+// base and defaults, matching the strategic merge patch that runs later.
+func overlayResourceList(
+	base, defaults corev1.ResourceList,
+	overlay map[corev1.ResourceName]*resource.Quantity,
+) corev1.ResourceList {
+	if len(overlay) == 0 {
+		return base
+	}
+
+	result := corev1.ResourceList{}
+	for resourceName, quantity := range base {
+		result[resourceName] = quantity.DeepCopy()
+	}
+	for resourceName, quantity := range overlay {
+		if quantity == nil {
+			delete(result, resourceName)
+			delete(defaults, resourceName)
+			continue
+		}
+		result[resourceName] = quantity.DeepCopy()
+	}
+	return result
 }
 
 // BuildHealthProbe builds a Kubernetes health probe configuration

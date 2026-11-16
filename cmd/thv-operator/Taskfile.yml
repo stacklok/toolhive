@@ -206,7 +206,8 @@ tasks:
   operator-test-integration:
     desc: Run integration tests for the operator using envtest
     cmds:
-      - go install sigs.k8s.io/controller-runtime/tools/setup-envtest@release-0.22
+      # Pinned to the release-0.22 head; branch queries for this nested module can fail on the Go proxy.
+      - go install sigs.k8s.io/controller-runtime/tools/setup-envtest@v0.0.0-20260125163108-a19ec76a3c5d
       - go install github.com/onsi/ginkgo/v2/ginkgo@latest
       # Run tests in parallel using ginkgo -p flag (uses number of CPU cores by default)
       - KUBEBUILDER_ASSETS="$($(go env GOPATH)/bin/setup-envtest use 1.31.0 -p path)" $(go env GOPATH)/bin/ginkgo --succinct -v -p ./cmd/thv-operator/test-integration/...

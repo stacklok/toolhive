@@ -152,17 +152,18 @@ func (rfw *ResponseFilteringWriter) FlushAndFilter() error {
 		// result, process it exactly as if it had been labeled correctly
 		// (which filters clean frames and fails closed on dirty ones). Only a
 		// body carrying no result under either shape passes through.
-		if carriesResult(rawResponse) {
+		switch sniffBodyShape(rawResponse) {
+		case bodyShapeJSON:
 			slog.Warn("response with unrecognized media type carries a JSON-RPC result; filtering as JSON",
 				"method", rfw.method, "contentType", contentType)
 			rfw.ResponseWriter.Header().Del("Content-Length")
 			return rfw.processJSONResponse(rawResponse)
-		}
-		if sseCarriesResult(rawResponse) {
+		case bodyShapeSSE:
 			slog.Warn("response with unrecognized media type carries a JSON-RPC result; filtering as SSE",
 				"method", rfw.method, "contentType", contentType)
 			rfw.ResponseWriter.Header().Del("Content-Length")
 			return rfw.processSSEResponse(rawResponse)
+		case bodyShapeNone:
 		}
 		// The leading BOM was removed above, so the backend's Content-Length
 		// is now three bytes too large even though this fallback doesn't filter
@@ -412,6 +413,10 @@ func (rfw *ResponseFilteringWriter) resolveSSEEvent(event []sseLine) []sseLine {
 	if len(event) == 0 {
 		return nil
 	}
+	if eventHasLoneCR(event) {
+		body := rfw.errorResponseBody(rfw.requestID(), errors.New("event carries a bare CR line break that the filter cannot split"))
+		return errorEventLines(body)
+	}
 
 	dataValues := eventDataValues(event)
 	if len(dataValues) == 0 {
@@ -435,6 +440,31 @@ func (rfw *ResponseFilteringWriter) resolveSSEEvent(event []sseLine) []sseLine {
 		return event
 	}
 	return rebuildEventWithPayload(event, replacement, failedClosed)
+}
+
+// errorEventLines replaces a whole event with one `data:` line carrying body. It is
+// used when the event's data cannot be located line by line, as with a lone CR.
+func errorEventLines(body []byte) []sseLine {
+	return []sseLine{{text: append([]byte("data: "), body...), term: []byte("\n")}}
+}
+
+// eventHasLoneCR reports whether an event carries a bare CR, a line break that a
+// spec client honours but the LF-only split does not. Its data would be invisible
+// to the filter, so such an event that carries a result must fail closed. A CR
+// at the end of a line is the first half of a CRLF terminator and is not lone.
+// The LF split stays as it is: splitting on CR too caused an earlier regression
+// with the go-sdk client.
+func eventHasLoneCR(event []sseLine) bool {
+	var joined []byte
+	lone := false
+	for _, l := range event {
+		if i := bytes.IndexByte(l.text, ''); i != -1 && i != len(l.text)-1 {
+			lone = true
+		}
+		joined = append(joined, l.text...)
+		joined = append(joined, l.term...)
+	}
+	return lone && sseCarriesResult(joined)
 }
 
 // eventDataValues extracts one event's `data:` field values, in order, each
@@ -716,6 +746,31 @@ func sseCarriesResult(rawResponse []byte) bool {
 		}
 	}
 	return false
+}
+
+// bodyShape is the framing a body with an unrecognized media type carries a
+// JSON-RPC result in.
+type bodyShape int
+
+const (
+	bodyShapeNone bodyShape = iota
+	bodyShapeJSON
+	bodyShapeSSE
+)
+
+// sniffBodyShape reports which framing body carries a JSON-RPC result in. JSON is
+// checked first, then SSE. A body carrying no result in either is bodyShapeNone.
+// Both the buffered FlushAndFilter path and the SSE stream writer call it, so the
+// rules for mislabeled bodies live in one place. body must have its BOM removed.
+func sniffBodyShape(body []byte) bodyShape {
+	switch {
+	case carriesResult(body):
+		return bodyShapeJSON
+	case sseCarriesResult(body):
+		return bodyShapeSSE
+	default:
+		return bodyShapeNone
+	}
 }
 
 // objectCarriesResult reports whether a trimmed JSON object value has a

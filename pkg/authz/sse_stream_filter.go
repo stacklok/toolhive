@@ -4,11 +4,13 @@
 package authz
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"errors"
 	"log/slog"
 	"mime"
+	"net"
 	"net/http"
 	"strings"
 
@@ -23,13 +25,16 @@ import (
 // for the blank line that ends it. A larger event fails the stream closed.
 const maxSSEEventBytes = 1 << 20
 
+// errSSEEncodedBody closes a filtered stream whose body is content-coded.
+var errSSEEncodedBody = errors.New("filtered event stream is content-coded and cannot be parsed")
+
 // errSSEEventTooLarge closes the stream when one event exceeds maxSSEEventBytes.
 var errSSEEventTooLarge = errors.New("SSE event exceeds the filter's size limit")
 
-// errSSEUnrecognizedMediaType closes a successful response whose Content-Type is
-// not text/event-stream. Such a body is not parsed, and it is not passed through
-// either, because a client may still read it as an event stream.
-var errSSEUnrecognizedMediaType = errors.New("successful response has a Content-Type other than text/event-stream")
+// errSSEUnrecognizedMediaType is logged when a successful response with a
+// Content-Type other than text/event-stream carries neither a JSON-RPC response
+// nor an SSE result. Such a body is dropped, since a client may read it as events.
+var errSSEUnrecognizedMediaType = errors.New("successful response has a Content-Type other than text/event-stream and no JSON-RPC result")
 
 // listMembers maps each list member of a result to the method whose filter applies.
 var listMembers = map[string]string{
@@ -63,8 +68,12 @@ type sseStreamFilterWriter struct {
 	failed      bool
 	failErr     error
 	// sniff marks a successful body with another media type. The whole body is
-	// buffered and treated as one JSON-RPC message (see writeSniffed).
+	// buffered and read as JSON-RPC or SSE once complete (see writeSniffed).
 	sniff bool
+	// encoded marks a filtered stream whose body is content-coded, which cannot be parsed.
+	encoded   bool
+	// committed records that the status line has been written.
+	committed bool
 }
 
 // newSSEStreamFilterWriter wraps w for a GET stream served on behalf of r.
@@ -82,18 +91,45 @@ func newSSEStreamFilterWriter(
 }
 
 // Unwrap exposes the underlying writer, so http.ResponseController can reach
-// deadlines and hijacking on the real connection.
+// deadlines on the real connection.
 func (w *sseStreamFilterWriter) Unwrap() http.ResponseWriter {
 	return w.ResponseWriter
 }
 
+// Hijack refuses a connection takeover. A hijacked connection, such as a 101
+// upgrade, would carry backend bytes past the filter in both directions. Declaring
+// Hijack here also stops http.ResponseController from reaching the underlying writer.
+func (w *sseStreamFilterWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	return nil, nil, http.ErrNotSupported
+}
+
 // WriteHeader forwards the status immediately, since the stream may stay open
-// for a long time. Content-Length is stripped because filtering can change the
-// body size.
+// for a long time. Filtered modes strip Content-Length in markFiltered, because
+// filtering can change the body size; a passed-through body keeps it.
 func (w *sseStreamFilterWriter) WriteHeader(statusCode int) {
-	w.ResponseWriter.Header().Del("Content-Length")
+	if statusCode >= 100 && statusCode < 200 {
+		// An informational response (e.g. 103 Early Hints) precedes the final status.
+		// Forward it without deciding the mode, so the final response still decides.
+		w.ResponseWriter.WriteHeader(statusCode)
+		return
+	}
 	w.decide(statusCode)
+	if w.encoded {
+		w.refuseEncoded()
+		return
+	}
+	w.committed = true
 	w.ResponseWriter.WriteHeader(statusCode)
+}
+
+// refuseEncoded answers a content-coded filtered stream with 502, once. The body
+// cannot be filtered, and forwarding it unfiltered would leak list answers.
+func (w *sseStreamFilterWriter) refuseEncoded() {
+	if w.committed {
+		return
+	}
+	w.committed = true
+	w.ResponseWriter.WriteHeader(http.StatusBadGateway)
 }
 
 // Write buffers the body and forwards every complete event. It returns the length
@@ -104,31 +140,25 @@ func (w *sseStreamFilterWriter) Write(data []byte) (int, error) {
 		return w.ResponseWriter.Write(data)
 	}
 	if w.failed {
+		w.refuseEncoded()
 		return 0, w.failErr
 	}
 	n := len(data)
+	w.buffer = append(w.buffer, data...)
 	if !w.started {
-		// A byte order mark can open the stream. Strip it once, so the first field parses.
+		// A byte order mark can open the stream, and a backend may split it across
+		// writes. Hold back a partial BOM until it is complete, then strip it once.
+		if len(w.buffer) < len(mcpparser.UTF8BOM) && bytes.HasPrefix(mcpparser.UTF8BOM, w.buffer) {
+			return n, nil
+		}
 		w.started = true
-		data = bytes.TrimPrefix(data, mcpparser.UTF8BOM)
+		w.buffer = bytes.TrimPrefix(w.buffer, mcpparser.UTF8BOM)
 	}
 	if w.sniff {
-		w.buffer = append(w.buffer, data...)
 		if len(w.buffer) > maxSSEEventBytes {
-			w.failed = true
-			w.failErr = errSSEEventTooLarge
-			w.buffer = nil
-			return 0, errSSEEventTooLarge
+			return 0, w.fail(errSSEEventTooLarge)
 		}
 		return n, nil
-	}
-	w.buffer = append(w.buffer, data...)
-	if len(w.buffer) > maxSSEEventBytes && completeEventEnd(w.buffer) == 0 {
-		// Stop the stream for good: drop what is buffered so finish() cannot write it out.
-		w.failed = true
-		w.failErr = errSSEEventTooLarge
-		w.buffer = nil
-		return 0, errSSEEventTooLarge
 	}
 	if err := w.drainCompleteEvents(); err != nil {
 		return 0, err
@@ -142,6 +172,10 @@ func (w *sseStreamFilterWriter) Flush() {
 	// Decide before flushing: a flush commits the headers, and the mode decides
 	// whether Cache-Control: private, no-store must be among them.
 	w.decide(http.StatusOK)
+	if w.failed {
+		w.refuseEncoded()
+		return
+	}
 	if w.sniff {
 		// A sniffed body is decided only once it is complete, so flush the transport only.
 		if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
@@ -175,7 +209,7 @@ func (w *sseStreamFilterWriter) finish() {
 		slog.Debug("stopped writing filtered SSE stream", "error", err)
 		return
 	}
-	trailing := bytes.TrimPrefix(w.buffer, mcpparser.UTF8BOM)
+	trailing := w.buffer
 	w.buffer = nil
 	if len(trailing) == 0 {
 		return
@@ -186,12 +220,15 @@ func (w *sseStreamFilterWriter) finish() {
 }
 
 // decide picks the mode once, from the Content-Type the handler set and the
-// status it is answering with. An event stream is parsed and filtered. A
-// non-2xx body (an error) is passed through unchanged. A successful body with
-// any other media type fails closed, since a client that ignores Content-Type
-// could read it as events. A parsed stream carries caller-specific list
-// answers, so it is marked uncacheable before its headers are committed, the
-// same as the POST path.
+// status it is answering with. An event stream is parsed and filtered as it
+// arrives. A non-2xx body (an error) is passed through unchanged. A successful
+// body with any other media type is sniffed (writeSniffed): it is held until the
+// handler returns, then read as JSON-RPC or SSE, or dropped. A client that ignores
+// Content-Type could read it as events, so it is never passed through unfiltered.
+// Held bodies are buffered up to maxSSEEventBytes, so a long-lived mislabeled
+// stream reaches the client only when it ends or hits that cap. Filtered modes
+// carry caller-specific list answers, so they are marked uncacheable before
+// their headers are committed, the same as the POST path.
 func (w *sseStreamFilterWriter) decide(status int) {
 	if w.decided {
 		return
@@ -199,43 +236,83 @@ func (w *sseStreamFilterWriter) decide(status int) {
 	w.decided = true
 	mediaType, _, _ := mime.ParseMediaType(w.ResponseWriter.Header().Get("Content-Type"))
 	if mediaType == "text/event-stream" {
-		w.ResponseWriter.Header().Set("Cache-Control", "private, no-store")
+		w.markFiltered()
 		return
 	}
 	if status >= 200 && status < 300 {
 		// Sniff it: a client may read it as events, so it is filtered like one or dropped.
 		w.sniff = true
-		w.ResponseWriter.Header().Set("Cache-Control", "private, no-store")
+		w.markFiltered()
 		return
 	}
 	w.passThrough = true
 }
 
+// markFiltered prepares the headers of a filtered mode. Filtering changes the body
+// size, so Content-Length must go, and the response must not be cached. Both run
+// before headers are committed, which happens on WriteHeader, Write or Flush.
+func (w *sseStreamFilterWriter) markFiltered() {
+	w.ResponseWriter.Header().Del("Content-Length")
+	w.ResponseWriter.Header().Set("Cache-Control", "private, no-store")
+	if ce := w.ResponseWriter.Header().Get("Content-Encoding"); ce != "" && !strings.EqualFold(ce, "identity") {
+		w.encoded = true
+		w.failed = true
+		w.failErr = errSSEEncodedBody
+	}
+}
+
 // writeSniffed handles a complete 2xx body whose media type is not an event
-// stream. A clean JSON-RPC response with a list member is filtered and sent.
-// Any other clean response is sent unchanged. Anything else (not JSON-RPC, or
-// a result outside a clean response) is dropped, so nothing unfiltered reaches
-// the client.
+// stream. The body is read as one JSON-RPC response when it parses as one, and
+// as SSE when its framing carries a result (sniffBodyShape decides). A clean
+// JSON-RPC response with a list member is filtered and sent; any other clean
+// response is sent unchanged. A body carrying no result in either shape is
+// dropped, so nothing unfiltered reaches the client.
 func (w *sseStreamFilterWriter) writeSniffed(body []byte) {
+	if hasAmbiguousResultKey(body) {
+		slog.Warn("dropped a 2xx body whose result key is duplicated or differs in case", "error", errSSEUnrecognizedMediaType)
+		return
+	}
 	message, _ := jsonrpc2.DecodeMessage(body)
 	response, isResponse := message.(*jsonrpc2.Response)
 	if !isResponse {
-		slog.Warn("dropped a 2xx body that is not a JSON-RPC response", "error", errSSEUnrecognizedMediaType)
+		switch sniffBodyShape(body) {
+		case bodyShapeSSE:
+		case bodyShapeJSON:
+			slog.Warn("dropped a 2xx JSON body carrying a result that is not a single JSON-RPC response",
+				"error", errSSEUnrecognizedMediaType)
+			return
+		default:
+			// No result in either shape: pass it through, as the buffered path does.
+			// A result split across data lines would still reach the client, so drop it.
+			if bodyCarriesResultAnywhere(body) {
+				slog.Warn("dropped a 2xx body whose result is split across data lines", "error", errSSEUnrecognizedMediaType)
+				return
+			}
+			if _, err := w.ResponseWriter.Write(body); err != nil {
+				slog.Debug("stopped writing filtered SSE stream", "error", err)
+			}
+			return
+		}
+		if err := w.writeLines(w.processLines(parseSSELines(body))); err != nil {
+			slog.Debug("stopped writing filtered SSE stream", "error", err)
+		}
 		return
 	}
 	method, err := listMethodForResult(response.Result)
 	if err != nil {
-		slog.Warn("dropped a 2xx JSON-RPC response with an ambiguous list", "error", err)
+		// Answer with an error that carries the request id, so the client does not wait for a timeout.
+		_, _ = w.ResponseWriter.Write(w.newFilter("").errorResponseBody(response.ID, err))
 		return
 	}
 	out := body
 	if method != "" {
 		filtered, ferr := w.newFilter(method).filterAndEncode(response)
 		if ferr != nil {
-			slog.Warn("dropped a 2xx JSON-RPC response that failed to filter", "error", ferr)
-			return
+			slog.Warn("answering a 2xx JSON-RPC response that failed to filter with an error", "error", ferr)
+			out = w.newFilter("").errorResponseBody(response.ID, ferr)
+		} else {
+			out = filtered
 		}
-		out = filtered
 	}
 	if _, err := w.ResponseWriter.Write(out); err != nil {
 		slog.Debug("stopped writing filtered SSE stream", "error", err)
@@ -245,13 +322,34 @@ func (w *sseStreamFilterWriter) writeSniffed(body []byte) {
 // drainCompleteEvents writes every event that is complete in the buffer and
 // keeps the rest.
 func (w *sseStreamFilterWriter) drainCompleteEvents() error {
-	end := completeEventEnd(w.buffer)
-	if end == 0 {
-		return nil
+	for {
+		end := firstEventEnd(w.buffer)
+		if end == 0 {
+			break
+		}
+		if end > maxSSEEventBytes {
+			return w.fail(errSSEEventTooLarge)
+		}
+		chunk := w.buffer[:end]
+		w.buffer = w.buffer[end:]
+		if err := w.writeLines(w.processLines(parseSSELines(chunk))); err != nil {
+			return err
+		}
 	}
-	chunk := w.buffer[:end]
-	w.buffer = w.buffer[end:]
-	return w.writeLines(w.processLines(parseSSELines(chunk)))
+	if len(w.buffer) > maxSSEEventBytes {
+		// An unterminated event has grown past the cap. Nothing buffered may be written out.
+		return w.fail(errSSEEventTooLarge)
+	}
+	return nil
+}
+
+// fail stops the stream for good and drops what is buffered, so finish() cannot
+// write it out.
+func (w *sseStreamFilterWriter) fail(err error) error {
+	w.failed = true
+	w.failErr = err
+	w.buffer = nil
+	return err
 }
 
 // writeLines writes each line with the terminator it was read with.
@@ -290,6 +388,10 @@ func (w *sseStreamFilterWriter) filterEvent(event []sseLine) []sseLine {
 	if len(event) == 0 {
 		return nil
 	}
+	if eventHasLoneCR(event) {
+		body := w.newFilter("").errorResponseBody(jsonrpc2.ID{}, errors.New("event carries a bare CR line break that the filter cannot split"))
+		return errorEventLines(body)
+	}
 	dataValues := eventDataValues(event)
 	if len(dataValues) == 0 {
 		return event
@@ -297,6 +399,9 @@ func (w *sseStreamFilterWriter) filterEvent(event []sseLine) []sseLine {
 	payload := bytes.Join(dataValues, []byte("\n"))
 	if len(payload) == 0 {
 		return event
+	}
+	if hasAmbiguousResultKey(payload) {
+		return w.failClosed(event, jsonrpc2.ID{}, "result key is duplicated or differs in case")
 	}
 
 	message, _ := jsonrpc2.DecodeMessage(payload)
@@ -363,20 +468,19 @@ func listMethodForResult(result json.RawMessage) (string, error) {
 	return method, nil
 }
 
-// completeEventEnd returns the length of the prefix of buf that ends with the
-// blank line closing its last complete event, or 0 if there is none.
-func completeEventEnd(buf []byte) int {
-	end := 0
+// firstEventEnd returns the length of the prefix of buf that ends with the blank
+// line closing its first complete event, or 0 if no event is complete yet.
+func firstEventEnd(buf []byte) int {
 	pos := 0
 	for {
 		idx := bytes.IndexByte(buf[pos:], '\n')
 		if idx == -1 {
-			return end
+			return 0
 		}
 		line := buf[pos : pos+idx]
 		pos += idx + 1
 		if len(bytes.TrimRight(line, "\r")) == 0 {
-			end = pos
+			return pos
 		}
 	}
 }
@@ -394,4 +498,52 @@ func parseSSELines(raw []byte) []sseLine {
 		raw = raw[idx+1:]
 	}
 	return lines
+}
+
+// hasAmbiguousResultKey reports whether a JSON object payload has a top-level key
+// that is "result" in some other spelling, or "result" more than once. Go's decoder
+// matches keys case-insensitively and keeps the last duplicate, while a client may
+// read the exact "result" key. Such a payload cannot be filtered reliably, so the
+// caller fails closed.
+func hasAmbiguousResultKey(payload []byte) bool {
+	dec := json.NewDecoder(bytes.NewReader(payload))
+	if tok, err := dec.Token(); err != nil || tok != json.Delim('{') {
+		return false
+	}
+	resultKeys := 0
+	for dec.More() {
+		tok, err := dec.Token()
+		if err != nil {
+			return true
+		}
+		key, ok := tok.(string)
+		if !ok {
+			return true
+		}
+		if strings.EqualFold(key, "result") {
+			if key != "result" {
+				return true
+			}
+			resultKeys++
+			if resultKeys > 1 {
+				return true
+			}
+		}
+		var skip json.RawMessage
+		if err := dec.Decode(&skip); err != nil {
+			return true
+		}
+	}
+	return false
+}
+
+// bodyCarriesResultAnywhere reports whether a body could carry a result under any
+// framing a client might read: the whole body, one data line, or the data lines
+// joined together, which is how a client assembles one event's data.
+func bodyCarriesResultAnywhere(body []byte) bool {
+	if carriesResult(body) || sseCarriesResult(body) {
+		return true
+	}
+	joined := bytes.Join(eventDataValues(parseSSELines(body)), []byte("\n"))
+	return carriesResult(joined)
 }

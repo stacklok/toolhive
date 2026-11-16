@@ -50,7 +50,9 @@ func (c *RunConfig) UsageMetricsProfile() usagemetrics.Profile {
 // registrySource classifies where the server definition came from. RunConfig
 // records the registry URLs only for remote and API registries; with both empty,
 // the server came from the embedded registry or a local registry file, which
-// the embedded catalog lookup tells apart.
+// the embedded catalog lookup tells apart. A local file entry that reuses a
+// built-in name is reported as builtin: RunConfig does not record the file, and
+// the name sent is one the built-in catalog already publishes.
 func (c *RunConfig) registrySource() string {
 	switch {
 	case c.RegistryServerName == "":

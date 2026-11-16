@@ -118,19 +118,40 @@ func TestService_EnsureInstanceID(t *testing.T) {
 
 		id, err := NewService(c, testNamespace).EnsureInstanceID(ctx, c, noDelay)
 		require.ErrorContains(t, err, "failed to create telemetry ConfigMap")
+		assert.NotErrorIs(t, err, ErrInstanceIDUnavailable)
 		assert.Empty(t, id)
 	})
 
-	t.Run("returns read errors other than not found", func(t *testing.T) {
+	t.Run("returns a forbidden read at once", func(t *testing.T) {
+		gets := 0
 		c := fake.NewClientBuilder().WithScheme(newScheme(t)).WithInterceptorFuncs(interceptor.Funcs{
 			Get: func(context.Context, client.WithWatch, client.ObjectKey, client.Object, ...client.GetOption) error {
+				gets++
 				return apierrors.NewForbidden(cmResource, configMapName, errors.New("denied"))
 			},
 		}).Build()
 
 		id, err := NewService(c, testNamespace).EnsureInstanceID(ctx, c, noDelay)
 		require.ErrorContains(t, err, "failed to get telemetry ConfigMap")
+		assert.NotErrorIs(t, err, ErrInstanceIDUnavailable, "a forbidden read is not transient")
 		assert.Empty(t, id)
+		assert.Equal(t, 1, gets, "a forbidden read is not retried")
+	})
+
+	t.Run("reports a persistent transient error as unavailable", func(t *testing.T) {
+		gets := 0
+		c := fake.NewClientBuilder().WithScheme(newScheme(t)).WithInterceptorFuncs(interceptor.Funcs{
+			Get: func(context.Context, client.WithWatch, client.ObjectKey, client.Object, ...client.GetOption) error {
+				gets++
+				return apierrors.NewServiceUnavailable("apiserver restarting")
+			},
+		}).Build()
+
+		id, err := NewService(c, testNamespace).EnsureInstanceID(ctx, c, noDelay)
+		require.ErrorIs(t, err, ErrInstanceIDUnavailable)
+		assert.ErrorContains(t, err, "apiserver restarting")
+		assert.Empty(t, id)
+		assert.Equal(t, noDelay.Steps, gets)
 	})
 
 	t.Run("retries a transient read error", func(t *testing.T) {

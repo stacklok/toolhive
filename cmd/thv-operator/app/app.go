@@ -8,6 +8,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -157,7 +158,10 @@ func Run() {
 
 	// Resolve the installation's instance ID before any controller reconciles,
 	// so every workload gets the same anonymous ID from its first pod template.
-	// Startup continues without it: usage metrics must not block the operator.
+	// If the API server stays unreachable, exit and let the pod restart: a
+	// replica that ran without the ID would roll every workload whenever it
+	// became the leader. An error a restart cannot fix (such as missing RBAC)
+	// hits every replica alike, so the operator runs without the ID.
 	// An operator opted out of update checks or usage metrics opts its
 	// workloads out of the same.
 	ctrlutil.SetUsageMetricsOptOut(updates.ShouldSkipUpdateChecks())
@@ -165,9 +169,13 @@ func Run() {
 	instanceID, err := telemetryService.EnsureInstanceID(
 		context.Background(), mgr.GetAPIReader(), telemetry.InstanceIDBackoff,
 	)
-	if err != nil {
+	switch {
+	case errors.Is(err, telemetry.ErrInstanceIDUnavailable):
+		setupLog.Error(err, "unable to resolve telemetry instance ID")
+		os.Exit(1)
+	case err != nil:
 		setupLog.Error(err, "unable to resolve telemetry instance ID; workloads that carry it will be rolled out without it")
-	} else {
+	default:
 		ctrlutil.SetUsageMetricsAnonymousID(instanceID)
 	}
 	if err := mgr.Add(&telemetry.LeaderTelemetryRunnable{

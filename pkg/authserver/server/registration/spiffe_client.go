@@ -8,8 +8,6 @@ import (
 	"slices"
 
 	"github.com/ory/fosite"
-
-	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
 // SPIFFEClient is the immutable OAuth client representation of a configured
@@ -25,12 +23,16 @@ type SPIFFEClient struct {
 }
 
 // NewSPIFFEClient creates an immutable, secretless, non-public client for a
-// configured SPIFFE association. GetAudience returns the configured audience
-// allowlist. resources is the independent RFC 8707 resource allowlist,
-// available via Resources(); it may be empty.
-func NewSPIFFEClient(id string, scopes, audiences, resources []string) (*SPIFFEClient, error) {
+// configured SPIFFE association. grantTypes are the grants the association
+// permits. GetAudience returns the configured audience allowlist. resources is
+// the independent RFC 8707 resource allowlist, available via Resources(); it
+// may be empty.
+func NewSPIFFEClient(id string, grantTypes, scopes, audiences, resources []string) (*SPIFFEClient, error) {
 	if id == "" {
 		return nil, fmt.Errorf("SPIFFE client ID is required")
+	}
+	if len(grantTypes) == 0 {
+		return nil, fmt.Errorf("SPIFFE client grant types are required")
 	}
 	if len(scopes) == 0 || len(audiences) == 0 {
 		return nil, fmt.Errorf("SPIFFE client scopes and audiences are required")
@@ -38,7 +40,7 @@ func NewSPIFFEClient(id string, scopes, audiences, resources []string) (*SPIFFEC
 
 	return &SPIFFEClient{
 		id:         id,
-		grantTypes: fosite.Arguments{oauthproto.GrantTypeTokenExchange},
+		grantTypes: slices.Clone(grantTypes),
 		scopes:     slices.Clone(scopes),
 		audiences:  slices.Clone(audiences),
 		resources:  slices.Clone(resources),

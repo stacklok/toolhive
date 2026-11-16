@@ -201,7 +201,7 @@ func loadKeyMaterial(ctx context.Context, provider keys.KeyProvider) (*keys.Sign
 // bundleSource may be nil.
 func authorizationServerParams(
 	cfg Config, signingKey *keys.SigningKeyData, additionalPublicKeys []*keys.PublicKeyData,
-	spiffeRegistry *SPIFFEAssociationRegistry, bundleSource *spiffeMultiDomainBundleSource, stor storage.Storage,
+	spiffeRegistry *SPIFFEAssociationRegistry, bundleSource *spiffeMultiDomainBundleSource,
 ) *oauthserver.AuthorizationServerParams {
 	return &oauthserver.AuthorizationServerParams{
 		Issuer:                                    cfg.Issuer,
@@ -222,7 +222,7 @@ func authorizationServerParams(
 		CIMDEnabled:                               cfg.CIMDEnabled,
 		AllowConfidentialClientRegistration:       cfg.AllowConfidentialClientRegistration,
 		AllowPrivateKeyJWTRegistration:            cfg.AllowPrivateKeyJWTRegistration,
-		HasStaticDelegateClients:                  len(cfg.DelegateClients) > 0,
+		HasStaticConfidentialClients:              cfg.hasStaticConfidentialClients(),
 		HasStaticSecretClients:                    hasSecretDelegateClient(cfg.DelegateClients),
 		InsecureAllowHTTP:                         cfg.InsecureAllowHTTP,
 		InsecureAllowConfidentialOverLoopbackHTTP: cfg.InsecureAllowConfidentialOverLoopbackHTTP,
@@ -232,7 +232,7 @@ func authorizationServerParams(
 		JWTBearerGrantEnabled:                     JWTBearerGrantEnabled(cfg.TrustedIssuers),
 		DeviceFlowEnabled:                         cfg.DeviceFlowEnabled,
 		DeviceCodeInterval:                        cfg.DeviceCodeInterval,
-		SPIFFEClientResolver:                      newSPIFFEClientResolver(spiffeRegistry, stor),
+		SPIFFEClientResolver:                      newSPIFFEClientResolver(spiffeRegistry),
 		SPIFFEX509BundleSource:                    spiffeX509BundleSource(bundleSource),
 		SPIFFEX509ClientMatcher:                   newSPIFFEX509ClientMatcher(spiffeRegistry),
 		SPIFFEJWTBundleSource:                     spiffeJWTBundleSource(bundleSource),
@@ -269,7 +269,7 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage) (_ *server
 		return nil, err
 	}
 
-	oauthParams := authorizationServerParams(cfg, signingKey, additionalPublicKeys, spiffeRegistry, bundleSource, stor)
+	oauthParams := authorizationServerParams(cfg, signingKey, additionalPublicKeys, spiffeRegistry, bundleSource)
 	authServerConfig, err := oauthserver.NewAuthorizationServerConfig(oauthParams)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create OAuth2 config: %w", err)
@@ -585,11 +585,7 @@ func decorateStorageForSPIFFE(
 	if err != nil {
 		return nil, nil, err
 	}
-	clients, err := registry.staticClients()
-	if err != nil {
-		return nil, nil, fmt.Errorf("build SPIFFE static clients: %w", err)
-	}
-	stor, err = storage.NewSPIFFEStorageDecorator(ctx, stor, clients)
+	stor, err = storage.NewSPIFFEStorageDecorator(ctx, stor, registry.staticClients())
 	if err != nil {
 		return nil, nil, fmt.Errorf("initialize SPIFFE client overlay: %w", err)
 	}
@@ -609,20 +605,18 @@ func decorateStorageForSPIFFE(
 // Method uses the shared leaf-package type because package server cannot
 // import authserver (authserver imports server). Package authserver aliases
 // that type, so both sides share one set of method values.
-func newSPIFFEClientResolver(
-	registry *SPIFFEAssociationRegistry, stor storage.Storage,
-) oauthserver.SPIFFEClientResolver {
+func newSPIFFEClientResolver(registry *SPIFFEAssociationRegistry) oauthserver.SPIFFEClientResolver {
 	if registry == nil {
 		return nil
 	}
 	return func(
-		ctx context.Context, spiffeID, clientID string, method spiffeauth.SPIFFEAuthenticationMethod,
+		_ context.Context, spiffeID, clientID string, method spiffeauth.SPIFFEAuthenticationMethod,
 	) (fosite.Client, error) {
-		principal, err := registry.Resolve(spiffeID, clientID, method)
+		client, err := registry.Resolve(spiffeID, clientID, method)
 		if err != nil {
 			return nil, err
 		}
-		return stor.GetClient(ctx, principal.ClientID())
+		return client, nil
 	}
 }
 

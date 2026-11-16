@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/stacklok/toolhive/pkg/authserver/internal/spiffetest"
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 )
 
@@ -112,6 +113,25 @@ type resourceClient struct {
 }
 
 func (c resourceClient) Resources() []string { return c.resources }
+
+var _ resourceScopedClient = (*registration.AuthenticatedSPIFFEClient)(nil)
+
+func TestValidateClientAudience_AuthenticatedSPIFFEClient(t *testing.T) {
+	t.Parallel()
+
+	const (
+		resource = "https://resource.example.com"
+		other    = "https://other.example.com"
+	)
+	client := spiffetest.AuthenticatedClient(t,
+		spiffetest.WithID("client"),
+		spiffetest.WithResources(resource),
+	)
+
+	assert.Equal(t, []string{resource}, ClientResources(client))
+	assert.NoError(t, ValidateClientAudience(resource, client, fosite.DefaultAudienceMatchingStrategy))
+	assert.ErrorIs(t, ValidateClientAudience(other, client, fosite.DefaultAudienceMatchingStrategy), ErrInvalidTarget)
+}
 
 func TestValidateClientAudience(t *testing.T) {
 	t.Parallel()

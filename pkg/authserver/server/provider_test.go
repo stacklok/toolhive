@@ -101,21 +101,21 @@ func TestNewAuthorizationServerConfig_ConfidentialClientCapabilities(t *testing.
 	require.NoError(t, err)
 
 	tests := []struct {
-		name                    string
-		allowConfidential       bool
-		allowPrivateKeyJWT      bool
-		hasStaticDelegateClient bool
-		hasStaticSecret         bool
-		hasStaticPrivateKeyJWT  bool
-		disableTokenExchange    bool
-		jwtBearerGrantEnabled   bool
+		name                   string
+		allowConfidential      bool
+		allowPrivateKeyJWT     bool
+		hasStaticConfidential  bool
+		hasStaticSecret        bool
+		hasStaticPrivateKeyJWT bool
+		disableTokenExchange   bool
+		jwtBearerGrantEnabled  bool
 	}{
-		{name: "public only", allowConfidential: false, hasStaticDelegateClient: false},
-		{name: "confidential DCR", allowConfidential: true, hasStaticDelegateClient: false},
-		{name: "private-key JWT registration", allowPrivateKeyJWT: true, hasStaticDelegateClient: false},
-		{name: "static secret delegate client", hasStaticDelegateClient: true, hasStaticSecret: true},
-		{name: "static private-key JWT delegate client", hasStaticDelegateClient: true, hasStaticPrivateKeyJWT: true},
-		{name: "mixed static delegate clients", hasStaticDelegateClient: true, hasStaticSecret: true,
+		{name: "public only", allowConfidential: false, hasStaticConfidential: false},
+		{name: "confidential DCR", allowConfidential: true, hasStaticConfidential: false},
+		{name: "private-key JWT registration", allowPrivateKeyJWT: true, hasStaticConfidential: false},
+		{name: "static secret delegate client", hasStaticConfidential: true, hasStaticSecret: true},
+		{name: "static private-key JWT delegate client", hasStaticConfidential: true, hasStaticPrivateKeyJWT: true},
+		{name: "mixed static delegate clients", hasStaticConfidential: true, hasStaticSecret: true,
 			hasStaticPrivateKeyJWT: true},
 		{name: "JWT bearer without token exchange", disableTokenExchange: true, jwtBearerGrantEnabled: true},
 	}
@@ -133,7 +133,7 @@ func TestNewAuthorizationServerConfig_ConfidentialClientCapabilities(t *testing.
 				SigningKey:                          rsaKey,
 				AllowConfidentialClientRegistration: tt.allowConfidential,
 				AllowPrivateKeyJWTRegistration:      tt.allowPrivateKeyJWT,
-				HasStaticDelegateClients:            tt.hasStaticDelegateClient,
+				HasStaticConfidentialClients:        tt.hasStaticConfidential,
 				HasStaticSecretClients:              tt.hasStaticSecret,
 				HasStaticPrivateKeyJWTClients:       tt.hasStaticPrivateKeyJWT,
 				DisableTokenExchange:                tt.disableTokenExchange,
@@ -142,7 +142,7 @@ func TestNewAuthorizationServerConfig_ConfidentialClientCapabilities(t *testing.
 			require.NoError(t, err)
 			assert.Equal(t, tt.allowConfidential, config.AllowConfidentialClientRegistration)
 			assert.Equal(t, tt.allowPrivateKeyJWT, config.AllowPrivateKeyJWTRegistration)
-			assert.Equal(t, tt.hasStaticDelegateClient, config.HasStaticDelegateClients)
+			assert.Equal(t, tt.hasStaticConfidential, config.HasStaticConfidentialClients)
 			assert.Equal(t, tt.hasStaticSecret, config.HasStaticSecretClients)
 			assert.Equal(t, tt.hasStaticPrivateKeyJWT, config.HasStaticPrivateKeyJWTClients)
 			assert.Equal(t, !tt.disableTokenExchange, config.TokenExchangeEnabled)
@@ -173,15 +173,15 @@ func TestNewAuthorizationServerConfig_ConfidentialHTTPTransport(t *testing.T) {
 			p.Issuer = "http://auth.example.com"
 			p.AllowConfidentialClientRegistration = true
 		}, wantErr: "plain-HTTP non-loopback"},
-		{name: "static delegate client rejects non-loopback HTTP", mutate: func(p *AuthorizationServerParams) {
+		{name: "static confidential client rejects non-loopback HTTP", mutate: func(p *AuthorizationServerParams) {
 			p.Issuer = "http://auth.example.com"
-			p.HasStaticDelegateClients = true
+			p.HasStaticConfidentialClients = true
 		}, wantErr: "plain-HTTP non-loopback"},
 		// A private_key_jwt delegate counts as confidential for the transport check
 		// even though it never advertises client_secret_* methods.
-		{name: "key-only static delegate client rejects non-loopback HTTP", mutate: func(p *AuthorizationServerParams) {
+		{name: "key-only static confidential client rejects non-loopback HTTP", mutate: func(p *AuthorizationServerParams) {
 			p.Issuer = "http://auth.example.com"
-			p.HasStaticDelegateClients = true
+			p.HasStaticConfidentialClients = true
 			p.HasStaticPrivateKeyJWTClients = true
 		}, wantErr: "plain-HTTP non-loopback"},
 		{name: "loopback opt-in permits confidential HTTP", mutate: func(p *AuthorizationServerParams) {
@@ -858,10 +858,10 @@ func TestNewAuthorizationServer_ConfidentialHTTPTransport(t *testing.T) {
 			wantErr: "plain-HTTP non-loopback",
 		},
 		{
-			name: "direct static delegate configuration rejects non-loopback HTTP",
+			name: "direct static confidential client configuration rejects non-loopback HTTP",
 			config: &AuthorizationServerConfig{
-				Config:                   &fosite.Config{AccessTokenIssuer: "http://auth.example.com"},
-				HasStaticDelegateClients: true,
+				Config:                       &fosite.Config{AccessTokenIssuer: "http://auth.example.com"},
+				HasStaticConfidentialClients: true,
 			},
 			wantErr: "plain-HTTP non-loopback",
 		},

@@ -361,7 +361,7 @@ Filtering a list removes the tools the filter hides and applies the overrides, a
 
 **What each report contains**:
 
-Each proxy (and each vMCP server) sends one report every 15 minutes, including when no tools were called. Every string field is limited to a fixed set of values defined in `pkg/usagemetrics/types.go`; anything else is reported as `other`.
+Each proxy (and each vMCP server) sends one report every 15 minutes, including when no tools were called. Outside Kubernetes it needs an anonymous ID first: until the first update check creates one, nothing is sent. Every string field is limited to a fixed set of values defined in `pkg/usagemetrics/types.go`; anything else is reported as `other`.
 
 | Field | Values |
 |-------|--------|
@@ -382,12 +382,13 @@ The client is taken from `clientInfo.name`: from the `initialize` request for se
 
 Server names, image references, URLs, hostnames, namespaces, tool, prompt and resource names, raw client names and error messages are never sent. A server from a custom registry is reported as `catalog_server: custom` even if its entry has a name. The one exception is a local registry file entry that reuses the name of a built-in entry: it cannot be told apart from the built-in entry, so it is reported as `registry_source: builtin` with that name, which is already public. `catalog_server` is only reported by servers that `thv` runs; Kubernetes workloads and vMCP never send it.
 
-**vMCP and the operator**: vMCP reports with the `vmcp` component and the same opt-outs. It only reads the thv config file for the opt-out: it never creates or rewrites it, a missing file means no opt-out, and a file it cannot read or parse means it sends nothing. The operator passes its instance ID to the workloads it deploys (`TOOLHIVE_ANONYMOUS_ID`), so reports from one installation share an anonymous ID. The ID is read from the operator's telemetry ConfigMap at startup, retrying for about 15 seconds, and does not change workload pod templates on later restarts. If it still cannot be read, the operator starts without it, which rolls out every workload that carries it; the next successful start rolls them out again. Opting the operator out opts the workloads it deploys out as well. Instead of the ID it passes the same setting: `TOOLHIVE_SKIP_UPDATE_CHECK=true` stops their update checks and usage reports, and `TOOLHIVE_USAGE_METRICS_ENABLED=false` stops their usage reports only. Turning either on or off rolls out those workloads once. A value set on the workload itself wins.
+**vMCP and the operator**: vMCP reports with the `vmcp` component and the same opt-outs. As in `thv`, its version check has its own opt-out (`TOOLHIVE_SKIP_UPDATE_CHECK=true`, or CI), so turning usage metrics off does not stop it. vMCP only reads the thv config file for the opt-out: it never creates or rewrites it, a missing file means no opt-out, and a file it cannot read or parse means it sends no usage reports. The operator passes its instance ID to the workloads it deploys (`TOOLHIVE_ANONYMOUS_ID`), so reports from one installation share an anonymous ID. The ID is read from the operator's telemetry ConfigMap at startup and does not change workload pod templates on later restarts. Errors that may be transient are retried for about 15 seconds; if they persist, the operator exits and its pod restarts, so that no replica runs without the ID and later rolls every workload when it becomes the leader. An error a retry cannot fix (forbidden, unauthorized, invalid) is not retried: the operator starts without the ID, which rolls out every workload that carries it. The ID stored in the ConfigMap is never replaced; if the ConfigMap is deleted, the leader stores the same ID again. Opting the operator out opts the workloads it deploys out as well. Instead of the ID it passes the same setting: `TOOLHIVE_SKIP_UPDATE_CHECK=true` stops their update checks and usage reports, and `TOOLHIVE_USAGE_METRICS_ENABLED=false` stops their usage reports only. Turning either on or off rolls out those workloads once. A value set on the workload itself wins.
 
 **Configuration**:
 - Enabled by default
 - Can be disabled via config: `thv config usage-metrics disable`
 - Can be disabled via environment variable: `TOOLHIVE_USAGE_METRICS_ENABLED=false`
+- Disabled, together with update checks, by `TOOLHIVE_SKIP_UPDATE_CHECK=true`
 - Automatically disabled in CI environments
 
 **Dependencies**:
@@ -395,7 +396,7 @@ Server names, image references, URLs, hostnames, namespaces, tool, prompt and re
 
 **Opting Out**:
 
-Users can opt out of anonymous usage metrics in two ways:
+Users can opt out of anonymous usage metrics in three ways:
 
 ```bash
 # Via config (persistent)
@@ -403,6 +404,9 @@ thv config usage-metrics disable
 
 # Via environment variable (session-only)
 export TOOLHIVE_USAGE_METRICS_ENABLED=false
+
+# Turn off update checks as well (session-only)
+export TOOLHIVE_SKIP_UPDATE_CHECK=true
 ```
 
 To re-enable:

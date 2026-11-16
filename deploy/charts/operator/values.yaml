@@ -94,8 +94,11 @@ operator:
 
   # -- Additional environment variables for the operator container.
   # Chart-managed variables take precedence for duplicate names. Set
-  # `TOOLHIVE_SKIP_UPDATE_CHECK` to `"true"` to disable periodic update
-  # checks and the usage metrics collected with them.
+  # `TOOLHIVE_SKIP_UPDATE_CHECK` to `"true"` to disable update checks and
+  # anonymous usage metrics, or `TOOLHIVE_USAGE_METRICS_ENABLED` to `"false"`
+  # to disable usage metrics only. The operator passes either setting to every
+  # MCPServer, MCPRemoteProxy and VirtualMCPServer it deploys; changing it rolls
+  # out those workloads once.
   env: []
 
   # -- Ports declared on the operator container. The default `metrics` and

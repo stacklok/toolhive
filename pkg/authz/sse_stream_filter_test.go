@@ -18,6 +18,13 @@ import (
 	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
 )
 
+// sseRequest returns a GET that asks for an event stream, as the MCP stream GET does.
+func sseRequest() *http.Request {
+	r := httptest.NewRequest(http.MethodGet, "/sse", nil)
+	r.Header.Set("Accept", "text/event-stream")
+	return r
+}
+
 // runSSEStream serves a GET event stream through the authz middleware. The
 // handler writes each chunk in order, so a test can split an event across writes.
 func runSSEStream(t *testing.T, authorizer *mockAuthorizer, contentType string, chunks ...string) *httptest.ResponseRecorder {
@@ -37,7 +44,7 @@ func runSSEStreamWithStatus(
 		}
 	})
 	handler := Middleware(authorizer, next, nil)
-	req := httptest.NewRequest(http.MethodGet, "/sse", nil)
+	req := sseRequest()
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
 	return rr
@@ -241,7 +248,7 @@ func TestSSEStreamFlushBeforeWriteSetsNoStore(t *testing.T) {
 		w.(http.Flusher).Flush()
 	})
 	handler := Middleware(authorizer, next, nil)
-	req := httptest.NewRequest(http.MethodGet, "/sse", nil)
+	req := sseRequest()
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
 
@@ -308,7 +315,7 @@ func TestSSEStreamFlushBetweenPartialChunks(t *testing.T) {
 		w.(http.Flusher).Flush()
 	})
 	handler := Middleware(authorizer, next, nil)
-	req := httptest.NewRequest(http.MethodGet, "/sse", nil)
+	req := sseRequest()
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
 
@@ -334,7 +341,7 @@ func TestSSEStreamFlushesCompleteEventWhileHandlerRuns(t *testing.T) {
 		w.(http.Flusher).Flush()
 		midStream = rr.Body.String()
 	})
-	Middleware(authorizer, next, nil).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/sse", nil))
+	Middleware(authorizer, next, nil).ServeHTTP(rr, sseRequest())
 
 	require.NotEmpty(t, midStream, "a complete event must be written before the handler returns")
 	assert.Contains(t, midStream, "weather")
@@ -363,7 +370,7 @@ func TestSSEStreamStripsBOMSplitAcrossWrites(t *testing.T) {
 	})
 	handler := Middleware(authorizer, next, nil)
 	rr := httptest.NewRecorder()
-	handler.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/sse", nil))
+	handler.ServeHTTP(rr, sseRequest())
 
 	assert.NotContains(t, rr.Body.String(), "secret", "a BOM split across writes must not hide the list")
 }
@@ -398,7 +405,7 @@ func TestSSEStreamInformationalStatusDoesNotDecideMode(t *testing.T) {
 		_, _ = io.WriteString(w, sseStreamEvent(`{"jsonrpc":"2.0","id":15,"result":{"tools":[{"name":"secret","inputSchema":{"type":"object"}}]}}`))
 	})
 	rr := httptest.NewRecorder()
-	Middleware(authorizer, next, nil).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/sse", nil))
+	Middleware(authorizer, next, nil).ServeHTTP(rr, sseRequest())
 
 	assert.NotContains(t, rr.Body.String(), "secret", "a 1xx response must not stop the list from being filtered")
 }
@@ -440,7 +447,7 @@ func TestSSEStreamStripsContentLengthOnImplicitOK(t *testing.T) {
 		_, _ = io.WriteString(w, ": keep-alive\n\n")
 	})
 	rr := httptest.NewRecorder()
-	Middleware(authorizer, next, nil).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/sse", nil))
+	Middleware(authorizer, next, nil).ServeHTTP(rr, sseRequest())
 
 	assert.Empty(t, rr.Header().Get("Content-Length"), "a filtered stream must not keep Content-Length")
 }
@@ -486,7 +493,7 @@ func TestSSEStreamRefusesContentEncodedBody(t *testing.T) {
 		_, _ = io.WriteString(w, sseStreamEvent(`{"jsonrpc":"2.0","id":19,"result":{"tools":[{"name":"secret","inputSchema":{"type":"object"}}]}}`))
 	})
 	rr := httptest.NewRecorder()
-	Middleware(authorizer, next, nil).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/sse", nil))
+	Middleware(authorizer, next, nil).ServeHTTP(rr, sseRequest())
 
 	assert.Equal(t, http.StatusBadGateway, rr.Code, "a content-coded list stream cannot be filtered and must be refused")
 	assert.NotContains(t, rr.Body.String(), "secret")
@@ -570,7 +577,7 @@ func TestSSEStreamRefusesHijack(t *testing.T) {
 		_, _, hijackErr = http.NewResponseController(w).Hijack()
 	})
 	hr := &hijackRecorder{ResponseRecorder: httptest.NewRecorder()}
-	Middleware(authorizer, next, nil).ServeHTTP(hr, httptest.NewRequest(http.MethodGet, "/sse", nil))
+	Middleware(authorizer, next, nil).ServeHTTP(hr, sseRequest())
 
 	require.ErrorIs(t, hijackErr, http.ErrNotSupported)
 	assert.False(t, hr.hijacked, "the underlying writer must not be hijacked")
@@ -619,8 +626,26 @@ func TestSSEStreamRefusesRepeatedContentEncodingHeader(t *testing.T) {
 		_, _ = io.WriteString(w, sseStreamEvent(`{"jsonrpc":"2.0","id":32,"result":{"tools":[{"name":"secret","inputSchema":{"type":"object"}}]}}`))
 	})
 	rr := httptest.NewRecorder()
-	Middleware(authorizer, next, nil).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/sse", nil))
+	Middleware(authorizer, next, nil).ServeHTTP(rr, sseRequest())
 
 	assert.Equal(t, http.StatusBadGateway, rr.Code, "a gzip coding in a second header line must be refused")
 	assert.NotContains(t, rr.Body.String(), "secret")
+}
+
+func TestSSEStreamRequestDropsAcceptEncoding(t *testing.T) {
+	t.Parallel()
+
+	authorizer := &mockAuthorizer{results: map[string]mockResult{}}
+	// The backend must not be asked for a coded body, which the filter cannot parse.
+	var got string
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Get("Accept-Encoding")
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+	})
+	req := sseRequest()
+	req.Header.Set("Accept-Encoding", "gzip")
+	Middleware(authorizer, next, nil).ServeHTTP(httptest.NewRecorder(), req)
+
+	assert.Empty(t, got, "Accept-Encoding must be removed before the backend sees the request")
 }

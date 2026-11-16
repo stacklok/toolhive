@@ -226,10 +226,13 @@ func Middleware(a authorizers.Authorizer, next http.Handler, passThroughTools ma
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// A GET opens the server-to-client event stream. Its list answers are
-		// filtered per event as they arrive, by the shape of each result.
+		// filtered per event as they arrive, by the shape of each result. Every GET
+		// is wrapped, because the legacy SSE client may not send Accept:
+		// text/event-stream, so the Accept header cannot mark the stream.
 		if r.Method == http.MethodGet {
 			stream := newSSEStreamFilterWriter(w, a, r, annotationCache, passThroughTools)
-			next.ServeHTTP(stream, r)
+			// The filter cannot parse a content-coded body, so ask the backend for an identity body.
+			next.ServeHTTP(stream, mcp.WithoutAcceptEncoding(r))
 			stream.finish()
 			return
 		}

@@ -10,6 +10,7 @@ import (
 	"maps"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -22,11 +23,13 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/stacklok/toolhive/pkg/authserver"
+	"github.com/stacklok/toolhive/pkg/authserver/authorizationdetails"
 	"github.com/stacklok/toolhive/pkg/authserver/claimnames"
 	authserverrunner "github.com/stacklok/toolhive/pkg/authserver/runner"
 	"github.com/stacklok/toolhive/pkg/authserver/server/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/authserver/server/tokenexchange/mocks"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
+	"github.com/stacklok/toolhive/pkg/mcp/toolcalldetails"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
@@ -325,9 +328,8 @@ func runDelegatedAgentFlow(t *testing.T, f *flow) {
 			// value for the session grant's ID-JAG and for the scheduled run's
 			// child grant.
 			assert.Equal(t, wantAct, claims["act"], tc.name)
-			// Until Delegated access: subject mapping at ID-JAG redemption (#6887)
-			// is built, AS-2 has no local user for AS-1's subject, so sub is
-			// the issuer-qualified AS-1 subject. That change flips this.
+			// AS-2 here is a namespaced server: it has no local user for AS-1's
+			// subject, so sub is the issuer-qualified AS-1 subject.
 			assert.Equal(t, f.as1+"#"+f.sub, claims["sub"], tc.name)
 		}
 
@@ -379,6 +381,44 @@ func runDelegatedAgentFlow(t *testing.T, f *flow) {
 		// plain JWT-bearer handler gets it and refuses the typ.
 		res = f.as2.redeem(t, f.as2.client, f.sessionLogin)
 		requireError(t, res, "invalid_grant", "invalid_assertion: The assertion JOSE typ header is not supported.")
+
+		// One tool-call authorization_details entry is carried by the
+		// redemption: it is echoed in the response and the access token, and
+		// the token still lives no longer than the ID-JAG. Each redemption
+		// needs a fresh ID-JAG, which is single use.
+		entry := map[string]any{
+			"type":             "https://toolhive.dev/mcp_tool_call",
+			"server":           "github",
+			"tool":             "pull_request_read",
+			"arguments_sha256": strings.Repeat("ab", 32),
+			"operation_id":     "op-1",
+		}
+		redeemWith := func(entries ...map[string]any) (tokenResult, string) {
+			res := f.as1Env.requestIDJAGWith(t, broker, f.session, f.as2Issuer, actorPairWith("accept"))
+			require.Equal(t, http.StatusOK, res.status, res.body)
+			details, err := json.Marshal(entries)
+			require.NoError(t, err)
+			idjag := res.str(t, "access_token")
+			return postToken(t, f.as2.srv.URL, f.as2.client, url.Values{
+				"grant_type":            {oauthproto.GrantTypeJWTBearer},
+				"assertion":             {idjag},
+				"resource":              {xrtIDJAGResource},
+				"authorization_details": {string(details)},
+			}), idjag
+		}
+		before := time.Now()
+		res, idjag := redeemWith(entry)
+		require.Equal(t, http.StatusOK, res.status, res.body)
+		assert.Equal(t, []any{entry}, res.body["authorization_details"])
+		token := res.str(t, "access_token")
+		assert.Equal(t, []any{entry}, accessTokenClaims(t, f.as2.embedded, token)["authorization_details"])
+		_, idjagClaims := decodeIDJAG(t, idjag)
+		expiresIn, ok := res.body["expires_in"].(float64)
+		require.True(t, ok, "expires_in is a number: %v", res.body["expires_in"])
+		assert.LessOrEqual(t, int64(expiresIn), intClaim(t, idjagClaims, "exp")-before.Unix(), "expires_in is capped by the ID-JAG")
+
+		res, _ = redeemWith(entry, entry)
+		requireError(t, res, "invalid_authorization_details", "single_entry_required")
 	})
 
 	t.Run("revoke", func(t *testing.T) {
@@ -585,7 +625,12 @@ func startFlow(t *testing.T, backend string) *flow {
 
 	f.sub, f.sessionLogin, f.scheduleLogin = sub, login1, login2
 
-	f.as2 = startAS2(t, l2, f.as1, f.sub, authserverrunner.WithAccessTokenType("at+jwt"))
+	callTypes := map[string]authorizationdetails.Type{}
+	toolcalldetails.Register(callTypes)
+	callRegistry, err := authorizationdetails.New(callTypes)
+	require.NoError(t, err)
+	f.as2 = startAS2(t, l2, f.as1, f.sub, authserverrunner.WithAccessTokenType("at+jwt"),
+		authserverrunner.WithAuthorizationDetailsRegistry(callRegistry))
 	require.Equal(t, f.as2Issuer, f.as2.issuer)
 	return f
 }

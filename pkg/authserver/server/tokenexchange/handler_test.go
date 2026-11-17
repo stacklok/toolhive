@@ -3259,6 +3259,38 @@ func TestGrantAndBoundAudiences_DelegateClientKeepsGenericPath(t *testing.T) {
 	}
 }
 
+// resourceListClient is a plain client that is not a SPIFFE client but carries a
+// resource list.
+type resourceListClient struct {
+	*fosite.DefaultClient
+	resources []string
+}
+
+func (c resourceListClient) Resources() []string { return c.resources }
+
+// TestGrantAndBoundAudiences_ResourceListClientGetsSingleResourceRule proves the
+// single-resource rule is chosen by the Resources capability, not by the SPIFFE
+// wrapper type: a sub-path of a listed resource, which the generic path would
+// grant, is refused.
+func TestGrantAndBoundAudiences_ResourceListClientGetsSingleResourceRule(t *testing.T) {
+	t.Parallel()
+
+	const subPath = testIssuer + "/v1"
+	tj := newTestJWKS(t)
+	h := newTestHandler(t, tj, time.Hour)
+	h.allowedAudiences = []string{testIssuer, subPath}
+	client := resourceListClient{
+		DefaultClient: &fosite.DefaultClient{ID: "scoped"},
+		resources:     []string{testIssuer},
+	}
+	req := newAccessRequest(t, client, url.Values{"resource": {subPath}})
+
+	err := h.grantAndBoundAudiences(
+		context.Background(), req, client, &ValidatedClaims{Audience: []string{subPath}})
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, server.ErrInvalidTarget), "got %v", err)
+}
+
 // TestGrantAndBoundAudiences_DelegateClientGrantsSubPathResource proves the
 // generic path grants a sub-path of a registered audience as a resource, which
 // the SPIFFE path rejects (see server.TestGrantSingleResource in

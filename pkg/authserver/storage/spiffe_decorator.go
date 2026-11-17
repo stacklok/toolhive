@@ -86,10 +86,10 @@ func preflightDurableCollisions(ctx context.Context, base Storage, clients map[s
 
 // resourceScopedClient is implemented by fosite.Client types (e.g.
 // registration.SPIFFEClient) that maintain an RFC 8707 resource allowlist
-// independent of GetAudience's audience allowlist. This mirrors the
-// identically-shaped interface in pkg/authserver/server/audience.go; both
-// packages match it structurally against the same concrete client types
-// without either importing the other's unexported interface.
+// independent of GetAudience's audience allowlist. It mirrors
+// server.ResourceScopedClient. This package keeps its own copy so storage does
+// not depend on the server package; both match the same concrete client types
+// structurally.
 type resourceScopedClient interface {
 	Resources() []string
 }

@@ -132,19 +132,19 @@ func GrantSingleResource(requester fosite.AccessRequester, permitted, allowedAud
 	return nil
 }
 
-// resourceScopedClient is implemented by clients (SPIFFE clients) whose RFC 8707
+// ResourceScopedClient is implemented by clients (SPIFFE clients) whose RFC 8707
 // resource allowlist is their only target list; their GetAudience is nil. A
 // client that does not implement this interface falls back to GetAudience,
 // preserving behavior for clients (e.g. delegate clients) that only ever had
-// one list.
-type resourceScopedClient interface {
+// one list. Token exchange also uses it to select the single-resource rule.
+type ResourceScopedClient interface {
 	Resources() []string
 }
 
 // ClientResources returns the resources client may request: its own resource
 // allowlist if it keeps one, otherwise its audiences.
 func ClientResources(client fosite.Client) []string {
-	if rc, ok := client.(resourceScopedClient); ok {
+	if rc, ok := client.(ResourceScopedClient); ok {
 		return rc.Resources()
 	}
 	return client.GetAudience()
@@ -192,7 +192,7 @@ func ValidateClientAudience(resource string, client fosite.Client, match fosite.
 // no resource allowlist: such a client may request nothing. Clients with a
 // resource allowlist, such as SPIFFE clients, are checked against it.
 func ValidateIDJAGClientAudience(resource string, client fosite.Client, match fosite.AudienceMatchingStrategy) error {
-	if _, scoped := client.(resourceScopedClient); !scoped && registration.DCRIssued(client) {
+	if _, scoped := client.(ResourceScopedClient); !scoped && registration.DCRIssued(client) {
 		return nil
 	}
 	return ValidateClientAudience(resource, client, match)

@@ -115,7 +115,7 @@ type resourceClient struct {
 
 func (c resourceClient) Resources() []string { return c.resources }
 
-var _ resourceScopedClient = (*registration.AuthenticatedSPIFFEClient)(nil)
+var _ ResourceScopedClient = (*registration.AuthenticatedSPIFFEClient)(nil)
 
 func TestValidateClientAudience_AuthenticatedSPIFFEClient(t *testing.T) {
 	t.Parallel()

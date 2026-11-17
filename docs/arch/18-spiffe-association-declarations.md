@@ -46,7 +46,7 @@ The runtime OAuth client built for a SPIFFE association (`registration.NewSPIFFE
 
 ### Token exchange requests
 
-SPIFFE-authenticated clients are targeted by exactly one RFC 8707 resource from their association in RFC 8693 token exchange. The handler is `grantAndBoundAudiences` in `pkg/authserver/server/tokenexchange/handler.go`, which hands SPIFFE clients to `GrantSingleResource` in `pkg/authserver/server/audience.go`:
+Clients that carry a resource list, such as SPIFFE clients, are targeted by exactly one RFC 8707 resource from their association in RFC 8693 token exchange. The handler is `grantAndBoundAudiences` in `pkg/authserver/server/tokenexchange/handler.go`, which hands those clients to `GrantSingleResource` in `pkg/authserver/server/audience.go`:
 
 - The request must carry exactly one non-empty `resource`. A missing, empty or repeated `resource` is rejected with `invalid_target`. There is no default audience.
 - Any `audience` parameter is rejected with `invalid_target`, even when a valid `resource` is also sent.
@@ -148,7 +148,7 @@ curl -X POST https://auth.example.com/oauth/token \
   --data-urlencode "client_assertion=$JWT_SVID"
 ```
 
-After validation, the authentication strategy calls the shared `SPIFFEAssociationRegistry.Resolve` path synchronously through its JWT resolver. The registry verifies the enabled JWT method and either derives the association's configured client ID or checks the supplied selector's ownership, then returns the configured static OAuth client wrapped in `registration.AuthenticatedSPIFFEClient`. The wrapper carries the verified SPIFFE ID and authentication method and is available to grant handlers, though none consume it yet. In production only this resolver builds it. It exists only on the client produced by client authentication: a client loaded from storage, for example when a stored request is read back, is the plain static client and does not carry it.
+After validation, the authentication strategy calls the shared `SPIFFEAssociationRegistry.Resolve` path synchronously through its JWT resolver. The registry verifies the enabled JWT method and either derives the association's configured client ID or checks the supplied selector's ownership, then returns the configured static OAuth client wrapped in `registration.AuthenticatedSPIFFEClient`. Token exchange selects the single-resource rule for any client that carries a resource list, and the wrapper carries one through the client it embeds. The wrapper also carries the verified SPIFFE ID and authentication method, but no grant handler reads those two values. In production only this resolver builds it. It exists only on the client produced by client authentication: a client loaded from storage, for example when a stored request is read back, is the plain static client and does not carry it.
 
 After the SPIFFE JWT arm is selected, malformed request fields use generic OAuth `invalid_request` errors; validation, association, and mixed-credential failures use generic `invalid_client` errors. In that arm, an HTTP Basic authorization header or any `client_secret` form field causes client authentication to fail. Credential material is not logged or included in errors.
 

@@ -131,6 +131,25 @@ func assertMintedIDJAGWithAct(
 	t *testing.T, env *xrtEnv, res tokenResult, target string, wantAct map[string]any, wantLifetime int64, extraClaims ...string,
 ) map[string]any {
 	t.Helper()
+	return assertIDJAGResponse(t, res, idJAGWant{
+		Issuer: env.issuer, Subject: "user-1", Target: target, Act: wantAct, Lifetime: wantLifetime, Extra: extraClaims,
+	})
+}
+
+// idJAGWant describes the ID-JAG a response must carry. A nil Act means the
+// token has no act claim. A Lifetime above zero is the exact exp - iat; zero
+// asks only for exp after iat. Extra names the claims beyond the base set.
+type idJAGWant struct {
+	Issuer, Subject, Target string
+	Act                     map[string]any
+	Lifetime                int64
+	Extra                   []string
+}
+
+// assertIDJAGResponse checks that res is a 200 token response carrying an
+// ID-JAG that matches want, and returns the decoded claims.
+func assertIDJAGResponse(t *testing.T, res tokenResult, want idJAGWant) map[string]any {
+	t.Helper()
 	require.Equal(t, http.StatusOK, res.status, res.body)
 	assert.ElementsMatch(t, []string{"access_token", "issued_token_type", "token_type", "expires_in"},
 		slices.Collect(maps.Keys(res.body)), "the response members are exactly these")
@@ -140,23 +159,23 @@ func assertMintedIDJAGWithAct(
 
 	header, claims := decodeIDJAG(t, res.str(t, "access_token"))
 	assert.Equal(t, oauthproto.JWTTypeIDJAG, header["typ"])
-	assert.Equal(t, env.issuer, claims["iss"])
-	assert.Equal(t, "user-1", claims["sub"])
-	assert.Equal(t, target, claims["aud"])
+	assert.Equal(t, want.Issuer, claims["iss"])
+	assert.Equal(t, want.Subject, claims["sub"])
+	assert.Equal(t, want.Target, claims["aud"])
 	assert.Equal(t, xrtTargetClientID, claims["client_id"])
 	assert.Equal(t, xrtIDJAGResource, claims["resource"])
 	iat, exp := intClaim(t, claims, "iat"), intClaim(t, claims, "exp")
 	base := []string{"iss", "sub", "aud", "client_id", "jti", "iat", "exp", "resource"}
 	assert.Greater(t, exp, iat)
-	if wantLifetime > 0 {
-		assert.EqualValues(t, wantLifetime, exp-iat)
+	if want.Lifetime > 0 {
+		assert.EqualValues(t, want.Lifetime, exp-iat)
 	}
-	if wantAct != nil {
-		assert.Equal(t, wantAct, claims["act"])
+	if want.Act != nil {
+		assert.Equal(t, want.Act, claims["act"])
 		base = append(base, "act")
 	}
 	assert.EqualValues(t, exp-iat, res.body["expires_in"], "expires_in is exp - iat")
-	assert.ElementsMatch(t, append(base, extraClaims...), slices.Collect(maps.Keys(claims)), "the claims are exactly these")
+	assert.ElementsMatch(t, append(base, want.Extra...), slices.Collect(maps.Keys(claims)), "the claims are exactly these")
 	return claims
 }
 
@@ -240,17 +259,7 @@ func TestMintIDJAGClaimsFromRealLogin(t *testing.T) {
 		t.Parallel()
 		oidc := startRealLoginUpstream(t)
 		env := startXRTServerWith(t, "memory", func(cfg *authserver.RunConfig, issuer string) {
-			cfg.Upstreams = []authserver.UpstreamRunConfig{{
-				Name: "mockoidc",
-				Type: authserver.UpstreamProviderTypeOIDC,
-				OIDCConfig: &authserver.OIDCUpstreamRunConfig{
-					IssuerURL: oidc.Issuer(), ClientID: oidc.Config().ClientID,
-					ClientSecretFile:  writeSecretFile(t, oidc.Config().ClientSecret),
-					RedirectURI:       issuer + "/oauth/callback",
-					Scopes:            []string{"openid", "profile", "email"},
-					InsecureAllowHTTP: true, AllowPrivateIPs: true,
-				},
-			}}
+			cfg.Upstreams = []authserver.UpstreamRunConfig{realLoginUpstream(t, oidc, issuer)}
 		})
 
 		login := realLoginAccessToken(t, env)
@@ -337,4 +346,21 @@ func startRealLoginUpstream(t *testing.T) *mockoidc.MockOIDC {
 	t.Cleanup(func() { require.NoError(t, m.Shutdown()) })
 	m.QueueUser(&mockoidc.MockUser{Subject: realLoginUpstreamSubject, Email: realLoginUpstreamEmail})
 	return m
+}
+
+// realLoginUpstream is the mockoidc upstream of a real login, with the
+// upstream's own sub as the subject.
+func realLoginUpstream(t *testing.T, oidc *mockoidc.MockOIDC, issuer string) authserver.UpstreamRunConfig {
+	t.Helper()
+	return authserver.UpstreamRunConfig{
+		Name: "mockoidc",
+		Type: authserver.UpstreamProviderTypeOIDC,
+		OIDCConfig: &authserver.OIDCUpstreamRunConfig{
+			IssuerURL: oidc.Issuer(), ClientID: oidc.Config().ClientID,
+			ClientSecretFile:  writeSecretFile(t, oidc.Config().ClientSecret),
+			RedirectURI:       issuer + "/oauth/callback",
+			Scopes:            []string{"openid", "profile", "email"},
+			InsecureAllowHTTP: true, AllowPrivateIPs: true,
+		},
+	}
 }

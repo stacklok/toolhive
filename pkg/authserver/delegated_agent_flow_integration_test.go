@@ -365,7 +365,7 @@ func runDelegatedAgentFlow(t *testing.T, f *flow) {
 		res = f.as2.redeem(t, f.as2.client, otherIDJAG)
 		requireError(t, res, "access_denied", "subject_unknown")
 
-		// A requested resource outside the subject's allowed_resources is
+		// A requested resource that the ID-JAG's resource claim does not list is
 		// refused before the assertion is consumed, so the replayed session
 		// ID-JAG reaches the check.
 		res = postToken(t, f.as2.srv.URL, f.as2.client, url.Values{
@@ -373,7 +373,7 @@ func runDelegatedAgentFlow(t *testing.T, f *flow) {
 			"assertion":  {f.sessionIDJAG},
 			"resource":   {"https://gw.example.net/not-allowed"},
 		})
-		requireError(t, res, "access_denied", "resource_denied")
+		requireError(t, res, "invalid_target", "The requested resource is invalid, unknown, or malformed.")
 
 		// An AS-1 login access token is not an ID-JAG. Its typ is at+jwt, so the
 		// plain JWT-bearer handler gets it and refuses the typ.

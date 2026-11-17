@@ -20,6 +20,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/stacklok/toolhive/pkg/authserver/claimnames"
+	"github.com/stacklok/toolhive/pkg/authserver/server"
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/authserver/server/session"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
@@ -484,16 +485,24 @@ func TestIDJAGHandler_MaxAgeIsCheckedBeforeResource(t *testing.T) {
 }
 
 const (
-	idJAGTestASIssuer     = "https://as.example.com"
-	idJAGTestOtherAud     = "https://other.example.com"
-	hintNoAcceptedAud     = "this server's issuer identifier is accepted by default; have the IdP use it as aud"
-	hintAcceptedAudMissed = "add this server's issuer identifier to jwt_bearer_grant.accepted_audiences"
-	hintIdPUsesWrongAud   = "have the IdP use this server's issuer identifier as aud"
+	idJAGTestASIssuer = "https://as.example.com"
+	idJAGTestOtherAud = "https://other.example.com"
+	// idJAGTestSecondResource is governed and bound like idJAGTestResource.
+	idJAGTestSecondResource = "https://mcp2.example.com"
+	// idJAGTestUnboundResource is governed but outside the subject binding.
+	idJAGTestUnboundResource = "https://unbound.example.com"
+	// idJAGTestForeignResource is not governed by the departure handler.
+	idJAGTestForeignResource = "https://foreign.example.com"
+	hintNoAcceptedAud        = "this server's issuer identifier is accepted by default; have the IdP use it as aud"
+	hintAcceptedAudMissed    = "add this server's issuer identifier to jwt_bearer_grant.accepted_audiences"
+	hintIdPUsesWrongAud      = "have the IdP use this server's issuer identifier as aud"
 )
 
 // newIDJAGDepartureHandler builds a handler whose AS issuer identifier is
-// asIssuer, whose trusted issuers all carry acceptedAudiences, and whose
-// departure lines go to the returned buffer. The logger is handler-local, so
+// asIssuer, whose trusted issuers all carry acceptedAudiences, whose governed
+// resources are idJAGTestResource, idJAGTestSecondResource and
+// idJAGTestUnboundResource, and whose departure lines go to the returned
+// buffer. The logger is handler-local, so
 // the process-wide default logger is untouched and tests stay parallel.
 func newIDJAGDepartureHandler(
 	t *testing.T, claims *ValidatedClaims, asIssuer string, acceptedAudiences []string, trustedIssuerURLs ...string,
@@ -511,7 +520,7 @@ func newIDJAGDepartureHandler(
 				MaxAssertionAge:   time.Hour.String(),
 				AcceptedAudiences: acceptedAudiences,
 				SubjectBindings: []JWTBearerSubjectBinding{
-					{Subject: idJAGTestSubject, AllowedResources: []string{idJAGTestResource}},
+					{Subject: idJAGTestSubject, AllowedResources: []string{idJAGTestResource, idJAGTestSecondResource}},
 				},
 			},
 		})
@@ -531,7 +540,7 @@ func newIDJAGDepartureHandler(
 		&mockAccessTokenStrategy{},
 		&mockAccessTokenStorage{},
 		resolved,
-		nil, nil, nil,
+		nil, []string{idJAGTestResource, idJAGTestSecondResource, idJAGTestUnboundResource}, nil,
 	)
 	require.NoError(t, err)
 	var buf strings.Builder
@@ -567,18 +576,11 @@ func TestIDJAGHandler_LogsDraftDepartures(t *testing.T) {
 		asIssuer string
 		accepted []string
 		audience []string
-		resource any // the resource claim; nil leaves it out
 		want     []draftDeparture
 		wantHint string // expected hint on the audience_not_issuer line; empty means no hint attr
 	}{
 		{
 			name:     "conforming ID-JAG logs nothing",
-			asIssuer: idJAGTestASIssuer,
-			audience: []string{idJAGTestASIssuer},
-			resource: idJAGTestResource,
-		},
-		{
-			name:     "absent resource claim is not a departure",
 			asIssuer: idJAGTestASIssuer,
 			audience: []string{idJAGTestASIssuer},
 		},
@@ -616,68 +618,10 @@ func TestIDJAGHandler_LogsDraftDepartures(t *testing.T) {
 			audience: []string{testTokenEndpoint},
 		},
 		{
-			name:     "resource claim does not contain the requested resource",
-			asIssuer: idJAGTestASIssuer,
-			audience: []string{idJAGTestASIssuer},
-			resource: []any{idJAGTestOtherAud},
-			want:     []draftDeparture{departureResourceNotCovered},
-		},
-		{
-			name:     "string resource claim names another resource",
-			asIssuer: idJAGTestASIssuer,
-			audience: []string{idJAGTestASIssuer},
-			resource: idJAGTestOtherAud,
-			want:     []draftDeparture{departureResourceNotCovered},
-		},
-		{
-			name:     "resource claim array covers the requested resource",
-			asIssuer: idJAGTestASIssuer,
-			audience: []string{idJAGTestASIssuer},
-			resource: []any{idJAGTestResource, idJAGTestOtherAud},
-		},
-		{
-			name:     "empty resource array is malformed",
-			asIssuer: idJAGTestASIssuer,
-			audience: []string{idJAGTestASIssuer},
-			resource: []any{},
-			want:     []draftDeparture{departureResourceMalformed},
-		},
-		{
-			name:     "non-string resource element is malformed",
-			asIssuer: idJAGTestASIssuer,
-			audience: []string{idJAGTestASIssuer},
-			resource: []any{42.0},
-			want:     []draftDeparture{departureResourceMalformed},
-		},
-		{
-			name:     "duplicate resource elements are malformed even when they cover the request",
-			asIssuer: idJAGTestASIssuer,
-			audience: []string{idJAGTestASIssuer},
-			resource: []any{idJAGTestResource, idJAGTestResource},
-			want:     []draftDeparture{departureResourceMalformed},
-		},
-		{
-			name:     "empty string resource is malformed",
-			asIssuer: idJAGTestASIssuer,
-			audience: []string{idJAGTestASIssuer},
-			resource: "",
-			want:     []draftDeparture{departureResourceMalformed},
-		},
-		{
-			name:     "null resource is malformed",
-			asIssuer: idJAGTestASIssuer,
-			audience: []string{idJAGTestASIssuer},
-			resource: jsonNull{},
-			want:     []draftDeparture{departureResourceMalformed},
-		},
-		{
-			name:     "every audience and resource finding at once",
+			name:     "both audience findings at once",
 			asIssuer: idJAGTestASIssuer,
 			audience: []string{testTokenEndpoint, idJAGTestOtherAud},
-			resource: idJAGTestOtherAud,
-			want: []draftDeparture{
-				departureMultipleAudiences, departureAudienceNotIssuer, departureResourceNotCovered,
-			},
+			want:     []draftDeparture{departureMultipleAudiences, departureAudienceNotIssuer},
 			wantHint: hintNoAcceptedAud,
 		},
 	}
@@ -687,13 +631,6 @@ func TestIDJAGHandler_LogsDraftDepartures(t *testing.T) {
 			tj := newTestJWKS(t)
 			claims := validIDJAGClaims()
 			claims.Audience = tt.audience
-			switch tt.resource.(type) {
-			case nil:
-			case jsonNull:
-				claims.Extra["resource"] = nil
-			default:
-				claims.Extra["resource"] = tt.resource
-			}
 			h, consumer, out := newIDJAGDepartureHandler(t, claims, tt.asIssuer, tt.accepted)
 
 			redeem := func() {
@@ -738,25 +675,6 @@ func TestIDJAGHandler_LogsDraftDepartures(t *testing.T) {
 	}
 }
 
-// jsonNull marks a resource claim that is present with a JSON null value.
-type jsonNull struct{}
-
-func TestIDJAGHandler_ResourceMalformedExcludesNotCovered(t *testing.T) {
-	t.Parallel()
-
-	claims := validIDJAGClaims()
-	claims.Audience = []string{idJAGTestASIssuer}
-	claims.Extra["resource"] = []any{idJAGTestOtherAud, idJAGTestOtherAud}
-	h, _, out := newIDJAGDepartureHandler(t, claims, idJAGTestASIssuer, nil)
-
-	require.NoError(t, h.HandleTokenEndpointRequest(t.Context(), newIDJAGRequest(t, newTestJWKS(t), idJAGTestClientID)))
-
-	lines := nonEmptyLines(out)
-	require.Len(t, lines, 1)
-	assert.Contains(t, lines[0], "finding=resource_malformed")
-	assert.NotContains(t, out.String(), "resource_not_covered")
-}
-
 func TestIDJAGHandler_RefusedRedemptionLogsNoDeparture(t *testing.T) {
 	t.Parallel()
 
@@ -793,10 +711,9 @@ func TestIDJAGHandler_RefusedRedemptionLogsNoDeparture(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			// Each ID-JAG would depart from the draft in every audience and resource way.
+			// Each ID-JAG would depart from the draft in every audience way.
 			claims := validIDJAGClaims()
 			claims.Audience = []string{testTokenEndpoint, idJAGTestOtherAud}
-			claims.Extra["resource"] = []any{}
 			h, consumer, out := newIDJAGDepartureHandler(t, claims, idJAGTestASIssuer, nil)
 			req := newIDJAGRequest(t, newTestJWKS(t), idJAGTestClientID)
 			tt.prepare(claims, consumer, req)
@@ -877,12 +794,20 @@ func TestIDJAGHandler_WarnOnceKeyIsIssuerAndFinding(t *testing.T) {
 
 const requestedResourceHint = "Exactly one resource parameter is required for the JWT-bearer grant."
 
-const idJAGClaimResourceDesc = "invalid_assertion: The ID-JAG assertion resource claim is not a valid resource URI."
+// jsonNull marks a resource claim that is present with a JSON null value.
+type jsonNull struct{}
 
 func TestIDJAGHandler_ResourceDefaultsFromClaim(t *testing.T) {
 	t.Parallel()
 
-	const unboundResource = "https://unbound.example.com"
+	const (
+		bound      = idJAGTestResource
+		bound2     = idJAGTestSecondResource
+		unbound    = idJAGTestUnboundResource
+		foreign    = idJAGTestForeignResource
+		notGoverns = "invalid_assertion: The ID-JAG assertion resource claim names a resource this server does not govern."
+		malformed  = "invalid_assertion: The ID-JAG assertion resource claim is malformed."
+	)
 	tests := []struct {
 		name         string
 		form         func(url.Values)
@@ -895,48 +820,106 @@ func TestIDJAGHandler_ResourceDefaultsFromClaim(t *testing.T) {
 	}{
 		{
 			name:         "absent param and string claim is accepted",
-			claim:        idJAGTestResource,
-			wantAudience: idJAGTestResource,
+			claim:        bound,
+			wantAudience: bound,
 		},
 		{
 			name:         "absent param and one-element array claim is accepted",
-			claim:        []any{idJAGTestResource},
-			wantAudience: idJAGTestResource,
+			claim:        []any{bound},
+			wantAudience: bound,
 		},
-		{name: "absent param and two-value claim is refused", claim: []any{idJAGTestResource, unboundResource}, wantErrIs: fosite.ErrInvalidRequest},
+		{name: "absent param and two-value claim is refused", claim: []any{bound, unbound}, wantErrIs: fosite.ErrInvalidRequest},
 		{name: "absent param and no claim is refused", wantErrIs: fosite.ErrInvalidRequest},
-		{name: "absent param and empty array claim is refused", claim: []any{}, wantErrIs: fosite.ErrInvalidRequest},
-		{name: "absent param and non-string element claim is refused", claim: []any{42}, wantErrIs: fosite.ErrInvalidRequest},
-		{name: "absent param and empty string claim is refused", claim: "", wantErrIs: fosite.ErrInvalidRequest},
-		{name: "absent param and null claim is refused", claim: jsonNull{}, wantErrIs: fosite.ErrInvalidRequest},
-		{name: "absent param and array of an empty string is refused", claim: []any{""}, wantErrIs: fosite.ErrInvalidRequest},
 		{
-			name:      "absent param and duplicate-value array claim is refused",
-			claim:     []any{idJAGTestResource, idJAGTestResource},
-			wantErrIs: fosite.ErrInvalidRequest,
+			name:     "malformed claim is an invalid assertion whatever the param",
+			form:     func(f url.Values) { f.Set("resource", bound) },
+			claim:    jsonNull{},
+			wantCode: "invalid_grant",
+			wantDesc: malformed,
+		},
+		{
+			name:     "malformed claim without a param is an invalid assertion",
+			claim:    jsonNull{},
+			wantCode: "invalid_grant",
+			wantDesc: malformed,
+		},
+		{
+			name:     "governed param outside a string claim is invalid_target",
+			form:     func(f url.Values) { f.Set("resource", unbound) },
+			claim:    bound,
+			wantCode: "invalid_target",
+			wantDesc: server.ErrInvalidTarget.DescriptionField,
+		},
+		{
+			name:         "param covered by an array claim is accepted",
+			form:         func(f url.Values) { f.Set("resource", bound) },
+			claim:        []any{unbound, bound},
+			wantAudience: bound,
+		},
+		{
+			name:     "claim with a value this server does not govern is refused even for a governed param",
+			form:     func(f url.Values) { f.Set("resource", bound) },
+			claim:    []any{bound, foreign},
+			wantCode: "invalid_grant",
+			wantDesc: notGoverns,
+		},
+		{
+			name:     "claim with a non-URI value is refused without quoting it",
+			form:     func(f url.Values) { f.Set("resource", bound) },
+			claim:    []any{bound, "not-a-uri"},
+			wantCode: "invalid_grant",
+			wantDesc: notGoverns,
+		},
+		{
+			name:     "string claim this server does not govern is refused for a governed param",
+			form:     func(f url.Values) { f.Set("resource", bound) },
+			claim:    foreign,
+			wantCode: "invalid_grant",
+			wantDesc: notGoverns,
+		},
+		{
+			name:     "string claim this server does not govern is refused without a param",
+			claim:    foreign,
+			wantCode: "invalid_grant",
+			wantDesc: notGoverns,
+		},
+		{
+			name:      "param listed by the claim but outside the subject binding is refused",
+			form:      func(f url.Values) { f.Set("resource", unbound) },
+			claim:     []any{bound, unbound},
+			clientAud: []string{bound, unbound},
+			wantCode:  "access_denied",
+			wantDesc:  "resource_denied",
+		},
+		{
+			name:         "param listed by a bound two-value claim is accepted with only that audience",
+			form:         func(f url.Values) { f.Set("resource", bound2) },
+			claim:        []any{bound, bound2},
+			clientAud:    []string{bound2},
+			wantAudience: bound2,
 		},
 		{
 			name:      "empty param wins over the claim",
 			form:      func(f url.Values) { f.Set("resource", "") },
-			claim:     idJAGTestResource,
+			claim:     bound,
 			wantErrIs: fosite.ErrInvalidRequest,
 		},
 		{
 			name:      "repeated params win over the claim",
-			form:      func(f url.Values) { f["resource"] = []string{idJAGTestResource, idJAGTestResource} },
-			claim:     idJAGTestResource,
+			form:      func(f url.Values) { f["resource"] = []string{bound, bound} },
+			claim:     bound,
 			wantErrIs: fosite.ErrInvalidRequest,
 		},
 		{
 			name:      "claim outside the subject binding is refused as a requested one is",
-			claim:     unboundResource,
-			clientAud: []string{unboundResource},
+			claim:     unbound,
+			clientAud: []string{unbound},
 			wantCode:  "access_denied",
 			wantDesc:  "resource_denied",
 		},
 		{
 			name:      "claim outside the client audiences is refused",
-			claim:     idJAGTestResource,
+			claim:     bound,
 			clientAud: []string{idJAGTestOtherAud},
 			wantCode:  "access_denied",
 			wantDesc:  "resource_denied",
@@ -945,13 +928,13 @@ func TestIDJAGHandler_ResourceDefaultsFromClaim(t *testing.T) {
 			name:     "claim that is not an absolute URI is refused without quoting it",
 			claim:    "not-a-uri",
 			wantCode: "invalid_grant",
-			wantDesc: idJAGClaimResourceDesc,
+			wantDesc: notGoverns,
 		},
 		{
 			name:     "claim that does not parse as a URI is refused without quoting it",
 			claim:    "https://secret-claim-value.example.com/%zz",
 			wantCode: "invalid_grant",
-			wantDesc: idJAGClaimResourceDesc,
+			wantDesc: notGoverns,
 		},
 	}
 	for _, tt := range tests {
@@ -965,7 +948,7 @@ func TestIDJAGHandler_ResourceDefaultsFromClaim(t *testing.T) {
 			default:
 				claims.Extra["resource"] = tt.claim
 			}
-			h, consumer, out := newIDJAGDepartureHandler(t, claims, idJAGTestASIssuer, nil)
+			h, consumer, _ := newIDJAGDepartureHandler(t, claims, idJAGTestASIssuer, nil)
 			req := newIDJAGRequest(t, newTestJWKS(t), idJAGTestClientID)
 			delete(req.Form, "resource")
 			if tt.form != nil {
@@ -980,7 +963,6 @@ func TestIDJAGHandler_ResourceDefaultsFromClaim(t *testing.T) {
 				require.NoError(t, err)
 				assert.Equal(t, fosite.Arguments{tt.wantAudience}, req.GetGrantedAudience())
 				assert.NotEmpty(t, consumer.key, "an accepted redemption consumes the assertion")
-				assert.NotContains(t, out.String(), "resource_not_covered")
 				return
 			}
 			require.Error(t, err)

@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/url"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -651,6 +652,10 @@ func validateSPIFFEClientAuth(
 	return nil
 }
 
+// absoluteURLClientIDPattern matches the same client_id shape the operator CRD
+// rejects, so a hand-written RunConfig is held to the same rule.
+var absoluteURLClientIDPattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9+.-]*://.+`)
+
 func validateSPIFFEClientAssociation(
 	entry SPIFFEClientAuthRunConfig,
 	index int,
@@ -683,6 +688,12 @@ func validateSPIFFEClientAssociation(
 		return "", fmt.Errorf(
 			"inbound_grants.spiffe_client_auth[%d]: client_id must not be a client metadata document URL "+
 				"(reserved for CIMD-resolved clients): %q",
+			index, entry.ClientID,
+		)
+	}
+	if absoluteURLClientIDPattern.MatchString(entry.ClientID) {
+		return "", fmt.Errorf(
+			"inbound_grants.spiffe_client_auth[%d]: client_id must not be an absolute URL: %q",
 			index, entry.ClientID,
 		)
 	}

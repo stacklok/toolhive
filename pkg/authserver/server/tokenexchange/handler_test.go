@@ -3429,6 +3429,10 @@ func TestHandleTokenEndpointRequest_SPIFFEActorToken(t *testing.T) {
 			wantHint: "does not match the authenticated workload",
 		},
 		{
+			name: "caller's own actor token satisfies a may_act naming it", caller: workloadA,
+			actorSubject: workloadA, mayAct: workloadA, wantActSub: workloadA,
+		},
+		{
 			name: "caller cannot assert a distinct actor", caller: workloadA,
 			actorSubject: "other-agent", wantErr: fosite.ErrInvalidRequest,
 			wantHint: "does not match the authenticated workload",

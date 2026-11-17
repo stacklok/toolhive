@@ -172,6 +172,12 @@ func TestValidateSPIFFETrust(t *testing.T) {
 		{name: "client_id must not be a malformed client metadata document URL", mutate: func(_ []SPIFFETrustDomainRunConfig, grants *InboundGrantsRunConfig) {
 			grants.SPIFFEClientAuth[0].ClientID = "https://example.org/%zz"
 		}, wantErr: "client_id must not be a client metadata document URL"},
+		{name: "client_id must not be an absolute non-HTTP URL", mutate: func(_ []SPIFFETrustDomainRunConfig, grants *InboundGrantsRunConfig) {
+			grants.SPIFFEClientAuth[0].ClientID = "spiffe://example.org/reporting"
+		}, wantErr: "client_id must not be an absolute URL"},
+		{name: "client_id without a scheme separator is accepted", mutate: func(_ []SPIFFETrustDomainRunConfig, grants *InboundGrantsRunConfig) {
+			grants.SPIFFEClientAuth[0].ClientID = "urn:foo"
+		}},
 		{name: "scope must be supported", mutate: func(_ []SPIFFETrustDomainRunConfig, grants *InboundGrantsRunConfig) {
 			grants.SPIFFEClientAuth[0].Scopes = []string{"admin"}
 		}, wantErr: "not in scopes_supported"},
@@ -349,8 +355,8 @@ func TestSPIFFETrustConfigTrustDomainLookup(t *testing.T) {
 func TestJWTClientCredentialsAssociation(t *testing.T) {
 	t.Parallel()
 
-	assoc := func(principal string, method SPIFFEAuthenticationMethod, grants ...string) SPIFFEClientAuthRunConfig {
-		a := withPrincipal(testSPIFFEAssociation(principal, "openid"), principal)
+	assoc := func(clientID string, method SPIFFEAuthenticationMethod, grants ...string) SPIFFEClientAuthRunConfig {
+		a := withPrincipal(testSPIFFEAssociation(clientID, "openid"), "spiffe://example.org/ns/default/"+clientID)
 		a.Methods = []SPIFFEAuthenticationMethod{method}
 		a.GrantTypes = grants
 		return a
@@ -359,11 +365,11 @@ func TestJWTClientCredentialsAssociation(t *testing.T) {
 		tokenExchange     = oauthproto.GrantTypeTokenExchange
 		clientCredentials = oauthproto.GrantTypeClientCredentials
 	)
-	jwtCC := assoc("spiffe://example.org/ns/default/jwt-cc", SPIFFEAuthenticationMethodJWT, clientCredentials)
-	jwtBoth := assoc("spiffe://example.org/ns/default/jwt-both", SPIFFEAuthenticationMethodJWT, tokenExchange, clientCredentials)
-	jwtTE := assoc("spiffe://example.org/ns/default/jwt-te", SPIFFEAuthenticationMethodJWT, tokenExchange)
-	x509CC := assoc("spiffe://example.org/ns/default/x509-cc", SPIFFEAuthenticationMethodX509, clientCredentials)
-	x509TE := assoc("spiffe://example.org/ns/default/x509-te", SPIFFEAuthenticationMethodX509, tokenExchange)
+	jwtCC := assoc("jwt-cc", SPIFFEAuthenticationMethodJWT, clientCredentials)
+	jwtBoth := assoc("jwt-both", SPIFFEAuthenticationMethodJWT, tokenExchange, clientCredentials)
+	jwtTE := assoc("jwt-te", SPIFFEAuthenticationMethodJWT, tokenExchange)
+	x509CC := assoc("x509-cc", SPIFFEAuthenticationMethodX509, clientCredentials)
+	x509TE := assoc("x509-te", SPIFFEAuthenticationMethodX509, tokenExchange)
 
 	tests := []struct {
 		name         string

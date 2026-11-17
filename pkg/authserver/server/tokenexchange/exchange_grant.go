@@ -213,27 +213,30 @@ func validateTopLevelDecoded(
 }
 
 // validateChildEntry applies the client's policy to an entry sent with a
-// refresh-token subject. A child never lists refresh_token, since derivation
-// is one level deep, and never outlives its parent. The input must have passed
+// refresh-token subject, whose grant is the source of the child. A child never
+// lists refresh_token, since derivation is one level deep, and never outlives
+// its source. The input must have passed
 // Registry.Parse or be hook output; errors and expires_in are as for
 // validateTopLevelEntry.
 //
 // A child with no lifetime left is refused even though storage Live treats
-// now == parent.ExpiresAt as live: a zero-lifetime child is useless.
+// now == source.ExpiresAt as live: a zero-lifetime child is useless. The derive
+// handler refuses a source with no whole second left before it gets here, so
+// this check is a fallback for direct callers.
 func validateChildEntry(
-	raw json.RawMessage, parent *storage.ExchangeGrant, policy ConfiguredClientPolicy, now time.Time,
+	raw json.RawMessage, source *storage.ExchangeGrant, policy ConfiguredClientPolicy, now time.Time,
 ) (json.RawMessage, time.Time, error) {
 	entry, err := decodeExchangeGrantEntry(raw)
 	if err != nil {
 		return nil, time.Time{}, err
 	}
-	return validateChildDecoded(entry, parent, policy, now)
+	return validateChildDecoded(entry, source, policy, now)
 }
 
 // validateChildDecoded is validateChildEntry for an entry the caller has
 // already decoded with decodeExchangeGrantEntry.
 func validateChildDecoded(
-	entry exchangeGrantEntry, parent *storage.ExchangeGrant, policy ConfiguredClientPolicy, now time.Time,
+	entry exchangeGrantEntry, source *storage.ExchangeGrant, policy ConfiguredClientPolicy, now time.Time,
 ) (json.RawMessage, time.Time, error) {
 	tokenType := entry.IssuableTokenTypes[0]
 	if tokenType == oauthproto.TokenTypeRefreshToken {
@@ -245,8 +248,8 @@ func validateChildDecoded(
 	}
 	nowSec := now.Unix()
 	ceiling := nowSec + capSeconds
-	if parentExpires := parent.ExpiresAt.Unix(); parentExpires < ceiling {
-		ceiling = parentExpires
+	if sourceExpires := source.ExpiresAt.Unix(); sourceExpires < ceiling {
+		ceiling = sourceExpires
 	}
 	return grantEntry(entry, tokenType, nowSec, ceiling)
 }

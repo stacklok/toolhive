@@ -36,17 +36,46 @@ const (
 type assertionStore struct {
 	fosite.Storage // unused methods panic if reached
 	client         fosite.Client
+	clients        map[string]fosite.Client // when set, GetClient looks ids up here
+	// The first GetClient call is fosite's own lookup; later calls come from the clock skew fallback.
+	laterClient    fosite.Client // returned by GetClient after its first call
+	getClientErr   error         // returned by GetClient after its first call
+	onValid        func()        // runs in ClientAssertionJWTValid, like a slow lookup and jti check
+	getClientCalls int
 	seen           map[string]struct{}
+	setExp         map[string]time.Time
 	setErr         error
+	recordSetErr   bool  // report setErr as a storage failure, like RedisStorage
 	validErr       error // returned by ClientAssertionJWTValid
 	recordValidErr bool  // report validErr as a storage failure, like RedisStorage
+	validCalls     int
 }
 
-func (s *assertionStore) GetClient(context.Context, string) (fosite.Client, error) {
+func (s *assertionStore) GetClient(_ context.Context, id string) (fosite.Client, error) {
+	s.getClientCalls++
+	if s.getClientCalls > 1 {
+		if s.getClientErr != nil {
+			return nil, s.getClientErr
+		}
+		if s.laterClient != nil {
+			return s.laterClient, nil
+		}
+	}
+	if s.clients != nil {
+		c, ok := s.clients[id]
+		if !ok {
+			return nil, fosite.ErrNotFound
+		}
+		return c, nil
+	}
 	return s.client, nil
 }
 
 func (s *assertionStore) ClientAssertionJWTValid(ctx context.Context, jti string) error {
+	s.validCalls++
+	if s.onValid != nil {
+		s.onValid()
+	}
 	if s.validErr != nil {
 		if s.recordValidErr {
 			RecordClientAssertionStoreFailure(ctx, s.validErr)
@@ -59,11 +88,17 @@ func (s *assertionStore) ClientAssertionJWTValid(ctx context.Context, jti string
 	return nil
 }
 
-func (s *assertionStore) SetClientAssertionJWT(_ context.Context, jti string, _ time.Time) error {
+func (s *assertionStore) SetClientAssertionJWT(ctx context.Context, jti string, exp time.Time) error {
 	if s.setErr != nil {
+		if s.recordSetErr {
+			RecordClientAssertionStoreFailure(ctx, s.setErr)
+		}
 		return s.setErr
 	}
 	s.seen[jti] = struct{}{}
+	if s.setExp != nil {
+		s.setExp[jti] = exp
+	}
 	return nil
 }
 
@@ -80,17 +115,18 @@ func TestClientAssertionErrorStrategy(t *testing.T) {
 	storageDown := errors.New("redis: connection refused")
 
 	tests := []struct {
-		name       string
-		mutate     func(*jwt.Claims)
-		kid        string
-		signingKey *ecdsa.PrivateKey
-		reuse      bool
-		setErr     error
-		validErr   error
-		recordErr  bool
-		noAssert   bool   // client_assertion_type set, client_assertion empty
-		wantErr    string // empty means authentication succeeds
-		wantStatus int
+		name         string
+		mutate       func(*jwt.Claims)
+		kid          string
+		signingKey   *ecdsa.PrivateKey
+		reuse        bool
+		setErr       error
+		validErr     error
+		recordErr    bool
+		recordSetErr bool
+		noAssert     bool   // client_assertion_type set, client_assertion empty
+		wantErr      string // empty means authentication succeeds
+		wantStatus   int
 	}{
 		{name: "valid assertion authenticates", mutate: valid},
 		{
@@ -138,6 +174,12 @@ func TestClientAssertionErrorStrategy(t *testing.T) {
 			wantErr: "server_error", wantStatus: http.StatusInternalServerError,
 		},
 		{
+			name:   "jti record backend failure is a server error",
+			mutate: valid,
+			setErr: storageDown, recordSetErr: true,
+			wantErr: "server_error", wantStatus: http.StatusInternalServerError,
+		},
+		{
 			name:     "jti known without a recorded failure stays invalid_client",
 			mutate:   valid,
 			validErr: fosite.ErrJTIKnown,
@@ -163,7 +205,7 @@ func TestClientAssertionErrorStrategy(t *testing.T) {
 
 			store := &assertionStore{
 				seen:   map[string]struct{}{},
-				setErr: tt.setErr, validErr: tt.validErr, recordValidErr: tt.recordErr,
+				setErr: tt.setErr, recordSetErr: tt.recordSetErr, validErr: tt.validErr, recordValidErr: tt.recordErr,
 				client: &fosite.DefaultOpenIDConnectClient{
 					DefaultClient: &fosite.DefaultClient{ID: assertionTestClientID},
 					JSONWebKeys: &josev3.JSONWebKeySet{Keys: []josev3.JSONWebKey{{
@@ -175,7 +217,9 @@ func TestClientAssertionErrorStrategy(t *testing.T) {
 			}
 			cfg := &fosite.Config{AccessTokenIssuer: assertionTestIssuer, TokenURL: assertionTestTokenURL}
 			provider := fosite.NewOAuth2Provider(store, newClientAssertionAudienceConfig(cfg))
-			strategy := newClientAssertionErrorStrategy(provider.DefaultClientAuthenticationStrategy)
+			strategy := newClientAssertionErrorStrategy(newClientAssertionClockSkewStrategy(
+				provider.DefaultClientAuthenticationStrategy, store, clientAssertionAudiences(cfg),
+				func() time.Time { return now }, true))
 
 			claims := jwt.Claims{
 				Issuer:   assertionTestClientID,

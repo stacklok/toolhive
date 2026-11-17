@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"net/url"
 	"strings"
 	"testing"
@@ -23,8 +24,8 @@ import (
 
 	coreaudit "github.com/stacklok/toolhive-core/audit"
 	"github.com/stacklok/toolhive/pkg/authserver/authorizationdetails"
+	"github.com/stacklok/toolhive/pkg/authserver/internal/spiffetest"
 	"github.com/stacklok/toolhive/pkg/authserver/server"
-	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/authserver/server/session"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
@@ -139,6 +140,49 @@ func signActorTokenForClient(t *testing.T, tj *testJWKS, subject, clientID strin
 	return tj.signToken(t, claims, map[string]any{
 		"client_id": clientID,
 	})
+}
+
+func TestTokenExchangeHandler_IDJAGActorToken(t *testing.T) {
+	t.Parallel()
+
+	tj := newTestJWKS(t)
+	tests := []struct {
+		name    string
+		typ     string
+		wantErr bool
+	}{
+		{name: "ID-JAG actor rejected", typ: oauthproto.JWTTypeIDJAG, wantErr: true},
+		{name: "ordinary actor accepted", typ: "JWT"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			h := newTestHandler(t, tj, 15*time.Minute)
+			claims := validClaims()
+			claims.Subject = testAgentClientID
+			actorToken := tj.signTokenWithType(t, tt.typ, claims, map[string]any{
+				"client_id": testAgentClientID,
+			})
+			form := defaultFormValues(t, tj)
+			form.Set("actor_token", actorToken)
+			form.Set("actor_token_type", oauthproto.TokenTypeJWT)
+			req := newAccessRequest(t, defaultClient(), form)
+
+			err := h.HandleTokenEndpointRequest(context.Background(), req)
+			if tt.wantErr {
+				require.ErrorIs(t, err, fosite.ErrInvalidRequest)
+				var rfcErr *fosite.RFC6749Error
+				require.ErrorAs(t, err, &rfcErr)
+				assert.Contains(t, rfcErr.Reason(), "actor token is invalid")
+				return
+			}
+			require.NoError(t, err)
+			sess := req.GetSession().(*session.Session)
+			assert.Equal(t, "user-123", sess.JWTClaims.Subject)
+			assert.Equal(t, map[string]any{"iss": testIssuer, "sub": testAgentClientID}, sess.JWTClaims.Extra["act"])
+		})
+	}
 }
 
 func TestTokenExchangeHandler_CanHandleTokenEndpointRequest(t *testing.T) {
@@ -810,8 +854,10 @@ func TestTokenExchangeHandler_HandleTokenEndpointRequest(t *testing.T) {
 				f.Set("audience", "https://not-allowed.example.com")
 				return f
 			},
-			lifespan: 15 * time.Minute,
-			wantErr:  true,
+			lifespan:     15 * time.Minute,
+			wantErr:      true,
+			wantFositeIs: server.ErrInvalidTarget,
+			hintContains: "not permitted to request audience",
 		},
 		{
 			// The subject token is valid only for testIssuer, but the client is
@@ -1824,6 +1870,98 @@ func TestTokenExchangeHandler_DefaultAudience(t *testing.T) {
 	}
 }
 
+// TestTokenExchangeHandler_AudienceRefusalErrorCode pins the error code returned when
+// a requested audience is refused. RFC 8693 §2.2.2 says invalid_target SHOULD be used
+// when the server is unwilling to issue a token for the requested resource or audience,
+// so the "audience" and "resource" parameters must report the same code. A request that
+// names no target and fails on the server-chosen default audience, or whose audience is
+// not a parseable URI, is a malformed request and stays invalid_request.
+func TestTokenExchangeHandler_AudienceRefusalErrorCode(t *testing.T) {
+	t.Parallel()
+
+	tj := newTestJWKS(t)
+
+	tests := []struct {
+		name             string
+		allowedAudiences []string
+		clientAudience   []string
+		requestedAud     []string
+		resource         string
+		wantCode         string
+		wantHint         string
+	}{
+		{
+			name:             "audience outside the client's audiences is invalid_target",
+			allowedAudiences: []string{testIssuer},
+			clientAudience:   []string{"https://allowed.example.com"},
+			requestedAud:     []string{"https://not-allowed.example.com"},
+			wantCode:         "invalid_target",
+			wantHint:         `The client is not permitted to request audience "https://not-allowed.example.com"`,
+		},
+		{
+			name:             "second of two audiences outside the client's audiences names that audience",
+			allowedAudiences: []string{testIssuer},
+			clientAudience:   []string{testIssuer},
+			requestedAud:     []string{testIssuer, "https://not-allowed.example.com"},
+			wantCode:         "invalid_target",
+			wantHint:         `"https://not-allowed.example.com"`,
+		},
+		{
+			name:             "resource outside the client's audiences is invalid_target",
+			allowedAudiences: []string{testIssuer, "https://other.example.com"},
+			clientAudience:   []string{testIssuer},
+			resource:         "https://other.example.com",
+			wantCode:         "invalid_target",
+			wantHint:         "The client is not permitted to request resource",
+		},
+		{
+			name:             "unparsable audience stays invalid_request",
+			allowedAudiences: []string{testIssuer},
+			clientAudience:   []string{testIssuer},
+			requestedAud:     []string{"https://exa mple.com/%zz"},
+			wantCode:         "invalid_request",
+		},
+		{
+			// No target was requested; the server picked the default audience and the
+			// client is not registered for it. The client's fix is to send an explicit
+			// parameter, so this stays a missing-parameter invalid_request.
+			name:             "default audience refused for the client stays invalid_request",
+			allowedAudiences: []string{testIssuer},
+			clientAudience:   []string{"https://other.example.com"},
+			wantCode:         "invalid_request",
+			wantHint:         "an explicit 'resource' or 'audience' parameter is required",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			h := newTestHandler(t, tj, 15*time.Minute)
+			h.allowedAudiences = tt.allowedAudiences
+
+			client := defaultClient()
+			client.Audience = tt.clientAudience
+			form := defaultFormValues(t, tj)
+			if tt.resource != "" {
+				form.Set("resource", tt.resource)
+			}
+			req := newAccessRequest(t, client, form)
+			if len(tt.requestedAud) > 0 {
+				req.SetRequestedAudience(fosite.Arguments(tt.requestedAud))
+			}
+
+			err := h.HandleTokenEndpointRequest(context.Background(), req)
+			require.Error(t, err)
+			var rfcErr *fosite.RFC6749Error
+			require.ErrorAs(t, err, &rfcErr)
+			assert.Equal(t, tt.wantCode, rfcErr.ErrorField)
+			assert.Equal(t, http.StatusBadRequest, rfcErr.CodeField)
+			assert.Contains(t, rfcErr.Reason(), tt.wantHint)
+		})
+	}
+}
+
 func TestCheckDelegationConsent(t *testing.T) {
 	t.Parallel()
 
@@ -2380,7 +2518,7 @@ func TestTokenExchangeHandler_ActChainProvenance(t *testing.T) {
 
 	// reExchange re-submits a first exchange's resulting session as a new
 	// subject_token: the delegated token's own "iss" is always this server's
-	// own issuer (see delegatedSubject's doc comment), so a second exchange
+	// own issuer (see claimnames.QualifySubject's doc comment), so a second exchange
 	// validates it via the self-issued path, not the external-issuer path.
 	// It carries forward exactly the claims a real re-exchange would see on
 	// the wire — client_id, the nested act chain, and external_issuer.
@@ -3001,6 +3139,9 @@ func TestTokenExchangeHandler_PopulateTokenEndpointResponse(t *testing.T) {
 		require.Error(t, err)
 		assert.True(t, errors.Is(err, fosite.ErrInvalidGrant),
 			"expected ErrInvalidGrant, got: %v", err)
+		var rfcErr *fosite.RFC6749Error
+		require.ErrorAs(t, err, &rfcErr)
+		assert.Equal(t, "The delegated token's bound lifetime has already elapsed.", rfcErr.HintField)
 		assert.Empty(t, responder.GetAccessToken())
 		assert.Nil(t, responder.GetExtra("authorization_details"))
 		assert.Empty(t, storage.createdSig)
@@ -3033,46 +3174,138 @@ func TestTokenExchangeHandler_PopulateTokenEndpointResponse(t *testing.T) {
 	})
 }
 
-// TestGrantResourceAudience_SPIFFEClientEnforcesResourcesIndependentlyOfAudiences
-// is a regression test for a bug where the RFC 8707 "resource" parameter was
-// checked against a SPIFFE client's audience allowlist instead of its
-// independently configured resource allowlist: a resource the client was
-// registered for was rejected, and a resource the client was NOT registered
-// for -- but which happened to be one of its audiences -- was granted.
-func TestGrantResourceAudience_SPIFFEClientEnforcesResourcesIndependentlyOfAudiences(t *testing.T) {
+// TestGrantAndBoundAudiences_SPIFFEClient checks that the handler hands SPIFFE
+// clients to server.GrantSingleResource (one refusal row, the full rule is
+// covered by server.TestGrantSingleResource) and then bounds the result by the
+// subject token's audience.
+func TestGrantAndBoundAudiences_SPIFFEClient(t *testing.T) {
 	t.Parallel()
 
+	const (
+		permitted    = testIssuer
+		notPermitted = "https://other.example.com"
+	)
+	tests := []struct {
+		name        string
+		form        url.Values
+		subjectAud  []string
+		wantGranted []string
+		wantErr     error
+	}{
+		{
+			name: "one resource in the association is granted", form: url.Values{"resource": {permitted}},
+			subjectAud: []string{permitted}, wantGranted: []string{permitted},
+		},
+		{
+			name: "audience parameter is rejected", form: url.Values{"audience": {permitted}},
+			subjectAud: []string{permitted}, wantErr: server.ErrInvalidTarget,
+		},
+		{
+			name: "resource outside the subject token audience is rejected", form: url.Values{"resource": {permitted}},
+			subjectAud: []string{notPermitted}, wantErr: server.ErrInvalidTarget,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			tj := newTestJWKS(t)
+			h := newTestHandler(t, tj, time.Hour)
+			h.allowedAudiences = []string{permitted, notPermitted}
+			client := spiffetest.AuthenticatedClient(t, spiffetest.WithResources(permitted))
+			req := newAccessRequest(t, client, tt.form)
+
+			err := h.grantAndBoundAudiences(
+				context.Background(), req, client, &ValidatedClaims{Audience: tt.subjectAud})
+			if tt.wantErr != nil {
+				require.Error(t, err)
+				assert.True(t, errors.Is(err, tt.wantErr), "got %v", err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantGranted, []string(req.GetGrantedAudience()))
+		})
+	}
+}
+
+// TestGrantAndBoundAudiences_DelegateClientKeepsGenericPath proves a
+// non-SPIFFE client may still send audience= and still gets the default
+// audience when it sends no target.
+func TestGrantAndBoundAudiences_DelegateClientKeepsGenericPath(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		requested fosite.Arguments
+	}{
+		{name: "audience parameter is granted", requested: fosite.Arguments{testIssuer}},
+		{name: "no target gets the default audience"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			tj := newTestJWKS(t)
+			h := newTestHandler(t, tj, time.Hour)
+			h.allowedAudiences = []string{testIssuer}
+			client := &fosite.DefaultClient{ID: "delegate", Audience: []string{testIssuer}}
+			req := newAccessRequest(t, client, url.Values{})
+			req.SetRequestedAudience(tt.requested)
+
+			require.NoError(t, h.grantAndBoundAudiences(
+				context.Background(), req, client, &ValidatedClaims{Audience: []string{testIssuer}}))
+			assert.Equal(t, []string{testIssuer}, []string(req.GetGrantedAudience()))
+		})
+	}
+}
+
+// resourceListClient is a plain client that is not a SPIFFE client but carries a
+// resource list.
+type resourceListClient struct {
+	*fosite.DefaultClient
+	resources []string
+}
+
+func (c resourceListClient) Resources() []string { return c.resources }
+
+// TestGrantAndBoundAudiences_ResourceListClientGetsSingleResourceRule proves the
+// single-resource rule is chosen by the Resources capability, not by the SPIFFE
+// wrapper type: a sub-path of a listed resource, which the generic path would
+// grant, is refused.
+func TestGrantAndBoundAudiences_ResourceListClientGetsSingleResourceRule(t *testing.T) {
+	t.Parallel()
+
+	const subPath = testIssuer + "/v1"
 	tj := newTestJWKS(t)
 	h := newTestHandler(t, tj, time.Hour)
-	// Both values must be server-wide allowed so the test isolates the
-	// per-client check (grantResourceAudience) from the server-wide one.
-	h.allowedAudiences = []string{testIssuer, "https://other.example.com"}
+	h.allowedAudiences = []string{testIssuer, subPath}
+	client := resourceListClient{
+		DefaultClient: &fosite.DefaultClient{ID: "scoped"},
+		resources:     []string{testIssuer},
+	}
+	req := newAccessRequest(t, client, url.Values{"resource": {subPath}})
 
-	const registeredResource = testIssuer
-	const registeredAudience = "https://other.example.com"
-	client, err := registration.NewSPIFFEClient(
-		"spiffe-client",
-		[]string{"openid"},
-		[]string{registeredAudience},
-		[]string{registeredResource},
-	)
-	require.NoError(t, err)
+	err := h.grantAndBoundAudiences(
+		context.Background(), req, client, &ValidatedClaims{Audience: []string{subPath}})
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, server.ErrInvalidTarget), "got %v", err)
+}
 
-	t.Run("resource in the client's resources is granted", func(t *testing.T) {
-		t.Parallel()
+// TestGrantAndBoundAudiences_DelegateClientGrantsSubPathResource proves the
+// generic path grants a sub-path of a registered audience as a resource, which
+// the SPIFFE path rejects (see server.TestGrantSingleResource in
+// pkg/authserver/server/audience_test.go).
+func TestGrantAndBoundAudiences_DelegateClientGrantsSubPathResource(t *testing.T) {
+	t.Parallel()
 
-		req := newAccessRequest(t, client, url.Values{"resource": {registeredResource}})
-		require.NoError(t, h.grantResourceAudience(context.Background(), req, client))
-		assert.Contains(t, req.GetGrantedAudience(), registeredResource)
-	})
+	const subPath = testIssuer + "/v1"
+	tj := newTestJWKS(t)
+	h := newTestHandler(t, tj, time.Hour)
+	h.allowedAudiences = []string{testIssuer, subPath}
+	client := &fosite.DefaultClient{ID: "delegate", Audience: []string{testIssuer}}
+	req := newAccessRequest(t, client, url.Values{"resource": {subPath}})
 
-	t.Run("resource that is only an audience, not a resource, is rejected", func(t *testing.T) {
-		t.Parallel()
-
-		req := newAccessRequest(t, client, url.Values{"resource": {registeredAudience}})
-		err := h.grantResourceAudience(context.Background(), req, client)
-		require.Error(t, err)
-		assert.True(t, errors.Is(err, server.ErrInvalidTarget))
-		assert.Empty(t, req.GetGrantedAudience())
-	})
+	require.NoError(t, h.grantAndBoundAudiences(
+		context.Background(), req, client, &ValidatedClaims{Audience: []string{subPath}}))
+	assert.Equal(t, []string{subPath}, []string(req.GetGrantedAudience()))
 }

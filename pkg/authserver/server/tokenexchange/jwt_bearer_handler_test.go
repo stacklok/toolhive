@@ -20,8 +20,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/stacklok/toolhive/pkg/authserver/claimnames"
+	"github.com/stacklok/toolhive/pkg/authserver/internal/spiffetest"
 	"github.com/stacklok/toolhive/pkg/authserver/server"
-	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/authserver/server/session"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
@@ -30,15 +31,17 @@ import (
 const testTokenEndpoint = "https://auth.example.com/oauth/token"
 
 type testJWTBearerAssertionValidator struct {
-	calls  int
-	err    error
-	claims *ValidatedClaims
+	calls       int
+	err         error
+	claims      *ValidatedClaims
+	gotDefaults []string
 }
 
 func (v *testJWTBearerAssertionValidator) ValidateJWTBearerAssertion(
-	context.Context, string, string,
+	_ context.Context, _ string, defaultAudiences []string,
 ) (*ValidatedClaims, error) {
 	v.calls++
+	v.gotDefaults = defaultAudiences
 	if v.err != nil {
 		return nil, v.err
 	}
@@ -106,9 +109,21 @@ func TestJWTBearerHandler_MatchingAndClientAuth(t *testing.T) {
 		{
 			name:         "ID-JAG assertion is left for its bound handler",
 			grantTypes:   fosite.Arguments{oauthproto.GrantTypeJWTBearer},
-			assertion:    signAssertionWithType(t, tj, idJAGJWTType),
+			assertion:    signAssertionWithType(t, tj, oauthproto.JWTTypeIDJAG),
 			wantHandles:  false,
 			wantSkipAuth: false,
+		},
+		{
+			// Routing compares the ID-JAG typ exactly (see assertionType), so a
+			// spec-equivalent spelling stays here and is refused later by
+			// validateAssertionType. Together with the matching case in
+			// TestIDJAGHandler_MatchingAndClientAuth this keeps the two
+			// matchers exact complements.
+			name:         "media-type ID-JAG assertion stays with the plain handler",
+			grantTypes:   fosite.Arguments{oauthproto.GrantTypeJWTBearer},
+			assertion:    signAssertionWithType(t, tj, "application/"+oauthproto.JWTTypeIDJAG),
+			wantHandles:  true,
+			wantSkipAuth: true,
 		},
 		{
 			name:         "other grant does not match",
@@ -131,7 +146,7 @@ func TestJWTBearerHandler_MatchingAndClientAuth(t *testing.T) {
 	}
 }
 
-func TestValidateJWTBearerPolicy_RejectsMalformedResourceURI(t *testing.T) {
+func TestJWTBearerPolicyChecks_RejectsMalformedResourceURI(t *testing.T) {
 	t.Parallel()
 
 	now := time.Now()
@@ -148,7 +163,7 @@ func TestValidateJWTBearerPolicy_RejectsMalformedResourceURI(t *testing.T) {
 		Expiry:   now.Add(time.Minute),
 	}
 
-	_, err := validateJWTBearerPolicy(url.Values{"resource": {"not-a-uri"}}, claims, policy)
+	err := runJWTBearerPolicy(url.Values{"resource": {"not-a-uri"}}, claims, policy)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, server.ErrInvalidTarget)
 }
@@ -315,7 +330,19 @@ func TestJWTBearerHandler_CanSkipClientAuthRejectsFormCredentials(t *testing.T) 
 	}
 }
 
-func TestValidateJWTBearerPolicy_ResourceAndPolicyErrors(t *testing.T) {
+// runJWTBearerPolicy runs the three policy checks in sequence for table tests.
+func runJWTBearerPolicy(form url.Values, claims *ValidatedClaims, policy *JWTBearerGrantPolicy) error {
+	if err := checkAssertionMaxAge(claims, policy); err != nil {
+		return err
+	}
+	resource, err := requestedResource(form)
+	if err != nil {
+		return err
+	}
+	return checkSubjectBinding(claims, policy, resource)
+}
+
+func TestJWTBearerPolicyChecks_ResourceAndPolicyErrors(t *testing.T) {
 	t.Parallel()
 
 	now := time.Now()
@@ -344,7 +371,7 @@ func TestValidateJWTBearerPolicy_ResourceAndPolicyErrors(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			_, err := validateJWTBearerPolicy(tt.form, tt.claims, policy)
+			err := runJWTBearerPolicy(tt.form, tt.claims, policy)
 			require.Error(t, err)
 			if tt.wantCode != "" {
 				var oauthErr *fosite.RFC6749Error
@@ -389,7 +416,14 @@ func TestValidateAssertionType_Typ(t *testing.T) {
 		{name: "absent typ is accepted", typ: nil, wantAccept: true},
 		{name: "empty typ is accepted", typ: "", wantAccept: true},
 		{name: "JWT typ is accepted", typ: "JWT", wantAccept: true},
-		{name: "ID-JAG typ is accepted", typ: idJAGJWTType, wantAccept: true},
+		// IDJAGHandler claims the exact ID-JAG typ, so the plain handler never
+		// sees one. If it did, redeeming it here would skip the client
+		// authentication IDJAGHandler requires.
+		{name: "ID-JAG typ is refused", typ: oauthproto.JWTTypeIDJAG, wantAccept: false},
+		// Redemption compares the ID-JAG typ exactly: a spec-equivalent
+		// spelling is not routed to IDJAGHandler and must not be redeemed here.
+		{name: "media-type ID-JAG typ is refused", typ: "application/" + oauthproto.JWTTypeIDJAG, wantAccept: false},
+		{name: "upper-case ID-JAG typ is refused", typ: "OAUTH-ID-JAG+JWT", wantAccept: false},
 		// An access token from this server must not be accepted as a JWT-bearer assertion.
 		{name: "at+jwt typ is refused", typ: "at+jwt", wantAccept: false},
 		{name: "media-type at+jwt typ is refused", typ: "application/at+jwt", wantAccept: false},
@@ -493,9 +527,7 @@ func TestAssertionJWTConsumer_ForwardsThroughFullSPIFFEDecoratorChain(t *testing
 	})
 	require.NoError(t, err)
 
-	spiffeClient, err := registration.NewSPIFFEClient(
-		"spiffe-client", []string{"openid"}, []string{"https://mcp.example.com"}, nil)
-	require.NoError(t, err)
+	spiffeClient := spiffetest.Client(t)
 	chain, err := storage.NewSPIFFEStorageDecorator(
 		ctx, cimdDecorated, map[string]fosite.Client{spiffeClient.GetID(): spiffeClient})
 	require.NoError(t, err)
@@ -756,14 +788,15 @@ func TestJWTBearerHandler_StampsNoUpstreamSessionClaim(t *testing.T) {
 
 	tj := newTestJWKS(t)
 	now := time.Now()
+	validator := &testJWTBearerAssertionValidator{claims: &ValidatedClaims{
+		Issuer:   issuer,
+		Subject:  subject,
+		JWTID:    "jti-no-upstream-session",
+		IssuedAt: now,
+		Expiry:   now.Add(30 * time.Minute),
+	}}
 	handler, err := newJWTBearerIssuanceHandler(
-		&testJWTBearerAssertionValidator{claims: &ValidatedClaims{
-			Issuer:   issuer,
-			Subject:  subject,
-			JWTID:    "jti-no-upstream-session",
-			IssuedAt: now,
-			Expiry:   now.Add(30 * time.Minute),
-		}},
+		validator,
 		testTokenEndpoint,
 		testAssertionJWTConsumer{},
 		&fosite.Config{AccessTokenLifespan: time.Hour},
@@ -782,8 +815,156 @@ func TestJWTBearerHandler_StampsNoUpstreamSessionClaim(t *testing.T) {
 
 	require.NoError(t, handler.HandleTokenEndpointRequest(context.Background(), req))
 
+	assert.Equal(t, []string{testTokenEndpoint}, validator.gotDefaults)
+
 	issued, ok := req.GetSession().(*session.Session)
 	require.True(t, ok, "expected the handler to install a *session.Session")
-	assert.Equal(t, true, issued.JWTClaims.Extra[session.NoUpstreamSessionClaimKey],
+	assert.Equal(t, true, issued.JWTClaims.Extra[claimnames.NoUpstreamSessionKey],
 		"JWT-bearer tokens must declare that they have no upstream session")
+}
+
+func TestJWTBearerHandler_MaxAgeIsCheckedBeforeResource(t *testing.T) {
+	t.Parallel()
+
+	const (
+		issuer   = "https://idp.example.com"
+		subject  = "ext-user"
+		resource = "https://mcp.example.com"
+	)
+	resolvedIssuers, err := ResolveJWTBearerGrantPolicies([]TrustedIssuer{{
+		IssuerURL:              issuer,
+		AllowedDelegateClients: []string{anyDelegateClient},
+		JWTBearerGrant: &JWTBearerGrantPolicy{
+			MaxAssertionAge: time.Hour.String(),
+			SubjectBindings: []JWTBearerSubjectBinding{
+				{Subject: subject, AllowedResources: []string{resource}},
+			},
+		},
+	}})
+	require.NoError(t, err)
+
+	now := time.Now()
+	validator := &testJWTBearerAssertionValidator{claims: &ValidatedClaims{
+		Issuer:   issuer,
+		Subject:  subject,
+		JWTID:    "jti-order-test",
+		IssuedAt: now.Add(-2 * time.Hour),
+		Expiry:   now.Add(time.Minute),
+	}}
+	handler, err := newJWTBearerIssuanceHandler(
+		validator,
+		testTokenEndpoint,
+		testAssertionJWTConsumer{},
+		&fosite.Config{AccessTokenLifespan: time.Hour},
+		&mockAccessTokenStrategy{},
+		&mockAccessTokenStorage{},
+		resolvedIssuers,
+	)
+	require.NoError(t, err)
+
+	req := fosite.NewAccessRequest(&session.Session{})
+	req.GrantTypes = fosite.Arguments{oauthproto.GrantTypeJWTBearer}
+	req.Form = map[string][]string{"assertion": {signAssertionWithType(t, newTestJWKS(t), nil)}}
+
+	err = handler.HandleTokenEndpointRequest(context.Background(), req)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, fosite.ErrInvalidGrant)
+	assert.NotErrorIs(t, err, fosite.ErrInvalidRequest)
+}
+
+// TestJWTBearerHandler_ResourceClaimIsNotADefault pins plain RFC 7523: only the
+// ID-JAG handler falls back to a resource claim.
+func TestJWTBearerHandler_ResourceClaimIsNotADefault(t *testing.T) {
+	t.Parallel()
+
+	const (
+		issuer   = "https://idp.example.com"
+		subject  = "ext-user"
+		resource = "https://mcp.example.com"
+	)
+	resolvedIssuers, err := ResolveJWTBearerGrantPolicies([]TrustedIssuer{{
+		IssuerURL:              issuer,
+		AllowedDelegateClients: []string{anyDelegateClient},
+		JWTBearerGrant: &JWTBearerGrantPolicy{
+			MaxAssertionAge: time.Hour.String(),
+			SubjectBindings: []JWTBearerSubjectBinding{
+				{Subject: subject, AllowedResources: []string{resource}},
+			},
+		},
+	}})
+	require.NoError(t, err)
+
+	now := time.Now()
+	validator := &testJWTBearerAssertionValidator{claims: &ValidatedClaims{
+		Issuer:   issuer,
+		Subject:  subject,
+		JWTID:    "jti-claim-default",
+		IssuedAt: now,
+		Expiry:   now.Add(time.Minute),
+		Extra:    map[string]any{"resource": resource},
+	}}
+	handler, err := newJWTBearerIssuanceHandler(
+		validator,
+		testTokenEndpoint,
+		testAssertionJWTConsumer{},
+		&fosite.Config{AccessTokenLifespan: time.Hour},
+		&mockAccessTokenStrategy{},
+		&mockAccessTokenStorage{},
+		resolvedIssuers,
+	)
+	require.NoError(t, err)
+
+	req := fosite.NewAccessRequest(&session.Session{})
+	req.GrantTypes = fosite.Arguments{oauthproto.GrantTypeJWTBearer}
+	req.Form = map[string][]string{"assertion": {signAssertionWithType(t, newTestJWKS(t), nil)}}
+
+	err = handler.HandleTokenEndpointRequest(context.Background(), req)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, fosite.ErrInvalidRequest)
+	var oauthErr *fosite.RFC6749Error
+	require.True(t, errors.As(err, &oauthErr))
+	assert.Equal(t, requestedResourceHint, oauthErr.HintField)
+}
+
+func TestJWTBearerHandler_PopulateFailsClosedOnElapsedExpiry(t *testing.T) {
+	t.Parallel()
+
+	resolvedIssuers, err := ResolveJWTBearerGrantPolicies([]TrustedIssuer{{
+		IssuerURL:              "https://idp.example.com",
+		AllowedDelegateClients: []string{anyDelegateClient},
+		JWTBearerGrant: &JWTBearerGrantPolicy{
+			MaxAssertionAge: time.Hour.String(),
+			SubjectBindings: []JWTBearerSubjectBinding{
+				{Subject: "ext-user", AllowedResources: []string{"https://mcp.example.com"}},
+			},
+		},
+	}})
+	require.NoError(t, err)
+
+	tokenStorage := &mockAccessTokenStorage{}
+	handler, err := newJWTBearerIssuanceHandler(
+		&testJWTBearerAssertionValidator{},
+		testTokenEndpoint,
+		testAssertionJWTConsumer{},
+		&fosite.Config{AccessTokenLifespan: time.Hour},
+		&mockAccessTokenStrategy{},
+		tokenStorage,
+		resolvedIssuers,
+	)
+	require.NoError(t, err)
+
+	sess := session.New("ext-user", "", "client", session.UserClaims{})
+	sess.SetExpiresAt(fosite.AccessToken, time.Now().Add(-time.Second))
+	req := fosite.NewAccessRequest(sess)
+	req.GrantTypes = fosite.Arguments{oauthproto.GrantTypeJWTBearer}
+	responder := fosite.NewAccessResponse()
+
+	err = handler.PopulateTokenEndpointResponse(context.Background(), req, responder)
+
+	require.ErrorIs(t, err, fosite.ErrInvalidGrant)
+	var oauthErr *fosite.RFC6749Error
+	require.ErrorAs(t, err, &oauthErr)
+	assert.Equal(t, "The JWT bearer assertion has expired.", oauthErr.HintField)
+	assert.Empty(t, responder.GetAccessToken())
+	assert.Empty(t, tokenStorage.createdSig)
 }

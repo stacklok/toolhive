@@ -27,16 +27,16 @@ thv start [workload-name] [flags]
 ### Options
 
 ```
-  -a, --all            Restart all MCP servers
-  -f, --foreground     Run the restarted workload in foreground mode (default false)
-  -g, --group string   Filter by group
-  -h, --help           help for start
+  -a, --all[=true|false]          Restart all MCP servers
+  -f, --foreground[=true|false]   Run the restarted workload in foreground mode (default false)
+  -g, --group string              Filter by group
+  -h, --help[=true|false]         help for start
 ```
 
 ### Options inherited from parent commands
 
 ```
-      --debug   Enable debug mode
+      --debug[=true|false]   Enable debug mode
 ```
 
 ### SEE ALSO

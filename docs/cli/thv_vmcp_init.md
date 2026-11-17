@@ -32,16 +32,16 @@ thv vmcp init [flags]
 ### Options
 
 ```
-  -c, --config string   Output file path for the generated config; alias for --output
-  -g, --group string    ToolHive group name to discover workloads from (required)
-  -h, --help            help for init
-  -o, --output string   Output file path for the generated config (default: stdout)
+  -c, --config string       Output file path for the generated config; alias for --output
+  -g, --group string        ToolHive group name to discover workloads from (required)
+  -h, --help[=true|false]   help for init
+  -o, --output string       Output file path for the generated config (default: stdout)
 ```
 
 ### Options inherited from parent commands
 
 ```
-      --debug   Enable debug mode
+      --debug[=true|false]   Enable debug mode
 ```
 
 ### SEE ALSO

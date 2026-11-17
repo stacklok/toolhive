@@ -71,7 +71,7 @@ var _ = Describe("MCPExternalAuthConfig SPIFFE CEL validation", func() {
 				SPIFFEClientAuth: []mcpv1beta1.SPIFFEClientConfig{{
 					TrustDomainRef: "example", PrincipalPattern: principalPattern, ClientID: "spiffe-client",
 					Methods:   []mcpv1beta1.SPIFFEAuthenticationMethod{mcpv1beta1.SPIFFEAuthenticationMethodX509},
-					Audiences: []string{"https://mcp.example.com"}, Scopes: []string{"openid"},
+					Audiences: []string{"https://mcp.example.com"}, Resources: []string{"https://mcp.example.com"}, Scopes: []string{"openid"},
 				}},
 			}
 		}
@@ -212,10 +212,10 @@ var _ = Describe("MCPExternalAuthConfig SPIFFE CEL validation", func() {
 			principal: "spiffe://other.example.org/ns/default/agent", errMatch: "principalPattern trust domain must match",
 		},
 		{
-			name: "audiences are required", trustDomains: true, clients: true,
-			principal: "spiffe://example.org/ns/default/agent", errMatch: "audiences",
+			name: "deprecated audiences may be omitted", trustDomains: true, clients: true,
+			principal: "spiffe://example.org/ns/default/agent", shouldAdmit: true,
 			mutate: func(config *mcpv1beta1.EmbeddedAuthServerConfig) {
-				config.InboundGrants.SPIFFEClientAuth[0].Audiences = nil
+				config.InboundGrants.SPIFFEClientAuth[0].Audiences = nil //nolint:staticcheck // Exercises the deprecated field.
 			},
 		},
 		{
@@ -226,17 +226,24 @@ var _ = Describe("MCPExternalAuthConfig SPIFFE CEL validation", func() {
 			},
 		},
 		{
-			name: "resources are optional", trustDomains: true, clients: true,
+			name: "a listed resource is admitted", trustDomains: true, clients: true,
 			principal: "spiffe://example.org/ns/default/agent", shouldAdmit: true,
 			mutate: func(config *mcpv1beta1.EmbeddedAuthServerConfig) {
 				config.InboundGrants.SPIFFEClientAuth[0].Resources = []string{"https://backend.example.com"}
 			},
 		},
 		{
-			name: "empty-string audience is rejected", trustDomains: true, clients: true,
+			name: "resources are required", trustDomains: true, clients: true,
+			principal: "spiffe://example.org/ns/default/agent", errMatch: "resources is required",
+			mutate: func(config *mcpv1beta1.EmbeddedAuthServerConfig) {
+				config.InboundGrants.SPIFFEClientAuth[0].Resources = nil
+			},
+		},
+		{
+			name: "empty-string deprecated audience is still rejected", trustDomains: true, clients: true,
 			principal: "spiffe://example.org/ns/default/agent", errMatch: "audiences",
 			mutate: func(config *mcpv1beta1.EmbeddedAuthServerConfig) {
-				config.InboundGrants.SPIFFEClientAuth[0].Audiences = []string{""}
+				config.InboundGrants.SPIFFEClientAuth[0].Audiences = []string{""} //nolint:staticcheck // Exercises the deprecated field.
 			},
 		},
 		{

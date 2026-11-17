@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math/big"
+	"net"
 	"net/url"
 	"reflect"
 	"strings"
@@ -53,6 +54,28 @@ func newTestRedisStorage(t *testing.T) (*RedisStorage, *miniredis.Miniredis) {
 
 	storage := NewRedisStorageWithClient(client, "test:auth:")
 	return storage, mr
+}
+
+// errSimulatedConnectionFailure is what newUnreachableRedisClient's dialer returns.
+var errSimulatedConnectionFailure = errors.New("simulated connection failure")
+
+// newUnreachableRedisClient returns a client whose every dial fails. Tests that
+// need a connection failure use it instead of closing a miniredis and dialing
+// the freed address: that port can be handed to another parallel test's
+// miniredis, which then answers the command and hides the failure.
+func newUnreachableRedisClient(t *testing.T) *redis.Client {
+	t.Helper()
+
+	client := redis.NewClient(&redis.Options{
+		Addr: "unreachable.invalid:6379", // never dialed; Dialer always fails
+		Dialer: func(context.Context, string, string) (net.Conn, error) {
+			return nil, errSimulatedConnectionFailure
+		},
+		DialerRetries: 1,
+		MaxRetries:    -1,
+	})
+	t.Cleanup(func() { _ = client.Close() })
+	return client
 }
 
 func withRedisStorage(t *testing.T, fn func(context.Context, *RedisStorage, *miniredis.Miniredis)) {
@@ -1338,12 +1361,21 @@ func TestRedisStorage_ClientAssertionJWT(t *testing.T) {
 	})
 
 	t.Run("backend failure is recorded for the client authentication strategy", func(t *testing.T) {
+		t.Parallel()
+		s := NewRedisStorageWithClient(newUnreachableRedisClient(t), "test:auth:")
+		ctx, recorded := server.NewClientAssertionStoreFailureContext(context.Background())
+		err := s.ClientAssertionJWTValid(ctx, "any-jti")
+		require.Error(t, err)
+		assert.NotErrorIs(t, err, fosite.ErrJTIKnown)
+		assert.Equal(t, err, recorded())
+	})
+
+	t.Run("failure to record the jti is recorded for the client authentication strategy", func(t *testing.T) {
 		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
 			ctx, recorded := server.NewClientAssertionStoreFailureContext(ctx)
 			mr.Close()
-			err := s.ClientAssertionJWTValid(ctx, "any-jti")
+			err := s.SetClientAssertionJWT(ctx, "any-jti", time.Now().Add(time.Minute))
 			require.Error(t, err)
-			assert.NotErrorIs(t, err, fosite.ErrJTIKnown)
 			assert.Equal(t, err, recorded())
 		})
 	})
@@ -1357,6 +1389,36 @@ func TestRedisStorage_ClientAssertionJWT(t *testing.T) {
 		})
 	})
 
+	t.Run("deadline in the past is invalid_client and leaves the reservation", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			require.NoError(t, s.ClientAssertionJWTValid(ctx, "past-jti"))
+			key := redisKey(s.keyPrefix, KeyTypeJWT, "past-jti")
+			ttlBefore := mr.TTL(key)
+			require.Positive(t, ttlBefore)
+
+			ctx, recorded := server.NewClientAssertionStoreFailureContext(ctx)
+			err := s.SetClientAssertionJWT(ctx, "past-jti", time.Now().Add(-time.Hour))
+			var rfcErr *fosite.RFC6749Error
+			require.ErrorAs(t, err, &rfcErr)
+			assert.Equal(t, fosite.ErrInvalidClient.ErrorField, rfcErr.ErrorField)
+			assert.Equal(t, 401, rfcErr.CodeField)
+			assert.NoError(t, recorded())
+
+			assert.Equal(t, ttlBefore, mr.TTL(key), "the reservation must stay as it was")
+			assert.ErrorIs(t, s.ClientAssertionJWTValid(ctx, "past-jti"), fosite.ErrJTIKnown)
+		})
+	})
+
+	t.Run("the key gets the deadline it is given as its TTL", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			require.NoError(t, s.ClientAssertionJWTValid(ctx, "ttl-jti"))
+			deadline := time.Now().Add(2 * time.Minute)
+			require.NoError(t, s.SetClientAssertionJWT(ctx, "ttl-jti", deadline))
+			ttl := mr.TTL(redisKey(s.keyPrefix, KeyTypeJWT, "ttl-jti"))
+			assert.InDelta(t, time.Until(deadline), ttl, float64(2*time.Second), "the backend must not add retention of its own")
+		})
+	})
+
 	t.Run("excessive lifetime is invalid_client", func(t *testing.T) {
 		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
 			err := s.SetClientAssertionJWT(ctx, "long-jti", time.Now().Add(time.Hour))
@@ -1367,11 +1429,32 @@ func TestRedisStorage_ClientAssertionJWT(t *testing.T) {
 		})
 	})
 
-	t.Run("expired JTI is not stored", func(t *testing.T) {
+	t.Run("deadline just in the past is refused and the jti stays reserved", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			require.NoError(t, s.ClientAssertionJWTValid(ctx, "past-grace-jti"))
+
+			ctx, recorded := server.NewClientAssertionStoreFailureContext(ctx)
+			err := s.SetClientAssertionJWT(ctx, "past-grace-jti", time.Now().Add(-time.Second))
+
+			var rfcErr *fosite.RFC6749Error
+			require.ErrorAs(t, err, &rfcErr)
+			assert.Equal(t, fosite.ErrInvalidClient.ErrorField, rfcErr.ErrorField)
+			assert.NoError(t, recorded())
+			assert.True(t, mr.Exists(redisKey(s.keyPrefix, KeyTypeJWT, "past-grace-jti")))
+			assert.ErrorIs(t, s.ClientAssertionJWTValid(ctx, "past-grace-jti"), fosite.ErrJTIKnown)
+		})
+	})
+
+	t.Run("deadline cap allows the retention extra", func(t *testing.T) {
 		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
-			require.NoError(t, s.SetClientAssertionJWT(ctx, "expired-jti", time.Now().Add(-time.Hour)))
-			err := s.ClientAssertionJWTValid(ctx, "expired-jti")
-			require.NoError(t, err) // Should be valid because expired JTI is not stored
+			maxDeadline := server.ClientAssertionMaxMarkerAhead
+			require.NoError(t, s.SetClientAssertionJWT(ctx, "cap-ok-jti", time.Now().Add(maxDeadline-5*time.Second)))
+
+			err := s.SetClientAssertionJWT(ctx, "cap-over-jti", time.Now().Add(maxDeadline+5*time.Second))
+			var rfcErr *fosite.RFC6749Error
+			require.ErrorAs(t, err, &rfcErr)
+			assert.Equal(t, fosite.ErrInvalidClient.ErrorField, rfcErr.ErrorField)
+			assert.Contains(t, rfcErr.HintField, "must be at most")
 		})
 	})
 }
@@ -4008,14 +4091,7 @@ func TestRedisStorage_Health(t *testing.T) {
 func TestRedisStorage_Health_ConnectionFailure(t *testing.T) {
 	t.Parallel()
 
-	mr := miniredis.RunT(t)
-	client := redis.NewClient(&redis.Options{
-		Addr: mr.Addr(),
-	})
-	storage := NewRedisStorageWithClient(client, "test:auth:")
-
-	// Close the miniredis server to simulate connection failure
-	mr.Close()
+	storage := NewRedisStorageWithClient(newUnreachableRedisClient(t), "test:auth:")
 
 	err := storage.Health(context.Background())
 	require.Error(t, err)
@@ -4772,19 +4848,14 @@ func TestRedisStorage_DCRCredentials_UpdateTTL(t *testing.T) {
 // TestRedisStorage_DCRCredentials_UpdateConnectionFailure exercises the generic
 // (non-Nil) error branch of UpdateDCRCredentialsIfPresent: a connection failure
 // mid-call must surface as a wrapped error, never as a spurious ErrNotFound or a
-// silent success. Mirrors TestRedisStorage_Health_ConnectionFailure by closing
-// miniredis before the call. (This branch is likewise untested for the sibling
+// silent success. Mirrors TestRedisStorage_Health_ConnectionFailure by using a
+// client that cannot connect. (This branch is likewise untested for the sibling
 // Store path; this closes the caller-visible gap for the update path.)
 func TestRedisStorage_DCRCredentials_UpdateConnectionFailure(t *testing.T) {
 	t.Parallel()
 
-	mr := miniredis.RunT(t)
-	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	s := NewRedisStorageWithClient(client, "test:auth:")
-
-	// Close the server so the SET round-trip fails with a connection error
-	// rather than redis.Nil.
-	mr.Close()
+	// The SET round-trip must fail with a connection error rather than redis.Nil.
+	s := NewRedisStorageWithClient(newUnreachableRedisClient(t), "test:auth:")
 
 	_, err := s.UpdateDCRCredentialsIfPresent(context.Background(), &DCRCredentials{
 		Key:                   dcrFixtureKey(),
@@ -4795,6 +4866,7 @@ func TestRedisStorage_DCRCredentials_UpdateConnectionFailure(t *testing.T) {
 	require.Error(t, err)
 	assert.NotErrorIs(t, err, ErrNotFound,
 		"a connection failure must surface as a generic error, not a spurious not-found")
+	assert.ErrorIs(t, err, errSimulatedConnectionFailure)
 }
 
 // TestRedisStorage_DCRCredentials_UpdateInvalidInputRejected pins that Update
@@ -5046,10 +5118,7 @@ func TestRedisStorage_DCRCredentials_UpdateIfUnchangedInvalidInput(t *testing.T)
 func TestRedisStorage_DCRCredentials_UpdateIfUnchangedConnectionFailure(t *testing.T) {
 	t.Parallel()
 
-	mr := miniredis.RunT(t)
-	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	s := NewRedisStorageWithClient(client, "test:auth:")
-	mr.Close()
+	s := NewRedisStorageWithClient(newUnreachableRedisClient(t), "test:auth:")
 
 	key := dcrFixtureKey()
 	_, err := s.UpdateDCRCredentialsIfUnchanged(context.Background(),
@@ -5057,6 +5126,7 @@ func TestRedisStorage_DCRCredentials_UpdateIfUnchangedConnectionFailure(t *testi
 	require.Error(t, err)
 	assert.NotErrorIs(t, err, ErrNotFound)
 	assert.NotErrorIs(t, err, ErrDCRCredentialsChanged)
+	assert.ErrorIs(t, err, errSimulatedConnectionFailure)
 }
 
 // TestRedisStorage_DCRCredentials_UpdateIfUnchangedConcurrent pins that the

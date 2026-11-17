@@ -20,7 +20,6 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
@@ -195,7 +194,7 @@ func (r *VirtualMCPServerReconciler) deploymentForVirtualMCPServer(
 						Args:            args,
 						Env:             env,
 						VolumeMounts:    volumeMounts,
-						Ports:           r.buildContainerPortsForVmcp(vmcp),
+						Ports:           ctrlutil.ProxyContainerPorts(vmcpDefaultPort, ctrlutil.TLSListenerEnabled(vmcp.Spec.AuthServerConfig)),
 						LivenessProbe: ctrlutil.BuildHealthProbe(
 							"/health", "http",
 							vmcpLivenessInitialDelay, vmcpLivenessPeriod, vmcpLivenessTimeout, vmcpLivenessFailures,
@@ -1103,17 +1102,6 @@ func (r *VirtualMCPServerReconciler) buildSecurityContextsForVmcp(
 	return securityBuilder.BuildPodSecurityContext(), securityBuilder.BuildContainerSecurityContext()
 }
 
-// buildContainerPortsForVmcp builds container port configuration
-func (*VirtualMCPServerReconciler) buildContainerPortsForVmcp(
-	_ *mcpv1beta1.VirtualMCPServer,
-) []corev1.ContainerPort {
-	return []corev1.ContainerPort{{
-		ContainerPort: vmcpDefaultPort,
-		Name:          "http",
-		Protocol:      corev1.ProtocolTCP,
-	}}
-}
-
 // serviceForVirtualMCPServer returns a VirtualMCPServer Service object
 func (r *VirtualMCPServerReconciler) serviceForVirtualMCPServer(
 	ctx context.Context,
@@ -1149,12 +1137,7 @@ func (r *VirtualMCPServerReconciler) serviceForVirtualMCPServer(
 			Type:            serviceType,
 			Selector:        ls,
 			SessionAffinity: sessionAffinity,
-			Ports: []corev1.ServicePort{{
-				Port:       vmcpDefaultPort,
-				TargetPort: intstr.FromInt(int(vmcpDefaultPort)),
-				Protocol:   corev1.ProtocolTCP,
-				Name:       "http",
-			}},
+			Ports:           ctrlutil.ProxyServicePorts(vmcpDefaultPort, ctrlutil.TLSListenerEnabled(vmcp.Spec.AuthServerConfig)),
 		},
 	}
 

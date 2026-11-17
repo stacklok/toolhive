@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -26,9 +27,9 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/stacklok/toolhive/pkg/authserver"
+	"github.com/stacklok/toolhive/pkg/authserver/claimnames"
 	authserverrunner "github.com/stacklok/toolhive/pkg/authserver/runner"
 	"github.com/stacklok/toolhive/pkg/authserver/server"
-	"github.com/stacklok/toolhive/pkg/authserver/server/session"
 	"github.com/stacklok/toolhive/pkg/authserver/server/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
@@ -44,7 +45,26 @@ const (
 	xrtOtherAudience      = "https://other.test.local"
 	xrtIDJAGCap           = 12 * time.Hour
 	xrtRefreshCap         = 720 * time.Hour
+	xrtTargetsOther       = "configured-targets-other"
+
+	// The broker's ID-JAG targets. Each requires a different set of subject
+	// claims. xrtIDJAGResource is not one of the server's allowed audiences.
+	xrtTargetPlain     = "https://as2.example.net"
+	xrtTargetUpstream  = "https://as2-upstream.example.net"
+	xrtTargetBoth      = "https://as2-both.example.net"
+	xrtIDJAGResource   = "https://gw.example.net/mcp"
+	xrtTargetClientID  = "broker-at-as2"
+	xrtIDJAGLifetime   = 60
+	xrtUpstreamSubject = "upstream_subject"
 )
+
+// xrtIDJAGTarget is a broker target for xrtIDJAGResource with the default lifetime.
+func xrtIDJAGTarget(issuer string, required ...string) authserver.DelegateClientIDJAGTarget {
+	return authserver.DelegateClientIDJAGTarget{
+		Issuer: issuer, ClientID: xrtTargetClientID, Resources: []string{xrtIDJAGResource},
+		RequiredSubjectClaims: required,
+	}
+}
 
 // xrtEnv is an embedded auth server with a broker client that may exchange
 // login tokens for refresh tokens, plus clients that may not.
@@ -75,6 +95,11 @@ func xrtClients(t *testing.T, jwksFile string) []authserver.DelegateClientRunCon
 		ExchangeRefreshTokens: &authserver.DelegateClientExchangeRefreshTokens{
 			IDJAGMaxLifetime: xrtIDJAGCap.String(), RefreshTokenMaxLifetime: xrtRefreshCap.String(),
 		},
+		IDJAG: &authserver.DelegateClientIDJAG{Targets: []authserver.DelegateClientIDJAGTarget{
+			xrtIDJAGTarget(xrtTargetPlain),
+			xrtIDJAGTarget(xrtTargetUpstream, xrtUpstreamSubject),
+			xrtIDJAGTarget(xrtTargetBoth, xrtUpstreamSubject, "sub_id"),
+		}},
 	}
 	otherRefresh := secretClient(t, xrtOtherRefreshClient, []string{oauthproto.GrantTypeTokenExchange})
 	otherRefresh.Audiences = nil
@@ -84,6 +109,16 @@ func xrtClients(t *testing.T, jwksFile string) []authserver.DelegateClientRunCon
 		AllowedSourceClients:    []string{xrtSourceApp},
 		ExchangeRefreshTokens: &authserver.DelegateClientExchangeRefreshTokens{
 			IDJAGMaxLifetime: xrtIDJAGCap.String(), RefreshTokenMaxLifetime: xrtRefreshCap.String(),
+		},
+	}
+	targetsOther := secretClient(t, xrtTargetsOther, []string{oauthproto.GrantTypeTokenExchange})
+	targetsOther.Audiences = nil
+	targetsOther.TokenExchange = &authserver.DelegateClientTokenExchange{
+		SelfIssuedSubjectTokens: authserver.SelfIssuedSubjectTokensRestricted,
+		SubjectTokenAudiences:   []string{cfgAudienceA},
+		AllowedSourceClients:    []string{xrtSourceApp},
+		ExchangeRefreshTokens: &authserver.DelegateClientExchangeRefreshTokens{
+			IDJAGMaxLifetime: xrtIDJAGCap.String(),
 		},
 	}
 	idJAGOnly := secretClient(t, xrtIDJAGOnlyClient, []string{oauthproto.GrantTypeTokenExchange})
@@ -100,12 +135,40 @@ func xrtClients(t *testing.T, jwksFile string) []authserver.DelegateClientRunCon
 		broker,
 		otherRefresh,
 		idJAGOnly,
+		targetsOther,
 		secretClient(t, cfgExchangeOnly, []string{oauthproto.GrantTypeTokenExchange}),
 		secretClient(t, cfgNoCodeID, []string{oauthproto.GrantTypeTokenExchange, oauthproto.GrantTypeJWTBearer}),
 	}
 }
 
 func startXRTServer(t *testing.T, backend string) *xrtEnv {
+	t.Helper()
+	return startXRTServerWith(t, backend, nil)
+}
+
+// startXRTServerWith starts the server like startXRTServer and applies mutate
+// to the RunConfig last. The server records sub_id and upstream_subject for
+// logins to the broker's API audience, which targets that require those
+// claims need: the option is set the way an embedder sets it, because
+// RunConfig has no field for it.
+//
+// opts are extra embedder options, applied after the defaults.
+func startXRTServerWith(
+	t *testing.T, backend string, mutate func(cfg *authserver.RunConfig, issuer string),
+	opts ...authserverrunner.EmbeddedAuthServerOption,
+) *xrtEnv {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	return startXRTServerOn(t, backend, listener, mutate, opts...)
+}
+
+// startXRTServerOn is startXRTServerWith on a listener the caller has already
+// bound, for a test that must know this server's issuer before it starts.
+func startXRTServerOn(
+	t *testing.T, backend string, listener net.Listener, mutate func(cfg *authserver.RunConfig, issuer string),
+	opts ...authserverrunner.EmbeddedAuthServerOption,
+) *xrtEnv {
 	t.Helper()
 	brokerKey := newAssertionKey(t, "broker-key")
 	jwksFile := filepath.Join(t.TempDir(), "broker.jwks")
@@ -122,7 +185,15 @@ func startXRTServer(t *testing.T, backend string) *xrtEnv {
 
 	clients := configuredClients(xrtClients(t, jwksFile)...)
 	stor := newStorageForBackend(t, backend)
-	srv, issuer, embedded, _ := startEmbeddedAuthServer(t, func(cfg *authserver.RunConfig, issuer string) {
+	// The source app is a user-facing client, as a DCR registration would be:
+	// it logs users in, and the broker exchanges its access tokens for grants.
+	require.NoError(t, stor.RegisterClient(t.Context(), &fosite.DefaultClient{
+		ID: xrtSourceApp, Public: true, RedirectURIs: []string{cfgRedirectURI},
+		ResponseTypes: []string{"code"},
+		GrantTypes:    []string{oauthproto.GrantTypeAuthorizationCode, oauthproto.GrantTypeRefreshToken},
+		Scopes:        []string{"openid", "profile", "offline_access"}, Audience: []string{cfgAudienceA},
+	}))
+	srv, issuer, embedded, _ := startEmbeddedAuthServerOn(t, listener, func(cfg *authserver.RunConfig, issuer string) {
 		clients(cfg)
 		cfg.AllowedAudiences = []string{cfgAudienceA, xrtOtherAudience}
 		cfg.InboundGrants.JWTBearer = &authserver.JWTBearerInboundGrantRunConfig{
@@ -138,7 +209,12 @@ func startXRTServer(t *testing.T, backend string) *xrtEnv {
 			Name: "mock-idp", IssuerURL: cfgIDJAGIssuer, JWKSURL: jwksServer.URL,
 			InsecureAllowHTTP: true, AllowPrivateIPs: true,
 		}}
-	}, stor)
+		if mutate != nil {
+			mutate(cfg, issuer)
+		}
+	}, stor, append(
+		[]authserverrunner.EmbeddedAuthServerOption{authserverrunner.WithSubjectIdentifierAudiences([]string{cfgAudienceA})},
+		opts...)...)
 	return &xrtEnv{
 		srv: srv, issuer: issuer, embedded: embedded, store: stor, brokerKey: brokerKey, idpKey: idpKey,
 		broker:       clientAuth{clientID: cfgBrokerID, key: &brokerKey},
@@ -276,7 +352,7 @@ func runExchangeRefreshTokenGrantFlows(t *testing.T, env *xrtEnv) {
 
 	t.Run("a client that may open grants cannot exchange the token for its input audience", func(t *testing.T) {
 		const idJAGOnlyEntry = `[{"type":"` + xrtGrantType + `","issuable_token_types":["` + oauthproto.TokenTypeIDJAG + `"]}]`
-		for param, wantCode := range map[string]string{"audience": "invalid_request", "resource": "invalid_target"} {
+		for param, wantCode := range map[string]string{"audience": "invalid_target", "resource": "invalid_target"} {
 			t.Run(param, func(t *testing.T) {
 				subject := env.mint(t, nil)
 				refused := postToken(t, env.srv.URL, env.secretIn, url.Values{
@@ -335,8 +411,8 @@ func runExchangeRefreshTokenGrantFlows(t *testing.T, env *xrtEnv) {
 		subID := map[string]any{"format": "iss_sub", "iss": env.issuer, "sub": "user-1"}
 		upstream := map[string]any{"iss": "https://idp.example", "claim": "oid", "value": "obj-1"}
 		subject := env.mint(t, func(_ *jwt.Claims, x map[string]any) {
-			x["sub_id"] = subID
-			x[session.UpstreamSubjectClaimKey] = upstream
+			x[claimnames.SubjectIdentifierKey] = subID
+			x[claimnames.UpstreamSubjectKey] = upstream
 		})
 		res := env.requestRefreshToken(t, env.broker, subject, nil)
 		require.Equal(t, http.StatusOK, res.status, res.body)
@@ -447,11 +523,26 @@ func runExchangeRefreshTokenGrantFlows(t *testing.T, env *xrtEnv) {
 func runExchangeRefreshTokenRefusals(t *testing.T, env *xrtEnv) {
 	t.Helper()
 	t.Run("routing", func(t *testing.T) {
-		// subject_token_type=refresh_token is claimed by the refresh-token handler,
-		// which refuses it unless the request asks for a refresh token.
-		res := env.requestRefreshToken(t, env.broker, "irrelevant", func(f url.Values) {
+		// subject_token_type=refresh_token with requested_token_type=id-jag is
+		// claimed by the refresh-token handler. A client with grants but no ID-JAG
+		// targets is refused with the unsupported requested-type text.
+		res := env.requestRefreshToken(t, env.secretIn, "irrelevant", func(f url.Values) {
 			f.Set("subject_token_type", oauthproto.TokenTypeRefreshToken)
 			f.Set("requested_token_type", oauthproto.TokenTypeIDJAG)
+			f.Del("authorization_details")
+		})
+		requireError(t, res, "invalid_request", unsupportedTypeDescription("requested_token_type", oauthproto.TokenTypeIDJAG))
+
+		// A client with targets mints.
+		grant := env.grantToken(t, env.broker, oauthproto.TokenTypeIDJAG, nil).str(t, "access_token")
+		minted := env.requestIDJAG(t, env.broker, grant, xrtTargetPlain)
+		require.Equal(t, http.StatusOK, minted.status, minted.body)
+		assert.Equal(t, oauthproto.TokenTypeIDJAG, minted.body["issued_token_type"])
+
+		// A refresh-token subject asking for any other type keeps the subject text.
+		res = env.requestRefreshToken(t, env.broker, "irrelevant", func(f url.Values) {
+			f.Set("subject_token_type", oauthproto.TokenTypeRefreshToken)
+			f.Set("requested_token_type", oauthproto.TokenTypeAccessToken)
 			f.Del("authorization_details")
 		})
 		requireError(t, res, "invalid_request", hinted(fosite.ErrInvalidRequest, fmt.Sprintf(
@@ -519,7 +610,7 @@ func runExchangeRefreshTokenRefusals(t *testing.T, env *xrtEnv) {
 			requireError(t, env.requestRefreshToken(t, env.broker, "garbage", nil), "invalid_request", "subject_token_invalid")
 		})
 
-		for name, typ := range map[string]string{"JWT-bearer-issued token": "JWT", "ID-JAG-issued token": "oauth-id-jag+jwt"} {
+		for name, typ := range map[string]string{"JWT-bearer-issued token": "JWT", "ID-JAG-issued token": oauthproto.JWTTypeIDJAG} {
 			t.Run(name, func(t *testing.T) {
 				assertion := signAssertionOfType(t, env.idpKey, typ, env.issuer, cfgNoCodeID, "jti-"+strings.ReplaceAll(typ, "+", "-")+"-"+t.Name())
 				issued := postToken(t, env.srv.URL, env.noCode, url.Values{
@@ -681,10 +772,10 @@ func TestExchangeRefreshTokensRequireTheStorageCapability(t *testing.T) {
 	t.Parallel()
 
 	// newHidden wraps a fresh memory store so the exchange-grant capability is
-	// not visible through storage.Unwrap. Each start owns its store: the
-	// constructor closes it on failure and EmbeddedAuthServer.Close on success.
+	// not visible through storage.Unwrap. The test owns and closes each store.
 	newHidden := func() storage.Storage {
 		memory := storage.NewMemoryStorage()
+		t.Cleanup(func() { _ = memory.Close() })
 		return struct {
 			storage.Storage
 			storage.DCRCredentialStore
@@ -701,7 +792,8 @@ func TestExchangeRefreshTokensRequireTheStorageCapability(t *testing.T) {
 		cfg.InsecureAllowConfidentialOverLoopbackHTTP = true
 		configuredClients(clients...)(cfg)
 		cfg.AllowedAudiences = []string{cfgAudienceA, xrtOtherAudience}
-		embedded, err := authserverrunner.NewEmbeddedAuthServerWithStorage(t.Context(), cfg, newHidden())
+		embedded, err := authserverrunner.NewEmbeddedAuthServerWithStorage(t.Context(), cfg, newHidden(),
+			authserverrunner.WithSubjectIdentifierAudiences([]string{cfgAudienceA}))
 		if err == nil {
 			assert.NoError(t, embedded.Close())
 		}

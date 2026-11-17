@@ -9,6 +9,7 @@ import (
 	"crypto/rsa"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -21,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ory/fosite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
@@ -252,6 +254,7 @@ func TestNewServer_ClientAdmissionWiring(t *testing.T) {
 			ctrl := gomock.NewController(t)
 			mockUpstream := upstreammocks.NewMockOAuth2Provider(ctrl)
 			stor := storage.NewMemoryStorage()
+			t.Cleanup(func() { _ = stor.Close() })
 
 			cfg := Config{
 				Issuer:           "https://example.com",
@@ -388,6 +391,7 @@ func TestNewServer_TrustedIssuerWithBothGrantsDisabled(t *testing.T) {
 	t.Run("token exchange disabled and no JWT-bearer grant leaves the validator nil", func(t *testing.T) {
 		t.Parallel()
 		stor := storage.NewMemoryStorage()
+		t.Cleanup(func() { _ = stor.Close() })
 		cfg := baseCfg(true)
 
 		srv, err := newServer(context.Background(), cfg, stor)
@@ -401,6 +405,7 @@ func TestNewServer_TrustedIssuerWithBothGrantsDisabled(t *testing.T) {
 	t.Run("token exchange enabled builds the validator", func(t *testing.T) {
 		t.Parallel()
 		stor := storage.NewMemoryStorage()
+		t.Cleanup(func() { _ = stor.Close() })
 		cfg := baseCfg(false)
 
 		srv, err := newServer(context.Background(), cfg, stor)
@@ -722,6 +727,9 @@ func TestServer_TokenEndpoint_CIMDFetchesAreRateLimited(t *testing.T) {
 func TestNewServer_SPIFFEAndCIMD_WrapStorageInOrder(t *testing.T) {
 	t.Parallel()
 
+	spiffeClient := testSPIFFEAssociation("spiffe-client", "openid")
+	spiffeClient.Audiences = []string{"https://mcp.example.com"}
+	spiffeClient.Resources = []string{"https://mcp.example.com"}
 	trust, err := NewSPIFFETrustConfig(
 		[]SPIFFETrustDomainRunConfig{{
 			Name:        "production",
@@ -732,15 +740,7 @@ func TestNewServer_SPIFFEAndCIMD_WrapStorageInOrder(t *testing.T) {
 				WorkloadAPI: &SPIFFEWorkloadAPIBundleSourceRunConfig{},
 			},
 		}},
-		&InboundGrantsRunConfig{SPIFFEClientAuth: []SPIFFEClientAuthRunConfig{{
-			TrustDomainRef:   "production",
-			PrincipalPattern: "spiffe://example.org/ns/default/agent",
-			ClientID:         "spiffe-client",
-			Methods:          []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509},
-			Scopes:           []string{"openid"},
-			Audiences:        []string{"https://mcp.example.com"},
-			GrantTypes:       []string{SPIFFEGrantTypeTokenExchange},
-		}}},
+		&InboundGrantsRunConfig{SPIFFEClientAuth: []SPIFFEClientAuthRunConfig{spiffeClient}},
 		[]string{"openid", "profile"},
 		[]string{"https://mcp.example.com"},
 	)
@@ -755,12 +755,8 @@ func TestNewServer_SPIFFEAndCIMD_WrapStorageInOrder(t *testing.T) {
 		SPIFFETrust:          trust,
 	}
 
-	// decorateStorageForSPIFFE is exercised directly, not through newServer,
-	// because Config.SPIFFETrust is hard-rejected by Config.Validate() (and
-	// therefore by newServer, which calls it) until a real SVID-verification
-	// consumer lands -- see validateConfigSPIFFENotYetEnforced. This test's
-	// actual subject, the storage-decoration order, lives entirely below
-	// that policy gate.
+	// decorateStorageForSPIFFE is exercised directly, not through newServer:
+	// this test's subject is the storage-decoration order alone.
 	decorated, _, err := decorateStorageForSPIFFE(context.Background(), cfg, stor)
 	require.NoError(t, err)
 
@@ -772,94 +768,6 @@ func TestNewServer_SPIFFEAndCIMD_WrapStorageInOrder(t *testing.T) {
 	client, err := decorated.GetClient(context.Background(), "spiffe-client")
 	require.NoError(t, err)
 	assert.Equal(t, "spiffe-client", client.GetID())
-}
-
-func TestNewSPIFFEClientResolver(t *testing.T) {
-	t.Parallel()
-
-	registry := newTestSPIFFEAssociationRegistry(t, []SPIFFEClientAuthRunConfig{
-		testSPIFFEAssociation("client", "openid"),
-	})
-	client, err := registration.NewSPIFFEClient(
-		"client", []string{"openid"}, []string{"https://audience.example.com"}, nil,
-	)
-	require.NoError(t, err)
-
-	tests := []struct {
-		name       string
-		registry   *SPIFFEAssociationRegistry
-		spiffeID   string
-		clientID   string
-		setupStore func(*storagemocks.MockStorage)
-		wantNil    bool
-		wantClient bool
-		wantErr    error
-	}{
-		{
-			name: "nil registry returns nil resolver", registry: nil,
-			wantNil: true,
-		},
-		{
-			name: "resolved association loads client", registry: registry,
-			spiffeID: "spiffe://example.org/ns/default/agent", clientID: "client",
-			setupStore: func(store *storagemocks.MockStorage) {
-				store.EXPECT().GetClient(gomock.Any(), "client").Return(client, nil)
-			},
-			wantClient: true,
-		},
-		{
-			name: "association rejection skips storage", registry: registry,
-			spiffeID: "spiffe://example.org/ns/other/agent", clientID: "client",
-		},
-		{
-			name: "empty client ID resolves via association", registry: registry,
-			spiffeID: "spiffe://example.org/ns/default/agent", clientID: "",
-			setupStore: func(store *storagemocks.MockStorage) {
-				store.EXPECT().GetClient(gomock.Any(), "client").Return(client, nil)
-			},
-			wantClient: true,
-		},
-		{
-			name: "storage error is propagated", registry: registry,
-			spiffeID: "spiffe://example.org/ns/default/agent", clientID: "client",
-			setupStore: func(store *storagemocks.MockStorage) {
-				store.EXPECT().GetClient(gomock.Any(), "client").Return(nil, assert.AnError)
-			},
-			wantErr: assert.AnError,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			store := storagemocks.NewMockStorage(gomock.NewController(t))
-			if tt.setupStore != nil {
-				tt.setupStore(store)
-			}
-			resolver := newSPIFFEClientResolver(tt.registry, store)
-			if tt.wantNil {
-				assert.Nil(t, resolver)
-				return
-			}
-
-			got, err := resolver(
-				context.Background(), tt.spiffeID, tt.clientID, SPIFFEAuthenticationMethodX509,
-			)
-			if tt.wantErr != nil {
-				require.ErrorIs(t, err, tt.wantErr)
-				assert.Nil(t, got)
-				return
-			}
-			if tt.wantClient {
-				require.NoError(t, err)
-				assert.Same(t, client, got)
-				return
-			}
-			require.Error(t, err)
-			assert.Nil(t, got)
-		})
-	}
 }
 
 func TestNewServer_UpstreamRefresherSharedInstance(t *testing.T) {
@@ -1030,10 +938,8 @@ func TestSPIFFEX509AuthoritiesUnsupported(t *testing.T) {
 	assert.Nil(t, authorities)
 }
 
-// eventRecordingStorage records when the server closes storage, so the ordering
-// between upstream draining and storage teardown can be asserted. Close does not
-// delegate: MemoryStorage.Close panics when called twice and the test cleanup
-// closes the underlying store.
+// eventRecordingStorage records unexpected attempts to close borrowed storage.
+// The test owner closes the underlying store separately.
 type eventRecordingStorage struct {
 	*storage.MemoryStorage
 	record func(string)
@@ -1046,10 +952,8 @@ func (s *eventRecordingStorage) Close() error {
 	return nil
 }
 
-// TestServer_CloseIdleConnections pins the Close/CloseIdleConnections split that
-// lets an embedder retire a superseded server without closing the storage a
-// replacement server is still serving through (see #6479). It also pins that
-// providers lacking the optional capability are skipped rather than panicking.
+// TestServer_CloseIdleConnections verifies live-safe pool draining and that
+// full shutdown releases instance resources without closing borrowed storage.
 func TestServer_CloseIdleConnections(t *testing.T) {
 	t.Parallel()
 
@@ -1085,6 +989,7 @@ func TestServer_CloseIdleConnections(t *testing.T) {
 			UpstreamFactory:  factory,
 		}, stor)
 		require.NoError(t, err)
+		t.Cleanup(func() { require.NoError(t, srv.Close()) })
 		return srv
 	}
 
@@ -1099,25 +1004,8 @@ func TestServer_CloseIdleConnections(t *testing.T) {
 
 		assert.Equal(t, int32(1), first.closes.Load())
 		assert.Equal(t, int32(1), second.closes.Load())
-		// Leaving storage open is the whole point of the split: an embedder
-		// retiring a superseded server must not tear down the storage the
-		// replacement server is serving through.
+		// Live-safe draining does not release the borrowed backend.
 		assert.Empty(t, events, "CloseIdleConnections must not touch storage")
-	})
-
-	t.Run("Close drains upstreams then closes storage", func(t *testing.T) {
-		t.Parallel()
-
-		var events []string
-		record := func(e string) { events = append(events, e) }
-		provider := &closeCountingProvider{}
-		provider.onClose = func() { record("upstream") }
-		srv := newTestServer(t, record, provider)
-
-		require.NoError(t, srv.Close())
-
-		assert.Equal(t, int32(1), provider.closes.Load())
-		assert.Equal(t, []string{"upstream", "storage"}, events)
 	})
 
 	t.Run("skips upstreams without the capability", func(t *testing.T) {
@@ -1129,6 +1017,42 @@ func TestServer_CloseIdleConnections(t *testing.T) {
 		assert.NotPanics(t, srv.CloseIdleConnections)
 		assert.Equal(t, int32(1), capable.closes.Load())
 	})
+}
+
+func TestNew_BorrowsSharedStorage(t *testing.T) {
+	t.Parallel()
+	base := storage.NewMemoryStorage()
+	t.Cleanup(func() { require.NoError(t, base.Close()) })
+	var closes atomic.Int32
+	stor := &eventRecordingStorage{MemoryStorage: base, record: func(string) { closes.Add(1) }}
+	cfg := Config{
+		Issuer:           "https://example.com",
+		KeyProvider:      keys.NewGeneratingProvider(keys.DefaultAlgorithm),
+		HMACSecrets:      &servercrypto.HMACSecrets{Current: validHMACSecret()},
+		AllowedAudiences: []string{"https://mcp.example.com"},
+		Upstreams:        []UpstreamConfig{{Name: "default", Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstreamConfig()}},
+	}
+	first, err := New(t.Context(), cfg, stor)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, first.Close()) })
+	second, err := New(t.Context(), cfg, stor)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, second.Close()) })
+	require.NoError(t, first.Close())
+	require.NoError(t, stor.RegisterClient(t.Context(), &fosite.DefaultClient{ID: "shared-client"}))
+	_, err = second.(*server).storage.GetClient(t.Context(), "shared-client")
+	require.NoError(t, err)
+
+	cfg.UpstreamFactory = func(context.Context, *UpstreamConfig) (upstream.OAuth2Provider, error) {
+		return nil, errors.New("factory failure")
+	}
+	failed, err := New(t.Context(), cfg, stor)
+	require.ErrorContains(t, err, "factory failure")
+	require.True(t, failed == nil, "constructor failure must return a nil interface")
+	_, err = stor.GetClient(t.Context(), "shared-client")
+	require.NoError(t, err)
+	require.NoError(t, second.Close())
+	assert.Zero(t, closes.Load(), "success, failure and shutdown must all preserve borrowed storage")
 }
 
 // TestServer_TrustedIssuerValidatorLifecycle pins that a server configured with
@@ -1150,14 +1074,15 @@ func TestServer_TrustedIssuerValidatorLifecycle(t *testing.T) {
 	newServerWithIssuers := func(t *testing.T, issuers []tokenexchange.TrustedIssuer) *server {
 		t.Helper()
 		stor := storage.NewMemoryStorage()
+		t.Cleanup(func() { _ = stor.Close() })
 		srv, err := newServer(t.Context(), Config{
 			Issuer:           "https://example.com",
 			KeyProvider:      keys.NewGeneratingProvider(keys.DefaultAlgorithm),
 			HMACSecrets:      &servercrypto.HMACSecrets{Current: validHMACSecret()},
 			AllowedAudiences: []string{"https://mcp.example.com"},
 			TrustedIssuers:   issuers,
-			// An upstream is required unless delegate clients or a JWT-bearer
-			// issuer is configured; a plain trusted issuer alone does not satisfy
+			// An upstream is required unless delegate clients, SPIFFE associations
+			// or a JWT-bearer issuer is configured; a plain trusted issuer alone does not satisfy
 			// that, so give the config one placeholder upstream.
 			Upstreams: []UpstreamConfig{{Name: "default", Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstreamConfig()}},
 			UpstreamFactory: func(_ context.Context, _ *UpstreamConfig) (upstream.OAuth2Provider, error) {
@@ -1165,6 +1090,7 @@ func TestServer_TrustedIssuerValidatorLifecycle(t *testing.T) {
 			},
 		}, stor)
 		require.NoError(t, err)
+		t.Cleanup(func() { require.NoError(t, srv.Close()) })
 		return srv
 	}
 
@@ -1380,12 +1306,7 @@ func TestServer_Close_DrainsRealOIDCUpstream(t *testing.T) {
 	t.Cleanup(issuer.Close)
 
 	stor := storage.NewMemoryStorage()
-	var closeOnce sync.Once
-	closeStorage := func() { closeOnce.Do(func() { _ = stor.Close() }) }
-	// Registered so an aborted require below does not leave storage running;
-	// idempotent because srv.Close() closes the same store, and
-	// MemoryStorage.Close panics if called twice.
-	t.Cleanup(closeStorage)
+	t.Cleanup(func() { _ = stor.Close() })
 
 	srv, err := newServer(t.Context(), Config{
 		Issuer:      "https://example.com",
@@ -1408,6 +1329,7 @@ func TestServer_Close_DrainsRealOIDCUpstream(t *testing.T) {
 		AllowedAudiences: []string{"https://mcp.example.com"},
 	}, stor)
 	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, srv.Close()) })
 	require.IsType(t, &upstream.OIDCProviderImpl{}, srv.upstreams[0].Provider)
 
 	// Discovery leaves at least one idle keep-alive connection behind; before
@@ -1417,7 +1339,6 @@ func TestServer_Close_DrainsRealOIDCUpstream(t *testing.T) {
 	require.GreaterOrEqual(t, openConns.Load(), int32(1), "discovery must leave a pooled connection")
 
 	require.NoError(t, srv.Close())
-	closeOnce.Do(func() {}) // srv.Close closed the store; disarm the cleanup
 
 	// The issuer observes the close asynchronously.
 	assert.Eventually(t, func() bool { return openConns.Load() == 0 }, 5*time.Second, 10*time.Millisecond,
@@ -1483,4 +1404,19 @@ func TestCloseIdleConnectionsFunction(t *testing.T) {
 
 		assert.False(t, CloseIdleConnections(capabilityFreeServer{}))
 	})
+}
+
+func TestStaticSPIFFEClientServedByRegistryIsSecretlessAndNonPublic(t *testing.T) {
+	t.Parallel()
+
+	registry := newTestSPIFFEAssociationRegistry(t, []SPIFFEClientAuthRunConfig{
+		testSPIFFEAssociation("client", "openid"),
+	})
+	clients := registry.staticClients()
+	served := clients["client"]
+	require.NotNil(t, served)
+	_, isOIDC := served.(fosite.OpenIDConnectClient)
+	assert.False(t, isOIDC)
+	assert.False(t, served.IsPublic())
+	assert.Nil(t, served.GetHashedSecret())
 }

@@ -5,397 +5,138 @@ package dcr
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"sync"
 	"time"
 
-	"github.com/stacklok/toolhive/pkg/authserver/storage"
+	"github.com/stacklok/toolhive/pkg/oauthproto/dcrkey"
+	"github.com/stacklok/toolhive/pkg/oauthproto/dcrstore"
 )
 
-// dcrStaleAgeThreshold is the age beyond which a cached DCR resolution is
-// considered stale and logged as such by higher-level wiring. The store itself
-// does not expire or evict entries. An upstream can still drop a registration
-// on its own (a ToolHive auth server evicts idle DCR clients); the resolver
-// can detect that on the next cache hit and replace the entry through
-// Replacer.ReplaceIfUnchanged (see verifyCachedRegistration for when it can).
-// An operator retires a cached registration by changing Request.RotationKey,
-// which addresses a new row; the old row is left in place.
+// dcrStaleAgeThreshold is the age beyond which observers warn about a cached
+// registration. Age alone does not expire it; rotation addresses a new key.
 const dcrStaleAgeThreshold = 90 * 24 * time.Hour
 
-// Key is a re-export of storage.DCRKey, kept as a package-local alias so
-// callers in this package can reference the canonical cache key without an
-// explicit storage. qualifier on every call site, while the canonical
-// definition lives in pkg/authserver/storage. The canonical form (and its
-// ScopesHash constructor) MUST live in a single place so any future Redis
-// backend hashes keys identically to the in-memory backend; see
-// storage.DCRKey for the field documentation.
-type Key = storage.DCRKey
+// Key aliases the canonical OAuth-side DCR key.
+type Key = dcrkey.Key
 
-// CredentialStore caches RFC 7591 Dynamic Client Registration resolutions
-// keyed by the (Issuer, UpstreamID, RedirectURI, ScopesHash) tuple plus the
-// optional RotationKey. Implementations must be safe for concurrent use.
-//
-// This is the runner-facing interface used by the DCR resolver. It is a
-// narrow re-projection of storage.DCRCredentialStore that exchanges
-// *Resolution values (the resolver's working type) instead of
-// *storage.DCRCredentials so the resolver internals stay agnostic to the
-// persistence layer's exact field shape.
-//
-// Implementations in this package are thin adapters around a
-// storage.DCRCredentialStore — the durable map / Redis hash lives over
-// there, and this interface adds a per-call Resolution <-> DCRCredentials
-// translation. There is exactly one persistence implementation per backend:
-// storage.MemoryStorage and storage.RedisStorage. See NewStorageBackedStore
-// for the adapter.
+// CredentialStore caches registrations by the five-field Key and is safe for
+// concurrent use. Persistence adapters belong to their owning subsystem.
 type CredentialStore interface {
-	// Get returns the cached resolution for key, or (nil, false, nil) if the
-	// key is not present. An error is returned only on backend failure.
+	// Get returns a copy, or (nil, false, nil) on a miss. Physical expired entries
+	// may still be returned; the resolver decides whether they are usable.
 	Get(ctx context.Context, key Key) (*Resolution, bool, error)
-
-	// PutIfAbsent claims key for resolution. Returns the authoritative
-	// durable value: the caller's own resolution on a successful claim, the
-	// concurrent winner's otherwise. Callers MUST use the returned value,
-	// not their input resolution — RFC 7591 dynamic registration mints a
-	// unique client_id/client_secret on every call, so a caller that lost
-	// the race and kept using its own resolution would hold credentials the
-	// durable store does not agree it owns.
-	//
-	// Implementations must reject a nil resolution with an error rather
-	// than silently succeeding — a no-op would leave callers with no
-	// debug trail for the subsequent Get miss.
-	//
-	// The returned *Resolution is always non-nil when err is nil.
+	// PutIfAbsent claims an absent or expired key and returns a copy of the
+	// authoritative winner, never nil on success. Callers must use that result,
+	// not their candidate. Nil and incomplete candidates must be rejected.
 	PutIfAbsent(ctx context.Context, key Key, resolution *Resolution) (*Resolution, error)
 }
 
-// Replacer is implemented by a CredentialStore that can replace a
-// registration the upstream has rejected. It is optional: ResolveCredentials
-// verifies a cached registration against the upstream only when its store
-// implements Replacer, and otherwise returns the cached registration
-// unchecked, without contacting the upstream.
+// Replacer is an optional CredentialStore capability. The resolver verifies a
+// cached registration against the upstream only when its store implements
+// Replacer; otherwise it returns the cached registration unchecked, without
+// contacting the upstream (see verifyCachedRegistration).
 //
-// It is a separate interface rather than a CredentialStore method so that
-// stores implemented outside this package keep compiling, and so that a
-// wrapper which embeds CredentialStore does not inherit a replacement that
-// skips whatever the wrapper does around writes (key namespacing, a lock
-// that lets only one replica register). A wrapper that supports replacement
-// must implement and forward ReplaceIfUnchanged explicitly.
+// It is a separate interface, not a CredentialStore method, so stores
+// implemented outside this package keep compiling and so a wrapper that embeds
+// CredentialStore does not inherit a replacement that skips whatever the
+// wrapper does around writes (key namespacing, a lock that lets only one
+// replica register). A wrapper that supports replacement must implement and
+// forward ReplaceIfUnchanged explicitly; forgetting to do so silently turns
+// the upstream check off.
 type Replacer interface {
-	// ReplaceIfUnchanged replaces the resolution stored at key with
-	// replacement, iff the stored resolution is still the registration the
-	// caller read (it carries expected's ClientID). It is the write path for
-	// re-registering after the upstream rejected a cached client, and it
-	// never overwrites a newer registration that a concurrent replica already
-	// persisted.
-	//
-	// Returns the authoritative durable value: replacement on success, the
-	// concurrent writer's row when the stored registration has already
-	// changed, or the result of claiming the key as PutIfAbsent would when no
-	// row exists any more. Callers MUST use the returned value, for the same
-	// reason as with CredentialStore.PutIfAbsent.
-	//
-	// Implementations must reject a nil expected or replacement with an
-	// error. The returned *Resolution is always non-nil when err is nil.
+	// ReplaceIfUnchanged replaces the registration identified by expected's
+	// ClientID, or returns the concurrent winner. Identity is the ClientID
+	// alone, because DCR mints a new client_id on every registration; the
+	// comparison does not consider expiry. A missing row is claimed as
+	// PutIfAbsent would. Nil expected or replacement is an error. The returned
+	// resolution is authoritative, independent, and non-nil on success.
 	ReplaceIfUnchanged(ctx context.Context, key Key, expected, replacement *Resolution) (*Resolution, error)
 }
 
-// Both in-package stores support replacement.
-var (
-	_ Replacer = (*inMemoryStore)(nil)
-	_ Replacer = (*storageBackedStore)(nil)
-)
-
-// NewStorageBackedStore returns a CredentialStore that delegates to a
-// storage.DCRCredentialStore for durable persistence and translates
-// Resolution values into DCRCredentials at the boundary. The returned
-// store is safe for concurrent use because the underlying
-// storage.DCRCredentialStore must be (per its interface contract).
-//
-// Panics if backend is nil — a nil backend is unambiguously a programming
-// error and silent acceptance would only delay the eventual nil-pointer
-// dereference to the first Get/Put call, far from the constructor site.
-func NewStorageBackedStore(backend storage.DCRCredentialStore) CredentialStore {
-	if backend == nil {
-		panic("dcr: NewStorageBackedStore: backend must not be nil")
-	}
-	return &storageBackedStore{backend: backend}
-}
-
 // CloseableCredentialStore is a CredentialStore that also releases an
-// underlying resource (typically a background goroutine) when closed.
-// NewInMemoryStore returns this interface so callers can call Close()
-// directly without a runtime type assertion — Close() being part of the
-// returned type at compile time prevents the silent-no-op failure mode
-// that .claude/rules/go-style.md warns about ("Never define a local
-// anonymous interface inside an option and type-assert against it to
-// check capability — a silent no-op results if the target doesn't
-// implement it.").
-//
-// NewStorageBackedStore returns the base CredentialStore because its
-// backends (storage.MemoryStorage shared across the authserver,
-// storage.RedisStorage) are owned by the authserver runner and closed
-// through that lifecycle, not by the dcr package.
+// underlying resource when closed. NewInMemoryStore returns it so callers can
+// call Close directly, with no runtime type assertion that would silently do
+// nothing if the target lacked the capability.
 type CloseableCredentialStore interface {
 	CredentialStore
 	io.Closer
 }
 
-// NewInMemoryStore returns a CloseableCredentialStore whose entries live
-// only for the lifetime of the returned value. This is the constructor
-// consumers reach for when they have no shared durable backend — most
-// notably the CLI OAuth flow, which manages cross-invocation credential
-// persistence outside the resolver (in pkg/auth/remote/handler.go's
-// CachedClientID / CachedClientSecretRef fields) and only needs the
-// resolver's intra-call singleflight + S256 PKCE / expiry-refetch
-// behaviour for one PerformOAuthFlow call.
-//
-// The implementation delegates to storage.NewMemoryStorage to share the
-// same Get/Put/scope-hash semantics as the durable backends, including
-// the background cleanup goroutine. Callers that need to release that
-// goroutine before process exit MUST call Close on the returned value
-// when finished — the return type is CloseableCredentialStore precisely
-// so the call site can `defer store.Close()` without a runtime
-// type-assertion. (CLI flows that complete in a single invocation can
-// also rely on process exit.)
+var (
+	_ CloseableCredentialStore = (*inMemoryStore)(nil)
+	_ Replacer                 = (*inMemoryStore)(nil)
+)
+
+// NewInMemoryStore returns an operation-scoped store, notably for CLI OAuth
+// flows whose cross-invocation persistence lives outside the resolver. It has
+// no sweeper or capacity policy; entries live as long as the returned value.
+// Close is an idempotent no-op and does not prevent subsequent operations.
 func NewInMemoryStore() CloseableCredentialStore {
-	return &inMemoryStore{mem: storage.NewMemoryStorage()}
+	return &inMemoryStore{entries: make(map[Key]Resolution)}
 }
 
-// inMemoryStore is the CloseableCredentialStore returned by
-// NewInMemoryStore. It holds exactly one *storage.MemoryStorage handle,
-// which serves Get / Put / Close. No embedding of storageBackedStore —
-// embedding would introduce a second handle to the same backend (typed
-// as the broad storage.DCRCredentialStore interface) and require a
-// manual "keep these two in sync" invariant the compiler could not
-// enforce. The single-field shape gives Get / Put / Close one
-// authoritative source.
-//
-// Get / Put logic is intentionally duplicated with storageBackedStore
-// rather than delegated through it: the two methods are three lines
-// each, and avoiding the embedding is a strictly stronger structural
-// guarantee than DRY here. credentialsToResolution /
-// resolutionToCredentials remain shared.
-//
-// closeOnce makes Close() idempotent at the dcr-package boundary even
-// though storage.MemoryStorage.Close() is not — calling
-// MemoryStorage.Close() twice panics on `close of closed channel`. The
-// CLI's `defer store.Close()` is single-call today, but guarding here
-// means future call sites that close-on-shortcircuit-then-defer (or
-// test helpers that close-then-reuse) cannot panic the process.
 type inMemoryStore struct {
-	mem       *storage.MemoryStorage
-	closeOnce sync.Once
-	closeErr  error
+	mu      sync.Mutex
+	entries map[Key]Resolution
 }
 
-// Get implements CredentialStore by delegating to the embedded
-// *storage.MemoryStorage. The ErrNotFound translation matches
-// storageBackedStore.Get; see that method for the rationale.
-func (s *inMemoryStore) Get(ctx context.Context, key Key) (*Resolution, bool, error) {
-	creds, err := s.mem.GetDCRCredentials(ctx, key)
-	if err != nil {
-		if errors.Is(err, storage.ErrNotFound) {
-			return nil, false, nil
-		}
-		return nil, false, err
+func (s *inMemoryStore) Get(_ context.Context, key Key) (*Resolution, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	current, ok := s.entries[key]
+	if !ok {
+		return nil, false, nil
 	}
-	return credentialsToResolution(creds), true, nil
+	return &current, true, nil
 }
 
-// PutIfAbsent implements CredentialStore by delegating to the embedded
-// *storage.MemoryStorage. The nil-resolution rejection matches
-// storageBackedStore.PutIfAbsent; see that method for the rationale.
-func (s *inMemoryStore) PutIfAbsent(ctx context.Context, key Key, resolution *Resolution) (*Resolution, error) {
+func (s *inMemoryStore) PutIfAbsent(_ context.Context, key Key, resolution *Resolution) (*Resolution, error) {
 	if resolution == nil {
 		return nil, fmt.Errorf("dcr: resolution must not be nil")
 	}
-	creds := resolutionToCredentials(key, resolution)
-	authoritative, err := s.mem.StoreDCRCredentialsIfAbsent(ctx, creds)
-	if err != nil {
+	if err := validateResolution(key, resolution); err != nil {
 		return nil, err
 	}
-	return credentialsToResolution(authoritative), nil
-}
-
-// ReplaceIfUnchanged implements Replacer by delegating to the embedded
-// *storage.MemoryStorage; see replaceIfUnchanged.
-func (s *inMemoryStore) ReplaceIfUnchanged(
-	ctx context.Context, key Key, expected, replacement *Resolution,
-) (*Resolution, error) {
-	return replaceIfUnchanged(ctx, s.mem, key, expected, replacement)
-}
-
-// Close releases the embedded MemoryStorage cleanup goroutine. Safe to
-// call multiple times: the underlying storage.MemoryStorage.Close
-// closes a channel and is NOT itself idempotent (a second call panics
-// on `close of closed channel`); the closeOnce here makes the
-// dcr-package boundary contract idempotent regardless. Subsequent
-// calls return the same error (if any) the first call produced.
-func (s *inMemoryStore) Close() error {
-	s.closeOnce.Do(func() {
-		s.closeErr = s.mem.Close()
-	})
-	return s.closeErr
-}
-
-// storageBackedStore is the dcr-package CredentialStore wrapping a
-// storage.DCRCredentialStore. Its methods are the only place that converts
-// between the resolver's *Resolution and the persisted
-// *storage.DCRCredentials shapes.
-type storageBackedStore struct {
-	backend storage.DCRCredentialStore
-}
-
-// Get implements CredentialStore.
-//
-// A storage-level ErrNotFound is translated into the (nil, false, nil)
-// miss-tuple advertised by the interface. Other errors propagate as-is.
-func (s *storageBackedStore) Get(ctx context.Context, key Key) (*Resolution, bool, error) {
-	creds, err := s.backend.GetDCRCredentials(ctx, key)
-	if err != nil {
-		if errors.Is(err, storage.ErrNotFound) {
-			return nil, false, nil
-		}
-		return nil, false, err
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if current, ok := s.entries[key]; ok &&
+		(current.ClientSecretExpiresAt.IsZero() || !time.Now().After(current.ClientSecretExpiresAt)) {
+		return &current, nil
 	}
-	return credentialsToResolution(creds), true, nil
+	return s.write(key, resolution), nil
 }
 
-// PutIfAbsent implements CredentialStore.
-//
-// A nil resolution is rejected rather than silently no-oped: a caller
-// passing nil would otherwise get a successful return, observe a miss on
-// the next Get, and have no error trail to debug from. Failing loudly at
-// the boundary makes such bugs visible at the first call.
-//
-// The returned *Resolution is the authoritative durable value —
-// s.backend.StoreDCRCredentialsIfAbsent's own contract — so a caller whose
-// registration lost a concurrent claim on this key gets back the winner's
-// credentials, not its own.
-func (s *storageBackedStore) PutIfAbsent(ctx context.Context, key Key, resolution *Resolution) (*Resolution, error) {
-	if resolution == nil {
-		return nil, fmt.Errorf("dcr: resolution must not be nil")
-	}
-	creds := resolutionToCredentials(key, resolution)
-	authoritative, err := s.backend.StoreDCRCredentialsIfAbsent(ctx, creds)
-	if err != nil {
-		return nil, err
-	}
-	return credentialsToResolution(authoritative), nil
-}
-
-// ReplaceIfUnchanged implements Replacer; see replaceIfUnchanged.
-func (s *storageBackedStore) ReplaceIfUnchanged(
-	ctx context.Context, key Key, expected, replacement *Resolution,
-) (*Resolution, error) {
-	return replaceIfUnchanged(ctx, s.backend, key, expected, replacement)
-}
-
-// replaceIfUnchanged is the shared ReplaceIfUnchanged body. It re-reads the
-// row and uses that physical row, not the caller's expected resolution, as
-// the compare-and-set witness: storage.DCRCredentialStore requires the value
-// its own GetDCRCredentials returned, and a Resolution does not carry every
-// persisted field. Identity is decided by ClientID because DCR mints a new
-// client_id on every registration.
-//
-// When the row has changed or vanished between the read and the write, the
-// key is claimed with StoreDCRCredentialsIfAbsent, which returns whatever a
-// concurrent writer left there and claims an empty slot otherwise.
-func replaceIfUnchanged(
-	ctx context.Context, backend storage.DCRCredentialStore, key Key, expected, replacement *Resolution,
-) (*Resolution, error) {
+func (s *inMemoryStore) ReplaceIfUnchanged(_ context.Context, key Key, expected, replacement *Resolution) (*Resolution, error) {
 	if expected == nil || replacement == nil {
 		return nil, fmt.Errorf("dcr: expected and replacement resolutions must not be nil")
 	}
-	creds := resolutionToCredentials(key, replacement)
-	claim := func() (*Resolution, error) {
-		authoritative, err := backend.StoreDCRCredentialsIfAbsent(ctx, creds)
-		if err != nil {
-			return nil, err
-		}
-		return credentialsToResolution(authoritative), nil
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if current, ok := s.entries[key]; ok && current.ClientID != expected.ClientID {
+		return &current, nil
 	}
-
-	current, err := backend.GetDCRCredentials(ctx, key)
-	switch {
-	case errors.Is(err, storage.ErrNotFound):
-		return claim()
-	case err != nil:
-		return nil, err
-	case current.ClientID != expected.ClientID:
-		// Another writer already replaced the stale registration.
-		return credentialsToResolution(current), nil
-	}
-
-	updated, err := backend.UpdateDCRCredentialsIfUnchanged(ctx, creds, current)
-	if errors.Is(err, storage.ErrDCRCredentialsChanged) || errors.Is(err, storage.ErrNotFound) {
-		return claim()
-	}
-	if err != nil {
+	if err := validateResolution(key, replacement); err != nil {
 		return nil, err
 	}
-	return credentialsToResolution(updated), nil
+	return s.write(key, replacement), nil
 }
 
-// resolutionToCredentials converts a resolver-side *Resolution into the
-// persisted *storage.DCRCredentials shape. The Key is supplied separately
-// because storage.DCRCredentials carries the key as a struct field rather
-// than implicitly via a map key, so the persistence layer can round-trip it
-// across processes and backends.
-//
-// Fields that exist on Resolution but not on DCRCredentials are dropped:
-//   - ClientIDIssuedAt: informational only per RFC 7591 §3.2.1; the resolver
-//     does not consult it for cache invalidation, so it does not need to
-//     survive a process restart.
-//   - RedirectURI: already encoded into key.RedirectURI; storing it twice
-//     would risk drift between the canonical key and the persisted value.
-//
-// CreatedAt and ClientSecretExpiresAt are preserved so cache observers
-// (e.g. lookupCachedResolution's staleness Warn) and TTL-aware backends
-// (Redis) keep their existing behaviour after a restart.
-func resolutionToCredentials(key Key, res *Resolution) *storage.DCRCredentials {
-	if res == nil {
-		return nil
-	}
-	return &storage.DCRCredentials{
-		Key:                     key,
-		ClientID:                res.ClientID,
-		ClientSecret:            res.ClientSecret,
-		TokenEndpointAuthMethod: res.TokenEndpointAuthMethod,
-		RegistrationAccessToken: res.RegistrationAccessToken,
-		RegistrationClientURI:   res.RegistrationClientURI,
-		AuthorizationEndpoint:   res.AuthorizationEndpoint,
-		TokenEndpoint:           res.TokenEndpoint,
-		CreatedAt:               res.CreatedAt,
-		ClientSecretExpiresAt:   res.ClientSecretExpiresAt,
-	}
+// Close is an idempotent no-op; this store owns no background resources.
+func (*inMemoryStore) Close() error { return nil }
+
+// write normalizes a copy to the persistence contract. s.mu must be held.
+func (s *inMemoryStore) write(key Key, resolution *Resolution) *Resolution {
+	normalized := *resolution
+	normalized.RedirectURI = key.RedirectURI
+	normalized.ClientIDIssuedAt = time.Time{}
+	s.entries[key] = normalized
+	return &normalized
 }
 
-// credentialsToResolution is the inverse of resolutionToCredentials. The
-// RedirectURI is recovered from the persisted Key so consumers that read it
-// off the resolution (e.g. pkg/authserver/runner.consumeResolution, which
-// writes it back onto a run-config copy when the caller left it empty)
-// see the canonical value.
-//
-// ClientIDIssuedAt is left zero because it is not persisted. Callers that
-// care about it (none today) must read it directly from the live RFC 7591
-// response, not from a cached resolution.
-func credentialsToResolution(creds *storage.DCRCredentials) *Resolution {
-	if creds == nil {
-		return nil
-	}
-	return &Resolution{
-		ClientID:                creds.ClientID,
-		ClientSecret:            creds.ClientSecret,
-		AuthorizationEndpoint:   creds.AuthorizationEndpoint,
-		TokenEndpoint:           creds.TokenEndpoint,
-		RegistrationAccessToken: creds.RegistrationAccessToken,
-		RegistrationClientURI:   creds.RegistrationClientURI,
-		TokenEndpointAuthMethod: creds.TokenEndpointAuthMethod,
-		RedirectURI:             creds.Key.RedirectURI,
-		ClientSecretExpiresAt:   creds.ClientSecretExpiresAt,
-		CreatedAt:               creds.CreatedAt,
-	}
+// validateResolution applies the shared persistence validation so the
+// operation-scoped store rejects what every durable backend rejects.
+func validateResolution(key Key, resolution *Resolution) error {
+	return dcrstore.Validate(resolutionToCredentials(key, resolution))
 }

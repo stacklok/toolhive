@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"reflect"
 	"slices"
+	"sync"
 	"time"
 
 	"github.com/ory/fosite"
@@ -21,7 +22,6 @@ import (
 	"golang.org/x/time/rate"
 
 	"github.com/stacklok/toolhive/pkg/authserver/internal/consentpolicy"
-	"github.com/stacklok/toolhive/pkg/authserver/internal/fositejose"
 	oauthserver "github.com/stacklok/toolhive/pkg/authserver/server"
 	"github.com/stacklok/toolhive/pkg/authserver/server/deviceflow"
 	"github.com/stacklok/toolhive/pkg/authserver/server/handlers"
@@ -31,12 +31,16 @@ import (
 	spiffeauth "github.com/stacklok/toolhive/pkg/authserver/spiffe"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
+	"github.com/stacklok/toolhive/pkg/authserver/upstreamfilter"
+	"github.com/stacklok/toolhive/pkg/bodylimit/httplimit"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
 // server is the internal implementation of the Server interface.
 type server struct {
-	handler http.Handler
+	closeOnce sync.Once
+	closeErr  error
+	handler   http.Handler
 	// oauthHandler is the handler behind handler, kept so Close can release
 	// the metric callback it registered.
 	oauthHandler *handlers.Handler
@@ -157,9 +161,7 @@ func closeSPIFFEBundleSourceOnConstructionError(source *spiffeMultiDomainBundleS
 	if *retErr == nil || source == nil {
 		return
 	}
-	if err := source.Close(); err != nil {
-		slog.Warn("failed to shut down SPIFFE bundle source during server construction cleanup", "error", err)
-	}
+	_ = source.Close()
 }
 
 func spiffeX509BundleSource(source *spiffeMultiDomainBundleSource) x509bundle.Source {
@@ -199,7 +201,7 @@ func loadKeyMaterial(ctx context.Context, provider keys.KeyProvider) (*keys.Sign
 // bundleSource may be nil.
 func authorizationServerParams(
 	cfg Config, signingKey *keys.SigningKeyData, additionalPublicKeys []*keys.PublicKeyData,
-	spiffeRegistry *SPIFFEAssociationRegistry, bundleSource *spiffeMultiDomainBundleSource, stor storage.Storage,
+	spiffeRegistry *SPIFFEAssociationRegistry, bundleSource *spiffeMultiDomainBundleSource,
 ) *oauthserver.AuthorizationServerParams {
 	return &oauthserver.AuthorizationServerParams{
 		Issuer:                                    cfg.Issuer,
@@ -220,7 +222,7 @@ func authorizationServerParams(
 		CIMDEnabled:                               cfg.CIMDEnabled,
 		AllowConfidentialClientRegistration:       cfg.AllowConfidentialClientRegistration,
 		AllowPrivateKeyJWTRegistration:            cfg.AllowPrivateKeyJWTRegistration,
-		HasStaticDelegateClients:                  len(cfg.DelegateClients) > 0,
+		HasStaticConfidentialClients:              cfg.hasStaticConfidentialClients(),
 		HasStaticSecretClients:                    hasSecretDelegateClient(cfg.DelegateClients),
 		InsecureAllowHTTP:                         cfg.InsecureAllowHTTP,
 		InsecureAllowConfidentialOverLoopbackHTTP: cfg.InsecureAllowConfidentialOverLoopbackHTTP,
@@ -230,8 +232,9 @@ func authorizationServerParams(
 		JWTBearerGrantEnabled:                     JWTBearerGrantEnabled(cfg.TrustedIssuers),
 		DeviceFlowEnabled:                         cfg.DeviceFlowEnabled,
 		DeviceCodeInterval:                        cfg.DeviceCodeInterval,
-		SPIFFEClientResolver:                      newSPIFFEClientResolver(spiffeRegistry, stor),
+		SPIFFEClientResolver:                      newSPIFFEClientResolver(spiffeRegistry),
 		SPIFFEX509BundleSource:                    spiffeX509BundleSource(bundleSource),
+		SPIFFEX509ClientMatcher:                   newSPIFFEX509ClientMatcher(spiffeRegistry),
 		SPIFFEJWTBundleSource:                     spiffeJWTBundleSource(bundleSource),
 	}
 }
@@ -266,7 +269,7 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage) (_ *server
 		return nil, err
 	}
 
-	oauthParams := authorizationServerParams(cfg, signingKey, additionalPublicKeys, spiffeRegistry, bundleSource, stor)
+	oauthParams := authorizationServerParams(cfg, signingKey, additionalPublicKeys, spiffeRegistry, bundleSource)
 	authServerConfig, err := oauthserver.NewAuthorizationServerConfig(oauthParams)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create OAuth2 config: %w", err)
@@ -327,8 +330,8 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage) (_ *server
 		return nil, fmt.Errorf("failed to create handler: %w", err)
 	}
 
-	// Create HTTP handler serving all endpoints
-	router := handlerInstance.Routes()
+	// Cap every endpoint for direct embedders as well as runner-hosted servers.
+	router := handlerInstance.Routes(httplimit.Middleware(handlers.MaxDCRBodySize))
 
 	slog.Debug("oauth authorization server initialized",
 		"issuer", cfg.Issuer,
@@ -416,8 +419,8 @@ func delegateClientIDs(delegateClients []DelegateClient) []string {
 }
 
 // explicitGrantClientIDs lists the IDs of delegate clients that set
-// grant_types explicitly. The ID-JAG handler gates these clients on the
-// jwt-bearer grant.
+// grant_types explicitly. See idJAGExplicitGrantClientIDs for the full set the
+// ID-JAG handler gates on the jwt-bearer grant.
 func explicitGrantClientIDs(clients []DelegateClient) []string {
 	var ids []string
 	for _, c := range clients {
@@ -428,11 +431,26 @@ func explicitGrantClientIDs(clients []DelegateClient) []string {
 	return ids
 }
 
+// idJAGExplicitGrantClientIDs lists the clients whose registered grant_types
+// the ID-JAG handler enforces: delegate clients that set grant_types
+// explicitly, and every configured SPIFFE association client. SPIFFE
+// associations are gated too because their static clients are restricted to
+// token-exchange; without this, a jwt-bearer ID-JAG bound to such a client_id
+// would redeem despite the association's grant policy. DCR and CIMD clients
+// are deliberately not in the set and are not held to their grant types.
+func idJAGExplicitGrantClientIDs(cfg Config) []string {
+	ids := explicitGrantClientIDs(cfg.DelegateClients)
+	for _, association := range cfg.SPIFFETrust.Associations() {
+		ids = append(ids, association.ClientID())
+	}
+	return ids
+}
+
 // newClientAdmissionStorage wraps stor so a configured client is served only
 // while cfg declares it. Consent-exempt IDs deliberately do not vouch. It must
-// sit below the CIMD decorator: callbackClient's fallback (ClientStoreBelowCIMD)
-// and CIMD's persisted-row fallback read below that decorator and must still
-// pass admission.
+// sit below the CIMD decorator: the continuation fallback NewHandler selects
+// (ClientStoreBelowCIMD) and CIMD's persisted-row fallback read below that
+// decorator and must still pass admission.
 func newClientAdmissionStorage(cfg Config, stor storage.Storage) (storage.Storage, error) {
 	admission, err := storage.NewClientAdmissionStorage(stor, delegateClientIDs(cfg.DelegateClients))
 	if err != nil {
@@ -567,11 +585,7 @@ func decorateStorageForSPIFFE(
 	if err != nil {
 		return nil, nil, err
 	}
-	clients, err := registry.staticClients()
-	if err != nil {
-		return nil, nil, fmt.Errorf("build SPIFFE static clients: %w", err)
-	}
-	stor, err = storage.NewSPIFFEStorageDecorator(ctx, stor, clients)
+	stor, err = storage.NewSPIFFEStorageDecorator(ctx, stor, registry.staticClients())
 	if err != nil {
 		return nil, nil, fmt.Errorf("initialize SPIFFE client overlay: %w", err)
 	}
@@ -591,21 +605,30 @@ func decorateStorageForSPIFFE(
 // Method uses the shared leaf-package type because package server cannot
 // import authserver (authserver imports server). Package authserver aliases
 // that type, so both sides share one set of method values.
-func newSPIFFEClientResolver(
-	registry *SPIFFEAssociationRegistry, stor storage.Storage,
-) oauthserver.SPIFFEClientResolver {
+func newSPIFFEClientResolver(registry *SPIFFEAssociationRegistry) oauthserver.SPIFFEClientResolver {
 	if registry == nil {
 		return nil
 	}
 	return func(
-		ctx context.Context, spiffeID, clientID string, method spiffeauth.SPIFFEAuthenticationMethod,
+		_ context.Context, spiffeID, clientID string, method spiffeauth.SPIFFEAuthenticationMethod,
 	) (fosite.Client, error) {
-		principal, err := registry.Resolve(spiffeID, clientID, method)
+		client, err := registry.Resolve(spiffeID, clientID, method)
 		if err != nil {
 			return nil, err
 		}
-		return stor.GetClient(ctx, principal.ClientID())
+		return client, nil
 	}
+}
+
+// newSPIFFEX509ClientMatcher returns the matcher the client-authentication
+// strategy uses to select the X.509 arm, or nil when no SPIFFE trust is
+// configured, like newSPIFFEClientResolver. A method value on a nil registry
+// would be non-nil.
+func newSPIFFEX509ClientMatcher(registry *SPIFFEAssociationRegistry) oauthserver.SPIFFEX509ClientMatcher {
+	if registry == nil {
+		return nil
+	}
+	return registry.usesX509
 }
 
 // decorateStorageForCIMD wraps stor with the CIMD decorator when CIMD is
@@ -685,9 +708,15 @@ func exchangeRefreshTokenCaps(block *DelegateClientExchangeRefreshTokens) (map[s
 // configuredClientPolicies builds the token-exchange policy of every delegate
 // client whose self_issued_subject_tokens is restricted, keyed by client_id; an
 // entry means restricted. A client with any, or without a token_exchange block,
-// gets no entry and so keeps blanket trust of self-issued subject tokens.
+// gets no entry and so keeps blanket trust of self-issued subject tokens. It binds
+// each restricted client's actor_profile to its registered validator. It relies
+// on Config.Validate having refused an unregistered or nil validator.
+//
+// It also logs once, at DEBUG, for every client that can hold ID-JAG grants
+// but has no id_jag.targets. It runs once per start, unlike config validation,
+// which can run on both the RunConfig and the Config path.
 func configuredClientPolicies(
-	clients []DelegateClient,
+	clients []DelegateClient, validators map[string]tokenexchange.ActorValidatorRegistration,
 ) (map[string]tokenexchange.ConfiguredClientPolicy, error) {
 	var policies map[string]tokenexchange.ConfiguredClientPolicy
 	for _, c := range clients {
@@ -701,13 +730,63 @@ func configuredClientPolicies(
 		if err != nil {
 			return nil, fmt.Errorf("delegate client %q: %w", c.ClientID, err)
 		}
+		idJAGTargets, err := idJAGTargetPolicies(c.TokenExchange.IDJAG)
+		if err != nil {
+			return nil, fmt.Errorf("delegate client %q: %w", c.ClientID, err)
+		}
+		if _, holdsIDJAGGrants := refreshCaps[oauthproto.TokenTypeIDJAG]; holdsIDJAGGrants && len(idJAGTargets) == 0 {
+			slog.Debug("delegate client can hold ID-JAG grants but has no id_jag.targets; it cannot mint ID-JAGs",
+				"client_id", c.ClientID)
+		}
 		policies[c.ClientID] = tokenexchange.ConfiguredClientPolicy{
 			AllowedSourceClients:  slices.Clone(c.TokenExchange.AllowedSourceClients),
 			SubjectTokenAudiences: slices.Clone(c.TokenExchange.SubjectTokenAudiences),
 			ExchangeRefreshTokens: refreshCaps,
+			IDJAGTargets:          idJAGTargets,
+			ActorProfile:          resolveActorProfile(c.TokenExchange.ActorProfile, validators),
 		}
 	}
 	return policies, nil
+}
+
+// idJAGTargetPolicies builds the runtime targets of an id_jag block, keyed by
+// the issuer exactly as configured, with the default lifetime applied. A nil block gives nil.
+func idJAGTargetPolicies(block *DelegateClientIDJAG) (map[string]tokenexchange.IDJAGTarget, error) {
+	if block == nil {
+		return nil, nil
+	}
+	targets := make(map[string]tokenexchange.IDJAGTarget, len(block.Targets))
+	for i, target := range block.Targets {
+		lifetime, err := idJAGTargetLifetime(target.Lifetime)
+		if err != nil {
+			return nil, fmt.Errorf("token_exchange.id_jag.targets[%d]: %w", i, err)
+		}
+		targets[target.Issuer] = tokenexchange.IDJAGTarget{
+			Issuer:                target.Issuer,
+			ClientID:              target.ClientID,
+			Resources:             slices.Clone(target.Resources),
+			Lifetime:              lifetime,
+			RequiredSubjectClaims: slices.Clone(target.RequiredSubjectClaims),
+		}
+	}
+	return targets, nil
+}
+
+// resolveActorProfile binds a client's actor_profile to its registration, which
+// carries the validator and the ActIssuer. It returns nil for a client without a
+// profile. It does not check that the registration exists: Config.Validate has
+// already refused a profile naming a missing or nil validator.
+func resolveActorProfile(
+	profile *DelegateClientActorProfile, validators map[string]tokenexchange.ActorValidatorRegistration,
+) *tokenexchange.ActorProfile {
+	if profile == nil {
+		return nil
+	}
+	return &tokenexchange.ActorProfile{
+		Name:                       profile.Validator,
+		ActorTokenType:             profile.ActorTokenType,
+		ActorValidatorRegistration: validators[profile.Validator],
+	}
 }
 
 // discoverExchangeGrantStorage finds the optional ExchangeGrantStorage
@@ -751,11 +830,11 @@ func buildProvider(
 	refresher storage.UpstreamTokenRefresher, upstreams []handlers.NamedUpstream,
 ) (_ fosite.OAuth2Provider, _ *tokenexchange.MultiIssuerTokenValidator, retErr error) {
 	delegateIDs := delegateClientIDs(cfg.DelegateClients)
-	clientPolicies, policyErr := configuredClientPolicies(cfg.DelegateClients)
+	clientPolicies, policyErr := configuredClientPolicies(cfg.DelegateClients, cfg.ActorTokenValidators)
 	if policyErr != nil {
 		return nil, nil, policyErr
 	}
-	jwtBearerEnabled := JWTBearerGrantEnabled(cfg.TrustedIssuers)
+	jwtBearerEnabled := authServerConfig.JWTBearerGrantEnabled
 	exchangeGrantStore, storeErr := discoverExchangeGrantStorage(cfg.DelegateClients, stor)
 	if storeErr != nil {
 		return nil, nil, storeErr
@@ -794,14 +873,16 @@ func buildProvider(
 		}
 	}()
 
+	signer := oauthserver.NewSigner(authServerConfig.SigningKey)
 	factories := make([]oauthserver.Factory, 0, 4)
-	tokenExchangeFactories, err := buildTokenExchangeFactories(cfg, delegateIDs, clientPolicies, shared, exchangeGrantStore)
+	tokenExchangeFactories, err := buildTokenExchangeFactories(
+		cfg, delegateIDs, clientPolicies, shared, exchangeGrantStore, signer)
 	if err != nil {
 		return nil, nil, err
 	}
 	factories = append(factories, tokenExchangeFactories...)
 	if jwtBearerEnabled {
-		jwtBearerFactories, err := buildJWTBearerFactories(cfg.TrustedIssuers, shared, explicitGrantClientIDs(cfg.DelegateClients))
+		jwtBearerFactories, err := buildJWTBearerFactories(cfg.TrustedIssuers, shared, idJAGExplicitGrantClientIDs(cfg))
 		if err != nil {
 			return nil, nil, err
 		}
@@ -821,7 +902,7 @@ func buildProvider(
 		return nil, nil, err
 	}
 	factories = append(factories, refreshGrantHandlerFactories(validators)...)
-	provider, err := createProvider(authServerConfig, stor, factories...)
+	provider, err := createProvider(authServerConfig, stor, signer, factories...)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -834,6 +915,7 @@ func buildProvider(
 func buildTokenExchangeFactories(
 	cfg Config, delegateIDs []string, clientPolicies map[string]tokenexchange.ConfiguredClientPolicy,
 	shared *tokenexchange.MultiIssuerTokenValidator, exchangeGrantStore storage.ExchangeGrantStorage,
+	signer *oauthserver.Signer,
 ) ([]oauthserver.Factory, error) {
 	if cfg.DisableTokenExchange {
 		return nil, nil
@@ -849,7 +931,7 @@ func buildTokenExchangeFactories(
 	// Registered with token exchange so a request for a refresh token
 	// always reaches it, even for a client that has not enabled the feature.
 	refreshTokenFactory, err := tokenexchange.RefreshTokenFactory(
-		clientPolicies, tokenexchange.WithExchangeGrantStorage(exchangeGrantStore))
+		clientPolicies, signer, tokenexchange.WithExchangeGrantStorage(exchangeGrantStore))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create refresh token exchange factory: %w", err)
 	}
@@ -921,7 +1003,7 @@ func buildDeviceFlowFactory(cfg Config, stor storage.Storage) (oauthserver.Facto
 // only when the caller supplied a non-empty allowlist.
 func buildHandlerOptions(
 	refresher storage.UpstreamTokenRefresher,
-	filter handlers.UpstreamFilter,
+	filter upstreamfilter.UpstreamFilter,
 	registrationRateLimit *RegistrationRateLimitRunConfig,
 	consentExemptClientIDs []string,
 ) []handlers.Option {
@@ -1022,33 +1104,31 @@ func (s *server) UpdateUpstreamClientCredentials(name string, creds upstream.Cli
 	return fmt.Errorf("unknown upstream %q", name)
 }
 
-// Close releases resources held by the server: it drains upstream idle
-// connections, unregisters the handler's metric callback, shuts down its
-// SPIFFE bundle and trusted-issuer refresh workers, and closes storage. Shutdown errors are joined so neither hides
-// the other.
+// Close releases instance-owned resources, but never the borrowed storage.
+// Concurrent and repeated calls return the same joined shutdown errors.
 func (s *server) Close() error {
-	slog.Debug("closing OAuth authorization server")
-	s.CloseIdleConnections()
-	var errs []error
-	if s.oauthHandler != nil {
-		if err := s.oauthHandler.Close(); err != nil {
-			errs = append(errs, err)
+	s.closeOnce.Do(func() {
+		slog.Debug("closing OAuth authorization server")
+		s.CloseIdleConnections()
+		var errs []error
+		if s.oauthHandler != nil {
+			if err := s.oauthHandler.Close(); err != nil {
+				errs = append(errs, err)
+			}
 		}
-	}
-	if s.spiffeBundleSource != nil {
-		if err := s.spiffeBundleSource.Close(); err != nil {
-			errs = append(errs, fmt.Errorf("failed to shut down SPIFFE bundle source: %w", err))
+		if s.spiffeBundleSource != nil {
+			if err := s.spiffeBundleSource.Close(); err != nil {
+				errs = append(errs, fmt.Errorf("failed to shut down SPIFFE bundle source: %w", err))
+			}
 		}
-	}
-	if s.trustedIssuerValidator != nil {
-		if err := s.trustedIssuerValidator.Close(); err != nil {
-			errs = append(errs, fmt.Errorf("failed to shut down trusted-issuer validator: %w", err))
+		if s.trustedIssuerValidator != nil {
+			if err := s.trustedIssuerValidator.Close(); err != nil {
+				errs = append(errs, fmt.Errorf("failed to shut down trusted-issuer validator: %w", err))
+			}
 		}
-	}
-	if err := s.storage.Close(); err != nil {
-		errs = append(errs, err)
-	}
-	return errors.Join(errs...)
+		s.closeErr = errors.Join(errs...)
+	})
+	return s.closeErr
 }
 
 // createProvider creates a fosite OAuth2Provider configured for the authorization code flow.
@@ -1066,9 +1146,12 @@ func (s *server) Close() error {
 //   - PKCE (RFC 7636) for public client security
 //   - Any extra factories passed in (e.g., RFC 8693 token exchange, or the
 //     embedder's Config.RefreshGrantHandlers), registered after the built-ins
+//
+// signer is the server's signer, which supplies the access-token strategy.
 func createProvider(
 	authServerConfig *oauthserver.AuthorizationServerConfig,
 	stor storage.Storage,
+	signer *oauthserver.Signer,
 	extraFactories ...oauthserver.Factory,
 ) (fosite.OAuth2Provider, error) {
 	slog.Debug("configuring fosite OAuth2 provider",
@@ -1076,33 +1159,16 @@ func createProvider(
 		"algorithm", authServerConfig.SigningKey.Algorithm,
 	)
 
-	// Convert go-jose/v4 JWK to go-jose/v3 JWK for fosite compatibility.
-	// Fosite v0.49.0 depends on go-jose/v3, while we use v4 internally.
-	// This ensures the "kid" (key ID) is included in JWT headers so resource
-	// servers can look up the correct public key from our JWKS endpoint.
-	signingKeyV3 := fositejose.ToFositeKey(authServerConfig.SigningKey)
-
 	// Create a composed token strategy:
 	// - JWT strategy (outer): signs access tokens as JWTs using the asymmetric signing key
 	// - HMAC strategy (inner): signs authorization codes and refresh tokens using HMACSecret
 	//
 	// Access tokens are JWTs so resource servers can validate them without calling us.
 	// Auth codes and refresh tokens are opaque HMAC tokens since only we validate them.
-	jwtStrategy := compose.NewOAuth2JWTStrategy(
-		func(_ context.Context) (interface{}, error) { return signingKeyV3, nil },
-		compose.NewOAuth2HMACStrategy(authServerConfig.Config),
-		authServerConfig.Config,
-	)
-	// This signer signs only access tokens: auth codes and refresh tokens use
-	// the HMAC strategy, and no ID-token strategy is registered. The type is
-	// set at signing time, not in the session, because storage persists the
-	// session's JWT header and a per-session typ would survive a configuration
-	// change across refreshes. Tokens signed through this signer get typ: at+jwt
-	// unless they set their own typ, so any future JWT that is not an access
-	// token, such as an ID-JAG (#6898), must set its own typ or sign with its
-	// own signer.
-	if authServerConfig.AccessTokenType == oauthserver.AccessTokenTypeATJWT {
-		jwtStrategy.Signer = oauthserver.NewATJWTAccessTokenSigner(jwtStrategy.Signer)
+	jwtStrategy, err := signer.AccessTokenStrategy(
+		authServerConfig.Config, authServerConfig.AccessTokenType == oauthserver.AccessTokenTypeATJWT)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build the access token strategy: %w", err)
 	}
 
 	commonStrategy := &compose.CommonStrategy{CoreStrategy: jwtStrategy}

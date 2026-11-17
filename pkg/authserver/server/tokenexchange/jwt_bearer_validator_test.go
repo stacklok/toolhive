@@ -11,6 +11,8 @@ import (
 	"github.com/go-jose/go-jose/v4/jwt"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
 func TestMultiIssuerTokenValidator_ValidateJWTBearerAssertion(t *testing.T) {
@@ -134,7 +136,7 @@ func TestMultiIssuerTokenValidator_ValidateJWTBearerAssertion(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			raw := tt.signer.signToken(t, tt.claims(), nil)
-			claims, err := validator.ValidateJWTBearerAssertion(context.Background(), raw, testTokenEndpoint)
+			claims, err := validator.ValidateJWTBearerAssertion(context.Background(), raw, []string{testTokenEndpoint})
 			if tt.wantErr != "" {
 				require.Error(t, err)
 				assert.Contains(t, err.Error(), tt.wantErr)
@@ -146,6 +148,35 @@ func TestMultiIssuerTokenValidator_ValidateJWTBearerAssertion(t *testing.T) {
 			assert.Equal(t, testExternalIssuer, claims.Issuer)
 		})
 	}
+}
+
+// TestMultiIssuerTokenValidator_ValidateJWTBearerAssertionAcceptsIDJAGType pins
+// that the subject-token typ deny does not reach redemption: an ID-JAG from a
+// trusted issuer still verifies as a JWT-bearer assertion.
+func TestMultiIssuerTokenValidator_ValidateJWTBearerAssertionAcceptsIDJAGType(t *testing.T) {
+	t.Parallel()
+
+	selfJWKS := newTestJWKS(t)
+	externalJWKS := newTestJWKS(t)
+	jwksServer := startJWKSServer(t, externalJWKS)
+	validator := newMultiValidator(t, selfJWKS, []TrustedIssuer{{
+		IssuerURL:              testExternalIssuer,
+		ExpectedAudience:       testExternalAudience,
+		JWKSURL:                jwksServer.URL + "/jwks",
+		AllowedDelegateClients: []string{anyDelegateClient},
+		JWTBearerGrant: &JWTBearerGrantPolicy{
+			MaxAssertionAge: time.Hour.String(),
+			SubjectBindings: []JWTBearerSubjectBinding{{
+				Subject:          "ext-user-456",
+				AllowedResources: []string{"https://mcp.example.com"},
+			}},
+		},
+	}})
+
+	raw := externalJWKS.signTokenWithType(t, oauthproto.JWTTypeIDJAG, jwtBearerExternalClaims(), nil)
+	claims, err := validator.ValidateJWTBearerAssertion(context.Background(), raw, []string{testTokenEndpoint})
+	require.NoError(t, err)
+	assert.Equal(t, "ext-user-456", claims.Subject)
 }
 
 func TestMultiIssuerTokenValidator_ValidateJWTBearerAssertionRejectsIssuerWithoutGrant(t *testing.T) {
@@ -162,7 +193,7 @@ func TestMultiIssuerTokenValidator_ValidateJWTBearerAssertionRejectsIssuerWithou
 	}})
 
 	raw := externalJWKS.signToken(t, externalClaims(), nil)
-	claims, err := validator.ValidateJWTBearerAssertion(context.Background(), raw, testTokenEndpoint)
+	claims, err := validator.ValidateJWTBearerAssertion(context.Background(), raw, []string{testTokenEndpoint})
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not enabled for the JWT-bearer grant")
@@ -220,7 +251,7 @@ func TestMultiIssuerTokenValidator_ValidateJWTBearerAssertion_AcceptedAudiences(
 			claims.Audience = tt.aud
 			raw := externalJWKS.signToken(t, claims, nil)
 
-			validated, err := validator.ValidateJWTBearerAssertion(context.Background(), raw, testTokenEndpoint)
+			validated, err := validator.ValidateJWTBearerAssertion(context.Background(), raw, []string{testTokenEndpoint})
 			if tt.wantErr != "" {
 				require.Error(t, err)
 				assert.Contains(t, err.Error(), tt.wantErr)
@@ -263,7 +294,7 @@ func TestMultiIssuerTokenValidator_ValidateJWTBearerAssertionRejectsIDTokenClaim
 	}})
 
 	raw := externalJWKS.signToken(t, jwtBearerExternalClaims(), map[string]any{"at_hash": "id-token-marker"})
-	_, err := validator.ValidateJWTBearerAssertion(context.Background(), raw, testTokenEndpoint)
+	_, err := validator.ValidateJWTBearerAssertion(context.Background(), raw, []string{testTokenEndpoint})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "at_hash")
 }
@@ -293,6 +324,85 @@ func TestValidateJWTBearerAssertionClaims_ClockSkewAndExpiry(t *testing.T) {
 			}
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
+}
+
+func TestMultiIssuerTokenValidator_ValidateJWTBearerAssertion_DefaultAudiences(t *testing.T) {
+	t.Parallel()
+
+	selfJWKS := newTestJWKS(t)
+	externalJWKS := newTestJWKS(t)
+	jwksServer := startJWKSServer(t, externalJWKS)
+	newValidator := func(accepted []string) *MultiIssuerTokenValidator {
+		return newMultiValidator(t, selfJWKS, []TrustedIssuer{{
+			IssuerURL:              testExternalIssuer,
+			ExpectedAudience:       testExternalAudience,
+			JWKSURL:                jwksServer.URL + "/jwks",
+			AllowedDelegateClients: []string{anyDelegateClient},
+			JWTBearerGrant: &JWTBearerGrantPolicy{
+				MaxAssertionAge:   time.Hour.String(),
+				AcceptedAudiences: accepted,
+				SubjectBindings: []JWTBearerSubjectBinding{
+					{Subject: "ext-user-456", AllowedResources: []string{"https://mcp.example.com"}},
+				},
+			},
+		}})
+	}
+
+	const (
+		secondDefault = "https://auth.example.com"
+		configured    = "https://configured.example.com"
+	)
+	const wantAudErr = "assertion audience must include one of the accepted authorization server identities"
+	tests := []struct {
+		name     string
+		defaults []string
+		accepted []string
+		aud      jwt.Audience
+		wantErr  string
+	}{
+		{name: "nil defaults are refused", defaults: nil, aud: jwt.Audience{testTokenEndpoint}, wantErr: "default audiences must not be empty"},
+		{name: "empty defaults are refused", defaults: []string{}, aud: jwt.Audience{testTokenEndpoint}, wantErr: "default audiences must not be empty"},
+		{name: "an empty element is refused", defaults: []string{testTokenEndpoint, ""}, aud: jwt.Audience{testTokenEndpoint}, wantErr: "default audiences must not be empty"},
+		{name: "the second default is accepted", defaults: []string{testTokenEndpoint, secondDefault}, aud: jwt.Audience{secondDefault}},
+		{
+			name:     "an audience outside the defaults is rejected",
+			defaults: []string{testTokenEndpoint, secondDefault},
+			aud:      jwt.Audience{"https://other.example.com"},
+			wantErr:  wantAudErr,
+		},
+		{
+			name:     "a configured list replaces the second default",
+			defaults: []string{testTokenEndpoint, secondDefault}, accepted: []string{configured},
+			aud: jwt.Audience{secondDefault}, wantErr: wantAudErr,
+		},
+		{
+			name:     "a configured list replaces the token endpoint default",
+			defaults: []string{testTokenEndpoint, secondDefault}, accepted: []string{configured},
+			aud: jwt.Audience{testTokenEndpoint}, wantErr: wantAudErr,
+		},
+		{
+			name:     "a configured list accepts its own entry",
+			defaults: []string{testTokenEndpoint, secondDefault}, accepted: []string{configured},
+			aud: jwt.Audience{configured},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			claims := jwtBearerExternalClaims()
+			claims.Audience = tt.aud
+			raw := externalJWKS.signToken(t, claims, nil)
+
+			validated, err := newValidator(tt.accepted).ValidateJWTBearerAssertion(context.Background(), raw, tt.defaults)
+			if tt.wantErr != "" {
+				require.ErrorContains(t, err, tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, "ext-user-456", validated.Subject)
 		})
 	}
 }

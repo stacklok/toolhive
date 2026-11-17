@@ -24,13 +24,13 @@ thv config otel get-metrics-enabled [flags]
 ### Options
 
 ```
-  -h, --help   help for get-metrics-enabled
+  -h, --help[=true|false]   help for get-metrics-enabled
 ```
 
 ### Options inherited from parent commands
 
 ```
-      --debug   Enable debug mode
+      --debug[=true|false]   Enable debug mode
 ```
 
 ### SEE ALSO

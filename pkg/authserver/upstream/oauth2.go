@@ -35,10 +35,10 @@ import (
 	"github.com/coreos/go-oidc/v3/oidc"
 	"golang.org/x/oauth2"
 
-	"github.com/stacklok/toolhive/pkg/auth/oautherr"
 	"github.com/stacklok/toolhive/pkg/authserver/oauthparams"
 	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
+	"github.com/stacklok/toolhive/pkg/oauthproto/oautherr"
 )
 
 const (
@@ -622,7 +622,9 @@ func authStyleFromMethod(method string) (oauth2.AuthStyle, error) {
 // NewOAuth2Provider creates a new pure OAuth 2.0 provider.
 // Use this for providers that don't support OIDC discovery.
 // The config must include AuthorizationEndpoint and TokenEndpoint.
+// Identity-extraction modifiers are registered automatically, including for standalone use.
 func NewOAuth2Provider(config *OAuth2Config, opts ...OAuth2ProviderOption) (*BaseOAuth2Provider, error) {
+	RegisterModifiers()
 	if config == nil {
 		return nil, errors.New("config is required")
 	}
@@ -1155,7 +1157,7 @@ func formatOAuth2Error(err error) error {
 // tokenRequestError is a token endpoint failure whose message is the sanitized
 // text built by formatOAuth2Error, while errors.As can still reach the
 // *oauth2.RetrieveError so callers can classify the failure with the
-// pkg/auth/oautherr predicates.
+// pkg/oauthproto/oautherr predicates.
 //
 // The RetrieveError in the chain is a scrubbed copy, unlike tokenexchange and
 // jwtbearer, which clear Body on the caller's error in place. Body is cleared

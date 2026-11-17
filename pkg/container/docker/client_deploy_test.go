@@ -424,6 +424,52 @@ func TestDeployWorkload_AllowDockerGateway_DefaultsToNotForwarded(t *testing.T) 
 	assert.True(t, fops.dnsCalled, "DNS container must be created on the isolation path")
 }
 
+// TestDeployWorkload_ReadOnlyRootfs_ForwardedToPermissionConfig verifies that the
+// ReadOnlyRootfs deploy option reaches the MCP container's permission config and
+// stays off by default.
+func TestDeployWorkload_ReadOnlyRootfs_ForwardedToPermissionConfig(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		opts func() *runtime.DeployWorkloadOptions
+		want bool
+	}{
+		{name: "unset", opts: runtime.NewDeployWorkloadOptions, want: false},
+		{name: "enabled", opts: func() *runtime.DeployWorkloadOptions {
+			o := runtime.NewDeployWorkloadOptions()
+			o.ReadOnlyRootfs = true
+			return o
+		}, want: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			fops := &fakeDeployOps{}
+			c := newClientWithOps(fops)
+
+			_, err := c.DeployWorkload(
+				t.Context(),
+				"img",
+				"name",
+				nil,
+				map[string]string{},
+				map[string]string{},
+				&permissions.Profile{},
+				"stdio",
+				tt.opts(),
+				false,
+			)
+			require.NoError(t, err)
+
+			require.NotNil(t, fops.mcpPermissionCfg)
+			assert.Equal(t, tt.want, fops.mcpPermissionCfg.ReadOnlyRootfs)
+		})
+	}
+}
+
 // TestDeployWorkload_NonBridgeNetwork_DropsIsolation verifies that when
 // isolateNetwork=true but the network mode is non-bridge (host/none), the
 // isolation sidecars are never created, no proxy env vars are injected, and the

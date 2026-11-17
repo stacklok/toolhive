@@ -58,6 +58,10 @@ _Appears in:_
 
 
 
+
+
+
+
 ## toolhive.stacklok.dev/authtypes
 
 
@@ -2058,9 +2062,10 @@ _Appears in:_
 | `signingKeySecretRefs` _[api.v1beta1.SecretKeyRef](#apiv1beta1secretkeyref) array_ | SigningKeySecretRefs references Kubernetes Secrets containing signing keys for JWT operations.<br />Supports key rotation by allowing multiple keys (oldest keys are used for verification only).<br />If not specified, an ephemeral signing key will be auto-generated (development only -<br />JWTs will be invalid after restart). |  | MaxItems: 5 <br />Optional: \{\} <br /> |
 | `hmacSecretRefs` _[api.v1beta1.SecretKeyRef](#apiv1beta1secretkeyref) array_ | HMACSecretRefs references Kubernetes Secrets containing symmetric secrets for signing<br />authorization codes and refresh tokens (opaque tokens).<br />Current secret must be at least 32 bytes and cryptographically random.<br />Supports secret rotation via multiple entries (first is current, rest are for verification).<br />If not specified, an ephemeral secret will be auto-generated (development only -<br />auth codes and refresh tokens will be invalid after restart). |  | Optional: \{\} <br /> |
 | `tokenLifespans` _[api.v1beta1.TokenLifespanConfig](#apiv1beta1tokenlifespanconfig)_ | TokenLifespans configures the duration that various tokens are valid.<br />If not specified, defaults are applied (access: 1h, refresh: 7d, authCode: 10m). |  | Optional: \{\} <br /> |
-| `spiffeTrustDomains` _[api.v1beta1.SPIFFETrustDomainConfig](#apiv1beta1spiffetrustdomainconfig) array_ | SPIFFETrustDomains declares SPIFFE trust domains for<br />inboundGrants.spiffeClientAuth associations. See SPIFFETrustDomainConfig's<br />doc comment for why declaring a domain does not by itself enable<br />authentication in this build. |  | MaxItems: 50 <br />MinItems: 1 <br />Optional: \{\} <br /> |
+| `spiffeTrustDomains` _[api.v1beta1.SPIFFETrustDomainConfig](#apiv1beta1spiffetrustdomainconfig) array_ | SPIFFETrustDomains declares SPIFFE trust domains for<br />inboundGrants.spiffeClientAuth associations. Each declaration must be<br />referenced by an inboundGrants.spiffeClientAuth entry. |  | MaxItems: 50 <br />MinItems: 1 <br />Optional: \{\} <br /> |
 | `inboundGrants` _[api.v1beta1.InboundGrantsConfig](#apiv1beta1inboundgrantsconfig)_ | InboundGrants configures canonical inbound OAuth grant families. |  | Optional: \{\} <br /> |
-| `upstreamProviders` _[api.v1beta1.UpstreamProviderConfig](#apiv1beta1upstreamproviderconfig) array_ | UpstreamProviders configures connections to upstream Identity Providers.<br />When configured, the embedded auth server delegates interactive authentication<br />to these providers. It may be omitted only when delegateClients or a trusted<br />issuer with jwtBearerGrant enables token-only operation.<br />MCPServer and MCPRemoteProxy support a single upstream; VirtualMCPServer supports multiple. |  | Optional: \{\} <br /> |
+| `tlsListener` _[api.v1beta1.TLSListenerConfig](#apiv1beta1tlslistenerconfig)_ | TLSListener configures an additional TLS listener on port 8443 that<br />serves the embedded authorization server's routes. MCP traffic, health<br />probes and metrics stay on plain HTTP. Both certificateSecretRef and<br />privateKeySecretRef are required. It is required when<br />inboundGrants.spiffeClientAuth enables spiffe_x509. That requirement is<br />checked when the resource is reconciled and reported in status conditions;<br />the API server does not reject it. The operator exposes the listener as an<br />https-auth container port and Service port 8443. Updates to the referenced<br />Secret contents are picked up without a pod restart. |  | Optional: \{\} <br /> |
+| `upstreamProviders` _[api.v1beta1.UpstreamProviderConfig](#apiv1beta1upstreamproviderconfig) array_ | UpstreamProviders configures connections to upstream Identity Providers.<br />When configured, the embedded auth server delegates interactive authentication<br />to these providers. It may be omitted only when token-only operation is<br />enabled by delegateClients (also under inboundGrants.tokenExchange),<br />inboundGrants.spiffeClientAuth, or a trusted issuer with jwtBearerGrant<br />(also under inboundGrants.jwtBearer).<br />MCPServer and MCPRemoteProxy support a single upstream; VirtualMCPServer supports multiple. |  | Optional: \{\} <br /> |
 | `primaryUpstreamProvider` _string_ | PrimaryUpstreamProvider names the upstream IDP whose access token Cedar<br />should read claims from when authorising a request. Must match the name<br />of one of the entries in UpstreamProviders. When empty, the controller<br />auto-selects the first entry of UpstreamProviders.<br />Only meaningful on VirtualMCPServer, where multiple upstream providers<br />can be configured and Cedar needs to pick which token's claims to<br />evaluate. The VirtualMCPServer controller validates this field against<br />UpstreamProviders at admission and rejects unresolvable values.<br />On MCPServer and MCPRemoteProxy this field is structurally present (the<br />EmbeddedAuthServerConfig struct is shared) but has no runtime effect:<br />those CRDs are restricted to a single upstream so there is no choice to<br />make. Setting it on those CRDs is silently ignored. |  | MaxLength: 63 <br />MinLength: 1 <br />Pattern: `^[a-z0-9]([a-z0-9-]*[a-z0-9])?$` <br />Optional: \{\} <br /> |
 | `storage` _[api.v1beta1.AuthServerStorageConfig](#apiv1beta1authserverstorageconfig)_ | Storage configures the storage backend for the embedded auth server.<br />If not specified, defaults to in-memory storage. |  | Optional: \{\} <br /> |
 | `disableUpstreamTokenInjection` _boolean_ | DisableUpstreamTokenInjection prevents the embedded auth server from injecting<br />upstream IdP tokens into requests forwarded to the backend MCP server.<br />When true, the embedded auth server still handles OAuth flows for clients,<br />but instead of swapping ToolHive JWTs for upstream tokens the proxy STRIPS<br />the client's credential headers (Authorization, Cookie, Proxy-Authorization)<br />after validating the JWT — the backend receives an unauthenticated request.<br />Use headerForward to attach static credentials (e.g. an API key) if the<br />backend needs them. Cannot be combined with token exchange, AWS STS, or OBO<br />middleware, which would re-add credentials after the strip.<br />This is useful when the backend MCP server does not require authentication<br />(e.g., public documentation servers) but you still want client authentication. | false | Optional: \{\} <br /> |
@@ -2493,7 +2498,7 @@ _Appears in:_
 | --- | --- | --- | --- |
 | `maxAssertionAge` _[Duration](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#duration-v1-meta)_ | MaxAssertionAge caps the exp-iat interval independently of exp. |  | Required: \{\} <br /> |
 | `subjectBindings` _[api.v1beta1.JWTBearerSubjectBinding](#apiv1beta1jwtbearersubjectbinding) array_ | SubjectBindings maps an exact external subject to allowed RFC 8707<br />resources. |  | MaxItems: 50 <br />MinItems: 1 <br />Required: \{\} <br /> |
-| `acceptedAudiences` _string array_ | AcceptedAudiences identifies this authorization server's accepted<br />assertion audiences. When omitted, runtime validation defaults to the<br />token endpoint. |  | MaxItems: 50 <br />items:MaxLength: 2048 <br />items:MinLength: 1 <br />items:Pattern: `^https?://[^[:space:]]+$` <br />Optional: \{\} <br /> |
+| `acceptedAudiences` _string array_ | AcceptedAudiences identifies this authorization server's accepted<br />assertion audiences. When omitted, plain JWT-bearer assertions must name<br />the token endpoint, and ID-JAG assertions may name the token endpoint or<br />this server's issuer identifier, unless the issuer is also an allowed<br />resource audience. A configured list replaces these defaults. |  | MaxItems: 50 <br />items:MaxLength: 2048 <br />items:MinLength: 1 <br />items:Pattern: `^https?://[^[:space:]]+$` <br />Optional: \{\} <br /> |
 
 
 #### api.v1beta1.JWTBearerInboundGrantConfig
@@ -2528,7 +2533,7 @@ _Appears in:_
 | `issuerRef` _string_ | IssuerRef references trustedIssuers[].name. |  | MaxLength: 253 <br />MinLength: 1 <br /> |
 | `maxAssertionAge` _[Duration](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#duration-v1-meta)_ | MaxAssertionAge caps the exp-iat interval independently of exp. |  | Required: \{\} <br /> |
 | `subjectBindings` _[api.v1beta1.JWTBearerSubjectBinding](#apiv1beta1jwtbearersubjectbinding) array_ | SubjectBindings maps an exact external subject to allowed RFC 8707<br />resources. |  | MaxItems: 50 <br />MinItems: 1 <br />Required: \{\} <br /> |
-| `acceptedAudiences` _string array_ | AcceptedAudiences identifies this authorization server's accepted<br />assertion audiences. When omitted, runtime validation defaults to the<br />token endpoint. |  | MaxItems: 50 <br />items:MaxLength: 2048 <br />items:MinLength: 1 <br />items:Pattern: `^https?://[^[:space:]]+$` <br />Optional: \{\} <br /> |
+| `acceptedAudiences` _string array_ | AcceptedAudiences identifies this authorization server's accepted<br />assertion audiences. When omitted, plain JWT-bearer assertions must name<br />the token endpoint, and ID-JAG assertions may name the token endpoint or<br />this server's issuer identifier, unless the issuer is also an allowed<br />resource audience. A configured list replaces these defaults. |  | MaxItems: 50 <br />items:MaxLength: 2048 <br />items:MinLength: 1 <br />items:Pattern: `^https?://[^[:space:]]+$` <br />Optional: \{\} <br /> |
 
 
 
@@ -3186,7 +3191,7 @@ _Appears in:_
 | `audit` _[api.v1beta1.AuditConfig](#apiv1beta1auditconfig)_ | Audit defines audit logging configuration for the proxy |  | Optional: \{\} <br /> |
 | `toolConfigRef` _[api.v1beta1.ToolConfigRef](#apiv1beta1toolconfigref)_ | ToolConfigRef references a MCPToolConfig resource for tool filtering and renaming.<br />The referenced MCPToolConfig must exist in the same namespace as this MCPRemoteProxy.<br />Cross-namespace references are not supported for security and isolation reasons.<br />If specified, this allows filtering and overriding tools from the remote MCP server. |  | Optional: \{\} <br /> |
 | `telemetryConfigRef` _[api.v1beta1.MCPTelemetryConfigReference](#apiv1beta1mcptelemetryconfigreference)_ | TelemetryConfigRef references an MCPTelemetryConfig resource for shared telemetry configuration.<br />The referenced MCPTelemetryConfig must exist in the same namespace as this MCPRemoteProxy.<br />Cross-namespace references are not supported for security and isolation reasons. |  | Optional: \{\} <br /> |
-| `resources` _[api.v1beta1.ResourceRequirements](#apiv1beta1resourcerequirements)_ | Resources defines the resource requirements for the proxy container |  | Optional: \{\} <br /> |
+| `resources` _[api.v1beta1.ResourceRequirements](#apiv1beta1resourcerequirements)_ | Resources defines the resource requirements for the proxy container.<br />Unset fields fall back to defaults: requests of 50m CPU and 64Mi memory,<br />limits of 200m CPU and 256Mi memory. Resources set on the "toolhive"<br />container through podTemplateSpec take precedence over this field.<br />A limit set without a request, here or in podTemplateSpec, drops the<br />default request so Kubernetes copies the limit into the request as usual.<br />A request set without a limit raises the default limit to match if the<br />request is above it. Requests and limits the user sets explicitly are used as given. |  | Optional: \{\} <br /> |
 | `serviceAccount` _string_ | ServiceAccount is the name of an already existing service account to use by the proxy.<br />If not specified, a ServiceAccount will be created automatically and used by the proxy. |  | Optional: \{\} <br /> |
 | `podTemplateSpec` _[RawExtension](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#rawextension-runtime-pkg)_ | PodTemplateSpec defines the pod template to use for the MCPRemoteProxy<br />This allows for customizing the pod configuration beyond what is provided by the other fields.<br />Note that to modify the specific container the remote proxy runs in, you must specify<br />the `toolhive` container name in the PodTemplateSpec.<br />This field accepts a PodTemplateSpec object as JSON/YAML. |  | Type: object <br />Optional: \{\} <br /> |
 | `trustProxyHeaders` _boolean_ | TrustProxyHeaders indicates whether to trust X-Forwarded-* headers from reverse proxies<br />When enabled, the proxy will use X-Forwarded-Proto, X-Forwarded-Host, X-Forwarded-Port,<br />and X-Forwarded-Prefix headers to construct endpoint URLs | false | Optional: \{\} <br /> |
@@ -4302,9 +4307,9 @@ _Appears in:_
 
 
 SPIFFEBundleSourceConfig is a discriminated bundle-source declaration. Type
-determines which, and only which, source payload may be set. The file-bundle
-loader is implemented in isolation, but SPIFFE authentication is not wired
-to any bundle source; endpoint and Workload API loading are not implemented.
+determines which, and only which, source payload may be set. Only the file
+source has a loader in this build; bundle_endpoint and workload_api pass CRD
+validation but are rejected when the auth-server configuration is validated.
 
 
 
@@ -4344,9 +4349,10 @@ _Appears in:_
 
 SPIFFEClientConfig associates one SPIFFE principal pattern from a declared
 trust domain with an explicit OAuth client identity and permissions.
-Configuration is not authentication: configured SPIFFE clients remain
-non-public OAuth clients without a secret until live SPIFFE credential
-validation is implemented (see SPIFFETrustDomainConfig's doc comment).
+Declaring a client does not grant access by itself. SPIFFE clients
+authenticate with a JWT-SVID or an X.509-SVID and have no client secret.
+Trust material comes from the declared bundle source (see
+SPIFFETrustDomainConfig's doc comment).
 
 GrantTypes is deliberately not exposed here: the runtime only accepts
 exactly the RFC 8693 token-exchange grant for a SPIFFE client
@@ -4364,8 +4370,8 @@ _Appears in:_
 | `principalPattern` _string_ | PrincipalPattern is a concrete SPIFFE ID or a terminal /* pattern within<br />the declared trust domain. This pattern is a best-effort CRD-level<br />approximation; runtime parsing via spiffeid.FromString remains<br />authoritative. |  | MaxLength: 2048 <br />Pattern: `^spiffe://[a-z0-9._-]+((/[a-zA-Z0-9._-]+)+(/\*)?\|/\*)$` <br />Required: \{\} <br /> |
 | `clientId` _string_ | ClientID is the explicit OAuth client_id. It is never derived from a<br />SPIFFE ID. |  | MaxLength: 253 <br />MinLength: 1 <br />Required: \{\} <br /> |
 | `methods` _[api.v1beta1.SPIFFEAuthenticationMethod](#apiv1beta1spiffeauthenticationmethod) array_ | Methods are the credential types this association may authenticate<br />with. Must be a subset of the referenced trust domain's methods. |  | MaxItems: 2 <br />MinItems: 1 <br />Required: \{\} <br />items:Enum: [spiffe_x509 spiffe_jwt] <br /> |
-| `resources` _string array_ | Resources are RFC 8707 resource indicators this association may<br />request. Must be a subset of the server's allowed_audiences allowlist,<br />which is derived at reconcile time and not available on this CRD, so<br />allowlist membership is validated at reconcile time, not admission.<br />Shape (a well-formed absolute HTTP(S) URI) is independent of that<br />derived allowlist and is validated here. Distinct from Audiences: a<br />resource permission does not imply the same value is also a permitted<br />token audience, or vice versa. |  | MaxItems: 50 <br />items:MaxLength: 2048 <br />items:MinLength: 1 <br />items:Pattern: `^https?://[^@#[:space:]]+$` <br />Optional: \{\} <br /> |
-| `audiences` _string array_ | Audiences are RFC 8693 token audiences this association may request. |  | MaxItems: 50 <br />MinItems: 1 <br />Required: \{\} <br />items:MaxLength: 2048 <br />items:MinLength: 1 <br /> |
+| `resources` _string array_ | Resources are RFC 8707 resource indicators this association may<br />request. Must be a subset of the server's allowed_audiences allowlist,<br />which is derived at reconcile time and not available on this CRD, so<br />allowlist membership is validated at reconcile time, not admission.<br />Shape (a well-formed absolute HTTP(S) URI) is independent of that<br />derived allowlist and is validated here. Required, with at least one<br />entry, for every association: token exchange takes exactly one resource<br />per request and grants it as the token audience. |  | MaxItems: 50 <br />items:MaxLength: 2048 <br />items:MinLength: 1 <br />items:Pattern: `^https?://[^@#[:space:]]+$` <br />Optional: \{\} <br /> |
+| `audiences` _string array_ | Deprecated: ignored; use resources.<br />The field was required in earlier releases and is still accepted so<br />existing objects keep validating. A non-empty value is reported by the<br />DeprecatedInboundGrantConfiguration condition and has no effect on token<br />targeting. |  | MaxItems: 50 <br />items:MaxLength: 2048 <br />items:MinLength: 1 <br />Optional: \{\} <br /> |
 | `scopes` _string array_ | Scopes are OAuth scopes granted to this association. Must be a subset<br />of the server's effective supported scopes. |  | MaxItems: 50 <br />MinItems: 1 <br />Required: \{\} <br />items:MaxLength: 256 <br />items:MinLength: 1 <br /> |
 
 
@@ -4393,12 +4399,8 @@ _Appears in:_
 
 
 SPIFFETrustDomainConfig declares one SPIFFE trust domain accepted by the
-embedded authorization server. Configuration is not authentication: no
-live X.509-SVID or JWT-SVID validation exists yet, so a declared trust
-domain does not by itself let any workload authenticate — RunConfig.Validate
-(pkg/authserver/config.go) currently hard-rejects any non-empty
-spiffeTrustDomains at authserver startup via validateSPIFFENotYetEnforced,
-a deliberate placeholder until real SVID verification lands.
+embedded authorization server. A declared domain becomes usable only after
+the configured source supplies trust material during auth-server startup.
 
 
 
@@ -4410,7 +4412,7 @@ _Appears in:_
 | `name` _string_ | Name uniquely identifies this declaration and is referenced by<br />inboundGrants.spiffeClientAuth[].trustDomainRef. |  | MaxLength: 253 <br />MinLength: 1 <br />Required: \{\} <br /> |
 | `trustDomain` _string_ | TrustDomain is the SPIFFE trust domain accepted by this declaration.<br />This pattern is a best-effort CRD-level approximation of the SPIFFE<br />trust-domain grammar; runtime parsing via<br />spiffeid.TrustDomainFromString remains authoritative. |  | MaxLength: 255 <br />MinLength: 1 <br />Pattern: `^([a-z0-9_]\|[a-z0-9_]([a-z0-9_-]\|\.[a-z0-9_-])*[a-z0-9_])$` <br />Required: \{\} <br /> |
 | `methods` _[api.v1beta1.SPIFFEAuthenticationMethod](#apiv1beta1spiffeauthenticationmethod) array_ | Methods explicitly enables the supported credential types for this<br />trust domain. |  | MaxItems: 2 <br />MinItems: 1 <br />Required: \{\} <br />items:Enum: [spiffe_x509 spiffe_jwt] <br /> |
-| `bundleSource` _[api.v1beta1.SPIFFEBundleSourceConfig](#apiv1beta1spiffebundlesourceconfig)_ | BundleSource declares exactly one trust-bundle source and is validated for<br />shape here. The standalone file loader exists, but is not wired into SPIFFE<br />authentication. |  | Required: \{\} <br /> |
+| `bundleSource` _[api.v1beta1.SPIFFEBundleSourceConfig](#apiv1beta1spiffebundlesourceconfig)_ | BundleSource declares exactly one trust-bundle source and is validated for<br />shape here. Only the file source is loaded in this build; bundle_endpoint<br />and workload_api are rejected when the auth-server configuration is<br />validated. |  | Required: \{\} <br /> |
 
 
 #### api.v1beta1.SPIFFEWorkloadAPIBundleSourceConfig
@@ -4452,6 +4454,7 @@ _Appears in:_
 - [api.v1beta1.RedisTLSConfig](#apiv1beta1redistlsconfig)
 - [api.v1beta1.SensitiveHeader](#apiv1beta1sensitiveheader)
 - [api.v1beta1.SessionStorageConfig](#apiv1beta1sessionstorageconfig)
+- [api.v1beta1.TLSListenerConfig](#apiv1beta1tlslistenerconfig)
 - [api.v1beta1.TokenExchangeConfig](#apiv1beta1tokenexchangeconfig)
 - [api.v1beta1.WebhookSpec](#apiv1beta1webhookspec)
 - [api.v1beta1.WebhookTLSConfig](#apiv1beta1webhooktlsconfig)
@@ -4540,6 +4543,24 @@ _Appears in:_
 | `keyPrefix` _string_ | KeyPrefix is an optional prefix for all Redis keys used by ToolHive |  | Optional: \{\} <br /> |
 | `passwordRef` _[api.v1beta1.SecretKeyRef](#apiv1beta1secretkeyref)_ | PasswordRef is a reference to a Secret key containing the Redis password |  | Optional: \{\} <br /> |
 | `tls` _[api.v1beta1.RedisTLSConfig](#apiv1beta1redistlsconfig)_ | TLS enables TLS for the Redis session storage connection and, when rate<br />limiting is configured, for the rate-limit connection to the same Redis.<br />When omitted, the connections are plaintext and the Redis password and<br />session data cross the network unencrypted. An empty object enables TLS<br />with server certificate verification against the system root CAs; set<br />caCertSecretRef for a private CA. A failed handshake never falls back to<br />plaintext. Only used when provider is redis. |  | Optional: \{\} <br /> |
+
+
+#### api.v1beta1.TLSListenerConfig
+
+
+
+TLSListenerConfig configures the certificate served by the embedded auth
+server's TLS listener. Both secret references are required.
+
+
+
+_Appears in:_
+- [api.v1beta1.EmbeddedAuthServerConfig](#apiv1beta1embeddedauthserverconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `certificateSecretRef` _[api.v1beta1.SecretKeyRef](#apiv1beta1secretkeyref)_ | CertificateSecretRef references the PEM-encoded TLS certificate. |  | Required: \{\} <br /> |
+| `privateKeySecretRef` _[api.v1beta1.SecretKeyRef](#apiv1beta1secretkeyref)_ | PrivateKeySecretRef references the PEM-encoded TLS private key. |  | Required: \{\} <br /> |
 
 
 #### api.v1beta1.TokenExchangeConfig

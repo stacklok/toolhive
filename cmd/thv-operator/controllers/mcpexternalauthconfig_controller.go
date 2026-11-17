@@ -216,6 +216,17 @@ func deprecatedInboundGrantFields(cfg *mcpv1beta1.EmbeddedAuthServerConfig, root
 			})
 		}
 	}
+	if cfg.InboundGrants != nil {
+		for i, spiffeClient := range cfg.InboundGrants.SPIFFEClientAuth {
+			//nolint:staticcheck // Reports the deprecated field to the user.
+			if len(spiffeClient.Audiences) > 0 {
+				associationPath := fmt.Sprintf("%s.inboundGrants.spiffeClientAuth[%d]", root, i)
+				fields = append(fields, deprecatedInboundGrantField{
+					path: associationPath + ".audiences", replacement: associationPath + ".resources",
+				})
+			}
+		}
+	}
 	return fields
 }
 

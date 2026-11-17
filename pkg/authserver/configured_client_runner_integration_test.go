@@ -141,6 +141,12 @@ func (r tokenResult) str(t *testing.T, key string) string {
 
 func postToken(t *testing.T, serverURL string, auth clientAuth, values url.Values) tokenResult {
 	t.Helper()
+	return postTokenWithHeader(t, serverURL, auth, values, nil)
+}
+
+// postTokenWithHeader is postToken with extra request headers.
+func postTokenWithHeader(t *testing.T, serverURL string, auth clientAuth, values url.Values, header http.Header) tokenResult {
+	t.Helper()
 	form := url.Values{}
 	for k, v := range values {
 		form[k] = append([]string(nil), v...)
@@ -163,6 +169,11 @@ func postToken(t *testing.T, serverURL string, auth clientAuth, values url.Value
 	request, err := http.NewRequest(http.MethodPost, serverURL+"/oauth/token", strings.NewReader(form.Encode()))
 	require.NoError(t, err)
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	for name, values := range header {
+		for _, value := range values {
+			request.Header.Add(name, value)
+		}
+	}
 	if auth.secret != "" || auth.emptyBasic {
 		request.SetBasicAuth(auth.clientID, auth.secret)
 	}
@@ -209,16 +220,21 @@ func authorizeProbe(t *testing.T, serverURL, clientID string) (int, string) {
 	return response.StatusCode, ""
 }
 
-func newRedisStorage(mr *miniredis.Miniredis) storage.Storage {
-	return storage.NewRedisStorageWithClient(redis.NewClient(&redis.Options{Addr: mr.Addr()}), "cfgclient:{test}:")
+func newRedisStorage(t *testing.T, mr *miniredis.Miniredis) storage.Storage {
+	t.Helper()
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() { _ = client.Close() })
+	return storage.NewRedisStorageWithClient(client, "cfgclient:{test}:")
 }
 
 func newStorageForBackend(t *testing.T, backend string) storage.Storage {
 	t.Helper()
 	if backend == "redis" {
-		return newRedisStorage(miniredis.RunT(t))
+		return newRedisStorage(t, miniredis.RunT(t))
 	}
-	return storage.NewMemoryStorage()
+	stor := storage.NewMemoryStorage()
+	t.Cleanup(func() { _ = stor.Close() })
+	return stor
 }
 
 // configuredClients configures the scopes, the one allowed audience and the
@@ -502,7 +518,9 @@ func TestConfiguredLoginClientConsentExemptStartsOnBothBackends(t *testing.T) {
 }
 
 // TestConfiguredPrivateKeyJWTClientKeepsIDAcrossKeyRotation covers rotating the
-// JWKS file between restarts over shared storage.
+// JWKS file between restarts over shared storage: old key only, then the
+// overlap where both keys are accepted, then new key only, where the old key is
+// refused.
 func TestConfiguredPrivateKeyJWTClientKeepsIDAcrossKeyRotation(t *testing.T) {
 	t.Parallel()
 
@@ -522,7 +540,7 @@ func TestConfiguredPrivateKeyJWTClientKeepsIDAcrossKeyRotation(t *testing.T) {
 		srv, issuer, embedded, stop := startEmbeddedAuthServer(t, func(cfg *authserver.RunConfig, _ string) {
 			clients(cfg)
 			pin(cfg)
-		}, newRedisStorage(mr))
+		}, newRedisStorage(t, mr))
 		return running{url: srv.URL, issuer: issuer, embedded: embedded, stop: stop}
 	}
 	exchange := func(srv running, key assertionKey) tokenResult {
@@ -537,6 +555,12 @@ func TestConfiguredPrivateKeyJWTClientKeepsIDAcrossKeyRotation(t *testing.T) {
 	writeJWKS(t, jwksFile, oldKey)
 	srv := start()
 	require.Equal(t, http.StatusOK, exchange(srv, oldKey).status)
+	srv.stop()
+
+	writeJWKS(t, jwksFile, oldKey, newKey)
+	srv = start()
+	assert.Equal(t, http.StatusOK, exchange(srv, oldKey).status, "old key is accepted during the overlap")
+	assert.Equal(t, http.StatusOK, exchange(srv, newKey).status, "new key is accepted during the overlap")
 	srv.stop()
 
 	writeJWKS(t, jwksFile, newKey)
@@ -593,7 +617,7 @@ func TestConfiguredLoginClientRefreshTokenSurvivesRemovalAndReAdd(t *testing.T) 
 		srv, _, _, stop := startEmbeddedAuthServer(t, func(cfg *authserver.RunConfig, _ string) {
 			configure(cfg)
 			pin(cfg)
-		}, newRedisStorage(mr))
+		}, newRedisStorage(t, mr))
 		return srv.URL, stop
 	}
 	refresh := func(serverURL, token string) tokenResult {
@@ -636,7 +660,7 @@ func accessTokenClaims(t *testing.T, embedded *authserverrunner.EmbeddedAuthServ
 
 func signIDJAGAssertion(t *testing.T, key *rsa.PrivateKey, issuer, clientID, jti string) string {
 	t.Helper()
-	return signAssertionOfType(t, key, "oauth-id-jag+jwt", issuer, clientID, jti)
+	return signAssertionOfType(t, key, oauthproto.JWTTypeIDJAG, issuer, clientID, jti)
 }
 
 // signAssertionOfType signs a trusted-issuer assertion with the given JOSE typ:

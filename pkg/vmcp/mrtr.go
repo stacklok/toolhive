@@ -25,7 +25,7 @@ import (
 type InputRequiredResult struct {
 	// InputRequests maps the producer's server-assigned keys to raw request
 	// objects (ElicitRequest, CreateMessageRequest, or ListRootsRequest —
-	// schema/draft's InputRequest union). Values are deliberately opaque
+	// schema/2026-07-28's InputRequest union). Values are deliberately opaque
 	// json.RawMessage: on the pass-through path vMCP relays them verbatim and
 	// does not reinterpret them. Use Methods to inspect only the wire method
 	// names (e.g. for capability gating). Nil on a load-shedding round

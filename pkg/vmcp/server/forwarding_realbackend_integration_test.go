@@ -502,7 +502,7 @@ func TestForwarding_Progress_RealBackend(t *testing.T) {
 // _meta injection every other Modern-aware method performs, so the Modern
 // request it sends is MALFORMED (header without _meta.protocolVersion) and
 // vMCP's -32020 rejection is CORRECT — accepting it would be worse than the
-// failing call. This is a PERMANENT fixture of go-sdk v1.7.x, not a bug to wait
+// failing call. This is still the behavior in go-sdk, not a bug to wait
 // out: modelcontextprotocol/go-sdk#1116 was closed wont-fix-by-design because
 // the 2026-07-28 revision REMOVED the logging/setLevel RPC (the maintainer's
 // answer: use the per-request logLevel _meta key instead). The rest of the

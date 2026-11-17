@@ -6,6 +6,7 @@ package authz
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -202,7 +203,10 @@ func TestCompletionRejectsUnauthorizableRefs(t *testing.T) {
 func listenBody(uris ...string) string {
 	quoted := make([]string, 0, len(uris))
 	for _, u := range uris {
-		quoted = append(quoted, `"`+u+`"`)
+		// json.Marshal keeps control characters in a URI valid JSON. It cannot
+		// fail for a string, so the error is ignored.
+		b, _ := json.Marshal(u)
+		quoted = append(quoted, string(b))
 	}
 	return `{"jsonrpc":"2.0","id":1,"method":"subscriptions/listen","params":` +
 		`{"notifications":{"resourceSubscriptions":[` + strings.Join(quoted, ",") + `]}}}`

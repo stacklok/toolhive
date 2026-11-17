@@ -25,7 +25,7 @@ func BuildProviderForTest(ctx context.Context, cfg Config, stor storage.Storage)
 		return nil, err
 	}
 	authServerConfig, err := oauthserver.NewAuthorizationServerConfig(
-		authorizationServerParams(cfg, signingKey, additionalPublicKeys, nil, nil, stor))
+		authorizationServerParams(cfg, signingKey, additionalPublicKeys, nil, nil))
 	if err != nil {
 		return nil, err
 	}

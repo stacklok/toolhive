@@ -17,8 +17,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
+	"github.com/stacklok/toolhive/pkg/oauthproto/dcrkey"
 )
 
 // probeUpstream is an authorization server double for cache-hit
@@ -134,7 +134,7 @@ func preloadCachedRegistration(t *testing.T, cache CredentialStore, upstream *pr
 		Issuer:      upstream.URL,
 		UpstreamID:  upstream.URL,
 		RedirectURI: upstream.URL + "/oauth/callback",
-		ScopesHash:  storage.ScopesHash(scopes),
+		ScopesHash:  dcrkey.ScopesHash(scopes),
 	}
 	_, err := cache.PutIfAbsent(context.Background(), key, &Resolution{
 		ClientID:                "cached-client-id",
@@ -263,7 +263,7 @@ func TestResolveCredentials_CacheHitVerifiesRegistration(t *testing.T) {
 
 			stored, ok, err := cache.Get(context.Background(), Key{
 				Issuer: upstream.URL, UpstreamID: upstream.URL,
-				RedirectURI: upstream.URL + "/oauth/callback", ScopesHash: storage.ScopesHash([]string{"openid"}),
+				RedirectURI: upstream.URL + "/oauth/callback", ScopesHash: dcrkey.ScopesHash([]string{"openid"}),
 			})
 			require.NoError(t, err)
 			require.True(t, ok)
@@ -311,7 +311,7 @@ func TestResolveCredentials_CacheHitProbesConfiguredTokenEndpoint(t *testing.T) 
 	cache := newMemoryDCRStore(t)
 	key := Key{
 		Issuer: upstream.URL, UpstreamID: upstream.URL,
-		RedirectURI: upstream.URL + "/oauth/callback", ScopesHash: storage.ScopesHash([]string{"openid"}),
+		RedirectURI: upstream.URL + "/oauth/callback", ScopesHash: dcrkey.ScopesHash([]string{"openid"}),
 	}
 	_, err := cache.PutIfAbsent(context.Background(), key, &Resolution{
 		ClientID:                "cached-client-id",
@@ -674,7 +674,7 @@ func TestResolveCredentials_CacheHitAuthorizationEndpointProbe(t *testing.T) {
 
 			stored, ok, err := cache.Get(context.Background(), Key{
 				Issuer: upstream.URL, UpstreamID: upstream.URL,
-				RedirectURI: upstream.URL + "/oauth/callback", ScopesHash: storage.ScopesHash([]string{"openid"}),
+				RedirectURI: upstream.URL + "/oauth/callback", ScopesHash: dcrkey.ScopesHash([]string{"openid"}),
 			})
 			require.NoError(t, err)
 			require.True(t, ok)
@@ -717,7 +717,7 @@ func TestResolveCredentials_CacheHitProbesConfiguredAuthorizationEndpoint(t *tes
 	cache := newMemoryDCRStore(t)
 	key := Key{
 		Issuer: upstream.URL, UpstreamID: upstream.URL,
-		RedirectURI: upstream.URL + "/oauth/callback", ScopesHash: storage.ScopesHash([]string{"openid"}),
+		RedirectURI: upstream.URL + "/oauth/callback", ScopesHash: dcrkey.ScopesHash([]string{"openid"}),
 	}
 	_, err := cache.PutIfAbsent(context.Background(), key, &Resolution{
 		ClientID:                "cached-client-id",

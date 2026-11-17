@@ -409,21 +409,6 @@ func TestBuildSecurityContextsForVmcp(t *testing.T) {
 	assert.NotNil(t, containerSecCtx)
 }
 
-// TestBuildContainerPortsForVmcp tests container port generation
-func TestBuildContainerPortsForVmcp(t *testing.T) {
-	t.Parallel()
-
-	vmcp := v1beta1test.NewVirtualMCPServer("test-vmcp", "default")
-
-	r := &VirtualMCPServerReconciler{}
-	ports := r.buildContainerPortsForVmcp(vmcp)
-
-	require.Len(t, ports, 1)
-	assert.Equal(t, vmcpDefaultPort, ports[0].ContainerPort)
-	assert.Equal(t, "http", ports[0].Name)
-	assert.Equal(t, corev1.ProtocolTCP, ports[0].Protocol)
-}
-
 // TestServiceForVirtualMCPServer tests Service creation
 func TestServiceForVirtualMCPServer(t *testing.T) {
 	t.Parallel()
@@ -1322,6 +1307,33 @@ func TestPodVolumesHash(t *testing.T) {
 			assert.NotEqual(t, baseHash, got, "changing a volume or mount field must change the hash")
 		})
 	}
+}
+
+// Only a Secret name or key differs between the cases, so the mounted paths are
+// identical; the volumes hash is what makes the Deployment roll.
+func TestBuildPodVolumesForVmcpTLSListenerHash(t *testing.T) {
+	t.Parallel()
+
+	hashFor := func(certSecret, certKey string) string {
+		vmcp := v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+			v1beta1test.WithVMCPGroupRef("test-group"),
+			v1beta1test.WithVMCPAuthServerConfig(&mcpv1beta1.EmbeddedAuthServerConfig{
+				TLSListener: &mcpv1beta1.TLSListenerConfig{
+					CertificateSecretRef: &mcpv1beta1.SecretKeyRef{Name: certSecret, Key: certKey},
+					PrivateKeySecretRef:  &mcpv1beta1.SecretKeyRef{Name: "listener-key", Key: "private-key"},
+				},
+			}),
+		)
+		r := &VirtualMCPServerReconciler{Scheme: testutil.NewScheme(t)}
+		_, _, hash, err := r.buildPodVolumesForVmcp(t.Context(), vmcp, nil, nil)
+		require.NoError(t, err)
+		return hash
+	}
+
+	base := hashFor("listener-cert", "certificate")
+	assert.Equal(t, base, hashFor("listener-cert", "certificate"), "unchanged references keep the hash")
+	assert.NotEqual(t, base, hashFor("other-cert", "certificate"), "renamed Secret must change the hash")
+	assert.NotEqual(t, base, hashFor("listener-cert", "tls.crt"), "changed key must change the hash")
 }
 
 // TestImagePullSecretsHash verifies the hash helper normalizes order, treats an

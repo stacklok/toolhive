@@ -210,7 +210,7 @@ func (h *JWTBearerHandler) HandleTokenEndpointRequest(ctx context.Context, reque
 	if err := h.consumeAssertion(ctx, replayPurpose(claims.JWTID), claims.Issuer, replayKey, claims.Expiry); err != nil {
 		return err
 	}
-	lifetime, err := h.assertionBoundedLifetime(ctx, claims.Expiry)
+	lifetime, err := h.assertionBoundedLifetime(ctx, claims.Expiry, 0)
 	if err != nil {
 		return err
 	}
@@ -373,15 +373,27 @@ func (h *JWTBearerHandler) consumeAssertion(
 	return nil
 }
 
-// assertionBoundedLifetime returns the issued token's lifetime: the
-// configured access-token lifespan, capped by the assertion's remaining
-// validity so a token derived from an assertion can never outlive it.
-func (h *JWTBearerHandler) assertionBoundedLifetime(ctx context.Context, expiry time.Time) (time.Duration, error) {
+// baseLifespan is the access-token lifespan before any assertion bound: the
+// client's own when it has one, else the server's.
+func (h *JWTBearerHandler) baseLifespan(ctx context.Context, clientLifespan time.Duration) time.Duration {
+	if clientLifespan > 0 {
+		return clientLifespan
+	}
+	return h.config.GetAccessTokenLifespan(ctx)
+}
+
+// assertionBoundedLifetime returns the issued token's lifetime: the client's
+// own lifespan (clientLifespan, zero for the server lifespan), capped by the
+// assertion's remaining validity so a token derived from an assertion can
+// never outlive it. Further bounds are applied to lifetime the same way.
+func (h *JWTBearerHandler) assertionBoundedLifetime(
+	ctx context.Context, expiry time.Time, clientLifespan time.Duration,
+) (time.Duration, error) {
 	remaining := time.Until(expiry)
 	if remaining <= 0 {
 		return 0, invalidAssertion("The JWT bearer assertion has expired.")
 	}
-	lifetime := h.config.GetAccessTokenLifespan(ctx)
+	lifetime := h.baseLifespan(ctx, clientLifespan)
 	if remaining < lifetime {
 		lifetime = remaining
 	}

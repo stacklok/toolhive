@@ -436,6 +436,22 @@ func explicitGrantClientIDs(clients []DelegateClient) []string {
 	return ids
 }
 
+// delegateAccessTokenLifespans maps each delegate client that sets its own
+// access-token lifespan to that lifespan.
+func delegateAccessTokenLifespans(clients []DelegateClient) map[string]time.Duration {
+	var lifespans map[string]time.Duration
+	for _, c := range clients {
+		if c.AccessTokenLifespan == 0 {
+			continue
+		}
+		if lifespans == nil {
+			lifespans = make(map[string]time.Duration)
+		}
+		lifespans[c.ClientID] = c.AccessTokenLifespan
+	}
+	return lifespans
+}
+
 // idJAGExplicitGrantClientIDs lists the clients whose registered grant_types
 // the ID-JAG handler enforces: delegate clients that set grant_types
 // explicitly, and every configured SPIFFE association client. SPIFFE
@@ -891,7 +907,8 @@ func buildProvider(
 	}
 	factories = append(factories, tokenExchangeFactories...)
 	if jwtBearerEnabled {
-		jwtBearerFactories, err := buildJWTBearerFactories(cfg.TrustedIssuers, shared, idJAGExplicitGrantClientIDs(cfg),
+		jwtBearerFactories, err := buildJWTBearerFactories(
+			cfg.TrustedIssuers, shared, idJAGExplicitGrantClientIDs(cfg), delegateAccessTokenLifespans(cfg.DelegateClients),
 			cfg.AuthorizationDetailsRegistry)
 		if err != nil {
 			return nil, nil, err
@@ -989,14 +1006,15 @@ func refreshGrantValidatorChain(
 // whose registered grant_types the ID-JAG handler enforces.
 func buildJWTBearerFactories(
 	trustedIssuers []tokenexchange.TrustedIssuer, shared *tokenexchange.MultiIssuerTokenValidator,
-	explicitGrantClientIDs []string, detailsRegistry *authorizationdetails.Registry,
+	explicitGrantClientIDs []string, clientLifespans map[string]time.Duration,
+	detailsRegistry *authorizationdetails.Registry,
 ) ([]oauthserver.Factory, error) {
 	jwtBearerFactory, err := tokenexchange.JWTBearerIssuanceFactory(trustedIssuers, shared,
 		tokenexchange.WithAuthorizationDetailsRegistry(detailsRegistry))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create JWT-bearer factory: %w", err)
 	}
-	idJAGFactory, err := tokenexchange.IDJAGIssuanceFactory(trustedIssuers, shared, explicitGrantClientIDs,
+	idJAGFactory, err := tokenexchange.IDJAGIssuanceFactory(trustedIssuers, shared, explicitGrantClientIDs, clientLifespans,
 		tokenexchange.WithAuthorizationDetailsRegistry(detailsRegistry))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create ID-JAG factory: %w", err)

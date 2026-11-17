@@ -404,6 +404,42 @@ type DelegateClientRunConfig struct {
 	// and may exchange any self-issued token. A client that sets GrantTypes or
 	// uses private_key_jwt must declare the block.
 	TokenExchange *DelegateClientTokenExchange `json:"token_exchange,omitempty" yaml:"token_exchange,omitempty"`
+
+	// AccessTokenLifespan is the lifetime of the access tokens this client
+	// obtains by redeeming an ID-JAG, as a Go duration string. If omitted, the
+	// server's access_token_lifespan applies. When set it must be greater than
+	// zero and at most 24h. It is an upper bound: a token never outlives the
+	// assertion it was redeemed from. Other grants ignore it.
+	//nolint:lll // field tags require full JSON+YAML names
+	AccessTokenLifespan string `json:"access_token_lifespan,omitempty" yaml:"access_token_lifespan,omitempty"`
+}
+
+// AccessTokenLifespanDuration parses AccessTokenLifespan. An omitted value
+// gives zero, which means the server lifespan applies; any set value must be in
+// (0, oauthserver.MaxAccessTokenLifespan].
+func (c DelegateClientRunConfig) AccessTokenLifespanDuration() (time.Duration, error) {
+	if c.AccessTokenLifespan == "" {
+		return 0, nil
+	}
+	d, err := time.ParseDuration(c.AccessTokenLifespan)
+	if err != nil {
+		return 0, fmt.Errorf("delegate_clients: client_id %q: access_token_lifespan %q: %w",
+			c.ClientID, c.AccessTokenLifespan, err)
+	}
+	if err := checkDelegateAccessTokenLifespan(c.ClientID, d); err != nil {
+		return 0, err
+	}
+	return d, nil
+}
+
+// checkDelegateAccessTokenLifespan enforces (0, MaxAccessTokenLifespan] on a
+// set lifespan.
+func checkDelegateAccessTokenLifespan(clientID string, d time.Duration) error {
+	if d <= 0 || d > oauthserver.MaxAccessTokenLifespan {
+		return fmt.Errorf("delegate_clients: client_id %q: access_token_lifespan must be greater than 0 and at most %v, got %v",
+			clientID, oauthserver.MaxAccessTokenLifespan, d)
+	}
+	return nil
 }
 
 // SelfIssuedSubjectTokens selects which self-issued subject tokens a delegate
@@ -874,6 +910,9 @@ func validateDelegateClients(
 ) error {
 	views := make([]delegateClientView, len(clients))
 	for i, client := range clients {
+		if _, err := client.AccessTokenLifespanDuration(); err != nil {
+			return err
+		}
 		views[i] = delegateClientView{
 			ClientID:      client.ClientID,
 			Scopes:        client.Scopes,
@@ -1163,6 +1202,11 @@ func validateResolvedDelegateClients(
 ) error {
 	views := make([]delegateClientView, len(clients))
 	for i, client := range clients {
+		if client.AccessTokenLifespan != 0 {
+			if err := checkDelegateAccessTokenLifespan(client.ClientID, client.AccessTokenLifespan); err != nil {
+				return err
+			}
+		}
 		if client.TokenEndpointAuthMethod != oauthproto.TokenEndpointAuthMethodPrivateKeyJWT {
 			if client.ClientSecret == "" {
 				return fmt.Errorf("delegate_clients: client_id %q: resolved client secret is required", client.ClientID)
@@ -2127,6 +2171,11 @@ type DelegateClient struct {
 
 	// TokenExchange carries the matching DelegateClientRunConfig field.
 	TokenExchange *DelegateClientTokenExchange
+
+	// AccessTokenLifespan is the parsed DelegateClientRunConfig field. Zero
+	// means unset: the server's access-token lifespan applies. Negative, or
+	// above server.MaxAccessTokenLifespan, is refused.
+	AccessTokenLifespan time.Duration
 }
 
 // Validate checks that the Config is valid.

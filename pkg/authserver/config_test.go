@@ -1327,12 +1327,20 @@ func TestDelegateClientRunConfigValidate(t *testing.T) {
 		Scopes:             []string{"openid"},
 		Audiences:          []string{"https://mcp.example.com"},
 	}
+	withLifespan := func(c DelegateClientRunConfig, lifespan string) DelegateClientRunConfig {
+		c.AccessTokenLifespan = lifespan
+		return c
+	}
 	tests := []struct {
 		name    string
 		clients []DelegateClientRunConfig
 		wantErr string
 	}{
 		{name: "secret client without grant types or block keeps legacy trust", clients: []DelegateClientRunConfig{validClient}},
+		{name: "valid access token lifespan", clients: []DelegateClientRunConfig{withLifespan(validClient, "30s")}},
+		{name: "zero access token lifespan", clients: []DelegateClientRunConfig{withLifespan(validClient, "0s")}, wantErr: "access_token_lifespan must be greater than 0"},
+		{name: "negative access token lifespan", clients: []DelegateClientRunConfig{withLifespan(validClient, "-5s")}, wantErr: "access_token_lifespan must be greater than 0"},
+		{name: "access token lifespan above the maximum", clients: []DelegateClientRunConfig{withLifespan(validClient, "25h")}, wantErr: "at most 24h0m0s"},
 		{name: "empty ID", clients: []DelegateClientRunConfig{{ClientSecretEnvVar: "SECRET", Scopes: validClient.Scopes, Audiences: validClient.Audiences}}, wantErr: "client_id is required"},
 		{name: "duplicate ID", clients: []DelegateClientRunConfig{validClient, validClient}, wantErr: "duplicate client_id"},
 		{name: "missing secret reference", clients: []DelegateClientRunConfig{{ClientID: "delegate", Scopes: validClient.Scopes, Audiences: validClient.Audiences}}, wantErr: "secret is required"},

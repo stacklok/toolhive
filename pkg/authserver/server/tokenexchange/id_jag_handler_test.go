@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -464,10 +465,71 @@ func TestIDJAGHandler_PopulateGatesOnOwnMatcher(t *testing.T) {
 	assert.NotEmpty(t, resp.GetAccessToken())
 }
 
+func TestIDJAGHandler_ClientAccessTokenLifespan(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name            string
+		assertionLeft   time.Duration
+		serverLifespan  time.Duration
+		clientLifespans map[string]time.Duration
+		want            time.Duration
+	}{
+		{
+			name:            "ID-JAG expires before the client lifespan",
+			assertionLeft:   20 * time.Second,
+			clientLifespans: map[string]time.Duration{idJAGTestClientID: time.Minute},
+			want:            20 * time.Second,
+		},
+		{
+			name:            "client lifespan is shorter than the ID-JAG's remaining life",
+			assertionLeft:   5 * time.Minute,
+			clientLifespans: map[string]time.Duration{idJAGTestClientID: 30 * time.Second},
+			want:            30 * time.Second,
+		},
+		{
+			name:            "client lifespan longer than the server lifespan",
+			assertionLeft:   5 * time.Minute,
+			serverLifespan:  time.Minute,
+			clientLifespans: map[string]time.Duration{idJAGTestClientID: 4 * time.Minute},
+			want:            4 * time.Minute,
+		},
+		{
+			name:            "unset keeps the server lifespan",
+			assertionLeft:   5 * time.Minute,
+			clientLifespans: map[string]time.Duration{"other-client": 10 * time.Second},
+			want:            5 * time.Minute,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			claims := validIDJAGClaims()
+			claims.Expiry = time.Now().Add(tc.assertionLeft)
+			h := newIDJAGTestHandler(t, &testJWTBearerAssertionValidator{claims: claims}, &recordingAssertionConsumer{})
+			h.clientLifespans = tc.clientLifespans
+			if tc.serverLifespan > 0 {
+				h.core.config = &fosite.Config{AccessTokenLifespan: tc.serverLifespan}
+			}
+			req := newIDJAGRequest(t, newTestJWKS(t), idJAGTestClientID)
+
+			require.NoError(t, h.HandleTokenEndpointRequest(context.Background(), req))
+			resp := fosite.NewAccessResponse()
+			require.NoError(t, h.PopulateTokenEndpointResponse(context.Background(), req, resp))
+
+			expiry := req.GetSession().GetExpiresAt(fosite.AccessToken)
+			assert.WithinDuration(t, time.Now().Add(tc.want), expiry, 3*time.Second)
+			expiresIn := time.Duration(reflect.ValueOf(resp.ToMap()["expires_in"]).Int()) * time.Second
+			assert.InDelta(t, tc.want.Seconds(), expiresIn.Seconds(), 3, "expires_in must match exp")
+		})
+	}
+}
+
 func TestIDJAGIssuanceFactory_RequiresSharedValidator(t *testing.T) {
 	t.Parallel()
 
-	_, err := IDJAGIssuanceFactory(idJAGResolvedIssuers(t), nil, nil)
+	_, err := IDJAGIssuanceFactory(idJAGResolvedIssuers(t), nil, nil, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "shared validator")
 }

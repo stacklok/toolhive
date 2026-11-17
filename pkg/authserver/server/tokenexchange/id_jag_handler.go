@@ -76,6 +76,10 @@ type IDJAGHandler struct {
 	// jwt-bearer grant in their registered grant types.
 	explicitGrantClients map[string]struct{}
 
+	// clientLifespans holds the per-client access-token lifespan of clients
+	// that set one. A client without an entry gets the server lifespan.
+	clientLifespans map[string]time.Duration
+
 	// issuer supplies this authorization server's issuer identifier, the same
 	// value the server's own token validator uses (fosite.Config
 	// AccessTokenIssuer).
@@ -235,7 +239,7 @@ func (h *IDJAGHandler) HandleTokenEndpointRequest(ctx context.Context, requester
 	if err := h.core.consumeAssertion(ctx, idJAGReplayPurpose, claims.Issuer, claims.JWTID, claims.Expiry); err != nil {
 		return err
 	}
-	lifetime, err := h.core.assertionBoundedLifetime(ctx, claims.Expiry)
+	lifetime, err := h.core.assertionBoundedLifetime(ctx, claims.Expiry, h.clientLifespans[requester.GetClient().GetID()])
 	if err != nil {
 		return err
 	}
@@ -459,11 +463,12 @@ func (*IDJAGHandler) checkClientBinding(requester fosite.AccessRequester, claims
 // enables the JWT-bearer grant: the two handlers share the per-issuer policy
 // and split one grant type by assertion typ, so enabling the grant enables
 // both assertion forms. explicitGrantClientIDs names the clients that must list
-// the jwt-bearer grant in their registered grant types. See
-// JWTBearerIssuanceFactory for the shared validator's ownership contract.
+// the jwt-bearer grant in their registered grant types. clientLifespans maps a
+// client to its own access-token lifespan; clients without an entry get the
+// server lifespan. See JWTBearerIssuanceFactory for the shared validator's ownership contract.
 func IDJAGIssuanceFactory(
 	trustedIssuers []TrustedIssuer, shared *MultiIssuerTokenValidator, explicitGrantClientIDs []string,
-	options ...FactoryOption,
+	clientLifespans map[string]time.Duration, options ...FactoryOption,
 ) (server.Factory, error) {
 	return jwtBearerGrantFactory(trustedIssuers, shared,
 		func(
@@ -471,8 +476,13 @@ func IDJAGIssuanceFactory(
 			config *fosite.Config, strategy oauth2.AccessTokenStrategy, tokenStorage oauth2.AccessTokenStorage,
 			resolvedIssuers []TrustedIssuer, allowedAudiences []string,
 		) (any, error) {
-			return newIDJAGIssuanceHandler(validator, tokenEndpoint, consumer, config, strategy, tokenStorage,
+			h, err := newIDJAGIssuanceHandler(validator, tokenEndpoint, consumer, config, strategy, tokenStorage,
 				resolvedIssuers, explicitGrantClientIDs, allowedAudiences, nil, options...)
+			if err != nil {
+				return nil, err
+			}
+			h.clientLifespans = clientLifespans
+			return h, nil
 		})
 }
 

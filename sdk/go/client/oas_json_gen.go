@@ -1525,6 +1525,12 @@ func (s *AuthenticationDelegateClientRunConfig) Encode(e *jx.Encoder) {
 // encodeFields encodes fields.
 func (s *AuthenticationDelegateClientRunConfig) encodeFields(e *jx.Encoder) {
 	{
+		if s.AccessTokenLifespan.Set {
+			e.FieldStart("access_token_lifespan")
+			s.AccessTokenLifespan.Encode(e)
+		}
+	}
+	{
 		if s.Audiences != nil {
 			e.FieldStart("audiences")
 			e.ArrStart()
@@ -1608,18 +1614,19 @@ func (s *AuthenticationDelegateClientRunConfig) encodeFields(e *jx.Encoder) {
 	}
 }
 
-var jsonFieldsNameOfAuthenticationDelegateClientRunConfig = [11]string{
-	0:  "audiences",
-	1:  "client_id",
-	2:  "client_secret_env_var",
-	3:  "client_secret_file",
-	4:  "grant_types",
-	5:  "jwks_file",
-	6:  "redirect_uris",
-	7:  "scopes",
-	8:  "token_endpoint_auth_method",
-	9:  "token_endpoint_auth_signing_alg",
-	10: "token_exchange",
+var jsonFieldsNameOfAuthenticationDelegateClientRunConfig = [12]string{
+	0:  "access_token_lifespan",
+	1:  "audiences",
+	2:  "client_id",
+	3:  "client_secret_env_var",
+	4:  "client_secret_file",
+	5:  "grant_types",
+	6:  "jwks_file",
+	7:  "redirect_uris",
+	8:  "scopes",
+	9:  "token_endpoint_auth_method",
+	10: "token_endpoint_auth_signing_alg",
+	11: "token_exchange",
 }
 
 // Decode decodes AuthenticationDelegateClientRunConfig from json.
@@ -1630,6 +1637,16 @@ func (s *AuthenticationDelegateClientRunConfig) Decode(d *jx.Decoder) error {
 
 	if err := d.ObjBytes(func(d *jx.Decoder, k []byte) error {
 		switch string(k) {
+		case "access_token_lifespan":
+			if err := func() error {
+				s.AccessTokenLifespan.Reset()
+				if err := s.AccessTokenLifespan.Decode(d); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return errors.Wrap(err, "decode field \"access_token_lifespan\"")
+			}
 		case "audiences":
 			if err := func() error {
 				s.Audiences = make([]string, 0)

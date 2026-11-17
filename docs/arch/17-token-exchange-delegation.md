@@ -677,6 +677,7 @@ optional; a client that sets none of them is the same client as before.
 | `jwks_file` | Path to the client's public JWKS. Required for `private_key_jwt`, forbidden otherwise. Each key must have `use: sig`. Private and symmetric keys are rejected, at most 10 keys are allowed, and the keys must match `token_endpoint_auth_signing_alg`. When that field is omitted, it is derived from the keys: each key's `alg`, or `ES256`, `ES384` or `ES512` from an EC key's curve; RSA keys without `alg` use `RS256`; keys that disagree are rejected and the field must be set. When the file holds more than one key, every key must have a unique, non-empty `kid`, and the client must send the `kid` of its signing key in the assertion header: fosite checks an assertion that has no `kid` only against the first signing key of the matching type, so a key added during a rotation would never be used otherwise. The `kid` rule is checked when the keys are loaded at startup, not when `RunConfig` is validated. |
 | `grant_types` | Omitted or empty means token exchange only. When set, the list must include token exchange. The other allowed values are `authorization_code`, `refresh_token` and the JWT-bearer grant. `refresh_token` is allowed only together with `authorization_code`. A client that sets `grant_types`, or uses `private_key_jwt`, must also declare a `token_exchange` block with `self_issued_subject_tokens` (see [Source policy and subject token audiences](#source-policy-and-subject-token-audiences)). |
 | `redirect_uris` | Required with `authorization_code`, forbidden without it. Each URI must be https and not loopback, as for any other confidential client. |
+| `access_token_lifespan` | A Go duration string, for example `30s`. The lifetime of the access tokens the client gets by redeeming an ID-JAG. Omitted: the server's `access_token_lifespan` applies. When set it must be greater than 0 and at most 24h (`0s` and negative values are refused at startup). Other grants ignore it. See [Lifetime of a redeemed token](#lifetime-of-a-redeemed-token). |
 
 A delegate's `audiences` limit what it may request. List the narrowest
 audience the client needs: with the default path-prefix strategy, an audience
@@ -1540,6 +1541,22 @@ single-use ID-JAG.
 The description is the reason alone and never echoes request data. Each refusal
 is logged once at WARN with the client ID and a fixed reason, as for token
 exchange.
+
+### Lifetime of a redeemed token
+
+A JWT-bearer or ID-JAG access token lives for the shorter of two times: the
+client's `access_token_lifespan` (the server's `access_token_lifespan` when the
+client sets none), and the time left on the assertion when it is redeemed. The
+token's `exp` and the response's `expires_in` use that one value. The
+per-client lifespan applies to ID-JAG redemption, where the client is
+authenticated. A plain JWT-bearer assertion has no client and uses the server
+lifespan. Other grants are not affected.
+
+The client lifespan is an upper bound, not a guarantee. A longer lifespan is
+shortened silently when the ID-JAG has less time left. On a ToolHive AS-1 the
+ID-JAG lives as long as the target's `lifetime` (60 seconds by default, at most
+300 seconds). To get the lifespan you configure, set the AS-1 target's ID-JAG
+lifetime to at least that lifespan plus the expected delay before redemption.
 
 ### Bound ID-JAG assertions
 

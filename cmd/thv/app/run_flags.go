@@ -611,6 +611,9 @@ func resolveTransportType(runFlags *RunFlags, serverMetadata regtypes.ServerMeta
 		}
 	}
 	if strings.HasPrefix(serverOrImage, runner.UVXScheme) && !hasHTTPOnlyFlags(runFlags) {
+		slog.Warn("no --transport given for a uvx:// package, using stdio; "+
+			"pass --transport streamable-http or --transport sse if the server speaks HTTP",
+			"package", serverOrImage)
 		return types.TransportTypeStdio.String()
 	}
 	return defaultTransportType

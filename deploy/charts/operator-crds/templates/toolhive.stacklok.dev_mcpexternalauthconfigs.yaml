@@ -558,9 +558,6 @@ spec:
                             authenticate with a JWT-SVID or an X.509-SVID and have no client secret.
                             Trust material comes from the declared bundle source (see
                             SPIFFETrustDomainConfig's doc comment).
-
-                            The CRD does not expose grantTypes. The converter always supplies the
-                            RFC 8693 token-exchange grant instead of letting it be configured.
                           properties:
                             audiences:
                               description: |-
@@ -584,6 +581,27 @@ spec:
                               maxLength: 253
                               minLength: 1
                               type: string
+                            grantTypes:
+                              default:
+                              - urn:ietf:params:oauth:grant-type:token-exchange
+                              description: |-
+                                GrantTypes contains the OAuth grants permitted for this association.
+                                It defaults to the token-exchange grant when omitted, which is what the
+                                operator configured before this field existed. List client_credentials
+                                to opt in to the SPIFFE-bound client credentials grant. The list alone
+                                decides which grants the association may use: client authentication does
+                                not confer any grant, and there is no separate per-grant enable switch.
+                                Use urn:ietf:params:oauth:grant-type:token-exchange for RFC 8693 token
+                                exchange.
+                              items:
+                                enum:
+                                - client_credentials
+                                - urn:ietf:params:oauth:grant-type:token-exchange
+                                type: string
+                              maxItems: 2
+                              minItems: 1
+                              type: array
+                              x-kubernetes-list-type: set
                             methods:
                               description: |-
                                 Methods are the credential types this association may authenticate
@@ -618,8 +636,9 @@ spec:
                                 allowlist membership is validated at reconcile time, not admission.
                                 Shape (a well-formed absolute HTTP(S) URI) is independent of that
                                 derived allowlist and is validated here. Required, with at least one
-                                entry, for every association: token exchange takes exactly one resource
-                                per request and grants it as the token audience.
+                                entry, for every association: client_credentials and token exchange each
+                                take exactly one resource per request and grant it as the token
+                                audience.
                               items:
                                 maxLength: 2048
                                 minLength: 1
@@ -806,9 +825,12 @@ spec:
                     default: false
                     description: |-
                       InsecureAllowConfidentialOverLoopbackHTTP opts in to confidential
-                      Dynamic Client Registration (DCR) and delegate clients when issuer is a
-                      plain-HTTP loopback URL (e.g. "http://localhost:8080"). Without this
-                      flag, that combination is rejected at reconcile time: a loopback http://
+                      Dynamic Client Registration (DCR), delegate clients and SPIFFE
+                      associations that have spiffe_jwt in methods and client_credentials in
+                      grantTypes on the same association, when issuer is a plain-HTTP loopback
+                      URL (e.g. "http://localhost:8080"). Without this
+                      flag, that combination is rejected at admission, and reconcile additionally
+                      requires the issuer host to be loopback. A loopback http://
                       issuer is normally fine for local development since the traffic never
                       leaves the machine, but confidential clients send secrets over cleartext.
                       Forcing TLS onto every loopback deployment instead would just push
@@ -839,8 +861,10 @@ spec:
 
                       One combination is rejected at admission on all three CRDs regardless of the
                       above: setting this field alongside confidential client registration or
-                      delegate clients, which would issue or use client secrets in cleartext over
-                      an unauthenticated endpoint (see the XValidation rule on
+                      delegate clients, or a SPIFFE association that has spiffe_jwt in methods and
+                      client_credentials in grantTypes on the same association, which would issue
+                      or use client secrets or JWT-SVIDs in cleartext over an unauthenticated
+                      endpoint (see the XValidation rule on
                       EmbeddedAuthServerConfig).
                     type: boolean
                   issuer:
@@ -2635,27 +2659,36 @@ spec:
                   rule: '!has(self.inboundGrants) || !has(self.inboundGrants.spiffeClientAuth)
                     || self.inboundGrants.spiffeClientAuth.all(client, !client.clientId.matches(''^[A-Za-z][A-Za-z0-9+.-]*://.+''))'
                 - message: insecureAllowHTTP cannot be combined with confidential
-                    client registration or delegateClients; client secrets would be
-                    issued or used in cleartext over an unauthenticated endpoint
+                    client registration, delegateClients or JWT-SVID SPIFFE associations
+                    that grant client_credentials; client secrets or JWT-SVIDs would
+                    be issued or used in cleartext over an unauthenticated endpoint
                   rule: '!(has(self.insecureAllowHTTP) && self.insecureAllowHTTP &&
                     ((has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration)
                     || (has(self.delegateClients) && size(self.delegateClients) >
                     0) || (has(self.inboundGrants) && has(self.inboundGrants.tokenExchange)
                     && has(self.inboundGrants.tokenExchange.delegateClients) && size(self.inboundGrants.tokenExchange.delegateClients)
-                    > 0)))'
+                    > 0) || (has(self.inboundGrants) && has(self.inboundGrants.spiffeClientAuth)
+                    && self.inboundGrants.spiffeClientAuth.exists(a, ''spiffe_jwt''
+                    in a.methods && has(a.grantTypes) && ''client_credentials'' in
+                    a.grantTypes))))'
                 - message: forceConfidentialRedirectUris requires allowConfidentialClientRegistration
                     to be true
                   rule: (!has(self.forceConfidentialRedirectUris) || size(self.forceConfidentialRedirectUris)
                     == 0) || (has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration)
-                - message: confidential client registration or delegateClients with
-                    an HTTP issuer require insecureAllowConfidentialOverLoopbackHTTP
-                    to be explicitly enabled; the issuer must still be loopback
+                - message: confidential client registration, delegateClients or JWT-SVID
+                    SPIFFE associations that grant client_credentials with an HTTP
+                    issuer require insecureAllowConfidentialOverLoopbackHTTP to be
+                    explicitly enabled; the issuer must still be loopback
                   rule: '!self.issuer.startsWith(''http://'') || (has(self.insecureAllowConfidentialOverLoopbackHTTP)
                     && self.insecureAllowConfidentialOverLoopbackHTTP) || ((!has(self.allowConfidentialClientRegistration)
                     || !self.allowConfidentialClientRegistration) && (!has(self.delegateClients)
                     || size(self.delegateClients) == 0) && (!has(self.inboundGrants)
                     || !has(self.inboundGrants.tokenExchange) || !has(self.inboundGrants.tokenExchange.delegateClients)
-                    || size(self.inboundGrants.tokenExchange.delegateClients) == 0))'
+                    || size(self.inboundGrants.tokenExchange.delegateClients) == 0)
+                    && !(has(self.inboundGrants) && has(self.inboundGrants.spiffeClientAuth)
+                    && self.inboundGrants.spiffeClientAuth.exists(a, ''spiffe_jwt''
+                    in a.methods && has(a.grantTypes) && ''client_credentials'' in
+                    a.grantTypes)))'
                 - message: canonical tokenExchange conflicts with legacy delegateClients
                     or RFC 8693 trusted issuer policy
                   rule: '!has(self.inboundGrants) || !has(self.inboundGrants.tokenExchange)
@@ -3701,9 +3734,6 @@ spec:
                             authenticate with a JWT-SVID or an X.509-SVID and have no client secret.
                             Trust material comes from the declared bundle source (see
                             SPIFFETrustDomainConfig's doc comment).
-
-                            The CRD does not expose grantTypes. The converter always supplies the
-                            RFC 8693 token-exchange grant instead of letting it be configured.
                           properties:
                             audiences:
                               description: |-
@@ -3727,6 +3757,27 @@ spec:
                               maxLength: 253
                               minLength: 1
                               type: string
+                            grantTypes:
+                              default:
+                              - urn:ietf:params:oauth:grant-type:token-exchange
+                              description: |-
+                                GrantTypes contains the OAuth grants permitted for this association.
+                                It defaults to the token-exchange grant when omitted, which is what the
+                                operator configured before this field existed. List client_credentials
+                                to opt in to the SPIFFE-bound client credentials grant. The list alone
+                                decides which grants the association may use: client authentication does
+                                not confer any grant, and there is no separate per-grant enable switch.
+                                Use urn:ietf:params:oauth:grant-type:token-exchange for RFC 8693 token
+                                exchange.
+                              items:
+                                enum:
+                                - client_credentials
+                                - urn:ietf:params:oauth:grant-type:token-exchange
+                                type: string
+                              maxItems: 2
+                              minItems: 1
+                              type: array
+                              x-kubernetes-list-type: set
                             methods:
                               description: |-
                                 Methods are the credential types this association may authenticate
@@ -3761,8 +3812,9 @@ spec:
                                 allowlist membership is validated at reconcile time, not admission.
                                 Shape (a well-formed absolute HTTP(S) URI) is independent of that
                                 derived allowlist and is validated here. Required, with at least one
-                                entry, for every association: token exchange takes exactly one resource
-                                per request and grants it as the token audience.
+                                entry, for every association: client_credentials and token exchange each
+                                take exactly one resource per request and grant it as the token
+                                audience.
                               items:
                                 maxLength: 2048
                                 minLength: 1
@@ -3949,9 +4001,12 @@ spec:
                     default: false
                     description: |-
                       InsecureAllowConfidentialOverLoopbackHTTP opts in to confidential
-                      Dynamic Client Registration (DCR) and delegate clients when issuer is a
-                      plain-HTTP loopback URL (e.g. "http://localhost:8080"). Without this
-                      flag, that combination is rejected at reconcile time: a loopback http://
+                      Dynamic Client Registration (DCR), delegate clients and SPIFFE
+                      associations that have spiffe_jwt in methods and client_credentials in
+                      grantTypes on the same association, when issuer is a plain-HTTP loopback
+                      URL (e.g. "http://localhost:8080"). Without this
+                      flag, that combination is rejected at admission, and reconcile additionally
+                      requires the issuer host to be loopback. A loopback http://
                       issuer is normally fine for local development since the traffic never
                       leaves the machine, but confidential clients send secrets over cleartext.
                       Forcing TLS onto every loopback deployment instead would just push
@@ -3982,8 +4037,10 @@ spec:
 
                       One combination is rejected at admission on all three CRDs regardless of the
                       above: setting this field alongside confidential client registration or
-                      delegate clients, which would issue or use client secrets in cleartext over
-                      an unauthenticated endpoint (see the XValidation rule on
+                      delegate clients, or a SPIFFE association that has spiffe_jwt in methods and
+                      client_credentials in grantTypes on the same association, which would issue
+                      or use client secrets or JWT-SVIDs in cleartext over an unauthenticated
+                      endpoint (see the XValidation rule on
                       EmbeddedAuthServerConfig).
                     type: boolean
                   issuer:
@@ -5778,27 +5835,36 @@ spec:
                   rule: '!has(self.inboundGrants) || !has(self.inboundGrants.spiffeClientAuth)
                     || self.inboundGrants.spiffeClientAuth.all(client, !client.clientId.matches(''^[A-Za-z][A-Za-z0-9+.-]*://.+''))'
                 - message: insecureAllowHTTP cannot be combined with confidential
-                    client registration or delegateClients; client secrets would be
-                    issued or used in cleartext over an unauthenticated endpoint
+                    client registration, delegateClients or JWT-SVID SPIFFE associations
+                    that grant client_credentials; client secrets or JWT-SVIDs would
+                    be issued or used in cleartext over an unauthenticated endpoint
                   rule: '!(has(self.insecureAllowHTTP) && self.insecureAllowHTTP &&
                     ((has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration)
                     || (has(self.delegateClients) && size(self.delegateClients) >
                     0) || (has(self.inboundGrants) && has(self.inboundGrants.tokenExchange)
                     && has(self.inboundGrants.tokenExchange.delegateClients) && size(self.inboundGrants.tokenExchange.delegateClients)
-                    > 0)))'
+                    > 0) || (has(self.inboundGrants) && has(self.inboundGrants.spiffeClientAuth)
+                    && self.inboundGrants.spiffeClientAuth.exists(a, ''spiffe_jwt''
+                    in a.methods && has(a.grantTypes) && ''client_credentials'' in
+                    a.grantTypes))))'
                 - message: forceConfidentialRedirectUris requires allowConfidentialClientRegistration
                     to be true
                   rule: (!has(self.forceConfidentialRedirectUris) || size(self.forceConfidentialRedirectUris)
                     == 0) || (has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration)
-                - message: confidential client registration or delegateClients with
-                    an HTTP issuer require insecureAllowConfidentialOverLoopbackHTTP
-                    to be explicitly enabled; the issuer must still be loopback
+                - message: confidential client registration, delegateClients or JWT-SVID
+                    SPIFFE associations that grant client_credentials with an HTTP
+                    issuer require insecureAllowConfidentialOverLoopbackHTTP to be
+                    explicitly enabled; the issuer must still be loopback
                   rule: '!self.issuer.startsWith(''http://'') || (has(self.insecureAllowConfidentialOverLoopbackHTTP)
                     && self.insecureAllowConfidentialOverLoopbackHTTP) || ((!has(self.allowConfidentialClientRegistration)
                     || !self.allowConfidentialClientRegistration) && (!has(self.delegateClients)
                     || size(self.delegateClients) == 0) && (!has(self.inboundGrants)
                     || !has(self.inboundGrants.tokenExchange) || !has(self.inboundGrants.tokenExchange.delegateClients)
-                    || size(self.inboundGrants.tokenExchange.delegateClients) == 0))'
+                    || size(self.inboundGrants.tokenExchange.delegateClients) == 0)
+                    && !(has(self.inboundGrants) && has(self.inboundGrants.spiffeClientAuth)
+                    && self.inboundGrants.spiffeClientAuth.exists(a, ''spiffe_jwt''
+                    in a.methods && has(a.grantTypes) && ''client_credentials'' in
+                    a.grantTypes)))'
                 - message: canonical tokenExchange conflicts with legacy delegateClients
                     or RFC 8693 trusted issuer policy
                   rule: '!has(self.inboundGrants) || !has(self.inboundGrants.tokenExchange)

@@ -388,9 +388,7 @@ func buildSPIFFEBundleSourceRunConfig(
 }
 
 // buildSPIFFEClientAuthRunConfigs converts CRD SPIFFEClientConfig entries to
-// authserver.SPIFFEClientAuthRunConfig. The CRD does not expose grantTypes,
-// so the RFC 8693 token-exchange grant is always supplied here rather than
-// configured.
+// authserver.SPIFFEClientAuthRunConfig.
 func buildSPIFFEClientAuthRunConfigs(
 	clients []mcpv1beta1.SPIFFEClientConfig,
 ) []authserver.SPIFFEClientAuthRunConfig {
@@ -410,10 +408,23 @@ func buildSPIFFEClientAuthRunConfigs(
 			Resources:        append([]string(nil), spiffeClient.Resources...),
 			Audiences:        deprecatedAudiences,
 			Scopes:           append([]string(nil), spiffeClient.Scopes...),
-			GrantTypes:       []string{oauthproto.GrantTypeTokenExchange},
+			GrantTypes:       spiffeGrantTypesOrDefault(spiffeClient.GrantTypes),
 		}
 	}
 	return configs
+}
+
+// spiffeGrantTypesOrDefault copies grantTypes, or returns the token-exchange
+// grant when it is empty. The CRD default normally fills it in, but an object
+// served by an older CRD schema (the operator chart upgraded without the CRD
+// chart) or built without the API server has none. Token exchange is what the
+// operator configured before the field existed, so this mirrors the CRD
+// default instead of failing the reconcile.
+func spiffeGrantTypesOrDefault(grantTypes []string) []string {
+	if len(grantTypes) == 0 {
+		return []string{oauthproto.GrantTypeTokenExchange}
+	}
+	return append([]string(nil), grantTypes...)
 }
 
 // EmbeddedAuthServerConfigName returns the config name that should be used for

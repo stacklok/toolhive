@@ -13,6 +13,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver"
 	"github.com/stacklok/toolhive/pkg/authserver/oauthparams"
 	"github.com/stacklok/toolhive/pkg/authserver/server/tokenexchange"
+	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
 // External auth configuration types
@@ -742,9 +743,6 @@ type SPIFFETrustDomainConfig struct {
 // Trust material comes from the declared bundle source (see
 // SPIFFETrustDomainConfig's doc comment).
 //
-// The CRD does not expose grantTypes. The converter always supplies the
-// RFC 8693 token-exchange grant instead of letting it be configured.
-//
 // +kubebuilder:validation:XValidation:rule="self.principalPattern.split('/').all(segment, segment != '.' && segment != '..')",message="principalPattern path must not contain . or .. segments"
 // +kubebuilder:validation:XValidation:rule="has(self.resources) && size(self.resources) > 0",message="resources is required"
 //
@@ -787,8 +785,9 @@ type SPIFFEClientConfig struct {
 	// allowlist membership is validated at reconcile time, not admission.
 	// Shape (a well-formed absolute HTTP(S) URI) is independent of that
 	// derived allowlist and is validated here. Required, with at least one
-	// entry, for every association: token exchange takes exactly one resource
-	// per request and grants it as the token audience.
+	// entry, for every association: client_credentials and token exchange each
+	// take exactly one resource per request and grant it as the token
+	// audience.
 	// +optional
 	// +kubebuilder:validation:MaxItems=50
 	// +kubebuilder:validation:items:MinLength=1
@@ -819,6 +818,22 @@ type SPIFFEClientConfig struct {
 	// +kubebuilder:validation:items:MaxLength=256
 	// +listType=set
 	Scopes []string `json:"scopes"`
+
+	// GrantTypes contains the OAuth grants permitted for this association.
+	// It defaults to the token-exchange grant when omitted, which is what the
+	// operator configured before this field existed. List client_credentials
+	// to opt in to the SPIFFE-bound client credentials grant. The list alone
+	// decides which grants the association may use: client authentication does
+	// not confer any grant, and there is no separate per-grant enable switch.
+	// Use urn:ietf:params:oauth:grant-type:token-exchange for RFC 8693 token
+	// exchange.
+	// +optional
+	// +kubebuilder:default={"urn:ietf:params:oauth:grant-type:token-exchange"}
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=2
+	// +kubebuilder:validation:items:Enum={"client_credentials","urn:ietf:params:oauth:grant-type:token-exchange"}
+	// +listType=set
+	GrantTypes []string `json:"grantTypes,omitempty"`
 }
 
 // InboundGrantsConfig groups canonical inbound OAuth grant-family configuration.
@@ -926,8 +941,9 @@ type JWTBearerIssuerPolicyConfig struct {
 // This type is shared by MCPExternalAuthConfig.Spec.EmbeddedAuthServer and
 // VirtualMCPServer.Spec.AuthServerConfig, so the XValidation rules below are
 // enforced at admission for both CRDs. CEL only requires the explicit opt-in for
-// delegate clients using an HTTP issuer; the shared Go validator performs the
-// precise loopback-host security check.
+// delegate clients and JWT-SVID SPIFFE client_credentials associations using an
+// HTTP issuer; the shared Go validator performs the precise loopback-host
+// security check.
 //
 // +kubebuilder:validation:XValidation:rule="(has(self.upstreamProviders) && size(self.upstreamProviders) > 0) || (has(self.delegateClients) && size(self.delegateClients) > 0) || (has(self.trustedIssuers) && self.trustedIssuers.exists(issuer, has(issuer.jwtBearerGrant))) || (has(self.inboundGrants) && (has(self.inboundGrants.tokenExchange) || has(self.inboundGrants.jwtBearer) || (has(self.inboundGrants.spiffeClientAuth) && size(self.inboundGrants.spiffeClientAuth) > 0)))",message="at least one upstream provider or inbound grant family is required"
 //
@@ -943,9 +959,9 @@ type JWTBearerIssuerPolicyConfig struct {
 // +kubebuilder:validation:XValidation:rule="!has(self.inboundGrants) || !has(self.inboundGrants.spiffeClientAuth) || self.inboundGrants.spiffeClientAuth.all(client, !client.clientId.startsWith('synthetic:'))",message="spiffeClientAuth clientId must not use the reserved synthetic: prefix"
 // +kubebuilder:validation:XValidation:rule="!has(self.inboundGrants) || !has(self.inboundGrants.spiffeClientAuth) || self.inboundGrants.spiffeClientAuth.all(client, !client.clientId.matches('^[A-Za-z][A-Za-z0-9+.-]*://.+'))",message="spiffeClientAuth clientId must not be an absolute URL"
 //
-// +kubebuilder:validation:XValidation:rule="!(has(self.insecureAllowHTTP) && self.insecureAllowHTTP && ((has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration) || (has(self.delegateClients) && size(self.delegateClients) > 0) || (has(self.inboundGrants) && has(self.inboundGrants.tokenExchange) && has(self.inboundGrants.tokenExchange.delegateClients) && size(self.inboundGrants.tokenExchange.delegateClients) > 0)))",message="insecureAllowHTTP cannot be combined with confidential client registration or delegateClients; client secrets would be issued or used in cleartext over an unauthenticated endpoint"
+// +kubebuilder:validation:XValidation:rule="!(has(self.insecureAllowHTTP) && self.insecureAllowHTTP && ((has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration) || (has(self.delegateClients) && size(self.delegateClients) > 0) || (has(self.inboundGrants) && has(self.inboundGrants.tokenExchange) && has(self.inboundGrants.tokenExchange.delegateClients) && size(self.inboundGrants.tokenExchange.delegateClients) > 0) || (has(self.inboundGrants) && has(self.inboundGrants.spiffeClientAuth) && self.inboundGrants.spiffeClientAuth.exists(a, 'spiffe_jwt' in a.methods && has(a.grantTypes) && 'client_credentials' in a.grantTypes))))",message="insecureAllowHTTP cannot be combined with confidential client registration, delegateClients or JWT-SVID SPIFFE associations that grant client_credentials; client secrets or JWT-SVIDs would be issued or used in cleartext over an unauthenticated endpoint"
 // +kubebuilder:validation:XValidation:rule="(!has(self.forceConfidentialRedirectUris) || size(self.forceConfidentialRedirectUris) == 0) || (has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration)",message="forceConfidentialRedirectUris requires allowConfidentialClientRegistration to be true"
-// +kubebuilder:validation:XValidation:rule="!self.issuer.startsWith('http://') || (has(self.insecureAllowConfidentialOverLoopbackHTTP) && self.insecureAllowConfidentialOverLoopbackHTTP) || ((!has(self.allowConfidentialClientRegistration) || !self.allowConfidentialClientRegistration) && (!has(self.delegateClients) || size(self.delegateClients) == 0) && (!has(self.inboundGrants) || !has(self.inboundGrants.tokenExchange) || !has(self.inboundGrants.tokenExchange.delegateClients) || size(self.inboundGrants.tokenExchange.delegateClients) == 0))",message="confidential client registration or delegateClients with an HTTP issuer require insecureAllowConfidentialOverLoopbackHTTP to be explicitly enabled; the issuer must still be loopback"
+// +kubebuilder:validation:XValidation:rule="!self.issuer.startsWith('http://') || (has(self.insecureAllowConfidentialOverLoopbackHTTP) && self.insecureAllowConfidentialOverLoopbackHTTP) || ((!has(self.allowConfidentialClientRegistration) || !self.allowConfidentialClientRegistration) && (!has(self.delegateClients) || size(self.delegateClients) == 0) && (!has(self.inboundGrants) || !has(self.inboundGrants.tokenExchange) || !has(self.inboundGrants.tokenExchange.delegateClients) || size(self.inboundGrants.tokenExchange.delegateClients) == 0) && !(has(self.inboundGrants) && has(self.inboundGrants.spiffeClientAuth) && self.inboundGrants.spiffeClientAuth.exists(a, 'spiffe_jwt' in a.methods && has(a.grantTypes) && 'client_credentials' in a.grantTypes)))",message="confidential client registration, delegateClients or JWT-SVID SPIFFE associations that grant client_credentials with an HTTP issuer require insecureAllowConfidentialOverLoopbackHTTP to be explicitly enabled; the issuer must still be loopback"
 // +kubebuilder:validation:XValidation:rule="!has(self.inboundGrants) || !has(self.inboundGrants.tokenExchange) || ((!has(self.delegateClients) || size(self.delegateClients) == 0) && (!has(self.trustedIssuers) || !self.trustedIssuers.exists(issuer, has(issuer.expectedAudience) || has(issuer.actorClaim) || has(issuer.allowedActors) || has(issuer.actorMatcher) || has(issuer.allowedDelegateClients) || (has(issuer.allowMayAct) && issuer.allowMayAct))))",message="canonical tokenExchange conflicts with legacy delegateClients or RFC 8693 trusted issuer policy"
 // +kubebuilder:validation:XValidation:rule="!has(self.inboundGrants) || !has(self.inboundGrants.jwtBearer) || !has(self.trustedIssuers) || !self.trustedIssuers.exists(issuer, has(issuer.jwtBearerGrant))",message="canonical jwtBearer conflicts with legacy jwtBearerGrant"
 // +kubebuilder:validation:XValidation:rule="!has(self.trustedIssuers) || self.trustedIssuers.all(issuer, !has(issuer.name) || self.trustedIssuers.filter(other, has(other.name) && other.name == issuer.name).size() == 1)",message="trustedIssuers must not contain duplicate names"
@@ -1102,8 +1118,10 @@ type EmbeddedAuthServerConfig struct {
 	//
 	// One combination is rejected at admission on all three CRDs regardless of the
 	// above: setting this field alongside confidential client registration or
-	// delegate clients, which would issue or use client secrets in cleartext over
-	// an unauthenticated endpoint (see the XValidation rule on
+	// delegate clients, or a SPIFFE association that has spiffe_jwt in methods and
+	// client_credentials in grantTypes on the same association, which would issue
+	// or use client secrets or JWT-SVIDs in cleartext over an unauthenticated
+	// endpoint (see the XValidation rule on
 	// EmbeddedAuthServerConfig).
 	// +kubebuilder:default=false
 	// +optional
@@ -1166,9 +1184,12 @@ type EmbeddedAuthServerConfig struct {
 	AllowPrivateKeyJWTRegistration bool `json:"allowPrivateKeyJWTRegistration,omitempty"`
 
 	// InsecureAllowConfidentialOverLoopbackHTTP opts in to confidential
-	// Dynamic Client Registration (DCR) and delegate clients when issuer is a
-	// plain-HTTP loopback URL (e.g. "http://localhost:8080"). Without this
-	// flag, that combination is rejected at reconcile time: a loopback http://
+	// Dynamic Client Registration (DCR), delegate clients and SPIFFE
+	// associations that have spiffe_jwt in methods and client_credentials in
+	// grantTypes on the same association, when issuer is a plain-HTTP loopback
+	// URL (e.g. "http://localhost:8080"). Without this
+	// flag, that combination is rejected at admission, and reconcile additionally
+	// requires the issuer host to be loopback. A loopback http://
 	// issuer is normally fine for local development since the traffic never
 	// leaves the machine, but confidential clients send secrets over cleartext.
 	// Forcing TLS onto every loopback deployment instead would just push
@@ -1403,6 +1424,14 @@ func applyEffectiveJWTBearer(
 	return nil
 }
 
+// hasConfidentialClients reports whether DCR of confidential clients is
+// enabled, the effective grants include a delegate client, or a SPIFFE
+// association allows the JWT-SVID method and grants client_credentials.
+func (c *EmbeddedAuthServerConfig) hasConfidentialClients(grants effectiveInboundGrants) bool {
+	return c.AllowConfidentialClientRegistration || len(grants.delegateClients) > 0 ||
+		c.hasSPIFFEJWTClientCredentials()
+}
+
 // ValidateInboundGrants validates the effective grant projection shared by
 // MCPExternalAuthConfig and inline VirtualMCPServer auth configuration.
 func (c *EmbeddedAuthServerConfig) ValidateInboundGrants() error {
@@ -1411,7 +1440,7 @@ func (c *EmbeddedAuthServerConfig) ValidateInboundGrants() error {
 		return err
 	}
 	if err := authserver.ValidateConfidentialClientTransport(
-		c.AllowConfidentialClientRegistration || len(grants.delegateClients) > 0,
+		c.hasConfidentialClients(grants),
 		c.InsecureAllowHTTP,
 		c.Issuer,
 		c.InsecureAllowConfidentialOverLoopbackHTTP,
@@ -1482,6 +1511,18 @@ func (c *EmbeddedAuthServerConfig) hasSPIFFEMethod(method SPIFFEAuthenticationMe
 	}
 	return slices.ContainsFunc(c.InboundGrants.SPIFFEClientAuth, func(a SPIFFEClientConfig) bool {
 		return slices.Contains(a.Methods, method)
+	})
+}
+
+// hasSPIFFEJWTClientCredentials reports whether any single SPIFFE association
+// allows the JWT-SVID method and lists the client_credentials grant.
+func (c *EmbeddedAuthServerConfig) hasSPIFFEJWTClientCredentials() bool {
+	if c.InboundGrants == nil {
+		return false
+	}
+	return slices.ContainsFunc(c.InboundGrants.SPIFFEClientAuth, func(a SPIFFEClientConfig) bool {
+		return slices.Contains(a.Methods, SPIFFEAuthenticationMethodJWT) &&
+			slices.Contains(a.GrantTypes, oauthproto.GrantTypeClientCredentials)
 	})
 }
 

@@ -11,6 +11,7 @@ import (
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 )
@@ -72,6 +73,7 @@ var _ = Describe("MCPExternalAuthConfig SPIFFE CEL validation", func() {
 					TrustDomainRef: "example", PrincipalPattern: principalPattern, ClientID: "spiffe-client",
 					Methods:   []mcpv1beta1.SPIFFEAuthenticationMethod{mcpv1beta1.SPIFFEAuthenticationMethodX509},
 					Audiences: []string{"https://mcp.example.com"}, Resources: []string{"https://mcp.example.com"}, Scopes: []string{"openid"},
+					GrantTypes: []string{"urn:ietf:params:oauth:grant-type:token-exchange"},
 				}},
 			}
 		}
@@ -100,6 +102,34 @@ var _ = Describe("MCPExternalAuthConfig SPIFFE CEL validation", func() {
 			client.PrincipalPattern = principal
 			client.ClientID = clientID
 			config.InboundGrants.SPIFFEClientAuth = append(config.InboundGrants.SPIFFEClientAuth, client)
+		}
+	}
+
+	jwtClientCredentials := func(extra func(*mcpv1beta1.EmbeddedAuthServerConfig)) func(*mcpv1beta1.EmbeddedAuthServerConfig) {
+		return func(config *mcpv1beta1.EmbeddedAuthServerConfig) {
+			config.SPIFFETrustDomains[0].Methods = []mcpv1beta1.SPIFFEAuthenticationMethod{mcpv1beta1.SPIFFEAuthenticationMethodJWT}
+			association := &config.InboundGrants.SPIFFEClientAuth[0]
+			association.Methods = []mcpv1beta1.SPIFFEAuthenticationMethod{mcpv1beta1.SPIFFEAuthenticationMethodJWT}
+			association.GrantTypes = []string{"client_credentials"}
+			extra(config)
+		}
+	}
+
+	jwtTokenExchangePlusX509ClientCredentials := func(extra func(*mcpv1beta1.EmbeddedAuthServerConfig)) func(*mcpv1beta1.EmbeddedAuthServerConfig) {
+		return func(config *mcpv1beta1.EmbeddedAuthServerConfig) {
+			config.SPIFFETrustDomains[0].Methods = []mcpv1beta1.SPIFFEAuthenticationMethod{
+				mcpv1beta1.SPIFFEAuthenticationMethodJWT, mcpv1beta1.SPIFFEAuthenticationMethodX509,
+			}
+			first := &config.InboundGrants.SPIFFEClientAuth[0]
+			first.Methods = []mcpv1beta1.SPIFFEAuthenticationMethod{mcpv1beta1.SPIFFEAuthenticationMethodJWT}
+			first.GrantTypes = []string{"urn:ietf:params:oauth:grant-type:token-exchange"}
+			second := *first
+			second.PrincipalPattern = "spiffe://example.org/ns/default/other"
+			second.ClientID = "spiffe-client-x509"
+			second.Methods = []mcpv1beta1.SPIFFEAuthenticationMethod{mcpv1beta1.SPIFFEAuthenticationMethodX509}
+			second.GrantTypes = []string{"client_credentials"}
+			config.InboundGrants.SPIFFEClientAuth = append(config.InboundGrants.SPIFFEClientAuth, second)
+			extra(config)
 		}
 	}
 
@@ -240,12 +270,83 @@ var _ = Describe("MCPExternalAuthConfig SPIFFE CEL validation", func() {
 			},
 		},
 		{
-			name: "JWT-SVID association with insecureAllowHTTP is admitted", trustDomains: true, clients: true,
+			name: "unknown grant type is rejected", trustDomains: true, clients: true,
+			principal: "spiffe://example.org/ns/default/agent", errMatch: "grantTypes",
+			mutate: func(config *mcpv1beta1.EmbeddedAuthServerConfig) {
+				config.InboundGrants.SPIFFEClientAuth[0].GrantTypes = []string{"authorization_code"}
+			},
+		},
+		{
+			name: "duplicate grant type is rejected", trustDomains: true, clients: true,
+			principal: "spiffe://example.org/ns/default/agent", errMatch: "grantTypes",
+			mutate: func(config *mcpv1beta1.EmbeddedAuthServerConfig) {
+				config.InboundGrants.SPIFFEClientAuth[0].GrantTypes = []string{"client_credentials", "client_credentials"}
+			},
+		},
+		{
+			name: "both grants are admitted", trustDomains: true, clients: true,
+			principal: "spiffe://example.org/ns/default/agent", shouldAdmit: true,
+			mutate: func(config *mcpv1beta1.EmbeddedAuthServerConfig) {
+				config.InboundGrants.SPIFFEClientAuth[0].GrantTypes = []string{
+					"client_credentials", "urn:ietf:params:oauth:grant-type:token-exchange",
+				}
+			},
+		},
+		{
+			name: "JWT-SVID token-exchange-only association with insecureAllowHTTP is admitted", trustDomains: true, clients: true,
 			principal: "spiffe://example.org/ns/default/agent", shouldAdmit: true,
 			mutate: func(config *mcpv1beta1.EmbeddedAuthServerConfig) {
 				config.InsecureAllowHTTP = true
 				config.SPIFFETrustDomains[0].Methods = []mcpv1beta1.SPIFFEAuthenticationMethod{mcpv1beta1.SPIFFEAuthenticationMethodJWT}
 				config.InboundGrants.SPIFFEClientAuth[0].Methods = []mcpv1beta1.SPIFFEAuthenticationMethod{mcpv1beta1.SPIFFEAuthenticationMethodJWT}
+			},
+		},
+		{
+			name: "JWT-SVID client_credentials association with insecureAllowHTTP is rejected", trustDomains: true, clients: true,
+			principal: "spiffe://example.org/ns/default/agent", errMatch: "JWT-SVID SPIFFE associations that grant client_credentials",
+			mutate: jwtClientCredentials(func(config *mcpv1beta1.EmbeddedAuthServerConfig) {
+				config.InsecureAllowHTTP = true
+			}),
+		},
+		{
+			name:         "JWT-SVID client_credentials association with an http loopback issuer is rejected without the loopback opt-in",
+			trustDomains: true, clients: true,
+			principal: "spiffe://example.org/ns/default/agent", errMatch: "JWT-SVID SPIFFE associations that grant client_credentials",
+			mutate: jwtClientCredentials(func(config *mcpv1beta1.EmbeddedAuthServerConfig) {
+				config.Issuer = "http://localhost:8080"
+			}),
+		},
+		{
+			name:         "JWT-SVID client_credentials association with an http loopback issuer is admitted with the loopback opt-in",
+			trustDomains: true, clients: true,
+			principal: "spiffe://example.org/ns/default/agent", shouldAdmit: true,
+			mutate: jwtClientCredentials(func(config *mcpv1beta1.EmbeddedAuthServerConfig) {
+				config.Issuer = "http://localhost:8080"
+				config.InsecureAllowConfidentialOverLoopbackHTTP = true
+			}),
+		},
+		{
+			name:         "JWT-SVID token exchange plus X.509 client_credentials on separate associations with insecureAllowHTTP is admitted",
+			trustDomains: true, clients: true,
+			principal: "spiffe://example.org/ns/default/agent", shouldAdmit: true,
+			mutate: jwtTokenExchangePlusX509ClientCredentials(func(config *mcpv1beta1.EmbeddedAuthServerConfig) {
+				config.InsecureAllowHTTP = true
+			}),
+		},
+		{
+			name:         "JWT-SVID token exchange plus X.509 client_credentials on separate associations with an http loopback issuer is admitted without the loopback opt-in",
+			trustDomains: true, clients: true,
+			principal: "spiffe://example.org/ns/default/agent", shouldAdmit: true,
+			mutate: jwtTokenExchangePlusX509ClientCredentials(func(config *mcpv1beta1.EmbeddedAuthServerConfig) {
+				config.Issuer = "http://localhost:8080"
+			}),
+		},
+		{
+			name: "X.509 client_credentials association with insecureAllowHTTP is unaffected", trustDomains: true, clients: true,
+			principal: "spiffe://example.org/ns/default/agent", shouldAdmit: true,
+			mutate: func(config *mcpv1beta1.EmbeddedAuthServerConfig) {
+				config.InsecureAllowHTTP = true
+				config.InboundGrants.SPIFFEClientAuth[0].GrantTypes = []string{"client_credentials"}
 			},
 		},
 		{
@@ -466,4 +567,16 @@ var _ = Describe("MCPExternalAuthConfig SPIFFE CEL validation", func() {
 			Expect(err.Error()).To(ContainSubstring(test.errMatch))
 		})
 	}
+
+	It("defaults grantTypes to token exchange when omitted", func() {
+		config := makeAuthConfig("spiffe-grant-types-default", true, true, "spiffe://example.org/ns/default/agent")
+		config.Spec.EmbeddedAuthServer.InboundGrants.SPIFFEClientAuth[0].GrantTypes = nil
+		Expect(k8sClient.Create(ctx, config)).To(Succeed())
+		DeferCleanup(func() { Expect(k8sClient.Delete(ctx, config)).To(Succeed()) })
+
+		stored := &mcpv1beta1.MCPExternalAuthConfig{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: config.Name, Namespace: config.Namespace}, stored)).To(Succeed())
+		Expect(stored.Spec.EmbeddedAuthServer.InboundGrants.SPIFFEClientAuth[0].GrantTypes).
+			To(Equal([]string{"urn:ietf:params:oauth:grant-type:token-exchange"}))
+	})
 })

@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	stderrors "errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -3696,34 +3697,94 @@ func TestBuildSPIFFETrustDomainRunConfigs(t *testing.T) {
 func TestBuildSPIFFEClientAuthRunConfigs(t *testing.T) {
 	t.Parallel()
 
-	audiences := []string{"https://mcp.example.com"}
-	scopes := []string{"openid"}
-	resources := []string{"https://backend.example.com"}
-	configs := buildSPIFFEClientAuthRunConfigs([]mcpv1beta1.SPIFFEClientConfig{{
-		TrustDomainRef:   "example",
-		PrincipalPattern: "spiffe://example.org/ns/default/agent",
-		ClientID:         "spiffe-client",
-		Methods:          []mcpv1beta1.SPIFFEAuthenticationMethod{mcpv1beta1.SPIFFEAuthenticationMethodX509},
-		Resources:        resources,
-		Audiences:        audiences, //nolint:staticcheck // Exercises the deprecated pass-through.
-		Scopes:           scopes,
-	}})
+	const (
+		tokenExchange     = "urn:ietf:params:oauth:grant-type:token-exchange"
+		clientCredentials = "client_credentials"
+	)
+	tests := []struct {
+		name       string
+		grantTypes []string
+		resources  []string
+		audiences  []string
+		wantGrants []string
+	}{
+		{
+			name:       "token exchange only association",
+			grantTypes: []string{tokenExchange},
+			resources:  []string{"https://backend.example.com"},
+			audiences:  []string{"https://mcp.example.com"},
+			wantGrants: []string{oauthproto.GrantTypeTokenExchange},
+		},
+		{
+			name:       "client credentials only association",
+			grantTypes: []string{clientCredentials},
+			resources:  []string{"https://backend.example.com"},
+			audiences:  []string{"https://mcp.example.com"},
+			wantGrants: []string{oauthproto.GrantTypeClientCredentials},
+		},
+		{
+			name:       "association with both grants",
+			grantTypes: []string{tokenExchange, clientCredentials},
+			resources:  []string{"https://backend.example.com"},
+			audiences:  []string{"https://mcp.example.com"},
+			wantGrants: []string{oauthproto.GrantTypeTokenExchange, oauthproto.GrantTypeClientCredentials},
+		},
+		{
+			name:       "nil grantTypes falls back to token exchange",
+			grantTypes: nil,
+			resources:  []string{"https://backend.example.com"},
+			audiences:  []string{"https://mcp.example.com"},
+			wantGrants: []string{oauthproto.GrantTypeTokenExchange},
+		},
+		{
+			name:       "empty grantTypes falls back to token exchange",
+			grantTypes: []string{},
+			resources:  []string{"https://backend.example.com"},
+			audiences:  []string{"https://mcp.example.com"},
+			wantGrants: []string{oauthproto.GrantTypeTokenExchange},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 
-	require.Len(t, configs, 1)
-	assert.Equal(t, "example", configs[0].TrustDomainRef)
-	assert.Equal(t, "spiffe://example.org/ns/default/agent", configs[0].PrincipalPattern)
-	assert.Equal(t, "spiffe-client", configs[0].ClientID)
-	assert.Equal(t, []authserver.SPIFFEAuthenticationMethod{authserver.SPIFFEAuthenticationMethodX509}, configs[0].Methods)
-	assert.Equal(t, []string{"https://backend.example.com"}, configs[0].Resources)
-	assert.Equal(t, []string{"https://mcp.example.com"}, configs[0].Audiences)
-	assert.Equal(t, []string{"openid"}, configs[0].Scopes)
-	// GrantTypes is not a CRD field; the converter always supplies exactly
-	// the RFC 8693 token-exchange grant.
-	assert.Equal(t, []string{oauthproto.GrantTypeTokenExchange}, configs[0].GrantTypes)
+			scopes := []string{"openid"}
+			source := mcpv1beta1.SPIFFEClientConfig{
+				TrustDomainRef:   "example",
+				PrincipalPattern: "spiffe://example.org/ns/default/agent",
+				ClientID:         "spiffe-client",
+				Methods:          []mcpv1beta1.SPIFFEAuthenticationMethod{mcpv1beta1.SPIFFEAuthenticationMethodX509},
+				Resources:        slices.Clone(tt.resources),
+				Audiences:        tt.audiences, //nolint:staticcheck // Exercises the deprecated pass-through.
+				Scopes:           scopes,
+				GrantTypes:       tt.grantTypes,
+			}
+			configs := buildSPIFFEClientAuthRunConfigs([]mcpv1beta1.SPIFFEClientConfig{source})
 
-	// The runtime type must not retain the CRD object's backing slices.
-	audiences[0] = "https://mutated.example.com"
-	assert.Equal(t, "https://mcp.example.com", configs[0].Audiences[0])
+			require.Len(t, configs, 1)
+			got := configs[0]
+			assert.Equal(t, "example", got.TrustDomainRef)
+			assert.Equal(t, "spiffe://example.org/ns/default/agent", got.PrincipalPattern)
+			assert.Equal(t, "spiffe-client", got.ClientID)
+			assert.Equal(t, []authserver.SPIFFEAuthenticationMethod{authserver.SPIFFEAuthenticationMethodX509}, got.Methods)
+			assert.Equal(t, tt.wantGrants, got.GrantTypes)
+			assert.ElementsMatch(t, tt.resources, got.Resources)
+			assert.Equal(t, tt.audiences, got.Audiences)
+			assert.Equal(t, []string{"openid"}, got.Scopes)
+
+			// The runtime type must not retain the CRD object's backing slices.
+			if len(source.GrantTypes) > 0 {
+				source.GrantTypes[0] = "mutated"
+			}
+			scopes[0] = "mutated"
+			source.Audiences[0] = "https://mutated.example.com" //nolint:staticcheck // Exercises the deprecated pass-through.
+			source.Resources[0] = "https://mutated.example.com"
+			assert.Equal(t, tt.wantGrants, got.GrantTypes)
+			assert.ElementsMatch(t, tt.resources, got.Resources)
+			assert.Equal(t, []string{"openid"}, got.Scopes)
+			assert.NotEqual(t, "https://mutated.example.com", got.Audiences[0])
+		})
+	}
 }
 
 // TestBuildAuthServerRunConfigRejectsUnsupportedSPIFFEBundleSource covers the
@@ -3770,6 +3831,7 @@ func TestBuildAuthServerRunConfigRejectsUnsupportedSPIFFEBundleSource(t *testing
 						Audiences:        []string{"https://mcp.example.com"},
 						Resources:        []string{"https://mcp.example.com"},
 						Scopes:           []string{"openid"},
+						GrantTypes:       []string{"urn:ietf:params:oauth:grant-type:token-exchange"},
 					}},
 				},
 			}, []string{"https://mcp.example.com"}, []string{"openid"}, "https://mcp.example.com")
@@ -3821,7 +3883,8 @@ func TestBuildAuthServerRunConfigSPIFFEResourcesAndScopesValidateOnceDerivedValu
 					// A custom, non-default scope: rejected by
 					// registration.DefaultScopes but valid once the real
 					// ScopesSupported below is consulted.
-					Scopes: []string{"custom:scope"},
+					Scopes:     []string{"custom:scope"},
+					GrantTypes: []string{"urn:ietf:params:oauth:grant-type:token-exchange"},
 				}},
 			},
 		}

@@ -980,9 +980,10 @@ func TestMCPExternalAuthConfig_validateEmbeddedAuthServer(t *testing.T) {
 								// admission-time pre-check fabricated a nil
 								// allowlist/default-scopes set instead of
 								// deferring to reconcile time.
-								Resources: []string{"https://backend.example.com"},
-								Audiences: []string{"https://mcp.example.com"},
-								Scopes:    []string{"custom:scope"},
+								Resources:  []string{"https://backend.example.com"},
+								Audiences:  []string{"https://mcp.example.com"},
+								Scopes:     []string{"custom:scope"},
+								GrantTypes: []string{"urn:ietf:params:oauth:grant-type:token-exchange"},
 							}},
 						},
 					},
@@ -1352,11 +1353,13 @@ func mustEmbeddedAuthServerConfigWithPrincipalPatterns(first, second string) *MC
 							TrustDomainRef: "example", PrincipalPattern: first, ClientID: "spiffe-client-1",
 							Methods:   []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509},
 							Audiences: []string{"https://mcp.example.com"}, Resources: []string{"https://mcp.example.com"}, Scopes: []string{"openid"},
+							GrantTypes: []string{"urn:ietf:params:oauth:grant-type:token-exchange"},
 						},
 						{
 							TrustDomainRef: "example", PrincipalPattern: second, ClientID: "spiffe-client-2",
 							Methods:   []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509},
 							Audiences: []string{"https://mcp.example.com"}, Resources: []string{"https://mcp.example.com"}, Scopes: []string{"openid"},
+							GrantTypes: []string{"urn:ietf:params:oauth:grant-type:token-exchange"},
 						},
 					},
 				},
@@ -1398,7 +1401,8 @@ func mustEmbeddedAuthServerConfigWithResource(resource string) *MCPExternalAuthC
 						ClientID:  "spiffe-client",
 						Methods:   []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509},
 						Audiences: []string{"https://mcp.example.com"}, Scopes: []string{"openid"},
-						Resources: []string{resource},
+						Resources:  []string{resource},
+						GrantTypes: []string{"urn:ietf:params:oauth:grant-type:token-exchange"},
 					}},
 				},
 			},
@@ -1465,6 +1469,7 @@ func TestMCPExternalAuthConfig_ZeroUpstreamAlternatives(t *testing.T) {
 						ClientID:  "spiffe-client",
 						Methods:   []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509},
 						Audiences: []string{"https://mcp.example.com"}, Resources: []string{"https://mcp.example.com"}, Scopes: []string{"openid"},
+						GrantTypes: []string{"urn:ietf:params:oauth:grant-type:token-exchange"},
 					}},
 				},
 			},
@@ -2114,12 +2119,24 @@ func TestEmbeddedAuthServerConfig_ValidateInboundGrants_ConfidentialClientTransp
 				SPIFFEClientAuth: []SPIFFEClientConfig{{
 					TrustDomainRef: "example", PrincipalPattern: "spiffe://example.org/ns/default/agent",
 					ClientID: "spiffe-client", Methods: []SPIFFEAuthenticationMethod{method},
-					Resources: []string{"https://mcp.example.com"}, Scopes: []string{"openid"},
+					Resources: []string{"https://mcp.example.com"},
+					Scopes:    []string{"openid"}, GrantTypes: []string{"client_credentials"},
 				}},
 			},
 		}
 		mutate(&config)
 		return config
+	}
+	splitSPIFFEMethodAndGrant := func(c *EmbeddedAuthServerConfig) {
+		c.SPIFFETrustDomains[0].Methods = []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodJWT, SPIFFEAuthenticationMethodX509}
+		first := &c.InboundGrants.SPIFFEClientAuth[0]
+		first.GrantTypes = []string{"urn:ietf:params:oauth:grant-type:token-exchange"}
+		second := *first
+		second.PrincipalPattern = "spiffe://example.org/ns/default/other"
+		second.ClientID = "spiffe-client-x509"
+		second.Methods = []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509}
+		second.GrantTypes = []string{"client_credentials"}
+		c.InboundGrants.SPIFFEClientAuth = append(c.InboundGrants.SPIFFEClientAuth, second)
 	}
 	tests := []struct {
 		name      string
@@ -2127,17 +2144,46 @@ func TestEmbeddedAuthServerConfig_ValidateInboundGrants_ConfidentialClientTransp
 		expectErr bool
 	}{
 		{
-			name: "SPIFFE JWT association is admitted with insecure HTTP",
+			name: "SPIFFE JWT client_credentials association rejects insecure HTTP",
 			config: spiffeConfig(SPIFFEAuthenticationMethodJWT, func(c *EmbeddedAuthServerConfig) {
 				c.InsecureAllowHTTP = true
 			}),
+			expectErr: true,
 		},
 		{
-			name:   "SPIFFE JWT association is admitted on HTTP loopback without explicit opt in",
-			config: spiffeConfig(SPIFFEAuthenticationMethodJWT, func(*EmbeddedAuthServerConfig) {}),
+			name:      "SPIFFE JWT client_credentials association rejects HTTP loopback without explicit opt in",
+			config:    spiffeConfig(SPIFFEAuthenticationMethodJWT, func(*EmbeddedAuthServerConfig) {}),
+			expectErr: true,
 		},
 		{
-			name: "SPIFFE X.509-only association is unaffected by insecure HTTP",
+			name: "SPIFFE JWT client_credentials association allows HTTP loopback with explicit opt in",
+			config: spiffeConfig(SPIFFEAuthenticationMethodJWT, func(c *EmbeddedAuthServerConfig) {
+				c.InsecureAllowConfidentialOverLoopbackHTTP = true
+			}),
+		},
+		{
+			name: "SPIFFE JWT token-exchange-only association is admitted with insecure HTTP",
+			config: spiffeConfig(SPIFFEAuthenticationMethodJWT, func(c *EmbeddedAuthServerConfig) {
+				c.InsecureAllowHTTP = true
+				c.InboundGrants.SPIFFEClientAuth[0].GrantTypes = []string{"urn:ietf:params:oauth:grant-type:token-exchange"}
+			}),
+		},
+		{
+			name: "SPIFFE JWT token-exchange-only association is admitted on HTTP loopback without explicit opt in",
+			config: spiffeConfig(SPIFFEAuthenticationMethodJWT, func(c *EmbeddedAuthServerConfig) {
+				c.InboundGrants.SPIFFEClientAuth[0].GrantTypes = []string{"urn:ietf:params:oauth:grant-type:token-exchange"}
+			}),
+		},
+		{
+			name: "SPIFFE JWT token exchange plus X.509 client_credentials on separate associations is admitted with insecure HTTP",
+			config: spiffeConfig(SPIFFEAuthenticationMethodJWT, func(c *EmbeddedAuthServerConfig) {
+				c.InsecureAllowHTTP = true
+				c.Issuer = "https://auth.example.com"
+				splitSPIFFEMethodAndGrant(c)
+			}),
+		},
+		{
+			name: "SPIFFE X.509 client_credentials association is unaffected by insecure HTTP",
 			config: spiffeConfig(SPIFFEAuthenticationMethodX509, func(c *EmbeddedAuthServerConfig) {
 				c.InsecureAllowHTTP = true
 				c.Issuer = "https://auth.example.com"
@@ -2401,6 +2447,7 @@ func TestEmbeddedAuthServerConfig_ValidateTLSListener(t *testing.T) {
 		return &InboundGrantsConfig{SPIFFEClientAuth: []SPIFFEClientConfig{{
 			TrustDomainRef: "example", PrincipalPattern: "spiffe://example.org/ns/default/agent",
 			ClientID: "spiffe-client", Methods: []SPIFFEAuthenticationMethod{method},
+			GrantTypes: []string{"client_credentials"},
 		}}}
 	}
 	trustDomains := []SPIFFETrustDomainConfig{{

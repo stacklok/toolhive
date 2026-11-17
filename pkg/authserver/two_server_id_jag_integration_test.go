@@ -40,21 +40,22 @@ type twoServerIDJAG struct {
 }
 
 // redeem presents assertion at AS-2's token endpoint under the JWT-bearer
-// grant, asking for resource.
-func (e *as2Env) redeem(t *testing.T, auth clientAuth, assertion, resource string) tokenResult {
+// grant, asking for xrtIDJAGResource.
+func (e *as2Env) redeem(t *testing.T, auth clientAuth, assertion string) tokenResult {
 	t.Helper()
 	return postToken(t, e.srv.URL, auth, url.Values{
 		"grant_type": {oauthproto.GrantTypeJWTBearer},
 		"assertion":  {assertion},
-		"resource":   {resource},
+		"resource":   {xrtIDJAGResource},
 	})
 }
 
 // startAS2 starts an AS-2 on listener that trusts the AS-1 at as1Issuer. AS-1's
-// JWKS is fetched at the first redemption, so AS-1 may start later. user-1 is
+// JWKS is fetched at the first redemption, so AS-1 may start later. subject is
 // AS-1's sub for the grant's user, bound exactly. The server's own issuer is an
-// accepted audience and is not an allowed audience; the resource is.
-func startAS2(t *testing.T, listener net.Listener, as1Issuer string) *as2Env {
+// accepted audience and is not an allowed audience; the resource is. opts are
+// passed to the embedded server.
+func startAS2(t *testing.T, listener net.Listener, as1Issuer, subject string, opts ...authserverrunner.EmbeddedAuthServerOption) *as2Env {
 	t.Helper()
 	key := newAssertionKey(t, "as2-client-key")
 	jwksFile := filepath.Join(t.TempDir(), "as2-client.jwks")
@@ -85,16 +86,28 @@ func startAS2(t *testing.T, listener net.Listener, as1Issuer string) *as2Env {
 			IssuerPolicies: []authserver.JWTBearerIssuerPolicyRunConfig{{
 				IssuerRef: "as1", MaxAssertionAge: "2m",
 				SubjectBindings: []tokenexchange.JWTBearerSubjectBinding{{
-					Subject: "user-1", AllowedResources: resources,
+					Subject: subject, AllowedResources: resources,
 				}},
 				AcceptedAudiences: []string{issuer},
 			}},
 		}
-	}, nil)
+	}, nil, opts...)
 	return &as2Env{
 		srv: srv, issuer: issuer, embedded: embedded,
 		client: clientAuth{clientID: xrtTargetClientID, key: &key},
 	}
+}
+
+// listenLoopback returns a listener on a free loopback port. The listener is
+// closed when the test ends.
+func listenLoopback(t *testing.T) net.Listener {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	// Closes a listener whose server never started. After a server has
+	// stopped, the second close fails harmlessly and the error is ignored.
+	t.Cleanup(func() { _ = listener.Close() })
+	return listener
 }
 
 // startTwoServerIDJAG is the one two-server harness in this package: AS-1
@@ -113,18 +126,10 @@ func startTwoServerIDJAGWith(
 	t *testing.T, mutate func(cfg *authserver.RunConfig), opts ...authserverrunner.EmbeddedAuthServerOption,
 ) *twoServerIDJAG {
 	t.Helper()
-	listen := func() net.Listener {
-		listener, err := net.Listen("tcp", "127.0.0.1:0")
-		require.NoError(t, err)
-		// Closes a listener whose server never started. After a server has
-		// stopped, the second close fails harmlessly and the error is ignored.
-		t.Cleanup(func() { _ = listener.Close() })
-		return listener
-	}
-	l1, l2 := listen(), listen()
+	l1, l2 := listenLoopback(t), listenLoopback(t)
 	as1Issuer := "http://" + l1.Addr().String()
 
-	as2 := startAS2(t, l2, as1Issuer)
+	as2 := startAS2(t, l2, as1Issuer, "user-1")
 
 	as1 := startXRTServerOn(t, "memory", l1, func(cfg *authserver.RunConfig, _ string) {
 		for _, delegate := range cfg.InboundGrants.TokenExchange.DelegateClients {
@@ -161,7 +166,7 @@ func TestIDJAGRedemptionAcrossTwoServers(t *testing.T) {
 	t.Parallel()
 	h := startTwoServerIDJAG(t)
 
-	res := h.as2.redeem(t, h.as2.client, h.mintIDJAG(t), xrtIDJAGResource)
+	res := h.as2.redeem(t, h.as2.client, h.mintIDJAG(t))
 	require.Equal(t, http.StatusOK, res.status, res.body)
 	access := accessTokenClaims(t, h.as2.embedded, res.str(t, "access_token"))
 	assert.Equal(t, h.as1.issuer+"#user-1", access["sub"], "sub is <AS-1 iss>#<sub>")
@@ -183,7 +188,7 @@ func TestIDJAGRedemptionCarriesActorAcrossTwoServers(t *testing.T) {
 	}, nil).Times(1)
 	h := startTwoServerIDJAGWith(t, setBrokerActorProfile, withActorTestValidator(validator))
 
-	res := h.as2.redeem(t, h.as2.client, h.mintIDJAGWith(t, actorPairWith("actor-token")), xrtIDJAGResource)
+	res := h.as2.redeem(t, h.as2.client, h.mintIDJAGWith(t, actorPairWith("actor-token")))
 	require.Equal(t, http.StatusOK, res.status, res.body)
 	access := accessTokenClaims(t, h.as2.embedded, res.str(t, "access_token"))
 	assert.Equal(t, h.as1.issuer+"#user-1", access["sub"], "sub is <AS-1 iss>#<sub>")

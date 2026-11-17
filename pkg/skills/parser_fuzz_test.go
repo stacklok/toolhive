@@ -27,8 +27,8 @@ func FuzzParseSkillMD(f *testing.F) {
 	})
 }
 
-// FuzzReferenceCheck checks that the SKILL.md body walk never panics on
-// untrusted markdown.
+// FuzzReferenceCheck checks that the SKILL.md body walk and the shell
+// tokenizer never panic on untrusted markdown.
 func FuzzReferenceCheck(f *testing.F) {
 	for _, seed := range []string{
 		"[a](b.md) ![i](x.png) [r][x]\n\n[x]: ../y.md\n",
@@ -42,6 +42,7 @@ func FuzzReferenceCheck(f *testing.F) {
 
 	dir := filepath.Join(f.TempDir(), "sk")
 	f.Fuzz(func(_ *testing.T, body []byte) {
-		_ = newRefChecker(dir, dir).checkReferences(body, 1)
+		_ = newRefChecker(dir, dir, true).checkReferences(body, 1)
+		_ = shellCommands(string(body))
 	})
 }

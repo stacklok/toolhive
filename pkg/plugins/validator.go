@@ -74,7 +74,8 @@ func ValidatePluginDir(path string) (*ValidationResult, error) {
 	// Reuse pkg/skills.Validator for bundled skills. Each manifest.Skills entry
 	// is a relative "./..." path; strip the leading "./" to resolve it under
 	// the plugin directory. WithPluginRoot contains references by the plugin
-	// directory, because the whole plugin tree is installed. Bundled findings
+	// directory and skips the script-direct-exec check, because the whole
+	// plugin tree is installed with executable bits kept. Bundled findings
 	// (errors and warnings) are reported with File relative to the plugin
 	// directory and with the legacy strings prefixed by the bundled skill path.
 	for _, skillPath := range manifest.Skills {

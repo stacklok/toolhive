@@ -79,6 +79,7 @@ share rule IDs; `file` tells them apart.
 | `skill-md-too-long` | warning | `SKILL.md` has more than 500 lines. | `SKILL.md` |
 | `ref-unresolved` | warning | A relative link, image, or link reference definition points at a file that does not exist. | the markdown file |
 | `ref-escapes-root` | warning | A reference leaves the skill directory (the plugin directory for a bundled skill). | the markdown file |
+| `script-direct-exec` | warning | A file shipped in the skill is run directly instead of through an interpreter. Standalone skills only. | the markdown file |
 | `ref-findings-truncated` | warning | Reference checking stopped at a limit (see below). | `SKILL.md` |
 
 ## Reference checks
@@ -96,17 +97,36 @@ definition is reported once, on its own line.
 definitions, resolved against the directory of the file that contains them. A
 link to an existing directory counts as resolved.
 
-**`ref-escapes-root`** checks the same destinations. A standalone skill is
-installed on its own, so `../shared/x.md` does not exist after install. For a
-skill bundled in a plugin the whole plugin is installed, so a reference is
-only reported when it leaves the plugin directory.
+**`ref-escapes-root`** checks the same destinations, plus inline code spans
+that contain `/` and words in fenced or indented code blocks. A standalone
+skill is installed on its own, so `../shared/x.md` does not exist after
+install. For a skill bundled in a plugin the whole plugin is installed, so a
+reference is only reported when it leaves the plugin directory. Paths in code
+are resolved against both the skill directory and the containing file's
+directory, and reported only when both leave the root.
+
+**`script-direct-exec`** reports a command such as `./scripts/run.sh` (also
+after `&&`, `||`, `;`, `|`, `$(`, backticks, variable assignments and `sudo`,
+`env` and similar wrappers) when the file exists in the skill. Standalone skills
+are installed without executable bits, so the command fails; run it through an
+interpreter instead (`bash scripts/run.sh`, `python3 scripts/run.py`). It is
+checked in `bash`, `sh`, `shell`, `zsh`, `console` and untagged fences, indented
+code blocks, and inline code spans whose command starts with `./` (a span that
+only names a file, such as `scripts/run.sh`, is not reported). In `console`
+blocks only lines starting with a `$ ` or `# ` prompt are commands. The check is
+skipped for skills bundled in a plugin, which are installed with executable
+bits.
 
 **Skipped references.** URLs and other schemes, `#anchors`, `<placeholders>`,
-`${VAR}` and `$VAR`, `{{ templates }}`, glob characters (`* [ ] { }`),
-absolute paths, and paths starting with `~`. A `#fragment`, a `?query` and an
-editor-style `:line` or `:line:col` suffix are removed before a path is
-resolved.
+`${VAR}` and `$VAR`, `{{ templates }}`, glob characters (`* ? [ ] { }`),
+absolute paths, and paths starting with `~`. A `#fragment`, a `?query` (in
+links) and an editor-style `:line` or `:line:col` suffix are removed before a
+path is resolved.
 
 **Limits.** At most 100 reference findings and 50 scanned markdown files per
 skill; reaching either adds one `ref-findings-truncated` warning. Linked files
 over 1 MiB, unreadable files, and symlinks are not scanned.
+
+Command detection is a heuristic, not a shell parser: heredocs and complex
+quoting may be misread. Because the rules are warnings, a misread never blocks
+a build or a validation.

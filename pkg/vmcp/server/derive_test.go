@@ -229,7 +229,10 @@ func TestDeriveCoreConfigMapsAllFields(t *testing.T) {
 		vmcpmocks.NewMockElicitationRequester(ctrl),
 	)
 
-	assertAllFieldsPopulated(t, *got, "core.Config", nil)
+	// Scope authorization is available to core embedders; transport configuration
+	// is introduced separately. The existing server path leaves it disabled.
+	assert.Nil(t, got.ScopeAuthorization)
+	assertAllFieldsPopulated(t, *got, "core.Config", map[string]struct{}{"ScopeAuthorization": {}})
 }
 
 // TestDeriveConfigsTreatInputAsReadOnly verifies neither helper mutates cfg. server.New

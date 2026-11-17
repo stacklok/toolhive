@@ -1375,6 +1375,26 @@ embedders and misconfigured gates.
 **Implementation**: `pkg/vmcp/core/core_checks.go`, `pkg/vmcp/server/call_gate.go`,
 `pkg/vmcp/server/serve_handlers.go`, `pkg/vmcp/codemode/decorator.go`, `pkg/mcp/errors.go`
 
+### Incoming scope authorization in the core
+
+Optional `core.Config.ScopeAuthorization` requires incoming-token scopes for
+direct tool calls. `CheckToolCall` and `CallTool` share this decision after Cedar
+admission, using the current identity and exact final advertised tool name.
+Missing scopes do not hide otherwise permitted tools from discovery. Unmapped
+tools retain their existing authorization behavior.
+
+The policy selects one validated claim (`scope` by default), accepts OAuth scope
+strings or arrays of individual tokens, and supports explicit transitive scope
+implications without prefix inference. Core construction validates and deep-copies
+the policy and rejects composite workflows when it is configured. Missing scopes
+produce `vmcp.InsufficientScopeError` with the complete operation requirement;
+malformed claims and Cedar refusals remain ordinary authorization failures.
+
+This core capability is opt-in for library embedders. Gateway configuration and
+HTTP challenge rendering are separate composition responsibilities; existing CLI
+and operator deployments do not enable it yet. The core never forwards backend
+authentication headers or determines which authorization server grants new scopes.
+
 ## Health Monitoring
 
 vMCP monitors backend health with configurable intervals. Health status (healthy, degraded, unhealthy, unauthenticated, unknown) affects routing decisions and is reported in VirtualMCPServer status.

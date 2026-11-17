@@ -569,6 +569,11 @@ privilege — the resulting actor identity still has to clear
 `may_act`, `ExternalActor`, the `client_id` binding, or the configured-
 delegate exemption).
 
+An authenticated SPIFFE client cannot present a distinct actor this way: its
+actor token's `sub` must equal the client's verified SPIFFE ID, or the request
+fails with `invalid_request`. See [SPIFFE association
+declarations](18-spiffe-association-declarations.md).
+
 Plain token exchange is unchanged for every client, including a client with an
 `actor_profile`. The profile applies only to ID-JAG issuance from an exchange
 grant; see [Actor-token validation at ID-JAG issuance](#actor-token-validation-at-id-jag-issuance).

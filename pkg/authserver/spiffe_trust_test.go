@@ -353,13 +353,13 @@ func TestHasSPIFFEJWTAssociation(t *testing.T) {
 	jwtOnly := testSPIFFEAssociation("jwt-client", "openid")
 	jwtOnly.Methods = []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodJWT}
 
-	assert.False(t, hasSPIFFEJWTRunConfigAssociation(nil))
-	assert.False(t, hasSPIFFEJWTRunConfigAssociation(&InboundGrantsRunConfig{
+	assert.False(t, (*RunConfig)(nil).hasSPIFFEMethod(SPIFFEAuthenticationMethodJWT))
+	assert.False(t, (&RunConfig{InboundGrants: &InboundGrantsRunConfig{
 		SPIFFEClientAuth: []SPIFFEClientAuthRunConfig{x509Only},
-	}))
-	assert.True(t, hasSPIFFEJWTRunConfigAssociation(&InboundGrantsRunConfig{
+	}}).hasSPIFFEMethod(SPIFFEAuthenticationMethodJWT))
+	assert.True(t, (&RunConfig{InboundGrants: &InboundGrantsRunConfig{
 		SPIFFEClientAuth: []SPIFFEClientAuthRunConfig{x509Only, jwtOnly},
-	}))
+	}}).hasSPIFFEMethod(SPIFFEAuthenticationMethodJWT))
 	assert.False(t, (*SPIFFETrustConfig)(nil).permitsMethod(SPIFFEAuthenticationMethodJWT))
 
 	trust := func(associations ...SPIFFEClientAuthRunConfig) *SPIFFETrustConfig {

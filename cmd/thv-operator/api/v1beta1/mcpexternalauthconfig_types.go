@@ -1408,7 +1408,7 @@ func applyEffectiveJWTBearer(
 // association allows the JWT-SVID method.
 func (c *EmbeddedAuthServerConfig) hasConfidentialClients(grants effectiveInboundGrants) bool {
 	return c.AllowConfidentialClientRegistration || len(grants.delegateClients) > 0 ||
-		c.hasSPIFFEJWTClientAuth()
+		c.hasSPIFFEMethod(SPIFFEAuthenticationMethodJWT)
 }
 
 // ValidateInboundGrants validates the effective grant projection shared by
@@ -1429,7 +1429,7 @@ func (c *EmbeddedAuthServerConfig) ValidateInboundGrants() error {
 	if err := tokenexchange.ValidateTrustedIssuers(grants.trustedIssuers, c.Issuer, nil); err != nil {
 		return fmt.Errorf("trustedIssuers: %w", err)
 	}
-	if c.hasSPIFFEX509ClientAuth() {
+	if c.hasSPIFFEMethod(SPIFFEAuthenticationMethodX509) {
 		if _, err := authserver.ValidateSPIFFEX509Issuer(c.Issuer); err != nil {
 			return err
 		}
@@ -1477,34 +1477,20 @@ func (c *EmbeddedAuthServerConfig) ValidateTLSListener() error {
 		}
 		return nil
 	}
-	if c.hasSPIFFEX509ClientAuth() {
+	if c.hasSPIFFEMethod(SPIFFEAuthenticationMethodX509) {
 		return fmt.Errorf("tlsListener is required when SPIFFE X.509 client authentication is configured")
 	}
 	return nil
 }
 
-func (c *EmbeddedAuthServerConfig) hasSPIFFEX509ClientAuth() bool {
+// hasSPIFFEMethod reports whether any SPIFFE client association allows method.
+func (c *EmbeddedAuthServerConfig) hasSPIFFEMethod(method SPIFFEAuthenticationMethod) bool {
 	if c.InboundGrants == nil {
 		return false
 	}
-	for _, association := range c.InboundGrants.SPIFFEClientAuth {
-		if slices.Contains(association.Methods, SPIFFEAuthenticationMethodX509) {
-			return true
-		}
-	}
-	return false
-}
-
-func (c *EmbeddedAuthServerConfig) hasSPIFFEJWTClientAuth() bool {
-	if c.InboundGrants == nil {
-		return false
-	}
-	for _, association := range c.InboundGrants.SPIFFEClientAuth {
-		if slices.Contains(association.Methods, SPIFFEAuthenticationMethodJWT) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(c.InboundGrants.SPIFFEClientAuth, func(a SPIFFEClientConfig) bool {
+		return slices.Contains(a.Methods, method)
+	})
 }
 
 func hasLegacyTokenExchangePolicy(issuer TrustedIssuerConfig) bool {

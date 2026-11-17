@@ -669,7 +669,7 @@ func (c *RunConfig) Validate() error {
 // grants, or a SPIFFE association that allows the JWT-SVID method.
 func (c *RunConfig) hasConfidentialClients(normalized *NormalizedInboundGrants) bool {
 	return c.AllowConfidentialClientRegistration || len(normalized.DelegateClients) > 0 ||
-		hasSPIFFEJWTRunConfigAssociation(c.InboundGrants)
+		c.hasSPIFFEMethod(SPIFFEAuthenticationMethodJWT)
 }
 
 // validateSPIFFEX509Listener requires the TLS listener and an https issuer when
@@ -803,17 +803,19 @@ func (c *RunConfig) validateUpstreamFilter() error {
 // HasSPIFFEX509ClientAuth reports whether any SPIFFE client association
 // enables spiffe_x509. A nil *RunConfig returns false.
 func (c *RunConfig) HasSPIFFEX509ClientAuth() bool {
+	return c.hasSPIFFEMethod(SPIFFEAuthenticationMethodX509)
+}
+
+// hasSPIFFEMethod reports whether any SPIFFE client association in the
+// unvalidated run-config form allows method. A nil *RunConfig or nil
+// InboundGrants returns false.
+func (c *RunConfig) hasSPIFFEMethod(method SPIFFEAuthenticationMethod) bool {
 	if c == nil || c.InboundGrants == nil {
 		return false
 	}
-	for _, association := range c.InboundGrants.SPIFFEClientAuth {
-		for _, method := range association.Methods {
-			if method == SPIFFEAuthenticationMethodX509 {
-				return true
-			}
-		}
-	}
-	return false
+	return slices.ContainsFunc(c.InboundGrants.SPIFFEClientAuth, func(a SPIFFEClientAuthRunConfig) bool {
+		return containsSPIFFEAuthenticationMethod(a.Methods, method)
+	})
 }
 
 // validateBaselineClientScopes ensures every entry in BaselineClientScopes is

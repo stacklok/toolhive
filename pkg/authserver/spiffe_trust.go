@@ -251,33 +251,6 @@ func NewSPIFFETrustConfig(
 	return config, nil
 }
 
-// permitsGrant reports whether any association lists grant. It is safe on a
-// nil receiver.
-func (c *SPIFFETrustConfig) permitsGrant(grant string) bool {
-	return slices.ContainsFunc(c.Associations(), func(a SPIFFEClientAuthConfig) bool {
-		return slices.Contains(a.AuthorizationPolicy().GrantTypes(), grant)
-	})
-}
-
-// permitsMethod reports whether any association allows method. It is safe on a
-// nil receiver.
-func (c *SPIFFETrustConfig) permitsMethod(method SPIFFEAuthenticationMethod) bool {
-	return slices.ContainsFunc(c.Associations(), func(a SPIFFEClientAuthConfig) bool {
-		return containsSPIFFEAuthenticationMethod(a.methods, method)
-	})
-}
-
-// hasSPIFFEJWTRunConfigAssociation reports whether any association of the
-// unvalidated run-config form allows the JWT-SVID method.
-func hasSPIFFEJWTRunConfigAssociation(grants *InboundGrantsRunConfig) bool {
-	if grants == nil {
-		return false
-	}
-	return slices.ContainsFunc(grants.SPIFFEClientAuth, func(a SPIFFEClientAuthRunConfig) bool {
-		return containsSPIFFEAuthenticationMethod(a.Methods, SPIFFEAuthenticationMethodJWT)
-	})
-}
-
 // ValidateSPIFFETrust validates SPIFFE trust declarations without fetching
 // bundles or validating credentials.
 func ValidateSPIFFETrust(
@@ -432,6 +405,22 @@ func (c SPIFFEClientAuthConfig) Methods() []SPIFFEAuthenticationMethod {
 // AuthorizationPolicy returns the association policy. Its getters return copies.
 func (c SPIFFEClientAuthConfig) AuthorizationPolicy() SPIFFEAuthorizationPolicy {
 	return c.authorization
+}
+
+// permitsGrant reports whether any association lists grant. It is safe on a
+// nil receiver.
+func (c *SPIFFETrustConfig) permitsGrant(grant string) bool {
+	return slices.ContainsFunc(c.Associations(), func(a SPIFFEClientAuthConfig) bool {
+		return slices.Contains(a.AuthorizationPolicy().GrantTypes(), grant)
+	})
+}
+
+// permitsMethod reports whether any association allows method. It is safe on a
+// nil receiver.
+func (c *SPIFFETrustConfig) permitsMethod(method SPIFFEAuthenticationMethod) bool {
+	return slices.ContainsFunc(c.Associations(), func(a SPIFFEClientAuthConfig) bool {
+		return containsSPIFFEAuthenticationMethod(a.methods, method)
+	})
 }
 
 func (c SPIFFEClientAuthConfig) clone() SPIFFEClientAuthConfig {

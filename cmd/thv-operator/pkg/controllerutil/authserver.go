@@ -388,10 +388,9 @@ func buildSPIFFEBundleSourceRunConfig(
 }
 
 // buildSPIFFEClientAuthRunConfigs converts CRD SPIFFEClientConfig entries to
-// authserver.SPIFFEClientAuthRunConfig. GrantTypes is not a CRD field: the
-// runtime only accepts exactly the RFC 8693 token-exchange grant for a
-// SPIFFE client (validateSPIFFEGrants in pkg/authserver/spiffe_trust.go), so
-// it is always supplied here rather than configured.
+// authserver.SPIFFEClientAuthRunConfig. The CRD does not expose grantTypes,
+// so the RFC 8693 token-exchange grant is always supplied here rather than
+// configured.
 func buildSPIFFEClientAuthRunConfigs(
 	clients []mcpv1beta1.SPIFFEClientConfig,
 ) []authserver.SPIFFEClientAuthRunConfig {

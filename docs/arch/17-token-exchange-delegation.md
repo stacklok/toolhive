@@ -148,7 +148,9 @@ JWT bearer when a trusted issuer enables it, and `client_credentials` when a SPI
 association lists that grant. Token exchange is enabled by a
 delegate client, a legacy trusted-issuer token-exchange policy, an
 `inbound_grants.token_exchange` block, or a SPIFFE association that lists the
-token-exchange grant. A SPIFFE association that lists only `client_credentials`
+token-exchange grant. A config with no `inbound_grants` block at all also has
+it on, because `NormalizeInboundGrants` defaults token exchange to enabled in
+that case. A SPIFFE association that lists only `client_credentials`
 does not enable it. Generic MCP and OIDC authorization-code clients
 cannot use token-only servers: the metadata deliberately lacks the
 authorization-code and PKCE fields those clients require to start an interactive

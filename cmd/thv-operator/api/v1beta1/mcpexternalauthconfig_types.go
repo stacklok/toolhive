@@ -742,10 +742,8 @@ type SPIFFETrustDomainConfig struct {
 // Trust material comes from the declared bundle source (see
 // SPIFFETrustDomainConfig's doc comment).
 //
-// GrantTypes is deliberately not exposed here: the runtime only accepts
-// exactly the RFC 8693 token-exchange grant for a SPIFFE client
-// (validateSPIFFEGrants in pkg/authserver/spiffe_trust.go), so the converter
-// always supplies it instead of letting it be configured.
+// The CRD does not expose grantTypes. The converter always supplies the
+// RFC 8693 token-exchange grant instead of letting it be configured.
 //
 // +kubebuilder:validation:XValidation:rule="self.principalPattern.split('/').all(segment, segment != '.' && segment != '..')",message="principalPattern path must not contain . or .. segments"
 // +kubebuilder:validation:XValidation:rule="has(self.resources) && size(self.resources) > 0",message="resources is required"

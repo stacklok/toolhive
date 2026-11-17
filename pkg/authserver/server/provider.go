@@ -476,7 +476,8 @@ func ValidateConfidentialClientTransport(
 		return nil
 	}
 	if insecureAllowHTTP {
-		return fmt.Errorf("confidential clients (allow_confidential_client_registration or delegate clients) " +
+		return fmt.Errorf("confidential clients (allow_confidential_client_registration, " +
+			"delegate clients or JWT-SVID SPIFFE associations) " +
 			"cannot be combined with insecure_allow_http: " +
 			"client credentials, authorization codes and tokens would cross cleartext HTTP")
 	}
@@ -496,18 +497,21 @@ func ValidateConfidentialClientTransport(
 		return fmt.Errorf("confidential clients require a valid issuer URL")
 	}
 	if insecureAllowConfidentialOverLoopbackHTTP && !networking.IsLocalhost(parsed.Host) {
-		return fmt.Errorf("confidential clients (allow_confidential_client_registration or delegate clients) " +
+		return fmt.Errorf("confidential clients (allow_confidential_client_registration, " +
+			"delegate clients or JWT-SVID SPIFFE associations) " +
 			"cannot use the loopback HTTP opt-in with a non-loopback issuer: " +
 			"client credentials, authorization codes and tokens would cross cleartext HTTP")
 	}
 	if !insecureAllowConfidentialOverLoopbackHTTP && networking.IsLocalhost(parsed.Host) {
-		return fmt.Errorf("confidential clients (allow_confidential_client_registration or delegate clients) " +
+		return fmt.Errorf("confidential clients (allow_confidential_client_registration, " +
+			"delegate clients or JWT-SVID SPIFFE associations) " +
 			"cannot be combined with a plain-HTTP loopback issuer unless " +
 			"insecure_allow_confidential_over_loopback_http is set: " +
 			"client credentials, authorization codes and tokens would cross cleartext HTTP")
 	}
 	if !networking.IsLocalhost(parsed.Host) {
-		return fmt.Errorf("confidential clients (allow_confidential_client_registration or delegate clients) " +
+		return fmt.Errorf("confidential clients (allow_confidential_client_registration, " +
+			"delegate clients or JWT-SVID SPIFFE associations) " +
 			"cannot use a plain-HTTP non-loopback issuer: " +
 			"client credentials, authorization codes and tokens would cross cleartext HTTP")
 	}

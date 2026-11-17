@@ -179,8 +179,8 @@ func TestEmbeddedAuthServer_SPIFFEX509ClientAuthOverTLS(t *testing.T) {
 }
 
 // TestEmbeddedAuthServer_SPIFFEClientCannotRedeemIDJAG proves a SPIFFE
-// association client, which is restricted to token exchange, is refused when it
-// redeems an ID-JAG through the jwt-bearer grant, while a delegate client that
+// association client, whose grant_types never include jwt-bearer, is refused when
+// it redeems an ID-JAG through the jwt-bearer grant, while a delegate client that
 // lists jwt-bearer redeems the same kind of assertion over the same listener.
 func TestEmbeddedAuthServer_SPIFFEClientCannotRedeemIDJAG(t *testing.T) {
 	t.Parallel()

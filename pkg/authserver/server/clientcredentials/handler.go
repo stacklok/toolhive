@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-FileCopyrightText: Copyright 2026 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
 // Package clientcredentials provides SPIFFE-bound client credentials handling.
@@ -34,9 +34,10 @@ type Handler struct {
 // that permit client_credentials.
 func Factory() server.Factory {
 	return func(config *server.AuthorizationServerConfig, storage fosite.Storage, strategy any) (any, error) {
-		stock, ok := compose.OAuth2ClientCredentialsGrantFactory(config.Config, storage, strategy).(fosite.TokenEndpointHandler)
+		created := compose.OAuth2ClientCredentialsGrantFactory(config.Config, storage, strategy)
+		stock, ok := created.(fosite.TokenEndpointHandler)
 		if !ok {
-			return nil, fmt.Errorf("fosite client credentials factory returned %T, not a token endpoint handler", stock)
+			return nil, fmt.Errorf("fosite client credentials factory returned %T, not a token endpoint handler", created)
 		}
 		return &Handler{stock: stock, allowedAudiences: config.AllowedAudiences}, nil
 	}

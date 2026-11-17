@@ -635,11 +635,12 @@ func (c *RunConfig) Validate() error {
 	// included. They send no secret, but unlike token-exchange-only DCR
 	// private_key_jwt clients they can hold authorization_code and refresh_token
 	// grants, so codes and long-lived tokens would cross plain HTTP. jti replay
-	// checks and the 5-minute assertion cap already limit a captured assertion;
-	// this is a conservative choice, matches the CRD CEL rules, and can be
-	// relaxed later (for example for an in-cluster HTTP issuer). SPIFFE
-	// associations that allow the JWT-SVID method count too: the JWT-SVID is a
-	// bearer credential sent in the clear over plain HTTP.
+	// checks and the 5-minute assertion cap already limit a captured assertion
+	// (neither applies to JWT-SVIDs: there is no jti check, and the cap is six
+	// minutes of remaining validity). This is a conservative choice, matches the
+	// CRD CEL rules, and can be relaxed later (for example for an in-cluster
+	// HTTP issuer). SPIFFE associations that allow the JWT-SVID method count
+	// too: the JWT-SVID is a bearer credential sent in the clear over plain HTTP.
 	if err := ValidateConfidentialClientTransport(
 		c.hasConfidentialClients(normalized), c.InsecureAllowHTTP,
 		c.Issuer, c.InsecureAllowConfidentialOverLoopbackHTTP); err != nil {

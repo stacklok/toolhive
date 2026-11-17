@@ -198,7 +198,9 @@ func runDelegatedAgentFlow(t *testing.T, f *flow) {
 		}, calls[0])
 
 		// The run's ID-JAG is capped by the agent credential and takes the schedule's owner.
-		shortExp := time.Now().Add(20 * time.Second)
+		// The credential must expire before the ID-JAG's own 60 s lifetime, or the cap
+		// would not bind; 40 s leaves time for the redemption step below to run first.
+		shortExp := time.Now().Add(40 * time.Second)
 		a.setShortExp(shortExp)
 		mark = a.callCount()
 		res = f.as1Env.requestIDJAGWith(t, broker, f.run, f.as2Issuer, actorPairWith("accept-short"))
@@ -375,11 +377,15 @@ func runDelegatedAgentFlow(t *testing.T, f *flow) {
 		require.Equal(t, http.StatusOK, res.status, res.body)
 		s2 := res.str(t, "access_token")
 		a.setRevokeTarget(s2)
-		// Known gap: the grant is not read again after the validator, so a revoke that
-		// lands during it still issues this one ID-JAG. This pins today's behaviour;
-		// re-reading the grant after the validator would flip it. A client can
-		// drop such an ID-JAG by re-checking its own session after the exchange;
-		// the server does not stop it.
+		// Known gap, described in docs/arch/17 (Grant reuse and revocation): the grant is
+		// not read again after the validator, so a revoke that lands during it still
+		// issues this one ID-JAG. It is bounded: the grant was checked just before the
+		// validator ran, the ID-JAG starts when the validator's answer is checked, and
+		// it lives 60 s. This pins today's behaviour; re-reading the grant after the
+		// validator would flip it. Nothing revokes a grant outside tests yet, so decide
+		// the re-read with the revocation work: RFC 7009 token revocation endpoint
+		// (#6966), Per-user revocation time for grants issued by token exchange
+		// (#6972), and Revoke the grant a reused subject token created (#6973).
 		res = f.as1Env.requestIDJAGWith(t, broker, s2, xrtTargetPlain, actorPairWith("revoke-during"))
 		require.Equal(t, http.StatusOK, res.status, res.body)
 
@@ -629,28 +635,32 @@ func (a *flowActor) validate(ctx context.Context, req tokenexchange.ActorRequest
 		}
 	case "revoke-during":
 		if env == nil {
-			a.t.Errorf("revoke-during before the actor has an env")
+			a.report(ctx, "revoke-during before the actor has an env")
 			return tokenexchange.ActorResult{}, errors.New("flow actor has no env")
 		}
 		grants, ok := storage.Unwrap(env.store).(storage.ExchangeGrantStorage)
 		if !ok {
-			a.t.Errorf("the store does not hold exchange grants")
+			a.report(ctx, "the store does not hold exchange grants")
 			return tokenexchange.ActorResult{}, errors.New("no exchange grant storage")
 		}
 		if err := grants.RevokeExchangeGrant(ctx, tokenSignature(revokeTarget), time.Now()); err != nil {
-			// A validator call that outlives its request (the server does not
-			// wait for it after the validator timeout) fails here with a
-			// cancelled context, possibly after the test has finished, and
-			// t.Errorf then panics. The request's own failure reports it.
-			if ctx.Err() == nil {
-				a.t.Errorf("revoke during the validator: %v", err)
-			}
+			a.report(ctx, "revoke during the validator: %v", err)
 			return tokenexchange.ActorResult{}, err
 		}
 		return accept, nil
 	default:
-		a.t.Errorf("unexpected actor_token of length %d", len(req.ActorToken))
+		a.report(ctx, "unexpected actor_token of length %d", len(req.ActorToken))
 		return tokenexchange.ActorResult{}, errors.New("unexpected actor_token")
+	}
+}
+
+// report fails the test from the validator's goroutine. It stays silent once ctx
+// is cancelled: the server does not wait for a validator call after the validator
+// timeout, so a late call can run after the test has finished, and t.Errorf then
+// panics. The request's own failure reports the problem in that case.
+func (a *flowActor) report(ctx context.Context, format string, args ...any) {
+	if ctx.Err() == nil {
+		a.t.Errorf(format, args...)
 	}
 }
 

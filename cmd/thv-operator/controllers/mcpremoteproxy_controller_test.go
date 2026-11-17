@@ -1552,6 +1552,116 @@ func TestMCPRemoteProxyReconciler_OBOWithoutIncomingAuthIsTerminal(t *testing.T)
 	}
 }
 
+// TestMCPRemoteProxyReconciler_handleExternalAuthConfig_DoesNotFlapLastTransitionTime
+// is the MCPRemoteProxy analogue of the MCPServer guard of the same name:
+// mirrorInvalidOnRemoteProxy's clear branch must leave the healthy True
+// condition and the single-upstream check's failure in place, or
+// handleExternalAuthConfig re-adds them with a fresh LastTransitionTime on
+// every reconcile.
+func TestMCPRemoteProxyReconciler_handleExternalAuthConfig_DoesNotFlapLastTransitionTime(t *testing.T) {
+	t.Parallel()
+
+	const (
+		authName   = "auth"
+		namespace  = "default"
+		configHash = "config-hash"
+		generation = int64(3)
+	)
+
+	healthySource := func() *mcpv1beta1.MCPExternalAuthConfig {
+		return &mcpv1beta1.MCPExternalAuthConfig{
+			ObjectMeta: metav1.ObjectMeta{Name: authName, Namespace: namespace},
+			Spec:       mcpv1beta1.MCPExternalAuthConfigSpec{Type: mcpv1beta1.ExternalAuthTypeUnauthenticated},
+			Status: mcpv1beta1.MCPExternalAuthConfigStatus{
+				ConfigHash: configHash,
+				Conditions: []metav1.Condition{{
+					Type:   mcpv1beta1.ConditionTypeValid,
+					Status: metav1.ConditionTrue,
+					Reason: "ValidationSucceeded",
+				}},
+			},
+		}
+	}
+	multiUpstreamSource := func() *mcpv1beta1.MCPExternalAuthConfig {
+		source := healthySource()
+		source.Spec = mcpv1beta1.MCPExternalAuthConfigSpec{
+			Type: mcpv1beta1.ExternalAuthTypeEmbeddedAuthServer,
+			EmbeddedAuthServer: &mcpv1beta1.EmbeddedAuthServerConfig{UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{
+				{Name: "first", Type: mcpv1beta1.UpstreamProviderTypeOIDC},
+				{Name: "second", Type: mcpv1beta1.UpstreamProviderTypeOIDC},
+			}},
+		}
+		return source
+	}
+
+	tests := []struct {
+		name        string
+		source      *mcpv1beta1.MCPExternalAuthConfig
+		seeded      metav1.Condition
+		expectError bool
+	}{
+		{
+			name:   "healthy ExternalAuthConfigValid condition",
+			source: healthySource(),
+			seeded: metav1.Condition{
+				Status:  metav1.ConditionTrue,
+				Reason:  mcpv1beta1.ConditionReasonMCPRemoteProxyExternalAuthConfigValid,
+				Message: "MCPExternalAuthConfig 'auth' is valid",
+			},
+		},
+		{
+			name:   "multi-upstream failure owned by the single-upstream check",
+			source: multiUpstreamSource(),
+			seeded: metav1.Condition{
+				Status:  metav1.ConditionFalse,
+				Reason:  mcpv1beta1.ConditionReasonMCPRemoteProxyExternalAuthConfigMultiUpstream,
+				Message: "MCPRemoteProxy supports only one upstream provider (found 2); use VirtualMCPServer for multi-upstream",
+			},
+			expectError: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Seeded well in the past: metav1.Time has second resolution, so a
+			// remove-then-re-add within one reconcile is only observable against a
+			// timestamp that predates the test run.
+			seeded := tt.seeded
+			seeded.Type = mcpv1beta1.ConditionTypeMCPRemoteProxyExternalAuthConfigValidated
+			seeded.ObservedGeneration = generation
+			seeded.LastTransitionTime = metav1.NewTime(time.Now().Add(-time.Hour).Truncate(time.Second))
+
+			proxy := v1beta1test.NewMCPRemoteProxy("proxy", namespace,
+				v1beta1test.WithRemoteProxyURL("https://remote.example.com"),
+				v1beta1test.WithRemoteProxyExternalAuthConfigRef(authName),
+				v1beta1test.WithRemoteProxyStatus(mcpv1beta1.MCPRemoteProxyStatus{
+					ExternalAuthConfigHash: configHash,
+					Conditions:             []metav1.Condition{seeded},
+				}),
+				v1beta1test.MutateRemoteProxy(func(p *mcpv1beta1.MCPRemoteProxy) {
+					p.Generation = generation
+				}),
+			)
+			reconciler, _ := newTestMCPRemoteProxyReconciler(t, proxy, tt.source)
+
+			err := reconciler.handleExternalAuthConfig(t.Context(), proxy)
+			if tt.expectError {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+			}
+
+			condition := meta.FindStatusCondition(proxy.Status.Conditions,
+				mcpv1beta1.ConditionTypeMCPRemoteProxyExternalAuthConfigValidated)
+			require.NotNil(t, condition)
+			assert.Equal(t, seeded, *condition,
+				"an unchanged condition must not be removed and re-added with a fresh LastTransitionTime")
+		})
+	}
+}
+
 func TestGetExternalAuthConfigForMCPRemoteProxy(t *testing.T) {
 	t.Parallel()
 

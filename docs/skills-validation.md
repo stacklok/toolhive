@@ -77,3 +77,36 @@ share rule IDs; `file` tells them apart.
 | `bundled-skill-unreadable` | error | A skill listed in the plugin manifest cannot be read. | the bundled skill directory |
 | `allowed-tools-comma` | warning | `allowed-tools` is comma-delimited instead of space-delimited. | `SKILL.md` |
 | `skill-md-too-long` | warning | `SKILL.md` has more than 500 lines. | `SKILL.md` |
+| `ref-unresolved` | warning | A relative link, image, or link reference definition points at a file that does not exist. | the markdown file |
+| `ref-escapes-root` | warning | A reference leaves the skill directory (the plugin directory for a bundled skill). | the markdown file |
+| `ref-findings-truncated` | warning | Reference checking stopped at a limit (see below). | `SKILL.md` |
+
+## Reference checks
+
+The reference rules catch mistakes that pass the other checks but break once
+the skill is installed. They are warnings: they never make a skill invalid.
+
+**What is scanned.** `SKILL.md`, then every relative `.md` or `.markdown` file
+it links to inside the skill directory, following links from file to file. Each
+file is scanned once. Line numbers count from the top of the file, frontmatter
+included. Inline links are reported at every occurrence; a link reference
+definition is reported once, on its own line.
+
+**`ref-unresolved`** checks link and image destinations and link reference
+definitions, resolved against the directory of the file that contains them. A
+link to an existing directory counts as resolved.
+
+**`ref-escapes-root`** checks the same destinations. A standalone skill is
+installed on its own, so `../shared/x.md` does not exist after install. For a
+skill bundled in a plugin the whole plugin is installed, so a reference is
+only reported when it leaves the plugin directory.
+
+**Skipped references.** URLs and other schemes, `#anchors`, `<placeholders>`,
+`${VAR}` and `$VAR`, `{{ templates }}`, glob characters (`* [ ] { }`),
+absolute paths, and paths starting with `~`. A `#fragment`, a `?query` and an
+editor-style `:line` or `:line:col` suffix are removed before a path is
+resolved.
+
+**Limits.** At most 100 reference findings and 50 scanned markdown files per
+skill; reaching either adds one `ref-findings-truncated` warning. Linked files
+over 1 MiB, unreadable files, and symlinks are not scanned.

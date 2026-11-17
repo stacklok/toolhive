@@ -64,29 +64,25 @@ func ValidateSkillDir(path string, opts ...ValidateOption) (*ValidationResult, e
 	for _, opt := range opts {
 		opt(&cfg)
 	}
-	root := path
+	root, skillRel := path, "."
 	if cfg.pluginRoot != "" {
 		root = filepath.Clean(cfg.pluginRoot)
 		// ValidatePluginDir only passes manifest paths that parsePluginManifest
 		// has already checked for "..", so this cannot fire through it; it
 		// guards direct callers.
-		if !filepath.IsAbs(root) || !within(root, path) {
+		rel, ok := relWithin(root, path)
+		if !filepath.IsAbs(root) || !ok {
 			return nil, fmt.Errorf("plugin root %q must be an absolute path containing %q", cfg.pluginRoot, path)
 		}
+		skillRel = filepath.ToSlash(rel)
 	}
 
 	res, err := validateSkillDir(path, root)
 	if err != nil {
 		return nil, err
 	}
-	if root != path {
-		rel, err := filepath.Rel(root, path)
-		if err != nil {
-			return nil, fmt.Errorf("resolving skill path in plugin: %w", err)
-		}
-		for i := range res.Findings {
-			res.Findings[i].File = pathpkg.Join(filepath.ToSlash(rel), res.Findings[i].File)
-		}
+	for i := range res.Findings {
+		res.Findings[i].File = pathpkg.Join(skillRel, res.Findings[i].File)
 	}
 	return res, nil
 }

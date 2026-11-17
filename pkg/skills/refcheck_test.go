@@ -7,11 +7,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/yuin/goldmark/ast"
 )
 
 // refFrontmatter is the SKILL.md frontmatter used by reference tests; the
@@ -238,6 +240,19 @@ func TestValidateSkillDir_ReferenceLimits(t *testing.T) {
 		assert.Equal(t, []refHit{{RuleRefFindingsTruncated, "SKILL.md", 0}}, refHits(t, dir))
 	})
 
+	t.Run("unreadable file is skipped", func(t *testing.T) {
+		t.Parallel()
+		if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+			t.Skip("file mode 0000 does not block reads on Windows or for root")
+		}
+		dir := makeSkillDir(t, "sk", refFrontmatter+"[locked](locked.md)\n")
+		writeTree(t, dir, map[string]string{"locked.md": "[gone](gone.md)\n"})
+		locked := filepath.Join(dir, "locked.md")
+		require.NoError(t, os.Chmod(locked, 0o000))
+		t.Cleanup(func() { _ = os.Chmod(locked, 0o600) })
+		assert.Empty(t, refHits(t, dir))
+	})
+
 	t.Run("oversized file is not scanned", func(t *testing.T) {
 		t.Parallel()
 		dir := makeSkillDir(t, "sk", refFrontmatter+"[big](big.md)\n")
@@ -288,4 +303,16 @@ func TestValidateSkillDir_PluginRootInvalid(t *testing.T) {
 			assert.Contains(t, err.Error(), "plugin root")
 		})
 	}
+}
+
+func TestRefPositionFallbacks(t *testing.T) {
+	t.Parallel()
+
+	// A node outside any document has no text and no enclosing block, and a
+	// block without lines has no position: both report an unknown offset,
+	// which maps to line 0.
+	assert.Equal(t, -1, inlineOffset(ast.NewLink()))
+	assert.Equal(t, -1, blockOffset(ast.NewParagraph()))
+	assert.Equal(t, 0, newLineIndex([]byte("a\nb\n"), 5).at(-1))
+	assert.Equal(t, 6, newLineIndex([]byte("a\nb\n"), 5).at(2))
 }

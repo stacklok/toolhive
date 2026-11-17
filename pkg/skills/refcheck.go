@@ -176,11 +176,9 @@ func (c *refChecker) truncate(reason, msg string) {
 }
 
 // relFile returns file as a slash-separated path relative to the skill dir.
+// Only SKILL.md and files queued after a within(c.skillDir) check are scanned.
 func (c *refChecker) relFile(file string) string {
-	rel, err := filepath.Rel(c.skillDir, file)
-	if err != nil {
-		return filepath.ToSlash(file)
-	}
+	rel, _ := relWithin(c.skillDir, file)
 	return filepath.ToSlash(rel)
 }
 
@@ -208,8 +206,18 @@ func refTarget(raw string) (string, bool) {
 
 // within reports whether p is root or inside it. Both must be clean.
 func within(root, p string) bool {
+	_, ok := relWithin(root, p)
+	return ok
+}
+
+// relWithin returns p relative to root, and whether p is root or inside it.
+// Both must be clean.
+func relWithin(root, p string) (string, bool) {
 	rel, err := filepath.Rel(root, p)
-	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", false
+	}
+	return rel, true
 }
 
 // inlineOffset returns the source offset of an inline node: its first text

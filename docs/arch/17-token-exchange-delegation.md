@@ -1863,6 +1863,7 @@ client receives them.
 | `expires_at` in the past, fractional, or not a number | `invalid_authorization_details` | `invalid_expires_at` |
 | Kind of token not enabled for the client | `invalid_authorization_details` | `token_type_not_permitted` |
 | Subject token expired, invalid, or not a login token (delegated, external, no upstream session, no `client_id` or `jti`) | `invalid_request` | `subject_token_invalid` |
+| Subject token carries the delegated-access marker (see [Delegated-access marker](#delegated-access-marker)) | `invalid_request` | `subject_token_delegated_access` |
 | Subject token's `aud` has none of the client's `subject_token_audiences`, or it was issued to a client that is not in `allowed_source_clients` (this includes the exchanging client itself) | `invalid_request` | `subject_token_audience` or `subject_token_source_client` |
 | Subject token's scope has neither `offline_access` nor `offline` | `invalid_request` | `subject_token_offline_access` |
 | Subject token already used | `invalid_request` | `token_used` |
@@ -1873,9 +1874,9 @@ client receives them.
 
 Checks run in this order, after the public-client, grant, subject-type and feature
 checks: request parameters, then `authorization_details` presence and parsing,
-then the subject token (validation, then the login-subject checks), then the
-entry content. A request with an expired subject token and a bad entry therefore
-gets the subject-token error.
+then the subject token (validation, then the delegated-access marker refusal, then
+the login-subject checks), then the entry content. A request with an expired
+subject token and a bad entry therefore gets the subject-token error.
 
 A subject token that is expired, invalid, or not a login token gets
 `error_description` `subject_token_invalid`. A fresh login access token fixes
@@ -1888,6 +1889,10 @@ refreshed access token keeps its original scopes. The user must sign in again,
 and the source client must request `offline_access` or `offline` at sign-in. A
 source client that is not registered for the scope cannot request it: sign-in
 fails with `invalid_scope`.
+`subject_token_delegated_access` is not a retry either: the token is a
+delegated-access token (see [Delegated-access marker](#delegated-access-marker)),
+and refreshing it only yields another one. The client must present a user's login
+access token instead.
 
 This path uses `invalid_request` for an expired subject token and for a disallowed
 source client, as RFC 8693 section 2.2.2 requires. The access-token handler uses
@@ -2165,7 +2170,8 @@ The server stops at the first check that fails:
 6. For a client with an actor profile: the actor validator, called once, after
    every check above (see [Why the validator is last](#why-the-validator-is-last)).
    Its answer sets `act` and `iat` and caps `exp`. The bounds check and signing
-   follow.
+   follow. Just before the call, an actor token that is a delegated-access token
+   is refused (see [Delegated-access marker](#delegated-access-marker)).
 
 An `error_description` is either a *stable reason*, the whole text, which is
 safe to match on, or a *hint* that can change (match on `error`). Grant problems
@@ -2552,6 +2558,7 @@ The last column is the reason on the Warn line of the log.
 | --- | --- | --- |
 | Refusal `actor_token_expired`, `approval_required` or `denied` | 400 `invalid_request`, with the reason | The same reason |
 | `ExpiresAt` at or before the check, less than 60 seconds earlier | 400 `invalid_request`, `actor_token_expired` | `actor_token_expired` |
+| Actor token is a delegated-access token this server issued (see [Delegated-access marker](#delegated-access-marker)) | 400 `invalid_request`, `actor_token_delegated_access` | `actor_token_delegated_access` |
 | Missing or wrong actor parameters (see [Required actor parameters](#required-actor-parameters)) | 400 `invalid_request`, with the hint | `request_parameter_refused` |
 | Plain error, or a refusal ToolHive cannot read | 500 `server_error`, hint "The actor token could not be validated." | `actor_validator_error` |
 | AgentID in neither form, or `ExpiresAt` zero or 60 seconds or more earlier | 500 `server_error`, the same hint | `actor_result_invalid` |
@@ -2596,6 +2603,54 @@ could still approve it, `denied` otherwise). A validator that only checks the
 credential's signature would let a client pair any user's grant with any
 agent's credential. ID-JAG -06 §9.10 asks profiles to say who authorizes this
 relationship; in ToolHive it is the validator.
+
+## Delegated-access marker
+
+The claim `https://toolhive.dev/claims/delegated_access` marks an access token
+issued through an approved delegated redemption. A gateway that holds a user's
+stored upstream credentials may read them for a marked token. Nothing in the
+shape of `sub` can say this: a synthetic subject, made for an upstream provider
+with no userinfo endpoint, looks like a real one.
+
+**Meaning.** Consumers check only that the claim is present and never read its
+value. The marker counts only on a token the embedded authorization server
+issued and the consumer validated against that server's own keys. The same claim
+on a token from any other issuer means nothing to a consumer. Middleware sees
+the claim in the validated raw claims, but it is left out of `Identity.Claims`,
+and so out of webhook payloads and audit output, like `tsid`.
+
+**A marked token is terminal.** A marked token is never exchanged into another
+token, so the marker cannot become a token that lives longer or names another
+party. Each refusal runs after signature validation and before any other claim
+of the token is used:
+
+| Where | Client sees |
+| --- | --- |
+| RFC 8693 exchange, as `subject_token` | 400 `invalid_request`, hint "The subject token is a delegated-access token and cannot be exchanged." |
+| RFC 8693 exchange, as `actor_token` | 400 `invalid_request`, hint "The actor token is a delegated-access token and cannot be exchanged." |
+| Opening an exchange grant, as `subject_token` | 400 `invalid_request`, `subject_token_delegated_access` |
+| ID-JAG issuance, as `actor_token`, before the actor validator is called | 400 `invalid_request`, `actor_token_delegated_access` |
+
+The grant-opening refusal runs right after validation, before any other claim is
+read, so it does not depend on the `act` and no-upstream-session claims a
+redeemed token also carries.
+
+On the RFC 8693 `subject_token` path, whose validator also accepts trusted external
+issuers, a token with the claim from such an issuer is refused the same way as a
+self-issued one, since no issuer may pass the marker on. The RFC 8693
+`actor_token` and grant-opening paths validate against this server's own keys
+only, so a token from another issuer fails there as an invalid token before the
+marker is read.
+
+At ID-JAG issuance the actor token is opaque to ToolHive, because the client's
+validator decides on it. ToolHive checks only the signature against its own keys
+and the issuer: a marked token it signed is refused even when it has expired or
+names another audience, because a verified signature is enough to refuse a token,
+though not to accept one. A token it did not sign goes to the validator unchanged.
+This costs one signature check per ID-JAG request with an actor token.
+
+The authorization server issues no marker yet. The refusals are in place first
+so that no marked token can ever be exchanged.
 
 ## Implementation
 

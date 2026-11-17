@@ -240,6 +240,26 @@ func (v *SelfIssuedTokenValidator) Validate(_ context.Context, rawToken string) 
 	return buildValidatedClaims(standardClaims, extraClaims), nil
 }
 
+// signedByThisServer parses rawToken and returns its claims when the signature
+// verifies against this server's keys and iss equals this server's issuer. It
+// checks nothing else: not exp, aud, sub, typ, id-token shape or may_act. That
+// is enough to trust the token's claims to refuse it, never to accept it, which
+// is why it is separate from Validate.
+func (v *SelfIssuedTokenValidator) signedByThisServer(rawToken string) (*ValidatedClaims, error) {
+	parsedToken, err := jwt.ParseSigned(rawToken, allowedSignatureAlgorithms)
+	if err != nil {
+		return nil, fmt.Errorf("token is not a valid JWT: %w", err)
+	}
+	standardClaims, extraClaims, _, err := verifySignature(parsedToken, v.publicJWKS)
+	if err != nil {
+		return nil, err
+	}
+	if standardClaims.Issuer != v.issuer {
+		return nil, fmt.Errorf("token was not issued by this server")
+	}
+	return buildValidatedClaims(standardClaims, extraClaims), nil
+}
+
 // rejectIDJAGType refuses a token whose JOSE typ header is the ID-JAG type. It
 // is called from SelfIssuedTokenValidator.Validate and
 // MultiIssuerTokenValidator.validateExternalToken. That covers the

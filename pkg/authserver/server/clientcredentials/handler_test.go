@@ -284,12 +284,12 @@ func TestHandlerCapsAccessTokenAtCredentialExpiry(t *testing.T) {
 		name string
 		// credentialIn is the credential's remaining validity.
 		credentialIn time.Duration
-		// wantIn is the expected access-token lifetime, within a few seconds.
-		wantIn    time.Duration
-		wantError bool
+		// wantExpiresIn is the expected access-token lifetime, within a few seconds.
+		wantExpiresIn time.Duration
+		wantError     bool
 	}{
-		{name: "credential sooner than the access-token lifespan caps the token", credentialIn: 5 * time.Minute, wantIn: 5 * time.Minute},
-		{name: "credential outliving the access-token lifespan leaves the lifespan", credentialIn: 24 * time.Hour, wantIn: lifespan},
+		{name: "credential sooner than the access-token lifespan caps the token", credentialIn: 5 * time.Minute, wantExpiresIn: 5 * time.Minute},
+		{name: "credential outliving the access-token lifespan leaves the lifespan", credentialIn: 24 * time.Hour, wantExpiresIn: lifespan},
 		{name: "expired credential is refused", credentialIn: -time.Second, wantError: true},
 	}
 	for _, tt := range tests {
@@ -310,7 +310,7 @@ func TestHandlerCapsAccessTokenAtCredentialExpiry(t *testing.T) {
 				return
 			}
 			require.NoError(t, err)
-			assert.InDelta(t, tt.wantIn.Seconds(),
+			assert.InDelta(t, tt.wantExpiresIn.Seconds(),
 				time.Until(req.GetSession().GetExpiresAt(fosite.AccessToken)).Seconds(), 5)
 		})
 	}

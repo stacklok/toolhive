@@ -340,16 +340,16 @@ func TestSPIFFEClientCredentialsTokenLifetime(t *testing.T) {
 	}
 
 	tests := []struct {
-		name      string
-		form      url.Values
-		peer      *x509.Certificate
-		wantIn    time.Duration
-		wantError string
+		name          string
+		form          url.Values
+		peer          *x509.Certificate
+		wantExpiresIn time.Duration
+		wantError     string
 	}{
-		{name: "JWT-SVID with a minute left caps the token", form: jwtForm(t, time.Minute), wantIn: time.Minute},
+		{name: "JWT-SVID with a minute left caps the token", form: jwtForm(t, time.Minute), wantExpiresIn: time.Minute},
 		{name: "JWT-SVID within the parser leeway after exp is refused", form: jwtForm(t, -30*time.Second), wantError: "invalid_grant"},
-		{name: "short-lived X.509-SVID caps the token", form: x509Form, peer: f.shortLeaf, wantIn: 5 * time.Minute},
-		{name: "X.509-SVID outliving the lifespan leaves the access-token lifespan", form: x509Form, peer: f.leaf, wantIn: time.Hour},
+		{name: "short-lived X.509-SVID caps the token", form: x509Form, peer: f.shortLeaf, wantExpiresIn: 5 * time.Minute},
+		{name: "X.509-SVID outliving the lifespan leaves the access-token lifespan", form: x509Form, peer: f.leaf, wantExpiresIn: time.Hour},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -369,14 +369,14 @@ func TestSPIFFEClientCredentialsTokenLifetime(t *testing.T) {
 			require.True(t, ok, rec.Body.String())
 			// The fixture's certificates are minted before the request, and the
 			// race detector can slow the run, so allow a generous lower bound.
-			assert.InDelta(t, tt.wantIn.Seconds(), expiresIn, 30)
-			assert.LessOrEqual(t, expiresIn, tt.wantIn.Seconds())
+			assert.InDelta(t, tt.wantExpiresIn.Seconds(), expiresIn, 30)
+			assert.LessOrEqual(t, expiresIn, tt.wantExpiresIn.Seconds())
 
 			raw, ok := body["access_token"].(string)
 			require.True(t, ok, rec.Body.String())
 			exp, ok := f.accessTokenClaims(t, raw)["exp"].(float64)
 			require.True(t, ok)
-			assert.InDelta(t, float64(time.Now().Add(tt.wantIn).Unix()), exp, 30, "exp follows the capped expiry")
+			assert.InDelta(t, float64(time.Now().Add(tt.wantExpiresIn).Unix()), exp, 30, "exp follows the capped expiry")
 		})
 	}
 }

@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/ory/fosite"
 
@@ -82,9 +83,10 @@ func NewSPIFFEAssociationRegistry(trust *SPIFFETrustConfig) (*SPIFFEAssociationR
 // clientID must match the association's client ID. It fails closed for
 // unknown IDs, mismatched client ownership, and disabled methods. This
 // method does not validate a credential: the caller must have verified the
-// SVID, because the returned client asserts that it was.
+// SVID, because the returned client asserts that it was. credentialExpiry is
+// the verified SVID's expiry, carried on the returned client.
 func (r *SPIFFEAssociationRegistry) Resolve(
-	spiffeID, clientID string, method SPIFFEAuthenticationMethod,
+	spiffeID, clientID string, method SPIFFEAuthenticationMethod, credentialExpiry time.Time,
 ) (*registration.AuthenticatedSPIFFEClient, error) {
 	if r == nil {
 		return nil, fmt.Errorf("no SPIFFE associations are configured")
@@ -107,7 +109,9 @@ func (r *SPIFFEAssociationRegistry) Resolve(
 		)
 	}
 
-	return registration.NewAuthenticatedSPIFFEClient(r.clients[association.ClientID()].SPIFFEClient, parsedID, method)
+	return registration.NewAuthenticatedSPIFFEClient(
+		r.clients[association.ClientID()].SPIFFEClient, parsedID, method, credentialExpiry,
+	)
 }
 
 // usesX509 reports whether clientID names an association whose methods include

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
+	"time"
 
 	"github.com/ory/fosite"
 	"github.com/ory/fosite/compose"
@@ -88,7 +89,10 @@ func (h *Handler) HandleTokenEndpointRequest(ctx context.Context, requester fosi
 	// the token. See claimnames.NoUpstreamSessionKey.
 	sess.JWTClaims.Extra[claimnames.NoUpstreamSessionKey] = true
 	requester.SetSession(sess)
-	return h.stock.HandleTokenEndpointRequest(ctx, requester)
+	if err := h.stock.HandleTokenEndpointRequest(ctx, requester); err != nil {
+		return err
+	}
+	return capAtCredentialExpiry(requester, client)
 }
 
 // PopulateTokenEndpointResponse delegates access-token issuance to the stock
@@ -99,7 +103,37 @@ func (h *Handler) PopulateTokenEndpointResponse(
 	if !h.CanHandleTokenEndpointRequest(ctx, requester) {
 		return errorsx.WithStack(fosite.ErrUnknownRequest)
 	}
+	// Handle lowered the session expiry to the credential expiry. If that
+	// instant passed since, fail closed rather than let the stock handler sign
+	// a token whose exp is already in the past. A race inside the stock call
+	// itself is accepted: it can only yield a token that is expired on arrival.
+	if exp := requester.GetSession().GetExpiresAt(fosite.AccessToken); !exp.IsZero() && !exp.After(time.Now()) {
+		var id string
+		if c := requester.GetClient(); c != nil {
+			id = c.GetID()
+		}
+		return reject(id, fosite.ErrInvalidGrant, "client credential expired before token issuance",
+			"The client credential has expired.")
+	}
 	return h.stock.PopulateTokenEndpointResponse(ctx, requester, responder)
+}
+
+// capAtCredentialExpiry makes the access token live no longer than the SVID
+// that authenticated the request. Fosite derives both expires_in and the JWT exp
+// from the session's access-token expiry, so lowering it is enough. An SVID
+// that has already expired is refused, which also closes the one-minute leeway
+// the JWT-SVID parser grants after exp.
+func capAtCredentialExpiry(requester fosite.AccessRequester, client *registration.AuthenticatedSPIFFEClient) error {
+	expiry := client.CredentialExpiry()
+	if !expiry.After(time.Now()) {
+		return reject(client.GetID(), fosite.ErrInvalidGrant, "client credential expired",
+			"The client credential has expired.")
+	}
+	sess := requester.GetSession()
+	if current := sess.GetExpiresAt(fosite.AccessToken); current.IsZero() || expiry.Before(current) {
+		sess.SetExpiresAt(fosite.AccessToken, expiry.UTC())
+	}
+	return nil
 }
 
 func grantPolicyScopes(requester fosite.AccessRequester, clientID string, permitted fosite.Arguments) error {

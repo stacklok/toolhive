@@ -53,7 +53,8 @@ func TestSPIFFEX509ClientAuthentication(t *testing.T) {
 			form:        url.Values{"client_id": {"spiffe-client"}},
 			certificate: certificate,
 			source:      source,
-			resolve: func(_ context.Context, identity, clientID string, method spiffeauth.SPIFFEAuthenticationMethod) (fosite.Client, error) {
+			resolve: func(_ context.Context, identity, clientID string, method spiffeauth.SPIFFEAuthenticationMethod, expiry time.Time) (fosite.Client, error) {
+				assert.Equal(t, certificate.NotAfter, expiry, "the leaf's NotAfter is the credential expiry")
 				assert.Equal(t, spiffeID.String(), identity)
 				assert.Equal(t, "spiffe-client", clientID)
 				assert.Equal(t, spiffeauth.SPIFFEAuthenticationMethodX509, method)
@@ -80,7 +81,7 @@ func TestSPIFFEX509ClientAuthentication(t *testing.T) {
 			form:        url.Values{"client_id": {"spiffe-client"}},
 			certificate: certificate,
 			source:      source,
-			resolve: func(context.Context, string, string, spiffeauth.SPIFFEAuthenticationMethod) (fosite.Client, error) {
+			resolve: func(context.Context, string, string, spiffeauth.SPIFFEAuthenticationMethod, time.Time) (fosite.Client, error) {
 				return nil, errors.New("association not found")
 			},
 			wantErrIs:        fosite.ErrInvalidClient,
@@ -91,7 +92,7 @@ func TestSPIFFEX509ClientAuthentication(t *testing.T) {
 			form:        url.Values{"client_id": {"spiffe-client"}},
 			certificate: certificate,
 			source:      source,
-			resolve: func(context.Context, string, string, spiffeauth.SPIFFEAuthenticationMethod) (fosite.Client, error) {
+			resolve: func(context.Context, string, string, spiffeauth.SPIFFEAuthenticationMethod, time.Time) (fosite.Client, error) {
 				return &fosite.DefaultClient{ID: "other-client"}, nil
 			},
 			wantErrIs:        fosite.ErrInvalidClient,
@@ -153,13 +154,13 @@ func TestSPIFFEX509ClientAuthentication(t *testing.T) {
 			defaultCalled := false
 			resolve := tt.resolve
 			if resolve == nil {
-				resolve = func(context.Context, string, string, spiffeauth.SPIFFEAuthenticationMethod) (fosite.Client, error) {
+				resolve = func(context.Context, string, string, spiffeauth.SPIFFEAuthenticationMethod, time.Time) (fosite.Client, error) {
 					return nil, errors.New("unexpected resolver call")
 				}
 			}
-			wrapped := func(ctx context.Context, identity, clientID string, method spiffeauth.SPIFFEAuthenticationMethod) (fosite.Client, error) {
+			wrapped := func(ctx context.Context, identity, clientID string, method spiffeauth.SPIFFEAuthenticationMethod, expiry time.Time) (fosite.Client, error) {
 				resolverCalled = true
-				return resolve(ctx, identity, clientID, method)
+				return resolve(ctx, identity, clientID, method, expiry)
 			}
 			strategy := newSPIFFEClientAuthenticationStrategy(
 				func(_ context.Context, _ *http.Request, _ url.Values) (fosite.Client, error) {
@@ -405,7 +406,7 @@ func TestVerifySPIFFEX509(t *testing.T) {
 
 			request, source := tt.build(t)
 
-			verifiedID, err := verifySPIFFEX509(request, source)
+			verifiedID, _, err := verifySPIFFEX509(request, source)
 
 			switch tt.want {
 			case wantRequired:
@@ -461,7 +462,7 @@ func TestSPIFFEX509ClientAuthenticationFollowsBundleRotation(t *testing.T) {
 			return nil, nil
 		},
 		testIssuer, nil, live,
-		func(context.Context, string, string, spiffeauth.SPIFFEAuthenticationMethod) (fosite.Client, error) {
+		func(context.Context, string, string, spiffeauth.SPIFFEAuthenticationMethod, time.Time) (fosite.Client, error) {
 			resolverCalls++
 			return resolvedClient, nil
 		},

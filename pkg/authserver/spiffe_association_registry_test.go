@@ -5,6 +5,7 @@ package authserver
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -112,11 +113,12 @@ func TestSPIFFEAssociationRegistryResolve(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
+			expiry := time.Now().Add(time.Hour)
 			var registry *SPIFFEAssociationRegistry
 			if !tt.nilRegistry {
 				registry = newTestSPIFFEAssociationRegistry(t, tt.associations)
 			}
-			client, err := registry.Resolve(tt.spiffeID, tt.clientID, tt.method)
+			client, err := registry.Resolve(tt.spiffeID, tt.clientID, tt.method, expiry)
 			if tt.wantErr != "" {
 				require.ErrorContains(t, err, tt.wantErr)
 				assert.Nil(t, client)
@@ -131,6 +133,7 @@ func TestSPIFFEAssociationRegistryResolve(t *testing.T) {
 			assert.Equal(t, tt.spiffeID, client.SPIFFEID().String())
 			assert.Equal(t, "example.org", client.SPIFFEID().TrustDomain().String())
 			assert.Equal(t, tt.method, client.AuthenticationMethod())
+			assert.Equal(t, expiry, client.CredentialExpiry())
 			assert.Equal(t, []string{tt.wantScope}, []string(client.GetScopes()))
 			assert.Equal(t, []string{oauthproto.GrantTypeTokenExchange}, []string(client.GetGrantTypes()))
 			wantResource := tt.wantResource
@@ -147,6 +150,7 @@ func TestSPIFFEAssociationRegistryResolve(t *testing.T) {
 				spiffetest.WithResources(wantResource...),
 				spiffetest.WithSPIFFEID(tt.spiffeID),
 				spiffetest.WithAuthMethod(tt.method),
+				spiffetest.WithCredentialExpiry(expiry),
 			)
 			assert.Equal(t, want, client)
 		})

@@ -616,8 +616,9 @@ func newSPIFFEClientResolver(registry *SPIFFEAssociationRegistry) oauthserver.SP
 	}
 	return func(
 		_ context.Context, spiffeID, clientID string, method spiffeauth.SPIFFEAuthenticationMethod,
+		credentialExpiry time.Time,
 	) (fosite.Client, error) {
-		client, err := registry.Resolve(spiffeID, clientID, method)
+		client, err := registry.Resolve(spiffeID, clientID, method, credentialExpiry)
 		if err != nil {
 			return nil, err
 		}

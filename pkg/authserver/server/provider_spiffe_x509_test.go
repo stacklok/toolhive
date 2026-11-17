@@ -70,7 +70,7 @@ func TestNewAuthorizationServerSPIFFEX509ClientAuthentication(t *testing.T) {
 			t.Parallel()
 
 			resolverCalls := 0
-			resolver := func(context.Context, string, string, spiffeauth.SPIFFEAuthenticationMethod) (fosite.Client, error) {
+			resolver := func(context.Context, string, string, spiffeauth.SPIFFEAuthenticationMethod, time.Time) (fosite.Client, error) {
 				resolverCalls++
 				return resolvedClient, nil
 			}

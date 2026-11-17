@@ -60,7 +60,7 @@ Delegate clients and other clients (`private_key_jwt`, `client_secret`, DCR and 
 
 ### client_credentials requests
 
-The `client_credentials` grant is handled by `Handler` in `pkg/authserver/server/clientcredentials/handler.go`, a thin wrapper around Fosite's stock client-credentials handler. It adds the association policy checks below and then lets Fosite issue the token, so lifetime and signing match the other grants. A request is handled as follows:
+The `client_credentials` grant is handled by `Handler` in `pkg/authserver/server/clientcredentials/handler.go`, a thin wrapper around Fosite's stock client-credentials handler. It adds the association policy checks and the lifetime cap below, and then lets Fosite issue and sign the token. A request is handled as follows:
 
 - The client must be an authenticated SPIFFE client (JWT-SVID or X.509-SVID) whose association lists `client_credentials`. Any other client, or a SPIFFE client without the grant, gets `unauthorized_client`. This check runs before the scope and resource checks, so a client without the grant learns nothing about its lists.
 - The request must carry exactly one non-empty `resource`. A missing, empty or repeated `resource` is rejected with `invalid_target`. Any `audience` parameter is rejected with `invalid_target`; this grant takes `resource` only.
@@ -69,6 +69,8 @@ The `client_credentials` grant is handled by `Handler` in `pkg/authserver/server
 - Each requested scope must be in the association's `scopes`, otherwise the request fails with `invalid_scope`. If no scope is requested, the token carries no scopes. Resource servers must not read a token without scopes as unrestricted.
 
 The access token has these claims: `sub` is the verified SPIFFE ID; `client_id` is the association's client ID; `aud` is the requested resource; `scp` is the granted scopes as an array, as for the other grants (there is no space-separated `scope` string); and `https://toolhive.dev/no_upstream_session` (`claimnames.NoUpstreamSessionKey`) is `true`, marking a token that never came from an upstream IdP login. The JOSE `typ` header is `at+jwt` when the server's access-token type is `at+jwt`, as for all grants. No refresh token is issued.
+
+The access token lives for the smaller of two periods: the server's access-token lifetime (`AccessTokenLifespan`) and the time left on the SVID that authenticated the request. For a JWT-SVID that is its `exp`. For an X.509-SVID it is the leaf certificate's `NotAfter`. Both `expires_in` and the token's `exp` follow this value. A JWT-SVID that has expired but is still inside the one-minute leeway go-spiffe accepts after `exp` passes client authentication and is then refused with `invalid_grant`. An SVID past that leeway, or an expired X.509-SVID, already fails client authentication with `invalid_client`. There is no separate setting for this lifetime.
 
 ```console
 curl -X POST https://auth.example.com/oauth/token \
@@ -190,13 +192,13 @@ The `spiffe_x509` and `spiffe_jwt` client authentication methods, and the `urn:i
 A JWT-SVID is a bearer credential, and the SPIFFE path has no application-level replay protection: no `jti` persistence, nonce, or proof-of-possession binding. Its `jti` is not stored, and the replay store that Fosite uses for `private_key_jwt` is wired only into the default strategy. A captured valid assertion can therefore be reused until its expiry, subject to these limits:
 
 - The assertion's sole audience must be the authorization-server issuer.
-- The assertion's remaining validity must not exceed six minutes when it is checked (`maxSPIFFEJWTAssertionRemainingValidity` in `pkg/authserver/server/spiffe_client_auth.go`): the five-minute issuer lifetime plus one minute of clock skew. Separately, the one-minute leeway that go-spiffe inherits from go-jose accepts an assertion for up to one minute after its `exp`.
+- The assertion's remaining validity must not exceed six minutes when it is checked (`maxSPIFFEJWTAssertionRemainingValidity` in `pkg/authserver/server/spiffe_client_auth.go`): the five-minute issuer lifetime plus one minute of clock skew. Separately, the one-minute leeway that go-spiffe inherits from go-jose accepts an assertion for up to one minute after its `exp`. The `client_credentials` grant refuses such an assertion.
 
 An association counts as a confidential client in the cleartext-transport check (`RunConfig.hasConfidentialClients`, `Config.hasStaticConfidentialClients` and `ValidateConfidentialClientTransport`), as delegate clients do, only when it allows `spiffe_jwt` and also grants `client_credentials`. For such an association `insecure_allow_http` is rejected, and an `http` issuer is accepted only when `insecure_allow_confidential_over_loopback_http` is set and the issuer host is loopback. The check runs in `RunConfig.Validate()` and `Config.Validate()`. An association that enables only `spiffe_x509` does not trigger it, and neither does one that allows `spiffe_jwt` for token exchange only.
 
 Token-exchange-only JWT-SVID associations are excluded so that existing deployments keep working, not because they are safer. Token exchange over plain HTTP is still exposed. A passive observer captures the JWT-SVID and the subject token from the same request, and can exchange them again for as long as the SVID is valid. Serve the issuer over TLS. The CRD admission rules do not include the `client_credentials` condition yet, because a custom resource cannot list `client_credentials` on this version.
 
-With the `client_credentials` grant, each request that presents a replayed SVID mints a new access token. One captured SVID can therefore mint any number of access tokens until it expires, not just one. Each token lives for the server's normal access-token lifetime (`AccessTokenLifespan`), and that lifetime is not capped to the SVID's expiry. Tokens are not bound to the client certificate or key (RFC 8705), and that binding is not implemented. This is accepted behavior: the SPIFFE specification treats JWT-SVIDs as bearer tokens and does not require `jti`.
+With the `client_credentials` grant, each request that presents a replayed SVID mints a new access token. One captured SVID can therefore mint any number of access tokens until it expires, not just one. Each token lives no longer than the SVID that authenticated the request (see "client_credentials requests"), so a replayed SVID mints tokens that expire within its own validity window. Tokens are not bound to the client certificate or key (RFC 8705), and that binding is not implemented. This is accepted behavior: the SPIFFE specification treats JWT-SVIDs as bearer tokens and does not require `jti`.
 
 ## X.509 client authentication
 

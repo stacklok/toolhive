@@ -52,10 +52,12 @@ const (
 type ccFixture struct {
 	handler http.Handler
 	// tokenKey verifies access tokens; jwtKey signs JWT-SVIDs; leaf is an
-	// X.509-SVID for ccX509SPIFFEID.
-	tokenKey *rsa.PrivateKey
-	jwtKey   *ecdsa.PrivateKey
-	leaf     *x509.Certificate
+	// X.509-SVID for ccX509SPIFFEID that outlives the access-token lifespan;
+	// shortLeaf is the same identity with five minutes left.
+	tokenKey  *rsa.PrivateKey
+	jwtKey    *ecdsa.PrivateKey
+	leaf      *x509.Certificate
+	shortLeaf *x509.Certificate
 }
 
 func newCCFixture(t *testing.T) *ccFixture {
@@ -68,7 +70,7 @@ func newCCFixture(t *testing.T) *ccFixture {
 		SerialNumber:          big.NewInt(1),
 		Subject:               pkix.Name{CommonName: "test CA"},
 		NotBefore:             now.Add(-time.Hour),
-		NotAfter:              now.Add(time.Hour),
+		NotAfter:              now.Add(4 * time.Hour),
 		IsCA:                  true,
 		BasicConstraintsValid: true,
 		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature,
@@ -80,18 +82,23 @@ func newCCFixture(t *testing.T) *ccFixture {
 	spiffeURL, err := url.Parse(ccX509SPIFFEID)
 	require.NoError(t, err)
 	leafKey := mustCCECKey(t)
-	leafDER, err := x509.CreateCertificate(rand.Reader, &x509.Certificate{
-		SerialNumber:          big.NewInt(2),
-		Subject:               pkix.Name{CommonName: "test workload"},
-		NotBefore:             now.Add(-time.Hour),
-		NotAfter:              now.Add(time.Hour),
-		KeyUsage:              x509.KeyUsageDigitalSignature,
-		BasicConstraintsValid: true,
-		URIs:                  []*url.URL{spiffeURL},
-	}, ca, &leafKey.PublicKey, caKey)
-	require.NoError(t, err)
-	leaf, err := x509.ParseCertificate(leafDER)
-	require.NoError(t, err)
+	newLeaf := func(serial int64, notAfter time.Time) *x509.Certificate {
+		leafDER, err := x509.CreateCertificate(rand.Reader, &x509.Certificate{
+			SerialNumber:          big.NewInt(serial),
+			Subject:               pkix.Name{CommonName: "test workload"},
+			NotBefore:             now.Add(-time.Hour),
+			NotAfter:              notAfter,
+			KeyUsage:              x509.KeyUsageDigitalSignature,
+			BasicConstraintsValid: true,
+			URIs:                  []*url.URL{spiffeURL},
+		}, ca, &leafKey.PublicKey, caKey)
+		require.NoError(t, err)
+		leaf, err := x509.ParseCertificate(leafDER)
+		require.NoError(t, err)
+		return leaf
+	}
+	leaf := newLeaf(2, now.Add(3*time.Hour))
+	shortLeaf := newLeaf(3, now.Add(5*time.Minute))
 
 	bundleJSON, err := json.Marshal(map[string]any{
 		"spiffe_sequence": 1,
@@ -162,7 +169,7 @@ func newCCFixture(t *testing.T) *ccFixture {
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, srv.Close()) })
 
-	return &ccFixture{handler: srv.Handler(), tokenKey: tokenKey, jwtKey: jwtKey, leaf: leaf}
+	return &ccFixture{handler: srv.Handler(), tokenKey: tokenKey, jwtKey: jwtKey, leaf: leaf, shortLeaf: shortLeaf}
 }
 
 func mustCCECKey(t *testing.T) *ecdsa.PrivateKey {
@@ -174,6 +181,11 @@ func mustCCECKey(t *testing.T) *ecdsa.PrivateKey {
 
 func (f *ccFixture) jwtSVID(t *testing.T, spiffeID string) string {
 	t.Helper()
+	return f.jwtSVIDExpiringIn(t, spiffeID, time.Minute)
+}
+
+func (f *ccFixture) jwtSVIDExpiringIn(t *testing.T, spiffeID string, validity time.Duration) string {
+	t.Helper()
 	signer, err := jose.NewSigner(
 		jose.SigningKey{Algorithm: jose.ES256, Key: f.jwtKey},
 		(&jose.SignerOptions{}).WithType("JWT").WithHeader("kid", "jwt-key"),
@@ -182,7 +194,7 @@ func (f *ccFixture) jwtSVID(t *testing.T, spiffeID string) string {
 	token, err := jwt.Signed(signer).Claims(jwt.Claims{
 		Subject:  spiffeID,
 		Audience: jwt.Audience{testIssuer},
-		Expiry:   jwt.NewNumericDate(time.Now().Add(time.Minute)),
+		Expiry:   jwt.NewNumericDate(time.Now().Add(validity)),
 	}).Serialize()
 	require.NoError(t, err)
 	return token
@@ -301,6 +313,70 @@ func TestSPIFFEClientCredentialsThroughNewServer(t *testing.T) {
 			assert.Equal(t, []any{"openid"}, claims["scp"])
 			assert.NotContains(t, claims, "scope")
 			assert.Equal(t, true, claims[claimnames.NoUpstreamSessionKey])
+		})
+	}
+}
+
+// TestSPIFFEClientCredentialsTokenLifetime checks that the access token lives
+// no longer than the SVID that authenticated the request, and no longer than
+// the server's access-token lifespan (one hour in the fixture).
+func TestSPIFFEClientCredentialsTokenLifetime(t *testing.T) {
+	t.Parallel()
+	f := newCCFixture(t)
+
+	jwtForm := func(t *testing.T, validity time.Duration) url.Values {
+		t.Helper()
+		return url.Values{
+			"grant_type":            {oauthproto.GrantTypeClientCredentials},
+			"client_assertion_type": {spiffeauth.SPIFFEJWTAssertionType},
+			"client_assertion":      {f.jwtSVIDExpiringIn(t, ccJWTSPIFFEID, validity)},
+			"resource":              {ccTestResource},
+		}
+	}
+	x509Form := url.Values{
+		"grant_type": {oauthproto.GrantTypeClientCredentials},
+		"client_id":  {ccX509ClientID},
+		"resource":   {ccTestResource},
+	}
+
+	tests := []struct {
+		name      string
+		form      url.Values
+		peer      *x509.Certificate
+		wantIn    time.Duration
+		wantError string
+	}{
+		{name: "JWT-SVID with a minute left caps the token", form: jwtForm(t, time.Minute), wantIn: time.Minute},
+		{name: "JWT-SVID within the parser leeway after exp is refused", form: jwtForm(t, -30*time.Second), wantError: "invalid_grant"},
+		{name: "short-lived X.509-SVID caps the token", form: x509Form, peer: f.shortLeaf, wantIn: 5 * time.Minute},
+		{name: "X.509-SVID outliving the lifespan leaves the access-token lifespan", form: x509Form, peer: f.leaf, wantIn: time.Hour},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			rec := f.postToken(t, tt.form, tt.peer)
+			body := decodeCCBody(t, rec)
+			if tt.wantError != "" {
+				require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+				assert.Equal(t, tt.wantError, body["error"])
+				assert.NotContains(t, body, "access_token")
+				return
+			}
+			require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+
+			expiresIn, ok := body["expires_in"].(float64)
+			require.True(t, ok, rec.Body.String())
+			// The fixture's certificates are minted before the request, and the
+			// race detector can slow the run, so allow a generous lower bound.
+			assert.InDelta(t, tt.wantIn.Seconds(), expiresIn, 30)
+			assert.LessOrEqual(t, expiresIn, tt.wantIn.Seconds())
+
+			raw, ok := body["access_token"].(string)
+			require.True(t, ok, rec.Body.String())
+			exp, ok := f.accessTokenClaims(t, raw)["exp"].(float64)
+			require.True(t, ok)
+			assert.InDelta(t, float64(time.Now().Add(tt.wantIn).Unix()), exp, 30, "exp follows the capped expiry")
 		})
 	}
 }

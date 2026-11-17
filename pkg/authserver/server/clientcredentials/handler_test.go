@@ -8,6 +8,7 @@ import (
 	"context"
 	"net/url"
 	"testing"
+	"time"
 
 	"github.com/ory/fosite"
 	"github.com/stretchr/testify/assert"
@@ -27,7 +28,12 @@ const (
 
 // recordingHandler stands in for Fosite's stock handler; no gomock mock of
 // fosite.TokenEndpointHandler exists in the repo.
-type recordingHandler struct{ called, populated bool }
+type recordingHandler struct {
+	called, populated bool
+	// lifespan, when set, is the access-token lifetime the stand-in stamps on
+	// the session as the stock handler does.
+	lifespan time.Duration
+}
 
 func (*recordingHandler) CanHandleTokenEndpointRequest(context.Context, fosite.AccessRequester) bool {
 	return true
@@ -35,8 +41,11 @@ func (*recordingHandler) CanHandleTokenEndpointRequest(context.Context, fosite.A
 func (*recordingHandler) CanSkipClientAuth(context.Context, fosite.AccessRequester) bool {
 	return false
 }
-func (h *recordingHandler) HandleTokenEndpointRequest(context.Context, fosite.AccessRequester) error {
+func (h *recordingHandler) HandleTokenEndpointRequest(_ context.Context, requester fosite.AccessRequester) error {
 	h.called = true
+	if h.lifespan > 0 {
+		requester.GetSession().SetExpiresAt(fosite.AccessToken, time.Now().UTC().Add(h.lifespan))
+	}
 	return nil
 }
 func (h *recordingHandler) PopulateTokenEndpointResponse(context.Context, fosite.AccessRequester, fosite.AccessResponder) error {
@@ -53,6 +62,7 @@ type clientOpts struct {
 	scopes    []string
 	resources []string
 	method    spiffeauth.SPIFFEAuthenticationMethod
+	expiry    time.Time
 	// unwrapped returns the static client without the authenticated principal.
 	unwrapped bool
 }
@@ -67,6 +77,9 @@ func newClient(t *testing.T, o clientOpts) fosite.Client {
 		spiffetest.WithGrantTypes(orDefault(o.grants, oauthproto.GrantTypeClientCredentials)...),
 		spiffetest.WithScopes(orDefault(o.scopes, "openid")...),
 		spiffetest.WithResources(orDefault(o.resources, testResource)...),
+	}
+	if !o.expiry.IsZero() {
+		opts = append(opts, spiffetest.WithCredentialExpiry(o.expiry))
 	}
 	if o.unwrapped {
 		return spiffetest.Client(t, opts...)
@@ -250,7 +263,7 @@ func TestHandlerPopulateTokenEndpointResponse(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			stock := &recordingHandler{}
-			req := fosite.NewAccessRequest(&session.Session{})
+			req := fosite.NewAccessRequest(session.New(testSPIFFEID, "", "client", session.UserClaims{}))
 			req.GrantTypes = tt.grants
 			err := (&Handler{stock: stock}).PopulateTokenEndpointResponse(context.Background(), req, fosite.NewAccessResponse())
 			if tt.wantError != nil {
@@ -261,4 +274,59 @@ func TestHandlerPopulateTokenEndpointResponse(t *testing.T) {
 			assert.Equal(t, tt.wantCalled, stock.populated)
 		})
 	}
+}
+
+func TestHandlerCapsAccessTokenAtCredentialExpiry(t *testing.T) {
+	t.Parallel()
+
+	const lifespan = time.Hour
+	tests := []struct {
+		name string
+		// credentialIn is the credential's remaining validity.
+		credentialIn time.Duration
+		// wantIn is the expected access-token lifetime, within a few seconds.
+		wantIn    time.Duration
+		wantError bool
+	}{
+		{name: "credential sooner than the access-token lifespan caps the token", credentialIn: 5 * time.Minute, wantIn: 5 * time.Minute},
+		{name: "credential outliving the access-token lifespan leaves the lifespan", credentialIn: 24 * time.Hour, wantIn: lifespan},
+		{name: "expired credential is refused", credentialIn: -time.Second, wantError: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			stock := &recordingHandler{lifespan: lifespan}
+			req := fosite.NewAccessRequest(&session.Session{})
+			req.GrantTypes = fosite.Arguments{oauthproto.GrantTypeClientCredentials}
+			req.Client = newClient(t, clientOpts{expiry: time.Now().Add(tt.credentialIn)})
+			req.Form = url.Values{"resource": {testResource}}
+			handler := &Handler{stock: stock, allowedAudiences: []string{testResource}}
+
+			err := handler.HandleTokenEndpointRequest(context.Background(), req)
+
+			if tt.wantError {
+				require.ErrorIs(t, err, fosite.ErrInvalidGrant)
+				assert.Equal(t, "The client credential has expired.", fosite.ErrorToRFC6749Error(err).HintField)
+				return
+			}
+			require.NoError(t, err)
+			assert.InDelta(t, tt.wantIn.Seconds(),
+				time.Until(req.GetSession().GetExpiresAt(fosite.AccessToken)).Seconds(), 5)
+		})
+	}
+}
+
+func TestHandlerPopulateRefusesElapsedSessionExpiry(t *testing.T) {
+	t.Parallel()
+
+	stock := &recordingHandler{}
+	sess := session.New(testSPIFFEID, "", "client", session.UserClaims{})
+	sess.SetExpiresAt(fosite.AccessToken, time.Now().Add(-time.Second))
+	req := fosite.NewAccessRequest(sess)
+	req.GrantTypes = fosite.Arguments{oauthproto.GrantTypeClientCredentials}
+
+	err := (&Handler{stock: stock}).PopulateTokenEndpointResponse(context.Background(), req, fosite.NewAccessResponse())
+
+	require.ErrorIs(t, err, fosite.ErrInvalidGrant)
+	assert.False(t, stock.populated)
 }

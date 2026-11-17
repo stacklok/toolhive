@@ -1438,6 +1438,7 @@ its own default text before the reason.
 | Not a compact signed JWT, bad `typ` or algorithm (an assertion with such a `typ` is routed to the plain handler, never the ID-JAG one) | 400 `invalid_grant`, `invalid_assertion: <hint>` | n/a |
 | Signature or claim validation fails, issuer not enabled, assertion whose issued lifetime (`exp` − `iat`) exceeds `max_assertion_age`, replayed or expired | 400 `invalid_grant`, `invalid_assertion: <hint>` | same code and reason; the hint names an ID-JAG for the first two |
 | ID-JAG without a `jti` or `client_id`, or issued to another client | n/a | 400 `invalid_grant`, `invalid_assertion: <hint>` |
+| ID-JAG whose `aud` is an array with more than one value, for any issuer | n/a | 400 `invalid_grant`, `invalid_assertion: <hint>` |
 | Subject not listed in `subject_bindings` | 400 `invalid_grant`, fosite text, no reason | 400 `access_denied`, `subject_unknown` |
 | Subject listed, resource not in its `allowed_resources` | 400 `invalid_target`, no description | 400 `access_denied`, `resource_denied` |
 | A malformed `resource` claim | n/a | 400 `invalid_grant`, `invalid_assertion: The ID-JAG assertion resource claim is malformed.` |
@@ -1567,7 +1568,6 @@ finding at WARN, and later ones at DEBUG. The line carries only `issuer`,
 `client_id`, `finding` and, for one finding, `hint`. It never carries the
 subject, `jti` or claim values. The findings are:
 
-- `multiple_audiences`: `aud` has more than one value.
 - `audience_not_issuer`: `aud` does not contain this server's issuer
   identifier. The handler accepts any value in the assertion issuer's
   `jwt_bearer_grant.accepted_audiences`. When that list is empty, it accepts
@@ -1581,8 +1581,6 @@ subject, `jti` or claim values. The findings are:
   `allowed_audiences`, because then no `aud` can name it (see
   [JWT-bearer configuration](#jwt-bearer-configuration)); the startup warning
   reports that case instead.
-
-The two audience findings can appear together.
 
 This is logging only. It changes nothing about what is accepted.
 

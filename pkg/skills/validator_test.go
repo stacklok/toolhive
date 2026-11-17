@@ -33,6 +33,8 @@ func TestValidateSkillDir(t *testing.T) {
 		wantValid    bool
 		wantErrors   []string
 		wantWarnings []string
+		// wantRules is the exact, ordered list of finding rule IDs.
+		wantRules []string
 	}{
 		{
 			name: "valid minimal skill",
@@ -69,6 +71,7 @@ This skill does things.
 			},
 			wantValid:  false,
 			wantErrors: []string{"SKILL.md not found"},
+			wantRules:  []string{RuleSkillMDMissing},
 		},
 		{
 			name: "invalid name - uppercase",
@@ -78,6 +81,7 @@ This skill does things.
 			},
 			wantValid:  false,
 			wantErrors: []string{"invalid skill name"},
+			wantRules:  []string{RuleNameInvalid},
 		},
 		{
 			name: "invalid name - starts with hyphen",
@@ -87,6 +91,7 @@ This skill does things.
 			},
 			wantValid:  false,
 			wantErrors: []string{"invalid skill name"},
+			wantRules:  []string{RuleNameInvalid},
 		},
 		{
 			name: "invalid name - ends with hyphen",
@@ -96,6 +101,7 @@ This skill does things.
 			},
 			wantValid:  false,
 			wantErrors: []string{"invalid skill name"},
+			wantRules:  []string{RuleNameInvalid},
 		},
 		{
 			name: "invalid name - consecutive hyphens",
@@ -105,6 +111,7 @@ This skill does things.
 			},
 			wantValid:  false,
 			wantErrors: []string{"consecutive hyphens"},
+			wantRules:  []string{RuleNameInvalid},
 		},
 		{
 			name: "invalid name - too long",
@@ -115,6 +122,7 @@ This skill does things.
 			},
 			wantValid:  false,
 			wantErrors: []string{"invalid skill name"},
+			wantRules:  []string{RuleNameInvalid},
 		},
 		{
 			name: "invalid name - single char",
@@ -124,6 +132,7 @@ This skill does things.
 			},
 			wantValid:  false,
 			wantErrors: []string{"invalid skill name"},
+			wantRules:  []string{RuleNameInvalid},
 		},
 		{
 			name: "missing name",
@@ -133,6 +142,7 @@ This skill does things.
 			},
 			wantValid:  false,
 			wantErrors: []string{"name is required"},
+			wantRules:  []string{RuleNameRequired},
 		},
 		{
 			name: "missing description",
@@ -142,6 +152,7 @@ This skill does things.
 			},
 			wantValid:  false,
 			wantErrors: []string{"description is required"},
+			wantRules:  []string{RuleDescriptionRequired},
 		},
 		{
 			name: "multiple errors",
@@ -151,6 +162,7 @@ This skill does things.
 			},
 			wantValid:  false,
 			wantErrors: []string{"name is required", "description is required"},
+			wantRules:  []string{RuleNameRequired, RuleDescriptionRequired},
 		},
 		{
 			name: "invalid frontmatter",
@@ -160,6 +172,7 @@ This skill does things.
 			},
 			wantValid:  false,
 			wantErrors: []string{"invalid SKILL.md"},
+			wantRules:  []string{RuleFrontmatterInvalid},
 		},
 		{
 			name: "name does not match directory",
@@ -169,6 +182,7 @@ This skill does things.
 			},
 			wantValid:  false,
 			wantErrors: []string{"must match directory name"},
+			wantRules:  []string{RuleNameDirMismatch},
 		},
 		{
 			name: "description exceeds max length",
@@ -179,6 +193,7 @@ This skill does things.
 			},
 			wantValid:  false,
 			wantErrors: []string{"description exceeds maximum length"},
+			wantRules:  []string{RuleDescriptionTooLong},
 		},
 		{
 			name: "compatibility exceeds max length",
@@ -190,6 +205,7 @@ This skill does things.
 			},
 			wantValid:  false,
 			wantErrors: []string{"compatibility field exceeds maximum length"},
+			wantRules:  []string{RuleCompatibilityTooLong},
 		},
 		{
 			name: "warning - large SKILL.md",
@@ -204,6 +220,7 @@ This skill does things.
 			},
 			wantValid:    true,
 			wantWarnings: []string{"SKILL.md has"},
+			wantRules:    []string{RuleSkillMDTooLong},
 		},
 		{
 			name: "warning - comma-delimited allowed-tools",
@@ -214,6 +231,7 @@ This skill does things.
 			},
 			wantValid:    true,
 			wantWarnings: []string{"comma-delimited format"},
+			wantRules:    []string{RuleAllowedToolsComma},
 		},
 		{
 			name: "valid two-char name",
@@ -256,6 +274,13 @@ This skill does things.
 				assert.True(t, containsSubstring(result.Warnings, wantWarn),
 					"expected warning containing %q in %v", wantWarn, result.Warnings)
 			}
+
+			assert.Equal(t, tt.wantRules, findingRules(result.Findings))
+			for _, f := range result.Findings {
+				assert.Equal(t, SkillMDFile, f.File, "rule %s", f.Rule)
+				assert.Zero(t, f.Line, "rule %s", f.Rule)
+			}
+			assertLegacyMatchesFindings(t, result, "")
 		})
 	}
 }
@@ -277,6 +302,42 @@ func TestValidateSkillDir_Symlink(t *testing.T) {
 	assert.False(t, result.Valid)
 	assert.True(t, containsSubstring(result.Errors, "symlink found"),
 		"expected symlink error in %v", result.Errors)
+	require.Len(t, result.Findings, 1)
+	assert.Equal(t, Finding{
+		Severity: SeverityError,
+		Rule:     RuleSymlinkNotAllowed,
+		File:     "link.txt",
+		Message:  result.Errors[0],
+	}, result.Findings[0])
+}
+
+// findingRules returns the rule IDs of findings in order.
+func findingRules(findings []Finding) []string {
+	var rules []string
+	for _, f := range findings {
+		rules = append(rules, f.Rule)
+	}
+	return rules
+}
+
+// assertLegacyMatchesFindings checks the Errors/Warnings to Findings contract:
+// each legacy string is prefix + the message of the finding of the same
+// severity at the same position.
+func assertLegacyMatchesFindings(t *testing.T, result *ValidationResult, prefix string) {
+	t.Helper()
+	var errs, warns []string
+	for _, f := range result.Findings {
+		switch f.Severity {
+		case SeverityError:
+			errs = append(errs, prefix+f.Message)
+		case SeverityWarning:
+			warns = append(warns, prefix+f.Message)
+		default:
+			t.Errorf("finding %s has unknown severity %q", f.Rule, f.Severity)
+		}
+	}
+	assert.Equal(t, errs, result.Errors)
+	assert.Equal(t, warns, result.Warnings)
 }
 
 func TestValidateSkillName(t *testing.T) {

@@ -1788,6 +1788,14 @@ const docTemplate = `{
                         "type": "array",
                         "uniqueItems": false
                     },
+                    "findings": {
+                        "description": "Findings lists every error and warning with its rule ID and location.\nEach Errors or Warnings entry corresponds to exactly one finding.",
+                        "items": {
+                            "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_skills.Finding"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
                     "valid": {
                         "description": "Valid indicates whether the skill definition is valid.",
                         "type": "boolean"
@@ -2250,6 +2258,30 @@ const docTemplate = `{
                     "FailureReasonUnknown"
                 ]
             },
+            "github_com_stacklok_toolhive_pkg_skills.Finding": {
+                "properties": {
+                    "file": {
+                        "description": "File is the slash-separated path of the affected file, relative to the\nvalidated directory.",
+                        "type": "string"
+                    },
+                    "line": {
+                        "description": "Line is the 1-based line in File, or 0 when unknown.",
+                        "type": "integer"
+                    },
+                    "message": {
+                        "description": "Message describes the problem.",
+                        "type": "string"
+                    },
+                    "rule": {
+                        "description": "Rule is the stable ID of the check that produced the finding.",
+                        "type": "string"
+                    },
+                    "severity": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_skills.Severity"
+                    }
+                },
+                "type": "object"
+            },
             "github_com_stacklok_toolhive_pkg_skills.InstallStatus": {
                 "description": "Status is the current installation status.",
                 "enum": [
@@ -2392,6 +2424,18 @@ const docTemplate = `{
                 "x-enum-varnames": [
                     "ScopeUser",
                     "ScopeProject"
+                ]
+            },
+            "github_com_stacklok_toolhive_pkg_skills.Severity": {
+                "description": "Severity is \"error\" or \"warning\".",
+                "enum": [
+                    "error",
+                    "warning"
+                ],
+                "type": "string",
+                "x-enum-varnames": [
+                    "SeverityError",
+                    "SeverityWarning"
                 ]
             },
             "github_com_stacklok_toolhive_pkg_skills.SkillContent": {
@@ -2653,6 +2697,14 @@ const docTemplate = `{
                         "description": "Errors is a list of validation errors, if any.",
                         "items": {
                             "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "findings": {
+                        "description": "Findings lists every error and warning with its rule ID and location.\nEach Errors or Warnings entry corresponds to exactly one finding.",
+                        "items": {
+                            "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_skills.Finding"
                         },
                         "type": "array",
                         "uniqueItems": false

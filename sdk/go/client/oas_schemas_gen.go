@@ -12400,6 +12400,52 @@ func (o OptSkillsScope) Or(d SkillsScope) SkillsScope {
 	return d
 }
 
+// NewOptSkillsSeverity returns new OptSkillsSeverity with value set to v.
+func NewOptSkillsSeverity(v SkillsSeverity) OptSkillsSeverity {
+	return OptSkillsSeverity{
+		Value: v,
+		Set:   true,
+	}
+}
+
+// OptSkillsSeverity is optional SkillsSeverity.
+type OptSkillsSeverity struct {
+	Value SkillsSeverity
+	Set   bool
+}
+
+// IsSet returns true if OptSkillsSeverity was set.
+func (o OptSkillsSeverity) IsSet() bool { return o.Set }
+
+// Reset unsets value.
+func (o *OptSkillsSeverity) Reset() {
+	var v SkillsSeverity
+	o.Value = v
+	o.Set = false
+}
+
+// SetTo sets value to v.
+func (o *OptSkillsSeverity) SetTo(v SkillsSeverity) {
+	o.Set = true
+	o.Value = v
+}
+
+// Get returns value and boolean that denotes whether value was set.
+func (o OptSkillsSeverity) Get() (v SkillsSeverity, ok bool) {
+	if !o.Set {
+		return v, false
+	}
+	return o.Value, true
+}
+
+// Or returns value if set, or given parameter if does not.
+func (o OptSkillsSeverity) Or(d SkillsSeverity) SkillsSeverity {
+	if v, ok := o.Get(); ok {
+		return v
+	}
+	return d
+}
+
 // NewOptSkillsSkillMetadata returns new OptSkillsSkillMetadata with value set to v.
 func NewOptSkillsSkillMetadata(v SkillsSkillMetadata) OptSkillsSkillMetadata {
 	return OptSkillsSkillMetadata{
@@ -15151,6 +15197,9 @@ func (*PluginsV01Response) listPublicRegistryPluginsRes() {}
 type PluginsValidationResult struct {
 	// Errors is a list of validation errors, if any.
 	Errors []string `json:"errors"`
+	// Findings lists every error and warning with its rule ID and location.
+	// Each Errors or Warnings entry corresponds to exactly one finding.
+	Findings []SkillsFinding `json:"findings"`
 	// Valid indicates whether the skill definition is valid.
 	Valid OptBool `json:"valid"`
 	// Warnings is a list of non-blocking validation warnings, if any.
@@ -15160,6 +15209,11 @@ type PluginsValidationResult struct {
 // GetErrors returns the value of Errors.
 func (s *PluginsValidationResult) GetErrors() []string {
 	return s.Errors
+}
+
+// GetFindings returns the value of Findings.
+func (s *PluginsValidationResult) GetFindings() []SkillsFinding {
+	return s.Findings
 }
 
 // GetValid returns the value of Valid.
@@ -15175,6 +15229,11 @@ func (s *PluginsValidationResult) GetWarnings() []string {
 // SetErrors sets the value of Errors.
 func (s *PluginsValidationResult) SetErrors(val []string) {
 	s.Errors = val
+}
+
+// SetFindings sets the value of Findings.
+func (s *PluginsValidationResult) SetFindings(val []SkillsFinding) {
+	s.Findings = val
 }
 
 // SetValid sets the value of Valid.
@@ -19570,6 +19629,70 @@ func (s *SkillsFailureReason) UnmarshalText(data []byte) error {
 	}
 }
 
+// Ref: #/components/schemas/SkillsFinding
+type SkillsFinding struct {
+	// File is the slash-separated path of the affected file, relative to the
+	// validated directory.
+	File OptString `json:"file"`
+	// Line is the 1-based line in File, or 0 when unknown.
+	Line OptInt `json:"line"`
+	// Message describes the problem.
+	Message OptString `json:"message"`
+	// Rule is the stable ID of the check that produced the finding.
+	Rule     OptString         `json:"rule"`
+	Severity OptSkillsSeverity `json:"severity"`
+}
+
+// GetFile returns the value of File.
+func (s *SkillsFinding) GetFile() OptString {
+	return s.File
+}
+
+// GetLine returns the value of Line.
+func (s *SkillsFinding) GetLine() OptInt {
+	return s.Line
+}
+
+// GetMessage returns the value of Message.
+func (s *SkillsFinding) GetMessage() OptString {
+	return s.Message
+}
+
+// GetRule returns the value of Rule.
+func (s *SkillsFinding) GetRule() OptString {
+	return s.Rule
+}
+
+// GetSeverity returns the value of Severity.
+func (s *SkillsFinding) GetSeverity() OptSkillsSeverity {
+	return s.Severity
+}
+
+// SetFile sets the value of File.
+func (s *SkillsFinding) SetFile(val OptString) {
+	s.File = val
+}
+
+// SetLine sets the value of Line.
+func (s *SkillsFinding) SetLine(val OptInt) {
+	s.Line = val
+}
+
+// SetMessage sets the value of Message.
+func (s *SkillsFinding) SetMessage(val OptString) {
+	s.Message = val
+}
+
+// SetRule sets the value of Rule.
+func (s *SkillsFinding) SetRule(val OptString) {
+	s.Rule = val
+}
+
+// SetSeverity sets the value of Severity.
+func (s *SkillsFinding) SetSeverity(val OptSkillsSeverity) {
+	s.Severity = val
+}
+
 // Status is the current installation status.
 // Ref: #/components/schemas/SkillsInstallStatus
 type SkillsInstallStatus string
@@ -19969,6 +20092,49 @@ func (s *SkillsScope) UnmarshalText(data []byte) error {
 		return nil
 	case SkillsScopeProject:
 		*s = SkillsScopeProject
+		return nil
+	default:
+		return errors.Errorf("invalid value: %q", data)
+	}
+}
+
+// Severity is "error" or "warning".
+// Ref: #/components/schemas/SkillsSeverity
+type SkillsSeverity string
+
+const (
+	SkillsSeverityError   SkillsSeverity = "error"
+	SkillsSeverityWarning SkillsSeverity = "warning"
+)
+
+// AllValues returns all SkillsSeverity values.
+func (SkillsSeverity) AllValues() []SkillsSeverity {
+	return []SkillsSeverity{
+		SkillsSeverityError,
+		SkillsSeverityWarning,
+	}
+}
+
+// MarshalText implements encoding.TextMarshaler.
+func (s SkillsSeverity) MarshalText() ([]byte, error) {
+	switch s {
+	case SkillsSeverityError:
+		return []byte(s), nil
+	case SkillsSeverityWarning:
+		return []byte(s), nil
+	default:
+		return nil, errors.Errorf("invalid value: %q", s)
+	}
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (s *SkillsSeverity) UnmarshalText(data []byte) error {
+	switch SkillsSeverity(data) {
+	case SkillsSeverityError:
+		*s = SkillsSeverityError
+		return nil
+	case SkillsSeverityWarning:
+		*s = SkillsSeverityWarning
 		return nil
 	default:
 		return errors.Errorf("invalid value: %q", data)
@@ -20588,6 +20754,9 @@ func (*SkillsV01Response) listPublicRegistrySkillsRes() {}
 type SkillsValidationResult struct {
 	// Errors is a list of validation errors, if any.
 	Errors []string `json:"errors"`
+	// Findings lists every error and warning with its rule ID and location.
+	// Each Errors or Warnings entry corresponds to exactly one finding.
+	Findings []SkillsFinding `json:"findings"`
 	// Valid indicates whether the skill definition is valid.
 	Valid OptBool `json:"valid"`
 	// Warnings is a list of non-blocking validation warnings, if any.
@@ -20597,6 +20766,11 @@ type SkillsValidationResult struct {
 // GetErrors returns the value of Errors.
 func (s *SkillsValidationResult) GetErrors() []string {
 	return s.Errors
+}
+
+// GetFindings returns the value of Findings.
+func (s *SkillsValidationResult) GetFindings() []SkillsFinding {
+	return s.Findings
 }
 
 // GetValid returns the value of Valid.
@@ -20612,6 +20786,11 @@ func (s *SkillsValidationResult) GetWarnings() []string {
 // SetErrors sets the value of Errors.
 func (s *SkillsValidationResult) SetErrors(val []string) {
 	s.Errors = val
+}
+
+// SetFindings sets the value of Findings.
+func (s *SkillsValidationResult) SetFindings(val []SkillsFinding) {
+	s.Findings = val
 }
 
 // SetValid sets the value of Valid.

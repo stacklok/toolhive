@@ -593,7 +593,7 @@ Exit codes follow a CI-oriented contract distinct from the generic `1` used else
 | `POST` | `/` | Install a skill |
 | `GET` | `/{name}` | Get skill info |
 | `DELETE` | `/{name}` | Uninstall a skill |
-| `POST` | `/validate` | Validate a SKILL.md |
+| `POST` | `/validate` | Validate a SKILL.md (result format: [skills-validation.md](../skills-validation.md)) |
 | `POST` | `/build` | Build skill to OCI artifact |
 | `POST` | `/push` | Push built skill to registry |
 | `GET` | `/builds` | List local builds |

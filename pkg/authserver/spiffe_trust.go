@@ -423,6 +423,16 @@ func (c *SPIFFETrustConfig) permitsMethod(method SPIFFEAuthenticationMethod) boo
 	})
 }
 
+// permitsJWTClientCredentials reports whether any single association allows
+// the JWT-SVID method and lists the client_credentials grant. It is safe on a
+// nil receiver.
+func (c *SPIFFETrustConfig) permitsJWTClientCredentials() bool {
+	return slices.ContainsFunc(c.Associations(), func(a SPIFFEClientAuthConfig) bool {
+		return containsSPIFFEAuthenticationMethod(a.methods, SPIFFEAuthenticationMethodJWT) &&
+			slices.Contains(a.AuthorizationPolicy().GrantTypes(), oauthproto.GrantTypeClientCredentials)
+	})
+}
+
 func (c SPIFFEClientAuthConfig) clone() SPIFFEClientAuthConfig {
 	c.methods = slices.Clone(c.methods)
 	return c

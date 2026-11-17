@@ -2635,33 +2635,27 @@ spec:
                   rule: '!has(self.inboundGrants) || !has(self.inboundGrants.spiffeClientAuth)
                     || self.inboundGrants.spiffeClientAuth.all(client, !client.clientId.matches(''^[A-Za-z][A-Za-z0-9+.-]*://.+''))'
                 - message: insecureAllowHTTP cannot be combined with confidential
-                    client registration, delegateClients or JWT-SVID SPIFFE associations;
-                    client secrets or JWT-SVIDs would be issued or used in cleartext
-                    over an unauthenticated endpoint
+                    client registration or delegateClients; client secrets would be
+                    issued or used in cleartext over an unauthenticated endpoint
                   rule: '!(has(self.insecureAllowHTTP) && self.insecureAllowHTTP &&
                     ((has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration)
                     || (has(self.delegateClients) && size(self.delegateClients) >
                     0) || (has(self.inboundGrants) && has(self.inboundGrants.tokenExchange)
                     && has(self.inboundGrants.tokenExchange.delegateClients) && size(self.inboundGrants.tokenExchange.delegateClients)
-                    > 0) || (has(self.inboundGrants) && has(self.inboundGrants.spiffeClientAuth)
-                    && self.inboundGrants.spiffeClientAuth.exists(a, ''spiffe_jwt''
-                    in a.methods))))'
+                    > 0)))'
                 - message: forceConfidentialRedirectUris requires allowConfidentialClientRegistration
                     to be true
                   rule: (!has(self.forceConfidentialRedirectUris) || size(self.forceConfidentialRedirectUris)
                     == 0) || (has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration)
-                - message: confidential client registration, delegateClients or JWT-SVID
-                    SPIFFE associations with an HTTP issuer require insecureAllowConfidentialOverLoopbackHTTP
+                - message: confidential client registration or delegateClients with
+                    an HTTP issuer require insecureAllowConfidentialOverLoopbackHTTP
                     to be explicitly enabled; the issuer must still be loopback
                   rule: '!self.issuer.startsWith(''http://'') || (has(self.insecureAllowConfidentialOverLoopbackHTTP)
                     && self.insecureAllowConfidentialOverLoopbackHTTP) || ((!has(self.allowConfidentialClientRegistration)
                     || !self.allowConfidentialClientRegistration) && (!has(self.delegateClients)
                     || size(self.delegateClients) == 0) && (!has(self.inboundGrants)
                     || !has(self.inboundGrants.tokenExchange) || !has(self.inboundGrants.tokenExchange.delegateClients)
-                    || size(self.inboundGrants.tokenExchange.delegateClients) == 0)
-                    && !(has(self.inboundGrants) && has(self.inboundGrants.spiffeClientAuth)
-                    && self.inboundGrants.spiffeClientAuth.exists(a, ''spiffe_jwt''
-                    in a.methods)))'
+                    || size(self.inboundGrants.tokenExchange.delegateClients) == 0))'
                 - message: canonical tokenExchange conflicts with legacy delegateClients
                     or RFC 8693 trusted issuer policy
                   rule: '!has(self.inboundGrants) || !has(self.inboundGrants.tokenExchange)
@@ -5784,33 +5778,27 @@ spec:
                   rule: '!has(self.inboundGrants) || !has(self.inboundGrants.spiffeClientAuth)
                     || self.inboundGrants.spiffeClientAuth.all(client, !client.clientId.matches(''^[A-Za-z][A-Za-z0-9+.-]*://.+''))'
                 - message: insecureAllowHTTP cannot be combined with confidential
-                    client registration, delegateClients or JWT-SVID SPIFFE associations;
-                    client secrets or JWT-SVIDs would be issued or used in cleartext
-                    over an unauthenticated endpoint
+                    client registration or delegateClients; client secrets would be
+                    issued or used in cleartext over an unauthenticated endpoint
                   rule: '!(has(self.insecureAllowHTTP) && self.insecureAllowHTTP &&
                     ((has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration)
                     || (has(self.delegateClients) && size(self.delegateClients) >
                     0) || (has(self.inboundGrants) && has(self.inboundGrants.tokenExchange)
                     && has(self.inboundGrants.tokenExchange.delegateClients) && size(self.inboundGrants.tokenExchange.delegateClients)
-                    > 0) || (has(self.inboundGrants) && has(self.inboundGrants.spiffeClientAuth)
-                    && self.inboundGrants.spiffeClientAuth.exists(a, ''spiffe_jwt''
-                    in a.methods))))'
+                    > 0)))'
                 - message: forceConfidentialRedirectUris requires allowConfidentialClientRegistration
                     to be true
                   rule: (!has(self.forceConfidentialRedirectUris) || size(self.forceConfidentialRedirectUris)
                     == 0) || (has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration)
-                - message: confidential client registration, delegateClients or JWT-SVID
-                    SPIFFE associations with an HTTP issuer require insecureAllowConfidentialOverLoopbackHTTP
+                - message: confidential client registration or delegateClients with
+                    an HTTP issuer require insecureAllowConfidentialOverLoopbackHTTP
                     to be explicitly enabled; the issuer must still be loopback
                   rule: '!self.issuer.startsWith(''http://'') || (has(self.insecureAllowConfidentialOverLoopbackHTTP)
                     && self.insecureAllowConfidentialOverLoopbackHTTP) || ((!has(self.allowConfidentialClientRegistration)
                     || !self.allowConfidentialClientRegistration) && (!has(self.delegateClients)
                     || size(self.delegateClients) == 0) && (!has(self.inboundGrants)
                     || !has(self.inboundGrants.tokenExchange) || !has(self.inboundGrants.tokenExchange.delegateClients)
-                    || size(self.inboundGrants.tokenExchange.delegateClients) == 0)
-                    && !(has(self.inboundGrants) && has(self.inboundGrants.spiffeClientAuth)
-                    && self.inboundGrants.spiffeClientAuth.exists(a, ''spiffe_jwt''
-                    in a.methods)))'
+                    || size(self.inboundGrants.tokenExchange.delegateClients) == 0))'
                 - message: canonical tokenExchange conflicts with legacy delegateClients
                     or RFC 8693 trusted issuer policy
                   rule: '!has(self.inboundGrants) || !has(self.inboundGrants.tokenExchange)

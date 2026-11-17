@@ -943,9 +943,9 @@ type JWTBearerIssuerPolicyConfig struct {
 // +kubebuilder:validation:XValidation:rule="!has(self.inboundGrants) || !has(self.inboundGrants.spiffeClientAuth) || self.inboundGrants.spiffeClientAuth.all(client, !client.clientId.startsWith('synthetic:'))",message="spiffeClientAuth clientId must not use the reserved synthetic: prefix"
 // +kubebuilder:validation:XValidation:rule="!has(self.inboundGrants) || !has(self.inboundGrants.spiffeClientAuth) || self.inboundGrants.spiffeClientAuth.all(client, !client.clientId.matches('^[A-Za-z][A-Za-z0-9+.-]*://.+'))",message="spiffeClientAuth clientId must not be an absolute URL"
 //
-// +kubebuilder:validation:XValidation:rule="!(has(self.insecureAllowHTTP) && self.insecureAllowHTTP && ((has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration) || (has(self.delegateClients) && size(self.delegateClients) > 0) || (has(self.inboundGrants) && has(self.inboundGrants.tokenExchange) && has(self.inboundGrants.tokenExchange.delegateClients) && size(self.inboundGrants.tokenExchange.delegateClients) > 0) || (has(self.inboundGrants) && has(self.inboundGrants.spiffeClientAuth) && self.inboundGrants.spiffeClientAuth.exists(a, 'spiffe_jwt' in a.methods))))",message="insecureAllowHTTP cannot be combined with confidential client registration, delegateClients or JWT-SVID SPIFFE associations; client secrets or JWT-SVIDs would be issued or used in cleartext over an unauthenticated endpoint"
+// +kubebuilder:validation:XValidation:rule="!(has(self.insecureAllowHTTP) && self.insecureAllowHTTP && ((has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration) || (has(self.delegateClients) && size(self.delegateClients) > 0) || (has(self.inboundGrants) && has(self.inboundGrants.tokenExchange) && has(self.inboundGrants.tokenExchange.delegateClients) && size(self.inboundGrants.tokenExchange.delegateClients) > 0)))",message="insecureAllowHTTP cannot be combined with confidential client registration or delegateClients; client secrets would be issued or used in cleartext over an unauthenticated endpoint"
 // +kubebuilder:validation:XValidation:rule="(!has(self.forceConfidentialRedirectUris) || size(self.forceConfidentialRedirectUris) == 0) || (has(self.allowConfidentialClientRegistration) && self.allowConfidentialClientRegistration)",message="forceConfidentialRedirectUris requires allowConfidentialClientRegistration to be true"
-// +kubebuilder:validation:XValidation:rule="!self.issuer.startsWith('http://') || (has(self.insecureAllowConfidentialOverLoopbackHTTP) && self.insecureAllowConfidentialOverLoopbackHTTP) || ((!has(self.allowConfidentialClientRegistration) || !self.allowConfidentialClientRegistration) && (!has(self.delegateClients) || size(self.delegateClients) == 0) && (!has(self.inboundGrants) || !has(self.inboundGrants.tokenExchange) || !has(self.inboundGrants.tokenExchange.delegateClients) || size(self.inboundGrants.tokenExchange.delegateClients) == 0) && !(has(self.inboundGrants) && has(self.inboundGrants.spiffeClientAuth) && self.inboundGrants.spiffeClientAuth.exists(a, 'spiffe_jwt' in a.methods)))",message="confidential client registration, delegateClients or JWT-SVID SPIFFE associations with an HTTP issuer require insecureAllowConfidentialOverLoopbackHTTP to be explicitly enabled; the issuer must still be loopback"
+// +kubebuilder:validation:XValidation:rule="!self.issuer.startsWith('http://') || (has(self.insecureAllowConfidentialOverLoopbackHTTP) && self.insecureAllowConfidentialOverLoopbackHTTP) || ((!has(self.allowConfidentialClientRegistration) || !self.allowConfidentialClientRegistration) && (!has(self.delegateClients) || size(self.delegateClients) == 0) && (!has(self.inboundGrants) || !has(self.inboundGrants.tokenExchange) || !has(self.inboundGrants.tokenExchange.delegateClients) || size(self.inboundGrants.tokenExchange.delegateClients) == 0))",message="confidential client registration or delegateClients with an HTTP issuer require insecureAllowConfidentialOverLoopbackHTTP to be explicitly enabled; the issuer must still be loopback"
 // +kubebuilder:validation:XValidation:rule="!has(self.inboundGrants) || !has(self.inboundGrants.tokenExchange) || ((!has(self.delegateClients) || size(self.delegateClients) == 0) && (!has(self.trustedIssuers) || !self.trustedIssuers.exists(issuer, has(issuer.expectedAudience) || has(issuer.actorClaim) || has(issuer.allowedActors) || has(issuer.actorMatcher) || has(issuer.allowedDelegateClients) || (has(issuer.allowMayAct) && issuer.allowMayAct))))",message="canonical tokenExchange conflicts with legacy delegateClients or RFC 8693 trusted issuer policy"
 // +kubebuilder:validation:XValidation:rule="!has(self.inboundGrants) || !has(self.inboundGrants.jwtBearer) || !has(self.trustedIssuers) || !self.trustedIssuers.exists(issuer, has(issuer.jwtBearerGrant))",message="canonical jwtBearer conflicts with legacy jwtBearerGrant"
 // +kubebuilder:validation:XValidation:rule="!has(self.trustedIssuers) || self.trustedIssuers.all(issuer, !has(issuer.name) || self.trustedIssuers.filter(other, has(other.name) && other.name == issuer.name).size() == 1)",message="trustedIssuers must not contain duplicate names"
@@ -1403,14 +1403,6 @@ func applyEffectiveJWTBearer(
 	return nil
 }
 
-// hasConfidentialClients reports whether DCR of confidential clients is
-// enabled, the effective grants include a delegate client, or a SPIFFE
-// association allows the JWT-SVID method.
-func (c *EmbeddedAuthServerConfig) hasConfidentialClients(grants effectiveInboundGrants) bool {
-	return c.AllowConfidentialClientRegistration || len(grants.delegateClients) > 0 ||
-		c.hasSPIFFEMethod(SPIFFEAuthenticationMethodJWT)
-}
-
 // ValidateInboundGrants validates the effective grant projection shared by
 // MCPExternalAuthConfig and inline VirtualMCPServer auth configuration.
 func (c *EmbeddedAuthServerConfig) ValidateInboundGrants() error {
@@ -1419,7 +1411,7 @@ func (c *EmbeddedAuthServerConfig) ValidateInboundGrants() error {
 		return err
 	}
 	if err := authserver.ValidateConfidentialClientTransport(
-		c.hasConfidentialClients(grants),
+		c.AllowConfidentialClientRegistration || len(grants.delegateClients) > 0,
 		c.InsecureAllowHTTP,
 		c.Issuer,
 		c.InsecureAllowConfidentialOverLoopbackHTTP,

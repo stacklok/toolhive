@@ -746,7 +746,7 @@ func TestMCPExternalAuthConfig_validateEmbeddedAuthServer(t *testing.T) {
 				},
 			},
 			expectErr: true,
-			errMsg:    "confidential clients (allow_confidential_client_registration, delegate clients or JWT-SVID SPIFFE associations) cannot be combined with insecure_allow_http",
+			errMsg:    "confidential clients (allow_confidential_client_registration, delegate clients or JWT-SVID SPIFFE associations that grant client_credentials) cannot be combined with insecure_allow_http",
 		},
 		{
 			name: "confidential clients with plain-HTTP loopback issuer without opt-in - invalid",
@@ -2127,22 +2127,14 @@ func TestEmbeddedAuthServerConfig_ValidateInboundGrants_ConfidentialClientTransp
 		expectErr bool
 	}{
 		{
-			name: "SPIFFE JWT association rejects insecure HTTP",
+			name: "SPIFFE JWT association is admitted with insecure HTTP",
 			config: spiffeConfig(SPIFFEAuthenticationMethodJWT, func(c *EmbeddedAuthServerConfig) {
 				c.InsecureAllowHTTP = true
 			}),
-			expectErr: true,
 		},
 		{
-			name:      "SPIFFE JWT association rejects HTTP loopback without explicit opt in",
-			config:    spiffeConfig(SPIFFEAuthenticationMethodJWT, func(*EmbeddedAuthServerConfig) {}),
-			expectErr: true,
-		},
-		{
-			name: "SPIFFE JWT association allows HTTP loopback with explicit opt in",
-			config: spiffeConfig(SPIFFEAuthenticationMethodJWT, func(c *EmbeddedAuthServerConfig) {
-				c.InsecureAllowConfidentialOverLoopbackHTTP = true
-			}),
+			name:   "SPIFFE JWT association is admitted on HTTP loopback without explicit opt in",
+			config: spiffeConfig(SPIFFEAuthenticationMethodJWT, func(*EmbeddedAuthServerConfig) {}),
 		},
 		{
 			name: "SPIFFE X.509-only association is unaffected by insecure HTTP",

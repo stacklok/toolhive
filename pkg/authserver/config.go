@@ -639,8 +639,10 @@ func (c *RunConfig) Validate() error {
 	// (neither applies to JWT-SVIDs: there is no jti check, and the cap is six
 	// minutes of remaining validity). This is a conservative choice, matches the
 	// CRD CEL rules, and can be relaxed later (for example for an in-cluster
-	// HTTP issuer). SPIFFE associations that allow the JWT-SVID method count
-	// too: the JWT-SVID is a bearer credential sent in the clear over plain HTTP.
+	// HTTP issuer). A SPIFFE association that allows the JWT-SVID method and
+	// grants client_credentials counts too: one captured JWT-SVID, a bearer
+	// credential, then mints access tokens directly. Token-exchange-only
+	// JWT-SVID associations do not count.
 	if err := ValidateConfidentialClientTransport(
 		c.hasConfidentialClients(normalized), c.InsecureAllowHTTP,
 		c.Issuer, c.InsecureAllowConfidentialOverLoopbackHTTP); err != nil {
@@ -666,10 +668,11 @@ func (c *RunConfig) Validate() error {
 
 // hasConfidentialClients reports whether any confidential client can exist:
 // DCR of confidential clients, at least one delegate client in the normalized
-// grants, or a SPIFFE association that allows the JWT-SVID method.
+// grants, or a SPIFFE association that allows the JWT-SVID method and grants
+// client_credentials.
 func (c *RunConfig) hasConfidentialClients(normalized *NormalizedInboundGrants) bool {
 	return c.AllowConfidentialClientRegistration || len(normalized.DelegateClients) > 0 ||
-		c.hasSPIFFEMethod(SPIFFEAuthenticationMethodJWT)
+		c.hasJWTClientCredentialsAssociation()
 }
 
 // validateSPIFFEX509Listener requires the TLS listener and an https issuer when
@@ -815,6 +818,20 @@ func (c *RunConfig) hasSPIFFEMethod(method SPIFFEAuthenticationMethod) bool {
 	}
 	return slices.ContainsFunc(c.InboundGrants.SPIFFEClientAuth, func(a SPIFFEClientAuthRunConfig) bool {
 		return containsSPIFFEAuthenticationMethod(a.Methods, method)
+	})
+}
+
+// hasJWTClientCredentialsAssociation reports whether any SPIFFE client
+// association in the unvalidated run-config form allows the JWT-SVID method and
+// lists the client_credentials grant. A nil *RunConfig or nil InboundGrants
+// returns false.
+func (c *RunConfig) hasJWTClientCredentialsAssociation() bool {
+	if c == nil || c.InboundGrants == nil {
+		return false
+	}
+	return slices.ContainsFunc(c.InboundGrants.SPIFFEClientAuth, func(a SPIFFEClientAuthRunConfig) bool {
+		return containsSPIFFEAuthenticationMethod(a.Methods, SPIFFEAuthenticationMethodJWT) &&
+			slices.Contains(a.GrantTypes, oauthproto.GrantTypeClientCredentials)
 	})
 }
 
@@ -2404,9 +2421,10 @@ func (c *Config) validateDelegationConfig() error {
 }
 
 // hasStaticConfidentialClients reports whether any delegate client is
-// configured or a SPIFFE association allows the JWT-SVID method.
+// configured or a SPIFFE association allows the JWT-SVID method and grants
+// client_credentials.
 func (c *Config) hasStaticConfidentialClients() bool {
-	return len(c.DelegateClients) > 0 || c.SPIFFETrust.permitsMethod(SPIFFEAuthenticationMethodJWT)
+	return len(c.DelegateClients) > 0 || c.SPIFFETrust.permitsJWTClientCredentials()
 }
 
 // validateConfidentialClientConfig groups cleartext-transport validation for

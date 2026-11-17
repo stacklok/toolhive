@@ -346,37 +346,71 @@ func TestSPIFFETrustConfigTrustDomainLookup(t *testing.T) {
 	assert.False(t, ok)
 }
 
-func TestHasSPIFFEJWTAssociation(t *testing.T) {
+func TestJWTClientCredentialsAssociation(t *testing.T) {
 	t.Parallel()
 
-	x509Only := testSPIFFEAssociation("x509-client", "openid")
-	jwtOnly := testSPIFFEAssociation("jwt-client", "openid")
-	jwtOnly.Methods = []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodJWT}
-
-	assert.False(t, (*RunConfig)(nil).hasSPIFFEMethod(SPIFFEAuthenticationMethodJWT))
-	assert.False(t, (&RunConfig{InboundGrants: &InboundGrantsRunConfig{
-		SPIFFEClientAuth: []SPIFFEClientAuthRunConfig{x509Only},
-	}}).hasSPIFFEMethod(SPIFFEAuthenticationMethodJWT))
-	assert.True(t, (&RunConfig{InboundGrants: &InboundGrantsRunConfig{
-		SPIFFEClientAuth: []SPIFFEClientAuthRunConfig{x509Only, jwtOnly},
-	}}).hasSPIFFEMethod(SPIFFEAuthenticationMethodJWT))
-	assert.False(t, (*SPIFFETrustConfig)(nil).permitsMethod(SPIFFEAuthenticationMethodJWT))
-
-	trust := func(associations ...SPIFFEClientAuthRunConfig) *SPIFFETrustConfig {
-		cfg, err := NewSPIFFETrustConfig([]SPIFFETrustDomainRunConfig{{
-			Name:         "production",
-			TrustDomain:  "example.org",
-			Methods:      []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509, SPIFFEAuthenticationMethodJWT},
-			BundleSource: validFileBundleSource(),
-		}}, &InboundGrantsRunConfig{SPIFFEClientAuth: associations},
-			[]string{"openid"}, []string{"https://audience.example.com"})
-		require.NoError(t, err)
-		return cfg
+	assoc := func(principal string, method SPIFFEAuthenticationMethod, grants ...string) SPIFFEClientAuthRunConfig {
+		a := withPrincipal(testSPIFFEAssociation(principal, "openid"), principal)
+		a.Methods = []SPIFFEAuthenticationMethod{method}
+		a.GrantTypes = grants
+		return a
 	}
-	x509Other := withPrincipal(x509Only, "spiffe://example.org/ns/default/other")
-	jwtOther := withPrincipal(jwtOnly, "spiffe://example.org/ns/default/jwt")
-	assert.False(t, trust(x509Only).permitsMethod(SPIFFEAuthenticationMethodJWT))
-	assert.True(t, trust(x509Other, jwtOther).permitsMethod(SPIFFEAuthenticationMethodJWT))
+	const (
+		tokenExchange     = oauthproto.GrantTypeTokenExchange
+		clientCredentials = oauthproto.GrantTypeClientCredentials
+	)
+	jwtCC := assoc("spiffe://example.org/ns/default/jwt-cc", SPIFFEAuthenticationMethodJWT, clientCredentials)
+	jwtBoth := assoc("spiffe://example.org/ns/default/jwt-both", SPIFFEAuthenticationMethodJWT, tokenExchange, clientCredentials)
+	jwtTE := assoc("spiffe://example.org/ns/default/jwt-te", SPIFFEAuthenticationMethodJWT, tokenExchange)
+	x509CC := assoc("spiffe://example.org/ns/default/x509-cc", SPIFFEAuthenticationMethodX509, clientCredentials)
+	x509TE := assoc("spiffe://example.org/ns/default/x509-te", SPIFFEAuthenticationMethodX509, tokenExchange)
+
+	tests := []struct {
+		name         string
+		associations []SPIFFEClientAuthRunConfig
+		want         bool
+	}{
+		{name: "no associations", want: false},
+		{name: "JWT-SVID with client_credentials", associations: []SPIFFEClientAuthRunConfig{jwtCC}, want: true},
+		{name: "JWT-SVID with both grants", associations: []SPIFFEClientAuthRunConfig{jwtBoth}, want: true},
+		{name: "JWT-SVID token exchange only", associations: []SPIFFEClientAuthRunConfig{jwtTE}, want: false},
+		{name: "X.509 with client_credentials", associations: []SPIFFEClientAuthRunConfig{x509CC}, want: false},
+		{name: "X.509 token exchange only", associations: []SPIFFEClientAuthRunConfig{x509TE}, want: false},
+		{
+			name:         "method and grant on different associations",
+			associations: []SPIFFEClientAuthRunConfig{jwtTE, x509CC},
+			want:         false,
+		},
+		{
+			name:         "one qualifying association among others",
+			associations: []SPIFFEClientAuthRunConfig{x509TE, jwtTE, jwtCC},
+			want:         true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			runConfig := &RunConfig{InboundGrants: &InboundGrantsRunConfig{SPIFFEClientAuth: tt.associations}}
+			assert.Equal(t, tt.want, runConfig.hasJWTClientCredentialsAssociation())
+
+			if len(tt.associations) == 0 {
+				return
+			}
+			trust, err := NewSPIFFETrustConfig([]SPIFFETrustDomainRunConfig{{
+				Name:         "production",
+				TrustDomain:  "example.org",
+				Methods:      []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509, SPIFFEAuthenticationMethodJWT},
+				BundleSource: validFileBundleSource(),
+			}}, runConfig.InboundGrants, []string{"openid"}, []string{"https://audience.example.com"})
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, trust.permitsJWTClientCredentials())
+		})
+	}
+
+	assert.False(t, (*RunConfig)(nil).hasJWTClientCredentialsAssociation())
+	assert.False(t, (&RunConfig{}).hasJWTClientCredentialsAssociation())
+	assert.False(t, (*SPIFFETrustConfig)(nil).permitsJWTClientCredentials())
 }
 
 //nolint:paralleltest // Swaps the process-wide default logger.

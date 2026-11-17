@@ -14,10 +14,11 @@ import (
 
 	oauthserver "github.com/stacklok/toolhive/pkg/authserver/server"
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
+	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
 // TestAuthorizationServerParamsGateSPIFFEJWTOnTransport pins that newServer's
-// parameter mapping marks a JWT-SVID association as a confidential client, so
+// parameter mapping marks a JWT-SVID client_credentials association as a confidential client, so
 // the provider's own transport check still refuses a plain-HTTP non-loopback
 // issuer if Config.Validate is bypassed.
 func TestAuthorizationServerParamsGateSPIFFEJWTOnTransport(t *testing.T) {
@@ -28,7 +29,21 @@ func TestAuthorizationServerParamsGateSPIFFEJWTOnTransport(t *testing.T) {
 		trust   *SPIFFETrustConfig
 		wantErr string
 	}{
-		{name: "JWT-SVID association is refused", trust: mustNewSPIFFEJWTTrustConfig(t), wantErr: "plain-HTTP non-loopback"},
+		{
+			name:    "JWT-SVID client_credentials association is refused",
+			trust:   mustNewSPIFFEJWTTrustConfig(t, oauthproto.GrantTypeClientCredentials),
+			wantErr: "plain-HTTP non-loopback",
+		},
+		{
+			name: "JWT-SVID association with both grants is refused",
+			trust: mustNewSPIFFEJWTTrustConfig(t,
+				oauthproto.GrantTypeTokenExchange, oauthproto.GrantTypeClientCredentials),
+			wantErr: "plain-HTTP non-loopback",
+		},
+		{
+			name:  "JWT-SVID token-exchange-only association is unaffected",
+			trust: mustNewSPIFFEJWTTrustConfig(t, oauthproto.GrantTypeTokenExchange),
+		},
 		{name: "X.509-only association is unaffected", trust: mustNewSPIFFETrustConfig(t)},
 	}
 	for _, tt := range tests {

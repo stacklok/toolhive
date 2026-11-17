@@ -194,9 +194,9 @@ type AuthorizationServerConfig struct {
 	// HasStaticConfidentialClients indicates whether any pre-provisioned
 	// confidential client exists at startup: a delegate client of any auth
 	// method, or a SPIFFE association that allows the JWT-SVID method (a bearer
-	// credential). It counts for the cleartext-transport check. It does not
-	// drive discovery; see HasStaticSecretClients and
-	// HasStaticPrivateKeyJWTClients.
+	// credential) and grants client_credentials. It counts for the
+	// cleartext-transport check. It does not drive discovery; see
+	// HasStaticSecretClients and HasStaticPrivateKeyJWTClients.
 	HasStaticConfidentialClients bool
 	// HasStaticSecretClients indicates whether any pre-provisioned delegate
 	// client authenticates with a client secret (an empty, client_secret_basic
@@ -330,9 +330,9 @@ type AuthorizationServerParams struct {
 	// HasStaticConfidentialClients indicates whether any pre-provisioned
 	// confidential client exists at startup: a delegate client of any auth
 	// method, or a SPIFFE association that allows the JWT-SVID method (a bearer
-	// credential). It counts for the cleartext-transport check. It does not
-	// drive discovery; see HasStaticSecretClients and
-	// HasStaticPrivateKeyJWTClients.
+	// credential) and grants client_credentials. It counts for the
+	// cleartext-transport check. It does not drive discovery; see
+	// HasStaticSecretClients and HasStaticPrivateKeyJWTClients.
 	HasStaticConfidentialClients bool
 	// HasStaticSecretClients indicates whether any pre-provisioned delegate
 	// client authenticates with a client secret (an empty, client_secret_basic
@@ -467,7 +467,7 @@ func validateTokenLifespans(cfg *AuthorizationServerParams) error {
 // when any confidential client is enabled, whether it is admitted through DCR
 // or statically declared. Statically declared delegate clients always count,
 // regardless of their authentication method, as do SPIFFE associations that
-// allow the JWT-SVID method.
+// allow the JWT-SVID method and grant client_credentials.
 func ValidateConfidentialClientTransport(
 	allowConfidential, insecureAllowHTTP bool,
 	issuer string, insecureAllowConfidentialOverLoopbackHTTP bool,
@@ -477,7 +477,8 @@ func ValidateConfidentialClientTransport(
 	}
 	if insecureAllowHTTP {
 		return fmt.Errorf("confidential clients (allow_confidential_client_registration, " +
-			"delegate clients or JWT-SVID SPIFFE associations) " +
+			"delegate clients or JWT-SVID SPIFFE associations " +
+			"that grant client_credentials) " +
 			"cannot be combined with insecure_allow_http: " +
 			"client credentials, authorization codes and tokens would cross cleartext HTTP")
 	}
@@ -498,20 +499,23 @@ func ValidateConfidentialClientTransport(
 	}
 	if insecureAllowConfidentialOverLoopbackHTTP && !networking.IsLocalhost(parsed.Host) {
 		return fmt.Errorf("confidential clients (allow_confidential_client_registration, " +
-			"delegate clients or JWT-SVID SPIFFE associations) " +
+			"delegate clients or JWT-SVID SPIFFE associations " +
+			"that grant client_credentials) " +
 			"cannot use the loopback HTTP opt-in with a non-loopback issuer: " +
 			"client credentials, authorization codes and tokens would cross cleartext HTTP")
 	}
 	if !insecureAllowConfidentialOverLoopbackHTTP && networking.IsLocalhost(parsed.Host) {
 		return fmt.Errorf("confidential clients (allow_confidential_client_registration, " +
-			"delegate clients or JWT-SVID SPIFFE associations) " +
+			"delegate clients or JWT-SVID SPIFFE associations " +
+			"that grant client_credentials) " +
 			"cannot be combined with a plain-HTTP loopback issuer unless " +
 			"insecure_allow_confidential_over_loopback_http is set: " +
 			"client credentials, authorization codes and tokens would cross cleartext HTTP")
 	}
 	if !networking.IsLocalhost(parsed.Host) {
 		return fmt.Errorf("confidential clients (allow_confidential_client_registration, " +
-			"delegate clients or JWT-SVID SPIFFE associations) " +
+			"delegate clients or JWT-SVID SPIFFE associations " +
+			"that grant client_credentials) " +
 			"cannot use a plain-HTTP non-loopback issuer: " +
 			"client credentials, authorization codes and tokens would cross cleartext HTTP")
 	}

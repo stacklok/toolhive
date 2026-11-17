@@ -527,7 +527,7 @@ func TestAssertionJWTConsumer_ForwardsThroughFullSPIFFEDecoratorChain(t *testing
 	})
 	require.NoError(t, err)
 
-	spiffeClient := spiffetest.Client(t, spiffetest.WithAudiences("https://mcp.example.com"))
+	spiffeClient := spiffetest.Client(t)
 	chain, err := storage.NewSPIFFEStorageDecorator(
 		ctx, cimdDecorated, map[string]fosite.Client{spiffeClient.GetID(): spiffeClient})
 	require.NoError(t, err)

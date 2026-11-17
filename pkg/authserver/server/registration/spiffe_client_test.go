@@ -14,21 +14,17 @@ import (
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
-var tokenExchangeGrants = []string{oauthproto.GrantTypeTokenExchange}
-
 func TestNewSPIFFEClient(t *testing.T) {
 	t.Parallel()
 
 	scopes := []string{"openid"}
-	audiences := []string{"https://api.example.com"}
 	resources := []string{"https://resource.example.com"}
 	grants := []string{oauthproto.GrantTypeTokenExchange}
-	client, err := NewSPIFFEClient("spiffe-client", grants, scopes, audiences, resources)
+	client, err := NewSPIFFEClient("spiffe-client", grants, scopes, resources)
 	require.NoError(t, err)
 
 	grants[0] = "changed"
 	scopes[0] = "changed"
-	audiences[0] = "changed"
 	resources[0] = "changed"
 
 	assert.Equal(t, "spiffe-client", client.GetID())
@@ -38,83 +34,45 @@ func TestNewSPIFFEClient(t *testing.T) {
 	assert.False(t, client.IsPublic())
 	assert.Equal(t, []string{oauthproto.GrantTypeTokenExchange}, []string(client.GetGrantTypes()))
 	assert.Equal(t, "openid", client.GetScopes()[0])
-	assert.Equal(t, []string{"https://api.example.com"}, client.Audiences())
-	assert.Equal(t, []string{"https://api.example.com"}, []string(client.GetAudience()))
+	assert.Nil(t, client.GetAudience())
 	assert.Equal(t, []string{"https://resource.example.com"}, client.Resources())
 
 	client.GetGrantTypes()[0] = "mutated"
 	client.GetScopes()[0] = "mutated"
-	client.Audiences()[0] = "mutated"
-	client.GetAudience()[0] = "mutated"
 	client.Resources()[0] = "mutated"
 	assert.Equal(t, []string{oauthproto.GrantTypeTokenExchange}, []string(client.GetGrantTypes()))
 	assert.Equal(t, "openid", client.GetScopes()[0])
-	assert.Equal(t, []string{"https://api.example.com"}, client.Audiences())
-	assert.Equal(t, []string{"https://api.example.com"}, []string(client.GetAudience()))
 	assert.Equal(t, []string{"https://resource.example.com"}, client.Resources())
 
-	_, err = NewSPIFFEClient("spiffe-client", tokenExchangeGrants, nil, nil, nil)
+	_, err = NewSPIFFEClient("disabled-exchange", []string{oauthproto.GrantTypeTokenExchange}, nil, nil)
 	require.Error(t, err)
-}
-
-// TestNewSPIFFEClient_DisjointAudiencesAndResources proves audiences and
-// resources are independently tracked, not aliases of the same underlying
-// field: a client configured with disjoint allowlists must return each list
-// unmodified by the other, and GetAudience (the RFC 8693 audience allowlist)
-// must never leak the RFC 8707 resource allowlist or vice versa.
-func TestNewSPIFFEClient_DisjointAudiencesAndResources(t *testing.T) {
-	t.Parallel()
-
-	client, err := NewSPIFFEClient(
-		"spiffe-client",
-		tokenExchangeGrants,
-		[]string{"openid"},
-		[]string{"https://audience.example.com"},
-		[]string{"https://resource.example.com"},
-	)
-	require.NoError(t, err)
-
-	assert.Equal(t, []string{"https://audience.example.com"}, []string(client.GetAudience()))
-	assert.Equal(t, []string{"https://resource.example.com"}, client.Resources())
-	assert.NotContains(t, client.GetAudience(), "https://resource.example.com")
-	assert.NotContains(t, client.Resources(), "https://audience.example.com")
 }
 
 func TestNewSPIFFEClient_Validation(t *testing.T) {
 	t.Parallel()
 
+	const tokenExchange = oauthproto.GrantTypeTokenExchange
 	tests := []struct {
-		name      string
-		id        string
-		grants    []string
-		scopes    []string
-		audiences []string
-		wantErr   string
+		name    string
+		id      string
+		grants  []string
+		scopes  []string
+		wantErr string
 	}{
+		{name: "missing ID", wantErr: "SPIFFE client ID is required"},
 		{
-			name: "missing ID", grants: tokenExchangeGrants,
-			wantErr: "SPIFFE client ID is required",
-		},
-		{
-			name: "missing grant types", id: "spiffe-client",
-			scopes: []string{"openid"}, audiences: []string{"https://api.example.com"},
+			name: "missing grant types", id: "spiffe-client", scopes: []string{"openid"},
 			wantErr: "SPIFFE client grant types are required",
 		},
 		{
-			name: "missing audiences", id: "spiffe-client", grants: tokenExchangeGrants,
-			scopes:  []string{"openid"},
-			wantErr: "SPIFFE client scopes and audiences are required",
-		},
-		{
-			name: "missing scopes", id: "spiffe-client", grants: tokenExchangeGrants,
-			audiences: []string{"https://api.example.com"},
-			wantErr:   "SPIFFE client scopes and audiences are required",
+			name: "missing scopes", id: "spiffe-client", grants: []string{tokenExchange},
+			wantErr: "SPIFFE client scopes are required",
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			client, err := NewSPIFFEClient(tt.id, tt.grants, tt.scopes, tt.audiences, nil)
+			client, err := NewSPIFFEClient(tt.id, tt.grants, tt.scopes, nil)
 			require.EqualError(t, err, tt.wantErr)
 			assert.Nil(t, client)
 		})
@@ -124,8 +82,8 @@ func TestNewSPIFFEClient_Validation(t *testing.T) {
 func TestNewAuthenticatedSPIFFEClient(t *testing.T) {
 	t.Parallel()
 
-	static, err := NewSPIFFEClient("client", tokenExchangeGrants,
-		[]string{"openid"}, []string{"https://api.example.com"}, []string{"https://resource.example.com"})
+	static, err := NewSPIFFEClient("client", []string{oauthproto.GrantTypeTokenExchange},
+		[]string{"openid"}, []string{"https://resource.example.com"})
 	require.NoError(t, err)
 	id := spiffeid.RequireFromString("spiffe://example.org/workload/concrete")
 
@@ -157,8 +115,8 @@ func TestNewAuthenticatedSPIFFEClient(t *testing.T) {
 			assert.Equal(t, static.GetID(), got.GetID())
 			assert.Equal(t, static.GetGrantTypes(), got.GetGrantTypes())
 			assert.Equal(t, static.GetScopes(), got.GetScopes())
-			assert.Equal(t, static.GetAudience(), got.GetAudience())
 			assert.Equal(t, []string{"https://resource.example.com"}, got.Resources())
+			assert.Nil(t, got.GetAudience())
 			assert.False(t, got.IsPublic())
 			assert.True(t, BackChannelOnly(got))
 		})

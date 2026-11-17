@@ -704,7 +704,7 @@ in addition to other grants can log users in.
   the server's sole allowed audience and is checked the same way. The check
   applies to every client, including dynamically registered and CIMD clients.
   It uses the client's own `audiences`, or its resource allowlist for SPIFFE
-  clients, and the server's configured audience matching strategy (fosite's
+  clients (which have no audiences), and the server's configured audience matching strategy (fosite's
   path-prefix strategy by default), which is the rule the authorization code
   callback and the refresh grant already apply to a client's audiences. For a
   client without a separate resource list, a request the check accepts therefore
@@ -732,7 +732,10 @@ in addition to other grants can log users in.
   names no target and the server's sole default audience is not one of the
   client's audiences, the refusal stays `invalid_request`: the client named no
   target, and the fix is to send an explicit `resource` or `audience`, which
-  the hint says.
+  the hint says. SPIFFE-authenticated clients use the resource-only rule
+  instead: any `audience` parameter, and a request with no `resource`, get
+  `invalid_target`. See
+  [SPIFFE Association Declarations](18-spiffe-association-declarations.md).
 - **Dynamically registered clients.** A DCR client keeps the audience list the
   server had when it registered, and that list is never refreshed. After an
   operator adds an audience, an existing DCR client that asks for it gets
@@ -856,8 +859,11 @@ the client type:
 
 - **Configured delegate clients.** A per-client allowlist. `audience` matches by
   path prefix. `resource` must also be an exact member of `allowed_audiences`.
-- **SPIFFE clients.** `audience` is checked the same way. `resource` is checked
-  against the client's own resource list.
+- **SPIFFE clients.** `audiences` is ignored. The
+  request must send exactly one `resource` that exactly matches an entry in the
+  association's resource list, and `audience` is rejected (see
+  [SPIFFE Association Declarations](18-spiffe-association-declarations.md)
+  for the full rule).
 - **DCR and CIMD clients.** A copy of the server's list taken at registration.
   ID-JAG redemption does not narrow them, so only the server list applies.
 - **Device flow.** The client receives all of its `audiences`.

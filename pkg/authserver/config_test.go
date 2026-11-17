@@ -113,6 +113,16 @@ func mustNewSPIFFETrustConfig(t *testing.T) *SPIFFETrustConfig {
 	return mustNewSPIFFETrustConfigWithSource(t, validFileBundleSource())
 }
 
+// testSPIFFEWildcardAssociation returns a valid token-exchange association for
+// the "production" trust domain that matches any workload in the default
+// namespace and allows audience as a resource.
+func testSPIFFEWildcardAssociation(audience string) SPIFFEClientAuthRunConfig {
+	association := testSPIFFEAssociation("agent-client", "openid")
+	association.PrincipalPattern = "spiffe://example.org/ns/default/*"
+	association.Resources = []string{audience}
+	return association
+}
+
 func mustNewSPIFFETrustConfigWithSource(t *testing.T, source SPIFFEBundleSourceRunConfig) *SPIFFETrustConfig {
 	t.Helper()
 	trust, err := NewSPIFFETrustConfig(
@@ -122,15 +132,7 @@ func mustNewSPIFFETrustConfigWithSource(t *testing.T, source SPIFFEBundleSourceR
 			Methods:      []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509},
 			BundleSource: source,
 		}},
-		&InboundGrantsRunConfig{SPIFFEClientAuth: []SPIFFEClientAuthRunConfig{{
-			TrustDomainRef:   "production",
-			PrincipalPattern: "spiffe://example.org/ns/default/*",
-			ClientID:         "agent-client",
-			Methods:          []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509},
-			Audiences:        []string{"https://mcp.example.com"},
-			Scopes:           []string{"openid"},
-			GrantTypes:       []string{SPIFFEGrantTypeTokenExchange},
-		}}},
+		&InboundGrantsRunConfig{SPIFFEClientAuth: []SPIFFEClientAuthRunConfig{testSPIFFEWildcardAssociation("https://mcp.example.com")}},
 		[]string{"openid"}, []string{"https://mcp.example.com"},
 	)
 	require.NoError(t, err)
@@ -721,23 +723,16 @@ func TestRunConfigValidate(t *testing.T) {
 
 	x509Config := func(mutate func(*RunConfig)) RunConfig {
 		config := RunConfig{
-			Issuer:      "https://auth.example.org",
-			TLSListener: &TLSListenerRunConfig{CertFile: "cert", KeyFile: "key"},
+			Issuer:           "https://auth.example.org",
+			AllowedAudiences: []string{"https://mcp.example.org/resource"},
+			TLSListener:      &TLSListenerRunConfig{CertFile: "cert", KeyFile: "key"},
 			SPIFFETrustDomains: []SPIFFETrustDomainRunConfig{{
 				Name:         "production",
 				TrustDomain:  "example.org",
 				Methods:      []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509},
 				BundleSource: validFileBundleSource(),
 			}},
-			InboundGrants: &InboundGrantsRunConfig{SPIFFEClientAuth: []SPIFFEClientAuthRunConfig{{
-				TrustDomainRef:   "production",
-				PrincipalPattern: "spiffe://example.org/ns/default/*",
-				ClientID:         "agent-client",
-				Methods:          []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509},
-				Audiences:        []string{"https://mcp.example.org/resource"},
-				Scopes:           []string{"openid"},
-				GrantTypes:       []string{SPIFFEGrantTypeTokenExchange},
-			}}},
+			InboundGrants: &InboundGrantsRunConfig{SPIFFEClientAuth: []SPIFFEClientAuthRunConfig{testSPIFFEWildcardAssociation("https://mcp.example.org/resource")}},
 		}
 		if mutate != nil {
 			mutate(&config)
@@ -3223,15 +3218,7 @@ func spiffeBundleSourceTestTrust(source SPIFFEBundleSourceRunConfig) ([]SPIFFETr
 		Methods:      []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509},
 		BundleSource: source,
 	}}
-	grants := &InboundGrantsRunConfig{SPIFFEClientAuth: []SPIFFEClientAuthRunConfig{{
-		TrustDomainRef:   "production",
-		PrincipalPattern: "spiffe://example.org/ns/default/*",
-		ClientID:         "agent-client",
-		Methods:          []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509},
-		Audiences:        []string{"https://mcp.example.com"},
-		Scopes:           []string{"openid"},
-		GrantTypes:       []string{SPIFFEGrantTypeTokenExchange},
-	}}}
+	grants := &InboundGrantsRunConfig{SPIFFEClientAuth: []SPIFFEClientAuthRunConfig{testSPIFFEWildcardAssociation("https://mcp.example.com")}}
 	return domains, grants
 }
 
@@ -3280,6 +3267,7 @@ func TestSPIFFEBundleSourceRuntimeSupport(t *testing.T) {
 			domains, grants := spiffeBundleSourceTestTrust(tt.source)
 			cfg := RunConfig{
 				Issuer:             "https://auth.example.org",
+				AllowedAudiences:   []string{"https://mcp.example.com"},
 				TLSListener:        &TLSListenerRunConfig{CertFile: "cert", KeyFile: "key"},
 				SPIFFETrustDomains: domains,
 				InboundGrants:      grants,

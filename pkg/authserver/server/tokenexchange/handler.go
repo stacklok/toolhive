@@ -936,9 +936,12 @@ func (h *Handler) grantScopes(
 	return nil
 }
 
-// grantAndBoundAudiences resolves the delegated token's audience from the
-// request (explicit "audience", RFC 8707 "resource", or the configured
-// default) and then bounds the result by the subject token.
+// grantAndBoundAudiences resolves the delegated token's audience and then
+// bounds the result by the subject token. Clients that carry a resource list
+// (server.ResourceScopedClient, today the SPIFFE clients) are targeted by one
+// RFC 8707 resource from that list, with no "audience" parameter and no default
+// audience. All other clients use the explicit
+// "audience", RFC 8707 "resource", or the configured default.
 //
 // The delegated token must not target a resource the subject token was not
 // itself valid for: every granted audience must be covered by the subject
@@ -950,6 +953,14 @@ func (h *Handler) grantScopes(
 func (h *Handler) grantAndBoundAudiences(
 	ctx context.Context, requester fosite.AccessRequester, client fosite.Client, validatedClaims *ValidatedClaims,
 ) error {
+	if scoped, ok := client.(server.ResourceScopedClient); ok {
+		if err := server.GrantSingleResource(requester, scoped.Resources(), h.allowedAudiences); err != nil {
+			slog.Debug("SPIFFE token exchange rejected",
+				"client_id", client.GetID(), "reason", fosite.ErrorToRFC6749Error(err).HintField)
+			return errorsx.WithStack(err)
+		}
+		return ensureAudienceSubsetOfSubject(requester.GetGrantedAudience(), validatedClaims.Audience)
+	}
 	if err := h.grantAudiences(ctx, requester, client); err != nil {
 		return err
 	}

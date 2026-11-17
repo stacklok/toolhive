@@ -2565,15 +2565,7 @@ func TestNewEmbeddedAuthServer_SPIFFEAndJWTBearerGrant(t *testing.T) {
 			},
 		}},
 		InboundGrants: &authserver.InboundGrantsRunConfig{
-			SPIFFEClientAuth: []authserver.SPIFFEClientAuthRunConfig{{
-				TrustDomainRef:   "production",
-				PrincipalPattern: "spiffe://example.org/ns/default/agent",
-				ClientID:         "spiffe-client",
-				Methods:          []authserver.SPIFFEAuthenticationMethod{authserver.SPIFFEAuthenticationMethodX509},
-				Scopes:           []string{"openid"},
-				Audiences:        []string{"https://mcp.example.com"},
-				GrantTypes:       []string{authserver.SPIFFEGrantTypeTokenExchange},
-			}},
+			SPIFFEClientAuth: []authserver.SPIFFEClientAuthRunConfig{testSPIFFEAssociation("spiffe-client", "spiffe://example.org/ns/default/agent")},
 		},
 		TrustedIssuers: []tokenexchange.TrustedIssuer{{
 			IssuerURL: "https://issuer.example.com",
@@ -2628,15 +2620,7 @@ func TestNewEmbeddedAuthServer_SPIFFEAndCIMD(t *testing.T) {
 			},
 		}},
 		InboundGrants: &authserver.InboundGrantsRunConfig{
-			SPIFFEClientAuth: []authserver.SPIFFEClientAuthRunConfig{{
-				TrustDomainRef:   "production",
-				PrincipalPattern: "spiffe://example.org/ns/default/agent",
-				ClientID:         "spiffe-client",
-				Methods:          []authserver.SPIFFEAuthenticationMethod{authserver.SPIFFEAuthenticationMethodX509},
-				Scopes:           []string{"openid"},
-				Audiences:        []string{"https://mcp.example.com"},
-				GrantTypes:       []string{authserver.SPIFFEGrantTypeTokenExchange},
-			}},
+			SPIFFEClientAuth: []authserver.SPIFFEClientAuthRunConfig{testSPIFFEAssociation("spiffe-client", "spiffe://example.org/ns/default/agent")},
 		},
 	}
 
@@ -2672,15 +2656,7 @@ func TestNewEmbeddedAuthServerWithStorage_SPIFFECollisionPrecedesDCR(t *testing.
 			},
 		}},
 		InboundGrants: &authserver.InboundGrantsRunConfig{
-			SPIFFEClientAuth: []authserver.SPIFFEClientAuthRunConfig{{
-				TrustDomainRef:   "production",
-				PrincipalPattern: "spiffe://example.org/ns/default/agent",
-				ClientID:         "spiffe-client",
-				Methods:          []authserver.SPIFFEAuthenticationMethod{authserver.SPIFFEAuthenticationMethodX509},
-				Scopes:           []string{"openid"},
-				Audiences:        []string{"https://mcp.example.com"},
-				GrantTypes:       []string{authserver.SPIFFEGrantTypeTokenExchange},
-			}},
+			SPIFFEClientAuth: []authserver.SPIFFEClientAuthRunConfig{testSPIFFEAssociation("spiffe-client", "spiffe://example.org/ns/default/agent")},
 		},
 		Upstreams: []authserver.UpstreamRunConfig{{
 			Name: "dcr-upstream",
@@ -2734,16 +2710,10 @@ func TestEmbeddedAuthServer_SPIFFESerializedRestartPolicy(t *testing.T) {
 				File: &authserver.SPIFFEFileBundleSourceRunConfig{Path: writeTestSPIFFEBundleFile(t)},
 			},
 		}}
+		spiffeClient := testSPIFFEAssociation("spiffe-client", "spiffe://example.org/ns/default/agent")
+		spiffeClient.Scopes = []string{scope}
 		cfg.InboundGrants = &authserver.InboundGrantsRunConfig{
-			SPIFFEClientAuth: []authserver.SPIFFEClientAuthRunConfig{{
-				TrustDomainRef:   "production",
-				PrincipalPattern: "spiffe://example.org/ns/default/agent",
-				ClientID:         "spiffe-client",
-				Methods:          []authserver.SPIFFEAuthenticationMethod{authserver.SPIFFEAuthenticationMethodX509},
-				Scopes:           []string{scope},
-				Audiences:        []string{"https://mcp.example.com"},
-				GrantTypes:       []string{authserver.SPIFFEGrantTypeTokenExchange},
-			}},
+			SPIFFEClientAuth: []authserver.SPIFFEClientAuthRunConfig{spiffeClient},
 		}
 		return cfg
 	}
@@ -2886,6 +2856,8 @@ func TestEmbeddedAuthServer_SPIFFEClientIDAloneDoesNotAuthenticate(t *testing.T)
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
+			spiffeClient := testSPIFFEAssociation("spiffe-client", "spiffe://example.org/ns/default/agent")
+			spiffeClient.Methods = tt.methods
 			cfg := authserver.RunConfig{
 				SchemaVersion:    authserver.CurrentSchemaVersion,
 				Issuer:           "https://auth.example.com",
@@ -2910,16 +2882,7 @@ func TestEmbeddedAuthServer_SPIFFEClientIDAloneDoesNotAuthenticate(t *testing.T)
 						File: &authserver.SPIFFEFileBundleSourceRunConfig{Path: writeTestSPIFFEBundleFile(t)},
 					},
 				}},
-				InboundGrants: &authserver.InboundGrantsRunConfig{SPIFFEClientAuth: []authserver.SPIFFEClientAuthRunConfig{{
-					TrustDomainRef:   "production",
-					PrincipalPattern: "spiffe://example.org/ns/default/agent",
-					ClientID:         "spiffe-client",
-					Methods:          tt.methods,
-					GrantTypes:       []string{authserver.SPIFFEGrantTypeTokenExchange},
-					Scopes:           []string{"openid"},
-					Resources:        []string{"https://mcp.example.com"},
-					Audiences:        []string{"https://mcp.example.com"},
-				}}},
+				InboundGrants: &authserver.InboundGrantsRunConfig{SPIFFEClientAuth: []authserver.SPIFFEClientAuthRunConfig{spiffeClient}},
 			}
 			if tt.methods[0] == authserver.SPIFFEAuthenticationMethodX509 {
 				cfg.TLSListener = writeTestSPIFFEListener(t)
@@ -4228,4 +4191,19 @@ func TestCloseIdleConnectionsWithoutCapability(t *testing.T) {
 
 	assert.NotPanics(t, eas.CloseIdleConnections)
 	assert.Zero(t, stub.closed.Load(), "must not fall back to Close")
+}
+
+// testSPIFFEAssociation returns a valid token-exchange association for the
+// "production" trust domain; callers override only the fields their case
+// cares about.
+func testSPIFFEAssociation(clientID, principal string) authserver.SPIFFEClientAuthRunConfig {
+	return authserver.SPIFFEClientAuthRunConfig{
+		TrustDomainRef:   "production",
+		PrincipalPattern: principal,
+		ClientID:         clientID,
+		Methods:          []authserver.SPIFFEAuthenticationMethod{authserver.SPIFFEAuthenticationMethodX509},
+		Scopes:           []string{"openid"},
+		Resources:        []string{"https://mcp.example.com"},
+		GrantTypes:       []string{oauthproto.GrantTypeTokenExchange},
+	}
 }

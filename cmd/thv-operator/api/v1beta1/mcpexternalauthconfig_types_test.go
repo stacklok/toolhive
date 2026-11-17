@@ -1077,6 +1077,16 @@ func TestMCPExternalAuthConfig_validateEmbeddedAuthServer(t *testing.T) {
 			errMsg:    "must be an absolute HTTP(S) URI",
 		},
 		{
+			name: "spiffe association without resources is rejected",
+			config: func() *MCPExternalAuthConfig {
+				c := mustEmbeddedAuthServerConfigWithResource("https://mcp.example.com/resource")
+				c.Spec.EmbeddedAuthServer.InboundGrants.SPIFFEClientAuth[0].Resources = nil
+				return c
+			}(),
+			expectErr: true,
+			errMsg:    "spiffeClientAuth[0].resources is required",
+		},
+		{
 			name:      "spiffe resource indicator accepts a well-formed URI",
 			config:    mustEmbeddedAuthServerConfigWithResource("https://mcp.example.com/resource"),
 			expectErr: false,
@@ -1270,6 +1280,7 @@ func mustEmbeddedAuthServerConfigWithSPIFFEX509Client(issuer, delegateClientID s
 		ClientID:         "spiffe-client",
 		Methods:          []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509},
 		Audiences:        []string{"https://mcp.example.com"},
+		Resources:        []string{"https://mcp.example.com"},
 		Scopes:           []string{"openid"},
 	}}}
 	if delegateClientID != "" {
@@ -1340,12 +1351,12 @@ func mustEmbeddedAuthServerConfigWithPrincipalPatterns(first, second string) *MC
 						{
 							TrustDomainRef: "example", PrincipalPattern: first, ClientID: "spiffe-client-1",
 							Methods:   []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509},
-							Audiences: []string{"https://mcp.example.com"}, Scopes: []string{"openid"},
+							Audiences: []string{"https://mcp.example.com"}, Resources: []string{"https://mcp.example.com"}, Scopes: []string{"openid"},
 						},
 						{
 							TrustDomainRef: "example", PrincipalPattern: second, ClientID: "spiffe-client-2",
 							Methods:   []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509},
-							Audiences: []string{"https://mcp.example.com"}, Scopes: []string{"openid"},
+							Audiences: []string{"https://mcp.example.com"}, Resources: []string{"https://mcp.example.com"}, Scopes: []string{"openid"},
 						},
 					},
 				},
@@ -1453,7 +1464,7 @@ func TestMCPExternalAuthConfig_ZeroUpstreamAlternatives(t *testing.T) {
 						TrustDomainRef: "example", PrincipalPattern: "spiffe://example.org/ns/default/agent",
 						ClientID:  "spiffe-client",
 						Methods:   []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509},
-						Audiences: []string{"https://mcp.example.com"}, Scopes: []string{"openid"},
+						Audiences: []string{"https://mcp.example.com"}, Resources: []string{"https://mcp.example.com"}, Scopes: []string{"openid"},
 					}},
 				},
 			},

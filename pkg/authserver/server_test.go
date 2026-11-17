@@ -727,6 +727,9 @@ func TestServer_TokenEndpoint_CIMDFetchesAreRateLimited(t *testing.T) {
 func TestNewServer_SPIFFEAndCIMD_WrapStorageInOrder(t *testing.T) {
 	t.Parallel()
 
+	spiffeClient := testSPIFFEAssociation("spiffe-client", "openid")
+	spiffeClient.Audiences = []string{"https://mcp.example.com"}
+	spiffeClient.Resources = []string{"https://mcp.example.com"}
 	trust, err := NewSPIFFETrustConfig(
 		[]SPIFFETrustDomainRunConfig{{
 			Name:        "production",
@@ -737,15 +740,7 @@ func TestNewServer_SPIFFEAndCIMD_WrapStorageInOrder(t *testing.T) {
 				WorkloadAPI: &SPIFFEWorkloadAPIBundleSourceRunConfig{},
 			},
 		}},
-		&InboundGrantsRunConfig{SPIFFEClientAuth: []SPIFFEClientAuthRunConfig{{
-			TrustDomainRef:   "production",
-			PrincipalPattern: "spiffe://example.org/ns/default/agent",
-			ClientID:         "spiffe-client",
-			Methods:          []SPIFFEAuthenticationMethod{SPIFFEAuthenticationMethodX509},
-			Scopes:           []string{"openid"},
-			Audiences:        []string{"https://mcp.example.com"},
-			GrantTypes:       []string{SPIFFEGrantTypeTokenExchange},
-		}}},
+		&InboundGrantsRunConfig{SPIFFEClientAuth: []SPIFFEClientAuthRunConfig{spiffeClient}},
 		[]string{"openid", "profile"},
 		[]string{"https://mcp.example.com"},
 	)

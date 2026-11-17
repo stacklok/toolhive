@@ -200,12 +200,23 @@ func TestNewRefusesInvalidInput(t *testing.T) {
 		name      string
 		providers map[string]subjectresolver.Provider
 		store     subjectresolver.IdentityStore
+		wantErr   error
 	}{
-		{"nil store", map[string]subjectresolver.Provider{idpIssuer: valid}, nil},
-		{"no providers", nil, store},
-		{"empty issuer", map[string]subjectresolver.Provider{"": valid}, store},
-		{"empty name", map[string]subjectresolver.Provider{idpIssuer: {SubjectClaim: "sub"}}, store},
-		{"empty subject claim", map[string]subjectresolver.Provider{idpIssuer: {Name: "okta"}}, store},
+		{"nil store", map[string]subjectresolver.Provider{idpIssuer: valid}, nil, nil},
+		{"no providers", nil, store, nil},
+		{"empty issuer", map[string]subjectresolver.Provider{"": valid}, store, nil},
+		{"empty name", map[string]subjectresolver.Provider{idpIssuer: {SubjectClaim: "sub"}}, store, nil},
+		{"empty subject claim", map[string]subjectresolver.Provider{idpIssuer: {Name: "okta"}}, store, nil},
+		{
+			"mutable email claim",
+			map[string]subjectresolver.Provider{idpIssuer: {Name: "okta", SubjectClaim: "email"}},
+			store, subject.ErrInvalidBindingClaim,
+		},
+		{
+			"mutable preferred_username claim",
+			map[string]subjectresolver.Provider{idpIssuer: {Name: "okta", SubjectClaim: "preferred_username"}},
+			store, subject.ErrInvalidBindingClaim,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -213,6 +224,9 @@ func TestNewRefusesInvalidInput(t *testing.T) {
 			r, err := subjectresolver.New(tt.providers, tt.store)
 			require.Error(t, err)
 			assert.Nil(t, r)
+			if tt.wantErr != nil {
+				assert.ErrorIs(t, err, tt.wantErr)
+			}
 		})
 	}
 }
